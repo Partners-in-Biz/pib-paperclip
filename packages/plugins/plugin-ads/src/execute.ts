@@ -20,6 +20,9 @@ import { closeRunIssue, note } from "./issues.js";
 import { scopePace } from "./pacing.js";
 import { SPEND_KINDS } from "./platforms.js";
 import { ProviderError } from "./providers/http.js";
+import type { GoogleAppSettings } from "./providers/google-app.js";
+import type { GoogleVideoSettings } from "./providers/google-video.js";
+import type { GoogleVideoAd } from "./providers/google-video-ad.js";
 import type { AccountRef } from "./providers/types.js";
 import type { CampaignTarget } from "./proposal-input.js";
 import { providerEnv, type AdsRuntime } from "./runtime.js";
@@ -176,6 +179,8 @@ export async function executeProposal(rt: AdsRuntime, actor: ExecuteActor, input
           objective: String(p.payload.objective),
           dailyBudgetMinor: Number(p.payload.dailyBudgetMinor),
           specialAdCategories: (p.payload.specialAdCategories as string[]) ?? [],
+          ...(p.payload.app ? { app: p.payload.app as GoogleAppSettings } : {}),
+          ...(p.payload.video ? { video: p.payload.video as GoogleVideoSettings } : {}),
           status: "PAUSED",
         });
         results.push({ what: `Created "${created.name}" (paused)`, ok: true, externalId: created.externalId });
@@ -226,7 +231,8 @@ export async function executeProposal(rt: AdsRuntime, actor: ExecuteActor, input
         const created = await t.provider.createAd(t.env, t.token, t.ref, {
           name: String(payload.name),
           adSetExternalId: String(payload.adSetExternalId),
-          creativeExternalId: String(payload.creativeExternalId),
+          creativeExternalId: String(payload.creativeExternalId ?? ""),
+          ...(payload.videoAd ? { videoAd: payload.videoAd as GoogleVideoAd } : {}),
           status: "PAUSED",
         });
         results.push({ what: `Created "${created.name}" (paused)`, ok: true, externalId: created.externalId });

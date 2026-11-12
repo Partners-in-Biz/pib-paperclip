@@ -289,6 +289,71 @@ describe("Google Ads: changing (only ever called from an approved proposal)", ()
     expect(ops[1].campaignOperation.create.campaignBudget).toBe(ops[0].campaignBudgetOperation.create.resourceName);
   });
 
+  it("creates an App campaign: budget, PAUSED MULTI_CHANNEL campaign with app settings, and its locations in one request", async () => {
+    const { fetchImpl, seen } = scripted([[/POST .*googleAds:mutate/, { body: { mutateOperationResponses: [{ campaignBudgetResult: { resourceName: "customers/5556667777/campaignBudgets/1" } }, { campaignResult: { resourceName: "customers/5556667777/campaigns/4343" } }, { campaignCriterionResult: {} }] } }]]);
+    const app = { appStore: "GOOGLE_APP_STORE" as const, appId: "com.velox.app", targetInstallCostMinor: 1_500, locationIds: ["2710"] };
+    const made = await googleProvider.createCampaign(env(googleApp(), fetchImpl), gToken, ref, { name: "Velox installs", objective: "MULTI_CHANNEL", dailyBudgetMinor: 20_000, app, status: "PAUSED" });
+    expect(made).toEqual({ externalId: "4343", name: "Velox installs" });
+    expect(seen).toHaveLength(1);
+    const ops = JSON.parse(seen[0]!.body!).mutateOperations;
+    expect(ops[0].campaignBudgetOperation.create).toMatchObject({ amountMicros: "200000000", explicitlyShared: false });
+    const campaign = ops[1].campaignOperation.create;
+    expect(campaign).toMatchObject({
+      status: "PAUSED",
+      advertisingChannelType: "MULTI_CHANNEL",
+      advertisingChannelSubType: "APP_CAMPAIGN",
+      campaignBudget: ops[0].campaignBudgetOperation.create.resourceName,
+      appCampaignSetting: { appStore: "GOOGLE_APP_STORE", appId: "com.velox.app", biddingStrategyGoalType: "OPTIMIZE_INSTALLS_TARGET_INSTALL_COST" },
+      targetCpa: { targetCpaMicros: "15000000" },
+    });
+    expect(campaign.manualCpc).toBeUndefined();
+    expect(ops[2].campaignCriterionOperation.create).toEqual({ campaign: campaign.resourceName, location: { geoTargetConstant: "geoTargetConstants/2710" } });
+  });
+
+  it("an App campaign with no target cost per install maximizes installs; an unknown channel or a missing app is refused before any call", async () => {
+    const { fetchImpl, seen } = scripted([[/POST .*googleAds:mutate/, { body: { mutateOperationResponses: [{ campaignResult: { resourceName: "customers/5556667777/campaigns/9" } }] } }]]);
+    const app = { appStore: "APPLE_APP_STORE" as const, appId: "1234567890", targetInstallCostMinor: null, locationIds: ["2710", "2826"] };
+    await googleProvider.createCampaign(env(googleApp(), fetchImpl), gToken, ref, { name: "Lumen installs", objective: "MULTI_CHANNEL", dailyBudgetMinor: 10_000, app });
+    const ops = JSON.parse(seen[0]!.body!).mutateOperations;
+    expect(ops[1].campaignOperation.create).toMatchObject({ maximizeConversions: {}, appCampaignSetting: { appStore: "APPLE_APP_STORE", appId: "1234567890", biddingStrategyGoalType: "OPTIMIZE_INSTALLS_WITHOUT_TARGET_INSTALL_COST" } });
+    expect(ops[1].campaignOperation.create.targetCpa).toBeUndefined();
+    expect(ops.slice(2)).toHaveLength(2);
+    await expect(googleProvider.createCampaign(env(googleApp(), fetchImpl), gToken, ref, { name: "x", objective: "MULTI_CHANNEL", dailyBudgetMinor: 10_000 })).rejects.toBeInstanceOf(AdsError);
+    await expect(googleProvider.createCampaign(env(googleApp(), fetchImpl), gToken, ref, { name: "x", objective: "VIDEO", dailyBudgetMinor: 10_000 })).rejects.toBeInstanceOf(AdsError);
+    expect(seen).toHaveLength(1);
+  });
+
+  it("creates a YouTube video campaign: budget, PAUSED Demand Gen campaign, a paused YouTube-only ad group and its locations in one request", async () => {
+    const { fetchImpl, seen } = scripted([[/POST .*googleAds:mutate/, { body: { mutateOperationResponses: [{ campaignBudgetResult: {} }, { campaignResult: { resourceName: "customers/5556667777/campaigns/5151" } }, { adGroupResult: {} }, { adGroupCriterionResult: {} }] } }]]);
+    const video = { targetCpaMinor: 2_500, bidFor: "CONVERSIONS" as const, locationIds: ["2710"] };
+    const made = await googleProvider.createCampaign(env(googleApp(), fetchImpl), gToken, ref, { name: "Velox YouTube", objective: "DEMAND_GEN", dailyBudgetMinor: 30_000, video, status: "PAUSED" });
+    expect(made).toEqual({ externalId: "5151", name: "Velox YouTube" });
+    expect(seen).toHaveLength(1);
+    const ops = JSON.parse(seen[0]!.body!).mutateOperations;
+    expect(ops[0].campaignBudgetOperation.create).toMatchObject({ amountMicros: "300000000", explicitlyShared: false });
+    const campaign = ops[1].campaignOperation.create;
+    expect(campaign).toMatchObject({ status: "PAUSED", advertisingChannelType: "DEMAND_GEN", campaignBudget: ops[0].campaignBudgetOperation.create.resourceName, targetCpa: { targetCpaMicros: "25000000" } });
+    expect(campaign.advertisingChannelSubType).toBeUndefined();
+    const group = ops[2].adGroupOperation.create;
+    expect(group).toMatchObject({ campaign: campaign.resourceName, status: "PAUSED" });
+    expect(group.demandGenAdGroupSettings.channelControls.selectedChannels).toEqual({ youtubeInStream: true, youtubeInFeed: true, youtubeShorts: true, discover: false, gmail: false, display: false, maps: false });
+    expect(ops[3].adGroupCriterionOperation.create).toEqual({ adGroup: group.resourceName, location: { geoTargetConstant: "geoTargetConstants/2710" } });
+  });
+
+  it("a YouTube video campaign without a target bids for conversions or clicks; missing settings are refused before any call", async () => {
+    const { fetchImpl, seen } = scripted([[/POST .*googleAds:mutate/, { body: { mutateOperationResponses: [{ campaignResult: { resourceName: "customers/5556667777/campaigns/9" } }] } }]]);
+    const create = (bidFor: "CONVERSIONS" | "CLICKS") => googleProvider.createCampaign(env(googleApp(), fetchImpl), gToken, ref, { name: "Lumen YouTube", objective: "DEMAND_GEN", dailyBudgetMinor: 10_000, video: { targetCpaMinor: null, bidFor, locationIds: ["2710", "2826"] } });
+    await create("CONVERSIONS");
+    await create("CLICKS");
+    const [conv, clicks] = seen.map((s) => JSON.parse(s.body!).mutateOperations);
+    expect(conv[1].campaignOperation.create).toMatchObject({ maximizeConversions: {} });
+    expect(clicks[1].campaignOperation.create).toMatchObject({ targetSpend: {} });
+    expect(clicks[1].campaignOperation.create.targetCpa).toBeUndefined();
+    expect(clicks.slice(3)).toHaveLength(2);
+    await expect(googleProvider.createCampaign(env(googleApp(), fetchImpl), gToken, ref, { name: "x", objective: "DEMAND_GEN", dailyBudgetMinor: 10_000 })).rejects.toBeInstanceOf(AdsError);
+    expect(seen).toHaveLength(2);
+  });
+
   it("changes status with an update mask", async () => {
     const { fetchImpl, seen } = scripted([[/campaigns:mutate/, { body: { results: [{}] } }]]);
     await googleProvider.setCampaignStatus(env(googleApp(), fetchImpl), gToken, ref, "4242", "paused");
@@ -476,13 +541,83 @@ describe("Google Ads: ad groups and keywords (Google only)", () => {
   const ref = { ...accountRef, externalId: "555-666-7777", loginCustomerId: "111-222-3333" };
 
   it("creates an ad group PAUSED with a CPC bid in micros", async () => {
-    const { fetchImpl, seen } = scripted([[/POST .*adGroups:mutate/, { body: { mutateOperationResponses: [{ adGroupResult: { resourceName: "customers/5556667777/adGroups/222" } }] } }]]);
+    const { fetchImpl, seen } = scripted([[/POST .*adGroups:mutate/, { body: { results: [{ resourceName: "customers/5556667777/adGroups/222" }] } }]]);
     const made = await googleProvider.createAdGroup(env(googleApp(), fetchImpl), gToken, ref, "4242", { name: "Brand keywords", cpcBidMinor: 1500 });
     expect(made).toEqual({ externalId: "222", name: "Brand keywords" });
     expect(seen[0]!.headers["login-customer-id"]).toBe("1112223333");
     const ops = JSON.parse(seen[0]!.body!).operations;
     expect(ops[0].create).toMatchObject({ status: "PAUSED", type: "SEARCH_STANDARD", cpcBidMicros: "15000000" });
     expect(ops[0].create.campaign).toBe("customers/5556667777/campaigns/4242");
+  });
+
+  // PAR-6697: the Google stubs replaced. Fixtures only; nothing here reaches Google.
+  const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]).toString("base64");
+  const VIDEO_AD = { videoAssets: ["customers/5556667777/assets/11"], logoImageAsset: "customers/5556667777/assets/12", businessName: "Velox", headlines: ["Read faster"], longHeadlines: ["Read faster with Velox"], descriptions: ["Train your reading speed."], finalUrl: "https://velox.example/?utm_source=google&utm_medium=video&utm_campaign=q4" };
+
+  it("uploads an image as an asset through the manager account and returns its resource name; the bytes stay out of the URL", async () => {
+    const { fetchImpl, seen } = scripted([[/POST .*\/customers\/5556667777\/assets:mutate/, { body: { results: [{ resourceName: "customers/5556667777/assets/12" }] } }]]);
+    expect(await googleProvider.uploadAdImage(env(googleApp(), fetchImpl), gToken, ref, { filename: "logo.png", imageBase64: PNG })).toEqual({ imageHash: "customers/5556667777/assets/12" });
+    expect(seen[0]!.headers["login-customer-id"]).toBe("1112223333");
+    expect(seen[0]!.url).not.toContain(PNG);
+    const create = JSON.parse(seen[0]!.body!).operations[0].create;
+    expect(create).toMatchObject({ type: "IMAGE", imageAsset: { data: PNG } });
+    expect(create.name).toMatch(/^logo\.png \d+$/);
+  });
+
+  it("refuses an image that is not JPEG, PNG or GIF before sending", async () => {
+    const none = scripted([]);
+    await expect(googleProvider.uploadAdImage(env(googleApp(), none.fetchImpl), gToken, ref, { filename: "x.webp", imageBase64: Buffer.from("RIFF0000WEBP").toString("base64") })).rejects.toThrow(/JPEG, PNG or GIF/);
+    await expect(googleProvider.uploadAdImage(env(googleApp(), none.fetchImpl), gToken, ref, { filename: "big.png", imageBase64: Buffer.alloc(5_242_881).toString("base64") })).rejects.toThrow(/5,120 KB/);
+    expect(none.seen).toHaveLength(0);
+  });
+
+  it("adds a YouTube video as an asset and refuses a video file link", async () => {
+    const { fetchImpl, seen } = scripted([[/assets:mutate/, { body: { results: [{ resourceName: "customers/5556667777/assets/11" }] } }]]);
+    for (const url of ["https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=3", "https://youtu.be/dQw4w9WgXcQ", "https://youtube.com/shorts/dQw4w9WgXcQ"]) {
+      expect(await googleProvider.uploadAdVideo(env(googleApp(), fetchImpl), gToken, ref, { videoUrl: url, title: "Promo" })).toEqual({ videoId: "customers/5556667777/assets/11" });
+    }
+    expect(JSON.parse(seen[0]!.body!).operations[0].create).toMatchObject({ type: "YOUTUBE_VIDEO", youtubeVideoAsset: { youtubeVideoId: "dQw4w9WgXcQ" } });
+    expect(new Set(seen.map((s) => JSON.parse(s.body!).operations[0].create.youtubeVideoAsset.youtubeVideoId))).toEqual(new Set(["dQw4w9WgXcQ"]));
+    const none = scripted([]);
+    await expect(googleProvider.uploadAdVideo(env(googleApp(), none.fetchImpl), gToken, ref, { videoUrl: "https://example.test/video.mp4" })).rejects.toMatchObject({ code: "unsupported_on_platform" });
+    expect(none.seen).toHaveLength(0);
+  });
+
+  it("creates a Demand Gen video ad PAUSED in the ad group and returns the ad id", async () => {
+    const { fetchImpl, seen } = scripted([[/POST .*adGroupAds:mutate/, { body: { results: [{ resourceName: "customers/5556667777/adGroupAds/77~9001" }] } }]]);
+    const made = await googleProvider.createAd(env(googleApp(), fetchImpl), gToken, ref, { name: "Q4 video", adSetExternalId: "77", creativeExternalId: "", videoAd: VIDEO_AD, status: "PAUSED" });
+    expect(made).toEqual({ externalId: "9001", name: "Q4 video" });
+    expect(seen[0]!.headers["login-customer-id"]).toBe("1112223333");
+    expect(JSON.parse(seen[0]!.body!).operations[0].create).toEqual({
+      adGroup: "customers/5556667777/adGroups/77",
+      status: "PAUSED",
+      ad: {
+        name: "Q4 video",
+        finalUrls: [VIDEO_AD.finalUrl],
+        demandGenVideoResponsiveAd: {
+          videos: [{ asset: "customers/5556667777/assets/11" }],
+          logoImages: [{ asset: "customers/5556667777/assets/12" }],
+          businessName: { text: "Velox" },
+          headlines: [{ text: "Read faster" }],
+          longHeadlines: [{ text: "Read faster with Velox" }],
+          descriptions: [{ text: "Train your reading speed." }],
+        },
+      },
+    });
+  });
+
+  it("refuses an ACTIVE ad, missing copy, and another account's assets before sending; ad sets and creatives name the Google way", async () => {
+    const none = scripted([]);
+    const e = env(googleApp(), none.fetchImpl);
+    const ad = (extra: Record<string, unknown>) => googleProvider.createAd(e, gToken, ref, { name: "Q4", adSetExternalId: "77", creativeExternalId: "", videoAd: { ...VIDEO_AD, ...extra } as never, status: "PAUSED" });
+    await expect(googleProvider.createAd(e, gToken, ref, { name: "Q4", adSetExternalId: "77", creativeExternalId: "", videoAd: VIDEO_AD, status: "ACTIVE" })).rejects.toThrow(/PAUSED/);
+    await expect(googleProvider.createAd(e, gToken, ref, { name: "Q4", adSetExternalId: "77", creativeExternalId: "cr1" })).rejects.toThrow(/videoAssets/);
+    await expect(ad({ logoImageAsset: "customers/999/assets/12" })).rejects.toThrow(/another Google Ads account/);
+    await expect(ad({ headlines: ["x".repeat(41)] })).rejects.toThrow(/too long/);
+    await expect(ad({ finalUrl: "https://velox.example/" })).rejects.toThrow(/UTM/);
+    await expect(googleProvider.createAdSet(e, gToken, ref, {} as never)).rejects.toMatchObject({ code: "unsupported_on_platform", message: expect.stringContaining("create_ad_group") });
+    await expect(googleProvider.createAdCreative(e, gToken, ref, {} as never)).rejects.toMatchObject({ code: "unsupported_on_platform", message: expect.stringContaining("create_ad") });
+    expect(none.seen).toHaveLength(0);
   });
 
   it("validates ad group name and CPC bid before sending", async () => {

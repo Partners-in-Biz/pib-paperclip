@@ -19,6 +19,8 @@ export interface MockWrite {
   lifetimeBudgetMinor?: number;
   name?: string;
   objective?: string;
+  app?: unknown;
+  video?: unknown;
   filename?: string;
   imageHash?: string | null;
   videoUrl?: string;
@@ -155,7 +157,7 @@ export class MockAdsProvider implements AdsProvider {
     this.createStatuses.push({ op: "create", status: request.status });
     this.maybeFail("create");
     const externalId = `mock-cmp-${(this.seq += 1)}`;
-    this.writes.push({ op: "create", accountExternalId: account.externalId, campaignExternalId: externalId, name: request.name, objective: request.objective, dailyBudgetMinor: request.dailyBudgetMinor, status: "paused" });
+    this.writes.push({ op: "create", accountExternalId: account.externalId, campaignExternalId: externalId, name: request.name, objective: request.objective, dailyBudgetMinor: request.dailyBudgetMinor, status: "paused", ...(request.app ? { app: request.app } : {}), ...(request.video ? { video: request.video } : {}) });
     (this.campaigns[account.externalId] ??= []).push({ externalId, name: request.name, status: "paused", rawStatus: "PAUSED", objective: request.objective, channel: this.platform, dailyBudgetMinor: request.dailyBudgetMinor, lifetimeBudgetMinor: null });
     return { externalId, name: request.name };
   }
@@ -205,7 +207,7 @@ export class MockAdsProvider implements AdsProvider {
   async createAd(_env: unknown, _token: TokenBundle, account: AccountRef, request: CreateAdRequest) {
     this.createStatuses.push({ op: "create_ad", status: request.status });
     const externalId = `mock-ad-${(this.seq += 1)}`;
-    this.writes.push({ op: "create_ad", accountExternalId: account.externalId, name: request.name, adSetExternalId: request.adSetExternalId, creativeExternalId: request.creativeExternalId, status: request.status === "ACTIVE" ? "active" : "paused" });
+    this.writes.push({ op: "create_ad", accountExternalId: account.externalId, name: request.name, adSetExternalId: request.adSetExternalId, creativeExternalId: request.creativeExternalId, ...(request.videoAd ? { videoAd: request.videoAd } : {}), status: request.status === "ACTIVE" ? "active" : "paused" });
     return { externalId, name: request.name };
   }
 

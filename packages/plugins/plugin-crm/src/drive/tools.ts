@@ -170,6 +170,11 @@ export async function driveFolderEnsure(ctx: PluginContext, viewer: Viewer, para
   if (type !== "project" && type !== "crm_company") throw new CrmError(`Invalid entity_type: ${type}`);
   if (!id) throw new CrmError("Missing entity_id");
 
+  // Timing logs (PAR-10212): which step of an ensure is slow (broker set-up, the folder look-up, the plan's steps).
+  const startedAt = Date.now();
+  const timing = (outcome: string, extra: Record<string, unknown>) =>
+    ctx.logger.info("Drive folder ensure", { companyId: viewer.companyId, entityType: type, entityId: id, includeTree: include_tree === true, outcome, elapsedMs: Date.now() - startedAt, ...extra });
+
   let broker;
   try {
     broker = await createBrokerForCompany(ctx, viewer.companyId);
@@ -186,16 +191,24 @@ export async function driveFolderEnsure(ctx: PluginContext, viewer: Viewer, para
   const projectFacts = type === "project" ? await loadProjectFacts(ctx, viewer, id, false) : null;
   const target = projectFacts ? folderTarget(projectFacts) : { entityType: type, entityId: id };
 
+  const brokerMs = Date.now() - startedAt;
+
   let existing: any;
+  const resolveStartedAt = Date.now();
   try {
     existing = await broker.resolve(target.entityType, target.entityId);
   } catch (e) {
+    timing("resolve_failed", { brokerMs, resolveMs: Date.now() - resolveStartedAt });
     if (e instanceof BrokerError) throw new CrmError(`Drive broker failed: ${e.message}`);
     throw new CrmError(`Drive broker failed: ${e instanceof Error ? e.message : String(e)}`);
   }
   // If the folder exists, is complete (all its standard sub-folders made) and we don't need the tree, return early.
   // An interrupted ensure leaves complete:false, and the plan below resumes it.
-  if (existing && existing.complete !== false && !include_tree) return { status: "exists", path: existing.path, url: existing.folder_url, folder_id: existing.folder_id, tree: [] };
+  const resolveMs = Date.now() - resolveStartedAt;
+  if (existing && existing.complete !== false && !include_tree) {
+    timing("exists", { brokerMs, resolveMs });
+    return { status: "exists", path: existing.path, url: existing.folder_url, folder_id: existing.folder_id, tree: [] };
+  }
 
   let facts = type === "project" ? projectFacts : await loadDriveFacts(ctx, viewer, type, id);
   if (!facts) throw new CrmError("project not found");
@@ -210,9 +223,11 @@ export async function driveFolderEnsure(ctx: PluginContext, viewer: Viewer, para
   if (plan.kind === "needs_human_look") return { status: "needs_human_look", reason: plan.reason, conflictsWith: plan.conflictsWith };
 
   let lastResult = null;
+  const ensureStartedAt = Date.now();
   try {
     for (const step of plan.steps) lastResult = await broker.ensure(step);
   } catch (e) {
+    timing("ensure_failed", { brokerMs, resolveMs, steps: plan.steps.length, ensureMs: Date.now() - ensureStartedAt });
     if (e instanceof BrokerError && e.retryable) {
       const details = e.folderId || e.path ? ` (folderId: ${e.folderId}) (path: ${e.path})` : "";
       throw new CrmError(`Drive broker failed part-way (retryable)${details}. Nothing was renamed or deleted. Call drive_folder_ensure again with the same arguments; it resumes and adopts what was already created (no duplicates).`);
@@ -220,6 +235,7 @@ export async function driveFolderEnsure(ctx: PluginContext, viewer: Viewer, para
     throw new CrmError(`Drive broker failed: ${e instanceof Error ? e.message : String(e)}`);
   }
 
+  timing("ensured", { brokerMs, resolveMs, steps: plan.steps.length, ensureMs: Date.now() - ensureStartedAt, existed: Boolean(existing) });
   if (!lastResult) throw new CrmError("No plan steps executed");
   // The tree is the leaf folder's standard sub-folders, and nothing else: a book, company or marketing folder has none, so its tree is
   // empty (the steps above it, the layout folders, are not part of what a save can choose from).

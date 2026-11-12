@@ -12,6 +12,8 @@ import {
 } from "../platforms.js";
 import { ExperimentSelect } from "./growth.js";
 import { MediaViewer } from "./media-viewer.js";
+import { AccountPicker } from "./post-tools.js";
+import { NO_ACCOUNT, PostPreview } from "./preview.js";
 import { Banner, Muted, PlatformBadge, Row, scopeName, scopeParams, SmallButton, platformLabel, toLocalInput } from "./parts.js";
 import type { MediaAsset, Post, RunAction, Snapshot } from "./types.js";
 
@@ -171,6 +173,8 @@ export function Composer({ snapshot, post, run, onClose }: {
   }, [snapshot.accounts, accountIds]);
   const activeTab = selectedPlatforms.includes(overrideTab as SocialPlatform) ? (overrideTab as SocialPlatform) : selectedPlatforms[0];
 
+  // An account the post already went out on stays on it.
+  const published = useMemo(() => new Set((post?.destinations ?? []).filter((d) => d.status !== "pending" && d.status !== "failed").map((d) => d.accountId)), [post]);
   const toggleAccount = (id: string) => setAccountIds((prev) => {
     const next = new Set(prev);
     if (next.has(id)) next.delete(id);
@@ -244,6 +248,14 @@ export function Composer({ snapshot, post, run, onClose }: {
   }
 
   const effectiveText = (platform: SocialPlatform) => overrides[platform]?.text?.trim() || body;
+  // The draft as it stands in this form, for the live preview.
+  const previewSource = {
+    body,
+    firstComment,
+    overrides,
+    media: mediaIds.map((id) => allAssets.find((a) => a.id === id)).filter((a): a is NonNullable<typeof a> => Boolean(a)).map((a) => ({ url: a.url, kind: a.kind, altText: null })),
+  };
+  const previewTargets = accounts.filter((a) => accountIds.has(a.id)).map((a) => ({ id: a.id, platform: a.platform, name: a.displayName, handle: a.handle, avatarUrl: a.avatarUrl }));
 
   return (
     <>
@@ -275,26 +287,30 @@ export function Composer({ snapshot, post, run, onClose }: {
         <TextArea value={body} onChange={(e) => setBody(e.target.value)} rows={6} placeholder="What do you want to say?" />
       </Field>
 
+      {body.trim() || previewSource.media.length ? (
+        <details open style={{ display: "grid", gap: 8 }}>
+          <summary style={{ fontSize: 12, color: tokens.muted, fontWeight: 500, cursor: "pointer", marginBottom: 8 }}>Preview: as it will look when posted</summary>
+          <PostPreview source={previewSource} accounts={previewTargets.length ? previewTargets : [NO_ACCOUNT]} />
+          {previewTargets.length === 0 ? <Muted>Pick accounts below to see each platform's own look.</Muted> : null}
+        </details>
+      ) : null}
+
       <div style={{ display: "grid", gap: 6 }}>
-        <span style={{ fontSize: 12, color: tokens.muted, fontWeight: 500 }}>Destinations</span>
+        <span style={{ fontSize: 12, color: tokens.muted, fontWeight: 500 }}>Post to</span>
         {accounts.length === 0 ? <Muted>No connected accounts for {scopeName(snapshot)}. Connect one on the Accounts tab.</Muted> : null}
         {foreign.length ? (
           <Muted style={{ color: tone("warn").fg }}>
             {foreign.map((d) => d.accountName).join(", ")} belong{foreign.length === 1 ? "s" : ""} to another client and will be removed from this post when you save.
           </Muted>
         ) : null}
-        <div style={{ display: "grid", gap: 6, gridTemplateColumns: fluidColumns(200, "auto-fill") }}>
-          {accounts.map((account) => (
-            <label key={account.id} style={{ display: "flex", gap: 8, alignItems: "center", padding: "6px 8px", borderRadius: 10, border: `1px solid ${accountIds.has(account.id) ? tokens.primary : tokens.border}`, cursor: "pointer" }}>
-              <input type="checkbox" checked={accountIds.has(account.id)} onChange={() => toggleAccount(account.id)} />
-              <PlatformBadge platform={account.platform} size={24} />
-              <span style={{ display: "grid", minWidth: 0 }}>
-                <span style={{ fontSize: 12, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{account.displayName}</span>
-                <Muted style={{ fontSize: 11 }}>{platformLabel(account.platform)}</Muted>
-              </span>
-            </label>
-          ))}
-        </div>
+        <AccountPicker
+          accounts={accounts}
+          selected={accountIds}
+          locked={published}
+          onToggle={(account) => toggleAccount(account.id)}
+          onAll={() => setAccountIds(new Set(accounts.map((a) => a.id)))}
+          onNone={() => setAccountIds(new Set(published))}
+        />
       </div>
 
       <div style={{ display: "grid", gap: 6 }}>

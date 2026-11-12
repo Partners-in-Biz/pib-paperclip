@@ -13,7 +13,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { ASK_OWNER_TOOL, reviewerAgentId, withClientParam } from "@partnersinbiz/pib-plugin-kit";
 import { AccountUnavailable, moveAccountScope, publicAccount, refreshAccountToken } from "./accounts.js";
 import { agentSummary } from "./agent.js";
-import { approvalView, approvePostByDelegate, handBackFromDelegate, approvePostByPerson, returnPostByDelegate, completeApproval, tryAutoApprove, recordClientApprovalByPerson, recordReviewerVerdict, recordSignoff, routeWaitingPost, signoffState, supersedePendingLinks } from "./approval-flow.js";
+import { approvalView, approvePostByDelegate, changeNotesFor, requestChangesByPerson, handBackFromDelegate, approvePostByPerson, returnPostByDelegate, completeApproval, tryAutoApprove, recordClientApprovalByPerson, recordReviewerVerdict, recordSignoff, routeWaitingPost, signoffState, supersedePendingLinks } from "./approval-flow.js";
 import { getPolicy, policyOut, savePolicy, scopeKeyOf } from "./approval-policy.js";
 import { assertDelegateNotEditing, clearDelegate, delegateBlockers, delegateCandidates, delegateFacts, delegateView, getDelegateStrict, setDelegate, type DelegateScope } from "./approval-delegate.js";
 import { listClientApprovals, requestClientApproval } from "./client-approval.js";
@@ -111,7 +111,7 @@ import {
   SocialError,
   type AccountScope,
 } from "./domain.js";
-import { experimentOptions, growthEnv, planExperimentTag, writeExperimentTag } from "./growth/service.js";
+import { experimentOptions, growthEnv, missingHookTag, planExperimentTag, writeExperimentTag } from "./growth/service.js";
 import { replyToInboxItem } from "./inbox.js";
 import { assetOut, foreignMedia, mediaFromAssetIds } from "./media.js";
 import { providerFor } from "./oauth/registry.js";
@@ -220,6 +220,26 @@ function postVisibility(params: Record<string, unknown>): AccountScope {
   const value = optionalString(params, "visibility") ?? "org";
   if (value !== "org" && value !== "personal") throw new SocialError("visibility must be org or personal");
   return value;
+}
+
+/**
+ * The overrides an edit writes. An edit that sends neither `overrides` nor `tags` leaves them alone (undefined). New
+ * `overrides` without a `tags` key keep the post's tags: they name the post's parts (`hook:`, `body:`, `cta:`) and the
+ * page's editor does not send them. `tags` (also `[]`, which clears) or `overrides.tags` replace them.
+ */
+export function overridesForEdit(current: unknown, overrides: unknown, tags: unknown): Record<string, unknown> | undefined {
+  if (overrides === undefined && tags === undefined) return undefined;
+  let stored: Record<string, unknown> = {};
+  try {
+    const parsed = typeof current === "string" ? JSON.parse(current) : current;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) stored = parsed as Record<string, unknown>;
+  } catch {
+    stored = {};
+  }
+  if (overrides !== undefined && overrides !== null && (typeof overrides !== "object" || Array.isArray(overrides))) throw new SocialError("overrides must be an object keyed by platform");
+  const base = overrides === undefined ? stored : ((overrides as Record<string, unknown> | null) ?? {});
+  const nextTags = Array.isArray(tags) ? tags : "tags" in base ? base.tags : stored.tags;
+  return normalizeOverrides({ ...base, tags: nextTags }) ?? {};
 }
 
 /** Validate and normalise the platform-keyed overrides object and reserved tags key. */
@@ -550,13 +570,10 @@ export async function updatePostRecord(ctx: PluginContext, viewer: Viewer, input
   const growth = growthEnv(ctx);
   const tagInput = moving && params.experimentId === undefined && post.experiment_id ? { experimentId: null } : { experimentId: params.experimentId, arm: params.arm };
   const tag = await planExperimentTag(growth, viewer.companyId, nextScope, tagInput);
-  // Merge tags into overrides if provided
-  const baseOverrides = (params.overrides as Record<string, unknown>) ?? {};
-  const overridesWithTags = params.tags && Array.isArray(params.tags) ? { ...baseOverrides, tags: params.tags } : baseOverrides;
   await updatePostContent(ctx, viewer.companyId, post.id, {
     body,
     media,
-    overrides: normalizeOverrides(overridesWithTags),
+    overrides: overridesForEdit(post.overrides, params.overrides, params.tags),
     firstComment: params.firstComment === undefined ? undefined : optionalString(params, "firstComment") ?? null,
     scope: moving ? scopeColumns(target) : undefined,
     scheduledAt: proposedTime(params),
@@ -678,6 +695,10 @@ export async function transitionPost(ctx: PluginContext, viewer: Viewer, postId:
   if (viewer.isAgent) assertAgentTransition(post.status, to);
   else assertTransition(post.status, to);
   if (to === "approved") requireUser(viewer, "approve a post");
+  if (to === "review" && viewer.isAgent) {
+    const untagged = await missingHookTag(growthEnv(ctx), viewer.companyId, post).catch(() => null);
+    if (untagged) throw new SocialError(untagged);
+  }
   if (to === "approved" && post.status === "review") {
     // Approval needs every sign-off the scope's policy asks for (a team member's click is one of them); the post is
     // approved, scheduled at its proposed time, and its review issue closed once they are all in (approval-flow.ts).
@@ -991,6 +1012,20 @@ export async function returnPostAsDelegateRecord(ctx: PluginContext, viewer: Vie
   const post = await requirePost(ctx, viewer, requiredString(params, "postId"));
   const result = await returnPostByDelegate(ctx, viewer, post, optionalString(params, "notes"));
   return { ...(await getPostDetail(ctx, viewer, post.id)), ...result };
+}
+
+/** Page action `social.request-changes`: a person's note on a post goes to the Social agent and the post ends as a draft (`requestChangesByPerson`). */
+export async function requestChangesRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
+  requireUser(viewer, "send changes to the agent");
+  const post = await requirePost(ctx, viewer, requiredString(params, "postId"));
+  const result = await requestChangesByPerson(ctx, viewer, post, optionalString(params, "notes"), { remember: params.remember === true });
+  return { ...(await getPostDetail(ctx, viewer, post.id)), changes: result };
+}
+
+/** Page action `social.change-notes`: the change requests a post has had, newest first. */
+export async function changeNotesRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
+  const post = await requirePost(ctx, viewer, requiredString(params, "postId"));
+  return { postId: post.id, notes: await changeNotesFor(ctx, viewer.companyId, post.id) };
 }
 
 /** `request-creative`: the hand-off issue for a post's image or video. */

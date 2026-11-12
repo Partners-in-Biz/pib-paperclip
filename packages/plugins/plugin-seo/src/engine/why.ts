@@ -26,6 +26,7 @@ export function fallbackWhy(changes: PreviewChanges): string {
   if (head && copy) return "A clearer title and description plus fuller copy on this page should help search engines understand what it is about and give visitors the answers they look for.";
   if (head) return "A clearer title and description should help search engines understand this page and make it more likely to be clicked in the results.";
   if (copy) return "Fuller, clearer copy on this page should help it match what people search for and give visitors the answers they came for.";
+  if (changes.linkEdits?.length) return "Links from this page to related pages should help visitors and search engines find them.";
   return "This change should make the page easier for search engines to understand and easier for visitors to use.";
 }
 

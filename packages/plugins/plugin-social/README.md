@@ -166,6 +166,28 @@ The social-content skill gets a **Media studio (pib-media-studio)** section and 
 3. Sync the skills for every company (Setup → Team → Fix skills, or the hourly sweep).
 4. A person sets a client's policy on Social → Posts → **Who approves** when that client should approve their own posts. Nothing changes for any scope until then.
 
+## 0.13.0: one focus a month, hooks tested and doubled down
+
+Src-only (no migration, no new capability). **Changes what agents do for every company's own work and its clients**: the skill text, the weekly plan and the reviewer's checks.
+
+- **Focus.** Each scope (own work, each client) has one focus a month: theme, audience, the ask, the real proof to build from and the number that says it worked. It lives in the scope's Growth program (`constraints.focus`, closed ones in `constraints.focusLog`, 12 at most). Tool `set-focus` (the current month only; a focus of another month is closed with `learned`), page action `social.growth-set-focus` (a person). `get-playbook` returns `focus` with its state (`none`, `current`, `next`, `expired`) and what to do.
+- **Parts.** A post names its parts in its tags: `hook:<name>`, `body:<name>`, `cta:<name>`. An edit keeps a post's tags (and its platform overrides) unless it sends new ones: before, any `update-post` without `overrides` and every save in the page's editor wiped them. Many hooks are tried over a few bodies and asks. Once a scope has a focus for the month, an agent's post without a hook tag is refused at `request-review` (replies, quotes and My Social are exempt).
+- **Hook board.** Tool `hook-board` (and the Growth tab): per part, the posts, people reached, actions per 100 reached, and a verdict (double down, keep testing, drop, too little reach). Under 100 people a part gets no verdict. It names the control: the best hook, body and ask so far.
+- **No reused pictures.** The Reviewer's pass is refused when the post's image or video was on another post of the same scope, on one of the same accounts, in the last 60 days (the same picture on another platform's account is allowed, and the two arms of one experiment may share media). The reply lists the earlier post and asks for new media.
+- **Guidance.** `references/social-craft.md` gains "One focus a month" and "Hooks, bodies, asks: test many, then double down"; the weekly plan routine starts from the focus and the board; three reviewer checks are new (worth stopping for, the picture itself, the hook tag).
+
+## 0.12.0: post preview, account picker, ask for changes
+
+Src-only (no migration, no new capability). Three things for a person on the Social page:
+
+- **Preview.** A post shows as each platform shows it in its feed (the account's name and picture, the text that platform gets, where the feed cuts it with "more", the media, the first comment), with a chip per account. On the post (Preview | Text), in the editor (live while typing) and on the Posts tab (List | Preview); the choice is kept in the browser. Under each mock-up: the character count and what the platform would refuse (over the limit, needs an image or video, too many media).
+- **Post to.** On a draft or a post in review the accounts are buttons on the post itself: press one to add it or take it off (`social.attach` / `social.detach`, as before; an account the post already went out on stays). The editor uses the same buttons, with All and None.
+- **Ask for changes.** A person writes what to change and sends it to the Social agent: page action `social.request-changes` (`postId`, `notes`, optional `remember`). A person only, never My Social. A draft stays a draft; a post in review, approved or scheduled goes back to draft, so it does not publish until it is approved again. The note is an owner/changes/ui row in `review_outcomes` (the statistics `review-outcomes` reads) and reaches the agent on the post's own issue (`review:<postId>`, reused when open, else a new one), woken. With `remember` the note tells the agent to propose it as a playbook rule (`propose-playbook-change`). `social.change-notes` lists a post's change requests (Reviewer, team, delegated approver, client) for the page.
+
+## 0.11.4: Drive ack before the gateway cut
+
+Src-only (PAR-10212). `store-rendered-asset` and the published post's Drive copy wait 8 s for the CRM's ack (the kit's `DRIVE_ACK_TIMEOUT_MS`; was 30 s and 10 s). The tool gateway cuts a call at about 10 s, so a slow Drive now answers `drive.ok: false` (`no_ack`) instead of a 504; the R2 asset is kept either way.
+
 ## 0.11.3: Facebook video reach, published history kept on account delete
 
 - Facebook video posts: Meta removed `total_video_impressions(_unique)` from `video_insights` (Graph API v25.0 changelog, for every API version once v26.0 shipped); the call still answered but without the rows, so impressions and reach stayed null with "video insights: missing total_video_impressions". Impressions and reach now come from the video's Page post (`post_id` on the Video, else `<pageId>_<videoId>`): `post_media_view` and `post_total_media_view_unique`, as for any other Page post. Views stay `total_video_views`.

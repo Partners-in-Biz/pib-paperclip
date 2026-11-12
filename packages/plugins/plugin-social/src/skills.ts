@@ -88,14 +88,14 @@ Each scope (own work, each client) has a Growth program: a goal ("engagement rat
 - **Features.** Each published post is tagged once: format, length and posting daypart in code; hook, CTA, topic (when the program lists topics) and tone by Jev from the caption only; plus the program's own questions.
 - **Review.** \`performance-review\` (one scope): top and bottom 5 posts with features and lift, median lift per feature value, running experiments, pending playbook changes, and hypothesis types ranked by UCB (untried types first, then what has won).
 - **Experiment.** \`propose-experiment\` changes **one** variable: \`hypothesisType\` like \`hook:question\`, arms \`control\` (what we do now) and \`variant\` (the change), at least 3 posts per arm. Max 3 running per scope. Tag each post with \`experimentId\` + \`arm\` on \`create-post\`/\`update-post\`. The daily \`measure-experiments\` job decides win / loss / no change / inconclusive when each arm has its 7-day scores (or after 21 days) and drafts a playbook change for a win or a loss.
-- **Playbook.** \`get-playbook\` before planning. \`propose-playbook-change\` (add a rule, remove a line, or replace) with a reason. \`decide-playbook-change\` keeps (new version) or discards.
+- **Playbook.** \`get-playbook\` before planning (it returns the month's focus; \`set-focus\` sets it; \`hook-board\` ranks hooks). \`propose-playbook-change\` (add a rule, remove a line, or replace) with a reason. \`decide-playbook-change\` keeps (new version) or discards.
 - **Feature discovery.** When the top and bottom posts differ in a way no feature captures, \`propose-feature-question\` adds a question Jev asks about every caption (yes/no, choice or score; at most 12). It backfills the last 90 days. Retire questions that separate nothing.
 - **Autopilot.** off: you only read. safe (default): you propose; a person approves experiments and keeps or discards changes from one approval issue per program per week. Never approve or decide yourself. full: your proposals start at once, you may decide changes, and wins are kept automatically.
 - \`list-experiments\` shows arms, tagged/published/scored counts per arm and verdicts. Never invent results; say "not measured yet".
 
 ## Tool list
 
-list-clients, list-connected-accounts, connect-account, refresh-account, create-post, create-personal-draft, update-post, get-post, list-posts, validate-post, attach-destination, detach-destination, request-review, get-approval-policy, get-approval-status, request-client-approval, record-review-verdict, approve-post-as-delegate, return-post-as-delegate, review-outcomes, media-compliance, request-creative, schedule-post, unschedule-post, bulk-schedule, retry-post, create-template, list-templates, list-media-assets, create-media-asset, import-media-from-url, list-issue-attachments, import-media-from-attachment, store-rendered-asset, create-rss-feed, list-rss-feeds, pause-rss-feed, resume-rss-feed, list-inbox, mark-inbox-read, reply-inbox, record-inbox-item, post-analytics, account-analytics, record-post-metrics, recollect-post-metrics, performance-review, get-playbook, propose-playbook-change, decide-playbook-change, list-experiments, propose-experiment, approve-experiment, reject-experiment, propose-feature-question.
+list-clients, list-connected-accounts, connect-account, refresh-account, create-post, create-personal-draft, update-post, get-post, list-posts, validate-post, attach-destination, detach-destination, request-review, get-approval-policy, get-approval-status, request-client-approval, record-review-verdict, approve-post-as-delegate, return-post-as-delegate, review-outcomes, media-compliance, request-creative, schedule-post, unschedule-post, bulk-schedule, retry-post, create-template, list-templates, list-media-assets, create-media-asset, import-media-from-url, list-issue-attachments, import-media-from-attachment, store-rendered-asset, create-rss-feed, list-rss-feeds, pause-rss-feed, resume-rss-feed, list-inbox, mark-inbox-read, reply-inbox, record-inbox-item, post-analytics, account-analytics, record-post-metrics, recollect-post-metrics, performance-review, hook-board, get-playbook, set-focus, propose-playbook-change, decide-playbook-change, list-experiments, propose-experiment, approve-experiment, reject-experiment, propose-feature-question.
 `;
 
 const CONTENT_DESCRIPTION =
@@ -108,7 +108,7 @@ Use this with \`social-publish\` whenever you write or rewrite post copy.
 ## Before you write
 
 1. Know who you write for: your own company (own work, no client) or one client (\`client\` from the issue or \`list-clients\`). Read their brand voice (the Growth program's constraints and the playbook: \`get-playbook\`), offer, audience and what they posted recently (\`list-posts\` in that scope). If the brand voice is unknown, keep it plain and professional and ask once with \`${ASK_OWNER_TOOL}\` for the voice, then add it to the playbook (\`propose-playbook-change\`, section constraints).
-2. One idea per post. Lead with the hook in the first line; most platforms truncate after 1-3 lines. **Read \`references/social-craft.md\` before you draft**: brand kit first, one real thing per post, format before words, write the way the brand talks, never repeat the account's last ten posts.
+2. One idea per post. Lead with the hook in the first line; most platforms truncate after 1-3 lines. **Read \`references/social-craft.md\` before you draft**: brand kit first, the month's focus (\`get-playbook\`; none: \`set-focus\`), one real thing per post, a hook tag on every post (\`hook:<short name>\`), format before words, and never a picture that was on another post. \`hook-board\` shows which hooks to double down on.
 3. Write the main \`body\` for the richest platform in the set (usually LinkedIn or Facebook), then add \`overrides\` for platforms with tighter limits or different norms. Never let a platform fall back to text that breaks its limit: \`validate-post\` will flag it.
 4. Put links in the platform's link field (\`overrides.<platform>.link\`) where it has one. Instagram and TikTok captions do not make links clickable; say "link in bio" there.
 5. Use the first comment (\`firstComment\`) for extra hashtags or a link on Instagram, Facebook and LinkedIn when it keeps the caption clean.
@@ -140,12 +140,12 @@ Full per-platform guidance: \`references/platforms.md\`.
 
 ## Weekly social review & plan
 
-For each scope with connected accounts (own work first, then each client):
-1. \`performance-review\` (default 28 days).
-2. Write the insights as a comment on the routine issue: what the top posts share, what the bottom posts share, which feature values lift or drag (with post counts), and the state of running experiments. Numbers only from the review.
-3. Propose at most 2 experiments (\`propose-experiment\`), picking hypothesis types high in \`rankedHypothesisTypes\` that are not running. If the top and bottom posts differ in something no feature measures, use \`propose-feature-question\` instead of guessing.
-4. Pending playbook changes: on full autopilot decide them (\`decide-playbook-change\`); otherwise they wait on the scope's weekly Growth approval issue, where a person decides. List them in your summary; do not ask again.
-5. Draft next week's posts following the playbook (\`get-playbook\`), each with a proposed time (\`scheduledAt\`), tagging the arms of running (or just proposed) experiments so each arm gets at least its minimum number of posts. \`validate-post\`, then \`request-review\`; approval schedules them.
+For each scope with connected accounts (own work first, then each client; a manual account counts). The method is in \`references/social-craft.md\` (sections 2 and 4):
+1. **Focus.** \`get-playbook\` returns \`focus\`. None for this month, or last month's: \`set-focus\` first (theme, audience, offer, proof, metric; \`learned\` closes the old one). A client's focus follows the client's goal: not known, ask once and plan nothing for that scope yet.
+2. **Read the numbers.** \`hook-board\` and \`performance-review\` (default 28 days). Comment on the routine issue: the hooks, bodies and asks to double down on, the ones to drop, the control, and the reach. Numbers only from the tools. Too little reach to rank is a finding: say it and plan for reach (short video first).
+3. **Hooks.** In a focus's first week write 50 first lines, each a different angle on one item of the proof, with 3 to 5 bodies and 2 or 3 asks; later weeks at least 20 new ones. Keep the best 6 to 10. Two new posts for every hook marked double down (said again with a different look, on the control body and ask); none for a part marked drop.
+4. **Draft the week** following the playbook, each post tagged \`hook:<name>\`, \`body:<name>\`, \`cta:<name>\` (\`tags\`), with a proposed time (\`scheduledAt\`), at least one carousel and one short video, and a picture or video made for that post. \`validate-post\`, then \`request-review\`; approval schedules them.
+5. **Growth Lab.** At most 2 experiments (\`propose-experiment\`, types high in \`rankedHypothesisTypes\`), only where the scope has the reach to measure one; tag the arms. Pending playbook changes: on full autopilot decide them, otherwise they wait on the scope's weekly Growth approval issue. Write what the week taught with \`propose-playbook-change\`.
 
 ## Media studio (pib-media-studio)
 
@@ -378,13 +378,14 @@ export const PLAN_ROUTINE_TITLE = "Weekly social review & plan";
 
 export const PLAN_ROUTINE_DESCRIPTION = `Weekly social review & plan for your company's own accounts and every active client (Growth Lab).
 
-Run procedure (details in the pib-social-content skill, "Weekly social review & plan"):
-1. list-connected-accounts without a client (own work), then list-clients and list-connected-accounts per client (clientKind + clientRef). Skip scopes without connected accounts.
-2. For each scope: performance-review, then comment the insights on this issue (top/bottom posts, feature lifts, running experiments; numbers from the review only).
-3. Propose at most 2 experiments per scope (propose-experiment, from the ranked hypothesis types), or a feature question when no feature explains the difference.
-4. Pending playbook changes: decide them only on full autopilot (decide-playbook-change); otherwise leave them on the approval issue.
-5. Draft next week's posts per scope and active platform with create-post, following get-playbook, each with a proposed time (scheduledAt) and tagging experiment arms (experimentId + arm). validate-post, fix every problem, request-review. Approval schedules each post at its proposed time.
-6. Finish with one line per scope (own work, then each client): posts drafted, experiments proposed or running, and anything the approver must decide. Then close this issue.`;
+Run procedure (details in the pib-social-content skill, "Weekly social review & plan", and its references/social-craft.md):
+1. list-connected-accounts without a client (own work), then list-clients and list-connected-accounts per client (clientKind + clientRef). Skip scopes without connected accounts. A manual account counts.
+2. For each scope, read the focus: get-playbook returns focus. None for this month, or an old one: set it first with set-focus (one theme, one audience, one ask, one number, real proof). A client's focus follows the client's goal; if you do not know it, ask once and plan nothing for that scope until you do.
+3. For each scope: hook-board and performance-review. Comment what they show on this issue: which hooks to double down on, which to drop, and the reach (numbers from the tools only). Too little reach to judge is a finding: say it, and plan for reach (short video first).
+4. Write the hooks for the focus. In a focus's first week: 50 first lines, each a different angle on one item of the proof, plus 3 to 5 bodies (an explanation, a belief-breaker, a demonstration) and 2 or 3 asks. Later weeks: at least 20 new hooks. Keep the best 6 to 10. Make two new posts for every hook marked double down (the same hook, a different look, on the control body and ask); make none for a part marked drop.
+5. Draft the week per scope and active platform with create-post: one hook per post, tagged hook:<short name>, body:<short name> and cta:<short name>, at least one carousel and one short video, each picture or video made for that post (a file that was on another post cannot pass review). Give each a proposed time (scheduledAt). validate-post, fix every problem, request-review. Approval schedules each post at its proposed time.
+6. Growth Lab: at most 2 experiments per scope (propose-experiment), only where the scope has the reach to measure one. Pending playbook changes: decide them only on full autopilot; otherwise leave them on the approval issue. Write what the week taught with propose-playbook-change.
+7. Finish with one line per scope (own work, then each client): the focus, hooks doubled and dropped, posts drafted, and anything the approver must decide. Then close this issue.`;
 
 export interface SocialSkill extends PluginManagedSkillDeclaration {
   markdown: string;
@@ -421,7 +422,15 @@ Read before you plan, draft or make any social post, for own work or for a clien
 - Colours, fonts or logo missing and there is a website: fill the kit first. A client: \`partnersinbiz.crm:extract-brand-from-site\` with \`client\` (it saves the empty colour and font fields). Own work: the same tool with \`url\` and no client, then save what it found with \`partnersinbiz.cockpit:update-company-profile\`. Check the picks against the site once, import the logo, and write the voice and tone examples from the site's own words.
 - Every image and video uses that kit: the same colours, the same fonts, the logo. One look per brand, the same every time. A reader should know whose post it is before they read a word.
 
-## 2. One real thing per post
+## 2. One focus a month
+Each scope (own work, each client, each app) has one focus a month: one theme, one audience, one ask, one number that says the month worked, and the real proof we can show. \`get-playbook\` returns it. None, or last month's: set it with \`set-focus\` before you plan (\`learned\` closes the old one with what it taught; next month's is set when that month starts).
+- About four posts in five serve the focus. The rest may be timely or light.
+- An app's focus is usually downloads: the app doing its one job, on screen in the first two seconds, and the store link as the ask.
+- A client's focus follows the client's goal for the month. Not known: ask once. Do not guess.
+- No real proof for a theme means it is the wrong theme. Pick the one we can show.
+- One message for the month everywhere: organic posts, paid ads, email and the site say the same thing.
+
+## 3. One real thing per post
 A post carries exactly one of these:
 - a result, with the number and where it comes from;
 - a before and after;
@@ -432,12 +441,23 @@ A post carries exactly one of these:
 
 General advice ("automate the work that repeats", "your site should book a call") is none of these. If the post could be on any agency's feed, it is not ours yet. Ask for the missing fact (a client result, a screenshot, a number) before you write around it.
 
-## 3. The first line earns the second
-- Write five first lines and keep the one that would stop you mid-scroll.
+## 4. Hooks, bodies, asks: test many, then double down
+A post has three parts: the hook (the first line, or the first five seconds of a video), the body (the middle) and the ask. Make many hooks, a few bodies and a few asks, and combine them.
+- **Hooks.** For a month's focus write 50, each a different angle: a number, a cost, a mistake, a before and after, a belief most people hold that is wrong, a question the audience already asks, one customer's day. Keep the strongest 10 to 15.
+- **Bodies.** 3 to 5 with substance: an explanation that teaches, a belief-breaker (what people assume, then the fact that breaks it), a demonstration (the product or the work doing the thing on screen).
+- **Asks.** 2 or 3.
+- **Tag the parts** on every post (\`tags\`): \`hook:<short name>\`, \`body:<short name>\`, \`cta:<short name>\`. The same name wherever that part is used. A post without tags teaches nothing.
+- **Read the board.** \`hook-board\` adds up, per part, how many people it reached and how many acted, and says: double down, keep testing, drop, or too little reach. It names the control: the best hook, body and ask so far.
+- **Second round.** Say the winning hooks again with a different look: a new setting, a new background, a carousel where it was a video. Put them on the control body and ask. Stop making the dropped parts. Then write new hooks and try to beat the control.
+- **Too little reach.** Under 100 people a part gets no verdict, and then reach is the job: short video first (platforms show it to people who do not follow the account), replies where the audience already talks, and a request to boost the strongest post.
+- Paid ads use the same method, and the organic winners are the first ads to run.
+
+## 5. The first line earns the second
+- Write many first lines (section 4) and keep the ones that would stop you mid-scroll.
 - Specific beats clever: a number, a name, a place, a price, a surprise, a tension between two things.
 - A question mark alone is not a hook. "Which decision does your team wait on most?" is a survey; "We cut <client>'s <task> from <before> to <after>. Here is the one change that did it." is a hook, once the blanks hold real, sourced facts. Never fill them with invented ones.
 
-## 4. Format first, then words
+## 6. Format first, then words
 Per brand, per week, at least:
 - one carousel (5 to 8 slides, slide 1 is the hook in 6 words or fewer, one idea per slide, the last slide is the ask);
 - one short video (15 to 40 seconds, the product or a face in the first 2 seconds, captions burned in, 9:16);
@@ -445,20 +465,20 @@ Per brand, per week, at least:
 
 Text only is for X and for replies. Make motion with the tools that cost nothing first: HTML slides rendered to PNG, Remotion, ffmpeg, the Studio video editor. Use generation when the idea needs a real scene, and read your limit with \`studio-usage\` first.
 
-## 5. Write the way the brand talks
+## 7. Write the way the brand talks
 The plain-writing rules (short, exact, no hedges) are for reports, comments and briefs. Marketing copy follows the brand voice instead: rhythm, contractions, warmth, and humour where the brand has it. Read the post aloud. If it sounds like a notice or a manual, rewrite it.
 
-## 6. Our process is never the subject
+## 8. Our process is never the subject
 Rules from reviews (UTM tags, one ask, card layout, "a notice is not a lead") shape the work. They are never what a post is about. Readers do not care how we check posts.
 
-## 7. Do not repeat yourself
+## 9. Do not repeat yourself
 Before you draft, read the account's last ten posts (\`list-posts\`). Do not reuse an opening, a structure or an ask from them. "Reply and tell me" at most once in five posts.
 
-## 8. One ask, and a reason
+## 10. One ask, and a reason
 One thing to do, fitted to the platform, and why it is worth their time ("Book 20 minutes: you leave with a fixed quote").
 
-## 9. Learn from each post
-At 48 hours and at 7 days read \`post-analytics\`. Write one line in the playbook (\`propose-playbook-change\`): what the post was, what it got, what you will change.
+## 11. Learn from each post
+At 48 hours and at 7 days read \`post-analytics\`; each week read \`hook-board\`. Write one line in the playbook (\`propose-playbook-change\`): what the post was, what it got, what you will change.
 
 ## What stays as it is
 Every gate still applies: review before anything goes out, sourced numbers only, no fake proof, consent for real people, the brand's banned words, UTM tags on links. This file changes what we make, not who approves it.

@@ -33,7 +33,7 @@ type FetchMock = (url: string, init?: RequestInit) => Promise<Response>;
 // No render service in tests unless one is given: create-preview falls back to the source.
 const noRender: FetchMock = async () => { throw new TypeError("fetch failed"); };
 
-function host(previewRow?: Row, rounds = 0, evidence: Row | null = null, opts: { fetch?: FetchMock; siteMs?: number } = {}) {
+function host(previewRow?: Row, rounds = 0, evidence: Row | null = null, opts: { fetch?: FetchMock; siteMs?: number; live?: string } = {}) {
   const executes: Array<{ sql: string; params: unknown[] }> = [];
   const created: Array<Record<string, unknown>> = [];
   const comments: Array<{ id: string; body: string }> = [];
@@ -66,7 +66,7 @@ function host(previewRow?: Row, rounds = 0, evidence: Row | null = null, opts: {
   let clock = Date.parse("2026-10-02T12:00:00Z");
   const site = vi.fn(async (_url: string) => {
     clock += opts.siteMs ?? 0;
-    return { status: 200, url: "https://acme.co.za/", redirects: [], headers: {}, text: LIVE, ms: 1 };
+    return { status: 200, url: "https://acme.co.za/", redirects: [], headers: {}, text: opts.live ?? LIVE, ms: 1 };
   });
   const fetch = vi.fn(opts.fetch ?? noRender);
   return { env: createEnv(ctx, { now: () => new Date(clock), site: site as never, fetch }), executes, created, comments, wakes, updates, site, fetch };
@@ -375,7 +375,7 @@ describe("create-preview from the rendered live page (PAR-8787)", () => {
     const row = { id: "p1", task_id: "t-1", page_url: "https://acme.co.za/category/x/", title: "X", status: "cancelled", review_status: "passed", expires_at: "2020-01-01", created_at: "2020-01-01", total: 1, stats: {}, html: "<html>stored</html>", changes: JSON.stringify({ title: "T", metaDescription: "M", h1: "H", bodyHtml: "<p>b</p>", bodyMode: "after", css: "x{}" }) };
     type Out = { previews: Array<Record<string, unknown>> };
     const plain = (await listPreviews(host(row).env, "co-1", { sprintId: "sp-1", previewId: "p1" })) as Out;
-    expect(plain.previews[0]!.changes).toEqual({ title: "T", metaDescription: "M", h1: "H", bodyHtml: "<p>b</p>", bodyMode: "after" });
+    expect(plain.previews[0]!.changes).toEqual({ title: "T", metaDescription: "M", h1: "H", bodyHtml: "<p>b</p>", bodyMode: "after", linkEdits: null });
     expect(plain.previews[0]).not.toHaveProperty("html");
     const withHtml = (await listPreviews(host(row).env, "co-1", { sprintId: "sp-1", previewId: "p1", includeHtml: true })) as Out;
     expect(withHtml.previews[0]!.html).toBe("<html>stored</html>");

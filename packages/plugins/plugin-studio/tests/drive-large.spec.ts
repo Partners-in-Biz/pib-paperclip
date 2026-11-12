@@ -48,6 +48,7 @@ vi.mock("../src/storage.js", () => ({
 vi.mock("../src/config.js", () => ({ StudioConfig: class { async bucket() { return {}; } } }));
 vi.mock("../src/scope.js", () => ({ scopeInput: () => null, resolveScope: async () => ({ scope: null, client: null }) }));
 vi.mock("@partnersinbiz/pib-plugin-kit", () => ({
+  DRIVE_ACK_TIMEOUT_MS: 8_000,
   driveSave: vi.fn(),
   driveList: vi.fn(),
   driveRead: vi.fn(),
@@ -126,7 +127,7 @@ describe("Save to Drive over 5 MiB", () => {
     const save = vi.fn(async (_c: unknown, _o: Record<string, unknown>) => ({ status: "saved" as const, requestId: "r", driveFileId: "1AbCdEfGhIjKlMnOp", url: "x" }));
     const out = await saveAssetToDrive(ctx, "co-1", row.id, save as never);
     expect(out).toMatchObject({ fileId: "1AbCdEfGhIjKlMnOp" });
-    expect(save.mock.calls[0]![1]).toMatchObject({ bytes: new Uint8Array([1, 2, 3]), timeoutMs: 20_000 });
+    expect(save.mock.calls[0]![1]).toMatchObject({ bytes: new Uint8Array([1, 2, 3]), timeoutMs: 8_000 });
   });
 
   it("refuses over 200 MB in plain words, and a double click joins the running transfer", async () => {

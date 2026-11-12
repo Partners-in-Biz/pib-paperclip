@@ -78,7 +78,6 @@ export async function captureSnapshot(
       mimeType: "application/json",
       bytes: Buffer.from(snapshotJson),
       subfolder: "04 Reports",
-      timeoutMs: 5000,
       ...driveTarget,
     }).catch(() => {
       // Suppress errors; exportToDrive never throws but we catch any unexpected issue

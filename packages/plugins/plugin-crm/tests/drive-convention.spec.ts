@@ -563,6 +563,23 @@ describe("Drive convention (planFolders and the sub-folder lists)", () => {
       expect(google.calls.filter((c) => !c.startsWith("GET")).length).toBe(writesAfterFirst);
     });
 
+    it("(23b) PAR-10212: each ensure logs its outcome with elapsed ms per step", async () => {
+      const st = seed();
+      linked(st, "co-d", "Acme Ltd");
+      const { harness } = await setup(NATIVE, st);
+      harness.seed({ projects: [{ id: "p1", companyId: CO, name: "Timed" } as never] });
+
+      await toolRaw(harness, "drive_folder_ensure", { entity_type: "project", entity_id: "p1" });
+      await toolRaw(harness, "drive_folder_ensure", { entity_type: "project", entity_id: "p1" });
+
+      const lines = harness.logs.filter((l) => l.level === "info" && l.message === "Drive folder ensure").map((l) => l.meta as Record<string, unknown>);
+      expect(lines.map((l) => l.outcome)).toEqual(["ensured", "exists"]);
+      expect(lines[0]).toMatchObject({ companyId: CO, entityType: "project", entityId: "p1", includeTree: false, existed: false });
+      expect(lines[0]!.steps).toBeGreaterThan(0);
+      for (const key of ["elapsedMs", "brokerMs", "resolveMs", "ensureMs"]) expect(lines[0]![key]).toEqual(expect.any(Number));
+      for (const key of ["elapsedMs", "brokerMs", "resolveMs"]) expect(lines[1]![key]).toEqual(expect.any(Number));
+    });
+
     it("(24) invalid project name: returns invalid_name, nothing is created in Drive", async () => {
       const { harness, google } = await setup();
       harness.seed({ projects: [{ id: "p1", companyId: CO, name: "PAR-123" } as never] });

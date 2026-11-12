@@ -182,7 +182,7 @@ async function dispatchTool(rt: AdsRuntime, v: Viewer, name: string, raw: Record
       const accountId = requiredString(p, "accountId");
       const account = await getAccount(rt.ctx, rt.companyId, accountId);
       if (!account || account.status !== "active") throw new AdsError("That ad account was not found or is not active.");
-      if (account.platform !== "meta") throw new AdsError("Media upload is only supported on Meta (Facebook and Instagram).");
+      if (account.platform !== "meta" && account.platform !== "google") throw new AdsError("Media upload is only supported on Meta (Facebook and Instagram) and Google.");
       const mediaType = requiredString(p, "mediaType");
       if (mediaType !== "image" && mediaType !== "video") throw new AdsError("mediaType must be image or video");
       const conn = account.connection_id ? await getConnection(rt.ctx, rt.companyId, account.connection_id) : null;
@@ -191,7 +191,8 @@ async function dispatchTool(rt: AdsRuntime, v: Viewer, name: string, raw: Record
       const token = await tokenFor(rt, conn);
       const provider = rt.provider(account.platform);
       const env = await providerEnv(rt, account.platform);
-      const accountRef = { externalId: account.external_id, currency: account.currency, loginCustomerId: null };
+      // Google needs the manager account (login-customer-id) when the account is reached through one.
+      const accountRef = { externalId: account.external_id, currency: account.currency, loginCustomerId: account.login_customer_id };
       if (mediaType === "image") {
         const imageBase64 = requiredString(p, "imageBase64");
         const decoded = Buffer.from(imageBase64, "base64");
@@ -199,7 +200,7 @@ async function dispatchTool(rt: AdsRuntime, v: Viewer, name: string, raw: Record
         return await provider.uploadAdImage(env, token, accountRef, { filename: requiredString(p, "filename"), imageBase64 });
       } else {
         const videoUrl = requiredString(p, "videoUrl");
-        if (!videoUrl.startsWith("https://")) throw new AdsError("Video URL must be https");
+        if (!videoUrl.startsWith("https://")) throw new AdsError(account.platform === "google" ? "Video URL must be an https YouTube link (Google ads use YouTube videos)" : "Video URL must be https");
         return await provider.uploadAdVideo(env, token, accountRef, { videoUrl, title: optionalString(p, "title") });
       }
     }

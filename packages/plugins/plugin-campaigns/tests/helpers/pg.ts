@@ -62,7 +62,7 @@ export async function startPg(): Promise<PgHarness> {
   await client.query(`CREATE SCHEMA ${NAMESPACE}`);
   // The columns of Paperclip's issues table the plugin reads.
   await client.query(`CREATE TABLE public.issues (
-    id uuid PRIMARY KEY, company_id uuid NOT NULL, title text NOT NULL DEFAULT 'Issue', status text NOT NULL,
+    id uuid PRIMARY KEY, company_id uuid NOT NULL, identifier text, title text NOT NULL DEFAULT 'Issue', status text NOT NULL,
     origin_kind text NOT NULL DEFAULT 'manual', origin_id text, assignee_agent_id uuid, assignee_user_id text,
     created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now())`);
   const migrations = join(PLUGIN_ROOT, "migrations");

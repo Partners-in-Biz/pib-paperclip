@@ -295,7 +295,7 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
     name: "create-preview",
     displayName: "Create a client preview link",
     description:
-      "Make a link the client can open to see proposed copy on their own page before anything is live. Use it for every WordPress change on a pr_only sprint: send the page (pageUrl, must be on the sprint's site) and the proposed title, metaDescription, h1 and/or bodyHtml (the main content, plain HTML: headings, paragraphs, lists, links, images). The server shows your copy on top of the live page with a 'Proposed, not live' bar and Approve / Request changes buttons. Copy is ADDED to the page (before or after the existing content); the preview is refused if it would lose over 30% of the live page's text. Every preview is held until the Reviewer has compared it with the live page: end your turn, you are woken with the result, and only then give the owner the link. Nothing is changed on the site. Existing pages only; the link expires after 30 days.",
+      "Make a link the client can open to see proposed copy on their own page before anything is live. Use it for every WordPress change on a pr_only sprint: send the page (pageUrl, must be on the sprint's site) and the proposed title, metaDescription, h1 and/or bodyHtml (the main content, plain HTML: headings, paragraphs, lists, links, images). The server shows your copy on top of the live page with a 'Proposed, not live' bar and Approve / Request changes buttons. Copy is ADDED to the page (before or after the existing content); the preview is refused if it would lose over 30% of the live page's text. Every preview is held until the Reviewer has compared it with the live page: end your turn, you are woken with the result, and only then give the owner the link. Nothing is changed on the site. To link an existing phrase to another page of the site without adding a block, send linkEdits (1 to 5 of { text, href }): the text must occur exactly once as plain text on the page (letters, digits, spaces, commas, full stops, colons, hyphens; no quotes or &), href a path like /buy-a-gun/ or a full URL on the same site. Existing pages only; the link expires after 30 days.",
     parametersSchema: schema(["sprintId", "pageUrl"], {
       sprintId,
       pageUrl: text("The live page to preview a change on: a full URL or a path like /about on the sprint's site."),
@@ -307,6 +307,11 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
       bodyMode: choice(["before", "after", "replace"], "before (default, above the existing content), after (below it) or replace (whole content area; needs allowReplace)"),
       css: text("Redesign tasks only: styles shown on the preview (colours, fonts, spacing, layout). Imports, scripts and event handlers are removed."),
       contentSelector: text("Content area override: #id, .class, tag, tag.class or tag#id (e.g. .comment-form). First match wins; other selectors or no match are refused."),
+      linkEdits: {
+        type: "array",
+        description: "Inline links, 1 to 5: wrap one exact phrase already on the page in a link. No new text is added.",
+        items: { type: "object", required: ["text", "href"], properties: { text: text("The phrase, exactly once on the page as plain text (3 to 200 characters)."), href: text("A path such as /buy-a-gun/ or a full http(s) URL on the sprint's own site.") }, additionalProperties: false },
+      },
       allowReplace: flag("With bodyMode replace only: you really are rewriting the whole page (say why in the summary)"),
       why: text("One sentence for the client, under this page in their approval email: why we changed it and how it should help search. Say should or helps; never promise a result."),
       label: text("Short name for the proposal, shown on the Needs you item."),
@@ -391,7 +396,7 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
     name: "list-previews",
     displayName: "List client previews",
     description:
-      "Previews made for a sprint, newest first, as short rows (id, page, status, review status, and the client's and the Reviewer's notes cut short). The default is the 20 newest; narrow with taskId, status or reviewStatus, or pass previewId for one preview in full (link, whole notes, figures, review link, and the approved copy as changes: title, metaDescription, h1, bodyHtml, bodyMode; includeHtml true adds the stored page html). Check it before applying a change: apply only what the owner has confirmed as approved.",
+      "Previews made for a sprint, newest first, as short rows (id, page, status, review status, and the client's and the Reviewer's notes cut short). The default is the 20 newest; narrow with taskId, status or reviewStatus, or pass previewId for one preview in full (link, whole notes, figures, review link, and the approved copy as changes: title, metaDescription, h1, bodyHtml, bodyMode, linkEdits; includeHtml true adds the stored page html). Check it before applying a change: apply only what the owner has confirmed as approved.",
     parametersSchema: schema(["sprintId"], {
       sprintId,
       previewId: text("One preview id: returns just that preview with every field in full (whole notes, figures, review link)"),

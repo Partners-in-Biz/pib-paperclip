@@ -1,4 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
+import { DRIVE_ACK_TIMEOUT_MS } from "@partnersinbiz/pib-plugin-kit";
 import { evidenceFileName, parseEvidenceClient, saveEvidenceToDrive, EVIDENCE_SUBFOLDER } from "../src/evidence-drive.js";
 
 const { fakeDriveSave, realDriveSave } = vi.hoisted(() => ({ fakeDriveSave: vi.fn(), realDriveSave: { fn: null as null | ((...a: unknown[]) => unknown) } }));
@@ -190,6 +191,8 @@ describe("evidence-drive functions", () => {
       const payloads = saveRequests();
       expect(payloads).toHaveLength(1);
       expect(payloads[0]).toMatchObject({ clientKind: "company", clientRef: "canary-abc12345", kind: "ops", subfolder: EVIDENCE_SUBFOLDER });
+      // PAR-10212: the kit's shared ack wait, under the tool gateway's ~10 s cut, so a slow Drive gives saved:false.
+      expect((fakeDriveSave.mock.calls[0]![1] as Record<string, unknown>).timeoutMs).toBe(DRIVE_ACK_TIMEOUT_MS);
     });
 
     it("no project and no client: the copy is skipped, nothing emitted (PAR-8128)", async () => {

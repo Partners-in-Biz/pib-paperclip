@@ -3,7 +3,7 @@
  * Wraps driveSave from pib-plugin-kit with error handling and name generation.
  * Never throws; Drive failures only log warnings.
  */
-import { driveSave, type DriveSaveResult } from "@partnersinbiz/pib-plugin-kit";
+import { DRIVE_ACK_TIMEOUT_MS, driveSave, type DriveSaveResult } from "@partnersinbiz/pib-plugin-kit";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 
 const NAME_PATTERN = /^(\d{4}-\d{2}-\d{2}\s+.+\s+v\d+\.\w+|[A-Z]+-\d+-\d+\.\w+)$/;
@@ -71,7 +71,7 @@ export async function exportToDrive(ctx: Pick<PluginContext, "logger" | "events"
       subfolder: opts.subfolder,
       ...(opts.bytes !== undefined ? { bytes: opts.bytes } : { publicUrl: opts.publicUrl ?? "" }),
       requestId: opts.requestId,
-      timeoutMs: opts.timeoutMs ?? 10_000,
+      timeoutMs: opts.timeoutMs ?? DRIVE_ACK_TIMEOUT_MS,
       ...(opts.client ? { client: { kind: opts.client.kind, ref: opts.client.ref } } : opts.ownWork === true ? { ownWork: true as const } : {}),
     });
 

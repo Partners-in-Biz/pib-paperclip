@@ -377,12 +377,19 @@ describe.skipIf(!available)("running ad creatives and ads", () => {
 
   it("rejects an ad creative proposal on a Google account", async () => {
     const google = await syncedAccount(w, { externalId: "ext-google", platform: "google", connectionPlatform: "mock" });
-    expect(await refusal(propose(w, CREATE_AD_CREATIVE(google.accountId)))).toMatchObject({ message: expect.stringContaining("Ad creatives are only supported on Meta") });
+    expect(await refusal(propose(w, CREATE_AD_CREATIVE(google.accountId)))).toMatchObject({ message: expect.stringContaining("Google has no standalone creatives") });
   });
 
-  it("rejects an ad proposal on a Google account", async () => {
-    const google = await syncedAccount(w, { externalId: "ext-google", platform: "google", connectionPlatform: "mock" });
-    expect(await refusal(propose(w, CREATE_AD(google.accountId)))).toMatchObject({ message: expect.stringContaining("Ads are only supported on Meta") });
+  it("creates a Google video ad PAUSED from its own copy and assets (no creative id), PAR-6697", async () => {
+    const google = await syncedAccount(w, { externalId: "555-666-7777", platform: "google", connectionPlatform: "mock" });
+    const videoAd = { videoAssets: ["customers/5556667777/assets/11"], logoImageAsset: "customers/5556667777/assets/12", businessName: "Velox", headlines: ["Read faster"], longHeadlines: ["Read faster with Velox"], descriptions: ["Train your reading speed."], finalUrl: "https://velox.example/?utm_source=google&utm_medium=video&utm_campaign=q4" };
+    expect(await refusal(propose(w, CREATE_AD(google.accountId, { adSetExternalId: "77", creativeExternalId: undefined })))).toMatchObject({ message: expect.stringContaining("videoAssets") });
+    expect(await refusal(propose(w, CREATE_AD(google.accountId, { adSetExternalId: "77", ...videoAd, videoAssets: ["customers/1/assets/11"] })))).toMatchObject({ message: expect.stringContaining("another Google Ads account") });
+    expect(await refusal(propose(w, CREATE_AD(google.accountId, { adSetExternalId: "as1", ...videoAd })))).toMatchObject({ message: expect.stringContaining("ad group") });
+    const { id, approvalId } = await approved(w, CREATE_AD(google.accountId, { adSetExternalId: "77", creativeExternalId: undefined, ...videoAd }));
+    const result = await executeProposal(w.rt(), agent, { proposalId: id, approvalId });
+    expect(result).toMatchObject({ status: "executed", results: [{ ok: true, what: expect.stringContaining("(paused)") }] });
+    expect(w.mock.writes).toEqual([{ op: "create_ad", accountExternalId: "555-666-7777", name: "Q4 ad", adSetExternalId: "77", creativeExternalId: "", videoAd, status: "paused" }]);
   });
 
   it("validates creative input: exactly one of image or video, non-https link, headline and body lengths", async () => {
@@ -417,6 +424,26 @@ describe.skipIf(!available)("running approved ad groups and keywords", () => {
     const k = await propose(w, { kind: "add_keywords", scopeKey: "own", accountId, adGroupExternalId: "ag-1", keywords: [{ text: "shoes", matchType: "exact" }], reason: "Terms." });
     for (const id of [g.id, k.id]) expect(await refusal(executeProposal(w.rt(), agent, { proposalId: id, approvalId: "whatever" }))).toMatchObject({ code: "not_approved" });
     expect(w.mock.writes).toEqual([]);
+  });
+
+  it("an App campaign is checked when proposed and created PAUSED with its app, goal and locations", async () => {
+    await expect(propose(w, CREATE(accountId, { name: "Velox installs", objective: "MULTI_CHANNEL", appStore: "GOOGLE_APP_STORE", appId: "com.velox.app" }))).rejects.toThrow(/locationIds is required/);
+    const app = { appStore: "GOOGLE_APP_STORE", appId: "com.velox.app", targetInstallCostMinor: 1000, locationIds: ["2710"] };
+    const { id, approvalId } = await approved(w, CREATE(accountId, { name: "Velox installs", objective: "multi_channel", ...app }));
+    expect((await getProposal(w.ctx, COMPANY, id))!.payload).toMatchObject({ objective: "MULTI_CHANNEL", app });
+    expect(await executeProposal(w.rt(), agent, { proposalId: id, approvalId })).toMatchObject({ status: "executed", results: [{ ok: true, what: 'Created "Velox installs" (paused)' }] });
+    expect(w.mock.writes).toEqual([expect.objectContaining({ op: "create", objective: "MULTI_CHANNEL", dailyBudgetMinor: 5000, status: "paused", app })]);
+    expect(w.mock.createStatuses).toEqual([{ op: "create", status: "PAUSED" }]);
+  });
+
+  it("a YouTube video campaign (VIDEO stored as DEMAND_GEN) is checked when proposed and created PAUSED with its bidding and locations", async () => {
+    await expect(propose(w, CREATE(accountId, { name: "Velox YouTube", objective: "VIDEO" }))).rejects.toThrow(/locationIds is required/);
+    const video = { targetCpaMinor: null, bidFor: "CLICKS", locationIds: ["2710"] };
+    const { id, approvalId } = await approved(w, CREATE(accountId, { name: "Velox YouTube", objective: "video", bidFor: "clicks", locationIds: ["2710"] }));
+    expect((await getProposal(w.ctx, COMPANY, id))!.payload).toMatchObject({ objective: "DEMAND_GEN", video, app: null });
+    expect(await executeProposal(w.rt(), agent, { proposalId: id, approvalId })).toMatchObject({ status: "executed", results: [{ ok: true, what: 'Created "Velox YouTube" (paused)' }] });
+    expect(w.mock.writes).toEqual([expect.objectContaining({ op: "create", objective: "DEMAND_GEN", dailyBudgetMinor: 5000, status: "paused", video })]);
+    expect(w.mock.createStatuses).toEqual([{ op: "create", status: "PAUSED" }]);
   });
 
   it("create the ad group and the keywords PAUSED, once each, and use the approval up", async () => {

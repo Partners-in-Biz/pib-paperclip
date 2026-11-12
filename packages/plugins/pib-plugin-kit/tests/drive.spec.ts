@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createHash } from "node:crypto";
-import { driveSave, registerDriveReplies, DRIVE_EVENTS, DRIVE_SUBFOLDERS } from "../src/drive.js";
+import { driveSave, registerDriveReplies, DRIVE_ACK_TIMEOUT_MS, DRIVE_EVENTS, DRIVE_SUBFOLDERS } from "../src/drive.js";
 import { CRM_PLUGIN_ID } from "../src/crm-projection.js";
 import { fakeCtx } from "./helpers/fake-ctx.js";
 
@@ -190,5 +190,12 @@ describe("subfolder and client (PAR-4064)", () => {
     expect(result.status).toBe("failed");
     if (result.status === "failed") expect(result.reason).toBe("invalid_input");
     expect(fake.emitted).toHaveLength(0);
+  });
+});
+
+describe("DRIVE_ACK_TIMEOUT_MS (PAR-10212)", () => {
+  it("ends the ack wait before the tool gateway's ~10 s cut, with room for the reply", () => {
+    expect(DRIVE_ACK_TIMEOUT_MS).toBeGreaterThanOrEqual(5_000);
+    expect(DRIVE_ACK_TIMEOUT_MS).toBeLessThanOrEqual(8_000);
   });
 });

@@ -3,8 +3,10 @@
  * against Google yet, so the first live read is a check (the Setup item says so).
  *
  * Reading: `customers:listAccessibleCustomers`, GAQL through `googleAds:search` (campaign and customer resources).
- * Writing (only through `execute.ts`): one atomic `googleAds:mutate` that creates a budget and a PAUSED search campaign;
- * `campaigns:mutate` for status; `campaignBudgets:mutate` for the daily amount.
+ * Writing (only through `execute.ts`): one atomic `googleAds:mutate` that creates a budget and a PAUSED search, App
+ * (`./google-app.ts`) or YouTube video campaign (Demand Gen, `./google-video.ts`);
+ * `campaigns:mutate` for status; `campaignBudgets:mutate` for the daily amount; `assets:mutate` for images and YouTube videos and
+ * `adGroupAds:mutate` for a PAUSED Demand Gen video ad (`./google-video-ad.ts`).
  *
  * Facts this relies on (Google's docs, checked 2026-10): the OAuth scope is `https://www.googleapis.com/auth/adwords`; developer tokens
  * were retired on 2026-09-09 and API access levels now belong to the Google Cloud project that owns the OAuth client (the
@@ -15,6 +17,9 @@
 import { AdsError } from "../domain.js";
 import { validateResponsiveSearchAd } from "../rsa.js";
 import { microsToMinor, minorToMicros } from "../money.js";
+import { appCampaignOperations, GOOGLE_APP_CHANNEL } from "./google-app.js";
+import { GOOGLE_VIDEO_CHANNEL, videoCampaignOperations } from "./google-video.js";
+import { imageMimeOf, videoAdFrom, videoAdOperation, youtubeVideoId } from "./google-video-ad.js";
 import { FORM_HEADERS, JSON_HEADERS, ProviderError, expiresAtFrom, formBody, int, num, readJson, request, str } from "./http.js";
 import type { AccountRef, AccountCaps, AddKeywordsRequest, AdPolicyRow, AdPolicyStatus, AdsProvider, CampaignHealth, CampaignInfo, CampaignStatus, CreateAdGroupRequest, ExchangeResult, InsightRow, ProviderAdAccount, ProviderEnv, TokenBundle } from "./types.js";
 
@@ -48,6 +53,15 @@ async function call<T = Record<string, unknown>>(env: ProviderEnv, token: TokenB
     body: init.body === undefined ? undefined : JSON.stringify(init.body),
   });
   return readJson<T>(res, label);
+}
+
+/** One `assets:mutate` create (an image or a YouTube video); returns the asset's resource name. An asset serves nothing by itself. */
+async function createAsset(env: ProviderEnv, token: TokenBundle, account: AccountRef, asset: Record<string, unknown>, label: string): Promise<string> {
+  const customer = digits(account.externalId);
+  const res = await call<{ results?: Array<{ resourceName?: string }> }>(env, token, `customers/${customer}/assets:mutate`, { loginCustomerId: account.loginCustomerId, body: { operations: [{ create: asset }] } }, label);
+  const resourceName = res.results?.map((r) => r.resourceName).find(Boolean);
+  if (!resourceName) throw new ProviderError(`${label}: Google did not return the new asset.`);
+  return resourceName;
 }
 
 /** One GAQL query, every page. */
@@ -301,6 +315,8 @@ export const googleProvider: AdsProvider = {
   async createCampaign(env, token, account, req) {
     const customer = digits(account.externalId);
     const temp = `customers/${customer}/campaignBudgets/-1`;
+    const objective = (req.objective || "SEARCH").toUpperCase();
+    if (objective !== "SEARCH" && objective !== GOOGLE_APP_CHANNEL && objective !== GOOGLE_VIDEO_CHANNEL) throw new AdsError(`Google campaigns of type ${objective} are not supported by this plugin yet; SEARCH, MULTI_CHANNEL (App) and DEMAND_GEN (YouTube video) are.`);
     const res = await call<{ mutateOperationResponses?: Array<{ campaignResult?: { resourceName?: string } }> }>(
       env,
       token,
@@ -309,7 +325,7 @@ export const googleProvider: AdsProvider = {
         loginCustomerId: account.loginCustomerId,
         body: {
           // One request, so the budget and the campaign are created together or not at all.
-          mutateOperations: [
+          mutateOperations: objective === GOOGLE_APP_CHANNEL ? appCampaignOperations(customer, req, account.currency, Date.now()) : objective === GOOGLE_VIDEO_CHANNEL ? videoCampaignOperations(customer, req, account.currency, Date.now()) : [
             { campaignBudgetOperation: { create: { resourceName: temp, name: `${req.name} budget ${Date.now()}`, deliveryMethod: "STANDARD", amountMicros: String(minorToMicros(req.dailyBudgetMinor, account.currency)), explicitlyShared: false } } },
             {
               campaignOperation: {
@@ -371,31 +387,54 @@ export const googleProvider: AdsProvider = {
     );
   },
 
-  async uploadAdImage() {
-    throw new ProviderError("Media upload is not supported on Google Ads via this plugin yet.");
+  async uploadAdImage(env, token, account, params) {
+    const bytes = Buffer.from(params.imageBase64, "base64");
+    if (bytes.length === 0) throw new AdsError("The image is empty.");
+    if (bytes.length > 5_242_880) throw new AdsError("Google takes images up to 5,120 KB; this one is larger.");
+    imageMimeOf(bytes); // JPEG, PNG or GIF, else refused before anything is sent
+    const asset = await createAsset(env, token, account, { name: `${params.filename.slice(0, 100)} ${Date.now()}`, type: "IMAGE", imageAsset: { data: bytes.toString("base64") } }, "Google upload image");
+    // The asset's resource name is what a Google ad names it by (logoImageAsset).
+    return { imageHash: asset };
   },
 
-  async uploadAdVideo() {
-    throw new ProviderError("Media upload is not supported on Google Ads via this plugin yet.");
+  async uploadAdVideo(env, token, account, params) {
+    const videoId = youtubeVideoId(params.videoUrl);
+    const asset = await createAsset(env, token, account, { name: `${(params.title ?? videoId).slice(0, 100)} ${Date.now()}`, type: "YOUTUBE_VIDEO", youtubeVideoAsset: { youtubeVideoId: videoId } }, "Google add YouTube video");
+    return { videoId: asset };
   },
 
   async createAdSet() {
-    throw new ProviderError("Ad sets are not supported on Google Ads via this plugin yet.");
+    throw new AdsError("Google has no ad sets with their own budget: the budget is the campaign's. Use create_ad_group under a SEARCH campaign, or create_campaign with DEMAND_GEN (its YouTube ad group is made with it).", "unsupported_on_platform");
   },
 
   async createAdCreative() {
-    throw new ProviderError("Ad creatives are not supported on Google Ads via this plugin yet.");
+    throw new AdsError("Google has no standalone creatives: the copy and media go in the ad. Use upload-ad-media, then create_ad with videoAssets, logoImageAsset and the copy.", "unsupported_on_platform");
   },
 
-  async createAd() {
-    throw new ProviderError("Ads are not supported on Google Ads via this plugin yet.");
+  async createAd(env, token, account, req) {
+    if (req.status !== undefined && req.status !== "PAUSED") throw new AdsError("Ads must be created PAUSED.");
+    if (!req.name?.trim()) throw new AdsError("Ad name is required.");
+    const customer = digits(account.externalId);
+    // Checked again here, so no caller can skip the limits or name another account's assets.
+    const ad = videoAdFrom({ ...req.videoAd }, customer);
+    const res = await call<{ results?: Array<{ resourceName?: string }> }>(
+      env,
+      token,
+      `customers/${customer}/adGroupAds:mutate`,
+      { loginCustomerId: account.loginCustomerId, body: { operations: [videoAdOperation(customer, digits(req.adSetExternalId), req.name, ad)] } },
+      "Google create video ad",
+    );
+    const resourceName = res.results?.map((r) => r.resourceName).find(Boolean);
+    if (!resourceName) throw new ProviderError("Google did not return the new ad.");
+    // "customers/<id>/adGroupAds/<adGroupId>~<adId>": the ad id is what the policy read-back uses.
+    return { externalId: (resourceName.split("/").pop() ?? resourceName).split("~").pop() ?? resourceName, name: req.name };
   },
 
   async createAdGroup(env, token, account, campaignExternalId, request) {
     if (!request.name?.trim()) throw new AdsError("Ad group name is required.");
     if (!Number.isInteger(request.cpcBidMinor) || request.cpcBidMinor <= 0) throw new AdsError("CPC bid must be a positive integer.");
     const customer = digits(account.externalId);
-    const res = await call<{ mutateOperationResponses?: Array<{ adGroupResult?: { resourceName?: string } }> }>(
+    const res = await call<{ results?: Array<{ resourceName?: string }> }>(
       env,
       token,
       `customers/${customer}/adGroups:mutate`,
@@ -417,7 +456,8 @@ export const googleProvider: AdsProvider = {
       },
       "Google create ad group",
     );
-    const resourceName = res.mutateOperationResponses?.map((r) => r.adGroupResult?.resourceName).find(Boolean);
+    // adGroups:mutate answers with `results` (only googleAds:mutate answers with mutateOperationResponses).
+    const resourceName = res.results?.map((r) => r.resourceName).find(Boolean);
     if (!resourceName) throw new ProviderError("Google did not return the new ad group.");
     return { externalId: resourceName.split("/").pop() ?? resourceName, name: request.name };
   },

@@ -10,7 +10,7 @@
  * to the asset id and the asset keeps its alt text.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { driveSave, formatClientParam, r2PutObject, sameClient, type DriveSaveOptions, type DriveSaveResult } from "@partnersinbiz/pib-plugin-kit";
+import { DRIVE_ACK_TIMEOUT_MS, driveSave, formatClientParam, r2PutObject, sameClient, type DriveSaveOptions, type DriveSaveResult } from "@partnersinbiz/pib-plugin-kit";
 import { resolveScope, rowScope, scopeFromParams, scopeInput, type ResolvedScope } from "./clients.js";
 import { loadSocialConfig } from "./config.js";
 import { postMedia } from "./db.js";
@@ -101,7 +101,8 @@ export async function storeRenderedAsset(ctx: PluginContext, viewer: Viewer, par
       mimeType: mime,
       bytes,
       subfolder: "02 Assets",
-      timeoutMs: 30_000,
+      // Answer before the tool gateway's ~10 s cut: a slow Drive gives drive.ok:false (no_ack), not a 504.
+      timeoutMs: DRIVE_ACK_TIMEOUT_MS,
       ...(target.scope ? { client: { kind: target.scope.kind, ref: target.scope.id } } : { ownWork: true as const }),
     });
     drive = saved.status === "saved" ? { ok: true, url: saved.url, driveFileId: saved.driveFileId } : { ok: false, reason: saved.status === "failed" ? saved.reason : saved.status };

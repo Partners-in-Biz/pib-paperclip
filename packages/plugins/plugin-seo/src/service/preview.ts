@@ -12,7 +12,7 @@ import { checkWhy } from "../engine/why.js";
 import { rubricLines, scorePreviewCopy, type PreviewRubric } from "../engine/rubric.js";
 import { isRehearsalSprint } from "../engine/rehearsal.js";
 import { loadFacts } from "./facts.js";
-import { buildPreviewHtml, countBySelector, MIN_KEPT_PCT, parseContentSelector, fingerprintChanges, liveFingerprint, previewStats, visibleWords, type LiveFingerprint, withDoctype, type BodyMode, type PreviewChanges } from "../engine/preview.js";
+import { buildPreviewHtml, checkLinkText, countBySelector, MIN_KEPT_PCT, parseContentSelector, fingerprintChanges, liveFingerprint, previewStats, visibleWords, type LiveFingerprint, withDoctype, type BodyMode, type LinkEdit, type PreviewChanges } from "../engine/preview.js";
 import { ORIGIN } from "../constants.js";
 import { capComment, commentFingerprint } from "../engine/thread.js";
 import { actorId, assignableUser, bool, errorMessage, num, oneOf, reqStr, SeoError, str, type Actor, type Env, type Params } from "./common.js";
@@ -31,6 +31,37 @@ import { PREVIEW_RENDER_URL, previewLink, previewSlug } from "./preview-links.js
 
 function hostOf(url: string): string {
   return new URL(/^https?:\/\//i.test(url) ? url : `https://${url}`).hostname.replace(/^www\./, "").toLowerCase();
+}
+
+/** A link target for linkEdits: http/https, no userinfo, this sprint's own host. Returns what is stored. Never a prefix or substring test. */
+export function parseLinkHref(raw: string, siteUrl: string): string {
+  const refuse = (why: string): never => {
+    throw new SeoError(`linkEdits href "${raw.slice(0, 120).replace(/[\u0000-\u001f\u007f]/g, "?")}" refused: ${why}.`);
+  };
+  if (/[\u0000-\u001f\u007f\s\\]/.test(raw)) refuse("it has a control character, space or backslash");
+  const relative = raw.startsWith("/") && !raw.startsWith("//");
+  let url: URL;
+  try {
+    url = relative ? new URL(raw, siteUrl) : new URL(raw);
+  } catch {
+    return refuse("it is not a full http(s) address or a path starting with one /");
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") refuse("only http and https links are allowed");
+  if (url.username || url.password) refuse("it carries a username or password");
+  if (hostOf(url.href) !== hostOf(siteUrl)) refuse(`links must go to ${siteUrl}'s own site`);
+  return relative ? `${url.pathname}${url.search}${url.hash}` : url.href;
+}
+
+function linkEditsOf(params: Params, siteUrl: string): LinkEdit[] | undefined {
+  const raw = params.linkEdits;
+  if (raw === undefined || raw === null) return undefined;
+  if (!Array.isArray(raw) || raw.length < 1 || raw.length > 5) throw new SeoError("linkEdits must be 1 to 5 entries of { text, href }.");
+  return raw.map((entry) => {
+    const e = entry as { text?: unknown; href?: unknown } | null;
+    if (!e || typeof e.text !== "string" || typeof e.href !== "string") throw new SeoError("Each linkEdits entry needs text and href (strings).");
+    checkLinkText(e.text);
+    return { text: e.text, href: parseLinkHref(e.href, siteUrl) };
+  });
 }
 
 /** Postgres text and jsonb cannot hold a NUL (0x00): a page that has one (a stray byte in a script or an attribute) made every preview of it fail to save. */
@@ -137,13 +168,15 @@ export async function createPreview(env: Env, companyId: string, actor: Actor, p
     css: str(params, "css", { max: 80_000 }),
     contentSelector: str(params, "contentSelector", { max: 100 }),
   };
+  const linkEdits = linkEditsOf(params, sprint.siteUrl);
+  if (linkEdits) changes.linkEdits = linkEdits;
   if (changes.contentSelector) parseContentSelector(changes.contentSelector);
   else delete changes.contentSelector;
   const why = checkWhy(str(params, "why", { max: 1000 }));
   if (why.error) throw new SeoError(why.error);
   if (why.why) changes.why = why.why;
   const allowReplace = bool(params, "allowReplace") ?? false;
-  if (!changes.title && !changes.metaDescription && !changes.h1 && !changes.bodyHtml && !changes.css) throw new SeoError("Send at least one proposed change: title, metaDescription, h1 or bodyHtml.");
+  if (!changes.title && !changes.metaDescription && !changes.h1 && !changes.bodyHtml && !changes.css && !changes.linkEdits) throw new SeoError("Send at least one proposed change: title, metaDescription, h1, bodyHtml or linkEdits.");
   let taskId = str(params, "taskId", { max: 80 });
   // A corrected preview made without a taskId (a developer's fix) belongs to the task the page's earlier preview belonged to.
   if (!taskId) {
@@ -215,13 +248,12 @@ export async function createPreview(env: Env, companyId: string, actor: Actor, p
     mimeType: "text/html",
     bytes: Buffer.from(withoutNul(built.html)),
     subfolder: "03 Deliverables",
-    timeoutMs: 5000,
     ...driveTarget,
   }).catch(() => {
     // Suppress errors; exportToDrive never throws but we catch any unexpected issue
   });
   const rubric = scorePreviewCopy(changes);
-  const review = await routePreviewReview(env, sprint, { rubric, id: token, key: reviewKey, pageUrl, title: changes.title ?? changes.h1 ?? pageUrl, stats, applied: built.applied, notes: built.notes, taskIssueId: task?.issueId ?? null, redesign });
+  const review = await routePreviewReview(env, sprint, { rubric, id: token, key: reviewKey, pageUrl, title: changes.title ?? changes.h1 ?? pageUrl, stats, applied: built.applied, notes: built.notes, taskIssueId: task?.issueId ?? null, redesign, linkEdits: changes.linkEdits });
   await parkTaskForReview(env, companyId, task?.id ?? null, changes.title ?? changes.h1 ?? pageUrl);
   return {
     previewId: token,
@@ -286,7 +318,7 @@ export async function listPreviews(env: Env, companyId: string, params: Params) 
       return {
         previewId: String(r.id),
         // The approved copy, readable for any status and expiry (the stored html is only returned with includeHtml).
-        changes: { title: stored.title ?? null, metaDescription: stored.metaDescription ?? null, h1: stored.h1 ?? null, bodyHtml: stored.bodyHtml ?? null, bodyMode: stored.bodyHtml ? stored.bodyMode ?? "before" : null },
+        changes: { title: stored.title ?? null, metaDescription: stored.metaDescription ?? null, h1: stored.h1 ?? null, bodyHtml: stored.bodyHtml ?? null, bodyMode: stored.bodyHtml ? stored.bodyMode ?? "before" : null, linkEdits: stored.linkEdits ?? null },
         ...(includeHtml ? { html: String(r.html ?? "") } : {}),
         url: previewLink(String(r.page_url), String(r.id)),
         taskId: r.task_id ? String(r.task_id) : null,
@@ -436,7 +468,7 @@ const REDESIGN_CHECKS = [
 async function routePreviewReview(
   env: Env,
   sprint: db.Sprint,
-  p: { rubric?: PreviewRubric | null; id: string; key: string; pageUrl: string; title: string; stats: StoredPreviewStats; applied: string[]; notes: string[]; taskIssueId: string | null; redesign?: boolean },
+  p: { rubric?: PreviewRubric | null; id: string; key: string; pageUrl: string; title: string; stats: StoredPreviewStats; applied: string[]; notes: string[]; taskIssueId: string | null; redesign?: boolean; linkEdits?: LinkEdit[] },
 ): Promise<string | null> {
   if (isRehearsalSprint(sprint)) return null;
   try {
@@ -454,6 +486,7 @@ async function routePreviewReview(
         ? `Text kept from the live page: ${p.stats.rendered.keptPct}% (${p.stats.rendered.liveWords} words live, +${p.stats.rendered.addedWords} added, -${p.stats.rendered.removedWords} removed).`
         : "Kept-text figure: measured when the review page is first opened (made from the page source).",
       ...(p.notes.length ? ["", ...p.notes.map((n) => `Note: ${n}`)] : []),
+      ...(p.linkEdits?.length ? ["", ...p.linkEdits.map((l) => `Link added: "${l.text}" -> ${l.href}`)] : []),
       ...(p.rubric ? ["", ...rubricLines(p.rubric)] : []),
       "",
       "## The client fact sheet (what the copy may claim)",
@@ -638,7 +671,7 @@ export interface PreviewRow {
 
 const strOrNull = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v : null);
 
-const CHANGE_FIELDS: Array<[string, string]> = [["title", "Title"], ["metaDescription", "Meta description"], ["h1", "Heading"], ["bodyHtml", "Body copy"], ["css", "Styles"]];
+const CHANGE_FIELDS: Array<[string, string]> = [["title", "Title"], ["metaDescription", "Meta description"], ["h1", "Heading"], ["bodyHtml", "Body copy"], ["css", "Styles"], ["linkEdits", "Links"]];
 
 /** The sprint's previews for the SEO page (staff only: includes the review link). A newer preview of the same page supersedes older ones. */
 export async function previewRows(env: Env, companyId: string, sprintId: string): Promise<PreviewRow[]> {

@@ -34,6 +34,8 @@ import {
   wrapKitEnvWithConfig, wrapKitEnvForMeasure, socialKitEnv, issuePort,
 } from "./host.js";
 import { ownSocialName } from "../preferences.js";
+import { focusOut, monthIn, setFocusRecord } from "../focus.js";
+import { hookBoard, partOf } from "../hook-board.js";
 // Import engine functions and types used locally (E.* references in old code)
 import {
   activeQuestions, SCORE_WINDOW, postLift, GrowthError,
@@ -393,7 +395,42 @@ export async function getPlaybookRecord(env: GrowthEnv, actor: GrowthActor, para
   const resolved = await scopeFromParams(env.ctx, actor.companyId, params);
   const { rule: mediaRule, source: mediaRuleSource } = await effectiveMediaRule(env, actor.companyId, resolved.scope);
   // loadError is ignored here; get-playbook always returns the effective rule, not a verdict
-  return { ...result, mediaRule, mediaRuleSource };
+  const program = await programForParams(env, actor, params);
+  const config = await loadSocialConfig(env.ctx, actor.companyId);
+  return { ...result, mediaRule, mediaRuleSource, focus: focusOut(program, monthIn(config.timezone)) };
+}
+
+// ── The monthly focus and the hook board ───────────────────────────────────
+
+/** `set-focus`: this month's (or next month's) focus of one scope. */
+export async function setFocus(env: GrowthEnv, actor: GrowthActor, params: Params) {
+  const program = await programForParams(env, actor, params);
+  const config = await loadSocialConfig(env.ctx, actor.companyId);
+  return setFocusRecord(env, actor, program, config.timezone, params);
+}
+
+/** `hook-board`: which hooks of one scope worked, with the focus they served. */
+export async function hookBoardRecord(env: GrowthEnv, actor: GrowthActor, params: Params) {
+  const program = await programForParams(env, actor, params);
+  const config = await loadSocialConfig(env.ctx, actor.companyId);
+  const scope: ClientScope = program.clientRef ? { kind: program.clientKind ?? "company", id: program.clientRef } : null;
+  const board = await hookBoard(env.ctx, actor.companyId, scope, params.periodDays == null ? 28 : Number(params.periodDays));
+  return { ...board, focus: focusOut(program, monthIn(config.timezone)) };
+}
+
+/**
+ * A scope with a focus for this month learns from every post, so an agent's post needs its hook tag before it goes to
+ * review. Returns the refusal text, or null when the post may go. Replies, quotes and My Social are not planned posts.
+ */
+export async function missingHookTag(env: GrowthEnv, companyId: string, post: { scope?: string | null; client_kind?: string | null; client_ref?: string | null; overrides?: unknown; reply_to_url?: string | null; quote_url?: string | null }): Promise<string | null> {
+  if (post.scope === "personal" || post.reply_to_url || post.quote_url) return null;
+  if (partOf({ overrides: post.overrides } as Parameters<typeof partOf>[0], "hook")) return null;
+  const program = await env.store.findProgram(companyId, GROWTH_CHANNEL, scopeOfRow(post));
+  if (!program) return null;
+  const config = await loadSocialConfig(env.ctx, companyId);
+  const { focus, state } = focusOut(program, monthIn(config.timezone));
+  if (state !== "current" || !focus) return null;
+  return `This scope's focus for ${focus.month} is "${focus.theme}", and every post is measured by its parts. Tag the post before review (update-post, tags): hook:<short name>, and body:<short name> and cta:<short name> where it has them. Use the same name on every post that uses that part.`;
 }
 
 // ── Program settings and feature questions ─────────────────────────────────
@@ -515,6 +552,8 @@ export async function growthSnapshot(env: GrowthEnv, actor: GrowthActor, params:
   for (const e of experiments.slice(0, 50)) experimentRows.push(experimentOut(e, OPEN_EXPERIMENTS.includes(e.status) ? await armCounts(env, e) : undefined));
   return {
     ...review,
+    focus: focusOut(program, monthIn(config.timezone)),
+    hookBoard: await hookBoard(env.ctx, actor.companyId, program.clientRef ? { kind: program.clientKind ?? "company", id: program.clientRef } : null, periodDays),
     playbook: program.playbook,
     versions: versions.map((v) => ({ version: v.version, reason: v.reason, experimentId: v.experimentId, createdBy: v.createdBy, createdAt: v.createdAt, playbook: v.playbook })),
     changes: changes.slice(0, 30).map(changeOut),
