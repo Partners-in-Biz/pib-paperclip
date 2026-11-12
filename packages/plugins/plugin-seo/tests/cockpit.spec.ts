@@ -118,13 +118,14 @@ describe("SEO cockpit snapshot (configured)", () => {
         items: [
           { key: "service_account", kind: "grant", title: "Add the service account key", why: "Search Console needs it.", steps: [], links: [], after: "", check: "service_account", status: "open", addedAt: iso(10 * DAY) },
           { key: "review:t-9", kind: "review", title: "Sign off: Publish post 1", why: "Ready to publish.", steps: [], links: [], after: "", check: "task_done", taskIds: ["t-9"], status: "open", addedAt: iso(DAY) },
+          { key: "approval-email:k1", kind: "message", title: "Send the approval email", why: "The client approves the previews.", steps: [], links: [], after: "", check: "manual", status: "open", addedAt: iso(DAY) },
           { key: "optional-dm", kind: "message", title: "DM a partner", why: "Optional", steps: [], links: [], after: "", check: "manual", status: "open", optional: true, addedAt: iso(DAY) },
           { key: "old", kind: "task", title: "Done thing", why: "", steps: [], links: [], after: "", check: "manual", status: "done", addedAt: iso(20 * DAY) },
         ],
       }];
     }
     if (sql.includes(`FROM ${T("previews")}`) && sql.includes("DISTINCT ON (sprint_id, page_url)")) {
-      return [{ ...ACME_ROW, n: "3", since: "2026-09-25T05:00:00Z", task_ids: ["t-9"] }];
+      return [{ ...SPRINT_ROW, n: "3", since: "2026-09-25T05:00:00Z", task_ids: ["t-9"] }];
     }
     if (sql.includes(`FROM ${T("sprint_tasks")} WHERE company_id = $1 AND id IN`)) return [{ id: "t-9", issue_id: "iss-t9" }];
     if (sql.includes(`FROM ${T("optimizations")} o JOIN`) && sql.includes("o.status = 'proposed'")) {
@@ -168,16 +169,18 @@ describe("SEO cockpit snapshot (configured)", () => {
     expect(health["needs-you:sp-1"]).toMatchObject({ status: "warn", detail: "1 item: Add the service account key" });
 
     expect(snap.waiting.map((w) => [w.key, w.kind, w.issueId])).toEqual([
-      ["seo:previews:sp-2", "review", null],
+      ["seo:previews:sp-1", "review", null],
       ["seo:needs-you:sp-1:service_account", "grant", "iss-ny"],
       ["seo:needs-you:sp-1:review:t-9", "review", "iss-t9"],
+      ["seo:needs-you:sp-1:approval-email:k1", "judgement", "iss-ny"],
       ["seo:optimization:o-1", "judgement", "iss-opt"],
     ]);
-    expect(snap.waiting[0]).toMatchObject({ title: "[Acme] 3 previews await your decision", href: "/seo?sprint=sp-2&tab=previews&client=company%3Ac1&filter=awaiting" });
-    // A sign-off for a task whose previews await a decision opens the Previews tab; a grant keeps its own page.
+    expect(snap.waiting[0]).toMatchObject({ title: "3 previews await your decision", href: "/seo?sprint=sp-1&tab=previews&filter=awaiting" });
+    // A grant keeps its own page; a sign-off for a task with an awaiting preview and the approval email open the Previews tab.
     expect(snap.waiting[1]!.href).toBe("/seo?sprint=sp-1&tab=integrations");
-    expect(snap.waiting[2]!.href).toBe("/seo?sprint=sp-1&tab=integrations");
-    expect(snap.waiting[3]).toMatchObject({ title: "[Acme] Approve an SEO change: /pricing stuck on page 2", href: "/seo?sprint=sp-2&tab=optimizations&client=company%3Ac1" });
+    expect(snap.waiting[2]!.href).toBe("/seo?sprint=sp-1&tab=previews&filter=awaiting");
+    expect(snap.waiting[3]!.href).toBe("/seo?sprint=sp-1&tab=previews&filter=awaiting");
+    expect(snap.waiting[4]).toMatchObject({ title: "[Acme] Approve an SEO change: /pricing stuck on page 2", href: "/seo?sprint=sp-2&tab=optimizations&client=company%3Ac1" });
 
     expect(snap.activity.map((a) => a.text)).toEqual([
       'Merged the approved PR for "Publish post 1" (Partners in Biz)',
