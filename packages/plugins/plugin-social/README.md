@@ -166,6 +166,10 @@ The social-content skill gets a **Media studio (pib-media-studio)** section and 
 3. Sync the skills for every company (Setup → Team → Fix skills, or the hourly sweep).
 4. A person sets a client's policy on Social → Posts → **Who approves** when that client should approve their own posts. Nothing changes for any scope until then.
 
+## 0.13.2: store-rendered-asset budget
+
+src-only (PAR-10249). `store-rendered-asset` now waits 20 s for the Drive ack (0.11.4 set 8 s as a stopgap under the 10 s cut) and declares `timeoutMs` 25 s, so the gateway no longer cuts it at 10 s.
+
 ## 0.13.1: the Cockpit waits on the delegate only when it could approve (PAR-10701)
 
 Src-only (no migration, no new capability). Who may approve does not change.

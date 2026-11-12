@@ -235,9 +235,13 @@ export function createGoogleDriveBroker(
   }
 
   function ensure(body: EnsureBody): Promise<EnsureResult> {
-    return serialized(`${sharedDriveId}|${body.entity_type}|${body.entity_id}`, () => ensureUnlocked(body));
+    const queuedAt = now();
+    return serialized(`${sharedDriveId}|${body.entity_type}|${body.entity_id}`, () => ensureUnlocked(body, now() - queuedAt));
   }
-  async function ensureUnlocked(body: EnsureBody): Promise<EnsureResult> {
+  async function ensureUnlocked(body: EnsureBody, lockWaitMs = 0): Promise<EnsureResult> {
+    const counts = { driveLookups: 0, adoptedUntagged: 0 };
+    const lookupRegistered = (t: DriveEntityType, i: string) => { counts.driveLookups++; return findRegistered(t, i); };
+    const childFolder = (p: string, n: string) => { counts.driveLookups++; return findChildFolder(p, n); };
     const { entity_type: type, entity_id: id, name } = body;
     // A fixed root such as "root:products" is the existing folder at its known path, not a new folder.
     const fixed = type === "root" ? DRIVE_ANCHORS[id] : undefined;
@@ -249,7 +253,7 @@ export function createGoogleDriveBroker(
     // pibComplete marks a folder whose standard sub-folders all exist; a folder that wants some gets it only after the last one.
     const tag: Record<string, string> = { pibEntityType: type, pibEntityId: idTag(body.entity_id), ...(wantsSubfolders ? {} : { pibComplete: "1" }), ...(body.created_by_run ? { pibRun: body.created_by_run.slice(0, 100) } : {}) };
 
-    let folder = await findRegistered(type, id);
+    let folder = await lookupRegistered(type, id);
     let created = false;
     if (!folder) {
       // The parent (and the fixed anchor folders above it) matter only when the folder has to be made or adopted.
@@ -271,7 +275,7 @@ export function createGoogleDriveBroker(
         parentPath = parent.path;
       }
       const path = parentPath ? `${parentPath}/${name}` : name;
-      const sameName = await findChildFolder(parentId, name);
+      const sameName = await childFolder(parentId, name);
       if (sameName && sameName.appProperties?.pibEntityType && sameName.appProperties.pibEntityType !== "subfolder") {
         throw new BrokerError(`Folder conflict: "${name}" under ${parentPath || "the Shared Drive root"} already belongs to ${sameName.appProperties.pibEntityType} ${sameName.appProperties.pibEntityId ?? ""}`, 409, false, sameName.id, path);
       }
@@ -301,7 +305,8 @@ export function createGoogleDriveBroker(
           child = known;
           leafCreated = false;
         } else {
-          const found = await findChildFolder(parent.id, segments[i]!);
+          const found = await childFolder(parent.id, segments[i]!);
+          if (found && found.appProperties?.pibEntityType !== "subfolder") counts.adoptedUntagged++;
           leafCreated = !found;
           child = found ?? (await createFolder(segments[i]!, parent.id, `${registered.path}/${here}`, { pibEntityType: "subfolder", pibEntityId: idTag(`${id}/${here}`) }));
           walked.set(here, child);
@@ -319,7 +324,7 @@ export function createGoogleDriveBroker(
       const done = await json<DriveFile>("PATCH", `${DRIVE}/files/${folder.id}?${shared}&fields=${encodeURIComponent(FOLDER_FIELDS)}`, { appProperties: { pibComplete: "1" } });
       registered = toRegistry(type, id, { ...folder, ...done, appProperties: { ...folder.appProperties, ...done.appProperties } });
     }
-    return { folder: registered, created, tree };
+    return { folder: registered, created, tree, stats: { lockWaitMs, ...counts } };
   }
 
   async function identity(overrideSharedDriveId?: string): Promise<IdentityResult> {

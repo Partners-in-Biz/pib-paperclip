@@ -2,6 +2,9 @@ import type { JsonSchema, PluginToolDeclaration } from "@paperclipai/plugin-sdk"
 import { growthToolDeclarations, type GrowthDeclarationOptions } from "@partnersinbiz/pib-plugin-kit";
 import { ALL_PLATFORMS, OVERRIDE_FIELDS, POST_STATUSES } from "./platforms.js";
 
+/** Gateway budget of store-rendered-asset (PAR-10249): above its 20 s Drive ack (asset-path.ts). */
+export const STORE_RENDERED_ASSET_TOOL_TIMEOUT_MS = 25_000;
+
 /** Every param has a short, exact description, and an enum where the values are fixed. */
 const text = (description: string): JsonSchema => ({ type: "string", description });
 const int = (description: string): JsonSchema => ({ type: "integer", description });
@@ -370,6 +373,8 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
       postId: text("Post to add the asset to (optional)"),
       ...scope,
     }),
+    // The gateway cuts a tool at 10 s unless it declares more; the Drive ack inside is 20 s (asset-path.ts).
+    timeoutMs: STORE_RENDERED_ASSET_TOOL_TIMEOUT_MS,
   },
   {
     name: "list-issue-attachments",
