@@ -394,7 +394,7 @@ async function freshPreview(env: Env, actor: Actor, req: PreviewRequestContext):
   };
   if (figure.keptPct < MIN_KEPT_PCT && !(changes.bodyMode === "replace" && allowReplace)) {
     throw new SeoError(
-      `This preview would keep only ${figure.keptPct}% of the live page's text (${figure.removedWords} of ${figure.liveWords} words gone). A change is added to the page, it does not wipe it: use bodyMode "before" or "after" to add copy next to the existing content. Only if you really are rewriting the whole page, send bodyMode "replace" with allowReplace true and say why in the summary.`,
+      `This preview would keep only ${figure.keptPct}% of the live page's text (${figure.removedWords} of ${figure.liveWords} words gone). A change is added to the page, it does not wipe it: use bodyMode "before", "after" or "afterFirstParagraph" to add copy next to the existing content. Only if you really are rewriting the whole page, send bodyMode "replace" with allowReplace true and say why in the summary.`,
     );
   }
   const reviewKey = randomBytes(18).toString("base64url");
