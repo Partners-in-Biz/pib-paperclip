@@ -14,6 +14,7 @@ import { isRehearsalSprint } from "../engine/rehearsal.js";
 import { loadFacts } from "./facts.js";
 import { buildPreviewHtml, checkLinkText, countBySelector, MIN_KEPT_PCT, parseContentSelector, fingerprintChanges, liveFingerprint, previewStats, visibleWords, type LiveFingerprint, withDoctype, type BodyMode, type LinkEdit, type PreviewChanges } from "../engine/preview.js";
 import { ORIGIN } from "../constants.js";
+import { IN_FLIGHT_MAX_MS, previewRequestKey, REUSE_RECHECK_MS, REUSE_WINDOW_MINUTES } from "../engine/request-key.js";
 import { capComment, commentFingerprint } from "../engine/thread.js";
 import { actorId, assignableUser, bool, errorMessage, num, oneOf, reqStr, SeoError, str, type Actor, type Env, type Params } from "./common.js";
 import { assertWritable, loadSprintContext } from "./context.js";
@@ -204,6 +205,167 @@ export async function createPreview(env: Env, companyId: string, actor: Actor, p
     );
   }
 
+  const label = str(params, "label", { max: 200 });
+  const rubric = scorePreviewCopy(changes);
+  const requestKey = previewRequestKey({ companyId, sprintId, pageUrl, taskId: task?.id ?? null, changes: withoutNul(changes), allowReplace, label, client, rubric });
+  const req: PreviewRequestContext = { companyId, sprintId, sprint, pageUrl, changes, allowReplace, task, redesign, label, client, rubric, requestKey, startedAt };
+  return onceInFlight(requestKey, env.now().getTime(), async () => (await reuseStoredPreview(env, req)) ?? (await freshPreview(env, actor, req)));
+}
+
+/** A type, not an interface: callers read it as a plain record. */
+export type CreatePreviewResult = {
+  previewId: string;
+  url: string;
+  pageUrl: string;
+  expiresAt: string;
+  applied?: string[];
+  stats: StoredPreviewStats;
+  basis: "rendered" | "source";
+  reviewStatus: string;
+  reviewIssueId: string | null;
+  rubric?: PreviewRubric;
+  notes?: string[];
+  /** true: this exact preview already existed (a repeated call); use its previewId and do not call again. */
+  reused: boolean;
+  next: string;
+};
+
+interface PreviewRequestContext {
+  companyId: string;
+  sprintId: string;
+  sprint: db.Sprint;
+  pageUrl: string;
+  changes: PreviewChanges;
+  allowReplace: boolean;
+  task: db.SprintTask | null;
+  redesign: boolean;
+  label: string | undefined;
+  client: ReturnType<typeof previewClient>;
+  rubric: PreviewRubric | null;
+  requestKey: string;
+  startedAt: number;
+}
+
+/**
+ * Identical create-preview calls running at the same time share one build. One worker process serves the plugin, so this map
+ * sees every concurrent call; an entry older than IN_FLIGHT_MAX_MS is treated as hung and dropped, so a stuck call blocks retries
+ * for at most that long. After a restart the map is empty and the stored lookup (reuseStoredPreview) answers instead.
+ */
+const IN_FLIGHT = new Map<string, { promise: Promise<CreatePreviewResult>; startedAt: number }>();
+
+/** Running create-preview builds (tests). */
+export const inFlightPreviewCount = (): number => IN_FLIGHT.size;
+
+async function onceInFlight(key: string, now: number, run: () => Promise<CreatePreviewResult>): Promise<CreatePreviewResult> {
+  const running = IN_FLIGHT.get(key);
+  if (running) {
+    if (now - running.startedAt < IN_FLIGHT_MAX_MS) return { ...(await running.promise), reused: true };
+    if (IN_FLIGHT.get(key) === running) IN_FLIGHT.delete(key);
+  }
+  const entry = { promise: run(), startedAt: now };
+  IN_FLIGHT.set(key, entry);
+  try {
+    return await entry.promise;
+  } finally {
+    if (IN_FLIGHT.get(key) === entry) IN_FLIGHT.delete(key);
+  }
+}
+
+const isoOf = (value: unknown): string => (value instanceof Date ? value : new Date(String(value))).toISOString();
+
+/** The newest pending, not sent-back, unexpired preview made for this exact request in the last REUSE_WINDOW_MINUTES. */
+export async function findReusablePreview(env: Env, companyId: string, requestKey: string): Promise<Record<string, unknown> | null> {
+  const rows = await env.ctx.db.query(
+    `SELECT id, created_at, expires_at, stats, review_status, review_issue_id, review_key, task_id FROM ${t("previews")}
+      WHERE company_id = $1 AND request_key = $2 AND status = 'pending' AND review_status <> 'changes_needed'
+        AND expires_at > now() AND created_at > now() - interval '${REUSE_WINDOW_MINUTES} minutes'
+      ORDER BY created_at DESC LIMIT 1`,
+    [companyId, requestKey],
+  );
+  return rows[0] ?? null;
+}
+
+/** The page source, or null when it cannot be read within `ms` (no render: this only checks whether the page changed). */
+async function sourceWithin(env: Env, url: string, ms: number): Promise<string | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const res = await Promise.race([env.site(url, { maxChars: MAX_HTML }), new Promise<null>((done) => { timer = setTimeout(() => done(null), ms); })]);
+    return res && res.status < 400 && res.text ? res.text : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** The open review issue a first call opened for this preview but did not record (it was cut off), if any. */
+async function openReviewIssueOf(env: Env, companyId: string, previewId: string): Promise<string | null | undefined> {
+  try {
+    const found = await env.ctx.issues.list({ companyId, originKind: ORIGIN.previewReview, originId: `preview-review:${previewId}`, limit: 5 });
+    return found.find((i) => i.status !== "done" && i.status !== "cancelled")?.id ?? null;
+  } catch (error) {
+    env.ctx.logger.info("SEO preview review lookup failed", { previewId, error: errorMessage(error) });
+    return undefined;
+  }
+}
+
+/**
+ * A repeated call (for example after a gateway timeout): return the stored preview instead of building a second one, and
+ * finish what the first call may not have done (the review issue, parking the task). Null when there is none to reuse or the
+ * live page changed since.
+ */
+async function reuseStoredPreview(env: Env, req: PreviewRequestContext): Promise<CreatePreviewResult | null> {
+  const row = await findReusablePreview(env, req.companyId, req.requestKey);
+  if (!row) return null;
+  const stats = (typeof row.stats === "string" ? JSON.parse(row.stats) : row.stats ?? {}) as StoredPreviewStats;
+  const madeAt = isoOf(row.created_at);
+  const notes = [`This exact preview was already made at ${madeAt} (a repeated call, for example after a gateway timeout). No new preview was made.`];
+  if (stats.liveFingerprint && typeof stats.liveFingerprint.title === "string") {
+    const source = await sourceWithin(env, req.pageUrl, REUSE_RECHECK_MS);
+    if (source === null) notes.push(`Could not re-check the live page; reused the preview made at ${madeAt}.`);
+    else if (fingerprintChanges(stats.liveFingerprint, liveFingerprint(source)).length > 0) return null;
+  }
+  const previewId = String(row.id);
+  const reviewStatus = String(row.review_status);
+  let reviewIssueId = row.review_issue_id ? String(row.review_issue_id) : null;
+  const title = req.changes.title ?? req.changes.h1 ?? req.pageUrl;
+  // A passed preview's task was already handed back to the agent: parking it again would wait for a verdict that came.
+  if (reviewStatus === "pending") {
+    if (!reviewIssueId && !isRehearsalSprint(req.sprint)) {
+      const existing = await openReviewIssueOf(env, req.companyId, previewId);
+      if (existing) {
+        await env.ctx.db.execute(`UPDATE ${t("previews")} SET review_issue_id = $2 WHERE id = $1 AND company_id = $3`, [previewId, existing, req.companyId]);
+        reviewIssueId = existing;
+      } else if (existing === null) {
+        const c = req.changes;
+        const applied = [c.title && "title", c.metaDescription && "metaDescription", c.h1 && "h1", c.bodyHtml && "bodyHtml", c.linkEdits?.length && "links", c.css && "css"].filter((a): a is string => typeof a === "string");
+        reviewIssueId = await routePreviewReview(env, req.sprint, { rubric: req.rubric, id: previewId, key: String(row.review_key), pageUrl: req.pageUrl, title, stats, applied, notes: [], taskIssueId: req.task?.issueId ?? null, redesign: req.redesign, linkEdits: c.linkEdits });
+      }
+    }
+    await parkTaskForReview(env, req.companyId, row.task_id ? String(row.task_id) : null, title);
+  }
+  return {
+    previewId,
+    url: previewLink(req.sprint.siteUrl, previewId),
+    pageUrl: req.pageUrl,
+    expiresAt: isoOf(row.expires_at),
+    stats,
+    basis: basisOf(stats),
+    reviewStatus,
+    reviewIssueId,
+    reused: true,
+    notes,
+    next: reviewStatus === "passed" ? "The Reviewer already passed this preview: use this previewId and link. Do not make it again." : nextAfterPreview(req.sprint),
+  };
+}
+
+const nextAfterPreview = (sprint: db.Sprint): string =>
+  sprint.clientSignoff === "auto"
+    ? "The link is HELD: the client sees a 'being checked' page until the Reviewer has compared it with the live page and passed it. Make a preview for every page of this task, then END your turn. The plugin does the rest: it parks this task on the client, drafts one approval email in Gmail for a person to send, and wakes you when the client has answered every preview of the task (with what to apply and what to revise). Do not put the links on Needs you and do not use block-task for this. Apply nothing before then."
+    : "The link is HELD: the client sees a 'being checked' page until the Reviewer has compared it with the live page and passed it. End your turn after making your previews; you are woken on this task's issue with the result. Only then put the link on Needs you for the owner. If the Reviewer asks for changes, fix and make a new preview. Apply anything through the Connector only after the client approved and the owner confirmed.";
+
+async function freshPreview(env: Env, actor: Actor, req: PreviewRequestContext): Promise<CreatePreviewResult> {
+  const { companyId, sprintId, sprint, pageUrl, changes, allowReplace, task, redesign, label, client, rubric, requestKey, startedAt } = req;
   const res = await env.site(pageUrl, { maxChars: MAX_HTML });
   if (res.status >= 400 || !res.text) throw new SeoError(`The live page answered ${res.status}; check the URL (a new page that is not live yet cannot be previewed on top of a live page).`);
   const token = randomBytes(24).toString("base64url");
@@ -230,13 +392,13 @@ export async function createPreview(env: Env, companyId: string, actor: Actor, p
   const reviewKey = randomBytes(18).toString("base64url");
   const expiresAt = new Date(env.now().getTime() + PREVIEW_DAYS * 86_400_000).toISOString();
   await env.ctx.db.execute(
-    `INSERT INTO ${t("previews")} (id, company_id, sprint_id, task_id, issue_id, page_url, title, html, changes, expires_at, created_by, review_key, stats)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::timestamptz, $11, $12, $13::jsonb)`,
-    [token, companyId, sprintId, task?.id ?? null, task?.issueId ?? sprint.rootIssueId ?? null, pageUrl, withoutNul(str(params, "label", { max: 200 }) ?? changes.title ?? changes.h1 ?? pageUrl), withoutNul(built.html), JSON.stringify(withoutNul(changes)), expiresAt, actorId(actor), reviewKey, JSON.stringify(withoutNul(stats))],
+    `INSERT INTO ${t("previews")} (id, company_id, sprint_id, task_id, issue_id, page_url, title, html, changes, expires_at, created_by, review_key, stats, request_key)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::timestamptz, $11, $12, $13::jsonb, $14)`,
+    [token, companyId, sprintId, task?.id ?? null, task?.issueId ?? sprint.rootIssueId ?? null, pageUrl, withoutNul(label ?? changes.title ?? changes.h1 ?? pageUrl), withoutNul(built.html), JSON.stringify(withoutNul(changes)), expiresAt, actorId(actor), reviewKey, JSON.stringify(withoutNul(stats)), requestKey],
   );
   // Save preview to Drive (non-blocking, errors only log warnings)
   const today = env.now().toISOString().split("T")[0]!;
-  const previewLabel = str(params, "label", { max: 200 }) ?? changes.title ?? changes.h1 ?? "preview";
+  const previewLabel = label ?? changes.title ?? changes.h1 ?? "preview";
   const driveName = `${today} SEO preview ${previewLabel.slice(0, 80).replace(/[/\\:*?"<>|]/g, "")} v01.html`;
   // The sprint's own client wins over the caller's; an own sprint asks for the own folder (PAR-8128). null = no copy.
   const driveTarget = sprintDriveTarget(sprint, client);
@@ -252,7 +414,6 @@ export async function createPreview(env: Env, companyId: string, actor: Actor, p
   }).catch(() => {
     // Suppress errors; exportToDrive never throws but we catch any unexpected issue
   });
-  const rubric = scorePreviewCopy(changes);
   const review = await routePreviewReview(env, sprint, { rubric, id: token, key: reviewKey, pageUrl, title: changes.title ?? changes.h1 ?? pageUrl, stats, applied: built.applied, notes: built.notes, taskIssueId: task?.issueId ?? null, redesign, linkEdits: changes.linkEdits });
   await parkTaskForReview(env, companyId, task?.id ?? null, changes.title ?? changes.h1 ?? pageUrl);
   return {
@@ -267,9 +428,8 @@ export async function createPreview(env: Env, companyId: string, actor: Actor, p
     reviewIssueId: review,
     ...(rubric ? { rubric } : {}),
     ...(built.notes.length > 0 ? { notes: built.notes } : {}),
-    next: sprint.clientSignoff === "auto"
-      ? "The link is HELD: the client sees a 'being checked' page until the Reviewer has compared it with the live page and passed it. Make a preview for every page of this task, then END your turn. The plugin does the rest: it parks this task on the client, drafts one approval email in Gmail for a person to send, and wakes you when the client has answered every preview of the task (with what to apply and what to revise). Do not put the links on Needs you and do not use block-task for this. Apply nothing before then."
-      : "The link is HELD: the client sees a 'being checked' page until the Reviewer has compared it with the live page and passed it. End your turn after making your previews; you are woken on this task's issue with the result. Only then put the link on Needs you for the owner. If the Reviewer asks for changes, fix and make a new preview. Apply anything through the Connector only after the client approved and the owner confirmed.",
+    reused: false,
+    next: nextAfterPreview(sprint),
   };
 }
 
