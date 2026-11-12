@@ -31,7 +31,7 @@
  */
 import { join } from "node:path";
 import { clipHasSound, hasClipAudio } from "./compile-audio.js";
-import { CompileError, inputKey, type CompileInput, type CompileInputs } from "./compile-video.js";
+import { CompileError, frameAt, inputKey, type CompileInput, type CompileInputs } from "./compile-video.js";
 import { clipDuration, editDuration, type AudioClip, type EditDoc, type MediaClip, type Track } from "./timeline.js";
 
 /** Defaults until the T1 spike measures them (PAR-10436). */
@@ -136,7 +136,7 @@ function chunkMain(doc: EditDoc, sources: CompileInputs, level: number, opts: Re
     load += w;
   }
 
-  const framesBelow = (t: number) => framesIn(t, fps);
+  const framesBelow = (t: number) => frameAt(t, fps); // the grid compileVideo cuts main segments on
   const end = (c: MediaClip) => ms(c.start + clipDuration(c));
   const mainEnd = Math.max(...clips.map(end));
   const passes: RenderPass[] = [];

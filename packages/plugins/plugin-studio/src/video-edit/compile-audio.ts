@@ -19,8 +19,11 @@ export interface AudioOptions { loudnorm?: boolean }
 /** The sound half of a render: extra input args, graph lines, and the final label (`null`: the edit is silent). */
 export interface AudioGraph { inputArgs: string[]; filters: string[]; outLabel: string | null }
 
-/** Multi-pass stems and intermediates: lossless PCM, so the final pass is the only lossy audio encode. */
-export const INTERMEDIATE_AUDIO_ENCODER_ARGS = ["-c:a", "pcm_s16le", "-ar", "48000", "-ac", "2"] as const;
+/**
+ * Multi-pass stems and intermediates: lossless 32-bit float PCM, so the final pass is the only lossy audio encode. Float,
+ * not s16: the single pass sums clips in float, and a stem whose sum passes full scale would clip in s16 (PAR-10465).
+ */
+export const INTERMEDIATE_AUDIO_ENCODER_ARGS = ["-c:a", "pcm_f32le", "-ar", "48000", "-ac", "2"] as const;
 export const AUDIO_ENCODER_ARGS = ["-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", "2"] as const;
 /** EBU R128 single pass, aimed at social platforms (-14 LUFS); loudnorm resamples to 192 kHz, so resample back after. */
 export const LOUDNORM = "loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000";
@@ -125,7 +128,7 @@ export function buildAudioGraph(doc: EditDoc, sources: CompileInputs, firstInput
 
 /**
  * ffmpeg args for one audio stem pass: the edit's sound only (same per-clip chain as `buildAudioGraph`, no loudnorm, which
- * runs once in the final pass), as PCM s16le 48 kHz stereo WAV. Throws if the edit has no sound.
+ * runs once in the final pass), as float PCM 48 kHz stereo WAV. Throws if the edit has no sound.
  */
 export function compileAudioStem(doc: EditDoc, sources: CompileInputs, outputPath: string): CompiledVideo {
   const audio = buildAudioGraph(doc, sources, 0);

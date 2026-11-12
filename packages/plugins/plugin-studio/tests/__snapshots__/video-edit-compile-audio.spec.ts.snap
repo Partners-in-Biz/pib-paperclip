@@ -334,7 +334,7 @@ exports[`compileAudioStem > emits PCM WAV with no loudnorm and the same per-clip
     "-map",
     "[aout]",
     "-c:a",
-    "pcm_s16le",
+    "pcm_f32le",
     "-ar",
     "48000",
     "-ac",

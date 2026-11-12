@@ -53,8 +53,14 @@ export const ENCODER_ARGS = ["-c:v", "libx264", "-profile:v", "high", "-preset",
  * the 6 GiB `--as` cap: three 10 s clips with a look reached 186 threads and failed at VmPeak 6143 MiB, and plain
  * 30 s edits already peaked at 5695 MiB. With these caps (and `MALLOC_ARENAS` in ffmpeg.ts) they peak near 2.5 GiB.
  */
-/** Near-lossless intermediate between passes (PAR-10460: mean PSNR >= 52 dB against the single pass). */
-export const INTERMEDIATE_ENCODER_ARGS = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "12", "-pix_fmt", "yuv420p"] as const;
+/**
+ * Lossless intermediate between passes, so a multi-pass render is pixel-identical to the single pass. Any lossy
+ * intermediate re-enters the final encoder's own noise: on the T7 equivalence fixtures crf 12 gave mean PSNR 41.0 to
+ * 42.4 dB against the single pass and crf 4 gave 42.8 (bar: 42), while qp 0 gives identical frames (PAR-10465). Cost at
+ * 1080x1920 30 fps: about 180 MiB/min (crf 12: 44 to 70), same encode time, lower VmPeak; a 180 s full-length layer pass
+ * is about 540 MiB, under the 2 GiB intermediate `--fsize`.
+ */
+export const INTERMEDIATE_ENCODER_ARGS = ["-c:v", "libx264", "-preset", "veryfast", "-qp", "0", "-pix_fmt", "yuv420p"] as const;
 export const DECODE_THREADS = 2;
 export const FILTER_THREADS = 4;
 export const ENCODE_THREADS = 4;
@@ -73,6 +79,18 @@ const unsupported = (name: string): never => {
   throw new CompileError("unsupported_feature", name);
 };
 const ms = (n: number) => Math.round(n * 1000) / 1000;
+/**
+ * The project frame grid: the first frame whose (millisecond) time is at or after `t`. A main-track segment over
+ * `[s, e)` gets `frameAt(e) - frameAt(s)` frames, so every cut lands on the frame at or after its time and nothing drifts
+ * across cuts (a 0.35 s clip at 30 fps is 10 or 11 frames, not always 11). The render planner cuts chunks on this grid.
+ */
+export function frameAt(t: number, fps: number): number {
+  let f = Math.max(0, Math.ceil(t * fps - 1e-6));
+  while (f > 0 && ms((f - 1) / fps) >= t - 1e-9) f--;
+  return f;
+}
+/** Frames `trim`/`color` give a segment of `length` s on their own (`trim=duration`: frames that start before the end). */
+const ownFrames = (length: number, fps: number) => Math.max(0, Math.ceil(ms(length) * fps - 1e-6));
 /** A number for the graph: millisecond precision, never exponent notation (all values are range-checked by normalizeEdit). */
 export const num = (n: number) => {
   const v = ms(n);
@@ -132,11 +150,12 @@ class Graph {
     return { index: this.inputs++, kind: source.kind };
   }
 
-  /** Black for `duration` seconds at project size and rate. */
-  black(duration: number): string {
+  /** Black for `duration` seconds at project size and rate; `frames`: its grid length when that differs. */
+  black(duration: number, frames = ownFrames(duration, this.doc.project.fps)): string {
     const { width, height, fps } = this.doc.project;
     const out = this.label("blk");
-    this.filters.push(`color=c=black:s=${width}x${height}:r=${fps}:d=${num(duration)},format=yuv420p,setsar=1[${out}]`);
+    const cut = frames === ownFrames(duration, fps) ? "" : `,trim=end_frame=${frames}`;
+    this.filters.push(`color=c=black:s=${width}x${height}:r=${fps}:d=${num(duration)}${cut},format=yuv420p,setsar=1[${out}]`);
     return out;
   }
 
@@ -256,8 +275,8 @@ class Graph {
   }
 
   /** One main-track clip as a full-frame yuv420p segment of exactly its timeline length. */
-  mainClip(clip: MediaClip, fadeInFromBlack: number): string {
-    const { width, height } = this.doc.project;
+  mainClip(clip: MediaClip, fadeInFromBlack: number, frames?: number): string {
+    const { width, height, fps } = this.doc.project;
     const { index, kind } = this.input(clip);
     const length = clipDuration(clip);
     const fades: string[] = [];
@@ -265,7 +284,8 @@ class Graph {
     if (fadeIn > 0) fades.push(`fade=t=in:st=0:d=${num(fadeIn)}`);
     if (clip.fadeOut > 0) fades.push(`fade=t=out:st=${num(length - clip.fadeOut)}:d=${num(clip.fadeOut)}`);
     const out = this.label("seg");
-    const tail = ["format=yuv420p", "setsar=1", ...fades, `trim=duration=${num(length)}`];
+    const cut = frames === undefined || frames === ownFrames(length, fps) ? `trim=duration=${num(length)}` : `trim=end_frame=${Math.max(1, frames)}`;
+    const tail = ["format=yuv420p", "setsar=1", ...fades, cut];
     const t = clip.transform;
     if (isIdentity(t) && !animated(clip) && !fadesOpacity(clip)) {
       // The common case: fit inside the frame, letterbox with black.
@@ -351,20 +371,23 @@ export function buildVideoGraph(doc: EditDoc, sources: CompileInputs, options: C
   const main = videoTracks[0]?.kind === "video" ? [...videoTracks[0].clips].sort((a, b) => a.start - b.start) : [];
   const parts: Parameters<Graph["join"]>[0] = [];
   let end = 0; // timeline end of what is joined so far
+  const { fps } = doc.project;
+  const span = (from: number, to: number) => frameAt(to, fps) - frameAt(from, fps);
   for (const clip of main) {
     const overlap = ms(end - clip.start);
     const xfade = clip.transitionIn && overlap > EPS ? { type: clip.transitionIn.type, offset: clip.start, duration: overlap } : null;
     if (overlap > EPS && !xfade) unsupported("overlapping_clips");
     if (clip.start - end > EPS) {
-      parts.push({ label: g.black(clip.start - end), xfade: null });
+      if (span(end, clip.start) > 0) parts.push({ label: g.black(clip.start - end, span(end, clip.start)), xfade: null });
       end = clip.start;
     }
     // A transition with nothing before it to cross into fades in from black.
     const fromBlack = clip.transitionIn && !xfade ? clip.transitionIn.duration : 0;
-    parts.push({ label: g.mainClip(clip, fromBlack), xfade });
-    end = ms(clip.start + clipDuration(clip));
+    const clipEnd = ms(clip.start + clipDuration(clip));
+    parts.push({ label: g.mainClip(clip, fromBlack, span(clip.start, clipEnd)), xfade });
+    end = clipEnd;
   }
-  if (duration - end > EPS) parts.push({ label: g.black(duration - end), xfade: null });
+  if (duration - end > EPS && span(end, duration) > 0) parts.push({ label: g.black(duration - end, span(end, duration)), xfade: null });
 
   let base = g.join(parts);
   for (const track of doc.tracks) {
