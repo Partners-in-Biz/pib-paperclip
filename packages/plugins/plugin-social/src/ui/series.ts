@@ -24,6 +24,7 @@ export const DEST_TONE: Record<string, ToneName> = {
   pending: "warn",
   publishing: "info",
   retrying: "warn",
+  awaiting_manual: "warn",
   published: "ok",
   failed: "bad",
 };
@@ -174,7 +175,7 @@ export function liftTrend(stats: ScopeStats | null | undefined): { labels: strin
 }
 
 const POST_ORDER = ["published", "scheduled", "approved", "review", "draft", "publishing", "partially_published", "failed"];
-const DEST_ORDER = ["published", "publishing", "pending", "retrying", "failed"];
+const DEST_ORDER = ["published", "publishing", "pending", "retrying", "awaiting_manual", "failed"];
 
 function words(status: string): string {
   const text = status.replace(/_/g, " ");

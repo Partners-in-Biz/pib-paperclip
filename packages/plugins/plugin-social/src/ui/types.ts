@@ -30,6 +30,8 @@ export interface Account extends Scoped {
   externalId: string | null;
   avatarUrl: string | null;
   connected: boolean;
+  /** No publishing link: a person posts for this account by hand. Absent from older workers. */
+  manual?: boolean;
   tokenExpiresAt: string | null;
   lastRefreshedAt: string | null;
   lastError: string | null;
@@ -57,7 +59,11 @@ export interface Destination {
   platform: SocialPlatform | null;
   accountName: string;
   accountStatus: string | null;
-  status: "pending" | "publishing" | "retrying" | "published" | "failed";
+  status: "pending" | "publishing" | "retrying" | "awaiting_manual" | "published" | "failed";
+  /** The account has no publishing link. Absent from older workers. */
+  manual?: boolean;
+  /** What a person needs to post this destination by hand; null once it is published. */
+  handPost?: { text: string; title: string | null; firstComment: string | null; url: string; prefilled: boolean; mediaByHand: boolean } | null;
   attempts: number;
   nextAttemptAt: string | null;
   externalId: string | null;
