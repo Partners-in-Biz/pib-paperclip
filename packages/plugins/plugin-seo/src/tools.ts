@@ -16,6 +16,7 @@ import { THREAD_ROLL_BYTES } from "./engine/thread.js";
 import { BUSINESS_TYPES } from "./templates/plans.js";
 import { BING_VERIFY_SITE_TOOL_TIMEOUT_MS } from "./integrations/bing.js";
 import { RUN_PAGESPEED_TOOL_TIMEOUT_MS } from "./integrations/pagespeed.js";
+import { CREATE_PREVIEW_TOOL_TIMEOUT_MS } from "./engine/request-key.js";
 
 const text = (description: string): JsonSchema => ({ type: "string", description });
 const int = (description: string): JsonSchema => ({ type: "integer", description });
@@ -295,7 +296,8 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
     name: "create-preview",
     displayName: "Create a client preview link",
     description:
-      "Make a link the client can open to see proposed copy on their own page before anything is live. Use it for every WordPress change on a pr_only sprint: send the page (pageUrl, must be on the sprint's site) and the proposed title, metaDescription, h1 and/or bodyHtml (the main content, plain HTML: headings, paragraphs, lists, links, images). The server shows your copy on top of the live page with a 'Proposed, not live' bar and Approve / Request changes buttons. Copy is ADDED to the page (before or after the existing content); the preview is refused if it would lose over 30% of the live page's text. Every preview is held until the Reviewer has compared it with the live page: end your turn, you are woken with the result, and only then give the owner the link. Nothing is changed on the site. To link an existing phrase to another page of the site without adding a block, send linkEdits (1 to 5 of { text, href }): the text must occur exactly once as plain text on the page (letters, digits, spaces, commas, full stops, colons, hyphens; no quotes or &), href a path like /buy-a-gun/ or a full URL on the same site. Existing pages only; the link expires after 30 days.",
+      "Make a link the client can open to see proposed copy on their own page before anything is live. Use it for every WordPress change on a pr_only sprint: send the page (pageUrl, must be on the sprint's site) and the proposed title, metaDescription, h1 and/or bodyHtml (the main content, plain HTML: headings, paragraphs, lists, links, images). The server shows your copy on top of the live page with a 'Proposed, not live' bar and Approve / Request changes buttons. Copy is ADDED to the page (before or after the existing content); the preview is refused if it would lose over 30% of the live page's text. Every preview is held until the Reviewer has compared it with the live page: end your turn, you are woken with the result, and only then give the owner the link. Nothing is changed on the site. To link an existing phrase to another page of the site without adding a block, send linkEdits (1 to 5 of { text, href }): the text must occur exactly once as plain text on the page (letters, digits, spaces, commas, full stops, colons, hyphens; no quotes or &), href a path like /buy-a-gun/ or a full URL on the same site. Existing pages only; the link expires after 30 days. `reused: true` means this exact preview already existed (for example after a gateway timeout): use that previewId and do not call again.",
+    timeoutMs: CREATE_PREVIEW_TOOL_TIMEOUT_MS,
     parametersSchema: schema(["sprintId", "pageUrl"], {
       sprintId,
       pageUrl: text("The live page to preview a change on: a full URL or a path like /about on the sprint's site."),
