@@ -536,7 +536,9 @@ async function executeHermes(
   // Remote runs use the skills already installed in the remote Hermes home.
   if (!remote && Object.prototype.hasOwnProperty.call(config, "paperclipRuntimeSkills")) {
     try {
-      const selectedSkills = await reconcileHermesPaperclipSkills(config);
+      const selectedSkills = await reconcileHermesPaperclipSkills(config, undefined, {
+        onLog: (line) => ctx.onLog("stdout", `[hermes] ${line}\n`),
+      });
       if (selectedSkills.length > 0) {
         await ctx.onLog(
           "stdout",
