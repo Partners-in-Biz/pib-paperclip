@@ -24,15 +24,24 @@ export interface DelegateSignoff {
 }
 
 const originId = (sprintId: string) => `signoff-delegate:${sprintId}`;
-const KEY_LINE = /Needs you key: `([^`]+)`/g;
+// Anchored to a whole line we wrote: external text is flattened onto one line inside inline code, so it can never forge one.
+const KEY_LINE = /^ {2}Needs you key: `([^`\n]+)`$/gm;
+
+/** External text (PR title, site and client name) as one-line inline code: whitespace flattened, backticks stripped, clipped. */
+function safe(text: string, max = 120): string {
+  const flat = text.replace(/`/g, "").replace(/\s+/g, " ").trim();
+  return `\`${flat.length > max ? `${flat.slice(0, max - 1).trimEnd()}…` : flat}\``;
+}
+const label = (sprint: db.Sprint) => safe(sprintLabel(sprint), 80);
+const issueTitle = (sprint: db.Sprint, n: number) => `Sign-offs for you: ${sprintLabel(sprint).replace(/\s+/g, " ").replace(/`/g, "").trim().slice(0, 80)} (${n})`;
 
 function describe(sprint: db.Sprint, items: DelegateSignoff[]): string {
   return [
-    `Client: ${sprintLabel(sprint)}. Sprint: ${sprint.id}.`,
+    `Client: ${label(sprint)}. Sprint: ${safe(sprint.id)}.`,
     "",
     "These sign-offs are yours to decide. Each page change has passed the Reviewer, and you may approve it under the SEO setting for sign-off delegates.",
     "",
-    ...items.flatMap((i) => [`- ${i.title}`, `  Task: ${i.taskId}`, `  Needs you key: \`${i.key}\``]),
+    ...items.flatMap((i) => [`- ${safe(i.title)}`, `  Task: ${safe(i.taskId)}`, `  Needs you key: ${safe(i.key, 200)}`]),
     "",
     `Call \`partnersinbiz.seo:approve-page-apply\` with sprintId \`${sprint.id}\`, the task id, the task's pages, a note, and needsYouKey set to the key above. The item then closes.`,
     "",
@@ -78,7 +87,7 @@ export async function syncSignoffDelegateIssue(env: Env, companyId: string, spri
     await openIssue(env, {
       companyId,
       sprint,
-      title: `Sign-offs for you: ${sprintLabel(sprint)} (${items.length})`.slice(0, 250),
+      title: issueTitle(sprint, items.length),
       description: describe(sprint, items),
       originKind: ORIGIN.signoffDelegate,
       originId: originId(sprintId),
@@ -95,9 +104,9 @@ export async function syncSignoffDelegateIssue(env: Env, companyId: string, spri
   const added = items.filter((i) => !before.has(i.key));
   const description = describe(sprint, items);
   if (description === (issue?.description ?? current.description)) return;
-  await patchIssue(env, companyId, current.id, { description, title: `Sign-offs for you: ${sprintLabel(sprint)} (${items.length})`.slice(0, 250) });
+  await patchIssue(env, companyId, current.id, { description, title: issueTitle(sprint, items.length) });
   if (added.length === 0) return;
-  await commentOn(env, companyId, current.id, `New sign-off${added.length === 1 ? "" : "s"} for you: ${added.map((i) => `**${i.title}** (key \`${i.key}\`)`).join("; ")}.`);
+  await commentOn(env, companyId, current.id, `New sign-off${added.length === 1 ? "" : "s"} for you: ${added.map((i) => `${safe(i.title)} (key ${safe(i.key, 200)})`).join("; ")}.`);
   await wakeIssue(env.ctx, current.id, companyId, "A new sign-off is waiting for you (sign-off delegate)");
 }
 
