@@ -74,6 +74,8 @@ import {
 } from "./plugin-local-folders.js";
 import { createPluginSecretsHandler } from "./plugin-secrets-handler.js";
 import { logActivity } from "./activity-log.js";
+import { isServerReservedWakeSource } from "./issue-wake-guards.js";
+import { badRequest } from "../errors.js";
 import type { PluginEventBus } from "./plugin-event-bus.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { lookup as dnsLookup } from "node:dns/promises";
@@ -755,6 +757,18 @@ export function recordWorkerProviderSpan(
     }
   };
   try { visit(params, parent, 0); } catch {}
+}
+
+/**
+ * Plugin wakeups copy params.contextSource into contextSnapshot.source. The
+ * server-reserved sources unlock guards (execution-stage cap exemption,
+ * review-verdict wake), so a plugin may not claim one: reject with a 400
+ * before any wake is queued (PAR-9770).
+ */
+function assertPluginWakeSourceAllowed(contextSource: unknown): void {
+  if (isServerReservedWakeSource(contextSource)) {
+    throw badRequest(`Plugin wakeups may not use the server-reserved context source "${String(contextSource)}"`);
+  }
 }
 
 export function buildHostServices(
@@ -2420,6 +2434,7 @@ export function buildHostServices(
       },
       async requestWakeup(params) {
         const companyId = ensureCompanyId(params.companyId);
+        assertPluginWakeSourceAllowed(params.contextSource);
         await ensurePluginAvailableForCompany(companyId);
         const issue = requireInCompany("Issue", await issues.getById(params.issueId), companyId);
         if (!issue.assigneeAgentId) {
@@ -2486,6 +2501,7 @@ export function buildHostServices(
       },
       async requestWakeups(params) {
         const companyId = ensureCompanyId(params.companyId);
+        assertPluginWakeSourceAllowed(params.contextSource);
         await ensurePluginAvailableForCompany(companyId);
         const results = [];
         for (const issueId of [...new Set(params.issueIds)]) {
