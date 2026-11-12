@@ -499,6 +499,29 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
     }),
   },
   {
+    name: "set-focus",
+    displayName: "Set the monthly focus",
+    description:
+      `Set one scope's focus for this month (or the next): one theme, one audience, one ask, one number, and the real material the posts are built from. Every plan, hook and post of the month serves it. get-playbook returns it and says when it is missing or out of date. A focus of an earlier month is closed first: pass learned (what worked and what did not, from hook-board).${OWN}`,
+    parametersSchema: schema(["theme", "audience", "offer", "proof", "metric"], {
+      ...scope,
+      month: text("YYYY-MM. Default: this month. Only this month or the next."),
+      theme: text("What the month is about, one line. E.g. \"Getting paid on time without chasing\"."),
+      audience: text("Who it is for: one kind of person and the moment they are in."),
+      offer: text("The one thing we want them to do (book a call, install the app, reply)."),
+      proof: ids("Real material to build from: a result with its source, a client story with consent, a real screen, a number. 1-10 items. Never invented: ask for it if you have none."),
+      metric: text("The one number that says the month worked, e.g. \"booked calls from social\" or \"installs\"."),
+      learned: text("Required when an earlier month's focus is still open: what that month taught (hooks and formats to keep, and to drop)."),
+    }),
+  },
+  {
+    name: "hook-board",
+    displayName: "Hook board",
+    description:
+      `Which parts of the posts worked in one scope: published posts grouped by their tags (hook:<name>, body:<name>, cta:<name>), with people reached, actions per 100 reached, and a verdict per part (double down, keep testing, drop, or too little reach to judge). Names the control: the best hook, body and ask so far. Read it before you plan a week and when you close a month.${OWN}`,
+    parametersSchema: schema([], { ...scope, periodDays: int("Days to look back, 7-90 (default 28)") }),
+  },
+  {
     name: "account-analytics",
     displayName: "Account analytics",
     description: `Engagement totals per account of one scope (latest snapshot per destination).${OWN}`,

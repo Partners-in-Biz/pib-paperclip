@@ -111,7 +111,7 @@ import {
   SocialError,
   type AccountScope,
 } from "./domain.js";
-import { experimentOptions, growthEnv, planExperimentTag, writeExperimentTag } from "./growth/service.js";
+import { experimentOptions, growthEnv, missingHookTag, planExperimentTag, writeExperimentTag } from "./growth/service.js";
 import { replyToInboxItem } from "./inbox.js";
 import { assetOut, foreignMedia, mediaFromAssetIds } from "./media.js";
 import { providerFor } from "./oauth/registry.js";
@@ -678,6 +678,10 @@ export async function transitionPost(ctx: PluginContext, viewer: Viewer, postId:
   if (viewer.isAgent) assertAgentTransition(post.status, to);
   else assertTransition(post.status, to);
   if (to === "approved") requireUser(viewer, "approve a post");
+  if (to === "review" && viewer.isAgent) {
+    const untagged = await missingHookTag(growthEnv(ctx), viewer.companyId, post).catch(() => null);
+    if (untagged) throw new SocialError(untagged);
+  }
   if (to === "approved" && post.status === "review") {
     // Approval needs every sign-off the scope's policy asks for (a team member's click is one of them); the post is
     // approved, scheduled at its proposed time, and its review issue closed once they are all in (approval-flow.ts).

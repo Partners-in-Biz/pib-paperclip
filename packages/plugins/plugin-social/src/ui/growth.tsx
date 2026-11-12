@@ -34,7 +34,7 @@ import {
 } from "@partnersinbiz/pib-plugin-ui";
 import { Banner, Card, chipStyle, fmtDate, Muted, PlatformBadge, Row, scopeName, scopeParams, SmallButton } from "./parts.js";
 import { EXPERIMENT_TONE, VERDICT_TONE, toneOf, verdictSegments } from "./series.js";
-import type { GrowthChange, GrowthExperiment, GrowthPost, GrowthSnapshot, RunAction, Snapshot } from "./types.js";
+import type { GrowthChange, GrowthExperiment, GrowthFocusView, GrowthHookBoard, GrowthPartRow, GrowthPost, GrowthSnapshot, RunAction, Snapshot } from "./types.js";
 
 export function fmtLift(value: number | null | undefined): string {
   if (value === null || value === undefined || !Number.isFinite(value)) return "—";
@@ -206,6 +206,120 @@ function ProgramSettings({ data, snapshot, act }: { data: GrowthSnapshot; snapsh
   );
 }
 
+const VERDICT_PILL: Record<GrowthPartRow["verdict"], ToneInput | undefined> = { "double down": "ok", drop: "bad", "keep testing": "info", "too little reach": undefined };
+
+/** This month's focus of the scope: what every post serves. People set it here; agents set it with `set-focus`. */
+function FocusCard({ view, snapshot, canEdit, act }: { view: GrowthFocusView; snapshot: Snapshot; canEdit: boolean; act: (key: string, params: Record<string, unknown>, success: string) => Promise<void> }) {
+  const f = view.focus;
+  const [open, setOpen] = useState(false);
+  const [theme, setTheme] = useState("");
+  const [audience, setAudience] = useState("");
+  const [offer, setOffer] = useState("");
+  const [proof, setProof] = useState("");
+  const [metric, setMetric] = useState("");
+  const [learned, setLearned] = useState("");
+  // A focus of an earlier month is closed with what it taught before the new one starts.
+  const closing = view.state === "expired";
+  const start = () => {
+    const keep = f && !closing ? f : null;
+    setTheme(keep?.theme ?? "");
+    setAudience(keep?.audience ?? f?.audience ?? "");
+    setOffer(keep?.offer ?? "");
+    setProof((keep?.proof ?? []).join("\n"));
+    setMetric(keep?.metric ?? "");
+    setLearned("");
+    setOpen(true);
+  };
+  const ready = theme.trim() && audience.trim() && offer.trim() && proof.trim() && metric.trim() && (!closing || learned.trim());
+  return (
+    <Card>
+      <Row style={{ justifyContent: "space-between" }}>
+        <strong style={{ fontSize: 13 }}>Focus for {f && !closing ? f.month : view.thisMonth}</strong>
+        {canEdit ? <SmallButton onClick={start}>{f && !closing ? "Edit" : "Set the focus"}</SmallButton> : null}
+      </Row>
+      {f && !closing ? (
+        <div style={{ display: "grid", gap: 4, fontSize: 13 }}>
+          <strong style={{ fontSize: 15 }}>{f.theme}</strong>
+          <span><Muted>For</Muted> {f.audience}</span>
+          <span><Muted>The ask</Muted> {f.offer}</span>
+          <span><Muted>It worked when</Muted> {f.metric}</span>
+          <Muted>Built from: {f.proof.join(" · ")}</Muted>
+        </div>
+      ) : (
+        <Muted>{closing && f ? `The last focus was ${f.month}: "${f.theme}". Close it with what it taught and set this month's.` : "No focus yet. One theme, one audience and one ask for the month, so every post pulls the same way and the numbers can show what worked."}</Muted>
+      )}
+      {view.past.length ? <Muted>Before: {view.past.map((p) => `${p.month} ${p.theme}${p.learned ? ` (${p.learned})` : ""}`).join(" · ")}</Muted> : null}
+      <Modal open={open} title={`Focus for ${view.thisMonth}: ${scopeName(snapshot)}`} onClose={() => setOpen(false)} footer={(
+        <>
+          <Button type="button" variant="secondary" onClick={() => setOpen(false)}>Cancel</Button>
+          <Button type="button" disabled={!ready} onClick={() => {
+            setOpen(false);
+            void act("social.growth-set-focus", { ...scopeParams(snapshot), theme, audience, offer, proof: proof.split("\n"), metric, learned: learned || undefined }, "Focus saved");
+          }}>Save focus</Button>
+        </>
+      )}>
+        <div style={{ display: "grid", gap: 10 }}>
+          {closing && f ? <Field label={`What did ${f.month} ("${f.theme}") teach? Hooks and formats to keep, and to drop`}><TextArea rows={2} value={learned} onChange={(e) => setLearned(e.target.value)} /></Field> : null}
+          <Field label="Theme: what the month is about, in one line"><Input value={theme} onChange={(e) => setTheme(e.target.value)} placeholder="Stop losing leads after hours" /></Field>
+          <Field label="Audience: one kind of person, and the moment they are in"><Input value={audience} onChange={(e) => setAudience(e.target.value)} /></Field>
+          <Field label="The ask: the one thing we want them to do"><Input value={offer} onChange={(e) => setOffer(e.target.value)} placeholder="Download the app" /></Field>
+          <Field label="Proof: real material to build from, one per line (results with their source, stories, screens)"><TextArea rows={4} value={proof} onChange={(e) => setProof(e.target.value)} /></Field>
+          <Field label="The number that says the month worked"><Input value={metric} onChange={(e) => setMetric(e.target.value)} placeholder="200 app downloads from social" /></Field>
+        </div>
+      </Modal>
+    </Card>
+  );
+}
+
+function PartTable({ title, rows }: { title: string; rows: GrowthPartRow[] }) {
+  if (rows.length === 0) return null;
+  return (
+    <div style={{ display: "grid", gap: 6, minWidth: 0 }}>
+      <strong style={{ fontSize: 12 }}>{title}</strong>
+      <DataTable
+        columns={[
+          { key: "name", header: title.replace(/s$/, "") },
+          { key: "posts", header: "Posts" },
+          { key: "reach", header: "Reached" },
+          { key: "rate", header: "Acted per 100" },
+          { key: "verdict", header: "Verdict" },
+        ]}
+        rows={rows.map((r) => ({
+          id: r.name,
+          name: r.name,
+          posts: r.posts,
+          reach: r.reach,
+          rate: r.rate === null ? "—" : String(r.rate),
+          verdict: <Chip tone={VERDICT_PILL[r.verdict]}>{r.verdict}</Chip>,
+        }))}
+      />
+    </div>
+  );
+}
+
+/** Which hooks, bodies and asks worked, from the tags on published posts. */
+function HookBoardCard({ board }: { board: GrowthHookBoard }) {
+  const control = [board.control.hook ? `hook "${board.control.hook}"` : null, board.control.body ? `body "${board.control.body}"` : null, board.control.cta ? `ask "${board.control.cta}"` : null].filter(Boolean);
+  const empty = board.hooks.length + board.bodies.length + board.ctas.length === 0;
+  return (
+    <SectionCard title="Hook board" subtitle={`${board.tagged} of ${board.published} published posts tagged · ${board.reach} people reached · last ${board.periodDays} days`} icon={Target}>
+      <div style={{ display: "grid", gap: 12, minWidth: 0 }}>
+        {control.length ? <Muted>The control to beat: {control.join(", ")}.</Muted> : null}
+        {board.notes.map((note) => <Muted key={note}>{note}</Muted>)}
+        {empty ? (
+          <EmptyState compact icon={Lightbulb} title="No tagged posts yet" description="Posts tagged hook:, body: and cta: show up here once they are published, ranked by how many of the people they reached acted." />
+        ) : (
+          <>
+            <PartTable title="Hooks" rows={board.hooks} />
+            <PartTable title="Bodies" rows={board.bodies} />
+            <PartTable title="Asks" rows={board.ctas} />
+          </>
+        )}
+      </div>
+    </SectionCard>
+  );
+}
+
 export function GrowthTab({ snapshot, run }: { snapshot: Snapshot; run: RunAction }) {
   const [data, setData] = useState<GrowthSnapshot | null>(null);
   const [error, setError] = useState("");
@@ -261,6 +375,7 @@ export function GrowthTab({ snapshot, run }: { snapshot: Snapshot; run: RunActio
         </Banner>
       ) : null}
       {data.notes.map((note) => <Banner key={note} tone="info" title="Note">{note}</Banner>)}
+      {data.focus ? <FocusCard view={data.focus} snapshot={snapshot} canEdit={data.canDecide} act={act} /> : null}
       <Toolbar>
         {[7, 28, 90].map((days) => (
           <SmallButton key={days} aria-pressed={period === days} onClick={() => setPeriod(days)} style={chipStyle(period === days)}>Last {days} days</SmallButton>
@@ -283,6 +398,8 @@ export function GrowthTab({ snapshot, run }: { snapshot: Snapshot; run: RunActio
           <LiftBars items={data.featureLifts.map((f) => ({ key: f.key, label: f.key.replace("=", ": ").replace(/_/g, " "), lift: f.medianLift, count: f.count }))} />
         </SectionCard>
       </div>
+
+      {data.hookBoard ? <HookBoardCard board={data.hookBoard} /> : null}
 
       {waiting ? (
         <div style={{ display: "grid", gap: 8 }}>

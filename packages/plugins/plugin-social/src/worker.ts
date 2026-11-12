@@ -57,6 +57,8 @@ import {
   performanceReview,
   proposeExperiment,
   proposeFeatureQuestion,
+  setFocus,
+  hookBoardRecord,
   proposePlaybookChange,
   rejectExperiment,
   savePlaybookRecord,
@@ -299,6 +301,10 @@ async function dispatchTool(ctx: PluginContext, viewer: Viewer, name: string, p:
     // Growth Lab (eight of its tools come from the kit factory, registered in setup)
     case "propose-feature-question":
       return proposeFeatureQuestion(growthEnv(ctx), viewer, p);
+    case "set-focus":
+      return setFocus(growthEnv(ctx), viewer, p);
+    case "hook-board":
+      return hookBoardRecord(growthEnv(ctx), viewer, p);
     default:
       throw new SocialError(`Unknown social tool ${name}`);
   }
@@ -463,6 +469,10 @@ const ACTIONS: Record<string, ActionHandler> = {
   "social.growth-load": (ctx, v, p) => growthSnapshot(growthEnv(ctx), v, { ...p, client: p.client ?? null }),
   "social.growth-update-program": growthAction((ctx, v, p) => updateProgramRecord(growthEnv(ctx), v, p)),
   "social.growth-save-playbook": growthAction((ctx, v, p) => savePlaybookRecord(growthEnv(ctx), v, p)),
+  "social.growth-set-focus": growthAction((ctx, v, p) => {
+    requireUser(v, "set the monthly focus");
+    return setFocus(growthEnv(ctx), v, p);
+  }),
   "social.growth-approve-experiment": growthAction((ctx, v, p) => {
     requireUser(v, "approve an experiment");
     return approveExperiment(growthEnv(ctx), v, p);

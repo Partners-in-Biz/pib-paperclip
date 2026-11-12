@@ -30,6 +30,9 @@ import { addWeeklyReviewItem, closeWeeklyReviewItem } from "./weekly-review.js";
 export const POST_REVIEW_CHECKS = [
   "Platform limits: length, hashtags, media format and count fit every destination (run `validate-post`).",
   "Brand voice and the rules in this scope's Growth Lab playbook (`get-playbook`).",
+  "Worth stopping for (`references/social-craft.md`): it serves this month's focus (`get-playbook` shows it), carries one real thing from the focus's proof, and its first line would stop the reader. General advice with no proof is a return.",
+  "Look at the image or video itself: it shows what THIS post says, uses the brand kit, and was not on another post on the same account (a reused file cannot pass).",
+  "It has a hook tag (`hook:<short name>`), and it does not repeat the opening, structure or ask of the scope's last ten posts.",
   "Claims and numbers are true and backed by a source; no promises the business cannot keep.",
   "Links open the right page and carry UTM tags.",
   "Media is attached where the platform needs it (Instagram, TikTok, YouTube, Pinterest) and has alt text.",
