@@ -985,7 +985,11 @@ describe("residual recovery production matrix", () => {
     await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, f.issue.id));
     const actor = { actorType: "user" as const, actorId: f.actorId, userId: f.actorId };
     const hold = gate === "hold" ? await tree.createHold(f.companyId, f.issue.id, { mode: "pause", actor }) : null;
-    if (gate === "agent") { await createAgentLifecycle(db).pauseAgent(f.agent.id); await lifecycleWorker.process(f.agent.id); }
+    if (gate === "agent") {
+      await createAgentLifecycle(db).pauseAgent(f.agent.id); await lifecycleWorker.process(f.agent.id);
+      // A pause older than the recovery grace window (PAR-10283), so stranded recovery escalates as before.
+      await db.update(agents).set({ pausedAt: new Date(Date.now() - 25 * 60 * 60 * 1000) }).where(eq(agents.id, f.agent.id));
+    }
     const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agent.id,
       status: "failed", runtimeMode: "native", nativeIssueId: f.issue.id, contextSnapshot: { issueId: f.issue.id },
       finishedAt: new Date(), errorCode: "saved_native_failure" }).returning();
