@@ -16,6 +16,9 @@
  * - `setProps` sets `keyframes` per property (a list replaces that property's keys, `[]` or null removes them,
  *   `keyframes: null` removes all) and `transitionIn` of any `TRANSITIONS` type on video and overlay clips (overlay
  *   transitions are still refused when rendering); text clips only fade in.
+ * - `setProps` on video and overlay clips also sets `adjust` (schema v3; merged per field, a neutral value removes that
+ *   field, `adjust: null` removes all) and `look` (merged with the clip's look, so `{intensity}` alone changes the
+ *   strength; `look: null` removes it). `split`, `trim` and `move` keep both on every part.
  * - `reorder` sets the track order (first track is the bottom layer); `removeTrack` removes the track with its clips.
  */
 import { clipDuration, EditError, KEYFRAME_PROPS, LIMITS, normalizeEdit, type Clip, type EditDoc, type EditErrorReason, type Keyframe, type Keyframes, type Track, type TrackKind, type Transition } from "./timeline.js";
@@ -47,8 +50,8 @@ export class OpError extends EditError {
 const SOURCE_PROPS = ["assetId", "version", "in", "out", "start", "speed", "volume", "fadeIn", "fadeOut"];
 /** What `setProps` may change, per track kind. `id` never changes: delete and add instead. */
 const PROPS: Record<TrackKind, readonly string[]> = {
-  video: [...SOURCE_PROPS, "transform", "transitionIn", "keyframes"],
-  overlay: [...SOURCE_PROPS, "transform", "transitionIn", "keyframes"],
+  video: [...SOURCE_PROPS, "transform", "transitionIn", "keyframes", "adjust", "look"],
+  overlay: [...SOURCE_PROPS, "transform", "transitionIn", "keyframes", "adjust", "look"],
   audio: [...SOURCE_PROPS, "keyframes"],
   text: ["text", "start", "duration", "font", "color", "fontSize", "fadeIn", "fadeOut", "transform", "transitionIn", "keyframes"],
   caption: ["start", "style", "words"],
@@ -286,6 +289,12 @@ function run(doc: EditDoc, raw: unknown, i: number): void {
         const keys = props.keyframes === null ? null : record(props.keyframes);
         if (props.keyframes !== null && !keys) fail(i, "invalid", "props.keyframes", "must be an object of property lists, or null.");
         (next as { keyframes?: unknown }).keyframes = keys ? { ...("keyframes" in clip ? clip.keyframes : {}), ...keys } : undefined;
+      }
+      // adjust and look merge into what the clip has; null removes them (normalizeEdit checks the result).
+      if ("assetId" in clip && "transform" in clip) {
+        const media = next as typeof clip;
+        if (record(props.adjust) && clip.adjust) media.adjust = { ...clip.adjust, ...record(props.adjust) };
+        if (record(props.look) && clip.look) media.look = { ...clip.look, ...record(props.look) } as typeof clip.look;
       }
       clipsOf(track)[index] = next;
       sortClips(track);

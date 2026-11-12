@@ -3,14 +3,17 @@
  * share it. Times are seconds on the timeline, rounded to milliseconds. `normalizeEdit` keeps only the fields below,
  * fills defaults and refuses anything out of range with an `EditError` that names the field.
  * Version 1: static transforms, crop, speed, volume, fades and a fade-in transition. Version 2 (Phase D) adds the other
- * `TRANSITIONS` and per-clip `keyframes`. Rollback-safe writer: `normalizeEdit` reads both and writes `schemaVersion: 1`
- * unless the doc uses a version 2 feature, so a plain edit stays readable by the previous build.
+ * `TRANSITIONS` and per-clip `keyframes`. Version 3 (PAR-8279 slice 2) adds `adjust` and `look` on video and overlay
+ * clips. Rollback-safe writer: `normalizeEdit` reads every version in `SCHEMA_VERSIONS` and writes the lowest one that
+ * holds the doc, from the `FEATURE_VERSION` table, so a plain edit stays readable by the previous build. Builds before
+ * Studio 0.1.49 read version 1 only and do not have this guard.
  */
 import { StudioError } from "../errors.js";
+import { ADJUST_RANGE, NEUTRAL_ADJUST, PIB_BASIC_IDS, type Adjust, type LookRef } from "./looks.js";
 
 /** The newest schema version this build reads; `normalizeEdit` writes the lowest version that holds the doc. */
-export const SCHEMA_VERSION = 2;
-export const SCHEMA_VERSIONS = [1, 2] as const;
+export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSIONS = [1, 2, 3] as const;
 export type SchemaVersion = (typeof SCHEMA_VERSIONS)[number];
 /** Transitions between main-track clips (ffmpeg xfade names). Only `fade` is version 1. */
 export const TRANSITIONS = [
@@ -30,6 +33,9 @@ export const TRACK_KINDS = ["video", "overlay", "text", "caption", "audio"] as c
 export type TrackKind = (typeof TRACK_KINDS)[number];
 export const CAPTION_STYLES = ["plain", "bold", "karaoke"] as const;
 export type CaptionStyle = (typeof CAPTION_STYLES)[number];
+/** Colour adjust fields in their fixed output order (ranges and formulas in looks.ts; blur is sigma at 1080 px). */
+export const ADJUST_FIELDS = ["brightness", "contrast", "saturation", "temperature", "blur", "vignette"] as const;
+export const LOOK_PACKS = ["pib-basic"] as const;
 
 export const LIMITS = {
   maxDuration: 180,
@@ -57,7 +63,8 @@ export interface Keyframe { t: number; value: number; ease: Ease }
 /** Only properties with at least one key are kept; an empty `keyframes` is dropped. */
 export type Keyframes = Partial<Record<KeyframeProp, Keyframe[]>>;
 interface Timed { id: string; start: number; fadeIn: number; fadeOut: number; keyframes?: Keyframes }
-export interface MediaClip extends Timed { assetId: string; version: number; in: number; out: number; speed: number; volume: number; transform: Transform; transitionIn: Transition | null }
+/** `adjust` holds only non-neutral fields (absent when all are neutral); `look` is a pack look at an intensity 0..1. */
+export interface MediaClip extends Timed { assetId: string; version: number; in: number; out: number; speed: number; volume: number; transform: Transform; transitionIn: Transition | null; adjust?: Partial<Adjust>; look?: LookRef }
 export interface AudioClip extends Timed { assetId: string; version: number; in: number; out: number; speed: number; volume: number }
 export interface TextClip extends Timed { text: string; duration: number; font: string | null; color: string; fontSize: number; transform: Transform; transitionIn: Transition | null }
 export interface CaptionWord { text: string; start: number; end: number }
@@ -74,7 +81,7 @@ export interface EditDoc { schemaVersion: SchemaVersion; project: EditProject; t
 
 export type EditErrorReason =
   | "invalid" | "out_of_range" | "too_many" | "duplicate" | "overlap" | "too_long" | "unsupported_version" | "not_found"
-  | "unknown_transition" | "unknown_ease" | "keyframe_limit" | "keyframe_order" | "no_audio";
+  | "unknown_transition" | "unknown_ease" | "keyframe_limit" | "keyframe_order" | "no_audio" | "unknown_look";
 
 /** A refused edit document: `reason` says what kind of problem, `path` which field (e.g. `tracks[0].clips[2].speed`). */
 export class EditError extends StudioError {
@@ -189,6 +196,31 @@ const MEDIA_KEYS: readonly KeyframeProp[] = KEYFRAME_PROPS;
 const TEXT_KEYS: readonly KeyframeProp[] = ["x", "y", "scale", "rotate", "opacity"];
 const AUDIO_KEYS: readonly KeyframeProp[] = ["volume"];
 
+/** A clip's colour adjust: known fields in range, neutral ones dropped, `{}` when nothing is left. */
+function adjust(value: unknown, path: string): { adjust?: Partial<Adjust> } {
+  if (value === undefined || value === null) return {};
+  if (typeof value !== "object" || Array.isArray(value)) fail("invalid", path, "must be an object.");
+  const raw = value as Record<string, unknown>;
+  for (const key of Object.keys(raw)) if (!(ADJUST_FIELDS as readonly string[]).includes(key)) fail("invalid", `${path}.${key}`, `is not an adjust field; use ${ADJUST_FIELDS.join(", ")}.`);
+  const out: Partial<Adjust> = {};
+  for (const field of ADJUST_FIELDS) {
+    const [lo, hi] = ADJUST_RANGE[field];
+    const v = number(raw[field], `${path}.${field}`, lo, hi, NEUTRAL_ADJUST[field]);
+    if (v !== NEUTRAL_ADJUST[field]) out[field] = v;
+  }
+  return Object.keys(out).length ? { adjust: out } : {};
+}
+/** A clip's look: a known pack (default pib-basic) and look id, intensity 0..1 (default 1). */
+function look(value: unknown, path: string): { look?: LookRef } {
+  if (value === undefined || value === null) return {};
+  if (typeof value !== "object" || Array.isArray(value)) fail("invalid", path, "must be an object.");
+  const l = value as Record<string, unknown>;
+  const pack = l.pack ?? "pib-basic";
+  if (!(LOOK_PACKS as readonly unknown[]).includes(pack)) fail("unknown_look", `${path}.pack`, `must be one of ${LOOK_PACKS.join(", ")}.`);
+  if (typeof l.id !== "string" || !PIB_BASIC_IDS.includes(l.id)) fail("unknown_look", `${path}.id`, `must be one of ${PIB_BASIC_IDS.join(", ")}.`);
+  return { look: { pack: pack as LookRef["pack"], id: l.id, intensity: number(l.intensity, `${path}.intensity`, 0, 1, 1) } };
+}
+
 /** Optional facts `normalizeEdit` can't see in the doc. `hasAudio` false = that asset version has no sound. */
 export interface NormalizeOptions { hasAudio?: (assetId: string, version: number) => boolean | undefined }
 function fades(c: Record<string, unknown>, path: string, length: number) {
@@ -259,23 +291,66 @@ function clip(kind: TrackKind, raw: unknown, path: string, ids: Set<string>, opt
   if (kind === "audio") return { ...base, ...src, ...fades(c, path, length), ...keyframes(c.keyframes, `${path}.keyframes`, length, AUDIO_KEYS, silent) };
   return {
     ...base, ...src, ...fades(c, path, length), transform: transform(c.transform, `${path}.transform`), transitionIn: transition(c.transitionIn, `${path}.transitionIn`, length),
-    ...keyframes(c.keyframes, `${path}.keyframes`, length, MEDIA_KEYS, silent),
+    ...keyframes(c.keyframes, `${path}.keyframes`, length, MEDIA_KEYS, silent), ...adjust(c.adjust, `${path}.adjust`), ...look(c.look, `${path}.look`),
   };
 }
 
-/** True when the doc needs schema version 2: a non-fade transition or any keyframes. */
-export function usesV2(tracks: Track[]): boolean {
-  return tracks.some((track) => (track.clips as Clip[]).some((c) => ("keyframes" in c && c.keyframes !== undefined) || ("transitionIn" in c && c.transitionIn !== null && c.transitionIn.type !== "fade")));
+/** The schema version a field needs; a record maps the field's values (an enum) to the version each needs. */
+export type Since = SchemaVersion | Readonly<Record<string, SchemaVersion>>;
+const each = (paths: readonly string[], v: SchemaVersion) => Object.fromEntries(paths.map((p) => [p, v])) as Record<string, SchemaVersion>;
+/**
+ * Every leaf a normalised doc can hold (path as `featurePaths` writes it: lists as `[]`, any track's clip as `clip`),
+ * with the schema version that introduced it. The writer stamps the highest version of the leaves present, so a new
+ * field MUST get a row here: `requiredVersion` throws on a leaf it does not know rather than write too low a version.
+ */
+export const FEATURE_VERSION: Readonly<Record<string, Since>> = {
+  ...each(["project.size", "project.width", "project.height", "project.fps", "tracks[].id", "tracks[].kind"], 1),
+  ...each(["id", "start", "fadeIn", "fadeOut", "assetId", "version", "in", "out", "speed", "volume", "text", "duration", "font", "color", "fontSize", "style", "words[].text", "words[].start", "words[].end"].map((k) => `clip.${k}`), 1),
+  ...each([...["x", "y", "scale", "rotate"].map((k) => `transform.${k}`), ...["left", "top", "right", "bottom"].map((k) => `transform.crop.${k}`)].map((k) => `clip.${k}`), 1),
+  "clip.transitionIn": 1, // null: no transition
+  "clip.transitionIn.duration": 1,
+  "clip.transitionIn.type": Object.fromEntries(TRANSITIONS.map((t) => [t, t === "fade" ? 1 : 2])),
+  ...each(KEYFRAME_PROPS.flatMap((p) => ["t", "value", "ease"].map((k) => `clip.keyframes.${p}[].${k}`)), 2),
+  ...each(ADJUST_FIELDS.map((f) => `clip.adjust.${f}`), 3),
+  ...each(["pack", "id", "intensity"].map((k) => `clip.look.${k}`), 3),
+};
+
+/** Each leaf of a doc (without `schemaVersion`) as [FEATURE_VERSION path, value]. */
+export function featurePaths(doc: Pick<EditDoc, "project" | "tracks">): [string, unknown][] {
+  const out: [string, unknown][] = [];
+  const walk = (value: unknown, path: string) => {
+    if (Array.isArray(value)) value.forEach((v) => walk(v, `${path}[]`));
+    else if (value !== null && typeof value === "object") for (const [k, v] of Object.entries(value)) walk(v, `${path}.${k}`);
+    else out.push([path, value]);
+  };
+  walk(doc.project, "project");
+  for (const track of doc.tracks) {
+    for (const [k, v] of Object.entries(track)) if (k !== "clips") walk(v, `tracks[].${k}`);
+    for (const c of track.clips) for (const [k, v] of Object.entries(c)) walk(v, `clip.${k}`);
+  }
+  return out;
+}
+
+/** The lowest schema version that holds the doc. Throws (a bug, not a bad doc) on a leaf `FEATURE_VERSION` lacks. */
+export function requiredVersion(doc: Pick<EditDoc, "project" | "tracks">): SchemaVersion {
+  let version: SchemaVersion = 1;
+  for (const [path, value] of featurePaths(doc)) {
+    const since = Object.hasOwn(FEATURE_VERSION, path) ? FEATURE_VERSION[path] : undefined;
+    const v = typeof since === "object" ? (Object.hasOwn(since, String(value)) ? since[String(value)] : undefined) : since;
+    if (v === undefined) throw new Error(`timeline: ${path} = ${String(value)} has no FEATURE_VERSION row`);
+    if (v > version) version = v;
+  }
+  return version;
 }
 
 /**
  * Validates and trims an edit document from the page or an agent. Throws `EditError` with a message a person can act on.
- * Reads schema versions 1 and 2; the result is version 1 unless it uses a version 2 feature (`usesV2`).
+ * Reads every version in `SCHEMA_VERSIONS`; the result has the lowest version that holds it (`requiredVersion`).
  */
 export function normalizeEdit(input: unknown, options: NormalizeOptions = {}): EditDoc {
   const raw = obj(input);
   if (raw.schemaVersion !== undefined && !(SCHEMA_VERSIONS as readonly unknown[]).includes(raw.schemaVersion)) {
-    fail("unsupported_version", "schemaVersion", `version ${String(raw.schemaVersion)} is not supported (this build reads ${SCHEMA_VERSIONS.join(" and ")}).`);
+    fail("unsupported_version", "schemaVersion", `version ${String(raw.schemaVersion)} is not supported (this build reads ${SCHEMA_VERSIONS.join(", ")}).`);
   }
   const p = obj(raw.project);
   const size = (p.size ?? "9:16") as SizePreset;
@@ -304,7 +379,7 @@ export function normalizeEdit(input: unknown, options: NormalizeOptions = {}): E
     return { id: trackId, kind, clips } as Track;
   });
 
-  const doc: EditDoc = { schemaVersion: usesV2(tracks) ? 2 : 1, project, tracks };
+  const doc: EditDoc = { schemaVersion: requiredVersion({ project, tracks }), project, tracks };
   const total = editDuration(doc);
   if (total > LIMITS.maxDuration) fail("too_long", "tracks", `the edit is ${total} s long; the most is ${LIMITS.maxDuration} s.`);
   return doc;

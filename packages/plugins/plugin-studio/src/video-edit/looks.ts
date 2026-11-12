@@ -141,7 +141,7 @@ export function vignetteStops(v: number, n = 9): { offset: number; gain: number 
   return Array.from({ length: n }, (_, i) => ({ offset: i / (n - 1), gain: vignetteGain(v, i / (n - 1)) }));
 }
 
-const ADJUST_RANGE: Readonly<Record<keyof Adjust, readonly [number, number]>> = {
+export const ADJUST_RANGE: Readonly<Record<keyof Adjust, readonly [number, number]>> = {
   brightness: [-1, 1], contrast: [0, 2], saturation: [0, 3], temperature: [1000, 40000], blur: [0, 50], vignette: [0, 1],
 };
 
