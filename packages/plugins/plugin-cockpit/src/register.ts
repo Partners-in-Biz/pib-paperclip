@@ -58,9 +58,9 @@ import { CockpitError, message, readInstalled, rememberInstalled, type Env } fro
 import { governCompany, type GovernorConfig } from "./governor.js";
 import { rehearseGovernor } from "./governor-rehearse.js";
 import { hostedUsageRollup, listHostedUsage, parseMonth } from "./hosted-usage.js";
-import { healthAlerts, refreshHealthIssue, warningSince } from "./health.js";
+import { healthAlerts, listAgents, refreshHealthIssue, warningSince } from "./health.js";
 import { HIRE_MATCH_ROLES, HIRE_ROLES } from "./hire.js";
-import { parseSnapshot, teamSignature } from "./merge.js";
+import { activeAgentIdsOf, parseSnapshot, teamSignature } from "./merge.js";
 import { NAMESPACE } from "./namespace.js";
 import { onDealWon, onInvoicePaid } from "./onboarding.js";
 import { ownSetupStatus, ownSnapshot } from "./own.js";
@@ -317,6 +317,8 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
       asks,
       unassigned,
       warningSince: warnings,
+      // The same agent read as the brief (brief.ts loadCompanyData); no hidden issues yet (PAR-10548 T2).
+      ownerFilter: { activeAgentIds: activeAgentIdsOf(await listAgents(env, companyId)), hiddenIssueIds: [] },
     };
   });
 

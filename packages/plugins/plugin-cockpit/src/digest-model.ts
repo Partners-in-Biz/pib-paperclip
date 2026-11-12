@@ -158,6 +158,8 @@ export interface DigestDay {
 }
 
 export interface DigestStats {
+  /** Items that wait on another seat or the client, not on the owner (same rule as the page and the tool). */
+  others?: number;
   /** Asks raised to the owner today, or null when they could not be counted. */
   newAsks: number | null;
   /** Asks that went to a deciding seat today instead of the owner. */
@@ -210,6 +212,7 @@ export function renderDigest(input: { items: DigestItem[]; stats: DigestStats; n
   const head = [
     `${items.length} ${items.length === 1 ? "item waits" : "items wait"} on you, in ${groups.length} ${groups.length === 1 ? "place" : "places"}.`,
     stats.newAsks === null ? "New asks today: not counted." : `New asks today: ${stats.newAsks}${yesterday ? ` (${yesterday.date.slice(5)}: ${yesterday.newAsks})` : " (first reading)"}.`,
+    stats.others ? `${stats.others} wait on others.` : null,
     oldest && oldestDays !== null ? `Oldest open: ${link(oldest)}, ${oldestDays} ${oldestDays === 1 ? "day" : "days"}.` : null,
   ].filter(Boolean);
   const lines: string[] = [head.join(" "), ""];
