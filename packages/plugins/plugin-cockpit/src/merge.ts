@@ -14,13 +14,14 @@ import {
   type TeamMemberReport,
   type Tone,
   type WaitingItem,
+  type WaitsOn,
 } from "@partnersinbiz/pib-plugin-kit/cockpit";
 import { MODULES, moduleOfPlugin, setupLeftLabel, setupSummary, type ModuleKey, type SetupStatus } from "@partnersinbiz/pib-plugin-kit/setup";
 import { TEAM_ROLES } from "@partnersinbiz/pib-plugin-kit/team";
 import { BUDGET_ALERT_RATIO, PLUGIN_KEY, STALE_AFTER_MS } from "./constants.js";
 import { parseFlowReports } from "./flows.js";
 
-export type { ActivityItem, CockpitKpi, CockpitSnapshot, HealthCheck, HealthStatus, QualityMetric, TeamMemberReport, Tone, WaitingItem };
+export type { WaitsOn, ActivityItem, CockpitKpi, CockpitSnapshot, HealthCheck, HealthStatus, QualityMetric, TeamMemberReport, Tone, WaitingItem };
 
 // ---------------------------------------------------------------------------
 // Parsing
@@ -84,6 +85,7 @@ function parseWaiting(row: Record<string, unknown>): WaitingItem | null {
   const key = str(row.key);
   const title = str(row.title);
   if (!key || !title) return null;
+  const waitsOn = parseWaitsOn(row.waitsOn);
   return {
     key,
     title,
@@ -92,7 +94,17 @@ function parseWaiting(row: Record<string, unknown>): WaitingItem | null {
     issueId: str(row.issueId),
     kind: WAITING_KINDS.includes(row.kind as WaitingItem["kind"]) ? (row.kind as WaitingItem["kind"]) : "other",
     since: isoOrNull(row.since),
+    ...(waitsOn ? { waitsOn } : {}),
   };
+}
+
+/** A valid `waitsOn` (an agent with an id, or the client); anything else is dropped, so the item stays with the owner. */
+function parseWaitsOn(value: unknown): WaitsOn | null {
+  const row = value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+  if (!row) return null;
+  if (row.kind === "client") return { kind: "client" };
+  const agentId = str(row.agentId);
+  return row.kind === "agent" && agentId ? { kind: "agent", agentId } : null;
 }
 
 function parseActivity(row: Record<string, unknown>): ActivityItem | null {
@@ -256,6 +268,8 @@ export interface WaitingEntry extends WaitingItem {
   rank?: WaitingRank;
   /** A few of the items a count stands for (unassigned issues), with links. */
   examples?: WaitingExample[];
+  /** Set on an owner item that waits on another seat for over `OTHERS_MAX_HIDE_DAYS` (or has no readable `since`): it came back to the owner. */
+  stale?: boolean;
 }
 
 function sinceMs(item: WaitingItem): number {
@@ -930,3 +944,59 @@ export function todayLine(input: { waiting: number; health: HealthStatus; health
 }
 
 export const HEALTH_LABEL: Record<HealthStatus, string> = { ok: "All good", warn: "Needs attention", bad: "Problems" };
+
+// ---------------------------------------------------------------------------
+// One owner-list rule (PAR-10548): every surface calls splitOwnerWaiting
+// ---------------------------------------------------------------------------
+
+/** How long an item may wait on someone else before it comes back to the owner. Same bound SEO uses for stale Needs you items. */
+export const OTHERS_MAX_HIDE_DAYS = 7;
+
+/** What the rule needs to know: the agents that can act, and the issues that never belong on the owner's list. */
+export interface OwnerFilter {
+  activeAgentIds: string[];
+  hiddenIssueIds: string[];
+}
+
+/** Ids of the agents that can act (not terminated, archived or deleted). */
+export function activeAgentIdsOf(agents: ReadonlyArray<{ id: string; status: string }>): string[] {
+  return agents.filter((a) => !INACTIVE_AGENT.has(a.status)).map((a) => a.id);
+}
+
+/**
+ * Split the merged waiting list into what the owner must decide and what waits
+ * on someone else. Rules, in order: (a) an issue in `hiddenIssueIds` is dropped;
+ * (b) no valid `waitsOn` -> owner; (c) an agent that is not active -> owner;
+ * (d) `since` missing, unreadable or older than 7 days -> owner, marked stale;
+ * (e) otherwise -> others. No filter (an old worker) gives (b) to (e) with no
+ * active agent, so agent items stay with the owner.
+ */
+export function splitOwnerWaiting(entries: WaitingEntry[], filter: Partial<OwnerFilter> | null | undefined, now: Date): { owner: WaitingEntry[]; others: WaitingEntry[] } {
+  const hidden = new Set(filter?.hiddenIssueIds ?? []);
+  const active = new Set(filter?.activeAgentIds ?? []);
+  const owner: WaitingEntry[] = [];
+  const others: WaitingEntry[] = [];
+  for (const entry of entries) {
+    if (entry.issueId && hidden.has(entry.issueId)) continue;
+    const waitsOn = parseWaitsOn(entry.waitsOn);
+    if (!waitsOn || (waitsOn.kind === "agent" && !active.has(waitsOn.agentId))) {
+      owner.push(entry);
+      continue;
+    }
+    const since = entry.since ? Date.parse(entry.since) : Number.NaN;
+    if (!Number.isFinite(since) || now.getTime() - since > OTHERS_MAX_HIDE_DAYS * 86_400_000) {
+      owner.push({ ...entry, stale: true, why: `Waiting on another seat for over ${OTHERS_MAX_HIDE_DAYS} days. ${entry.why}`.trim() });
+      continue;
+    }
+    others.push(entry);
+  }
+  return { owner, others };
+}
+
+/** The "others" part of a brief or tool answer. */
+export function othersData(others: WaitingEntry[], link: (href: string | null | undefined) => string | null = (h) => h ?? null) {
+  return {
+    count: others.length,
+    items: others.map((w) => ({ title: w.title, href: link(w.href), waitsOn: w.waitsOn ?? null, from: w.sourceTitle, since: w.since ?? null })),
+  };
+}

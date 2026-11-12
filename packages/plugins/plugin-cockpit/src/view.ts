@@ -14,6 +14,8 @@ import {
   healthGroups,
   hostWaiting,
   mergeWaiting,
+  splitOwnerWaiting,
+  type OwnerFilter,
   parseSnapshot,
   pluginEnabled,
   setupMissingCount,
@@ -68,6 +70,8 @@ export interface LoadResult {
   unassigned?: { count: number; items: Array<{ id: string; identifier: string | null; title: string; status?: string; createdAt: string | null }> };
   /** When the Cockpit first saw each warning (`<plugin>:<check key>`), for checks that do not say. */
   warningSince?: Record<string, string>;
+  /** The agents that can act and the issues that never belong on the owner's list (older workers do not send it: agent items then stay with the owner). */
+  ownerFilter?: OwnerFilter;
 }
 
 export type SnapshotSource = "live" | "stored";
@@ -104,7 +108,10 @@ export interface CockpitView {
   snapshots: Array<CockpitSnapshot & { source: SnapshotSource }>;
   today: string;
   health: HealthStatus;
+  /** What waits on the owner. */
   waiting: WaitingEntry[];
+  /** What waits on another seat or the client (back on `waiting` after 7 days). */
+  waitingOthers: WaitingEntry[];
   kpis: Record<"money" | "pipeline" | "marketing" | "delivery" | "people" | "other", KpiEntry[]>;
   headline: KpiEntry[];
   activity: ActivityGroup[];
@@ -214,7 +221,7 @@ export function buildView(input: ViewInput): CockpitView {
   const host = { source: "host", sourceTitle: "Paperclip", items: hostWaiting({ approvals: input.approvals, myIssues: input.myIssues, setupMissing, setupIssueId: input.setupIssueId }) };
   // An issue with a row of its own is not counted again among the unassigned ones.
   const unassigned = { source: "unassigned", sourceTitle: "Paperclip", items: unassignedWaiting(input.load.unassigned, shownIssueIds([...own, host])) };
-  const waiting = mergeWaiting([...own, unassigned, host]);
+  const { owner: waiting, others: waitingOthers } = splitOwnerWaiting(mergeWaiting([...own, unassigned, host]), input.load.ownerFilter, input.now);
   const agents = agentRows((input.agents ?? []).filter((a) => !INACTIVE.has(a.status)), { runs: input.runs, snapshots, since: new Date(input.now.getTime() - 7 * 86_400_000) });
   const activity = activityGroups({ snapshots, host: input.hostActivity, runs: input.runs, agents: input.agents, now: input.now, windowMs: input.windowMs });
   const health = worstOf(groups.map((g) => g.status));
@@ -239,6 +246,7 @@ export function buildView(input: ViewInput): CockpitView {
     }),
     health,
     waiting,
+    waitingOthers,
     kpis: groupKpis(snapshots),
     headline: headlineKpis(snapshots),
     activity,

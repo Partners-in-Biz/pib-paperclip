@@ -6,6 +6,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ORIGIN } from "../src/constants.js";
 import { buildOwnerDigest, ownerDigestTick, postOwnerDigest, readOwnerCards } from "../src/digest.js";
+import { NAMESPACE } from "../src/namespace.js";
 import { saveTeam } from "../src/roles.js";
 import { COMPANY, embeddedAvailable } from "./helpers/pg.js";
 import { startWorlds, type Hybrid } from "./helpers/hybrid.js";
@@ -216,5 +217,27 @@ d("the owner's daily digest (Postgres)", () => {
     w.clock.set(AT_1605);
     const digest = (await buildOwnerDigest(w.env, A))!;
     expect(digest.body).toContain("Which layout for the landing page? Applies by itself Thu 10:00: Layout A.");
+  });
+
+  it("the one owner-list rule: the digest keeps the owner items and counts the others (PAR-10698)", async () => {
+    const w = await make();
+    const day = 86_400_000;
+    const at = (days: number) => new Date(new Date(AT_1605).getTime() - days * day).toISOString();
+    const waiting = [
+      { key: "a", title: "A", why: "w", kind: "review", since: at(1), waitsOn: { kind: "agent", agentId: OP } },
+      { key: "b", title: "B", why: "w", kind: "review", since: at(2), waitsOn: { kind: "client" } },
+      { key: "c", title: "C", why: "w", kind: "review", since: at(9), waitsOn: { kind: "client" } },
+      { key: "d", title: "D", why: "w", kind: "review", since: at(1), waitsOn: { kind: "agent", agentId: "aaaaaaaa-0000-4000-8000-0000000000ff" } },
+      { key: "e", title: "E", why: "w", kind: "review", since: at(1) },
+    ];
+    await w.client.query(
+      `INSERT INTO ${NAMESPACE}.snapshots (company_id, plugin_key, kind, payload, checked_at) VALUES ($1, 'partnersinbiz.social', 'cockpit', $2::jsonb, $3)`,
+      [A, JSON.stringify({ plugin: "partnersinbiz.social", title: "Social", checkedAt: AT_1605, kpis: [], health: [], waiting, activity: [], quality: [] }), AT_1605],
+    );
+    cards(w, {});
+    const digest = (await buildOwnerDigest(w.env, A))!;
+    expect(digest.items.map((i) => i.key).sort()).toEqual(["c", "d", "e"]);
+    expect(digest.stats.others).toBe(2);
+    expect(digest.body).toContain("2 wait on others.");
   });
 });
