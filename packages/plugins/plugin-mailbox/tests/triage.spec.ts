@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { MAIL_CATEGORIES, MAIL_EVENTS } from "@partnersinbiz/pib-plugin-kit";
 import { syncAccount } from "../src/gmail/sync.js";
-import { clientOptions, combineTriage, plausibleClients, ruleCategory, triageQuestions, type TriageFacts } from "../src/gmail/triage.js";
+import { clientOptions, combineTriage, opensReplyTask, plausibleClients, ruleCategory, triageQuestions, type TriageFacts } from "../src/gmail/triage.js";
 import type { CrmClientRow, SendRow } from "../src/gmail/types.js";
 import { jevAnswers } from "./helpers/fake-gmail.js";
 import { CO } from "./helpers/memory.js";
@@ -237,5 +237,32 @@ describe("triage rules and options", () => {
       labelPrefix: "PiB",
     });
     expect(triage).toMatchObject({ category: "lead", source: "rules", clientRef: null, needsReply: 0.4 });
+  });
+});
+
+describe("which mail opens a reply task", () => {
+  const base = { needsReply: 0.8, phishing: 0, bulk: false, clientSource: null as string | null };
+  it("keeps lead, client and support mail at 0.7", () => {
+    expect(opensReplyTask({ ...base, category: "client" })).toBe(true);
+    expect(opensReplyTask({ ...base, category: "client", needsReply: 0.6 })).toBe(false);
+    expect(opensReplyTask({ ...base, category: "newsletter" })).toBe(false);
+  });
+  it("opens a task for a known client's answer to our mail (a go-ahead or a bug)", () => {
+    expect(opensReplyTask({ ...base, category: "reply", needsReply: 0.82, clientSource: "mapping" })).toBe(true);
+    expect(opensReplyTask({ ...base, category: "reply", clientSource: "email" })).toBe(false);
+    expect(opensReplyTask({ ...base, category: "reply" })).toBe(false);
+  });
+  it("acts from 0.5 for a mapped or corrected client", () => {
+    expect(opensReplyTask({ ...base, category: "client", needsReply: 0.55, clientSource: "correction" })).toBe(true);
+    expect(opensReplyTask({ ...base, category: "client", needsReply: 0.32, clientSource: "mapping" })).toBe(false);
+  });
+  it("never for bulk or likely phishing", () => {
+    expect(opensReplyTask({ ...base, category: "client", clientSource: "mapping", bulk: true })).toBe(false);
+    expect(opensReplyTask({ ...base, category: "client", clientSource: "mapping", phishing: 0.95 })).toBe(false);
+  });
+  it("asks Jev about action too, so a thank-you with a bug report counts", () => {
+    const q = triageQuestions(null).needs_reply as { instructions: string; criteria: Record<string, string> };
+    expect(q.instructions).toMatch(/any action/);
+    expect(q.criteria.true).toMatch(/reports a problem/);
   });
 });

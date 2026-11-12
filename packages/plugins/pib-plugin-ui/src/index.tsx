@@ -1183,7 +1183,7 @@ export interface HandoffNewIssue {
  * person created the task, has the module record the link. Pass `useHostNewIssue()` as `newIssue`. The module's worker
  * builds the text (buildHandoffDescription in the plugin kit) and re-checks the client on `record`.
  */
-export function GiveToAgentButton({ newIssue, prepare, record, onDone, onError, label = "Give to agent", variant = "secondary", disabled }: {
+export function GiveToAgentButton({ newIssue, prepare, record, onDone, onError, label = "Give to agent", variant = "secondary", disabled, style }: {
   newIssue: HandoffNewIssue;
   prepare: () => Promise<HandoffIssueDefaults>;
   record: (issue: HandoffCreatedIssue) => Promise<{ message?: string | null; warning?: string | null } | void>;
@@ -1192,6 +1192,7 @@ export function GiveToAgentButton({ newIssue, prepare, record, onDone, onError, 
   label?: string;
   variant?: "primary" | "secondary";
   disabled?: boolean;
+  style?: CSSProperties;
 }) {
   const [busy, setBusy] = useState(false);
   async function give() {
@@ -1209,7 +1210,7 @@ export function GiveToAgentButton({ newIssue, prepare, record, onDone, onError, 
       setBusy(false);
     }
   }
-  return <Button type="button" variant={variant} disabled={disabled || busy} onClick={() => void give()}>{busy ? "Opening…" : label}</Button>;
+  return <Button type="button" variant={variant} style={style} disabled={disabled || busy} onClick={() => void give()}>{busy ? "Opening…" : label}</Button>;
 }
 
 export function Button({ variant = "primary", ...props }: ButtonHTMLAttributes<HTMLButtonElement> & {
