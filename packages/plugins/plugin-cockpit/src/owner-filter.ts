@@ -18,7 +18,7 @@ const HIDDEN_LIMIT = 1000;
 
 export interface OwnerFilterResult {
   hiddenIssueIds: string[];
-  /** Parts whose read failed (`canary`, `standingQueue`); that part is empty. */
+  /** Parts whose read failed (`canary`, `standingQueue`, or `limit` when the row cap cut the list); that part is empty. */
   degraded: string[];
 }
 
@@ -48,5 +48,9 @@ export async function ownerFilter(env: Env, companyId: string): Promise<OwnerFil
          OR project_id = ANY(ARRAY(SELECT jsonb_array_elements_text($4::jsonb))::uuid[])) LIMIT ${HIDDEN_LIMIT}`,
     [companyId, JSON.stringify(CONTAINER_ORIGIN_KINDS), JSON.stringify(identifiers), JSON.stringify(projects)],
   );
+  if (rows.length >= HIDDEN_LIMIT) {
+    degraded.push("limit");
+    env.ctx.logger.info("Cockpit owner filter hit its row cap", { companyId, limit: HIDDEN_LIMIT });
+  }
   return { hiddenIssueIds: rows.map((r) => String(r.id)), degraded };
 }

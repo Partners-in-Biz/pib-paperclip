@@ -138,6 +138,7 @@ export function clientNames(known: KnownClient[]): Map<string, string> {
 }
 
 /** The CRM's canary company ids start with this. Keep in step with plugin-crm src/canary-flag.ts:18 (`CANARY_PREFIX`). Real CRM ids are UUIDs. */
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export const CANARY_ID_PREFIX = "canary-";
 const COMPANY_LIMIT = 5000;
 const LINK_BATCH = 25;
@@ -160,5 +161,6 @@ export async function canaryProjectIds(ctx: PluginContext, companyId: string): P
   };
   const [canary, shared] = await Promise.all([linked(rows.map((r) => String(r.id))), linked(real.map((r) => String(r.id)))]);
   const keep = new Set(shared);
-  return [...new Set(canary)].filter((id) => !keep.has(id));
+  // The link store holds any non-empty string; a malformed id would make the uuid cast throw and lose the whole filter.
+  return [...new Set(canary)].filter((id) => !keep.has(id) && UUID.test(id));
 }

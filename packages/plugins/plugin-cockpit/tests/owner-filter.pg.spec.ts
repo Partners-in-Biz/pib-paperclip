@@ -1,7 +1,7 @@
 /** The hidden-issue set (PAR-10548 T2): every SQL clause against a real Postgres. */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { rememberClientProjects } from "@partnersinbiz/pib-plugin-kit";
-import { listUnassigned, waitingSplit } from "../src/brief.js";
+import { listUnassigned, loadCompanyData, waitingSplit } from "../src/brief.js";
 import { NAMESPACE } from "../src/namespace.js";
 import { ownerFilter } from "../src/owner-filter.js";
 import { buildView, type LoadResult } from "../src/view.js";
@@ -134,5 +134,29 @@ d("hidden issue set (Postgres)", () => {
     const view = buildView({ load, installed: null, modules: null, live: {}, agents: [], now: new Date(NOW), windowMs: 86_400_000, setupMissing: 0, myIssues: ownerIssues } as never);
     expect(view.waiting.some((e) => e.issueId === sprint)).toBe(false);
     expect(view.waiting.some((e) => e.issueId === "i-keep")).toBe(true);
+  });
+
+  it("9. a malformed canary project id does not break the query; the good one still hides", async () => {
+    const w = await make({ standingQueueIssues: ["PAR-5"] });
+    const good = uuid();
+    await crm(w, "canary-run1", [good, "not-a-uuid"]);
+    const i = await issue(w, { identifier: "PAR-1", project: good });
+    const queue = await issue(w, { identifier: "PAR-5" });
+    const r = await hidden(w);
+    expect(r.degraded).toEqual([]);
+    expect([...r.hiddenIssueIds].sort()).toEqual([i, queue].sort());
+  });
+
+  it("10. both callers (loadCompanyData, cockpit.load) carry the hidden set and leave it out of unassigned", async () => {
+    const w = await make({ standingQueueIssues: ["PAR-9356"] });
+    const sprint = await issue(w, { identifier: "PAR-1", origin: SPRINT, agent: "aaaaaaaa-0000-4000-8000-0000000000a1" });
+    const queue = await issue(w, { identifier: "PAR-9356" });
+    const other = await issue(w, { identifier: "PAR-9357" });
+    const data = await loadCompanyData(w.env, A);
+    expect([...(data.hiddenIssueIds ?? [])].sort()).toEqual([sprint, queue].sort());
+    expect([data.unassigned.count, data.unassigned.items.map((i) => i.id)]).toEqual([1, [other]]);
+    const load = (await w.actions.get("cockpit.load")!({ team: false }, { companyId: A, actor: { type: "user", userId: "u1" } })) as { unassigned: { count: number; items: { id: string }[] }; ownerFilter: { hiddenIssueIds: string[] } };
+    expect([...load.ownerFilter.hiddenIssueIds].sort()).toEqual([sprint, queue].sort());
+    expect([load.unassigned.count, load.unassigned.items.map((i) => i.id)]).toEqual([1, [other]]);
   });
 });
