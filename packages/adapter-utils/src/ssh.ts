@@ -1622,6 +1622,98 @@ export async function buildSshSpawnTarget(input: {
   };
 }
 
+// Remote run check (PAR-9917, plan 13.9 finding 2). The remote part only
+// prints facts; `decideSshRunCheck` decides on the host.
+export type SshRunCheckBasis =
+  | "never_spawned" | "no_record" | "legacy_lease" | "group_empty"
+  | "leader_gone_members_live" | "leader_live" | "group_reused" | "check_failed" | "refused";
+export interface SshRunCheck {
+  result: "alive" | "gone" | "unknown";
+  basis: SshRunCheckBasis;
+  pgid?: number;
+  leaderStart?: string;
+  checkedAt: string;
+}
+type SshRunCheckDecision = Omit<SshRunCheck, "checkedAt">;
+const SSH_RUN_CHECK_HEADER = "paperclip-run-check 1\n";
+const SSH_RUN_CHECK_TIMEOUT_MS = 10_000;
+
+/** Lexical: absolute, no `.`/`..`/empty parts, strictly below the workspace. */
+export function sshRunDirIsConfined(remoteWorkspacePath: string, remoteRunDir: string): boolean {
+  if (!remoteRunDir.startsWith("/") || /(^|\/)\.{0,2}(\/|$)/.test(remoteRunDir.slice(1))) return false;
+  const ws = trimTrailingSlashes(remoteWorkspacePath);
+  return remoteRunDir.length > ws.length + 1 && remoteRunDir.startsWith(ws === "/" ? "/" : `${ws}/`);
+}
+
+export function buildSshRunCheckScript(remoteWorkspacePath: string, remoteRunDir: string): string {
+  return [
+    "export LC_ALL=C",
+    `ws=${shellQuote(trimTrailingSlashes(remoteWorkspacePath))}`,
+    `rd=${shellQuote(remoteRunDir)}`,
+    `printf '${SSH_RUN_CHECK_HEADER.trim()}\\n'`,
+    'wsp=$(cd -P "$ws" 2>/dev/null && pwd -P) || { printf "refused\\nend\\n"; exit 0; }',
+    'if r=$(cd -P "$rd" 2>/dev/null && pwd -P); then case "$r" in "$wsp"/?*) ;; *) printf "refused\\nend\\n"; exit 0;; esac; fi',
+    'if [ ! -f "$rd/record" ]; then printf "norecord\\nend\\n"; exit 0; fi',
+    `printf 'record\\n'; cat "$rd/record" || exit 1; printf '\\037\\n'`,
+    `pg=$(sed -n 's/^pgid=\\([0-9][0-9]*\\)$/\\1/p' "$rd/record" | head -n 1)`,
+    'if [ -n "$pg" ]; then',
+    "  all=$(ps -A -o pgid=) || exit 1",
+    `  printf 'pgid=%s\\n' "$pg"`,
+    `  printf '%s\\n' "$all" | awk -v g="$pg" '$1==g{n++} END{printf "members=%d total=%d\\n", n, NR}'`,
+    `  printf 'leader=%s\\n' "$(ps -o lstart= -p "$pg" 2>/dev/null | sed 's/^ *//;s/ *$//')"`,
+    "fi",
+    "printf 'end\\n'",
+  ].join("\n");
+}
+
+/** Pure decision over the lease facts and the remote output. Never throws. */
+export function decideSshRunCheck(input: { spawnMarked: boolean; stdout: string | null }): SshRunCheckDecision {
+  const failed = { result: "unknown", basis: "check_failed" } as const;
+  const noRecord: SshRunCheckDecision = input.spawnMarked
+    ? { result: "unknown", basis: "no_record" } : { result: "gone", basis: "never_spawned" };
+  const at = input.stdout?.indexOf(SSH_RUN_CHECK_HEADER) ?? -1;
+  if (input.stdout == null || at < 0 || (at > 0 && input.stdout[at - 1] !== "\n")) return failed;
+  const out = input.stdout.slice(at + SSH_RUN_CHECK_HEADER.length);
+  if (!out.endsWith("end\n")) return failed;
+  if (out === "refused\nend\n") return { result: "unknown", basis: "refused" };
+  if (out === "norecord\nend\n") return noRecord;
+  const sep = out.indexOf("\x1f\n");
+  if (!out.startsWith("record\n") || sep < 0) return failed;
+  const record = parseSshRunRecord(out.slice("record\n".length, sep));
+  if (record.status !== "readable") return noRecord;
+  const facts = /^pgid=(\d+)\nmembers=(\d+) total=(\d+)\nleader=([^\n]*)\nend\n$/.exec(out.slice(sep + 2));
+  if (!facts || Number(facts[1]) !== record.pgid || Number(facts[3]) === 0) return failed;
+  const leaderStart = facts[4]!;
+  const base = { pgid: record.pgid, ...(leaderStart ? { leaderStart } : {}) };
+  if (Number(facts[2]) === 0) return { result: "gone", basis: "group_empty", ...base };
+  if (!leaderStart) return { result: "alive", basis: "leader_gone_members_live", ...base };
+  return leaderStart === record.lstart
+    ? { result: "alive", basis: "leader_live", ...base }
+    : { result: "gone", basis: "group_reused", ...base };
+}
+
+/** One ssh command, 10 s limit, never throws. `lease` is the ssh lease's metadata. */
+export async function checkRemoteRun(
+  config: SshConnectionConfig,
+  lease: { remoteRunDir?: unknown; remoteSpawnStartedAt?: unknown } | null,
+  options: { run?: typeof runSshCommand; now?: () => Date } = {},
+): Promise<SshRunCheck> {
+  const checkedAt = (options.now ?? (() => new Date()))().toISOString();
+  const runDir = lease?.remoteRunDir;
+  if (typeof runDir !== "string" || runDir.length === 0) return { result: "unknown", basis: "legacy_lease", checkedAt };
+  if (!sshRunDirIsConfined(config.remoteWorkspacePath, runDir)) return { result: "unknown", basis: "refused", checkedAt };
+  let stdout: string | null = null;
+  try {
+    const result = await (options.run ?? runSshCommand)(
+      config, buildSshRunCheckScript(config.remoteWorkspacePath, runDir), { timeoutMs: SSH_RUN_CHECK_TIMEOUT_MS });
+    stdout = result.stdout;
+  } catch {
+    stdout = null;
+  }
+  const spawnMarked = typeof lease?.remoteSpawnStartedAt === "string" && lease.remoteSpawnStartedAt.length > 0;
+  return { ...decideSshRunCheck({ spawnMarked, stdout }), checkedAt };
+}
+
 export async function syncDirectoryToSsh(input: {
   spec: SshRemoteExecutionSpec;
   localDir: string;

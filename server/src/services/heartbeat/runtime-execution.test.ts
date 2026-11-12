@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { agents, budgetPolicies, companies, completionContracts, nativeRunResults, costEvents, agentWakeupRequests, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issues, executionWorkspaces, nativeRunFinalizations, runUsageReceipts, workspaceOperations, type Db } from "@paperclipai/db";
+import { agents, budgetPolicies, companies, completionContracts, nativeRunResults, costEvents, agentWakeupRequests, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, environmentLeases, heartbeatRuns, issues, executionWorkspaces, nativeRunFinalizations, runUsageReceipts, workspaceOperations, type Db } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { trace } from "@opentelemetry/api";
@@ -455,6 +455,28 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     await executeHeartbeatRuntime(db, input).catch(() => undefined);
     expect(input.services.persistRunProcessMetadata).toHaveBeenCalledWith(expect.any(String),
       expect.objectContaining({ pid: 4242, targetKind: expected }));
+  });
+
+  // PAR-9917: the ssh spawn marker is the "recorded spawn" for never_spawned, so the
+  // shipped call sites must write it before either dispatch, and only for ssh.
+  it.each([
+    [false, "ssh", true], [true, "ssh", true], [false, "sandbox", false], [true, "sandbox", false],
+  ] as const)("writes the ssh spawn marker before dispatch (native: %s, transport: %s)", async (native, transport, marked) => {
+    const { input, adapter, run } = await fixture(native);
+    const [lease] = await db.insert(environmentLeases).values({ companyId: run.companyId, heartbeatRunId: run.id,
+      provider: transport, metadata: { remoteCwd: "/workspace" } }).returning();
+    input.workspace.executionTarget = { kind: "remote", transport, leaseId: lease!.id, remoteCwd: "/workspace" } as typeof input.workspace.executionTarget;
+    let seenAtDispatch: Record<string, unknown> | null | undefined;
+    const atDispatch = async () => {
+      seenAtDispatch = (await db.select().from(environmentLeases).where(eq(environmentLeases.id, lease!.id)))[0]!.metadata;
+      return { exitCode: 0, signal: null, timedOut: false };
+    };
+    if (native) vi.mocked(executePaperclipNativeSession).mockImplementationOnce(atDispatch);
+    else adapter.execute.mockImplementationOnce(atDispatch);
+    await executeHeartbeatRuntime(db, input).catch(() => undefined);
+    expect(seenAtDispatch).toBeDefined();
+    if (marked) expect(seenAtDispatch).toMatchObject({ remoteCwd: "/workspace", remoteSpawnStartedAt: expect.any(String) });
+    else expect(seenAtDispatch).not.toHaveProperty("remoteSpawnStartedAt");
   });
 
   it("preserves Stop metadata and marks no-work accounting without manufacturing a receipt", async () => {

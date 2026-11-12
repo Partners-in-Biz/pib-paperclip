@@ -54,7 +54,8 @@ import type {
   PluginEnvironmentSyncResult,
   PluginSyncOperation,
 } from "@paperclipai/plugin-sdk";
-import { ensureSshWorkspaceReady } from "@paperclipai/adapter-utils/ssh";
+import { checkRemoteRun, ensureSshWorkspaceReady, type SshRunCheck } from "@paperclipai/adapter-utils/ssh";
+import { sshRemoteRunDir } from "./ssh-run-lease.js";
 import {
   getActiveStepContext,
   runWithRuntimeParent,
@@ -1190,6 +1191,9 @@ function createSshEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
       }
 
       const { remoteCwd } = await ensureSshWorkspaceReady(parsed.config);
+      const remoteRunDir = input.heartbeatRunId
+        ? sshRemoteRunDir(parsed.config.remoteWorkspacePath, input.heartbeatRunId)
+        : null;
       return await environmentsSvc.acquireLease({
         companyId: input.companyId,
         environmentId: input.environment.id,
@@ -1208,6 +1212,7 @@ function createSshEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
           username: parsed.config.username,
           remoteWorkspacePath: parsed.config.remoteWorkspacePath,
           remoteCwd,
+          ...(remoteRunDir ? { remoteRunDir } : {}),
         },
       });
     },
@@ -4113,6 +4118,24 @@ export function environmentRuntimeService(
     // record, so a deleted or foreign-bound environment never strands it. The
     // caller owns the lease release; this dispatcher only runs the provider
     // teardown and throws when the driver teardown throws.
+    /** Read-only remote check of an ssh lease's run (PAR-9917). Never throws. */
+    async checkSshRunLease(leaseId: string): Promise<SshRunCheck> {
+      try {
+        const lease = await environmentsSvc.getLeaseById(leaseId);
+        const environment = lease?.provider === "ssh" && lease.environmentId
+          ? await environmentsSvc.getById(lease.environmentId) : null;
+        const parsed = environment?.driver === "ssh"
+          ? await resolveEnvironmentDriverConfigForRuntime(db, lease!.companyId, environment) : null;
+        if (parsed?.driver !== "ssh") return { result: "unknown", basis: "check_failed", checkedAt: new Date().toISOString() };
+        // The run dir was derived from the workspace path recorded at acquire.
+        const recordedWorkspace = lease!.metadata?.remoteWorkspacePath;
+        return await checkRemoteRun({ ...parsed.config, remoteWorkspacePath: typeof recordedWorkspace === "string"
+          ? recordedWorkspace : parsed.config.remoteWorkspacePath }, lease!.metadata ?? null);
+      } catch {
+        return { result: "unknown", basis: "check_failed", checkedAt: new Date().toISOString() };
+      }
+    },
+
     async inspectLeaseResource(leaseId: string): Promise<PluginEnvironmentLeaseObservation | undefined> {
       const lease = await environmentsSvc.getLeaseById(leaseId);
       if (!lease || lease.status !== "failed" || lease.leasePolicy !== "ephemeral" || !lease.providerLeaseId) return undefined;
