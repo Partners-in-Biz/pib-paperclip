@@ -1191,6 +1191,9 @@ function createSshEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
       }
 
       const { remoteCwd } = await ensureSshWorkspaceReady(parsed.config);
+      const remoteRunDir = input.heartbeatRunId
+        ? sshRemoteRunDir(parsed.config.remoteWorkspacePath, input.heartbeatRunId)
+        : null;
       return await environmentsSvc.acquireLease({
         companyId: input.companyId,
         environmentId: input.environment.id,
@@ -1209,8 +1212,7 @@ function createSshEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
           username: parsed.config.username,
           remoteWorkspacePath: parsed.config.remoteWorkspacePath,
           remoteCwd,
-          ...((runDir) => (runDir ? { remoteRunDir: runDir } : {}))(input.heartbeatRunId
-            ? sshRemoteRunDir(parsed.config.remoteWorkspacePath, input.heartbeatRunId) : null),
+          ...(remoteRunDir ? { remoteRunDir } : {}),
         },
       });
     },
