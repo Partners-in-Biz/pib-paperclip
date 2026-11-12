@@ -262,6 +262,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "issues.wakeup",
     "issue.comments.create",
     "issue.comments.read",
+    // 0.21.2: waiting rows whose issue is hidden (404) or that repeat a sign-off are dropped.
     // 0.21.1: the owner's daily digest lists the host's approval cards that wait on a person (ctx.issues.listInteractions). Read only; a new capability, so the release is stop-first.
     "issue.interactions.read",
     "issue.relations.read",
