@@ -460,11 +460,15 @@ export function applyLinkEdits(html: string, area: { innerStart: number; innerEn
     const inner = out.slice(area.innerStart, end);
     const hits: Array<{ at: number; blocked: string | null }> = [];
     const stack: string[] = [];
-    const tokens = /<!--[\s\S]*?-->|<(script|style)\b[\s\S]*?<\/\1\s*>|<(\/?)([a-z][a-z0-9]*)\b[^>]*?(\/?)>/gi;
+    const tokens = /<!--[\s\S]*?-->|<(script|style)\b[\s\S]*?<\/\1\s*>|<(\/?)([a-z][a-z0-9]*)\b((?:"[^"]*"|'[^']*'|[^>"'])*?)(\/?)>/gi;
     let last = 0;
     const scan = (from: number, to: number) => {
       const node = inner.slice(from, to);
-      for (let i = node.indexOf(edit.text); i !== -1; i = node.indexOf(edit.text, i + edit.text.length)) {
+      const entities = [...node.matchAll(/&#?[a-z0-9]+;/gi)].map((e) => [e.index!, e.index! + e[0].length] as const);
+      for (let i = node.indexOf(edit.text); i !== -1; i = node.indexOf(edit.text, i + 1)) {
+        const j = i + edit.text.length;
+        if (entities.some(([s0, e0]) => i < e0 && j > s0)) continue;
+        if ((i > 0 && /[\p{L}\p{N}]/u.test(node[i - 1]!)) || (j < node.length && /[\p{L}\p{N}]/u.test(node[j]!))) continue;
         hits.push({ at: from + i, blocked: stack.find((t) => LINK_BLOCKED_TAGS.has(t)) ?? null });
       }
     };
@@ -472,7 +476,7 @@ export function applyLinkEdits(html: string, area: { innerStart: number; innerEn
       scan(last, m.index);
       last = m.index + m[0].length;
       const tag = m[3]?.toLowerCase();
-      if (!tag || m[4]) continue;
+      if (!tag || m[5]) continue;
       if (m[2]) {
         const open = stack.lastIndexOf(tag);
         if (open !== -1) stack.length = open;

@@ -60,6 +60,23 @@ describe("engine: applyLinkEdits on the hunting fixture", () => {
   });
 });
 
+describe("engine: applyLinkEdits keeps markup intact", () => {
+  const run = (html: string, text: string) => {
+    const innerStart = html.indexOf("<") === 0 ? 0 : 0;
+    return applyLinkEdits(html, { innerStart, innerEnd: html.length }, [{ text, href: "/x/" }]).html;
+  };
+  it("refuses a phrase that sits inside an entity", () => {
+    expect(() => run("<p>Cats &nbsp; and</p>", "nbsp")).toThrow(/not found/);
+  });
+  it("does not end a tag at > inside a quoted attribute", () => {
+    expect(run('<div title="a>b gun here"><p>x gun here</p></div>', "gun here")).toBe('<div title="a>b gun here"><p>x <a href="/x/">gun here</a></p></div>');
+  });
+  it("does not match in the middle of a word", () => {
+    expect(() => run("<p>Buy a gun shotgun today</p>", "gun today")).toThrow(/not found/);
+    expect(run("<p>Buy a gun today</p>", "gun today")).toBe('<p>Buy a <a href="/x/">gun today</a></p>');
+  });
+});
+
 describe("service: parseLinkHref", () => {
   it.each([
     "javascript:alert(1)", " JavaScript:alert(1)", "java\tscript:alert(1)", "data:text/html,x", "https://evil.example/", "//evil.example", "/\\evil.example",
