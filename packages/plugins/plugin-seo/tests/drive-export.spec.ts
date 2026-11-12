@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
+import { DRIVE_ACK_TIMEOUT_MS } from "@partnersinbiz/pib-plugin-kit";
 import { NAMESPACE } from "../src/namespace.js";
 import { createEnv, type Actor } from "../src/service/common.js";
 import { createPreview } from "../src/service/preview.js";
@@ -71,6 +72,8 @@ describe("createPreview saves HTML preview to Drive", () => {
     expect(opts.subfolder).toBe("03 Deliverables");
     expect(opts.mimeType).toBe("text/html");
     expect(String(opts.name)).toMatch(/^\d{4}-\d{2}-\d{2} .+ v\d{2}\.html$/);
+    // PAR-10212: the kit's shared ack wait, under the tool gateway's ~10 s cut.
+    expect(opts.timeoutMs).toBe(DRIVE_ACK_TIMEOUT_MS);
   });
 
   it.each([{ status: "failed" as const, reason: "drive_not_bound" }, { status: "no_ack" as const }, { rejected: true }])

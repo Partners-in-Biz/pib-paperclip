@@ -2,7 +2,7 @@
  * Save campaign send records to company Drive.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { driveSave, type DriveSaveOptions, type DriveSaveResult } from "@partnersinbiz/pib-plugin-kit";
+import { DRIVE_ACK_TIMEOUT_MS, driveSave, type DriveSaveOptions, type DriveSaveResult } from "@partnersinbiz/pib-plugin-kit";
 import { getCampaign } from "./db.js";
 
 export interface SaveSendRecordOptions {
@@ -79,7 +79,7 @@ export async function saveSendRecord(ctx: PluginContext, opts: SaveSendRecordOpt
       mimeType: "application/json",
       bytes: recordBytes,
       subfolder: "03 Deliverables",
-      timeoutMs: 10000,
+      timeoutMs: DRIVE_ACK_TIMEOUT_MS,
       ...target,
     });
 

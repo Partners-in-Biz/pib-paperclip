@@ -96,6 +96,14 @@ export interface DriveTransferProgress {
   bytesTotal: number;
 }
 
+/**
+ * The wait for the CRM's `drive.file.saved` / `drive.file.failed` ack on an inline save that runs inside a tool or
+ * action call. The tool gateway cuts a call at about 10 s on our host (PAR-10208: 504s at 10.0 to 10.1 s), so the wait
+ * ends first and the caller answers `no_ack` (saved:false) instead of a bare 504. The CRM still finishes a slow save;
+ * only the answer is lost. Every producer that saves inline passes this as `timeoutMs`.
+ */
+export const DRIVE_ACK_TIMEOUT_MS = 8_000;
+/** A background save (nothing waits on it in front of the gateway) keeps the longer default. */
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_BYTES = DRIVE_INLINE_MAX_BYTES;
 type Pending = { resolve: (r: DriveSaveResult) => void; companyId: string; progress?: (p: DriveTransferProgress) => void };
