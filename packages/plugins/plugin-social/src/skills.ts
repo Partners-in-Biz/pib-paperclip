@@ -108,7 +108,7 @@ Use this with \`social-publish\` whenever you write or rewrite post copy.
 ## Before you write
 
 1. Know who you write for: your own company (own work, no client) or one client (\`client\` from the issue or \`list-clients\`). Read their brand voice (the Growth program's constraints and the playbook: \`get-playbook\`), offer, audience and what they posted recently (\`list-posts\` in that scope). If the brand voice is unknown, keep it plain and professional and ask once with \`${ASK_OWNER_TOOL}\` for the voice, then add it to the playbook (\`propose-playbook-change\`, section constraints).
-2. One idea per post. Lead with the hook in the first line; most platforms truncate after 1-3 lines.
+2. One idea per post. Lead with the hook in the first line; most platforms truncate after 1-3 lines. **Read \`references/social-craft.md\` before you draft**: brand kit first, one real thing per post, format before words, write the way the brand talks, never repeat the account's last ten posts.
 3. Write the main \`body\` for the richest platform in the set (usually LinkedIn or Facebook), then add \`overrides\` for platforms with tighter limits or different norms. Never let a platform fall back to text that breaks its limit: \`validate-post\` will flag it.
 4. Put links in the platform's link field (\`overrides.<platform>.link\`) where it has one. Instagram and TikTok captions do not make links clickable; say "link in bio" there.
 5. Use the first comment (\`firstComment\`) for extra hashtags or a link on Instagram, Facebook and LinkedIn when it keeps the caption clean.
@@ -149,7 +149,7 @@ For each scope with connected accounts (own work first, then each client):
 
 ## Media studio (pib-media-studio)
 
-Posts need visuals: carousels, branded images, short videos. Make them yourself from the client's brand (their profile, and the colours, fonts and logo from their site): slides as HTML rendered to PNG, videos stitched with ffmpeg, then attach the files to your issue and import them with \`import-media-from-attachment\`. The whole workflow, sizes, safe areas, commands and checks are in \`references/media-studio.md\`: read it before you make a visual. Never use an image you have no rights to, and never invent stats or people.
+Posts need visuals: carousels, branded images, short videos. Make them yourself from the brand kit (\`partnersinbiz.crm:get-client-profile\` for a client, \`partnersinbiz.cockpit:company-profile\` for own work; fill a missing kit first with \`partnersinbiz.crm:extract-brand-from-site\`): slides as HTML rendered to PNG, videos stitched with ffmpeg, then attach the files to your issue and import them with \`import-media-from-attachment\`. The whole workflow, sizes, safe areas, commands and checks are in \`references/media-studio.md\`: read it before you make a visual. Never use an image you have no rights to, and never invent stats or people.
 
 **The media rule.** The scope's playbook can carry a \`media-rule\` block (\`get-playbook\` shows it; with none the default applies: LinkedIn, Instagram and Facebook posts need an image or a video, a video counts only up to 30 seconds, every image needs alt text, and question, thread and quote posts need no media). The Reviewer checks it when it records a verdict, and with \`enforce: block\` a post that misses it cannot pass. Write the post's media in the same pass as its copy. If you cannot make it yourself, or the Reviewer sends the post back for missing or weak media, call \`request-creative\`: the full route is in the \`pib-creative-studio\` skill.
 
@@ -410,6 +410,60 @@ export const PIB_ONLY_SKILLS: SocialSkill[] = [
   },
 ];
 
+/** `references/social-craft.md` of the content skill: what makes a post worth stopping for. No company names or numbers: every company gets this text. */
+export const SOCIAL_CRAFT_REFERENCE = `# Social craft: how to make a post worth stopping for
+
+Read before you plan, draft or make any social post, for own work or for a client. A post that only passes the mechanical checks (length, one ask, alt text) is not done: it must also be worth stopping for. Text-only posts with a general tip are the usual failure.
+
+## 1. Start from the brand kit
+- Own work: \`partnersinbiz.cockpit:company-profile\` (voice, audience, banned words, and the brand kit: tagline, colours, fonts, logo address, visual style).
+- A client: \`partnersinbiz.crm:get-client-profile\` (voice, audience, banned words, brand kit).
+- Colours, fonts or logo missing and there is a website: fill the kit first. A client: \`partnersinbiz.crm:extract-brand-from-site\` with \`client\` (it saves the empty colour and font fields). Own work: the same tool with \`url\` and no client, then save what it found with \`partnersinbiz.cockpit:update-company-profile\`. Check the picks against the site once, import the logo, and write the voice and tone examples from the site's own words.
+- Every image and video uses that kit: the same colours, the same fonts, the logo. One look per brand, the same every time. A reader should know whose post it is before they read a word.
+
+## 2. One real thing per post
+A post carries exactly one of these:
+- a result, with the number and where it comes from;
+- a before and after;
+- a short story: one customer, one day, one build (names and faces only with consent on file);
+- an opinion we will defend, said plainly;
+- a how-to someone can use today, with the actual steps;
+- behind the scenes: a real screen, a real build, a real mistake.
+
+General advice ("automate the work that repeats", "your site should book a call") is none of these. If the post could be on any agency's feed, it is not ours yet. Ask for the missing fact (a client result, a screenshot, a number) before you write around it.
+
+## 3. The first line earns the second
+- Write five first lines and keep the one that would stop you mid-scroll.
+- Specific beats clever: a number, a name, a place, a price, a surprise, a tension between two things.
+- A question mark alone is not a hook. "Which decision does your team wait on most?" is a survey; "We cut <client>'s <task> from <before> to <after>. Here is the one change that did it." is a hook, once the blanks hold real, sourced facts. Never fill them with invented ones.
+
+## 4. Format first, then words
+Per brand, per week, at least:
+- one carousel (5 to 8 slides, slide 1 is the hook in 6 words or fewer, one idea per slide, the last slide is the ask);
+- one short video (15 to 40 seconds, the product or a face in the first 2 seconds, captions burned in, 9:16);
+- the rest as image posts with a real picture: a real screen, a real place, a real person, or a designed card in the brand kit.
+
+Text only is for X and for replies. Make motion with the tools that cost nothing first: HTML slides rendered to PNG, Remotion, ffmpeg, the Studio video editor. Use generation when the idea needs a real scene, and read your limit with \`studio-usage\` first.
+
+## 5. Write the way the brand talks
+The plain-writing rules (short, exact, no hedges) are for reports, comments and briefs. Marketing copy follows the brand voice instead: rhythm, contractions, warmth, and humour where the brand has it. Read the post aloud. If it sounds like a notice or a manual, rewrite it.
+
+## 6. Our process is never the subject
+Rules from reviews (UTM tags, one ask, card layout, "a notice is not a lead") shape the work. They are never what a post is about. Readers do not care how we check posts.
+
+## 7. Do not repeat yourself
+Before you draft, read the account's last ten posts (\`list-posts\`). Do not reuse an opening, a structure or an ask from them. "Reply and tell me" at most once in five posts.
+
+## 8. One ask, and a reason
+One thing to do, fitted to the platform, and why it is worth their time ("Book 20 minutes: you leave with a fixed quote").
+
+## 9. Learn from each post
+At 48 hours and at 7 days read \`post-analytics\`. Write one line in the playbook (\`propose-playbook-change\`): what the post was, what it got, what you will change.
+
+## What stays as it is
+Every gate still applies: review before anything goes out, sourced numbers only, no fake proof, consent for real people, the brand's banned words, UTM tags on links. This file changes what we make, not who approves it.
+`;
+
 export const SKILLS: SocialSkill[] = [
   {
     skillKey: "social-publish",
@@ -428,6 +482,7 @@ export const SKILLS: SocialSkill[] = [
     files: [
       { path: "references/platforms.md", content: PLATFORMS_REFERENCE },
       { path: "references/media-studio.md", content: MEDIA_STUDIO_REFERENCE },
+      { path: "references/social-craft.md", content: SOCIAL_CRAFT_REFERENCE },
     ],
   },
   {
