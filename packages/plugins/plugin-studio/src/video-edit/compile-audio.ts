@@ -12,7 +12,7 @@
  */
 import { CompileError, filePath, inputKey, num, type CompileInputs } from "./compile-video.js";
 import { toFfmpegExpr } from "./keyframes.js";
-import { clipDuration, editDuration, type AudioClip, type EditDoc, type MediaClip } from "./timeline.js";
+import { clipDuration, editDuration, type AudioClip, type EditDoc, type MediaClip, type TrackKind } from "./timeline.js";
 
 export interface AudioOptions { loudnorm?: boolean }
 /** The sound half of a render: extra input args, graph lines, and the final label (`null`: the edit is silent). */
@@ -42,6 +42,17 @@ export function atempoChain(speed: number): number[] {
 
 type SoundClip = (MediaClip | AudioClip) & { fromTrack: "picture" | "audio" };
 
+/**
+ * Whether a clip on a track of `kind` adds a sound input (its own `-i`): every audio-track clip, and a video/overlay
+ * clip whose source the probe found sound in. The render planner weighs and labels passes with this same rule.
+ */
+export function clipHasSound(kind: TrackKind, clip: { assetId: string; version: number }, sources: CompileInputs): boolean {
+  if (kind === "audio") return true;
+  if (kind !== "video" && kind !== "overlay") return false;
+  const source = sources[inputKey(clip.assetId, clip.version)];
+  return source?.kind === "video" && source.hasAudio === true;
+}
+
 /** The clips that carry sound, in timeline order (ties: track order). */
 function soundClips(doc: EditDoc, sources: CompileInputs): SoundClip[] {
   const out: SoundClip[] = [];
@@ -49,13 +60,15 @@ function soundClips(doc: EditDoc, sources: CompileInputs): SoundClip[] {
     if (track.kind === "audio") {
       for (const clip of track.clips) out.push({ ...clip, fromTrack: "audio" });
     } else if (track.kind === "video" || track.kind === "overlay") {
-      for (const clip of track.clips) {
-        const source = sources[inputKey(clip.assetId, clip.version)];
-        if (source?.kind === "video" && source.hasAudio === true) out.push({ ...clip, fromTrack: "picture" });
-      }
+      for (const clip of track.clips) if (clipHasSound(track.kind, clip, sources)) out.push({ ...clip, fromTrack: "picture" });
     }
   }
   return out.map((c, i) => ({ c, i })).sort((a, b) => a.c.start - b.c.start || a.i - b.i).map(({ c }) => c);
+}
+
+/** Whether the compiled edit has an audio stream (`buildAudioGraph` returns a label exactly when this is true). */
+export function hasClipAudio(doc: EditDoc, sources: CompileInputs): boolean {
+  return soundClips(doc, sources).length > 0;
 }
 
 /** Builds the sound graph. Input indexes start at `firstInput` (the picture graph's input count). */
