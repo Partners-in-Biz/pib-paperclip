@@ -103,6 +103,7 @@ export async function saveEvidenceToDrive(
       kind: "ops",
       name,
       mimeType: "image/png",
+      timeoutMs: 20_000,
       bytes,
       subfolder: EVIDENCE_SUBFOLDER,
       ...(projectId ? { projectId } : { client: parsed.client! }),

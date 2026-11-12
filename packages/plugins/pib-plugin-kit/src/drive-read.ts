@@ -59,7 +59,8 @@ export interface DriveReadTarget {
   timeoutMs?: number;
 }
 
-const DEFAULT_TIMEOUT_MS = 30_000;
+// Below the 30 s tool-gateway cut: a slow CRM ends as no_ack, not a 504 (PAR-10202).
+const DEFAULT_TIMEOUT_MS = 20_000;
 type Pending = Map<string, { resolve: (ok: boolean, payload: Record<string, unknown>) => void; companyId: string; progress?: (payload: Record<string, unknown>) => void }>;
 type Which = "list" | "read" | "thumbs";
 const pendingByCtx = new WeakMap<Pick<PluginContext, "events">, Record<Which, Pending>>();

@@ -52,6 +52,19 @@ describe("drive save", () => {
     vi.useRealTimers();
   });
 
+  it("(3b) default wait is 20 s, under the 30 s gateway cut: no_ack, not a hang (PAR-10202)", async () => {
+    vi.useFakeTimers();
+    const promise = driveSave(fake.ctx, { companyId: "co-1", kind: "test", name: "test.txt", mimeType: "text/plain", bytes: Buffer.from("test") });
+    await vi.advanceTimersByTimeAsync(19_999);
+    let settled = false;
+    void promise.then(() => { settled = true; });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect((await promise).status).toBe("no_ack");
+    vi.useRealTimers();
+  });
+
   it("(4) never throws: emit failures + invalid inputs", async () => {
     let result = await driveSave({ events: { on: vi.fn(), emit: vi.fn().mockRejectedValue(new Error("E")), listLifecycle: vi.fn(), acknowledgeLifecycle: vi.fn() } },
       { companyId: "co-1", kind: "x", name: "x", mimeType: "x", bytes: Buffer.from("x") });

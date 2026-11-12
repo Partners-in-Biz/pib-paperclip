@@ -153,6 +153,12 @@ describe("evidence-drive functions", () => {
       expect(mockCtx.logger.warn).toHaveBeenCalledWith(expect.stringContaining("could not save evidence"), expect.anything());
     });
 
+    it("waits 20 s for the CRM ack, under the 30 s gateway cut (PAR-10202)", async () => {
+      fakeDriveSave.mockResolvedValue({ status: "no_ack", requestId: "r" });
+      await saveEvidenceToDrive(mockCtx, { companyId: "co-1", projectId: "proj-1", issueId: "PAR-123", step: "login", pngBase64: validPngBase64 });
+      expect(fakeDriveSave.mock.calls[0]![1]).toMatchObject({ timeoutMs: 20_000 });
+    });
+
     it("returns result on success", async () => {
       const success = { status: "saved" as const, requestId: "r", driveFileId: "f123", url: "https://drive.example/f" };
       fakeDriveSave.mockResolvedValue(success);

@@ -96,7 +96,8 @@ export interface DriveTransferProgress {
   bytesTotal: number;
 }
 
-const DEFAULT_TIMEOUT_MS = 30_000;
+// Below the 30 s tool-gateway cut: a slow CRM ends as no_ack, not a 504 (PAR-10202).
+const DEFAULT_TIMEOUT_MS = 20_000;
 const MAX_BYTES = DRIVE_INLINE_MAX_BYTES;
 type Pending = { resolve: (r: DriveSaveResult) => void; companyId: string; progress?: (p: DriveTransferProgress) => void };
 const pendingByCtx = new WeakMap<Pick<PluginContext, "events">, Map<string, Pending>>();

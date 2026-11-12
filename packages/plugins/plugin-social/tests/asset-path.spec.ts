@@ -75,6 +75,8 @@ describe("store-rendered-asset", () => {
     expect(sent).toMatchObject({ companyId: "co", kind: "social", subfolder: "02 Assets", mimeType: "image/png", client: { kind: "company", ref: "c1" }, name: "2026-10-21 Acme spring-banner v01.png" });
     expect(Buffer.from(sent.bytes as Uint8Array).equals(png)).toBe(true);
     expect(out.drive).toEqual({ ok: true, url: saved.url, driveFileId: "drv-1" });
+    // The ack wait stays under the 30 s gateway cut (PAR-10202).
+    expect(sent.timeoutMs).toBe(20_000);
     // Attach keeps the post's current media and adds the new asset.
     expect(attach).toHaveBeenCalledWith(w.ctx, VIEWER, { postId: "p1", mediaAssetIds: ["a-old", out.asset.id] });
     expect(out.attached).toEqual({ ok: true, postId: "p1" });
