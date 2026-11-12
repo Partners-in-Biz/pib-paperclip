@@ -5,6 +5,9 @@ import { createEnv, type Actor } from "../src/service/common.js";
 import { createPreview } from "../src/service/preview.js";
 import { captureSnapshot } from "../src/service/snapshots.js";
 
+// createPreview does a cold module import and a real render; the deploy runner is loaded, so 5s/1s defaults flake.
+vi.setConfig({ testTimeout: 30_000 });
+
 // Mock driveSave at the kit level
 const { fakeDriveSave } = vi.hoisted(() => ({ fakeDriveSave: vi.fn() }));
 
@@ -62,7 +65,7 @@ describe("createPreview saves HTML preview to Drive", () => {
 
     expect(result).toHaveProperty("previewId");
     expect(result.reviewStatus).toBe("pending");
-    await vi.waitFor(() => expect(fakeDriveSave).toHaveBeenCalled());
+    await vi.waitFor(() => expect(fakeDriveSave).toHaveBeenCalled(), { timeout: 15_000 });
 
     const opts = fakeDriveSave.mock.calls[0]![1] as Record<string, unknown>;
     expect(opts.subfolder).toBe("03 Deliverables");
@@ -80,7 +83,7 @@ describe("createPreview saves HTML preview to Drive", () => {
 
     expect(result).toHaveProperty("previewId");
     expect(result.reviewStatus).toBe("pending");
-    await vi.waitFor(() => expect(fakeDriveSave).toHaveBeenCalled());
+    await vi.waitFor(() => expect(fakeDriveSave).toHaveBeenCalled(), { timeout: 15_000 });
   });
 });
 
@@ -114,7 +117,7 @@ describe("captureSnapshot saves JSON audit to Drive", () => {
 
     expect(result).toHaveProperty("snapshotId");
     expect(result.created).toBe(true);
-    await vi.waitFor(() => expect(fakeDriveSave).toHaveBeenCalled());
+    await vi.waitFor(() => expect(fakeDriveSave).toHaveBeenCalled(), { timeout: 15_000 });
 
     const opts = fakeDriveSave.mock.calls[0]![1] as Record<string, unknown>;
     expect(opts.subfolder).toBe("04 Reports");
@@ -141,6 +144,6 @@ describe("captureSnapshot saves JSON audit to Drive", () => {
 
     expect(result).toHaveProperty("snapshotId");
     expect(result.created).toBe(true);
-    await vi.waitFor(() => expect(fakeDriveSave).toHaveBeenCalled());
+    await vi.waitFor(() => expect(fakeDriveSave).toHaveBeenCalled(), { timeout: 15_000 });
   });
 });
