@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { fakeMusic, MUSIC_PROVIDER_TIMEOUT_MS, stabilityMusic, STABLE_AUDIO_URL } from "../src/music/stable-audio.js";
 import { FAKE_MUSIC_MP3 } from "../src/music/fake-mp3.js";
 import { musicCapCredits, musicCredits, assertMusicCapFits } from "../src/music/stable-audio-price.js";
+import { StudioConfig } from "../src/config.js";
 import { sniffMime } from "../src/storage.js";
 
 const MP3 = new Uint8Array(readFileSync(join(import.meta.dirname, "fixtures", "music.mp3")));
@@ -89,11 +90,47 @@ describe("Stable Audio outcome table", () => {
     ac.abort();
     expect(await p).toMatchObject({ ok: false, charged: "maybe", httpStatus: null, code: "provider_unknown" });
   });
-  it("timeout is charged maybe, provider_unknown", async () => {
+  it("timeout: the client passes its own signal, not the caller's, and it follows the caller's abort", async () => {
+    let seen: AbortSignal | undefined;
+    const ac = new AbortController();
+    const g = stabilityMusic("k", async (_u, init) => {
+      seen = init.signal as AbortSignal;
+      return new Response(MP3, { status: 200 });
+    });
+    await g.generate({ prompt: "p", duration: 5, signal: ac.signal });
+    expect(MUSIC_PROVIDER_TIMEOUT_MS).toBe(120_000);
+    expect(seen).toBeInstanceOf(AbortSignal);
+    expect(seen).not.toBe(ac.signal);
+    expect(seen!.aborted).toBe(false);
+    ac.abort();
+    expect(seen!.aborted).toBe(true);
+    // without a caller signal the client still sets a timeout signal
+    let solo: AbortSignal | undefined;
+    await stabilityMusic("k", async (_u, init) => {
+      solo = init.signal as AbortSignal;
+      return new Response(MP3, { status: 200 });
+    }).generate({ prompt: "p", duration: 5 });
+    expect(solo).toBeInstanceOf(AbortSignal);
+  });
+  it("a TimeoutError from fetch is charged maybe, provider_unknown", async () => {
     const g = stabilityMusic("k", async () => {
       throw new DOMException("timed out", "TimeoutError");
     });
     expect(await run({ generate: g.generate } as never)).toMatchObject({ ok: false, charged: "maybe", code: "provider_unknown" });
+  });
+});
+
+describe("StudioConfig.stabilityKey (real config class)", () => {
+  const cfg = (value: string | null) => {
+    const c = Object.create(StudioConfig.prototype) as { secrets: Promise<{ get(p: string): Promise<string | null> }> };
+    c.secrets = Promise.resolve({ get: async (path: string) => (path === "stability.apiKey" ? value : null) });
+    return c as unknown as StudioConfig;
+  };
+  it("no secret -> not_configured naming Stability AI", async () => {
+    await expect(cfg(null).stabilityKey()).rejects.toMatchObject({ code: "not_configured", message: expect.stringContaining("Stability AI") });
+  });
+  it("a stored secret is returned", async () => {
+    expect(await cfg("sk-live").stabilityKey()).toBe("sk-live");
   });
 });
 
