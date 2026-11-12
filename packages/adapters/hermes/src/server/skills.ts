@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -6,9 +7,10 @@ import type {
   AdapterSkillEntry,
   AdapterSkillSnapshot,
 } from "@paperclipai/adapter-utils";
+import { classifyPaperclipSkillLink } from "@paperclipai/adapter-utils/skill-link-classify";
 import {
-  ensurePaperclipSkillSymlink,
   isPaperclipSkillSourceMissing,
+  type PaperclipSkillEntry,
   readInstalledSkillTargets,
   readPaperclipRuntimeSkillEntries,
   resolveLegacyPaperclipDesiredSkillNames,
@@ -213,40 +215,108 @@ export async function listHermesSkills(
   return buildHermesSkillSnapshot(ctx.config);
 }
 
-/**
- * A profile link is the same installation when it resolves to the snapshot
- * source, or when it points at a versioned cache folder
- * (`<skills root>/__versions__/<skillId>/<versionId>`) under the same skills
- * root as the unversioned source folder.
- */
-async function isSameSkillInstallation(
-  linked: string,
-  source: string,
-  versionIds: Array<string | null | undefined> = [],
-): Promise<boolean> {
-  const resolvedLinked = path.resolve(linked);
-  const resolvedSource = path.resolve(source);
-  if (resolvedLinked === resolvedSource) return true;
-  const [realLinked, realSource] = await Promise.all([
-    fs.realpath(resolvedLinked).catch(() => null),
-    fs.realpath(resolvedSource).catch(() => null),
+type SkillLinkFs = {
+  readlink: (target: string) => Promise<string>;
+  realpath: (target: string) => Promise<string>;
+  rename: (from: string, to: string) => Promise<void>;
+};
+
+export interface ReconcileHermesSkillsOptions {
+  /** One line per re-point or warning. The run passes its log; the sync route passes nothing. */
+  onLog?: (line: string) => Promise<void> | void;
+  /** Test seams: replace filesystem calls, or act right after the rename. */
+  fs?: Partial<SkillLinkFs>;
+  afterRename?: (target: string) => Promise<void> | void;
+}
+
+type SkillLinkState =
+  | { kind: "missing" | "dangling" | "ours-stale" | "foreign"; linked: string | null }
+  | { kind: "same"; atRequestedVersion: boolean; linked: string | null };
+
+const FOREIGN_RENAME_CODES = new Set(["EISDIR", "ENOTDIR", "ENOTEMPTY", "EEXIST"]);
+
+function errorCode(err: unknown): string | undefined {
+  return (err as NodeJS.ErrnoException | null)?.code;
+}
+
+function occupiedError(entry: PaperclipSkillEntry, target: string): Error {
+  return new Error(
+    `Cannot reconcile Hermes skill "${entry.key}" because ${target} is occupied by another installation.`,
+  );
+}
+
+async function inspectSkillLink(target: string, entry: PaperclipSkillEntry, ops: SkillLinkFs): Promise<SkillLinkState> {
+  const stat = await fs.lstat(target).catch((err) => {
+    if (errorCode(err) === "ENOENT") return null;
+    throw err;
+  });
+  if (!stat) return { kind: "missing", linked: null };
+  if (!stat.isSymbolicLink()) return { kind: "foreign", linked: null };
+  const raw = await ops.readlink(target).catch(() => null);
+  if (raw === null) return { kind: "foreign", linked: null };
+  const linked = path.resolve(path.dirname(target), raw);
+  // stat the value read, not the name: another run may swap the name in between.
+  const dangling = await fs.stat(linked).then(() => false, (err) => errorCode(err) === "ENOENT");
+  if (dangling) return { kind: "dangling", linked };
+  const [resolvedTarget, resolvedSource] = await Promise.all([
+    ops.realpath(linked).catch(() => null),
+    ops.realpath(entry.source).catch(() => null),
   ]);
-  if (realLinked && realLinked === realSource) return true;
-  const marker = `${path.sep}__versions__${path.sep}`;
-  const markerIndex = resolvedLinked.indexOf(marker);
-  if (markerIndex <= 0) return false;
-  const linkedRoot = resolvedLinked.slice(0, markerIndex);
-  if (!resolvedSource.startsWith(linkedRoot + path.sep)) return false;
-  // Layout is <root>/__versions__/<skillId>/<versionId>. When the entry carries
-  // a version identity, the link must point at exactly that version.
-  const known = versionIds.filter((id): id is string => Boolean(id));
-  if (known.length === 0) return true;
-  return known.includes(path.basename(resolvedLinked));
+  return { ...classifyPaperclipSkillLink({ resolvedTarget, resolvedSource, entry }), linked };
+}
+
+/** Make the link under a unique temporary name beside skills/, then rename it over the name. */
+async function swapSkillLink(entry: PaperclipSkillEntry, target: string, tmpDir: string, ops: SkillLinkFs) {
+  await fs.mkdir(tmpDir, { recursive: true });
+  const tmp = path.join(tmpDir, `${entry.runtimeName}.${process.pid}.${randomBytes(6).toString("hex")}`);
+  try {
+    await fs.symlink(entry.source, tmp);
+    await ops.rename(tmp, target);
+  } catch (err) {
+    const code = errorCode(err);
+    if (code && FOREIGN_RENAME_CODES.has(code)) throw occupiedError(entry, target);
+    if (code === "EXDEV") {
+      throw new Error(
+        `Cannot link Hermes skill "${entry.key}": the temporary link ${tmp} and ${target} are on different filesystems (EXDEV).`,
+      );
+    }
+    throw err;
+  } finally {
+    await fs.unlink(tmp).catch(() => {});
+  }
+}
+
+async function linkSkillAtomically(
+  entry: PaperclipSkillEntry,
+  target: string,
+  tmpDir: string,
+  oldLinked: string | null,
+  ops: SkillLinkFs,
+  options: ReconcileHermesSkillsOptions,
+) {
+  for (let attempt = 1; ; attempt += 1) {
+    await swapSkillLink(entry, target, tmpDir, ops);
+    await options.afterRename?.(target);
+    const after = await inspectSkillLink(target, entry, ops);
+    if (after.kind === "missing" || after.kind === "dangling") {
+      if (attempt < 2) continue;
+      throw new Error(
+        `Cannot reconcile Hermes skill "${entry.key}": ${target} points at ${after.linked ?? "nothing"}, which was removed during the swap.`,
+      );
+    }
+    if (after.kind === "foreign") throw occupiedError(entry, target);
+    if (oldLinked) await options.onLog?.(`Re-pointed skill "${entry.key}" from ${oldLinked} to ${entry.source}.`);
+    if (after.linked !== path.resolve(entry.source)) {
+      await options.onLog?.(`Skill "${entry.key}": another run linked ${after.linked} meanwhile; carrying on.`);
+    }
+    return;
+  }
 }
 
 export async function reconcileHermesPaperclipSkills(
   config: Record<string, unknown>,
   requestedDesiredSkills?: string[],
+  options: ReconcileHermesSkillsOptions = {},
 ): Promise<string[]> {
   const availableEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredSkills = requestedDesiredSkills
@@ -260,20 +330,29 @@ export async function reconcileHermesPaperclipSkills(
   await fs.mkdir(skillsHome, { recursive: true });
   const installed = await readInstalledSkillTargets(skillsHome);
   const availableByRuntimeName = new Map(availableEntries.map((entry) => [entry.runtimeName, entry]));
+  // Beside the real parent of skills/, so the rename stays on one filesystem.
+  const tmpDir = path.join(path.dirname(await fs.realpath(skillsHome)), ".paperclip-skill-tmp");
+  const ops: SkillLinkFs = {
+    readlink: (target) => fs.readlink(target),
+    realpath: (target) => fs.realpath(target),
+    rename: (from, to) => fs.rename(from, to),
+    ...options.fs,
+  };
 
   for (const entry of availableEntries) {
     if (!desiredSet.has(entry.key) || isPaperclipSkillSourceMissing(entry)) continue;
     const target = path.join(skillsHome, entry.runtimeName);
-    await ensurePaperclipSkillSymlink(entry.source, target);
-    const linkedSource = await fs.readlink(target).catch(() => null);
-    const resolvedSource = linkedSource
-      ? path.resolve(path.dirname(target), linkedSource)
-      : null;
-    if (!resolvedSource || !(await isSameSkillInstallation(resolvedSource, entry.source, [entry.versionId, entry.currentVersionId]))) {
-      throw new Error(
-        `Cannot reconcile Hermes skill "${entry.key}" because ${target} is occupied by another installation.`,
-      );
+    const state = await inspectSkillLink(target, entry, ops);
+    if (state.kind === "foreign") throw occupiedError(entry, target);
+    if (state.kind === "same") {
+      if (!state.atRequestedVersion && entry.versionId) {
+        await options.onLog?.(
+          `Warning: skill "${entry.key}" pinned ${entry.versionId}, current ${state.linked} is linked; pins are best effort on a shared profile.`,
+        );
+      }
+      continue;
     }
+    await linkSkillAtomically(entry, target, tmpDir, state.linked, ops, options);
   }
 
   for (const [name, installedEntry] of installed.entries()) {
