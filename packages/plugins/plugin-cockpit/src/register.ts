@@ -50,6 +50,7 @@ import { OWN_METRICS_EVENT, onOwnMetricsEvent } from "./growth-own-metrics.js";
 import { OPS_TOOL_SET, runOpsTool } from "./ops-tools.js";
 import { confirmAttestation } from "./security.js";
 import { listUnassigned, onSetupSummary, runTool } from "./brief.js";
+import { ownerFilter } from "./owner-filter.js";
 import { assignableUser, JOBS, PLUGIN_KEY, type RoleKind } from "./constants.js";
 import { getHealthIssue, getRoles, listRoles, listSnapshots, upsertSnapshot } from "./db.js";
 import { doneCheckFor } from "./done-checks.js";
@@ -291,6 +292,8 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
     if (params.installed) await rememberInstalled(ctx, params.installed);
     if (params.uiBase) await rememberPluginUiBase(ctx, params.uiBase);
     await env.skills.ensure(companyId).catch(() => undefined);
+    // The unassigned count leaves out the hidden issues; a failed read leaves none hidden.
+    const hidden = await ownerFilter(env, companyId).catch(() => ({ hiddenIssueIds: [] as string[], degraded: ["ownerFilter"] }));
     const [roles, saved, snapshots, setup, own, health, installed, asks, unassigned, warnings] = await Promise.all([
       getRoles(ctx, companyId),
       configSaved(ctx, companyId),
@@ -300,7 +303,7 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
       getHealthIssue(ctx, companyId),
       readInstalled(ctx),
       openAskViews(env, companyId).catch(() => []),
-      listUnassigned(ctx, companyId),
+      listUnassigned(ctx, companyId, hidden.hiddenIssueIds),
       warningSince(env, companyId),
     ]);
     const team = params.team === false ? null : await roleViews(env, companyId);
@@ -317,8 +320,8 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
       asks,
       unassigned,
       warningSince: warnings,
-      // The same agent read as the brief (brief.ts loadCompanyData); no hidden issues yet (PAR-10548 T2).
-      ownerFilter: { activeAgentIds: activeAgentIdsOf(await listAgents(env, companyId)), hiddenIssueIds: [] },
+      // The same agent read as the brief (brief.ts loadCompanyData); hiddenIssueIds from owner-filter.ts.
+      ownerFilter: { activeAgentIds: activeAgentIdsOf(await listAgents(env, companyId)), hiddenIssueIds: hidden.hiddenIssueIds },
     };
   });
 

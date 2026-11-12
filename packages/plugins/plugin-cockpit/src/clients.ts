@@ -6,7 +6,7 @@
  * filed under it instead of company-wide.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { parseClientParam, type ClientKind } from "@partnersinbiz/pib-plugin-kit";
+import { clientProjectIds, parseClientParam, type ClientKind } from "@partnersinbiz/pib-plugin-kit";
 import { NAMESPACE } from "./namespace.js";
 
 export interface KnownClient {
@@ -135,4 +135,30 @@ export function clientNames(known: KnownClient[]): Map<string, string> {
     if (!names.has(entry.clientRef)) names.set(entry.clientRef, entry.clientName);
   }
   return names;
+}
+
+/** The CRM's canary company ids start with this. Keep in step with plugin-crm src/canary-flag.ts:18 (`CANARY_PREFIX`). Real CRM ids are UUIDs. */
+export const CANARY_ID_PREFIX = "canary-";
+const COMPANY_LIMIT = 5000;
+const LINK_BATCH = 25;
+
+/**
+ * Projects linked to a canary CRM company (id `canary-%`, deleted rows too),
+ * minus any project a non-canary company also links.
+ */
+export async function canaryProjectIds(ctx: PluginContext, companyId: string): Promise<string[]> {
+  const rows = await ctx.db.query<{ id: string }>(`SELECT id FROM ${T.companies} WHERE company_id = $1 AND id LIKE $2 LIMIT $3`, [companyId, `${CANARY_ID_PREFIX}%`, COMPANY_LIMIT]);
+  if (rows.length === 0) return [];
+  const real = await ctx.db.query<{ id: string }>(`SELECT id FROM ${T.companies} WHERE company_id = $1 AND id NOT LIKE $2 LIMIT $3`, [companyId, `${CANARY_ID_PREFIX}%`, COMPANY_LIMIT]);
+  const linked = async (ids: string[]) => {
+    const out: string[] = [];
+    for (let i = 0; i < ids.length; i += LINK_BATCH) {
+      const batch = await Promise.all(ids.slice(i, i + LINK_BATCH).map((id) => clientProjectIds(ctx, companyId, { kind: "company", id })));
+      out.push(...batch.flat());
+    }
+    return out;
+  };
+  const [canary, shared] = await Promise.all([linked(rows.map((r) => String(r.id))), linked(real.map((r) => String(r.id)))]);
+  const keep = new Set(shared);
+  return [...new Set(canary)].filter((id) => !keep.has(id));
 }
