@@ -13,7 +13,7 @@ export const WRITING_SECTION = `${WRITING_HEADING}
 
 For text a person or another agent reads (comments, questions, briefs, reports, verdicts, pull request text):
 
-- Result first, then the evidence. One idea per sentence, 20 words or fewer.
+- Result first, then the evidence. Short sentences, one idea in each.
 - Say who does what, in the active voice.
 - One name per thing: never rotate synonyms. Plain words, no hedges (might, perhaps). If the doubt is the fact, say what you checked.
 - Numbers in a table, commands and errors in a code block.
