@@ -318,13 +318,15 @@ describe("create-preview from the rendered live page (PAR-8787)", () => {
 
   it("previewRows adds expired, overlapIds and changedFields for the Previews tab (PAR-9145)", async () => {
     const mk = (id: string, status: string, expired: boolean, changes: unknown) => ({ id, task_id: "t-1", issue_id: "iss-1", issue_identifier: "PAR-1", page_url: "https://acme.co.za/", title: "Home", status, review_status: "passed", expires_at: "2026-11-30", created_at: "2026-11-01", total: 3, stats: "{}", expired, changes: JSON.stringify(changes) });
-    const rowsIn = [mk("a", "pending", false, { title: "x", h1: "y" }), mk("b", "pending", false, { bodyHtml: "<p>z</p>" }), mk("c", "pending", true, {})];
+    const rowsIn = [mk("a", "pending", false, { title: "x", h1: "y", why: "Searchers want the price" }), mk("b", "pending", false, { bodyHtml: "<p>z</p>" }), mk("c", "pending", true, {})];
     const h = host();
     (h.env.ctx.db as { query: (sql: string) => Promise<Row[]> }).query = async (sql: string) => (/FROM plugin_seo_8099f8879a\.previews/.test(sql) ? rowsIn : []);
     const out = await previewRows(h.env, "co-1", "sp-1");
     expect(out.map((r) => r.expired)).toEqual([false, false, true]);
     expect(out[0]).toMatchObject({ issueIdentifier: "PAR-1", changedFields: ["Title", "Heading"], overlapIds: ["b"] });
     expect(out[1]!.changedFields).toEqual(["Body copy"]);
+    expect(out[0]).toMatchObject({ changes: { title: "x", metaDescription: null, h1: "y", bodyMode: null }, why: "Searchers want the price" });
+    expect(out[1]).toMatchObject({ changes: { bodyMode: "before" }, why: null });
     expect(out[2]!.overlapIds).toEqual(["a", "b"]);
   });
 

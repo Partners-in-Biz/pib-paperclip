@@ -306,6 +306,8 @@ export type PreviewItem = {
   issueId: string | null;
   issueIdentifier: string | null;
   changedFields: string[];
+  changes: { title: string | null; metaDescription: string | null; h1: string | null; bodyMode: string | null };
+  why: string | null;
   decidedBy: string | null;
   decisionSource: string | null;
   decidedAt: string | null;

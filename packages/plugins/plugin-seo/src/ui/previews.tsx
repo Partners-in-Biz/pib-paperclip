@@ -28,6 +28,14 @@ export function PreviewsTab({ bundle, filter, onFilter, onChanged }: { bundle: S
   const [busy, setBusy] = useState<string | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [declining, setDeclining] = useState<PreviewItem[] | null>(null);
+  const [openId, setOpenId] = useState<string | null>(null);
+  const drawerItem = openId ? all.find((p) => p.id === openId) ?? null : null;
+  const actionsFor = (p: PreviewItem) => ({
+    onApprove: () => void run(p.id, [p.id], "decide-preview", { decision: "approved" }),
+    onDecline: () => setDeclining([p]),
+    onUndo: () => void run(p.id, [p.id], "undo-preview-decision"),
+    onConfirm: () => void run(p.id, [p.id], "confirm-preview-approval"),
+  });
 
   const run = async (key: string, ids: string[], tool: string, extra: Record<string, unknown> = {}): Promise<boolean> => {
     setBusy(key);
@@ -84,36 +92,30 @@ export function PreviewsTab({ bundle, filter, onFilter, onChanged }: { bundle: S
             </div>
             <div style={{ display: "grid", gap: 0, minWidth: 0 }}>
               {g.items.map((p) => (
-                <PreviewRow key={p.id} p={p} manual={manual} narrow={narrow} busy={busy} error={errors[p.id]}
-                  onApprove={() => void run(p.id, [p.id], "decide-preview", { decision: "approved" })}
-                  onDecline={() => setDeclining([p])}
-                  onUndo={() => void run(p.id, [p.id], "undo-preview-decision")}
-                  onConfirm={() => void run(p.id, [p.id], "confirm-preview-approval")} />
+                <PreviewRow key={p.id} p={p} manual={manual} narrow={narrow} busy={busy} error={errors[p.id]} onOpen={() => setOpenId(p.id)} {...actionsFor(p)} />
               ))}
             </div>
           </SectionCard>
         );
       })}
+      {drawerItem ? <PreviewDrawer p={drawerItem} manual={manual} narrow={narrow} busy={busy} error={errors[drawerItem.id]} onClose={() => setOpenId(null)} {...actionsFor(drawerItem)} /> : null}
       {declining ? <DeclineModal items={declining} onClose={() => setDeclining(null)} onSubmit={async (note) => { const ok = await run("decline", declining.map((p) => p.id), "decide-preview", { decision: "declined", note }); if (ok) setDeclining(null); return ok; }} errors={errors} /> : null}
     </div>
   );
 }
 
-function PreviewRow({ p, manual, narrow, busy, error, now = Date.now(), onApprove, onDecline, onUndo, onConfirm }: {
+function PreviewRow({ p, manual, narrow, busy, error, now = Date.now(), onOpen, onApprove, onDecline, onUndo, onConfirm }: {
   p: PreviewItem; manual: boolean; narrow: boolean; busy: string | null; error?: string; now?: number;
-  onApprove: () => void; onDecline: () => void; onUndo: () => void; onConfirm: () => void;
+  onOpen: () => void; onApprove: () => void; onDecline: () => void; onUndo: () => void; onConfirm: () => void;
 }) {
   const status = previewStatus(p);
   const left = previewDaysLeft(p.expiresAt, now);
   const open = p.status === "pending" && !p.expired;
   const decided = p.status === "approved" || p.status === "declined" || p.status === "changes_requested";
-  const clientApproved = p.status === "approved" && p.decisionSource === "email" && !p.confirmedAt;
-  const reason = p.reviewStatus === "passed" ? "" : "The Reviewer has not passed this preview yet";
-  const disabled = busy !== null;
   return (
     <div style={{ display: "grid", gap: 6, padding: "10px 0", borderTop: `1px solid ${tokens.border}`, minWidth: 0 }}>
       <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", minWidth: 0 }}>
-        <strong style={{ fontSize: 13, ...breakAnywhere }} title={p.pageUrl}>{shortUrl(p.pageUrl)}</strong>
+        <button type="button" onClick={onOpen} aria-label={`Open preview of ${shortUrl(p.pageUrl)}`} title="Open the preview details" style={{ all: "unset", cursor: "pointer", fontSize: 13, fontWeight: 700, textDecoration: "underline", ...breakAnywhere }}>{shortUrl(p.pageUrl)}</button>
         <Pill tone={status.tone} dot>{status.label}</Pill>
       </div>
       <span style={{ fontSize: 12, color: tokens.muted, ...breakAnywhere }}>
@@ -125,8 +127,23 @@ function PreviewRow({ p, manual, narrow, busy, error, now = Date.now(), onApprov
       {p.overlapIds.length > 0 ? <span style={{ fontSize: 12, color: tokens.muted }}>{p.overlapIds.length} other pending preview{p.overlapIds.length === 1 ? "" : "s"} for this page.</span> : null}
       {p.expired ? <span style={{ fontSize: 12 }}>Expired before a decision. {p.issueId ? <IssueLink id={p.issueId} identifier={p.issueIdentifier} /> : null}</span> : null}
       {error ? <Banner tone="bad">{error}</Banner> : null}
-      {open || (decided && !p.appliedAt) ? (
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", flexDirection: narrow ? "column" : "row" }}>
+      <PreviewActions p={p} manual={manual} narrow={narrow} busy={busy} onApprove={onApprove} onDecline={onDecline} onUndo={onUndo} onConfirm={onConfirm} />
+    </div>
+  );
+}
+
+type ActionProps = { p: PreviewItem; manual: boolean; narrow: boolean; busy: string | null; onApprove: () => void; onDecline: () => void; onUndo: () => void; onConfirm: () => void };
+
+/** The decision buttons, the same in the row and in the drawer. */
+function PreviewActions({ p, manual, narrow, busy, onApprove, onDecline, onUndo, onConfirm }: ActionProps) {
+  const open = p.status === "pending" && !p.expired;
+  const decided = p.status === "approved" || p.status === "declined" || p.status === "changes_requested";
+  const clientApproved = p.status === "approved" && p.decisionSource === "email" && !p.confirmedAt;
+  const reason = p.reviewStatus === "passed" ? "" : "The Reviewer has not passed this preview yet";
+  const disabled = busy !== null;
+  if (!open && !(decided && !p.appliedAt)) return null;
+  return (
+    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", flexDirection: narrow ? "column" : "row" }}>
           {open ? (
             <>
               <Button type="button" variant="primary" disabled={disabled || Boolean(reason)} title={reason || "Approve this preview"} onClick={onApprove}>Approve</Button>
@@ -137,8 +154,50 @@ function PreviewRow({ p, manual, narrow, busy, error, now = Date.now(), onApprov
           {decided && !p.appliedAt ? <Button type="button" variant="secondary" disabled={disabled} onClick={onUndo}>Undo</Button> : null}
           {clientApproved && manual ? <Button type="button" variant="primary" disabled={disabled} onClick={onConfirm}>Confirm and apply</Button> : null}
         </div>
-      ) : null}
+      
+  );
+}
+
+function Field({ label, value }: { label: string; value: string | null }) {
+  return (
+    <div style={{ display: "grid", gap: 2, minWidth: 0 }}>
+      <span style={{ fontSize: 12, color: tokens.muted }}>{label}</span>
+      <span style={{ fontSize: 13, ...breakAnywhere }}>{value ?? "Not changed"}</span>
     </div>
+  );
+}
+
+const BODY_MODE_LABEL: Record<string, string> = { before: "Added above the existing content", after: "Added below the existing content", replace: "Replaces the whole content area" };
+
+/** One preview in full: the links (built by the server), the proposed copy, the evidence and the same decision buttons. No live fetch. */
+function PreviewDrawer({ p, onClose, error, ...actions }: ActionProps & { error?: string; onClose: () => void }) {
+  const status = previewStatus(p);
+  const linkStyle = { fontSize: 13, color: tokens.fg, fontWeight: 600 } as const;
+  return (
+    <Modal open title={shortUrl(p.pageUrl)} description={p.title} onClose={onClose} width={560} footer={<Button type="button" variant="secondary" onClick={onClose}>Close</Button>}>
+      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
+        <Pill tone={status.tone} dot>{status.label}</Pill>
+        <a href={p.url} target="_blank" rel="noreferrer" style={linkStyle}>Proposal ↗</a>
+        {p.reviewUrl ? <a href={p.reviewUrl} target="_blank" rel="noreferrer" style={linkStyle}>Live vs proposal ↗</a> : null}
+      </div>
+      <div style={{ display: "grid", gap: 8 }}>
+        <strong style={{ fontSize: 13 }}>Proposed copy</strong>
+        <Field label="Title" value={p.changes.title} />
+        <Field label="Meta description" value={p.changes.metaDescription} />
+        <Field label="Heading (H1)" value={p.changes.h1} />
+        <Field label="Body copy" value={p.changes.bodyMode ? BODY_MODE_LABEL[p.changes.bodyMode] ?? p.changes.bodyMode : null} />
+      </div>
+      <div style={{ display: "grid", gap: 8 }}>
+        <strong style={{ fontSize: 13 }}>Evidence</strong>
+        <Field label="Reviewer" value={`${REVIEW_LABEL[p.reviewStatus]?.replace("Reviewer: ", "") ?? p.reviewStatus}${p.reviewNote ? `: ${p.reviewNote}` : ""}`} />
+        <Field label="Against the live page" value={p.keptPct != null ? `Keeps ${p.keptPct}% of the live text, adds ${p.addedWords ?? 0} words (${p.renderedChecked ? "as a visitor sees it" : "page source"})` : null} />
+        <Field label="Why" value={p.why} />
+        {p.decisionNote ? <Field label="Decision note" value={`${previewDecider(p)} · "${p.decisionNote}"`} /> : null}
+      </div>
+      {p.overlapIds.length > 0 ? <span style={{ fontSize: 12, color: tokens.muted }}>{p.overlapIds.length} other pending preview{p.overlapIds.length === 1 ? "" : "s"} for this page.</span> : null}
+      {error ? <Banner tone="bad">{error}</Banner> : null}
+      <PreviewActions p={p} {...actions} />
+    </Modal>
   );
 }
 
