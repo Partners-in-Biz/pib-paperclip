@@ -79,6 +79,7 @@ import { chatCompletionDeliveryService } from "./services/chat-completion-delive
 // HTTP server, so trace coverage does not depend on incidental timing.
 import { instrumentationReady, shutdownInstrumentation } from "./instrumentation.js";
 import { sentryReady, shutdownSentry, captureException } from "./sentry.js";
+import { installStreamWriteErrorNet } from "./stream-write-error-net.js";
 import { blockedIssueSweeper } from "./services/blocked-issue-sweeper.js";
 import { setSentryRunLinkResolver } from "./sentry-links.js";
 import { createSentryRunLinkResolver } from "./services/sentry-run-links.js";
@@ -289,6 +290,7 @@ function initializeRuntimeConfigConsumers(config: ReturnType<typeof loadConfig>)
 }
 
 export async function startServer(): Promise<StartedServer> {
+  installStreamWriteErrorNet();
   const startupDatabase: StartupDatabaseTeardown = { close: null };
   try {
     return await startServerWithDatabaseTeardown(startupDatabase);
