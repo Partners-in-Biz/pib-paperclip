@@ -12,6 +12,10 @@ const { createErrorLog } = require('./errlog.cjs');
 
 const COMMANDS = Object.freeze(['open', 'goto', 'click', 'fill', 'text', 'shot', 'close']);
 
+// How long to wait for a text that the page renders after its document has loaded.
+const OPEN_EXPECT_WAIT_MS = 15000;
+const SHOT_EXPECT_WAIT_MS = 5000;
+
 // Sort a driver error into a reason that names the cause (PAR-9187). Only a dead
 // browser/context ends the session; a missing or ambiguous target, a slow page or
 // any other page-level error leaves it open so the agent can retry or close.
@@ -144,7 +148,13 @@ function createDispatcher(deps = {}) {
           const violation = await afterOp(ctx, sessionKey);
           if (violation) return violation;
 
-          if (!(await ctx.hasText(site.loggedIn.expect))) {
+          // The logged-in text can render a moment after the document: wait for it before calling the session expired.
+          const loggedIn = await ctx.hasText(site.loggedIn.expect, { timeoutMs: OPEN_EXPECT_WAIT_MS });
+          // The page can navigate or open a popup while we wait. Check the origin wall again before deciding
+          // anything: a refused origin is reported as such, and never keeps a session or hides behind "expired".
+          const lateViolation = await afterOp(ctx, sessionKey);
+          if (lateViolation) return lateViolation;
+          if (!loggedIn) {
             await ctx.close();
             return { exit: EXIT.SESSION_EXPIRED, ok: false, reason: 'session_expired' };
           }
@@ -318,7 +328,7 @@ function createDispatcher(deps = {}) {
 
           let expectMatched = false;
           if (expect) {
-            if (!(await ctx.hasText(expect))) {
+            if (!(await ctx.hasText(expect, { timeoutMs: SHOT_EXPECT_WAIT_MS }))) {
               return { exit: EXIT.EXPECT_MISSING, ok: false, reason: 'expect_missing' };
             }
             expectMatched = true;
