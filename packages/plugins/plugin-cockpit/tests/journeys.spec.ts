@@ -391,7 +391,9 @@ describe("the producer Drive journey (PAR-7712)", async () => {
     expect(step("ensure-canary").expect).toContainEqual({ path: "driveProject", equals: "linked" });
     expect(step("canary-project").capture).toEqual({ driveProjectId: { path: "projects[0].projectId" } });
     expect(step("social-save").input).toMatchObject({ client: "{{client}}", name: "drive-journey-{{runId}}" });
-    expect(step("evidence-save").input).toMatchObject({ client: { kind: "company", ref: "{{companyRecordId}}" }, step: "drive-journey-{{runId}}" });
+    // The run names the canary client, not the acceptance issue's project (PAR-10122): the agent passes no client at all.
+    expect(step("evidence-save").input).toMatchObject({ acceptanceRunId: "{{runId}}", step: "drive-journey-{{runId}}" });
+    expect(step("evidence-save").input).not.toHaveProperty("client");
     for (const id of ["check-social", "check-evidence"]) expect(step(id).input).toMatchObject({ projectId: "{{driveProjectId}}", nameContains: "{{runId}}" });
   });
 
@@ -407,8 +409,10 @@ describe("the producer Drive journey (PAR-7712)", async () => {
     }
   });
 
-  it("does not trust the producers' answers (a background save can time out at the gateway): only the read-back steps check the file", () => {
-    for (const id of ["social-save", "evidence-save"]) expect(step(id).expect, id).toEqual([{ path: "$", notEmpty: true }]);
+  it("does not trust Social's answer (a background save can time out at the gateway), but evidence-save must say saved: saved false is a refusal, not a time-out", () => {
+    expect(j.version).toBe(2);
+    expect(step("social-save").expect).toEqual([{ path: "$", notEmpty: true }]);
+    expect(step("evidence-save").expect).toEqual([{ path: "saved", equals: true }]);
   });
 
   it("reads fields the CRM's drive_files_list really returns", () => {
