@@ -21,6 +21,7 @@ import { scopePace } from "./pacing.js";
 import { SPEND_KINDS } from "./platforms.js";
 import { ProviderError } from "./providers/http.js";
 import type { GoogleAppSettings } from "./providers/google-app.js";
+import type { GoogleVideoSettings } from "./providers/google-video.js";
 import type { AccountRef } from "./providers/types.js";
 import type { CampaignTarget } from "./proposal-input.js";
 import { providerEnv, type AdsRuntime } from "./runtime.js";
@@ -178,6 +179,7 @@ export async function executeProposal(rt: AdsRuntime, actor: ExecuteActor, input
           dailyBudgetMinor: Number(p.payload.dailyBudgetMinor),
           specialAdCategories: (p.payload.specialAdCategories as string[]) ?? [],
           ...(p.payload.app ? { app: p.payload.app as GoogleAppSettings } : {}),
+          ...(p.payload.video ? { video: p.payload.video as GoogleVideoSettings } : {}),
           status: "PAUSED",
         });
         results.push({ what: `Created "${created.name}" (paused)`, ok: true, externalId: created.externalId });
