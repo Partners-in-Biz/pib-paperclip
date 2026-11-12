@@ -307,7 +307,7 @@ export const CAMPAIGN_TOOLS: PluginToolDeclaration[] = [
   {
     name: "edit-campaign-step",
     displayName: "Edit campaign step",
-    description: "Change the subject and/or the plain-text body of one step of a draft campaign; the HTML body stays as it is. Give at least one of subject or body. Cancels a pending approval (ask again).",
+    description: "Change the subject and/or the plain-text body of one step of a draft campaign; the HTML body stays as it is. Give at least one of subject or body. Cancels a pending approval (ask again) and returns the preflight of the edited campaign.",
     parametersSchema: schema(["campaignId", "position"], {
       campaignId,
       position: int("Step number (1 is the first step).", 1),

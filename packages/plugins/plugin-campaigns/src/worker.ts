@@ -1307,7 +1307,12 @@ async function editCampaignStepAction(ctx: PluginContext, companyId: string, par
   await updateStepText(ctx, { companyId, campaignId: campaign.id, position, variant, subject, body: text });
   await markEdited(ctx, campaign.id);
   const approvalReset = await invalidateApproval(ctx, companyId, campaign, `the text of step ${position}${variant === "b" ? "B" : ""} changed`);
-  return { campaignId: campaign.id, position, variant, subjectSet: subject !== undefined, bodySet: text !== undefined, approvalReset };
+  // Preflight on the edited steps (no link check over the network), so the writer sees at once whether the fix holds.
+  const result = await gatherPreflight(ctx, companyId, campaign, await listSteps(ctx, campaign.id), { network: false });
+  return {
+    campaignId: campaign.id, position, variant, subjectSet: subject !== undefined, bodySet: text !== undefined, approvalReset,
+    preflight: { ok: result.ok, errors: result.errors, warnings: result.warnings, sentAs: result.sentAs, channels: result.channels },
+  };
 }
 
 async function createTemplateAction(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {

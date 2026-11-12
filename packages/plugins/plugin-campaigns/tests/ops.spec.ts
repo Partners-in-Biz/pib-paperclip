@@ -210,6 +210,38 @@ describe("edit-campaign-step", () => {
   });
 });
 
+describe("edit-campaign-step re-checks and re-asks", () => {
+  const agent = { companyId: CO, agentId: "agent-camp" };
+  type Pre = { ok: boolean; errors: Array<{ code: string }> };
+  it("a draft edit shows the new body in the returned preflight and in preflight-campaign", async () => {
+    const s = seed();
+    s.campaigns!.push(campaign("camp-p", { status: "draft", delivery: "email" }));
+    s.campaign_steps!.push(step("camp-p", 1, "a", "Offer", ""));
+    const { harness } = await boot({ store: s });
+    const before = await harness.executeTool<{ data: Pre }>("preflight-campaign", { campaignId: "camp-p", links: false }, agent);
+    expect(before.data.errors.map((e) => e.code)).toContain("empty-body");
+    const out = await harness.executeTool<{ data?: { preflight: Pre }; error?: string }>("edit-campaign-step", { campaignId: "camp-p", position: 1, body: "Hello, a real body." }, agent);
+    expect(out.error).toBeUndefined();
+    expect(out.data!.preflight.errors.map((e) => e.code)).not.toContain("empty-body");
+    expect(s.campaign_steps!.find((r) => r.campaign_id === "camp-p")).toMatchObject({ body: "Hello, a real body." });
+    const after = await harness.executeTool<{ data: Pre }>("preflight-campaign", { campaignId: "camp-p", links: false }, agent);
+    expect(after.data.errors.map((e) => e.code)).not.toContain("empty-body");
+  });
+
+  it("an edit cancels the approval that was asked for, so it must be asked again", async () => {
+    const s = seed();
+    s.campaigns!.push(campaign("camp-a", { status: "draft", delivery: "email" }));
+    s.campaign_steps!.push(step("camp-a", 1, "a", "Offer", "Hello there"));
+    const { harness } = await boot({ store: s });
+    const issue = await harness.ctx.issues.create({ companyId: CO, title: "Approve camp-a", description: "x" });
+    s.campaigns![0]!.approval_issue_id = issue.id;
+    const out = await harness.executeTool<{ data?: { approvalReset: boolean }; error?: string }>("edit-campaign-step", { campaignId: "camp-a", position: 1, subject: "New offer" }, agent);
+    expect(out.data?.approvalReset).toBe(true);
+    expect(s.campaigns![0]!.approval_issue_id ?? null).toBeNull();
+    expect((await harness.ctx.issues.get(issue.id, CO))!.status).toBe("cancelled");
+  });
+});
+
 describe("an HTML body is for emails", () => {
   it("is refused on an SMS step", async () => {
     const s = seed();
