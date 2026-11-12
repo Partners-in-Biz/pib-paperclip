@@ -4,7 +4,7 @@
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { createPibOnlySkillSyncer, createSkillSyncer, normalizeUrl, safeFetch } from "@partnersinbiz/pib-plugin-kit";
-import type { SiteFetcher } from "../checks/site.js";
+import { isBareSitePath, type SiteFetcher } from "../checks/site.js";
 import { loadSeoConfig, type LoadedConfig } from "../config.js";
 import { sprintPagePath, sprintScope, type SprintClientFields } from "../engine/scope.js";
 import { localDate, localHour } from "../engine/time.js";
@@ -199,7 +199,7 @@ export function isoDateParam(params: Params, key: string): string | undefined {
 /** A normalised http(s) URL; relative paths resolve against the sprint site. */
 export function urlParam(value: string, siteUrl?: string | null): string {
   try {
-    if (siteUrl && value.startsWith("/")) return new URL(value, normalizeUrl(siteUrl)).toString();
+    if (siteUrl && (value.startsWith("/") || isBareSitePath(value))) return new URL(value.trim(), `${normalizeUrl(siteUrl).replace(/\/+$/, "")}/`).toString();
     return normalizeUrl(value);
   } catch {
     throw new SeoError(`Not a valid URL: ${value}`);

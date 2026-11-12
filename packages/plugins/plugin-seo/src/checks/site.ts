@@ -37,10 +37,21 @@ export function originOf(url: string): string {
   return new URL(withScheme).origin;
 }
 
+/** True for `sitemap_index.xml` or `sub/sitemap.xml`: a relative path, not a host name. */
+export function isBareSitePath(value: string): boolean {
+  const v = value.trim();
+  if (!v || /^[a-z][a-z0-9+.-]*:/i.test(v) || v.startsWith("//")) return false;
+  const first = v.split("/")[0];
+  if (v.includes("/")) return !first.includes(".") || first === "." || first === "..";
+  return /\.(xml|xml\.gz|txt)$/i.test(v);
+}
+
 export function absoluteUrl(url: string, siteUrl?: string | null): string {
   const trimmed = url.trim();
   if (/^https?:\/\//i.test(trimmed)) return new URL(trimmed).toString();
   if (siteUrl && trimmed.startsWith("/")) return new URL(trimmed, originOf(siteUrl)).toString();
+  // A bare file name such as sitemap_index.xml is a path on the site, not a host (PAR-10088).
+  if (siteUrl && isBareSitePath(trimmed)) return new URL(trimmed, `${originOf(siteUrl)}/`).toString();
   return new URL(`https://${trimmed}`).toString();
 }
 
@@ -302,9 +313,9 @@ export async function runCrawlerSim(fetcher: SiteFetcher, url: string): Promise<
 }
 
 /** Agent MCP calls time out after 10 s in the tool gateway; 1 s is left for overhead. */
-export const LINK_AUDIT_MAX_MS = 9_000;
+export const LINK_AUDIT_MAX_MS = 7_500;
 /** The sitemap (robots.txt, sitemap, child sitemaps) gets at most this; the crawl gets the rest. */
-export const LINK_AUDIT_SITEMAP_MS = 6_000;
+export const LINK_AUDIT_SITEMAP_MS = 5_000;
 
 /** Pages the link audit loads at once. */
 export const LINK_AUDIT_CONCURRENCY = 10;
@@ -314,7 +325,7 @@ export const LINK_AUDIT_CONCURRENCY = 10;
  * (each slowed to 5.5 s), 4 at once finished 4.
  */
 export const LINK_AUDIT_SHORT_CRAWL_CONCURRENCY = 4;
-export const LINK_AUDIT_SHORT_CRAWL_MS = 7_500;
+export const LINK_AUDIT_SHORT_CRAWL_MS = 6_000;
 /** Child sitemaps the link audit reads (all at once); more are reported as a partial sitemap. */
 export const LINK_AUDIT_MAX_CHILD_SITEMAPS = 25;
 /** A cached read or page load still pending after this is dropped and started again (a hung fetch never pins the cache). */
