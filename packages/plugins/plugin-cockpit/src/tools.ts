@@ -143,7 +143,7 @@ export const COCKPIT_TOOLS: PluginToolDeclaration[] = [
     name: TOOL_NAMES.updateProfile,
     displayName: "Fill in the company profile",
     description:
-      "Fill EMPTY fields of the company profile from what you found (the website, past work). For the brand kit fields, read our own website first with partnersinbiz.crm:extract-brand-from-site (pass url, no client) and save the colours, fonts and logo address it finds here. Fields that already have a value are never changed: to change one, ask the owner with ask-owner (kind decision) and quote the new value. Returns which fields were filled, which were kept and why.",
+      "Fill EMPTY fields of the company profile from what you found (the website, past work). For the brand kit fields, read our own website first with partnersinbiz.crm:extract-brand-from-site (pass url, no client) and save the colours, fonts and logo address it finds here. Fields that already have a value are kept, except for PiB (the CEO seat), who may overwrite them; the old value is kept in history. Any other agent that needs a set value changed asks PiB in an issue and quotes the new value. What we sell: never prices; quoted after a call. Returns which fields were filled, overwritten or kept, and why.",
     parametersSchema: schema([], {
       ...PROFILE_PROPERTIES,
       issueId: { type: "string", description: "The issue you are working on, for the record (optional)." },
