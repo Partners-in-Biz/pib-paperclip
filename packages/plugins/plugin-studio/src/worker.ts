@@ -32,6 +32,7 @@ import { sweepRenderWorkdirs } from "./video-edit/workdir.js";
 import { createRenderExecutor } from "./video-edit/render-pipeline.js";
 import { createRenderRunner } from "./video-edit/runner.js";
 import { isVideoEditTool, runVideoEditTool } from "./video-edit/tools.js";
+import { musicAction } from "./video-edit/music.js";
 import { voiceoverAction } from "./video-edit/voiceover.js";
 import { clientSummaries } from "./summary.js";
 import { assertReachable, loadIssue, resolveScope, scopeForWork, scopeInput } from "./scope.js";
@@ -465,6 +466,10 @@ const plugin = definePlugin({
     action("video-edit-voiceover", async (params, context) => {
       const me = await videoEditor(context);
       return voiceoverAction(ctx, me.companyId, objectParams(params), { userId: me.userId });
+    });
+    action("video-edit-music", async (params, context) => {
+      const me = await videoEditor(context);
+      return musicAction(ctx, me.companyId, objectParams(params), { userId: me.userId });
     });
     action("video-edit-render", async (params, context) => {
       const me = await videoEditor(context);
