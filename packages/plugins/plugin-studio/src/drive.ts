@@ -5,7 +5,7 @@
  * client's file only lands in that client's folder (own work goes to the company's own project).
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { driveSave as kitDriveSave, scopeOfRow, type DriveSaveOptions, type DriveSaveResult, type DriveTransferProgress } from "@partnersinbiz/pib-plugin-kit";
+import { DRIVE_ACK_TIMEOUT_MS, driveSave as kitDriveSave, scopeOfRow, type DriveSaveOptions, type DriveSaveResult, type DriveTransferProgress } from "@partnersinbiz/pib-plugin-kit";
 import { addLink, getAssetRow } from "./assets.js";
 import { StudioConfig } from "./config.js";
 import { iso, num, table } from "./db.js";
@@ -17,8 +17,8 @@ import { DRIVE_INLINE_MAX_BYTES, DRIVE_MAX_BYTES } from "./drive-limits.js";
 // The limit is checked here first, before reading from R2, for a clear message.
 export { DRIVE_INLINE_MAX_BYTES, DRIVE_MAX_BYTES };
 export const DRIVE_LINK_TYPE = "drive_file";
-// Well under the host's 30 s action limit, so people get the plain message instead of a bare 502 (PAR-8114).
-export const DRIVE_TIMEOUT_MS = 20_000;
+// Under the tool gateway's ~10 s cut (PAR-10208), so people and agents get the plain message instead of a bare 504.
+export const DRIVE_TIMEOUT_MS = DRIVE_ACK_TIMEOUT_MS;
 /** A large transfer: the longest wait between two progress replies (the CRM sends one per 8 MiB chunk). */
 export const TRANSFER_IDLE_MS = 60_000;
 /** Signed R2 links for a large transfer: long enough for 200 MB on a slow line, short enough to be worthless later. */

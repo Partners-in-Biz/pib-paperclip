@@ -248,7 +248,6 @@ export async function createPreview(env: Env, companyId: string, actor: Actor, p
     mimeType: "text/html",
     bytes: Buffer.from(withoutNul(built.html)),
     subfolder: "03 Deliverables",
-    timeoutMs: 5000,
     ...driveTarget,
   }).catch(() => {
     // Suppress errors; exportToDrive never throws but we catch any unexpected issue
