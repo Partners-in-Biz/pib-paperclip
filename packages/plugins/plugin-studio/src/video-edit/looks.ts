@@ -9,11 +9,13 @@
  *   6600 K is exactly (1,1,1). `NEUTRAL_ADJUST.temperature` is therefore 6600.
  * - `vignette=angle=A` multiplies by cos(A * d / dmax)^4, d = distance from the centre, dmax = half the diagonal.
  * - `eq` works on the code values of the decoded frame, which in production is yuv420p BT.709 TV range (Y 16..235).
- *   Brightness adds b*256 code values on a 219-wide range (measured on ffmpeg 6.1.1), so in full-scale terms it adds b*256/219 (`EQ_BRIGHTNESS_K`),
- *   and contrast pivots on code 128, which is 112/219 in full scale (`EQ_PIVOT`). Saturation scales chroma about
- *   luma, unchanged by range. The compile step must therefore NOT convert to full range before `eq`.
- *   Luma is clamped to 0..1 before the chroma is added back; the SVG matrix is linear and clamps only at the end, so the two differ for
- *   colours whose luma leaves 0..1 (bright colours with +brightness). Parity tests use colours that stay inside.
+ *   The compile step must therefore NOT convert to full range before `eq`. Per plane it is integer maths on values
+ *   rounded to float (vf_eq.c `process_c`, `eqPlane`): luma gets contrast and brightness, each chroma plane gets
+ *   saturation as its contrast with brightness 0. Brightness lands in whole steps of about 2.555 codes (0.12 adds 27,
+ *   not 30.7) and saturation pulls chroma one code low (grey at saturation 1.6 gets Cb = Cr = 127). Matched code for
+ *   code on 40 colour/setting pairs against ffmpeg 6.1.1 (PAR-10159). As an average over many pixels each plane is
+ *   affine, so the SVG path is one colour matrix. Luma is clamped to the code range 0..255 before the chroma is added
+ *   back; the SVG matrix clamps only at the end, so the two differ only for colours whose luma leaves that range.
  */
 
 export type Rgb = readonly [number, number, number];
@@ -30,10 +32,41 @@ export const NEUTRAL_ADJUST: Readonly<Adjust> = { brightness: 0, contrast: 1, sa
 export const BLUR_REF_WIDTH = 1080;
 const LUMA = [0.2126, 0.7152, 0.0722] as const;
 const IDENTITY: Mat3 = [1, 0, 0, 0, 1, 0, 0, 0, 1];
-/** `eq` on TV-range code values, in full-scale units: brightness gain and contrast pivot (see header). */
-const EQ_BRIGHTNESS_K = 256 / 219;
-const EQ_PIVOT = 112 / 219;
 const clamp01 = (n: number): number => (n < 0 ? 0 : n > 1 ? 1 : n);
+const gcd = (a: number, b: number): number => (b ? gcd(b, a % b) : a);
+
+/** vf_eq.c's integer gain and offset for one plane, from the parameters rounded to float as ffmpeg stores them. */
+function eqInts(contrast: number, brightness: number): { ci: number; bi: number } {
+  const ci = Math.trunc(Math.fround(contrast) * 256 * 16);
+  return { ci, bi: Math.trunc((Math.trunc(100 * Math.fround(brightness) + 100) * 511) / 200) - 128 - Math.trunc(ci / 32) };
+}
+/** ffmpeg `eq` on one 8-bit code value: `((in * ci) >> 12) + bi`, clipped to 0..255. */
+export function eqCode(contrast: number, brightness: number, code: number): number {
+  const { ci, bi } = eqInts(contrast, brightness);
+  return Math.min(255, Math.max(0, Math.floor((code * ci) / 4096) + bi));
+}
+/** `eqCode` as the average line `in * k + o` over many pixels: the floor costs (d - 1) / 2d of a code, d the denominator of ci / 4096. */
+export function eqPlane(contrast: number, brightness: number): { k: number; o: number } {
+  const { ci, bi } = eqInts(contrast, brightness);
+  const d = 4096 / gcd(ci, 4096);
+  return { k: ci / 4096, o: bi - (d - 1) / (2 * d) };
+}
+
+/** BT.709 colour difference back to RGB: what one unit of Cb and Cr (both moved alike) adds to each channel. */
+const CHROMA_RGB: Rgb = [1.5748, -(0.2126 * 1.5748 + 0.0722 * 1.8556) / 0.7152, 1.8556];
+/** `eq` in full-scale RGB terms: luma `y*ky + dy`, chroma scaled by `ks` about luma, and `dc` added to Cb and Cr. */
+function eqRgb(a: Adjust): { ky: number; dy: number; ks: number; dc: number } {
+  let [ky, dy, ks, dc] = [1, 0, 1, 0];
+  if (a.brightness !== 0 || a.contrast !== 1) {
+    const p = eqPlane(a.contrast, a.brightness);
+    [ky, dy] = [p.k, (16 * p.k + p.o - 16) / 219];
+  }
+  if (a.saturation !== 1) {
+    const p = eqPlane(a.saturation, 0);
+    [ks, dc] = [p.k, (128 * p.k + p.o - 128) / 224];
+  }
+  return { ky, dy, ks, dc };
+}
 
 /** Saturation matrix about BT.709 luma (s = 1 is identity, 0 is mono). */
 const sat = (s: number): Mat3 => [
@@ -158,9 +191,10 @@ function fill(a?: Partial<Adjust>): Adjust {
 export function applyAdjust(rgb: Rgb, adjust: Partial<Adjust>): Rgb {
   const a = fill(adjust);
   const y = LUMA[0] * rgb[0] + LUMA[1] * rgb[1] + LUMA[2] * rgb[2];
-  const y2 = clamp01((y - EQ_PIVOT) * a.contrast + EQ_PIVOT + a.brightness * EQ_BRIGHTNESS_K);
+  const e = eqRgb(a);
+  const y2 = Math.min(239 / 219, Math.max(-16 / 219, y * e.ky + e.dy)); // the code range 0..255
   const g = temperatureGain(a.temperature);
-  return [0, 1, 2].map((i) => clamp01(clamp01(y2 + (rgb[i]! - y) * a.saturation) * g[i]!)) as unknown as Rgb;
+  return [0, 1, 2].map((i) => clamp01(clamp01(y2 + (rgb[i]! - y) * e.ks + CHROMA_RGB[i]! * e.dc) * g[i]!)) as unknown as Rgb;
 }
 
 // ---- ffmpeg output ----
@@ -236,11 +270,12 @@ export function toSvgPrimitives(x: LookRef | Partial<Adjust>, opts: { displayWid
   }
   const a = fill(x);
   if (a.brightness !== 0 || a.contrast !== 1 || a.saturation !== 1) {
-    // out_i = s*in_i + (c - s)*Y + (p - p*c + k*b): linear in RGB, so one matrix (brightness is additive, as eq).
+    // out_i = ks*in_i + (ky - ks)*Y + dy + e_i*dc (`eqRgb`): affine in RGB, so one matrix (brightness is additive, as eq).
+    const e = eqRgb(a);
     const v: number[] = [];
     for (let i = 0; i < 3; i++) {
-      for (let j = 0; j < 3; j++) v.push((i === j ? a.saturation : 0) + (a.contrast - a.saturation) * LUMA[j]!);
-      v.push(0, EQ_PIVOT * (1 - a.contrast) + a.brightness * EQ_BRIGHTNESS_K);
+      for (let j = 0; j < 3; j++) v.push((i === j ? e.ks : 0) + (e.ky - e.ks) * LUMA[j]!);
+      v.push(0, e.dy + CHROMA_RGB[i]! * e.dc);
     }
     out.push({ kind: "matrix", values: [...v, 0, 0, 0, 1, 0] });
   }

@@ -79,7 +79,8 @@ describe("looks: adjust", () => {
   it("brightness is additive (SVG intercept), not multiplicative", () => {
     const [p] = toSvgPrimitives({ brightness: 0.2 });
     expect(p).toMatchObject({ kind: "matrix" });
-    expect(applyPrimitives([0, 0, 0], [p!])[0]).toBeCloseTo((0.2 * 256) / 219, 6);
+    // eq adds trunc(trunc(100*0.2f + 100) * 511 / 200) - 256 = 50 codes of 219 (PAR-10159), the same on every channel.
+    expect(applyPrimitives([0, 0, 0], [p!])).toEqual([50 / 219, 50 / 219, 50 / 219].map((n) => expect.closeTo(n, 9)));
   });
   it("ffmpeg args are fixed strings from our numbers, in render order", () => {
     expect(adjustToFfmpeg({ brightness: 0.2, contrast: 1.1, saturation: 0, temperature: 5000, blur: 10, vignette: 0.5 }, { renderWidth: 1080 }))
