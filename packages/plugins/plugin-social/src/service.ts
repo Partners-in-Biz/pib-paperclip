@@ -46,6 +46,7 @@ import {
   destinationsForPost,
   destinationsForScope,
   deleteDisabledAccount,
+  publishedDestinationCount,
   disableManualAccount,
   disconnectAccount,
   isManual,
@@ -1078,6 +1079,12 @@ export async function deleteAccountRecord(ctx: PluginContext, viewer: Viewer, ac
   requireUser(viewer, "delete an account");
   const account = await requireAccount(ctx, viewer, accountId);
   if (account.status !== "disabled") throw new SocialError(`Disconnect ${account.display_name} first, then delete it`);
+  const published = await publishedDestinationCount(ctx, viewer.companyId, account.id);
+  if (published > 0) {
+    throw new SocialError(
+      `${account.display_name} has ${published} published post${published === 1 ? "" : "s"}. Deleting it would erase what was published there and its metrics, so it stays disconnected.`,
+    );
+  }
   const removed = await deleteDisabledAccount(ctx, viewer.companyId, account.id);
   if (!removed) throw new SocialError(`${account.display_name} was not deleted: it is no longer disconnected`);
   return { accountId: account.id, deleted: true };

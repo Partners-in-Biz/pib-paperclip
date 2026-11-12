@@ -452,11 +452,26 @@ export async function disconnectAccount(ctx: PluginContext, companyId: string, i
   return result.rowCount;
 }
 
+/** SQL: the account (`accounts` row aliased `a`) has a published destination, so deleting it would cascade away a post's record. */
+const HAS_PUBLISHED = (ctx: PluginContext, alias: string) =>
+  `EXISTS (SELECT 1 FROM ${table(ctx, "destinations")} d WHERE d.account_id = ${alias}.id AND d.status = 'published')`;
+
+/** How many destinations of this account are published (a post's record of what went out). */
+export async function publishedDestinationCount(ctx: PluginContext, companyId: string, accountId: string): Promise<number> {
+  const rows = await ctx.db.query<{ n: number | string }>(
+    `SELECT count(*) AS n FROM ${table(ctx, "destinations")} WHERE company_id = $1 AND account_id = $2 AND status = 'published'`,
+    [companyId, accountId],
+  );
+  return Number(rows[0]?.n ?? 0);
+}
+
 /**
  * Delete a disconnected account for good (a wrong account connected by mistake). Its inbox items, metrics and RSS feed links go; its
- * destinations on posts (and their scores) go by cascade, so the posts stay but no longer list it. Only a disabled row is removed.
+ * destinations on posts (and their scores) go by cascade, so the posts stay but no longer list it. Only a disabled row with no
+ * published destination is removed: the cascade would erase what a post published there and its metrics (PAR-10115).
  */
 export async function deleteDisabledAccount(ctx: PluginContext, companyId: string, id: string): Promise<number> {
+  if ((await publishedDestinationCount(ctx, companyId, id)) > 0) return 0;
   await ctx.db.execute(`DELETE FROM ${table(ctx, "inbox_items")} WHERE company_id = $1 AND account_id = $2`, [companyId, id]);
   await ctx.db.execute(`DELETE FROM ${table(ctx, "post_metrics")} WHERE company_id = $1 AND account_id = $2`, [companyId, id]);
   await ctx.db.execute(
@@ -466,7 +481,10 @@ export async function deleteDisabledAccount(ctx: PluginContext, companyId: strin
       WHERE company_id = $1 AND ($2 = ANY(account_ids) OR account_id = $2)`,
     [companyId, id],
   );
-  const result = await ctx.db.execute(`DELETE FROM ${table(ctx, "accounts")} WHERE company_id = $1 AND id = $2 AND status = 'disabled'`, [companyId, id]);
+  const result = await ctx.db.execute(
+    `DELETE FROM ${table(ctx, "accounts")} a WHERE a.company_id = $1 AND a.id = $2 AND a.status = 'disabled' AND NOT ${HAS_PUBLISHED(ctx, "a")}`,
+    [companyId, id],
+  );
   return result.rowCount;
 }
 
@@ -502,8 +520,9 @@ export async function flagLegacyTokens(ctx: PluginContext, companyId: string): P
 /** Remove leftover rows that never had a credential (e.g. the fake LinkedIn row). */
 export async function deleteJunkAccounts(ctx: PluginContext, companyId: string): Promise<number> {
   const result = await ctx.db.execute(
-    `DELETE FROM ${table(ctx, "accounts")}
-      WHERE company_id = $1 AND token_enc IS NULL AND secret_ref IS NULL AND manual = false AND status <> 'disabled'`,
+    `DELETE FROM ${table(ctx, "accounts")} a
+      WHERE a.company_id = $1 AND a.token_enc IS NULL AND a.secret_ref IS NULL AND a.manual = false AND a.status <> 'disabled'
+        AND NOT ${HAS_PUBLISHED(ctx, "a")}`,
     [companyId],
   );
   return result.rowCount;
