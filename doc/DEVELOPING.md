@@ -1789,6 +1789,8 @@ pnpm paperclipai run
 2. `paperclipai doctor` with repair enabled
 3. starts the server when checks pass
 
+`PAPERCLIP_EXIT_ON_STREAM_WRITE_ERROR=1` makes the server exit (code 1) on an uncaught `EPIPE` / `ERR_STREAM_DESTROYED` instead of logging `[paperclip] stream-write-error-net: kept running` and staying up. It is read when the error happens.
+
 ### One-command isolated manual test drive
 
 Use `test-drive` when you want to exercise the UI from a fresh checkout or SHA
