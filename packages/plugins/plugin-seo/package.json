@@ -1,12 +1,6 @@
 {
   "name": "@partnersinbiz/plugin-seo",
-<<<<<<< HEAD
-  "version": "0.47.1",
-||||||| parent of a4e653bc3 (fix(plugin-seo): bump to 0.48.0 after T6 took 0.47.0, reindent PreviewActions (PAR-9146))
-  "version": "0.47.0",
-=======
   "version": "0.48.0",
->>>>>>> a4e653bc3 (fix(plugin-seo): bump to 0.48.0 after T6 took 0.47.0, reindent PreviewActions (PAR-9146))
   "private": true,
   "type": "module",
   "description": "90-day SEO sprints worked as Paperclip issues by an SEO agent hired through a normal Paperclip task.",

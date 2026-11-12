@@ -36,13 +36,7 @@ describe("manifest", () => {
       expect.objectContaining({ routeKey: "setup-status", method: "GET", path: "/setup-status", auth: "board", companyResolution: { from: "query", key: "companyId" } }),
       expect.objectContaining({ routeKey: "cockpit", method: "GET", path: "/cockpit", auth: "board", companyResolution: { from: "query", key: "companyId" } }),
     ]);
-<<<<<<< HEAD
-    expect(manifest.version).toBe("0.47.1"); // Hardcoded check catches manual typos in version bumps
-||||||| parent of a4e653bc3 (fix(plugin-seo): bump to 0.48.0 after T6 took 0.47.0, reindent PreviewActions (PAR-9146))
-    expect(manifest.version).toBe("0.47.0"); // Hardcoded check catches manual typos in version bumps
-=======
     expect(manifest.version).toBe("0.48.0"); // Hardcoded check catches manual typos in version bumps
->>>>>>> a4e653bc3 (fix(plugin-seo): bump to 0.48.0 after T6 took 0.47.0, reindent PreviewActions (PAR-9146))
     expect(manifest.version).toBe(pkg.version);
   });
 
