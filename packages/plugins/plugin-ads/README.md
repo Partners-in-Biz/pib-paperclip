@@ -1,6 +1,6 @@
 # Paid ads
 
-Paperclip plugin `partnersinbiz.ads`. Version 0.3.29. 0.3.29 (PAR-6695): Google App campaigns. A `create_campaign` with `objective` MULTI_CHANNEL creates a PAUSED App campaign (install goal, own budget, locations) in one request. 0.3.28: src-only (PAR-10212): the creative's Drive copy waits the kit's 8 s `DRIVE_ACK_TIMEOUT_MS` for the CRM's ack (was 10 s, the tool gateway's cut).
+Paperclip plugin `partnersinbiz.ads`. Version 0.3.30. 0.3.30 (PAR-6696): YouTube video campaigns. Google's API cannot create VIDEO campaigns, so a `create_campaign` with `objective` DEMAND_GEN (or VIDEO) creates a PAUSED Demand Gen campaign with its own budget and a paused ad group that shows only on YouTube (in-stream, in-feed, Shorts) in the named locations, in one request. 0.3.29 (PAR-6695): Google App campaigns. A `create_campaign` with `objective` MULTI_CHANNEL creates a PAUSED App campaign (install goal, own budget, locations) in one request. 0.3.28: src-only (PAR-10212): the creative's Drive copy waits the kit's 8 s `DRIVE_ACK_TIMEOUT_MS` for the CRM's ack (was 10 s, the tool gateway's cut).
 
 Reads Meta and Google Ads performance into one picture for PiB's own ads and for each client's, keeps monthly budget caps with pacing, raises anomaly alerts, and turns every campaign or budget change into a **proposal with the numbers** that goes to the Reviewer, then a person (and the client, through the CRM, where the scope asks). It is the governed-spend module the audit asked for (Q1a-7, Q9-4, Q10-14), not a port of the old 91-route Ads manager.
 
