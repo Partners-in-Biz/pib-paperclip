@@ -19,6 +19,9 @@ import { runContained } from "../src/video-edit/ffmpeg.js";
 import { planRender, type RenderPass } from "../src/video-edit/render-plan.js";
 import { FPS, normalizeEdit, type EditDoc } from "../src/video-edit/timeline.js";
 
+/** The audio weight these cases were written for (the tuned default in render-plan.ts may move; the plan shapes must not). */
+const AUDIO_WEIGHT = 0.25;
+
 const W = 320;
 const H = 240;
 const BAR = { meanPsnr: 42, minPsnr: 35, audioDiffDb: -50 };
@@ -98,7 +101,7 @@ async function renderBoth(name: string, doc: EditDoc, passBudget: number) {
   const singleRender = compileVideo(doc, sources, single);
   await render(singleRender, dirname(single));
   await render(withPcmSound(singleRender, singleMix), dirname(single));
-  const plan = planRender(doc, sources, { workdir: join(root, "multi"), passBudget });
+  const plan = planRender(doc, sources, { workdir: join(root, "multi"), passBudget, audioWeight: AUDIO_WEIGHT });
   if (plan.kind !== "multi") throw new Error(`${name}: expected a multi-pass plan, got ${plan.kind}`);
   for (const pass of plan.passes) {
     const compiled = pass.kind === "stem" ? compileAudioStem(pass.doc, pass.sources, pass.output) : compileVideo(pass.doc, pass.sources, pass.output, { intermediate: true, origin: pass.origin });

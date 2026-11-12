@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { hasClipAudio } from "../src/video-edit/compile-audio.js";
 import { compileVideo, frameAt, inputKey, type CompileInputs } from "../src/video-edit/compile-video.js";
-import { AUDIO_WEIGHT, editWeight, inputWeight, planRender, type RenderPass, type RenderPlan } from "../src/video-edit/render-plan.js";
+import { editWeight, inputWeight, planRender, type RenderPass, type RenderPlan } from "../src/video-edit/render-plan.js";
 import { clipDuration, editDuration, normalizeEdit, type EditDoc, type MediaClip } from "../src/video-edit/timeline.js";
 
 const ms = (n: number) => Math.round(n * 1000) / 1000;
@@ -23,7 +23,10 @@ const clip = (id: string, assetId: string, start: number, len: number, extra: ob
 const run = (n: number, len: number, pick: (i: number) => object = () => ({})) =>
   Array.from({ length: n }, (_, i) => clip(`c${i}`, "g", Math.round(i * len * 1000) / 1000, len, { ...GRADE, ...pick(i) }));
 const edit = (main: unknown[], rest: unknown[] = [], fps = 30) => normalizeEdit({ project: { size: "9:16", fps }, tracks: [{ id: "v", kind: "video", clips: main }, ...rest] });
-const plan = (doc: EditDoc, passBudget?: number, audioWeight?: number) => planRender(doc, inputs, { workdir: WD, passBudget, audioWeight });
+/** The budget these cases were written for (the tuned defaults in render-plan.ts may move; the planning rules do not). */
+const AUDIO_WEIGHT = 0.25;
+const SPEC = { passBudget: 8, audioWeight: AUDIO_WEIGHT };
+const plan = (doc: EditDoc, passBudget = SPEC.passBudget, audioWeight = SPEC.audioWeight) => planRender(doc, inputs, { workdir: WD, passBudget, audioWeight });
 function multi(p: RenderPlan) {
   if (p.kind !== "multi") throw new Error(`expected multi, got ${p.kind}`);
   return p;
@@ -53,7 +56,7 @@ describe("render plan weights", () => {
       { id: "vo", kind: "audio", clips: [clip("vo1", "music", 1, 3, { volume: 0.5 })] },
     ]);
     // main 1 + 0.25 (clip audio) + 4, overlays 1 + 1 + 0.25, music 0.25, voiceover 0.25
-    expect(editWeight(doc, inputs)).toBe(8);
+    expect(editWeight(doc, inputs, AUDIO_WEIGHT)).toBe(8);
     expect(inputCount(doc, inputs)).toBe(8);
   });
 
@@ -178,7 +181,7 @@ describe("main-track chunks", () => {
     const doc = edit(run(17, 1, (i) => (i === 7 ? { transitionIn: { type: "fade", duration: 0.5 }, start: 6.5 } : {})), [{ id: "o", kind: "overlay", clips: [clip("o1", "png", 1, 2)] }]);
     const before = structuredClone(doc);
     const sources = structuredClone(inputs);
-    const p = multi(planRender(doc, sources, { workdir: WD }));
+    const p = multi(planRender(doc, sources, { workdir: WD, ...SPEC }));
     expect(doc).toEqual(before);
     expect(sources).toEqual(inputs);
     expect(p.final.doc.tracks[1]).not.toBe(doc.tracks[1]);

@@ -93,6 +93,8 @@ export interface RenderControl {
   signal: AbortSignal;
   /** Call once ffmpeg is spawned: records pid (= pgid) and work folder for recovery. False = the claim is gone. */
   started(info: { pgid: number; workdir: string }): Promise<boolean>;
+  /** The ffmpeg run of the last `started()` has ended (its group is gone): a lost claim must not signal that pgid. */
+  passEnded(): void;
   /** ffmpeg is done and the output is being stored. False = the claim is gone. */
   uploading(): Promise<boolean>;
 }
@@ -222,6 +224,10 @@ export function createRenderRunner(ctx: PluginContext, opts: RunnerOptions = {})
         entry.pgid = info.pgid;
         entry.workdir = info.workdir;
         return beat({ pid: info.pgid, workdir: info.workdir });
+      },
+      passEnded() {
+        // The row keeps the old pid for recovery, which checks the cmdline first; this worker just stops signalling it.
+        entry.pgid = null;
       },
       uploading: () => beat({ stage: "uploading" }),
     };
