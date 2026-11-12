@@ -71,7 +71,7 @@ PAR-10822. A lead source now has an `intake`: `lead` (the default; every existin
 - makes **no** contact, activity, follow-up or consent record;
 - opens one issue in the project (origin `crm:report:<key>`, through `openIssueOnce`), titled `<source label>: <first 60 characters of subject>` (the message's first line when there is no subject), assigned to the agent when it still exists, else unassigned;
 - puts every submitted field in one plain-text code block the visitor cannot close, so links and HTML are shown as text.
-The same report (sender, subject, message, fields) twice in a day is one issue. Signed and unsigned calls keep the lead rules (honeypot, fill time, links, Turnstile, per-IP caps for unsigned). Migration `022_crm.sql` adds `intake` (default `lead`), `target_project_id` and `target_agent_id`; rollback: none needed, old code ignores them.
+The same report (sender, subject, message, fields) twice in a day is one issue. Signed and unsigned calls keep the lead rules (honeypot, fill time, links, Turnstile, per-IP caps for unsigned). Migration `022_crm.sql` adds `intake` (default `lead`, named CHECK `lead_sources_intake`: `lead` or `issue`; a later mode drops and re-adds that one constraint), `target_project_id` and `target_agent_id`; rollback: none needed, old code ignores them.
 
 ## Drive save timing logs (0.45.1)
 

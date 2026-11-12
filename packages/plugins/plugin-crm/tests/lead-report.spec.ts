@@ -32,6 +32,7 @@ describe("the report intake migration", () => {
     for (const statement of splitSqlStatements(sql)) expect(() => validateMigrationStatement(statement, NAMESPACE), statement.slice(0, 80)).not.toThrow();
     for (const line of sql.split("\n").filter((row) => row.trim().startsWith("--"))) expect(line).not.toMatch(/['"`]/);
     expect(sql).toContain("ADD COLUMN IF NOT EXISTS intake text NOT NULL DEFAULT 'lead'");
+    expect(sql).toContain("ADD CONSTRAINT lead_sources_intake CHECK (intake IN ('lead', 'issue'))");
     expect(sql).not.toMatch(/\b(delete|update|drop)\b/i);
   });
 });
