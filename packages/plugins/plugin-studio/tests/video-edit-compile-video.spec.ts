@@ -130,6 +130,19 @@ describe("compileVideo contract", () => {
     expect(e.code).toBe("unsupported_feature");
   });
 
+  it("caps decoder threads on every picture input, filter and encoder threads once (PAR-10432)", () => {
+    const { args } = compile([video(clip("c1", "a", 0, 0, 2), clip("c2", "b", 2, 0, 2), clip("c3", "c", 4, 0, 2)), overlay(clip("o1", "logo", 0, 0, 2))]);
+    const at = args.flatMap((a, i) => (a === "-i" ? [i] : []));
+    expect(at).toHaveLength(4);
+    // `-threads` binds to the next file, so each picture input carries its own (the one in containedArgv reaches input 0 only).
+    for (const i of at) expect(args.slice(args.lastIndexOf("-threads", i), args.lastIndexOf("-threads", i) + 2)).toEqual(["-threads", "2"]);
+    expect(args.filter((a) => a === "-threads")).toHaveLength(5);
+    expect(args.slice(args.indexOf("-filter_complex_script") - 2, args.indexOf("-filter_complex_script"))).toEqual(["-filter_complex_threads", "4"]);
+    const out = args.lastIndexOf("-threads");
+    expect(out).toBeGreaterThan(args.indexOf("libx264"));
+    expect(args[out + 1]).toBe("4");
+  });
+
   it("names a missing input", () => {
     const e = errorOf(() => compileVideo(edit([video(clip("c1", "zzz", 0, 0, 1))]), inputs, "out.mp4"));
     expect(e.message).toBe("missing_input:zzz@1");

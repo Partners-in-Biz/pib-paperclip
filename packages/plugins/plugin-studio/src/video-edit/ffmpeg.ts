@@ -24,6 +24,8 @@ export const FSIZE_BYTES = 209_715_200;
 /** RLIMIT_AS default. A9 sets the final value from the measured peak (+50%); pass `asLimitBytes` to change it. */
 export const DEFAULT_AS_LIMIT_BYTES = 6 * 1024 * 1024 * 1024;
 export const NICE = 10;
+/** ffmpeg `-threads` is per file: placed first, it binds to the first input only. Multi-input renders cap every file
+ * themselves (`compile-video.ts`, PAR-10432). */
 export const THREADS = 4;
 export const CANCEL_GRACE_MS = 10_000;
 export const STDERR_TAIL_BYTES = 4096;
@@ -150,14 +152,22 @@ function killGroup(kill: (pid: number, signal: NodeJS.Signals) => void, pgid: nu
 }
 
 /**
- * The child env, an allowlist. ffmpeg/ffprobe: PATH and LC_ALL=C (the worker env is PATH/NODE_PATH/TZ/NODE_ENV only; ffmpeg
- * needs nothing else, and never the worker's secrets). node: PATH, LANG and `PIB_ML_*` (from the worker env, then `opts.env`).
+ * glibc malloc arenas for ffmpeg/ffprobe. By default a process gets up to 8 per core, each a 64 MiB reservation that
+ * `--as` counts though it is mostly untouched: a 180 s, 6-cut graded render (13 inputs, 120 threads) peaked at 5404 MiB
+ * with the default and 3026 MiB with 4 (PAR-10432).
+ */
+export const MALLOC_ARENAS = 4;
+
+/**
+ * The child env, an allowlist. ffmpeg/ffprobe: PATH, LC_ALL=C and MALLOC_ARENA_MAX (the worker env is
+ * PATH/NODE_PATH/TZ/NODE_ENV only; ffmpeg needs nothing else, and never the worker's secrets). node: PATH, LANG and
+ * `PIB_ML_*` (from the worker env, then `opts.env`).
  */
 export function containedEnv(opts: Pick<RunOptions, "tool" | "env"> = {}, from: NodeJS.ProcessEnv = process.env): Record<string, string> {
   const path = from.PATH || "/usr/bin:/bin";
   if ((opts.tool ?? "ffmpeg") !== "node") {
     if (opts.env && Object.keys(opts.env).length) throw new Error("env is only for tool \"node\"");
-    return { PATH: path, LC_ALL: "C" };
+    return { PATH: path, LC_ALL: "C", MALLOC_ARENA_MAX: String(MALLOC_ARENAS) };
   }
   const env: Record<string, string> = { PATH: path };
   if (from.LANG) env.LANG = from.LANG;

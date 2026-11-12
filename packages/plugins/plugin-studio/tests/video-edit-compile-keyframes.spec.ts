@@ -62,10 +62,11 @@ describe("keyframed x/y/scale/rotate: compiled graph", () => {
     expect(lines[xfade]).toContain(`[${/\[(seg\d+)\]$/.exec(lines[keyed])![1]}]xfade=transition=fade:duration=1:offset=2`);
   });
 
-  it("keyframed edits cap filter threads; plain edits do not", () => {
-    const keyed = compileVideo(doc([video(clip("c1", "box", 0, 3, { keyframes: { x: [k(0, 0), k(3, 9)] } }))]), inputs, "out.mp4").args;
-    expect(keyed.slice(keyed.indexOf("-filter_complex_script") - 2, keyed.indexOf("-filter_complex_script"))).toEqual(["-filter_complex_threads", "4"]);
-    expect(compileVideo(doc([video(clip("c1", "box", 0, 3, { transform: { x: 9 } }))]), inputs, "out.mp4").args).not.toContain("-filter_complex_threads");
+  it("keyframed and plain edits both cap filter threads (PAR-10432)", () => {
+    for (const c of [clip("c1", "box", 0, 3, { keyframes: { x: [k(0, 0), k(3, 9)] } }), clip("c1", "box", 0, 3, { transform: { x: 9 } })]) {
+      const args = compileVideo(doc([video(c)]), inputs, "out.mp4").args;
+      expect(args.slice(args.indexOf("-filter_complex_script") - 2, args.indexOf("-filter_complex_script"))).toEqual(["-filter_complex_threads", "4"]);
+    }
   });
 
   it("an unkeyed clip with the same transform compiles exactly as before (no eval=frame, no black@0)", () => {
