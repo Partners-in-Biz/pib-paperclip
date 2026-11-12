@@ -5,7 +5,8 @@ import { fileURLToPath } from "node:url";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { NAMESPACE } from "../src/namespace.js";
-import { markPostPostedRecord, postAnalyticsRecord, type Viewer } from "../src/service.js";
+import { deleteJunkAccounts } from "../src/db.js";
+import { deleteAccountRecord, markPostPostedRecord, postAnalyticsRecord, type Viewer } from "../src/service.js";
 
 const MIGRATIONS = fileURLToPath(new URL("../migrations/", import.meta.url));
 const EMBEDDED = fileURLToPath(new URL("../../../db/node_modules/embedded-postgres/dist/index.js", import.meta.url));
@@ -136,5 +137,35 @@ describe.skipIf(!available)("mark-posted X link and post-analytics measurable (p
     expect(by.dm).toMatchObject({ measurable: false, unmeasuredReason: "no external id (marked posted by hand without a link)" });
     expect(by.ddis).toMatchObject({ measurable: false, unmeasuredReason: "account disabled or disconnected" });
     expect(by.dok).toMatchObject({ measurable: true, unmeasuredReason: null });
+  });
+
+  describe("deleting an account keeps the record of what a post published (PAR-10115)", () => {
+    const destinationIds = async () => (await q(`SELECT id FROM ${T("destinations")} WHERE post_id = 'p1' ORDER BY id`)).map((r) => r.id);
+    const accountExists = async (id: string) => (await q(`SELECT 1 FROM ${T("accounts")} WHERE id = $1`, [id])).length === 1;
+
+    it("refuses to delete a disconnected account with a hand-marked published destination; post-analytics still lists it", async () => {
+      await seed("published", [{ id: "dm", account: "ax", status: "published", result: { manual: true } }]);
+      await expect(deleteAccountRecord(ctx, viewer, "ax")).rejects.toThrow(/X has 1 published post\. Deleting it would erase/);
+      expect(await accountExists("ax")).toBe(true);
+      expect(await destinationIds()).toEqual(["dm"]);
+      const out = (await postAnalyticsRecord(ctx, viewer, { postId: "p1" })) as { destinations: Array<{ destinationId: string; measurable: boolean; unmeasuredReason: string | null }> };
+      expect(out.destinations).toEqual([expect.objectContaining({ destinationId: "dm", measurable: false, unmeasuredReason: "no external id (marked posted by hand without a link)" })]);
+    });
+
+    it("still deletes a disconnected account whose destinations never published", async () => {
+      await seed("failed", [{ id: "df", account: "ax", status: "failed" }]);
+      expect(await deleteAccountRecord(ctx, viewer, "ax")).toEqual({ accountId: "ax", deleted: true });
+      expect(await accountExists("ax")).toBe(false);
+      expect(await destinationIds()).toEqual([]);
+    });
+
+    it("the junk-account sweep skips an account with a published destination", async () => {
+      await client.query(`INSERT INTO ${T("accounts")} (id, company_id, platform, scope, display_name, status, token_enc) VALUES
+        ('ajunk', 'co', 'x', 'org', 'Junk', 'needs_reconnect', NULL), ('ajunk2', 'co', 'x', 'org', 'Junk2', 'needs_reconnect', NULL)`);
+      await seed("published", [{ id: "dj", account: "ajunk", status: "published", externalId: "1702" }]);
+      expect(await deleteJunkAccounts(ctx, "co")).toBe(1);
+      expect([await accountExists("ajunk"), await accountExists("ajunk2")]).toEqual([true, false]);
+      expect(await destinationIds()).toEqual(["dj"]);
+    });
   });
 });

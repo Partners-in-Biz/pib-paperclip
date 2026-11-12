@@ -6,36 +6,66 @@ import { fakeCtx, fastNetwork, json, mockFetch } from "./helpers.js";
 const env: ProviderEnv = { app: { platform: "facebook", clientId: "app-id", clientSecret: "app-secret" }, redirectUri: "https://paperclip.example.com/cb" };
 const account: ProviderAccount = { id: "a1", platform: "facebook", externalId: "p1", handle: null, displayName: "P", meta: {}, token: { accessToken: "TOK" } };
 const VID = "1164596305897468";
+const POST = `105961684676894_${VID}`;
 const G = `https://graph.facebook.com/v21.0/${VID}`;
+const GP = `https://graph.facebook.com/v21.0/${POST}`;
 const V1 = `${G}?fields=comments.summary%28true%29.limit%280%29%2Clikes.summary%28true%29.limit%280%29&access_token=TOK`;
-const V2 = `${G}/video_insights?metric=total_video_impressions%2Ctotal_video_impressions_unique&period=lifetime&access_token=TOK`;
+const P0 = `${G}?fields=post_id&access_token=TOK`;
+const V2 = `${GP}/insights?metric=post_media_view%2Cpost_total_media_view_unique&access_token=TOK`;
 const V3 = `${G}/video_insights?metric=total_video_views&period=lifetime&access_token=TOK`;
 
 const fields = () => json({ id: VID, comments: { summary: { total_count: 3 } }, likes: { summary: { total_count: 4 } } });
-const reach = () => json({ data: [{ name: "total_video_impressions", values: [{ value: 120 }] }, { name: "total_video_impressions_unique", values: [{ value: 80 }] }] });
+const owner = () => json({ id: VID, post_id: POST });
+const noPostId = () => json({ id: VID });
+const reach = () => json({ data: [{ name: "post_media_view", values: [{ value: 120 }] }, { name: "post_total_media_view_unique", values: [{ value: 80 }] }] });
 const views = () => json({ data: [{ name: "total_video_views", values: [{ value: 50 }] }] });
+// What Graph returns since Meta removed total_video_impressions(_unique) (v25.0 changelog): 200 with no row for them.
+const removedVideoImpressions = () => json({ data: [] });
 const invalidMetric = () => json({ error: { message: "(#100) The value must be a valid insights metric", code: 100 } }, 400);
 const down = () => json({ error: { message: "Service unavailable" } }, 503);
 
 beforeEach(() => fastNetwork());
 afterEach(() => vi.unstubAllGlobals());
 
-function routes(v1: () => Response, v2: () => Response, v3: () => Response) {
+function routes(v1: () => Response, v2: () => Response, v3: () => Response, p0: () => Response = owner) {
   return mockFetch([
-    [`GET ${G}/video_insights`, (url: URL) => (url.searchParams.get("metric") === "total_video_views" ? v3() : v2())],
-    [`GET ${G}`, v1],
+    [`GET ${G}/video_insights`, (url: URL) => (url.searchParams.get("metric") === "total_video_views" ? v3() : removedVideoImpressions())],
+    [`GET ${GP}/insights`, v2],
+    [`GET ${G}`, (url: URL) => (url.searchParams.get("fields") === "post_id" ? p0() : v1())],
   ] as never);
 }
 
 describe("Facebook video metrics (bare Video id)", () => {
-  it("makes exactly V1, V2, V3 and never asks for shares", async () => {
+  it("makes exactly V1, the post lookup, post insights and V3; never asks for shares or the removed total_video_impressions", async () => {
     const { calls } = routes(fields, reach, views);
     const s = await facebookProvider.metrics!(env, account, VID);
-    expect(calls.map((c: { url: string }) => c.url)).toEqual([V1, V2, V3]);
+    expect(calls.map((c: { url: string }) => c.url)).toEqual([V1, P0, V2, V3]);
+    expect(calls.some((c: { url: string }) => c.url.includes("total_video_impressions"))).toBe(false);
     expect(calls.some((c: { url: string }) => c.url.includes("shares"))).toBe(false);
     expect(s).toMatchObject({ likes: 4, comments: 3, impressions: 120, reach: 80, views: 50, shares: 0 });
-    expect(s!.raw).toMatchObject({ sharesSource: "not_available" });
+    expect(s!.raw).toMatchObject({ sharesSource: "not_available", postId: POST });
     expect([s!.insightsError, s!.insightsUnavailable, s!.externalId]).toEqual([undefined, undefined, undefined]);
+  });
+
+  it("no post_id on the Video: falls back to <pageId>_<videoId> with the Page id from the account", async () => {
+    const { calls } = routes(fields, reach, views, noPostId);
+    const s = await facebookProvider.metrics!({ ...env }, { ...account, meta: { pageId: "105961684676894" } }, VID);
+    expect(calls.map((c: { url: string }) => c.url)).toContain(V2);
+    expect(s).toMatchObject({ impressions: 120, reach: 80 });
+  });
+
+  it("post lookup fails: still reads the fallback post id, and a failed lookup is not an insights error", async () => {
+    routes(fields, reach, views, invalidMetric);
+    const s = await facebookProvider.metrics!(env, { ...account, externalId: "105961684676894" }, VID);
+    expect(s).toMatchObject({ impressions: 120, reach: 80, views: 50 });
+    expect([s!.insightsError, s!.insightsUnavailable]).toEqual([undefined, undefined]);
+  });
+
+  it("post insights without a row: impressions null and a named insights error, views kept", async () => {
+    routes(fields, () => json({ data: [{ name: "post_media_view", values: [{ value: 7 }] }] }), views);
+    const s = await facebookProvider.metrics!(env, account, VID);
+    expect(s).toMatchObject({ impressions: 7, reach: null, views: 50 });
+    expect(s!.insightsError).toBe("post insights: missing post_total_media_view_unique");
   });
 
   it("V2 permanent 400: views, likes, comments kept; impressions and reach null; insightsUnavailable", async () => {

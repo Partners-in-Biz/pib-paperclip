@@ -64,7 +64,12 @@ async function metaGet<T = Record<string, unknown>>(url: string, params: Record<
 type InsightRows = { data?: Array<{ name: string; values?: Array<{ value?: number }>; total_value?: { value?: number } }> };
 const cleanError = (message: string) => message.replace(/(access_token|refresh_token|token)=[^\s&"']*/gi, "").replace(/(https?:\/\/[^\s?"']*)\?[^\s"']*/gi, "$1").slice(0, 500);
 
-/** Facebook Video id: V1 likes/comments (required); V2 impressions/reach and V3 views are best effort; a permanent 4xx sets insightsUnavailable. */
+/**
+ * Facebook Video id: V1 likes/comments (required); impressions/reach from the video's Page post and V3 views are best
+ * effort; a permanent 4xx sets insightsUnavailable. Meta removed `total_video_impressions(_unique)` from video_insights
+ * (Graph API v25.0 changelog, all versions from v26.0): the call still succeeds but has no row for them, so the
+ * post-level media views are read instead, as for any other Page post.
+ */
 async function facebookVideoMetrics(env: ProviderEnv, account: ProviderAccount, videoId: string): Promise<MetricsSnapshot> {
   const base = graph(env);
   const token = account.token.accessToken;
@@ -77,16 +82,17 @@ async function facebookVideoMetrics(env: ProviderEnv, account: ProviderAccount, 
     views: 0, likes: count(data.likes?.summary?.total_count), comments: count(data.comments?.summary?.total_count), shares: 0,
     impressions: null, reach: null, raw: { fields: data, sharesSource: "not_available" },
   };
-  const insight = async (metric: string, names: string[]): Promise<Array<number | null> | null> => {
+  const insight = async (path: string, label: string, metric: string, period?: string): Promise<Array<number | null> | null> => {
+    const names = metric.split(",");
     try {
-      const res = await metaGet<InsightRows>(`${base}/${videoId}/video_insights`, { metric, period: "lifetime", access_token: token }, "Facebook video insights");
+      const res = await metaGet<InsightRows>(`${base}/${path}`, { metric, period, access_token: token }, `Facebook ${label}`);
       const rows = res.data ?? [];
       const values = names.map((name) => {
         const row = rows.find((r) => r.name === name);
         return row ? optionalCount(row.values?.[0]?.value ?? row.total_value?.value) : null;
       });
       const missing = names.find((_, i) => values[i] === null);
-      if (missing) snapshot.insightsError ??= `video insights: missing ${missing}`;
+      if (missing) snapshot.insightsError ??= `${label}: missing ${missing}`;
       return values;
     } catch (error) {
       const message = cleanError(error instanceof Error ? error.message : String(error));
@@ -95,12 +101,16 @@ async function facebookVideoMetrics(env: ProviderEnv, account: ProviderAccount, 
       return null;
     }
   };
-  const reach = await insight("total_video_impressions,total_video_impressions_unique", ["total_video_impressions", "total_video_impressions_unique"]);
+  // The video's Page post: its `post_id` field, else the `<pageId>_<videoId>` form Page video posts use.
+  const owner = await bestEffort(() => metaGet<{ post_id?: string }>(`${base}/${videoId}`, { fields: "post_id", access_token: token }, "Facebook video post"));
+  const postId = str(owner.value?.post_id) ?? `${str(account.meta.pageId) ?? account.externalId}_${videoId}`;
+  snapshot.raw = { fields: data, sharesSource: "not_available", postId };
+  const reach = await insight(`${postId}/insights`, "post insights", "post_media_view,post_total_media_view_unique");
   if (reach) {
     snapshot.impressions = reach[0];
     snapshot.reach = reach[1];
   }
-  const views = await insight("total_video_views", ["total_video_views"]);
+  const views = await insight(`${videoId}/video_insights`, "video insights", "total_video_views", "lifetime");
   if (views?.[0] != null) snapshot.views = views[0];
   return snapshot;
 }
