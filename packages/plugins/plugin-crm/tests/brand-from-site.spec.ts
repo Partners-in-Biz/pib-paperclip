@@ -19,7 +19,12 @@ const findings = (over: Partial<BrandFindings> = {}): BrandFindings => ({
     { hex: "#2e6b4d", score: 30, evidence: ["var --secondary"], role: "secondary" },
     { hex: "#f0b429", score: 12, evidence: ["used 2 times"] },
   ],
+  backgroundColor: "#fffaf2",
+  textColor: "#222222",
   fonts: ["Playfair Display", "Inter"],
+  fontsDeclared: [],
+  shareImage: null,
+  generator: null,
   logoUrl: "https://acme.example/logo.svg",
   logoCandidates: ["https://acme.example/logo.svg"],
   notes: [],
@@ -42,7 +47,7 @@ describe("brandPatchFrom: only well-supported colours are saved", () => {
 describe("extract-brand-from-site for own work (no client)", () => {
   const viewer: Viewer = { companyId: "co", userId: null, agentId: "a1", role: "agent" } as unknown as Viewer;
   const html = `<html><head><title>Us</title><meta name="theme-color" content="#E4572E"><link rel="apple-touch-icon" href="/logo.png">
-    <style>:root{--brand-primary:#e4572e} h1{font-family:"Instrument Serif",serif}</style></head><body><h1>We run the busywork</h1></body></html>`;
+    <style>:root{--brand-primary:#e4572e} h1{font-family:"Instrument Serif",serif} body{background:#f7f6f3;color:#171716}</style></head><body><h1>We run the busywork</h1>${"<p>line</p>".repeat(40)}</body></html>`;
   const ctx = { http: { fetch: async () => ({ status: 200, headers: new Headers(), text: async () => html }) } } as unknown as PluginContext;
 
   it("reads the site, saves nothing and says what to put in the company profile", async () => {
@@ -54,6 +59,7 @@ describe("extract-brand-from-site for own work (no client)", () => {
       forCompanyProfile: { primaryColor: "#e4572e", fonts: "Instrument Serif", logoUrl: "https://us.example/logo.png" },
     });
     expect((out.found as { headings: string[] }).headings).toEqual(["We run the busywork"]);
+    expect(out.found).toMatchObject({ backgroundColor: "#f7f6f3", textColor: "#171716", shareImage: null });
     expect((out.next as string[])[0]).toContain("partnersinbiz.cockpit:update-company-profile");
   });
   it("asks for a client or an address", async () => {
