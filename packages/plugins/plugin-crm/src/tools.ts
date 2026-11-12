@@ -121,6 +121,17 @@ export const CRM_TOOLS: PluginToolDeclaration[] = [
     parametersSchema: schema(["client"], { client: P.client }),
   },
   {
+    name: "extract-brand-from-site",
+    displayName: "Read brand from website",
+    description:
+      "Read a client's brand from their website: colours (ranked, with the evidence for each), font families, the logo address, and the site's own title, description and headings. It fills the brand kit fields of the client profile that are still empty (main, second and accent colour, fonts, website) and never changes a field that has a value. Run it when get-client-profile lists brand kit fields as missing, before you make anything visual for the client. The result says what was saved, what was kept, and what is left for you (import the logo, write the voice from the site's words).",
+    parametersSchema: schema([], {
+      client: text("The client: company:<id> or contact:<id> (from find-records). Leave out for our own website: then pass url, nothing is saved, and the result says what to save in the Cockpit's company profile."),
+      url: text("The page to read, e.g. https://acme.co.za. Leave out to use the profile's website, else the company's domain."),
+      apply: bool("false: only report what was found and what would be saved. Default true."),
+    }),
+  },
+  {
     name: "update-client-profile",
     displayName: "Update client profile",
     description:

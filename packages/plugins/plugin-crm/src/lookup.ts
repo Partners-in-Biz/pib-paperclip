@@ -630,6 +630,23 @@ export async function requireClient(ctx: PluginContext, viewer: Viewer, client: 
   return row.name;
 }
 
+/** The client's name and, for a company, the domain on its CRM record. Refused when the viewer may not see the client. */
+export async function clientNameAndDomain(ctx: PluginContext, viewer: Viewer, client: { kind: ClientKind; id: string }): Promise<{ name: string; domain: string | null }> {
+  const records = await visible(ctx, viewer);
+  if (client.kind === "company") {
+    const row = records.accounts.find((a) => a.id === client.id);
+    if (!row) throw new CrmError("Company was not found or is not visible to you (find it with find-records)");
+    return { name: row.name, domain: row.domain ? bareDomain(row.domain) : null };
+  }
+  const row = records.contacts.find((c) => c.id === client.id);
+  if (!row) throw new CrmError("Contact was not found or is not visible to you (find it with find-records)");
+  return { name: row.name, domain: null };
+}
+
+/** Profile fields the other modules act on when they change (Ads keeps a client's banned words). */
+const BRAND_EVENT_FIELDS = ["brandVoice", "toneNotes", "bannedWords", "logoKey", "primaryColor", "secondaryColor", "accentColor", "fonts", "toneExamples"];
+export const CLIENT_BRAND_UPDATED_EVENT = "client.brand.updated";
+
 export async function getClientProfileTool(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
   const client = parseClientRef(params.client);
   const name = await requireClient(ctx, viewer, client);
@@ -680,6 +697,18 @@ export async function updateClientProfile(ctx: PluginContext, viewer: Viewer, pa
       humanOwned: result.humanOwned,
       updatedBy: viewer.agentId ? `agent:${viewer.agentId}` : viewer.userId ? `user:${viewer.userId}` : null,
     });
+  }
+  // The brand changed: tell the modules that keep a copy of its rules (never fails the save).
+  if (result.changed.some((field) => BRAND_EVENT_FIELDS.includes(field))) {
+    await ctx.events
+      .emit(CLIENT_BRAND_UPDATED_EVENT, viewer.companyId, {
+        clientKind: client.kind,
+        clientRef: client.id,
+        bannedWords: result.profile.bannedWords ?? [],
+        brandNote: [result.profile.brandVoice, result.profile.toneNotes].filter(Boolean).join(" ").slice(0, 600) || null,
+        changed: result.changed.filter((field) => BRAND_EVENT_FIELDS.includes(field)),
+      })
+      .catch((error) => ctx.logger.info("CRM brand update event deferred", { client: refOf(client.kind, client.id), error: error instanceof Error ? error.message : String(error) }));
   }
   const servicesDiff = diffServices(servicesBefore, result.profile.services);
   // The services changed: tell the other modules, and start what was added (a customer's new service opens its onboarding step).

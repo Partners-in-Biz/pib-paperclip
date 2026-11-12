@@ -69,7 +69,19 @@ function externalLink(url: string) {
  * it before writing for the client. A field a person fills in is locked
  * (only people change it); each field's lock can be switched.
  */
-export function ClientProfileCard({ profile, onSave }: { profile: ClientProfileView | null; onSave: (patch: Record<string, unknown>, success?: string) => Promise<boolean> }) {
+/** What `crm.extract-brand-from-site` found on the client's website. */
+export interface BrandFromSite {
+  site: string;
+  found: { primaryColor: string | null; secondaryColor: string | null; accentColor: string | null; fonts: string[]; logoUrl: string | null; colors: Array<{ hex: string; score: number; evidence: string }> };
+  notes: string[];
+}
+
+export function ClientProfileCard({ profile, onSave, onReadBrand }: {
+  profile: ClientProfileView | null;
+  onSave: (patch: Record<string, unknown>, success?: string) => Promise<boolean>;
+  /** Reads the brand from the client's website (nothing is saved). Absent: the button is hidden. */
+  onReadBrand?: (url: string) => Promise<BrandFromSite>;
+}) {
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [locking, setLocking] = useState(false);
@@ -90,7 +102,35 @@ export function ClientProfileCard({ profile, onSave }: { profile: ClientProfileV
   const [toneExamples, setToneExamples] = useState("");
   const [scopeTemplateRef, setScopeTemplateRef] = useState("");
   const [termsRef, setTermsRef] = useState("");
+  const [reading, setReading] = useState(false);
+  const [brandNote, setBrandNote] = useState("");
+  const [seen, setSeen] = useState<BrandFromSite["found"]["colors"]>([]);
   const missing = missingFields(profile);
+
+  /** Read the site and put what it finds into the empty brand fields of the form. The person checks, then saves. */
+  async function readBrandFromSite() {
+    if (!onReadBrand) return;
+    setReading(true);
+    setBrandNote("");
+    try {
+      const result = await onReadBrand(website.trim());
+      const f = result.found;
+      const filled: string[] = [];
+      if (!primaryColor && f.primaryColor) { setPrimaryColor(f.primaryColor); filled.push("main colour"); }
+      if (!secondaryColor && f.secondaryColor) { setSecondaryColor(f.secondaryColor); filled.push("second colour"); }
+      if (!accentColor && f.accentColor) { setAccentColor(f.accentColor); filled.push("accent colour"); }
+      if (!fonts && f.fonts.length) { setFonts(f.fonts.join(", ")); filled.push("fonts"); }
+      if (!website) setWebsite(result.site);
+      setSeen(f.colors.slice(0, 8));
+      setBrandNote(
+        `${filled.length ? `Filled from ${result.site}: ${filled.join(", ")}. Check them, then save.` : `Nothing new to fill from ${result.site}.`}${f.logoUrl ? ` Logo found: ${f.logoUrl}` : ""}${result.notes.length ? ` ${result.notes.join(" ")}` : ""}`,
+      );
+    } catch (error) {
+      setBrandNote(error instanceof Error ? error.message : String(error));
+    } finally {
+      setReading(false);
+    }
+  }
 
   function startEdit() {
     setBrandVoice(profile?.brandVoice ?? "");
@@ -195,7 +235,23 @@ export function ClientProfileCard({ profile, onSave }: { profile: ClientProfileV
           <Field label="Tone notes">
             <TextArea value={toneNotes} onChange={(event) => setToneNotes(event.target.value)} placeholder="No emoji. Say 'you', never 'customers'." />
           </Field>
-          <h4 style={{ margin: "6px 0 0", fontSize: 13 }}>Brand kit</h4>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", marginTop: 6 }}>
+            <h4 style={{ margin: 0, fontSize: 13 }}>Brand kit</h4>
+            {onReadBrand ? (
+              <Button type="button" variant="secondary" onClick={() => void readBrandFromSite()} disabled={reading || saving}>
+                {reading ? "Reading the website…" : "Read from website"}
+              </Button>
+            ) : null}
+          </div>
+          {brandNote ? <p style={{ ...muted, overflowWrap: "anywhere" }}>{brandNote}</p> : null}
+          {seen.length ? (
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+              <span style={muted}>Colours seen on the site (click to use as main):</span>
+              {seen.map((c) => (
+                <button key={c.hex} type="button" title={`${c.hex}: ${c.evidence}`} onClick={() => setPrimaryColor(c.hex)} style={{ width: 22, height: 22, borderRadius: 6, border: `1px solid ${tokens.border}`, background: c.hex, cursor: "pointer", padding: 0 }} aria-label={`Use ${c.hex} as the main colour`} />
+              ))}
+            </div>
+          ) : null}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 160px), 1fr))", gap: 12 }}>
             <Field label="Main colour">
               <Input value={primaryColor} onChange={(event) => setPrimaryColor(event.target.value)} placeholder="#1A73E8" />

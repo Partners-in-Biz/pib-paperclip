@@ -20,16 +20,23 @@ export type ProfileFieldKey =
   | "whatWeSell"
   | "audience"
   | "brandVoice"
-  | "bannedWords";
+  | "bannedWords"
+  | "tagline"
+  | "primaryColor"
+  | "secondaryColor"
+  | "accentColor"
+  | "fonts"
+  | "logoUrl"
+  | "visualStyle";
 
-export type ProfileGroup = "identity" | "online" | "email" | "offer" | "voice";
+export type ProfileGroup = "identity" | "online" | "email" | "offer" | "voice" | "brand";
 
 export interface ProfileField {
   key: ProfileFieldKey;
   label: string;
   group: ProfileGroup;
-  /** text: one line; long: a paragraph; url, email, vat: checked; list: words or phrases. */
-  kind: "text" | "long" | "url" | "email" | "vat" | "list";
+  /** text: one line; long: a paragraph; url, email, vat, color: checked; list: words or phrases. */
+  kind: "text" | "long" | "url" | "email" | "vat" | "color" | "list";
   max: number;
   /** For agents and the form: what goes in it. */
   hint: string;
@@ -51,6 +58,13 @@ export const PROFILE_FIELDS: ProfileField[] = [
   { key: "audience", label: "Audience", group: "offer", kind: "long", max: 1000, hint: "Who the ideal clients are: industry, size, region, the problem they have." },
   { key: "brandVoice", label: "Brand voice", group: "voice", kind: "long", max: 1000, hint: "How we sound: tone, spelling (en-ZA), words we like, how formal." },
   { key: "bannedWords", label: "Banned words", group: "voice", kind: "list", max: 60, hint: "Words or phrases never to use, one per line or separated by commas." },
+  { key: "tagline", label: "Tagline", group: "brand", kind: "text", max: 160, hint: "The one line we are known by, as on the website.", placeholder: "We run the busywork." },
+  { key: "primaryColor", label: "Main colour", group: "brand", kind: "color", max: 9, hint: "The main brand colour as hex, from the website or the logo.", placeholder: "#E4572E" },
+  { key: "secondaryColor", label: "Second colour", group: "brand", kind: "color", max: 9, hint: "The second brand colour as hex (often the paper or the ink).", placeholder: "#F5F0E6" },
+  { key: "accentColor", label: "Accent colour", group: "brand", kind: "color", max: 9, hint: "The accent colour as hex, for buttons and highlights.", placeholder: "#1D1D1B" },
+  { key: "fonts", label: "Fonts", group: "brand", kind: "text", max: 200, hint: "Font families, headings first, separated by commas.", placeholder: "Instrument Serif, Geist" },
+  { key: "logoUrl", label: "Logo", group: "brand", kind: "url", max: 400, hint: "A public https address of the logo file (PNG or SVG) agents put on images and video.", placeholder: "https://example.co.za/logo.png" },
+  { key: "visualStyle", label: "Visual style", group: "brand", kind: "long", max: 1000, hint: "How our images and video look: paper or dark, photos or type, real screens, motion, and what never to show." },
 ];
 
 export const PROFILE_GROUPS: Array<{ key: ProfileGroup; title: string; description: string }> = [
@@ -59,6 +73,7 @@ export const PROFILE_GROUPS: Array<{ key: ProfileGroup; title: string; descripti
   { key: "email", title: "Email", description: "Who outgoing email is from." },
   { key: "offer", title: "What we do", description: "What agents may say we sell, and to whom." },
   { key: "voice", title: "Brand voice", description: "How posts, emails and replies must sound." },
+  { key: "brand", title: "Brand kit", description: "How everything we make must look: the same fields a client has in the CRM." },
 ];
 
 /** The fields the setup item needs before agents can write in the company's name. */
@@ -136,6 +151,11 @@ export function cleanField(key: ProfileFieldKey, value: unknown): string | strin
   if (field.kind === "email") {
     if (!/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(text)) throw new ProfileError(`${field.label} must be an email address, e.g. hello@example.co.za.`);
     return text.toLowerCase();
+  }
+  if (field.kind === "color") {
+    const hex = text.startsWith("#") ? text : `#${text}`;
+    if (!/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(hex)) throw new ProfileError(`${field.label} must be a hex colour, e.g. #E4572E.`);
+    return hex.toUpperCase();
   }
   if (field.kind === "vat") {
     const digits = text.replace(/[\s-]/g, "");
