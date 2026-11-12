@@ -4,7 +4,9 @@
  * Each case plans an edit with a small pass budget, runs every pass through `runContained` in plan order (stems with
  * `compileAudioStem`, chunks and layers with `compileVideo(..., { intermediate: true })`), renders the final doc, and
  * compares that against the single pass of the same doc: frame count exact, audio duration within 1 frame, mean PSNR
- * >= 42 dB and per-frame minimum >= 35 dB, and the RMS of the audio difference <= -50 dBFS.
+ * >= 42 dB and per-frame minimum >= 35 dB, and the RMS of the audio difference <= -50 dBFS. On CI a missing ffmpeg fails
+ * the spec instead of skipping it. A pure part (no ffmpeg) checks the frame grid on 2000 seeded random layouts: every
+ * frame of the chunked render shows the same clip frame (or black) as the single pass.
  */
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -12,15 +14,17 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { AUDIO_ENCODER_ARGS, compileAudioStem, INTERMEDIATE_AUDIO_ENCODER_ARGS } from "../src/video-edit/compile-audio.js";
-import { compileVideo, inputKey, type CompiledVideo, type CompileInputs } from "../src/video-edit/compile-video.js";
+import { compileVideo, inputKey, mainSegments, type CompiledVideo, type CompileInputs } from "../src/video-edit/compile-video.js";
 import { runContained } from "../src/video-edit/ffmpeg.js";
 import { planRender, type RenderPass } from "../src/video-edit/render-plan.js";
-import { normalizeEdit, type EditDoc } from "../src/video-edit/timeline.js";
+import { FPS, normalizeEdit, type EditDoc } from "../src/video-edit/timeline.js";
 
 const W = 320;
 const H = 240;
 const BAR = { meanPsnr: 42, minPsnr: 35, audioDiffDb: -50 };
 const hasFfmpeg = spawnSync("ffmpeg", ["-version"]).status === 0 && spawnSync("ffprobe", ["-version"]).status === 0;
+/** Locally a missing ffmpeg skips the real-ffmpeg cases; on CI they run (and fail) so a green run always holds proof. */
+const runReal = hasFfmpeg || Boolean(process.env.CI);
 
 let dir = "";
 let sources: CompileInputs = {};
@@ -97,8 +101,10 @@ async function renderBoth(name: string, doc: EditDoc, passBudget: number) {
   const plan = planRender(doc, sources, { workdir: join(root, "multi"), passBudget });
   if (plan.kind !== "multi") throw new Error(`${name}: expected a multi-pass plan, got ${plan.kind}`);
   for (const pass of plan.passes) {
-    const compiled = pass.kind === "stem" ? compileAudioStem(pass.doc, pass.sources, pass.output) : compileVideo(pass.doc, pass.sources, pass.output, { intermediate: true });
+    const compiled = pass.kind === "stem" ? compileAudioStem(pass.doc, pass.sources, pass.output) : compileVideo(pass.doc, pass.sources, pass.output, { intermediate: true, origin: pass.origin });
     await render(compiled, dirname(pass.output));
+    // Each picture pass renders exactly the frames the plan gives it (the final doc trims and joins on that count).
+    if (pass.kind !== "stem") expect((await probe(pass.output)).frames, `${name}: ${pass.id} frames`).toBe(pass.frames);
   }
   const multi = join(root, "multi", "final", "out.mp4");
   const multiMix = join(root, "multi", "final", "mix.mov");
@@ -157,13 +163,97 @@ async function expectEquivalent(name: string, doc: EditDoc, passBudget: number):
 
 const kinds = (passes: RenderPass[]) => passes.reduce<Record<string, number>>((n, p) => ({ ...n, [p.kind]: (n[p.kind] ?? 0) + 1 }), {});
 
-describe.skipIf(!hasFfmpeg)("multi-pass render equals the single pass (real ffmpeg, runContained)", () => {
+/** Deterministic PRNG (mulberry32), so a failing layout is reproducible from its seed. */
+function rng(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const ms = (n: number) => Math.round(n * 1000) / 1000;
+
+/**
+ * What each output frame of the main track shows: `<clip id>:<clip frame>` or `black`. A clip that plays a chunk output
+ * expands to that chunk's own frames (the chunk compiled at its `origin`), so a chunked plan expands to its final picture.
+ */
+function shownFrames(doc: EditDoc, origin: number, chunks: Map<string, RenderPass>): string[] {
+  const out: string[] = [];
+  for (const s of mainSegments(doc, origin)) {
+    if (s.xfade) throw new Error("shownFrames: no xfade in these layouts");
+    const chunk = s.clip ? chunks.get(s.clip.assetId) : undefined;
+    const inner = chunk ? shownFrames(chunk.doc, chunk.origin, chunks) : null;
+    if (chunk && inner && (inner.length !== chunk.frames || s.frames !== chunk.frames)) {
+      throw new Error(`${chunk.id}: renders ${inner.length} frames, plan says ${chunk.frames}, the final doc plays ${s.frames}`);
+    }
+    for (let j = 0; j < s.frames; j++) out.push(!s.clip ? "black" : inner ? inner[j] : `${s.clip.id}:${j}`);
+  }
+  return out;
+}
+
+/**
+ * A random main track of 4 to 14 clips (weight 1 each) with gaps, starts summed in ms as the editor does. `aligned`:
+ * lengths and gaps are whole frames, rounded to ms; otherwise any ms value.
+ */
+function randomLayout(seed: number, aligned: boolean): EditDoc {
+  const r = rng(seed);
+  const fps = FPS[Math.floor(r() * FPS.length)];
+  const len = () => (aligned ? ms(Math.ceil(r() * 24) / fps) : ms(0.02 + r() * 0.8));
+  const clips: object[] = [];
+  let at = 0;
+  for (let i = 0, n = 4 + Math.floor(r() * 11); i < n; i++) {
+    if (r() < 0.4) at = ms(at + len());
+    const length = len();
+    clips.push({ id: `c${i}`, assetId: "g", version: 1, start: at, in: 0, out: length });
+    at = ms(at + length);
+  }
+  return normalizeEdit({ project: { size: "16:9", fps }, tracks: [{ id: "v", kind: "video", clips }] });
+}
+
+describe("chunked main track keeps the single pass frame grid (pure, 2000 seeded layouts)", () => {
+  const gridSources: CompileInputs = { [inputKey("g", 1)]: { path: "/w/g.mp4", kind: "video", hasAudio: false, width: W, height: H, fps: 30 } };
+  for (const aligned of [true, false]) {
+    it(`${aligned ? "whole-frame lengths and gaps (ms-rounded)" : "any ms lengths and gaps"}: same frames, every clip on the same frame`, () => {
+      const failures: string[] = [];
+      let chunked = 0;
+      for (let seed = 1; seed <= 1000; seed++) {
+        const doc = randomLayout(seed, aligned);
+        const plan = planRender(doc, gridSources, { workdir: "/w/multi", passBudget: 3 });
+        if (plan.kind !== "multi") continue;
+        chunked++;
+        const single = shownFrames(doc, 0, new Map());
+        let multi: string[];
+        try {
+          multi = shownFrames(plan.final.doc, 0, new Map(plan.passes.map((p) => [p.id, p])));
+        } catch (e) {
+          failures.push(`seed ${seed}: ${(e as Error).message}`);
+          continue;
+        }
+        const firstOf = (frames: string[]) => Object.fromEntries(frames.map((f, i) => [f.split(":")[0], i]).filter(([id, i]) => frames.findIndex((g) => g.split(":")[0] === id) === i));
+        if (multi.length !== single.length) failures.push(`seed ${seed}: ${multi.length} frames, single pass ${single.length}`);
+        else if (multi.some((f, i) => f !== single[i])) failures.push(`seed ${seed}: clip start frames ${JSON.stringify(firstOf(multi))}, single pass ${JSON.stringify(firstOf(single))}`);
+      }
+      expect(chunked).toBeGreaterThan(900);
+      expect(failures.slice(0, 5), `${failures.length} of ${chunked} layouts differ`).toEqual([]);
+    });
+  }
+});
+
+describe.skipIf(!runReal)("multi-pass render equals the single pass (real ffmpeg, runContained)", () => {
   beforeAll(async () => {
+    if (!hasFfmpeg) return; // the first case fails with the reason
     dir = mkdtempSync(join(tmpdir(), "studio-multipass-"));
     await fixtures();
   }, 120_000);
   afterAll(() => {
     if (dir) rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("ffmpeg and ffprobe are installed (CI must run these cases, not skip them)", () => {
+    expect(hasFfmpeg).toBe(true);
   });
 
   it("(a) budget 3: 7 clips, an xfade across a chunk boundary, a gap, a look, clip audio and music", async () => {
@@ -216,5 +306,15 @@ describe.skipIf(!hasFfmpeg)("multi-pass render equals the single pass (real ffmp
     ]);
     const passes = await expectEquivalent("d", doc, 2);
     expect(kinds(passes)).toEqual({ stem: 2 });
+  }, 600_000);
+
+  it("(e) chunk starts off the frame grid: ms-summed whole-frame cuts after a lead-in gap", async () => {
+    // Before chunks were cut on the edit's grid (origin), the last clip here landed on frame 45 instead of 44.
+    const doc = edit([
+      { id: "v", kind: "video", clips: [clip("av", 0.367, 0.5, { from: 1 }), clip("alt", 0.867, 0.167, { from: 2 }), clip("neg", 1.034, 0.433, { from: 3 }), clip("av", 1.467, 0.6, { from: 4 })] },
+      { id: "m", kind: "audio", clips: [clip("music", 0, 2.1, { volume: 0.5 })] },
+    ]);
+    const passes = await expectEquivalent("e", doc, 3);
+    expect(kinds(passes).chunk).toBeGreaterThanOrEqual(2);
   }, 600_000);
 });
