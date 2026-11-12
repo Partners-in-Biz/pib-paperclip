@@ -67,7 +67,7 @@ describe("profile tools and actions", () => {
     const s = setup();
     const empty = await s.tool("company-profile", {});
     expect(empty.error).toBeUndefined();
-    expect(empty.content).toMatch(/^Company profile: 0 of 14 fields set/);
+    expect(empty.content).toMatch(/^Company profile: 0 of 21 fields set/);
     expect(empty.data).toMatchObject({ href: "/PIB/cockpit?tab=profile", missing: expect.arrayContaining(["legalName", "brandVoice"]) });
 
     const filled = await s.tool("update-company-profile", { website: "partnersinbiz.online", brandVoice: "Plain, warm, South African English.", issueId: "PIB-3" });
@@ -129,7 +129,7 @@ describe("the Profile tab", () => {
 
   it("renders every field in its group, marks agent-filled ones and what is still needed", () => {
     const html = render();
-    for (const text of ["Company profile", "Who we are", "Online", "Email", "What we do", "Brand voice", "Legal name", "VAT number", "Booking link", "Sender email", "Banned words", "3 of 14 set", "Filled in by an agent on 26 Sep: check it.", "Agents still need the sender email, what we sell and brand voice", "Save profile"]) expect(html, text).toContain(text);
+    for (const text of ["Company profile", "Who we are", "Online", "Email", "What we do", "Brand voice", "Legal name", "VAT number", "Booking link", "Sender email", "Banned words", "3 of 21 set", "Filled in by an agent on 26 Sep: check it.", "Agents still need the sender email, what we sell and brand voice", "Save profile"]) expect(html, text).toContain(text);
     expect(html).toContain("cheap\nguaranteed");
     // Phone-friendly: fields wrap to one column; no fixed widths.
     expect(html).toContain("minmax(min(260px, 100%), 1fr)");

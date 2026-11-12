@@ -136,14 +136,14 @@ export const COCKPIT_TOOLS: PluginToolDeclaration[] = [
     name: TOOL_NAMES.profile,
     displayName: "Company profile",
     description:
-      "The company's own profile: legal and trading name, VAT number, address, website, booking link, sender name and email, what we sell, audience, brand voice and banned words. Read it before writing anything in the company's name (posts, emails, invoices, replies). For a client's details use the CRM's client profile. Returns the profile, the missing fields and the page where the owner edits it.",
+      "The company's own profile: legal and trading name, VAT number, address, website, booking link, sender name and email, what we sell, audience, brand voice and banned words, and the brand kit for own work (tagline, main, second and accent colour, fonts, logo address, visual style). Read it before writing or making anything in the company's name (posts, images, video, emails, invoices, replies). For a client's details use the CRM's client profile. Returns the profile, the missing fields and the page where the owner edits it.",
     parametersSchema: schema([], {}),
   },
   {
     name: TOOL_NAMES.updateProfile,
     displayName: "Fill in the company profile",
     description:
-      "Fill EMPTY fields of the company profile from what you found (the website, past work). Fields that already have a value are never changed: to change one, ask the owner with ask-owner (kind decision) and quote the new value. Returns which fields were filled, which were kept and why.",
+      "Fill EMPTY fields of the company profile from what you found (the website, past work). For the brand kit fields, read our own website first with partnersinbiz.crm:extract-brand-from-site (pass url, no client) and save the colours, fonts and logo address it finds here. Fields that already have a value are never changed: to change one, ask the owner with ask-owner (kind decision) and quote the new value. Returns which fields were filled, which were kept and why.",
     parametersSchema: schema([], {
       ...PROFILE_PROPERTIES,
       issueId: { type: "string", description: "The issue you are working on, for the record (optional)." },
