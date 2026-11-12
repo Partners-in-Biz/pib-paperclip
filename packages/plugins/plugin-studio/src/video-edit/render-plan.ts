@@ -38,9 +38,13 @@ import { clipHasSound, hasClipAudio } from "./compile-audio.js";
 import { CompileError, frameAt, inputKey, type CompileInput, type CompileInputs } from "./compile-video.js";
 import { clipDuration, editDuration, type AudioClip, type EditDoc, type MediaClip, type Track } from "./timeline.js";
 
-/** Defaults until the T1 spike measures them (PAR-10436). */
-export const PASS_BUDGET = 8;
-export const AUDIO_WEIGHT = 0.25;
+/**
+ * Measured by the T1 spike (PAR-10460, pib-vps, every look and adjust): a pass of weight 10 peaks near 4500 MiB VmPeak
+ * under the 6 GiB `--as` cap (weight 12: 5107 MiB, over the 5 GiB bar), and an audio input costs about 0.05 of a graded
+ * video input, so 0.1 keeps a 2x margin.
+ */
+export const PASS_BUDGET = 10;
+export const AUDIO_WEIGHT = 0.1;
 const BASE_RATE = 1080 * 1920 * 30;
 const W_EPS = 1e-9;
 const EPS = 0.0005; // compile-video.ts: smaller overlaps and gaps are ignored
