@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { chromaKeyFilter, despillFilter, despillRgb, keyCoverage, keyDistance, keyYuv, spillScreen } from "../src/video-edit/chroma.js";
+import { chromaKeyFilter, despillFilter, despillRgb, keyCoverage, keyDistance, keyMatrix, keyYuv, spillScreen } from "../src/video-edit/chroma.js";
 import { compileVideo, inputKey, type CompileInputs } from "../src/video-edit/compile-video.js";
 import { runContained } from "../src/video-edit/ffmpeg.js";
 import { normalizeEdit, type ChromaKey, type EditDoc } from "../src/video-edit/timeline.js";
@@ -12,6 +12,9 @@ const inputs: CompileInputs = {
   [inputKey("base", 1)]: { path: "base.mp4", kind: "video" },
   [inputKey("green", 1)]: { path: "green.mp4", kind: "video" },
   [inputKey("png", 1)]: { path: "green.png", kind: "image" },
+  [inputKey("flat", 1)]: { path: "flat.mp4", kind: "video" },
+  [inputKey("flatpng", 1)]: { path: "flat.png", kind: "image" },
+  [inputKey("flatjpg", 1)]: { path: "flat.jpg", kind: "image" },
 };
 const clip = (id: string, assetId: string, start: number, out: number, extra: Record<string, unknown> = {}) => ({ id, assetId, version: 1, start, in: 0, out, ...extra });
 const doc = (tracks: unknown[]) => normalizeEdit({ project: { size: "9:16", fps: 30 }, tracks });
@@ -25,6 +28,8 @@ const keyed = (asset: string, k: Partial<ChromaKey>, extra: Record<string, unkno
 describe("chroma key: formulas (shared with the preview)", () => {
   it("converts the key with BT.709 TV range and passes it as YUV", () => {
     expect(keyYuv({ color: "#00FF00" })).toEqual([173, 42, 26]);
+    expect(keyYuv({ color: "#00FF00" }, "bt601")).toEqual([145, 54, 34]);
+    expect([keyMatrix(false, false), keyMatrix(true, true), keyMatrix(true, false)]).toEqual(["bt709", "bt709", "bt601"]);
     expect(chromaKeyFilter({ color: "#00FF00", similarity: 0.15, blend: 0.05, spill: 0 })).toBe("chromakey=color=0xAD2A1A:similarity=0.15:blend=0.05:yuv=1");
   });
 
@@ -59,10 +64,15 @@ describe("chroma key: compiled graph", () => {
     expect(g).toMatch(/chromakey=[^,]+,scale=in_color_matrix=bt709,format=gbrap,colortemperature=[^,]+,scale=out_color_matrix=bt709:out_range=tv,format=yuva420p/);
   });
 
-  it("an image's own alpha is multiplied back after the key", () => {
-    const g = graphOf(keyed("png", {}));
-    expect(g).toMatch(/format=gbrap,scale=out_color_matrix=bt709:out_range=tv,format=yuva420p,split\[ckp\d+\]\[cko\d+\]/);
+  it("an image's own alpha is multiplied back after the key; an ungraded image keys in its implicit BT.601", () => {
+    const g = graphOf(keyed("png", { spill: 1 }));
+    expect(g).toMatch(/fps=30,format=yuva420p,split\[ckp\d+\]\[cko\d+\]/);
+    expect(g).toContain(`${chromaKeyFilter({ ...KEY, spill: 1 }, "bt601")},scale=in_color_matrix=bt601,format=rgba,despill=`);
     expect(g).toMatch(/\[cka\d+\]\[cko\d+\]blend=all_mode=multiply\[cka\d+\];\[ckp\d+\]\[cka\d+\]alphamerge/);
+    const graded = graphOf(keyed("png", {}, { adjust: { contrast: 1.1 } }));
+    expect(graded).toMatch(/format=gbrap,scale=out_color_matrix=bt709:out_range=tv,format=yuva420p,split\[ckp\d+\]\[cko\d+\]/);
+    expect(graded).toContain(chromaKeyFilter(KEY, "bt709"));
+    expect(chromaKeyFilter(KEY, "bt601")).not.toBe(chromaKeyFilter(KEY, "bt709"));
   });
 });
 
@@ -111,6 +121,9 @@ describe.skipIf(!hasFfmpeg)("chroma key with real ffmpeg", () => {
     await ffmpeg(["-f", "lavfi", "-i", "color=c=0x3040C0:s=108x192:r=30:d=1", "-vf", to709, ...yuv, "base.mp4"]);
     await ffmpeg(["-f", "lavfi", "-i", `${SCENE},${to709}`, ...yuv, "green.mp4"]);
     // Left half fully transparent (black under alpha 0), right half the green scene.
+    await ffmpeg(["-f", "lavfi", "-i", `color=c=0xD06040:s=108x192:r=30:d=1,${to709}`, ...yuv, "flat.mp4"]);
+    await ffmpeg(["-f", "lavfi", "-i", "color=c=0xD06040:s=108x192,format=rgba", "-frames:v", "1", "-y", "flat.png"]);
+    await ffmpeg(["-f", "lavfi", "-i", "color=c=0xD06040:s=108x192", "-frames:v", "1", "-q:v", "1", "-y", "flat.jpg"]);
     await ffmpeg(["-f", "lavfi", "-i", `${SCENE},format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lt(X,54),0,255)'`, "-frames:v", "1", "-y", "green.png"]);
   }, 120_000);
   afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -155,10 +168,22 @@ describe.skipIf(!hasFfmpeg)("chroma key with real ffmpeg", () => {
     expect(Math.max(...subject) - Math.min(...subject), "mono subject").toBeLessThanOrEqual(4);
   }, 120_000);
 
+  // Rule PAR-10158: the key path must not move a colour it keeps, for each input kind and grade variant.
+  for (const asset of ["flat", "flatpng", "flatjpg"]) {
+    it(`${asset}: a kept flat colour renders as without the key (ungraded, look-only, adjust-only)`, async () => {
+      for (const grade of [{}, { look: { pack: "pib-basic", id: "mono" } }, { adjust: { brightness: 0.1 } }]) {
+        const plain = rgbAt(await render(doc([video(clip("b", "base", 0, 0.5)), overlay(clip("o", asset, 0, 0.5, grade))])), W / 2 - 4, H / 2 - 4);
+        const key = rgbAt(await render(keyed(asset, { spill: 1 }, grade)), W / 2 - 4, H / 2 - 4);
+        expectNear(key, plain, 2, `${asset} ${JSON.stringify(grade)}`);
+      }
+    }, 120_000);
+  }
+
   it("a transparent PNG keeps its own transparency where the key would not remove it", async () => {
     const p = await render(keyed("png", {}));
+    const unkeyed = await render(doc([video(clip("b", "base", 0, 0.5)), overlay(clip("o", "png", 0, 0.5))]));
     expectNear(rgbAt(p, 300, 1200), BASE, 4, "transparent half");
     expectNear(rgbAt(p, 1000, 100), BASE, 4, "screen keyed out");
-    expectNear(rgbAt(p, 700, H / 2 - 4), SUBJECT, 4, "subject");
+    expectNear(rgbAt(p, 700, H / 2 - 4), rgbAt(unkeyed, 700, H / 2 - 4), 2, "subject as without the key");
   }, 120_000);
 });

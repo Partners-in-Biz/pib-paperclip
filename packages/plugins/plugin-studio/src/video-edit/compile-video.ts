@@ -19,7 +19,7 @@
  * model throws `CompileError` with `unsupported_feature:<name>`.
  */
 import { StudioError } from "../errors.js";
-import { chromaKeyFilter, despillFilter } from "./chroma.js";
+import { chromaKeyFilter, despillFilter, keyMatrix } from "./chroma.js";
 import { AUDIO_ENCODER_ARGS, INTERMEDIATE_AUDIO_ENCODER_ARGS, buildAudioGraph } from "./compile-audio.js";
 import { buildTextLayers } from "./compile-text.js";
 import { fontsDir } from "./fonts.js";
@@ -226,22 +226,27 @@ class Graph {
   }
 
   /**
-   * Chroma key (schema v4, D3c, `chroma.ts`) on the source frame, before grade and shape: `chromakey` on BT.709 TV-range
-   * yuva420p, then `despill` on packed RGBA when the clip has spill. An image is taken to RGB first and through the
-   * explicit BT.709 `toYuv` (as `grade`), and because `chromakey` replaces the alpha plane, its own alpha (a PNG's
-   * transparency) is multiplied back in. Ends in yuva420p. One chain step; `[]` without a key.
+   * Chroma key (schema v4, D3c, `chroma.ts`) on the source frame, before grade and shape: `chromakey` on TV-range
+   * yuva420p, then `despill` on packed RGBA when the clip has spill. The key works in the encoding the clip already has
+   * on its unkeyed path, so a key never shifts a colour it keeps (rule PAR-10158): video and graded images are BT.709
+   * (`grade` takes an image through the explicit `toYuv`), an ungraded image is ffmpeg's implicit `format=yuva420p`
+   * (BT.601). `chromakey` replaces the alpha plane, so an image's own alpha (a PNG's transparency) is multiplied back
+   * in. Ends in yuva420p. One chain step; `[]` without a key.
    */
   private key(clip: MediaClip, kind: CompileInput["kind"]): string[] {
     const k = clip.chromaKey;
     if (!k) return [];
+    const matrix = keyMatrix(kind === "image", graded(clip));
     const spill = despillFilter(k);
-    const keyed = [chromaKeyFilter(k), ...(spill ? ["scale=in_color_matrix=bt709,format=rgba", spill, ...toYuv(true)] : [])].join(",");
+    const despill = spill ? [`scale=in_color_matrix=${matrix},format=rgba`, spill, `scale=out_color_matrix=${matrix}:out_range=tv`, "format=yuva420p"] : [];
+    const keyed = [chromaKeyFilter(k, matrix), ...despill].join(",");
     if (kind !== "image") return ["format=yuva420p", keyed];
+    const entry = matrix === "bt709" ? ["format=gbrap", ...toYuv(true)] : ["format=yuva420p"];
     const [pic, own, ownAlpha] = [this.label("ckp"), this.label("cko"), this.label("cko")];
     const [keyedPic, keyedCopy, keyAlpha, alpha] = [this.label("ckp"), this.label("cka"), this.label("cka"), this.label("cka")];
     return [
       [
-        `format=gbrap,${toYuv(true).join(",")},split[${pic}][${own}]`,
+        `${entry.join(",")},split[${pic}][${own}]`,
         `[${own}]alphaextract[${ownAlpha}]`,
         `[${pic}]${keyed},format=yuva420p,split[${keyedPic}][${keyedCopy}]`,
         `[${keyedCopy}]alphaextract[${keyAlpha}]`,
