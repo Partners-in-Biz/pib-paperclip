@@ -404,13 +404,19 @@ export async function handleLeadWebhook(ctx: PluginContext, input: PluginWebhook
 }
 
 /**
- * A signed signup to a newsletter form, after the source bucket (plan PAR-10817 "Signup"): the daily ceiling, the settings checked
+ * A signed signup to a newsletter form, after the source bucket (plan PAR-10817 "Signup"): the daily ceiling, the hourly cap, the settings checked
  * again, the address checks, then `processSignup`. Every outcome past the checks answers the same success.
  */
 async function newsletterSignup(ctx: PluginContext, source: LeadSource, body: Record<string, unknown>, info: { now: Date; ipHash: string | null; salt: string }): Promise<LeadWebhookResult> {
   const dayAgo = new Date(info.now.getTime() - 86_400_000).toISOString();
   if ((await countCaptures(ctx, source.companyId, source.id, dayAgo, source.confirmDailyCap)) >= source.confirmDailyCap) {
     throw new LeadRejected("This form has sent all the confirmation emails it may today. Please try again tomorrow.", "rate_limited");
+  }
+  // The hourly cap (PAR-11288): one capture row is one confirmation mail. Soft: count then insert is not atomic, so signups
+  // in flight at the same moment can each pass (bounded by the source bucket).
+  const cap = source.confirmHourlyCap;
+  if (cap && (await countCaptures(ctx, source.companyId, source.id, new Date(info.now.getTime() - 3_600_000).toISOString(), cap)) >= cap) {
+    throw new LeadRejected("Too many signups right now. Please try again later.", "rate_limited");
   }
   if (!signupSettingsOk(source)) {
     ctx.logger.warn("CRM newsletter form refused a signup: its confirmUrl, confirmFrom or confirmation key no longer passes the checks", { sourceId: source.id, event: "bad_source_config" });
@@ -879,6 +885,7 @@ export async function leadSourceView(ctx: PluginContext, source: LeadSource, url
           confirmUrl: source.confirmUrl,
           confirmFrom: source.confirmFrom,
           confirmDailyCap: source.confirmDailyCap,
+          confirmHourlyCap: source.confirmHourlyCap,
           confirmKey: source.confirmSecret ? { set: true, keyId: keyId(source.confirmSecret) } : { set: false },
         },
       }

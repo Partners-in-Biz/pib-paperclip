@@ -102,6 +102,15 @@ PAR-10891, plan PAR-10817 "Send result" (`src/newsletter-send-result.ts`). The C
 - The `redeliver-mail` job (every 5 minutes) deletes any `crm:nl:` outbox row that is no longer pending (the outbox gave up and no answer came). Pending rows and other keys are untouched.
 - Rollback: revert the code. Rows already deleted stay deleted, which is the safe direction. No schema change.
 
+## Newsletter hourly cap (0.52.0)
+
+PAR-11288. `confirmHourlyCap` on a newsletter form: about the most confirmation mails it sends in one hour, 1 to 300 (e.g. 30 for ToolChanges). Left out or `null`: no hourly cap, only the daily ceiling (every existing form). `create-lead-endpoint` and `update-lead-source` take it (`null` on update clears it); `list-lead-sources` shows it under `newsletter`. A lead or report form refuses it.
+- Checked after the daily ceiling: `confirm_hourly_cap` capture rows of this source in the last hour refuse the next signup with "Too many signups right now. Please try again later." (`rate_limited`, so 429). Nothing is written and no mail is queued.
+- One capture row is one mail; a duplicate, suppressed or already-subscribed signup writes no row, so it does not count. A canary (`.invalid`) dry run writes its row with no mail, and that row counts.
+- **Soft, "about":** count then insert is not atomic, so signups in flight at the same moment can each pass (bounded by the source bucket, 100 signed calls a minute).
+- **Per source:** two newsletter forms on one site each have their own cap.
+- Migration `024_crm.sql` adds `confirm_hourly_cap` (nullable integer) and replaces the CHECK `lead_sources_newsletter`: a newsletter source has it null or 1 to 300, any other source null. Existing rows and the 0.51 inserts (without the column) pass. **Stop-first:** apply and read back the migration on production (column present, new CHECK text) before the code deploys; the new code selects the column. Rollback: revert the code; the column and CHECK stay, and old code never reads them, so a form with a cap set has only the daily ceiling again.
+
 ## Newsletter confirm (0.50.0)
 
 PAR-10853, plan PAR-10817 "Confirm". A signed body with `action: "confirm"` and `token` on a newsletter form (`src/newsletter-confirm.ts`). `action` is read on a newsletter form only; a lead or report form ignores it.
