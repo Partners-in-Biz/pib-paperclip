@@ -465,7 +465,9 @@ describe("plugin-worker-manager stderr failure context", () => {
         renderEnvironment: null,
       })).rejects.toMatchObject({
         code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED,
-        message: expect.stringContaining("unknown invocation scope"),
+        // PAR-11072: a call with no invocation id no longer reads live
+        // invocations; company-b has no saved settings, so it gets that text.
+        message: expect.stringContaining('company "company-b" has no saved settings for this plugin'),
       });
     } finally {
       await handle.stop().catch(() => undefined);
@@ -897,6 +899,152 @@ describe("plugin proactive events.subscribe: options-seeded scope + filter parit
       await handle.stop().catch(() => undefined);
     }
   });
+});
+
+describe("plugin calls without an invocation id: deterministic scope rule (PAR-11072)", () => {
+  // Each case runs idle (the outer getData names no company, so no invocation
+  // is registered) and busy (the outer getData registers an invocation for
+  // "company-live", which is not configured). The nested call carries no
+  // invocation id and goes through the real manager context resolution into
+  // the real createHostClientHandlers gate.
+  const RULE3 = (id: string) =>
+    `company context is required: company "${id}" has no saved settings for this plugin; ` +
+    "calls made outside a host invocation (jobs, timers, start-up) can act only for companies with saved settings";
+  const STATES = ["idle", "busy"] as const;
+
+  function makeHandle(onStreamNotification?: (method: string, params: Record<string, unknown>) => void) {
+    const ok = () => vi.fn(async () => ({ ok: true }));
+    const services = {
+      config: { get: ok() },
+      companies: { get: ok() },
+      state: { get: ok() },
+      events: { subscribe: vi.fn(async () => undefined) },
+      http: { fetch: ok() },
+      db: { query: ok() },
+    };
+    const hostHandlers = createHostClientHandlers({
+      pluginId: "test.plugin",
+      capabilities: ["companies.read", "plugin.state.read", "events.subscribe", "http.outbound", "database.namespace.read"],
+      services: services as unknown as HostServices,
+    });
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT, manifest: TEST_MANIFEST, config: {},
+      instanceInfo: { instanceId: "instance-1", hostVersion: "1.0.0" }, apiVersion: 1,
+      hostHandlers, proactiveCompanyScopes: ["company-1", "company-2"], onStreamNotification,
+    });
+    return { handle, services };
+  }
+
+  function callNoId(
+    handle: ReturnType<typeof makeHandle>["handle"],
+    state: (typeof STATES)[number],
+    nested: Record<string, unknown>,
+  ) {
+    return handle.call("getData", {
+      key: "probe",
+      ...(state === "busy" ? { companyId: "company-live" } : {}),
+      params: { mode: "omit", ...nested },
+    } as unknown as HostToWorkerMethods["getData"][0]);
+  }
+
+  async function withHandle(run: (h: ReturnType<typeof makeHandle>) => Promise<void>, onStream?: Parameters<typeof makeHandle>[0]) {
+    vi.mocked(logger.warn).mockClear();
+    vi.mocked(logger.error).mockClear();
+    const h = makeHandle(onStream);
+    try {
+      await h.handle.start();
+      await run(h);
+    } finally {
+      await h.handle.stop().catch(() => undefined);
+    }
+  }
+
+  function expectWarn(method: string, reason: string, requestedCompanyId?: string) {
+    expect(logger.warn).toHaveBeenCalledWith(
+      { pluginId: "test.plugin", method, reason, requestedCompanyId },
+      "plugin scope refusal",
+    );
+    expect(logger.error).not.toHaveBeenCalledWith(expect.anything(), "host handler error");
+  }
+
+  // Shape -> nested call and the service it reaches. `id` is the company named.
+  const companyShapes = (id: string) => [
+    { shape: "companyId", nested: { hostMethod: "config.get", requestedCompanyId: id }, service: "config" },
+    { shape: "scopeKind company + scopeId", nested: { hostMethod: "state.get", requestedCompanyId: id }, service: "state" },
+    { shape: "events.subscribe filter.companyId", nested: { hostMethod: "events.subscribe", requestedCompanyId: id }, service: "events" },
+    { shape: "companies.get", nested: { hostMethod: "companies.get", requestedCompanyId: id }, service: "companies" },
+  ] as const;
+  const serviceFn = (services: ReturnType<typeof makeHandle>["services"], name: string) =>
+    Object.values(services[name as keyof typeof services])[0] as ReturnType<typeof vi.fn>;
+
+  describe.each(STATES)("worker %s", (state) => {
+    it.each([
+      { shape: "instance state", nested: { hostMethod: "state.get", nestedParams: { scopeKind: "instance", namespace: "ns", stateKey: "k" } }, service: "state" },
+      { shape: "http.fetch", nested: { hostMethod: "http.fetch", nestedParams: { url: "https://example.test" } }, service: "http" },
+      { shape: "db.query", nested: { hostMethod: "db.query", nestedParams: { sql: "select 1" } }, service: "db" },
+      { shape: "unfiltered events.subscribe", nested: { hostMethod: "events.subscribe", nestedParams: { eventPattern: "issue.updated" } }, service: "events" },
+    ])("admits a call that needs no company: $shape", ({ nested, service }) => withHandle(async ({ handle, services }) => {
+      await callNoId(handle, state, nested);
+      expect(serviceFn(services, service)).toHaveBeenCalledTimes(1);
+    }));
+
+    it.each(companyShapes("company-1"))("admits a configured company: $shape", ({ nested, service }) =>
+      withHandle(async ({ handle, services }) => {
+        await callNoId(handle, state, nested);
+        expect(serviceFn(services, service)).toHaveBeenCalledTimes(1);
+      }));
+
+    it.each(companyShapes("company-9"))("refuses an unconfigured company with the rule 3 text: $shape", ({ nested, service }) =>
+      withHandle(async ({ handle, services }) => {
+        const err = await callNoId(handle, state, nested).catch((e: unknown) => e);
+        expect(err).toMatchObject({ code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED });
+        expect((err as Error).message).toBe(`Plugin "test.plugin" is not allowed to perform "${nested.hostMethod}": ${RULE3("company-9")}`);
+        expect(serviceFn(services, service)).not.toHaveBeenCalled();
+        expectWarn(nested.hostMethod, "unconfigured_company", "company-9");
+      }));
+
+    it("refuses a wildcard company key with no_company, never the configured set", () => withHandle(async ({ handle, services }) => {
+      const err = await callNoId(handle, state, {
+        hostMethod: "state.get", nestedParams: { scopeKind: "company", namespace: "ns", stateKey: "k" },
+      }).catch((e: unknown) => e) as Error;
+      expect(err.message).toMatch(/: company context is required$/);
+      expect(services.state.get).not.toHaveBeenCalled();
+      expectWarn("state.get", "no_company");
+    }));
+
+    it("refuses a call that needs a company and names none with no_company", () => withHandle(async ({ handle, services }) => {
+      const err = await callNoId(handle, state, { hostMethod: "config.get", nestedParams: {} }).catch((e: unknown) => e) as Error;
+      expect(err.message).toMatch(/: company context is required$/);
+      expect(services.config.get).not.toHaveBeenCalled();
+      expectWarn("config.get", "no_company");
+    }));
+
+    it("refuses an unknown invocation id with unknown_invocation", () => withHandle(async ({ handle, services }) => {
+      const err = await callNoId(handle, state, { mode: "unknown", hostMethod: "companies.get", requestedCompanyId: "company-1" })
+        .catch((e: unknown) => e) as Error;
+      expect(err.message).toContain("missing, expired, or unknown invocation scope");
+      expect(services.companies.get).not.toHaveBeenCalled();
+      expectWarn("companies.get", "unknown_invocation");
+    }));
+
+    it("keeps the live-invocation check for stream notifications", async () => {
+      const delivered: string[] = [];
+      await withHandle(async ({ handle }) => {
+        await callNoId(handle, state, { hostMethod: "streams.emit", requestedCompanyId: "company-9" });
+        await callNoId(handle, state, { hostMethod: "streams.emit", requestedCompanyId: "company-1" });
+      }, (_method, params) => delivered.push(String(params.companyId)));
+      // Configured company: delivered either way. Unconfigured: dropped while busy.
+      expect(delivered).toEqual(state === "busy" ? ["company-1"] : ["company-9", "company-1"]);
+    });
+  });
+
+  it("logs other handler errors at ERROR, not as a scope refusal", () => withHandle(async ({ handle, services }) => {
+    services.companies.get.mockRejectedValueOnce(new Error("db down"));
+    await expect(callNoId(handle, "idle", { hostMethod: "companies.get", requestedCompanyId: "company-1" }))
+      .rejects.toThrow("db down");
+    expect(logger.error).toHaveBeenCalledWith({ method: "companies.get", err: "db down" }, "host handler error");
+    expect(logger.warn).not.toHaveBeenCalledWith(expect.anything(), "plugin scope refusal");
+  }));
 });
 
 // ---------------------------------------------------------------------------
