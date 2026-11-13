@@ -100,6 +100,10 @@ describe("preview chroma key (D3d2): fallback without WebGL", () => {
     expect(player).toContain('opacity: seg.chromaKey && keyed !== "none" ? 0 : undefined');
     expect(player).toContain('{keyed === "none" ? <NoKeyLabel clipId={seg.clipId} /> : null}');
     expect(player).toContain('display: keyed === "none" ? "none" : "block"');
+    // Keyed clips load with CORS (R2 links are cross-origin); a failed CORS load remounts the video without it.
+    expect(player).toContain("const withCors = !!seg.chromaKey && cors;");
+    expect(player).toContain('crossOrigin={withCors ? "anonymous" : undefined}');
+    expect(player).toContain("onError={() => { if (withCors) setCors(false); }}");
     const layer = readFileSync(new URL("../src/ui/editor/ChromaLayer.tsx", import.meta.url), "utf8");
     expect(layer).toContain("return startChromaLoop(el, video, () => uniforms.current, (s) => status.current(s));");
   });

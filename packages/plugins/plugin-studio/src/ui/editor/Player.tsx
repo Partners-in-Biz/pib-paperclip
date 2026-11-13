@@ -266,6 +266,9 @@ function OverlayClip({ layer, url, z, size, project, playing, onLoaded }: { laye
   const [videoEl, setVideoEl] = useState<HTMLVideoElement | null>(null);
   const bindVideo = useRef((el: HTMLVideoElement | null) => { video.current = el; setVideoEl(el); }).current;
   const [keyStatus, setKeyStatus] = useState<ChromaStatus | null>(null);
+  // A keyed clip loads with CORS: the R2 link is cross-origin and WebGL refuses a cross-origin frame without it. If that
+  // load fails (no CORS answer), the video remounts without it and the key reports "none" on its first draw.
+  const [cors, setCors] = useState(true);
   const [source, setSource] = useState<Size | null>(null);
   const filterId = `po${useId().replace(/[^\w-]/g, "")}`;
   const seg = layer.segment;
@@ -286,13 +289,17 @@ function OverlayClip({ layer, url, z, size, project, playing, onLoaded }: { laye
   const picture = { position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "contain", display: "block", clipPath: rounded, filter: grade ? `url(#${filterId})` : undefined } as const;
   // Keyed: the canvas shows the picture and the video only plays (hidden, still decoding). Until WebGL answers, neither.
   const keyed = seg.chromaKey ? keyStatus : null;
+  const withCors = !!seg.chromaKey && cors;
   return url ? (
     <>
       <div data-overlay-layer={seg.clipId} data-blend={seg.blendMode ?? undefined} style={{ position: "absolute", inset: 0, zIndex: z, opacity: layer.alpha, mixBlendMode: (blend ?? undefined) as never, transform: clipTransform(layer, project), pointerEvents: "none" }}>
         {grade ? <GradeFilter id={filterId} grade={grade} /> : null}
         <video
+          key={withCors ? "cors" : "plain"}
           ref={bindVideo}
           src={url}
+          crossOrigin={withCors ? "anonymous" : undefined}
+          onError={() => { if (withCors) setCors(false); }}
           data-clip-id={seg.clipId}
           data-keyed={seg.chromaKey ? (keyed ?? "pending") : undefined}
           playsInline
