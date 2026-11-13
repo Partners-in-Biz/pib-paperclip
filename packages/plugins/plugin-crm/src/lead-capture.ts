@@ -61,6 +61,16 @@ import {
   type Submission,
 } from "./lead-form.js";
 import {
+  checkApplyTags,
+  checkConfirmDailyCap,
+  checkConfirmFrom,
+  checkConfirmUrl,
+  NEWSLETTER_RATE_LIMIT_PER_HOUR,
+  newsletterParamsIn,
+  newsletterSettingsOf,
+  refuseConfirmSecret,
+} from "./newsletter-settings.js";
+import {
   bumpSource,
   captureByKey,
   countHits,
@@ -73,6 +83,7 @@ import {
   recentCaptures,
   settleCapture,
   recordHit,
+  saveConfirmSecret,
   saveLeadSourceSettings,
   saveRotatedKeys,
   saveSigningSecret,
@@ -798,6 +809,8 @@ export async function leadSourceView(ctx: PluginContext, source: LeadSource, url
     turnstile: Boolean(source.turnstileSiteKey),
     intake: source.intake,
     ...(source.intake === "issue" ? { projectId: source.targetProjectId, assigneeAgentId: source.targetAgentId } : {}),
+    // The confirmation-link secret is never in a view: only the settings a person or agent may read and change.
+    ...(source.intake === "newsletter" ? { newsletter: { applyTags: source.applyTags, confirmUrl: source.confirmUrl, confirmFrom: source.confirmFrom, confirmDailyCap: source.confirmDailyCap } } : {}),
     rateLimitPerHour: source.rateLimitPerHour,
     accepted: source.acceptedCount,
     rejected: source.rejectedCount,
@@ -809,17 +822,20 @@ export async function leadSourceView(ctx: PluginContext, source: LeadSource, url
   };
 }
 
-/** The intake settings a new source asks for: `lead` (default) or `issue` with a project of this company and, optionally, one of its agents. */
+/**
+ * The intake settings a new source asks for: `lead` (default), `issue` with a project of this company and, optionally, one of its agents,
+ * or `newsletter` (its own settings are read by `newsletterSettingsOf`).
+ */
 async function intakeOf(ctx: PluginContext, companyId: string, params: Record<string, unknown>): Promise<{ intake: LeadIntake; targetProjectId: string | null; targetAgentId: string | null }> {
   const raw = params.intake == null || params.intake === "" ? "lead" : params.intake;
   if (typeof raw !== "string" || !(LEAD_INTAKES as readonly string[]).includes(raw)) throw new CrmError(`intake must be ${LEAD_INTAKES.slice(0, -1).join(", ")} or ${LEAD_INTAKES.at(-1)}`);
-  // The database takes newsletter sources (migration 023); the tools that create them and check their settings come next (PAR-10863).
-  if (raw === "newsletter") throw new CrmError("Newsletter forms (intake newsletter) cannot be created yet: use lead or issue");
   const projectId = text(params, "projectId", 80);
   const agentId = text(params, "assigneeAgentId", 80);
-  if (raw === "lead") {
+  const newsletterParams = newsletterParamsIn(params);
+  if (raw !== "newsletter" && newsletterParams.length) throw new CrmError(`${newsletterParams.join(", ")} belong to a newsletter form: pass intake newsletter too`);
+  if (raw === "lead" || raw === "newsletter") {
     if (projectId || agentId) throw new CrmError("projectId and assigneeAgentId belong to a report form: pass intake issue too");
-    return { intake: "lead", targetProjectId: null, targetAgentId: null };
+    return { intake: raw as LeadIntake, targetProjectId: null, targetAgentId: null };
   }
   if (!projectId) throw new CrmError("A report form (intake issue) needs projectId: the project its issues open in");
   const project = await ctx.projects.get(projectId, companyId).catch(() => null);
@@ -859,9 +875,12 @@ function asksForSecret(params: Record<string, unknown>): boolean {
  * `create-lead-endpoint`: a lead form for a client (or for us, with no `client`). Idempotent
  * per client and label: asking again returns the same source (its key is still valid, no new secret).
  * `serverSecret: true` (a person, on the Lead forms card) also makes the signing secret and shows it once; an agent asking for it is refused.
+ * `intake: "newsletter"` (a person only: it always gets a signing secret) also takes applyTags, confirmUrl, confirmFrom and confirmDailyCap,
+ * and the plugin makes the confirmation-link secret, which no result shows.
  */
 export async function createLeadEndpoint(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>, by: "agent" | "human" = "agent", options: CreateEndpointOptions = {}) {
-  const wantsSecret = asksForSecret(params);
+  refuseConfirmSecret(params);
+  let wantsSecret = asksForSecret(params);
   if (wantsSecret && !isPerson(viewer, by)) throw new CrmError(SECRET_BY_PERSON);
   const client = clientOf(params);
   const clientName = client ? await requireClient(ctx, viewer, client) : null;
@@ -881,6 +900,12 @@ export async function createLeadEndpoint(ctx: PluginContext, viewer: Viewer, par
     siteUrl = siteOrigin(site.url);
   } else {
     siteUrl = siteOrigin(httpsUrl(params, "siteUrl"));
+  }
+  // A newsletter form is called by the site's server, signed: it always has a signing secret, so only a person makes one.
+  const newsletter = intake.intake === "newsletter" ? newsletterSettingsOf(params, siteUrl) : null;
+  if (newsletter) {
+    if (!isPerson(viewer, by)) throw new CrmError(`A newsletter form (intake newsletter) always gets a server signing secret. ${SECRET_BY_PERSON}`);
+    wantsSecret = true;
   }
 
   const settings = await leadsConfig(ctx, viewer.companyId);
@@ -904,18 +929,19 @@ export async function createLeadEndpoint(ctx: PluginContext, viewer: Viewer, par
     successMessage: text(params, "successMessage", 200),
     // A widget with no secret to check it would only annoy visitors: the site key is copied only when both are saved.
     turnstileSiteKey: (await turnstileReady(ctx, viewer.companyId)) ? settings.turnstileSiteKey : null,
-    rateLimitPerHour: 120,
+    rateLimitPerHour: newsletter ? NEWSLETTER_RATE_LIMIT_PER_HOUR : 120,
     acceptedCount: 0,
     rejectedCount: 0,
     lastSubmissionAt: null,
     createdBy: actorOf(viewer),
     createdAt: null,
     ...intake,
-    applyTags: [],
-    confirmUrl: null,
-    confirmFrom: null,
-    confirmSecret: null,
-    confirmDailyCap: 300,
+    applyTags: newsletter?.applyTags ?? [],
+    confirmUrl: newsletter?.confirmUrl ?? null,
+    confirmFrom: newsletter?.confirmFrom ?? null,
+    // Same generator as the signing secret; stored only, never returned (the view and the result below leave it out).
+    confirmSecret: newsletter ? generateSigningSecret() : null,
+    confirmDailyCap: newsletter?.confirmDailyCap ?? 300,
   };
   await insertLeadSource(ctx, source);
   const view = await leadSourceView(ctx, { ...source, createdAt: new Date().toISOString() }, urls);
@@ -924,7 +950,9 @@ export async function createLeadEndpoint(ctx: PluginContext, viewer: Viewer, par
     source: view,
     // Shown once, to the person who asked on the card: it is stored in the CRM's own database and never returned again.
     ...(source.signingSecret ? { serverSecret: source.signingSecret, serverSecretNote: "Shown once. The client's server signs requests with it (X-PiB-Signature); keep it in that server's environment, never in a page or a repo." } : {}),
-    next: urls ? "Install the snippet on the client's site (see embed.steps), then send one test enquiry." : NO_URLS_NOTE,
+    next: newsletter
+      ? "Put the key and the signing secret in the site server's environment (never in a page or a repo). The form takes no signup until the confirmation-mail step ships."
+      : urls ? "Install the snippet on the client's site (see embed.steps), then send one test enquiry." : NO_URLS_NOTE,
   };
 }
 
@@ -943,10 +971,12 @@ async function requireSource(ctx: PluginContext, viewer: Viewer, params: Record<
  * replaces the signing secret (the old one stops at once); the new one is shown once. An agent asking for it is refused.
  */
 export async function rotateLeadKey(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>, by: "agent" | "human" = "agent", now: Date = new Date()) {
+  refuseConfirmSecret(params);
   const wantsSecret = asksForSecret(params);
   if (wantsSecret && !isPerson(viewer, by)) throw new CrmError(SECRET_BY_PERSON);
   const source = await requireSource(ctx, viewer, params);
   if (source.status === "revoked") throw new CrmError("This form was switched off for good. Create a new one with create-lead-endpoint.");
+  if (params.newConfirmKey === true) return replaceConfirmKey(ctx, viewer, source, wantsSecret, now);
   const publicKey = generateLeadKey();
   const until = new Date(now.getTime() + KEY_GRACE_DAYS * 86_400_000).toISOString();
   const newSecret = wantsSecret ? generateSigningSecret() : null;
@@ -964,6 +994,21 @@ export async function rotateLeadKey(ctx: PluginContext, viewer: Viewer, params: 
     oldKeyValidUntil: until,
     ...(newSecret ? { serverSecret: newSecret, serverSecretNote: "Shown once. The old secret no longer works: update the client's server now." } : {}),
     next: `Put the new snippet on the site within ${KEY_GRACE_DAYS} days; the old key keeps working until then.`,
+  };
+}
+
+/**
+ * `rotate-lead-key` with `newConfirmKey: true` (newsletter forms only): replaces the secret that signs confirmation links, so every link
+ * already sent stops working. The form's key and signing secret stay; the new secret is stored only, never returned. An agent may do it.
+ */
+async function replaceConfirmKey(ctx: PluginContext, viewer: Viewer, source: LeadSource, wantsSecret: boolean, now: Date) {
+  if (source.intake !== "newsletter") throw new CrmError("newConfirmKey is for a newsletter form (intake newsletter) only");
+  if (wantsSecret) throw new CrmError("Replace the confirmation key on its own: run rotate-lead-key again for the signing secret");
+  await saveConfirmSecret(ctx, viewer.companyId, source.id, generateSigningSecret());
+  return {
+    source: await leadSourceView(ctx, source, await urlsFor(ctx, viewer.companyId), now),
+    confirmKeyReplaced: true,
+    note: "Every confirmation link already sent stops working; people who have not confirmed sign up again. The form's key and signing secret did not change, and signups go on.",
   };
 }
 
@@ -1006,10 +1051,23 @@ export async function listLeadSourcesTool(ctx: PluginContext, viewer: Viewer, pa
  * An agent may pause and resume; only a person revokes (it cannot be undone).
  */
 export async function updateLeadSource(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>, source: "agent" | "human") {
+  refuseConfirmSecret(params);
   const row = await requireSource(ctx, viewer, params);
+  if (params.intake != null && params.intake !== "" && params.intake !== row.intake) {
+    throw new CrmError(`A form's intake is set when it is made and never changes (this one is ${row.intake}): make a new form with create-lead-endpoint`);
+  }
   const next: LeadSource = { ...row };
   if ("label" in params) next.label = text(params, "label", 80) ?? row.label;
   if ("consentText" in params) next.consentText = text(params, "consentText", LIMITS.consentText);
+  const newsletterParams = newsletterParamsIn(params);
+  if (row.intake !== "newsletter" && newsletterParams.length) throw new CrmError(`${newsletterParams.join(", ")} belong to a newsletter form; this one is ${row.intake}`);
+  if (row.intake === "newsletter") {
+    if (!next.consentText) throw new CrmError("A newsletter form needs its consent wording: consentText cannot be empty");
+    if (params.applyTags != null) next.applyTags = checkApplyTags(params.applyTags);
+    if (params.confirmUrl != null) next.confirmUrl = checkConfirmUrl(params.confirmUrl, row.siteUrl);
+    if (params.confirmFrom != null) next.confirmFrom = checkConfirmFrom(params.confirmFrom);
+    if (params.confirmDailyCap != null) next.confirmDailyCap = checkConfirmDailyCap(params.confirmDailyCap);
+  }
   if ("privacyUrl" in params) next.privacyUrl = httpsUrl(params, "privacyUrl");
   if ("successMessage" in params) next.successMessage = text(params, "successMessage", 200);
   if (typeof params.status === "string") {
@@ -1020,7 +1078,12 @@ export async function updateLeadSource(ctx: PluginContext, viewer: Viewer, param
     next.status = status;
   }
   await saveLeadSourceSettings(ctx, next);
-  return { source: await leadSourceView(ctx, next, await urlsFor(ctx, viewer.companyId)) };
+  // A confirmation link carries a hash of the wording the person saw: new wording voids the links already sent.
+  const wordingChanged = row.intake === "newsletter" && next.consentText !== row.consentText;
+  return {
+    source: await leadSourceView(ctx, next, await urlsFor(ctx, viewer.companyId)),
+    ...(wordingChanged ? { note: "The consent wording changed, so every confirmation link already sent stops working; people who have not confirmed sign up again." } : {}),
+  };
 }
 
 /** The recent leads of one source as attribution only (no names, no emails): which campaigns work. */

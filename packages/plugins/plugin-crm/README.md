@@ -78,7 +78,16 @@ The same report (sender, subject, message, fields) twice in a day is one issue. 
 PAR-10850, plan PAR-10817 stage 1 (first half; the tools follow in PAR-10863). Nothing a visitor or an existing form sees changes.
 - Migration `023_crm.sql` widens `lead_sources_intake` to `lead`, `issue`, `newsletter` and adds `apply_tags` (jsonb, default `[]`), `confirm_url`, `confirm_from`, `confirm_secret`, `confirm_daily_cap` (default 300), with the CHECK `lead_sources_newsletter`: a newsletter source has tags, `confirm_url`, `confirm_from`, `confirm_secret`, `signing_secret` and `consent_text`; any other source has none of the newsletter settings. Existing rows pass unchanged. Rollback: revert the code; the columns can stay. **Stop-first:** apply and read back the migration on production before the code deploys.
 - The store reads and writes the new columns (`saveConfirmSecret` replaces the confirmation secret of a newsletter source only).
-- The tools refuse `intake: "newsletter"` for now, and the lead webhook refuses a newsletter source (nothing is written) until stage 2 adds signup and confirm.
+- The tools refused `intake: "newsletter"` in this version (0.48.0 adds them), and the lead webhook refuses a newsletter source (nothing is written) until stage 2 adds signup and confirm.
+
+## Newsletter forms: tools (0.48.0)
+
+PAR-10863, plan PAR-10817 stage 1 (second half). Deploy together with 0.47.0.
+- `create-lead-endpoint` takes `intake: "newsletter"` with `siteUrl` or `siteId`, `applyTags` (1 to 5 tags of 1 to 60 characters), `confirmUrl` (https, host exactly the site's host, no userinfo, port, query or fragment), `confirmFrom` (one address) and `confirmDailyCap` (1 to 5000, default 300). Only a person makes one: it always gets a signing secret. Its per-hour bucket is 20. The plugin makes `confirm_secret` (same generator as the signing secret); no result, view or log shows it, and every tool refuses a `confirmSecret` parameter.
+- `update-lead-source` changes those settings on a newsletter form with the same checks, refuses them on any other form, and never changes `intake`. New `consentText` on a newsletter form is allowed and the result says the confirmation links already sent stop working.
+- `rotate-lead-key` with `newConfirmKey: true` (newsletter only, agents too) replaces only `confirm_secret`; the key and signing secret stay.
+- `list-lead-sources` shows a newsletter form's settings under `newsletter`, without the secret.
+- The lead webhook still refuses a newsletter form until stage 2.
 
 ## Drive save: one query into an existing sub-folder (0.46.2)
 

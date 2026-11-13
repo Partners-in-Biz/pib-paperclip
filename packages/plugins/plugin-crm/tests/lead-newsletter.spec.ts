@@ -1,4 +1,4 @@
-/** Newsletter lead sources, stage 1a (PAR-10850): the database takes them, the tools do not make them yet, and the webhook refuses them. */
+/** Newsletter lead sources, stage 1a (PAR-10850): the database takes them and the webhook refuses them (the tools: lead-newsletter-tools.spec.ts). */
 import { describe, expect, it } from "vitest";
 import { tool } from "./helpers/crm.js";
 import { bootLeads, delivery, lead, makeSource, makeSourceAsPerson, signedDelivery } from "./helpers/leads.js";
@@ -21,13 +21,6 @@ describe("the lead webhook and a newsletter form", () => {
     expect(booted.store.consent_records).toHaveLength(0);
     expect(booted.store.contacts).toHaveLength(contacts);
     expect(booted.store.lead_sources[0]).toMatchObject({ accepted_count: 0, rejected_count: 0, status: "active" });
-  });
-
-  it("the tools do not make a newsletter form yet, and store nothing", async () => {
-    const booted = await bootLeads();
-    expect(await refused(makeSource(booted, { label: "Newsletter", intake: "newsletter" }))).toMatch(/cannot be created yet/);
-    expect(await refused(makeSourceAsPerson(booted, { label: "Newsletter", intake: "newsletter", serverSecret: true }))).toMatch(/cannot be created yet/);
-    expect(booted.store.lead_sources).toHaveLength(0);
   });
 
   it("every existing form still lists as lead, keeps empty newsletter settings and still takes a lead", async () => {

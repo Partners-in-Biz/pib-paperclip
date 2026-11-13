@@ -13,6 +13,8 @@ A lead form has its own key. Whose lead it is comes from the key: a form made fo
 ## Make one
 \`create-lead-endpoint\` with \`client\` (leave out for our own), \`label\` (the same label for the same client returns the same form), optionally \`siteId\` (one of the client's websites), \`consentText\`, \`privacyUrl\`, \`successMessage\`. The result has the key, \`embed.snippet\`, \`embed.curl\` and \`embed.steps\`. If it says the plugin does not know its address yet, a person opens the CRM page once; run it again.
 
+**A newsletter form** (\`intake: newsletter\`, double opt-in) is made by a PERSON (it always gets a signing secret): put it on Needs you with \`siteUrl\`, \`applyTags\` (1 to 5), \`confirmUrl\` (an https page on that exact host), \`confirmFrom\` (one address). An agent may change those settings with \`update-lead-source\`, and \`rotate-lead-key\` with \`newConfirmKey: true\` voids every confirmation link already sent. The intake never changes, and the confirmation-link secret is never shown.
+
 ## Install it on the client's site
 This is a change to the client's site: do it through the client's repo project (a PR into the work branch) or give it to the client's developer. Never edit the live site by hand.
 - **The snippet** is two lines (a comment and a script tag). Put it where the form should appear: a page's HTML, a theme template, or a Custom HTML block in WordPress. It adds an iframe; the form lives on our host. Options on the script tag: \`data-consent\` (the wording by the tick box), \`data-privacy\`, \`data-success\`, \`data-accent\` (#RRGGBB: it takes the client's brand colour from the profile), \`data-fields\` (name,email,phone,company,message), \`data-target\` (a CSS selector), \`data-title\`.
