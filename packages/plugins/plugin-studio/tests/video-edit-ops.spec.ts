@@ -239,7 +239,7 @@ describe("video edit ops", () => {
     expect(refused(["delete"])).toMatchObject({ reason: "invalid", path: "ops[0]" });
     expect(() => applyOps(input(), "delete" as unknown as unknown[])).toThrow(OpError);
     expect(refused(Array.from({ length: MAX_OPS + 1 }, () => ({ op: "setProject", fps: 30 })))).toMatchObject({ reason: "too_many", opIndex: -1 });
-    expect(() => applyOps({ schemaVersion: 4 }, [])).toThrow(EditError);
+    expect(() => applyOps({ schemaVersion: 5 }, [])).toThrow(EditError);
   });
 
   it("a chain of edits round-trips through JSON", () => {
