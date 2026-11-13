@@ -64,6 +64,10 @@ Listens to `plugin.<sender>.mail.send.requested` for every kit `MAIL_SENDERS` pl
 - A retry first looks the message up by its Message-ID, so an attempt Gmail accepted is not sent twice.
 - Over the rate, Gmail down or the account needs reconnecting: nothing is stored and the sender's outbox retries. No connected account, a bad address, an expired attachment link or a message Gmail refuses: `failed` with `permanent: true`. The Sent tab retries by hand.
 
+## 0.9.11: newsletter send records are blanked after 30 days
+
+- The hourly private-mail job also blanks recipients, subject and request of every send record whose key starts `crm:nl:` and is older than 30 days (the same statement erasure uses). The record stays, so a repeated key is still refused. No migration.
+
 ## 0.9.10: client asks open a task; Give to agent on every row
 
 - **Who gets a Reply needed task.** One rule (`opensReplyTask`, shared by sync and the done-check): lead, client or support mail at needs-reply 0.7, as before. A **known client** (a client mail mapping or a person's correction) now also opens one when answering mail we sent (category `reply`: a go-ahead, "it errors when I approve") and from 0.5. Replies from anyone else stay with the plugin that sent the mail. Bulk and likely phishing never open one.
