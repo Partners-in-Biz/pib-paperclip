@@ -464,6 +464,35 @@ export async function saveContact(ctx: PluginContext, contact: ContactDraft): Pr
   );
 }
 
+/** Inserts a contact unless one with its id exists (a newsletter subscriber's id comes from the address). True when this call inserted it. */
+export async function insertContactOnce(ctx: PluginContext, contact: ContactDraft): Promise<boolean> {
+  const res = await ctx.db.execute(
+    `INSERT INTO ${table(ctx, "contacts")}
+      (id, company_id, name, emails, lifecycle, custom, tags)
+     VALUES ($1, $2, $3, $4::jsonb, $5, $6::jsonb, $7::jsonb)
+     ON CONFLICT (id) DO NOTHING`,
+    [contact.id, contact.companyId, contact.name, json(contact.emails), contact.lifecycle, json(contact.custom), json(contact.tags)],
+  );
+  return (res?.rowCount ?? 0) > 0;
+}
+
+/**
+ * Appends each tag the contact does not have yet (compared case-insensitively) in one statement, so an edit made after the
+ * contact was read is never overwritten (`saveContact` writes the whole row with no version check). It ignores who owns the
+ * tags field: a newsletter tag records consent. Other tags stay as written. True when a tag was added.
+ */
+export async function addContactTags(ctx: PluginContext, companyId: string, contactId: string, tags: readonly string[]): Promise<boolean> {
+  const missing = `FROM jsonb_array_elements_text($3::jsonb) WITH ORDINALITY AS t(tag, n)
+          WHERE NOT EXISTS (SELECT 1 FROM jsonb_array_elements_text(c.tags) AS e(tag) WHERE lower(e.tag) = lower(t.tag))`;
+  const res = await ctx.db.execute(
+    `UPDATE ${table(ctx, "contacts")} c
+        SET tags = c.tags || (SELECT COALESCE(jsonb_agg(t.tag ORDER BY t.n), '[]'::jsonb) ${missing}), updated_at = now()
+      WHERE c.id = $1 AND c.company_id = $2 AND EXISTS (SELECT 1 ${missing})`,
+    [contactId, companyId, json(tags)],
+  );
+  return (res?.rowCount ?? 0) > 0;
+}
+
 export async function listLinks(ctx: PluginContext, companyId: string): Promise<LinkDraft[]> {
   const rows = await ctx.db.query<LinkRow>(
     `SELECT id, company_id, contact_id, account_id, role_label

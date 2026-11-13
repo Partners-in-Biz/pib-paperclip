@@ -435,6 +435,11 @@ export async function failCapture(ctx: PluginContext, companyId: string, key: st
   return (res.rowCount ?? 0) > 0 ? { sourceId: capture.sourceId } : null;
 }
 
+/** Marks a newsletter capture `confirmed` (and names the contact) when the row still exists. */
+export async function confirmCapture(ctx: PluginContext, companyId: string, key: string, contactId: string): Promise<void> {
+  await ctx.db.execute(`UPDATE ${table(ctx, "lead_captures")} SET outcome = 'confirmed', contact_id = $3 WHERE company_id = $1 AND key = $2`, [companyId, key, contactId]);
+}
+
 /** Captures of one source, newest first, for the source's recent-leads view (attribution only: no personal data). */
 export async function recentCaptures(ctx: PluginContext, companyId: string, sourceId: string, limit = 20): Promise<LeadCaptureRow[]> {
   const rows = await ctx.db.query<CaptureRow>(
@@ -550,7 +555,8 @@ export async function putConsent(ctx: PluginContext, row: Omit<ConsentRow, "id">
   await ctx.db.execute(
     `INSERT INTO ${table(ctx, "consent_records")}
       (id, company_id, sender_key, subject_key, email, contact_id, purpose, basis, granted, source, wording, form_id, url, policy_version, ip_hash, recorded_at, expires_at, recorded_by)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::timestamptz, $17::timestamptz, $18)`,
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::timestamptz, $17::timestamptz, $18)
+     ON CONFLICT (company_id, sender_key, subject_key, purpose) DO NOTHING`,
     [row.id ?? randomUUID(), row.companyId, row.senderKey, row.subjectKey, row.email, row.contactId, row.purpose, row.basis, row.granted, row.source, row.wording, row.formId, row.url, row.policyVersion, row.ipHash, row.recordedAt, row.expiresAt, row.recordedBy],
   );
 }

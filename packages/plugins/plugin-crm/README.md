@@ -81,13 +81,13 @@ PAR-10850 (database, 0.47.0) and PAR-10863 (tools, 0.47.1), plan PAR-10817 stage
 - `create-lead-endpoint` takes `intake: "newsletter"` with `siteUrl`, `applyTags` (1 to 5 tags, 1 to 60 characters), `confirmUrl` (https, exactly the site's host, no userinfo, port, query or fragment), `confirmFrom` (one address) and `confirmDailyCap` (1 to 300). An agent may create one: it has no signing secret (so no signups) until a person makes one with "Make a signing secret" on the Lead forms card (`crm.make-lead-secret`), and the result says so in one line. `confirmUrl` is at most 100 characters (`MAX_CONFIRM_URL_LENGTH`).
 - The plugin makes `confirm_secret`; no parameter sets it and no tool, view or log shows it (only `confirmKey: { set, keyId }`). `rotate-lead-key` with `newConfirmKey: true` replaces it alone (a `confirmSecret` argument is refused, never read as a plain rotation) (open links die; key and signing secret stay).
 - `update-lead-source` changes the settings with the same checks. `intake` never changes to or from `newsletter`. New `consentText` on a newsletter source voids open links, and the result says so.
-- The lead webhook refuses a newsletter source without a signing secret (nothing is written). Signup is 0.48.0, below; confirm comes later.
+- The lead webhook refuses a newsletter source without a signing secret (nothing is written). Signup is 0.48.0 and confirm 0.49.0, below.
 
 
 ## Newsletter signup (0.48.0)
 
 PAR-10852, plan PAR-10817 "Signup". A body with no `action` on a newsletter form (`src/newsletter-signup.ts`):
-- **Signed calls only**; an unsigned call, or any `action` (confirm ships later), is refused.
+- **Signed calls only**; an unsigned call, or an `action` other than `confirm`, is refused.
 - Limits in order: the source bucket (`rateLimitPerHour`, x5 signed), then the daily ceiling: `confirm_daily_cap` capture rows in the last 24 hours refuse the next (index `lead_captures_source`).
 - The stored `confirm_url` and `confirm_from` are checked again as on write; a value changed in the database refuses the signup with `bad_source_config` and one log line without the address.
 - Address checks as for a lead. A contact that is `unsubscribed` or `bounced`, or already has every `apply_tags` tag, gets nothing.
@@ -101,6 +101,16 @@ PAR-10891, plan PAR-10817 "Send result" (`src/newsletter-send-result.ts`). The C
 - `mail.send.result` for a `crm:nl:` key: **sent** deletes the outbox row (the signup stays `pending_confirmation`). **Failed for good**, or every recipient suppressed: the capture becomes `confirmation_failed` (only from `pending_confirmation`, so a repeated answer counts nothing), one rejection is counted on the source, and the row is deleted. A failure a retry may fix only notes the error. Another company's answer changes nothing.
 - The `redeliver-mail` job (every 5 minutes) deletes any `crm:nl:` outbox row that is no longer pending (the outbox gave up and no answer came). Pending rows and other keys are untouched.
 - Rollback: revert the code. Rows already deleted stay deleted, which is the safe direction. No schema change.
+
+## Newsletter confirm (0.50.0)
+
+PAR-10853, plan PAR-10817 "Confirm". A signed body with `action: "confirm"` and `token` on a newsletter form (`src/newsletter-confirm.ts`). `action` is read on a newsletter form only; a lead or report form ignores it.
+- Its own bucket: hits are logged under `<source id>:confirm` (30 a minute, 200 an hour), never the source id, so bad tokens cannot use up the signup cap and do not count as source rejections.
+- The token is checked (`verifyConfirmToken`: signature with `confirm_secret`, source, 7 days, the wording hash). A contact on that address that is `unsubscribed` or `bounced` is left as it is. Every refusal answers the same "not valid" message.
+- New address: a contact with lifecycle `lead`, `custom.origin` `newsletter`, tags = `apply_tags` only, and an id made from the workspace and the address, so two clicks at once insert one contact. Existing contact: only its tags change.
+- Tags are appended by one `UPDATE` (`addContactTags`, case-insensitive, other tags untouched), even when a person owns the tags field; never read-then-`saveContact`.
+- A consent record (purpose `newsletter`, basis `consent`, source `form`, the source's `consent_text`, the page path from the token, the clicking visitor's keyed hash, form id = source id); the signup's capture row becomes `confirmed` when it still exists; one `newsletter_confirmed` activity per link. No issue, lead score or speed-to-lead.
+- A second click (tags present, consent granted) changes nothing and answers success. `putConsent` now inserts with `ON CONFLICT DO NOTHING`, so two writes at once keep one record.
 
 ## Drive save: one query into an existing sub-folder (0.46.2)
 
