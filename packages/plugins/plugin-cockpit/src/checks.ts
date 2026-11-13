@@ -3,8 +3,15 @@
  * (`watch.ts`): the kit's drift, grant, approval and run-profile checks, the
  * measurement alerts, the registers and confirmations, and what waits on the
  * owner. Each runs on its own: one that cannot read its data says nothing
- * (and logs) instead of failing the snapshot, and the whole set is cached for
- * ten minutes per company because the snapshot is read on every page load.
+ * (and logs) instead of failing the snapshot. Each part is cached for ten
+ * minutes per company because the snapshot is read on every page load.
+ *
+ * A run reads the company before its first part and after each part that ran
+ * (the "probe", PAR-11071 rules 2-3). Once the plugin call that started it has
+ * ended, every company-named read is refused (-32005), and a part would turn
+ * that into "nothing to flag". So a refused probe stops the run: the part that
+ * just ran is `lost` (not stored), the parts still due are `notRun`, and the
+ * snapshot shows one row naming them (`OWN_CHECKS_INCOMPLETE_KEY`).
  *
  * Findings: Q9-8 / Q9-13 (role drift, run profile), RC5 (unrouted approvals,
  * blocked, grants), Q8-3 / Q8-8 / Q9-12 (measurement), Q1b-14 (client effort),
@@ -63,12 +70,65 @@ export interface ExtraChecks {
   kpis: CockpitKpi[];
   quality: QualityMetric[];
   waiting: WaitingItem[];
-  /** Each part's name, state and time, in run order; only on a run that read (a cache hit has none). */
+  /** Each part's name, state and time, in run order; absent when every part was served from the cache. */
   run?: PartRecord[];
+  /** Set when a refused company read stopped the run: the part it cut off ("" when no part could start) and the error's numeric code (0 when it had none). */
+  stop?: { lostPart: string; code: number };
 }
 
 const TTL_MS = 10 * 60_000;
-const caches = new WeakMap<object, Map<string, { at: number; value: ExtraChecks }>>();
+
+/** What a part returned (`failed`: it threw, stored empty). */
+interface StoredPart {
+  at: number;
+  value: Partial<ExtraChecks>;
+  failed: boolean;
+}
+
+/** One company's cache: each part's last result, its losses in a row, and until when a part lost twice is left alone. */
+interface CompanyChecks {
+  parts: Map<string, StoredPart>;
+  losses: Map<string, number>;
+  heldUntil: Map<string, number>;
+}
+
+const caches = new WeakMap<object, Map<string, CompanyChecks>>();
+
+function companyChecks(env: Env, companyId: string): CompanyChecks {
+  let byCompany = caches.get(env);
+  if (!byCompany) caches.set(env, (byCompany = new Map()));
+  let entry = byCompany.get(companyId);
+  if (!entry) byCompany.set(companyId, (entry = { parts: new Map(), losses: new Map(), heldUntil: new Map() }));
+  return entry;
+}
+
+/** The row's key; PAR-11233 reads the row back by it. */
+export const OWN_CHECKS_INCOMPLETE_KEY = "own_checks_incomplete";
+const PARTS_LEAD = "Not finished this time: ";
+const NOT_STARTED = "The checks that were due could not run: the Cockpit could no longer read this company. ";
+
+/** The row's `detail`: the unfinished parts by name. `notStarted` when no part could start. Read back with `parseIncompleteParts` only. */
+export function formatIncompleteParts(names: string[], options: { notStarted?: boolean } = {}): string {
+  return `${options.notStarted ? NOT_STARTED : ""}${PARTS_LEAD}${names.length ? names.join(", ") : "none"}. Until they finish they say nothing, so a problem only they find is not shown; the next page load or the hourly check runs them again.`;
+}
+
+/** The part names in a `detail` written by `formatIncompleteParts` (none for any other text). */
+export function parseIncompleteParts(detail: string | null | undefined): string[] {
+  if (!detail) return [];
+  const at = detail.indexOf(PARTS_LEAD);
+  if (at < 0) return [];
+  const rest = detail.slice(at + PARTS_LEAD.length);
+  const end = rest.indexOf(".");
+  const list = (end < 0 ? rest : rest.slice(0, end)).trim();
+  if (!list || list === "none") return [];
+  return list.split(",").map((name) => name.trim()).filter(Boolean);
+}
+
+/** The numeric `code` of a refused read (-32005 is a scope refusal), else 0. Never the text. */
+function errorCode(error: unknown): number {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === "number" && Number.isFinite(code) ? code : 0;
+}
 
 /** The modules the company has switched on, as the kit's role drift check wants them. */
 async function moduleMap(env: Env, companyId: string): Promise<Partial<Record<ModuleKey, boolean>>> {
@@ -83,22 +143,87 @@ async function moduleMap(env: Env, companyId: string): Promise<Partial<Record<Mo
 
 type Part = () => Promise<Partial<ExtraChecks>>;
 
-/** Runs the parts one after another (each may fail alone), merging what they return and recording each part's state and time. */
-async function gather(env: Env, companyId: string, parts: Array<[string, Part]>): Promise<{ value: ExtraChecks; run: PartRecord[] }> {
+function merge(out: ExtraChecks, got: Partial<ExtraChecks>): void {
+  out.health.push(...(got.health ?? []));
+  out.kpis.push(...(got.kpis ?? []));
+  out.quality.push(...(got.quality ?? []));
+  out.waiting.push(...(got.waiting ?? []));
+}
+
+/**
+ * Runs the parts in order (each may fail alone) and merges what they return
+ * with what the cache holds. The map is read first: a part stored inside ten
+ * minutes is `cached`, a held one `held`, and neither reads the host. Before
+ * the first part that must run, and after each part that ran, the company is
+ * read; a refusal stops the run (see the file comment). `start` reads what the
+ * parts share, once, after the first probe.
+ */
+async function gather(env: Env, companyId: string, now: number, parts: Array<[string, Part]>, start: (company: { issuePrefix?: string | null } | null) => Promise<void>): Promise<ExtraChecks> {
+  const store = companyChecks(env, companyId);
   const out: ExtraChecks = { health: [], kpis: [], quality: [], waiting: [] };
   const record: PartRecord[] = [];
+  const probe = () => env.ctx.companies.get(companyId);
+  let started = false;
+  let stop: { lostPart: string; code: number } | undefined;
   for (const [name, run] of parts) {
-    try {
-      const got = await timed(record, name, run);
-      out.health.push(...(got.health ?? []));
-      out.kpis.push(...(got.kpis ?? []));
-      out.quality.push(...(got.quality ?? []));
-      out.waiting.push(...(got.waiting ?? []));
-    } catch (error) {
-      env.ctx.logger.info("Cockpit check failed", { companyId, check: name, error: message(error) });
+    const stored = store.parts.get(name);
+    if (stored && now - stored.at < TTL_MS) {
+      merge(out, stored.value);
+      record.push({ name, state: "cached", ms: 0 });
+      continue;
     }
+    if ((store.heldUntil.get(name) ?? 0) > now) {
+      record.push({ name, state: "held", ms: 0 });
+      continue;
+    }
+    if (stop) {
+      record.push({ name, state: "notRun", ms: 0 });
+      continue;
+    }
+    if (!started) {
+      started = true;
+      let company: { issuePrefix?: string | null } | null;
+      try {
+        company = await probe();
+      } catch (error) {
+        stop = { lostPart: "", code: errorCode(error) };
+        record.push({ name, state: "notRun", ms: 0 });
+        continue;
+      }
+      await start(company);
+    }
+    let got: Partial<ExtraChecks> = {};
+    let failure: unknown;
+    try {
+      got = await timed(record, name, run);
+    } catch (error) {
+      failure = error;
+    }
+    try {
+      await probe();
+    } catch (error) {
+      // Whatever the part returned or threw, it may have read nothing: not stored, not merged.
+      record[record.length - 1]!.state = "lost";
+      stop = { lostPart: name, code: errorCode(error) };
+      const losses = (store.losses.get(name) ?? 0) + 1;
+      store.losses.set(name, losses);
+      if (losses >= 2) store.heldUntil.set(name, now + TTL_MS);
+      continue;
+    }
+    store.losses.delete(name);
+    store.heldUntil.delete(name);
+    if (failure !== undefined) {
+      env.ctx.logger.info("Cockpit check failed", { companyId, check: name, error: message(failure) });
+      store.parts.set(name, { at: now, value: {}, failed: true });
+      continue;
+    }
+    store.parts.set(name, { at: now, value: got, failed: false });
+    merge(out, got);
   }
-  return { value: out, run: record };
+  // Every part from the cache: not a run, no record.
+  if (record.some((r) => r.state !== "cached")) out.run = record;
+  if (stop) out.stop = stop;
+  return out;
 }
 
 const nonOk = (check: HealthCheck | null | undefined): HealthCheck[] => (check && check.status !== "ok" ? [check] : []);
@@ -110,19 +235,17 @@ async function openCockpitAsk(env: Env, companyId: string, effectKey: string): P
 }
 
 export async function extraChecks(env: Env, companyId: string, options: { fresh?: boolean } = {}): Promise<ExtraChecks> {
-  let cache = caches.get(env);
-  if (!cache) caches.set(env, (cache = new Map()));
+  // `fresh` recomputes every part, as if the cache had just been forgotten (results are stored as usual).
+  if (options.fresh) forgetChecks(env, companyId);
   const now = env.now();
-  const hit = cache.get(companyId);
-  if (!options.fresh && hit && now.getTime() - hit.at < TTL_MS) {
-    // A hit is not a run: the same result, without the record of the run that read it.
-    delete hit.value.run;
-    return hit.value;
-  }
   const ctx = env.ctx;
-  const company = await ctx.companies.get(companyId).catch(() => null);
-  const prefix = company?.issuePrefix ?? null;
-  const roles = await getRoles(ctx, companyId).catch(() => null);
+  // Read once, after the first probe, and only when a part must run.
+  let prefix: string | null = null;
+  let roles: Awaited<ReturnType<typeof getRoles>> | null = null;
+  const start = async (company: { issuePrefix?: string | null } | null) => {
+    prefix = company?.issuePrefix ?? null;
+    roles = await getRoles(ctx, companyId).catch(() => null);
+  };
 
   const parts: Array<[string, Part]> = [
     // Skills and tool access of the staffed agents, and agents with no model or timeout pinned (Q9-8, Q9-13, Q8-7).
@@ -247,14 +370,10 @@ export async function extraChecks(env: Env, companyId: string, options: { fresh?
       return { quality: [{ key: "memory_feedback_signal", label: "Memory brief feedback coverage (30 days)", value: signal.level === "none" ? "No signal" : `${stats.feedback30d.briefsWithFeedback} of ${stats.briefs30d.total}`, raw: stats.feedback30d.briefsWithFeedback, tone: signal.level === "ok" ? "ok" : "warn" }] };
     }],
   ];
-  const { value, run } = await gather(env, companyId, parts);
-  cache.set(companyId, { at: now.getTime(), value });
-  // The caller reads the record at once (own.ts); the next hit removes it.
-  value.run = run;
-  return value;
+  return gather(env, companyId, now.getTime(), parts, start);
 }
 
-/** Forget a company's cached checks (after a change that should show at once). */
+/** Forget a company's cached parts, losses and holds (after a change that should show at once). */
 export function forgetChecks(env: Env, companyId: string): void {
   caches.get(env)?.delete(companyId);
 }
