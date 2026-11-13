@@ -12,15 +12,19 @@
  * Opacity keys (D1d2) scale the clip's alpha per frame (`sendcmd` driving `colorchannelmixer aa`), times its fade alpha.
  * Looks and colour adjust (schema v3, D2c) grade each clip right after its timing, before crop/rotate/scale, with the
  * filters `looks.ts` derives (the preview reads the same module), so shape and alpha work on the graded picture.
+ * Overlay frame and blend mode (schema v4, D3b) come from `layer.ts`: the frame rounds and borders the shaped picture,
+ * a blend mode blends it with the base in RGB (`lut2`) instead of the plain `overlay`.
  * Text and caption tracks are drawn last, over everything, by `compile-text.ts` (A5a). Sound is compiled by
  * `compile-audio.ts` (A5b) into the same graph; a silent edit gets no audio stream (`-an`). Anything else outside this
  * model throws `CompileError` with `unsupported_feature:<name>`.
  */
 import { StudioError } from "../errors.js";
+import { chromaKeyFilter, despillFilter, keyMatrix } from "./chroma.js";
 import { AUDIO_ENCODER_ARGS, INTERMEDIATE_AUDIO_ENCODER_ARGS, buildAudioGraph } from "./compile-audio.js";
 import { buildTextLayers } from "./compile-text.js";
 import { fontsDir } from "./fonts.js";
 import { toFfmpegExpr } from "./keyframes.js";
+import { blendLutExpr, frameStill, type LayerBlend } from "./layer.js";
 import { adjustToFfmpeg, lookToFfmpeg } from "./looks.js";
 import { clipDuration, editDuration, type EditDoc, type MediaClip, type Transform, type TransitionType } from "./timeline.js";
 
@@ -122,6 +126,8 @@ const reshapes = (clip: MediaClip) => Boolean(keysOf(clip, "scale") || keysOf(cl
 /** Any motion keys: the overlay position is evaluated per frame. */
 const animated = (clip: MediaClip) => reshapes(clip) || Boolean(keysOf(clip, "x") || keysOf(clip, "y"));
 const fadesOpacity = (clip: MediaClip) => Boolean(clip.keyframes?.opacity);
+/** A frame that draws something (radius or border above 0). */
+const hasFrame = (clip: MediaClip) => Boolean(clip.frame && (clip.frame.cornerRadius > 0 || clip.frame.borderWidth > 0));
 /** A look or a colour adjust on the clip (normalizeEdit drops neutral adjust fields, so present means non-neutral). */
 const graded = (clip: MediaClip) => Boolean(clip.look || clip.adjust);
 
@@ -182,17 +188,18 @@ class Graph {
    * always ends in YUV. Blur first scales the frame to the render width, so the `looks.ts` sigma (at render width) is a
    * fixed fraction of the clip's own width whatever the source resolution. `vignette` has no alpha formats, so on an
    * image it runs on a split copy and the source alpha is merged back (a PNG overlay keeps its transparency). `[]` when
-   * not graded.
+   * not graded. `keyed`: the chroma key already ran, so the frame is BT.709 yuva420p and its alpha is kept.
    */
-  private grade(clip: MediaClip, kind: CompileInput["kind"]): string[] {
+  private grade(clip: MediaClip, kind: CompileInput["kind"], keyed = false): string[] {
     if (!graded(clip)) return [];
     const { width } = this.doc.project;
-    const alpha = kind === "image";
+    const alpha = kind === "image" || keyed;
     // An image starts in RGB with its own decoder matrix (PNG is RGB, JPEG is BT.601 by spec), so every graded image
     // leaves the chain through the explicit BT.709 `toYuv`. Without this an adjust-only PNG fell to ffmpeg's implicit
     // BT.601 and a JPEG look read BT.601 codes as BT.709: Y 101 against 92 for the same pixel (review, PAR-10158).
-    const out: string[] = alpha ? ["format=gbrap"] : [];
-    let rgb = alpha;
+    const fromRgb = kind === "image" && !keyed;
+    const out: string[] = fromRgb ? ["format=gbrap"] : [];
+    let rgb = fromRgb;
     const yuv = () => {
       if (rgb) out.push(...toYuv(alpha));
       rgb = false;
@@ -216,6 +223,37 @@ class Graph {
     }
     yuv();
     return out;
+  }
+
+  /**
+   * Chroma key (schema v4, D3c, `chroma.ts`) on the source frame, before grade and shape: `chromakey` on TV-range
+   * yuva420p, then `despill` on packed RGBA when the clip has spill. The key works in the encoding the clip already has
+   * on its unkeyed path, so a key never shifts a colour it keeps (rule PAR-10158): video and graded images are BT.709
+   * (`grade` takes an image through the explicit `toYuv`), an ungraded image is ffmpeg's implicit `format=yuva420p`
+   * (BT.601). `chromakey` replaces the alpha plane, so an image's own alpha (a PNG's transparency) is multiplied back
+   * in. Ends in yuva420p. One chain step; `[]` without a key.
+   */
+  private key(clip: MediaClip, kind: CompileInput["kind"]): string[] {
+    const k = clip.chromaKey;
+    if (!k) return [];
+    const matrix = keyMatrix(kind === "image", graded(clip));
+    const spill = despillFilter(k);
+    const despill = spill ? [`scale=in_color_matrix=${matrix},format=rgba`, spill, `scale=out_color_matrix=${matrix}:out_range=tv`, "format=yuva420p"] : [];
+    const keyed = [chromaKeyFilter(k, matrix), ...despill].join(",");
+    if (kind !== "image") return ["format=yuva420p", keyed];
+    const entry = matrix === "bt709" ? ["format=gbrap", ...toYuv(true)] : ["format=yuva420p"];
+    const [pic, own, ownAlpha] = [this.label("ckp"), this.label("cko"), this.label("cko")];
+    const [keyedPic, keyedCopy, keyAlpha, alpha] = [this.label("ckp"), this.label("cka"), this.label("cka"), this.label("cka")];
+    return [
+      [
+        `${entry.join(",")},split[${pic}][${own}]`,
+        `[${own}]alphaextract[${ownAlpha}]`,
+        `[${pic}]${keyed},format=yuva420p,split[${keyedPic}][${keyedCopy}]`,
+        `[${keyedCopy}]alphaextract[${keyAlpha}]`,
+        `[${keyAlpha}][${ownAlpha}]blend=all_mode=multiply[${alpha}]`,
+        `[${keyedPic}][${alpha}]alphamerge`,
+      ].join(";"),
+    ];
   }
 
   private crop(t: Transform): string[] {
@@ -246,7 +284,8 @@ class Graph {
     const t = clip.transform;
     const s = toFfmpegExpr(keysOf(clip, "scale"), t.scale, offset);
     const scale = `scale=w='max(2,iw*(${s}))':h='max(2,ih*(${s}))':eval=frame`;
-    if (!keysOf(clip, "rotate")) return [...this.shape({ ...t, scale: 1 }, "black@0"), scale];
+    if (!keysOf(clip, "rotate")) return [...this.shape({ ...t, scale: 1 }, "black@0"), ...this.frame(clip), scale];
+    if (hasFrame(clip)) unsupported("frame_with_rotation"); // this branch never reaches frame(), which refuses it too
     const r = toFfmpegExpr(keysOf(clip, "rotate"), t.rotate, offset);
     return [
       "format=yuva420p",
@@ -321,19 +360,82 @@ class Graph {
     return out;
   }
 
+  /**
+   * Frame (schema v4, D3b) on the shaped picture at its fitted size: corners rounded and a border drawn inside the edge
+   * along that outline (`layer.ts` `frameStill`; the picture keeps its size and position). Mask and border are built
+   * once, with `geq` on the clip's first frame, and reused: the second input of `blend`/`overlay` repeats its one
+   * frame. The corner mask multiplies the alpha already there (a PNG keeps its transparency); fades and opacity run
+   * after, so the border fades with the clip. With scale keys it runs before the keyed scale, so border and radius scale
+   * with the clip (CSS `transform` semantics). Rotation is refused (`frame_with_rotation`): the rounded outline would
+   * follow the rotated bounding box. One chain step (sub-chains joined with `;`); `[]` without a visible frame.
+   */
+  private frame(clip: MediaClip): string[] {
+    const f = clip.frame;
+    if (!f || !hasFrame(clip)) return [];
+    if (clip.transform.rotate !== 0 || keysOf(clip, "rotate")) unsupported("frame_with_rotation");
+    const still = frameStill(f);
+    const [pic, first] = [this.label("frp"), this.label("frs")];
+    const stills = [still.mask, still.ring].filter(Boolean).map(() => this.label("frs"));
+    const chains = [`format=yuva420p,split[${pic}][${first}]`, `[${first}]trim=end_frame=1${stills.length > 1 ? ",split" : ""}${stills.map((l) => `[${l}]`).join("")}`];
+    let last = pic;
+    if (still.mask) {
+      const [mask, p0, p1, a0, a1, rounded] = ["frm", "frp", "frp", "fra", "fra", "frp"].map((p) => this.label(p));
+      chains.push(
+        `[${stills[0]}]format=gray,geq=lum='${still.mask}'[${mask}]`,
+        `[${last}]split[${p0}][${p1}]`,
+        `[${p1}]alphaextract[${a0}]`,
+        `[${a0}][${mask}]blend=all_mode=multiply[${a1}]`,
+        `[${p0}][${a1}]alphamerge[${rounded}]`,
+      );
+      last = rounded;
+    }
+    if (still.ring) {
+      const ring = this.label("frr");
+      const [r, g, b] = still.color;
+      chains.push(`[${stills.at(-1)}]format=gbrap,geq=r=${r}:g=${g}:b=${b}:a='${still.ring}',${toYuv(true).join(",")}[${ring}]`, `[${last}][${ring}]overlay=x=0:y=0,format=yuva420p`);
+    } else chains.push(`[${last}]null`);
+    return [chains.join(";")];
+  }
+
+  /**
+   * Blend mode (schema v4, D3b): the overlay goes on a transparent full-frame canvas over its interval (the same
+   * placement as `overlay=`), `lut2` blends that canvas with the base in RGB by the `blend.ts` formula, and the result,
+   * carrying the canvas alpha, is laid over the base: out = base + alpha x (blend - base). Outside the clip's interval
+   * the base passes through untouched. BT.709 both ways, as `grade`. Returns the new base label.
+   */
+  private blendOver(base: string, shaped: string, clip: MediaClip, mode: LayerBlend): string {
+    const { width, height, fps } = this.doc.project;
+    const length = clipDuration(clip);
+    const [canvas, pc, pa, alpha, b0, b1, bt, lt, bl, merged, out] = ["bcv", "bpc", "bpa", "bpa", "bb", "bb", "bbt", "blt", "bbl", "bbl", "base"].map((p) => this.label(p));
+    const expr = blendLutExpr(mode);
+    this.filters.push(
+      `color=c=black@0:s=${width}x${height}:r=${fps}:d=${num(length)},format=yuva420p,setpts=PTS-STARTPTS+${num(clip.start)}/TB[${canvas}]`,
+      `[${canvas}][${shaped}]overlay=${this.overlayAt(clip, clip.start)}:eof_action=pass,format=yuva420p,split[${pc}][${pa}]`,
+      `[${base}]split[${b0}][${b1}]`,
+      `[${b1}]trim=start=${num(clip.start)}:end=${num(clip.start + length)},${toRgb(false).join(",")}[${bt}]`,
+      `[${pc}]${toRgb(false).join(",")}[${lt}]`,
+      `[${bt}][${lt}]lut2=c0='${expr}':c1='${expr}':c2='${expr}',${toYuv(false).join(",")}[${bl}]`,
+      `[${pa}]alphaextract[${alpha}]`,
+      `[${bl}][${alpha}]alphamerge[${merged}]`,
+      `[${b0}][${merged}]overlay=x=0:y=0:eof_action=pass[${out}]`,
+    );
+    return out;
+  }
+
   /** Lays one overlay clip over `base`, shifted to its timeline start; alpha fades. Returns the new base label. */
   overlayClip(base: string, clip: MediaClip): string {
     if (clip.transitionIn) unsupported("overlay_transition");
     const { index, kind } = this.input(clip);
     const length = clipDuration(clip);
     // Frames carry timeline time here, so the clip's local 0 is at `clip.start`.
-    const shape = reshapes(clip) ? this.keyedShape(clip, clip.start) : this.shape(clip.transform);
-    const steps = [...this.timing(clip, kind, clip.start), ...this.grade(clip, kind), ...shape];
+    const shape = reshapes(clip) ? this.keyedShape(clip, clip.start) : [...this.shape(clip.transform), ...this.frame(clip)];
+    const steps = [...this.timing(clip, kind, clip.start), ...this.key(clip, kind), ...this.grade(clip, kind, Boolean(clip.chromaKey)), ...shape];
     if (clip.fadeIn > 0) steps.push(`fade=t=in:st=${num(clip.start)}:d=${num(clip.fadeIn)}:alpha=1`);
     if (clip.fadeOut > 0) steps.push(`fade=t=out:st=${num(clip.start + length - clip.fadeOut)}:d=${num(clip.fadeOut)}:alpha=1`);
     steps.push(...this.opacity(clip, clip.start));
     const shaped = this.label("ov");
     this.filters.push(`[${index}:v]${steps.join(",")}[${shaped}]`);
+    if (clip.blendMode) return this.blendOver(base, shaped, clip, clip.blendMode);
     const out = this.label("base");
     this.filters.push(`[${base}][${shaped}]overlay=${this.overlayAt(clip, clip.start)}:eof_action=pass[${out}]`);
     return out;

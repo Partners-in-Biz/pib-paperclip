@@ -114,7 +114,7 @@ describe.skipIf(!available)("Video edit store against real Postgres", () => {
     expect(await editDoc(animated.id)).toMatchObject({ schemaVersion: 1 });
     await saveVideoEdit(ctx, CO, { editId: plain.id, baseRevision: 1, doc: v2("asset-own") }, USER);
     expect(await editDoc(plain.id)).toMatchObject({ schemaVersion: 2 });
-    await expect(saveVideoEdit(ctx, CO, { editId: plain.id, baseRevision: 2, doc: { ...v2("asset-own"), schemaVersion: 4 } }, USER)).rejects.toMatchObject({ reason: "unsupported_version" });
+    await expect(saveVideoEdit(ctx, CO, { editId: plain.id, baseRevision: 2, doc: { ...v2("asset-own"), schemaVersion: 5 } }, USER)).rejects.toMatchObject({ reason: "unsupported_version" });
   });
 
   it("v3 writer: create, save, version snapshot and restore keep adjust + look as v3; neutral adjust saves v1", async () => {
@@ -136,6 +136,27 @@ describe.skipIf(!available)("Video edit store against real Postgres", () => {
     await restoreEditVersion(ctx, CO, { editId: made.id, baseRevision: 4, versionId: version.id }, USER);
     expect(await editDoc(made.id)).toMatchObject(styled);
     expect((await getVideoEdit(ctx, CO, made.id)).doc.schemaVersion).toBe(3);
+  });
+
+  it("v4 writer: create, save, version snapshot and restore keep overlay layering as v4; normal blend saves v1", async () => {
+    await addAsset("asset-own", CO, null);
+    const clip = { id: "c", assetId: "asset-own", version: 1, in: 0, out: 4, start: 0 };
+    const doc = (extra: Record<string, unknown>) => ({ project: { size: "9:16", fps: 30 }, tracks: [{ id: "o", kind: "overlay", clips: [{ ...clip, ...extra }] }] });
+    const layered = doc({ blendMode: "screen", chromaKey: { color: "#00ff00", spill: 0.5 }, frame: { borderWidth: 6, cornerRadius: 20 } });
+    const stamped = { schemaVersion: 4, tracks: [{ clips: [{ blendMode: "screen", chromaKey: { color: "#00FF00", similarity: 0.1, blend: 0, spill: 0.5 }, frame: { borderWidth: 6, borderColor: "#FFFFFF", cornerRadius: 20 } }] }] };
+    const made = await createVideoEdit(ctx, CO, { title: "Layers", doc: layered }, USER);
+    expect(await editDoc(made.id)).toMatchObject(stamped);
+    const version = await saveEditVersion(ctx, CO, { editId: made.id, name: "keyed" }, USER);
+    expect(await rawDoc("SELECT doc FROM $T.video_edit_versions WHERE id = $1", version.id)).toMatchObject(stamped);
+    await saveVideoEdit(ctx, CO, { editId: made.id, baseRevision: 1, doc: { ...doc({ blendMode: "normal", frame: { borderWidth: 0 } }), schemaVersion: 4 } }, USER);
+    expect(await editDoc(made.id)).toMatchObject({ schemaVersion: 1 });
+    expect(JSON.stringify(await editDoc(made.id))).not.toMatch(/blendMode|frame/);
+    await saveVideoEdit(ctx, CO, { editId: made.id, baseRevision: 2, doc: layered }, USER);
+    expect(await editDoc(made.id)).toMatchObject(stamped);
+    await saveVideoEdit(ctx, CO, { editId: made.id, baseRevision: 3, doc: doc({}) }, USER);
+    await restoreEditVersion(ctx, CO, { editId: made.id, baseRevision: 4, versionId: version.id }, USER);
+    expect(await editDoc(made.id)).toMatchObject(stamped);
+    expect((await getVideoEdit(ctx, CO, made.id)).doc.schemaVersion).toBe(4);
   });
 
   it("v2 writer: volume keyframes on a picture are refused with no_audio", async () => {

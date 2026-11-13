@@ -4,7 +4,7 @@
  * fills defaults and refuses anything out of range with an `EditError` that names the field.
  * Version 1: static transforms, crop, speed, volume, fades and a fade-in transition. Version 2 (Phase D) adds the other
  * `TRANSITIONS` and per-clip `keyframes`. Version 3 (PAR-8279 slice 2) adds `adjust` and `look` on video and overlay
- * clips. Rollback-safe writer: `normalizeEdit` reads every version in `SCHEMA_VERSIONS` and writes the lowest one that
+ * clips. Version 4 (slice 3) adds `blendMode`, `chromaKey` and `frame` on overlay clips. Rollback-safe writer: `normalizeEdit` reads every version in `SCHEMA_VERSIONS` and writes the lowest one that
  * holds the doc, from the `FEATURE_VERSION` table, so a plain edit stays readable by the previous build. Builds before
  * Studio 0.1.49 read version 1 only and do not have this guard.
  */
@@ -12,8 +12,8 @@ import { StudioError } from "../errors.js";
 import { ADJUST_RANGE, NEUTRAL_ADJUST, PIB_BASIC_IDS, type Adjust, type LookRef } from "./looks.js";
 
 /** The newest schema version this build reads; `normalizeEdit` writes the lowest version that holds the doc. */
-export const SCHEMA_VERSION = 3;
-export const SCHEMA_VERSIONS = [1, 2, 3] as const;
+export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSIONS = [1, 2, 3, 4] as const;
 export type SchemaVersion = (typeof SCHEMA_VERSIONS)[number];
 /** Transitions between main-track clips (ffmpeg xfade names). Only `fade` is version 1. */
 export const TRANSITIONS = [
@@ -36,6 +36,9 @@ export type CaptionStyle = (typeof CAPTION_STYLES)[number];
 /** Colour adjust fields in their fixed output order (ranges and formulas in looks.ts; blur is sigma at 1080 px). */
 export const ADJUST_FIELDS = ["brightness", "contrast", "saturation", "temperature", "blur", "vignette"] as const;
 export const LOOK_PACKS = ["pib-basic"] as const;
+/** How an overlay clip mixes with the layers under it (schema v4). `normal` is the default and is never stored. */
+export const BLEND_MODES = ["normal", "multiply", "screen", "overlay", "darken", "lighten", "addition", "difference", "softlight"] as const;
+export type BlendMode = (typeof BLEND_MODES)[number];
 
 export const LIMITS = {
   maxDuration: 180,
@@ -52,19 +55,26 @@ export const LIMITS = {
   maxTransition: 5,
   maxKeyframes: 50,
   opacity: [0, 1],
+  similarity: [0.01, 1],
+  borderWidth: [0, 40],
+  cornerRadius: [0, 50],
 } as const;
 
 export interface Crop { left: number; top: number; right: number; bottom: number }
 /** x/y: offset of the clip's centre from the frame's centre in px; scale 1 = fit; rotate in degrees; crop as fractions. */
 export interface Transform { x: number; y: number; scale: number; rotate: number; crop: Crop }
 export interface Transition { type: TransitionType; duration: number }
+/** Keys out `color` (#RRGGBB): similarity 0.01..1 (how close counts), blend 0..1 (edge softness), spill 0..1 (despill). */
+export interface ChromaKey { color: string; similarity: number; blend: number; spill: number }
+/** A border of `borderWidth` px (at the project size) in `borderColor`, corners rounded by `cornerRadius` % of the short side. */
+export interface Frame { borderWidth: number; borderColor: string; cornerRadius: number }
 /** `t`: seconds from the clip's own `start` (a transition's overlap included), 0..clip duration. */
 export interface Keyframe { t: number; value: number; ease: Ease }
 /** Only properties with at least one key are kept; an empty `keyframes` is dropped. */
 export type Keyframes = Partial<Record<KeyframeProp, Keyframe[]>>;
 interface Timed { id: string; start: number; fadeIn: number; fadeOut: number; keyframes?: Keyframes }
 /** `adjust` holds only non-neutral fields (absent when all are neutral); `look` is a pack look at an intensity 0..1. */
-export interface MediaClip extends Timed { assetId: string; version: number; in: number; out: number; speed: number; volume: number; transform: Transform; transitionIn: Transition | null; adjust?: Partial<Adjust>; look?: LookRef }
+export interface MediaClip extends Timed { assetId: string; version: number; in: number; out: number; speed: number; volume: number; transform: Transform; transitionIn: Transition | null; adjust?: Partial<Adjust>; look?: LookRef; blendMode?: Exclude<BlendMode, "normal">; chromaKey?: ChromaKey; frame?: Frame }
 export interface AudioClip extends Timed { assetId: string; version: number; in: number; out: number; speed: number; volume: number }
 export interface TextClip extends Timed { text: string; duration: number; font: string | null; color: string; fontSize: number; transform: Transform; transitionIn: Transition | null }
 export interface CaptionWord { text: string; start: number; end: number }
@@ -81,7 +91,7 @@ export interface EditDoc { schemaVersion: SchemaVersion; project: EditProject; t
 
 export type EditErrorReason =
   | "invalid" | "out_of_range" | "too_many" | "duplicate" | "overlap" | "too_long" | "unsupported_version" | "not_found"
-  | "unknown_transition" | "unknown_ease" | "keyframe_limit" | "keyframe_order" | "no_audio" | "unknown_look";
+  | "unknown_transition" | "unknown_ease" | "keyframe_limit" | "keyframe_order" | "no_audio" | "unknown_look" | "unknown_blend";
 
 /** A refused edit document: `reason` says what kind of problem, `path` which field (e.g. `tracks[0].clips[2].speed`). */
 export class EditError extends StudioError {
@@ -221,6 +231,41 @@ function look(value: unknown, path: string): { look?: LookRef } {
   return { look: { pack: pack as LookRef["pack"], id: l.id, intensity: number(l.intensity, `${path}.intensity`, 0, 1, 1) } };
 }
 
+function hex(value: unknown, path: string, fallback?: string): string {
+  if ((value === undefined || value === null) && fallback !== undefined) return fallback;
+  if (typeof value !== "string" || !COLOR.test(value)) fail("invalid", path, "must be a colour like #00FF00.");
+  return value.toUpperCase();
+}
+function optionalObj(value: unknown, path: string): Record<string, unknown> | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "object" || Array.isArray(value)) fail("invalid", path, "must be an object.");
+  return value as Record<string, unknown>;
+}
+function only(raw: Record<string, unknown>, path: string, keys: readonly string[]): void {
+  for (const key of Object.keys(raw)) if (!keys.includes(key)) fail("invalid", `${path}.${key}`, `is not a field here; use ${keys.join(", ")}.`);
+}
+/** Overlay layering (schema v4): blend mode (`normal` dropped), chroma key, frame (dropped when it draws nothing). */
+function layer(c: Record<string, unknown>, path: string): { blendMode?: Exclude<BlendMode, "normal">; chromaKey?: ChromaKey; frame?: Frame } {
+  const out: { blendMode?: Exclude<BlendMode, "normal">; chromaKey?: ChromaKey; frame?: Frame } = {};
+  const mode = c.blendMode ?? "normal";
+  if (typeof mode !== "string" || !(BLEND_MODES as readonly string[]).includes(mode)) fail("unknown_blend", `${path}.blendMode`, `must be one of ${BLEND_MODES.join(", ")}.`);
+  if (mode !== "normal") out.blendMode = mode as Exclude<BlendMode, "normal">;
+  const k = optionalObj(c.chromaKey, `${path}.chromaKey`);
+  if (k) {
+    const p = `${path}.chromaKey`;
+    only(k, p, ["color", "similarity", "blend", "spill"]);
+    out.chromaKey = { color: hex(k.color, `${p}.color`), similarity: number(k.similarity, `${p}.similarity`, LIMITS.similarity[0], LIMITS.similarity[1], 0.1), blend: number(k.blend, `${p}.blend`, 0, 1, 0), spill: number(k.spill, `${p}.spill`, 0, 1, 0) };
+  }
+  const f = optionalObj(c.frame, `${path}.frame`);
+  if (f) {
+    const p = `${path}.frame`;
+    only(f, p, ["borderWidth", "borderColor", "cornerRadius"]);
+    const frame = { borderWidth: number(f.borderWidth, `${p}.borderWidth`, LIMITS.borderWidth[0], LIMITS.borderWidth[1], 0), borderColor: hex(f.borderColor, `${p}.borderColor`, "#FFFFFF"), cornerRadius: number(f.cornerRadius, `${p}.cornerRadius`, LIMITS.cornerRadius[0], LIMITS.cornerRadius[1], 0) };
+    if (frame.borderWidth || frame.cornerRadius) out.frame = frame;
+  }
+  return out;
+}
+
 /** Optional facts `normalizeEdit` can't see in the doc. `hasAudio` false = that asset version has no sound. */
 export interface NormalizeOptions { hasAudio?: (assetId: string, version: number) => boolean | undefined }
 function fades(c: Record<string, unknown>, path: string, length: number) {
@@ -292,6 +337,7 @@ function clip(kind: TrackKind, raw: unknown, path: string, ids: Set<string>, opt
   return {
     ...base, ...src, ...fades(c, path, length), transform: transform(c.transform, `${path}.transform`), transitionIn: transition(c.transitionIn, `${path}.transitionIn`, length),
     ...keyframes(c.keyframes, `${path}.keyframes`, length, MEDIA_KEYS, silent), ...adjust(c.adjust, `${path}.adjust`), ...look(c.look, `${path}.look`),
+    ...(kind === "overlay" ? layer(c, path) : {}),
   };
 }
 
@@ -313,6 +359,8 @@ export const FEATURE_VERSION: Readonly<Record<string, Since>> = {
   ...each(KEYFRAME_PROPS.flatMap((p) => ["t", "value", "ease"].map((k) => `clip.keyframes.${p}[].${k}`)), 2),
   ...each(ADJUST_FIELDS.map((f) => `clip.adjust.${f}`), 3),
   ...each(["pack", "id", "intensity"].map((k) => `clip.look.${k}`), 3),
+  "clip.blendMode": Object.fromEntries(BLEND_MODES.filter((m) => m !== "normal").map((m) => [m, 4])),
+  ...each([...["color", "similarity", "blend", "spill"].map((k) => `clip.chromaKey.${k}`), ...["borderWidth", "borderColor", "cornerRadius"].map((k) => `clip.frame.${k}`)], 4),
 };
 
 /** Each leaf of a doc (without `schemaVersion`) as [FEATURE_VERSION path, value]. */

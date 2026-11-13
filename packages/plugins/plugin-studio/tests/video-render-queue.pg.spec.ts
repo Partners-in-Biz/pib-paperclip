@@ -59,7 +59,10 @@ describe.skipIf(!available)("Render queue against real Postgres", () => {
     expect(await stored({ ...DOC, schemaVersion: 2, tracks: [{ id: "v", kind: "video", clips: [clip] }] })).toMatchObject({ schemaVersion: 2, tracks: [{ clips: [{ keyframes: { scale: [{}, {}] } }] }] });
     const styled = { ...clip, keyframes: undefined, adjust: { brightness: 0.2, contrast: 1 }, look: { id: "mono" } };
     expect(await stored({ ...DOC, schemaVersion: 1, tracks: [{ id: "v", kind: "video", clips: [styled] }] })).toMatchObject({ schemaVersion: 3, tracks: [{ clips: [{ adjust: { brightness: 0.2 }, look: { pack: "pib-basic", id: "mono", intensity: 1 } }] }] });
-    await expect(enqueueRender(ctx, { companyId: CO, editId: "e", editRevision: 1, doc: { schemaVersion: 4 }, preset: "9:16" })).rejects.toMatchObject({ reason: "unsupported_version", code: "bad_edit" });
+    const layered = { ...clip, keyframes: undefined, blendMode: "multiply", chromaKey: { color: "#00ff00" }, frame: { cornerRadius: 10 } };
+    expect(await stored({ ...DOC, schemaVersion: 1, tracks: [{ id: "o", kind: "overlay", clips: [layered] }] })).toMatchObject({ schemaVersion: 4, tracks: [{ clips: [{ blendMode: "multiply", chromaKey: { color: "#00FF00", similarity: 0.1 }, frame: { borderWidth: 0, borderColor: "#FFFFFF", cornerRadius: 10 } }] }] });
+    expect(await stored({ ...DOC, schemaVersion: 4, tracks: [{ id: "o", kind: "overlay", clips: [{ ...layered, blendMode: "normal", chromaKey: null, frame: null }] }] })).toMatchObject({ schemaVersion: 1 });
+    await expect(enqueueRender(ctx, { companyId: CO, editId: "e", editRevision: 1, doc: { schemaVersion: 5 }, preset: "9:16" })).rejects.toMatchObject({ reason: "unsupported_version", code: "bad_edit" });
   });
 
   let ctx: PluginContext;
