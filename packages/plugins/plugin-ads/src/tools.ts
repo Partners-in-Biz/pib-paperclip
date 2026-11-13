@@ -160,7 +160,7 @@ export const ADS_TOOLS: PluginToolDeclaration[] = [
   {
     name: "diagnose-google-campaign",
     displayName: "Diagnose a Google campaign",
-    description: "Read-only: why an ENABLED Google campaign shows nothing. Returns the campaign's status, serving status, primary status and reasons, bidding strategy and dates; ad groups (status, primary status, CPC bid); ads (status, policy approval and review, policy topics); keywords (match type, status, serving status such as low search volume, approval); billing setup and customer status; and how many location and schedule targets exist. A section that fails comes back as an error and the rest still answers. Changes nothing.",
+    description: "Read-only: why an ENABLED Google campaign shows nothing. Returns the campaign's status, serving status, primary status and reasons, channel type, bidding strategy and start/end date time; asset groups for Performance Max (status, primary status and reasons, ad strength; PMax has no ad groups, ads or keywords, so those come back empty); ad groups (status, primary status, CPC bid); ads (status, policy approval and review, policy topics); keywords (match type, status, serving status such as low search volume, approval); billing setup and customer status; and how many location and schedule targets exist. A section that fails comes back as an error and the rest still answers. Changes nothing.",
     parametersSchema: schema(["accountId", "campaignId"], { accountId: str("The ad account's id from list-ad-accounts (the plugin's id, a Google account)."), campaignId: str("The Google campaign id (digits), from list-ad-campaigns.") }),
   },
   {
