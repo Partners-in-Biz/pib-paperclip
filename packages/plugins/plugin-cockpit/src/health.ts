@@ -238,6 +238,24 @@ async function healthIssueOn(env: Env, companyId: string): Promise<boolean> {
   }
 }
 
+/**
+ * The oldest open issue with the health origin, or null. Several: the oldest is
+ * adopted and the rest are left alone. A refused list falls back to creating.
+ */
+async function findOpenByOrigin(env: Env, companyId: string) {
+  try {
+    const rows = await env.ctx.issues.list({ companyId, originKind: ORIGIN.health as `plugin:${string}`, originId: `${ORIGIN_ID.health}${companyId}`, limit: 50 });
+    const openRows = rows
+      .filter((row) => !CLOSED.has(String(row.status)))
+      .sort((a, b) => new Date(String(a.createdAt)).getTime() - new Date(String(b.createdAt)).getTime());
+    if (openRows.length > 1) env.ctx.logger.info("Several open health issues; adopting the oldest", { companyId, adopted: openRows[0]!.id, others: openRows.slice(1).map((row) => row.id) });
+    return openRows[0] ?? null;
+  } catch (error) {
+    env.ctx.logger.info("Health issue look-up by origin failed", { companyId, error: message(error) });
+    return null;
+  }
+}
+
 /** Keep the one System health issue for the company current. */
 export async function refreshHealthIssue(env: Env, companyId: string, problems?: Problems): Promise<HealthRefresh> {
   const roles = await getRoles(env.ctx, companyId);
@@ -255,7 +273,8 @@ export async function refreshHealthIssue(env: Env, companyId: string, problems?:
   const content = healthIssueContent(found.entries, company?.issuePrefix ?? null);
   const existing = await getHealthIssue(env.ctx, companyId);
   const issue = existing ? await env.ctx.issues.get(existing.issueId, companyId).catch(() => null) : null;
-  const open = issue && !CLOSED.has(String(issue.status)) ? issue : null;
+  let open = issue && !CLOSED.has(String(issue.status)) ? issue : null;
+  let tracked = existing;
   const now = env.now().toISOString();
 
   if (!content) {
@@ -273,6 +292,15 @@ export async function refreshHealthIssue(env: Env, companyId: string, problems?:
     return { action: "none", issueId: null, problems: 0 };
   }
 
+  // No tracked open issue: a create whose record save failed leaves an open issue with our origin.
+  if (!open) {
+    const adopted = await findOpenByOrigin(env, companyId);
+    if (adopted) {
+      open = adopted;
+      if (tracked?.issueId !== adopted.id) tracked = null;
+    }
+  }
+
   const operator = await operatorAgentId(env, companyId);
   const owner = roles.ownerUserId;
   const print = fingerprint(content.title, content.description);
@@ -284,10 +312,10 @@ export async function refreshHealthIssue(env: Env, companyId: string, problems?:
       : !open.assigneeAgentId && !open.assigneeUserId && owner
         ? { assigneeUserId: owner }
         : null;
-    if (existing?.fingerprint === print && !reassign) return { action: "unchanged", issueId: open.id, problems: found.entries.length };
+    if (tracked?.fingerprint === print && !reassign) return { action: "unchanged", issueId: open.id, problems: found.entries.length };
     await env.ctx.issues.update(open.id, { title: content.title, description: content.description, ...(reassign ?? {}) }, companyId);
     await saveHealthIssue(env.ctx, { companyId, issueId: open.id, fingerprint: print, problemKeys: found.keys }, now);
-    const before = new Set(existing?.problemKeys ?? []);
+    const before = new Set(tracked?.problemKeys ?? []);
     const fresh = found.keys.some((key) => !before.has(key));
     const assignee = reassign?.assigneeAgentId ?? open.assigneeAgentId ?? null;
     if ((fresh || reassign) && assignee) await wakeIssue(env.ctx, open.id, companyId, "New system health problems");
