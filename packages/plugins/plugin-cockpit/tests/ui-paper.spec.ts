@@ -8,7 +8,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { defaultSettings, SECTION_PRESETS, type PaperEditionDoc, type PaperIndexEntry } from "../src/paper-model.js";
 import { tabFromSearch } from "../src/ui/index.js";
-import { isInternal, paperBlocks } from "../src/ui/paper-markdown.js";
+import { isInternal, italicParts, paperBlocks } from "../src/ui/paper-markdown.js";
 import { addSection, ArchiveList, EditionPage, EditorBody, filterEntries, monthLabel, moveSection, neighbours, PAPER_CSS, paperHref, paperSelection, timingText } from "../src/ui/paper.js";
 
 const linkFor = (href: string) => ({ href, "data-internal": "1" }) as Record<string, string>;
@@ -100,6 +100,14 @@ describe("the markdown", () => {
       { kind: "quote", text: "said" },
       { kind: "p", text: "last" },
     ]);
+  });
+
+  it("reads italics only around whole words, so names with underscores stay as written", () => {
+    expect(italicParts("the clip *You Didn't Surrender* got views")).toEqual(["the clip ", "*You Didn't Surrender*", " got views"]);
+    expect(italicParts("say _so_ once")).toEqual(["say ", "_so_", " once"]);
+    expect(italicParts("key as secret FIREBASE_SA_WEBTOOLS_382B9, or re-login")).toEqual(["key as secret FIREBASE_SA_WEBTOOLS_382B9, or re-login"]);
+    expect(italicParts("2*3*4 and a_b_c and snake_case_name")).toEqual(["2*3*4 and a_b_c and snake_case_name"]);
+    expect(italicParts("a * b * c")).toEqual(["a * b * c"]);
   });
 
   it("knows a Paperclip address from an outside one", () => {

@@ -80,7 +80,12 @@ export function isInternal(href: string, origin: string | null): boolean {
   }
 }
 
-const ITALIC = /(\*[^*\s][^*]*\*|_[^_\s][^_]*_)/g;
+/** `*word*` or `_word_` standing on its own. A mark inside a word is not one: `FIREBASE_SA_WEBTOOLS` and `2*3*4` stay as written. */
+const ITALIC = /((?<![\p{L}\p{N}*])\*[^*\s](?:[^*]*[^*\s])?\*(?![\p{L}\p{N}*])|(?<![\p{L}\p{N}_])_[^_\s](?:[^_]*[^_\s])?_(?![\p{L}\p{N}_]))/gu;
+
+export function italicParts(text: string): string[] {
+  return text.split(ITALIC);
+}
 
 function withItalics(text: string, key: string): ReactNode {
   const parts = text.split(ITALIC);
