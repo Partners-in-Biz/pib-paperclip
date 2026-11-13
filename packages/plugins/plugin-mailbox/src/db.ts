@@ -1205,8 +1205,8 @@ export class SqlStore implements GmailStore {
       `SELECT DISTINCT lower(e.email) AS email FROM ${this.t("messages")} m
          JOIN ${this.t("client_mail_maps")} c ON c.company_id = m.company_id AND c.id = m.map_id AND c.count_only
          CROSS JOIN LATERAL (VALUES (m.from_addr->>'email'), (m.reply_to_addr->>'email')) AS e(email)
-        WHERE m.company_id = $1 AND m.direction = 'inbound' AND lower(e.email) = ANY($2::text[])`,
-      [companyId, emails],
+        WHERE m.company_id = $1 AND m.direction = 'inbound' AND lower(e.email) IN (SELECT lower(jsonb_array_elements_text($2::jsonb)))`,
+      [companyId, JSON.stringify(emails)],
     );
     return rows.map((r) => r.email);
   }
