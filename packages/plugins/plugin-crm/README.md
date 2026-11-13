@@ -76,12 +76,24 @@ The same report (sender, subject, message, fields) twice in a day is one issue. 
 ## Newsletter forms: database, store and tools (0.47.0, 0.47.1)
 
 PAR-10850 (database, 0.47.0) and PAR-10863 (tools, 0.47.1), plan PAR-10817 stage 1. Nothing a visitor or an existing form sees changes.
-- Migration `023_crm.sql` widens `lead_sources_intake` to `lead`, `issue`, `newsletter` and adds `apply_tags` (jsonb, default `[]`), `confirm_url`, `confirm_from`, `confirm_secret`, `confirm_daily_cap` (default 300), with the CHECK `lead_sources_newsletter`: a newsletter source has tags, `confirm_url`, `confirm_from`, `confirm_secret` and `consent_text` (not `signing_secret`: only a person makes one, so an agent-created source has none until then; the lead webhook refuses a newsletter source either way); any other source has none of the newsletter settings. Existing rows pass unchanged. Rollback: revert the code; the columns can stay. **Stop-first:** apply and read back the migration on production before the code deploys.
+- Migration `023_crm.sql` widens `lead_sources_intake` to `lead`, `issue`, `newsletter` and adds `apply_tags` (jsonb, default `[]`), `confirm_url`, `confirm_from`, `confirm_secret`, `confirm_daily_cap` (default 300), with the CHECK `lead_sources_newsletter`: a newsletter source has tags, `confirm_url`, `confirm_from`, `confirm_secret` and `consent_text` (not `signing_secret`: only a person makes one, so an agent-created source has none until then and the lead webhook refuses it); any other source has none of the newsletter settings. Existing rows pass unchanged. Rollback: revert the code; the columns can stay. **Stop-first:** apply and read back the migration on production before the code deploys.
 - The store reads and writes the new columns (`saveConfirmSecret` replaces the confirmation secret of a newsletter source only).
 - `create-lead-endpoint` takes `intake: "newsletter"` with `siteUrl`, `applyTags` (1 to 5 tags, 1 to 60 characters), `confirmUrl` (https, exactly the site's host, no userinfo, port, query or fragment), `confirmFrom` (one address) and `confirmDailyCap` (1 to 300). An agent may create one: it has no signing secret (so no signups) until a person makes one with "Make a signing secret" on the Lead forms card (`crm.make-lead-secret`), and the result says so in one line. `confirmUrl` is at most 100 characters (`MAX_CONFIRM_URL_LENGTH`).
 - The plugin makes `confirm_secret`; no parameter sets it and no tool, view or log shows it (only `confirmKey: { set, keyId }`). `rotate-lead-key` with `newConfirmKey: true` replaces it alone (a `confirmSecret` argument is refused, never read as a plain rotation) (open links die; key and signing secret stay).
 - `update-lead-source` changes the settings with the same checks. `intake` never changes to or from `newsletter`. New `consentText` on a newsletter source voids open links, and the result says so.
-- The lead webhook refuses a newsletter source (nothing is written) until stage 2 adds signup and confirm.
+- The lead webhook refuses a newsletter source without a signing secret (nothing is written). Signup is 0.48.0, below; confirm comes later.
+
+
+## Newsletter signup (0.48.0)
+
+PAR-10852, plan PAR-10817 "Signup". A body with no `action` on a newsletter form (`src/newsletter-signup.ts`):
+- **Signed calls only**; an unsigned call, or any `action` (confirm ships later), is refused.
+- Limits in order: the source bucket (`rateLimitPerHour`, x5 signed), then the daily ceiling: `confirm_daily_cap` capture rows in the last 24 hours refuse the next (index `lead_captures_source`).
+- The stored `confirm_url` and `confirm_from` are checked again as on write; a value changed in the database refuses the signup with `bad_source_config` and one log line without the address.
+- Address checks as for a lead. A contact that is `unsubscribed` or `bounced`, or already has every `apply_tags` tag, gets nothing.
+- `insertCapture` (outcome `pending_confirmation`, no contact); only when that insert wins is one `mail.send.requested` queued: key `crm:nl:<capture key>`, `from` = `confirm_from`, `fromName` = the form label, not marketing, `context.kind` `client_message`. Fixed text plus `confirm_url#t=<token>`; nothing the visitor typed. If queueing throws, the capture is deleted and the call fails, so a retry sends. A `.invalid` (canary) address is captured but no mail is queued.
+- Every case past the checks gives the same success. No contact, tag, consent record, issue or lead score is written.
+- Rollback (stage 2, Marcus): first pause every newsletter source (`update-lead-source` status `paused`), then revert the code. No schema change.
 
 ## Drive save: one query into an existing sub-folder (0.46.2)
 

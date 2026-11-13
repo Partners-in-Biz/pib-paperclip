@@ -393,7 +393,16 @@ export async function insertCapture(
   return (res?.rowCount ?? 0) > 0;
 }
 
-/** The capture row of a lead that is being removed with its client. */
+/** Capture rows of one source since `sinceIso`, counted up to `cap` (a newsletter's daily ceiling; index `lead_captures_source`). */
+export async function countCaptures(ctx: PluginContext, companyId: string, sourceId: string, sinceIso: string, cap: number): Promise<number> {
+  const rows = await ctx.db.query<{ id: string }>(
+    `SELECT id FROM ${table(ctx, "lead_captures")} WHERE company_id = $1 AND source_id = $2 AND created_at >= $3::timestamptz LIMIT ${Math.max(1, Math.trunc(cap))}`,
+    [companyId, sourceId, sinceIso],
+  );
+  return rows.length;
+}
+
+/** The capture row of a lead that is being removed with its client, or of a signup whose confirmation mail could not be queued. */
 export async function deleteCapture(ctx: PluginContext, companyId: string, key: string): Promise<void> {
   await ctx.db.execute(`DELETE FROM ${table(ctx, "lead_captures")} WHERE company_id = $1 AND key = $2`, [companyId, key]);
 }
