@@ -230,6 +230,8 @@ export async function boot(options: { store?: Store; config?: Record<string, unk
       lead_sources: {
         accepted_count: 0, rejected_count: 0, previous_key: null, previous_key_until: null, last_submission_at: null,
         intake: "lead", apply_tags: [], confirm_url: null, confirm_from: null, confirm_secret: null, confirm_daily_cap: 300,
+        // Migration 024: no hourly cap.
+        confirm_hourly_cap: null,
       },
       client_leads: { phone: null, meta: {}, issue_id: null, outcome: "new", value_minor: null, value_currency: null, outcome_at: null },
       // Column defaults of migration 012 that the counters and the signing flow rely on.

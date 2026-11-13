@@ -88,7 +88,7 @@ PAR-10850 (database, 0.47.0) and PAR-10863 (tools, 0.47.1), plan PAR-10817 stage
 
 PAR-10852, plan PAR-10817 "Signup". A body with no `action` on a newsletter form (`src/newsletter-signup.ts`):
 - **Signed calls only**; an unsigned call, or an `action` other than `confirm`, is refused.
-- Limits in order: the source bucket (`rateLimitPerHour`, x5 signed), then the daily ceiling: `confirm_daily_cap` capture rows in the last 24 hours refuse the next (index `lead_captures_source`).
+- Limits in order: the source bucket (`rateLimitPerHour`, x5 signed), then the daily ceiling: `confirm_daily_cap` capture rows in the last 24 hours refuse the next (index `lead_captures_source`), then the hourly cap when set (`confirm_hourly_cap`, 0.52.0, below).
 - The stored `confirm_url` and `confirm_from` are checked again as on write; a value changed in the database refuses the signup with `bad_source_config` and one log line without the address.
 - Address checks as for a lead. A contact that is `unsubscribed` or `bounced`, or already has every `apply_tags` tag, gets nothing.
 - `insertCapture` (outcome `pending_confirmation`, no contact); only when that insert wins is one `mail.send.requested` queued: key `crm:nl:<capture key>`, `from` = `confirm_from`, `fromName` = the form label, not marketing, `context.kind` `client_message`. Fixed text plus `confirm_url#t=<token>`; nothing the visitor typed. If queueing throws, the capture is deleted and the call fails, so a retry sends. A `.invalid` (canary) address is captured but no mail is queued.
@@ -101,6 +101,15 @@ PAR-10891, plan PAR-10817 "Send result" (`src/newsletter-send-result.ts`). The C
 - `mail.send.result` for a `crm:nl:` key: **sent** deletes the outbox row (the signup stays `pending_confirmation`). **Failed for good**, or every recipient suppressed: the capture becomes `confirmation_failed` (only from `pending_confirmation`, so a repeated answer counts nothing), one rejection is counted on the source, and the row is deleted. A failure a retry may fix only notes the error. Another company's answer changes nothing.
 - The `redeliver-mail` job (every 5 minutes) deletes any `crm:nl:` outbox row that is no longer pending (the outbox gave up and no answer came). Pending rows and other keys are untouched.
 - Rollback: revert the code. Rows already deleted stay deleted, which is the safe direction. No schema change.
+
+## Newsletter hourly cap (0.52.0)
+
+PAR-11288. `confirmHourlyCap` on a newsletter form: about the most confirmation mails it sends in one hour, 1 to 300 (e.g. 30 for ToolChanges). Left out or `null`: no hourly cap, only the daily ceiling (every existing form). `create-lead-endpoint` and `update-lead-source` take it (`null` on update clears it); `list-lead-sources` shows it under `newsletter`. A lead or report form refuses it.
+- Checked after the daily ceiling: `confirm_hourly_cap` capture rows of this source in the last hour refuse the next signup with "Too many signups right now. Please try again later." (`rate_limited`, so 429). Nothing is written and no mail is queued.
+- One capture row is one mail; a duplicate, suppressed or already-subscribed signup writes no row, so it does not count. A canary (`.invalid`) dry run writes its row with no mail, and that row counts.
+- **Soft, "about":** count then insert is not atomic, so signups in flight at the same moment can each pass (bounded by the source bucket, 100 signed calls a minute).
+- **Per source:** two newsletter forms on one site each have their own cap.
+- Migration `024_crm.sql` adds `confirm_hourly_cap` (nullable integer) and replaces the CHECK `lead_sources_newsletter`: a newsletter source has it null or 1 to 300, any other source null. Existing rows and the 0.51 inserts (without the column) pass. **Stop-first:** apply and read back the migration on production (column present, new CHECK text) before the code deploys; the new code selects the column. Rollback: revert the code; the column and CHECK stay, and old code never reads them, so a form with a cap set has only the daily ceiling again.
 
 ## Newsletter confirm (0.50.0)
 

@@ -37,6 +37,7 @@ const NEWSLETTER_FIELDS = {
   confirmUrl: text("Newsletter forms only (required there): the https page that confirms a signup, at most 100 characters, on exactly the host of the form's site (no subdomain, user name, port, ? or #)."),
   confirmFrom: text("Newsletter forms only (required there): the one address the confirmation mail is sent from, e.g. hello@example.co.za."),
   confirmDailyCap: int("Newsletter forms only: the most confirmation mails the form sends in 24 hours, 1 to 300 (default 300).", { minimum: 1, maximum: 300 }),
+  confirmHourlyCap: { type: ["integer", "null"], minimum: 1, maximum: 300, description: "Newsletter forms only: about the most confirmation mails the form sends in one hour, 1 to 300 (a soft cap); null or left out on create: no hourly cap. On update, null clears it." } as JsonSchema,
 };
 
 const P = {
