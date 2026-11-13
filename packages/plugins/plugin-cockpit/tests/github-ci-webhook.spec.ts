@@ -117,4 +117,26 @@ describe("github-ci webhook", () => {
     const body = (comments(s)[0] as { body: string }).body;
     expect(body).not.toMatch(/<script>|\n#/);
   });
+
+  it("tries only actionable companies: an unconfigured company gets no config or secret read", async () => {
+    const s = await open();
+    const reads: string[] = [];
+    const ctx = s.ctx as never as { companies: { list: unknown }; config: { get: (...a: unknown[]) => unknown }; secrets: { resolve: (...a: unknown[]) => unknown } };
+    ctx.companies.list = async (input?: { actionableOnly?: boolean }) => (input?.actionableOnly ? [{ id: A }] : [{ id: "company-x" }, { id: A }]);
+    const config = ctx.config.get.bind(ctx.config);
+    ctx.config.get = (...a: unknown[]) => { reads.push(JSON.stringify(a)); return config(...a); };
+    const secrets = ctx.secrets.resolve.bind(ctx.secrets);
+    ctx.secrets.resolve = (...a: unknown[]) => { reads.push(JSON.stringify(a)); return secrets(...a); };
+    expect((await send(s.ctx as never, suite())).outcome).toBe("commented");
+    expect((await send(s.ctx as never, suite(), { delivery: "d2", sig: "sha256=" + "0".repeat(64) })).status).toBe(401);
+    expect(reads.filter((r) => r.includes("company-x"))).toEqual([]);
+  });
+
+  it("list refused or throws: 401 bad signature, no throw", async () => {
+    const s = await open();
+    (s.ctx as never as { companies: { list: unknown } }).companies.list = async () => { throw new Error("refused"); };
+    const r = await send(s.ctx as never, suite());
+    expect(r).toEqual({ status: 401, outcome: "bad signature" });
+    expect(comments(s)).toHaveLength(0);
+  });
 });
