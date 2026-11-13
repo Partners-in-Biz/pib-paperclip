@@ -6,7 +6,8 @@
  * separate `-i` of a picture clip with sound, compile-audio.ts) weighs `audioWeight`. An edit whose total weight is
  * within `passBudget` renders in one pass, as today.
  *
- * Otherwise the main track is cut, in time order, into chunks of weight <= `passBudget - 1`. Each chunk is a pass:
+ * Otherwise the main track is cut, in time order, into chunks of weight <= `passBudget - 1` (at least two when there
+ * is a cut and that still lightens the main track, `halve`: the pipeline runs a level's chunks side by side). Each chunk is a pass:
  * a sub-doc that holds only its main clips, shifted to the chunk's start, rendered by the unchanged `compileVideo`. The
  * final doc swaps the main track for one plain clip per chunk output and keeps every other track. If that main track is
  * still heavier than its share of the budget, it is chunked again (recursion); passes are listed leaves first.
@@ -123,8 +124,28 @@ function sourcesFor(doc: EditDoc, all: CompileInputs): CompileInputs {
 
 interface Level { passes: RenderPass[]; doc: EditDoc; sources: CompileInputs }
 
+/**
+ * Two chunks instead of one (PAR-11217): ffmpeg 6.1 runs a whole filter graph on one thread, so a chunk pass is bound
+ * by that thread (about 0.9 s of it per second of graded 1080x1920), and two chunk passes run side by side
+ * (render-pipeline.ts) take about 0.6 of the wall. Cut where the two halves' durations are closest, only at a cut
+ * `chunkMain` allows (no overlap, or an overlap with a transition); `[clips]` when there is none.
+ */
+function halve(clips: MediaClip[], end: (c: MediaClip) => number): MediaClip[][] {
+  const from = clips[0]?.start ?? 0;
+  const to = Math.max(...clips.map(end));
+  let best = -1;
+  let gap = Infinity;
+  for (let i = 1; i < clips.length; i++) {
+    const before = Math.max(...clips.slice(0, i).map(end));
+    if (before - clips[i].start > EPS && clips[i].transitionIn === null) continue;
+    const d = Math.abs(clips[i].start - from - (to - clips[i].start));
+    if (d < gap) [best, gap] = [i, d];
+  }
+  return best < 0 ? [clips] : [clips.slice(0, best), clips.slice(best)];
+}
+
 /** One level of main-track chunking: the chunk passes and the doc that joins their outputs. */
-function chunkMain(doc: EditDoc, sources: CompileInputs, level: number, opts: Required<PlanOptions>): Level {
+function chunkMain(doc: EditDoc, sources: CompileInputs, level: number, opts: Required<PlanOptions>, split = true): Level {
   const { fps, width, height } = doc.project;
   const index = mainIndex(doc);
   const track = doc.tracks[index] as Extract<Track, { kind: "video" | "overlay" }>;
@@ -142,8 +163,8 @@ function chunkMain(doc: EditDoc, sources: CompileInputs, level: number, opts: Re
     groups[groups.length - 1].push(clip);
     load += w;
   }
-
   const end = (c: MediaClip) => ms(c.start + clipDuration(c));
+  if (split && groups.length === 1) groups.splice(0, 1, ...halve(clips, end));
   const passes: RenderPass[] = [];
   const finals: MediaClip[] = [];
   const outputs: CompileInputs = {};
@@ -310,8 +331,11 @@ export function planRender(doc: EditDoc, sources: CompileInputs, options: PlanOp
     const main = inputs[index];
     const others = sum(inputs.map((w) => ({ weight: w }))) - main;
     if (main <= Math.max(2, opts.passBudget - others) + W_EPS) break;
-    const next = chunkMain(current.doc, current.sources, levels, opts);
-    const nextMain = sum(trackInputs(next.doc.tracks[index], next.sources, doc.project.fps, opts.audioWeight));
+    const mainOf = (l: Level) => sum(trackInputs(l.doc.tracks[index], l.sources, doc.project.fps, opts.audioWeight));
+    let next = chunkMain(current.doc, current.sources, levels, opts);
+    // Two outputs can weigh what their clips did (one light clip each): then one chunk, as before the split.
+    if (mainOf(next) >= main - W_EPS) next = chunkMain(current.doc, current.sources, levels, opts, false);
+    const nextMain = mainOf(next);
     if (nextMain >= main - W_EPS) break; // no progress (a budget too small to merge chunk outputs): stop here
     passes.push(...next.passes);
     current = next;
