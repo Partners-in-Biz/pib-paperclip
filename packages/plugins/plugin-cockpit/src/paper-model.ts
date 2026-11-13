@@ -517,6 +517,73 @@ export function editionMarkdown(doc: PaperEditionDoc, paperHref: string, max = 7
 }
 
 // ---------------------------------------------------------------------------
+// The daily brief as an edition
+// ---------------------------------------------------------------------------
+
+const BRIEF_HEAD = /^\s*(?:#{1,6}\s+(.+?)|\*\*([^*]+)\*\*:?)\s*$/;
+const BRIEF_TITLE = /^\s*\*\*((?:daily|morning|evening)\b[^*]*)\*\*\s*(.*)$/i;
+
+function cutAt(value: string, max: number): string {
+  const flat = value.replace(/\s+/g, " ").trim();
+  if (flat.length <= max) return flat;
+  const cut = flat.slice(0, max);
+  return `${cut.slice(0, Math.max(cut.lastIndexOf(" "), max - 30)).replace(/[\s,;:.]+$/, "")}…`;
+}
+
+/** Markdown without its marks, for a headline or a standfirst. */
+function plainLine(value: string): string {
+  return value.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/\*\*|`/g, "").replace(/^\s*(?:[-*•]|\d+[.)])\s+/, "").trim();
+}
+
+/**
+ * The Operator's markdown brief (`post-daily-brief`) read as an edition, so a company whose Operator still
+ * posts the brief has a paper too: the bold lines and `##` heads become sections, the text before the first
+ * one the standfirst. Null for the Weekly retro and for a text with no sections.
+ */
+export function briefToEdition(markdown: string): Omit<PublishInput, "edition" | "date"> | null {
+  const lines = markdown.replace(/\r\n?/g, "\n").split("\n");
+  if (/weekly retro/i.test(lines.slice(0, 3).join(" "))) return null;
+  let title = "";
+  const preamble: string[] = [];
+  const sections: Array<{ title: string; lines: string[] }> = [];
+  for (const line of lines) {
+    const titled = !title && sections.length === 0 && preamble.every((l) => !l.trim()) ? BRIEF_TITLE.exec(line) : null;
+    if (titled) {
+      title = titled[1]!.replace(/[.:]\s*$/, "").trim();
+      if (titled[2]) preamble.push(titled[2]);
+      continue;
+    }
+    const head = BRIEF_HEAD.exec(line);
+    if (head) {
+      sections.push({ title: oneLine(head[1] ?? head[2], 200), lines: [] });
+      continue;
+    }
+    (sections.length ? sections[sections.length - 1]!.lines : preamble).push(line);
+  }
+  const out: PaperSection[] = [];
+  const seen = new Set<string>();
+  for (const s of sections) {
+    const body = s.lines.join("\n").trim().slice(0, PAPER_LIMITS.sectionBody);
+    if (!body) continue;
+    // "Waiting on Peet (65, batched; hard stops first)": the bracket is a note, not part of the title.
+    const note = /^(.*?)\s*\(([^)]*)\)\s*$/.exec(s.title);
+    const sectionTitle = oneLine(note ? note[1] : s.title, PAPER_LIMITS.sectionTitle) || "Notes";
+    let id = slug(sectionTitle) || `section-${out.length + 1}`;
+    for (let n = 2; seen.has(id); n += 1) id = `${id.replace(/-\d+$/, "")}-${n}`;
+    seen.add(id);
+    out.push({ id, title: sectionTitle, body, source: "company" });
+    if (out.length >= PAPER_LIMITS.sections) break;
+  }
+  if (out.length === 0) return null;
+  const intro = plainLine(preamble.join(" "));
+  const waiting = sections.map((s) => /^waiting on\b[^()]*\((\d+)/i.exec(s.title)).find(Boolean);
+  const firstLine = plainLine(out[0]!.body.split("\n").find((l) => l.trim()) ?? "");
+  const headline = waiting ? `${waiting[1]} ${waiting[1] === "1" ? "item waits" : "items wait"} on you` : cutAt(intro || firstLine || title || "Daily brief", 110);
+  const standfirst = cutAt(intro || (waiting ? firstLine : "") || title || "The Operator's daily brief.", 420);
+  return { headline, standfirst, figures: [], sections: out };
+}
+
+// ---------------------------------------------------------------------------
 // The edition the Cockpit compiles itself
 // ---------------------------------------------------------------------------
 

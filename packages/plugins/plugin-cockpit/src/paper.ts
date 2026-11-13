@@ -18,6 +18,7 @@ import { getRoles, listRoles } from "./db.js";
 import { CockpitError, message, type Env } from "./env.js";
 import { linkFor } from "./health.js";
 import {
+  briefToEdition,
   checkPublish,
   compileEdition,
   countWords,
@@ -155,7 +156,8 @@ export interface PublishResult {
   push: string | null;
 }
 
-export async function publishEdition(env: Env, companyId: string, input: PublishInput, by: { source: "agent" | "auto"; agentId: string | null }): Promise<PublishResult> {
+/** `copy: false` leaves the Daily brief issue alone (the edition was read from a brief that is already posted there). */
+export async function publishEdition(env: Env, companyId: string, input: PublishInput, by: { source: "agent" | "auto"; agentId: string | null; copy?: boolean }): Promise<PublishResult> {
   const { ctx } = env;
   const now = env.now();
   const [settings, meta, company, previous] = await Promise.all([readPaperSettings(env, companyId), readMeta(env, companyId), companyInfo(ctx, companyId), getEdition(env, companyId, input.date, input.edition)]);
@@ -208,7 +210,7 @@ export async function publishEdition(env: Env, companyId: string, input: Publish
   // A copy on the Daily brief issue: the thread the owner replies on, and what reaches their inbox.
   let briefIssueId: string | null = null;
   try {
-    briefIssueId = (await postDailyBrief(env, companyId, editionMarkdown(doc, href), by.agentId)).issueId;
+    if (by.copy !== false) briefIssueId = (await postDailyBrief(env, companyId, editionMarkdown(doc, href), by.agentId)).issueId;
   } catch (error) {
     ctx.logger.info("Paper: the copy on the Daily brief issue was not posted", { companyId, error: message(error) });
   }
@@ -244,15 +246,29 @@ export function taskDescription(input: { name: string; edition: PaperEditionKey;
   ].join("\n");
 }
 
-export type RequestResult = { requested: true; issueId: string; created: boolean } | { requested: false; reason: "no-operator" | "off" };
+export type RequestResult = { requested: true; issueId: string; created: boolean } | { requested: false; reason: "no-operator" | "operator-paused" | "off" };
+
+/** Statuses in which an agent picks up a task it is given. */
+const WORKING = new Set(["active", "idle", "running"]);
+
+/** The Operator when it can write today: linked and not paused, in error or waiting for approval. */
+async function writer(env: Env, companyId: string): Promise<{ id: string | null; usable: boolean }> {
+  const id = await operatorAgentId(env, companyId).catch(() => null);
+  if (!id) return { id: null, usable: false };
+  const agent = await env.ctx.agents.get(id, companyId).catch(() => null);
+  return { id, usable: Boolean(agent && WORKING.has(String(agent.status))) };
+}
 
 /** Opens (or wakes) the Operator's task to write an edition for today. One task per day and edition. */
 export async function requestEdition(env: Env, companyId: string, edition: PaperEditionKey, options: { force?: boolean; by?: string } = {}): Promise<RequestResult> {
   const { ctx } = env;
   const settings = await readPaperSettings(env, companyId);
   if (!settings.editions[edition].enabled && !options.force) return { requested: false, reason: "off" };
-  const operator = await operatorAgentId(env, companyId);
-  if (!operator) return { requested: false, reason: "no-operator" };
+  const who = await writer(env, companyId);
+  if (!who.id) return { requested: false, reason: "no-operator" };
+  // A task for a paused Operator would only sit there: the compiled edition covers the day.
+  if (!who.usable) return { requested: false, reason: "operator-paused" };
+  const operator = who.id;
   const date = sastDate(env.now());
   const originId = paperTaskOriginId(companyId, date, edition);
   const meta = await readMeta(env, companyId);
@@ -268,6 +284,16 @@ export async function requestEdition(env: Env, companyId: string, edition: Paper
   if (found.length > 0 && !options.force) {
     await mark(found[0]!.id);
     return { requested: true, issueId: found[0]!.id, created: false };
+  }
+  // An edition nobody wrote on an earlier day is not owed any more: its task goes, so they do not pile up.
+  try {
+    const old = (await ctx.issues.list({ companyId, originKind: ORIGIN.paper as `plugin:${string}`, limit: 50 })) as Array<{ id: string; status?: string; originId?: string | null }>;
+    for (const task of old) {
+      if (["done", "cancelled"].includes(String(task.status)) || task.originId === originId || !String(task.originId ?? "").endsWith(`:${edition}`)) continue;
+      await ctx.issues.update(task.id, { status: "cancelled" }, companyId);
+    }
+  } catch (error) {
+    ctx.logger.info("Paper: old writing tasks were not cancelled", { companyId, error: message(error) });
   }
   const company = await companyInfo(ctx, companyId);
   const made = await createWorkIssue(ctx, {
@@ -304,6 +330,8 @@ export async function paperTick(env: Env): Promise<{ requested: number; compiled
       const settings = await readPaperSettings(env, row.companyId);
       if (!PAPER_EDITIONS.some((e) => settings.editions[e].enabled)) continue;
       let meta = await readMeta(env, row.companyId);
+      // A company with no working Operator that never had an edition is parked: no task, no compiled paper, no noise.
+      if (meta.count === 0 && !(await writer(env, row.companyId)).usable) continue;
       if (!meta.firstSeenAt) {
         meta = { ...meta, firstSeenAt: now.toISOString() };
         await env.ctx.state.set(META(row.companyId), meta);
@@ -326,6 +354,23 @@ export async function paperTick(env: Env): Promise<{ requested: number; compiled
     }
   }
   return out;
+}
+
+/**
+ * The Operator posted its markdown brief with `post-daily-brief` (a company whose instructions still say so):
+ * the same text becomes today's morning edition, unless a written one is already there. Before noon SAST only,
+ * and never for the Weekly retro. No second copy goes on the Daily brief issue.
+ */
+export async function editionFromBrief(env: Env, companyId: string, body: string, agentId: string | null): Promise<PublishResult | null> {
+  const now = env.now();
+  if (sastMinutes(now) >= 12 * 60) return null;
+  if (!(await readPaperSettings(env, companyId)).editions.morning.enabled) return null;
+  const date = sastDate(now);
+  const existing = await getEdition(env, companyId, date, "morning");
+  if (existing && existing.source === "agent") return null;
+  const edition = briefToEdition(body);
+  if (!edition) return null;
+  return publishEdition(env, companyId, { edition: "morning", date, ...edition }, { source: "agent", agentId, copy: false });
 }
 
 // ---------------------------------------------------------------------------

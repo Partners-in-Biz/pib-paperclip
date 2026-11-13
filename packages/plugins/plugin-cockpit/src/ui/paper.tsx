@@ -440,7 +440,7 @@ export function PaperPanel({ search, linkFor, navigate, refreshKey = 0 }: { sear
   });
   const onWriteNow = (edition: PaperEditionKey) => run(async () => {
     const result = (await writeNow({ edition })) as { requested: boolean; reason?: string };
-    if (!result.requested) throw new Error(result.reason === "no-operator" ? "There is no Operator to write it. Staff the role in Setup → Team." : "That edition is switched off.");
+    if (!result.requested) throw new Error(result.reason === "no-operator" ? "There is no Operator to write it. Staff the role in Setup → Team." : result.reason === "operator-paused" ? `${operatorName ?? "The Operator"} is paused, so nobody can write it now. Compile one from the numbers instead.` : "That edition is switched off.");
     await reload();
     return `${operatorName ?? "The Operator"} is writing the ${edition} edition. It shows here when it is published, usually within a few minutes.`;
   });
