@@ -4206,8 +4206,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         skillFileJobs.push({
           filePath: `${packageDir}/${inventoryEntry.path}`,
           load: async () => {
+            // listFull above already refreshed the inventory; skip it per file (PAR-11024).
             const fileDetail = await companySkills
-              .readFile(companyId, skill.id, inventoryEntry.path)
+              .readFile(companyId, skill.id, inventoryEntry.path, { skipInventoryRefresh: true })
               .catch(() => null);
             if (!fileDetail) return null;
             return inventoryEntry.path === "SKILL.md"
