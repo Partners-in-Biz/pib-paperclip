@@ -13,6 +13,15 @@ describe("shouldQueueFollowupForRunningIssueWake", () => {
     })).toBe(true);
   });
 
+  it("queues a follow-up when a done-check gate reopens the issue the running turn closed", () => {
+    // PAR-11130: merged into the closing run, this wake was lost and the
+    // reopened issue sat in todo with no run queued.
+    expect(shouldQueueFollowupForRunningIssueWake({
+      contextSnapshot: { wakeReason: "issue_reopened_by_gate", source: "plugin.issue.requestWakeup" },
+      wakeCommentId: null,
+    })).toBe(true);
+  });
+
   it("still coalesces a generic issue wake without new input", () => {
     expect(shouldQueueFollowupForRunningIssueWake({
       contextSnapshot: { wakeReason: "issue_commented" },

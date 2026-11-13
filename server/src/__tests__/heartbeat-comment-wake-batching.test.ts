@@ -451,6 +451,82 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     expect(runs[0]?.id).toBe(runId);
   });
 
+  it.each([
+    { wakeReason: "issue_reopened_by_gate", queuesFollowup: true },
+    { wakeReason: "Done check: not finished", queuesFollowup: false },
+  ])("a plugin gate reopen wake ($wakeReason) after the running turn closed the issue", async ({ wakeReason, queuesFollowup }) => {
+    // PAR-11130: the agent's run closes the issue (executionRunId cleared),
+    // the done-check gate reopens it to todo and asks for a wake while that
+    // run is still finishing. Merged into the closing run, the wake was lost.
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    await db.insert(companies).values(wakeCompanyRow(companyId, issuePrefix));
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Close-out owner",
+      role: "general",
+      status: "running",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      contextSnapshot: { issueId, taskId: issueId, wakeReason: "Close-out review" },
+    });
+    runningProcesses.set(runId, { child: {} as never, graceSec: 0, processGroupId: null });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Close-out review",
+      status: "todo",
+      priority: "medium",
+      responsibleUserId: "responsible-user",
+      assigneeAgentId: agentId,
+      executionRunId: null,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    // Same shape as plugin-host-services `issues.requestWakeup`.
+    const wake = await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: wakeReason,
+      payload: { issueId, mutation: "plugin_wakeup", contextSource: "plugin.issue.requestWakeup" },
+      requestedByActorType: "system",
+      requestedByActorId: "plugin-cockpit",
+      contextSnapshot: { issueId, taskId: issueId, wakeReason, source: "plugin.issue.requestWakeup" },
+    });
+
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    if (queuesFollowup) {
+      // Held behind the running turn as its own wake, not merged into it.
+      expect(wake).toBeNull();
+      expect(runs).toHaveLength(1);
+      const deferred = await selectDeferredWakeForAgent(companyId, agentId);
+      expect(deferred).toMatchObject({ reason: "issue_execution_deferred", runId: null });
+      expect((deferred?.payload as Record<string, unknown>)._paperclipWakeContext)
+        .toMatchObject({ issueId, wakeReason });
+    } else {
+      // Control: a generic wake still merges into the running turn.
+      expect(wake?.id).toBe(runId);
+      expect(runs).toHaveLength(1);
+    }
+  });
+
   it("defers recovery hand-back wakes until the resolving run exits", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -1100,6 +1176,81 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       expect(String(secondPayload.message ?? "")).toContain(
         "Please handle this follow-up after you finish",
       );
+    } finally {
+      gateway.releaseFirstWait();
+      await gateway.close();
+    }
+  }, 120_000);
+
+  it("starts a new assignee run after the closing run exits when a done-check gate reopens the issue", async () => {
+    // PAR-11130 end to end: the gate's wake arrives while the closing run is
+    // still finishing; once that run exits the assignee must get a new run.
+    const gateway = await createControlledGatewayServer();
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    try {
+      await db.insert(companies).values(wakeCompanyRow(companyId, issuePrefix));
+      await grantFixtureWorkspaceAccess(companyId, ["responsible-user", "user-1"]);
+      await db.insert(agents).values(wakeGatewayAgentRow(agentId, companyId, "Close-out owner", gateway));
+      await db.insert(issues).values(wakeIssueRow(issueId, companyId, "Close-out review", agentId, issuePrefix));
+
+      const comment = await db
+        .insert(issueComments)
+        .values(wakeUserCommentRow(companyId, issueId, "user-1", "Please close this out"))
+        .returning()
+        .then((rows) => rows[0]);
+      const closingRun = await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: { issueId, commentId: comment.id },
+        contextSnapshot: { issueId, taskId: issueId, commentId: comment.id, wakeReason: "issue_commented" },
+        requestedByActorType: "user",
+        requestedByActorId: "user-1",
+      });
+      expect(closingRun).not.toBeNull();
+      await waitFor(() => gateway.getAgentPayloads().length === 1);
+
+      // The run closes the issue (lock cleared), then the gate reopens it.
+      await db
+        .update(issues)
+        .set({
+          status: "todo",
+          completedAt: null,
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(issues.id, issueId));
+
+      // Same shape as plugin-host-services `issues.requestWakeup`.
+      const gateWake = await heartbeat.wakeup(agentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_reopened_by_gate",
+        payload: { issueId, mutation: "plugin_wakeup", contextSource: "plugin.issue.requestWakeup" },
+        requestedByActorType: "system",
+        requestedByActorId: "plugin-cockpit",
+        contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_reopened_by_gate", source: "plugin.issue.requestWakeup" },
+      });
+      expect(gateWake).toBeNull();
+
+      gateway.releaseFirstWait();
+
+      await waitFor(() => gateway.getAgentPayloads().length >= 2, 90_000);
+      const runs = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, agentId))
+        .orderBy(asc(heartbeatRuns.createdAt));
+      expect(runs).toHaveLength(2);
+      expect(runs[0]?.id).toBe(closingRun!.id);
+      expect(runs[1]?.contextSnapshot).toMatchObject({ issueId, wakeReason: "issue_reopened_by_gate" });
     } finally {
       gateway.releaseFirstWait();
       await gateway.close();
