@@ -79,7 +79,7 @@ import {
   saveSigningSecret,
   type LeadSource,
 } from "./lead-store.js";
-import { newsletterSettings, NO_NEWSLETTER, refuseConfirmSecret, refuseNewsletterParams } from "./lead-newsletter.js";
+import { newsletterSettings, NO_NEWSLETTER, refuseConfirmSecret, refuseNewsletterParams, touchesNewsletter } from "./lead-newsletter.js";
 import { asLeadExtras, attributionOf, formLines, intakeLead, type LeadExtras } from "./leads.js";
 import { openIssueOnce } from "./mail.js";
 import { PLUGIN_ID } from "./namespace.js";
@@ -1057,8 +1057,9 @@ export async function updateLeadSource(ctx: PluginContext, viewer: Viewer, param
   if ("label" in params) next.label = text(params, "label", 80) ?? row.label;
   if ("consentText" in params) next.consentText = text(params, "consentText", LIMITS.consentText);
   if (row.intake === "newsletter") {
-    if (!next.consentText) throw new CrmError("A newsletter form needs consentText: it is the wording each confirmed subscriber agreed to");
-    Object.assign(next, newsletterSettings(params, row.siteUrl, row));
+    if ("consentText" in params && !next.consentText) throw new CrmError("A newsletter form needs consentText: it is the wording each confirmed subscriber agreed to");
+    // Only a call that changes a newsletter setting checks them all again, so a status or label change always goes through.
+    if (touchesNewsletter(params)) Object.assign(next, newsletterSettings(params, row.siteUrl, row));
   } else {
     refuseNewsletterParams(params, row.intake);
   }

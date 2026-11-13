@@ -75,7 +75,12 @@ export function parseConfirmUrl(value: unknown, siteUrl: string | null): string 
   if (url.port || /^https:\/\/[^/?#]*:\d*(?:[/?#]|$)/i.test(raw)) throw new CrmError("confirmUrl must not name a port");
   if (raw.includes("?") || raw.includes("#")) throw new CrmError("confirmUrl must not carry a query (?) or a fragment (#): the link adds its own");
   if (url.hostname !== site.hostname) throw new CrmError(`confirmUrl must be on ${site.hostname} exactly (no other host or subdomain)`);
-  return url.toString();
+  // The stored value is the parsed address, which percent-encodes spaces and non-ASCII letters: the limit holds for that.
+  const href = url.toString();
+  if (href.length > NEWSLETTER_LIMITS.confirmUrl) {
+    throw new CrmError(`confirmUrl is at most ${NEWSLETTER_LIMITS.confirmUrl} characters once encoded (spaces and accented letters take 3 to 6 each); this one is ${href.length}`);
+  }
+  return href;
 }
 
 /** One valid address, lower-cased. */
@@ -90,6 +95,11 @@ export function parseDailyCap(value: unknown): number {
   const cap = typeof value === "number" ? value : typeof value === "string" && value.trim() ? Number(value) : NaN;
   if (!Number.isInteger(cap) || cap < 1 || cap > NEWSLETTER_LIMITS.dailyCap) throw new CrmError(`confirmDailyCap is a whole number from 1 to ${NEWSLETTER_LIMITS.dailyCap}`);
   return cap;
+}
+
+/** Whether a call names any newsletter setting (an update that names none leaves them as they are, unchecked). */
+export function touchesNewsletter(params: Record<string, unknown>): boolean {
+  return NEWSLETTER_PARAMS.some((key) => key in params);
 }
 
 /**

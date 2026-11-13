@@ -73,9 +73,22 @@ describe("creating a newsletter form", () => {
     expect(booted.store.lead_sources).toHaveLength(0);
   });
 
-  it("the settings are cleaned: tags trimmed and deduplicated case-insensitively, the url kept as given", () => {
+  it("the settings are cleaned: tags trimmed and deduplicated case-insensitively, the url stored as parsed (host lower-cased, spaces encoded)", () => {
     expect(parseApplyTags([" News ", "news", "Jobs"])).toEqual(["News", "Jobs"]);
     expect(parseConfirmUrl("https://remotesaffa.co.za/subscribe/confirm", "https://remotesaffa.co.za")).toBe("https://remotesaffa.co.za/subscribe/confirm");
+    expect(parseConfirmUrl("https://REMOTESAFFA.co.za/a b", SITE)).toBe("https://remotesaffa.co.za/a%20b");
+  });
+
+  it("the 100-character limit holds for the stored, encoded url: a short raw url that encodes past it is refused", () => {
+    const accented = `${SITE}/${"é".repeat(40)}`;
+    const spaced = `${SITE}/${"a ".repeat(30)}x`;
+    for (const raw of [accented, spaced]) {
+      expect(raw.length).toBeLessThanOrEqual(MAX_CONFIRM_URL_LENGTH);
+      expect(new URL(raw).toString().length).toBeGreaterThan(MAX_CONFIRM_URL_LENGTH);
+      expect(() => parseConfirmUrl(raw, SITE)).toThrow(/at most 100 characters once encoded/);
+    }
+    const fits = `${SITE}/${"é".repeat(10)}`;
+    expect(parseConfirmUrl(fits, SITE).length).toBeLessThanOrEqual(MAX_CONFIRM_URL_LENGTH);
   });
 
   it("a lead or report form takes none of the newsletter settings, and a label of another intake is never turned into a newsletter", async () => {
@@ -112,6 +125,15 @@ describe("updating a newsletter form", () => {
     const reworded = await tool(booted.harness, "update-lead-source", { sourceId: made.source.id, consentText: "Yes, the Friday list please." });
     expect(reworded.note).toMatch(/links already sent stop working/);
     expect(booted.store.lead_sources[0]).toMatchObject({ confirm_secret: secret, consent_text: "Yes, the Friday list please.", confirm_daily_cap: 50 });
+  });
+
+  it("a status or label change does not re-check the stored settings, so a form that no longer passes can still be paused", async () => {
+    const booted = await bootLeads();
+    const made = await newsletter(booted);
+    booted.store.lead_sources[0]!.confirm_url = "https://www.remotesaffa.co.za/confirm"; // stored before a tighter rule
+    const paused = await tool(booted.harness, "update-lead-source", { sourceId: made.source.id, status: "paused", label: "Friday list" });
+    expect(paused.source).toMatchObject({ status: "paused", label: "Friday list" });
+    expect(await refused(tool(booted.harness, "update-lead-source", { sourceId: made.source.id, confirmDailyCap: 20 }))).toMatch(/exactly/);
   });
 });
 
