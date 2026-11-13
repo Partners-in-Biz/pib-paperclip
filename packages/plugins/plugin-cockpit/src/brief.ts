@@ -46,6 +46,7 @@ import {
   type WaitingEntry,
 } from "./merge.js";
 import { ownSnapshot } from "./own.js";
+import { withTriggerIfUnset } from "./run-trigger.js";
 import { ownerFilter, type OwnerFilterResult } from "./owner-filter.js";
 import { currentRoles } from "./roles.js";
 import { TOOL_NAMES } from "./tools.js";
@@ -318,7 +319,7 @@ export async function loadCompanyData(env: Env, companyId: string, days = 7, win
   const [stored, own, agents, runStats, approvals, statuses, asks, unassigned, repairs, setup, roles] = await Promise.all([
     guard("snapshots", () => storedSnapshots(env, companyId), []),
     // The Cockpit's own checks (jobs, routines, watch, memory) read the most: when they hang, the other plugins' snapshots still answer.
-    guard("ownChecks", () => ownSnapshot(env, companyId), { ...emptySnapshot(PLUGIN_KEY, "Cockpit"), checkedAt: env.now().toISOString() }),
+    guard("ownChecks", () => withTriggerIfUnset("brief", () => ownSnapshot(env, companyId)), { ...emptySnapshot(PLUGIN_KEY, "Cockpit"), checkedAt: env.now().toISOString() }),
     guard("agents", () => listAgents(env, companyId), []),
     guard("runs", () => listRuns(env.ctx, companyId, { now: env.now(), days: Math.max(days, 7), windowHours }), []),
     guard("approvals", () => listApprovals(env.ctx, companyId), []),

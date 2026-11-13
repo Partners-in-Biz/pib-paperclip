@@ -31,6 +31,8 @@ import { memoryJevConfig } from "./memory/jev.js";
 import { memoryStats } from "./memory/store.js";
 import { cockpitFlowReports } from "./own-flows.js";
 import { profileSetupItem, readProfile } from "./profile.js";
+import { clockMs, ownRunMeta, timed, type PartRecord } from "./run-record.js";
+import { BOOT_ID, currentTrigger } from "./run-trigger.js";
 import { watchChecks } from "./watch.js";
 
 const PLUGINS_PATH = "/company/settings/instance/plugins";
@@ -286,88 +288,105 @@ export function staleAsksCheck(asks: Array<{ identifier: string | null; issueId:
 }
 
 export async function ownSnapshot(env: Env, companyId: string): Promise<CockpitSnapshot> {
+  const started = clockMs();
+  // Each section's name, state and time, for the one log line of this run (PAR-11071 rule 1).
+  const sections: PartRecord[] = [];
   const snapshot = emptySnapshot(PLUGIN_KEY, "Cockpit");
   snapshot.checkedAt = env.now().toISOString();
   const health: HealthCheck[] = [];
   try {
-    health.push(await jobHealth(env.ctx, JOBS.healthAlerts, "Hourly health check", 60));
-    health.push(await jobHealth(env.ctx, JOBS.reemitRoles, "Hourly role updates", 60));
-    // The 0.5.0 jobs: one that stops (or fails for every company) leaves reviews unopened, improvements unmeasured, credential expiries unwatched and goals unreviewed, and nothing else would say so.
-    health.push(await jobHealth(env.ctx, JOBS.closeoutSweep, "Daily close-out reviews", 24 * 60));
-    health.push(await jobHealth(env.ctx, JOBS.improvementsRecheck, "Daily improvements re-check", 24 * 60));
-    health.push(await jobHealth(env.ctx, JOBS.credentialsCheck, "Daily credentials check", 24 * 60));
-    health.push(await jobHealth(env.ctx, JOBS.businessReview, "Weekly business review", 7 * 24 * 60));
-    health.push(await jobHealth(env.ctx, JOBS.acceptanceNightly, "Nightly acceptance request", 24 * 60));
+    await timed(sections, "job-health", async () => {
+      health.push(await jobHealth(env.ctx, JOBS.healthAlerts, "Hourly health check", 60));
+      health.push(await jobHealth(env.ctx, JOBS.reemitRoles, "Hourly role updates", 60));
+      // The 0.5.0 jobs: one that stops (or fails for every company) leaves reviews unopened, improvements unmeasured, credential expiries unwatched and goals unreviewed, and nothing else would say so.
+      health.push(await jobHealth(env.ctx, JOBS.closeoutSweep, "Daily close-out reviews", 24 * 60));
+      health.push(await jobHealth(env.ctx, JOBS.improvementsRecheck, "Daily improvements re-check", 24 * 60));
+      health.push(await jobHealth(env.ctx, JOBS.credentialsCheck, "Daily credentials check", 24 * 60));
+      health.push(await jobHealth(env.ctx, JOBS.businessReview, "Weekly business review", 7 * 24 * 60));
+      health.push(await jobHealth(env.ctx, JOBS.acceptanceNightly, "Nightly acceptance request", 24 * 60));
+    });
   } catch (error) {
     env.ctx.logger.info("Cockpit job health failed", { error: message(error) });
   }
   // The Cockpit's own routines, like every plugin reports its own (the kit adds them to what the others publish).
-  health.push(...(await routineHealth(env.ctx, companyId)));
+  health.push(...(await timed(sections, "routine-health", () => routineHealth(env.ctx, companyId))));
   // Run failure rate, repeated errors, retry storms, blocked and stalled issues (watch.ts).
   try {
-    health.push(...(await watchChecks(env, companyId)));
+    health.push(...(await timed(sections, "watch", () => watchChecks(env, companyId))));
   } catch (error) {
     env.ctx.logger.info("Cockpit watch failed", { error: message(error) });
   }
   try {
-    const stats = await memoryStats(env.ctx, companyId);
-    snapshot.kpis.push(
-      { key: "memory_facts", label: "Memory facts", value: String(stats.facts.active), raw: stats.facts.active, delta: stats.added7d ? `+${stats.added7d} this week` : null, href: "/cockpit?tab=memory", group: "other" },
-      { key: "memory_briefs", label: "Memory briefs (7 days)", value: String(stats.briefs7d.total), raw: stats.briefs7d.total, delta: stats.briefs7d.total ? `avg ${stats.briefs7d.avgFacts} facts` : null, href: "/cockpit?tab=memory", group: "other" },
-    );
-    const noted = stats.feedback30d.missing + stats.feedback30d.noise;
-    if (noted > 0) {
-      snapshot.quality.push({ key: "memory_feedback", label: "Memory brief feedback (30 days)", value: `${stats.feedback30d.missing} missing, ${stats.feedback30d.noise} noise`, raw: noted, tone: stats.feedback30d.missing > stats.briefs7d.total ? "warn" : "neutral" });
-    }
-    if (stats.facts.active > 0) health.push(await jobHealth(env.ctx, JOBS.memoryUpkeep, "Daily memory upkeep", 24 * 60));
+    await timed(sections, "memory", async () => {
+      const stats = await memoryStats(env.ctx, companyId);
+      snapshot.kpis.push(
+        { key: "memory_facts", label: "Memory facts", value: String(stats.facts.active), raw: stats.facts.active, delta: stats.added7d ? `+${stats.added7d} this week` : null, href: "/cockpit?tab=memory", group: "other" },
+        { key: "memory_briefs", label: "Memory briefs (7 days)", value: String(stats.briefs7d.total), raw: stats.briefs7d.total, delta: stats.briefs7d.total ? `avg ${stats.briefs7d.avgFacts} facts` : null, href: "/cockpit?tab=memory", group: "other" },
+      );
+      const noted = stats.feedback30d.missing + stats.feedback30d.noise;
+      if (noted > 0) {
+        snapshot.quality.push({ key: "memory_feedback", label: "Memory brief feedback (30 days)", value: `${stats.feedback30d.missing} missing, ${stats.feedback30d.noise} noise`, raw: noted, tone: stats.feedback30d.missing > stats.briefs7d.total ? "warn" : "neutral" });
+      }
+      if (stats.facts.active > 0) health.push(await jobHealth(env.ctx, JOBS.memoryUpkeep, "Daily memory upkeep", 24 * 60));
+    });
   } catch (error) {
     env.ctx.logger.info("Cockpit memory stats failed", { error: message(error) });
   }
   try {
-    const roles = await getRoles(env.ctx, companyId);
-    const operator = await agentUsable(env, companyId, roles?.operatorAgentId ?? null);
-    health.push(operatorCheck(operator));
-    const reviewer = roles?.reviewerAgentId ? await lookupAgent(env, companyId, roles.reviewerAgentId) : undefined;
-    // Only a linked Reviewer that could be looked up: a failed lookup says nothing.
-    const reviewerHealth = reviewer !== undefined ? reviewerCheck(reviewer, roles?.reviewOutward ?? false) : null;
-    if (reviewerHealth) health.push(reviewerHealth);
-    const weekAgo = new Date(env.now().getTime() - 7 * 86_400_000).toISOString();
-    const owner = ownerCheck(roles?.ownerUserId, roles?.ownerUserId ? 0 : await countActivitySince(env.ctx, companyId, "ask_refused", weekAgo).catch(() => 0));
-    if (owner) health.push(owner);
-    // The roles the Cockpit staffs, like every plugin reports its own (kit CockpitSnapshot.team).
-    const team = [];
-    if (roles?.operatorAgentId) team.push({ role: "operator" as const, agentId: roles.operatorAgentId, status: (await lookupAgent(env, companyId, roles.operatorAgentId))?.status ?? null });
-    if (roles?.reviewerAgentId) team.push({ role: "reviewer" as const, agentId: roles.reviewerAgentId, status: reviewer?.status ?? null });
-    // The Acceptance agent is linked in the kit's hire state, not in the roles table; reported like any role (the kit's registry names it once Setup lists it).
-    const acceptanceId = await acceptanceAgentId(env, companyId);
-    if (acceptanceId) team.push({ role: "acceptance" as TeamRoleKey, agentId: acceptanceId, status: (await lookupAgent(env, companyId, acceptanceId))?.status ?? null });
-    if (team.length) snapshot.team = team;
+    await timed(sections, "roles", async () => {
+      const roles = await getRoles(env.ctx, companyId);
+      const operator = await agentUsable(env, companyId, roles?.operatorAgentId ?? null);
+      health.push(operatorCheck(operator));
+      const reviewer = roles?.reviewerAgentId ? await lookupAgent(env, companyId, roles.reviewerAgentId) : undefined;
+      // Only a linked Reviewer that could be looked up: a failed lookup says nothing.
+      const reviewerHealth = reviewer !== undefined ? reviewerCheck(reviewer, roles?.reviewOutward ?? false) : null;
+      if (reviewerHealth) health.push(reviewerHealth);
+      const weekAgo = new Date(env.now().getTime() - 7 * 86_400_000).toISOString();
+      const owner = ownerCheck(roles?.ownerUserId, roles?.ownerUserId ? 0 : await countActivitySince(env.ctx, companyId, "ask_refused", weekAgo).catch(() => 0));
+      if (owner) health.push(owner);
+      // The roles the Cockpit staffs, like every plugin reports its own (kit CockpitSnapshot.team).
+      const team = [];
+      if (roles?.operatorAgentId) team.push({ role: "operator" as const, agentId: roles.operatorAgentId, status: (await lookupAgent(env, companyId, roles.operatorAgentId))?.status ?? null });
+      if (roles?.reviewerAgentId) team.push({ role: "reviewer" as const, agentId: roles.reviewerAgentId, status: reviewer?.status ?? null });
+      // The Acceptance agent is linked in the kit's hire state, not in the roles table; reported like any role (the kit's registry names it once Setup lists it).
+      const acceptanceId = await acceptanceAgentId(env, companyId);
+      if (acceptanceId) team.push({ role: "acceptance" as TeamRoleKey, agentId: acceptanceId, status: (await lookupAgent(env, companyId, acceptanceId))?.status ?? null });
+      if (team.length) snapshot.team = team;
+    });
   } catch (error) {
     env.ctx.logger.info("Cockpit roles check failed", { error: message(error) });
   }
   try {
-    const asks = staleAsksCheck(await openAskViews(env, companyId), env.now());
+    const asks = await timed(sections, "asks", async () => staleAsksCheck(await openAskViews(env, companyId), env.now()));
     if (asks) health.push(asks);
   } catch (error) {
     env.ctx.logger.info("Cockpit question check failed", { error: message(error) });
   }
   // The kit's drift, grant and approval checks, the measurement alerts, the registers and confirmations, the improvements, goals and what waits on the owner (checks.ts).
+  // No record (a cache hit, or the checks failed as a whole): no log line, and the run counts as complete.
+  let parts: PartRecord[] | undefined;
+  // The sections so far run before the checks: their sum is the line's `sectionsMs`.
+  const beforeChecks = sections.length;
   try {
     const extra = await extraChecks(env, companyId);
     health.push(...extra.health);
     snapshot.kpis.push(...extra.kpis);
     snapshot.quality.push(...extra.quality);
     snapshot.waiting.push(...extra.waiting);
+    parts = extra.run;
   } catch (error) {
     env.ctx.logger.info("Cockpit extra checks failed", { error: message(error) });
   }
   try {
-    snapshot.activity = toActivityItems(await recentActivity(env.ctx, companyId, 10));
+    snapshot.activity = await timed(sections, "activity", async () => toActivityItems(await recentActivity(env.ctx, companyId, 10)));
   } catch (error) {
     env.ctx.logger.info("Cockpit activity read failed", { error: message(error) });
   }
   // The Cockpit's own stages of the company graph (onboarding), like every plugin reports its own.
-  snapshot.flows = await cockpitFlowReports(env, companyId);
+  snapshot.flows = await timed(sections, "flows", () => cockpitFlowReports(env, companyId));
   snapshot.health = health;
+  if (parts) {
+    env.ctx.logger.info("Cockpit own checks", ownRunMeta({ companyId, boot: BOOT_ID, trigger: currentTrigger(), totalMs: clockMs() - started, sections, sectionsBeforeChecks: beforeChecks, parts }));
+  }
   return snapshot;
 }
