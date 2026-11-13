@@ -6,12 +6,14 @@
  * a clock drives the playhead (so gaps play too); the showing video is re-seeked only when it drifts.
  * Transitions and keyframes (PAR-8449): inside a transition window both slots play, each in a layer styled by the plan
  * (`PreviewLayers`); the clip inside each layer is placed by its keyframes.
+ * Overlay tracks (PAR-10166): each overlay clip under the playhead gets its own `<video>` (`OverlayClip`) above the base,
+ * with CSS `mix-blend-mode` for its blend mode and a rounded, bordered picture for its frame.
  */
 import { useEffect, useId, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
 import { useHostContext } from "@paperclipai/plugin-sdk/ui";
 import { Button } from "@partnersinbiz/pib-plugin-ui";
 import type { EditorStore } from "./editor-store.js";
-import { assignSlots, buildPreviewPlan, clipTransform, frameAt, previewGrade, type PreviewFrame, type PreviewGrade, type PreviewSlots } from "./preview-plan.js";
+import { assignSlots, blendCss, buildPreviewPlan, clipTransform, containBox, frameAt, layerFrame, overlaysAt, previewGrade, type PreviewFrame, type PreviewGrade, type PreviewLayer, type PreviewSlots } from "./preview-plan.js";
 import { usePreviewUrls } from "../previews.js";
 import { Overlay } from "./Overlay.js";
 import { audioClips, audioFrameAt, audioMute, audioWindow } from "./audio-track.js";
@@ -33,10 +35,11 @@ export function Player({ store }: { store: EditorStore }) {
   const byId = useMemo(() => new Map(plan.segments.map((s) => [s.clipId, s])), [plan]);
   const end = plan.end;
   const frame = frameAt(plan, playhead);
+  const overlays = overlaysAt(plan, playhead);
   // Audio clips near the playhead get an <audio> element (PAR-8322); their assets' links load with the video's.
   const audioNear = audioWindow(doc, playhead);
   const allAudio = useMemo(() => audioClips(doc), [doc]);
-  const previews = usePreviewUrls(companyId, [...new Set([...plan.segments.map((s) => s.assetId), ...allAudio.map((a) => a.clip.assetId)])]);
+  const previews = usePreviewUrls(companyId, [...new Set([...plan.segments.map((s) => s.assetId), ...plan.overlays.map((s) => s.assetId), ...allAudio.map((a) => a.clip.assetId)])]);
   useSyncExternalStore(audioMute.subscribe, audioMute.getSnapshot, audioMute.getSnapshot);
   const [playing, setPlaying] = useState(false);
   const aspect = doc ? `${doc.project.width} / ${doc.project.height}` : "16 / 9";
@@ -152,7 +155,7 @@ export function Player({ store }: { store: EditorStore }) {
   return (
     <section aria-label="Player" data-editor-panel="player" data-preview-clip={frame.segment?.clipId ?? frame.kind} style={{ display: "grid", gap: 8, minWidth: 0 }}>
       <div style={{ position: "relative", width: "100%", maxWidth: 480, maxHeight: "60vh", aspectRatio: aspect, margin: "0 auto", borderRadius: 8, overflow: "hidden", background: hasClips ? "black" : "rgba(127,127,127,0.12)", display: "grid", placeItems: "center", minWidth: 0 }}>
-        <PreviewLayers frame={frame} slots={slots} urls={[urlOf(0), urlOf(1)]} project={doc?.project ?? { width: 16, height: 9 }} setVideo={(i, el) => { videos.current[i] = el; }} onLoaded={resync} />
+        <PreviewLayers frame={frame} overlays={overlays} overlayUrls={previews.urls} playing={playing} slots={slots} urls={[urlOf(0), urlOf(1)]} project={doc?.project ?? { width: 16, height: 9 }} setVideo={(i, el) => { videos.current[i] = el; }} onLoaded={resync} />
         {audioNear.map(({ clip }) => {
           const src = previews.urls[clip.assetId];
           return src ? (
@@ -186,8 +189,12 @@ export function Player({ store }: { store: EditorStore }) {
  * clip inside it placed by its keyframes (offset, scale, rotation, opacity x fade); the fadeblack/fadewhite matte sits
  * between the two layers. Stacked with z-index in the plan's paint order, below the text overlay.
  */
-export function PreviewLayers({ frame, slots, urls, project, setVideo, onLoaded }: {
+export function PreviewLayers({ frame, overlays = [], overlayUrls = {}, playing = false, slots, urls, project, setVideo, onLoaded }: {
   frame: PreviewFrame;
+  /** Overlay-track layers showing now (`overlaysAt`) and the preview links by asset id. */
+  overlays?: readonly PreviewLayer[];
+  overlayUrls?: Readonly<Record<string, string | undefined>>;
+  playing?: boolean;
   slots: readonly (string | null)[];
   urls: readonly (string | undefined)[];
   project: { width: number; height: number };
@@ -212,7 +219,7 @@ export function PreviewLayers({ frame, slots, urls, project, setVideo, onLoaded 
     onLoaded?.();
   };
   return (
-    <div ref={box} data-preview-layers style={{ position: "absolute", inset: 0 }}>
+    <div ref={box} data-preview-layers style={{ position: "absolute", inset: 0, isolation: "isolate", background: overlays.length ? "black" : undefined }}>
       {([0, 1] as const).map((i) => {
         const at = frame.layers.findIndex((l) => l.segment.clipId === slots[i]);
         const layer = at >= 0 ? frame.layers[at] : null;
@@ -237,12 +244,59 @@ export function PreviewLayers({ frame, slots, urls, project, setVideo, onLoaded 
           </div>
         ) : null;
       })}
+      {overlays.map((layer, k) => (
+        <OverlayClip key={layer.segment.clipId} layer={layer} url={overlayUrls[layer.segment.assetId]} z={10 + k} size={size} project={project} playing={playing} onLoaded={onLoaded} />
+      ))}
       {frame.matte ? <div data-preview-matte={frame.matte.color} style={{ position: "absolute", inset: 0, zIndex: 2, background: frame.matte.color, opacity: frame.matte.opacity }} /> : null}
     </div>
   );
 }
 
 type Size = { width: number; height: number };
+
+/**
+ * One overlay clip (PAR-10166): a frame-sized group (keyframed placement, opacity x fade, `mix-blend-mode`) holding the
+ * graded `<video>`; with a frame the video is cut to rounded corners (`clip-path`) and the border is a box on the picture,
+ * both inside the group so they scale, move and fade with the clip. Plays in step with the playhead like the base slots.
+ */
+function OverlayClip({ layer, url, z, size, project, playing, onLoaded }: { layer: PreviewLayer; url: string | undefined; z: number; size: Size; project: Size; playing: boolean; onLoaded?: () => void }) {
+  const video = useRef<HTMLVideoElement | null>(null);
+  const [source, setSource] = useState<Size | null>(null);
+  const filterId = `po${useId().replace(/[^\w-]/g, "")}`;
+  const seg = layer.segment;
+  useEffect(() => {
+    const v = video.current;
+    if (!v) return;
+    if (v.playbackRate !== seg.speed) v.playbackRate = seg.speed;
+    v.volume = layer.volume;
+    if (v.readyState >= 1 && !v.seeking && Math.abs(v.currentTime - layer.sourceTime) > (playing ? DRIFT : STILL)) v.currentTime = layer.sourceTime;
+    if (playing && v.paused) void v.play().catch(() => undefined);
+    if (!playing && !v.paused) v.pause();
+  });
+  const grade = size.width > 0 ? previewGrade(seg, size, source) : null;
+  const region = containBox(size, source);
+  const fr = size.width > 0 ? layerFrame(seg, layer.scale, region, size, project) : null;
+  const blend = blendCss(seg);
+  const rounded = fr && fr.radius > 0 ? `inset(${n4(region.y)}px ${n4(size.width - region.x - region.width)}px ${n4(size.height - region.y - region.height)}px ${n4(region.x)}px round ${n4(fr.radius)}px)` : undefined;
+  return url ? (
+    <div data-overlay-layer={seg.clipId} data-blend={seg.blendMode ?? undefined} style={{ position: "absolute", inset: 0, zIndex: z, opacity: layer.alpha, mixBlendMode: (blend ?? undefined) as never, transform: clipTransform(layer, project), pointerEvents: "none" }}>
+      {grade ? <GradeFilter id={filterId} grade={grade} /> : null}
+      <video
+        ref={video}
+        src={url}
+        data-clip-id={seg.clipId}
+        playsInline
+        preload="auto"
+        onLoadedMetadata={(e) => { setSource({ width: e.currentTarget.videoWidth, height: e.currentTarget.videoHeight }); onLoaded?.(); }}
+        onSeeked={onLoaded}
+        style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "contain", display: "block", clipPath: rounded, filter: grade ? `url(#${filterId})` : undefined }}
+      />
+      {fr && fr.borderWidth > 0 ? (
+        <div data-overlay-border style={{ position: "absolute", left: fr.region.x, top: fr.region.y, width: fr.region.width, height: fr.region.height, boxSizing: "border-box", border: `${n4(fr.borderWidth)}px solid ${fr.borderColor}`, borderRadius: fr.radius }} />
+      ) : null}
+    </div>
+  ) : null;
+}
 const n4 = (n: number) => String(Math.round(n * 10000) / 10000 || 0);
 const list = (a: readonly number[]) => a.map(n4).join(" ");
 
