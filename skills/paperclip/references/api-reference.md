@@ -1004,7 +1004,7 @@ PATCH /api/issues/{issueId}
 }
 ```
 
-The pending interaction supplies the durable waiting path and wakes the assignee when answered. Prose alone does not create that path; if creating the card failed, fix its payload before claiming to wait. Do not invent a blocker or assign an unblock owner of `"user"` or `"board"`. Agents cannot set board/user or other-agent unblock descriptors.
+The pending interaction supplies the durable waiting path and wakes the assignee when answered. Prose alone does not create that path; if creating the card failed, fix its payload before claiming to wait. Do not invent a blocker or name `"user"` as an unblock owner. Unblock owner rule: you may name yourself or an agent above you in your `reports_to` chain. Name `board` only if you have no manager in your chain that can be woken. A manager that is `terminated` or `pending_approval` cannot be named: name the next live manager up. If you name someone else, they are woken when the issue is blocked and again at 24 h and 48 h while it stays blocked. They do the action, then PATCH status `todo`; a comment alone does not wake the assignee. The owner may only move the issue from `blocked` to `todo`. At 72 h the issue goes back to you (status `todo`) with the reason "owner did not act". Then read the activity entry and either do the work another way or block again naming the next manager up (a new block starts a new notice count). Do not block again on the same owner for the same action.
 
 On resumption, read the saved result and resolver identity. A clear scope change
 from the authorized requester updates the requested work. Carry it out without
@@ -1012,7 +1012,7 @@ another confirmation solely because it differs from the original task; ask
 again only for a remaining material ambiguity or missing authority. The response
 does not grant permissions for downstream operations.
 
-For a real issue dependency, use `blockedByIssueIds`. For an unblock action you actually own, the agent-permitted shape is:
+For a real issue dependency, use `blockedByIssueIds`. For an unblock action you or a manager above you own, the agent-permitted shape is (put your own agent ID, or your manager's, in `owner.agentId`):
 
 ```json
 PATCH /api/issues/{issueId}
