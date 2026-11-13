@@ -272,6 +272,8 @@ export const PLUGIN_RPC_ERROR_CODES = {
    * `multiCompanyConfig: true` on its definition.
    */
   CROSS_TENANT_CONFIG: -32006,
+  /** A plugin refused the request because of a rate limit; the webhook route answers 429. */
+  RATE_LIMITED: -32007,
   /** A catch-all for errors that do not fit other categories. */
   UNKNOWN: -32099,
 } as const;
