@@ -103,7 +103,7 @@ export class LeadRejected extends Error {
   constructor(message: string, readonly outcome: string) {
     super(message);
     this.name = "LeadRejected";
-    // Undefined on a host whose SDK predates the code: the worker then sends WORKER_ERROR and the host answers 502, as before.
+    // The worker bundle carries the SDK, so the code is always sent; a host older than the code answers 502, as before.
     this.code = outcome === "rate_limited" ? PLUGIN_RPC_ERROR_CODES.RATE_LIMITED : undefined;
   }
 }
