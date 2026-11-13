@@ -11,6 +11,9 @@ const doc = (kind: string, clip: Record<string, unknown>, schemaVersion?: number
 const video = (extra: Record<string, unknown>, v?: number) => doc("video", media(extra), v);
 const FULL_ADJUST = { brightness: 0.2, contrast: 1.3, saturation: 0.5, temperature: 4000, blur: 10, vignette: 0.4 };
 const clipOf = (d: EditDoc, i = 0) => d.tracks[0].clips[i] as unknown as Record<string, any>;
+/** The highest version a FEATURE_VERSION row can stamp; v4+ rows are covered by their own spec. */
+const top = (v: (typeof FEATURE_VERSION)[string]) => (typeof v === "number" ? v : Math.max(...Object.values(v)));
+const upTo3 = (p: string) => top(FEATURE_VERSION[p]) <= 3;
 
 function refused(input: unknown): EditError {
   try {
@@ -39,18 +42,18 @@ const MAX_DOC = {
 };
 
 describe("schema v3: FEATURE_VERSION decides the version stamp", () => {
-  it("reads 1, 2 and 3 and refuses 4 with unsupported_version", () => {
-    expect(SCHEMA_VERSION).toBe(3);
+  it("reads 1, 2 and 3 (and 4) and refuses 5 with unsupported_version", () => {
+    expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(3);
     for (const v of [1, 2, 3]) expect(normalizeEdit(video({}, v)).schemaVersion).toBe(1);
-    expect(refused(video({}, 4))).toMatchObject({ reason: "unsupported_version", path: "schemaVersion", code: "bad_edit" });
+    expect(refused(video({}, 5))).toMatchObject({ reason: "unsupported_version", path: "schemaVersion", code: "bad_edit" });
   });
 
-  it("every leaf a full doc emits has a row, and every row is emitted (no stale rows)", () => {
+  it("every leaf a full doc emits has a row, and every v1-v3 row is emitted (no stale rows)", () => {
     const full = normalizeEdit(MAX_DOC);
     expect(full.schemaVersion).toBe(3);
     const emitted = new Set(featurePaths(full).map(([p]) => p));
     expect([...emitted].filter((p) => !Object.hasOwn(FEATURE_VERSION, p))).toEqual([]);
-    expect(Object.keys(FEATURE_VERSION).filter((p) => !emitted.has(p))).toEqual([]);
+    expect(Object.keys(FEATURE_VERSION).filter(upTo3).filter((p) => !emitted.has(p))).toEqual([]);
   });
 
   it("an unknown emitted key or value throws instead of stamping a lower version", () => {
@@ -73,9 +76,9 @@ describe("schema v3: FEATURE_VERSION decides the version stamp", () => {
     expect(out.schemaVersion).toBe(version);
     expect(JSON.stringify(normalizeEdit(JSON.parse(JSON.stringify(out))))).toBe(JSON.stringify(out));
   });
-  it("the feature table covers every row above version 1", () => {
+  it("the feature table covers every v2-v3 row", () => {
     const covered = new Set(FEATURES.flatMap(([, extra]) => featurePaths(normalizeEdit(video(extra))).map(([p]) => p)));
-    const above1 = Object.entries(FEATURE_VERSION).filter(([, v]) => (typeof v === "number" ? v : Math.max(...Object.values(v))) > 1).map(([p]) => p);
+    const above1 = Object.keys(FEATURE_VERSION).filter((p) => upTo3(p) && top(FEATURE_VERSION[p]) > 1);
     expect(above1.filter((p) => !covered.has(p))).toEqual([]);
   });
 });
@@ -144,7 +147,7 @@ describe("schema v3: adjust and look", () => {
     const failure = classifyRenderError(new EditError("schemaVersion: version 3 is not supported", "unsupported_version", "schemaVersion"));
     expect(failure.kind).toBe("deterministic");
     try {
-      normalizeEdit(video({}, 4));
+      normalizeEdit(video({}, 5));
     } catch (error) {
       expect(classifyRenderError(error).kind).toBe("deterministic");
     }
