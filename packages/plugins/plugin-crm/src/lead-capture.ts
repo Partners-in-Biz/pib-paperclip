@@ -64,6 +64,7 @@ import {
   bumpSource,
   captureByKey,
   countHits,
+  DEFAULT_CONFIRM_DAILY_CAP,
   deleteCapture,
   findLeadSourceByKey,
   getLeadSource,
@@ -915,7 +916,7 @@ export async function createLeadEndpoint(ctx: PluginContext, viewer: Viewer, par
     confirmUrl: null,
     confirmFrom: null,
     confirmSecret: null,
-    confirmDailyCap: 300,
+    confirmDailyCap: DEFAULT_CONFIRM_DAILY_CAP,
   };
   await insertLeadSource(ctx, source);
   const view = await leadSourceView(ctx, { ...source, createdAt: new Date().toISOString() }, urls);

@@ -28,6 +28,9 @@ function int(value: unknown): number {
 
 export { LEAD_INTAKES, SOURCE_STATUSES, type LeadIntake, type SourceStatus };
 
+/** Confirmation mails a newsletter source sends in 24 hours unless set otherwise; the column default of migration 023. */
+export const DEFAULT_CONFIRM_DAILY_CAP = 300;
+
 export interface LeadSource {
   id: string;
   companyId: string;
@@ -147,7 +150,7 @@ function mapSource(row: SourceRow): LeadSource {
     confirmUrl: row.confirm_url ?? null,
     confirmFrom: row.confirm_from ?? null,
     confirmSecret: row.confirm_secret ?? null,
-    confirmDailyCap: int(row.confirm_daily_cap) || 300,
+    confirmDailyCap: int(row.confirm_daily_cap) || DEFAULT_CONFIRM_DAILY_CAP,
   };
 }
 

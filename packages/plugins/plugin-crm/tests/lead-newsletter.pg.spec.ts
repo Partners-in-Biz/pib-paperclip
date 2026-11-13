@@ -58,12 +58,16 @@ describe.skipIf(!available)("migration 023 on an existing database", () => {
         ["confirm_url", { ...full, confirm_url: null }],
         ["confirm_from", { ...full, confirm_from: null }],
         ["confirm_secret", { ...full, confirm_secret: null }],
-        ["signing_secret", { ...full, signing_secret: null }],
         ["consent_text", { ...full, consent_text: null }],
       ];
       for (const [index, [field, values]] of missing.entries()) {
         await expect(q(`INSERT INTO ${T} (${NEWSLETTER_COLUMNS}) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11)`, newsletterRow(`m${index}`, values)), field).rejects.toThrow(/lead_sources_newsletter/);
       }
+      // No signing secret yet (only a person makes one): the newsletter row is accepted and reads back without one.
+      await q(`INSERT INTO ${T} (${NEWSLETTER_COLUMNS}) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11)`, newsletterRow("n2", { ...full, signing_secret: null }));
+      expect((await q(`SELECT intake, apply_tags, confirm_url, confirm_secret, signing_secret FROM ${T} WHERE id = 'n2'`)).rows).toEqual([
+        { intake: "newsletter", apply_tags: ["remotesaffa-subscribers"], confirm_url: full.confirm_url, confirm_secret: "pibs_c", signing_secret: null },
+      ]);
       // Any other intake carries none of the newsletter settings.
       await expect(q(`UPDATE ${T} SET apply_tags = '["x"]' WHERE id = 's1'`)).rejects.toThrow(/lead_sources_newsletter/);
       await expect(q(`UPDATE ${T} SET confirm_url = 'https://acme.co.za/c' WHERE id = 's2'`)).rejects.toThrow(/lead_sources_newsletter/);
@@ -90,6 +94,8 @@ describe.skipIf(!available)("migration 023 on an existing database", () => {
       await insertLeadSource(pg.ctx, base);
       await insertLeadSource(pg.ctx, { ...base, id: "l1", label: "Contact", publicKey: "pibl_llllllllllllllllllllllll", signingSecret: null, intake: "lead", applyTags: [], confirmUrl: null, confirmFrom: null, confirmSecret: null, confirmDailyCap: 300 });
       expect(await getLeadSource(pg.ctx, "co-1", "n1")).toMatchObject({ intake: "newsletter", applyTags: ["remotesaffa-subscribers"], confirmUrl: base.confirmUrl, confirmFrom: base.confirmFrom, confirmSecret: "pibs_c", confirmDailyCap: 250 });
+      await insertLeadSource(pg.ctx, { ...base, id: "n2", publicKey: "pibl_oooooooooooooooooooooooo", signingSecret: null });
+      expect(await getLeadSource(pg.ctx, "co-1", "n2")).toMatchObject({ intake: "newsletter", signingSecret: null, confirmSecret: "pibs_c" });
       expect(await getLeadSource(pg.ctx, "co-1", "l1")).toMatchObject({ intake: "lead", applyTags: [], confirmUrl: null, confirmSecret: null, confirmDailyCap: 300 });
 
       await saveLeadSourceSettings(pg.ctx, { ...base, applyTags: ["a", "b"], confirmDailyCap: 100 });
@@ -99,6 +105,7 @@ describe.skipIf(!available)("migration 023 on an existing database", () => {
       expect((await listLeadSources(pg.ctx, "co-1")).map((row) => [row.id, row.applyTags, row.confirmSecret, row.confirmDailyCap])).toEqual([
         ["n1", ["a", "b"], "pibs_new", 100],
         ["l1", [], null, 300],
+        ["n2", ["remotesaffa-subscribers"], "pibs_c", 250],
       ]);
     } finally {
       await pg.stop();
