@@ -41,7 +41,7 @@ Look at the numbers, then: fine or expected, \`acknowledge-ad-alert\` with a one
 
 ## Changing ads: proposals only
 
-\`list-campaigns-without-cap\` shows the campaigns that have no hard cap row and the caps that exist. Only a person sets a cap; a \`create_campaign\` proposal may carry \`capMinor\`, recorded when the owner approves and it runs. Nothing enforces a cap yet.
+\`diagnose-google-campaign\` (accountId, campaignId) is read-only: when an ENABLED Google campaign has no impressions it returns the campaign, ad group, ad policy, keyword serving, billing and targeting state in one call; a section that fails comes back as an error. \`list-campaigns-without-cap\` shows the campaigns that have no hard cap row and the caps that exist. Only a person sets a cap; a \`create_campaign\` proposal may carry \`capMinor\`, recorded when the owner approves and it runs. Nothing enforces a cap yet.
 
 \`propose-ad-change\` kinds: \`create_campaign\` (made **paused**; builds the campaign and its budget), \`change_budget\` (one campaign's daily budget), \`pause_campaign\`, \`resume_campaign\`, \`create_ad_set\` (Meta only, made **paused**), \`create_ad_creative\` (Meta only; reusable), \`create_ad\` (made **paused**; Google: a Demand Gen video ad), \`create_ad_group\` (Google only, made paused), \`add_keywords\` (Google only), \`create_responsive_search_ad\` (Google only, made **paused**; 3-15 headlines of 30 characters, 2-4 descriptions of 90, an https final URL with utm_source, utm_medium and utm_campaign, optional path1/path2 of 15), \`creative_check\` (clears ad copy, changes nothing). Give the numbers and a real reason. The plugin works out what it adds to the month against the cap and says so on the issue.
 
