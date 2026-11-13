@@ -117,6 +117,7 @@ The company's own mailboxes are its own, so a lead from them was filed as the co
 - The message is filed under the client (\`client_kind\`, \`client_ref\`, triage source \`mapping\`).
 - A sender mapping with a visitor in Reply-To makes it a lead for that client: \`lead.captured\` goes to the CRM with the client's scope and the visitor as the person (no person when there is no Reply-To: the website's address is not one).
 - Without a mapping nothing changes: it stays the company's own. Mail that looks like a client's (a relayed form, or a client's CRM domain) is flagged \`needs_mapping\` and listed by \`list-client-mail-maps\`.
+- A mapping marked \`countOnly\` (AHS Law's rs@ahslaw.co.za) is a lead we only count: needsReply is 0, no Reply-needed issue opens, and \`create-draft\` and \`send-draft\` refuse its enquirers. Never contact them; the client answers its own leads.
 - Adding a mapping files the flagged mail of the last 30 days and re-sends those leads in the client's scope under a new key (\`supersedes\` names the old one). The CRM decides how to merge.
 
 ## Doing it

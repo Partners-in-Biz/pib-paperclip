@@ -497,7 +497,7 @@ const FOLLOW_UP_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 export function wantsReply(row: MessageRow): boolean {
   const triage = row.triage;
-  return opensReplyTask({ category: triage?.category, needsReply: triage?.needsReply ?? 0, phishing: triage?.phishing ?? 0, bulk: Boolean(row.bulk), clientSource: triage?.clientSource });
+  return opensReplyTask({ category: triage?.category, needsReply: triage?.needsReply ?? 0, phishing: triage?.phishing ?? 0, bulk: Boolean(row.bulk), clientSource: triage?.clientSource, countOnly: triage?.countOnly });
 }
 
 const receivedMs = (row: MessageRow) => Date.parse(row.received_at ?? row.created_at) || 0;

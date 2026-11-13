@@ -250,7 +250,10 @@ export interface GmailStore {
   crmContact(companyId: string, id: string): Promise<CrmClientRow | null>;
   // client mail mappings
   listClientMaps(companyId: string): Promise<ClientMapRow[]>;
-  insertClientMap(row: { companyId: string; matchType: ClientMapType; pattern: string; clientKind: "company" | "contact"; clientRef: string; clientName: string | null; note: string | null; createdBy: string | null }): Promise<ClientMapRow>;
+  insertClientMap(row: { companyId: string; matchType: ClientMapType; pattern: string; clientKind: "company" | "contact"; clientRef: string; clientName: string | null; note: string | null; createdBy: string | null; countOnly?: boolean }): Promise<ClientMapRow>;
+  setClientMapCountOnly(companyId: string, id: string, countOnly: boolean): Promise<void>;
+  /** The map ids of this company's count-only mappings that filed inbound mail from or with Reply-To one of these addresses (lower case). */
+  countOnlyEnquirers(companyId: string, emails: string[]): Promise<string[]>;
   deleteClientMap(companyId: string, id: string): Promise<boolean>;
   /** Mail flagged as looking like a client's with no mapping, by sender domain (newest first). */
   unmappedSummary(companyId: string, days: number): Promise<Array<{ domain: string; n: number | string; last_at: string | null; sample_id: string | null }>>;
@@ -339,7 +342,7 @@ const SUPPRESSION_COLUMNS = "company_id, email, scope, reason, source, detail, s
 
 const DOMAIN_COLUMNS = "company_id, domain, status, result, source, client_kind, client_ref, checked_at, first_checked_at, status_since, dmarc_none_since";
 
-const MAP_COLUMNS = "id, company_id, match_type, pattern, client_kind, client_ref, client_name, note, created_by, created_at";
+const MAP_COLUMNS = "id, company_id, match_type, pattern, client_kind, client_ref, client_name, note, count_only, created_by, created_at";
 
 /** Column → SQL cast for account patches. Only these columns can be patched. */
 const ACCOUNT_PATCH_CASTS: Record<keyof AccountPatch, string> = {
@@ -471,7 +474,7 @@ function normaliseHealth(row: RecipientHealthRow): RecipientHealthRow {
 }
 
 function normaliseMap(row: ClientMapRow): ClientMapRow {
-  return { ...row, created_at: iso(row.created_at) ?? "" };
+  return { ...row, count_only: row.count_only === true, created_at: iso(row.created_at) ?? "" };
 }
 
 interface CrmContactDb {
@@ -1181,15 +1184,31 @@ export class SqlStore implements GmailStore {
     return rows.map(normaliseMap);
   }
 
-  async insertClientMap(row: { companyId: string; matchType: ClientMapType; pattern: string; clientKind: "company" | "contact"; clientRef: string; clientName: string | null; note: string | null; createdBy: string | null }): Promise<ClientMapRow> {
+  async insertClientMap(row: { companyId: string; matchType: ClientMapType; pattern: string; clientKind: "company" | "contact"; clientRef: string; clientName: string | null; note: string | null; createdBy: string | null; countOnly?: boolean }): Promise<ClientMapRow> {
     const id = `map_${randomUUID()}`;
     await this.db.execute(
-      `INSERT INTO ${this.t("client_mail_maps")} (id, company_id, match_type, pattern, client_kind, client_ref, client_name, note, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-      [id, row.companyId, row.matchType, row.pattern, row.clientKind, row.clientRef, row.clientName, row.note, row.createdBy],
+      `INSERT INTO ${this.t("client_mail_maps")} (id, company_id, match_type, pattern, client_kind, client_ref, client_name, note, created_by, count_only)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      [id, row.companyId, row.matchType, row.pattern, row.clientKind, row.clientRef, row.clientName, row.note, row.createdBy, row.countOnly === true],
     );
     const rows = await this.db.query<ClientMapRow>(`SELECT ${MAP_COLUMNS} FROM ${this.t("client_mail_maps")} WHERE company_id = $1 AND id = $2`, [row.companyId, id]);
     return normaliseMap(rows[0] ?? { id, company_id: row.companyId, match_type: row.matchType, pattern: row.pattern, client_kind: row.clientKind, client_ref: row.clientRef, client_name: row.clientName, note: row.note, created_by: row.createdBy, created_at: "" });
+  }
+
+  async setClientMapCountOnly(companyId: string, id: string, countOnly: boolean): Promise<void> {
+    await this.db.execute(`UPDATE ${this.t("client_mail_maps")} SET count_only = $3 WHERE company_id = $1 AND id = $2`, [companyId, id, countOnly]);
+  }
+
+  async countOnlyEnquirers(companyId: string, emails: string[]): Promise<string[]> {
+    if (!emails.length) return [];
+    const rows = await this.db.query<{ email: string }>(
+      `SELECT DISTINCT lower(e.email) AS email FROM ${this.t("messages")} m
+         JOIN ${this.t("client_mail_maps")} c ON c.company_id = m.company_id AND c.id = m.map_id AND c.count_only
+         CROSS JOIN LATERAL (VALUES (m.from_addr->>'email'), (m.reply_to_addr->>'email')) AS e(email)
+        WHERE m.company_id = $1 AND m.direction = 'inbound' AND lower(e.email) = ANY($2::text[])`,
+      [companyId, emails],
+    );
+    return rows.map((r) => r.email);
   }
 
   async deleteClientMap(companyId: string, id: string): Promise<boolean> {

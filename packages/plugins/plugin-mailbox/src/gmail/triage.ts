@@ -78,7 +78,8 @@ export const RELIABLE_CLIENT_SOURCES = new Set<string>(["mapping", "correction"]
  * and from 0.5, because missing a client's ask costs more than an extra task.
  * Replies from anyone else stay with the plugin that sent the mail.
  */
-export function opensReplyTask(t: { category: string | null | undefined; needsReply: number; phishing: number; bulk: boolean; clientSource: string | null | undefined }): boolean {
+export function opensReplyTask(t: { category: string | null | undefined; needsReply: number; phishing: number; bulk: boolean; clientSource: string | null | undefined; countOnly?: boolean | null }): boolean {
+  if (t.countOnly) return false;
   if (!t.category || t.bulk || t.phishing >= 0.9) return false;
   const knownClient = Boolean(t.clientSource && RELIABLE_CLIENT_SOURCES.has(t.clientSource));
   if (t.category === "reply") {
@@ -493,6 +494,11 @@ export async function triageMessage(env: Env, run: TriageRunContext, row: Messag
   let mapState: MapState | null = null;
   if (mapped) {
     triage.mapping = { id: mapped.id, type: mapped.match_type };
+    // Count only: the lead stays a lead (it is counted), but nobody answers it.
+    if (mapped.count_only) {
+      triage.countOnly = true;
+      triage.needsReply = 0;
+    }
     if (relay && triage.category !== "spam" && triage.category !== "lead" && (triage.phishing ?? 0) < 0.9) {
       triage.category = "lead";
       triage.source = "rules";

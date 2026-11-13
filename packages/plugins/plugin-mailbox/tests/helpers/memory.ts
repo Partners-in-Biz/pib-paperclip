@@ -550,11 +550,23 @@ export class MemoryStore implements GmailStore {
   async listClientMaps(companyId: string) {
     return this.maps.filter((map) => map.company_id === companyId).map((map) => ({ ...map }));
   }
-  async insertClientMap(row: { companyId: string; matchType: ClientMapType; pattern: string; clientKind: "company" | "contact"; clientRef: string; clientName: string | null; note: string | null; createdBy: string | null }) {
+  async insertClientMap(row: { companyId: string; matchType: ClientMapType; pattern: string; clientKind: "company" | "contact"; clientRef: string; clientName: string | null; note: string | null; createdBy: string | null; countOnly?: boolean }) {
     this.mapSeq += 1;
-    const map: ClientMapRow = { id: `map_${this.mapSeq}`, company_id: row.companyId, match_type: row.matchType, pattern: row.pattern, client_kind: row.clientKind, client_ref: row.clientRef, client_name: row.clientName, note: row.note, created_by: row.createdBy, created_at: nowIso() };
+    const map: ClientMapRow = { id: `map_${this.mapSeq}`, company_id: row.companyId, match_type: row.matchType, pattern: row.pattern, client_kind: row.clientKind, client_ref: row.clientRef, client_name: row.clientName, note: row.note, count_only: row.countOnly === true, created_by: row.createdBy, created_at: nowIso() };
     this.maps.push(map);
     return { ...map };
+  }
+  async setClientMapCountOnly(companyId: string, id: string, countOnly: boolean) {
+    for (const map of this.maps) if (map.company_id === companyId && map.id === id) map.count_only = countOnly;
+  }
+  async countOnlyEnquirers(companyId: string, emails: string[]) {
+    const ids = new Set(this.maps.filter((m) => m.company_id === companyId && m.count_only).map((m) => m.id));
+    const found = new Set<string>();
+    for (const m of this.messages.values()) {
+      if (m.company_id !== companyId || m.direction !== "inbound" || !m.map_id || !ids.has(m.map_id)) continue;
+      for (const e of [m.from_addr?.email, m.reply_to_addr?.email]) if (e && emails.includes(e.toLowerCase())) found.add(e.toLowerCase());
+    }
+    return [...found];
   }
   async deleteClientMap(companyId: string, id: string) {
     const before = this.maps.length;

@@ -201,6 +201,7 @@ export const MAILBOX_TOOLS: PluginToolDeclaration[] = [
       clientKind: { type: "string", enum: ["company", "contact"], description: "company or contact." },
       clientRef: str("The CRM id of the client."),
       note: str("Optional: why (e.g. the AHS Law website form)."),
+      countOnly: { type: "boolean", description: "True: website-form mail we only count (month-end report). No Reply-needed task, needsReply false, and create-draft and send-draft refuse its enquirers. Leads are still counted." },
     }),
   },
   {

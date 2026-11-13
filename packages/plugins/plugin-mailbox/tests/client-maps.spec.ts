@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { HANDOFF_EVENTS } from "@partnersinbiz/pib-plugin-kit";
-import { addClientMap, clientMapOverview, factsOf, looksLikeClientMail, matchClientMap, normalisePattern, removeClientMap } from "../src/client-maps.js";
+import { addClientMap, assertNotCountOnlyEnquirer, clientMapOverview, factsOf, looksLikeClientMail, matchClientMap, normalisePattern, removeClientMap } from "../src/client-maps.js";
 import { bySender, leadCapturedFrom, relayedPerson } from "../src/gmail/leads.js";
-import { syncAccount } from "../src/gmail/sync.js";
-import { ruleCategory, triageState, type TriageFacts } from "../src/gmail/triage.js";
+import { syncAccount, wantsReply } from "../src/gmail/sync.js";
+import { opensReplyTask, ruleCategory, triageState, type TriageFacts } from "../src/gmail/triage.js";
 import type { ClientMapRow, MessageRow } from "../src/gmail/types.js";
 import { CO } from "./helpers/memory.js";
 import { jevAnswers } from "./helpers/fake-gmail.js";
@@ -291,5 +291,29 @@ describe("relayed form mail is a lead for the client, whatever the sender looks 
     expect(leads(t.host.emitted)).toEqual([]);
     // Without a mapping the state carries no such flag (the minimal state Jev sees is unchanged).
     expect(triageState({ from_addr: { email: "a@b.co" }, subject: "s", snippet: "s", attachments: [], bulk: false } as never, { isReply: false, knownClient: false })).not.toHaveProperty("clientWebsiteForm");
+  });
+});
+
+describe("count-only mappings (PAR-11138)", () => {
+  it("count-only form mail: needsReply 0, no reply task, still a counted lead, and its enquirer cannot be drafted to or sent to", async () => {
+    const s = setup();
+    s.store.crm.push(AHS);
+    await addClientMap(s.env, CO, { matchType: "sender_address", pattern: "wordpress@ahslaw.co.za", clientKind: "company", clientRef: "crm-ahs", countOnly: true }, null);
+    await syncForm(s, "c1");
+    const row = [...s.store.messages.values()][0]!;
+    expect(row).toMatchObject({ category: "lead", needs_reply: 0, map_state: "mapped" });
+    expect(row.triage).toMatchObject({ countOnly: true, needsReply: 0 });
+    expect(wantsReply(row)).toBe(false);
+    expect([...s.host.issues.values()]).toEqual([]);
+    // The lead is still counted.
+    expect(leads(s.host.emitted)).toHaveLength(1);
+    await expect(assertNotCountOnlyEnquirer(s.store, CO, [{ email: "Jane@Gmail.com" }])).rejects.toThrow(/count-only/);
+    await expect(assertNotCountOnlyEnquirer(s.store, CO, [{ email: "other@example.com" }])).resolves.toBeUndefined();
+  });
+
+  it("opensReplyTask is false for count-only even for a reliable lead", () => {
+    const t = { category: "lead", needsReply: 1, phishing: 0, bulk: false, clientSource: "mapping" };
+    expect(opensReplyTask(t)).toBe(true);
+    expect(opensReplyTask({ ...t, countOnly: true })).toBe(false);
   });
 });
