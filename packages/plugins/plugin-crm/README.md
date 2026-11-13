@@ -88,7 +88,7 @@ PAR-10850 (database, 0.47.0) and PAR-10863 (tools, 0.47.1), plan PAR-10817 stage
 
 PAR-10852, plan PAR-10817 "Signup". A body with no `action` on a newsletter form (`src/newsletter-signup.ts`):
 - **Signed calls only**; an unsigned call, or an `action` other than `confirm`, is refused.
-- Limits in order: the source bucket (`rateLimitPerHour`, x5 signed), then the daily ceiling: `confirm_daily_cap` capture rows in the last 24 hours refuse the next (index `lead_captures_source`).
+- Limits in order: the source bucket (`rateLimitPerHour`, x5 signed), then the daily ceiling: `confirm_daily_cap` capture rows in the last 24 hours refuse the next (index `lead_captures_source`), then the hourly cap when set (`confirm_hourly_cap`, 0.52.0, below).
 - The stored `confirm_url` and `confirm_from` are checked again as on write; a value changed in the database refuses the signup with `bad_source_config` and one log line without the address.
 - Address checks as for a lead. A contact that is `unsubscribed` or `bounced`, or already has every `apply_tags` tag, gets nothing.
 - `insertCapture` (outcome `pending_confirmation`, no contact); only when that insert wins is one `mail.send.requested` queued: key `crm:nl:<capture key>`, `from` = `confirm_from`, `fromName` = the form label, not marketing, `context.kind` `client_message`. Fixed text plus `confirm_url#t=<token>`; nothing the visitor typed. If queueing throws, the capture is deleted and the call fails, so a retry sends. A `.invalid` (canary) address is captured but no mail is queued.
