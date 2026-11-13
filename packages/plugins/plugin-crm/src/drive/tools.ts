@@ -109,6 +109,16 @@ export const DRIVE_TOOLS: PluginToolDeclaration[] = [
     }),
     timeoutMs: DRIVE_TOOL_TIMEOUT_MS,
   },
+  {
+    name: "drive_file_trash",
+    displayName: "Trash a Drive file",
+    description: "Move one file on this company's bound Shared Drive to the Drive trash (recoverable for 30 days; never a permanent delete). Pass the Google file id. Refuses a file that is not on this company's Shared Drive (not_found) and a folder unless allowFolder is true (is_folder). Trashing a file that is already in the trash is fine (alreadyTrashed). Returns id, name and trashed: true. Use it only for files a person or a decision said to remove (test proof files, canary folders); say which decision on the issue.",
+    parametersSchema: schema(["fileId"], {
+      fileId: text("The Google Drive file id (from the Drive link).", 200),
+      allowFolder: { type: "boolean", description: "Set true to trash a folder (and everything in it), e.g. a canary folder. Default false: a folder is refused." },
+    }),
+    timeoutMs: DRIVE_TOOL_TIMEOUT_MS,
+  },
 ];
 
 /** The files saved to a project's Drive folder (PAR-7712): what a check reads to prove a save landed, without trusting the producer's answer. */
@@ -300,7 +310,7 @@ export async function createBrokerForCompany(ctx: PluginContext, companyId: stri
 const isBadCredential = (e: unknown): boolean => e instanceof BrokerError && (e.code === "bad_credential" || e.status === 401);
 
 /** Methods whose input can be sent again: a stream (upload chunks, a download body) is used once and is never retried. */
-const REPLAYABLE = ["resolve", "findSubfolder", "ensure", "identity", "uploadFile", "listFiles", "fileMeta", "downloadFile", "thumbnail"] as const;
+const REPLAYABLE = ["resolve", "findSubfolder", "ensure", "identity", "uploadFile", "listFiles", "fileMeta", "trashFile", "downloadFile", "thumbnail"] as const;
 const ONE_SHOT = ["uploadFileStream", "downloadStream"] as const;
 
 /**
@@ -603,4 +613,35 @@ export async function driveFileSave(ctx: PluginContext, viewer: Viewer, params: 
   }
 
   return saveDriveFile(ctx, viewer, input);
+}
+
+const TRASH_FILE_ID = /^[A-Za-z0-9_-]{10,200}$/;
+
+/** `drive_file_trash` (PAR-11108): Drive trash for one file on the company's Shared Drive. Logs one activity entry per trash. */
+export async function driveFileTrash(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>, deps: { brokerFor?: (ctx: PluginContext, companyId: string) => Promise<Broker | null> } = {}): Promise<unknown> {
+  const fileId = typeof params.fileId === "string" ? params.fileId.trim() : "";
+  if (!TRASH_FILE_ID.test(fileId)) return { status: "invalid_input", hint: "fileId is a Google Drive file id (letters, digits, - and _)." };
+  const allowFolder = params.allowFolder === true;
+  try {
+    const broker = await (deps.brokerFor ?? createBrokerForCompany)(ctx, viewer.companyId);
+    if (!broker) return { status: "drive_not_bound", hint: "Bind Drive in CRM settings (drive.sharedDriveId)." };
+    if (!broker.trashFile) return { status: "not_supported", hint: "This Drive connection can't trash files." };
+    const r = await broker.trashFile(fileId, { allowFolder });
+    if (r.status === "not_found") return { status: "not_found", hint: "No such file on this company's Shared Drive." };
+    if (r.status !== "trashed") return { status: "is_folder", hint: "That is a folder. Pass allowFolder: true to trash it and everything in it." };
+    if (!r.alreadyTrashed) {
+      await ctx.activity.log({
+        companyId: viewer.companyId,
+        message: `Moved Drive file "${r.name}" to the trash`,
+        entityType: "drive_file",
+        entityId: r.id,
+        metadata: { agentId: viewer.agentId, runId: viewer.runId ?? null, fileId: r.id, name: r.name, mimeType: r.mimeType, allowFolder },
+      }).catch((e: unknown) => ctx.logger.warn("drive_file_trash activity log failed", { error: e instanceof Error ? e.message : String(e) }));
+    }
+    return { id: r.id, name: r.name, trashed: true, ...(r.alreadyTrashed ? { alreadyTrashed: true } : {}) };
+  } catch (e) {
+    if (e instanceof DriveNotBoundError) return { status: "drive_not_bound", hint: "Bind Drive in CRM settings (drive.sharedDriveId)." };
+    if (e instanceof BrokerError) return { status: "broker_error", hint: `Google Drive refused the trash (${e.status}).`, retryable: e.retryable };
+    throw e;
+  }
 }

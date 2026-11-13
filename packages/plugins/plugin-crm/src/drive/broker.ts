@@ -95,6 +95,12 @@ export interface Broker {
   listFiles?(parentFolderId: string): Promise<DriveFileInfo[]>;
   /** null when the file is missing, trashed, or not on this company's Shared Drive. */
   fileMeta?(fileId: string): Promise<DriveFileInfo | null>;
+  /**
+   * Move one file to the Drive trash (PAR-11108): PATCH `trashed: true`, recoverable for 30 days, never a delete.
+   * `not_found` covers a missing file and one outside this company's Shared Drive; `is_folder` a folder without `allowFolder`.
+   * A file that is already in the trash answers `trashed` with `alreadyTrashed: true`.
+   */
+  trashFile?(fileId: string, opts?: { allowFolder?: boolean }): Promise<TrashResult>;
   downloadFile?(fileId: string, maxBytes: number): Promise<Uint8Array>;
   /** A large file's bytes as a stream (PAR-8125), for a copy into R2. Nothing is buffered. `size` is Drive's Content-Length when sent. */
   downloadStream?(fileId: string): Promise<{ body: ReadableStream<Uint8Array>; size: number | null }>;
@@ -104,6 +110,10 @@ export interface Broker {
    */
   thumbnail?(fileId: string, px: number, maxBytes: number, allowed: (parents: string[]) => boolean): Promise<DriveThumbnail | null>;
 }
+
+export type TrashResult =
+  | { status: "trashed"; id: string; name: string; mimeType: string; alreadyTrashed?: boolean }
+  | { status: "not_found" | "is_folder" };
 
 /** A Drive file as the read routes see it: no link, no owner. */
 export interface DriveFileInfo {

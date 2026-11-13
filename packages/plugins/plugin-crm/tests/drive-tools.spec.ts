@@ -38,7 +38,7 @@ afterEach(() => vi.unstubAllGlobals());
 
 describe("Drive folder tools", () => {
   it("declares resolve, ensure, file-save, set, list, and binding tools with schemas and descriptions", () => {
-    expect(DRIVE_TOOLS).toHaveLength(11);
+    expect(DRIVE_TOOLS).toHaveLength(12);
     expect(DRIVE_TOOLS[0].name).toBe("drive_folder_resolve");
     expect(DRIVE_TOOLS[1].name).toBe("drive_folder_ensure");
     expect(DRIVE_TOOLS[2].name).toBe("drive_file_save");
@@ -50,6 +50,8 @@ describe("Drive folder tools", () => {
     expect(DRIVE_TOOLS[8].name).toBe("drive_transfer_status");
     expect(DRIVE_TOOLS[10].name).toBe("drive_files_list");
     expect(DRIVE_TOOLS[10].description).toContain("Read-only");
+    expect(DRIVE_TOOLS[11].name).toBe("drive_file_trash");
+    expect(DRIVE_TOOLS[11].description).toContain("never a permanent delete");
     expect(DRIVE_TOOLS[0].description).toContain("Never hard-code");
     expect(DRIVE_TOOLS[0].description).toContain("ALWAYS call this first");
     expect(DRIVE_TOOLS[1].description).toContain("Never hard-code");
@@ -534,5 +536,30 @@ describe("Drive folder tools", () => {
     expect(r.data?.status).toBe("invalid_name");
     expect(r.data?.problem).toBe("drive_id");
     expect(google.files).toHaveLength(0);
+  });
+});
+
+describe("drive_file_trash tool (PAR-11108)", () => {
+  it("trashes a file on the bound drive, answers id, name and trashed:true, and logs one activity entry", async () => {
+    const g = fakeGoogle();
+    g.files.push({ id: "proof0000001", name: "W4 proof campaigns", mimeType: "text/plain", parents: [DRIVE_ID] });
+    const { harness } = await setup(NATIVE, undefined, g);
+    const r: any = await toolRaw(harness, "drive_file_trash", { fileId: "proof0000001" });
+    expect(r.data).toEqual({ id: "proof0000001", name: "W4 proof campaigns", trashed: true });
+    expect(g.files[0]!.trashed).toBe(true);
+    const log = harness.activity.filter((a: any) => a.entityType === "drive_file");
+    expect(log).toHaveLength(1);
+  });
+
+  it("refuses a folder without allowFolder, a file elsewhere and a bad id", async () => {
+    const g = fakeGoogle();
+    g.files.push({ id: "folder000001", name: "canary", mimeType: "application/vnd.google-apps.folder", parents: [DRIVE_ID] });
+    g.files.push({ id: "other0000001", name: "x", mimeType: "text/plain", parents: ["z"], driveId: "another-drive" });
+    const { harness } = await setup(NATIVE, undefined, g);
+    expect((await toolRaw(harness, "drive_file_trash", { fileId: "folder000001" }) as any).data.status).toBe("is_folder");
+    expect((await toolRaw(harness, "drive_file_trash", { fileId: "other0000001" }) as any).data.status).toBe("not_found");
+    expect((await toolRaw(harness, "drive_file_trash", { fileId: "../x" }) as any).data.status).toBe("invalid_input");
+    expect(g.files.some((f) => f.trashed)).toBe(false);
+    expect((await toolRaw(harness, "drive_file_trash", { fileId: "folder000001", allowFolder: true }) as any).data.trashed).toBe(true);
   });
 });
