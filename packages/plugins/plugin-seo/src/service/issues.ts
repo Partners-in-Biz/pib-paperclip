@@ -86,6 +86,21 @@ export async function getIssue(env: Env, companyId: string, issueId: string): Pr
   }
 }
 
+export type StrictIssueRead = { kind: "found"; issue: Issue } | { kind: "missing" } | { kind: "error"; error: unknown };
+
+/**
+ * Read an issue and keep the three outcomes apart. The host returns null for a missing, other-company or private issue
+ * and throws only on a failed call, so null is "missing" and a throw is "error" (never key on the error text).
+ */
+export async function readIssueStrict(env: Env, companyId: string, issueId: string): Promise<StrictIssueRead> {
+  try {
+    const issue = await env.ctx.issues.get(issueId, companyId);
+    return issue ? { kind: "found", issue } : { kind: "missing" };
+  } catch (error) {
+    return { kind: "error", error };
+  }
+}
+
 export async function patchIssue(env: Env, companyId: string, issueId: string, patch: UpdatePatch): Promise<Issue | null> {
   try {
     return await env.ctx.issues.update(issueId, patch, companyId);

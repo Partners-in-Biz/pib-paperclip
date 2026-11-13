@@ -117,4 +117,78 @@ describe("one weekly Needs you issue", () => {
     expect(h.executes).toHaveLength(0);
     expect(h.comments).toHaveLength(0);
   });
+
+  describe("linked issue cannot be read (PAR-11069)", () => {
+    const relinks = (h: ReturnType<typeof world>) => h.executes.filter((e) => /UPDATE plugin_seo_8099f8879a\.needs_you SET issue_id/.test(e.sql));
+    const missingWorld = (digests: Row[], listed: Row[] = []) => {
+      const h = world(digests);
+      h.ctx.issues.get = (async () => null) as never;
+      (h.ctx.issues as unknown as { list: unknown }).list = async () => listed;
+      return h;
+    };
+    const run = async (h: ReturnType<typeof world>, extra: Partial<Parameters<typeof addNeedsYou>[3]> = {}) => {
+      const info = await companyInfo(h.env, "co-1");
+      const sprint = (await db.getSprint(h.env.ctx.db, "co-1", "sp-1"))!;
+      return addNeedsYou(h.env, info, sprint, { key: "new", kind: "grant", title: "Item new", why: "w", steps: [], links: [], after: "a", check: "manual", taskIds: [], ...extra });
+    };
+
+    it("missing with loud items: one create, every week digest linked to it, no update", async () => {
+      const h = missingWorld([digest("sp-1", [item("a1", "Acme grant")], "dead"), digest("sp-2", [item("b1", "Beta grant")], "dead")]);
+      await run(h);
+      expect(h.created).toHaveLength(1);
+      expect(h.updates).toHaveLength(0);
+      expect(h.ctx.issues.update).not.toHaveBeenCalled();
+      const linked = relinks(h).filter((e) => e.params[0] === h.created[0]!.id);
+      expect(linked.map((e) => e.params[2]).sort()).toEqual(["ny-sp-1", "ny-sp-2"]);
+    });
+
+    it("missing with only quiet items: unlinked, nothing created, no update", async () => {
+      const quiet = { ...item("q1", "Optional advice"), quiet: true };
+      const h = missingWorld([digest("sp-1", [quiet], "dead")]);
+      await run(h, { quiet: true });
+      expect(h.created).toHaveLength(0);
+      expect(h.updates).toHaveLength(0);
+      expect(relinks(h).some((e) => e.params[0] === null && e.params[2] === "ny-sp-1")).toBe(true);
+    });
+
+    it("a thrown read changes nothing: no unlink, no create, no update", async () => {
+      const h = world([digest("sp-1", [item("a1", "Acme grant")], "wk-issue")]);
+      h.ctx.issues.get = (async () => { throw new Error("host down"); }) as never;
+      await run(h);
+      expect(h.created).toHaveLength(0);
+      expect(h.updates).toHaveLength(0);
+      expect(relinks(h).some((e) => e.params[0] === null)).toBe(false);
+      expect(h.ctx.logger.info).toHaveBeenCalledWith("SEO needs-you sync skipped: issue read failed", expect.anything());
+    });
+
+    it("missing with a readable open origin match: linked to it, nothing created", async () => {
+      const h = missingWorld([digest("sp-1", [item("a1", "Acme grant")], "dead")], [{ id: "dead" }, { id: "other" }]);
+      h.ctx.issues.get = (async (id: string) => (id === "other" ? { id, status: "todo", identifier: "PIB-7" } : null)) as never;
+      await run(h);
+      expect(h.created).toHaveLength(0);
+      expect(relinks(h).some((e) => e.params[0] === "other")).toBe(true);
+      expect(h.updates.some((u) => u.id === "dead")).toBe(false);
+    });
+
+    it("the recreated issue missing later in the week: no second create, no update, one log line", async () => {
+      const h = missingWorld([digest("sp-1", [item("a1", "Acme grant")], "dead")]);
+      await run(h);
+      expect(h.created).toHaveLength(1);
+      const again = missingWorld([digest("sp-1", [item("a1", "Acme grant")], h.created[0]!.id)]);
+      for (const [k, v] of h.state) again.state.set(k, v);
+      await run(again);
+      await run(again);
+      expect(again.created).toHaveLength(0);
+      expect(again.updates).toHaveLength(0);
+      const lines = (again.ctx.logger.info as unknown as { mock: { calls: unknown[][] } }).mock.calls.filter((c) => /missing again/.test(String(c[0])));
+      expect(lines).toHaveLength(1);
+    });
+
+    it("found: patches the description as before", async () => {
+      const h = world([digest("sp-1", [item("a1", "Acme grant")], "wk-issue")]);
+      await run(h);
+      expect(h.created).toHaveLength(0);
+      expect(h.updates.some((u) => u.id === "wk-issue")).toBe(true);
+    });
+  });
 });
