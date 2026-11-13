@@ -18,6 +18,7 @@ import { assignSlots, blendCss, buildPreviewPlan, clipTransform, containBox, fra
 import { usePreviewUrls } from "../previews.js";
 import { Overlay } from "./Overlay.js";
 import { ChromaLayer, NoKeyLabel, type ChromaStatus } from "./ChromaLayer.js";
+import { eyedropper, sampleVideo } from "./eyedropper.js";
 import { audioClips, audioFrameAt, audioMute, audioWindow } from "./audio-track.js";
 
 const fmt = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
@@ -43,6 +44,7 @@ export function Player({ store }: { store: EditorStore }) {
   const allAudio = useMemo(() => audioClips(doc), [doc]);
   const previews = usePreviewUrls(companyId, [...new Set([...plan.segments.map((s) => s.assetId), ...plan.overlays.map((s) => s.assetId), ...allAudio.map((a) => a.clip.assetId)])]);
   useSyncExternalStore(audioMute.subscribe, audioMute.getSnapshot, audioMute.getSnapshot);
+  const picking = useSyncExternalStore(eyedropper.subscribe, eyedropper.getState, eyedropper.getState).clipId;
   const [playing, setPlaying] = useState(false);
   const aspect = doc ? `${doc.project.width} / ${doc.project.height}` : "16 / 9";
 
@@ -165,6 +167,13 @@ export function Player({ store }: { store: EditorStore }) {
           ) : null;
         })}
         <Overlay store={store} />
+        {picking ? (
+          <div data-eyedropper-catcher role="button" aria-label="Pick the key colour from the preview" style={{ position: "absolute", inset: 0, zIndex: 60, cursor: "crosshair", outline: "2px solid currentColor", outlineOffset: -2 }}
+            onClick={(e) => {
+              const v = e.currentTarget.parentElement?.querySelector<HTMLVideoElement>(`video[data-clip-id="${CSS.escape(picking)}"]`);
+              eyedropper.finish(v ? sampleVideo(v, e.clientX, e.clientY) : { error: "That clip is not showing at the playhead. Move the playhead onto it." });
+            }} />
+        ) : null}
         {message ? <div style={{ position: "relative", zIndex: 6, padding: 12, textAlign: "center", opacity: 0.7, color: hasClips ? "white" : undefined }}>{message}</div> : null}
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
