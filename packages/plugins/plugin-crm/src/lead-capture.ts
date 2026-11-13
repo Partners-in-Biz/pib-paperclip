@@ -82,6 +82,7 @@ import {
 } from "./lead-store.js";
 import { newsletterSettings, NO_NEWSLETTER, refuseConfirmSecret, refuseNewsletterParams, touchesNewsletter } from "./lead-newsletter.js";
 import { processSignup, signupSettingsOk } from "./newsletter-signup.js";
+import { CONFIRM_RATE, confirmBucket, processConfirm } from "./newsletter-confirm.js";
 import { asLeadExtras, attributionOf, formLines, intakeLead, type LeadExtras } from "./leads.js";
 import { openIssueOnce } from "./mail.js";
 import { PLUGIN_ID } from "./namespace.js";
@@ -329,6 +330,8 @@ export async function handleLeadWebhook(ctx: PluginContext, input: PluginWebhook
   const ip = clientIp(input.headers);
   const salt = await ipSalt(ctx);
   const ipHash = ip ? hashIp(salt, ip) : null;
+  // The request log id this call counts under: a newsletter confirm has its own bucket (plan PAR-10817 "Confirm" step 2).
+  let bucket = source.id;
 
   try {
     // Server-to-server callers sign the exact bytes with the source's secret.
@@ -342,7 +345,12 @@ export async function handleLeadWebhook(ctx: PluginContext, input: PluginWebhook
     }
     if (source.intake === "newsletter") {
       if (!signed) throw new LeadRejected("This newsletter form takes signed calls only.", "unsigned");
-      // Confirming a signup (action confirm) ships in a later stage; until then any action is refused.
+      // `action` is read on a newsletter form only: a lead or report form ignores it, as before.
+      if (body.action === "confirm") {
+        bucket = confirmBucket(source.id);
+        if (await overConfirmLimit(ctx, bucket, now)) throw new LeadRejected("Too many confirmations. Please try again in a few minutes.", "rate_limited");
+        return await newsletterConfirm(ctx, source, body, { now, ipHash, salt });
+      }
       if (body.action != null) throw new LeadRejected("This form does not take that action.", "invalid");
     }
 
@@ -378,13 +386,13 @@ export async function handleLeadWebhook(ctx: PluginContext, input: PluginWebhook
     if (error instanceof LeadRejected) {
       // A request over the limit is not written down: the count is already at its cap, and a flood must not become a flood of rows.
       if (error.outcome !== "rate_limited") {
-        await recordHit(ctx, source.id, ipHash, error.outcome).catch(() => undefined);
-        await bumpSource(ctx, source.id, false).catch(() => undefined);
+        await recordHit(ctx, bucket, ipHash, error.outcome).catch(() => undefined);
+        if (bucket === source.id) await bumpSource(ctx, source.id, false).catch(() => undefined);
       }
       throw error;
     }
     ctx.logger.error("CRM lead form failed", { sourceId: source.id, error: error instanceof Error ? error.message : String(error) });
-    await recordHit(ctx, source.id, ipHash, "error").catch(() => undefined);
+    await recordHit(ctx, bucket, ipHash, "error").catch(() => undefined);
     throw new LeadRejected(ERROR_GENERIC, "error");
   }
 }
@@ -411,6 +419,30 @@ async function newsletterSignup(ctx: PluginContext, source: LeadSource, body: Re
   const outcome = await processSignup(ctx, source, { email: sub.email, pageUrl: sub.attribution.pageUrl, attribution: attributionOf(sub.attribution), now: info.now, ipHash: visitorHash, salt: info.salt });
   await recordHit(ctx, source.id, info.ipHash, outcome);
   if (outcome === "pending_confirmation" || outcome === "dry_run") await bumpSource(ctx, source.id, true);
+  return { status: "stored", sourceId: source.id, client: null, contactId: null };
+}
+
+/** True when the confirm bucket of a source is full (30 a minute, 200 an hour). */
+async function overConfirmLimit(ctx: PluginContext, bucket: string, now: Date): Promise<boolean> {
+  if ((await countHits(ctx, bucket, new Date(now.getTime() - 60_000).toISOString(), CONFIRM_RATE.perMinute)) >= CONFIRM_RATE.perMinute) return true;
+  return (await countHits(ctx, bucket, new Date(now.getTime() - 3_600_000).toISOString(), CONFIRM_RATE.perHour)) >= CONFIRM_RATE.perHour;
+}
+
+/** The same answer for every refusal, so the caller cannot tell an expired link from an address that asked us to stop. */
+const CONFIRM_REFUSED = "This confirmation link is not valid.";
+
+/** A signed confirm (plan PAR-10817 "Confirm"), after its own bucket: the settings checked again, then `processConfirm`. */
+async function newsletterConfirm(ctx: PluginContext, source: LeadSource, body: Record<string, unknown>, info: { now: Date; ipHash: string | null; salt: string }): Promise<LeadWebhookResult> {
+  if (!signupSettingsOk(source)) {
+    ctx.logger.warn("CRM newsletter form refused a confirmation: its settings no longer pass the checks", { sourceId: source.id, event: "bad_source_config" });
+    throw new LeadRejected("This form is temporarily unavailable.", "bad_source_config");
+  }
+  // The consent record names the visitor who clicked (the address the signing server passes); the bucket stays on the caller.
+  const visitorIp = typeof body.visitorIp === "string" ? body.visitorIp.trim() : "";
+  const visitorHash = /^[0-9a-f:.]{3,45}$/i.test(visitorIp) ? hashIp(info.salt, visitorIp.toLowerCase()) : info.ipHash;
+  const outcome = await processConfirm(ctx, source, { token: body.token, now: info.now, ipHash: visitorHash, salt: info.salt });
+  if (!outcome.ok) throw new LeadRejected(CONFIRM_REFUSED, outcome.reason);
+  await recordHit(ctx, confirmBucket(source.id), info.ipHash, outcome.status);
   return { status: "stored", sourceId: source.id, client: null, contactId: null };
 }
 

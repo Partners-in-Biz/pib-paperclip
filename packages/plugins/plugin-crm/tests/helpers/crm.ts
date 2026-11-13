@@ -19,6 +19,19 @@ export const ago = (minutes: number) => new Date(NOW - minutes * 60_000).toISOSt
 
 const mine = (rows: Row[] | undefined, p: unknown[]) => (rows ?? []).filter((row) => row.company_id === p[0]);
 
+/** `addContactTags`: the tags of the contact not already there (case-insensitive) are appended; nothing else changes. */
+export const EXECUTE_ROUTES: Route[] = [
+  [/SET tags = c\.tags \|\|/, (p, s) => {
+    const row = (s.contacts ?? []).find((contact) => contact.id === p[0] && contact.company_id === p[1]);
+    if (!row) return [];
+    const have = new Set((row.tags as string[]).map((tag) => tag.toLowerCase()));
+    const missing = (JSON.parse(String(p[2])) as string[]).filter((tag) => !have.has(tag.toLowerCase()));
+    if (!missing.length) return [];
+    row.tags = [...row.tags, ...missing];
+    return [row];
+  }],
+];
+
 export const ROUTES: Route[] = [
   // Lists that also include records shared by partner grants: company scope is enough here.
   [/OR id IN \(/, (p, s, sql) => mine(s[/FROM \S+\.(\w+)/.exec(sql)![1]!], p)],
@@ -206,6 +219,7 @@ export async function boot(options: { store?: Store; config?: Record<string, unk
     namespace: NAMESPACE,
     coreReadTables: ["heartbeat_runs", "issues", "cost_events"],
     routes: [...(options.routes ?? []), ...ROUTES],
+    executeRoutes: EXECUTE_ROUTES,
     defaults: {
       outbox: { status: "pending", attempts: 0, last_error: null, result: null },
       handoffs: { created_at: new Date(NOW).toISOString() },

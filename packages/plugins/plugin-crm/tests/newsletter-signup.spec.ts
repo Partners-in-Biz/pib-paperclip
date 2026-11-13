@@ -146,10 +146,10 @@ describe("newsletter signup", () => {
     expect(JSON.stringify(warn.mock.calls)).not.toContain(EMAIL);
   });
 
-  it("refuses any action on a newsletter form (confirm ships later) and writes nothing", async () => {
+  it("refuses an action other than confirm on a newsletter form and writes nothing", async () => {
     const booted = await bootLeads();
     const made = await newsletter(booted);
-    expect(await refused(handleLeadWebhook(booted.harness.ctx, signup(made, { action: "confirm", token: "x.y" })))).toMatch(/does not take that action/);
+    expect(await refused(handleLeadWebhook(booted.harness.ctx, signup(made, { action: "subscribe" })))).toMatch(/does not take that action/);
     expect(booted.store.lead_captures).toHaveLength(0);
     expect(booted.store.outbox).toHaveLength(0);
   });
