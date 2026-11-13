@@ -5,6 +5,7 @@ import {
   CapabilityDeniedError,
   createHostClientHandlers,
   InvocationScopeDeniedError,
+  unconfiguredCompanyMessage,
 } from "../src/host-client-factory.js";
 import { PLUGIN_RPC_ERROR_CODES } from "../src/protocol.js";
 
@@ -304,6 +305,63 @@ describe("createHostClientHandlers invocation company scope", () => {
       }, context),
     ).resolves.toEqual({ id: "comment-2" });
     expect(createComment).toHaveBeenCalled();
+  });
+});
+
+describe("createHostClientHandlers scope refusal reasons (PAR-11072)", () => {
+  function make() {
+    const companiesGet = vi.fn(async () => ({ id: "x" }));
+    const configGet = vi.fn(async () => ({}));
+    const handlers = createHostClientHandlers({
+      pluginId: "paperclip.test",
+      capabilities: ["companies.read"],
+      services: { companies: { get: companiesGet }, config: { get: configGet } } as unknown as HostServices,
+    });
+    return { handlers, companiesGet, configGet };
+  }
+  const refusal = (p: Promise<unknown>) => p.then(() => null, (e: unknown) => e as InvocationScopeDeniedError);
+
+  it("says the named company has no saved settings when the host marks it unconfigured", async () => {
+    const { handlers, companiesGet, configGet } = make();
+    const context = { unconfiguredCompanyId: "company-9" };
+    for (const err of [
+      await refusal(handlers["companies.get"]({ companyId: "company-9" }, context)),
+      await refusal(handlers["config.get"]({ companyId: "company-9" }, context)),
+    ]) {
+      expect(err).toBeInstanceOf(InvocationScopeDeniedError);
+      expect(err?.message).toContain(unconfiguredCompanyMessage("company-9"));
+      expect(err?.message).toContain("company context is required");
+      expect(err).toMatchObject({ reason: "unconfigured_company", requestedCompanyId: "company-9" });
+    }
+    expect(companiesGet).not.toHaveBeenCalled();
+    expect(configGet).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the plain text when the marked company is not the one requested", async () => {
+    const { handlers, companiesGet } = make();
+    const err = await refusal(handlers["companies.get"]({ companyId: "company-8" }, { unconfiguredCompanyId: "company-9" }));
+    expect(err?.message).toMatch(/: company context is required$/);
+    expect(err).toMatchObject({ reason: "no_company", requestedCompanyId: "company-8" });
+    expect(companiesGet).not.toHaveBeenCalled();
+  });
+
+  it("gives no_company to a call with no company context and none named", async () => {
+    const { handlers } = make();
+    const err = await refusal(handlers["config.get"]({}));
+    expect(err).toMatchObject({ reason: "no_company", requestedCompanyId: undefined });
+  });
+
+  it("gives unknown_invocation to an invalid invocation scope", async () => {
+    const { handlers } = make();
+    const err = await refusal(handlers["companies.get"]({ companyId: "company-1" }, { invalidInvocationScope: true }));
+    expect(err?.message).toContain("unknown invocation scope");
+    expect(err).toMatchObject({ reason: "unknown_invocation" });
+  });
+
+  it("leaves reason unset for a cross-company call inside an invocation", async () => {
+    const { handlers } = make();
+    const err = await refusal(handlers["companies.get"]({ companyId: "company-b" }, { invocationScope: { companyId: "company-a" } }));
+    expect(err).toMatchObject({ reason: undefined, requestedCompanyId: "company-b" });
   });
 });
 

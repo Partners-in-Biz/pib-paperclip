@@ -80,10 +80,40 @@ export class CapabilityDeniedError extends Error {
 export class InvocationScopeDeniedError extends Error {
   override readonly name = "InvocationScopeDeniedError";
   readonly code = PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED;
+  readonly pluginId: string;
+  readonly method: string;
+  /** Why the call was refused; unset for a cross-company call inside an invocation. */
+  readonly reason?: InvocationScopeDenialReason;
+  /** The single company the call named, when it named one. */
+  readonly requestedCompanyId?: string;
 
-  constructor(pluginId: string, method: string, message: string) {
+  constructor(
+    pluginId: string,
+    method: string,
+    message: string,
+    details: { reason?: InvocationScopeDenialReason; requestedCompanyId?: string } = {},
+  ) {
     super(`Plugin "${pluginId}" is not allowed to perform "${method}": ${message}`);
+    this.pluginId = pluginId;
+    this.method = method;
+    this.reason = details.reason;
+    this.requestedCompanyId = details.requestedCompanyId;
   }
+}
+
+/**
+ * - `unconfigured_company`: a call outside a host invocation named a company
+ *   with no saved settings for the plugin.
+ * - `no_company`: the call needs one company and has no company context.
+ * - `unknown_invocation`: the call carried a missing, expired or unknown
+ *   invocation id.
+ */
+export type InvocationScopeDenialReason = "unconfigured_company" | "no_company" | "unknown_invocation";
+
+/** Rule 3 text (PAR-11072): starts with "company context is required" so existing matchers keep working. */
+export function unconfiguredCompanyMessage(companyId: string): string {
+  return `company context is required: company "${companyId}" has no saved settings for this plugin; ` +
+    "calls made outside a host invocation (jobs, timers, start-up) can act only for companies with saved settings";
 }
 
 // ---------------------------------------------------------------------------
@@ -603,6 +633,50 @@ export function createHostClientHandlers(
     return noCompanyScope;
   }
 
+  function unknownInvocationError(method: WorkerToHostMethodName): InvocationScopeDeniedError {
+    return new InvocationScopeDeniedError(
+      pluginId,
+      method,
+      "the worker referenced a missing, expired, or unknown invocation scope",
+      { reason: "unknown_invocation" },
+    );
+  }
+
+  /**
+   * The call has no company context. When the host says the call (made outside
+   * an invocation) names a company with no saved settings, the refusal says so;
+   * otherwise it is the plain "company context is required".
+   */
+  function missingCompanyContextError(
+    method: WorkerToHostMethodName,
+    requestedCompanyId: string | null,
+    context?: WorkerHostCallContext,
+  ): InvocationScopeDeniedError {
+    if (requestedCompanyId && readNonEmptyString(context?.unconfiguredCompanyId) === requestedCompanyId) {
+      return new InvocationScopeDeniedError(pluginId, method, unconfiguredCompanyMessage(requestedCompanyId), {
+        reason: "unconfigured_company",
+        requestedCompanyId,
+      });
+    }
+    return new InvocationScopeDeniedError(pluginId, method, "company context is required", {
+      reason: "no_company",
+      ...(requestedCompanyId ? { requestedCompanyId } : {}),
+    });
+  }
+
+  function crossCompanyError(
+    method: WorkerToHostMethodName,
+    requestedCompanyId: string,
+    allowedCompanyId: string,
+  ): InvocationScopeDeniedError {
+    return new InvocationScopeDeniedError(
+      pluginId,
+      method,
+      `requested company "${requestedCompanyId}" but the current invocation is scoped to company "${allowedCompanyId}"`,
+      { requestedCompanyId },
+    );
+  }
+
   function requireInvocationCompanyScope(
     method: WorkerToHostMethodName,
     params: unknown,
@@ -611,21 +685,13 @@ export function createHostClientHandlers(
     const requested = requestedCompanyScope(method, params);
     if (requested.kind === "none") return;
 
-    if (context?.invalidInvocationScope) {
-      throw new InvocationScopeDeniedError(
-        pluginId,
-        method,
-        "the worker referenced a missing, expired, or unknown invocation scope",
-      );
-    }
+    if (context?.invalidInvocationScope) throw unknownInvocationError(method);
 
     const allowedCompanyId = readNonEmptyString(context?.invocationScope?.companyId);
 
     if (requested.kind === "all") {
       if (method === "companies.list") return;
-      if (!allowedCompanyId) {
-        throw new InvocationScopeDeniedError(pluginId, method, "company context is required");
-      }
+      if (!allowedCompanyId) throw missingCompanyContextError(method, null, context);
       throw new InvocationScopeDeniedError(
         pluginId,
         method,
@@ -633,16 +699,9 @@ export function createHostClientHandlers(
       );
     }
 
-    if (!allowedCompanyId) {
-      throw new InvocationScopeDeniedError(pluginId, method, "company context is required");
-    }
-
+    if (!allowedCompanyId) throw missingCompanyContextError(method, requested.companyId, context);
     if (requested.companyId !== allowedCompanyId) {
-      throw new InvocationScopeDeniedError(
-        pluginId,
-        method,
-        `requested company "${requested.companyId}" but the current invocation is scoped to company "${allowedCompanyId}"`,
-      );
+      throw crossCompanyError(method, requested.companyId, allowedCompanyId);
     }
   }
 
@@ -651,33 +710,21 @@ export function createHostClientHandlers(
     params: unknown,
     context?: WorkerHostCallContext,
   ): string {
-    if (context?.invalidInvocationScope) {
-      throw new InvocationScopeDeniedError(
-        pluginId,
-        method,
-        "the worker referenced a missing, expired, or unknown invocation scope",
-      );
-    }
+    if (context?.invalidInvocationScope) throw unknownInvocationError(method);
 
     const requested = requestedCompanyScope(method, params);
     const scopedCompanyId = readNonEmptyString(context?.invocationScope?.companyId);
     if (requested.kind === "single") {
-      if (!scopedCompanyId) {
-        throw new InvocationScopeDeniedError(pluginId, method, "company context is required");
-      }
+      if (!scopedCompanyId) throw missingCompanyContextError(method, requested.companyId, context);
       if (requested.companyId !== scopedCompanyId) {
-        throw new InvocationScopeDeniedError(
-          pluginId,
-          method,
-          `requested company "${requested.companyId}" but the current invocation is scoped to company "${scopedCompanyId}"`,
-        );
+        throw crossCompanyError(method, requested.companyId, scopedCompanyId);
       }
       return scopedCompanyId;
     }
 
     if (scopedCompanyId) return scopedCompanyId;
 
-    throw new InvocationScopeDeniedError(pluginId, method, "company context is required");
+    throw missingCompanyContextError(method, null, context);
   }
 
   /**

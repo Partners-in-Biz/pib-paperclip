@@ -13,7 +13,22 @@ function sendNestedHostRequest(originalRequest, invocationId) {
   const mode = params.mode;
   const requestedCompanyId = params.requestedCompanyId;
   const hostMethod = params.hostMethod || "companies.get";
-  const nestedParams = hostMethod === "secrets.resolve"
+  if (hostMethod === "streams.emit") {
+    // Stream notifications are fire-and-forget: send one, then answer the
+    // outer call so the test can read what the host delivered.
+    const notification = {
+      jsonrpc: "2.0",
+      method: "streams.emit",
+      params: { channel: "probe", companyId: requestedCompanyId, event: { ok: true } },
+    };
+    if (mode === "echo") notification.paperclipInvocationId = invocationId;
+    send(notification);
+    send({ jsonrpc: "2.0", id: originalRequest.id, result: { sent: true } });
+    return;
+  }
+  // `nestedParams` sends exactly these params, for shapes the switch below
+  // does not build (instance state, wildcard key, unfiltered subscribe, ...).
+  const nestedParams = params.nestedParams ? params.nestedParams : hostMethod === "secrets.resolve"
     ? {
         companyId: requestedCompanyId,
         secretRef: {

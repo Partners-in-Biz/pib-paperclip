@@ -319,6 +319,13 @@ export interface WorkerHostCallContext {
   invocationScope?: PluginInvocationScope | null;
   invalidInvocationScope?: boolean;
   /**
+   * Set by the host for a call made outside a host invocation (no invocation
+   * id: jobs, timers, start-up) that names a company with no saved settings for
+   * this plugin. The gate refuses it with a text that says so. It never grants
+   * access: `invocationScope` stays unset.
+   */
+  unconfiguredCompanyId?: string;
+  /**
    * The W3C `traceparent` the host minted for the echoed invocation. The host
    * recovers it from its own invocation record, not from the worker, so a worker
    * can never forge a span parent. The span host handler validates and uses it.
