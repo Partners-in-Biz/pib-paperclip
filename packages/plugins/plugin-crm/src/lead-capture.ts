@@ -63,6 +63,7 @@ import {
 import {
   bumpSource,
   captureByKey,
+  countCaptures,
   countHits,
   deleteCapture,
   findLeadSourceByKey,
@@ -80,6 +81,7 @@ import {
   type LeadSource,
 } from "./lead-store.js";
 import { newsletterSettings, NO_NEWSLETTER, refuseConfirmSecret, refuseNewsletterParams, touchesNewsletter } from "./lead-newsletter.js";
+import { processSignup, signupSettingsOk } from "./newsletter-signup.js";
 import { asLeadExtras, attributionOf, formLines, intakeLead, type LeadExtras } from "./leads.js";
 import { openIssueOnce } from "./mail.js";
 import { PLUGIN_ID } from "./namespace.js";
@@ -306,8 +308,8 @@ export async function handleLeadWebhook(ctx: PluginContext, input: PluginWebhook
     throw new LeadRejected(ERROR_GENERIC, "error");
   }
   if (!source || source.status !== "active") throw new LeadRejected(NOT_ACTIVE, "inactive");
-  // A newsletter source takes signups only once the double opt-in path exists (plan PAR-10817 stage 2). Until then: refused, nothing written.
-  if (source.intake === "newsletter") throw new LeadRejected(NOT_ACTIVE, "inactive");
+  // A newsletter source takes signed calls only: until a person makes its signing secret it takes nothing, and nothing is written.
+  if (source.intake === "newsletter" && !source.signingSecret) throw new LeadRejected(NOT_ACTIVE, "inactive");
   // A client's form whose client was deleted (or merged away) has nobody to hand the lead to: refuse before anything is stored, and switch the form off.
   if (source.clientKind && source.clientRef) {
     let exists: boolean;
@@ -338,8 +340,14 @@ export async function handleLeadWebhook(ctx: PluginContext, input: PluginWebhook
       if (!check.ok) throw new LeadRejected(check.reason, "bad_signature");
       signed = true;
     }
+    if (source.intake === "newsletter") {
+      if (!signed) throw new LeadRejected("This newsletter form takes signed calls only.", "unsigned");
+      // Confirming a signup (action confirm) ships in a later stage; until then any action is refused.
+      if (body.action != null) throw new LeadRejected("This form does not take that action.", "invalid");
+    }
 
     if (await overLimit(ctx, source, ipHash, signed, now)) throw new LeadRejected("Too many submissions. Please try again in a few minutes.", "rate_limited");
+    if (source.intake === "newsletter") return await newsletterSignup(ctx, source, body, { now, ipHash, salt });
 
     // Bots: no reason is given.
     if (!signed && cleanText(body.hp_website, 200)) return await dropped(ctx, source, ipHash, "honeypot");
@@ -379,6 +387,31 @@ export async function handleLeadWebhook(ctx: PluginContext, input: PluginWebhook
     await recordHit(ctx, source.id, ipHash, "error").catch(() => undefined);
     throw new LeadRejected(ERROR_GENERIC, "error");
   }
+}
+
+/**
+ * A signed signup to a newsletter form, after the source bucket (plan PAR-10817 "Signup"): the daily ceiling, the settings checked
+ * again, the address checks, then `processSignup`. Every outcome past the checks answers the same success.
+ */
+async function newsletterSignup(ctx: PluginContext, source: LeadSource, body: Record<string, unknown>, info: { now: Date; ipHash: string | null; salt: string }): Promise<LeadWebhookResult> {
+  const dayAgo = new Date(info.now.getTime() - 86_400_000).toISOString();
+  if ((await countCaptures(ctx, source.companyId, source.id, dayAgo, source.confirmDailyCap)) >= source.confirmDailyCap) {
+    throw new LeadRejected("This form has sent all the confirmation emails it may today. Please try again tomorrow.", "rate_limited");
+  }
+  if (!signupSettingsOk(source)) {
+    ctx.logger.warn("CRM newsletter form refused a signup: its confirmUrl, confirmFrom or confirmation key no longer passes the checks", { sourceId: source.id, event: "bad_source_config" });
+    throw new LeadRejected("This form is temporarily unavailable.", "bad_source_config");
+  }
+  const settings = await leadsConfig(ctx, source.companyId);
+  const parsed = parseSubmission(body, { extraBlockedDomains: settings.blockedDomains, allowReserved: source.canary });
+  if (!parsed.ok) throw new LeadRejected(parsed.message, parsed.reason);
+  const sub = parsed.submission;
+  // The capture names the visitor (the address the signing server passes), as a lead's consent record does; the bucket stays on the caller.
+  const visitorHash = sub.visitorIp && /^[0-9a-f:.]{3,45}$/i.test(sub.visitorIp) ? hashIp(info.salt, sub.visitorIp.toLowerCase()) : info.ipHash;
+  const outcome = await processSignup(ctx, source, { email: sub.email, pageUrl: sub.attribution.pageUrl, attribution: attributionOf(sub.attribution), now: info.now, ipHash: visitorHash, salt: info.salt });
+  await recordHit(ctx, source.id, info.ipHash, outcome);
+  if (outcome === "pending_confirmation" || outcome === "dry_run") await bumpSource(ctx, source.id, true);
+  return { status: "stored", sourceId: source.id, client: null, contactId: null };
 }
 
 async function dropped(ctx: PluginContext, source: LeadSource, ipHash: string | null, reason: "honeypot" | "too_fast" | "spam"): Promise<LeadWebhookResult> {

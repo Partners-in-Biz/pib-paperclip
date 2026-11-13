@@ -161,19 +161,7 @@ describe("rotate-lead-key with newConfirmKey", () => {
 });
 
 describe("the lead webhook and a newsletter form", () => {
-  it("refuses a signed signup until the double opt-in path ships, and writes nothing", async () => {
-    const booted = await bootLeads();
-    const made = await newsletter(booted);
-    const contacts = booted.store.contacts.length;
-    expect(await refused(handleLeadWebhook(booted.harness.ctx, signedDelivery(made.serverSecret!, lead(made.source.key))))).toMatch(/not active/);
-    expect(booted.store.lead_hits).toHaveLength(0);
-    expect(booted.store.lead_captures).toHaveLength(0);
-    expect(booted.store.consent_records).toHaveLength(0);
-    expect(booted.store.contacts).toHaveLength(contacts);
-    expect(booted.store.outbox).toHaveLength(0);
-    expect(await crmIssues(booted.harness)).toHaveLength(0);
-    expect(booted.store.lead_sources[0]).toMatchObject({ accepted_count: 0, rejected_count: 0 });
-  });
+  // A signed signup is newsletter-signup.spec.ts.
 
   it("refuses an unsigned post to an agent-made newsletter form (no signing secret yet), and writes nothing", async () => {
     const booted = await bootLeads();
