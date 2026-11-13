@@ -82,6 +82,7 @@ import { runPushDigest } from "./push/digest.js";
 import { reviewRoundsCheck } from "./register-w1c-rounds.js";
 import { registerW1cEdge } from "./register-w1c-edge.js";
 import { registerBrowserStatus } from "./browser-status.js";
+import { jobHandler } from "./run-trigger.js";
 import { registerW1cPolicy } from "./register-w1c-policy.js";
 import { riskTierCloseCheck } from "./register-w1c-done.js";
 import { sweepAskDeadlines } from "./register-w1c-deadlines.js";
@@ -545,7 +546,9 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
     }
   });
 
-  ctx.jobs.register(JOBS.reemitRoles, async () => {
+  // Every job handler runs under the `job` label, read only by the own-checks log line (run-trigger.ts).
+  const registerJob = (key: string, handler: () => Promise<void>) => ctx.jobs.register(key, jobHandler(handler));
+  registerJob(JOBS.reemitRoles, async () => {
     const result = await trackJob(ctx, JOBS.reemitRoles, async () => {
       const sent = await reemitRoles(env);
       await linkPendingAcceptance(env);
@@ -553,45 +556,45 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
     });
     if (result.emitted || result.failed) ctx.logger.info("Cockpit roles re-sent", result);
   });
-  ctx.jobs.register(JOBS.acceptanceNightly, async () => {
+  registerJob(JOBS.acceptanceNightly, async () => {
     ctx.logger.info("Nightly acceptance request", await trackJob(ctx, JOBS.acceptanceNightly, () => nightlyAcceptance(env)));
   });
-  ctx.jobs.register(JOBS.healthAlerts, async () => {
+  registerJob(JOBS.healthAlerts, async () => {
     ctx.logger.info("Cockpit health alerts", await trackJob(ctx, JOBS.healthAlerts, () => healthAlerts(env)));
   });
-  ctx.jobs.register(JOBS.memoryUpkeep, async () => {
+  registerJob(JOBS.memoryUpkeep, async () => {
     ctx.logger.info("Company memory upkeep", await trackJob(ctx, JOBS.memoryUpkeep, () => upkeep(env)));
   });
-  ctx.jobs.register(JOBS.closeoutSweep, async () => {
+  registerJob(JOBS.closeoutSweep, async () => {
     ctx.logger.info("Close-out sweep", await trackJob(ctx, JOBS.closeoutSweep, () => closeoutSweep(env)));
   });
-  ctx.jobs.register(JOBS.improvementsRecheck, async () => {
+  registerJob(JOBS.improvementsRecheck, async () => {
     ctx.logger.info("Improvements re-check", await trackJob(ctx, JOBS.improvementsRecheck, () => recheckImprovements(env)));
   });
-  ctx.jobs.register(JOBS.agentResearch, async () => {
+  registerJob(JOBS.agentResearch, async () => {
     const result = await trackJob(ctx, JOBS.agentResearch, () => agentResearch(env));
     ctx.logger.info(result.opened === 0 ? "Agent research: nothing opened (no eligible agent, or this week's issues already exist)" : "Agent research", result);
   });
-  ctx.jobs.register(JOBS.credentialsCheck, async () => {
+  registerJob(JOBS.credentialsCheck, async () => {
     ctx.logger.info("Credentials check", await trackJob(ctx, JOBS.credentialsCheck, () => credentialsCheck(env)));
   });
-  ctx.jobs.register(JOBS.businessReview, async () => {
+  registerJob(JOBS.businessReview, async () => {
     ctx.logger.info("Weekly business review", await trackJob(ctx, JOBS.businessReview, () => businessReviews(env)));
   });
-  ctx.jobs.register(JOBS.hostedUsageRollup, async () => {
+  registerJob(JOBS.hostedUsageRollup, async () => {
     ctx.logger.info("Hosted usage roll-up", await trackJob(ctx, JOBS.hostedUsageRollup, () => hostedUsageRollup(env)));
   });
-  ctx.jobs.register(JOBS.growthReview, async () => {
+  registerJob(JOBS.growthReview, async () => {
     ctx.logger.info("Weekly growth review", await trackJob(ctx, JOBS.growthReview, () => growthReviews(env)));
   });
-  ctx.jobs.register(JOBS.governor, async () => {
+  registerJob(JOBS.governor, async () => {
     ctx.logger.info("Agent governor", await trackJob(ctx, JOBS.governor, () => governorTick(env)));
   });
-  ctx.jobs.register(JOBS.pushDigest, async () => {
+  registerJob(JOBS.pushDigest, async () => {
     ctx.logger.info("Push digest", await trackJob(ctx, JOBS.pushDigest, () => runPushDigest(ctx)));
   });
 
-  ctx.jobs.register(JOBS.askDeadlines, async () => {
+  registerJob(JOBS.askDeadlines, async () => {
     ctx.logger.info(
       "Ask deadline sweep",
       await trackJob(ctx, JOBS.askDeadlines, () => sweepAskDeadlines(env)),

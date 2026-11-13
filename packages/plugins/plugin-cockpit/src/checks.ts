@@ -55,6 +55,7 @@ import { feedbackSignal } from "./memory/signal.js";
 import { NAMESPACE } from "./namespace.js";
 import { proofGapCheck, unreviewedApprovalCheck } from "./quality.js";
 import { currentRoles } from "./roles.js";
+import { timed, type PartRecord } from "./run-record.js";
 import { attestationChecks, attestationState, membersCheck, readAttestations } from "./security.js";
 
 export interface ExtraChecks {
@@ -62,6 +63,8 @@ export interface ExtraChecks {
   kpis: CockpitKpi[];
   quality: QualityMetric[];
   waiting: WaitingItem[];
+  /** Each part's name, state and time, in run order; only on a run that read (a cache hit has none). */
+  run?: PartRecord[];
 }
 
 const TTL_MS = 10 * 60_000;
@@ -80,12 +83,13 @@ async function moduleMap(env: Env, companyId: string): Promise<Partial<Record<Mo
 
 type Part = () => Promise<Partial<ExtraChecks>>;
 
-/** Runs the parts one after another (each may fail alone), merging what they return. */
-async function gather(env: Env, companyId: string, parts: Array<[string, Part]>): Promise<ExtraChecks> {
+/** Runs the parts one after another (each may fail alone), merging what they return and recording each part's state and time. */
+async function gather(env: Env, companyId: string, parts: Array<[string, Part]>): Promise<{ value: ExtraChecks; run: PartRecord[] }> {
   const out: ExtraChecks = { health: [], kpis: [], quality: [], waiting: [] };
+  const record: PartRecord[] = [];
   for (const [name, run] of parts) {
     try {
-      const got = await run();
+      const got = await timed(record, name, run);
       out.health.push(...(got.health ?? []));
       out.kpis.push(...(got.kpis ?? []));
       out.quality.push(...(got.quality ?? []));
@@ -94,7 +98,7 @@ async function gather(env: Env, companyId: string, parts: Array<[string, Part]>)
       env.ctx.logger.info("Cockpit check failed", { companyId, check: name, error: message(error) });
     }
   }
-  return out;
+  return { value: out, run: record };
 }
 
 const nonOk = (check: HealthCheck | null | undefined): HealthCheck[] => (check && check.status !== "ok" ? [check] : []);
@@ -110,7 +114,11 @@ export async function extraChecks(env: Env, companyId: string, options: { fresh?
   if (!cache) caches.set(env, (cache = new Map()));
   const now = env.now();
   const hit = cache.get(companyId);
-  if (!options.fresh && hit && now.getTime() - hit.at < TTL_MS) return hit.value;
+  if (!options.fresh && hit && now.getTime() - hit.at < TTL_MS) {
+    // A hit is not a run: the same result, without the record of the run that read it.
+    delete hit.value.run;
+    return hit.value;
+  }
   const ctx = env.ctx;
   const company = await ctx.companies.get(companyId).catch(() => null);
   const prefix = company?.issuePrefix ?? null;
@@ -239,8 +247,10 @@ export async function extraChecks(env: Env, companyId: string, options: { fresh?
       return { quality: [{ key: "memory_feedback_signal", label: "Memory brief feedback coverage (30 days)", value: signal.level === "none" ? "No signal" : `${stats.feedback30d.briefsWithFeedback} of ${stats.briefs30d.total}`, raw: stats.feedback30d.briefsWithFeedback, tone: signal.level === "ok" ? "ok" : "warn" }] };
     }],
   ];
-  const value = await gather(env, companyId, parts);
+  const { value, run } = await gather(env, companyId, parts);
   cache.set(companyId, { at: now.getTime(), value });
+  // The caller reads the record at once (own.ts); the next hit removes it.
+  value.run = run;
   return value;
 }
 
