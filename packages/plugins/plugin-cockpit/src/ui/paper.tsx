@@ -48,10 +48,10 @@ export const PAPER_CSS = `
 .pib-paper-headline { font-family: ${DISPLAY}; font-weight: 700; font-size: clamp(28px, 5vw, 52px); line-height: 1.06; letter-spacing: -.012em; margin: 26px 0 12px; text-wrap: balance; overflow-wrap: anywhere; }
 .pib-paper-standfirst { font-size: clamp(17px, 2.1vw, 21px); line-height: 1.45; font-style: italic; color: var(--paper-ink); margin: 0 0 10px; max-width: 62ch; white-space: pre-line; }
 .pib-paper-byline { font-size: 12px; letter-spacing: .12em; text-transform: uppercase; color: var(--paper-soft); margin: 0 0 22px; }
-.pib-paper-figures { display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr)); border-top: 1px solid var(--paper-ink); border-bottom: 1px solid var(--paper-ink); margin: 0 0 26px; }
+.pib-paper-figures { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); border-top: 1px solid var(--paper-ink); border-bottom: 1px solid var(--paper-ink); margin: 0 0 26px; }
 .pib-paper-figure { padding: 12px 14px 12px 0; margin-left: 14px; min-width: 0; display: grid; grid-template-rows: minmax(2.5em, auto) auto auto; align-items: end; align-content: start; }
 .pib-paper-figure-label { font-size: 11px; line-height: 1.25; letter-spacing: .14em; text-transform: uppercase; color: var(--paper-soft); }
-.pib-paper-figure-value { font-family: ${DISPLAY}; font-size: clamp(22px, 3vw, 30px); font-weight: 700; line-height: 1.15; font-variant-numeric: lining-nums tabular-nums; overflow-wrap: anywhere; }
+.pib-paper-figure-value { font-family: ${DISPLAY}; font-size: clamp(20px, 2.4vw, 28px); font-weight: 700; line-height: 1.15; font-variant-numeric: lining-nums tabular-nums; overflow-wrap: break-word; word-break: normal; }
 .pib-paper-figure-note { font-size: 13px; font-style: italic; color: var(--paper-soft); line-height: 1.3; }
 .pib-paper-lead { column-width: 330px; column-gap: 38px; column-rule: 1px solid var(--paper-hair); margin-bottom: 30px; }
 .pib-paper-cols { column-width: 290px; column-gap: 38px; column-rule: 1px solid var(--paper-hair); }
@@ -62,9 +62,10 @@ export const PAPER_CSS = `
 .pib-paper-wire { font-weight: 400; font-style: italic; letter-spacing: .04em; text-transform: none; color: var(--paper-accent); }
 .pib-paper-p { font-size: 16.5px; line-height: 1.58; margin: 0 0 10px; overflow-wrap: anywhere; hyphens: auto; }
 .pib-paper-drop::first-letter { font-family: ${DISPLAY}; float: left; font-size: 3.5em; line-height: .82; font-weight: 700; padding: 5px 8px 0 0; }
-.pib-paper-sub { font-family: ${SERIF}; font-size: 15px; font-weight: 700; font-style: italic; margin: 14px 0 6px; break-after: avoid; }
-.pib-paper-list { font-size: 16px; line-height: 1.5; margin: 0 0 10px; padding-left: 20px; overflow-wrap: anywhere; }
-.pib-paper-list li { margin: 0 0 6px; padding-left: 2px; }
+.pib-paper-sub { font-family: ${SERIF}; font-size: 15px; font-weight: 700; font-style: italic; margin: 14px 0 6px; break-after: avoid; clear: left; }
+.pib-paper-list { font-size: 16px; line-height: 1.5; margin: 0 0 10px; padding-left: 22px; overflow-wrap: anywhere; clear: left; list-style: disc outside; }
+ol.pib-paper-list { list-style: decimal outside; }
+.pib-paper-list li { margin: 0 0 6px; padding-left: 2px; display: list-item; }
 .pib-paper-list li::marker { color: var(--paper-accent); }
 .pib-paper-quote { margin: 0 0 10px; padding-left: 12px; border-left: 2px solid var(--paper-accent); font-style: italic; font-size: 16.5px; line-height: 1.5; }
 .pib-paper-foot { border-top: 1px solid var(--paper-ink); margin-top: 6px; padding-top: 8px; font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: var(--paper-soft); display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
@@ -303,13 +304,20 @@ export function EditorBody({ settings, presets, operator, busy, dirty, onChange,
         </div>
       </div>
 
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", position: "sticky", bottom: 0, padding: "10px 0", background: tokens.bg, borderTop: `1px solid ${tokens.border}` }}>
+      <div style={card}>
+        <span style={label}>Right now</span>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <Button type="button" variant="secondary" disabled={busy || dirty} onClick={() => onWriteNow(edition)}>Write the {edition} edition now</Button>
+          <Button type="button" variant="secondary" disabled={busy || dirty} title="An edition from the numbers alone, with no writer" onClick={() => onCompileNow(edition)}>Compile from the numbers</Button>
+          <Button type="button" variant="secondary" disabled={busy} onClick={onReset}>Restore the default sections</Button>
+        </div>
+        {dirty ? <Muted>Save your changes first, then ask for an edition.</Muted> : null}
+      </div>
+
+      {/* Only Save and Back stay in view: a bar that wraps to two rows covers the form on a narrow screen. */}
+      <div style={{ display: "flex", gap: 8, alignItems: "center", position: "sticky", bottom: 0, padding: "10px 0", background: tokens.bg, borderTop: `1px solid ${tokens.border}` }}>
         <Button type="button" disabled={busy || !dirty} onClick={onSave}>{busy ? "Saving…" : dirty ? "Save" : "Saved"}</Button>
         <Button type="button" variant="secondary" disabled={busy} onClick={onClose}>{dirty ? "Discard changes" : "Back to the paper"}</Button>
-        <span style={{ flex: "1 1 12px" }} />
-        <Button type="button" variant="secondary" disabled={busy || dirty} title={dirty ? "Save first" : undefined} onClick={() => onWriteNow(edition)}>Write the {edition} edition now</Button>
-        <Button type="button" variant="secondary" disabled={busy || dirty} title="An edition from the numbers alone, with no writer" onClick={() => onCompileNow(edition)}>Compile from the numbers</Button>
-        <Button type="button" variant="secondary" disabled={busy} onClick={onReset}>Restore the default sections</Button>
       </div>
     </div>
   );

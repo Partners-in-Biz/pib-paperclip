@@ -105,6 +105,9 @@ export function PaperInline({ text, linkFor, linkStyle }: { text: string; linkFo
   );
 }
 
+/** A big first letter needs a paragraph of a few lines beside it; on a one-line opener it only pushes the next block aside. */
+export const DROP_CAP_MIN_CHARS = 200;
+
 export function PaperBody({ markdown, linkFor, dropCap = false, className }: { markdown: string; linkFor: PaperLinkFor; dropCap?: boolean; className?: string }) {
   const blocks = paperBlocks(markdown);
   const link: CSSProperties = { color: "inherit", textDecoration: "underline", textDecorationColor: "var(--paper-accent)", textDecorationThickness: 1, textUnderlineOffset: 3 };
@@ -122,7 +125,7 @@ export function PaperBody({ markdown, linkFor, dropCap = false, className }: { m
           );
         }
         if (block.kind !== "p") return null;
-        return <p key={index} className={dropCap && index === 0 ? "pib-paper-p pib-paper-drop" : "pib-paper-p"}><PaperInline text={block.text} linkFor={linkFor} linkStyle={link} /></p>;
+        return <p key={index} className={dropCap && index === 0 && block.text.length >= DROP_CAP_MIN_CHARS ? "pib-paper-p pib-paper-drop" : "pib-paper-p"}><PaperInline text={block.text} linkFor={linkFor} linkStyle={link} /></p>;
       })}
     </div>
   );
