@@ -4,7 +4,7 @@
 import { COCKPIT_PLUGIN } from "@partnersinbiz/pib-plugin-kit/cockpit";
 
 export const PLUGIN_KEY = COCKPIT_PLUGIN;
-export const VERSION = "0.26.2";
+export const VERSION = "0.27.0";
 
 export const JOBS = {
   reemitRoles: "reemit-roles",
@@ -77,6 +77,8 @@ export const ORIGIN = {
   access: `plugin:${COCKPIT_PLUGIN}:access`,
   /** The owner's one daily digest of everything that waits on them. */
   digest: `plugin:${COCKPIT_PLUGIN}:digest`,
+  /** The Operator's task to write one edition of the Daily Paper: one per day and edition. */
+  paper: `plugin:${COCKPIT_PLUGIN}:paper`,
 } as const;
 
 /**
@@ -108,7 +110,7 @@ export const LEGACY_ORIGIN_ID = {
 } as const;
 
 /** The Cockpit page tabs (`?tab=`). */
-export const COCKPIT_TABS = { overview: "overview", flows: "flows", profile: "profile", memory: "memory" } as const;
+export const COCKPIT_TABS = { overview: "overview", paper: "paper", flows: "flows", profile: "profile", memory: "memory" } as const;
 export const PROFILE_PATH = "/cockpit?tab=profile";
 
 /** Budget use at or above this share of the monthly budget raises an alert. */
