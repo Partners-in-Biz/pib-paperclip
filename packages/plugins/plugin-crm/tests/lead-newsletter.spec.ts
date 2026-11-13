@@ -23,7 +23,7 @@ describe("creating a newsletter form", () => {
     const secret = String(row.confirm_secret);
     expect(secret).toMatch(/^pibs_[a-z0-9]{40}$/);
     expect(secret).not.toBe(made.serverSecret);
-    expect(made.source).toMatchObject({ intake: "newsletter", embed: null, newsletter: { applyTags: ["remotesaffa-subscribers"], confirmSecret: { set: true } } });
+    expect(made.source).toMatchObject({ intake: "newsletter", embed: null, newsletter: { applyTags: ["remotesaffa-subscribers"], confirmKey: { set: true } } });
     const listed = await tool(booted.harness, "list-lead-sources", {});
     const updated = await tool(booted.harness, "update-lead-source", { sourceId: made.source.id, label: "Friday list" });
     for (const output of [made, listed, updated, booted.harness.logs]) expect(JSON.stringify(output)).not.toContain(secret);
@@ -107,22 +107,26 @@ describe("updating a newsletter form", () => {
   });
 });
 
-describe("rotate-lead-key with confirmSecret", () => {
+describe("rotate-lead-key with newConfirmKey", () => {
   it("replaces only the confirmation secret (key and signing secret stay) and never shows it; a lead form has none", async () => {
     const booted = await bootLeads();
     const made = await newsletter(booted);
     const before = { ...booted.store.lead_sources[0]! };
-    const rotated = await tool(booted.harness, "rotate-lead-key", { sourceId: made.source.id, confirmSecret: true });
+    const rotated = await tool(booted.harness, "rotate-lead-key", { sourceId: made.source.id, newConfirmKey: true });
     const after = booted.store.lead_sources[0]!;
     expect(after.confirm_secret).toMatch(/^pibs_[a-z0-9]{40}$/);
     expect(after.confirm_secret).not.toBe(before.confirm_secret);
     expect(after).toMatchObject({ public_key: before.public_key, previous_key: null, signing_secret: before.signing_secret });
-    expect(rotated).toMatchObject({ confirmSecretReplaced: true, source: { key: made.source.key } });
+    expect(rotated).toMatchObject({ confirmKeyReplaced: true, source: { key: made.source.key } });
     expect(JSON.stringify(rotated)).not.toMatch(/pibs_/);
     expect(JSON.stringify(booted.harness.logs)).not.toMatch(/pibs_/);
 
     const plain = await makeSource(booted, { label: "Contact" });
-    expect(await refused(tool(booted.harness, "rotate-lead-key", { sourceId: plain.source.id, confirmSecret: true }))).toMatch(/belongs to a newsletter form/);
+    expect(await refused(tool(booted.harness, "rotate-lead-key", { sourceId: plain.source.id, newConfirmKey: true }))).toMatch(/belongs to a newsletter form/);
+    // A blanked or misnamed option never falls through to a plain key rotation.
+    const key = booted.store.lead_sources[0]!.public_key;
+    for (const value of [true, "[REDACTED]"]) expect(await refused(tool(booted.harness, "rotate-lead-key", { sourceId: made.source.id, confirmSecret: value }))).toMatch(/never a parameter/);
+    expect(booted.store.lead_sources[0]!.public_key).toBe(key);
   });
 });
 
