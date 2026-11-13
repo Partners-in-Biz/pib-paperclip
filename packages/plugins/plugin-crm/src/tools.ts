@@ -196,7 +196,7 @@ export const CRM_TOOLS: PluginToolDeclaration[] = [
       "Give a lead form a new key. The old key keeps working for 7 days so the snippet on the site can be swapped without losing leads. Use it after a key leaked, or to turn on spam protection that was set up after the snippet was installed. It never makes a signing secret: only a person does that, on the client's Lead forms card.",
     parametersSchema: schema(["sourceId"], {
       sourceId: text("The form (from list-lead-sources)."),
-      confirmSecret: bool("Newsletter forms only. true: replace ONLY the secret that signs confirmation links, so every link already sent stops working at once; the public key and signing secret stay and signups go on. The secret is never shown."),
+      newConfirmKey: bool("Newsletter forms only. true: replace ONLY the key that signs confirmation links, so every link already sent stops working at once; the public key and signing secret stay and signups go on. The key is never shown."),
     }),
   },
   {

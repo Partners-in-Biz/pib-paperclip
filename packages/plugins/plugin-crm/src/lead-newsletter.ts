@@ -26,7 +26,7 @@ const given = (params: Record<string, unknown>, key: string) => key in params &&
 /** Refuses a call that tries to set the confirmation-link secret, in any spelling. */
 export function refuseConfirmSecret(params: Record<string, unknown>): void {
   if (given(params, "confirmSecret") || given(params, "confirm_secret")) {
-    throw new CrmError("confirmSecret is made by the plugin and is never set or shown. rotate-lead-key with confirmSecret true replaces it.");
+    throw new CrmError("confirmSecret is made by the plugin and is never set or shown. rotate-lead-key with newConfirmKey true replaces it.");
   }
 }
 

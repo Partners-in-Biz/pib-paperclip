@@ -809,7 +809,7 @@ export async function leadSourceView(ctx: PluginContext, source: LeadSource, url
           confirmUrl: source.confirmUrl,
           confirmFrom: source.confirmFrom,
           confirmDailyCap: source.confirmDailyCap,
-          confirmSecret: source.confirmSecret ? { set: true, keyId: keyId(source.confirmSecret) } : { set: false },
+          confirmKey: source.confirmSecret ? { set: true, keyId: keyId(source.confirmSecret) } : { set: false },
         },
       }
       : {}),
@@ -969,7 +969,9 @@ export async function rotateLeadKey(ctx: PluginContext, viewer: Viewer, params: 
   if (wantsSecret && !isPerson(viewer, by)) throw new CrmError(SECRET_BY_PERSON);
   const source = await requireSource(ctx, viewer, params);
   if (source.status === "revoked") throw new CrmError("This form was switched off for good. Create a new one with create-lead-endpoint.");
-  if (params.confirmSecret === true || params.confirmSecret === "true") return await replaceConfirmSecret(ctx, viewer, source, wantsSecret, now);
+  // The option is not named like a credential: a host that blanks secret-looking argument names must never turn it into a plain key rotation.
+  if (params.confirmSecret != null) throw new CrmError("confirmSecret is never a parameter. To replace the confirmation key, pass newConfirmKey true.");
+  if (params.newConfirmKey === true || params.newConfirmKey === "true") return await replaceConfirmSecret(ctx, viewer, source, wantsSecret, now);
   const publicKey = generateLeadKey();
   const until = new Date(now.getTime() + KEY_GRACE_DAYS * 86_400_000).toISOString();
   const newSecret = wantsSecret ? generateSigningSecret() : null;
@@ -991,17 +993,17 @@ export async function rotateLeadKey(ctx: PluginContext, viewer: Viewer, params: 
 }
 
 /**
- * `rotate-lead-key` with `confirmSecret: true` (newsletter forms only): a new confirmation-link secret, so every link already sent
+ * `rotate-lead-key` with `newConfirmKey: true` (newsletter forms only): a new confirmation-link secret, so every link already sent
  * stops working at once. The public key and the signing secret stay, so signups go on. The new secret is never shown, so an agent may do it.
  */
 async function replaceConfirmSecret(ctx: PluginContext, viewer: Viewer, source: LeadSource, alsoSigningSecret: boolean, now: Date) {
-  if (source.intake !== "newsletter") throw new CrmError(`confirmSecret belongs to a newsletter form; this form's intake is ${source.intake}`);
-  if (alsoSigningSecret) throw new CrmError("Replace the confirmation secret and the signing secret in two calls: confirmSecret true alone, then serverSecret true.");
+  if (source.intake !== "newsletter") throw new CrmError(`newConfirmKey belongs to a newsletter form; this form's intake is ${source.intake}`);
+  if (alsoSigningSecret) throw new CrmError("Replace the confirmation secret and the signing secret in two calls: newConfirmKey true alone, then serverSecret true.");
   await saveConfirmSecret(ctx, viewer.companyId, source.id, generateSigningSecret());
   const fresh = (await getLeadSource(ctx, viewer.companyId, source.id)) ?? source;
   return {
     source: await leadSourceView(ctx, fresh, await urlsFor(ctx, viewer.companyId), now),
-    confirmSecretReplaced: true,
+    confirmKeyReplaced: true,
     note: "Every confirmation link already sent stopped working. The public key and the signing secret did not change, so new signups go on.",
   };
 }
