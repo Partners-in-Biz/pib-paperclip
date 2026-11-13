@@ -59,13 +59,38 @@ describe("sanitizeItem", () => {
     expect(sanitizeItem({ ...base, link: "https://x.test/a", guid: "g1" })!.key).toBe("g1");
     expect(sanitizeItem({ ...base, link: "https://x.test/a" })!.key).toBe("https://x.test/a");
   });
-  it("escapes merge tokens so the real renderer leaves them alone", () => {
-    const item = sanitizeItem({ ...base, link: "https://x.test/a", title: "Hi {{first_name}} {{{name}}}", description: "{{ unsubscribe_url }} {{first_name|there}}" })!;
-    const out = personalize(`${item.title} ${item.description}`, { name: "Ann Lee", unsubscribeUrl: "https://u.test/x" });
+  it("escapes merge tokens in every text field so the real renderer leaves them alone", () => {
+    const item = sanitizeItem({
+      ...base,
+      link: "https://x.test/a",
+      title: "Hi {{first_name}} {{{name}}}",
+      description: "{{ unsubscribe_url }} {{first_name|there}}",
+      pubDate: "{{first_name}}",
+      guid: "{{ unsubscribe_url }}",
+      categories: ["{{first_name}}"],
+    })!;
+    const all = [item.title, item.description, item.pubDate!, item.guid!, item.key, ...item.categories].join(" | ");
+    const out = personalize(all, { name: "Ann Lee", unsubscribeUrl: "https://u.test/x" });
     expect(out).not.toContain("Ann");
     expect(out).not.toContain("https://u.test/x");
-    expect(out).toBe(`${item.title} ${item.description}`);
+    expect(out).toBe(all);
     expect(item.title).toContain("{ {first_name}}");
+    expect(item.pubDate).toBe("{ {first_name}}");
+  });
+});
+
+describe("parseRss on pathological input", () => {
+  const fast = (xml: string) => {
+    const start = Date.now();
+    parseRss(xml);
+    expect(Date.now() - start).toBeLessThan(1000);
+  };
+  it("unclosed <item> repeated at the size cap", () => fast("<item>".repeat(160_000)));
+  it("unclosed <title> inside an item", () => fast(`<item>${"<title>".repeat(140_000)}</item>`));
+  it("unclosed CDATA, script and tags in a description", () => {
+    fast(`<item><description>${"<![CDATA[".repeat(100_000)}</description></item>`);
+    fast(`<item><description>${"&lt;script&gt;".repeat(70_000)}</description></item>`);
+    fast(`<item><description>${"<<<".repeat(300_000)}</description></item>`);
   });
 });
 

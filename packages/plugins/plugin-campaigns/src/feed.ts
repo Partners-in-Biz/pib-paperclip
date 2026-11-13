@@ -76,27 +76,102 @@ function decodeEntities(text: string): string {
   });
 }
 
+const asciiLower = (text: string): string => text.replace(/[A-Z]/g, (c) => c.toLowerCase());
+const isBoundary = (ch: string | undefined): boolean => ch === undefined || ch === ">" || ch === "/" || /\s/.test(ch);
+
+/**
+ * Plain text from HTML in one linear pass (no lazy scans over the whole body, so unclosed tags cannot
+ * make the cost quadratic). Script, style and comments go with their content.
+ */
 function stripHtml(html: string): string {
-  return html
-    .replace(/<script\b[\s\S]*?<\/script\s*>/gi, " ")
-    .replace(/<style\b[\s\S]*?<\/style\s*>/gi, " ")
-    .replace(/<!--[\s\S]*?-->/g, " ")
-    .replace(/<[^>]*>/g, " ");
+  const lower = asciiLower(html);
+  let out = "";
+  let i = 0;
+  while (i < html.length) {
+    const lt = html.indexOf("<", i);
+    if (lt === -1) return out + html.slice(i);
+    out += html.slice(i, lt);
+    if (lower.startsWith("<!--", lt)) {
+      const end = html.indexOf("-->", lt + 4);
+      if (end === -1) return out;
+      out += " ";
+      i = end + 3;
+      continue;
+    }
+    const skip = ["script", "style"].find((t) => lower.startsWith(`<${t}`, lt) && isBoundary(lower[lt + t.length + 1]));
+    if (skip) {
+      const close = lower.indexOf(`</${skip}`, lt);
+      if (close === -1) return out;
+      const gt = html.indexOf(">", close);
+      if (gt === -1) return out;
+      out += " ";
+      i = gt + 1;
+      continue;
+    }
+    const gt = html.indexOf(">", lt);
+    if (gt === -1) return out + html.slice(lt); // no ">" anywhere after: the rest is text
+    out += " ";
+    i = gt + 1;
+  }
+  return out;
 }
 
 const collapse = (text: string): string => text.replace(/\s+/g, " ").trim();
 
-/** The text of a field: CDATA is taken as written, anything else is entity-decoded once. */
-function fieldText(raw: string): { text: string; cdata: boolean } {
-  const cdata = /<!\[CDATA\[([\s\S]*?)\]\]>/.exec(raw);
-  if (cdata) return { text: raw.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1"), cdata: true };
-  return { text: decodeEntities(raw), cdata: false };
+/** Replaces each CDATA section by its content, linear. An unclosed section keeps its text as written. */
+function unwrapCdata(raw: string): { text: string; cdata: boolean } {
+  let out = "";
+  let i = 0;
+  let cdata = false;
+  for (;;) {
+    const start = raw.indexOf("<![CDATA[", i);
+    if (start === -1) break;
+    const end = raw.indexOf("]]>", start + 9);
+    if (end === -1) break;
+    out += raw.slice(i, start) + raw.slice(start + 9, end);
+    cdata = true;
+    i = end + 3;
+  }
+  return { text: out + raw.slice(i), cdata };
 }
 
-function tagValues(block: string, tag: string): string[] {
+/** The text of a field: CDATA is taken as written, anything else is entity-decoded once. */
+function fieldText(raw: string): { text: string; cdata: boolean } {
+  const u = unwrapCdata(raw);
+  return u.cdata ? u : { text: decodeEntities(raw), cdata: false };
+}
+
+/**
+ * The inner text of each <tag ...>...</tag> in order, by indexOf scans (linear). An element with no
+ * closing tag ends the scan. Stops after `limit` elements.
+ */
+function elements(xml: string, tag: string, limit = Infinity): string[] {
+  const lower = asciiLower(xml);
+  const open = `<${tag.toLowerCase()}`;
+  const close = `</${tag.toLowerCase()}`;
   const out: string[] = [];
-  const re = new RegExp(`<${tag}(?:\\s[^>]*)?>([\\s\\S]*?)</${tag}\\s*>`, "gi");
-  for (const m of block.matchAll(re)) out.push(m[1] ?? "");
+  let i = 0;
+  while (out.length < limit) {
+    const s = lower.indexOf(open, i);
+    if (s === -1) break;
+    if (!isBoundary(lower[s + open.length])) {
+      i = s + 1;
+      continue;
+    }
+    const gt = lower.indexOf(">", s);
+    if (gt === -1) break;
+    if (lower[gt - 1] === "/") {
+      out.push("");
+      i = gt + 1;
+      continue;
+    }
+    const e = lower.indexOf(close, gt + 1);
+    if (e === -1) break;
+    out.push(xml.slice(gt + 1, e));
+    const end = lower.indexOf(">", e);
+    if (end === -1) break;
+    i = end + 1;
+  }
   return out;
 }
 
@@ -109,23 +184,19 @@ function plain(raw: string, max: number): string {
 
 /** The <item> elements of an RSS 2.0 feed, as plain text with caps applied. */
 export function parseRss(xml: string): FeedItem[] {
-  const items: FeedItem[] = [];
-  for (const match of xml.matchAll(/<item(?:\s[^>]*)?>([\s\S]*?)<\/item\s*>/gi)) {
-    if (items.length >= MAX_FEED_ITEMS) break;
-    const block = match[1] ?? "";
-    const first = (tag: string, max: number): string => plain(tagValues(block, tag)[0] ?? "", max);
+  return elements(xml, "item", MAX_FEED_ITEMS).map((block) => {
+    const first = (tag: string, max: number): string => plain(elements(block, tag, 1)[0] ?? "", max);
     const guid = first("guid", MAX_LINK);
     const pub = first("pubDate", 100);
-    items.push({
+    return {
       title: first("title", MAX_TITLE),
       link: first("link", MAX_LINK),
       description: first("description", MAX_DESCRIPTION),
       pubDate: pub || null,
       guid: guid || null,
-      categories: tagValues(block, "category").map((c) => plain(c, MAX_TITLE)).filter(Boolean),
-    });
-  }
-  return items;
+      categories: elements(block, "category").map((c) => plain(c, MAX_TITLE)).filter(Boolean),
+    };
+  });
 }
 
 /** Breaks every "{{" so feed text can never form a merge token: "{{x}}" becomes "{ {x}}". */
@@ -149,7 +220,7 @@ export function sanitizeItem(item: FeedItem): CleanFeedItem | null {
     title: escapeMergeTokens(item.title),
     link: escapeMergeTokens(item.link),
     description: escapeMergeTokens(item.description),
-    pubDate: item.pubDate,
+    pubDate: item.pubDate === null ? null : escapeMergeTokens(item.pubDate),
     guid: guid === null ? null : escapeMergeTokens(guid),
     categories: item.categories.map(escapeMergeTokens),
     key: escapeMergeTokens(guid ?? item.link),
