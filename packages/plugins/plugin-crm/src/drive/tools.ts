@@ -201,7 +201,7 @@ export async function driveFolderEnsure(ctx: PluginContext, viewer: Viewer, para
     ctx.logger.info("Drive folder ensure", { companyId: viewer.companyId, entityType: type, entityId: id, includeTree: include_tree === true, outcome, elapsedMs: Date.now() - startedAt, ...extra });
 
   // Internal param: the save's own broker, so one save reads the config, binding and key once.
-  let broker: Broker | null | undefined = params.broker && typeof params.broker === "object" ? (params.broker as Broker) : undefined;
+  let broker: Broker | null | undefined = isBroker(params.broker) ? params.broker : undefined;
   try {
     if (!broker) broker = await createBrokerForCompany(ctx, viewer.companyId);
   } catch (e) {
@@ -317,6 +317,12 @@ const isBadCredential = (e: unknown): boolean => e instanceof BrokerError && (e.
 /** Methods whose input can be sent again: a stream (upload chunks, a download body) is used once and is never retried. */
 const REPLAYABLE = ["resolve", "findSubfolder", "ensure", "identity", "uploadFile", "listFiles", "fileMeta", "trashFile", "downloadFile", "thumbnail"] as const;
 const ONE_SHOT = ["uploadFileStream", "downloadStream"] as const;
+
+/** An internal param arrives through the raw tool body: accept only a real broker, never a JSON object an agent sent. */
+function isBroker(b: unknown): b is Broker {
+  const x = b as Partial<Broker> | null | undefined;
+  return !!x && typeof x === "object" && typeof x.resolve === "function" && typeof x.ensure === "function";
+}
 
 /**
  * The broker on the cached key. When Google refuses the key, the secret is read once more; a different key (rotated

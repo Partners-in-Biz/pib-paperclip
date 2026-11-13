@@ -5,6 +5,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { boot, CO, seed, company, contact } from "./helpers/crm.js";
 import { clearServiceAccountTokenCache } from "../src/drive/google-sa.js";
+import { driveFolderEnsure } from "../src/drive/tools.js";
 import { saveDriveFile } from "../src/drive/save.js";
 import { DRIVE_ID, KEY_JSON, LAYOUT, fakeGoogle, folderAt, uploadsOf } from "./support/fake-google-drive.js";
 
@@ -121,11 +122,13 @@ describe("PAR-11350: one broker per save, every stage timed", () => {
   });
 
   it("the timing line carries every new stage and the named stages add up to totalMs (fake clock)", async () => {
-    const { save, timing } = await setup();
+    const { save, timing, google } = await setup();
     await save("p-a", "Assets/Social");
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
       vi.setSystemTime(0);
+      // Every Drive request costs 100 ms on the fake clock, so the stage sum is a real number.
+      vi.stubGlobal("fetch", (async (...a: Parameters<typeof google.fetchFn>) => { vi.setSystemTime(Date.now() + 100); return google.fetchFn(...a); }) as never);
       // Each async step costs wall time on a real clock; the fake clock only moves where the test moves it, so run the save and then read the line.
       await save("p-a", "Assets/Social");
     } finally {
@@ -135,6 +138,13 @@ describe("PAR-11350: one broker per save, every stage timed", () => {
     for (const k of ["sourceMs", "brokerMs", "factsMs", "findSubfolderMs", "upsertMs", "uploadListMs", "uploadPostMs", "uploadMs"]) expect(typeof t[k]).toBe("number");
     expect(t.uploadMs).toBe(t.uploadListMs + t.uploadPostMs);
     const sum = t.sourceMs + t.brokerMs + t.factsMs + t.resolveMs + t.findSubfolderMs + t.dedupeMs + t.uploadMs + t.upsertMs;
+    expect(t.totalMs).toBeGreaterThanOrEqual(400);
     expect(Math.abs(t.totalMs - sum)).toBeLessThanOrEqual(50);
+  });
+
+  it("a hostile broker value in the tool body is ignored: ensure builds its own broker", async () => {
+    const { harness } = await setup();
+    const r = await driveFolderEnsure(harness.ctx, { companyId: CO, userId: null, agentId: null, role: null } as never, { entity_type: "project", entity_id: "p-a", broker: {}, timing: "x" } as never);
+    expect(r).toBeTruthy();
   });
 });
