@@ -44,6 +44,8 @@ function makeHost(raw: Record<string, unknown> = FULL, now = "2026-09-20T08:00:0
   const issues = new Map<string, Issue>();
   const outbox = new Map<string, Record<string, unknown>>();
   const state = new Map<string, unknown>();
+  let failDelete = false;
+  const warnings: Array<{ message: string; meta: unknown }> = [];
   const agents = new Map<string, { id: string; name: string; status: string }>();
   const skey = (k: Record<string, unknown>) => `${k.scopeKind}|${k.scopeId ?? ""}|${k.namespace ?? "default"}|${k.stateKey}`;
   let seq = 0;
@@ -73,7 +75,8 @@ function makeHost(raw: Record<string, unknown> = FULL, now = "2026-09-20T08:00:0
     },
     state: {
       get: async (k: Record<string, unknown>) => state.get(skey(k)) ?? null,
-      set: async (k: Record<string, unknown>, value: unknown) => { state.set(skey(k), value); },
+      set: async (k: Record<string, unknown>, value: unknown) => { if (value === null) throw new Error("null value in column value_json violates not-null constraint"); state.set(skey(k), value); },
+      delete: async (k: Record<string, unknown>) => { if (failDelete) throw new Error("delete failed"); state.delete(skey(k)); },
     },
     agents: {
       get: async (id: string) => agents.get(id) ?? null,
@@ -89,7 +92,7 @@ function makeHost(raw: Record<string, unknown> = FULL, now = "2026-09-20T08:00:0
       requestWakeup: async () => ({}),
     },
     secrets: { resolve: async () => undefined },
-    logger: { info: () => undefined, warn: () => undefined, error: () => undefined },
+    logger: { info: () => undefined, warn: (message: string, meta?: unknown) => { warnings.push({ message, meta }); }, error: () => undefined },
   } as never;
   const clock = { now: new Date(now) };
   const env = createEnv(ctx, { now: () => clock.now, config: async (companyId: string) => payrollConfigFrom(ctx, companyId, raw) });
@@ -101,7 +104,7 @@ function makeHost(raw: Record<string, unknown> = FULL, now = "2026-09-20T08:00:0
     agents.set("agent-clerk", { id: "agent-clerk", name: "Payroll Clerk", status });
     state.set(`company|${C}|pib-hire|role:payroll-clerk`, { agentId: "agent-clerk", linkedAt: "2026-09-01T00:00:00Z", linkedBy: "manual", hire: null });
   };
-  return { env, ctx, emitted, issues, outbox, state, clock, roles, linkClerk };
+  return { env, ctx, emitted, issues, outbox, state, warnings, setFailDelete: (v: boolean) => { failDelete = v; }, clock, roles, linkClerk };
 }
 
 async function addEmployee(host: ReturnType<typeof makeHost>, first = "Thandi", email: string | null = "thandi@example.test") {
@@ -145,6 +148,29 @@ describe("Prepare pay run", () => {
     // Once per month.
     expect(await triggers.prepareRunTrigger(host.env, C)).toBeNull();
     expect([...host.issues.values()].filter((i) => String(i.title).startsWith("Prepare pay run"))).toHaveLength(1);
+  });
+
+  it("releases the once-a-month mark when the issue cannot be opened, so the next run tries again", async () => {
+    const host = makeHost();
+    host.roles();
+    await addEmployee(host);
+    const create = (host.ctx as any).issues.create;
+    (host.ctx as any).issues.create = async () => { throw new Error("boom"); };
+    expect(await triggers.prepareRunTrigger(host.env, C)).toBeNull();
+    (host.ctx as any).issues.create = create;
+    expect(await triggers.prepareRunTrigger(host.env, C)).not.toBeNull();
+  });
+
+  it("logs once when the mark cannot be released", async () => {
+    const host = makeHost();
+    host.roles();
+    await addEmployee(host);
+    (host.ctx as any).issues.create = async () => { throw new Error("boom"); };
+    host.setFailDelete(true);
+    expect(await triggers.prepareRunTrigger(host.env, C)).toBeNull();
+    const failed = host.warnings.filter((w) => w.message === "Payroll mark release failed");
+    expect(failed).toHaveLength(1);
+    expect(failed[0].meta).toMatchObject({ companyId: C, key: "prepare:2026-09" });
   });
 
   it("waits until the lead time, and the lead time is a setting", async () => {
