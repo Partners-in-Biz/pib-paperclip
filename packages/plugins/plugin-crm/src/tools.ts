@@ -31,6 +31,14 @@ const int = (description: string, extra: Record<string, unknown> = {}): JsonSche
 const bool = (description: string): JsonSchema => ({ type: "boolean", description });
 const bag = (description: string): JsonSchema => ({ type: "object", additionalProperties: true, description });
 
+/** The settings of a newsletter lead form (intake newsletter). The secret that signs its confirmation links is never a parameter. */
+const NEWSLETTER_FIELDS = {
+  applyTags: textList("Newsletter forms only (required there): 1 to 5 tags of 1 to 60 characters that a subscriber gets once they confirm, e.g. [\"remotesaffa-subscribers\"]."),
+  confirmUrl: text("Newsletter forms only (required there): the https page that confirms a signup, at most 100 characters, on exactly the host of the form's site (no subdomain, user name, port, ? or #)."),
+  confirmFrom: text("Newsletter forms only (required there): the one address the confirmation mail is sent from, e.g. hello@example.co.za."),
+  confirmDailyCap: int("Newsletter forms only: the most confirmation mails the form sends in 24 hours, 1 to 300 (default 300).", { minimum: 1, maximum: 300 }),
+};
+
 const P = {
   companyRecordId: text("CRM company id (from find-records or get-company). company:<id> also works."),
   contactId: text("CRM contact id (from find-records or get-contact). contact:<id> also works."),
@@ -175,9 +183,10 @@ export const CRM_TOOLS: PluginToolDeclaration[] = [
       consentText: text("The wording next to the marketing tick box. Default: the client (or we) may email news and offers, with an unsubscribe line. Must say who will email them."),
       privacyUrl: text("A link to the privacy policy shown under the form."),
       successMessage: text("What the visitor reads after sending (default: Thank you, we will be in touch)."),
-      intake: oneOf(LEAD_INTAKES, "lead (default): each submission is a lead (contact, follow-up, consent). issue: a report form; each submission opens one issue in projectId, email is optional, and no contact or consent record is made. The label starts the issue title (e.g. label Listing report gives Listing report: <subject>)."),
+      intake: oneOf(LEAD_INTAKES, "lead (default): each submission is a lead (contact, follow-up, consent). issue: a report form; each submission opens one issue in projectId, email is optional, and no contact or consent record is made. The label starts the issue title (e.g. label Listing report gives Listing report: <subject>). newsletter: a signup list with double opt-in (signed server calls only; an agent may create it, and it takes no signups until a person makes its signing secret on the Lead forms card); needs siteUrl, applyTags, confirmUrl and confirmFrom. The intake never changes after creation."),
       projectId: text("Only with intake issue (required there): the Paperclip project the report issues open in."),
       assigneeAgentId: text("Only with intake issue: the agent each report issue is assigned to. Leave out for unassigned issues in the project."),
+      ...NEWSLETTER_FIELDS,
     }),
   },
   {
@@ -187,6 +196,7 @@ export const CRM_TOOLS: PluginToolDeclaration[] = [
       "Give a lead form a new key. The old key keeps working for 7 days so the snippet on the site can be swapped without losing leads. Use it after a key leaked, or to turn on spam protection that was set up after the snippet was installed. It never makes a signing secret: only a person does that, on the client's Lead forms card.",
     parametersSchema: schema(["sourceId"], {
       sourceId: text("The form (from list-lead-sources)."),
+      newConfirmKey: bool("Newsletter forms only. true: replace ONLY the key that signs confirmation links, so every link already sent stops working at once; the public key and signing secret stay and signups go on. The key is never shown."),
     }),
   },
   {
@@ -210,6 +220,7 @@ export const CRM_TOOLS: PluginToolDeclaration[] = [
       consentText: text("The wording next to the marketing tick box."),
       privacyUrl: text("A link to the privacy policy."),
       successMessage: text("What the visitor reads after sending."),
+      ...NEWSLETTER_FIELDS,
       status: oneOf(SOURCE_STATUSES, "active: takes leads. paused: stops for now. revoked: off for good (a person only)."),
     }),
   },
