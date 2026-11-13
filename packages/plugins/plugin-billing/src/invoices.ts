@@ -8,6 +8,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { PluginContext, PluginPerformActionContext } from "@paperclipai/plugin-sdk";
 import { getCrmCompany, getCrmContact, listCrmContactsAtCompany, type CrmCompanyBilling, type MailAddress } from "@partnersinbiz/pib-plugin-kit";
 import { invoiceBalance, iso, refreshInvoiceStatus } from "./balances.js";
+import { documentBrand } from "./brand.js";
 import { billingSettings, defaultTaxCode, emailEnabled, loadBilling, privateR2, type BillingSettings } from "./config.js";
 import { saveSentCopy } from "./sent-copy.js";
 import {
@@ -725,6 +726,7 @@ export async function invoiceView(ctx: PluginContext, invoice: InvoiceRow, setti
     payment: Object.keys(payment).length ? payment : null,
     paymentLinks: (await activePaymentLinks(ctx, invoice)).map((link) => ({ provider: link.provider, label: link.label, url: link.url })),
     notes: invoice.notes ?? settings.invoiceNotes ?? null,
+    brand: await documentBrand(ctx, sender, settings),
   };
 }
 
@@ -751,6 +753,7 @@ export async function quoteView(ctx: PluginContext, quote: QuoteRow, settings: B
     legacy: totals.legacy,
     notes: quote.notes ?? null,
     payment: Object.keys(payment).length ? payment : null,
+    brand: await documentBrand(ctx, sender, settings),
   };
 }
 

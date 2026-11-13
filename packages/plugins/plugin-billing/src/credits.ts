@@ -7,6 +7,7 @@ import type { PluginContext, PluginPerformActionContext } from "@paperclipai/plu
 import { creditNoteAvailable, invoiceBalances, iso } from "./balances.js";
 import { emailEnabled, loadBilling, privateR2, type BillingSettings } from "./config.js";
 import { asObject, getCreditNote, getInvoice, insertCreditNote, table, type CreditNoteRow } from "./db.js";
+import { documentBrand } from "./brand.js";
 import { docFileName, renderDocument, statementPdfSpec, type DocView, type StatementEntry, type StatementView } from "./documents.js";
 import { BillingError, createCreditNote, daysPastDue } from "./domain.js";
 import { creditNoteEmail, parseAddresses, queueMail, statementEmail } from "./mail.js";
@@ -256,7 +257,8 @@ export async function statementData(ctx: PluginContext, companyId: string, clien
     else ageing.d90plus += b.outstandingMinor;
   }
   const customer = mine[0] ? asObject(mine[0].invoice.customer_snapshot ?? mine[0].invoice.customer) : await customerFrom(ctx, companyId, client.kind, client.id, undefined).catch(() => ({ name: client.id }));
-  return { currency: cur, from, to, sender: senderFrom(settings, undefined), customer, openingMinor: opening, entries, ageing, payment: settings.payment ?? null };
+  const sender = senderFrom(settings, undefined);
+  return { currency: cur, from, to, sender, customer, openingMinor: opening, entries, ageing, payment: settings.payment ?? null, brand: await documentBrand(ctx, sender, settings) };
 }
 
 function statementRange(params: Record<string, unknown>): { from: string; to: string } {

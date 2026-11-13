@@ -51,6 +51,8 @@ const instanceConfigSchema: JsonSchema = {
         phone: text("Phone"),
         vatNumber: text("VAT number", "When set, documents are titled Tax invoice / Tax credit note."),
         registrationNumber: text("Company registration number"),
+        logoUrl: text("Logo address", "An https link to your logo as a PNG or JPEG (up to 2 MB). It prints top left on invoices, quotes, credit notes and statements. Wide logos look best."),
+        brandColor: text("Brand colour", "A hex colour such as #14304f for headings, the table header and the amount due. Empty: navy."),
       },
     },
     payment: {
@@ -200,7 +202,7 @@ const instanceConfigSchema: JsonSchema = {
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.21.4",
+  version: "0.22.0",
   displayName: "Billing",
   description: "Invoices, quotes, credit notes, EFT proof of payment, bills, expenses, time and retainers. Agents draft and ask; a person approves sending and money.",
   author: "Partners in Biz",
