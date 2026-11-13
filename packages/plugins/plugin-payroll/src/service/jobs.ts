@@ -1,7 +1,7 @@
 /**
  * Scheduled work that loops over companies (jobs have no company scope).
  */
-import { configSaved, isModuleEnabled, publishSetupStatus, tryLinkPendingHire } from "@partnersinbiz/pib-plugin-kit";
+import { actionableCompanyIds, configSaved, isModuleEnabled, publishSetupStatus, tryLinkPendingHire } from "@partnersinbiz/pib-plugin-kit";
 import * as db from "../db.js";
 import { CLERK_ROLE, type clerkOnLinked } from "../hire.js";
 import { PLUGIN_ID } from "../namespace.js";
@@ -76,7 +76,7 @@ async function publishStatus(e: Env, companyId: string, published: Map<string, n
 }
 
 /** Companies with payroll rows, plus companies that saved the Payroll settings but have none yet. */
-async function payrollCompanies(e: Env): Promise<string[]> {
+export async function payrollCompanies(e: Env): Promise<string[]> {
   const { ctx } = e;
   const ids = new Set<string>();
   for (const load of [db.companiesWithRuns, db.companiesWithEmployees]) {
@@ -85,6 +85,12 @@ async function payrollCompanies(e: Env): Promise<string[]> {
     } catch (error) {
       ctx.logger.info("Payroll company list failed", { error: errorMessage(error) });
     }
+  }
+  // The host's actionable list is the companies with saved settings; null (unknown) keeps the per-company probe.
+  const actionable = await actionableCompanyIds(ctx);
+  if (actionable) {
+    for (const id of actionable) ids.add(id);
+    return [...ids];
   }
   try {
     for (const company of await ctx.companies.list({ limit: 100 })) {
