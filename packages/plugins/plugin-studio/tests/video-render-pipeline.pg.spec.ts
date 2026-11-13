@@ -517,7 +517,9 @@ setTimeout(() => {
     const ids = r.runs.map((x) => x.id);
     expect(ids.slice(0, 2).sort()).toEqual(["chunk-0-0", "chunk-0-1"]);
     expect(ids.at(-1)).toBe("final");
-    const at = (id: string) => r.started[ids.indexOf(id)].endedBefore;
+    // Side by side, the log order and the started() order can differ: match each run to its own group.
+    const pgidOf = (id: string) => r.runs.find((x) => x.id === id)!.pgid;
+    const at = (id: string) => r.started.find((s) => s.pgid === pgidOf(id))!.endedBefore;
     // Both first chunks were up before either ended; a third waits for a free lane, level 1 for all of level 0.
     expect([at("chunk-0-0"), at("chunk-0-1")]).toEqual([0, 0]);
     expect(at("chunk-0-2")).toBeGreaterThanOrEqual(1);
@@ -533,7 +535,9 @@ setTimeout(() => {
     const r = await passes(8, { options: { passConcurrency: 2 } });
     expect(r.result).toMatchObject({ error: { code: "ffmpeg_failed", kind: "deterministic", stderrTail: expect.stringContaining("boom chunk-0-0") } });
     expect(r.runs.map((x) => x.id).sort()).toEqual(["chunk-0-0", "chunk-0-1"]);
-    const sibling = r.started[r.runs.findIndex((x) => x.id === "chunk-0-1")].pgid;
+    // The log order of two side-by-side runs is not their start order; the run logs its own group.
+    const sibling = r.runs.find((x) => x.id === "chunk-0-1")!.pgid;
+    expect(r.started.map((s) => s.pgid)).toContain(sibling);
     expect(r.kills).toContainEqual([-sibling, "SIGTERM"]);
     for (const s of r.started) expect(await pidsInGroup(s.pgid)).toEqual([]);
     expect(r.ended()).toBe(2);
