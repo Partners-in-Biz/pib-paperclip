@@ -19,12 +19,16 @@
  * - `setProps` on video and overlay clips also sets `adjust` (schema v3; merged per field, a neutral value removes that
  *   field, `adjust: null` removes all) and `look` (merged with the clip's look, so `{intensity}` alone changes the
  *   strength; `look: null` removes it). `split`, `trim` and `move` keep both on every part.
- * - `reorder` sets the track order (first track is the bottom layer); `removeTrack` removes the track with its clips.
+ * - `setProps` on overlay clips also sets `blendMode` (schema v4; "normal" removes it), `chromaKey` and `frame` (merged
+ *   per field like `look`; null removes them). A clip moved to the video track drops all three (they are overlay-only).
+ * - `reorder` sets the order of all tracks at once (first track is the bottom layer) and moves no clips; `moveTrack`
+ *   moves one track to `toIndex` (0..tracks-1, the others keep their order). Its undo is `moveTrack` back to the old
+ *   index (`moveTrackUndo`). `removeTrack` removes the track with its clips.
  */
 import { clipDuration, EditError, KEYFRAME_PROPS, LIMITS, normalizeEdit, type Clip, type EditDoc, type EditErrorReason, type Keyframe, type Keyframes, type Track, type TrackKind, type Transition } from "./timeline.js";
 
 export const MAX_OPS = 500;
-export const OP_NAMES = ["addClip", "split", "trim", "move", "delete", "reorder", "setProps", "addTrack", "removeTrack", "setProject"] as const;
+export const OP_NAMES = ["addClip", "split", "trim", "move", "delete", "reorder", "moveTrack", "setProps", "addTrack", "removeTrack", "setProject"] as const;
 export type OpName = (typeof OP_NAMES)[number];
 
 export type EditOp =
@@ -34,6 +38,7 @@ export type EditOp =
   | { op: "move"; clipId: string; start?: number; trackId?: string }
   | { op: "delete"; clipId: string }
   | { op: "reorder"; trackIds: string[] }
+  | { op: "moveTrack"; trackId: string; toIndex: number }
   | { op: "setProps"; clipId: string; props: Record<string, unknown> }
   | { op: "addTrack"; track: { id: string; kind: TrackKind; clips?: unknown[] }; index?: number }
   | { op: "removeTrack"; trackId: string }
@@ -51,7 +56,7 @@ const SOURCE_PROPS = ["assetId", "version", "in", "out", "start", "speed", "volu
 /** What `setProps` may change, per track kind. `id` never changes: delete and add instead. */
 const PROPS: Record<TrackKind, readonly string[]> = {
   video: [...SOURCE_PROPS, "transform", "transitionIn", "keyframes", "adjust", "look"],
-  overlay: [...SOURCE_PROPS, "transform", "transitionIn", "keyframes", "adjust", "look"],
+  overlay: [...SOURCE_PROPS, "transform", "transitionIn", "keyframes", "adjust", "look", "blendMode", "chromaKey", "frame"],
   audio: [...SOURCE_PROPS, "keyframes"],
   text: ["text", "start", "duration", "font", "color", "fontSize", "fadeIn", "fadeOut", "transform", "transitionIn", "keyframes"],
   caption: ["start", "style", "words"],
@@ -264,6 +269,14 @@ function run(doc: EditDoc, raw: unknown, i: number): void {
       doc.tracks = (ids as string[]).map((x) => doc.tracks[have.indexOf(x)]);
       return;
     }
+    case "moveTrack": {
+      const { track, index } = findTrack(doc, idArg(o, "trackId", i), i, "trackId");
+      const to = o.toIndex;
+      if (typeof to !== "number" || !Number.isInteger(to) || to < 0 || to >= doc.tracks.length) fail(i, "out_of_range", "toIndex", `must be a whole number from 0 to ${doc.tracks.length - 1}.`);
+      doc.tracks.splice(index, 1);
+      doc.tracks.splice(to, 0, track);
+      return;
+    }
     case "setProps": {
       const { track, index, clip } = findClip(doc, idArg(o, "clipId", i), i);
       const props = objArg(o, "props", i);
@@ -295,6 +308,8 @@ function run(doc: EditDoc, raw: unknown, i: number): void {
         const media = next as typeof clip;
         if (record(props.adjust) && clip.adjust) media.adjust = { ...clip.adjust, ...record(props.adjust) };
         if (record(props.look) && clip.look) media.look = { ...clip.look, ...record(props.look) } as typeof clip.look;
+        if (record(props.chromaKey) && clip.chromaKey) media.chromaKey = { ...clip.chromaKey, ...record(props.chromaKey) } as typeof clip.chromaKey;
+        if (record(props.frame) && clip.frame) media.frame = { ...clip.frame, ...record(props.frame) } as typeof clip.frame;
       }
       clipsOf(track)[index] = next;
       sortClips(track);
@@ -320,6 +335,13 @@ function run(doc: EditDoc, raw: unknown, i: number): void {
     default:
       fail(i, "invalid", "op", `must be one of ${OP_NAMES.join(", ")}.`);
   }
+}
+
+/** The op that undoes `moveTrack { trackId, toIndex }` on `before` (the doc it applies to): the track back to its index. */
+export function moveTrackUndo(before: EditDoc, trackId: string): EditOp & { op: "moveTrack" } {
+  const toIndex = before.tracks.findIndex((t) => t.id === trackId);
+  if (toIndex < 0) throw new OpError(`there is no track ${trackId}.`, "not_found", "trackId", -1);
+  return { op: "moveTrack", trackId, toIndex };
 }
 
 /** Applies `ops` in order to a copy of `edit` and returns the normalised result. Throws `OpError` and applies nothing on any failure. */

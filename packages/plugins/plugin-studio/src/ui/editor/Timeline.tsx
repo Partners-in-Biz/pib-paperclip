@@ -17,6 +17,7 @@ import { AddClipDialog } from "./AddClipDialog.js";
 import { AudioTrack } from "./AudioTrack.js";
 import { CaptionTrack } from "./CaptionTrack.js";
 import { TextTrack } from "./TextTrack.js";
+import { moveTrackOps } from "./layer-panel.js";
 import { applyKeyEdit, undoKeyChange } from "./ClipInspector.js";
 import { addClipOps, clipEnd, createKeyHistory, keyMarkers, moveKeysOps, type KeyHistory, clipJoins, DEFAULT_TRANSITION_SECONDS, TRANSITION_LABELS, TRANSITION_TYPES, transitionOps, type Join, type TransitionKind, type TransitionPick, clipLabel, clipLength, clipUnderPlayhead, docLength, fitScale, formatTime, hitTest, isTrimmable, pxToSeconds, reorderResult, rippleBox, secondsToPx, splitTarget, tickStep, trimResult, type LibraryPick, type TrimEdge } from "./timeline-view.js";
 
@@ -302,8 +303,12 @@ export function Timeline({ store, keyHistory }: { store: EditorStore; keyHistory
               const clips = track.clips as Clip[];
               return (
                 <div key={track.id} data-track={track.id} style={{ display: "flex", height: LANE_H, borderBottom: "1px solid #8882" }}>
-                  <div title={`${track.kind} · ${track.id}`} style={{ ...ellipsis, position: "sticky", left: 0, zIndex: 2, width: LABEL_W, flex: "none", boxSizing: "border-box", padding: "0 8px", lineHeight: `${LANE_H}px`, fontSize: 12, background: "var(--background, Canvas)", borderRight: "1px solid #8883" }}>
-                    {track.kind} · {track.id}
+                  <div title={`${track.kind} · ${track.id}`} style={{ position: "sticky", left: 0, zIndex: 2, width: LABEL_W, flex: "none", boxSizing: "border-box", display: "flex", alignItems: "center", gap: 2, padding: "0 4px 0 8px", fontSize: 12, background: "var(--background, Canvas)", borderRight: "1px solid #8883" }}>
+                    <span style={{ ...ellipsis, flex: "1 1 auto" }}>{track.kind} · {track.id}</span>
+                    {tracks.length > 1 ? (["up", "down"] as const).map((dir) => {
+                      const move = moveTrackOps(doc, track.id, dir);
+                      return <button key={dir} type="button" data-track-move={dir} aria-label={`Move track ${track.id} ${dir}`} title={dir === "up" ? "Move this track up (further back)" : "Move this track down (further forward)"} disabled={busy || !move} onClick={() => move && void store.applyOps(move.ops)} style={{ ...btn(!busy && Boolean(move)), flex: "none", padding: "0 3px", fontSize: 10, lineHeight: "14px" }}>{dir === "up" ? "▲" : "▼"}</button>;
+                    }) : null}
                   </div>
                   <div onPointerDown={(e) => onLaneDown(track.id, clips, e)} onPointerMove={onLaneMove} onPointerUp={onLaneUp} onPointerCancel={onLaneCancel} style={{ position: "relative", width: laneW, touchAction: "pan-y" }}>
                     {clips.map((clip) => {
@@ -355,7 +360,7 @@ export function Timeline({ store, keyHistory }: { store: EditorStore; keyHistory
           </div>
         )}
       </div>
-      {tracks.length ? <div data-timeline-help style={{ ...ellipsis, padding: "4px 12px", fontSize: 12, opacity: 0.7 }}>Alt-drag an edge: trim without closing the gap · drag a ◆ to move a key</div> : null}
+      {tracks.length ? <div data-timeline-help style={{ ...ellipsis, padding: "4px 12px", fontSize: 12, opacity: 0.7 }}>Alt-drag an edge: trim without closing the gap · drag a ◆ to move a key · lower tracks are drawn in front</div> : null}
       {keyNote ? <div role="alert" data-key-note style={{ padding: "0 12px 6px", fontSize: 12, color: "#c2410c", overflowWrap: "anywhere" }}>{keyNote}</div> : null}
       {adding ? <AddClipDialog companyId={companyId} client={client} busy={busy} onPick={addPicked} onClose={() => setAdding(false)} /> : null}
     </section>

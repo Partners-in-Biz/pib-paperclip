@@ -72,7 +72,7 @@ describe("schema v2: transitions, keyframes and the rollback-safe writer", () =>
     expect(refused(video({ transitionIn: { type: "wipe", duration: 1 } }))).toMatchObject({ reason: "unknown_transition", path: "tracks[0].clips[0].transitionIn.type" });
     expect(refused(video({ keyframes: { crop: [{ t: 0, value: 0 }] } })).reason).toBe("invalid");
     expect(refused(video({ keyframes: [{ t: 0, value: 0 }] })).reason).toBe("invalid");
-    expect(refused({ schemaVersion: 4 }).reason).toBe("unsupported_version");
+    expect(refused({ schemaVersion: 5 }).reason).toBe("unsupported_version");
   });
 
   it("refuses volume keyframes on a clip without sound with no_audio", () => {
