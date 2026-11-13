@@ -3,7 +3,7 @@
  * did steps 1 to 3 first: signed calls only, the source bucket, the daily ceiling, the address checks and the settings check.
  *
  * A signup writes one capture row (outcome `pending_confirmation`, no contact) and queues one confirmation mail. It writes no
- * contact, tag, consent record or issue and runs no lead scoring: that waits for the click on the link (confirm, a later stage).
+ * contact, tag, consent record or issue and runs no lead scoring: that waits for the click on the link (`newsletter-confirm.ts`).
  * Every outcome here gives the caller the same answer, so it cannot learn who is on the list.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
