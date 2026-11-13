@@ -73,12 +73,15 @@ PAR-10822. A lead source now has an `intake`: `lead` (the default; every existin
 - puts every submitted field in one plain-text code block the visitor cannot close, so links and HTML are shown as text.
 The same report (sender, subject, message, fields) twice in a day is one issue. Signed and unsigned calls keep the lead rules (honeypot, fill time, links, Turnstile, per-IP caps for unsigned). Migration `022_crm.sql` adds `intake` (default `lead`, named CHECK `lead_sources_intake`: `lead` or `issue`; a later mode drops and re-adds that one constraint), `target_project_id` and `target_agent_id`; rollback: none needed, old code ignores them.
 
-## Newsletter forms: database and store (0.47.0)
+## Newsletter forms: database, store and tools (0.47.0, 0.47.1)
 
-PAR-10850, plan PAR-10817 stage 1 (first half; the tools follow in PAR-10863). Nothing a visitor or an existing form sees changes.
+PAR-10850 (database, 0.47.0) and PAR-10863 (tools, 0.47.1), plan PAR-10817 stage 1. Nothing a visitor or an existing form sees changes.
 - Migration `023_crm.sql` widens `lead_sources_intake` to `lead`, `issue`, `newsletter` and adds `apply_tags` (jsonb, default `[]`), `confirm_url`, `confirm_from`, `confirm_secret`, `confirm_daily_cap` (default 300), with the CHECK `lead_sources_newsletter`: a newsletter source has tags, `confirm_url`, `confirm_from`, `confirm_secret` and `consent_text` (not `signing_secret`: only a person makes one, so an agent-created source has none until then; the lead webhook refuses a newsletter source either way); any other source has none of the newsletter settings. Existing rows pass unchanged. Rollback: revert the code; the columns can stay. **Stop-first:** apply and read back the migration on production before the code deploys.
 - The store reads and writes the new columns (`saveConfirmSecret` replaces the confirmation secret of a newsletter source only).
-- The tools refuse `intake: "newsletter"` for now, and the lead webhook refuses a newsletter source (nothing is written) until stage 2 adds signup and confirm.
+- `create-lead-endpoint` takes `intake: "newsletter"` with `siteUrl`, `applyTags` (1 to 5 tags, 1 to 60 characters), `confirmUrl` (https, exactly the site's host, no userinfo, port, query or fragment), `confirmFrom` (one address) and `confirmDailyCap` (1 to 300). It needs the signing secret, so only a person creates one (`serverSecret: true`, Lead forms card).
+- The plugin makes `confirm_secret`; no parameter sets it and no tool, view or log shows it (only `set` and a short `keyId`). `rotate-lead-key` with `confirmSecret: true` replaces it alone (open links die; key and signing secret stay).
+- `update-lead-source` changes the settings with the same checks. `intake` never changes to or from `newsletter`. New `consentText` on a newsletter source voids open links, and the result says so.
+- The lead webhook refuses a newsletter source (nothing is written) until stage 2 adds signup and confirm.
 
 ## Drive save: one query into an existing sub-folder (0.46.2)
 
