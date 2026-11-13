@@ -180,7 +180,10 @@ describe.skipIf(!hasFfmpeg)("blend + frame with real ffmpeg", () => {
       for (const f of compiled.files) writeFileSync(join(dir, f.name), f.content);
       const r = spawnSync("ffmpeg", ["-benchmark", "-threads", "4", ...compiled.args], { cwd: dir, encoding: "utf8" });
       expect(r.status, r.stderr.slice(-500)).toBe(0);
-      return Number(/maxrss=(\d+)kB/.exec(r.stderr)?.[1]) / 1024;
+      // ffmpeg 6 prints `maxrss=NkB`, ffmpeg 8 `maxrss=NKiB`.
+      const kib = Number(/maxrss=(\d+)\s*(?:kB|KiB)/.exec(r.stderr)?.[1]);
+      expect(kib, r.stderr.slice(-300)).toBeGreaterThan(0);
+      return kib / 1024;
     };
     const atStart = maxRss(0);
     const late = maxRss(10);
