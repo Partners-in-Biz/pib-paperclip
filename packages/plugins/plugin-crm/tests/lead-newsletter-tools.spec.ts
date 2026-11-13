@@ -7,7 +7,10 @@ import { bootLeads, makeSource, makeSourceAsPerson, type Booted } from "./helper
 const SITE = "https://remotesaffa.co.za";
 const NEWSLETTER = { label: "Newsletter", intake: "newsletter", siteUrl: SITE, applyTags: ["remotesaffa-subscribers"], confirmUrl: `${SITE}/subscribe/confirm`, confirmFrom: "hello@remotesaffa.co.za", consentText: "Yes, send me the Friday list." };
 const refused = (promise: Promise<unknown>) => promise.then(() => "accepted", (error: unknown) => String(error));
-const row = (booted: Booted) => booted.store.lead_sources[0] as Record<string, any>;
+const row = (booted: Booted) => booted.store.lead_sources[0] as Record<string, unknown>;
+/** What the tools return about one form (only the parts these specs read). */
+type ToolResult = { source: { id: string; intake: string; newsletter?: Record<string, unknown> }; note?: string; confirmKeyReplaced?: boolean };
+type Listed = { sources: Array<{ newsletter?: Record<string, unknown> }> };
 
 async function newsletterForm(extra: Record<string, unknown> = {}) {
   const booted = await bootLeads();
@@ -24,7 +27,7 @@ describe("create-lead-endpoint with intake newsletter", () => {
     expect(row(booted)).toMatchObject({ intake: "newsletter", confirm_url: `${SITE}/subscribe/confirm`, confirm_from: "hello@remotesaffa.co.za", confirm_daily_cap: 250, rate_limit_per_hour: 20, consent_text: NEWSLETTER.consentText });
     expect(made.serverSecret).toMatch(/^pibs_/);
     expect(made.source).toMatchObject({ intake: "newsletter", newsletter: { applyTags: ["remotesaffa-subscribers"], confirmUrl: `${SITE}/subscribe/confirm`, confirmFrom: "hello@remotesaffa.co.za", confirmDailyCap: 250 } });
-    const listed = await tool<Record<string, any>>(booted.harness, "list-lead-sources", {});
+    const listed = await tool<Listed>(booted.harness, "list-lead-sources", {});
     expect(listed.sources[0].newsletter).toEqual(made.source.newsletter);
     for (const output of [made, listed, booted.harness.logs]) expect(JSON.stringify(output)).not.toContain(secret);
     expect(JSON.stringify(listed)).not.toMatch(/confirm_?secret/i);
@@ -82,14 +85,14 @@ describe("update-lead-source on a newsletter form", () => {
     expect(await refused(tool(booted.harness, "update-lead-source", { sourceId: made.source.id, intake: "lead" }))).toMatch(/intake is set when it is made/);
     expect(await refused(tool(booted.harness, "update-lead-source", { sourceId: made.source.id, intake: "issue" }))).toMatch(/intake is set when it is made/);
     expect(await refused(tool(booted.harness, "update-lead-source", { ...NEWSLETTER, sourceId: lead.source.id }))).toMatch(/intake is set when it is made/);
-    expect(booted.store.lead_sources.map((source: any) => source.intake)).toEqual(["newsletter", "lead"]);
+    expect(booted.store.lead_sources.map((source) => (source as Record<string, unknown>).intake)).toEqual(["newsletter", "lead"]);
     // Naming the intake it already has is not a change.
-    expect((await tool<Record<string, any>>(booted.harness, "update-lead-source", { sourceId: made.source.id, intake: "newsletter" })).source.intake).toBe("newsletter");
+    expect((await tool<ToolResult>(booted.harness, "update-lead-source", { sourceId: made.source.id, intake: "newsletter" })).source.intake).toBe("newsletter");
   });
 
   it("an agent changes the settings, checked the same way; a lead form refuses them", async () => {
     const { booted, made, secret } = await newsletterForm();
-    const updated = await tool<Record<string, any>>(booted.harness, "update-lead-source", { sourceId: made.source.id, applyTags: ["remotesaffa", "Remotesaffa", "friday"], confirmUrl: `${SITE}/confirm`, confirmFrom: "news@remotesaffa.co.za", confirmDailyCap: 100 });
+    const updated = await tool<ToolResult>(booted.harness, "update-lead-source", { sourceId: made.source.id, applyTags: ["remotesaffa", "Remotesaffa", "friday"], confirmUrl: `${SITE}/confirm`, confirmFrom: "news@remotesaffa.co.za", confirmDailyCap: 100 });
     expect(updated.source.newsletter).toEqual({ applyTags: ["remotesaffa", "friday"], confirmUrl: `${SITE}/confirm`, confirmFrom: "news@remotesaffa.co.za", confirmDailyCap: 100 });
     expect(updated.note).toBeUndefined();
     expect(await refused(tool(booted.harness, "update-lead-source", { sourceId: made.source.id, confirmUrl: "https://shop.remotesaffa.co.za/confirm" }))).toMatch(/exactly/);
@@ -102,7 +105,7 @@ describe("update-lead-source on a newsletter form", () => {
 
   it("new consent wording is allowed and says the open links stop working", async () => {
     const { booted, made, secret } = await newsletterForm();
-    const updated = await tool<Record<string, any>>(booted.harness, "update-lead-source", { sourceId: made.source.id, consentText: "Yes, send me the weekly list." });
+    const updated = await tool<ToolResult>(booted.harness, "update-lead-source", { sourceId: made.source.id, consentText: "Yes, send me the weekly list." });
     expect(updated.note).toMatch(/confirmation link already sent stops working/);
     expect(row(booted).consent_text).toBe("Yes, send me the weekly list.");
     expect(JSON.stringify(updated)).not.toContain(secret);
@@ -113,7 +116,7 @@ describe("rotate-lead-key with newConfirmKey", () => {
   it("replaces only the confirmation secret (an agent may): the key and signing secret stay, nothing shows the new one", async () => {
     const { booted, made, secret } = await newsletterForm();
     const before = { ...row(booted) };
-    const rotated = await tool<Record<string, any>>(booted.harness, "rotate-lead-key", { sourceId: made.source.id, newConfirmKey: true });
+    const rotated = await tool<ToolResult>(booted.harness, "rotate-lead-key", { sourceId: made.source.id, newConfirmKey: true });
     const fresh = row(booted).confirm_secret as string;
     expect(fresh).toMatch(/^pibs_[a-z0-9]{40}$/);
     expect(fresh).not.toBe(secret);
