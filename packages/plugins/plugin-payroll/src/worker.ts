@@ -89,7 +89,8 @@ const plugin = definePlugin({
 
     for (const tool of PAYROLL_TOOLS) {
       ctx.tools.register(tool.name, tool, async (params, run) => {
-        await skills?.ensure(run.companyId).catch(() => undefined);
+        // A tool call never waits long for the skill sync (kit `soon`).
+        await skills?.soon(run.companyId);
         return runTool(e, tool.name, asParams(params), run);
       });
     }
@@ -177,7 +178,8 @@ function registerActions(e: Env, onLinked: ReturnType<typeof clerkOnLinked>) {
   const action = (key: string, fn: (companyId: string, actor: Actor, params: Record<string, unknown>) => Promise<unknown>) =>
     ctx.actions.register(key, async (params, context: PluginPerformActionContext) => {
       if (!context.companyId) throw new PayrollError("Open Payroll inside a company");
-      await skills?.ensure(context.companyId).catch(() => undefined);
+      // A page action never waits long for the skill sync (kit `soon`).
+      await skills?.soon(context.companyId);
       return fn(context.companyId, actionActor(context), asParams(params));
     });
 

@@ -131,7 +131,8 @@ const plugin = definePlugin({
 
     for (const tool of MAILBOX_TOOLS) {
       ctx.tools.register(tool.name, tool, async (params, run) => {
-        await skillSync?.ensure(run.companyId).catch(() => undefined);
+        // A tool call never waits long for the skill sync (kit `soon`).
+        await skillSync?.soon(run.companyId);
         return runTool(ctx, tool.name, params, run).then(normalizeToolResult);
       });
     }
@@ -141,7 +142,8 @@ const plugin = definePlugin({
 
     ctx.actions.register("mailbox.load", async (params, context) => {
       const companyId = requiredCompany(context);
-      await skillSync?.ensure(companyId).catch(() => undefined);
+      // The page never waits long for the skill sync (kit `soon`).
+      await skillSync?.soon(companyId);
       await rememberCompany(ctx, companyId);
       return load(ctx, companyId, params);
     });

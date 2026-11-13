@@ -2,6 +2,8 @@
 
 Paperclip plugin `partnersinbiz.billing` (0.7). Customer-facing money for PiB: invoices, quotes, credit notes, EFT proof of payment, suppliers' bills, expenses with receipts, time, retainers and operational reports. Every financial event posts to the Accounting plugin as a journal. Money is integer minor units (cents) everywhere.
 
+**0.21.3** (skill sync never holds a call up): src-only; a tool call, a page action or the page load waits at most 2 s for the managed-skill sync and goes on while it finishes behind it; a failed sync is tried again after 5 minutes, not on every call (kit `soon`, `createSkillSyncGuard`). Before this, each call waited for the host after every worker restart, and on a company with many skills that ran into the host's 30-second limit.
+
 **0.21.2** (recurring revenue wording): the Overview's "MRR … from 3 retainers and repeating invoices" counted repeating-invoice schedules as retainers; `mrrMetrics` now returns `retainers` and `repeating` apart (`active` stays the sum) and the card reads "from 1 retainer and 2 repeating invoices". Reports gains a "Repeating invoices" KPI. `billing.update-recurring` accepts `templateInvoiceId` to move a schedule to another of the company's invoices (one live schedule pointed at a draft cancelled as a duplicate). No migration, no capability change: src-only.
 
 **0.20.0** (billing send approval, step 4 of 4, PAR-6994): the send ticket freezes the recipients (`invoices.approval_recipients`) and the mail goes to exactly those; when the mail is sent, `sent_to` and `sent_message_id` are recorded and one comment is posted on the ticket. **Behaviour change:** with email on, an invoice whose customer has no email address can no longer get a send ticket; fix the CRM contact first (or pass `sendTo`).

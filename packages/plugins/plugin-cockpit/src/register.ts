@@ -88,7 +88,6 @@ import { sweepAskDeadlines } from "./register-w1c-deadlines.js";
 import { ownerDigestTick, registerOwnerDigest } from "./digest.js";
 import { editionFromBrief, paperTick, registerPaper, runPaperTool } from "./paper.js";
 import { PAPER_TOOL_NAME_SET } from "./paper-tool-declarations.js";
-import { skillsSoon } from "./skill-sync.js";
 
 /** The Setup plugin's event carrying its one setup count (`setup.summary`). */
 export const SETUP_SUMMARY_EVENT = "setup.summary";
@@ -164,7 +163,7 @@ function text(value: unknown, max: number): string | undefined {
 }
 
 export function createEnv(ctx: PluginContext, now: () => Date = () => new Date()): Env {
-  return { ctx, skills: createSkillSyncer(ctx, SKILLS), now };
+  return { ctx, skills: createSkillSyncer(ctx, SKILLS, { now: () => now().getTime() }), now };
 }
 
 /** `goals.confirm` ids: a list of goal ids, or none for every proposed goal. */
@@ -295,8 +294,8 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
     const companyId = requiredCompany(context);
     if (params.installed) await rememberInstalled(ctx, params.installed);
     if (params.uiBase) await rememberPluginUiBase(ctx, params.uiBase);
-    // The page never waits long for the skill sync (skill-sync.ts).
-    await skillsSoon(env, companyId);
+    // The page never waits long for the skill sync (kit `soon`).
+    await env.skills.soon(companyId);
     // The unassigned count leaves out the hidden issues; a failed read leaves none hidden.
     const hidden = await ownerFilter(env, companyId).catch(() => ({ hiddenIssueIds: [] as string[], degraded: ["ownerFilter"] }));
     const [roles, saved, snapshots, setup, own, health, installed, asks, unassigned, warnings] = await Promise.all([
@@ -688,8 +687,8 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
 
   for (const tool of COCKPIT_TOOLS) {
     ctx.tools.register(tool.name, tool, async (params, run) => {
-      // A tool call never waits long for the skill sync (skill-sync.ts).
-      await skillsSoon(env, run.companyId);
+      // A tool call never waits long for the skill sync (kit `soon`).
+      await env.skills.soon(run.companyId);
       const result = MEMORY_TOOL_NAMES.has(tool.name)
         ? await runMemoryTool(env, tool.name, params, run)
         : ACCESS_TOOL_SET.has(tool.name)

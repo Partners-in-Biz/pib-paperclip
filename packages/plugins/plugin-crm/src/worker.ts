@@ -293,7 +293,8 @@ const plugin = definePlugin({
       handler: (params: Record<string, unknown>, context: PluginPerformActionContext) => Promise<unknown>,
     ) => {
       ctx.actions.register(key, async (params, context) => {
-        if (context.companyId) await skillSync?.ensure(context.companyId).catch(() => undefined);
+        // A page action never waits long for the skill sync (kit `soon`).
+        if (context.companyId) await skillSync?.soon(context.companyId);
         const result = await handler(params, context);
         if (context.companyId && CRM_MUTATIONS.has(key)) await afterMutation(ctx, context.companyId, key, params);
         return result;
@@ -566,8 +567,8 @@ const plugin = definePlugin({
       if (event.companyId) await skillSync?.ensure(event.companyId);
     });
     // Skill sync runs in the background so start-up never waits on it (a core upgrade that changes every
-    // managed skill made it outlast the host's 15 s initialize limit, 2026-11-08). Actions, tools and
-    // events still wait for their company's sync through skillSync.ensure.
+    // managed skill made it outlast the host's 15 s initialize limit, 2026-11-08). Actions and tools
+    // wait at most 2 s for their company's sync (skillSync.soon); company.created waits for it (skillSync.ensure).
     void syncKnownCompanies(ctx);
     // A deploy empties the folder the signing pages live in: write them again from the records (never blocks start).
     void syncAllPages(ctx).catch((error) => ctx.logger.info("CRM signing pages not synced at start", { error: error instanceof Error ? error.message : String(error) }));
@@ -725,7 +726,8 @@ async function runTool(ctx: PluginContext, name: string, params: unknown, run: T
       runId: run.runId,
     });
     const body = objectParams(params);
-    await skillSync?.ensure(run.companyId).catch(() => undefined);
+    // A tool call never waits long for the skill sync (kit `soon`).
+    await skillSync?.soon(run.companyId);
     let data = await dispatch(ctx, viewer, name, body, "agent");
     if (CRM_MUTATIONS.has(name)) await afterMutation(ctx, run.companyId, name, body);
     const kind = RECORD_TOOLS[name];

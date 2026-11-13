@@ -75,11 +75,86 @@ export async function syncManagedSkills(
   return results;
 }
 
+/** How long a tool call or a page load waits for the skill sync before it goes on without it. */
+export const SKILL_SYNC_WAIT_MS = 2_000;
+/** After a failed sync, `soon` does not start another for that company before this long. */
+export const SKILL_SYNC_RETRY_MS = 5 * 60_000;
+
+export interface SkillSyncGuardOptions {
+  /** The clock for the retry window, in ms (tests). Defaults to `Date.now`. */
+  now?: () => number;
+  /** Where a thrown sync is noted. */
+  logger?: { info(message: string, meta?: Record<string, unknown>): void };
+}
+
+/**
+ * The guard for callers that must never wait long for the skill sync: tool
+ * calls, page loads and API routes. On a company with many skills the host can
+ * take more than 30 seconds to reconcile or reset one skill, and a call that
+ * waits for that runs into the host's own 30-second limit (on 13 Nov 2026 that
+ * rolled back a Cockpit release and a CRM and Mailbox release at their smoke
+ * tests).
+ *
+ * The returned function starts (or joins) the company's sync through `ensure`,
+ * waits at most `waitMs` for it and then lets it finish behind the caller. It
+ * never throws. After a failed sync (a `failed` result or a thrown error) it
+ * does not call `ensure` again for that company for
+ * {@link SKILL_SYNC_RETRY_MS}: a retry on every call only adds load to a host
+ * that is already slow.
+ *
+ * `createSkillSyncer(...).soon` is this guard over the syncer's own `ensure`.
+ * Use this directly for a composite (a plugin with two syncers).
+ */
+export function createSkillSyncGuard(
+  ensure: (companyId: string) => Promise<SkillSyncResult[]>,
+  options: SkillSyncGuardOptions = {},
+): (companyId: string, waitMs?: number) => Promise<void> {
+  const now = options.now ?? (() => Date.now());
+  const failedAt = new Map<string, number>();
+  return async (companyId, waitMs = SKILL_SYNC_WAIT_MS) => {
+    const last = failedAt.get(companyId);
+    if (last !== undefined && now() - last < SKILL_SYNC_RETRY_MS) return;
+    const failed = (error?: unknown) => {
+      failedAt.set(companyId, now());
+      if (error === undefined) return;
+      try {
+        options.logger?.info("Managed skill sync failed", { companyId, error: error instanceof Error ? error.message : String(error) });
+      } catch {
+        // A logger that throws must not reach the caller.
+      }
+    };
+    let sync: Promise<void>;
+    try {
+      sync = Promise.resolve(ensure(companyId)).then((results) => {
+        if (Array.isArray(results) && results.some((r) => r.action === "failed")) failed();
+        else failedAt.delete(companyId);
+      }, failed);
+    } catch (error) {
+      failed(error);
+      return;
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const wait = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, waitMs);
+    });
+    try {
+      await Promise.race([sync, wait]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  };
+}
+
 /**
  * Sync once per company per worker process. Call it from any company-scoped
  * entry point (actions, tools, events, jobs with an explicit company).
  *
- * - `ensure`: once per company per process (memoised).
+ * - `soon`: what a tool call, a page load or an API route uses. Starts or joins
+ *   the sync, waits at most 2 seconds, never throws, and leaves a failed sync
+ *   alone for 5 minutes ({@link createSkillSyncGuard}).
+ * - `ensure`: once per company per process (memoised). Waits for the host, so
+ *   only for callers that need the result (team wiring, a new company's
+ *   bootstrap) and never in a tool call or a page load.
  * - `force`: always resets every skill.
  * - `check`: syncs only what changed, every time it is called (not memoised);
  *   what `syncAllCompanies` and the periodic sweep use, so a copy that was
@@ -89,25 +164,32 @@ export async function syncManagedSkills(
  * find the companies this plugin has served without `ctx.companies.list`,
  * which the host refuses while another call is in flight.
  */
-export function createSkillSyncer(ctx: PluginContext, skills: SkillDeclarationLike[]) {
+export function createSkillSyncer(ctx: PluginContext, skills: SkillDeclarationLike[], options: Pick<SkillSyncGuardOptions, "now"> = {}) {
   const done = new Map<string, Promise<SkillSyncResult[]>>();
+  const ensure = (companyId: string): Promise<SkillSyncResult[]> => {
+    void rememberCompany(ctx, companyId);
+    const existing = done.get(companyId);
+    if (existing) return existing;
+    const run = syncManagedSkills(ctx, companyId, skills).then((results) => {
+      const failed = results.filter((r) => r.action === "failed");
+      if (failed.length > 0) {
+        done.delete(companyId);
+        ctx.logger.info("Managed skill sync incomplete", { companyId, failed });
+      }
+      return results;
+    });
+    done.set(companyId, run);
+    return run;
+  };
+  const guard = createSkillSyncGuard(ensure, { now: options.now, logger: ctx.logger });
   return {
     /** The declarations this syncer keeps in step (for drift checks). */
     skills,
-    ensure(companyId: string): Promise<SkillSyncResult[]> {
+    ensure,
+    /** For tool calls, page loads and API routes: waits at most `waitMs` (2 s), never throws. */
+    soon(companyId: string, waitMs?: number): Promise<void> {
       void rememberCompany(ctx, companyId);
-      const existing = done.get(companyId);
-      if (existing) return existing;
-      const run = syncManagedSkills(ctx, companyId, skills).then((results) => {
-        const failed = results.filter((r) => r.action === "failed");
-        if (failed.length > 0) {
-          done.delete(companyId);
-          ctx.logger.info("Managed skill sync incomplete", { companyId, failed });
-        }
-        return results;
-      });
-      done.set(companyId, run);
-      return run;
+      return guard(companyId, waitMs);
     },
     force(companyId: string): Promise<SkillSyncResult[]> {
       void rememberCompany(ctx, companyId);

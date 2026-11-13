@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
+import { SKILL_SYNC_RETRY_MS } from "@partnersinbiz/pib-plugin-kit";
 import manifest from "../src/manifest.js";
 import plugin from "../src/worker.js";
 
@@ -23,15 +24,27 @@ describe("tool path does not wait on the skill sync", () => {
     expect((res as { data?: unknown }).data).toBeTypeOf("object");
   });
 
-  it("a later call starts a new sync after a failed one", async () => {
+  it("after a failed sync a later call leaves the host alone for five minutes, then starts a new sync", async () => {
     const harness = await setup(async () => { throw new Error("timed out"); });
-    const reconcile = (harness.ctx as unknown as { skills: { managed: { reset: ReturnType<typeof vi.fn> } } }).skills.managed.reset;
-    await harness.executeTool("list-sprints", {}, { companyId: "co-1" });
-    await new Promise((r) => setTimeout(r, 50));
-    const first = reconcile.mock.calls.length;
-    expect(first).toBeGreaterThan(0);
-    await harness.executeTool("list-sprints", {}, { companyId: "co-1" });
-    await new Promise((r) => setTimeout(r, 50));
-    expect(reconcile.mock.calls.length).toBeGreaterThan(first);
+    const reset = (harness.ctx as unknown as { skills: { managed: { reset: ReturnType<typeof vi.fn> } } }).skills.managed.reset;
+    const realNow = Date.now.bind(Date);
+    let ahead = 0;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => realNow() + ahead);
+    try {
+      await harness.executeTool("list-sprints", {}, { companyId: "co-1" });
+      await new Promise((r) => setTimeout(r, 50));
+      const first = reset.mock.calls.length;
+      expect(first).toBeGreaterThan(0);
+      // A retry on every call only adds load to a host that is already slow (kit `soon`).
+      await harness.executeTool("list-sprints", {}, { companyId: "co-1" });
+      await new Promise((r) => setTimeout(r, 50));
+      expect(reset.mock.calls.length).toBe(first);
+      ahead = SKILL_SYNC_RETRY_MS;
+      await harness.executeTool("list-sprints", {}, { companyId: "co-1" });
+      await new Promise((r) => setTimeout(r, 50));
+      expect(reset.mock.calls.length).toBeGreaterThan(first);
+    } finally {
+      clock.mockRestore();
+    }
   });
 });
