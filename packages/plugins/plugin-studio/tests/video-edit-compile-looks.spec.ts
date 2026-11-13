@@ -45,12 +45,13 @@ describe("looks + adjust: compiled graph", () => {
     ]));
     expect(g).toMatchSnapshot();
     expect(g).toContain(`fps=30,${TO_RGB},colorchannelmixer=rr=0.2126:rg=0.7152:rb=0.0722:gr=0.2126:gg=0.7152:gb=0.0722:br=0.2126:bg=0.7152:bb=0.0722,${TO_YUV},format=yuva420p,rotate=`);
-    expect(g).toMatch(/fps=30,format=gbrap,colorchannelmixer=rr=1\.08:[^,]*,scale=out_color_matrix=bt709:out_range=tv,format=yuva420p,split\[vga\d+\]\[vgb\d+\];\[vga\d+\]format=yuv420p,vignette=angle=1\.0472\[vgc\d+\];\[vgb\d+\]alphaextract\[vgd\d+\];\[vgc\d+\]\[vgd\d+\]alphamerge,format=yuva420p,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,fade=t=in/);
+    expect(g).toMatch(/fps=30,scale=w='min\(iw,1080\)':h='min\(ih,1920\)':force_original_aspect_ratio=decrease:force_divisible_by=2,format=gbrap,colorchannelmixer=rr=1\.08:[^,]*,scale=out_color_matrix=bt709:out_range=tv,format=yuva420p,split\[vga\d+\]\[vgb\d+\];\[vga\d+\]format=yuv420p,vignette=angle=1\.0472\[vgc\d+\];\[vgb\d+\]alphaextract\[vgd\d+\];\[vgc\d+\]\[vgd\d+\]alphamerge,format=yuva420p,scale=w=1080:h=1920:force_original_aspect_ratio=decrease:force_divisible_by=2,fade=t=in/);
   });
 
   it("a graded image starts in RGB with its decoder matrix and always leaves through BT.709", () => {
     const g = graphOf(doc([video(clip("b", "blk", 0, 1)), overlay(clip("o1", "png", 0, 1, { adjust: { saturation: 1.5 } }))]));
-    expect(g).toContain("fps=30,format=gbrap,scale=out_color_matrix=bt709:out_range=tv,format=yuva420p,eq=saturation=1.5,format=yuva420p");
+    // The pre-fit (PAR-11217) scales at most to the frame; `format=gbrap` after it still takes the decoder's matrix.
+    expect(g).toContain("fps=30,scale=w='min(iw,1080)':h='min(ih,1920)':force_original_aspect_ratio=decrease:force_divisible_by=2,format=gbrap,scale=out_color_matrix=bt709:out_range=tv,format=yuva420p,eq=saturation=1.5,format=yuva420p");
     expect(g).not.toContain("in_color_matrix");
   });
 
