@@ -88,6 +88,7 @@ import { sweepAskDeadlines } from "./register-w1c-deadlines.js";
 import { ownerDigestTick, registerOwnerDigest } from "./digest.js";
 import { editionFromBrief, paperTick, registerPaper, runPaperTool } from "./paper.js";
 import { PAPER_TOOL_NAME_SET } from "./paper-tool-declarations.js";
+import { skillsSoon } from "./skill-sync.js";
 
 /** The Setup plugin's event carrying its one setup count (`setup.summary`). */
 export const SETUP_SUMMARY_EVENT = "setup.summary";
@@ -294,7 +295,8 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
     const companyId = requiredCompany(context);
     if (params.installed) await rememberInstalled(ctx, params.installed);
     if (params.uiBase) await rememberPluginUiBase(ctx, params.uiBase);
-    await env.skills.ensure(companyId).catch(() => undefined);
+    // The page never waits long for the skill sync (skill-sync.ts).
+    await skillsSoon(env, companyId);
     // The unassigned count leaves out the hidden issues; a failed read leaves none hidden.
     const hidden = await ownerFilter(env, companyId).catch(() => ({ hiddenIssueIds: [] as string[], degraded: ["ownerFilter"] }));
     const [roles, saved, snapshots, setup, own, health, installed, asks, unassigned, warnings] = await Promise.all([
@@ -686,7 +688,8 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
 
   for (const tool of COCKPIT_TOOLS) {
     ctx.tools.register(tool.name, tool, async (params, run) => {
-      await env.skills.ensure(run.companyId).catch(() => undefined);
+      // A tool call never waits long for the skill sync (skill-sync.ts).
+      await skillsSoon(env, run.companyId);
       const result = MEMORY_TOOL_NAMES.has(tool.name)
         ? await runMemoryTool(env, tool.name, params, run)
         : ACCESS_TOOL_SET.has(tool.name)
