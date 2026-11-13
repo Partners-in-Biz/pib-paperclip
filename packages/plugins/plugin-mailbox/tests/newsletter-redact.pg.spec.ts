@@ -1,9 +1,6 @@
 /**
- * Client messages (the CRM's signing email, reports, feedback requests: `context.kind` `client_message`) on a real Postgres with all ten
- * migrations, through the real worker. The signing link in such an email is a bearer token, so once its send has ended the Mailbox must
- * hold no text of it anywhere: this scans EVERY table of the plugin's schema, every event the worker emitted, every log line and every
- * answer a tool gave, for the token. A send that is still waiting for a retry keeps its text (the retry needs it), and the same scan finds it.
- * Both ways of sending are covered: Gmail, and the email provider (where the links must also reach the provider untouched, with no tracking).
+ * Newsletter send records (key `crm:nl:`) on a real Postgres, through the real worker: the hourly private-mail job blanks recipients, subject
+ * and request of such a record once it is older than 30 days. Younger ones and other keys are untouched, and the blanked key is still refused as a duplicate.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
@@ -18,7 +15,7 @@ import { NAMESPACE } from "../src/namespace.js";
 import { rememberCompany } from "../src/setup-status.js";
 import plugin from "../src/worker.js";
 import { dohFetchFrom } from "./helpers/dns.js";
-import { CLIENT, DOMAIN, dnsVerified, ESP_ON, FROM } from "./helpers/esp.js";
+import { ESP_ON } from "./helpers/esp.js";
 import { FakeGmail } from "./helpers/fake-gmail.js";
 import { FakeResend } from "./helpers/fake-resend.js";
 import { CO, ENCRYPTION_KEY } from "./helpers/memory.js";
@@ -27,27 +24,11 @@ import { sealedTokens } from "./helpers/setup.js";
 
 const available = await embeddedAvailable();
 
-// Built at runtime: a secret-shaped literal in a test file is refused by GitHub push protection, and a test must not share a token with anything real.
-const TOKEN = ["pibt", `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`.padEnd(40, "q")].join("_");
-const PAGE = "https://paperclip.example.com/_plugins/00000000-0000-4000-8000-000000000001/ui/s/page1234.html";
-const LINK = `${PAGE}#${TOKEN}`;
-const TEXT = `Hi Ada,\n\nPlease review and sign your proposal here: ${LINK}\n\nThank you`;
-const HTML = `<p>Hi Ada,</p><p><a href="${LINK}">Please review and sign your proposal</a></p>`;
 const CRM_SEND = pluginEvent(PIB_PLUGINS.crm, MAIL_EVENTS.sendRequested);
 const am = { agentId: "agent-am", companyId: CO };
 
-function signing(overrides: Record<string, unknown> = {}) {
-  return {
-    key: "crm:msg:approval-1",
-    to: [{ email: "ada@client.co.za", name: "Ada" }],
-    subject: "Please sign your proposal",
-    text: TEXT,
-    html: HTML,
-    context: { plugin: PIB_PLUGINS.crm, kind: "client_message", id: "approval-1", clientKind: "company", clientRef: CLIENT.ref },
-    labels: ["PiB/Clients"],
-    marketing: false,
-    ...overrides,
-  };
+function newsletter(overrides: Record<string, unknown> = {}) {
+  return { key: "crm:nl:new", to: [{ email: "ada@client.co.za", name: "Ada" }], subject: "News", text: "hello", marketing: false, ...overrides };
 }
 
 describe.skipIf(!available)("old newsletter send records are blanked by the hourly job (real Postgres)", () => {
@@ -70,20 +51,11 @@ describe.skipIf(!available)("old newsletter send records are blanked by the hour
 
   const sql = async <T = Record<string, unknown>>(text: string, params: unknown[] = []) => (await pg.client.query(text, params)).rows as T[];
 
-  /** Every row of every table of the plugin's schema, as text. */
-  async function wholeStore(): Promise<string> {
-    const tables = await sql<{ tablename: string }>(`SELECT tablename FROM pg_tables WHERE schemaname = '${NAMESPACE}' ORDER BY tablename`);
-    let all = "";
-    for (const { tablename } of tables) all += JSON.stringify(await sql(`SELECT row_to_json(t) AS r FROM ${NAMESPACE}.${tablename} t`));
-    return all;
-  }
-
   /** The worker on the real database, a fake Gmail behind the global fetch (the Mailbox's Gmail calls) and a fake Resend and DNS behind the host's. */
   async function boot(config: Record<string, unknown> = ESP_ON) {
     const harness = createTestHarness({ manifest, config: { publicBaseUrl: "https://paperclip.example.com", encryptionKey: ENCRYPTION_KEY, ...config } });
     const gmail = new FakeGmail();
-    // Gmail reads its own sent mail back: its snippet and its text contain the link, as the real one would.
-    gmail.sentText = () => TEXT;
+    gmail.sentText = () => "hello";
     vi.stubGlobal("fetch", gmail.fetch);
     const resend = new FakeResend();
     const dns: { records: Record<string, string[]> } = { records: {} };
@@ -109,9 +81,7 @@ describe.skipIf(!available)("old newsletter send records are blanked by the hour
   }
   type Booted = Awaited<ReturnType<typeof boot>>;
 
-  const send = (b: Booted, overrides: Record<string, unknown> = {}) => b.harness.emit(CRM_SEND, signing(overrides), { companyId: CO });
-  const results = (b: Booted) => b.events(MAIL_EVENTS.sendResult);
-  const storedRequest = async (key = "crm:msg:approval-1") => (await sql<{ request: Record<string, unknown> }>(`SELECT request FROM ${NAMESPACE}.send_requests WHERE key = $1`, [key]))[0]!.request;
+  const send = (b: Booted, overrides: Record<string, unknown> = {}) => b.harness.emit(CRM_SEND, newsletter(overrides), { companyId: CO });
 
   const insert = (key: string, age: string) =>
     sql(`INSERT INTO ${NAMESPACE}.send_requests (key, company_id, source_plugin, account_id, from_address, to_addrs, subject, status, context, request, gmail_message_id, rfc_message_id, sent_at, created_at)

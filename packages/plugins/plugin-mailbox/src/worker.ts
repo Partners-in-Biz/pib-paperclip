@@ -97,7 +97,7 @@ import { runSyncJob, syncOne, triageRunFor } from "./gmail/sync.js";
 import type { AccountRow, ClientMapType, DomainCheckRow, DraftExtras, MessageRow, SendRow } from "./gmail/types.js";
 import type { DomainReport } from "./domain-health.js";
 import { PLUGIN_ID } from "./namespace.js";
-import { isPrivateMail, PRIVATE_BODY_NOTE, PRIVATE_STALE_DAYS } from "./private-mail.js";
+import { isPrivateMail, NEWSLETTER_RECORD_DAYS, PRIVATE_BODY_NOTE, PRIVATE_STALE_DAYS } from "./private-mail.js";
 import { cleanDisplayName, draftSendContext, parseReplyTo } from "./sender.js";
 import { preferencesLoad, preferencesSave } from "./preferences.js";
 import { SKILLS } from "./skills.js";
@@ -1036,7 +1036,7 @@ async function scrubPrivateMail(ctx: PluginContext, companyId: string): Promise<
     const bodies = await s.scrubPrivateBodies(companyId, new Date(requireEnv().now() - PRIVATE_STALE_DAYS * 86_400_000).toISOString());
     const snippets = await s.scrubPrivateSnippets(companyId);
     // Newsletter send records (key crm:nl:) keep no recipients or text after 30 days; the record stays so the key is still refused.
-    const newsletters = await s.redactStaleNewsletterSends(companyId, new Date(requireEnv().now() - 30 * 86_400_000).toISOString());
+    const newsletters = await s.redactStaleNewsletterSends(companyId, new Date(requireEnv().now() - NEWSLETTER_RECORD_DAYS * 86_400_000).toISOString());
     if (newsletters > 0) ctx.logger.info("Old newsletter send records blanked", { companyId, newsletters });
     if (bodies > 0 || snippets > 0) ctx.logger.info("Client message text removed", { companyId, bodies, snippets });
   } catch (error) {
