@@ -9,7 +9,7 @@ import { describe, expect, it } from "vitest";
 import { defaultSettings, SECTION_PRESETS, type PaperEditionDoc, type PaperIndexEntry } from "../src/paper-model.js";
 import { tabFromSearch } from "../src/ui/index.js";
 import { isInternal, paperBlocks } from "../src/ui/paper-markdown.js";
-import { addSection, ArchiveList, EditionPage, EditorBody, filterEntries, monthLabel, moveSection, neighbours, paperHref, paperSelection, timingText } from "../src/ui/paper.js";
+import { addSection, ArchiveList, EditionPage, EditorBody, filterEntries, monthLabel, moveSection, neighbours, PAPER_CSS, paperHref, paperSelection, timingText } from "../src/ui/paper.js";
 
 const linkFor = (href: string) => ({ href, "data-internal": "1" }) as Record<string, string>;
 
@@ -69,6 +69,18 @@ describe("the edition page", () => {
     expect(html).not.toContain("<script>");
     expect(html).toContain("from the web");
     expect(html).toContain('class="pib-paper-sub"');
+  });
+
+  it("draws list markers itself (the host's base styles remove them) and keeps a number in one piece", () => {
+    expect(PAPER_CSS).toContain("list-style: disc outside");
+    expect(PAPER_CSS).toContain("ol.pib-paper-list { list-style: decimal outside; }");
+    expect(PAPER_CSS).not.toMatch(/pib-paper-figure-value \{[^}]*overflow-wrap: anywhere/);
+  });
+
+  it("gives the lead a big first letter only when its first paragraph is a few lines long", () => {
+    expect(html).not.toContain("pib-paper-drop\"");
+    const long = { ...doc, sections: [{ ...doc.sections[0]!, body: `${"Three money approvals unblock the most today. ".repeat(6)}\n\n- one` }, doc.sections[1]!] };
+    expect(renderToStaticMarkup(createElement(EditionPage, { doc: long, linkFor }))).toContain('class="pib-paper-p pib-paper-drop"');
   });
 
   it("says when the Cockpit compiled it", () => {
@@ -133,6 +145,8 @@ describe("the editor", () => {
     expect(out).toContain("Written by Thandi at the end of the daily operations review, which starts at 07:00. If none has arrived by 09:00");
     expect(out).toContain("Saved");
     expect(html(true)).toContain("Discard changes");
+    expect(html(true)).toContain("Save your changes first, then ask for an edition.");
+    expect(out).toContain("Write the morning edition now");
   });
 
   it("words the timing of each edition", () => {
