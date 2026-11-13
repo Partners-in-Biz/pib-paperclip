@@ -49,7 +49,7 @@ const ROUTES: Route[] = [
     return [...by.values()].map((row) => ({ currency: row.currency, open_minor: String(row.open_minor), open_deals: String(row.open_deals), won_minor: String(row.won_minor) }));
   }],
   [/AS won_month/, (p, s) => {
-    const contacts = mine(s.contacts, p);
+    const contacts = mine(s.contacts, p).filter((c) => c.custom?.origin !== "newsletter");
     const open = contacts.filter((c) => c.lifecycle === "lead" || c.lifecycle === "prospect");
     return [{
       won_month: String(mine(s.deals, p).filter((d) => stageOf(s, d)?.kind === "won" && d.updated_at >= monthStart()).length),

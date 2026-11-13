@@ -300,6 +300,7 @@ export async function handleReply(ctx: PluginContext, companyId: string, mail: M
       title: `${followUp ? "Reply from" : "Check reply from"} ${name}: ${subject}`.slice(0, 200),
       description: lines.join("\n"),
       // A lead's reply is sales work; a client's is the Account Manager's.
+      // Decision (PAR-10817): a newsletter subscriber who replies is still routed to the Inbound Qualifier, so this reader does not use the newsletter-origin helper.
       assignee: await recordAssignee(ctx, companyId, contact, contact.lifecycle === "lead" ? "inbound-qualifier" : "account-manager"),
       wakeReason: "A CRM contact replied",
     });
