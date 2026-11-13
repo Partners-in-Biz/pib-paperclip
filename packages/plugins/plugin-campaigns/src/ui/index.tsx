@@ -78,6 +78,8 @@ interface Campaign {
   launchError?: string | null;
   /** Where it stands in plain words, and what needs a person. Absent from an older worker. */
   state?: CampaignState | null;
+  /** Its client is one of our own brands: approved like an own campaign. */
+  ownBrand?: boolean;
 }
 
 interface AbSuggestion {
@@ -99,7 +101,18 @@ interface WorkspaceClient {
   contactCount: number | null;
 }
 
-interface Snapshot { campaigns: Campaign[]; settingsSaved?: boolean; client?: WorkspaceClient | null; series?: CampaignSeries; suppressed?: number }
+interface BrandGroup { client: { kind: ClientKind; id: string; name: string }; campaigns: Campaign[]; byCampaign?: Record<string, { sent: number; replies: number }> }
+interface Snapshot {
+  campaigns: Campaign[];
+  settingsSaved?: boolean;
+  client?: WorkspaceClient | null;
+  series?: CampaignSeries;
+  suppressed?: number;
+  /** On the own page: each of our own brands with its campaigns. */
+  brands?: BrandGroup[];
+  /** In a client workspace: this client is one of our own brands. */
+  ownBrand?: boolean;
+}
 type TabId = "overview" | "campaigns" | "review" | "preferences";
 type CreateKind = "campaign" | "step" | "ab" | null;
 
@@ -141,7 +154,18 @@ function Banner({ text, link, linkProps }: { text: string; link: { label: string
 }
 
 /** What needs a person, above everything else: one line per campaign, with the way in. Nothing when all is well. */
-function NeedsAttention({ campaigns, onOpen }: { campaigns: Campaign[]; onOpen: (id: string) => void }) {
+/** The name of a group in the list: our own campaigns, or one of our own brands with the way into its workspace. */
+function GroupHeading({ name, count, note, link }: { name: string; count: number; note?: string; link?: { label: string; props: Record<string, unknown> } }) {
+  return (
+    <div style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap", minWidth: 0 }}>
+      <h2 style={{ margin: 0, fontSize: 14, fontWeight: 650, overflowWrap: "anywhere" }}>{name}</h2>
+      <span style={{ fontSize: 12.5, color: tokens.muted }}>{count} {count === 1 ? "campaign" : "campaigns"}{note ? ` · ${note}` : ""}</span>
+      {link ? <a {...link.props} style={{ fontSize: 12.5, fontWeight: 600, color: tokens.primary, marginLeft: "auto", whiteSpace: "nowrap" }}>{link.label} →</a> : null}
+    </div>
+  );
+}
+
+function NeedsAttention({ campaigns, brandOf, onOpen }: { campaigns: Campaign[]; brandOf?: (id: string) => string | null; onOpen: (id: string) => void }) {
   const items = campaigns.filter((campaign) => campaign.state?.attention);
   if (items.length === 0) return null;
   return (
@@ -153,7 +177,7 @@ function NeedsAttention({ campaigns, onOpen }: { campaigns: Campaign[]; onOpen: 
         {items.map((campaign) => (
           <li key={campaign.id} style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", fontSize: 13, lineHeight: 1.45, minWidth: 0 }}>
             <span style={{ flex: "1 1 260px", minWidth: 0, overflowWrap: "anywhere" }}>
-              <strong style={{ fontWeight: 600 }}>{campaign.name}</strong>
+              <strong style={{ fontWeight: 600 }}>{brandOf?.(campaign.id) ? `${brandOf(campaign.id)}: ` : ""}{campaign.name}</strong>
               <span style={{ color: campaign.state!.tone === "bad" ? tone("bad").fg : tokens.muted }}> · {campaign.state!.attention}</span>
             </span>
             <Button type="button" variant="secondary" style={{ height: 28, fontSize: 12.5 }} onClick={() => onOpen(campaign.id)}>Open</Button>
@@ -185,6 +209,8 @@ function CampaignsPageMain({ context }: PluginPageProps) {
   const pause = usePluginAction("campaigns.pause");
   const resume = usePluginAction("campaigns.resume");
   const complete = usePluginAction("campaigns.complete");
+  const moveCampaign = usePluginAction("campaigns.move");
+  const setOwnBrand = usePluginAction("campaigns.set-own-brand");
   const abSuggestion = usePluginAction("campaigns.ab-suggestion");
   const declareWinner = usePluginAction("campaigns.declare-winner");
   const [ab, setAb] = useState<AbSuggestion | null>(null);
@@ -280,7 +306,9 @@ function CampaignsPageMain({ context }: PluginPageProps) {
   }
   function openCampaign(id: string) {
     setMessage("");
-    navigation.navigate(`/campaigns${withParam(location.search, "campaign", id)}`);
+    const brand = (snapshot?.brands ?? []).find((group) => group.campaigns.some((campaign) => campaign.id === id));
+    const base = brand ? withParam(location.search, "client", formatClientParam(brand.client)) : location.search;
+    navigation.navigate(`/campaigns${withParam(base, "campaign", id)}`);
   }
   function closeCampaign() {
     setMessage("");
@@ -317,9 +345,12 @@ function CampaignsPageMain({ context }: PluginPageProps) {
   const barName = client?.name ?? (snapshot ? "Unknown client" : snapshotPlaceholder(loadError, "Loading…"));
   const q = search.trim().toLowerCase();
   const all = snapshot?.campaigns ?? [];
-  const campaigns = useMemo(() => all.filter((c) => !q || c.name.toLowerCase().includes(q) || (STATUS_LABEL[c.status] ?? c.status).toLowerCase().includes(q)), [snapshot, q]);
-  const waitingCount = all.filter(awaitingApproval).length;
-  const byCampaign = snapshot?.series?.byCampaign ?? {};
+  const campaigns = useMemo(() => all.filter((c) => !q || c.name.toLowerCase().includes(q) || (c.state?.label ?? STATUS_LABEL[c.status] ?? c.status).toLowerCase().includes(q)), [snapshot, q]);
+  const brandGroups = scope ? [] : snapshot?.brands ?? [];
+  const everything = [...all, ...brandGroups.flatMap((group) => group.campaigns)];
+  const waitingCount = everything.filter(awaitingApproval).length;
+  const byCampaign: Record<string, { sent: number; replies: number } | undefined> = { ...Object.assign({}, ...brandGroups.map((group) => group.byCampaign ?? {})), ...(snapshot?.series?.byCampaign ?? {}) };
+  const matches = (c: Campaign) => !q || c.name.toLowerCase().includes(q) || (c.state?.label ?? STATUS_LABEL[c.status] ?? c.status).toLowerCase().includes(q);
   const newCampaignButton = <Button type="button" onClick={openNewCampaign}>+ New campaign</Button>;
   // One "+ New campaign": in the header once there are campaigns, else in the empty state.
   const headerAction = snapshot && all.length > 0 ? newCampaignButton : undefined;
@@ -360,99 +391,13 @@ function CampaignsPageMain({ context }: PluginPageProps) {
     return null;
   }
 
-  const body = (
-    <>
-      <ModuleOffBanner companyId={context.companyId} pluginKey={PLUGIN_ID} />
-      {gmail && gmail.status !== "done" ? (
-        <Banner text="Emails can't go out: Gmail isn't connected in the Mailbox." link={{ label: "Connect Gmail", href: "/mailbox?tab=mailboxes&connect=gmail" }} linkProps={linkProps} />
-      ) : null}
-      {snapshot && snapshot.settingsSaved === false ? (
-        <Banner text="Due emails won't go out until the Campaigns settings are saved once." link={{ label: "Open settings", href: settingsItem?.href ?? "/company/settings/instance/plugins" }} linkProps={linkProps} />
-      ) : null}
-      {openId ? (
-        <div style={{ display: "grid", gap: 14, minWidth: 0 }}>
-          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", minWidth: 0 }}>
-            <Button type="button" variant="secondary" style={{ height: 30, fontSize: 12.5 }} onClick={closeCampaign}>← All campaigns</Button>
-            <h2 style={{ margin: 0, fontSize: 18, fontWeight: 650, minWidth: 0, overflowWrap: "anywhere" }}>{detail?.campaign.name ?? "Campaign"}</h2>
-          </div>
-          {detail ? (
-          <CampaignDetail
-            key={detail.campaign.id}
-            data={detail}
-            initialTab={detail.state?.key === "stuck" ? "people" : "summary"}
-            linkFor={linkProps}
-            actions={{
-              busy,
-              onRequestApproval: () => void run(() => requestApproval({ campaignId: detail.campaign.id }), approvalRequested),
-              onLaunch: () => void run(() => launch({ campaignId: detail.campaign.id }), "Campaign launched"),
-              onAddStep: () => openAddStep(detail.campaign.id),
-              onPause: () => void run(() => pause({ campaignId: detail.campaign.id }), "Campaign paused"),
-              onResume: () => void run(() => resume({ campaignId: detail.campaign.id }), "Campaign resumed"),
-              onEnrollNew: () => void run(() => launch({ campaignId: detail.campaign.id }), "New audience contacts enrolled and the campaign is running"),
-              onComplete: () => {
-                if (window.confirm(`Complete ${detail.campaign.name}? Nobody gets its later emails after this.`)) void run(() => complete({ campaignId: detail.campaign.id }), "Campaign completed");
-              },
-              onAb: () => openAb(detail.campaign.id),
-              onApprove: (input) => void run(() => approveCampaign({ campaignId: detail.campaign.id, ...input }), approvedMessage),
-              onSendBack: (note) => void run(() => sendBackCampaign({ campaignId: detail.campaign.id, note }), "Sent back. The campaign's agent has a task to fix it."),
-            }}
-          />
-          ) : <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>{snapshotPlaceholder(loadError, "Loading the campaign…")}</p>}
-        </div>
-      ) : (
-        <>
-          <NeedsAttention campaigns={all} onOpen={openCampaign} />
-      <Tabs
-        tabs={[
-          { id: "overview", label: "Overview", icon: LayoutDashboard },
-          { id: "campaigns", label: "Campaigns", icon: Send, count: waitingCount || null, countTone: "warn" },
-          { id: "review", label: "Weekly review", icon: CircleCheckBig },
-          ...(scope ? [] : [{ id: "preferences", label: "Preferences", icon: Settings }]),
-        ]}
-        active={tab}
-        onChange={(id) => { setTab(id as TabId); setSearch(""); setMessage(""); }}
-      />
-
-      {tab === "overview" ? <GetStarted status={setupStatus} hasData={all.length > 0} moduleName="Campaigns" linkFor={linkProps} /> : null}
-      {tab === "overview" ? (
-        snapshot ? (
-          <CampaignsOverview
-            campaigns={snapshot.campaigns}
-            series={snapshot.series}
-            suppressed={snapshot.suppressed ?? 0}
-            onNew={newCampaignButton}
-            onList={() => { setTab("campaigns"); setSearch(""); }}
-            onAb={openAb}
-            onOpen={openCampaign}
-          />
-        ) : <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>{snapshotPlaceholder(loadError)}</p>
-      ) : null}
-
-      {tab === "review" ? <WeeklyReview client={scope ? formatClientParam(scope) : null} /> : null}
-
-      {tab === "preferences" ? (
-        <PreferencesPanel
-          load={() => loadPreferences({}) as Promise<PreferencesLoadResult>}
-          save={(patch) => savePreferences({ patch }) as Promise<PreferencesSaveResult>}
-        />
-      ) : null}
-
-      {tab === "campaigns" ? (
-        <div style={{ display: "grid", gap: 12 }}>
-          {all.length > 5 ? <Toolbar search={search} onSearchChange={setSearch} searchPlaceholder="Search campaigns…" /> : null}
-          {!snapshot ? <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>{snapshotPlaceholder(loadError)}</p> : all.length === 0 ? (
-            <EmptyState
-              title={scope ? `No campaigns for ${clientName} yet` : "No campaigns yet"}
-              icon={Send}
-              description={scope
-                ? "Create a campaign for this client and add its emails, then request approval. It launches by itself once a person approves."
-                : "Create a campaign and add its emails, then request approval. It launches by itself once a person approves."}
-              action={newCampaignButton}
-            />
-          ) : narrow ? (
+  /** The campaigns of one group (our own, or one brand) as a table, or as rows on a phone. */
+  function campaignList(rows: Campaign[]): ReactNode {
+    return (
+      narrow ? (
             <CompactRows
               label="Campaigns"
-              rows={campaigns}
+              rows={rows}
               title={(c) => c.name}
               meta={(c) => c.state?.detail ?? `${STATUS_LABEL[c.status] ?? c.status} · ${c.stats.enrolled} enrolled`}
               trailing={rowFlag}
@@ -496,9 +441,149 @@ function CampaignsPageMain({ context }: PluginPageProps) {
                 } },
                 { key: "id", header: "Next step", width: "180px", render: (_value, row) => rowAction(row as unknown as Campaign) },
               ]}
-              rows={campaigns.map((c) => ({ ...c, enrolled: c.stats.enrolled, stepCount: new Set(c.steps.map((s) => s.position)).size }))}
+              rows={rows.map((c) => ({ ...c, enrolled: c.stats.enrolled, stepCount: new Set(c.steps.map((s) => s.position)).size }))}
               emptyMessage="No campaigns match."
             />
+          )
+    );
+  }
+
+  const body = (
+    <>
+      <ModuleOffBanner companyId={context.companyId} pluginKey={PLUGIN_ID} />
+      {gmail && gmail.status !== "done" ? (
+        <Banner text="Emails can't go out: Gmail isn't connected in the Mailbox." link={{ label: "Connect Gmail", href: "/mailbox?tab=mailboxes&connect=gmail" }} linkProps={linkProps} />
+      ) : null}
+      {snapshot && snapshot.settingsSaved === false ? (
+        <Banner text="Due emails won't go out until the Campaigns settings are saved once." link={{ label: "Open settings", href: settingsItem?.href ?? "/company/settings/instance/plugins" }} linkProps={linkProps} />
+      ) : null}
+      {openId ? (
+        <div style={{ display: "grid", gap: 14, minWidth: 0 }}>
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", minWidth: 0 }}>
+            <Button type="button" variant="secondary" style={{ height: 30, fontSize: 12.5 }} onClick={closeCampaign}>← All campaigns</Button>
+            <h2 style={{ margin: 0, fontSize: 18, fontWeight: 650, minWidth: 0, overflowWrap: "anywhere" }}>{detail?.campaign.name ?? "Campaign"}</h2>
+          </div>
+          {detail ? (
+          <CampaignDetail
+            key={detail.campaign.id}
+            data={detail}
+            initialTab={detail.state?.key === "stuck" ? "people" : "summary"}
+            linkFor={linkProps}
+            actions={{
+              busy,
+              onRequestApproval: () => void run(() => requestApproval({ campaignId: detail.campaign.id }), approvalRequested),
+              onLaunch: () => void run(() => launch({ campaignId: detail.campaign.id }), "Campaign launched"),
+              onAddStep: () => openAddStep(detail.campaign.id),
+              onPause: () => void run(() => pause({ campaignId: detail.campaign.id }), "Campaign paused"),
+              onResume: () => void run(() => resume({ campaignId: detail.campaign.id }), "Campaign resumed"),
+              onEnrollNew: () => void run(() => launch({ campaignId: detail.campaign.id }), "New audience contacts enrolled and the campaign is running"),
+              onComplete: () => {
+                if (window.confirm(`Complete ${detail.campaign.name}? Nobody gets its later emails after this.`)) void run(() => complete({ campaignId: detail.campaign.id }), "Campaign completed");
+              },
+              onAb: () => openAb(detail.campaign.id),
+              onApprove: (input) => void run(() => approveCampaign({ campaignId: detail.campaign.id, ...input }), approvedMessage),
+              onSendBack: (note) => void run(() => sendBackCampaign({ campaignId: detail.campaign.id, note }), "Sent back. The campaign's agent has a task to fix it."),
+              onMove: (client) => {
+                if (!window.confirm("Move this draft? It will go out as the new sender and use that sender's do-not-email list: someone who opted out of the old sender's emails is not on the new list. If approval was asked for, it is cancelled.")) return;
+                void run(async () => {
+                const moved = (await moveCampaign({ campaignId: detail.campaign.id, client: client ?? "own" })) as { client?: { kind: ClientKind; id: string } | null };
+                // It lives in another workspace now: follow it there.
+                navigation.navigate(`/campaigns${withParam(withParam(location.search, "client", moved.client ? formatClientParam(moved.client) : null), "campaign", detail.campaign.id)}`, { replace: true });
+                }, "Moved. If approval was asked for, ask again: the sender changed.");
+              },
+            }}
+          />
+          ) : <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>{snapshotPlaceholder(loadError, "Loading the campaign…")}</p>}
+        </div>
+      ) : (
+        <>
+          {scope?.kind === "company" && snapshot ? (
+            <p style={{ margin: 0, fontSize: 13, color: tokens.muted, lineHeight: 1.5, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+              <span style={{ flex: "1 1 320px", minWidth: 0 }}>
+                {snapshot.ownBrand
+                  ? `${clientName} is one of our own brands. Its campaigns go out as ${clientName}, keep their own do-not-email list, and are approved like our own campaigns.`
+                  : `${clientName} is a client: its campaigns need the client's written yes and your approval.`}
+              </span>
+              <Button
+                type="button"
+                variant="secondary"
+                style={{ height: 28, fontSize: 12.5 }}
+                disabled={busy}
+                title="Only a company owner or admin can change this."
+                onClick={() => {
+                  const own = !snapshot.ownBrand;
+                  const question = own
+                    ? `Mark ${clientName} as one of our own brands? Its campaigns will be approved like our own: no client's written yes.`
+                    : `${clientName} is a client after all? Its campaigns will need the client's written yes again.`;
+                  if (window.confirm(question)) void run(() => setOwnBrand({ client: formatClientParam(scope), own }), own ? `${clientName} is now one of our own brands.` : `${clientName} is a client again.`);
+                }}
+              >
+                {snapshot.ownBrand ? "Not one of ours" : "Mark as one of our own brands"}
+              </Button>
+            </p>
+          ) : null}
+          <NeedsAttention campaigns={everything} brandOf={(id) => brandGroups.find((group) => group.campaigns.some((campaign) => campaign.id === id))?.client.name ?? null} onOpen={openCampaign} />
+      <Tabs
+        tabs={[
+          { id: "overview", label: "Overview", icon: LayoutDashboard },
+          { id: "campaigns", label: "Campaigns", icon: Send, count: waitingCount || null, countTone: "warn" },
+          { id: "review", label: "Weekly review", icon: CircleCheckBig },
+          ...(scope ? [] : [{ id: "preferences", label: "Preferences", icon: Settings }]),
+        ]}
+        active={tab}
+        onChange={(id) => { setTab(id as TabId); setSearch(""); setMessage(""); }}
+      />
+
+      {tab === "overview" ? <GetStarted status={setupStatus} hasData={all.length > 0} moduleName="Campaigns" linkFor={linkProps} /> : null}
+      {tab === "overview" ? (
+        snapshot ? (
+          <CampaignsOverview
+            campaigns={snapshot.campaigns}
+            series={snapshot.series}
+            suppressed={snapshot.suppressed ?? 0}
+            onNew={newCampaignButton}
+            onList={() => { setTab("campaigns"); setSearch(""); }}
+            onAb={openAb}
+            onOpen={openCampaign}
+          />
+        ) : <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>{snapshotPlaceholder(loadError)}</p>
+      ) : null}
+
+      {tab === "review" ? <WeeklyReview client={scope ? formatClientParam(scope) : null} /> : null}
+
+      {tab === "preferences" ? (
+        <PreferencesPanel
+          load={() => loadPreferences({}) as Promise<PreferencesLoadResult>}
+          save={(patch) => savePreferences({ patch }) as Promise<PreferencesSaveResult>}
+        />
+      ) : null}
+
+      {tab === "campaigns" ? (
+        <div style={{ display: "grid", gap: 12 }}>
+          {everything.length > 5 ? <Toolbar search={search} onSearchChange={setSearch} searchPlaceholder="Search campaigns…" /> : null}
+          {!snapshot ? <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>{snapshotPlaceholder(loadError)}</p> : everything.length === 0 && brandGroups.length === 0 ? (
+            <EmptyState
+              title={scope ? `No campaigns for ${clientName} yet` : "No campaigns yet"}
+              icon={Send}
+              description={scope
+                ? "Create a campaign for this client and add its emails, then request approval. It launches by itself once a person approves."
+                : "Create a campaign and add its emails, then request approval. It launches by itself once a person approves."}
+              action={newCampaignButton}
+            />
+          ) : (
+            <>
+              {brandGroups.length > 0 ? <GroupHeading name="Our own campaigns" count={campaigns.length} /> : null}
+              {campaigns.length > 0 || brandGroups.length === 0 ? campaignList(campaigns) : <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>{q ? "No campaigns match." : "None yet."}</p>}
+              {brandGroups.map((group) => {
+                const rows = group.campaigns.filter(matches);
+                return (
+                  <div key={group.client.id} style={{ display: "grid", gap: 8, marginTop: 10, minWidth: 0 }}>
+                    <GroupHeading name={group.client.name} count={rows.length} note="One of our own brands" link={{ label: `Open ${group.client.name}`, props: linkProps(`/campaigns?client=${encodeURIComponent(formatClientParam(group.client))}&tab=campaigns`) }} />
+                    {rows.length > 0 ? campaignList(rows) : <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>{q ? "No campaigns match." : `No campaigns for ${group.client.name} yet. Open ${group.client.name} to create one, or move a draft there from its Summary.`}</p>}
+                  </div>
+                );
+              })}
+            </>
           )}
         </div>
       ) : null}
@@ -662,7 +747,7 @@ function CampaignsPageMain({ context }: PluginPageProps) {
     <Page
       title="Campaigns"
       accent="campaigns"
-      description="This company's own email campaigns. A client's campaigns live in that client's workspace, opened from the CRM."
+      description="Our own campaigns, and those of our own brands. A client's campaigns live in that client's workspace, opened from the CRM."
       message={pageMessage}
       actions={headerAction}
     >

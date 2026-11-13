@@ -10,7 +10,7 @@ Themed email, SMS and WhatsApp programs for your company's own marketing or a cl
 The Growth Lab tools (\`performance-review\`, \`get-playbook\`, \`propose-playbook-change\`, \`decide-playbook-change\`, \`list-experiments\`, \`propose-experiment\`, \`approve-experiment\`, \`reject-experiment\`) keep a playbook per scope and test one change at a time on A/B steps. Read \`get-playbook\` before you write a campaign. Details: references/growth-lab.md.
 
 ## Scope
-- Own work: omit \`client\`. Client work: \`client\` is \`company:<CRM id>\` or \`contact:<CRM id>\`, never a name. \`list-campaigns\` takes the same \`client\`. Client issue titles start with \`[Client name]\`, and a client's issues open in the client's own project.
+- Own work: omit \`client\`. Client work: \`client\` is \`company:<CRM id>\` or \`contact:<CRM id>\`, never a name. \`list-campaigns\` takes the same \`client\`. Client issue titles start with \`[Client name]\`, and a client's issues open in the client's own project. One of our own brands that is a CRM company (a product or site we run under its own name) is a \`client\` too: create its campaigns with \`client: company:<CRM id>\` and give it its own sender, so they show under the brand and go out as the brand. A person marks which companies are our own brands; those need no client's yes.
 - Find contacts, tags and clients with \`partnersinbiz.crm:find-records\`. New CRM contacts and clients reach Campaigns within 15 minutes. If one is "not found", wait 15 minutes and try again.
 
 ## Build

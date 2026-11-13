@@ -20,7 +20,8 @@ export function ApprovalBar({ data, busy, onApprove, onSendBack }: {
   onSendBack: (note: string) => void;
 }) {
   const { campaign, audience } = data;
-  const isClient = Boolean(campaign.client);
+  // One of our own brands is approved like an own campaign: no client's written yes.
+  const isClient = Boolean(campaign.client) && !campaign.ownBrand;
   const [yesRef, setYesRef] = useState(campaign.clientYes?.ref ?? "");
   const [yesSeen, setYesSeen] = useState(false);
   const [sendingBack, setSendingBack] = useState(false);
@@ -42,7 +43,7 @@ export function ApprovalBar({ data, busy, onApprove, onSendBack }: {
     <section aria-label="Approval" style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr)", gap: 12, padding: 14, borderRadius: 12, border: `1px solid ${tone(failed ? "bad" : "warn").border}`, background: tone(failed ? "bad" : "warn").soft, minWidth: 0 }}>
       <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
         <strong style={{ fontSize: 14 }}>{failed ? "Approved, but it could not launch" : "Waiting for your approval"}</strong>
-        {isClient ? <Pill tone="info" title={campaign.client?.name ?? undefined}>{`For ${campaign.client?.name ?? "a client"}`}</Pill> : null}
+        {campaign.client ? <Pill tone="info" title={campaign.client.name ?? undefined}>{`For ${campaign.client.name ?? "a client"}`}</Pill> : null}
       </div>
       {failed ? (
         <p role="alert" style={{ margin: 0, fontSize: 13, lineHeight: 1.45, color: tokens.fg, overflowWrap: "anywhere" }}>

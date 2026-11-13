@@ -10,6 +10,7 @@
 import type { PluginContext, PluginPerformActionContext } from "@paperclipai/plugin-sdk";
 import { readCompanyRoles } from "@partnersinbiz/pib-plugin-kit";
 import { approvalAudience, audienceChangedMessage, customerCount } from "./approval-audience.js";
+import { isClientCampaign } from "./brands.js";
 import { getCampaign, listSteps, setApprovalAudience, setClientYes } from "./db.js";
 import { CampaignError, type CampaignDraft } from "./domain.js";
 import { messagingSetup } from "./messaging.js";
@@ -44,9 +45,11 @@ async function openApproval(ctx: PluginContext, companyId: string, campaignId: s
 
 /** Q5a, Q7, F18: who may decide on this campaign. Throws with the reason when the caller may not. */
 async function assertMayDecide(ctx: PluginContext, companyId: string, userId: string, campaign: CampaignDraft, contactIds: string[]): Promise<void> {
-  const clients = campaign.clientRef ? 0 : await customerCount(ctx, companyId, contactIds);
-  if (!campaign.clientRef && clients === 0) return;
-  const why = campaign.clientRef ? "a client's campaign" : `an own campaign that reaches ${clients} current client${clients === 1 ? "" : "s"}`;
+  // A campaign of one of our own brands is decided like an own campaign (the owner marked the brand; an agent cannot).
+  const forClient = await isClientCampaign(ctx, companyId, campaign);
+  const clients = forClient ? 0 : await customerCount(ctx, companyId, contactIds);
+  if (!forClient && clients === 0) return;
+  const why = forClient ? "a client's campaign" : `an own campaign that reaches ${clients} current client${clients === 1 ? "" : "s"}`;
   const owner = await companyOwnerUserId(ctx, companyId);
   if (!owner) throw new CampaignError(`This is ${why}, so only the company owner decides, and no company owner is known. Set the owner in the Cockpit first.`);
   if (owner !== userId) throw new CampaignError(`This is ${why}, so only the company owner decides on it.`);
@@ -69,7 +72,7 @@ export async function approveAction(ctx: PluginContext, context: PluginPerformAc
     const shownCount = typeof params.audienceCount === "number" ? params.audienceCount : shownHash === campaign.approvalAudienceHash ? campaign.approvalAudienceCount : null;
     throw new CampaignError(audienceChangedMessage(shownCount, audience.count));
   }
-  if (campaign.clientRef) {
+  if (await isClientCampaign(ctx, companyId, campaign)) {
     const ref = optionalString(params, "clientYesRef");
     if (!ref || params.clientYesSeen !== true) throw new CampaignError("Record the client's yes: where they said yes (a link to the comment or email), and tick that you have seen it.");
     await setClientYes(ctx, campaign.id, { ref, by: userId });
@@ -128,7 +131,7 @@ export async function reviewApprovalTool(ctx: PluginContext, companyId: string, 
   }
   // The PR 3 rule: the owner decides a client's campaign or one that reaches current clients; else the approver by the kit's chain.
   const audience = await currentAudience(ctx, companyId, campaign);
-  const ownerOnly = Boolean(campaign.clientRef) || (await customerCount(ctx, companyId, audience.contactIds)) > 0;
+  const ownerOnly = (await isClientCampaign(ctx, companyId, campaign)) || (await customerCount(ctx, companyId, audience.contactIds)) > 0;
   const person = ownerOnly ? await companyOwnerUserId(ctx, companyId) : await approverUserId(ctx, companyId, campaign);
   if (!person) throw new CampaignError("No approver is known for this company (set the owner in the Cockpit). The approval stays with you; a person sees it after 24 hours.");
   await ctx.issues.createComment(issueId, `Reviewer pass: ${note}\n\nOver to the approver: open the campaign to approve or send back.`, companyId);

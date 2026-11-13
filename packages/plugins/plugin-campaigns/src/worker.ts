@@ -40,6 +40,7 @@ import {
   listCampaignTemplates,
   listSteps,
   markEdited,
+  moveDraft,
   REPLY_OUTCOMES,
   replyEvent,
   saveCampaign,
@@ -101,11 +102,13 @@ import { forgetMessagingSetup, messagingSetup } from "./messaging.js";
 import { objectParams, optionalString, requiredString, stringList, integer } from "./params.js";
 import { DOMAIN_HEALTH_EVENT, gatherPreflight, preflightLines, rememberDomainHealth, rememberSenderHealth, SENDER_HEALTH_EVENT, unfilledPlaceholders } from "./preflight.js";
 import { campaignState, failedByCampaign, openReviseCampaigns, type CampaignFacts } from "./attention.js";
+import { isClientCampaign, isOwnBrandCampaign, ownBrands, withBrand, type OwnBrand } from "./brands.js";
 import { enrollmentPeople, peopleView, resultRows, resultsView, stepNumbers, stepTaskCounts, type TaskCounts } from "./people.js";
 import { eraseSubject, onConsentRecorded } from "./privacy.js";
 import { CAMPAIGNS_PROJECT_KEY } from "./namespace.js";
 import { projectForCampaign } from "./projects.js";
-import { preferencesLoad, preferencesSave } from "./preferences.js";
+import { campaignsPreferences, preferencesLoad, preferencesSave, readCampaignPreferences } from "./preferences.js";
+import { savePreferences } from "@partnersinbiz/pib-plugin-kit";
 import { growthApproveExperiment, growthDecideChange, growthRejectExperiment, growthReviewLoad } from "./growth-review.js";
 import { identityChanged, listSenderIdentities, preflightCampaign, recordChannelConsent, removeSenderIdentity, setSenderIdentity, suppressPhone } from "./sender-tools.js";
 import { composeMessage, sendMessagingStep } from "./sms.js";
@@ -157,7 +160,7 @@ import { eventTotals, weeklySends } from "./series.js";
 import { knownCompanies, publishAllSetupStatus, rememberCompany, setupStatus } from "./setup-status.js";
 import { cockpitSnapshot, publishAllCockpit } from "./cockpit.js";
 import { CAMPAIGN_DONE_CHECKS } from "./donechecks.js";
-import { approverUserId, assigneeFields, workOwner } from "./owner.js";
+import { approverUserId, assigneeFields, companyOwnerUserId, workOwner } from "./owner.js";
 import { approvalOrigin, handSentKey, reviseOrigin, stepOrigin } from "./origins.js";
 import { announceSuppression, onContactSuppressed, reannounceSuppressions, suppressAddress, suppressionEvents, suppressionPayload } from "./suppress.js";
 
@@ -226,6 +229,8 @@ const plugin = definePlugin({
     ctx.actions.register("campaigns.complete", (params, context) => completeAction(ctx, context, params));
     ctx.actions.register("campaigns.stats", (params, context) => statsAction(ctx, context, params));
     ctx.actions.register("campaigns.enroll", (params, context) => enrollAction(ctx, context, params));
+    ctx.actions.register("campaigns.move", (params, context) => moveCampaignAction(ctx, context, params));
+    ctx.actions.register("campaigns.set-own-brand", (params, context) => setOwnBrandAction(ctx, context, params));
     ctx.actions.register("campaigns.detail", (params, context) => campaignDetail(ctx, requiredCompany(context), params));
     ctx.actions.register("campaigns.ab-suggestion", (params, context) => suggestWinner(ctx, requiredCompany(context), params));
     ctx.actions.register("campaigns.declare-winner", (params, context) => declareWinner(ctx, requiredCompany(context), params));
@@ -422,17 +427,34 @@ async function load(ctx: PluginContext, context: PluginPerformActionContext, par
     attentionFacts(ctx, companyId),
   ]);
   const byCampaign = eventTotals(counts ?? [], ids);
-  const result = [];
-  for (const campaign of campaigns) {
-    const steps = await listSteps(ctx, campaign.id);
-    const stats = await campaignStats(ctx, campaign.id);
-    const approval = campaign.approvalIssueId ? await ctx.issues.get(campaign.approvalIssueId, companyId).catch(() => null) : null;
-    const state = campaignState(stateFacts(campaign, steps, stats, approval, counts ? byCampaign[campaign.id]?.sent ?? 0 : null, attention), now);
-    result.push({ ...publicCampaign(campaign), steps, stats, approvalStatus: approval?.status ?? null, state });
+  const brands = await ownBrands(ctx, companyId).catch(() => [] as OwnBrand[]);
+  const rows = async (list: CampaignDraft[], totals: Record<string, { sent: number }>) => {
+    const result = [];
+    for (const campaign of list) {
+      const steps = await listSteps(ctx, campaign.id);
+      const stats = await campaignStats(ctx, campaign.id);
+      const approval = campaign.approvalIssueId ? await ctx.issues.get(campaign.approvalIssueId, companyId).catch(() => null) : null;
+      const state = campaignState(stateFacts(campaign, steps, stats, approval, counts ? totals[campaign.id]?.sent ?? 0 : null, attention), now);
+      result.push({ ...publicCampaign(campaign), steps, stats, approvalStatus: approval?.status ?? null, state, ownBrand: isOwnBrandCampaign(brands, campaign) });
+    }
+    return result;
+  };
+  const result = await rows(campaigns, byCampaign);
+  // The own page also lists each of our own brands with its campaigns (they live in the brand's workspace).
+  const brandGroups = [];
+  if (!scope) {
+    for (const brand of brands) {
+      const list = await listCampaigns(ctx, companyId, { kind: "company", id: brand.id });
+      const totals = eventTotals(counts ?? [], new Set(list.map((campaign) => campaign.id)));
+      brandGroups.push({ client: { kind: "company" as const, id: brand.id, name: brand.name }, campaigns: await rows(list, totals), byCampaign: totals });
+    }
   }
   const setup = await messagingSetup(ctx, companyId).catch(() => null);
   return {
     campaigns: result,
+    brands: brandGroups,
+    // Whether this page's client is one of our own brands (the workspace says so, and the client's-yes rule does not apply).
+    ownBrand: scope ? isOwnBrandCampaign(brands, { clientKind: scope.kind, clientRef: scope.id }) : false,
     suppressed,
     series: { weeks: weeklySends(days, now, 12, ids), byCampaign },
     settingsSaved: Object.keys(config).length > 0,
@@ -531,7 +553,9 @@ async function campaignDetail(ctx: PluginContext, companyId: string, params: Rec
   const fingerprint = audience ? audienceFingerprint(audience.eligible.map((contact) => contact.id)) : null;
   // The approval bar (plan 5.1): for an own campaign, how many of the people are current clients.
   const deciding = campaign.status === "draft" && Boolean(campaign.approvalIssueId);
-  const customers = deciding && fingerprint && !campaign.clientRef ? await customerCount(ctx, companyId, fingerprint.contactIds).catch(() => null) : null;
+  // One of our own brands is decided like an own campaign, so its bar shows the current clients too.
+  const forClient = await isClientCampaign(ctx, companyId, campaign);
+  const customers = deciding && fingerprint && !forClient ? await customerCount(ctx, companyId, fingerprint.contactIds).catch(() => null) : null;
   return {
     campaign: {
       ...publicCampaign(campaign),
@@ -539,7 +563,10 @@ async function campaignDetail(ctx: PluginContext, companyId: string, params: Rec
       stats,
       approvalStatus: approval?.status ?? null,
       clientYes: campaign.clientYesRef ? { ref: campaign.clientYesRef, by: campaign.clientYesBy ?? null, at: campaign.clientYesAt ?? null } : null,
+      ownBrand: !forClient && Boolean(campaign.clientRef),
     },
+    // Where a person may move it: our own work or one of our own brands. Empty when it cannot move.
+    moveTargets: await moveTargets(ctx, companyId, campaign),
     sender: preflight ? { sentAs: preflight.sentAs, channels: preflight.channels } : null,
     preflight: preflight ? { errors: preflight.errors, warnings: preflight.warnings } : null,
     approval: approval
@@ -575,6 +602,74 @@ async function campaignDetail(ctx: PluginContext, companyId: string, params: Rec
       : null,
     results: results ? resultsView(steps, results) : null,
   };
+}
+
+/** Why this campaign cannot move between our own work and our own brands, or null when it can. */
+function moveBlocker(campaign: CampaignDraft, brands: OwnBrand[]): string | null {
+  if (campaign.clientRef && !isOwnBrandCampaign(brands, campaign)) return "This is a client's campaign. It stays with the client.";
+  // Once people are enrolled, their emails, step tasks and opt-out links were made for the current sender.
+  if (campaign.status !== "draft") return "Only a draft can move. A launched campaign stays with the sender it went out as; make a new campaign for the brand.";
+  return null;
+}
+
+async function moveTargets(ctx: PluginContext, companyId: string, campaign: CampaignDraft) {
+  const brands = await ownBrands(ctx, companyId).catch(() => [] as OwnBrand[]);
+  if (brands.length === 0 || moveBlocker(campaign, brands)) return [];
+  return [{ client: null as string | null, name: "Our own campaigns" }, ...brands.map((brand) => ({ client: `company:${brand.id}` as string | null, name: brand.name }))]
+    .filter((target) => target.client !== (campaign.clientRef ? `company:${campaign.clientRef}` : null));
+}
+
+/**
+ * Page action `campaigns.move`: a person moves a draft between our own work and one of our own brands, so it shows
+ * under the brand, goes out as the brand and uses the brand's do-not-email list. Never for an agent, never to or from a
+ * client, and never after launch. The audience stays as it is. An open approval is cancelled: the approver saw another
+ * sender.
+ */
+async function moveCampaignAction(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {
+  const companyId = requiredCompany(context);
+  if (context.actor.agentId || context.actor.type !== "user" || !context.actor.userId) throw new CampaignError("Only a signed-in person moves a campaign to a brand.");
+  const campaign = await requireCampaign(ctx, companyId, requiredString(params, "campaignId"));
+  const brands = await ownBrands(ctx, companyId);
+  const blocker = moveBlocker(campaign, brands);
+  if (blocker) throw new CampaignError(blocker);
+  const scope = readClientScope(params);
+  if (scope === undefined) throw new CampaignError('Say where it moves to: client "company:<crm id>" of one of our own brands, or "own".');
+  if (scope && !isOwnBrandCampaign(brands, { clientKind: scope.kind, clientRef: scope.id })) {
+    throw new CampaignError("A campaign only moves to one of our own brands (Preferences, Our own brands). A client's campaign is created in the client's workspace.");
+  }
+  const client = await requireClient(ctx, companyId, scope);
+  // Who it goes to must not change by moving: only a tag audience means the same people under another sender.
+  if (campaign.audienceMode !== "tags") {
+    throw new CampaignError(`Its audience is the contacts at ${campaign.clientName ?? "its company"}, which means other people somewhere else. Change the audience to tags first, then move it.`);
+  }
+  const next = withClient(campaign, client, "tags");
+  if (campaignScopeKey(next) === campaignScopeKey(campaign)) return { ...publicCampaign(campaign), moved: false, approvalReset: false };
+  // The approval first, so an approval marked done right now finds no campaign to launch; then the move, only while it is still a draft.
+  const approvalReset = await invalidateApproval(ctx, companyId, next, "the campaign moved to another sender");
+  if (!(await moveDraft(ctx, next))) throw new CampaignError("It was launched or changed just now, so it stays where it is. Reload the campaign.");
+  await markEdited(ctx, next.id);
+  return { ...publicCampaign(next), moved: true, approvalReset };
+}
+
+/**
+ * Page action `campaigns.set-own-brand`: a company owner or admin marks a CRM company as one of our own brands, or
+ * takes the mark away. The kit's `savePreferences` checks the person and their role and refuses anyone else, an agent
+ * included. The company is stored by its CRM id.
+ */
+async function setOwnBrandAction(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {
+  const companyId = requiredCompany(context);
+  const scope = readClientScope(params);
+  if (!scope || scope.kind !== "company") throw new CampaignError('Say which CRM company: client "company:<crm id>". A contact cannot be a brand.');
+  const client = await requireClient(ctx, companyId, scope);
+  const own = params.own === true;
+  const current = await readCampaignPreferences(ctx, companyId);
+  const saved = await savePreferences(ctx, context, campaignsPreferences, { ownBrands: withBrand(current.ownBrands, { id: client!.id, name: client!.name }, own) });
+  if (!saved.ok) throw new CampaignError(saved.error ?? "The list of our own brands could not be saved.");
+  return { client: { kind: "company" as const, id: client!.id, name: client!.name }, ownBrand: own };
+}
+
+function campaignScopeKey(campaign: CampaignDraft): string {
+  return campaign.clientRef ? `${campaign.clientKind ?? "company"}:${campaign.clientRef}` : "own";
 }
 
 async function listCampaignsRecord(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
@@ -774,7 +869,9 @@ async function launchCampaign(
 ): Promise<LaunchResult> {
   assertCanLaunch(campaign.status);
   // A client's campaign launches the first time only with the client's written yes on record (plan 5.1): a hand-marked issue is not enough.
-  if (campaign.status === "draft" && campaign.clientRef && !(campaign.clientYesRef && campaign.clientYesAt)) throw new CampaignError(CLIENT_YES_MISSING);
+  // One of our own brands is not a client: it launches like an own campaign.
+  const forClient = await isClientCampaign(ctx, companyId, campaign);
+  if (campaign.status === "draft" && forClient && !(campaign.clientYesRef && campaign.clientYesAt)) throw new CampaignError(CLIENT_YES_MISSING);
   const steps = await listSteps(ctx, campaign.id);
   if (steps.length === 0) throw new CampaignError("A campaign needs at least one step before launch. Add one with add-campaign-step.");
   // Things change between approval and launch (a sender removed, a provider switched off): check again, without the web.
@@ -796,6 +893,19 @@ async function launchCampaign(
     const approval = campaign.approvalIssueId ? await ctx.issues.get(campaign.approvalIssueId, companyId).catch(() => null) : null;
     if (!approval?.description?.includes(ALL_CONTACTS_MARK)) {
       throw new CampaignError(`This campaign would email every CRM contact (${contacts.length}), but its approval did not say "${ALL_CONTACTS_MARK}${contacts.length})". Add audience tags, or request approval again so the approver sees who gets it.`);
+    }
+  }
+  // An own or own-brand campaign that reaches a current client is the company owner's decision (Q7), whichever way the
+  // approval was given: the Approve button, the approval issue marked done by hand, the catch-up job or the launch tool.
+  if (campaign.status === "draft" && !forClient) {
+    const customers = await customerCount(ctx, companyId, eligible.map((contact) => contact.id));
+    if (customers > 0) {
+      const owner = await companyOwnerUserId(ctx, companyId);
+      const approval = campaign.approvalIssueId ? await ctx.issues.get(campaign.approvalIssueId, companyId).catch(() => null) : null;
+      const decider = options.approvedByUserId ?? approval?.assigneeUserId ?? null;
+      const reach = `This campaign reaches ${customers} current client${customers === 1 ? "" : "s"}, so only the company owner approves it`;
+      if (!owner) throw new CampaignError(`${reach}, and no company owner is known. Set the owner in the Cockpit first.`);
+      if (decider !== owner) throw new CampaignError(`${reach}. The owner clicks Approve and launch on the campaign.`);
     }
   }
   // A draft launches only to the people its approval was for (F5): someone tagged since, or an issue marked done by hand
@@ -857,7 +967,7 @@ async function launchOnApproval(ctx: PluginContext, companyId: string, campaign:
     const userId = approvedByUserId ?? (await approverUserId(ctx, companyId, campaign));
     try {
       await ctx.issues.update(issueId, { status: "todo", assigneeAgentId: null, assigneeUserId: userId }, companyId);
-      const next = campaign.clientRef
+      const next = (await isClientCampaign(ctx, companyId, campaign).catch(() => true))
         ? "Open the campaign, record where the client said yes, then click **Approve and launch** there. Marking this issue done does not launch a client's campaign."
         : "Fix that, then click **Launch** on the campaign (or mark this issue **done** again).";
       await commentOn(ctx, companyId, issueId, `Approved, but the campaign could not launch: ${error.message}\n\n${next} Cancel the issue to drop the launch.`);
@@ -1216,7 +1326,7 @@ async function requestApproval(ctx: PluginContext, companyId: string, params: Re
       ? "- **Delivery:** email. The Mailbox sends each due step as marketing mail (with an unsubscribe header). {{first_name}} and the other tokens are filled in per contact."
       : "- **Delivery:** issue. Each due step opens an issue and the campaign's agent sends the email.";
   const description = [
-    campaign.clientRef
+    (await isClientCampaign(ctx, companyId, campaign))
       ? `To approve campaign **${campaign.name}**, open it on the Campaigns page, record where the client said yes and click **Approve and launch**. Marking this issue done does not launch a client's campaign. Cancel the issue to refuse it (its agent gets a task to revise it).`
       : `Mark this issue **done** to approve campaign **${campaign.name}**, or click **Approve and launch** on the campaign: it then launches by itself. Cancel the issue to refuse it (its agent gets a task to revise it).`,
     "",
