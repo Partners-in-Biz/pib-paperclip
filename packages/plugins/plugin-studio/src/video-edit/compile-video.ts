@@ -19,6 +19,7 @@
  * model throws `CompileError` with `unsupported_feature:<name>`.
  */
 import { StudioError } from "../errors.js";
+import { chromaKeyFilter, despillFilter } from "./chroma.js";
 import { AUDIO_ENCODER_ARGS, INTERMEDIATE_AUDIO_ENCODER_ARGS, buildAudioGraph } from "./compile-audio.js";
 import { buildTextLayers } from "./compile-text.js";
 import { fontsDir } from "./fonts.js";
@@ -187,17 +188,18 @@ class Graph {
    * always ends in YUV. Blur first scales the frame to the render width, so the `looks.ts` sigma (at render width) is a
    * fixed fraction of the clip's own width whatever the source resolution. `vignette` has no alpha formats, so on an
    * image it runs on a split copy and the source alpha is merged back (a PNG overlay keeps its transparency). `[]` when
-   * not graded.
+   * not graded. `keyed`: the chroma key already ran, so the frame is BT.709 yuva420p and its alpha is kept.
    */
-  private grade(clip: MediaClip, kind: CompileInput["kind"]): string[] {
+  private grade(clip: MediaClip, kind: CompileInput["kind"], keyed = false): string[] {
     if (!graded(clip)) return [];
     const { width } = this.doc.project;
-    const alpha = kind === "image";
+    const alpha = kind === "image" || keyed;
     // An image starts in RGB with its own decoder matrix (PNG is RGB, JPEG is BT.601 by spec), so every graded image
     // leaves the chain through the explicit BT.709 `toYuv`. Without this an adjust-only PNG fell to ffmpeg's implicit
     // BT.601 and a JPEG look read BT.601 codes as BT.709: Y 101 against 92 for the same pixel (review, PAR-10158).
-    const out: string[] = alpha ? ["format=gbrap"] : [];
-    let rgb = alpha;
+    const fromRgb = kind === "image" && !keyed;
+    const out: string[] = fromRgb ? ["format=gbrap"] : [];
+    let rgb = fromRgb;
     const yuv = () => {
       if (rgb) out.push(...toYuv(alpha));
       rgb = false;
@@ -221,6 +223,32 @@ class Graph {
     }
     yuv();
     return out;
+  }
+
+  /**
+   * Chroma key (schema v4, D3c, `chroma.ts`) on the source frame, before grade and shape: `chromakey` on BT.709 TV-range
+   * yuva420p, then `despill` on packed RGBA when the clip has spill. An image is taken to RGB first and through the
+   * explicit BT.709 `toYuv` (as `grade`), and because `chromakey` replaces the alpha plane, its own alpha (a PNG's
+   * transparency) is multiplied back in. Ends in yuva420p. One chain step; `[]` without a key.
+   */
+  private key(clip: MediaClip, kind: CompileInput["kind"]): string[] {
+    const k = clip.chromaKey;
+    if (!k) return [];
+    const spill = despillFilter(k);
+    const keyed = [chromaKeyFilter(k), ...(spill ? ["scale=in_color_matrix=bt709,format=rgba", spill, ...toYuv(true)] : [])].join(",");
+    if (kind !== "image") return ["format=yuva420p", keyed];
+    const [pic, own, ownAlpha] = [this.label("ckp"), this.label("cko"), this.label("cko")];
+    const [keyedPic, keyedCopy, keyAlpha, alpha] = [this.label("ckp"), this.label("cka"), this.label("cka"), this.label("cka")];
+    return [
+      [
+        `format=gbrap,${toYuv(true).join(",")},split[${pic}][${own}]`,
+        `[${own}]alphaextract[${ownAlpha}]`,
+        `[${pic}]${keyed},format=yuva420p,split[${keyedPic}][${keyedCopy}]`,
+        `[${keyedCopy}]alphaextract[${keyAlpha}]`,
+        `[${keyAlpha}][${ownAlpha}]blend=all_mode=multiply[${alpha}]`,
+        `[${keyedPic}][${alpha}]alphamerge`,
+      ].join(";"),
+    ];
   }
 
   private crop(t: Transform): string[] {
@@ -396,7 +424,7 @@ class Graph {
     const length = clipDuration(clip);
     // Frames carry timeline time here, so the clip's local 0 is at `clip.start`.
     const shape = reshapes(clip) ? this.keyedShape(clip, clip.start) : [...this.shape(clip.transform), ...this.frame(clip)];
-    const steps = [...this.timing(clip, kind, clip.start), ...this.grade(clip, kind), ...shape];
+    const steps = [...this.timing(clip, kind, clip.start), ...this.key(clip, kind), ...this.grade(clip, kind, Boolean(clip.chromaKey)), ...shape];
     if (clip.fadeIn > 0) steps.push(`fade=t=in:st=${num(clip.start)}:d=${num(clip.fadeIn)}:alpha=1`);
     if (clip.fadeOut > 0) steps.push(`fade=t=out:st=${num(clip.start + length - clip.fadeOut)}:d=${num(clip.fadeOut)}:alpha=1`);
     steps.push(...this.opacity(clip, clip.start));
