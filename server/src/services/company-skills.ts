@@ -4455,12 +4455,41 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     };
   }
 
-  async function readFile(companyId: string, skillId: string, relativePath: string): Promise<CompanySkillFileDetail | null> {
-    await ensureSkillInventoryCurrent(companyId);
+  async function readFile(
+    companyId: string,
+    skillId: string,
+    relativePath: string,
+    options: { skipInventoryRefresh?: boolean } = {},
+  ): Promise<CompanySkillFileDetail | null> {
+    // Callers that read many files must refresh once (readFiles or an earlier
+    // list/listFull), not once per file: a refresh walks the whole company
+    // inventory (PAR-11024).
+    if (!options.skipInventoryRefresh) await ensureSkillInventoryCurrent(companyId);
     const skill = await getById(companyId, skillId);
     if (!skill) return null;
 
     return readLoadedSkillFile(skill, relativePath);
+  }
+
+  /**
+   * Reads several files of one skill with a single inventory refresh and a
+   * single visibility-checked lookup. Returns null when the skill is missing or
+   * not visible; a file that cannot be read maps to null.
+   */
+  async function readFiles(
+    companyId: string,
+    skillId: string,
+    relativePaths: Iterable<string>,
+  ): Promise<Map<string, CompanySkillFileDetail | null> | null> {
+    await ensureSkillInventoryCurrent(companyId);
+    const skill = await getById(companyId, skillId);
+    if (!skill) return null;
+    const files = new Map<string, CompanySkillFileDetail | null>();
+    for (const relativePath of relativePaths) {
+      if (files.has(relativePath)) continue;
+      files.set(relativePath, await readLoadedSkillFile(skill, relativePath).catch(() => null));
+    }
+    return files;
   }
 
   async function readLoadedSkillFile(skill: CompanySkill, relativePath: string): Promise<CompanySkillFileDetail> {
@@ -7521,6 +7550,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     renameSkill,
     updateStatus,
     readFile,
+    readFiles,
     updateSkill,
     updateFile,
     deleteFile,

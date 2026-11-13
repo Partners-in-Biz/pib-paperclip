@@ -1217,21 +1217,22 @@ export function builtInAgentService(db: Db) {
   async function getCurrentSkillFiles(companyId: string, skill: CompanySkill | null, bundle: BuiltInAgentBundleDefinition) {
     const currentFiles: Record<string, string | null> = {};
     const stockFiles = bundle.skill.files;
-    for (const packagePath of Object.keys(stockFiles)) {
-      const relativePath = packagePath.split("/").slice(1).join("/") || "SKILL.md";
+    const relativePaths = new Map(
+      Object.keys(stockFiles).map((packagePath) => [packagePath, packagePath.split("/").slice(1).join("/") || "SKILL.md"]),
+    );
+    // One inventory refresh for the whole skill, not one per file (PAR-11024).
+    const otherPaths = [...relativePaths.values()].filter((relativePath) => relativePath !== "SKILL.md");
+    const loaded = skill && otherPaths.length > 0
+      ? await skillSvc.readFiles(companyId, skill.id, otherPaths).catch(() => null)
+      : null;
+    for (const [packagePath, relativePath] of relativePaths) {
       if (!skill) {
         currentFiles[packagePath] = null;
         continue;
       }
-      if (relativePath === "SKILL.md") {
-        currentFiles[packagePath] = skill.markdown;
-        continue;
-      }
-      try {
-        currentFiles[packagePath] = (await skillSvc.readFile(companyId, skill.id, relativePath))?.content ?? null;
-      } catch {
-        currentFiles[packagePath] = null;
-      }
+      currentFiles[packagePath] = relativePath === "SKILL.md"
+        ? skill.markdown
+        : loaded?.get(relativePath)?.content ?? null;
     }
     return currentFiles;
   }
