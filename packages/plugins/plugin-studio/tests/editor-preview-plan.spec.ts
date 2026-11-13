@@ -18,7 +18,7 @@ describe("preview plan", () => {
     const plan = buildPreviewPlan(three);
     expect(plan.segments.map((s) => [s.clipId, s.start, s.end])).toEqual([["a", 0, 3], ["b", 3, 5], ["c", 6, 8]]);
     expect(plan.end).toBe(8);
-    expect(buildPreviewPlan(null)).toEqual({ segments: [], end: 0 });
+    expect(buildPreviewPlan(null)).toEqual({ segments: [], overlays: [], end: 0 });
   });
 
   it("maps timeline time to source time with speed", () => {
