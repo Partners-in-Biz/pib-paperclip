@@ -85,7 +85,8 @@ export interface Broker {
   findSubfolder?(type: DriveEntityType, id: string, subPath: string, folderId?: string): Promise<{ folder_id: string } | null>;
   ensure(body: EnsureBody): Promise<EnsureResult>;
   identity(sharedDriveId?: string): Promise<IdentityResult>;
-  uploadFile(input: { name: string; bytes: Uint8Array; mimeType: string; parentFolderId?: string }): Promise<UploadResult>;
+  /** `timing`, when given, is filled with the ms of the same-name list and of the POST (PAR-11350). */
+  uploadFile(input: { name: string; bytes: Uint8Array; mimeType: string; parentFolderId?: string; timing?: { listMs?: number; postMs?: number } }): Promise<UploadResult>;
   /**
    * A large file (PAR-8125), streamed: a Google resumable upload fed one chunk at a time. `sha256` is the producer's;
    * the bytes are hashed on the way and the upload is cancelled before its last chunk when they differ.
