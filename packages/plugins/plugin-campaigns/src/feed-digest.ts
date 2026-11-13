@@ -68,14 +68,15 @@ export async function createFeedDigest(ctx: PluginContext, companyId: string, pa
   if (!allowed.includes(feedUrl)) {
     throw new CampaignError(`${feedUrl} is not an allowed digest feed. Add it to "Digest feeds" (digestFeedUrls) in the Campaigns settings first.`);
   }
-  const tags = stringList(params, "audienceTags").map((tag) => tag.trim()).filter(Boolean);
+  const tags = stringList(params, "audienceTags").map((tag) => tag.trim()).filter(Boolean).filter((tag, i, all) => all.indexOf(tag) === i);
   if (tags.length < 1 || tags.length > 5) throw new CampaignError("audienceTags needs 1 to 5 CRM tags: a digest never goes to all contacts.");
   const name = requiredString(params, "name");
   const subject = requiredString(params, "subject");
-  const category = optionalString(params, "category") ?? null;
+  const category = optionalString(params, "category") || null;
 
   const open = await openDraft(ctx, companyId, feedUrl, category);
   if (open) {
+    // A failed lookup only softens the message below; request-campaign-approval re-checks.
     const issue = open.approval_issue_id ? await ctx.issues.get(open.approval_issue_id, companyId).catch(() => null) : null;
     const waiting = issue !== null && issue.status !== "cancelled";
     return {

@@ -44,6 +44,13 @@ describe("fetchFeed", () => {
   it("gives a clear error for big, html, 404 and rejected", async () => {
     await expect(fetchFeed(ctxWith(async () => xmlRes("a".repeat(1_000_001))), "https://x.test/f")).rejects.toThrow(/too large/);
     await expect(fetchFeed(ctxWith(async () => xmlRes("<html>", 200, "text/html")), "https://x.test/f")).rejects.toThrow(/not a feed/);
+    let read = false;
+    const moved = xmlRes(FEED);
+    Object.defineProperty(moved, "url", { value: "https://evil.test/feed" });
+    moved.text = async () => { read = true; return FEED; };
+    await expect(fetchFeed(ctxWith(async () => moved), "https://x.test/feed")).rejects.toThrow(/redirects/);
+    expect(read).toBe(false);
+    await expect(fetchFeed(ctxWith(async () => xmlRes("", 301)), "https://x.test/f")).rejects.toThrow(/status 301/);
     await expect(fetchFeed(ctxWith(async () => xmlRes("", 404)), "https://x.test/f")).rejects.toThrow(/status 404/);
     await expect(fetchFeed(ctxWith(async () => { throw new Error("timeout after 30s"); }), "https://x.test/f")).rejects.toThrow(/https:\/\/x\.test\/f.*timeout after 30s/);
   });

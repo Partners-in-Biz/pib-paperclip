@@ -46,11 +46,14 @@ export async function fetchFeed(ctx: PluginContext, url: string): Promise<string
 
   let res: Response;
   try {
-    res = await ctx.http.fetch(parsed.toString(), { method: "GET", headers: { accept: "application/rss+xml, application/xml, text/xml" } });
+    res = await ctx.http.fetch(parsed.toString(), { method: "GET", redirect: "manual", headers: { accept: "application/rss+xml, application/xml, text/xml" } });
   } catch (error) {
     const cause = error instanceof Error ? error.message : String(error);
     throw new FeedError(`Feed ${url} could not be fetched: ${cause}`);
   }
+  // The allow-list bounds what is downloaded, so a redirect is never followed: refuse "manual" 3xx answers and, if the host
+  // followed one anyway, a final URL on another origin (or res.redirected) before the body is read.
+  if (res.redirected || (res.url && new URL(res.url).origin !== parsed.origin)) throw new FeedError(`Feed ${url} refused: it redirects to another address.`);
   if (res.status < 200 || res.status > 299) throw new FeedError(`Feed ${url} answered with status ${res.status}.`);
   const type = (res.headers.get("content-type") ?? "").toLowerCase();
   if (!type.includes("xml") && !type.includes("rss")) throw new FeedError(`Feed ${url} is not a feed: content-type is "${type || "missing"}".`);

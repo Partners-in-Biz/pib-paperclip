@@ -51,7 +51,7 @@ describe.skipIf(!available)("create-feed-digest (postgres)", () => {
       (await harness.executeTool<{ data?: Record<string, any>; error?: string }>("create-feed-digest", { feedUrl: FEED_URL, audienceTags: ["vip"], name: "Weekly", subject: "This week", ...params }, { companyId: CO, agentId: "agent-camp" }));
     return { harness, store, fetch, call };
   }
-  const rows = async () => (await pg.client.query(`SELECT id, status, feed_item_keys, approval_issue_id FROM ${T} ORDER BY created_at`)).rows as Array<Record<string, any>>;
+  const rows = async () => (await pg.client.query(`SELECT id, status, feed_category, feed_item_keys, approval_issue_id FROM ${T} ORDER BY created_at`)).rows as Array<Record<string, any>>;
   const markLaunched = (id: string) => pg.client.query(`UPDATE ${T} SET status = 'scheduled' WHERE id = $1`, [id]);
 
   it("drafts 3 items newest first, keeps the keys on the row and opens the launch approval without sending", async () => {
@@ -138,5 +138,14 @@ describe.skipIf(!available)("create-feed-digest (postgres)", () => {
     expect(seo.data).toMatchObject({ created: true, items: 1 });
     await markLaunched(String(seo.data!.campaignId));
     expect((await call({ category: "ads" })).data).toMatchObject({ created: true, items: 1 });
+  });
+
+  it("a whitespace-only category counts as no category", async () => {
+    const { call } = await setup({ xml: `<rss><channel>${item(1)}</channel></rss>` });
+    const first = await call({ category: "   " });
+    expect(first.data).toMatchObject({ created: true, items: 1 });
+    expect((await rows())[0]!.feed_category).toBeNull();
+    await markLaunched(String(first.data!.campaignId));
+    expect((await call()).data).toMatchObject({ created: false });
   });
 });
