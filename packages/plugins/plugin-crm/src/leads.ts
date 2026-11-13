@@ -35,7 +35,7 @@ import {
   type LeadCapturedResult,
 } from "@partnersinbiz/pib-plugin-kit";
 import { asRecord, contactsByEmail, contactsByHandle, getAccount, getContact, insertActivityOnce, insertContact, insertLink, saveContact, table } from "./db.js";
-import { createContact, fillContact, linkContact, normalizeEmail, type ContactDraft } from "./domain.js";
+import { createContact, fillContact, isNewsletterOrigin, linkContact, normalizeEmail, type ContactDraft } from "./domain.js";
 import { oneLine, type Attribution } from "./lead-form.js";
 import { settleCapture } from "./lead-store.js";
 import { leadBand } from "./lead-levels.js";
@@ -388,6 +388,12 @@ export async function handleLead(ctx: PluginContext, companyId: string, lead: Le
   } else if (extras) {
     // The same person again: fill what is empty (a phone, a better name, the first touch), never overwrite.
     const filled = fillContact(contact, { name: lead.name ?? undefined, phones: extras.phone ? [extras.phone] : [], custom: formCustom });
+    // A newsletter subscriber who fills in a real lead form is a lead from now on.
+    if (isNewsletterOrigin(contact.custom)) {
+      const { origin: _origin, ...rest } = contact.custom;
+      contact.custom = rest;
+      filled.push("custom.origin");
+    }
     if (filled.length) await saveContact(ctx, contact);
   }
 

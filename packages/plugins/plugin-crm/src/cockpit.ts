@@ -26,6 +26,7 @@ import {
   type WaitingItem,
 } from "@partnersinbiz/pib-plugin-kit";
 import { teamReport } from "./agent.js";
+import { NOT_NEWSLETTER_ORIGIN_SQL } from "./domain.js";
 import { CARE_EVENT_KIND } from "./care-clients.js";
 import { PLUGIN_ID } from "./namespace.js";
 import { isLeadFollowUp, isReplyWork } from "./origins.js";
@@ -260,11 +261,11 @@ export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Pr
       `SELECT
          (SELECT count(*) FROM ${t(ctx, "deals")} d JOIN ${t(ctx, "pipeline_stages")} s ON s.id = d.stage_id
            WHERE d.company_id = $1 AND s.kind = 'won' AND d.updated_at >= date_trunc('month', now()))::text AS won_month,
-         (SELECT count(*) FROM ${t(ctx, "contacts")} WHERE company_id = $1 AND lifecycle = 'lead' AND created_at >= now() - interval '7 days')::text AS new_leads_week,
+         (SELECT count(*) FROM ${t(ctx, "contacts")} WHERE company_id = $1 AND lifecycle = 'lead' AND ${NOT_NEWSLETTER_ORIGIN_SQL} AND created_at >= now() - interval '7 days')::text AS new_leads_week,
          (SELECT count(*) FROM ${t(ctx, "contacts")} WHERE company_id = $1 AND next_action_due_at IS NOT NULL AND next_action_due_at <= now())::text AS follow_up,
          (SELECT count(DISTINCT sequence_id) FROM ${t(ctx, "enrollments")} WHERE company_id = $1 AND status = 'running')::text AS active_sequences,
-         (SELECT count(*) FROM ${t(ctx, "contacts")} WHERE company_id = $1 AND lifecycle IN ('lead', 'prospect'))::text AS open_leads,
-         (SELECT count(*) FROM ${t(ctx, "contacts")} WHERE company_id = $1 AND lifecycle IN ('lead', 'prospect') AND lead_scored_at IS NOT NULL)::text AS scored_leads`,
+         (SELECT count(*) FROM ${t(ctx, "contacts")} WHERE company_id = $1 AND lifecycle IN ('lead', 'prospect') AND ${NOT_NEWSLETTER_ORIGIN_SQL})::text AS open_leads,
+         (SELECT count(*) FROM ${t(ctx, "contacts")} WHERE company_id = $1 AND lifecycle IN ('lead', 'prospect') AND ${NOT_NEWSLETTER_ORIGIN_SQL} AND lead_scored_at IS NOT NULL)::text AS scored_leads`,
       [companyId],
     );
     return rows[0] ?? null;
