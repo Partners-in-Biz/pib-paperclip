@@ -227,15 +227,8 @@ export function healthIssueContent(entries: HealthEntry[], prefix: string | null
 
 export type HealthRefresh =
   | { action: "skipped"; reason: string }
+  | { action: "kept"; reason: string; issueId: null }
   | { action: "created" | "updated" | "unchanged" | "closed" | "none"; issueId: string | null; problems: number };
-
-async function companyPrefix(env: Env, companyId: string): Promise<string | null> {
-  try {
-    return (await env.ctx.companies.get(companyId))?.issuePrefix ?? null;
-  } catch {
-    return null;
-  }
-}
 
 async function healthIssueOn(env: Env, companyId: string): Promise<boolean> {
   try {
@@ -251,7 +244,15 @@ export async function refreshHealthIssue(env: Env, companyId: string, problems?:
   if (!roles) return { action: "skipped", reason: "Cockpit settings not saved" };
   if (!(await healthIssueOn(env, companyId))) return { action: "skipped", reason: "health issue switched off" };
   const found = problems ?? (await collectProblems(env, companyId, { trackWarnings: true }));
-  const content = healthIssueContent(found.entries, await companyPrefix(env, companyId));
+  // One uncaught read. When the plugin call has ended the host refuses it; then the
+  // tracked issue cannot be read either, so touch nothing (no close, create or record delete).
+  let company: Awaited<ReturnType<Env["ctx"]["companies"]["get"]>>;
+  try {
+    company = await env.ctx.companies.get(companyId);
+  } catch {
+    return { action: "kept", reason: "company not readable", issueId: null };
+  }
+  const content = healthIssueContent(found.entries, company?.issuePrefix ?? null);
   const existing = await getHealthIssue(env.ctx, companyId);
   const issue = existing ? await env.ctx.issues.get(existing.issueId, companyId).catch(() => null) : null;
   const open = issue && !CLOSED.has(String(issue.status)) ? issue : null;
