@@ -8,6 +8,7 @@
 import { useEffect, useState, useSyncExternalStore, type KeyboardEvent } from "react";
 import type { Clip, Ease, MediaClip, KeyframeProp, TrackKind } from "../../video-edit/timeline.js";
 import type { EditorStore } from "./editor-store.js";
+import { KeyFramePanel } from "./KeyFramePanel.js";
 import { LayerPanel } from "./LayerPanel.js";
 import { LookPanel } from "./LookPanel.js";
 import { hasLookPanel } from "./look-panel.js";
@@ -113,6 +114,7 @@ export function ClipInspector({ store, history }: { store: EditorStore; history:
         );
       }) : null}
       {found && found.kind === "overlay" ? <LayerPanel store={store} clip={found.clip as MediaClip} /> : null}
+      {found && found.kind === "overlay" ? <KeyFramePanel store={store} clip={found.clip as MediaClip} /> : null}
       {found && hasLookPanel(found.kind) ? <LookPanel store={store} clip={found.clip as MediaClip} /> : null}
     </section>
   );
