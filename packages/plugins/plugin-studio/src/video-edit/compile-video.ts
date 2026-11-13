@@ -402,12 +402,22 @@ class Graph {
    * placement as `overlay=`), `lut2` blends that canvas with the base in RGB by the `blend.ts` formula, and the result,
    * carrying the canvas alpha, is laid over the base: out = base + alpha x (blend - base). Outside the clip's interval
    * the base passes through untouched. BT.709 both ways, as `grade`. Returns the new base label.
+   *
+   * Memory (PAR-11088): the blended layer comes from a split of the base, so its first frame needs the base at the clip
+   * start. Laid over the base as it is, `overlay` would wait for that frame and queue every base frame before it (about
+   * 90 MiB per second of start at 1080x1920: a clip at 150 s ran a 6 GiB `--as` cap out). So the layer is padded from
+   * 0 with transparent frames (`tpad`, which needs no input), one per base frame `trim=start` drops (the base is on the
+   * 1/fps timebase: nearest frame, `trimFrames`), and the base and the layer run in step. Padding is not blended
+   * (`enable`), so it costs a fill per frame.
    */
   private blendOver(base: string, shaped: string, clip: MediaClip, mode: LayerBlend): string {
     const { width, height, fps } = this.doc.project;
     const length = clipDuration(clip);
     const [canvas, pc, pa, alpha, b0, b1, bt, lt, bl, merged, out] = ["bcv", "bpc", "bpa", "bpa", "bb", "bb", "bbt", "blt", "bbl", "bbl", "base"].map((p) => this.label(p));
     const expr = blendLutExpr(mode);
+    const lead = trimFrames(clip.start, fps);
+    const pad = lead > 0 ? `,setpts=PTS-STARTPTS,tpad=start=${lead}:color=black@0` : "";
+    const enable = lead > 0 ? `:enable='gte(t,${num((lead - 0.5) / fps)})'` : "";
     this.filters.push(
       `color=c=black@0:s=${width}x${height}:r=${fps}:d=${num(length)},format=yuva420p,setpts=PTS-STARTPTS+${num(clip.start)}/TB[${canvas}]`,
       `[${canvas}][${shaped}]overlay=${this.overlayAt(clip, clip.start)}:eof_action=pass,format=yuva420p,split[${pc}][${pa}]`,
@@ -416,8 +426,8 @@ class Graph {
       `[${pc}]${toRgb(false).join(",")}[${lt}]`,
       `[${bt}][${lt}]lut2=c0='${expr}':c1='${expr}':c2='${expr}',${toYuv(false).join(",")}[${bl}]`,
       `[${pa}]alphaextract[${alpha}]`,
-      `[${bl}][${alpha}]alphamerge[${merged}]`,
-      `[${b0}][${merged}]overlay=x=0:y=0:eof_action=pass[${out}]`,
+      `[${bl}][${alpha}]alphamerge${pad}[${merged}]`,
+      `[${b0}][${merged}]overlay=x=0:y=0:eof_action=pass${enable}[${out}]`,
     );
     return out;
   }
