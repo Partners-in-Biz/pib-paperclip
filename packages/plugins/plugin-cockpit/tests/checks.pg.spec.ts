@@ -410,8 +410,8 @@ d("the Cockpit's extra checks (Postgres)", () => {
         },
       };
 
-      // Call companyBrief with tight timeout so ownChecks (which contains ownSnapshot) times out
-      const brief = await companyBrief(w.env, A, { sectionMs: 50, totalMs: 500 });
+      // ownSnapshot reaches the memory read after three sections; 50 ms was too short for that on a busy CI runner (PAR-11232). The hang still times the section out.
+      const brief = await companyBrief(w.env, A, { sectionMs: 1500, totalMs: 3000 });
 
       // When ownChecks times out, it should be marked degraded
       expect(memoryHangFired).toBe(true);
