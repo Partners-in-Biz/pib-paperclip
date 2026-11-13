@@ -280,7 +280,7 @@ export type SprintBundle = {
   playbook?: { playbookId: string | null; version: number | null; pending: number } | null;
 };
 
-export type TabId = "plan" | "keywords" | "backlinks" | "content" | "audits" | "optimizations" | "previews" | "playbook" | "integrations";
+export type TabId = "plan" | "keywords" | "backlinks" | "content" | "audits" | "optimizations" | "previews" | "playbook" | "growth" | "integrations";
 
 export type PreviewFilter = "awaiting" | "approved" | "declined" | "applied" | "expired";
 
@@ -316,3 +316,34 @@ export type PreviewItem = {
   expired: boolean;
   overlapIds: string[];
 };
+
+/** One growth experiment as the `seo.growth-experiments` worker action returns it (kit record). */
+export interface GrowthExperimentRow {
+  experimentId: string;
+  status: "proposed" | "running" | "measured" | "rejected" | "abandoned";
+  hypothesis: string;
+  hypothesisType: string;
+  arms: Array<{ key: string; description: string }>;
+  minPerArm: number;
+  windowDays: number;
+  startedAt: string | null;
+  measuredAt: string | null;
+  verdict: "win" | "loss" | "no_change" | "inconclusive" | null;
+  reason: string | null;
+  note: string | null;
+  playbookDiff: string | null;
+  counts: Record<string, { posts: number; published: number; scored: number }> | null;
+  createdAt: string | null;
+}
+
+export interface GrowthLoad {
+  scope: "own" | "client" | "unlinked";
+  clientName?: string | null;
+  legacyClientName?: string | null;
+  programId: string | null;
+  autopilot: string | null;
+  maxRunning: number;
+  running: number;
+  experiments: GrowthExperimentRow[];
+  pendingPlaybookChanges: number | null;
+}
