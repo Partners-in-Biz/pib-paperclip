@@ -27,7 +27,7 @@
  * what a visitor types is also there; that log is the host's, not ours.
  */
 import { randomBytes, randomUUID } from "node:crypto";
-import type { PluginContext, PluginWebhookInput } from "@paperclipai/plugin-sdk";
+import { PLUGIN_RPC_ERROR_CODES, type PluginContext, type PluginWebhookInput } from "@paperclipai/plugin-sdk";
 import { configSaved, HANDOFF_EVENTS, isModuleEnabled, pluginEvent, PIB_PLUGINS, pluginUiBase, readConfig, SecretResolver, type ClientRef } from "@partnersinbiz/pib-plugin-kit";
 import { recordConsent } from "./consent.js";
 import { asRecord, getAccount, getContact } from "./db.js";
@@ -94,11 +94,17 @@ import { getSite } from "./sites.js";
 import { onClientLeadStoredForSpeedToLead } from "./speed-to-lead.js";
 import { clientLeadsWithoutIssue, clientProjectIds, companiesWithClientLeadsWithoutIssue, deleteClientLeadByKey, getClientProfile, insertClientLead, setClientLeadIssue, type ClientLead } from "./store.js";
 
-/** The webhook answers with this when something the visitor can fix is wrong. The host passes the message on in its 502 body. */
+/**
+ * The webhook answers with this when something the visitor can fix is wrong. The host passes the message on in its 502 body;
+ * a `rate_limited` refusal carries the RATE_LIMITED code, so the host answers 429 instead (PAR-11278).
+ */
 export class LeadRejected extends Error {
+  readonly code: number | undefined;
   constructor(message: string, readonly outcome: string) {
     super(message);
     this.name = "LeadRejected";
+    // Undefined on a host whose SDK predates the code: the worker then sends WORKER_ERROR and the host answers 502, as before.
+    this.code = outcome === "rate_limited" ? PLUGIN_RPC_ERROR_CODES.RATE_LIMITED : undefined;
   }
 }
 

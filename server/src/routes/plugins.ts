@@ -2770,6 +2770,7 @@ export function pluginRoutes(
    * Errors:
    * - 404 if plugin not found or endpointKey not declared
    * - 400 if plugin is not in ready state or lacks webhooks.receive capability
+   * - 429 if the plugin refused with `PLUGIN_RPC_ERROR_CODES.RATE_LIMITED`
    * - 502 if the worker is unavailable or the RPC call fails
    */
   router.post("/plugins/:pluginId/webhooks/:endpointKey", async (req, res) => {
@@ -2897,7 +2898,10 @@ export function pluginRoutes(
         })
         .where(eq(pluginWebhookDeliveries.id, delivery.id));
 
-      res.status(502).json({
+      // A plugin's rate-limit refusal is the caller's to retry later (429, no Retry-After:
+      // the plugin's limits differ per path). Every other worker error stays 502.
+      const rateLimited = err instanceof JsonRpcCallError && err.code === PLUGIN_RPC_ERROR_CODES.RATE_LIMITED;
+      res.status(rateLimited ? 429 : 502).json({
         deliveryId: delivery.id,
         status: "failed",
         error: errorMessage,
