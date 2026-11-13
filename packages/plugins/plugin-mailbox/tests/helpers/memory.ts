@@ -837,6 +837,15 @@ export class MemoryStore implements GmailStore {
     }
     return n;
   }
+  async redactStaleNewsletterSends(companyId: string, beforeIso: string) {
+    let n = 0;
+    for (const row of this.sends.values()) {
+      if (row.company_id !== companyId || !row.key.startsWith("crm:nl:") || row.created_at >= beforeIso || (row.request as unknown as Record<string, unknown>).erased) continue;
+      Object.assign(row, { to_addrs: [], subject: "[erased on request]", skipped: [], delivery: {}, error: row.error ? "[erased on request]" : null, request: { key: row.key, erased: true } });
+      n += 1;
+    }
+    return n;
+  }
   async scrubInboxResults(_companyId: string, keys: string[]) {
     void _companyId;
     let n = 0;

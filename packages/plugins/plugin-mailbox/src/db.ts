@@ -312,6 +312,8 @@ export interface GmailStore {
   sendKeysTo(companyId: string, emails: string[]): Promise<string[]>;
   /** Keeps the record (key, status, context) so a repeated request is still refused; removes recipients, subject, body and error text. */
   redactSends(companyId: string, keys: string[]): Promise<number>;
+  /** The same blanking for newsletter sends (key `crm:nl:`) created before this time; rows already blanked are left alone. */
+  redactStaleNewsletterSends(companyId: string, beforeIso: string): Promise<number>;
   scrubInboxResults(companyId: string, keys: string[]): Promise<number>;
   deleteLeadOutbox(companyId: string, emails: string[]): Promise<number>;
   blankCrmProjection(companyId: string, contactId: string | null, emails: string[]): Promise<number>;
@@ -330,6 +332,9 @@ const MESSAGE_COLUMNS =
 const SEND_COLUMNS =
   "key, company_id, source_plugin, account_id, from_address, to_addrs, subject, status, permanent, attempts, gmail_message_id, gmail_thread_id, rfc_message_id, error, context, request, claimed_at, sent_at, created_at, updated_at, skipped, provider, provider_message_id, delivery_status, delivery";
 
+/** Blanks what identifies a send (recipients, subject, request) and keeps the record, so a repeated key is still refused. */
+const REDACT_SENDS_SET = (table: string) => `UPDATE ${table} SET to_addrs = '[]'::jsonb, subject = '[erased on request]', skipped = '[]'::jsonb, delivery = '{}'::jsonb,
+           error = CASE WHEN error IS NULL THEN NULL ELSE '[erased on request]' END, request = jsonb_build_object('key', key, 'erased', true), updated_at = now()`;
 const SUPPRESSION_COLUMNS = "company_id, email, scope, reason, source, detail, sender_key, email_hash, erased_at, created_at, updated_at";
 
 const DOMAIN_COLUMNS = "company_id, domain, status, result, source, client_kind, client_ref, checked_at, first_checked_at, status_since, dmarc_none_since";
@@ -1320,15 +1325,18 @@ export class SqlStore implements GmailStore {
   async redactSends(companyId: string, keys: string[]): Promise<number> {
     let changed = 0;
     for (let at = 0; at < keys.length; at += 500) {
-      const res = await this.db.execute(
-        `UPDATE ${this.t("send_requests")} SET to_addrs = '[]'::jsonb, subject = '[erased on request]', skipped = '[]'::jsonb, delivery = '{}'::jsonb,
-           error = CASE WHEN error IS NULL THEN NULL ELSE '[erased on request]' END, request = jsonb_build_object('key', key, 'erased', true), updated_at = now()
-          WHERE company_id = $1 AND key = ANY(${textArray(2)})`,
-        [companyId, json(keys.slice(at, at + 500))],
-      );
+      const res = await this.db.execute(`${REDACT_SENDS_SET(this.t("send_requests"))} WHERE company_id = $1 AND key = ANY(${textArray(2)})`, [companyId, json(keys.slice(at, at + 500))]);
       changed += res.rowCount ?? 0;
     }
     return changed;
+  }
+
+  async redactStaleNewsletterSends(companyId: string, beforeIso: string): Promise<number> {
+    const res = await this.db.execute(
+      `${REDACT_SENDS_SET(this.t("send_requests"))} WHERE company_id = $1 AND key LIKE 'crm:nl:%' AND created_at < $2::timestamptz AND NOT (request ? 'erased')`,
+      [companyId, beforeIso],
+    );
+    return res.rowCount ?? 0;
   }
 
   async scrubInboxResults(companyId: string, keys: string[]): Promise<number> {

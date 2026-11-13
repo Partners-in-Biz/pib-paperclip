@@ -1035,6 +1035,9 @@ async function scrubPrivateMail(ctx: PluginContext, companyId: string): Promise<
     const s = requireStore();
     const bodies = await s.scrubPrivateBodies(companyId, new Date(requireEnv().now() - PRIVATE_STALE_DAYS * 86_400_000).toISOString());
     const snippets = await s.scrubPrivateSnippets(companyId);
+    // Newsletter send records (key crm:nl:) keep no recipients or text after 30 days; the record stays so the key is still refused.
+    const newsletters = await s.redactStaleNewsletterSends(companyId, new Date(requireEnv().now() - 30 * 86_400_000).toISOString());
+    if (newsletters > 0) ctx.logger.info("Old newsletter send records blanked", { companyId, newsletters });
     if (bodies > 0 || snippets > 0) ctx.logger.info("Client message text removed", { companyId, bodies, snippets });
   } catch (error) {
     ctx.logger.info("Client message text not removed this hour", { companyId, error: errorMessage(error) });
