@@ -105,6 +105,11 @@ function wrap(text: string, font: PDFFont, size: number, maxWidth: number): stri
       while (font.widthOfTextAtSize(rest, size) > maxWidth && rest.length > 1) {
         let cut = rest.length - 1;
         while (cut > 1 && font.widthOfTextAtSize(rest.slice(0, cut), size) > maxWidth) cut -= 1;
+        // Prefer a natural break (an email or web address): before "@", or after ".", "/", "-" or "_".
+        const at = rest.lastIndexOf("@", cut);
+        const soft = Math.max(...[".", "/", "-", "_"].map((c) => rest.lastIndexOf(c, cut - 1) + 1));
+        const natural = Math.max(at > 0 ? at : 0, soft);
+        if (natural >= Math.ceil(cut / 3)) cut = natural;
         out.push(rest.slice(0, cut));
         rest = rest.slice(cut);
       }
