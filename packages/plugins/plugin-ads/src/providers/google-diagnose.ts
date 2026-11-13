@@ -22,6 +22,8 @@ export interface CampaignDiagnosis {
   customerId: string;
   readOnly: true;
   campaign: Section<Record<string, unknown> | null>;
+  /** Performance Max (and similar) campaigns have asset groups and no ad groups, ads or keywords, so those three come back empty. */
+  assetGroups: Section<Array<Record<string, unknown>>>;
   adGroups: Section<Array<Record<string, unknown>>>;
   ads: Section<Array<Record<string, unknown>>>;
   keywords: Section<Array<Record<string, unknown>>>;
@@ -32,13 +34,20 @@ export interface CampaignDiagnosis {
 export async function diagnoseCampaign(run: GaqlRunner, customerId: string, campaignId: string): Promise<CampaignDiagnosis> {
   const cid = digitsOnly(campaignId);
   if (!cid) throw new Error("campaignId must be the Google campaign id (digits).");
-  const [campaign, adGroups, ads, keywords, billing, targeting] = await Promise.all([
+  const [campaign, assetGroups, adGroups, ads, keywords, billing, targeting] = await Promise.all([
     section(async () => {
       const rows = await run(
-        `SELECT campaign.id, campaign.name, campaign.status, campaign.serving_status, campaign.primary_status, campaign.primary_status_reasons, campaign.bidding_strategy_type, campaign.start_date, campaign.end_date FROM campaign WHERE campaign.id = ${cid}`,
+        `SELECT campaign.id, campaign.name, campaign.status, campaign.serving_status, campaign.primary_status, campaign.primary_status_reasons, campaign.bidding_strategy_type, campaign.advertising_channel_type, campaign.advertising_channel_sub_type, campaign.start_date_time, campaign.end_date_time FROM campaign WHERE campaign.id = ${cid}`,
         "Google campaign",
       );
       return rows[0]?.campaign ?? null;
+    }),
+    section(async () => {
+      const rows = await run(
+        `SELECT asset_group.id, asset_group.name, asset_group.status, asset_group.primary_status, asset_group.primary_status_reasons, asset_group.ad_strength FROM asset_group WHERE campaign.id = ${cid}`,
+        "Google asset groups",
+      );
+      return rows.map((r) => r.assetGroup ?? {});
     }),
     section(async () => {
       const rows = await run(
@@ -78,5 +87,5 @@ export async function diagnoseCampaign(run: GaqlRunner, customerId: string, camp
       return count;
     }),
   ]);
-  return { campaignId: cid, customerId: digitsOnly(customerId), readOnly: true, campaign, adGroups, ads, keywords, billing, targeting };
+  return { campaignId: cid, customerId: digitsOnly(customerId), readOnly: true, campaign, assetGroups, adGroups, ads, keywords, billing, targeting };
 }

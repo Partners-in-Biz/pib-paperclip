@@ -3,7 +3,8 @@ import { describe, expect, it } from "vitest";
 import { diagnoseCampaign, type GaqlRunner } from "../src/providers/google-diagnose.js";
 
 const rows: Record<string, Array<Record<string, any>>> = {
-  "Google campaign": [{ campaign: { id: "22905170639", status: "ENABLED", servingStatus: "SERVING", primaryStatus: "LIMITED", primaryStatusReasons: ["BIDDING_STRATEGY_LEARNING"], biddingStrategyType: "MAXIMIZE_CLICKS", startDate: "2026-11-01" } }],
+  "Google campaign": [{ campaign: { id: "22905170639", status: "ENABLED", servingStatus: "SERVING", primaryStatus: "LIMITED", primaryStatusReasons: ["BIDDING_STRATEGY_LEARNING"], biddingStrategyType: "MAXIMIZE_CLICKS", advertisingChannelType: "PERFORMANCE_MAX", startDateTime: "2026-11-01 00:00:00" } }],
+  "Google asset groups": [{ assetGroup: { id: "5", name: "AGrp", status: "ENABLED", primaryStatus: "ELIGIBLE", primaryStatusReasons: [], adStrength: "GOOD" } }],
   "Google ad groups": [{ adGroup: { id: "1", name: "AG", status: "ENABLED", primaryStatus: "ELIGIBLE", cpcBidMicros: "1000000" } }],
   "Google ads": [{ adGroup: { id: "1" }, adGroupAd: { ad: { id: "9" }, status: "ENABLED", policySummary: { approvalStatus: "APPROVED_LIMITED", reviewStatus: "REVIEWED", policyTopicEntries: [{ topic: "TRADEMARKS" }] } } }],
   "Google keywords": [{ adGroup: { id: "1" }, adGroupCriterion: { keyword: { text: "software developer", matchType: "PHRASE" }, status: "ENABLED", systemServingStatus: "RARELY_SERVED", approvalStatus: "APPROVED" } }],
@@ -21,9 +22,11 @@ describe("diagnoseCampaign", () => {
     };
     const d = await diagnoseCampaign(run, "758-529-6111", "22905170639");
     expect(queries.every((q) => q.startsWith("SELECT"))).toBe(true);
-    expect(queries.filter((q) => q.includes("campaign.id = 22905170639")).length).toBe(5);
+    expect(queries.filter((q) => q.includes("campaign.id = 22905170639")).length).toBe(6);
     expect(d.customerId).toBe("7585296111");
     expect(d.campaign).toMatchObject({ ok: true, data: { primaryStatusReasons: ["BIDDING_STRATEGY_LEARNING"], servingStatus: "SERVING" } });
+    expect(d.campaign).toMatchObject({ data: { advertisingChannelType: "PERFORMANCE_MAX" } });
+    expect(d.assetGroups).toMatchObject({ ok: true, data: [{ name: "AGrp", primaryStatus: "ELIGIBLE" }] });
     expect(d.adGroups).toMatchObject({ ok: true, data: [{ name: "AG", cpcBidMicros: "1000000" }] });
     expect(d.ads).toMatchObject({ ok: true, data: [{ adGroupId: "1", policySummary: { approvalStatus: "APPROVED_LIMITED" } }] });
     expect(d.keywords).toMatchObject({ ok: true, data: [{ systemServingStatus: "RARELY_SERVED" }] });
@@ -40,6 +43,17 @@ describe("diagnoseCampaign", () => {
     expect(d.billing).toEqual({ ok: false, error: "Google billing setup: permission denied" });
     expect(d.campaign.ok).toBe(true);
     expect(d.keywords.ok).toBe(true);
+  });
+
+  it("uses start_date_time/end_date_time, not the removed start_date/end_date fields (PAR-11126)", async () => {
+    const queries: string[] = [];
+    await diagnoseCampaign(async (q) => (queries.push(q), []), "1", "22905170639");
+    const c = queries.find((q) => q.includes("FROM campaign WHERE"))!;
+    expect(c).toContain("campaign.start_date_time");
+    expect(c).toContain("campaign.end_date_time");
+    expect(c).toContain("campaign.advertising_channel_type");
+    expect(c).not.toMatch(/campaign\.(start|end)_date[^_]/);
+    expect(queries.some((q) => q.includes("FROM asset_group WHERE campaign.id = 22905170639"))).toBe(true);
   });
 
   it("rejects a campaign id with no digits (no query injection)", async () => {
