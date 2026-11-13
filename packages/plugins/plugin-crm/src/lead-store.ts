@@ -421,6 +421,20 @@ export async function settleCapture(ctx: PluginContext, companyId: string, key: 
   await ctx.db.execute(`UPDATE ${table(ctx, "lead_captures")} SET outcome = 'stored', contact_id = $3 WHERE company_id = $1 AND key = $2`, [companyId, key, contactId]);
 }
 
+/**
+ * A newsletter signup whose confirmation mail failed for good: `pending_confirmation` becomes `confirmation_failed`. Only one caller
+ * makes the change (the update is conditional), so a repeated or concurrent answer gets null and counts nothing twice.
+ */
+export async function failCapture(ctx: PluginContext, companyId: string, key: string): Promise<{ sourceId: string } | null> {
+  const capture = await captureByKey(ctx, companyId, key);
+  if (!capture || capture.outcome !== "pending_confirmation") return null;
+  const res = await ctx.db.execute(
+    `UPDATE ${table(ctx, "lead_captures")} SET outcome = 'confirmation_failed' WHERE company_id = $1 AND key = $2 AND outcome = 'pending_confirmation'`,
+    [companyId, key],
+  );
+  return (res.rowCount ?? 0) > 0 ? { sourceId: capture.sourceId } : null;
+}
+
 /** Captures of one source, newest first, for the source's recent-leads view (attribution only: no personal data). */
 export async function recentCaptures(ctx: PluginContext, companyId: string, sourceId: string, limit = 20): Promise<LeadCaptureRow[]> {
   const rows = await ctx.db.query<CaptureRow>(

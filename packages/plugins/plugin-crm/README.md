@@ -95,6 +95,13 @@ PAR-10852, plan PAR-10817 "Signup". A body with no `action` on a newsletter form
 - Every case past the checks gives the same success. No contact, tag, consent record, issue or lead score is written.
 - Rollback (stage 2, Marcus): first pause every newsletter source (`update-lead-source` status `paused`), then revert the code. No schema change.
 
+## Newsletter confirmation send result (0.49.0)
+
+PAR-10891, plan PAR-10817 "Send result" (`src/newsletter-send-result.ts`). The CRM outbox row of a confirmation mail holds the address and the link, so it never outlives the send:
+- `mail.send.result` for a `crm:nl:` key: **sent** deletes the outbox row (the signup stays `pending_confirmation`). **Failed for good**, or every recipient suppressed: the capture becomes `confirmation_failed` (only from `pending_confirmation`, so a repeated answer counts nothing), one rejection is counted on the source, and the row is deleted. A failure a retry may fix only notes the error. Another company's answer changes nothing.
+- The `redeliver-mail` job (every 5 minutes) deletes any `crm:nl:` outbox row that is no longer pending (the outbox gave up and no answer came). Pending rows and other keys are untouched.
+- Rollback: revert the code. Rows already deleted stay deleted, which is the safe direction. No schema change.
+
 ## Drive save: one query into an existing sub-folder (0.46.2)
 
 src-only (PAR-10250). A save that names a sub-folder of a complete client folder now asks Drive once (`findSubfolder`: one `files.list` scoped to the Shared Drive, matching the `subfolder` tag of every prefix of the path) instead of running the full ensure with its sibling scan. The folder is used only when the chain holds: the first segment under the client's folder, each next under the previous, each found once, not trashed. Any miss falls back to the full path as before. The `drive save timing` line shows `path: fast` on a hit. Sub-folders a person made are not tagged.
