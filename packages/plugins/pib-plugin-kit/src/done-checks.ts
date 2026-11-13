@@ -50,6 +50,16 @@ export type DoneCheckOutcome = "skipped" | "passed" | "reopened" | "escalated";
 /** Failed closes before the issue goes to the Operator instead of back to the agent. */
 export const DONE_CHECK_MAX_REOPENS = 3;
 
+/**
+ * Wake reason for a done-check reopen. The host queues a new run for it when
+ * the closing run is still running (the issue's `executionRunId` is already
+ * cleared by then, so `wakeIssueWhenIdle` wakes at once). Any other reason
+ * merges into that run, which ends seconds later, and the reopened issue sits
+ * in `todo` with nothing queued (PAR-11130). Must match the server's
+ * `ISSUE_REOPENED_BY_GATE_WAKE_REASON`.
+ */
+export const DONE_CHECK_REOPEN_WAKE_REASON = "issue_reopened_by_gate";
+
 const attemptsKey = (companyId: string, issueId: string) => ({ scopeKind: "company" as const, scopeId: companyId, namespace: "pib-done-checks", stateKey: issueId });
 
 function message(error: unknown): string {
@@ -116,7 +126,7 @@ export async function runDoneCheck(ctx: PluginContext, rules: DoneCheckRule[], e
       `**Still not done** (${ruleLabel}), after ${attempts} tries:\n${list}\n\nHanding this to ${handTo} to sort out why it keeps getting closed early.`,
       companyId,
     );
-    if (route.assigneeAgentId) await wakeIssueWhenIdle(ctx, issue.id, companyId, "Done check: closed early again");
+    if (route.assigneeAgentId) await wakeIssueWhenIdle(ctx, issue.id, companyId, DONE_CHECK_REOPEN_WAKE_REASON);
   }
 
   if (attempts >= DONE_CHECK_MAX_REOPENS) {
@@ -212,7 +222,7 @@ export async function runDoneCheck(ctx: PluginContext, rules: DoneCheckRule[], e
     `**Not done yet** (${rule.label}):\n${list}\n\nThe issue is open again. Finish these, then close it.`,
     companyId,
   );
-  if (issue.assigneeAgentId) await wakeIssueWhenIdle(ctx, issue.id, companyId, "Done check: not finished");
+  if (issue.assigneeAgentId) await wakeIssueWhenIdle(ctx, issue.id, companyId, DONE_CHECK_REOPEN_WAKE_REASON);
   return "reopened";
 }
 
