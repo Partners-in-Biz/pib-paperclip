@@ -237,6 +237,7 @@ import {
 } from "./lookup.js";
 import { companyPrefix, crmLink, refOf } from "./refs.js";
 import { contactAssignee } from "./mail.js";
+import { onNewsletterSendResult, purgeSettledSignupMails } from "./newsletter-send-result.js";
 import { publishAllSetupStatus, recordFullShare, rememberCompany, setupStatus } from "./setup-status.js";
 import { getClientProfile, handoffCompanies, heldLeadStats, listClientLeads } from "./store.js";
 import {
@@ -452,8 +453,8 @@ const plugin = definePlugin({
     ctx.jobs.register("open-due-steps", () => trackJob(ctx, "open-due-steps", () => openDueSteps(ctx)));
     ctx.jobs.register("redeliver-mail", async () => {
       await trackJob(ctx, "redeliver-mail", async () => {
-        const result = await redeliverMail(ctx);
-        if (result.emitted || result.failed || result.handedOver) ctx.logger.info("CRM mail redelivery", result);
+        const result = { ...(await redeliverMail(ctx)), signupMailsCleared: await purgeSettledSignupMails(ctx) };
+        if (result.emitted || result.failed || result.handedOver || result.signupMailsCleared) ctx.logger.info("CRM mail redelivery", result);
       });
     });
     ctx.events.on(pluginEvent(PIB_PLUGINS.seo, SIGNOFF_EVENT), (event) => onSignoffEvent(ctx, event).catch((error) => ctx.logger.info("CRM sign-off event failed", { error: String(error) })));
@@ -506,6 +507,8 @@ const plugin = definePlugin({
     ctx.events.on(pluginEvent(PIB_PLUGINS.mailbox, MAIL_EVENTS.sendResult), (event) => onSendResult(ctx, event));
     // The Mailbox's answer for an approved email to a client (keys crm:msg:...); sequence emails (crm:seq:...) are handled above.
     ctx.events.on(pluginEvent(PIB_PLUGINS.mailbox, MAIL_EVENTS.sendResult), (event) => onCareSendResult(ctx, event));
+    // The answer for a newsletter confirmation mail (keys crm:nl:...).
+    ctx.events.on(pluginEvent(PIB_PLUGINS.mailbox, MAIL_EVENTS.sendResult), (event) => onNewsletterSendResult(ctx, event));
     ctx.jobs.register("emit-recent", () => trackJob(ctx, "emit-recent", () => emitForAllCompanies(ctx, 1800)));
     ctx.jobs.register("emit-all", () => trackJob(ctx, "emit-all", () => emitForAllCompanies(ctx, null)));
     ctx.jobs.register("sales-daily", async () => {

@@ -17,7 +17,7 @@ import { deleteCapture, insertCapture, type LeadSource } from "./lead-store.js";
 import { PLUGIN_ID } from "./namespace.js";
 import { confirmLink, MAX_PATH_BYTES, MIN_CONFIRM_SECRET_LENGTH, mintConfirmToken } from "./newsletter-token.js";
 
-/** Outbox keys of confirmation mails: `crm:nl:<capture key>`. The send-result handler (a later stage) takes this prefix. */
+/** Outbox keys of confirmation mails: `crm:nl:<capture key>`. The send-result handler (newsletter-send-result.ts) takes this prefix. */
 export const SIGNUP_MAIL_PREFIX = "crm:nl:";
 export const SIGNUP_SUBJECT = "Please confirm your subscription";
 export const PENDING_CONFIRMATION = "pending_confirmation";

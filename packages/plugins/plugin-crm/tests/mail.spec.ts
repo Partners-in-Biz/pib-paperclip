@@ -596,6 +596,17 @@ describe("sequence email", () => {
     expect(store.enrollments![0]).toMatchObject({ sending_key: null, open_issue_id: issue!.id });
   });
 
+  it("deletes a newsletter confirmation (crm:nl:) the outbox gave up on, and keeps a pending one and a settled crm:seq: row", async () => {
+    const store = seed();
+    store.enrollments = [enrollment("e1", "seq-mail", "ada", { sending_key: "crm:seq:e1:1" })];
+    const row = (key: string, status: string) => ({ key, company_id: CO, event: "mail.send.requested", payload: {}, status, attempts: status === "pending" ? 2 : 21, next_attempt_at: status === "pending" ? "2999-01-01T00:00:00.000Z" : PAST, last_error: null, result: null });
+    store.outbox = [row("crm:nl:gave-up", "failed"), row("crm:nl:waiting", "pending"), row("crm:seq:e1:1", "failed")];
+    const { harness } = await boot({ store });
+    await harness.runJob("redeliver-mail");
+    expect(store.outbox!.map((item) => item.key).sort()).toEqual(["crm:nl:waiting", "crm:seq:e1:1"]);
+    expect(store.outbox!.find((item) => item.key === "crm:nl:waiting")).toMatchObject({ status: "pending", attempts: 2 });
+  });
+
   it("never emails unsubscribed contacts and opens an issue when there is no address", async () => {
     const store = seed();
     store.enrollments = [
