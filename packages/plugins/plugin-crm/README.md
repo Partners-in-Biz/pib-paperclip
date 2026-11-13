@@ -126,6 +126,7 @@ Src-only (PAR-10212). Each Drive save a producer plugin asks for writes info lin
 
 ## Drive read-back and evidence names (0.45.0)
 - **`drive_files_list`** (agent tool, read-only): the files the CRM saved to Drive for one Paperclip project, newest first, with name, Drive link, sub-folder and the folder's Drive id, plus the project's own Drive folder (path and link; a client's project is the client's folder). Optional `subfolder` and `nameContains` filters. It reads the CRM's `drive_files` rows, so a check can prove a producer's save landed even when the producer's tool answer timed out at the gateway (a save waits up to 30 s for Drive). The Cockpit's `drive-producers-canary` journey uses it (PAR-7712).
+- **`drive_file_trash`** (agent tool, 0.51.0, PAR-11108): moves one file on this company's bound Shared Drive to the Drive trash (`trashed: true`, recoverable 30 days, never a delete). Input `fileId`, optional `allowFolder` (a folder is refused without it, for the weekly canary cleanup). A file on another drive or a missing one answers `not_found`; one already in the trash answers `alreadyTrashed`. Returns `id`, `name`, `trashed: true` and writes one activity entry (new capability `activity.log.write`: a stop-first deploy).
 - **Evidence names.** The Drive name check now accepts the Cockpit's evidence names, `ISSUE-step-YYYYMMDDTHHMMSSZ.ext` (for example `PAR-123-login-20261021T101500Z.png`). Before, it took only `ISSUE-<digits>.ext`, so every `evidence-save` copy was refused as `invalid_name`.
 - Src-only: no migration, no capability change.
 

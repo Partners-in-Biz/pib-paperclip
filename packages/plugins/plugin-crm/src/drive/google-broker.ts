@@ -26,7 +26,7 @@ import {
 } from "./broker.js";
 import { DRIVE_TRANSFER_MAX_BYTES } from "@partnersinbiz/pib-plugin-kit";
 import { GoogleAuthError, serviceAccountToken, type GoogleFetch, type ServiceAccountKey } from "./google-sa.js";
-import type { DriveFileInfo, DriveThumbnail } from "./broker.js";
+import type { DriveFileInfo, DriveThumbnail, TrashResult } from "./broker.js";
 
 const DRIVE = "https://www.googleapis.com/drive/v3";
 const DRIVE_UPLOAD = "https://www.googleapis.com/upload/drive/v3";
@@ -434,6 +434,28 @@ export function createGoogleDriveBroker(
     return { ...fileInfo(file), ...(typeof sha === "string" && /^[0-9a-f]{64}$/i.test(sha) ? { sha256: sha.toLowerCase() } : {}) };
   }
 
+  /** PAR-11108: Drive trash only (`trashed: true`, recoverable 30 days). Same Shared Drive check as fileMeta; folders need allowFolder. */
+  async function trashFile(fileId: string, opts: { allowFolder?: boolean } = {}): Promise<TrashResult> {
+    const url = `${DRIVE}/files/${encodeURIComponent(fileId)}?${shared}`;
+    const res = await request("GET", `${url}&fields=${encodeURIComponent("id,name,mimeType,driveId,trashed")}`);
+    if (res.status === 404) return { status: "not_found" };
+    if (res.status < 200 || res.status >= 300) throw toBrokerError(res.status, res.text);
+    const file = JSON.parse(res.text) as DriveFile & { driveId?: string; trashed?: boolean };
+    if (typeof file.id !== "string" || file.driveId !== sharedDriveId) return { status: "not_found" };
+    const mimeType = file.mimeType ?? "application/octet-stream";
+    if (mimeType === "application/vnd.google-apps.folder" && opts.allowFolder !== true) return { status: "is_folder" };
+    if (file.trashed) return { status: "trashed", id: file.id, name: file.name, mimeType, alreadyTrashed: true };
+    const patch = await request("PATCH", `${url}&fields=${encodeURIComponent("id,name,mimeType,trashed")}`, {
+      body: JSON.stringify({ trashed: true }),
+      headers: { "Content-Type": "application/json" },
+    });
+    if (patch.status === 404) return { status: "not_found" };
+    if (patch.status < 200 || patch.status >= 300) throw toBrokerError(patch.status, patch.text);
+    const done = JSON.parse(patch.text) as DriveFile & { trashed?: boolean };
+    if (done.trashed !== true) throw new BrokerError("Drive did not confirm the trash", 502, true);
+    return { status: "trashed", id: file.id, name: done.name ?? file.name, mimeType };
+  }
+
   async function bearer(): Promise<string> {
     try {
       return await serviceAccountToken(fetchFn, key, undefined, now());
@@ -612,5 +634,5 @@ export function createGoogleDriveBroker(
     return { body: res.body as ReadableStream<Uint8Array>, size: size !== null && Number.isFinite(size) ? size : null };
   }
 
-  return { resolve, findSubfolder, ensure, identity, uploadFile, uploadFileStream, listFiles, fileMeta, downloadFile, downloadStream, thumbnail };
+  return { resolve, findSubfolder, ensure, identity, uploadFile, uploadFileStream, listFiles, fileMeta, trashFile, downloadFile, downloadStream, thumbnail };
 }
