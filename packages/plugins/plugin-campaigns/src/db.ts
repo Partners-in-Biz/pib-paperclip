@@ -180,8 +180,8 @@ export async function insertCampaign(ctx: PluginContext, campaign: CampaignDraft
   await ctx.db.execute(
     `INSERT INTO ${table(ctx, "campaigns")}
       (id, company_id, name, description, status, from_name, from_local, reply_to, audience_tags, start_at, end_at, approval_issue_id, winner_variant,
-       client_kind, client_ref, client_name, audience_mode, delivery, owner_user_id, owner_agent_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`,
+       client_kind, client_ref, client_name, audience_mode, delivery, owner_user_id, owner_agent_id, feed_url, feed_category, feed_item_keys)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23::jsonb)`,
     [
       campaign.id,
       campaign.companyId,
@@ -203,6 +203,9 @@ export async function insertCampaign(ctx: PluginContext, campaign: CampaignDraft
       assertDelivery(campaign.delivery),
       campaign.ownerUserId ?? null,
       campaign.ownerAgentId ?? null,
+      campaign.feedUrl ?? null,
+      campaign.feedCategory ?? null,
+      campaign.feedItemKeys ? JSON.stringify(campaign.feedItemKeys) : null,
     ],
   );
 }

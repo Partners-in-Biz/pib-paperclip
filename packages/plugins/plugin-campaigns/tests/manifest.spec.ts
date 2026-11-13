@@ -26,9 +26,9 @@ describe("manifest 0.6", () => {
   });
 
   it("is version 0.8.8 everywhere", () => {
-    expect(manifest.version).toBe("0.12.2");
-    expect(PLUGIN_VERSION).toBe("0.12.2");
-    expect(pkg.version).toBe("0.12.2");
+    expect(manifest.version).toBe("0.13.0");
+    expect(PLUGIN_VERSION).toBe("0.13.0");
+    expect(pkg.version).toBe("0.13.0");
   });
 
   it("declares the activity.log.write capability", () => {
@@ -127,7 +127,7 @@ describe("migrations", () => {
   it("014 is a migration, passes the host guard, widens the step event kinds and indexes the sent events by address", () => {
     const sql = read("014_campaigns.sql");
     expect(files[13]).toBe("014_campaigns.sql");
-    expect(files).toHaveLength(16);
+    expect(files).toHaveLength(17);
     for (const statement of splitSqlStatements(sql)) expect(() => validateMigrationStatement(statement, NAMESPACE), statement.slice(0, 80)).not.toThrow();
     for (const line of sql.split("\n").filter((l) => l.trim().startsWith("--"))) expect(line).not.toMatch(/['"]/);
     // Every kind of 013 stays allowed, and the two new ones are added.
@@ -136,6 +136,15 @@ describe("migrations", () => {
     expect(sql).not.toMatch(/\bdelete\b/i);
     expect(sql).not.toMatch(/\bdrop\s+table\b/i);
     expect(sql).not.toMatch(/\bupdate\b/i);
+  });
+
+  it("017 is a migration, passes the host guard and only adds nullable feed columns and an index", () => {
+    const sql = read("017_campaigns.sql");
+    expect(files[16]).toBe("017_campaigns.sql");
+    for (const statement of splitSqlStatements(sql)) expect(() => validateMigrationStatement(statement, NAMESPACE), statement.slice(0, 80)).not.toThrow();
+    for (const line of sql.split("\n").filter((l) => l.trim().startsWith("--"))) expect(line).not.toMatch(/['"]/);
+    expect(sql).toContain("ADD COLUMN feed_item_keys jsonb");
+    expect(sql.split("\n").filter((l) => !l.trim().startsWith("--")).join("\n")).not.toMatch(/\b(delete|drop)\b|ADD COLUMN[^;,]*\b(not null|default)\b/i);
   });
 
   it("never edits an applied migration: 001 to 013 are live and each file still has the hash it was applied with", () => {

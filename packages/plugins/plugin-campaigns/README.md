@@ -117,7 +117,7 @@ The plugin declares a managed **Campaigns** project (`projects.managed`) and cal
 
 ### Settings
 
-`publicBaseUrl`, `oneClickUnsubscribeUrl`, and the `messaging` block: `accountSid`, `authToken` (secret), `smsFrom`, `messagingServiceSid`, `whatsappFrom`, `defaultCountry` (+27), `weekdays`, `saturday`, `sunday`, `blackoutDates`, `inboundWebhookSecret` (secret).
+`digestFeedUrls`: the https feeds `create-feed-digest` may read (empty by default; a feed not listed is refused before any fetch). `publicBaseUrl`, `oneClickUnsubscribeUrl`, and the `messaging` block: `accountSid`, `authToken` (secret), `smsFrom`, `messagingServiceSid`, `whatsappFrom`, `defaultCountry` (+27), `weekdays`, `saturday`, `sunday`, `blackoutDates`, `inboundWebhookSecret` (secret).
 
 ### Needs elsewhere
 
