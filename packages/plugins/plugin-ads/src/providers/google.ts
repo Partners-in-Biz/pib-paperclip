@@ -20,6 +20,7 @@ import { microsToMinor, minorToMicros } from "../money.js";
 import { appCampaignOperations, GOOGLE_APP_CHANNEL } from "./google-app.js";
 import { GOOGLE_VIDEO_CHANNEL, videoCampaignOperations } from "./google-video.js";
 import { imageMimeOf, videoAdFrom, videoAdOperation, youtubeVideoId } from "./google-video-ad.js";
+import { diagnoseCampaign, type CampaignDiagnosis } from "./google-diagnose.js";
 import { FORM_HEADERS, JSON_HEADERS, ProviderError, expiresAtFrom, formBody, int, num, readJson, request, str } from "./http.js";
 import type { AccountRef, AccountCaps, AddKeywordsRequest, AdPolicyRow, AdPolicyStatus, AdsProvider, CampaignHealth, CampaignInfo, CampaignStatus, CreateAdGroupRequest, ExchangeResult, InsightRow, ProviderAdAccount, ProviderEnv, TokenBundle } from "./types.js";
 
@@ -539,5 +540,10 @@ export const googleProvider: AdsProvider = {
     });
   },
 };
+
+/** Read-only: why a campaign does not serve (PAR-11049). One GAQL query per section; a failing section comes back as an error. */
+export function diagnoseGoogleCampaign(env: ProviderEnv, token: TokenBundle, account: AccountRef, campaignExternalId: string): Promise<CampaignDiagnosis> {
+  return diagnoseCampaign((query, label) => gaql(env, token, account.externalId, query, account.loginCustomerId, label), account.externalId, campaignExternalId);
+}
 
 export type { AccountRef };

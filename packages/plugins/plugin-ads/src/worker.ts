@@ -65,6 +65,7 @@ import {
   summaryRecord,
   variantsRecord,
 } from "./records.js";
+import { diagnoseGoogleCampaign } from "./providers/google.js";
 import { runtimeFor, providerEnv, type AdsRuntime } from "./runtime.js";
 import { adsSetupStatus } from "./setup-status.js";
 import { sweepCaps } from "./sweeper.js";
@@ -177,6 +178,16 @@ async function dispatchTool(rt: AdsRuntime, v: Viewer, name: string, raw: Record
         { bannedWords: [...(scope?.banned_words ?? []), ...extra] },
       );
       return { ...result, bannedWordsChecked: (scope?.banned_words.length ?? 0) + extra.length, note: `A machine check only. It also scores the copy on the shared creative rubric (out of 100; 80 passes) with score ${result.rubric?.score ?? 0}. A score under 80 is advisory: the gaps are in rubric.notes; only blockers fail the check. It never clears copy: propose it (creative_check, or inside create_campaign) and the Reviewer reads it against the client's brand profile.` };
+    }
+    case "diagnose-google-campaign": {
+      const account = await getAccount(rt.ctx, rt.companyId, requiredString(p, "accountId"));
+      if (!account || account.status !== "active") throw new AdsError("That ad account was not found or is not active.");
+      if (account.platform !== "google") throw new AdsError("diagnose-google-campaign only works on a Google ad account.");
+      const conn = account.connection_id ? await getConnection(rt.ctx, rt.companyId, account.connection_id) : null;
+      if (!conn || (conn.status !== "connected" && conn.status !== "expiring")) throw new AdsError("The connection for this ad account needs signing in again.");
+      const token = await tokenFor(rt, conn);
+      const env = await providerEnv(rt, "google");
+      return diagnoseGoogleCampaign(env, token, { externalId: account.external_id, currency: account.currency, loginCustomerId: account.login_customer_id }, requiredString(p, "campaignId"));
     }
     case "upload-ad-media": {
       const accountId = requiredString(p, "accountId");

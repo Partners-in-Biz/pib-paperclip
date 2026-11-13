@@ -158,6 +158,12 @@ export const ADS_TOOLS: PluginToolDeclaration[] = [
     parametersSchema: schema([], { client: clientOrAll, accountId: str("Only this account (the plugin's id)."), status: oneOf(["active", "paused", "archived", "other"], "Only campaigns in this state.") }),
   },
   {
+    name: "diagnose-google-campaign",
+    displayName: "Diagnose a Google campaign",
+    description: "Read-only: why an ENABLED Google campaign shows nothing. Returns the campaign's status, serving status, primary status and reasons, bidding strategy and dates; ad groups (status, primary status, CPC bid); ads (status, policy approval and review, policy topics); keywords (match type, status, serving status such as low search volume, approval); billing setup and customer status; and how many location and schedule targets exist. A section that fails comes back as an error and the rest still answers. Changes nothing.",
+    parametersSchema: schema(["accountId", "campaignId"], { accountId: str("The ad account's id from list-ad-accounts (the plugin's id, a Google account)."), campaignId: str("The Google campaign id (digits), from list-ad-campaigns.") }),
+  },
+  {
     name: "list-campaigns-without-cap",
     displayName: "Campaigns without a cap",
     description: "Read-only. Campaigns we know of that have no hard cap row yet, and the caps that exist. Only a signed-in board user sets a cap, through the ads.set-campaign-cap page action (no button on the Ads page yet); an agent cannot. A cap is only a record for now: nothing refuses a change because of it yet.",
