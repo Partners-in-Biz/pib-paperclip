@@ -22,7 +22,8 @@ export type Rgb = [number, number, number];
 export type SpillScreen = "green" | "blue";
 
 export type YuvMatrix = "bt709" | "bt601";
-const COEFFS: Readonly<Record<YuvMatrix, [number, number]>> = { bt709: [0.2126, 0.0722], bt601: [0.299, 0.114] };
+/** Kr, Kb per matrix (also the preview shader's Cb/Cr rows, `ui/editor/chroma-gl.ts`). */
+export const COEFFS: Readonly<Record<YuvMatrix, [number, number]>> = { bt709: [0.2126, 0.0722], bt601: [0.299, 0.114] };
 const round3 = (n: number) => String(Math.round(n * 1000) / 1000);
 const parseHex = (hex: string): Rgb => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)) as Rgb;
 

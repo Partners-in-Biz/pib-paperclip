@@ -14,7 +14,7 @@
  * each with its blend mode (CSS `mix-blend-mode`, `layer.ts` `BLEND_CSS`) and frame (`layerFrame`: rounded corners and a
  * border inside the edge, the geometry of the render's `frameStill`).
  */
-import type { EditDoc, Frame, Keyframes, MediaClip, TextClip, TransitionType } from "../../video-edit/timeline.js";
+import type { ChromaKey, EditDoc, Frame, Keyframes, MediaClip, TextClip, TransitionType } from "../../video-edit/timeline.js";
 import { valueAt } from "../../video-edit/keyframes.js";
 import { toSvgPrimitives, vignetteStops, type Adjust, type LookRef, type SvgPrimitive } from "../../video-edit/looks.js";
 import { BLEND_CSS, cornerRadiusPx, type LayerBlend } from "../../video-edit/layer.js";
@@ -46,6 +46,8 @@ export interface PreviewSegment {
   /** Schema v4 overlay clip fields (null on the main track and when unset). */
   blendMode: LayerBlend | null;
   frame: Frame | null;
+  /** Schema v4 overlay chroma key (D3d2, drawn by `ChromaLayer`). */
+  chromaKey: ChromaKey | null;
 }
 
 export interface PreviewPlan {
@@ -135,6 +137,7 @@ export function buildPreviewPlan(doc: EditDoc | null): PreviewPlan {
         adjust: c.adjust ?? null,
         blendMode: track.kind === "overlay" ? c.blendMode ?? null : null,
         frame: track.kind === "overlay" ? c.frame ?? null : null,
+        chromaKey: track.kind === "overlay" ? c.chromaKey ?? null : null,
       });
       prev = { id: c.id, end: c.start + length };
     }
