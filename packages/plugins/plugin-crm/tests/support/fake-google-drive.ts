@@ -172,11 +172,11 @@ export function fakeGoogle(opts: FakeGoogleOptions = {}) {
       const parent = /'([^']+)' in parents/.exec(q)?.[1];
       const name = /name = '((?:[^'\\]|\\.)*)'/.exec(q)?.[1]?.replace(/\\(.)/g, "$1");
       const type = /key='pibEntityType' and value='([^']*)'/.exec(q)?.[1];
-      const id = /key='pibEntityId' and value='([^']*)'/.exec(q)?.[1];
+      const ids = [...q.matchAll(/key='pibEntityId' and value='([^']*)'/g)].map((m) => m[1]!); // an OR of several ids matches any of them (findSubfolder)
       const folderOnly = q.includes("vnd.google-apps.folder");
       const hits = files.filter(
         (f) => !f.trashed && (!folderOnly || f.mimeType.includes("folder")) && (!parent || f.parents.includes(parent)) && (name === undefined || f.name === name) &&
-          (type === undefined || f.appProperties?.pibEntityType === type) && (id === undefined || f.appProperties?.pibEntityId === id),
+          (type === undefined || f.appProperties?.pibEntityType === type) && (ids.length === 0 || ids.includes(f.appProperties?.pibEntityId ?? "")),
       );
       return json(200, { files: hits.map(view) });
     }

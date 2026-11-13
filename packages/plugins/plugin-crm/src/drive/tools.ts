@@ -170,12 +170,13 @@ async function notConfiguredFallback(ctx: PluginContext, viewer: Viewer, type: D
 }
 
 /** Stage timing of one folder ensure (PAR-10249); numbers only. */
-export interface EnsureTiming { resolveMs?: number; siblingsMs?: number; ensureMs?: number; ensureLockWaitMs?: number; driveLookups?: number; adoptedUntagged?: number }
+export interface EnsureTiming { resolveMs?: number; siblingsMs?: number; ensureMs?: number; ensureLockWaitMs?: number; driveLookups?: number; adoptedUntagged?: number; fast?: boolean }
 
 export async function driveFolderEnsure(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>): Promise<unknown> {
   const type = params.entity_type as DriveEntityType;
   const id = params.entity_id as string;
-  const include_tree = params.include_tree as boolean | undefined; // Internal param: get tree for already-ensured folders
+  const want_subfolder = typeof params.want_subfolder === "string" && params.want_subfolder ? params.want_subfolder : undefined; // Internal param (PAR-10250): one query for this sub-folder; a miss falls back to the full tree
+  const include_tree = (params.include_tree as boolean | undefined) || Boolean(want_subfolder); // Internal param: get tree for already-ensured folders
   // Internal param (PAR-10249): the save fills it with this ensure's stage timing.
   const stage = params.timing && typeof params.timing === "object" ? (params.timing as EnsureTiming) : undefined;
   const clock = Date.now;
@@ -224,6 +225,16 @@ export async function driveFolderEnsure(ctx: PluginContext, viewer: Viewer, para
   if (existing && existing.complete !== false && !include_tree) {
     timing("exists", { brokerMs, resolveMs });
     return { status: "exists", path: existing.path, url: existing.folder_url, folder_id: existing.folder_id, tree: [] };
+  }
+
+  // Fast path (PAR-10250): the folder is complete and the wanted sub-folder is there, chained under it: one query, no sibling scan, no ensure.
+  if (existing && existing.complete !== false && want_subfolder && broker.findSubfolder) {
+    const hit = await broker.findSubfolder(target.entityType, target.entityId, want_subfolder, existing.folder_id);
+    if (hit) {
+      if (stage) stage.fast = true;
+      timing("exists_subfolder", { brokerMs, resolveMs });
+      return { status: "exists", path: existing.path, url: existing.folder_url, folder_id: existing.folder_id, tree: [{ path: `${existing.path}/${want_subfolder}`, folderId: hit.folder_id }] };
+    }
   }
 
   let facts = type === "project" ? projectFacts : await loadDriveFacts(ctx, viewer, type, id);
@@ -289,7 +300,7 @@ export async function createBrokerForCompany(ctx: PluginContext, companyId: stri
 const isBadCredential = (e: unknown): boolean => e instanceof BrokerError && (e.code === "bad_credential" || e.status === 401);
 
 /** Methods whose input can be sent again: a stream (upload chunks, a download body) is used once and is never retried. */
-const REPLAYABLE = ["resolve", "ensure", "identity", "uploadFile", "listFiles", "fileMeta", "downloadFile", "thumbnail"] as const;
+const REPLAYABLE = ["resolve", "findSubfolder", "ensure", "identity", "uploadFile", "listFiles", "fileMeta", "downloadFile", "thumbnail"] as const;
 const ONE_SHOT = ["uploadFileStream", "downloadStream"] as const;
 
 /**

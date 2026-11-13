@@ -81,6 +81,8 @@ export interface IdentityResult {
 /** What the CRM needs from Drive. The implementation is `google-broker.ts` (Google Drive v3, service account). */
 export interface Broker {
   resolve(type: DriveEntityType, id: string): Promise<RegistryFolder | null>;
+  /** One query for the sub-folder at `subPath` below an entity folder; null when it is not there, trashed or not chained under that folder (PAR-10250). */
+  findSubfolder?(type: DriveEntityType, id: string, subPath: string, folderId?: string): Promise<{ folder_id: string } | null>;
   ensure(body: EnsureBody): Promise<EnsureResult>;
   identity(sharedDriveId?: string): Promise<IdentityResult>;
   uploadFile(input: { name: string; bytes: Uint8Array; mimeType: string; parentFolderId?: string }): Promise<UploadResult>;
