@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { cleanFlowReports, FLOW_STAGES, FLOWS, flowStagesFor } from "../src/flows.js";
-import { DONE_CHECK_MAX_REOPENS, runDoneCheck, type DoneCheckRule } from "../src/done-checks.js";
+import { DONE_CHECK_MAX_REOPENS, DONE_CHECK_REOPEN_WAKE_REASON, runDoneCheck, type DoneCheckRule } from "../src/done-checks.js";
 import { PIB_PLUGINS } from "../src/contracts.js";
 import { TEAM_ROLES } from "../src/team.js";
 import { MODULES } from "../src/setup.js";
@@ -41,13 +41,17 @@ function simpleFakeCtx(issue: Record<string, unknown> | null) {
   const updates: Array<Record<string, unknown>> = [];
   const comments: string[] = [];
   const wakes: string[] = [];
+  const wakeReasons: Array<string | undefined> = [];
   const ctx = {
     manifest: { id: "partnersinbiz.billing" },
     issues: {
       get: vi.fn(async () => issue),
       update: vi.fn(async (_id: string, patch: Record<string, unknown>) => void updates.push(patch)),
       createComment: vi.fn(async (_id: string, body: string) => void comments.push(body)),
-      requestWakeup: vi.fn(async (id: string) => void wakes.push(id)),
+      requestWakeup: vi.fn(async (id: string, _companyId: string, options?: { reason?: string }) => {
+        wakes.push(id);
+        wakeReasons.push(options?.reason);
+      }),
     },
     state: {
       get: vi.fn(async (k: { stateKey: string }) => state.get(k.stateKey) ?? null),
@@ -55,7 +59,7 @@ function simpleFakeCtx(issue: Record<string, unknown> | null) {
     },
     logger: { info: vi.fn() },
   } as unknown as PluginContext;
-  return { ctx, updates, comments, wakes };
+  return { ctx, updates, comments, wakes, wakeReasons };
 }
 
 describe("done checks", () => {
@@ -83,6 +87,10 @@ describe("done checks", () => {
     expect(f.updates[0]).toEqual({ status: "todo" });
     expect(f.comments[0]).toContain("2 drafts still have no send request");
     expect(f.wakes).toEqual(["i1"]);
+    // The host queues a fresh run for this reason even while the closing run
+    // is still alive; any other reason merges into that run and is lost.
+    expect(f.wakeReasons).toEqual([DONE_CHECK_REOPEN_WAKE_REASON]);
+    expect(DONE_CHECK_REOPEN_WAKE_REASON).toBe("issue_reopened_by_gate");
   });
 
   it("holds the wake while the finishing run still holds the issue, then wakes when it ends", async () => {
