@@ -20,7 +20,7 @@ import { countActivitySince, recentActivity, toActivityItems } from "./activity.
 import { acceptanceAgentId } from "./acceptance-role.js";
 import { ASK_STALE_DAYS, staleAsks } from "./ask-model.js";
 import { openAskViews } from "./asks.js";
-import { extraChecks } from "./checks.js";
+import { extraChecks, formatIncompleteParts, OWN_CHECKS_INCOMPLETE_KEY, type ExtraChecks } from "./checks.js";
 import { JOBS, PLUGIN_KEY, ROUTINES, ROUTINE_TITLES, VERSION } from "./constants.js";
 import { goalCounts, listGoals } from "./goals.js";
 import { GOALS_WANTED, goalLine } from "./goals-model.js";
@@ -31,7 +31,7 @@ import { memoryJevConfig } from "./memory/jev.js";
 import { memoryStats } from "./memory/store.js";
 import { cockpitFlowReports } from "./own-flows.js";
 import { profileSetupItem, readProfile } from "./profile.js";
-import { clockMs, ownRunMeta, timed, type PartRecord } from "./run-record.js";
+import { clockMs, ownRunMeta, timed, unfinishedParts, type PartRecord } from "./run-record.js";
 import { BOOT_ID, currentTrigger } from "./run-trigger.js";
 import { watchChecks } from "./watch.js";
 
@@ -271,6 +271,20 @@ export function ownerCheck(ownerUserId: string | null | undefined, refusedAsks7d
   };
 }
 
+/** One warn row when some of the own checks did not finish (lost, held or not run), else null. */
+export function incompleteChecksRow(parts: PartRecord[], stop: ExtraChecks["stop"]): HealthCheck | null {
+  const names = unfinishedParts(parts);
+  if (names.length === 0) return null;
+  return {
+    key: OWN_CHECKS_INCOMPLETE_KEY,
+    title: "Cockpit checks incomplete",
+    status: "warn",
+    detail: formatIncompleteParts(names, { notStarted: stop?.lostPart === "" }),
+    href: "/cockpit",
+    fix: "Nothing to do if it clears on the next load. If it stays for more than an hour, tell the Operator.",
+  };
+}
+
 /** Questions to the owner waiting more than three days. */
 export function staleAsksCheck(asks: Array<{ identifier: string | null; issueId: string; askedAt: string }>, now: Date): HealthCheck | null {
   const stale = staleAsks(asks, now);
@@ -363,8 +377,9 @@ export async function ownSnapshot(env: Env, companyId: string): Promise<CockpitS
     env.ctx.logger.info("Cockpit question check failed", { error: message(error) });
   }
   // The kit's drift, grant and approval checks, the measurement alerts, the registers and confirmations, the improvements, goals and what waits on the owner (checks.ts).
-  // No record (a cache hit, or the checks failed as a whole): no log line, and the run counts as complete.
+  // No record (every part cached, or the checks failed as a whole): no log line, and the run counts as complete.
   let parts: PartRecord[] | undefined;
+  let stop: ExtraChecks["stop"];
   // The sections so far run before the checks: their sum is the line's `sectionsMs`.
   const beforeChecks = sections.length;
   try {
@@ -374,6 +389,9 @@ export async function ownSnapshot(env: Env, companyId: string): Promise<CockpitS
     snapshot.quality.push(...extra.quality);
     snapshot.waiting.push(...extra.waiting);
     parts = extra.run;
+    stop = extra.stop;
+    const incomplete = parts ? incompleteChecksRow(parts, stop) : null;
+    if (incomplete) health.push(incomplete);
   } catch (error) {
     env.ctx.logger.info("Cockpit extra checks failed", { error: message(error) });
   }
@@ -386,7 +404,7 @@ export async function ownSnapshot(env: Env, companyId: string): Promise<CockpitS
   snapshot.flows = await timed(sections, "flows", () => cockpitFlowReports(env, companyId));
   snapshot.health = health;
   if (parts) {
-    env.ctx.logger.info("Cockpit own checks", ownRunMeta({ companyId, boot: BOOT_ID, trigger: currentTrigger(), totalMs: clockMs() - started, sections, sectionsBeforeChecks: beforeChecks, parts }));
+    env.ctx.logger.info("Cockpit own checks", ownRunMeta({ companyId, boot: BOOT_ID, trigger: currentTrigger(), totalMs: clockMs() - started, sections, sectionsBeforeChecks: beforeChecks, parts, stop }));
   }
   return snapshot;
 }

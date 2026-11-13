@@ -313,15 +313,34 @@ d("the Cockpit's extra checks (Postgres)", () => {
   describe("how it runs", () => {
     it("is cached for ten minutes per company and can be refreshed", async () => {
       const w = await make();
-      const first = await extraChecks(w.env, A);
-      expect(await extraChecks(w.env, A)).toBe(first);
+      // Per-part cache (PAR-11232): a hit is a new object built from the stored parts, so equality is deep and the proof of a hit is that the host was not read.
+      let reads = 0;
+      const db = w.ctx.db as unknown as { query: (...args: unknown[]) => Promise<unknown> };
+      const query = db.query.bind(db);
+      db.query = (...args) => ((reads += 1), query(...args));
+      const companies = w.ctx.companies as unknown as { get: (...args: unknown[]) => Promise<unknown> };
+      const get = companies.get.bind(companies);
+      companies.get = (...args) => ((reads += 1), get(...args));
+      const result = async () => {
+        const { run: _run, ...value } = await extraChecks(w.env, A);
+        return value;
+      };
+      const first = await result();
+      expect(reads).toBeGreaterThan(0);
+      reads = 0;
+      expect(await result()).toEqual(first);
       w.clock.set("2026-10-03T12:09:00.000Z");
-      expect(await extraChecks(w.env, A)).toBe(first);
+      expect(await result()).toEqual(first);
+      expect(reads).toBe(0);
       w.clock.set("2026-10-03T12:11:00.000Z");
-      expect(await extraChecks(w.env, A)).not.toBe(first);
-      const again = await extraChecks(w.env, A);
+      await result();
+      expect(reads).toBeGreaterThan(0);
+      reads = 0;
+      await result();
+      expect(reads).toBe(0);
       forgetChecks(w.env, A);
-      expect(await extraChecks(w.env, A)).not.toBe(again);
+      await result();
+      expect(reads).toBeGreaterThan(0);
     });
 
     it("one check that cannot read its data does not take the others down", async () => {
@@ -391,8 +410,8 @@ d("the Cockpit's extra checks (Postgres)", () => {
         },
       };
 
-      // Call companyBrief with tight timeout so ownChecks (which contains ownSnapshot) times out
-      const brief = await companyBrief(w.env, A, { sectionMs: 50, totalMs: 500 });
+      // ownSnapshot reaches the memory read after three sections; 50 ms was too short for that on a busy CI runner (PAR-11232). The hang still times the section out.
+      const brief = await companyBrief(w.env, A, { sectionMs: 1500, totalMs: 3000 });
 
       // When ownChecks times out, it should be marked degraded
       expect(memoryHangFired).toBe(true);

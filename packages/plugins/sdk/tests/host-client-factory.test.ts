@@ -475,6 +475,27 @@ describe("createHostClientHandlers capability gating for LOOA-641 methods", () =
     ).rejects.toBeInstanceOf(InvocationScopeDeniedError);
     expect(list).not.toHaveBeenCalled();
   });
+
+  it("after the invocation ends, admits company-less reads and refuses a company read with -32005 (PAR-11232)", async () => {
+    // The Cockpit's own checks rest on this: a company read after each part tells the run whether it can still read.
+    const query = vi.fn(async () => [{ ok: 1 }]);
+    const stateGet = vi.fn(async () => "v");
+    const companiesGet = vi.fn(async () => ({ id: "company-a" }));
+    const services = { db: { query }, state: { get: stateGet }, companies: { get: companiesGet } } as unknown as HostServices;
+    const handlers = createHostClientHandlers({
+      pluginId: "paperclip.test",
+      capabilities: ["database.namespace.read", "plugin.state.read", "companies.read"],
+      services,
+    });
+    const dead = { ...context, invalidInvocationScope: true };
+    await expect(handlers["db.query"]({ sql: "SELECT 1" }, dead)).resolves.toEqual([{ ok: 1 }]);
+    await expect(handlers["state.get"]({ scopeKind: "instance", stateKey: "k" }, dead)).resolves.toBe("v");
+    const refused = await handlers["companies.get"]({ companyId: "company-a" }, dead).then(() => null, (e: unknown) => e);
+    expect(refused).toBeInstanceOf(InvocationScopeDeniedError);
+    expect((refused as InvocationScopeDeniedError).code).toBe(-32005);
+    expect(PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED).toBe(-32005);
+    expect(companiesGet).not.toHaveBeenCalled();
+  });
 });
 
 
