@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { hasClipAudio } from "../src/video-edit/compile-audio.js";
 import { compileVideo, frameAt, inputKey, type CompileInputs } from "../src/video-edit/compile-video.js";
-import { editWeight, inputWeight, planRender, type RenderPass, type RenderPlan } from "../src/video-edit/render-plan.js";
+import { editWeight, inputWeight, PASS_BUDGET, planRender, type RenderPass, type RenderPlan } from "../src/video-edit/render-plan.js";
 import { clipDuration, editDuration, normalizeEdit, type EditDoc, type MediaClip } from "../src/video-edit/timeline.js";
 
 const ms = (n: number) => Math.round(n * 1000) / 1000;
@@ -102,6 +102,20 @@ describe("main-track chunks", () => {
     const doc = edit([clip("a", "s", 0, 5), clip("b", "s", 5, 5)], Array.from({ length: 3 }, (_, i) => ({ id: `o${i}`, kind: "overlay", clips: [clip(`o${i}c`, "g", 0, 10, GRADE)] })));
     const p = multi(plan(doc, 4));
     expect(p.passes.filter((x) => x.kind === "chunk").map((x) => x.id)).toEqual(["chunk-0-0"]);
+  });
+
+  it("PAR-11417: two chunk outputs with sound are not merged again (the worst-case 'both' edit with sound)", () => {
+    // The probe's doc (video-edit-worst-case-probe.spec.ts): 6 x 30 s graded main clips and two overlay tracks of 6
+    // clips, every source with sound, at the tuned defaults. The halved main track weighs 2 x (1 + 0.1) = 2.2.
+    const ov = (track: string) => ({ id: track, kind: "overlay", clips: run(6, 30, () => ({ assetId: "s" })).map((c) => ({ ...c, id: `${track}${c.id}` })) });
+    const doc = edit(run(6, 30, () => ({ assetId: "s" })), [ov("om"), ov("ok")]);
+    const p = multi(planRender(doc, inputs, { workdir: WD }));
+    expect(p.levels).toBe(1);
+    expect(p.passes.map((x) => x.id)).toEqual(["chunk-0-0", "chunk-0-1", "layer-0"]);
+    for (const x of [...p.passes, p.final]) expect(x.weight).toBeLessThanOrEqual(PASS_BUDGET + 1e-9);
+    // The same edit without sound plans the same passes (its chunk outputs weigh 2, the floor).
+    const silent = multi(planRender(edit(run(6, 30), [ov("om"), ov("ok")].map((t) => ({ ...t, clips: t.clips.map((c) => ({ ...c, assetId: "g" })) }))), inputs, { workdir: WD }));
+    expect(silent.passes.map((x) => x.id)).toEqual(p.passes.map((x) => x.id));
   });
 
   it("AC4: boundaries on the frame grid, chunks tile the main track, durations add up in frames", () => {

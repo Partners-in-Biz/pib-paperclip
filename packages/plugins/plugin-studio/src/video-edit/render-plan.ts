@@ -330,7 +330,15 @@ export function planRender(doc: EditDoc, sources: CompileInputs, options: PlanOp
     const inputs = current.doc.tracks.map((t) => sum(trackInputs(t, current.sources, doc.project.fps, opts.audioWeight)));
     const main = inputs[index];
     const others = sum(inputs.map((w) => ({ weight: w }))) - main;
-    if (main <= Math.max(2, opts.passBudget - others) + W_EPS) break;
+    // The floor is two inputs: merging two chunk outputs into one costs a whole re-encode of the edit to save one input.
+    // After a level the main track holds only chunk outputs, so the floor is two plain inputs plus the `audioWeight` of
+    // those that carry sound: outputs with sound (1 + `audioWeight` each) stop the loop where silent ones (1 each) do,
+    // and a silent plan is unchanged (PAR-11417: the halved main track of the worst-case edit with sound weighs 2.2 and
+    // took a 180 s `chunk-1-0` pass to save 1.1). Counting the sound that is there, not a flat 2 x (1 + `audioWeight`),
+    // keeps level 0 as it was: source clips with sound still chunk when they are over the floor of 2.
+    const track = current.doc.tracks[index] as Extract<Track, { kind: "video" | "overlay" }>;
+    const sound = levels > 0 ? track.clips.filter((c) => clipHasSound(track.kind, c, current.sources)).length * opts.audioWeight : 0;
+    if (main <= Math.max(2 + sound, opts.passBudget - others) + W_EPS) break;
     const mainOf = (l: Level) => sum(trackInputs(l.doc.tracks[index], l.sources, doc.project.fps, opts.audioWeight));
     let next = chunkMain(current.doc, current.sources, levels, opts);
     // Two outputs can weigh what their clips did (one light clip each): then one chunk, as before the split.
