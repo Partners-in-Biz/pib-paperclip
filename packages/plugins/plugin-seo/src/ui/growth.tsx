@@ -72,7 +72,7 @@ function ProposedCard({ x, g, act }: { x: GrowthExperimentRow; g: GrowthLoad; ac
           <Button type="button" variant="secondary" disabled={!reason.trim() || busy} style={small} onClick={() => void run("seo.growth-reject-experiment", { experimentId: x.experimentId, reason: reason.trim() }, "Experiment rejected")}>Reject</Button>
         </div>
       )}
-      {full ? <p style={muted}>{g.maxRunning} experiments are already running, so this one cannot start yet. Wait for one to be measured, or abandon one below.</p> : null}
+      {full ? <p style={muted}>{g.maxRunning} {g.maxRunning === 1 ? "experiment is" : "experiments are"} already running, so this one cannot start yet. Wait for one to be measured, or abandon one below.</p> : null}
     </div>
   );
 }
