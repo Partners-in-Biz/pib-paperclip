@@ -73,6 +73,12 @@ PAR-10822. A lead source now has an `intake`: `lead` (the default; every existin
 - puts every submitted field in one plain-text code block the visitor cannot close, so links and HTML are shown as text.
 The same report (sender, subject, message, fields) twice in a day is one issue. Signed and unsigned calls keep the lead rules (honeypot, fill time, links, Turnstile, per-IP caps for unsigned). Migration `022_crm.sql` adds `intake` (default `lead`, named CHECK `lead_sources_intake`: `lead` or `issue`; a later mode drops and re-adds that one constraint), `target_project_id` and `target_agent_id`; rollback: none needed, old code ignores them.
 
+## Newsletter forms: database and store (0.47.0)
+
+PAR-10850, plan PAR-10817 stage 1 (first half; the tools follow in PAR-10863). Nothing a visitor or an existing form sees changes.
+- Migration `023_crm.sql` widens `lead_sources_intake` to `lead`, `issue`, `newsletter` and adds `apply_tags` (jsonb, default `[]`), `confirm_url`, `confirm_from`, `confirm_secret`, `confirm_daily_cap` (default 300), with the CHECK `lead_sources_newsletter`: a newsletter source has tags, `confirm_url`, `confirm_from`, `confirm_secret`, `signing_secret` and `consent_text`; any other source has none of the newsletter settings. Existing rows pass unchanged. Rollback: revert the code; the columns can stay. **Stop-first:** apply and read back the migration on production before the code deploys.
+- The store reads and writes the new columns (`saveConfirmSecret` replaces the confirmation secret of a newsletter source only).
+- The tools refuse `intake: "newsletter"` for now, and the lead webhook refuses a newsletter source (nothing is written) until stage 2 adds signup and confirm.
 
 ## Drive save: one query into an existing sub-folder (0.46.2)
 

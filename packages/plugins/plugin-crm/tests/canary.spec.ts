@@ -85,7 +85,7 @@ describe("create-canary-client", () => {
     const person = store.contacts.find((row) => row.id === CONTACT)!;
     expect(person).toMatchObject({ name: "Canary Contact", emails: ["canary@canary.invalid"], lifecycle: "lead", tags: ["canary", "lead"], custom: { canary: true, dryRun: true } });
     expect(store.contact_companies).toEqual(expect.arrayContaining([expect.objectContaining({ contact_id: CONTACT, account_id: ACCOUNT, role_label: "owner" })]));
-    expect(store.lead_sources[0]).toMatchObject({ canary: true, client_kind: "company", client_ref: ACCOUNT, label: "Canary form" });
+    expect(store.lead_sources[0]).toMatchObject({ canary: true, client_kind: "company", client_ref: ACCOUNT, label: "Canary form", intake: "lead", apply_tags: [], confirm_url: null, confirm_secret: null });
     // The other modules hear about it like any client: creating and removing it are mutations that share the change feed.
     for (const name of ["create-canary-client", "crm.create-canary-client", "cleanup-canary", "crm.cleanup-canary"]) expect(CRM_MUTATIONS.has(name), name).toBe(true);
   });

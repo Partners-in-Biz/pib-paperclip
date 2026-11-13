@@ -53,7 +53,7 @@ describe("creating a report form", () => {
     await expect(makeSource(booted, { label: "R1", intake: "issue" })).rejects.toThrow(/needs projectId/);
     await expect(makeSource(booted, { label: "R2", intake: "issue", projectId: "nope" })).rejects.toThrow(/not found/);
     await expect(makeSource(booted, { label: "R3", intake: "issue", projectId: PROJECT, assigneeAgentId: "nobody" })).rejects.toThrow(/not found/);
-    await expect(makeSource(booted, { label: "R4", intake: "newsletter" })).rejects.toThrow(/intake must be/);
+    await expect(makeSource(booted, { label: "R4", intake: "survey" })).rejects.toThrow(/intake must be lead, issue or newsletter/);
     await expect(makeSource(booted, { label: "R5", projectId: PROJECT })).rejects.toThrow(/intake issue/);
   });
 });

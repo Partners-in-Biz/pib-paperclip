@@ -304,6 +304,8 @@ export async function handleLeadWebhook(ctx: PluginContext, input: PluginWebhook
     throw new LeadRejected(ERROR_GENERIC, "error");
   }
   if (!source || source.status !== "active") throw new LeadRejected(NOT_ACTIVE, "inactive");
+  // A newsletter source takes signups only once the double opt-in path exists (plan PAR-10817 stage 2). Until then: refused, nothing written.
+  if (source.intake === "newsletter") throw new LeadRejected(NOT_ACTIVE, "inactive");
   // A client's form whose client was deleted (or merged away) has nobody to hand the lead to: refuse before anything is stored, and switch the form off.
   if (source.clientKind && source.clientRef) {
     let exists: boolean;
@@ -810,7 +812,9 @@ export async function leadSourceView(ctx: PluginContext, source: LeadSource, url
 /** The intake settings a new source asks for: `lead` (default) or `issue` with a project of this company and, optionally, one of its agents. */
 async function intakeOf(ctx: PluginContext, companyId: string, params: Record<string, unknown>): Promise<{ intake: LeadIntake; targetProjectId: string | null; targetAgentId: string | null }> {
   const raw = params.intake == null || params.intake === "" ? "lead" : params.intake;
-  if (typeof raw !== "string" || !(LEAD_INTAKES as readonly string[]).includes(raw)) throw new CrmError(`intake must be ${LEAD_INTAKES.join(" or ")}`);
+  if (typeof raw !== "string" || !(LEAD_INTAKES as readonly string[]).includes(raw)) throw new CrmError(`intake must be ${LEAD_INTAKES.slice(0, -1).join(", ")} or ${LEAD_INTAKES.at(-1)}`);
+  // The database takes newsletter sources (migration 023); the tools that create them and check their settings come next (PAR-10863).
+  if (raw === "newsletter") throw new CrmError("Newsletter forms (intake newsletter) cannot be created yet: use lead or issue");
   const projectId = text(params, "projectId", 80);
   const agentId = text(params, "assigneeAgentId", 80);
   if (raw === "lead") {
@@ -907,6 +911,11 @@ export async function createLeadEndpoint(ctx: PluginContext, viewer: Viewer, par
     createdBy: actorOf(viewer),
     createdAt: null,
     ...intake,
+    applyTags: [],
+    confirmUrl: null,
+    confirmFrom: null,
+    confirmSecret: null,
+    confirmDailyCap: 300,
   };
   await insertLeadSource(ctx, source);
   const view = await leadSourceView(ctx, { ...source, createdAt: new Date().toISOString() }, urls);
