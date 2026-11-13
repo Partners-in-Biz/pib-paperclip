@@ -46,3 +46,25 @@ describe("resolveVerifiedCompany: cost of unsigned hits", () => {
     expect(calls).toEqual({ list: 1, resolve: 2 });
   });
 });
+
+describe("resolveVerifiedCompany: only actionable companies", () => {
+  it("never reads the secret of a company outside the actionable list; refuses a bad signature", async () => {
+    const resolved: string[] = [];
+    const ctx = {
+      companies: { list: async () => [{ id: "A" }] },
+      secrets: { resolve: async (_n: string, o: { companyId: string }) => { resolved.push(o.companyId); return `tok-${o.companyId.toLowerCase()}`; } },
+    } as unknown as PluginContext;
+    const good = computeTwilioSignature("tok-a", url, { a: ["b"] });
+    expect(await resolveVerifiedCompany(ctx, { "x-twilio-signature": good }, body, url)).toEqual({ companyId: "A" });
+    expect(resolved).toEqual(["A"]);
+  });
+
+  it("list throws: no companies, nothing cached, asked again next time", async () => {
+    let lists = 0;
+    const ctx = { companies: { list: async () => { lists++; throw new Error("refused"); } }, secrets: { resolve: async () => "t" } } as unknown as PluginContext;
+    const sig = computeTwilioSignature("t", url, { a: ["b"] });
+    expect(await resolveVerifiedCompany(ctx, { "x-twilio-signature": sig }, body, url)).toBeNull();
+    expect(await resolveVerifiedCompany(ctx, { "x-twilio-signature": sig }, body, url)).toBeNull();
+    expect(lists).toBe(2);
+  });
+});
