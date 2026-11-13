@@ -166,6 +166,10 @@ The social-content skill gets a **Media studio (pib-media-studio)** section and 
 3. Sync the skills for every company (Setup → Team → Fix skills, or the hourly sweep).
 4. A person sets a client's policy on Social → Posts → **Who approves** when that client should approve their own posts. Nothing changes for any scope until then.
 
+## 0.13.4: the skill sweep skips companies with no saved settings
+
+src-only (kit 0.14.0): the daily skill sweep skips a company with no saved settings without calling the host for it (needs_settings), when the host lists the companies a job may act for. No migration, no capability change.
+
 ## 0.13.3: the skill sync never holds a call up
 
 src-only. Through `createCompanyBootstrap().ensure`, a tool call, a page action or the page load waits at most 2 s for the managed-skill sync and goes on while it finishes behind it; a failed sync is tried again after 5 minutes, not on every call (kit `soon`, `createSkillSyncGuard`). Before this, each call waited for the host after every worker restart, and on a company with many skills that ran into the host's 30-second limit. The same bounded wait applies to the OAuth route and to each job tick. Only a new company's bootstrap (`company.created`) still waits for the sync.

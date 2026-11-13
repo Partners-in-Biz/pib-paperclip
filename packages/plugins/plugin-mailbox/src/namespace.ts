@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 export const PLUGIN_ID = "partnersinbiz.mailbox";
-export const PLUGIN_VERSION = "0.9.12";
+export const PLUGIN_VERSION = "0.9.13";
 export const NAMESPACE_SLUG = "mailbox";
 
 export function pluginNamespace(pluginId = PLUGIN_ID, slug = NAMESPACE_SLUG): string {

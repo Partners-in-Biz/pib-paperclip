@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  actionableCompanyIds,
   LAZY_BOOTSTRAP_EVENTS,
   SKILL_SYNC_JOB,
   classifySkillSync,
@@ -57,6 +58,14 @@ describe("known companies", () => {
     expect(partial.ids.sort()).toEqual(["given", "mine"]);
     expect(partial.listed).toBe(false);
     expect(partial.listError).toContain("companies.list");
+    expect(partial.actionable).toBeNull();
+    expect(all.actionable).toEqual(["host"]);
+  });
+
+  it("actionableCompanyIds is null when the call throws, and null when the host list is switched off", async () => {
+    expect(await actionableCompanyIds(fakeCtx({ companyListThrows: true }).ctx)).toBeNull();
+    const fake = fakeCtx({ companies: { a: {} } });
+    expect((await listCompanyIds(fake.ctx, { includeHostList: false })).actionable).toBeNull();
   });
 });
 
@@ -91,6 +100,55 @@ describe("syncAllCompanies", () => {
     expect(byCompany.para!.status).toBe("needs_settings");
     expect(byCompany.para!.error).toContain("company context is required");
     expect(fake.resets.some((r) => r.companyId === "para")).toBe(false);
+  });
+
+  describe("with the host's actionable list (PAR-11072)", () => {
+    const COMPANIES = { par: {}, para: {} };
+
+    it("(a) the list throws: one host call per company and the same statuses as before, none marked needs_settings without its own refused call", async () => {
+      const fake = fakeCtx({ companyListThrows: true, deniedCompanies: ["para"] });
+      const syncer = createSkillSyncer(fake.ctx, SKILLS);
+      const sweep = await syncAllCompanies(fake.ctx, syncer, { companyIds: ["par", "para", "other"] });
+      const status = Object.fromEntries(sweep.outcomes.map((o) => [o.companyId, o.status]));
+      expect(status).toEqual({ par: "synced", para: "needs_settings", other: "synced" });
+      expect(fake.hostCalls.some((c) => c.endsWith(":para"))).toBe(true);
+      expect(fake.hostCalls.some((c) => c.endsWith(":other"))).toBe(true);
+      expect(sweep.listed).toBe(false);
+    });
+
+    it("(b) an old host ignores the param and returns every company: today's behaviour, one host call per company", async () => {
+      const fake = fakeCtx({ companies: COMPANIES, deniedCompanies: ["para"], actionableHost: "old" });
+      const syncer = createSkillSyncer(fake.ctx, SKILLS);
+      const sweep = await syncAllCompanies(fake.ctx, syncer, {});
+      expect(await actionableCompanyIds(fake.ctx)).toEqual(["par", "para"]);
+      expect(sweep.outcomes.map((o) => [o.companyId, o.status]).sort()).toEqual([["par", "synced"], ["para", "needs_settings"]]);
+      expect(fake.hostCalls.some((c) => c.endsWith(":para"))).toBe(true);
+    });
+
+    it("(c) a new host, one configured and one unconfigured company: needs_settings, and no host call and no isEnabled call names the unconfigured one", async () => {
+      const fake = fakeCtx({ companies: COMPANIES, deniedCompanies: ["para"], actionableHost: "new" });
+      const syncer = createSkillSyncer(fake.ctx, SKILLS);
+      const enabledFor: string[] = [];
+      const sweep = await syncAllCompanies(fake.ctx, syncer, { companyIds: ["par", "para"], isEnabled: async (id) => (enabledFor.push(id), true) });
+      const byCompany = Object.fromEntries(sweep.outcomes.map((o) => [o.companyId, o]));
+      expect(byCompany.par!.status).toBe("synced");
+      expect(byCompany.para!.status).toBe("needs_settings");
+      expect(byCompany.para!.error).toContain("company context is required");
+      expect(fake.hostCalls.filter((c) => c.endsWith(":para"))).toEqual([]);
+      expect(enabledFor).toEqual(["par"]);
+      expect(fake.resets.some((r) => r.companyId === "para")).toBe(false);
+      const stored = fake.state.get(stateKeyOf({ scopeKind: "instance", namespace: "pib-kit", stateKey: "skill-sync-status" })) as { companies: Record<string, { status: string }> };
+      expect(stored.companies.para!.status).toBe("needs_settings");
+    });
+
+    it("(d) inside an invocation the list is only that call's company, so a sweep records every other known company needs_settings (documented: jobs and webhooks only)", async () => {
+      const fake = fakeCtx({ companies: COMPANIES, invocationCompany: "par" });
+      const syncer = createSkillSyncer(fake.ctx, SKILLS);
+      expect(await actionableCompanyIds(fake.ctx)).toEqual(["par"]);
+      const sweep = await syncAllCompanies(fake.ctx, syncer, { companyIds: ["par", "para"] });
+      expect(sweep.outcomes.map((o) => [o.companyId, o.status]).sort()).toEqual([["par", "synced"], ["para", "needs_settings"]]);
+      expect(fake.hostCalls.filter((c) => c.endsWith(":para"))).toEqual([]);
+    });
   });
 
   it("skips a company that switched the module off, and force resets everything", async () => {

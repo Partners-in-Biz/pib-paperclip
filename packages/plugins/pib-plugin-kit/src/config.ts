@@ -2,7 +2,8 @@
  * Company config and secret-ref resolution.
  *
  * Jobs run without an invocation scope. The host still allows a job's host
- * call when it names a company that has a saved plugin config row, so every
+ * call when it names a company that has a saved plugin config row (any other
+ * company is refused with "company context is required"), so every
  * helper here takes `companyId` explicitly. Callers must never rely on the
  * host deriving the company.
  */
