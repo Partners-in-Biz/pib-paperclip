@@ -395,6 +395,15 @@ describe("IndexNow and Bing", () => {
     expect(calls[5]!.body).toEqual({ siteUrl: "https://partnersinbiz.online/", urlList: ["https://partnersinbiz.online/a"] });
     expect(bingVerificationFiles("ABC123").file.content).toContain("<user>ABC123</user>");
   });
+
+  it("keeps the Bing response body in the error on a non-2xx SubmitFeed", async () => {
+    const body = `${"x".repeat(250)}TAIL-OF-BING-BODY`;
+    const fetchImpl = vi.fn(async () => new Response(body, { status: 400 }));
+    const error = await bingSubmitSitemap(fetchImpl, "bing-key", "https://partnersinbiz.online/", "https://partnersinbiz.online/sitemap.xml").catch((e: unknown) => e as Error);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain("HTTP 400");
+    expect((error as Error).message).toContain("TAIL-OF-BING-BODY");
+  });
 });
 
 describe("change scope", () => {
