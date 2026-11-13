@@ -52,7 +52,7 @@ import { getAttachment, listMailboxes } from "./agent-mail.js";
 import { clientProjectIds, resolveClientProjectId } from "@partnersinbiz/pib-plugin-kit";
 import type { ClientScope } from "@partnersinbiz/pib-plugin-kit/client-ref";
 import { prepareHandoff, recordHandoff, type HandoffDeps, type HandoffScope } from "./handoff.js";
-import { addClientMap, clientMapOverview, removeClientMap } from "./client-maps.js";
+import { addClientMap, assertNotCountOnlyEnquirer, clientMapOverview, removeClientMap } from "./client-maps.js";
 import { DELEGATE_EFFECT_KEY, ensureDefaultDelegations, mailboxDelegateEffect, removeDelegation } from "./delegations.js";
 import { sendingDomain } from "./dns.js";
 import {
@@ -849,7 +849,7 @@ function clientMapInput(params: Record<string, unknown>) {
   const matchType = requiredString(params, "matchType");
   const clientKind = requiredString(params, "clientKind");
   if (clientKind !== "company" && clientKind !== "contact") throw new MailboxError("clientKind must be company or contact");
-  return { matchType: matchType as ClientMapType, pattern: requiredString(params, "pattern"), clientKind: clientKind as "company" | "contact", clientRef: requiredString(params, "clientRef"), note: optionalString(params, "note") ?? null };
+  return { matchType: matchType as ClientMapType, pattern: requiredString(params, "pattern"), clientKind: clientKind as "company" | "contact", clientRef: requiredString(params, "clientRef"), note: optionalString(params, "note") ?? null, ...(typeof params.countOnly === "boolean" ? { countOnly: params.countOnly } : {}) };
 }
 
 // ---------------------------------------------------------------------------
@@ -1096,6 +1096,7 @@ async function createDraft(companyId: string, agentId: string | null, params: Re
   const to = addresses(params, "to");
   const cc = addresses(params, "cc");
   const bcc = addresses(params, "bcc");
+  await assertNotCountOnlyEnquirer(requireStore(), companyId, [...to, ...cc, ...bcc]);
   const replyToMessageId = optionalString(params, "replyToMessageId") ?? null;
   const replyTo = parseReplyTo(params.replyTo);
   if (replyTo.invalid) throw new MailboxError("Invalid replyTo address");
@@ -1128,6 +1129,7 @@ async function sendDraft(companyId: string, agentId: string | null, messageId: s
   if (!row) throw new MailboxError("Draft was not found");
   if (row.status !== "draft") throw new MailboxError("Only a draft can be sent");
   if (agentId) assertMaySend(await delegationFor(row.account_id, agentId));
+  await assertNotCountOnlyEnquirer(s, companyId, [...(row.to_addrs ?? []), ...(row.cc_addrs ?? []), ...(row.bcc_addrs ?? [])]);
   const replyToMessageId = row.draft?.replyToMessageId ?? null;
   if (replyToMessageId) {
     // A reply to this message went out after this draft was saved: this is a leftover copy, sending it would answer twice (PAR-8030).

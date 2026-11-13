@@ -67,6 +67,8 @@ export interface StoredTriage {
   labels: string[];
   /** The client mail mapping that filed this message (client mail forwarded or relayed to a company mailbox). */
   mapping?: { id: string; type: ClientMapType } | null;
+  /** Set when the mapping is count only: never opens a reply task, never answered. */
+  countOnly?: boolean;
 }
 
 export interface MessageRow {
@@ -244,6 +246,8 @@ export interface ClientMapRow {
   client_ref: string;
   client_name: string | null;
   note: string | null;
+  /** Website-form mail we only count (month-end report): no reply task, no draft or send to the enquirer. */
+  count_only?: boolean;
   created_by: string | null;
   created_at: string;
 }
