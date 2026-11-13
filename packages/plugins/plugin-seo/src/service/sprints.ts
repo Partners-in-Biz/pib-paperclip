@@ -236,7 +236,8 @@ export async function createSprint(env: Env, companyId: string, actor: Actor, pa
     }
   }
   const seeded = await seedTemplate(env, sprint, plan);
-  await env.skills.ensure(companyId).catch(() => []);
+  // create-sprint runs as a tool: do not wait on the skill sync (PAR-11023).
+  void env.skills.ensure(companyId).catch(() => []);
   // A client sprint works in the client's own project when one exists; the company SEO project is the fallback.
   // A rehearsal sprint has no issues, so it needs neither: no project is linked or created for it.
   if (!rehearsal) sprint = await autoLinkClientProject(env, sprint);
