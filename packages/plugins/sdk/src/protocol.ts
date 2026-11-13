@@ -326,6 +326,13 @@ export interface WorkerHostCallContext {
    */
   unconfiguredCompanyId?: string;
   /**
+   * Set by the host for a `companies.list` call made outside a host invocation:
+   * the companies with saved settings for this plugin, which are the companies
+   * such a call may act for. `companies.list({ actionableOnly: true })` answers
+   * from it. It never grants access by itself.
+   */
+  actionableCompanyIds?: readonly string[];
+  /**
    * The W3C `traceparent` the host minted for the echoed invocation. The host
    * recovers it from its own invocation record, not from the worker, so a worker
    * can never forge a span parent. The span host handler validates and uses it.
@@ -1807,8 +1814,10 @@ export interface WorkerToHostMethods {
   ];
 
   // Companies (read)
+  // `actionableOnly`: only companies this call may act for (see
+  // `PluginCompaniesClient.list`). Hosts that predate it ignore it.
   "companies.list": [
-    params: { limit?: number; offset?: number },
+    params: { limit?: number; offset?: number; actionableOnly?: boolean },
     result: Company[],
   ];
   "companies.get": [
