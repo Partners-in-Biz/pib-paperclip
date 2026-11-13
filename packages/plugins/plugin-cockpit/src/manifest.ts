@@ -4,7 +4,6 @@ import { JOBS, PLUGIN_KEY, ROUTINES, ROUTINE_TITLES, SKILL_SLUGS, VERSION } from
 import { SKILLS } from "./skills.js";
 import { COCKPIT_TOOLS, TOOL_NAMES } from "./tools.js";
 import { OPS_TOOL_NAMES } from "./ops-tool-declarations.js";
-import { PAPER_TOOL_NAMES } from "./paper-tool-declarations.js";
 import { DEFAULT_PAUSE_ORDER, DEFAULT_TRIGGER_FAILURES, DEFAULT_TRIGGER_AGENTS } from "./governor-model.js";
 
 export { JOBS, VERSION };
@@ -22,7 +21,7 @@ export const DAILY_ROUTINE_DESCRIPTION = `Daily operations review. Follow the ${
 7. Check everything waiting on the owner. If an agent could do it, hand it to that agent.
 8. Make sure today's important work has an agent and is not blocked.
 9. Look at \`improvements\` (overdue first) and any close-out review or business review issue assigned to you: do them, or hand the change to the agent that owns it.
-10. Write the morning edition of the Daily Paper: call ${tool(PAPER_TOOL_NAMES.assignment)} (edition morning) for the sections the owner asked for, then publish with ${tool(PAPER_TOOL_NAMES.publish)}: headline, standfirst, figures and one entry per section, with **Outward sends today** (the brief's \`outwardSends\`: one line each, issue | client | channel | what, then the count) in the client section. It posts the copy on the Daily brief issue itself; do not also call ${tool(TOOL_NAMES.postBrief)}.
+10. Post the Daily brief with ${tool(TOOL_NAMES.postBrief)}: done yesterday, waiting on you (questions first, with links), risks, today's plan, and **Outward sends today** (the brief's \`outwardSends\`: one line each, issue | client | channel | what, then the count). Short.
 11. Close this issue with one line: fixed, handed off, waiting on the owner.
 
 Never approve money or legal items, never change budgets, never send or publish anything yourself.`;

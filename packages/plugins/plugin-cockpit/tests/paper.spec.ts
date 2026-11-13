@@ -7,7 +7,7 @@
 import { describe, expect, it } from "vitest";
 import { ORIGIN } from "../src/constants.js";
 import { saveRoles } from "../src/db.js";
-import { getEdition, listMonth, paperTick, readPaperSettings, runPaperTool } from "../src/paper.js";
+import { editionFromBrief, getEdition, listMonth, paperTick, readPaperSettings, runPaperTool } from "../src/paper.js";
 import type { PaperView } from "../src/paper.js";
 import { createEnv, registerCockpit } from "../src/register.js";
 import { COCKPIT_TOOLS } from "../src/tools.js";
@@ -19,8 +19,8 @@ const OWNER = "user-owner";
 
 type Result = { content: string; data: Record<string, any>; error?: string };
 
-async function setup(at = "2026-11-13T05:00:00.000Z", options: { operator?: boolean } = {}) {
-  const fake = fakeCtx({ savedConfigs: { [A]: {} }, prefixes: { [A]: "PAR" }, agents: [{ id: OP, companyId: A, name: "Thandi", status: "active" }] });
+async function setup(at = "2026-11-13T05:00:00.000Z", options: { operator?: boolean; status?: string } = {}) {
+  const fake = fakeCtx({ savedConfigs: { [A]: {} }, prefixes: { [A]: "PAR" }, agents: [{ id: OP, companyId: A, name: "Thandi", status: options.status ?? "active" }] });
   const clock = fixedClock(at);
   const env = createEnv(fake.ctx, clock.now);
   registerCockpit(fake.ctx, env);
@@ -243,5 +243,84 @@ describe("the page actions", () => {
 
     const none = await setup("2026-11-13T05:00:00.000Z", { operator: false });
     expect(await none.action("paper.write-now", { edition: "evening" })).toEqual({ requested: false, reason: "no-operator" });
+    const paused = await setup("2026-11-13T05:00:00.000Z", { status: "paused" });
+    expect(await paused.action("paper.write-now", { edition: "evening" })).toEqual({ requested: false, reason: "operator-paused" });
+    expect(paused.tasks()).toHaveLength(0);
+  });
+});
+
+describe("a company with no working Operator", () => {
+  it("that never had an edition is left alone: no task, no compiled paper", async () => {
+    const s = await setup("2026-11-12T12:00:00.000Z", { status: "paused" });
+    await paperTick(s.env);
+    s.clock.set("2026-11-13T15:30:00.000Z");
+    expect(await paperTick(s.env)).toEqual({ requested: 0, compiled: 0, failed: 0 });
+    expect(s.tasks()).toHaveLength(0);
+    expect([...s.issues.values()]).toHaveLength(0);
+  });
+
+  it("that has editions still gets the compiled one on the day its Operator is down", async () => {
+    const s = await setup("2026-11-12T05:00:00.000Z");
+    await s.tool("paper-publish", EDITION);
+    await paperTick(s.env);
+    s.agents[0]!.status = "paused";
+    s.clock.set("2026-11-13T15:30:00.000Z");
+    // 17:30 SAST: the evening task is not opened for a paused Operator, and the morning edition is past its 8 hours.
+    expect(await paperTick(s.env)).toMatchObject({ requested: 0, compiled: 0 });
+    s.clock.set("2026-11-13T17:00:00.000Z");
+    expect(await paperTick(s.env)).toMatchObject({ requested: 0, compiled: 1 });
+    expect((await getEdition(s.env, A, "2026-11-13", "evening"))!.source).toBe("auto");
+  });
+});
+
+describe("yesterday's writing task", () => {
+  it("is cancelled when today's is opened, so unwritten editions do not pile up", async () => {
+    const s = await setup("2026-11-12T15:00:00.000Z");
+    expect(await paperTick(s.env)).toMatchObject({ requested: 1 });
+    const first = s.tasks()[0]!;
+    s.clock.set("2026-11-13T15:00:00.000Z");
+    expect(await paperTick(s.env)).toMatchObject({ requested: 1 });
+    expect(s.issues.get(first.id)!.status).toBe("cancelled");
+    expect(s.tasks().filter((t) => t.status === "todo").map((t) => t.title)).toEqual(["Evening paper, Fri 13 Nov"]);
+  });
+});
+
+describe("a brief posted the old way (post-daily-brief)", () => {
+  const BRIEF = "**Daily brief, Fri 13 Nov.** All data present.\n\n**Paperclip status**\n- Done yesterday: Sofia closed 6 SEO tasks.\n\n**Waiting on Peet (65, batched)**\n- Approve the Tvisha invoice.";
+  const post = (s: Awaited<ReturnType<typeof setup>>, body: string) => s.tools.get("post-daily-brief")!({ body }, { companyId: A, agentId: OP, runId: "run-1", projectId: "" }) as Promise<Result>;
+
+  it("is today's morning edition too, with no second copy on the Daily brief issue", async () => {
+    const s = await setup("2026-11-13T05:03:00.000Z");
+    const r = await post(s, BRIEF);
+    expect(r.error).toBeUndefined();
+    expect(r.content).toContain("It is also today's morning edition on Cockpit → Paper (/PAR/cockpit?tab=paper&date=2026-11-13&edition=morning).");
+    const doc = (await getEdition(s.env, A, "2026-11-13", "morning"))!;
+    expect(doc).toMatchObject({ headline: "65 items wait on you", standfirst: "All data present.", source: "agent", author: "Thandi" });
+    expect(doc.sections.map((x) => x.title)).toEqual(["Paperclip status", "Waiting on Peet"]);
+    expect(s.comments.filter((c) => c.body.includes("Daily brief, Fri 13 Nov"))).toHaveLength(1);
+    expect(s.comments).toHaveLength(1);
+  });
+
+  it("does not replace an edition the Operator published, and replaces one the Cockpit compiled", async () => {
+    const s = await setup("2026-11-13T05:03:00.000Z");
+    await s.tool("paper-publish", EDITION);
+    expect((await post(s, BRIEF)).content).not.toContain("morning edition");
+    expect((await getEdition(s.env, A, "2026-11-13", "morning"))!.headline).toBe(EDITION.headline);
+
+    const late = await setup("2026-11-12T12:00:00.000Z");
+    await paperTick(late.env);
+    late.clock.set("2026-11-13T07:00:00.000Z");
+    expect(await paperTick(late.env)).toMatchObject({ compiled: 1 });
+    await post(late, BRIEF);
+    expect((await getEdition(late.env, A, "2026-11-13", "morning"))!).toMatchObject({ source: "agent", headline: "65 items wait on you" });
+  });
+
+  it("is left as a brief in the afternoon, for the Weekly retro and when the morning edition is off", async () => {
+    const s = await setup("2026-11-13T12:30:00.000Z");
+    expect(await editionFromBrief(s.env, A, BRIEF, OP)).toBeNull();
+    s.clock.set("2026-11-13T05:03:00.000Z");
+    expect(await editionFromBrief(s.env, A, "**Weekly retro**\n\n**What worked**\n- A", OP)).toBeNull();
+    await s.tool("paper-settings", { action: "set", edition: "morning", enabled: false });
+    expect(await editionFromBrief(s.env, A, BRIEF, OP)).toBeNull();
   });
 });

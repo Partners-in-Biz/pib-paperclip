@@ -7,6 +7,7 @@
 import { describe, expect, it } from "vitest";
 import {
   BACKDATE_DAYS,
+  briefToEdition,
   checkPublish,
   compileEdition,
   countWords,
@@ -264,5 +265,44 @@ describe("the edition the Cockpit compiles itself", () => {
     expect(calm.headline).toBe("Nothing waits on you");
     expect(calm.sections.find((s) => s.id === "still-open")!.body).toBe("Nothing waits on you.");
     expect(calm.sections.find((s) => s.id === "incidents")!.body).toBe("Every health check passes.");
+  });
+});
+
+describe("the daily brief read as an edition", () => {
+  const BRIEF = `**Daily brief, Fri 13 Nov.** Note: company-brief timed out once (504), then worked on retry.
+
+**Paperclip status**
+- Done yesterday: Sofia closed 6 SEO tasks. Cash R33,313; revenue this month R7,500; nothing overdue.
+- Blocked: 3 issues wait on Max ([PAR-4436](/PAR/issues/PAR-4436)).
+
+**Waiting on Peet (65, batched; hard stops first)**
+- Money/client: approve invoice to Tvisha Aesthetics R6,250.
+
+**Consent gate**
+
+**Grok Bot work (Elon)**
+- PAR-8566 blocked.`;
+
+  it("takes the bold lines as sections, the note after the title as the standfirst and the waiting count as the headline", () => {
+    const e = briefToEdition(BRIEF)!;
+    expect(e.headline).toBe("65 items wait on you");
+    expect(e.standfirst).toBe("Note: company-brief timed out once (504), then worked on retry.");
+    // An empty section is dropped; a bracket after a title is a note, not part of it.
+    expect(e.sections.map((s) => [s.id, s.title])).toEqual([["paperclip-status", "Paperclip status"], ["waiting-on-peet", "Waiting on Peet"], ["grok-bot-work", "Grok Bot work"]]);
+    expect(e.sections[0]!.body).toContain("[PAR-4436](/PAR/issues/PAR-4436)");
+    expect(e.figures).toEqual([]);
+  });
+
+  it("reads the skill's own shape and a brief that opens with a sentence", () => {
+    const shaped = briefToEdition("**Daily brief, Friday 13 November**\n\n**Done yesterday**\n- Rhea published 3 posts.\n\n## Risks\n- None");
+    expect(shaped).toMatchObject({ headline: "Rhea published 3 posts.", standfirst: "Daily brief, Friday 13 November" });
+    expect(shaped!.sections.map((s) => s.title)).toEqual(["Done yesterday", "Risks"]);
+    const prose = briefToEdition("Morning. Cash is R33,313 and nothing is overdue.\n\n**Money**\n- Approve the invoice.");
+    expect(prose).toMatchObject({ headline: "Morning. Cash is R33,313 and nothing is overdue.", standfirst: "Morning. Cash is R33,313 and nothing is overdue." });
+  });
+
+  it("is not made from the Weekly retro or from a text with no sections", () => {
+    expect(briefToEdition("**Weekly retro**\n\n**What worked**\n- A")).toBeNull();
+    expect(briefToEdition("Just one line.")).toBeNull();
   });
 });

@@ -73,7 +73,7 @@ import { registerMemoryActions } from "./memory/actions.js";
 import { onCommentCreated, upkeep } from "./memory/service.js";
 import { MEMORY_TOOL_NAMES, runMemoryTool } from "./memory/tools.js";
 import { SKILLS } from "./skills.js";
-import { COCKPIT_TOOLS } from "./tools.js";
+import { COCKPIT_TOOLS, TOOL_NAMES } from "./tools.js";
 import { devices, mute, publicKey, subscribe, test, unsubscribe } from "./push/actions.js";
 import { onIssueNeedsYou } from "./push/triggers-needs-you.js";
 import { handleOwnerPush } from "./push/owner-push-route.js";
@@ -86,7 +86,7 @@ import { registerW1cPolicy } from "./register-w1c-policy.js";
 import { riskTierCloseCheck } from "./register-w1c-done.js";
 import { sweepAskDeadlines } from "./register-w1c-deadlines.js";
 import { ownerDigestTick, registerOwnerDigest } from "./digest.js";
-import { paperTick, registerPaper, runPaperTool } from "./paper.js";
+import { editionFromBrief, paperTick, registerPaper, runPaperTool } from "./paper.js";
 import { PAPER_TOOL_NAME_SET } from "./paper-tool-declarations.js";
 
 /** The Setup plugin's event carrying its one setup count (`setup.summary`). */
@@ -708,6 +708,16 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
                     : REVIEW_FINDING_TOOL_SET.has(tool.name)
                       ? await runReviewFindingTool(env, tool.name, params, run)
                       : await runTool(env, tool.name, params, run);
+      // A daily brief posted the old way is the morning paper too (Cockpit → Paper), so the owner has one whatever the Operator's instructions say.
+      if (tool.name === TOOL_NAMES.postBrief && !(result as { error?: unknown }).error) {
+        try {
+          const body = (params as { body?: unknown } | null)?.body;
+          const paper = typeof body === "string" ? await editionFromBrief(env, run.companyId, body, run.agentId ?? null) : null;
+          if (paper) (result as { content?: string }).content = `${(result as { content?: string }).content ?? ""} It is also today's morning edition on Cockpit → Paper (${paper.href}).`.trim();
+        } catch (error) {
+          ctx.logger.info("Paper: the brief was not turned into an edition", { companyId: run.companyId, error: message(error) });
+        }
+      }
       return normalizeToolResult(result);
     });
   }

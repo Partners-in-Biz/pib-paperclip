@@ -9,7 +9,6 @@ import { MEMORY_TOOLS, MODULES, TEAM_ROLES, withFrontmatter, type ModuleKey, typ
 import { agentFacingSummary, COMPANY_SKILL_DESCRIPTION, COMPANY_SKILL_KEY, COMPANY_SKILL_SLUG, companySkillBody } from "./company-skill.js";
 import { PLUGIN_KEY, SKILL_KEYS, SKILL_SLUGS } from "./constants.js";
 import { OPS_TOOL_NAMES } from "./ops-tool-declarations.js";
-import { PAPER_TOOL_NAMES } from "./paper-tool-declarations.js";
 import { ACCEPTANCE_DESCRIPTION, ACCEPTANCE_FILES, ACCEPTANCE_SKILL_BODY } from "./acceptance-skill.js";
 import { CODE_REVIEW_REFERENCE, CODE_REVIEW_REFERENCE_PATH, CREATIVE_BAR_PATH, CREATIVE_BAR_REFERENCE, EVIDENCE_REFERENCE, EVIDENCE_REFERENCE_PATH, OPERATOR_FILES, OPERATOR_REFERENCE_PATHS, OWNER_CHECKS_REFERENCE, OWNER_CHECKS_REFERENCE_PATH } from "./skill-references.js";
 import { SCREENSHOT_REFERENCE, SCREENSHOT_REFERENCE_PATH } from "./screenshots.js";
@@ -50,7 +49,7 @@ The Cockpit plugin (\`${PLUGIN_KEY}\`) collects what every plugin reports each h
 |---|---|
 | ${T(TOOL_NAMES.brief)} | Everything at once. Start here (\`windowHours: 168\` for the weekly retro). It includes \`asks\`, \`stuckFlows\`, \`unassigned\` (open issues nobody holds) and \`team\` (the agent in each role). |
 | ${T(TOOL_NAMES.health)} / ${T(TOOL_NAMES.waiting)} / ${T(TOOL_NAMES.scorecards)} | Problems worst first with \`fix\` and \`href\`; what waits on a person (questions first, then money and legal); per agent runs, failures, spend and quality. |
-| ${T(TOOL_NAMES.postBrief)} | Post the Weekly retro on this week's "Daily brief" issue. |
+| ${T(TOOL_NAMES.postBrief)} | Post the daily brief on this week's "Daily brief" issue. |
 | ${T(TOOL_NAMES.askOwner)} | One question to the owner on the issue that waits for it; the reply comes back on that issue. |
 | ${T(TOOL_NAMES.profile)} / ${T(TOOL_NAMES.updateProfile)} | The company's own profile; fill empty fields from the website and past work. |
 | ${T(TOOL_NAMES.repairsList)}, ${T(TOOL_NAMES.governorState)}, ${T(TOOL_NAMES.watchdogFindings)} | Repairs, pauses, findings. |
@@ -79,18 +78,31 @@ ${routingMap()}
 7. **Check what waits on the owner.** For each item in \`waiting\`: is a person really needed? If an agent could do it (drafting, research, a follow-up, a fix), reassign it to that agent with instructions. Keep only money, legal, one-time grants (login consent, key, DNS record) and real judgement.
 8. **Plan today.** Pick the few things that move the KPIs (overdue invoices, stuck deals, content due, SEO tasks due). Each needs an owner agent and must not be blocked.
 9. **Improvements and reviews.** Each overdue item in \`improvements\`: record the number (${T(OPS_TOOL_NAMES.improvementResolve)} with \`resultValue\`) or drop it. A **Close-out review** or **Business review** issue assigned to you: work its checklist (\`${OPERATOR_REFERENCE_PATHS.closeout}\`, \`${OPERATOR_REFERENCE_PATHS.goals}\`) and record each change with ${T(OPS_TOOL_NAMES.improvementPropose)}.
-10. **Write the morning paper** (**The Daily Paper** below). One morning edition a day.
+10. **Post the brief** with ${T(TOOL_NAMES.postBrief)} (format below). One brief a day.
 11. Close the routine issue with one line: what you fixed, what you handed off, what waits on the owner.
 
-## The Daily Paper
+## The daily brief
 
-The owner's morning and end-of-day report is a newspaper on Cockpit → Paper. The owner picks its sections and changes them any day.
+Short. The owner reads it on their phone. Use this shape:
 
-1. ${T(PAPER_TOOL_NAMES.assignment)} (\`edition\`): the sections with the owner's instruction for each, the writing rules, the last editions. Follow it, never memory.
-2. Gather: \`company\` sections from the brief and your tools (evening: \`windowHours: 12\`), \`web\` sections by searching the web or X.
-3. ${T(PAPER_TOOL_NAMES.publish)}. It posts the copy on the Daily brief issue too: do not post the brief yourself.
+\`\`\`markdown
+**Daily brief, <weekday> <date>**
 
-What waits on the owner is \`waiting\` after step 7, questions first. Repairs and **Outward sends today** go in the section they fit. The owner wants something else in it: ${T(PAPER_TOOL_NAMES.settings)}.
+**Done yesterday**
+- <past tense, one line each, with links; group by agent when there are many>
+
+**Waiting on you** (<n>)
+1. <questions from agents first, then money/legal> — <why a person is needed> [Answer](/<prefix>/issues/…)
+
+**Risks**
+- <health problems, budgets at 80%+, deadlines at risk, roles not staffed; "None" when none>
+
+**Today's plan**
+- <agent>: <what it will do>
+\`\`\`
+
+- Never more than ~20 lines. Link every item.
+- "Waiting on you" is the same list as ${T(TOOL_NAMES.waiting)} after step 7. Include repairs (brief's \`repairs\`) when present.
 
 ## Onboarding a new client
 
