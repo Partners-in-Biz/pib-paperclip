@@ -281,7 +281,8 @@ async function runTool(e: Env, name: string, params: unknown, run: ToolRunContex
   try {
     // Switched off in Setup: agents (and the SEO routines) get a clear refusal.
     if (!(await seoOn(e, run.companyId))) return toolFail(MODULE_OFF_MESSAGE);
-    await e.skills.ensure(run.companyId).catch(() => []);
+    // Never wait on the managed-skill sync: the host call can take 30 s+ and the tool result does not depend on the copy (PAR-11023).
+    void e.skills.ensure(run.companyId).catch(() => []);
     const data = await dispatch(e, run.companyId, await toolActor(e.ctx, run), name, params);
     // MCP clients need structuredContent to be an object: never return null, arrays or bare values.
     return toolOk(toolSummary(name, data), data);
@@ -314,7 +315,7 @@ function registerActions(e: Env) {
   const action = (key: string, fn: (companyId: string, actor: Actor, params: Record<string, unknown>) => Promise<unknown>) =>
     ctx.actions.register(key, async (params, context) => {
       const companyId = actionCompany(context);
-      await e.skills.ensure(companyId).catch(() => []);
+      void e.skills.ensure(companyId).catch(() => []);
       return fn(companyId, actionActor(context), asParams(params));
     });
 
