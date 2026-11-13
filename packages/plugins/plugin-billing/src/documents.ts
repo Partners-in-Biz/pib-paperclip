@@ -51,6 +51,8 @@ export interface DocView {
   /** Credit note: the invoice it credits. */
   againstNumber?: string | null;
   reason?: string | null;
+  /** Sender's logo bytes and brand colour (see brand.ts); none gives the plain look. */
+  brand?: { logo: Uint8Array | null; accent: string | null } | null;
 }
 
 const PAYMENT_FIELDS: Array<[string, string]> = [
@@ -174,6 +176,9 @@ export function documentPdfSpec(view: DocView): PdfDocumentSpec {
     sections,
     footer: footerParts.join(" · ") || null,
     stamp: stampFor(view),
+    logo: view.brand?.logo ?? null,
+    accent: view.brand?.accent ?? null,
+    brandName: text(view.sender.name) || FALLBACK_SENDER_NAME,
   };
 }
 
@@ -207,6 +212,7 @@ export interface StatementView {
   entries: StatementEntry[];
   ageing: { current: number; d30: number; d60: number; d90: number; d90plus: number };
   payment?: Record<string, unknown> | null;
+  brand?: { logo: Uint8Array | null; accent: string | null } | null;
 }
 
 /** Entries in date order with a running balance. */
@@ -262,5 +268,8 @@ export function statementPdfSpec(view: StatementView): PdfDocumentSpec {
     ],
     sections: paymentLines(view.payment, reference).length ? [{ heading: "Payment details (EFT)", lines: paymentLines(view.payment, reference) }] : [],
     footer: text(view.sender.name) || null,
+    logo: view.brand?.logo ?? null,
+    accent: view.brand?.accent ?? null,
+    brandName: text(view.sender.name) || FALLBACK_SENDER_NAME,
   };
 }
