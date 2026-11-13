@@ -59,6 +59,7 @@ export {
   getRequiredCapability,
   CapabilityDeniedError,
   InvocationScopeDeniedError,
+  unconfiguredCompanyMessage,
 } from "./host-client-factory.js";
 
 // JSON-RPC protocol helpers and constants
@@ -131,6 +132,7 @@ export type {
   HostServices,
   HostClientFactoryOptions,
   HostClientHandlers,
+  InvocationScopeDenialReason,
 } from "./host-client-factory.js";
 
 // JSON-RPC protocol types
