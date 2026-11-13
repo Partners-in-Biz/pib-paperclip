@@ -195,7 +195,7 @@ import { closeStands, CRM_DONE_CHECKS, doneCheckIssue } from "./done-checks.js";
 import { originFor } from "./origins.js";
 import { LEAD_EVENTS, onLeadCaptured, processHeldLeads } from "./leads.js";
 import { clientLeadForms, createLeadEndpoint, handleLeadWebhook, listLeadSourcesTool, makeLeadSecret, retryClientLeadIssues, rotateLeadKey, updateLeadSource } from "./lead-capture.js";
-import { purgeHits } from "./lead-store.js";
+import { expireUnconfirmedCaptures, purgeHits } from "./lead-store.js";
 import { purgePublicHits } from "./esign-store.js";
 import { dayOf, ROLLUP_KEEP_DAYS } from "./site-events-form.js";
 import { purgeRollup } from "./site-events-store.js";
@@ -525,6 +525,8 @@ const plugin = definePlugin({
       await trackJob(ctx, "setup-status", async () => {
         // First, so a failing step below can never leave the lead form's request log to grow.
         await purgeHits(ctx, new Date(Date.now() - 2 * 86_400_000).toISOString()).catch(() => undefined);
+        // A newsletter signup nobody confirmed is not kept: 30 days, then the row (with its keyed address hash) goes.
+        await expireUnconfirmedCaptures(ctx, new Date(Date.now() - 30 * 86_400_000).toISOString()).catch(() => undefined);
         // The signing page's and the site events' request logs (keyed address hashes), and daily counts past their retention.
         await purgePublicHits(ctx, new Date(Date.now() - 2 * 86_400_000).toISOString()).catch(() => undefined);
         await purgeRollup(ctx, dayOf(Date.now() - ROLLUP_KEEP_DAYS * 86_400_000)).catch(() => undefined);
