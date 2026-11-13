@@ -180,7 +180,7 @@ async function notConfiguredFallback(ctx: PluginContext, viewer: Viewer, type: D
 }
 
 /** Stage timing of one folder ensure (PAR-10249); numbers only. */
-export interface EnsureTiming { resolveMs?: number; siblingsMs?: number; ensureMs?: number; ensureLockWaitMs?: number; driveLookups?: number; adoptedUntagged?: number; fast?: boolean }
+export interface EnsureTiming { resolveMs?: number; siblingsMs?: number; ensureMs?: number; ensureLockWaitMs?: number; driveLookups?: number; adoptedUntagged?: number; fast?: boolean; factsMs?: number; findSubfolderMs?: number }
 
 export async function driveFolderEnsure(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>): Promise<unknown> {
   const type = params.entity_type as DriveEntityType;
@@ -200,9 +200,10 @@ export async function driveFolderEnsure(ctx: PluginContext, viewer: Viewer, para
   const timing = (outcome: string, extra: Record<string, unknown>) =>
     ctx.logger.info("Drive folder ensure", { companyId: viewer.companyId, entityType: type, entityId: id, includeTree: include_tree === true, outcome, elapsedMs: Date.now() - startedAt, ...extra });
 
-  let broker;
+  // Internal param: the save's own broker, so one save reads the config, binding and key once.
+  let broker: Broker | null | undefined = params.broker && typeof params.broker === "object" ? (params.broker as Broker) : undefined;
   try {
-    broker = await createBrokerForCompany(ctx, viewer.companyId);
+    if (!broker) broker = await createBrokerForCompany(ctx, viewer.companyId);
   } catch (e) {
     if (e instanceof DriveNotBoundError) {
       return { status: "drive_not_bound", hint: "Bind this company's Shared Drive in the CRM settings (drive.sharedDriveId)." };
@@ -213,7 +214,9 @@ export async function driveFolderEnsure(ctx: PluginContext, viewer: Viewer, para
 
   // A client's project has no folder of its own: it is ensured as its company's folder, and that folder is what comes back.
   // The contact's name (it is part of the folder name) is looked up only when the folder has to be planned, not on the hot "exists" path.
+  const factsStart = Date.now();
   const projectFacts = type === "project" ? await loadProjectFacts(ctx, viewer, id, false) : null;
+  if (stage) stage.factsMs = Date.now() - factsStart;
   const target = projectFacts ? folderTarget(projectFacts) : { entityType: type, entityId: id };
 
   const brokerMs = Date.now() - startedAt;
@@ -239,7 +242,9 @@ export async function driveFolderEnsure(ctx: PluginContext, viewer: Viewer, para
 
   // Fast path (PAR-10250): the folder is complete and the wanted sub-folder is there, chained under it: one query, no sibling scan, no ensure.
   if (existing && existing.complete !== false && want_subfolder && broker.findSubfolder) {
+    const findStart = Date.now();
     const hit = await broker.findSubfolder(target.entityType, target.entityId, want_subfolder, existing.folder_id);
+    if (stage) stage.findSubfolderMs = Date.now() - findStart;
     if (hit) {
       if (stage) stage.fast = true;
       timing("exists_subfolder", { brokerMs, resolveMs });

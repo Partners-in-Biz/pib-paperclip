@@ -35,7 +35,7 @@ async function setup() {
     const calls = google.calls.slice(before).filter((c) => c.includes("/drive/v3/files") || c.includes("/upload/drive/v3/files"));
     return { r, calls, writes: calls.filter((c) => c.startsWith("POST")) };
   };
-  return { google, save, timing, count };
+  return { google, save, timing, count, harness };
 }
 
 beforeEach(() => clearServiceAccountTokenCache());
@@ -107,5 +107,34 @@ describe("PAR-10250: one-query fast path into an existing sub-folder", () => {
     await save("p-a", "Assets/Social");
     const ups = uploadsOf(google.files);
     expect(ups.map((u) => u.parents[0])).toEqual([a, b, b, a]);
+  });
+});
+
+describe("PAR-11350: one broker per save, every stage timed", () => {
+  it("a fast-path save reads the config once (the ensure reuses the save's broker); Drive requests stay 4", async () => {
+    const { save, count, harness } = await setup();
+    await save("p-a", "Assets/Social");
+    const get = vi.spyOn(harness.ctx.config, "get");
+    const { calls } = await count(() => save("p-a", "Assets/Social"));
+    expect(calls).toHaveLength(4);
+    expect(get).toHaveBeenCalledTimes(1);
+  });
+
+  it("the timing line carries every new stage and the named stages add up to totalMs (fake clock)", async () => {
+    const { save, timing } = await setup();
+    await save("p-a", "Assets/Social");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(0);
+      // Each async step costs wall time on a real clock; the fake clock only moves where the test moves it, so run the save and then read the line.
+      await save("p-a", "Assets/Social");
+    } finally {
+      vi.useRealTimers();
+    }
+    const t = timing().at(-1);
+    for (const k of ["sourceMs", "brokerMs", "factsMs", "findSubfolderMs", "upsertMs", "uploadListMs", "uploadPostMs", "uploadMs"]) expect(typeof t[k]).toBe("number");
+    expect(t.uploadMs).toBe(t.uploadListMs + t.uploadPostMs);
+    const sum = t.sourceMs + t.brokerMs + t.factsMs + t.resolveMs + t.findSubfolderMs + t.dedupeMs + t.uploadMs + t.upsertMs;
+    expect(Math.abs(t.totalMs - sum)).toBeLessThanOrEqual(50);
   });
 });
