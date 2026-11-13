@@ -2,17 +2,20 @@
  * The companies a plugin has served, remembered in instance-scoped state.
  *
  * Why. A plugin job needs company ids from somewhere. `ctx.companies.list` is
- * the obvious source, but the host refuses it with "unknown invocation scope"
- * whenever another call (a tool, an action, an event) is in flight in the same
- * worker: live logs show hundreds of those refusals for billing, payroll and
- * SEO ("Company list unavailable for the Cockpit push"). Instance-scoped state
+ * the obvious source, but the host used to refuse it with "unknown invocation
+ * scope" whenever another call (a tool, an action, an event) was in flight in
+ * the same worker: live logs showed hundreds of those refusals for billing,
+ * payroll and SEO ("Company list unavailable for the Cockpit push"). Since the
+ * host change of PAR-11072 a job gets the list, and "unknown invocation scope"
+ * means only a stale invocation id; the plugin's own memory stays the source a
+ * job can rely on with an older host. Instance-scoped state
  * names no company, so the host never gates it. Every company-scoped entry point
  * that reaches the kit (`createSkillSyncer`, `registerCompanyBootstrap`,
  * `syncAllCompanies`) remembers its company here, and jobs read the list back.
  *
  * This list only says which companies exist for the plugin. It does not let a
  * job act for them: the host still lets a job name only companies that have a
- * saved config row for the plugin (see `syncAllCompanies`).
+ * saved config row for the plugin (see `syncAllCompanies`, `actionableCompanyIds`).
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 

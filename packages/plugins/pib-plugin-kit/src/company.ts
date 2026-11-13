@@ -9,19 +9,27 @@
  * checked that every plugin had one (the Cockpit had none).
  *
  * What the host allows, which bounds what is possible here (wiki
- * plugin-jobs-company-scope):
+ * plugin-jobs-company-scope; PAR-11072):
  * - A scheduled job runs with no invocation scope. A host call from a job
  *   passes only when it names a company that has a SAVED plugin config row for
  *   this plugin. A company whose plugin settings were never saved (Partners in
- *   Apps today) is refused with "company context is required", whatever the
- *   plugin does. So a job CANNOT sync skills for such a company; it can only
- *   report that it could not (`needs_settings`).
+ *   Apps today) is refused with "company context is required: company "<id>"
+ *   has no saved settings for this plugin; ...", whatever the plugin does. So a
+ *   job CANNOT sync skills for such a company; it can only report that it could
+ *   not (`needs_settings`).
  * - Calls made inside an invocation for a company (tool, action, event) pass
  *   for that company, configured or not. That is why `company.created`, and
  *   the lazy events below, work for any company.
- * - `ctx.companies.list` fails while another call is in flight in the worker,
- *   so company ids come from the plugin's own memory (`knownCompanyIds`), not
- *   from a list call.
+ * - `ctx.companies.list` now answers from a job even while another call is in
+ *   flight in the worker (it used to fail with "unknown invocation scope").
+ *   "Unknown invocation scope" now means only a stale or expired invocation id.
+ *   `companies.list({ actionableOnly: true })` returns only the companies the
+ *   call may act for: from a job, the ones with saved settings. The sweep asks
+ *   for that list (`actionableCompanyIds`) and records every other known
+ *   company `needs_settings` without a host call. A host that predates the
+ *   parameter, or a list that fails, gives `null` ("unknown"): the sweep then
+ *   makes one host call per company, as before. Company ids still also come
+ *   from the plugin's own memory (`knownCompanyIds`).
  *
  * Provided here: `syncAllCompanies` (sweep every known company), the periodic
  * variant (`createPeriodicSkillSync`, `registerSkillSyncJob`),
@@ -46,18 +54,46 @@ export interface CompanyIdList {
   /** `companies.list` answered (its ids are included); false when it was refused or absent. */
   listed: boolean;
   listError?: string;
+  /**
+   * The companies this call may act for (`companies.list({ actionableOnly: true })`),
+   * or `null` when that call failed or was refused (unknown, not "none").
+   * `null` also when `includeHostList` is false. An old host that ignores the
+   * parameter returns every company here, which is the same as today.
+   */
+  actionable: string[] | null;
+}
+
+type ListInput = { limit?: number; actionableOnly?: boolean };
+
+/**
+ * The companies this call may act for: from a job or a webhook, the ones with
+ * saved settings for this plugin. For jobs and webhooks only: inside an action,
+ * tool or event the answer is only that invocation's company, so a sweep built
+ * on it would see one company. `null` when the call throws or is refused
+ * (unknown, not "none").
+ */
+export async function actionableCompanyIds(ctx: PluginContext): Promise<string[] | null> {
+  try {
+    const list = ctx.companies.list as (input?: ListInput) => Promise<Array<{ id?: string }>>;
+    const companies = await list.call(ctx.companies, { limit: 100, actionableOnly: true });
+    return companies.filter((company) => company?.id).map((company) => String(company.id));
+  } catch {
+    return null;
+  }
 }
 
 /**
  * The company ids a plugin should act for: the ones given, the ones the plugin
  * remembered, and (best effort) the host's list. A refused `companies.list`
- * does not fail the call.
+ * does not fail the call. `actionable` is the host's actionable list (see
+ * `actionableCompanyIds`; jobs and webhooks only), `null` when unknown.
  */
 export async function listCompanyIds(ctx: PluginContext, options: { extra?: string[]; includeHostList?: boolean } = {}): Promise<CompanyIdList> {
   const ids = new Set<string>(options.extra ?? []);
   for (const id of await knownCompanyIds(ctx)) ids.add(id);
   let listed = false;
   let listError: string | undefined;
+  let actionable: string[] | null = null;
   if (options.includeHostList !== false) {
     try {
       const companies = (await ctx.companies.list({ limit: 100 })) as Array<{ id?: string }>;
@@ -66,8 +102,9 @@ export async function listCompanyIds(ctx: PluginContext, options: { extra?: stri
     } catch (error) {
       listError = error instanceof Error ? error.message : String(error);
     }
+    actionable = await actionableCompanyIds(ctx);
   }
-  return { ids: [...ids], listed, ...(listError ? { listError } : {}) };
+  return { ids: [...ids], listed, ...(listError ? { listError } : {}), actionable };
 }
 
 // ---------------------------------------------------------------------------
@@ -92,10 +129,14 @@ export interface SkillSyncSweep {
 
 /**
  * The error text the host gives a job that names a company with no saved plugin
- * config. Only this: the generic "is not allowed to perform" prefix is also what
+ * config: `company context is required: company "<id>" has no saved settings
+ * for this plugin; calls made outside a host invocation (jobs, timers,
+ * start-up) can act only for companies with saved settings` (same text idle and
+ * busy). Only this: the generic "is not allowed to perform" prefix is also what
  * a missing capability says, "requested company X but scoped to Y" is a caller
- * bug, and "missing, expired, or unknown invocation scope" is a transient scope
- * failure; none of those is fixed by saving settings, so they stay `failed`.
+ * bug, and "missing, expired, or unknown invocation scope" now means only a
+ * stale or expired invocation id; none of those is fixed by saving settings, so
+ * they stay `failed`. A contract test pins this pattern to the host text.
  */
 const NEEDS_SETTINGS = /company context is required/i;
 
@@ -154,11 +195,25 @@ async function recordSyncStatus(ctx: PluginContext, outcomes: CompanySyncOutcome
  * the Cockpit to ask for the settings. It still syncs the first time any tool,
  * action or event for it reaches the plugin (`registerCompanyBootstrap`'s lazy
  * events, or the plugin's own `skillSync.ensure`).
+ *
+ * When the host's actionable list answers, a known company that is not in it is
+ * recorded `needs_settings` with no host call and no `isEnabled` call. When it
+ * does not answer (`actionable` is `null`), every company gets its own host
+ * call, as before.
+ *
+ * For jobs and webhooks only. Inside an action, tool or event the host's answer
+ * is only that call's company, so a sweep run there would record every other
+ * company `needs_settings`.
  */
 export async function syncAllCompanies(ctx: PluginContext, syncer: SkillSyncer, options: SyncAllOptions = {}): Promise<SkillSyncSweep> {
   const list = await listCompanyIds(ctx, { extra: options.companyIds, includeHostList: options.includeHostList });
   const outcomes: CompanySyncOutcome[] = [];
+  const actionable = list.actionable ? new Set(list.actionable) : null;
   for (const companyId of list.ids) {
+    if (actionable && !actionable.has(companyId)) {
+      outcomes.push({ companyId, status: "needs_settings", reset: [], error: "company context is required: no saved settings for this plugin (host actionable list)" });
+      continue;
+    }
     try {
       if (options.isEnabled && !(await options.isEnabled(companyId))) {
         outcomes.push({ companyId, status: "skipped", reset: [] });
