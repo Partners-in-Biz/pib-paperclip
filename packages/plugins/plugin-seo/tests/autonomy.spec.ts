@@ -389,7 +389,7 @@ describe("IndexNow and Bing", () => {
     expect(await bingVerifySite(fetchImpl, "bing-key", "https://partnersinbiz.online/")).toBe(true);
     await bingSubmitSitemap(fetchImpl, "bing-key", "https://partnersinbiz.online/", "https://partnersinbiz.online/sitemap.xml");
     expect(await bingSubmitUrlBatch(fetchImpl, "bing-key", "https://partnersinbiz.online/", ["https://partnersinbiz.online/a", "https://partnersinbiz.online/a"])).toBe(1);
-    expect(calls.map((c) => c.method)).toEqual(["GetUserSites", "AddSite", "GetUserSites", "VerifySite", "SubmitSitemap", "SubmitUrlBatch"]);
+    expect(calls.map((c) => c.method)).toEqual(["GetUserSites", "AddSite", "GetUserSites", "VerifySite", "SubmitFeed", "SubmitUrlBatch"]);
     expect(calls[1]!.body).toEqual({ siteUrl: "https://partnersinbiz.online/" });
     expect(calls[4]!.body).toEqual({ siteUrl: "https://partnersinbiz.online/", feedUrl: "https://partnersinbiz.online/sitemap.xml" });
     expect(calls[5]!.body).toEqual({ siteUrl: "https://partnersinbiz.online/", urlList: ["https://partnersinbiz.online/a"] });
