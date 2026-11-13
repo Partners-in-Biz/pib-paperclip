@@ -131,7 +131,7 @@ describe("compileVideo intermediate option", () => {
     expect(r).toMatchSnapshot();
     const base = compileVideo(doc, withSound, "out.mov");
     expect(r.files).toEqual(base.files);
-    expect(r.args.join(" ")).toContain(`-c:v libx264 -preset veryfast -qp 0 -pix_fmt yuv420p`);
+    expect(r.args.join(" ")).toContain(`-c:v libx264 -preset ultrafast -qp 0 -pix_fmt yuv420p`);
     expect(r.args.join(" ")).toContain("-c:a pcm_f32le -ar 48000 -ac 2");
     expect(r.args.at(-1)).toBe("file:out.mov");
     const strip = (a: string[]) => a.join(" ").replace(ENCODER_ARGS.join(" "), "V").replace(INTERMEDIATE_ENCODER_ARGS.join(" "), "V").replace(/-c:a \S+( -b:a \S+)? -ar 48000 -ac 2/, "A");

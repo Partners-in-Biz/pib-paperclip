@@ -13,7 +13,7 @@ import { assertOwnKey, MAX_ASSET_BYTES, type PrivateBucket } from "../src/storag
 import { AUDIO_ENCODER_ARGS } from "../src/video-edit/compile-audio.js";
 import { ENCODER_ARGS, inputKey, type CompileInputs } from "../src/video-edit/compile-video.js";
 import { DEFAULT_AS_LIMIT_BYTES, FSIZE_BYTES, pidsInGroup, TIMEOUT_SEC } from "../src/video-edit/ffmpeg.js";
-import { createRenderExecutor, INTERMEDIATE_FSIZE_BYTES, renderPasses, verifyOutput, type PassOptions } from "../src/video-edit/render-pipeline.js";
+import { createRenderExecutor, INTERMEDIATE_FSIZE_BYTES, PASS_CONCURRENCY, renderPasses, verifyOutput, type PassOptions } from "../src/video-edit/render-pipeline.js";
 import { enqueueRender, getRender } from "../src/video-edit/render-queue.js";
 import { cmdlineNames, createRenderRunner, RenderFailure } from "../src/video-edit/runner.js";
 import type { ProbeResult } from "../src/video-edit/probe.js";
@@ -368,20 +368,21 @@ setTimeout(() => {
     const sources: CompileInputs = { [inputKey("src-a", 1)]: { path: join(dir, "in-0.mp4"), kind: "video", hasAudio: !!opts.audio, width: 1080, height: 1920 } };
     const abort = opts.abort ?? new AbortController();
     const kills: Array<[number, string]> = [];
-    const started: Array<{ pgid: number; workdir: string; names: boolean; leftover: number[] }> = [];
+    const started: Array<{ pgid: number; workdir: string; names: boolean; leftover: number[]; endedBefore: number }> = [];
     let ended = 0;
     const control = {
       signal: abort.signal,
       async started(info: { pgid: number; workdir: string }) {
         // The previous pass's group is empty by the time the next pass is up.
         const leftover = started.length ? await pidsInGroup(started[started.length - 1].pgid) : [];
-        started.push({ ...info, names: await cmdlineNames(info.pgid, dir), leftover });
+        started.push({ ...info, names: await cmdlineNames(info.pgid, dir), leftover, endedBefore: ended });
         opts.onStart?.(started.length, info.pgid);
         return true;
       },
       passEnded: () => void (ended += 1),
     };
-    const options: PassOptions = { statfs, ...opts.options, plan: { passBudget: 3, ...opts.options?.plan }, run: {
+    // One pass at a time unless a test asks for more (the side-by-side chunk tests below).
+    const options: PassOptions = { statfs, passConcurrency: 1, ...opts.options, plan: { passBudget: 3, ...opts.options?.plan }, run: {
         bins: mpBins,
         killImpl: (pid, sig) => {
           kills.push([pid, sig]);
@@ -482,7 +483,10 @@ setTimeout(() => {
     const done = await render(mainDoc(4), null, { run: { bins: mpBins }, plan: { passBudget: 3 } });
     expect(done).toMatchObject({ status: "succeeded", errorKind: null });
     expect(puts).toEqual([`studio/${CO}/own/${done.id}/v1.mp4`, `studio/${CO}/own/${done.id}/${PREVIEW_FILE}`]);
-    expect((await runs()).map((x) => x.id)).toEqual(["chunk-0-0", "chunk-0-1", "final", "proxy"]);
+    // The two chunks run side by side (PASS_CONCURRENCY), in either order; then the final pass and the proxy.
+    const ids = (await runs()).map((x) => x.id);
+    expect(ids.slice(0, 2).sort()).toEqual(["chunk-0-0", "chunk-0-1"]);
+    expect(ids.slice(2)).toEqual(["final", "proxy"]);
     expect(await workFolders()).toEqual([]);
     await pg.db.execute(`DELETE FROM ${pg.db.namespace}.video_renders`);
     await steer({ fail: { "chunk-0-1": true } });
@@ -503,6 +507,40 @@ setTimeout(() => {
     expect(await runs()).toEqual([]);
     expect(gets).toEqual([`studio/${CO}/own/src-a/v1.mp4`, `studio/${CO}/own/src-a/v1.mp4`]);
     expect(puts).toEqual([]);
+  });
+
+  it("PAR-11217: the chunks of one level run two at a time; the next level and the final pass wait for all of them", async () => {
+    await steer({ linger: true, sleep: { "chunk-0-0": 300, "chunk-0-1": 300, "chunk-0-2": 300, "chunk-0-3": 300 } });
+    const r = await passes(8, { options: { passConcurrency: PASS_CONCURRENCY } });
+    expect(PASS_CONCURRENCY).toBe(2);
+    expect(r.result).toMatchObject({ ok: { plan: "multi", passes: ["chunk-0-0", "chunk-0-1", "chunk-0-2", "chunk-0-3", "chunk-1-0", "chunk-1-1"] } });
+    const ids = r.runs.map((x) => x.id);
+    expect(ids.slice(0, 2).sort()).toEqual(["chunk-0-0", "chunk-0-1"]);
+    expect(ids.at(-1)).toBe("final");
+    // Side by side, the log order and the started() order can differ: match each run to its own group.
+    const pgidOf = (id: string) => r.runs.find((x) => x.id === id)!.pgid;
+    const at = (id: string) => r.started.find((s) => s.pgid === pgidOf(id))!.endedBefore;
+    // Both first chunks were up before either ended; a third waits for a free lane, level 1 for all of level 0.
+    expect([at("chunk-0-0"), at("chunk-0-1")]).toEqual([0, 0]);
+    expect(at("chunk-0-2")).toBeGreaterThanOrEqual(1);
+    expect(Math.min(at("chunk-1-0"), at("chunk-1-1"))).toBe(4);
+    expect(at("final")).toBe(6);
+    expect(r.ended()).toBe(7);
+    for (const s of r.started) expect(await pidsInGroup(s.pgid)).toEqual([]);
+    expect(r.left.filter((f) => f.startsWith("chunk-"))).toEqual([]);
+  });
+
+  it("PAR-11217: a failed chunk cancels the one beside it and starts nothing more", async () => {
+    await steer({ linger: true, fail: { "chunk-0-0": true }, sleep: { "chunk-0-0": 200, "chunk-0-1": 20_000 } });
+    const r = await passes(8, { options: { passConcurrency: 2 } });
+    expect(r.result).toMatchObject({ error: { code: "ffmpeg_failed", kind: "deterministic", stderrTail: expect.stringContaining("boom chunk-0-0") } });
+    expect(r.runs.map((x) => x.id).sort()).toEqual(["chunk-0-0", "chunk-0-1"]);
+    // The log order of two side-by-side runs is not their start order; the run logs its own group.
+    const sibling = r.runs.find((x) => x.id === "chunk-0-1")!.pgid;
+    expect(r.started.map((s) => s.pgid)).toContain(sibling);
+    expect(r.kills).toContainEqual([-sibling, "SIGTERM"]);
+    for (const s of r.started) expect(await pidsInGroup(s.pgid)).toEqual([]);
+    expect(r.ended()).toBe(2);
   });
 
   it("AC8: an edit within the budget is today's single pass with today's encoder and limits", async () => {

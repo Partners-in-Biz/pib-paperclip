@@ -4,8 +4,9 @@
  * The `process-renders` job calls `tick()` once a minute. A tick only looks and starts; it never waits for a render
  * (the job RPC times out after 5 minutes and is not killed), so the render itself runs on in the worker as a promise:
  *  1. recover: active rows whose heartbeat is stale and that this worker does not run. Their process group is killed
- *     only when `/proc/<pid>/cmdline` still names the row's work folder (never by name, pattern or port); then the
- *     row goes through the failure policy as an infra error.
+ *     only when `/proc/<pid>/cmdline` still names the row's work folder (never by name, pattern or port), and so is
+ *     every other group leader whose command line names it (a pass that ran side by side with the recorded one,
+ *     PAR-11217); then the row goes through the failure policy as an infra error.
  *  2. claim the oldest queued job (the database allows one active render per host) and start the executor.
  * While a render runs, a 15 s timer heartbeats it. A heartbeat that returns false means the claim is gone (cancelled or
  * recovered elsewhere): the runner aborts the executor and kills its process group.
@@ -14,7 +15,7 @@
  * exit, output fails verification) end the job as `failed` at once. Infra errors (stale heartbeat or worker death,
  * `disk_low`, timeout, rlimit, anything unexpected) re-queue it while `attempts < MAX_ATTEMPTS`, then `failed`.
  */
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { errorText } from "../errors.js";
@@ -91,10 +92,13 @@ export function failureFromRun(result: RunResult): RenderFailure | null {
 export interface RenderControl {
   /** Aborted when the claim is gone: stop the ffmpeg run (`handle.cancel()`) and throw. */
   signal: AbortSignal;
-  /** Call once ffmpeg is spawned: records pid (= pgid) and work folder for recovery. False = the claim is gone. */
+  /**
+   * Call once ffmpeg is spawned: records pid (= pgid) and work folder for recovery. False = the claim is gone. Up to
+   * `PASS_CONCURRENCY` runs can be live at once (render-pipeline.ts); the row keeps the last pid.
+   */
   started(info: { pgid: number; workdir: string }): Promise<boolean>;
-  /** The ffmpeg run of the last `started()` has ended (its group is gone): a lost claim must not signal that pgid. */
-  passEnded(): void;
+  /** The ffmpeg run of group `pgid` has ended (its group is gone): a lost claim must not signal it. No pgid: every run. */
+  passEnded(pgid?: number): void;
   /** ffmpeg is done and the output is being stored. False = the claim is gone. */
   uploading(): Promise<boolean>;
 }
@@ -121,6 +125,7 @@ export interface RunnerOptions {
 export interface Running {
   id: string;
   token: string;
+  /** The last ffmpeg group started; `groups` holds every live one. */
   pgid: number | null;
   workdir: string | null;
 }
@@ -132,6 +137,7 @@ export interface TickResult {
 }
 
 interface Active extends Running {
+  groups: Set<number>;
   abort: AbortController;
   timer: NodeJS.Timeout;
   done: Promise<void>;
@@ -150,6 +156,22 @@ export interface RenderRunner {
 export async function cmdlineNames(pid: number, workdir: string, procRoot = "/proc"): Promise<boolean> {
   const cmd = await readFile(`${procRoot}/${pid}/cmdline`, "utf8").catch(() => "");
   return cmd.replaceAll("\0", " ").includes(workdir);
+}
+
+/** Every process group leader (`pgrp == pid`, as `runContained` spawns them) whose command line names a file in `workdir`. */
+export async function groupsNaming(workdir: string, procRoot = "/proc"): Promise<number[]> {
+  const out: number[] = [];
+  for (const name of await readdir(procRoot).catch(() => [] as string[])) {
+    if (!/^\d+$/.test(name)) continue;
+    const pid = Number(name);
+    const stat = await readFile(`${procRoot}/${pid}/stat`, "utf8").catch(() => "");
+    const pgrp = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[2]);
+    if (pgrp !== pid) continue;
+    // `<workdir>/`: every pass names a file inside it, and `r-<id>` must not match `r-<id>-old`.
+    const cmd = await readFile(`${procRoot}/${pid}/cmdline`, "utf8").catch(() => "");
+    if (cmd.replaceAll("\0", " ").includes(`${workdir.replace(/\/+$/, "")}/`)) out.push(pid);
+  }
+  return out;
 }
 
 export function createRenderRunner(ctx: PluginContext, opts: RunnerOptions = {}): RenderRunner {
@@ -187,8 +209,10 @@ export function createRenderRunner(ctx: PluginContext, opts: RunnerOptions = {})
       // Ours and alive here: a slow heartbeat write, not a dead worker.
       if (active.has(row.id) || !row.claimToken) continue;
       const workdir = row.workdir;
-      if (row.pid && workdir && isAbsolute(workdir) && workdir.length > 8 && (await cmdlineNames(row.pid, workdir, procRoot))) {
-        killGroup(row.pid, "SIGKILL");
+      if (workdir && isAbsolute(workdir) && workdir.length > 8) {
+        const groups = new Set(await groupsNaming(workdir, procRoot));
+        if (row.pid && (await cmdlineNames(row.pid, workdir, procRoot))) groups.add(row.pid);
+        for (const pgid of groups) killGroup(pgid, "SIGKILL");
       }
       const outcome = await fail(row, row.claimToken, { kind: "infra", code: "stale_heartbeat", error: "The render stopped reporting (worker restarted or hung).", stderrTail: null });
       if (outcome !== "lost") n += 1;
@@ -199,14 +223,15 @@ export function createRenderRunner(ctx: PluginContext, opts: RunnerOptions = {})
 
   function start(job: ClaimedRender, executor: RenderExecutor): void {
     const abort = new AbortController();
-    const entry = { id: job.id, token: job.claimToken, pgid: null, workdir: null, abort } as unknown as Active;
+    const entry = { id: job.id, token: job.claimToken, pgid: null, groups: new Set<number>(), workdir: null, abort } as unknown as Active;
     const lost = () => {
       if (abort.signal.aborted) return;
       abort.abort(new RenderFailure("The render claim was lost.", "infra", "cancelled"));
-      killGroup(entry.pgid, "SIGTERM");
-      const pgid = entry.pgid;
+      const groups = [...entry.groups];
+      for (const pgid of groups) killGroup(pgid, "SIGTERM");
       setTimeout(() => {
-        if (active.get(job.id) === entry) killGroup(pgid, "SIGKILL");
+        if (active.get(job.id) !== entry) return;
+        for (const pgid of groups) if (entry.groups.has(pgid)) killGroup(pgid, "SIGKILL");
       }, graceMs).unref?.();
     };
     const beat = async (patch: Parameters<typeof heartbeatRender>[3] = {}) => {
@@ -222,12 +247,15 @@ export function createRenderRunner(ctx: PluginContext, opts: RunnerOptions = {})
       signal: abort.signal,
       async started(info) {
         entry.pgid = info.pgid;
+        entry.groups.add(info.pgid);
         entry.workdir = info.workdir;
         return beat({ pid: info.pgid, workdir: info.workdir });
       },
-      passEnded() {
+      passEnded(pgid) {
         // The row keeps the old pid for recovery, which checks the cmdline first; this worker just stops signalling it.
-        entry.pgid = null;
+        if (pgid === undefined) entry.groups.clear();
+        else entry.groups.delete(pgid);
+        entry.pgid = [...entry.groups].at(-1) ?? null;
       },
       uploading: () => beat({ stage: "uploading" }),
     };

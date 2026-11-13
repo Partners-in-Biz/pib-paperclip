@@ -7,7 +7,8 @@
  *  2. In a fresh work folder (disk check first): download each input, probe video inputs (sound, size, frame rate),
  *     plan the passes (render-plan.ts, PAR-10436), compile (A4/A5), write the graph and text files, run ffmpeg
  *     contained (A6) with the stall watchdog. An edit within `PASS_BUDGET` is one pass, as before. A heavier one runs
- *     its passes one at a time, each in `dir/<pass-id>/` with absolute input and output paths: one render deadline
+ *     its passes one at a time (the chunks of one level `PASS_CONCURRENCY` at a time), each in `dir/<pass-id>/` with
+ *     absolute input and output paths: one render deadline
  *     (`TIMEOUT_SEC` from the first spawn; a pass that would start with under `MIN_PASS_SEC` left fails `timeout`),
  *     `INTERMEDIATE_FSIZE_BYTES` for intermediates and `FSIZE_BYTES` for the final pass, `started()`/`passEnded()` per
  *     pass, and an ffprobe check of each pass output (`verify_failed`). An intermediate is deleted once the last pass
@@ -62,6 +63,8 @@ export interface PipelineOptions {
   deadlineSec?: number;
   /** Tests only: the clock behind the deadline. */
   now?: () => number;
+  /** How many chunk passes of one level run at a time. Default `PASS_CONCURRENCY`. */
+  passConcurrency?: number;
 }
 
 /**
@@ -72,6 +75,12 @@ export interface PipelineOptions {
 export const INTERMEDIATE_FSIZE_BYTES = 6 * 1024 * 1024 * 1024;
 /** A pass that would start with less than this left before the render deadline fails `timeout` without spawning. */
 export const MIN_PASS_SEC = 60;
+/**
+ * Chunk passes of one level run this many at a time (PAR-11217). ffmpeg 6.1 runs the filter graph on one thread, so a
+ * graded chunk is bound by it; on pib-vps at load 15 two halves of a chunk took 50.6 s side by side against 87.5 s one
+ * after the other. Each pass keeps its own `--as` and fsize caps; the render's peak is two passes' memory.
+ */
+export const PASS_CONCURRENCY = 2;
 
 /** One input weighs more than any pass may hold (render-plan.ts `tooComplex`): deterministic, the message is shown. */
 export class TooComplexError extends RenderFailure {
@@ -172,7 +181,7 @@ async function passProblem(pass: RenderPass, fps: number, run: RunOptions): Prom
 }
 
 export interface PassReport { plan: "single" | "multi"; weight: number; passes: string[] }
-export type PassOptions = Pick<PipelineOptions, "run" | "fontsDir" | "plan" | "deadlineSec" | "now" | "statfs">;
+export type PassOptions = Pick<PipelineOptions, "run" | "fontsDir" | "plan" | "deadlineSec" | "now" | "statfs" | "passConcurrency">;
 
 /** Free space a multi-pass render needs: two intermediates at their size cap, plus 2 GiB, never under the single-pass floor. */
 export function multiPassMinFreeBytes(): number {
@@ -196,20 +205,26 @@ export async function renderPasses(doc: EditDoc, sources: CompileInputs, dir: st
   if (plan.kind === "tooComplex") throw new TooComplexError(plan.input, plan.inputWeight);
   let deadline: number | null = null;
 
-  const run = async (compiled: CompiledVideo, cwd: string, fsizeBytes: number): Promise<void> => {
-    checkpoint();
+  // `stop`: a sibling pass of the same level failed (`together`); this run is cancelled and throws that failure.
+  const run = async (compiled: CompiledVideo, cwd: string, fsizeBytes: number, stop?: AbortSignal): Promise<void> => {
+    const halted = () => {
+      checkpoint();
+      if (stop?.aborted) throw stop.reason;
+    };
+    halted();
     for (const file of compiled.files) {
       if (!SAFE_FILE.test(file.name)) throw deterministic(`Unsafe compile file name ${file.name}.`, "compile_error");
       await writeFile(join(cwd, file.name), file.content, { mode: 0o600, flag: "wx" });
     }
-    checkpoint();
+    halted();
     // One deadline from the first spawn (the ffmpeg phase, not downloads); each later pass gets what is left.
     const left = deadline === null ? deadlineSec : Math.floor((deadline - clock()) / 1000);
     if (left < MIN_PASS_SEC) throw new RenderFailure("The render took longer than the time limit.", "infra", "timeout");
     deadline ??= clock() + deadlineSec * 1000;
     const handle = runContained(compiled.args, { stallSec: STALL_SEC, ...runOpts, cwd, timeoutSec: left, fsizeBytes });
-    const stop = () => handle.cancel();
-    control.signal.addEventListener("abort", stop, { once: true });
+    const cancel = () => handle.cancel();
+    control.signal.addEventListener("abort", cancel, { once: true });
+    stop?.addEventListener("abort", cancel, { once: true });
     let result: RunResult;
     try {
       if (handle.pgid > 0 && !(await control.started({ pgid: handle.pgid, workdir: dir }))) handle.cancel();
@@ -219,11 +234,12 @@ export async function renderPasses(doc: EditDoc, sources: CompileInputs, dir: st
       await handle.done;
       throw e;
     } finally {
-      control.signal.removeEventListener("abort", stop);
+      control.signal.removeEventListener("abort", cancel);
+      stop?.removeEventListener("abort", cancel);
       // `done` resolves after the group is SIGKILLed: nothing of this pass is left to signal.
-      control.passEnded();
+      control.passEnded(handle.pgid);
     }
-    checkpoint();
+    halted();
     const failed = failureFromRun(result);
     if (failed) throw failed;
   };
@@ -246,20 +262,53 @@ export async function renderPasses(doc: EditDoc, sources: CompileInputs, dir: st
       if (n === 0) await rm(dirname(p), { recursive: true, force: true });
     }
   };
-  for (const pass of plan.passes) {
+  const runPass = async (pass: RenderPass, stop: AbortSignal): Promise<void> => {
     checkpoint();
     const cwd = dirname(pass.output);
     if (relative(dir, cwd) !== pass.id) throw deterministic(`Render pass ${pass.id} is outside the work folder.`, "compile_error");
     await mkdir(cwd, { mode: 0o700 });
     const compiled = pass.kind === "stem" ? compileAudioStem(pass.doc, pass.sources, pass.output) : compileVideo(pass.doc, pass.sources, pass.output, { intermediate: true, origin: pass.origin, fontsDir: options.fontsDir });
-    await run(compiled, cwd, INTERMEDIATE_FSIZE_BYTES);
+    await run(compiled, cwd, INTERMEDIATE_FSIZE_BYTES, stop);
     const why = await passProblem(pass, doc.project.fps, runOpts);
     if (why) throw deterministic(`Render pass ${pass.id}: ${why}`, "verify_failed");
     await release(pass.sources);
+  };
+  // The chunks of one level read only sources and lower levels: they run `passConcurrency` at a time. Others in order.
+  for (let i = 0; i < plan.passes.length; ) {
+    const pass = plan.passes[i];
+    let j = i + 1;
+    while (pass.kind === "chunk" && j < plan.passes.length && plan.passes[j].kind === "chunk" && plan.passes[j].level === pass.level) j++;
+    await together(plan.passes.slice(i, j), options.passConcurrency ?? PASS_CONCURRENCY, runPass);
+    i = j;
   }
   await run(compileVideo(plan.final.doc, plan.final.sources, OUTPUT_FILE, { fontsDir: options.fontsDir }), dir, FSIZE_BYTES);
   await release(plan.final.sources);
   return { plan: "multi", weight: plan.weight, passes: plan.passes.map((p) => p.id) };
+}
+
+/**
+ * Runs `work` on `items`, at most `width` at a time, in list order. The first failure aborts the `stop` signal the
+ * others got (their ffmpeg runs are cancelled), waits for them to end, and is thrown; later failures are dropped.
+ */
+export async function together<T>(items: readonly T[], width: number, work: (item: T, stop: AbortSignal) => Promise<void>): Promise<void> {
+  const stop = new AbortController();
+  let next = 0;
+  let failure: { error: unknown } | null = null;
+  const lane = async () => {
+    while (!failure && next < items.length) {
+      const item = items[next++];
+      try {
+        await work(item, stop.signal);
+      } catch (error) {
+        if (!failure) {
+          failure = { error };
+          stop.abort(error);
+        }
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(width, items.length)) }, lane));
+  if (failure) throw (failure as { error: unknown }).error;
 }
 
 function scopeOf(job: ClaimedRender): ClientScope {

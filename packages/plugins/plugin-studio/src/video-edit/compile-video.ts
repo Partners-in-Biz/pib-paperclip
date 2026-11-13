@@ -68,8 +68,11 @@ export const ENCODER_ARGS = ["-c:v", "libx264", "-profile:v", "high", "-preset",
  * 42.4 dB against the single pass and crf 4 gave 42.8 (bar: 42), while qp 0 gives identical frames (PAR-10465). Cost at
  * 1080x1920 30 fps: 2 to 3 MiB/s ungraded, about 14 MB/s graded (the vignette adjust dithers every pixel), so a 180 s
  * full-length pass is up to about 2.5 GB. The render pipeline passes `INTERMEDIATE_FSIZE_BYTES` (render-pipeline.ts).
+ * Preset `ultrafast` (PAR-11217): qp 0 is lossless at any preset, so the frames are the same, and on 30 s of noisy
+ * 1080x1920 it took 49 CPU-s to encode and 14 to decode against 90 and 34 for `veryfast` (CAVLC, no CABAC), for a file
+ * about 27% bigger (20 MB/s there: 3.6 GB for 180 s, under the 6 GiB cap).
  */
-export const INTERMEDIATE_ENCODER_ARGS = ["-c:v", "libx264", "-preset", "veryfast", "-qp", "0", "-pix_fmt", "yuv420p"] as const;
+export const INTERMEDIATE_ENCODER_ARGS = ["-c:v", "libx264", "-preset", "ultrafast", "-qp", "0", "-pix_fmt", "yuv420p"] as const;
 export const DECODE_THREADS = 2;
 export const FILTER_THREADS = 4;
 export const ENCODE_THREADS = 4;
@@ -256,6 +259,23 @@ class Graph {
     ];
   }
 
+  /**
+   * Pre-fit (PAR-11217): an overlay that is keyed or graded and only shrinks on its way to the frame is scaled to its
+   * fitted size first, so the key and grade run on the pixels it shows (a PiP at scale 0.33 is about 1/9 of the source:
+   * the full-size key and despill alone cost about 3 CPU-seconds per second of 1080x1920). The step is the same fit
+   * `shape` does, capped at the source size (`min(iw,..)`): a downscale lands on exactly the size `shape` would give,
+   * so `shape`'s own scale passes through; a source at or under its fitted size is not resized (an odd side drops one
+   * pixel to stay even). Not with a crop or rotation (they change the box before the fit), scale or rotate keys (the size
+   * changes per frame) or blur (its sigma is set at render width, `grade`). `[]` otherwise.
+   */
+  private prefit(clip: MediaClip): string[] {
+    if (!clip.chromaKey && !graded(clip)) return [];
+    const t = clip.transform;
+    if (t.rotate !== 0 || hasCrop(t) || reshapes(clip) || (clip.adjust?.blur ?? 0) > 0) return [];
+    const { width, height } = this.doc.project;
+    return [`scale=w='min(iw,${num(width * t.scale)})':h='min(ih,${num(height * t.scale)})':force_original_aspect_ratio=decrease:force_divisible_by=2`];
+  }
+
   private crop(t: Transform): string[] {
     if (!hasCrop(t)) return [];
     const { left, top, right, bottom } = t.crop;
@@ -439,7 +459,7 @@ class Graph {
     const length = clipDuration(clip);
     // Frames carry timeline time here, so the clip's local 0 is at `clip.start`.
     const shape = reshapes(clip) ? this.keyedShape(clip, clip.start) : [...this.shape(clip.transform), ...this.frame(clip)];
-    const steps = [...this.timing(clip, kind, clip.start), ...this.key(clip, kind), ...this.grade(clip, kind, Boolean(clip.chromaKey)), ...shape];
+    const steps = [...this.timing(clip, kind, clip.start), ...this.prefit(clip), ...this.key(clip, kind), ...this.grade(clip, kind, Boolean(clip.chromaKey)), ...shape];
     if (clip.fadeIn > 0) steps.push(`fade=t=in:st=${num(clip.start)}:d=${num(clip.fadeIn)}:alpha=1`);
     if (clip.fadeOut > 0) steps.push(`fade=t=out:st=${num(clip.start + length - clip.fadeOut)}:d=${num(clip.fadeOut)}:alpha=1`);
     steps.push(...this.opacity(clip, clip.start));
