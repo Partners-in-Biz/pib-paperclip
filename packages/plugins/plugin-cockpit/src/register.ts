@@ -86,6 +86,8 @@ import { registerW1cPolicy } from "./register-w1c-policy.js";
 import { riskTierCloseCheck } from "./register-w1c-done.js";
 import { sweepAskDeadlines } from "./register-w1c-deadlines.js";
 import { ownerDigestTick, registerOwnerDigest } from "./digest.js";
+import { paperTick, registerPaper, runPaperTool } from "./paper.js";
+import { PAPER_TOOL_NAME_SET } from "./paper-tool-declarations.js";
 
 /** The Setup plugin's event carrying its one setup count (`setup.summary`). */
 export const SETUP_SUMMARY_EVENT = "setup.summary";
@@ -222,6 +224,7 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
   // The owner's standing-approval policy: written only by the owner, through these two actions.
   registerW1cPolicy(env);
   registerOwnerDigest(env);
+  registerPaper(env);
   // The Browser tab: the pib-browser logins, read from the status file (owner company only).
   registerBrowserStatus(env);
 
@@ -599,6 +602,13 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
     } catch (error) {
       ctx.logger.warn("Owner digest: the sweep failed", { error: message(error) });
     }
+    // The Daily Paper rides on it too: the evening edition's task at its time, and a compiled edition when none arrived.
+    try {
+      const paper = await paperTick(env);
+      if (paper.requested || paper.compiled || paper.failed) ctx.logger.info("Daily Paper", paper);
+    } catch (error) {
+      ctx.logger.warn("Daily Paper: the sweep failed", { error: message(error) });
+    }
   });
 
   registerMemoryActions(env);
@@ -681,6 +691,8 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
         ? await runMemoryTool(env, tool.name, params, run)
         : ACCESS_TOOL_SET.has(tool.name)
           ? await runAccessTool(env, tool.name, params, run)
+        : PAPER_TOOL_NAME_SET.has(tool.name)
+          ? await runPaperTool(env, tool.name, params, run)
         : AGENT_TOOL_NAMES.has(tool.name)
           ? await runAgentTool(env, tool.name, params, run)
           : AGENT_READ_TOOL_NAMES.has(tool.name)

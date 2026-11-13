@@ -40,6 +40,13 @@
           "by": "Delivery Lead",
           "at": "2026-11-04",
           "expires": "2026-12-04"
+        },
+        {
+          "hash": "9464f5b61ab1870c",
+          "reason": "0.27.0 (the Daily Paper) changes only step 10 of the daily review and replaces the daily brief format section with The Daily Paper. None of the five golden scenarios reads those parts. Waived so the release can ship; re-baseline from a live run before expiry.",
+          "by": "Owner session",
+          "at": "2026-11-13",
+          "expires": "2026-12-13"
         }
       ]
     },
