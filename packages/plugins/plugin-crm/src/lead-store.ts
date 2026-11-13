@@ -7,7 +7,7 @@
 import { randomUUID } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { asRecord, table } from "./db.js";
-import { LEAD_INTAKES, SOURCE_STATUSES, type LeadIntake, type SourceStatus } from "./lead-form.js";
+import { LEAD_INTAKES, SOURCE_STATUSES, emailHash, type LeadIntake, type SourceStatus } from "./lead-form.js";
 import type { ClientKind } from "./refs.js";
 
 function iso(value: unknown): string | null {
@@ -321,6 +321,15 @@ export async function purgeHits(ctx: PluginContext, beforeIso: string): Promise<
   await ctx.db.execute(`UPDATE ${table(ctx, "lead_captures")} SET ip_hash = NULL WHERE ip_hash IS NOT NULL AND created_at < $1::timestamptz`, [beforeIso]);
 }
 
+/** Capture rows of a signup that was never confirmed (outcome `pending_confirmation` or `confirmation_failed`) older than `beforeIso`. Any other outcome stays. */
+export async function expireUnconfirmedCaptures(ctx: PluginContext, beforeIso: string): Promise<number> {
+  const res = await ctx.db.execute(
+    `DELETE FROM ${table(ctx, "lead_captures")} WHERE outcome = ANY(ARRAY(SELECT jsonb_array_elements_text($1::jsonb))) AND created_at < $2::timestamptz`,
+    [JSON.stringify(["pending_confirmation", "confirmation_failed"]), beforeIso],
+  );
+  return res?.rowCount ?? 0;
+}
+
 // ---------------------------------------------------------------------------
 // Captures
 // ---------------------------------------------------------------------------
@@ -554,6 +563,16 @@ export async function eraseFormData(ctx: PluginContext, companyId: string, email
   if (contactIds.length) {
     const res = await ctx.db.execute(`DELETE FROM ${table(ctx, "lead_captures")} WHERE company_id = $1 AND contact_id = ANY(ARRAY(SELECT jsonb_array_elements_text($2::jsonb)))`, [companyId, JSON.stringify([...contactIds])]);
     captures += res?.rowCount ?? 0;
+  }
+  // A newsletter signup nobody confirmed has a capture row and no contact: reach it by the keyed hash of the address in its key.
+  const { ipSalt } = await import("./lead-capture.js");
+  const hashes = [...new Set([emailHash(address, await ipSalt(ctx)), emailHash(address)])];
+  for (const source of await listLeadSources(ctx, companyId)) {
+    for (const hash of hashes) {
+      const prefix = `form:${source.id}:${hash}:`.replace(/[\\%_]/g, "\\$&");
+      const res = await ctx.db.execute(`DELETE FROM ${table(ctx, "lead_captures")} WHERE company_id = $1 AND key LIKE $2`, [companyId, `${prefix}%`]);
+      captures += res?.rowCount ?? 0;
+    }
   }
   const consent = await ctx.db.execute(`DELETE FROM ${table(ctx, "consent_records")} WHERE company_id = $1 AND email = $2`, [companyId, address]);
   const leads = await ctx.db.execute(`DELETE FROM ${table(ctx, "client_leads")} WHERE company_id = $1 AND source = 'form' AND email = $2`, [companyId, address]);
