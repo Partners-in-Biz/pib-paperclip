@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { COEFFS, despillRgb, keyCoverage, keyDistance, rgbToYuv, type Rgb } from "../src/video-edit/chroma.js";
 import { normalizeEdit, type ChromaKey } from "../src/video-edit/timeline.js";
 import { buildPreviewPlan } from "../src/ui/editor/preview-plan.js";
-import { chromaUniforms, createChromaGl, FRAGMENT_SHADER, keyPixel, NO_KEY_LABEL, type CanvasLike } from "../src/ui/editor/chroma-gl.js";
+import { chromaUniforms, createChromaGl, FRAGMENT_SHADER, keyPixel, NO_KEY_LABEL, startChromaLoop, type CanvasLike } from "../src/ui/editor/chroma-gl.js";
 
 const GREEN: ChromaKey = { color: "#00B140", similarity: 0.12, blend: 0.08, spill: 0.6 };
 // Deterministic pseudo-random colours (no Math.random: a failure must replay).
@@ -101,8 +101,47 @@ describe("preview chroma key (D3d2): fallback without WebGL", () => {
     expect(player).toContain('{keyed === "none" ? <NoKeyLabel clipId={seg.clipId} /> : null}');
     expect(player).toContain('display: keyed === "none" ? "none" : "block"');
     const layer = readFileSync(new URL("../src/ui/editor/ChromaLayer.tsx", import.meta.url), "utf8");
-    expect(layer).toMatch(/if \(!gl\) \{\s*status\.current\("none"\);/);
-    expect(layer).toContain('"webglcontextlost"');
+    expect(layer).toContain("return startChromaLoop(el, video, () => uniforms.current, (s) => status.current(s));");
+  });
+
+  /** Runs the shipped loop with a fake key and a manual frame clock. */
+  function loop(draw: () => boolean, gl = true) {
+    const status: string[] = [], queued: (() => void)[] = [], cancelled: number[] = [];
+    let disposed = 0;
+    const listeners: Record<string, (e: Event) => void> = {};
+    const canvas = { addEventListener: (n: string, f: (e: Event) => void) => (listeners[n] = f), removeEventListener: () => {} } as unknown as HTMLCanvasElement;
+    const video = { currentTime: 0, seeking: false, paused: false, readyState: 4, videoWidth: 8 } as HTMLVideoElement;
+    const create = () => (gl ? { draw, dispose: () => void disposed++ } : null);
+    const cleanup = startChromaLoop(canvas, video, () => chromaUniforms(GREEN), (s) => status.push(s), { create, raf: (f) => queued.push(f), caf: (id) => cancelled.push(id) });
+    const frame = () => queued.shift()?.();
+    return { status, queued, cancelled, frame, cleanup, listeners, disposed: () => disposed };
+  }
+
+  it("a draw that throws (cross-origin video, SecurityError) stops the loop and reports none", () => {
+    let draws = 0;
+    const l = loop(() => {
+      draws++;
+      if (draws === 3) throw new DOMException("The video element contains cross-origin data, and may not be loaded.", "SecurityError");
+      return true;
+    });
+    l.frame();
+    l.frame();
+    expect(l.status).toEqual(["gl"]);
+    l.frame();
+    expect(l.status).toEqual(["gl", "none"]);
+    expect(l.queued).toHaveLength(0); // no further frame scheduled
+    l.cleanup();
+    expect(l.disposed()).toBe(1);
+  });
+
+  it("no WebGL reports none at once; a lost context stops the loop", () => {
+    expect(loop(() => true, false).status).toEqual(["none"]);
+    const l = loop(() => true);
+    l.frame();
+    l.listeners.webglcontextlost!({ preventDefault: () => {} } as Event);
+    expect(l.status).toEqual(["gl", "none"]);
+    l.frame(); // the frame already queued does nothing
+    expect(l.queued).toHaveLength(0);
   });
 
   it("the plan carries the overlay's key (main track never)", () => {

@@ -197,3 +197,59 @@ export function createChromaGl(canvas: CanvasLike, p: ChromaUniforms): ChromaGl 
     },
   };
 }
+
+export type ChromaStatus = "gl" | "none";
+
+/** The browser hooks the draw loop needs; the tests pass fakes. */
+export interface ChromaLoopDeps {
+  create?: (canvas: HTMLCanvasElement, p: ChromaUniforms) => ChromaGl | null;
+  raf?: (cb: () => void) => number;
+  caf?: (id: number) => void;
+}
+
+/**
+ * Keys `video` onto `canvas` on every new frame and returns the cleanup. Reports "gl" while it draws and "none" (the
+ * caller shows the clip unkeyed under `NO_KEY_LABEL`) when WebGL is missing, the context is lost, or a draw throws.
+ * A draw throws when the video is cross-origin without CORS (a presigned R2 link): WebGL refuses the tainted upload
+ * with a SecurityError on every frame, so the loop stops at the first throw instead of leaving the clip invisible.
+ */
+export function startChromaLoop(canvas: HTMLCanvasElement, video: HTMLVideoElement, uniforms: () => ChromaUniforms, onStatus: (s: ChromaStatus) => void, deps: ChromaLoopDeps = {}): () => void {
+  const { create = createChromaGl, raf = requestAnimationFrame, caf = cancelAnimationFrame } = deps;
+  const gl = create(canvas, uniforms());
+  if (!gl) {
+    onStatus("none");
+    return () => {};
+  }
+  onStatus("gl");
+  // Draw when the frame may have changed: every animation frame while playing, else when time, seek or size moves.
+  let last = "", id = 0, stopped = false;
+  const stop = () => {
+    stopped = true;
+    caf(id);
+  };
+  const tick = () => {
+    if (stopped) return;
+    const u = uniforms();
+    const at = `${video.currentTime}|${video.seeking}|${video.readyState}|${video.videoWidth}|${JSON.stringify(u)}`;
+    try {
+      if ((!video.paused || at !== last) && !video.seeking && gl.draw(video, canvas, u)) last = at;
+    } catch {
+      stop();
+      onStatus("none");
+      return;
+    }
+    id = raf(tick);
+  };
+  id = raf(tick);
+  const lost = (e: Event) => {
+    e.preventDefault();
+    stop();
+    onStatus("none");
+  };
+  canvas.addEventListener("webglcontextlost", lost);
+  return () => {
+    stop();
+    canvas.removeEventListener("webglcontextlost", lost);
+    gl.dispose();
+  };
+}
