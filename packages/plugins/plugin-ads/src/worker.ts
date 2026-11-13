@@ -106,8 +106,9 @@ function requireUser(v: Viewer, what: string): string {
   return v.userId;
 }
 
+/** Before a tool call, a page action or the page load: never waits long for the skill sync (kit `soon`). */
 async function ensureCompany(ctx: PluginContext, companyId: string): Promise<void> {
-  await skillSync?.ensure(companyId).catch(() => undefined);
+  await skillSync?.soon(companyId);
 }
 
 // ── agent tools ─────────────────────────────────────────────────────────────

@@ -166,6 +166,10 @@ The social-content skill gets a **Media studio (pib-media-studio)** section and 
 3. Sync the skills for every company (Setup → Team → Fix skills, or the hourly sweep).
 4. A person sets a client's policy on Social → Posts → **Who approves** when that client should approve their own posts. Nothing changes for any scope until then.
 
+## 0.13.3: the skill sync never holds a call up
+
+src-only. Through `createCompanyBootstrap().ensure`, a tool call, a page action or the page load waits at most 2 s for the managed-skill sync and goes on while it finishes behind it; a failed sync is tried again after 5 minutes, not on every call (kit `soon`, `createSkillSyncGuard`). Before this, each call waited for the host after every worker restart, and on a company with many skills that ran into the host's 30-second limit. The same bounded wait applies to the OAuth route and to each job tick. Only a new company's bootstrap (`company.created`) still waits for the sync.
+
 ## 0.13.2: store-rendered-asset budget
 
 src-only (PAR-10249). `store-rendered-asset` now waits 20 s for the Drive ack (0.11.4 set 8 s as a stopgap under the 10 s cut) and declares `timeoutMs` 25 s, so the gateway no longer cuts it at 10 s.

@@ -422,13 +422,15 @@ const plugin = definePlugin({
     registerRoleWatch(ctx);
     for (const tool of BILLING_TOOLS) {
       ctx.tools.register(tool.name, tool, async (params, run) => {
-        await skillSync?.ensure(run.companyId).catch(() => undefined);
+        // A tool call never waits long for the skill sync (kit `soon`).
+        await skillSync?.soon(run.companyId);
         return runTool(ctx, tool.name, params, run);
       });
     }
     for (const [key, handler] of Object.entries(ACTIONS)) {
       ctx.actions.register(key, async (params, context) => {
-        if (context.companyId && key === "billing.load") await skillSync?.ensure(context.companyId).catch(() => undefined);
+        // The page never waits long for the skill sync (kit `soon`).
+        if (context.companyId && key === "billing.load") await skillSync?.soon(context.companyId);
         return handler(ctx, context, params ?? {});
       });
     }

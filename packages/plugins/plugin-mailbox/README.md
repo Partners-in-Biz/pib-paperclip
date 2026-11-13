@@ -64,6 +64,10 @@ Listens to `plugin.<sender>.mail.send.requested` for every kit `MAIL_SENDERS` pl
 - A retry first looks the message up by its Message-ID, so an attempt Gmail accepted is not sent twice.
 - Over the rate, Gmail down or the account needs reconnecting: nothing is stored and the sender's outbox retries. No connected account, a bad address, an expired attachment link or a message Gmail refuses: `failed` with `permanent: true`. The Sent tab retries by hand.
 
+## 0.9.12: the skill sync never holds a call up
+
+- src-only: a tool call, a page action or the page load waits at most 2 s for the managed-skill sync and goes on while it finishes behind it; a failed sync is tried again after 5 minutes, not on every call (kit `soon`, `createSkillSyncGuard`). Before this, each call waited for the host after every worker restart, and on a company with many skills that ran into the host's 30-second limit (13 Nov 2026: a CRM and Mailbox release rolled back at its smoke test for this).
+
 ## 0.9.11: newsletter send records are blanked after 30 days
 
 - The hourly private-mail job also blanks recipients, subject and request of every send record whose key starts `crm:nl:` and is older than 30 days (the same statement erasure uses). The record stays, so a repeated key is still refused. No migration.

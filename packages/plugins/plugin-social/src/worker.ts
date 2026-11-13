@@ -707,7 +707,7 @@ const plugin = definePlugin({
     // This is the plugin's only issue.updated subscription (a second one would deliver each event twice).
     registerDoneChecks(ctx, SOCIAL_DONE_CHECKS);
     // The one company.created wiring (kit): remembers the company, syncs the skills, checks the weekly routine's stored template.
-    registerCompanyBootstrap(ctx, { ensureResources: ensure });
+    registerCompanyBootstrap(ctx, { ensureResources: (companyId) => bootstrap!.ensure(companyId, { waitForSkills: true }) });
     registerCrmProjection(ctx, ctx.db.namespace);
     // The CRM's client-to-project links: a client's Social issues open in the client's own project (Q1a-12).
     registerClientProjectWatch(ctx);
