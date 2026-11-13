@@ -7,7 +7,8 @@
  * Transitions and keyframes (PAR-8449): inside a transition window both slots play, each in a layer styled by the plan
  * (`PreviewLayers`); the clip inside each layer is placed by its keyframes.
  * Overlay tracks (PAR-10166): each overlay clip under the playhead gets its own `<video>` (`OverlayClip`) above the base,
- * with CSS `mix-blend-mode` for its blend mode and a rounded, bordered picture for its frame.
+ * with CSS `mix-blend-mode` for its blend mode and a rounded, bordered picture for its frame. A keyed clip (PAR-10167)
+ * draws through `ChromaLayer` (WebGL); without WebGL it plays unkeyed under a "preview without key" label.
  */
 import { useEffect, useId, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
 import { useHostContext } from "@paperclipai/plugin-sdk/ui";
@@ -16,6 +17,7 @@ import type { EditorStore } from "./editor-store.js";
 import { assignSlots, blendCss, buildPreviewPlan, clipTransform, containBox, frameAt, layerFrame, overlaysAt, previewGrade, type PreviewFrame, type PreviewGrade, type PreviewLayer, type PreviewSlots } from "./preview-plan.js";
 import { usePreviewUrls } from "../previews.js";
 import { Overlay } from "./Overlay.js";
+import { ChromaLayer, NoKeyLabel, type ChromaStatus } from "./ChromaLayer.js";
 import { audioClips, audioFrameAt, audioMute, audioWindow } from "./audio-track.js";
 
 const fmt = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
@@ -261,6 +263,9 @@ type Size = { width: number; height: number };
  */
 function OverlayClip({ layer, url, z, size, project, playing, onLoaded }: { layer: PreviewLayer; url: string | undefined; z: number; size: Size; project: Size; playing: boolean; onLoaded?: () => void }) {
   const video = useRef<HTMLVideoElement | null>(null);
+  const [videoEl, setVideoEl] = useState<HTMLVideoElement | null>(null);
+  const bindVideo = useRef((el: HTMLVideoElement | null) => { video.current = el; setVideoEl(el); }).current;
+  const [keyStatus, setKeyStatus] = useState<ChromaStatus | null>(null);
   const [source, setSource] = useState<Size | null>(null);
   const filterId = `po${useId().replace(/[^\w-]/g, "")}`;
   const seg = layer.segment;
@@ -278,23 +283,31 @@ function OverlayClip({ layer, url, z, size, project, playing, onLoaded }: { laye
   const fr = size.width > 0 ? layerFrame(seg, layer.scale, region, size, project) : null;
   const blend = blendCss(seg);
   const rounded = fr && fr.radius > 0 ? `inset(${n4(region.y)}px ${n4(size.width - region.x - region.width)}px ${n4(size.height - region.y - region.height)}px ${n4(region.x)}px round ${n4(fr.radius)}px)` : undefined;
+  const picture = { position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "contain", display: "block", clipPath: rounded, filter: grade ? `url(#${filterId})` : undefined } as const;
+  // Keyed: the canvas shows the picture and the video only plays (hidden, still decoding). Until WebGL answers, neither.
+  const keyed = seg.chromaKey ? keyStatus : null;
   return url ? (
-    <div data-overlay-layer={seg.clipId} data-blend={seg.blendMode ?? undefined} style={{ position: "absolute", inset: 0, zIndex: z, opacity: layer.alpha, mixBlendMode: (blend ?? undefined) as never, transform: clipTransform(layer, project), pointerEvents: "none" }}>
-      {grade ? <GradeFilter id={filterId} grade={grade} /> : null}
-      <video
-        ref={video}
-        src={url}
-        data-clip-id={seg.clipId}
-        playsInline
-        preload="auto"
-        onLoadedMetadata={(e) => { setSource({ width: e.currentTarget.videoWidth, height: e.currentTarget.videoHeight }); onLoaded?.(); }}
-        onSeeked={onLoaded}
-        style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "contain", display: "block", clipPath: rounded, filter: grade ? `url(#${filterId})` : undefined }}
-      />
-      {fr && fr.borderWidth > 0 ? (
-        <div data-overlay-border style={{ position: "absolute", left: fr.region.x, top: fr.region.y, width: fr.region.width, height: fr.region.height, boxSizing: "border-box", border: `${n4(fr.borderWidth)}px solid ${fr.borderColor}`, borderRadius: fr.radius }} />
-      ) : null}
-    </div>
+    <>
+      <div data-overlay-layer={seg.clipId} data-blend={seg.blendMode ?? undefined} style={{ position: "absolute", inset: 0, zIndex: z, opacity: layer.alpha, mixBlendMode: (blend ?? undefined) as never, transform: clipTransform(layer, project), pointerEvents: "none" }}>
+        {grade ? <GradeFilter id={filterId} grade={grade} /> : null}
+        <video
+          ref={bindVideo}
+          src={url}
+          data-clip-id={seg.clipId}
+          data-keyed={seg.chromaKey ? (keyed ?? "pending") : undefined}
+          playsInline
+          preload="auto"
+          onLoadedMetadata={(e) => { setSource({ width: e.currentTarget.videoWidth, height: e.currentTarget.videoHeight }); onLoaded?.(); }}
+          onSeeked={onLoaded}
+          style={{ ...picture, opacity: seg.chromaKey && keyed !== "none" ? 0 : undefined }}
+        />
+        {seg.chromaKey ? <ChromaLayer chromaKey={seg.chromaKey} video={videoEl} style={{ ...picture, display: keyed === "none" ? "none" : "block" }} onStatus={setKeyStatus} /> : null}
+        {fr && fr.borderWidth > 0 ? (
+          <div data-overlay-border style={{ position: "absolute", left: fr.region.x, top: fr.region.y, width: fr.region.width, height: fr.region.height, boxSizing: "border-box", border: `${n4(fr.borderWidth)}px solid ${fr.borderColor}`, borderRadius: fr.radius }} />
+        ) : null}
+      </div>
+      {keyed === "none" ? <NoKeyLabel clipId={seg.clipId} /> : null}
+    </>
   ) : null;
 }
 const n4 = (n: number) => String(Math.round(n * 10000) / 10000 || 0);
