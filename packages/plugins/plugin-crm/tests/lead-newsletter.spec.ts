@@ -1,9 +1,10 @@
 /** Newsletter lead sources (intake newsletter), stage 1: the settings, their checks, the hidden confirmation secret, and a webhook that refuses them for now. */
 import { describe, expect, it } from "vitest";
-import { tool } from "./helpers/crm.js";
+import { crmIssues, tool } from "./helpers/crm.js";
 import { bootLeads, delivery, lead, makeSource, makeSourceAsPerson, signedDelivery, type Booted } from "./helpers/leads.js";
-import { handleLeadWebhook } from "../src/lead-capture.js";
+import { handleLeadWebhook, NEWSLETTER_NO_SECRET } from "../src/lead-capture.js";
 import { parseApplyTags, parseConfirmUrl } from "../src/lead-newsletter.js";
+import { MAX_CONFIRM_URL_LENGTH, MIN_CONFIRM_SECRET_LENGTH } from "../src/newsletter-token.js";
 
 const SITE = "https://remotesaffa.co.za";
 const NEWSLETTER = { label: "Newsletter", intake: "newsletter", siteUrl: SITE, applyTags: ["remotesaffa-subscribers"], confirmUrl: `${SITE}/subscribe/confirm`, confirmFrom: "hello@remotesaffa.co.za", consentText: "Yes, send me the Friday list." };
@@ -30,10 +31,16 @@ describe("creating a newsletter form", () => {
     expect(listed.sources[0]).toMatchObject({ intake: "newsletter" });
   });
 
-  it("an agent cannot create one (it needs a signing secret, which only a person makes), and nothing is stored", async () => {
+  it("an agent creates one: it has a confirmation secret but no signing secret, and the result says a person adds that", async () => {
     const booted = await bootLeads();
-    expect(await refused(makeSource(booted, NEWSLETTER))).toMatch(/newsletter form .* person/);
-    expect(booted.store.lead_sources).toHaveLength(0);
+    const made = await makeSource(booted, NEWSLETTER);
+    const row = booted.store.lead_sources[0]!;
+    expect(row).toMatchObject({ intake: "newsletter", signing_secret: null });
+    expect(String(row.confirm_secret).length).toBeGreaterThanOrEqual(MIN_CONFIRM_SECRET_LENGTH);
+    expect(made.serverSecret).toBeUndefined();
+    expect(made.source).toMatchObject({ serverSecret: { set: false }, newsletter: { confirmKey: { set: true } } });
+    expect(made.next).toBe(NEWSLETTER_NO_SECRET);
+    expect(JSON.stringify([made, booted.harness.logs])).not.toContain(String(row.confirm_secret));
   });
 
   it("refuses missing or bad settings: confirmUrl off the site's exact host, with userinfo, a port, a query or fragment, or on http", async () => {
@@ -49,6 +56,7 @@ describe("creating a newsletter form", () => {
       [{ confirmUrl: "https://remotesaffa.co.za:443/confirm" }, /port/],
       [{ confirmUrl: "https://remotesaffa.co.za/confirm?x=1" }, /query/],
       [{ confirmUrl: "https://remotesaffa.co.za/confirm#t" }, /fragment/],
+      [{ confirmUrl: `${SITE}/${"c".repeat(MAX_CONFIRM_URL_LENGTH - SITE.length)}` }, /at most 100/],
       [{ confirmUrl: "" }, /confirmUrl is required/],
       [{ siteUrl: "" }, /needs siteUrl/],
       [{ confirmFrom: "hello@remotesaffa.co.za, x@y.co" }, /one email address/],
@@ -140,7 +148,18 @@ describe("the lead webhook and a newsletter form", () => {
     expect(booted.store.lead_captures).toHaveLength(0);
     expect(booted.store.consent_records).toHaveLength(0);
     expect(booted.store.contacts).toHaveLength(contacts);
+    expect(booted.store.outbox).toHaveLength(0);
+    expect(await crmIssues(booted.harness)).toHaveLength(0);
     expect(booted.store.lead_sources[0]).toMatchObject({ accepted_count: 0, rejected_count: 0 });
+  });
+
+  it("refuses an unsigned post to an agent-made newsletter form (no signing secret yet), and writes nothing", async () => {
+    const booted = await bootLeads();
+    const made = await makeSource(booted, NEWSLETTER);
+    expect(await refused(handleLeadWebhook(booted.harness.ctx, delivery(lead(made.source.key), { "x-real-ip": "203.0.113.9" })))).toMatch(/not active/);
+    expect(booted.store.lead_captures).toHaveLength(0);
+    expect(booted.store.outbox).toHaveLength(0);
+    expect(await crmIssues(booted.harness)).toHaveLength(0);
   });
 
   it("every existing form still lists as lead and still takes a lead", async () => {

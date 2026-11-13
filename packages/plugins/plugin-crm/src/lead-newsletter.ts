@@ -5,8 +5,11 @@
  */
 import { CrmError } from "./domain.js";
 import { cleanText, isValidEmail } from "./lead-form.js";
+import { DEFAULT_CONFIRM_DAILY_CAP } from "./lead-store.js";
+import { MAX_CONFIRM_URL_LENGTH } from "./newsletter-token.js";
 
-export const NEWSLETTER_LIMITS = { tags: 5, tagLength: 60, confirmUrl: 300, dailyCap: 300 } as const;
+/** `confirmUrl` is short enough that `confirmUrl#t=<token>` stays under the link limit of the token module. */
+export const NEWSLETTER_LIMITS = { tags: 5, tagLength: 60, confirmUrl: MAX_CONFIRM_URL_LENGTH, dailyCap: 300 } as const;
 
 /** The tool parameters only a newsletter source has. */
 export const NEWSLETTER_PARAMS = ["applyTags", "confirmUrl", "confirmFrom", "confirmDailyCap"] as const;
@@ -19,7 +22,7 @@ export interface NewsletterSettings {
 }
 
 /** The settings of every source that is not a newsletter (the CHECK `lead_sources_newsletter` wants them empty). */
-export const NO_NEWSLETTER: NewsletterSettings = { applyTags: [], confirmUrl: null, confirmFrom: null, confirmDailyCap: NEWSLETTER_LIMITS.dailyCap };
+export const NO_NEWSLETTER: NewsletterSettings = { applyTags: [], confirmUrl: null, confirmFrom: null, confirmDailyCap: DEFAULT_CONFIRM_DAILY_CAP };
 
 const given = (params: Record<string, unknown>, key: string) => key in params && params[key] != null && params[key] !== "";
 
@@ -97,6 +100,6 @@ export function newsletterSettings(params: Record<string, unknown>, siteUrl: str
   const applyTags = given(params, "applyTags") ? parseApplyTags(params.applyTags) : current ? parseApplyTags(current.applyTags) : parseApplyTags(undefined);
   const confirmUrl = parseConfirmUrl(given(params, "confirmUrl") ? params.confirmUrl : current?.confirmUrl, siteUrl);
   const confirmFrom = parseConfirmFrom(given(params, "confirmFrom") ? params.confirmFrom : current?.confirmFrom);
-  const confirmDailyCap = given(params, "confirmDailyCap") ? parseDailyCap(params.confirmDailyCap) : current?.confirmDailyCap ?? NEWSLETTER_LIMITS.dailyCap;
+  const confirmDailyCap = given(params, "confirmDailyCap") ? parseDailyCap(params.confirmDailyCap) : current?.confirmDailyCap ?? DEFAULT_CONFIRM_DAILY_CAP;
   return { applyTags, confirmUrl, confirmFrom, confirmDailyCap };
 }

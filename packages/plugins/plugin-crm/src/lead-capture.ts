@@ -64,7 +64,6 @@ import {
   bumpSource,
   captureByKey,
   countHits,
-  DEFAULT_CONFIRM_DAILY_CAP,
   deleteCapture,
   findLeadSourceByKey,
   getLeadSource,
@@ -852,8 +851,9 @@ export interface CreateEndpointOptions {
   canary?: boolean;
 }
 
-const NEWSLETTER_BY_PERSON =
-  "A newsletter form (intake newsletter) takes signed server calls only, so it is created together with its server signing secret: a person does that (serverSecret true, Lead forms card). Put a Needs-you item on it with applyTags, confirmUrl and confirmFrom.";
+/** One line on a newsletter form made without a signing secret (an agent always makes it so): a person adds the secret later. */
+export const NEWSLETTER_NO_SECRET =
+  "This newsletter form has no signing secret yet, so it takes no signups: a person makes one with \"Make a signing secret\" on the client's Lead forms card (CRM, open the client, Lead forms).";
 
 export const SECRET_BY_PERSON =
   "A server signing secret is a credential, so only a person makes it, on the client's Lead forms card (CRM, open the client, Lead forms): it is shown there once. Put a Needs-you item on the client with that card's link; never ask for the secret in chat or put it in an issue.";
@@ -884,7 +884,6 @@ export async function createLeadEndpoint(ctx: PluginContext, viewer: Viewer, par
   const client = clientOf(params);
   const clientName = client ? await requireClient(ctx, viewer, client) : null;
   const intake = await intakeOf(ctx, viewer.companyId, params);
-  if (intake.intake === "newsletter" && !wantsSecret) throw new CrmError(NEWSLETTER_BY_PERSON);
   if (intake.intake !== "newsletter") refuseNewsletterParams(params, intake.intake);
   const label = text(params, "label", 80) ?? (intake.intake === "issue" ? "Report" : intake.intake === "newsletter" ? "Newsletter" : clientName ? `${clientName} website form` : "Website form");
   const existing = (await listLeadSources(ctx, viewer.companyId, client ?? "own")).find((row) => row.status !== "revoked" && row.label.toLowerCase() === label.toLowerCase());
@@ -946,7 +945,9 @@ export async function createLeadEndpoint(ctx: PluginContext, viewer: Viewer, par
     source: view,
     // Shown once, to the person who asked on the card: it is stored in the CRM's own database and never returned again.
     ...(source.signingSecret ? { serverSecret: source.signingSecret, serverSecretNote: "Shown once. The client's server signs requests with it (X-PiB-Signature); keep it in that server's environment, never in a page or a repo." } : {}),
-    next: urls ? "Install the snippet on the client's site (see embed.steps), then send one test enquiry." : NO_URLS_NOTE,
+    next: source.intake === "newsletter"
+      ? (source.signingSecret ? "The client's server signs each signup with the signing secret; there is no browser snippet." : NEWSLETTER_NO_SECRET)
+      : urls ? "Install the snippet on the client's site (see embed.steps), then send one test enquiry." : NO_URLS_NOTE,
   };
 }
 

@@ -34,7 +34,7 @@ const bag = (description: string): JsonSchema => ({ type: "object", additionalPr
 /** The settings of a newsletter lead form (intake newsletter). The secret that signs its confirmation links is never a parameter. */
 const NEWSLETTER_FIELDS = {
   applyTags: textList("Newsletter forms only (required there): 1 to 5 tags of 1 to 60 characters that a subscriber gets once they confirm, e.g. [\"remotesaffa-subscribers\"]."),
-  confirmUrl: text("Newsletter forms only (required there): the https page that confirms a signup, on exactly the host of the form's site (no subdomain, user name, port, ? or #)."),
+  confirmUrl: text("Newsletter forms only (required there): the https page that confirms a signup, at most 100 characters, on exactly the host of the form's site (no subdomain, user name, port, ? or #)."),
   confirmFrom: text("Newsletter forms only (required there): the one address the confirmation mail is sent from, e.g. hello@example.co.za."),
   confirmDailyCap: int("Newsletter forms only: the most confirmation mails the form sends in 24 hours, 1 to 300 (default 300).", { minimum: 1, maximum: 300 }),
 };
@@ -183,7 +183,7 @@ export const CRM_TOOLS: PluginToolDeclaration[] = [
       consentText: text("The wording next to the marketing tick box. Default: the client (or we) may email news and offers, with an unsubscribe line. Must say who will email them."),
       privacyUrl: text("A link to the privacy policy shown under the form."),
       successMessage: text("What the visitor reads after sending (default: Thank you, we will be in touch)."),
-      intake: oneOf(LEAD_INTAKES, "lead (default): each submission is a lead (contact, follow-up, consent). issue: a report form; each submission opens one issue in projectId, email is optional, and no contact or consent record is made. The label starts the issue title (e.g. label Listing report gives Listing report: <subject>). newsletter: a signup list with double opt-in (signed server calls only, so a person creates it with its signing secret on the Lead forms card); needs siteUrl, applyTags, confirmUrl and confirmFrom. The intake never changes after creation."),
+      intake: oneOf(LEAD_INTAKES, "lead (default): each submission is a lead (contact, follow-up, consent). issue: a report form; each submission opens one issue in projectId, email is optional, and no contact or consent record is made. The label starts the issue title (e.g. label Listing report gives Listing report: <subject>). newsletter: a signup list with double opt-in (signed server calls only; an agent may create it, and it takes no signups until a person makes its signing secret on the Lead forms card); needs siteUrl, applyTags, confirmUrl and confirmFrom. The intake never changes after creation."),
       projectId: text("Only with intake issue (required there): the Paperclip project the report issues open in."),
       assigneeAgentId: text("Only with intake issue: the agent each report issue is assigned to. Leave out for unassigned issues in the project."),
       ...NEWSLETTER_FIELDS,
