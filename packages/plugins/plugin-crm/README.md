@@ -81,7 +81,7 @@ PAR-10850 (database, 0.47.0) and PAR-10863 (tools, 0.47.1), plan PAR-10817 stage
 - `create-lead-endpoint` takes `intake: "newsletter"` with `siteUrl`, `applyTags` (1 to 5 tags, 1 to 60 characters), `confirmUrl` (https, exactly the site's host, no userinfo, port, query or fragment), `confirmFrom` (one address) and `confirmDailyCap` (1 to 300). An agent may create one: it has no signing secret (so no signups) until a person makes one with "Make a signing secret" on the Lead forms card (`crm.make-lead-secret`), and the result says so in one line. `confirmUrl` is at most 100 characters (`MAX_CONFIRM_URL_LENGTH`).
 - The plugin makes `confirm_secret`; no parameter sets it and no tool, view or log shows it (only `confirmKey: { set, keyId }`). `rotate-lead-key` with `newConfirmKey: true` replaces it alone (a `confirmSecret` argument is refused, never read as a plain rotation) (open links die; key and signing secret stay).
 - `update-lead-source` changes the settings with the same checks. `intake` never changes to or from `newsletter`. New `consentText` on a newsletter source voids open links, and the result says so.
-- The lead webhook refuses a newsletter source without a signing secret (nothing is written). Signup is 0.48.0 and confirm 0.49.0, below.
+- The lead webhook refuses a newsletter source without a signing secret (nothing is written). Signup is 0.48.0 and confirm 0.50.0, below.
 
 
 ## Newsletter signup (0.48.0)

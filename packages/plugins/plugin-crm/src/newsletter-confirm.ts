@@ -90,8 +90,8 @@ export async function processConfirm(
     recordedAt: input.now.toISOString(),
   });
 
-  // 8. The capture row of the signup, when it is still there, and one activity per link.
-  await confirmCapture(ctx, companyId, leadCaptureKey(source.id, email, new Date(issuedAt), input.salt), contactId);
+  // 8. The capture rows of the signup (the token's day and today's), when still there, and one activity per link.
+  for (const key of new Set([new Date(issuedAt), input.now].map((day) => leadCaptureKey(source.id, email, day, input.salt)))) await confirmCapture(ctx, companyId, key, contactId);
   await insertActivityOnce(ctx, {
     companyId,
     recordType: "contact",
