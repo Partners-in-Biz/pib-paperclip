@@ -11,6 +11,10 @@ const READER = [
   /lifecycle\s+IN\s*\([^)]*'lead'/i,
   /lifecycle\s*(?:===|!==|==|!=)\s*["']lead["']/,
   /["']lead["']\s*(?:===|!==|==|!=)\s*[\w.?]*lifecycle/,
+  /lifecycle\s*<>\s*'lead'/,
+  /lifecycle\s+NOT\s+IN\s*\([^)]*'lead'/i,
+  /lifecycle\s*(?:=|<>|!=)\s*(?:ANY|ALL)\s*\([^)]*\blead\b/i,
+  /\.includes\(\s*[\w.?]*lifecycle\s*\)/,
 ];
 
 /** file -> a text the allowed line must contain. Writers (`lifecycle: "lead"`) are not readers and need no entry. */
@@ -55,6 +59,14 @@ describe("readers of lifecycle lead", () => {
   it("fails on a planted reader", () => {
     const planted = [{ file: "planted.ts", text: "const q = `SELECT 1 FROM c WHERE lifecycle = 'lead'`;" }];
     expect(findReaders(planted)).toHaveLength(1);
+    // The scanner (not a file under src/) is what is exercised here; the planted-file run is in the PR body.
+    for (const line of [
+      "WHERE lifecycle <> 'lead'",
+      "WHERE lifecycle NOT IN ('lead', 'x')",
+      "WHERE lifecycle = ANY('{lead}')",
+      'if (["lead", "prospect"].includes(c.lifecycle)) {}',
+      'if (c.lifecycle != "lead") {}',
+    ]) expect(findReaders([{ file: "planted.ts", text: line }]), line).toHaveLength(1);
     expect(findReaders([{ file: "ok.ts", text: "WHERE lifecycle = 'lead' AND ${NOT_NEWSLETTER_ORIGIN_SQL}" }])).toEqual([]);
   });
 });
