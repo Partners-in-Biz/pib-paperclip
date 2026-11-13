@@ -125,6 +125,8 @@ const reshapes = (clip: MediaClip) => Boolean(keysOf(clip, "scale") || keysOf(cl
 /** Any motion keys: the overlay position is evaluated per frame. */
 const animated = (clip: MediaClip) => reshapes(clip) || Boolean(keysOf(clip, "x") || keysOf(clip, "y"));
 const fadesOpacity = (clip: MediaClip) => Boolean(clip.keyframes?.opacity);
+/** A frame that draws something (radius or border above 0). */
+const hasFrame = (clip: MediaClip) => Boolean(clip.frame && (clip.frame.cornerRadius > 0 || clip.frame.borderWidth > 0));
 /** A look or a colour adjust on the clip (normalizeEdit drops neutral adjust fields, so present means non-neutral). */
 const graded = (clip: MediaClip) => Boolean(clip.look || clip.adjust);
 
@@ -250,6 +252,7 @@ class Graph {
     const s = toFfmpegExpr(keysOf(clip, "scale"), t.scale, offset);
     const scale = `scale=w='max(2,iw*(${s}))':h='max(2,ih*(${s}))':eval=frame`;
     if (!keysOf(clip, "rotate")) return [...this.shape({ ...t, scale: 1 }, "black@0"), ...this.frame(clip), scale];
+    if (hasFrame(clip)) unsupported("frame_with_rotation"); // this branch never reaches frame(), which refuses it too
     const r = toFfmpegExpr(keysOf(clip, "rotate"), t.rotate, offset);
     return [
       "format=yuva420p",
@@ -335,7 +338,7 @@ class Graph {
    */
   private frame(clip: MediaClip): string[] {
     const f = clip.frame;
-    if (!f || (f.cornerRadius <= 0 && f.borderWidth <= 0)) return [];
+    if (!f || !hasFrame(clip)) return [];
     if (clip.transform.rotate !== 0 || keysOf(clip, "rotate")) unsupported("frame_with_rotation");
     const still = frameStill(f);
     const [pic, first] = [this.label("frp"), this.label("frs")];

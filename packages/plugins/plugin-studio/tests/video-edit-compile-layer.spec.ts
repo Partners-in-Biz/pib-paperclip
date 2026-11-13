@@ -53,6 +53,23 @@ describe("blend + frame: compiled graph", () => {
     expect(() => compileVideo(rotated, inputs, "out.mp4")).toThrow(CompileError);
     expect(() => compileVideo(rotated, inputs, "out.mp4")).toThrow(/frame_with_rotation/);
   });
+
+  it("refuses a frame on every compile path that can rotate: static, rotate keys, rotate + scale keys", () => {
+    const rot = [{ t: 0, value: 0 }, { t: 1, value: 45 }];
+    const sc = [{ t: 0, value: 0.5 }, { t: 1, value: 1 }];
+    const cases = [
+      { transform: { rotate: 10 }, frame: { cornerRadius: 20 } },
+      { frame: { cornerRadius: 20, borderWidth: 5 }, keyframes: { rotate: rot } },
+      { frame: { borderWidth: 5 }, keyframes: { rotate: rot, scale: sc } },
+    ];
+    for (const extra of cases) {
+      const d = doc([video(clip("b", "base", 0, 1)), overlay(clip("o", "top", 0, 1, extra))]);
+      expect(() => compileVideo(d, inputs, "out.mp4")).toThrow(/frame_with_rotation/);
+    }
+    // Rotate keys with an empty frame still compile.
+    const empty = doc([video(clip("b", "base", 0, 1)), overlay(clip("o", "top", 0, 1, { frame: { cornerRadius: 0, borderWidth: 0 }, keyframes: { rotate: rot } }))]);
+    expect(graphOf(empty)).not.toContain("geq=");
+  });
 });
 
 describe("frame coverage (shared with the preview)", () => {
