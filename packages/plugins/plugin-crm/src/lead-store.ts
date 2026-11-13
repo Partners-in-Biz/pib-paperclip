@@ -28,6 +28,9 @@ function int(value: unknown): number {
 
 export { LEAD_INTAKES, SOURCE_STATUSES, type LeadIntake, type SourceStatus };
 
+/** Confirmation mails a newsletter source sends in 24 hours unless set otherwise; the column default of migration 023. */
+export const DEFAULT_CONFIRM_DAILY_CAP = 300;
+
 export interface LeadSource {
   id: string;
   companyId: string;
@@ -59,6 +62,16 @@ export interface LeadSource {
   intake: LeadIntake;
   targetProjectId: string | null;
   targetAgentId: string | null;
+  /** Newsletter only: the tags a confirmed subscriber receives. Empty for every other intake. */
+  applyTags: string[];
+  /** Newsletter only: the https page the confirmation link opens, on the host of `siteUrl`. */
+  confirmUrl: string | null;
+  /** Newsletter only: the address the confirmation mail is sent from. */
+  confirmFrom: string | null;
+  /** Newsletter only: signs confirmation links. Made by the plugin; no tool, view, export or log returns it. */
+  confirmSecret: string | null;
+  /** Newsletter only: the most confirmation mails the source sends in 24 hours. */
+  confirmDailyCap: number;
 }
 
 interface SourceRow {
@@ -88,11 +101,22 @@ interface SourceRow {
   intake?: string | null;
   target_project_id?: string | null;
   target_agent_id?: string | null;
+  apply_tags?: unknown;
+  confirm_url?: string | null;
+  confirm_from?: string | null;
+  confirm_secret?: string | null;
+  confirm_daily_cap?: unknown;
 }
 
 const SOURCE_COLUMNS = `id, company_id, client_kind, client_ref, label, site_id, site_url, public_key, previous_key, previous_key_until, signing_secret,
   status, canary, consent_text, privacy_url, success_message, turnstile_site_key, rate_limit_per_hour, accepted_count, rejected_count,
-  last_submission_at, created_by, created_at, intake, target_project_id, target_agent_id`;
+  last_submission_at, created_by, created_at, intake, target_project_id, target_agent_id,
+  apply_tags, confirm_url, confirm_from, confirm_secret, confirm_daily_cap`;
+
+function tagList(value: unknown): string[] {
+  const list = typeof value === "string" ? (() => { try { return JSON.parse(value) as unknown; } catch { return []; } })() : value;
+  return Array.isArray(list) ? list.filter((tag): tag is string => typeof tag === "string") : [];
+}
 
 function mapSource(row: SourceRow): LeadSource {
   return {
@@ -119,9 +143,14 @@ function mapSource(row: SourceRow): LeadSource {
     lastSubmissionAt: iso(row.last_submission_at),
     createdBy: row.created_by ?? null,
     createdAt: iso(row.created_at),
-    intake: row.intake === "issue" ? "issue" : "lead",
+    intake: row.intake === "issue" || row.intake === "newsletter" ? row.intake : "lead",
     targetProjectId: row.target_project_id ?? null,
     targetAgentId: row.target_agent_id ?? null,
+    applyTags: tagList(row.apply_tags),
+    confirmUrl: row.confirm_url ?? null,
+    confirmFrom: row.confirm_from ?? null,
+    confirmSecret: row.confirm_secret ?? null,
+    confirmDailyCap: int(row.confirm_daily_cap) || DEFAULT_CONFIRM_DAILY_CAP,
   };
 }
 
@@ -129,8 +158,9 @@ export async function insertLeadSource(ctx: PluginContext, source: LeadSource): 
   await ctx.db.execute(
     `INSERT INTO ${table(ctx, "lead_sources")}
       (id, company_id, client_kind, client_ref, label, site_id, site_url, public_key, signing_secret, status, canary,
-       consent_text, privacy_url, success_message, turnstile_site_key, rate_limit_per_hour, created_by, intake, target_project_id, target_agent_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`,
+       consent_text, privacy_url, success_message, turnstile_site_key, rate_limit_per_hour, created_by, intake, target_project_id, target_agent_id,
+       apply_tags, confirm_url, confirm_from, confirm_secret, confirm_daily_cap)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21::jsonb, $22, $23, $24, $25)`,
     [
       source.id,
       source.companyId,
@@ -152,6 +182,11 @@ export async function insertLeadSource(ctx: PluginContext, source: LeadSource): 
       source.intake,
       source.targetProjectId,
       source.targetAgentId,
+      JSON.stringify(source.applyTags),
+      source.confirmUrl,
+      source.confirmFrom,
+      source.confirmSecret,
+      source.confirmDailyCap,
     ],
   );
 }
@@ -161,9 +196,13 @@ export async function saveLeadSourceSettings(ctx: PluginContext, source: LeadSou
   await ctx.db.execute(
     `UPDATE ${table(ctx, "lead_sources")}
         SET label = $3, site_id = $4, site_url = $5, status = $6, consent_text = $7, privacy_url = $8, success_message = $9,
-            turnstile_site_key = $10, rate_limit_per_hour = $11, updated_at = now()
+            turnstile_site_key = $10, rate_limit_per_hour = $11, apply_tags = $12::jsonb, confirm_url = $13, confirm_from = $14,
+            confirm_daily_cap = $15, updated_at = now()
       WHERE company_id = $1 AND id = $2`,
-    [source.companyId, source.id, source.label, source.siteId, source.siteUrl, source.status, source.consentText, source.privacyUrl, source.successMessage, source.turnstileSiteKey, source.rateLimitPerHour],
+    [
+      source.companyId, source.id, source.label, source.siteId, source.siteUrl, source.status, source.consentText, source.privacyUrl, source.successMessage, source.turnstileSiteKey, source.rateLimitPerHour,
+      JSON.stringify(source.applyTags), source.confirmUrl, source.confirmFrom, source.confirmDailyCap,
+    ],
   );
 }
 
@@ -184,6 +223,11 @@ export async function saveRotatedKeys(
 /** Replaces a form's signing secret (a person made a new one): the old one stops working at once. The public key is untouched. */
 export async function saveSigningSecret(ctx: PluginContext, companyId: string, id: string, signingSecret: string): Promise<void> {
   await ctx.db.execute(`UPDATE ${table(ctx, "lead_sources")} SET signing_secret = $3, updated_at = now() WHERE company_id = $1 AND id = $2`, [companyId, id, signingSecret]);
+}
+
+/** Replaces a newsletter source's confirmation-link secret: every link already sent stops working at once. Nothing else changes. */
+export async function saveConfirmSecret(ctx: PluginContext, companyId: string, id: string, confirmSecret: string): Promise<void> {
+  await ctx.db.execute(`UPDATE ${table(ctx, "lead_sources")} SET confirm_secret = $3, updated_at = now() WHERE company_id = $1 AND id = $2 AND intake = 'newsletter'`, [companyId, id, confirmSecret]);
 }
 
 export async function getLeadSource(ctx: PluginContext, companyId: string, id: string): Promise<LeadSource | null> {

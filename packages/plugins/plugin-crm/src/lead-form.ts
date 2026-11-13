@@ -17,8 +17,11 @@ export const LEAD_ENDPOINT_KEY = "lead";
 export const SOURCE_STATUSES = ["active", "paused", "revoked"] as const;
 export type SourceStatus = (typeof SOURCE_STATUSES)[number];
 
-/** lead (default): a submission becomes a lead. issue: it opens one issue in a set project (a report), with no contact and no consent record. */
-export const LEAD_INTAKES = ["lead", "issue"] as const;
+/**
+ * lead (default): a submission becomes a lead. issue: it opens one issue in a set project (a report), with no contact and no consent record.
+ * newsletter: a signup confirmed by mail (double opt-in) before anything is written. Set at creation; a source never changes to or from it.
+ */
+export const LEAD_INTAKES = ["lead", "issue", "newsletter"] as const;
 export type LeadIntake = (typeof LEAD_INTAKES)[number];
 
 /** Largest request body the endpoint reads. A real form is a few hundred bytes. */

@@ -212,7 +212,11 @@ export async function boot(options: { store?: Store; config?: Record<string, unk
       activities: { created_at: new Date(NOW).toISOString() },
       contacts: { email_status: "ok", created_at: new Date(NOW).toISOString(), updated_at: new Date(NOW).toISOString() },
       // Column defaults of migration 009 that the inserts rely on.
-      lead_sources: { accepted_count: 0, rejected_count: 0, previous_key: null, previous_key_until: null, last_submission_at: null },
+      // Migration 023 (newsletter intake): every source that is not a newsletter has these values.
+      lead_sources: {
+        accepted_count: 0, rejected_count: 0, previous_key: null, previous_key_until: null, last_submission_at: null,
+        intake: "lead", apply_tags: [], confirm_url: null, confirm_from: null, confirm_secret: null, confirm_daily_cap: 300,
+      },
       client_leads: { phone: null, meta: {}, issue_id: null, outcome: "new", value_minor: null, value_currency: null, outcome_at: null },
       // Column defaults of migration 012 that the counters and the signing flow rely on.
       event_keys: { accepted_count: 0, rejected_count: 0, previous_key: null, previous_key_until: null, last_event_at: null },
