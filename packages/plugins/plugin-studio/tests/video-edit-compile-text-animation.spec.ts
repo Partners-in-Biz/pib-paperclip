@@ -164,10 +164,13 @@ describe.skipIf(!hasLibass)("animated text with real ffmpeg", () => {
       { ...base, id: `a${i}`, font, start: 2 * i + 1, animation: { in: "pop", inDuration: 0.1 } },
     ]))]);
     const got = frames(doc, 2 * fonts.length, fonts.flatMap((_, i) => [Math.round((2 * i + 0.5) * FPS), Math.round((2 * i + 1.5) * FPS)]));
+    // 3 px: above the 0.5 px pixel-centre noise floor, below the smallest calibration term (rounded's lift is 5 px at
+    // fontSize 140, serif's 14.8 px), so dropping the lift or the (winAscent + winDescent) / upem size factor fails.
+    const PX = 3;
     fonts.forEach((font, i) => {
       const [plain, animated] = [ink(got[2 * i]!), ink(got[2 * i + 1]!)];
-      expect(Math.abs(animated.cx - plain.cx), `${font} x`).toBeLessThan(W * 0.01);
-      expect(Math.abs(animated.cy - plain.cy), `${font} y`).toBeLessThan(H * 0.01);
+      expect(Math.abs(animated.cx - plain.cx), `${font} x`).toBeLessThan(PX);
+      expect(Math.abs(animated.cy - plain.cy), `${font} y`).toBeLessThan(PX);
       expect(Math.abs(animated.w / plain.w - 1), `${font} width`).toBeLessThan(0.02);
     });
   }, 300_000);

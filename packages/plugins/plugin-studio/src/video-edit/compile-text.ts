@@ -226,7 +226,11 @@ function fadeAt(t: number, duration: number, fadeIn: number, fadeOut: number): n
   return 1;
 }
 
-/** The ASS document for one animated text clip: one event per phase (entry, rest, exit), each with its own tags. */
+/**
+ * The ASS document for one animated text clip: one event per phase (entry, rest, exit), each with its own tags.
+ * Parity with drawtext is single-line only: libass spaces lines by the win box, which is taller than drawtext's
+ * `line_spacing`, so multi-line animated text sits taller than the same plain clip.
+ */
 export function animatedTextAss(doc: EditDoc, clip: TextClip): string {
   const id = textFont(clip);
   if (Object.keys(clip.keyframes ?? {}).length) throw new CompileError("unsupported_feature", "text_animation_keyframes");
