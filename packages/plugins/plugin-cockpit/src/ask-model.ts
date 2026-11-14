@@ -19,6 +19,17 @@ import { POLICY_CLASSES, type PolicyClass } from "./owner-defaults-model.js";
 export const ASK_KINDS = ["decision", "grant", "money", "legal", "info"] as const;
 export type AskKind = (typeof ASK_KINDS)[number];
 
+/**
+ * A plugin reads issues as a non-member, so under issue privacy a private task reads as null, the same as a missing one
+ * (doc/ISSUE-PRIVACY.md). The Cockpit cannot tell the two apart, so one sentence covers both (PAR-11587).
+ */
+export const UNREADABLE_ISSUE_HINT = "For a private task the Cockpit cannot read, use a native ask_user_questions card on the issue itself.";
+
+/** The ask-owner error for an issue the Cockpit cannot read: missing, or private. */
+export function unreadableIssueMessage(issueId: string): string {
+  return `Issue ${issueId} was not found in this company, or it is a private task the Cockpit cannot read. ${UNREADABLE_ISSUE_HINT} Otherwise pass the issue you are working on (id or identifier, e.g. PIB-23).`;
+}
+
 export const ASK_LIMITS = {
   question: 600,
   why: 300,
