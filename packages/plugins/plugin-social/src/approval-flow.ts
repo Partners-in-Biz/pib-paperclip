@@ -494,7 +494,7 @@ export async function reusedMedia(ctx: PluginContext, companyId: string, post: P
   }
   const rows = await ctx.db.query<{ id: string; body: string; media: unknown; created_at: unknown; experiment_id: string | null }>(
     `SELECT p.id, p.body, p.media, p.created_at, p.experiment_id FROM ${table(ctx, "posts")} p
-      WHERE p.company_id = $1 AND p.id <> $2 AND p.status <> 'draft' AND p.scope = $3 AND ${who}
+      WHERE p.company_id = $1 AND p.id <> $2 AND p.status <> 'draft' AND p.archived_at IS NULL AND p.scope = $3 AND ${who}
         AND p.created_at >= now() - make_interval(days => $4)
       ORDER BY p.created_at DESC LIMIT 300`,
     params,

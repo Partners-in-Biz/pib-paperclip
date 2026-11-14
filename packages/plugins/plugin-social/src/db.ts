@@ -700,6 +700,8 @@ export interface PostRow {
   experiment_arm?: string | null;
   /** The Social agent task that picks a time for this approved post (none when it had a time). */
   schedule_issue_id?: string | null;
+  /** Set when the post is archived (soft delete); null otherwise. */
+  archived_at?: unknown;
   created_at: unknown;
   updated_at: unknown;
 }
@@ -707,7 +709,7 @@ export interface PostRow {
 export const POST_COLS = [
   "id", "company_id", "body", "overrides", "media", "status", "scheduled_at", "scope", "owner_user_id", "client_kind", "client_ref", "client_name",
   "first_comment", "source", "source_ref", "failure_issue_id", "published_at", "error", "created_by_agent_id", "experiment_id", "experiment_arm",
-  "schedule_issue_id", "reply_to_url", "quote_url", "note", "created_at", "updated_at",
+  "schedule_issue_id", "reply_to_url", "quote_url", "note", "archived_at", "created_at", "updated_at",
 ].join(", ");
 
 export function postMedia(row: Pick<PostRow, "media">): MediaRef[] {
@@ -753,6 +755,7 @@ export async function listPosts(ctx: PluginContext, companyId: string, filter: {
   }
   where += scopeClause(filter.scope, params);
   if (!filter.includePersonal) where += orgOnlyClause();
+  where += " AND archived_at IS NULL";
   params.push(Math.min(Math.max(filter.limit ?? 500, 1), 1000));
   return ctx.db.query<PostRow>(
     `SELECT ${POST_COLS} FROM ${table(ctx, "posts")} WHERE ${where} ORDER BY created_at DESC LIMIT $${params.length}`,
@@ -764,7 +767,7 @@ export async function listPosts(ctx: PluginContext, companyId: string, filter: {
 export async function listPersonalPosts(ctx: PluginContext, companyId: string, viewerUserId: string, filter: { status?: string; limit?: number } = {}): Promise<PostRow[]> {
   const params: unknown[] = [companyId];
   const personalFilter = personalScopeClause(viewerUserId, params);
-  let where = `company_id = $1${personalFilter}`;
+  let where = `company_id = $1 AND archived_at IS NULL${personalFilter}`;
   if (filter.status) {
     params.push(filter.status);
     where += ` AND status = $${params.length}`;
@@ -782,6 +785,30 @@ export async function getPost(ctx: PluginContext, companyId: string, id: string)
     [id, companyId],
   );
   return rows[0] ?? null;
+}
+
+/** Full post id from a full id or an unambiguous prefix (the 8-char short id). Null when none or several match. */
+export async function resolvePostId(ctx: PluginContext, companyId: string, idOrPrefix: string): Promise<string | null> {
+  const key = idOrPrefix.trim();
+  if (!key) return null;
+  const exact = await getPost(ctx, companyId, key);
+  if (exact) return exact.id;
+  if (!/^[A-Za-z0-9-]{4,}$/.test(key)) return null;
+  const rows = await ctx.db.query<{ id: string }>(
+    `SELECT id FROM ${table(ctx, "posts")} WHERE company_id = $1 AND id LIKE $2 LIMIT 2`,
+    [companyId, `${key}%`],
+  );
+  return rows.length === 1 ? rows[0].id : null;
+}
+
+/** Sets or clears archived_at. True when a row changed (false: already in that state). */
+export async function setPostArchived(ctx: PluginContext, companyId: string, id: string, archived: boolean): Promise<boolean> {
+  const result = await ctx.db.execute(
+    `UPDATE ${table(ctx, "posts")} SET archived_at = ${archived ? "now()" : "NULL"}, updated_at = now()
+      WHERE id = $1 AND company_id = $2 AND (archived_at IS NULL) = $3::boolean AND status NOT IN ('published', 'partially_published', 'publishing', 'scheduled')`,
+    [id, companyId, archived],
+  );
+  return result.rowCount === 1;
 }
 
 export interface PostWrite {
@@ -1844,7 +1871,7 @@ export async function scopeSummary(ctx: PluginContext, companyId: string, scope:
        (SELECT count(*) FROM ${accounts} WHERE company_id = $1 AND ${w.sql} AND status = 'needs_reconnect') AS needs_reconnect,
        (SELECT count(*) FROM ${posts} WHERE company_id = $1 AND ${w.sql} AND status = 'scheduled'
           AND scheduled_at >= now() AND scheduled_at < now() + interval '7 days') AS scheduled_week,
-       (SELECT count(*) FROM ${posts} WHERE company_id = $1 AND ${w.sql} AND status IN ('failed', 'partially_published')
+       (SELECT count(*) FROM ${posts} WHERE company_id = $1 AND ${w.sql} AND status IN ('failed', 'partially_published') AND archived_at IS NULL
           AND updated_at >= now() - interval '30 days') AS failed,
        (SELECT max(published_at) FROM ${posts} WHERE company_id = $1 AND ${w.sql}) AS last_published`,
     params,

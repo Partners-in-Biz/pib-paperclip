@@ -171,7 +171,7 @@ export async function checkSchedule(issue: DoneCheckIssue, ctx: PluginContext): 
   const scope = scopeKey === "own" ? null : parseClientParam(scopeKey);
   if (scopeKey !== "own" && !scope) return { done: true };
   const approved = await ctx.db.query<{ id: string; body: string }>(
-    `SELECT id, body FROM ${posts} WHERE company_id = $1 AND status = 'approved' AND COALESCE(client_ref, '') = $2 ORDER BY updated_at LIMIT 100`,
+    `SELECT id, body FROM ${posts} WHERE company_id = $1 AND status = 'approved' AND archived_at IS NULL AND COALESCE(client_ref, '') = $2 ORDER BY updated_at LIMIT 100`,
     [issue.companyId, scope?.id ?? ""],
   );
   if (approved.length === 0) return { done: true };

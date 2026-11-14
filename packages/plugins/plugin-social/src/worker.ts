@@ -133,6 +133,7 @@ import {
   updateAccountRecord,
   updatePostRecord,
   unschedulePostRecord,
+  archivePostRecord,
   validatePostRecord,
   type Viewer,
 } from "./service.js";
@@ -231,6 +232,10 @@ async function dispatchTool(ctx: PluginContext, viewer: Viewer, name: string, p:
       return detachDestination(ctx, viewer, p);
     case "request-review":
       return transitionPost(ctx, viewer, requiredString(p, "postId"), "review");
+    case "archive-post":
+      return archivePostRecord(ctx, viewer, p, true);
+    case "unarchive-post":
+      return archivePostRecord(ctx, viewer, p, false);
     case "unschedule-post":
       return unschedulePostRecord(ctx, viewer, p);
     case "schedule-post":

@@ -306,6 +306,18 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
     parametersSchema: schema(["postId", "reason"], { postId: POST_ID, reason: text("Why the post is taken off the schedule") }),
   },
   {
+    name: "archive-post",
+    displayName: "Archive post",
+    description: "Soft-delete a post: it leaves the Cockpit lists and queues and its media is free to reuse. Reversible with unarchive-post. Accepts the full id or the 8-character short id. Archiving twice does nothing. A scheduled post must be unscheduled first; a published post is refused.",
+    parametersSchema: schema(["postId"], { postId: POST_ID }),
+  },
+  {
+    name: "unarchive-post",
+    displayName: "Unarchive post",
+    description: "Bring an archived post back to the lists, in the status it had. Accepts the full id or the 8-character short id. Does nothing if the post is not archived.",
+    parametersSchema: schema(["postId"], { postId: POST_ID }),
+  },
+  {
     name: "bulk-schedule",
     displayName: "Bulk schedule posts",
     description: "Schedule several approved posts at the same time. Returns one result per post.",
