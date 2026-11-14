@@ -33,13 +33,16 @@ import { num as dbNum, table } from "../db.js";
 import { StudioError } from "../errors.js";
 import { assertOwnKey, assetKey, extFor, MAX_ASSET_BYTES, putObject, sha256Hex, type PrivateBucket } from "../storage.js";
 import { compileAudioStem, hasClipAudio } from "./compile-audio.js";
-import { compileVideo, inputKey, type CompiledVideo, type CompileInputs } from "./compile-video.js";
+import { compileVideo, inputKey, sourceKey, type CompiledVideo, type CompileInputs } from "./compile-video.js";
 import { FSIZE_BYTES, runContained, STALL_SEC, TIMEOUT_SEC, type RunOptions, type RunResult } from "./ffmpeg.js";
 import { probeMedia, type ProbeResult } from "./probe.js";
 import { makeProxy, PREVIEW_MIME, previewKeyFor } from "./proxy.js";
 import { planRender, type PlanOptions, type RenderPass } from "./render-plan.js";
 import type { ClaimedRender } from "./render-queue.js";
 import { failureFromRun, RenderFailure, type RenderControl, type RenderExecutor } from "./runner.js";
+import type { StickerRef } from "./sticker-packs.js";
+import { stickerRelPath } from "./sticker-packs.js";
+import { stickerFile } from "./stickers.js";
 import { editDuration, normalizeEdit, type EditDoc } from "./timeline.js";
 import { assertDiskSpace, downloadObjectToWorkdir, MIN_FREE_BYTES, withRenderWorkdir } from "./workdir.js";
 
@@ -56,6 +59,8 @@ export interface PipelineOptions {
   /** Extra options for every contained ffmpeg/ffprobe run (tests point `bins` at fakes). */
   run?: Omit<RunOptions, "tool" | "captureStdout" | "cwd">;
   fontsDir?: string;
+  /** Where the bundled sticker packs are (tests). Default: beside the worker (stickers.ts). */
+  stickersDir?: string;
   statfs?: StatfsFn;
   /** Pass budget overrides (tests). Default: render-plan.ts `PASS_BUDGET` and `AUDIO_WEIGHT`. */
   plan?: Pick<PlanOptions, "passBudget" | "audioWeight">;
@@ -110,6 +115,8 @@ interface InputRow {
   bytes: unknown;
 }
 
+/** The bundled sticker PNGs are 256 px square (stickers/). */
+const STICKER_PX = 256;
 const deterministic = (message: string, code: string) => new RenderFailure(message, "deterministic", code);
 
 /** The (asset, version) pairs the timeline uses, in first-use order. */
@@ -120,6 +127,25 @@ export function editInputs(doc: EditDoc): Array<{ assetId: string; version: numb
       if (typeof clip.assetId !== "string" || typeof clip.version !== "number") continue;
       const k = inputKey(clip.assetId, clip.version);
       if (!seen.has(k)) seen.set(k, { assetId: clip.assetId, version: clip.version });
+    }
+  }
+  return [...seen.values()];
+}
+
+/** The bundled stickers the timeline uses, in first-use order, one per (pack, id). Only manifest members reach the render. */
+export function editStickers(doc: EditDoc): StickerRef[] {
+  const seen = new Map<string, StickerRef>();
+  for (const track of doc.tracks) {
+    for (const clip of track.clips as Array<{ sticker?: unknown }>) {
+      if (!clip.sticker) continue;
+      const ref = clip.sticker as StickerRef;
+      try {
+        stickerRelPath(ref); // a ref outside the closed manifest fails here, before any path exists
+      } catch {
+        throw deterministic("A sticker in this edit is not in the bundled packs.", "unknown_sticker");
+      }
+      const k = sourceKey({ sticker: ref });
+      if (!seen.has(k)) seen.set(k, { pack: ref.pack, id: ref.id });
     }
   }
   return [...seen.values()];
@@ -371,6 +397,9 @@ export function createRenderExecutor(options: PipelineOptions = {}): RenderExecu
           }
           sources[inputKey(input.assetId, input.version)] = { path, kind: input.kind, hasAudio, ...dims };
         }
+
+        // Bundled stickers are read in place (never copied, never from a doc string): a PNG each, no download, no probe.
+        for (const ref of editStickers(doc)) sources[sourceKey({ sticker: ref })] = { path: stickerFile(ref, options.stickersDir), kind: "image", width: STICKER_PX, height: STICKER_PX };
 
         checkpoint();
         const withAudio = hasClipAudio(doc, sources);

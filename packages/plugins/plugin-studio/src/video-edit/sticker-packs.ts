@@ -58,3 +58,18 @@ export function stickerIds(pack: StickerPack): string[] {
 export function isSticker(pack: unknown, id: unknown): pack is StickerPack {
   return typeof pack === "string" && (STICKER_PACKS as readonly string[]).includes(pack) && typeof id === "string" && Object.hasOwn(MANIFEST[pack as StickerPack], id);
 }
+
+/** pack -> id -> file name, built once from the manifest. The only source of a sticker's file name. */
+const FILES: ReadonlyMap<StickerPack, ReadonlyMap<string, string>> = new Map(
+  STICKER_PACKS.map((pack) => [pack, new Map(stickerIds(pack).map((id) => [id, `${id}.png`]))]),
+);
+
+/**
+ * The `<pack>/<id>.png` path (relative, `/` separated) a sticker is served at, by map lookup in the manifest; throws
+ * for anything not in it. Pure, so the render (`stickers.ts`) and the browser preview build the same path from it.
+ */
+export function stickerRelPath(ref: unknown): string {
+  const r = ref as { pack?: unknown; id?: unknown } | null | undefined;
+  if (!r || !isSticker(r.pack, r.id)) throw new Error("Unknown sticker.");
+  return `${r.pack}/${FILES.get(r.pack as StickerPack)!.get(r.id as string)!}`;
+}
