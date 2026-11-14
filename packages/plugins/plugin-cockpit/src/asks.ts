@@ -17,7 +17,7 @@
 import type { PluginEvent, ToolRunContext } from "@paperclipai/plugin-sdk";
 import { askAnsweredKey, askCardProblems, askEffectComment, askEffectKeys, emitAskAnswered, runAskEffect, type AskAnswered, type AskEffectResult } from "@partnersinbiz/pib-plugin-kit";
 import { recordActivity } from "./activity.js";
-import { askComment, AskError, ASK_LIMITS, describeEffect, INTERNAL_EFFECTS, parseAskInput, wakeReason, type AskEffect, type AskInput, type AskKind, type AskView } from "./ask-model.js";
+import { askComment, AskError, ASK_LIMITS, describeEffect, INTERNAL_EFFECTS, parseAskInput, unreadableIssueMessage, wakeReason, type AskEffect, type AskInput, type AskKind, type AskView } from "./ask-model.js";
 import { readDecisionRights, routeAskToSeat } from "./decision-rights.js";
 import { askText, classify, DECISION_CLASS_LABEL, DEFAULT_APPLY_HOURS, defaultAnswer, HARD_STOPS, routeAsk, type HardStopKey } from "./decision-rights-model.js";
 import { crmClient } from "./clients.js";
@@ -355,6 +355,14 @@ export interface AskOwnerResult {
   autoApply?: { answer: string; at: string } | null;
 }
 
+/**
+ * An open ask whose issue reads as null (deleted, or a private task the Cockpit cannot read) is treated as closed or cancelled.
+ * One log line names the ask and the issue so the close can be traced (PAR-11587).
+ */
+export function logUnreadableAskIssue(env: Env, ask: Pick<AskRow, "id" | "issueId" | "companyId">, where: string): void {
+  env.ctx.logger.info("ask-owner: the ask's issue could not be read (missing, or a private task); treated as closed", { askId: ask.id, issueId: ask.issueId, companyId: ask.companyId, where });
+}
+
 /** The tool. Throws AskError with a message the agent can act on. */
 export async function askOwner(env: Env, run: Pick<ToolRunContext, "agentId" | "runId" | "companyId">, raw: Record<string, unknown>): Promise<AskOwnerResult> {
   const companyId = run.companyId;
@@ -369,7 +377,7 @@ export async function askOwner(env: Env, run: Pick<ToolRunContext, "agentId" | "
   const problems = askCardProblems({ kind: input.kind, links: input.links, steps: input.steps, effect: input.effect });
   if (problems.length > 0) throw new AskError(`The question is not ready to send:\n- ${problems.join("\n- ")}`);
   const issue = await env.ctx.issues.get(input.issueId, companyId).catch(() => null);
-  if (!issue) throw new AskError(`Issue ${input.issueId} was not found in this company. Pass the issue you are working on (id or identifier, e.g. PIB-23).`);
+  if (!issue) throw new AskError(unreadableIssueMessage(input.issueId));
   if (CLOSED.has(String(issue.status))) throw new AskError(`Issue ${issue.identifier ?? issue.id} is closed. Ask on an open issue: the one waiting for the answer.`);
   const now = env.now().toISOString();
 
@@ -598,6 +606,7 @@ async function applyAnswer(env: Env, ask: AskRow, source: ApplyAnswerSource): Pr
   }
 
   const issue = await env.ctx.issues.get(ask.issueId, ask.companyId).catch(() => null);
+  if (!issue) logUnreadableAskIssue(env, ask, "answer");
   const closedIssue = !issue || CLOSED.has(String(issue.status));
   // For owner path, preserve original status logic. For policy, always close with "answered"
   const status = source.kind === "policy"
@@ -721,6 +730,7 @@ export async function settleEffect(env: Env, ask: AskRow, result: Pick<AskEffect
     agentId: ask.returnAgentId,
   }).catch(() => false);
   const issue = await env.ctx.issues.get(ask.issueId, ask.companyId).catch(() => null);
+  if (!issue) logUnreadableAskIssue(env, ask, "effect");
   if (!issue || CLOSED.has(String(issue.status))) return true;
   if (ask.source === "cockpit" && (result.status === "applied" || result.status === "already_applied")) {
     await env.ctx.issues.update(ask.issueId, { status: "done" }, ask.companyId).catch((error) => env.ctx.logger.info("ask-owner: the finished question was not closed", { askId: ask.id, error: message(error) }));
@@ -824,6 +834,7 @@ export async function onAskComment(env: Env, event: Pick<PluginEvent, "companyId
 async function settleByIssue(env: Env, ask: AskRow): Promise<"resolved" | "cancelled" | "open"> {
   const issue = await env.ctx.issues.get(ask.issueId, ask.companyId).catch(() => null);
   const now = env.now().toISOString();
+  if (!issue) logUnreadableAskIssue(env, ask, "issue-update");
   if (!issue || issue.status === "cancelled") {
     await closeAsk(env, ask, { status: "cancelled" }, now);
     return "cancelled";

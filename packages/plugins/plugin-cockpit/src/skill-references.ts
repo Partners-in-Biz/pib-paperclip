@@ -14,6 +14,7 @@ import { CLARITY_PENALTY, CREATIVE_PASS_SCORE, CREATIVE_RUBRIC_WEIGHTS, HOOK_MAX
 import { PLUGIN_KEY } from "./constants.js";
 import { EVAL_TOOL_NAMES } from "./eval-tool-declarations.js";
 import { OPS_TOOL_NAMES } from "./ops-tool-declarations.js";
+import { UNREADABLE_ISSUE_HINT } from "./ask-model.js";
 import { TOOL_NAMES } from "./tools.js";
 
 const T = (name: string) => `\`${PLUGIN_KEY}:${name}\``;
@@ -309,6 +310,8 @@ The Visual QA overflow gate for UI changes stays as it is. For outward work, cap
 export const ASKING_REFERENCE = `# Asking the owner so the answer does something
 
 ${T(TOOL_NAMES.askOwner)} asks once per issue. Every question carries a link to the exact screen where the owner acts (for a plain decision, the issue itself) and, for a grant, the steps. A question without them is refused with what is missing.
+
+The Cockpit reads issues as a non-member, so it cannot read a private task. An ask refused as "not found in this company, or a private task the Cockpit cannot read" is not worth a retry. ${UNREADABLE_ISSUE_HINT}
 
 ## With an effect
 
