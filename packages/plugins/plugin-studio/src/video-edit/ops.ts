@@ -24,11 +24,13 @@
  * - `reorder` sets the order of all tracks at once (first track is the bottom layer) and moves no clips; `moveTrack`
  *   moves one track to `toIndex` (0..tracks-1, the others keep their order). Its undo is `moveTrack` back to the old
  *   index (`moveTrackUndo`). `removeTrack` removes the track with its clips.
- * - Schema v5: on overlay clips `setProps` `sticker {pack, id}` swaps the source to a bundled sticker (assetId and
- *   version go) and `assetId` swaps it back (sticker goes); a sticker clip can't move to the video track. `split`,
- *   `trim` and `move` between overlay tracks work on stickers.
+ * - Schema v5: `setProps` on video and overlay clips sets `effects` (the list replaces the clip's; [] or null removes
+ *   them). On overlay clips `sticker {pack, id}` swaps the source to a bundled sticker (assetId and version go) and
+ *   `assetId` swaps it back (sticker goes); a sticker clip can't move to the video track. On text clips `animation` is
+ *   merged per field like `look` (`{in: null}` removes the entry side; `animation: null` removes both). `split` keeps
+ *   the entry animation on the left part and the exit on the right, each shortened to fit; `trim` works on stickers.
  */
-import { clipDuration, EditError, KEYFRAME_PROPS, LIMITS, normalizeEdit, type Clip, type EditDoc, type EditErrorReason, type Keyframe, type Keyframes, type Track, type TrackKind, type Transition } from "./timeline.js";
+import { clipDuration, EditError, KEYFRAME_PROPS, LIMITS, normalizeEdit, type Clip, type EditDoc, type EditErrorReason, type Keyframe, type Keyframes, type TextAnimation, type Track, type TrackKind, type Transition } from "./timeline.js";
 
 export const MAX_OPS = 500;
 export const OP_NAMES = ["addClip", "split", "trim", "move", "delete", "reorder", "moveTrack", "setProps", "addTrack", "removeTrack", "setProject"] as const;
@@ -58,10 +60,10 @@ export class OpError extends EditError {
 const SOURCE_PROPS = ["assetId", "version", "in", "out", "start", "speed", "volume", "fadeIn", "fadeOut"];
 /** What `setProps` may change, per track kind. `id` never changes: delete and add instead. */
 const PROPS: Record<TrackKind, readonly string[]> = {
-  video: [...SOURCE_PROPS, "transform", "transitionIn", "keyframes", "adjust", "look"],
-  overlay: [...SOURCE_PROPS, "sticker", "transform", "transitionIn", "keyframes", "adjust", "look", "blendMode", "chromaKey", "frame"],
+  video: [...SOURCE_PROPS, "transform", "transitionIn", "keyframes", "adjust", "look", "effects"],
+  overlay: [...SOURCE_PROPS, "sticker", "transform", "transitionIn", "keyframes", "adjust", "look", "effects", "blendMode", "chromaKey", "frame"],
   audio: [...SOURCE_PROPS, "keyframes"],
-  text: ["text", "start", "duration", "font", "color", "fontSize", "fadeIn", "fadeOut", "transform", "transitionIn", "keyframes"],
+  text: ["text", "start", "duration", "font", "color", "fontSize", "fadeIn", "fadeOut", "transform", "transitionIn", "keyframes", "animation"],
   caption: ["start", "style", "words"],
 };
 
@@ -122,7 +124,12 @@ function fitFades(clip: Clip, length: number): Clip {
   if (c.transitionIn && c.transitionIn.duration > length) c.transitionIn = { ...c.transitionIn, duration: length };
   return c;
 }
-
+/** A text clip's animation for one part of a split: `keep` is the side the part still has, shortened to `length`. */
+function splitAnimation(animation: TextAnimation | undefined, keep: "in" | "out", length: number): { animation?: TextAnimation } {
+  const preset = animation?.[keep];
+  if (!preset) return { animation: undefined };
+  return { animation: { [keep]: preset, [`${keep}Duration`]: Math.min(animation[`${keep}Duration`] ?? length, length) } };
+}
 
 /** How the move from one key to the next runs (the earlier key's ease), 0..1 -> 0..1; `hold` jumps at the next key. */
 const EASE: Record<Keyframe["ease"], (p: number) => number> = {
@@ -189,8 +196,8 @@ function split(doc: EditDoc, o: Args, i: number): void {
     right = { ...clip, id: newId, start: at, words: after.map((w) => ({ ...w, start: ms(w.start - offset), end: ms(w.end - offset) })) };
   } else if ("duration" in clip) {
     const rest = ms(end - at);
-    left = fitFades({ ...clip, duration: offset, fadeOut: 0, ...fitKeys(clip.keyframes, 0, offset, { end: true }, i) }, offset);
-    right = fitFades({ ...clip, id: newId, start: at, duration: rest, fadeIn: 0, transitionIn: null, ...fitKeys(clip.keyframes, offset, rest, { start: true }, i) }, rest);
+    left = fitFades({ ...clip, duration: offset, fadeOut: 0, ...fitKeys(clip.keyframes, 0, offset, { end: true }, i), ...splitAnimation(clip.animation, "in", offset) }, offset);
+    right = fitFades({ ...clip, id: newId, start: at, duration: rest, fadeIn: 0, transitionIn: null, ...fitKeys(clip.keyframes, offset, rest, { start: true }, i), ...splitAnimation(clip.animation, "out", rest) }, rest);
   } else {
     const cut = ms(clip.in + offset * clip.speed);
     if (cut <= clip.in || cut >= clip.out) fail(i, "out_of_range", "at", "is too close to the clip's edge at this speed.");
@@ -314,6 +321,7 @@ function run(doc: EditDoc, raw: unknown, i: number): void {
         delete swap.version;
       }
       if (props.assetId !== undefined && props.assetId !== null && props.sticker === undefined) delete swap.sticker;
+      if ("animation" in props && "text" in clip && record(props.animation) && clip.animation) (next as typeof clip).animation = { ...clip.animation, ...record(props.animation) };
       // adjust and look merge into what the clip has; null removes them (normalizeEdit checks the result).
       if ("in" in clip && "transform" in clip) {
         const media = next as typeof clip;
