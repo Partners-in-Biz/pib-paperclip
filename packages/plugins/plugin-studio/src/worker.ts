@@ -8,6 +8,7 @@ import { briefDoc } from "./canvas-brief.js";
 import { applyOpsAction, cancelRenderAction, createEditAction, deleteEditAction, getEditAction, listEditsAction, listVersionsAction, renderAction, restoreVersionAction, saveVersionAction, renderStatusAction } from "./video-edit/actions.js";
 import { captionClipAction } from "./video-edit/auto-caption.js";
 import { detectBeatsAction } from "./video-edit/beats.js";
+import { cutToBeatAction } from "./video-edit/cut-to-beat.js";
 import { createShare, listShares, refreshShares, revokeShare } from "./canvas-share.js";
 import { discardGive, prepareGive, recordGive } from "./give.js";
 import { reviewAsset } from "./review.js";
@@ -465,6 +466,10 @@ const plugin = definePlugin({
       return captionClipAction(ctx, me.companyId, objectParams(params), { userId: me.userId });
     });
     action("video-edit-detect-beats", async (params, context) => detectBeatsAction(ctx, (await person(context)).companyId, objectParams(params)));
+    action("video-edit-cut-to-beat", async (params, context) => {
+      const me = await videoEditor(context);
+      return cutToBeatAction(ctx, me.companyId, objectParams(params), { userId: me.userId });
+    });
     action("video-edit-voiceover", async (params, context) => {
       const me = await videoEditor(context);
       return voiceoverAction(ctx, me.companyId, objectParams(params), { userId: me.userId });
