@@ -6,7 +6,7 @@
  * SEO's own get-playbook, propose-playbook-change, decide-playbook-change
  * remain on SEO's playbook tables (013) and continue to work on sprint playbooks.
  */
-import type { PluginContext, ToolRunContext } from "@paperclipai/plugin-sdk";
+import type { PluginContext, ToolResult, ToolRunContext } from "@paperclipai/plugin-sdk";
 import {
   AUTOPILOT_MODES,
   createGrowthStore,
@@ -364,3 +364,15 @@ export function registerKitGrowthTools(ctx: PluginContext): void {
   registerGrowthTools({ ...ctx, tools } as typeof ctx, seoGrowthToolsHost(ctx));
 }
 
+/** Registers every SEO tool the kit does not serve (incl. the three native playbook tools), then the kit Growth tools. */
+export function registerSeoTools(
+  ctx: PluginContext,
+  tools: ReadonlyArray<{ name: string }>,
+  run: (name: string, params: unknown, runCtx: ToolRunContext) => Promise<ToolResult>,
+): void {
+  for (const tool of tools) {
+    if (KIT_GROWTH_TOOL_NAMES.has(tool.name)) continue;
+    (ctx.tools.register as (...a: unknown[]) => unknown)(tool.name, tool, (params: unknown, runCtx: ToolRunContext) => run(tool.name, params, runCtx));
+  }
+  registerKitGrowthTools(ctx);
+}
