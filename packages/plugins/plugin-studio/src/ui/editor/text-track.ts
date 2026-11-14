@@ -6,6 +6,7 @@ import type { LayoutFont } from "../../layout.js";
 import type { Clip, EditDoc, TextClip } from "../../video-edit/timeline.js";
 import { freeId } from "./timeline-view.js";
 import { fontStack, UI_FONTS } from "../font-names.js";
+import { revealUnits, textAnimationAt, PRESETS, phases } from "../../video-edit/text-animation.js";
 
 /** A5a's font ids (`src/video-edit/fonts.ts` FONT_IDS; a test keeps them equal). Copied, not imported: fonts.ts reads the disk. */
 export const TEXT_FONTS = ["sans", "serif", "rounded"] as const satisfies readonly LayoutFont[];
@@ -127,4 +128,29 @@ export function overlayStyle(clip: TextClip, project: { width: number; height: n
     whiteSpace: "pre",
     textAlign: "center",
   } as const;
+}
+
+/**
+ * The preview of an animated text clip (schema v5, D4d2) at playhead `t`: the render's own motion curves
+ * (`text-animation.ts`, shared with the ASS writer) give the centre, size and opacity multipliers; a reveal preset
+ * (typewriter, wordByWord) lays every unit out and hides the ones not shown yet, as the render does with alpha.
+ * A clip without `animation` is `overlayStyle` as before (`units` null).
+ */
+export function animatedOverlay(clip: TextClip, project: { width: number; height: number }, t: number, opacity: number): { style: Record<string, string | number>; units: { text: string; hidden: boolean }[] | null } {
+  if (!clip.animation) return { style: overlayStyle(clip, project, opacity), units: null };
+  const kind = phases(clip.animation, clip.duration).map((p) => PRESETS[p.preset].reveal).find(Boolean);
+  const split = kind ? revealUnits(clip.text, kind) : null;
+  const state = textAnimationAt(clip, project, t - clip.start, split?.units.length ?? 0);
+  const base: Record<string, string | number> = overlayStyle(clip, project, ms(opacity * state.alpha));
+  const style: Record<string, string | number> = {
+    ...base,
+    left: `${ms((state.x / project.width) * 100)}%`,
+    top: `${ms((state.y / project.height) * 100)}%`,
+    transform: `translate(-50%, -50%) rotate(${clip.transform.rotate}deg) scale(${ms(state.scale)})`,
+  };
+  if (!split) return { style, units: null };
+  const shown = state.shown ?? split.units.length;
+  const units = split.units.map((u, i) => ({ text: u.prefix + u.text, hidden: i >= shown }));
+  if (split.tail) units.push({ text: split.tail, hidden: false });
+  return { style, units };
 }
