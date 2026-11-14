@@ -18,6 +18,12 @@ const instanceConfigSchema: JsonSchema = {
       title: "Public base URL",
       description: "The https address people reach Paperclip on, e.g. https://paperclip.partnersinbiz.online. Unsubscribe links in emails are built on it. Open the Campaigns page once after saving so the plugin learns its public path.",
     },
+    digestFeedUrls: {
+      type: "array",
+      title: "Digest feeds",
+      description: "https feeds create-feed-digest may read. Empty by default: a feed that is not listed is refused before anything is fetched.",
+      items: { type: "string" },
+    },
     oneClickUnsubscribeUrl: {
       type: "string",
       title: "One-click unsubscribe address (optional)",

@@ -42,7 +42,7 @@ describe("Campaigns tool surface", () => {
   it("drops complete-step (marking the step issue done moves the contact on) and adds the stop and opt-out tools", () => {
     const names = CAMPAIGN_TOOLS.map((tool) => tool.name);
     expect(names).not.toContain("complete-step");
-    expect(names).toEqual(expect.arrayContaining(["stop-enrollment", "suppress-address", "request-campaign-approval", "launch-campaign", "set-sender-identity", "remove-sender-identity", "list-sender-identities", "record-channel-consent", "suppress-phone", "preflight-campaign"]));
+    expect(names).toEqual(expect.arrayContaining(["stop-enrollment", "suppress-address", "request-campaign-approval", "launch-campaign", "set-sender-identity", "remove-sender-identity", "list-sender-identities", "record-channel-consent", "suppress-phone", "preflight-campaign", "create-feed-digest"]));
     expect(manifest.tools).toBe(CAMPAIGN_TOOLS);
   });
 
