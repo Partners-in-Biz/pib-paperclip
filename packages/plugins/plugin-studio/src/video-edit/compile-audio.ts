@@ -10,7 +10,7 @@
  * track), optionally run through `loudnorm`, and padded/cut to the edit's length. Encoded as AAC 48 kHz stereo 160k.
  * An edit with no sound has no segments: the output then has no audio stream at all (`-an`).
  */
-import { CompileError, GRAPH_FILE, filePath, inputKey, num, type CompileInputs } from "./compile-video.js";
+import { CompileError, GRAPH_FILE, filePath, inputKey, num, sourceKey, type CompileInputs } from "./compile-video.js";
 import type { CompiledVideo } from "./compile-video.js";
 import { toFfmpegExpr } from "./keyframes.js";
 import { clipDuration, editDuration, type AudioClip, type EditDoc, type MediaClip, type TrackKind } from "./timeline.js";
@@ -52,10 +52,10 @@ type SoundClip = (MediaClip | AudioClip) & { fromTrack: "picture" | "audio" };
  * Whether a clip on a track of `kind` adds a sound input (its own `-i`): every audio-track clip, and a video/overlay
  * clip whose source the probe found sound in. The render planner weighs and labels passes with this same rule.
  */
-export function clipHasSound(kind: TrackKind, clip: { assetId: string; version: number }, sources: CompileInputs): boolean {
+export function clipHasSound(kind: TrackKind, clip: Parameters<typeof sourceKey>[0], sources: CompileInputs): boolean {
   if (kind === "audio") return true;
   if (kind !== "video" && kind !== "overlay") return false;
-  const source = sources[inputKey(clip.assetId, clip.version)];
+  const source = sources[sourceKey(clip)];
   return source?.kind === "video" && source.hasAudio === true;
 }
 
@@ -66,7 +66,7 @@ function soundClips(doc: EditDoc, sources: CompileInputs): SoundClip[] {
     if (track.kind === "audio") {
       for (const clip of track.clips) out.push({ ...clip, fromTrack: "audio" });
     } else if (track.kind === "video" || track.kind === "overlay") {
-      for (const clip of track.clips) if (clipHasSound(track.kind, clip, sources)) out.push({ ...clip, fromTrack: "picture" });
+      for (const clip of track.clips) if ("assetId" in clip && clipHasSound(track.kind, clip, sources)) out.push({ ...clip, fromTrack: "picture" }); // a sticker has no sound
     }
   }
   return out.map((c, i) => ({ c, i })).sort((a, b) => a.c.start - b.c.start || a.i - b.i).map(({ c }) => c);
