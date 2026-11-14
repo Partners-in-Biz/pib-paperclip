@@ -4,16 +4,18 @@
  * fills defaults and refuses anything out of range with an `EditError` that names the field.
  * Version 1: static transforms, crop, speed, volume, fades and a fade-in transition. Version 2 (Phase D) adds the other
  * `TRANSITIONS` and per-clip `keyframes`. Version 3 (PAR-8279 slice 2) adds `adjust` and `look` on video and overlay
- * clips. Version 4 (slice 3) adds `blendMode`, `chromaKey` and `frame` on overlay clips. Rollback-safe writer: `normalizeEdit` reads every version in `SCHEMA_VERSIONS` and writes the lowest one that
+ * clips. Version 4 (slice 3) adds `blendMode`, `chromaKey` and `frame` on overlay clips. Version 5 (slice 4) adds a
+ * `sticker` source on overlay clips (in place of `assetId` + `version`). Rollback-safe writer: `normalizeEdit` reads every version in `SCHEMA_VERSIONS` and writes the lowest one that
  * holds the doc, from the `FEATURE_VERSION` table, so a plain edit stays readable by the previous build. Builds before
  * Studio 0.1.49 read version 1 only and do not have this guard.
  */
 import { StudioError } from "../errors.js";
 import { ADJUST_RANGE, NEUTRAL_ADJUST, PIB_BASIC_IDS, type Adjust, type LookRef } from "./looks.js";
+import { isSticker, STICKER_PACKS, type StickerRef } from "./sticker-packs.js";
 
 /** The newest schema version this build reads; `normalizeEdit` writes the lowest version that holds the doc. */
-export const SCHEMA_VERSION = 4;
-export const SCHEMA_VERSIONS = [1, 2, 3, 4] as const;
+export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSIONS = [1, 2, 3, 4, 5] as const;
 export type SchemaVersion = (typeof SCHEMA_VERSIONS)[number];
 /** Transitions between main-track clips (ffmpeg xfade names). Only `fade` is version 1. */
 export const TRANSITIONS = [
@@ -73,16 +75,22 @@ export interface Keyframe { t: number; value: number; ease: Ease }
 /** Only properties with at least one key are kept; an empty `keyframes` is dropped. */
 export type Keyframes = Partial<Record<KeyframeProp, Keyframe[]>>;
 interface Timed { id: string; start: number; fadeIn: number; fadeOut: number; keyframes?: Keyframes }
+export type { StickerRef };
 /** `adjust` holds only non-neutral fields (absent when all are neutral); `look` is a pack look at an intensity 0..1. */
 export interface MediaClip extends Timed { assetId: string; version: number; in: number; out: number; speed: number; volume: number; transform: Transform; transitionIn: Transition | null; adjust?: Partial<Adjust>; look?: LookRef; blendMode?: Exclude<BlendMode, "normal">; chromaKey?: ChromaKey; frame?: Frame }
+/** An overlay clip showing a bundled sticker (a still picture without sound) instead of a library asset (schema v5). */
+export type StickerClip = Omit<MediaClip, "assetId" | "version"> & { sticker: StickerRef };
+/** A clip on a video or overlay track (a sticker only on an overlay track). */
+export type PictureClip = MediaClip | StickerClip;
 export interface AudioClip extends Timed { assetId: string; version: number; in: number; out: number; speed: number; volume: number }
 export interface TextClip extends Timed { text: string; duration: number; font: string | null; color: string; fontSize: number; transform: Transform; transitionIn: Transition | null }
 export interface CaptionWord { text: string; start: number; end: number }
 /** Word times are relative to the clip's start. */
 export interface CaptionClip { id: string; start: number; style: CaptionStyle; words: CaptionWord[] }
-export type Clip = MediaClip | AudioClip | TextClip | CaptionClip;
+export type Clip = MediaClip | StickerClip | AudioClip | TextClip | CaptionClip;
 export type Track =
-  | { id: string; kind: "video" | "overlay"; clips: MediaClip[] }
+  | { id: string; kind: "video"; clips: MediaClip[] }
+  | { id: string; kind: "overlay"; clips: Array<MediaClip | StickerClip> }
   | { id: string; kind: "audio"; clips: AudioClip[] }
   | { id: string; kind: "text"; clips: TextClip[] }
   | { id: string; kind: "caption"; clips: CaptionClip[] };
@@ -91,7 +99,8 @@ export interface EditDoc { schemaVersion: SchemaVersion; project: EditProject; t
 
 export type EditErrorReason =
   | "invalid" | "out_of_range" | "too_many" | "duplicate" | "overlap" | "too_long" | "unsupported_version" | "not_found"
-  | "unknown_transition" | "unknown_ease" | "keyframe_limit" | "keyframe_order" | "no_audio" | "unknown_look" | "unknown_blend";
+  | "unknown_transition" | "unknown_ease" | "keyframe_limit" | "keyframe_order" | "no_audio" | "unknown_look" | "unknown_blend"
+  | "unknown_sticker";
 
 /** A refused edit document: `reason` says what kind of problem, `path` which field (e.g. `tracks[0].clips[2].speed`). */
 export class EditError extends StudioError {
@@ -266,6 +275,16 @@ function layer(c: Record<string, unknown>, path: string): { blendMode?: Exclude<
   return out;
 }
 
+/** An overlay clip's bundled sticker: a pack in `STICKER_PACKS` and an id in its manifest. */
+function sticker(value: unknown, path: string): StickerRef {
+  const s = optionalObj(value, path);
+  if (!s) fail("invalid", path, "must be an object {pack, id}.");
+  only(s, path, ["pack", "id"]);
+  if (typeof s.pack !== "string" || !(STICKER_PACKS as readonly string[]).includes(s.pack)) fail("unknown_sticker", `${path}.pack`, `must be one of ${STICKER_PACKS.join(", ")}.`);
+  if (!isSticker(s.pack, s.id)) fail("unknown_sticker", `${path}.id`, `is not a sticker in the ${s.pack} pack.`);
+  return { pack: s.pack, id: s.id as string };
+}
+
 /** Optional facts `normalizeEdit` can't see in the doc. `hasAudio` false = that asset version has no sound. */
 export interface NormalizeOptions { hasAudio?: (assetId: string, version: number) => boolean | undefined }
 function fades(c: Record<string, unknown>, path: string, length: number) {
@@ -274,15 +293,24 @@ function fades(c: Record<string, unknown>, path: string, length: number) {
   if (fadeIn + fadeOut > length + 1e-9) fail("out_of_range", `${path}.fadeOut`, "fade in and fade out together are longer than the clip.");
   return { fadeIn, fadeOut };
 }
-function source(c: Record<string, unknown>, path: string) {
-  if (typeof c.assetId !== "string" || !ASSET_ID.test(c.assetId)) fail("invalid", `${path}.assetId`, "is not an asset id.");
-  if (typeof c.version !== "number" || !Number.isInteger(c.version) || c.version < 1) fail("invalid", `${path}.version`, "must be a whole number from 1.");
+/** A clip's source: a library asset (`assetId` + `version`) or, on an overlay clip only, a bundled `sticker`. */
+function source(c: Record<string, unknown>, path: string, kind: TrackKind) {
+  let from: { assetId: string; version: number } | { sticker: StickerRef };
+  if (c.sticker !== undefined && c.sticker !== null) {
+    if (kind !== "overlay") fail("invalid", `${path}.sticker`, "only overlay clips can be stickers.");
+    if (c.assetId !== undefined && c.assetId !== null) fail("invalid", `${path}.assetId`, "give assetId or sticker, not both.");
+    from = { sticker: sticker(c.sticker, `${path}.sticker`) };
+  } else {
+    if (typeof c.assetId !== "string" || !ASSET_ID.test(c.assetId)) fail("invalid", `${path}.assetId`, "is not an asset id.");
+    if (typeof c.version !== "number" || !Number.isInteger(c.version) || c.version < 1) fail("invalid", `${path}.version`, "must be a whole number from 1.");
+    from = { assetId: c.assetId, version: c.version };
+  }
   const inPoint = number(c.in, `${path}.in`, 0, 86400, 0);
   const out = number(c.out, `${path}.out`, 0, 86400);
   if (out <= inPoint) fail("out_of_range", `${path}.out`, "must be after in.");
   const speed = number(c.speed, `${path}.speed`, LIMITS.speed[0], LIMITS.speed[1], 1);
   const volume = number(c.volume, `${path}.volume`, LIMITS.volume[0], LIMITS.volume[1], 1);
-  return { assetId: c.assetId, version: c.version, in: inPoint, out, speed, volume };
+  return { ...from, in: inPoint, out, speed, volume };
 }
 
 /** How long a clip lasts on the timeline, in seconds. */
@@ -330,10 +358,10 @@ function clip(kind: TrackKind, raw: unknown, path: string, ids: Set<string>, opt
       ...keyframes(c.keyframes, `${path}.keyframes`, duration, TEXT_KEYS, true),
     };
   }
-  const src = source(c, path);
+  const src = source(c, path, kind);
   const length = ms((src.out - src.in) / src.speed);
-  const silent = options.hasAudio?.(src.assetId, src.version) === false;
-  if (kind === "audio") return { ...base, ...src, ...fades(c, path, length), ...keyframes(c.keyframes, `${path}.keyframes`, length, AUDIO_KEYS, silent) };
+  const silent = "sticker" in src || options.hasAudio?.(src.assetId, src.version) === false;
+  if (kind === "audio") return { ...base, ...(src as typeof src & { assetId: string; version: number }), ...fades(c, path, length), ...keyframes(c.keyframes, `${path}.keyframes`, length, AUDIO_KEYS, silent) };
   return {
     ...base, ...src, ...fades(c, path, length), transform: transform(c.transform, `${path}.transform`), transitionIn: transition(c.transitionIn, `${path}.transitionIn`, length),
     ...keyframes(c.keyframes, `${path}.keyframes`, length, MEDIA_KEYS, silent), ...adjust(c.adjust, `${path}.adjust`), ...look(c.look, `${path}.look`),
@@ -361,6 +389,8 @@ export const FEATURE_VERSION: Readonly<Record<string, Since>> = {
   ...each(["pack", "id", "intensity"].map((k) => `clip.look.${k}`), 3),
   "clip.blendMode": Object.fromEntries(BLEND_MODES.filter((m) => m !== "normal").map((m) => [m, 4])),
   ...each([...["color", "similarity", "blend", "spill"].map((k) => `clip.chromaKey.${k}`), ...["borderWidth", "borderColor", "cornerRadius"].map((k) => `clip.frame.${k}`)], 4),
+  "clip.sticker.pack": Object.fromEntries(STICKER_PACKS.map((p) => [p, 5])),
+  "clip.sticker.id": 5,
 };
 
 /** Each leaf of a doc (without `schemaVersion`) as [FEATURE_VERSION path, value]. */

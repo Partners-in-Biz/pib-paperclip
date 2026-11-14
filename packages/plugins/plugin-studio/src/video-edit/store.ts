@@ -11,7 +11,7 @@ import { iso, num, table } from "../db.js";
 import { StudioError } from "../errors.js";
 import { clientFilter } from "../page.js";
 import { scopeForWork, scopeInput } from "../scope.js";
-import { editDuration, normalizeEdit, type EditDoc } from "./timeline.js";
+import { editDuration, normalizeEdit, type EditDoc, type MediaClip, type StickerClip } from "./timeline.js";
 
 export const MAX_EDIT_TITLE = 200;
 export const MAX_EDIT_VERSIONS = 100;
@@ -130,7 +130,8 @@ export async function assertAssets(ctx: PluginContext, companyId: string, scope:
  */
 export async function normalizeForWrite(ctx: PluginContext, companyId: string, input: unknown): Promise<EditDoc> {
   const doc = normalizeEdit(input);
-  const animated = doc.tracks.flatMap((t) => (t.kind === "video" || t.kind === "overlay" ? t.clips.filter((c) => c.keyframes?.volume) : []));
+  const shown = doc.tracks.flatMap((t): Array<MediaClip | StickerClip> => (t.kind === "video" || t.kind === "overlay" ? t.clips : []));
+  const animated = shown.filter((c): c is MediaClip => "assetId" in c && Boolean(c.keyframes?.volume)); // normalizeEdit refuses volume keys on a sticker
   if (!animated.length) return doc;
   const ids = [...new Set(animated.map((c) => c.assetId))];
   const marks = ids.map((_, i) => `$${i + 2}`).join(", ");

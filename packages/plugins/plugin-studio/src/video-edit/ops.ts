@@ -24,6 +24,9 @@
  * - `reorder` sets the order of all tracks at once (first track is the bottom layer) and moves no clips; `moveTrack`
  *   moves one track to `toIndex` (0..tracks-1, the others keep their order). Its undo is `moveTrack` back to the old
  *   index (`moveTrackUndo`). `removeTrack` removes the track with its clips.
+ * - Schema v5: on overlay clips `setProps` `sticker {pack, id}` swaps the source to a bundled sticker (assetId and
+ *   version go) and `assetId` swaps it back (sticker goes); a sticker clip can't move to the video track. `split`,
+ *   `trim` and `move` between overlay tracks work on stickers.
  */
 import { clipDuration, EditError, KEYFRAME_PROPS, LIMITS, normalizeEdit, type Clip, type EditDoc, type EditErrorReason, type Keyframe, type Keyframes, type Track, type TrackKind, type Transition } from "./timeline.js";
 
@@ -56,7 +59,7 @@ const SOURCE_PROPS = ["assetId", "version", "in", "out", "start", "speed", "volu
 /** What `setProps` may change, per track kind. `id` never changes: delete and add instead. */
 const PROPS: Record<TrackKind, readonly string[]> = {
   video: [...SOURCE_PROPS, "transform", "transitionIn", "keyframes", "adjust", "look"],
-  overlay: [...SOURCE_PROPS, "transform", "transitionIn", "keyframes", "adjust", "look", "blendMode", "chromaKey", "frame"],
+  overlay: [...SOURCE_PROPS, "sticker", "transform", "transitionIn", "keyframes", "adjust", "look", "blendMode", "chromaKey", "frame"],
   audio: [...SOURCE_PROPS, "keyframes"],
   text: ["text", "start", "duration", "font", "color", "fontSize", "fadeIn", "fadeOut", "transform", "transitionIn", "keyframes"],
   caption: ["start", "style", "words"],
@@ -119,6 +122,7 @@ function fitFades(clip: Clip, length: number): Clip {
   if (c.transitionIn && c.transitionIn.duration > length) c.transitionIn = { ...c.transitionIn, duration: length };
   return c;
 }
+
 
 /** How the move from one key to the next runs (the earlier key's ease), 0..1 -> 0..1; `hold` jumps at the next key. */
 const EASE: Record<Keyframe["ease"], (p: number) => number> = {
@@ -214,7 +218,7 @@ function run(doc: EditDoc, raw: unknown, i: number): void {
       return split(doc, o, i);
     case "trim": {
       const { track, index, clip } = findClip(doc, idArg(o, "clipId", i), i);
-      if (!("assetId" in clip)) fail(i, "invalid", "clipId", `clip ${clip.id} has no source to trim; change its duration or words with setProps.`);
+      if (!("in" in clip)) fail(i, "invalid", "clipId", `clip ${clip.id} has no source to trim; change its duration or words with setProps.`);
       const inPoint = numArg(o, "in", i);
       const out = numArg(o, "out", i);
       if (inPoint === undefined && out === undefined) fail(i, "invalid", "", "give in, out or both.");
@@ -303,8 +307,15 @@ function run(doc: EditDoc, raw: unknown, i: number): void {
         if (props.keyframes !== null && !keys) fail(i, "invalid", "props.keyframes", "must be an object of property lists, or null.");
         (next as { keyframes?: unknown }).keyframes = keys ? { ...("keyframes" in clip ? clip.keyframes : {}), ...keys } : undefined;
       }
+      // A clip shows an asset or a sticker, never both: setting one source drops the other (normalizeEdit checks the result).
+      const swap = next as { assetId?: unknown; version?: unknown; sticker?: unknown };
+      if (props.sticker !== undefined && props.sticker !== null && props.assetId === undefined) {
+        delete swap.assetId;
+        delete swap.version;
+      }
+      if (props.assetId !== undefined && props.assetId !== null && props.sticker === undefined) delete swap.sticker;
       // adjust and look merge into what the clip has; null removes them (normalizeEdit checks the result).
-      if ("assetId" in clip && "transform" in clip) {
+      if ("in" in clip && "transform" in clip) {
         const media = next as typeof clip;
         if (record(props.adjust) && clip.adjust) media.adjust = { ...clip.adjust, ...record(props.adjust) };
         if (record(props.look) && clip.look) media.look = { ...clip.look, ...record(props.look) } as typeof clip.look;
