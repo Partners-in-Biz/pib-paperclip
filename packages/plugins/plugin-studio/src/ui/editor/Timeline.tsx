@@ -14,6 +14,8 @@ import { useHostContext } from "@paperclipai/plugin-sdk/ui";
 import type { Clip, TrackKind } from "../../video-edit/timeline.js";
 import { clipCount, type EditorStore } from "./editor-store.js";
 import { AddClipDialog } from "./AddClipDialog.js";
+import { addStickerOps } from "./sticker-picker.js";
+import type { StickerRef } from "../../video-edit/sticker-packs.js";
 import { AudioTrack } from "./AudioTrack.js";
 import { CaptionTrack } from "./CaptionTrack.js";
 import { TextTrack } from "./TextTrack.js";
@@ -177,6 +179,13 @@ export function Timeline({ store, keyHistory }: { store: EditorStore; keyHistory
     if (!(await store.applyOps(made.ops))) return store.getState().toast ?? "The clip wasn't added. Try again.";
     store.selectClip(made.clipId);
     store.setPlayhead(made.start);
+    return null;
+  };
+  const addSticker = async (ref: StickerRef) => {
+    const made = addStickerOps(doc, ref, playhead);
+    if ("error" in made) return made.error;
+    if (!(await store.applyOps(made.ops))) return store.getState().toast ?? "The sticker wasn't added. Try again.";
+    store.selectClip(made.clipId);
     return null;
   };
   function onKey(e: KeyboardEvent<HTMLElement>) {
@@ -362,7 +371,7 @@ export function Timeline({ store, keyHistory }: { store: EditorStore; keyHistory
       </div>
       {tracks.length ? <div data-timeline-help style={{ ...ellipsis, padding: "4px 12px", fontSize: 12, opacity: 0.7 }}>Alt-drag an edge: trim without closing the gap · drag a ◆ to move a key · lower tracks are drawn in front</div> : null}
       {keyNote ? <div role="alert" data-key-note style={{ padding: "0 12px 6px", fontSize: 12, color: "#c2410c", overflowWrap: "anywhere" }}>{keyNote}</div> : null}
-      {adding ? <AddClipDialog companyId={companyId} client={client} busy={busy} onPick={addPicked} onClose={() => setAdding(false)} /> : null}
+      {adding ? <AddClipDialog companyId={companyId} client={client} busy={busy} onPick={addPicked} onPickSticker={addSticker} onClose={() => setAdding(false)} /> : null}
     </section>
   );
 }
