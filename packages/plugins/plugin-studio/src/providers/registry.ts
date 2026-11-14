@@ -9,6 +9,7 @@ import { findModel, lipsyncMode } from "../models.js";
 import { fakeProviderOn } from "../provider.js";
 import { isTablePriced, localCredits } from "../seedance-price.js";
 import { PIB_BASIC_IDS } from "../video-edit/looks.js";
+import { STICKER_PACKS, stickerIds } from "../video-edit/sticker-packs.js";
 import { fakeSpeechToText, xaiSpeechToText, XAI_STT_MODEL, type SpeechToText } from "../video-edit/stt.js";
 import { fakeTextToSpeech, xaiTextToSpeech, XAI_VOICES, type TextToSpeech } from "../video-edit/tts.js";
 import { ttsCredits } from "../video-edit/tts-price.js";
@@ -137,6 +138,18 @@ export function resolveLookPack(override?: unknown, configDefault?: unknown): Lo
   return found;
 }
 
+/**
+ * Sticker packs (PAR-10172, plan PAR-8279 slice 4): closed lists defined in code (video-edit/sticker-packs.ts), shipped as
+ * PNGs in the plugin. Nothing to configure: no secret, no default setting, no network.
+ */
+export interface StickerPackEntry {
+  key: string;
+  label: string;
+  ids: readonly string[];
+}
+const STICKER_LABELS: Record<(typeof STICKER_PACKS)[number], string> = { "noto-emoji": "Noto Emoji", "pib-shapes": "PiB shapes" };
+export const STICKER_PACK_ENTRIES: readonly StickerPackEntry[] = STICKER_PACKS.map((key) => ({ key, label: STICKER_LABELS[key], ids: stickerIds(key) }));
+
 const VOICE_NOTES: Record<Capability, Record<string, { price: string; qualityNote: string }>> = {
   stt: { xai: { price: "Not charged to Studio credits (xAI bills the key a few cents a minute)", qualityNote: `${XAI_STT_MODEL}: timed words for captions.` } },
   tts: { xai: { price: `${ttsCredits(1000)} credits per 1,000 characters`, qualityNote: `Grok voice, ${XAI_VOICES.length} voices.` } },
@@ -170,7 +183,7 @@ export async function providerOptions(config: Pick<StudioConfig, "providerDefaul
   });
   const lookChosen = safe(() => resolveLookPack(undefined, lookDefault).key, () => LOOK_PACKS[0]!.key);
   const looks = LOOK_PACKS.map((p) => ({ key: p.key, label: p.label, ids: p.ids, isDefault: p.key === lookChosen }));
-  return { stt: await voice("stt"), tts: await voice("tts"), music: await voice("music"), lipsync, looks };
+  return { stt: await voice("stt"), tts: await voice("tts"), music: await voice("music"), lipsync, looks, stickers: STICKER_PACK_ENTRIES };
 }
 
 /** Speech to text for `override` (or the company default). Fake when PIB_STUDIO_FAKE_PROVIDER=1. */
