@@ -5,7 +5,8 @@
  * Version 1: static transforms, crop, speed, volume, fades and a fade-in transition. Version 2 (Phase D) adds the other
  * `TRANSITIONS` and per-clip `keyframes`. Version 3 (PAR-8279 slice 2) adds `adjust` and `look` on video and overlay
  * clips. Version 4 (slice 3) adds `blendMode`, `chromaKey` and `frame` on overlay clips. Version 5 (slice 4) adds a
- * `sticker` source on overlay clips (in place of `assetId` + `version`). Rollback-safe writer: `normalizeEdit` reads every version in `SCHEMA_VERSIONS` and writes the lowest one that
+ * `sticker` source on overlay clips (in place of `assetId` + `version`), `effects` on video and overlay clips and
+ * `animation` on text clips. Rollback-safe writer: `normalizeEdit` reads every version in `SCHEMA_VERSIONS` and writes the lowest one that
  * holds the doc, from the `FEATURE_VERSION` table, so a plain edit stays readable by the previous build. Builds before
  * Studio 0.1.49 read version 1 only and do not have this guard.
  */
@@ -41,6 +42,12 @@ export const LOOK_PACKS = ["pib-basic"] as const;
 /** How an overlay clip mixes with the layers under it (schema v4). `normal` is the default and is never stored. */
 export const BLEND_MODES = ["normal", "multiply", "screen", "overlay", "darken", "lighten", "addition", "difference", "softlight"] as const;
 export type BlendMode = (typeof BLEND_MODES)[number];
+/** Clip effects (schema v5) on video and overlay clips. glitch, filmGrain and vhs are deferred (no exact preview). */
+export const EFFECTS = ["zoomPunch", "shake", "flash", "rgbSplit", "blurIn"] as const;
+export type EffectId = (typeof EFFECTS)[number];
+/** Text in/out animation presets (schema v5), drawn through ASS. */
+export const TEXT_ANIMATIONS = ["fadeUp", "slideLeft", "slideRight", "slideUp", "slideDown", "pop", "bounce", "typewriter", "wordByWord"] as const;
+export type TextAnimationPreset = (typeof TEXT_ANIMATIONS)[number];
 
 export const LIMITS = {
   maxDuration: 180,
@@ -60,6 +67,8 @@ export const LIMITS = {
   similarity: [0.01, 1],
   borderWidth: [0, 40],
   cornerRadius: [0, 50],
+  maxEffects: 3,
+  animationDuration: [0.05, 5],
 } as const;
 
 export interface Crop { left: number; top: number; right: number; bottom: number }
@@ -75,15 +84,19 @@ export interface Keyframe { t: number; value: number; ease: Ease }
 /** Only properties with at least one key are kept; an empty `keyframes` is dropped. */
 export type Keyframes = Partial<Record<KeyframeProp, Keyframe[]>>;
 interface Timed { id: string; start: number; fadeIn: number; fadeOut: number; keyframes?: Keyframes }
+/** An effect at an intensity in (0, 1]; a 0 intensity is dropped. */
+export interface Effect { id: EffectId; intensity: number }
+/** A text clip's entry (`in`) and exit (`out`) preset, each with its length in seconds; only the sides set are kept. */
+export interface TextAnimation { in?: TextAnimationPreset; inDuration?: number; out?: TextAnimationPreset; outDuration?: number }
 export type { StickerRef };
 /** `adjust` holds only non-neutral fields (absent when all are neutral); `look` is a pack look at an intensity 0..1. */
-export interface MediaClip extends Timed { assetId: string; version: number; in: number; out: number; speed: number; volume: number; transform: Transform; transitionIn: Transition | null; adjust?: Partial<Adjust>; look?: LookRef; blendMode?: Exclude<BlendMode, "normal">; chromaKey?: ChromaKey; frame?: Frame }
+export interface MediaClip extends Timed { assetId: string; version: number; in: number; out: number; speed: number; volume: number; transform: Transform; transitionIn: Transition | null; adjust?: Partial<Adjust>; look?: LookRef; effects?: Effect[]; blendMode?: Exclude<BlendMode, "normal">; chromaKey?: ChromaKey; frame?: Frame }
 /** An overlay clip showing a bundled sticker (a still picture without sound) instead of a library asset (schema v5). */
 export type StickerClip = Omit<MediaClip, "assetId" | "version"> & { sticker: StickerRef };
 /** A clip on a video or overlay track (a sticker only on an overlay track). */
 export type PictureClip = MediaClip | StickerClip;
 export interface AudioClip extends Timed { assetId: string; version: number; in: number; out: number; speed: number; volume: number }
-export interface TextClip extends Timed { text: string; duration: number; font: string | null; color: string; fontSize: number; transform: Transform; transitionIn: Transition | null }
+export interface TextClip extends Timed { text: string; duration: number; font: string | null; color: string; fontSize: number; transform: Transform; transitionIn: Transition | null; animation?: TextAnimation }
 export interface CaptionWord { text: string; start: number; end: number }
 /** Word times are relative to the clip's start. */
 export interface CaptionClip { id: string; start: number; style: CaptionStyle; words: CaptionWord[] }
@@ -100,7 +113,7 @@ export interface EditDoc { schemaVersion: SchemaVersion; project: EditProject; t
 export type EditErrorReason =
   | "invalid" | "out_of_range" | "too_many" | "duplicate" | "overlap" | "too_long" | "unsupported_version" | "not_found"
   | "unknown_transition" | "unknown_ease" | "keyframe_limit" | "keyframe_order" | "no_audio" | "unknown_look" | "unknown_blend"
-  | "unknown_sticker";
+  | "unknown_sticker" | "unknown_effect" | "unknown_animation";
 
 /** A refused edit document: `reason` says what kind of problem, `path` which field (e.g. `tracks[0].clips[2].speed`). */
 export class EditError extends StudioError {
@@ -275,6 +288,40 @@ function layer(c: Record<string, unknown>, path: string): { blendMode?: Exclude<
   return out;
 }
 
+/** A clip's effects (schema v5): at most `LIMITS.maxEffects`, each id once, intensity 0..1 (default 1; 0 is dropped). */
+function effects(value: unknown, path: string): { effects?: Effect[] } {
+  const out: Effect[] = [];
+  const seen = new Set<string>();
+  list(value, path, LIMITS.maxEffects).forEach((item, i) => {
+    const p = `${path}[${i}]`;
+    const e = optionalObj(item, p);
+    if (!e) fail("invalid", p, "must be an object {id, intensity}.");
+    only(e, p, ["id", "intensity"]);
+    if (typeof e.id !== "string" || !(EFFECTS as readonly string[]).includes(e.id)) fail("unknown_effect", `${p}.id`, `must be one of ${EFFECTS.join(", ")}.`);
+    if (seen.has(e.id)) fail("duplicate", `${p}.id`, `the effect ${e.id} is listed twice.`);
+    seen.add(e.id);
+    const intensity = number(e.intensity, `${p}.intensity`, 0, 1, 1);
+    if (intensity > 0) out.push({ id: e.id as EffectId, intensity });
+  });
+  return out.length ? { effects: out } : {};
+}
+/** A text clip's animation (schema v5): each side set is a known preset with a length; both together fit the clip. */
+function animation(value: unknown, path: string, length: number): { animation?: TextAnimation } {
+  const a = optionalObj(value, path);
+  if (!a) return {};
+  only(a, path, ["in", "inDuration", "out", "outDuration"]);
+  const sides = (["in", "out"] as const).filter((side) => a[side] !== undefined && a[side] !== null);
+  const out: TextAnimation = {};
+  for (const side of sides) {
+    const preset = a[side];
+    if (typeof preset !== "string" || !(TEXT_ANIMATIONS as readonly string[]).includes(preset)) fail("unknown_animation", `${path}.${side}`, `must be one of ${TEXT_ANIMATIONS.join(", ")}.`);
+    const [lo, hi] = LIMITS.animationDuration;
+    out[side] = preset as TextAnimationPreset;
+    out[`${side}Duration`] = number(a[`${side}Duration`], `${path}.${side}Duration`, lo, hi, Math.max(lo, Math.min(0.5, ms(length / sides.length))));
+  }
+  if ((out.inDuration ?? 0) + (out.outDuration ?? 0) > length + 1e-9) fail("out_of_range", `${path}.${sides[sides.length - 1]}Duration`, "the animation is longer than the clip.");
+  return sides.length ? { animation: out } : {};
+}
 /** An overlay clip's bundled sticker: a pack in `STICKER_PACKS` and an id in its manifest. */
 function sticker(value: unknown, path: string): StickerRef {
   const s = optionalObj(value, path);
@@ -355,7 +402,7 @@ function clip(kind: TrackKind, raw: unknown, path: string, ids: Set<string>, opt
       ...base, ...fades(c, path, duration), text: text(c.text, `${path}.text`, LIMITS.maxText), duration, font, color: color.toUpperCase(),
       fontSize: number(c.fontSize, `${path}.fontSize`, LIMITS.fontSize[0], LIMITS.fontSize[1], 64),
       transform: transform(c.transform, `${path}.transform`), transitionIn: transition(c.transitionIn, `${path}.transitionIn`, duration),
-      ...keyframes(c.keyframes, `${path}.keyframes`, duration, TEXT_KEYS, true),
+      ...keyframes(c.keyframes, `${path}.keyframes`, duration, TEXT_KEYS, true), ...animation(c.animation, `${path}.animation`, duration),
     };
   }
   const src = source(c, path, kind);
@@ -365,7 +412,7 @@ function clip(kind: TrackKind, raw: unknown, path: string, ids: Set<string>, opt
   return {
     ...base, ...src, ...fades(c, path, length), transform: transform(c.transform, `${path}.transform`), transitionIn: transition(c.transitionIn, `${path}.transitionIn`, length),
     ...keyframes(c.keyframes, `${path}.keyframes`, length, MEDIA_KEYS, silent), ...adjust(c.adjust, `${path}.adjust`), ...look(c.look, `${path}.look`),
-    ...(kind === "overlay" ? layer(c, path) : {}),
+    ...effects(c.effects, `${path}.effects`), ...(kind === "overlay" ? layer(c, path) : {}),
   };
 }
 
@@ -391,6 +438,11 @@ export const FEATURE_VERSION: Readonly<Record<string, Since>> = {
   ...each([...["color", "similarity", "blend", "spill"].map((k) => `clip.chromaKey.${k}`), ...["borderWidth", "borderColor", "cornerRadius"].map((k) => `clip.frame.${k}`)], 4),
   "clip.sticker.pack": Object.fromEntries(STICKER_PACKS.map((p) => [p, 5])),
   "clip.sticker.id": 5,
+  "clip.effects[].id": Object.fromEntries(EFFECTS.map((e) => [e, 5])),
+  "clip.effects[].intensity": 5,
+  "clip.animation.in": Object.fromEntries(TEXT_ANIMATIONS.map((a) => [a, 5])),
+  "clip.animation.out": Object.fromEntries(TEXT_ANIMATIONS.map((a) => [a, 5])),
+  ...each(["clip.animation.inDuration", "clip.animation.outDuration"], 5),
 };
 
 /** Each leaf of a doc (without `schemaVersion`) as [FEATURE_VERSION path, value]. */

@@ -62,8 +62,11 @@ describe.skipIf(!available)("Render queue against real Postgres", () => {
     const layered = { ...clip, keyframes: undefined, blendMode: "multiply", chromaKey: { color: "#00ff00" }, frame: { cornerRadius: 10 } };
     expect(await stored({ ...DOC, schemaVersion: 1, tracks: [{ id: "o", kind: "overlay", clips: [layered] }] })).toMatchObject({ schemaVersion: 4, tracks: [{ clips: [{ blendMode: "multiply", chromaKey: { color: "#00FF00", similarity: 0.1 }, frame: { borderWidth: 0, borderColor: "#FFFFFF", cornerRadius: 10 } }] }] });
     expect(await stored({ ...DOC, schemaVersion: 4, tracks: [{ id: "o", kind: "overlay", clips: [{ ...layered, blendMode: "normal", chromaKey: null, frame: null }] }] })).toMatchObject({ schemaVersion: 1 });
+    const fx = { ...clip, keyframes: undefined, effects: [{ id: "shake", intensity: 0.4 }] };
     const sticker = { id: "s", sticker: { pack: "pib-shapes", id: "star" }, in: 0, out: 2, start: 0 };
-    expect(await stored({ ...DOC, schemaVersion: 1, tracks: [{ id: "o", kind: "overlay", clips: [sticker] }] })).toMatchObject({ schemaVersion: 5, tracks: [{ clips: [{ sticker: { pack: "pib-shapes", id: "star" } }] }] });
+    const title = { id: "t", start: 0, text: "Hi", duration: 2, animation: { out: "slideLeft" } };
+    expect(await stored({ ...DOC, schemaVersion: 1, tracks: [{ id: "v", kind: "video", clips: [fx] }, { id: "o", kind: "overlay", clips: [sticker] }, { id: "x", kind: "text", clips: [title] }] })).toMatchObject({ schemaVersion: 5, tracks: [{ clips: [{ effects: [{ id: "shake", intensity: 0.4 }] }] }, { clips: [{ sticker: { pack: "pib-shapes", id: "star" } }] }, { clips: [{ animation: { out: "slideLeft", outDuration: 0.5 } }] }] });
+    expect(await stored({ ...DOC, schemaVersion: 5, tracks: [{ id: "v", kind: "video", clips: [{ ...fx, effects: [] }] }] })).toMatchObject({ schemaVersion: 1 });
     await expect(enqueueRender(ctx, { companyId: CO, editId: "e", editRevision: 1, doc: { ...DOC, tracks: [{ id: "o", kind: "overlay", clips: [{ ...sticker, sticker: { pack: "pib-shapes", id: "../x" } }] }] }, preset: "9:16" })).rejects.toMatchObject({ reason: "unknown_sticker", code: "bad_edit" });
     await expect(enqueueRender(ctx, { companyId: CO, editId: "e", editRevision: 1, doc: { schemaVersion: 6 }, preset: "9:16" })).rejects.toMatchObject({ reason: "unsupported_version", code: "bad_edit" });
   });
