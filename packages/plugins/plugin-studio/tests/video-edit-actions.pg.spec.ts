@@ -108,7 +108,7 @@ describe.skipIf(!available)("Video edit actions against real Postgres", () => {
     const [row] = await (pg.db.query as (sql: string, params: unknown[]) => Promise<{ doc: unknown }[]>)(`SELECT doc FROM ${pg.db.namespace}.video_edits WHERE id = $1`, [edit.id]);
     const stored = typeof row.doc === "string" ? JSON.parse(row.doc) : row.doc;
     expect(stored).toMatchObject({ schemaVersion: 1 });
-    expect(JSON.stringify(stored)).not.toMatch(/keyframes|transitionIn":\{|adjust|look|blendMode|chromaKey|frame|sticker/);
+    expect(JSON.stringify(stored)).not.toMatch(/keyframes|transitionIn":\{|adjust|look|blendMode|chromaKey|frame|sticker|effects|animation/);
   });
 
   it("caps a start-from-assets timeline at 180 s and refuses assets that do not fit at all", async () => {

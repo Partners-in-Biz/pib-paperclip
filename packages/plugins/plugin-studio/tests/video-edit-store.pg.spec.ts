@@ -159,24 +159,26 @@ describe.skipIf(!available)("Video edit store against real Postgres", () => {
     expect((await getVideoEdit(ctx, CO, made.id)).doc.schemaVersion).toBe(4);
   });
 
-  it("v5 writer: create, save and restore keep a sticker overlay as v5; an unknown sticker is refused", async () => {
+  it("v5 writer: create, save and restore keep stickers, effects and text animation as v5; an unknown sticker is refused", async () => {
     await addAsset("asset-own", CO, null);
     const clip = { id: "c", assetId: "asset-own", version: 1, in: 0, out: 4, start: 0 };
-    const doc = (o: Record<string, unknown>) => ({ project: { size: "9:16", fps: 30 }, tracks: [
-      { id: "v", kind: "video", clips: [clip] },
+    const doc = (o: Record<string, unknown>, t: Record<string, unknown> = {}) => ({ project: { size: "9:16", fps: 30 }, tracks: [
+      { id: "v", kind: "video", clips: [{ ...clip, effects: [{ id: "zoomPunch", intensity: 0.5 }] }] },
       { id: "o", kind: "overlay", clips: [{ ...clip, id: "s", ...o }] },
+      { id: "t", kind: "text", clips: [{ id: "x", start: 0, text: "Hi", duration: 2, ...t }] },
     ] });
-    const v5 = doc({ assetId: undefined, version: undefined, sticker: { pack: "noto-emoji", id: "fire" } });
-    const stamped = { schemaVersion: 5, tracks: [{ clips: [{ assetId: "asset-own" }] }, { clips: [{ sticker: { pack: "noto-emoji", id: "fire" } }] }] };
+    const v5 = doc({ assetId: undefined, version: undefined, sticker: { pack: "noto-emoji", id: "fire" } }, { animation: { in: "pop" } });
+    const stamped = { schemaVersion: 5, tracks: [{ clips: [{ effects: [{ id: "zoomPunch", intensity: 0.5 }] }] }, { clips: [{ sticker: { pack: "noto-emoji", id: "fire" } }] }, { clips: [{ animation: { in: "pop", inDuration: 0.5 } }] }] };
     const made = await createVideoEdit(ctx, CO, { title: "Stickers", doc: v5 }, USER);
     expect(await editDoc(made.id)).toMatchObject(stamped);
     expect(JSON.stringify((await editDoc(made.id)).tracks[1])).not.toMatch(/assetId/);
-    const version = await saveEditVersion(ctx, CO, { editId: made.id, name: "sticker" }, USER);
-    await saveVideoEdit(ctx, CO, { editId: made.id, baseRevision: 1, doc: { ...doc({}), schemaVersion: 5 } }, USER);
+    const version = await saveEditVersion(ctx, CO, { editId: made.id, name: "fx" }, USER);
+    await saveVideoEdit(ctx, CO, { editId: made.id, baseRevision: 1, doc: { ...doc({}), tracks: doc({}).tracks.map((t) => ({ ...t, clips: t.clips.map((c) => ({ ...c, effects: [] })) })) } }, USER);
     expect(await editDoc(made.id)).toMatchObject({ schemaVersion: 1 });
     await restoreEditVersion(ctx, CO, { editId: made.id, baseRevision: 2, versionId: version.id }, USER);
     expect(await editDoc(made.id)).toMatchObject(stamped);
     await expect(saveVideoEdit(ctx, CO, { editId: made.id, baseRevision: 3, doc: doc({ assetId: undefined, sticker: { pack: "noto-emoji", id: "nope" } }) }, USER)).rejects.toMatchObject({ reason: "unknown_sticker" });
+    await expect(saveVideoEdit(ctx, CO, { editId: made.id, baseRevision: 3, doc: doc({ effects: [{ id: "glitch" }] }) }, USER)).rejects.toMatchObject({ reason: "unknown_effect" });
   });
 
   it("v2 writer: volume keyframes on a picture are refused with no_audio", async () => {
