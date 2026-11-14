@@ -44,11 +44,14 @@ import {
   getAccount,
   getContact,
   getDeal,
+  getStage,
   insertActivity,
   insertActivityOnce,
   insertDeal,
+  listCompanyStages,
   listDeals,
   listLinks,
+  listPipelines,
   listStages,
   saveAccount,
   saveContact,
@@ -211,23 +214,30 @@ async function wonStageId(ctx: PluginContext, pipelineId: string): Promise<strin
 }
 
 /**
- * Moves a deal to a stage: logs the move, stops the contact's sequences on
- * won or lost, and runs the won hand-off when it enters a won stage.
+ * Moves a deal to a stage, in any pipeline of the deal's company: the deal
+ * takes the stage's pipeline (the one place `pipeline_id` is set, so it
+ * always equals its stage's). Logs the move, stops the contact's sequences
+ * on won or lost, and runs the won hand-off when it enters a won stage.
  */
 export async function moveDealTo(
   ctx: PluginContext,
   deal: DealDraft,
-  stage: { id: string; name: string; kind: string },
+  stage: { id: string; name: string; kind: string; pipeline_id: string; company_id?: string },
   how: string,
 ): Promise<{ deal: DealDraft; stageKind: string; won: { firstWin: boolean; emitted: boolean; issueId: string | null } | null }> {
-  const before = await listStages(ctx, deal.pipelineId).catch(() => []);
-  const wasWon = stageKind(before.find((row) => row.id === deal.stageId)?.kind ?? "open") === "won";
+  if (stage.company_id != null && stage.company_id !== deal.companyId) throw new Error("Stage was not found");
+  // The old stage decides what the deal was (won or not) and which pipeline it was in; a legacy row's own pipeline_id may disagree.
+  const before = await getStage(ctx, deal.stageId).catch(() => null);
+  const wasWon = stageKind(before?.kind ?? "open") === "won";
+  const fromPipeline = before?.pipeline_id ?? deal.pipelineId;
   const moved = deal.stageId !== stage.id;
-  const next: DealDraft = { ...deal, stageId: stage.id };
+  const next: DealDraft = { ...deal, stageId: stage.id, pipelineId: stage.pipeline_id };
   await saveDeal(ctx, next);
   if (moved) {
     // Recorded for the deal's history and the Cockpit's activity list; never fails the move.
-    await insertActivity(ctx, { companyId: deal.companyId, recordType: "deal", recordId: deal.id, kind: "deal_moved", body: `Moved to ${stage.name}` }).catch(() => undefined);
+    const into = fromPipeline === stage.pipeline_id ? null : (await listPipelines(ctx, deal.companyId).catch(() => [])).find((row) => row.id === stage.pipeline_id)?.name;
+    const body = into ? `Moved to ${into}: ${stage.name}` : `Moved to ${stage.name}`;
+    await insertActivity(ctx, { companyId: deal.companyId, recordType: "deal", recordId: deal.id, kind: "deal_moved", body }).catch(() => undefined);
   }
   const kind = stageKind(stage.kind);
   if (stageStopsEnrollments(kind) && deal.contactId) await stopEnrollmentsForContact(ctx, deal.companyId, deal.contactId);
@@ -266,9 +276,8 @@ export type MoveToWon = (deal: DealDraft, stageId: string, how: string) => Promi
 
 export function moveToWonWith(ctx: PluginContext): MoveToWon {
   return async (deal, stageId, how) => {
-    const stages = await listStages(ctx, deal.pipelineId);
-    const stage = stages.find((row) => row.id === stageId);
-    if (!stage) throw new Error("Won stage was not found");
+    const stage = await getStage(ctx, stageId);
+    if (!stage || stage.company_id !== deal.companyId) throw new Error("Won stage was not found");
     await moveDealTo(ctx, deal, stage, how);
   };
 }
@@ -322,12 +331,13 @@ export async function handleQuoteAccepted(ctx: PluginContext, companyId: string,
   if (quote.dealId) {
     const deal = await getDeal(ctx, quote.dealId);
     if (deal && deal.companyId === companyId) {
-      const stages = await listStages(ctx, deal.pipelineId);
-      if (stageKind(stages.find((stage) => stage.id === deal.stageId)?.kind ?? "open") === "won") {
+      const current = await getStage(ctx, deal.stageId);
+      if (stageKind(current?.kind ?? "open") === "won") {
         await logQuote(ctx, companyId, deal, quote);
         return { action: "already-won", dealId: deal.id };
       }
-      const won = await wonStageId(ctx, deal.pipelineId);
+      // The won stage of the deal's own pipeline (its stage's).
+      const won = await wonStageId(ctx, current?.pipeline_id ?? deal.pipelineId);
       if (!won) return { action: "ignored", dealId: deal.id, reason: "The pipeline has no won stage" };
       await moveToWon(deal, won, how);
       await logQuote(ctx, companyId, deal, quote);
@@ -339,17 +349,22 @@ export async function handleQuoteAccepted(ctx: PluginContext, companyId: string,
   if (!client) return { action: "ignored", reason: `Client ${refOf(quote.clientKind, quote.clientRef)} is not in the CRM` };
   const deals = await clientDeals(ctx, companyId, quote.clientKind, quote.clientRef);
   const pipeline = await ensurePipeline(ctx, companyId);
-  const stages = await listStages(ctx, pipeline.pipelineId);
-  const kindOf = (deal: DealDraft) => stageKind(stages.find((stage) => stage.id === deal.stageId)?.kind ?? "open");
+  // Each deal is classified by its own stage, in whichever pipeline that stage is.
+  const stages = new Map((await listCompanyStages(ctx, companyId)).map((stage) => [stage.id, stage]));
+  const kindOf = (deal: DealDraft) => stageKind(stages.get(deal.stageId)?.kind ?? "open");
   const open = deals.filter((deal) => kindOf(deal) === "open");
-  const won = await wonStageId(ctx, pipeline.pipelineId);
-  if (!won) return { action: "ignored", reason: "The pipeline has no won stage" };
   if (open.length === 1) {
-    await moveToWon(open[0]!, won, how);
-    await logQuote(ctx, companyId, open[0]!, quote);
-    return { action: "won", dealId: open[0]!.id };
+    const only = open[0]!;
+    const won = await wonStageId(ctx, stages.get(only.stageId)?.pipeline_id ?? only.pipelineId);
+    if (!won) return { action: "ignored", dealId: only.id, reason: "The pipeline has no won stage" };
+    await moveToWon(only, won, how);
+    await logQuote(ctx, companyId, only, quote);
+    return { action: "won", dealId: only.id };
   }
   if (open.length === 0) {
+    // A new deal goes to the default pipeline.
+    const won = await wonStageId(ctx, pipeline.pipelineId);
+    if (!won) return { action: "ignored", reason: "The pipeline has no won stage" };
     // A sale without a deal in the pipeline: record it as a won deal so the pipeline and the client's lifecycle are right.
     const deal: DealDraft = {
       id: randomUUID(),

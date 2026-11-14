@@ -802,7 +802,7 @@ export async function saveDeal(ctx: PluginContext, deal: DealDraft): Promise<voi
     `UPDATE ${table(ctx, "deals")}
         SET stage_id = $2, title = $3, amount_minor = $4, currency = $5, tags = $6::jsonb,
             next_action_kind = $7, next_action_due_at = $8, custom = $9::jsonb,
-            human_owned_fields = $10::jsonb, account_id = $11, contact_id = $12, updated_at = now()
+            human_owned_fields = $10::jsonb, account_id = $11, contact_id = $12, pipeline_id = $13, updated_at = now()
       WHERE id = $1`,
     [
       deal.id,
@@ -817,8 +817,14 @@ export async function saveDeal(ctx: PluginContext, deal: DealDraft): Promise<voi
       json(deal.humanOwned),
       deal.accountId,
       deal.contactId,
+      deal.pipelineId,
     ],
   );
+}
+
+/** The pipeline a deal belongs to: its stage's (a legacy row's own `pipeline_id` may disagree), else its own column. */
+export async function dealPipelineId(ctx: PluginContext, deal: Pick<DealDraft, "pipelineId" | "stageId">): Promise<string> {
+  return (await getStage(ctx, deal.stageId))?.pipeline_id ?? deal.pipelineId;
 }
 
 export async function stopEnrollmentsForContact(ctx: PluginContext, companyId: string, contactId: string): Promise<void> {

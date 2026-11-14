@@ -841,6 +841,7 @@ export const CRM_TOOLS: PluginToolDeclaration[] = [
       "Create a deal (a sale in progress) in the first open stage for a client. Link it with companyRecordId and/or contactId. Returns its id. Put its id on the Billing quote so acceptance closes it.",
     parametersSchema: schema(["title"], {
       title: text("What is being sold, e.g. Website rebuild."),
+      pipeline: text("The pipeline it goes in: its id or name (see list-stages). It starts in that pipeline's first open stage. Omit for the main (default) pipeline."),
       amountMinor: P.amountMinor,
       currency: P.currency,
       companyRecordId: P.companyRecordId,
@@ -853,10 +854,11 @@ export const CRM_TOOLS: PluginToolDeclaration[] = [
     name: "move-deal",
     displayName: "Move deal",
     description:
-      "Move a deal to another stage. Won makes the client a customer, logs the win and tells Billing and the Cockpit (a first win starts onboarding). Won or lost stops the contact's sequences.",
-    parametersSchema: schema(["dealId", "stageId"], {
+      "Move a deal to another stage, also into another pipeline. Send stageId, pipeline or both. Won makes the client a customer, logs the win and tells Billing and the Cockpit (a first win starts onboarding). Won or lost stops the contact's sequences.",
+    parametersSchema: schema(["dealId"], {
       dealId: P.dealId,
-      stageId: text("Stage id from list-stages. A stage name (e.g. Proposal) or the word won or lost also works."),
+      stageId: text("Stage id from list-stages (another pipeline's stage id moves the deal there). A stage name (e.g. Proposal) or the word won or lost also works: looked up in pipeline if given, else in the deal's pipeline."),
+      pipeline: text("Pipeline id or name (see list-stages). Alone: the deal goes to that pipeline's first open stage (a deal already in it stays put). With a stage id, the stage must be in this pipeline."),
       quoteId: text("Only with stageId won: the accepted quote this deal closes (from a pick-the-deal hand-off). The deal records it."),
     }),
   },
@@ -873,6 +875,7 @@ export const CRM_TOOLS: PluginToolDeclaration[] = [
       companyRecordId: text("The CRM company this deal is for (company:<id> also works). An empty string unlinks it."),
       contactId: text("The CRM contact this deal is with (contact:<id> also works). An empty string unlinks it."),
       stageId: text("Move to this stage: id from list-stages, a stage name, or won or lost. Won makes the client a customer and tells Billing."),
+      pipeline: text("Move to this pipeline (id or name, see list-stages), as move-deal: alone, its first open stage; with stageId, where a stage name is looked up."),
     }),
   },
   {
