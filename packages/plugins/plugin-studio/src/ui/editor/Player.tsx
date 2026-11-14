@@ -15,7 +15,7 @@ import { useHostContext } from "@paperclipai/plugin-sdk/ui";
 import { Button } from "@partnersinbiz/pib-plugin-ui";
 import type { EditorStore } from "./editor-store.js";
 import { useStickerBase } from "./sticker-base.js";
-import { stickerUrl } from "./sticker-url.js";
+import { overlayAssetIds, overlaySourceUrl } from "./sticker-url.js";
 import { assignSlots, blendCss, buildPreviewPlan, clipTransform, containBox, frameAt, layerFrame, overlaysAt, previewGrade, type PreviewFrame, type PreviewGrade, type PreviewLayer, type PreviewSlots } from "./preview-plan.js";
 import { usePreviewUrls } from "../previews.js";
 import { Overlay } from "./Overlay.js";
@@ -44,7 +44,7 @@ export function Player({ store }: { store: EditorStore }) {
   // Audio clips near the playhead get an <audio> element (PAR-8322); their assets' links load with the video's.
   const audioNear = audioWindow(doc, playhead);
   const allAudio = useMemo(() => audioClips(doc), [doc]);
-  const previews = usePreviewUrls(companyId, [...new Set([...plan.segments.map((s) => s.assetId), ...plan.overlays.filter((s) => !s.sticker).map((s) => s.assetId), ...allAudio.map((a) => a.clip.assetId)])]);
+  const previews = usePreviewUrls(companyId, [...new Set([...plan.segments.map((s) => s.assetId), ...overlayAssetIds(plan.overlays), ...allAudio.map((a) => a.clip.assetId)])]);
   useSyncExternalStore(audioMute.subscribe, audioMute.getSnapshot, audioMute.getSnapshot);
   const picking = useSyncExternalStore(eyedropper.subscribe, eyedropper.getState, eyedropper.getState).clipId;
   const [playing, setPlaying] = useState(false);
@@ -259,7 +259,7 @@ export function PreviewLayers({ frame, overlays = [], overlayUrls = {}, playing 
         ) : null;
       })}
       {overlays.map((layer, k) => (
-        <OverlayClip key={layer.segment.clipId} layer={layer} url={layer.segment.sticker ? stickerUrl(stickerBase, layer.segment.sticker) : overlayUrls[layer.segment.assetId]} z={10 + k} size={size} project={project} playing={playing} onLoaded={onLoaded} />
+        <OverlayClip key={layer.segment.clipId} layer={layer} url={overlaySourceUrl(layer.segment, stickerBase, overlayUrls)} z={10 + k} size={size} project={project} playing={playing} onLoaded={onLoaded} />
       ))}
       {frame.matte ? <div data-preview-matte={frame.matte.color} style={{ position: "absolute", inset: 0, zIndex: 2, background: frame.matte.color, opacity: frame.matte.opacity }} /> : null}
     </div>

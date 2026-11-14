@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildPreviewPlan } from "../src/ui/editor/preview-plan.js";
-import { stickerUrl } from "../src/ui/editor/sticker-url.js";
+import { overlayAssetIds, overlaySourceUrl, stickerUrl } from "../src/ui/editor/sticker-url.js";
 import { normalizeEdit } from "../src/video-edit/timeline.js";
 
 const doc = normalizeEdit({
@@ -19,7 +19,7 @@ describe("preview plan with a sticker overlay", () => {
     expect(sticker).toMatchObject({ clipId: "s", assetId: "", sticker: { pack: "noto-emoji", id: "fire" } });
     expect(media).toMatchObject({ clipId: "m", assetId: "top", sticker: null });
     // The id list Player.tsx builds: stickers filtered out.
-    expect(plan.overlays.filter((s) => !s.sticker).map((s) => s.assetId)).toEqual(["top"]);
+    expect(overlayAssetIds(plan.overlays)).toEqual(["top"]);
   });
 });
 
@@ -29,5 +29,15 @@ describe("stickerUrl", () => {
     expect(stickerUrl(null, { pack: "pib-shapes", id: "star" })).toBeUndefined();
     expect(stickerUrl("https://h/ui/", { pack: "noto-emoji", id: "../../x" } as never)).toBeUndefined();
     expect(stickerUrl("https://h/ui/", undefined)).toBeUndefined();
+  });
+});
+
+describe("overlaySourceUrl", () => {
+  it("picks the bundled pack for a sticker and the library preview for media", () => {
+    const [sticker, media] = buildPreviewPlan(doc).overlays;
+    const urls = { top: "blob:top" };
+    expect(overlaySourceUrl(sticker, "https://h/ui/", urls)).toBe("https://h/ui/stickers/noto-emoji/fire.png");
+    expect(overlaySourceUrl(media, "https://h/ui/", urls)).toBe("blob:top");
+    expect(overlaySourceUrl(sticker, null, urls)).toBeUndefined();
   });
 });

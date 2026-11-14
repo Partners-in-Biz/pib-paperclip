@@ -14,3 +14,17 @@ export function stickerUrl(base: string | null, ref: StickerRef | null | undefin
     return undefined;
   }
 }
+
+/** The library asset ids an overlay list needs previews for: stickers have no asset, so they are left out. */
+export function overlayAssetIds(overlays: readonly { assetId: string; sticker?: StickerRef | null }[]): string[] {
+  return overlays.filter((s) => !s.sticker).map((s) => s.assetId);
+}
+
+/** The URL an overlay segment plays from: the bundled pack for a sticker, else its library preview. */
+export function overlaySourceUrl(
+  seg: { assetId: string; sticker?: StickerRef | null },
+  stickerBase: string | null,
+  overlayUrls: Readonly<Record<string, string | undefined>>,
+): string | undefined {
+  return seg.sticker ? stickerUrl(stickerBase, seg.sticker) : overlayUrls[seg.assetId];
+}
