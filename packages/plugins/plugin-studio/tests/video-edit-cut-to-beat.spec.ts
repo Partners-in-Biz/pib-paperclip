@@ -10,7 +10,8 @@ const v = (id: string, start: number, len: number, extra: object = {}) => ({ id,
 const doc = normalizeEdit({
   tracks: [
     { id: "main", kind: "video", clips: [v("c1", 0, 2.3), v("c2", 2.3, 2.6), v("c3", 4.9, 2.3)] },
-    { id: "music", kind: "audio", clips: [{ id: "m1", assetId: "song", version: 1, in: 0, out: 30, start: 0 }] },
+    { id: "music", kind: "audio", clips: [{ id: "m1", assetId: "song", version: 1, in: 0, out: 30, start: 0 }, { id: "late", assetId: "song", version: 1, in: 400, out: 410, start: 30 }] },
+    { id: "ov", kind: "overlay", clips: [{ id: "st", sticker: { pack: "noto-emoji", id: "fire" }, in: 0, out: 2, start: 0 }] },
   ],
 });
 // 120 BPM from 0 s.
@@ -70,7 +71,15 @@ describe("cutToBeatAction", () => {
 
   it("refuses a stale revision, a bad every and cutting the music's own track", async () => {
     await expect(cutToBeatAction(ctx, "co", { editId: "e1", baseRevision: 2, musicClipId: "m1" }, {})).rejects.toThrow(/revision 3/);
-    await expect(cutToBeatAction(ctx, "co", { editId: "e1", baseRevision: 3, musicClipId: "m1", every: 3 }, {})).rejects.toThrow(/every must be/);
+    for (const every of [3, "2", true, [2]]) await expect(cutToBeatAction(ctx, "co", { editId: "e1", baseRevision: 3, musicClipId: "m1", every }, {})).rejects.toThrow(/every must be/);
     await expect(cutToBeatAction(ctx, "co", { editId: "e1", baseRevision: 3, musicClipId: "c1", trackId: "main" }, {})).rejects.toThrow(/track being cut/);
+  });
+
+  it("refuses a sticker as the music clip, as a StudioError", async () => {
+    await expect(cutToBeatAction(ctx, "co", { editId: "e1", baseRevision: 3, musicClipId: "st" }, {})).rejects.toMatchObject({ name: "StudioError", message: "A sticker has no sound; pick a video or sound clip." });
+  });
+
+  it("says so when the music clip's range has no beats (past the analysed part)", async () => {
+    await expect(cutToBeatAction(ctx, "co", { editId: "e1", baseRevision: 3, musicClipId: "late" }, {})).rejects.toMatchObject({ code: "no_beats", message: expect.stringMatching(/No beats in the music clip's range.*first 360 s/) });
   });
 });

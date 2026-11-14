@@ -6,7 +6,7 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { StudioError } from "../errors.js";
 import { applyOpsAction } from "./actions.js";
-import { gridFor, soundClip, text, timelineBeats, type BeatDeps } from "./beats.js";
+import { analysedWarning, gridFor, soundClip, text, timelineBeats, type BeatDeps } from "./beats.js";
 import { applyOps, type EditOp } from "./ops.js";
 import { getVideoEdit, type EditActor } from "./store.js";
 import { clipDuration, type EditDoc, type MediaClip } from "./timeline.js";
@@ -53,8 +53,8 @@ export async function cutToBeatAction(ctx: PluginContext, companyId: string, par
   if (!Number.isInteger(base) || base < 1) bad("baseRevision is required: the revision these changes start from.");
   const musicClipId = text(params.musicClipId);
   if (!musicClipId) bad("musicClipId is required: the sound clip whose beats set the cuts.");
-  const every = params.every === undefined ? 1 : Number(params.every);
-  if (!(EVERY as readonly number[]).includes(every)) bad(`every must be one of ${EVERY.join(", ")}.`);
+  const every = params.every === undefined ? 1 : params.every;
+  if (typeof every !== "number" || !(EVERY as readonly number[]).includes(every)) bad(`every must be one of ${EVERY.join(", ")}.`);
   const edit = await getVideoEdit(ctx, companyId, text(params.editId));
   if (edit.revision !== base) throw new StudioError(`Someone saved this video edit since you opened it (now revision ${edit.revision}). Reload to see their changes.`, "edit_conflict");
   const trackId = text(params.trackId) || edit.doc.tracks.find((t) => t.kind === "video")?.id;
@@ -63,7 +63,9 @@ export async function cutToBeatAction(ctx: PluginContext, companyId: string, par
   if (edit.doc.tracks.find((t) => t.id === trackId)?.clips.some((c) => c.id === musicClipId)) bad("The music clip is on the track being cut; pick another track.");
   const { grid } = await gridFor(ctx, companyId, edit, music, deps);
   if (grid.tempo <= 0) bad("No steady beat was found in this clip's sound.", "no_beats");
-  const beats = timelineBeats(grid.beats, music).filter((_, i) => i % every === 0);
+  const inRange = timelineBeats(grid.beats, music);
+  if (!inRange.length) bad(`No beats in the music clip's range (source ${music.in}..${music.out} s). ${analysedWarning(music) ?? ""}`.trim(), "no_beats");
+  const beats = inRange.filter((_, i) => i % every === 0);
   // On the timeline a beat lasts 60 / tempo / speed of the music clip.
   const ops = cutToBeatOps(edit.doc, trackId, beats, (every * 60) / (grid.tempo * music.speed) + 0.001);
   const summary = { trackId, cuts: ops.length, tempo: grid.tempo, every };
