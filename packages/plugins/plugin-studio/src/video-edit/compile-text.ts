@@ -7,10 +7,16 @@
  * the `ass` filter with `fontsdir=` set to the bundled fonts; ASS text is escaped (`\`, `{`, `}`, newlines). Only paths
  * we choose (work-dir file names, the fonts folder) are written into the graph, escaped for both filter levels.
  * Tracks are drawn in document order over everything the video compiler laid down (main track + overlays).
+ *
+ * A text clip with an `animation` (schema v5) is drawn through ASS instead (`text-<clipId>.ass`, same `ass` filter and
+ * fonts as captions), its presets written from the shared tables in `text-animation.ts`. Text without one keeps its
+ * drawtext, byte for byte.
  */
 import { CompileError, type CompileFile } from "./compile-video.js";
+import type { LayoutFont } from "../layout.js";
 import { FONTS, fontFile, fontId } from "./fonts.js";
 import { toFfmpegExpr } from "./keyframes.js";
+import { moveOffset, phases, PRESETS, revealTime, revealUnits, type Curve, type Phase } from "./text-animation.js";
 import type { CaptionClip, CaptionStyle, CaptionWord, EditDoc, Keyframe, TextClip } from "./timeline.js";
 
 export interface TextLayers { filters: string[]; files: CompileFile[]; outLabel: string }
@@ -67,8 +73,8 @@ function fadeAlpha(start: number, end: number, fadeIn: number, fadeOut: number):
 
 export const textFileName = (clip: TextClip) => `text-${clip.id}.txt`;
 
-/** One drawtext for a text clip: bold face of its font, centred on the frame plus its x/y offset, shown for its time. */
-function drawtext(clip: TextClip, fontsDir: string): string {
+/** The bundled font of a text clip, refusing what neither text path can draw. */
+function textFont(clip: TextClip): LayoutFont {
   const id = fontId(clip.font);
   if (!id) throw new CompileError("unsupported_feature", "text_font");
   const t = clip.transform;
@@ -76,6 +82,14 @@ function drawtext(clip: TextClip, fontsDir: string): string {
   if (t.rotate !== 0 || keys.rotate) throw new CompileError("unsupported_feature", "text_rotate");
   if (keys.scale) throw new CompileError("unsupported_feature", "text_scale");
   if (t.crop.left + t.crop.top + t.crop.right + t.crop.bottom > 0) throw new CompileError("unsupported_feature", "text_crop");
+  return id;
+}
+
+/** One drawtext for a text clip: bold face of its font, centred on the frame plus its x/y offset, shown for its time. */
+function drawtext(clip: TextClip, fontsDir: string): string {
+  const id = textFont(clip);
+  const t = clip.transform;
+  const keys = clip.keyframes ?? {};
   // Keyframe `t` counts from the clip's start; drawtext's `t` is timeline time, so the curve is offset by `clip.start`.
   const keyed = (kfs: Keyframe[]) => toFfmpegExpr(kfs, 0, clip.start);
   const size = Math.max(1, Math.round(clip.fontSize * t.scale));
@@ -187,6 +201,112 @@ export function captionAss(doc: EditDoc, clips: CaptionClip[]): string {
 }
 
 export const captionFileName = (trackId: string) => `captions-${trackId}.ass`;
+export const textAssName = (clip: TextClip) => `text-${clip.id}.ass`;
+
+/**
+ * OS/2 metrics of the bundled bold faces (read from fonts/*.ttf; a test re-reads them). libass sizes a face so that
+ * winAscent + winDescent fill the style's Fontsize, where drawtext's fontsize is the em, and `\an5` centres that box on
+ * `\pos`. So the ASS size is the drawtext size x (winAscent + winDescent) / upem, and `\pos` is raised by the distance
+ * from the box centre to the centre of the cap height, which is where drawtext's ink box centres capitals.
+ */
+export const ASS_FACE: Record<LayoutFont, { upem: number; winAscent: number; winDescent: number; capHeight: number }> = {
+  sans: { upem: 2048, winAscent: 1984, winDescent: 494, capHeight: 1490 },
+  serif: { upem: 1000, winAscent: 1206, winDescent: 294, capHeight: 700 },
+  rounded: { upem: 1000, winAscent: 1077, winDescent: 300, capHeight: 705 },
+};
+
+const hexAlpha = (opacity: number) => `&H${Math.round(255 * (1 - Math.min(1, Math.max(0, opacity)))).toString(16).toUpperCase().padStart(2, "0")}&`;
+/** Fill and outline alpha for an opacity: the outline is black at 0.6, as drawtext's `bordercolor=0x000000@0.6`. */
+const alphaTags = (opacity: number) => `\\1a${hexAlpha(opacity)}\\3a${hexAlpha(0.6 * opacity)}`;
+
+/** drawtext's fade alpha (`fadeAlpha`) at clip-local `t`. */
+function fadeAt(t: number, duration: number, fadeIn: number, fadeOut: number): number {
+  if (fadeIn > 0 && t < fadeIn) return Math.max(0, t / fadeIn);
+  if (fadeOut > 0 && t > duration - fadeOut) return Math.max(0, (duration - t) / fadeOut);
+  return 1;
+}
+
+/** The ASS document for one animated text clip: one event per phase (entry, rest, exit), each with its own tags. */
+export function animatedTextAss(doc: EditDoc, clip: TextClip): string {
+  const id = textFont(clip);
+  if (Object.keys(clip.keyframes ?? {}).length) throw new CompileError("unsupported_feature", "text_animation_keyframes");
+  const frame = { width: doc.project.width, height: doc.project.height };
+  const t = clip.transform;
+  const size = Math.max(1, Math.round(clip.fontSize * t.scale));
+  const face = ASS_FACE[id];
+  const lift = ((face.winAscent - face.winDescent - face.capHeight) / 2 / face.upem) * size;
+  const rest = { x: frame.width / 2 + t.x, y: frame.height / 2 + t.y - lift };
+  const D = clip.duration;
+  const fadeIn = Math.max(clip.fadeIn, clip.transitionIn?.duration ?? 0);
+  const text = textFileContent(clip.text);
+  const ph = phases(clip.animation, D);
+  const restFrom = ph.find((p) => p.side === "in")?.to ?? 0;
+  const restTo = ph.find((p) => p.side === "out")?.from ?? D;
+  const spans: { from: number; to: number; phase?: Phase }[] = [...ph.map((p) => ({ from: p.from, to: p.to, phase: p })), { from: restFrom, to: restTo }];
+  const events = spans
+    .sort((a, b) => a.from - b.from)
+    .flatMap(({ from, to, phase }) => {
+      const start = assTime(clip.start + from);
+      const end = assTime(clip.start + to);
+      if (start === end) return [];
+      const origin = Math.round((clip.start + from) * 100) / 100;
+      // Milliseconds from the event's (centisecond) start to clip-local `at`.
+      const rel = (at: number) => Math.max(0, Math.round((clip.start + at - origin) * 1000));
+      const len = rel(to);
+      let tags = "";
+      let body = assText(text);
+      if (fadeIn > 0 || clip.fadeOut > 0) {
+        const t2 = Math.min(to, Math.max(from, fadeIn));
+        const t3 = Math.min(to, Math.max(t2, D - clip.fadeOut));
+        const a = (at: number) => Math.round(255 * (1 - fadeAt(at, D, fadeIn, clip.fadeOut)));
+        if (a(from) + a(t2) + a(to) > 0) tags += `\\fade(${a(from)},${a(t2)},${a(to)},0,${rel(t2)},${rel(t3)},${len})`;
+      }
+      if (!phase) return [`Dialogue: 0,${start},${end},t,,0,0,0,,{\\pos(${num(rest.x)},${num(rest.y)})${tags}}${body}`];
+      const shape = PRESETS[phase.preset];
+      // Clip-local time of a curve point: entry runs p forwards from the clip start, exit runs it backwards to the end.
+      const at = (p: number) => (phase.side === "in" ? phase.from + p * (phase.to - phase.from) : phase.to - p * (phase.to - phase.from));
+      const timed = (curve: Curve, write: (v: number) => string) => {
+        const pts = curve.map(([p, v]) => [at(p), v] as const).sort((x, y) => x[0] - y[0]);
+        let out = write(pts[0]![1]);
+        for (let i = 1; i < pts.length; i++) out += `\\t(${rel(pts[i - 1]![0])},${rel(pts[i]![0])},${write(pts[i]![1])})`;
+        return out;
+      };
+      const far = moveOffset(phase, 0, frame);
+      const [x1, y1, x2, y2] = phase.side === "in" ? [rest.x + far.dx, rest.y + far.dy, rest.x, rest.y] : [rest.x, rest.y, rest.x + far.dx, rest.y + far.dy];
+      tags = (shape.move ? `\\move(${num(x1)},${num(y1)},${num(x2)},${num(y2)},${rel(phase.from)},${rel(phase.to)})` : `\\pos(${num(rest.x)},${num(rest.y)})`) + tags;
+      if (shape.scale) tags += timed(shape.scale, (v) => `\\fscx${num(v * 100)}\\fscy${num(v * 100)}`);
+      if (shape.alpha) tags += timed(shape.alpha, alphaTags);
+      if (shape.reveal) {
+        // Every unit is laid out from the start (so the line does not shift); each one's alpha flips at its time.
+        const { units, tail } = revealUnits(text, shape.reveal);
+        const [hidden, shown] = phase.side === "in" ? [alphaTags(0), alphaTags(1)] : [alphaTags(1), alphaTags(0)];
+        body = units.map((u, i) => {
+          const r = rel(revealTime(phase, i, units.length));
+          const tag = phase.side === "in" && r <= 0 ? shown : `${hidden}\\t(${r},${r + 1},${shown})`;
+          return `${assText(u.prefix)}{${tag}}${assText(u.text)}`;
+        }).join("") + assText(tail);
+      }
+      return [`Dialogue: 0,${start},${end},t,,0,0,0,,{${tags}}${body}`];
+    });
+  return [
+    "[Script Info]",
+    "ScriptType: v4.00+",
+    `PlayResX: ${frame.width}`,
+    `PlayResY: ${frame.height}`,
+    "WrapStyle: 2",
+    "ScaledBorderAndShadow: yes",
+    "YCbCr Matrix: None",
+    "",
+    "[V4+ Styles]",
+    "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+    `Style: t,${FONTS[id].family},${num((size * (face.winAscent + face.winDescent)) / face.upem)},${assColor(clip.color)},${assColor(clip.color)},&H66000000,&H00000000,-1,0,0,0,100,100,0,0,1,${Math.max(1, Math.round(size / 24))},0,5,0,0,0,1`,
+    "",
+    "[Events]",
+    "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+    ...events,
+    "",
+  ].join("\n");
+}
 
 /** Draws every non-empty text and caption track over `base`, in document order. `base` is returned when there are none. */
 export function buildTextLayers(doc: EditDoc, base: string, fontsDir: () => string): TextLayers {
@@ -201,8 +321,13 @@ export function buildTextLayers(doc: EditDoc, base: string, fontsDir: () => stri
     const out = `tx${n++}`;
     if (track.kind === "text") {
       const clips = [...track.clips].sort((a, b) => a.start - b.start);
-      for (const clip of clips) files.push({ name: textFileName(clip), content: textFileContent(clip.text) });
-      filters.push(`[${label}]${clips.map((clip) => drawtext(clip, fonts())).join(",")}[${out}]`);
+      for (const clip of clips) {
+        if (clip.animation) files.push({ name: textAssName(clip), content: animatedTextAss(doc, clip) });
+        else files.push({ name: textFileName(clip), content: textFileContent(clip.text) });
+      }
+      const draw = (clip: TextClip) =>
+        clip.animation ? `ass=filename=${filterValue(textAssName(clip))}:fontsdir=${filterValue(fonts())}` : drawtext(clip, fonts());
+      filters.push(`[${label}]${clips.map(draw).join(",")}[${out}]`);
     } else {
       const name = captionFileName(track.id);
       files.push({ name, content: captionAss(doc, track.clips) });
