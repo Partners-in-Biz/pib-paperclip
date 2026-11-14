@@ -215,7 +215,7 @@ Src-only (PAR-10212). `store-rendered-asset` and the published post's Drive copy
 
 ## 0.13.5: archive-post / unarchive-post
 
-`archive-post` (`postId`, full id or 8-char short id) soft-deletes a post: `archived_at` is set (migration 021), the post leaves the Cockpit lists and queues, nothing is lost. Archiving twice is a no-op; published, publishing and scheduled posts are refused (unschedule first). `unarchive-post` clears the flag. Same scope rules as `update-post`.
+`archive-post` (`postId`, full id or 8-char short id) soft-deletes a post: `archived_at` is set (migration 021), the post leaves the Cockpit lists and queues, nothing is lost. Archiving twice is a no-op; published, publishing and scheduled posts are refused (unschedule first). `unarchive-post` clears the flag. Same scope rules as `update-post`. Archived posts are left out of: the post lists (`list-posts` and the personal list), the Cockpit draft, review, approved and failed counts and queues, the approval and scheduled flow stages, the review-issue check for inactive delegates, the "pick a time" done-check, the similarity window of the approval check, and the scope summary's failed count. They are still counted in stats and the plan-trigger totals (history of what was written). Archiving a post in review cancels its open review issue and detaches it; a pending client approval link is superseded. Archiving does not touch media: the files stay in the library and are only reachable through the unarchived post. Unarchiving does not reopen the review issue; send the post for review again.
 
 ## 0.11.2: unschedule-post
 

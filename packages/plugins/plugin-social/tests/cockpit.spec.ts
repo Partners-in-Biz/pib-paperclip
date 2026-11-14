@@ -288,7 +288,7 @@ describe("waitsOn only where the delegate's own gate says yes (PAR-10701)", () =
     const db = w.ctx.db as unknown as { query: (sql: string, params: unknown[]) => Promise<unknown[]> };
     const base = db.query;
     db.query = async (sql, params) => {
-      if (sql.includes(`FROM ${T("posts")} WHERE company_id = $1 AND status = 'review' ORDER BY updated_at`)) {
+      if (sql.includes(`FROM ${T("posts")} WHERE company_id = $1 AND status = 'review' AND archived_at IS NULL ORDER BY updated_at`)) {
         return w.post.status === "review" ? [{ ...postRow(w), review_issue_id: "iss-9", review_since: SINCE }] : [];
       }
       if (sql.includes(`FROM ${T("posts")} WHERE company_id = $1 AND status = 'approved'`)) return approved;

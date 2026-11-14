@@ -748,13 +748,14 @@ export function postOverrides(row: Pick<PostRow, "overrides">): Partial<Record<S
 /** Posts, newest first. `scope` undefined = every scope (jobs); null = own work. Excludes personal posts unless includePersonal (own work is the company's posts, never a person's My Social drafts). */
 export async function listPosts(ctx: PluginContext, companyId: string, filter: { status?: string; scope?: ClientScope; limit?: number; includePersonal?: boolean } = {}): Promise<PostRow[]> {
   const params: unknown[] = [companyId];
-  let where = "company_id = $1 AND archived_at IS NULL";
+  let where = "company_id = $1";
   if (filter.status) {
     params.push(filter.status);
     where += ` AND status = $${params.length}`;
   }
   where += scopeClause(filter.scope, params);
   if (!filter.includePersonal) where += orgOnlyClause();
+  where += " AND archived_at IS NULL";
   params.push(Math.min(Math.max(filter.limit ?? 500, 1), 1000));
   return ctx.db.query<PostRow>(
     `SELECT ${POST_COLS} FROM ${table(ctx, "posts")} WHERE ${where} ORDER BY created_at DESC LIMIT $${params.length}`,
@@ -1870,7 +1871,7 @@ export async function scopeSummary(ctx: PluginContext, companyId: string, scope:
        (SELECT count(*) FROM ${accounts} WHERE company_id = $1 AND ${w.sql} AND status = 'needs_reconnect') AS needs_reconnect,
        (SELECT count(*) FROM ${posts} WHERE company_id = $1 AND ${w.sql} AND status = 'scheduled'
           AND scheduled_at >= now() AND scheduled_at < now() + interval '7 days') AS scheduled_week,
-       (SELECT count(*) FROM ${posts} WHERE company_id = $1 AND ${w.sql} AND status IN ('failed', 'partially_published')
+       (SELECT count(*) FROM ${posts} WHERE company_id = $1 AND ${w.sql} AND status IN ('failed', 'partially_published') AND archived_at IS NULL
           AND updated_at >= now() - interval '30 days') AS failed,
        (SELECT max(published_at) FROM ${posts} WHERE company_id = $1 AND ${w.sql}) AS last_published`,
     params,

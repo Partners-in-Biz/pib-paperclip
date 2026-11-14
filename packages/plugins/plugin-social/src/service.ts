@@ -133,7 +133,7 @@ import { spaceOf } from "./space.js";
 import { closeManualPostIssue } from "./issues.js";
 import { buildPublishRequest, retryPost } from "./publish.js";
 import { requestCreative } from "./creative.js";
-import { closePostReview, routePostReview } from "./review.js";
+import { closePostReview, issueOpen, reviewIssueOf, routePostReview } from "./review.js";
 import { mediaCompliance } from "./media-compliance.js";
 import { reviewStats } from "./review-outcomes.js";
 import { requireCanActOnPost } from "./ownership.js";
@@ -791,6 +791,19 @@ export async function archivePostRecord(ctx: PluginContext, viewer: Viewer, para
     throw new SocialError(`The post changed while you were trying to ${verb} it. Reload and try again.`);
   }
   if (archive) await supersedePendingLinks(ctx, viewer.companyId, post.id);
+  if (archive) {
+    // The review task of an archived post has nothing left to review: close it so it does not sit in someone's queue.
+    try {
+      const issueId = await reviewIssueOf(ctx, viewer.companyId, post.id);
+      if (issueId && (await issueOpen(ctx, viewer.companyId, issueId))) {
+        await ctx.issues.createComment(issueId, "This post was archived, so there is nothing left to review. Unarchive it to bring it back.", viewer.companyId);
+        await ctx.issues.update(issueId, { status: "cancelled" }, viewer.companyId);
+        await ctx.db.execute(`UPDATE ${table(ctx, "posts")} SET review_issue_id = NULL WHERE id = $1 AND company_id = $2`, [post.id, viewer.companyId]);
+      }
+    } catch (error) {
+      ctx.logger.warn("Social: could not close the review issue of an archived post", { postId: post.id, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
   ctx.logger.info(`Social post ${verb}d`, { companyId: viewer.companyId, postId: post.id, by: viewer.isAgent ? viewer.agentId : viewer.userId });
   return { ...(await getPostDetail(ctx, viewer, post.id)), changed: true };
 }

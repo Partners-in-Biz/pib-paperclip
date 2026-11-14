@@ -70,6 +70,14 @@ describe("archive-post", () => {
     });
   }
 
+  it("archiving a post in review cancels its open review issue and detaches it", async () => {
+    const w = approvalWorld({ client: null, reviewIssue: "rev-1" });
+    Object.assign(w.post, { status: "review" });
+    await archivePostRecord(w.ctx, PERSON, { postId: "p1" });
+    expect(w.updates).toContainEqual({ id: "rev-1", patch: { status: "cancelled" } });
+    expect(w.reviewIssueId()).toBeNull();
+  });
+
   it("refuses a scheduled post and says to unschedule", async () => {
     const w = world("scheduled", { scheduled_at: "2099-01-01T10:00:00Z" });
     await expect(archivePostRecord(w.ctx, PERSON, { postId: "p1" })).rejects.toThrow(/unschedule/);
