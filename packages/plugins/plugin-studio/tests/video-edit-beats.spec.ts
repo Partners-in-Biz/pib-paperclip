@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { audioExtractArgs } from "../src/video-edit/auto-caption.js";
 import { BEAT_RUN, BEATS_ALGO, detectBeats, detectBeatsAction, extractBeatAudio, SAMPLE_RATE, timelineBeats, wavSamples } from "../src/video-edit/beats.js";
@@ -21,6 +21,7 @@ vi.mock("../src/video-edit/workdir.js", () => ({
   downloadObjectToWorkdir: async () => ({ path: join(scratch, "source.bin"), bytes: 10 }),
 }));
 const scratch = mkdtempSync(join(process.env.TMPDIR || tmpdir(), "beats-spec-"));
+afterAll(() => rmSync(scratch, { recursive: true, force: true }));
 
 const hasFfmpeg = (() => {
   try {
