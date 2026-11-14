@@ -114,7 +114,7 @@ describe.skipIf(!available)("Video edit store against real Postgres", () => {
     expect(await editDoc(animated.id)).toMatchObject({ schemaVersion: 1 });
     await saveVideoEdit(ctx, CO, { editId: plain.id, baseRevision: 1, doc: v2("asset-own") }, USER);
     expect(await editDoc(plain.id)).toMatchObject({ schemaVersion: 2 });
-    await expect(saveVideoEdit(ctx, CO, { editId: plain.id, baseRevision: 2, doc: { ...v2("asset-own"), schemaVersion: 5 } }, USER)).rejects.toMatchObject({ reason: "unsupported_version" });
+    await expect(saveVideoEdit(ctx, CO, { editId: plain.id, baseRevision: 2, doc: { ...v2("asset-own"), schemaVersion: 6 } }, USER)).rejects.toMatchObject({ reason: "unsupported_version" });
   });
 
   it("v3 writer: create, save, version snapshot and restore keep adjust + look as v3; neutral adjust saves v1", async () => {
@@ -157,6 +157,26 @@ describe.skipIf(!available)("Video edit store against real Postgres", () => {
     await restoreEditVersion(ctx, CO, { editId: made.id, baseRevision: 4, versionId: version.id }, USER);
     expect(await editDoc(made.id)).toMatchObject(stamped);
     expect((await getVideoEdit(ctx, CO, made.id)).doc.schemaVersion).toBe(4);
+  });
+
+  it("v5 writer: create, save and restore keep a sticker overlay as v5; an unknown sticker is refused", async () => {
+    await addAsset("asset-own", CO, null);
+    const clip = { id: "c", assetId: "asset-own", version: 1, in: 0, out: 4, start: 0 };
+    const doc = (o: Record<string, unknown>) => ({ project: { size: "9:16", fps: 30 }, tracks: [
+      { id: "v", kind: "video", clips: [clip] },
+      { id: "o", kind: "overlay", clips: [{ ...clip, id: "s", ...o }] },
+    ] });
+    const v5 = doc({ assetId: undefined, version: undefined, sticker: { pack: "noto-emoji", id: "fire" } });
+    const stamped = { schemaVersion: 5, tracks: [{ clips: [{ assetId: "asset-own" }] }, { clips: [{ sticker: { pack: "noto-emoji", id: "fire" } }] }] };
+    const made = await createVideoEdit(ctx, CO, { title: "Stickers", doc: v5 }, USER);
+    expect(await editDoc(made.id)).toMatchObject(stamped);
+    expect(JSON.stringify((await editDoc(made.id)).tracks[1])).not.toMatch(/assetId/);
+    const version = await saveEditVersion(ctx, CO, { editId: made.id, name: "sticker" }, USER);
+    await saveVideoEdit(ctx, CO, { editId: made.id, baseRevision: 1, doc: { ...doc({}), schemaVersion: 5 } }, USER);
+    expect(await editDoc(made.id)).toMatchObject({ schemaVersion: 1 });
+    await restoreEditVersion(ctx, CO, { editId: made.id, baseRevision: 2, versionId: version.id }, USER);
+    expect(await editDoc(made.id)).toMatchObject(stamped);
+    await expect(saveVideoEdit(ctx, CO, { editId: made.id, baseRevision: 3, doc: doc({ assetId: undefined, sticker: { pack: "noto-emoji", id: "nope" } }) }, USER)).rejects.toMatchObject({ reason: "unknown_sticker" });
   });
 
   it("v2 writer: volume keyframes on a picture are refused with no_audio", async () => {
