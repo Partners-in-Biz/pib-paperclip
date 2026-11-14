@@ -463,7 +463,7 @@ async function waitingItems(ctx: PluginContext, companyId: string): Promise<Wait
   // `review_since`: the last status change or edit, i.e. when the post entered review (an edit in review moves it on).
   const posts = await ctx.db.query<PostRow & { review_issue_id: string | null; review_since: string | null }>(
     `SELECT ${POST_COLS}, review_issue_id, updated_at::text AS review_since
-       FROM ${table(ctx, "posts")} WHERE company_id = $1 AND status = 'review' ORDER BY updated_at LIMIT 20`,
+       FROM ${table(ctx, "posts")} WHERE company_id = $1 AND archived_at IS NULL AND status = 'review' ORDER BY updated_at LIMIT 20`,
     [companyId],
   );
   const policies = new Map<string, Awaited<ReturnType<typeof getPolicy>>>();
@@ -501,7 +501,7 @@ async function waitingItems(ctx: PluginContext, companyId: string): Promise<Wait
   // Approved, but no time: the Social agent has a task to pick one (or a person does, when there is no agent).
   const unscheduled = await ctx.db.query<Scoped & { id: string; body: string; schedule_issue_id: string | null; updated_at: string | null }>(
     `SELECT id, body, client_kind, client_ref, client_name, schedule_issue_id, updated_at::text AS updated_at
-       FROM ${table(ctx, "posts")} WHERE company_id = $1 AND status = 'approved' ORDER BY updated_at LIMIT 20`,
+       FROM ${table(ctx, "posts")} WHERE company_id = $1 AND archived_at IS NULL AND status = 'approved' ORDER BY updated_at LIMIT 20`,
     [companyId],
   );
   for (const post of unscheduled) {
@@ -769,7 +769,7 @@ async function issueStillOpen(ctx: PluginContext, companyId: string, issueId: st
 
 async function draftWork(ctx: PluginContext, companyId: string): Promise<{ drafts: number; work: DraftWork[] }> {
   const posts = table(ctx, "posts");
-  const counted = await ctx.db.query<{ drafts: string }>(`SELECT count(*)::text AS drafts FROM ${posts} WHERE company_id = $1 AND status = 'draft'`, [companyId]);
+  const counted = await ctx.db.query<{ drafts: string }>(`SELECT count(*)::text AS drafts FROM ${posts} WHERE company_id = $1 AND archived_at IS NULL AND status = 'draft'`, [companyId]);
   const handoffs = await ctx.db.query<{ key: string; issue_id: string; payload: unknown; created_at: string | null }>(
     `SELECT key, issue_id, payload, created_at::text AS created_at FROM ${table(ctx, "handoffs")}
       WHERE company_id = $1 AND kind = 'repurpose' AND issue_id IS NOT NULL AND created_at >= now() - interval '30 days'

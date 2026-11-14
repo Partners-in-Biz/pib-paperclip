@@ -96,6 +96,8 @@ import {
   resetFailedDestinations,
   saveInboxReply,
   setPostOutcome,
+  resolvePostId,
+  setPostArchived,
 } from "./db.js";
 import {
   aggregateMetrics,
@@ -761,6 +763,36 @@ export async function unschedulePostRecord(ctx: PluginContext, viewer: Viewer, p
   ctx.logger.info("Social post unscheduled", { companyId: viewer.companyId, postId: post.id, by: who, reason });
   await supersedePendingLinks(ctx, viewer.companyId, post.id);
   return getPostDetail(ctx, viewer, post.id);
+}
+
+/**
+ * archive-post: soft delete. The post leaves the Cockpit lists and queues; nothing is lost and unarchive-post brings it back.
+ * Accepts the 8-char short id. Archiving twice is a no-op; a published, publishing or scheduled post is refused.
+ */
+export async function archivePostRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>, archive = true) {
+  const verb = archive ? "archive" : "unarchive";
+  const ref = requiredString(params, "postId");
+  const id = await resolvePostId(ctx, viewer.companyId, ref);
+  if (!id) throw new SocialError(`No single post matches "${ref}" (use the full id or a longer prefix).`);
+  const post = await requirePost(ctx, viewer, id);
+  if (viewer.isAgent && post.scope === "personal" && post.created_by_agent_id !== viewer.agentId) {
+    throw new SocialError(`Agents can only ${verb} personal posts that they created`);
+  }
+  const isArchived = post.archived_at != null;
+  if (isArchived === archive) return { ...(await getPostDetail(ctx, viewer, post.id)), changed: false };
+  if (archive && ["published", "partially_published", "publishing"].includes(post.status)) {
+    throw new SocialError(`A ${post.status.replace("_", " ")} post cannot be archived.`);
+  }
+  if (archive && post.status === "scheduled") {
+    throw new SocialError("A scheduled post cannot be archived; unschedule it first (unschedule-post).");
+  }
+  await assertDelegateNotEditing(ctx, viewer, post, [postDelegateScope(post)]);
+  if (!(await setPostArchived(ctx, viewer.companyId, post.id, archive))) {
+    throw new SocialError(`The post changed while you were trying to ${verb} it. Reload and try again.`);
+  }
+  if (archive) await supersedePendingLinks(ctx, viewer.companyId, post.id);
+  ctx.logger.info(`Social post ${verb}d`, { companyId: viewer.companyId, postId: post.id, by: viewer.isAgent ? viewer.agentId : viewer.userId });
+  return { ...(await getPostDetail(ctx, viewer, post.id)), changed: true };
 }
 
 export async function schedulePost(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {

@@ -213,6 +213,10 @@ Src-only (PAR-10212). `store-rendered-asset` and the published post's Drive copy
 - Facebook video posts: Meta removed `total_video_impressions(_unique)` from `video_insights` (Graph API v25.0 changelog, for every API version once v26.0 shipped); the call still answered but without the rows, so impressions and reach stayed null with "video insights: missing total_video_impressions". Impressions and reach now come from the video's Page post (`post_id` on the Video, else `<pageId>_<videoId>`): `post_media_view` and `post_total_media_view_unique`, as for any other Page post. Views stay `total_video_views`.
 - **Delete** refuses a disconnected account that has a published destination: the cascade would erase what a post published there and its metrics (a hand-marked X post lost its destination this way, PAR-10115). The account stays disconnected and post-analytics keeps listing the destination as not measurable. The junk-account sweep skips such accounts too. src-only.
 
+## 0.13.5: archive-post / unarchive-post
+
+`archive-post` (`postId`, full id or 8-char short id) soft-deletes a post: `archived_at` is set (migration 021), the post leaves the Cockpit lists and queues, nothing is lost. Archiving twice is a no-op; published, publishing and scheduled posts are refused (unschedule first). `unarchive-post` clears the flag. Same scope rules as `update-post`.
+
 ## 0.11.2: unschedule-post
 
 `unschedule-post` (`postId`, required `reason`) takes a scheduled post back to draft: body, media and accounts stay, the time is cleared, and who and why go to the log and the post's internal note. Only a scheduled post qualifies; same scope rules as `update-post`, which works on the post afterwards. src-only.
