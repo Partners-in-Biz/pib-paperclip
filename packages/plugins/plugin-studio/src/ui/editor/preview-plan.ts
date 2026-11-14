@@ -14,8 +14,9 @@
  * each with its blend mode (CSS `mix-blend-mode`, `layer.ts` `BLEND_CSS`) and frame (`layerFrame`: rounded corners and a
  * border inside the edge, the geometry of the render's `frameStill`).
  */
-import type { ChromaKey, EditDoc, Frame, Keyframes, MediaClip, StickerClip, TextClip, TransitionType } from "../../video-edit/timeline.js";
+import type { ChromaKey, EditDoc, Effect, Frame, Keyframes, MediaClip, StickerClip, TextClip, TransitionType } from "../../video-edit/timeline.js";
 import { valueAt } from "../../video-edit/keyframes.js";
+import { effectFrame, type EffectFrame } from "../../video-edit/effects.js";
 import { toSvgPrimitives, vignetteStops, type Adjust, type LookRef, type SvgPrimitive } from "../../video-edit/looks.js";
 import { BLEND_CSS, cornerRadiusPx, type LayerBlend } from "../../video-edit/layer.js";
 import type { StickerRef } from "../../video-edit/sticker-packs.js";
@@ -52,12 +53,17 @@ export interface PreviewSegment {
   frame: Frame | null;
   /** Schema v4 overlay chroma key (D3d2, drawn by `ChromaLayer`). */
   chromaKey: ChromaKey | null;
+  /** Schema v5 clip effects (empty when none) and whether the clip sits on a video track (shake cover) or an overlay. */
+  effects: Effect[];
+  mainTrack: boolean;
 }
 
 export interface PreviewPlan {
   segments: PreviewSegment[];
   /** Overlay-track clips, lowest track first (paint order); they never set `end` or take part in `frameAt`. */
   overlays: PreviewSegment[];
+  /** The project frame in render px (the effects' sizes are in render px). */
+  project: { width: number; height: number };
   /** End of the last segment: the length of the preview. */
   end: number;
 }
@@ -81,6 +87,8 @@ export interface PreviewLayer extends LayerLook {
   alpha: number;
   /** 0..1 element volume. */
   volume: number;
+  /** The clip's effects at this time (`effects.ts`, render px), null without effects. */
+  fx: EffectFrame | null;
 }
 
 export interface PreviewFrame {
@@ -143,12 +151,14 @@ export function buildPreviewPlan(doc: EditDoc | null): PreviewPlan {
         blendMode: track.kind === "overlay" ? c.blendMode ?? null : null,
         frame: track.kind === "overlay" ? c.frame ?? null : null,
         chromaKey: track.kind === "overlay" ? c.chromaKey ?? null : null,
+        effects: c.effects ?? [],
+        mainTrack: track.kind === "video",
       });
       prev = { id: c.id, end: c.start + length };
     }
   }
   segments.sort((a, b) => a.start - b.start);
-  return { segments, overlays, end: segments.reduce((end, s) => Math.max(end, s.end), 0) };
+  return { segments, overlays, project: { width: doc?.project.width ?? 0, height: doc?.project.height ?? 0 }, end: segments.reduce((end, s) => Math.max(end, s.end), 0) };
 }
 
 const clamp01 = (n: number) => Math.min(1, Math.max(0, n));
@@ -230,7 +240,7 @@ export function transitionMix(type: TransitionType, p: number): TransitionMix {
   }
 }
 
-function layerAt(s: PreviewSegment, t: number, l: LayerLook, gain: number): PreviewLayer {
+function layerAt(s: PreviewSegment, t: number, l: LayerLook, gain: number, project: { width: number; height: number }): PreviewLayer {
   const k = s.keyframes;
   const lt = t - s.start;
   const fade = fadeAt(s, t);
@@ -244,12 +254,19 @@ function layerAt(s: PreviewSegment, t: number, l: LayerLook, gain: number): Prev
     rotate: valueAt(k.rotate, lt, s.transform.rotate),
     alpha: clamp01(valueAt(k.opacity, lt, 1) * fade),
     volume: clamp01(valueAt(k.volume, lt, s.volume) * fade * gain),
+    fx: s.effects.length ? effectFrame(s.effects, lt, project, s.mainTrack) : null,
   };
 }
 
-/** CSS transform placing a layer's clip in the frame like the render does: centre offset, then scale, then rotation. */
-export function clipTransform(l: Pick<PreviewLayer, "x" | "y" | "scale" | "rotate">, project: { width: number; height: number }): string {
-  return `translate(${pct(l.x / project.width)}, ${pct(l.y / project.height)}) scale(${r4(l.scale)}) rotate(${r4(l.rotate)}deg)`;
+/**
+ * CSS transform placing a layer's clip in the frame like the render does: centre offset, then scale, then rotation.
+ * With effects (`fx`, render px; `display` = CSS px per render px) the shake moves the whole clip first and the zoom
+ * punch multiplies its scale, about the clip's centre.
+ */
+export function clipTransform(l: Pick<PreviewLayer, "x" | "y" | "scale" | "rotate"> & { fx?: EffectFrame | null }, project: { width: number; height: number }, display = 1): string {
+  const fx = l.fx;
+  const shake = fx && (fx.dx || fx.dy) ? `translate(${r4(fx.dx * display)}px, ${r4(fx.dy * display)}px) ` : "";
+  return `${shake}translate(${pct(l.x / project.width)}, ${pct(l.y / project.height)}) scale(${r4(l.scale * (fx?.scale ?? 1))}) rotate(${r4(l.rotate)}deg)`;
 }
 
 /**
@@ -372,12 +389,12 @@ export function frameAt(plan: PreviewPlan, t: number): PreviewFrame {
   if (from && segment.transition) {
     const p = clamp01((t - segment.start) / segment.transitionDuration);
     const mix = transitionMix(segment.transition, p);
-    const outgoing = layerAt(from, t, mix.out, 1 - p);
-    const incoming = layerAt(segment, t, mix.in, p);
+    const outgoing = layerAt(from, t, mix.out, 1 - p, plan.project);
+    const incoming = layerAt(segment, t, mix.in, p, plan.project);
     layers = mix.inOnTop ? [outgoing, incoming] : [incoming, outgoing];
     matte = mix.matte;
   } else {
-    layers = [layerAt(segment, t, look(), 1)];
+    layers = [layerAt(segment, t, look(), 1, plan.project)];
   }
   const top = layers.find((l) => l.segment === segment)!;
   return { kind: "clip", segment, sourceTime: top.sourceTime, opacity: top.alpha, volume: top.volume, next, layers, matte };
@@ -385,7 +402,7 @@ export function frameAt(plan: PreviewPlan, t: number): PreviewFrame {
 
 /** The overlay-track layers showing at t, in paint order (lowest track first). Each carries its keyframed placement. */
 export function overlaysAt(plan: PreviewPlan, t: number): PreviewLayer[] {
-  return plan.overlays.filter((s) => s.start <= t + EPS && t < s.end - EPS).map((s) => layerAt(s, t, look(), 1));
+  return plan.overlays.filter((s) => s.start <= t + EPS && t < s.end - EPS).map((s) => layerAt(s, t, look(), 1, plan.project));
 }
 
 /** The CSS `mix-blend-mode` of an overlay segment (`addition` is `plus-lighter`), or null for a normal blend. */
