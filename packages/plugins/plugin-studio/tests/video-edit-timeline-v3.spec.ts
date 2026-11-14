@@ -42,10 +42,10 @@ const MAX_DOC = {
 };
 
 describe("schema v3: FEATURE_VERSION decides the version stamp", () => {
-  it("reads 1, 2 and 3 (and 4) and refuses 5 with unsupported_version", () => {
+  it("reads 1, 2 and 3 (and 4) and refuses 6 with unsupported_version", () => {
     expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(3);
     for (const v of [1, 2, 3]) expect(normalizeEdit(video({}, v)).schemaVersion).toBe(1);
-    expect(refused(video({}, 5))).toMatchObject({ reason: "unsupported_version", path: "schemaVersion", code: "bad_edit" });
+    expect(refused(video({}, 6))).toMatchObject({ reason: "unsupported_version", path: "schemaVersion", code: "bad_edit" });
   });
 
   it("every leaf a full doc emits has a row, and every v1-v3 row is emitted (no stale rows)", () => {
@@ -147,7 +147,7 @@ describe("schema v3: adjust and look", () => {
     const failure = classifyRenderError(new EditError("schemaVersion: version 3 is not supported", "unsupported_version", "schemaVersion"));
     expect(failure.kind).toBe("deterministic");
     try {
-      normalizeEdit(video({}, 5));
+      normalizeEdit(video({}, 6));
     } catch (error) {
       expect(classifyRenderError(error).kind).toBe("deterministic");
     }
