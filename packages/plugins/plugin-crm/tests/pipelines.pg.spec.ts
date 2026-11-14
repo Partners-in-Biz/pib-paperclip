@@ -2,12 +2,16 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { dealOpenReport, cockpitSnapshot } from "../src/cockpit.js";
 import { defaultPipelineId, ensurePipeline, insertStages, listCompanyStages, listPipelines } from "../src/db.js";
+import { listDealsTool, listStagesTool } from "../src/lookup.js";
+import { pipelineForecast } from "../src/worker.js";
+import type { Viewer } from "../src/domain.js";
 import { NAMESPACE } from "../src/namespace.js";
 import { embeddedAvailable, startPg, type PgHarness } from "./helpers/pg.js";
 
 const CO = "co-1";
 const OTHER = "co-2";
 const N = NAMESPACE;
+const viewer: Viewer = { companyId: CO, userId: "u1", agentId: null, role: "owner" };
 const available = await embeddedAvailable();
 
 describe.skipIf(!available)("the default pipeline rule on a real Postgres", () => {
@@ -87,5 +91,36 @@ describe.skipIf(!available)("the default pipeline rule on a real Postgres", () =
     const pipelines = (await q(`SELECT name FROM ${N}.pipelines WHERE company_id = 'co-new'`)).rows;
     expect(pipelines).toEqual([{ name: "Sales" }]);
     expect((await q(`SELECT count(*)::int AS n FROM ${N}.pipeline_stages WHERE pipeline_id = '${result.pipelineId}'`)).rows).toEqual([{ n: 5 }]);
+  });
+
+  it("filters list-deals, list-stages and pipeline-forecast by pipeline (id or name)", async () => {
+    await seedTwo();
+    const ids = async (params: Record<string, unknown>) => (await listDealsTool(pg.ctx, viewer, params)).deals.map((row: { id: string }) => row.id).sort();
+    expect(await ids({ pipeline: "p-spons" })).toEqual(["d-legacy", "d-spons", "d-won-spons"]);
+    expect(await ids({ pipeline: "sponsors" })).toEqual(["d-legacy", "d-spons", "d-won-spons"]);
+    expect(await ids({})).toHaveLength(5);
+    expect(await ids({ pipeline: "Sales", stage: "s-open" })).toEqual(["d-sales"]);
+    expect((await listDealsTool(pg.ctx, viewer, { pipeline: "Sponsors" })).deals.find((row: { id: string }) => row.id === "d-legacy")).toMatchObject({ pipeline: { id: "p-spons", name: "Sponsors" } });
+
+    const dflt = await listStagesTool(pg.ctx, viewer, {});
+    expect(dflt.stages.map((row: { id: string }) => row.id)).toEqual(["s-open", "s-won"]);
+    expect(dflt.pipelines.map((row: { name: string; isDefault: boolean }) => [row.name, row.isDefault])).toEqual([["Sales", true], ["Sponsors", false]]);
+    expect((await listStagesTool(pg.ctx, viewer, { pipeline: "Sponsors" })).stages.map((row: { id: string }) => row.id)).toEqual(["sp-open", "sp-won"]);
+
+    const open = (f: { totalOpenMinor: number }) => f.totalOpenMinor;
+    const sales = await pipelineForecast(pg.ctx, viewer, {});
+    const spons = await pipelineForecast(pg.ctx, viewer, { pipeline: "Sponsors" });
+    expect(sales.pipeline).toEqual({ id: "p-sales", name: "Sales" });
+    expect(open(sales)).toBe(100_000);
+    expect(spons.pipeline).toEqual({ id: "p-spons", name: "Sponsors" });
+    expect(open(spons)).toBe(1_400_000);
+    expect(open(sales) + open(spons)).toBe(1_500_000);
+  });
+
+  it("another company's pipeline is not found in all three", async () => {
+    await seedTwo();
+    await expect(listDealsTool(pg.ctx, viewer, { pipeline: "p-other" })).rejects.toThrow(/not found/);
+    await expect(listStagesTool(pg.ctx, viewer, { pipeline: "p-other" })).rejects.toThrow(/not found/);
+    await expect(pipelineForecast(pg.ctx, viewer, { pipeline: "p-other" })).rejects.toThrow(/not found/);
   });
 });

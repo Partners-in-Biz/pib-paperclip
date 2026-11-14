@@ -104,7 +104,8 @@ export const CRM_TOOLS: PluginToolDeclaration[] = [
     description: "Deals with their stage, status, value and client ref. Filter by status, stage or client.",
     parametersSchema: schema([], {
       status: oneOf(DEAL_STATUSES, "open, won or lost."),
-      stage: text("Stage id or stage name, e.g. Proposal (see list-stages)."),
+      stage: text("Stage id or stage name, e.g. Proposal (see list-stages). A name is looked up in the given pipeline, else in all."),
+      pipeline: text("Only this pipeline's deals: its id or name (see list-stages). Omit for all pipelines."),
       client: text("Only this client's deals: company:<id> or contact:<id>. A company includes its people's deals."),
       limit: int("Most deals to return, 1 to 50 (default 25).", { minimum: 1, maximum: 50 }),
     }),
@@ -112,8 +113,8 @@ export const CRM_TOOLS: PluginToolDeclaration[] = [
   {
     name: "list-stages",
     displayName: "List pipeline stages",
-    description: "The pipeline's stages in order, with each stage's id, kind (open, won, lost) and deal count. Use the id with move-deal.",
-    parametersSchema: schema([], {}),
+    description: "The pipeline's stages in order, with each stage's id, kind (open, won, lost) and deal count. Use the id with move-deal. Also lists every pipeline.",
+    parametersSchema: schema([], { pipeline: text("Pipeline id or name. Omit for the main (default) pipeline.") }),
   },
   {
     name: "list-sequences",
@@ -557,8 +558,8 @@ export const CRM_TOOLS: PluginToolDeclaration[] = [
   {
     name: "pipeline-forecast",
     displayName: "Pipeline forecast",
-    description: "Open pipeline value by stage with a weighted forecast (each stage's win chance). An estimate, not a promise.",
-    parametersSchema: schema([], {}),
+    description: "Open pipeline value by stage with a weighted forecast (each stage's win chance). An estimate, not a promise. Covers the main pipeline unless you name another.",
+    parametersSchema: schema([], { pipeline: text("Pipeline id or name (see list-stages). Omit for the main pipeline.") }),
   },
   {
     name: "export-contacts",

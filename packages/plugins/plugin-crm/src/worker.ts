@@ -233,6 +233,7 @@ import {
   listDealsTool,
   listSequencesTool,
   listStagesTool,
+  pipelineParam,
   parseClientRef,
   pickProfile,
   updateClientProfile,
@@ -813,7 +814,7 @@ async function dispatch(
     case "contact-graph":
       return contactGraph(ctx, viewer, body);
     case "pipeline-forecast":
-      return pipelineForecast(ctx, viewer);
+      return pipelineForecast(ctx, viewer, body);
     case "add-deal-product":
       return addDealProduct(ctx, viewer, body);
     case "list-deal-products":
@@ -829,7 +830,7 @@ async function dispatch(
     case "list-deals":
       return listDealsTool(ctx, viewer, body);
     case "list-stages":
-      return listStagesTool(ctx, viewer);
+      return listStagesTool(ctx, viewer, body);
     case "list-sequences":
       return listSequencesTool(ctx, viewer);
     case "get-client-profile": {
@@ -1489,15 +1490,19 @@ async function contactGraph(ctx: PluginContext, viewer: Viewer, params: Record<s
   };
 }
 
-async function pipelineForecast(ctx: PluginContext, viewer: Viewer) {
-  const pipeline = await ensurePipeline(ctx, viewer.companyId);
-  const stages = await listStages(ctx, pipeline.pipelineId);
+export async function pipelineForecast(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown> = {}) {
+  const picked = await pipelineParam(ctx, viewer.companyId, params.pipeline);
+  const pipelineId = picked?.id ?? (await ensurePipeline(ctx, viewer.companyId)).pipelineId;
+  const [stages, pipelines] = await Promise.all([listStages(ctx, pipelineId), listPipelines(ctx, viewer.companyId)]);
   const deals = await listDeals(ctx, viewer.companyId);
   const visibleDeals = deals.filter((deal) => canSeeRecord(viewer, deal, []));
-  return forecastPipeline({
+  // A deal belongs to the pipeline of its stage, so only deals on this pipeline's stages count.
+  const stageIds = new Set(stages.map((stage) => stage.id));
+  const forecast = forecastPipeline({
     stages: stages.map((stage) => ({ id: stage.id, name: stage.name, kind: stageKind(stage.kind), position: stage.position })),
-    deals: visibleDeals.map((deal) => ({ stageId: deal.stageId, amountMinor: deal.amountMinor, currency: deal.currency })),
+    deals: visibleDeals.filter((deal) => stageIds.has(deal.stageId)).map((deal) => ({ stageId: deal.stageId, amountMinor: deal.amountMinor, currency: deal.currency })),
   });
+  return { ...forecast, pipeline: { id: pipelineId, name: pipelines.find((row) => row.id === pipelineId)?.name ?? "" } };
 }
 
 async function addDealProduct(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
