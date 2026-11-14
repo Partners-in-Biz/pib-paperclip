@@ -14,6 +14,9 @@
  * filters `looks.ts` derives (the preview reads the same module), so shape and alpha work on the graded picture.
  * Overlay frame and blend mode (schema v4, D3b) come from `layer.ts`: the frame rounds and borders the shaped picture,
  * a blend mode blends it with the base in RGB (`lut2`) instead of the plain `overlay`.
+ * Effects (schema v5, D4c) come from `effects.ts`: zoomPunch and shake are per-frame scale and position expressions on
+ * the shape, the pixel effects (rgbSplit, blurIn, flash) run on the shaped clip (an overlay) or the full-frame segment
+ * (a main clip), before fades and opacity.
  * Text and caption tracks are drawn last, over everything, by `compile-text.ts` (A5a). Sound is compiled by
  * `compile-audio.ts` (A5b) into the same graph; a silent edit gets no audio stream (`-an`). Anything else outside this
  * model throws `CompileError` with `unsupported_feature:<name>`.
@@ -22,6 +25,7 @@ import { StudioError } from "../errors.js";
 import { chromaKeyFilter, despillFilter, keyMatrix } from "./chroma.js";
 import { AUDIO_ENCODER_ARGS, INTERMEDIATE_AUDIO_ENCODER_ARGS, buildAudioGraph } from "./compile-audio.js";
 import { buildTextLayers } from "./compile-text.js";
+import { BLUR_IN, blurInSigma, blurInSigmaExpr, flashFilter, intensity, rgbSplitFilter, shakeCover, shakeExpr, zoomExpr } from "./effects.js";
 import { fontsDir } from "./fonts.js";
 import { toFfmpegExpr } from "./keyframes.js";
 import { blendLutExpr, frameStill, type LayerBlend } from "./layer.js";
@@ -136,6 +140,13 @@ const fadesOpacity = (clip: PictureClip) => Boolean(clip.keyframes?.opacity);
 const hasFrame = (clip: PictureClip) => Boolean(clip.frame && (clip.frame.cornerRadius > 0 || clip.frame.borderWidth > 0));
 /** A look or a colour adjust on the clip (normalizeEdit drops neutral adjust fields, so present means non-neutral). */
 const graded = (clip: PictureClip) => Boolean(clip.look || clip.adjust);
+/** zoomPunch or shake: the clip's size or position changes per frame (schema v5). */
+const moves = (clip: PictureClip) => intensity(clip.effects, "zoomPunch") > 0 || intensity(clip.effects, "shake") > 0;
+/**
+ * A `sendcmd` filter running `cmd`. Three parsers unquote in turn: filtergraph (`[],;`), filter options (`:`), then
+ * sendcmd's own argument token.
+ */
+const sendcmd = (cmd: string) => `sendcmd=c=${cmd.replace(/[\\':]/g, "\\$&").replace(/[\\'[\],;]/g, "\\$&")}`;
 
 /** Filters that take RGB only. Everything else in a grade runs on YUV (`eq`, `vignette`) or either (`gblur`). */
 const RGB_ONLY = /^(colorchannelmixer|curves|colortemperature)=/;
@@ -155,6 +166,7 @@ class Graph {
   private inputs = 0;
   private labels = 0;
   private opacities = 0;
+  private blurs = 0;
   constructor(readonly doc: EditDoc, readonly sources: CompileInputs) {}
 
   label(prefix: string) {
@@ -274,7 +286,7 @@ class Graph {
   private prefit(clip: PictureClip): string[] {
     if (!clip.chromaKey && !graded(clip)) return [];
     const t = clip.transform;
-    if (t.rotate !== 0 || hasCrop(t) || reshapes(clip) || (clip.adjust?.blur ?? 0) > 0) return [];
+    if (t.rotate !== 0 || hasCrop(t) || reshapes(clip) || (clip.adjust?.blur ?? 0) > 0 || intensity(clip.effects, "zoomPunch") > 0) return [];
     const { width, height } = this.doc.project;
     return [`scale=w='min(iw,${num(width * t.scale)})':h='min(ih,${num(height * t.scale)})':force_original_aspect_ratio=decrease:force_divisible_by=2`];
   }
@@ -302,10 +314,11 @@ class Graph {
    * corners may leave the frame), then scale. Scale keys only: today's static shape at scale 1 (a static rotation keeps
    * its rotated-box fit), then scale. Fill is `black@0`: `c=none` leaves the canvas corners undefined.
    */
-  private keyedShape(clip: PictureClip, offset: number): string[] {
+  private keyedShape(clip: PictureClip, offset: number, factor: string | null = null): string[] {
     const { width, height } = this.doc.project;
     const t = clip.transform;
-    const s = toFfmpegExpr(keysOf(clip, "scale"), t.scale, offset);
+    const keyed = toFfmpegExpr(keysOf(clip, "scale"), t.scale, offset);
+    const s = factor ? `(${keyed})*(${factor})` : keyed;
     const scale = `scale=w='max(2,iw*(${s}))':h='max(2,ih*(${s}))':eval=frame`;
     if (!keysOf(clip, "rotate")) return [...this.shape({ ...t, scale: 1 }, "black@0"), ...this.frame(clip), scale];
     if (hasFrame(clip)) unsupported("frame_with_rotation"); // this branch never reaches frame(), which refuses it too
@@ -332,18 +345,58 @@ class Graph {
     const length = clipDuration(clip);
     const expr = toFfmpegExpr(kfs, 1, 0, "LT").replace(/\bLT\b/g, `(TI*${num(length)})`);
     const target = `colorchannelmixer@op${this.opacities++}`;
-    const cmd = `${num(offset)}-${num(offset + length)} [expr] ${target} aa 'clip(${expr},0,1)'`;
-    // Three parsers unquote in turn: filtergraph (`[],;`), filter options (`:`), then sendcmd's own argument token.
-    const opt = cmd.replace(/[\\':]/g, "\\$&");
-    return ["format=rgba", `sendcmd=c=${opt.replace(/[\\'[\],;]/g, "\\$&")}`, target];
+    return ["format=rgba", sendcmd(`${num(offset)}-${num(offset + length)} [expr] ${target} aa 'clip(${expr},0,1)'`), target];
+  }
+
+  /**
+   * The clip's shape with its effect size (schema v5): zoomPunch (per frame) times the main track's shake cover (a
+   * constant). Keyed shapes fold both into their per-frame scale; a static shape takes the cover in its own scale and
+   * the zoom as one more per-frame scale after it (and after the frame, so border and radius zoom with the clip).
+   * `pixels` (an overlay's pixel effects) go just before the step that changes size per frame: ffmpeg 6.1 `gblur`
+   * segfaults when its input size changes, and CSS applies `filter` before `transform` the same way.
+   */
+  private effectShape(clip: PictureClip, offset: number, main: boolean, pixels: string[] = []): string[] {
+    const k = intensity(clip.effects, "zoomPunch");
+    const zoom = k > 0 ? zoomExpr(k, offset) : null;
+    const cover = main ? shakeCover(intensity(clip.effects, "shake")) : 1;
+    if (reshapes(clip)) {
+      const steps = this.keyedShape(clip, offset, cover === 1 ? zoom : `(${zoom ?? 1})*${num(cover)}`);
+      return [...steps.slice(0, -1), ...pixels, ...steps.slice(-1)];
+    }
+    const t = { ...clip.transform, scale: clip.transform.scale * cover };
+    const shape = [...(main ? this.shape(t) : [...this.shape(t), ...this.frame(clip)]), ...pixels];
+    return zoom ? [...shape, `scale=w='max(2,iw*(${zoom}))':h='max(2,ih*(${zoom}))':eval=frame`] : shape;
+  }
+
+  /**
+   * Pixel effects (schema v5, `effects.ts`) in their fixed order: rgbSplit (planar RGB, BT.709 both ways, as `grade`),
+   * blurIn (`gblur` whose sigma a `sendcmd` sets per frame, on only for its length), flash (`geq`, on only for its
+   * length). `alpha`: the frame is yuva420p (an overlay) and keeps its alpha; else it is first made yuv420p, the
+   * format the main segment ends in anyway. `[]` without pixel effects.
+   */
+  private pixelEffects(clip: PictureClip, offset: number, alpha: boolean): string[] {
+    const { width } = this.doc.project;
+    const k = (id: Parameters<typeof intensity>[1]) => intensity(clip.effects, id);
+    const out: string[] = [];
+    const split = rgbSplitFilter(k("rgbSplit"), width);
+    if (split) out.push(...toRgb(alpha), split, ...toYuv(alpha));
+    if (k("blurIn") > 0) {
+      const target = `gblur@bi${this.blurs++}`;
+      const end = offset + BLUR_IN.duration;
+      out.push(sendcmd(`${num(offset)}-${num(end)} [expr] ${target} sigma '${blurInSigmaExpr(k("blurIn"), width)}'`), `${target}=sigma=${num(blurInSigma(k("blurIn"), 0, width))}:enable='lt(t,${num(end)})'`);
+    }
+    if (k("flash") > 0) out.push(flashFilter(k("flash"), offset, alpha));
+    return out.length && !alpha ? ["format=yuv420p", ...out] : out;
   }
 
   private overlayAt(clip: PictureClip, offset: number) {
     const t = clip.transform;
-    if (!animated(clip)) return `x=(W-w)/2+${num(t.x)}:y=(H-h)/2+${num(t.y)}`;
+    if (!animated(clip) && !moves(clip)) return `x=(W-w)/2+${num(t.x)}:y=(H-h)/2+${num(t.y)}`;
     const x = toFfmpegExpr(keysOf(clip, "x"), t.x, offset);
     const y = toFfmpegExpr(keysOf(clip, "y"), t.y, offset);
-    return `x='(W-w)/2+${x}':y='(H-h)/2+${y}':eval=frame`;
+    const k = intensity(clip.effects, "shake");
+    const shake = k > 0 ? shakeExpr(k, offset, this.doc.project) : { x: "", y: "" };
+    return `x='(W-w)/2+${x}${shake.x}':y='(H-h)/2+${y}${shake.y}':eval=frame`;
   }
 
   /** One main-track clip as a full-frame yuv420p segment of exactly its timeline length. */
@@ -359,7 +412,7 @@ class Graph {
     const cut = frames === undefined || frames === trimFrames(length, fps) ? `trim=duration=${num(length)}` : `trim=end_frame=${Math.max(1, frames)}`;
     const tail = ["format=yuv420p", "setsar=1", ...fades, cut];
     const t = clip.transform;
-    if (isIdentity(t) && !animated(clip) && !fadesOpacity(clip)) {
+    if (isIdentity(t) && !animated(clip) && !fadesOpacity(clip) && !moves(clip)) {
       // The common case: fit inside the frame, letterbox with black.
       const steps = [
         ...this.timing(clip, kind, 0),
@@ -367,6 +420,7 @@ class Graph {
         ...this.crop(t),
         `scale=w=${width}:h=${height}:force_original_aspect_ratio=decrease:force_divisible_by=2`,
         `pad=w=${width}:h=${height}:x=(ow-iw)/2:y=(oh-ih)/2:color=black`,
+        ...this.pixelEffects(clip, 0, false),
         ...tail,
       ];
       this.filters.push(`[${index}:v]${steps.join(",")}[${out}]`);
@@ -376,10 +430,10 @@ class Graph {
     // The segment starts at the clip's own 0, so keyframe offset is 0 (xfade later shifts the whole segment). Opacity is
     // alpha over that black frame; the fades after it then darken to black, so the picture is opacity x fade.
     const shaped = this.label("shp");
-    const shape = reshapes(clip) ? this.keyedShape(clip, 0) : this.shape(t);
+    const shape = this.effectShape(clip, 0, true);
     this.filters.push(`[${index}:v]${[...this.timing(clip, kind, 0), ...this.grade(clip, kind), ...shape, ...this.opacity(clip, 0)].join(",")}[${shaped}]`);
     const bg = this.black(length);
-    this.filters.push(`[${bg}][${shaped}]overlay=${this.overlayAt(clip, 0)}:eof_action=pass,${tail.join(",")}[${out}]`);
+    this.filters.push(`[${bg}][${shaped}]overlay=${[`${this.overlayAt(clip, 0)}:eof_action=pass`, ...this.pixelEffects(clip, 0, false), ...tail].join(",")}[${out}]`);
     return out;
   }
 
@@ -461,7 +515,7 @@ class Graph {
     const { index, kind } = this.input(clip);
     const length = clipDuration(clip);
     // Frames carry timeline time here, so the clip's local 0 is at `clip.start`.
-    const shape = reshapes(clip) ? this.keyedShape(clip, clip.start) : [...this.shape(clip.transform), ...this.frame(clip)];
+    const shape = this.effectShape(clip, clip.start, false, this.pixelEffects(clip, clip.start, true));
     const steps = [...this.timing(clip, kind, clip.start), ...this.prefit(clip), ...this.key(clip, kind), ...this.grade(clip, kind, Boolean(clip.chromaKey)), ...shape];
     if (clip.fadeIn > 0) steps.push(`fade=t=in:st=${num(clip.start)}:d=${num(clip.fadeIn)}:alpha=1`);
     if (clip.fadeOut > 0) steps.push(`fade=t=out:st=${num(clip.start + length - clip.fadeOut)}:d=${num(clip.fadeOut)}:alpha=1`);
