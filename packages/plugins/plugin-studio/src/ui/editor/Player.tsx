@@ -14,6 +14,8 @@ import { useEffect, useId, useMemo, useReducer, useRef, useState, useSyncExterna
 import { useHostContext } from "@paperclipai/plugin-sdk/ui";
 import { Button } from "@partnersinbiz/pib-plugin-ui";
 import type { EditorStore } from "./editor-store.js";
+import { useStickerBase } from "./sticker-base.js";
+import { stickerUrl } from "./sticker-url.js";
 import { assignSlots, blendCss, buildPreviewPlan, clipTransform, containBox, frameAt, layerFrame, overlaysAt, previewGrade, type PreviewFrame, type PreviewGrade, type PreviewLayer, type PreviewSlots } from "./preview-plan.js";
 import { usePreviewUrls } from "../previews.js";
 import { Overlay } from "./Overlay.js";
@@ -42,7 +44,7 @@ export function Player({ store }: { store: EditorStore }) {
   // Audio clips near the playhead get an <audio> element (PAR-8322); their assets' links load with the video's.
   const audioNear = audioWindow(doc, playhead);
   const allAudio = useMemo(() => audioClips(doc), [doc]);
-  const previews = usePreviewUrls(companyId, [...new Set([...plan.segments.map((s) => s.assetId), ...plan.overlays.map((s) => s.assetId), ...allAudio.map((a) => a.clip.assetId)])]);
+  const previews = usePreviewUrls(companyId, [...new Set([...plan.segments.map((s) => s.assetId), ...plan.overlays.filter((s) => !s.sticker).map((s) => s.assetId), ...allAudio.map((a) => a.clip.assetId)])]);
   useSyncExternalStore(audioMute.subscribe, audioMute.getSnapshot, audioMute.getSnapshot);
   const picking = useSyncExternalStore(eyedropper.subscribe, eyedropper.getState, eyedropper.getState).clipId;
   const [playing, setPlaying] = useState(false);
@@ -212,6 +214,7 @@ export function PreviewLayers({ frame, overlays = [], overlayUrls = {}, playing 
   setVideo?: (i: 0 | 1, el: HTMLVideoElement | null) => void;
   onLoaded?: () => void;
 }) {
+  const stickerBase = useStickerBase();
   // Looks and adjust (PAR-10159): the filter works in the element's CSS px, so it needs the box and each source's size.
   const box = useRef<HTMLDivElement | null>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
@@ -256,7 +259,7 @@ export function PreviewLayers({ frame, overlays = [], overlayUrls = {}, playing 
         ) : null;
       })}
       {overlays.map((layer, k) => (
-        <OverlayClip key={layer.segment.clipId} layer={layer} url={overlayUrls[layer.segment.assetId]} z={10 + k} size={size} project={project} playing={playing} onLoaded={onLoaded} />
+        <OverlayClip key={layer.segment.clipId} layer={layer} url={layer.segment.sticker ? stickerUrl(stickerBase, layer.segment.sticker) : overlayUrls[layer.segment.assetId]} z={10 + k} size={size} project={project} playing={playing} onLoaded={onLoaded} />
       ))}
       {frame.matte ? <div data-preview-matte={frame.matte.color} style={{ position: "absolute", inset: 0, zIndex: 2, background: frame.matte.color, opacity: frame.matte.opacity }} /> : null}
     </div>
@@ -303,21 +306,32 @@ function OverlayClip({ layer, url, z, size, project, playing, onLoaded }: { laye
     <>
       <div data-overlay-layer={seg.clipId} data-blend={seg.blendMode ?? undefined} style={{ position: "absolute", inset: 0, zIndex: z, opacity: layer.alpha, mixBlendMode: (blend ?? undefined) as never, transform: clipTransform(layer, project), pointerEvents: "none" }}>
         {grade ? <GradeFilter id={filterId} grade={grade} /> : null}
-        <video
-          key={withCors ? "cors" : "plain"}
-          ref={bindVideo}
-          src={url}
-          crossOrigin={withCors ? "anonymous" : undefined}
-          onError={() => { if (withCors) setCors(false); }}
-          data-clip-id={seg.clipId}
-          data-keyed={seg.chromaKey ? (keyed ?? "pending") : undefined}
-          playsInline
-          preload="auto"
-          onLoadedMetadata={(e) => { setSource({ width: e.currentTarget.videoWidth, height: e.currentTarget.videoHeight }); onLoaded?.(); }}
-          onSeeked={onLoaded}
-          style={{ ...picture, opacity: seg.chromaKey && keyed !== "none" ? 0 : undefined }}
-        />
-        {seg.chromaKey ? <ChromaLayer chromaKey={seg.chromaKey} video={videoEl} style={{ ...picture, display: keyed === "none" ? "none" : "block" }} onStatus={setKeyStatus} /> : null}
+        {seg.sticker ? (
+          <img
+            src={url}
+            alt=""
+            data-clip-id={seg.clipId}
+            data-sticker={`${seg.sticker.pack}/${seg.sticker.id}`}
+            onLoad={(e) => { setSource({ width: e.currentTarget.naturalWidth, height: e.currentTarget.naturalHeight }); onLoaded?.(); }}
+            style={picture}
+          />
+        ) : (
+          <video
+            key={withCors ? "cors" : "plain"}
+            ref={bindVideo}
+            src={url}
+            crossOrigin={withCors ? "anonymous" : undefined}
+            onError={() => { if (withCors) setCors(false); }}
+            data-clip-id={seg.clipId}
+            data-keyed={seg.chromaKey ? (keyed ?? "pending") : undefined}
+            playsInline
+            preload="auto"
+            onLoadedMetadata={(e) => { setSource({ width: e.currentTarget.videoWidth, height: e.currentTarget.videoHeight }); onLoaded?.(); }}
+            onSeeked={onLoaded}
+            style={{ ...picture, opacity: seg.chromaKey && keyed !== "none" ? 0 : undefined }}
+          />
+        )}
+        {seg.chromaKey && !seg.sticker ? <ChromaLayer chromaKey={seg.chromaKey} video={videoEl} style={{ ...picture, display: keyed === "none" ? "none" : "block" }} onStatus={setKeyStatus} /> : null}
         {fr && fr.borderWidth > 0 ? (
           <div data-overlay-border style={{ position: "absolute", left: fr.region.x, top: fr.region.y, width: fr.region.width, height: fr.region.height, boxSizing: "border-box", border: `${n4(fr.borderWidth)}px solid ${fr.borderColor}`, borderRadius: fr.radius }} />
         ) : null}
