@@ -495,4 +495,18 @@ describePg("the hand-over of decided previews", () => {
     expect(h.wakeups).toEqual(["iss-1"]);
     expect(h.locks().at(-1)).toMatchObject({ siteId: "site-1", scope: "pages", pages: ["https://acme.co.za/irrigation"] });
   });
+  it("PAR-11603: two approvals on one page hand over only the newer one, however often the sweep runs", async () => {
+    await reset();
+    await putSprint(AUTO);
+    await putTask("t-1", "iss-1");
+    const page = "https://acme.co.za/irrigation/";
+    await put("old", { page_url: page, created_at: ago(6 * HOURS), ...decided("approved", "email", { decided_at: ago(5 * HOURS) }) });
+    await put("new", { page_url: page, created_at: ago(2 * HOURS), ...decided("approved", "email", { decided_at: ago(30 * 60_000) }) });
+    const h = host(AUTO);
+    expect(await retryHandovers(h.env)).toBe(1);
+    expect(await retryHandovers(h.env)).toBe(0);
+    expect((await one("new")).handed_at).not.toBeNull();
+    expect((await one("old")).handed_at).toBeNull();
+    expect(h.wakeups).toEqual(["iss-1"]);
+  });
 });

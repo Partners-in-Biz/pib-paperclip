@@ -68,7 +68,7 @@ export async function latestTaskPreviews(env: Env, companyId: string, taskId: st
     `SELECT DISTINCT ON (page_url) id, page_url, title, status, review_status, decision_note, handed_at, draft_key, decision_source, confirmed_at, decided_at
        FROM ${t("previews")} p WHERE company_id = $1 AND task_id = $2 AND ${PREVIEW_LIVE_SQL} AND status <> 'cancelled'
        ORDER BY page_url, (status = 'approved' AND handed_at IS NULL AND NOT EXISTS (
-         SELECT 1 FROM ${t("previews")} n WHERE n.company_id = p.company_id AND n.task_id = p.task_id AND n.page_url = p.page_url AND n.created_at > p.created_at AND n.status IN ('declined', 'changes_requested'))) DESC, created_at DESC`,
+         SELECT 1 FROM ${t("previews")} n WHERE n.company_id = p.company_id AND n.task_id = p.task_id AND n.page_url = p.page_url AND n.created_at > p.created_at AND n.status IN ('approved', 'declined', 'changes_requested'))) DESC, created_at DESC`,
     [companyId, taskId],
   );
   return rows.map((r) => ({
@@ -434,18 +434,20 @@ async function finishHandover(env: Env, sprint: db.Sprint, task: db.SprintTask, 
   return true;
 }
 
+/** The sprint of preview p is an auto-sign-off pr_only WordPress sprint (isAutoSignoff without the rehearsal test: a rehearsal sprint makes no previews). */
+const AUTO_SPRINT_SQL = `SELECT 1 FROM ${t("sprints")} s WHERE s.company_id = p.company_id AND s.id = p.sprint_id AND s.client_signoff = 'auto' AND s.change_policy = 'pr_only' AND s.site_access = 'wordpress'`;
+
 /**
  * A current preview of p's task that makes the hand-over wait (the same test as handOverTask): with the client or the Reviewer, or an
  * email approval nobody confirmed on a manual sprint. The sweep leaves such tasks out, so rows that only wait never fill its LIMIT.
  * "Auto" here is isAutoSignoff without the rehearsal test: a rehearsal sprint makes no previews.
  */
-const AUTO_SPRINT_SQL = `SELECT 1 FROM ${t("sprints")} s WHERE s.company_id = p.company_id AND s.id = p.sprint_id AND s.client_signoff = 'auto' AND s.change_policy = 'pr_only' AND s.site_access = 'wordpress'`;
 const WAITING_SIBLING_SQL = `SELECT 1 FROM ${t("previews")} w
     WHERE w.company_id = p.company_id AND w.task_id = p.task_id AND w.status <> 'cancelled' AND ${PREVIEW_LIVE_SQL}
       AND NOT EXISTS (SELECT 1 FROM ${t("previews")} v WHERE v.company_id = w.company_id AND v.task_id = w.task_id AND v.page_url = w.page_url AND v.created_at > w.created_at AND v.status <> 'cancelled' AND ${PREVIEW_LIVE_SQL})
       AND ((w.status = 'pending' AND w.review_status IN ('passed', 'pending'))
         OR (w.status = 'approved' AND w.handed_at IS NULL AND COALESCE(w.decision_source, 'email') = 'email' AND w.confirmed_at IS NULL
-          AND NOT EXISTS (SELECT 1 FROM ${t("sprints")} s WHERE s.company_id = p.company_id AND s.id = p.sprint_id AND s.client_signoff = 'auto' AND s.change_policy = 'pr_only' AND s.site_access = 'wordpress')))`;
+          AND NOT EXISTS (${AUTO_SPRINT_SQL})))`;
 
 /**
  * Runs from the 5-minute job: finishes hand-overs that were claimed but not done, and hands over person decisions (cockpit, api,
@@ -460,7 +462,7 @@ export async function retryHandovers(env: Env): Promise<number> {
           OR (p.handed_at IS NULL AND p.decided_at < now() - make_interval(mins => $2::int) AND (p.decision_source IN ('cockpit', 'api') OR p.confirmed_at IS NOT NULL OR EXISTS (${AUTO_SPRINT_SQL}))
             AND ${PREVIEW_LIVE_SQL}
             AND NOT EXISTS (SELECT 1 FROM ${t("previews")} n WHERE n.company_id = p.company_id AND n.task_id = p.task_id AND n.page_url = p.page_url AND n.created_at > p.created_at AND n.status <> 'cancelled'
-              AND (p.status <> 'approved' OR n.status IN ('declined', 'changes_requested')))
+              AND (p.status <> 'approved' OR n.status IN ('approved', 'declined', 'changes_requested')))
             AND (p.decided_at < now() - make_interval(hours => $3::int) OR NOT EXISTS (${WAITING_SIBLING_SQL}))))
       ORDER BY p.handover_attempts, COALESCE(p.handed_at, p.decided_at) LIMIT ${HANDOVER_SWEEP_LIMIT}`,
     [HANDOVER_MAX_ATTEMPTS, HANDOVER_RETRY_AFTER_MINUTES, SIBLING_WAIT_HOURS],
