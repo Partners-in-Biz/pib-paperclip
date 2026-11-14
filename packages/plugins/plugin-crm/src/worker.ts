@@ -70,7 +70,10 @@ import {
   mergeContacts,
   enrollmentsForContact,
   enrollmentsForSequence,
+  deletePipeline,
   ensurePipeline,
+  insertPipeline,
+  insertStages,
   listCompanyStages,
   listPipelines,
   getAccount,
@@ -172,6 +175,8 @@ import {
   type RecordType,
   type SequenceStepDraft,
   type Viewer,
+  DEFAULT_STAGES,
+  STAGE_KINDS,
 } from "./domain.js";
 import { PLUGIN_ID } from "./namespace.js";
 import { CRM_TOOLS } from "./tools.js";
@@ -775,6 +780,8 @@ async function dispatch(
       return logOutcome(ctx, viewer, DESK_DEPS, body, source);
     case "create-deal":
       return createDeal(ctx, viewer, body);
+    case "create-pipeline":
+      return createPipeline(ctx, viewer, body);
     case "move-deal":
       return moveDeal(ctx, viewer, body);
     case "update-deal":
@@ -1806,6 +1813,49 @@ async function logActivity(ctx: PluginContext, viewer: Viewer, params: Record<st
     issueId: optionalString(params, "issueId"),
   });
   return { id, recordType, recordId, kind };
+}
+
+export async function createPipeline(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
+  // The company's first pipeline (Sales) must exist and stay the default, so it is made before this one.
+  await ensurePipeline(ctx, viewer.companyId);
+  const name = requiredString(params, "name").trim();
+  if (!name) throw new CrmError("name is required");
+  const given = params.stages;
+  if (given != null && !Array.isArray(given)) throw new CrmError("stages must be a list of {name, kind}");
+  const stages = (given == null ? DEFAULT_STAGES.map(({ name: stage, kind }) => ({ name: stage, kind: kind as string })) : (given as unknown[]).map((raw) => {
+    const item = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+    return { name: typeof item.name === "string" ? item.name.trim() : "", kind: String(item.kind ?? "") };
+  })).map((stage, position) => ({ ...stage, position }));
+  const seen = new Set<string>();
+  for (const stage of stages) {
+    if (!stage.name) throw new CrmError("Every stage needs a name");
+    if (!(STAGE_KINDS as readonly string[]).includes(stage.kind)) throw new CrmError(`Stage "${stage.name}" has kind "${stage.kind}"; use open, won or lost`);
+    const key = stage.name.toLowerCase();
+    if (seen.has(key)) throw new CrmError(`Two stages are named "${stage.name}"; stage names must be unique`);
+    seen.add(key);
+  }
+  const count = (kind: string) => stages.filter((stage) => stage.kind === kind).length;
+  if (count("open") < 1) throw new CrmError("A pipeline needs at least one open stage");
+  if (count("won") !== 1) throw new CrmError(`A pipeline needs exactly one won stage (got ${count("won")})`);
+  if (count("lost") !== 1) throw new CrmError(`A pipeline needs exactly one lost stage (got ${count("lost")})`);
+  const existing = await listPipelines(ctx, viewer.companyId);
+  if (existing.some((row) => row.name.trim().toLowerCase() === name.toLowerCase())) throw new CrmError(`A pipeline named "${name}" already exists`);
+  const pipelineId = randomUUID();
+  await insertPipeline(ctx, viewer.companyId, pipelineId, name);
+  try {
+    await insertStages(ctx, viewer.companyId, pipelineId, stages);
+  } catch (error) {
+    // Best effort: a row left behind has no stages, so every reader and the default rule ignore it.
+    await deletePipeline(ctx, viewer.companyId, pipelineId).catch(() => undefined);
+    throw error;
+  }
+  const saved = await listStages(ctx, pipelineId);
+  return {
+    pipelineId,
+    name,
+    isDefault: false,
+    stages: saved.map((stage) => ({ id: stage.id, name: stage.name, kind: stage.kind, position: stage.position })),
+  };
 }
 
 async function createDeal(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {

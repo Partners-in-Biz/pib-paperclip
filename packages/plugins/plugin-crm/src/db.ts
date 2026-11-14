@@ -719,6 +719,16 @@ export async function insertStages(
   );
 }
 
+/** Writes a pipeline row with no stages (invisible until `insertStages` succeeds). */
+export async function insertPipeline(ctx: PluginContext, companyId: string, pipelineId: string, name: string): Promise<void> {
+  await ctx.db.execute(`INSERT INTO ${table(ctx, "pipelines")} (id, company_id, name) VALUES ($1, $2, $3)`, [pipelineId, companyId, name]);
+}
+
+/** Removes a pipeline row of this company (cleanup after a failed stage insert). */
+export async function deletePipeline(ctx: PluginContext, companyId: string, pipelineId: string): Promise<void> {
+  await ctx.db.execute(`DELETE FROM ${table(ctx, "pipelines")} WHERE id = $1 AND company_id = $2`, [pipelineId, companyId]);
+}
+
 /** The default pipeline and its first open stage; an empty company gets "Sales" with the default stages. */
 export async function ensurePipeline(ctx: PluginContext, companyId: string): Promise<{ pipelineId: string; openStageId: string }> {
   let pipelineId = await defaultPipelineId(ctx, companyId);
