@@ -124,10 +124,13 @@ function fitFades(clip: Clip, length: number): Clip {
   if (c.transitionIn && c.transitionIn.duration > length) c.transitionIn = { ...c.transitionIn, duration: length };
   return c;
 }
-/** A text clip's animation for one part of a split: `keep` is the side the part still has, shortened to `length`. */
+/**
+ * A text clip's animation for one part of a split: `keep` is the side the part still has, shortened to `length`.
+ * A part shorter than the shortest animation loses it (as `fitFades` drops fades), so a sliver split can't be refused.
+ */
 function splitAnimation(animation: TextAnimation | undefined, keep: "in" | "out", length: number): { animation?: TextAnimation } {
   const preset = animation?.[keep];
-  if (!preset) return { animation: undefined };
+  if (!preset || length < LIMITS.animationDuration[0]) return { animation: undefined };
   return { animation: { [keep]: preset, [`${keep}Duration`]: Math.min(animation[`${keep}Duration`] ?? length, length) } };
 }
 

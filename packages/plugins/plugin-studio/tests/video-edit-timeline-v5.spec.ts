@@ -236,6 +236,14 @@ describe("schema v5 ops (writer path: applyOps)", () => {
     expect(["animation" in find(exitOnly, "title"), find(exitOnly, "title-2").animation]).toEqual([false, { out: "pop", outDuration: 0.5 }]);
   });
 
+  it("split within the shortest animation of either edge succeeds; the sliver loses its animation", () => {
+    const animated = applyOps(edit(), [{ op: "setProps", clipId: "title", props: { animation: { in: "fadeUp", out: "pop" } } }]);
+    const atStart = applyOps(animated, [{ op: "split", clipId: "title", at: 0.02 }]);
+    expect(["animation" in find(atStart, "title"), find(atStart, "title-2").animation]).toEqual([false, { out: "pop", outDuration: 0.5 }]);
+    const atEnd = applyOps(animated, [{ op: "split", clipId: "title", at: 3.98 }]);
+    expect([find(atEnd, "title").animation, "animation" in find(atEnd, "title-2")]).toEqual([{ in: "fadeUp", inDuration: 0.5 }, false]);
+  });
+
   it("split, trim and move between overlays keep stickers and effects; a sticker can't go on the video track", () => {
     const styled = applyOps(edit(), [{ op: "setProps", clipId: "s", props: { effects: [{ id: "blurIn" }], blendMode: "screen" } }]);
     const d = applyOps(styled, [{ op: "split", clipId: "s", at: 2 }, { op: "trim", clipId: "s-2", out: 3.5 }, { op: "move", clipId: "s-2", trackId: "o", start: 5 }]);
