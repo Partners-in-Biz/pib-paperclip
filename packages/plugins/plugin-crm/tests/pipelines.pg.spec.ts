@@ -3,7 +3,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { dealOpenReport, cockpitSnapshot } from "../src/cockpit.js";
 import { defaultPipelineId, ensurePipeline, insertStages, listCompanyStages, listPipelines } from "../src/db.js";
 import { listDealsTool, listStagesTool } from "../src/lookup.js";
-import { pipelineForecast } from "../src/worker.js";
+import { createPipeline, pipelineForecast } from "../src/worker.js";
 import type { Viewer } from "../src/domain.js";
 import { NAMESPACE } from "../src/namespace.js";
 import { embeddedAvailable, startPg, type PgHarness } from "./helpers/pg.js";
@@ -91,6 +91,15 @@ describe.skipIf(!available)("the default pipeline rule on a real Postgres", () =
     const pipelines = (await q(`SELECT name FROM ${N}.pipelines WHERE company_id = 'co-new'`)).rows;
     expect(pipelines).toEqual([{ name: "Sales" }]);
     expect((await q(`SELECT count(*)::int AS n FROM ${N}.pipeline_stages WHERE pipeline_id = '${result.pipelineId}'`)).rows).toEqual([{ n: 5 }]);
+  });
+
+  it("create-pipeline on a real DB writes Sales (5 stages), the new pipeline and its N stages", async () => {
+    const made = await createPipeline(pg.ctx, viewer, { name: "JagGids", stages: [{ name: "Lead", kind: "open" }, { name: "Signed", kind: "won" }, { name: "Declined", kind: "lost" }] });
+    expect(made).toMatchObject({ name: "JagGids", isDefault: false });
+    expect((await q(`SELECT name FROM ${N}.pipelines WHERE company_id = '${CO}' ORDER BY created_at, id`)).rows).toEqual([{ name: "Sales" }, { name: "JagGids" }]);
+    expect((await q(`SELECT name, kind, position FROM ${N}.pipeline_stages WHERE pipeline_id = '${made.pipelineId}' ORDER BY position`)).rows)
+      .toEqual([{ name: "Lead", kind: "open", position: 0 }, { name: "Signed", kind: "won", position: 1 }, { name: "Declined", kind: "lost", position: 2 }]);
+    expect((await listPipelines(pg.ctx, CO)).map((row) => [row.name, row.isDefault])).toEqual([["Sales", true], ["JagGids", false]]);
   });
 
   it("filters list-deals, list-stages and pipeline-forecast by pipeline (id or name)", async () => {
