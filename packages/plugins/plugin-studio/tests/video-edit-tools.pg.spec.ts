@@ -39,6 +39,7 @@ describe("video edit tool declarations", () => {
     expect(by["video-edit-render-status"]!.required).toEqual(["renderId"]);
     expect(by["video-edit-cancel-render"]!.required).toEqual(["renderId"]);
     expect(by["video-edit-delete"]!.required).toEqual(["editId"]);
+    expect(by["video-edit-detect-beats"]!.required).toEqual(["editId", "clipId"]);
   });
 
   it("takes no spending or company fields", () => {

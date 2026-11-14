@@ -3,6 +3,7 @@ import { LINK_TARGETS } from "./assets.js";
 import { MAX_BRIEF_ASSETS, MAX_BRIEF_PROMPTS } from "./canvas-brief.js";
 import { MAX_TEXT } from "./canvas-rules.js";
 import { MAX_BATCH } from "./generation.js";
+import { MAX_ANALYSE_SEC } from "./video-edit/beats.js";
 import { MAX_LINE_CHARS } from "./lipsync.js";
 import { PHOTO_PRESETS } from "./presets.js";
 import { LIPSYNC } from "./providers/registry.js";
@@ -139,6 +140,13 @@ const VIDEO_EDIT_TOOLS: PluginToolDeclaration[] = [
       name: text("Optional Library name for the music"),
       issueId: ISSUE,
     }),
+  },
+  {
+    name: "video-edit-detect-beats",
+    displayName: "Find the beats in a clip's sound",
+    description:
+      `Find the tempo (BPM) and beats in a video or sound clip's source (its first ${MAX_ANALYSE_SEC} s). Returns beats in source seconds and timelineBeats (on the timeline, inside the clip's in..out). Kept per asset version, so asking again is instant. Changes nothing. Free.`,
+    parametersSchema: schema(["editId", "clipId"], { editId: EDIT_ID, clipId: text("The video or sound clip, usually the music") }),
   },
   {
     name: "video-edit-render",
