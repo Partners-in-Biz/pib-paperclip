@@ -3,7 +3,7 @@
  * React); TextTrack.tsx and Overlay.tsx draw with it. Every change is an ops batch the worker validates.
  */
 import type { LayoutFont } from "../../layout.js";
-import type { Clip, EditDoc, TextClip } from "../../video-edit/timeline.js";
+import { LIMITS, TEXT_ANIMATIONS, type Clip, type EditDoc, type TextAnimationPreset, type TextClip } from "../../video-edit/timeline.js";
 import { freeId } from "./timeline-view.js";
 import { fontStack, UI_FONTS } from "../font-names.js";
 
@@ -17,7 +17,18 @@ export const MAX_TEXT = 500;
 const COLOR = /^#[0-9A-F]{6}$/;
 const ms = (n: number) => Math.round(n * 1000) / 1000;
 
-export interface TextForm { text: string; font: string; fontSize: string; color: string; x: string; y: string; start: string; duration: string }
+export interface TextForm {
+  text: string; font: string; fontSize: string; color: string; x: string; y: string; start: string; duration: string;
+  /** Animation presets ("" = none) and their lengths in seconds (PAR-10180). */
+  animIn: string; animInDuration: string; animOut: string; animOutDuration: string;
+}
+/** The presets the picker offers, in the order the schema lists them, with a person's name for each. */
+export const ANIMATION_LABELS: Record<TextAnimationPreset, string> = {
+  fadeUp: "Fade up", slideLeft: "Slide left", slideRight: "Slide right", slideUp: "Slide up", slideDown: "Slide down",
+  pop: "Pop", bounce: "Bounce", typewriter: "Typewriter", wordByWord: "Word by word",
+};
+export const ANIMATION_PRESETS: readonly TextAnimationPreset[] = TEXT_ANIMATIONS;
+export const DEFAULT_ANIMATION_SECONDS = 0.5;
 type Ops = { ops: Record<string, unknown>[] };
 
 /** Every text clip with its track, in timeline order. */
@@ -56,7 +67,34 @@ export function formOf(clip: TextClip): TextForm {
   return {
     text: clip.text, font: clip.font ?? "sans", fontSize: String(clip.fontSize), color: clip.color,
     x: String(clip.transform.x), y: String(clip.transform.y), start: String(clip.start), duration: String(clip.duration),
+    animIn: clip.animation?.in ?? "", animInDuration: String(clip.animation?.inDuration ?? DEFAULT_ANIMATION_SECONDS),
+    animOut: clip.animation?.out ?? "", animOutDuration: String(clip.animation?.outDuration ?? DEFAULT_ANIMATION_SECONDS),
   };
+}
+
+/**
+ * The `animation` prop that turns the clip's animation into the form's: undefined when it is the same, null to remove it
+ * (both sides "none"), else the merge object ({in: null} removes one side). A string is the error to show.
+ */
+function animationProp(clip: TextClip, form: TextForm, length: number): { in: string | null; inDuration?: number; out: string | null; outDuration?: number } | null | undefined | string {
+  const known = (v: string) => v === "" || (ANIMATION_PRESETS as readonly string[]).includes(v);
+  if (!known(form.animIn) || !known(form.animOut)) return "Pick an animation from the list.";
+  const [lo, hi] = LIMITS.animationDuration;
+  const seconds = (v: string, label: string): number | string => {
+    const n = Number(v.trim());
+    return v.trim() !== "" && Number.isFinite(n) && n >= lo && n <= hi ? ms(n) : `${label} must be a number from ${lo} to ${hi}.`;
+  };
+  const inLen = form.animIn ? seconds(form.animInDuration, "The in-animation length") : 0;
+  const outLen = form.animOut ? seconds(form.animOutDuration, "The out-animation length") : 0;
+  if (typeof inLen === "string") return inLen;
+  if (typeof outLen === "string") return outLen;
+  if (inLen + outLen > length + 1e-9) return "The in and out animations together are longer than the text clip.";
+  const was = clip.animation;
+  const same = (was?.in ?? "") === form.animIn && (was?.out ?? "") === form.animOut
+    && (!form.animIn || (was?.inDuration ?? DEFAULT_ANIMATION_SECONDS) === inLen) && (!form.animOut || (was?.outDuration ?? DEFAULT_ANIMATION_SECONDS) === outLen);
+  if (same) return undefined;
+  if (!form.animIn && !form.animOut) return null;
+  return { in: form.animIn || null, ...(form.animIn ? { inDuration: inLen } : {}), out: form.animOut || null, ...(form.animOut ? { outDuration: outLen } : {}) };
 }
 
 /** The one `setProps` op that turns `clip` into `form`; null when nothing changed, or an error a person can act on. */
@@ -88,6 +126,9 @@ export function textEditOps(clip: TextClip, form: TextForm): Ops | { error: stri
     if (clip.transitionIn && clip.transitionIn.duration > (duration as number)) props.transitionIn = null;
   }
   if (x !== clip.transform.x || y !== clip.transform.y) props.transform = { x, y };
+  const animation = animationProp(clip, form, (duration as number));
+  if (typeof animation === "string") return { error: animation };
+  if (animation !== undefined) props.animation = animation;
   if (!Object.keys(props).length) return null;
   return { ops: [{ op: "setProps", clipId: clip.id, props }] };
 }

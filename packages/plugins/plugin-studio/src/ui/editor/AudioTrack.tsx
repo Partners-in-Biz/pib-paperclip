@@ -10,6 +10,7 @@ import { Button, Field, Input, Modal, PageMessage } from "@partnersinbiz/pib-plu
 import { usePreviewUrls } from "../previews.js";
 import { clientParam } from "./AddClipDialog.js";
 import { addAudioOps, audioClips, audioEditOps, audioMute, findAudioClip, formOf, MUSIC_DEFAULT_SECONDS, MUSIC_MAX_PROMPT_CHARS, MUSIC_PRICE_LABEL, musicParams, VOICEOVER_MAX_CHARS, VOICEOVER_VOICES, voiceoverCredits, voiceoverParams, VOLUME_RANGE, type AudioForm } from "./audio-track.js";
+import { BeatPanel } from "./BeatPanel.js";
 import type { EditorStore, MusicOutcome } from "./editor-store.js";
 import { formatTime } from "./timeline-view.js";
 
@@ -272,6 +273,7 @@ export function AudioTrack({ store }: { store: EditorStore }) {
           </div>
         </form>
       ) : null}
+      {clip ? <BeatPanel store={store} clip={clip} /> : null}
       {error ? <div role="alert" style={{ color: "#e5484d", fontSize: 12, overflowWrap: "anywhere" }}>{error}</div> : null}
       {speaking ? <VoiceoverDialog busy={busy} at={playhead} onSpeak={speakPicked} onClose={() => setSpeaking(false)} /> : null}
       {composing ? <MusicDialog busy={busy} at={playhead} onMake={makePicked} onClose={() => setComposing(false)} /> : null}

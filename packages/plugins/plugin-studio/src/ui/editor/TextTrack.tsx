@@ -9,7 +9,7 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import type { LayoutFont } from "../../layout.js";
 import type { EditorStore } from "./editor-store.js";
 import { formatTime } from "./timeline-view.js";
-import { addTextOps, findTextClip, FONT_NAMES, formOf, MAX_TEXT, TEXT_FONTS, textClips, textEditOps, type TextForm } from "./text-track.js";
+import { addTextOps, ANIMATION_LABELS, ANIMATION_PRESETS, findTextClip, FONT_NAMES, formOf, MAX_TEXT, TEXT_FONTS, textClips, textEditOps, type TextForm } from "./text-track.js";
 
 const field = { display: "grid", gap: 2, fontSize: 12, minWidth: 0 } as const;
 const input = { padding: "4px 6px", borderRadius: 6, border: "1px solid #8886", background: "transparent", color: "inherit", minWidth: 0, width: "100%", boxSizing: "border-box" } as const;
@@ -78,6 +78,22 @@ export function TextTrack({ store }: { store: EditorStore }) {
           <label style={field}>Y<input type="number" step={10} value={form.y} onChange={set("y")} style={input} /></label>
           <label style={field}>Start (s)<input type="number" min={0} step={0.1} value={form.start} onChange={set("start")} style={input} /></label>
           <label style={field}>Duration (s)<input type="number" min={0.1} step={0.1} value={form.duration} onChange={set("duration")} style={input} /></label>
+          <label style={field}>
+            Animate in
+            <select aria-label="Animate in" data-text-anim-in value={form.animIn} onChange={set("animIn")} style={input}>
+              <option value="">None</option>
+              {ANIMATION_PRESETS.map((a) => <option key={a} value={a}>{ANIMATION_LABELS[a]}</option>)}
+            </select>
+          </label>
+          <label style={field}>In length (s)<input type="number" min={0.05} max={5} step={0.05} disabled={!form.animIn} value={form.animInDuration} onChange={set("animInDuration")} style={input} /></label>
+          <label style={field}>
+            Animate out
+            <select aria-label="Animate out" data-text-anim-out value={form.animOut} onChange={set("animOut")} style={input}>
+              <option value="">None</option>
+              {ANIMATION_PRESETS.map((a) => <option key={a} value={a}>{ANIMATION_LABELS[a]}</option>)}
+            </select>
+          </label>
+          <label style={field}>Out length (s)<input type="number" min={0.05} max={5} step={0.05} disabled={!form.animOut} value={form.animOutDuration} onChange={set("animOutDuration")} style={input} /></label>
           <div style={{ display: "flex", alignItems: "end", gap: 8 }}>
             <button type="submit" disabled={busy} style={btn(!busy)}>Save text</button>
           </div>
