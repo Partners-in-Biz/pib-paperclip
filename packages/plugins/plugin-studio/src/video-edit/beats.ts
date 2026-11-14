@@ -229,8 +229,10 @@ export function soundClip(doc: EditDoc, clipId: string): MediaClip {
   for (const t of doc.tracks) {
     const c = t.clips.find((x) => x.id === clipId);
     if (!c) continue;
-    if (t.kind === "video" || t.kind === "overlay" || t.kind === "audio") return c as MediaClip;
-    bad(`Clip ${clipId} is on a ${t.kind} track; pick a video or sound clip.`);
+    if (t.kind !== "video" && t.kind !== "overlay" && t.kind !== "audio") bad(`Clip ${clipId} is on a ${t.kind} track; pick a video or sound clip.`);
+    // An overlay clip may be a bundled sticker: no asset, no sound.
+    if ("sticker" in c || !("assetId" in c) || !c.assetId) bad("A sticker has no sound; pick a video or sound clip.");
+    return c as MediaClip;
   }
   bad(`Clip ${clipId} is not in this video edit.`, "not_found");
 }
@@ -245,6 +247,7 @@ export async function gridFor(ctx: PluginContext, companyId: string, edit: Edit,
   } catch (e) {
     bad(e instanceof Error ? e.message : String(e), "unknown_asset");
   }
+  if (!input) bad(`Clip ${clip.id} has no library asset to read sound from; pick a video or sound clip.`, "unknown_asset");
   if (input.kind === "image") bad("A picture has no sound; pick a video or sound clip.");
   const key = beatsStateKey(companyId, input.assetId, input.version);
   const hit = cachedGrid(await ctx.state.get(key));
@@ -261,6 +264,14 @@ export function timelineBeats(beats: readonly number[], clip: Pick<MediaClip, "s
 
 export const text = (v: unknown) => (typeof v === "string" ? v.trim() : "");
 
+/** Says when part of the clip lies past the analysed start of its source, where no beats are found. */
+export function analysedWarning(clip: Pick<MediaClip, "in" | "out">): string | undefined {
+  if (clip.out <= MAX_ANALYSE_SEC) return undefined;
+  return clip.in >= MAX_ANALYSE_SEC
+    ? `This clip starts after the first ${MAX_ANALYSE_SEC} s of its source, which is all Studio analyses, so it has no beats.`
+    : `Only the first ${MAX_ANALYSE_SEC} s of the source is analysed; the clip has no beats after source time ${MAX_ANALYSE_SEC} s.`;
+}
+
 /** `video-edit-detect-beats`: tempo and beats of a clip's sound, as source seconds and on the timeline. */
 export async function detectBeatsAction(ctx: PluginContext, companyId: string, params: Record<string, unknown>, deps: BeatDeps = {}) {
   const clipId = text(params.clipId);
@@ -268,5 +279,6 @@ export async function detectBeatsAction(ctx: PluginContext, companyId: string, p
   const edit = await getVideoEdit(ctx, companyId, text(params.editId));
   const clip = soundClip(edit.doc, clipId);
   const { grid, cached } = await gridFor(ctx, companyId, edit, clip, deps);
-  return { editId: edit.id, revision: edit.revision, clipId, assetId: clip.assetId, version: clip.version, tempo: grid.tempo, beats: grid.beats, timelineBeats: timelineBeats(grid.beats, clip), cached };
+  const warning = analysedWarning(clip);
+  return { editId: edit.id, revision: edit.revision, clipId, assetId: clip.assetId, version: clip.version, tempo: grid.tempo, beats: grid.beats, timelineBeats: timelineBeats(grid.beats, clip), cached, analysedSec: MAX_ANALYSE_SEC, ...(warning ? { warning } : {}) };
 }

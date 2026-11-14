@@ -10,11 +10,15 @@ import { BEAT_RUN, BEATS_ALGO, detectBeats, detectBeatsAction, extractBeatAudio,
 import { containedArgv, runContained } from "../src/video-edit/ffmpeg.js";
 import { normalizeEdit } from "../src/video-edit/timeline.js";
 
-const doc = normalizeEdit({ tracks: [{ id: "music", kind: "audio", clips: [{ id: "m1", assetId: "a1", version: 2, in: 1, out: 31, start: 4 }] }] });
+const doc = normalizeEdit({
+  tracks: [
+    { id: "music", kind: "audio", clips: [{ id: "m1", assetId: "a1", version: 2, in: 1, out: 31, start: 4 }, { id: "late", assetId: "a1", version: 2, in: 400, out: 410, start: 40 }] },
+    { id: "ov", kind: "overlay", clips: [{ id: "st", sticker: { pack: "noto-emoji", id: "fire" }, in: 0, out: 2, start: 0 }] },
+  ],
+});
 vi.mock("../src/video-edit/store.js", () => ({ getVideoEdit: async () => ({ id: "e1", revision: 3, client: null, doc }) }));
-vi.mock("../src/video-edit/render-pipeline.js", () => ({
-  resolveInputs: async () => [{ assetId: "a1", version: 2, key: "k", mime: "audio/wav", kind: "audio", bytes: 10 }],
-}));
+const resolveInputs = vi.hoisted(() => vi.fn(async () => [{ assetId: "a1", version: 2, key: "k", mime: "audio/wav", kind: "audio", bytes: 10 }] as unknown[]));
+vi.mock("../src/video-edit/render-pipeline.js", () => ({ resolveInputs }));
 vi.mock("../src/config.js", () => ({ StudioConfig: class { bucket = async () => ({}) } }));
 vi.mock("../src/video-edit/workdir.js", () => ({
   withRenderWorkdir: async (_id: string, _bytes: number, fn: (dir: string) => unknown) => fn(scratch),
@@ -102,6 +106,22 @@ describe("extract and cache", () => {
     expect(second).toMatchObject({ cached: true, beats: first.beats });
     expect(extract).toHaveBeenCalledTimes(1);
     await expect(detectBeatsAction(ctx, "co", { editId: "e1", clipId: "nope" }, { extract })).rejects.toThrow(/not in this video edit/);
+  });
+
+  it("refuses a sticker clip, and a clip with no resolved asset, as a StudioError", async () => {
+    const ctx = { state: { get: async () => null, set: async () => undefined } } as unknown as PluginContext;
+    await expect(detectBeatsAction(ctx, "co", { editId: "e1", clipId: "st" })).rejects.toMatchObject({ name: "StudioError", message: "A sticker has no sound; pick a video or sound clip." });
+    resolveInputs.mockResolvedValueOnce([]);
+    await expect(detectBeatsAction(ctx, "co", { editId: "e1", clipId: "m1" })).rejects.toMatchObject({ name: "StudioError", message: expect.stringMatching(/no library asset/) });
+  });
+
+  it("says how much of the source is analysed, and warns for a clip past it", async () => {
+    const ctx = { state: { get: async () => ({ algo: BEATS_ALGO, tempo: 120, beats: [1, 1.5] }), set: async () => undefined } } as unknown as PluginContext;
+    const inside = await detectBeatsAction(ctx, "co", { editId: "e1", clipId: "m1" });
+    expect(inside).toMatchObject({ analysedSec: 360, timelineBeats: [4, 4.5] });
+    expect(inside).not.toHaveProperty("warning");
+    const late = await detectBeatsAction(ctx, "co", { editId: "e1", clipId: "late" });
+    expect(late).toMatchObject({ analysedSec: 360, timelineBeats: [], warning: expect.stringMatching(/starts after the first 360 s/) });
   });
 });
 

@@ -145,7 +145,7 @@ const VIDEO_EDIT_TOOLS: PluginToolDeclaration[] = [
     name: "video-edit-detect-beats",
     displayName: "Find the beats in a clip's sound",
     description:
-      `Find the tempo (BPM) and beats in a video or sound clip's source (its first ${MAX_ANALYSE_SEC} s). Returns beats in source seconds and timelineBeats (on the timeline, inside the clip's in..out). Kept per asset version, so asking again is instant. Changes nothing. Free.`,
+      `Find the tempo (BPM) and beats in a video or sound clip's source (its first ${MAX_ANALYSE_SEC} s). Returns beats in source seconds and timelineBeats (on the timeline, inside the clip's in..out), analysedSec, and a warning when the clip runs past the analysed part. Kept per asset version, so asking again is instant. Changes nothing. Free.`,
     parametersSchema: schema(["editId", "clipId"], { editId: EDIT_ID, clipId: text("The video or sound clip, usually the music") }),
   },
   {
