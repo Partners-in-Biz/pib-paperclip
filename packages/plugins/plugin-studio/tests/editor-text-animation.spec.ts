@@ -47,6 +47,19 @@ describe("animatedOverlay", () => {
     expect(animatedOverlay(clip, project, 1, 1).units!.map((u) => u.text).join("")).toBe("One two three");
   });
 
+  it("mixed reveal presets split per phase: characters on a typewriter entry, words on a wordByWord exit", () => {
+    const { clip, project } = clipOf({ animation: { in: "typewriter", inDuration: 1, out: "wordByWord", outDuration: 2 } });
+    const at = (t: number) => animatedOverlay(clip, project, 1 + t, 1).units;
+    expect(at(0.5)!.length).toBe(13); // one unit per character
+    const exit = at(3.5)!; // 1.5 s into the 2 s exit
+    expect(exit.map((u) => u.text.trim())).toEqual(["One", "two", "three"]);
+    expect(exit.map((u) => u.hidden)).toEqual([false, true, true]);
+    expect(at(1.5)).toBeNull(); // between the phases: no reveal split
+    const rev = clipOf({ animation: { in: "wordByWord", inDuration: 1, out: "typewriter", outDuration: 2 } });
+    expect(animatedOverlay(rev.clip, rev.project, 1.5, 1).units!.length).toBe(3);
+    expect(animatedOverlay(rev.clip, rev.project, 4, 1).units!.length).toBe(13);
+  });
+
   it("multiplies the clip's own opacity (fades, keyframes) with the animation's", () => {
     const { clip, project } = clipOf({ animation: { in: "fadeUp", inDuration: 1 } });
     expect(animatedOverlay(clip, project, 1.5, 0.5).style.opacity).toBe(0.25);

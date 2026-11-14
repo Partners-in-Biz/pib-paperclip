@@ -138,9 +138,12 @@ export function overlayStyle(clip: TextClip, project: { width: number; height: n
  */
 export function animatedOverlay(clip: TextClip, project: { width: number; height: number }, t: number, opacity: number): { style: Record<string, string | number>; units: { text: string; hidden: boolean }[] | null } {
   if (!clip.animation) return { style: overlayStyle(clip, project, opacity), units: null };
-  const kind = phases(clip.animation, clip.duration).map((p) => PRESETS[p.preset].reveal).find(Boolean);
+  const local = t - clip.start;
+  // The render picks the reveal kind per phase, so the preview does too (none outside a phase).
+  const active = phases(clip.animation, clip.duration).find((p) => local >= p.from && local <= p.to);
+  const kind = active ? PRESETS[active.preset].reveal : undefined;
   const split = kind ? revealUnits(clip.text, kind) : null;
-  const state = textAnimationAt(clip, project, t - clip.start, split?.units.length ?? 0);
+  const state = textAnimationAt(clip, project, local, split?.units.length ?? 0);
   const base: Record<string, string | number> = overlayStyle(clip, project, ms(opacity * state.alpha));
   const style: Record<string, string | number> = {
     ...base,
