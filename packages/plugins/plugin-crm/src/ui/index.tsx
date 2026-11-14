@@ -152,6 +152,7 @@ interface Stage {
   name: string;
   kind: string;
   position: number;
+  pipelineId?: string | null;
 }
 
 interface Summary {
@@ -1126,6 +1127,7 @@ interface WorkspaceDeal {
   stageId: string;
   stageName: string;
   stageKind: string;
+  pipelineId?: string | null;
   contactId: string | null;
   contactName: string | null;
   accountId: string | null;
@@ -1360,7 +1362,7 @@ function ClientWorkspace({ companyId, client, companyPrefix }: { companyId: stri
   const pickReady = pickMode === "new" ? pickName.trim() !== "" : pickId !== "";
   const openDeal = openDealId ? deals.find((deal) => deal.id === openDealId) ?? null : null;
   const dealView: DealView | null = openDeal
-    ? { id: openDeal.id, title: openDeal.title, amountMinor: openDeal.amountMinor, currency: openDeal.currency, stageId: openDeal.stageId, accountId: openDeal.accountId, contactId: openDeal.contactId }
+    ? { id: openDeal.id, title: openDeal.title, amountMinor: openDeal.amountMinor, currency: openDeal.currency, stageId: openDeal.stageId, pipelineId: openDeal.pipelineId ?? null, accountId: openDeal.accountId, contactId: openDeal.contactId }
     : null;
 
   function openModal(next: Exclude<WorkspaceModal, null>) {
