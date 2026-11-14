@@ -843,6 +843,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           return callHost("companies.list", {
             limit: input?.limit,
             offset: input?.offset,
+            actionableOnly: input?.actionableOnly,
           });
         },
 

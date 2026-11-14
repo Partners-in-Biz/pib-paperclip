@@ -1189,8 +1189,18 @@ export interface PluginTelemetryClient {
 export interface PluginCompaniesClient {
   /**
    * List companies visible to this plugin.
+   *
+   * Inside a host invocation (action, data, tool, page route) the answer is the
+   * invocation's company. Outside one (jobs, timers, webhooks, start-up) it is
+   * every company.
+   *
+   * `actionableOnly: true` returns only the companies this call may act for:
+   * inside an invocation, the invocation's company (saved settings or not);
+   * outside one, the companies with saved settings for this plugin. Both
+   * filters run before `limit` and `offset`. A host that predates the
+   * parameter ignores it and returns the plain answer.
    */
-  list(input?: { limit?: number; offset?: number }): Promise<Company[]>;
+  list(input?: { limit?: number; offset?: number; actionableOnly?: boolean }): Promise<Company[]>;
 
   /**
    * Get one company by ID.

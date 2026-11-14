@@ -83,6 +83,12 @@ export interface TestHarnessOptions {
   capabilities?: PluginCapability[];
   /** Initial config returned by `ctx.config.get(companyId)`. */
   config?: Record<string, unknown>;
+  /**
+   * Companies returned by `ctx.companies.list({ actionableOnly: true })` (the
+   * companies with saved settings, as a job sees them). Defaults to every
+   * seeded company. See `TestHarness.setActionableCompanyIds`.
+   */
+  actionableCompanyIds?: string[];
 }
 
 export interface TestHarnessLogEntry {
@@ -127,6 +133,11 @@ export interface TestHarness {
     principalGrants?: PrincipalPermissionGrant[];
   }): void;
   setConfig(config: Record<string, unknown>): void;
+  /**
+   * Set the companies `ctx.companies.list({ actionableOnly: true })` returns;
+   * `null` means every seeded company. Applied before `limit`/`offset`.
+   */
+  setActionableCompanyIds(companyIds: string[] | null): void;
   /** Dispatch a host or plugin event to registered handlers. */
   emit(eventType: PluginEventType | `plugin.${string}`, payload: unknown, base?: Partial<PluginEvent>): Promise<void>;
   /** Execute a previously-registered scheduled job handler. */
@@ -504,6 +515,9 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
   const entities = new Map<string, PluginEntityRecord>();
   const entityExternalIndex = new Map<string, string>();
   const companies = new Map<string, Company>();
+  let actionableCompanyIds: Set<string> | null = options.actionableCompanyIds
+    ? new Set(options.actionableCompanyIds)
+    : null;
   const lifecycleEvents = new Map<string, ResourceLifecycleEvent>();
   const lifecycleAcknowledgments = new Set<string>();
   const projects = new Map<string, Project>();
@@ -1601,6 +1615,10 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       async list(input) {
         requireCapability(manifest, capabilitySet, "companies.read");
         let out = [...companies.values()];
+        if (input?.actionableOnly === true && actionableCompanyIds) {
+          const allowed = actionableCompanyIds;
+          out = out.filter((company) => allowed.has(company.id));
+        }
         if (input?.offset) out = out.slice(input.offset);
         if (input?.limit) out = out.slice(0, input.limit);
         return out;
@@ -2646,6 +2664,9 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
     },
     setConfig(config) {
       currentConfig = { ...config };
+    },
+    setActionableCompanyIds(companyIds) {
+      actionableCompanyIds = companyIds ? new Set(companyIds) : null;
     },
     async emit(eventType, payload, base) {
       const event: PluginEvent = {

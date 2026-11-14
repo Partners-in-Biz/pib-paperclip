@@ -124,6 +124,64 @@ describe("createHostClientHandlers invocation company scope", () => {
     ).resolves.toEqual([{ id: "company-a", name: "Company A" }]);
   });
 
+  describe("companies.list actionableOnly (PAR-11072 T2)", () => {
+    const rows = [
+      { id: "company-a", name: "Company A" },
+      { id: "company-b", name: "Company B" },
+      { id: "company-c", name: "Company C" },
+    ];
+    function setup(listImpl?: (params: unknown, filter?: { companyIds?: readonly string[] }) => Promise<unknown>) {
+      const list = vi.fn(listImpl ?? (async () => rows));
+      const handlers = createHostClientHandlers({
+        pluginId: "paperclip.test",
+        capabilities: ["companies.read"],
+        services: { companies: { list } } as unknown as HostServices,
+      });
+      return { list, handlers };
+    }
+
+    it("outside an invocation, without the param, returns every company and passes no filter", async () => {
+      const { list, handlers } = setup();
+      await expect(handlers["companies.list"]({ limit: 10 }, { actionableCompanyIds: ["company-b"] })).resolves.toEqual(rows);
+      expect(list).toHaveBeenCalledWith({ limit: 10, offset: undefined });
+    });
+
+    it("outside an invocation, actionableOnly returns the configured set and hands the filter to the service", async () => {
+      const { list, handlers } = setup();
+      await expect(
+        handlers["companies.list"]({ actionableOnly: true, limit: 1 }, { actionableCompanyIds: ["company-c"] }),
+      ).resolves.toEqual([rows[2]]);
+      expect(list).toHaveBeenCalledWith({ limit: 1, offset: undefined }, { companyIds: ["company-c"] });
+    });
+
+    it("outside an invocation with no configured company, actionableOnly returns nothing", async () => {
+      const { handlers } = setup();
+      await expect(handlers["companies.list"]({ actionableOnly: true }, {})).resolves.toEqual([]);
+    });
+
+    it("inside an invocation, actionableOnly returns the invocation company even without saved settings", async () => {
+      const { list, handlers } = setup();
+      await expect(
+        handlers["companies.list"](
+          { actionableOnly: true },
+          { invocationScope: { companyId: "company-b" }, actionableCompanyIds: ["company-c"] },
+        ),
+      ).resolves.toEqual([rows[1]]);
+      expect(list).toHaveBeenCalledWith({ limit: undefined, offset: undefined }, { companyIds: ["company-b"] });
+    });
+
+    it("never widens the answer when a service ignores the filter, and never forwards worker-sent extras", async () => {
+      const { list, handlers } = setup();
+      await expect(
+        handlers["companies.list"](
+          { actionableOnly: true, companyIds: ["company-a"] } as never,
+          { actionableCompanyIds: ["company-b"] },
+        ),
+      ).resolves.toEqual([rows[1]]);
+      expect(list.mock.calls[0]?.[0]).toEqual({ limit: undefined, offset: undefined });
+    });
+  });
+
   it("rejects company-scope store access for a different company", async () => {
     const stateGet = vi.fn(async () => null);
     const services = {
