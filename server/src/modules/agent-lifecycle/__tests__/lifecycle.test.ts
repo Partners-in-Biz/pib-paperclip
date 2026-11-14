@@ -19,7 +19,7 @@ import { errorHandler } from "../../../middleware/error-handler.js";
 import { createLifecycleDriver } from "../../../services/agent-lifecycle-driver.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
-import { agents, approvals, projects, issues, heartbeatRuns, nativeRunFinalizations, budgetPolicies, environmentLeases, environments, agentApiKeys, activityLog, agentConfigRevisions, userCompanyPreferences, companies, companyMemberships, principalPermissionGrants, plugins, pluginCompanySettings, applyPendingMigrations, closeRegisteredClients, createDb, type Db } from "@paperclipai/db";
+import { agents, approvals, projects, issues, heartbeatRuns, heartbeatRunEvents, nativeRunFinalizations, budgetPolicies, environmentLeases, environments, agentApiKeys, activityLog, agentConfigRevisions, userCompanyPreferences, companies, companyMemberships, principalPermissionGrants, plugins, pluginCompanySettings, applyPendingMigrations, closeRegisteredClients, createDb, type Db } from "@paperclipai/db";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../../__tests__/helpers/embedded-postgres.js";
 import { createAgentLifecycle, configureAgentLifecycle, startAgentLifecycle } from "../../../services/agent-lifecycle.js";
@@ -602,6 +602,53 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       remoteExecutionTermination: remoteTerminationReceipt(lease, { providerLeaseId: lease.providerLeaseId, state: "destroyed" }),
     } }).where(eq(environmentLeases.id, lease.id));
     expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(true);
+  });
+
+  it("finishes a pause when an SSH run was cancelled before it reached the host, and applies a queued resume", async () => {
+    // 2026-11-10: Mac (ssh) agents hung in pausing. Runs cancelled at
+    // execution-start leave an expired ssh lease with no termination receipt.
+    const work = worker(async agent => agent.lifecycleState === "pausing"
+      ? await agentExecutionsHaveStopped(db, [agent.id]) ? "complete" : "pending" : "complete");
+    const lifecycle = createAgentLifecycle(db);
+    const agent = await hire(); await work.process(agent.id);
+    const sshLease = (runId: string) => ({ companyId, heartbeatRunId: runId, provider: "ssh", providerLeaseId: `ssh-${runId}`,
+      status: "expired", releasedAt: new Date(), metadata: { driver: "ssh", agentId: agent.id } });
+    const [never] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, status: "cancelled",
+      invocationSource: "on_demand", runtimeMode: "legacy", executionStage: "settled", startedAt: new Date(), finishedAt: new Date(),
+      error: "Cancelled: agent not invokable at execution-start" }).returning();
+    await db.insert(environmentLeases).values(sshLease(never.id));
+    await db.insert(heartbeatRunEvents).values({ companyId, runId: never.id, agentId: agent.id, seq: 1,
+      eventType: "lifecycle", stream: "system", message: "run started" });
+    await lifecycle.pauseAgent(agent.id); await work.process(agent.id);
+    expect((await current(agent.id)).lifecycleState).toBe("paused");
+
+    // A run whose adapter did invoke ssh still needs a receipt before the pause can finish.
+    await lifecycle.resumeAgent(agent.id); await work.process(agent.id);
+    expect((await current(agent.id)).lifecycleState).toBe("ready");
+    const [ran] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, status: "cancelled",
+      invocationSource: "on_demand", runtimeMode: "legacy", executionStage: "settled", startedAt: new Date(), finishedAt: new Date() }).returning();
+    const [ranLease] = await db.insert(environmentLeases).values({ ...sshLease(ran.id), status: "released", cleanupStatus: "success" }).returning();
+    await db.insert(heartbeatRunEvents).values({ companyId, runId: ran.id, agentId: agent.id, seq: 1,
+      eventType: "adapter.invoke", stream: "system", message: "adapter invocation" });
+    await lifecycle.pauseAgent(agent.id); await work.process(agent.id);
+    expect((await current(agent.id)).lifecycleState).toBe("pausing");
+
+    // Resume while pausing is queued, and the API says so.
+    const app = express(); app.use(express.json());
+    app.use((req, _res, next) => { req.actor = { type: "board", source: "local_implicit", userId: "board", companyIds: [companyId] }; next(); });
+    app.use("/api", agentRoutes(db)); app.use(errorHandler);
+    const resumed = await request(app).post(`/api/agents/${agent.id}/resume`).expect(200);
+    expect(resumed.body).toMatchObject({ lifecycleState: "pausing", pauseReason: null, resumeQueued: true });
+    await work.process(agent.id);
+    expect((await current(agent.id)).lifecycleState).toBe("pausing");
+    await db.update(environmentLeases).set({ metadata: { remoteExecutionTermination:
+      remoteTerminationReceipt(ranLease, { providerLeaseId: ranLease.providerLeaseId, state: "stopped" }) } })
+      .where(eq(environmentLeases.id, ranLease.id));
+    expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(true);
+    // Let the pause's retry backoff elapse.
+    await db.update(agents).set({ lifecycleOperation: sql`${agents.lifecycleOperation} - 'retryAt'` }).where(eq(agents.id, agent.id));
+    await work.process(agent.id); await work.process(agent.id);
+    expect(await current(agent.id)).toMatchObject({ lifecycleState: "ready", lifecycleHolds: [] });
   });
 
   it("does not prepare a proposed hire until approval", async () => {

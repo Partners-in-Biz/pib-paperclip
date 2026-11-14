@@ -5917,6 +5917,7 @@ export function agentRoutes(
       res.status(404).json({ error: "Agent not found" });
       return;
     }
+    const resumeQueued = agent.lifecycleState === "pausing";
 
     const actor = getActorInfo(req);
     await logActivity(db, {
@@ -5929,9 +5930,14 @@ export function agentRoutes(
       action: "agent.resumed",
       entityType: "agent",
       entityId: agent.id,
+      ...(resumeQueued ? { details: { resumeQueued: true } } : {}),
     });
 
-    res.json(redactAgentRowForResponse(agent));
+    // Resume during a pause drops the hold; the agent comes back only once the
+    // pause has proven every execution stopped. Say so instead of a silent 200.
+    res.json(resumeQueued ? { ...redactAgentRowForResponse(agent), resumeQueued: true,
+      message: "Resume queued: the agent is still pausing and resumes once its runs have stopped" }
+      : redactAgentRowForResponse(agent));
   });
 
   router.post("/agents/:id/clear-error", async (req, res) => {

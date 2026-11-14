@@ -250,7 +250,11 @@ export function AgentActionButtons({
 
   const resolvedCompanyId = companyId ?? agent.companyId;
   const canonicalAgentRef = agentRouteRef(agent);
-  const isPaused = agent.lifecycleState ? agent.lifecycleState === "paused" : agent.status === "paused";
+  // A pause that is still waiting for runs to stop keeps its hold until Resume
+  // drops it; Resume then queues and applies once the pause finishes.
+  const isPaused = agent.lifecycleState
+    ? agent.lifecycleState === "paused" || (agent.lifecycleState === "pausing" && Boolean(agent.pauseReason))
+    : agent.status === "paused";
   const isAgentError = agent.status === "error";
   const needsSetup = agent.pauseReason === "setup" && agent.status !== "terminated"
     && !["terminating", "cleaning_up", "terminated", "rejected"].includes(agent.lifecycleState ?? "");
@@ -366,7 +370,8 @@ export function AgentActionButtons({
   const disabled = actionsDisabled || agentAction.isPending;
   const assignAndRunDisabled = disabled || isPendingApproval || workActionsDisabled || agent.status === "terminated";
   const pauseResumeDisabled = disabled || isPendingApproval || (isPaused && workActionsDisabled)
-    || Boolean(agent.lifecycleState && ["pausing", "terminating", "cleaning_up", "terminated", "rejected"].includes(agent.lifecycleState));
+    || (agent.lifecycleState === "pausing" && !isPaused)
+    || Boolean(agent.lifecycleState && ["terminating", "cleaning_up", "terminated", "rejected"].includes(agent.lifecycleState));
   const clearErrorDisabled = disabled;
   const runtimeConfig = agent.runtimeConfig as Record<string, unknown> | null;
   const runtimeDebug =

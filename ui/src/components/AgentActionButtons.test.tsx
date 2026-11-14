@@ -161,6 +161,16 @@ describe("AgentActionButtons", () => {
     expect(mockAgentsApi.invoke).not.toHaveBeenCalled();
   });
 
+  it("offers Resume while a manual pause is still waiting for runs to stop", async () => {
+    render(makeAgent({ status: "paused", lifecycleState: "pausing", pauseReason: "manual" }), { workActionsInMenu: true });
+    await flushReact();
+    await act(() => container.querySelector<HTMLButtonElement>('button[aria-label="Open actions for Alpha Agent"]')?.click());
+    const resume = [...document.querySelectorAll("button")].find(button => button.textContent?.trim() === "Resume");
+    expect(resume?.disabled).toBe(false);
+    await act(() => resume!.click());
+    expect(mockAgentsApi.resume).toHaveBeenCalled();
+  });
+
   it.each(["paused", "preparing", "verifying", "pausing", undefined] as const)("replaces run controls with one setup action when lifecycle is %s", async lifecycleState => {
     render(makeAgent({ adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "claude" }, status: "paused", lifecycleState, pauseReason: "setup" }));
     await flushReact();
