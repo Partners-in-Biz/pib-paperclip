@@ -375,7 +375,13 @@ setTimeout(() => {
       async started(info: { pgid: number; workdir: string }) {
         // The previous pass's group is empty by the time the next pass is up.
         const leftover = started.length ? await pidsInGroup(started[started.length - 1].pgid) : [];
-        started.push({ ...info, names: await cmdlineNames(info.pgid, dir), leftover, endedBefore: ended });
+        // /proc/<pgid>/cmdline is read right after spawn: on a loaded host the child can still be pre-exec, so poll briefly.
+        let names = await cmdlineNames(info.pgid, dir);
+        for (let i = 0; !names && i < 50; i++) {
+          await new Promise((res) => setTimeout(res, 20));
+          names = await cmdlineNames(info.pgid, dir);
+        }
+        started.push({ ...info, names, leftover, endedBefore: ended });
         opts.onStart?.(started.length, info.pgid);
         return true;
       },
