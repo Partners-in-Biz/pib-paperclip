@@ -4,12 +4,14 @@ import { describe, expect, it } from "vitest";
 import { applyOps, OpError } from "../src/video-edit/ops.js";
 import { classifyRenderError } from "../src/video-edit/runner.js";
 import { isSticker, NOTO_EMOJI, PIB_SHAPES, STICKER_PACKS, stickerIds } from "../src/video-edit/sticker-packs.js";
-import { BLEND_MODES, EditError, FEATURE_VERSION, featurePaths, KEYFRAME_PROPS, normalizeEdit, requiredVersion, SCHEMA_VERSION, type EditDoc } from "../src/video-edit/timeline.js";
+import { BLEND_MODES, EditError, FEATURE_VERSION, featurePaths, KEYFRAME_PROPS, normalizeEdit, requiredVersion, SCHEMA_VERSION, type EditDoc, type StickerRef } from "../src/video-edit/timeline.js";
 
 const media = (extra: Record<string, unknown> = {}) => ({ id: "c", assetId: "asset-1", version: 1, in: 0, out: 4, start: 0, ...extra });
 const sticker = (extra: Record<string, unknown> = {}) => ({ id: "c", sticker: { pack: "noto-emoji", id: "fire" }, in: 0, out: 4, start: 0, ...extra });
 const doc = (kind: string, clip: Record<string, unknown>, schemaVersion?: number) => ({ ...(schemaVersion ? { schemaVersion } : {}), project: { size: "9:16", fps: 30 }, tracks: [{ id: "t", kind, clips: [clip] }] });
-const clipOf = (d: EditDoc, i = 0) => d.tracks[0].clips[i] as unknown as Record<string, any>;
+/** A clip read back for assertions: any field, with the v5 objects typed. */
+type ClipView = Record<string, unknown> & { sticker?: StickerRef };
+const clipOf = (d: EditDoc, i = 0) => d.tracks[0].clips[i] as unknown as ClipView;
 const top = (v: (typeof FEATURE_VERSION)[string]) => (typeof v === "number" ? v : Math.max(...Object.values(v)));
 const roundTrips = (d: EditDoc) => expect(JSON.stringify(normalizeEdit(JSON.parse(JSON.stringify(d))))).toBe(JSON.stringify(d));
 
@@ -59,7 +61,7 @@ describe("schema v5: FEATURE_VERSION rows for stickers", () => {
   it("an unknown emitted key or value throws instead of stamping a lower version", () => {
     const full = normalizeEdit(MAX_DOC);
     const swap = (t: number, clip: Record<string, unknown>) => ({ ...full, tracks: full.tracks.map((tr, i) => (i === t ? { ...tr, clips: [clip] } : tr)) }) as unknown as EditDoc;
-    const s = full.tracks[2].clips[0] as unknown as Record<string, any>;
+    const s = full.tracks[2].clips[0] as unknown as ClipView;
     expect(() => requiredVersion(swap(2, { ...s, sticker: { pack: "giphy", id: "x" } }))).toThrow(/clip\.sticker\.pack = giphy/);
     expect(() => requiredVersion(swap(2, { ...s, sticker: { ...s.sticker, file: "x.png" } }))).toThrow(/clip\.sticker\.file/);
   });
@@ -142,7 +144,7 @@ describe("schema v5 sticker ops (writer path: applyOps)", () => {
     { id: "o", kind: "overlay", clips: [media({ id: "b" })] },
     { id: "o2", kind: "overlay", clips: [sticker({ id: "s" })] },
   ] });
-  const find = (d: EditDoc, id: string) => d.tracks.flatMap((t) => t.clips as unknown as Record<string, any>[]).find((c) => c.id === id)!;
+  const find = (d: EditDoc, id: string) => d.tracks.flatMap((t) => t.clips as unknown as ClipView[]).find((c) => c.id === id)!;
   const opRefusal = (ops: unknown[], base: unknown = edit()): OpError => {
     try {
       applyOps(base, ops);
