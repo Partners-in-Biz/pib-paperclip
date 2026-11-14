@@ -473,4 +473,26 @@ describePg("the hand-over of decided previews", () => {
       expect((await syncApplyWindow(h.env, await sprintOf(h), "test"))!.pages).toContain("https://acme.co.za/a");
     });
   });
+  it("PAR-11603: a client's email approval on an auto sprint opens its window although the page was re-previewed and a sibling is still pending", async () => {
+    await reset();
+    await putSprint(AUTO);
+    await putTask("t-1", "iss-1");
+    const page = "https://acme.co.za/irrigation/";
+    await put("old", { page_url: page, created_at: ago(5 * HOURS), ...decided("approved", "email", { decided_at: ago(30 * 60_000) }) });
+    await put("redo", { page_url: page, created_at: ago(HOURS) });
+    await put("sibling", { created_at: ago(5 * HOURS) });
+    const h = host(AUTO);
+    // Inside the grace the task still waits for the other previews.
+    expect(await retryHandovers(h.env)).toBe(0);
+    expect((await one("old")).handed_at).toBeNull();
+    // Past the grace (and the 5-minute sweep age) the approval is handed over alone; the newer pending preview does not strand it.
+    await sql.unsafe(`UPDATE ${SCHEMA}.previews SET decided_at = now() - interval '3 hours' WHERE id = 'old'`);
+    expect(await retryHandovers(h.env)).toBe(1);
+    const old = await one("old");
+    expect(old.handed_at).not.toBeNull();
+    expect(ms(old.apply_until)).toBeGreaterThan(Date.now());
+    expect((await one("redo")).handed_at).toBeNull();
+    expect(h.wakeups).toEqual(["iss-1"]);
+    expect(h.locks().at(-1)).toMatchObject({ siteId: "site-1", scope: "pages", pages: ["https://acme.co.za/irrigation"] });
+  });
 });

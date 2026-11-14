@@ -57,13 +57,18 @@ interface TaskPreview {
   /** cockpit, email or api; null on an answer from before migration 026 (an email answer). */
   decisionSource: string | null;
   confirmed: boolean;
+  decidedAt: Date | null;
 }
 
 /** The newest preview of each page of a task (an older one for the same page is superseded). */
 export async function latestTaskPreviews(env: Env, companyId: string, taskId: string): Promise<TaskPreview[]> {
   const rows = await env.ctx.db.query(
-    `SELECT DISTINCT ON (page_url) id, page_url, title, status, review_status, decision_note, handed_at, draft_key, decision_source, confirmed_at
-       FROM ${t("previews")} WHERE company_id = $1 AND task_id = $2 AND ${PREVIEW_LIVE_SQL} AND status <> 'cancelled' ORDER BY page_url, created_at DESC`,
+    // An approved preview not yet handed over outranks a newer one still undecided (PAR-11603): the client's answer stands until
+    // someone declines or asks changes on a newer one, so a re-made preview never strands an approval without its apply window.
+    `SELECT DISTINCT ON (page_url) id, page_url, title, status, review_status, decision_note, handed_at, draft_key, decision_source, confirmed_at, decided_at
+       FROM ${t("previews")} p WHERE company_id = $1 AND task_id = $2 AND ${PREVIEW_LIVE_SQL} AND status <> 'cancelled'
+       ORDER BY page_url, (status = 'approved' AND handed_at IS NULL AND NOT EXISTS (
+         SELECT 1 FROM ${t("previews")} n WHERE n.company_id = p.company_id AND n.task_id = p.task_id AND n.page_url = p.page_url AND n.created_at > p.created_at AND n.status IN ('declined', 'changes_requested'))) DESC, created_at DESC`,
     [companyId, taskId],
   );
   return rows.map((r) => ({
@@ -77,6 +82,7 @@ export async function latestTaskPreviews(env: Env, companyId: string, taskId: st
     draftKey: r.draft_key ? String(r.draft_key) : null,
     decisionSource: r.decision_source ? String(r.decision_source) : null,
     confirmed: Boolean(r.confirmed_at),
+    decidedAt: r.decided_at ? new Date(String(r.decided_at)) : null,
   }));
 }
 
@@ -288,6 +294,8 @@ export const PERSON_APPLY_HOURS = 48;
 export const HANDOVER_RETRY_AFTER_MINUTES = 5;
 export const HANDOVER_MAX_ATTEMPTS = 5;
 const HANDOVER_SWEEP_LIMIT = 25;
+/** An answer waits this long for the task's other previews; after that it is handed over alone (PAR-11603), so one slow page never holds an approval back. */
+export const SIBLING_WAIT_HOURS = 2;
 const DECIDED = new Set(["approved", "declined", "changes_requested"]);
 type HandoverOutcome = "waiting" | "handed" | "nothing";
 
@@ -335,7 +343,8 @@ async function handOverTask(env: Env, sprint: db.Sprint, taskId: string): Promis
   const waiting = previews.some(
     (p) => (p.status === "pending" && (p.reviewStatus === "passed" || p.reviewStatus === "pending")) || (!auto && p.status === "approved" && !p.handedAt && (p.decisionSource ?? "email") === "email" && !p.confirmed),
   );
-  if (waiting) return "waiting";
+  const graceOver = previews.some((p) => p.status === "approved" && isEligible(p, auto) && p.decidedAt !== null && env.now().getTime() - p.decidedAt.getTime() >= SIBLING_WAIT_HOURS * 3_600_000);
+  if (waiting && !graceOver) return "waiting";
   if (previews.length === 0 && task.status === "blocked" && task.assigneeKind === "client") {
     // Every preview of the task was cancelled: nothing is left for the client to answer, so the agent gets the task back.
     if (!(await patchIssue(env, sprint.companyId, task.issueId, { status: "todo" }))) return "nothing";
@@ -430,6 +439,7 @@ async function finishHandover(env: Env, sprint: db.Sprint, task: db.SprintTask, 
  * email approval nobody confirmed on a manual sprint. The sweep leaves such tasks out, so rows that only wait never fill its LIMIT.
  * "Auto" here is isAutoSignoff without the rehearsal test: a rehearsal sprint makes no previews.
  */
+const AUTO_SPRINT_SQL = `SELECT 1 FROM ${t("sprints")} s WHERE s.company_id = p.company_id AND s.id = p.sprint_id AND s.client_signoff = 'auto' AND s.change_policy = 'pr_only' AND s.site_access = 'wordpress'`;
 const WAITING_SIBLING_SQL = `SELECT 1 FROM ${t("previews")} w
     WHERE w.company_id = p.company_id AND w.task_id = p.task_id AND w.status <> 'cancelled' AND ${PREVIEW_LIVE_SQL}
       AND NOT EXISTS (SELECT 1 FROM ${t("previews")} v WHERE v.company_id = w.company_id AND v.task_id = w.task_id AND v.page_url = w.page_url AND v.created_at > w.created_at AND v.status <> 'cancelled' AND ${PREVIEW_LIVE_SQL})
@@ -447,12 +457,13 @@ export async function retryHandovers(env: Env): Promise<number> {
     `SELECT p.id, p.company_id, p.sprint_id, p.task_id, p.page_url, p.handed_at::text AS claim FROM ${t("previews")} p
       WHERE p.task_id IS NOT NULL AND p.handover_done_at IS NULL AND p.handover_attempts < $1 AND p.status IN ('approved', 'declined', 'changes_requested')
         AND ((p.handed_at IS NOT NULL AND p.handed_at < now() - make_interval(mins => $2::int))
-          OR (p.handed_at IS NULL AND p.decided_at < now() - make_interval(mins => $2::int) AND (p.decision_source IN ('cockpit', 'api') OR p.confirmed_at IS NOT NULL)
+          OR (p.handed_at IS NULL AND p.decided_at < now() - make_interval(mins => $2::int) AND (p.decision_source IN ('cockpit', 'api') OR p.confirmed_at IS NOT NULL OR EXISTS (${AUTO_SPRINT_SQL}))
             AND ${PREVIEW_LIVE_SQL}
-            AND NOT EXISTS (SELECT 1 FROM ${t("previews")} n WHERE n.company_id = p.company_id AND n.task_id = p.task_id AND n.page_url = p.page_url AND n.created_at > p.created_at AND n.status <> 'cancelled')
-            AND NOT EXISTS (${WAITING_SIBLING_SQL})))
+            AND NOT EXISTS (SELECT 1 FROM ${t("previews")} n WHERE n.company_id = p.company_id AND n.task_id = p.task_id AND n.page_url = p.page_url AND n.created_at > p.created_at AND n.status <> 'cancelled'
+              AND (p.status <> 'approved' OR n.status IN ('declined', 'changes_requested')))
+            AND (p.decided_at < now() - make_interval(hours => $3::int) OR NOT EXISTS (${WAITING_SIBLING_SQL}))))
       ORDER BY p.handover_attempts, COALESCE(p.handed_at, p.decided_at) LIMIT ${HANDOVER_SWEEP_LIMIT}`,
-    [HANDOVER_MAX_ATTEMPTS, HANDOVER_RETRY_AFTER_MINUTES],
+    [HANDOVER_MAX_ATTEMPTS, HANDOVER_RETRY_AFTER_MINUTES, SIBLING_WAIT_HOURS],
   );
   const groups = new Map<string, { companyId: string; sprintId: string; taskId: string; claim: string | null; ids: string[]; pages: string[] }>();
   for (const r of rows) {
