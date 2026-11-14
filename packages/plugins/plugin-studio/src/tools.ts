@@ -4,6 +4,7 @@ import { MAX_BRIEF_ASSETS, MAX_BRIEF_PROMPTS } from "./canvas-brief.js";
 import { MAX_TEXT } from "./canvas-rules.js";
 import { MAX_BATCH } from "./generation.js";
 import { MAX_ANALYSE_SEC } from "./video-edit/beats.js";
+import { EVERY } from "./video-edit/cut-to-beat.js";
 import { MAX_LINE_CHARS } from "./lipsync.js";
 import { PHOTO_PRESETS } from "./presets.js";
 import { LIPSYNC } from "./providers/registry.js";
@@ -147,6 +148,20 @@ const VIDEO_EDIT_TOOLS: PluginToolDeclaration[] = [
     description:
       `Find the tempo (BPM) and beats in a video or sound clip's source (its first ${MAX_ANALYSE_SEC} s). Returns beats in source seconds and timelineBeats (on the timeline, inside the clip's in..out), analysedSec, and a warning when the clip runs past the analysed part. Kept per asset version, so asking again is instant. Changes nothing. Free.`,
     parametersSchema: schema(["editId", "clipId"], { editId: EDIT_ID, clipId: text("The video or sound clip, usually the music") }),
+  },
+  {
+    name: "video-edit-cut-to-beat",
+    displayName: "Cut a track to the beat",
+    description:
+      "Trim the clips of one video or overlay track so each ends on a beat of a music clip (the latest beat before its end; later clips move up), at the revision you read. Only shortens clips; a clip with no beat in its last beat interval is left alone. Saves through video-edit-apply-ops and returns the ops it applied (undo: trim them back). dryRun: true returns the ops without saving. Free.",
+    parametersSchema: schema(["editId", "baseRevision", "musicClipId"], {
+      editId: EDIT_ID,
+      baseRevision: { type: "integer", minimum: 1, description: "The revision your changes start from" } as JsonSchema,
+      musicClipId: text("The sound or video clip whose beats set the cuts"),
+      trackId: text("Optional video or overlay track to cut; default the first video track"),
+      every: { type: "integer", enum: [...EVERY], description: "Cut on every Nth beat; default 1" } as JsonSchema,
+      dryRun: { type: "boolean", description: "Return the ops without saving; default false" } as JsonSchema,
+    }),
   },
   {
     name: "video-edit-render",
