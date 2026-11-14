@@ -71,6 +71,7 @@ import {
   enrollmentsForContact,
   enrollmentsForSequence,
   deletePipeline,
+  dealPipelineId,
   ensurePipeline,
   insertPipeline,
   insertStages,
@@ -1860,6 +1861,9 @@ export async function createPipeline(ctx: PluginContext, viewer: Viewer, params:
 
 async function createDeal(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
   const pipeline = await ensurePipeline(ctx, viewer.companyId);
+  // `pipeline` (id or name) puts the deal in that pipeline's first open stage; omitted: the default pipeline's.
+  const picked = await pipelineParam(ctx, viewer.companyId, params.pipeline);
+  const start = picked ? await firstOpenStage(ctx, picked) : { pipeline_id: pipeline.pipelineId, id: pipeline.openStageId };
   const accountId = optionalId(params, "companyRecordId", "company");
   const contactId = optionalId(params, "contactId", "contact");
   if (accountId) await requireAccount(ctx, viewer, accountId);
@@ -1867,8 +1871,8 @@ async function createDeal(ctx: PluginContext, viewer: Viewer, params: Record<str
   const deal: DealDraft = {
     id: randomUUID(),
     companyId: viewer.companyId,
-    pipelineId: pipeline.pipelineId,
-    stageId: pipeline.openStageId,
+    pipelineId: start.pipeline_id,
+    stageId: start.id,
     accountId: accountId ?? null,
     contactId: contactId ?? null,
     title: requiredString(params, "title"),
@@ -1888,7 +1892,8 @@ async function createDeal(ctx: PluginContext, viewer: Viewer, params: Record<str
 
 async function moveDeal(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>, how = "in the CRM") {
   const deal = await requireDeal(ctx, viewer, requiredString(params, "dealId"));
-  const stage = await resolveStage(ctx, deal, requiredString(params, "stageId"));
+  const stage = await moveTarget(ctx, deal, params);
+  if (!stage) throw new CrmError("move-deal needs stageId, pipeline or both (list-stages has them).");
   // The accepted quote this move closes (a "pick the deal" hand-off): the deal records it.
   const quoteId = optionalString(params, "quoteId");
   if (quoteId && stageKind(stage.kind) !== "won") throw new CrmError("quoteId goes with stageId won: an accepted quote closes the deal.");
@@ -1953,8 +1958,7 @@ async function updateDealRecord(ctx: PluginContext, viewer: Viewer, params: Reco
   }
 
   const how = source === "human" ? "in the CRM" : "by an agent in the CRM";
-  const stageValue = optionalString(params, "stageId");
-  const stage = stageValue ? await resolveStage(ctx, next, stageValue) : null;
+  const stage = await moveTarget(ctx, next, params);
   let won: Awaited<ReturnType<typeof onDealWon>> | null = null;
   let saved = next;
   if (stage && stage.id !== deal.stageId) {
@@ -1963,15 +1967,17 @@ async function updateDealRecord(ctx: PluginContext, viewer: Viewer, params: Reco
     saved = moved.deal;
     won = moved.won;
   } else {
+    // Its stage's pipeline (repairs a legacy row whose own pipeline_id disagrees).
+    const current = await getStage(ctx, next.stageId);
+    if (current) next.pipelineId = current.pipeline_id;
     await saveDeal(ctx, next);
     // A deal won without a client could not make anyone a customer or tell Billing: linking its client now does.
     const hadClient = Boolean(deal.accountId || deal.contactId);
-    const isWon = stageKind((await listStages(ctx, deal.pipelineId).catch(() => [])).find((row) => row.id === next.stageId)?.kind ?? "open") === "won";
+    const isWon = stageKind(current?.kind ?? "open") === "won";
     if (isWon && !hadClient && (next.accountId || next.contactId)) won = await onDealWon(ctx, next, `${how}, when its client was linked`);
   }
   await insertFacts(ctx, deal.companyId, "deal", deal.id, facts);
-  const stages = await listStages(ctx, saved.pipelineId).catch(() => []);
-  const current = stages.find((row) => row.id === saved.stageId);
+  const current = await getStage(ctx, saved.stageId).catch(() => null);
   return {
     ...saved,
     stageName: current?.name ?? null,
@@ -2017,14 +2023,39 @@ async function sequenceDetail(ctx: PluginContext, viewer: Viewer, params: Record
   };
 }
 
-/** A stage by id, by name (case-insensitive) or by the words won / lost. */
-async function resolveStage(ctx: PluginContext, deal: DealDraft, value: string) {
+/**
+ * The stage a move-deal / update-deal call asks for, or null when it asks for no move. `stageId` (an id, a name or won / lost)
+ * and/or `pipeline` (id or name). A stage id may be in another pipeline of the deal's company: a cross-pipeline move.
+ * `pipeline` alone: that pipeline's first open stage (a deal already in it stays in its stage).
+ */
+async function moveTarget(ctx: PluginContext, deal: DealDraft, params: Record<string, unknown>) {
+  const pipeline = await pipelineParam(ctx, deal.companyId, params.pipeline);
+  const stageValue = optionalString(params, "stageId");
+  if (stageValue) return resolveStage(ctx, deal, stageValue, pipeline);
+  if (!pipeline) return null;
+  const current = await getStage(ctx, deal.stageId);
+  if (current && current.company_id === deal.companyId && current.pipeline_id === pipeline.id) return current;
+  return firstOpenStage(ctx, pipeline);
+}
+
+async function firstOpenStage(ctx: PluginContext, pipeline: { id: string; name: string }) {
+  const open = (await listStages(ctx, pipeline.id)).find((stage) => stageKind(stage.kind) === "open");
+  if (!open) throw new CrmError(`Pipeline ${pipeline.name} has no open stage`);
+  return open;
+}
+
+/**
+ * A stage by id, by name (case-insensitive) or by the words won / lost. A name or won / lost is looked up in `pipeline` when
+ * given, else in the deal's pipeline (its stage's). A stage id of another company is not found; one outside `pipeline` is refused.
+ */
+async function resolveStage(ctx: PluginContext, deal: DealDraft, value: string, pipeline: { id: string; name: string } | null = null) {
   const byId = await getStage(ctx, value);
   if (byId) {
     if (byId.company_id !== deal.companyId) throw new CrmError("Stage was not found");
+    if (pipeline && byId.pipeline_id !== pipeline.id) throw new CrmError(`Stage ${byId.name} is not in pipeline ${pipeline.name}: send the stage of that pipeline, or leave pipeline out.`);
     return byId;
   }
-  const stages = await listStages(ctx, deal.pipelineId);
+  const stages = await listStages(ctx, pipeline?.id ?? (await dealPipelineId(ctx, deal)));
   const lower = value.trim().toLowerCase();
   const byName = stages.find((stage) => stage.name.toLowerCase() === lower);
   if (byName) return byName;

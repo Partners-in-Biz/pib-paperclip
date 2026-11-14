@@ -1,7 +1,8 @@
 /** The default pipeline rule and the open-pipeline figures with two pipelines, on a real Postgres. */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { dealOpenReport, cockpitSnapshot } from "../src/cockpit.js";
-import { defaultPipelineId, ensurePipeline, insertStages, listCompanyStages, listPipelines } from "../src/db.js";
+import { defaultPipelineId, ensurePipeline, getDeal, getStage, insertStages, listCompanyStages, listPipelines } from "../src/db.js";
+import { moveDealTo } from "../src/handoffs.js";
 import { listDealsTool, listStagesTool } from "../src/lookup.js";
 import { createPipeline, pipelineForecast } from "../src/worker.js";
 import type { Viewer } from "../src/domain.js";
@@ -131,5 +132,20 @@ describe.skipIf(!available)("the default pipeline rule on a real Postgres", () =
     await expect(listDealsTool(pg.ctx, viewer, { pipeline: "p-other" })).rejects.toThrow(/not found/);
     await expect(listStagesTool(pg.ctx, viewer, { pipeline: "p-other" })).rejects.toThrow(/not found/);
     await expect(pipelineForecast(pg.ctx, viewer, { pipeline: "p-other" })).rejects.toThrow(/not found/);
+  });
+  it("moveDealTo across pipelines writes the stage's pipeline_id, clears won_at and names the pipeline (T4)", async () => {
+    await seedTwo();
+    await q(`UPDATE ${N}.deals SET won_at = now() WHERE id = 'd-won-sales'`);
+    const won = (await getDeal(pg.ctx, "d-won-sales"))!;
+    await moveDealTo(pg.ctx, won, (await getStage(pg.ctx, "sp-open"))!, "in a test");
+    const moved = await q(`SELECT pipeline_id, stage_id, won_at FROM ${N}.deals WHERE id = 'd-won-sales'`);
+    expect(moved.rows[0]).toMatchObject({ pipeline_id: "p-spons", stage_id: "sp-open", won_at: null });
+    const timeline = await q(`SELECT body FROM ${N}.activities WHERE record_id = 'd-won-sales' AND kind = 'deal_moved'`);
+    expect((timeline.rows as Array<{ body: string }>).map((row) => row.body)).toEqual(["Moved to Sponsors: sp-open"]);
+    // A legacy row (Sales on the row, a Sponsors stage) moved within Sponsors is repaired.
+    const legacy = (await getDeal(pg.ctx, "d-legacy"))!;
+    await moveDealTo(pg.ctx, legacy, (await getStage(pg.ctx, "sp-open"))!, "in a test");
+    const repaired = await q(`SELECT pipeline_id FROM ${N}.deals WHERE id = 'd-legacy'`);
+    expect(repaired.rows[0]).toMatchObject({ pipeline_id: "p-spons" });
   });
 });
