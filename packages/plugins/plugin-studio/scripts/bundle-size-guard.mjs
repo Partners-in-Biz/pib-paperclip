@@ -7,7 +7,10 @@ import { checkMlDist, ML_BUDGET, mlBytes } from "./ml-dist-check.mjs";
 
 // 2026-11-08: raised to 1,050,000 for Studio 0.1.49 (lip-sync form, ClipInspector, transition picker, keyframe preview
 // grew the UI to 956,057 bytes with no font inlined; the font checks below still guard that). Next growth still fails loudly.
-const BUDGET = 1_050_000; // bytes; was 950,000 (897,553 before B12 + ~2 KB loader + 50 KB)
+// 2026-11-15: raised to 1,150,000 for Studio 0.1.64 (slice 4, PAR-10181: sticker picker, effects panel, beat panel,
+// animated-text and effect preview grew the unminified UI to 1,106,642 bytes; no font or sticker is inlined, the checks
+// below still guard that, and the stickers are served files under dist/ui/stickers).
+const BUDGET = 1_150_000; // bytes; was 1,050,000, before that 950,000 (897,553 before B12 + ~2 KB loader + 50 KB)
 const bundle = new URL("../dist/ui/index.js", import.meta.url);
 const fontsDir = new URL("../dist/ui/fonts/", import.meta.url);
 const size = statSync(bundle).size;
