@@ -5,6 +5,7 @@ import { MAX_TEXT } from "./canvas-rules.js";
 import { MAX_BATCH } from "./generation.js";
 import { MAX_ANALYSE_SEC } from "./video-edit/beats.js";
 import { EVERY } from "./video-edit/cut-to-beat.js";
+import { SILENCE_PARAMS } from "./video-edit/silence.js";
 import { MAX_LINE_CHARS } from "./lipsync.js";
 import { PHOTO_PRESETS } from "./presets.js";
 import { LIPSYNC } from "./providers/registry.js";
@@ -161,6 +162,21 @@ const VIDEO_EDIT_TOOLS: PluginToolDeclaration[] = [
       trackId: text("Optional video or overlay track to cut; default the first video track"),
       every: { type: "integer", enum: [...EVERY], description: "Cut on every Nth beat; default 1" } as JsonSchema,
       dryRun: { type: "boolean", description: "Return the ops without saving; default false" } as JsonSchema,
+    }),
+  },
+  {
+    name: "video-edit-cut-silences",
+    displayName: "Cut the silences out of a clip",
+    description:
+      "Find the silent parts of a video or sound clip's sound and cut them out, at the revision you read: the clip is split around each silence (keeping `padding` seconds next to the sound) and later clips move up; captions and the other tracks move with the cuts, and a clip under a cut (such as music) plays on and ends earlier. Saves through video-edit-apply-ops and returns the ops it applied and silences {cuts, secondsSaved}. dryRun: true returns the same without saving: run it first to show how much goes. Free.",
+    parametersSchema: schema(["editId", "baseRevision", "clipId"], {
+      editId: EDIT_ID,
+      baseRevision: { type: "integer", minimum: 1, description: "The revision your changes start from" } as JsonSchema,
+      clipId: text("The video or sound clip with the speech"),
+      threshold: { type: "number", minimum: SILENCE_PARAMS.threshold.range[0], maximum: SILENCE_PARAMS.threshold.range[1], description: `Sound quieter than this many dB counts as silence; default ${SILENCE_PARAMS.threshold.default}` } as JsonSchema,
+      minSilence: { type: "number", minimum: SILENCE_PARAMS.minSilence.range[0], maximum: SILENCE_PARAMS.minSilence.range[1], description: `Shortest silence to cut, in seconds; default ${SILENCE_PARAMS.minSilence.default}` } as JsonSchema,
+      padding: { type: "number", minimum: SILENCE_PARAMS.padding.range[0], maximum: SILENCE_PARAMS.padding.range[1], description: `Seconds of silence kept next to the sound; default ${SILENCE_PARAMS.padding.default}` } as JsonSchema,
+      dryRun: { type: "boolean", description: "Return the ops, cuts and seconds saved without saving; default false" } as JsonSchema,
     }),
   },
   {

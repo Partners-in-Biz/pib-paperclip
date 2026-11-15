@@ -9,6 +9,7 @@ import { applyOpsAction, cancelRenderAction, createEditAction, deleteEditAction,
 import { captionClipAction } from "./video-edit/auto-caption.js";
 import { detectBeatsAction } from "./video-edit/beats.js";
 import { cutToBeatAction } from "./video-edit/cut-to-beat.js";
+import { cutSilencesAction } from "./video-edit/silence.js";
 import { createShare, listShares, refreshShares, revokeShare } from "./canvas-share.js";
 import { discardGive, prepareGive, recordGive } from "./give.js";
 import { reviewAsset } from "./review.js";
@@ -469,6 +470,10 @@ const plugin = definePlugin({
     action("video-edit-cut-to-beat", async (params, context) => {
       const me = await videoEditor(context);
       return cutToBeatAction(ctx, me.companyId, objectParams(params), { userId: me.userId });
+    });
+    action("video-edit-cut-silences", async (params, context) => {
+      const me = await videoEditor(context);
+      return cutSilencesAction(ctx, me.companyId, objectParams(params), { userId: me.userId });
     });
     action("video-edit-voiceover", async (params, context) => {
       const me = await videoEditor(context);
