@@ -9,7 +9,7 @@ import { StudioError } from "./errors.js";
 import type { PrivateBucket } from "./storage.js";
 
 /** Keys under `providers` in the plugin settings: one default per capability, two for lip-sync (audio, typed line). */
-export type ProviderSetting = "stt" | "tts" | "lipsync" | "lipsyncLine" | "looks";
+export type ProviderSetting = "stt" | "tts" | "lipsync" | "lipsyncLine" | "looks" | "reframe";
 
 export function instanceConfigSchema(): JsonSchema {
   return {
@@ -52,6 +52,8 @@ export function instanceConfigSchema(): JsonSchema {
           lipsyncLine: { type: "string", title: "Lip-sync a typed line", enum: ["seedance-2.5-dialogue"], default: "seedance-2.5-dialogue" },
           // Look pack keys: src/providers/registry.ts LOOK_PACKS (literal, same reason).
           looks: { type: "string", title: "Look pack for video clips", enum: ["pib-basic"], default: "pib-basic" },
+          // Reframe keys: src/providers/registry.ts PROVIDERS.reframe (literal, same reason).
+          reframe: { type: "string", title: "Reframe for other shapes", enum: ["local-face", "centre"], default: "local-face" },
         },
       },
     },
