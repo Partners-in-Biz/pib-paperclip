@@ -68,6 +68,16 @@ describe.skipIf(!available)("metrics conflict-fill and metricsError (postgres)",
     expect(await insertMetrics(ctx, { ...base, views: 1, impressions: 7, reach: 7, clicks: 7, saves: 7 })).toBe("unchanged");
   });
 
+  it("a fill keeps the first raw and takes the newest insights detail (PAR-11950)", async () => {
+    await client.query(`UPDATE ${NAMESPACE}.post_metrics SET reach = NULL, raw = '{"fields":{"id":"v"}}'::jsonb WHERE destination_id = 'd1'`);
+    const calls = [{ label: "post insights", path: "p_v/insights", metric: "post_media_view", ok: false, status: 400, code: 100 }, { label: "video insights (all)", path: "v/video_insights", metric: null, ok: true, returned: [] }];
+    expect(await insertMetrics(ctx, { ...base, views: 1, impressions: 1, reach: null, clicks: 1, saves: 1, raw: { fields: { id: "new" }, insights: calls, viewsSource: null } })).toBe("filled");
+    const raw = (await metric())[0]!.raw as Record<string, unknown>;
+    expect(raw).toMatchObject({ fields: { id: "v" }, insights: calls });
+    expect(raw).toHaveProperty("filledAt");
+    expect(raw).not.toHaveProperty("viewsSource");
+  });
+
   it("a non-null impressions survives a later insert", async () => {
     await client.query(`UPDATE ${NAMESPACE}.post_metrics SET reach = NULL WHERE destination_id = 'd1'`);
     expect(await insertMetrics(ctx, { ...base, views: 1, impressions: 555, reach: 60, clicks: 1, saves: 1 })).toBe("filled");
