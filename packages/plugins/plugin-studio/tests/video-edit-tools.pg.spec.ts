@@ -42,6 +42,7 @@ describe("video edit tool declarations", () => {
     expect(by["video-edit-detect-beats"]!.required).toEqual(["editId", "clipId"]);
     expect(by["video-edit-cut-to-beat"]!.required).toEqual(["editId", "baseRevision", "musicClipId"]);
     expect(by["video-edit-cut-to-beat"]!.properties.every!.enum).toEqual([1, 2, 4]);
+    expect(by["video-edit-cut-silences"]!.required).toEqual(["editId", "baseRevision", "clipId"]);
   });
 
   it("takes no spending or company fields", () => {
