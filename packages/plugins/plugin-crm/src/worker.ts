@@ -1162,6 +1162,7 @@ async function clientWorkspace(ctx: PluginContext, viewer: Viewer, ref: ClientRe
       stageId: deal.stageId,
       stageName: stageById.get(deal.stageId)?.name ?? deal.stageId,
       stageKind: stageById.get(deal.stageId)?.kind ?? "open",
+      pipelineId: stageById.get(deal.stageId)?.pipeline_id ?? null,
       contactId: deal.contactId,
       contactName: deal.contactId ? contactById.get(deal.contactId)?.name ?? null : null,
       accountId: deal.accountId,
@@ -1193,7 +1194,7 @@ async function clientWorkspace(ctx: PluginContext, viewer: Viewer, ref: ClientRe
     companies,
     deals,
     activities,
-    stages: stages.map((stage) => ({ id: stage.id, name: stage.name, kind: stage.kind, position: stage.position })),
+    stages: stages.map((stage) => ({ id: stage.id, name: stage.name, kind: stage.kind, position: stage.position, pipelineId: stage.pipeline_id })),
     sequences: sequences.map((row) => ({ id: row.id, name: row.name, completionMode: row.completion_mode })),
     options: {
       companies: visibleAccounts.map((row) => ({ id: row.id, name: row.name })),
