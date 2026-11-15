@@ -88,4 +88,8 @@ if (watch) {
   // dist/ui/fonts is the same set for the browser editor (Phase B) to load with FontFace.
   cpSync(new URL("./fonts", import.meta.url), new URL("./dist/fonts", import.meta.url), { recursive: true });
   cpSync(new URL("./fonts", import.meta.url), new URL("./dist/ui/fonts", import.meta.url), { recursive: true });
+  // The sticker packs (PAR-10172 D4b): dist/stickers is what the render reads (src/video-edit/stickers.ts); dist/ui/stickers
+  // is the same set for the browser preview. Closed manifest, so only listed files are ever opened.
+  cpSync(new URL("./stickers", import.meta.url), new URL("./dist/stickers", import.meta.url), { recursive: true });
+  cpSync(new URL("./stickers", import.meta.url), new URL("./dist/ui/stickers", import.meta.url), { recursive: true });
 }
