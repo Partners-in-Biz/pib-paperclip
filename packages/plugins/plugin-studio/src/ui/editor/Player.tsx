@@ -19,6 +19,8 @@ import { overlayAssetIds, overlaySourceUrl } from "./sticker-url.js";
 import { assignSlots, blendCss, buildPreviewPlan, clipTransform, containBox, frameAt, layerFrame, overlaysAt, previewGrade, type PreviewFrame, type PreviewGrade, type PreviewLayer, type PreviewSlots } from "./preview-plan.js";
 import { usePreviewUrls } from "../previews.js";
 import { Overlay } from "./Overlay.js";
+import { EffectFilter } from "./EffectFilter.js";
+import { effectPixels } from "./effect-filter.js";
 import { ChromaLayer, NoKeyLabel, type ChromaStatus } from "./ChromaLayer.js";
 import { eyedropper, sampleVideo } from "./eyedropper.js";
 import { audioClips, audioFrameAt, audioMute, audioWindow } from "./audio-track.js";
@@ -238,8 +240,14 @@ export function PreviewLayers({ frame, overlays = [], overlayUrls = {}, playing 
         const at = frame.layers.findIndex((l) => l.segment.clipId === slots[i]);
         const layer = at >= 0 ? frame.layers[at] : null;
         const grade = layer && size.width > 0 ? previewGrade(layer.segment, size, sources[i]) : null;
+        // Effects (PAR-10177): zoom and shake ride the clip's transform; rgbSplit, blurIn and flash filter the whole frame
+        // (the render applies them after the clip is placed on it), so the filter sits on the frame-sized layer.
+        const frameBox = containBox(size, project);
+        const display = project.width > 0 ? frameBox.width / project.width : 0;
+        const fx = layer && size.width > 0 ? effectPixels(layer.fx, display) : null;
         return urls[i] ? (
-          <div key={i} data-preview-layer={i} style={{ position: "absolute", inset: 0, overflow: "hidden", zIndex: layer ? 1 + 2 * at : 0, opacity: layer ? layer.opacity : 0, clipPath: layer?.clipPath ?? undefined, transform: layer?.transform ?? undefined }}>
+          <div key={i} data-preview-layer={i} data-effects={fx ? "true" : undefined} style={{ position: "absolute", inset: 0, overflow: "hidden", zIndex: layer ? 1 + 2 * at : 0, opacity: layer ? layer.opacity : 0, clipPath: layer?.clipPath ?? undefined, transform: layer?.transform ?? undefined, filter: fx ? `url(#${filterId}-${i}fx)` : undefined }}>
+            {fx ? <EffectFilter id={`${filterId}-${i}fx`} region={frameBox} fx={fx} opaque /> : null}
             {grade ? <GradeFilter id={`${filterId}-${i}`} grade={grade} /> : null}
             <video
               ref={(el) => setVideo?.(i, el)}
@@ -253,7 +261,7 @@ export function PreviewLayers({ frame, overlays = [], overlayUrls = {}, playing 
               preload="auto"
               onLoadedMetadata={(e) => loaded(i, e.currentTarget)}
               onSeeked={onLoaded}
-              style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "contain", display: "block", opacity: layer ? layer.alpha : 0, transform: layer ? clipTransform(layer, project) : undefined, filter: grade ? `url(#${filterId}-${i})` : undefined }}
+              style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "contain", display: "block", opacity: layer ? layer.alpha : 0, transform: layer ? clipTransform(layer, project, display) : undefined, filter: grade ? `url(#${filterId}-${i})` : undefined }}
             />
           </div>
         ) : null;
@@ -298,14 +306,20 @@ function OverlayClip({ layer, url, z, size, project, playing, onLoaded }: { laye
   const fr = size.width > 0 ? layerFrame(seg, layer.scale, region, size, project) : null;
   const blend = blendCss(seg);
   const rounded = fr && fr.radius > 0 ? `inset(${n4(region.y)}px ${n4(size.width - region.x - region.width)}px ${n4(size.height - region.y - region.height)}px ${n4(region.x)}px round ${n4(fr.radius)}px)` : undefined;
-  const picture = { position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "contain", display: "block", clipPath: rounded, filter: grade ? `url(#${filterId})` : undefined } as const;
+  // Effects (PAR-10177): the pixel effects filter the picture before the group's transform, like the render's order.
+  const display = project.width > 0 ? containBox(size, project).width / project.width : 0;
+  const fx = size.width > 0 ? effectPixels(layer.fx, display, layer.scale) : null;
+  const fxId = `${filterId}fx`;
+  const filters = [grade ? `url(#${filterId})` : "", fx ? `url(#${fxId})` : ""].filter(Boolean).join(" ");
+  const picture = { position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "contain", display: "block", clipPath: rounded, filter: filters || undefined } as const;
   // Keyed: the canvas shows the picture and the video only plays (hidden, still decoding). Until WebGL answers, neither.
   const keyed = seg.chromaKey ? keyStatus : null;
   const withCors = !!seg.chromaKey && cors;
   return url ? (
     <>
-      <div data-overlay-layer={seg.clipId} data-blend={seg.blendMode ?? undefined} style={{ position: "absolute", inset: 0, zIndex: z, opacity: layer.alpha, mixBlendMode: (blend ?? undefined) as never, transform: clipTransform(layer, project), pointerEvents: "none" }}>
+      <div data-overlay-layer={seg.clipId} data-blend={seg.blendMode ?? undefined} data-effects={layer.fx ? "true" : undefined} style={{ position: "absolute", inset: 0, zIndex: z, opacity: layer.alpha, mixBlendMode: (blend ?? undefined) as never, transform: clipTransform(layer, project, display), pointerEvents: "none" }}>
         {grade ? <GradeFilter id={filterId} grade={grade} /> : null}
+        {fx ? <EffectFilter id={fxId} region={region} fx={fx} opaque={!seg.sticker} /> : null}
         {seg.sticker ? (
           <img
             src={url}
