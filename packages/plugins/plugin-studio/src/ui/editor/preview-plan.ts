@@ -14,15 +14,19 @@
  * each with its blend mode (CSS `mix-blend-mode`, `layer.ts` `BLEND_CSS`) and frame (`layerFrame`: rounded corners and a
  * border inside the edge, the geometry of the render's `frameStill`).
  */
-import type { ChromaKey, EditDoc, Frame, Keyframes, MediaClip, TextClip, TransitionType } from "../../video-edit/timeline.js";
+import type { ChromaKey, EditDoc, Frame, Keyframes, MediaClip, StickerClip, TextClip, TransitionType } from "../../video-edit/timeline.js";
 import { valueAt } from "../../video-edit/keyframes.js";
 import { toSvgPrimitives, vignetteStops, type Adjust, type LookRef, type SvgPrimitive } from "../../video-edit/looks.js";
 import { BLEND_CSS, cornerRadiusPx, type LayerBlend } from "../../video-edit/layer.js";
+import type { StickerRef } from "../../video-edit/sticker-packs.js";
 import { clipLength } from "./player-clips.js";
 
 export interface PreviewSegment {
   clipId: string;
+  /** The library asset; "" for a bundled sticker (it has none: its file is read through `sticker`). */
   assetId: string;
+  /** The bundled sticker this overlay shows (schema v5), else null. */
+  sticker: StickerRef | null;
   /** Timeline start and end, in seconds. */
   start: number;
   end: number;
@@ -111,7 +115,7 @@ export function buildPreviewPlan(doc: EditDoc | null): PreviewPlan {
   for (const track of doc?.tracks ?? []) {
     if (track.kind !== "video" && track.kind !== "overlay") continue;
     let prev: { id: string; end: number } | null = null;
-    for (const c of [...(track.clips as MediaClip[])].sort((a, b) => a.start - b.start)) {
+    for (const c of [...(track.clips as Array<MediaClip | StickerClip>)].sort((a, b) => a.start - b.start)) {
       const length = clipLength(c);
       if (length <= 0) continue;
       const tr = c.transitionIn;
@@ -119,7 +123,8 @@ export function buildPreviewPlan(doc: EditDoc | null): PreviewPlan {
       const xfade = !!tr && track === main && !!prev && prev.end > c.start + EPS;
       (track.kind === "overlay" ? overlays : segments).push({
         clipId: c.id,
-        assetId: c.assetId,
+        assetId: "assetId" in c ? c.assetId : "",
+        sticker: "sticker" in c ? c.sticker : null,
         start: c.start,
         end: c.start + length,
         in: c.in,
