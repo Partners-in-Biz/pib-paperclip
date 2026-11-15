@@ -3,13 +3,16 @@ import { LINK_TARGETS } from "./assets.js";
 import { MAX_BRIEF_ASSETS, MAX_BRIEF_PROMPTS } from "./canvas-brief.js";
 import { MAX_TEXT } from "./canvas-rules.js";
 import { MAX_BATCH } from "./generation.js";
+import { MAX_ANALYSE_SEC } from "./video-edit/beats.js";
+import { EVERY } from "./video-edit/cut-to-beat.js";
 import { MAX_LINE_CHARS } from "./lipsync.js";
 import { PHOTO_PRESETS } from "./presets.js";
 import { LIPSYNC } from "./providers/registry.js";
 import { MAX_START_ASSETS } from "./video-edit/actions.js";
 import { MAX_OPS, OP_NAMES } from "./video-edit/ops.js";
 import { ADJUST_RANGE, NEUTRAL_ADJUST, PIB_BASIC_IDS } from "./video-edit/looks.js";
-import { ADJUST_FIELDS, BLEND_MODES, CAPTION_STYLES, EASES, LIMITS, SIZES, TRANSITIONS } from "./video-edit/timeline.js";
+import { ADJUST_FIELDS, BLEND_MODES, CAPTION_STYLES, EASES, EFFECTS, LIMITS, SIZES, TEXT_ANIMATIONS, TRANSITIONS } from "./video-edit/timeline.js";
+import { STICKER_PACKS } from "./video-edit/sticker-packs.js";
 import { DEFAULT_VOICE, XAI_VOICES } from "./video-edit/tts.js";
 import { MAX_PROMPT_CHARS, MUSIC_DEFAULT_SECONDS, MUSIC_MAX_SECONDS, STABLE_AUDIO_MONTHLY_USD_CAP, STABLE_AUDIO_USD_PER_GENERATION } from "./music/stable-audio-price.js";
 import { MAX_SCRIPT_CHARS, ttsCredits } from "./video-edit/tts-price.js";
@@ -79,7 +82,7 @@ const VIDEO_EDIT_TOOLS: PluginToolDeclaration[] = [
     name: "video-edit-apply-ops",
     displayName: "Change a video edit",
     description:
-      "Apply a list of edit operations to a video edit at the revision you read. All or nothing: if one op is refused, none apply and the message names it. Refused if someone saved since baseRevision: reload with video-edit-get. Each op is an object with op set to one of " + OP_NAMES.join(", ") + " plus that op's fields (e.g. {op:'trim',clipId,in,out}, {op:'split',clipId,at}). setProps props can hold transitionIn {type,duration} (type one of " + TRANSITIONS.join(", ") + "; only fade on text clips, and only main video track clips render the others) and keyframes {x,y,scale,rotate,opacity,volume: [{t,value,ease}]} (t = seconds from the clip's start, ease one of " + EASES.join(", ") + ", at most " + LIMITS.maxKeyframes + " per property; a list replaces that property's keys, [] removes them, keyframes:null removes all). split and trim keep keyframes on the same frames and add a key at each cut; going over the limit is refused with keyframe_limit. On video and overlay clips setProps props can also hold adjust {" + ADJUST_FIELDS.map((f) => `${f} ${ADJUST_RANGE[f].join("..")} (neutral ${NEUTRAL_ADJUST[f]})`).join(", ") + "} (temperature in kelvin, blur = sigma at 1080 px width; merged per field; a neutral value removes that field, adjust:null removes all) and look {pack:'pib-basic', id one of " + PIB_BASIC_IDS.join(", ") + ", intensity 0..1 (default 1)} (merged with the clip's look; look:null removes it). On overlay clips setProps props can also hold blendMode (one of " + BLEND_MODES.join(", ") + "; normal removes it), chromaKey {color '#RRGGBB', similarity " + LIMITS.similarity.join("..") + " (default 0.1), blend 0..1, spill 0..1} and frame {borderWidth " + LIMITS.borderWidth.join("..") + " px, borderColor '#RRGGBB', cornerRadius " + LIMITS.cornerRadius.join("..") + " % of the short side} (both merged per field; null removes them). Tracks stack in list order (first = bottom layer): {op:'moveTrack',trackId,toIndex} moves one track (undo: moveTrack back to its old index); {op:'reorder',trackIds} sets the whole order. Free.",
+      "Apply a list of edit operations to a video edit at the revision you read. All or nothing: if one op is refused, none apply and the message names it. Refused if someone saved since baseRevision: reload with video-edit-get. Each op is an object with op set to one of " + OP_NAMES.join(", ") + " plus that op's fields (e.g. {op:'trim',clipId,in,out}, {op:'split',clipId,at}). setProps props can hold transitionIn {type,duration} (type one of " + TRANSITIONS.join(", ") + "; only fade on text clips, and only main video track clips render the others) and keyframes {x,y,scale,rotate,opacity,volume: [{t,value,ease}]} (t = seconds from the clip's start, ease one of " + EASES.join(", ") + ", at most " + LIMITS.maxKeyframes + " per property; a list replaces that property's keys, [] removes them, keyframes:null removes all). split and trim keep keyframes on the same frames and add a key at each cut; going over the limit is refused with keyframe_limit. On video and overlay clips setProps props can also hold adjust {" + ADJUST_FIELDS.map((f) => `${f} ${ADJUST_RANGE[f].join("..")} (neutral ${NEUTRAL_ADJUST[f]})`).join(", ") + "} (temperature in kelvin, blur = sigma at 1080 px width; merged per field; a neutral value removes that field, adjust:null removes all) and look {pack:'pib-basic', id one of " + PIB_BASIC_IDS.join(", ") + ", intensity 0..1 (default 1)} (merged with the clip's look; look:null removes it). On overlay clips setProps props can also hold blendMode (one of " + BLEND_MODES.join(", ") + "; normal removes it), chromaKey {color '#RRGGBB', similarity " + LIMITS.similarity.join("..") + " (default 0.1), blend 0..1, spill 0..1} and frame {borderWidth " + LIMITS.borderWidth.join("..") + " px, borderColor '#RRGGBB', cornerRadius " + LIMITS.cornerRadius.join("..") + " % of the short side} (both merged per field; null removes them). On video and overlay clips setProps props can also hold effects [{id one of " + EFFECTS.join(", ") + ", intensity 0..1 (default 1)}] (at most " + LIMITS.maxEffects + ", each id once; the list replaces the clip's, [] or null removes them). On overlay clips sticker {pack one of " + STICKER_PACKS.join(", ") + ", id} shows a bundled sticker instead of the clip's asset (the id must be in the pack, else unknown_sticker; setting assetId and version swaps back). On text clips animation {in, out (each one of " + TEXT_ANIMATIONS.join(", ") + "), inDuration, outDuration " + LIMITS.animationDuration.join("..") + " s (default 0.5)} (merged per field; {in:null} removes the entry, animation:null removes both; split keeps the entry on the left part and the exit on the right). Tracks stack in list order (first = bottom layer): {op:'moveTrack',trackId,toIndex} moves one track (undo: moveTrack back to its old index); {op:'reorder',trackIds} sets the whole order. Free.",
     parametersSchema: schema(["editId", "baseRevision", "ops"], {
       editId: EDIT_ID,
       baseRevision: { type: "integer", minimum: 1, description: "The revision your changes start from" } as JsonSchema,
@@ -137,6 +140,27 @@ const VIDEO_EDIT_TOOLS: PluginToolDeclaration[] = [
       at: { type: "number", minimum: 0, description: "Where on the timeline it starts, in seconds; default 0 (moved past any sound already there)" } as JsonSchema,
       name: text("Optional Library name for the music"),
       issueId: ISSUE,
+    }),
+  },
+  {
+    name: "video-edit-detect-beats",
+    displayName: "Find the beats in a clip's sound",
+    description:
+      `Find the tempo (BPM) and beats in a video or sound clip's source (its first ${MAX_ANALYSE_SEC} s). Returns beats in source seconds and timelineBeats (on the timeline, inside the clip's in..out), analysedSec, and a warning when the clip runs past the analysed part. Kept per asset version, so asking again is instant. Changes nothing. Free.`,
+    parametersSchema: schema(["editId", "clipId"], { editId: EDIT_ID, clipId: text("The video or sound clip, usually the music") }),
+  },
+  {
+    name: "video-edit-cut-to-beat",
+    displayName: "Cut a track to the beat",
+    description:
+      "Trim the clips of one video or overlay track so each ends on a beat of a music clip (the latest beat before its end; later clips move up), at the revision you read. Only shortens clips; a clip with no beat in its last beat interval is left alone. Saves through video-edit-apply-ops and returns the ops it applied (undo: trim them back). dryRun: true returns the ops without saving. Free.",
+    parametersSchema: schema(["editId", "baseRevision", "musicClipId"], {
+      editId: EDIT_ID,
+      baseRevision: { type: "integer", minimum: 1, description: "The revision your changes start from" } as JsonSchema,
+      musicClipId: text("The sound or video clip whose beats set the cuts"),
+      trackId: text("Optional video or overlay track to cut; default the first video track"),
+      every: { type: "integer", enum: [...EVERY], description: "Cut on every Nth beat; default 1" } as JsonSchema,
+      dryRun: { type: "boolean", description: "Return the ops without saving; default false" } as JsonSchema,
     }),
   },
   {

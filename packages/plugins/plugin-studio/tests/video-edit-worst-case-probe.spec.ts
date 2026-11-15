@@ -18,7 +18,9 @@ import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { inputKey, type CompileInputs } from "../src/video-edit/compile-video.js";
+import { inputKey, sourceKey, type CompileInputs } from "../src/video-edit/compile-video.js";
+import type { StickerRef } from "../src/video-edit/sticker-packs.js";
+import { stickerFile } from "../src/video-edit/stickers.js";
 import { pidsInGroup } from "../src/video-edit/ffmpeg.js";
 import { probeMedia } from "../src/video-edit/probe.js";
 import { planRender } from "../src/video-edit/render-plan.js";
@@ -404,8 +406,11 @@ const W = 1080;
 const H = 1920;
 const FPS = 30;
 const CLIPS = 6;
-type Variant = "base" | "key" | "mult" | "both";
-const ALL_VARIANTS: Variant[] = ["base", "key", "mult", "both"];
+// Slice 4 (PAR-10181): `fx` = `both` plus 3 effects on every main and overlay clip and a text track of 6 animated
+// titles (the gated slice 2-4 edit); `fxs` = `fx` with the multiply track's clips as bundled stickers.
+type Variant = "base" | "key" | "mult" | "both" | "fx" | "fxs";
+const ALL_VARIANTS: Variant[] = ["base", "key", "mult", "both", "fx", "fxs"];
+const STICKERS: StickerRef[] = [{ pack: "noto-emoji", id: "fire" }, { pack: "pib-shapes", id: "circle" }];
 
 
 /** ffmpeg to build a source; throws with its stderr. */
@@ -442,6 +447,8 @@ async function probedSources(dir: string, built: Array<{ name: string; file: str
     const p = await probeMedia(join(dir, file));
     sources[inputKey(name, 1)] = { path: join(dir, file), kind: "video", hasAudio: p.hasAudio, width: p.width ?? undefined, height: p.height ?? undefined, fps: p.fps ?? undefined };
   }
+  // Bundled stickers as the executor adds them (render-pipeline.ts): the PNG in place, 256 px square, no probe.
+  for (const ref of STICKERS) sources[sourceKey({ sticker: ref })] = { path: stickerFile(ref), kind: "image", width: 256, height: 256 };
   return sources;
 }
 
@@ -453,14 +460,26 @@ function buildDoc(variant: Variant, secs: number) {
   const base: unknown[] = [];
   const mult: unknown[] = [];
   const key: unknown[] = [];
+  const fx = variant === "fx" || variant === "fxs";
+  // The heaviest 3-effect sets of the D4c budget table (PR #976): shake and rgbSplit cost the most per effect.
+  const mainFx = fx ? { effects: [{ id: "zoomPunch", intensity: 0.8 }, { id: "shake", intensity: 0.6 }, { id: "rgbSplit", intensity: 0.7 }] } : {};
+  const overFx = fx ? { effects: [{ id: "shake", intensity: 0.5 }, { id: "flash", intensity: 0.6 }, { id: "blurIn", intensity: 0.8 }] } : {};
+  const texts: unknown[] = [];
   for (let i = 0; i < CLIPS; i++) {
-    base.push(clip("b" + i, "wb", i * secs, { ...feats }));
-    mult.push(clip("m" + i, "wo", i * secs, { blendMode: "multiply", transform: t, frame, fadeIn: 0.5, adjust: { brightness: 0.1, vignette: 0.3 }, look: { id: "mono" } }));
-    key.push(clip("k" + i, "wg", i * secs, { chromaKey: { color: "#00B140", similarity: 0.15, blend: 0.05, spill: 0.3 }, transform: { ...t, x: -t.x }, frame: { cornerRadius: 20, borderWidth: 4, borderColor: "#FFFFFF" } }));
+    base.push(clip("b" + i, "wb", i * secs, { ...feats, ...mainFx }));
+    const multFeats = { blendMode: "multiply", transform: t, frame, fadeIn: 0.5, adjust: { brightness: 0.1, vignette: 0.3 }, look: { id: "mono" }, ...overFx };
+    if (variant === "fxs") {
+      const { assetId: _a, version: _v, ...rest } = clip("m" + i, "-", i * secs, multFeats);
+      mult.push({ ...rest, sticker: STICKERS[i % STICKERS.length] });
+    } else mult.push(clip("m" + i, "wo", i * secs, multFeats));
+    key.push(clip("k" + i, "wg", i * secs, { chromaKey: { color: "#00B140", similarity: 0.15, blend: 0.05, spill: 0.3 }, transform: { ...t, x: -t.x }, frame: { cornerRadius: 20, borderWidth: 4, borderColor: "#FFFFFF" }, ...overFx }));
+    const [a, b] = [["pop", "fadeUp"], ["typewriter", "wordByWord"], ["slideLeft", "bounce"]][i % 3]!;
+    texts.push({ id: "t" + i, start: i * secs, duration: secs, text: `Worst case title ${i + 1}`, fontSize: 96, color: "#FFFFFF", animation: { in: a, inDuration: 1, out: b, outDuration: 1 } });
   }
   const tracks: unknown[] = [{ id: "v-main", kind: "video", clips: base }];
-  if (variant === "mult" || variant === "both") tracks.push({ id: "om", kind: "overlay", clips: mult });
-  if (variant === "key" || variant === "both") tracks.push({ id: "ok", kind: "overlay", clips: key });
+  if (variant !== "base" && variant !== "key") tracks.push({ id: "om", kind: "overlay", clips: mult });
+  if (variant !== "base" && variant !== "mult") tracks.push({ id: "ok", kind: "overlay", clips: key });
+  if (fx) tracks.push({ id: "tx", kind: "text", clips: texts });
   return normalizeEdit({ project: { size: "9:16", fps: FPS }, tracks });
 }
 

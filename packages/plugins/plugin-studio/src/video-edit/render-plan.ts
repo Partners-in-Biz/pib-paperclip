@@ -36,7 +36,7 @@
  */
 import { join } from "node:path";
 import { clipHasSound, hasClipAudio } from "./compile-audio.js";
-import { CompileError, frameAt, inputKey, type CompileInput, type CompileInputs } from "./compile-video.js";
+import { CompileError, frameAt, inputKey, sourceKey, type CompileInput, type CompileInputs } from "./compile-video.js";
 import { clipDuration, editDuration, type AudioClip, type EditDoc, type MediaClip, type Track } from "./timeline.js";
 
 /**
@@ -76,9 +76,9 @@ export function inputWeight(source: CompileInput, projectFps: number, audioWeigh
   return Math.max(1, (source.width * source.height * fps) / BASE_RATE);
 }
 
-function sourceOf(sources: CompileInputs, clip: { assetId: string; version: number }): CompileInput {
-  const source = sources[inputKey(clip.assetId, clip.version)];
-  if (!source) throw new CompileError("missing_input", inputKey(clip.assetId, clip.version));
+function sourceOf(sources: CompileInputs, clip: Parameters<typeof sourceKey>[0]): CompileInput {
+  const source = sources[sourceKey(clip)];
+  if (!source) throw new CompileError("missing_input", sourceKey(clip));
   return source;
 }
 
@@ -87,7 +87,7 @@ function trackInputs(track: Track, sources: CompileInputs, fps: number, audioWei
   const out: { key: string; weight: number }[] = [];
   if (track.kind === "text" || track.kind === "caption") return out;
   for (const clip of track.clips) {
-    const key = inputKey(clip.assetId, clip.version);
+    const key = sourceKey(clip);
     const source = sourceOf(sources, clip);
     if (track.kind === "audio") out.push({ key, weight: audioWeight });
     else {
@@ -117,7 +117,7 @@ function sourcesFor(doc: EditDoc, all: CompileInputs): CompileInputs {
   const out: CompileInputs = {};
   for (const track of doc.tracks) {
     if (track.kind === "text" || track.kind === "caption") continue;
-    for (const clip of track.clips) out[inputKey(clip.assetId, clip.version)] = sourceOf(all, clip);
+    for (const clip of track.clips) out[sourceKey(clip)] = sourceOf(all, clip);
   }
   return out;
 }
@@ -148,7 +148,7 @@ function halve(clips: MediaClip[], end: (c: MediaClip) => number): MediaClip[][]
 function chunkMain(doc: EditDoc, sources: CompileInputs, level: number, opts: Required<PlanOptions>, split = true): Level {
   const { fps, width, height } = doc.project;
   const index = mainIndex(doc);
-  const track = doc.tracks[index] as Extract<Track, { kind: "video" | "overlay" }>;
+  const track = doc.tracks[index] as Extract<Track, { kind: "video" }>; // the main track (mainIndex)
   const clips = [...track.clips].sort((a, b) => a.start - b.start);
   const clipWeight = (c: MediaClip) => sum(trackInputs({ ...track, clips: [c] }, sources, fps, opts.audioWeight));
 
