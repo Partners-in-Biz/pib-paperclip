@@ -148,7 +148,7 @@ describe.skipIf(!available)("mark-posted X link and post-analytics measurable (p
       const out = (await postAnalyticsRecord(ctx, viewer, { postId: "p1" })) as Out;
       expect(out.destinations).toEqual([{
         destinationId: null, accountId: null, status: "published", metricWindows: [], metricsError: null, measurable: false,
-        unmeasuredReason: "no destination record (marked posted by hand, no link stored; it replied to https://x.com/vinayp10/status/2113263397491855821)",
+        unmeasuredReason: "no destination record (no link stored; marked posted by hand or its account was deleted before 0.11.3; it replied to https://x.com/vinayp10/status/2113263397491855821)",
         replyToUrl: "https://x.com/vinayp10/status/2113263397491855821", quoteUrl: null,
       }]);
     });

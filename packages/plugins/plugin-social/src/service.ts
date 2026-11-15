@@ -1476,7 +1476,7 @@ export function missingDestinationEntry(post: Pick<PostRow, "reply_to_url" | "qu
   const answered = replyToUrl ? `; it replied to ${replyToUrl}` : quoteUrl ? `; it quoted ${quoteUrl}` : "";
   return {
     destinationId: null, accountId: null, status: "published", metricWindows: [], metricsError: null,
-    measurable: false, unmeasuredReason: `no destination record (marked posted by hand, no link stored${answered})`,
+    measurable: false, unmeasuredReason: `no destination record (no link stored; marked posted by hand or its account was deleted before 0.11.3${answered})`,
     replyToUrl, quoteUrl,
   };
 }
