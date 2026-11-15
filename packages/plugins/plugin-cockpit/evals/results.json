@@ -40,6 +40,20 @@
           "by": "Delivery Lead",
           "at": "2026-11-04",
           "expires": "2026-12-04"
+        },
+        {
+          "hash": "9464f5b61ab1870c",
+          "reason": "0.27.0 (the Daily Paper) changes only step 10 of the daily review and replaces the daily brief format section with The Daily Paper. None of the five golden scenarios reads those parts. Waived so the release can ship; re-baseline from a live run before expiry.",
+          "by": "Owner session",
+          "at": "2026-11-13",
+          "expires": "2026-12-13"
+        },
+        {
+          "hash": "ee2f130ce2f3ce0b",
+          "reason": "0.27.11 (PAR-11587) adds one paragraph to the asking reference: an ask refused as not found or private is not retried; use a native ask_user_questions card on a private task. No existing rule changes, and no golden scenario asks on an unreadable issue. Waived so the fix can ship; re-baseline from a live run before expiry.",
+          "by": "Leo (Senior Software Engineer)",
+          "at": "2026-11-14",
+          "expires": "2026-12-14"
         }
       ]
     },
@@ -164,6 +178,13 @@
           "hash": "e4ba318073961b11",
           "reason": "Only the generated journeys list (references/journeys.md) changed: drive-producers-canary is now v2 (0.24.1, evidence-save under the run's canary client). No instruction in the skill changed, so its two scenarios are unaffected. Re-baseline from a live run before expiry (PAR-10122).",
           "by": "Senior Developer",
+          "at": "2026-11-12",
+          "expires": "2026-12-12"
+        },
+        {
+          "hash": "5b2a78bc75759142",
+          "reason": "Only the generated journeys list changed: drive-producers-canary is now v3 (0.24.4, check-social before evidence-save). No instruction in the skill changed. Re-baseline from a live run before expiry (PAR-10515).",
+          "by": "Software Engineer",
           "at": "2026-11-12",
           "expires": "2026-12-12"
         }

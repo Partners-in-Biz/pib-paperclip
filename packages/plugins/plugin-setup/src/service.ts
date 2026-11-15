@@ -58,7 +58,7 @@ const INSTALLED_STATE = { scopeKind: "instance" as const, namespace: "setup", st
 // Drive binding (CRM integration)
 // ---------------------------------------------------------------------------
 
-const driveBindingState = (companyId: string) => ({ scopeKind: "company" as const, namespace: "setup", stateKey: `drive-binding:${companyId}` });
+const driveBindingState = (companyId: string) => ({ scopeKind: "company" as const, scopeId: companyId, namespace: "setup", stateKey: `drive-binding:${companyId}` });
 
 export async function onDriveBindingEvent(ctx: PluginContext, event: PluginEvent): Promise<void> {
   const binding = parseDriveBindingEvent(event.payload);

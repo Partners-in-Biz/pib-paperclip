@@ -192,13 +192,15 @@ const plugin = definePlugin({
     for (const tool of CAMPAIGN_TOOLS) {
       if ((GROWTH_TOOL_NAMES as readonly string[]).includes(tool.name)) continue;
       ctx.tools.register(tool.name, tool, async (params, run) => {
-        await skillSync?.ensure(run.companyId).catch(() => undefined);
+        // A tool call never waits long for the skill sync (kit `soon`).
+        await skillSync?.soon(run.companyId);
         return runTool(ctx, tool.name, params, run).then(normalizeToolResult);
       });
     }
     registerGrowthTools(ctx, campaignsGrowthToolsHost(ctx));
     ctx.actions.register("campaigns.load", async (params, context) => {
-      if (context.companyId) await skillSync?.ensure(context.companyId).catch(() => undefined);
+      // The page never waits long for the skill sync (kit `soon`).
+      if (context.companyId) await skillSync?.soon(context.companyId);
       // The page reports /_plugins/<installation uuid>/ui/ so Setup can link the settings page.
       await rememberPluginUiBase(ctx, params.uiBase);
       if (context.companyId) await rememberCompany(ctx, context.companyId);

@@ -43,7 +43,7 @@ describe("runContained tool node", () => {
     const from = { PATH: "/usr/bin", LANG: "C.UTF-8", PIB_ML_THREADS: "4", PAPERCLIP_API_KEY: "secret", NODE_OPTIONS: "--require x", HOME: "/home/p", AWS_SECRET_ACCESS_KEY: "s" };
     expect(containedEnv({ tool: "node", env: { PIB_ML_MODE: "track" } }, from)).toEqual({ PATH: "/usr/bin", LANG: "C.UTF-8", PIB_ML_THREADS: "4", PIB_ML_MODE: "track" });
     expect(() => containedEnv({ tool: "node", env: { NODE_OPTIONS: "--inspect" } }, from)).toThrow(/not allowed/);
-    expect(containedEnv({}, from)).toEqual({ PATH: "/usr/bin", LC_ALL: "C" });
+    expect(containedEnv({}, from)).toEqual({ PATH: "/usr/bin", LC_ALL: "C", MALLOC_ARENA_MAX: "4" });
     expect(() => containedEnv({ tool: "ffmpeg", env: { PIB_ML_X: "1" } }, from)).toThrow();
   });
 

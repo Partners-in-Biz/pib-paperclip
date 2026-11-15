@@ -111,8 +111,16 @@ export interface AuthorisedGrant {
   input: db.PageGrantInput;
 }
 
-/** Checks the call (plan Approach 3, in that order) and returns the grant to write. Throws a SeoError naming the first refusal. */
-export async function authorisePageApply(env: Env, companyId: string, actor: Actor, params: Params): Promise<AuthorisedGrant> {
+/** What the grant gate checks, without the grant's own `note` and `hours`. */
+export interface PageApplyCheck {
+  sprintId: string;
+  taskId: string;
+  pageUrls: string[];
+  reviewCommentId: string | null;
+}
+
+/** Gate step 1: who may approve at all. Throws the refusal. */
+async function assertGrantActor(env: Env, companyId: string, actor: Actor): Promise<void> {
   if (actor.kind === "system") throw new SeoError("Only a person or a sign-off delegate agent can approve applying page changes.");
   if (actor.kind === "agent") {
     const delegates = await delegateAgentIds(env, companyId);
@@ -120,12 +128,54 @@ export async function authorisePageApply(env: Env, companyId: string, actor: Act
       throw new SeoError("You are not a sign-off delegate (SEO setting signoffDelegateAgentIds, saved by an instance admin). Put the change set on Needs you (needs-you-add, with the task id) for the delegate or a person.");
     }
   }
+}
+
+/**
+ * Whether `actor` may approve applying these pages right now (PAR-10548 T5): every check of `authorisePageApply` except
+ * parsing `note` and `hours`, in the same order and with the same sentences. Read-only. Returns the first refusal, or null
+ * when the gate would say yes. A failure that is not a refusal (a database error) is thrown, never read as a yes.
+ */
+export async function pageApplyRefusal(env: Env, companyId: string, actor: Actor, input: PageApplyCheck): Promise<string | null> {
+  try {
+    await assertGrantActor(env, companyId, actor);
+    await checkGrant(env, companyId, actor, input);
+    return null;
+  } catch (error) {
+    if (error instanceof SeoError) return error.message;
+    throw error;
+  }
+}
+
+/** Checks the call (plan Approach 3, in that order) and returns the grant to write. Throws a SeoError naming the first refusal. */
+export async function authorisePageApply(env: Env, companyId: string, actor: Actor, params: Params): Promise<AuthorisedGrant> {
+  await assertGrantActor(env, companyId, actor);
   const sprintId = reqStr(params, "sprintId");
   const taskId = reqStr(params, "taskId");
   const note = reqStr(params, "note", { max: MAX_NOTE });
   const hours = num(params, "hours", { min: 1, max: 72, integer: true }) ?? APPROVAL_DEFAULT_HOURS;
   const reviewCommentId = str(params, "reviewCommentId") ?? null;
   const urls = strList(params, "pageUrls");
+  const { sprint, task, pages: unique, reviewRef } = await checkGrant(env, companyId, actor, { sprintId, taskId, pageUrls: urls, reviewCommentId });
+
+  const label = actor.kind === "agent" ? `${actorLabel(actor)} (sign-off delegate)` : actorLabel(actor);
+  const applyUntil = new Date(env.now().getTime() + hours * 3_600_000).toISOString();
+  return {
+    sprint,
+    task,
+    input: {
+      companyId, sprintId: sprint.id, siteId: sprint.siteId!, taskId: task.id, pageUrls: unique, grantedBy: label,
+      grantedByAgentId: actor.kind === "agent" ? actor.agentId.toLowerCase() : null, reviewRef, note, applyUntil,
+    },
+  };
+}
+
+/** The gate after step 1 and the parse: the sprint, the task and its issue, the pages, the Reviewer PASS and the cap. Read-only. */
+async function checkGrant(
+  env: Env,
+  companyId: string,
+  actor: Actor,
+  { sprintId, taskId, pageUrls: urls, reviewCommentId }: PageApplyCheck,
+): Promise<{ sprint: db.Sprint; task: db.SprintTask; pages: string[]; reviewRef: string }> {
   if (urls.length < 1 || urls.length > MAX_GRANT_PAGES) throw new SeoError(`pageUrls must list 1 to ${MAX_GRANT_PAGES} pages`);
 
   const sprint = await requireSprint(env, companyId, sprintId);
@@ -176,17 +226,7 @@ export async function authorisePageApply(env: Env, companyId: string, actor: Act
   );
   const total = Number(open[0]?.n ?? 0);
   if (total > MAX_GRANT_PAGES) throw new SeoError(`This would leave ${total} pages open for applying on the site; at most ${MAX_GRANT_PAGES}. Revoke or finish other grants first.`);
-
-  const label = actor.kind === "agent" ? `${actorLabel(actor)} (sign-off delegate)` : actorLabel(actor);
-  const applyUntil = new Date(env.now().getTime() + hours * 3_600_000).toISOString();
-  return {
-    sprint,
-    task,
-    input: {
-      companyId, sprintId: sprint.id, siteId: sprint.siteId, taskId: task.id, pageUrls: unique, grantedBy: label,
-      grantedByAgentId: actor.kind === "agent" ? actor.agentId.toLowerCase() : null, reviewRef, note, applyUntil,
-    },
-  };
+  return { sprint, task, pages: unique, reviewRef };
 }
 
 /** Authorises and writes the grant rows (a repeat keeps the later apply_until, one row per page). No emit, comment or wake yet (T2b). */

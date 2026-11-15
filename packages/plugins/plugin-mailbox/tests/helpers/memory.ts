@@ -550,11 +550,23 @@ export class MemoryStore implements GmailStore {
   async listClientMaps(companyId: string) {
     return this.maps.filter((map) => map.company_id === companyId).map((map) => ({ ...map }));
   }
-  async insertClientMap(row: { companyId: string; matchType: ClientMapType; pattern: string; clientKind: "company" | "contact"; clientRef: string; clientName: string | null; note: string | null; createdBy: string | null }) {
+  async insertClientMap(row: { companyId: string; matchType: ClientMapType; pattern: string; clientKind: "company" | "contact"; clientRef: string; clientName: string | null; note: string | null; createdBy: string | null; countOnly?: boolean }) {
     this.mapSeq += 1;
-    const map: ClientMapRow = { id: `map_${this.mapSeq}`, company_id: row.companyId, match_type: row.matchType, pattern: row.pattern, client_kind: row.clientKind, client_ref: row.clientRef, client_name: row.clientName, note: row.note, created_by: row.createdBy, created_at: nowIso() };
+    const map: ClientMapRow = { id: `map_${this.mapSeq}`, company_id: row.companyId, match_type: row.matchType, pattern: row.pattern, client_kind: row.clientKind, client_ref: row.clientRef, client_name: row.clientName, note: row.note, count_only: row.countOnly === true, created_by: row.createdBy, created_at: nowIso() };
     this.maps.push(map);
     return { ...map };
+  }
+  async setClientMapCountOnly(companyId: string, id: string, countOnly: boolean) {
+    for (const map of this.maps) if (map.company_id === companyId && map.id === id) map.count_only = countOnly;
+  }
+  async countOnlyEnquirers(companyId: string, emails: string[]) {
+    const ids = new Set(this.maps.filter((m) => m.company_id === companyId && m.count_only).map((m) => m.id));
+    const found = new Set<string>();
+    for (const m of this.messages.values()) {
+      if (m.company_id !== companyId || m.direction !== "inbound" || !m.map_id || !ids.has(m.map_id)) continue;
+      for (const e of [m.from_addr?.email, m.reply_to_addr?.email]) if (e && emails.includes(e.toLowerCase())) found.add(e.toLowerCase());
+    }
+    return [...found];
   }
   async deleteClientMap(companyId: string, id: string) {
     const before = this.maps.length;
@@ -832,6 +844,15 @@ export class MemoryStore implements GmailStore {
     for (const key of keys) {
       const row = this.sends.get(key);
       if (!row || row.company_id !== companyId) continue;
+      Object.assign(row, { to_addrs: [], subject: "[erased on request]", skipped: [], delivery: {}, error: row.error ? "[erased on request]" : null, request: { key: row.key, erased: true } });
+      n += 1;
+    }
+    return n;
+  }
+  async redactStaleNewsletterSends(companyId: string, beforeIso: string) {
+    let n = 0;
+    for (const row of this.sends.values()) {
+      if (row.company_id !== companyId || !row.key.startsWith("crm:nl:") || row.created_at >= beforeIso || (row.request as unknown as Record<string, unknown>).erased) continue;
       Object.assign(row, { to_addrs: [], subject: "[erased on request]", skipped: [], delivery: {}, error: row.error ? "[erased on request]" : null, request: { key: row.key, erased: true } });
       n += 1;
     }

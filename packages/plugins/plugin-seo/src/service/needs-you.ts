@@ -49,7 +49,7 @@ import { bingKeyItem, githubTokenItem, linkSiteItem, serviceAccountItem } from "
 import { settingsPath } from "./settings-path.js";
 import { agentInstruction, agentRouteFor, isPageChangeTitle, needsPageWindow, type AgentRoute, type HandoffSite } from "../engine/needs-you-handoff.js";
 import { findSeoClientProject } from "./site.js";
-import { commentOn, getIssue, OPEN_ISSUE_STATUSES, openIssue, patchIssue } from "./issues.js";
+import { commentOn, getIssue, OPEN_ISSUE_STATUSES, openIssue, patchIssue, readIssueStrict } from "./issues.js";
 import { routePrReview } from "./review.js";
 import { setVerifyFailure, sprintVerifyRoute, sprintWordPressSite, verifyFailureOf, sprintHasSftp, wpConnectorItemFor, wpSftpItemFor } from "./wordpress.js";
 
@@ -61,7 +61,7 @@ const nowIso = (env: Env) => env.now().toISOString();
  * week's open items). `rollover`: create this week's only when last week
  * still has open items (the daily run, so each week gets its own issue).
  */
-async function currentDigest(env: Env, info: CompanyInfo, sprint: db.Sprint, mode: "read" | "write" | "rollover"): Promise<db.NeedsYouDigest | null> {
+export async function currentDigest(env: Env, info: CompanyInfo, sprint: db.Sprint, mode: "read" | "write" | "rollover"): Promise<db.NeedsYouDigest | null> {
   const week = weekStart(info.today);
   const existing = await db.getNeedsYou(env.ctx.db, sprint.companyId, sprint.id, week);
   if (existing) return existing;
@@ -106,8 +106,7 @@ async function syncDigestIssue(env: Env, info: CompanyInfo, sprint: db.Sprint, d
     // Every digest of the week points at the one issue (this sprint joins one a sibling opened).
     for (const d of all) if (d.issueId !== id) await db.setNeedsYouIssue(env.ctx.db, sprint.companyId, d.id, id, ident);
   };
-  if (!issueId) {
-    if (open.length === 0 || loud.length === 0) return null;
+  const create = async (): Promise<string | null> => {
     try {
       const created = await openIssue(env, {
         companyId: sprint.companyId,
@@ -128,9 +127,20 @@ async function syncDigestIssue(env: Env, info: CompanyInfo, sprint: db.Sprint, d
       env.ctx.logger.info("SEO needs-you issue not created", { sprintId: sprint.id, error: errorMessage(error) });
       return null;
     }
+  };
+  if (!issueId) {
+    if (open.length === 0 || loud.length === 0) return null;
+    return create();
   }
   if (issueId !== digest.issueId) await link(issueId, identifier);
-  const issue = await getIssue(env, sprint.companyId, issueId);
+  const read = await readIssueStrict(env, sprint.companyId, issueId);
+  if (read.kind === "error") {
+    // A failed read says nothing about the issue: no unlink, no patch, no create.
+    env.ctx.logger.info("SEO needs-you sync skipped: issue read failed", { issueId, error: errorMessage(read.error) });
+    return issueId;
+  }
+  if (read.kind === "missing") return repairMissingDigestIssue(env, sprint, digest, all, issueId, loud.length > 0, link, create);
+  const issue = read.issue;
   const isOpen = issue ? OPEN_ISSUE_STATUSES.has(String(issue.status)) : false;
   if (open.length === 0) {
     if (isOpen || issue?.description !== description) await patchIssue(env, sprint.companyId, issueId, { description, ...(isOpen ? { status: "done" } : {}) });
@@ -146,6 +156,55 @@ async function syncDigestIssue(env: Env, info: CompanyInfo, sprint: db.Sprint, d
     if (digest.status === "done") await db.upsertNeedsYou(env.ctx.db, { ...digest, status: "open" });
   }
   return issueId;
+}
+
+const recreatedKey = (companyId: string, weekStartDate: string) => ({ scopeKind: "company" as const, scopeId: companyId, namespace: "seo-needs-you", stateKey: `needs-you-recreated:${weekStartDate}` });
+const missingLoggedKey = (companyId: string, weekStartDate: string) => ({ scopeKind: "company" as const, scopeId: companyId, namespace: "seo-needs-you", stateKey: `needs-you-missing-logged:${weekStartDate}` });
+
+/**
+ * The linked weekly issue reads as missing (the host returns null for a deleted, other-company or private issue).
+ * Never patch it. Once per week: unlink the dead id, adopt a readable open issue with the week's origin, else open one
+ * when loud items are open. After that recreation, keep the link and stay quiet (one log line a week).
+ */
+async function repairMissingDigestIssue(
+  env: Env,
+  sprint: db.Sprint,
+  digest: db.NeedsYouDigest,
+  all: db.NeedsYouDigest[],
+  deadId: string,
+  hasLoud: boolean,
+  link: (id: string, ident: string | null) => Promise<void>,
+  create: () => Promise<string | null>,
+): Promise<string | null> {
+  const companyId = sprint.companyId;
+  if (await env.ctx.state.get(recreatedKey(companyId, digest.weekStart))) {
+    const logged = missingLoggedKey(companyId, digest.weekStart);
+    if (!(await env.ctx.state.get(logged))) {
+      env.ctx.logger.info("SEO needs-you issue missing again after this week's recreation: link kept, no update", { issueId: deadId, weekStart: digest.weekStart });
+      await env.ctx.state.set(logged, env.now().toISOString());
+    }
+    return deadId;
+  }
+  for (const d of await db.getNeedsYouForWeek(env.ctx.db, companyId, digest.weekStart)) {
+    if (d.issueId === deadId) await db.setNeedsYouIssue(env.ctx.db, companyId, d.id, null, null);
+  }
+  let found: Array<{ id: string }> = [];
+  try {
+    found = (await env.ctx.issues.list({ companyId, originKind: ORIGIN.needsYou, originId: `weekly:${digest.weekStart}`, limit: 20 })) as Array<{ id: string }>;
+  } catch (error) {
+    env.ctx.logger.info("SEO needs-you origin lookup failed", { error: errorMessage(error) });
+  }
+  for (const candidate of found) {
+    if (candidate.id === deadId) continue;
+    const read = await readIssueStrict(env, companyId, candidate.id);
+    if (read.kind !== "found" || !OPEN_ISSUE_STATUSES.has(String(read.issue.status))) continue;
+    await link(candidate.id, read.issue.identifier ?? null);
+    return candidate.id;
+  }
+  if (!hasLoud) return null;
+  const id = await create();
+  if (id) await env.ctx.state.set(recreatedKey(companyId, digest.weekStart), env.now().toISOString());
+  return id;
 }
 
 /** The weekly issue's description: the items of every sprint that has some, grouped by client. */
@@ -202,6 +261,7 @@ export async function addNeedsYou(env: Env, info: CompanyInfo, sprint: db.Sprint
   if (merged.added && issueId && digest.issueId && !item.quiet) {
     await commentOn(env, sprint.companyId, issueId, `New item for ${sprintLabel(sprint)}: **${item.title}**. ${item.why}`, { pointer: "the whole item is on the client's SEO page" });
   }
+  await tellSignoffDelegate(env, sprint.companyId, sprint.id);
   return { issueId, added: merged.added, key: item.key };
 }
 
@@ -259,6 +319,7 @@ export async function closeSignoffItems(env: Env, companyId: string, sprintId: s
   const next = { ...digest, items };
   await db.upsertNeedsYou(env.ctx.db, next);
   await syncDigestIssue(env, info, sprint, next);
+  await tellSignoffDelegate(env, sprint.companyId, sprint.id);
   return closed;
 }
 
@@ -466,13 +527,17 @@ export async function resolveNeedsYou(env: Env, info: CompanyInfo, sprint: db.Sp
   const tasksContinued = (await continueTasks(env, fresh, item.taskIds ?? [], by, note)) + (key.startsWith("chunk:") ? await continueGroup(env, fresh, key.slice("chunk:".length), by) : 0);
   const issueId = await syncDigestIssue(env, info, fresh, next);
   if (issueId && openItems(next.items).length > 0) await commentOn(env, sprint.companyId, issueId, `Done: **${item.title}** (${by}). ${item.after}`);
+  await tellSignoffDelegate(env, sprint.companyId, sprint.id);
   return { resolved: true, stillOpen: null, tasksContinued };
 }
 
 /** Daily: close items the plugin can see done. */
 export async function recheckNeedsYou(env: Env, info: CompanyInfo, sprint: db.Sprint): Promise<number> {
   const digest = await currentDigest(env, info, sprint, "rollover");
-  if (!digest) return 0;
+  if (!digest) {
+    await tellSignoffDelegate(env, sprint.companyId, sprint.id);
+    return 0;
+  }
   // A new week: open this week's issue for the carried items (last week's closed on rollover). An existing issue is
   // re-rendered too, so its summary never falls behind while this sprint's own items stay quiet.
   if (digest.issueId || openItems(digest.items).length > 0) await syncDigestIssue(env, info, sprint, digest);
@@ -492,6 +557,8 @@ export async function recheckNeedsYou(env: Env, info: CompanyInfo, sprint: db.Sp
       env.ctx.logger.info("SEO needs-you check failed", { key: item.key, error: errorMessage(error) });
     }
   }
+  // The daily job is also the backstop: a delegate who became eligible (a preview passed) is told here.
+  await tellSignoffDelegate(env, sprint.companyId, sprint.id);
   return resolved;
 }
 
@@ -865,4 +932,10 @@ export async function giveNeedsYouToAgent(env: Env, companyId: string, actor: Ac
 
   const left = open.length - picked.length;
   return { sprintId: sprint.id, given: picked.length, tasksResumed, issueId: createdIssueId, issueIds: issues, stillNeedYou: left };
+}
+
+/** Loaded on use: signoff-delegate reaches page-apply (via cockpit), which imports this module, so a static import would be a cycle. */
+async function tellSignoffDelegate(env: Env, companyId: string, sprintId: string): Promise<void> {
+  const { tellSignoffDelegate: tell } = await import("./signoff-delegate.js");
+  await tell(env, companyId, sprintId);
 }

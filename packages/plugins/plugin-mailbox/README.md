@@ -64,6 +64,18 @@ Listens to `plugin.<sender>.mail.send.requested` for every kit `MAIL_SENDERS` pl
 - A retry first looks the message up by its Message-ID, so an attempt Gmail accepted is not sent twice.
 - Over the rate, Gmail down or the account needs reconnecting: nothing is stored and the sender's outbox retries. No connected account, a bad address, an expired attachment link or a message Gmail refuses: `failed` with `permanent: true`. The Sent tab retries by hand.
 
+## 0.9.13: the skill sweep skips companies with no saved settings
+
+src-only (kit 0.14.0): the daily skill sweep skips a company with no saved settings without calling the host for it (needs_settings), when the host lists the companies a job may act for. No migration, no capability change.
+
+## 0.9.12: the skill sync never holds a call up
+
+- src-only: a tool call, a page action or the page load waits at most 2 s for the managed-skill sync and goes on while it finishes behind it; a failed sync is tried again after 5 minutes, not on every call (kit `soon`, `createSkillSyncGuard`). Before this, each call waited for the host after every worker restart, and on a company with many skills that ran into the host's 30-second limit (13 Nov 2026: a CRM and Mailbox release rolled back at its smoke test for this).
+
+## 0.9.11: newsletter send records are blanked after 30 days
+
+- The hourly private-mail job also blanks recipients, subject and request of every send record whose key starts `crm:nl:` and is older than 30 days (the same statement erasure uses). The record stays, so a repeated key is still refused. No migration.
+
 ## 0.9.10: client asks open a task; Give to agent on every row
 
 - **Who gets a Reply needed task.** One rule (`opensReplyTask`, shared by sync and the done-check): lead, client or support mail at needs-reply 0.7, as before. A **known client** (a client mail mapping or a person's correction) now also opens one when answering mail we sent (category `reply`: a go-ahead, "it errors when I approve") and from 0.5. Replies from anyone else stay with the plugin that sent the mail. Bulk and likely phishing never open one.

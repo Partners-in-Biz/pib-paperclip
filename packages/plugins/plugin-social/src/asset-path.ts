@@ -10,7 +10,7 @@
  * to the asset id and the asset keeps its alt text.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { DRIVE_ACK_TIMEOUT_MS, driveSave, formatClientParam, r2PutObject, sameClient, type DriveSaveOptions, type DriveSaveResult } from "@partnersinbiz/pib-plugin-kit";
+import { driveSave, formatClientParam, r2PutObject, sameClient, type DriveSaveOptions, type DriveSaveResult } from "@partnersinbiz/pib-plugin-kit";
 import { resolveScope, rowScope, scopeFromParams, scopeInput, type ResolvedScope } from "./clients.js";
 import { loadSocialConfig } from "./config.js";
 import { postMedia } from "./db.js";
@@ -19,6 +19,9 @@ import { ATTACHMENT_MAX_BYTES, mediaKey, registerAsset } from "./media.js";
 import { mediaInfo, shapeNotes, sniffMime } from "./media-info.js";
 import { SOCIAL_MEDIA_MIME } from "./platforms.js";
 import { requirePost, updatePostRecord, type Viewer } from "./service.js";
+
+/** How long store-rendered-asset waits for Drive to ack the copy; below the tool's 25 s gateway budget (tools.ts). */
+export const STORE_ASSET_DRIVE_ACK_MS = 20_000;
 
 export type DriveOutcome = { ok: true; url: string; driveFileId: string } | { ok: false; reason: string };
 
@@ -101,8 +104,7 @@ export async function storeRenderedAsset(ctx: PluginContext, viewer: Viewer, par
       mimeType: mime,
       bytes,
       subfolder: "02 Assets",
-      // Answer before the tool gateway's ~10 s cut: a slow Drive gives drive.ok:false (no_ack), not a 504.
-      timeoutMs: DRIVE_ACK_TIMEOUT_MS,
+      timeoutMs: STORE_ASSET_DRIVE_ACK_MS,
       ...(target.scope ? { client: { kind: target.scope.kind, ref: target.scope.id } } : { ownWork: true as const }),
     });
     drive = saved.status === "saved" ? { ok: true, url: saved.url, driveFileId: saved.driveFileId } : { ok: false, reason: saved.status === "failed" ? saved.reason : saved.status };

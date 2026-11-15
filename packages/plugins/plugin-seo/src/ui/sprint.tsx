@@ -17,6 +17,7 @@ import {
   Eye,
   Field,
   FileText,
+  FlaskConical,
   HeartPulse,
   Info,
   Input,
@@ -57,6 +58,7 @@ import { BusinessTypeField } from "./home.js";
 import { MoreMenu, type MenuItem } from "./menu.js";
 import { Banner, Breadcrumb, IssueLink, StatePill, StuckBanner, linkButton, shortUrl, small, top, type Crumb } from "./parts.js";
 import { PlaybookTab } from "./playbook.js";
+import { GrowthTab } from "./growth.js";
 import { BacklinksTab, ContentTab, KeywordsTab, AuditsTab, OptimizationsTab } from "./lists.js";
 import { IntegrationsTab } from "./integrations.js";
 import { PreviewsTab, awaitingCount } from "./previews.js";
@@ -74,6 +76,7 @@ const TABS: Array<{ id: TabId; label: string; icon: LucideIcon }> = [
   { id: "audits", label: "Audits", icon: HeartPulse },
   { id: "optimizations", label: "Optimizations", icon: Lightbulb },
   { id: "playbook", label: "Playbook", icon: BookOpen },
+  { id: "growth", label: "Growth", icon: FlaskConical },
   { id: "integrations", label: "Integrations", icon: Plug },
 ];
 
@@ -302,6 +305,7 @@ export function SprintCockpit({
       {tab === "audits" ? <AuditsTab bundle={bundle} call={call} working={working} /> : null}
       {tab === "optimizations" ? <OptimizationsTab bundle={bundle} call={call} /> : null}
       {tab === "playbook" ? <PlaybookTab sprintId={sprintId} onChanged={reload} onMessage={onMessage} /> : null}
+      {tab === "growth" ? <GrowthTab sprintId={sprintId} onMessage={onMessage} onOpenTab={selectTab} /> : null}
       {tab === "integrations" ? <IntegrationsTab companyId={companyId} bundle={bundle} load={load} call={call} reload={reload} onMessage={onMessage} working={working} /> : null}
       {dialog === "link" ? <LinkClientModal sprint={s} onClose={() => setDialog(null)} call={call} /> : null}
       {dialog === "through" ? <RunThroughModal sprint={s} onClose={() => setDialog(null)} call={call} onChanged={onChanged} /> : null}

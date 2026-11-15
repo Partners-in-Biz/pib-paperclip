@@ -2827,7 +2827,21 @@ export function createPluginWorkerHandle(
     return null;
   }
 
-  function contextForWorkerMessage(message: JsonRpcRequest | JsonRpcNotification): WorkerHostCallContext {
+  /**
+   * Resolve the host-call context for a worker message.
+   *
+   * A request with no invocation id (jobs, timers, start-up) gets a
+   * deterministic answer that never depends on other live invocations
+   * (PAR-11072): a configured company resolves to its scope; an unconfigured
+   * company is named in `unconfiguredCompanyId` so the gate can say why it
+   * refuses; anything else gets no company context. Stream notifications
+   * (`consultLiveInvocations`) keep the older rule: no id while any invocation
+   * is live is an invalid scope.
+   */
+  function contextForWorkerMessage(
+    message: JsonRpcRequest | JsonRpcNotification,
+    options: { consultLiveInvocations?: boolean } = {},
+  ): WorkerHostCallContext {
     const invocationId = readNonEmptyString(
       (message as { paperclipInvocationId?: unknown }).paperclipInvocationId,
     );
@@ -2846,9 +2860,12 @@ export function createPluginWorkerHandle(
       if (proactiveCompanyId && proactiveCompanyScopes.has(proactiveCompanyId)) {
         return { invocationScope: { companyId: proactiveCompanyId } };
       }
-      const hasActiveInvocation = activeInvocations.size > 0 ||
-        Array.from(pendingRequests.values()).some((pending) => pending.invocationId);
-      return hasActiveInvocation ? { invalidInvocationScope: true } : {};
+      if (options.consultLiveInvocations) {
+        const hasActiveInvocation = activeInvocations.size > 0 ||
+          Array.from(pendingRequests.values()).some((pending) => pending.invocationId);
+        return hasActiveInvocation ? { invalidInvocationScope: true } : {};
+      }
+      return proactiveCompanyId ? { unconfiguredCompanyId: proactiveCompanyId } : {};
     }
     const entry = activeInvocations.get(invocationId);
     if (!entry) return { invalidInvocationScope: true };
@@ -2920,7 +2937,22 @@ export function createPluginWorkerHandle(
       });
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
-      log.error({ method, err: errorMessage }, "host handler error");
+      if ((err as { code?: unknown } | null)?.code === PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED) {
+        // A scope refusal is the gate working, not a host fault: WARN, with the
+        // fields an operator needs to group refusals (PAR-11072). Journal only.
+        const denial = err as { reason?: unknown; requestedCompanyId?: unknown };
+        log.warn(
+          {
+            pluginId,
+            method,
+            reason: typeof denial.reason === "string" ? denial.reason : undefined,
+            requestedCompanyId: typeof denial.requestedCompanyId === "string" ? denial.requestedCompanyId : undefined,
+          },
+          "plugin scope refusal",
+        );
+      } else {
+        log.error({ method, err: errorMessage }, "host handler error");
+      }
       try {
         sendMessage(
           createErrorResponse(
@@ -3015,7 +3047,7 @@ export function createPluginWorkerHandle(
     ) {
       const params = (notification.params ?? {}) as Record<string, unknown>;
       const companyId = String(params.companyId ?? "");
-      const context = contextForWorkerMessage(notification);
+      const context = contextForWorkerMessage(notification, { consultLiveInvocations: true });
       if (context.invalidInvocationScope) {
         log.warn(
           { method: notification.method, companyId },

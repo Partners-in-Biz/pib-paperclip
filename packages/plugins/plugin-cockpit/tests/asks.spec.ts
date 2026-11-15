@@ -2,7 +2,7 @@
  * ask-owner: the agent asks, the issue goes to the owner (in review), the
  * owner's reply hands it back and wakes the agent with the answer.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { askComment, AskError, answerText, askTone, askWaitingItem, parseAskInput, prefixed, safeHref, staleAsks, wakeReason } from "../src/ask-model.js";
 import { NO_OWNER_MESSAGE, onAskComment, onAskIssueUpdated, openAskViews, reconcileAsks } from "../src/asks.js";
 import { companyBrief, waitingFrom } from "../src/brief.js";
@@ -137,7 +137,9 @@ describe("asking the owner", () => {
     await saveTeam(s.env, A, {}, "user-1");
     const done = await issueFor(s, { status: "done" });
     expect((await ask(s, { issueId: done.id, ...QUESTION })).error).toMatch(/is closed/);
-    expect((await ask(s, { issueId: "PIB-404", ...QUESTION })).error).toMatch(/was not found/);
+    const unreadable = (await ask(s, { issueId: "PIB-404", ...QUESTION })).error;
+    expect(unreadable).toMatch(/was not found in this company, or it is a private task the Cockpit cannot read/);
+    expect(unreadable).toContain("use a native ask_user_questions card on the issue itself");
     expect((await ask(s, { issueId: done.id, ...QUESTION }, { ...RUN, agentId: undefined as never })).error).toMatch(/Only an agent/);
     expect((await ask(s, {})).data).toEqual({ ok: false, error: expect.stringMatching(/issueId is required/) });
   });
@@ -228,6 +230,16 @@ describe("the owner's reply", () => {
     const fourth = await issueFor(s);
     await ask(s, { issueId: fourth.id, ...QUESTION });
     expect(await onAskIssueUpdated(s.env, { companyId: A, entityType: "issue", entityId: fourth.id })).toBe("open");
+  });
+
+  it("an ask whose issue turns unreadable (a private task) is cancelled and logs the ask and issue", async () => {
+    const s = await asked();
+    const info = vi.spyOn(s.ctx.logger, "info");
+    // The host returns null for a private task read by a non-member, the same as a missing one.
+    s.issues.delete(s.issue.id);
+    expect(await onAskIssueUpdated(s.env, { companyId: A, entityType: "issue", entityId: s.issue.id })).toBe("cancelled");
+    expect(s.store.asks![0].status).toBe("cancelled");
+    expect(info).toHaveBeenCalledWith(expect.stringContaining("could not be read"), expect.objectContaining({ askId: s.store.asks![0].id, issueId: s.issue.id, where: "issue-update" }));
   });
 
   it("the hourly check ignores a person's comment older than the ask, even when the host lists newest first", async () => {

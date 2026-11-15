@@ -27,7 +27,7 @@ import {
 
 export type SiteFetcher = (
   url: string,
-  init?: { method?: string; headers?: Record<string, string>; maxChars?: number },
+  init?: { method?: string; headers?: Record<string, string>; maxChars?: number; maxRedirects?: number },
 ) => Promise<SafeFetchResult>;
 
 export const GOOGLEBOT_UA = "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)";

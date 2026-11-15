@@ -9,7 +9,7 @@ import type { EditDoc } from "../../video-edit/timeline.js";
 import type { EditorStore } from "./editor-store.js";
 import { captionStyle, STYLE_LOOK, visibleCaptions, captionClips } from "./caption-timing.js";
 import { useStudioFonts } from "../fonts.js";
-import { overlayStyle, textClips, visibleText } from "./text-track.js";
+import { animatedOverlay, textClips, visibleText } from "./text-track.js";
 import { keyedText } from "./preview-plan.js";
 
 export function Overlay({ store }: { store: EditorStore }) {
@@ -25,15 +25,14 @@ export function OverlayView({ doc, playhead }: { doc: EditDoc | null; playhead: 
   const captions = visibleCaptions(doc, playhead);
   return (
     <div data-text-overlay aria-hidden={shown.length || captions.length ? undefined : true} style={{ position: "absolute", inset: 0, overflow: "hidden", pointerEvents: "none", containerType: "size", zIndex: 5 }}>
-      {shown.map(({ clip, opacity }) => (
-        <div
-          key={clip.id}
-          data-overlay-clip={clip.id}
-          style={overlayStyle(clip, { width, height }, opacity)}
-        >
-          {clip.text}
-        </div>
-      ))}
+      {shown.map(({ clip, opacity }) => {
+        const { style, units } = animatedOverlay(clip, { width, height }, playhead, opacity);
+        return (
+          <div key={clip.id} data-overlay-clip={clip.id} style={style}>
+            {units ? units.map((u, i) => <span key={i} style={u.hidden ? { visibility: "hidden" } : undefined}>{u.text}</span>) : <>{clip.text}</>}
+          </div>
+        );
+      })}
       {captions.map(({ clip, words }) => (
         <div key={clip.id} data-overlay-caption={clip.id} data-caption-style={clip.style} style={captionStyle(clip.style, { width, height })}>
           {words.map((w, i) => (

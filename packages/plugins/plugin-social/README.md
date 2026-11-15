@@ -166,6 +166,26 @@ The social-content skill gets a **Media studio (pib-media-studio)** section and 
 3. Sync the skills for every company (Setup → Team → Fix skills, or the hourly sweep).
 4. A person sets a client's policy on Social → Posts → **Who approves** when that client should approve their own posts. Nothing changes for any scope until then.
 
+## 0.13.4: the skill sweep skips companies with no saved settings
+
+src-only (kit 0.14.0): the daily skill sweep skips a company with no saved settings without calling the host for it (needs_settings), when the host lists the companies a job may act for. No migration, no capability change.
+
+## 0.13.3: the skill sync never holds a call up
+
+src-only. Through `createCompanyBootstrap().ensure`, a tool call, a page action or the page load waits at most 2 s for the managed-skill sync and goes on while it finishes behind it; a failed sync is tried again after 5 minutes, not on every call (kit `soon`, `createSkillSyncGuard`). Before this, each call waited for the host after every worker restart, and on a company with many skills that ran into the host's 30-second limit. The same bounded wait applies to the OAuth route and to each job tick. Only a new company's bootstrap (`company.created`) still waits for the sync.
+
+## 0.13.2: store-rendered-asset budget
+
+src-only (PAR-10249). `store-rendered-asset` now waits 20 s for the Drive ack (0.11.4 set 8 s as a stopgap under the 10 s cut) and declares `timeoutMs` 25 s, so the gateway no longer cuts it at 10 s.
+
+## 0.13.1: the Cockpit waits on the delegate only when it could approve (PAR-10701)
+
+Src-only (no migration, no new capability). Who may approve does not change.
+
+- A post in review is labelled "Waiting for the delegated approver" and carries `waitsOn: {kind:"agent"}` only when the delegate's own approve gate would accept it now (`delegateApprovalRefusal`, the read-only part of `approve-post-as-delegate`: Reviewer pass of this version, scored, by another agent; post created after the delegate was named; not its own post; the delegate may act). Otherwise it is "Approve post" for the owner. Before, an active delegate alone was enough.
+- Client-only scopes carry `waitsOn: {kind:"client"}`. An approved post with no time waits on the agent of its open schedule issue; no issue, a closed one, a person's, or a failed read: no `waitsOn`.
+- The review item's `since` is when the post entered review (its last status change or edit).
+
 ## 0.13.0: one focus a month, hooks tested and doubled down
 
 Src-only (no migration, no new capability). **Changes what agents do for every company's own work and its clients**: the skill text, the weekly plan and the reviewer's checks.
@@ -192,6 +212,10 @@ Src-only (PAR-10212). `store-rendered-asset` and the published post's Drive copy
 
 - Facebook video posts: Meta removed `total_video_impressions(_unique)` from `video_insights` (Graph API v25.0 changelog, for every API version once v26.0 shipped); the call still answered but without the rows, so impressions and reach stayed null with "video insights: missing total_video_impressions". Impressions and reach now come from the video's Page post (`post_id` on the Video, else `<pageId>_<videoId>`): `post_media_view` and `post_total_media_view_unique`, as for any other Page post. Views stay `total_video_views`.
 - **Delete** refuses a disconnected account that has a published destination: the cascade would erase what a post published there and its metrics (a hand-marked X post lost its destination this way, PAR-10115). The account stays disconnected and post-analytics keeps listing the destination as not measurable. The junk-account sweep skips such accounts too. src-only.
+
+## 0.13.5: archive-post / unarchive-post
+
+`archive-post` (`postId`, full id or 8-char short id) soft-deletes a post: `archived_at` is set (migration 021), the post leaves the Cockpit lists and queues, nothing is lost. Archiving twice is a no-op; published, publishing and scheduled posts are refused (unschedule first). `unarchive-post` clears the flag. Same scope rules as `update-post`. Archived posts are left out of: the post lists (`list-posts` and the personal list), the Cockpit draft, review, approved and failed counts and queues, the approval and scheduled flow stages, the review-issue check for inactive delegates, the "pick a time" done-check, the similarity window of the approval check, and the scope summary's failed count. They are still counted in stats and the plan-trigger totals (history of what was written). Archiving a post in review cancels its open review issue and detaches it; a pending client approval link is superseded. Archiving does not touch media: the files stay in the library and are only reachable through the unarchived post. Unarchiving does not reopen the review issue; send the post for review again.
 
 ## 0.11.2: unschedule-post
 

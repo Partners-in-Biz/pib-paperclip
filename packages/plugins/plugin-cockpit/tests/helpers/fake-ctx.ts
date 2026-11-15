@@ -206,6 +206,8 @@ export function fakeCtx(options: {
     state: {
       get: async (key: Parameters<typeof stateKey>[0]) => state.get(stateKey(key)) ?? null,
       set: async (key: Parameters<typeof stateKey>[0], value: unknown) => {
+        // plugin_state.value_json is NOT NULL: the host refuses null.
+        if (value === null || value === undefined) throw new Error("null value in column \"value_json\" of relation \"plugin_state\" violates not-null constraint");
         state.set(stateKey(key), value);
       },
       delete: async (key: Parameters<typeof stateKey>[0]) => {

@@ -249,6 +249,13 @@ export function approvalWorld(opts: WorldOptions = {}) {
           post.media = params[3] ? JSON.parse(String(params[3])) : [];
           return 1;
         }
+        if (sql.includes("SET archived_at =")) {
+          const archive = params[2] === true;
+          if (((post as { archived_at?: unknown }).archived_at == null) !== archive) return 0;
+          if (["published", "partially_published", "publishing", "scheduled"].includes(String(post.status))) return 0;
+          (post as { archived_at?: unknown }).archived_at = archive ? new Date().toISOString() : null;
+          return 1;
+        }
         if (sql.includes("SET schedule_issue_id = $3")) {
           post.schedule_issue_id = params[2];
           return 1;

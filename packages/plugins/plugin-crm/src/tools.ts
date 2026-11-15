@@ -1,7 +1,7 @@
 import type { JsonSchema, PluginToolDeclaration } from "@paperclipai/plugin-sdk";
 import { SITE_ACCESS_KINDS, SITE_PLATFORMS, SITE_SEO_PLUGINS } from "@partnersinbiz/pib-plugin-kit/client-sites";
-import { ACTIVITY_KINDS, COMPLETION_MODES, DEAL_STATUSES, FIELD_TYPES, FIND_KINDS, FIND_MAX, LIFECYCLES, NEXT_ACTIONS, RECORD_TYPES, SEQUENCE_DELIVERIES } from "./domain.js";
-import { SOURCE_STATUSES } from "./lead-form.js";
+import { ACTIVITY_KINDS, COMPLETION_MODES, DEAL_STATUSES, FIELD_TYPES, FIND_KINDS, FIND_MAX, LIFECYCLES, NEXT_ACTIONS, RECORD_TYPES, SEQUENCE_DELIVERIES, STAGE_KINDS } from "./domain.js";
+import { LEAD_INTAKES, SOURCE_STATUSES } from "./lead-form.js";
 import { CARE_TOOLS } from "./care-tools.js";
 import { ESIGN_TOOLS } from "./esign-tools.js";
 import { GROWTH_TOOLS } from "./growth-tools.js";
@@ -30,6 +30,14 @@ const oneOf = (values: readonly string[], description: string): JsonSchema => ({
 const int = (description: string, extra: Record<string, unknown> = {}): JsonSchema => ({ type: "integer", description, ...extra });
 const bool = (description: string): JsonSchema => ({ type: "boolean", description });
 const bag = (description: string): JsonSchema => ({ type: "object", additionalProperties: true, description });
+
+/** The settings of a newsletter lead form (intake newsletter). The secret that signs its confirmation links is never a parameter. */
+const NEWSLETTER_FIELDS = {
+  applyTags: textList("Newsletter forms only (required there): 1 to 5 tags of 1 to 60 characters that a subscriber gets once they confirm, e.g. [\"remotesaffa-subscribers\"]."),
+  confirmUrl: text("Newsletter forms only (required there): the https page that confirms a signup, at most 100 characters, on exactly the host of the form's site (no subdomain, user name, port, ? or #)."),
+  confirmFrom: text("Newsletter forms only (required there): the one address the confirmation mail is sent from, e.g. hello@example.co.za."),
+  confirmDailyCap: int("Newsletter forms only: the most confirmation mails the form sends in 24 hours, 1 to 300 (default 300).", { minimum: 1, maximum: 300 }),
+};
 
 const P = {
   companyRecordId: text("CRM company id (from find-records or get-company). company:<id> also works."),
@@ -96,7 +104,8 @@ export const CRM_TOOLS: PluginToolDeclaration[] = [
     description: "Deals with their stage, status, value and client ref. Filter by status, stage or client.",
     parametersSchema: schema([], {
       status: oneOf(DEAL_STATUSES, "open, won or lost."),
-      stage: text("Stage id or stage name, e.g. Proposal (see list-stages)."),
+      stage: text("Stage id or stage name, e.g. Proposal (see list-stages). A name is looked up in the given pipeline, else in all."),
+      pipeline: text("Only this pipeline's deals: its id or name (see list-stages). Omit for all pipelines."),
       client: text("Only this client's deals: company:<id> or contact:<id>. A company includes its people's deals."),
       limit: int("Most deals to return, 1 to 50 (default 25).", { minimum: 1, maximum: 50 }),
     }),
@@ -104,8 +113,30 @@ export const CRM_TOOLS: PluginToolDeclaration[] = [
   {
     name: "list-stages",
     displayName: "List pipeline stages",
-    description: "The pipeline's stages in order, with each stage's id, kind (open, won, lost) and deal count. Use the id with move-deal.",
-    parametersSchema: schema([], {}),
+    description: "The pipeline's stages in order, with each stage's id, kind (open, won, lost) and deal count. Use the id with move-deal. Also lists every pipeline.",
+    parametersSchema: schema([], { pipeline: text("Pipeline id or name. Omit for the main (default) pipeline.") }),
+  },
+  {
+    name: "create-pipeline",
+    displayName: "Create pipeline",
+    description:
+      "Create another pipeline (its own set of stages) for a separate line of deals, e.g. sponsors. The company's first pipeline, Sales, is made first if it is missing, and stays the default. Omit stages to get Discovery, Proposal, Negotiation, Won and Lost. Custom stages need at least one open, exactly one won and exactly one lost stage, with unique names. Returns the pipeline id and its stage ids (use them with create-deal / move-deal).",
+    parametersSchema: schema(["name"], {
+      name: text("The new pipeline's name, e.g. Sponsors. Must differ from the company's other pipelines (case ignored)."),
+      stages: {
+        type: "array",
+        description: "Stages in board order, e.g. [{\"name\":\"Lead\",\"kind\":\"open\"},{\"name\":\"Signed\",\"kind\":\"won\"},{\"name\":\"Declined\",\"kind\":\"lost\"}]. Omit for the default five stages.",
+        items: {
+          type: "object",
+          required: ["name", "kind"],
+          additionalProperties: false,
+          properties: {
+            name: text("The stage name, unique within this pipeline (case ignored)."),
+            kind: oneOf(STAGE_KINDS, "open, won or lost."),
+          },
+        },
+      },
+    }),
   },
   {
     name: "list-sequences",
@@ -175,6 +206,10 @@ export const CRM_TOOLS: PluginToolDeclaration[] = [
       consentText: text("The wording next to the marketing tick box. Default: the client (or we) may email news and offers, with an unsubscribe line. Must say who will email them."),
       privacyUrl: text("A link to the privacy policy shown under the form."),
       successMessage: text("What the visitor reads after sending (default: Thank you, we will be in touch)."),
+      intake: oneOf(LEAD_INTAKES, "lead (default): each submission is a lead (contact, follow-up, consent). issue: a report form; each submission opens one issue in projectId, email is optional, and no contact or consent record is made. The label starts the issue title (e.g. label Listing report gives Listing report: <subject>). newsletter: a signup list with double opt-in (signed server calls only; an agent may create it, and it takes no signups until a person makes its signing secret on the Lead forms card); needs siteUrl, applyTags, confirmUrl and confirmFrom. The intake never changes after creation."),
+      projectId: text("Only with intake issue (required there): the Paperclip project the report issues open in."),
+      assigneeAgentId: text("Only with intake issue: the agent each report issue is assigned to. Leave out for unassigned issues in the project."),
+      ...NEWSLETTER_FIELDS,
     }),
   },
   {
@@ -184,6 +219,7 @@ export const CRM_TOOLS: PluginToolDeclaration[] = [
       "Give a lead form a new key. The old key keeps working for 7 days so the snippet on the site can be swapped without losing leads. Use it after a key leaked, or to turn on spam protection that was set up after the snippet was installed. It never makes a signing secret: only a person does that, on the client's Lead forms card.",
     parametersSchema: schema(["sourceId"], {
       sourceId: text("The form (from list-lead-sources)."),
+      newConfirmKey: bool("Newsletter forms only. true: replace ONLY the key that signs confirmation links, so every link already sent stops working at once; the public key and signing secret stay and signups go on. The key is never shown."),
     }),
   },
   {
@@ -207,6 +243,7 @@ export const CRM_TOOLS: PluginToolDeclaration[] = [
       consentText: text("The wording next to the marketing tick box."),
       privacyUrl: text("A link to the privacy policy."),
       successMessage: text("What the visitor reads after sending."),
+      ...NEWSLETTER_FIELDS,
       status: oneOf(SOURCE_STATUSES, "active: takes leads. paused: stops for now. revoked: off for good (a person only)."),
     }),
   },
@@ -543,8 +580,8 @@ export const CRM_TOOLS: PluginToolDeclaration[] = [
   {
     name: "pipeline-forecast",
     displayName: "Pipeline forecast",
-    description: "Open pipeline value by stage with a weighted forecast (each stage's win chance). An estimate, not a promise.",
-    parametersSchema: schema([], {}),
+    description: "Open pipeline value by stage with a weighted forecast (each stage's win chance). An estimate, not a promise. Covers the main pipeline unless you name another.",
+    parametersSchema: schema([], { pipeline: text("Pipeline id or name (see list-stages). Omit for the main pipeline.") }),
   },
   {
     name: "export-contacts",
@@ -804,6 +841,7 @@ export const CRM_TOOLS: PluginToolDeclaration[] = [
       "Create a deal (a sale in progress) in the first open stage for a client. Link it with companyRecordId and/or contactId. Returns its id. Put its id on the Billing quote so acceptance closes it.",
     parametersSchema: schema(["title"], {
       title: text("What is being sold, e.g. Website rebuild."),
+      pipeline: text("The pipeline it goes in: its id or name (see list-stages). It starts in that pipeline's first open stage. Omit for the main (default) pipeline."),
       amountMinor: P.amountMinor,
       currency: P.currency,
       companyRecordId: P.companyRecordId,
@@ -816,10 +854,11 @@ export const CRM_TOOLS: PluginToolDeclaration[] = [
     name: "move-deal",
     displayName: "Move deal",
     description:
-      "Move a deal to another stage. Won makes the client a customer, logs the win and tells Billing and the Cockpit (a first win starts onboarding). Won or lost stops the contact's sequences.",
-    parametersSchema: schema(["dealId", "stageId"], {
+      "Move a deal to another stage, also into another pipeline. Send stageId, pipeline or both. Won makes the client a customer, logs the win and tells Billing and the Cockpit (a first win starts onboarding). Won or lost stops the contact's sequences.",
+    parametersSchema: schema(["dealId"], {
       dealId: P.dealId,
-      stageId: text("Stage id from list-stages. A stage name (e.g. Proposal) or the word won or lost also works."),
+      stageId: text("Stage id from list-stages (another pipeline's stage id moves the deal there). A stage name (e.g. Proposal) or the word won or lost also works: looked up in pipeline if given, else in the deal's pipeline."),
+      pipeline: text("Pipeline id or name (see list-stages). Alone: the deal goes to that pipeline's first open stage (a deal already in it stays put). With a stage id, the stage must be in this pipeline."),
       quoteId: text("Only with stageId won: the accepted quote this deal closes (from a pick-the-deal hand-off). The deal records it."),
     }),
   },
@@ -836,6 +875,7 @@ export const CRM_TOOLS: PluginToolDeclaration[] = [
       companyRecordId: text("The CRM company this deal is for (company:<id> also works). An empty string unlinks it."),
       contactId: text("The CRM contact this deal is with (contact:<id> also works). An empty string unlinks it."),
       stageId: text("Move to this stage: id from list-stages, a stage name, or won or lost. Won makes the client a customer and tells Billing."),
+      pipeline: text("Move to this pipeline (id or name, see list-stages), as move-deal: alone, its first open stage; with stageId, where a stage name is looked up."),
     }),
   },
   {

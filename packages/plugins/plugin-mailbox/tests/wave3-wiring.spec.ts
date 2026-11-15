@@ -216,6 +216,14 @@ describe("the daily domain job and the hourly housekeeping", () => {
     expect(status.companies[CO]).toMatchObject({ plugin: "partnersinbiz.mailbox" });
   });
 
+  it("logs one line per company for every hourly client message scrub, also when nothing was removed", async () => {
+    const { harness } = await boot();
+    await harness.runJob("setup-status");
+    const lines = harness.logs.filter((l) => l.message === "Client message scrub ran");
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.meta).toMatchObject({ companyId: CO, bodies: expect.any(Number), snippets: expect.any(Number) });
+  });
+
   it("every hour the Mailbox posts to its own public address to prove the unsubscribe proxy rule, and records the answer before it reports Setup", async () => {
     const { harness } = await boot({ unsubscribe: { secret: "unsubscribe-secret-0123456789" } });
     const posted: string[] = [];

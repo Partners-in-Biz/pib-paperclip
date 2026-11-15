@@ -46,7 +46,7 @@ function timeOf(row: MessageRow): number {
 export function needsReply(row: MessageRow): boolean {
   if (row.direction !== "inbound") return false;
   const category = row.category ?? row.triage?.category ?? null;
-  return opensReplyTask({ category, needsReply: num(row.needs_reply), phishing: num(row.phishing), bulk: Boolean(row.bulk), clientSource: row.triage?.clientSource });
+  return opensReplyTask({ category, needsReply: num(row.needs_reply), phishing: num(row.phishing), bulk: Boolean(row.bulk), clientSource: row.triage?.clientSource, countOnly: row.triage?.countOnly });
 }
 
 /** Our answer in the thread: a draft, queued or sent reply. */

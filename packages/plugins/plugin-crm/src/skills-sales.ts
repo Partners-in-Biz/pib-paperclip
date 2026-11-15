@@ -18,7 +18,7 @@ The CRM's **Today** tab is the one list a person works through: every contact an
 - **Pipeline checks** (issues titled "Pipeline:"): each lists open deals with no activity for 14 days or more. For each deal: get its client (\`get-company\` / \`get-contact\`), then either
   - revive it: set the next step with a brief (\`set-next-action\` on the contact, kind, inDays, brief) so it lands on the desk, or
   - close it: \`move-deal\` to \`lost\` and \`log-activity\` why.
-- **Weekly pipeline summary** (Mondays, issue titled "Weekly pipeline summary"): use \`list-deals\` and \`pipeline-forecast\`. Comment 5-8 plain lines for the owner: new leads, deals moved, won and lost (with reasons), forecast, and what needs the owner. Link every deal you name. Then mark the issue done.
+- **Weekly pipeline summary** (Mondays, issue titled "Weekly pipeline summary"): use \`list-deals\` and \`pipeline-forecast\`. pipeline-forecast covers the main pipeline; list-stages lists the others; forecast each by name. Comment 5-8 plain lines for the owner: new leads, deals moved, won and lost (with reasons), forecast, and what needs the owner. Link every deal you name. Then mark the issue done.
 - **Hand-offs** (a won deal without a client, an accepted quote without a deal): follow the steps in the issue.
 
 ## Rules

@@ -80,7 +80,7 @@ async function bingCall(fetchImpl: FetchLike, apiKey: string, method: string, bo
       json = null;
     }
     if (!res.ok) {
-      const message = json && typeof json === "object" && typeof (json as { Message?: unknown }).Message === "string" ? (json as { Message: string }).Message : text.slice(0, 200);
+      const message = json && typeof json === "object" && typeof (json as { Message?: unknown }).Message === "string" ? (json as { Message: string }).Message : text.slice(0, 500);
       throw new Error(`Bing Webmaster API ${method} returned HTTP ${res.status}${message ? `: ${message}` : ""}`);
     }
     return json && typeof json === "object" && "d" in (json as object) ? (json as { d: unknown }).d : json;
@@ -125,7 +125,8 @@ export async function bingVerifySite(fetchImpl: FetchLike, apiKey: string, siteU
 }
 
 export async function bingSubmitSitemap(fetchImpl: FetchLike, apiKey: string, siteUrl: string, feedUrl: string): Promise<void> {
-  await bingCall(fetchImpl, apiKey, "SubmitSitemap", { siteUrl, feedUrl });
+  // Bing has no "SubmitSitemap" method (it answers 404); sitemaps go through SubmitFeed.
+  await bingCall(fetchImpl, apiKey, "SubmitFeed", { siteUrl, feedUrl });
 }
 
 export async function bingSubmitUrlBatch(fetchImpl: FetchLike, apiKey: string, siteUrl: string, urlList: string[]): Promise<number> {

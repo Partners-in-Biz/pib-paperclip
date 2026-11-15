@@ -9,7 +9,7 @@
  * for any other company.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { createSkillSyncer, type SkillDeclarationLike, type SkillSyncResult } from "./skills.js";
+import { createSkillSyncGuard, createSkillSyncer, type SkillDeclarationLike, type SkillSyncResult } from "./skills.js";
 
 /** The issue prefix of the instance's own company. Campaigns and Mailbox keep their own copy of this rule for preferences. */
 export const OWN_COMPANY_PREFIX = "PAR";
@@ -25,9 +25,9 @@ export async function isParCompany(ctx: PluginContext, companyId: string): Promi
 }
 
 /**
- * `createSkillSyncer` for skills only PAR may read. `ensure`, `force` and `check`
- * (so also the sweep, `syncAllCompanies`) return [] and touch nothing for any
- * other company, and for a company whose lookup failed. Pass `isEnabled` to
+ * `createSkillSyncer` for skills only PAR may read. `ensure`, `soon`, `force` and
+ * `check` (so also the sweep, `syncAllCompanies`) return [] and touch nothing for
+ * any other company, and for a company whose lookup failed. Pass `isEnabled` to
  * `syncAllCompanies` so the sweep records those companies as skipped.
  */
 export function createPibOnlySkillSyncer(ctx: PluginContext, skills: SkillDeclarationLike[]) {
@@ -37,10 +37,13 @@ export function createPibOnlySkillSyncer(ctx: PluginContext, skills: SkillDeclar
     (run: (companyId: string) => Promise<SkillSyncResult[]>) =>
     async (companyId: string): Promise<SkillSyncResult[]> =>
       (await isParCompany(ctx, companyId)) ? run(companyId) : none();
+  const ensure = gated((id) => inner.ensure(id));
   return {
     skills: inner.skills,
     isEnabled: (companyId: string) => isParCompany(ctx, companyId),
-    ensure: gated((id) => inner.ensure(id)),
+    ensure,
+    /** For tool calls and page loads: the own-company lookup counts toward the wait too (kit `createSkillSyncGuard`). */
+    soon: createSkillSyncGuard(ensure, { logger: ctx.logger }),
     force: gated((id) => inner.force(id)),
     check: gated((id) => inner.check(id)),
   };

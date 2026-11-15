@@ -200,7 +200,7 @@ export async function startPg(): Promise<PgHarness> {
 
   const env: Env = {
     ctx,
-    skills: { ensure: async () => [], force: async () => [] },
+    skills: { ensure: async () => [], soon: async () => undefined, force: async () => [] },
     now: () => clock.now,
     fetchImpl,
   };

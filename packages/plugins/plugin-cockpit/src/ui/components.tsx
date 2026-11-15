@@ -466,6 +466,42 @@ export function WaitingList({ items, linkFor, now, limit, onDismiss }: { items: 
   );
 }
 
+/** Who an item waits on: the agent's name from the view's agents, or "the client". */
+export function waitsOnText(waitsOn: WaitingEntry["waitsOn"], agents: Array<{ id: string; name: string }>): string {
+  if (!waitsOn) return "someone else";
+  if (waitsOn.kind === "client") return "the client";
+  return agents.find((a) => a.id === waitsOn.agentId)?.name ?? "another agent";
+}
+
+/** "3d" / "5h" since an ISO time; empty when unreadable. */
+export function sinceText(since: string | null | undefined, now: Date): string {
+  const t = since ? Date.parse(since) : NaN;
+  if (!Number.isFinite(t)) return "";
+  const hours = Math.max(0, Math.floor((now.getTime() - t) / 3_600_000));
+  return hours < 24 ? `${hours}h` : `${Math.floor(hours / 24)}d`;
+}
+
+/** Collapsed "Waiting on others (N)": items an agent or the client can act on. Renders nothing when there are none. */
+export function WaitingOthers({ items, agents, linkFor, now }: { items: WaitingEntry[]; agents: Array<{ id: string; name: string }>; linkFor: LinkPropsFor; now: Date }) {
+  if (items.length === 0) return null;
+  return (
+    <details style={{ minWidth: 0 }}>
+      <summary style={{ cursor: "pointer", minHeight: 40, display: "flex", alignItems: "center", fontSize: 13, fontWeight: 650, color: tokens.muted }}>Waiting on others ({items.length})</summary>
+      <div style={{ display: "grid", gap: 8, minWidth: 0 }}>
+        {items.map((item) => {
+          const age = sinceText(item.since, now);
+          return (
+            <div key={item.key} style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap", minWidth: 0, fontSize: 13, color: tokens.fg }}>
+              <Anchor href={item.href} linkFor={linkFor} style={{ color: tokens.primary, fontWeight: 600, minWidth: 0, flex: "1 1 220px", overflowWrap: "anywhere" }}>{item.title}</Anchor>
+              <span style={{ color: tokens.muted, minWidth: 0, overflowWrap: "anywhere" }}>waits on {waitsOnText(item.waitsOn, agents)}{age ? ` · ${age}` : ""}</span>
+            </div>
+          );
+        })}
+      </div>
+    </details>
+  );
+}
+
 /** Counts per kind as toned pills (for the Waiting card header); questions from agents first. */
 export function WaitingKinds({ items }: { items: WaitingEntry[] }) {
   const asks = items.filter((item) => item.ask);
@@ -884,7 +920,7 @@ export function HealthList({ groups, linkFor, now, backup, showAll = false }: { 
 // ---------------------------------------------------------------------------
 
 /** The dashboard widget body. */
-export function TodayCard({ waiting, health, today, headline, linkFor }: { waiting: number; health: HealthStatus; today: string; headline: KpiEntry[]; linkFor: LinkPropsFor }) {
+export function TodayCard({ waiting, others = 0, health, today, headline, linkFor }: { waiting: number; others?: number; health: HealthStatus; today: string; headline: KpiEntry[]; linkFor: LinkPropsFor }) {
   const accent = moduleAccent("cockpit");
   const t = tone(health);
   return (
@@ -903,7 +939,7 @@ export function TodayCard({ waiting, health, today, headline, linkFor }: { waiti
         <Light status={health} size={12} />
         <a {...linkFor("/cockpit")} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 13, fontWeight: 600, color: tokens.fg, textDecoration: "none" }}>
           <Inbox size={14} color={waiting ? tone("warn").solid : tokens.muted} aria-hidden="true" />
-          {waiting === 0 ? "Nothing waiting on you" : `${waiting} waiting on you`}
+          {waiting === 0 ? "Nothing waiting on you" : `${waiting} waiting on you`}{others > 0 ? ` · ${others} on others` : ""}
         </a>
       </div>
       <p style={{ margin: 0, fontSize: 12.5, color: tokens.muted, lineHeight: 1.45 }}>{today}</p>

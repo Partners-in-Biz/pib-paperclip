@@ -284,11 +284,18 @@ export class ChatControlRecoveryUnresolvedError extends Error {
   }
 }
 
+// A plugin done-check (close-out checklist gate) reopened the issue the
+// running turn just closed. That turn has finished with the issue, so merging
+// the wake into it loses it (PAR-11130). Plugins send this through
+// `issues.requestWakeup`; the kit's `DONE_CHECK_REOPEN_WAKE_REASON` matches.
+export const ISSUE_REOPENED_BY_GATE_WAKE_REASON = "issue_reopened_by_gate";
+
 const RUNNING_ISSUE_WAKE_REASONS_REQUIRING_FOLLOWUP = new Set([
   CHAT_COMPLETION_WAKE_REASON,
   "approval_approved",
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
   "issue_recovery_action_restored",
+  ISSUE_REOPENED_BY_GATE_WAKE_REASON,
 ]);
 
 

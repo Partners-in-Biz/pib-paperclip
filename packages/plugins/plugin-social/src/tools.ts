@@ -2,6 +2,9 @@ import type { JsonSchema, PluginToolDeclaration } from "@paperclipai/plugin-sdk"
 import { growthToolDeclarations, type GrowthDeclarationOptions } from "@partnersinbiz/pib-plugin-kit";
 import { ALL_PLATFORMS, OVERRIDE_FIELDS, POST_STATUSES } from "./platforms.js";
 
+/** Gateway budget of store-rendered-asset (PAR-10249): above its 20 s Drive ack (asset-path.ts). */
+export const STORE_RENDERED_ASSET_TOOL_TIMEOUT_MS = 25_000;
+
 /** Every param has a short, exact description, and an enum where the values are fixed. */
 const text = (description: string): JsonSchema => ({ type: "string", description });
 const int = (description: string): JsonSchema => ({ type: "integer", description });
@@ -303,6 +306,18 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
     parametersSchema: schema(["postId", "reason"], { postId: POST_ID, reason: text("Why the post is taken off the schedule") }),
   },
   {
+    name: "archive-post",
+    displayName: "Archive post",
+    description: "Soft-delete a post: it leaves the Cockpit lists and queues and its media is free to reuse. Reversible with unarchive-post. Accepts the full id or the 8-character short id. Archiving twice does nothing. A scheduled post must be unscheduled first; a published post is refused.",
+    parametersSchema: schema(["postId"], { postId: POST_ID }),
+  },
+  {
+    name: "unarchive-post",
+    displayName: "Unarchive post",
+    description: "Bring an archived post back to the lists, in the status it had. Accepts the full id or the 8-character short id. Does nothing if the post is not archived.",
+    parametersSchema: schema(["postId"], { postId: POST_ID }),
+  },
+  {
     name: "bulk-schedule",
     displayName: "Bulk schedule posts",
     description: "Schedule several approved posts at the same time. Returns one result per post.",
@@ -370,6 +385,8 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
       postId: text("Post to add the asset to (optional)"),
       ...scope,
     }),
+    // The gateway cuts a tool at 10 s unless it declares more; the Drive ack inside is 20 s (asset-path.ts).
+    timeoutMs: STORE_RENDERED_ASSET_TOOL_TIMEOUT_MS,
   },
   {
     name: "list-issue-attachments",

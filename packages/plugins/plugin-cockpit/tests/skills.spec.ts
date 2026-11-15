@@ -340,7 +340,7 @@ describe("the Operator's references (Wave 3)", () => {
   });
 
   it("the daily loop and the retro list the steps the routines list, in the same order", () => {
-    for (const text of ["1. **Read.**", "2. **Health first.**", "3. **Check the team", "4. **Route unassigned work.**", "5. **Unblock agents.**", "6. **Stuck in the flows.**", "7. **Check what waits on the owner.**", "8. **Plan today.**", "9. **Improvements and reviews.**", "10. **Post the brief**", "11. Close the routine issue"]) expect(OPERATOR_SKILL_BODY, text).toContain(text);
+    for (const text of ["1. **Read.**", "2. **Health first.**", "3. **Check the team", "4. **Route unassigned work.**", "5. **Unblock agents.**", "6. **Stuck in the flows.**", "7. **Check what waits on the owner.**", "8. **Plan today.**", "9. **Improvements and reviews.**", "10. **Write the morning paper**", "11. Close the routine issue"]) expect(OPERATOR_SKILL_BODY, text).toContain(text);
     expect(DAILY_ROUTINE_DESCRIPTION).toContain("9. Look at `improvements`");
     expect(DAILY_ROUTINE_DESCRIPTION).toContain("11. Close this issue");
     for (const text of ["1. ", "2. ", "3. ", "4. ", "5. ", "6. Carry out the proposals that do not need the owner"]) expect(OPERATOR_SKILL_BODY, text).toContain(text);

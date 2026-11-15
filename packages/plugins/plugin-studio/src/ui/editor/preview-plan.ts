@@ -10,15 +10,24 @@
  * the clip's own start). A transition with no overlapping clip before it previews as a fade from black, as before.
  * Looks and colour adjust (PAR-10159): `previewGrade` turns a clip's look and adjust into an SVG filter on its video,
  * from the same `looks.ts` primitives the render's ffmpeg filters come from (see there for the formulas).
+ * Overlay layers (PAR-10166, slice 3): clips on `overlay` tracks show over the base in track order (later track on top),
+ * each with its blend mode (CSS `mix-blend-mode`, `layer.ts` `BLEND_CSS`) and frame (`layerFrame`: rounded corners and a
+ * border inside the edge, the geometry of the render's `frameStill`).
  */
-import type { EditDoc, Keyframes, MediaClip, TextClip, TransitionType } from "../../video-edit/timeline.js";
+import type { ChromaKey, EditDoc, Effect, Frame, Keyframes, MediaClip, StickerClip, TextClip, TransitionType } from "../../video-edit/timeline.js";
 import { valueAt } from "../../video-edit/keyframes.js";
+import { effectFrame, type EffectFrame } from "../../video-edit/effects.js";
 import { toSvgPrimitives, vignetteStops, type Adjust, type LookRef, type SvgPrimitive } from "../../video-edit/looks.js";
+import { BLEND_CSS, cornerRadiusPx, type LayerBlend } from "../../video-edit/layer.js";
+import type { StickerRef } from "../../video-edit/sticker-packs.js";
 import { clipLength } from "./player-clips.js";
 
 export interface PreviewSegment {
   clipId: string;
+  /** The library asset; "" for a bundled sticker (it has none: its file is read through `sticker`). */
   assetId: string;
+  /** The bundled sticker this overlay shows (schema v5), else null. */
+  sticker: StickerRef | null;
   /** Timeline start and end, in seconds. */
   start: number;
   end: number;
@@ -39,10 +48,22 @@ export interface PreviewSegment {
   /** Schema v3 grade: the clip's look and its non-neutral adjust fields (null when absent). */
   look: LookRef | null;
   adjust: Partial<Adjust> | null;
+  /** Schema v4 overlay clip fields (null on the main track and when unset). */
+  blendMode: LayerBlend | null;
+  frame: Frame | null;
+  /** Schema v4 overlay chroma key (D3d2, drawn by `ChromaLayer`). */
+  chromaKey: ChromaKey | null;
+  /** Schema v5 clip effects (empty when none) and whether the clip sits on a video track (shake cover) or an overlay. */
+  effects: Effect[];
+  mainTrack: boolean;
 }
 
 export interface PreviewPlan {
   segments: PreviewSegment[];
+  /** Overlay-track clips, lowest track first (paint order); they never set `end` or take part in `frameAt`. */
+  overlays: PreviewSegment[];
+  /** The project frame in render px (the effects' sizes are in render px). */
+  project: { width: number; height: number };
   /** End of the last segment: the length of the preview. */
   end: number;
 }
@@ -66,6 +87,8 @@ export interface PreviewLayer extends LayerLook {
   alpha: number;
   /** 0..1 element volume. */
   volume: number;
+  /** The clip's effects at this time (`effects.ts`, render px), null without effects. */
+  fx: EffectFrame | null;
 }
 
 export interface PreviewFrame {
@@ -95,19 +118,21 @@ const NONE: Keyframes = {};
 
 export function buildPreviewPlan(doc: EditDoc | null): PreviewPlan {
   const segments: PreviewSegment[] = [];
+  const overlays: PreviewSegment[] = [];
   const main = doc?.tracks.find((t) => t.kind === "video");
   for (const track of doc?.tracks ?? []) {
-    if (track.kind !== "video") continue;
+    if (track.kind !== "video" && track.kind !== "overlay") continue;
     let prev: { id: string; end: number } | null = null;
-    for (const c of [...(track.clips as MediaClip[])].sort((a, b) => a.start - b.start)) {
+    for (const c of [...(track.clips as Array<MediaClip | StickerClip>)].sort((a, b) => a.start - b.start)) {
       const length = clipLength(c);
       if (length <= 0) continue;
       const tr = c.transitionIn;
       // An xfade needs the clip before it on the main track to overlap its start (plan Q1).
       const xfade = !!tr && track === main && !!prev && prev.end > c.start + EPS;
-      segments.push({
+      (track.kind === "overlay" ? overlays : segments).push({
         clipId: c.id,
-        assetId: c.assetId,
+        assetId: "assetId" in c ? c.assetId : "",
+        sticker: "sticker" in c ? c.sticker : null,
         start: c.start,
         end: c.start + length,
         in: c.in,
@@ -123,12 +148,17 @@ export function buildPreviewPlan(doc: EditDoc | null): PreviewPlan {
         keyframes: c.keyframes ?? NONE,
         look: c.look ?? null,
         adjust: c.adjust ?? null,
+        blendMode: track.kind === "overlay" ? c.blendMode ?? null : null,
+        frame: track.kind === "overlay" ? c.frame ?? null : null,
+        chromaKey: track.kind === "overlay" ? c.chromaKey ?? null : null,
+        effects: c.effects ?? [],
+        mainTrack: track.kind === "video",
       });
       prev = { id: c.id, end: c.start + length };
     }
   }
   segments.sort((a, b) => a.start - b.start);
-  return { segments, end: segments.reduce((end, s) => Math.max(end, s.end), 0) };
+  return { segments, overlays, project: { width: doc?.project.width ?? 0, height: doc?.project.height ?? 0 }, end: segments.reduce((end, s) => Math.max(end, s.end), 0) };
 }
 
 const clamp01 = (n: number) => Math.min(1, Math.max(0, n));
@@ -210,7 +240,7 @@ export function transitionMix(type: TransitionType, p: number): TransitionMix {
   }
 }
 
-function layerAt(s: PreviewSegment, t: number, l: LayerLook, gain: number): PreviewLayer {
+function layerAt(s: PreviewSegment, t: number, l: LayerLook, gain: number, project: { width: number; height: number }): PreviewLayer {
   const k = s.keyframes;
   const lt = t - s.start;
   const fade = fadeAt(s, t);
@@ -224,12 +254,19 @@ function layerAt(s: PreviewSegment, t: number, l: LayerLook, gain: number): Prev
     rotate: valueAt(k.rotate, lt, s.transform.rotate),
     alpha: clamp01(valueAt(k.opacity, lt, 1) * fade),
     volume: clamp01(valueAt(k.volume, lt, s.volume) * fade * gain),
+    fx: s.effects.length ? effectFrame(s.effects, lt, project, s.mainTrack) : null,
   };
 }
 
-/** CSS transform placing a layer's clip in the frame like the render does: centre offset, then scale, then rotation. */
-export function clipTransform(l: Pick<PreviewLayer, "x" | "y" | "scale" | "rotate">, project: { width: number; height: number }): string {
-  return `translate(${pct(l.x / project.width)}, ${pct(l.y / project.height)}) scale(${r4(l.scale)}) rotate(${r4(l.rotate)}deg)`;
+/**
+ * CSS transform placing a layer's clip in the frame like the render does: centre offset, then scale, then rotation.
+ * With effects (`fx`, render px; `display` = CSS px per render px) the shake moves the whole clip first and the zoom
+ * punch multiplies its scale, about the clip's centre.
+ */
+export function clipTransform(l: Pick<PreviewLayer, "x" | "y" | "scale" | "rotate"> & { fx?: EffectFrame | null }, project: { width: number; height: number }, display = 1): string {
+  const fx = l.fx;
+  const shake = fx && (fx.dx || fx.dy) ? `translate(${r4(fx.dx * display)}px, ${r4(fx.dy * display)}px) ` : "";
+  return `${shake}translate(${pct(l.x / project.width)}, ${pct(l.y / project.height)}) scale(${r4(l.scale * (fx?.scale ?? 1))}) rotate(${r4(l.rotate)}deg)`;
 }
 
 /**
@@ -352,13 +389,50 @@ export function frameAt(plan: PreviewPlan, t: number): PreviewFrame {
   if (from && segment.transition) {
     const p = clamp01((t - segment.start) / segment.transitionDuration);
     const mix = transitionMix(segment.transition, p);
-    const outgoing = layerAt(from, t, mix.out, 1 - p);
-    const incoming = layerAt(segment, t, mix.in, p);
+    const outgoing = layerAt(from, t, mix.out, 1 - p, plan.project);
+    const incoming = layerAt(segment, t, mix.in, p, plan.project);
     layers = mix.inOnTop ? [outgoing, incoming] : [incoming, outgoing];
     matte = mix.matte;
   } else {
-    layers = [layerAt(segment, t, look(), 1)];
+    layers = [layerAt(segment, t, look(), 1, plan.project)];
   }
   const top = layers.find((l) => l.segment === segment)!;
   return { kind: "clip", segment, sourceTime: top.sourceTime, opacity: top.alpha, volume: top.volume, next, layers, matte };
+}
+
+/** The overlay-track layers showing at t, in paint order (lowest track first). Each carries its keyframed placement. */
+export function overlaysAt(plan: PreviewPlan, t: number): PreviewLayer[] {
+  return plan.overlays.filter((s) => s.start <= t + EPS && t < s.end - EPS).map((s) => layerAt(s, t, look(), 1, plan.project));
+}
+
+/** The CSS `mix-blend-mode` of an overlay segment (`addition` is `plus-lighter`), or null for a normal blend. */
+export const blendCss = (s: Pick<PreviewSegment, "blendMode">): string | null => (s.blendMode ? BLEND_CSS[s.blendMode] : null);
+
+/** An overlay's frame as CSS, in the element's px: the picture box, its corner radius, and the border drawn inside the edge. */
+export interface PreviewFrameBox {
+  region: Box;
+  radius: number;
+  borderWidth: number;
+  borderColor: string;
+}
+
+/**
+ * The frame of an overlay segment on its picture (`region`, the `object-fit: contain` box in an element of `box` CSS px).
+ * Same geometry as the render's `frameStill`: radius is `cornerRadius` % of the picture's short side; the border is
+ * `borderWidth` render px wide inside the outline. The render draws a static-scale frame at its final size, so its border
+ * keeps its width whatever the scale; with scale keys the frame scales with the clip. The layer's transform scales the CSS
+ * box, so a static scale divides out of the border width here, and `box.width / project.width` turns render px into CSS px.
+ * `null` when the segment has no visible frame.
+ */
+export function layerFrame(s: Pick<PreviewSegment, "frame" | "keyframes">, scale: number, region: Box, box: { width: number }, project: { width: number }): PreviewFrameBox | null {
+  const f = s.frame;
+  if (!f || (f.cornerRadius <= 0 && f.borderWidth <= 0)) return null;
+  const px = box.width / project.width;
+  const keyed = !!s.keyframes.scale;
+  return {
+    region,
+    radius: r4(cornerRadiusPx(f, region.width, region.height)),
+    borderWidth: r4((f.borderWidth * px) / (keyed ? 1 : Math.max(scale, 0.01))),
+    borderColor: f.borderColor,
+  };
 }

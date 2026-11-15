@@ -6,7 +6,7 @@
  * SEO's own get-playbook, propose-playbook-change, decide-playbook-change
  * remain on SEO's playbook tables (013) and continue to work on sprint playbooks.
  */
-import type { PluginContext, ToolRunContext } from "@paperclipai/plugin-sdk";
+import type { PluginContext, ToolResult, ToolRunContext } from "@paperclipai/plugin-sdk";
 import {
   AUTOPILOT_MODES,
   createGrowthStore,
@@ -21,6 +21,8 @@ import {
   resolveCrmClient,
   reviewerAgentId,
   starterPlaybook,
+  registerGrowthTools,
+  GROWTH_TOOL_NAMES,
   clientScopeFromInput,
   formatClientParam,
   OPEN_EXPERIMENTS,
@@ -63,7 +65,7 @@ export interface SeoGrowthEnv {
 }
 
 export function seoGrowthStore(ctx: PluginContext): GrowthStore {
-  return createGrowthStore({
+  const store = createGrowthStore({
     db: ctx.db,
     table: (name) => t(name),
     subjectKind: SUBJECT_KIND,
@@ -73,6 +75,8 @@ export function seoGrowthStore(ctx: PluginContext): GrowthStore {
       autopilot: AUTOPILOT_MODES.includes(p.autopilot as Autopilot) ? p.autopilot : "safe",
     }),
   }) as GrowthStore;
+  // SEO has no tagged posts. The kit's reject path untags posts and calls these unguarded, so reject threw without them.
+  return Object.assign(store, { experimentPosts: async () => [], setPostExperiment: async () => false }) as GrowthStore;
 }
 
 /** `client` / `clientKind`+`clientRef` to a CRM-checked scope. A client the CRM does not know is refused before any read or write. */
@@ -312,6 +316,9 @@ export function seoGrowthEnv(ctx: PluginContext, companyId: string, store: Growt
           `The SEO agent's weekly review for **${label(program)}** has items for you. Experiments change one thing at a time on real pages; playbook changes edit the rules the agent follows when it optimises pages.`,
           "",
           ...lines,
+          program.clientRef
+            ? `Approve or reject each experiment on the SEO page: open any SEO sprint for ${label(program)}, Growth tab.`
+            : "Approve or reject each experiment on the SEO page: open any of our own SEO sprints (not linked to a client), Growth tab.",
           `Autopilot: **${program.autopilot}** (off: agents only read; safe: a person approves; reviewed: the Reviewer decides what stays internal; full: the agent approves and wins are kept automatically).`,
         ].join("\n"),
         priority: "medium",
@@ -340,4 +347,32 @@ export function seoGrowthToolsHost(ctx: PluginContext): GrowthToolsHost<GrowthAc
     },
     handlers: seoGrowthHandlers((companyId) => seoGrowthEnv(ctx, companyId)),
   } as unknown as GrowthToolsHost<GrowthActor>;
+}
+
+/** Kit Growth tools SEO serves natively: the kit host has no handlers for them, so registering them over the native ones fails with "host.handlers[name] is not a function". */
+const NATIVE_PLAYBOOK_TOOLS = new Set(["get-playbook", "propose-playbook-change", "decide-playbook-change"]);
+export const KIT_GROWTH_TOOL_NAMES = new Set((GROWTH_TOOL_NAMES as readonly string[]).filter((n) => !NATIVE_PLAYBOOK_TOOLS.has(n)));
+
+/** Registers the kit Growth tools except the native playbook ones (registration order must not let the kit shadow them). */
+export function registerKitGrowthTools(ctx: PluginContext): void {
+  const tools = new Proxy(ctx.tools, {
+    get: (target, prop, receiver) =>
+      prop === "register"
+        ? (name: string, ...rest: unknown[]) => (NATIVE_PLAYBOOK_TOOLS.has(name) ? undefined : (target.register as (...a: unknown[]) => unknown)(name, ...rest))
+        : Reflect.get(target, prop, receiver),
+  });
+  registerGrowthTools({ ...ctx, tools } as typeof ctx, seoGrowthToolsHost(ctx));
+}
+
+/** Registers every SEO tool the kit does not serve (incl. the three native playbook tools), then the kit Growth tools. */
+export function registerSeoTools(
+  ctx: PluginContext,
+  tools: ReadonlyArray<{ name: string }>,
+  run: (name: string, params: unknown, runCtx: ToolRunContext) => Promise<ToolResult>,
+): void {
+  for (const tool of tools) {
+    if (KIT_GROWTH_TOOL_NAMES.has(tool.name)) continue;
+    (ctx.tools.register as (...a: unknown[]) => unknown)(tool.name, tool, (params: unknown, runCtx: ToolRunContext) => run(tool.name, params, runCtx));
+  }
+  registerKitGrowthTools(ctx);
 }

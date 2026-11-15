@@ -19,7 +19,7 @@ interface StoredFailure {
 }
 
 /** Internal state key for routine failures tracking. */
-function routineFailureStateKey(companyId: string) {
+export function routineFailureStateKey(companyId: string) {
   return {
     scopeKind: "company" as const,
     scopeId: companyId,
@@ -156,7 +156,7 @@ export async function routineFailureTick(env: Env, companyId: string): Promise<R
   if (current.size > 0) {
     await env.ctx.state.set(stateKey, Object.fromEntries(current));
   } else {
-    await env.ctx.state.set(stateKey, null);
+    await env.ctx.state.delete(stateKey);
   }
 
   return counts;
