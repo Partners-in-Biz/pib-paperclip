@@ -1333,6 +1333,9 @@ export async function insertMetrics(ctx: PluginContext, input: {
   raw?: Record<string, unknown>;
 }): Promise<MetricsInsertOutcome> {
   // ctx.db.execute has no RETURNING, so a pre-read tells "inserted" from "filled" (informational only).
+  // A fill keeps the first raw but takes the newest per-call insights detail, so a recollect shows what Graph said now.
+  // When the newest reply carries insights, its insights/viewsSource/viewsUnavailable replace the old set as a whole
+  // (a key that is now null or absent is dropped, so no stale viewsSource sits next to newer calls).
   let existed = false;
   if (input.destinationId && input.window) {
     const found = await ctx.db.query<{ id: string }>(
@@ -1352,7 +1355,10 @@ export async function insertMetrics(ctx: PluginContext, input: {
        clicks = COALESCE(post_metrics.clicks, EXCLUDED.clicks),
        saves = COALESCE(post_metrics.saves, EXCLUDED.saves),
        views = CASE WHEN post_metrics.views = 0 THEN EXCLUDED.views ELSE post_metrics.views END,
-       raw = post_metrics.raw || jsonb_build_object('filledAt', now())
+       raw = (CASE WHEN EXCLUDED.raw ? 'insights' THEN post_metrics.raw - 'insights' - 'viewsSource' - 'viewsUnavailable' ELSE post_metrics.raw END)
+         || jsonb_build_object('filledAt', now())
+         || (SELECT COALESCE(jsonb_object_agg(e.key, e.value), '{}'::jsonb) FROM jsonb_each(EXCLUDED.raw) e
+              WHERE e.key IN ('insights', 'viewsSource', 'viewsUnavailable') AND e.value <> 'null'::jsonb)
      WHERE post_metrics.impressions IS NULL OR post_metrics.reach IS NULL OR post_metrics.clicks IS NULL OR post_metrics.saves IS NULL`,
     [
       randomUUID(), input.companyId, input.postId, input.destinationId ?? null, input.accountId ?? null, input.platform ?? null,
@@ -1369,9 +1375,11 @@ export type MetricsInsertOutcome = "inserted" | "filled" | "unchanged";
 export interface MetricsErrorRecord {
   at: string;
   window: string;
-  kind: "provider" | "insights" | "unsupported";
+  kind: "provider" | "insights" | "unsupported" | "unavailable";
   status?: number;
   message: string;
+  /** Per-call insights results (label, path, status, Graph code, metric names returned) so no failure is hidden. */
+  calls?: unknown[];
 }
 
 /** Atomic jsonb merge: never read-modify-write `result` (publish.ts keeps firstCommentId/firstCommentError there). */

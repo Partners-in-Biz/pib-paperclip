@@ -1453,6 +1453,34 @@ function latestPerDestination(rows: MetricsRow[]): MetricsRow[] {
   return [...latest.values()];
 }
 
+export interface PostAnalyticsDestination {
+  destinationId: string | null;
+  accountId: string | null;
+  status: string;
+  metricWindows: string[];
+  metricsError: unknown;
+  measurable: boolean;
+  unmeasuredReason: string | null;
+  replyToUrl?: string | null;
+  quoteUrl?: string | null;
+}
+
+/**
+ * The post-analytics entry for a published post with no destination record at all. `reply_to_url` / `quote_url` is the
+ * X post it answered or quoted, not the link to what was posted, so it is reported but never measured.
+ */
+export function missingDestinationEntry(post: Pick<PostRow, "reply_to_url" | "quote_url">): PostAnalyticsDestination {
+  const text = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : null);
+  const replyToUrl = text(post.reply_to_url);
+  const quoteUrl = text(post.quote_url);
+  const answered = replyToUrl ? `; it replied to ${replyToUrl}` : quoteUrl ? `; it quoted ${quoteUrl}` : "";
+  return {
+    destinationId: null, accountId: null, status: "published", metricWindows: [], metricsError: null,
+    measurable: false, unmeasuredReason: `no destination record (no link stored; marked posted by hand or its account was deleted before 0.11.3${answered})`,
+    replyToUrl, quoteUrl,
+  };
+}
+
 export async function postAnalyticsRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
   const postId = optionalString(params, "postId");
   if (postId) {
@@ -1469,14 +1497,20 @@ export async function postAnalyticsRecord(ctx: PluginContext, viewer: Viewer, pa
       if (!isSocialPlatform(account.platform) || !providerFor(account.platform).metrics) return "platform has no metrics";
       return null;
     };
+    const destinations: PostAnalyticsDestination[] = dests.map((d) => {
+      const result = d.result && typeof d.result === "object" && !Array.isArray(d.result) ? (d.result as Record<string, unknown>) : {};
+      const reason = unmeasuredReason(d);
+      return { destinationId: d.id, accountId: d.account_id, status: d.status, metricWindows: d.metric_windows ?? [], metricsError: result.metricsError ?? null, measurable: reason === null, unmeasuredReason: reason };
+    });
+    // A published post with no destination row (legacy: before 0.11.3 deleting an account also deleted its published
+    // destinations) is never a bare empty list: say that it cannot be measured and which link, if any, is stored.
+    if (destinations.length === 0 && (post.status === "published" || post.status === "partially_published" || post.published_at != null)) {
+      destinations.push(missingDestinationEntry(post));
+    }
     return {
       postId: post.id,
       ...aggregateMetrics(latest.map(metricNumbers)),
-      destinations: dests.map((d) => {
-        const result = d.result && typeof d.result === "object" && !Array.isArray(d.result) ? (d.result as Record<string, unknown>) : {};
-        const reason = unmeasuredReason(d);
-        return { destinationId: d.id, accountId: d.account_id, status: d.status, metricWindows: d.metric_windows ?? [], metricsError: result.metricsError ?? null, measurable: reason === null, unmeasuredReason: reason };
-      }),
+      destinations,
       snapshots: rows.map((r) => ({ window: r.metric_window, platform: r.platform, destinationId: r.destination_id, recordedAt: iso(r.recorded_at), ...metricNumbers(r), impressions: r.impressions == null ? null : Number(r.impressions), reach: r.reach == null ? null : Number(r.reach), saves: r.saves == null ? null : Number(r.saves), clicks: r.clicks == null ? null : Number(r.clicks) })),
     };
   }
