@@ -39,6 +39,13 @@ export interface FakeOptions {
   stateReadThrows?: boolean;
   /** `ctx.companies.list` refuses (another call in flight). */
   companyListThrows?: boolean;
+  /**
+   * `ctx.companies.list({ actionableOnly: true })` as a host answers it: "old" ignores the param (every company, the default),
+   * "new" returns only the companies not in `deniedCompanies` (the ones with saved settings).
+   */
+  actionableHost?: "old" | "new";
+  /** The fake runs inside an invocation for this company: `companies.list` returns only it, configured or not. */
+  invocationCompany?: string;
   /** `ctx.authorization` refuses. */
   grantsThrow?: boolean;
   /** Issue ids that have blockers (`ctx.issues.relations.get`), or `"throws"` for a plugin without `issue.relations.read`. */
@@ -68,7 +75,10 @@ export function fakeCtx(options: FakeOptions = {}) {
   const seedComments = options.issueComments ?? {};
   let counter = 0;
 
+  /** Every host call that named a company, refused or not: `<method>:<companyId>`. */
+  const hostCalls: string[] = [];
   const guard = (companyId: string | undefined, method: string) => {
+    if (companyId) hostCalls.push(`${method}:${companyId}`);
     if (companyId && denied.has(companyId)) throw new Error(`Plugin "x" is not allowed to perform "${method}": company context is required`);
   };
 
@@ -78,6 +88,7 @@ export function fakeCtx(options: FakeOptions = {}) {
     config: {
       get: async (companyId?: string) => {
         if (!companyId) throw new Error("companyId is required");
+        hostCalls.push(`config.get:${companyId}`);
         if (denied.has(companyId)) throw new Error(`Plugin "x" is not allowed to perform "config.get": company context is required`);
         return (options.config?.[companyId] ?? {}) as Record<string, unknown>;
       },
@@ -108,9 +119,11 @@ export function fakeCtx(options: FakeOptions = {}) {
         const company = options.companies?.[companyId];
         return company ? { id: companyId, name: "Test Co", issuePrefix: "TST", defaultResponsibleUserId: null, ...company } : null;
       },
-      list: async () => {
+      list: async (input?: { actionableOnly?: boolean }) => {
         if (options.companyListThrows) throw new Error('Plugin "x" is not allowed to perform "companies.list": the worker referenced a missing, expired, or unknown invocation scope');
-        return Object.keys(options.companies ?? {}).map((id) => ({ id, name: options.companies![id]!.name ?? "Test Co" }));
+        if (options.invocationCompany) return [{ id: options.invocationCompany, name: "Test Co" }];
+        const only = input?.actionableOnly && options.actionableHost === "new";
+        return Object.keys(options.companies ?? {}).filter((id) => !only || !denied.has(id)).map((id) => ({ id, name: options.companies![id]!.name ?? "Test Co" }));
       },
     },
     agents: {
@@ -210,7 +223,7 @@ export function fakeCtx(options: FakeOptions = {}) {
     for (const fn of handlers.get(name) ?? []) await fn({ eventType: name, companyId, payload, occurredAt: new Date().toISOString() } as unknown as PluginEvent);
   };
 
-  return { ctx, state, handlers, emitted, issues, updates, comments, wakeups, jobs, resets, deliver, denied, grantStore, grantWrites };
+  return { ctx, state, handlers, emitted, issues, updates, comments, wakeups, jobs, resets, hostCalls, deliver, denied, grantStore, grantWrites };
 }
 
 /** A roles copy as the Cockpit broadcasts it. */

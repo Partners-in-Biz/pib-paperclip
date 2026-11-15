@@ -3,7 +3,7 @@
  * clocks, fetchers), actors, errors, parameter parsing and per-company info.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { createPibOnlySkillSyncer, createSkillSyncer, normalizeUrl, safeFetch } from "@partnersinbiz/pib-plugin-kit";
+import { createPibOnlySkillSyncer, createSkillSyncGuard, createSkillSyncer, normalizeUrl, safeFetch } from "@partnersinbiz/pib-plugin-kit";
 import { isBareSitePath, type SiteFetcher } from "../checks/site.js";
 import { loadSeoConfig, type LoadedConfig } from "../config.js";
 import { sprintPagePath, sprintScope, type SprintClientFields } from "../engine/scope.js";
@@ -62,9 +62,12 @@ export interface Env {
 export function createSkillSyncers(ctx: PluginContext): Env["skills"] {
   const shared = createSkillSyncer(ctx, SKILLS);
   const own = createPibOnlySkillSyncer(ctx, PIB_ONLY_SKILL_DECLARATIONS);
+  const ensure = async (id: string) => [...(await shared.ensure(id)), ...(await own.ensure(id))];
   return {
     ...shared,
-    ensure: async (id) => [...(await shared.ensure(id)), ...(await own.ensure(id))],
+    ensure,
+    // Both syncers behind one guard: never throws, and a failed sync is left alone for 5 minutes (kit `createSkillSyncGuard`).
+    soon: createSkillSyncGuard(ensure, { logger: ctx.logger }),
     force: async (id) => [...(await shared.force(id)), ...(await own.force(id))],
     check: async (id) => [...(await shared.check(id)), ...(await own.check(id))],
   };

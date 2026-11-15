@@ -79,6 +79,8 @@ const base = { sprintId: "sp-1", taskId: "t-1", pageUrl: "/", h1: "New heading" 
 describe("create-preview", () => {
   it("refuses a body that would wipe most of the live page", async () => {
     await expect(createPreview(host().env, "co-1", seo, { ...base, bodyHtml: "<p>short intro</p>", bodyMode: "replace" })).rejects.toThrow(/keep only \d+% of the live page/);
+    // The kept-text message names every add mode, including afterFirstParagraph.
+    await expect(createPreview(host().env, "co-1", seo, { ...base, bodyHtml: "<p>short intro</p>", bodyMode: "replace" })).rejects.toThrow(/"before", "after" or "afterFirstParagraph"/);
   });
 
   it("adds copy by default, holds the preview and opens a review issue for the owner or Reviewer", async () => {

@@ -26,6 +26,8 @@ export interface EnsureResult {
   folder: RegistryFolder;
   created: boolean;
   tree: Array<{ path: string; folderId: string; created: boolean }>;
+  /** Stage timing of this ensure (PAR-10249): the wait for the per-folder lock, the Drive lookups made and the untagged sub-folders adopted. */
+  stats?: { lockWaitMs: number; driveLookups: number; adoptedUntagged: number };
 }
 
 export interface UploadResult {
@@ -79,9 +81,12 @@ export interface IdentityResult {
 /** What the CRM needs from Drive. The implementation is `google-broker.ts` (Google Drive v3, service account). */
 export interface Broker {
   resolve(type: DriveEntityType, id: string): Promise<RegistryFolder | null>;
+  /** One query for the sub-folder at `subPath` below an entity folder; null when it is not there, trashed or not chained under that folder (PAR-10250). */
+  findSubfolder?(type: DriveEntityType, id: string, subPath: string, folderId?: string): Promise<{ folder_id: string } | null>;
   ensure(body: EnsureBody): Promise<EnsureResult>;
   identity(sharedDriveId?: string): Promise<IdentityResult>;
-  uploadFile(input: { name: string; bytes: Uint8Array; mimeType: string; parentFolderId?: string }): Promise<UploadResult>;
+  /** `timing`, when given, is filled with the ms of the same-name list and of the POST (PAR-11350). */
+  uploadFile(input: { name: string; bytes: Uint8Array; mimeType: string; parentFolderId?: string; timing?: { listMs?: number; postMs?: number } }): Promise<UploadResult>;
   /**
    * A large file (PAR-8125), streamed: a Google resumable upload fed one chunk at a time. `sha256` is the producer's;
    * the bytes are hashed on the way and the upload is cancelled before its last chunk when they differ.
@@ -91,6 +96,12 @@ export interface Broker {
   listFiles?(parentFolderId: string): Promise<DriveFileInfo[]>;
   /** null when the file is missing, trashed, or not on this company's Shared Drive. */
   fileMeta?(fileId: string): Promise<DriveFileInfo | null>;
+  /**
+   * Move one file to the Drive trash (PAR-11108): PATCH `trashed: true`, recoverable for 30 days, never a delete.
+   * `not_found` covers a missing file and one outside this company's Shared Drive; `is_folder` a folder without `allowFolder`.
+   * A file that is already in the trash answers `trashed` with `alreadyTrashed: true`.
+   */
+  trashFile?(fileId: string, opts?: { allowFolder?: boolean }): Promise<TrashResult>;
   downloadFile?(fileId: string, maxBytes: number): Promise<Uint8Array>;
   /** A large file's bytes as a stream (PAR-8125), for a copy into R2. Nothing is buffered. `size` is Drive's Content-Length when sent. */
   downloadStream?(fileId: string): Promise<{ body: ReadableStream<Uint8Array>; size: number | null }>;
@@ -100,6 +111,10 @@ export interface Broker {
    */
   thumbnail?(fileId: string, px: number, maxBytes: number, allowed: (parents: string[]) => boolean): Promise<DriveThumbnail | null>;
 }
+
+export type TrashResult =
+  | { status: "trashed"; id: string; name: string; mimeType: string; alreadyTrashed?: boolean }
+  | { status: "not_found" | "is_folder" };
 
 /** A Drive file as the read routes see it: no link, no owner. */
 export interface DriveFileInfo {

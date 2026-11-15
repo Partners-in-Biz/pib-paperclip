@@ -166,7 +166,7 @@ function Field({ label, value, empty = "Not changed" }: { label: string; value: 
   );
 }
 
-const BODY_MODE_LABEL: Record<string, string> = { before: "Added above the existing content", after: "Added below the existing content", replace: "Replaces the whole content area" };
+const BODY_MODE_LABEL: Record<string, string> = { before: "Added above the existing content", after: "Added below the existing content", replace: "Replaces the whole content area", afterFirstParagraph: "Added after the first paragraph" };
 
 /** One preview in full: the links (built by the server), the proposed copy, the evidence and the same decision buttons. No live fetch. */
 function PreviewDrawer({ p, onClose, error, ...actions }: ActionProps & { error?: string; onClose: () => void }) {

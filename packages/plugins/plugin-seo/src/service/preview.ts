@@ -28,6 +28,7 @@ import { exportToDrive, sprintDriveTarget } from "./drive-export.js";
 export const PREVIEW_DAYS = 30;
 const MAX_HTML = 1_500_000;
 export { PREVIEW_BASE, previewLink, previewSlug } from "./preview-links.js";
+import { assertInsertArea, assertWpBodyApplicable, needsWpBodyCheck, wpPostContent } from "./wp-body.js";
 import { PREVIEW_RENDER_URL, previewLink, previewSlug } from "./preview-links.js";
 
 function hostOf(url: string): string {
@@ -165,7 +166,7 @@ export async function createPreview(env: Env, companyId: string, actor: Actor, p
     metaDescription: str(params, "metaDescription", { max: 500 }),
     h1: str(params, "h1", { max: 300 }),
     bodyHtml: str(params, "bodyHtml", { max: 200_000 }),
-    bodyMode: oneOf(params, "bodyMode", ["before", "after", "replace"] as const) as BodyMode | undefined,
+    bodyMode: oneOf(params, "bodyMode", ["before", "after", "replace", "afterFirstParagraph"] as const) as BodyMode | undefined,
     css: str(params, "css", { max: 80_000 }),
     contentSelector: str(params, "contentSelector", { max: 100 }),
   };
@@ -371,11 +372,18 @@ async function freshPreview(env: Env, actor: Actor, req: PreviewRequestContext):
   const token = randomBytes(24).toString("base64url");
   const sourceUrl = res.url || pageUrl;
   // Build from the page as a visitor sees it (scripts ran) when the preview service can render it; else from the source.
+  // The WordPress body check (PAR-10302) runs beside the render; wpPostContent never throws.
+  const wpBody = needsWpBodyCheck(changes) ? wpPostContent(env, res.text, sourceUrl) : null;
   const render = await renderedLive(env, sourceUrl, res.text, changes.contentSelector, startedAt);
+  const wp = wpBody ? await wpBody : ({ kind: "none" } as const);
+  assertWpBodyApplicable(wp, changes);
   const liveHtml = withoutNul("html" in render ? render.html : res.text);
+  const areaNote = assertInsertArea(wp, liveHtml, changes);
   const built = buildPreviewHtml(liveHtml, sourceUrl, withoutNul(changes), { token, clientName: sprint.clientName });
   if (built.applied.length === 0) throw new SeoError(`None of the changes could be placed on the page. ${built.notes.join(" ")}`.trim());
   built.notes.unshift(render.note);
+  if (wp.kind === "skip") built.notes.push(wp.note);
+  if (areaNote) built.notes.push(areaNote);
   const figure = previewStats(liveHtml, built.html);
   // One stored figure: on the rendered basis it is `stats.rendered` (the review page never recomputes it); on the
   // source basis the review page measures `stats.rendered` on first open.
@@ -386,7 +394,7 @@ async function freshPreview(env: Env, actor: Actor, req: PreviewRequestContext):
   };
   if (figure.keptPct < MIN_KEPT_PCT && !(changes.bodyMode === "replace" && allowReplace)) {
     throw new SeoError(
-      `This preview would keep only ${figure.keptPct}% of the live page's text (${figure.removedWords} of ${figure.liveWords} words gone). A change is added to the page, it does not wipe it: use bodyMode "before" or "after" to add copy next to the existing content. Only if you really are rewriting the whole page, send bodyMode "replace" with allowReplace true and say why in the summary.`,
+      `This preview would keep only ${figure.keptPct}% of the live page's text (${figure.removedWords} of ${figure.liveWords} words gone). A change is added to the page, it does not wipe it: use bodyMode "before", "after" or "afterFirstParagraph" to add copy next to the existing content. Only if you really are rewriting the whole page, send bodyMode "replace" with allowReplace true and say why in the summary.`,
     );
   }
   const reviewKey = randomBytes(18).toString("base64url");

@@ -3,7 +3,7 @@
  * Takes a base64-encoded PNG and saves it with a timestamp-based filename.
  * Failures never affect the step: fire-and-forget, logged as warnings.
  */
-import { DRIVE_ACK_TIMEOUT_MS, driveSave, type DriveSaveResult } from "@partnersinbiz/pib-plugin-kit";
+import { driveSave, type DriveSaveResult } from "@partnersinbiz/pib-plugin-kit";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 
 export const EVIDENCE_SUBFOLDER = "05 Evidence";
@@ -45,6 +45,8 @@ export function evidenceFileName(issueId: string, step: string, timestamp: strin
   const sanitizedStep = step.replace(/[^a-z0-9-]/gi, "-").replace(/--+/g, "-").toLowerCase();
   return `${prefix}-${number}-${sanitizedStep}-${timestamp}.png`;
 }
+
+export const EVIDENCE_ACK_TIMEOUT_MS = 20_000;
 
 /**
  * Save an evidence screenshot to Drive as a fire-and-forget operation.
@@ -105,8 +107,8 @@ export async function saveEvidenceToDrive(
       mimeType: "image/png",
       bytes,
       subfolder: EVIDENCE_SUBFOLDER,
-      // Answer before the tool gateway's ~10 s cut (a 504 hides the result): a slow Drive gives saved:false, not a 504.
-      timeoutMs: DRIVE_ACK_TIMEOUT_MS,
+      // Below the tool's 25 s gateway budget: a slow Drive gives saved:false, not a 504.
+      timeoutMs: EVIDENCE_ACK_TIMEOUT_MS,
       ...(projectId ? { projectId } : { client: parsed.client! }),
     });
 

@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { CompileError, compileVideo, GRAPH_FILE, inputKey, type CompileInputs } from "../src/video-edit/compile-video.js";
+import { CompileError, compileVideo, ENCODER_ARGS, frameAt, GRAPH_FILE, INTERMEDIATE_ENCODER_ARGS, inputKey, type CompileInputs } from "../src/video-edit/compile-video.js";
 import { editDuration, normalizeEdit, TRANSITIONS } from "../src/video-edit/timeline.js";
 
 const inputs: CompileInputs = {
@@ -108,6 +108,37 @@ describe("compileVideo snapshots", () => {
   });
 });
 
+describe("main-track frame grid (PAR-10465)", () => {
+  it("frameAt: the first frame at or after t, in the graph's millisecond time", () => {
+    expect([0, 0.35, 0.7, 1.05, 10.5].map((t) => frameAt(t, 30))).toEqual([0, 11, 21, 32, 315]);
+    expect(frameAt(0.367, 30)).toBe(11); // 11/30 s prints as 0.367
+  });
+  it("cuts non-aligned clips on the grid, so no drift accumulates; aligned clips keep trim=duration", () => {
+    const g = graph(compile([video(...[0, 1, 2, 3].map((i) => clip(`c${i}`, "a", i * 0.35, 0, 0.35)))]));
+    expect([...g.matchAll(/trim=(duration=[\d.]+|end_frame=\d+)\[seg/g)].map((m) => m[1])).toEqual(["duration=0.35", "end_frame=10", "duration=0.35", "end_frame=10"]);
+    expect(graph(compile([video(clip("c1", "a", 0, 0, 1), clip("c2", "b", 1.35, 0, 1))]))).toContain("color=c=black:s=1080x1920:r=30:d=0.35,format=yuv420p");
+  });
+});
+
+describe("compileVideo intermediate option", () => {
+  const withSound: CompileInputs = { ...inputs, [inputKey("a", 1)]: { path: "in/a.mp4", kind: "video", hasAudio: true } };
+  const doc = edit([video(clip("c1", "a", 0, 0, 2), clip("c2", "b", 2, 1, 3))]);
+  it("is off by default: the args are the delivery args", () => {
+    expect(compileVideo(doc, withSound, "out.mp4", { intermediate: false })).toEqual(compileVideo(doc, withSound, "out.mp4"));
+  });
+  it("swaps only the video and audio encoder args (PCM, .mov), snapshot", () => {
+    const r = compileVideo(doc, withSound, "out.mov", { intermediate: true });
+    expect(r).toMatchSnapshot();
+    const base = compileVideo(doc, withSound, "out.mov");
+    expect(r.files).toEqual(base.files);
+    expect(r.args.join(" ")).toContain(`-c:v libx264 -preset ultrafast -qp 0 -pix_fmt yuv420p`);
+    expect(r.args.join(" ")).toContain("-c:a pcm_f32le -ar 48000 -ac 2");
+    expect(r.args.at(-1)).toBe("file:out.mov");
+    const strip = (a: string[]) => a.join(" ").replace(ENCODER_ARGS.join(" "), "V").replace(INTERMEDIATE_ENCODER_ARGS.join(" "), "V").replace(/-c:a \S+( -b:a \S+)? -ar 48000 -ac 2/, "A");
+    expect(strip(r.args)).toBe(strip(base.args));
+  });
+});
+
 describe("compileVideo contract", () => {
   it("returns an args array of plain strings, never a shell string; odd paths stay one argument", () => {
     const odd = { [inputKey("a", 1)]: { path: "/w/my clip; rm -rf ~ $(x).mp4", kind: "video" as const } };
@@ -128,6 +159,19 @@ describe("compileVideo contract", () => {
     const e = errorOf(() => compile(tracks as unknown[]));
     expect(e.message).toBe(`unsupported_feature:${feature}`);
     expect(e.code).toBe("unsupported_feature");
+  });
+
+  it("caps decoder threads on every picture input, filter and encoder threads once (PAR-10432)", () => {
+    const { args } = compile([video(clip("c1", "a", 0, 0, 2), clip("c2", "b", 2, 0, 2), clip("c3", "c", 4, 0, 2)), overlay(clip("o1", "logo", 0, 0, 2))]);
+    const at = args.flatMap((a, i) => (a === "-i" ? [i] : []));
+    expect(at).toHaveLength(4);
+    // `-threads` binds to the next file, so each picture input carries its own (the one in containedArgv reaches input 0 only).
+    for (const i of at) expect(args.slice(args.lastIndexOf("-threads", i), args.lastIndexOf("-threads", i) + 2)).toEqual(["-threads", "2"]);
+    expect(args.filter((a) => a === "-threads")).toHaveLength(5);
+    expect(args.slice(args.indexOf("-filter_complex_script") - 2, args.indexOf("-filter_complex_script"))).toEqual(["-filter_complex_threads", "4"]);
+    const out = args.lastIndexOf("-threads");
+    expect(out).toBeGreaterThan(args.indexOf("libx264"));
+    expect(args[out + 1]).toBe("4");
   });
 
   it("names a missing input", () => {

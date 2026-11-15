@@ -152,7 +152,8 @@ const ACTIONS: Record<string, Handler> = {
     // The page reports /_plugins/<installation uuid>/ui/ so the setup checklist can link to the settings.
     await rememberPluginUiBase(ctx, p.uiBase);
     const book = await ensureBook(ctx, companyId);
-    await skillSync?.ensure(companyId).catch(() => undefined);
+    // The page never waits long for the skill sync (kit `soon`).
+    await skillSync?.soon(companyId);
     if (actor.kind === "user") await tryLinkBookkeeper(ctx, companyId, syncSkills);
     const settings = await readSettings(ctx, companyId);
     const chart = await loadChart(ctx, companyId);
@@ -551,7 +552,8 @@ function toolContent(data: unknown): string {
 
 async function runTool(ctx: PluginContext, name: string, params: unknown, run: ToolRunContext): Promise<ToolResult> {
   try {
-    await skillSync?.ensure(run.companyId).catch(() => undefined);
+    // A tool call never waits long for the skill sync (kit `soon`).
+    await skillSync?.soon(run.companyId);
     const data = await dispatchTool(ctx, name, obj(params), run);
     // MCP structuredContent must be an object; toolOk wraps lists and scalars.
     return toolOk(toolContent(data), data);
@@ -786,7 +788,8 @@ const plugin = definePlugin({
     if (!pluginCtx || !companyId) return;
     try {
       await ensureBook(pluginCtx, companyId);
-      await skillSync?.ensure(companyId);
+      // Saving the settings never waits long for the skill sync (kit `soon`).
+      await skillSync?.soon(companyId);
     } catch (error) {
       pluginCtx.logger.warn("Book setup after settings save failed", { companyId, error: errorMessage(error) });
     }

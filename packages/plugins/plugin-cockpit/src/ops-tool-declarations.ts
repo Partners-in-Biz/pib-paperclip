@@ -27,6 +27,9 @@ export const OPS_TOOL_NAMES = {
   evidenceSave: "evidence-save",
 } as const;
 
+/** Gateway budget of evidence-save: above its 20 s Drive ack (PAR-10249). */
+export const EVIDENCE_SAVE_TOOL_TIMEOUT_MS = 25_000;
+
 const METRIC_KEY: JsonSchema = { type: "string", maxLength: 120, description: METRIC_KEY_HELP };
 
 export const OPS_TOOLS: PluginToolDeclaration[] = [
@@ -190,6 +193,8 @@ export const OPS_TOOLS: PluginToolDeclaration[] = [
       },
       acceptanceRunId: { type: "string", maxLength: 60, description: "Only for an acceptance journey step that says so: the run id. The file then goes to that run's canary client, whatever project the issue has, and step must contain the run id. Leave it out for real work." },
     }),
+    // The gateway cuts a plugin tool at 10 s unless it declares more; the Drive ack inside is 20 s (evidence-drive.ts), so 25 s.
+    timeoutMs: EVIDENCE_SAVE_TOOL_TIMEOUT_MS,
   },
 ];
 

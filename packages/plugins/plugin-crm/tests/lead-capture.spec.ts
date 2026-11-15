@@ -67,6 +67,16 @@ describe("a lead from our own form", () => {
     expect(booted.store.lead_sources[0]!.last_submission_at).toBeTruthy();
   });
 
+  it("a newsletter subscriber who sends a real lead form stops being one: custom.origin is cleared", async () => {
+    const booted = await bootLeads();
+    const { source } = await makeSource(booted, {});
+    await post(booted, lead(source.key));
+    const contact = booted.store.contacts.find((row) => row.emails.includes("jane@smith-plumbing.test"))!;
+    contact.custom = { ...contact.custom, origin: "newsletter" };
+    await post(booted, lead(source.key, { phone: "082 555 1212" }), { "x-real-ip": ip(14) }, new Date(Date.now() + 86_400_000));
+    expect(booted.store.contacts.find((row) => row.id === contact.id)!.custom).not.toHaveProperty("origin");
+  });
+
   it("does not record consent when the box was not ticked, and tells the follow-up not to market to them", async () => {
     const booted = await bootLeads();
     const { source } = await makeSource(booted, {});

@@ -272,6 +272,8 @@ export const PLUGIN_RPC_ERROR_CODES = {
    * `multiCompanyConfig: true` on its definition.
    */
   CROSS_TENANT_CONFIG: -32006,
+  /** A plugin refused the request because of a rate limit; the webhook route answers 429. */
+  RATE_LIMITED: -32007,
   /** A catch-all for errors that do not fit other categories. */
   UNKNOWN: -32099,
 } as const;
@@ -318,6 +320,13 @@ export interface WorkerHostCallContext {
   providerSpanBudget?: { remaining: number };
   invocationScope?: PluginInvocationScope | null;
   invalidInvocationScope?: boolean;
+  /**
+   * Set by the host for a call made outside a host invocation (no invocation
+   * id: jobs, timers, start-up) that names a company with no saved settings for
+   * this plugin. The gate refuses it with a text that says so. It never grants
+   * access: `invocationScope` stays unset.
+   */
+  unconfiguredCompanyId?: string;
   /**
    * The W3C `traceparent` the host minted for the echoed invocation. The host
    * recovers it from its own invocation record, not from the worker, so a worker

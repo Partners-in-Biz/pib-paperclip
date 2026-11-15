@@ -95,7 +95,7 @@ describe("repurpose drafts: linked or listing the page", () => {
 describe("schedule approved posts: none left without a time", () => {
   const rows = (approved: Row[]) => (sql: string) => {
     if (sql.includes("AND (id = $2 OR schedule_issue_id = $3)")) return [{ id: "p1" }];
-    if (sql.includes("status = 'approved' AND COALESCE(client_ref, '') = $2")) return approved;
+    if (sql.includes("status = 'approved' AND archived_at IS NULL AND COALESCE(client_ref, '') = $2")) return approved;
     return [];
   };
 

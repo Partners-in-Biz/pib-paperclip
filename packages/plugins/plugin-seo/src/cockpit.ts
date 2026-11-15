@@ -23,6 +23,7 @@ import {
   type QualityMetric,
   type Tone,
   type WaitingItem,
+  type WaitsOn,
 } from "@partnersinbiz/pib-plugin-kit";
 import { teamSetupPath } from "@partnersinbiz/pib-plugin-kit/team";
 import { parseSeoConfig } from "./config.js";
@@ -37,11 +38,13 @@ import { localDate } from "./engine/time.js";
 import type { NeedsYouItem } from "./engine/needs-you.js";
 import { sprintPagePath } from "./engine/scope.js";
 import { PLUGIN_ID } from "./namespace.js";
-import type { Env } from "./service/common.js";
+import { createEnv, type Env } from "./service/common.js";
 import { announcementLine, processAnnouncements } from "./service/handoff.js";
 import { SEO_ROLE } from "./service/hire.js";
+import { MAX_GRANT_PAGES, pageApplyRefusal, taskPageSet } from "./service/page-apply.js";
 import { activeTotals, isActiveSprint, sprintOverviews, type ActiveTotals, type SprintOverview } from "./service/overview.js";
 import { seoOn } from "./service/setup-status.js";
+import { delegateAgentIds } from "./service/signoff.js";
 
 type Scoped = { sprint_id: string; site_name: string; client_kind: string | null; client_ref: string | null; client_name: string | null };
 
@@ -529,6 +532,28 @@ async function awaitingPreviews(ctx: PluginContext, companyId: string): Promise<
   return { sprints: rows.map((r) => ({ ...r, n: Number(r.n) })), tasks };
 }
 
+/**
+ * PAR-10548 T5: who a one-task sign-off (review or pr) waits on. The first sign-off delegate when the page grant gate
+ * (`pageApplyRefusal`, the same check approve-page-apply runs) would let that delegate approve every page the task names,
+ * with no review comment; otherwise null, so it stays the owner's. A failed read is null, never a guess.
+ */
+export async function delegateWaitsOn(env: Env, companyId: string, sprintId: string, taskId: string, delegate: string | null): Promise<WaitsOn | null> {
+  if (!delegate) return null;
+  try {
+    const sprint = await db.getSprint(env.ctx.db, companyId, sprintId);
+    const task = sprint ? await db.getTask(env.ctx.db, companyId, taskId) : null;
+    if (!sprint || !task || task.sprintId !== sprint.id) return null;
+    const pageUrls = await taskPageSet(env, companyId, task, sprint.siteUrl);
+    if (pageUrls.length === 0 || pageUrls.length > MAX_GRANT_PAGES) return null;
+    const actor = { kind: "agent" as const, agentId: delegate, runId: null, responsibleUserId: null };
+    const refusal = await pageApplyRefusal(env, companyId, actor, { sprintId, taskId, pageUrls, reviewCommentId: null });
+    return refusal === null ? { kind: "agent", agentId: delegate } : null;
+  } catch (error) {
+    env.ctx.logger.info("SEO cockpit waitsOn check failed", { sprintId, taskId, error: error instanceof Error ? error.message : String(error) });
+    return null;
+  }
+}
+
 async function waitingItems(ctx: PluginContext, companyId: string, data: WaitingData): Promise<WaitingItem[]> {
   const items: WaitingItem[] = [];
   const { pending, proposals } = data;
@@ -555,8 +580,13 @@ async function waitingItems(ctx: PluginContext, companyId: string, data: Waiting
       since: a.since,
     });
   }
+  // The delegate is read once, only when a one-task sign-off is open; an empty list or a failed read means none.
+  const env = createEnv(ctx);
+  const oneTaskSignoff = (item: NeedsYouItem) => SIGNOFF_KINDS.has(item.kind) && item.taskIds?.length === 1;
+  const delegate = pending.some((p) => oneTaskSignoff(p.item)) ? (await delegateAgentIds(env, companyId))[0] ?? null : null;
   for (const { item, digest } of pending) {
     const taskIssue = item.kind === "review" && item.taskIds?.length === 1 ? taskIssues.get(item.taskIds[0]!) ?? null : null;
+    const waitsOn = oneTaskSignoff(item) ? await delegateWaitsOn(env, companyId, digest.sprint_id, item.taskIds![0]!, delegate) : null;
     items.push({
       key: `seo:needs-you:${digest.sprint_id}:${item.key}`,
       title: `${prefix(digest)}${item.title}`,
@@ -567,6 +597,7 @@ async function waitingItems(ctx: PluginContext, companyId: string, data: Waiting
       issueId: taskIssue ?? digest.issue_id,
       kind: KIND[item.kind] ?? "other",
       since: item.addedAt ?? null,
+      ...(waitsOn ? { waitsOn } : {}),
     });
   }
   for (const p of proposals) {

@@ -18,9 +18,26 @@ import {
 import {
   BLOCKED_ISSUE_SWEEP_MAX_PER_TICK,
   BLOCKED_ISSUE_SWEEP_MIN_AGE_MS,
+  BLOCKED_OWNER_RENOTIFIED_ACTION,
   blockedIssueSweeper,
 } from "../services/blocked-issue-sweeper.js";
 import { buildIssueBlockersResolvedWakeStateKey } from "../services/issue-dependency-wakeups.js";
+
+// Runs between the scan and the re-read, so a test can change the issue in that gap.
+const betweenScanAndAct = vi.hoisted(() => ({ hook: null as null | ((issueId: string) => Promise<void>) }));
+vi.mock("../services/recovery/disposition-repair.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/recovery/disposition-repair.js")>();
+  return {
+    ...actual,
+    readDispositionRepairDurableWaitingState: async (
+      ...args: Parameters<typeof actual.readDispositionRepairDurableWaitingState>
+    ) => {
+      const result = await actual.readDispositionRepairDurableWaitingState(...args);
+      await betweenScanAndAct.hook?.(args[1].issue.id);
+      return result;
+    },
+  };
+});
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -39,6 +56,7 @@ describeEmbeddedPostgres("blocked issue sweeper", () => {
   }, 30_000);
 
   afterEach(async () => {
+    betweenScanAndAct.hook = null;
     await db.delete(activityLog);
     await db.delete(issueRelations);
     await db.delete(heartbeatRuns);
@@ -361,5 +379,250 @@ describeEmbeddedPostgres("blocked issue sweeper", () => {
     expect(await sweeper.nextDueAt(now, 12345)).toBe(12345);
     await db.update(issues).set({ status: "todo" }).where(eq(issues.companyId, ctx.companyId));
     expect(await sweeper.nextDueAt(now)).toBeNull();
+  });
+  describe("another agent named as unblock owner (PAR-9398)", () => {
+    const HOUR = 60 * 60 * 1000;
+    const blockedAt = new Date(now.getTime() - 30 * HOUR);
+    const at = (hours: number) => new Date(blockedAt.getTime() + hours * HOUR);
+
+    async function seedOwner(ctx: Awaited<ReturnType<typeof seedCompany>>, status = "idle") {
+      const ownerId = randomUUID();
+      await db.insert(agents).values({
+        id: ownerId,
+        companyId: ctx.companyId,
+        name: "Owner",
+        role: "engineer",
+        status,
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+      return ownerId;
+    }
+
+    async function seedOwned(ownerStatus = "idle", assigneeStatus = "idle") {
+      const ctx = await seedCompany(assigneeStatus);
+      const ownerId = await seedOwner(ctx, ownerStatus);
+      const issueId = await seedIssue(ctx, {
+        blockedTransitionAt: blockedAt,
+        unblockDescriptor: { owner: { agentId: ownerId }, action: "Grant the deploy key" },
+      });
+      return { ctx, ownerId, issueId };
+    }
+
+    async function renotices(issueId: string) {
+      return db
+        .select()
+        .from(activityLog)
+        .where(and(eq(activityLog.entityId, issueId), eq(activityLog.action, BLOCKED_OWNER_RENOTIFIED_ACTION)));
+    }
+
+    it("moves the issue as before when the descriptor names the assignee itself", async () => {
+      const ctx = await seedCompany();
+      const issueId = await seedIssue(ctx, {
+        blockedTransitionAt: blockedAt,
+        unblockDescriptor: { owner: { agentId: ctx.agentId }, action: "Re-check CI" },
+      });
+      const { sweeper, wakeup } = makeSweeper();
+
+      await sweeper.sweep(at(1));
+
+      expect(await statusOf(issueId)).toBe("todo");
+      expect(wakeup).toHaveBeenCalledWith(ctx.agentId, expect.objectContaining({ reason: "issue_status_changed" }));
+      expect(await renotices(issueId)).toHaveLength(0);
+    });
+
+    it("does nothing before 24 hours have passed since the block", async () => {
+      const { issueId } = await seedOwned();
+      const { sweeper, wakeup } = makeSweeper();
+
+      const result = await sweeper.sweep(at(23.9));
+
+      expect(result).toMatchObject({ moved: 0, renotified: 0 });
+      expect(await statusOf(issueId)).toBe("blocked");
+      expect(wakeup).not.toHaveBeenCalled();
+      expect(await renotices(issueId)).toHaveLength(0);
+    });
+
+    it("re-notices the owner at 24 hours with a numbered key, as the system sweeper, and does not move", async () => {
+      const { ctx, ownerId, issueId } = await seedOwned();
+      const { sweeper, wakeup } = makeSweeper();
+
+      const result = await sweeper.sweep(at(24));
+
+      expect(result).toMatchObject({ moved: 0, renotified: 1 });
+      expect(await statusOf(issueId)).toBe("blocked");
+      expect(wakeup).toHaveBeenCalledTimes(1);
+      expect(wakeup).toHaveBeenCalledWith(ownerId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_unblock_requested",
+        idempotencyKey: `issue-unblock:${issueId}:${blockedAt.toISOString()}:n1`,
+        requestedByActorType: "system",
+        requestedByActorId: "blocked_issue_sweeper",
+        payload: { issueId, action: "Grant the deploy key" },
+        contextSnapshot: { wakeReason: "issue_unblock_requested", issueId, taskId: issueId },
+      });
+      expect(wakeup).not.toHaveBeenCalledWith(ctx.agentId, expect.anything());
+      const rows = await renotices(issueId);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.actorType).toBe("system");
+      expect(rows[0]?.details).toMatchObject({ blockedTransitionAt: blockedAt.toISOString(), count: 1 });
+    });
+
+    it("keeps the re-notice apart from the notice sent at block time", async () => {
+      const { ownerId, issueId } = await seedOwned();
+      // The queue returns the request it stored; a coalesced or skipped one would be marked.
+      const wakeup = vi.fn(async () => ({ id: randomUUID(), status: "queued" }));
+      const sweeper = blockedIssueSweeper(db, { wakeup });
+
+      await sweeper.sweep(at(24));
+
+      const opts = (wakeup.mock.calls[0] as unknown as [string, { idempotencyKey: string }])[1];
+      const blockTimeKey = `issue-unblock:${issueId}:${blockedAt.toISOString()}`;
+      expect(wakeup.mock.calls[0]?.[0]).toBe(ownerId);
+      expect(opts.idempotencyKey).not.toBe(blockTimeKey);
+      expect(opts.idempotencyKey.startsWith(`${blockTimeKey}:n`)).toBe(true);
+      const [row] = await renotices(issueId);
+      expect(row?.details).not.toHaveProperty("wakeFailed");
+    });
+
+    it("sends the second re-notice 24 hours after the first, then moves to todo 24 hours later", async () => {
+      const { ctx, ownerId, issueId } = await seedOwned();
+      const { sweeper, wakeup } = makeSweeper();
+
+      expect((await sweeper.sweep(at(24))).renotified).toBe(1);
+      expect((await sweeper.sweep(at(47.9))).renotified).toBe(0);
+      expect((await sweeper.sweep(at(48))).renotified).toBe(1);
+      expect(wakeup).toHaveBeenLastCalledWith(
+        ownerId,
+        expect.objectContaining({ idempotencyKey: `issue-unblock:${issueId}:${blockedAt.toISOString()}:n2` }),
+      );
+      expect(await statusOf(issueId)).toBe("blocked");
+      expect((await renotices(issueId)).map((r) => (r.details as { count: number }).count).sort()).toEqual([1, 2]);
+
+      const before72 = await sweeper.sweep(at(71.9));
+      expect(before72).toMatchObject({ moved: 0, renotified: 0 });
+      expect(await statusOf(issueId)).toBe("blocked");
+      expect(wakeup).toHaveBeenCalledTimes(2);
+
+      const fallback = await sweeper.sweep(at(72));
+      expect(fallback).toMatchObject({ moved: 1, renotified: 0 });
+      expect(await statusOf(issueId)).toBe("todo");
+      expect(wakeup).toHaveBeenCalledTimes(3);
+      expect(wakeup).toHaveBeenLastCalledWith(
+        ctx.agentId,
+        expect.objectContaining({
+          reason: "issue_status_changed",
+          contextSnapshot: expect.objectContaining({ source: "blocked_issue_sweeper" }),
+        }),
+      );
+      const [swept] = await db
+        .select()
+        .from(activityLog)
+        .where(and(eq(activityLog.entityId, issueId), eq(activityLog.action, "issue.blocked_swept_to_todo")));
+      expect(swept?.details).toMatchObject({ reason: "owner_did_not_act", status: "todo" });
+      expect(await renotices(issueId)).toHaveLength(2);
+    });
+
+    it.each([
+      ["throws", true, () => Promise.reject(new Error("queue down"))],
+      ["is skipped", false, () => Promise.resolve({ id: randomUUID(), status: "skipped" })],
+      ["returns nothing", false, () => Promise.resolve(null)],
+    ] as const)("still falls back to todo at 72 hours when the owner wake %s", async (_how, failed, ownerWake) => {
+      const { ctx, ownerId, issueId } = await seedOwned();
+      const wakeup = vi.fn(async (agentId: string, _opts: unknown): Promise<unknown> =>
+        agentId === ownerId ? ownerWake() : null,
+      );
+      const sweeper = blockedIssueSweeper(db, { wakeup });
+
+      expect((await sweeper.sweep(at(24))).renotified).toBe(1);
+      expect((await sweeper.sweep(at(48))).renotified).toBe(1);
+      const rows = await renotices(issueId);
+      expect(rows).toHaveLength(2);
+      for (const row of rows) {
+        if (failed) expect(row.details).toMatchObject({ wakeFailed: true });
+        else expect(row.details).not.toHaveProperty("wakeFailed");
+      }
+
+      expect(await sweeper.sweep(at(72))).toMatchObject({ moved: 1 });
+      expect(await statusOf(issueId)).toBe("todo");
+      expect(wakeup).toHaveBeenLastCalledWith(ctx.agentId, expect.objectContaining({ reason: "issue_status_changed" }));
+      const [swept] = await db
+        .select()
+        .from(activityLog)
+        .where(and(eq(activityLog.entityId, issueId), eq(activityLog.action, "issue.blocked_swept_to_todo")));
+      expect(swept?.details).toMatchObject({ reason: "owner_did_not_act", status: "todo" });
+    });
+
+    it.each([
+      ["the owner", "paused", "idle"],
+      ["the assignee", "idle", "paused"],
+    ])("leaves the issue alone when %s is unhealthy", async (_who, ownerStatus, assigneeStatus) => {
+      const { issueId } = await seedOwned(ownerStatus, assigneeStatus);
+      const { sweeper, wakeup } = makeSweeper();
+
+      await sweeper.sweep(at(24));
+      await sweeper.sweep(at(80));
+
+      expect(await statusOf(issueId)).toBe("blocked");
+      expect(wakeup).not.toHaveBeenCalled();
+      expect(await renotices(issueId)).toHaveLength(0);
+    });
+
+    it("treats an owner that is itself blocked as one that ignored the notice", async () => {
+      const { ctx, ownerId, issueId } = await seedOwned();
+      // The owner's own work is blocked too (recently, so it is not swept here).
+      await seedIssue(ctx, { assigneeAgentId: ownerId, blockedTransitionAt: new Date(at(72).getTime() - 60_000) });
+      const { sweeper, wakeup } = makeSweeper();
+
+      await sweeper.sweep(at(24));
+      await sweeper.sweep(at(48));
+      expect(wakeup).toHaveBeenCalledTimes(2);
+      expect(await statusOf(issueId)).toBe("blocked");
+
+      await sweeper.sweep(at(72));
+      expect(await statusOf(issueId)).toBe("todo");
+      expect(wakeup).toHaveBeenLastCalledWith(ctx.agentId, expect.objectContaining({ reason: "issue_status_changed" }));
+    });
+
+    it("starts a new count when the issue is blocked again", async () => {
+      const { ownerId, issueId } = await seedOwned();
+      const { sweeper, wakeup } = makeSweeper();
+      await sweeper.sweep(at(24));
+      await sweeper.sweep(at(48));
+
+      const reblockedAt = at(50);
+      await db.update(issues).set({ blockedTransitionAt: reblockedAt }).where(eq(issues.id, issueId));
+      const reblockAt = (hours: number) => new Date(reblockedAt.getTime() + hours * HOUR);
+
+      expect((await sweeper.sweep(reblockAt(23))).renotified).toBe(0);
+      expect((await sweeper.sweep(reblockAt(24))).renotified).toBe(1);
+      expect(wakeup).toHaveBeenLastCalledWith(
+        ownerId,
+        expect.objectContaining({ idempotencyKey: `issue-unblock:${issueId}:${reblockedAt.toISOString()}:n1` }),
+      );
+      expect(await statusOf(issueId)).toBe("blocked");
+      const counts = (await renotices(issueId)).map((r) => r.details as { blockedTransitionAt: string; count: number });
+      expect(counts.filter((d) => d.blockedTransitionAt === reblockedAt.toISOString()).map((d) => d.count)).toEqual([1]);
+    });
+
+    it.each([
+      ["reassigned", (ctxAgent: string, owner: string) => ({ assigneeAgentId: owner }) as Partial<typeof issues.$inferInsert>],
+      ["unblocked", () => ({ status: "todo" }) as Partial<typeof issues.$inferInsert>],
+    ])("skips an issue %s between the scan and the re-notice", async (_label, change) => {
+      const { ctx, ownerId, issueId } = await seedOwned();
+      betweenScanAndAct.hook = async (id) => {
+        if (id === issueId) await db.update(issues).set(change(ctx.agentId, ownerId)).where(eq(issues.id, issueId));
+      };
+      const { sweeper, wakeup } = makeSweeper();
+
+      const result = await sweeper.sweep(at(24));
+
+      expect(result).toMatchObject({ moved: 0, renotified: 0, skipped: 1 });
+      expect(wakeup).not.toHaveBeenCalled();
+      expect(await renotices(issueId)).toHaveLength(0);
+    });
   });
 });

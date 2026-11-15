@@ -8,7 +8,7 @@ import type { Viewer } from "../domain.js";
 import { BrokerError, DriveNotBoundError, type Broker } from "./broker.js";
 import { r2Chunks, R2StreamError, type R2Fetch } from "./r2-stream.js";
 import { findDriveFile, upsertDriveFile } from "./store.js";
-import { createBrokerForCompany, driveFolderEnsure } from "./tools.js";
+import { createBrokerForCompany, driveFolderEnsure, type EnsureTiming } from "./tools.js";
 import { DRIVE_SUBFOLDERS, translateSubfolder } from "./convention.js";
 import { acquireTransferSlot } from "./transfer-slots.js";
 import { openRunFile, resolveRunRoots, type RunScopeRefusal } from "./run-scope.js";
@@ -93,15 +93,30 @@ export interface SaveDriveFileResult {
 
 export async function saveDriveFile(ctx: PluginContext, viewer: Viewer, input: SaveDriveFileInput, opts?: { allowedRoots?: string[]; r2FetchFn?: R2Fetch }): Promise<SaveDriveFileResult> {
   // A run file's handle is closed here on every return, unless a job took it over (the job closes it).
-  const held: { fh?: FileHandle; handedOff?: boolean } = {};
+  const held: SaveHeld = { timing: {} };
+  const startedAt = Date.now();
+  let result: SaveDriveFileResult | undefined;
   try {
-    return await saveDriveFileInner(ctx, viewer, input, held, opts);
+    result = await saveDriveFileInner(ctx, viewer, input, held, opts);
+    return result;
   } finally {
+    // One line per save that reached Drive (PAR-10249): numbers and two flags only, no bytes, names or clients.
+    if (held.reachedDrive) {
+      const t = held.timing;
+      ctx.logger.info("drive save timing", {
+        sourceMs: held.sourceMs ?? 0, brokerMs: held.brokerMs ?? 0, factsMs: t.factsMs ?? 0, findSubfolderMs: t.findSubfolderMs ?? 0, upsertMs: held.upsertMs ?? 0,
+        resolveMs: t.resolveMs ?? 0, siblingsMs: t.siblingsMs ?? 0, ensureMs: t.ensureMs ?? 0, ensureLockWaitMs: t.ensureLockWaitMs ?? 0,
+        driveLookups: t.driveLookups ?? 0, adoptedUntagged: t.adoptedUntagged ?? 0, dedupeMs: held.dedupeMs ?? 0, uploadMs: (held.uploadListMs ?? 0) + (held.uploadPostMs ?? 0) || (held.uploadMs ?? 0), uploadListMs: held.uploadListMs ?? 0, uploadPostMs: held.uploadPostMs ?? 0,
+        totalMs: Date.now() - startedAt, deduplicated: result?.status === "saved" && result.duplicate === true, path: held.ensurePath ?? "full",
+      });
+    }
     if (held.fh && !held.handedOff) await held.fh.close().catch(() => undefined);
   }
 }
 
-async function saveDriveFileInner(ctx: PluginContext, viewer: Viewer, input: SaveDriveFileInput, held: { fh?: FileHandle; handedOff?: boolean }, opts?: { allowedRoots?: string[]; r2FetchFn?: R2Fetch }): Promise<SaveDriveFileResult> {
+interface SaveHeld { fh?: FileHandle; handedOff?: boolean; timing: EnsureTiming; reachedDrive?: boolean; ensurePath?: "full" | "exists" | "fast"; dedupeMs?: number; uploadMs?: number; sourceMs?: number; brokerMs?: number; upsertMs?: number; uploadListMs?: number; uploadPostMs?: number }
+
+async function saveDriveFileInner(ctx: PluginContext, viewer: Viewer, input: SaveDriveFileInput, held: SaveHeld, opts?: { allowedRoots?: string[]; r2FetchFn?: R2Fetch }): Promise<SaveDriveFileResult> {
   const { companyId, projectId, fileKind, name, mimeType, contentBase64, publicUrl, path: filePath, sha256: inputSha256 } = input;
 
   if (!NAME_PATTERN.test(name)) {
@@ -156,6 +171,7 @@ async function saveDriveFileInner(ctx: PluginContext, viewer: Viewer, input: Sav
     large = { url: r2Url, size };
   }
 
+  const sourceStart = Date.now();
   let bytes: Uint8Array = new Uint8Array(0);
   // A file over 5 MB in the calling run's own workspace or scratch dir (PAR-9219 A rows 2-3): its open handle goes to a job.
   let local: { fh: FileHandle; stat: Stats } | null = null;
@@ -197,6 +213,8 @@ async function saveDriveFileInner(ctx: PluginContext, viewer: Viewer, input: Sav
     return { status: "sha_mismatch", hint: `Expected ${inputSha256}, got ${computedSha256}` };
   }
 
+  held.sourceMs = Date.now() - sourceStart;
+  const brokerStart = Date.now();
   let broker;
   try {
     broker = await createBrokerForCompany(ctx, companyId);
@@ -210,11 +228,14 @@ async function saveDriveFileInner(ctx: PluginContext, viewer: Viewer, input: Sav
     return { status: "drive_not_bound", hint: "Bind Drive in CRM settings (drive.sharedDriveId)." };
   }
 
+  held.brokerMs = Date.now() - brokerStart;
+
   let resolvedSubfolderId: string | null = null;
   // The sub-folder the file really goes into (null: the folder itself, also when the folder has no sub-folders and the requested one is ignored)
   let savedSubfolder: string | null = null;
-  // Pass include_tree when subfolder is set, so already-ensured projects return tree with subfolders
-  const folderRes = await driveFolderEnsure(ctx, viewer, { entity_type: "project", entity_id: projectId, ...(subfolder ? { include_tree: true } : {}) });
+  // want_subfolder: one query for that sub-folder; a miss falls back to the full tree (PAR-10250)
+  held.reachedDrive = true;
+  const folderRes = await driveFolderEnsure(ctx, viewer, { entity_type: "project", entity_id: projectId, timing: held.timing, broker, ...(subfolder ? { want_subfolder: subfolder } : {}) });
   if (typeof folderRes !== "object" || !folderRes) {
     return { status: "invalid_input", hint: "Failed to ensure folder" };
   }
@@ -226,6 +247,7 @@ async function saveDriveFileInner(ctx: PluginContext, viewer: Viewer, input: Sav
     return { status: folderAny.status as any, hint: folderAny.hint };
   }
 
+  held.ensurePath = held.timing.fast ? "fast" : folderAny.status === "exists" ? "exists" : "full";
   const folderId = folderAny.folder_id;
   if (!folderId) {
     return { status: "invalid_input", hint: "No folder_id from ensure result" };
@@ -255,12 +277,16 @@ async function saveDriveFileInner(ctx: PluginContext, viewer: Viewer, input: Sav
     return startLocalSave(ctx, viewer, input, local, { broker, uploadFolderId, savedSubfolder, subfolder });
   }
 
+  const dedupeStart = Date.now();
   const existing = await findDriveFile(ctx, companyId, { folderId: uploadFolderId, name, sha256: computedSha256 });
+  held.dedupeMs = Date.now() - dedupeStart;
   if (existing) {
     return savedResult(existing, true);
   }
 
   let uploadResult;
+  const uploadTiming: { listMs?: number; postMs?: number } = {};
+  const uploadStart = Date.now();
   try {
     if (large) {
       if (!broker.uploadFileStream) {
@@ -278,8 +304,11 @@ async function saveDriveFileInner(ctx: PluginContext, viewer: Viewer, input: Sav
         releaseSlot();
       }
     } else {
-      uploadResult = await broker.uploadFile({ name, bytes, mimeType, parentFolderId: uploadFolderId });
+      uploadResult = await broker.uploadFile({ name, bytes, mimeType, parentFolderId: uploadFolderId, timing: uploadTiming });
     }
+    held.uploadMs = Date.now() - uploadStart;
+    held.uploadListMs = uploadTiming.listMs ?? 0;
+    held.uploadPostMs = uploadTiming.postMs ?? 0;
   } catch (e) {
     if (e instanceof R2StreamError) {
       return { status: "fetch_failed", code: e.code, retryable: e.code === "fetch_failed", hint: e.message };
@@ -293,11 +322,13 @@ async function saveDriveFileInner(ctx: PluginContext, viewer: Viewer, input: Sav
     return { status: "broker_error", code: "unknown", retryable: false, hint: "File upload failed" };
   }
 
+  const upsertStart = Date.now();
   try {
     const { file: inserted } = await upsertDriveFile(ctx, {
       companyId, projectId, kind: fileKind, folderId: uploadFolderId, name, sha256: computedSha256,
       driveFileId: uploadResult.fileId, webUrl: uploadResult.webViewLink, sourcePlugin: null, subfolder: savedSubfolder,
     });
+    held.upsertMs = Date.now() - upsertStart;
     return savedResult(inserted, false);
   } catch (e) {
     return { status: "broker_error", code: "db_error", retryable: false, hint: "Failed to store file metadata" };

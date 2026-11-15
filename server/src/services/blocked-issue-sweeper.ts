@@ -20,9 +20,14 @@ const BLOCKED_ISSUE_SWEEP_SCAN_LIMIT = 500;
 // that re-blocks the issue would be woken about every 30 minutes.
 export const BLOCKED_ISSUE_SWEEP_REPEAT_WINDOW_MS = 24 * 60 * 60 * 1000;
 export const BLOCKED_ISSUE_SWEPT_ACTION = "issue.blocked_swept_to_todo";
+// PAR-9398: one row per re-notice sent to another agent named as unblock owner.
+export const BLOCKED_OWNER_RENOTIFIED_ACTION = "issue.blocked_owner_renotified";
+// Re-notices before the sweeper falls back to moving the issue to todo.
+export const BLOCKED_OWNER_MAX_RENOTICES = 2;
+const UNBLOCK_OWNER_SWEEPER_ACTOR_ID = "blocked_issue_sweeper";
 const HEALTHY_AGENT_STATUSES = new Set(["idle", "active"]);
 
-export type BlockedIssueSweepReason = "blockers_done" | "owner_agent_idle";
+export type BlockedIssueSweepReason = "blockers_done" | "owner_agent_idle" | "owner_did_not_act";
 
 /**
  * Moves long-blocked issues back to `todo` and wakes the assignee when nothing
@@ -31,6 +36,9 @@ export type BlockedIssueSweepReason = "blockers_done" | "owner_agent_idle";
  *  - `owner_agent_idle`: no blocker issue is open and the agent named as the
  *    unblock owner (the assignee when no descriptor is set) is idle and
  *    invokable, so a wake will be picked up.
+ * When the owner is another agent than the assignee (PAR-9398), the sweeper first
+ * re-notices that owner twice, 24 h apart (24 h and 48 h after the block), and only
+ * 24 h after the second re-notice moves the issue with reason `owner_did_not_act`.
  * Issues owned by the board or a user, with open blockers, or with a run in
  * flight are left alone.
  */
@@ -85,7 +93,7 @@ export function blockedIssueSweeper(db: Db, heartbeat: IssueAssignmentWakeupDeps
       .orderBy(asc(sql`coalesce(${issues.blockedTransitionAt}, ${issues.updatedAt})`))
       .limit(BLOCKED_ISSUE_SWEEP_SCAN_LIMIT);
 
-    if (candidates.length === 0) return { checked: 0, moved: 0, skipped: 0 };
+    if (candidates.length === 0) return { checked: 0, moved: 0, renotified: 0, skipped: 0 };
 
     const recentlySwept = new Set(
       (
@@ -105,6 +113,28 @@ export function blockedIssueSweeper(db: Db, heartbeat: IssueAssignmentWakeupDeps
     );
 
     const companyIds = [...new Set(candidates.map((c) => c.companyId))];
+    // Re-notices per issue, counted only for the issue's current block.
+    const renotices = new Map<string, { count: number; lastAt: number }>();
+    const renoticeRows = await db
+      .select({ entityId: activityLog.entityId, details: activityLog.details, createdAt: activityLog.createdAt })
+      .from(activityLog)
+      .where(
+        and(
+          inArray(activityLog.companyId, companyIds),
+          eq(activityLog.entityType, "issue"),
+          eq(activityLog.action, BLOCKED_OWNER_RENOTIFIED_ACTION),
+          inArray(activityLog.entityId, candidates.map((c) => c.id)),
+        ),
+      );
+    const blockedSinceById = new Map(candidates.map((c) => [c.id, new Date(c.blockedSince).toISOString()]));
+    for (const row of renoticeRows) {
+      const details = (row.details ?? {}) as { blockedTransitionAt?: unknown; renotifiedAt?: unknown };
+      if (details.blockedTransitionAt !== blockedSinceById.get(row.entityId)) continue;
+      const at = typeof details.renotifiedAt === "string" ? Date.parse(details.renotifiedAt) : row.createdAt.getTime();
+      const prev = renotices.get(row.entityId) ?? { count: 0, lastAt: 0 };
+      renotices.set(row.entityId, { count: prev.count + 1, lastAt: Math.max(prev.lastAt, at) });
+    }
+
     const agentRows = await db
       .select({
         id: agents.id,
@@ -137,9 +167,10 @@ export function blockedIssueSweeper(db: Db, heartbeat: IssueAssignmentWakeupDeps
     }
 
     let moved = 0;
+    let renotified = 0;
     let skipped = 0;
     for (const candidate of candidates) {
-      if (moved >= BLOCKED_ISSUE_SWEEP_MAX_PER_TICK) break;
+      if (moved + renotified >= BLOCKED_ISSUE_SWEEP_MAX_PER_TICK) break;
       const assigneeAgentId = candidate.assigneeAgentId!;
       if (recentlySwept.has(candidate.id)) {
         logger.info({ issueId: candidate.id }, "blocked issue sweeper skipped an issue it already swept in the last 24h");
@@ -154,6 +185,8 @@ export function blockedIssueSweeper(db: Db, heartbeat: IssueAssignmentWakeupDeps
       }
 
       let reason: BlockedIssueSweepReason;
+      // Set when the next step is a re-notice to another agent owner, not a move.
+      let renotice: { ownerAgentId: string; action: string; count: number } | null = null;
       if (readiness.blockerIssueIds.length > 0 && readiness.allBlockersDone) {
         reason = "blockers_done";
       } else {
@@ -178,6 +211,20 @@ export function blockedIssueSweeper(db: Db, heartbeat: IssueAssignmentWakeupDeps
           continue;
         }
         reason = "owner_agent_idle";
+        if (ownerAgentId !== assigneeAgentId) {
+          // PAR-9398: another agent must act. Re-notice it twice before moving the issue.
+          const sent = renotices.get(candidate.id) ?? { count: 0, lastAt: 0 };
+          const since = sent.count === 0 ? new Date(candidate.blockedSince).getTime() : sent.lastAt;
+          if (now.getTime() - since < BLOCKED_ISSUE_SWEEP_REPEAT_WINDOW_MS) {
+            skipped += 1;
+            continue;
+          }
+          if (sent.count < BLOCKED_OWNER_MAX_RENOTICES) {
+            renotice = { ownerAgentId, action: candidate.unblockDescriptor?.action ?? "", count: sent.count + 1 };
+          } else {
+            reason = "owner_did_not_act";
+          }
+        }
       }
 
       try {
@@ -204,6 +251,49 @@ export function blockedIssueSweeper(db: Db, heartbeat: IssueAssignmentWakeupDeps
           fresh.blockedTransitionAt?.getTime() !== candidate.blockedTransitionAt?.getTime()
         ) {
           skipped += 1;
+          continue;
+        }
+
+        if (renotice) {
+          const blockedTransitionAt = new Date(candidate.blockedSince).toISOString();
+          // Same shape as the notice at block time (routable-blocked.ts), with a numbered
+          // key so the wake queue does not merge it into that first notice.
+          let wakeFailed = false;
+          try {
+            await heartbeat.wakeup(renotice.ownerAgentId, {
+              source: "automation",
+              triggerDetail: "system",
+              reason: "issue_unblock_requested",
+              idempotencyKey: `issue-unblock:${candidate.id}:${blockedTransitionAt}:n${renotice.count}`,
+              requestedByActorType: "system",
+              requestedByActorId: UNBLOCK_OWNER_SWEEPER_ACTOR_ID,
+              payload: { issueId: candidate.id, action: renotice.action },
+              contextSnapshot: { wakeReason: "issue_unblock_requested", issueId: candidate.id, taskId: candidate.id },
+            });
+          } catch (err) {
+            wakeFailed = true;
+            logger.warn({ err, issueId: candidate.id }, "failed to re-notice the unblock owner");
+          }
+          // Recorded even when the wake failed or was skipped, so the fallback move
+          // still comes and the issue is never left blocked with nobody due to be woken.
+          await logActivity(db, {
+            companyId: candidate.companyId,
+            actorType: "system",
+            actorId: UNBLOCK_OWNER_SWEEPER_ACTOR_ID,
+            action: BLOCKED_OWNER_RENOTIFIED_ACTION,
+            entityType: "issue",
+            entityId: candidate.id,
+            issueId: candidate.id,
+            details: {
+              identifier: candidate.identifier,
+              blockedTransitionAt,
+              count: renotice.count,
+              ownerAgentId: renotice.ownerAgentId,
+              renotifiedAt: now.toISOString(),
+              ...(wakeFailed ? { wakeFailed: true } : {}),
+            },
+          });
+          renotified += 1;
           continue;
         }
 
@@ -306,7 +396,7 @@ export function blockedIssueSweeper(db: Db, heartbeat: IssueAssignmentWakeupDeps
       }
     }
 
-    return { checked: candidates.length, moved, skipped };
+    return { checked: candidates.length, moved, renotified, skipped };
   }
 
   /**

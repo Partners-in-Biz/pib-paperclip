@@ -150,6 +150,8 @@ const manifest: PaperclipPluginManifestV1 = {
     "webhooks.receive",
     "ui.page.register",
     "ui.sidebar.register",
+    // drive_file_trash writes one activity entry per trash (0.51.0, PAR-11108: a stop-first deploy, like any new capability).
+    "activity.log.write",
   ],
   entrypoints: {
     worker: "./dist/worker.js",

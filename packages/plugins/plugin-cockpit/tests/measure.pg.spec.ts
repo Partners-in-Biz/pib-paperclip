@@ -296,7 +296,7 @@ d("measurement layer (Postgres)", () => {
 
   describe("the report", () => {
     it("puts it together without failing when a part has no data", async () => {
-      const env = { ctx: h.ctx, skills: { ensure: async () => [], force: async () => [] }, now: () => NOW } as never;
+      const env = { ctx: h.ctx, skills: { ensure: async () => [], soon: async () => undefined, force: async () => [] }, now: () => NOW } as never;
       (h.ctx as unknown as { agents: unknown }).agents = { list: async () => [{ id: A, name: "Developer", status: "idle" }, { id: B, name: "Code Reviewer", status: "idle" }] };
       await run(A, "succeeded", 3, { usd: 2, input: 10 });
       await issue(ISSUE.root, "PAR-1", { agent: A, completedHoursAgo: 1 });

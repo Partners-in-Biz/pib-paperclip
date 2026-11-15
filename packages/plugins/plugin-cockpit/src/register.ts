@@ -50,6 +50,7 @@ import { OWN_METRICS_EVENT, onOwnMetricsEvent } from "./growth-own-metrics.js";
 import { OPS_TOOL_SET, runOpsTool } from "./ops-tools.js";
 import { confirmAttestation } from "./security.js";
 import { listUnassigned, onSetupSummary, runTool } from "./brief.js";
+import { ownerFilter } from "./owner-filter.js";
 import { assignableUser, JOBS, PLUGIN_KEY, type RoleKind } from "./constants.js";
 import { getHealthIssue, getRoles, listRoles, listSnapshots, upsertSnapshot } from "./db.js";
 import { doneCheckFor } from "./done-checks.js";
@@ -58,9 +59,9 @@ import { CockpitError, message, readInstalled, rememberInstalled, type Env } fro
 import { governCompany, type GovernorConfig } from "./governor.js";
 import { rehearseGovernor } from "./governor-rehearse.js";
 import { hostedUsageRollup, listHostedUsage, parseMonth } from "./hosted-usage.js";
-import { healthAlerts, refreshHealthIssue, warningSince } from "./health.js";
+import { healthAlerts, listAgents, refreshHealthIssue, warningSince } from "./health.js";
 import { HIRE_MATCH_ROLES, HIRE_ROLES } from "./hire.js";
-import { parseSnapshot, teamSignature } from "./merge.js";
+import { activeAgentIdsOf, parseSnapshot, teamSignature } from "./merge.js";
 import { NAMESPACE } from "./namespace.js";
 import { onDealWon, onInvoicePaid } from "./onboarding.js";
 import { ownSetupStatus, ownSnapshot } from "./own.js";
@@ -72,7 +73,7 @@ import { registerMemoryActions } from "./memory/actions.js";
 import { onCommentCreated, upkeep } from "./memory/service.js";
 import { MEMORY_TOOL_NAMES, runMemoryTool } from "./memory/tools.js";
 import { SKILLS } from "./skills.js";
-import { COCKPIT_TOOLS } from "./tools.js";
+import { COCKPIT_TOOLS, TOOL_NAMES } from "./tools.js";
 import { devices, mute, publicKey, subscribe, test, unsubscribe } from "./push/actions.js";
 import { onIssueNeedsYou } from "./push/triggers-needs-you.js";
 import { handleOwnerPush } from "./push/owner-push-route.js";
@@ -81,10 +82,13 @@ import { runPushDigest } from "./push/digest.js";
 import { reviewRoundsCheck } from "./register-w1c-rounds.js";
 import { registerW1cEdge } from "./register-w1c-edge.js";
 import { registerBrowserStatus } from "./browser-status.js";
+import { jobHandler } from "./run-trigger.js";
 import { registerW1cPolicy } from "./register-w1c-policy.js";
 import { riskTierCloseCheck } from "./register-w1c-done.js";
 import { sweepAskDeadlines } from "./register-w1c-deadlines.js";
 import { ownerDigestTick, registerOwnerDigest } from "./digest.js";
+import { editionFromBrief, paperTick, registerPaper, runPaperTool } from "./paper.js";
+import { PAPER_TOOL_NAME_SET } from "./paper-tool-declarations.js";
 
 /** The Setup plugin's event carrying its one setup count (`setup.summary`). */
 export const SETUP_SUMMARY_EVENT = "setup.summary";
@@ -160,7 +164,7 @@ function text(value: unknown, max: number): string | undefined {
 }
 
 export function createEnv(ctx: PluginContext, now: () => Date = () => new Date()): Env {
-  return { ctx, skills: createSkillSyncer(ctx, SKILLS), now };
+  return { ctx, skills: createSkillSyncer(ctx, SKILLS, { now: () => now().getTime() }), now };
 }
 
 /** `goals.confirm` ids: a list of goal ids, or none for every proposed goal. */
@@ -221,6 +225,7 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
   // The owner's standing-approval policy: written only by the owner, through these two actions.
   registerW1cPolicy(env);
   registerOwnerDigest(env);
+  registerPaper(env);
   // The Browser tab: the pib-browser logins, read from the status file (owner company only).
   registerBrowserStatus(env);
 
@@ -290,7 +295,10 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
     const companyId = requiredCompany(context);
     if (params.installed) await rememberInstalled(ctx, params.installed);
     if (params.uiBase) await rememberPluginUiBase(ctx, params.uiBase);
-    await env.skills.ensure(companyId).catch(() => undefined);
+    // The page never waits long for the skill sync (kit `soon`).
+    await env.skills.soon(companyId);
+    // The unassigned count leaves out the hidden issues; a failed read leaves none hidden.
+    const hidden = await ownerFilter(env, companyId).catch(() => ({ hiddenIssueIds: [] as string[], degraded: ["ownerFilter"] }));
     const [roles, saved, snapshots, setup, own, health, installed, asks, unassigned, warnings] = await Promise.all([
       getRoles(ctx, companyId),
       configSaved(ctx, companyId),
@@ -300,7 +308,7 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
       getHealthIssue(ctx, companyId),
       readInstalled(ctx),
       openAskViews(env, companyId).catch(() => []),
-      listUnassigned(ctx, companyId),
+      listUnassigned(ctx, companyId, hidden.hiddenIssueIds),
       warningSince(env, companyId),
     ]);
     const team = params.team === false ? null : await roleViews(env, companyId);
@@ -317,6 +325,8 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
       asks,
       unassigned,
       warningSince: warnings,
+      // The same agent read as the brief (brief.ts loadCompanyData); hiddenIssueIds from owner-filter.ts.
+      ownerFilter: { activeAgentIds: activeAgentIdsOf(await listAgents(env, companyId)), hiddenIssueIds: hidden.hiddenIssueIds },
     };
   });
 
@@ -536,7 +546,9 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
     }
   });
 
-  ctx.jobs.register(JOBS.reemitRoles, async () => {
+  // Every job handler runs under the `job` label, read only by the own-checks log line (run-trigger.ts).
+  const registerJob = (key: string, handler: () => Promise<void>) => ctx.jobs.register(key, jobHandler(handler));
+  registerJob(JOBS.reemitRoles, async () => {
     const result = await trackJob(ctx, JOBS.reemitRoles, async () => {
       const sent = await reemitRoles(env);
       await linkPendingAcceptance(env);
@@ -544,45 +556,45 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
     });
     if (result.emitted || result.failed) ctx.logger.info("Cockpit roles re-sent", result);
   });
-  ctx.jobs.register(JOBS.acceptanceNightly, async () => {
+  registerJob(JOBS.acceptanceNightly, async () => {
     ctx.logger.info("Nightly acceptance request", await trackJob(ctx, JOBS.acceptanceNightly, () => nightlyAcceptance(env)));
   });
-  ctx.jobs.register(JOBS.healthAlerts, async () => {
+  registerJob(JOBS.healthAlerts, async () => {
     ctx.logger.info("Cockpit health alerts", await trackJob(ctx, JOBS.healthAlerts, () => healthAlerts(env)));
   });
-  ctx.jobs.register(JOBS.memoryUpkeep, async () => {
+  registerJob(JOBS.memoryUpkeep, async () => {
     ctx.logger.info("Company memory upkeep", await trackJob(ctx, JOBS.memoryUpkeep, () => upkeep(env)));
   });
-  ctx.jobs.register(JOBS.closeoutSweep, async () => {
+  registerJob(JOBS.closeoutSweep, async () => {
     ctx.logger.info("Close-out sweep", await trackJob(ctx, JOBS.closeoutSweep, () => closeoutSweep(env)));
   });
-  ctx.jobs.register(JOBS.improvementsRecheck, async () => {
+  registerJob(JOBS.improvementsRecheck, async () => {
     ctx.logger.info("Improvements re-check", await trackJob(ctx, JOBS.improvementsRecheck, () => recheckImprovements(env)));
   });
-  ctx.jobs.register(JOBS.agentResearch, async () => {
+  registerJob(JOBS.agentResearch, async () => {
     const result = await trackJob(ctx, JOBS.agentResearch, () => agentResearch(env));
     ctx.logger.info(result.opened === 0 ? "Agent research: nothing opened (no eligible agent, or this week's issues already exist)" : "Agent research", result);
   });
-  ctx.jobs.register(JOBS.credentialsCheck, async () => {
+  registerJob(JOBS.credentialsCheck, async () => {
     ctx.logger.info("Credentials check", await trackJob(ctx, JOBS.credentialsCheck, () => credentialsCheck(env)));
   });
-  ctx.jobs.register(JOBS.businessReview, async () => {
+  registerJob(JOBS.businessReview, async () => {
     ctx.logger.info("Weekly business review", await trackJob(ctx, JOBS.businessReview, () => businessReviews(env)));
   });
-  ctx.jobs.register(JOBS.hostedUsageRollup, async () => {
+  registerJob(JOBS.hostedUsageRollup, async () => {
     ctx.logger.info("Hosted usage roll-up", await trackJob(ctx, JOBS.hostedUsageRollup, () => hostedUsageRollup(env)));
   });
-  ctx.jobs.register(JOBS.growthReview, async () => {
+  registerJob(JOBS.growthReview, async () => {
     ctx.logger.info("Weekly growth review", await trackJob(ctx, JOBS.growthReview, () => growthReviews(env)));
   });
-  ctx.jobs.register(JOBS.governor, async () => {
+  registerJob(JOBS.governor, async () => {
     ctx.logger.info("Agent governor", await trackJob(ctx, JOBS.governor, () => governorTick(env)));
   });
-  ctx.jobs.register(JOBS.pushDigest, async () => {
+  registerJob(JOBS.pushDigest, async () => {
     ctx.logger.info("Push digest", await trackJob(ctx, JOBS.pushDigest, () => runPushDigest(ctx)));
   });
 
-  ctx.jobs.register(JOBS.askDeadlines, async () => {
+  registerJob(JOBS.askDeadlines, async () => {
     ctx.logger.info(
       "Ask deadline sweep",
       await trackJob(ctx, JOBS.askDeadlines, () => sweepAskDeadlines(env)),
@@ -593,6 +605,13 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
       if (digest.posted || digest.failed) ctx.logger.info("Owner digest", digest);
     } catch (error) {
       ctx.logger.warn("Owner digest: the sweep failed", { error: message(error) });
+    }
+    // The Daily Paper rides on it too: the evening edition's task at its time, and a compiled edition when none arrived.
+    try {
+      const paper = await paperTick(env);
+      if (paper.requested || paper.compiled || paper.failed) ctx.logger.info("Daily Paper", paper);
+    } catch (error) {
+      ctx.logger.warn("Daily Paper: the sweep failed", { error: message(error) });
     }
   });
 
@@ -671,11 +690,14 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
 
   for (const tool of COCKPIT_TOOLS) {
     ctx.tools.register(tool.name, tool, async (params, run) => {
-      await env.skills.ensure(run.companyId).catch(() => undefined);
+      // A tool call never waits long for the skill sync (kit `soon`).
+      await env.skills.soon(run.companyId);
       const result = MEMORY_TOOL_NAMES.has(tool.name)
         ? await runMemoryTool(env, tool.name, params, run)
         : ACCESS_TOOL_SET.has(tool.name)
           ? await runAccessTool(env, tool.name, params, run)
+        : PAPER_TOOL_NAME_SET.has(tool.name)
+          ? await runPaperTool(env, tool.name, params, run)
         : AGENT_TOOL_NAMES.has(tool.name)
           ? await runAgentTool(env, tool.name, params, run)
           : AGENT_READ_TOOL_NAMES.has(tool.name)
@@ -691,6 +713,16 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
                     : REVIEW_FINDING_TOOL_SET.has(tool.name)
                       ? await runReviewFindingTool(env, tool.name, params, run)
                       : await runTool(env, tool.name, params, run);
+      // A daily brief posted the old way is the morning paper too (Cockpit → Paper), so the owner has one whatever the Operator's instructions say.
+      if (tool.name === TOOL_NAMES.postBrief && !(result as { error?: unknown }).error) {
+        try {
+          const body = (params as { body?: unknown } | null)?.body;
+          const paper = typeof body === "string" ? await editionFromBrief(env, run.companyId, body, run.agentId ?? null) : null;
+          if (paper) (result as { content?: string }).content = `${(result as { content?: string }).content ?? ""} It is also today's morning edition on Cockpit → Paper (${paper.href}).`.trim();
+        } catch (error) {
+          ctx.logger.info("Paper: the brief was not turned into an edition", { companyId: run.companyId, error: message(error) });
+        }
+      }
       return normalizeToolResult(result);
     });
   }

@@ -26,11 +26,14 @@ export function rendersRoot(): string {
 
 type StatfsFn = (path: string) => Promise<{ bavail: number | bigint; bsize: number | bigint }>;
 
-/** Throws `disk_low` unless the disk has >= 8 GB free and >= 4x the input bytes. */
-export async function assertDiskSpace(dir: string, inputBytes: number, statfsImpl: StatfsFn = statfs): Promise<number> {
+/**
+ * Throws `disk_low` unless the disk has >= `minFreeBytes` (default 8 GB) free and >= 4x the input bytes. A multi-pass
+ * render passes a higher floor (render-pipeline.ts `multiPassMinFreeBytes`).
+ */
+export async function assertDiskSpace(dir: string, inputBytes: number, statfsImpl: StatfsFn = statfs, minFreeBytes: number = MIN_FREE_BYTES): Promise<number> {
   const s = await statfsImpl(dir);
   const free = Number(s.bavail) * Number(s.bsize);
-  const need = Math.max(MIN_FREE_BYTES, INPUT_FREE_FACTOR * Math.max(0, inputBytes));
+  const need = Math.max(minFreeBytes, INPUT_FREE_FACTOR * Math.max(0, inputBytes));
   if (free < need) {
     const gb = (n: number) => (n / 1024 ** 3).toFixed(1);
     throw new StudioError(`Not enough disk space to render: ${gb(free)} GB free, ${gb(need)} GB needed`, "disk_low");

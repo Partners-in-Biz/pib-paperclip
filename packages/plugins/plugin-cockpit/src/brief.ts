@@ -27,9 +27,12 @@ import {
   groupKpis,
   healthGroups,
   hostWaiting,
+  activeAgentIdsOf,
   mergeWaiting,
+  othersData,
   setupMissingCount,
   shownIssueIds,
+  splitOwnerWaiting,
   staleChecks,
   todayLine,
   unassignedWaiting,
@@ -43,6 +46,8 @@ import {
   type WaitingEntry,
 } from "./merge.js";
 import { ownSnapshot } from "./own.js";
+import { withTriggerIfUnset } from "./run-trigger.js";
+import { ownerFilter, type OwnerFilterResult } from "./owner-filter.js";
 import { currentRoles } from "./roles.js";
 import { TOOL_NAMES } from "./tools.js";
 import { mondayLabel, weekKey } from "./week.js";
@@ -192,16 +197,17 @@ export interface UnassignedIssue {
  * ago: the count and the first 50 (most urgent, then oldest). The page and the
  * brief leave out the ones listed on their own row and show five.
  */
-export async function listUnassigned(ctx: PluginContext, companyId: string): Promise<{ count: number; items: UnassignedIssue[] }> {
+export async function listUnassigned(ctx: PluginContext, companyId: string, excludeIds: string[] = []): Promise<{ count: number; items: UnassignedIssue[] }> {
   const where = `company_id = $1 AND assignee_agent_id IS NULL AND assignee_user_id IS NULL AND hidden_at IS NULL
-        AND status IN ('todo', 'in_progress', 'in_review', 'blocked') AND created_at < now() - interval '1 day'`;
+        AND status IN ('todo', 'in_progress', 'in_review', 'blocked') AND created_at < now() - interval '1 day'
+        AND NOT (id = ANY(ARRAY(SELECT jsonb_array_elements_text($2::jsonb))::uuid[]))`;
   try {
     const [count, rows] = await Promise.all([
-      ctx.db.query<{ n: string }>(`SELECT count(*)::text AS n FROM public.issues WHERE ${where}`, [companyId]),
+      ctx.db.query<{ n: string }>(`SELECT count(*)::text AS n FROM public.issues WHERE ${where}`, [companyId, JSON.stringify(excludeIds)]),
       ctx.db.query<Record<string, unknown>>(
         `SELECT id, identifier, title, status, priority, created_at FROM public.issues WHERE ${where}
           ORDER BY CASE priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, created_at LIMIT 50`,
-        [companyId],
+        [companyId, JSON.stringify(excludeIds)],
       ),
     ]);
     return {
@@ -299,6 +305,8 @@ export interface CompanyData {
   asks: AskView[];
   /** Open issues nobody is assigned to (older than a day). */
   unassigned: { count: number; items: UnassignedIssue[] };
+  /** Open issues that never belong on the owner's list (containers, standing queue, canary); see owner-filter.ts. */
+  hiddenIssueIds?: string[];
   /** Repair rows for escalation tracking. */
   repairs: RepairRow[];
 }
@@ -306,20 +314,24 @@ export interface CompanyData {
 /** Each read gets a time limit through `budget`; one that hangs gives its empty value and is named in the budget's `degraded` list. */
 export async function loadCompanyData(env: Env, companyId: string, days = 7, windowHours = days * 24, budget: BriefBudget = newBudget(env)): Promise<CompanyData> {
   const { guard } = budget;
+  // Started first: the unassigned count leaves out the hidden issues, so it waits on this one query only.
+  const hiddenRead = guard("ownerFilter", () => ownerFilter(env, companyId), { hiddenIssueIds: [], degraded: [] } as OwnerFilterResult);
   const [stored, own, agents, runStats, approvals, statuses, asks, unassigned, repairs, setup, roles] = await Promise.all([
     guard("snapshots", () => storedSnapshots(env, companyId), []),
     // The Cockpit's own checks (jobs, routines, watch, memory) read the most: when they hang, the other plugins' snapshots still answer.
-    guard("ownChecks", () => ownSnapshot(env, companyId), { ...emptySnapshot(PLUGIN_KEY, "Cockpit"), checkedAt: env.now().toISOString() }),
+    guard("ownChecks", () => withTriggerIfUnset("brief", () => ownSnapshot(env, companyId)), { ...emptySnapshot(PLUGIN_KEY, "Cockpit"), checkedAt: env.now().toISOString() }),
     guard("agents", () => listAgents(env, companyId), []),
     guard("runs", () => listRuns(env.ctx, companyId, { now: env.now(), days: Math.max(days, 7), windowHours }), []),
     guard("approvals", () => listApprovals(env.ctx, companyId), []),
     guard("setup", () => setupStatuses(env, companyId), {} as Record<string, SetupStatus>),
     guard("asks", () => openAskViews(env, companyId), [] as AskView[]),
-    guard("unassigned", () => listUnassigned(env.ctx, companyId), { count: 0, items: [] }),
+    guard("unassigned", async () => listUnassigned(env.ctx, companyId, (await hiddenRead).hiddenIssueIds), { count: 0, items: [] }),
     guard("askRepairs", () => listRepairs(env.ctx, companyId, { kind: "ask_deadline", limit: 500 }), [] as RepairRow[]),
     guard("setupSummary", () => readSetupSummaryThrows(env, companyId), null),
     guard("ownerRoles", () => getRoles(env.ctx, companyId), null),
   ]);
+  const hidden = await hiddenRead;
+  for (const name of hidden.degraded) if (!budget.degraded.includes(name)) budget.degraded.push(name);
   // ownerIssues depends on roles, so fetch it after roles are available
   const ownerList = await guard("ownerIssues", () => listUserIssues(env.ctx, companyId, roles?.ownerUserId ?? null), { items: [], total: 0, more: false });
   const holds = await guard("holdsUp", () => readHoldsUp(env.ctx, companyId, ownerList.items.map((i) => i.id)), new Map<string, number>());
@@ -351,11 +363,19 @@ export async function loadCompanyData(env: Env, companyId: string, days = 7, win
     asks,
     unassigned,
     repairs,
+    hiddenIssueIds: hidden.hiddenIssueIds,
   };
 }
 
 /** Everything waiting: questions for the owner first, then each plugin's items, unassigned work and the host's approvals and issues; each issue once. */
-export function waitingFrom(data: Pick<CompanyData, "snapshots" | "approvals" | "ownerIssues" | "setupMissing"> & Partial<Pick<CompanyData, "asks" | "unassigned" | "setupIssueId" | "repairs">>): WaitingEntry[] {
+export function waitingFrom(data: WaitingData, now: Date = new Date()): WaitingEntry[] {
+  return waitingSplit(data, now).owner;
+}
+
+type WaitingData = Pick<CompanyData, "snapshots" | "approvals" | "ownerIssues" | "setupMissing"> & Partial<Pick<CompanyData, "asks" | "unassigned" | "setupIssueId" | "repairs" | "agents" | "hiddenIssueIds">>;
+
+/** The one owner-list rule: what waits on the owner, and what waits on others (a seat that can act, or the client). */
+export function waitingSplit(data: WaitingData, now: Date = new Date()): { owner: WaitingEntry[]; others: WaitingEntry[] } {
   // Build a map of ask id -> escalation time for asks with escalate_ask repairs
   const escalatedAsks = new Map<string, string>();
   for (const repair of data.repairs ?? []) {
@@ -369,7 +389,8 @@ export function waitingFrom(data: Pick<CompanyData, "snapshots" | "approvals" | 
     ...data.snapshots.map((snapshot) => ({ source: snapshot.plugin, sourceTitle: snapshot.title, items: snapshot.waiting })),
   ];
   const host = { source: "host", sourceTitle: "Paperclip", items: hostWaiting({ approvals: data.approvals, myIssues: data.ownerIssues, setupMissing: data.setupMissing, setupIssueId: data.setupIssueId }) };
-  return mergeWaiting([...own, { source: "unassigned", sourceTitle: "Paperclip", items: unassignedWaiting(data.unassigned, shownIssueIds([...own, host])) }, host]);
+  const merged = mergeWaiting([...own, { source: "unassigned", sourceTitle: "Paperclip", items: unassignedWaiting(data.unassigned, shownIssueIds([...own, host])) }, host]);
+  return splitOwnerWaiting(merged, { activeAgentIds: activeAgentIdsOf(data.agents ?? []), hiddenIssueIds: data.hiddenIssueIds ?? [] }, now);
 }
 
 // ---------------------------------------------------------------------------
@@ -509,7 +530,9 @@ export async function companyBrief(env: Env, companyId: string, options: { windo
     : staleChecks({ expected, lastSnapshot: Object.fromEntries(data.snapshots.map((s) => [s.plugin, s.checkedAt])), now, listeningSince: data.listeningSince });
   const groups = healthGroups(data.snapshots, stale);
   // Tier A info cards need no action: keep them out of the owner's waiting count and brief.
-  const waiting = waitingFrom(data).filter((w) => !w.key.startsWith("outward-send:"));
+  const split = waitingSplit(data, now);
+  const waiting = split.owner.filter((w) => !w.key.startsWith("outward-send:"));
+  const others = split.others.filter((w) => !w.key.startsWith("outward-send:"));
   const agents = agentRows(data.agents, { stats: data.runStats, snapshots: data.snapshots, since: new Date(now.getTime() - 7 * 86_400_000) });
   const activity = activityGroups({ snapshots: data.snapshots, stats: data.runStats, agents: data.agents, now, windowMs: windowHours * 3_600_000, perGroup: 6 });
   const kpis = groupKpis(data.snapshots);
@@ -544,6 +567,8 @@ export async function companyBrief(env: Env, companyId: string, options: { windo
       ...(w.ask ? { question: { askKind: w.ask.kind, options: w.ask.options, askedBy: w.ask.askedBy, dueBy: w.ask.dueBy } } : {}),
       ...(w.examples ? { examples: w.examples.map((e) => ({ title: e.title, href: link(e.href), since: e.since ?? null })) } : {}),
     })),
+    /** Items that wait on another seat or the client, not the owner (a seat that can act now; back to the owner after 7 days). */
+    others: othersData(others, link),
     /** Owner issues counted, and whether some are not shown (list stops at the ceiling). */
     ownerIssues: { total: data.ownerIssuesTotal ?? data.ownerIssues.length, moreNotShown: data.ownerIssuesMore ?? false },
     /** Questions agents asked the owner, oldest first: answered on the issue, they go back to the agent. */
@@ -740,7 +765,8 @@ export async function runTool(env: Env, name: string, raw: unknown, run: ToolRun
         const degradedText = brief.degraded.length > 0 ? ` Waiting list incomplete: ${brief.degraded.join(", ")} unavailable (timed out).` : "";
         summary = `${brief.waiting.length} ${brief.waiting.length === 1 ? "item waits" : "items wait"} on the owner.${degradedText}`;
       }
-      return toolOk(summary, { items: brief.waiting, count: brief.waiting.length, degraded: brief.degraded });
+      if (brief.others.count > 0) summary += ` ${brief.others.count} wait on others.`;
+      return toolOk(summary, { items: brief.waiting, count: brief.waiting.length, others: brief.others, degraded: brief.degraded });
     }
     if (name === TOOL_NAMES.scorecards) {
       const brief = await companyBrief(env, companyId, { windowHours: 168 });

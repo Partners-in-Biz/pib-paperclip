@@ -8,6 +8,9 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import {
   ensurePipeline,
   grantsFor,
+  listCompanyStages,
+  listPipelines,
+  resolvePipeline,
   listAccounts,
   listActivities,
   listContacts,
@@ -83,10 +86,28 @@ export async function visibleClients(ctx: PluginContext, viewer: Viewer): Promis
   return { has: (kind, id) => (kind === "company" ? companies.has(id) : contacts.has(id)) };
 }
 
+/** Every stage of every pipeline of the company, each tagged with its pipeline (a deal belongs to the pipeline of its stage). */
 async function stageMap(ctx: PluginContext, companyId: string) {
-  const pipeline = await ensurePipeline(ctx, companyId);
-  const stages = await listStages(ctx, pipeline.pipelineId);
-  return new Map(stages.map((stage) => [stage.id, { id: stage.id, name: stage.name, kind: stageKind(stage.kind), position: stage.position }]));
+  await ensurePipeline(ctx, companyId); // an empty company gets its default Sales pipeline, as before
+  const [stages, pipelines] = await Promise.all([listCompanyStages(ctx, companyId), listPipelines(ctx, companyId)]);
+  const names = new Map(pipelines.map((row) => [row.id, row.name]));
+  return new Map(
+    stages.map((stage) => [
+      stage.id,
+      { id: stage.id, name: stage.name, kind: stageKind(stage.kind), position: stage.position, pipelineId: stage.pipeline_id, pipelineName: names.get(stage.pipeline_id) ?? "" },
+    ]),
+  );
+}
+
+/** The company's pipeline named by `value` (id or name); an unknown or another company's one is a plain "not found". */
+export async function pipelineParam(ctx: PluginContext, companyId: string, value: unknown) {
+  if (value == null || value === "") return null;
+  if (typeof value !== "string") throw new CrmError("pipeline must be a pipeline id or name (see list-stages)");
+  try {
+    return await resolvePipeline(ctx, companyId, value);
+  } catch (error) {
+    throw new CrmError(error instanceof Error ? error.message : String(error));
+  }
 }
 
 function parseKind(value: unknown): (typeof FIND_KINDS)[number] {
@@ -228,7 +249,7 @@ export async function findRecords(ctx: PluginContext, viewer: Viewer, params: Re
   };
 }
 
-function dealSummary(deal: DealDraft, stages: Map<string, { name: string; kind: string }>) {
+function dealSummary(deal: DealDraft, stages: Map<string, { name: string; kind: string; pipelineId?: string; pipelineName?: string }>) {
   const stage = stages.get(deal.stageId);
   return {
     id: deal.id,
@@ -240,6 +261,7 @@ function dealSummary(deal: DealDraft, stages: Map<string, { name: string; kind: 
     status: stage?.kind ?? "open",
     client: deal.accountId ? refOf("company", deal.accountId) : deal.contactId ? refOf("contact", deal.contactId) : null,
     contact: deal.contactId ? refOf("contact", deal.contactId) : null,
+    ...(stage?.pipelineId ? { pipeline: { id: stage.pipelineId, name: stage.pipelineName ?? "" } } : {}),
   };
 }
 
@@ -402,15 +424,19 @@ export async function listDealsTool(ctx: PluginContext, viewer: Viewer, params: 
   if (status && !(DEAL_STATUSES as readonly string[]).includes(status)) throw new CrmError("status must be open, won or lost");
   const client = params.client == null || params.client === "" ? null : parseClientRef(params.client);
   const limit = parseLimit(params.limit, 25, 50);
-  const [records, stages] = await Promise.all([visible(ctx, viewer), stageMap(ctx, viewer.companyId)]);
+  const [records, stages, pipeline] = await Promise.all([visible(ctx, viewer), stageMap(ctx, viewer.companyId), pipelineParam(ctx, viewer.companyId, params.pipeline)]);
   const stageQuery = typeof params.stage === "string" && params.stage.trim() ? params.stage.trim().toLowerCase() : null;
-  const stageIds = stageQuery ? new Set([...stages.values()].filter((stage) => stage.id === params.stage || stage.name.toLowerCase() === stageQuery).map((stage) => stage.id)) : null;
+  // A stage name resolves inside the given pipeline, else across all of them.
+  const stageIds = stageQuery
+    ? new Set([...stages.values()].filter((stage) => (!pipeline || stage.pipelineId === pipeline.id) && (stage.id === params.stage || stage.name.toLowerCase() === stageQuery)).map((stage) => stage.id))
+    : null;
   if (stageIds && stageIds.size === 0) throw new CrmError(`No stage called ${params.stage}. See list-stages.`);
   let companyPeople: Set<string> | null = null;
   if (client?.kind === "company") companyPeople = new Set(records.links.filter((link) => link.accountId === client.id).map((link) => link.contactId));
   const rows = records.deals.filter((deal) => {
     const kind = stages.get(deal.stageId)?.kind ?? "open";
     if (status && kind !== status) return false;
+    if (pipeline && stages.get(deal.stageId)?.pipelineId !== pipeline.id) return false;
     if (stageIds && !stageIds.has(deal.stageId)) return false;
     if (client?.kind === "company") return deal.accountId === client.id || (deal.accountId == null && deal.contactId != null && companyPeople!.has(deal.contactId));
     if (client?.kind === "contact") return deal.contactId === client.id;
@@ -419,10 +445,18 @@ export async function listDealsTool(ctx: PluginContext, viewer: Viewer, params: 
   return { total: rows.length, deals: rows.slice(0, limit).map((deal) => dealSummary(deal, stages)) };
 }
 
-export async function listStagesTool(ctx: PluginContext, viewer: Viewer) {
-  const [stages, records] = await Promise.all([stageMap(ctx, viewer.companyId), visible(ctx, viewer)]);
+export async function listStagesTool(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown> = {}) {
+  const [stages, records, pipelines, picked] = await Promise.all([
+    stageMap(ctx, viewer.companyId),
+    visible(ctx, viewer),
+    listPipelines(ctx, viewer.companyId),
+    pipelineParam(ctx, viewer.companyId, params.pipeline),
+  ]);
+  const shown = picked ?? pipelines.find((row) => row.isDefault) ?? null;
   return {
+    pipelines,
     stages: [...stages.values()]
+      .filter((stage) => !shown || stage.pipelineId === shown.id)
       .sort((a, b) => a.position - b.position)
       .map((stage) => ({ id: stage.id, name: stage.name, kind: stage.kind, deals: records.deals.filter((deal) => deal.stageId === stage.id).length })),
     note: "Move a deal with move-deal. Won sets the client to customer and tells Billing and the Cockpit; won or lost stops the contact's sequences.",

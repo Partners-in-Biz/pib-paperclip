@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { WaitingList, ageText, holdsUpText } from "../src/ui/components.js";
+import { TodayCard, WaitingList, WaitingOthers, ageText, holdsUpText } from "../src/ui/components.js";
 import type { WaitingEntry } from "../src/merge.js";
 
 const NOW = new Date("2026-10-28T10:00:00.000Z");
@@ -60,5 +60,26 @@ describe("Waiting on you list", () => {
   it("wraps a very long title rather than overflowing", () => {
     const html = render([entry(1, { title: "x".repeat(400) })]);
     expect(html).toContain("overflow-wrap:anywhere");
+  });
+});
+
+describe("Waiting on others", () => {
+  const agents = [{ id: "a1", name: "Social Delegate" }];
+  const others = (n: number) => Array.from({ length: n }, (_, i) => entry(i + 1, { title: `A very long title ${"word ".repeat(30)}${i}`, waitsOn: i % 2 ? { kind: "client" } : { kind: "agent", agentId: "a1" } }));
+  const html = (items: WaitingEntry[]) => renderToStaticMarkup(createElement(WaitingOthers, { items, agents, linkFor: linkFor as never, now: NOW }));
+
+  it("renders nothing with none", () => expect(html([])).toBe(""));
+  it("shows N, who, age and a link", () => {
+    const out = html(others(2));
+    expect(out).toContain("Waiting on others (2)");
+    expect(out).toContain("waits on Social Delegate · 1d");
+    expect(out).toContain("waits on the client");
+    expect(out).toContain('href="/issues/PAR-1"');
+  });
+  it("lists 25", () => expect(html(others(25))).toContain("Waiting on others (25)"));
+  it("widget line adds N on others only when N > 0", () => {
+    const card = (others: number) => renderToStaticMarkup(createElement(TodayCard, { waiting: 3, others, health: "ok", today: "t", headline: [], linkFor: linkFor as never }));
+    expect(card(2)).toContain("3 waiting on you · 2 on others");
+    expect(card(0)).not.toContain("on others");
   });
 });

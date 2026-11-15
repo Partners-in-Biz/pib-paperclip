@@ -11,8 +11,8 @@ const migrationsDir = new URL("../migrations/", import.meta.url);
 const files = readdirSync(migrationsDir).filter((f) => f.endsWith(".sql")).sort();
 
 describe("migrations", () => {
-  it("keeps 001–010 untouched and adds 011", () => {
-    expect(files).toEqual(["001_mailbox.sql", "002_mailbox.sql", "003_gmail.sql", "004_crm_projection.sql", "005_decisions_inbox.sql", "006_bounces.sql", "007_suppressions_outbox.sql", "008_wave3_delegations_senders_domains.sql", "009_esp_send_only_accounts.sql", "010_client_messages_holds_tracking.sql", "011_ses.sql"]);
+  it("keeps 001–010 untouched and adds 011 and 012", () => {
+    expect(files).toEqual(["001_mailbox.sql", "002_mailbox.sql", "003_gmail.sql", "004_crm_projection.sql", "005_decisions_inbox.sql", "006_bounces.sql", "007_suppressions_outbox.sql", "008_wave3_delegations_senders_domains.sql", "009_esp_send_only_accounts.sql", "010_client_messages_holds_tracking.sql", "011_ses.sql", "012_client_mail_count_only.sql"]);
   });
 
   it("011 adds one partial unique index for SES accounts and nothing else", () => {
@@ -137,6 +137,13 @@ function guardedDb(rows: Record<string, unknown>[] = []) {
 }
 
 describe("runtime SQL passes the host guard", () => {
+  it("countOnlyEnquirers sends its emails as JSON, never as an array param", async () => {
+    const { db, calls } = guardedDb([{ email: "a@b.co" }]);
+    const found = await new SqlStore(db).countOnlyEnquirers("co-1", ["a@b.co", "c@d.co"]);
+    expect(found).toEqual(["a@b.co"]);
+    expect(calls).toHaveLength(1);
+  });
+
   it("covers every store method", async () => {
     const { db, calls } = guardedDb();
     const s = new SqlStore(db);

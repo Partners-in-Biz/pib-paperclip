@@ -20,7 +20,6 @@ import {
   registerCrmProjection,
   registerCrmSiteProjection,
   registerDriveReplies,
-  registerGrowthTools,
   registerHireWatch,
   registerModuleWatch,
   registerRoleWatch,
@@ -31,7 +30,6 @@ import {
   toolOk,
   trackJob,
   unlinkAgent,
-  GROWTH_TOOL_NAMES,
 } from "@partnersinbiz/pib-plugin-kit";
 import { cockpitSnapshot } from "./cockpit.js";
 import { gscRedirectUri, validateSeoConfig } from "./config.js";
@@ -78,6 +76,7 @@ import { guardTaskThreads } from "./service/thread.js";
 import { checkAgentClose } from "./service/done-checks.js";
 import { needsYouView, onNeedsYouIssueUpdated, parkTasksWaitingOnYou } from "./service/needs-you.js";
 import { playbookSummary } from "./service/playbook.js";
+import { growthAbandon, growthApprove, growthExperiments, growthReject } from "./growth-actions.js";
 import { setupChecklist } from "./service/setup.js";
 import { MODULE_OFF_MESSAGE, seoOn, seoSetupStatus } from "./service/setup-status.js";
 import { routineViews, saveRoutineReport } from "./service/routines.js";
@@ -85,7 +84,7 @@ import { siteLinkView, siteProjectOptions, wordPressSiteOptions } from "./servic
 import { sprintWordPressSite } from "./service/wordpress.js";
 import { loadServiceAccount } from "./service/google-access.js";
 import { SEO_TOOLS, GROWTH_TOOLS } from "./tools.js";
-import { seoGrowthToolsHost } from "./growth-host.js";
+import { registerSeoTools } from "./growth-host.js";
 
 let env: Env | null = null;
 
@@ -96,11 +95,7 @@ const plugin = definePlugin({
     const e = createEnv(ctx);
     env = e;
     registerDriveReplies(ctx);
-    for (const tool of SEO_TOOLS) {
-      if ((GROWTH_TOOL_NAMES as readonly string[]).includes(tool.name)) continue;
-      ctx.tools.register(tool.name, tool, (params, run) => runTool(e, tool.name, params, run));
-    }
-    registerGrowthTools(ctx, seoGrowthToolsHost(ctx));
+    registerSeoTools(ctx, SEO_TOOLS, (name, params, run) => runTool(e, name, params, run));
     registerActions(e);
     ctx.jobs.register(DAILY_JOB_KEY, async (job) => {
       // Recorded for the Cockpit's job health (kit jobHealth).
@@ -280,7 +275,9 @@ async function runTool(e: Env, name: string, params: unknown, run: ToolRunContex
   try {
     // Switched off in Setup: agents (and the SEO routines) get a clear refusal.
     if (!(await seoOn(e, run.companyId))) return toolFail(MODULE_OFF_MESSAGE);
-    await e.skills.ensure(run.companyId).catch(() => []);
+    // Never wait on the managed-skill sync: the host call can take 30 s+ and the tool result does not depend on the copy (PAR-11023).
+    // `soon` never throws and leaves a failed sync alone for 5 minutes, so a slow host is not asked again on every call.
+    void e.skills.soon(run.companyId);
     const data = await dispatch(e, run.companyId, await toolActor(e.ctx, run), name, params);
     // MCP clients need structuredContent to be an object: never return null, arrays or bare values.
     return toolOk(toolSummary(name, data), data);
@@ -313,7 +310,8 @@ function registerActions(e: Env) {
   const action = (key: string, fn: (companyId: string, actor: Actor, params: Record<string, unknown>) => Promise<unknown>) =>
     ctx.actions.register(key, async (params, context) => {
       const companyId = actionCompany(context);
-      await e.skills.ensure(companyId).catch(() => []);
+      // Not awaited (PAR-11023); `soon` adds the 5-minute pause after a failed sync.
+      void e.skills.soon(companyId);
       return fn(companyId, actionActor(context), asParams(params));
     });
 
@@ -577,6 +575,10 @@ function registerActions(e: Env) {
   });
 
   // "Re-sync": wires the linked agent again. It never creates an agent.
+  action("seo.growth-experiments", async (companyId, actor, params) => growthExperiments(e, companyId, requireUser(actor), params));
+  action("seo.growth-approve-experiment", async (companyId, actor, params) => growthApprove(e, companyId, requireUser(actor), params));
+  action("seo.growth-reject-experiment", async (companyId, actor, params) => growthReject(e, companyId, requireUser(actor), params));
+  action("seo.growth-abandon-experiment", async (companyId, actor, params) => growthAbandon(e, companyId, requireUser(actor), params));
   action("seo.activate-agent", async (companyId, actor) => resyncAgent(e, companyId, requireUser(actor)));
   action("seo.sync-skills", async (companyId, actor) => {
     requireUser(actor);

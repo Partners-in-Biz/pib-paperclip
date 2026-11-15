@@ -387,7 +387,7 @@ describe("the producer Drive journey (PAR-7712)", async () => {
   });
 
   it("saves through the producers' own tools for the canary only, then reads the CRM's rows for the canary's own project", () => {
-    expect(j.steps.map((s) => s.tool)).toEqual(["partnersinbiz.crm:create-canary-client", "partnersinbiz.crm:list-client-projects", "partnersinbiz.social:store-rendered-asset", "partnersinbiz.cockpit:evidence-save", "partnersinbiz.crm:drive_files_list", "partnersinbiz.crm:drive_files_list", "partnersinbiz.crm:cleanup-canary"]);
+    expect(j.steps.map((s) => s.tool)).toEqual(["partnersinbiz.crm:create-canary-client", "partnersinbiz.crm:list-client-projects", "partnersinbiz.social:store-rendered-asset", "partnersinbiz.crm:drive_files_list", "partnersinbiz.cockpit:evidence-save", "partnersinbiz.crm:drive_files_list", "partnersinbiz.crm:cleanup-canary"]);
     expect(step("ensure-canary").expect).toContainEqual({ path: "driveProject", equals: "linked" });
     expect(step("canary-project").capture).toEqual({ driveProjectId: { path: "projects[0].projectId" } });
     expect(step("social-save").input).toMatchObject({ client: "{{client}}", name: "drive-journey-{{runId}}" });
@@ -410,7 +410,7 @@ describe("the producer Drive journey (PAR-7712)", async () => {
   });
 
   it("does not trust Social's answer (a background save can time out at the gateway), but evidence-save must say saved: saved false is a refusal, not a time-out", () => {
-    expect(j.version).toBe(2);
+    expect(j.version).toBe(3);
     expect(step("social-save").expect).toEqual([{ path: "$", notEmpty: true }]);
     expect(step("evidence-save").expect).toEqual([{ path: "saved", equals: true }]);
   });
