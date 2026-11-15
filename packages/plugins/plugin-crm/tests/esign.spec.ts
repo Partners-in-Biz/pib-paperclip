@@ -444,6 +444,22 @@ describe("the client opens the page and signs", () => {
     expect(html).toContain(row.audit_head);
   });
 
+  it("a deal in another pipeline moves to that pipeline's won stage (its stage decides, even on a legacy row)", async () => {
+    const { booted, token, doc } = await sentToAda({ dealId: "d-acme" });
+    const store = booted.store;
+    store.pipelines!.push({ id: "p2", company_id: CO, name: "JagGids", created_at: "2026-02-01T00:00:00Z" });
+    store.pipeline_stages!.push(
+      { id: "j-lead", company_id: CO, pipeline_id: "p2", name: "Lead", kind: "open", position: 0 },
+      { id: "j-won", company_id: CO, pipeline_id: "p2", name: "Signed", kind: "won", position: 1 },
+      { id: "j-lost", company_id: CO, pipeline_id: "p2", name: "Declined", kind: "lost", position: 2 },
+    );
+    // Legacy: the stage is JagGids's, the row still says Sales.
+    Object.assign(store.deals!.find((d) => d.id === "d-acme")!, { stage_id: "j-lead", pipeline_id: "p1" });
+    const result = await sign(booted, signBody({ pageId: doc.page_id, contentSha256: doc.content_sha256, consentSha256: doc.consent_sha256 }, token));
+    if (result.status === "signed") expect(await result.effects).toEqual([]);
+    expect(store.deals!.find((d) => d.id === "d-acme")).toMatchObject({ stage_id: "j-won", pipeline_id: "p2" });
+  });
+
   it("the signed copy is stored on the work issue and the deal, the deal moves to won, and Billing is told", async () => {
     const { booted, comments, token, doc, made } = await sentToAda({ dealId: "d-acme", quoteId: "bq-9", quoteNumber: "Q-0009" });
     booted.emit.mockClear();

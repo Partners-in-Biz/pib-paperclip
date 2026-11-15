@@ -20,7 +20,6 @@ import {
   registerCrmProjection,
   registerCrmSiteProjection,
   registerDriveReplies,
-  registerGrowthTools,
   registerHireWatch,
   registerModuleWatch,
   registerRoleWatch,
@@ -31,7 +30,6 @@ import {
   toolOk,
   trackJob,
   unlinkAgent,
-  GROWTH_TOOL_NAMES,
 } from "@partnersinbiz/pib-plugin-kit";
 import { cockpitSnapshot } from "./cockpit.js";
 import { gscRedirectUri, validateSeoConfig } from "./config.js";
@@ -86,7 +84,7 @@ import { siteLinkView, siteProjectOptions, wordPressSiteOptions } from "./servic
 import { sprintWordPressSite } from "./service/wordpress.js";
 import { loadServiceAccount } from "./service/google-access.js";
 import { SEO_TOOLS, GROWTH_TOOLS } from "./tools.js";
-import { seoGrowthToolsHost } from "./growth-host.js";
+import { registerSeoTools } from "./growth-host.js";
 
 let env: Env | null = null;
 
@@ -97,11 +95,7 @@ const plugin = definePlugin({
     const e = createEnv(ctx);
     env = e;
     registerDriveReplies(ctx);
-    for (const tool of SEO_TOOLS) {
-      if ((GROWTH_TOOL_NAMES as readonly string[]).includes(tool.name)) continue;
-      ctx.tools.register(tool.name, tool, (params, run) => runTool(e, tool.name, params, run));
-    }
-    registerGrowthTools(ctx, seoGrowthToolsHost(ctx));
+    registerSeoTools(ctx, SEO_TOOLS, (name, params, run) => runTool(e, name, params, run));
     registerActions(e);
     ctx.jobs.register(DAILY_JOB_KEY, async (job) => {
       // Recorded for the Cockpit's job health (kit jobHealth).
