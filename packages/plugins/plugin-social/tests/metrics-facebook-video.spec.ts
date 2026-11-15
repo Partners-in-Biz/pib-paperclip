@@ -55,6 +55,23 @@ describe("Facebook video metrics (bare Video id)", () => {
     expect(s).toMatchObject({ impressions: 120, reach: 80 });
   });
 
+  it("bare post_id from Graph (#12 on the bare id): page-scoped to <pageId>_<postId> (PAR-11965)", async () => {
+    const STORY = "1465382822359655";
+    const scoped = `https://graph.facebook.com/v21.0/105961684676894_${STORY}/insights`;
+    const statuses = () => json({ error: { message: "(#12) singular statuses API is deprecated for versions v2.4 and higher", code: 12 } }, 400);
+    const { calls } = mockFetch([
+      [`GET ${G}/video_insights`, (url: URL) => (url.searchParams.get("metric") === "total_video_views" ? views() : removedVideoImpressions())],
+      [`GET ${scoped}`, reach],
+      [`GET https://graph.facebook.com/v21.0/${STORY}/insights`, statuses],
+      [`GET ${G}`, (url: URL) => (url.searchParams.get("fields")?.startsWith("post_id") ? json({ id: VID, post_id: STORY }) : fields())],
+    ] as never);
+    const s = await facebookProvider.metrics!(env, { ...account, meta: { pageId: "105961684676894" } }, VID);
+    expect(calls.map((c: { url: string }) => c.url)).toContain(`${scoped}?metric=post_media_view%2Cpost_total_media_view_unique&access_token=TOK`);
+    expect(s).toMatchObject({ impressions: 120, reach: 80, views: 50 });
+    expect(s!.raw).toMatchObject({ postId: `105961684676894_${STORY}`, owner: { postIdSource: "video.post_id (page-scoped)" } });
+    expect([s!.insightsError, s!.insightsUnavailable]).toEqual([undefined, undefined]);
+  });
+
   it("post lookup fails: still reads the fallback post id, and a failed lookup is not an insights error", async () => {
     routes(fields, reach, views, invalidMetric);
     const s = await facebookProvider.metrics!(env, { ...account, externalId: "105961684676894" }, VID);
