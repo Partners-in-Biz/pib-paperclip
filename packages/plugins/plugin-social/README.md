@@ -210,7 +210,7 @@ Src-only (PAR-10212). `store-rendered-asset` and the published post's Drive copy
 
 ## 0.11.3: Facebook video reach, published history kept on account delete
 
-- Facebook video posts: Meta removed `total_video_impressions(_unique)` from `video_insights` (Graph API v25.0 changelog, for every API version once v26.0 shipped); the call still answered but without the rows, so impressions and reach stayed null with "video insights: missing total_video_impressions". Impressions and reach now come from the video's Page post (`post_id` on the Video, else `<pageId>_<videoId>`): `post_media_view` and `post_total_media_view_unique`, as for any other Page post. Views stay `total_video_views`.
+- Facebook video posts: Meta removed `total_video_impressions(_unique)` from `video_insights` (Graph API v25.0 changelog, for every API version once v26.0 shipped); the call still answered but without the rows, so impressions and reach stayed null with "video insights: missing total_video_impressions". Impressions and reach now come from the video's Page post (`post_id` on the Video, page-scoped to `<pageId>_<postId>` when Graph returns it bare (0.13.7), else `<pageId>_<videoId>`): `post_media_view` and `post_total_media_view_unique`, as for any other Page post. Views stay `total_video_views`.
 - **Delete** refuses a disconnected account that has a published destination: the cascade would erase what a post published there and its metrics (a hand-marked X post lost its destination this way, PAR-10115). The account stays disconnected and post-analytics keeps listing the destination as not measurable. The junk-account sweep skips such accounts too. src-only.
 
 ## 0.13.7: Facebook video post insights on the page-scoped post id
