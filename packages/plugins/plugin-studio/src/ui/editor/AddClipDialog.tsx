@@ -33,7 +33,7 @@ export function AddClipDialog({ companyId, client, busy, onPick, onPickSticker, 
   busy: boolean;
   /** Sends the batch; resolves null when it saved (the dialog closes), else the message to show. */
   onPick: (pick: LibraryPick) => Promise<string | null>;
-  /** Puts a sticker on the first overlay track at the playhead; resolves null when it saved, else the message to show. */
+  /** Puts a sticker on an overlay track with room at the playhead; resolves null when it saved, else the message to show. */
   onPickSticker?: (ref: StickerRef) => Promise<string | null>;
   onClose: () => void;
 }) {
@@ -84,7 +84,7 @@ export function AddClipDialog({ companyId, client, busy, onPick, onPickSticker, 
       open
       width={560}
       title="Add a clip"
-      description={onStickers ? "Pick a sticker. It lands on the overlay track at the playhead and shows for 3 seconds." : "Pick a video or picture from the Library. It joins the end of the video track; a picture shows for 3 seconds."}
+      description={onStickers ? "Pick a sticker. It lands on an overlay track at the playhead and shows for 3 seconds." : "Pick a video or picture from the Library. It joins the end of the video track; a picture shows for 3 seconds."}
       onClose={onClose}
       footer={
         <>

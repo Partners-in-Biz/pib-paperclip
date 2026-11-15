@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { applyOps } from "../src/video-edit/ops.js";
 import { normalizeEdit, type EditDoc } from "../src/video-edit/timeline.js";
 import { ANIMATION_LABELS, ANIMATION_PRESETS, findTextClip, formOf, textEditOps } from "../src/ui/editor/text-track.js";
-import { beatsAnswer, cutPlan, cuttableTracks, markerPercents } from "../src/ui/editor/beat-panel.js";
+import { beatsAnswer, cutPlan, cuttableTracks, liveUndo, markerPercents } from "../src/ui/editor/beat-panel.js";
 import { cutToBeatOps } from "../src/video-edit/cut-to-beat.js";
 
 const doc = (extra: Record<string, unknown> = {}): EditDoc => normalizeEdit({
@@ -80,5 +80,15 @@ describe("cut to beat preview and undo", () => {
   it("returns null for ops that do not fit the doc", () => {
     expect(cutPlan(d, [{ op: "trim", clipId: "nope", out: 1 }])).toBeNull();
     expect(cutPlan(d, "x")).toBeNull();
+  });
+});
+
+describe("undo cuts goes stale", () => {
+  it("is offered only while the edit is at the revision the cuts saved", () => {
+    const undo = { ops: [], revision: 7 };
+    expect(liveUndo(undo, 7)).toBe(undo);
+    expect(liveUndo(undo, 8)).toBeNull(); // a later trim or someone else's save: undo would overwrite it
+    expect(liveUndo({ ops: [], revision: null }, null)).toBeNull();
+    expect(liveUndo(null, 7)).toBeNull();
   });
 });

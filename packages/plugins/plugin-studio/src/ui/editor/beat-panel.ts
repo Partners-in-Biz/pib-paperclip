@@ -59,6 +59,11 @@ export function cutUndoOps(before: EditDoc, ops: readonly Op[]): Op[] {
 }
 
 /** The worker's cut ops (a dry run) as a list a person can read, plus the ops that undo them. Null when they don't apply to `doc`. */
+/** The undo of applied cuts while the edit is still at the revision those cuts saved; null after any later save. */
+export function liveUndo<T extends { revision: number | null }>(undo: T | null, revision: number | null): T | null {
+  return undo && undo.revision !== null && undo.revision === revision ? undo : null;
+}
+
 export function cutPlan(doc: EditDoc, rawOps: unknown): CutPlan | null {
   if (!Array.isArray(rawOps)) return null;
   const ops = rawOps.filter((o): o is Op => !!o && typeof o === "object");

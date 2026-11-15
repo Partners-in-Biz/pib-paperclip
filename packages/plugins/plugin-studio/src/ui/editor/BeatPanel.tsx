@@ -4,11 +4,11 @@
  * `video-edit-cut-to-beat` for a dry run and lists the cuts; "Apply cuts" saves exactly those ops through the store,
  * and "Undo cuts" saves the ops that put the clips back. Logic lives in beat-panel.ts (unit tested).
  */
-import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useHostContext } from "@paperclipai/plugin-sdk/ui";
 import { useStudioAction } from "../action.js";
 import { audioLength } from "./audio-track.js";
-import { beatsAnswer, cutPlan, cuttableTracks, EVERY_CHOICES, markerPercents, type BeatsAnswer, type CutPlan } from "./beat-panel.js";
+import { beatsAnswer, cutPlan, cuttableTracks, EVERY_CHOICES, liveUndo, markerPercents, type BeatsAnswer, type CutPlan } from "./beat-panel.js";
 import type { EditorStore } from "./editor-store.js";
 import { formatTime } from "./timeline-view.js";
 import type { AudioClip } from "../../video-edit/timeline.js";
@@ -27,13 +27,17 @@ export function BeatPanel({ store, clip }: { store: EditorStore; clip: AudioClip
   const [trackId, setTrackId] = useState("");
   const [every, setEvery] = useState<number>(1);
   const [plan, setPlan] = useState<CutPlan | null>(null);
-  const [undo, setUndo] = useState<CutPlan["undo"] | null>(null);
+  // The undo batch and the revision the cuts saved: any later save (a trim, someone else) makes it stale.
+  const [undo, setUndo] = useState<{ ops: CutPlan["undo"]; revision: number | null } | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [working, setWorking] = useState(false);
   const chosen = tracks.some((t) => t.id === trackId) ? trackId : tracks[0]?.id ?? "";
   // A different clip or someone else's save makes the markers and the preview stale.
+  const clipRef = useRef(clip.id);
+  clipRef.current = clip.id;
   useEffect(() => { setBeats(null); setPlan(null); setUndo(null); setMessage(null); }, [clip.id]);
   useEffect(() => { setPlan(null); }, [revision, chosen, every]);
+  useEffect(() => { setUndo((u) => liveUndo(u, revision)); }, [revision]);
 
   const ask = async <T,>(run: () => Promise<T>): Promise<T | null> => {
     setWorking(true);
@@ -42,8 +46,9 @@ export function BeatPanel({ store, clip }: { store: EditorStore; clip: AudioClip
   };
   const find = async () => {
     if (!edit) return;
-    const raw = await ask(() => detect({ companyId, editId: edit.id, clipId: clip.id }));
-    if (raw === null) return;
+    const asked = clip.id;
+    const raw = await ask(() => detect({ companyId, editId: edit.id, clipId: asked }));
+    if (raw === null || clipRef.current !== asked) return; // an answer for a clip that is no longer selected
     const found = beatsAnswer(raw);
     if (!found) return setMessage("Studio sent an unexpected answer. Try again.");
     setBeats(found);
@@ -51,8 +56,9 @@ export function BeatPanel({ store, clip }: { store: EditorStore; clip: AudioClip
   };
   const preview = async () => {
     if (!edit || !doc || revision === null || !chosen) return;
-    const raw = await ask(() => cut({ companyId, editId: edit.id, baseRevision: revision, musicClipId: clip.id, trackId: chosen, every, dryRun: true }));
-    if (raw === null) return;
+    const asked = clip.id;
+    const raw = await ask(() => cut({ companyId, editId: edit.id, baseRevision: revision, musicClipId: asked, trackId: chosen, every, dryRun: true }));
+    if (raw === null || clipRef.current !== asked) return;
     const made = cutPlan(doc, (raw as { ops?: unknown }).ops);
     if (!made) return setMessage("Studio sent cuts this edit can't take. Reload and try again.");
     if (!made.rows.length) return setMessage("No clip on that track ends near a beat, so there is nothing to cut.");
@@ -61,13 +67,13 @@ export function BeatPanel({ store, clip }: { store: EditorStore; clip: AudioClip
   const apply = async () => {
     if (!plan || busy) return;
     const back = plan.undo;
-    if (await store.applyOps(plan.ops)) { setUndo(back); setPlan(null); setMessage(`${plan.rows.length} cut${plan.rows.length === 1 ? "" : "s"} applied.`); return; }
+    if (await store.applyOps(plan.ops)) { setUndo({ ops: back, revision: store.getState().revision }); setPlan(null); setMessage(`${plan.rows.length} cut${plan.rows.length === 1 ? "" : "s"} applied.`); return; }
     setMessage(store.getState().toast ?? "The cuts weren't saved.");
     store.dismissToast();
   };
   const revert = async () => {
     if (!undo || busy) return;
-    if (await store.applyOps(undo)) { setUndo(null); setMessage("Cuts undone."); return; }
+    if (await store.applyOps(undo.ops)) { setUndo(null); setMessage("Cuts undone."); return; }
     setMessage(store.getState().toast ?? "Undo wasn't saved.");
     store.dismissToast();
   };
