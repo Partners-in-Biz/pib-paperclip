@@ -146,10 +146,15 @@ async function facebookVideoMetrics(env: ProviderEnv, account: ProviderAccount, 
 
   // The video's Page post: its `post_id` field, else the `<pageId>_<videoId>` form Page video posts use.
   const owner = await bestEffort(() => metaGet<{ post_id?: string; permalink_url?: string }>(`${base}/${videoId}`, { fields: "post_id,permalink_url", access_token: token }, "Facebook video post"));
-  const postId = str(owner.value?.post_id) ?? `${str(account.meta.pageId) ?? account.externalId}_${videoId}`;
+  // Graph can return `post_id` bare (a story id): `/<bare id>/insights` hits the legacy Status node and fails with
+  // (#12) "singular statuses API is deprecated" (HTTP 400, PAR-11965). Page post insights need `<pageId>_<postId>`.
+  const pageId = str(account.meta.pageId) ?? account.externalId;
+  const rawPostId = str(owner.value?.post_id);
+  const bare = rawPostId !== undefined && !rawPostId.includes("_");
+  const postId = rawPostId ? (bare ? `${pageId}_${rawPostId}` : rawPostId) : `${pageId}_${videoId}`;
   const permalink = str(owner.value?.permalink_url);
   const ownerInfo = {
-    postIdSource: str(owner.value?.post_id) ? "video.post_id" : "page_id_video_id",
+    postIdSource: rawPostId ? (bare ? "video.post_id (page-scoped)" : "video.post_id") : "page_id_video_id",
     ...(permalink ? { permalinkUrl: permalink, isReel: /\/reels?\//.test(permalink) } : {}),
     ...(owner.error ? { error: cleanError(owner.error) } : {}),
   };

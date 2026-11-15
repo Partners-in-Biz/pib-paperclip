@@ -210,8 +210,12 @@ Src-only (PAR-10212). `store-rendered-asset` and the published post's Drive copy
 
 ## 0.11.3: Facebook video reach, published history kept on account delete
 
-- Facebook video posts: Meta removed `total_video_impressions(_unique)` from `video_insights` (Graph API v25.0 changelog, for every API version once v26.0 shipped); the call still answered but without the rows, so impressions and reach stayed null with "video insights: missing total_video_impressions". Impressions and reach now come from the video's Page post (`post_id` on the Video, else `<pageId>_<videoId>`): `post_media_view` and `post_total_media_view_unique`, as for any other Page post. Views stay `total_video_views`.
+- Facebook video posts: Meta removed `total_video_impressions(_unique)` from `video_insights` (Graph API v25.0 changelog, for every API version once v26.0 shipped); the call still answered but without the rows, so impressions and reach stayed null with "video insights: missing total_video_impressions". Impressions and reach now come from the video's Page post (`post_id` on the Video, page-scoped to `<pageId>_<postId>` when Graph returns it bare (0.13.7), else `<pageId>_<videoId>`): `post_media_view` and `post_total_media_view_unique`, as for any other Page post. Views stay `total_video_views`.
 - **Delete** refuses a disconnected account that has a published destination: the cascade would erase what a post published there and its metrics (a hand-marked X post lost its destination this way, PAR-10115). The account stays disconnected and post-analytics keeps listing the destination as not measurable. The junk-account sweep skips such accounts too. src-only.
+
+## 0.13.7: Facebook video post insights on the page-scoped post id
+
+Facebook video metrics: Graph can return the Video's `post_id` bare (a story id, no `<pageId>_` prefix). `/<bare id>/insights` hits the legacy Status node and Graph answers `(#12) singular statuses API is deprecated for versions v2.4 and higher` (HTTP 400), so impressions and reach stayed null while the video calls worked (PAR-11965). A bare `post_id` is now page-scoped to `<pageId>_<postId>` before the Page post insights call; `raw.owner.postIdSource` says `video.post_id (page-scoped)`. A `post_id` that already has the prefix is used as is. src-only.
 
 ## 0.13.6: Facebook video insights show every failure; published posts without a destination
 
