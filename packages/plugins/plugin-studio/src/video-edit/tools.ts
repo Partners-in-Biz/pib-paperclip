@@ -10,6 +10,7 @@ import { captionClipAction, type CaptionDeps } from "./auto-caption.js";
 import { detectBeatsAction, type BeatDeps } from "./beats.js";
 import { cutToBeatAction } from "./cut-to-beat.js";
 import { musicAction, type MusicDeps } from "./music.js";
+import { cutSilencesAction, type SilenceDeps } from "./silence.js";
 import { voiceoverAction, type VoiceoverDeps } from "./voiceover.js";
 
 export const VIDEO_EDIT_TOOL_NAMES = [
@@ -26,6 +27,7 @@ export const VIDEO_EDIT_TOOL_NAMES = [
   "video-edit-music",
   "video-edit-detect-beats",
   "video-edit-cut-to-beat",
+  "video-edit-cut-silences",
 ] as const;
 
 export const isVideoEditTool = (name: string): boolean => (VIDEO_EDIT_TOOL_NAMES as readonly string[]).includes(name);
@@ -37,7 +39,7 @@ export async function runVideoEditTool(
   params: Record<string, unknown>,
   run: Pick<ToolRunContext, "companyId" | "agentId"> & { runId?: string },
   work: { projectId: string | null; issueId?: string | null },
-  deps: ActionDeps & CaptionDeps & { voiceover?: VoiceoverDeps; music?: MusicDeps; beats?: BeatDeps } = {},
+  deps: ActionDeps & CaptionDeps & { voiceover?: VoiceoverDeps; music?: MusicDeps; beats?: BeatDeps; silence?: SilenceDeps } = {},
 ): Promise<unknown> {
   const companyId = run.companyId;
   const actor = { agentId: run.agentId };
@@ -71,6 +73,8 @@ export async function runVideoEditTool(
       return detectBeatsAction(ctx, companyId, params, deps.beats);
     case "video-edit-cut-to-beat":
       return cutToBeatAction(ctx, companyId, params, actor, deps.beats);
+    case "video-edit-cut-silences":
+      return cutSilencesAction(ctx, companyId, params, actor, deps.silence);
     default:
       throw new StudioError(`Unknown tool ${name}`);
   }
