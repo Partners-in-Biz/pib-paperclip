@@ -557,6 +557,20 @@ export class MemoryStore implements GmailStore {
   async crmClients() {
     return [...this.crm];
   }
+  async clientRecipients(companyId: string, emails: string[], domains: string[]) {
+    void companyId;
+    const own = (lifecycle?: string | null) => !["lead", "prospect"].includes(lifecycle ?? "");
+    const clean = (d: string | null) => (d ?? "").toLowerCase().replace(/^(https?:\/\/)?(www[.])?/, "").split("/")[0];
+    return emails.filter((email) =>
+      this.crm.some((c) => {
+        const lifecycle = (c as { lifecycle?: string | null }).lifecycle;
+        if (!own(lifecycle)) return false;
+        if (c.kind === "contact") return c.emails.some((e) => e.toLowerCase() === email);
+        const d = email.split("@")[1] ?? "";
+        return (clean(c.domain) !== "" && clean(c.domain) === d && domains.includes(d)) || (c as { billingEmail?: string }).billingEmail?.toLowerCase() === email;
+      }),
+    );
+  }
   async crmContact(companyId: string, id: string) {
     void companyId;
     return this.crm.find((c) => c.kind === "contact" && c.id === id) ?? null;

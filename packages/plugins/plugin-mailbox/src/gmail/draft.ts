@@ -98,7 +98,9 @@ export async function performDraft(env: Env, companyId: string, request: MailDra
 
   // One draft per client and purpose: a newer version replaces the older open one (PAR-12249).
   const { context } = request;
-  const purposeKey = `${context.plugin}:${context.kind}:${context.clientRef ?? context.id}`.slice(0, 300);
+  // One client = its CRM ref; with none (a sprint not linked to a client) the first recipient's address, so two sprints for one client still share one open draft.
+  const who = context.clientRef ?? request.to[0]?.email?.trim().toLowerCase() ?? context.id;
+  const purposeKey = `${context.plugin}:${context.kind}:${who}`.slice(0, 300);
   const id = randomUUID();
   await env.store.insertDraft({
     id,

@@ -92,7 +92,7 @@ import { correctTriage, markReadInGmail, readMessageBody, searchMail, type Triag
 import { handleDraftRequested } from "./gmail/draft.js";
 import { deleteMail, replyMode, startReply } from "./mail-actions.js";
 import { deleteDraftWithReason, draftAttachments, editDraft, mailboxSignature, requestRewrite, withSignature } from "./draft-edit.js";
-import { cleanPurpose, heldDraftError, holdFor, purposeKeyFor, replaceOlderDrafts } from "./draft-purpose.js";
+import { assertHeldDraftMaySend, cleanPurpose, holdFor, purposeKeyFor, replaceOlderDrafts } from "./draft-purpose.js";
 import { newerSentReply, removeSupersededDrafts, reusableReplyDraft } from "./reply-dedupe.js";
 import { handleSendRequested, performSend, retrySend } from "./gmail/send.js";
 import { runSyncJob, syncOne, triageRunFor } from "./gmail/sync.js";
@@ -116,7 +116,8 @@ const plugin = definePlugin({
     store = new SqlStore(ctx.db);
     env = createEnv(ctx, store);
     skillSync = createSkillSyncer(ctx, SKILLS);
-    registerCrmProjection(ctx, ctx.db.namespace);
+    // companyBilling: a client's billing email is one way to tell that a recipient belongs to a customer (PAR-12249).
+    registerCrmProjection(ctx, ctx.db.namespace, { companies: true, contacts: true, companyBilling: true });
     registerModuleWatch(ctx);
     registerRoleWatch(ctx);
     // The CRM's client-to-project links: a reply issue opens in the client's own project.
@@ -1143,7 +1144,7 @@ async function createDraft(companyId: string, agentId: string | null, params: Re
   });
   // One draft per client and purpose: the newer version replaces the older open one (PAR-12249).
   const replaced = purposeKey ? await replaceOlderDrafts(requireStore(), companyId, accountId, purposeKey, id) : [];
-  return { id, status: "draft", to: to.map((a) => a.email), ...(replaced.length ? { replaced } : {}), ...(agentId && holdFor(purpose, params.unasked === true) ? { heldForPerson: true, note: "This is mail the client did not ask for: only a person sends it. send-draft will be refused." } : {}) };
+  return { id, status: "draft", to: to.map((a) => a.email), ...(replaced.length ? { replaced } : {}), ...(agentId && holdFor(purpose, params.unasked === true) ? { heldForPerson: true, note: "Mail the client did not ask for: send-draft is refused when a recipient is an existing client (CRM customer, by contact, domain or billing email), and when that cannot be checked. Mail to a prospect with no customer record is not held." } : {}) };
 }
 
 async function sendDraft(companyId: string, agentId: string | null, messageId: string) {
@@ -1153,8 +1154,7 @@ async function sendDraft(companyId: string, agentId: string | null, messageId: s
   if (row.status !== "draft") throw new MailboxError("Only a draft can be sent");
   if (agentId) {
     // Mail the client did not ask for, and drafts a plugin made for a person: an agent never sends them (PAR-12249).
-    const held = heldDraftError(row.draft);
-    if (held) throw new MailboxError(held);
+    await assertHeldDraftMaySend(s, companyId, row);
     assertMaySend(await delegationFor(row.account_id, agentId));
   }
   await assertNotCountOnlyEnquirer(s, companyId, [...(row.to_addrs ?? []), ...(row.cc_addrs ?? []), ...(row.bcc_addrs ?? [])]);
