@@ -106,7 +106,7 @@ function collapseVolatileStrips(html: string): string {
 export function visibleWords(html: string): string[] {
   const text = collapseVolatileStrips(stripGoogleTranslateWidget(html))
     .replace(/<(script|style|noscript|template|svg)\b[\s\S]*?<\/\1\s*>/gi, " ")
-    .replace(/<div id="pib-preview-bar"[\s\S]*?<\/form><\/div><div style="height:64px"><\/div>/i, " ")
+    .replace(/<div id="pib-preview-bar"[\s\S]*?<\/form><\/div><div (?:style="height:64px"|id="pib-preview-spacer")><\/div>/i, " ")
     .replace(/<!--[\s\S]*?-->/g, " ")
     .replace(/<[^>]+>/g, " ")
     .replace(/&nbsp;|&#160;/g, " ")
@@ -651,14 +651,26 @@ export function buildPreviewHtml(live: string, pageUrl: string, changes: Preview
 
   const slug = previewSlug(pageUrl);
   const decisionUrl = `${PREVIEW_BASE}/p/${slug}/${escapeHtml(opts.token)}/decision`;
+  const barCss =
+    `<style id="pib-preview-bar-css">` +
+    `#pib-preview-bar,#pib-preview-bar *{box-sizing:border-box}` +
+    `#pib-preview-spacer{height:72px}` +
+    `.whatsapp-button,.telegram-button{box-sizing:border-box!important;width:100%!important;max-width:100%!important;float:none!important;display:block!important}` +
+    `@media (max-width:640px){#pib-preview-spacer{height:210px}` +
+    `#pib-preview-bar{padding:10px 12px!important;flex-direction:column;align-items:stretch!important;gap:8px!important}` +
+    `#pib-preview-bar form{flex-direction:column;align-items:stretch!important;width:100%}` +
+    `#pib-preview-bar input{min-width:0!important;width:100%}` +
+    `#pib-preview-bar button{width:100%}}` +
+    `</style>`;
   const banner =
     `<div id="pib-preview-bar" style="position:fixed;left:0;right:0;bottom:0;z-index:2147483647;background:#111827;color:#fff;font:14px/1.4 system-ui,sans-serif;padding:10px 16px;display:flex;gap:12px;flex-wrap:wrap;align-items:center;justify-content:space-between;box-shadow:0 -2px 12px rgba(0,0,0,.3)">` +
+    barCss +
     `<span><strong>Proposed changes, not live.</strong> ${opts.clientName ? `For ${escapeHtml(opts.clientName)}. ` : ""}Nothing here is on the website yet.</span>` +
     `<form method="post" action="${escapeHtml(decisionUrl)}" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:0">` +
     `<input name="note" placeholder="Comment (optional)" maxlength="1000" style="padding:6px 8px;border-radius:6px;border:0;min-width:200px;font:inherit">` +
     `<button name="decision" value="approved" style="background:#16a34a;color:#fff;border:0;border-radius:6px;padding:7px 14px;font:inherit;cursor:pointer">Approve</button>` +
     `<button name="decision" value="changes_requested" style="background:#f59e0b;color:#111;border:0;border-radius:6px;padding:7px 14px;font:inherit;cursor:pointer">Request changes</button>` +
-    `</form></div><div style="height:64px"></div>`;
+    `</form></div><div id="pib-preview-spacer"></div>`;
   html = /<\/body\s*>/i.test(html) ? html.replace(/<\/body\s*>/i, `${banner}</body>`) : `${html}${banner}`;
   return { html, applied, notes };
 }

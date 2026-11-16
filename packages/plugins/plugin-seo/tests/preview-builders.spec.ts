@@ -13,7 +13,7 @@ function build(html: string, mode: (typeof BUILDER_MODES)[number]): string {
   const changes = mode === "h1" ? { h1: "New heading" } : { bodyHtml: "<p>NEW</p>", bodyMode: mode };
   const out = buildPreviewHtml(html, "https://x.co.za/page/", changes, opts).html;
   // The answer bar is the same on every preview; leave it out so the stored outputs stay small.
-  const bar = /<div id="pib-preview-bar"[\s\S]*?<div style="height:64px"><\/div>/;
+  const bar = /<div id="pib-preview-bar"[\s\S]*?<div id="pib-preview-spacer"><\/div>/;
   expect(out).toMatch(bar);
   return out.replace(bar, "<!--bar-->");
 }
