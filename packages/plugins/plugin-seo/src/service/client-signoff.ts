@@ -247,15 +247,15 @@ export async function onDraftResult(env: Env, event: { companyId?: string | null
     kind: "task",
     title: drafted ? `Send the approval email to the client (${noun})` : `Send the approval links to the client (${noun}): the email draft could not be made`,
     why: drafted
-      ? `The Reviewer passed ${noun} for ${sprint.siteName}. The email is drafted in your Gmail (to the client's contacts on their own domain). Nothing changes on their site until they approve.`
+      ? `The Reviewer passed ${noun} for ${sprint.siteName}. The email is drafted in the Mailbox Drafts tab (to the client's contacts on their own domain). Nothing changes on their site until they approve.`
       : `The Reviewer passed ${noun} for ${sprint.siteName} but the Gmail draft failed (${result.error ?? "unknown error"}). Send the links yourself.`,
-    steps: drafted ? ["Open the draft in Gmail, check the addresses and the wording.", "Press Send."] : ["Send each link to the client with a short note.", ...pages.map((p) => `${p.title}: ${p.link}`)],
-    links: drafted && result.draftUrl ? [{ label: "Gmail draft", url: result.draftUrl }] : pages.map((p) => ({ label: p.title.slice(0, 60), url: p.link })),
+    steps: drafted ? ["Open the draft in the Mailbox, check the addresses and the wording.", "Press Send."] : ["Send each link to the client with a short note.", ...pages.map((p) => `${p.title}: ${p.link}`)],
+    links: drafted && result.draftUrl ? [{ label: "Mailbox draft", url: result.draftUrl }] : pages.map((p) => ({ label: p.title.slice(0, 60), url: p.link })),
     after: "The client's answers are picked up automatically: approved pages are applied by the SEO agent, change requests go back to it.",
     check: "manual",
     taskIds: [],
   }).catch((error: unknown) => env.ctx.logger.info("SEO approval email line not added", { sprintId, error: errorMessage(error) }));
-  if (sprint.rootIssueId && drafted) await commentOn(env, companyId, sprint.rootIssueId, `Approval email drafted in Gmail for ${noun}: ${result.draftUrl ?? "(open Gmail drafts)"}`, { dedupeKey: `draft:${result.key}` });
+  if (sprint.rootIssueId && drafted) await commentOn(env, companyId, sprint.rootIssueId, `Approval email drafted in the Mailbox for ${noun}: ${result.draftUrl ?? "(open the Mailbox Drafts tab)"}`, { dedupeKey: `draft:${result.key}` });
 }
 
 // ---------------------------------------------------------------------------

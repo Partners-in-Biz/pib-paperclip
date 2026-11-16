@@ -37,79 +37,41 @@ function switchedOff(ctx: unknown, modules: Record<string, boolean>) {
 }
 
 describe("mail.draft.requested", () => {
-  it("creates a Gmail draft (never a send) and answers with the draft's ids and Gmail link", async () => {
+  it("creates a Paperclip Mailbox draft (not a Gmail one, never a send) and answers with a Mailbox link", async () => {
     const { gmail, env, host, store } = setup({ fromName: "Partners in Biz" });
     const result = await handleDraftRequested(env, event(request({ replyTo: { email: "outreach@partnersinbiz.online" } })));
 
-    expect(result).toMatchObject({
-      key: KEY,
-      status: "drafted",
-      gmailDraftId: "draft-1",
-      gmailMessageId: "draft-msg-1",
-      threadId: "t-draft-msg-1",
-      account: "peet@partnersinbiz.online",
-      draftUrl: "https://mail.google.com/mail/?authuser=peet%40partnersinbiz.online#drafts?compose=draft-msg-1",
-      error: null,
-      permanent: false,
-      context: request().context,
-    });
-    expect(draftCalls(gmail)).toHaveLength(1);
-    expect(draftCalls(gmail)[0]!.url.pathname).toBe("/gmail/v1/users/me/drafts");
-    expect(gmail.count("POST", "/messages/send")).toBe(0);
+    expect(result).toMatchObject({ key: KEY, status: "drafted", gmailDraftId: null, account: "peet@partnersinbiz.online", draftUrl: "/mailbox?tab=drafts", error: null, permanent: false, context: request().context });
+    expect(gmail.calls).toHaveLength(0);
+    expect(gmail.drafts).toHaveLength(0);
     expect(gmail.sent).toHaveLength(0);
     expect(store.sends.size).toBe(0);
-    expect(gmail.drafts).toHaveLength(1);
-    const mime = gmail.drafts[0]!.mime;
-    expect(mime).toContain("From: Partners in Biz <peet@partnersinbiz.online>");
-    expect(mime).toContain("To: Ann Smith <ann@client.co.za>");
-    expect(mime).toContain("Reply-To: outreach@partnersinbiz.online");
-    expect(mime).toContain("Subject: Your backlink opportunity");
-    expect(mime).toContain("multipart/alternative");
-    expect(mime).toContain("text/html");
-    expect(mime).not.toContain("List-Unsubscribe");
-
-    expect(results(host.emitted)).toEqual([expect.objectContaining({ key: KEY, status: "drafted", draftUrl: result!.draftUrl, context: expect.objectContaining(request().context) })]);
+    const rows = [...store.messages.values()];
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ status: "draft", direction: "outbound", account_id: "acc-1", subject: "Your backlink opportunity" });
+    expect(rows[0]!.to_addrs).toEqual([{ email: "ann@client.co.za", name: "Ann Smith" }]);
+    expect(results(host.emitted)).toEqual([expect.objectContaining({ key: KEY, status: "drafted", context: expect.objectContaining(request().context) })]);
     expect(sendResults(host.emitted)).toHaveLength(0);
-    // Kept apart from a send request that uses the same key.
     expect(host.inbox.get(`draft:${KEY}`)).toMatchObject({ status: "drafted" });
-    expect(host.inbox.has(KEY)).toBe(false);
   });
 
   it("uses the account `from` names when it is a connected Gmail account", async () => {
-    const { gmail, env, store } = setup();
+    const { env, store } = setup();
     store.addAccount({ id: "acc-2", company_id: CO, address: "sales@partnersinbiz.online", token_sealed: store.accounts.get("acc-1")!.token_sealed });
     const result = await handleDraftRequested(env, event(request({ from: "sales@partnersinbiz.online" })));
     expect(result).toMatchObject({ status: "drafted", account: "sales@partnersinbiz.online" });
-    expect(gmail.drafts[0]!.mime).toContain("From: ");
-    expect(gmail.drafts[0]!.mime).toContain("sales@partnersinbiz.online");
+    expect([...store.messages.values()][0]!.account_id).toBe("acc-2");
   });
 
-  it("is idempotent: a repeat delivery creates no second Gmail draft and re-emits the stored result", async () => {
-    const { gmail, env, host } = setup();
+  it("is idempotent: a repeat delivery creates no second draft and re-emits the stored result", async () => {
+    const { env, host, store } = setup();
     const first = await handleDraftRequested(env, event(request()));
     const second = await handleDraftRequested(env, event(request()));
-    expect(gmail.drafts).toHaveLength(1);
-    expect(draftCalls(gmail)).toHaveLength(1);
+    expect(store.messages.size).toBe(1);
     expect(second).toEqual(first);
     const emitted = results(host.emitted);
     expect(emitted).toHaveLength(2);
     expect(emitted[1]).toEqual(emitted[0]);
-  });
-
-  it("finds a draft whose answer was lost instead of creating a second one", async () => {
-    const { gmail, env, host } = setup();
-    gmail.intercept = async (call) => {
-      if (call.method !== "POST" || !call.url.pathname.endsWith("/drafts")) return null;
-      gmail.intercept = null;
-      await gmail.fetch(call.url.toString(), { method: call.method, body: call.body, headers: call.headers });
-      return new Response(JSON.stringify({ error: { code: 503, message: "Backend Error" } }), { status: 503 });
-    };
-    expect(await handleDraftRequested(env, event(request()))).toBeNull();
-    expect(gmail.drafts).toHaveLength(1);
-    expect(host.inbox.size).toBe(0);
-    const later = await handleDraftRequested(env, event(request()));
-    expect(later).toMatchObject({ status: "drafted", gmailDraftId: "draft-1", gmailMessageId: "draft-msg-1" });
-    expect(gmail.drafts).toHaveLength(1);
   });
 
   it("fails permanently without a connected Gmail account, and repeats the answer", async () => {
@@ -168,46 +130,6 @@ describe("mail.draft.requested", () => {
     expect(gmail.drafts).toHaveLength(0);
   });
 
-  it("treats Gmail trouble as transient: performDraft throws, the handler stores and emits nothing, the next delivery drafts", async () => {
-    const { gmail, env, host } = setup();
-    gmail.intercept = (call) => (call.url.pathname.endsWith("/drafts") && call.method === "POST" ? new Response(JSON.stringify({ error: { code: 503, message: "Backend Error" } }), { status: 503 }) : null);
-    await expect(performDraft(env, CO, request())).rejects.toThrow(/Gmail: Backend Error/);
-    expect(await handleDraftRequested(env, event(request()))).toBeNull();
-    expect(host.inbox.size).toBe(0);
-    expect(results(host.emitted)).toHaveLength(0);
-
-    gmail.intercept = (call) => (call.url.pathname.endsWith("/drafts") && call.method === "POST" ? new Response(JSON.stringify({ error: { code: 429, message: "Rate Limit Exceeded", status: "RESOURCE_EXHAUSTED" } }), { status: 429 }) : null);
-    await expect(performDraft(env, CO, request())).rejects.toThrow();
-
-    gmail.intercept = null;
-    expect(await handleDraftRequested(env, event(request()))).toMatchObject({ status: "drafted" });
-    expect(gmail.drafts).toHaveLength(1);
-  });
-
-  it("a mailbox that must be reconnected throws (transient) and creates nothing", async () => {
-    const { gmail, env, store, host } = setup();
-    store.accounts.get("acc-1")!.status = "needs_reconnect";
-    await expect(performDraft(env, CO, request())).rejects.toThrow(/must be reconnected/);
-    expect(await handleDraftRequested(env, event(request()))).toBeNull();
-    expect(gmail.drafts).toHaveLength(0);
-    expect(host.inbox.size).toBe(0);
-  });
-
-  it("a message Gmail refuses (400) fails for good", async () => {
-    const { gmail, env } = setup();
-    gmail.intercept = (call) => (call.url.pathname.endsWith("/drafts") && call.method === "POST" ? new Response(JSON.stringify({ error: { code: 400, message: "Invalid To header" } }), { status: 400 }) : null);
-    expect(await handleDraftRequested(env, event(request()))).toMatchObject({ status: "failed", permanent: true, error: "Gmail: Invalid To header" });
-  });
-
-  it("uses the upload endpoint for a large draft", async () => {
-    const { gmail, env } = setup();
-    const result = await handleDraftRequested(env, event(request({ key: "big", html: `<p>${"a".repeat(4_000_000)}</p>`, text: "a".repeat(100) })));
-    expect(result).toMatchObject({ status: "drafted" });
-    const call = draftCalls(gmail)[0]!;
-    expect(call.url.pathname).toBe("/upload/gmail/v1/users/me/drafts");
-    expect(call.url.searchParams.get("uploadType")).toBe("multipart");
-    expect(gmail.count("POST", "/messages/send")).toBe(0);
-  });
 });
 
 describe("draft request parsing", () => {
