@@ -1141,6 +1141,17 @@ export async function assertGitSensitiveAdapterWorkspaceValid(input: {
     Boolean(issue.projectWorkspaceId) ||
     Boolean(input.resolvedWorkspace.workspaceId) ||
     input.executionWorkspace.strategy === "git_worktree";
+  // agent_default (persisted as adapter_managed) never binds the project
+  // workspace: the run gets its own task directory, which has no checkout.
+  // Issue creation still fills issue.projectWorkspaceId from the project
+  // default, so that id alone must not demand git metadata (PAR-12160).
+  const agentDefaultTaskDirectory =
+    input.persistedExecutionWorkspace?.mode === "adapter_managed" &&
+    input.persistedExecutionWorkspace.strategyType !== "git_worktree" &&
+    input.executionWorkspace.strategy !== "git_worktree" &&
+    !input.resolvedWorkspace.workspaceId;
+  const gitMetadataExpectation =
+    workspaceExpectation && !agentDefaultTaskDirectory;
 
   const fail = (
     reason: string,
@@ -1268,7 +1279,7 @@ export async function assertGitSensitiveAdapterWorkspaceValid(input: {
   }
 
   if (
-    workspaceExpectation &&
+    gitMetadataExpectation &&
     !(input.resolvedWorkspace.localPathOnlyWorkspace === true && input.executionWorkspace.strategy === "project_primary" && !input.executionWorkspace.repoUrl && !input.executionWorkspace.branchName) &&
     effectiveCwd &&
     !(await hasGitMetadata(effectiveCwd))

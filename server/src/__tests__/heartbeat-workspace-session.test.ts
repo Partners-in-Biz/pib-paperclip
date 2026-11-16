@@ -453,6 +453,69 @@ describe("assertGitSensitiveAdapterWorkspaceValid", () => {
     );
   });
 
+  // PAR-12160: an agent_default issue in a git_repo project with no cwd keeps
+  // the project's default projectWorkspaceId, but runs in its own empty task
+  // directory (persisted as adapter_managed). That must not need a checkout.
+  function buildAgentDefaultTaskDirectoryInput(
+    overrides: Partial<WorkspaceValidationInput> = {},
+  ): WorkspaceValidationInput {
+    const input = buildWorkspaceValidationInput({ adapterType: "hermes_local" });
+    const cwd = "/tmp/paperclip-instance/isolated-workspaces/company-1/issue-1";
+    return {
+      ...input,
+      resolvedWorkspace: buildResolvedWorkspace({
+        cwd,
+        source: "task_session",
+        projectId: null,
+        workspaceId: null,
+      }),
+      executionWorkspace: {
+        ...input.executionWorkspace,
+        baseCwd: cwd,
+        source: "task_session",
+        projectId: null,
+        workspaceId: null,
+        cwd,
+      },
+      persistedExecutionWorkspace: {
+        ...input.persistedExecutionWorkspace!,
+        mode: "adapter_managed",
+        cwd,
+      },
+      ...overrides,
+    };
+  }
+
+  it("accepts an agent_default task directory without git metadata when the issue keeps a project workspace id", async () => {
+    await expect(
+      assertGitSensitiveAdapterWorkspaceValid(buildAgentDefaultTaskDirectoryInput()),
+    ).resolves.toBeUndefined();
+  });
+
+  it("still requires git metadata when an adapter_managed run resolved the project workspace", async () => {
+    const input = buildAgentDefaultTaskDirectoryInput();
+    await expectWorkspaceValidationFailure(
+      {
+        ...input,
+        resolvedWorkspace: { ...input.resolvedWorkspace, workspaceId: "workspace-1" },
+      },
+      "missing_git_metadata",
+      "has no .git metadata",
+    );
+  });
+
+  it("still requires git metadata for a git_worktree execution workspace in adapter_managed mode", async () => {
+    const input = buildAgentDefaultTaskDirectoryInput();
+    await expectWorkspaceValidationFailure(
+      {
+        ...input,
+        executionWorkspace: { ...input.executionWorkspace, strategy: "git_worktree" },
+      },
+      "missing_git_metadata",
+      "has no .git metadata",
+    );
+  });
+
   it("does not apply the git-sensitive workspace guard to non-local execution targets", async () => {
     const input = buildWorkspaceValidationInput();
 
