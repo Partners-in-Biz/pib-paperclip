@@ -191,6 +191,12 @@ export interface GmailStore {
   listInbox(companyId: string, filter: InboxFilter): Promise<MessageRow[]>;
   markDraftSent(companyId: string, id: string, fields: SentFields & { context: SendContext; sendKey: string }): Promise<void>;
   setDraftStatus(companyId: string, id: string, status: "draft" | "queued", error: string | null): Promise<void>;
+  /** Saves a draft in the Paperclip Mailbox (never in Gmail Drafts). */
+  insertDraft(row: { id: string; companyId: string; accountId: string; subject: string; body: string; to: MailAddress[]; cc: MailAddress[]; bcc: MailAddress[]; draft: DraftExtras }): Promise<void>;
+  /** Removes a draft that has not been sent; false when there is none. */
+  deleteDraft(companyId: string, id: string): Promise<boolean>;
+  /** Open drafts of one mailbox that carry this purpose key (one draft per client and purpose), newest first. */
+  draftsByPurpose(companyId: string, accountId: string, purposeKey: string): Promise<MessageRow[]>;
   // send requests
   recentClaims(accountId: string): Promise<number>;
   claimSend(input: SendRecordInput, force: boolean): Promise<boolean>;
@@ -1775,6 +1781,16 @@ export class SqlStore implements GmailStore {
   async deleteDraft(companyId: string, id: string): Promise<boolean> {
     const done = await this.db.execute(`DELETE FROM ${this.t("messages")} WHERE company_id = $1 AND id = $2 AND direction = 'outbound' AND status = 'draft'`, [companyId, id]);
     return done.rowCount > 0;
+  }
+
+  async draftsByPurpose(companyId: string, accountId: string, purposeKey: string): Promise<MessageRow[]> {
+    const rows = await this.db.query<MessageRow>(
+      `SELECT ${MESSAGE_COLUMNS} FROM ${this.t("messages")}
+        WHERE company_id = $1 AND account_id = $2 AND direction = 'outbound' AND status = 'draft' AND draft ->> 'purposeKey' = $3
+        ORDER BY created_at DESC LIMIT 50`,
+      [companyId, accountId, purposeKey],
+    );
+    return rows.map(normaliseMessage);
   }
 
   /** Outbound mail on one mailbox answering one message (drafts, queued and sent), newest first: the duplicate-reply checks (PAR-8030). */

@@ -137,6 +137,14 @@ export interface DraftExtras {
   fileList?: Array<{ id: string; name: string; mime: string; bytes: number }>;
   /** A person asked the drafting agent for a new version. Cleared when the agent saves one. */
   rewrite?: { note: string; requestedAt: string; issueId: string | null } | null;
+  /** One open draft per client and purpose: a newer draft with the same key replaces the older one (PAR-12249). */
+  purposeKey?: string | null;
+  /** The plugin's draft request key (plugin drafts only). */
+  requestKey?: string | null;
+  /** The kind of mail (upsell, proposal, outreach, approval-request, ...) the drafting agent or plugin named. */
+  purpose?: string | null;
+  /** Mail the client did not ask for: an agent's `send-draft` is refused, only a person sends it (PAR-12249). */
+  holdForPerson?: { reason: string } | null;
 }
 
 export interface DraftFile {

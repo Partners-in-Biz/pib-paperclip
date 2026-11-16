@@ -42,7 +42,7 @@ export const MAIL_EVENTS = {
   /** Mailbox → the requesting plugin (filter on `context.plugin`). */
   sendResult: "mail.send.result",
   /**
-   * Any plugin in MAIL_SENDERS → Mailbox: put a message in the company's Gmail DRAFTS folder instead of sending it. A person
+   * Any plugin in MAIL_SENDERS → Mailbox: put a message in the Paperclip Mailbox drafts (never Gmail Drafts, PAR-12249) instead of sending it. A person
    * reads it, changes it and sends it from Gmail (or deletes it). The Mailbox never sends a draft by itself.
    */
   draftRequested: "mail.draft.requested",
@@ -120,7 +120,7 @@ export interface MailSendRequested {
 }
 
 /**
- * `mail.draft.requested`: the same message fields as a send, but the Mailbox only creates a Gmail draft (users.drafts.create) on
+ * `mail.draft.requested`: the same message fields as a send, but the Mailbox only saves a draft in the Paperclip Mailbox drafts on
  * the account `from` names, else the company's default Gmail account. `key` is the idempotency key: a repeat delivery
  * re-emits the stored result and never creates a second draft. No suppression or marketing rules apply (nothing is sent).
  */
@@ -149,6 +149,10 @@ export interface MailDraftResult {
   account?: string | null;
   /** Opens the draft in Gmail (https://mail.google.com/mail/?authuser=<account>#drafts?compose=<message id>). */
   draftUrl?: string | null;
+  /** The draft's id in the Paperclip Mailbox Drafts (PAR-12249: drafts are no longer written to Gmail). */
+  mailboxDraftId?: string | null;
+  /** Older open drafts for the same client and purpose that this one replaced. */
+  replacedDraftIds?: string[];
   error?: string | null;
   /** True when the failure will not go away on retry (bad address, no Gmail account). */
   permanent?: boolean;
