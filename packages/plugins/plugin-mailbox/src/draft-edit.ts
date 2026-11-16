@@ -108,6 +108,8 @@ export async function editDraft(
   // A new version from the agent answers an open rewrite request.
   if (actor?.kind === "agent") extras.rewrite = null;
   if (actor?.kind === "user" && !extras.by) extras.by = actor;
+  // A person changed this draft: a newer draft for the same client and purpose never replaces it (PAR-12249).
+  if (actor?.kind === "user") extras.editedByPerson = true;
 
   const saved = await store.updateDraft(companyId, row.id, { subject: subject ?? row.subject, body: body ?? row.body ?? "", to, cc, bcc, draft: extras });
   if (!saved) throw new MailboxError("Only a draft that has not been sent can be changed");

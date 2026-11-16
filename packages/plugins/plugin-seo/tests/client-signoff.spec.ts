@@ -119,6 +119,67 @@ describe("the approval email draft", () => {
     expect(executed(w, /SET draft_key = \$3, draft_status = 'requested'/)).toHaveLength(1);
   });
 
+  describe("one open draft per client: the newer draft carries the older unanswered pages (PAR-12249)", () => {
+    /** A small previews table behind both queries: the earlier-open one (draft_key IS NOT NULL) and the to-draft one. */
+    const table = (rows: Row[]) => {
+      const seen: string[] = [];
+      const alive = (r: Row) => r.status === "pending" && r.review_status === "passed" && r.expires_at !== "expired";
+      const routes: Route[] = [
+        [/SELECT id, company_id FROM plugin_seo_8099f8879a\.sprints WHERE client_signoff = 'auto'/, () => [{ id: "sp-real", company_id: "co-1" }]],
+        [/FROM \(\s*SELECT DISTINCT ON \(page_url\) id, page_url, title, reviewed_at/, (_params, sql) => {
+          seen.push(sql);
+          const earlier = sql.includes("draft_key IS NOT NULL");
+          return rows.filter((r) => alive(r) && (earlier ? r.draft_key != null && r.draft_status === "drafted" : r.draft_key == null));
+        }],
+        [/FROM plugin_seo_8099f8879a\.crm_contacts WHERE company_id = \$1 AND \$2 = ANY\(account_ids\)/, () => [{ name: "Elle van Zyl", emails: ["elle@agristudies.co.za"] }]],
+      ];
+      return { routes, seen };
+    };
+    const earlier = (id: string, page: string, extra: Row = {}) => preview(id, page, { draft_key: "seo-approval:sp-real:old", draft_status: "drafted", expires_at: "later", ...extra });
+    const fresh = (id: string, page: string) => preview(id, page, { expires_at: "later" });
+
+    it("one earlier drafted-and-unanswered page and one new page: the email lists both and the old page is re-keyed", async () => {
+      const { routes } = table([earlier("e1", "old-page"), fresh("p2", "new-page")]);
+      const w = world({ sprints: [wp({ client_kind: "company", client_ref: "47a39f83" })], routes });
+      expect(await draftApprovalRequests(w.env)).toBe(1);
+      const [event] = emitted(w);
+      expect(event!.payload.key).toBe(draftKeyFor("sp-real", ["e1", "p2"]));
+      expect(event!.payload.subject).toBe("Please review 2 proposed changes for Agri Studies");
+      expect(event!.payload.text).toContain("/p/");
+      expect(event!.payload.text).toContain("https://agristudies.co.za/old-page");
+      expect(event!.payload.text).toContain("https://agristudies.co.za/new-page");
+      const [claim] = executed(w, /SET draft_key = \$3, draft_status = 'requested'/);
+      expect(claim!.params[2]).toBe(event!.payload.key);
+      expect(JSON.parse(String(claim!.params[3]))).toEqual(["e1", "p2"]);
+      // The older page may be re-keyed (it is in the carried list); a page of another batch may not.
+      expect(JSON.parse(String(claim!.params[4]))).toEqual(["e1"]);
+      expect(claim!.sql).toMatch(/draft_key IS NULL OR id IN/);
+    });
+
+    it("an expired, answered or cancelled earlier page is not carried", async () => {
+      const { routes, seen } = table([
+        earlier("x-expired", "expired", { expires_at: "expired" }),
+        earlier("x-approved", "approved", { status: "approved" }),
+        earlier("x-cancelled", "cancelled", { status: "cancelled" }),
+        fresh("p2", "new-page"),
+      ]);
+      const w = world({ sprints: [wp({ client_kind: "company", client_ref: "47a39f83" })], routes });
+      expect(await draftApprovalRequests(w.env)).toBe(1);
+      const [event] = emitted(w);
+      expect(event!.payload.key).toBe(draftKeyFor("sp-real", ["p2"]));
+      expect(event!.payload.text).toContain("new-page");
+      expect(event!.payload.text).not.toMatch(/expired|approved|cancelled/);
+      const [claim] = executed(w, /SET draft_key = \$3, draft_status = 'requested'/);
+      expect(JSON.parse(String(claim!.params[4]))).toEqual([]);
+      // The real query keeps those pages out too: only the newest non-cancelled, still-pending, passed, unexpired, drafted page of each URL.
+      const sql = seen.find((q) => q.includes("draft_key IS NOT NULL"))!;
+      expect(sql).toContain("status <> 'cancelled'");
+      expect(sql).toContain("status = 'pending' AND review_status = 'passed'");
+      expect(sql).toContain("draft_status = 'drafted'");
+      expect(sql).toContain("expires_at > now()");
+    });
+  });
+
   it("asks again when the event could not be sent", async () => {
     const w = world({ sprints: [wp()], routes: draftRoutes([preview("p1", "a")]) });
     (w.ctx.events.emit as unknown as { mockRejectedValueOnce: (e: Error) => void }).mockRejectedValueOnce(new Error("host down"));

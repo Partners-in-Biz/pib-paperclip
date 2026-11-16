@@ -254,6 +254,12 @@ export interface GmailStore {
   crmCompany(companyId: string, id: string): Promise<CrmClientRow | null>;
   crmClients(companyId: string, limit: number): Promise<CrmClientRow[]>;
   crmContact(companyId: string, id: string): Promise<CrmClientRow | null>;
+  /**
+   * Which of these addresses belong to an existing client: a CRM contact with that address, or a company whose domain
+   * (`domains`: the non-free domains of the addresses) or billing email matches, whose lifecycle is anything but lead or prospect
+   * (customer, churned or not set: unsure counts as a client). Returns the matching addresses, lower case.
+   */
+  clientRecipients(companyId: string, emails: string[], domains: string[]): Promise<string[]>;
   // client mail mappings
   listClientMaps(companyId: string): Promise<ClientMapRow[]>;
   insertClientMap(row: { companyId: string; matchType: ClientMapType; pattern: string; clientKind: "company" | "contact"; clientRef: string; clientName: string | null; note: string | null; createdBy: string | null; countOnly?: boolean }): Promise<ClientMapRow>;
@@ -500,6 +506,8 @@ const companyRow = (row: CrmCompanyDb): CrmClientRow => ({ kind: "company", id: 
 
 /** `https://www.acme.co.za/x` → `acme.co.za`, in SQL. */
 const DOMAIN_SQL = "split_part(regexp_replace(lower(coalesce(domain, '')), '^(https?://)?(www[.])?', ''), '/', 1)";
+
+const DOMAIN_SQL_CO = DOMAIN_SQL.replace("coalesce(domain,", "coalesce(co.domain,");
 
 export class SqlStore implements GmailStore {
   constructor(readonly db: DbClient) {}
@@ -1173,6 +1181,27 @@ export class SqlStore implements GmailStore {
       [companyId, limit],
     );
     return [...companies.map(companyRow), ...contacts.map(contactRow)];
+  }
+
+  async clientRecipients(companyId: string, emails: string[], domains: string[]): Promise<string[]> {
+    if (!emails.length) return [];
+    const rows = await this.db.query<{ email: string }>(
+      `SELECT DISTINCT lower(e.email) AS email FROM jsonb_array_elements_text($2::jsonb) AS e(email)
+        WHERE EXISTS (SELECT 1 FROM ${this.t("crm_contacts")} c
+                       WHERE c.company_id = $1 AND c.deleted = false
+                         AND EXISTS (SELECT 1 FROM unnest(c.emails) AS ce WHERE lower(ce) = lower(e.email))
+                         AND (coalesce(c.lifecycle, '') NOT IN ('lead', 'prospect')
+                              OR EXISTS (SELECT 1 FROM ${this.t("crm_companies")} ac
+                                          WHERE ac.company_id = $1 AND ac.deleted = false AND ac.id = ANY(c.account_ids)
+                                            AND coalesce(ac.lifecycle, '') NOT IN ('lead', 'prospect'))))
+           OR EXISTS (SELECT 1 FROM ${this.t("crm_companies")} co
+                       WHERE co.company_id = $1 AND co.deleted = false AND coalesce(co.lifecycle, '') NOT IN ('lead', 'prospect')
+                         AND (lower(co.billing ->> 'email') = lower(e.email)
+                              OR (${DOMAIN_SQL_CO} <> '' AND ${DOMAIN_SQL_CO} = split_part(lower(e.email), '@', 2)
+                                  AND split_part(lower(e.email), '@', 2) IN (SELECT lower(jsonb_array_elements_text($3::jsonb))))))`,
+      [companyId, JSON.stringify(emails), JSON.stringify(domains)],
+    );
+    return rows.map((r) => r.email);
   }
 
   async crmContact(companyId: string, id: string): Promise<CrmClientRow | null> {
