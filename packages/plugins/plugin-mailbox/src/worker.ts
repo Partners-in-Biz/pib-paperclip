@@ -92,6 +92,7 @@ import { correctTriage, markReadInGmail, readMessageBody, searchMail, type Triag
 import { handleDraftRequested } from "./gmail/draft.js";
 import { deleteMail, replyMode, startReply } from "./mail-actions.js";
 import { deleteDraftWithReason, draftAttachments, editDraft, mailboxSignature, requestRewrite, withSignature } from "./draft-edit.js";
+import { cleanPurpose, heldDraftError, holdFor, purposeKeyFor, replaceOlderDrafts } from "./draft-purpose.js";
 import { newerSentReply, removeSupersededDrafts, reusableReplyDraft } from "./reply-dedupe.js";
 import { handleSendRequested, performSend, retrySend } from "./gmail/send.js";
 import { runSyncJob, syncOne, triageRunFor } from "./gmail/sync.js";
@@ -1115,6 +1116,8 @@ async function createDraft(companyId: string, agentId: string | null, params: Re
     if (open) return { id: open.id, status: "draft", to: (open.to_addrs ?? []).map((a) => a.email), reused: true };
   }
   const id = randomUUID();
+  const purpose = cleanPurpose(params.purpose);
+  const purposeKey = purposeKeyFor(params.purposeKey, purpose, to);
   await requireStore().insertDraft({
     id,
     companyId,
@@ -1124,9 +1127,23 @@ async function createDraft(companyId: string, agentId: string | null, params: Re
     to,
     cc,
     bcc,
-    draft: { html: optionalString(params, "html") ?? null, replyToMessageId, threadId, by, sourceIssueId, replyTo: replyTo.address, fromName: cleanDisplayName(params.fromName) },
+    draft: {
+      html: optionalString(params, "html") ?? null,
+      replyToMessageId,
+      threadId,
+      by,
+      sourceIssueId,
+      replyTo: replyTo.address,
+      fromName: cleanDisplayName(params.fromName),
+      purpose,
+      purposeKey,
+      // Only an agent's draft is held: a person's own draft on the page is theirs to send.
+      holdForPerson: agentId ? holdFor(purpose, params.unasked === true) : null,
+    },
   });
-  return { id, status: "draft", to: to.map((a) => a.email) };
+  // One draft per client and purpose: the newer version replaces the older open one (PAR-12249).
+  const replaced = purposeKey ? await replaceOlderDrafts(requireStore(), companyId, accountId, purposeKey, id) : [];
+  return { id, status: "draft", to: to.map((a) => a.email), ...(replaced.length ? { replaced } : {}), ...(agentId && holdFor(purpose, params.unasked === true) ? { heldForPerson: true, note: "This is mail the client did not ask for: only a person sends it. send-draft will be refused." } : {}) };
 }
 
 async function sendDraft(companyId: string, agentId: string | null, messageId: string) {
@@ -1134,7 +1151,12 @@ async function sendDraft(companyId: string, agentId: string | null, messageId: s
   const row = await s.getMessage(companyId, messageId);
   if (!row) throw new MailboxError("Draft was not found");
   if (row.status !== "draft") throw new MailboxError("Only a draft can be sent");
-  if (agentId) assertMaySend(await delegationFor(row.account_id, agentId));
+  if (agentId) {
+    // Mail the client did not ask for, and drafts a plugin made for a person: an agent never sends them (PAR-12249).
+    const held = heldDraftError(row.draft);
+    if (held) throw new MailboxError(held);
+    assertMaySend(await delegationFor(row.account_id, agentId));
+  }
   await assertNotCountOnlyEnquirer(s, companyId, [...(row.to_addrs ?? []), ...(row.cc_addrs ?? []), ...(row.bcc_addrs ?? [])]);
   const replyToMessageId = row.draft?.replyToMessageId ?? null;
   if (replyToMessageId) {

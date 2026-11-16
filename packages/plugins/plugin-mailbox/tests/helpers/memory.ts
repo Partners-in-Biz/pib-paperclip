@@ -4,6 +4,7 @@
  */
 import { vi } from "vitest";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
+import type { MailAddress } from "@partnersinbiz/pib-plugin-kit";
 import type { AccountPatch, EspDomainPatch, GmailStore, SentFields } from "../../src/db.js";
 import type { EspAuditRow, EspDayField, EspDayRow, EspDomainRow, EspEventInput, RecipientHealthRow } from "../../src/esp/types.js";
 import { isPrivateMail, scrubbedRequest } from "../../src/private-mail.js";
@@ -14,6 +15,7 @@ import type {
   ClientMapType,
   CrmClientRow,
   DelegationSource,
+  DraftExtras,
   DomainCheckRow,
   InboxFilter,
   MessageRow,
@@ -362,6 +364,22 @@ export class MemoryStore implements GmailStore {
     const row = this.messages.get(id);
     if (!row || row.company_id !== companyId) return;
     Object.assign(row, { status: "sent", gmail_message_id: fields.gmailMessageId, gmail_thread_id: fields.gmailThreadId, rfc_message_id: fields.rfcMessageId, sent_context: fields.context, send_key: fields.sendKey, send_error: null });
+  }
+  async insertDraft(row: { id: string; companyId: string; accountId: string; subject: string; body: string; to: MailAddress[]; cc: MailAddress[]; bcc: MailAddress[]; draft: DraftExtras }) {
+    this.messages.set(row.id, {
+      id: row.id, company_id: row.companyId, account_id: row.accountId, subject: row.subject, body: row.body, direction: "outbound", status: "draft", created_at: nowIso(), read_at: null,
+      gmail_message_id: null, gmail_thread_id: null, rfc_message_id: null, in_reply_to: null, refs: null, from_addr: null, to_addrs: row.to, cc_addrs: row.cc, bcc_addrs: row.bcc, snippet: null, labels: [], attachments: [],
+      bulk: false, received_at: null, triage: null, triaged_at: null, category: null, urgency: null, needs_reply: null, phishing: null, client_kind: null, client_ref: null, reply_to: null, sent_context: null,
+      send_key: null, draft: row.draft, send_error: null, bounce: null, reply_to_addr: null, map_state: null, map_id: null,
+    } as unknown as MessageRow);
+  }
+  async deleteDraft(companyId: string, id: string) {
+    const row = this.messages.get(id);
+    if (!row || row.company_id !== companyId || row.direction !== "outbound" || row.status !== "draft") return false;
+    return this.messages.delete(id);
+  }
+  async draftsByPurpose(companyId: string, accountId: string, purposeKey: string) {
+    return [...this.messages.values()].filter((m) => m.company_id === companyId && m.account_id === accountId && m.direction === "outbound" && m.status === "draft" && m.draft?.purposeKey === purposeKey).reverse();
   }
   async setDraftStatus(companyId: string, id: string, status: "draft" | "queued", error: string | null) {
     const row = this.messages.get(id);
