@@ -3130,6 +3130,13 @@
       "when": 1794105390611,
       "tag": "0448_agent_config_revision_numbers",
       "breakpoints": true
+    },
+    {
+      "idx": 449,
+      "version": "7",
+      "when": 1794915544763,
+      "tag": "0449_member_restriction",
+      "breakpoints": true
     }
   ]
 }
