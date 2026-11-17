@@ -30,6 +30,7 @@ export {
   setMemberRestrictionMode,
   type MemberRestrictionDenial,
 } from "./admin.js";
+export { HONEST_PERSON_RUN_RULE_ID, honestPersonRuleFor, type HonestPersonRule } from "./honest-person.js";
 export {
   memberRestrictionReadCondition,
   restrictionPersonIds,

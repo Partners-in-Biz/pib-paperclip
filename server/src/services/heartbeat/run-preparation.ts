@@ -13,7 +13,9 @@ import { boundRunIssueIdSql } from "../run-task-binding.js";
 import { isBrowserUseConnection } from "../browser-use-client.js";
 import { restConnectorFor } from "../connectors/rest-registry.js";
 import { explicitOperatorRunIdentity } from "../run-identity.js";
-import type { WakeCausingActor } from "./causing-actor.js";
+import { causingPersonFor, readStampedWakeCausingActor, type WakeCausingActor } from "./causing-actor.js";
+import { recordMemberRestrictionDenial } from "../member-restriction/admin.js";
+import { HONEST_PERSON_RUN_RULE_ID } from "../member-restriction/honest-person.js";
 import {
   type DurableChatWakeupRequest,
 } from "../durable-chat-wakeup.js";
@@ -3245,7 +3247,7 @@ export function createHeartbeatRunPreparation(db: Db) {
     return input.source === "on_demand" || input.triggerDetail === "manual";
   }
 
-  async function resolveResponsibleUserIdForRunSeed(input: {
+  type RunSeedInput = {
     companyId: string;
     contextSnapshot: Record<string, unknown>;
     issueContext: { id: string; responsibleUserId: string | null; parentId: string | null } | null;
@@ -3257,7 +3259,37 @@ export function createHeartbeatRunPreparation(db: Db) {
     source?: WakeupOptions["source"] | null;
     triggerDetail?: WakeupOptions["triggerDetail"] | null;
     existingRunResponsibleUserId?: string | null;
-  }) {
+  };
+
+  /**
+   * The person a run works for (C36). H1 (PAR-12608 4.10) comes first: when
+   * the wake's stamped causing person is bound by rule group H, the run works
+   * for him under `enforce`; under `report` the present person is kept and a
+   * "would differ" is recorded. Otherwise, and in mode `off`, the present order.
+   */
+  async function resolveResponsibleUserIdForRunSeed(input: RunSeedInput) {
+    const causing = await causingPersonFor(
+      db, input.companyId, readStampedWakeCausingActor(input.contextSnapshot),
+    );
+    if (causing?.mode === "enforce") {
+      delete input.contextSnapshot.executionIdentityCause;
+      return causing.personId;
+    }
+    const present = await resolvePresentResponsibleUserIdForRunSeed(input);
+    if (causing?.mode === "report" && present !== causing.personId) {
+      await recordMemberRestrictionDenial(db, {
+        companyId: input.companyId,
+        personId: causing.personId,
+        ruleId: HONEST_PERSON_RUN_RULE_ID,
+        target: "heartbeat.run_person",
+        objectId: input.issueContext?.id ?? null,
+        mode: "report",
+      });
+    }
+    return present;
+  }
+
+  async function resolvePresentResponsibleUserIdForRunSeed(input: RunSeedInput) {
     const contextResponsibleUserId = readNonEmptyString(
       input.contextSnapshot.responsibleUserId,
     );
