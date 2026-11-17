@@ -115,6 +115,13 @@ const NOT_OPEN = "This is not open to limited members";
 const UNKNOWN_ROUTE = "This route is not in the plugin's access table";
 const OWN_COMPANIES = "Your access is limited to your own companies, and this is not yet limited that way";
 
+/**
+ * Set on every handler the guard registers, so the registration check (4.5,
+ * `./testing.ts`) can tell a guarded registration from a direct one.
+ */
+export const GUARDED_HANDLER: unique symbol = Symbol.for("partnersinbiz.access.guarded-handler");
+const guarded = <T extends object>(handler: T): T => Object.defineProperty(handler, GUARDED_HANDLER, { value: true });
+
 export function permissionOf(entry: AccessTableEntry | undefined): string | null {
   if (entry === undefined) return null;
   if (entry === ADMIN_ONLY) return ADMIN_ONLY;
@@ -244,30 +251,38 @@ export function createAccessGuard(ctx: PluginContext, options: AccessGuardOption
     return { mode, open: permissions.length > 0, permissions };
   }
 
-  ctx.actions.register(ACCESS_ME_ACTION, async (_params, context) =>
-    accessMe(context?.companyId ?? context?.actor?.companyId ?? null, actionCaller(context)),
+  ctx.actions.register(
+    ACCESS_ME_ACTION,
+    guarded(async (_params, context) => accessMe(context?.companyId ?? context?.actor?.companyId ?? null, actionCaller(context))),
   );
 
   return {
     pluginKey,
     action(key, handler) {
       registered.add(key);
-      ctx.actions.register(key, async (params, context): Promise<unknown | ActionRefusal> => {
-        const companyId = context?.companyId ?? context?.actor?.companyId ?? null;
-        const r = await check(companyId, key, actionCaller(context));
-        return "refused" in r ? permissionRefusal(r.refused) : handler(params, context, r.check);
-      });
+      ctx.actions.register(
+        key,
+        guarded(async (params: Record<string, unknown>, context: PluginPerformActionContext): Promise<unknown | ActionRefusal> => {
+          const companyId = context?.companyId ?? context?.actor?.companyId ?? null;
+          const r = await check(companyId, key, actionCaller(context));
+          return "refused" in r ? permissionRefusal(r.refused) : handler(params, context, r.check);
+        }),
+      );
     },
     tool(name, declaration, handler) {
       const key = `tool:${name}`;
       registered.add(key);
-      ctx.tools.register(name, declaration, async (params, run) => {
-        const r = await check(run?.companyId || null, key, toolCaller(run));
-        if ("refused" in r) {
-          return normalizeToolResult({ error: `Access refused: the person this run works for may not do this (${r.refused}). An owner can change it in Setup under People.` });
-        }
-        return handler(params, run, r.check);
-      });
+      ctx.tools.register(
+        name,
+        declaration,
+        guarded(async (params: unknown, run: ToolRunContext) => {
+          const r = await check(run?.companyId || null, key, toolCaller(run));
+          if ("refused" in r) {
+            return normalizeToolResult({ error: `Access refused: the person this run works for may not do this (${r.refused}). An owner can change it in Setup under People.` });
+          }
+          return handler(params, run, r.check);
+        }),
+      );
     },
     apiRoute(routeKey, handler) {
       registered.add(`api:${routeKey}`);
