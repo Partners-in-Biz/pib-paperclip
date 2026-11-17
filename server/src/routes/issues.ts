@@ -175,6 +175,7 @@ import {
   type IssueWakeDiagnosticsResponse,
   type IssueRelationIssueSummary,
   type IssueLockedStub,
+  type IssueBlockerAttention,
   type IssueReviewPolicy,
   type IssueThreadInteractionCanonicalResolverPolicy,
   type IssueComment,
@@ -5577,6 +5578,39 @@ export function issueRoutes(
     return { id: issue.id, identifier: issue.identifier, locked: true };
   }
 
+  /*
+   * Stubs (PAR-12608 4.3, PAR-12726). Every task a readable task points at
+   * (parent and ancestors, blockers, blocked tasks, links and mentions, the
+   * sampled terminal blocker) is shown in full only when `issue:read` allows
+   * it for this caller, so the private rule and the member restriction both
+   * pick the identifier-only stub. Visibility alone never decides it.
+   */
+  function withReadableTerminalBlocker(
+    attention: IssueBlockerAttention | null,
+    readableIds: Set<string>,
+  ): IssueBlockerAttention | null {
+    const terminal = attention?.terminalBlocker;
+    if (!attention || !terminal || readableIds.has(terminal.id)) return attention;
+    return { ...attention, terminalBlocker: null };
+  }
+
+  async function redactIssueAncestry<A extends { id: string; identifier: string | null }>(
+    req: Request,
+    companyId: string,
+    ancestors: A[],
+    blockerAttention: IssueBlockerAttention | null,
+  ): Promise<{ ancestors: Array<A | IssueLockedStub>; blockerAttention: IssueBlockerAttention | null }> {
+    const terminalId = blockerAttention?.terminalBlocker?.id;
+    const readableIds = await readableIssueEdgeIds(req, companyId, [
+      ...ancestors.map((ancestor) => ancestor.id),
+      ...(terminalId ? [terminalId] : []),
+    ]);
+    return {
+      ancestors: ancestors.map((ancestor) => readableIds.has(ancestor.id) ? ancestor : lockedIssueStub(ancestor)),
+      blockerAttention: withReadableTerminalBlocker(blockerAttention, readableIds),
+    };
+  }
+
   async function redactIssueRelationEdges(
     req: Request,
     companyId: string,
@@ -5630,6 +5664,7 @@ export function issueRoutes(
     id: string;
     blockedBy?: IssueRelationIssueSummary[];
     blocks?: IssueRelationIssueSummary[];
+    blockerAttention?: IssueBlockerAttention | null;
   }>(req: Request, companyId: string, rows: T[]): Promise<T[]> {
     const related = rows.flatMap((row) => [...(row.blockedBy ?? []), ...(row.blocks ?? [])]);
     const edgeIds = new Set<string>();
@@ -5640,7 +5675,11 @@ export function issueRoutes(
       edgeIds.add(issue.id);
       pending.push(...(issue.terminalBlockers ?? []));
     }
-    const readableIds = await readableIssueEdgeIds(req, companyId, [...edgeIds]);
+    const terminalIds = rows.flatMap((row) => {
+      const terminal = row.blockerAttention?.terminalBlocker;
+      return terminal ? [terminal.id] : [];
+    });
+    const readableIds = await readableIssueEdgeIds(req, companyId, [...edgeIds, ...terminalIds]);
     const redact = (issue: IssueRelationIssueSummary, ancestors = new Set<string>()): IssueEdgeReference => {
       if (!readableIds.has(issue.id)) return lockedIssueStub(issue);
       const { terminalBlockers, ...visibleFields } = issue;
@@ -5657,6 +5696,7 @@ export function issueRoutes(
       ...row,
       ...(row.blockedBy ? { blockedBy: row.blockedBy.map((issue) => redact(issue)) } : {}),
       ...(row.blocks ? { blocks: row.blocks.map((issue) => redact(issue)) } : {}),
+      ...(row.blockerAttention ? { blockerAttention: withReadableTerminalBlocker(row.blockerAttention, readableIds) } : {}),
     })) as T[];
   }
 
@@ -9634,6 +9674,7 @@ export function issueRoutes(
       recoveryActionsByRelationIssue,
     );
     const visibleRelations = await redactIssueRelationEdges(req, issue.companyId, relationsWithRecoveryActions);
+    const visibleAncestry = await redactIssueAncestry(req, issue.companyId, ancestors, blockerAttention);
     const revalidatedActiveRecoveryAction = await revalidateActiveSourceRecoveryForRead({
         issue,
         trigger: "read_projection",
@@ -9677,7 +9718,7 @@ export function issueRoutes(
         description: issue.description,
         status: issue.status,
         workMode: issue.workMode,
-        ...(blockerAttention ? { blockerAttention } : {}),
+        ...(visibleAncestry.blockerAttention ? { blockerAttention: visibleAncestry.blockerAttention } : {}),
         ...(reviewAttention ? { reviewAttention } : {}),
         scheduledRetry,
         activeRecoveryAction: revalidatedActiveRecoveryAction,
@@ -9693,13 +9734,13 @@ export function issueRoutes(
         originId: issue.originId,
         updatedAt: issue.updatedAt,
       },
-      ancestors: ancestors.map((ancestor) => ({
+      ancestors: visibleAncestry.ancestors.map((ancestor) => "locked" in ancestor ? ancestor : {
         id: ancestor.id,
         identifier: ancestor.identifier,
         title: ancestor.title,
         status: ancestor.status,
         priority: ancestor.priority,
-      })),
+      }),
       project: visibleProject
         ? {
             id: visibleProject.id,
@@ -9986,9 +10027,10 @@ export function issueRoutes(
     const relationsWithRecoveryActions = withRecoveryActionsOnRelationSummaries(
       relations, recoveryActionsByRelationIssue,
     );
-    const [visibleRelations, visibleReferenceSummary, visibleProject, mentionedProjectVisibility] = await Promise.all([
+    const [visibleRelations, visibleReferenceSummary, visibleAncestry, visibleProject, mentionedProjectVisibility] = await Promise.all([
       redactIssueRelationEdges(req, issue.companyId, relationsWithRecoveryActions),
       redactIssueReferenceEdges(req, issue.companyId, referenceSummary),
+      redactIssueAncestry(req, issue.companyId, ancestors, blockerAttention),
       visibleIssueProject(req, project),
       Promise.all(mentionedProjects.map((mentionedProject) => canActorReadProject(req, mentionedProject))),
     ]);
@@ -10000,8 +10042,8 @@ export function issueRoutes(
       ...issue,
       ...inboxArchiveFields,
       goalId: goal?.id ?? issue.goalId,
-      ancestors,
-      ...(blockerAttention ? { blockerAttention } : {}),
+      ancestors: visibleAncestry.ancestors,
+      ...(visibleAncestry.blockerAttention ? { blockerAttention: visibleAncestry.blockerAttention } : {}),
       ...(reviewAttention ? { reviewAttention } : {}),
       successfulRunHandoff: successfulRunHandoffStates.get(issue.id) ?? null,
       executionBlocker,
