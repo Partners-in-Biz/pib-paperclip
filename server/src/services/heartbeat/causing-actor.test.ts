@@ -14,7 +14,7 @@ type Heartbeat = ReturnType<typeof heartbeatService>;
 // is never called; only its types matter.
 function wakeCallsThatMustNotCompile(heartbeat: Heartbeat) {
   // @ts-expect-error causingActor is required on every wake
-  void heartbeat.wakeup("agent-1", { causingActor: "system", source: "on_demand", reason: "manual" });
+  void heartbeat.wakeup("agent-1", { source: "on_demand", reason: "manual" });
   // @ts-expect-error the wake options themselves are required
   void heartbeat.wakeup("agent-1");
   void heartbeat.wakeup("agent-1", { source: "on_demand", causingActor: SYSTEM_CAUSING_ACTOR });

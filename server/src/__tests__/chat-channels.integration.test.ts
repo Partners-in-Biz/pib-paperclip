@@ -65893,7 +65893,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         });
         if (mode === "handoff_rollback") f.wakeup.mockImplementationOnce(async (agentId, options) => {
           const original = options!.durableChatRequest!;
-          return heartbeatService(db).wakeup(agentId, { causingActor: "system", ...options, durableChatRequest: createDurableChatWakeupRequest({
+          return heartbeatService(db).wakeup(agentId, { ...options, durableChatRequest: createDurableChatWakeupRequest({
             ...original, onAdmitted: async (tx, receipt) => {
               await original.onAdmitted!(tx, receipt);
               throw new Error("Simulated interruption before admission commit");

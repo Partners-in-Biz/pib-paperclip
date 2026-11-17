@@ -75,7 +75,7 @@ describe("durable case handoff queue admission", () => {
   });
   it("rejects an invented handoff version before creating a wake", async () => {
     const f = await fixture();
-    await expect(heartbeatService(db).wakeup(f.agentId, { causingActor: "system", ...f.options,
+    await expect(heartbeatService(db).wakeup(f.agentId, { ...f.options,
       durableCaseHandoffRequest: { ...f.options.durableCaseHandoffRequest, expectedIssueStatusVersion: 42 } })).rejects.toThrow("assignment");
     expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.wakeupRequestId))).toHaveLength(0);
   });
@@ -301,7 +301,7 @@ describe("durable case handoff queue admission", () => {
       authorAgentId: f.agentId, body: "Proceed to the next explicitly requested case phase" }).returning();
     await db.update(caseHandoffs).set({ actorType: "agent", actorId: f.agentId, fromAgentId: f.agentId, commentId: comment.id })
       .where(eq(caseHandoffs.id, f.handoffId));
-    const run = await heartbeatService(db).wakeup(f.agentId, { causingActor: "system", ...f.options, requestedByActorType: "agent", requestedByActorId: f.agentId,
+    const run = await heartbeatService(db).wakeup(f.agentId, { ...f.options, causingActor: { type: "agent", agentId: f.agentId, runId: null }, requestedByActorType: "agent", requestedByActorId: f.agentId,
       payload: { ...f.options.payload, commentId: comment.id }, contextSnapshot: { ...f.options.contextSnapshot, wakeCommentId: comment.id } });
     expect(run).toMatchObject({ status: "queued", wakeupRequestId: f.wakeupRequestId });
     expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.wakeupRequestId)))[0])

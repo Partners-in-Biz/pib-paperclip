@@ -57,8 +57,8 @@ describe("heartbeat queue module boundary", () => {
     let rejectSecond!: (reason: Error) => void;
     deps.getAgent.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectFirst = reject; }));
     deps.getAgent.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectSecond = reject; }));
-    const first = createHeartbeatQueue(database.db, deps).trackWakeup("first");
-    const second = createHeartbeatQueue(database.db, deps).trackWakeup("second");
+    const first = createHeartbeatQueue(database.db, deps).trackWakeup("first", { causingActor: "system" });
+    const second = createHeartbeatQueue(database.db, deps).trackWakeup("second", { causingActor: "system" });
     const firstCheck = expect(first).rejects.toThrow("first lookup failed");
     const secondCheck = expect(second).rejects.toThrow("second lookup failed");
     expect(deps.activeWakeupPromises).toEqual(new Set([first, second]));
@@ -347,7 +347,7 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
         if (kind === "missing request") delete contextSnapshot.contextCompactionRequestId;
         if (kind === "malformed request") payload.requestId = { unexpected: true };
         if (kind === "mismatched request") payload.requestId = randomUUID();
-        return f.queue.enqueueWakeup(agentId, { causingActor: "system", ...options, contextSnapshot, payload });
+        return f.queue.enqueueWakeup(agentId, { ...options, contextSnapshot, payload });
       } });
       await expect(service.request({ companyId: f.company.id, issue: f.issue, userId: f.user.id }))
         .rejects.toMatchObject({ code: "wake_skipped" });
