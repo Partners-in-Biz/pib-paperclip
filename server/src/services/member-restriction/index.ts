@@ -1,5 +1,6 @@
 export {
   MemberRestrictionReadError,
+  memberRestrictionEnforcedCompanyIds,
   memberRestrictionFor,
   memberRestrictionKillSwitchIgnoredValue,
   memberRestrictionKillSwitchOn,
@@ -22,3 +23,9 @@ export {
   assertRoleAllowedForRestriction,
   setMemberRestriction,
 } from "./admin.js";
+export {
+  memberRestrictionReadCondition,
+  restrictionPersonIds,
+  strictReadCondition,
+  type StrictReadResource,
+} from "./strict-read.js";

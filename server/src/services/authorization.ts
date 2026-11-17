@@ -33,6 +33,7 @@ import type {
   TaskBridgeAgentKeyScope,
 } from "@paperclipai/shared";
 import { loadActorMemberships } from "./member-restriction/actor-memberships.js";
+import { memberRestrictionReadCondition, type StrictReadResource } from "./member-restriction/strict-read.js";
 import {
   LOW_TRUST_REVIEW_PRESET,
   extractAgentMentionIds,
@@ -671,38 +672,50 @@ export async function canActorReadIssuePrivacy(db: Db | DbTransaction, actor: Au
     .limit(1).then(rows => rows.length > 0);
 }
 
-/** Filter every externally reachable task query with the same privacy predicate. */
-export async function issueReadSqlCondition(db: Db | DbTransaction, actor: AuthorizationActor): Promise<SQL<boolean>> {
-  if (actor.authorizingUserId) return issuePrivacyCondition(actor);
-  if (issuePrivacyMode() !== "enforce") return sql<boolean>`true`;
-  if (actor.source === "local_implicit" || actor.isInstanceAdmin) return sql<boolean>`true`;
-  if (actor.type === "board" && !actor.ignoreInstanceAdmin && actor.source !== "cloud_tenant"
+async function isBoardInstanceAdminForReads(db: Db | DbTransaction, actor: AuthorizationActor): Promise<boolean> {
+  return actor.type === "board" && !actor.ignoreInstanceAdmin && actor.source !== "cloud_tenant"
     && await db.select({ id: instanceUserRoles.id }).from(instanceUserRoles)
       .where(and(eq(instanceUserRoles.userId, actor.userId ?? ""), eq(instanceUserRoles.role, "instance_admin")))
-      .limit(1).then(rows => rows.length > 0)) return sql<boolean>`true`;
-  return issuePrivacyCondition(actor);
+      .limit(1).then(rows => rows.length > 0);
+}
+
+/**
+ * The list builders' shared flow (PAR-12608 4.3, place 1). The member
+ * restriction is AND-ed onto the privacy condition; when no person the actor
+ * carries is restricted under `enforce`, the result is today's condition
+ * unchanged. Where today returns "all rows" because the privacy mode is not
+ * `enforce`, the restriction part alone is returned. The local-board and
+ * instance-admin exits stay: neither is bound by the restriction.
+ */
+async function readSqlCondition(
+  db: Db | DbTransaction,
+  actor: AuthorizationActor,
+  resource: StrictReadResource,
+  privacyCondition: (actor: AuthorizationActor) => SQL<boolean>,
+): Promise<SQL<boolean>> {
+  const withRestriction = (condition: SQL<boolean>, restriction: SQL<boolean> | null) =>
+    restriction ? sql<boolean>`(${condition} and ${restriction})` : condition;
+  if (actor.authorizingUserId) {
+    return withRestriction(privacyCondition(actor), await memberRestrictionReadCondition(db, actor, resource));
+  }
+  if (actor.source === "local_implicit" || actor.isInstanceAdmin) return sql<boolean>`true`;
+  if (issuePrivacyMode() !== "enforce") {
+    const restriction = await memberRestrictionReadCondition(db, actor, resource);
+    if (!restriction || await isBoardInstanceAdminForReads(db, actor)) return sql<boolean>`true`;
+    return restriction;
+  }
+  if (await isBoardInstanceAdminForReads(db, actor)) return sql<boolean>`true`;
+  return withRestriction(privacyCondition(actor), await memberRestrictionReadCondition(db, actor, resource));
+}
+
+/** Filter every externally reachable task query with the same privacy predicate. */
+export async function issueReadSqlCondition(db: Db | DbTransaction, actor: AuthorizationActor): Promise<SQL<boolean>> {
+  return readSqlCondition(db, actor, "issue", issuePrivacyCondition);
 }
 
 /** SQL equivalent used for project list/search pushdown. */
 export async function projectReadSqlCondition(db: Db | DbTransaction, actor: AuthorizationActor): Promise<SQL<boolean>> {
-  if (actor.authorizingUserId) return projectPrivacyCondition(actor);
-  if (issuePrivacyMode() !== "enforce") return sql<boolean>`true`;
-  if (actor.source === "local_implicit" || actor.isInstanceAdmin) return sql<boolean>`true`;
-  if (
-    actor.type === "board"
-    && !actor.ignoreInstanceAdmin
-    && actor.source !== "cloud_tenant"
-    && Boolean(await db
-      .select({ id: instanceUserRoles.id })
-      .from(instanceUserRoles)
-      .where(and(
-        eq(instanceUserRoles.userId, actor.userId ?? ""),
-        eq(instanceUserRoles.role, "instance_admin"),
-      ))
-      .limit(1)
-      .then((rows) => rows[0] ?? null))
-  ) return sql<boolean>`true`;
-  return projectPrivacyCondition(actor);
+  return readSqlCondition(db, actor, "project", projectPrivacyCondition);
 }
 
 function responsibleUserSnapshotTtlMs() {
