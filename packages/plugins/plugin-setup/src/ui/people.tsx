@@ -38,6 +38,15 @@ export function setArea(draft: Draft, keys: string[], state: Exclude<AreaState, 
 
 const draftOf = (grant: Grant | null): Draft => ({ preset: grant?.preset ?? null, allow: grant?.allow ?? [], deny: grant?.deny ?? [] });
 
+export type SaveGrantPayload = Draft & { userId: string; linkedCompanyIds: string[]; scopeOverrides: Grant["scopeOverrides"] };
+/**
+ * What Save sends. The kit rebuilds the whole grant from it, so the fields this
+ * tab does not edit (own companies, scope overrides) go back unchanged.
+ */
+export function grantPayload(userId: string, grant: Grant | null, draft: Draft): SaveGrantPayload {
+  return { userId, ...draft, linkedCompanyIds: grant?.linkedCompanyIds ?? [], scopeOverrides: grant?.scopeOverrides ?? {} };
+}
+
 export interface PeopleSectionProps {
   view: AccessPeopleView;
   members: PeopleMember[];
@@ -50,7 +59,7 @@ export interface PeopleSectionProps {
   onConfirmEnforce: () => void;
   onCancelConfirm: () => void;
   onSendAgain: () => void;
-  onSave: (userId: string, draft: Draft, linkedCompanyIds: string[]) => void;
+  onSave: (payload: SaveGrantPayload) => void;
   onClear: (userId: string) => void;
 }
 
@@ -146,6 +155,7 @@ function PersonRow({ member, name, grant, view, busy, onSave, onClear }: { membe
         <Pill size="sm" tone={admin || grant ? "ok" : "neutral"}>{admin ? "Full access" : preset ?? (grant ? "Custom" : "No access")}</Pill>
         {admin || draft ? null : <Button type="button" variant="secondary" disabled={busy !== null} onClick={() => setDraft(draftOf(grant))}>Change</Button>}
       </div>
+      {admin ? null : <p style={{ margin: 0, fontSize: 12, color: tokens.muted, ...breakAnywhere }}>Own companies: {linked.length ? linked.join(", ") : "none yet"}</p>}
       {draft ? (
         <div style={{ display: "grid", gap: 8 }}>
           <label style={{ display: "grid", gap: 4, fontSize: 12, color: tokens.muted }}>Preset
@@ -169,12 +179,11 @@ function PersonRow({ member, name, grant, view, busy, onSave, onClear }: { membe
               );
             })}
           </div>
-          <p style={{ margin: 0, fontSize: 12, color: tokens.muted, ...breakAnywhere }}>Own companies: {linked.length ? linked.join(", ") : "none yet"}</p>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "space-between" }}>
             <Button type="button" variant="secondary" onClick={() => setDraft(null)}>Cancel</Button>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
               {grant ? <Button type="button" variant="secondary" disabled={busy !== null} onClick={() => { onClear(member.userId); setDraft(null); }}>Remove access</Button> : null}
-              <Button type="button" disabled={busy !== null} onClick={() => { onSave(member.userId, draft, linked); setDraft(null); }}>Save</Button>
+              <Button type="button" disabled={busy !== null} onClick={() => { onSave(grantPayload(member.userId, grant, draft)); setDraft(null); }}>Save</Button>
             </div>
           </div>
         </div>
@@ -228,7 +237,7 @@ export function PeopleTab({ companyId, members, agentNames, linkFor }: { company
       onConfirmEnforce={() => { const seen = (confirm ?? []).map((p) => p.userId); setConfirm(null); void run("mode", () => setMode({ companyId, mode: "enforce", confirmNoAccess: seen }), (a) => `Switch is enforce, revision ${a.rev}.${sent(a)}`); }}
       onCancelConfirm={() => setConfirm(null)}
       onSendAgain={() => void run("send", () => sendAgain({ companyId }), (a) => `Sent revision ${a.rev}.`)}
-      onSave={(userId, draft, linkedCompanyIds) => void run("save", () => saveGrant({ companyId, userId, ...draft, linkedCompanyIds }), (a) => `Saved. Access is now at revision ${a.rev}.${sent(a)}`)}
+      onSave={(payload) => void run("save", () => saveGrant({ companyId, ...payload }), (a) => `Saved. Access is now at revision ${a.rev}.${sent(a)}`)}
       onClear={(userId) => void run("save", () => clearGrant({ companyId, userId }), (a) => `Access removed. Revision ${a.rev}.${sent(a)}`)}
     />
   );

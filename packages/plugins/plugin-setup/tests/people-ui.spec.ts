@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { accessAreas, type AccessPeopleView } from "../src/access-people.js";
 import { fetchMembers } from "../src/ui/api.js";
 import { setupTabs } from "../src/ui/index.js";
-import { PeopleSection, areaState, isAccessAdminRole, setArea, type PeopleSectionProps } from "../src/ui/people.js";
+import { PeopleSection, areaState, grantPayload, isAccessAdminRole, setArea, type PeopleSectionProps } from "../src/ui/people.js";
 
 const noop = () => undefined;
 const view = (over: Partial<AccessPeopleView> = {}): AccessPeopleView => ({
@@ -55,6 +55,20 @@ describe("People tab", () => {
     expect(out).toContain("through agent Rhea");
     expect(out).toContain('href="/PAR/company/settings/invites"');
     expect(out).not.toContain("Switch lost");
+  });
+
+  it("shows own companies on the collapsed row, read-only, for members only", () => {
+    const out = html(props());
+    expect(out.match(/Own companies: none yet/g)).toHaveLength(1); // u1, not the owner
+    const linked = view({ people: [{ userId: "u1", role: "member", grant: { userId: "u1", preset: "viewer", allow: [], deny: [], linkedCompanyIds: ["client-1"], scopeOverrides: {} } as never }] });
+    expect(html(props({ view: linked }))).toContain("Own companies: client-1");
+  });
+
+  it("Save sends the stored scope overrides and own companies back unchanged", () => {
+    const grant = { userId: "u1", preset: "viewer" as const, allow: [], deny: [], linkedCompanyIds: ["client-1"], scopeOverrides: { crm: "linked" as const }, updatedBy: "owner", updatedAt: "2026-11-17T10:00:00.000Z" };
+    const draft = { preset: "viewer", allow: [], deny: ["billing.invoices:view"] };
+    expect(grantPayload("u1", grant, draft)).toEqual({ userId: "u1", ...draft, linkedCompanyIds: ["client-1"], scopeOverrides: { crm: "linked" } });
+    expect(grantPayload("u2", null, { preset: null, allow: [], deny: [] })).toEqual({ userId: "u2", preset: null, allow: [], deny: [], linkedCompanyIds: [], scopeOverrides: {} });
   });
 
   it("switch lost, and an empty report list", () => {
