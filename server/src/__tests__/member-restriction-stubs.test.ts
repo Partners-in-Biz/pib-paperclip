@@ -55,7 +55,7 @@ async function createApp(db: Db, userId: string, companyId: string) {
     req.actor = { type: "board", userId, companyIds: [companyId], source: "session", isInstanceAdmin: false };
     next();
   });
-  app.use("/api", issueRoutes(db, {} as any));
+  app.use("/api", issueRoutes(db, {} as Parameters<typeof issueRoutes>[1]));
   app.use(errorHandler);
   return app;
 }
