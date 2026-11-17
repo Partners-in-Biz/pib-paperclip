@@ -652,6 +652,8 @@ function issuePrivacyPrincipalCondition(actor: AuthorizationActor): SQL<boolean>
         select p.id, p.company_id, p.privacy_parent_issue_id, p.visibility, p.project_id,
           p.responsible_user_id, p.created_by_user_id, p.assignee_user_id, p.assignee_agent_id
         from issues p where p.id = c.privacy_parent_issue_id and p.company_id = c.company_id
+          -- A chat passes no privacy to work started from it (PAR-12774 4.3).
+          and p.conversation_agent_id is null
         limit 1
       ) p
       where c.privacy_parent_issue_id is not null

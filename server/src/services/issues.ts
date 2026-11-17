@@ -2026,6 +2026,21 @@ async function assertExecutionTaskParent(db: Db, companyId: string, parentId?: s
   if (parent?.conversationAgentId) throw unprocessable("Conversations cannot have new subtasks; create a task in a project instead");
 }
 
+/** Whether a task takes over its privacy parent's privacy. A chat passes none on
+ * (PAR-12774 4.3): work started from a chat keeps its own visibility. The
+ * `privacy_parent_issue_id` link to the chat stays (workspace lineage, strict climb). */
+async function privacyParentPassesPrivacy(
+  db: Db | DbTransaction,
+  parent: { companyId: string; visibility: string; projectId: string | null; conversationAgentId: string | null },
+): Promise<boolean> {
+  if (parent.conversationAgentId) return false;
+  if (parent.visibility === "private") return true;
+  if (!parent.projectId) return false;
+  return db.select({ id: projects.id }).from(projects)
+    .where(and(eq(projects.id, parent.projectId), eq(projects.companyId, parent.companyId), eq(projects.visibility, "private")))
+    .limit(1).then((rows: Array<{ id: string }>) => rows.length > 0);
+}
+
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 // `originIssueId` is server-derived provenance; callers cannot supply it.
 type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId" | "title" | "titleNeedsGeneration" | "workspaceSelection" | "originIssueId"> & {
@@ -10677,15 +10692,15 @@ export function issueService(db: Db) {
           if (sourceRun) runSourceIssueId = (await loadRunBoundIssue(tx as unknown as Db, sourceRun))?.id ?? null;
         }
         // Privacy follows structure: the requested parent (even when placed
-        // beside it), the chat that handed this off, or the run's task.
+        // beside it), the chat that handed this off, or the run's task. A chat
+        // stays the privacy parent but passes no privacy on.
         let privacyParentIssueId = requestedParentId ?? handoffSource?.id ?? runSourceIssueId;
         let inheritedPrivateSubtree = false;
         if (privacyParentIssueId) {
           const [source] = await tx.select().from(issues)
             .where(and(eq(issues.id, privacyParentIssueId), eq(issues.companyId, companyId)));
           if (!source) privacyParentIssueId = null;
-          else if (source.visibility === "private" || (source.projectId && await tx.select({ id: projects.id }).from(projects)
-            .where(and(eq(projects.id, source.projectId), eq(projects.visibility, "private"))).limit(1).then(rows => rows.length > 0))) {
+          else if (await privacyParentPassesPrivacy(tx, source)) {
             visibility = "private";
             privacyRootIssueId = source.privacyRootIssueId ?? source.id;
             inheritedPrivateSubtree = true;
@@ -11651,8 +11666,8 @@ export function issueService(db: Db) {
           const [privacyParent] = privacyParentId ? await tx.select().from(issues)
             .where(and(eq(issues.id, privacyParentId), eq(issues.companyId, existing.companyId))) : [];
           patch.privacyParentIssueId = privacyParent?.id ?? null;
-          if (privacyParent && (privacyParent.visibility === "private" || (privacyParent.projectId && await tx.select({ id: projects.id }).from(projects)
-            .where(and(eq(projects.id, privacyParent.projectId), eq(projects.visibility, "private"))).limit(1).then((rows: Array<{ id: string }>) => rows.length > 0)))) {
+          // A chat privacy parent (kept by a flattened move) passes no privacy on.
+          if (privacyParent && await privacyParentPassesPrivacy(tx, privacyParent)) {
             if (issueData.visibility === "open") throw unprocessable("A task cannot be made public while it inherits private access");
             patch.visibility = "private";
             patch.privacyRootIssueId = privacyParent.privacyRootIssueId ?? privacyParent.id;
@@ -11850,13 +11865,14 @@ export function issueService(db: Db) {
         if (changesPrivacy && updated.visibility === "private") {
           // Creation and tree changes hold the same company lock. No child can
           // slip into the tree between discovering descendants and protecting them.
+          // A chat passes no privacy on, so the sweep does not descend from one.
           const protectedRows = await tx.execute(sql`with recursive descendants as (
-            select i.id, i.parent_id, i.privacy_parent_issue_id from issues i
+            select i.id, i.parent_id, i.privacy_parent_issue_id, i.conversation_agent_id from issues i
               where i.id = ${updated.id} and i.company_id = ${updated.companyId}
             union
-            select i.id, i.parent_id, i.privacy_parent_issue_id from issues i join descendants p
+            select i.id, i.parent_id, i.privacy_parent_issue_id, i.conversation_agent_id from issues i join descendants p
               on i.parent_id = p.id or i.privacy_parent_issue_id = p.id
-              where i.company_id = ${updated.companyId}
+              where i.company_id = ${updated.companyId} and p.conversation_agent_id is null
           ) update issues i set visibility = 'private',
               privacy_root_issue_id = ${updated.privacyRootIssueId ?? updated.id},
               privacy_parent_issue_id = coalesce(i.privacy_parent_issue_id, i.parent_id), updated_at = now()
