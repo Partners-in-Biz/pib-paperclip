@@ -101,10 +101,20 @@ export function registerAccessReceiver(ctx: PluginContext, pluginKey: string): (
       ctx.logger.info("Access receive stopped: stored row unreadable", { companyId, rev: update.rev, error: errorText(error) });
       return;
     }
+    // An unreadable row has no old `userIds` to diff: grants of people only in it stay until a later send.
     const current = stored === null || stored === "invalid" ? null : stored;
     if (current && update.rev <= current.rev) {
-      // Same rev again: nothing to write, but say we hold it, so a lost confirmation is repaired.
-      if (update.rev === current.rev) await confirm(companyId, current.rev);
+      if (update.rev < current.rev) return;
+      // Same rev again: no grant writes, but refresh `receivedAt` so the switch stops asking
+      // (the row is written last, so a row at this rev means its grants are complete), and
+      // confirm, so a lost confirmation is repaired.
+      try {
+        const row: AccessCompanyRow = { mode: current.mode, rev: current.rev, userIds: current.userIds, receivedAt: new Date().toISOString() };
+        await ctx.state.set(accessCompanyScope(companyId), row);
+      } catch (error) {
+        ctx.logger.info("Access receive: row refresh failed", { companyId, rev: current.rev, error: errorText(error) });
+      }
+      await confirm(companyId, current.rev);
       return;
     }
 

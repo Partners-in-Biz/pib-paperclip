@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { PluginEvent } from "@paperclipai/plugin-sdk";
-import { onAccessReceived, registerAccessReceiver, type AccessUpdatedPayload } from "../src/access/index.js";
+import { ACCESS_ASK_INTERVAL_MS, onAccessReceived, readAccessSwitch, registerAccessReceiver, type AccessUpdatedPayload } from "../src/access/index.js";
 import { loadGrant } from "../src/permissions.js";
 import { CO, PLUGIN, ROW, accessFake as fake, grantKey } from "./helpers/access-fake.js";
 
@@ -38,18 +38,37 @@ describe("access receiver", () => {
     expect(synced(f)).toEqual([{ name: "access.synced", companyId: CO, payload: { companyId: CO, rev: 3, pluginKey: PLUGIN } }]);
   });
 
-  it("drops a lower or equal rev; an equal rev re-confirms without writing", async () => {
+  it("drops a lower or equal rev; an equal rev writes only the company row and re-confirms", async () => {
     const f = fake();
     const handle = registerAccessReceiver(f.ctx, PLUGIN);
     await send(handle, { rev: 5, userIds: ["u1"], grants: { u1: grant("viewer") } });
     f.writes.length = 0;
     await send(handle, { rev: 4, mode: "off", userIds: [] });
-    await send(handle, { rev: 5, mode: "off", userIds: [] });
     expect(f.writes).toEqual([]);
-    expect(f.store.get(ROW)).toMatchObject({ mode: "report", rev: 5 });
+    await send(handle, { rev: 5, mode: "off", userIds: [] });
+    expect(f.writes).toEqual([`set ${ROW}`]);
+    expect(f.store.has(grantKey("u1"))).toBe(true);
+    expect(f.store.get(ROW)).toMatchObject({ mode: "report", rev: 5, userIds: ["u1"] });
     expect(synced(f).map((e) => e.payload.rev)).toEqual([5, 5]);
     await send(handle, { rev: 6, mode: "off", userIds: [] });
     expect(f.store.get(ROW)).toMatchObject({ mode: "off", rev: 6 });
+  });
+
+  it("an equal rev refreshes a stale receivedAt, so the switch stops asking", async () => {
+    const f = fake();
+    const handle = registerAccessReceiver(f.ctx, PLUGIN);
+    const old = "2026-01-01T00:00:00.000Z";
+    f.store.set(ROW, { mode: "report", rev: 5, userIds: ["u1"], receivedAt: old });
+    expect((await readAccessSwitch(f.ctx, CO, PLUGIN)).asked).toBe(true);
+    f.emitted.length = 0;
+    await send(handle, { rev: 5, mode: "report", userIds: ["u1"] });
+    const row = f.store.get(ROW) as { receivedAt: string };
+    expect(Date.parse(row.receivedAt)).toBeGreaterThan(Date.parse(old));
+    expect(row).toMatchObject({ mode: "report", rev: 5, userIds: ["u1"] });
+    // Past the once-a-minute limit, so only a stale row could make it ask.
+    const later = Date.now() + ACCESS_ASK_INTERVAL_MS + 1;
+    expect(await readAccessSwitch(f.ctx, CO, PLUGIN, { now: () => later })).toMatchObject({ mode: "report", asked: false });
+    expect(f.named("access.request")).toEqual([]);
   });
 
   it("stores rev 0 from Setup's answer for a company with no settings when it has no row", async () => {
