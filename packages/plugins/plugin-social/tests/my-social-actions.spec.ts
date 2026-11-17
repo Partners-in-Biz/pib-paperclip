@@ -494,7 +494,8 @@ describe("My Social page wiring", () => {
   it("My Social is the same workspace as Social, in the personal space", async () => {
     const { readFileSync } = await import("node:fs");
     const ui = readFileSync(new URL("../src/ui/index.tsx", import.meta.url), "utf8");
-    expect(ui).toContain('<SocialWorkspace {...props} space="me" />');
+    expect(ui).toContain('<GatedWorkspace {...props} space="me" />');
+    expect(ui).toContain("<SocialWorkspace {...props} />");
     expect(ui).toContain("space,\n    })) as Snapshot");
     // every write that takes the page's scope also carries the space
     const parts = readFileSync(new URL("../src/ui/parts.tsx", import.meta.url), "utf8");

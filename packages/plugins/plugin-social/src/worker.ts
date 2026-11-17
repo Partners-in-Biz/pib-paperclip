@@ -1,10 +1,11 @@
 import { runCalendarCheck } from "./calendar-check.js";
 import { getCadenceRecord, setCadenceRecord } from "./cadence-record.js";
-import { GROWTH_TOOL_NAMES, normalizeToolResult, registerGrowthTools, type GrowthToolsHost } from "@partnersinbiz/pib-plugin-kit";
+import { createAccessGuard, GROWTH_TOOL_NAMES, normalizeToolResult, registerGrowthTools, type AccessGuard, type GrowthToolsHost } from "@partnersinbiz/pib-plugin-kit";
 import {
   definePlugin,
   runWorker,
   type PluginApiRequestInput,
+  type PluginApiResponse,
   type PluginContext,
   type PluginPerformActionContext,
   type ToolResult,
@@ -154,12 +155,14 @@ import {
   myDisconnectAccountAction,
 } from "./my-social.js";
 import { handleClientSummary } from "./routes.js";
+import { ACCESS_TABLE } from "./access-table.js";
 import { socialSetupStatus } from "./setup-status.js";
 import { GROWTH_TOOL_DESCRIPTIONS, GROWTH_TOOL_KINDS, SOCIAL_TOOLS } from "./tools.js";
 import { refreshTokensJob } from "./tokens.js";
 import { correctTriage } from "./triage.js";
 
 let pluginCtx: PluginContext | null = null;
+let guard: AccessGuard | null = null;
 let bootstrap: CompanyBootstrap | null = null;
 const lastRuns: Record<string, { at: string; ok: boolean; summary?: unknown; error?: string }> = {};
 
@@ -556,7 +559,11 @@ const ACTIONS: Record<string, ActionHandler> = {
 
 // ── API routes ──────────────────────────────────────────────────────────────
 
-async function handleApiRoute(ctx: PluginContext, input: PluginApiRequestInput) {
+/** The manifest's routes, each registered through the access guard. */
+const API_ROUTE_KEYS = ["oauth-complete", "client-summary", SETUP_STATUS_ROUTE.routeKey, COCKPIT_ROUTE.routeKey] as const;
+const NOT_FOUND: PluginApiResponse = { status: 404, body: { error: "Not found" } };
+
+async function handleApiRoute(ctx: PluginContext, input: PluginApiRequestInput): Promise<PluginApiResponse> {
   if (input.routeKey === "client-summary") return handleClientSummary(ctx, input);
   if (input.routeKey === COCKPIT_ROUTE.routeKey) {
     const companyId = input.companyId;
@@ -576,7 +583,7 @@ async function handleApiRoute(ctx: PluginContext, input: PluginApiRequestInput) 
       return { status: 500, body: { error: error instanceof Error ? error.message : String(error) } };
     }
   }
-  if (input.routeKey !== "oauth-complete") return { status: 404, body: { error: "Not found" } };
+  if (input.routeKey !== "oauth-complete") return NOT_FOUND;
   // OAuth completion (called by the static bridge page).
   try {
     if (input.actor.actorType !== "user") return { status: 403, body: { error: "Only a signed-in person can finish connecting an account." } };
@@ -672,18 +679,22 @@ const plugin = definePlugin({
     bootstrap = createCompanyBootstrap(ctx);
     const ensure = (companyId: string) => bootstrap!.ensure(companyId);
 
+    // Every action, tool and API route goes through the access guard (PAR-12677). With the switch off it is a pass-through.
+    const g = createAccessGuard(ctx, { pluginKey: PLUGIN_ID, table: ACCESS_TABLE });
+    guard = g;
     for (const tool of SOCIAL_TOOLS) {
       if ((GROWTH_TOOL_NAMES as readonly string[]).includes(tool.name)) continue;
-      ctx.tools.register(tool.name, tool, async (params, run) => normalizeToolResult(await runTool(ctx, tool.name, params, run)));
+      g.tool(tool.name, tool, async (params, run) => normalizeToolResult(await runTool(ctx, tool.name, params, run)));
     }
-    registerGrowthTools(ctx, socialGrowthToolsHost(ctx));
+    registerGrowthTools(ctx, socialGrowthToolsHost(ctx), g);
     for (const [key, raw] of Object.entries(ACTIONS)) {
       const handler = REFUSABLE_ACTIONS.has(key) ? refusalAsResult(raw) : raw;
-      ctx.actions.register(key, async (params, context) => handler(ctx, await actionViewer(ctx, context), objectParams(params)));
+      g.action(key, async (params, context) => handler(ctx, await actionViewer(ctx, context), objectParams(params)));
     }
     // Company preferences: the kit checks the caller is an owner or admin of the company (agents are refused).
-    ctx.actions.register("social.preferences-load", async (_params, context) => loadPreferencesAction(ctx, context));
-    ctx.actions.register("social.preferences-save", async (params, context) => savePreferencesAction(ctx, context, objectParams(params)));
+    g.action("social.preferences-load", async (_params, context) => loadPreferencesAction(ctx, context));
+    g.action("social.preferences-save", async (params, context) => savePreferencesAction(ctx, context, objectParams(params)));
+    for (const routeKey of API_ROUTE_KEYS) g.apiRoute(routeKey, (input) => handleApiRoute(ctx, input));
 
     registerJob(ctx, "publish-due", () => publishDueJob(ctx, ensure));
     registerJob(ctx, "refresh-tokens", async () => {
@@ -745,8 +756,9 @@ const plugin = definePlugin({
     };
   },
   async onApiRequest(input) {
-    if (!pluginCtx) return { status: 503, body: { error: "Social plugin is not ready" } };
-    return handleApiRoute(pluginCtx, input);
+    if (!pluginCtx || !guard) return { status: 503, body: { error: "Social plugin is not ready" } };
+    // An unknown key under the switch `off` answers as before; under report and enforce the guard refuses it.
+    return guard.handleApiRequest(input, async () => NOT_FOUND);
   },
 });
 
