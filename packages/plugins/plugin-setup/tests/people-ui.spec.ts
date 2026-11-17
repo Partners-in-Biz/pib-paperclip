@@ -1,8 +1,9 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { GUARDED_PLUGINS } from "@partnersinbiz/pib-plugin-kit";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { accessAreas, type AccessPeopleView } from "../src/access-people.js";
+import { fetchMembers } from "../src/ui/api.js";
 import { setupTabs } from "../src/ui/index.js";
 import { PeopleSection, areaState, isAccessAdminRole, setArea, type PeopleSectionProps } from "../src/ui/people.js";
 
@@ -60,6 +61,33 @@ describe("People tab", () => {
     const out = html(props({ view: view({ switchLost: true, refusals: [] }) }));
     expect(out).toContain("Switch lost, choose again");
     expect(out).toContain("Nothing refused");
+  });
+});
+
+describe("fetchMembers", () => {
+  const answer = (status: number, body: unknown) => vi.stubGlobal("fetch", async () => new Response(JSON.stringify(body), { status }));
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("an operator's 403 reads as no role and no members, so no tab", async () => {
+    answer(403, { error: "Permission denied" });
+    expect(await fetchMembers("co")).toEqual({ currentUserRole: null, members: [] });
+  });
+
+  it("keeps active human members with name, email and role", async () => {
+    answer(200, {
+      access: { currentUserRole: "owner" },
+      members: [
+        { principalType: "user", principalId: "u1", status: "active", membershipRole: "member", user: { name: "Sipho", email: "s@x.co" } },
+        { principalType: "user", principalId: "u2", status: "suspended", membershipRole: "member", user: null },
+        null,
+      ],
+    });
+    expect(await fetchMembers("co")).toEqual({ currentUserRole: "owner", members: [{ userId: "u1", name: "Sipho", email: "s@x.co", role: "member" }] });
+  });
+
+  it("another failure is an error, not a hidden tab", async () => {
+    answer(500, { error: "db down" });
+    await expect(fetchMembers("co")).rejects.toThrow("db down");
   });
 });
 

@@ -207,13 +207,15 @@ export async function fetchMembers(companyId: string): Promise<MembersLite> {
   const body = (await readJson(res)) as { members?: unknown; access?: { currentUserRole?: unknown } } | null;
   if (res.status === 401 || res.status === 403) return { currentUserRole: null, members: [] };
   if (!res.ok) throw errorFrom(body, `Could not read the members (${res.status})`);
-  const rows = Array.isArray(body?.members) ? (body.members as Array<Record<string, any>>) : [];
-  return {
-    currentUserRole: typeof body?.access?.currentUserRole === "string" ? body.access.currentUserRole : null,
-    members: rows
-      .filter((m) => m && m.principalType === "user" && m.status === "active" && typeof m.principalId === "string")
-      .map((m) => ({ userId: m.principalId, name: typeof m.user?.name === "string" ? m.user.name : null, email: typeof m.user?.email === "string" ? m.user.email : null, role: typeof m.membershipRole === "string" ? m.membershipRole : null })),
-  };
+  type RawMember = { principalType?: unknown; principalId?: unknown; status?: unknown; membershipRole?: unknown; user?: { name?: unknown; email?: unknown } | null };
+  const rows = Array.isArray(body?.members) ? (body.members as Array<RawMember | null>) : [];
+  const str = (v: unknown) => (typeof v === "string" ? v : null);
+  const members: MembersLite["members"] = [];
+  for (const m of rows) {
+    if (!m || m.principalType !== "user" || m.status !== "active" || typeof m.principalId !== "string") continue;
+    members.push({ userId: m.principalId, name: str(m.user?.name), email: str(m.user?.email), role: str(m.membershipRole) });
+  }
+  return { currentUserRole: str(body?.access?.currentUserRole), members };
 }
 
 /** Agent names by id, for the report list. Empty when the agents cannot be read. */
