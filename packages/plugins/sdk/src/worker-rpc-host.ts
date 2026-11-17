@@ -77,6 +77,7 @@ import type {
   PluginEvent,
   PluginJobContext,
   PluginLauncherRegistration,
+  PluginActingPersonContext,
   ScopeKey,
   ToolRunContext,
   ToolResult,
@@ -2071,6 +2072,12 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     return value === "user" || value === "agent" || value === "system" ? value : "system";
   }
 
+  /** The host's acting person, kept only when the host sent it (an older host sends neither field). */
+  function actingPersonFrom(raw: PluginActingPersonContext | null | undefined): PluginActingPersonContext {
+    if (!raw || !("onBehalfOfUserId" in raw)) return {};
+    return { onBehalfOfUserId: stringOrNull(raw.onBehalfOfUserId), onBehalfOfRestricted: raw.onBehalfOfRestricted === true };
+  }
+
   function actionContextFromParams(params: PerformActionParams): PluginPerformActionContext {
     const rawActor = params.actorContext && typeof params.actorContext === "object"
       ? params.actorContext
@@ -2081,6 +2088,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       agentId: stringOrNull(rawActor?.agentId),
       runId: stringOrNull(rawActor?.runId),
       companyId: stringOrNull(rawActor?.companyId),
+      ...actingPersonFrom(rawActor),
     });
     return Object.freeze({
       actor,

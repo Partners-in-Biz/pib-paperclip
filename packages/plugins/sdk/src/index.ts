@@ -316,6 +316,7 @@ export type {
   PluginEvent,
   PluginJobContext,
   PluginLauncherRegistration,
+  PluginActingPersonContext,
   ToolRunContext,
   ToolResult,
   PluginEntityUpsert,

@@ -70,6 +70,7 @@ import type {
   PluginJobContext,
   PluginExecutionWorkspaceMetadata,
   PluginWorkspace,
+  PluginActingPersonContext,
   ToolRunContext,
   ToolResult,
   PluginLocalFolderListing,
@@ -437,7 +438,7 @@ export interface GetDataParams {
  */
 export type PluginPerformActionActorType = "user" | "agent" | "system";
 
-export interface PluginPerformActionActorContext {
+export interface PluginPerformActionActorContext extends PluginActingPersonContext {
   /** Authenticated principal type resolved by the Paperclip host. */
   type: PluginPerformActionActorType;
   /** Authenticated board user id when `type === "user"`, otherwise null. */

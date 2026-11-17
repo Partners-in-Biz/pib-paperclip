@@ -624,6 +624,9 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       agentId: stringOrNull(actorInput?.agentId),
       runId: stringOrNull(actorInput?.runId),
       companyId,
+      ...(actorInput && "onBehalfOfUserId" in actorInput
+        ? { onBehalfOfUserId: stringOrNull(actorInput.onBehalfOfUserId), onBehalfOfRestricted: actorInput.onBehalfOfRestricted === true }
+        : {}),
     });
     return Object.freeze({ actor, companyId });
   }
@@ -2703,6 +2706,9 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         runId: runCtx.runId ?? randomUUID(),
         companyId: runCtx.companyId ?? "company-test",
         projectId: runCtx.projectId ?? "project-test",
+        ...("onBehalfOfUserId" in runCtx
+          ? { onBehalfOfUserId: runCtx.onBehalfOfUserId ?? null, onBehalfOfRestricted: runCtx.onBehalfOfRestricted === true }
+          : {}),
       };
       return await handler(params, ctxToPass) as T;
     },

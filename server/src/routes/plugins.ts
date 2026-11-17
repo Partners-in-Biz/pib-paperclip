@@ -96,6 +96,12 @@ import { isCloudManagedInstance } from "../services/cloud-instance.js";
 import { getHiddenSettings } from "../services/settings-visibility.js";
 import { secretService } from "../services/secrets.js";
 import { badRequest, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
+import {
+  isMemberRestrictionUnavailable,
+  memberRestrictionResolver,
+  pluginActingPersonForActor,
+  type PluginActingPerson,
+} from "../services/member-restriction/index.js";
 
 /**
  * Floor: when the hosting operator hides the Plugins settings surface
@@ -464,7 +470,7 @@ interface PluginScopedApiRequest {
     agentId?: string | null;
     userId?: string | null;
     runId?: string | null;
-  };
+  } & PluginActingPerson;
   companyId: string;
   headers: Record<string, string>;
 }
@@ -546,6 +552,7 @@ export function pluginRoutes(
     workerManager: bridgeDeps?.workerManager ?? webhookDeps?.workerManager,
   });
   const issuesSvc = issueService(db);
+  const resolveMemberRestriction = memberRestrictionResolver(db);
 
   function matchScopedApiRoute(route: PluginApiRouteDeclaration, method: string, requestPath: string) {
     if (route.method !== method) return null;
@@ -803,8 +810,14 @@ export function pluginRoutes(
     }
   }
 
-  function performActionActorContext(req: Request, companyId: string | undefined): PluginPerformActionActorContext {
+  /** The acting person a plugin receives (PAR-12608 4.10, H3); a failed restriction read throws 503. */
+  function actingPerson(req: Request, companyId: string | null | undefined): Promise<PluginActingPerson> {
+    return pluginActingPersonForActor(resolveMemberRestriction, req.actor, companyId);
+  }
+
+  async function performActionActorContext(req: Request, companyId: string | undefined): Promise<PluginPerformActionActorContext> {
     const scopedCompanyId = companyId ?? null;
+    const person = await actingPerson(req, scopedCompanyId);
     if (req.actor.type === "agent") {
       return {
         type: "agent",
@@ -812,6 +825,7 @@ export function pluginRoutes(
         agentId: req.actor.agentId ?? null,
         runId: req.actor.runId ?? null,
         companyId: scopedCompanyId,
+        ...person,
       };
     }
     if (req.actor.type === "board") {
@@ -821,6 +835,7 @@ export function pluginRoutes(
         agentId: null,
         runId: req.actor.runId ?? null,
         companyId: scopedCompanyId,
+        ...person,
       };
     }
     return {
@@ -829,6 +844,7 @@ export function pluginRoutes(
       agentId: null,
       runId: req.actor.runId ?? null,
       companyId: scopedCompanyId,
+      ...person,
     };
   }
 
@@ -1089,7 +1105,10 @@ export function pluginRoutes(
     }
     // A run can have no project. Plugins then get an empty projectId, the same
     // value the tool gateway sends, so both paths give plugins one contract.
-    const runContext: ToolRunContext = { ...requestedRunContext, projectId: requestedProjectId ?? "" };
+    // The acting person is core's to compute; a value in the request body is dropped.
+    const { onBehalfOfUserId: _requestedPerson, onBehalfOfRestricted: _requestedMark, ...requestedIds } =
+      requestedRunContext as ToolRunContext;
+    const runContext: ToolRunContext = { ...requestedIds, projectId: requestedProjectId ?? "" };
 
     assertCompanyAccess(req, runContext.companyId);
     const scopeError = await validateToolRunContextScope(runContext);
@@ -1097,6 +1116,7 @@ export function pluginRoutes(
       res.status(403).json({ error: scopeError });
       return;
     }
+    Object.assign(runContext, await actingPerson(req, runContext.companyId));
 
     if (req.actor.type === "agent" && toolGatewayDeps) {
       try {
@@ -1576,6 +1596,7 @@ export function pluginRoutes(
     }
 
     const companyId = assertPluginBridgeScope(req, body.companyId);
+    const actorContext = await performActionActorContext(req, companyId);
 
     try {
       const result = await bridgeDeps.workerManager.call(
@@ -1584,7 +1605,7 @@ export function pluginRoutes(
         {
           key: body.key,
           params: actionParamsWithAuthorizedCompanyScope(body.params, companyId),
-          actorContext: performActionActorContext(req, companyId),
+          actorContext,
           renderEnvironment: body.renderEnvironment ?? null,
         },
       );
@@ -1760,6 +1781,7 @@ export function pluginRoutes(
     } | undefined;
 
     const companyId = assertPluginBridgeScope(req, body?.companyId);
+    const actorContext = await performActionActorContext(req, companyId);
 
     try {
       const result = await bridgeDeps.workerManager.call(
@@ -1768,7 +1790,7 @@ export function pluginRoutes(
         {
           key,
           params: actionParamsWithAuthorizedCompanyScope(body?.params, companyId),
-          actorContext: performActionActorContext(req, companyId),
+          actorContext,
           renderEnvironment: body?.renderEnvironment ?? null,
         },
       );
@@ -1951,6 +1973,7 @@ export function pluginRoutes(
       }
 
       const actor = getActorInfo(req);
+      const person = await actingPerson(req, companyId);
       const input: PluginScopedApiRequest = {
         routeKey: match.route.routeKey,
         method: req.method,
@@ -1964,6 +1987,7 @@ export function pluginRoutes(
           agentId: actor.agentId,
           userId: actor.actorType === "user" ? actor.actorId : null,
           runId: actor.runId,
+          ...person,
         },
         companyId,
         headers: sanitizePluginRequestHeaders(req),
@@ -1992,6 +2016,8 @@ export function pluginRoutes(
         res.status(status).json(result.body ?? null);
       }
     } catch (err) {
+      // A failed restriction read answers through the error handler: 503 with its code, no data.
+      if (isMemberRestrictionUnavailable(err)) throw err;
       const status = typeof (err as { status?: unknown }).status === "number"
         ? (err as { status: number }).status
         : err instanceof JsonRpcCallError && (
