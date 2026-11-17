@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
+import type { AccessGuard } from "@partnersinbiz/pib-plugin-kit";
 import { registerSeoTools, KIT_GROWTH_TOOL_NAMES } from "../src/growth-host.js";
 import { SEO_TOOLS } from "../src/tools.js";
 
@@ -8,9 +9,10 @@ const PLAYBOOK = ["get-playbook", "propose-playbook-change", "decide-playbook-ch
 describe("SEO tool registration", () => {
   it("registers each playbook tool exactly once, natively, and no tool twice", async () => {
     const reg: Array<{ name: string; handler: (p: unknown, r: unknown) => Promise<unknown> }> = [];
-    const ctx = { tools: { register: (name: string, _d: unknown, handler: never) => void reg.push({ name, handler }) } } as unknown as PluginContext;
+    const ctx = {} as unknown as PluginContext;
+    const guard = { tool: (name: string, _d: unknown, handler: never) => void reg.push({ name, handler }) } as unknown as Pick<AccessGuard, "tool">;
     const calls: string[] = [];
-    registerSeoTools(ctx, SEO_TOOLS, async (name) => { calls.push(name); return { content: "native" } as never; });
+    registerSeoTools(ctx, guard, SEO_TOOLS, async (name) => { calls.push(name); return { content: "native" } as never; });
     const names = reg.map((r) => r.name);
     expect(new Set(names).size).toBe(names.length);
     for (const n of PLAYBOOK) {

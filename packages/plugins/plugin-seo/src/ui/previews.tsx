@@ -4,11 +4,11 @@
  * confirm-preview-approval; those handlers read who you are from the signed-in session and refuse anyone else.
  */
 import { useState } from "react";
-import { usePluginAction } from "@paperclipai/plugin-sdk/ui";
 import { Button, EmptyState, Eye, Modal, Pill, SectionCard, TextArea, breakAnywhere, tokens, useIsNarrow } from "@partnersinbiz/pib-plugin-ui";
 import { Banner, IssueLink, shortUrl } from "./parts.js";
 import type { PreviewItem, PreviewFilter, SprintBundle } from "./types.js";
 import { PREVIEW_FILTER_LABEL, awaitingCount, previewsFor, PREVIEW_FILTERS, previewDaysLeft, previewDecider, previewExpiryTone, previewStatus } from "./words.js";
+import { useSeoCall } from "./actions.js";
 
 export { awaitingCount, previewsFor };
 
@@ -20,7 +20,7 @@ type Reply = { skipped?: Skipped[] } | null;
 
 export function PreviewsTab({ bundle, filter, onFilter, onChanged }: { bundle: SprintBundle; filter: PreviewFilter; onFilter: (f: PreviewFilter) => void; onChanged: () => Promise<void> }) {
   const narrow = useIsNarrow();
-  const callAction = usePluginAction("seo.call");
+  const callAction = useSeoCall();
   const sprintId = bundle.sprint.sprintId;
   const manual = bundle.sprint.clientSignoff !== "auto";
   const all = bundle.previews ?? [];
