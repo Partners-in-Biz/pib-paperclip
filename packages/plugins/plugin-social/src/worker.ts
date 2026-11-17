@@ -138,6 +138,7 @@ import {
   type Viewer,
 } from "./service.js";
 import { growthAction } from "./growth/action.js";
+import { REFUSABLE_ACTIONS, refusalAsResult } from "./refusal.js";
 import { createPersonalDraftRecord } from "./personal-draft.js";
 import { loadPreferencesAction, savePreferencesAction } from "./preferences.js";
 import {
@@ -666,7 +667,8 @@ const plugin = definePlugin({
       ctx.tools.register(tool.name, tool, async (params, run) => normalizeToolResult(await runTool(ctx, tool.name, params, run)));
     }
     registerGrowthTools(ctx, socialGrowthToolsHost(ctx));
-    for (const [key, handler] of Object.entries(ACTIONS)) {
+    for (const [key, raw] of Object.entries(ACTIONS)) {
+      const handler = REFUSABLE_ACTIONS.has(key) ? refusalAsResult(raw) : raw;
       ctx.actions.register(key, async (params, context) => handler(ctx, await actionViewer(ctx, context), objectParams(params)));
     }
     // Company preferences: the kit checks the caller is an owner or admin of the company (agents are refused).
