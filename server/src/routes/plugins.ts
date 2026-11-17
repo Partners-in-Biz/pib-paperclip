@@ -49,6 +49,7 @@ import {
   PLUGIN_STATUSES,
 } from "@paperclipai/shared";
 import { pluginRegistryService } from "../services/plugin-registry.js";
+import { agentKeyRunNamingError, toolRouteCallerError } from "../services/member-restriction/rule-group-h.js";
 import { pluginLifecycleManager } from "../services/plugin-lifecycle.js";
 import {
   getPluginUiContributionMetadata,
@@ -1092,6 +1093,20 @@ export function pluginRoutes(
     const runContext: ToolRunContext = { ...requestedRunContext, projectId: requestedProjectId ?? "" };
 
     assertCompanyAccess(req, runContext.companyId);
+    // PAR-12608 4.9 decision 1 (signed-in callers) and H5 (a long-lived key
+    // naming a run in the tool run context). The header was checked at auth.
+    const restrictionError = await toolRouteCallerError(db, req.actor, runContext.companyId, "POST /plugins/tools/execute")
+      ?? (req.actor.source === "agent_key" && req.actor.onBehalfOfUserId && runContext.runId !== req.actor.runId
+        ? await agentKeyRunNamingError(db, {
+            companyId: runContext.companyId,
+            agentId: runContext.agentId,
+            personId: req.actor.onBehalfOfUserId,
+            runId: runContext.runId,
+            membership: req.actor.onBehalfOfMemberships?.find((m) => m.companyId === runContext.companyId) ?? null,
+            target: "POST /plugins/tools/execute",
+          })
+        : null);
+    if (restrictionError) throw restrictionError;
     const scopeError = await validateToolRunContextScope(runContext);
     if (scopeError) {
       res.status(403).json({ error: scopeError });

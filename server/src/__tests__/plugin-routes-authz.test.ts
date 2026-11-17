@@ -120,6 +120,8 @@ function boardActor(overrides: Record<string, unknown> = {}) {
     source: "session",
     isInstanceAdmin: false,
     companyIds: [companyA],
+    // An owner: the tool execute route admits only owners and admins (PAR-12714).
+    memberships: [{ companyId: companyA, membershipRole: "owner", status: "active", restricted: false, restrictionMode: "off" }],
     ...overrides,
   };
 }

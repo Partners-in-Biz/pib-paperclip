@@ -30,6 +30,7 @@ import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
 import { captureRunIdentity } from "../services/run-identity.js";
 import { loadActorMemberships } from "../services/member-restriction/actor-memberships.js";
+import { agentKeyRunNamingError } from "../services/member-restriction/rule-group-h.js";
 import { boardAuthService } from "../services/board-auth.js";
 import { retryIdempotentDatabaseOperation } from "../database-retry.js";
 import { beginIdleTrackedWork } from "../services/task-admission.js";
@@ -486,6 +487,33 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       return;
     }
 
+    const keyPersonMemberships = await loadResponsibleUserMemberships(db, {
+      companyId: key.companyId,
+      userId: responsibleUserId,
+    });
+    // H5 (PAR-12608 4.10): a long-lived key names only a run of its own agent
+    // that works for its own person. Without a header it acts as that person.
+    const namedRunId = normalizeOptionalString(runIdHeader);
+    if (namedRunId) {
+      try {
+        const runError = await agentKeyRunNamingError(db, {
+          companyId: key.companyId,
+          agentId: key.agentId,
+          personId: responsibleUserId,
+          runId: namedRunId,
+          membership: keyPersonMemberships.find((membership) => membership.companyId === key.companyId) ?? null,
+          target: `${req.method} ${req.path}`,
+        });
+        if (runError) {
+          next(runError);
+          return;
+        }
+      } catch (error) {
+        next(error);
+        return;
+      }
+    }
+
     req.actor = {
       type: "agent",
       agentId: key.agentId,
@@ -493,10 +521,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       keyId: key.id,
       keyScope: normalizeAgentApiKeyScope(key.scopeConfig),
       onBehalfOfUserId: responsibleUserId,
-      onBehalfOfMemberships: await loadResponsibleUserMemberships(db, {
-        companyId: key.companyId,
-        userId: responsibleUserId,
-      }),
+      onBehalfOfMemberships: keyPersonMemberships,
       runId: runIdHeader || undefined,
       source: "agent_key",
     };
