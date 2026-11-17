@@ -143,13 +143,18 @@ type Actor = Express.Request["actor"];
       expect(leftOut.body.responsibleUserId).toBe(f.users.U);
     });
 
-    it("refuses U naming O on the children route", async () => {
+    it("refuses U naming O on the children and plan-decomposition routes", async () => {
       const f = await fixture();
       const parent = await createTask(f, await board(f.users.O), {});
       const child = await request(app(await board(f.users.U)))
         .post(`/api/issues/${parent.body.id}/children`)
         .send({ title: "Child", responsibleUserId: f.users.O });
       expect(child.status, JSON.stringify(child.body)).toBe(422);
+      const decomposed = await request(app(await board(f.users.U)))
+        .post(`/api/issues/${parent.body.id}/accepted-plan-decompositions`)
+        .send({ acceptedPlanRevisionId: randomUUID(), children: [{ title: "Step", responsibleUserId: f.users.O }] });
+      expect(decomposed.status, JSON.stringify(decomposed.body)).toBe(422);
+      expect(decomposed.body.code).toBe("RESPONSIBLE_PERSON_NOT_SELF");
     });
 
     it("lets O (owner) name U as today", async () => {
@@ -216,6 +221,31 @@ type Actor = Express.Request["actor"];
       const asO = await request(app(await board(f.users.O)))
         .patch(`/api/routines/${routineId}`).send({ description: "new instruction" });
       expect(asO.status, JSON.stringify(asO.body)).toBe(200);
+    });
+
+    it("refuses (403) U on each trigger route and on a revision restore of O's routine", async () => {
+      const f = await fixture();
+      const routineId = await routineOf(f, f.users.O);
+      const asO = app(await board(f.users.O));
+      const trigger = await request(asO).post(`/api/routines/${routineId}/triggers`)
+        .send({ kind: "webhook" });
+      expect(trigger.status, JSON.stringify(trigger.body)).toBe(201);
+      const triggerId = (trigger.body.trigger ?? trigger.body).id as string;
+      const [stored] = await db.select({ latestRevisionId: routines.latestRevisionId }).from(routines)
+        .where(eq(routines.id, routineId));
+      const asU = app(await board(f.users.U));
+      for (const call of [
+        request(asU).patch(`/api/routine-triggers/${triggerId}`).send({ enabled: false }),
+        request(asU).post(`/api/routine-triggers/${triggerId}/rotate-secret`).send({}),
+        request(asU).delete(`/api/routine-triggers/${triggerId}`),
+        request(asU).post(`/api/routines/${routineId}/revisions/${stored!.latestRevisionId}/restore`).send({}),
+      ]) {
+        const res = await call;
+        expect(res.status, JSON.stringify(res.body)).toBe(403);
+        expect(res.body.code).toBe("ROUTINE_NOT_OWN");
+      }
+      const deleted = await request(asO).delete(`/api/routine-triggers/${triggerId}`);
+      expect(deleted.status, JSON.stringify(deleted.body)).toBe(204);
     });
 
     it("refuses U handing his own routine to O", async () => {
