@@ -3,12 +3,11 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   useHostLocation,
   useHostNavigation,
-  usePluginAction,
   type PluginPageProps,
   type PluginSidebarProps,
   type PluginWidgetProps,
 } from "@paperclipai/plugin-sdk/ui";
-import { Blocks, Button, EmptyState, Field, ListChecks, Modal, Page, Pill, ProgressRing, Rocket, SectionCard, Select, ShieldCheck, Tabs, Users, breakAnywhere, errorText, fluidColumns, formatDateTime, moduleAccent, tokens, tone, useIsNarrow } from "@partnersinbiz/pib-plugin-ui";
+import { AccessGate, Blocks, Button, EmptyState, Field, ListChecks, Modal, Page, Pill, ProgressRing, Rocket, SectionCard, Select, ShieldCheck, Tabs, Users, breakAnywhere, errorText, fluidColumns, formatDateTime, moduleAccent, tokens, tone, useAccess, useIsNarrow } from "@partnersinbiz/pib-plugin-ui";
 import { MODULES, SETUP_PLUGIN, setupLeftLabel, type ModuleKey, type SetupItem, type SetupSummary } from "../kit-setup.js";
 import { planCopy, previewValue, type CopyPlan } from "../copy.js";
 import { finishSetupSummary } from "../finish-issue.js";
@@ -18,6 +17,7 @@ import { ownKeyItem } from "../own-key.js";
 import { isMemoryAction, memorySetupParams, WIKI_PLUGIN } from "../memory.js";
 import { parseSetupStatus, PLUGINS_PAGE } from "../status.js";
 import { guidedSteps, setupFocus, teamSummary, TEAM_ANCHOR, type TeamRoleState } from "../team.js";
+import { useAccessMe, useSetupAction } from "./actions.js";
 import { fetchAgentNames, fetchCompanies, fetchMembers, fetchPluginConfig, fetchRecentRuns, runPluginAction, savePluginConfig, type CompanyLite, type MembersLite, type PluginRecordLite } from "./api.js";
 import { Card, Chip, ItemLink, ItemRow, Md, ModuleCard, ModuleGroup, ModuleProgressRow, ProgressBar, ProgressOverview, groupState, moduleCounts, optionalLabel, type LinkPropsFor } from "./components.js";
 import { onSetupChanged, sharedRequest, useSetupData, viewsSummary, type LoadResult, type ModuleView, type SetupData } from "./data.js";
@@ -116,7 +116,17 @@ export function showLoadingLine(state: { loading: boolean; load: unknown; error:
   return state.loading && !state.load && !state.error;
 }
 
-export const SetupPage = withHelp(SetupPageMain);
+export const SetupPage = withHelp(GatedSetupPage);
+
+/** The page gate only shapes the screen; the worker's access guard is the gate (spec PAR-12578 4.6). */
+function GatedSetupPage(props: PluginPageProps) {
+  const access = useAccess(useAccessMe(), props.context.companyId);
+  return (
+    <AccessGate state={access} kind="page" moduleName="Setup">
+      <SetupPageMain {...props} />
+    </AccessGate>
+  );
+}
 
 function SetupPageMain({ context }: PluginPageProps) {
   const companyId = context.companyId;
@@ -126,8 +136,8 @@ function SetupPageMain({ context }: PluginPageProps) {
   const narrow = useIsNarrow();
   // Links into Setup → Team also scroll there when the address does not change.
   const linkFor = withTeamScroll(useLinkFor());
-  const saveModules = usePluginAction("setup.save-modules");
-  const refreshIssue = usePluginAction("setup.refresh-issue");
+  const saveModules = useSetupAction("setup.save-modules");
+  const refreshIssue = useSetupAction("setup.refresh-issue");
   const [draft, setDraft] = useState<ModuleChoice | null>(null);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
@@ -936,6 +946,15 @@ export function CopyPreview({ row, onToggle }: { row: CopyRow; onToggle: (includ
 // ---------------------------------------------------------------------------
 
 export function SetupProgressWidget({ context }: PluginWidgetProps) {
+  const access = useAccess(useAccessMe(), context.companyId);
+  return (
+    <AccessGate state={access} kind="widget">
+      <SetupProgress context={context} />
+    </AccessGate>
+  );
+}
+
+function SetupProgress({ context }: PluginWidgetProps) {
   // The stored statuses (no live checks on the dashboard): the same count as the sidebar.
   const data = useSetupData(context.companyId, { live: false });
   const linkFor = useWidgetLinkFor(context);
@@ -998,9 +1017,18 @@ export function sidebarLeft(result: Partial<LoadResult> | null | undefined): num
   return finishSetupSummary({ modules: result.modules, statuses, installed: result.installed ?? null }).requiredLeft;
 }
 
-export function SetupSidebar({ context }: PluginSidebarProps) {
+export function SetupSidebar(props: PluginSidebarProps) {
+  const access = useAccess(useAccessMe(), props.context.companyId);
+  return (
+    <AccessGate state={access} kind="sidebar">
+      <SetupSidebarEntry {...props} />
+    </AccessGate>
+  );
+}
+
+function SetupSidebarEntry({ context }: PluginSidebarProps) {
   const hostNavigation = useHostNavigation();
-  const load = usePluginAction("setup.load");
+  const load = useSetupAction("setup.load");
   const [left, setLeft] = useState<number | null>(null);
   const [tick, setTick] = useState(0);
   // The page reports what it checked; the badge follows at once.

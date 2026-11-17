@@ -119,3 +119,8 @@ export function fixedClock(iso: string) {
     },
   };
 }
+
+/** The tool half of the access guard with no guard: each tool goes straight to `ctx.tools.register` (read at call time). */
+export function directTools(ctx: any): { tool: (name: string, declaration: any, handler: any) => void } {
+  return { tool: (name, declaration, handler) => ctx.tools.register(name, declaration, handler) };
+}

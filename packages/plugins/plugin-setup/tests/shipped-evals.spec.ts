@@ -4,7 +4,7 @@ import { describe, it, expect } from "vitest";
 import { SHIPPED_EVAL_FILES, shippedEvalFile } from "../src/shipped-evals.js";
 import { loadPack } from "../src/templates.js";
 import { TEMPLATE_TOOLS, registerTemplateTools } from "../src/template-tools.js";
-import { fakeCtx } from "./helpers/fake-ctx.js";
+import { directTools, fakeCtx } from "./helpers/fake-ctx.js";
 
 describe("shipped eval files", () => {
   it("match the eval files Cockpit ships", () => {
@@ -24,7 +24,7 @@ describe("shipped eval files", () => {
     const { ctx } = fakeCtx({ companies: { c: { name: "C" } } });
     let handler: any;
     (ctx as any).tools.register = (n: string, _d: unknown, fn: unknown) => { if (n === "template-get") handler = fn; };
-    registerTemplateTools(ctx);
+    registerTemplateTools(ctx, directTools(ctx));
     const real = loadPack().templates.filter((t) => !t.hostOwned);
     const withEval = real.find((t) => shippedEvalFile(t.evalFile ?? `${t.key}.json`));
     const without = real.find((t) => !shippedEvalFile(t.evalFile ?? `${t.key}.json`));
