@@ -11,6 +11,7 @@ import { Projects } from "./Projects";
 
 const mockProjectsApi = vi.hoisted(() => ({
   list: vi.fn(),
+  update: vi.fn(),
 }));
 
 const mockResourceMembershipsApi = vi.hoisted(() => ({
@@ -141,7 +142,14 @@ describe("Projects", () => {
         description: "First project",
         updatedAt: new Date("2026-01-01T00:00:00Z"),
       }),
+      makeProject({
+        id: "project-z",
+        urlKey: "zulu",
+        name: "Zulu",
+        archivedAt: new Date("2026-01-20T00:00:00Z"),
+      }),
     ]);
+    mockProjectsApi.update.mockResolvedValue(makeProject({ id: "project-z", urlKey: "zulu", name: "Zulu" }));
     mockResourceMembershipsApi.listMine.mockResolvedValue({
       projectMemberships: { "project-b": "left" },
       agentMemberships: {},
@@ -243,6 +251,58 @@ describe("Projects", () => {
     expect(content.indexOf("My Projects")).toBeLessThan(content.indexOf("Charlie"));
     expect(content.indexOf("Charlie")).toBeLessThan(content.indexOf("Alpha"));
     expect(content.indexOf("Alpha")).toBeLessThan(content.indexOf("Other Projects"));
+  });
+
+  it("keeps archived projects in a closed Archived section until it is opened", async () => {
+    await renderProjects();
+
+    expect(mockProjectsApi.list).toHaveBeenCalledWith("company-1", { includeArchived: true });
+    const section = container.querySelector('[data-testid="archived-projects"]')!;
+    expect(section.textContent).toContain("Archived");
+    expect(section.textContent).toContain("1 project");
+    expect(container.textContent).not.toContain("Zulu");
+
+    const toggle = section.querySelector<HTMLButtonElement>("button[aria-expanded]")!;
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    await act(() => toggle.click());
+
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    const content = container.textContent ?? "";
+    expect(content.indexOf("Bravo")).toBeLessThan(content.indexOf("Zulu"));
+    // Archived rows offer Unarchive only, never Join / Leave or a star.
+    expect(section.querySelector('button[aria-label="Unarchive Zulu"]')).not.toBeNull();
+    expect(section.querySelector('button[aria-label="Leave Zulu"]')).toBeNull();
+  });
+
+  it("shows a matching archived project while searching", async () => {
+    await renderProjects();
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="Search projects"]')!;
+    await act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "zulu");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    expect(container.textContent).toContain("Zulu");
+    expect(container.textContent).not.toContain("Alpha");
+    expect(container.textContent).not.toContain("No projects match your search.");
+  });
+
+  it("unarchives a project from the Archived section", async () => {
+    await renderProjects();
+    const section = container.querySelector('[data-testid="archived-projects"]')!;
+    await act(() => section.querySelector<HTMLButtonElement>("button[aria-expanded]")!.click());
+
+    mockProjectsApi.list.mockResolvedValue([
+      makeProject({ id: "project-z", urlKey: "zulu", name: "Zulu", archivedAt: null }),
+    ]);
+    await act(() => section.querySelector<HTMLButtonElement>('button[aria-label="Unarchive Zulu"]')!.click());
+    await flushReact();
+    await flushReact();
+
+    expect(mockProjectsApi.update).toHaveBeenCalledWith("project-z", { archivedAt: null }, "company-1");
+    expect(container.querySelector('[data-testid="archived-projects"]')).toBeNull();
+    expect(container.textContent).toContain("My Projects");
+    expect(container.textContent).toContain("Zulu");
   });
 
   it("reserves description line height for projects without descriptions", async () => {
