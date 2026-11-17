@@ -20,7 +20,11 @@ const MODE_LABELS: Record<MemberRestrictionMode, string> = {
   enforce: "Enforce",
 };
 
-/** The state in words. An unknown mode (switch not loaded) claims neither "enforced" nor "not enforced". */
+/**
+ * The state in words. An unknown mode (a viewer who cannot read the switch, or the switch failed to
+ * load) reads plain "flag set": a deliberate fourth wording beyond the spec 4.2 table, because the
+ * page cannot honestly claim either "restricted" or "not enforced".
+ */
 export function memberRestrictionStateLabel(mode: MemberRestrictionMode | undefined, forcedOff: boolean) {
   if (forcedOff) return "flag set, not enforced";
   if (!mode) return "flag set";

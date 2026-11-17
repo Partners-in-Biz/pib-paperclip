@@ -316,6 +316,60 @@ describe("CompanyAccess", () => {
     });
   });
 
+  it("shows no banner when health does not report the kill switch", async () => {
+    healthMock.mockResolvedValueOnce({ status: "ok" });
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <CompanyAccess />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(healthMock).toHaveBeenCalled();
+    expect(container.textContent).toContain("Full access");
+    expect(container.querySelector("[role='alert']")).toBeNull();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("hides the switch and skips the mode request for a member who cannot manage members", async () => {
+    const base = await listMembersMock();
+    base.members[1] = { ...base.members[1], restricted: true, restrictedPluginKeys: [], restrictedAgentIds: [] };
+    base.access = { ...base.access, currentUserRole: "operator", canManageMembers: false };
+    listMembersMock.mockReset();
+    listMembersMock.mockResolvedValue(base);
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <CompanyAccess />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.querySelector("[aria-label='Member restriction switch']")).toBeNull();
+    expect(restrictionModeMock).not.toHaveBeenCalled();
+    // Without the switch the page does not know the mode, so the flagged member reads plain "flag set".
+    expect(container.textContent).toContain("flag set");
+    expect(container.textContent).not.toContain("flag set, not enforced");
+    expect(container.textContent).not.toContain("restricted");
+    expect(container.textContent).toContain("Full access");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("saves member role and status without touching grants", async () => {
     const root = createRoot(container);
     const queryClient = new QueryClient({
