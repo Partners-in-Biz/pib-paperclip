@@ -35,6 +35,13 @@ import { useHiddenSettings } from "@/hooks/useHiddenSettings";
 import { useCloudInstance } from "@/hooks/useCloudInstance";
 import { InvitesSection } from "@/components/access/InvitesSection";
 import { describeError } from "@/api/errors";
+import { healthApi } from "@/api/health";
+import {
+  KillSwitchBanner,
+  MemberRestrictionSummary,
+  MemberRestrictionSwitch,
+  useMemberRestrictionMode,
+} from "@/components/access/MemberRestriction";
 
 const reassignmentIssueStatuses = "backlog,todo,in_progress,in_review,blocked,failed,timed_out";
 type EditableMemberStatus = "pending" | "active" | "suspended";
@@ -106,6 +113,12 @@ export function CompanyAccess() {
     queryFn: () => agentsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+
+  const healthQuery = useQuery({ queryKey: queryKeys.health, queryFn: () => healthApi.get() });
+  const restrictionModeQuery = useMemberRestrictionMode(
+    membersQuery.data?.access.canManageMembers ? selectedCompanyId : null,
+  );
+  const restrictionForcedOff = healthQuery.data?.memberRestriction === "forced_off";
 
   const joinRequestsQuery = useQuery({
     queryKey: queryKeys.access.joinRequests(selectedCompanyId ?? "", "pending_approval"),
@@ -319,6 +332,9 @@ export function CompanyAccess() {
         </div>
       )}
 
+      {restrictionForcedOff ? <KillSwitchBanner /> : null}
+      {access?.canManageMembers ? <MemberRestrictionSwitch companyId={selectedCompanyId} /> : null}
+
       <section className="space-y-4">
         {access?.canApproveJoinRequests && pendingHumanJoinRequests.length > 0 ? (
           <div className="space-y-3">
@@ -372,13 +388,14 @@ export function CompanyAccess() {
                 <th className="px-3 py-2 font-medium">Email</th>
                 <th className="px-3 py-2 font-medium">Role</th>
                 <th className="px-3 py-2 font-medium">Status</th>
+                <th className="px-3 py-2 font-medium">Access</th>
                 <th className="px-3 py-2 text-right font-medium">Action</th>
               </tr>
             </thead>
             <tbody>
               {members.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="px-3 py-8 text-muted-foreground">
+                  <td colSpan={6} className="px-3 py-8 text-muted-foreground">
                     No user memberships found for this organization yet.
                   </td>
                 </tr>
@@ -394,10 +411,10 @@ export function CompanyAccess() {
                           {member.user?.image ? <AvatarImage src={member.user.image} alt={displayName} /> : null}
                           <AvatarFallback>{memberInitials(member)}</AvatarFallback>
                         </Avatar>
-                        <span className="truncate font-medium">{displayName}</span>
+                        <span className="max-w-56 truncate font-medium" title={displayName}>{displayName}</span>
                       </div>
                     </td>
-                    <td className="px-3 py-3 text-muted-foreground">
+                    <td className="min-w-48 max-w-64 break-all px-3 py-3 text-muted-foreground">
                       {member.user?.email || member.principalId}
                     </td>
                     <td className="px-3 py-3">
@@ -409,6 +426,13 @@ export function CompanyAccess() {
                       <Badge variant={member.status === "active" ? "secondary" : member.status === "suspended" ? "destructive" : "outline"}>
                         {member.status.replace("_", " ")}
                       </Badge>
+                    </td>
+                    <td className="px-3 py-3">
+                      <MemberRestrictionSummary
+                        member={member}
+                        mode={restrictionModeQuery.data?.mode}
+                        forcedOff={restrictionForcedOff}
+                      />
                     </td>
                     <td className="px-3 py-3 text-right">
                       <div className="flex justify-end gap-2">

@@ -23,6 +23,30 @@ let member = {
   createdAt: "2026-10-12T12:00:00Z",
   updatedAt: "2026-10-12T12:00:00Z",
 };
+// Stress data for the restriction column: long names, both flag states, a large 7-day count.
+const restrictedMembers = [
+  {
+    ...member,
+    id: "member-restricted",
+    principalId: "user-restricted",
+    user: {
+      id: "user-restricted",
+      email: "a.very.long.client.address.for.restriction.checks@subsidiary-of-a-long-company-name.example.test",
+      name: "Bartholomew Montgomery-Wolstenholme the Third of Client Services",
+      image: null,
+    },
+    restricted: true,
+    restrictedPluginKeys: Array.from({ length: 12 }, (_, i) => `plugin.${i}`),
+    restrictedAgentIds: ["agent-1"],
+  },
+  {
+    ...member,
+    id: "member-open",
+    principalId: "user-open",
+    user: { id: "user-open", email: "open@example.test", name: "Open member", image: null },
+    restricted: false,
+  },
+];
 function MembershipHost() {
   return (
     <>
@@ -54,7 +78,12 @@ const meta = {
         {
           path: "/api/companies/company-storybook/members",
           read: () => ({
-            members: parameters.fixtureState === "empty" ? [] : [member],
+            members:
+              parameters.fixtureState === "empty"
+                ? []
+                : parameters.restrictionStress
+                  ? [member, ...restrictedMembers]
+                  : [member],
             access: {
               currentUserRole: "owner",
               canManageMembers: true,
@@ -66,6 +95,21 @@ const meta = {
         {
           path: "/api/companies/company-storybook/join-requests",
           read: () => [],
+        },
+        {
+          path: "/api/companies/company-storybook/member-restriction-mode",
+          method: "GET",
+          read: () => ({
+            mode: parameters.restrictionStress ? "enforce" : "off",
+            deniedLast7Days: parameters.restrictionStress ? 123456 : 0,
+          }),
+        },
+        {
+          path: "/api/health",
+          read: () => ({
+            status: "ok",
+            ...(parameters.restrictionKillSwitch ? { memberRestriction: "forced_off" } : {}),
+          }),
         },
         {
           path: "/api/companies/company-storybook/members/member-gap",
@@ -83,6 +127,12 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 export const Members: Story = {};
+/** Kill switch on, company stored as `enforce`: every flagged member reads "flag set, not enforced". */
+export const RestrictionKillSwitch: Story = {
+  parameters: { restrictionStress: true, restrictionKillSwitch: true },
+};
+/** Company stored as `enforce`, no kill switch: the flagged member reads "restricted". */
+export const RestrictionEnforced: Story = { parameters: { restrictionStress: true } };
 export const Loading: Story = { parameters: { fixtureState: "loading" } };
 export const Empty: Story = { parameters: { fixtureState: "empty" } };
 export const Failed: Story = { parameters: { fixtureState: "failure" } };
