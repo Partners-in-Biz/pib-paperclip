@@ -626,7 +626,8 @@ function issuePrivacyPrincipalCondition(actor: AuthorizationActor): SQL<boolean>
   const implicit = principal?.type === "agent"
     ? sql`n.assignee_agent_id = ${principal.id}`
     : principal?.type === "user"
-      ? sql`(n.responsible_user_id = ${principal.id} or n.created_by_user_id = ${principal.id} or n.assignee_user_id = ${principal.id})`
+      ? sql`(n.responsible_user_id = ${principal.id} or n.created_by_user_id = ${principal.id} or n.assignee_user_id = ${principal.id}
+        or n.conversation_user_id = ${principal.id})`
       : sql`false`;
   const grant = principal ? sql`exists (
     select 1 from ${issueAccessGrants} g where g.issue_id = n.id
@@ -642,15 +643,15 @@ function issuePrivacyPrincipalCondition(actor: AuthorizationActor): SQL<boolean>
   return sql<boolean>`exists (
     with recursive privacy_ancestors as (
       select p.id, p.company_id, p.privacy_parent_issue_id, p.visibility, p.project_id,
-        p.responsible_user_id, p.created_by_user_id, p.assignee_user_id, p.assignee_agent_id
+        p.responsible_user_id, p.created_by_user_id, p.assignee_user_id, p.assignee_agent_id, p.conversation_user_id
       from issues p where p.id = ${issues.id} and p.company_id = ${issues.companyId}
       union
       (select p.id, p.company_id, p.privacy_parent_issue_id, p.visibility, p.project_id,
-        p.responsible_user_id, p.created_by_user_id, p.assignee_user_id, p.assignee_agent_id
+        p.responsible_user_id, p.created_by_user_id, p.assignee_user_id, p.assignee_agent_id, p.conversation_user_id
       from privacy_ancestors c
       cross join lateral (
         select p.id, p.company_id, p.privacy_parent_issue_id, p.visibility, p.project_id,
-          p.responsible_user_id, p.created_by_user_id, p.assignee_user_id, p.assignee_agent_id
+          p.responsible_user_id, p.created_by_user_id, p.assignee_user_id, p.assignee_agent_id, p.conversation_user_id
         from issues p where p.id = c.privacy_parent_issue_id and p.company_id = c.company_id
           -- A chat passes no privacy to work started from it (PAR-12774 4.3).
           and p.conversation_agent_id is null
@@ -695,32 +696,62 @@ async function isBoardInstanceAdminForReads(db: Db | DbTransaction, actor: Autho
 }
 
 /**
+ * The chat rule (PAR-12774 4.2). A chat, a task with `conversation_agent_id`
+ * set, is readable by its person, and by its agent while that agent works for
+ * that person (every person the run carries must be the chat's person). The
+ * local board reads every chat. Nobody else does: not an owner, admin,
+ * instance admin, grant holder, project member or plugin ("no principal").
+ * A row that is not a chat passes. Two columns of the row itself, no
+ * sub-query; never softened by the privacy mode.
+ */
+function chatReadCondition(actor: AuthorizationActor): SQL<boolean> {
+  if (actor.source === "local_implicit") return sql<boolean>`true`;
+  const notChat = sql<boolean>`${issues.conversationAgentId} is null`;
+  if (actor.type === "board" && actor.userId) {
+    return sql<boolean>`(${notChat} or ${issues.conversationUserId} = ${actor.userId})`;
+  }
+  if (actor.type !== "agent" || !actor.agentId) return notChat;
+  const people = [...new Set([actor.onBehalfOfUserId, actor.authorizingUserId].filter((id): id is string => !!id))];
+  const chatOf = [
+    sql`${issues.conversationAgentId} = ${actor.agentId}`,
+    ...people.map(id => sql`${issues.conversationUserId} = ${id}`),
+  ];
+  return sql<boolean>`(${notChat} or (${sql.join(chatOf, sql` and `)}))`;
+}
+
+/**
  * The list builders' shared flow (PAR-12608 4.3, place 1). The member
  * restriction is AND-ed onto the privacy condition; when no person the actor
  * carries is restricted under `enforce`, the result is today's condition
  * unchanged. Where today returns "all rows" because the privacy mode is not
  * `enforce`, the restriction part alone is returned. The local-board and
  * instance-admin exits stay: neither is bound by the restriction.
+ * `rowCondition` (the chat rule for tasks) is AND-ed onto every return except
+ * the local board's, whatever the mode, the instance admin included.
  */
 async function readSqlCondition(
   db: Db | DbTransaction,
   actor: AuthorizationActor,
   resource: StrictReadResource,
   privacyCondition: (actor: AuthorizationActor) => SQL<boolean>,
+  rowCondition: SQL<boolean> | null = null,
 ): Promise<SQL<boolean>> {
   const withRestriction = (condition: SQL<boolean>, restriction: SQL<boolean> | null) =>
     restriction ? sql<boolean>`(${condition} and ${restriction})` : condition;
+  const allRows = rowCondition ?? sql<boolean>`true`;
+  const withRow = (condition: SQL<boolean>) => withRestriction(condition, rowCondition);
   if (actor.authorizingUserId) {
-    return withRestriction(privacyCondition(actor), await memberRestrictionReadCondition(db, actor, resource));
+    return withRow(withRestriction(privacyCondition(actor), await memberRestrictionReadCondition(db, actor, resource)));
   }
-  if (actor.source === "local_implicit" || actor.isInstanceAdmin) return sql<boolean>`true`;
+  if (actor.source === "local_implicit") return sql<boolean>`true`;
+  if (actor.isInstanceAdmin) return allRows;
   if (issuePrivacyMode() !== "enforce") {
     const restriction = await memberRestrictionReadCondition(db, actor, resource);
-    if (!restriction || await isBoardInstanceAdminForReads(db, actor)) return sql<boolean>`true`;
-    return restriction;
+    if (!restriction || await isBoardInstanceAdminForReads(db, actor)) return allRows;
+    return withRow(restriction);
   }
-  if (await isBoardInstanceAdminForReads(db, actor)) return sql<boolean>`true`;
-  return withRestriction(privacyCondition(actor), await memberRestrictionReadCondition(db, actor, resource));
+  if (await isBoardInstanceAdminForReads(db, actor)) return allRows;
+  return withRow(withRestriction(privacyCondition(actor), await memberRestrictionReadCondition(db, actor, resource)));
 }
 
 /** Memo key of one person's restriction in one company, shared by a read snapshot and its decisions. */
@@ -751,7 +782,7 @@ function memberRestrictionOfActorPerson(
 
 /** Filter every externally reachable task query with the same privacy predicate. */
 export async function issueReadSqlCondition(db: Db | DbTransaction, actor: AuthorizationActor): Promise<SQL<boolean>> {
-  return readSqlCondition(db, actor, "issue", issuePrivacyCondition);
+  return readSqlCondition(db, actor, "issue", issuePrivacyCondition, chatReadCondition(actor));
 }
 
 /** SQL equivalent used for project list/search pushdown. */
