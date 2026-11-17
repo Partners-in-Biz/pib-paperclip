@@ -249,7 +249,7 @@ describe("create-sprint scope", () => {
     const { harness, executes } = await boot([LEGACY]);
     const agentTry = await harness.executeTool<{ error?: string }>("update-sprint", { sprintId: "legacy-1", client: "company:crm-1" }, { companyId: "co-1" });
     expect(agentTry.error).toMatch(/Only a person/);
-    const moved = await harness.performAction<Row>("seo.call", { tool: "update-sprint", params: { sprintId: "legacy-1", client: "company:crm-1" } }, user);
+    const moved = await harness.performAction<Row>("seo.call-edit", { tool: "update-sprint", params: { sprintId: "legacy-1", client: "company:crm-1" } }, user);
     expect(moved).toMatchObject({ client: "company:crm-1", clientName: "Acme Ltd" });
     const update = executes.find((e) => e.sql.startsWith(`UPDATE ${NAMESPACE}.sprints SET`))!;
     expect(update.params).toEqual(expect.arrayContaining(["company", "crm-1", "Acme Ltd"]));

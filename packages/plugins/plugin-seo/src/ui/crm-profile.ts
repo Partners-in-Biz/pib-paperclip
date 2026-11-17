@@ -3,9 +3,13 @@
  * when a sprint is created. The SEO worker may not read the CRM's tables, but
  * the page runs as the signed-in person, who can call the CRM's read-only
  * `crm.client-workspace` action. Anything missing or failing gives null and
- * the page falls back to a local service business for a client.
+ * the page falls back to a local service business for a client. That action is
+ * `crm.companies:view` in the CRM's access table: a person with SEO and no CRM
+ * gets a refusal (or a 403), which also gives null, so the SEO page shows
+ * itself without the CRM's hint (PAR-12676).
  */
 import type { ClientRef } from "@partnersinbiz/pib-plugin-kit/client-ref";
+import { isRefusal } from "@partnersinbiz/pib-plugin-kit/refusal";
 import type { ProfileHint } from "../engine/business-type.js";
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -20,7 +24,7 @@ function text(value: unknown): string | null {
 export function parseCrmWorkspace(body: unknown): ProfileHint | null {
   const root = record(body);
   const data = record(root?.data) ?? root;
-  if (!data || data.found === false) return null;
+  if (!data || data.found === false || isRefusal(data) || isRefusal(root)) return null;
   const profile = record(data.profile);
   const company = record(data.company);
   const contact = record(data.contact);

@@ -1,5 +1,5 @@
 /**
- * One dispatcher for agent tools and the UI's generic `seo.call` action.
+ * One dispatcher for agent tools and the UI's `seo.call*` actions (one per permission, src/access-table.ts).
  */
 import * as analytics from "./service/analytics.js";
 import * as checks from "./service/checks.js";
@@ -152,7 +152,7 @@ export const HANDLERS: Record<string, Handler> = {
   "decide-playbook-change": (env, c, a, p) => playbook.decidePlaybookChangeTool(env, c, a, p),
 };
 
-/** Page-only actions (people press a button; no agent tool): reached through the UI's `seo.call`. */
+/** Page-only actions (people press a button; no agent tool): reached through the UI's `seo.call*` action of their permission. */
 export const UI_ONLY_HANDLERS: Record<string, Handler> = {
   "approve-site-writes": (env, c, a, p) => signoff.approveSiteWrites(env, c, a, p),
   "add-redesign": (env, c, a, p) => redesign.addRedesign(env, c, a, p),
