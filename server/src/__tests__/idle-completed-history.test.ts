@@ -97,9 +97,9 @@ const DELETE_METHOD = "DELETE" as never;
     await db.update(tables.heartbeatRuns).set({ status: "running", responsibleUserId: p.userId }).where(eq(tables.heartbeatRuns.id, f.runId));
     await db.update(tables.issues).set({ status: "in_progress", responsibleUserId: p.userId }).where(eq(tables.issues.id, f.issueId));
     const actor = { type: "agent" as const, companyId: f.companyId, agentId: f.agentId, runId: f.runId, source: "agent_jwt" as const,
-      onBehalfOfUserId: p.userId, onBehalfOfMemberships: [{ companyId: f.companyId, membershipRole: "member", status: "active" }] };
+      onBehalfOfUserId: p.userId, onBehalfOfMemberships: [{ companyId: f.companyId, membershipRole: "member", status: "active", restricted: false, restrictionMode: "off" as const }] };
     const userActor = { type: "board" as const, userId: p.userId, companyIds: [f.companyId], source: "session" as const,
-      memberships: [{ companyId: f.companyId, membershipRole: "member", status: "active" }] };
+      memberships: [{ companyId: f.companyId, membershipRole: "member", status: "active", restricted: false, restrictionMode: "off" as const }] };
     const service = decisionService(db, { wakeOriginAgent: async () => null });
     const finish = () => db.update(tables.heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(tables.heartbeatRuns.id, f.runId));
     return { ...f, ...p, actor, userActor, service, finish };
@@ -1093,7 +1093,7 @@ const DELETE_METHOD = "DELETE" as never;
       const { Router } = await import("express");
       const router = Router(); router.use(issueRoutes(db, storage));
       const api = createMcpApiDispatch(router), actor = { type: "board", userId: f.userId, companyIds: [f.companyId], source: "session",
-        memberships: [{ companyId: f.companyId, membershipRole: "owner", status: "active" }] };
+        memberships: [{ companyId: f.companyId, membershipRole: "owner", status: "active", restricted: false, restrictionMode: "off" as const }] };
       for (const id of result.storedIds) expect(await api({ actor } as never, DELETE_METHOD, `/attachments/${id}`)).toEqual({ ok: true });
       expect(await db.select().from(tables.issueAttachments)).toHaveLength(0);
       for (const asset of assets) expect((await storage.headObject(f.companyId, asset.objectKey)).exists).toBe(false);
@@ -1818,9 +1818,9 @@ const DELETE_METHOD = "DELETE" as never;
       await db.update(tables.heartbeatRuns).set({ status: "running", responsibleUserId: p.userId }).where(eq(tables.heartbeatRuns.id, f.runId));
       await db.update(tables.issues).set({ status: "in_progress", responsibleUserId: p.userId }).where(eq(tables.issues.id, f.issueId));
       const actor = { type: "agent" as const, companyId: f.companyId, agentId: f.agentId, runId: f.runId, source: "agent_jwt" as const,
-        onBehalfOfUserId: p.userId, onBehalfOfMemberships: [{ companyId: f.companyId, membershipRole: "member", status: "active" }] };
+        onBehalfOfUserId: p.userId, onBehalfOfMemberships: [{ companyId: f.companyId, membershipRole: "member", status: "active", restricted: false, restrictionMode: "off" as const }] };
       const userActor = { type: "board" as const, userId: p.userId, companyIds: [f.companyId], source: "session" as const,
-        memberships: [{ companyId: f.companyId, membershipRole: "member", status: "active" }] };
+        memberships: [{ companyId: f.companyId, membershipRole: "member", status: "active", restricted: false, restrictionMode: "off" as const }] };
       const service = decisionService(db, { wakeOriginAgent: async () => null });
       const decision = await service.create({ companyId: f.companyId, actor, agentId: f.agentId, runId: f.runId,
         title: "Save this comment?", body: "Completion proof", continuationPolicy: "none",

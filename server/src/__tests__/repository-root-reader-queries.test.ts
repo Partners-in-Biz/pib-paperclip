@@ -154,7 +154,7 @@ it("reloads project grants on every publication attempt", async () => {
 it("keeps supplied membership snapshots separate from fresh database snapshots", async () => {
   const actor: AuthorizationActor = { type: "agent", source: "agent_jwt", companyId, agentId,
     runId: runIds[0], onBehalfOfUserId: userId };
-  const supplied = { ...actor, onBehalfOfMemberships: [{ companyId, membershipRole: "operator", status: "active" }] };
+  const supplied = { ...actor, onBehalfOfMemberships: [{ companyId, membershipRole: "operator", status: "active", restricted: false, restrictionMode: "off" as const }] };
   const service = authorizationService(db);
   const resource = { type: "company" as const, companyId };
   await db.update(companyMemberships).set({ status: "inactive" }).where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalId, userId)));

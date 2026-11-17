@@ -124,7 +124,7 @@ describe.skipIf(!recoveryPostgresSupport.supported)("repository catalog bootstra
     app.use(express.json());
     app.use((req, _res, next) => {
       req.actor = { type: "board", source: "session", userId: f.userId, companyIds: [f.companyId],
-        memberships: [{ companyId: f.companyId, membershipRole: "owner", status: "active" }], isInstanceAdmin: false };
+        memberships: [{ companyId: f.companyId, membershipRole: "owner", status: "active", restricted: false, restrictionMode: "off" }], isInstanceAdmin: false };
       next();
     });
     app.use("/api", taskWorkspaceRoutes(db));

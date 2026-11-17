@@ -121,7 +121,7 @@ describeEmbeddedPostgres("inbox agent policy routes", () => {
       source: "session",
       userId,
       companyIds: [companyId],
-      memberships: [{ companyId, membershipRole: "operator", status: "active" }],
+      memberships: [{ companyId, membershipRole: "operator", status: "active", restricted: false, restrictionMode: "off" }],
       isInstanceAdmin: false,
     };
   }

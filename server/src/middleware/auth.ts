@@ -25,10 +25,11 @@ import {
 import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 import { agentRunWritesRevoked } from "../agent-run-cancellation.js";
 import { loadAgentRunAuthentication } from "./agent-run-authentication.js";
-import { isUuidLike, normalizeAgentApiKeyScope, type DeploymentMode } from "@paperclipai/shared";
+import { isUuidLike, normalizeAgentApiKeyScope, type ActorCompanyMembership, type DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
 import { captureRunIdentity } from "../services/run-identity.js";
+import { loadActorMemberships } from "../services/member-restriction/actor-memberships.js";
 import { boardAuthService } from "../services/board-auth.js";
 import { retryIdempotentDatabaseOperation } from "../database-retry.js";
 import { beginIdleTrackedWork } from "../services/task-admission.js";
@@ -99,21 +100,7 @@ async function loadResponsibleUserMemberships(
       .from(authUsers)
       .where(eq(authUsers.id, input.userId))
       .then((rows) => rows[0] ?? null),
-    db
-      .select({
-        companyId: companyMemberships.companyId,
-        membershipRole: companyMemberships.membershipRole,
-        status: companyMemberships.status,
-      })
-      .from(companyMemberships)
-      .where(
-        and(
-          eq(companyMemberships.companyId, input.companyId),
-          eq(companyMemberships.principalType, "user"),
-          eq(companyMemberships.principalId, input.userId),
-          eq(companyMemberships.status, "active"),
-        ),
-      ),
+    loadActorMemberships(db, { userId: input.userId, companyId: input.companyId, activeOnly: true }),
   ]);
   return user ? memberships : [];
 }
@@ -124,20 +111,7 @@ async function loadResponsibleUserMemberships(
  * and the Cloud trusted-header path so both resolve the same access set.
  */
 async function loadActiveUserCompanyMemberships(db: Db, userId: string) {
-  return db
-    .select({
-      companyId: companyMemberships.companyId,
-      membershipRole: companyMemberships.membershipRole,
-      status: companyMemberships.status,
-    })
-    .from(companyMemberships)
-    .where(
-      and(
-        eq(companyMemberships.principalType, "user"),
-        eq(companyMemberships.principalId, userId),
-        eq(companyMemberships.status, "active"),
-      ),
-    );
+  return loadActorMemberships(db, { userId, activeOnly: true });
 }
 
 async function auditAgentJwtRunHeaderMismatch(
@@ -709,18 +683,17 @@ async function resolveCloudTenantActorOnce(
   // needs seeding per request here. A read failure degrades to the pinned
   // primary instead of blocking authentication, mirroring the fail-closed
   // owner-elevation resolution below.
-  let additionalMemberships: { companyId: string; membershipRole: string | null; status: string }[] =
-    [];
+  let loadedMemberships: ActorCompanyMembership[] = [];
   try {
-    additionalMemberships = (await loadActiveUserCompanyMemberships(db, userId)).filter(
-      (row) => row.companyId !== companyId,
-    );
+    loadedMemberships = await loadActiveUserCompanyMemberships(db, userId);
   } catch (err) {
     logger.warn(
       { err, userId, stackId },
       "Failed to load cloud tenant user's company memberships; scoping actor to the stack's primary company",
     );
   }
+  const additionalMemberships = loadedMemberships.filter((row) => row.companyId !== companyId);
+  const primaryRestriction = loadedMemberships.find((row) => row.companyId === companyId);
 
   return {
     type: "board",
@@ -733,7 +706,12 @@ async function resolveCloudTenantActorOnce(
         companyId,
         membershipRole: effectiveMembership.membershipRole ?? membershipRole,
         status: effectiveMembership.status,
-      },
+        // Restriction fields of the pinned primary come from the same read.
+        // When that read failed they stay out: the membership is "unknown" and
+        // the member-restriction resolver reads the database (PAR-12608 4.2).
+        restricted: primaryRestriction?.restricted,
+        restrictionMode: primaryRestriction?.restrictionMode,
+      } as ActorCompanyMembership,
       ...additionalMemberships,
     ],
     // Computed per request, never persisted: the stack owner is elevated to
