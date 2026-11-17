@@ -151,6 +151,15 @@ export const updateUserCompanyAccessSchema = z.object({
 
 export type UpdateUserCompanyAccess = z.infer<typeof updateUserCompanyAccessSchema>;
 
+/** PUT /companies/:companyId/members/:memberId/restriction (PAR-12608 4.2). */
+export const updateMemberRestrictionSchema = z.object({
+  restricted: z.boolean(),
+  pluginKeys: z.array(z.string().trim().min(1)).max(200).default([]),
+  agentIds: z.array(z.string().uuid()).max(500).default([]),
+}).strict();
+
+export type UpdateMemberRestriction = z.infer<typeof updateMemberRestrictionSchema>;
+
 export const searchAdminUsersQuerySchema = z.object({
   query: z.string().trim().max(120).optional().default(""),
 });

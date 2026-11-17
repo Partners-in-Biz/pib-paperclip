@@ -27,6 +27,7 @@ import {
 } from "@paperclipai/db";
 import type { PermissionKey, PrincipalType } from "@paperclipai/shared";
 import { conflict } from "../errors.js";
+import { assertRoleAllowedForRestriction } from "./member-restriction/admin.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
 import { authorizationService, type AuthorizationActor, type AuthorizationResource } from "./authorization.js";
 import { ensureHumanRoleDefaultGrants } from "./principal-access-compatibility.js";
@@ -560,6 +561,7 @@ export function accessService(db: Db) {
       const nextMembershipRole =
         data.membershipRole !== undefined ? data.membershipRole : existing.membershipRole;
       const nextStatus = data.status ?? existing.status;
+      if (nextMembershipRole !== existing.membershipRole) assertRoleAllowedForRestriction(existing, nextMembershipRole);
 
       if(nextStatus==="active"&&(existing.principalType==="agent"||nextMembershipRole!=="viewer")
         &&(existing.status!=="active"||existing.principalType==="user"&&existing.membershipRole==="viewer"))
@@ -908,6 +910,7 @@ export function accessService(db: Db) {
         const existingMembership = existingByCompany.get(companyId);
         if (existingMembership) {
           if (existingMembership.status !== "active") {
+            assertRoleAllowedForRestriction(existingMembership, existingMembership.membershipRole);
             if (existingMembership.membershipRole !== "viewer") {
               await notifyChatCompanyAuthorityChange(tx, { companyId });
               await notifyMuseContactVerification(tx,{companyId,operatorId:userId});
@@ -952,6 +955,7 @@ export function accessService(db: Db) {
       )).for("update").then(rows => rows[0] ?? null);
       if (existing) {
         if (existing.status !== status || existing.membershipRole !== membershipRole) {
+          if (existing.membershipRole !== membershipRole) assertRoleAllowedForRestriction(existing, membershipRole);
           if(status==="active"&&(principalType==="agent"||membershipRole!=="viewer")
             &&(existing.status!=="active"||principalType==="user"&&existing.membershipRole==="viewer"))
             await notifyMuseContactVerification(tx,{companyId,...(principalType==="user"?{operatorId:principalId}:{agentId:principalId})});
@@ -1165,6 +1169,7 @@ export function accessService(db: Db) {
       const nextMembershipRole =
         data.membershipRole !== undefined ? data.membershipRole : existing.membershipRole;
       const nextStatus = data.status ?? existing.status;
+      if (nextMembershipRole !== existing.membershipRole) assertRoleAllowedForRestriction(existing, nextMembershipRole);
 
       if(nextStatus==="active"&&(existing.principalType==="agent"||nextMembershipRole!=="viewer")
         &&(existing.status!=="active"||existing.principalType==="user"&&existing.membershipRole==="viewer"))

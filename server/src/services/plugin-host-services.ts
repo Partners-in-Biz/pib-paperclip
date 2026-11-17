@@ -1510,6 +1510,11 @@ export function buildHostServices(
     scope: grant.scope && typeof grant.scope === "object" ? sanitizeRecord(grant.scope) : grant.scope ?? null,
   });
 
+  // The restriction flag and lists go only to callers who may manage members (PAR-12608 4.2), never to plugins.
+  const withoutRestriction = <T extends { restricted?: unknown; restrictedPluginKeys?: unknown; restrictedAgentIds?: unknown }>(
+    { restricted: _r, restrictedPluginKeys: _p, restrictedAgentIds: _a, ...member }: T,
+  ) => member;
+
   const loadPluginMember = async (companyId: string, memberId: string) => {
     const member = await access.getMemberById(companyId, memberId);
     if (!member) return null;
@@ -1519,7 +1524,7 @@ export function buildHostServices(
       member.principalId,
     );
     return {
-      ...member,
+      ...withoutRestriction(member),
       principalType: member.principalType as PrincipalType,
       status: member.status as "pending" | "active" | "suspended" | "archived",
       grants: grants.map(redactGrant),
@@ -3199,7 +3204,7 @@ export function buildHostServices(
           grantsByPrincipal.set(key, existing);
         }
         return visibleRows.map((member) => ({
-          ...member,
+          ...withoutRestriction(member),
           principalType: member.principalType as PrincipalType,
           status: member.status as "pending" | "active" | "suspended" | "archived",
           grants: (grantsByPrincipal.get(`${member.principalType}:${member.principalId}`) ?? []).map(redactGrant),
