@@ -3,7 +3,7 @@
  * Owner company only, like the credential rows built from the same file.
  */
 import type { PluginPerformActionContext } from "@paperclipai/plugin-sdk";
-import { isOwnerCompany } from "@partnersinbiz/pib-plugin-kit";
+import { isOwnerCompany, type AccessGuard } from "@partnersinbiz/pib-plugin-kit";
 import { BROWSER_STATUS_PATH, readStatus } from "./credentials.js";
 import { parseBrowserStatus, type BrowserIdentity } from "./credentials-model.js";
 import { CockpitError, type Env } from "./env.js";
@@ -24,6 +24,6 @@ export async function loadBrowserView(env: Env, context: PluginPerformActionCont
   return { state: "read", checkedAt: status.checkedAt, stale: status.stale, identities: status.identities };
 }
 
-export function registerBrowserStatus(env: Env): void {
-  env.ctx.actions.register("browser.status", async (_params, context) => loadBrowserView(env, context));
+export function registerBrowserStatus(env: Env, guard: AccessGuard): void {
+  guard.action("browser.status", async (_params, context) => loadBrowserView(env, context));
 }
