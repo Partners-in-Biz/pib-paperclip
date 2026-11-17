@@ -69,7 +69,7 @@ describe.skipIf(!support.supported)("task search relevance rubric (real PostgreS
         const start = performance.now();
         const rows = engine === "full"
           ? (await companySearchService(db).search(companyId, companySearchQuerySchema.parse({ q: testCase.q }))).results.filter((row) => row.type === "issue")
-          : await issueService(db).list(companyId, { q: testCase.q, limit: 50 });
+          : await issueService(db).list(companyId, { readCondition: "system", q: testCase.q, limit: 50 });
         const resultKeys = rows.map((row) => keys.get(row.id)!);
         report.push({ engine, name: testCase.name, q: testCase.q, keys: resultKeys, ...searchQualityMetrics(resultKeys, testCase.relevant), ms: performance.now() - start });
         if (baseline) return;
@@ -95,7 +95,7 @@ describe.skipIf(!support.supported)("task search relevance rubric (real PostgreS
     await db.insert(issues).values({ companyId, title: "x".repeat(300) });
     for (const q of ['""', "%", "_", "\\", "z".repeat(200)]) {
       const full = await companySearchService(db).search(companyId, companySearchQuerySchema.parse({ q }));
-      const quick = await issueService(db).list(companyId, { q, limit: 50 });
+      const quick = await issueService(db).list(companyId, { readCondition: "system", q, limit: 50 });
       if (q === '""' || q.startsWith("z")) {
         expect(full.results).toEqual([]);
         expect(quick).toEqual([]);
@@ -126,7 +126,7 @@ describe.skipIf(!support.supported)("task search relevance rubric (real PostgreS
         for (let i = 0; i < 21; i++) {
           const start = performance.now();
           if (engine === "full") await companySearchService(db).search(companyId, companySearchQuerySchema.parse({ q }));
-          else await issueService(db).list(companyId, { q, limit: 20 });
+          else await issueService(db).list(companyId, { readCondition: "system", q, limit: 20 });
           durations.push(performance.now() - start);
         }
         const warmMs = durations.slice(1);

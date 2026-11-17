@@ -12333,7 +12333,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(sourceRun?.livenessState).toBe("plan_only");
     if (withLegacyReview) {
       expect(await db.select().from(issues).where(eq(issues.id, legacyReviewId))).toEqual(legacyReviewBefore);
-      const source = (await issueService(db).list(companyId)).find((issue) => issue.id === issueId);
+      const source = (await issueService(db).list(companyId, { readCondition: "system" })).find((issue) => issue.id === issueId);
       expect(source).toBeDefined();
       expect(source).not.toHaveProperty("productivityReview");
     }
