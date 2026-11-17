@@ -48,6 +48,8 @@ import {
   shouldIncludeIssueFilterWorkspaceOption,
   issueStatusOrder,
   type IssueFilterState,
+  CREATOR_KIND_FILTER_PREFIX,
+  creatorKindFilterOptions,
 } from "../lib/issue-filters";
 import {
   DEFAULT_INBOX_ISSUE_COLUMNS,
@@ -444,7 +446,7 @@ interface Agent {
 type CreatorOption = {
   id: string;
   label: string;
-  kind: "agent" | "user";
+  kind: "agent" | "user" | "automation";
   searchText?: string;
 };
 
@@ -1080,6 +1082,10 @@ function StreamlinedIssuesList({
     const options = new Map<string, CreatorOption>();
     const knownAgentIds = new Set<string>();
 
+    for (const kindOption of creatorKindFilterOptions) {
+      options.set(kindOption.id, { ...kindOption, searchText: `${kindOption.label} kind type created by` });
+    }
+
     if (currentUserId) {
       options.set(`user:${currentUserId}`, {
         id: `user:${currentUserId}`,
@@ -1131,6 +1137,9 @@ function StreamlinedIssuesList({
     }
 
     return [...options.values()].sort((a, b) => {
+      const aKind = a.id.startsWith(CREATOR_KIND_FILTER_PREFIX);
+      const bKind = b.id.startsWith(CREATOR_KIND_FILTER_PREFIX);
+      if (aKind !== bKind) return aKind ? -1 : 1;
       if (a.kind !== b.kind) return a.kind === "user" ? -1 : 1;
       return a.label.localeCompare(b.label);
     });

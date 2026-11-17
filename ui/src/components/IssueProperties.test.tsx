@@ -1137,7 +1137,7 @@ describe("IssueProperties", () => {
       expect(container.textContent).not.toContain("Morgan Product");
       expect(container.textContent).not.toContain("Responsible");
       expect(container.textContent).not.toContain("Kicked off by");
-      expect(container.textContent).not.toContain("Created by");
+      expect(container.textContent).toContain("Created by");
       expect(container.querySelector('[title="CodexCoder"] [data-slot="agent-avatar"] img')?.getAttribute("src")).toContain("/api/agent-avatars/cap-v1/");
     });
 
@@ -1162,7 +1162,7 @@ describe("IssueProperties", () => {
       expect(container.textContent).not.toContain("Kicked off by");
       expect(container.textContent).not.toContain("Kicked off by · responsible");
       expect(container.textContent).not.toContain("(auto)");
-      expect(container.textContent).not.toContain("Created by");
+      expect(container.textContent).toContain("Created by");
     });
 
     act(() => root.unmount());
