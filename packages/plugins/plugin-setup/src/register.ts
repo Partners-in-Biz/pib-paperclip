@@ -43,7 +43,7 @@ export function registerSetup(ctx: PluginContext): void {
   );
   // The access switch (off, report, enforce): an owner or admin, with its preconditions and an audit entry.
   ctx.actions.register("setup.access.set-mode", (params, context) =>
-    refusable(async () => setAccessSwitch(ctx, { companyId: requiredCompany(context), actor: context.actor.type === "user" ? { type: "user", userId: context.actor.userId } : undefined }, params.mode)),
+    refusable(async () => setAccessSwitch(ctx, { companyId: requiredCompany(context), actor: context.actor.type === "user" ? { type: "user", userId: context.actor.userId } : undefined }, params.mode, params.confirmNoAccess)),
   );
   ctx.actions.register("setup.load", (params, context) => loadSetup(ctx, requiredCompany(context), params));
   ctx.actions.register("setup.save-modules", (params, context) =>
