@@ -132,6 +132,35 @@ export async function setAccessMode(ctx: Db, companyId: string, mode: AccessMode
 }
 
 /**
+ * `setAccessMode`, but only while the company is still at `expectRev` (0 when it
+ * has no row yet), so a check made at that `rev` holds for the write.
+ * Returns the new `rev`, or null when the row moved in between.
+ */
+export async function setAccessModeAt(ctx: Db, companyId: string, mode: AccessMode, expectRev: number, by: string, now: string): Promise<number | null> {
+  const { rowCount } = await ctx.db.execute(
+    `INSERT INTO ${T.settings} (company_id, mode, rev, granted_user_ids, updated_at, updated_by) VALUES ($1, $2, ${LOST_REV} + 1, '[]'::jsonb, $3, $4)
+     ON CONFLICT (company_id) DO UPDATE SET mode = EXCLUDED.mode, rev = ${T.settings}.rev + 1, updated_at = EXCLUDED.updated_at, updated_by = EXCLUDED.updated_by
+     WHERE ${T.settings}.rev = $5`,
+    [companyId, mode, now, by, expectRev],
+  );
+  if (rowCount !== 1) return null;
+  return (await getAccessSettings(ctx, companyId))?.rev ?? null;
+}
+
+/**
+ * Puts the switch back from `from` to `to` (`rev` + 1, so a plugin that already
+ * got `from` takes the undo too). Changes nothing when the mode is no longer
+ * `from`: someone switched it since. Returns whether it wrote.
+ */
+export async function revertAccessMode(ctx: Db, companyId: string, from: AccessMode, to: AccessMode, by: string, now: string): Promise<boolean> {
+  const { rowCount } = await ctx.db.execute(
+    `UPDATE ${T.settings} SET mode = $3, rev = rev + 1, updated_at = $4, updated_by = $5 WHERE company_id = $1 AND mode = $2`,
+    [companyId, from, to, now, by],
+  );
+  return rowCount === 1;
+}
+
+/**
  * A plugin holds a `rev` above Setup's (Setup's table came back from a backup):
  * Setup's `rev` goes to one above it, so the next send replaces what the plugin
  * holds. Returns the `rev` after the change.
