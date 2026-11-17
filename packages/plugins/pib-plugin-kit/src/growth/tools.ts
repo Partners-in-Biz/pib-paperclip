@@ -9,6 +9,7 @@
  * is never guessed: a malformed or unsupported one fails before any read or write.
  */
 import type { JsonSchema, PluginContext, PluginToolDeclaration, ToolResult, ToolRunContext } from "@paperclipai/plugin-sdk";
+import type { AccessGuard } from "../access/guard.js";
 import { GrowthError } from "./engine.js";
 import { formatScopeKey, parseScopeKey, type ScopeKey } from "../growth-scope.js";
 import { normalizeToolResult } from "../tool-result.js";
@@ -203,10 +204,16 @@ export async function runGrowthTool<A extends GrowthActor>(host: GrowthToolsHost
   }
 }
 
-/** Registers the eight tools. The manifest lists `growthToolDeclarations` with the same options. */
-export function registerGrowthTools<A extends GrowthActor>(ctx: PluginContext, host: GrowthToolsHost<A>): void {
+/**
+ * Registers the eight tools. The manifest lists `growthToolDeclarations` with the
+ * same options. With the plugin's access guard each goes through `guard.tool`
+ * under the key `tool:<name>` (PAR-12578 plan 4.4); a guarded plugin passes it.
+ */
+export function registerGrowthTools<A extends GrowthActor>(ctx: PluginContext, host: GrowthToolsHost<A>, guard?: Pick<AccessGuard, "tool">): void {
   for (const declaration of growthToolDeclarations(host)) {
     const name = declaration.name as GrowthToolName;
-    ctx.tools.register(name, declaration, async (params, run) => normalizeToolResult(await runGrowthTool(host, name, params, run)));
+    const handler = async (params: unknown, run: ToolRunContext) => normalizeToolResult(await runGrowthTool(host, name, params, run));
+    if (guard) guard.tool(name, declaration, handler);
+    else ctx.tools.register(name, declaration, handler);
   }
 }
