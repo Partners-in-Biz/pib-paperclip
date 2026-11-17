@@ -304,6 +304,25 @@ describe("closed isolated workspace issue routes", () => {
     expect(res.status).toBe(200);
   });
 
+  // PAR-12725 (AC-L3, checkout by name): checkout asks issue:read for everybody
+  // before anything else, so a restricted member's refusal is a plain 404.
+  it("refuses a checkout the caller may not read, before the workspace or the checkout", async () => {
+    mockAccessService.decide.mockImplementationOnce(async (input: { action: string }) => ({
+      allowed: false, action: input.action, reason: "deny_member_restricted", explanation: "Not his task.",
+    }));
+
+    const res = await request(createApp())
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({ agentId, expectedStatuses: ["todo"] });
+
+    expect(res.status).toBe(404);
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+      action: "issue:read", resource: expect.objectContaining({ type: "issue", issueId }),
+    }));
+    expect(mockExecutionWorkspaceService.reopenClosedIsolatedExecutionWorkspaceForIssue).not.toHaveBeenCalled();
+    expect(mockIssueService.checkout).not.toHaveBeenCalled();
+  });
+
   it("returns 409 and blocks the comment when the workspace cannot be reopened", async () => {
     mockExecutionWorkspaceService.reopenClosedIsolatedExecutionWorkspaceForIssue.mockResolvedValue({
       ok: false,
