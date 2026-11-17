@@ -6,6 +6,7 @@ import {
   companies, companyMemberships, createDb, projectAccessMembers, projects, type Db,
 } from "@paperclipai/db";
 import { deriveProjectUrlKey } from "@paperclipai/shared";
+import { and, eq, SQL } from "drizzle-orm";
 import { errorHandler } from "../middleware/index.js";
 import { projectRoutes } from "../routes/projects.js";
 import { projectReadSqlCondition } from "../services/authorization.js";
@@ -20,6 +21,32 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
  * issues-goal-context-routes.test.ts and company-skills-routes.test.ts; AC-L14
  * in services/project-list-read-scope.test.ts.
  */
+
+/**
+ * The routes' per-row project:read filter hides the same rows the SQL condition
+ * does, so a route test on the final list cannot tell whether the condition
+ * reached the list function. Record what the routes pass (the real service
+ * still runs) and assert it below.
+ */
+const listCalls = vi.hoisted(() => ({ list: [] as unknown[][], listSummaries: [] as unknown[][] }));
+
+vi.mock("../services/index.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/index.js")>();
+  return {
+    ...actual,
+    projectService: (...args: Parameters<typeof actual.projectService>) => {
+      const svc = actual.projectService(...args);
+      return {
+        ...svc,
+        list: (...call: Parameters<typeof svc.list>) => { listCalls.list.push(call); return svc.list(...call); },
+        listSummaries: (...call: Parameters<typeof svc.listSummaries>) => {
+          listCalls.listSummaries.push(call);
+          return svc.listSummaries(...call);
+        },
+      };
+    },
+  };
+});
 
 type Actor = Express.Request["actor"];
 
@@ -55,6 +82,8 @@ const failingRestrictionDb = {
 
 afterEach(() => {
   vi.unstubAllEnvs();
+  listCalls.list.length = 0;
+  listCalls.listSummaries.length = 0;
 });
 
 describe("project routes when the restriction cannot be read (AC-X1)", () => {
@@ -68,6 +97,9 @@ describe("project routes when the restriction cannot be read (AC-X1)", () => {
     expect(res.body.code).toBe("MEMBER_RESTRICTION_UNAVAILABLE");
     expect(Array.isArray(res.body)).toBe(false);
     expect(res.body.projects).toBeUndefined();
+    // No project rows were read: the list functions never ran.
+    expect(listCalls.list).toEqual([]);
+    expect(listCalls.listSummaries).toEqual([]);
   });
 });
 
@@ -155,6 +187,34 @@ describe("project list callers database support", () => {
     it("AC-F8: with the kill switch `off` R resolves it as in mode off", async () => {
       vi.stubEnv("PAPERCLIP_MEMBER_RESTRICTION", "off");
       expect((await fetch(R)).body.id).toBe(projectOfO);
+    });
+  });
+
+  describe.each([
+    ["GET /companies/:companyId/projects", "list", () => `/api/companies/${companyId}/projects`],
+    ["GET /companies/:companyId/projects?view=summary", "listSummaries", () => `/api/companies/${companyId}/projects?view=summary`],
+    ["GET /projects/:shortname", "list", () => `/api/projects/${projectOfOKey}?companyId=${companyId}`],
+  ] as const)("%s", (_name, fn, path) => {
+    /** Runs the route as `userId` and returns the projects the condition it passed to `fn` selects. */
+    const rowsOfPassedCondition = async (userId: string) => {
+      listCalls[fn].length = 0;
+      await request(appFor(db, sessionActor(userId, companyId))).get(path());
+      expect(listCalls[fn].length).toBeGreaterThan(0);
+      const conditions = listCalls[fn].map((call) => (call[1] as { readCondition: unknown }).readCondition);
+      const ids = new Set<string>();
+      for (const condition of conditions) {
+        expect(condition).not.toBe("system");
+        expect(condition).toBeInstanceOf(SQL);
+        const rows = await db.select({ id: projects.id }).from(projects)
+          .where(and(eq(projects.companyId, companyId), condition as SQL<boolean>));
+        rows.forEach((row) => ids.add(row.id));
+      }
+      return [...ids].sort();
+    };
+
+    it(`passes the caller's own SQL read condition to ${fn} (R's selects only his project, O's both)`, async () => {
+      expect(await rowsOfPassedCondition(R)).toEqual([projectOfR]);
+      expect(await rowsOfPassedCondition(O)).toEqual(sorted(projectOfR, projectOfO));
     });
   });
 

@@ -340,13 +340,14 @@ export function projectRoutes(db: Db) {
         limit: req.query.limit, cursor: req.query.cursor,
       });
       const candidateIds = await access.projectDiscoveryCandidateIds(req.actor, companyId);
-      const readCondition = await projectReadSqlCondition(db, req.actor);
+      // The read scope is read where it is passed: dropping it from the call drops the read (AC-X1).
+      const scope = { includeArchived, candidateIds, readCondition: await projectReadSqlCondition(db, req.actor) };
       const visible: ProjectDiscoveryPage["projects"] = [];
       let cursor = page.cursor;
       // Scan bounded projections; authorization runs before selecting the public
       // page/cursor so denied projects neither fill pages nor leak their IDs.
       while (visible.length <= page.limit) {
-        const batch = await svc.listSummaries(companyId, { limit: 51, cursor, includeArchived, candidateIds, readCondition });
+        const batch = await svc.listSummaries(companyId, { ...scope, limit: 51, cursor });
         const allowed = await filterProjectsForActor(req, batch.map(project => ({ ...project, companyId })));
         visible.push(...allowed.map(({ companyId: _companyId, ...project }) => project));
         if (batch.length < 51) break;
