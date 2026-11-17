@@ -3615,15 +3615,15 @@ export function issueRoutes(
     wakeup: (agentId, options) => heartbeat.wakeup(agentId, options),
   });
   const runnerGoals = runnerGoalService(db, {
-    enqueueOfflineControl: async ({ issueId, agentId, requestId, control }) => {
+    enqueueOfflineControl: async ({ issueId, agentId, requestId, control, causingActor }) => {
       const run = await heartbeat.wakeup(agentId, {
         source: "on_demand",
         triggerDetail: "manual",
         reason: "goal_control",
         payload: { issueId, requestId, intent: "goal_control" },
         idempotencyKey: `goal_control:${requestId}`,
-        // The goal-control outbox does not carry the person who asked yet.
-        causingActor: SYSTEM_CAUSING_ACTOR,
+        // The person who asked (H1); a server-made stop before reassignment stays "system".
+        causingActor: causingActor ?? SYSTEM_CAUSING_ACTOR,
         requestedByActorType: "system",
         contextSnapshot: {
           issueId,
@@ -9526,6 +9526,7 @@ export function issueRoutes(
           issue.companyId,
           issue.id,
           req.body,
+          wakeCausingActorFromActor(getActorInfo(req)),
         );
         res.status(202).json(accepted);
       } catch (error) {
