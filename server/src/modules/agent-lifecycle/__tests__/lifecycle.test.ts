@@ -227,7 +227,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       value.use("/api", agentRoutes(db)); value.use(errorHandler); return value;
     }
     const board: Express.Request["actor"] = { type: "board", source: "session", userId: "board", companyIds: [companyId],
-      memberships: [{ companyId, membershipRole: "member", status: "active" }] };
+      memberships: [{ companyId, membershipRole: "member", status: "active", restricted: false, restrictionMode: "off" }] };
     const setupId = randomUUID();
     const body = { setupId, name: "Wizard agent", adapterType: "process" };
     const url = `/api/companies/${companyId}/agents`;
@@ -1037,7 +1037,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       app.use("/api", agentRoutes(db)); app.use(errorHandler); return app;
     }
     const board: Express.Request["actor"] = { type: "board", source: "session", userId: "board", companyIds: [companyId],
-      memberships: [{ companyId, membershipRole: "admin", status: "active" }] };
+      memberships: [{ companyId, membershipRole: "admin", status: "active", restricted: false, restrictionMode: "off" }] };
     await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "board", membershipRole: "admin" });
     await db.insert(principalPermissionGrants).values(["agents:create", "agents:configure"].map(permissionKey => ({ companyId, principalType: "user", principalId: "board", permissionKey })));
     const url = `/api/agents/${agent.id}/lifecycle/retry`;
