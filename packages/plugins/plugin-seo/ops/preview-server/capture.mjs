@@ -1,6 +1,7 @@
 // Guard for the review-page screenshots (PAR-9042): a shot is only taken of the page it is meant to show.
 // A mismatch throws, so /shot/* answers 502 instead of serving a picture of an error page or another site.
 
+import { inflateSync } from "node:zlib";
 import { checkRenderUrl } from "./sweep.mjs";
 
 const bare = (host) => String(host ?? "").toLowerCase().replace(/^www\./, "");
@@ -98,4 +99,72 @@ export async function guardShot({ which, mobile = false, liveUrl, proposalUrl, p
   const r = await f(proposalUrl, { redirect: "follow", signal: AbortSignal.timeout(20_000) });
   const why = captureMismatch({ status: r.status, url: proposalUrl, html: await r.text() }, { host: "127.0.0.1", title: proposalHtml });
   if (why) throw new Error(`shot refused for ${label}: ${why}`);
+}
+
+/**
+ * True when a PNG is one flat colour: Chromium wrote it before the page painted (PAR-12454). Only the 8-bit, non-interlaced
+ * RGB/RGBA PNGs Chromium writes are read; any other PNG answers false, so it is never refused. A pixel check, not a byte-size
+ * floor: a blank 390 px mobile shot is about 9.5 KB but a short real page is 12-25 KB, so no size limit separates them.
+ */
+export function isBlankPng(buf) {
+  if (!buf || buf.length < 33 || buf.readUInt32BE(0) !== 0x89504e47) return false;
+  const width = buf.readUInt32BE(16);
+  const height = buf.readUInt32BE(20);
+  const [depth, colour, , , interlace] = buf.subarray(24, 29);
+  const bpp = colour === 2 ? 3 : colour === 6 ? 4 : 0;
+  if (depth !== 8 || !bpp || interlace !== 0 || !width || !height) return false;
+  const idat = [];
+  for (let at = 8; at + 8 <= buf.length; ) {
+    const len = buf.readUInt32BE(at);
+    if (buf.toString("latin1", at + 4, at + 8) === "IDAT") idat.push(buf.subarray(at + 8, at + 8 + len));
+    at += 12 + len;
+  }
+  let raw;
+  try {
+    raw = inflateSync(Buffer.concat(idat));
+  } catch {
+    return false;
+  }
+  const stride = width * bpp;
+  if (raw.length < height * (stride + 1)) return false;
+  let prev = new Uint8Array(stride);
+  let first = null;
+  for (let y = 0; y < height; y++) {
+    const filter = raw[y * (stride + 1)];
+    const line = raw.subarray(y * (stride + 1) + 1, (y + 1) * (stride + 1));
+    const row = new Uint8Array(stride);
+    for (let i = 0; i < stride; i++) {
+      const a = i >= bpp ? row[i - bpp] : 0;
+      const b = prev[i];
+      const c = i >= bpp ? prev[i - bpp] : 0;
+      let add = 0;
+      if (filter === 1) add = a;
+      else if (filter === 2) add = b;
+      else if (filter === 3) add = (a + b) >> 1;
+      else if (filter === 4) {
+        const p = a + b - c;
+        const pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c);
+        add = pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
+      } else if (filter !== 0) return false;
+      row[i] = (line[i] + add) & 0xff;
+    }
+    first ??= row.slice(0, bpp);
+    for (let i = 0; i < stride; i++) if (row[i] !== first[i % bpp]) return false;
+    prev = row;
+  }
+  return true;
+}
+
+/**
+ * Take a shot until it is not blank (isBlankPng), at most `tries` times. A blank one is removed so it is never cached; still
+ * blank after the last try throws, so /shot answers 502 and the next request tries again (PAR-12454).
+ */
+export async function shotUntilPainted({ take, read, remove, label, tries = 3 }) {
+  for (let attempt = 1; ; attempt++) {
+    await take();
+    const png = await read();
+    if (!isBlankPng(png)) return png;
+    await remove().catch(() => undefined);
+    if (attempt >= tries) throw new Error(`shot for ${label} came out blank after ${tries} tries`);
+  }
 }
