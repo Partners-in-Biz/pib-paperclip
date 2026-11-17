@@ -49,6 +49,8 @@ describe("plugin acting person database support", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-plugin-acting-person-");
     db = createDb(tempDb.connectionString);
+    // Warm the route modules here: their cold import takes most of a test's 15 s budget.
+    await Promise.all([import("../routes/plugins.js"), import("../middleware/auth.js"), import("../middleware/error-handler.js")]);
   }, 60_000);
   afterAll(async () => { await tempDb?.cleanup(); });
 
@@ -174,9 +176,25 @@ describe("plugin acting person database support", () => {
   });
 
   it.each(ENTRIES)("%s with a long-lived agent key carries the key's person", async (entry) => {
+    // H5 (PAR-12714): a long-lived key may name only a run of its own agent for its own person.
     const f = await fixture("enforce");
-    await expectPerson(entry, f, await keyFor(f, f.restricted), f.restricted, true);
-    await expectPerson(entry, f, await keyFor(f, f.unflagged), f.unflagged, false);
+    for (const [person, restricted] of [[f.restricted, true], [f.unflagged, false]] as const) {
+      await expectPerson(entry, f, await keyFor(f, person), person, restricted, {}, await runFor(f, person));
+    }
+  });
+
+  it("tool with a long-lived agent key naming another person's or agent's run is refused (H5)", async () => {
+    const f = await fixture("enforce");
+    const [other] = await db.insert(agents).values({ companyId: f.companyId, name: "Other", adapterType: "process" }).returning();
+    const [otherAgentRun] = await db.insert(heartbeatRuns).values({
+      companyId: f.companyId, agentId: other!.id, invocationSource: "assignment", status: "running", responsibleUserId: f.restricted,
+    }).returning();
+    for (const runId of [await runFor(f, f.owner), otherAgentRun!.id]) {
+      const { res } = await callEntry("tool", f, await keyFor(f, f.restricted), {}, runId);
+      expect(res.status).toBe(422);
+      expect(res.body.code ?? res.body.details?.code).toBe("agent_key_run_not_owned");
+      expect(executeTool).not.toHaveBeenCalled();
+    }
   });
 
   it.each(ENTRIES)("%s through an agent-purpose connection carries its approver", async (entry) => {
