@@ -11,7 +11,18 @@
 import type { PluginContext, PluginEvent } from "@paperclipai/plugin-sdk";
 import { ACCESS_EVENTS, ACCESS_REFUSAL_EVENT, GUARDED_PLUGINS, configSaved, isAccessRev, pluginEvent, resolveAccess, type ActorInput } from "@partnersinbiz/pib-plugin-kit";
 import { publishAccess } from "./access-publish.js";
-import { getAccessSettings, listAccessSettings, listAccessSync, raiseAccessRev, recordAccessRefusal, recordAccessSync, type AccessSettings } from "./access-store.js";
+import {
+  claimAccessLostNote,
+  getAccessSettings,
+  listAccessSettings,
+  listAccessSync,
+  raiseAccessRev,
+  recordAccessLost,
+  recordAccessRefusal,
+  recordAccessSync,
+  releaseAccessLostNote,
+  type AccessSettings,
+} from "./access-store.js";
 import { PLUGIN_ID } from "./namespace.js";
 
 /** The guarded plugins that confirm by event: all 15 but Setup. */
@@ -41,15 +52,37 @@ export async function unconfirmedPlugins(ctx: PluginContext, companyId: string, 
 
 /**
  * The plugin's `rev` against Setup's. Higher than Setup's: Setup raises its own
- * above it and sends. A company with no settings row is left alone here (the
- * switch-lost note is part 2). Returns true when it already sent.
+ * above it and sends. A `rev` above 0 for a company with no settings row: the
+ * switch is lost (one activity entry), and Setup does not invent a mode.
+ * Returns true when it already sent.
  */
 async function compareRev(ctx: PluginContext, settings: AccessSettings | null, companyId: string, pluginKey: string, rev: number, now: string): Promise<boolean> {
-  if (!settings || rev <= settings.rev) return false;
+  if (!settings) {
+    if (rev > 0) await noteSwitchLost(ctx, companyId, pluginKey, rev, now);
+    return false;
+  }
+  if (rev <= settings.rev) return false;
   const raised = await raiseAccessRev(ctx, companyId, rev, now);
   ctx.logger.info("A plugin held a higher access rev; Setup raised its own", { companyId, pluginKey, reported: rev, rev: raised });
   await publishAccess(ctx, companyId);
   return true;
+}
+
+async function noteSwitchLost(ctx: PluginContext, companyId: string, pluginKey: string, rev: number, now: string): Promise<void> {
+  await recordAccessLost(ctx, companyId, pluginKey, rev, now);
+  if (!(await claimAccessLostNote(ctx, companyId, now))) return;
+  try {
+    await ctx.activity.log({
+      companyId,
+      message: "Access switch lost: Setup has no access settings for this company but a plugin still holds some. Choose the switch again in Setup under People",
+      entityType: "plugin_access",
+      entityId: companyId,
+      metadata: { pluginKey, rev },
+    });
+  } catch (error) {
+    await releaseAccessLostNote(ctx, companyId);
+    ctx.logger.info("Could not write the switch-lost activity entry", { companyId, error: errorText(error) });
+  }
 }
 
 /** `access.synced { companyId, rev, pluginKey }`: record the confirmation. */

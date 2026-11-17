@@ -2,7 +2,7 @@ import type { PluginContext, PluginEvent } from "@paperclipai/plugin-sdk";
 import { ACCESS_EVENTS, ACCESS_REFUSAL_EVENT, GUARDED_PLUGINS, pluginEvent } from "@partnersinbiz/pib-plugin-kit";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { AccessUpdatedPayload } from "../src/access-publish.js";
-import { getAccessSettings, listAccessRefusals, listAccessSync, recordAccessSync, setAccessMode } from "../src/access-store.js";
+import { getAccessLost, getAccessSettings, listAccessRefusals, listAccessSync, recordAccessSync, setAccessMode } from "../src/access-store.js";
 import {
   ACCESS_PEERS,
   ACCESS_RESEND_WINDOW_MS,
@@ -36,7 +36,7 @@ const T0 = Date.parse("2026-11-17T10:00:00.000Z");
 const iso = (ms: number) => new Date(ms).toISOString();
 
 /** A ctx on the real database with in-memory events, config, members and activity. */
-function world(opts: { saved?: string[] } = {}) {
+function world(opts: { saved?: string[]; activityFails?: boolean } = {}) {
   const handlers = new Map<string, Array<(event: PluginEvent) => Promise<void>>>();
   const emitted: Array<{ name: string; companyId: string; payload: AccessUpdatedPayload }> = [];
   const activity: Array<{ companyId: string; message: string }> = [];
@@ -62,7 +62,12 @@ function world(opts: { saved?: string[] } = {}) {
         ],
       },
     },
-    activity: { log: async (entry: { companyId: string; message: string }) => void activity.push(entry) },
+    activity: {
+      log: async (entry: { companyId: string; message: string }) => {
+        if (opts.activityFails) throw new Error("activity.log.write not granted");
+        activity.push(entry);
+      },
+    },
     logger: { info: () => undefined, warn: () => undefined, error: () => undefined, debug: () => undefined },
   } as unknown as PluginContext;
   const event = (companyId: string, payload: Record<string, unknown>) => ({ eventId: "e", eventType: "x", occurredAt: iso(T0), companyId, payload }) as unknown as PluginEvent;
@@ -119,6 +124,33 @@ describe.skipIf(!available)("Setup access sync on a real database", () => {
       await onAccessRequest(ctx, ADS, event(CO, { companyId: OTHER, rev: 0 }));
       await onAccessRequest(ctx, ADS, event(CO, { pluginKey: CRM, rev: 0 }));
       expect(emitted).toHaveLength(0);
+    });
+
+    it("a rev held for a company with no settings: switch lost, one activity entry, the next save starts above it", async () => {
+      const { ctx, sent, event, activity } = world();
+      await onAccessRequest(ctx, ADS, event(CO, { rev: 4 }), () => T0);
+      await onAccessRequest(ctx, CRM, event(CO, { rev: 6 }), () => T0);
+      await onAccessSynced(ctx, CRM, event(CO, { rev: 6 }), () => T0);
+      expect(activity).toHaveLength(1);
+      expect(activity[0]).toMatchObject({ companyId: CO, message: expect.stringContaining("Choose the switch again") });
+      expect(await getAccessLost(ctx, CO)).toMatchObject({ rev: 6, firstPluginKey: ADS });
+      // Setup does not invent a mode: no settings row, and the answer stays off at 0 (the plugin keeps its higher rev).
+      expect(await getAccessSettings(ctx, CO)).toBeNull();
+      expect(sent()).toEqual([
+        [CO, "off", 0],
+        [CO, "off", 0],
+      ]);
+      expect(await setAccessMode(ctx, CO, "off", "owner", iso(T0))).toBe(7);
+    });
+
+    it("a failed activity write leaves the note open, so the next report writes it", async () => {
+      const failing = world({ activityFails: true });
+      await onAccessRequest(failing.ctx, ADS, failing.event(CO, { rev: 3 }), () => T0);
+      expect(await getAccessLost(failing.ctx, CO)).toMatchObject({ rev: 3, notedAt: null });
+      const { ctx, event, activity } = world();
+      await onAccessRequest(ctx, ADS, event(CO, { rev: 3 }), () => T0);
+      expect(activity).toHaveLength(1);
+      expect(await getAccessLost(ctx, CO)).toMatchObject({ notedAt: iso(T0) });
     });
   });
 
