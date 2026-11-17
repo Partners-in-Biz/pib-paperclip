@@ -769,6 +769,7 @@ export {
   updateMemberPermissionsSchema,
   searchAdminUsersQuerySchema,
   updateUserCompanyAccessSchema,
+  updateMemberRestrictionSchema,
   type CreateCompanyInvite,
   type CreateOpenClawInvitePrompt,
   type AcceptInvite,
@@ -788,6 +789,7 @@ export {
   type UpdateMemberPermissions,
   type SearchAdminUsersQuery,
   type UpdateUserCompanyAccess,
+  type UpdateMemberRestriction,
 } from "./access.js";
 
 export {

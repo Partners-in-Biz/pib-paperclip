@@ -48,6 +48,10 @@ export interface CompanyMemberRecord extends CompanyMembership {
   membershipRole: HumanCompanyMembershipRole | null;
   user: AccessUserProfile | null;
   grants: PrincipalPermissionGrant[];
+  /** Per-person access flag and lists (PAR-12608 4.2); only sent to callers who may manage members. */
+  restricted: boolean;
+  restrictedPluginKeys: string[];
+  restrictedAgentIds: string[];
   removal?: {
     canArchive: boolean;
     reason: string | null;
