@@ -12,7 +12,7 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
  * scope. Spec PAR-12608 rev 3, section 4.3 (C28) and 7 (X5): for each route
  * caller this ticket changed, a filter test, a kill-switch test (AC-F8) and a
  * failing-read test (AC-X1). The board-chat caller is covered in
- * board-chat-route-feature-flag.test.ts; AC-L14 in
+ * board-chat-task-list-read-scope.test.ts (real resolver); AC-L14 in
  * services/issue-list-read-scope.test.ts.
  */
 
