@@ -1,3 +1,4 @@
+import { runCalendarCheck } from "./calendar-check.js";
 import { GROWTH_TOOL_NAMES, normalizeToolResult, registerGrowthTools, type GrowthToolsHost } from "@partnersinbiz/pib-plugin-kit";
 import {
   definePlugin,
@@ -605,6 +606,8 @@ async function hourlyUpkeep(ctx: PluginContext, companyId: string): Promise<void
   await tryLinkSocialHire(ctx, companyId);
   const plans = await planSweep(ctx, companyId);
   if (plans.opened) ctx.logger.info("Social plan sweep opened first plans", { companyId, ...plans });
+  const calendar = await runCalendarCheck(ctx, companyId);
+  if (calendar.ran) ctx.logger.info("Social calendar check ran", { companyId, ...calendar });
 }
 
 function registerJob(ctx: PluginContext, key: string, run: () => Promise<unknown>) {
