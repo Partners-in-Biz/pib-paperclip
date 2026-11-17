@@ -179,7 +179,7 @@ describe("durable Grok routine qualification", () => {
     await db.insert(dotRunnerAssignments).values({ companyId: f.company.id, agentId: f.agent.id, bindingId: f.pairing.bindingId, bindingGeneration: 1,
       runId: run!.id, normalizedSessionId: randomUUID(), turnId: randomUUID(), controllerGeneration: 1, catalogDigest: "fixture", projection: {},
       status: "accepted", acceptBy: new Date(Date.now() + 60000), expiresAt: new Date(Date.now() + 60000) });
-    const app = express(); app.use((req, _res, next) => { req.actor = { type: "board", source: "session", userId: reader, companyIds: [f.company.id], memberships: [{ companyId: f.company.id, membershipRole: "member", status: "active" }] }; next(); });
+    const app = express(); app.use((req, _res, next) => { req.actor = { type: "board", source: "session", userId: reader, companyIds: [f.company.id], memberships: [{ companyId: f.company.id, membershipRole: "member", status: "active", restricted: false, restrictionMode: "off" }] }; next(); });
     app.use("/api", grokBotRoutes(db, f.oauth.config.resource));
     const path = `/api/companies/${f.company.id}/agents/${f.agent.id}/grok-binding`;
     const hidden = await request(app).get(path).expect(200);

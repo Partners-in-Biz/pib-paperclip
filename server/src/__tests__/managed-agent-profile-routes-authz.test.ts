@@ -38,7 +38,7 @@ function boardActor(role: "operator" | "viewer"): Express.Request["actor"] {
     userEmail: null,
     isInstanceAdmin: false,
     companyIds: [COMPANY_ID],
-    memberships: [{ companyId: COMPANY_ID, membershipRole: role, status: "active" }],
+    memberships: [{ companyId: COMPANY_ID, membershipRole: role, status: "active", restricted: false, restrictionMode: "off" }],
   };
 }
 

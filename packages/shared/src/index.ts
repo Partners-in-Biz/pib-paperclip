@@ -1335,6 +1335,8 @@ export type {
   UserCompanyAccessEntry,
   UserCompanyAccessResponse,
   MemberRestriction,
+  ActorCompanyMembership,
+  SessionMemberRestriction,
   CompanyPortabilityInclude,
   CompanyPortabilityEnvInput,
   CompanyPortabilityFileEntry,

@@ -215,7 +215,7 @@ describe("environment instance routes", () => {
       userId: "user-1",
       source: "session",
       companyIds: ["company-1"],
-      memberships: [{ companyId: "company-1", membershipRole: "member", status: "active" }],
+      memberships: [{ companyId: "company-1", membershipRole: "member", status: "active", restricted: false, restrictionMode: "off" }],
       isInstanceAdmin: false,
     });
 

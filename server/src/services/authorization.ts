@@ -24,6 +24,7 @@ import {
   userInboxAgentPolicies,
 } from "@paperclipai/db";
 import type {
+  ActorCompanyMembership,
   AgentApiKeyScope,
   InboxAgentPolicyMode,
   PermissionKey,
@@ -31,6 +32,7 @@ import type {
   SkillTestAgentKeyScope,
   TaskBridgeAgentKeyScope,
 } from "@paperclipai/shared";
+import { loadActorMemberships } from "./member-restriction/actor-memberships.js";
 import {
   LOW_TRUST_REVIEW_PRESET,
   extractAgentMentionIds,
@@ -65,8 +67,8 @@ export type AuthorizationActor =
     userId?: string | null;
     sessionId?: string | null;
     companyIds?: string[];
-    memberships?: Array<{ companyId: string; membershipRole?: string | null; status?: string }>;
-    onBehalfOfMemberships?: Array<{ companyId: string; membershipRole?: string | null; status?: string }>;
+    memberships?: ActorCompanyMembership[];
+    onBehalfOfMemberships?: ActorCompanyMembership[];
     isInstanceAdmin?: boolean;
     ignoreInstanceAdmin?: boolean;
     agentId?: string | null;
@@ -537,7 +539,7 @@ type ResponsibleUserSnapshot = {
   userId: string;
   companyId: string;
   userExists: boolean;
-  activeMembership: { companyId: string; membershipRole?: string | null; status?: string } | null;
+  activeMembership: ActorCompanyMembership | null;
 };
 
 type ResponsibleUserActorWithMemo = AuthorizationActor & {
@@ -716,7 +718,7 @@ export function responsibleUserAuthzShadowMode() {
 }
 
 function activeActorMembership(
-  memberships: Array<{ companyId: string; membershipRole?: string | null; status?: string }> | null | undefined,
+  memberships: ActorCompanyMembership[] | null | undefined,
   companyId: string,
 ) {
   return memberships?.find((membership) => membership.companyId === companyId && membership.status === "active") ?? null;
@@ -895,22 +897,7 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
         .from(authUsers)
         .where(eq(authUsers.id, userId))
         .then((rows) => rows[0] ?? null),
-      db
-        .select({
-          companyId: companyMemberships.companyId,
-          membershipRole: companyMemberships.membershipRole,
-          status: companyMemberships.status,
-        })
-        .from(companyMemberships)
-        .where(
-          and(
-            eq(companyMemberships.companyId, companyId),
-            eq(companyMemberships.principalType, "user"),
-            eq(companyMemberships.principalId, userId),
-            eq(companyMemberships.status, "active"),
-          ),
-        )
-        .then((rows) => rows[0] ?? null),
+      loadActorMemberships(db, { userId, companyId, activeOnly: true }).then((rows) => rows[0] ?? null),
     ]);
     return {
       userId,
@@ -2979,6 +2966,8 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
     decideReadsForActors,
     projectDiscoveryCandidateIds,
     decidePrincipalGrant,
+    /** The person a run works for, with his restriction fields (read-only; PAR-12608 AC-X2). */
+    loadResponsibleUserSnapshot,
   };
 }
 

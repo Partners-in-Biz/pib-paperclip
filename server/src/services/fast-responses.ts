@@ -25,7 +25,6 @@ import {
   budgetReservations,
   companies,
   companyFastResponses,
-  companyMemberships,
   companySecrets,
   costEvents,
   fastResponseRequests,
@@ -55,6 +54,7 @@ import { isAutomaticRecoverySuppressedByPauseHold } from "./recovery/pause-hold-
 import { accessService } from "./access.js";
 import type { AuthorizationActor } from "./authorization.js";
 import { forbidden, unprocessable } from "../errors.js";
+import { loadActorMemberships } from "./member-restriction/actor-memberships.js";
 import {
   logActivity,
   publishActivity,
@@ -467,20 +467,11 @@ export function fastResponseService(
     )
       throw forbidden("sponsorship_disabled");
     const memberships = request.responsibleUserId
-      ? await tx
-          .select({
-            companyId: companyMemberships.companyId,
-            membershipRole: companyMemberships.membershipRole,
-            status: companyMemberships.status,
-          })
-          .from(companyMemberships)
-          .where(
-            and(
-              eq(companyMemberships.companyId, request.companyId),
-              eq(companyMemberships.principalType, "user"),
-              eq(companyMemberships.principalId, request.responsibleUserId),
-            ),
-          )
+      ? await loadActorMemberships(tx, {
+          userId: request.responsibleUserId,
+          companyId: request.companyId,
+          activeOnly: false,
+        })
       : [];
     if (!request.sponsored && !request.responsibleUserId)
       throw forbidden("responsible_user_missing");

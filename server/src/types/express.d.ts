@@ -1,6 +1,6 @@
 export {};
 
-import type { AgentApiKeyScope } from "@paperclipai/shared";
+import type { ActorCompanyMembership, AgentApiKeyScope } from "@paperclipai/shared";
 
 declare global {
   namespace Express {
@@ -14,16 +14,8 @@ declare global {
         companyId?: string;
         companyIds?: string[];
         sessionId?: string | null;
-        memberships?: Array<{
-          companyId: string;
-          membershipRole?: string | null;
-          status?: string;
-        }>;
-        onBehalfOfMemberships?: Array<{
-          companyId: string;
-          membershipRole?: string | null;
-          status?: string;
-        }>;
+        memberships?: ActorCompanyMembership[];
+        onBehalfOfMemberships?: ActorCompanyMembership[];
         isInstanceAdmin?: boolean;
         canManageExperimentalSettings?: boolean;
         keyId?: string;

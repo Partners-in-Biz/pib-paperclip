@@ -1101,7 +1101,7 @@ function boardActor(companyId: string, userId = "owner-user") {
     userId,
     isInstanceAdmin: false,
     companyIds: [companyId],
-    memberships: [{ companyId, status: "active", membershipRole: "operator" }],
+    memberships: [{ companyId, status: "active", membershipRole: "operator", restricted: false, restrictionMode: "off" as const }],
   };
 }
 

@@ -7513,8 +7513,12 @@ registry.registerPath({
   path: "/api/auth/get-session",
   tags: ["auth"],
   summary: "Get current session",
-  description: "Authenticated board sessions can include an optional same-user boardBootstrap with accessible companies and boardAccess. Existing session fields are unchanged; clients retain ordinary company and access reads when the optional projection is absent.",
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  description: "Authenticated board sessions can include an optional same-user boardBootstrap with accessible companies and boardAccess. Existing session fields are unchanged; clients retain ordinary company and access reads when the optional projection is absent. memberRestrictions lists, per company the signed-in person belongs to, whether he is restricted there and the company's restriction mode (off, report, enforce).",
+  responses: {
+    200: r.ok(),
+    401: r.unauthorized,
+    503: { description: "Member restriction could not be read (MEMBER_RESTRICTION_UNAVAILABLE)" },
+  },
 });
 
 registry.registerPath({

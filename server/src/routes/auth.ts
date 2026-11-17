@@ -12,6 +12,24 @@ import { validate } from "../middleware/validate.js";
 import { resolveSentryDsns } from "../sentry-dsn.js";
 import { logger } from "../middleware/logger.js";
 import { loadBoardBootstrap } from "../services/board-bootstrap.js";
+import {
+  memberRestrictionForMembership,
+  memberRestrictionResolver,
+} from "../services/member-restriction/index.js";
+
+/**
+ * The signed-in person's own restriction in each company he belongs to, from
+ * the fields his actor memberships already carry; a membership without them is
+ * read through the resolver (a failed read answers 503, never "not restricted").
+ */
+async function loadSessionMemberRestrictions(db: Db, actor: Express.Request["actor"]) {
+  if (!actor.userId) return [];
+  const resolve = memberRestrictionResolver(db);
+  return Promise.all((actor.memberships ?? []).map(async (membership) => {
+    const restriction = await memberRestrictionForMembership(resolve, actor.userId!, membership.companyId, membership);
+    return { companyId: membership.companyId, restricted: restriction.restricted, mode: restriction.mode };
+  }));
+}
 
 async function loadCurrentUserProfile(db: Db, userId: string) {
   const user = await db
@@ -52,7 +70,11 @@ export function authRoutes(db: Db) {
         return undefined;
       })
       : Promise.resolve(undefined);
-    const [user, boardBootstrap] = await Promise.all([loadCurrentUserProfile(db, req.actor.userId), bootstrap]);
+    const [user, boardBootstrap, memberRestrictions] = await Promise.all([
+      loadCurrentUserProfile(db, req.actor.userId),
+      bootstrap,
+      loadSessionMemberRestrictions(db, req.actor),
+    ]);
     res.setHeader("Cache-Control", "private, no-store");
     const session = authSessionSchema.parse({
       session: {
@@ -67,6 +89,7 @@ export function authRoutes(db: Db) {
       sentryDsn: resolveSentryDsns().frontend,
       // Match the server SDK's runtime environment, including in reused images.
       sentryEnvironment: process.env.SENTRY_ENVIRONMENT || null,
+      memberRestrictions,
     });
     res.json({ ...session, ...(boardBootstrap ? { boardBootstrap } : {}) });
   });

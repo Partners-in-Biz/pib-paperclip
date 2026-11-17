@@ -165,7 +165,7 @@ describeEmbeddedPostgres("inbox archive routes", () => {
       onBehalfOfMemberships: [{
         companyId: seeded.companyId,
         membershipRole: "operator",
-        status: "active",
+        status: "active", restricted: false, restrictionMode: "off",
       }],
     };
   }
@@ -177,7 +177,7 @@ describeEmbeddedPostgres("inbox archive routes", () => {
       source: "session",
       userId: seeded.responsibleUserId,
       companyIds: [seeded.companyId],
-      memberships: [{ companyId: seeded.companyId, membershipRole: "operator", status: "active" }],
+      memberships: [{ companyId: seeded.companyId, membershipRole: "operator", status: "active", restricted: false, restrictionMode: "off" }],
       isInstanceAdmin: false,
     });
 
@@ -206,7 +206,7 @@ describeEmbeddedPostgres("inbox archive routes", () => {
       source: "session",
       userId: seeded.responsibleUserId,
       companyIds: [seeded.companyId],
-      memberships: [{ companyId: seeded.companyId, membershipRole: "operator", status: "active" }],
+      memberships: [{ companyId: seeded.companyId, membershipRole: "operator", status: "active", restricted: false, restrictionMode: "off" }],
       isInstanceAdmin: false,
     });
     let manualArchive: Promise<{ status: number }> | undefined;
@@ -364,7 +364,7 @@ describeEmbeddedPostgres("inbox archive routes", () => {
       source: "session",
       userId: seeded.responsibleUserId,
       companyIds: [seeded.companyId],
-      memberships: [{ companyId: seeded.companyId, membershipRole: "operator", status: "active" }],
+      memberships: [{ companyId: seeded.companyId, membershipRole: "operator", status: "active", restricted: false, restrictionMode: "off" }],
       isInstanceAdmin: false,
     });
 
@@ -421,7 +421,7 @@ describeEmbeddedPostgres("inbox archive routes", () => {
       source: "session",
       userId: seeded.responsibleUserId,
       companyIds: [seeded.companyId],
-      memberships: [{ companyId: seeded.companyId, membershipRole: "operator", status: "active" }],
+      memberships: [{ companyId: seeded.companyId, membershipRole: "operator", status: "active", restricted: false, restrictionMode: "off" }],
       isInstanceAdmin: false,
     });
 
@@ -507,7 +507,7 @@ describeEmbeddedPostgres("inbox archive routes", () => {
       source: "session",
       userId: seeded.responsibleUserId,
       companyIds: [seeded.companyId],
-      memberships: [{ companyId: seeded.companyId, membershipRole: "operator", status: "active" }],
+      memberships: [{ companyId: seeded.companyId, membershipRole: "operator", status: "active", restricted: false, restrictionMode: "off" }],
       isInstanceAdmin: false,
     });
     await request(boardApp)

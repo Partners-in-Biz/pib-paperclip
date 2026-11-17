@@ -198,7 +198,7 @@ function boardActor(fixture: Fixture): Express.Request["actor"] {
       {
         companyId: fixture.company.id,
         membershipRole: "operator",
-        status: "active",
+        status: "active", restricted: false, restrictionMode: "off",
       },
     ],
     isInstanceAdmin: true,

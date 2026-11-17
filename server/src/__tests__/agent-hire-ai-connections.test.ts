@@ -76,7 +76,7 @@ async function fixture(provider: "anthropic" | "openai", method: "api_key" | "su
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    req.actor = { type: "agent", agentId, companyId, runId: run!.id, source: "agent_jwt", onBehalfOfUserId: userId, onBehalfOfMemberships: [{ companyId, membershipRole: "owner", status: "active" }] };
+    req.actor = { type: "agent", agentId, companyId, runId: run!.id, source: "agent_jwt", onBehalfOfUserId: userId, onBehalfOfMemberships: [{ companyId, membershipRole: "owner", status: "active", restricted: false, restrictionMode: "off" }] };
     next();
   });
   app.use("/api", agentRoutes(db));

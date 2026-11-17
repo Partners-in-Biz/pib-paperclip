@@ -1024,6 +1024,8 @@ export type {
   UserCompanyAccessEntry,
   UserCompanyAccessResponse,
   MemberRestriction,
+  ActorCompanyMembership,
+  SessionMemberRestriction,
 } from "./access.js";
 export type { QuotaWindow, ProviderQuotaResult } from "./quota.js";
 export type {

@@ -2,7 +2,7 @@ import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notificatio
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, gte, lt, lte, or, sql } from "drizzle-orm";
 import {
-  agents, authUsers, budgetReservations, companies, companyMemberships, companyDecisionModels, costEvents,
+  agents, authUsers, budgetReservations, companies, companyDecisionModels, costEvents,
   decisionInvocations, heartbeatRuns, issues, projects, companySecrets, type Db,
 } from "@paperclipai/db";
 import {
@@ -11,6 +11,7 @@ import {
   type DecisionModelSettings, type DecisionProvider, type DecisionRequest, type DecisionResult, type DecisionUnavailableReason, type UpdateDecisionModel,
 } from "@paperclipai/shared";
 import { HttpError, forbidden, unprocessable } from "../errors.js";
+import { loadActorMemberships } from "./member-restriction/actor-memberships.js";
 import { aiConnectionService } from "./ai-connections.js";
 import { accessService } from "./access.js";
 import { type AuthorizationActor } from "./authorization.js";
@@ -109,8 +110,7 @@ export function decisionModelService(db: Db, options: { provider?: typeof runDec
       const runIssue = run.nativeIssueId ?? run.contextSnapshot?.issueId ?? run.contextSnapshot?.taskId;
       if (issueId && issueId !== runIssue) throw forbidden("Task does not belong to this run");
       issueId = typeof runIssue === "string" ? runIssue : null;
-      const memberships = userId ? await executor.select({ companyId: companyMemberships.companyId, membershipRole: companyMemberships.membershipRole, status: companyMemberships.status })
-        .from(companyMemberships).where(and(eq(companyMemberships.companyId, context.companyId), eq(companyMemberships.principalType, "user"), eq(companyMemberships.principalId, userId))) : [];
+      const memberships = userId ? await loadActorMemberships(executor, { userId, companyId: context.companyId, activeOnly: false }) : [];
       actor = { ...actor, onBehalfOfUserId: userId, onBehalfOfMemberships: memberships };
     } else if (actor.type === "board") userId = actor.userId ?? (actor.source === "local_implicit" ? "local-board" : null);
     else throw forbidden();

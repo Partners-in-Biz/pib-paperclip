@@ -186,3 +186,26 @@ export interface MemberRestriction {
   pluginKeys: string[];
   agentIds: string[];
 }
+
+/**
+ * A company membership as a signed-in actor carries it (`actor.memberships`,
+ * `actor.onBehalfOfMemberships`, the responsible-user snapshot). Every loader
+ * fills `restricted` and `restrictionMode` with the resolver's answer at load
+ * time, so a loader that leaves them out does not compile. A membership that
+ * still lacks them at run time (an actor built by hand) is "unknown": the
+ * resolver reads the database, it never assumes "not restricted".
+ */
+export interface ActorCompanyMembership {
+  companyId: string;
+  membershipRole?: string | null;
+  status?: string;
+  restricted: boolean;
+  restrictionMode: MemberRestrictionMode;
+}
+
+/** One entry of the signed-in person's own session data, per company he belongs to. */
+export interface SessionMemberRestriction {
+  companyId: string;
+  restricted: boolean;
+  mode: MemberRestrictionMode;
+}

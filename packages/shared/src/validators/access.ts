@@ -5,6 +5,7 @@ import {
   INVITE_JOIN_TYPES,
   JOIN_REQUEST_STATUSES,
   JOIN_REQUEST_TYPES,
+  MEMBER_RESTRICTION_MODES,
   PERMISSION_KEYS,
 } from "../constants.js";
 import { optionalAgentAdapterTypeSchema } from "../adapter-type.js";
@@ -216,6 +217,14 @@ export const authSessionSchema = z.object({
   sentryDsn: z.string().min(1).nullable(),
   // Optional for browser/server version skew; null leaves the SDK default.
   sentryEnvironment: z.string().nullable().optional(),
+  // The signed-in person's own restriction per company (PAR-12608 4.2, "What
+  // the screens get"), so a screen can hide what the server will refuse.
+  // Optional for browser/server version skew.
+  memberRestrictions: z.array(z.object({
+    companyId: z.string().min(1),
+    restricted: z.boolean(),
+    mode: z.enum(MEMBER_RESTRICTION_MODES),
+  })).optional(),
 });
 
 export type AuthSession = z.infer<typeof authSessionSchema>;
