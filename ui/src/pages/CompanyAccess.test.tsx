@@ -26,6 +26,8 @@ const healthMock = vi.hoisted(() => vi.fn(async (): Promise<Record<string, unkno
 const restrictionModeMock = vi.hoisted(() => vi.fn(async () => ({ mode: "off", deniedLast7Days: 0 })));
 
 vi.mock("@/api/health", () => ({ healthApi: { get: () => healthMock() } }));
+const sessionMock = vi.hoisted(() => vi.fn(async () => ({ user: { id: "user-1" } })));
+vi.mock("@/api/auth", () => ({ authApi: { getSession: () => sessionMock() } }));
 
 vi.mock("@/api/cloud", () => ({
   cloudApi: { listStacks: listCloudStacksMock },
@@ -339,6 +341,46 @@ describe("CompanyAccess", () => {
     });
   });
 
+  it("offers the Access control per member, locked on owner, admin and the signed-in person", async () => {
+    sessionMock.mockResolvedValueOnce({ user: { id: "user-4" } });
+    const base = await listMembersMock();
+    const extra = (id: string, role: string) => ({
+      ...base.members[1],
+      id: `member-${id}`,
+      principalId: `user-${id}`,
+      membershipRole: role,
+      user: { id: `user-${id}`, email: `${id}@example.test`, name: `Person ${id}`, image: null },
+    });
+    base.members.push(extra("3", "admin"), extra("4", "viewer"));
+    listMembersMock.mockResolvedValueOnce(base);
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <CompanyAccess />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const accessButton = (email: string) => {
+      const row = [...container.querySelectorAll("tr")].find((entry) => entry.textContent?.includes(email))!;
+      return [...row.querySelectorAll("button")].find((button) => button.textContent === "Access")!;
+    };
+    expect(accessButton("codexcoder@paperclip.local").disabled).toBe(true);
+    expect(accessButton("codexcoder@paperclip.local").parentElement?.title).toBe("Owners and admins cannot be restricted");
+    expect(accessButton("3@example.test").disabled).toBe(true);
+    expect(accessButton("4@example.test").disabled).toBe(true);
+    expect(accessButton("4@example.test").parentElement?.title).toBe("You cannot change your own access");
+    expect(accessButton("board@paperclip.local").disabled).toBe(false);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("hides the switch and skips the mode request for a member who cannot manage members", async () => {
     const base = await listMembersMock();
     base.members[1] = { ...base.members[1], restricted: true, restrictedPluginKeys: [], restrictedAgentIds: [] };
@@ -359,6 +401,7 @@ describe("CompanyAccess", () => {
 
     expect(container.querySelector("[aria-label='Member restriction switch']")).toBeNull();
     expect(restrictionModeMock).not.toHaveBeenCalled();
+    expect([...container.querySelectorAll("button")].some((button) => button.textContent === "Access")).toBe(false);
     // Without the switch the page does not know the mode, so the flagged member reads plain "flag set".
     expect(container.textContent).toContain("flag set");
     expect(container.textContent).not.toContain("flag set, not enforced");

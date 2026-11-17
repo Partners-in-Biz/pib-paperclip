@@ -36,8 +36,8 @@ const restrictedMembers = [
       image: null,
     },
     restricted: true,
-    restrictedPluginKeys: Array.from({ length: 12 }, (_, i) => `plugin.${i}`),
-    restrictedAgentIds: ["agent-1"],
+    restrictedPluginKeys: ["pib.plugin-with-a-rather-long-key-0", "pib.removed-plugin"],
+    restrictedAgentIds: ["agent-0", "agent-3", "00000000-0000-4000-8000-000000000000"],
   },
   {
     ...member,
@@ -47,6 +47,24 @@ const restrictedMembers = [
     restricted: false,
   },
 ];
+// Stress data for the Access dialog: many plugins and agents with long names, every 4.7 mark.
+const longName = "Client Services Operations Coordinator for the Southern Region Subsidiary";
+const stressPlugins = Array.from({ length: 24 }, (_, i) => ({
+  id: `plugin-${i}`,
+  pluginKey: `pib.plugin-with-a-rather-long-key-${i}`,
+  status: "ready",
+  manifestJson: { displayName: i % 3 === 0 ? `${longName} plugin ${i}` : `Plugin ${i}` },
+}));
+const stressAgents = Array.from({ length: 30 }, (_, i) => ({
+  id: `agent-${i}`,
+  companyId: "company-storybook",
+  name: i % 4 === 0 ? `${longName} agent ${i}` : `Agent ${i}`,
+  role: "general",
+  status: i % 7 === 3 ? "terminated" : i % 9 === 5 ? "paused" : "active",
+  reportsTo: i > 0 && i < 6 ? "agent-0" : null,
+  adapterType: i % 3 === 0 ? "claude_local" : i % 3 === 1 ? "http" : "hermes_gateway",
+  permissions: { canCreateAgents: i % 5 === 0 },
+}));
 function MembershipHost() {
   return (
     <>
@@ -93,6 +111,11 @@ const meta = {
           }),
         },
         {
+          path: "/api/companies/company-storybook/agents",
+          read: () => (parameters.restrictionStress ? stressAgents : []),
+        },
+        { path: "/api/plugins", read: () => stressPlugins },
+        {
           path: "/api/companies/company-storybook/join-requests",
           read: () => [],
         },
@@ -133,6 +156,15 @@ export const RestrictionKillSwitch: Story = {
 };
 /** Company stored as `enforce`, no kill switch: the flagged member reads "restricted". */
 export const RestrictionEnforced: Story = { parameters: { restrictionStress: true } };
+/** The Access dialog of the flagged member with stress data and a stored id that is no longer an agent. */
+export const RestrictionDialog: Story = {
+  parameters: { restrictionStress: true },
+  play: async ({ canvasElement }) => {
+    const row = (await within(canvasElement).findByText(/Bartholomew/)).closest("tr")!;
+    await userEvent.click(within(row as HTMLElement).getByRole("button", { name: "Access" }));
+    await within(document.body).findByText("Agents this member may instruct");
+  },
+};
 export const Loading: Story = { parameters: { fixtureState: "loading" } };
 export const Empty: Story = { parameters: { fixtureState: "empty" } };
 export const Failed: Story = { parameters: { fixtureState: "failure" } };
