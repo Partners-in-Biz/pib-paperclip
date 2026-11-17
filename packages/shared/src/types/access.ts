@@ -8,6 +8,7 @@ import type {
   JoinRequestStatus,
   JoinRequestType,
   MembershipStatus,
+  MemberRestrictionMode,
   PermissionKey,
   PrincipalType,
 } from "../constants.js";
@@ -167,4 +168,17 @@ export interface UserCompanyAccessResponse {
     isInstanceAdmin: boolean;
   }) | null;
   companyAccess: UserCompanyAccessEntry[];
+}
+
+/**
+ * What the member-restriction resolver answers for one person in one company.
+ * `restricted` is true only when the company's mode is `report` or `enforce`
+ * (and the server kill switch is not on) and that person's membership row is
+ * flagged, whatever the row's status.
+ */
+export interface MemberRestriction {
+  restricted: boolean;
+  mode: MemberRestrictionMode;
+  pluginKeys: string[];
+  agentIds: string[];
 }

@@ -35,6 +35,7 @@ import {
   WORKSPACE_READINESS_USER_ID_HEADER,
 } from "../auth/workspace-login-handoff.js";
 import { serverVersion } from "../version.js";
+import { memberRestrictionKillSwitchOn } from "../services/member-restriction/index.js";
 import { getStartupRecoveryState } from "../startup-recovery-state.js";
 import { nativeRestartRecoverySummary } from "../services/native-runtime/native-restart-recovery.js";
 import {
@@ -444,6 +445,7 @@ export function healthRoutes(
       serverInfo,
       startupRecovery,
       nativeRecovery,
+      ...(memberRestrictionKillSwitchOn() ? { memberRestriction: "forced_off" as const } : {}),
       ...(databaseBackup ? { databaseBackup } : {}),
       ...(warnings ? { warnings } : {}),
       ...(devServer ? { devServer } : {}),

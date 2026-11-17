@@ -93,6 +93,7 @@ import { deliverReconciledExecutions, settleUnrecoverableExecutions } from "./se
 import { deliverPendingPauseResumes } from "./services/issue-tree-resume.js";
 import { invalidateNativeReplacementDiscovery, reconcileSafeNativeReplacements } from "./services/native-runtime/native-safe-replacement.js";
 import { reconcileAbandonedExecutionControl } from "./services/execution-control-reconciliation.js";
+import { reportMemberRestrictionKillSwitchAtBoot } from "./services/member-restriction/index.js";
 import { acknowledgeNativeStartupCleanup } from "./services/native-runtime/native-startup-cleanup.js";
 import { executionControlSchedule, registerExecutionControlWork } from "./services/execution-control-work.js";
 import { connectionIntentDeliveryService } from "./services/connection-intent-delivery.js";
@@ -1185,6 +1186,13 @@ async function startServerWithDatabaseTeardown(
     })
     .catch((err) => {
       logger.error({ err }, "startup reconciliation of built-in agents failed");
+    }));
+
+  // Kill switch PAPERCLIP_MEMBER_RESTRICTION: boot log line, and an activity entry
+  // on each company whose member-restriction mode is not `off` (PAR-12608 4.2).
+  void trackIdleWork(reportMemberRestrictionKillSwitchAtBoot(db)
+    .catch((err) => {
+      logger.error({ err }, "startup report of the member-restriction kill switch failed");
     }));
 
   // Force the instance onto the Kubernetes sandbox provider when configured via
