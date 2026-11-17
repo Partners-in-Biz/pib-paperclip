@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { DataTable, usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import { DataTable } from "@paperclipai/plugin-sdk/ui";
+import { useAccountingAction } from "./actions.js";
 import { Button, CompactRows, EmptyState, Field, Input, Modal, Pill, Section, Select, Sheet, tokens, tone, formatDate, formatMoney, formatShortDate, useIsNarrow } from "@partnersinbiz/pib-plugin-ui";
 import { cleanMemo } from "../domain/memo.js";
 import type { LoadResult } from "./overview.js";
@@ -173,25 +174,25 @@ function importMessage(r: Record<string, unknown>): string {
 }
 
 export function BankTab({ data, onMessage }: { data: LoadResult; onMessage: (m: string) => void }) {
-  const loadBank = usePluginAction("accounting.bank");
-  const loadLines = usePluginAction("accounting.bank-lines");
-  const saveBankAccount = usePluginAction("accounting.save-bank-account");
-  const uploadUrl = usePluginAction("accounting.statement-upload-url");
-  const importStatement = usePluginAction("accounting.import-statement");
-  const queuePdfStatements = usePluginAction("accounting.queue-pdf-statements");
-  const refreshSuggestions = usePluginAction("accounting.refresh-suggestions");
-  const accept = usePluginAction("accounting.accept-suggestion");
-  const categorise = usePluginAction("accounting.categorise");
-  const matchOpenItem = usePluginAction("accounting.match-open-item");
-  const exclude = usePluginAction("accounting.exclude-line");
-  const undo = usePluginAction("accounting.undo-line");
-  const saveRule = usePluginAction("accounting.save-rule");
-  const deleteRule = usePluginAction("accounting.delete-rule");
-  const prepareRec = usePluginAction("accounting.prepare-reconciliation");
-  const requestRec = usePluginAction("accounting.request-reconciliation-approval");
-  const approveRec = usePluginAction("accounting.approve-reconciliation");
-  const discardRec = usePluginAction("accounting.discard-reconciliation");
-  const openRec = usePluginAction("accounting.open-reconciliation");
+  const loadBank = useAccountingAction("accounting.bank");
+  const loadLines = useAccountingAction("accounting.bank-lines");
+  const saveBankAccount = useAccountingAction("accounting.save-bank-account");
+  const uploadUrl = useAccountingAction("accounting.statement-upload-url");
+  const importStatement = useAccountingAction("accounting.import-statement");
+  const queuePdfStatements = useAccountingAction("accounting.queue-pdf-statements");
+  const refreshSuggestions = useAccountingAction("accounting.refresh-suggestions");
+  const accept = useAccountingAction("accounting.accept-suggestion");
+  const categorise = useAccountingAction("accounting.categorise");
+  const matchOpenItem = useAccountingAction("accounting.match-open-item");
+  const exclude = useAccountingAction("accounting.exclude-line");
+  const undo = useAccountingAction("accounting.undo-line");
+  const saveRule = useAccountingAction("accounting.save-rule");
+  const deleteRule = useAccountingAction("accounting.delete-rule");
+  const prepareRec = useAccountingAction("accounting.prepare-reconciliation");
+  const requestRec = useAccountingAction("accounting.request-reconciliation-approval");
+  const approveRec = useAccountingAction("accounting.approve-reconciliation");
+  const discardRec = useAccountingAction("accounting.discard-reconciliation");
+  const openRec = useAccountingAction("accounting.open-reconciliation");
   const { busy, run } = useRunner(onMessage);
 
   const [snap, setSnap] = useState<BankSnapshot | null>(null);

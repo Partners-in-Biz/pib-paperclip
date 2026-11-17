@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import { useAccountingAction } from "./actions.js";
 import { Button, Field, Input, Section, Select, formatDate, formatMoney, formatMonth } from "@partnersinbiz/pib-plugin-ui";
 import type { LoadResult } from "./overview.js";
 import { centsToInput, Muted, Row, small, Table, Td, toCents, useRunner } from "./shared.js";
@@ -28,11 +28,11 @@ interface ForecastResult {
 }
 
 export function BudgetsTab({ data, onMessage }: { data: LoadResult; onMessage: (m: string) => void }) {
-  const loadBudgets = usePluginAction("accounting.budgets");
-  const saveBudgets = usePluginAction("accounting.save-budgets");
-  const loadForecast = usePluginAction("accounting.forecast");
-  const saveLine = usePluginAction("accounting.save-forecast-line");
-  const deleteLine = usePluginAction("accounting.delete-forecast-line");
+  const loadBudgets = useAccountingAction("accounting.budgets");
+  const saveBudgets = useAccountingAction("accounting.save-budgets");
+  const loadForecast = useAccountingAction("accounting.forecast");
+  const saveLine = useAccountingAction("accounting.save-forecast-line");
+  const deleteLine = useAccountingAction("accounting.delete-forecast-line");
   const { busy, run } = useRunner(onMessage);
   const thisMonth = new Date().toISOString().slice(0, 7);
   const [fromMonth, setFromMonth] = useState(thisMonth);
