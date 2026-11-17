@@ -122,6 +122,23 @@ const OWN_COMPANIES = "Your access is limited to your own companies, and this is
 export const GUARDED_HANDLER: unique symbol = Symbol.for("partnersinbiz.access.guarded-handler");
 const guarded = <T extends object>(handler: T): T => Object.defineProperty(handler, GUARDED_HANDLER, { value: true });
 
+/**
+ * Test seam for the access test helper (4.5 items 4 to 6, `./testing.ts`), by
+ * plugin key. Only that helper sets one, and only while it runs; with none set
+ * the guard behaves exactly as without this seam.
+ */
+export interface GuardProbe {
+  /** Answers instead of the plugin's handler when the guard lets a call through. */
+  reached(key: string, check: AccessCheck): unknown;
+  /** Keys the guard treats as missing from the table. */
+  hidden: ReadonlySet<string>;
+}
+const PROBES = Symbol.for("partnersinbiz.access.guard-probes");
+export function guardProbes(): Map<string, GuardProbe> {
+  const g = globalThis as { [PROBES]?: Map<string, GuardProbe> };
+  return (g[PROBES] ??= new Map());
+}
+
 export function permissionOf(entry: AccessTableEntry | undefined): string | null {
   if (entry === undefined) return null;
   if (entry === ADMIN_ONLY) return ADMIN_ONLY;
@@ -180,6 +197,7 @@ export function createAccessGuard(ctx: PluginContext, options: AccessGuardOption
   const registered = new Set<string>();
   const routes = new Map<string, GuardedApiRoute>();
   const areas = areasOf(pluginKey);
+  const probe = () => guardProbes().get(pluginKey);
   onAccessReceived(ctx, (companyId) => noteAccessReceived(ctx, companyId));
 
   /** The caller's access, or why it has none (`unverified`: a read failed). */
@@ -213,7 +231,7 @@ export function createAccessGuard(ctx: PluginContext, options: AccessGuardOption
     }
     const { mode } = await readAccessSwitch(ctx, companyId, pluginKey, { now: options.now });
     if (mode === "off") return { check: { mode, caller, decision: ALL } };
-    const entry = Object.hasOwn(table, key) ? table[key] : undefined;
+    const entry = Object.hasOwn(table, key) && !probe()?.hidden.has(key) ? table[key] : undefined;
     const viaAgentId = caller.type === "agent" ? caller.agentId : null;
     if (strictKey && entry === undefined) {
       await reportAccessRefusal(ctx, mode, { companyId, pluginKey, userId: caller.userId, key, permission: null, viaAgentId }, { now: options.now });
@@ -265,7 +283,9 @@ export function createAccessGuard(ctx: PluginContext, options: AccessGuardOption
         guarded(async (params: Record<string, unknown>, context: PluginPerformActionContext): Promise<unknown | ActionRefusal> => {
           const companyId = context?.companyId ?? context?.actor?.companyId ?? null;
           const r = await check(companyId, key, actionCaller(context));
-          return "refused" in r ? permissionRefusal(r.refused) : handler(params, context, r.check);
+          if ("refused" in r) return permissionRefusal(r.refused);
+          const p = probe();
+          return p ? p.reached(key, r.check) : handler(params, context, r.check);
         }),
       );
     },
@@ -280,7 +300,8 @@ export function createAccessGuard(ctx: PluginContext, options: AccessGuardOption
           if ("refused" in r) {
             return normalizeToolResult({ error: `Access refused: the person this run works for may not do this (${r.refused}). An owner can change it in Setup under People.` });
           }
-          return handler(params, run, r.check);
+          const p = probe();
+          return p ? (p.reached(key, r.check) as ToolResult) : handler(params, run, r.check);
         }),
       );
     },
@@ -295,6 +316,8 @@ export function createAccessGuard(ctx: PluginContext, options: AccessGuardOption
       const r = await check(companyId, `api:${input.routeKey}`, routeCaller(input.actor), true);
       if ("refused" in r) return routeRefusal(r.refused);
       const handler = routes.get(input.routeKey) ?? fallback;
+      const p = probe();
+      if (p && handler) return p.reached(`api:${input.routeKey}`, r.check) as PluginApiResponse;
       return handler ? handler(input, r.check) : { status: 404, body: { error: "Unknown route" } };
     },
     keys: () => [...registered],

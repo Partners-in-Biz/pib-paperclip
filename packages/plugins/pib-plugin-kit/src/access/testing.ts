@@ -14,13 +14,32 @@
  * 2. Each manifest `apiRoutes` key has an `api:` row, and each `api:` row a route.
  * 3. Source check: no `.actions.register`, `.tools.register` or (outside the
  *    plugins with named data handlers) `.data.register` in `src/`.
+ *
+ * Given the `harness` (and `onApiRequest` for a plugin with API routes), it then
+ * calls every guarded action, tool and route with seeded people and runs.
+ * "Today's result" means the guard handed the call to the plugin's handler
+ * unchanged; the guard's probe answers in its place, so no handler runs.
+ * 4. Switch absent or `off`: every call passes. `enforce`: an operator with no
+ *    grant is refused (passes on an `ANY_MEMBER` row), the owner passes, an
+ *    operator granted the row's permission passes, and with the row hidden he
+ *    is refused.
+ * 5. Tools under `enforce`: a run for the operator is refused, a run for the
+ *    owner passes; a run with no person, a run not found and no run are refused.
+ * 6. API routes under `enforce`: the owner and an agent on the owner's run pass;
+ *    the operator and an agent on his run are refused; an unknown route key is
+ *    refused.
  */
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { GUARDED_HANDLER, type AccessTable } from "./guard.js";
+import type { PluginApiRequestInput, PluginApiResponse, PluginContext } from "@paperclipai/plugin-sdk";
+import type { TestHarness } from "@paperclipai/plugin-sdk/testing";
+import { accessGrantScope, permissionKey } from "../permissions.js";
+import { ACTING_PERSON_SQL } from "./acting-person.js";
+import { ADMIN_ONLY, GUARDED_HANDLER, guardProbes, type AccessTable, type GuardProbe } from "./guard.js";
 import { ACCESS_ME_ACTION } from "./me.js";
+import { isRefusal, PERMISSION_DENIED } from "./refusal.js";
+import { accessCompanyScope } from "./switch.js";
 
 /** The only data handlers a PiB plugin may register (4.4: they carry no caller). Studio 9, Voice 2, CRM 2. */
 export const NAMED_DATA_HANDLERS: Readonly<Record<string, readonly string[]>> = Object.freeze({
@@ -34,8 +53,12 @@ export const REGISTER_CALL = /\.(actions|data|tools)\.register\b/g;
 const GUARD_FILE = fileURLToPath(new URL("./guard.ts", import.meta.url));
 
 export interface PluginAccessCheckInput {
-  /** The sdk harness's `ctx` (`createTestHarness(...).ctx`). */
-  ctx: PluginContext;
+  /** The sdk harness's `ctx` (`createTestHarness(...).ctx`); taken from `harness` when that is given. */
+  ctx?: PluginContext;
+  /** The sdk harness; given, the behaviour checks (items 4 to 6) run too. */
+  harness?: TestHarness;
+  /** The plugin's `onApiRequest`, e.g. `plugin.definition.onApiRequest`; needed for the route checks. */
+  onApiRequest?: (input: PluginApiRequestInput) => Promise<PluginApiResponse>;
   /** The plugin's setup, e.g. `plugin.definition.setup`. Run once, with the registrations recorded. */
   setup: (ctx: PluginContext) => void | Promise<void>;
   manifest: { id: string; apiRoutes?: ReadonlyArray<{ routeKey: string }> };
@@ -81,7 +104,7 @@ export async function recordRegistrations(ctx: PluginContext, setup: PluginAcces
 }
 
 /** Items 1 and 2 on recorded registrations. Each problem is one readable line. */
-export function registrationProblems(input: Omit<PluginAccessCheckInput, "ctx" | "setup" | "srcDir">, rec: RecordedRegistrations): string[] {
+export function registrationProblems(input: Pick<PluginAccessCheckInput, "manifest" | "table">, rec: RecordedRegistrations): string[] {
   const { manifest, table } = input;
   const problems: string[] = [];
   const has = (key: string) => Object.hasOwn(table, key);
@@ -144,10 +167,160 @@ export function sourceProblems(pluginKey: string, srcDir: string): string[] {
   return problems;
 }
 
-/** All three checks; an empty list means the plugin passes. */
+/** All checks; an empty list means the plugin passes. */
 export async function checkPluginAccess(input: PluginAccessCheckInput): Promise<string[]> {
-  const rec = await recordRegistrations(input.ctx, input.setup);
-  return [...registrationProblems(input, rec), ...(input.srcDir ? sourceProblems(input.manifest.id, input.srcDir) : [])];
+  const ctx = input.harness?.ctx ?? input.ctx;
+  if (!ctx) throw new Error("checkPluginAccess needs the harness or its ctx");
+  const rec = await recordRegistrations(ctx, input.setup);
+  return [
+    ...registrationProblems(input, rec),
+    ...(input.srcDir ? sourceProblems(input.manifest.id, input.srcDir) : []),
+    ...(input.harness ? await behaviourProblems({ ...input, harness: input.harness }, rec) : []),
+  ];
+}
+
+const id = (n: number) => `a1500000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+/** The companies, people, agent and runs the behaviour checks seed. */
+export const ACCESS_TEST_IDS = Object.freeze({
+  absent: id(1), off: id(2), enforce: id(3),
+  owner: id(11), operator: id(12), granted: id(13),
+  agent: id(21), runOwner: id(31), runOperator: id(32), runNobody: id(33), runMissing: id(34),
+});
+const T = ACCESS_TEST_IDS;
+const scopeKey = (s: { scopeId?: string; namespace?: string; stateKey: string }) => `${s.scopeId ?? ""}|${s.namespace ?? ""}|${s.stateKey}`;
+const short = (v: unknown) => {
+  const s = JSON.stringify(v) ?? String(v);
+  return s.length > 120 ? `${s.slice(0, 117)}...` : s;
+};
+
+type Kind = "action" | "tool" | "route";
+type Who = { user: string } | { run: string };
+type Outcome = { reached: true } | { reached: false; refused: boolean; got: string };
+
+/** Items 4 to 6 on the set-up harness. Each problem is one readable line. */
+export async function behaviourProblems(input: PluginAccessCheckInput & { harness: TestHarness }, rec: RecordedRegistrations): Promise<string[]> {
+  const { harness, table, manifest, onApiRequest } = input;
+  const ctx = harness.ctx;
+  const problems: string[] = [];
+  const routes = (manifest.apiRoutes ?? []).map((r) => r.routeKey);
+  if (routes.length && !onApiRequest) problems.push("the manifest has API routes but no onApiRequest was given to the access check (pass plugin.definition.onApiRequest)");
+  const actions = [...rec.actions].filter(([k, r]) => r.guarded && k !== ACCESS_ME_ACTION).map(([k]) => k);
+  const tools = [...rec.tools].filter(([, r]) => r.guarded).map(([k]) => k);
+
+  const allow: string[] = [];
+  const scopeOverrides: Record<string, "all"> = {};
+  for (const e of Object.values(table)) {
+    if (typeof e === "object" && "resource" in e) {
+      allow.push(permissionKey(e.resource, e.action));
+      scopeOverrides[e.resource] = "all";
+    }
+  }
+  const at = new Date().toISOString();
+  const rows = new Map<string, unknown>([
+    [scopeKey(accessCompanyScope(T.off)), { mode: "off", rev: 1, userIds: [], receivedAt: at }],
+    [scopeKey(accessCompanyScope(T.enforce)), { mode: "enforce", rev: 1, userIds: [], receivedAt: at }],
+    [scopeKey(accessGrantScope(T.enforce, T.granted)), { allow, scopeOverrides }],
+  ]);
+  const runs = new Map<string, string | null>([[T.runOwner, T.owner], [T.runOperator, T.operator], [T.runNobody, null]]);
+  const companies = [T.absent, T.off, T.enforce];
+  const member = (companyId: string, userId: string, role: string) => ({ id: `m-${companyId}-${userId}`, companyId, principalType: "user" as const, principalId: userId, status: "active" as const, membershipRole: role, grants: [], createdAt: at, updatedAt: at });
+  harness.seed({ accessMembers: companies.flatMap((co) => [member(co, T.owner, "owner"), member(co, T.operator, "member"), member(co, T.granted, "member")]) });
+
+  let seen = 0;
+  const probe: GuardProbe & { hidden: Set<string> } = { hidden: new Set(), reached: () => (seen++, { content: "access check", status: 200, body: null }) };
+  const get = ctx.state.get;
+  const query = ctx.db.query;
+  // The harness keeps its capability checks: the plugin's own call goes first.
+  ctx.state.get = async (scope) => {
+    const v = await get.call(ctx.state, scope);
+    const k = scopeKey(scope);
+    return rows.has(k) ? rows.get(k) : v;
+  };
+  ctx.db.query = (async (sql: string, params?: unknown[]) => {
+    const out = await query.call(ctx.db, sql, params);
+    if (sql !== ACTING_PERSON_SQL) return out;
+    const [runId, companyId, agentId] = params ?? [];
+    const found = typeof runId === "string" && runs.has(runId) && companies.includes(companyId as string) && agentId === T.agent;
+    return found ? [{ responsible_user_id: runs.get(runId), status: "running" }] : [];
+  }) as typeof ctx.db.query;
+
+  async function call(kind: Kind, name: string, companyId: string, who: Who): Promise<Outcome> {
+    seen = 0;
+    let result: unknown;
+    try {
+      if (kind === "action") {
+        result = await harness.performAction(name, {}, { companyId, actor: { type: "user", userId: "user" in who ? who.user : null } });
+      } else if (kind === "tool") {
+        result = await harness.executeTool(name, {}, { agentId: T.agent, runId: "run" in who ? who.run : "", companyId });
+      } else {
+        const actor = "user" in who ? { actorType: "user" as const, actorId: who.user, userId: who.user } : { actorType: "agent" as const, actorId: T.agent, agentId: T.agent, runId: who.run };
+        result = await onApiRequest!({ routeKey: name, method: "GET", path: `/${name}`, params: {}, query: {}, body: null, actor, companyId, headers: {} });
+      }
+    } catch (error) {
+      if (seen) return { reached: true };
+      return { reached: false, refused: false, got: `an error: ${error instanceof Error ? error.message : String(error)}` };
+    }
+    if (seen) return { reached: true };
+    const r = result as { error?: unknown; status?: unknown; body?: unknown } | null;
+    const reason =
+      kind === "action" ? (isRefusal(r) && r.code === PERMISSION_DENIED ? r.message : null)
+      : kind === "tool" ? (typeof r?.error === "string" && r.error.startsWith("Access refused") ? r.error : null)
+      : r?.status === 403 && isRefusal(r.body) ? r.body.message : null;
+    if (reason !== null) return { reached: false, refused: true, got: `the refusal form ("${reason}")` };
+    return { reached: false, refused: false, got: `${short(result)}, not through the access guard of ${manifest.id} (is createAccessGuard given pluginKey "${manifest.id}"?)` };
+  }
+
+  async function expectCall(label: string, want: "pass" | "refuse", kind: Kind, name: string, companyId: string, who: Who) {
+    const o = await call(kind, name, companyId, who);
+    if (want === "pass" ? o.reached : !o.reached && o.refused) return;
+    const wanted = want === "pass" ? "today's result (the call reaches its handler)" : "the refusal form";
+    problems.push(`${label}: expected ${wanted}, got ${o.reached ? "today's result (the call reached its handler)" : o.got}`);
+  }
+
+  const open = (key: string) => {
+    const e = table[key];
+    return typeof e === "object" && "anyMember" in e;
+  };
+  const noGrant = (key: string) => (open(key) ? "pass" : "refuse");
+  const user = (u: string) => ({ user: u });
+  const run = (r: string) => ({ run: r });
+  const askRoutes = onApiRequest ? routes : [];
+  guardProbes().set(manifest.id, probe);
+  try {
+    for (const [co, sw] of [[T.absent, "switch absent"], [T.off, "switch off"]] as const) {
+      for (const a of actions) await expectCall(`action "${a}", ${sw}, operator with no grant`, "pass", "action", a, co, user(T.operator));
+      for (const t of tools) await expectCall(`tool "${t}", ${sw}, run working for an operator with no grant`, "pass", "tool", t, co, run(T.runOperator));
+      for (const r of askRoutes) await expectCall(`API route "${r}", ${sw}, operator with no grant`, "pass", "route", r, co, user(T.operator));
+    }
+    const E = T.enforce;
+    for (const a of actions) {
+      await expectCall(`action "${a}", enforce, operator with no grant`, noGrant(a), "action", a, E, user(T.operator));
+      await expectCall(`action "${a}", enforce, owner`, "pass", "action", a, E, user(T.owner));
+      if (table[a] !== ADMIN_ONLY) await expectCall(`action "${a}", enforce, operator granted its permission`, "pass", "action", a, E, user(T.granted));
+      probe.hidden.add(a);
+      await expectCall(`action "${a}" missing from the table, enforce, operator granted every permission`, "refuse", "action", a, E, user(T.granted));
+      probe.hidden.delete(a);
+    }
+    for (const t of tools) {
+      await expectCall(`tool "${t}", enforce, run working for an operator with no grant`, noGrant(`tool:${t}`), "tool", t, E, run(T.runOperator));
+      await expectCall(`tool "${t}", enforce, run working for the owner`, "pass", "tool", t, E, run(T.runOwner));
+      await expectCall(`tool "${t}", enforce, run with no person`, "refuse", "tool", t, E, run(T.runNobody));
+      await expectCall(`tool "${t}", enforce, run that cannot be found`, "refuse", "tool", t, E, run(T.runMissing));
+      await expectCall(`tool "${t}", enforce, no run`, "refuse", "tool", t, E, run(""));
+    }
+    for (const r of askRoutes) {
+      await expectCall(`API route "${r}", enforce, owner`, "pass", "route", r, E, user(T.owner));
+      await expectCall(`API route "${r}", enforce, agent on a run working for the owner`, "pass", "route", r, E, run(T.runOwner));
+      await expectCall(`API route "${r}", enforce, operator with no grant`, noGrant(`api:${r}`), "route", r, E, user(T.operator));
+      await expectCall(`API route "${r}", enforce, agent on a run working for an operator with no grant`, noGrant(`api:${r}`), "route", r, E, run(T.runOperator));
+    }
+    if (onApiRequest) await expectCall("unknown API route key, enforce, owner", "refuse", "route", "access-check-unknown-route", E, user(T.owner));
+  } finally {
+    guardProbes().delete(manifest.id);
+    ctx.state.get = get;
+    ctx.db.query = query;
+  }
+  return problems;
 }
 
 /** Throws one error listing every problem. */
