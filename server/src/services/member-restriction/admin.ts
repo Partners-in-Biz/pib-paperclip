@@ -121,6 +121,21 @@ export async function countMemberRestrictionDenials(db: Db, companyId: string, d
   return Number(row?.value ?? 0);
 }
 
+/**
+ * The stored switch and the 7-day denial count. The column, not the resolver
+ * answer, so the Access page still shows `enforce` under the kill switch.
+ * Returns null when the company does not exist.
+ */
+export async function getMemberRestrictionMode(db: Db, companyId: string) {
+  const company = await db
+    .select({ mode: companies.memberRestrictionMode })
+    .from(companies)
+    .where(eq(companies.id, companyId))
+    .then((rows) => rows[0] ?? null);
+  if (!company) return null;
+  return { mode: company.mode, deniedLast7Days: await countMemberRestrictionDenials(db, companyId) };
+}
+
 /** Change the company switch. Returns null when the company does not exist. */
 export async function setMemberRestrictionMode(db: Db, companyId: string, mode: MemberRestrictionMode) {
   return db.transaction(async (tx) => {

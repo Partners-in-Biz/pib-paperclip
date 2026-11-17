@@ -107,6 +107,7 @@ import { assertAuthenticated, assertCompanyAccess } from "./authz.js";
 import {
   MEMBER_RESTRICTION_CHANGED_ACTION,
   MEMBER_RESTRICTION_MODE_CHANGED_ACTION,
+  getMemberRestrictionMode,
   setMemberRestriction,
   setMemberRestrictionMode,
 } from "../services/member-restriction/admin.js";
@@ -4687,6 +4688,15 @@ export function accessRoutes(
       res.json(member);
     }
   );
+
+  router.get("/companies/:companyId/member-restriction-mode", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertPersonForMemberRestriction(req);
+    await assertCompanyPermission(req, companyId, "users:manage_permissions");
+    const result = await getMemberRestrictionMode(db, companyId);
+    if (!result) throw notFound("Company not found");
+    res.json(result);
+  });
 
   router.put(
     "/companies/:companyId/member-restriction-mode",

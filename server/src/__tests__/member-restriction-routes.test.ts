@@ -245,6 +245,33 @@ describe("member-restriction routes database support", () => {
     expect((await request(app).put(modePath).send({ mode: "audit" })).status).toBe(400);
   });
 
+  it("AC-F5: GET returns the stored mode (also under the kill switch) and the 7-day count; same guard as PUT", async () => {
+    const { company, member, agent } = await setup();
+    const owner = await member("owner");
+    const modePath = `/api/companies/${company.id}/member-restriction-mode`;
+    await db.update(companies).set({ memberRestrictionMode: "enforce" }).where(eq(companies.id, company.id));
+    await db.insert(activityLog).values({ companyId: company.id, actorType: "system", actorId: "member-restriction",
+      action: "member_restriction.denied", entityType: "company", entityId: company.id });
+
+    as(await member("operator"));
+    expect((await request(app).get(modePath)).status).toBe(403);
+    const ceo = await agent(company.id, "ceo");
+    actor = { type: "agent", agentId: ceo.id, companyId: company.id, source: "agent_key" };
+    expect((await request(app).get(modePath)).status).toBe(403);
+    as(owner, "mcp_oauth");
+    expect((await request(app).get(modePath)).status).toBe(403);
+
+    as(owner);
+    vi.stubEnv("PAPERCLIP_MEMBER_RESTRICTION", "off");
+    try {
+      const res = await request(app).get(modePath);
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body).toEqual({ mode: "enforce", deniedLast7Days: 1 });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("AC-F7: a denial writes a log line each time and one entry per person, rule and day, also under concurrency", async () => {
     const { company } = await setup();
     const { recordMemberRestrictionDenial } = await import("../services/member-restriction/index.js");

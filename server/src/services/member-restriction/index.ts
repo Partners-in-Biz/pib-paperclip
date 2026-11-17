@@ -23,6 +23,7 @@ export {
   MEMBER_RESTRICTION_MODE_CHANGED_ACTION,
   assertRoleAllowedForRestriction,
   countMemberRestrictionDenials,
+  getMemberRestrictionMode,
   recordMemberRestrictionDenial,
   setMemberRestriction,
   setMemberRestrictionMode,
