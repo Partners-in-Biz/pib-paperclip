@@ -26,14 +26,26 @@ import {
 import type {
   ActorCompanyMembership,
   AgentApiKeyScope,
+  MemberRestriction,
   InboxAgentPolicyMode,
   PermissionKey,
   PrincipalType,
   SkillTestAgentKeyScope,
   TaskBridgeAgentKeyScope,
 } from "@paperclipai/shared";
-import { loadActorMemberships } from "./member-restriction/actor-memberships.js";
-import { memberRestrictionReadCondition, type StrictReadResource } from "./member-restriction/strict-read.js";
+import {
+  actorPersonMembership,
+  loadActorMemberships,
+  memberRestrictionForMembership,
+} from "./member-restriction/actor-memberships.js";
+import { recordMemberRestrictionDenial } from "./member-restriction/admin.js";
+import { memberRestrictionFor, memberRestrictionUnavailable } from "./member-restriction/resolver.js";
+import {
+  memberRestrictionReadCondition,
+  restrictionPersonIds,
+  strictReadCondition,
+  type StrictReadResource,
+} from "./member-restriction/strict-read.js";
 import {
   LOW_TRUST_REVIEW_PRESET,
   extractAgentMentionIds,
@@ -170,6 +182,7 @@ export type AuthorizationDecision = {
     | "deny_low_trust_boundary"
     | "deny_issue_private"
     | "deny_project_private"
+    | "deny_member_restricted"
     | "deny_scope"
     | "deny_unsupported_action";
   grant?: {
@@ -708,6 +721,32 @@ async function readSqlCondition(
   return withRestriction(privacyCondition(actor), await memberRestrictionReadCondition(db, actor, resource));
 }
 
+/** Memo key of one person's restriction in one company, shared by a read snapshot and its decisions. */
+function memberRestrictionMemoKey(personId: string, companyId: string) {
+  return `member-restriction:${personId}:${companyId}`;
+}
+
+/**
+ * The resolver's answer for one person an actor carries (PAR-12608 4.2). A
+ * carried membership that says "not restricted" answers without a read; any
+ * other case reads the database. A failed read throws 503
+ * `MEMBER_RESTRICTION_UNAVAILABLE`.
+ */
+function memberRestrictionOfActorPerson(
+  db: Db | DbTransaction,
+  actor: AuthorizationActor,
+  personId: string,
+  companyId: string,
+): Promise<MemberRestriction> {
+  const carried = actorPersonMembership(actor, companyId);
+  return memberRestrictionForMembership(
+    (person, company) => memberRestrictionFor(db as Db, person, company),
+    personId,
+    companyId,
+    carried?.personId === personId ? carried.membership : null,
+  );
+}
+
 /** Filter every externally reachable task query with the same privacy predicate. */
 export async function issueReadSqlCondition(db: Db | DbTransaction, actor: AuthorizationActor): Promise<SQL<boolean>> {
   return readSqlCondition(db, actor, "issue", issuePrivacyCondition);
@@ -782,9 +821,12 @@ export function authorizationDeniedDetails(decision: AuthorizationDecision) {
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
+/** Per restricted person: does the strict condition hold for this row (PAR-12608 4.3, place 3). */
+type StrictReadable = { strictReadable?: Map<string, boolean> };
+
 type ReadAuthorizationSnapshot = {
-  issues: Map<string, IssueAuthorizationRow & IssuePrivacyRow & { readable: boolean }>;
-  projects: Map<string, ProjectAuthorizationRow & ProjectPrivacyRow & { readable: boolean }>;
+  issues: Map<string, IssueAuthorizationRow & IssuePrivacyRow & { readable: boolean } & StrictReadable>;
+  projects: Map<string, ProjectAuthorizationRow & ProjectPrivacyRow & { readable: boolean } & StrictReadable>;
   runs: Map<string, { companyId: string; agentId: string; contextSnapshot: Record<string, unknown> } | null>;
   memo: Map<string, Promise<unknown>>;
 };
@@ -828,6 +870,34 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
     const privacyKey = (actor: AuthorizationActor) => JSON.stringify([actor.type, actor.agentId, actor.userId, actor.onBehalfOfUserId]);
     const privacyActors = [...new Map(batchActors.map(actor => [privacyKey(actor), actor])).values()];
     const privacyIndexes = batchActors.map(actor => privacyActors.findIndex(peer => privacyKey(peer) === privacyKey(actor)));
+    // PAR-12608 4.3, place 3: for every person restricted in a resource's
+    // company, the snapshot precomputes the strict condition with the builders'
+    // own function, so the base decision follows it and adds no rule or query.
+    const strictPersons: string[] = [];
+    for (const actor of batchActors) {
+      for (const personId of restrictionPersonIds(actor)) {
+        for (const companyId of new Set(resources.map(resource => resource.companyId))) {
+          const key = memberRestrictionMemoKey(personId, companyId);
+          if (!memo.has(key)) memo.set(key, memberRestrictionOfActorPerson(db, actor, personId, companyId));
+          if ((await memo.get(key) as MemberRestriction).restricted && !strictPersons.includes(personId)) strictPersons.push(personId);
+        }
+      }
+    }
+    // The condition goes in WHERE: a single-table select list drops the table
+    // names its correlated subqueries rely on.
+    async function strictReadableIds(resource: StrictReadResource, ids: string[]) {
+      const table = resource === "issue" ? issues : projects;
+      const byPerson = new Map<string, Set<string>>();
+      for (const personId of strictPersons) {
+        const rows = await db.select({ id: table.id }).from(table)
+          .where(and(inArray(table.id, ids), strictReadCondition(resource, personId)))
+          .catch((error: unknown) => { throw memberRestrictionUnavailable(error); });
+        byPerson.set(personId, new Set(rows.map(row => row.id)));
+      }
+      return (id: string) => strictPersons.length
+        ? new Map(strictPersons.map(personId => [personId, byPerson.get(personId)!.has(id)]))
+        : undefined;
+    }
     const issueIds = [...new Set(resources.flatMap(resource => resource.type === "issue" && resource.issueId ? [resource.issueId] : []))];
     const projectIds = new Set(resources.flatMap(resource => resource.type === "project" && resource.projectId ? [resource.projectId]
       : resource.type === "issue" && resource.projectId ? [resource.projectId] : []));
@@ -840,8 +910,12 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
         responsibleUserId: issues.responsibleUserId, createdByUserId: issues.createdByUserId,
         readable: sql<boolean[]>`ARRAY[${sql.join(privacyActors.map(actor => issuePrivacyCondition(actor)), sql`, `)}]`,
       }).from(issues).where(inArray(issues.id, issueIds.slice(offset, offset + 500)));
+      const strictReadable = await strictReadableIds("issue", issueIds.slice(offset, offset + 500));
       for (const row of rows) {
-        for (let index = 0; index < snapshots.length; index++) snapshots[index].issues.set(row.id, { ...row, readable: row.readable[privacyIndexes[index]] });
+        const strict = strictReadable(row.id);
+        for (let index = 0; index < snapshots.length; index++) {
+          snapshots[index].issues.set(row.id, { ...row, readable: row.readable[privacyIndexes[index]], strictReadable: strict });
+        }
         if (row.projectId) projectIds.add(row.projectId);
       }
     }
@@ -851,8 +925,12 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
         executionWorkspacePolicy: projects.executionWorkspacePolicy, visibility: projects.visibility,
         readable: sql<boolean[]>`ARRAY[${sql.join(privacyActors.map(actor => projectPrivacyCondition(actor)), sql`, `)}]`,
       }).from(projects).where(inArray(projects.id, ids.slice(offset, offset + 500)));
-      for (const row of rows) for (let index = 0; index < snapshots.length; index++) {
-        snapshots[index].projects.set(row.id, { ...row, readable: row.readable[privacyIndexes[index]] });
+      const strictReadable = await strictReadableIds("project", ids.slice(offset, offset + 500));
+      for (const row of rows) {
+        const strict = strictReadable(row.id);
+        for (let index = 0; index < snapshots.length; index++) {
+          snapshots[index].projects.set(row.id, { ...row, readable: row.readable[privacyIndexes[index]], strictReadable: strict });
+        }
       }
     }
     const results: AuthorizationDecision[][] = [];
@@ -1772,7 +1850,99 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
     });
   }
 
+  /**
+   * Task writes whose visibility step already asked `issue:read` through
+   * `decideBase` (so the member restriction ran there); the outer write is not
+   * checked a second time.
+   */
+  const restrictionCheckedWrites = new WeakSet<object>();
+
+  /** The task or project a read or a task write names, for the member restriction. */
+  function memberRestrictionTarget(input: {
+    action: AuthorizationAction;
+    resource: AuthorizationResource;
+  }): { resource: StrictReadResource; id: string } | null {
+    const { action, resource } = input;
+    if (action === "project:read") {
+      return resource.type === "project" && resource.projectId ? { resource: "project", id: resource.projectId } : null;
+    }
+    if (resource.type !== "issue") return null;
+    if (action === "issue:read") return resource.issueId ? { resource: "issue", id: resource.issueId } : null;
+    if (action === "issue:comment" || action === "issue:mutate") {
+      const id = resource.issueId ?? resource.parentIssueId;
+      return id ? { resource: "issue", id } : null;
+    }
+    return null;
+  }
+
+  /** Strict condition for one person on one row: the read snapshot's value, else one query. A failed read is 503. */
+  async function strictlyReadable(target: { resource: StrictReadResource; id: string }, companyId: string, personId: string) {
+    const retained = target.resource === "issue" ? readSnapshot?.issues.get(target.id) : readSnapshot?.projects.get(target.id);
+    const known = retained?.companyId === companyId ? retained.strictReadable?.get(personId) : undefined;
+    if (known !== undefined) return known;
+    const table = target.resource === "issue" ? issues : projects;
+    try {
+      // In WHERE, not the select list (see `strictReadableIds`). A missing row
+      // reads as "not his"; the caller answers "not found" for it anyway.
+      const rows = await db.select({ id: table.id }).from(table)
+        .where(and(eq(table.id, target.id), eq(table.companyId, companyId), strictReadCondition(target.resource, personId)))
+        .limit(1);
+      return rows.length > 0;
+    } catch (error) {
+      throw memberRestrictionUnavailable(error);
+    }
+  }
+
+  /**
+   * PAR-12608 4.3, place 2: the strict check in the `issue:read` and
+   * `project:read` path of the base decision. Governed only by the company's
+   * `member_restriction_mode` (never by `PAPERCLIP_ISSUE_PRIVACY_MODE`):
+   * `report` records a "would refuse" and allows, `enforce` records and denies
+   * with `deny_member_restricted`. Task writes reach it too: the standard agent
+   * branch through its `issue:read` visibility step, the board and low-trust
+   * branches (which never ask `issue:read`) here, on the written task or the
+   * new child's parent. The local board and instance admins are never bound.
+   */
+  async function applyMemberRestriction(
+    input: { actor: AuthorizationActor; action: AuthorizationAction; resource: AuthorizationResource },
+    decision: AuthorizationDecision,
+  ): Promise<AuthorizationDecision> {
+    if (!decision.allowed || decision.reason === "allow_instance_admin" || decision.reason === "allow_local_board") {
+      return decision;
+    }
+    const target = memberRestrictionTarget(input);
+    if (!target || restrictionCheckedWrites.has(input)) return decision;
+    const companyId = companyIdForResource(input.resource);
+    for (const personId of restrictionPersonIds(input.actor)) {
+      const restriction = await batchRead(memberRestrictionMemoKey(personId, companyId),
+        () => memberRestrictionOfActorPerson(db, input.actor, personId, companyId));
+      if (!restriction.restricted || restriction.mode === "off") continue;
+      if (await strictlyReadable(target, companyId, personId)) continue;
+      const mode = restriction.mode;
+      await batchRead(`member-restriction-denied:${companyId}:${personId}`, () => recordMemberRestrictionDenial(db as Db, {
+        companyId, personId, ruleId: "R-read", target: input.action, objectId: target.id, mode,
+      }));
+      if (mode === "enforce") {
+        return deny({
+          action: input.action,
+          reason: "deny_member_restricted",
+          explanation: `The ${target.resource === "issue" ? "task" : "project"} is not one of this restricted member's own.`,
+        });
+      }
+    }
+    return decision;
+  }
+
   async function decideBase(input: {
+    actor: AuthorizationActor;
+    action: AuthorizationAction;
+    resource: AuthorizationResource;
+    scope?: Record<string, unknown> | null;
+  }): Promise<AuthorizationDecision> {
+    return applyMemberRestriction(input, await decideBaseUnchecked(input));
+  }
+
+  async function decideBaseUnchecked(input: {
     actor: AuthorizationActor;
     action: AuthorizationAction;
     resource: AuthorizationResource;
@@ -1850,6 +2020,8 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
           explanation: `Issue write denied because the target is not visible: ${visibilityDecision.explanation}`,
         };
       }
+      // The member restriction ran on `issue:read` of the same task above.
+      if (visibilityResource.type === "issue" && visibilityResource.issueId) restrictionCheckedWrites.add(input);
 
       return allow({
         action: input.action,

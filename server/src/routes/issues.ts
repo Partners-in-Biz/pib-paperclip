@@ -16942,6 +16942,9 @@ export function issueRoutes(
         "Issue not found",
       );
       if (!issue) return;
+      // Checkout is a read of the task for everybody (PAR-12608 C22, X4): a
+      // caller who cannot read it gets the same "not found".
+      if (!(await assertIssueReadAllowed(req, res, issue))) return;
 
       if (issue.projectId) {
         const project = await projectsSvc.getById(issue.projectId);
