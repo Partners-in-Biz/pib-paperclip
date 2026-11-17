@@ -5,6 +5,7 @@ import { MODULES, type SetupStatus } from "../kit-setup.js";
 import { parseSecretCatalog, type SecretLite } from "../model-key.js";
 import { parseRuns, RUNS_LIMIT, type RunLite } from "../own-key.js";
 import { parseSetupStatus } from "../status.js";
+import { parseCompanyAgents } from "../team.js";
 import { projectsHaveRepository } from "../templates.js";
 
 export interface PluginRecordLite {
@@ -189,6 +190,39 @@ export async function fetchHasRepository(companyId: string): Promise<boolean> {
     return res.ok ? projectsHaveRepository(await readJson(res)) : false;
   } catch {
     return false;
+  }
+}
+
+export interface MembersLite {
+  currentUserRole: string | null;
+  members: Array<{ userId: string; name: string | null; email: string | null; role: string | null }>;
+}
+
+/**
+ * `GET /api/companies/:id/members`: the active human members and the viewer's own role. The route needs
+ * `users:manage_permissions`; a refusal (an operator) reads as no role and no members, never as an error.
+ */
+export async function fetchMembers(companyId: string): Promise<MembersLite> {
+  const res = await fetch(`/api/companies/${encodeURIComponent(companyId)}/members`, { credentials: "include", headers: { accept: "application/json" } });
+  const body = (await readJson(res)) as { members?: unknown; access?: { currentUserRole?: unknown } } | null;
+  if (res.status === 401 || res.status === 403) return { currentUserRole: null, members: [] };
+  if (!res.ok) throw errorFrom(body, `Could not read the members (${res.status})`);
+  const rows = Array.isArray(body?.members) ? (body.members as Array<Record<string, any>>) : [];
+  return {
+    currentUserRole: typeof body?.access?.currentUserRole === "string" ? body.access.currentUserRole : null,
+    members: rows
+      .filter((m) => m && m.principalType === "user" && m.status === "active" && typeof m.principalId === "string")
+      .map((m) => ({ userId: m.principalId, name: typeof m.user?.name === "string" ? m.user.name : null, email: typeof m.user?.email === "string" ? m.user.email : null, role: typeof m.membershipRole === "string" ? m.membershipRole : null })),
+  };
+}
+
+/** Agent names by id, for the report list. Empty when the agents cannot be read. */
+export async function fetchAgentNames(companyId: string): Promise<Record<string, string>> {
+  try {
+    const res = await fetch(`/api/companies/${encodeURIComponent(companyId)}/agents`, { credentials: "include", headers: { accept: "application/json" } });
+    return res.ok ? Object.fromEntries(parseCompanyAgents(await readJson(res)).map((agent) => [agent.id, agent.name])) : {};
+  } catch {
+    return {};
   }
 }
 
