@@ -116,19 +116,19 @@ export function showLoadingLine(state: { loading: boolean; load: unknown; error:
   return state.loading && !state.load && !state.error;
 }
 
-export const SetupPage = withHelp(GatedSetupPage);
+export const SetupPage = withHelp(SetupPageMain);
 
 /** The page gate only shapes the screen; the worker's access guard is the gate (spec PAR-12578 4.6). */
-function GatedSetupPage(props: PluginPageProps) {
+function SetupPageMain(props: PluginPageProps) {
   const access = useAccess(useAccessMe(), props.context.companyId);
   return (
     <AccessGate state={access} kind="page" moduleName="Setup">
-      <SetupPageMain {...props} />
+      <SetupWorkspace {...props} />
     </AccessGate>
   );
 }
 
-function SetupPageMain({ context }: PluginPageProps) {
+function SetupWorkspace({ context }: PluginPageProps) {
   const companyId = context.companyId;
   const data = useSetupData(companyId);
   const location = useHostLocation();
