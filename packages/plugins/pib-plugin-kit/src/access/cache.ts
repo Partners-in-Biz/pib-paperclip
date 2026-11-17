@@ -19,6 +19,8 @@ import { actingPersonForRun, type ActingPerson, type RunRef } from "./acting-per
 
 export const ACCESS_CACHE_TTL_MS = 30_000;
 export const ACCESS_CACHE_MAX = 2_000;
+/** The reason of a person's access when his members read failed. */
+export const CANNOT_VERIFY_ACCESS = "Cannot verify your access";
 
 /** One person in one company, as read from core and the plugin's grant copy. */
 export interface MemberEntry {
@@ -133,7 +135,7 @@ export async function cachedAccessFor(ctx: PluginContext, companyId: string, use
     const entry = await accessCacheFor(ctx).read(companyId, `u:${userId}`, () => readMember(ctx, companyId, userId));
     return accessOfMember(userId, entry);
   } catch {
-    return { userId, bypass: false, grant: null, reason: "Cannot verify your access" };
+    return { userId, bypass: false, grant: null, reason: CANNOT_VERIFY_ACCESS };
   }
 }
 
