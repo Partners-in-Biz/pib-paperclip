@@ -77,6 +77,18 @@ describe("SEO access guard", () => {
     await expect(harness.performAction("seo.call-edit", { tool: "decide-preview", params: {} }, person)).rejects.toThrow(/called through seo\.call-approve/);
   });
 
+  it("the README's compact-task-thread call (an edit handler through seo.call-edit) answers as today with the switch off", async () => {
+    const harness = harnessOf();
+    await plugin.definition.setup(harness.ctx);
+    const person = { companyId: ACCESS_TEST_IDS.off, actor: { type: "user" as const, userId: ACCESS_TEST_IDS.owner } };
+    const call = { tool: "compact-task-thread", params: { issueId: "PAR-528", dryRun: true } };
+    expect(seoCallAction("compact-task-thread")).toBe("seo.call-edit");
+    await expect(harness.performAction("seo.call-edit", call, person)).resolves.toMatchObject({ dryRun: true, rolled: 0 });
+    const readme = readFileSync(fileURLToPath(new URL("../README.md", import.meta.url)), "utf8");
+    expect(readme).toContain("/actions/seo.call-edit` with `{\"companyId\": \"<company id>\", \"params\": {\"tool\": \"compact-task-thread\"");
+    expect(readme).not.toMatch(/\/actions\/seo\.call` with `\{[^`]*"tool": "compact-task-thread"/);
+  });
+
   it("with the switch off an unknown route answers as before (404), not a refusal", async () => {
     const harness = harnessOf();
     await plugin.definition.setup(harness.ctx);
