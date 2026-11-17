@@ -2,7 +2,7 @@ import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
 import { registerDriveReplies } from "@partnersinbiz/pib-plugin-kit";
 import type { Env } from "./env.js";
 import { GITHUB_CI_ENDPOINT, handleGithubCi } from "./webhooks/github-ci.js";
-import { handleApiRoute, registerCockpit } from "./register.js";
+import { handleCockpitApiRequest, registerCockpit } from "./register.js";
 
 let env: Env | null = null;
 
@@ -27,7 +27,7 @@ const plugin = definePlugin({
   },
   async onApiRequest(input) {
     if (!env) return { status: 503, body: { error: "Cockpit plugin is not ready" } };
-    return handleApiRoute(env, input);
+    return handleCockpitApiRequest(env, input);
   },
 });
 
