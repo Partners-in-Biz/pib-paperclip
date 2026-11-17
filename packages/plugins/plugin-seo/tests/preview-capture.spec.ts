@@ -1,5 +1,6 @@
+import { deflateSync } from "node:zlib";
 import { describe, expect, it, vi } from "vitest";
-import { captureMismatch, fetchLive, guardShot, proposalState, titleOf } from "../ops/preview-server/capture.mjs";
+import { captureMismatch, fetchLive, guardShot, isBlankPng, proposalState, shotUntilPainted, titleOf } from "../ops/preview-server/capture.mjs";
 
 const page = (t: string) => `<html><head><title>${t}</title></head><body>x</body></html>`;
 
@@ -64,5 +65,87 @@ describe("fetchLive and guardShot (PAR-9042)", () => {
     await expect(guardShot(args, { fetchImpl: (async () => res(410, page("expired"))) as never })).rejects.toThrow(/HTTP 410/);
     await expect(guardShot(args, { fetchImpl: (async () => res(200, page("This preview has expired"))) as never })).rejects.toThrow(/title/);
     await expect(guardShot(args, { fetchImpl: (async () => res(200, page("Hydroponics"))) as never })).resolves.toBeUndefined();
+  });
+});
+
+/** An 8-bit RGB PNG, each row stored with `filter` (Sub, Up or Paeth on a flat image still decode to the same pixels). */
+function png(width: number, height: number, pixel: (x: number, y: number) => number[], filter = 0): Buffer {
+  const rows: number[] = [];
+  let prev: number[] = new Array(width * 3).fill(0);
+  for (let y = 0; y < height; y++) {
+    const row: number[] = [];
+    for (let x = 0; x < width; x++) row.push(...pixel(x, y));
+    const enc = row.map((v, i) => {
+      const a = i >= 3 ? row[i - 3] : 0;
+      const b = prev[i];
+      const c = i >= 3 ? prev[i - 3] : 0;
+      const p = a + b - c;
+      const paeth = Math.abs(p - a) <= Math.abs(p - b) && Math.abs(p - a) <= Math.abs(p - c) ? a : Math.abs(p - b) <= Math.abs(p - c) ? b : c;
+      const pred = [0, a, b, (a + b) >> 1, paeth][filter];
+      return (v - pred) & 0xff;
+    });
+    rows.push(filter, ...enc);
+    prev = row;
+  }
+  const chunk = (type: string, data: Buffer) => {
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(data.length);
+    return Buffer.concat([len, Buffer.from(type, "latin1"), data, Buffer.alloc(4)]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr.set([8, 2, 0, 0, 0], 8);
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk("IHDR", ihdr),
+    chunk("IDAT", deflateSync(Buffer.from(rows))),
+    chunk("IEND", Buffer.alloc(0)),
+  ]);
+}
+
+describe("isBlankPng (PAR-12454)", () => {
+  const white = () => [255, 255, 255];
+  it("finds a one-colour shot blank, whatever the row filter", () => {
+    for (const filter of [0, 1, 2, 3, 4]) expect(isBlankPng(png(40, 30, white, filter))).toBe(true);
+    expect(isBlankPng(png(40, 30, () => [20, 40, 60], 4))).toBe(true);
+  });
+  it("finds one dark pixel or a gradient not blank, however small the file", () => {
+    const dot = png(40, 30, (x, y) => (x === 39 && y === 29 ? [0, 0, 0] : [255, 255, 255]), 1);
+    expect(dot.length).toBeLessThan(1_000);
+    expect(isBlankPng(dot)).toBe(false);
+    expect(isBlankPng(png(40, 30, (x) => [x, x, x], 4))).toBe(false);
+  });
+  it("never refuses what it cannot read", () => {
+    expect(isBlankPng(Buffer.from("not a png at all, just some text bytes"))).toBe(false);
+    expect(isBlankPng(Buffer.alloc(0))).toBe(false);
+    const grey = png(4, 4, white);
+    grey[25] = 0; // colour type 0 (greyscale): not what Chromium writes
+    expect(isBlankPng(grey)).toBe(false);
+  });
+});
+
+describe("shotUntilPainted (PAR-12454)", () => {
+  const blank = png(8, 8, () => [255, 255, 255]);
+  const real = png(8, 8, (x, y) => [x * 30, y * 30, 0]);
+  it("retakes a blank shot and serves the first painted one", async () => {
+    const shots = [blank, real];
+    const take = vi.fn(async () => undefined);
+    const remove = vi.fn(async () => undefined);
+    const read = vi.fn(async () => shots[take.mock.calls.length - 1]);
+    await expect(shotUntilPainted({ take, read, remove, label: "live" })).resolves.toBe(real);
+    expect(take).toHaveBeenCalledTimes(2);
+    expect(remove).toHaveBeenCalledTimes(1);
+  });
+  it("gives up after three blank shots, deletes the file and throws so /shot answers 502", async () => {
+    const take = vi.fn(async () => undefined);
+    const remove = vi.fn(async () => {
+      throw new Error("ENOENT");
+    });
+    await expect(shotUntilPainted({ take, read: async () => blank, remove, label: "live-mobile" })).rejects.toThrow(
+      "shot for live-mobile came out blank after 3 tries",
+    );
+    expect(take).toHaveBeenCalledTimes(3);
+    expect(remove).toHaveBeenCalledTimes(3);
   });
 });

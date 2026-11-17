@@ -4,9 +4,9 @@
 import http from "node:http";
 import { createRequire } from "node:module";
 import { execFile } from "node:child_process";
-import { mkdir, readFile, stat } from "node:fs/promises";
+import { mkdir, readFile, stat, unlink } from "node:fs/promises";
 import { DECISION_SQL, DECISION_STATE_SQL, DECLINED_PAGE, refusedAnswer, SCHEMA } from "./decision.mjs";
-import { guardShot, proposalState } from "./capture.mjs";
+import { guardShot, proposalState, shotUntilPainted } from "./capture.mjs";
 import { startEgressProxy } from "./egress.mjs";
 import { createRenderService, keptTextFigure, RENDER_PORT, wordsOf } from "./render.mjs";
 import { chromiumEnv, domArgs, findChrome, makeProfile, SHOT_MAX_AGE_MS, shotArgs, sweepProfiles, sweepShots } from "./sweep.mjs";
@@ -162,8 +162,14 @@ async function shotFor(row, token, which, mobile = false) {
   const url = which === "live" ? row.page_url : `http://127.0.0.1:${PORT}/p/${token}?key=${encodeURIComponent(row.review_key)}`;
   // Fail loudly rather than save a picture of an error page or another site (PAR-9042).
   await guardShot({ which, mobile, liveUrl: row.page_url, proposalUrl: url, proposalHtml: row.html });
-  await screenshot(url, file, mobile);
-  return readFile(file);
+  // agriauctionssa.co.za intermittently gives a blank shot: a deferred script on a host that hangs holds the first paint
+  // (PAR-12454). A one-colour shot is retaken up to twice; a still-blank one is deleted (never cached) and answers 502.
+  return shotUntilPainted({
+    take: () => screenshot(url, file, mobile),
+    read: () => readFile(file),
+    remove: () => unlink(file),
+    label: `${which}${mobile ? "-mobile" : ""}`,
+  });
 }
 
 function reviewPage(token, key, row) {
