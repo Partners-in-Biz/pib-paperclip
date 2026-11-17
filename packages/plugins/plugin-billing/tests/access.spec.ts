@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { PluginApiRequestInput } from "@paperclipai/plugin-sdk";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
-import { ADMIN_ONLY, accessCompanyScope, isRefusal } from "@partnersinbiz/pib-plugin-kit";
+import { ADMIN_ONLY, accessCompanyScope, accessGrantScope, isRefusal } from "@partnersinbiz/pib-plugin-kit";
 import { assertPluginAccess, ACCESS_TEST_IDS } from "@partnersinbiz/pib-plugin-kit/access-testing";
 import manifest from "../src/manifest.js";
 import plugin, { TOOL_ACTIONS } from "../src/worker.js";
@@ -29,13 +29,14 @@ const CO = "a1500000-0000-4000-8000-0000000000aa";
 const OWNER = "a1500000-0000-4000-8000-0000000000b1";
 const OPERATOR = "a1500000-0000-4000-8000-0000000000b2";
 
-/** A booted plugin on one company with the given switch, an owner and an operator with no grant. */
-async function boot(mode: "off" | "enforce") {
+/** A booted plugin on one company with the given switch, an owner and an operator with the given grant (none by default). */
+async function boot(mode: "off" | "enforce", operatorAllows: string[] = []) {
   const harness = harnessOf();
   const at = new Date().toISOString();
   const member = (userId: string, role: string) => ({ id: `m-${userId}`, companyId: CO, principalType: "user" as const, principalId: userId, status: "active" as const, membershipRole: role, grants: [], createdAt: at, updatedAt: at });
   harness.seed({ accessMembers: [member(OWNER, "owner"), member(OPERATOR, "member")] as never });
   await harness.ctx.state.set(accessCompanyScope(CO), { mode, rev: 1, userIds: [], receivedAt: at });
+  if (operatorAllows.length) await harness.ctx.state.set(accessGrantScope(CO, OPERATOR), { allow: operatorAllows, deny: [], scopeOverrides: { billing: "all" } });
   await plugin.definition.setup(harness.ctx);
   return harness;
 }
@@ -90,6 +91,34 @@ describe("Billing access guard", () => {
       expect(TOOL_ACTION_KEYS[tool], tool).toBe(action);
       expect(ACCESS_TABLE[`tool:${tool}`], tool).toEqual(ACCESS_TABLE[action]);
     }
+  });
+});
+
+describe("Billing actions that reach a client with no further approval need billing.invoices:approve", () => {
+  const operator = { companyId: CO, actor: { type: "user" as const, userId: OPERATOR } };
+  const reached = async (call: Promise<unknown>) => {
+    const answer = await call.catch((error: unknown) => ({ threw: String(error) }));
+    expect(isRefusal(answer), JSON.stringify(answer)).toBe(false);
+    return answer;
+  };
+
+  it("retry-send: an operator with invoices edit but not approve is refused under enforce; with approve it reaches the handler", async () => {
+    expect(ACCESS_TABLE["billing.retry-send"]).toEqual({ resource: "billing.invoices", action: "approve" });
+    const editOnly = await boot("enforce", ["billing.invoices:view", "billing.invoices:edit"]);
+    expect(isRefusal(await editOnly.performAction("billing.retry-send", {}, operator))).toBe(true);
+    const approver = await boot("enforce", ["billing.invoices:approve"]);
+    expect(await reached(approver.performAction("billing.retry-send", {}, operator))).toMatchObject({ threw: expect.stringMatching(/kind is required/) });
+  });
+
+  it("autoSend: plans create alone may create a subscription but not turn on automatic sending under enforce", async () => {
+    const plansOnly = await boot("enforce", ["billing.plans:create"]);
+    const refused = await plansOnly.performAction("billing.create-subscription", { autoSend: true }, operator);
+    expect(isRefusal(refused) && refused.message).toMatch(/automatic sending needs billing\.invoices approve/);
+    expect(await reached(plansOnly.performAction("billing.create-subscription", { autoSend: false }, operator))).toMatchObject({ threw: expect.stringMatching(/client is required/) });
+    const approver = await boot("enforce", ["billing.plans:create", "billing.invoices:approve"]);
+    expect(await reached(approver.performAction("billing.create-subscription", { autoSend: true }, operator))).toMatchObject({ threw: expect.stringMatching(/client is required/) });
+    const off = await boot("off");
+    expect(await reached(off.performAction("billing.create-subscription", { autoSend: true }, operator))).toMatchObject({ threw: expect.stringMatching(/client is required/) });
   });
 });
 

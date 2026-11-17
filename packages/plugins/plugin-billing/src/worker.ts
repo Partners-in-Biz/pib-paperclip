@@ -11,13 +11,17 @@ import {
   type ToolRunContext,
 } from "@paperclipai/plugin-sdk";
 import {
+  type AccessCheck,
+  cachedAccessFor,
   COCKPIT_ROUTE,
   configSaved,
   correctDecision,
   createAccessGuard,
   createSkillSyncer,
+  judgeAccess,
   listCrmClients,
   parseClientParam,
+  permissionRefusal,
   redeliver,
   registerCrmProjection,
   registerDriveReplies,
@@ -186,7 +190,7 @@ import { SKILLS } from "./skills.js";
 import { assertOwnKey } from "./storage.js";
 import { billTime, deleteTimeEntry, listTime, logTime, startTimer, stopTimer } from "./time.js";
 import { BILLING_TOOLS } from "./tools.js";
-import { ACCESS_TABLE } from "./access-table.js";
+import { ACCESS_TABLE, AUTO_SEND_ACTIONS, AUTO_SEND_PERMISSION } from "./access-table.js";
 import { openWorkIssues, refreshWorkIssueOrigins } from "./workissues.js";
 import { invoiceNumberLabel } from "./invoice-number.js";
 import {
@@ -436,9 +440,11 @@ const plugin = definePlugin({
       });
     }
     for (const [key, handler] of Object.entries(ACTIONS)) {
-      guard.action(key, async (params, context) => {
+      guard.action(key, async (params, context, check) => {
         // The page never waits long for the skill sync (kit `soon`).
         if (context.companyId && key === "billing.load") await skillSync?.soon(context.companyId);
+        const autoSendRefused = AUTO_SEND_ACTIONS.has(key) ? await autoSendRefusal(ctx, context, params ?? {}, check) : null;
+        if (autoSendRefused) return permissionRefusal(autoSendRefused);
         return handler(ctx, context, params ?? {});
       });
     }
@@ -956,6 +962,18 @@ async function quoteHtml(ctx: PluginContext, context: PluginPerformActionContext
 }
 
 // ── Recurring ──────────────────────────────────────────────────────────────
+
+/**
+ * Automatic sending reaches the client with no further approval, so under `enforce` a limited person who turns it on
+ * needs `billing.invoices:approve` as well as the action's `billing.plans` row (PAR-12675). Agents cannot turn it on
+ * at all (`requirePerson`), and with the switch off or in `report` nothing changes.
+ */
+async function autoSendRefusal(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>, check: AccessCheck): Promise<string | null> {
+  if (check.mode !== "enforce" || check.caller.type !== "user" || !check.caller.userId) return null;
+  if (params.autoSend !== true && params.autoSend !== "true") return null;
+  const verdict = judgeAccess(await cachedAccessFor(ctx, requiredCompany(context), check.caller.userId), AUTO_SEND_PERMISSION);
+  return verdict.ok ? null : `Turning on automatic sending needs billing.invoices approve: ${verdict.reason}`;
+}
 
 async function createRecurringAction(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {
   const companyId = requiredCompany(context);

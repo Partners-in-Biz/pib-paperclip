@@ -7,9 +7,13 @@
  * - `view` reads, `create` adds a record, `edit` changes one or asks a person for a decision (a send, a payment check),
  *   `delete` cancels or removes one.
  * - `billing.invoices:approve`: what moves money or reaches a client without a further approval (mark sent, send a
- *   credit note or statement, record a payment or refund, credits, write-offs, proofs of payment, reminders run now).
+ *   credit note or statement, record a payment or refund, credits, write-offs, proofs of payment, reminders run now,
+ *   a retried send). Turning on automatic sending of a recurring invoice or subscription needs it too, on top of the
+ *   `billing.plans` row (`AUTO_SEND_ACTIONS`).
  * - `billing.invoices:export`: the Drive catch-up of sent PDFs.
  * - `billing.plans`: recurring invoices, retainer plans and subscriptions.
+ * - `billing.settings:edit` (`set-numbering`): a client's invoice letters and next number; the company sequence also
+ *   needs a person. Grantable to non-admins on purpose, like the other `*.settings:edit`.
  * - `billing.bank` has no row: the bank details are read and saved only through the preferences, which the kit keeps
  *   to owners and admins (a save) or shows masked to anyone else (a read).
  * - `ADMIN_ONLY`: the company preferences save and the skill sync (the kit checks owner or admin there already).
@@ -43,13 +47,13 @@ const ACTION_ROWS: Readonly<Record<string, AccessTableEntry>> = Object.freeze({
   ]),
   ...rows(invoices("create"), ["create-invoice", "add-line", "create-payment-link", "register-pop", "upload-url", "convert-quote", "bill-time"]),
   ...rows(invoices("edit"), [
-    "update-line", "remove-line", "update-invoice", "set-invoice-tax", "request-send", "request-pay", "retry-send",
+    "update-line", "remove-line", "update-invoice", "set-invoice-tax", "request-send", "request-pay",
     "request-payment-check", "request-reminder-send", "cancel-payment-link", "log-follow-up", "set-dunning-optout", "retry-ledger",
   ]),
   ...rows(invoices("delete"), ["cancel-invoice", "delete-draft-invoice"]),
   ...rows(invoices("approve"), [
     "mark-sent", "record-payment", "create-credit-note", "send-credit-note", "send-statement", "apply-credit", "write-off",
-    "confirm-pop", "link-pop", "reject-pop", "record-refund", "simulate-payment", "run-dunning",
+    "confirm-pop", "link-pop", "reject-pop", "record-refund", "simulate-payment", "run-dunning", "retry-send",
   ]),
   ...rows(invoices("export"), ["drive-catchup"]),
 
@@ -126,3 +130,12 @@ export const ACCESS_TABLE: AccessTable = Object.freeze({
   "api:setup-status": settings("view"),
   "api:cockpit": reports("view"),
 });
+
+/**
+ * Actions that turn on automatic sending when `autoSend` is true: from then on invoices reach the client with no
+ * further approval, so under `enforce` a limited person also needs `billing.invoices:approve` (checked in the worker).
+ */
+export const AUTO_SEND_ACTIONS: ReadonlySet<string> = new Set([
+  "billing.create-recurring", "billing.update-recurring", "billing.create-subscription", "billing.set-subscription-status",
+]);
+export const AUTO_SEND_PERMISSION: AccessTableEntry = invoices("approve");
