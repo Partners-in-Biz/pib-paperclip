@@ -2,7 +2,7 @@ import type { JsonSchema, PaperclipPluginManifestV1 } from "@paperclipai/plugin-
 import { PLUGIN_ID } from "./namespace.js";
 import { TEMPLATE_TOOLS } from "./template-tools.js";
 
-export const VERSION = "0.7.15";
+export const VERSION = "0.7.16";
 
 export const JOBS = {
   reemitModules: "reemit-modules",
@@ -45,6 +45,8 @@ const manifest: PaperclipPluginManifestV1 = {
     "companies.read",
     // Entitlements: who is an owner or admin of a company (role checks on save-modules and set-entitlements).
     "access.members.read",
+    // A3 (PAR-12643): audit entries for access grant and switch changes. A new capability: a stop-first deploy.
+    "activity.log.write",
     "database.namespace.migrate",
     "database.namespace.read",
     "database.namespace.write",
@@ -72,6 +74,8 @@ const manifest: PaperclipPluginManifestV1 = {
   database: {
     namespaceSlug: "setup",
     migrationsDir: "migrations",
+    // A3 (PAR-12643): read-only; finds the acting person of a tool call and counts runs for the access confirm list. Stop-first.
+    coreReadTables: ["heartbeat_runs"],
   },
   jobs: [
     {

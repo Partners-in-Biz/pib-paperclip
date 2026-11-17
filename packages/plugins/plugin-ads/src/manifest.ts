@@ -48,7 +48,8 @@ const manifest: PaperclipPluginManifestV1 = {
     "ui.sidebar.register",
   ],
   entrypoints: { worker: "./dist/worker.js", ui: "./dist/ui" },
-  database: { namespaceSlug: "ads", migrationsDir: "migrations" },
+  // A3 (PAR-12643): heartbeat_runs is read-only; the access guard finds the acting person of a tool call. Stop-first.
+  database: { namespaceSlug: "ads", migrationsDir: "migrations", coreReadTables: ["heartbeat_runs"] },
   tools: ADS_TOOLS,
   jobs: [
     {
