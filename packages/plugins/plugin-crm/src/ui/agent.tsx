@@ -4,7 +4,8 @@
  * with one line and "Fix in Setup".
  */
 import { useState, type CSSProperties, type ReactNode } from "react";
-import { useHostContext, useHostNavigation, usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import { useHostContext, useHostNavigation } from "@paperclipai/plugin-sdk/ui";
+import { useCrmAction } from "./actions.js";
 import { Button, errorText, tokens, tone } from "@partnersinbiz/pib-plugin-ui";
 import { EXTRA_SKILLS, ROLE_SKILL_PURPOSE, ROLE_SKILLS, TEAM_SETUP_HREF, agentProblem, stillMissing } from "./role-skills.js";
 import { useRoleSkills } from "./use-role-skills.js";
@@ -58,7 +59,7 @@ function Banner({ tone: t = "info", children }: { tone?: "warn" | "info" | "ok" 
 export function AccountManagerBox({ hire, refresh, onMessage }: { hire: HireView | null | undefined; refresh: () => Promise<void>; onMessage: (m: string) => void }) {
   const host = useHostContext();
   const nav = useHostNavigation();
-  const resync = usePluginAction("crm.resync-agent");
+  const resync = useCrmAction("crm.resync-agent");
   const [resyncing, setResyncing] = useState(false);
   const agent = hire?.agent ?? null;
   // The page attaches the role skills (and the extras that exist) for the person viewing: a plugin worker cannot.
