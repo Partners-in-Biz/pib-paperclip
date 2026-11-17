@@ -1,5 +1,7 @@
 import type { PluginApiRequestInput, PluginApiResponse, PluginContext, PluginPerformActionContext } from "@paperclipai/plugin-sdk";
-import { PIB_PLUGINS, pluginEvent, registerCompanyBootstrap, registerRoleWatch } from "@partnersinbiz/pib-plugin-kit";
+import { PIB_PLUGINS, pluginEvent, registerCompanyBootstrap, registerRoleWatch, type ActorInput, type SaveGrantInput } from "@partnersinbiz/pib-plugin-kit";
+import { clearAccessGrant, saveAccessGrant } from "./access-grants.js";
+import { accessPeople } from "./access-people.js";
 import { DRIVE_BINDING_EVENT } from "./drive-checklist.js";
 import { accessStatus, noteRedPlugins, registerAccessSync, resendAccessHourly, resendRecentAccess, sendAccessAgain } from "./access-sync.js";
 import { setAccessSwitch } from "./access-switch.js";
@@ -48,6 +50,23 @@ export function registerSetup(ctx: PluginContext): void {
   // The switch state for the People screen: mode, rev and the 15 plugins, red when one is behind on enforce.
   ctx.actions.register("setup.access.status", (_params, context) =>
     refusable(async () => accessStatus(ctx, requiredCompany(context), context.actor.type === "user" ? { type: "user", userId: context.actor.userId } : undefined)),
+  );
+  // The People tab: the switch, the 15 plugins, each member's grant and the report list. Owner or admin only.
+  ctx.actions.register("setup.access.people", (_params, context) => refusable(async () => accessPeople(ctx, requiredCompany(context), userActor(context))));
+  ctx.actions.register("setup.access.save-grant", (params, context) =>
+    refusable(async () =>
+      saveAccessGrant(ctx, { companyId: requiredCompany(context), actor: userActor(context) }, {
+        userId: typeof params.userId === "string" ? params.userId : "",
+        preset: params.preset as SaveGrantInput["preset"],
+        allow: params.allow as string[] | undefined,
+        deny: params.deny as string[] | undefined,
+        linkedCompanyIds: params.linkedCompanyIds as string[] | undefined,
+        scopeOverrides: params.scopeOverrides as SaveGrantInput["scopeOverrides"],
+      }),
+    ),
+  );
+  ctx.actions.register("setup.access.clear-grant", (params, context) =>
+    refusable(async () => clearAccessGrant(ctx, { companyId: requiredCompany(context), actor: userActor(context) }, typeof params.userId === "string" ? params.userId : "")),
   );
   ctx.actions.register("setup.load", (params, context) => loadSetup(ctx, requiredCompany(context), params));
   ctx.actions.register("setup.save-modules", (params, context) =>
@@ -233,6 +252,10 @@ async function refusable<T extends object>(run: () => Promise<T>): Promise<T | {
     if (error instanceof SetupError) return { ok: false, error: error.message };
     throw error;
   }
+}
+
+function userActor(context: PluginPerformActionContext): ActorInput {
+  return context.actor.type === "user" ? { type: "user", userId: context.actor.userId } : undefined;
 }
 
 function requiredCompany(context: PluginPerformActionContext): string {
