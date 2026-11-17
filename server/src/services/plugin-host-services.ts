@@ -87,6 +87,7 @@ import { pluginActingPersonBoundByH } from "./member-restriction/acting-person.j
 import { recordMemberRestrictionDenial } from "./member-restriction/admin.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { accessService } from "./access.js";
+import { withoutInviteMemberRestriction } from "./member-restriction/invite.js";
 import {
   authorizationService,
   canActorReadChat,
@@ -3318,7 +3319,8 @@ export function buildHostServices(
           companyId,
           inviteType: "company_join" as const,
           allowedJoinTypes,
-          defaultsPayload: mergeInviteDefaults(params.defaultsPayload ?? null, normalizedAgentMessage, humanRole),
+          // The reserved restriction key is never taken from a free payload (PAR-12608 4.2a).
+          defaultsPayload: mergeInviteDefaults(withoutInviteMemberRestriction(params.defaultsPayload), normalizedAgentMessage, humanRole),
           expiresAt: new Date(Date.now() + COMPANY_INVITE_TTL_MS),
           invitedByUserId: null,
         };

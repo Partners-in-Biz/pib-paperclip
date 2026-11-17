@@ -37,6 +37,7 @@ import {
   claimJoinRequestApiKeySchema,
   createBoardApiKeySchema,
   createCompanyInviteSchema,
+  type InviteMemberRestrictionInput,
   createOpenClawInvitePromptSchema,
   listCompanyInvitesQuerySchema,
   listJoinRequestsQuerySchema,
@@ -112,6 +113,17 @@ import {
   setMemberRestrictionMode,
 } from "../services/member-restriction/admin.js";
 import { actorRestrictedInCompany } from "../services/member-restriction/company-record.js";
+import {
+  INVITE_MEMBER_RESTRICTION_KEY,
+  assertInviterNotRestricted,
+  inviteMemberRestrictionFromDefaults,
+  markForNewInvite,
+  withoutInviteMemberRestriction,
+} from "../services/member-restriction/invite.js";
+import {
+  memberRestrictionResolver,
+  type MemberRestrictionResolver,
+} from "../services/member-restriction/resolver.js";
 import {
   claimBoardOwnership,
   inspectBoardClaimChallenge
@@ -1499,6 +1511,7 @@ async function loadCompanyInviteRecords(
       companyName,
       humanRole: extractInviteHumanRole(invite),
       inviteMessage: extractInviteMessage(invite),
+      memberRestriction: inviteMemberRestrictionFromDefaults(invite.defaultsPayload),
       state: inviteState(invite),
       invitedByUser: invite.invitedByUserId
         ? userMap.get(invite.invitedByUserId) ?? null
@@ -1557,6 +1570,7 @@ async function loadJoinRequestRecords(db: Db, companyId: string) {
             allowedJoinTypes: invite.allowedJoinTypes,
             humanRole: extractInviteHumanRole(invite),
             inviteMessage: extractInviteMessage(invite),
+            memberRestriction: inviteMemberRestrictionFromDefaults(invite.defaultsPayload),
             createdAt: invite.createdAt,
             expiresAt: invite.expiresAt,
             revokedAt: invite.revokedAt,
@@ -2654,10 +2668,13 @@ export function accessRoutes(
     cliAuthCreateRateLimiter?: InviteRateLimiter;
     cliAuthPollRateLimiter?: InviteRateLimiter;
     authPublicBaseUrl?: string;
+    /** Test seam: the member-restriction resolver (PAR-12608 4.2). */
+    memberRestrictionResolver?: MemberRestrictionResolver;
   }
 ) {
   const router = Router();
   const access = accessService(db);
+  const resolveMemberRestriction = opts.memberRestrictionResolver ?? memberRestrictionResolver(db);
   const boardAuth = boardAuthService(db);
   const agents = agentService(db);
   const agentsLifecycle = createAgentLifecycle(db);
@@ -3045,6 +3062,17 @@ export function accessRoutes(
     if (!allowed) throw forbidden("Permission denied");
   }
 
+  /**
+   * A restricted inviter gets 403 `MEMBER_RESTRICTED` (AC-I5); a failed
+   * restriction read is 503. Runs before the permission check: `users:invite`
+   * is off the action list (4.6), so `canUser` would refuse him first with a
+   * bare "Permission denied".
+   */
+  async function assertInviterAllowed(req: Request, companyId: string) {
+    assertCompanyAccess(req, companyId);
+    await assertInviterNotRestricted(db, resolveMemberRestriction, req.actor, companyId);
+  }
+
   async function createCompanyInviteForCompany(input: {
     req: Request;
     companyId: string;
@@ -3052,6 +3080,7 @@ export function accessRoutes(
     humanRole?: "owner" | "admin" | "operator" | "viewer" | null;
     defaultsPayload?: Record<string, unknown> | null;
     agentMessage?: string | null;
+    restriction?: InviteMemberRestrictionInput;
   }) {
     const normalizedAgentMessage =
       typeof input.agentMessage === "string"
@@ -3070,15 +3099,26 @@ export function accessRoutes(
         }
       }
     }
+    const memberRestriction = await markForNewInvite(db, {
+      companyId: input.companyId,
+      allowedJoinTypes: input.allowedJoinTypes,
+      humanRole: effectiveHumanRole,
+      restriction: input.restriction,
+      assertCanSetLists: () => assertCompanyPermission(input.req, input.companyId, "users:manage_permissions"),
+    });
+    // The reserved key comes from `restriction` only, never from the free payload (AC-I6).
+    const mergedDefaults = mergeInviteDefaults(
+      withoutInviteMemberRestriction(input.defaultsPayload),
+      normalizedAgentMessage,
+      effectiveHumanRole,
+    );
     const insertValues = {
       companyId: input.companyId,
       inviteType: "company_join" as const,
       allowedJoinTypes: input.allowedJoinTypes,
-      defaultsPayload: mergeInviteDefaults(
-        input.defaultsPayload ?? null,
-        normalizedAgentMessage,
-        effectiveHumanRole,
-      ),
+      defaultsPayload: memberRestriction
+        ? { ...mergedDefaults, [INVITE_MEMBER_RESTRICTION_KEY]: memberRestriction }
+        : mergedDefaults,
       expiresAt: companyInviteExpiresAt(),
       invitedByUserId: input.req.actor.userId ?? null
     };
@@ -3310,6 +3350,7 @@ export function accessRoutes(
     validate(createCompanyInviteSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
+      await assertInviterAllowed(req, companyId);
       await assertCompanyPermission(req, companyId, "users:invite");
       const { token, created, normalizedAgentMessage } =
         await createCompanyInviteForCompany({
@@ -3318,7 +3359,8 @@ export function accessRoutes(
           allowedJoinTypes: req.body.allowedJoinTypes,
           humanRole: req.body.humanRole ?? null,
           defaultsPayload: req.body.defaultsPayload ?? null,
-          agentMessage: req.body.agentMessage ?? null
+          agentMessage: req.body.agentMessage ?? null,
+          restriction: req.body.restriction
         });
 
       await logActivity(db, {
@@ -3336,7 +3378,8 @@ export function accessRoutes(
           allowedJoinTypes: created.allowedJoinTypes,
           expiresAt: created.expiresAt.toISOString(),
           humanRole: extractInviteHumanRole(created),
-          hasAgentMessage: Boolean(normalizedAgentMessage)
+          hasAgentMessage: Boolean(normalizedAgentMessage),
+          memberRestriction: inviteMemberRestrictionFromDefaults(created.defaultsPayload)
         }
       });
 
@@ -3366,6 +3409,7 @@ export function accessRoutes(
     validate(createOpenClawInvitePromptSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
+      await assertInviterAllowed(req, companyId);
       await assertCanGenerateOpenClawInvitePrompt(req, companyId);
       const { token, created, normalizedAgentMessage } =
         await createCompanyInviteForCompany({
