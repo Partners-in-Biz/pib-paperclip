@@ -23,6 +23,16 @@ function sources(dir: string): string[] {
 }
 
 const mentions = (file: string) => /heartbeat_runs/.test(readFileSync(file, "utf8"));
+const oneLine = (sql: string) => sql.replace(/\s+/g, " ").trim();
+
+/**
+ * The one other query, allowed by name and exact text: Setup's confirm list
+ * before enforce counts the runs that worked per person (plan, 4.3). It returns
+ * counts only, filtered by company and person, never a run's context.
+ */
+const ALLOWED: Record<string, string> = {
+  "plugin-setup/src/access-switch.ts": `SELECT responsible_user_id, COUNT(*)::int AS runs FROM public.heartbeat_runs WHERE company_id = $1 AND responsible_user_id IN (SELECT jsonb_array_elements_text($2::jsonb)) AND status = 'succeeded' AND created_at >= $3 GROUP BY responsible_user_id`,
+};
 
 describe("heartbeat_runs in guarded plugins", () => {
   const gaining = readdirSync(PLUGINS).filter((d) => d.startsWith("plugin-") && !READ_BEFORE_A.includes(d) && statSync(join(PLUGINS, d, "src"), { throwIfNoEntry: false })?.isDirectory());
@@ -36,9 +46,19 @@ describe("heartbeat_runs in guarded plugins", () => {
     const offenders = gaining.flatMap((d) =>
       sources(join(PLUGINS, d, "src"))
         .filter((f) => !/[\\/]manifest\.ts$/.test(f) && mentions(f))
-        .map((f) => f.slice(PLUGINS.length + 1)),
+        .map((f) => f.slice(PLUGINS.length + 1).replace(/\\/g, "/"))
+        .filter((f) => !Object.hasOwn(ALLOWED, f)),
     );
     expect(offenders).toEqual([]);
+  });
+
+  it("an allowed file names the table once, inside its exact query", () => {
+    for (const [file, sql] of Object.entries(ALLOWED)) {
+      const text = readFileSync(join(PLUGINS, file), "utf8");
+      expect(text.match(/heartbeat_runs/g), file).toHaveLength(1);
+      const literal = text.match(/`(SELECT[^`]*heartbeat_runs[^`]*)`/);
+      expect(literal && oneLine(literal[1]!), file).toBe(sql);
+    }
   });
 
   it("the kit queries it in one place, selecting only the person and the status", () => {

@@ -75,7 +75,8 @@ async function confirmAll(ctx: PluginContext, rev: number, skip: string[] = []) 
   }
 }
 
-const set = (ctx: PluginContext, mode: unknown, actor: unknown = OWNER) => setAccessSwitch(ctx, { companyId: CO, actor: actor as never }, mode);
+/** u1 has no grant, so he is on the enforce confirm list; these cases confirm him (the list has its own spec). */
+const set = (ctx: PluginContext, mode: unknown, actor: unknown = OWNER, confirm: string[] = ["u1"]) => setAccessSwitch(ctx, { companyId: CO, actor: actor as never }, mode, confirm);
 
 describe.skipIf(!available)("Setup access switch on a real database", () => {
   beforeEach(async () => {

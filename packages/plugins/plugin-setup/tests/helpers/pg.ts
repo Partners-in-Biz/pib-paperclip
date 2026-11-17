@@ -34,7 +34,11 @@ export interface Pg {
   stop: () => Promise<void>;
 }
 
-export async function startPg(): Promise<Pg> {
+/**
+ * `coreReadTables`: the core tables the guard lets a query read, as the manifest's
+ * `database.coreReadTables` does on the host. The test creates them itself.
+ */
+export async function startPg(opts: { coreReadTables?: string[] } = {}): Promise<Pg> {
   const { default: EmbeddedPostgres } = (await import(EMBEDDED)) as { default: new (opts: Record<string, unknown>) => { initialise: () => Promise<void>; start: () => Promise<void>; stop: () => Promise<void>; getPgClient: () => PgClient } };
   const dir = mkdtempSync(join(tmpdir(), "setup-pg-"));
   const port = await freePort();
@@ -55,7 +59,7 @@ export async function startPg(): Promise<Pg> {
     namespace: NAMESPACE,
     // Rows cross the host's JSON RPC: dates arrive as ISO strings.
     query: async (sql, params = []) => {
-      validateRuntimeQuery(sql, NAMESPACE);
+      validateRuntimeQuery(sql, NAMESPACE, opts.coreReadTables);
       validateParams(sql, params);
       return JSON.parse(JSON.stringify((await client.query(sql, params)).rows));
     },
