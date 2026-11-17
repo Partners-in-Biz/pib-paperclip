@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { useHostNavigation, usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import { useHostNavigation } from "@paperclipai/plugin-sdk/ui";
+import { useMailboxAction } from "./actions.js";
 import { Pill, errorText, formatDateTime, tokens } from "@partnersinbiz/pib-plugin-ui";
 import { taskHref, taskLinkLine, taskLinkName, taskStatusName, taskTone } from "./view.js";
 
@@ -56,7 +57,7 @@ export function TaskChip({ link }: { link: TaskLink }) {
 }
 
 function ThreadRow({ message, startOpen }: { message: ThreadMessage; startOpen: boolean }) {
-  const getMessage = usePluginAction("mailbox.get-message");
+  const getMessage = useMailboxAction("mailbox.get-message");
   const [open, setOpen] = useState(startOpen);
   const [body, setBody] = useState<Body | null>(null);
 
@@ -111,7 +112,7 @@ function ThreadRow({ message, startOpen }: { message: ThreadMessage; startOpen: 
  * A draft opens the message it answers, so the reader sees what is being replied to before sending.
  */
 export function MailContext({ messageId }: { messageId: string }) {
-  const load = usePluginAction("mailbox.thread-context");
+  const load = useMailboxAction("mailbox.thread-context");
   const navigation = useHostNavigation();
   const [data, setData] = useState<ThreadContext | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
