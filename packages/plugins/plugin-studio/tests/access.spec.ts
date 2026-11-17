@@ -4,16 +4,24 @@
  * `.register` call in src/, and the behaviour of items 4 to 6 (Studio has no API routes). The last cases run real
  * handlers, so "today's result" is what Studio really answers.
  */
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 import { accessCompanyScope, PERMISSION_DENIED } from "@partnersinbiz/pib-plugin-kit";
 import { assertPluginAccess, NAMED_DATA_HANDLERS } from "@partnersinbiz/pib-plugin-kit/access-testing";
+import { AccessRefused, checkAccess, unwrapRefusal } from "@partnersinbiz/pib-plugin-ui";
 import { describe, expect, it } from "vitest";
 import { STUDIO_ACCESS_TABLE } from "../src/access-table.js";
 import manifest from "../src/manifest.js";
 import plugin from "../src/worker.js";
 
 const SRC = fileURLToPath(new URL("../src", import.meta.url));
+const files = (dir: string): string[] =>
+  readdirSync(dir).flatMap((name) => {
+    const path = join(dir, name);
+    return statSync(path).isDirectory() ? files(path) : /\.tsx?$/.test(name) ? [path] : [];
+  });
 const COMPANY = "a1600000-0000-4000-8000-000000000001";
 const OWNER = "a1600000-0000-4000-8000-000000000011";
 const OPERATOR = "a1600000-0000-4000-8000-000000000012";
@@ -36,6 +44,25 @@ describe("Studio access guard (PAR-12687)", () => {
         expect(entry.resource).toMatch(/^studio\.(work|settings)$/);
         expect(entry.scoped).toBeUndefined();
       }
+    }
+  });
+
+  it("only src/ui/action.ts imports usePluginAction, and its page hook is the UI kit's withRefusal (4.6, PAR-12688)", () => {
+    const direct = files(join(SRC, "ui"))
+      .filter((f) => relative(SRC, f) !== join("ui", "action.ts"))
+      .filter((f) => /\busePluginAction\b/.test(readFileSync(f, "utf8")))
+      .map((f) => relative(SRC, f));
+    expect(direct).toEqual([]);
+    expect(readFileSync(join(SRC, "ui", "action.ts"), "utf8")).toMatch(/export const useStudioAction\b.*= withRefusal\(usePluginAction\);/);
+  });
+
+  it("every page and sidebar slot in the manifest is exported behind the page gate (4.6, PAR-12688)", () => {
+    const index = readFileSync(join(SRC, "ui", "index.tsx"), "utf8");
+    const slots = manifest.ui?.slots ?? [];
+    expect(slots.length).toBeGreaterThan(0);
+    for (const slot of slots) {
+      const kind = slot.type === "sidebar" ? "sidebar" : "page";
+      expect(index, slot.exportName).toMatch(new RegExp(`export const ${slot.exportName} = withStudioAccess\\(\\w+, "${kind}"\\)`));
     }
   });
 
@@ -71,6 +98,29 @@ describe("Studio access guard (PAR-12687)", () => {
       // `me` is open to every member: the page reads the caller's own role first.
       expect(await harness.performAction("me", {}, as(OPERATOR))).toMatchObject({ role: "member" });
       expect(await harness.performAction("me", {}, as(OWNER))).toMatchObject({ role: "owner", isOwner: true });
+    });
+
+    it("page gate: open with the switch absent or off and for the owner; closed for an operator with no grant under enforce", async () => {
+      const gate = async (mode: "off" | "enforce" | undefined, userId: string) => {
+        const { harness, as } = await studio(mode);
+        return checkAccess((params) => harness.performAction("access.me", params, as(userId)), COMPANY);
+      };
+      expect(await gate(undefined, OPERATOR)).toBe("open");
+      expect(await gate("off", OPERATOR)).toBe("open");
+      expect(await gate("enforce", OWNER)).toBe("open");
+      expect(await gate("enforce", OPERATOR)).toBe("closed");
+    });
+
+    it("a page action's refusal throws with the worker's message instead of reading as success (withRefusal)", async () => {
+      for (const mode of [undefined, "enforce"] as const) {
+        const { harness, as } = await studio(mode);
+        const answer = await harness.performAction("set-cap", { scopeKey: "company", monthlyCredits: 5 }, as(OPERATOR));
+        expect(() => unwrapRefusal(answer)).toThrow(AccessRefused);
+        expect(() => unwrapRefusal(answer)).toThrow((answer as { message: string }).message);
+      }
+      const { harness, as } = await studio("enforce");
+      const me = await harness.performAction("me", {}, as(OWNER));
+      expect(unwrapRefusal(me)).toBe(me);
     });
 
     it("enforce: an agent tool with no run is refused with the tool error the agent can pass on", async () => {
