@@ -282,6 +282,8 @@ export type ActorInput = { type?: string | null; userId?: string | null } | null
 
 const NAMESPACE = "access";
 const userScope = (companyId: string, userId: string) => ({ scopeKind: "company" as const, scopeId: companyId, namespace: NAMESPACE, stateKey: `u:${userId}` });
+/** Where `loadGrant` reads a person's grant; the access receiver writes there. */
+export const accessGrantScope = userScope;
 export const MAX_LINKED_COMPANIES = 200;
 const SCOPE_MODES: readonly string[] = ["all", "linked"];
 const unique = (xs: readonly string[]) => [...new Set(xs.map((x) => x.trim()).filter(Boolean))];
