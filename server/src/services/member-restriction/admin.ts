@@ -93,8 +93,9 @@ export async function setMemberRestriction(
       principalId: existing.principalId,
       before: {
         restricted: existing.restricted,
-        pluginKeys: [...existing.restrictedPluginKeys],
-        agentIds: [...existing.restrictedAgentIds],
+        // Sorted like `after`, so a no-op save of an unsorted stored list writes no entry.
+        pluginKeys: uniqueSorted(existing.restrictedPluginKeys),
+        agentIds: uniqueSorted(existing.restrictedAgentIds),
       },
       after: next,
     };
