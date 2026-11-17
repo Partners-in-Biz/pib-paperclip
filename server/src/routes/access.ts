@@ -47,6 +47,8 @@ import {
   archiveCompanyMemberSchema,
   updateMemberPermissionsSchema,
   updateUserCompanyAccessSchema,
+  updateMemberRestrictionSchema,
+  updateMemberRestrictionModeSchema,
   PERMISSION_KEYS,
   isUuidLike,
 } from "@paperclipai/shared";
@@ -102,6 +104,12 @@ import {
   findReusableHumanJoinRequest,
 } from "../lib/join-request-dedupe.js";
 import { assertAuthenticated, assertCompanyAccess } from "./authz.js";
+import {
+  MEMBER_RESTRICTION_CHANGED_ACTION,
+  MEMBER_RESTRICTION_MODE_CHANGED_ACTION,
+  setMemberRestriction,
+  setMemberRestrictionMode,
+} from "../services/member-restriction/admin.js";
 import {
   claimBoardOwnership,
   inspectBoardClaimChallenge
@@ -4632,6 +4640,75 @@ export function accessRoutes(
       );
       if (!member) throw notFound("Member not found");
       res.json(member);
+    }
+  );
+
+  /** Only a signed-in person sets restriction: no agent, plugin or assistant connection (PAR-12608 4.2). */
+  function assertPersonForMemberRestriction(req: Request) {
+    if (req.actor.type !== "board" || req.actor.source === "mcp_oauth") {
+      throw forbidden("Only a signed-in person can change member restriction");
+    }
+  }
+
+  router.put(
+    "/companies/:companyId/members/:memberId/restriction",
+    validate(updateMemberRestrictionSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const memberId = req.params.memberId as string;
+      assertPersonForMemberRestriction(req);
+      await assertCompanyPermission(req, companyId, "users:manage_permissions");
+      const memberToUpdate = await access.getMemberById(companyId, memberId);
+      if (!memberToUpdate) throw notFound("Member not found");
+      if (memberToUpdate.principalType === "user" && memberToUpdate.principalId === req.actor.userId) {
+        throw forbidden("You cannot change your own restriction");
+      }
+      // A flag on an owner or admin is 422 (inside setMemberRestriction), before the rank check below.
+      const protectedTarget = memberToUpdate.membershipRole === "owner" || memberToUpdate.membershipRole === "admin";
+      if (!(protectedTarget && req.body.restricted)) {
+        await assertCanManageCompanyMember(req, access, companyId, memberToUpdate);
+      }
+
+      const result = await setMemberRestriction(db, companyId, memberId, req.body);
+      if (!result) throw notFound("Member not found");
+      if (JSON.stringify(result.before) !== JSON.stringify(result.after)) {
+        await logActivity(db, {
+          companyId,
+          actorType: "user",
+          actorId: req.actor.userId ?? "board",
+          action: MEMBER_RESTRICTION_CHANGED_ACTION,
+          entityType: "company_membership",
+          entityId: memberId,
+          details: { principalId: result.principalId, old: result.before, new: result.after },
+        });
+      }
+      const member = (await loadCompanyMemberRecords(db, companyId)).find((entry) => entry.id === memberId);
+      if (!member) throw notFound("Member not found");
+      res.json(member);
+    }
+  );
+
+  router.put(
+    "/companies/:companyId/member-restriction-mode",
+    validate(updateMemberRestrictionModeSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertPersonForMemberRestriction(req);
+      await assertCompanyPermission(req, companyId, "users:manage_permissions");
+      const result = await setMemberRestrictionMode(db, companyId, req.body.mode);
+      if (!result) throw notFound("Company not found");
+      if (result.changed) {
+        await logActivity(db, {
+          companyId,
+          actorType: "user",
+          actorId: req.actor.userId ?? "board",
+          action: MEMBER_RESTRICTION_MODE_CHANGED_ACTION,
+          entityType: "company",
+          entityId: companyId,
+          details: { oldMode: result.oldMode, newMode: result.newMode, deniedLast7Days: result.deniedLast7Days },
+        });
+      }
+      res.json({ mode: result.newMode, deniedLast7Days: result.deniedLast7Days });
     }
   );
 

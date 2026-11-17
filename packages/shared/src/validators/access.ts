@@ -5,6 +5,7 @@ import {
   INVITE_JOIN_TYPES,
   JOIN_REQUEST_STATUSES,
   JOIN_REQUEST_TYPES,
+  MEMBER_RESTRICTION_MODES,
   PERMISSION_KEYS,
 } from "../constants.js";
 import { optionalAgentAdapterTypeSchema } from "../adapter-type.js";
@@ -150,6 +151,22 @@ export const updateUserCompanyAccessSchema = z.object({
 });
 
 export type UpdateUserCompanyAccess = z.infer<typeof updateUserCompanyAccessSchema>;
+
+/** PUT /companies/:companyId/members/:memberId/restriction (PAR-12608 4.2). */
+export const updateMemberRestrictionSchema = z.object({
+  restricted: z.boolean(),
+  pluginKeys: z.array(z.string().trim().min(1)).max(200).default([]),
+  agentIds: z.array(z.string().uuid()).max(500).default([]),
+}).strict();
+
+export type UpdateMemberRestriction = z.infer<typeof updateMemberRestrictionSchema>;
+
+/** PUT /companies/:companyId/member-restriction-mode (PAR-12608 4.2). */
+export const updateMemberRestrictionModeSchema = z.object({
+  mode: z.enum(MEMBER_RESTRICTION_MODES),
+}).strict();
+
+export type UpdateMemberRestrictionMode = z.infer<typeof updateMemberRestrictionModeSchema>;
 
 export const searchAdminUsersQuerySchema = z.object({
   query: z.string().trim().max(120).optional().default(""),
