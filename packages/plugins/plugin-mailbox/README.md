@@ -64,6 +64,12 @@ Listens to `plugin.<sender>.mail.send.requested` for every kit `MAIL_SENDERS` pl
 - A retry first looks the message up by its Message-ID, so an attempt Gmail accepted is not sent twice.
 - Over the rate, Gmail down or the account needs reconnecting: nothing is stored and the sender's outbox retries. No connected account, a bad address, an expired attachment link or a message Gmail refuses: `failed` with `permanent: true`. The Sent tab retries by hand.
 
+## 0.10.0: the access guard (PAR-12682, spec PAR-12578 stage A)
+
+- Every page action, agent tool and API route is registered through the kit access guard, with one row each in `src/access-table.ts`: `mailbox.mail` (view, create, edit, delete), `mailbox.accounts` (connect, disconnect, delete, default, client, delegations) and `mailbox.settings` (sending domains, holds, client mail maps, the unsubscribe check). Preferences and the skill sync are owner or admin only. A tool needs the same permission as its page action.
+- The page and the sidebar entry ask `access.me` first; every page action goes through `withRefusal` (`src/ui/actions.ts`), so a refusal shows as an error, never as success.
+- With the company's access switch `off` (every company today) the guard passes every call on unchanged.
+
 ## 0.9.13: the skill sweep skips companies with no saved settings
 
 src-only (kit 0.14.0): the daily skill sweep skips a company with no saved settings without calling the host for it (needs_settings), when the host lists the companies a job may act for. No migration, no capability change.

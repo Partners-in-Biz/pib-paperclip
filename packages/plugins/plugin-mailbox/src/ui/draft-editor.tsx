@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import { useMailboxAction } from "./actions.js";
 import { MailContext } from "./mail-context.js";
 import { Button, Field, Input, Modal, Pill, TextArea, errorText, formatDateTime, tokens, tone } from "@partnersinbiz/pib-plugin-ui";
 
@@ -163,12 +163,12 @@ function RecipientField({ label, values, onChange, search }: { label: string; va
 }
 
 export function DraftEditor({ draft, from, drafter, agentDrafted, canSend, onClose, onChanged }: Props) {
-  const update = usePluginAction("mailbox.update-draft");
-  const send = usePluginAction("mailbox.send-draft");
-  const remove = usePluginAction("mailbox.delete-draft");
-  const rewrite = usePluginAction("mailbox.request-rewrite");
-  const contactSearch = usePluginAction("mailbox.contact-search");
-  const signature = usePluginAction("mailbox.gmail-signature");
+  const update = useMailboxAction("mailbox.update-draft");
+  const send = useMailboxAction("mailbox.send-draft");
+  const remove = useMailboxAction("mailbox.delete-draft");
+  const rewrite = useMailboxAction("mailbox.request-rewrite");
+  const contactSearch = useMailboxAction("mailbox.contact-search");
+  const signature = useMailboxAction("mailbox.gmail-signature");
 
   const startTo = draft.to_addrs ?? [];
   const startCc = draft.cc_addrs ?? [];
