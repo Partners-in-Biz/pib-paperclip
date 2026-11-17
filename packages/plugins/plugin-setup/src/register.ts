@@ -2,6 +2,7 @@ import type { PluginApiRequestInput, PluginApiResponse, PluginContext, PluginPer
 import { PIB_PLUGINS, pluginEvent, registerCompanyBootstrap, registerRoleWatch } from "@partnersinbiz/pib-plugin-kit";
 import { DRIVE_BINDING_EVENT } from "./drive-checklist.js";
 import { registerAccessSync, resendAccessHourly, resendRecentAccess, sendAccessAgain } from "./access-sync.js";
+import { setAccessSwitch } from "./access-switch.js";
 import { isCompanyAdmin, isOperatorAdmin } from "./access.js";
 import { operatorDowngrade } from "./entitlements.js";
 import { SETUP_EVENTS } from "./kit-setup.js";
@@ -39,6 +40,10 @@ export function registerSetup(ctx: PluginContext): void {
   // "Send again" on the People screen: an owner or admin sends the company's access state now.
   ctx.actions.register("setup.access.send-again", (_params, context) =>
     refusable(async () => sendAccessAgain(ctx, requiredCompany(context), context.actor.type === "user" ? { type: "user", userId: context.actor.userId } : undefined)),
+  );
+  // The access switch (off, report, enforce): an owner or admin, with its preconditions and an audit entry.
+  ctx.actions.register("setup.access.set-mode", (params, context) =>
+    refusable(async () => setAccessSwitch(ctx, { companyId: requiredCompany(context), actor: context.actor.type === "user" ? { type: "user", userId: context.actor.userId } : undefined }, params.mode)),
   );
   ctx.actions.register("setup.load", (params, context) => loadSetup(ctx, requiredCompany(context), params));
   ctx.actions.register("setup.save-modules", (params, context) =>
