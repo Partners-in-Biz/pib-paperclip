@@ -1,6 +1,7 @@
 import type { PluginApiRequestInput, PluginApiResponse, PluginContext, PluginPerformActionContext } from "@paperclipai/plugin-sdk";
 import { PIB_PLUGINS, pluginEvent, registerCompanyBootstrap, registerRoleWatch } from "@partnersinbiz/pib-plugin-kit";
 import { DRIVE_BINDING_EVENT } from "./drive-checklist.js";
+import { registerAccessSync, resendAccessHourly, resendRecentAccess, sendAccessAgain } from "./access-sync.js";
 import { isCompanyAdmin, isOperatorAdmin } from "./access.js";
 import { operatorDowngrade } from "./entitlements.js";
 import { SETUP_EVENTS } from "./kit-setup.js";
@@ -34,6 +35,11 @@ export function registerSetup(ctx: PluginContext): void {
     }
   });
   registerTemplateTools(ctx);
+  registerAccessSync(ctx);
+  // "Send again" on the People screen: an owner or admin sends the company's access state now.
+  ctx.actions.register("setup.access.send-again", (_params, context) =>
+    refusable(async () => sendAccessAgain(ctx, requiredCompany(context), context.actor.type === "user" ? { type: "user", userId: context.actor.userId } : undefined)),
+  );
   ctx.actions.register("setup.load", (params, context) => loadSetup(ctx, requiredCompany(context), params));
   ctx.actions.register("setup.save-modules", (params, context) =>
     refusable(async () => {
@@ -95,6 +101,13 @@ export function registerSetup(ctx: PluginContext): void {
     if (result.emitted || result.failed) ctx.logger.info("Module switches re-sent", result);
     // Host rule: a job acts only for a company whose Setup settings are saved. Say so instead of skipping silently (Q7-7).
     if (result.skipped) ctx.logger.info("Companies skipped because Setup's settings are not saved (New company saves them)", { skipped: result.skipped });
+    // Access too: every company not on off, and one back on off until every plugin confirmed it.
+    const access = await resendAccessHourly(ctx);
+    if (access.sent || access.skipped || access.failed) ctx.logger.info("Access re-sent (hourly)", access);
+  });
+  ctx.jobs.register(JOBS.accessResend, async () => {
+    const access = await resendRecentAccess(ctx);
+    if (access.sent || access.skipped || access.failed) ctx.logger.info("Access re-sent", access);
   });
   ctx.jobs.register(JOBS.weeklyFinishSetup, async () => {
     ctx.logger.info("Weekly Finish setup", await weeklyFinishSetup(ctx));

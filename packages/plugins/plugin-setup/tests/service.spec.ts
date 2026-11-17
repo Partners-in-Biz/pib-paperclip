@@ -9,6 +9,7 @@ import { allModulesOn } from "../src/modules.js";
 import { NAMESPACE, PLUGIN_ID } from "../src/namespace.js";
 import { handleApiRoute, registerSetup } from "../src/register.js";
 import { onStatusEvent, reemitModules, refreshFinishIssue, rememberInstalled, reportStatuses, saveModules, SUMMARY_EVENT, weeklyFinishSetup } from "../src/service.js";
+import { ACCESS_PEERS } from "../src/access-sync.js";
 import { fakeCtx, fixedClock } from "./helpers/fake-ctx.js";
 import { splitSqlStatements, validateMigrationStatement } from "./helpers/sql-guard.js";
 
@@ -124,9 +125,9 @@ describe("module choice", () => {
     await expect(save({ modules: {} }, { companyId: A, actor: { type: "agent", userId: null, agentId: "ag" } })).resolves.toMatchObject({ ok: false, error: expect.stringMatching(/board user/) });
     await save({ modules: { payroll: false }, installed: INSTALLED }, { companyId: A, actor: { type: "user", userId: "user-9", agentId: null } });
     expect(emitted.map((e) => e.name)).toEqual([SETUP_EVENTS.modulesUpdated, SUMMARY_EVENT]);
-    expect([...jobs.keys()].sort()).toEqual([JOBS.reemitModules, JOBS.weeklyFinishSetup, JOBS.templateDrift].sort());
+    expect([...jobs.keys()].sort()).toEqual([JOBS.reemitModules, JOBS.weeklyFinishSetup, JOBS.templateDrift, JOBS.accessResend].sort());
     // The status feeds, the drive.binding feed, plus the one company.created wiring (and its lazy catch-up events) of the kit's registerCompanyBootstrap.
-    expect([...handlers.keys()].sort()).toEqual([...Object.values(PIB_PLUGINS).map((key) => `plugin.${key}.setup.status`), `plugin.${PIB_PLUGINS.crm}.drive.binding`, "company.created", "company.updated", "project.created", `plugin.${PIB_PLUGINS.cockpit}.roles.updated`].sort());
+    expect([...handlers.keys()].sort()).toEqual([...Object.values(PIB_PLUGINS).map((key) => `plugin.${key}.setup.status`), `plugin.${PIB_PLUGINS.crm}.drive.binding`, "company.created", "company.updated", "project.created", `plugin.${PIB_PLUGINS.cockpit}.roles.updated`, ...ACCESS_PEERS.flatMap((key) => ["synced", "request", "refusal"].map((name) => `plugin.${key}.access.${name}`))].sort());
     const load = (await actions.get("setup.load")!({}, { companyId: A, actor: { type: "user", userId: "user-9" } })) as Record<string, unknown>;
     expect(load).toMatchObject({ modules: expect.objectContaining({ payroll: false }), updatedBy: "user-9", installed: { [PIB_PLUGINS.crm]: { id: "crm-uuid", status: "ready" } } });
   });
