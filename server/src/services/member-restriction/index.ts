@@ -38,6 +38,13 @@ export {
   type PluginActingPerson,
 } from "./plugin-acting-person.js";
 export {
+  AGENT_KEY_RUN_NOT_OWNED_CODE,
+  TOOL_ROUTE_OWNER_ONLY_CODE,
+  agentKeyRunNamingError,
+  ruleGroupHBinding,
+  toolRouteCallerError,
+} from "./rule-group-h.js";
+export {
   memberRestrictionReadCondition,
   restrictionPersonIds,
   strictReadCondition,
