@@ -127,6 +127,15 @@ export async function setAccessMode(ctx: Db, companyId: string, mode: AccessMode
   );
 }
 
+/**
+ * A plugin holds a `rev` above Setup's (Setup's table came back from a backup):
+ * Setup's `rev` goes to one above it, so the next send replaces what the plugin
+ * holds. Returns the `rev` after the change.
+ */
+export async function raiseAccessRev(ctx: Db, companyId: string, above: number, now: string): Promise<number> {
+  return returnRev(ctx, companyId, `UPDATE ${T.settings} SET rev = $2 + 1, updated_at = $3 WHERE company_id = $1 AND rev <= $2`, [companyId, above, now]);
+}
+
 /** ctx.db.execute returns no rows, so the `rev` is read back (a change made at the same time may already be in it). */
 async function returnRev(ctx: Db, companyId: string, sql: string, params: unknown[]): Promise<number> {
   await ctx.db.execute(sql, params);

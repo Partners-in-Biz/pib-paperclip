@@ -8,6 +8,7 @@ export const JOBS = {
   reemitModules: "reemit-modules",
   weeklyFinishSetup: "weekly-finish-setup",
   templateDrift: "template-drift",
+  accessResend: "access-resend",
 } as const;
 
 const instanceConfigSchema: JsonSchema = {
@@ -90,6 +91,12 @@ const manifest: PaperclipPluginManifestV1 = {
       displayName: "Template drift",
       description: "Every hour: finds agents behind the team template pack and keeps one Template drift issue per company (the sync work list). Closes it at zero and reports the templates:drift health check.",
       schedule: "30 * * * *",
+    },
+    {
+      jobKey: JOBS.accessResend,
+      displayName: "Re-send access",
+      description: "Every minute: re-sends a company's access state while a guarded plugin has not confirmed the current revision, for 15 minutes after the last change.",
+      schedule: "* * * * *",
     },
   ],
   apiRoutes: [
