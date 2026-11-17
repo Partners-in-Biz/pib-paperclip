@@ -48,6 +48,7 @@ import {
   updateMemberPermissionsSchema,
   updateUserCompanyAccessSchema,
   updateMemberRestrictionSchema,
+  updateMemberRestrictionModeSchema,
   PERMISSION_KEYS,
   isUuidLike,
 } from "@paperclipai/shared";
@@ -105,7 +106,10 @@ import {
 import { assertAuthenticated, assertCompanyAccess } from "./authz.js";
 import {
   MEMBER_RESTRICTION_CHANGED_ACTION,
+  MEMBER_RESTRICTION_MODE_CHANGED_ACTION,
+  getMemberRestrictionMode,
   setMemberRestriction,
+  setMemberRestrictionMode,
 } from "../services/member-restriction/admin.js";
 import {
   claimBoardOwnership,
@@ -4682,6 +4686,39 @@ export function accessRoutes(
       const member = (await loadCompanyMemberRecords(db, companyId)).find((entry) => entry.id === memberId);
       if (!member) throw notFound("Member not found");
       res.json(member);
+    }
+  );
+
+  router.get("/companies/:companyId/member-restriction-mode", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertPersonForMemberRestriction(req);
+    await assertCompanyPermission(req, companyId, "users:manage_permissions");
+    const result = await getMemberRestrictionMode(db, companyId);
+    if (!result) throw notFound("Company not found");
+    res.json(result);
+  });
+
+  router.put(
+    "/companies/:companyId/member-restriction-mode",
+    validate(updateMemberRestrictionModeSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertPersonForMemberRestriction(req);
+      await assertCompanyPermission(req, companyId, "users:manage_permissions");
+      const result = await setMemberRestrictionMode(db, companyId, req.body.mode);
+      if (!result) throw notFound("Company not found");
+      if (result.changed) {
+        await logActivity(db, {
+          companyId,
+          actorType: "user",
+          actorId: req.actor.userId ?? "board",
+          action: MEMBER_RESTRICTION_MODE_CHANGED_ACTION,
+          entityType: "company",
+          entityId: companyId,
+          details: { oldMode: result.oldMode, newMode: result.newMode, deniedLast7Days: result.deniedLast7Days },
+        });
+      }
+      res.json({ mode: result.newMode, deniedLast7Days: result.deniedLast7Days });
     }
   );
 

@@ -161,6 +161,13 @@ export const updateMemberRestrictionSchema = z.object({
 
 export type UpdateMemberRestriction = z.infer<typeof updateMemberRestrictionSchema>;
 
+/** PUT /companies/:companyId/member-restriction-mode (PAR-12608 4.2). */
+export const updateMemberRestrictionModeSchema = z.object({
+  mode: z.enum(MEMBER_RESTRICTION_MODES),
+}).strict();
+
+export type UpdateMemberRestrictionMode = z.infer<typeof updateMemberRestrictionModeSchema>;
+
 export const searchAdminUsersQuerySchema = z.object({
   query: z.string().trim().max(120).optional().default(""),
 });
