@@ -236,6 +236,7 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
       owner: choice(["agent", "human"], "Who does it (default agent); human = on Needs you unless autopilot is off. Site code changes stay agent work"),
       week: int("Sprint week; default the current week"),
       autopilotEligible: flag("false = needs sign-off in safe mode"),
+      pageUrls: list("Pages this task is about (same site as the sprint, up to 50); approve-page-apply treats them as the task's pages"),
       createIssue: flag("Open its issue now when it is due (default true; else the daily run opens it)"),
     }),
   },

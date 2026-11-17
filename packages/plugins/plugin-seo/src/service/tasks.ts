@@ -3,7 +3,7 @@
  * the task tools (start, complete, block, skip, add).
  */
 import { randomUUID } from "node:crypto";
-import { reviewerAgentId, wakeIssue } from "@partnersinbiz/pib-plugin-kit";
+import { normalisePageUrl, reviewerAgentId, sameSite, wakeIssue } from "@partnersinbiz/pib-plugin-kit";
 import { ORIGIN, taskOriginId } from "../constants.js";
 import * as db from "../db.js";
 import { BLOCK_COMMENT_MAX, blockComment, completionComment, taskIssueDescription, taskIssueTitle, type EvidenceArtifact, type SiteCopy, type TaskCopy } from "../engine/copy.js";
@@ -34,6 +34,7 @@ import {
   SeoError,
   str,
   strList,
+  urlParam,
   type Actor,
   type CompanyInfo,
   type Env,
@@ -563,6 +564,13 @@ export async function addTask(env: Env, companyId: string, actor: Actor, params:
   // Site changes are agent work: the agent makes them through the site repo.
   const codeWork = isCodeTask({ taskType, title, source: "manual" });
   const owner = requestedOwner === "human" && codeWork ? "agent" : requestedOwner;
+  // Pages the task names (PAR-12432): same site as the sprint; approve-page-apply reads them as the task's pages.
+  const pageUrls = [...new Set(strList(params, "pageUrls", { max: 50, itemMax: 1000 }).map((u) => {
+    const page = normalisePageUrl(urlParam(u, ctx.sprint.siteUrl));
+    if (!page) throw new SeoError(`${u} is not a page address (a full http(s) URL without ? or #).`);
+    if (!sameSite(page, ctx.sprint.siteUrl)) throw new SeoError(`${u} is not on the sprint's site (${ctx.sprint.siteUrl}).`);
+    return page;
+  }))];
   const id = randomUUID();
   const dueNow = week <= ctx.clock.week;
   await db.insertTasks(env.ctx.db, [{
@@ -584,6 +592,7 @@ export async function addTask(env: Env, companyId: string, actor: Actor, params:
     parentOptimizationId: null,
     context: actor.kind === "agent" ? `Added by the SEO Specialist.` : null,
   }]);
+  if (pageUrls.length > 0) await db.updateTask(env.ctx.db, companyId, id, { evidence: { pageUrls } });
   let issueId: string | null = null;
   const createIssue = bool(params, "createIssue") ?? true;
   if (createIssue && dueNow && ctx.sprint.rootIssueId && ctx.sprint.status !== "paused") {
@@ -604,6 +613,7 @@ export async function addTask(env: Env, companyId: string, actor: Actor, params:
     week,
     owner,
     issueId,
+    ...(pageUrls.length > 0 ? { pageUrls } : {}),
     due: dueNow,
     ...(owner !== requestedOwner ? { note: "Code and content changes are agent work: the SEO Specialist makes them through the site repo, so this task is the agent's." } : {}),
     ...(owner === "human" ? { note: "Tasks for a person go on the sprint's weekly Needs you issue instead of an issue of their own." } : {}),

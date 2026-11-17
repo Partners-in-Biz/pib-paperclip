@@ -40,6 +40,8 @@ export async function taskPageSet(env: Env, companyId: string, task: db.SprintTa
   const previews = await env.ctx.db.query(`SELECT page_url FROM ${t("previews")} WHERE company_id = $1 AND task_id = $2`, [companyId, task.id]);
   raw.push(...previews.map((r: Record<string, unknown>) => String(r.page_url ?? "")));
   for (const chunk of await db.listChunks(env.ctx.db, companyId, task.id)) raw.push(...chunk.urls);
+  const named = ((task.evidence ?? {}) as { pageUrls?: unknown }).pageUrls;
+  if (Array.isArray(named)) for (const u of named) if (typeof u === "string") raw.push(u);
   const dropped = ((task.evidence ?? {}) as { droppedPages?: Array<{ pageUrl?: unknown }> }).droppedPages;
   if (Array.isArray(dropped)) for (const d of dropped) if (typeof d?.pageUrl === "string") raw.push(d.pageUrl);
   return [...new Set(raw.map((u) => normalisePageUrl(u, siteUrl)).filter((u): u is string => u !== null))].sort();
