@@ -33,6 +33,7 @@ export {
 export {
   isMemberRestrictionUnavailable,
   pluginActingPersonForActor,
+  pluginActingPersonForUser,
   type PluginActingPerson,
 } from "./plugin-acting-person.js";
 export {
