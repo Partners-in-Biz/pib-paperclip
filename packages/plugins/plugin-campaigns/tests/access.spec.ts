@@ -4,10 +4,13 @@
  * `.register` call in src/, and the behaviour of 4.5 items 4 to 6. The last cases run real handlers, so "today's
  * result" is what Campaigns really answers, and the switch `off` is a pass-through.
  */
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 import { accessCompanyScope, PERMISSION_DENIED } from "@partnersinbiz/pib-plugin-kit";
 import { ACCESS_TEST_IDS, assertPluginAccess, NAMED_DATA_HANDLERS } from "@partnersinbiz/pib-plugin-kit/access-testing";
+import { AccessRefused, unwrapRefusal } from "@partnersinbiz/pib-plugin-ui";
 import { describe, expect, it } from "vitest";
 import { CAMPAIGNS_ACCESS_TABLE } from "../src/access-table.js";
 import manifest from "../src/manifest.js";
@@ -15,6 +18,11 @@ import plugin from "../src/worker.js";
 
 const SRC = fileURLToPath(new URL("../src", import.meta.url));
 const T = ACCESS_TEST_IDS;
+const files = (dir: string): string[] =>
+  readdirSync(dir).flatMap((name) => {
+    const path = join(dir, name);
+    return statSync(path).isDirectory() ? files(path) : /\.tsx?$/.test(name) ? [path] : [];
+  });
 
 describe("Campaigns access guard (PAR-12684)", () => {
   it("registers every action, tool and route through the guard, matches its table and passes the behaviour checks", async () => {
@@ -37,6 +45,19 @@ describe("Campaigns access guard (PAR-12684)", () => {
         expect(entry.scoped, key).toBeUndefined();
       }
     }
+  });
+
+  it("page (PAR-12685): only src/ui/actions.ts imports usePluginAction; page and sidebar sit behind the access gate", () => {
+    const direct = files(join(SRC, "ui"))
+      .filter((f) => relative(SRC, f) !== join("ui", "actions.ts"))
+      .filter((f) => /\busePluginAction\b/.test(readFileSync(f, "utf8")))
+      .map((f) => relative(SRC, f));
+    expect(direct).toEqual([]);
+    const actions = readFileSync(join(SRC, "ui", "actions.ts"), "utf8");
+    expect(actions).toMatch(/withRefusal\(usePluginAction\)/);
+    const page = readFileSync(join(SRC, "ui", "index.tsx"), "utf8");
+    expect(page).toMatch(/<AccessGate state=\{access\} kind="page"[^>]*>\s*<CampaignsPageBody/);
+    expect(page).toMatch(/<AccessGate state=\{access\} kind="sidebar">\s*<CampaignsSidebarEntry/);
   });
 
   describe("real handlers", () => {
@@ -77,6 +98,13 @@ describe("Campaigns access guard (PAR-12684)", () => {
       const { harness } = await campaigns("enforce");
       const out = await harness.executeTool("suggest-ab-winner", { campaignId: "x" }, { agentId: T.agent, runId: "", companyId: T.enforce });
       expect(out.error).toMatch(/^Access refused: the person this run works for may not do this/);
+    });
+
+    it("page (PAR-12685): a refusal answer reaches the page as AccessRefused with the worker's message", async () => {
+      const { harness, as } = await campaigns("enforce");
+      const answer = await harness.performAction("campaigns.load", {}, as(T.operator));
+      expect(() => unwrapRefusal(answer)).toThrow(AccessRefused);
+      expect(() => unwrapRefusal(answer)).toThrow((answer as { message: string }).message);
     });
   });
 });
