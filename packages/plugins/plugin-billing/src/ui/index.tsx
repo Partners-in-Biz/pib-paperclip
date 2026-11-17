@@ -2,7 +2,7 @@ import { withHelp } from "./help-page.js";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useHostLocation, useHostNavigation, type PluginPageProps, type PluginSidebarProps } from "@paperclipai/plugin-sdk/ui";
 import { loadStatusText } from "./load-status.js";
-import { Button, ClientWorkspaceBar, Coins, FileText, LayoutDashboard, ModuleStateBanner, Page, PageFrame, PageMessage, Receipt, RefreshCw, Tabs, Timer, errorText, useUrlTab, type TabItem } from "@partnersinbiz/pib-plugin-ui";
+import { AccessGate, Button, ClientWorkspaceBar, Coins, FileText, LayoutDashboard, ModuleStateBanner, Page, PageFrame, PageMessage, Receipt, RefreshCw, Tabs, Timer, errorText, useAccess, useUrlTab, type TabItem } from "@partnersinbiz/pib-plugin-ui";
 import { GetStarted, useGroupedNav, usePluginSetupStatus } from "@partnersinbiz/pib-plugin-ui";
 import { clientScopeFromSearch, formatClientParam } from "@partnersinbiz/pib-plugin-kit/client-ref";
 import { resolvePluginUiBase } from "@partnersinbiz/pib-plugin-kit/oauth-client";
@@ -10,6 +10,7 @@ import { moduleEnabled, moduleState } from "@partnersinbiz/pib-plugin-kit/setup-
 import { BillsTab, ExpensesTab } from "./costs.js";
 import { InvoicesTab, NewDocumentModal } from "./invoices.js";
 import { Overview } from "./overview.js";
+import { useAccessMe } from "./actions.js";
 import { BillingContext, Muted, SectionNav, money, useCall, type BillingApi } from "./parts.js";
 import { CreditNotesSection, PaymentsTab } from "./payments.js";
 import { QuotesTab } from "./quotes.js";
@@ -55,7 +56,17 @@ function WorkspacePage({ header, message, children }: { header: ReactNode; messa
 
 export const BillingPage = withHelp(BillingPageMain);
 
-function BillingPageMain({ context }: PluginPageProps) {
+/** The page asks `access.me` first; closed shows the "no access" page (the guard still refuses every call). */
+function BillingPageMain(props: PluginPageProps) {
+  const access = useAccess(useAccessMe(), props.context.companyId);
+  return (
+    <AccessGate state={access} kind="page" moduleName="Billing">
+      <BillingPageBody {...props} />
+    </AccessGate>
+  );
+}
+
+function BillingPageBody({ context }: PluginPageProps) {
   const location = useHostLocation();
   const navigation = useHostNavigation();
   // "Finish setting up Billing" on the overview until its required setup is done.
@@ -250,7 +261,17 @@ function BillingPageMain({ context }: PluginPageProps) {
   );
 }
 
-export function BillingSidebar({ context }: PluginSidebarProps) {
+export function BillingSidebar(props: PluginSidebarProps) {
+  // Nothing while the access check loads, so the entry does not flash for a person without access.
+  const access = useAccess(useAccessMe(), props.context.companyId);
+  return (
+    <AccessGate state={access} kind="sidebar">
+      <BillingSidebarEntry {...props} />
+    </AccessGate>
+  );
+}
+
+function BillingSidebarEntry({ context }: PluginSidebarProps) {
   // Nothing while the company has Billing switched off (shown as usual while loading).
   const enabled = useModuleEnabled(context.companyId);
   // The Cockpit's Clients / Marketing / Finance group shows this page instead (pib-plugin-ui NAV_GROUPS).
