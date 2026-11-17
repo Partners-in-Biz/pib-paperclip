@@ -110,6 +110,41 @@ export async function memberRestrictionFor(
   };
 }
 
+/**
+ * The companies in which one person is restricted under `enforce` (PAR-12608
+ * 4.3, list builders): a flagged row in any status, in a company whose mode is
+ * `enforce`. `report` and `off` companies are left out, so their lists stay
+ * unfiltered. With the kill switch on nothing is read and the answer is empty.
+ * Throws `MemberRestrictionReadError` when the answer cannot be read.
+ */
+export async function memberRestrictionEnforcedCompanyIds(
+  db: Pick<Db, "select">,
+  personId: string,
+): Promise<string[]> {
+  if (memberRestrictionKillSwitchOn()) return [];
+  let rows: Array<{ companyId: unknown }>;
+  try {
+    rows = await db
+      .select({ companyId: companyMemberships.companyId })
+      .from(companyMemberships)
+      .innerJoin(companies, eq(companies.id, companyMemberships.companyId))
+      .where(
+        and(
+          eq(companyMemberships.principalType, "user"),
+          eq(companyMemberships.principalId, personId),
+          eq(companyMemberships.restricted, true),
+          eq(companies.memberRestrictionMode, "enforce"),
+        ),
+      );
+  } catch (error) {
+    throw new MemberRestrictionReadError("company restriction list could not be read", { cause: error });
+  }
+  if (!Array.isArray(rows) || !rows.every((row) => typeof row.companyId === "string")) {
+    throw new MemberRestrictionReadError("company restriction list is malformed");
+  }
+  return [...new Set(rows.map((row) => row.companyId as string))].sort();
+}
+
 export function memberRestrictionResolver(db: Db): MemberRestrictionResolver {
   return (personId, companyId) => memberRestrictionFor(db, personId, companyId);
 }
