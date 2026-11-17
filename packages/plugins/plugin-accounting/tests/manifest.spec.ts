@@ -49,7 +49,13 @@ describe("manifest", () => {
   it("adds no capability for 0.4: the Reviewer pass, compact tools and erasure need none", () => {
     expect(manifest.capabilities).not.toContain("webhooks.receive");
     expect(manifest.capabilities).not.toContain("issue.relations.read");
-    expect(manifest.database?.coreReadTables).toEqual(["issues"]);
+    expect(manifest.database?.coreReadTables).toEqual(["issues", "heartbeat_runs"]);
+  });
+
+  it("A3 (PAR-12643): reads the caller's role and heartbeat_runs for the access guard, writes no member or audit row", () => {
+    expect(manifest.capabilities).toContain("access.members.read");
+    expect(manifest.capabilities).not.toContain("access.members.write");
+    expect(manifest.capabilities).not.toContain("activity.log.write");
   });
 
   it("settings: VAT category, year end, Jev and a private R2 block with secret refs", () => {
