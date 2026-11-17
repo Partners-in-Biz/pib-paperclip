@@ -19,6 +19,9 @@ import { iso, table } from "./db.js";
 import { clip } from "./domain.js";
 import { createIssueSafely, ORIGIN_KIND, projectIdForRow, socialAssignee } from "./issues.js";
 import { socialPath } from "./oauth/flow.js";
+import { wakeIssue } from "@partnersinbiz/pib-plugin-kit";
+import { cadenceGaps, cadenceSection, getCadence } from "./cadence.js";
+import { PLATFORM_LABELS, type SocialPlatform } from "./platforms.js";
 import { whenText } from "./schedule.js";
 
 const DAY_MS = 86_400_000;
@@ -113,10 +116,11 @@ function capped(lines: string[]): string[] {
 }
 
 /** The issue text for one scope. Pure. */
-export function calendarCheckDescription(f: CalendarFindings, timeZone: string, pagePath: string | null): string {
+export function calendarCheckDescription(f: CalendarFindings, timeZone: string, pagePath: string | null, fill: string[] = []): string {
   const out: string[] = [
     "Only a **scheduled** post is published. Drafts, posts in review and approved posts without a schedule only *propose* a time: the calendar shows them at that slot (dashed), but nothing goes out until the post is approved and scheduled.",
     "",
+    ...fill,
   ];
   const doubles = f.duplicates.filter((g) => g.doublePublish);
   if (doubles.length) {
@@ -165,53 +169,102 @@ interface QueryRow {
   accounts: string | null;
 }
 
+interface AccountQueryRow {
+  id: string;
+  platform: string;
+  display_name: string;
+  client_kind: string | null;
+  client_ref: string | null;
+  client_name: string | null;
+}
+
+type ScopeRow = Pick<QueryRow, "client_kind" | "client_ref" | "client_name">;
+
+const OPEN_ISSUE = new Set(["backlog", "todo", "in_progress", "in_review", "blocked"]);
+const ISSUE_STATE = (companyId: string, scopeKey: string) => ({ scopeKind: "company" as const, scopeId: companyId, namespace: "social-calendar-check", stateKey: `issue:${scopeKey}` });
+
 /**
- * Runs the check once a day per company: the first call at or after CHECK_HOUR local time opens one issue per scope with
- * findings, assigned to the Social agent. Returns how many issues it opened (0 before the hour, when already run today, or
- * when the calendar is clean). Never throws.
+ * Runs the check once a day per company: the first call at or after CHECK_HOUR local time reports, per scope with
+ * findings or cadence gaps, to the Social agent. A scope whose check issue from an earlier day is still open gets the
+ * new report as a comment there (and a wake-up) instead of a second issue. Never throws.
  */
-export async function runCalendarCheck(ctx: PluginContext, companyId: string, now: Date = new Date()): Promise<{ ran: boolean; opened: number }> {
+export async function runCalendarCheck(ctx: PluginContext, companyId: string, now: Date = new Date()): Promise<{ ran: boolean; opened: number; commented: number }> {
+  const none = { ran: false, opened: 0, commented: 0 };
   try {
     const config = await loadSocialConfig(ctx, companyId);
     const timeZone = config.timezone || "UTC";
     const { day, hour } = localDayHour(now, timeZone);
-    if (hour < CHECK_HOUR) return { ran: false, opened: 0 };
+    if (hour < CHECK_HOUR) return none;
     const last = await ctx.state.get(STATE(companyId)).catch(() => null);
-    if (last === day) return { ran: false, opened: 0 };
-    // Mark the day first: a failure below must not open the same issues every hour.
+    if (last === day) return none;
+    // Mark the day first: a failure below must not report every hour.
     await ctx.state.set(STATE(companyId), day);
-    const rows = await ctx.db.query<QueryRow>(
-      `SELECT p.id, p.status, p.scheduled_at, p.published_at, p.body, p.client_kind, p.client_ref, p.client_name,
-              (SELECT string_agg(d.account_id, ',') FROM ${table(ctx, "destinations")} d WHERE d.post_id = p.id) AS accounts
-         FROM ${table(ctx, "posts")} p
-        WHERE p.company_id = $1 AND p.archived_at IS NULL AND p.scope = 'org'
-          AND coalesce(p.published_at, p.scheduled_at) BETWEEN now() - interval '14 days' AND now() + interval '3 days'
-          AND p.status IN ('draft', 'review', 'approved', 'scheduled', 'publishing', 'published', 'partially_published')`,
-      [companyId],
-    );
-    const byScope = new Map<string, { rows: CalendarRow[]; sample: QueryRow }>();
+    const [rows, accountRows] = await Promise.all([
+      ctx.db.query<QueryRow>(
+        `SELECT p.id, p.status, p.scheduled_at, p.published_at, p.body, p.client_kind, p.client_ref, p.client_name,
+                (SELECT string_agg(d.account_id, ',') FROM ${table(ctx, "destinations")} d WHERE d.post_id = p.id) AS accounts
+           FROM ${table(ctx, "posts")} p
+          WHERE p.company_id = $1 AND p.archived_at IS NULL AND p.scope = 'org'
+            AND coalesce(p.published_at, p.scheduled_at) BETWEEN now() - interval '14 days' AND now() + interval '9 days'
+            AND p.status IN ('draft', 'review', 'approved', 'scheduled', 'publishing', 'published', 'partially_published')`,
+        [companyId],
+      ),
+      ctx.db.query<AccountQueryRow>(
+        `SELECT id, platform, display_name, client_kind, client_ref, client_name FROM ${table(ctx, "accounts")}
+          WHERE company_id = $1 AND scope = 'org' AND status <> 'disabled'`,
+        [companyId],
+      ),
+    ]);
+    const keyOf = (row: ScopeRow) => {
+      const scope = scopeOfRow(row);
+      return scope ? formatClientParam(scope) : "own";
+    };
+    const byScope = new Map<string, { rows: CalendarRow[]; sample: ScopeRow; accounts: AccountQueryRow[] }>();
+    const entryFor = (row: ScopeRow) => {
+      const key = keyOf(row);
+      const entry = byScope.get(key) ?? { rows: [], sample: { client_kind: row.client_kind, client_ref: row.client_ref, client_name: row.client_name }, accounts: [] };
+      byScope.set(key, entry);
+      return { key, entry };
+    };
     for (const row of rows) {
       const at = WENT_OUT.has(row.status) ? iso(row.published_at) ?? iso(row.scheduled_at) : iso(row.scheduled_at);
       if (!at) continue;
-      const scope = scopeOfRow(row);
-      const scopeKey = scope ? formatClientParam(scope) : "own";
-      const entry = byScope.get(scopeKey) ?? { rows: [], sample: row };
-      entry.rows.push({ id: row.id, status: row.status, at, body: row.body ?? "", scopeKey, accounts: row.accounts ? row.accounts.split(",") : [] });
-      byScope.set(scopeKey, entry);
+      const { key, entry } = entryFor(row);
+      entry.rows.push({ id: row.id, status: row.status, at, body: row.body ?? "", scopeKey: key, accounts: row.accounts ? row.accounts.split(",") : [] });
     }
+    for (const account of accountRows) entryFor(account).entry.accounts.push(account);
     let opened = 0;
-    for (const [scopeKey, { rows: scoped, sample }] of byScope) {
-      const findings = calendarFindings(scoped, now.getTime());
-      if (findingsEmpty(findings)) continue;
+    let commented = 0;
+    for (const [scopeKey, { rows: scoped, sample, accounts }] of byScope) {
+      const scope = scopeOfRow(sample);
+      // The 14-day look-back belongs to the findings; the cadence counts every row it is given.
+      const findings = calendarFindings(scoped.filter((r) => Date.parse(r.at) <= now.getTime() + 3 * DAY_MS), now.getTime());
+      const cadence = accounts.length ? await getCadence(ctx, companyId, scope) : null;
+      const names = new Map(accounts.map((a) => [a.id, `${PLATFORM_LABELS[a.platform as SocialPlatform] ?? a.platform} (${a.display_name})`]));
+      const gaps = cadence ? cadenceGaps(cadence, accounts.map((a) => ({ id: a.id, platform: a.platform, name: names.get(a.id)! })), scoped.map((r) => ({ at: r.at, accounts: r.accounts })), now, timeZone) : [];
+      const fill = cadence ? cadenceSection(cadence, gaps, names) : [];
+      const freeSlots = gaps.reduce((n, d) => n + d.free.length, 0);
+      if (findingsEmpty(findings) && freeSlots === 0) continue;
       try {
+        const pagePath = await socialPath(ctx, companyId, { tab: "calendar" }, scope).catch(() => null);
+        const counts = [freeSlots ? `${freeSlots} free slots to fill` : "", findings.missed.length ? `${findings.missed.length} missed` : "", findings.upcoming.length ? `${findings.upcoming.length} not approved for the next 48 h` : "", findings.duplicates.length ? `${findings.duplicates.length} same-opening groups` : ""].filter(Boolean).join(", ");
+        const description = calendarCheckDescription(findings, timeZone, pagePath, fill);
+        const existing = await ctx.state.get(ISSUE_STATE(companyId, scopeKey)).catch(() => null);
+        if (typeof existing === "string" && existing) {
+          const issue = (await ctx.issues.get(existing, companyId).catch(() => null)) as { status?: string; assigneeAgentId?: string | null } | null;
+          if (issue && OPEN_ISSUE.has(String(issue.status))) {
+            await ctx.issues.createComment(existing, `**Calendar check ${day}: ${counts}**\n\n${description}`, companyId);
+            if (issue.assigneeAgentId) await wakeIssue(ctx, existing, companyId, "Daily social calendar check");
+            commented += 1;
+            continue;
+          }
+        }
         const assignee = await socialAssignee(ctx, companyId);
-        const pagePath = await socialPath(ctx, companyId, { tab: "posts" }, scopeOfRow(sample)).catch(() => null);
-        const counts = [findings.missed.length ? `${findings.missed.length} missed` : "", findings.upcoming.length ? `${findings.upcoming.length} not approved for the next 48 h` : "", findings.duplicates.length ? `${findings.duplicates.length} same-opening groups` : ""].filter(Boolean).join(", ");
-        await createIssueSafely(ctx, {
+        const created = await createIssueSafely(ctx, {
           companyId,
           projectId: await projectIdForRow(ctx, companyId, sample),
           title: `${clientPrefix(sample)}Social calendar check ${day}: ${counts}`,
-          description: calendarCheckDescription(findings, timeZone, pagePath),
+          description,
           priority: findings.duplicates.some((g) => g.doublePublish) ? "high" : "medium",
           originKind: ORIGIN_KIND,
           originId: `calendar-check:${scopeKey}:${day}`,
@@ -219,14 +272,15 @@ export async function runCalendarCheck(ctx: PluginContext, companyId: string, no
           assigneeUserId: assignee.assigneeUserId,
           wakeReason: "Daily social calendar check",
         });
+        await ctx.state.set(ISSUE_STATE(companyId, scopeKey), created.id).catch(() => undefined);
         opened += 1;
       } catch (error) {
         ctx.logger.info("Social calendar check issue not opened", { companyId, scope: scopeKey, error: error instanceof Error ? error.message : String(error) });
       }
     }
-    return { ran: true, opened };
+    return { ran: true, opened, commented };
   } catch (error) {
     ctx.logger.info("Social calendar check skipped", { companyId, error: error instanceof Error ? error.message : String(error) });
-    return { ran: false, opened: 0 };
+    return none;
   }
 }

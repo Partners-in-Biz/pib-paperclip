@@ -1,4 +1,5 @@
 import { runCalendarCheck } from "./calendar-check.js";
+import { getCadenceRecord, setCadenceRecord } from "./cadence-record.js";
 import { GROWTH_TOOL_NAMES, normalizeToolResult, registerGrowthTools, type GrowthToolsHost } from "@partnersinbiz/pib-plugin-kit";
 import {
   definePlugin,
@@ -60,6 +61,7 @@ import {
   proposeFeatureQuestion,
   setFocus,
   hookBoardRecord,
+  hookGivePrepareRecord,
   proposePlaybookChange,
   rejectExperiment,
   savePlaybookRecord,
@@ -312,6 +314,8 @@ async function dispatchTool(ctx: PluginContext, viewer: Viewer, name: string, p:
       return setFocus(growthEnv(ctx), viewer, p);
     case "hook-board":
       return hookBoardRecord(growthEnv(ctx), viewer, p);
+    case "get-cadence":
+      return getCadenceRecord(ctx, viewer, p);
     default:
       throw new SocialError(`Unknown social tool ${name}`);
   }
@@ -475,6 +479,9 @@ const ACTIONS: Record<string, ActionHandler> = {
   // Growth Lab (people): the Growth tab.
   "social.growth-load": (ctx, v, p) => growthSnapshot(growthEnv(ctx), v, { ...p, client: p.client ?? null }),
   "social.growth-update-program": growthAction((ctx, v, p) => updateProgramRecord(growthEnv(ctx), v, p)),
+  "social.hook-give-prepare": growthAction((ctx, v, p) => hookGivePrepareRecord(growthEnv(ctx), v, p)),
+  "social.get-cadence": (ctx, v, p) => getCadenceRecord(ctx, v, p),
+  "social.set-cadence": (ctx, v, p) => setCadenceRecord(ctx, v, p),
   "social.growth-save-playbook": growthAction((ctx, v, p) => savePlaybookRecord(growthEnv(ctx), v, p)),
   "social.growth-set-focus": growthAction((ctx, v, p) => {
     requireUser(v, "set the monthly focus");
