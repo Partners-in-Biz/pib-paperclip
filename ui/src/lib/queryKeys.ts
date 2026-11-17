@@ -595,6 +595,8 @@ export const queryKeys = {
       ["access", "join-requests", companyId, status] as const,
     companyMembers: (companyId: string) =>
       ["access", "company-members", companyId] as const,
+    memberRestrictionMode: (companyId: string) =>
+      ["access", "member-restriction-mode", companyId] as const,
     companyUserDirectory: (companyId: string) =>
       ["access", "company-user-directory", companyId] as const,
     adminUsers: (query: string) => ["access", "admin-users", query] as const,
