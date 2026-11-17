@@ -35,6 +35,15 @@ import { useHiddenSettings } from "@/hooks/useHiddenSettings";
 import { useCloudInstance } from "@/hooks/useCloudInstance";
 import { InvitesSection } from "@/components/access/InvitesSection";
 import { describeError } from "@/api/errors";
+import { authApi } from "@/api/auth";
+import { healthApi } from "@/api/health";
+import {
+  KillSwitchBanner,
+  MemberRestrictionDialog,
+  MemberRestrictionSummary,
+  MemberRestrictionSwitch,
+  useMemberRestrictionMode,
+} from "@/components/access/MemberRestriction";
 
 const reassignmentIssueStatuses = "backlog,todo,in_progress,in_review,blocked,failed,timed_out";
 type EditableMemberStatus = "pending" | "active" | "suspended";
@@ -81,6 +90,7 @@ export function CompanyAccess() {
     );
   };
   const [editingMemberId, setEditingMemberId] = useState<string | null>(null);
+  const [restrictingMemberId, setRestrictingMemberId] = useState<string | null>(null);
   const [removingMemberId, setRemovingMemberId] = useState<string | null>(null);
   const [reassignmentTarget, setReassignmentTarget] = useState<string>("__unassigned");
   const [draftRole, setDraftRole] = useState<CompanyMember["membershipRole"]>(null);
@@ -106,6 +116,11 @@ export function CompanyAccess() {
     queryFn: () => agentsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+
+  const healthQuery = useQuery({ queryKey: queryKeys.health, queryFn: () => healthApi.get() });
+  const sessionQuery = useQuery({ queryKey: queryKeys.auth.session, queryFn: () => authApi.getSession() });
+  const restrictionModeQuery = useMemberRestrictionMode(selectedCompanyId);
+  const restrictionForcedOff = healthQuery.data?.memberRestriction === "forced_off";
 
   const joinRequestsQuery = useQuery({
     queryKey: queryKeys.access.joinRequests(selectedCompanyId ?? "", "pending_approval"),
@@ -183,6 +198,10 @@ export function CompanyAccess() {
   const editingMember = useMemo(
     () => membersQuery.data?.members.find((member) => member.id === editingMemberId) ?? null,
     [editingMemberId, membersQuery.data?.members],
+  );
+  const restrictingMember = useMemo(
+    () => membersQuery.data?.members.find((member) => member.id === restrictingMemberId) ?? null,
+    [restrictingMemberId, membersQuery.data?.members],
   );
   const removingMember = useMemo(
     () => membersQuery.data?.members.find((member) => member.id === removingMemberId) ?? null,
@@ -319,6 +338,9 @@ export function CompanyAccess() {
         </div>
       )}
 
+      {restrictionForcedOff ? <KillSwitchBanner /> : null}
+      <MemberRestrictionSwitch companyId={selectedCompanyId} />
+
       <section className="space-y-4">
         {access?.canApproveJoinRequests && pendingHumanJoinRequests.length > 0 ? (
           <div className="space-y-3">
@@ -372,13 +394,14 @@ export function CompanyAccess() {
                 <th className="px-3 py-2 font-medium">Email</th>
                 <th className="px-3 py-2 font-medium">Role</th>
                 <th className="px-3 py-2 font-medium">Status</th>
+                <th className="px-3 py-2 font-medium">Access</th>
                 <th className="px-3 py-2 text-right font-medium">Action</th>
               </tr>
             </thead>
             <tbody>
               {members.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="px-3 py-8 text-muted-foreground">
+                  <td colSpan={6} className="px-3 py-8 text-muted-foreground">
                     No user memberships found for this organization yet.
                   </td>
                 </tr>
@@ -410,10 +433,35 @@ export function CompanyAccess() {
                         {member.status.replace("_", " ")}
                       </Badge>
                     </td>
+                    <td className="px-3 py-3">
+                      <MemberRestrictionSummary
+                        member={member}
+                        mode={restrictionModeQuery.data?.mode}
+                        forcedOff={restrictionForcedOff}
+                        agents={agentsQuery.data ?? []}
+                      />
+                    </td>
                     <td className="px-3 py-3 text-right">
                       <div className="flex justify-end gap-2">
                         <Button size="sm" variant="outline" onClick={() => setEditingMemberId(member.id)}>
                           Edit
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => setRestrictingMemberId(member.id)}
+                          disabled={
+                            member.membershipRole === "owner" ||
+                            member.membershipRole === "admin" ||
+                            member.principalId === sessionQuery.data?.user?.id
+                          }
+                          title={
+                            member.membershipRole === "owner" || member.membershipRole === "admin"
+                              ? "Owners and admins cannot be restricted"
+                              : undefined
+                          }
+                        >
+                          Access
                         </Button>
                         <span
                           className="inline-flex"
@@ -505,6 +553,13 @@ export function CompanyAccess() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <MemberRestrictionDialog
+        companyId={selectedCompanyId}
+        member={restrictingMember}
+        agents={agentsQuery.data ?? []}
+        onClose={() => setRestrictingMemberId(null)}
+      />
 
       <Dialog open={!!removingMember} onOpenChange={(open) => !open && setRemovingMemberId(null)}>
         <DialogContent className="max-w-xl">
