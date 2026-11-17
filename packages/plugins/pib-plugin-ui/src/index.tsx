@@ -70,6 +70,8 @@ export { PreferencesPanel, PreferencesView, type PreferencesViewProps } from "./
 export * from "./preferences-logic.js";
 export * from "./richtext.js";
 export * from "./module-state.js";
+export * from "./access.js";
+export * from "./refusal.js";
 export * from "./display.js";
 
 const focusRing: CSSProperties = {
