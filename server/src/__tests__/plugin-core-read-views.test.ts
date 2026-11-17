@@ -6,10 +6,11 @@ import { createDb } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 // Chat privacy CP-4b-1 (PAR-12827, plan PAR-12774 4.9 part A): chat-free read views for plugin SQL.
-const migrationSql = await readFile(new URL(
-  "../../../packages/db/src/migrations/0450_plugin_core_read_views.sql", import.meta.url,
-), "utf8");
-const migrationStatements = migrationSql.split("--> statement-breakpoint").map((s) => s.trim()).filter(Boolean);
+// CP-4b-3 (PAR-12886): 0451 recreates the run view with hashed chat sets; the owner test re-runs both in order.
+const MIGRATIONS = ["0450_plugin_core_read_views.sql", "0451_plugin_core_read_runs_hashed_chat_sets.sql"];
+const migrationStatements = (await Promise.all(MIGRATIONS.map((file) => readFile(new URL(
+  `../../../packages/db/src/migrations/${file}`, import.meta.url,
+), "utf8")))).flatMap((text) => text.split("--> statement-breakpoint").map((s) => s.trim()).filter(Boolean));
 const VIEWS = ["issues", "issue_comments", "heartbeat_runs"] as const;
 const BLANKED_RUN_COLUMNS = ["error", "stdout_excerpt", "stderr_excerpt", "result_json", "context_snapshot"];
 
@@ -21,7 +22,7 @@ describe("plugin_core_read views database support", () => {
   });
 });
 
-(support.supported ? describe : describe.skip)("plugin_core_read views (migration 0450)", () => {
+(support.supported ? describe : describe.skip)("plugin_core_read views (migrations 0450, 0451)", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
   const companyId = randomUUID(), agentId = randomUUID(), userId = `chat-user-${randomUUID()}`;
@@ -108,6 +109,40 @@ describe("plugin_core_read views database support", () => {
       }
       expect(run.status).toBe("failed");
       expect(run.error_code).toBe("adapter_failed");
+    }
+  });
+
+  it("CP-4b-3: a run is a chat run when any key names a chat of its own company; NULL keys keep the text", async () => {
+    const otherCompanyId = randomUUID(), otherAgentId = randomUUID();
+    await db.execute(sql`INSERT INTO companies (id, name, issue_prefix) VALUES (${otherCompanyId}, 'Core read 2', 'PCS')`);
+    await db.execute(sql`INSERT INTO agents (id, company_id, name, role, adapter_type)
+      VALUES (${otherAgentId}, ${otherCompanyId}, 'Other agent', 'engineer', 'process')`);
+    const cases = {
+      // issue_id names a task, context taskId names the chat: one chat key is enough.
+      taskWithChatTaskKey: { companyId, agentId, issueId: taskId, context: { issueId: taskId, taskId: chatId }, chat: true },
+      // Every key NULL (no issue, no native issue, empty context): NULL OR NULL is NULL, CASE falls to ELSE.
+      allKeysNull: { companyId, agentId, issueId: null, context: {}, chat: false },
+      // Keys that name no issue at all.
+      unknownKeys: { companyId, agentId, issueId: null, context: { issueId: randomUUID(), taskId: "not-a-uuid" }, chat: false },
+      // Another company's run naming this company's chat: the chat test is per company.
+      otherCompany: { companyId: otherCompanyId, agentId: otherAgentId, issueId: null, context: { issueId: chatId, taskId: chatId }, chat: false },
+    };
+    const ids = Object.fromEntries(Object.keys(cases).map((name) => [name, randomUUID()])) as Record<keyof typeof cases, string>;
+    for (const [name, c] of Object.entries(cases) as Array<[keyof typeof cases, (typeof cases)[keyof typeof cases]]>) {
+      await db.execute(sql`INSERT INTO heartbeat_runs (id, company_id, agent_id, status, scope_kind, issue_id,
+        error, stdout_excerpt, stderr_excerpt, result_json, context_snapshot)
+        VALUES (${ids[name]}, ${c.companyId}, ${c.agentId}, 'failed', ${c.issueId ? "issue" : "company"}, ${c.issueId},
+        'error text', 'stdout text', 'stderr text', ${JSON.stringify({ reply: "agent reply" })}::jsonb,
+        ${JSON.stringify(c.context)}::jsonb)`);
+    }
+
+    for (const [name, c] of Object.entries(cases) as Array<[keyof typeof cases, (typeof cases)[keyof typeof cases]]>) {
+      const [run] = await rows(sql`SELECT * FROM plugin_core_read.heartbeat_runs WHERE id = ${ids[name]}`);
+      expect(run, name).toBeDefined();
+      for (const column of BLANKED_RUN_COLUMNS) {
+        expect(run[column] === null, `${column} of ${name}`).toBe(c.chat);
+      }
+      if (!c.chat) expect(run.error, name).toBe("error text");
     }
   });
 
