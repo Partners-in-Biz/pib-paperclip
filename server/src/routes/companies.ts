@@ -65,6 +65,7 @@ import {
   logActivity,
   workTimelineService,
 } from "../services/index.js";
+import { issueReadSqlCondition } from "../services/authorization.js";
 import { isCloudManagedInstance } from "../services/cloud-instance.js";
 import { getHiddenSettings } from "../services/settings-visibility.js";
 import type { StorageService } from "../storage/types.js";
@@ -425,6 +426,9 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     assertCompanyAccess(req, companyId);
     const query = companyArtifactsQuerySchema.parse(req.query);
     res.json(await artifacts.list(companyId, query, {
+      // Only artifacts of tasks the actor can read: no chat of another person,
+      // no private task he is not on (PAR-12774 4.4 row 4).
+      issueReadCondition: await issueReadSqlCondition(db, req.actor),
       userId: query.starred && req.actor.type === "board" ? req.actor.userId : undefined,
     }));
   });

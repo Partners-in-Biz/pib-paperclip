@@ -195,7 +195,17 @@ function pageByCursor<T extends { id: string; updatedAt: string }>(
   return { page, nextCursor };
 }
 
-async function loadIssueGroupingRows(db: Db, companyId: string, seedIssueIds: Iterable<string>) {
+/**
+ * The tasks a group may name. With a read condition, a task the actor cannot
+ * read (a chat of another person, a private task) is not loaded, so it never
+ * becomes a group's title and the walk to the root stops below it.
+ */
+async function loadIssueGroupingRows(
+  db: Db,
+  companyId: string,
+  seedIssueIds: Iterable<string>,
+  issueReadCondition?: SQL<boolean>,
+) {
   const rowsById = new Map<string, IssueGroupingRow>();
   let pending = [...new Set(seedIssueIds)];
 
@@ -209,7 +219,7 @@ async function loadIssueGroupingRows(db: Db, companyId: string, seedIssueIds: It
         updatedAt: issues.updatedAt,
       })
       .from(issues)
-      .where(and(eq(issues.companyId, companyId), inArray(issues.id, pending)));
+      .where(and(eq(issues.companyId, companyId), inArray(issues.id, pending), issueReadCondition));
 
     const nextPending = new Set<string>();
     for (const row of rows) {
@@ -321,7 +331,13 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
     list: async (
       companyId: string,
       rawQuery: Partial<CompanyArtifactsQuery> = {},
-      options: { issueConditions?: SQL[]; userId?: string } = {},
+      /**
+       * `issueReadCondition` is the actor's task read condition
+       * (`issueReadSqlCondition`): an artifact is listed only when its task is
+       * readable (PAR-12774 4.4 row 4). Every caller on behalf of an actor
+       * passes it.
+       */
+      options: { issueConditions?: SQL[]; issueReadCondition?: SQL<boolean>; userId?: string } = {},
     ): Promise<CompanyArtifactsResponse> => {
       const query = companyArtifactsQuerySchema.parse(rawQuery);
       const cursor = decodeCursor(query.cursor);
@@ -343,6 +359,7 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
       const issueConditions: SQL[] = [
         isNull(issues.hiddenAt),
         isNull(issues.harnessKind),
+        ...(options.issueReadCondition ? [options.issueReadCondition] : []),
         ...(options.issueConditions ?? []),
       ];
       const artifacts: CompanyArtifact[] = [];
@@ -742,7 +759,7 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
 
       const issueSeedIds = new Set(artifacts.map((artifact) => artifact.issue.id));
       if (query.groupIssueId) issueSeedIds.add(query.groupIssueId);
-      const issueRows = await loadIssueGroupingRows(db, companyId, issueSeedIds);
+      const issueRows = await loadIssueGroupingRows(db, companyId, issueSeedIds, options.issueReadCondition);
       const groups = buildArtifactGroups({
         artifacts: sorted,
         companyPrefix: company.issuePrefix,
