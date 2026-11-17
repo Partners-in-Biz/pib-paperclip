@@ -3,7 +3,7 @@
  * stop-first release and the last release notes. Read from `maintenance.load`.
  */
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import { useCockpitAction } from "./actions.js";
 import { Button, EmptyState, PageMessage, Pill, TriangleAlert, Wrench, errorText, tokens } from "@partnersinbiz/pib-plugin-ui";
 import type { MaintenanceView, ReleaseNote, ReleaseNotePhase } from "../maintenance.js";
 import { Card, Muted } from "./components.js";
@@ -97,7 +97,7 @@ export function MaintenanceBody({ view }: { view: MaintenanceView }) {
 
 /** The Maintenance tab. */
 export function MaintenancePanel({ refreshKey = 0 }: { refreshKey?: number }) {
-  const load = usePluginAction("maintenance.load");
+  const load = useCockpitAction("maintenance.load");
   const [view, setView] = useState<MaintenanceView | null>(null);
   const [error, setError] = useState<string | null>(null);
 
