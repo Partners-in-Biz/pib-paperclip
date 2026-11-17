@@ -13,6 +13,7 @@ import { ACCESS_EVENTS, ACCESS_REFUSAL_EVENT, GUARDED_PLUGINS, configSaved, isAc
 import { publishAccess } from "./access-publish.js";
 import {
   claimAccessLostNote,
+  claimAccessRedNote,
   getAccessSettings,
   listAccessSettings,
   listAccessSync,
@@ -21,6 +22,7 @@ import {
   recordAccessRefusal,
   recordAccessSync,
   releaseAccessLostNote,
+  releaseAccessRedNote,
   type AccessSettings,
 } from "./access-store.js";
 import { PLUGIN_ID } from "./namespace.js";
@@ -187,6 +189,94 @@ export function resendAccessHourly(ctx: PluginContext): Promise<ResendResult> {
 /** Once at worker start: every company Setup holds settings for. */
 export function resendAllAccess(ctx: PluginContext): Promise<ResendResult> {
   return resend(ctx, async () => true);
+}
+
+// ---------------------------------------------------------------------------
+// While on `enforce`: a plugin behind for more than 15 minutes is red (plan, 4.3)
+
+/** On `enforce`, a plugin that has not confirmed the current `rev` for longer than this is red. */
+export const ACCESS_RED_AFTER_MS = 15 * 60_000;
+
+export interface AccessPluginStatus {
+  pluginKey: string;
+  /** The highest `rev` it confirmed, or null when it never reported. */
+  rev: number | null;
+  syncedAt: string | null;
+  confirmed: boolean;
+  red: boolean;
+}
+
+/**
+ * All 15 guarded plugins against the company's current `rev`. The time behind is
+ * counted from the settings row's `updated_at`, which is at or after the change
+ * that made the current `rev`, so a plugin turns red late, never early.
+ */
+export async function accessPluginStatus(ctx: PluginContext, settings: AccessSettings | null, companyId: string, now: Clock = Date.now): Promise<AccessPluginStatus[]> {
+  const rev = settings?.rev ?? 0;
+  const rows = new Map((await listAccessSync(ctx, companyId)).map((row) => [row.pluginKey, row]));
+  const late = settings?.mode === "enforce" && now() - Date.parse(settings.updatedAt) > ACCESS_RED_AFTER_MS;
+  return GUARDED_PLUGINS.map((pluginKey) => {
+    // Setup reads its own tables, so it is always current.
+    if (pluginKey === PLUGIN_ID) return { pluginKey, rev, syncedAt: settings?.updatedAt ?? null, confirmed: true, red: false };
+    const row = rows.get(pluginKey);
+    const confirmed = row !== undefined && row.rev >= rev;
+    return { pluginKey, rev: row?.rev ?? null, syncedAt: row?.syncedAt ?? null, confirmed, red: late && !confirmed };
+  });
+}
+
+/** The People screen's switch state: mode, `rev` and the 15 plugins with their red flag. Owner or admin only. */
+export async function accessStatus(ctx: PluginContext, companyId: string, actor: ActorInput, now: Clock = Date.now) {
+  const access = await resolveAccess(ctx, companyId, actor?.type === "user" ? actor : null);
+  if (!access.bypass || !access.userId) return { ok: false as const, error: "Only a company owner or admin can see the access switch" };
+  const settings = await getAccessSettings(ctx, companyId);
+  return { ok: true as const, mode: settings?.mode ?? "off", rev: settings?.rev ?? 0, plugins: await accessPluginStatus(ctx, settings, companyId, now) };
+}
+
+export type RedNoteResult = { noted: number; failed: number };
+
+/**
+ * Hourly: for every company on `enforce`, one activity entry per day (UTC) for
+ * each red plugin. That is the only notice of a plugin that lost its row and
+ * cannot get it back. Two runs at once write one entry: the day is claimed first.
+ */
+export async function noteRedPlugins(ctx: PluginContext, now: Clock = Date.now): Promise<RedNoteResult> {
+  const result: RedNoteResult = { noted: 0, failed: 0 };
+  const day = new Date(now()).toISOString().slice(0, 10);
+  for (const row of await listAccessSettings(ctx)) {
+    if (row.mode !== "enforce") continue;
+    let red: AccessPluginStatus[];
+    try {
+      red = (await accessPluginStatus(ctx, row, row.companyId, now)).filter((plugin) => plugin.red);
+    } catch (error) {
+      result.failed += 1;
+      ctx.logger.info("Could not check the access confirmations", { companyId: row.companyId, error: errorText(error) });
+      continue;
+    }
+    for (const plugin of red) {
+      try {
+        if (!(await claimAccessRedNote(ctx, row.companyId, plugin.pluginKey, day))) continue;
+      } catch (error) {
+        result.failed += 1;
+        ctx.logger.info("Could not claim the red-plugin note", { companyId: row.companyId, pluginKey: plugin.pluginKey, error: errorText(error) });
+        continue;
+      }
+      try {
+        await ctx.activity.log({
+          companyId: row.companyId,
+          message: `Access: ${plugin.pluginKey} has not confirmed the current access (rev ${row.rev}) for more than 15 minutes while this company is on enforce. It may be working on old access. Use Send again in Setup under People; if it stays red, follow the access way-out runbook in packages/plugins/DEPLOY.md`,
+          entityType: "plugin_access",
+          entityId: row.companyId,
+          metadata: { pluginKey: plugin.pluginKey, rev: row.rev, confirmedRev: plugin.rev, since: row.updatedAt },
+        });
+        result.noted += 1;
+      } catch (error) {
+        result.failed += 1;
+        ctx.logger.info("Could not write the red-plugin activity entry", { companyId: row.companyId, pluginKey: plugin.pluginKey, error: errorText(error) });
+        await releaseAccessRedNote(ctx, row.companyId, plugin.pluginKey, day).catch(() => undefined);
+      }
+    }
+  }
+  return result;
 }
 
 /** The "Send again" action: an owner or admin of the company sends its state now. */

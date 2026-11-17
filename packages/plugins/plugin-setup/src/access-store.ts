@@ -13,6 +13,7 @@ const T = {
   sync: `${NAMESPACE}.access_sync`,
   refusals: `${NAMESPACE}.access_refusals`,
   lost: `${NAMESPACE}.access_lost`,
+  red: `${NAMESPACE}.access_red_notes`,
 };
 
 /** A first settings row starts at the highest `rev` a plugin reported for a lost switch (migration 005). */
@@ -229,6 +230,24 @@ export async function getAccessLost(ctx: Db, companyId: string): Promise<AccessL
   const row = rows[0];
   if (!row) return null;
   return { companyId: String(row.company_id), rev: Number(row.rev), firstPluginKey: String(row.first_plugin_key), reportedAt: iso(row.reported_at), notedAt: row.noted_at == null ? null : iso(row.noted_at) };
+}
+
+// ---------------------------------------------------------------------------
+// Red plugins on `enforce`: one activity entry per day per plugin and company (migration 006)
+
+/** True for exactly one caller per plugin, company and day (`YYYY-MM-DD`, UTC): the one that writes the entry. */
+export async function claimAccessRedNote(ctx: Db, companyId: string, pluginKey: string, day: string): Promise<boolean> {
+  const { rowCount } = await ctx.db.execute(
+    `INSERT INTO ${T.red} (company_id, plugin_key, noted_on) VALUES ($1, $2, $3::date)
+     ON CONFLICT (company_id, plugin_key) DO UPDATE SET noted_on = EXCLUDED.noted_on WHERE ${T.red}.noted_on < EXCLUDED.noted_on`,
+    [companyId, pluginKey, day],
+  );
+  return rowCount === 1;
+}
+
+/** The entry could not be written: the next hourly run tries again the same day. */
+export async function releaseAccessRedNote(ctx: Db, companyId: string, pluginKey: string, day: string): Promise<void> {
+  await ctx.db.execute(`DELETE FROM ${T.red} WHERE company_id = $1 AND plugin_key = $2 AND noted_on = $3::date`, [companyId, pluginKey, day]);
 }
 
 // ---------------------------------------------------------------------------
