@@ -82,6 +82,29 @@ A brand-new plugin other than `ads` first needs two edits in the PiB Paperclip r
 | exit 30 | deployed and live, but a company's skill sync failed: re-run `paperclipai plugin action partnersinbiz.<plugin> <plugin>.sync-skills` for that company |
 | rollback did not verify (exit 21) | Paperclip may be down: `ssh root@65.108.146.144`, read `/root/pib-deploy/<id>/log`, then `deploy-plugins.sh --rollback` |
 
+## Access switch: the way out
+
+For per-person access (PAR-12578 plan, section 9). Use it when a company is on `enforce` and nobody can switch it off from Setup's People screen: under `enforce`, a failing members read denies everyone, owners too. It needs nothing from the page, the guard or the members read.
+
+1. On the server, as the instance operator, in Setup's plugin schema. Core records its name per plugin; look it up first:
+
+   ```sql
+   SELECT namespace_name FROM plugin_database_namespaces WHERE plugin_key = 'partnersinbiz.setup';
+   ```
+
+   It is `plugin_setup_48494712db` (the same hash every host derives). Then switch the company off:
+
+   ```sql
+   UPDATE plugin_setup_48494712db.access_settings SET mode = 'off', rev = rev + 1, updated_at = now() WHERE company_id = '<company>';
+   ```
+
+   Leave out the `WHERE` to switch every company off. A company with no row is already off.
+2. The plugins get it three ways, none through the guard or the members read: Setup's minute job sees a `rev` that no plugin confirmed yet and sends it (for 15 minutes after `updated_at`); each plugin asks by itself once its copy is 10 minutes old, and Setup answers; a restart of the Setup worker sends everything.
+3. On the People screen, check every plugin shows the new `rev` and none is red. Only if a plugin still refuses: roll that plugin back (`deploy-plugins.sh --rollback <plugin>`).
+4. The SQL change writes no activity entry. Say on the incident issue who ran it, when, and for which companies.
+
+While a company is on `enforce`, a plugin that has not confirmed the current `rev` for more than 15 minutes shows red on the People screen, and Setup's hourly job writes one activity entry per day for it, naming the plugin and the company. Start with Send again; if it stays red, the plugin may be working on old access: use the steps above.
+
 ## After
 
 - `deploy-plugins.sh --rollback [plugin...]` puts the newest backup back (stop-first).

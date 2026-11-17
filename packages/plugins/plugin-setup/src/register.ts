@@ -1,7 +1,7 @@
 import type { PluginApiRequestInput, PluginApiResponse, PluginContext, PluginPerformActionContext } from "@paperclipai/plugin-sdk";
 import { PIB_PLUGINS, pluginEvent, registerCompanyBootstrap, registerRoleWatch } from "@partnersinbiz/pib-plugin-kit";
 import { DRIVE_BINDING_EVENT } from "./drive-checklist.js";
-import { registerAccessSync, resendAccessHourly, resendRecentAccess, sendAccessAgain } from "./access-sync.js";
+import { accessStatus, noteRedPlugins, registerAccessSync, resendAccessHourly, resendRecentAccess, sendAccessAgain } from "./access-sync.js";
 import { setAccessSwitch } from "./access-switch.js";
 import { isCompanyAdmin, isOperatorAdmin } from "./access.js";
 import { operatorDowngrade } from "./entitlements.js";
@@ -44,6 +44,10 @@ export function registerSetup(ctx: PluginContext): void {
   // The access switch (off, report, enforce): an owner or admin, with its preconditions and an audit entry.
   ctx.actions.register("setup.access.set-mode", (params, context) =>
     refusable(async () => setAccessSwitch(ctx, { companyId: requiredCompany(context), actor: context.actor.type === "user" ? { type: "user", userId: context.actor.userId } : undefined }, params.mode, params.confirmNoAccess)),
+  );
+  // The switch state for the People screen: mode, rev and the 15 plugins, red when one is behind on enforce.
+  ctx.actions.register("setup.access.status", (_params, context) =>
+    refusable(async () => accessStatus(ctx, requiredCompany(context), context.actor.type === "user" ? { type: "user", userId: context.actor.userId } : undefined)),
   );
   ctx.actions.register("setup.load", (params, context) => loadSetup(ctx, requiredCompany(context), params));
   ctx.actions.register("setup.save-modules", (params, context) =>
@@ -109,6 +113,9 @@ export function registerSetup(ctx: PluginContext): void {
     // Access too: every company not on off, and one back on off until every plugin confirmed it.
     const access = await resendAccessHourly(ctx);
     if (access.sent || access.skipped || access.failed) ctx.logger.info("Access re-sent (hourly)", access);
+    // On enforce: one activity entry per day per plugin and company for a plugin behind for more than 15 minutes.
+    const red = await noteRedPlugins(ctx);
+    if (red.noted || red.failed) ctx.logger.info("Access plugins behind on enforce noted", red);
   });
   ctx.jobs.register(JOBS.accessResend, async () => {
     const access = await resendRecentAccess(ctx);
