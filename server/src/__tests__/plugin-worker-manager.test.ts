@@ -387,6 +387,38 @@ describe("plugin-worker-manager stderr failure context", () => {
     }
   });
 
+  it("records the host-computed acting person on the invocation scope (H6)", async () => {
+    const companiesGet = vi.fn(async (params: { companyId: string }) => ({ id: params.companyId }));
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT,
+      manifest: TEST_MANIFEST,
+      config: {},
+      instanceInfo: { instanceId: "instance-1", hostVersion: "1.0.0" },
+      apiVersion: 1,
+      hostHandlers: { "companies.get": companiesGet as never },
+    });
+    const call = (actorContext: Record<string, unknown>) => handle.call("performAction", {
+      key: "probe",
+      params: { mode: "echo", requestedCompanyId: "company-a" },
+      actorContext: { userId: null, agentId: null, runId: null, companyId: "company-a", ...actorContext },
+      renderEnvironment: null,
+    } as never);
+
+    try {
+      await handle.start();
+      await call({ type: "agent", agentId: "agent-1", onBehalfOfUserId: "person-u" });
+      await call({ type: "user", userId: "local-board", onBehalfOfUserId: null });
+      await call({ type: "user", userId: "person-o" });
+      expect(companiesGet.mock.calls.map(([, context]) => (context as { invocationScope?: unknown }).invocationScope)).toEqual([
+        { companyId: "company-a", actingPersonId: "person-u" },
+        { companyId: "company-a" },
+        { companyId: "company-a", actingPersonId: "person-o" },
+      ]);
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
   it("passes echoed invocation scope to worker-to-host handlers", async () => {
     const companiesGet = vi.fn(async () => ({ id: "company-1" }) as Company);
     const handle = createPluginWorkerHandle("test.plugin", {

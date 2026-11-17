@@ -1269,8 +1269,8 @@ export function createPluginWorkerHandle(
       : method === "executeTool" ? params.runContext
       : null;
     if (!isRecord(caller)) return null;
-    const onBehalfOf = readNonEmptyString(caller.onBehalfOfUserId);
-    if (onBehalfOf) return onBehalfOf;
+    // A host that computed the acting person always sets the key (null for the local board).
+    if ("onBehalfOfUserId" in caller) return readNonEmptyString(caller.onBehalfOfUserId);
     const signedIn = caller.type === "user" || caller.actorType === "user";
     return signedIn ? readNonEmptyString(caller.userId) : null;
   }
