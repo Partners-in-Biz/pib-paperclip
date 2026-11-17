@@ -31,6 +31,11 @@ export {
   type MemberRestrictionDenial,
 } from "./admin.js";
 export {
+  isMemberRestrictionUnavailable,
+  pluginActingPersonForActor,
+  type PluginActingPerson,
+} from "./plugin-acting-person.js";
+export {
   memberRestrictionReadCondition,
   restrictionPersonIds,
   strictReadCondition,
