@@ -1259,11 +1259,36 @@ export function createPluginWorkerHandle(
     return typeof value === "object" && value !== null && !Array.isArray(value);
   }
 
+  /**
+   * The person a call works for, read only from what the host itself built
+   * (the action caller, the API-route caller, the tool run context). H6.
+   */
+  function deriveActingPersonId(method: HostToWorkerMethodName | string, params: Record<string, unknown>): string | null {
+    const caller = method === "performAction" ? params.actorContext
+      : method === "handleApiRequest" ? params.actor
+      : method === "executeTool" ? params.runContext
+      : null;
+    if (!isRecord(caller)) return null;
+    const onBehalfOf = readNonEmptyString(caller.onBehalfOfUserId);
+    if (onBehalfOf) return onBehalfOf;
+    const signedIn = caller.type === "user" || caller.actorType === "user";
+    return signedIn ? readNonEmptyString(caller.userId) : null;
+  }
+
   function deriveInvocationScope(
     method: HostToWorkerMethodName | string,
     params: unknown,
   ): PluginInvocationScope | null {
     if (!isRecord(params)) return null;
+    const scope = deriveCompanyInvocationScope(method, params);
+    const actingPersonId = scope ? deriveActingPersonId(method, params) : null;
+    return scope && actingPersonId ? { ...scope, actingPersonId } : scope;
+  }
+
+  function deriveCompanyInvocationScope(
+    method: HostToWorkerMethodName | string,
+    params: Record<string, unknown>,
+  ): PluginInvocationScope | null {
 
     const directCompanyId = readNonEmptyString(params.companyId);
     if (directCompanyId) {

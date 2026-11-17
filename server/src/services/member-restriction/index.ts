@@ -49,6 +49,7 @@ export {
   actingPersonBoundByH,
   assertNamesOnlyHimself,
   assertRoutineWorksForCaller,
+  pluginActingPersonBoundByH,
   type ActingPerson,
 } from "./acting-person.js";
 export {
