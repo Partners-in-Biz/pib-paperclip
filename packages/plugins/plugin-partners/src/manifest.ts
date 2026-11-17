@@ -28,6 +28,8 @@ const manifest: PaperclipPluginManifestV1 = {
   instanceConfigSchema,
   capabilities: [
     "companies.read",
+    // A3 (PAR-12643): the access guard reads the caller's role (ctx.access.members.list). A new capability: a stop-first deploy.
+    "access.members.read",
     "database.namespace.migrate",
     "database.namespace.read",
     "database.namespace.write",
@@ -43,7 +45,8 @@ const manifest: PaperclipPluginManifestV1 = {
     "ui.sidebar.register",
   ],
   entrypoints: { worker: "./dist/worker.js", ui: "./dist/ui" },
-  database: { namespaceSlug: "partners", migrationsDir: "migrations" },
+  // A3 (PAR-12643): heartbeat_runs is read-only; the access guard finds the acting person of a tool call. Stop-first.
+  database: { namespaceSlug: "partners", migrationsDir: "migrations", coreReadTables: ["heartbeat_runs"] },
   tools: PARTNER_TOOLS,
   skills: SKILLS,
   jobs: [
