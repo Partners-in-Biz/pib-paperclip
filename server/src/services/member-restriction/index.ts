@@ -44,6 +44,14 @@ export {
   toolRouteCallerError,
 } from "./rule-group-h.js";
 export {
+  RESPONSIBLE_PERSON_NOT_SELF_CODE,
+  ROUTINE_NOT_OWN_CODE,
+  actingPersonBoundByH,
+  assertNamesOnlyHimself,
+  assertRoutineWorksForCaller,
+  type ActingPerson,
+} from "./acting-person.js";
+export {
   memberRestrictionReadCondition,
   restrictionPersonIds,
   strictReadCondition,
