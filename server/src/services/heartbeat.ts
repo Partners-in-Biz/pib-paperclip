@@ -1,3 +1,4 @@
+import { wakeCausingActorFromActorRef } from "./heartbeat/causing-actor.js";
 import { resolveProviderApiPlacement } from "./native-runtime/provider-api-placement.js";
 import type { StopInvocationOptions } from "./heartbeat/run-control.js";
 import { isContextCompactionRun } from "./context-compaction.js";
@@ -4304,6 +4305,7 @@ export function heartbeatService(
         source,
         triggerDetail,
         contextSnapshot,
+        causingActor: wakeCausingActorFromActorRef(actor),
         requestedByActorType: actor?.actorType,
         requestedByActorId: actor?.actorId ?? null,
       }),

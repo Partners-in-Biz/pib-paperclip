@@ -1,4 +1,5 @@
 import { notifyStatusCardIssueChange } from "../services/status-card-notifications.js";
+import { wakeCausingActorFromActor } from "../services/heartbeat/causing-actor.js";
 import { removePluginWorkspace } from "../services/plugin-workspaces.js";
 import { canActorReadWorkspaceOperation } from "../services/heartbeat-run-privacy.js";
 import { canActorReadExecutionWorkspace, executionWorkspaceReadSqlCondition } from "../services/authorization.js";
@@ -1160,6 +1161,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
           rescueRef: result.rescueRef?.branchName ?? null,
           mutation: "execution_workspace_quarantine_restore",
         },
+        causingActor: wakeCausingActorFromActor(actor),
         requestedByActorType: actor.actorType,
         requestedByActorId: actor.actorId,
         contextSnapshot: {

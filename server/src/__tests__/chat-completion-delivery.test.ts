@@ -79,6 +79,7 @@ import { createHeartbeatQueueTestDependencies } from "./helpers/heartbeat-queue.
     // The generic dependency signal is replaceable. The outbox's exact wake
     // receipt is not: it needs that identity to reconcile a refused admission.
     await heartbeat.wakeup(f.agentId, {
+      causingActor: "system",
       source: "automation", triggerDetail: "system", reason: "issue_continuation_needed",
       requestedByActorType: "system", requestedByActorId: "dependency-test",
       payload: { issueId: f.sourceId }, contextSnapshot: { issueId: f.sourceId },

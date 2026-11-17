@@ -1,5 +1,6 @@
 import { logger } from "../middleware/logger.js";
 import type { DurableChatWakeupRequest } from "./durable-chat-wakeup.js";
+import { wakeCausingActorFromActorRef, type WakeCausingActor } from "./heartbeat/causing-actor.js";
 
 type WakeupTriggerDetail = "manual" | "ping" | "callback" | "system";
 type WakeupSource = "timer" | "assignment" | "on_demand" | "automation";
@@ -14,6 +15,7 @@ export interface IssueAssignmentWakeupDeps {
       payload?: Record<string, unknown> | null;
       idempotencyKey?: string | null;
       allowRunCoalescing?: boolean;
+      causingActor: WakeCausingActor;
       requestedByActorType?: "user" | "agent" | "system";
       requestedByActorId?: string | null;
       contextSnapshot?: Record<string, unknown>;
@@ -28,6 +30,8 @@ export function queueIssueAssignmentWakeup(input: {
   reason: string;
   mutation: string;
   contextSource: string;
+  /** Who led to the wake; defaults to the requestedBy actor (PAR-12608 4.7). */
+  causingActor?: WakeCausingActor;
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
   taskKey?: string | null;
@@ -56,6 +60,10 @@ export function queueIssueAssignmentWakeup(input: {
         ...(input.taskKey ? { taskKey: input.taskKey } : {}),
         ...(input.wakeCommentId ? { wakeCommentId: input.wakeCommentId } : {}),
       },
+      causingActor: input.causingActor ?? wakeCausingActorFromActorRef({
+        actorType: input.requestedByActorType ?? "system",
+        actorId: input.requestedByActorId,
+      }),
       requestedByActorType: input.requestedByActorType,
       requestedByActorId: input.requestedByActorId ?? null,
       ...(input.durableChatRequest

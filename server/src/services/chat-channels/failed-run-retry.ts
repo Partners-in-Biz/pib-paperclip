@@ -1,4 +1,5 @@
 import { notifyStrandedAgentStatus } from "../live-run-recovery-notifications.js";
+import { wakeCausingActorFromActorRef } from "../heartbeat/causing-actor.js";
 import { notifyDeferredExecutionWork, notifyTaskRetrySettlement } from "../deferred-execution-notifications.js";
 import { notifyNativeResponsePresentation } from "../native-response-presentation-notifications.js";
 import { notifyChatInboundWakeNotices } from "../chat-inbound-wake-notice-notifications.js";
@@ -1991,6 +1992,7 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
           allowRunCoalescing: false,
           ...(typeof claimed.payload.taskRetryIntentId === "string"
             ? { taskRetryRequestId: claimed.payload.taskRetryIntentId } : {}),
+          causingActor: wakeCausingActorFromActorRef({ actorType: source.requestedByActorType, actorId: source.requestedByActorId }),
           requestedByActorType: source.requestedByActorType,
           requestedByActorId: source.requestedByActorId,
           durableChatRequest: createDurableChatWakeupRequest({

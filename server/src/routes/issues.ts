@@ -1,4 +1,5 @@
 import { confirmMcpAttachmentCleanup, recordMcpAttachmentCleanup, type McpAttachmentCleanup } from "../services/public-mcp/upload-cleanup.js";
+import { SYSTEM_CAUSING_ACTOR, wakeCausingActorFromActor, wakeCausingActorFromActorRef } from "../services/heartbeat/causing-actor.js";
 import { notifyDeferredExecutionWork } from "../services/deferred-execution-notifications.js";
 import { notifyNativeRecoveryNotices } from "../services/native-recovery-notice-notifications.js";
 import { notifyNativeStatusReassessment } from "../services/native-status-reassessment-notifications.js";
@@ -2515,7 +2516,7 @@ async function queueResolvedInteractionContinuationWakeup(input: {
     payload?: unknown;
     result?: unknown;
   };
-  actor: { actorType: "user" | "agent"; actorId: string };
+  actor: { actorType: "user" | "agent"; actorId: string; runId?: string | null };
   source: string;
   forceFreshSession?: boolean;
   workspaceRefreshReason?: string | null;
@@ -2686,6 +2687,7 @@ async function queueResolvedInteractionContinuationWakeup(input: {
         input.idempotencyKey ??
         `interaction:${input.interaction.id}:${input.interaction.status}`,
       allowRunCoalescing: !hasExternalPromptBinding,
+      causingActor: wakeCausingActorFromActorRef(input.actor),
       requestedByActorType: input.actor.actorType,
       requestedByActorId: input.actor.actorId,
       contextSnapshot: {
@@ -3619,6 +3621,8 @@ export function issueRoutes(
         reason: "goal_control",
         payload: { issueId, requestId, intent: "goal_control" },
         idempotencyKey: `goal_control:${requestId}`,
+        // The goal-control outbox does not carry the person who asked yet.
+        causingActor: SYSTEM_CAUSING_ACTOR,
         requestedByActorType: "system",
         contextSnapshot: {
           issueId,
@@ -4962,6 +4966,7 @@ export function issueRoutes(
         idempotencyKey: decision.idempotencyKey,
         payload: decision.payload,
         contextSnapshot: decision.contextSnapshot,
+        causingActor: wakeCausingActorFromActor(input.actor),
         requestedByActorType: input.actor.actorType,
         requestedByActorId: input.actor.actorId,
       })
@@ -10926,6 +10931,7 @@ export function issueRoutes(
               recoveryActionId: result.recoveryAction.id,
               mutation: "recovery_action_resolution",
             },
+            causingActor: wakeCausingActorFromActor(actor),
             requestedByActorType: actor.actorType,
             requestedByActorId: actor.actorId,
             contextSnapshot: {
@@ -14360,6 +14366,7 @@ export function issueRoutes(
               triggerDetail: "system",
               reason: "issue_status_changed",
               idempotencyKey: `stalled-review-decision:${result.issue.id}:${req.body.action}`,
+              causingActor: wakeCausingActorFromActor(actor),
               requestedByActorType: "user",
               requestedByActorId: actor.actorId,
               payload: {
@@ -16430,8 +16437,10 @@ export function issueRoutes(
 
       // Merge all wakeups from this update into one enqueue per agent to avoid duplicate runs.
       void (async () => {
-        type WakeupRequest = NonNullable<
-          Parameters<typeof heartbeat.wakeup>[1]
+        // Every wake of this request is caused by its signed-in actor (PAR-12608 4.7).
+        type WakeupRequest = Omit<
+          NonNullable<Parameters<typeof heartbeat.wakeup>[1]>,
+          "causingActor"
         >;
         type DependencyReadinessProvider = {
           getDependencyReadiness?: typeof svc.getDependencyReadiness;
@@ -16821,7 +16830,7 @@ export function issueRoutes(
 
         for (const { agentId, wakeup } of wakeups.values()) {
           heartbeat
-            .wakeup(agentId, wakeup)
+            .wakeup(agentId, { ...wakeup, causingActor: wakeCausingActorFromActor(actor) })
             .then((wakeRun) => {
               if (wakeup.reason !== ISSUE_BLOCKERS_RESOLVED_WAKE_REASON) return;
               const payload =
@@ -17071,6 +17080,7 @@ export function issueRoutes(
             triggerDetail: "system",
             reason: "issue_checked_out",
             payload: { issueId: issue.id, mutation: "checkout" },
+            causingActor: wakeCausingActorFromActor(actor),
             requestedByActorType: actor.actorType,
             requestedByActorId: actor.actorId,
             contextSnapshot: { issueId: issue.id, source: "issue.checkout" },
@@ -17974,6 +17984,7 @@ export function issueRoutes(
               mutation: "interaction",
             },
             idempotencyKey: `interaction-pending:${interaction.id}`,
+            causingActor: wakeCausingActorFromActor(actor),
             requestedByActorType: actor.actorType,
             requestedByActorId: actor.actorId,
             contextSnapshot: {
@@ -20115,8 +20126,10 @@ export function issueRoutes(
 
       // Merge all wakeups from this comment into one enqueue per agent to avoid duplicate runs.
       void (async () => {
-        type WakeupRequest = NonNullable<
-          Parameters<typeof heartbeat.wakeup>[1]
+        // Every wake of this request is caused by its signed-in actor (PAR-12608 4.7).
+        type WakeupRequest = Omit<
+          NonNullable<Parameters<typeof heartbeat.wakeup>[1]>,
+          "causingActor"
         >;
         const wakeups = new Map<
           string,
@@ -20385,7 +20398,7 @@ export function issueRoutes(
 
         for (const { agentId, wakeup } of wakeups.values()) {
           heartbeat
-            .wakeup(agentId, wakeup)
+            .wakeup(agentId, { ...wakeup, causingActor: wakeCausingActorFromActor(actor) })
             .then((wakeRun) => {
               if (wakeup.reason !== ISSUE_BLOCKERS_RESOLVED_WAKE_REASON) return;
               const payload =

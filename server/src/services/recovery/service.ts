@@ -1,4 +1,5 @@
 import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
+import { SYSTEM_CAUSING_ACTOR, type WakeCausingActor } from "../heartbeat/causing-actor.js";
 import { promoteDeferredWorkIntents } from "../work-intent-outbox.js";
 import { isContextCompactionRun } from "../context-compaction.js";
 import { notifyNativeEnvironmentSettlement } from "../native-environment-settlement-notifications.js";
@@ -270,6 +271,7 @@ type RecoveryWakeupOptions = {
   reason?: string | null;
   payload?: Record<string, unknown> | null;
   idempotencyKey?: string | null;
+  causingActor: WakeCausingActor;
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
   contextSnapshot?: Record<string, unknown>;
@@ -281,7 +283,7 @@ type RecoveryWakeupOptions = {
 
 type RecoveryWakeup = (
   agentId: string,
-  opts?: RecoveryWakeupOptions,
+  opts: RecoveryWakeupOptions,
 ) => Promise<typeof heartbeatRuns.$inferSelect | null>;
 
 type ResolvedDependencyWakeBackstopSource =
@@ -2212,6 +2214,7 @@ export function recoveryService(
         return null;
     }
     const queued = await deps.enqueueWakeup(input.agentId, {
+      causingActor: SYSTEM_CAUSING_ACTOR,
       source: "automation",
       triggerDetail: "system",
       reason: input.reason,
@@ -2270,6 +2273,7 @@ export function recoveryService(
     agentId: string,
   ) {
     return deps.enqueueWakeup(agentId, {
+      causingActor: SYSTEM_CAUSING_ACTOR,
       source: "assignment",
       triggerDetail: "system",
       reason: "issue_assigned",
@@ -2423,6 +2427,7 @@ export function recoveryService(
       });
 
       const queued = await deps.enqueueWakeup(creatorAgent.id, {
+        causingActor: SYSTEM_CAUSING_ACTOR,
         source: "automation",
         triggerDetail: "system",
         reason: "issue_assigned",
@@ -3443,6 +3448,7 @@ export function recoveryService(
       try {
         if (timing.delayMs === 0) {
           const enqueuedRun = await deps.enqueueWakeup(agentId, {
+            causingActor: SYSTEM_CAUSING_ACTOR,
             source: "automation",
             triggerDetail: "system",
             reason: ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
@@ -6276,6 +6282,7 @@ export function recoveryService(
 
         try {
           const wake = await deps.enqueueWakeup(agentId, {
+            causingActor: SYSTEM_CAUSING_ACTOR,
             source: "automation",
             triggerDetail: "system",
             reason: ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,

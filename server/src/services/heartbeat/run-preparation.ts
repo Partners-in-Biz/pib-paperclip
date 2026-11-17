@@ -13,6 +13,7 @@ import { boundRunIssueIdSql } from "../run-task-binding.js";
 import { isBrowserUseConnection } from "../browser-use-client.js";
 import { restConnectorFor } from "../connectors/rest-registry.js";
 import { explicitOperatorRunIdentity } from "../run-identity.js";
+import type { WakeCausingActor } from "./causing-actor.js";
 import {
   type DurableChatWakeupRequest,
 } from "../durable-chat-wakeup.js";
@@ -829,6 +830,13 @@ export interface WakeupOptions {
   reason?: string | null;
   payload?: Record<string, unknown> | null;
   idempotencyKey?: string | null;
+  /**
+   * Who led to this wake (PAR-12608 4.7). Required, so a caller that forgets
+   * it does not compile. It is not stored and nothing reads it yet: the
+   * requestedBy fields below stay the stored record of the wake, and a replayed
+   * stored wake derives it from them (`wakeCausingActorFromStoredWake`).
+   */
+  causingActor: WakeCausingActor;
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
   contextSnapshot?: Record<string, unknown>;

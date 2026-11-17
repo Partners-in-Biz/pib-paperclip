@@ -1,3 +1,4 @@
+import { wakeCausingActorFromStoredWake } from "./causing-actor.js";
 import { CONTEXT_COMPACTION_WAKE_REASON, ContextCompactionError, isContextCompactionRun, readContextCompactionRequest } from "../context-compaction.js";
 import { deliveredQueuedCommentIds } from "../queued-comment-delivery.js";
 import { deferredWorkIntentWait } from "../work-intent-outbox.js";
@@ -2086,6 +2087,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       const actorType = (["user", "agent", "system"] as const)
         .find(t => t === wake.requestedByActorType) ?? "system";
       await enqueueWakeup(wake.agentId, {
+        causingActor: wakeCausingActorFromStoredWake(wake),
         source, triggerDetail,
         reason: readNonEmptyString(ownerExit.reason) ?? null,
         payload,
@@ -2196,6 +2198,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       const context = parseObject(parseObject(wake.payload)[DEFERRED_WAKE_CONTEXT_KEY]);
       const { executionWait: _wait, [DEFERRED_WAKE_CONTEXT_KEY]: _context, ...payload } = parseObject(wake.payload);
       await enqueueWakeup(wake.agentId, {
+        causingActor: wakeCausingActorFromStoredWake(wake),
         source: wake.source as WakeupOptions["source"], triggerDetail: wake.triggerDetail as WakeupOptions["triggerDetail"],
         reason: wake.reason ?? undefined, payload, contextSnapshot: context,
         requestedByActorType: wake.requestedByActorType as WakeupOptions["requestedByActorType"],
@@ -2595,7 +2598,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
   // already await it, so they do not need this registration.
   function trackWakeup(
     agentId: string,
-    opts: WakeupOptions = {},
+    opts: WakeupOptions,
   ): ReturnType<typeof enqueueWakeup> {
     const promise = enqueueWakeup(agentId, opts);
     activeWakeupPromises.add(promise);
@@ -2607,7 +2610,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     return promise;
   }
 
-  async function enqueueWakeup(agentId: string, opts: WakeupOptions = {}, executionWaitRequestId?: string) {
+  async function enqueueWakeup(agentId: string, opts: WakeupOptions, executionWaitRequestId?: string) {
     const source = opts.source ?? "on_demand";
     const triggerDetail = opts.triggerDetail ?? null;
     const contextSnapshot: Record<string, unknown> = {
@@ -5670,6 +5673,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
 
       try {
         const wakeRun = await enqueueWakeup(candidate.agentId, {
+          causingActor: wakeCausingActorFromStoredWake(candidate),
           allowRunCoalescing: false,
           source: candidate.source as WakeupOptions["source"],
           triggerDetail: (candidate.triggerDetail ??

@@ -558,7 +558,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       .toMatchObject({ status: "in_review", executionRunId: children[0]!.id });
     const [laterComment] = await db.insert(issueComments).values({ companyId, issueId,
       authorType: "user", authorUserId: "responsible-user", body: "A later board follow-up" }).returning();
-    await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "system", reason: "issue_commented",
+    await heartbeat.wakeup(agentId, { causingActor: "system", source: "on_demand", triggerDetail: "system", reason: "issue_commented",
       payload: { issueId, commentId: laterComment!.id }, requestedByActorType: "user", requestedByActorId: "responsible-user",
       contextSnapshot: { issueId, taskId: issueId, source: "issue.comment", wakeCommentId: laterComment!.id, wakeCommentIds: [laterComment!.id] } });
     const [preserved] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, children[0]!.id));
@@ -1898,6 +1898,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     );
 
     const newAssigneeRun = await heartbeat.wakeup(newAgentId, {
+      causingActor: "system",
       source: "assignment",
       triggerDetail: "system",
       reason: "issue_assigned",

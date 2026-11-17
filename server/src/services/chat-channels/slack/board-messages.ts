@@ -81,7 +81,7 @@ export function createSlackBoardMessages(db: Db, options: BoardMessageOptions) {
           await options.heartbeat.wakeup(agentId, {
             source: "automation", triggerDetail: "system", reason: "issue_commented",
             idempotencyKey: `slack-board-comment:${action.id}`, allowRunCoalescing: false,
-            requestedByActorType: "user", requestedByActorId: userId,
+            causingActor: { type: "user", userId }, requestedByActorType: "user", requestedByActorId: userId,
             payload: { issueId, commentId, resumeIntent: true, followUpRequested: true },
             contextSnapshot: { issueId, taskId: issueId, taskKey: issue.identifier ?? issueId, wakeCommentId: commentId, source: "issue.comment", resumeIntent: true, followUpRequested: true },
           });

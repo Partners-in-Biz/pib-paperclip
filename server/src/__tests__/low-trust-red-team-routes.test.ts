@@ -1020,6 +1020,7 @@ describeEmbeddedPostgres(
       })]);
       await issueService(db).update(created.body.id, { status: "todo" });
       const systemRun = await heartbeatService(db).wakeup(fixture.agents.lowTrust.id, {
+        causingActor: "system",
         source: "automation", reason: "issue_ready", requestedByActorType: "system",
         payload: { issueId: created.body.id }, contextSnapshot: { issueId: created.body.id, source: "automatic_promotion" },
       });
@@ -1033,6 +1034,7 @@ describeEmbeddedPostgres(
       await issueService(db).update(created.body.id, { assigneeAgentId: fixture.agents.lowTrust.id });
       expect([403, 404]).toContain((await request(worker).get(`/api/issues/${created.body.id}`)).status);
       const pluginRun = await heartbeatService(db).wakeup(fixture.agents.lowTrust.id, {
+        causingActor: "system",
         source: "automation", reason: "issue_commented", requestedByActorType: "user", requestedByActorId: "board-user",
         payload: { issueId: created.body.id, _paperclipWakeContext: { source: "issue.comment" } },
         contextSnapshot: { issueId: created.body.id, source: "plugin:example" },
@@ -2148,6 +2150,7 @@ describeEmbeddedPostgres(
           .where(eq(issues.id, fixture.issues.reviewRoot.id));
 
         const run = await heartbeat.wakeup(fixture.agents.standard.id, {
+          causingActor: "system",
           source: "automation",
           triggerDetail: "system",
           reason: "issue_commented",

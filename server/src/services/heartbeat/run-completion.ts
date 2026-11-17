@@ -1069,6 +1069,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         );
         if (rolloverProjection?.goal?.status === "active") {
           await enqueueWakeup(agent.id, {
+            causingActor: { type: "agent", agentId: agent.id, runId: livenessRun.id },
             source: "automation",
             triggerDetail: "system",
             reason: "goal_control",

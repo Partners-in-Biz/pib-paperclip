@@ -22,7 +22,17 @@ describe("createDecisionWakeOriginAgent", () => {
       source: "automation",
       triggerDetail: "system",
       reason: "decision_decided",
+      causingActor: "system",
       payload: { issueId: "issue-1", decisionId: "decision-1", outcome: "decided" },
     });
+  });
+
+  it("names the person who decided as the causing actor", async () => {
+    const wakeup = vi.fn().mockResolvedValue({ id: "run-1" });
+
+    await createDecisionWakeOriginAgent(wakeup)({ ...input, decidedByUserId: "user-1" });
+    expect(wakeup).toHaveBeenCalledWith("agent-1", expect.objectContaining({
+      causingActor: { type: "user", userId: "user-1" },
+    }));
   });
 });

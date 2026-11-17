@@ -1,4 +1,5 @@
 import { Router, type Request } from "express";
+import { SYSTEM_CAUSING_ACTOR } from "../services/heartbeat/causing-actor.js";
 import { eq } from "drizzle-orm";
 import { heartbeatRuns, type Db } from "@paperclipai/db";
 import {
@@ -112,6 +113,7 @@ export function approvalRoutes(
             issueId: issue.id,
             ...approvalReviewPathContext(input.approvalId),
           },
+          causingActor: { type: "user", userId: input.requestedByUserId },
           requestedByActorType: "user",
           requestedByActorId: input.requestedByUserId,
           contextSnapshot: {
@@ -340,6 +342,7 @@ export function approvalRoutes(
               issueIds: linkedIssueIds,
               ...(primaryReviewPathContext ?? {}),
             },
+            causingActor: req.actor.userId ? { type: "user", userId: req.actor.userId } : SYSTEM_CAUSING_ACTOR,
             requestedByActorType: "user",
             requestedByActorId: req.actor.userId ?? "board",
             contextSnapshot: {

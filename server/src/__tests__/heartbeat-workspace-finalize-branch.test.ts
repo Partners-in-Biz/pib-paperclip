@@ -230,6 +230,7 @@ async function seedRunTarget(db: Db, repoRoot: string) {
 
 async function wakeIssue(heartbeat: Heartbeat, agentId: string, issueId: string) {
   return heartbeat.wakeup(agentId, {
+    causingActor: "system",
     source: "automation",
     triggerDetail: "system",
     reason: "issue_commented",

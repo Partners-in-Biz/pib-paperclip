@@ -1,4 +1,5 @@
 import { notifyRoutineExecutionStatus } from "./routine-execution-status-notifications.js";
+import { SYSTEM_CAUSING_ACTOR } from "./heartbeat/causing-actor.js";
 import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
 import { notifyChatResponseAvailability } from "./chat-response-availability.js";
@@ -357,6 +358,7 @@ export async function deliverReconciledExecutions(
         reason: "issue_recovery_action_restored",
         idempotencyKey: `execution-reconciliation:${action.id}`,
         payload: { issueId: task.id, recoveryActionId: action.id },
+        causingActor: SYSTEM_CAUSING_ACTOR,
         requestedByActorType: "system",
         requestedByActorId: "execution-recovery",
         contextSnapshot: {

@@ -1720,7 +1720,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       await waitForRunToSettle(heartbeat, runId, 5_000);
       await heartbeat.waitForRunExecutionDrain(runId);
       const [firstAction] = await selectRecoveryActionsForIssue(issueId);
-      const next = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual",
+      const next = await heartbeat.wakeup(agentId, { causingActor: "system", source: "on_demand", triggerDetail: "manual",
         reason: "retry_failed_run", failedRunId: runId, payload: { issueId }, contextSnapshot: { issueId },
         requestedByActorType: "user", requestedByActorId: "responsible-user" });
       expect(next).toHaveProperty("id");
@@ -1831,7 +1831,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           if (scenario === "new_message") {
             await db.insert(issueComments).values({ id: nextCommentId, companyId, issueId, authorType: "user",
               authorUserId: "responsible-user", body: "Use these new instructions." });
-            await heartbeat.wakeup(agentId, { source: "automation", reason: "issue_commented",
+            await heartbeat.wakeup(agentId, { causingActor: "system", source: "automation", reason: "issue_commented",
               requestedByActorType: "user", requestedByActorId: "responsible-user",
               payload: { issueId, commentId: nextCommentId },
               contextSnapshot: { issueId, commentId: nextCommentId, wakeReason: "issue_commented" } });
@@ -2415,6 +2415,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const reviewerRuns = () => db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, reviewerId));
 
     expect(await heartbeat.wakeup(reviewerId, {
+      causingActor: "system",
       source: "assignment", triggerDetail: "system", reason: "issue_assigned",
       payload: { issueId, mutation: "update" },
       requestedByActorType: "agent", requestedByActorId: developerId,
@@ -3393,6 +3394,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const heartbeat = heartbeatService(db);
 
     const run = await heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "timer",
       triggerDetail: "system",
       reason: "heartbeat_timer",
@@ -8886,7 +8888,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(await selectRecoveryActionsForIssue(issueId)).toHaveLength(0);
     expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, deferred!.id)))[0]?.status).toBe("deferred_issue_execution");
     const [go] = await db.insert(issueComments).values({ companyId, issueId, authorUserId: "responsible-user", body: "go" }).returning();
-    const next = await heartbeat.wakeup(agentId, { source: "automation", reason: "issue_commented", requestedByActorType: "user", requestedByActorId: "responsible-user",
+    const next = await heartbeat.wakeup(agentId, { causingActor: "system", source: "automation", reason: "issue_commented", requestedByActorType: "user", requestedByActorId: "responsible-user",
       payload: { issueId, commentId: go!.id }, contextSnapshot: { issueId, commentId: go!.id, wakeReason: "issue_commented" },
     });
     expect(next?.contextSnapshot?.wakeCommentIds).toEqual([pending!.id, go!.id]);
@@ -8989,6 +8991,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       let next: Awaited<ReturnType<typeof heartbeat.wakeup>>;
       try {
         next = await heartbeat.wakeup(agentId, {
+          causingActor: "system",
           source: "automation",
           reason: "issue_commented",
           requestedByActorType: "user",
@@ -10423,6 +10426,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       // silent skipped response or fresh authority for the denied input.
       await expect(
         heartbeat.wakeup(agentId, {
+          causingActor: "system",
           source: "on_demand",
           triggerDetail: "manual",
           requestedByActorType: "user",
@@ -13374,6 +13378,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         },
       });
       const run = await heartbeat.wakeup(source.agentId, {
+        causingActor: "system",
         source: "automation",
         triggerDetail: "system",
         reason: "issue_continuation_needed",
@@ -15901,6 +15906,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       });
       const heartbeat = heartbeatService(db);
       const next = await heartbeat.wakeup(agentId, {
+        causingActor: "system",
         source: "automation",
         triggerDetail: "system",
         reason: "issue_commented",
@@ -17221,7 +17227,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId, authorType: "user", authorUserId: "responsible-user", body: "Continue reviewing the accepted plan in Plan mode." }).returning();
     try {
       const heartbeat = heartbeatService(db);
-      const next = await heartbeat.wakeup(f.agentId, { source: "automation", triggerDetail: "system", reason: "issue_commented", requestedByActorType: "user", requestedByActorId: "responsible-user",
+      const next = await heartbeat.wakeup(f.agentId, { causingActor: "system", source: "automation", triggerDetail: "system", reason: "issue_commented", requestedByActorType: "user", requestedByActorId: "responsible-user",
         payload: { issueId: f.issueId, commentId: comment!.id }, contextSnapshot: { issueId: f.issueId, taskId: f.issueId, wakeCommentId: comment!.id, wakeCommentIds: [comment!.id] } });
       expect(next).not.toBeNull(); expect(next!.id).not.toBe(f.runId);
       const [admitted] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, next!.id));
