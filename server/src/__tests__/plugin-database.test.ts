@@ -142,6 +142,76 @@ describe("plugin database SQL validation", () => {
   });
 });
 
+// PAR-12826 (chat privacy CP-4a, plan 4.9 A3): the scan sees every table reference.
+describe("plugin SQL scan sees every table reference", () => {
+  const ns = "plugin_test";
+  // Each form names public.issues where the old keyword scan did not look.
+  const forms: Array<[string, string]> = [
+    ["after a comma", `SELECT x.id FROM ${ns}.rows x, public.issues i WHERE i.id = x.issue_id`],
+    ["after a comma, upper case", `SELECT X.ID FROM ${ns}.ROWS X, PUBLIC.ISSUES I`],
+    ["after a comma in a sub-query", `SELECT * FROM ${ns}.rows WHERE issue_id IN (SELECT i.id FROM ${ns}.rows r, public.issues i)`],
+    ["after a comma in a WITH query", `WITH t AS (SELECT i.id FROM ${ns}.rows r, public.issues i) SELECT * FROM t`],
+    ["after a comma that follows a JOIN ... ON", `SELECT 1 FROM ${ns}.rows a JOIN ${ns}.rows b ON a.id = b.id, public.issues i`],
+    ["spaced around the dot", `SELECT 1 FROM public . issues`],
+    ["quoted", `SELECT 1 FROM ${ns}.rows r, "public"."issues" i`],
+    ["after ONLY", `SELECT 1 FROM ONLY public.issues`],
+    ["after a comment", `SELECT 1 FROM ${ns}.rows r, /* note */ public.issues`],
+    ["after an E-string that hides a quote", `SELECT E'\\'' AS a FROM ${ns}.rows r, public.issues i --'`],
+  ];
+
+  it.each(forms)("refuses an undeclared public.issues %s", (_form, statement) => {
+    expect(() => validatePluginRuntimeQuery(statement, ns, [])).toThrow(/public\.issues.*not whitelisted/i);
+  });
+
+  it.each(forms)("accepts a declared public.issues %s and hands it to the replacement hook", (_form, statement) => {
+    const refs = validatePluginRuntimeQuery(statement, ns, ["issues"]);
+    expect(refs.map((ref) => [ref.schema, ref.table])).toEqual([["public", "issues"]]);
+    expect(statement.slice(refs[0]!.start, refs[0]!.end).replace(/[\s"]/g, "").toLowerCase()).toBe("public.issues");
+  });
+
+  it("returns every declared core reference in statement order", () => {
+    const statement = `SELECT 1 FROM public.issues i JOIN public.companies c ON c.id = i.company_id, public.issues j`;
+    const refs = validatePluginRuntimeQuery(statement, ns, ["issues", "companies"]);
+    expect(refs.map((ref) => statement.slice(ref.start, ref.end))).toEqual(["public.issues", "public.companies", "public.issues"]);
+  });
+
+  it("does not take text in a string literal for a table", () => {
+    expect(validatePluginRuntimeQuery(`SELECT 'a, public.issues' AS note FROM ${ns}.rows`, ns, [])).toEqual([]);
+  });
+
+  it("refuses another schema after a comma", () => {
+    expect(() => validatePluginRuntimeQuery(`SELECT 1 FROM ${ns}.rows r, plugin_other.secrets s`, ns, []))
+      .toThrow(/cannot read schema "plugin_other"/);
+  });
+
+  it("refuses a public name outside a FROM or JOIN item", () => {
+    expect(() => validatePluginRuntimeQuery(`SELECT $1::public.issues FROM ${ns}.rows`, ns, ["issues"]))
+      .toThrow(/cannot mutate or define/i);
+  });
+
+  it("refuses a Unicode-escaped name, which could spell public", () => {
+    expect(() => validatePluginRuntimeQuery(`SELECT 1 FROM ${ns}.rows r, U&"\\0070ublic".issues i`, ns, ["issues"]))
+      .toThrow(/Unicode-escaped/);
+  });
+
+  it("checks a comma item in a plugin migration against the manifest", () => {
+    const view = `CREATE VIEW ${ns}.open_rows AS SELECT r.id FROM ${ns}.rows r, public.issues i WHERE i.id = r.issue_id`;
+    expect(() => validatePluginMigrationStatement(view, ns, [])).toThrow(/public\.issues.*not whitelisted/i);
+    expect(() => validatePluginMigrationStatement(view, ns, ["issues"])).not.toThrow();
+  });
+
+  it("keeps the forms plugins use today", () => {
+    for (const statement of [
+      `SELECT EXTRACT(EPOCH FROM now() - r.created_at) FROM ${ns}.rows r`,
+      `SELECT 1 FROM ${ns}.rows r CROSS JOIN LATERAL jsonb_array_elements(r.data) e, unnest($1::uuid[]) u(id)`,
+      `SELECT 1 FROM ${ns}.rows r WHERE coalesce(r.a IS DISTINCT FROM $1, r.flag)`,
+      `WITH RECURSIVE tree AS (SELECT i.id FROM public.issues i UNION ALL SELECT c.id FROM public.issues c JOIN tree ON c.parent_id = tree.id) SELECT * FROM tree`,
+    ]) {
+      expect(() => validatePluginRuntimeQuery(statement, ns, ["issues"])).not.toThrow();
+    }
+  });
+});
+
 describe("buildPluginWorkerEnv", () => {
   const instanceInfo = {
     deploymentMode: "authenticated",
@@ -854,5 +924,66 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
 
     await expect(pluginDb.applyMigrations(pluginId, pluginManifest, packageRoot))
       .rejects.toThrow(/checksum mismatch/i);
+  });
+
+  // PAR-12826 (chat privacy CP-4a): both forms run, not only read.
+  async function seedCoreIssue(title: string) {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Paperclip", issuePrefix: "TST", requireBoardApprovalForNewAgents: false });
+    await db.insert(issues).values({ id: issueId, companyId, title, status: "todo", priority: "medium", identifier: "TST-1" });
+    return issueId;
+  }
+
+  async function installWithTable(pluginKey: string, coreReadTables: string[], tableSql: string) {
+    const pluginManifest = { ...manifest(pluginKey), database: { migrationsDir: "migrations", coreReadTables } } as PaperclipPluginManifestV1;
+    const namespace = derivePluginDatabaseNamespace(pluginKey);
+    const packageRoot = await createPluginPackage(pluginManifest, tableSql.replaceAll("NS", namespace));
+    const pluginId = await installPluginRecord(pluginManifest);
+    const pluginDb = pluginDatabaseService(db);
+    await pluginDb.applyMigrations(pluginId, pluginManifest, packageRoot);
+    return { pluginId, namespace, pluginDb };
+  }
+
+  it("runs a declared public.issues after a comma and refuses it undeclared", async () => {
+    const issueId = await seedCoreIssue("Comma issue");
+    const table = "CREATE TABLE NS.marks (id uuid PRIMARY KEY, issue_id uuid NOT NULL, label text NOT NULL);";
+    const declared = await installWithTable("paperclip.dbtest", ["issues"], table);
+    await declared.pluginDb.execute(declared.pluginId, `INSERT INTO ${declared.namespace}.marks VALUES ($1, $2, $3)`, [randomUUID(), issueId, "alpha"]);
+    const statement = `SELECT m.label, i.title FROM ${declared.namespace}.marks m, public.issues i WHERE i.id = m.issue_id`;
+
+    expect(validatePluginRuntimeQuery(statement, declared.namespace, ["issues"]).map((ref) => ref.table)).toEqual(["issues"]);
+    await expect(declared.pluginDb.query(declared.pluginId, statement)).resolves.toEqual([{ label: "alpha", title: "Comma issue" }]);
+
+    const undeclared = await installWithTable("paperclip.escape", [], table);
+    await expect(
+      undeclared.pluginDb.query(undeclared.pluginId, `SELECT i.title FROM ${undeclared.namespace}.marks m, public.issues i`),
+    ).rejects.toThrow(/public\.issues.*not whitelisted/i);
+  });
+
+  it("never resolves a table named without a schema to public", async () => {
+    await seedCoreIssue("Core issue");
+    const plain = await installWithTable("paperclip.dbtest", ["issues"], "CREATE TABLE NS.marks (id uuid PRIMARY KEY);");
+    // Drizzle wraps the Postgres error; its cause says the plain name found nothing.
+    const missing = { cause: expect.objectContaining({ message: 'relation "issues" does not exist' }) };
+    await expect(plain.pluginDb.query(plain.pluginId, "SELECT title FROM issues")).rejects.toMatchObject(missing);
+    await expect(
+      plain.pluginDb.execute(plain.pluginId, `INSERT INTO ${plain.namespace}.marks (id) SELECT id FROM issues`),
+    ).rejects.toMatchObject(missing);
+
+    // A plugin table named like a core table is the one a plain name reaches.
+    const shadow = await installWithTable("paperclip.escape", [], "CREATE TABLE NS.issues (id uuid PRIMARY KEY, title text NOT NULL);");
+    await shadow.pluginDb.execute(shadow.pluginId, `INSERT INTO ${shadow.namespace}.issues VALUES ($1, $2)`, [randomUUID(), "Plugin row"]);
+    await expect(shadow.pluginDb.query(shadow.pluginId, "SELECT title FROM issues")).resolves.toEqual([{ title: "Plugin row" }]);
+
+    // The plugin's search_path ends with its transaction.
+    const after = Array.from((await db.execute(sql`SELECT title FROM issues`)) as Iterable<{ title: string }>);
+    expect(after).toEqual([{ title: "Core issue" }]);
+  });
+});
+
+describe("plugin database tests run under CI", () => {
+  it.runIf(Boolean(process.env.CI))("has a real database under CI", () => {
+    expect(embeddedPostgresSupport.supported).toBe(true);
   });
 });

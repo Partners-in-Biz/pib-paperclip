@@ -18,7 +18,9 @@ import type {
 const IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const MAX_POSTGRES_IDENTIFIER_LENGTH = 63;
 
-type SqlRef = { schema: string; table: string; keyword: string };
+/** A table reference found by the scan; `start`/`end` are offsets in the statement when the token scan found it. */
+export type SqlRef = { schema: string; table: string; keyword: string; start?: number; end?: number };
+type SqlToken = { kind: "word" | "name" | "punct" | "literal"; value: string; start: number; end: number };
 type QualifiedRefPattern =
   | { pattern: RegExp; groups: "keyword-schema-table" }
   | { pattern: RegExp; groups: "schema-table"; keyword: string };
@@ -124,6 +126,137 @@ function normaliseSql(input: string): string {
   return stripSqlForKeywordScan(input).replace(/\s+/g, " ").trim().toLowerCase();
 }
 
+/**
+ * Splits SQL into words (unquoted, lower-cased), quoted names, punctuation and
+ * literals the way Postgres reads them: nested comments, E'' strings with
+ * backslash escapes, dollar quotes. A U&"..." name is refused: its escapes could
+ * spell any schema.
+ */
+function tokenizeSql(input: string): SqlToken[] {
+  const tokens: SqlToken[] = [];
+  let i = 0;
+  const closeAt = (from: number, quote: string, backslash: boolean) => {
+    for (let j = from; j < input.length; j += 1) {
+      if (backslash && input[j] === "\\") { j += 1; continue; }
+      if (input[j] === quote) {
+        if (input[j + 1] !== quote) return j + 1;
+        j += 1;
+      }
+    }
+    return input.length;
+  };
+  while (i < input.length) {
+    const char = input[i]!;
+    const start = i;
+    if (/\s/.test(char)) { i += 1; continue; }
+    if (input.startsWith("--", i)) { const nl = input.indexOf("\n", i); i = nl < 0 ? input.length : nl; continue; }
+    if (input.startsWith("/*", i)) {
+      let depth = 0;
+      while (i < input.length) {
+        if (input.startsWith("/*", i)) { depth += 1; i += 2; }
+        else if (input.startsWith("*/", i)) { depth -= 1; i += 2; if (depth === 0) break; }
+        else i += 1;
+      }
+      continue;
+    }
+    if (/[uU]/.test(char) && input[i + 1] === "&" && input[i + 2] === "\"") {
+      throw new Error("Plugin SQL cannot use Unicode-escaped identifiers (U&\"...\")");
+    }
+    if (char === "'") {
+      const prev = tokens.at(-1);
+      i = closeAt(i + 1, "'", prev?.kind === "word" && prev.value === "e" && prev.end === i);
+      tokens.push({ kind: "literal", value: "", start, end: i });
+      continue;
+    }
+    if (char === "\"") {
+      i = closeAt(i + 1, "\"", false);
+      tokens.push({ kind: "name", value: input.slice(start + 1, i - 1).replaceAll("\"\"", "\""), start, end: i });
+      continue;
+    }
+    const dollar = /^\$([A-Za-z_][A-Za-z0-9_]*)?\$/.exec(input.slice(i));
+    if (dollar) {
+      const close = input.indexOf(dollar[0], i + dollar[0].length);
+      i = close < 0 ? input.length : close + dollar[0].length;
+      tokens.push({ kind: "literal", value: "", start, end: i });
+      continue;
+    }
+    const word = /^[A-Za-z_\u0080-\uffff][A-Za-z0-9_$\u0080-\uffff]*/.exec(input.slice(i));
+    const literal = word ? null : /^(\$\d+|\d[\d.]*(?:[eE][+-]?\d+)?)/.exec(input.slice(i));
+    const text = word?.[0] ?? literal?.[0] ?? char;
+    i += text.length;
+    tokens.push({ kind: word ? "word" : literal ? "literal" : "punct", value: word ? text.toLowerCase() : text, start, end: i });
+  }
+  return tokens;
+}
+
+const FROM_LIST_END = new Set([
+  "where", "group", "having", "window", "order", "limit", "offset", "fetch", "for",
+  "union", "intersect", "except", "returning", "set", "select", "values", "from", "join",
+]);
+
+/**
+ * Every table named as an item of a FROM list or after JOIN, including the
+ * items after a comma (`FROM a.x, public.issues`) and after ONLY / LATERAL.
+ * Sub-queries are skipped here; their own FROM is scanned when the loop reaches it.
+ */
+function extractFromItemRefs(tokens: SqlToken[]): SqlRef[] {
+  const refs: SqlRef[] = [];
+  const skipParens = (open: number) => {
+    let depth = 0;
+    for (let k = open; k < tokens.length; k += 1) {
+      if (tokens[k]!.value === "(" && tokens[k]!.kind === "punct") depth += 1;
+      if (tokens[k]!.value === ")" && tokens[k]!.kind === "punct" && (depth -= 1) === 0) return k;
+    }
+    return tokens.length;
+  };
+  tokens.forEach((head, i) => {
+    if (head.kind !== "word" || (head.value !== "from" && head.value !== "join")) return;
+    if (head.value === "from" && tokens[i - 1]?.value === "distinct") return;
+    let expectItem = true;
+    for (let j = i + 1; j < tokens.length; j += 1) {
+      const tok = tokens[j]!;
+      if (tok.kind === "punct" && tok.value === "(") { j = skipParens(j); expectItem = false; continue; }
+      if (tok.kind === "punct" && tok.value === ")") break;
+      if (tok.kind === "punct" && tok.value === ",") { expectItem = true; continue; }
+      if (tok.kind === "word" && FROM_LIST_END.has(tok.value)) break;
+      if (!expectItem || (tok.kind === "word" && (tok.value === "only" || tok.value === "lateral"))) continue;
+      expectItem = false;
+      const parts: SqlToken[] = [];
+      let k = j;
+      while (tokens[k]?.kind === "word" || tokens[k]?.kind === "name") {
+        parts.push(tokens[k]!);
+        if (tokens[k + 1]?.value !== ".") break;
+        k += 2;
+      }
+      if (parts.length >= 2) {
+        const schema = parts.at(-2)!;
+        const table = parts.at(-1)!;
+        refs.push({ keyword: head.value, schema: schema.value, table: table.value, start: schema.start, end: table.end });
+      }
+      j = Math.max(j, k);
+    }
+  });
+  return refs;
+}
+
+/**
+ * Every `public.<name>` anywhere in the statement, whatever spacing, quoting or
+ * position. A name in a FROM/JOIN item or after REFERENCES counts as a read;
+ * any other position is refused by assertAllowedPublicRead.
+ */
+function extractPublicRefs(tokens: SqlToken[], fromItems: readonly SqlRef[]): SqlRef[] {
+  const reads = new Set(fromItems.map((ref) => ref.start));
+  const refs: SqlRef[] = [];
+  tokens.forEach((tok, i) => {
+    const table = tokens[i + 2];
+    if ((tok.kind !== "word" && tok.kind !== "name") || tok.value !== "public" || tokens[i + 1]?.value !== ".") return;
+    if (!table || (table.kind !== "word" && table.kind !== "name")) return;
+    const keyword = reads.has(tok.start) ? "from" : tokens[i - 1]?.value === "references" ? "references" : "other";
+    refs.push({ keyword, schema: "public", table: table.value, start: tok.start, end: table.end });
+  });
+  return refs;
+}
+
 function extractQualifiedRefs(statement: string): SqlRef[] {
   const refs: SqlRef[] = [];
   const patterns: QualifiedRefPattern[] = [
@@ -151,6 +284,11 @@ function extractQualifiedRefs(statement: string): SqlRef[] {
       }
     }
   }
+  // The keyword patterns above miss comma items, spacing and quoting variants;
+  // the token scan adds every FROM/JOIN item and every public.<name>.
+  const tokens = tokenizeSql(statement);
+  const fromItems = extractFromItemRefs(tokens);
+  refs.push(...fromItems, ...extractPublicRefs(tokens, fromItems));
   return refs;
 }
 
@@ -243,11 +381,16 @@ export function validatePluginMigrationStatement(
   }
 }
 
+/**
+ * Validates a ctx.db.query statement. Returns every accepted public.<table>
+ * reference with its offsets in the statement: the input of the host's core
+ * table replacement.
+ */
 export function validatePluginRuntimeQuery(
   query: string,
   namespace: string,
   coreReadTables: readonly PluginDatabaseCoreReadTable[] = [],
-): void {
+): SqlRef[] {
   const statements = splitSqlStatements(query);
   if (statements.length !== 1) {
     throw new Error("Plugin runtime SQL must contain exactly one statement");
@@ -263,14 +406,17 @@ export function validatePluginRuntimeQuery(
   }
 
   const allowedCoreReadTables = new Set(coreReadTables);
+  const coreRefs: SqlRef[] = [];
   for (const ref of extractQualifiedRefs(statement)) {
     if (ref.schema === namespace) continue;
     if (ref.schema === "public") {
       assertAllowedPublicRead(ref, allowedCoreReadTables);
+      if (ref.start !== undefined && !coreRefs.some((seen) => seen.start === ref.start)) coreRefs.push(ref);
       continue;
     }
     throw new Error(`ctx.db.query cannot read schema "${ref.schema}"`);
   }
+  return coreRefs.sort((a, b) => a.start! - b.start!);
 }
 
 export function validatePluginRuntimeExecute(query: string, namespace: string): void {
@@ -457,6 +603,20 @@ export function pluginDatabaseService(db: PluginDatabaseRootClient) {
       .where(eq(pluginDatabaseNamespaces.pluginId, input.pluginId));
   }
 
+  /**
+   * Runs plugin SQL with search_path set to the plugin's own schema for this
+   * transaction only, so a table named without a schema never resolves to public.
+   */
+  async function executeInNamespace(namespace: string, statement: SQL) {
+    if (typeof db.transaction !== "function") {
+      throw new Error("Plugin SQL needs a database client that supports transactions");
+    }
+    return db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT set_config('search_path', ${quoteIdentifier(namespace)}, true)`);
+      return tx.execute(statement);
+    });
+  }
+
   return {
     ensureNamespace,
 
@@ -558,14 +718,14 @@ export function pluginDatabaseService(db: PluginDatabaseRootClient) {
       const plugin = await getPluginRecord(pluginId);
       const namespace = await getRuntimeNamespace(pluginId);
       validatePluginRuntimeQuery(statement, namespace, plugin.manifestJson.database?.coreReadTables ?? []);
-      const result = await db.execute(bindSql(statement, params));
+      const result = await executeInNamespace(namespace, bindSql(statement, params));
       return Array.from(result as Iterable<T>);
     },
 
     async execute(pluginId: string, statement: string, params?: unknown[]): Promise<{ rowCount: number }> {
       const namespace = await getRuntimeNamespace(pluginId);
       validatePluginRuntimeExecute(statement, namespace);
-      const result = await db.execute(bindSql(statement, params));
+      const result = await executeInNamespace(namespace, bindSql(statement, params));
       return { rowCount: Number((result as { count?: number | string }).count ?? 0) };
     },
   };
