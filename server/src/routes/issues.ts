@@ -1,5 +1,6 @@
 import { confirmMcpAttachmentCleanup, recordMcpAttachmentCleanup, type McpAttachmentCleanup } from "../services/public-mcp/upload-cleanup.js";
 import { SYSTEM_CAUSING_ACTOR, wakeCausingActorFromActor, wakeCausingActorFromActorRef } from "../services/heartbeat/causing-actor.js";
+import { assertNamesOnlyHimself } from "../services/member-restriction/acting-person.js";
 import { notifyDeferredExecutionWork } from "../services/deferred-execution-notifications.js";
 import { notifyNativeRecoveryNotices } from "../services/native-recovery-notice-notifications.js";
 import { notifyNativeStatusReassessment } from "../services/native-status-reassessment-notifications.js";
@@ -808,7 +809,18 @@ async function sanitizeIssueCreateAttribution<T extends object>(
   options: { surface: string; entityId?: string | null },
 ) {
   const sanitized = { ...input } as T & Record<string, unknown>;
-  if (req.actor.type !== "agent") return sanitized;
+  if (req.actor.type !== "agent") {
+    // H2 (PAR-12608 4.10): a member bound by rule group H names only himself;
+    // under `enforce` leaving it out also names himself.
+    const self = await assertNamesOnlyHimself(db, req.actor, {
+      companyId,
+      ruleId: "H2",
+      target: options.surface,
+      requestedPersonId: readNonEmptyString(sanitized.responsibleUserId),
+    });
+    if (self) (sanitized as Record<string, unknown>).responsibleUserId = self;
+    return sanitized;
+  }
 
   if (
     hasOwn(sanitized, "responsibleUserId") &&
