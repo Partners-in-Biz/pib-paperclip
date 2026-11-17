@@ -191,6 +191,13 @@ import {
 import { recordToolRuntimeAuditWriteFailure } from "./tool-runtime-metrics.js";
 import { unresolvedRecoveryToolInvocation } from "./recovery-effect-receipts.js";
 import { isRetiredComposioConnection, RETIRED_COMPOSIO_MESSAGE } from "@paperclipai/shared";
+import { MEMBER_RESTRICTION_UNAVAILABLE_CODE } from "@paperclipai/shared";
+import {
+  isMemberRestrictionUnavailable,
+  memberRestrictionResolver,
+  pluginActingPersonForUser,
+  type PluginActingPerson,
+} from "./member-restriction/index.js";
 import {
   createPaperclipCloudConnector,
   isPaperclipCloudConnectorStrategy,
@@ -4766,6 +4773,31 @@ export function createToolGatewayService(
       addresseeUserId: userId,
       payload,
     });
+  }
+
+  /**
+   * The acting person a plugin tool called through this session receives
+   * (PAR-12608 4.10, H3): the run's person, read as `resolveConnectionGrant`
+   * reads it. A failed restriction read refuses the call with 503.
+   */
+  async function pluginActingPersonForSession(session: ToolGatewaySession): Promise<PluginActingPerson> {
+    let personId = session.responsibleUserId ?? null;
+    if (session.runId && !session.identityContextId) {
+      const [run] = await db
+        .select({ responsibleUserId: heartbeatRuns.responsibleUserId })
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.id, session.runId), eq(heartbeatRuns.companyId, session.companyId)))
+        .limit(1);
+      personId = run?.responsibleUserId ?? personId;
+    }
+    try {
+      return await pluginActingPersonForUser(memberRestrictionResolver(db), personId, session.companyId);
+    } catch (error) {
+      if (!isMemberRestrictionUnavailable(error)) throw error;
+      throw new ToolGatewayHttpError(503, error.message, MEMBER_RESTRICTION_UNAVAILABLE_CODE, {
+        code: MEMBER_RESTRICTION_UNAVAILABLE_CODE,
+      });
+    }
   }
 
   async function resolveConnectionGrant(
@@ -11323,6 +11355,7 @@ export function createToolGatewayService(
                     runId: session.runId!,
                     companyId: session.companyId,
                     projectId: session.projectId ?? "",
+                    ...await pluginActingPersonForSession(session),
                   },
                 ),
                 executionTimeoutMs,
