@@ -2963,7 +2963,7 @@ export function IssueProperties({
               size="sm"
             />
           ) : (
-            <span className="min-w-0 text-sm"><AutomationCreatorLabel issue={issue} /></span>
+            <span className="block min-w-0 max-w-full text-sm"><AutomationCreatorLabel issue={issue} /></span>
           )}
         </PropertyRow>
         {originatingActor ? (

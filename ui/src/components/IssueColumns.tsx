@@ -44,7 +44,7 @@ export function AutomationCreatorLabel({ issue }: { issue: Pick<Issue, "createdB
   const creator = deriveIssueCreator(issue, { routineName });
   const name = creator.kind === "automation" ? creator.name : "";
   return (
-    <span className="inline-flex min-w-0 items-center gap-1" data-testid="issue-created-by-automation" title={name}>
+    <span className="flex min-w-0 max-w-full items-center gap-1" data-testid="issue-created-by-automation" title={name}>
       <Zap className="h-3 w-3 shrink-0 text-muted-foreground" aria-hidden />
       <span className="min-w-0 truncate">{name}</span>
     </span>
@@ -424,7 +424,7 @@ export function InboxIssueTrailingColumns({
           }
 
           return (
-            <span key={column} className="min-w-0 text-xs text-foreground">
+            <span key={column} className="block min-w-0 text-xs text-foreground">
               <AutomationCreatorLabel issue={issue} />
             </span>
           );

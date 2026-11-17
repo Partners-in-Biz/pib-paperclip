@@ -108,6 +108,23 @@ describe.skipIf(!available)("the ad copy check", () => {
     ({ accountId } = await syncedAccount(w));
   });
 
+  it("the approval issue records the person whose click asked as its creator, and nobody for an agent", async () => {
+    // The SDK test host does not keep the actor, so watch what the plugin sends to issues.create.
+    const api = w.ctx.issues as unknown as { create: (input: Record<string, any>) => Promise<unknown> };
+    const original = api.create.bind(api);
+    const seen: Array<{ originId?: string; actor?: unknown }> = [];
+    api.create = async (input) => (seen.push({ originId: input.originId, actor: input.actor }), original(input));
+    try {
+      const creative = { headline: "Fresh leads for you", primaryText: "Fresh coffee", landingUrl: "https://acme.test" };
+      await createProposal(w.rt(), { userId: "user-1" }, CREATE(accountId, { creative }));
+      await createProposal(w.rt(), { agentId: ADS_AGENT }, CREATE(accountId, { name: "Agent campaign", creative }));
+    } finally {
+      api.create = original;
+    }
+    const approvals = seen.filter((c) => c.originId?.startsWith("ads-approval:"));
+    expect(approvals.map((c) => c.actor)).toEqual([{ actorUserId: "user-1" }, undefined]);
+  });
+
   it("copy that uses a banned word cannot go to review: no issue opens, and the fix brings it in", async () => {
     const { updateScope } = await import("../src/db.js");
     await updateScope(w.ctx, COMPANY, "own", { bannedWords: ["cheap"] });
