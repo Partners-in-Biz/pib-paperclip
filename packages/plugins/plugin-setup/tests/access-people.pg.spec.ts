@@ -2,9 +2,10 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { GUARDED_PLUGINS, PERMISSION_CATALOG } from "@partnersinbiz/pib-plugin-kit";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { saveAccessGrant } from "../src/access-grants.js";
-import { accessAreas, accessPeople } from "../src/access-people.js";
+import { accessAreas, accessPeople, saveGrantParams } from "../src/access-people.js";
 import { recordAccessLost, recordAccessRefusal, setAccessMode } from "../src/access-store.js";
 import { NAMESPACE } from "../src/namespace.js";
+import { grantPayload, setArea } from "../src/ui/people.js";
 import { embeddedAvailable, startPg, type Pg } from "./helpers/pg.js";
 
 const available = await embeddedAvailable();
@@ -82,6 +83,22 @@ describe.skipIf(!available)("the People tab view on a real database", () => {
     expect(view.people[1]!.grant).toMatchObject({ preset: "viewer", deny: ["crm.contacts:view"], linkedCompanyIds: [] });
     expect(view.plugins).toHaveLength(GUARDED_PLUGINS.length);
     expect(view.presets.map((p) => p.id)).toContain("clientManager");
+  });
+
+  it("a save from the tab keeps the scope overrides and own companies it does not edit", async () => {
+    const { ctx } = world();
+    await saveAccessGrant(ctx, { companyId: CO, actor: OWNER }, { userId: "u1", preset: "viewer", linkedCompanyIds: ["client-1"], scopeOverrides: { crm: "linked" } });
+    const before = await accessPeople(ctx, CO, OWNER);
+    if (!before.ok) throw new Error(before.error);
+    const grant = before.people.find((row) => row.userId === "u1")!.grant!;
+    // The tab path: the row's draft with billing denied, the payload Save sends, the worker's params parse.
+    const billing = accessAreas().find((a) => a.area === "billing")!.keys;
+    const draft = setArea({ preset: grant.preset, allow: grant.allow, deny: grant.deny }, billing, "deny");
+    const params: Record<string, unknown> = { companyId: CO, ...grantPayload("u1", grant, draft) };
+    expect(await saveAccessGrant(ctx, { companyId: CO, actor: OWNER }, saveGrantParams(params))).toMatchObject({ ok: true, rev: 2 });
+    const after = await accessPeople(ctx, CO, OWNER);
+    if (!after.ok) throw new Error(after.error);
+    expect(after.people.find((row) => row.userId === "u1")!.grant).toMatchObject({ preset: "viewer", deny: billing, linkedCompanyIds: ["client-1"], scopeOverrides: { crm: "linked" } });
   });
 
   it("lists refusals newest first, with the agent they went through", async () => {

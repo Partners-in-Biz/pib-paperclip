@@ -1,7 +1,7 @@
 import type { PluginApiRequestInput, PluginApiResponse, PluginContext, PluginPerformActionContext } from "@paperclipai/plugin-sdk";
-import { PIB_PLUGINS, pluginEvent, registerCompanyBootstrap, registerRoleWatch, type ActorInput, type SaveGrantInput } from "@partnersinbiz/pib-plugin-kit";
+import { PIB_PLUGINS, pluginEvent, registerCompanyBootstrap, registerRoleWatch, type ActorInput } from "@partnersinbiz/pib-plugin-kit";
 import { clearAccessGrant, saveAccessGrant } from "./access-grants.js";
-import { accessPeople } from "./access-people.js";
+import { accessPeople, saveGrantParams } from "./access-people.js";
 import { DRIVE_BINDING_EVENT } from "./drive-checklist.js";
 import { accessStatus, noteRedPlugins, registerAccessSync, resendAccessHourly, resendRecentAccess, sendAccessAgain } from "./access-sync.js";
 import { setAccessSwitch } from "./access-switch.js";
@@ -55,14 +55,7 @@ export function registerSetup(ctx: PluginContext): void {
   ctx.actions.register("setup.access.people", (_params, context) => refusable(async () => accessPeople(ctx, requiredCompany(context), userActor(context))));
   ctx.actions.register("setup.access.save-grant", (params, context) =>
     refusable(async () =>
-      saveAccessGrant(ctx, { companyId: requiredCompany(context), actor: userActor(context) }, {
-        userId: typeof params.userId === "string" ? params.userId : "",
-        preset: params.preset as SaveGrantInput["preset"],
-        allow: params.allow as string[] | undefined,
-        deny: params.deny as string[] | undefined,
-        linkedCompanyIds: params.linkedCompanyIds as string[] | undefined,
-        scopeOverrides: params.scopeOverrides as SaveGrantInput["scopeOverrides"],
-      }),
+      saveAccessGrant(ctx, { companyId: requiredCompany(context), actor: userActor(context) }, saveGrantParams(params)),
     ),
   );
   ctx.actions.register("setup.access.clear-grant", (params, context) =>

@@ -4,7 +4,7 @@
  * members route in the browser, so the worker never holds them.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { PERMISSION_CATALOG, PRESETS, listAccess, type AccessRow, type ActorInput } from "@partnersinbiz/pib-plugin-kit";
+import { PERMISSION_CATALOG, PRESETS, listAccess, type AccessRow, type ActorInput, type SaveGrantInput } from "@partnersinbiz/pib-plugin-kit";
 import { getAccessLost, getAccessSettings, listAccessRefusals, type AccessRefusal } from "./access-store.js";
 import { accessPluginStatus, type AccessPluginStatus } from "./access-sync.js";
 
@@ -38,6 +38,22 @@ export function accessAreas(): AccessArea[] {
     areas.set(resource.area, keys);
   }
   return [...areas].map(([area, keys]) => ({ area, keys }));
+}
+
+/**
+ * The `setup.access.save-grant` params as the kit's input. The kit rebuilds the
+ * whole grant from it, so every stored field (scope overrides, linked companies)
+ * must come through; the kit checks the values.
+ */
+export function saveGrantParams(params: Record<string, unknown>): SaveGrantInput {
+  return {
+    userId: typeof params.userId === "string" ? params.userId : "",
+    preset: params.preset as SaveGrantInput["preset"],
+    allow: params.allow as string[] | undefined,
+    deny: params.deny as string[] | undefined,
+    linkedCompanyIds: params.linkedCompanyIds as string[] | undefined,
+    scopeOverrides: params.scopeOverrides as SaveGrantInput["scopeOverrides"],
+  };
 }
 
 export async function accessPeople(ctx: PluginContext, companyId: string, actor: ActorInput): Promise<AccessPeopleView | { ok: false; error: string }> {
