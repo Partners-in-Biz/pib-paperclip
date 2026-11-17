@@ -1001,6 +1001,7 @@ describe("agent live run routes", () => {
       },
       requestedByActorType: "user",
       requestedByActorId: "local-board",
+      causingActor: { type: "user", userId: "local-board" },
       contextSnapshot: {
         triggeredBy: "board",
         actorId: "local-board",
@@ -1027,6 +1028,7 @@ describe("agent live run routes", () => {
       triggerDetail: "manual",
       requestedByActorType: "user",
       requestedByActorId: "local-board",
+      causingActor: { type: "user", userId: "local-board" },
       contextSnapshot: {
         triggeredBy: "board",
         actorId: "local-board",
