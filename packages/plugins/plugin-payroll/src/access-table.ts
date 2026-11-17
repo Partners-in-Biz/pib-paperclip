@@ -18,15 +18,18 @@ const payruns = (action: PermissionAction) => ({ resource: "payroll.payruns", ac
 const settings = (action: PermissionAction) => ({ resource: "payroll.settings", action });
 
 export const PAYROLL_ACCESS_TABLE: AccessTable = Object.freeze({
-  // The page's first read: employees with their terms, runs and the overview.
-  "payroll.load": employees("view"),
+  // The page's first read returns employees, pay runs and the overview (settings,
+  // open runs, pending leave), so it takes pay runs, like the overview tool.
+  // A role with only employees cannot open the Payroll page.
+  "payroll.load": payruns("view"),
   "payroll.rules": settings("view"),
   "payroll.review-rules": settings("edit"),
   "payroll.save-component": settings("edit"),
   "payroll.audit": settings("view"),
 
   "payroll.employee-terms": employees("view"),
-  // One action saves a new employee and changes an existing one.
+  // One action saves a new employee and changes an existing one, so it takes
+  // edit: a role with only employees create cannot add an employee.
   "payroll.save-employee": employees("edit"),
   "payroll.terminate-employee": employees("delete"),
   "payroll.save-terms": employees("edit"),
