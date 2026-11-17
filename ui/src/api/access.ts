@@ -3,6 +3,7 @@ import type {
   JoinRequest,
   MemberRestrictionMode,
   PermissionKey,
+  UpdateMemberRestriction,
 } from "@paperclipai/shared";
 import { api } from "./client";
 
@@ -345,6 +346,9 @@ export const accessApi = {
       status?: "pending" | "active" | "suspended";
     },
   ) => api.patch<CompanyMember>(`/companies/${companyId}/members/${memberId}`, input),
+
+  setMemberRestriction: (companyId: string, memberId: string, input: UpdateMemberRestriction) =>
+    api.put<CompanyMember>(`/companies/${companyId}/members/${memberId}/restriction`, input),
 
   getMemberRestrictionMode: (companyId: string) =>
     api.get<MemberRestrictionModeState>(`/companies/${companyId}/member-restriction-mode`),
