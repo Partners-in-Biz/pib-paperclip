@@ -64,6 +64,12 @@ Listens to `plugin.<sender>.mail.send.requested` for every kit `MAIL_SENDERS` pl
 - A retry first looks the message up by its Message-ID, so an attempt Gmail accepted is not sent twice.
 - Over the rate, Gmail down or the account needs reconnecting: nothing is stored and the sender's outbox retries. No connected account, a bad address, an expired attachment link or a message Gmail refuses: `failed` with `permanent: true`. The Sent tab retries by hand.
 
+## 0.10.0: the access guard (PAR-12682, spec PAR-12578 stage A)
+
+- Every page action, agent tool and API route is registered through the kit access guard, with one row each in `src/access-table.ts`: `mailbox.mail` (view, create, edit, delete), `mailbox.accounts` (connect, disconnect, delete, default, client, delegations) and `mailbox.settings` (sending domains, holds, client mail maps, the unsubscribe check). Preferences and the skill sync are owner or admin only. A tool needs the same permission as its page action.
+- The page and the sidebar entry ask `access.me` first; every page action goes through `withRefusal` (`src/ui/actions.ts`), so a refusal shows as an error, never as success.
+- With the company's access switch `off` (every company today) the guard passes every call on unchanged.
+
 ## 0.9.20: plugin drafts in the Mailbox drafts; agents cannot send unasked mail to clients (PAR-12249, PAR-14558)
 
 - **Plugin drafts** (`mail.draft.requested`) are saved in the Paperclip Mailbox drafts (table `messages`, status `draft`), never in Gmail Drafts. The result carries `mailboxDraftId`; `gmailDraftId`, `gmailMessageId` and `draftUrl` are null. A plugin's draft is held for a person: an agent's `send-draft` of it is refused when a recipient is an existing client.
