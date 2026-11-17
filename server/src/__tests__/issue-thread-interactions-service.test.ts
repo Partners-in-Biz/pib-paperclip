@@ -480,9 +480,13 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     const input = { kind: "request_confirmation" as const, payload: { version: 1 as const, prompt: "Proceed?" } };
     const actor = { agentId: fixture.agentId };
     expect(await interactionsSvc.create(scope, input, actor)).toMatchObject({ addresseeUserId: null });
-    const addresseeUserId = "paperclip-id:confirmation-reviewer";
-    await seedQuestionUser(fixture.companyId, addresseeUserId);
+    const addresseeUserId = fixture.userId;
     expect(await interactionsSvc.create(scope, { ...input, addresseeUserId }, actor)).toMatchObject({ addresseeUserId });
+    // Another person may not read the chat (PAR-12841), so cannot be its addressee.
+    const reviewer = "paperclip-id:confirmation-reviewer";
+    await seedQuestionUser(fixture.companyId, reviewer);
+    await expect(interactionsSvc.create(scope, { ...input, addresseeUserId: reviewer }, actor))
+      .rejects.toMatchObject({ status: 422, details: { code: "interaction_addressee_user_unavailable" } });
   });
 
   it("keeps ordinary task addressing optional and enforces valid explicit recipients", async () => {
