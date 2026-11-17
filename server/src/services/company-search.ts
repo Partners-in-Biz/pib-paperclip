@@ -593,6 +593,8 @@ export function companySearchService(db: Db) {
       const tokenCount = tokens.length;
 
       const issueFilters = issueFilterConditions(companyId, query);
+      // Artifacts belong to a task: the caller's task read condition binds them too (PAR-12720).
+      const artifactReadConditions = options?.issueReadCondition ? [options.issueReadCondition] : [];
       const hasIssueOnlyFilters = issueOnlyFiltersActive(query);
 
       // Scope conditions over precomputed flag columns (alias-qualified).
@@ -951,6 +953,7 @@ export function companySearchService(db: Db) {
           eq(issues.companyId, companyId),
           visibleIssueCondition(),
           ...artifactIssueFilters,
+          ...artifactReadConditions,
         ];
         const documentArtifactConditions = [
           eq(issueDocuments.companyId, companyId),
@@ -1035,7 +1038,7 @@ export function companySearchService(db: Db) {
         const result = await companyArtifactsService(db).list(companyId, {
           q: normalizedQuery.slice(0, COMPANY_ARTIFACTS_MAX_QUERY_LENGTH),
           limit: Math.min(fetchLimit, COMPANY_ARTIFACTS_MAX_LIMIT),
-        }, { issueConditions: issueFilters });
+        }, { issueConditions: [...issueFilters, ...artifactReadConditions] });
         return result.artifacts;
       }
 
