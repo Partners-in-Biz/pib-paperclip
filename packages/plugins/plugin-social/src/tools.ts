@@ -532,6 +532,12 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
     }),
   },
   {
+    name: "get-cadence",
+    displayName: "Get posting cadence",
+    description: `The scope's posting cadence (posts a day per account, days, hours; a person sets it on the Growth tab) and, for the days ahead, each account's posts against it and the free slots (local time, instant and accounts). No cadence: you decide how many posts. Draft one post per free slot with that scheduledAt.${OWN}`,
+    parametersSchema: schema([], { ...scope }),
+  },
+  {
     name: "hook-board",
     displayName: "Hook board",
     description:
