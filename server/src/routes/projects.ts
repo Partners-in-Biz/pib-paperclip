@@ -38,6 +38,7 @@ import { externalObjectService } from "../services/external-objects.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 import { ensureProjectAccessMember } from "../services/projects.js";
+import { projectReadSqlCondition } from "../services/authorization.js";
 import {
   buildWorkspaceRuntimeDesiredStatePatch,
   listConfiguredRuntimeServiceEntries,
@@ -152,7 +153,7 @@ export function projectRoutes(db: Db) {
     if (!urlKey) return rawId;
     const visibleProjects = await filterProjectsForActor(
       req,
-      await svc.list(companyId, { includeArchived: true }),
+      await svc.list(companyId, { includeArchived: true, readCondition: await projectReadSqlCondition(db, req.actor) }),
     );
     const matches = visibleProjects.filter((project) => deriveProjectUrlKey(project.name, project.id) === urlKey);
     if (matches.length > 1) {
@@ -339,12 +340,13 @@ export function projectRoutes(db: Db) {
         limit: req.query.limit, cursor: req.query.cursor,
       });
       const candidateIds = await access.projectDiscoveryCandidateIds(req.actor, companyId);
+      const readCondition = await projectReadSqlCondition(db, req.actor);
       const visible: ProjectDiscoveryPage["projects"] = [];
       let cursor = page.cursor;
       // Scan bounded projections; authorization runs before selecting the public
       // page/cursor so denied projects neither fill pages nor leak their IDs.
       while (visible.length <= page.limit) {
-        const batch = await svc.listSummaries(companyId, { limit: 51, cursor, includeArchived, candidateIds });
+        const batch = await svc.listSummaries(companyId, { limit: 51, cursor, includeArchived, candidateIds, readCondition });
         const allowed = await filterProjectsForActor(req, batch.map(project => ({ ...project, companyId })));
         visible.push(...allowed.map(({ companyId: _companyId, ...project }) => project));
         if (batch.length < 51) break;
@@ -354,7 +356,7 @@ export function projectRoutes(db: Db) {
       res.json({ projects: selected, nextCursor: visible.length > page.limit ? selected.at(-1)!.id : null } satisfies ProjectDiscoveryPage);
       return;
     }
-    const result = await svc.list(companyId, { includeArchived });
+    const result = await svc.list(companyId, { includeArchived, readCondition: await projectReadSqlCondition(db, req.actor) });
     res.json(await filterProjectsForActor(req, result));
   });
 

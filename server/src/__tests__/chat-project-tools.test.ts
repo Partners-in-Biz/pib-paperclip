@@ -41,7 +41,7 @@ import { recoveryPostgresSupport as support } from "./helpers/recovery-postgres.
     const policy = { trustPreset: "low_trust_review", authorizationPolicy: { trustBoundary: { mode: "low_trust_review", companyId: f.companyId, projectIds: ids.slice(-2) } } };
     await server.db.update(agents).set({ permissions: policy }).where(eq(agents.id, f.agentId));
     expect((await projectService(server.db).listSummaries(f.companyId, {
-      limit: 51, includeArchived: false, candidateIds: ids.slice(-2),
+      limit: 51, includeArchived: false, candidateIds: ids.slice(-2), readCondition: "system",
     })).map(p => p.id)).toEqual(ids.slice(-2));
     const restricted = await callProjectTool({ ...toolInput, arguments: { limit: 1 } });
     expect(restricted.projects.map((p: { id: string }) => p.id)).toEqual([ids[51]]);

@@ -10034,7 +10034,8 @@ export function issueRoutes(
         activeRecoveryAction,
       })),
       timing.time("mentioned_projects", () => mentionedProjectIds.length > 0
-        ? projectsSvc.listByIds(issue.companyId, mentionedProjectIds)
+        ? projectReadSqlCondition(db, req.actor).then((readCondition) =>
+          projectsSvc.listByIds(issue.companyId, mentionedProjectIds, { readCondition }))
         : Promise.resolve([])),
     ]);
     const relationsWithRecoveryActions = withRecoveryActionsOnRelationSummaries(

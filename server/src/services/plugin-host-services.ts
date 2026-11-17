@@ -1936,7 +1936,9 @@ export function buildHostServices(
       async list(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        return applyWindow((await projects.list(companyId)) as Project[], params);
+        // "system": a worker-to-host call carries no person. A restricted person reaches a plugin only
+        // through the plugin gate (spec 4.6, C5) and the plugin's own access guard (stage A).
+        return applyWindow((await projects.list(companyId, { readCondition: "system" })) as Project[], params);
       },
       async get(params) {
         const companyId = ensureCompanyId(params.companyId);

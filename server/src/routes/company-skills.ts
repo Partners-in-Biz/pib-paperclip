@@ -68,7 +68,7 @@ import {
   normalizeSkillPolicySourceType,
   type SkillPolicyPrincipal,
 } from "../services/company-skill-policy.js";
-import { authorizationDeniedDetails, type AuthorizationActor } from "../services/authorization.js";
+import { authorizationDeniedDetails, projectReadSqlCondition, type AuthorizationActor } from "../services/authorization.js";
 import {
   normalizeSkillPolicySourceLocator,
   type SkillPolicyAction,
@@ -1652,7 +1652,7 @@ export function companySkillRoutes(db: Db, options: { pluginWorkerManager?: Plug
     async (req, res) => {
       const companyId = req.params.companyId as string;
       await assertCanMutateCompanySkills(req, companyId, "skills.import", { sourceType: "workspace" });
-      const result = await svc.browseProjectWorkspace(companyId, req.body);
+      const result = await svc.browseProjectWorkspace(companyId, req.body, await projectReadSqlCondition(db, req.actor));
       res.json(result);
     },
   );
@@ -1663,7 +1663,7 @@ export function companySkillRoutes(db: Db, options: { pluginWorkerManager?: Plug
     async (req, res) => {
       const companyId = req.params.companyId as string;
       await assertCanMutateCompanySkills(req, companyId, "skills.import", { sourceType: "workspace" });
-      const result = await svc.scanProjectWorkspaces(companyId, req.body);
+      const result = await svc.scanProjectWorkspaces(companyId, req.body, await projectReadSqlCondition(db, req.actor));
 
       const actor = getActorInfo(req);
       await logActivity(db, {
