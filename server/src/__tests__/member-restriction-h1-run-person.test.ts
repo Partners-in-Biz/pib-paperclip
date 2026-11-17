@@ -3,21 +3,8 @@ import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
-  activityLog,
-  agentRuntimeState,
-  agentWakeupRequests,
-  agents,
-  authUsers,
-  companies,
-  companyMemberships,
-  companySkills,
-  costEvents,
-  createDb,
-  heartbeatRunEvents,
-  heartbeatRuns,
-  issueComments,
-  issues,
-  type Db,
+  activityLog, agentRuntimeState, agentWakeupRequests, agents, authUsers, companies, companyMemberships, companySkills,
+  costEvents, createDb, heartbeatRunEvents, heartbeatRuns, issueComments, issues, type Db,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
@@ -26,10 +13,7 @@ import { runningProcesses } from "../adapters/index.ts";
 import { issueService } from "../services/issues.ts";
 import { createHeartbeatRunPreparation } from "../services/heartbeat/run-preparation.js";
 import {
-  WAKE_CAUSING_ACTOR_CONTEXT_KEY,
-  stampWakeCausingActor,
-  wakeCausingActorFromStoredWake,
-  type WakeCausingActor,
+  WAKE_CAUSING_ACTOR_CONTEXT_KEY, stampWakeCausingActor, wakeCausingActorFromStoredWake, type WakeCausingActor,
 } from "../services/heartbeat/causing-actor.js";
 import type { WakeupOptions } from "../services/heartbeat/run-preparation.js";
 
@@ -117,19 +101,8 @@ describe("H1 database support", () => {
     mockAdapterExecute.mockClear();
     runningProcesses.clear();
     await drainHeartbeatRunsToQuiescence(db, heartbeat);
-    await db.delete(issueComments);
-    await db.delete(activityLog);
-    await db.delete(heartbeatRunEvents);
-    await db.delete(costEvents);
-    await db.delete(heartbeatRuns);
-    await db.delete(agentWakeupRequests);
-    await db.delete(agentRuntimeState);
-    await db.delete(issues);
-    await db.delete(agents);
-    await db.delete(companySkills);
-    await db.delete(companyMemberships);
-    await db.delete(companies);
-    await db.delete(authUsers);
+    for (const table of [issueComments, activityLog, heartbeatRunEvents, costEvents, heartbeatRuns, agentWakeupRequests,
+      agentRuntimeState, issues, agents, companySkills, companyMemberships, companies, authUsers]) await db.delete(table);
   });
 
   afterAll(async () => {
