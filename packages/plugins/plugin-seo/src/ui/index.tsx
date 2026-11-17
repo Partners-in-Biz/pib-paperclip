@@ -121,19 +121,19 @@ function SeoAgentBox({ hire, stuck, refresh, onMessage }: { hire: HireView | nul
 
 const RUNNING = ["pre_launch", "active", "compounding"];
 
-export const SeoPage = withHelp(SeoPageGated);
+export const SeoPage = withHelp(SeoPageMain);
 
 /** The page asks `access.me` first; closed shows the "no access" page (the guard still refuses every call). */
-function SeoPageGated(props: PluginPageProps) {
+function SeoPageMain(props: PluginPageProps) {
   const access = useAccess(useAccessMe(), props.context.companyId);
   return (
     <AccessGate state={access} kind="page" moduleName="SEO">
-      <SeoPageMain {...props} />
+      <SeoPageBody {...props} />
     </AccessGate>
   );
 }
 
-function SeoPageMain({ context }: PluginPageProps) {
+function SeoPageBody({ context }: PluginPageProps) {
   const load = useSeoAction("seo.load");
   const reportRoutine = useSeoAction("seo.routine-report");
   const nav = useHostNavigation();
