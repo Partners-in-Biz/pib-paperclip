@@ -1,3 +1,4 @@
+import { SYSTEM_CAUSING_ACTOR } from "./causing-actor.js";
 import { readNativeStartupCleanup } from "../native-runtime/native-startup-cleanup.js";
 import { isContextCompactionRun } from "../context-compaction.js";
 import { notifyStrandedAgentStatus } from "../live-run-recovery-notifications.js";
@@ -1641,6 +1642,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
     if (decision.kind !== "enqueue") return;
 
     const continuationRun = await enqueueWakeup(run.agentId, {
+      causingActor: { type: "agent", agentId: run.agentId, runId: run.id },
       source: "automation",
       triggerDetail: "system",
       reason: RUN_LIVENESS_CONTINUATION_REASON,
@@ -2032,6 +2034,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
     }
 
     const handoffRun = await enqueueWakeup(decision.targetAgentId, {
+      causingActor: { type: "agent", agentId: run.agentId, runId: run.id },
       source: "automation",
       triggerDetail: "system",
       reason: FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
@@ -2151,6 +2154,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
     if (decision.kind !== "enqueue") return;
 
     const recoveryRun = await enqueueWakeup(issue.assigneeAgentId, {
+      causingActor: SYSTEM_CAUSING_ACTOR,
       source: "automation",
       triggerDetail: "system",
       reason: ISSUE_REVIEW_PATH_LOST_WAKE_REASON,

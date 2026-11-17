@@ -1,3 +1,4 @@
+import { SYSTEM_CAUSING_ACTOR, wakeCausingActorFromActorRef } from "./causing-actor.js";
 import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { notifyIssueReviewState } from "../issue-review-state-notifications.js";
@@ -351,6 +352,7 @@ export function createHeartbeatScheduling(
 
       if (recoveryIssue.assigneeAgentId) {
         await enqueueWakeup(recoveryIssue.assigneeAgentId, {
+          causingActor: wakeCausingActorFromActorRef({ actorType: input.actorType, actorId: input.actorId }),
           source: "automation",
           triggerDetail: "system",
           reason: "issue_monitor_recovery_issue",
@@ -415,6 +417,7 @@ export function createHeartbeatScheduling(
         sql`${agentWakeupRequests.payload}->>'issueId' = ${input.claimed.id}`,
         sql`${agentWakeupRequests.status} <> 'skipped'`)).limit(1);
     const wake = accepted ?? await enqueueWakeup(input.claimed.assigneeAgentId!, {
+      causingActor: SYSTEM_CAUSING_ACTOR,
       issueStateGuard: { statuses: [input.claimed.status], assigneeAgentId: input.claimed.assigneeAgentId!,
         monitorNextCheckAt: input.scheduledAtIso,
         monitorWakeRequestedAt: input.claimed.monitorWakeRequestedAt!.toISOString() },
@@ -787,6 +790,7 @@ export function createHeartbeatScheduling(
       } else {
         let executionDeferredCause: string | null = null;
         const wake = await enqueueWakeup(targetAgentId, {
+          causingActor: wakeCausingActorFromActorRef({ actorType: input.actorType, actorId: input.actorId }),
           issueStateGuard: { statuses: [claimed.status], assigneeAgentId: claimed.assigneeAgentId,
             monitorNextCheckAt: scheduledAtIso, monitorWakeRequestedAt: claimed.monitorWakeRequestedAt!.toISOString(),
             onExecutionDeferred: cause => { executionDeferredCause = cause; } },
@@ -1165,6 +1169,7 @@ export function createHeartbeatScheduling(
     let enqueued = 0;
     for (const session of sessions) {
       const run = await enqueueWakeup(session.agentId, {
+        causingActor: SYSTEM_CAUSING_ACTOR,
         source: "automation",
         triggerDetail: "system",
         reason: "goal_control",
@@ -1268,6 +1273,7 @@ export function createHeartbeatScheduling(
       }
 
       const run = await enqueueWakeup(action.agentId, {
+        causingActor: SYSTEM_CAUSING_ACTOR,
         source: "automation",
         triggerDetail: "system",
         reason: "goal_control",
@@ -1362,6 +1368,7 @@ export function createHeartbeatScheduling(
       const timerClaim = await claimDueTimerHeartbeat(agent, now, intervalSec);
       if (!timerClaim) continue;
       const run = await enqueueWakeup(agent.id, {
+        causingActor: SYSTEM_CAUSING_ACTOR,
         source: "timer", triggerDetail: "system", reason: "heartbeat_timer",
         requestedByActorType: "system", requestedByActorId: "heartbeat_scheduler",
         contextSnapshot: { source: "scheduler", reason: "interval_elapsed", now: now.toISOString(),

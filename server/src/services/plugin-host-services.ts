@@ -1,4 +1,5 @@
 import { projectGitAuthorizationService } from "./project-git-authorization.js";
+import { SYSTEM_CAUSING_ACTOR } from "./heartbeat/causing-actor.js";
 import { createLiveEventDelivery } from "../realtime/live-event-delivery.js";
 import { createLiveRunEventRedactor } from "./live-run-event-redaction.js";
 import { projectInstanceSecretService } from "./project-instance-secrets.js";
@@ -1163,6 +1164,7 @@ export function buildHostServices(
     }
 
     void heartbeat.wakeup(issue.assigneeAgentId, {
+      causingActor: { type: "user", userId: args.actorUserId },
       source: "automation",
       triggerDetail: "system",
       reason: "issue_commented",
@@ -2447,6 +2449,7 @@ export function buildHostServices(
         }
         const contextSource = params.contextSource ?? "plugin.issue.requestWakeup";
         const run = await heartbeat.wakeup(issue.assigneeAgentId, {
+          causingActor: SYSTEM_CAUSING_ACTOR,
           source: "assignment",
           triggerDetail: "system",
           reason: params.reason ?? "plugin_issue_wakeup_requested",
@@ -2515,6 +2518,7 @@ export function buildHostServices(
           }
           const contextSource = params.contextSource ?? "plugin.issue.requestWakeups";
           const run = await heartbeat.wakeup(issue.assigneeAgentId, {
+            causingActor: SYSTEM_CAUSING_ACTOR,
             source: "assignment",
             triggerDetail: "system",
             reason: params.reason ?? "plugin_issue_wakeup_requested",
@@ -2716,6 +2720,7 @@ export function buildHostServices(
             && postCommentIssue.status !== "cancelled"
           ) {
             await heartbeat.wakeup(postCommentIssue.assigneeAgentId, {
+              causingActor: { type: "user", userId: params.actorUserId },
               source: "automation",
               triggerDetail: "system",
               reason: "issue_commented",
@@ -2980,6 +2985,7 @@ export function buildHostServices(
         // (applied) and only when a requester agent exists.
         if (applied && approval.requestedByAgentId) {
           void heartbeat.wakeup(approval.requestedByAgentId, {
+            causingActor: { type: "user", userId: params.actorUserId },
             source: "automation",
             triggerDetail: "system",
             reason: params.action === "approve" ? "approval_approved" : "approval_rejected",
@@ -3112,6 +3118,7 @@ export function buildHostServices(
         const agent = await agents.getById(params.agentId);
         requireInCompany("Agent", agent, companyId);
         const run = await heartbeat.wakeup(params.agentId, {
+          causingActor: SYSTEM_CAUSING_ACTOR,
           source: "automation",
           triggerDetail: "system",
           reason: params.reason ?? null,
@@ -3596,6 +3603,7 @@ export function buildHostServices(
         if (!session) throw new Error(`Session not found: ${params.sessionId}`);
 
         const run = await heartbeat.wakeup(session.agentId, {
+          causingActor: SYSTEM_CAUSING_ACTOR,
           source: "automation",
           triggerDetail: "system",
           reason: params.reason ?? null,

@@ -527,7 +527,7 @@ describePg("decisionService", () => {
     expect(await service().recoverEffects()).toEqual({ resumed: 1 });
     expect((await service().get(created.id))?.executionStatus).toBe("succeeded");
     expect(await db.select().from(issueComments).where(eq(issueComments.issueId, targetIssueId))).toHaveLength(1);
-    expect(wakes).toEqual([{ companyId, agentId, issueId: originIssueId, decisionId: created.id, outcome: "decided" }]);
+    expect(wakes).toEqual([{ companyId, agentId, issueId: originIssueId, decisionId: created.id, outcome: "decided", decidedByUserId }]);
   });
 
   it("retries a terminal continuation after a crash between effects and wake delivery", async () => {
@@ -544,7 +544,7 @@ describePg("decisionService", () => {
 
     await service().sweepContinuations();
 
-    expect(wakes).toEqual([{ companyId, agentId, issueId: originIssueId, decisionId: created.id, outcome: "decided" }]);
+    expect(wakes).toEqual([{ companyId, agentId, issueId: originIssueId, decisionId: created.id, outcome: "decided", decidedByUserId }]);
     expect((await service().get(created.id))?.metadata).toMatchObject({ continuationPending: false });
     expect(await db.select().from(issueComments).where(eq(issueComments.issueId, targetIssueId))).toHaveLength(1);
   });
@@ -753,7 +753,7 @@ describePg("decisionService", () => {
     const result = await service().dismiss(created.id, decidedByUserId, boardActor(), "No");
 
     expect(result).toMatchObject({ status: "decided", chosenOptionId: "dismissed" });
-    expect(wakes).toEqual([{ companyId, agentId, issueId: originIssueId, decisionId: created.id, outcome: "decided" }]);
+    expect(wakes).toEqual([{ companyId, agentId, issueId: originIssueId, decisionId: created.id, outcome: "decided", decidedByUserId }]);
   });
   describe("continuation worker", () => {
     let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;

@@ -1,3 +1,4 @@
+import { wakeCausingActorFromActorRef } from "./causing-actor.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { writeDeferredExecutionWait } from "../deferred-execution-wait.js";
 import type { DeferredReceiptRecoveryOptions } from "../deferred-execution-notifications.js";
@@ -702,6 +703,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
       // atomically adopts the deferred comments and still applies every gate.
       await enqueueWakeup(run.agentId, { source: wake.source as WakeupOptions["source"], triggerDetail: (wake.triggerDetail ?? undefined) as WakeupOptions["triggerDetail"],
         reason, payload, contextSnapshot: context,
+        causingActor: wakeCausingActorFromActorRef({ actorType: "user", actorId: requestedByActorId }),
         requestedByActorType: "user", requestedByActorId,
         queuedCommentRequestId: wake.id,
         idempotencyKey: `remote-stop-comment:${run.id}:${wake.id}` }, wake.id);
@@ -816,6 +818,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     const deliveryPayload = response ? { ...payload } : withQueuedCommentIdsInWakePayload(payload, commentIds);
     delete deliveryPayload.queuedCommentInterrupt;
     await enqueueWakeup(wake.agentId, {
+      causingActor: { type: "user", userId: actorId },
       source: "on_demand", triggerDetail: "manual", reason: "issue_commented",
       payload: deliveryPayload, contextSnapshot: response
         ? { ...parseObject(payload._paperclipWakeContext), issueId, triggeredBy: "board", actorId,
@@ -848,6 +851,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     const issueId = readNonEmptyString(wake.payload?.issueId);
     if (!issueId) return;
     await enqueueWakeup(wake.agentId, { source: "on_demand", triggerDetail: "manual", reason: "task_retry",
+      causingActor: { type: "user", userId: intent.actorId },
       requestedByActorType: "user", requestedByActorId: intent.actorId, taskRetryRequestId: wake.id,
       payload: { issueId }, contextSnapshot: { issueId, triggeredBy: "board", actorId: intent.actorId,
         responsibleUserId: intent.actorId },
