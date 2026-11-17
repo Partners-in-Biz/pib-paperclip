@@ -65,6 +65,15 @@ describe.skipIf(!available)("billing approvals (postgres)", () => {
     return invoice;
   }
 
+  it("records the person whose click asked as the task's creator, and nobody for an agent", async () => {
+    await roles({});
+    const base = { companyId: COMPANY, title: "Send invoice", description: "d", client: null, originId: "invoice-send:i1", outward: true };
+    const byPerson = await openBillingApproval(h.ctx, { ...SETTINGS } as never, { ...base, actorUserId: "user-1" });
+    expect(h.issues.get(byPerson.id)!.actor).toEqual({ actorUserId: "user-1" });
+    const byAgent = await openBillingApproval(h.ctx, { ...SETTINGS } as never, { ...base, actorUserId: null });
+    expect(h.issues.get(byAgent.id)!.actor).toBeNull();
+  });
+
   it("the frozen roles copy (no owner, no Reviewer) still reaches the host's default owner: the live failure, fixed", async () => {
     await roles({ ownerUserId: null });
     (h.ctx.companies as unknown as { get: (id: string) => Promise<unknown> }).get = async (id: string) => ({ id, name: "PiB", issuePrefix: "PIB", defaultResponsibleUserId: "owner-default" });

@@ -1,8 +1,11 @@
 import { AgentIdentity } from "@/components/AgentIdentity";
 import type { AvatarAgent } from "./AgentAvatar";
 import type { ReactNode } from "react";
-import { deriveOriginatingActor, type Issue } from "@paperclipai/shared";
-import { Columns3 } from "lucide-react";
+import { deriveIssueCreator, deriveOriginatingActor, type Issue } from "@paperclipai/shared";
+import { Columns3, Zap } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { routinesApi } from "../api/routines";
+import { queryKeys } from "../lib/queryKeys";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Button } from "@/components/ui/button";
 import {
@@ -24,13 +27,37 @@ import { StatusIcon } from "./StatusIcon";
 import { Badge } from "@/components/ui/badge";
 import { taskStatusIconProps } from "@/lib/task-status-presentation";
 
+/** Name a routine-made task's routine (shares the routine detail cache). Other sources are named without a lookup. */
+function useRoutineName(issue: Pick<Issue, "originKind" | "originId">): string | null {
+  const routineId = issue.originKind === "routine_execution" ? (issue.originId ?? null) : null;
+  const { data } = useQuery({
+    queryKey: queryKeys.routines.detail(routineId ?? ""),
+    queryFn: () => routinesApi.get(routineId as string),
+    enabled: Boolean(routineId),
+  });
+  return data?.title?.trim() || null;
+}
+
+/** "Created by" for a task nobody clicked: the automation's name ("SEO", "Mailbox", "Routine: <name>"). */
+export function AutomationCreatorLabel({ issue }: { issue: Pick<Issue, "createdByUserId" | "createdByAgentId" | "originKind" | "originId"> }) {
+  const routineName = useRoutineName(issue);
+  const creator = deriveIssueCreator(issue, { routineName });
+  const name = creator.kind === "automation" ? creator.name : "";
+  return (
+    <span className="flex min-w-0 max-w-full items-center gap-1" data-testid="issue-created-by-automation" title={name}>
+      <Zap className="h-3 w-3 shrink-0 text-muted-foreground" aria-hidden />
+      <span className="min-w-0 truncate">{name}</span>
+    </span>
+  );
+}
+
 export const issueTrailingColumns: InboxIssueColumn[] = ["assignee", "kickedOffBy", "project", "workspace", "parent", "labels", "updated"];
 
 const issueColumnLabels: Record<InboxIssueColumn, string> = {
   status: "Status",
   id: "ID",
   assignee: "Responsible",
-  kickedOffBy: "Kicked off by",
+  kickedOffBy: "Created by",
   project: "Project",
   workspace: "Workspace",
   parent: "Parent task",
@@ -42,7 +69,7 @@ const issueColumnDescriptions: Record<InboxIssueColumn, string> = {
   status: "Task state chip on the left edge.",
   id: "Ticket identifier like PAP-1009.",
   assignee: "Responsible agent or board user.",
-  kickedOffBy: "Board user or agent who created the task.",
+  kickedOffBy: "Person, agent or automation that created the task.",
   project: "Linked project pill with its color.",
   workspace: "Execution or project workspace used for the task.",
   parent: "Parent task identifier and title.",
@@ -397,8 +424,8 @@ export function InboxIssueTrailingColumns({
           }
 
           return (
-            <span key={column} className="min-w-0 truncate text-xs text-muted-foreground">
-              Unknown
+            <span key={column} className="block min-w-0 text-xs text-foreground">
+              <AutomationCreatorLabel issue={issue} />
             </span>
           );
         }

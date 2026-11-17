@@ -24,7 +24,7 @@ export interface Harness {
   client: PgClient;
   emitted: Array<{ name: string; companyId: string; payload: unknown }>;
   documents: Map<string, { issueId: string; key: string; body: string; title?: string; format?: string }>;
-  issues: Map<string, { id: string; companyId: string; title: string; description?: string; status: string; assigneeUserId?: string | null; assigneeAgentId?: string | null; originId?: string | null; projectId?: string | null; identifier?: string; createdAt?: string }>;
+  issues: Map<string, { id: string; companyId: string; title: string; description?: string; status: string; assigneeUserId?: string | null; assigneeAgentId?: string | null; originId?: string | null; projectId?: string | null; identifier?: string; createdAt?: string; actor?: { actorUserId?: string | null; actorAgentId?: string | null } | null }>;
   comments: Array<{ issueId: string; body: string }>;
   wakeups: string[];
   handlers: Map<string, Array<(event: PluginEvent) => Promise<void>>>;
@@ -132,9 +132,9 @@ export async function startHarness(): Promise<Harness> {
       },
     },
     issues: {
-      create: async (input: { companyId: string; title: string; description?: string; status?: string; assigneeUserId?: string | null; assigneeAgentId?: string | null; originId?: string | null; projectId?: string | null }) => {
+      create: async (input: { companyId: string; title: string; description?: string; status?: string; assigneeUserId?: string | null; assigneeAgentId?: string | null; originId?: string | null; projectId?: string | null; actor?: { actorUserId?: string | null; actorAgentId?: string | null } }) => {
         issueSeq += 1;
-        const issue = { id: `issue-${issueSeq}`, companyId: input.companyId, title: input.title, description: input.description, status: input.status ?? "todo", assigneeUserId: input.assigneeUserId ?? null, assigneeAgentId: input.assigneeAgentId ?? null, originId: input.originId ?? null, projectId: input.projectId ?? null, identifier: `PIB-${issueSeq}`, createdAt: new Date().toISOString() };
+        const issue = { id: `issue-${issueSeq}`, companyId: input.companyId, title: input.title, description: input.description, status: input.status ?? "todo", assigneeUserId: input.assigneeUserId ?? null, assigneeAgentId: input.assigneeAgentId ?? null, originId: input.originId ?? null, projectId: input.projectId ?? null, actor: input.actor ?? null, identifier: `PIB-${issueSeq}`, createdAt: new Date().toISOString() };
         issues.set(issue.id, issue);
         return issue;
       },
