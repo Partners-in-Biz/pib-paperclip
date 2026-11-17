@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { actingPersonForRun } from "../src/access/acting-person.js";
-import { embeddedAvailable, startPg, type Pg } from "./helpers/pg.js";
+import { databaseRequired, embeddedAvailable, startPg, type Pg } from "./helpers/pg.js";
 
 const available = await embeddedAvailable();
 let pg: Pg;
@@ -42,7 +42,7 @@ afterAll(async () => {
   if (available) await pg.stop();
 });
 
-it.runIf(Boolean(process.env.CI))("runs against a real database in CI (never skips there)", () => {
+it.runIf(databaseRequired())("runs against a real database in CI (never skips there)", () => {
   expect(available).toBe(true);
 });
 
