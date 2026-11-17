@@ -1465,6 +1465,7 @@ describe.each(["unchanged", "newer_active", "stale_idle"] as const)(
         return directExecute();
       });
       const fresh = await heartbeat.wakeup(agentId, {
+        causingActor: "system",
         source: "automation",
         triggerDetail: "system",
         reason: "issue_commented",
@@ -1624,7 +1625,7 @@ describe("goal-less native task-session publication", () => {
         executionWorkspaceSettings: { mode: "shared_workspace" } });
       await db.insert(issueWorkProducts).values({ id: workProductId, companyId, issueId, type: "artifact", provider: "paperclip",
         title: "Saved artifact", status: "ready_for_review", reviewState: "approved" });
-      const first = await heartbeat.wakeup(agentId, { source: "automation", triggerDetail: "system", reason: "issue_commented",
+      const first = await heartbeat.wakeup(agentId, { causingActor: "system", source: "automation", triggerDetail: "system", reason: "issue_commented",
         requestedByActorType: "user", requestedByActorId: "pointer-user", payload: { issueId }, contextSnapshot: { issueId, taskId: issueId, skipIssueComment: true } });
       expect(first).not.toBeNull();
       await closeEntered;
@@ -1658,7 +1659,7 @@ describe("goal-less native task-session publication", () => {
       const issuesSvc = issueService(db);
       await issuesSvc.update(issueId, { status: "todo", actorUserId: "pointer-user" });
       const comment = await issuesSvc.addComment(issueId, "Continue using the saved artifact.", { userId: "pointer-user" });
-      const second = await heartbeat.wakeup(agentId, { source: "automation", triggerDetail: "system", reason: "issue_reopened_via_comment",
+      const second = await heartbeat.wakeup(agentId, { causingActor: "system", source: "automation", triggerDetail: "system", reason: "issue_reopened_via_comment",
         requestedByActorType: "user", requestedByActorId: "pointer-user", payload: { issueId, commentId: comment.id, mutation: "comment", reopenedFrom: "done" },
         contextSnapshot: { issueId, taskId: issueId, wakeCommentId: comment.id, reopenedFrom: "done", skipIssueComment: true,
           ...(mode === "fresh" ? { forceFreshSession: true } : {}) } });
@@ -1689,7 +1690,7 @@ describe("goal-less native task-session publication", () => {
         })]);
         await issuesSvc.update(issueId, { status: "todo", actorUserId: "pointer-user" });
         const followup = await issuesSvc.addComment(issueId, "Continue the fresh session's saved work.", { userId: "pointer-user" });
-        const third = await heartbeat.wakeup(agentId, { source: "automation", triggerDetail: "system", reason: "issue_reopened_via_comment",
+        const third = await heartbeat.wakeup(agentId, { causingActor: "system", source: "automation", triggerDetail: "system", reason: "issue_reopened_via_comment",
           requestedByActorType: "user", requestedByActorId: "pointer-user",
           payload: { issueId, commentId: followup.id, mutation: "comment", reopenedFrom: "done" },
           contextSnapshot: { issueId, taskId: issueId, wakeCommentId: followup.id, reopenedFrom: "done", skipIssueComment: true } });

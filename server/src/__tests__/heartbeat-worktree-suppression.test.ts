@@ -199,6 +199,7 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
     });
 
     const run = await heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "assignment",
       triggerDetail: "system",
       reason: "issue_assigned",
@@ -282,6 +283,7 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
     });
 
     const systemRun = await heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "assignment",
       triggerDetail: "system",
       payload: { issueId },
@@ -302,6 +304,7 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
     });
 
     const userRun = await heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "on_demand",
       triggerDetail: "manual",
       payload: { issueId },
@@ -323,6 +326,7 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
     const heartbeat = heartbeatService(db, { runtimeEnv: {} });
 
     const run = await heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "assignment",
       triggerDetail: "system",
       reason: "issue_assigned",

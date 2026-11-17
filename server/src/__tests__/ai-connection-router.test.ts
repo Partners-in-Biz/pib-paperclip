@@ -318,7 +318,7 @@ describe("durable, authorized connection routing", () => {
       throw new Error("fixture policy interruption");
     });
     try {
-      const run = await heartbeat.wakeup(agent!.id, { source: "on_demand", reason: "manual", triggerDetail: "manual", contextSnapshot: { responsibleUserId: "alice", wakeReason: "manual" } });
+      const run = await heartbeat.wakeup(agent!.id, { causingActor: "system", source: "on_demand", reason: "manual", triggerDetail: "manual", contextSnapshot: { responsibleUserId: "alice", wakeReason: "manual" } });
       expect(run).not.toBeNull();
       await expect.poll(async () => (await heartbeat.getRun(run!.id))?.status, { timeout: 20_000 }).toBe("failed");
       expect(affinity).toBe(run!.id);
@@ -343,7 +343,7 @@ describe("durable, authorized connection routing", () => {
     proposal.mockResolvedValueOnce({ kind: "exhausted", retryAt: new Date(Date.now() + 60_000).toISOString(), skipped: { [members[1]!.id]: "Exhausted" } });
     const heartbeat = heartbeatService(db, { pluginWorkerManager: worker, runtimeEnv: {} });
     try {
-      const run = await heartbeat.wakeup(agent!.id, { source: "assignment", reason: "issue_assigned", payload: { issueId: issue!.id }, contextSnapshot: { issueId: issue!.id, wakeReason: "issue_assigned", responsibleUserId: "alice" }, triggerDetail: "system" });
+      const run = await heartbeat.wakeup(agent!.id, { causingActor: "system", source: "assignment", reason: "issue_assigned", payload: { issueId: issue!.id }, contextSnapshot: { issueId: issue!.id, wakeReason: "issue_assigned", responsibleUserId: "alice" }, triggerDetail: "system" });
       expect(run).not.toBeNull();
       await expect.poll(async () => (await heartbeat.getRun(run!.id))?.status, { timeout: 20_000 }).toBe("cancelled");
       const cancelled = await heartbeat.getRun(run!.id); expect(cancelled?.errorCode).toBe("ai_connection_pool_exhausted");
@@ -377,7 +377,7 @@ describe("durable, authorized connection routing", () => {
     proposal.mockRejectedValueOnce(new Error("Synthetic unexpected router policy failure"));
     const heartbeat = heartbeatService(db, { pluginWorkerManager: worker, runtimeEnv: {} });
     try {
-      const run = await heartbeat.wakeup(agent!.id, { source: "assignment", reason: "issue_assigned", payload: { issueId: issue!.id }, contextSnapshot: { issueId: issue!.id, wakeReason: "issue_assigned", responsibleUserId: "alice" }, triggerDetail: "system" });
+      const run = await heartbeat.wakeup(agent!.id, { causingActor: "system", source: "assignment", reason: "issue_assigned", payload: { issueId: issue!.id }, contextSnapshot: { issueId: issue!.id, wakeReason: "issue_assigned", responsibleUserId: "alice" }, triggerDetail: "system" });
       expect(run).not.toBeNull();
       await expect.poll(async () => (await heartbeat.getRun(run!.id))?.status, { timeout: 20_000 }).toBe("failed");
       const failed = await heartbeat.getRun(run!.id);
@@ -476,7 +476,7 @@ describe("durable, authorized connection routing", () => {
     const [issue] = await db.insert(issues).values({ companyId, title: "Healthy routed task", status: "todo",
       assigneeAgentId: agent.id, responsibleUserId: "alice", createdByUserId: "alice" }).returning();
     try {
-      const run = await heartbeat.wakeup(agent.id, { source: "assignment", reason: "issue_assigned", triggerDetail: "system",
+      const run = await heartbeat.wakeup(agent.id, { causingActor: "system", source: "assignment", reason: "issue_assigned", triggerDetail: "system",
         payload: { issueId: issue.id }, contextSnapshot: { issueId: issue.id, responsibleUserId: "alice" } });
       expect(run).not.toBeNull();
       await heartbeat.drainActiveRunExecutions();

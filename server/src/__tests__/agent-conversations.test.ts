@@ -733,6 +733,7 @@ import {
 
         expect(
           await heartbeat.wakeup(runtimeAgent, {
+            causingActor: "system",
             source: "automation",
             contextSnapshot: { issueId: chat.id },
           }),
@@ -823,6 +824,7 @@ import {
         await db.update(issues).set(state).where(eq(issues.id, chat.id));
         for (const reason of ["issue_blockers_resolved", "issue_children_completed", "issue_unblock_requested"]) {
           expect(await heartbeat.wakeup(agentId, {
+            causingActor: "system",
             source: "automation",
             reason,
             contextSnapshot: { issueId: chat.id, wakeReason: reason },

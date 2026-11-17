@@ -120,7 +120,7 @@ describe("durable Grok routine qualification", () => {
     const acquire = vi.spyOn(runtime, "acquireRunLease").mockRejectedValue(new Error("Unexpected provider allocation"));
     const heartbeat = heartbeatService(db, { environmentRuntime: runtime });
     try {
-      await heartbeat.wakeup(f.agent.id, { source: "assignment", reason: "issue_assigned",
+      await heartbeat.wakeup(f.agent.id, { causingActor: "system", source: "assignment", reason: "issue_assigned",
         requestedByActorType: "user", requestedByActorId: f.principal.grant.userId,
         payload: { issueId: task.id }, contextSnapshot: { issueId: task.id } });
       await heartbeat.drainActiveRunExecutions();

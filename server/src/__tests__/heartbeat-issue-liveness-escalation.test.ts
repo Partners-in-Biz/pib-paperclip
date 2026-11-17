@@ -399,6 +399,7 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
 
     const heartbeat = heartbeatService(db);
     const followUpRun = await heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "automation",
       triggerDetail: "system",
       reason: "issue_commented",
@@ -777,6 +778,7 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     const heartbeat = heartbeatService(db);
     // Different producers and wake keys must not create new attempts or notices.
     await Promise.all(Array.from({ length: 6 }, (_, i) => heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "automation", triggerDetail: "system", reason: "issue_continuation_needed",
       requestedByActorType: "system", requestedByActorId: "wait-regression",
       idempotencyKey: `producer-${i}`, payload: { issueId: blockedIssueId },
@@ -814,6 +816,7 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
   it("rechecks every gate after an execution hold clears", async () => {
     const { companyId, agentId, blockedIssueId, blockerIssueId, action } = await seedExecutionWait();
     const wake = () => heartbeatService(db).wakeup(agentId, {
+      causingActor: "system",
       source: "automation", triggerDetail: "system", reason: "issue_continuation_needed",
       requestedByActorType: "system", requestedByActorId: "wait-regression",
       payload: { issueId: blockedIssueId }, contextSnapshot: { issueId: blockedIssueId },
@@ -841,6 +844,7 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
       }).returning();
       commentIds.push(comment!.id);
       expect(await heartbeat.wakeup(agentId, {
+        causingActor: "system",
         source: "on_demand", triggerDetail: "manual", reason: "issue_commented",
         requestedByActorType: "user", requestedByActorId: "board-user",
         payload: { issueId: blockedIssueId, commentId: comment!.id },
@@ -853,6 +857,7 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(0);
     await db.update(issueRecoveryActions).set({ evidence: {} }).where(eq(issueRecoveryActions.id, action.id));
     const resumed = await heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "on_demand", triggerDetail: "manual", reason: "issue_resumed",
       requestedByActorType: "user", requestedByActorId: "board-user",
       payload: { issueId: blockedIssueId }, contextSnapshot: { issueId: blockedIssueId },

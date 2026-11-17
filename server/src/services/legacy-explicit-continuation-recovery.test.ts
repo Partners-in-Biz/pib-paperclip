@@ -37,6 +37,7 @@ describe("legacy recovery after an explicit user continuation", () => {
     // provider, then replay the sweeper's already-read failed source explicitly.
     await db.insert(heartbeatRuns).values({ companyId, agentId, status: "running" });
     const successor = await heartbeatService(db).wakeup(agentId, {
+      causingActor: "system",
       source: "automation", triggerDetail: "system", reason: "issue_commented",
       requestedByActorType: "user", requestedByActorId: "board",
       payload: { issueId, commentId }, contextSnapshot: { issueId, wakeCommentId: commentId },

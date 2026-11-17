@@ -1259,7 +1259,7 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     const answerHeartbeat = legacy ? { ...heartbeat, wakeup: (...[agentId, options]: Parameters<typeof heartbeat.wakeup>) => {
       const contextSnapshot = { ...options?.contextSnapshot };
       delete contextSnapshot.mutation;
-      return heartbeat.wakeup(agentId, { ...options, contextSnapshot });
+      return heartbeat.wakeup(agentId, { causingActor: "system", ...options, contextSnapshot });
     } } : heartbeat;
     await questionResponseDeliveryService(db, { heartbeat: answerHeartbeat }).deliver(interaction.id);
     const [delivery] = await db.select().from(issueQuestionResponseDeliveries)
