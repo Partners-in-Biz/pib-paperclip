@@ -8,6 +8,8 @@ import { voiceSessionStore } from "../../voice/voice-session-store.js";
 
 import { githubChatPrincipalAccess } from "../../chat-github-access.js";
 
+import { inboundRefusedForPerson } from "../../member-restriction/inbound.js";
+
 import {
   and,
   eq,
@@ -44,6 +46,18 @@ type InboundAuthorityOptions = {
 export function createChatInboundAuthority(db: Db, options: InboundAuthorityOptions) {
   const { voiceStore, runtimeCallbackEndpoint } = options;
 
+  /**
+   * PAR-12608 4.6a row 11: a message from a linked identity is mapped to its
+   * person here. A person restricted under `enforce` is refused like a denied
+   * link; a failed read throws 503 `MEMBER_RESTRICTION_UNAVAILABLE`.
+   */
+  function restrictedLinkedPerson(database: DbOrTransaction, endpoint: EndpointRow, userId: string) {
+    return inboundRefusedForPerson(db, { companyId: endpoint.companyId, personId: userId, channel: "chat", objectId: endpoint.id }, database);
+  }
+  async function unlessRestricted<T extends { allowed: boolean; linkedDenied: boolean; userId: string | null }>(database: DbOrTransaction, endpoint: EndpointRow, access: T) {
+    if (!access.allowed || !access.userId || !(await restrictedLinkedPerson(database, endpoint, access.userId))) return access;
+    return { ...access, allowed: false, linkedDenied: true, userId: null };
+  }
 
   async function findAuthorizedIdentityLink(endpoint: EndpointRow, userId: string) {
     return db.select({ id: chatIdentityLinks.id }).from(chatIdentityLinks)
@@ -143,6 +157,9 @@ export function createChatInboundAuthority(db: Db, options: InboundAuthorityOpti
       ) {
         return { principal, userId: null, linkedDenied: true };
       }
+      if (await restrictedLinkedPerson(db, endpoint, link.userId)) {
+        return { principal, userId: null, linkedDenied: true, restricted: true };
+      }
       return { principal, userId: link.userId, linkedDenied: false };
     }
     return { principal, userId: null, linkedDenied: false };
@@ -193,7 +210,7 @@ export function createChatInboundAuthority(db: Db, options: InboundAuthorityOpti
       }
     }
     const githubAccess = await githubChatPrincipalAccess(tx, endpoint, principalId);
-    if (githubAccess) return githubAccess;
+    if (githubAccess) return unlessRestricted(tx, endpoint, githubAccess);
     // Link confirmation already uses this transaction-scoped identity key.
     // Taking it at the final task mutation boundary prevents a newly confirmed
     // identity from racing the authorization snapshot. Row locks below also
@@ -238,11 +255,11 @@ export function createChatInboundAuthority(db: Db, options: InboundAuthorityOpti
       const allowed =
         membership?.status === "active" &&
         membership.membershipRole !== "viewer";
-      return {
+      return unlessRestricted(tx, endpoint, {
         allowed,
         linkedDenied: !allowed,
         userId: allowed ? link.userId : null,
-      };
+      });
     }
     if (!endpoint.allowUnlinkedPeople) {
       return { allowed: false, linkedDenied: false, userId: null };
