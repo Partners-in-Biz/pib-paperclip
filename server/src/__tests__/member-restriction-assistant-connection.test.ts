@@ -11,23 +11,25 @@ import {
   companies,
   companyMemberships,
   createDb,
+  instanceUserRoles,
   issues,
   mcpOauthClients,
   mcpOauthGrants,
   mcpOauthRequests,
+  mcpOauthTokens,
   museAgentBindings,
 } from "@paperclipai/db";
 import { museCredentialHash } from "../services/muse-identity.js";
 import { museOAuth } from "../services/muse-oauth.js";
 import { errorHandler } from "../middleware/error-handler.js";
-import { publicMcpManagementRoutes } from "../routes/public-mcp.js";
+import { publicMcpIngressRoutes, publicMcpManagementRoutes } from "../routes/public-mcp.js";
 import { logActivity } from "../services/activity-log.js";
 import { authorizationService } from "../services/authorization.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { pluginActingPersonForActor } from "../services/member-restriction/plugin-acting-person.js";
 import { memberRestrictionResolver } from "../services/member-restriction/resolver.js";
 import { createPublicMcpEvents } from "../services/public-mcp/events.js";
-import { createPublicMcpOAuth } from "../services/public-mcp/oauth.js";
+import { createPublicMcpOAuth, hashMcpSecret } from "../services/public-mcp/oauth.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 /**
@@ -104,11 +106,18 @@ describe("assistant connection database support", () => {
     const id = await requestFor(target.config.resource, purpose === "personal" ? ["paperclip:read"] : ["paperclip:agent"]);
     return target.consent(id, session(userId), { decision: "approve", companyId, allowWrites: false });
   };
-  async function agentGrant(userId: string) {
+  async function agentGrant(userId: string, inCompany = companyId, forAgent = agentId) {
     const [grant] = await db.insert(mcpOauthGrants).values({
-      companyId, userId, clientId, agentId, resource: agentConfig.resource, purpose: "agent", scopes: ["paperclip:agent"],
+      companyId: inCompany, userId, clientId, agentId: forAgent, resource: agentConfig.resource, purpose: "agent", scopes: ["paperclip:agent"],
     }).returning();
     return grant!.id;
+  }
+  async function member(membershipRole: "owner" | "operator", restricted: boolean) {
+    const id = `person-${randomUUID()}`;
+    const now = new Date();
+    await db.insert(authUsers).values({ id, name: id, email: `${id}@example.test`, createdAt: now, updatedAt: now });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: id, status: "active", membershipRole, restricted });
+    return id;
   }
 
   beforeAll(async () => {
@@ -186,6 +195,20 @@ describe("assistant connection database support", () => {
     });
   }
 
+  it("AC-M1 under report: a flagged person approves; the grant is written and the refusal is only recorded", async () => {
+    const P = await member("operator", true);
+    await setMode("report");
+    try {
+      await expect(approve(P, "personal")).resolves.toMatchObject({ redirectUrl: expect.stringContaining("code=") });
+      expect(await grantsOf(P)).toHaveLength(1);
+      expect(await denials()).toEqual(expect.arrayContaining([expect.objectContaining({
+        personId: P, ruleId: "R-assistant-connection", target: "assistant_connection.approve", mode: "report",
+      })]));
+    } finally {
+      await setMode("enforce");
+    }
+  });
+
   it("AC-M1, row 3: R under enforce cannot pair a Muse agent connection; no grant is written", async () => {
     await expect((await musePairing(R))()).rejects.toMatchObject({ code: "access_denied", status: 403 });
     expect(await grantsOf(R)).toEqual([]);
@@ -233,6 +256,34 @@ describe("assistant connection database support", () => {
     const { actor } = await agentOAuth.authorizeGrant(await agentGrant(U));
     expect(actor).toEqual({ type: "agent", source: "mcp_oauth", agentId, companyId });
     await setMode("enforce");
+  });
+
+  // PAR-12931: the caller types rule group H does not bind keep today's actor.
+  it("AC-M3 caller types: an instance admin who is an operator here keeps today's agent-purpose actor", async () => {
+    const A = await member("operator", false);
+    await db.insert(instanceUserRoles).values({ userId: A, role: "instance_admin" });
+    const today = { type: "agent", source: "mcp_oauth", agentId, companyId };
+    expect((await agentOAuth.authorizeGrant(await agentGrant(A))).actor).toEqual(today);
+    // Flagged under report: the call is let through (recorded) and he is still not bound.
+    await setFlag(A, true);
+    await setMode("report");
+    try {
+      expect((await agentOAuth.authorizeGrant(await agentGrant(A))).actor).toEqual(today);
+    } finally {
+      await setMode("enforce");
+    }
+  });
+
+  it("AC-M3 caller types: the owner of company X restricted in company Y; each grant reads its own company's membership", async () => {
+    const P = await member("operator", true);
+    const [x] = await db.insert(companies).values({
+      name: "Owner co", issuePrefix: `X${randomUUID().slice(0, 6).toUpperCase()}`, memberRestrictionMode: "enforce",
+    }).returning();
+    await db.insert(companyMemberships).values({ companyId: x!.id, principalType: "user", principalId: P, status: "active", membershipRole: "owner" });
+    const [xAgent] = await db.insert(agents).values({ companyId: x!.id, name: "Dot X", role: "engineer", adapterType: "process" }).returning();
+    const { actor } = await agentOAuth.authorizeGrant(await agentGrant(P, x!.id, xAgent!.id));
+    expect(actor).toEqual({ type: "agent", source: "mcp_oauth", agentId: xAgent!.id, companyId: x!.id });
+    await expect(agentOAuth.authorizeGrant(await agentGrant(P))).rejects.toMatchObject({ code: "invalid_grant" });
   });
 
   it("AC-M4: U flagged after AC-M3: the next call through his agent-purpose connection is refused", async () => {
@@ -326,5 +377,45 @@ describe("assistant connection database support", () => {
     } finally {
       await setMode("enforce");
     }
+  });
+
+  // PAR-13141: the bearer path. A failed read is 503, never 401 invalid_token (a reconnect prompt).
+  it("AC-X1 per call site: bearer authenticate and the /mcp and /mcp/runner ingress answer 503", async () => {
+    const unavailable = { status: 503, details: { code: "MEMBER_RESTRICTION_UNAVAILABLE" } };
+    const [personal] = await db.insert(mcpOauthGrants).values({
+      companyId, userId: R, clientId, resource: config.resource, purpose: "personal", scopes: ["paperclip:read"],
+    }).returning();
+    const bearerFor = async (grantId: string) => {
+      const token = `pcmcp_at_${randomBytes(24).toString("base64url")}`;
+      await db.insert(mcpOauthTokens).values({ grantId, tokenHash: hashMcpSecret(token), kind: "access", expiresAt: new Date(Date.now() + 60_000) });
+      return token;
+    };
+    const personalToken = await bearerFor(personal!.id);
+    const agentToken = await bearerFor(await agentGrant(R));
+    const ingress = (target: typeof oauth) => {
+      const app = express();
+      app.use(express.json());
+      app.use(publicMcpIngressRoutes(target, vi.fn()));
+      app.use(errorHandler);
+      return app;
+    };
+    const call = (target: typeof oauth, token: string) => request(ingress(target)).post(new URL(target.config.resource).pathname)
+      .set("authorization", `Bearer ${token}`).send({ jsonrpc: "2.0", id: 1, method: "tools/list" });
+    resolverFails.on = true;
+    await expect(oauth.authenticate(personalToken)).rejects.toMatchObject(unavailable);
+    await expect(agentOAuth.authenticate(agentToken)).rejects.toMatchObject(unavailable);
+    for (const [target, token] of [[oauth, personalToken], [agentOAuth, agentToken]] as const) {
+      // Both MCP paths are secret-sensitive (http-log-policy), so the error handler
+      // redacts every 5xx body; the 503 and the missing reconnect challenge are the signal.
+      const res = await call(target, token);
+      expect(res.status).toBe(503);
+      expect(res.body).toEqual({ error: "Internal server error" });
+      expect(res.headers["www-authenticate"]).toBeUndefined();
+    }
+    // With the read working, R (flagged, enforce) gets today's 401 invalid_token.
+    resolverFails.on = false;
+    const refused = await call(oauth, personalToken);
+    expect(refused.status).toBe(401);
+    expect(refused.headers["www-authenticate"]).toContain("invalid_token");
   });
 });
