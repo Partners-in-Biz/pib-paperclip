@@ -38,6 +38,7 @@ export interface MemberRestrictionRouteEntry {
 
 const TASKS_TEST = "server/src/__tests__/member-restriction-route-table-tasks.test.ts";
 const TREE_TEST = "server/src/__tests__/member-restriction-route-table-comments-projects.test.ts";
+const INBOX_TEST = "server/src/__tests__/member-restriction-route-table-inbox-search.test.ts";
 const DOCS_TEST = "server/src/__tests__/member-restriction-route-table-documents.test.ts";
 const ACCOUNT_TEST = "server/src/__tests__/member-restriction-route-table-account.test.ts";
 const WORKSPACES_TEST = "server/src/__tests__/member-restriction-route-table-workspaces-assets.test.ts";
@@ -261,6 +262,30 @@ export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntr
   { method: "PATCH", path: "/api/companies/:companyId/branding", class: "closed" },
   { method: "POST", path: "/api/companies/:companyId/archive", class: "closed" },
   { method: "DELETE", path: "/api/companies/:companyId", class: "closed" },
+
+  // C4d-3 (PAR-13026): inbox, search, sidebar counts and inbox dismissals
+  // (4.6: results only through 4.3). The inbox and both searches take the read
+  // conditions; read state and inbox archive read the task first ("Issue not
+  // found"); the sidebar counts use the conditions of their lists, and the
+  // join-request count is 0 for him (AC-G7). Dismissals are his own rows.
+  { method: "GET", path: "/api/companies/:companyId/inbox/mine", class: "open", test: INBOX_TEST },
+  { method: "POST", path: "/api/issues/:id/read", class: "open", test: INBOX_TEST },
+  { method: "DELETE", path: "/api/issues/:id/read", class: "open", test: INBOX_TEST },
+  { method: "POST", path: "/api/issues/:id/inbox-archive", class: "open", test: INBOX_TEST },
+  { method: "DELETE", path: "/api/issues/:id/inbox-archive", class: "open", test: INBOX_TEST },
+  { method: "GET", path: "/api/companies/:companyId/search", class: "open", test: INBOX_TEST },
+  { method: "GET", path: "/api/companies/:companyId/search/extract", class: "open", test: INBOX_TEST },
+  { method: "GET", path: "/api/companies/:companyId/sidebar-badges", class: "open", test: INBOX_TEST },
+  { method: "GET", path: "/api/companies/:companyId/inbox-dismissals", class: "open", test: INBOX_TEST },
+  { method: "POST", path: "/api/companies/:companyId/inbox-dismissals", class: "open", test: INBOX_TEST },
+  { method: "DELETE", path: "/api/companies/:companyId/inbox-dismissals/:itemKey", class: "open", test: INBOX_TEST },
+  // Closed: the attention feed is the company's decision queue (decisions,
+  // join requests, triage and their history across the company); the action
+  // list denies the decision-queue actions.
+  { method: "GET", path: "/api/companies/:companyId/attention", class: "closed" },
+  { method: "GET", path: "/api/companies/:companyId/attention/summary", class: "closed" },
+  { method: "GET", path: "/api/companies/:companyId/attention/tasks", class: "closed" },
+  { method: "GET", path: "/api/companies/:companyId/attention/history", class: "closed" },
 
   // C4e-2 (PAR-12734): user directory, assets and execution workspaces. The
   // directory is reduced to id and display name where his person is
