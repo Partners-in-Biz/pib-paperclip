@@ -8940,10 +8940,16 @@ export function issueRoutes(
           loadIssues: () => readCompact(listFilters, "index"),
           loadFailures: async () => {
             const permission = await access.decide({ actor: req.actor, action: "company_scope:read", resource: { type: "company", companyId } });
-            if (!permission.allowed) throw new HttpError(403, "Run telemetry is outside this actor's authorization boundary");
-            const runs = latestFailedRunsByAgent(await heartbeat.list(companyId, undefined, 200, { summary: true }));
+            // PAR-12608 4.6, AC-G7: a restricted member sees the failed runs the
+            // sidebar counts for him: on a task he can read, working for him.
+            const restrictedTo = refusedOnlyByMemberRestriction(permission) ? userId : null;
+            if (!permission.allowed && !restrictedTo) throw new HttpError(403, "Run telemetry is outside this actor's authorization boundary");
+            const runs = latestFailedRunsByAgent(await heartbeat.list(companyId, undefined, 200, { summary: true }))
+              .filter((run) => !restrictedTo || (run.responsibleUserId === restrictedTo && run.scopeKind !== "company" && run.issueId));
             const decisions = await getHeartbeatRunReadDecisions(db, access, req.actor, runs);
-            return runRedactions.redactForRuns(companyId, runs.map((run, index) => decisions[index] ? run : redactHeartbeatRunListRow(run)), getActorInfo(req).actorId);
+            const shown = runs.map((run, index) => decisions[index] ? run : redactHeartbeatRunListRow(run))
+              .filter((_, index) => !restrictedTo || decisions[index]);
+            return runRedactions.redactForRuns(companyId, shown, getActorInfo(req).actorId);
           },
           loadContext: (ids, projection) => readCompact({
             readCondition, issueIds: ids, listProjection: projection, limit: 100, includeRoutineExecutions: true,

@@ -15,6 +15,8 @@ import { taskToastEligible } from "./task-toast-eligibility.js";
 import { subscribeCompanyLiveEvents } from "../services/live-events.js";
 import { trackIdleWork } from "../services/task-admission.js";
 import { createLiveRunEventRedactor } from "../services/live-run-event-redaction.js";
+import { refusedOnlyByMemberRestriction } from "../services/member-restriction/action-list.js";
+import { actorPersonMembership } from "../services/member-restriction/actor-memberships.js";
 
 interface WsSocket {
   readyState: number;
@@ -311,10 +313,18 @@ export function setupLiveEventsWebSocketServer(
         : payload.entityType === "issue" && typeof payload.entityId === "string" ? payload.entityId : null;
       const runId = typeof payload.runId === "string" ? payload.runId
         : payload.entityType === "heartbeat_run" && typeof payload.entityId === "string" ? payload.entityId : null;
+      // PAR-12608 4.6a row 17: a caller refused `company_scope:read` only by the
+      // member restriction gets a run event only for a run on a task he can
+      // read that works for him.
+      let runMustWorkFor: string | null = null;
       if (event.type === "heartbeat.run.event" || event.type === "heartbeat.run.log") {
         const decision = await access.decide({ actor: context!.actor, action: "company_scope:read",
           resource: { type: "company", companyId: event.companyId } });
-        if (!decision.allowed) return null;
+        if (!decision.allowed) {
+          runMustWorkFor = refusedOnlyByMemberRestriction(decision)
+            ? actorPersonMembership(context!.actor, event.companyId)?.personId ?? null : null;
+          if (!runMustWorkFor || !runId) return null;
+        }
       }
       const readBindings: Parameters<typeof getHeartbeatRunReadDecisions>[3][number][] = [];
       if (issueId) {
@@ -325,8 +335,10 @@ export function setupLiveEventsWebSocketServer(
           companyId: heartbeatRuns.companyId,
           scopeKind: heartbeatRuns.scopeKind,
           issueId: heartbeatRuns.issueId,
+          responsibleUserId: heartbeatRuns.responsibleUserId,
         }).from(heartbeatRuns).where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, event.companyId)));
         if (!run) return null;
+        if (runMustWorkFor && (run.scopeKind === "company" || !run.issueId || run.responsibleUserId !== runMustWorkFor)) return null;
         readBindings.push(run);
       }
       if ((await getHeartbeatRunReadDecisions(db, access, context!.actor, readBindings)).some(allowed => !allowed)) return null;
