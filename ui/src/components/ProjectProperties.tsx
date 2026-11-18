@@ -220,6 +220,10 @@ export function ProjectProperties({ project, repositories, onUpdate, onFieldUpda
   const { data: privacySession } = useQuery({ queryKey: queryKeys.auth.session, queryFn: () => authApi.getSession() });
   const { data: privacyAccess } = useQuery({ queryKey: queryKeys.access.currentBoardAccess, queryFn: () => accessApi.getCurrentBoardAccess() });
   const canManagePrivacy = canManageProjectPrivacy(project, privacySession?.user?.id ?? privacySession?.session?.userId ?? null, privacyAccess);
+  // PAR-12608 4.4: once the company's restriction switch is not off, an open
+  // project's access list decides what its restricted members read.
+  const restrictionMode = privacySession?.memberRestrictions?.find((entry) => entry.companyId === project.companyId)?.mode ?? "off";
+  const showAccessMembers = project.visibility === "private" || restrictionMode !== "off";
   const queryClient = useQueryClient();
   const [openProjectConfirmation, setOpenProjectConfirmation] = useState(false);
   const [executionWorkspaceAdvancedOpen, setExecutionWorkspaceAdvancedOpen] = useState(false);
@@ -505,7 +509,7 @@ export function ProjectProperties({ project, repositories, onUpdate, onFieldUpda
                 ? "Only access members can discover this project. Tasks shared directly remain readable on their own."
                 : "Everyone in the company can discover this project. Individually private tasks keep their own access rules."}
             </p>
-            {project.visibility === "private" ? <ProjectAccessMembers project={project} canManage={canManagePrivacy} /> : null}
+            {showAccessMembers ? <ProjectAccessMembers project={project} canManage={canManagePrivacy} /> : null}
           </div>
         </PropertyRow>
         {repositories ?? <ProjectRepositories key={project.id} project={project} />}
