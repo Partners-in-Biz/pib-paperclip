@@ -64,6 +64,10 @@ Listens to `plugin.<sender>.mail.send.requested` for every kit `MAIL_SENDERS` pl
 - A retry first looks the message up by its Message-ID, so an attempt Gmail accepted is not sent twice.
 - Over the rate, Gmail down or the account needs reconnecting: nothing is stored and the sender's outbox retries. No connected account, a bad address, an expired attachment link or a message Gmail refuses: `failed` with `permanent: true`. The Sent tab retries by hand.
 
+## 0.9.14: plugin draft requests land in the Mailbox Drafts tab
+
+`mail.draft.requested` (SEO approval and progress emails, CRM speed-to-lead replies) now saves a Paperclip draft in the Mailbox (Drafts tab, editable, sent with the Send button) instead of a Gmail Drafts-folder draft. The result's `draftUrl` is `/<company prefix>/mailbox?tab=drafts`; `gmailDraftId` and `gmailMessageId` are null. A repeat request finds the same draft (stable id per key). A mailbox that needs reconnecting no longer blocks it: the draft is not in Gmail. The server also refuses the Gmail connector's `create_draft` for agents (`gmail_draft_use_mailbox`), and the company standards tell agents to use `create-draft`. No migration.
+
 ## 0.9.13: the skill sweep skips companies with no saved settings
 
 src-only (kit 0.14.0): the daily skill sweep skips a company with no saved settings without calling the host for it (needs_settings), when the host lists the companies a job may act for. No migration, no capability change.

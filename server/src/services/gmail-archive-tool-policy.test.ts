@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   assertGmailArchiveToolArgumentsSupported,
+  assertGmailDraftGoesThroughMailbox,
   gmailArchiveToolDescription,
   gmailArchiveToolInputSchema,
 } from "./gmail-archive-tool-policy.js";
@@ -74,5 +75,15 @@ describe("Gmail archive tool policy", () => {
       "unlabel_thread",
       { anything: true },
     )).not.toThrow();
+  });
+});
+
+describe("Gmail drafts go through the Mailbox", () => {
+  it("refuses the official Gmail connector's create_draft and leaves other tools alone", () => {
+    const draft = { config: { sourceTemplateKey: "gmail", oauth: { connectorProfile: "gmail.draft" } } };
+    expect(() => assertGmailDraftGoesThroughMailbox(draft, "create_draft"))
+      .toThrow(expect.objectContaining({ status: 400, details: { code: "gmail_draft_use_mailbox" } }));
+    expect(() => assertGmailDraftGoesThroughMailbox(draft, "search_threads")).not.toThrow();
+    expect(() => assertGmailDraftGoesThroughMailbox({ config: { url: "https://example.com/mcp" } }, "create_draft")).not.toThrow();
   });
 });

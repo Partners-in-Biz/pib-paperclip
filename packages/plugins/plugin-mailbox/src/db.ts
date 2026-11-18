@@ -179,6 +179,7 @@ export interface GmailStore {
   setTriage(companyId: string, id: string, write: TriageWrite): Promise<void>;
   recentInbound(accountId: string, minutes: number, limit: number): Promise<MessageRow[]>;
   getMessage(companyId: string, id: string): Promise<MessageRow | null>;
+  insertDraft(row: { id: string; companyId: string; accountId: string; subject: string; body: string; to: MailAddress[]; cc: MailAddress[]; bcc: MailAddress[]; draft: DraftExtras }): Promise<void>;
   /** By Gmail message id; `accountId` narrows it to one mailbox when several are connected. */
   getMessageByGmailId(companyId: string, gmailMessageId: string, accountId?: string | null): Promise<MessageRow | null>;
   getMessageByRfcId(companyId: string, rfcMessageId: string): Promise<MessageRow | null>;

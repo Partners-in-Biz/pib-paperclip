@@ -320,6 +320,12 @@ export class MemoryStore implements GmailStore {
       .slice(0, limit)
       .map((m) => ({ ...m }));
   }
+  async insertDraft(row: { id: string; companyId: string; accountId: string; subject: string; body: string; to: any[]; cc: any[]; bcc: any[]; draft: any }) {
+    this.messages.set(row.id, {
+      id: row.id, company_id: row.companyId, account_id: row.accountId, subject: row.subject, body: row.body, direction: "outbound", status: "draft",
+      to_addrs: row.to, cc_addrs: row.cc, bcc_addrs: row.bcc, draft: row.draft, gmail_message_id: null,
+    } as any);
+  }
   async getMessage(companyId: string, id: string) {
     const row = this.messages.get(id);
     return row && row.company_id === companyId ? { ...row } : null;

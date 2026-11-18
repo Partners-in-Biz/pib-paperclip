@@ -16,10 +16,10 @@
  * - No Gmail account, a bad address, an account of the email provider (send-only: it has no Drafts folder), a client's
  *   mailbox asked to hold another party's mail, or a message Gmail refuses → `failed` with `permanent: true`.
  */
+import { createHash } from "node:crypto";
 import type { PluginEvent } from "@paperclipai/plugin-sdk";
 import { isModuleEnabled, MAIL_EVENTS, receiveOnce, type MailDraftRequested, type MailDraftResult } from "@partnersinbiz/pib-plugin-kit";
 import { loadMailboxConfig } from "../config.js";
-import { GmailUnavailable } from "../domain.js";
 import { PLUGIN_ID } from "../namespace.js";
 import { pickSender } from "../pick-sender.js";
 import { accountScopeProblem, cleanDisplayName, effectiveReplyTo, parseReplyTo } from "../sender.js";
@@ -107,48 +107,56 @@ export async function performDraft(env: Env, companyId: string, request: MailDra
   const scopeProblem = accountScopeProblem(account, request);
   if (scopeProblem) return failedDraft(request, scopeProblem);
   const mailbox = account;
-  if (mailbox.status === "needs_reconnect") throw new GmailUnavailable(`Gmail for ${mailbox.address} must be reconnected before a draft can be created`);
 
-  const rfcMessageId = messageIdFor(`draft:${request.key}`, mailbox.address);
-  let draft: GmailDraft | null = null;
-  try {
-    // An earlier attempt may have created the draft and lost the answer: find it by its Message-ID before creating another.
-    try {
-      draft = await withGmail(env, loaded, mailbox, (token) => findGmailDraft(env.fetch, token, rfcMessageId));
-    } catch (error) {
-      if (!isPermanentGmail(error)) throw error;
-    }
-    if (!draft) {
-      const mime = buildMime({
-        from: { email: mailbox.address, name: request.fromName ?? mailbox.from_name ?? loaded.config.fromName },
-        to: request.to,
-        cc: request.cc ?? [],
-        bcc: request.bcc ?? [],
-        replyTo: effectiveReplyTo(request.replyTo, mailbox.address),
-        subject: request.subject,
-        text: request.text,
-        html: request.html,
-        messageId: rfcMessageId,
-        date: new Date(env.now()),
-      });
-      draft = await withGmail(env, loaded, mailbox, (token) => createGmailDraft(env.fetch, token, mime));
-    }
-  } catch (error) {
-    if (isPermanentGmail(error)) return failedDraft(request, errorMessage(error));
-    throw error;
+  // The draft lives in the Paperclip Mailbox (Drafts tab), not in Gmail: a person edits it there and presses Send.
+  // Idempotent per request key, so a repeat delivery finds the first draft instead of making a second.
+  const id = draftIdFor(companyId, request.key);
+  if (!(await env.store.getMessage(companyId, id))) {
+    await env.store.insertDraft({
+      id,
+      companyId,
+      accountId: mailbox.id,
+      subject: request.subject,
+      body: request.text ?? "",
+      to: request.to,
+      cc: request.cc ?? [],
+      bcc: request.bcc ?? [],
+      draft: {
+        html: request.html ?? null,
+        replyToMessageId: null,
+        threadId: null,
+        by: { kind: "plugin", id: request.context.plugin },
+        sourceIssueId: null,
+        replyTo: request.replyTo ? (typeof request.replyTo === "string" ? request.replyTo : request.replyTo.email) : null,
+        fromName: request.fromName ?? null,
+      } as never,
+    });
   }
+  let company: { issuePrefix?: string | null } | null = null;
+  try {
+    company = (await env.ctx.companies.get(companyId)) as { issuePrefix?: string | null } | null;
+  } catch {
+    company = null;
+  }
+  const base = company?.issuePrefix ? `/${company.issuePrefix}` : "";
   return {
     key: request.key,
     status: "drafted",
-    gmailDraftId: draft.id,
-    gmailMessageId: draft.messageId,
-    threadId: draft.threadId,
+    gmailDraftId: null,
+    gmailMessageId: null,
+    threadId: null,
     account: mailbox.address,
-    draftUrl: draftUrlFor(mailbox.address, draft.messageId),
+    draftUrl: `${base}/mailbox?tab=drafts`,
     error: null,
     permanent: false,
     context: request.context,
   };
+}
+
+/** A stable uuid per (company, request key), so a repeat request maps to the same Paperclip draft. */
+export function draftIdFor(companyId: string, key: string): string {
+  const h = createHash("sha256").update(`mail-draft:${companyId}:${key}`).digest("hex");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-8${h.slice(17, 20)}-${h.slice(20, 32)}`;
 }
 
 /** Event handler for `plugin.<sender>.mail.draft.requested`. */
