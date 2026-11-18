@@ -141,7 +141,7 @@ import {
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { ONBOARDING_FIRST_TASK_SKILL_KEY, PAPERCLIP_CORE_SKILL_KEYS } from "../services/company-skills.js";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
-import { assertAuthenticated, assertBoard, assertCompanyAccess, assertInstanceAdmin, buildActorSecretContext, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
+import { assertAuthenticated, assertBoard, assertCompanyAccess, assertInstanceAdmin, buildActorSecretContext, decideIssueAccessForActor, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
 import { runAdapterLoginStartSpine } from "./adapter-login-route-spine.js";
 import { isLoginCommandSupportedAdapterType } from "../services/login-command.js";
 import {
@@ -1454,30 +1454,6 @@ export function agentRoutes(
     });
     if (decision.allowed) return;
     throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
-  }
-
-  /** The same `resource` and `scope` as `decideIssueAccess` in routes/issues.ts. */
-  async function decideIssueAccess(
-    req: Request,
-    issue: {
-      id: string; companyId: string; projectId: string | null; parentId: string | null;
-      assigneeAgentId: string | null; assigneeUserId: string | null; status: string;
-    },
-    action: "issue:read" | "issue:comment",
-  ) {
-    return access.decide({
-      actor: req.actor,
-      action,
-      resource: {
-        type: "issue", companyId: issue.companyId, issueId: issue.id,
-        projectId: issue.projectId, parentIssueId: issue.parentId,
-        assigneeAgentId: issue.assigneeAgentId, assigneeUserId: issue.assigneeUserId, status: issue.status,
-      },
-      scope: {
-        issueId: issue.id, projectId: issue.projectId, parentIssueId: issue.parentId,
-        assigneeAgentId: issue.assigneeAgentId, assigneeUserId: issue.assigneeUserId,
-      },
-    });
   }
 
   async function assertBoardCanWakeAgent(req: Request, agent: { id: string; companyId: string }) {
@@ -6271,7 +6247,7 @@ export function agentRoutes(
       // Read the task first (PAR-12608 4.6, AC-G3): a caller who cannot read it
       // gets the unknown-run answer before any state check, and nothing is written.
       if (failedRunIssue && failedRunIssue.companyId === agent.companyId &&
-          !(await decideIssueAccess(req, failedRunIssue, "issue:read")).allowed) {
+          !(await decideIssueAccessForActor(access, req.actor, failedRunIssue, "issue:read")).allowed) {
         throw notFound("Failed run not found");
       }
       if (failedRun.runtimeMode === "native" && failedRun.errorCode === "native_session_cleanup_quarantined") {
@@ -6292,7 +6268,7 @@ export function agentRoutes(
         if (issue.conversationAgentId && issue.conversationUserId !== req.actor.userId) {
           throw forbidden("Only the conversation owner can retry a chat run");
         }
-        const decision = await decideIssueAccess(req, issue, "issue:comment");
+        const decision = await decideIssueAccessForActor(access, req.actor, issue, "issue:comment");
         if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
         const savedReviewContext = readNativeReviewAssignmentContext(failedContext);
         if (failedRun.runtimeMode === "native" && failedRun.status === "failed" &&
