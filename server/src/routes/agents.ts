@@ -306,6 +306,12 @@ import {
   canActorReadWorkspaceOperation,
   redactHeartbeatRunListRow,
 } from "../services/heartbeat-run-privacy.js";
+import { refusedOnlyByMemberRestriction } from "../services/member-restriction/action-list.js";
+import {
+  restrictedAgentIdsForActor,
+  restrictedAgentView,
+  runWorksForRestrictedCaller,
+} from "../services/member-restriction/agent-read.js";
 import {
   PaperclipRunnerProviderProfileError,
   resolvePaperclipRunnerProviderProfile,
@@ -1234,13 +1240,26 @@ export function agentRoutes(
     return false;
   }
 
-  async function assertRunTelemetryReadAllowed(req: Request, res: Response, companyId: string) {
+  async function assertRunTelemetryReadAllowed(
+    req: Request,
+    res: Response,
+    companyId: string,
+    run?: { id: string; scopeKind?: string | null; issueId?: string | null },
+  ) {
     const decision = await access.decide({
       actor: req.actor,
       action: "company_scope:read",
       resource: { type: "company", companyId },
     });
     if (decision.allowed) return true;
+    // PAR-12608 4.6, AC-G5: one run's detail, log and events stay open to a
+    // caller refused only by the member restriction when the run works for
+    // him (its task is checked next); any other run is "not found" for him.
+    if (run && refusedOnlyByMemberRestriction(decision)) {
+      if (await runWorksForRestrictedCaller(db, req.actor, { ...run, companyId })) return true;
+      res.status(404).json({ error: "Heartbeat run not found" });
+      return false;
+    }
     res.status(403).json({ error: "Run telemetry is outside this actor's authorization boundary" });
     return false;
   }
@@ -4028,7 +4047,14 @@ export function agentRoutes(
       });
       return;
     }
+    const listed = await restrictedAgentIdsForActor(db, req.actor, companyId);
     const result = await filterAgentsForActor(req, await svc.list(companyId));
+    // PAR-12608 4.6, AC-G4: a caller bound by R under `enforce` gets only the
+    // agents on his list, each reduced to five fields.
+    if (listed) {
+      res.json(result.filter((agent) => listed.has(agent.id)).map(restrictedAgentView));
+      return;
+    }
     const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
     if (canReadConfigs) {
       res.json(result.map((agent) => redactAgentRowForResponse(agent)));
@@ -4257,6 +4283,13 @@ export function agentRoutes(
     const agent = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
     if (!agent) return;
     if (!(await assertAgentReadAllowed(req, res, agent))) return;
+    // PAR-12608 4.6, AC-G4: under `enforce` an agent off his list is "not found".
+    const listed = await restrictedAgentIdsForActor(db, req.actor, agent.companyId);
+    if (listed) {
+      if (listed.has(agent.id)) res.json(restrictedAgentView(agent));
+      else res.status(404).json({ error: "Agent not found" });
+      return;
+    }
     const isSelf = req.actor.type === "agent" && req.actor.agentId === id;
     if (isSelf) {
       const trustPreset = await resolveAgentSelfTrustPreset(req, agent);
@@ -7280,7 +7313,7 @@ export function agentRoutes(
     const runId = readHeartbeatRunId(req);
     const run = await getAccessibleResource(req, res, heartbeat.getRun(runId), "Heartbeat run not found");
     if (!run) return;
-    if (!(await assertRunTelemetryReadAllowed(req, res, run.companyId))) return;
+    if (!(await assertRunTelemetryReadAllowed(req, res, run.companyId, run))) return;
     if (!(await assertRunReadAllowed(req, res, run))) return;
     const retryExhaustedReason = await heartbeat.getRetryExhaustedReason(runId);
     const decoratedRun = heartbeat.decorateActiveRunStatus(run);
@@ -7767,7 +7800,7 @@ export function agentRoutes(
     const runId = readHeartbeatRunId(req);
     const run = await getAccessibleResource(req, res, heartbeat.getRunReadAccess(runId), "Heartbeat run not found");
     if (!run) return;
-    if (!(await assertRunTelemetryReadAllowed(req, res, run.companyId))) return;
+    if (!(await assertRunTelemetryReadAllowed(req, res, run.companyId, run))) return;
     if (!(await assertRunReadAllowed(req, res, run))) return;
 
     if (req.query.view === "plugin-panels") {
@@ -7798,7 +7831,7 @@ export function agentRoutes(
     const runId = readHeartbeatRunId(req);
     const run = await getAccessibleResource(req, res, heartbeat.getRunLogAccess(runId), "Heartbeat run not found");
     if (!run) return;
-    if (!(await assertRunTelemetryReadAllowed(req, res, run.companyId))) return;
+    if (!(await assertRunTelemetryReadAllowed(req, res, run.companyId, run))) return;
     if (!(await assertRunReadAllowed(req, res, run))) return;
 
     const offset = Number(req.query.offset ?? 0);

@@ -4272,6 +4272,20 @@ registry.registerPath({
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
+for (const method of ["get", "post"] as const) {
+  registry.registerPath({
+    method,
+    path: "/api/companies/{companyId}/chats/{agentRef}",
+    tags: ["issues"],
+    summary: method === "get" ? "Get the board user's conversation with one agent" : "Open the board user's conversation with one agent",
+    description: method === "get"
+      ? "Requires Agent Chat to be enabled. Returns the one conversation of this user with the agent (id or reference), or null. Read-only."
+      : "Requires Agent Chat to be enabled. Returns the one conversation of this user with the agent (id or reference), and creates it when there is none.",
+    request: { params: z.object({ companyId: z.string(), agentRef: z.string() }) },
+    responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+  });
+}
+
 registry.registerPath({
   method: "get",
   path: "/api/companies/{companyId}/inbox/mine",
