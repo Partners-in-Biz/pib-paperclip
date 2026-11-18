@@ -55,6 +55,7 @@ export const HANDLERS: Record<string, Handler> = {
   "complete-task": (env, c, a, p) => tasks.completeTask(env, c, a, p),
   "block-task": (env, c, a, p) => tasks.blockTask(env, c, a, p),
   "skip-task": (env, c, a, p) => tasks.skipTask(env, c, a, p),
+  "attach-task-issue": (env, c, a, p) => tasks.attachTaskIssue(env, c, a, p),
   "add-task": (env, c, a, p) => tasks.addTask(env, c, a, p),
   "start-tasks-now": (env, c, a, p) => tasks.startTasksNow(env, c, a, p),
   "compact-task-thread": (env, c, _a, p) => thread.compactTaskThreadTool(env, c, p),
