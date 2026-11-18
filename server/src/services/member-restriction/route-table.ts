@@ -34,6 +34,12 @@ export interface MemberRestrictionRouteEntry {
   class: MemberRestrictionRouteClass;
   /** Repo-relative test file proving the per-object rule (AC-G3, AC-G9); it must name `path`. */
   test?: string;
+  /**
+   * Path of another row with the same method that also catches this row's
+   * requests (`/api/agents/me` shadows `/api/agents/:id`). The scan proves the
+   * router registers this row's route first, in the same file.
+   */
+  shadows?: string;
 }
 
 const TASKS_TEST = "server/src/__tests__/member-restriction-route-table-tasks.test.ts";
@@ -398,6 +404,13 @@ type ClassifierRequest = Request & { [HITS]?: Array<{ entry: MemberRestrictionRo
  * does not know. So a `closed` row wins, rows of different classes refuse, and
  * rows of one class agree. The scan fails the build when a row's pattern
  * catches a registered route other than its own.
+ *
+ * `shadows` tells the table that order: after the `closed` check, a hit whose
+ * path another hit of the same method names in `shadows` is dropped, so
+ * `/api/agents/me` (shadowing `/api/agents/:id`) answers with its own class.
+ * A `closed` shadowed row still wins. The scan proves each `shadows` against
+ * the routers (same method, the shadowed row catches the path, same file and
+ * registered earlier).
  */
 export function createRouteClassifier(entries: readonly MemberRestrictionRouteEntry[] = MEMBER_RESTRICTION_ROUTE_TABLE) {
   const router = Router();
@@ -425,8 +438,13 @@ export function createRouteClassifier(entries: readonly MemberRestrictionRouteEn
           if (err) resolve({ kind: "refused", reason: "unroutable" });
           else if (hits.length === 0) resolve({ kind: "unlisted" });
           else if (closed) resolve({ kind: "matched", ...closed });
-          else if (hits.some((hit) => hit.entry.class !== hits[0]!.entry.class)) resolve({ kind: "refused", reason: "ambiguous" });
-          else resolve({ kind: "matched", ...hits[0]! });
+          else {
+            const kept = hits.filter((hit) => !hits.some((other) => other !== hit
+              && other.entry.method === hit.entry.method && other.entry.shadows === hit.entry.path));
+            // Two rows naming each other leave nothing: refuse (the scan fails on it).
+            if (kept.length === 0 || kept.some((hit) => hit.entry.class !== kept[0]!.entry.class)) resolve({ kind: "refused", reason: "ambiguous" });
+            else resolve({ kind: "matched", ...kept[0]! });
+          }
         });
     });
   };
