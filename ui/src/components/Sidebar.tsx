@@ -38,6 +38,7 @@ import { SidebarRecentTasks } from "./SidebarRecentTasks";
 import { useDialogActions } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { useSidebar } from "../context/SidebarContext";
+import { useMemberRestriction } from "../context/MemberRestrictionContext";
 import { attentionApi } from "../api/attention";
 import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
@@ -70,6 +71,7 @@ function ClassicSidebar({ children }: { children?: ReactNode }) {
   const { selectedCompanyId, selectedCompany } = useCompany();
   const { collapsed, peeking } = useSidebar();
   const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
+  const { enforced: memberRestricted } = useMemberRestriction();
   const rail = collapsed && !peeking;
   const inboxBadge = useInboxBadge(selectedCompanyId);
   const { data: experimentalSettings } = useQuery({
@@ -288,7 +290,8 @@ function ClassicSidebar({ children }: { children?: ReactNode }) {
           <>
             <SidebarProjects />
             <SidebarAgents />
-            <SidebarSection
+            {/* Every entry of this section is closed to a restricted member (PAR-12608 4.6). */}
+            {memberRestricted ? null : <SidebarSection
               label="Organization"
               collapsible={{ open: organizationOpen, onOpenChange: setOrganizationOpen }}
             >
@@ -299,7 +302,7 @@ function ClassicSidebar({ children }: { children?: ReactNode }) {
               <SidebarNavItem to="/activity" label="Activity" icon={History} />
               <SidebarNavItem to="/activity/commentary" label="Commentary" icon={History} />
               <SidebarNavItem to="/company/settings" label="Settings" icon={Settings} />
-            </SidebarSection>
+            </SidebarSection>}
           </>
         )}
 
