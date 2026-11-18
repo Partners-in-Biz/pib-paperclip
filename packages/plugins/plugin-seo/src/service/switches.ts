@@ -2,7 +2,7 @@
  * Switches for the 0.23.0 extras: AI search (GEO), Google Analytics (GA4) and page groups. Each is off, per sprint, until
  * a person turns it on; a company has a default for NEW sprints (also off). Running sprints never follow the default.
  *
- * Who may switch: a signed-in person only. The page's `seo.call` action passes the host's actor, and `set-switch` is a
+ * Who may switch: a signed-in person only. The page's `seo.call-settings` action passes the host's actor, and `set-switch` is a
  * page-only handler (no agent tool); it still checks the actor itself and never reads who changed it from the request.
  * Agents can read the state (`get-switches`) and are refused by every tool of an extra that is off.
  */

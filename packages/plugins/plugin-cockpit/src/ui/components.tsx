@@ -64,7 +64,7 @@ import { TEAM_SETUP_PATH } from "@partnersinbiz/pib-plugin-kit/team";
 import { ASK_KIND_LABEL, askTone } from "../ask-model.js";
 import type { BackupInfo } from "../view.js";
 import { plainDetail } from "../plain.js";
-import { kpiParts, readableDates } from "./kpis.js";
+import { kpiPanelWide, kpiParts, readableDates } from "./kpis.js";
 import { healthCounts, runColumns, runsPerDay } from "./series.js";
 
 export type LinkPropsFor = (href: string) => AnchorHTMLAttributes<HTMLAnchorElement>;
@@ -127,7 +127,7 @@ export function Chip({ children, tone: t = "neutral", icon }: { children: ReactN
   return <Pill tone={t} icon={icon}>{children}</Pill>;
 }
 
-export function Card({ title, actions, children, id, icon, subtitle, tone: t, strip }: {
+export function Card({ title, actions, children, id, icon, subtitle, tone: t, strip, style }: {
   title: string;
   actions?: ReactNode;
   children: ReactNode;
@@ -136,8 +136,9 @@ export function Card({ title, actions, children, id, icon, subtitle, tone: t, st
   subtitle?: ReactNode;
   tone?: ToneInput;
   strip?: boolean;
+  style?: CSSProperties;
 }) {
-  return <SectionCard id={id} title={title} icon={icon} subtitle={subtitle} tone={t} strip={strip} actions={actions}>{children}</SectionCard>;
+  return <SectionCard id={id} title={title} icon={icon} subtitle={subtitle} tone={t} strip={strip} actions={actions} style={style}>{children}</SectionCard>;
 }
 
 export function Muted({ children }: { children: ReactNode }) {
@@ -560,10 +561,16 @@ function kpiLabel(label: string, now?: Date): string {
   return readableDates(label, now);
 }
 
+/** The row of number groups: part-width panels side by side, a group with many tiles on a row of its own. */
+export const KPI_GROUPS_ROW: CSSProperties = { display: "flex", flexWrap: "wrap", gap: 16, minWidth: 0 };
+
 /**
  * A group of numbers (Money, Pipeline, …): the tiles it is given (by default
- * the ones that are not zero or need attention), two to a row in a half-width
- * panel, filling the row.
+ * the ones that are not zero or need attention), filling each row of the
+ * panel. A group with up to four tiles is a part-width panel beside the
+ * others; a longer one takes the whole row (`kpiPanelWide`). The panel keeps
+ * its content at the top, so a panel beside a taller one never spreads its
+ * title and tiles apart.
  */
 export function KpiGroup({ group, kpis, linkFor, hidden = 0, now }: { group: keyof typeof KPI_GROUP_TITLES; kpis: KpiEntry[]; linkFor: LinkPropsFor; hidden?: number; now?: Date }) {
   const narrow = useIsNarrow();
@@ -574,6 +581,7 @@ export function KpiGroup({ group, kpis, linkFor, hidden = 0, now }: { group: key
       title={KPI_GROUP_TITLES[group]}
       icon={KPI_GROUP_ICON[group]}
       actions={bad ? <Pill tone="bad" size="sm" dot>{bad} to fix</Pill> : warn ? <Pill tone="warn" size="sm" dot>{warn} to watch</Pill> : null}
+      style={{ alignContent: "start", flex: kpiPanelWide(kpis.length) ? "1 1 100%" : "1 1 420px" }}
     >
       {kpis.length === 0
         ? <Muted>{hidden ? `Nothing to report: ${hidden} ${hidden === 1 ? "number is" : "numbers are"} at zero.` : "No numbers reported yet."}</Muted>

@@ -54,6 +54,8 @@ const manifest: PaperclipPluginManifestV1 = {
   author: "Partners in Biz",
   categories: ["connector", "automation"],
   capabilities: [
+    // A3 (PAR-12643): the access guard reads the caller's role (ctx.access.members.list). A new capability: a stop-first deploy.
+    "access.members.read",
     "agent.tools.register",
     "companies.read",
     "events.emit",
@@ -91,7 +93,8 @@ const manifest: PaperclipPluginManifestV1 = {
       },
     ],
   },
-  database: { namespaceSlug: "crm_telephony", migrationsDir: "migrations" },
+  // A3 (PAR-12643): heartbeat_runs is read-only; the access guard finds the acting person of a tool call. Stop-first.
+  database: { namespaceSlug: "crm_telephony", migrationsDir: "migrations", coreReadTables: ["heartbeat_runs"] },
   jobs: [
     {
       jobKey: "media-pipeline",

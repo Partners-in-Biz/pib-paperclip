@@ -553,12 +553,12 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(await db.select().from(activityLog).where(and(eq(activityLog.entityId, f.issueId), eq(activityLog.action, "issue.updated")))).toHaveLength(1);
     expect(await db.select().from(issues).where(and(eq(issues.id, f.issueId), executionIssueCondition()))).toHaveLength(0);
     expect((await issueService(db).getById(f.issueId))?.externalConversationState).toBe("waiting");
-    expect(await issueService(db).list(f.companyId)).toHaveLength(0);
+    expect(await issueService(db).list(f.companyId, { readCondition: "system" })).toHaveLength(0);
     expect((await dashboardService(db).summary(f.companyId)).tasks.open).toBe(0);
     expect((await attentionService(db).list(f.companyId)).items.filter((item) => item.subject.id === f.issueId || item.relatedIssue?.id === f.issueId)).toHaveLength(0);
     const results = await companySearchService(db).search(f.companyId, companySearchQuerySchema.parse({ q: "you there" }));
     expect(results.results.find((result) => result.issue?.id === f.issueId)?.issue?.externalConversationState).toBe("waiting");
-    expect((await issueService(db).list(f.companyId, { q: "you there" }))[0]?.externalConversationState).toBe("waiting");
+    expect((await issueService(db).list(f.companyId, { readCondition: "system", q: "you there" }))[0]?.externalConversationState).toBe("waiting");
     expect((await issueService(db).listReviewAttention(f.companyId, [{ id: f.issueId, companyId: f.companyId, status: "in_review" }])).get(f.issueId)?.state).toBe("none");
   });
 

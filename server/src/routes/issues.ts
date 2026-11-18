@@ -13047,7 +13047,9 @@ export function issueRoutes(
       const onboardingFirstTaskRequested =
         rawOnboardingFirstTask === true && req.actor.type === "board";
       let isOnboardingFirstTask = onboardingFirstTaskRequested
-        ? (await svc.count(companyId)) === 0
+        ? // "system": an existence check that gates server-owned behaviour; the
+          // count is never returned, and a reader's view must not make it zero.
+          (await svc.count(companyId, { readCondition: "system" })) === 0
         : false;
       const watchdogDiscovery =
         normalizeWatchdogDiscovery(rawWatchdogDiscovery);
@@ -14215,7 +14217,8 @@ export function issueRoutes(
         union
         select p.id, p.company_id, p.privacy_parent_issue_id from issues p join ancestry c
           on p.id = c.privacy_parent_issue_id and p.company_id = c.company_id
-          where p.visibility = 'private' or exists (select 1 from projects pp where pp.id = p.project_id and pp.visibility = 'private')
+          where p.conversation_agent_id is null
+            and (p.visibility = 'private' or exists (select 1 from projects pp where pp.id = p.project_id and pp.visibility = 'private'))
       ) select id from ancestry)`));
     const grants = await db.select().from(issueAccessGrants)
       .where(inArray(issueAccessGrants.issueId, ancestry.map(task => task.id)))

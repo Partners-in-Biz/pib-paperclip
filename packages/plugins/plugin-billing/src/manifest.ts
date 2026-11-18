@@ -202,7 +202,7 @@ const instanceConfigSchema: JsonSchema = {
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.22.2",
+  version: "0.22.3",
   displayName: "Billing",
   description: "Invoices, quotes, credit notes, EFT proof of payment, bills, expenses, time and retainers. Agents draft and ask; a person approves sending and money.",
   author: "Partners in Biz",
@@ -238,7 +238,8 @@ const manifest: PaperclipPluginManifestV1 = {
     "access.members.read",
   ],
   entrypoints: { worker: "./dist/worker.js", ui: "./dist/ui" },
-  database: { namespaceSlug: "billing", migrationsDir: "migrations", coreReadTables: ["issues"] },
+  // A3 (PAR-12643): heartbeat_runs is read-only; the access guard finds the acting person of a tool call. Stop-first.
+  database: { namespaceSlug: "billing", migrationsDir: "migrations", coreReadTables: ["issues", "heartbeat_runs"] },
   tools: BILLING_TOOLS,
   webhooks: [
     {

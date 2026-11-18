@@ -34,6 +34,7 @@ export { HONEST_PERSON_RUN_RULE_ID, honestPersonRuleFor, type HonestPersonRule }
 export {
   isMemberRestrictionUnavailable,
   pluginActingPersonForActor,
+  pluginActingPersonForUser,
   type PluginActingPerson,
 } from "./plugin-acting-person.js";
 export {

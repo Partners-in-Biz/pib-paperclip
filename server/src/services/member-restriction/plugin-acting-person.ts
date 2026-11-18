@@ -1,7 +1,7 @@
 import { MEMBER_RESTRICTION_UNAVAILABLE_CODE, type MemberRestriction } from "@paperclipai/shared";
 import { HttpError } from "../../errors.js";
 import { actorPersonMembership, memberRestrictionForMembership } from "./actor-memberships.js";
-import type { MemberRestrictionResolver } from "./resolver.js";
+import { memberRestrictionOrUnavailable, type MemberRestrictionResolver } from "./resolver.js";
 
 /**
  * The acting person core hands a plugin (PAR-12608 4.10, H3): who the action,
@@ -40,6 +40,20 @@ export async function pluginActingPersonForActor(
   if (!companyId) return { onBehalfOfUserId: carried.personId, onBehalfOfRestricted: false };
   const restriction = await memberRestrictionForMembership(resolve, carried.personId, companyId, carried.membership);
   return { onBehalfOfUserId: carried.personId, onBehalfOfRestricted: enforcedRestriction(restriction) };
+}
+
+/**
+ * For a known person id (a tool-gateway session's run person). Same refusal on
+ * a failed read: 503 `MEMBER_RESTRICTION_UNAVAILABLE`.
+ */
+export async function pluginActingPersonForUser(
+  resolve: MemberRestrictionResolver,
+  personId: string | null | undefined,
+  companyId: string,
+): Promise<PluginActingPerson> {
+  if (!personId) return NO_PERSON;
+  const restriction = await memberRestrictionOrUnavailable(resolve, personId, companyId);
+  return { onBehalfOfUserId: personId, onBehalfOfRestricted: enforcedRestriction(restriction) };
 }
 
 export function isMemberRestrictionUnavailable(error: unknown): error is HttpError {
