@@ -248,6 +248,22 @@ it("AC-G1: the closed workspace rows and the dashboard, costs, secrets, skills a
     expect((await (await client()).get(`/api/assets/${logo!.id}/content`)).status).toBe(200);
   });
 
+  it("R files images only under issues/drafts or a task he can read, judged on the namespace storage saves", async () => {
+    const own = await ids(Y, O, true);
+    const other = await ids(Y, O);
+    const upload = async (namespace: string) => (await as(await boardFor(R))).post(`/api/companies/${Y}/assets/images`)
+      .field("namespace", namespace).attach("file", PNG, { filename: "shot.png", contentType: "image/png" });
+    for (const namespace of [`_issues/${other.issueId}`, `|issues/${other.issueId}`, "general", `projects/${randomUUID()}`]) {
+      notFound("Issue not found")(await upload(namespace));
+    }
+    for (const namespace of ["issues/drafts", `issues/${own.issueId}`]) {
+      const res = await upload(namespace);
+      expect(res.status, `${namespace} ${JSON.stringify(res.body)}`).toBe(201);
+    }
+    const general = await today(() => upload("general"));
+    expect(general.status, JSON.stringify(general.body)).toBe(201);
+  });
+
   it("a workspace with no source task is \"not found\" for R", async () => {
     const [orphan] = await db.insert(executionWorkspaces).values({
       companyId: Y, name: "No task", cwd: path.join(root, "orphan"), mode: "isolated_workspace", strategyType: "git_worktree",

@@ -6,6 +6,7 @@ import { JSDOM } from "jsdom";
 import type { Db } from "@paperclipai/db";
 import { ASSET_NAMESPACE_RULE, createAssetImageMetadataSchema, isUuidLike } from "@paperclipai/shared";
 import type { StorageService } from "../storage/types.js";
+import { normalizeNamespace } from "../storage/service.js";
 import { authorizationService } from "../services/authorization.js";
 import { actorRestrictedInCompany } from "../services/member-restriction/company-record.js";
 import { assetService, logActivity } from "../services/index.js";
@@ -151,13 +152,16 @@ export function assetRoutes(db: Db, storage: StorageService) {
     }
 
     const namespaceSuffix = parsedMeta.data.namespace ?? "general";
-    // A restricted person files an image only under a task he can read
-    // (PAR-12608 4.6): the read side opens `issues/<id>` assets by that task.
-    const [area, issueId] = namespaceSuffix.split("/").map((part) => part.trim()).filter(Boolean);
-    if (area === "issues" && issueId !== "drafts" && await actorRestrictedInCompany(db, req.actor, companyId)) {
-      const readable = !!issueId && isUuidLike(issueId) && (await authorizationService(db).decide({
-        actor: req.actor, action: "issue:read", resource: { type: "issue", companyId, issueId },
-      })).allowed;
+    // A restricted person files an image only under `issues/drafts` or a task
+    // he can read (PAR-12608 4.6); every other namespace is refused, since the
+    // read side would never open it for him. Decide on the namespace as
+    // storage saves it, so `_issues` or `|issues` cannot slip past.
+    const [, area, issueId] = normalizeNamespace(`assets/${namespaceSuffix}`).split("/");
+    if (await actorRestrictedInCompany(db, req.actor, companyId)) {
+      const readable = area === "issues" && !!issueId && (issueId === "drafts" || (isUuidLike(issueId)
+        && (await authorizationService(db).decide({
+          actor: req.actor, action: "issue:read", resource: { type: "issue", companyId, issueId },
+        })).allowed));
       if (!readable) {
         res.status(404).json({ error: "Issue not found" });
         return;
