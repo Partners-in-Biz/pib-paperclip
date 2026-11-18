@@ -645,7 +645,6 @@ export function pluginRoutes(
       if (!id) return null;
       const [agent] = await db.select({ id: agents.id, companyId: agents.companyId }).from(agents).where(eq(agents.id, id)).limit(1);
       if (!agent || !hasCompanyAccess(req, agent.companyId)) throw notFound("Agent not found");
-      assertCompanyAccess(req, agent.companyId);
       const decision = await authorizationService(db).decide({ actor: req.actor, action: "agent:read", resource: { type: "agent", companyId: agent.companyId, agentId: agent.id } });
       if (!decision.allowed) throw notFound("Agent not found");
       return agent.companyId;
