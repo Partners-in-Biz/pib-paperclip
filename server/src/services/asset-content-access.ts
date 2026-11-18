@@ -20,9 +20,17 @@ export async function isRunnerApiResponseAsset(db: Pick<Db, "select">, asset: As
 
 export async function canActorReadAssetContent(db: Db, actor: AuthorizationActor, asset: Asset): Promise<boolean> {
   const access = authorizationService(db);
+  // A restricted member is refused `company_scope:read` by the action list; he
+  // still reads an asset tied to a task, a run or a draft of his (PAR-12608 4.6).
+  let restrictedMember = false;
   if (actor.type === "agent") {
     if (actor.companyId !== asset.companyId) return false;
-  } else if (actor.type !== "board" || !(await access.decide({ actor, action: "company_scope:read", resource: { type: "company", companyId: asset.companyId } })).allowed) return false;
+  } else if (actor.type !== "board") return false;
+  else {
+    const scope = await access.decide({ actor, action: "company_scope:read", resource: { type: "company", companyId: asset.companyId } });
+    if (!scope.allowed && scope.reason !== "deny_member_restricted") return false;
+    restrictedMember = !scope.allowed;
+  }
   const parts = asset.objectKey.split("/");
   const isDraft = parts[1] === "assets" && parts[2] === "issues" && parts[3] === "drafts";
   const sourceIssueId = parts[1] === "assets" ? parts[3] : parts[2];
@@ -51,6 +59,8 @@ export async function canActorReadAssetContent(db: Db, actor: AuthorizationActor
     ? actor.source === "local_implicit" || actor.isInstanceAdmin || actor.userId === asset.createdByUserId
     : actor.type === "agent" && actor.agentId === asset.createdByAgentId
       && (!asset.createdByUserId || actor.onBehalfOfUserId === asset.createdByUserId))) return false;
+  if (restrictedMember && !(namespace(asset) === "issues" && !isDraft) && !captures.length && !attachments.length
+    && !(isDraft && actor.type === "board" && actor.userId === asset.createdByUserId)) return false;
   for (const attachment of attachments) {
     if (!(await access.decide({ actor, action: "issue:read", resource: {
       type: "issue", companyId: asset.companyId, issueId: attachment.issueId,

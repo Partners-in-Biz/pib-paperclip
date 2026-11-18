@@ -8654,7 +8654,9 @@ export function issueRoutes(
       action: "company_scope:read",
       resource: { type: "company", companyId },
     });
-    if (!companyScopeDecision.allowed) {
+    // Search is open to a restricted member, filtered by the read conditions (PAR-12608 4.6).
+    const restrictedSearch = companyScopeDecision.reason === "deny_member_restricted";
+    if (!companyScopeDecision.allowed && !restrictedSearch) {
       res.status(403).json({
         error: "Company search is outside this actor's authorization boundary",
       });
@@ -8696,7 +8698,9 @@ export function issueRoutes(
       action: "company_scope:read",
       resource: { type: "company", companyId },
     });
-    if (!companyScopeDecision.allowed) {
+    // Search is open to a restricted member, filtered by the read conditions (PAR-12608 4.6).
+    const restrictedSearch = companyScopeDecision.reason === "deny_member_restricted";
+    if (!companyScopeDecision.allowed && !restrictedSearch) {
       res.status(403).json({
         error: "Company search is outside this actor's authorization boundary",
       });
@@ -8735,6 +8739,7 @@ export function issueRoutes(
     const result = await getSearchService().search(companyId, query, {
       issueReadCondition: await issueReadSqlCondition(db, req.actor),
       projectReadCondition: await projectReadSqlCondition(db, req.actor),
+      excludeAgents: restrictedSearch,
     });
     res.json(result);
   });
