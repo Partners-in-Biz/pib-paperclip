@@ -9,6 +9,11 @@ import { COMPANY_IMPORT_TRANSFERS_ROUTE_PATH } from "@paperclipai/shared/company
 import { errorHandler } from "../middleware/index.js";
 import { buildOpenApiSpec, openApiRoutes } from "../routes/openapi.js";
 import { mcpDiscoveryDocuments } from "../services/public-mcp/discovery.js";
+import {
+  MEMBER_RESTRICTION_ROUTE_TABLE,
+  createRouteClassifier,
+  type MemberRestrictionRouteEntry,
+} from "../services/member-restriction/route-table.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROUTES_DIR = path.resolve(__dirname, "../routes");
@@ -221,9 +226,17 @@ function resolveMountedPath(file: string, prefix: string, routePath: string) {
   return `${prefix}${routePath}`;
 }
 
+/** Source from one route registration up to the next one: the handler, for the member-restriction scan. */
+function handlerSource(source: string, index: number) {
+  const next = source.slice(index + 1).search(/\brouter\.(get|head|post|put|patch|delete|use)\(/);
+  return source.slice(index, next < 0 ? undefined : index + 1 + next);
+}
+
 function loadActualRoutes() {
   const routes = new Set<string>();
   const excludedRoutes = new Set<string>();
+  const mounts = new Set<string>();
+  const handlerSources = new Map<string, string>();
   const unknownRouteFiles: string[] = [];
 
   for (const file of fs
@@ -243,6 +256,7 @@ function loadActualRoutes() {
       const method = match[1].toUpperCase();
       const routePath = match[2];
       const operation = `${method} ${normalizeExpressPath(resolveMountedPath(file, prefix, routePath))}`;
+      handlerSources.set(operation, handlerSource(source, match.index ?? 0));
       if (explicitOpenApiOperationCoverageExclusions.has(operation)) {
         excludedRoutes.add(operation);
       } else {
@@ -253,9 +267,17 @@ function loadActualRoutes() {
     for (const match of source.matchAll(ROUTE_ARRAY_PATTERN)) {
       for (const literal of match[2].matchAll(/["'`]([^"'`]+)["'`]/g)) {
         const operation = `${match[1].toUpperCase()} ${normalizeExpressPath(resolveMountedPath(file, prefix, literal[1]))}`;
+        handlerSources.set(operation, handlerSource(source, match.index ?? 0));
         if (explicitOpenApiOperationCoverageExclusions.has(operation)) excludedRoutes.add(operation);
         else routes.add(operation);
       }
+    }
+
+    // Mounts (`router.use("/plugins/:pluginId/api")`), for `USE` rows of the route table.
+    for (const match of source.matchAll(/router\.use\(\s*["'`]([^"'`]+)["'`]/g)) {
+      const operation = `USE ${normalizeExpressPath(resolveMountedPath(file, prefix, match[1]))}`;
+      mounts.add(operation);
+      handlerSources.set(operation, handlerSource(source, match.index ?? 0));
     }
 
     if (file === "public-mcp.ts") {
@@ -309,6 +331,8 @@ function loadActualRoutes() {
   return {
     routes,
     excludedRoutes,
+    mounts,
+    handlerSources,
     unknownRouteFiles: unknownRouteFiles.sort(),
   };
 }
@@ -1482,4 +1506,108 @@ it("documents canonical saved-resource links in catalog team install responses",
   expect(schema.required).toContain("resourceLinks");
   expect(schema.properties.resourceLinks.items.properties.kind.enum).toEqual(["agent", "project", "routine"]);
   expect(schema.properties.resourceLinks.items.required).toEqual(["kind", "id", "name", "href"]);
+});
+
+// PAR-12608 4.6 and X3: the build-failing scan of the member-restriction route
+// table. A route with no row passes (it is closed at run time); a row must name
+// a registered route, alone, with its test, and must not catch another route.
+const COMPANY_CHECK_PATTERN = /\b(assertCompanyAccess|hasCompanyAccess|getAccessibleResource)\s*[<(]/;
+const REPO_ROOT = path.resolve(__dirname, "../../..");
+
+/** `GET /api/issues/{id}` and `GET /api/Issues/:issueId/` have one shape. */
+function routeShape(method: string, routePath: string) {
+  const shaped = normalizeExpressPath(routePath).replace(/\{[^}]+\}/g, "{}").replace(/(.)\/$/, "$1").toLowerCase();
+  return `${method.toUpperCase()} ${shaped}`;
+}
+
+type RouteInventory = { operations: Iterable<string>; handlerSources: Map<string, string> };
+
+async function routeTableScanErrors(
+  table: readonly MemberRestrictionRouteEntry[],
+  inventory: RouteInventory,
+  readTest: (repoPath: string) => string | null,
+) {
+  const errors: string[] = [];
+  const byShape = new Map<string, string>();
+  for (const operation of inventory.operations) {
+    const [method, routePath] = operation.split(" ");
+    byShape.set(routeShape(method!, routePath!), operation);
+  }
+  const seen = new Map<string, MemberRestrictionRouteEntry>();
+  for (const entry of table) {
+    const row = `${entry.method} ${entry.path}`;
+    const shape = routeShape(entry.method, entry.path);
+    const operation = byShape.get(shape);
+    if (!operation) errors.push(`${row}: matches no registered route`);
+    if (seen.has(shape)) errors.push(`${row}: a second row for the route of ${seen.get(shape)!.method} ${seen.get(shape)!.path}`);
+    seen.set(shape, entry);
+    if (entry.class === "open" || entry.class === "run" || entry.class === "by-company") {
+      const test = entry.test ? readTest(entry.test) : null;
+      if (test === null) errors.push(`${row}: ${entry.class} row names no existing object-level test`);
+      else if (!test.includes(entry.path)) errors.push(`${row}: test ${entry.test} does not name ${entry.path}`);
+    }
+    if (entry.class === "by-company" && operation && !COMPANY_CHECK_PATTERN.test(inventory.handlerSources.get(operation) ?? "")) {
+      errors.push(`${row}: by-company handler calls no company check of routes/authz.ts`);
+    }
+  }
+  const classify = createRouteClassifier(table);
+  for (const operation of byShape.values()) {
+    const [method, routePath] = operation.split(" ");
+    if (method === "USE") continue;
+    const result = await classify(method!, normalizeExpressPath(routePath!).replace(/\{[^}]+\}/g, "sample1"));
+    if (result.kind !== "matched" || result.entry.class === "closed") continue;
+    if (routeShape(result.entry.method, result.entry.path) !== routeShape(method!, routePath!)) {
+      errors.push(`${result.entry.method} ${result.entry.path}: also catches ${operation}; give that route its own row`);
+    }
+  }
+  return errors.sort();
+}
+
+describe("member restriction route table scan", () => {
+  it("every row of the route table is true to the mounted routes", async () => {
+    const { routes, excludedRoutes, mounts, handlerSources } = loadActualRoutes();
+    const readTest = (repoPath: string) => {
+      const file = path.resolve(REPO_ROOT, repoPath);
+      return file.startsWith(REPO_ROOT + path.sep) && fs.existsSync(file) ? fs.readFileSync(file, "utf8") : null;
+    };
+    expect(mounts.has("USE /api/plugins/{pluginId}/api")).toBe(true);
+    expect(routes.has("GET /api/companies/{companyId}") || routes.has("GET /api/companies")).toBe(true);
+    const operations = [...routes, ...excludedRoutes, ...mounts];
+    expect(await routeTableScanErrors(MEMBER_RESTRICTION_ROUTE_TABLE, { operations, handlerSources }, readTest)).toEqual([]);
+  });
+
+  it("fails on a row with no route, a doubled row, a missing test, a by-company handler without a check and a caught route", async () => {
+    const inventory: RouteInventory = {
+      operations: ["GET /api/issues/{id}", "GET /api/agents/me", "GET /api/agents/{id}", "GET /api/approvals/{id}",
+        "USE /api/plugins/{pluginId}/api"],
+      handlerSources: new Map([
+        ["GET /api/approvals/{id}", "router.get(\"/approvals/:id\", async (req, res) => { res.json({}); })"],
+        ["GET /api/agents/{id}", "router.get(\"/agents/:id\", async (req, res) => { assertCompanyAccess(req, a.companyId); })"],
+      ]),
+    };
+    const tests: Record<string, string> = { "t.test.ts": "/api/issues/:id /api/approvals/:id /api/agents/:id" };
+    const readTest = (repoPath: string) => tests[repoPath] ?? null;
+    const clean: MemberRestrictionRouteEntry[] = [
+      { method: "GET", path: "/api/issues/:id", class: "open", test: "t.test.ts" },
+      { method: "USE", path: "/api/plugins/:pluginId/api", class: "plugin" },
+      { method: "GET", path: "/api/agents/me", class: "closed" },
+      { method: "GET", path: "/api/agents/:id", class: "by-company", test: "t.test.ts" },
+    ];
+    expect(await routeTableScanErrors(clean, inventory, readTest)).toEqual([]);
+
+    expect(await routeTableScanErrors([
+      { method: "GET", path: "/api/nowhere/:id", class: "closed" },
+      { method: "GET", path: "/api/Issues/:issueId/", class: "open", test: "t.test.ts" },
+      { method: "GET", path: "/api/issues/:id", class: "open", test: "t.test.ts" },
+      { method: "GET", path: "/api/approvals/:id", class: "by-company", test: "missing.test.ts" },
+      { method: "GET", path: "/api/agents/:id", class: "run", test: "t.test.ts" },
+    ], inventory, readTest)).toEqual([
+      "GET /api/Issues/:issueId/: test t.test.ts does not name /api/Issues/:issueId/",
+      "GET /api/agents/:id: also catches GET /api/agents/me; give that route its own row",
+      "GET /api/approvals/:id: by-company handler calls no company check of routes/authz.ts",
+      "GET /api/approvals/:id: by-company row names no existing object-level test",
+      "GET /api/issues/:id: a second row for the route of GET /api/Issues/:issueId/",
+      "GET /api/nowhere/:id: matches no registered route",
+    ]);
+  });
 });
