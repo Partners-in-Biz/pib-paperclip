@@ -158,7 +158,7 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
       dueOnly: flag("Only tasks due by today"),
     }),
   },
-  { group: "Tasks", name: "start-task", displayName: "Start sprint task", description: "Mark a task in progress.", parametersSchema: schema(["taskId"], { taskId, note: text("Comment posted on the task's issue (max 2000 chars)") }) },
+  { group: "Tasks", name: "start-task", displayName: "Start sprint task", description: "Mark a task in progress. A task with no issue gets its issue opened now.", parametersSchema: schema(["taskId"], { taskId, note: text("Comment posted on the task's issue (max 2000 chars)") }) },
   {
     group: "Tasks",
     name: "complete-task",
@@ -223,6 +223,7 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
     }),
   },
   { group: "Tasks", name: "skip-task", displayName: "Skip sprint task", description: "Mark a task skipped (not relevant for this site) with the reason; cancels its issue.", parametersSchema: schema(["taskId", "reason"], { taskId, reason: text("Why the task does not apply to this site (max 2000 chars)") }) },
+  { group: "Tasks", name: "attach-task-issue", displayName: "Attach an issue to a sprint task", description: "Attach an existing issue to a task that has none (add-task could not open one). start-task also opens a missing issue; this repairs the rest. approve-page-apply needs the task's issue.", parametersSchema: schema(["taskId", "issueId"], { taskId, issueId: text("The Paperclip issue id to attach (same company, not another task's)") }) },
   {
     group: "Tasks",
     name: "add-task",
