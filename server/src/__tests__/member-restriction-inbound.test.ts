@@ -2,9 +2,10 @@ import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
-  EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, activityLog, authUsers, chatEndpoints, chatExternalPrincipals, chatIdentityLinks,
+  EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, activityLog, authUsers, chatEndpoints, chatExternalPrincipals, chatGitHubConfigurations, chatIdentityLinks,
   chatVoiceSessions, companies, companyMemberships, createDb, toolApplications, toolConnections, agents,
 } from "@paperclipai/db";
+import type { GitHubChatConfiguration } from "@paperclipai/shared";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { voiceSessionStore } from "../services/voice/voice-session-store.js";
 import { createChatInboundAuthority } from "../services/chat-channels/inbound/authorization.js";
@@ -136,6 +137,48 @@ describe("inbound restriction database support", () => {
       await expect(authority.ensurePrincipal(endpoint, author)).rejects.toMatchObject({ status: 503, details: { code: "MEMBER_RESTRICTION_UNAVAILABLE" } });
       await expect(db.transaction((tx) => authority.lockCurrentPrincipalAuthorization(tx, endpoint, principal.id)))
         .rejects.toMatchObject({ status: 503 });
+    });
+  });
+
+  describe("row 11: GitHub identity mapped to R", () => {
+    /**
+     * A GitHub endpoint with a saved configuration, so the task-write lock takes
+     * its GitHub branch (`githubChatPrincipalAccess`), with R's GitHub identity linked to him.
+     */
+    async function githubLinkedEndpoint(companyId: string, R: string) {
+      const [agent] = await db.insert(agents).values({ companyId, name: "GitHub agent", role: "engineer", status: "active", adapterType: "codex_local" }).returning();
+      const [application] = await db.insert(toolApplications).values({ companyId, name: "GitHub", type: "chat" }).returning();
+      const [connection] = await db.insert(toolConnections).values({ companyId, applicationId: application!.id, name: "GitHub", uid: randomUUID(), transport: "chat_sdk", connectionPurpose: "channel" }).returning();
+      const [endpoint] = await db.insert(chatEndpoints).values({ companyId, connectionId: connection!.id, provider: "github", providerAccountId: "1001",
+        publicId: randomUUID(), assignedAgentId: agent!.id, status: "active" }).returning();
+      // Only `people` and `memberAccess` are read on this path.
+      const configuration = { version: 1, toolsEnabled: true, responsibleUserId: R, memberAccess: "all_linked", people: [] } as unknown as GitHubChatConfiguration;
+      await db.insert(chatGitHubConfigurations).values({ companyId, endpointId: endpoint!.id, configuration, updatedByUserId: R });
+      const [principal] = await db.insert(chatExternalPrincipals).values({ companyId, provider: "github", providerAccountId: "1001", externalId: String(Date.now()) }).returning();
+      await db.insert(chatIdentityLinks).values({ companyId, endpointId: endpoint!.id, principalId: principal!.id, paperclipUserId: R, status: "linked", confirmedAt: new Date() });
+      const authority = createChatInboundAuthority(db, { voiceStore: { authorizePrincipal: vi.fn() }, runtimeCallbackEndpoint: vi.fn() });
+      const lock = () => db.transaction((tx) => authority.lockCurrentPrincipalAuthorization(tx, endpoint!, principal!.id));
+      return { lock };
+    }
+
+    it("AC-M8 row 11: under enforce the GitHub branch maps his identity to no person", async () => {
+      const { companyId, R } = await setup("enforce");
+      const { lock } = await githubLinkedEndpoint(companyId, R);
+      await expect(lock()).resolves.toMatchObject({ allowed: false, linkedDenied: true, userId: null });
+      expect(await denials(companyId)).toEqual([expect.objectContaining({ ruleId: INBOUND_MEMBER_RESTRICTION_RULE_ID, target: "inbound.chat", mode: "enforce" })]);
+    });
+
+    it.each(["report", "kill switch"] as const)("under %s the GitHub branch maps his identity to him", async (variant) => {
+      if (variant === "kill switch") vi.stubEnv("PAPERCLIP_MEMBER_RESTRICTION", "off");
+      const { companyId, R } = await setup(variant === "report" ? "report" : "enforce");
+      const { lock } = await githubLinkedEndpoint(companyId, R);
+      await expect(lock()).resolves.toMatchObject({ allowed: true, linkedDenied: false, userId: R });
+    });
+
+    it("a failed restriction read on the GitHub branch is 503 MEMBER_RESTRICTION_UNAVAILABLE", async () => {
+      const { companyId, R } = await setup("enforce", { broken: true });
+      const { lock } = await githubLinkedEndpoint(companyId, R);
+      await expect(lock()).rejects.toMatchObject({ status: 503, details: { code: "MEMBER_RESTRICTION_UNAVAILABLE" } });
     });
   });
 });
