@@ -143,6 +143,12 @@ const mockDb = vi.hoisted(() => ({
   transaction: mockDbTransaction,
 }));
 
+// The stub database has no membership tables; the agent-list route check of
+// PAR-12608 4.7 has its own database test (member-restriction-agent-route-checks).
+vi.mock("../services/member-restriction/agent-read.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../services/member-restriction/agent-read.js")>()),
+  actorMayInstructAgent: async () => true,
+}));
 vi.mock("@paperclipai/shared/telemetry", () => ({
   trackAgentTaskCompleted: vi.fn(),
   trackErrorHandlerCrash: vi.fn(),

@@ -2038,6 +2038,12 @@ describe("agent live run routes", () => {
   });
 });
 
+// The stub database has no membership tables; the agent-list route check of
+// PAR-12608 4.7 has its own database test (member-restriction-agent-route-checks).
+vi.mock("../services/member-restriction/agent-read.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../services/member-restriction/agent-read.js")>()),
+  actorMayInstructAgent: async () => true,
+}));
 vi.mock("../services/agent-lifecycle.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../services/agent-lifecycle.js")>();
   return { ...actual, createAgentLifecycle: () => ({
