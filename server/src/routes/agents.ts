@@ -52,6 +52,7 @@ import { assertAiConnectionCreateAccess, canInstallSharedAiConnectionForNewAgent
 import { isAiConnectionCompatible } from "@paperclipai/shared";
 import { applyConnectorSkills, resolveConnectorAssignments, annotateConnectorSkills, isConnectorSkill } from "../services/connector-runtime.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
+import { readNonEmptyString } from "../modules/wake-queue/domain/values.js";
 import { canRetryStoppedRun } from "../services/cancelled-native-startup.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext, type NativeReviewAssignmentContext } from "../services/native-runtime/native-review-participant.js";
 import { paperclipRunnerTransitionConfig, normalizeLegacyRunnerProvider, isPaperclipRunnerProvider, PAPERCLIP_RUNNER_ACPX_PROFILES } from "@paperclipai/adapter-utils";
@@ -1453,6 +1454,30 @@ export function agentRoutes(
     });
     if (decision.allowed) return;
     throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+  }
+
+  /** The same `resource` and `scope` as `decideIssueAccess` in routes/issues.ts. */
+  async function decideIssueAccess(
+    req: Request,
+    issue: {
+      id: string; companyId: string; projectId: string | null; parentId: string | null;
+      assigneeAgentId: string | null; assigneeUserId: string | null; status: string;
+    },
+    action: "issue:read" | "issue:comment",
+  ) {
+    return access.decide({
+      actor: req.actor,
+      action,
+      resource: {
+        type: "issue", companyId: issue.companyId, issueId: issue.id,
+        projectId: issue.projectId, parentIssueId: issue.parentId,
+        assigneeAgentId: issue.assigneeAgentId, assigneeUserId: issue.assigneeUserId, status: issue.status,
+      },
+      scope: {
+        issueId: issue.id, projectId: issue.projectId, parentIssueId: issue.parentId,
+        assigneeAgentId: issue.assigneeAgentId, assigneeUserId: issue.assigneeUserId,
+      },
+    });
   }
 
   async function assertBoardCanWakeAgent(req: Request, agent: { id: string; companyId: string }) {
@@ -6239,6 +6264,16 @@ export function agentRoutes(
       ) {
         throw notFound("Failed run not found");
       }
+      const failedContext = asRecord(failedRun.contextSnapshot) ?? {};
+      // The run's task, by the heartbeat rule: `issueId`, else `taskId`.
+      const issueId = readNonEmptyString(failedContext.issueId) ?? readNonEmptyString(failedContext.taskId);
+      const failedRunIssue = issueId ? await issueService(db).getById(issueId) : null;
+      // Read the task first (PAR-12608 4.6, AC-G3): a caller who cannot read it
+      // gets the unknown-run answer before any state check, and nothing is written.
+      if (failedRunIssue && failedRunIssue.companyId === agent.companyId &&
+          !(await decideIssueAccess(req, failedRunIssue, "issue:read")).allowed) {
+        throw notFound("Failed run not found");
+      }
       if (failedRun.runtimeMode === "native" && failedRun.errorCode === "native_session_cleanup_quarantined") {
         throw conflict("The stopped native session requires cleanup and reconciliation before a new attempt.", {
           code: "native_session_cleanup_quarantined",
@@ -6247,29 +6282,17 @@ export function agentRoutes(
       if (!(await canRetryStoppedRun(db, failedRun))) {
         throw conflict("Only a failed run or a verified eligible cancellation can start a new attempt.");
       }
-      const failedContext = asRecord(failedRun.contextSnapshot) ?? {};
-      const issueId =
-        typeof failedContext.issueId === "string"
-          ? failedContext.issueId
-          : null;
       if (failedRun.status === "cancelled" && (!issueId ||
           (await getExecutionBlocker(db, agent.companyId, issueId))?.runId !== failedRun.id)) {
         throw conflict("The stopped run no longer owns this task's recovery hold.");
       }
       if (issueId) {
-        const issue = await issueService(db).getById(issueId);
+        const issue = failedRunIssue;
         if (!issue || issue.companyId !== agent.companyId) throw notFound("Task not found");
         if (issue.conversationAgentId && issue.conversationUserId !== req.actor.userId) {
           throw forbidden("Only the conversation owner can retry a chat run");
         }
-        const decision = await access.decide({
-          actor: req.actor, action: "issue:comment",
-          resource: {
-            type: "issue", companyId: issue.companyId, issueId: issue.id,
-            projectId: issue.projectId, parentIssueId: issue.parentId,
-            assigneeAgentId: issue.assigneeAgentId, assigneeUserId: issue.assigneeUserId, status: issue.status,
-          },
-        });
+        const decision = await decideIssueAccess(req, issue, "issue:comment");
         if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
         const savedReviewContext = readNativeReviewAssignmentContext(failedContext);
         if (failedRun.runtimeMode === "native" && failedRun.status === "failed" &&
