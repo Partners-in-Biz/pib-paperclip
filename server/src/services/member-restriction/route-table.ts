@@ -464,3 +464,75 @@ export function createRouteClassifier(entries: readonly MemberRestrictionRouteEn
     });
   };
 }
+
+/**
+ * The mount table of PAR-12608 section 4.6a: every registration on the Express
+ * app in `app.ts` and every socket upgrade handler (`server.on("upgrade")`),
+ * none of which the `/api` middleware of 4.6 sees. Default for a caller bound
+ * by R: refused. The scan in `__tests__/member-restriction-mount-table.test.ts`
+ * fails the build when a registration or upgrade handler has no row, a row
+ * names one that no longer exists, or a "to prove" row names neither a test
+ * nor the ticket that proves it.
+ */
+export interface MemberRestrictionMountEntry {
+  /** Row of 4.6a; `null` for middleware that answers no request with data of its own, and for the `/api` router (4.6). */
+  row: number | null;
+  /**
+   * The registrations as the scan reads them: for `app.ts` the method and the
+   * leading name of each argument (`USE "/api/ready" readinessRoutes`,
+   * `GET "/api/x" <inline>`); for a socket, `UPGRADE <file under server/src>`.
+   */
+  mounts: readonly string[];
+  /** The rule for R (the restricted person), in short. */
+  rule: string;
+  /** A "to prove" row: the test that proves it (it names `4.6a row <n>`), or the ticket that will. */
+  toProve?: string;
+  /** Row 5: every route of the mounted routers, classified (4.6a: `run` or `closed`, to prove per route). */
+  routes?: ReadonlyArray<{ method: string; path: string; class: "run" | "closed" }>;
+}
+
+/** The tests of rows 2, 5, 9, 12 and 19 land with PAR-13211 (C4f-2b), which points this at its test file. */
+const MOUNT_TEST = "PAR-13211";
+
+export const MEMBER_RESTRICTION_MOUNT_TABLE: readonly MemberRestrictionMountEntry[] = [
+  { row: null, rule: "middleware: request accounting, body parsing, logging, host and Cloud guards; the actor is resolved here",
+    mounts: ["USE databaseOperationMiddleware", "USE idleAdmissionMiddleware", "USE COMPANY_IMPORT_API_PATH express.json",
+      "USE \"/api/chat-webhooks\" createChatWebhookDiagnostics chatWebhookBodyParser",
+      "USE \"/api/plugins/:pluginId/webhooks/:endpointKey\" pluginWebhookBodyParser", "USE dotPrincipalHttp.bodyParser",
+      "USE <inline>", "USE \"/api\" apiCompression", "USE httpLogger", "USE privateHostnameGuard",
+      "USE cloudRuntimeIdentityMiddleware", "USE cloudWarmStandbyMiddleware", "USE actorMiddleware",
+      "USE cloudControlMiddleware", "USE skillAccessRequestContext", "USE errorHandler"] },
+  { row: null, rule: "the `/api` router and its 404: the route table of 4.6", mounts: ["USE \"/api\" api", "USE \"/api\" <inline>"] },
+  { row: 1, rule: "not bound: no company data", mounts: ["USE \"/api/liveness\" livenessRoutes", "USE \"/api/ready\" readinessRoutes"] },
+  { row: 2, rule: "refused: only a managed-run bearer or a Cloud inspection permit, never a member's session or key",
+    mounts: ["USE \"/api/customer-success/v1\" customerSuccessRoutes"], toProve: MOUNT_TEST },
+  { row: 3, rule: "as row 4: an agent-purpose assistant connection", mounts: ["USE museTransportRoutes"] },
+  { row: 4, rule: "every call resolves its actor in `actorForGrant` (C4f)", mounts: ["USE publicMcpIngress"] },
+  { row: 5, rule: "a run's own run-bound token only; tools end in the dispatcher (4.8) and the connector builder (4.9)",
+    mounts: ["USE runtimeConnectionIntentRoutes", "USE nativeRunMcpRoutes"], toProve: MOUNT_TEST,
+    routes: [
+      { method: "POST", path: "/runtime-tools/github/credentials", class: "run" },
+      { method: "GET", path: "/mcp/runtime-tools", class: "run" },
+      { method: "POST", path: "/mcp/runtime-tools", class: "run" },
+      { method: "POST", path: "/runtime-tools/connections/search", class: "run" },
+      { method: "POST", path: "/runtime-tools/connections/request", class: "run" },
+      { method: "ALL", path: "/mcp/native-runs/:runId", class: "run" },
+    ] },
+  { row: 6, rule: "an inbound call mapped to him is refused", mounts: ["USE voiceWebhookRoutes"], toProve: "PAR-13206" },
+  { row: 7, rule: "no person; the run it starts is held to invariant A (4.7)", mounts: ["USE connectionEventWakeRoutes"] },
+  { row: 8, rule: "open: sign-in, sign-out, own profile", mounts: ["USE \"/api/auth\" authRoutes", "ALL \"/api/auth/{*authPath}\" opts.betterAuthHandler"] },
+  { row: 9, rule: "open: agent documentation with no company data", mounts: ["USE llmRoutes"], toProve: MOUNT_TEST },
+  { row: 10, rule: "a mail mapped to him becomes no comment, task or wake", mounts: ["USE emailWebhookRoutes"], toProve: "PAR-13206" },
+  { row: 11, rule: "a message from his linked identity is refused", mounts: ["USE chatWebhookRoutes"], toProve: "PAR-13206" },
+  { row: 12, rule: "refused: finishing a GitHub set-up is `connections:configure`, which the action list denies",
+    mounts: ["GET \"/api/chat-github/manifest/callback\" <inline>", "GET \"/api/chat-github/cloud/callback\" <inline>",
+      "GET \"/api/chat-github/identity/callback\" <inline>"], toProve: MOUNT_TEST },
+  { row: 13, rule: "connector tools refused (4.9), plugin tools through the dispatcher (4.8)", mounts: ["USE mcpGatewayProtocolRoutes"] },
+  { row: 14, rule: "not gated: plugin code, no data (4.8)", mounts: ["USE pluginUiStaticRoutes"] },
+  { row: 15, rule: "not bound: the screen's static files", mounts: ["USE staticUi"] },
+  { row: 16, rule: "the plugin gate at upgrade (4.8, C5-1)", mounts: ["UPGRADE realtime/plugin-api-ws.ts"] },
+  { row: 17, rule: "per event at delivery: task and project events through `decide()`, run events through the run rule",
+    mounts: ["UPGRADE realtime/live-events-ws.ts"] },
+  { row: 18, rule: "refused", mounts: ["UPGRADE realtime/environment-custom-image-terminal-ws.ts"] },
+  { row: 19, rule: "not a person's entry: a registered run's own authority", mounts: ["UPGRADE realtime/runner-prp-ws.ts"], toProve: MOUNT_TEST },
+];
