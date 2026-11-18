@@ -3174,6 +3174,7 @@ export function accessRoutes(
       input.joinRequest.requestingUserId,
       membershipRole,
       "active",
+      inviteMemberRestrictionFromDefaults(input.invite.defaultsPayload),
     );
     const grants = humanJoinGrantsFromDefaults(
       input.invite.defaultsPayload as Record<string, unknown> | null,
@@ -4264,12 +4265,14 @@ export function accessRoutes(
         const membershipRole = resolveHumanInviteRole(
           invite.defaultsPayload as Record<string, unknown> | null,
         );
+        // The mark is read from the invite again at approval; the approval cannot drop it.
         await access.ensureMembership(
           companyId,
           "user",
           existing.requestingUserId,
           membershipRole,
-          "active"
+          "active",
+          inviteMemberRestrictionFromDefaults(invite.defaultsPayload),
         );
         const grants = humanJoinGrantsFromDefaults(
           invite.defaultsPayload as Record<string, unknown> | null,
