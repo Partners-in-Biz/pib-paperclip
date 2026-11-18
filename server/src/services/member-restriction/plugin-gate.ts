@@ -2,8 +2,8 @@ import type { Db } from "@paperclipai/db";
 import { MEMBER_RESTRICTED_CODE, type ActorCompanyMembership } from "@paperclipai/shared";
 import { forbidden, HttpError } from "../../errors.js";
 import { recordMemberRestrictionDenial } from "./admin.js";
-import { actorPersonMembership, memberRestrictionForMembership } from "./actor-memberships.js";
-import type { MemberRestrictionResolver } from "./resolver.js";
+import { actorPersonMembership, loadActorMemberships, memberRestrictionForMembership } from "./actor-memberships.js";
+import { memberRestrictionKillSwitchOn, type MemberRestrictionResolver } from "./resolver.js";
 
 /**
  * The core plugin gate (PAR-12608 4.8): a call made by, or for, a restricted
@@ -55,6 +55,35 @@ export async function assertPluginOpenForActor(
   const carried = actorPersonMembership(actor, companyId);
   if (!carried) return;
   await assertPluginOpenForPerson(deps, { companyId, personId: carried.personId, pluginKey, target }, carried.membership);
+}
+
+/**
+ * The Apps menu (4.8, AC-K4): `GET /plugins/ui-contributions` names no
+ * company, so for a signed-in user restricted under `enforce` in any company
+ * it keeps only the plugins open to him in every such company. A person who is
+ * owner in X and restricted in Y therefore sees Y's list in X too, the rule of
+ * 4.6 for pages with no company in their path (S14). `report` and `off` filter
+ * nothing, like every list (4.2). Nobody else is filtered: no signed-in user,
+ * the local board, an instance admin. A failed read throws 503.
+ */
+export async function filterPluginsOpenForPerson<T extends { pluginKey: string }>(
+  deps: PluginGateDeps,
+  actor: { type: string; userId?: string | null; source?: string; isInstanceAdmin?: boolean;
+    memberships?: Array<Partial<ActorCompanyMembership> & { companyId: string }> },
+  rows: T[],
+): Promise<T[]> {
+  const personId = actor.type === "board" ? actor.userId : null;
+  if (!personId || actor.source === "local_implicit" || actor.isInstanceAdmin || memberRestrictionKillSwitchOn()) return rows;
+  const memberships = actor.memberships ?? await loadActorMemberships(deps.db, { userId: personId, activeOnly: false });
+  let open: Set<string> | null = null;
+  for (const membership of memberships) {
+    const restriction = await memberRestrictionForMembership(deps.resolve, personId, membership.companyId, membership);
+    if (!restriction.restricted || restriction.mode !== "enforce") continue;
+    const before: Set<string> | null = open;
+    open = new Set(restriction.pluginKeys.filter((key) => !before || before.has(key)));
+  }
+  const keep = open;
+  return keep ? rows.filter((row) => keep.has(row.pluginKey)) : rows;
 }
 
 export function isMemberRestricted(error: unknown): error is HttpError {

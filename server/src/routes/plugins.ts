@@ -103,7 +103,11 @@ import {
   pluginActingPersonForActor,
   type PluginActingPerson,
 } from "../services/member-restriction/index.js";
-import { assertPluginOpenForActor, isMemberRestricted } from "../services/member-restriction/plugin-gate.js";
+import {
+  assertPluginOpenForActor,
+  filterPluginsOpenForPerson,
+  isMemberRestricted,
+} from "../services/member-restriction/plugin-gate.js";
 
 /**
  * Floor: when the hosting operator hides the Plugins settings surface
@@ -988,11 +992,18 @@ export function pluginRoutes(
    * ]
    * ```
    *
+   * A user restricted under `enforce` gets only the plugins open to him
+   * (PAR-12608 4.8, AC-K4); a failed restriction read is 503.
+   *
    * Response: PluginUiContribution[]
    */
   router.get("/plugins/ui-contributions", async (req, res) => {
     assertBoardOrgAccess(req);
-    const plugins = await registry.listByStatus("ready");
+    const plugins = await filterPluginsOpenForPerson(
+      { db, resolve: resolveMemberRestriction },
+      req.actor,
+      await registry.listByStatus("ready"),
+    );
 
     const contributions: PluginUiContribution[] = plugins
       .map((plugin) => {

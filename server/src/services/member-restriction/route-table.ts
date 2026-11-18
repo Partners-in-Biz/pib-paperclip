@@ -389,13 +389,16 @@ export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntr
   // handler calls `assertPluginOpenForPerson` before the worker is called: a
   // plugin not on his list is 403 `MEMBER_RESTRICTED` (4.8). The API mount also
   // carries the plugin socket, whose upgrade is replayed through it (4.6a row 16).
-  // The tool route and `ui-contributions` are C5-2 and C5-3.
   { method: "POST", path: "/api/plugins/:pluginId/bridge/data", class: "plugin" },
   { method: "POST", path: "/api/plugins/:pluginId/bridge/action", class: "plugin" },
   { method: "POST", path: "/api/plugins/:pluginId/data/:key", class: "plugin" },
   { method: "POST", path: "/api/plugins/:pluginId/actions/:key", class: "plugin" },
   { method: "GET", path: "/api/plugins/:pluginId/bridge/stream/:channel", class: "plugin" },
   { method: "USE", path: "/api/plugins/:pluginId/api", class: "plugin" },
+  // C5-3 (PAR-12742): the Apps menu. The handler keeps only his open plugins
+  // (`filterPluginsOpenForPerson`); without that filter this row would hand him
+  // every plugin (PAR-13261).
+  { method: "GET", path: "/api/plugins/ui-contributions", class: "plugin", test: "server/src/__tests__/member-restriction-ui-contributions.test.ts" },
 ];
 
 /**

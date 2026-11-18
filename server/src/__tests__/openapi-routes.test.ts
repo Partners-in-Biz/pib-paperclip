@@ -1614,7 +1614,8 @@ async function routeTableScanErrors(
 
 // PAR-12608 4.8, AC-K7: every route under `/plugins/:pluginId/`, and every
 // `plugin` row, calls the core plugin gate unless it is on the not-gated list.
-const PLUGIN_GATE_CALL_PATTERN = /\bassertPluginOpenForPerson\s*\(/;
+// A list route (`ui-contributions`) calls the gate's filter instead.
+const PLUGIN_GATE_CALL_PATTERN = /\b(?:assertPluginOpenForPerson|filterPluginsOpenForPerson)\s*\(/;
 
 function pluginGateScanErrors(
   table: readonly MemberRestrictionRouteEntry[],
