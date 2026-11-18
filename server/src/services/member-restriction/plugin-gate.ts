@@ -75,15 +75,15 @@ export async function filterPluginsOpenForPerson<T extends { pluginKey: string }
   const personId = actor.type === "board" ? actor.userId : null;
   if (!personId || actor.source === "local_implicit" || actor.isInstanceAdmin || memberRestrictionKillSwitchOn()) return rows;
   const memberships = actor.memberships ?? await loadActorMemberships(deps.db, { userId: personId, activeOnly: false });
-  let open: Set<string> | null = null;
+  const openLists: ReadonlyArray<string>[] = [];
   for (const membership of memberships) {
     const restriction = await memberRestrictionForMembership(deps.resolve, personId, membership.companyId, membership);
     if (!restriction.restricted || restriction.mode !== "enforce") continue;
-    const before: Set<string> | null = open;
-    open = new Set(restriction.pluginKeys.filter((key) => !before || before.has(key)));
+    openLists.push(restriction.pluginKeys);
   }
-  const keep = open;
-  return keep ? rows.filter((row) => keep.has(row.pluginKey)) : rows;
+  if (openLists.length === 0) return rows;
+  const keep = new Set(openLists[0]!.filter((key) => openLists.every((list) => list.includes(key))));
+  return rows.filter((row) => keep.has(row.pluginKey));
 }
 
 export function isMemberRestricted(error: unknown): error is HttpError {
