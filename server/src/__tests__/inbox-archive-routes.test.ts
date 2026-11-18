@@ -588,12 +588,14 @@ describeEmbeddedPostgres("inbox archive routes", () => {
       .send({})
       .expect(200);
 
+    // The task is outside the low-trust boundary, so the agent cannot read it:
+    // the route reads the task first and answers not found (PAR-12958, AC-G3).
     const lowTrust = await seed({ lowTrust: true });
     await request(appFor(agentActor(lowTrust)))
       .post(`/api/issues/${lowTrust.issueId}/inbox-archive`)
       .send({})
-      .expect(403)
-      .expect(({ body }) => expect(body.code).toBe("inbox_agent_not_allowed"));
+      .expect(404)
+      .expect(({ body }) => expect(body).toEqual({ error: "Issue not found" }));
   });
 
   it("requires a scoped grant for cross-user archive and unarchive", async () => {

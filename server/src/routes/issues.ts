@@ -12687,6 +12687,7 @@ export function issueRoutes(
       "Issue not found",
     );
     if (!issue) return;
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Board authentication required" });
       return;
@@ -12737,6 +12738,7 @@ export function issueRoutes(
       "Issue not found",
     );
     if (!issue) return;
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Board authentication required" });
       return;
@@ -12842,6 +12844,7 @@ export function issueRoutes(
         "Issue not found",
       );
       if (!issue) return;
+      if (!(await assertIssueReadAllowed(req, res, issue))) return;
       const target = await resolveInboxArchiveTarget(req, issue);
       const actor = getActorInfo(req);
       const archiveState = await svc.archiveInbox(
@@ -12888,6 +12891,7 @@ export function issueRoutes(
         "Issue not found",
       );
       if (!issue) return;
+      if (!(await assertIssueReadAllowed(req, res, issue))) return;
       const target = await resolveInboxArchiveTarget(req, issue);
       const removed = await svc.unarchiveInbox(
         issue.companyId,
@@ -19313,6 +19317,7 @@ export function issueRoutes(
       "Issue not found",
     );
     if (!issue) return;
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
     if (req.actor.type !== "board") {
       res
         .status(403)
@@ -19336,6 +19341,7 @@ export function issueRoutes(
       "Issue not found",
     );
     if (!issue) return;
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
     if (req.actor.type !== "board") {
       res
         .status(403)
@@ -19373,6 +19379,13 @@ export function issueRoutes(
     res.json(traces);
   });
 
+  // A trace id never confirms a task the caller cannot read (AC-G3): same 404 as a missing trace.
+  async function canReadFeedbackTraceIssue(req: Request, trace: { companyId: string; issueId: string }) {
+    const issue = await svc.getById(trace.issueId);
+    if (!issue || issue.companyId !== trace.companyId) return false;
+    return (await decideIssueAccess(req, issue, "issue:read")).allowed;
+  }
+
   router.get("/feedback-traces/:traceId", async (req, res) => {
     const traceId = req.params.traceId as string;
     if (req.actor.type !== "board") {
@@ -19385,7 +19398,7 @@ export function issueRoutes(
       parseBooleanQuery(req.query.includePayload) ||
       req.query.includePayload === undefined;
     const trace = await feedback.getFeedbackTraceById(traceId, includePayload);
-    if (!trace || !actorCanAccessCompany(req, trace.companyId)) {
+    if (!trace || !actorCanAccessCompany(req, trace.companyId) || !(await canReadFeedbackTraceIssue(req, trace))) {
       res.status(404).json({ error: "Feedback trace not found" });
       return;
     }
@@ -19401,7 +19414,7 @@ export function issueRoutes(
       return;
     }
     const bundle = await feedback.getFeedbackTraceBundle(traceId);
-    if (!bundle || !actorCanAccessCompany(req, bundle.companyId)) {
+    if (!bundle || !actorCanAccessCompany(req, bundle.companyId) || !(await canReadFeedbackTraceIssue(req, bundle))) {
       res.status(404).json({ error: "Feedback trace not found" });
       return;
     }
@@ -20569,6 +20582,7 @@ export function issueRoutes(
         "Issue not found",
       );
       if (!issue) return;
+      if (!(await assertIssueReadAllowed(req, res, issue))) return;
       if (req.actor.type !== "board") {
         res
           .status(403)
