@@ -290,7 +290,8 @@ export interface AcceptedPlanDecompositionChildIssue {
 
 export interface AcceptedPlanDecompositionSummary extends AcceptedPlanDecomposition {
   acceptedPlanRevisionNumber: number | null;
-  childIssues: AcceptedPlanDecompositionChildIssue[];
+  /** A child the caller cannot read is an identifier-only `IssueLockedStub`. */
+  childIssues: Array<AcceptedPlanDecompositionChildIssue | IssueLockedStub>;
 }
 
 export interface IssueRelationIssueSummary {
