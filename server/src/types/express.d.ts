@@ -17,6 +17,10 @@ declare global {
         memberships?: ActorCompanyMembership[];
         onBehalfOfMemberships?: ActorCompanyMembership[];
         isInstanceAdmin?: boolean;
+        /** Companies where a person this actor carries is restricted under `enforce`; set by the route-table middleware. */
+        memberRestrictedCompanyIds?: string[];
+        /** The route is `by-company`: its handler must refuse a company in `memberRestrictedCompanyIds`. */
+        memberRestrictionByCompany?: boolean;
         canManageExperimentalSettings?: boolean;
         keyId?: string;
         keyScope?: AgentApiKeyScope;
