@@ -10213,8 +10213,9 @@ export function issueService(db: Db) {
       });
     },
 
-    listConversations: async (companyId: string, userId: string) => db.select().from(issues).where(and(
-      eq(issues.companyId, companyId), eq(issues.conversationUserId, userId), isNotNull(issues.conversationAgentId),
+    /** The caller's chats. `readCondition` (required) is the caller's `issueReadSqlCondition` (PAR-12720). */
+    listConversations: async (companyId: string, userId: string, readCondition: SQL<boolean>) => db.select().from(issues).where(and(
+      eq(issues.companyId, companyId), eq(issues.conversationUserId, userId), isNotNull(issues.conversationAgentId), readCondition,
     )).orderBy(desc(issues.updatedAt), asc(issues.id)),
 
     getConversation: async (companyId: string, agentId: string, userId: string) => db.select().from(issues).where(and(

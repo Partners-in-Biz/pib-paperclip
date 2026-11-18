@@ -19363,7 +19363,7 @@ export function issueRoutes(
     assertCompanyAccess(req, companyId);
     if (req.actor.type !== "board" || !req.actor.userId) throw forbidden("Board user access required");
     if (!(await instanceSettings.getExperimental()).enableAgentChat) throw notFound("Agent Chat is disabled");
-    const conversations = await svc.listConversations(companyId, req.actor.userId);
+    const conversations = await svc.listConversations(companyId, req.actor.userId, await issueReadSqlCondition(db, req.actor));
     res.json(await withConversationReadState(db, companyId, req.actor.userId, await filterIssuesForActor(req, conversations)));
   });
 

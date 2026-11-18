@@ -66,6 +66,7 @@ import {
   workTimelineService,
 } from "../services/index.js";
 import { isCloudManagedInstance } from "../services/cloud-instance.js";
+import { issueReadSqlCondition } from "../services/authorization.js";
 import { getHiddenSettings } from "../services/settings-visibility.js";
 import type { StorageService } from "../storage/types.js";
 import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo, hasCompanyAccess } from "./authz.js";
@@ -426,6 +427,8 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     const query = companyArtifactsQuerySchema.parse(req.query);
     res.json(await artifacts.list(companyId, query, {
       userId: query.starred && req.actor.type === "board" ? req.actor.userId : undefined,
+      // Every artifact belongs to a task: list only those of tasks the caller may read (PAR-12720).
+      issueConditions: [await issueReadSqlCondition(db, req.actor)],
     }));
   });
 
