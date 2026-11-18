@@ -95,6 +95,8 @@ describeDb("core plugin gate (PAR-12608 4.8)", () => {
   };
   const setList = (pluginKeys: string[]) => db.update(companyMemberships).set({ restrictedPluginKeys: pluginKeys })
     .where(and(eq(companyMemberships.companyId, id.Y!), eq(companyMemberships.principalId, R)));
+  const setFlag = (restricted: boolean) => db.update(companyMemberships).set({ restricted })
+    .where(and(eq(companyMemberships.companyId, id.Y!), eq(companyMemberships.principalId, R)));
   const setMode = (mode: "off" | "report" | "enforce") =>
     db.update(companies).set({ memberRestrictionMode: mode }).where(eq(companies.id, id.Y!));
   const install = async (key: string) => {
@@ -167,6 +169,7 @@ describeDb("core plugin gate (PAR-12608 4.8)", () => {
     vi.clearAllMocks();
     workerManager.call.mockResolvedValue({ status: 200, body: { ok: true } });
     failRead.on = false;
+    await setFlag(true);
     await setList([]);
     await setMode("enforce");
   });
@@ -238,28 +241,57 @@ describeDb("core plugin gate (PAR-12608 4.8)", () => {
     expect(workerManager.call).toHaveBeenCalledWith(id.crm, "handleApiRequest", expect.objectContaining({ routeKey: "channel" }));
   });
 
-  it("AC-M7: R's open stream of a plugin then removed from his list delivers nothing further and ends", async () => {
-    await setList([CRM]);
-    actor = await boardFor(R);
+  /** Opens R's CRM stream; `until` reads until the text holds a pattern, false when the stream ends first. */
+  const openStream = async () => {
     const res = await fetch(`${base}/api/plugins/${id.crm}/bridge/stream/ch?companyId=${id.Y}`);
     expect(res.status).toBe(200);
     const reader = res.body!.getReader();
-    let text = "";
+    const state = { text: "" };
     const until = async (pattern: string) => {
-      while (!text.includes(pattern)) {
+      while (!state.text.includes(pattern)) {
         const chunk = await reader.read();
         if (chunk.done) return false;
-        text += new TextDecoder().decode(chunk.value);
+        state.text += new TextDecoder().decode(chunk.value);
       }
       return true;
     };
     await until(":ok");
-    streamBus.publish(id.crm!, "ch", id.Y!, { mark: "before" });
-    expect(await until("before")).toBe(true);
+    return { state, until };
+  };
+  const publish = (mark: string) => streamBus.publish(id.crm!, "ch", id.Y!, { mark });
+
+  it("AC-M7: R's open stream of a plugin then removed from his list delivers nothing further and ends", async () => {
+    await setList([CRM]);
+    actor = await boardFor(R);
+    const stream = await openStream();
+    publish("before");
+    expect(await stream.until("before")).toBe(true);
     await setList([]);
-    streamBus.publish(id.crm!, "ch", id.Y!, { mark: "after" });
-    expect(await until("@@end-of-stream@@")).toBe(false);
-    expect(text).not.toContain("after");
+    publish("after");
+    expect(await stream.until("@@end-of-stream@@")).toBe(false);
+    expect(stream.state.text).not.toContain("after");
+    // The re-check records no denial: one per message would flood the log.
+    expect(await denials()).not.toContain(`plugin:${CRM}:stream`);
+  });
+
+  it("4.6a: a stream opened before his flag was set is re-checked against the database, not the carried membership", async () => {
+    await setFlag(false);
+    actor = await boardFor(R);
+    const stream = await openStream();
+    await setFlag(true);
+    publish("after");
+    expect(await stream.until("@@end-of-stream@@")).toBe(false);
+    expect(stream.state.text).not.toContain("after");
+  });
+
+  it("4.6a, AC-X1: a failed read while the stream is open ends it and delivers nothing further", async () => {
+    await setList([CRM]);
+    actor = await boardFor(R);
+    const stream = await openStream();
+    failRead.on = true;
+    publish("after");
+    expect(await stream.until("@@end-of-stream@@")).toBe(false);
+    expect(stream.state.text).not.toContain("after");
   });
 
   it("report mode records a would-refuse and lets the call through", async () => {
