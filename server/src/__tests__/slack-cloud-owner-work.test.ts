@@ -6,7 +6,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { SLACK_CHAT_BOT_SCOPES } from "@paperclipai/shared";
 import { activityLog, agentRuntimeState, agentTaskSessions, agentWakeupRequests, agents, applyPendingMigrations, authUsers,
-  chatDeliveries, chatEndpoints, chatExternalPrincipals, companySecretBindings, chatIdentityLinks, chatSlackRegistrations, companies, companyMemberships,
+  chatConversations, chatDeliveries, chatEndpoints, chatExternalPrincipals, companySecretBindings, chatIdentityLinks, chatSlackRegistrations, companies, companyMemberships,
   companySecrets, companySkills, costEvents, financeEvents, heartbeatRunEvents, heartbeatRuns, issueComments, issues, toolApplications, toolConnections,
   closeCheckpointDb, closeFileStorageDb, closeLivenessDb, createDb } from "@paperclipai/db";
 import { databaseWorkPending, reconcileDatabaseWork, subscribeDatabaseWork } from "@paperclipai/db/work-signals";
@@ -426,6 +426,54 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
         credentialSecretRefs: connection!.credentialSecretRefs, credentialRefs: connection!.credentialRefs });
       expect(vi.mocked(cloud.request).mock.calls).toHaveLength(requests);
     } finally { transaction.mockRestore(); }
+  }, 60_000);
+
+  // PAR-12608 4.6a row 11, AC-M8: a Slack message from a restricted member's
+  // linked identity under `enforce` is refused with a reply that says so; no
+  // task, comment or wake. The kill switch makes `enforce` behave as `off`. The
+  // failed read is in member-restriction-inbound.test.ts.
+  it.each(["enforce", "kill switch"] as const)("refuses a restricted member's linked Slack message with a reply (%s)", async (variant) => {
+    if (variant === "kill switch") vi.stubEnv("PAPERCLIP_MEMBER_RESTRICTION", "off");
+    const endpointId = await createEndpoint(variant === "enforce" ? "RESTRICTED" : "KILLSWITCH");
+    await confirm(endpointId); await activate(endpointId); await confirm(endpointId);
+    const R = `restricted-${randomUUID()}`, now = new Date();
+    await db.insert(authUsers).values({ id: R, name: "R", email: `${R}@example.test`, emailVerified: true, createdAt: now, updatedAt: now });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: R, status: "active", membershipRole: "operator", restricted: true });
+    await db.update(chatIdentityLinks).set({ paperclipUserId: R }).where(eq(chatIdentityLinks.endpointId, endpointId));
+    await db.update(companies).set({ memberRestrictionMode: "enforce" }).where(eq(companies.id, companyId));
+    const replies: unknown[] = [];
+    for (const transport of transports) {
+      const base = transport.getMockImplementation()!;
+      transport.mockImplementation(async config => {
+        if (!new URL(config.url, config.baseURL).pathname.endsWith("/chat.postEphemeral")) return base(config);
+        replies.push((config as { data?: unknown }).data);
+        return { data: { ok: true, message_ts: "1.1" }, status: 200, statusText: "OK", headers: {}, config, request: {} };
+      });
+    }
+    const endpoint = await row(endpointId), enrolled = (await setup(endpointId)).slackCloudEvents!;
+    cloud.enqueue({ companyId, endpointId, publicId: endpoint.publicId, connectionId: endpoint.connectionId,
+      runtimeGeneration: (await setup(endpointId)).runtimeGeneration, teamId: enrolled.teamId, appId: enrolled.appId, bindingId: enrolled.bindingId }, secret, variant === "enforce" ? "EvRestricted" : "EvKillSwitch");
+    await githubConnectionEventService(db, { connector: cloud.connector }).pollOnce({ forDelivery: true });
+    expect(callbacks).toHaveLength(1);
+    const [received] = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpointId));
+    expect(deferred.length).toBeGreaterThan(0);
+    for (const work of deferred.splice(0)) await work();
+    const [delivery] = await db.select().from(chatDeliveries).where(eq(chatDeliveries.id, received!.id));
+    const conversations = await db.select().from(chatConversations).where(eq(chatConversations.endpointId, endpointId));
+    if (variant === "kill switch") {
+      expect(delivery!.state).not.toBe("filtered");
+      expect(conversations).toHaveLength(1);
+      expect(replies).toEqual([]);
+      return;
+    }
+    expect(delivery).toMatchObject({ state: "filtered", principalId: null, redactedError: "Linked Paperclip account is restricted in this company" });
+    expect(conversations).toEqual([]);
+    expect(await db.select().from(issues).where(eq(issues.companyId, companyId))).toEqual([]);
+    expect(await db.select().from(issueComments).where(eq(issueComments.companyId, companyId))).toEqual([]);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId))).toEqual([]);
+    expect(replies).toHaveLength(1);
+    expect(Object.fromEntries(new URLSearchParams(String(replies[0])))).toMatchObject({ channel: "CTEST", user: "UOPERATOR",
+      text: "Your Paperclip account is restricted in this company, so this message was not accepted." });
   }, 60_000);
 
   it("public tool removal refuses a foreign company before Slack archival or retirement staging", async () => {
