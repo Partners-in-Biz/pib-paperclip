@@ -115,7 +115,6 @@ jobs:
             pnpm -r --filter "!${RUNNER}" --filter "!${SERVER}" typecheck
             ts_only server
           fi
-
       # Blocking (PAR-12977): the PR's own added or modified test files run first, by name, so they always run and
       # show per-file in the log. The --changed step below can time out on a PR that touches a hub file such as
       # server/src/routes/issues.ts. `vitest list` keeps only files a root vitest project collects (runner, e2e and
