@@ -38,6 +38,7 @@ import { externalObjectService } from "../services/external-objects.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 import { ensureProjectAccessMember } from "../services/projects.js";
+import { assertRestrictedBodyAllowed } from "../services/member-restriction/body-allowlist.js";
 import { projectReadSqlCondition } from "../services/authorization.js";
 import {
   memberRestrictionForActor,
@@ -400,6 +401,9 @@ export function projectRoutes(db: Db) {
   router.post("/companies/:companyId/projects", validate(createProjectSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    // PAR-12934 (4.6): a caller bound by a restricted person sends no host
+    // configuration, secret or repository. Refused before anything is written.
+    await assertRestrictedBodyAllowed(db, req, companyId, "createProject", req.body);
     type CreateProjectPayload = Parameters<typeof svc.create>[1] & {
       workspace?: Parameters<typeof svc.createWorkspace>[1];
       repositoryIds?: string[];
@@ -531,6 +535,7 @@ export function projectRoutes(db: Db) {
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
     if (!existing) return;
     if (!(await assertProjectReadAllowed(req, res, existing))) return;
+    await assertRestrictedBodyAllowed(db, req, existing.companyId, "updateProject", req.body, existing.id);
     const body = { ...req.body };
     if (body.visibility !== undefined) {
       if (!(await assertCanManageProjectPrivacy(req, res, existing))) return;
