@@ -299,12 +299,19 @@ describe("member-restriction invites database support", () => {
     const owner = await member("owner");
     as(owner.principalId, [company.id]);
     const sneaky = { memberRestriction: { restricted: true, pluginKeys: ["crm"], agentIds: [] }, note: "kept" };
-    for (const body of [{ defaultsPayload: sneaky }, { defaultsPayload: sneaky, restriction: { restricted: false } }]) {
+    // No typed field under `off`: the key is absent. A typed `restricted: false` is stored
+    // exactly as the recorded choice (PAR-13096), never the free payload's value.
+    const notRestricted = { restricted: false, pluginKeys: [], agentIds: [] };
+    for (const [body, expected] of [
+      [{ defaultsPayload: sneaky }, undefined],
+      [{ defaultsPayload: sneaky, restriction: { restricted: false } }, notRestricted],
+    ] as const) {
       const res = await createInvite(company.id, body);
       expect(res.status, JSON.stringify(res.body)).toBe(201);
       const [stored] = await db.select().from(invites).where(eq(invites.id, res.body.id));
       expect(stored!.defaultsPayload).toMatchObject({ note: "kept" });
-      expect(stored!.defaultsPayload).not.toHaveProperty("memberRestriction");
+      expect((stored!.defaultsPayload as Record<string, unknown>).memberRestriction).toEqual(expected);
+      expect(res.body.defaultsPayload.memberRestriction).toEqual(expected);
     }
     // A marked invite stores the field's value, not the payload's lists.
     const marked = await createInvite(company.id, { defaultsPayload: sneaky, restriction: { restricted: true } });

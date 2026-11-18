@@ -117,8 +117,11 @@ import {
   INVITE_MEMBER_RESTRICTION_KEY,
   assertInviterNotRestricted,
   inviteMemberRestrictionFromDefaults,
+  inviteRestrictionChoice,
+  markForJoin,
   markForNewInvite,
   withoutInviteMemberRestriction,
+  type JoinMark,
 } from "../services/member-restriction/invite.js";
 import {
   memberRestrictionResolver,
@@ -3116,6 +3119,7 @@ export function accessRoutes(
       companyId: input.companyId,
       inviteType: "company_join" as const,
       allowedJoinTypes: input.allowedJoinTypes,
+      // A stored `{ restricted: false }` records the choice; only no key gets the default at the join.
       defaultsPayload: memberRestriction
         ? { ...mergedDefaults, [INVITE_MEMBER_RESTRICTION_KEY]: memberRestriction }
         : mergedDefaults,
@@ -3157,6 +3161,8 @@ export function accessRoutes(
     invite: typeof invites.$inferSelect;
     joinRequest: typeof joinRequests.$inferSelect;
     companyId: string;
+    /** From `markForJoin` on this invite, computed before the accept wrote anything (PAR-13096 E1). */
+    mark: JoinMark;
   }) {
     if (input.joinRequest.requestType !== "human") {
       throw badRequest("Only human join requests can be approved through a human invite");
@@ -3174,7 +3180,7 @@ export function accessRoutes(
       input.joinRequest.requestingUserId,
       membershipRole,
       "active",
-      inviteMemberRestrictionFromDefaults(input.invite.defaultsPayload),
+      input.mark.mark,
     );
     const grants = humanJoinGrantsFromDefaults(
       input.invite.defaultsPayload as Record<string, unknown> | null,
@@ -3218,6 +3224,7 @@ export function accessRoutes(
         requestType: "human",
         inviteId: input.invite.id,
         source: "human_invite_accept",
+        memberRestrictionIsDefault: input.mark.isDefault,
       },
     });
 
@@ -3380,7 +3387,8 @@ export function accessRoutes(
           expiresAt: created.expiresAt.toISOString(),
           humanRole: extractInviteHumanRole(created),
           hasAgentMessage: Boolean(normalizedAgentMessage),
-          memberRestriction: inviteMemberRestrictionFromDefaults(created.defaultsPayload)
+          memberRestriction: inviteMemberRestrictionFromDefaults(created.defaultsPayload),
+          restrictionChoice: inviteRestrictionChoice(created.defaultsPayload)
         }
       });
 
@@ -3821,6 +3829,18 @@ export function accessRoutes(
       if (inviteAlreadyAccepted && !replayJoinRequestId) {
         throw conflict("Join request not found");
       }
+      // The mark is decided before the invite is consumed or a join request is
+      // written, so a failed read (503) leaves the accept retryable (PAR-13096 E1).
+      const humanJoinMark =
+        requestType === "human"
+          ? await markForJoin(db, {
+              companyId,
+              defaultsPayload: invite.defaultsPayload,
+              membershipRole: resolveHumanInviteRole(
+                invite.defaultsPayload as Record<string, unknown> | null,
+              ),
+            })
+          : null;
 
       const replayMergedDefaults = inviteAlreadyAccepted
         ? mergeJoinDefaultsPayloadForReplay(
@@ -4134,6 +4154,7 @@ export function accessRoutes(
           invite,
           joinRequest: created,
           companyId,
+          mark: humanJoinMark!,
         });
       }
 
@@ -4259,20 +4280,27 @@ export function accessRoutes(
       if (!invite) throw notFound("Invite not found");
 
       let createdAgentId: string | null = existing.createdAgentId ?? null;
+      let joinMark: JoinMark | null = null;
       if (existing.requestType === "human") {
         if (!existing.requestingUserId)
           throw conflict("Join request missing user identity");
         const membershipRole = resolveHumanInviteRole(
           invite.defaultsPayload as Record<string, unknown> | null,
         );
-        // The mark is read from the invite again at approval; the approval cannot drop it.
+        // The mark is decided from the request's own invite at approval, before
+        // anything is written: its choice, or the restricted default (PAR-13096).
+        joinMark = await markForJoin(db, {
+          companyId,
+          defaultsPayload: invite.defaultsPayload,
+          membershipRole,
+        });
         await access.ensureMembership(
           companyId,
           "user",
           existing.requestingUserId,
           membershipRole,
           "active",
-          inviteMemberRestrictionFromDefaults(invite.defaultsPayload),
+          joinMark.mark,
         );
         const grants = humanJoinGrantsFromDefaults(
           invite.defaultsPayload as Record<string, unknown> | null,
@@ -4366,7 +4394,11 @@ export function accessRoutes(
         action: "join.approved",
         entityType: "join_request",
         entityId: requestId,
-        details: { requestType: existing.requestType, createdAgentId }
+        details: {
+          requestType: existing.requestType,
+          createdAgentId,
+          ...(joinMark ? { memberRestrictionIsDefault: joinMark.isDefault } : {})
+        }
       });
 
       if (createdAgentId) {
