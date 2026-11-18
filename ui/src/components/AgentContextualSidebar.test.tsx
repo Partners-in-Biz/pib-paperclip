@@ -35,7 +35,7 @@ vi.mock("./SidebarNavItem", () => ({
 
 vi.mock("@/plugins/slots", () => ({ usePluginSlots: () => ({ slots: [{ pluginKey: "test.plugin", id: "insights", displayName: "Insights" }] }) }));
 
-const restriction = vi.hoisted(() => ({ isPageHidden: (_path: string) => false }));
+const restriction = vi.hoisted(() => ({ isPageHidden: (_path: string): boolean => false }));
 vi.mock("@/context/MemberRestrictionContext", () => ({ useMemberRestriction: () => restriction }));
 
 describe("AgentContextualSidebar", () => {
