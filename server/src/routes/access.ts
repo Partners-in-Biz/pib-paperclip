@@ -118,6 +118,7 @@ import {
   assertInviterNotRestricted,
   inviteMemberRestrictionFromDefaults,
   inviteRestrictionChoice,
+  joinMarkPreview,
   markForJoin,
   markForNewInvite,
   withoutInviteMemberRestriction,
@@ -1456,6 +1457,24 @@ function inviteStateWhereClause(
   }
 }
 
+/**
+ * The restriction fields a list shows for one invite (PAR-13096 point 4). An
+ * invite a join can still use shows the mark that join would apply now; any
+ * other shows what is stored. Both fields are omitted when the mode is unknown.
+ */
+async function listedInviteRestriction(
+  preview: ReturnType<typeof joinMarkPreview>,
+  invite: typeof invites.$inferSelect,
+  joinStillOpen: boolean,
+): Promise<{ memberRestriction?: JoinMark["mark"]; memberRestrictionIsDefault?: boolean }> {
+  if (!joinStillOpen) return { memberRestriction: inviteMemberRestrictionFromDefaults(invite.defaultsPayload) };
+  const joinMark = await preview({
+    defaultsPayload: invite.defaultsPayload,
+    membershipRole: resolveHumanInviteRole(invite.defaultsPayload as Record<string, unknown> | null),
+  });
+  return joinMark ? { memberRestriction: joinMark.mark, memberRestrictionIsDefault: joinMark.isDefault } : {};
+}
+
 async function loadCompanyInviteRecords(
   db: Db,
   companyId: string,
@@ -1507,20 +1526,25 @@ async function loadCompanyInviteRecords(
   const joinRequestIdByInviteId = new Map(
     joinRows.map((row: { inviteId: string; id: string }) => [row.inviteId, row.id]),
   );
+  const preview = joinMarkPreview(db, companyId);
 
   return {
-    invites: visibleRows.map((invite) => ({
+    invites: await Promise.all(visibleRows.map(async (invite) => ({
       ...invite,
       companyName,
       humanRole: extractInviteHumanRole(invite),
       inviteMessage: extractInviteMessage(invite),
-      memberRestriction: inviteMemberRestrictionFromDefaults(invite.defaultsPayload),
+      ...(await listedInviteRestriction(
+        preview,
+        invite,
+        invite.acceptedAt === null && invite.allowedJoinTypes !== "agent",
+      )),
       state: inviteState(invite),
       invitedByUser: invite.invitedByUserId
         ? userMap.get(invite.invitedByUserId) ?? null
         : null,
       relatedJoinRequestId: joinRequestIdByInviteId.get(invite.id) ?? null,
-    })),
+    }))),
     nextOffset: hasMore ? options.offset + options.limit : null,
   };
 }
@@ -1552,8 +1576,9 @@ async function loadJoinRequestRecords(db: Db, companyId: string) {
   ];
   const userMap = await loadUsersById(db, userIds);
   const inviteMap = new Map(inviteRows.map((invite) => [invite.id, invite]));
+  const preview = joinMarkPreview(db, companyId);
 
-  return rows.map((row) => {
+  return Promise.all(rows.map(async (row) => {
     const invite = inviteMap.get(row.inviteId) ?? null;
     return {
       ...toJoinRequestResponse(row),
@@ -1573,7 +1598,11 @@ async function loadJoinRequestRecords(db: Db, companyId: string) {
             allowedJoinTypes: invite.allowedJoinTypes,
             humanRole: extractInviteHumanRole(invite),
             inviteMessage: extractInviteMessage(invite),
-            memberRestriction: inviteMemberRestrictionFromDefaults(invite.defaultsPayload),
+            ...(await listedInviteRestriction(
+              preview,
+              invite,
+              row.status === "pending_approval" && row.requestType === "human",
+            )),
             createdAt: invite.createdAt,
             expiresAt: invite.expiresAt,
             revokedAt: invite.revokedAt,
@@ -1584,7 +1613,7 @@ async function loadJoinRequestRecords(db: Db, companyId: string) {
           }
         : null,
     };
-  });
+  }));
 }
 
 async function loadUserCompanyAccessResponse(

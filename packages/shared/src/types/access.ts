@@ -102,6 +102,12 @@ export interface CompanyInviteRecord extends Invite {
   humanRole: HumanCompanyMembershipRole | null;
   inviteMessage: string | null;
   memberRestriction?: InviteMemberRestriction | null;
+  /**
+   * Set while a join can still use the invite (PAR-13096 point 4): true when
+   * `memberRestriction` is the company's restricted default, not a recorded
+   * choice. Both fields are omitted when the company's mode cannot be read.
+   */
+  memberRestrictionIsDefault?: boolean;
   state: InviteState;
   invitedByUser: AccessUserProfile | null;
   relatedJoinRequestId: string | null;
@@ -143,6 +149,12 @@ export interface JoinRequestInviteSummary {
   humanRole: HumanCompanyMembershipRole | null;
   inviteMessage: string | null;
   memberRestriction?: InviteMemberRestriction | null;
+  /**
+   * Set while a join can still use the invite (PAR-13096 point 4): true when
+   * `memberRestriction` is the company's restricted default, not a recorded
+   * choice. Both fields are omitted when the company's mode cannot be read.
+   */
+  memberRestrictionIsDefault?: boolean;
   createdAt: Date;
   expiresAt: Date;
   revokedAt: Date | null;

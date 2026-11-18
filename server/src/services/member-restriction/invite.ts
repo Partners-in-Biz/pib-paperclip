@@ -4,6 +4,7 @@ import {
   MEMBER_RESTRICTION_REQUIRED_CODE,
   type InviteMemberRestriction,
   type InviteMemberRestrictionInput,
+  type MemberRestrictionMode,
 } from "@paperclipai/shared";
 import { forbidden, unprocessable } from "../../errors.js";
 import { memberRestrictionForActor } from "./actor-memberships.js";
@@ -84,19 +85,44 @@ export async function markForJoin(
   db: Db,
   input: { companyId: string; defaultsPayload: unknown; membershipRole: string | null },
 ): Promise<JoinMark> {
-  const choice = inviteRestrictionChoice(input.defaultsPayload);
-  if (choice === "restricted") return { mark: inviteMemberRestrictionFromDefaults(input.defaultsPayload), isDefault: false };
-  if (choice === "not_restricted") return { mark: null, isDefault: false };
+  if (inviteRestrictionChoice(input.defaultsPayload) !== "none") return joinMarkInMode(input, "off");
   let mode;
   try {
     mode = await memberRestrictionModeFor(db, input.companyId);
   } catch (error) {
     throw memberRestrictionUnavailable(error);
   }
+  return joinMarkInMode(input, mode);
+}
+
+/** `markForJoin` once the mode is known; the mode only matters when no choice was recorded. */
+function joinMarkInMode(
+  input: { defaultsPayload: unknown; membershipRole: string | null },
+  mode: MemberRestrictionMode,
+): JoinMark {
+  const choice = inviteRestrictionChoice(input.defaultsPayload);
+  if (choice === "restricted") return { mark: inviteMemberRestrictionFromDefaults(input.defaultsPayload), isDefault: false };
+  if (choice === "not_restricted") return { mark: null, isDefault: false };
   if (mode === "off" || (input.membershipRole && PROTECTED_ROLES.has(input.membershipRole))) {
     return { mark: null, isDefault: false };
   }
   return { mark: { restricted: true, pluginKeys: [], agentIds: [] }, isDefault: true };
+}
+
+/**
+ * For the invite and join-request lists (PAR-13096 point 4): the mark a join
+ * would apply now. The mode is read at most once per list call, and only when
+ * a row has no recorded choice. A failed read gives `undefined` (unknown, never
+ * "not restricted") instead of a 503, so owners can still see and reject.
+ */
+export function joinMarkPreview(db: Db, companyId: string) {
+  let mode: Promise<MemberRestrictionMode | null> | null = null;
+  return async (input: { defaultsPayload: unknown; membershipRole: string | null }): Promise<JoinMark | undefined> => {
+    if (inviteRestrictionChoice(input.defaultsPayload) !== "none") return joinMarkInMode(input, "off");
+    mode ??= memberRestrictionModeFor(db, companyId).catch(() => null);
+    const known = await mode;
+    return known === null ? undefined : joinMarkInMode(input, known);
+  };
 }
 
 /**
