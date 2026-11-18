@@ -16,6 +16,26 @@ import {
 } from "../services/member-restriction/route-table.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
+// The failing-read fixture for the governed-action check (AC-X1): only the
+// list of companies where the person is restricted fails to read.
+const resolverFails = vi.hoisted(() => ({ on: false }));
+vi.mock("../services/member-restriction/resolver.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/member-restriction/resolver.js")>();
+  return {
+    ...actual,
+    memberRestrictionEnforcedCompanyIds: (...args: Parameters<typeof actual.memberRestrictionEnforcedCompanyIds>) =>
+      resolverFails.on
+        ? Promise.reject(new actual.MemberRestrictionReadError("fixture: restriction unreadable"))
+        : actual.memberRestrictionEnforcedCompanyIds(...args),
+  };
+});
+// The tool gateway's approve and decline: a call means the parked tool call
+// runs (or is declined) and, with `rememberAction`, a trust rule is written.
+const toolGateway = vi.hoisted(() => ({
+  approve: vi.fn(async () => ({})),
+  decline: vi.fn(async () => ({})),
+}));
+
 /**
  * PAR-13025 (C4d-2): the question and interaction rows of the route table.
  * Spec PAR-12608 rev 3, 4.6 and S11. AC-G3: for every `open` and `run` row, R
@@ -24,9 +44,10 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
  * answer is the restriction. Scope callers (section 8): R as owner of X, and
  * an instance admin who is not a member of Y, get today's answer. S11: R
  * answers a question an agent put on his own task (200). This area has no
- * `closed` and no `by-company` rows, and adds no resolver caller: every
- * handler decides through `issue:read`, whose kill-switch and failing-read
- * tests are the base decision's (AC-F8, AC-X1).
+ * `closed` and no `by-company` rows. S11 also: under `enforce` he decides no
+ * tool review and no secret proposal (403, nothing runs); that check is this
+ * area's one resolver caller, with its kill-switch and failing-read tests
+ * below (AC-F8, AC-X1). Every other handler decides through `issue:read`.
  */
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -34,6 +55,9 @@ const THIS_FILE = "server/src/__tests__/member-restriction-route-table-questions
 
 afterEach(() => {
   vi.unstubAllEnvs();
+  resolverFails.on = false;
+  toolGateway.approve.mockClear();
+  toolGateway.decline.mockClear();
 });
 
 describe("question and interaction route rows database support", () => {
@@ -194,7 +218,10 @@ it("every row of this file has exactly one case, and each case's caller matches 
     app = express();
     app.use(express.json());
     app.use((req, _res, next) => { req.actor = actor; next(); });
-    app.use("/api", issueRoutes(db, {} as never));
+    app.use("/api", issueRoutes(db, {} as never, {
+      approveToolActionRequest: toolGateway.approve,
+      declineToolActionRequest: toolGateway.decline,
+    } as never));
     app.use(errorHandler);
 
     const [y, x] = await db.insert(companies).values([
@@ -268,5 +295,87 @@ it("every row of this file has exactly one case, and each case's caller matches 
     const [row] = await db.select({ status: issueThreadInteractions.status }).from(issueThreadInteractions)
       .where(eq(issueThreadInteractions.id, own.askId));
     expect(row!.status).toBe("answered");
+  });
+
+  describe("S11: governed actions (a tool review or a secret proposal)", () => {
+    const later = () => new Date(Date.now() + 3_600_000).toISOString();
+    /** A tool review and a secret proposal parked by the agent's run on `target`'s task. */
+    const governed = async (target: Ids) => {
+      const interactions = issueThreadInteractionService(db);
+      const by = { agentId: target.agentId };
+      const toolReview = await interactions.create({ id: target.issueId, companyId: target.companyId }, {
+        kind: "request_confirmation", resolverPolicy: "human_only", continuationPolicy: "none",
+        payload: { version: 1, prompt: "Approve Send mail?", toolAction: {
+          version: 1, actionRequestId: randomUUID(), invocationId: randomUUID(), toolName: "gmail.send",
+          toolDisplayName: "Send mail", connectionId: null, applicationId: null, appDisplayName: null, risk: "write",
+          previewMarkdown: "Send one mail", argumentsSummaryJson: "{}", argumentsHash: "hash", expiresAt: later(),
+        } },
+      } as never, by);
+      const secret = await interactions.create({ id: target.issueId, companyId: target.companyId }, {
+        kind: "request_confirmation", resolverPolicy: "human_only", continuationPolicy: "none",
+        payload: { version: 1, prompt: "Give the agent the key?", secretProposal: {
+          version: 1, proposalId: randomUUID(), sourceSecretLabel: "Mail key", configPath: "env.MAIL_KEY",
+          targetAgentId: target.agentId, targetAgentName: "Agent", justification: "To send mail", expiresAt: later(),
+        } },
+      } as never, by);
+      return { toolReviewId: toolReview.id, secretId: secret.id };
+    };
+    const statusOf = async (id: string) => (await db.select({ status: issueThreadInteractions.status })
+      .from(issueThreadInteractions).where(eq(issueThreadInteractions.id, id)))[0]!.status;
+    const refused = (res: Res) => res.status === 403 && res.body?.code === "MEMBER_RESTRICTED_GOVERNED_ACTION";
+
+    it.each([false, true])("R accepts a tool review on his own task (rememberAction %s): 403, nothing runs", async (rememberAction) => {
+      const own = await ids(Y, R);
+      const { toolReviewId } = await governed(own);
+      const res = await as(await boardFor(R)).post(at(own, toolReviewId, "accept")).send({ rememberAction });
+      expect(refused(res), JSON.stringify(res.body)).toBe(true);
+      expect(toolGateway.approve).not.toHaveBeenCalled();
+      expect(await statusOf(toolReviewId)).toBe("pending");
+    });
+
+    it("R rejects a tool review, or accepts or rejects a secret proposal, on his own task: 403, still pending", async () => {
+      const own = await ids(Y, R);
+      const { toolReviewId, secretId } = await governed(own);
+      const caller = await boardFor(R);
+      for (const [id, verb] of [[toolReviewId, "reject"], [secretId, "accept"], [secretId, "reject"]] as const) {
+        const res = await as(caller).post(at(own, id, verb)).send({});
+        expect(refused(res), `${verb} ${JSON.stringify(res.body)}`).toBe(true);
+        expect(await statusOf(id)).toBe("pending");
+      }
+      expect(toolGateway.decline).not.toHaveBeenCalled();
+      // A plain confirmation on the same task stays his to decide (S11).
+      const plain = await as(caller).post(at(own, own.confirmId, "accept")).send({});
+      expect(plain.status, JSON.stringify(plain.body)).toBe(200);
+    });
+
+    it("O, R as owner of X, and the kill switch off get today's answer: the gateway decides", async () => {
+      const decide = async (userId: string, target: Ids) => {
+        const { toolReviewId } = await governed(target);
+        const caller = await boardFor(userId);
+        const accept = await as(caller).post(at(target, toolReviewId, "accept")).send({ rememberAction: true });
+        expect(accept.status, JSON.stringify(accept.body)).toBe(200);
+        const reject = await as(caller).post(at(target, toolReviewId, "reject")).send({});
+        expect(reject.status, JSON.stringify(reject.body)).toBe(200);
+        return [accept.status, reject.status];
+      };
+      expect(await decide(O, await ids(Y, O))).toEqual([200, 200]);
+      expect(await decide(R, await ids(X, R))).toEqual([200, 200]);
+      const own = await ids(Y, R);
+      expect(await today(() => decide(R, own))).toEqual([200, 200]);
+      expect(toolGateway.approve).toHaveBeenCalledTimes(3);
+      expect(toolGateway.decline).toHaveBeenCalledTimes(3);
+    });
+
+    it("AC-X1: the restriction cannot be read: 503 MEMBER_RESTRICTION_UNAVAILABLE, nothing runs", async () => {
+      const own = await ids(Y, R);
+      const { toolReviewId } = await governed(own);
+      const caller = await boardFor(R);
+      resolverFails.on = true;
+      const res = await as(caller).post(at(own, toolReviewId, "accept")).send({ rememberAction: true });
+      expect(res.status, JSON.stringify(res.body)).toBe(503);
+      expect(res.body.code ?? res.body.details?.code).toBe("MEMBER_RESTRICTION_UNAVAILABLE");
+      expect(toolGateway.approve).not.toHaveBeenCalled();
+      expect(await statusOf(toolReviewId)).toBe("pending");
+    });
   });
 });
