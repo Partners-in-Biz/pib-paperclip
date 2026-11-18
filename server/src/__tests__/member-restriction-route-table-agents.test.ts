@@ -1,9 +1,13 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, authUsers, companies, companyMemberships, createDb, heartbeatRuns, issues } from "@paperclipai/db";
+import { eq } from "drizzle-orm";
+import { agentApiKeys, agents, authUsers, companies, companyMemberships, createDb, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
+import { createLocalAgentJwt } from "../agent-auth-jwt.js";
+import { actorMiddleware } from "../middleware/auth.js";
 import { errorHandler } from "../middleware/error-handler.js";
+import { agentChatMessageRoutes } from "../routes/agent-chat-messages.js";
 import { agentRoutes } from "../routes/agents.js";
 import { issueRoutes } from "../routes/issues.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
@@ -22,9 +26,12 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
  * configuration and company-wide run routes classify as closed. Scope callers
  * (section 8): R as owner of X, and an instance admin who is no member of Y,
  * get today's answer. AC-X1: a failed restriction read answers 503, no data.
+ * PAR-13135 (C4c-3b): the `run` rows: a run working for R reads its own
+ * identity as six fields (AC-A2) and opens a chat only as an agent on his list.
  */
 
-const resolverFails = vi.hoisted(() => ({ on: false }));
+/** `on`: every restriction read fails. `list`: only the agent-list read (`agent-read.ts`) fails, so a new caller is failed on its own. */
+const resolverFails = vi.hoisted(() => ({ on: false, list: false }));
 vi.mock("../services/member-restriction/resolver.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../services/member-restriction/resolver.js")>();
   const fail = () => Promise.reject(new actual.MemberRestrictionReadError("fixture: restriction unreadable"));
@@ -35,7 +42,7 @@ vi.mock("../services/member-restriction/resolver.js", async (importOriginal) => 
     memberRestrictionEnforcedCompanyIds: (...args: Parameters<typeof actual.memberRestrictionEnforcedCompanyIds>) =>
       resolverFails.on ? fail() : actual.memberRestrictionEnforcedCompanyIds(...args),
     memberRestrictionResolver: (db: Parameters<typeof actual.memberRestrictionResolver>[0]) =>
-      (personId: string, companyId: string) => resolverFails.on ? fail() : actual.memberRestrictionFor(db, personId, companyId),
+      (personId: string, companyId: string) => resolverFails.on || resolverFails.list ? fail() : actual.memberRestrictionFor(db, personId, companyId),
   };
 });
 
@@ -45,6 +52,7 @@ const THIS_FILE = "server/src/__tests__/member-restriction-route-table-agents.te
 afterEach(() => {
   vi.unstubAllEnvs();
   resolverFails.on = false;
+  resolverFails.list = false;
 });
 
 describe("agent route rows database support", () => {
@@ -94,9 +102,18 @@ const CASES: Case[] = [
     refused: agentNotFound, reached: (res) => { ok(res); expect(res.body.conversationAgentId).toBeTruthy(); } },
 ];
 
-/** The closed rows of this area (AC-G1: the key routes are named; AC-G4: configuration and instructions; AC-H4). */
+/** The `run` rows of this file, each with its own describe block below. */
+const RUN_ROWS = ["GET /api/agents/me", "POST /api/agents/me/chat/messages"];
+
+/** The closed rows of this area (AC-G1: the key routes, an agent's secrets and connector credentials; AC-G4: configuration and instructions; AC-H4). */
 const CLOSED_ROWS = [
-  "GET /api/agents/me",
+  "POST /api/agents/me/secret-proposals",
+  "GET /api/agents/me/secret-proposals",
+  "DELETE /api/agents/me/secret-proposals/:id",
+  "GET /api/agents/me/secrets",
+  "POST /api/agents/me/secrets/:key/value",
+  "POST /api/agents/me/connections/:connectionId/start-authorization",
+  "POST /api/agents/me/connections/:connectionId/token",
   "GET /api/agents/:id/keys",
   "POST /api/agents/:id/keys",
   "DELETE /api/agents/:id/keys/:keyId",
@@ -108,12 +125,18 @@ const CLOSED_ROWS = [
   "GET /api/companies/:companyId/live-runs",
 ];
 
-it("every open row of this file has exactly one case, and each case is an open row", () => {
+it("every open and run row of this file has exactly one case, and each case is a row of its class", () => {
   const rows = MEMBER_RESTRICTION_ROUTE_TABLE.filter((entry) => entry.test === THIS_FILE).map((entry) => `${entry.method} ${entry.path}`);
-  expect(CASES.map((entry) => entry.row).sort()).toEqual([...rows].sort());
-  for (const entry of CASES) {
-    expect(MEMBER_RESTRICTION_ROUTE_TABLE.find((item) => `${item.method} ${item.path}` === entry.row)!.class, entry.row).toBe("open");
-  }
+  expect([...CASES.map((entry) => entry.row), ...RUN_ROWS].sort()).toEqual([...rows].sort());
+  const classOf = (row: string) => MEMBER_RESTRICTION_ROUTE_TABLE.find((item) => `${item.method} ${item.path}` === row)!.class;
+  for (const entry of CASES) expect(classOf(entry.row), entry.row).toBe("open");
+  for (const row of RUN_ROWS) expect(classOf(row), row).toBe("run");
+});
+
+it("AC-G1: GET /api/agents/me is its own run row; an agent by id stays the open /api/agents/:id row", async () => {
+  const classify = createRouteClassifier();
+  expect(await classify("GET", "/api/agents/me")).toMatchObject({ kind: "matched", entry: { path: "/api/agents/me", class: "run" } });
+  expect(await classify("GET", `/api/agents/${randomUUID()}`)).toMatchObject({ kind: "matched", entry: { path: "/api/agents/:id", class: "open" } });
 });
 
 it("AC-G1, AC-G4 and AC-H4: keys, configuration, instructions, pausing, the org chart and the run lists classify as closed", async () => {
@@ -177,6 +200,7 @@ it("AC-G1, AC-G4 and AC-H4: keys, configuration, instructions, pausing, the org 
     app.use((req, _res, next) => { req.actor = actor; next(); });
     app.use("/api", issueRoutes(db, {} as never));
     app.use("/api", agentRoutes(db));
+    app.use("/api", agentChatMessageRoutes(db));
     app.use(errorHandler);
     await instanceSettingsService(db).updateExperimental({ enableAgentChat: true });
 
@@ -269,11 +293,12 @@ it("AC-G1, AC-G4 and AC-H4: keys, configuration, instructions, pausing, the org 
   });
 
   /** A run's actor as `auth.ts` builds it: the person it works for, his memberships, and the authorizer. */
-  const runFor = async (people: { onBehalfOf?: string; authorizing?: string }): Promise<Actor> => {
+  const runFor = async (people: { onBehalfOf?: string; authorizing?: string },
+    agentId = listedAgent, companyId = Y, runId = randomUUID()): Promise<Actor> => {
     const onBehalfOfUserId = people.onBehalfOf ?? null;
     const onBehalfOfMemberships = onBehalfOfUserId
-      ? await loadActorMemberships(db, { userId: onBehalfOfUserId, companyId: Y, activeOnly: true }) : [];
-    return { type: "agent", agentId: listedAgent, companyId: Y, runId: randomUUID(), source: "agent_jwt", onBehalfOfUserId,
+      ? await loadActorMemberships(db, { userId: onBehalfOfUserId, companyId, activeOnly: true }) : [];
+    return { type: "agent", agentId, companyId, runId, source: "agent_jwt", onBehalfOfUserId,
       ...(people.authorizing ? { authorizingUserId: people.authorizing } : {}), onBehalfOfMemberships } as Actor;
   };
 
@@ -308,6 +333,137 @@ it("AC-G1, AC-G4 and AC-H4: keys, configuration, instructions, pausing, the org 
       check(now);
       expect(now.body).toEqual((await today(async () => as(await runFor({})).get(path))).body);
     }
+  });
+
+  describe("GET /api/agents/me (run row, AC-A2)", () => {
+    const SIX = ["companyId", "id", "name", "role", "status", "title"];
+    const me = async (who: Actor) => as(who).get("/api/agents/me");
+    const sixKeys = (res: request.Response) => { ok(res); expect(Object.keys(res.body).sort()).toEqual(SIX); };
+    const fullView = (res: request.Response, agentId = listedAgent) => {
+      ok(res);
+      expect(res.body).toMatchObject({ id: agentId });
+      expect(res.body).toHaveProperty("adapterConfig");
+      expect(res.body).toHaveProperty("runtimeConfig");
+    };
+
+    it("a run for R reads exactly six fields; for O, and with the kill switch `off` (AC-F8), today's full view", async () => {
+      const mine = await me(await runFor({ onBehalfOf: R }));
+      sixKeys(mine);
+      for (const key of ["adapterConfig", "runtimeConfig", "keyScope", "permissions"]) expect(mine.body).not.toHaveProperty(key);
+      fullView(await me(await runFor({ onBehalfOf: O })));
+      fullView(await today(async () => me(await runFor({ onBehalfOf: R }))));
+    });
+
+    it("kept as today: R's browser session 401, the task_bridge view, the trust preset `denied` 403", async () => {
+      expect((await me(await boardFor(R))).body).toEqual({ error: "Agent authentication required" });
+      const bridge = { ...(await runFor({ onBehalfOf: R })), keyScope: { kind: "task_bridge" } } as Actor;
+      const bridged = await me(bridge);
+      ok(bridged);
+      expect(bridged.body.keyScope).toEqual({ kind: "task_bridge" });
+      const [denied] = await db.insert(agents).values({ companyId: Y, name: "Denied", adapterType: "process",
+        permissions: { trustPreset: "no-such-preset" } }).returning();
+      const res = await me(await runFor({ onBehalfOf: R }, denied!.id));
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body).toEqual((await today(async () => me(await runFor({ onBehalfOf: R }, denied!.id)))).body);
+    });
+
+    it("AC-X1: a run for R gets 503 and no agent field; a run for O and a run with no person are answered with no read", async () => {
+      const [forR, forO, nobody] = [await runFor({ onBehalfOf: R }), await runFor({ onBehalfOf: O }), await runFor({})];
+      resolverFails.on = true;
+      const res = await me(forR);
+      expect(res.status, JSON.stringify(res.body)).toBe(503);
+      expect(res.body.code ?? res.body.details?.code).toBe("MEMBER_RESTRICTION_UNAVAILABLE");
+      expect(res.body).not.toHaveProperty("id");
+      fullView(await me(forO));
+      fullView(await me(nobody));
+    });
+
+    it("scope callers (AC-G12): a run for R of an agent in X, and a run for an instance admin, get today's answer", async () => {
+      const inX = await agent(X);
+      fullView(await me(await runFor({ onBehalfOf: R }, inX, X)), inX);
+      const admin = async () => me(await runFor({ onBehalfOf: ADMIN }));
+      expect((await admin()).body).toEqual((await today(admin)).body);
+    });
+
+    it("real auth: R's agent key and R's run token read six fields; O's key reads the full view", async () => {
+      const server = express();
+      server.use(actorMiddleware(db, { deploymentMode: "authenticated", resolveSession: async () => null }));
+      server.use("/api", agentRoutes(db));
+      server.use(errorHandler);
+      const keyFor = async (userId: string) => {
+        const token = `pcp_${randomUUID()}`;
+        await db.insert(agentApiKeys).values({ companyId: Y, agentId: listedAgent, responsibleUserId: userId, name: "me",
+          keyHash: createHash("sha256").update(token).digest("hex") });
+        return token;
+      };
+      const bearer = async (token: string) => request(server).get("/api/agents/me").set("authorization", `Bearer ${token}`);
+      sixKeys(await bearer(await keyFor(R)));
+      vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", "member-restriction-route-table-agents");
+      sixKeys(await bearer(createLocalAgentJwt(listedAgent, Y, "process", randomUUID(), R)));
+      fullView(await bearer(await keyFor(O)));
+    });
+  });
+
+  describe("POST /api/agents/me/chat/messages (run row: a chat opens only with an agent on his list)", () => {
+    /** A `running` run of `agentId` on `issueId` working for `worksFor`, holding the task (agent-chat-messages.test.ts). */
+    const runningRun = async (companyId: string, agentId: string, issueId: string, worksFor: string) => {
+      const [row] = await db.insert(heartbeatRuns).values({ companyId, agentId, issueId, scopeKind: "issue",
+        status: "running", responsibleUserId: worksFor }).returning();
+      await db.update(issues).set({ assigneeAgentId: agentId, executionRunId: row!.id,
+        identifier: `CH-${randomUUID().slice(0, 8)}` }).where(eq(issues.id, issueId));
+      return runFor({ onBehalfOf: worksFor }, agentId, companyId, row!.id);
+    };
+    const post = (who: Actor) => as(who).post("/api/agents/me/chat/messages").send({ body: "Done", idempotencyKey: randomUUID() });
+    const chatsOf = (agentId: string) => db.select().from(issues).where(eq(issues.conversationAgentId, agentId));
+    const commentsOf = (agentId: string) => db.select().from(issueComments).where(eq(issueComments.authorAgentId, agentId));
+    const created = (res: request.Response) => expect(res.status, JSON.stringify(res.body)).toBe(201);
+
+    it("the listed agent's run for R on R's task opens R's chat with that agent", async () => {
+      const res = await post(await runningRun(Y, listedAgent, await task(Y, R), R));
+      created(res);
+      const [chat] = await db.select().from(issues).where(eq(issues.id, res.body.conversationId));
+      expect(chat).toMatchObject({ conversationUserId: R, conversationAgentId: listedAgent });
+    });
+
+    it("an agent off R's list is refused with no chat and no comment; with the kill switch `off`, 201", async () => {
+      const unlisted = await agent(Y);
+      const res = await post(await runningRun(Y, unlisted, await task(Y, R), R));
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body).toEqual({ error: "Agent chat is limited to the agents on the person's list" });
+      expect(await chatsOf(unlisted)).toEqual([]);
+      expect(await commentsOf(unlisted)).toEqual([]);
+      created(await today(async () => post(await runningRun(Y, unlisted, await task(Y, R), R))));
+    });
+
+    it("a run for R on O's task is refused by the task read; a failed read (also of the list alone) is 503; neither writes a comment", async () => {
+      const [before, chatsBefore] = [(await commentsOf(listedAgent)).length, (await chatsOf(listedAgent)).length];
+      const refused = await post(await runningRun(Y, listedAgent, await task(Y, O), R));
+      expect(refused.status, JSON.stringify(refused.body)).toBe(403);
+      expect(refused.body.error).toEqual(expect.any(String));
+      expect(refused.body.error).not.toBe("Agent chat is limited to the agents on the person's list");
+      const caller = await runningRun(Y, listedAgent, await task(Y, R), R);
+      resolverFails.on = true;
+      const failed = await post(caller);
+      expect(failed.status, JSON.stringify(failed.body)).toBe(503);
+      resolverFails.on = false;
+      resolverFails.list = true;
+      const listFailed = await post(caller);
+      expect(listFailed.status, JSON.stringify(listFailed.body)).toBe(503);
+      expect(listFailed.body.code ?? listFailed.body.details?.code).toBe("MEMBER_RESTRICTION_UNAVAILABLE");
+      resolverFails.list = false;
+      expect((await commentsOf(listedAgent)).length).toBe(before);
+      expect((await chatsOf(listedAgent)).length).toBe(chatsBefore);
+    });
+
+    it("R's browser session is refused; a run for R of an agent in X (R is owner there) posts with the switch on and off", async () => {
+      const res = await post(await boardFor(R));
+      expect(res.status).toBe(403);
+      expect(res.body).toEqual({ error: "An authenticated task run is required" });
+      const inX = await agent(X);
+      const caller = await runningRun(X, inX, await task(X, R), R);
+      created(await post(caller));
+      created(await today(async () => post(caller)));
+    });
   });
 
   it("AC-H4: an unflagged owner's new key carries him, never another person", async () => {

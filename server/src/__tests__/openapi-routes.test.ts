@@ -237,10 +237,12 @@ function loadActualRoutes() {
   const excludedRoutes = new Set<string>();
   const mounts = new Set<string>();
   const handlerSources = new Map<string, string>();
-  // Where each operation is first registered, for the `shadows` check of the route table scan.
+  // Where each operation is first registered, and how often, for the `shadows` check of the route table scan.
   const positions = new Map<string, { file: string; index: number }>();
+  const registrations = new Map<string, number>();
   const position = (operation: string, file: string, index: number | undefined) => {
     if (!positions.has(operation)) positions.set(operation, { file, index: index ?? 0 });
+    registrations.set(operation, (registrations.get(operation) ?? 0) + 1);
   };
   const unknownRouteFiles: string[] = [];
 
@@ -344,6 +346,7 @@ function loadActualRoutes() {
     mounts,
     handlerSources,
     positions,
+    registrations,
     unknownRouteFiles: unknownRouteFiles.sort(),
   };
 }
@@ -1535,6 +1538,8 @@ type RouteInventory = {
   operations: Iterable<string>;
   handlerSources: Map<string, string>;
   positions: Map<string, { file: string; index: number }>;
+  /** Registrations per operation; `positions` keeps only the first. */
+  registrations?: Map<string, number>;
 };
 
 async function routeTableScanErrors(
@@ -1576,8 +1581,13 @@ async function routeTableScanErrors(
     }
     const caught = await createRouteClassifier([shadowed])(entry.method, entry.path.replace(/:[^/]+/g, "sample1"));
     if (caught.kind !== "matched") errors.push(`${row}: shadows ${entry.method} ${entry.shadows}, which does not catch it`);
-    const own = inventory.positions.get(byShape.get(routeShape(entry.method, entry.path)) ?? "");
-    const other = inventory.positions.get(byShape.get(routeShape(shadowed.method, shadowed.path)) ?? "");
+    const ownOperation = byShape.get(routeShape(entry.method, entry.path)) ?? "";
+    const otherOperation = byShape.get(routeShape(shadowed.method, shadowed.path)) ?? "";
+    if ([ownOperation, otherOperation].some((operation) => (inventory.registrations?.get(operation) ?? 1) > 1)) {
+      errors.push(`${row}: shadows ${entry.method} ${entry.shadows}, and one of the two is registered more than once`);
+    }
+    const own = inventory.positions.get(ownOperation);
+    const other = inventory.positions.get(otherOperation);
     if (!own || !other || own.file !== other.file) {
       errors.push(`${row}: shadows ${entry.method} ${entry.shadows}, which is not registered in the same file`);
     } else if (own.index >= other.index) {
@@ -1603,7 +1613,7 @@ async function routeTableScanErrors(
 
 describe("member restriction route table scan", () => {
   it("every row of the route table is true to the mounted routes", async () => {
-    const { routes, excludedRoutes, mounts, handlerSources, positions } = loadActualRoutes();
+    const { routes, excludedRoutes, mounts, handlerSources, positions, registrations } = loadActualRoutes();
     const readTest = (repoPath: string) => {
       const file = path.resolve(REPO_ROOT, repoPath);
       return file.startsWith(REPO_ROOT + path.sep) && fs.existsSync(file) ? fs.readFileSync(file, "utf8") : null;
@@ -1613,7 +1623,7 @@ describe("member restriction route table scan", () => {
     // Every registration has its own source offset (array literals included), so "registered first" is strict.
     expect(new Set([...positions.values()].map(({ file, index }) => `${file}:${index}`)).size).toBe(positions.size);
     const operations = [...routes, ...excludedRoutes, ...mounts];
-    expect(await routeTableScanErrors(MEMBER_RESTRICTION_ROUTE_TABLE, { operations, handlerSources, positions }, readTest)).toEqual([]);
+    expect(await routeTableScanErrors(MEMBER_RESTRICTION_ROUTE_TABLE, { operations, handlerSources, positions, registrations }, readTest)).toEqual([]);
   });
 
   it("fails on a row with no route, a doubled row, a missing test, a by-company handler without a check and a caught route", async () => {
@@ -1687,6 +1697,11 @@ describe("member restriction route table scan", () => {
     ]);
     expect(await routeTableScanErrors(table("/api/agents/:id"), inventory(at("agents.ts", 250)), readTest)).toEqual([
       "GET /api/agents/me: shadows GET /api/agents/:id, which is registered first",
+    ]);
+    // A second registration of either route (another file) is not seen by the order check: fail.
+    expect(await routeTableScanErrors(table("/api/agents/:id"), { ...inventory(at("agents.ts", 100)),
+      registrations: new Map([["GET /api/agents/{id}", 2]]) }, readTest)).toEqual([
+      "GET /api/agents/me: shadows GET /api/agents/:id, and one of the two is registered more than once",
     ]);
     // Same offset (one registration for both, or a row shadowing its own path): not proved first.
     expect(await routeTableScanErrors(table("/api/agents/:id"), inventory(at("agents.ts", 200)), readTest)).toEqual([

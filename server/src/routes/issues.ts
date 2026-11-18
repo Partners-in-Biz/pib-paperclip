@@ -2,7 +2,7 @@ import { confirmMcpAttachmentCleanup, recordMcpAttachmentCleanup, type McpAttach
 import { SYSTEM_CAUSING_ACTOR, wakeCausingActorFromActor, wakeCausingActorFromActorRef } from "../services/heartbeat/causing-actor.js";
 import { assertNamesOnlyHimself } from "../services/member-restriction/acting-person.js";
 import { refusedOnlyByMemberRestriction } from "../services/member-restriction/action-list.js";
-import { restrictedAgentIdsForActor } from "../services/member-restriction/agent-read.js";
+import { hideUnreadableIssueIds, restrictedAgentIdsForActor } from "../services/member-restriction/agent-read.js";
 import { notifyDeferredExecutionWork } from "../services/deferred-execution-notifications.js";
 import { notifyNativeRecoveryNotices } from "../services/native-recovery-notice-notifications.js";
 import { notifyNativeStatusReassessment } from "../services/native-status-reassessment-notifications.js";
@@ -7351,7 +7351,9 @@ export function issueRoutes(
           error: "Issue follow-up blocked by unresolved blockers",
           details: {
             issueId: issue.id,
-            unresolvedBlockerIssueIds: readiness.unresolvedBlockerIssueIds,
+            // PAR-12608 4.3: a blocker the caller cannot read is never named.
+            unresolvedBlockerIssueIds: await hideUnreadableIssueIds(db, req.actor, issue.companyId,
+              readiness.unresolvedBlockerIssueIds),
           },
         });
         return false;

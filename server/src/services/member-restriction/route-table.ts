@@ -50,6 +50,7 @@ const ACCOUNT_TEST = "server/src/__tests__/member-restriction-route-table-accoun
 const WORKSPACES_TEST = "server/src/__tests__/member-restriction-route-table-workspaces-assets.test.ts";
 const APPROVALS_TEST = "server/src/__tests__/member-restriction-route-table-approvals.test.ts";
 const AGENTS_TEST = "server/src/__tests__/member-restriction-route-table-agents.test.ts";
+const TASK_LIST_TEST = "server/src/__tests__/member-restriction-task-list-callers.test.ts";
 
 export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntry[] = [
   // C4b-1a (PAR-12730): the task routes of `routes/issues.ts`. Comments,
@@ -355,11 +356,25 @@ export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntr
   { method: "GET", path: "/api/companies/:companyId/chats", class: "open", test: AGENTS_TEST },
   { method: "GET", path: "/api/companies/:companyId/chats/:agentRef", class: "open", test: AGENTS_TEST },
   { method: "POST", path: "/api/companies/:companyId/chats/:agentRef", class: "open", test: AGENTS_TEST },
-  // Closed: an agent's own view carries its configuration (PAR-12938); the
-  // key routes never call `decide()`, so these rows alone close them (H4);
-  // configuration, instructions, pausing, the org chart and the run lists are
-  // company set-up or company-wide. Every other agent route has no row.
-  { method: "GET", path: "/api/agents/me", class: "closed" },
+  // C4c-3b (PAR-13135): a run's own identity (six fields for a run working for
+  // him, AC-A2), its inbox (blockers he cannot read are counted, not named;
+  // another person's inbox is empty) and its chat post (only an agent on his
+  // list opens a chat).
+  { method: "GET", path: "/api/agents/me", class: "run", test: AGENTS_TEST, shadows: "/api/agents/:id" },
+  { method: "GET", path: "/api/agents/me/inbox-lite", class: "run", test: TASK_LIST_TEST },
+  { method: "GET", path: "/api/agents/me/inbox/mine", class: "run", test: TASK_LIST_TEST },
+  { method: "POST", path: "/api/agents/me/chat/messages", class: "run", test: AGENTS_TEST },
+  // Closed (4.6): an agent's secrets and connector credentials; connector tools go through the plugin gate (C5-2).
+  { method: "POST", path: "/api/agents/me/secret-proposals", class: "closed" },
+  { method: "GET", path: "/api/agents/me/secret-proposals", class: "closed" },
+  { method: "DELETE", path: "/api/agents/me/secret-proposals/:id", class: "closed" },
+  { method: "GET", path: "/api/agents/me/secrets", class: "closed" },
+  { method: "POST", path: "/api/agents/me/secrets/:key/value", class: "closed" },
+  { method: "POST", path: "/api/agents/me/connections/:connectionId/start-authorization", class: "closed" },
+  { method: "POST", path: "/api/agents/me/connections/:connectionId/token", class: "closed" },
+  // Closed: the key routes never call `decide()`, so these rows alone close
+  // them (H4); configuration, instructions, pausing, the org chart and the run
+  // lists are company set-up or company-wide. Every other agent route has no row.
   { method: "GET", path: "/api/agents/:id/keys", class: "closed" },
   { method: "POST", path: "/api/agents/:id/keys", class: "closed" },
   { method: "DELETE", path: "/api/agents/:id/keys/:keyId", class: "closed" },

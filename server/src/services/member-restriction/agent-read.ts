@@ -1,5 +1,6 @@
-import { and, eq } from "drizzle-orm";
-import { heartbeatRuns, type Db } from "@paperclipai/db";
+import { and, eq, inArray } from "drizzle-orm";
+import { heartbeatRuns, issues, type Db } from "@paperclipai/db";
+import { issueReadSqlCondition, type AuthorizationActor } from "../authorization.js";
 import { actorPersonMembership, memberRestrictionForMembership } from "./actor-memberships.js";
 import { memberRestrictionResolver } from "./resolver.js";
 import { restrictionPersonIds } from "./strict-read.js";
@@ -41,6 +42,21 @@ export async function restrictedAgentIdsForActor(db: Db, actor: AgentReadActor, 
     (listed, { agentIds }) => new Set(agentIds.filter((id) => listed.has(id))),
     new Set(bound[0]!.agentIds),
   );
+}
+
+/**
+ * PAR-12608 4.3: of `ids` (task ids a route answers with, e.g. unresolved
+ * blockers), the ones the caller may read, in their order. A caller not bound
+ * by a restricted person gets `ids` with no extra query.
+ */
+export async function hideUnreadableIssueIds(
+  db: Db, actor: AgentReadActor & AuthorizationActor, companyId: string, ids: string[],
+): Promise<string[]> {
+  if (ids.length === 0 || !(await restrictedAgentIdsForActor(db, actor, companyId))) return ids;
+  const rows = await db.select({ id: issues.id }).from(issues)
+    .where(and(eq(issues.companyId, companyId), inArray(issues.id, ids), await issueReadSqlCondition(db, actor)));
+  const readable = new Set(rows.map((row) => row.id));
+  return ids.filter((id) => readable.has(id));
 }
 
 /** The five fields of an agent on his list (AC-G4). */
