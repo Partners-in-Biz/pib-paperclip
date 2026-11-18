@@ -210,7 +210,7 @@ describe("member restriction mount table scan (4.6a, AC-M8)", () => {
     ];
     const row5 = MEMBER_RESTRICTION_MOUNT_TABLE.find((entry) => entry.row === 5)!;
     expect(row5.routes!.map((route) => `${route.method} ${route.path}`).sort()).toEqual(routes.sort());
-    expect(row5.routes!.find((route) => route.path === "/runtime-tools/github/credentials")).toMatchObject({ class: "closed", toProve: "PAR-13217" });
+    expect(row5.routes!.find((route) => route.path === "/runtime-tools/github/credentials")).toMatchObject({ class: "closed", toProve: "PAR-13220" });
     const unclosed = MEMBER_RESTRICTION_MOUNT_TABLE.map((entry) => entry.row !== 5 ? entry
       : { ...entry, routes: entry.routes!.map((route) => ({ ...route, toProve: undefined })) });
     const registrations = [...appRegistrations(appSource), ...upgradeHandlers()];
