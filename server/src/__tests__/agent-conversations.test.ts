@@ -229,13 +229,16 @@ import {
       await instanceSettingsService(db).updateExperimental({ enableAgentChat: false });
       expect((await request(app).get(listPath)).status).toBe(200);
       await instanceSettingsService(db).updateExperimental({ enableAgentChat: true });
+      // A chat is created private (PAR-12823): a colleague gets "not found".
       expect(
         (
           await request(appFor(colleague)).get(
             `/api/issues/${resolved[0].body.id}`,
           )
         ).status,
-      ).toBe(200);
+      ).toBe(404);
+      expect((await request(app).get(`/api/issues/${resolved[0].body.id}`)).body)
+        .toMatchObject({ visibility: "private", privacyRootIssueId: resolved[0].body.id, projectId: null });
       expect(
         (await request(appFor(randomUUID(), false)).get(path)).status,
       ).toBe(403);

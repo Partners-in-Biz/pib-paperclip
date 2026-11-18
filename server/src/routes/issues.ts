@@ -332,6 +332,7 @@ import { decisionTrainingService } from "../services/decision-training.js";
 import { feedbackService } from "../services/feedback.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import {
+  CHAT_ALWAYS_PRIVATE,
   ISSUE_BLOCKER_DIAGNOSTICS_MAX_BLOCKERS,
   ISSUE_WAKE_DIAGNOSTICS_LOOKBACK_DAYS,
   ISSUE_WAKE_DIAGNOSTICS_MAX_ACTIVITY_RECORDS,
@@ -14272,6 +14273,11 @@ export function issueRoutes(
     async (req, res) => {
       const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
       if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
+      // A chat takes no grants (PAR-12774 Q4): hand work off as a task instead.
+      if (issue.conversationAgentId) {
+        res.status(422).json({ error: CHAT_ALWAYS_PRIVATE });
+        return;
+      }
       const managedIssue = await resolveManagedIssueForPrivacy(req, res, issue);
       if (!managedIssue) return;
       if (managedIssue.privacyRootIssueId === null) {
@@ -14612,6 +14618,11 @@ export function issueRoutes(
           if (!res.headersSent) res.status(404).json({ error: "Parent issue not found" });
           return;
         }
+      }
+      // A chat's visibility is fixed (PAR-12774 4.1), whatever the body asks.
+      if (req.body.visibility !== undefined && existing.conversationAgentId) {
+        res.status(422).json({ error: CHAT_ALWAYS_PRIVATE });
+        return;
       }
       // An authorized agent may restrict a task; widening access remains an owner/admin action.
       if (req.body.visibility !== undefined && !(req.actor.type === "agent" && req.body.visibility === "private")
