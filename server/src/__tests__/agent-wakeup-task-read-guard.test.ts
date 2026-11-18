@@ -148,6 +148,8 @@ if (process.env.CI && !support.supported) throw new Error("embedded Postgres req
   beforeAll(async () => {
     process.env.PAPERCLIP_AGENT_JWT_SECRET = "wakeup-task-read-guard-secret";
     process.env.PAPERCLIP_INSTANCE_ID = "default";
+    // The reader cases start several runs on P within the hour; the per-ticket wake-loop cap (3) is not under test.
+    process.env.PIB_TICKET_RUNS_PER_HOUR_CAP = "100";
     if (externalTestDatabaseUrl) {
       await applyPendingMigrations(externalTestDatabaseUrl);
       db = createDb(externalTestDatabaseUrl);
@@ -216,6 +218,7 @@ if (process.env.CI && !support.supported) throw new Error("embedded Postgres req
     await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
     delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
+    delete process.env.PIB_TICKET_RUNS_PER_HOUR_CAP;
   });
 
   // Denials first: no successful wake has run yet, so X's rows and P's session are still.
