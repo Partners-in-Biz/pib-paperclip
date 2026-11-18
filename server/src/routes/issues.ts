@@ -9559,6 +9559,8 @@ export function issueRoutes(
         });
         return;
       }
+      // Agents keep the issue:mutate gate in assertIssueWriteInfluenceAllowed.
+      if (req.actor.type !== "agent" && !(await assertIssueReadAllowed(req, res, issue))) return;
       if (req.actor.type !== "agent") assertBoard(req);
       if (!(await assertIssueWriteInfluenceAllowed(req, res, issue))) return;
       try {
@@ -14197,6 +14199,7 @@ export function issueRoutes(
       "Issue not found",
     );
     if (!issue) return;
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
 
     const actor = getActorInfo(req);
     const result = await heartbeat.retryScheduledRetryNow({
@@ -14388,6 +14391,7 @@ export function issueRoutes(
         "Issue not found",
       );
       if (!issue) return;
+      if (!(await assertIssueReadAllowed(req, res, issue))) return;
       assertBoard(req);
 
       if (req.actor.source !== "local_implicit") {
@@ -17262,6 +17266,9 @@ export function issueRoutes(
       "Issue not found",
     );
     if (!existing) return;
+    // PAR-12966 (a): no break-glass. A company owner who cannot read the task
+    // gets 404; the instance admin or the local board runs the recovery.
+    if (!(await assertIssueReadAllowed(req, res, existing))) return;
 
     const clearAssignee = req.query.clearAssignee === "true";
     const result = await svc.adminForceRelease(id, { clearAssignee });
