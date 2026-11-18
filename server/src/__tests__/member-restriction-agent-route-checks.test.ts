@@ -198,6 +198,9 @@ const passed = (res: request.Response, status: number) => expect(res.status, JSO
       const mine = await task();
       unavailable(await failingRead(async () => as(await board(R)).patch(`/api/issues/${mine}`).send({ assigneeAgentId: Z })));
       expect(await assignee(mine)).toBeNull();
+      const title = `Unwritten ${randomUUID().slice(0, 8)}`;
+      unavailable(await failingRead(async () => create(await board(R), { title, assigneeAgentId: Z })));
+      expect(await db.select().from(issues).where(eq(issues.title, title))).toHaveLength(0);
     });
   });
 
@@ -224,9 +227,22 @@ const passed = (res: request.Response, status: number) => expect(res.status, JSO
       passed(await patch(await board(R), await task(null, reviewer(Z)), Z), 200);
     });
 
-    it("AC-F8 and AC-X1: kill switch `off` accepts Z; a failed read is 503", async () => {
+    it("AC-F8 and AC-X1: kill switch `off` accepts Z; a failed read is 503 (create and update)", async () => {
       passed(await today(async () => create(await board(R), Z)), 201);
       unavailable(await failingRead(async () => create(await board(R), Z)));
+      passed(await today(async () => patch(await board(R), await task(), Z)), 200);
+      const mine = await task();
+      unavailable(await failingRead(async () => patch(await board(R), mine, Z)));
+      expect((await db.select({ p: issues.executionPolicy }).from(issues).where(eq(issues.id, mine)))[0]!.p).toBeNull();
+    });
+
+    it("accepted-plan decomposition: a child naming Z as reviewer is 422; a failed read is 503; kill switch `off` passes the check", async () => {
+      const decompose = async (who: Actor) => as(who).post(`/api/issues/${await task()}/accepted-plan-decompositions`)
+        .send({ acceptedPlanRevisionId: randomUUID(), children: [{ title: "Step", executionPolicy: reviewer(Z) }] });
+      notListed(await decompose(await board(R)), 422);
+      unavailable(await failingRead(async () => decompose(await board(R))));
+      const now = await today(async () => decompose(await board(R)));
+      expect(now.body.details?.code, JSON.stringify(now.body)).not.toBe("agent_not_listed");
     });
   });
 
