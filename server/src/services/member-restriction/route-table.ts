@@ -37,6 +37,7 @@ export interface MemberRestrictionRouteEntry {
 }
 
 const TASKS_TEST = "server/src/__tests__/member-restriction-route-table-tasks.test.ts";
+const TREE_TEST = "server/src/__tests__/member-restriction-route-table-comments-projects.test.ts";
 
 export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntry[] = [
   // C4b-1a (PAR-12730): the task routes of `routes/issues.ts`. Comments,
@@ -104,6 +105,69 @@ export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntr
   { method: "GET", path: "/api/issues/:id/feedback-traces", class: "closed" },
   { method: "GET", path: "/api/feedback-traces/:traceId", class: "closed" },
   { method: "GET", path: "/api/feedback-traces/:traceId/bundle", class: "closed" },
+
+  // C4b-1b (PAR-12731): the comment routes of `routes/issues.ts`. Each `open`
+  // handler reads the task through `issue:read` first ("Issue not found").
+  // Annotation comments are documents (C4b-2); `resolve-from-comment` is
+  // questions (C4d).
+  { method: "GET", path: "/api/issues/:id/recent-comments", class: "open", test: TREE_TEST },
+  { method: "GET", path: "/api/issues/:id/comments", class: "open", test: TREE_TEST },
+  { method: "POST", path: "/api/issues/:id/comments", class: "open", test: TREE_TEST },
+  { method: "GET", path: "/api/issues/:id/comments/:commentId", class: "open", test: TREE_TEST },
+  { method: "DELETE", path: "/api/issues/:id/comments/:commentId", class: "open", test: TREE_TEST },
+  { method: "GET", path: "/api/issues/:id/queued-comments", class: "open", test: TREE_TEST },
+  // Closed: the queued-comment writes check only the company (edit, reorder,
+  // discard) or answer a denied `issue:comment` with 403 (interrupt, steer),
+  // which tells R that O's task exists (AC-G3).
+  { method: "PATCH", path: "/api/issues/:id/queued-comments/:commentId", class: "closed" },
+  { method: "PUT", path: "/api/issues/:id/queued-comments/order", class: "closed" },
+  { method: "POST", path: "/api/issues/:id/queued-comments/interrupt", class: "closed" },
+  { method: "POST", path: "/api/issues/:id/queued-comments/:commentId/steer", class: "closed" },
+  { method: "DELETE", path: "/api/issues/:id/queued-comments/:commentId", class: "closed" },
+
+  // C4b-1b: `routes/projects.ts`. Every `open` handler reads the project
+  // through `project:read` (lists through `projectReadSqlCondition`) first;
+  // workspace delete then asks `project:write_workspace`, access members the
+  // privacy-owner rule (4.4, AC-P3).
+  { method: "GET", path: "/api/companies/:companyId/projects", class: "open", test: TREE_TEST },
+  { method: "GET", path: "/api/projects/:id", class: "open", test: TREE_TEST },
+  { method: "GET", path: "/api/projects/:id/external-object-summary", class: "open", test: TREE_TEST },
+  { method: "GET", path: "/api/projects/:id/access-members", class: "open", test: TREE_TEST },
+  { method: "POST", path: "/api/projects/:id/access-members", class: "open", test: TREE_TEST },
+  { method: "DELETE", path: "/api/projects/:id/access-members/:memberId", class: "open", test: TREE_TEST },
+  { method: "GET", path: "/api/projects/:id/workspaces", class: "open", test: TREE_TEST },
+  { method: "DELETE", path: "/api/projects/:id/workspaces/:workspaceId", class: "open", test: TREE_TEST },
+  // Closed until PAR-12933: project create and patch take a workspace
+  // `provisionCommand`, `env` with any company `secret_ref` and an
+  // `environmentId`; workspace create and patch take a host `cwd`, a
+  // `cleanupCommand` and runtime commands. 4.6 denies secrets, `runtime:*`
+  // and `environments:manage`; PAR-12933 adds the handler guard and reopens
+  // them (creating a project is allowed, 4.5).
+  { method: "POST", path: "/api/companies/:companyId/projects", class: "closed" },
+  { method: "PATCH", path: "/api/projects/:id", class: "closed" },
+  { method: "POST", path: "/api/projects/:id/workspaces", class: "closed" },
+  { method: "PATCH", path: "/api/projects/:id/workspaces/:workspaceId", class: "closed" },
+  // Closed: repositories and git authorization are the company's tool access
+  // (4.6 "tool access"); runtime services need `runtime:*`, which the action
+  // list denies; deleting a project, as deleting a task, is the owner's.
+  { method: "GET", path: "/api/companies/:companyId/project-repositories", class: "closed" },
+  { method: "GET", path: "/api/projects/:id/git-authorization", class: "closed" },
+  { method: "PUT", path: "/api/projects/:id/git-authorization", class: "closed" },
+  { method: "PUT", path: "/api/projects/:id/repositories", class: "closed" },
+  { method: "POST", path: "/api/projects/:id/workspaces/:workspaceId/runtime-services/:action", class: "closed" },
+  { method: "POST", path: "/api/projects/:id/workspaces/:workspaceId/runtime-commands/:action", class: "closed" },
+  { method: "DELETE", path: "/api/projects/:id", class: "closed" },
+
+  // C4b-1b: `routes/issue-tree-control.ts` (board only). Reading a task's
+  // pause state and holds, and previewing a hold, read the root task first.
+  // Placing and releasing a hold pause, cancel or wake a whole subtree's runs:
+  // an operator tool, closed like the recovery and retry rows above.
+  { method: "GET", path: "/api/issues/:id/tree-control/state", class: "open", test: TREE_TEST },
+  { method: "POST", path: "/api/issues/:id/tree-control/preview", class: "open", test: TREE_TEST },
+  { method: "GET", path: "/api/issues/:id/tree-holds", class: "open", test: TREE_TEST },
+  { method: "GET", path: "/api/issues/:id/tree-holds/:holdId", class: "open", test: TREE_TEST },
+  { method: "POST", path: "/api/issues/:id/tree-holds", class: "closed" },
+  { method: "POST", path: "/api/issues/:id/tree-holds/:holdId/release", class: "closed" },
 ];
 
 export type MemberRestrictionRouteMatch =
