@@ -512,6 +512,41 @@ describe("AgentMail durable email pipeline", () => {
     expect((await issueService(db).getById(job.issueId!))?.status).not.toBe("done");
   });
 
+  // PAR-12608 4.6a row 10, AC-M8: a mail is mapped to the inbox's sponsor. A
+  // sponsor restricted under `enforce` gets no task, comment or wake. The kill
+  // switch makes `enforce` behave as `off`; a failed read (a flagged row whose
+  // plugin list is not a list) processes nothing and leaves the mail to retry.
+  it.each(["enforce", "kill switch", "failed read"] as const)("turns no mail into work for a restricted sponsor (%s)", async (variant) => {
+    try {
+      if (variant === "kill switch") vi.stubEnv("PAPERCLIP_MEMBER_RESTRICTION", "off");
+      const f = await fixture();
+      await db.update(companies).set({ memberRestrictionMode: "enforce" }).where(eq(companies.id, f.companyId));
+      await db.update(companyMemberships).set({ restricted: true })
+        .where(and(eq(companyMemberships.companyId, f.companyId), eq(companyMemberships.principalId, "email-board")));
+      if (variant === "failed read") {
+        await db.execute(sql`UPDATE company_memberships SET restricted_plugin_keys = '"broken"'::jsonb WHERE company_id = ${f.companyId} AND principal_id = 'email-board'`);
+      }
+      await f.receive(f.message("restricted-mail", "restricted-thread"));
+      const [delivery] = await db.select().from(chatDeliveries).where(eq(chatDeliveries.companyId, f.companyId));
+      const tasks = await db.select().from(issues).where(eq(issues.companyId, f.companyId));
+      if (variant === "kill switch") {
+        expect(tasks).toHaveLength(1);
+        expect(f.wakeup).toHaveBeenCalled();
+        return;
+      }
+      expect(tasks).toEqual([]);
+      expect(await db.select().from(issueComments).where(eq(issueComments.companyId, f.companyId))).toEqual([]);
+      expect(f.wakeup).not.toHaveBeenCalled();
+      if (variant === "enforce") {
+        expect(delivery).toMatchObject({ state: "filtered", redactedError: "Inbox sponsor is restricted in this company" });
+      } else {
+        expect(delivery!.state).not.toMatch(/^(processed|filtered)$/);
+      }
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("admits signed webhooks through the durable queue and rejects a valid signature for another inbox", async () => {
     const f = await fixture();
     const endpoint = await f.service.getEndpoint(f.endpointId);
