@@ -253,13 +253,15 @@ import {
       const queuedInterrupt = { queueId: randomUUID(), revision: "queue-revision", targetRunId: randomUUID() };
       expect((await request(appFor(colleague)).post(`/api/issues/${chatId}/queued-comments/interrupt`)
         .send(queuedInterrupt)).status).toBe(403);
+      // A colleague cannot read the private chat, so a send or an upload answers
+      // "not found" before the owner check (PAR-12942, AC-G3).
       for (const body of ["Hello", "/new"]) {
         expect((await request(appFor(colleague)).post(`/api/issues/${chatId}/comments`)
-          .send({ body, clientRequestId: randomUUID() })).status).toBe(403);
+          .send({ body, clientRequestId: randomUUID() })).status).toBe(404);
       }
       expect((await request(appFor(colleague))
         .post(`/api/companies/${companyId}/issues/${chatId}/attachments`)
-        .attach("file", Buffer.from("foreign upload"), "note.txt")).status).toBe(403);
+        .attach("file", Buffer.from("foreign upload"), "note.txt")).status).toBe(404);
 
       const [planReview] = await db.insert(issueThreadInteractions).values({
         companyId, issueId: chatId, kind: "request_confirmation", status: "pending",
