@@ -4,8 +4,10 @@ import multer from "multer";
 import createDOMPurify from "dompurify";
 import { JSDOM } from "jsdom";
 import type { Db } from "@paperclipai/db";
-import { ASSET_NAMESPACE_RULE, createAssetImageMetadataSchema } from "@paperclipai/shared";
+import { ASSET_NAMESPACE_RULE, createAssetImageMetadataSchema, isUuidLike } from "@paperclipai/shared";
 import type { StorageService } from "../storage/types.js";
+import { authorizationService } from "../services/authorization.js";
+import { actorRestrictedInCompany } from "../services/member-restriction/company-record.js";
 import { assetService, logActivity } from "../services/index.js";
 import {
   formatAttachmentSize,
@@ -149,6 +151,18 @@ export function assetRoutes(db: Db, storage: StorageService) {
     }
 
     const namespaceSuffix = parsedMeta.data.namespace ?? "general";
+    // A restricted person files an image only under a task he can read
+    // (PAR-12608 4.6): the read side opens `issues/<id>` assets by that task.
+    const [area, issueId] = namespaceSuffix.split("/").map((part) => part.trim()).filter(Boolean);
+    if (area === "issues" && issueId !== "drafts" && await actorRestrictedInCompany(db, req.actor, companyId)) {
+      const readable = !!issueId && isUuidLike(issueId) && (await authorizationService(db).decide({
+        actor: req.actor, action: "issue:read", resource: { type: "issue", companyId, issueId },
+      })).allowed;
+      if (!readable) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+    }
     const contentType = (file.mimetype || "").toLowerCase();
     if (contentType !== SVG_CONTENT_TYPE && !isAllowedContentType(contentType)) {
       res.status(422).json({ error: `Unsupported file type: ${contentType || "unknown"}` });

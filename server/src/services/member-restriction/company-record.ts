@@ -1,5 +1,6 @@
 import type { Db } from "@paperclipai/db";
-import { memberRestrictionEnforcedCompanyIds, memberRestrictionUnavailable } from "./resolver.js";
+import { memberRestrictionEnforcedCompanyIds, memberRestrictionFor, memberRestrictionUnavailable } from "./resolver.js";
+import { actorPersonMembership, memberRestrictionForMembership } from "./actor-memberships.js";
 import { restrictionPersonIds } from "./strict-read.js";
 
 /**
@@ -33,6 +34,26 @@ export async function companiesRestrictedForActor(
     }
   }
   return ids;
+}
+
+/**
+ * True when a person the actor works for is restricted in `companyId` under
+ * `enforce`. A membership the actor carries as "not restricted" answers
+ * without a read; a failed read throws 503 `MEMBER_RESTRICTION_UNAVAILABLE`.
+ */
+export async function actorRestrictedInCompany(
+  db: Db,
+  actor: Parameters<typeof restrictionPersonIds>[0] & Parameters<typeof actorPersonMembership>[0],
+  companyId: string,
+): Promise<boolean> {
+  const carried = actorPersonMembership(actor, companyId);
+  const resolve = (personId: string, id: string) => memberRestrictionFor(db, personId, id);
+  for (const personId of restrictionPersonIds(actor)) {
+    const membership = carried?.personId === personId ? carried.membership : null;
+    const restriction = await memberRestrictionForMembership(resolve, personId, companyId, membership);
+    if (restriction.restricted && restriction.mode === "enforce") return true;
+  }
+  return false;
 }
 
 /** The full record outside `restricted`, the reduced one inside. */
