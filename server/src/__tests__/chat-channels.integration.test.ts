@@ -11135,6 +11135,42 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect(runtime.endpoints.get(endpoint.id)!.posts.filter(post => post.text.includes("One resume"))).toHaveLength(1);
   });
 
+  // PAR-12608 4.6a row 11, AC-M8: a message from a restricted member's linked
+  // Slack identity under `enforce` is refused with a reply that says so; no
+  // task, comment or wake. The kill switch makes `enforce` behave as `off`.
+  // The failed read is in member-restriction-inbound.test.ts.
+  it.each(["enforce", "kill switch"] as const)("refuses a restricted member's linked Slack message with a reply (%s)", async (variant) => {
+    try {
+      if (variant === "kill switch") vi.stubEnv("PAPERCLIP_MEMBER_RESTRICTION", "off");
+      const fixture = await seedCompany();
+      const R = `restricted-${randomUUID()}`;
+      await db.insert(authUsers).values({ id: R, name: "R", email: `${R}@example.com`, emailVerified: true, createdAt: new Date(), updatedAt: new Date() });
+      await db.insert(companyMemberships).values({ companyId: fixture.companyId, principalType: "user", principalId: R, status: "active", membershipRole: "operator", restricted: true });
+      await db.update(companies).set({ memberRestrictionMode: "enforce" }).where(eq(companies.id, fixture.companyId));
+      const { callbacks, endpoint, wakeup } = await configuredSlackEndpoint(fixture, { allowUnlinkedPeople: false });
+      const [principal] = await db.insert(chatExternalPrincipals).values({ companyId: fixture.companyId, provider: "slack", providerAccountId: "T-PAPERCLIP", externalId: "URESTRICTED" }).returning();
+      await db.insert(chatIdentityLinks).values({ companyId: fixture.companyId, endpointId: endpoint.id, principalId: principal.id, paperclipUserId: R, status: "linked", confirmedAt: new Date() });
+      const dm = makeThread({ channelId: "D-RESTRICTED", id: "slack:D-RESTRICTED:8300.1", isDM: true });
+      await deliverMessage({ callbacks, endpointId: endpoint.id, thread: dm.thread,
+        message: makeMessage({ id: "8300.1", text: "Start work for me", userId: "URESTRICTED" }), trigger: "direct_message" });
+      const conversations = await readChatConversationsByEndpointId(endpoint.id);
+      if (variant === "kill switch") {
+        expect(conversations).toHaveLength(1);
+        expect(wakeup).toHaveBeenCalledTimes(1);
+        return;
+      }
+      expect(conversations).toEqual([]);
+      expect(wakeup).not.toHaveBeenCalled();
+      expect(await db.select().from(issueComments).where(eq(issueComments.companyId, fixture.companyId))).toEqual([]);
+      const [delivery] = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpoint.id));
+      expect(delivery).toMatchObject({ state: "filtered", principalId: null, redactedError: "Linked Paperclip account is restricted in this company" });
+      expect(dm.postEphemeral).toHaveBeenCalledWith("URESTRICTED",
+        "Your Paperclip account is restricted in this company, so this message was not accepted.", { fallbackToDM: false });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("dispatches and publishes a queued Slack Board send with a one-connection database pool", async () => {
     const fixture = await seedCompany();
     const { callbacks, endpoint, service, wakeup, runtime } = await configuredSlackEndpoint(fixture, { linkedBoardUser: true });
