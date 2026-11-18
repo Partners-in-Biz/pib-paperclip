@@ -25,8 +25,22 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 const support = await getEmbeddedPostgresTestSupport();
 const THIS_FILE = "server/src/__tests__/member-restriction-route-table-tasks.test.ts";
 
+/** PAR-13135: fails only the agent-list read (`agent-read.ts`), so the follow-up guard's read is failed on its own. */
+const listFails = vi.hoisted(() => ({ on: false }));
+vi.mock("../services/member-restriction/resolver.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/member-restriction/resolver.js")>();
+  return {
+    ...actual,
+    memberRestrictionResolver: (db: Parameters<typeof actual.memberRestrictionResolver>[0]) =>
+      (personId: string, companyId: string) => listFails.on
+        ? Promise.reject(new actual.MemberRestrictionReadError("fixture: agent list unreadable"))
+        : actual.memberRestrictionFor(db, personId, companyId),
+  };
+});
+
 afterEach(() => {
   vi.unstubAllEnvs();
+  listFails.on = false;
 });
 
 describe("task route rows database support", () => {
@@ -224,7 +238,7 @@ it("AC-G1: the closed task rows classify as closed for their real paths", async 
     });
   });
 
-  it("PAR-13135: R resuming his task blocked by O's task gets the 409 with no blocker id; with the kill switch `off` the id is listed", async () => {
+  it("PAR-13135: R resuming his task blocked by O's task gets the 409 with no blocker id; with the kill switch `off` the id is listed; a failed list read is 503", async () => {
     const { issueId: blocker } = await freshTask(Y, O);
     const [mine] = await db.insert(issues).values({ companyId: Y, title: "R's blocked task", status: "blocked",
       createdByUserId: R, responsibleUserId: R }).returning();
@@ -235,5 +249,10 @@ it("AC-G1: the closed task rows classify as closed for their real paths", async 
       expect(res.body).toEqual({ error: "Issue follow-up blocked by unresolved blockers",
         details: { issueId: mine!.id, unresolvedBlockerIssueIds: listed } });
     }
+    listFails.on = true;
+    const failed = await resume();
+    expect(failed.status, JSON.stringify(failed.body)).toBe(503);
+    expect(failed.body.code ?? failed.body.details?.code).toBe("MEMBER_RESTRICTION_UNAVAILABLE");
+    expect(JSON.stringify(failed.body)).not.toContain(blocker);
   });
 });

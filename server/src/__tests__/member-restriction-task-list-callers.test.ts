@@ -18,8 +18,22 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 
 type Actor = Express.Request["actor"];
 
+/** PAR-13135: fails only the agent-list read (`agent-read.ts`), so each new caller of it is failed on its own. */
+const listFails = vi.hoisted(() => ({ on: false }));
+vi.mock("../services/member-restriction/resolver.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/member-restriction/resolver.js")>();
+  return {
+    ...actual,
+    memberRestrictionResolver: (db: Parameters<typeof actual.memberRestrictionResolver>[0]) =>
+      (personId: string, companyId: string) => listFails.on
+        ? Promise.reject(new actual.MemberRestrictionReadError("fixture: agent list unreadable"))
+        : actual.memberRestrictionFor(db, personId, companyId),
+  };
+});
+
 afterEach(() => {
   vi.unstubAllEnvs();
+  listFails.on = false;
 });
 
 describe("agent inbox routes when the restriction cannot be read (AC-X1)", () => {
@@ -184,6 +198,20 @@ describe("task list callers database support", () => {
       expect(ids(await get(mine(R), runIn(R)))).toEqual([other.mine]);
       vi.stubEnv("PAPERCLIP_MEMBER_RESTRICTION", "off");
       expect(ids(await get(mine(O), runIn(R)))).toEqual([other.blocker, other.touchedByO].sort());
+    });
+
+    it("AC-X1: when the agent list cannot be read, a run for R gets 503 and no task from inbox-lite or O's inbox", async () => {
+      listFails.on = true;
+      for (const path of ["/api/agents/me/inbox-lite", mine(O)]) {
+        const app = express();
+        app.use((req, _res, next) => { req.actor = runIn(R); next(); });
+        app.use("/api", agentRoutes(db));
+        app.use(errorHandler);
+        const res = await request(app).get(path);
+        expect(res.status, JSON.stringify(res.body)).toBe(503);
+        expect(res.body.code ?? res.body.details?.code).toBe("MEMBER_RESTRICTION_UNAVAILABLE");
+        for (const id of [other.mine, other.blocker, other.touchedByO]) expect(JSON.stringify(res.body)).not.toContain(id);
+      }
     });
   });
 });

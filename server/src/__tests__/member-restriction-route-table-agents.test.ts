@@ -30,7 +30,8 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
  * identity as six fields (AC-A2) and opens a chat only as an agent on his list.
  */
 
-const resolverFails = vi.hoisted(() => ({ on: false }));
+/** `on`: every restriction read fails. `list`: only the agent-list read (`agent-read.ts`) fails, so a new caller is failed on its own. */
+const resolverFails = vi.hoisted(() => ({ on: false, list: false }));
 vi.mock("../services/member-restriction/resolver.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../services/member-restriction/resolver.js")>();
   const fail = () => Promise.reject(new actual.MemberRestrictionReadError("fixture: restriction unreadable"));
@@ -41,7 +42,7 @@ vi.mock("../services/member-restriction/resolver.js", async (importOriginal) => 
     memberRestrictionEnforcedCompanyIds: (...args: Parameters<typeof actual.memberRestrictionEnforcedCompanyIds>) =>
       resolverFails.on ? fail() : actual.memberRestrictionEnforcedCompanyIds(...args),
     memberRestrictionResolver: (db: Parameters<typeof actual.memberRestrictionResolver>[0]) =>
-      (personId: string, companyId: string) => resolverFails.on ? fail() : actual.memberRestrictionFor(db, personId, companyId),
+      (personId: string, companyId: string) => resolverFails.on || resolverFails.list ? fail() : actual.memberRestrictionFor(db, personId, companyId),
   };
 });
 
@@ -51,6 +52,7 @@ const THIS_FILE = "server/src/__tests__/member-restriction-route-table-agents.te
 afterEach(() => {
   vi.unstubAllEnvs();
   resolverFails.on = false;
+  resolverFails.list = false;
 });
 
 describe("agent route rows database support", () => {
@@ -433,7 +435,7 @@ it("AC-G1, AC-G4 and AC-H4: keys, configuration, instructions, pausing, the org 
       created(await today(async () => post(await runningRun(Y, unlisted, await task(Y, R), R))));
     });
 
-    it("a run for R on O's task is refused by the task read; a failed read is 503; neither writes a comment", async () => {
+    it("a run for R on O's task is refused by the task read; a failed read (also of the list alone) is 503; neither writes a comment", async () => {
       const [before, chatsBefore] = [(await commentsOf(listedAgent)).length, (await chatsOf(listedAgent)).length];
       const refused = await post(await runningRun(Y, listedAgent, await task(Y, O), R));
       expect(refused.status, JSON.stringify(refused.body)).toBe(403);
@@ -444,6 +446,11 @@ it("AC-G1, AC-G4 and AC-H4: keys, configuration, instructions, pausing, the org 
       const failed = await post(caller);
       expect(failed.status, JSON.stringify(failed.body)).toBe(503);
       resolverFails.on = false;
+      resolverFails.list = true;
+      const listFailed = await post(caller);
+      expect(listFailed.status, JSON.stringify(listFailed.body)).toBe(503);
+      expect(listFailed.body.code ?? listFailed.body.details?.code).toBe("MEMBER_RESTRICTION_UNAVAILABLE");
+      resolverFails.list = false;
       expect((await commentsOf(listedAgent)).length).toBe(before);
       expect((await chatsOf(listedAgent)).length).toBe(chatsBefore);
     });
