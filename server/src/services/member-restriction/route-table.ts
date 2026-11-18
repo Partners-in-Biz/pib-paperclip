@@ -495,8 +495,7 @@ export interface MemberRestrictionMountEntry {
   routes?: ReadonlyArray<{ method: string; path: string; class: "run" | "closed"; toProve?: string }>;
 }
 
-/** The tests of rows 2, 5, 9, 12 and 19 land with PAR-13211 (C4f-2b), which points this at its test file. */
-const MOUNT_TEST = "PAR-13211";
+const MOUNT_TEST = "server/src/__tests__/member-restriction-mount-rows.test.ts";
 
 export const MEMBER_RESTRICTION_MOUNT_TABLE: readonly MemberRestrictionMountEntry[] = [
   { row: null, rule: "middleware: request accounting, body parsing, logging, host and Cloud guards; the actor is resolved here",
