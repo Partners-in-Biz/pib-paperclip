@@ -349,6 +349,7 @@ import {
   type ParentPlacement,
 } from "../services/issue-hierarchy.js";
 import {
+  approvalReadSqlCondition,
   authorizationDeniedDetails,
   issueReadSqlCondition,
   projectReadSqlCondition,
@@ -12938,7 +12939,8 @@ export function issueRoutes(
     )
       return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
-    const approvals = await issueApprovalsSvc.listApprovalsForIssue(id);
+    // Only approvals whose every linked task the caller may read (4.6).
+    const approvals = await issueApprovalsSvc.listApprovalsForIssue(id, await approvalReadSqlCondition(db, req.actor));
     res.json(approvals);
   });
 
