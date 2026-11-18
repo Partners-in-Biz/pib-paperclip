@@ -43,13 +43,14 @@ async function modeOrUnavailable(db: Db, companyId: string): Promise<MemberRestr
 
 /** The run's person (C40); a run that cannot be found is refused. */
 async function runPerson(db: Db, run: ToolRunRef): Promise<string | null> {
-  let row;
-  if (!isUuidLike(run.runId)) row = undefined;
-  else try {
-    [row] = await loadAgentRunAuthentication(db, run);
-    await refreshRunIdentityPerson(db, run, row);
-  } catch (error) {
-    throw memberRestrictionUnavailable(error);
+  let row: Awaited<ReturnType<typeof loadAgentRunAuthentication>>[number] | undefined;
+  if (isUuidLike(run.runId)) {
+    try {
+      [row] = await loadAgentRunAuthentication(db, run);
+      await refreshRunIdentityPerson(db, run, row);
+    } catch (error) {
+      throw memberRestrictionUnavailable(error);
+    }
   }
   if (!row) throw forbidden("This tool call names a run that cannot be found", { code: TOOL_RUN_NOT_FOUND_CODE });
   return row.responsibleUserId?.trim() || null;
