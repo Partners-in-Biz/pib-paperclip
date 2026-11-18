@@ -6,6 +6,7 @@ import { expect, it, vi } from "vitest";
 import { MobileBottomNav } from "./MobileBottomNav";
 import { coordinatorAttentionSummaryQueryKey } from "@/lib/coordinator-attention";
 
+vi.mock("@/api/auth", () => ({ authApi: { getSession: async () => ({ session: { id: "s", userId: "u" }, user: null, memberRestrictions: [] }) } }));
 vi.mock("@/hooks/useCoordinatorWorkspaceEnabled", () => ({ useCoordinatorWorkspaceEnabled: () => ({ enabled: true }) }));
 vi.mock("@/hooks/useAgentChatEnabled", () => ({ useAgentChatEnabled: () => ({ enabled: true }) }));
 vi.mock("@/hooks/useCombinedInboxTasksEnabled", () => ({ useCombinedInboxTasksEnabled: () => ({ enabled: false }) }));
@@ -16,6 +17,7 @@ vi.mock("@/lib/router", () => ({ useLocation: () => ({ pathname: "/chats" }), Na
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 it("uses the canonical outstanding count on the phone as well as the desktop", async () => {
   const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } });
+  client.setQueryData(["auth", "session"], { session: { id: "s", userId: "u" }, user: null, memberRestrictions: [] });
   const key = coordinatorAttentionSummaryQueryKey("company");
   client.setQueryData(key, { totalCount: 3, deskBadgeCount: 0 });
   const host = document.createElement("div"); document.body.append(host); const root = createRoot(host);

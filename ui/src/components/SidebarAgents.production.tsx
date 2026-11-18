@@ -37,6 +37,7 @@ import {
   useResourceMemberships,
 } from "../hooks/useResourceMemberships";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
+import { useMemberRestrictionGate } from "../hooks/useMemberRestrictionGate";
 import {
   AGENT_SORT_MODE_UPDATED_EVENT,
   getAgentSortModeStorageKey,
@@ -339,31 +340,33 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
   const membershipsQuery = useResourceMemberships(selectedCompanyId);
   const membershipMutation = useResourceMembershipMutation(selectedCompanyId);
 
+  // `live-runs` is closed for a restricted member under `enforce` (AC-G10): no request, no live mark.
+  const memberGate = useMemberRestrictionGate(selectedCompanyId);
   const liveRunsQueryKey = queryKeys.liveRuns(selectedCompanyId!);
   const sharedLiveRuns = useSharedPollingQuery({
     companyId: selectedCompanyId,
     resourceKey: "live-runs",
     queryKey: liveRunsQueryKey,
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && !memberGate.closed,
     // Event-sourced via LiveUpdatesProvider (issue 9627); no interval poll needed.
     refetchInterval: false,
     leaderOnly: true,
   });
   const { data: liveRuns, dataUpdatedAt: liveRunsUpdatedAt } = useQuery({
     queryKey: liveRunsQueryKey,
-    queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
-    enabled: sharedLiveRuns.enabled,
+    queryFn: memberGate.guard(() => heartbeatsApi.liveRunsForCompany(selectedCompanyId!), []),
+    enabled: sharedLiveRuns.enabled && !memberGate.closed,
     refetchInterval: sharedLiveRuns.refetchInterval,
   });
   usePublishSharedQueryData(sharedLiveRuns, liveRuns, liveRunsUpdatedAt);
 
   const liveCountByAgent = useMemo(() => {
     const counts = new Map<string, number>();
-    for (const run of liveRuns ?? []) {
+    for (const run of memberGate.closed ? [] : liveRuns ?? []) {
       counts.set(run.agentId, (counts.get(run.agentId) ?? 0) + 1);
     }
     return counts;
-  }, [liveRuns]);
+  }, [liveRuns, memberGate.closed]);
   const liveAgentIds = useMemo(() => {
     const ids = new Set<string>();
     for (const [agentId, count] of liveCountByAgent) {
