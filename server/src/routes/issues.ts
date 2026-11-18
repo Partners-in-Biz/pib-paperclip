@@ -11752,6 +11752,10 @@ export function issueRoutes(
       "Issue not found",
     );
     if (!issue) return;
+    // A caller who cannot read the task gets "not found" before the board-only
+    // answer, so the 403 does not tell him it exists (PAR-12942, AC-G3). A read
+    // check only: no break-glass, and none of the agent write checks.
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Board authentication required" });
       return;
@@ -11809,6 +11813,10 @@ export function issueRoutes(
       "Issue not found",
     );
     if (!issue) return;
+    // A caller who cannot read the task gets "not found" before the board-only
+    // answer, so the 403 does not tell him it exists (PAR-12942, AC-G3). A read
+    // check only: no break-glass, and none of the agent write checks.
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Board authentication required" });
       return;
@@ -12057,6 +12065,10 @@ export function issueRoutes(
       "Issue not found",
     );
     if (!issue) return;
+    // A caller who cannot read the task gets "not found" before the board-only
+    // answer, so the 403 does not tell him it exists (PAR-12942, AC-G3). A read
+    // check only: no break-glass, and none of the agent write checks.
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Board authentication required" });
       return;
@@ -19545,6 +19557,8 @@ export function issueRoutes(
       );
       if (!issue) return;
       if (issue.conversationAgentId && req.actor.type === "board") {
+        // A person who cannot read the chat gets "not found" (PAR-12942, AC-G3).
+        if (!(await assertIssueReadAllowed(req, res, issue))) return;
         if (!(await instanceSettings.getExperimental()).enableAgentChat) throw notFound("Agent Chat is disabled");
         if (!req.actor.userId) throw forbidden("Board user access required");
         if (req.actor.userId !== issue.conversationUserId) throw forbidden("Only the conversation owner can send messages or start a new session");
@@ -20775,17 +20789,19 @@ export function issueRoutes(
         res.status(404).json({ error: "Issue not found" });
         return;
       }
+      // A task of another company, or one the caller cannot read, answers
+      // the same as a missing task (PAR-12942, AC-G3).
       if (issue.companyId !== companyId) {
-        res.status(422).json({ error: "Issue does not belong to company" });
+        res.status(404).json({ error: "Issue not found" });
         return;
       }
+      if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
       if (issue.conversationAgentId && req.actor.type === "board" && !(await instanceSettings.getExperimental()).enableAgentChat) {
         throw notFound("Agent Chat is disabled");
       }
       if (issue.conversationAgentId && req.actor.type === "board" && req.actor.userId !== issue.conversationUserId) {
         throw forbidden("Only the conversation owner can upload attachments");
       }
-      if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
       if (
         !(await assertDeliverableMutationAllowedByRunContext(req, res, issue))
       )
