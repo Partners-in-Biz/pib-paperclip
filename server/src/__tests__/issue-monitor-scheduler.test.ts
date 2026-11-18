@@ -28,6 +28,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
+import { issueService } from "../services/issues.ts";
 import { normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
 import { PaperclipRunnerToolAuthority } from "../services/native-runtime/paperclip-runner-tool-authority.js";
 
@@ -267,6 +268,25 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
 
     return { companyId, agentId, issueId, nextCheckAt };
   }
+
+  it("PAR-8899: done clears the monitor and cancels queued monitor and review-recovery wakes", async () => {
+    const { issueId, agentId, companyId } = await seedFixture();
+    for (const reason of ["issue_monitor_due", "execution_review_participant_recovery", "issue_commented"]) {
+      await db.insert(agentWakeupRequests).values({
+        companyId, agentId, source: "automation", reason, status: "queued", payload: { issueId },
+      });
+    }
+    await issueService(db).update(issueId, { status: "done" });
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
+    expect(issue.monitorNextCheckAt).toBeNull();
+    expect(normalizeIssueExecutionPolicy(issue.executionPolicy ?? null)?.monitor ?? null).toBeNull();
+    const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+    const byReason = Object.fromEntries(wakes.map((w) => [w.reason, w.status]));
+    expect(byReason.issue_monitor_due).toBe("cancelled");
+    expect(byReason.execution_review_participant_recovery).toBe("cancelled");
+    expect(byReason.issue_commented).toBe("queued");
+    expect((await heartbeatService(db).tickIssueMonitors(new Date("2026-04-11T12:31:00.000Z"))).triggered).toBe(0);
+  });
 
   it("triggers due issue monitors once and clears the one-shot schedule", async () => {
     const { issueId, agentId } = await seedFixture();
