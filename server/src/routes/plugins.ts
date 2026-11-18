@@ -96,7 +96,7 @@ import {
 import { isCloudManagedInstance } from "../services/cloud-instance.js";
 import { getHiddenSettings } from "../services/settings-visibility.js";
 import { secretService } from "../services/secrets.js";
-import { badRequest, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
+import { badRequest, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
 import {
   isMemberRestrictionUnavailable,
   memberRestrictionResolver,
@@ -1192,6 +1192,8 @@ export function pluginRoutes(
       );
       res.json(result);
     } catch (err) {
+      // The dispatcher's plugin gate (4.8) answers through the error handler with its status and code.
+      if (err instanceof HttpError) throw err;
       const message = err instanceof Error ? err.message : String(err);
 
       // Distinguish between "worker not running" (502) and other errors (500)

@@ -212,6 +212,7 @@ import {
 import { createPluginJobScheduler } from "./services/plugin-job-scheduler.js";
 import { pluginJobStore } from "./services/plugin-job-store.js";
 import { createPluginToolDispatcher } from "./services/plugin-tool-dispatcher.js";
+import { pluginToolGate } from "./services/member-restriction/tool-gate.js";
 import { createToolGatewayService } from "./services/tool-gateway.js";
 import { toolAccessService } from "./services/tool-access.js";
 import { chatChannelService } from "./services/chat-channels.js";
@@ -883,6 +884,7 @@ export async function createApp(
     workerManager,
     lifecycleManager: lifecycle,
     db,
+    toolGate: pluginToolGate(db),
   });
   const gatewayOAuthAccess = toolAccessService(db, {
     deploymentMode: opts.deploymentMode,
