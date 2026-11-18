@@ -51,6 +51,7 @@ const WORKSPACES_TEST = "server/src/__tests__/member-restriction-route-table-wor
 const APPROVALS_TEST = "server/src/__tests__/member-restriction-route-table-approvals.test.ts";
 const AGENTS_TEST = "server/src/__tests__/member-restriction-route-table-agents.test.ts";
 const TASK_LIST_TEST = "server/src/__tests__/member-restriction-task-list-callers.test.ts";
+const INSTANCE_TEST = "server/src/__tests__/member-restriction-route-table-instance.test.ts";
 
 export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntry[] = [
   // C4b-1a (PAR-12730): the task routes of `routes/issues.ts`. Comments,
@@ -384,6 +385,22 @@ export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntr
   { method: "GET", path: "/api/companies/:companyId/org", class: "closed" },
   { method: "GET", path: "/api/companies/:companyId/heartbeat-runs", class: "closed" },
   { method: "GET", path: "/api/companies/:companyId/live-runs", class: "closed" },
+
+  // C4g-3 (PAR-13263, decision PAR-13261 sections 1 to 3): what the app shell
+  // reads on every page. For R at `enforce` health answers the anonymous body
+  // and the general settings only `{ censorUsernameInLogs }`; a primary agent
+  // off his list is null on read and "Agent not found" on write. The dev-server
+  // restart, the full settings, every settings write, the lifecycle and task
+  // drain routes have no row.
+  { method: "GET", path: "/api/health", class: "open", test: INSTANCE_TEST },
+  { method: "GET", path: "/api/instance/settings/experimental", class: "open", test: INSTANCE_TEST },
+  { method: "GET", path: "/api/instance/settings/general", class: "open", test: INSTANCE_TEST },
+  { method: "GET", path: "/api/announcements/current", class: "open", test: INSTANCE_TEST },
+  { method: "GET", path: "/api/announcements/:id/image", class: "open", test: INSTANCE_TEST },
+  { method: "GET", path: "/api/announcements/:id/animation", class: "open", test: INSTANCE_TEST },
+  { method: "POST", path: "/api/announcements/:id/dismiss", class: "open", test: INSTANCE_TEST },
+  { method: "GET", path: "/api/companies/:companyId/primary-agent/me", class: "open", test: INSTANCE_TEST },
+  { method: "PUT", path: "/api/companies/:companyId/primary-agent/me", class: "open", test: INSTANCE_TEST },
 
   // C5-1 (PAR-12740): the plugin call points of `routes/plugins.ts` (C13). Each
   // handler calls `assertPluginOpenForPerson` before the worker is called: a
