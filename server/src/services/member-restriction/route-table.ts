@@ -44,6 +44,7 @@ export interface MemberRestrictionRouteEntry {
 
 const TASKS_TEST = "server/src/__tests__/member-restriction-route-table-tasks.test.ts";
 const TREE_TEST = "server/src/__tests__/member-restriction-route-table-comments-projects.test.ts";
+const PROJECT_BODY_TEST = "server/src/__tests__/member-restriction-project-body-allowlist.test.ts";
 const INBOX_TEST = "server/src/__tests__/member-restriction-route-table-inbox-search.test.ts";
 const DOCS_TEST = "server/src/__tests__/member-restriction-route-table-documents.test.ts";
 const ACCOUNT_TEST = "server/src/__tests__/member-restriction-route-table-account.test.ts";
@@ -140,8 +141,7 @@ export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntr
 
   // C4b-1b: `routes/projects.ts`. Every `open` handler reads the project
   // through `project:read` (lists through `projectReadSqlCondition`) first;
-  // workspace delete then asks `project:write_workspace`, access members the
-  // privacy-owner rule (4.4, AC-P3).
+  // access members then ask the privacy-owner rule (4.4, AC-P3).
   { method: "GET", path: "/api/companies/:companyId/projects", class: "open", test: TREE_TEST },
   { method: "GET", path: "/api/projects/:id", class: "open", test: TREE_TEST },
   { method: "GET", path: "/api/projects/:id/external-object-summary", class: "open", test: TREE_TEST },
@@ -149,17 +149,19 @@ export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntr
   { method: "POST", path: "/api/projects/:id/access-members", class: "open", test: TREE_TEST },
   { method: "DELETE", path: "/api/projects/:id/access-members/:memberId", class: "open", test: TREE_TEST },
   { method: "GET", path: "/api/projects/:id/workspaces", class: "open", test: TREE_TEST },
-  { method: "DELETE", path: "/api/projects/:id/workspaces/:workspaceId", class: "open", test: TREE_TEST },
-  // Closed until PAR-12933: project create and patch take a workspace
-  // `provisionCommand`, `env` with any company `secret_ref` and an
-  // `environmentId`; workspace create and patch take a host `cwd`, a
-  // `cleanupCommand` and runtime commands. 4.6 denies secrets, `runtime:*`
-  // and `environments:manage`; PAR-12933 adds the handler guard and reopens
-  // them (creating a project is allowed, 4.5).
-  { method: "POST", path: "/api/companies/:companyId/projects", class: "closed" },
-  { method: "PATCH", path: "/api/projects/:id", class: "closed" },
+  // PAR-12934 (C4i-a): create and patch run the body allowlist of
+  // `body-allowlist.ts` first (4.5, 4.6): a bound caller sends no `env`,
+  // execution workspace policy, workspace, lead agent or repository; patch
+  // reads the project through `project:read` before it.
+  { method: "POST", path: "/api/companies/:companyId/projects", class: "open", test: PROJECT_BODY_TEST },
+  { method: "PATCH", path: "/api/projects/:id", class: "open", test: PROJECT_BODY_TEST },
+  // Closed: a project workspace is a host `cwd`, a repository, commands and a
+  // plugin; every field but `name`, `visibility` and `isPrimary` is host
+  // configuration, so an allowlist would leave nothing to create (4.6), and
+  // deleting one removes O's configuration.
   { method: "POST", path: "/api/projects/:id/workspaces", class: "closed" },
   { method: "PATCH", path: "/api/projects/:id/workspaces/:workspaceId", class: "closed" },
+  { method: "DELETE", path: "/api/projects/:id/workspaces/:workspaceId", class: "closed" },
   // Closed: repositories and git authorization are the company's tool access
   // (4.6 "tool access"); runtime services need `runtime:*`, which the action
   // list denies; deleting a project, as deleting a task, is the owner's.
@@ -172,13 +174,15 @@ export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntr
   { method: "DELETE", path: "/api/projects/:id", class: "closed" },
 
   // C4b-1b: `routes/issue-tree-control.ts` (board only). Reading a task's
-  // pause state and holds, and previewing a hold, read the root task first.
-  // Placing and releasing a hold pause, cancel or wake a whole subtree's runs:
-  // an operator tool, closed like the recovery and retry rows above.
+  // pause state reads the root task first. Placing and releasing a hold
+  // pause, cancel or wake a whole subtree's runs: an operator tool, closed
+  // like the recovery and retry rows above. The preview and the hold reads
+  // return the active runs and affected agents under the root without the
+  // run rule of AC-G5 or the agent list of 4.7: closed (PAR-12938).
   { method: "GET", path: "/api/issues/:id/tree-control/state", class: "open", test: TREE_TEST },
-  { method: "POST", path: "/api/issues/:id/tree-control/preview", class: "open", test: TREE_TEST },
-  { method: "GET", path: "/api/issues/:id/tree-holds", class: "open", test: TREE_TEST },
-  { method: "GET", path: "/api/issues/:id/tree-holds/:holdId", class: "open", test: TREE_TEST },
+  { method: "POST", path: "/api/issues/:id/tree-control/preview", class: "closed" },
+  { method: "GET", path: "/api/issues/:id/tree-holds", class: "closed" },
+  { method: "GET", path: "/api/issues/:id/tree-holds/:holdId", class: "closed" },
   { method: "POST", path: "/api/issues/:id/tree-holds", class: "closed" },
   { method: "POST", path: "/api/issues/:id/tree-holds/:holdId/release", class: "closed" },
 
