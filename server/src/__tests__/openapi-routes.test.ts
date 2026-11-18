@@ -1646,7 +1646,27 @@ function pluginGateScanErrors(
   return errors.sort();
 }
 
+// The inventory only reads `router.<method>(`; a path registered on any other
+// receiver would be invisible to the scan above, so it is refused here.
+const OTHER_RECEIVER_ROUTE_PATTERN =
+  /\b([A-Za-z_$][\w$]*)\s*\.\s*(get|head|post|put|patch|delete|all|options|use|ws)\(\s*\[?\s*["'`]\//g;
+
+function otherReceiverRoutes(file: string, source: string) {
+  return [...source.matchAll(OTHER_RECEIVER_ROUTE_PATTERN)]
+    .filter((match) => match[1] !== "router")
+    .map((match) => `${file}: ${match[0]}`);
+}
+
 describe("plugin gate scan (AC-K7)", () => {
+  it("no route file registers a path on a receiver other than `router`", () => {
+    const found = fs.readdirSync(ROUTES_DIR)
+      .filter((file) => file.endsWith(".ts") && !file.endsWith(".test.ts"))
+      .flatMap((file) => otherReceiverRoutes(file, fs.readFileSync(path.join(ROUTES_DIR, file), "utf8")));
+    expect(found).toEqual([]);
+    expect(otherReceiverRoutes("plugins.ts", "const r2 = router; r2.get(\"/plugins/:pluginId/x\", h); req.get(\"x-id\");"))
+      .toEqual(["plugins.ts: r2.get(\"/"]);
+  });
+
   it("every route under /plugins/:pluginId/ calls the gate or is on the not-gated list", () => {
     const { routes, excludedRoutes, mounts, handlerSources } = loadActualRoutes();
     const operations = [...routes, ...excludedRoutes, ...mounts];
