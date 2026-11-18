@@ -89,6 +89,7 @@ import { getTelemetryClient } from "../telemetry.js";
 import { accessService } from "./access.js";
 import {
   authorizationService,
+  canActorReadChat,
   canActorReadIssuePrivacy,
   issuePrivacyMode,
   issueReadSqlCondition,
@@ -866,6 +867,9 @@ export function buildHostServices(
     issue: Parameters<typeof toIssuePrivacyRow>[0] | null | undefined,
   ): Promise<boolean> => {
     if (!issue) return false;
+    // A plugin never reads a chat by id, whatever the privacy mode (PAR-12774
+    // 4.2, AC-P5). Plugin lists and SQL are CP-4 (PAR-12818).
+    if (!(await canActorReadChat(db, pluginIssuePrivacyActor, issue))) return false;
     if (issuePrivacyMode() !== "enforce") return true;
     return canActorReadIssuePrivacy(db, pluginIssuePrivacyActor, toIssuePrivacyRow(issue));
   };

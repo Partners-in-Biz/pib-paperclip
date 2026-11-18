@@ -719,6 +719,37 @@ function chatReadCondition(actor: AuthorizationActor): SQL<boolean> {
   return sql<boolean>`(${notChat} or (${sql.join(chatOf, sql` and `)}))`;
 }
 
+/** The chat columns of a task row: `conversationAgentId` set means a chat. */
+export type ChatRow = { conversationAgentId: string | null; conversationUserId: string | null };
+
+/** `chatReadCondition` for a loaded row (the same rule, in code). */
+function chatReadableBy(actor: AuthorizationActor, row: ChatRow): boolean {
+  if (actor.source === "local_implicit" || !row.conversationAgentId) return true;
+  if (actor.type === "board") return !!actor.userId && row.conversationUserId === actor.userId;
+  if (actor.type !== "agent" || !actor.agentId || row.conversationAgentId !== actor.agentId) return false;
+  return [actor.onBehalfOfUserId, actor.authorizingUserId]
+    .every(id => !id || id === row.conversationUserId);
+}
+
+/**
+ * The chat rule for one task (PAR-12774 4.2). Loads the chat columns when the
+ * caller has not; a task that is not found or not a chat passes (the caller's
+ * own checks answer for it).
+ */
+export async function canActorReadChat(
+  db: Db | DbTransaction,
+  actor: AuthorizationActor,
+  issue: { id: string; companyId: string } & Partial<ChatRow>,
+): Promise<boolean> {
+  if (actor.source === "local_implicit") return true;
+  const row = issue.conversationAgentId !== undefined && issue.conversationUserId !== undefined
+    ? issue as ChatRow
+    : await db.select({ conversationAgentId: issues.conversationAgentId, conversationUserId: issues.conversationUserId })
+      .from(issues).where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)))
+      .then(rows => rows[0] ?? null);
+  return !row || chatReadableBy(actor, row);
+}
+
 /**
  * The list builders' shared flow (PAR-12608 4.3, place 1). The member
  * restriction is AND-ed onto the privacy condition; when no person the actor
@@ -858,7 +889,7 @@ type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type StrictReadable = { strictReadable?: Map<string, boolean> };
 
 type ReadAuthorizationSnapshot = {
-  issues: Map<string, IssueAuthorizationRow & IssuePrivacyRow & { readable: boolean } & StrictReadable>;
+  issues: Map<string, IssueAuthorizationRow & IssuePrivacyRow & ChatRow & { readable: boolean } & StrictReadable>;
   projects: Map<string, ProjectAuthorizationRow & ProjectPrivacyRow & { readable: boolean } & StrictReadable>;
   runs: Map<string, { companyId: string; agentId: string; contextSnapshot: Record<string, unknown> } | null>;
   memo: Map<string, Promise<unknown>>;
@@ -900,7 +931,8 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
       }).from(heartbeatRuns).where(inArray(heartbeatRuns.id, ids));
       for (const row of rows) runs.set(row.id, row);
     }
-    const privacyKey = (actor: AuthorizationActor) => JSON.stringify([actor.type, actor.agentId, actor.userId, actor.onBehalfOfUserId]);
+    const privacyKey = (actor: AuthorizationActor) => JSON.stringify([actor.type, actor.agentId, actor.userId, actor.onBehalfOfUserId,
+      actor.authorizingUserId, actor.source === "local_implicit"]);
     const privacyActors = [...new Map(batchActors.map(actor => [privacyKey(actor), actor])).values()];
     const privacyIndexes = batchActors.map(actor => privacyActors.findIndex(peer => privacyKey(peer) === privacyKey(actor)));
     // PAR-12608 4.3, place 3: for every person restricted in a resource's
@@ -941,7 +973,10 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
         status: issues.status, executionPolicy: issues.executionPolicy, originKind: issues.originKind, originId: issues.originId,
         visibility: issues.visibility, privacyRootIssueId: issues.privacyRootIssueId,
         responsibleUserId: issues.responsibleUserId, createdByUserId: issues.createdByUserId,
-        readable: sql<boolean[]>`ARRAY[${sql.join(privacyActors.map(actor => issuePrivacyCondition(actor)), sql`, `)}]`,
+        conversationAgentId: issues.conversationAgentId, conversationUserId: issues.conversationUserId,
+        // PAR-12774 4.2, place 3: a chat the actor may not read is not readable.
+        readable: sql<boolean[]>`ARRAY[${sql.join(privacyActors.map(actor =>
+          sql`(${issuePrivacyCondition(actor)} and ${chatReadCondition(actor)})`), sql`, `)}]`,
       }).from(issues).where(inArray(issues.id, issueIds.slice(offset, offset + 500)));
       const strictReadable = await strictReadableIds("issue", issueIds.slice(offset, offset + 500));
       for (const row of rows) {
@@ -1966,13 +2001,41 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
     return decision;
   }
 
+  /**
+   * PAR-12774 4.2, place 2: the chat rule in the base decision, beside the
+   * strict check, on the task a read or a task write names (`memberRestrictionTarget`).
+   * Only the local board passes it; the instance admin, owner, admin, grant
+   * holder and project member do not. It denies with `deny_issue_private`, so
+   * the 404 and break-glass stay as they are, and no privacy mode softens it.
+   */
+  async function applyChatRule(
+    input: { actor: AuthorizationActor; action: AuthorizationAction; resource: AuthorizationResource },
+    decision: AuthorizationDecision,
+  ): Promise<AuthorizationDecision> {
+    if (!decision.allowed || decision.reason === "allow_local_board" || input.actor.source === "local_implicit") return decision;
+    const target = memberRestrictionTarget(input);
+    if (target?.resource !== "issue") return decision;
+    const companyId = companyIdForResource(input.resource);
+    const retained = readSnapshot?.issues.get(target.id);
+    const issue = retained?.companyId === companyId ? retained : await batchRead(`chat-row:${companyId}:${target.id}`, () =>
+      db.select({ conversationAgentId: issues.conversationAgentId, conversationUserId: issues.conversationUserId })
+        .from(issues).where(and(eq(issues.id, target.id), eq(issues.companyId, companyId)))
+        .then(rows => rows[0] ?? null));
+    if (!issue || chatReadableBy(input.actor, issue)) return decision;
+    return deny({
+      action: input.action,
+      reason: "deny_issue_private",
+      explanation: "The task is a chat of another person or agent.",
+    });
+  }
+
   async function decideBase(input: {
     actor: AuthorizationActor;
     action: AuthorizationAction;
     resource: AuthorizationResource;
     scope?: Record<string, unknown> | null;
   }): Promise<AuthorizationDecision> {
-    return applyMemberRestriction(input, await decideBaseUnchecked(input));
+    return applyChatRule(input, await applyMemberRestriction(input, await decideBaseUnchecked(input)));
   }
 
   async function decideBaseUnchecked(input: {
