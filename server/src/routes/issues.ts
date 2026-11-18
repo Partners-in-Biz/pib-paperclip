@@ -5375,6 +5375,19 @@ export function issueRoutes(
     }).then((decision) => decision.allowed);
   }
 
+  /**
+   * PAR-12608 4.5: a task is created or moved only into a project the caller
+   * can read; otherwise the same "not found" as an unknown project. Through
+   * `project:read` this carries the restricted member's strict rule.
+   */
+  async function assertTargetProjectReadable(req: Request, res: Response, companyId: string, projectId: string | null | undefined) {
+    if (!projectId) return true;
+    const project = await projectsSvc.getById(projectId);
+    if (project && project.companyId === companyId && await canActorReadProject(req, project)) return true;
+    res.status(404).json({ error: "Project not found" });
+    return false;
+  }
+
   async function visibleIssueProject<T extends { id: string; companyId: string }>(
     req: Request,
     project: T | null,
@@ -13225,7 +13238,8 @@ export function issueRoutes(
       };
     if (createBody.parentId) {
       const parent = await svc.getById(createBody.parentId);
-      if (!parent || parent.companyId !== companyId || !(await assertIssueReadAllowed(req, res, parent))) {
+      // An unreadable parent answers exactly like a missing one (PAR-12608 4.5).
+      if (!parent || parent.companyId !== companyId || !(await decideIssueAccess(req, parent, "issue:read")).allowed) {
         if (!res.headersSent) res.status(404).json({ error: "Parent issue not found" });
         return;
       }
@@ -13576,6 +13590,13 @@ export function issueRoutes(
         "Parent issue not found",
       );
       if (!parent) return;
+      // PAR-12608 4.5: a child only under a task the caller can read, with the
+      // same "not found" as a missing parent. Agents are checked by
+      // `issue:mutate` just below, which carries the read rule.
+      if (req.actor.type !== "agent" && !(await decideIssueAccess(req, parent, "issue:read")).allowed) {
+        res.status(404).json({ error: "Parent issue not found" });
+        return;
+      }
       if (
         !isTaskBridgeKeyActor(req) &&
         !(await assertIssueWriteInfluenceAllowed(req, res, parent))
@@ -13654,6 +13675,7 @@ export function issueRoutes(
           return;
         }
       }
+      if (!(await assertTargetProjectReadable(req, res, parent.companyId, createBody.projectId))) return;
       const childAssignmentScope = {
         projectId: await resolveCreateAssignmentProjectId({ ...createBody, companyId: parent.companyId, parentId: parent.id }),
         parentIssueId: childPlacement.effectiveParentId,
@@ -13887,6 +13909,7 @@ export function issueRoutes(
           },
         );
         if (!sanitizedChild) return;
+        if (!(await assertTargetProjectReadable(req, res, sourceIssue.companyId, sanitizedChild.projectId as string | null | undefined))) return;
         await assertCreateUnblockOwnerAllowed(req, sanitizedChild, sourceIssue.companyId);
         const normalizedAssigneeAgentId =
           await normalizeIssueAssigneeAgentReference(
@@ -14584,7 +14607,8 @@ export function issueRoutes(
       }
       if (req.body.parentId) {
         const parent = await svc.getById(req.body.parentId);
-        if (!parent || parent.companyId !== existing.companyId || !(await assertIssueReadAllowed(req, res, parent))) {
+        // An unreadable parent answers exactly like a missing one (PAR-12608 4.5).
+        if (!parent || parent.companyId !== existing.companyId || !(await decideIssueAccess(req, parent, "issue:read")).allowed) {
           if (!res.headersSent) res.status(404).json({ error: "Parent issue not found" });
           return;
         }

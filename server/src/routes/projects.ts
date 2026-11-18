@@ -40,6 +40,11 @@ import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo }
 import { ensureProjectAccessMember } from "../services/projects.js";
 import { projectReadSqlCondition } from "../services/authorization.js";
 import {
+  memberRestrictionForActor,
+  memberRestrictionOrUnavailable,
+  memberRestrictionResolver,
+} from "../services/member-restriction/index.js";
+import {
   buildWorkspaceRuntimeDesiredStatePatch,
   listConfiguredRuntimeServiceEntries,
   runWorkspaceJobForControl,
@@ -234,6 +239,20 @@ export function projectRoutes(db: Db) {
     }
   }
 
+  /**
+   * PAR-12608 4.5, "taking it away": on an open project, somebody else may
+   * remove the privacy owner's row when that owner is restricted here (report
+   * or enforce). Private and personal projects, and unrestricted owners, keep
+   * today's refusal. A failed read is 503.
+   */
+  async function restrictedCreatorRowRemovable(req: Request, project: {
+    companyId: string; visibility?: string | null; privacyOwnerUserId?: string | null; personalOwnerUserId?: string | null;
+  }, subjectId: string) {
+    if (project.visibility !== "open" || project.personalOwnerUserId || project.privacyOwnerUserId !== subjectId) return false;
+    if (req.actor.userId === subjectId) return false;
+    return (await memberRestrictionOrUnavailable(memberRestrictionResolver(db), subjectId, project.companyId)).restricted;
+  }
+
   async function enrichProjectAccessMembers(rows: Array<typeof projectAccessMembers.$inferSelect>) {
     const agentIds = rows.filter((row) => row.subjectType === "agent").map((row) => row.subjectId);
     const userIds = rows.filter((row) => row.subjectType === "user").map((row) => row.subjectId);
@@ -390,6 +409,12 @@ export function projectRoutes(db: Db) {
     const receiptOnly = req.get("X-Paperclip-Receipt-Only") === "true";
     if (receiptOnly && !idempotencyKey) throw unprocessable("Project receipt recovery requires an idempotency key");
     projectData.privacyOwnerUserId = req.actor.type === "board" ? req.actor.userId ?? null : req.actor.type === "agent" ? req.actor.onBehalfOfUserId ?? null : null;
+    // PAR-12608 4.5: a project a restricted member creates (or an agent run
+    // working for him) is his through `project_access_members`, open or
+    // private. Read before anything is written: a failed read is 503. The
+    // local board is never restricted.
+    const creatorRestricted = req.actor.source !== "local_implicit"
+      && (await memberRestrictionForActor(memberRestrictionResolver(db), req.actor, companyId))?.restricted === true;
     const runContext = req.actor.type === "agent" && req.actor.source === "agent_jwt" && req.actor.runId
       ? await projectToolContext(db, req.actor, true) : null;
     await assertProjectEnvironmentSelection(
@@ -461,7 +486,7 @@ export function projectRoutes(db: Db) {
       if (runContext && !museActor) await projectToolContext(tx as unknown as Db, req.actor, true);
       const service = projectService(tx as unknown as Db);
       const project = repositories ? await service.createWithRepositories(companyId, projectData, repositories) : await service.create(companyId, projectData);
-      if (project.visibility === "private") await addActorAsPrivateProjectPrincipal(req, project, tx as unknown as Db);
+      if (project.visibility === "private" || creatorRestricted) await addActorAsPrivateProjectPrincipal(req, project, tx as unknown as Db);
       const attachedUrls = new Set((repositories ?? []).map(repo => repo.url.toLowerCase()));
       const registeredUrls: typeof urlRepositories = [];
       for (const repo of urlRepositories) {
@@ -633,7 +658,8 @@ export function projectRoutes(db: Db) {
       res.status(404).json({ error: "Project access member not found" });
       return;
     }
-    if (member.subjectType === "user" && [project.personalOwnerUserId, project.privacyOwnerUserId].includes(member.subjectId)) {
+    if (member.subjectType === "user" && [project.personalOwnerUserId, project.privacyOwnerUserId].includes(member.subjectId)
+      && !(await restrictedCreatorRowRemovable(req, project, member.subjectId))) {
       res.status(422).json({ error: "The project privacy owner cannot be removed" });
       return;
     }

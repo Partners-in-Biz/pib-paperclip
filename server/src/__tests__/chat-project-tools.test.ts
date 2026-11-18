@@ -247,7 +247,8 @@ import { recoveryPostgresSupport as support } from "./helpers/recovery-postgres.
         { projectId: f.projectId, assigneeAgentId: null, assigneeUserId: "board-user" },
       ]) {
         const result = await create(path, fields);
-        const hiddenProject = fields.projectId !== f.projectId && path.startsWith("/api/companies/");
+        // Both create routes answer an unreadable project with "not found" (PAR-12608 4.5).
+        const hiddenProject = fields.projectId !== f.projectId;
         expect(result.status, JSON.stringify(result.body)).toBe(hiddenProject ? 404 : 403);
         expect(result.body.error).toMatch(hiddenProject ? /^Project not found$/ : /outside.*boundary|cannot assign work to board users|different company/i);
       }
@@ -291,9 +292,8 @@ import { recoveryPostgresSupport as support } from "./helpers/recovery-postgres.
           projectId: outside.id, assigneeAgentId: f.agentId, status: "backlog" }),
       });
       const denied = await response.json();
-      const hiddenProject = path.startsWith("/api/companies/");
-      expect(response.status, JSON.stringify(denied)).toBe(hiddenProject ? 404 : 403);
-      expect(denied.error).toMatch(hiddenProject ? /^Project not found$/ : /outside.*boundary/i);
+      expect(response.status, JSON.stringify(denied)).toBe(404);
+      expect(denied.error).toMatch(/^Project not found$/);
     }
     await expect(call(f, "create_task", { title: "Native root cannot escape", projectId: outside.id,
       idempotencyKey: "root-outside", status: "backlog" })).rejects.toThrow(/outside.*boundary/);
