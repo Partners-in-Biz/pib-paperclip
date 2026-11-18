@@ -24,6 +24,19 @@ vi.hoisted(() => {
   process.env.PAPERCLIP_IN_WORKTREE = "false";
 });
 
+// The company-mode read of `markForNewInvite` (an unrestricted inviter) is made to fail through this seam.
+const modeRead = vi.hoisted(() => ({ fail: false }));
+vi.mock("../services/member-restriction/resolver.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/member-restriction/resolver.js")>();
+  return {
+    ...actual,
+    memberRestrictionModeFor: async (...args: Parameters<typeof actual.memberRestrictionModeFor>) => {
+      if (modeRead.fail) throw new actual.MemberRestrictionReadError("database down");
+      return actual.memberRestrictionModeFor(...args);
+    },
+  };
+});
+
 type Db = ReturnType<typeof createDb>;
 type Role = "owner" | "admin" | "operator" | "viewer";
 type Mode = "off" | "report" | "enforce";
@@ -46,10 +59,11 @@ describe("member-restriction invites database support", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-member-restriction-invites-");
     db = createDb(tempDb.connectionString);
-    const [{ accessRoutes }, { errorHandler }, { memberRestrictionResolver }] = await Promise.all([
+    // The mocked resolver module loads first: importing it alongside the routes lets the routes bind the real one.
+    const { memberRestrictionResolver } = await import("../services/member-restriction/resolver.js");
+    const [{ accessRoutes }, { errorHandler }] = await Promise.all([
       import("../routes/access.js"),
       import("../middleware/error-handler.js"),
-      import("../services/member-restriction/resolver.js"),
     ]);
     const real = memberRestrictionResolver(db);
     app = express();
@@ -68,6 +82,7 @@ describe("member-restriction invites database support", () => {
   afterEach(async () => {
     vi.unstubAllEnvs();
     failingResolver = null;
+    modeRead.fail = false;
     await db.delete(activityLog);
     await db.delete(joinRequests);
     await db.delete(invites);
@@ -235,6 +250,18 @@ describe("member-restriction invites database support", () => {
     failingResolver = async () => { throw new Error("database down"); };
     const res = await createInvite(company.id, { humanRole: "viewer", restriction: { restricted: false } });
     expect(res.status).toBe(503);
+    expect(res.body).toMatchObject({ code: "MEMBER_RESTRICTION_UNAVAILABLE" });
+    expect(res.body).not.toHaveProperty("token");
+    expect(await db.select().from(invites)).toHaveLength(0);
+  });
+
+  it("AC-X1 (invite path, mode read): an unrestricted owner gets 503 and no invite when the company mode cannot be read", async () => {
+    const { company, member } = await setup("enforce");
+    const owner = await member("owner");
+    as(owner.principalId, [company.id]);
+    modeRead.fail = true;
+    const res = await createInvite(company.id, {});
+    expect(res.status, JSON.stringify(res.body)).toBe(503);
     expect(res.body).toMatchObject({ code: "MEMBER_RESTRICTION_UNAVAILABLE" });
     expect(res.body).not.toHaveProperty("token");
     expect(await db.select().from(invites)).toHaveLength(0);

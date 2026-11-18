@@ -87,7 +87,7 @@ import { pluginActingPersonBoundByH } from "./member-restriction/acting-person.j
 import { recordMemberRestrictionDenial } from "./member-restriction/admin.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { accessService } from "./access.js";
-import { withoutInviteMemberRestriction } from "./member-restriction/invite.js";
+import { markForNewInvite, withoutInviteMemberRestriction } from "./member-restriction/invite.js";
 import {
   authorizationService,
   canActorReadChat,
@@ -3315,6 +3315,17 @@ export function buildHostServices(
           : null;
         const allowedJoinTypes = params.allowedJoinTypes ?? "both";
         const humanRole = allowedJoinTypes === "agent" ? null : params.humanRole ?? "operator";
+        // A plugin cannot choose the restriction mark (the SDK has no such field), so in a
+        // company whose mode is not `off` it may create agent invites only (PAR-12608 4.2a, AC-I7).
+        await markForNewInvite(db, {
+          companyId,
+          allowedJoinTypes,
+          humanRole,
+          restriction: undefined,
+          assertCanSetLists: async () => {
+            throw new Error("A plugin cannot set restriction lists");
+          },
+        });
         const insertValues = {
           companyId,
           inviteType: "company_join" as const,
