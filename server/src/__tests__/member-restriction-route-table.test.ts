@@ -78,7 +78,8 @@ describe("member restriction route table matcher", () => {
     expect(await classify("GET", "/api/issues/abc/extra")).toEqual({ kind: "unlisted" });
     expect(await classify("GET", "/api/issuesx/abc")).toEqual({ kind: "unlisted" });
     expect(await classify("OPTIONS", "/api/issues/abc")).toEqual({ kind: "unlisted" });
-    expect(await createRouteClassifier()("GET", "/api/issues/abc")).toEqual({ kind: "unlisted" });
+    expect(await createRouteClassifier([])("GET", "/api/issues/abc")).toEqual({ kind: "unlisted" });
+    expect(await createRouteClassifier()("GET", "/api/no-such-route/abc")).toEqual({ kind: "unlisted" });
   });
 
   it("one request, several rows: closed wins, different classes refuse, one class agrees", async () => {
