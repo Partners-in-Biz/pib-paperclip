@@ -560,7 +560,9 @@ export function companySearchService(db: Db) {
       query: CompanySearchQuery,
       options?: { issueReadCondition?: SQL<boolean>; projectReadCondition?: SQL<boolean>; onNextMembershipChange?: (at: Date | null) => void;
         /** Restrict result kinds before pagination; retain the requested text-match scope. */
-        issueResultsOnly?: boolean },
+        issueResultsOnly?: boolean;
+        /** A restricted member's search (PAR-12608 4.6): tasks, projects, comments and documents, no agents. */
+        excludeAgents?: boolean },
     ): Promise<CompanySearchResponse> => {
       const taskSearch = parseTaskSearch(query.q);
       const normalizedQuery = taskSearch.normalizedQuery;
@@ -914,7 +916,7 @@ export function companySearchService(db: Db) {
       const projectReadCondition = options?.projectReadCondition ?? sql<boolean>`true`;
 
       async function fetchAgentRows() {
-        if (options?.issueResultsOnly || !hasSearchText || !scopeIncludesAgents(scope) || hasIssueOnlyFilters) return [];
+        if (options?.issueResultsOnly || options?.excludeAgents || !hasSearchText || !scopeIncludesAgents(scope) || hasIssueOnlyFilters) return [];
         return db
           .select({
             id: agents.id,
@@ -1016,7 +1018,7 @@ export function companySearchService(db: Db) {
       }
 
       async function countAgents(filters: CompanySearchQuery = query) {
-        if (options?.issueResultsOnly || !hasSearchText || issueOnlyFiltersActive(filters)) return 0;
+        if (options?.issueResultsOnly || options?.excludeAgents || !hasSearchText || issueOnlyFiltersActive(filters)) return 0;
         const rows = await db
           .select({ count: sql<number>`count(*)::int` })
           .from(agents)

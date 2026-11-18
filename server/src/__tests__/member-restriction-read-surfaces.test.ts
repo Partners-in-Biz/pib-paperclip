@@ -195,6 +195,14 @@ describe("read surfaces database support", () => {
       expect(await search()).toContain(id.mine);
     });
 
+    it("R's search passes the action list's company_scope:read refusal and returns no agents (PAR-12923)", async () => {
+      const body = await get(`/api/companies/${companyId}/search?q=Agent&scope=agents`);
+      expect(body.results).toEqual([]);
+      vi.stubEnv("PAPERCLIP_MEMBER_RESTRICTION", "off");
+      const unrestricted = await get(`/api/companies/${companyId}/search?q=Agent&scope=agents`);
+      expect(unrestricted.results.length).toBeGreaterThan(0);
+    });
+
     it("AC-F8: with the kill switch `off`, R finds both as in mode off", async () => {
       vi.stubEnv("PAPERCLIP_MEMBER_RESTRICTION", "off");
       const body = await search();
