@@ -48,6 +48,7 @@ import { createMcpApiDispatch, createPublicMcpExecutor } from "./services/public
 import { createPublicMcpEvents, type PublicMcpEvents } from "./services/public-mcp/events.js";
 import { publicMcpIngressRoutes, publicMcpManagementRoutes } from "./routes/public-mcp.js";
 import { agentAvatarRoutes } from "./routes/agent-avatars.js";
+import { memberRestrictionRouteGuard } from "./services/member-restriction/route-middleware.js";
 import { decisionModelRoutes } from "./routes/decision-models.js";
 import { agentObservabilityRoutes } from "./routes/agent-observability.js";
 import { aiConnectionRoutes } from "./routes/ai-connections.js";
@@ -695,6 +696,8 @@ export async function createApp(
 
   // Mount API routes
   const api = Router();
+  // First line of the api router (PAR-12608 4.6, C10): the member-restriction route table.
+  api.use(memberRestrictionRouteGuard(db));
   const agentAvatars = agentAvatarRoutes();
   api.use(agentAvatars.router);
   api.use(boardMutationGuard());
