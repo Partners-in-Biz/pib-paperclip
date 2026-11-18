@@ -308,6 +308,7 @@ import {
 } from "../services/heartbeat-run-privacy.js";
 import { refusedOnlyByMemberRestriction } from "../services/member-restriction/action-list.js";
 import {
+  hideUnreadableIssueIds,
   restrictedAgentIdsForActor,
   restrictedAgentView,
   runWorksForRestrictedCaller,
@@ -4196,6 +4197,13 @@ export function agentRoutes(
       res.status(403).json({ error: trustPreset.detail });
       return;
     }
+    // PAR-12608 4.6, AC-A2: a run working for a restricted person reads its own
+    // identity only, never its configuration.
+    if (await restrictedAgentIdsForActor(db, req.actor, agent.companyId)) {
+      const { id, companyId, name, role, title, status } = agent;
+      res.json({ id, companyId, name, role, title, status });
+      return;
+    }
     if (trustPreset.kind === "low_trust_review") {
       res.json(buildLowTrustSelfView(agent));
       return;
@@ -4232,6 +4240,9 @@ export function agentRoutes(
       issuesSvc.listDependencyReadiness(req.actor.companyId, issueIds),
       recoveryActionsSvc.listActiveForIssues(req.actor.companyId, issueIds),
     ]);
+    // PAR-12608 4.3: a blocker the caller cannot read is counted, never named.
+    const readableBlockers = new Set(await hideUnreadableIssueIds(db, req.actor, req.actor.companyId,
+      [...new Set([...dependencyReadiness.values()].flatMap((entry) => entry.unresolvedBlockerIssueIds))]));
 
     res.json(
       eligibleRows.map((issue) => ({
@@ -4248,7 +4259,8 @@ export function agentRoutes(
         activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
         dependencyReady: dependencyReadiness.get(issue.id)?.isDependencyReady ?? true,
         unresolvedBlockerCount: dependencyReadiness.get(issue.id)?.unresolvedBlockerCount ?? 0,
-        unresolvedBlockerIssueIds: dependencyReadiness.get(issue.id)?.unresolvedBlockerIssueIds ?? [],
+        unresolvedBlockerIssueIds: (dependencyReadiness.get(issue.id)?.unresolvedBlockerIssueIds ?? [])
+          .filter((id) => readableBlockers.has(id)),
       })),
     );
   });
@@ -4260,6 +4272,12 @@ export function agentRoutes(
     }
 
     const query = agentMineInboxQuerySchema.parse(req.query);
+    // PAR-12608 4.6: a run working for a restricted person reads his inbox only.
+    if (query.userId !== req.actor.onBehalfOfUserId
+      && await restrictedAgentIdsForActor(db, req.actor, req.actor.companyId)) {
+      res.json([]);
+      return;
+    }
     const issuesSvc = issueService(db);
     const rows = await issuesSvc.list(req.actor.companyId, {
       touchedByUserId: query.userId,

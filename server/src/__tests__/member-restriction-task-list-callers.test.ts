@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, companies, companyMemberships, createDb, issues, type Db } from "@paperclipai/db";
+import { agents, companies, companyMemberships, createDb, issueRelations, issues, type Db } from "@paperclipai/db";
 import { errorHandler } from "../middleware/error-handler.js";
 import { agentRoutes } from "../routes/agents.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -133,6 +133,57 @@ describe("task list callers database support", () => {
     it("AC-F8: with the kill switch `off` a run for R lists as in mode off", async () => {
       vi.stubEnv("PAPERCLIP_MEMBER_RESTRICTION", "off");
       expect(await listed(path(O), runFor(R))).toEqual(tasksOfO);
+    });
+  });
+
+  /** PAR-13135, in a company of its own so the lists above stay exact. */
+  describe("a run's inbox names only what its person may read, and only his own inbox", () => {
+    let other = { companyId: "", agentId: "", blocker: "", mine: "", touchedByO: "" };
+    const runIn = (personId: string): Actor => ({ ...runFor(personId), companyId: other.companyId, agentId: other.agentId });
+    const get = async (path: string, actor: Actor) => {
+      const app = express();
+      app.use((req, _res, next) => { req.actor = actor; next(); });
+      app.use("/api", agentRoutes(db));
+      app.use(errorHandler);
+      const res = await request(app).get(path);
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      return res.body as Array<{ id: string; unresolvedBlockerIssueIds: string[]; unresolvedBlockerCount: number; dependencyReady: boolean }>;
+    };
+    const mine = (userId: string) => `/api/agents/me/inbox/mine?userId=${encodeURIComponent(userId)}`;
+    const ids = (rows: Array<{ id: string }>) => rows.map((row) => row.id).sort();
+
+    beforeAll(async () => {
+      const [company] = await db.insert(companies).values({
+        name: "Inbox co", issuePrefix: `M${randomUUID().slice(0, 6).toUpperCase()}`, memberRestrictionMode: "enforce",
+      }).returning();
+      await db.insert(companyMemberships).values([
+        { companyId: company!.id, principalType: "user", principalId: O, status: "active", membershipRole: "owner" },
+        { companyId: company!.id, principalType: "user", principalId: R, status: "active", membershipRole: "operator", restricted: true },
+      ]);
+      const [agent] = await db.insert(agents).values({ companyId: company!.id, name: "Inbox agent", adapterType: "process", status: "active" }).returning();
+      const [blocker, own, touched] = await db.insert(issues).values([
+        { companyId: company!.id, title: "O's blocker", status: "todo", createdByUserId: O },
+        { companyId: company!.id, title: "R's blocked task", status: "blocked", createdByUserId: R, assigneeAgentId: agent!.id },
+        { companyId: company!.id, title: "O's task for R", status: "todo", createdByUserId: O, responsibleUserId: R },
+      ]).returning();
+      await db.insert(issueRelations).values({ companyId: company!.id, issueId: blocker!.id, relatedIssueId: own!.id, type: "blocks" });
+      other = { companyId: company!.id, agentId: agent!.id, blocker: blocker!.id, mine: own!.id, touchedByO: touched!.id };
+    });
+
+    it("inbox-lite: a run for R counts the blocker he cannot read but does not name it; a run for O, and the kill switch `off`, name it", async () => {
+      const blocked = { id: other.mine, unresolvedBlockerCount: 1, dependencyReady: false };
+      expect(await get("/api/agents/me/inbox-lite", runIn(R))).toEqual([expect.objectContaining({ ...blocked, unresolvedBlockerIssueIds: [] })]);
+      const named = [expect.objectContaining({ ...blocked, unresolvedBlockerIssueIds: [other.blocker] })];
+      expect(await get("/api/agents/me/inbox-lite", runIn(O))).toEqual(named);
+      vi.stubEnv("PAPERCLIP_MEMBER_RESTRICTION", "off");
+      expect(await get("/api/agents/me/inbox-lite", runIn(R))).toEqual(named);
+    });
+
+    it("inbox/mine: a run for R gets [] for O's inbox (O touched a task R can read) and his own tasks for his; kill switch `off`: today's answer", async () => {
+      expect(await get(mine(O), runIn(R))).toEqual([]);
+      expect(ids(await get(mine(R), runIn(R)))).toEqual([other.mine]);
+      vi.stubEnv("PAPERCLIP_MEMBER_RESTRICTION", "off");
+      expect(ids(await get(mine(O), runIn(R)))).toEqual([other.blocker, other.touchedByO].sort());
     });
   });
 });

@@ -14,6 +14,7 @@ import { resolveTaskWatchdogMutationScope } from "./task-watchdog-scope.js";
 import { readNativeReviewAssignmentContext } from "./native-runtime/native-review-participant.js";
 import { nativeRunKeyScope } from "./native-runtime/native-skill-test-scope.js";
 import { crossIssueInfluenceLimitError, observeCrossIssueInfluence } from "./cross-issue-influence-limit.js";
+import { restrictedAgentIdsForActor } from "./member-restriction/agent-read.js";
 
 type Actor = { companyId: string; agentId: string; runId: string; agentApiKeyId?: string | null;
   keyScope?: AgentApiKeyScope | null; onBehalfOfUserId?: string | null;
@@ -99,6 +100,11 @@ export async function sendAgentChatMessage(
       eq(companyMemberships.principalId, userId), eq(companyMemberships.status, "active"),
     )).for("share");
     if (!membership) throw forbidden("The responsible human is no longer an active company member");
+    // PAR-12608 4.6: a chat opens only with an agent on the person's list (native tool path too).
+    const listed = await restrictedAgentIdsForActor(tx, { type: "agent", agentId: actor.agentId, companyId: actor.companyId,
+      onBehalfOfUserId: actor.onBehalfOfUserId ?? userId, authorizingUserId: actor.authorizingUserId, source: actor.source },
+    actor.companyId);
+    if (listed && !listed.has(actor.agentId)) throw forbidden("Agent chat is limited to the agents on the person's list");
     const authActor: AuthorizationActor = { type: "agent", ...actor, keyId: actor.agentApiKeyId, keyScope: credentialScope.data,
       source: actor.source ?? "agent_jwt", onBehalfOfUserId: actor.onBehalfOfUserId ?? userId };
     const authorize = async (issueId: string, action: "issue:read" | "issue:comment") => {
