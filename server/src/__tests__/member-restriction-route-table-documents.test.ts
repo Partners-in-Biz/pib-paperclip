@@ -2,18 +2,20 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { and, eq, inArray } from "drizzle-orm";
 import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { authUsers, companies, companyMemberships, createDb, issues } from "@paperclipai/db";
+import {
+  activityLog, agents, authUsers, companies, companyMemberships, createDb, documents as documentRows, heartbeatRuns,
+  issueAttachments, issueDocuments, issues,
+} from "@paperclipai/db";
 import { errorHandler } from "../middleware/error-handler.js";
 import { issueRoutes } from "../routes/issues.js";
 import { documentAnnotationService, documentService, issueService, workProductService } from "../services/index.js";
 import { loadActorMemberships } from "../services/member-restriction/actor-memberships.js";
-import {
-  MEMBER_RESTRICTION_ROUTE_TABLE,
-  createRouteClassifier,
-} from "../services/member-restriction/route-table.js";
+import { memberRestrictionRouteGuard } from "../services/member-restriction/route-middleware.js";
+import { MEMBER_RESTRICTION_ROUTE_TABLE } from "../services/member-restriction/route-table.js";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
 import { createStorageService } from "../storage/service.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -24,16 +26,35 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
  * row, R (restricted in Y) asks for O's object through that route and gets
  * "not found"; a control call with the kill switch on reaches the object, so
  * the answer is the restriction. Scope callers (section 8): R as owner of X,
- * and an instance admin who is not a member of Y, get today's answer. AC-G1
- * for the closed rows is the classifier's answer; the 403 body is the
- * middleware's (AC-G2). This area has no `run` and no `by-company` rows.
+ * and an instance admin who is not a member of Y, get today's answer. This
+ * area has no `run`, no `by-company` and no `closed` rows.
+ * PAR-12943 (C4j-2): document lock, unlock, delete and attachment upload are
+ * open now that their handlers read the task first (PAR-12942). The app runs
+ * the route-table middleware above the routes, as `app.ts` does.
  */
+
+/** `on`: every restriction read fails (AC-X1). */
+const resolverFails = vi.hoisted(() => ({ on: false }));
+vi.mock("../services/member-restriction/resolver.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/member-restriction/resolver.js")>();
+  const fail = () => Promise.reject(new actual.MemberRestrictionReadError("fixture: restriction unreadable"));
+  return {
+    ...actual,
+    memberRestrictionFor: (...args: Parameters<typeof actual.memberRestrictionFor>) =>
+      resolverFails.on ? fail() : actual.memberRestrictionFor(...args),
+    memberRestrictionEnforcedCompanyIds: (...args: Parameters<typeof actual.memberRestrictionEnforcedCompanyIds>) =>
+      resolverFails.on ? fail() : actual.memberRestrictionEnforcedCompanyIds(...args),
+    memberRestrictionResolver: (db: Parameters<typeof actual.memberRestrictionResolver>[0]) =>
+      (personId: string, companyId: string) => resolverFails.on ? fail() : actual.memberRestrictionFor(db, personId, companyId),
+  };
+});
 
 const support = await getEmbeddedPostgresTestSupport();
 const THIS_FILE = "server/src/__tests__/member-restriction-route-table-documents.test.ts";
 
 afterEach(() => {
   vi.unstubAllEnvs();
+  resolverFails.on = false;
 });
 
 describe("document, work-product and attachment route rows database support", () => {
@@ -45,7 +66,7 @@ describe("document, work-product and attachment route rows database support", ()
 type Actor = Express.Request["actor"];
 type Res = request.Response;
 type Ids = {
-  issueId: string; key: string; firstRevisionId: string; latestRevisionId: string;
+  companyId: string; issueId: string; key: string; firstRevisionId: string; latestRevisionId: string;
   threadId: string; workProductId: string; attachmentId: string;
 };
 
@@ -58,6 +79,16 @@ type Case = {
 const KEY = "plan";
 const BODY = "Owner wrote this document.";
 const doc = ({ issueId }: Ids) => `/api/issues/${issueId}/documents/${KEY}`;
+/** The four rows C4j-2 opens (PAR-12943). `pathCompanyId` is the upload's path company; it defaults to the task's. */
+const WRITES = {
+  lock: (c: request.SuperTest<request.Test>, ids: Ids) => c.post(`${doc(ids)}/lock`),
+  unlock: (c: request.SuperTest<request.Test>, ids: Ids) => c.post(`${doc(ids)}/unlock`),
+  delete: (c: request.SuperTest<request.Test>, ids: Ids) => c.delete(doc(ids)),
+  upload: (c: request.SuperTest<request.Test>, ids: Ids, pathCompanyId = ids.companyId) =>
+    c.post(`/api/companies/${pathCompanyId}/issues/${ids.issueId}/attachments`).attach("file", Buffer.from("R's file"), "r.txt"),
+};
+type Write = keyof typeof WRITES;
+const WRITE_NAMES = Object.keys(WRITES) as Write[];
 
 const CASES: Case[] = [
   { row: "GET /api/issues/:id/documents", send: (c, { issueId }) => c.get(`/api/issues/${issueId}/documents`) },
@@ -97,14 +128,10 @@ const CASES: Case[] = [
   { row: "GET /api/attachments/:attachmentId/content",
     send: (c, { attachmentId }) => c.get(`/api/attachments/${attachmentId}/content`) },
   { row: "DELETE /api/attachments/:attachmentId", send: (c, { attachmentId }) => c.delete(`/api/attachments/${attachmentId}`) },
-];
-
-/** The closed rows this ticket wrote (AC-G1). */
-const CLOSED_ROWS = [
-  "POST /api/issues/:id/documents/:key/lock",
-  "POST /api/issues/:id/documents/:key/unlock",
-  "DELETE /api/issues/:id/documents/:key",
-  "POST /api/companies/:companyId/issues/:issueId/attachments",
+  { row: "POST /api/issues/:id/documents/:key/lock", send: WRITES.lock },
+  { row: "POST /api/issues/:id/documents/:key/unlock", send: WRITES.unlock },
+  { row: "DELETE /api/issues/:id/documents/:key", send: WRITES.delete },
+  { row: "POST /api/companies/:companyId/issues/:issueId/attachments", send: (c, ids) => WRITES.upload(c, ids) },
 ];
 
 it("every open row of this file has exactly one case, and each case is an open row", () => {
@@ -114,17 +141,6 @@ it("every open row of this file has exactly one case, and each case is an open r
   expect(CASES.map((entry) => entry.row).sort()).toEqual([...rows].sort());
   for (const entry of CASES) {
     expect(MEMBER_RESTRICTION_ROUTE_TABLE.find((item) => `${item.method} ${item.path}` === entry.row)!.class, entry.row).toBe("open");
-  }
-});
-
-it("AC-G1: the closed document and attachment rows classify as closed for their real paths", async () => {
-  const classify = createRouteClassifier();
-  for (const row of CLOSED_ROWS) {
-    const entry = MEMBER_RESTRICTION_ROUTE_TABLE.find((item) => `${item.method} ${item.path}` === row);
-    expect(entry?.class, row).toBe("closed");
-    const sample = entry!.path.replace(/:[A-Za-z]+/g, () => randomUUID());
-    const result = await classify(entry!.method, sample);
-    expect(result.kind === "matched" ? result.entry.class : result.kind, `${entry!.method} ${sample}`).toBe("closed");
   }
 });
 
@@ -141,6 +157,9 @@ it("AC-G1: the closed document and attachment rows classify as closed for their 
   const ADMIN = `instance-admin-${randomUUID()}`;
   let Y = "";
   let X = "";
+  /** D: R is no member. Z: R is restricted, the company's mode is `off`. */
+  let D = "";
+  let Z = "";
 
   const as = (who: Actor) => {
     actor = who;
@@ -185,7 +204,7 @@ it("AC-G1: the closed document and attachment rows classify as closed for their 
       },
     });
     return {
-      issueId, key: KEY, firstRevisionId: first.document.latestRevisionId!, latestRevisionId: latest.document.latestRevisionId!,
+      companyId, issueId, key: KEY, firstRevisionId: first.document.latestRevisionId!, latestRevisionId: latest.document.latestRevisionId!,
       threadId: thread.id, workProductId: workProduct!.id, attachmentId: attachment.id,
     };
   };
@@ -207,15 +226,20 @@ it("AC-G1: the closed document and attachment rows classify as closed for their 
     app = express();
     app.use(express.json());
     app.use((req, _res, next) => { req.actor = actor; next(); });
+    app.use("/api", memberRestrictionRouteGuard(db));
     app.use("/api", issueRoutes(db, storage));
     app.use(errorHandler);
 
-    const [y, x] = await db.insert(companies).values([
+    const [y, x, d, z] = await db.insert(companies).values([
       { name: "Y", issuePrefix: `Y${randomUUID().slice(0, 6).toUpperCase()}`, memberRestrictionMode: "enforce" },
       { name: "X", issuePrefix: `X${randomUUID().slice(0, 6).toUpperCase()}`, memberRestrictionMode: "enforce" },
+      { name: "D", issuePrefix: `D${randomUUID().slice(0, 6).toUpperCase()}`, memberRestrictionMode: "enforce" },
+      { name: "Z", issuePrefix: `Z${randomUUID().slice(0, 6).toUpperCase()}`, memberRestrictionMode: "off" },
     ]).returning();
     Y = y!.id;
     X = x!.id;
+    D = d!.id;
+    Z = z!.id;
     const now = new Date();
     await db.insert(authUsers).values([O, R, ADMIN].map((id) => ({
       id, name: id, email: `${id}@example.test`, emailVerified: true, createdAt: now, updatedAt: now,
@@ -224,6 +248,9 @@ it("AC-G1: the closed document and attachment rows classify as closed for their 
       { companyId: Y, principalType: "user", principalId: O, status: "active", membershipRole: "owner" },
       { companyId: Y, principalType: "user", principalId: R, status: "active", membershipRole: "operator", restricted: true },
       { companyId: X, principalType: "user", principalId: R, status: "active", membershipRole: "owner" },
+      { companyId: D, principalType: "user", principalId: O, status: "active", membershipRole: "owner" },
+      { companyId: Z, principalType: "user", principalId: O, status: "active", membershipRole: "owner" },
+      { companyId: Z, principalType: "user", principalId: R, status: "active", membershipRole: "operator", restricted: true },
     ]);
   }, 120_000);
 
@@ -259,6 +286,130 @@ it("AC-G1: the closed document and attachment rows classify as closed for their 
       const admin = () => callAs(() => boardFor(ADMIN, true), ids(Y, O));
       const adminNow = await admin();
       expect(adminNow.status, JSON.stringify(adminNow.body)).toBe((await today(admin)).status);
+    });
+  });
+
+  describe("C4j-2 (PAR-12943): lock, unlock, delete and upload (AC-G3, AC-G12, AC-F8, AC-X1)", () => {
+    const NOT_FOUND = { error: "Issue not found" };
+    /** The document, its lock and its latest revision. */
+    const docState = async ({ issueId }: Ids) => (await db
+      .select({ id: documentRows.id, lockedAt: documentRows.lockedAt, lockedByUserId: documentRows.lockedByUserId,
+        latestRevisionId: documentRows.latestRevisionId })
+      .from(issueDocuments).innerJoin(documentRows, eq(documentRows.id, issueDocuments.documentId))
+      .where(and(eq(issueDocuments.issueId, issueId), eq(issueDocuments.key, KEY))))[0] ?? null;
+    const attachmentsOf = async ({ issueId }: Ids) =>
+      (await db.select({ id: issueAttachments.id }).from(issueAttachments).where(eq(issueAttachments.issueId, issueId))).length;
+    const documentActivity = async ({ issueId }: Ids) => (await db.select({ id: activityLog.id }).from(activityLog)
+      .where(and(eq(activityLog.entityId, issueId), inArray(activityLog.action,
+        ["issue.document_locked", "issue.document_unlocked", "issue.document_deleted"])))).length;
+    /** What a refused write must leave: the document, its lock, its activity and the attachment rows as they were. */
+    const snapshot = async (ids: Ids) =>
+      ({ doc: await docState(ids), attachments: await attachmentsOf(ids), activity: await documentActivity(ids) });
+    const expectNotFound = (res: Res) => {
+      expect(res.status, JSON.stringify(res.body)).toBe(404);
+      expect(res.body).toEqual(NOT_FOUND);
+    };
+    /** Today's answer of each write for a caller who can read the task and may write. */
+    const SUCCESS: Record<Write, number> = { lock: 200, unlock: 200, delete: 200, upload: 201 };
+
+    /** A run on R's task working for R, as `auth.ts` builds its actor. */
+    const runForR = async (issueId: string): Promise<Actor> => {
+      const [agent] = await db.insert(agents).values({ companyId: Y, name: `Agent ${randomUUID().slice(0, 6)}`,
+        role: "engineer", status: "idle", adapterType: "process",
+        runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: false } } }).returning();
+      await db.insert(companyMemberships).values({ companyId: Y, principalType: "agent", principalId: agent!.id,
+        status: "active", membershipRole: "member" });
+      const [run] = await db.insert(heartbeatRuns).values({ companyId: Y, agentId: agent!.id, issueId, scopeKind: "issue",
+        status: "running", responsibleUserId: R }).returning();
+      return { type: "agent", agentId: agent!.id, companyId: Y, runId: run!.id, source: "agent_jwt", onBehalfOfUserId: R,
+        onBehalfOfMemberships: await loadActorMemberships(db, { userId: R, companyId: Y, activeOnly: true }) } as Actor;
+    };
+
+    it("AC-G3: R on his own task: lock 200, unlock 200, delete 200, upload 201", async () => {
+      const mine = await ids(Y, R);
+      const lock = await WRITES.lock(as(await boardFor(R)), mine);
+      expect(lock.status, JSON.stringify(lock.body)).toBe(200);
+      expect((await docState(mine))!.lockedByUserId).toBe(R);
+      const unlock = await WRITES.unlock(as(await boardFor(R)), mine);
+      expect(unlock.status, JSON.stringify(unlock.body)).toBe(200);
+      expect((await docState(mine))!.lockedAt).toBeNull();
+      const removed = await WRITES.delete(as(await boardFor(R)), mine);
+      expect(removed.status, JSON.stringify(removed.body)).toBe(200);
+      expect(await docState(mine)).toBeNull();
+      const before = await attachmentsOf(mine);
+      const upload = await WRITES.upload(as(await boardFor(R)), mine);
+      expect(upload.status, JSON.stringify(upload.body)).toBe(201);
+      expect(await attachmentsOf(mine)).toBe(before + 1);
+    });
+
+    for (const op of ["lock", "unlock", "delete"] as const) {
+      it(`AC-G3: R ${op} on a task of Y he cannot read and on a task of D he is not in: 404, nothing written`, async () => {
+        for (const target of [await ids(Y, O), await ids(D, O)]) {
+          const before = await snapshot(target);
+          expectNotFound(await WRITES[op](as(await boardFor(R)), target));
+          expect(await snapshot(target)).toEqual(before);
+        }
+      });
+    }
+
+    it("AC-G3: upload naming Y with a task of Y he cannot read, or with a task of D: 404 and no attachment row", async () => {
+      for (const target of [await ids(Y, O), await ids(D, O)]) {
+        const before = await snapshot(target);
+        expectNotFound(await WRITES.upload(as(await boardFor(R)), target, Y));
+        expect(await snapshot(target)).toEqual(before);
+      }
+    });
+
+    it("AC-G3: upload naming D, a company he is not in: 403 from the company check, nothing written", async () => {
+      const target = await ids(D, O);
+      const before = await snapshot(target);
+      const res = await WRITES.upload(as(await boardFor(R)), target, D);
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.error).toBe("User does not have access to this company");
+      expect(await snapshot(target)).toEqual(before);
+    });
+
+    it("a run working for R: upload on his task 201; lock on his task 403 (board only); lock on a task he cannot read 404", async () => {
+      const mine = await ids(Y, R);
+      const run = await runForR(mine.issueId);
+      const upload = await WRITES.upload(as(run), mine);
+      expect(upload.status, JSON.stringify(upload.body)).toBe(201);
+      const before = await snapshot(mine);
+      const lock = await WRITES.lock(as(run), mine);
+      expect(lock.status, JSON.stringify(lock.body)).toBe(403);
+      expect(lock.body).toEqual({ error: "Board authentication required" });
+      expect(await snapshot(mine)).toEqual(before);
+      const owners = await ids(Y, O);
+      const ownersBefore = await snapshot(owners);
+      expectNotFound(await WRITES.lock(as(run), owners));
+      expect(await snapshot(owners)).toEqual(ownersBefore);
+    });
+
+    it("AC-F8: in a company whose mode is `off`, and with the kill switch `off` where the mode is `enforce`, today's answers", async () => {
+      for (const op of WRITE_NAMES) {
+        // Z's mode is `off`: R, restricted there, writes on O's task as today.
+        const inZ = await WRITES[op](as(await boardFor(R)), await ids(Z, O));
+        expect(inZ.status, `${op} in Z: ${JSON.stringify(inZ.body)}`).toBe(SUCCESS[op]);
+        // Variable `off`, column `enforce`: Y behaves as mode `off`.
+        const target = await ids(Y, O);
+        const killed = await today(async () => WRITES[op](as(await boardFor(R)), target));
+        expect(killed.status, `${op} kill switch: ${JSON.stringify(killed.body)}`).toBe(SUCCESS[op]);
+      }
+    });
+
+    it("AC-X1: the restriction cannot be read: 503 MEMBER_RESTRICTION_UNAVAILABLE and nothing written, on lock and on upload", async () => {
+      for (const op of ["lock", "upload"] as const) {
+        const mine = await ids(Y, R);
+        const caller = await boardFor(R);
+        const before = await snapshot(mine);
+        resolverFails.on = true;
+        const res = await WRITES[op](as(caller), mine);
+        resolverFails.on = false;
+        expect(res.status, `${op}: ${JSON.stringify(res.body)}`).toBe(503);
+        expect(res.body.code ?? res.body.details?.code).toBe("MEMBER_RESTRICTION_UNAVAILABLE");
+        expect(JSON.stringify(res.body)).not.toContain(mine.attachmentId);
+        expect(await snapshot(mine)).toEqual(before);
+      }
     });
   });
 });
