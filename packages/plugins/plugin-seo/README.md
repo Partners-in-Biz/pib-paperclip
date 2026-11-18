@@ -127,6 +127,10 @@ node ./esbuild.config.mjs # dist/ (worker, manifest, ui, ui/oauth-callback.html 
 
 Migrations 001–019 are applied on installed instances; 0.23.0 adds `020_seo.sql` and 0.23.1 adds `021_seo.sql`. Never edit an applied one — add `022_seo.sql` and up. `012_seo.sql`: sprint site link columns (`site_project_id`, `site_access`, `repo_url`, `default_branch`, `framework`, `hosting`, `change_policy`, `verification`), `sprint_tasks.issue_project_id`, and the `needs_you` table.
 
+## 0.52.0: attach-task-issue
+
+New agent tool `attach-task-issue`; `start-task` now opens the task issue when it is missing (PAR-13216).
+
 ## 0.51.0: access guard (switch off)
 
 - **Seven call actions instead of one.** The page's generic `seo.call` is split by the permission a handler needs: `seo.call` (`seo.work` view, reads), `seo.call-create`, `seo.call-edit`, `seo.call-delete`, `seo.call-approve` (`seo.work` create, edit, delete, approve), `seo.call-settings-view` and `seo.call-settings` (`seo.settings` view, edit). Body unchanged: `{"tool": "<handler>", "params": {...}}`. A handler sent through another call action is refused ("<handler> is called through <action>, not <other>. Do not retry."), also with the switch off: use the action named in that message. Examples: `compact-task-thread` goes through `seo.call-edit`; `decide-preview`, `undo-preview-decision`, `confirm-preview-approval` through `seo.call-approve`; `set-switch` through `seo.call-settings`.
