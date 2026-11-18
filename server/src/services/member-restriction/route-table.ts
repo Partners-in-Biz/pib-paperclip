@@ -43,6 +43,7 @@ const DOCS_TEST = "server/src/__tests__/member-restriction-route-table-documents
 const ACCOUNT_TEST = "server/src/__tests__/member-restriction-route-table-account.test.ts";
 const WORKSPACES_TEST = "server/src/__tests__/member-restriction-route-table-workspaces-assets.test.ts";
 const APPROVALS_TEST = "server/src/__tests__/member-restriction-route-table-approvals.test.ts";
+const AGENTS_TEST = "server/src/__tests__/member-restriction-route-table-agents.test.ts";
 
 export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntry[] = [
   // C4b-1a (PAR-12730): the task routes of `routes/issues.ts`. Comments,
@@ -334,6 +335,34 @@ export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntr
   { method: "POST", path: "/api/approvals/:id/comments", class: "closed" },
   { method: "POST", path: "/api/issues/:id/approvals", class: "closed" },
   { method: "DELETE", path: "/api/issues/:id/approvals/:approvalId", class: "closed" },
+  // C4c-1 (PAR-12736): agents, runs, chat and agent keys. The agent list
+  // holds only the agents on his list, each with id, name, title, icon and
+  // status; any other agent by id is "not found" (AC-G4). One run's detail,
+  // log and events open only when the run works for him and its task passes
+  // his strict `issue:read` (AC-G5). A chat opens only with an agent on his
+  // list; the chat list is his own conversations through 4.3.
+  { method: "GET", path: "/api/companies/:companyId/agents", class: "open", test: AGENTS_TEST },
+  { method: "GET", path: "/api/agents/:id", class: "open", test: AGENTS_TEST },
+  { method: "GET", path: "/api/heartbeat-runs/:runId", class: "open", test: AGENTS_TEST },
+  { method: "GET", path: "/api/heartbeat-runs/:runId/events", class: "open", test: AGENTS_TEST },
+  { method: "GET", path: "/api/heartbeat-runs/:runId/log", class: "open", test: AGENTS_TEST },
+  { method: "GET", path: "/api/companies/:companyId/chats", class: "open", test: AGENTS_TEST },
+  { method: "GET", path: "/api/companies/:companyId/chats/:agentRef", class: "open", test: AGENTS_TEST },
+  { method: "POST", path: "/api/companies/:companyId/chats/:agentRef", class: "open", test: AGENTS_TEST },
+  // Closed: an agent's own view carries its configuration (PAR-12938); the
+  // key routes never call `decide()`, so these rows alone close them (H4);
+  // configuration, instructions, pausing, the org chart and the run lists are
+  // company set-up or company-wide. Every other agent route has no row.
+  { method: "GET", path: "/api/agents/me", class: "closed" },
+  { method: "GET", path: "/api/agents/:id/keys", class: "closed" },
+  { method: "POST", path: "/api/agents/:id/keys", class: "closed" },
+  { method: "DELETE", path: "/api/agents/:id/keys/:keyId", class: "closed" },
+  { method: "GET", path: "/api/agents/:id/configuration", class: "closed" },
+  { method: "GET", path: "/api/agents/:id/instructions-bundle", class: "closed" },
+  { method: "POST", path: "/api/agents/:id/pause", class: "closed" },
+  { method: "GET", path: "/api/companies/:companyId/org", class: "closed" },
+  { method: "GET", path: "/api/companies/:companyId/heartbeat-runs", class: "closed" },
+  { method: "GET", path: "/api/companies/:companyId/live-runs", class: "closed" },
 ];
 
 export type MemberRestrictionRouteMatch =
