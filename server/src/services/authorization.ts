@@ -38,6 +38,7 @@ import {
   loadActorMemberships,
   memberRestrictionForMembership,
 } from "./member-restriction/actor-memberships.js";
+import { memberRestrictionAllowsAction } from "./member-restriction/action-list.js";
 import { recordMemberRestrictionDenial } from "./member-restriction/admin.js";
 import { memberRestrictionFor, memberRestrictionUnavailable } from "./member-restriction/resolver.js";
 import {
@@ -1943,6 +1944,26 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
     return null;
   }
 
+  /**
+   * PAR-12608 4.3 place 2, last bullet: allowed actions of the action list
+   * that never pass through `issue:read` but name a task or project. A task
+   * assignment names the task, else the new task's parent, else the project of
+   * a new top-level task; a workspace write names its project. Only the
+   * member restriction uses this; the chat rule keeps `memberRestrictionTarget`.
+   */
+  function memberRestrictionActionTarget(input: {
+    action: AuthorizationAction;
+    resource: AuthorizationResource;
+  }): { resource: StrictReadResource; id: string } | null {
+    const { action, resource } = input;
+    if (resource.type !== "issue" || (action !== "tasks:assign" && action !== "project:write_workspace")) return null;
+    if (action === "tasks:assign") {
+      const taskId = resource.issueId ?? resource.parentIssueId;
+      if (taskId) return { resource: "issue", id: taskId };
+    }
+    return resource.projectId ? { resource: "project", id: resource.projectId } : null;
+  }
+
   /** Strict condition for one person on one row: the read snapshot's value, else one query. A failed read is 503. */
   async function strictlyReadable(target: { resource: StrictReadResource; id: string }, companyId: string, personId: string) {
     const retained = target.resource === "issue" ? readSnapshot?.issues.get(target.id) : readSnapshot?.projects.get(target.id);
@@ -1969,7 +1990,10 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
    * with `deny_member_restricted`. Task writes reach it too: the standard agent
    * branch through its `issue:read` visibility step, the board and low-trust
    * branches (which never ask `issue:read`) here, on the written task or the
-   * new child's parent. The local board and instance admins are never bound.
+   * new child's parent. The allowed actions of the action list that name a
+   * task or project without asking `issue:read` (`tasks:assign`,
+   * `project:write_workspace`) repeat it here (4.6). The local board and
+   * instance admins are never bound.
    */
   async function applyMemberRestriction(
     input: { actor: AuthorizationActor; action: AuthorizationAction; resource: AuthorizationResource },
@@ -1978,7 +2002,7 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
     if (!decision.allowed || decision.reason === "allow_instance_admin" || decision.reason === "allow_local_board") {
       return decision;
     }
-    const target = memberRestrictionTarget(input);
+    const target = memberRestrictionTarget(input) ?? memberRestrictionActionTarget(input);
     if (!target || restrictionCheckedWrites.has(input)) return decision;
     const companyId = companyIdForResource(input.resource);
     for (const personId of restrictionPersonIds(input.actor)) {
@@ -1995,6 +2019,48 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
           action: input.action,
           reason: "deny_member_restricted",
           explanation: `The ${target.resource === "issue" ? "task" : "project"} is not one of this restricted member's own.`,
+        });
+      }
+    }
+    return decision;
+  }
+
+  /**
+   * PAR-12608 4.6, "The action list": the restriction step of `decide()`,
+   * after the base decision and the person intersections. For a caller who
+   * works for a restricted person, an action that is not on the list is
+   * `deny_member_restricted` under `enforce` (whatever the usual answer was)
+   * and a recorded "would refuse" under `report` when it would have passed.
+   * It runs only here, never inside `decideBase`, so a write's internal
+   * `company_scope:read` visibility step (a new top-level task) is not
+   * refused by it. The local board and instance admins are never bound.
+   */
+  async function applyMemberRestrictionActionList(
+    input: { actor: AuthorizationActor; action: AuthorizationAction; resource: AuthorizationResource },
+    decision: AuthorizationDecision,
+  ): Promise<AuthorizationDecision> {
+    if (memberRestrictionAllowsAction(input.action) || input.actor.source === "local_implicit"
+      || decision.reason === "allow_instance_admin" || decision.reason === "allow_local_board") {
+      return decision;
+    }
+    const companyId = companyIdForResource(input.resource);
+    for (const personId of restrictionPersonIds(input.actor)) {
+      const restriction = await batchRead(memberRestrictionMemoKey(personId, companyId),
+        () => memberRestrictionOfActorPerson(db, input.actor, personId, companyId));
+      if (!restriction.restricted || restriction.mode === "off") continue;
+      const mode = restriction.mode;
+      // A call refused anyway is not a refusal by the restriction: nothing to record.
+      if (decision.allowed) {
+        await batchRead(`member-restriction-action-denied:${companyId}:${personId}:${input.action}`, () =>
+          recordMemberRestrictionDenial(db as Db, {
+            companyId, personId, ruleId: "R-action", target: input.action, objectId: null, mode,
+          }));
+      }
+      if (mode === "enforce") {
+        return deny({
+          action: input.action,
+          reason: "deny_member_restricted",
+          explanation: `The action ${input.action} is not available to a restricted member.`,
         });
       }
     }
@@ -3123,6 +3189,15 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
   }
 
   async function decide(input: {
+    actor: AuthorizationActor;
+    action: AuthorizationAction;
+    resource: AuthorizationResource;
+    scope?: Record<string, unknown> | null;
+  }): Promise<AuthorizationDecision> {
+    return applyMemberRestrictionActionList(input, await decideWithoutActionList(input));
+  }
+
+  async function decideWithoutActionList(input: {
     actor: AuthorizationActor;
     action: AuthorizationAction;
     resource: AuthorizationResource;
