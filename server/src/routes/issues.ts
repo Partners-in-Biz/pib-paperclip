@@ -518,7 +518,7 @@ type CompanySearchService = {
   search(
     companyId: string,
     query: CompanySearchQuery,
-    options?: { issueReadCondition?: SQL<boolean>; projectReadCondition?: SQL<boolean> },
+    options?: { issueReadCondition?: SQL<boolean>; projectReadCondition?: SQL<boolean>; excludeAgents?: boolean },
   ): Promise<CompanySearchResponse>;
 };
 type ActivityIssueRelationSummary = {
