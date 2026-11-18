@@ -7,6 +7,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useMemberRestriction } from "../context/MemberRestrictionContext";
+import { useMemberRestrictionGate } from "../hooks/useMemberRestrictionGate";
 import { issuesApi } from "../api/issues";
 import { authApi } from "../api/auth";
 import { agentsApi } from "../api/agents";
@@ -141,11 +142,14 @@ export function CommandPalette() {
     [allProjects],
   );
 
-  const { data: labels = [] } = useQuery({
+  // Company labels are a closed list for a restricted member under `enforce` (AC-G10): no `label:` matching.
+  const memberGate = useMemberRestrictionGate(selectedCompanyId);
+  const { data: labelData = [] } = useQuery({
     queryKey: queryKeys.issues.labels(selectedCompanyId!),
-    queryFn: () => issuesApi.listLabels(selectedCompanyId!),
-    enabled: !!selectedCompanyId && open,
+    queryFn: memberGate.guard(() => issuesApi.listLabels(selectedCompanyId!), []),
+    enabled: !!selectedCompanyId && open && !memberGate.closed,
   });
+  const labels = memberGate.closed ? [] : labelData;
 
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,

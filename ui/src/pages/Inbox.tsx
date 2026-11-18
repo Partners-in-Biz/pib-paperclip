@@ -35,6 +35,7 @@ import { useSidebar } from "../context/SidebarContext";
 import { queryKeys } from "../lib/queryKeys";
 import { useDialogActions } from "../context/DialogContext";
 import { useIssueExternalObjectSummaries } from "../hooks/useIssueExternalObjects";
+import { useMemberRestrictionGate } from "../hooks/useMemberRestrictionGate";
 import {
   applyIssueFilters,
   countActiveIssueFilters,
@@ -849,6 +850,8 @@ function StreamlinedInbox({
 }: InboxSurfaceProps) {
   const streamlinedUiEnabled = true;
   const { selectedCompanyId } = useCompany();
+  // Labels and external-object summaries are closed lists for a restricted member under `enforce` (AC-G10).
+  const memberGate = useMemberRestrictionGate(selectedCompanyId);
   const { setBreadcrumbs } = useBreadcrumbs();
   const { openNewIssue } = useDialogActions();
   const { isMobile } = useSidebar();
@@ -921,11 +924,11 @@ function StreamlinedInbox({
   });
   const { data: labels } = useQuery({
     queryKey: queryKeys.issues.labels(selectedCompanyId!),
-    queryFn: () => issuesApi.listLabels(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
+    queryFn: memberGate.guard(() => issuesApi.listLabels(selectedCompanyId!), []),
+    enabled: !!selectedCompanyId && !memberGate.closed,
   });
   const isolatedWorkspacesEnabled = experimentalSettings?.enableIsolatedWorkspaces === true;
-  const externalObjectsEnabled = experimentalSettings?.enableExternalObjects === true;
+  const externalObjectsEnabled = experimentalSettings?.enableExternalObjects === true && !memberGate.closed;
   const { data: executionWorkspaces = [], isLoading: isWorkspacesLoading } = useQuery({
     queryKey: selectedCompanyId
       ? queryKeys.executionWorkspaces.summaryList(selectedCompanyId)
@@ -2661,7 +2664,7 @@ function StreamlinedInbox({
                 agents={agents}
                 creators={creatorOptions}
                 projects={projects?.map((project) => ({ id: project.id, name: project.name }))}
-                labels={labels?.map((label) => ({ id: label.id, name: label.name, color: label.color }))}
+                labels={memberGate.closed ? undefined : labels?.map((label) => ({ id: label.id, name: label.name, color: label.color }))}
                 currentUserId={currentUserId}
                 enableExternalObjectFilters={externalObjectsEnabled}
                 enableAgentCreatedVisibilityFilter
@@ -2766,7 +2769,7 @@ function StreamlinedInbox({
                 agents={agents}
                 creators={creatorOptions}
                 projects={projects?.map((project) => ({ id: project.id, name: project.name }))}
-                labels={labels?.map((label) => ({ id: label.id, name: label.name, color: label.color }))}
+                labels={memberGate.closed ? undefined : labels?.map((label) => ({ id: label.id, name: label.name, color: label.color }))}
                 currentUserId={currentUserId}
                 enableExternalObjectFilters={externalObjectsEnabled}
                 enableAgentCreatedVisibilityFilter
