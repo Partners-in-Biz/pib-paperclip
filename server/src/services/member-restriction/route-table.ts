@@ -231,7 +231,11 @@ export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntr
   // `getIssueThreadInteractionResolutionAuthorization`. The run an answer
   // starts is held to invariant A by the wake queue (4.7). Pending questions
   // is board-only and the conversation owner's. `resolve-from-comment` records
-  // a person's reply for the agent run that read it: a run only.
+  // a person's reply for the agent run that read it: a run only. Excluded:
+  // a tool review or a secret proposal (payload `toolAction` or
+  // `secretProposal`). Under `enforce` no resolving route decides one for
+  // him (403 `MEMBER_RESTRICTED_GOVERNED_ACTION`, nothing runs), checked in
+  // `assertIssueThreadInteractionResolutionAllowed`; tool access stays closed.
   { method: "GET", path: "/api/issues/:id/pending-questions", class: "open", test: QUESTIONS_TEST },
   { method: "GET", path: "/api/issues/:id/interactions", class: "open", test: QUESTIONS_TEST },
   { method: "POST", path: "/api/issues/:id/interactions", class: "open", test: QUESTIONS_TEST },

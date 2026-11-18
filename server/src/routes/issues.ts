@@ -17,6 +17,7 @@ import {
   memberRestrictionResolver,
   memberRestrictionUnavailable,
 } from "../services/member-restriction/resolver.js";
+import { memberRestrictionEnforcedCompanyIdsForActor } from "../services/member-restriction/strict-read.js";
 import { notifyDeferredExecutionWork } from "../services/deferred-execution-notifications.js";
 import { notifyNativeRecoveryNotices } from "../services/native-recovery-notice-notifications.js";
 import { notifyNativeStatusReassessment } from "../services/native-status-reassessment-notifications.js";
@@ -6276,6 +6277,32 @@ export function issueRoutes(
     // and re-runs this audience under its locks before any mutation.
     relayedHumanUserId?: string | null,
   ) {
+    const payload =
+      interaction.payload && typeof interaction.payload === "object"
+        ? (interaction.payload as {
+            toolAction?: unknown;
+            secretProposal?: unknown;
+          })
+        : null;
+    const governedAction =
+      interaction.kind === "request_confirmation" &&
+      (payload?.toolAction !== undefined ||
+        payload?.secretProposal !== undefined);
+    // S11 (PAR-12608 4.6): a caller who works for a person restricted under
+    // `enforce` in this company decides no tool review and no secret
+    // proposal. Approving one runs the parked call with its run's tools and
+    // can write a standing trust rule; tool access stays `closed` for him.
+    // Plain questions and confirmations stay open.
+    if (
+      governedAction &&
+      (await memberRestrictionEnforcedCompanyIdsForActor(db, req.actor)).includes(issue.companyId)
+    ) {
+      return denyIssueThreadInteractionResolution(res, {
+        status: 403,
+        code: "MEMBER_RESTRICTED_GOVERNED_ACTION",
+        message: "A restricted member cannot decide a tool review or a secret proposal",
+      });
+    }
     const reviewRestriction = await resolvePendingReviewInteractionRestriction(
       issue,
       interaction,
@@ -6288,13 +6315,6 @@ export function issueRoutes(
         interaction,
       );
     }
-    const payload =
-      interaction.payload && typeof interaction.payload === "object"
-        ? (interaction.payload as {
-            toolAction?: unknown;
-            secretProposal?: unknown;
-          })
-        : null;
     const actor = getActorInfo(req);
     const decision: IssueThreadInteractionResolverAudienceDecision =
       evaluateIssueThreadInteractionResolverAudience({
@@ -6309,10 +6329,7 @@ export function issueRoutes(
             : { type: "user", userId: actor.actorId },
         interaction,
         additionalRestriction: resolverPolicyRestriction,
-        governedAction:
-          interaction.kind === "request_confirmation" &&
-          (payload?.toolAction !== undefined ||
-            payload?.secretProposal !== undefined),
+        governedAction,
       });
     if (!decision.allowed) {
       return denyIssueThreadInteractionResolution(res, {
