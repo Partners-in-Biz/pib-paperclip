@@ -1,6 +1,7 @@
 import { confirmMcpAttachmentCleanup, recordMcpAttachmentCleanup, type McpAttachmentCleanup } from "../services/public-mcp/upload-cleanup.js";
 import { SYSTEM_CAUSING_ACTOR, wakeCausingActorFromActor, wakeCausingActorFromActorRef } from "../services/heartbeat/causing-actor.js";
 import { assertNamesOnlyHimself } from "../services/member-restriction/acting-person.js";
+import { refusedOnlyByMemberRestriction } from "../services/member-restriction/action-list.js";
 import { notifyDeferredExecutionWork } from "../services/deferred-execution-notifications.js";
 import { notifyNativeRecoveryNotices } from "../services/native-recovery-notice-notifications.js";
 import { notifyNativeStatusReassessment } from "../services/native-status-reassessment-notifications.js";
@@ -8655,7 +8656,7 @@ export function issueRoutes(
       resource: { type: "company", companyId },
     });
     // Search is open to a restricted member, filtered by the read conditions (PAR-12608 4.6).
-    const restrictedSearch = companyScopeDecision.reason === "deny_member_restricted";
+    const restrictedSearch = refusedOnlyByMemberRestriction(companyScopeDecision);
     if (!companyScopeDecision.allowed && !restrictedSearch) {
       res.status(403).json({
         error: "Company search is outside this actor's authorization boundary",
@@ -8699,7 +8700,7 @@ export function issueRoutes(
       resource: { type: "company", companyId },
     });
     // Search is open to a restricted member, filtered by the read conditions (PAR-12608 4.6).
-    const restrictedSearch = companyScopeDecision.reason === "deny_member_restricted";
+    const restrictedSearch = refusedOnlyByMemberRestriction(companyScopeDecision);
     if (!companyScopeDecision.allowed && !restrictedSearch) {
       res.status(403).json({
         error: "Company search is outside this actor's authorization boundary",
@@ -8790,11 +8791,19 @@ export function issueRoutes(
     options: { reportPagination?: boolean } = {},
   ): Promise<IssueListPreparedResponse> {
     const compactView = view === "compact" || view === "index" || view === "rows";
-    const canReadCompanyScope = await actorCanReadCompanyScope(req, companyId);
+    const companyScope = await access.decide({
+      actor: req.actor,
+      action: "company_scope:read",
+      resource: { type: "company", companyId },
+    });
+    const canReadCompanyScope = companyScope.allowed;
     // Pagination describes the raw query page. An actor whose rows are filtered
     // after the query (for example a low-trust agent) gets no pagination: the
     // raw page's cursor and has-more state would reveal tasks it cannot read.
-    const pageLimit = options.reportPagination && canReadCompanyScope && typeof listFilters.limit === "number"
+    // A restricted member's rows are cut in the SQL (`readCondition`), so his
+    // raw page is his own and its pagination is safe (PAR-12608 4.6).
+    const rawPageIsVisible = canReadCompanyScope || refusedOnlyByMemberRestriction(companyScope);
+    const pageLimit = options.reportPagination && rawPageIsVisible && typeof listFilters.limit === "number"
       ? listFilters.limit
       : null;
     // Probe one row past the page so a capped response can say more exist.

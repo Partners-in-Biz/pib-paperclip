@@ -10,7 +10,8 @@ import {
 import { errorHandler } from "../middleware/error-handler.js";
 import { authorizationService, type AuthorizationAction, type AuthorizationActor, type AuthorizationResource } from "../services/authorization.js";
 import { canActorReadAssetContent } from "../services/asset-content-access.js";
-import { MEMBER_RESTRICTION_ACTION_LIST } from "../services/member-restriction/action-list.js";
+import { MEMBER_RESTRICTION_ACTION_LIST, refusedOnlyByMemberRestriction } from "../services/member-restriction/action-list.js";
+import { ISSUE_LIST_HAS_MORE_HEADER, ISSUE_LIST_NEXT_OFFSET_HEADER, issueRoutes } from "../routes/issues.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 /**
@@ -169,6 +170,51 @@ const DENIED = (Object.keys(MEMBER_RESTRICTION_ACTION_LIST) as AuthorizationActi
       expect(await writeWorkspace(board(R), p.others!)).toMatchObject({ allowed: false, reason: "deny_member_restricted" });
       expect((await writeWorkspace(board(R), p.mine!)).allowed).toBe(true);
       expect((await writeWorkspace(board(U), p.others!)).allowed).toBe(true);
+    });
+  });
+
+  describe("refusedOnlyByMemberRestriction, the gate of the surfaces kept open to R", () => {
+    it("is set when the call would have passed, and not on a call refused anyway", async () => {
+      expect(refusedOnlyByMemberRestriction(await decide(board(R), "company_scope:read"))).toBe(true);
+      expect(refusedOnlyByMemberRestriction(await decide(agentFor(R), "company_scope:read"))).toBe(true);
+      // An action U (same role, not restricted) is refused anyway: R gets no flag.
+      let refusedAnyway: AuthorizationAction | null = null;
+      for (const action of DENIED) {
+        if (!(await decide(board(U), action)).allowed) { refusedAnyway = action; break; }
+      }
+      expect(refusedAnyway).not.toBeNull();
+      const decision = await decide(board(R), refusedAnyway!);
+      expect(decision.reason).toBe("deny_member_restricted");
+      expect(refusedOnlyByMemberRestriction(decision)).toBe(false);
+    });
+  });
+
+  describe("task list pagination, a consumer of company_scope:read", () => {
+    it("reports has-more and the next offset on R's own page, as with the switch off", async () => {
+      const own = await db.insert(issues).values([1, 2, 3].map((n) => ({ companyId, title: `R paged ${n}`, createdByUserId: R }))).returning();
+      const server = express();
+      server.use((req, _res, next) => {
+        req.actor = { type: "board", source: "session", userId: R, companyIds: [companyId], isInstanceAdmin: false,
+          memberships: [{ companyId, membershipRole: "operator", status: "active", restricted: true, restrictionMode: "enforce" as const }] };
+        next();
+      });
+      server.use("/api", issueRoutes(db, {} as never, {}));
+      server.use(errorHandler);
+      const page = async () => {
+        const res = await request(server).get(`/api/companies/${companyId}/issues?q=R%20paged&limit=2`);
+        expect(res.status, JSON.stringify(res.body)).toBe(200);
+        return { ids: (res.body as Array<{ id: string }>).map((row) => row.id),
+          hasMore: res.headers[ISSUE_LIST_HAS_MORE_HEADER.toLowerCase()], nextOffset: res.headers[ISSUE_LIST_NEXT_OFFSET_HEADER.toLowerCase()] };
+      };
+      try {
+        const enforced = await page();
+        expect(enforced).toMatchObject({ hasMore: "true", nextOffset: "2" });
+        expect(enforced.ids).toHaveLength(2);
+        vi.stubEnv("PAPERCLIP_MEMBER_RESTRICTION", "off");
+        expect(await page()).toEqual(enforced);
+      } finally {
+        for (const row of own) await db.delete(issues).where(eq(issues.id, row.id));
+      }
     });
   });
 

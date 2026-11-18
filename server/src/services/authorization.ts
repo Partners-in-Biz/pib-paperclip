@@ -152,6 +152,13 @@ export type AuthorizationDecision = {
   explanation: string;
   inboxPolicyMode?: InboxAgentPolicyMode | "grant_override";
   code?: "RESPONSIBLE_USER_UNAUTHORIZED" | "RESPONSIBLE_USER_UNAVAILABLE";
+  /**
+   * Set on a `deny_member_restricted` from the action list when the call
+   * would otherwise have passed (PAR-12608 4.6). A consumer that keeps a
+   * surface open to a restricted member checks this, so a caller refused
+   * anyway (a low-trust run working for him) stays refused.
+   */
+  refusedOnlyByMemberRestriction?: true;
   reason:
     | "allow_low_trust_boundary"
     | "allow_local_board"
@@ -2061,6 +2068,7 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
           action: input.action,
           reason: "deny_member_restricted",
           explanation: `The action ${input.action} is not available to a restricted member.`,
+          ...(decision.allowed ? { refusedOnlyByMemberRestriction: true as const } : {}),
         });
       }
     }

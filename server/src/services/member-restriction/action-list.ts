@@ -1,4 +1,4 @@
-import type { AuthorizationAction } from "../authorization.js";
+import type { AuthorizationAction, AuthorizationDecision } from "../authorization.js";
 
 /**
  * PAR-12608 rev 3, 4.6 "The action list": which `decide()` actions a caller
@@ -77,4 +77,14 @@ export const MEMBER_RESTRICTION_ACTION_LIST = {
 /** Whether a restricted member may ask for this action at all. Unknown at run time: denied. */
 export function memberRestrictionAllowsAction(action: AuthorizationAction): boolean {
   return (MEMBER_RESTRICTION_ACTION_LIST as Partial<MemberRestrictionActionList>)[action] === "allowed";
+}
+
+/**
+ * Whether the action list alone refused this decision: the caller works for a
+ * restricted person and would otherwise pass. A surface the spec keeps open to
+ * him (search, his task list, his asset content) goes on for this answer only,
+ * filtered by the read conditions; any other refusal stays a refusal.
+ */
+export function refusedOnlyByMemberRestriction(decision: Pick<AuthorizationDecision, "allowed" | "reason" | "refusedOnlyByMemberRestriction">): boolean {
+  return !decision.allowed && decision.reason === "deny_member_restricted" && decision.refusedOnlyByMemberRestriction === true;
 }

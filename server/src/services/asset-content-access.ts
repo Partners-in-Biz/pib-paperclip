@@ -2,6 +2,7 @@ import { and, eq } from "drizzle-orm";
 import { assets, caseAttachments, heartbeatRuns, issues, issueAttachments, runnerApiResponseReservations, type Db } from "@paperclipai/db";
 import { isUuidLike } from "@paperclipai/shared";
 import { authorizationService, type AuthorizationActor } from "./authorization.js";
+import { refusedOnlyByMemberRestriction } from "./member-restriction/action-list.js";
 import { canActorReadHeartbeatRun } from "./heartbeat-run-privacy.js";
 import { canActorReadCase } from "./case-access.js";
 
@@ -28,7 +29,7 @@ export async function canActorReadAssetContent(db: Db, actor: AuthorizationActor
   } else if (actor.type !== "board") return false;
   else {
     const scope = await access.decide({ actor, action: "company_scope:read", resource: { type: "company", companyId: asset.companyId } });
-    if (!scope.allowed && scope.reason !== "deny_member_restricted") return false;
+    if (!scope.allowed && !refusedOnlyByMemberRestriction(scope)) return false;
     restrictedMember = !scope.allowed;
   }
   const parts = asset.objectKey.split("/");
