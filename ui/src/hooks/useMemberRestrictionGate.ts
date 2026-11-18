@@ -3,6 +3,7 @@ import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-quer
 import { MEMBER_RESTRICTED_CODE } from "@paperclipai/shared";
 import { authApi } from "../api/auth";
 import { ApiError } from "../api/api-error";
+import { hasUnverifiedSession } from "../lib/cached-session";
 import { queryKeys } from "../lib/queryKeys";
 import { memberRestrictionFor } from "../lib/member-restriction";
 
@@ -46,9 +47,12 @@ export function useMemberRestrictionGate(companyId: string | null | undefined): 
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
   });
-  // Held closed until the session is known, so no closed request goes out first.
-  // A failed session read opens it: the server still refuses, and `guard` catches that.
-  const closed = (isPending && !isError) || memberRestrictionFor(session?.memberRestrictions, companyId).enforced;
+  // Held closed until the session is known, so no closed request goes out first. A session
+  // restored from the saved query cache counts as unknown until the server confirms it: its
+  // restriction mode may be old (PAR-12932). A failed session read opens it: the server
+  // still refuses, and `guard` catches that.
+  const unknown = (isPending || hasUnverifiedSession(queryClient)) && !isError;
+  const closed = unknown || memberRestrictionFor(session?.memberRestrictions, companyId).enforced;
   const guard = useCallback(
     <T>(fetch: () => Promise<T>, empty: T) => async () => {
       try {

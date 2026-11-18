@@ -266,6 +266,8 @@ export function IssueProperties({
   const { isMobile } = useSidebar();
   const queryClient = useQueryClient();
   const companyId = issue.companyId ?? selectedCompanyId;
+  // Closed lists for a restricted member under `enforce` (AC-G10): labels, accepted plans.
+  const memberGate = useMemberRestrictionGate(companyId);
   const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
@@ -307,8 +309,8 @@ export function IssueProperties({
   );
   const { data: paneTabAcceptedPlans } = useQuery({
     queryKey: queryKeys.issues.acceptedPlanDecompositions(issue.id),
-    queryFn: () => issuesApi.listAcceptedPlanDecompositions(issue.id),
-    enabled: taskChatShellEnabled,
+    queryFn: memberGate.guard(() => issuesApi.listAcceptedPlanDecompositions(issue.id), []),
+    enabled: taskChatShellEnabled && !memberGate.closed,
   });
   const { data: paneTabAttachments } = useQuery({
     queryKey: queryKeys.issues.attachments(issue.id),
@@ -469,7 +471,6 @@ export function IssueProperties({
 
   // Company labels are a closed list for a restricted member under `enforce` (AC-G10): no label
   // picker; the task's own labels still show, they arrive on the task.
-  const memberGate = useMemberRestrictionGate(companyId);
   const { data: labels } = useQuery({
     queryKey: queryKeys.issues.labels(companyId!),
     queryFn: memberGate.guard(() => issuesApi.listLabels(companyId!), []),
@@ -2494,7 +2495,7 @@ export function IssueProperties({
         </PropertyPicker>
 
         {issue.originKind === "routine_execution" && issue.originId ? (
-          <RoutineOriginRow routineId={issue.originId} />
+          <RoutineOriginRow routineId={issue.originId} companyId={issue.companyId} />
         ) : null}
 
         {streamlinedPropertiesEnabled ? (

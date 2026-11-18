@@ -4,12 +4,15 @@ import type { Agent, AcceptedPlanDecompositionSummary } from "@paperclipai/share
 import { ChevronRight, GitBranch, Repeat, CheckCircle2, Loader2 } from "lucide-react";
 import { Link } from "@/lib/router";
 import { issuesApi } from "../api/issues";
+import { useMemberRestrictionGate } from "../hooks/useMemberRestrictionGate";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, formatDateTime, relativeTime } from "../lib/utils";
 
 interface IssuePlanDecompositionsSectionProps {
   issueId: string;
   issueIdentifier: string | null;
+  /** The task's company: accepted plans are closed to a restricted member under `enforce` (AC-G10). */
+  companyId: string;
   agentMap?: Map<string, Agent>;
 }
 
@@ -33,11 +36,14 @@ function StatusBadge({ status }: { status: AcceptedPlanDecompositionSummary["sta
 export function IssuePlanDecompositionsSection({
   issueId,
   issueIdentifier,
+  companyId,
   agentMap,
 }: IssuePlanDecompositionsSectionProps) {
+  const memberGate = useMemberRestrictionGate(companyId);
   const { data: decompositions } = useQuery({
     queryKey: queryKeys.issues.acceptedPlanDecompositions(issueId),
-    queryFn: () => issuesApi.listAcceptedPlanDecompositions(issueId),
+    queryFn: memberGate.guard(() => issuesApi.listAcceptedPlanDecompositions(issueId), []),
+    enabled: !memberGate.closed,
   });
 
   const items = useMemo(() => decompositions ?? [], [decompositions]);

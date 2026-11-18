@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-quer
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionMemberRestriction } from "@paperclipai/shared";
 import { ApiError } from "../api/api-error";
+import { markCachedSession } from "../lib/cached-session";
 import { queryKeys } from "../lib/queryKeys";
 import { isMemberRestrictedError, useMemberRestrictionGate, type MemberRestrictionGate } from "./useMemberRestrictionGate";
 
@@ -101,6 +102,19 @@ describe("useMemberRestrictionGate", () => {
       JSON.stringify(queryKeys.access.memberRestrictionMode(COMPANY_ID)),
     ]));
     invalidate.mockRestore();
+  });
+
+  it("holds a session restored from the saved cache closed until the server confirms it", async () => {
+    // The saved copy says `report`; the server now says `enforce` (PAR-12932, task detail reload).
+    client.setQueryData(queryKeys.auth.session, { session: { id: "s", userId: "u" }, user: null,
+      memberRestrictions: [{ companyId: COMPANY_ID, restricted: true, mode: "report" }] });
+    void client.invalidateQueries({ queryKey: queryKeys.auth.session, refetchType: "none" });
+    markCachedSession(client);
+    session.memberRestrictions = [{ companyId: COMPANY_ID, restricted: true, mode: "enforce" }];
+    const fetchList = vi.fn(async () => ["label"]);
+    await render(fetchList);
+    expect(gate?.closed).toBe(true);
+    expect(fetchList).not.toHaveBeenCalled();
   });
 
   it("keeps every other error an error, a plain 403 included", async () => {

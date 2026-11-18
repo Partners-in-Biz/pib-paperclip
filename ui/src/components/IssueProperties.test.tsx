@@ -1267,6 +1267,28 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
+  it.each([["enforce", false], ["report", true]] as const)(
+    "reads accepted plans and the source routine only when open, restricted under %s (AC-G10)",
+    async (mode, open) => {
+      mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-1" },
+        memberRestrictions: [{ companyId: "company-1", restricted: true, mode }] });
+      mockIssuesApi.listAcceptedPlanDecompositions.mockClear();
+      mockRoutinesApi.get.mockResolvedValue({ id: "routine-1", title: "Nightly triage" });
+      const root = renderProperties(container, {
+        issue: createIssue({ originKind: "routine_execution", originId: "routine-1" }),
+        childIssues: [],
+        onUpdate: vi.fn(),
+        inline: true,
+      });
+      await flush();
+      await flush();
+      expect(mockIssuesApi.listAcceptedPlanDecompositions.mock.calls.length > 0).toBe(open);
+      expect(mockRoutinesApi.get.mock.calls.length > 0).toBe(open);
+      expect(container.textContent?.includes("Nightly triage")).toBe(open);
+      act(() => root.unmount());
+    },
+  );
+
   it("omits the Routine row while the source routine is still loading", async () => {
     mockRoutinesApi.get.mockReturnValue(new Promise(() => {}));
     const root = renderProperties(container, {
