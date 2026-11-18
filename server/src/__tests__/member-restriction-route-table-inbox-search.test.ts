@@ -12,6 +12,7 @@ import {
   invites, issueComments, issues, joinRequests, principalPermissionGrants,
 } from "@paperclipai/db";
 import { errorHandler } from "../middleware/error-handler.js";
+import { logger } from "../middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "../realtime/live-events-ws.js";
 import { inboxDismissalRoutes } from "../routes/inbox-dismissals.js";
 import { issueRoutes } from "../routes/issues.js";
@@ -330,17 +331,27 @@ it("AC-G1: the attention rows classify as closed for their real paths", async ()
       const socket = new WebSocket(`ws://127.0.0.1:${(server.address() as AddressInfo).port}/api/companies/${Y}/events/ws`);
       const messages: Array<{ type: string; payload: Record<string, unknown> }> = [];
       socket.on("message", (bytes) => messages.push(JSON.parse(bytes.toString())));
+      const warn = vi.spyOn(logger, "warn");
+      const failures = () => warn.mock.calls.filter((call) => call[1] === "live event authorization failed").length;
       try {
         await once(socket, "open");
         for (const runId of Object.values(runs)) {
           publishLiveEvent({ companyId: Y, type: "heartbeat.run.log", payload: { runId, chunk: "log line" } });
         }
-        const barrier = randomUUID();
-        publishLiveEvent({ companyId: Y, type: "agent.status", payload: { agentId: barrier, status: "idle" } });
-        await expect.poll(() => messages.some((message) => message.payload.agentId === barrier)).toBe(true);
+        if (resolverFails.on) {
+          // Nothing reaches R, so wait until the delivery refused every run event.
+          await expect.poll(failures).toBe(Object.keys(runs).length);
+        } else {
+          // Delivery is in order: once an event of R's own task arrives, all earlier ones are decided.
+          // PAR-13111: an unbound event (e.g. agent.status) is dropped for R, so it cannot be the barrier.
+          const barrier = randomUUID();
+          publishLiveEvent({ companyId: Y, type: "agent.session.goal.changed", payload: { issueId: id.mineY, barrier } });
+          await expect.poll(() => messages.some((message) => message.payload.barrier === barrier)).toBe(true);
+        }
         const names = Object.fromEntries(Object.entries(runs).map(([name, runId]) => [runId, name]));
         return messages.filter((message) => message.type === "heartbeat.run.log").map((message) => names[message.payload.runId as string]);
       } finally {
+        warn.mockRestore();
         socket.terminate();
         wss.close();
         server.close();
