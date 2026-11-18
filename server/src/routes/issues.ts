@@ -8947,7 +8947,8 @@ export function issueRoutes(
             const runs = latestFailedRunsByAgent(await heartbeat.list(companyId, undefined, 200, { summary: true }))
               .filter((run) => !restrictedTo || (run.responsibleUserId === restrictedTo && run.scopeKind !== "company" && run.issueId));
             const decisions = await getHeartbeatRunReadDecisions(db, access, req.actor, runs);
-            const shown = runs.flatMap((run, index) => decisions[index] ? [run] : restrictedTo ? [] : [redactHeartbeatRunListRow(run)]);
+            const shown = runs.map((run, index) => decisions[index] ? run : redactHeartbeatRunListRow(run))
+              .filter((_, index) => !restrictedTo || decisions[index]);
             return runRedactions.redactForRuns(companyId, shown, getActorInfo(req).actorId);
           },
           loadContext: (ids, projection) => readCompact({
