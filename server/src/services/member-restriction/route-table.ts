@@ -39,6 +39,7 @@ export interface MemberRestrictionRouteEntry {
 const TASKS_TEST = "server/src/__tests__/member-restriction-route-table-tasks.test.ts";
 const TREE_TEST = "server/src/__tests__/member-restriction-route-table-comments-projects.test.ts";
 const DOCS_TEST = "server/src/__tests__/member-restriction-route-table-documents.test.ts";
+const ACCOUNT_TEST = "server/src/__tests__/member-restriction-route-table-account.test.ts";
 
 export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntry[] = [
   // C4b-1a (PAR-12730): the task routes of `routes/issues.ts`. Comments,
@@ -204,6 +205,61 @@ export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntr
   { method: "POST", path: "/api/issues/:id/documents/:key/unlock", class: "closed" },
   { method: "DELETE", path: "/api/issues/:id/documents/:key", class: "closed" },
   { method: "POST", path: "/api/companies/:companyId/issues/:issueId/attachments", class: "closed" },
+
+  // C4e-1 (PAR-12733): account, session and company record. His own account
+  // (4.6 and 4.6a row 8): every handler reads only `req.actor.userId`'s rows
+  // (profile, preferences, board keys) or a CLI challenge by its secret token.
+  { method: "GET", path: "/api/auth/get-session", class: "open", test: ACCOUNT_TEST },
+  { method: "GET", path: "/api/auth/profile", class: "open", test: ACCOUNT_TEST },
+  { method: "PATCH", path: "/api/auth/profile", class: "open", test: ACCOUNT_TEST },
+  { method: "POST", path: "/api/cli-auth/challenges", class: "open", test: ACCOUNT_TEST },
+  { method: "GET", path: "/api/cli-auth/challenges/:id", class: "open", test: ACCOUNT_TEST },
+  { method: "POST", path: "/api/cli-auth/challenges/:id/approve", class: "open", test: ACCOUNT_TEST },
+  { method: "POST", path: "/api/cli-auth/challenges/:id/cancel", class: "open", test: ACCOUNT_TEST },
+  { method: "GET", path: "/api/cli-auth/me", class: "open", test: ACCOUNT_TEST },
+  { method: "POST", path: "/api/cli-auth/revoke-current", class: "open", test: ACCOUNT_TEST },
+  { method: "GET", path: "/api/board-api-keys", class: "open", test: ACCOUNT_TEST },
+  { method: "POST", path: "/api/board-api-keys", class: "open", test: ACCOUNT_TEST },
+  { method: "DELETE", path: "/api/board-api-keys/:keyId", class: "open", test: ACCOUNT_TEST },
+  { method: "GET", path: "/api/sidebar-preferences/me", class: "open", test: ACCOUNT_TEST },
+  { method: "PUT", path: "/api/sidebar-preferences/me", class: "open", test: ACCOUNT_TEST },
+  { method: "GET", path: "/api/companies/:companyId/sidebar-preferences/me", class: "open", test: ACCOUNT_TEST },
+  { method: "PUT", path: "/api/companies/:companyId/sidebar-preferences/me", class: "open", test: ACCOUNT_TEST },
+  { method: "GET", path: "/api/workspace-preferences/me", class: "open", test: ACCOUNT_TEST },
+  { method: "PUT", path: "/api/companies/:companyId/workspace-preferences/me", class: "open", test: ACCOUNT_TEST },
+  // The company record: reduced to id, name, logo and task prefix in a
+  // company where his person is restricted under `enforce` (`company-record.ts`).
+  // Artifacts are listed through `issueReadSqlCondition` (4.3).
+  { method: "GET", path: "/api/companies", class: "open", test: ACCOUNT_TEST },
+  { method: "GET", path: "/api/companies/:companyId", class: "open", test: ACCOUNT_TEST },
+  { method: "GET", path: "/api/companies/:companyId/artifacts", class: "open", test: ACCOUNT_TEST },
+  // Closed: company-wide numbers and the work timeline (the company activity
+  // feed), feedback traces, export and import, and every change to a company
+  // (create, settings, branding, archive, delete). `/stats` and `/issues` need
+  // their own rows, or the `/:companyId` row would catch them.
+  { method: "GET", path: "/api/companies/stats", class: "closed" },
+  { method: "GET", path: "/api/companies/issues", class: "closed" },
+  { method: "GET", path: "/api/companies/:companyId/timeline", class: "closed" },
+  { method: "GET", path: "/api/companies/:companyId/feedback-traces", class: "closed" },
+  { method: "POST", path: "/api/companies/:companyId/export", class: "closed" },
+  { method: "GET", path: "/api/companies/:companyId/export/fidelity", class: "closed" },
+  { method: "POST", path: "/api/companies/:companyId/exports/preview", class: "closed" },
+  { method: "POST", path: "/api/companies/:companyId/exports", class: "closed" },
+  { method: "POST", path: "/api/companies/:companyId/imports/preview", class: "closed" },
+  { method: "POST", path: "/api/companies/:companyId/imports/apply", class: "closed" },
+  { method: "POST", path: "/api/companies/import/preview", class: "closed" },
+  { method: "GET", path: "/api/companies/import/jobs/:jobId", class: "closed" },
+  { method: "POST", path: "/api/companies/import", class: "closed" },
+  { method: "POST", path: "/api/companies/import/transfers", class: "closed" },
+  { method: "PUT", path: "/api/companies/import/transfers/:transferId/parts/:partIndex", class: "closed" },
+  { method: "GET", path: "/api/companies/import/transfers/:transferId", class: "closed" },
+  { method: "POST", path: "/api/companies/import/transfers/:transferId/preview", class: "closed" },
+  { method: "POST", path: "/api/companies/import/transfers/:transferId/apply", class: "closed" },
+  { method: "POST", path: "/api/companies", class: "closed" },
+  { method: "PATCH", path: "/api/companies/:companyId", class: "closed" },
+  { method: "PATCH", path: "/api/companies/:companyId/branding", class: "closed" },
+  { method: "POST", path: "/api/companies/:companyId/archive", class: "closed" },
+  { method: "DELETE", path: "/api/companies/:companyId", class: "closed" },
 ];
 
 export type MemberRestrictionRouteMatch =
