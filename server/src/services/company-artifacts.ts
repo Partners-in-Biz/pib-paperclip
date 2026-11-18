@@ -331,7 +331,7 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
     list: async (
       companyId: string,
       rawQuery: Partial<CompanyArtifactsQuery> = {},
-      options: { issueConditions?: SQL[]; userId?: string } = {},
+      options: { issueConditions?: SQL[]; projectConditions?: SQL[]; userId?: string } = {},
     ): Promise<CompanyArtifactsResponse> => {
       const query = companyArtifactsQuerySchema.parse(rawQuery);
       const cursor = decodeCursor(query.cursor);
@@ -355,6 +355,8 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
         isNull(issues.harnessKind),
         ...(options.issueConditions ?? []),
       ];
+      // A readable task can sit in a project the caller may not read: such a project joins as null.
+      const projectConditions = options.projectConditions ?? [];
       const artifacts: CompanyArtifact[] = [];
       const artifactSortDates = new Map<string, string>();
       const workProductAttachmentIds = new Set<string>();
@@ -440,6 +442,7 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
             and(
               eq(issues.projectId, projects.id),
               eq(projects.companyId, issues.companyId),
+              ...projectConditions,
             ),
           )
           .leftJoin(
@@ -557,6 +560,7 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
             and(
               eq(issues.projectId, projects.id),
               eq(projects.companyId, issueWorkProducts.companyId),
+              ...projectConditions,
             ),
           )
           .leftJoin(
@@ -689,6 +693,7 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
             and(
               eq(issues.projectId, projects.id),
               eq(projects.companyId, issues.companyId),
+              ...projectConditions,
             ),
           )
           .leftJoin(

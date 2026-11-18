@@ -3,7 +3,7 @@ import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
-  agents, authUsers, boardApiKeys, companies, companyMemberships, createDb, documents, issueDocuments, issues,
+  agents, authUsers, boardApiKeys, companies, companyMemberships, createDb, documents, issueDocuments, issues, projects,
 } from "@paperclipai/db";
 import { errorHandler } from "../middleware/error-handler.js";
 import { accessRoutes } from "../routes/access.js";
@@ -64,6 +64,7 @@ type Case = { row: string; send: (c: ReturnType<typeof request>, ctx: Ctx) => re
 const WRONG_TOKEN = "wrong-token-0123456789abcdef";
 /** O's saved sidebar orders: R's answers must never hold them. */
 const O_ORDER = [randomUUID(), randomUUID()];
+const O_PROJECT = "O-secret-project";
 const notFound = (res: Res) => expect(res.status, JSON.stringify(res.body)).toBe(404);
 const ok = (res: Res) => expect(res.status, JSON.stringify(res.body)).toBeLessThan(300);
 const noO = (res: Res, { O, oKeyId }: Ctx) => {
@@ -215,8 +216,11 @@ it("AC-G1: the closed company rows (changing the company, stats, timeline, expor
     ctx.oDocId = doc!.id;
     ctx.oTaskId = task!.id;
     // R's readable child under O's unreadable task, with its own artifact: the grouping must not climb to O's task.
+    // The child sits in O's project, which R is no access member of: its name must not come back.
+    const [project] = await db.insert(projects).values({ companyId: ctx.Y, name: O_PROJECT }).returning();
     const [child] = await db.insert(issues).values({
-      companyId: ctx.Y, parentId: task!.id, title: "R's subtask", status: "todo", createdByUserId: ctx.O, assigneeUserId: ctx.R,
+      companyId: ctx.Y, parentId: task!.id, projectId: project!.id, title: "R's subtask", status: "todo",
+      createdByUserId: ctx.O, assigneeUserId: ctx.R,
     }).returning();
     ctx.rTaskId = child!.id;
     const [rDoc] = await db.insert(documents).values({
@@ -266,6 +270,23 @@ it("AC-G1: the closed company rows (changing the company, stats, timeline, expor
     // Today's answer: with the switch `off` the parent is the group.
     const off = await today(async () => as(caller).get(`/api/companies/${ctx.Y}/artifacts?groupBy=parent_task`));
     expect(off.body.groups.map((group: { issue: { id: string } }) => group.issue.id)).toEqual([ctx.oTaskId]);
+  });
+
+  it("AC-G3: artifacts of R's readable task never name the project he is no access member of", async () => {
+    const caller = await boardFor(ctx.R);
+    for (const query of ["", "?groupBy=task", "?groupBy=parent_task"]) {
+      const res = await as(caller).get(`/api/companies/${ctx.Y}/artifacts${query}`);
+      ok(res);
+      expect(JSON.stringify(res.body), query).not.toContain(O_PROJECT);
+      const mine = [...res.body.artifacts, ...(res.body.groups ?? []).flatMap((group: { previewArtifacts: unknown[] }) => group.previewArtifacts)]
+        .filter((artifact: { issue: { id: string } }) => artifact.issue.id === ctx.rTaskId);
+      expect(mine.length, query).toBeGreaterThan(0);
+      for (const artifact of mine) expect(artifact.project, query).toBeNull();
+    }
+    // Today's answer: with the switch `off` the project is returned.
+    const off = await today(async () => as(caller).get(`/api/companies/${ctx.Y}/artifacts`));
+    const mineOff = off.body.artifacts.find((artifact: { issue: { id: string } }) => artifact.issue.id === ctx.rTaskId);
+    expect(mineOff.project?.name).toBe(O_PROJECT);
   });
 
   it("the company record in X, and for the admin, is the full record; in Y it is reduced", async () => {

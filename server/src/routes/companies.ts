@@ -66,7 +66,7 @@ import {
   workTimelineService,
 } from "../services/index.js";
 import { isCloudManagedInstance } from "../services/cloud-instance.js";
-import { issueReadSqlCondition } from "../services/authorization.js";
+import { issueReadSqlCondition, projectReadSqlCondition } from "../services/authorization.js";
 import { companiesRestrictedForActor, companyRecordFor } from "../services/member-restriction/company-record.js";
 import { getHiddenSettings } from "../services/settings-visibility.js";
 import type { StorageService } from "../storage/types.js";
@@ -433,6 +433,7 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
       userId: query.starred && req.actor.type === "board" ? req.actor.userId : undefined,
       // Every artifact belongs to a task: list only those of tasks the caller may read (PAR-12720).
       issueConditions: [await issueReadSqlCondition(db, req.actor)],
+      projectConditions: [await projectReadSqlCondition(db, req.actor)],
     }));
   });
 
