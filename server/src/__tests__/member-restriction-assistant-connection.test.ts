@@ -15,7 +15,10 @@ import {
   mcpOauthClients,
   mcpOauthGrants,
   mcpOauthRequests,
+  museAgentBindings,
 } from "@paperclipai/db";
+import { museCredentialHash } from "../services/muse-identity.js";
+import { museOAuth } from "../services/muse-oauth.js";
 import { errorHandler } from "../middleware/error-handler.js";
 import { publicMcpManagementRoutes } from "../routes/public-mcp.js";
 import { logActivity } from "../services/activity-log.js";
@@ -159,6 +162,27 @@ describe("assistant connection database support", () => {
       .send({ decision: "approve", companyId, allowWrites: false });
     expect(res.status).toBe(403);
     expect(res.body.error).toBe("access_denied");
+    expect(await grantsOf(R)).toEqual([]);
+  });
+
+  it("AC-M1, row 3: R under enforce cannot pair a Muse agent connection; no grant is written", async () => {
+    const [agent] = await db.insert(agents).values({
+      companyId, name: "Muse", role: "engineer", status: "active", adapterType: "paperclip_runner",
+      adapterConfig: { provider: "muse", allowUnmeteredProvider: true, lifecycle: "per_turn" },
+    }).returning();
+    await db.insert(companyMemberships).values({ companyId, principalType: "agent", principalId: agent!.id, membershipRole: "member", status: "active" });
+    const ticket = randomBytes(32).toString("base64url");
+    const [binding] = await db.insert(museAgentBindings).values({
+      companyId, agentId: agent!.id, operatorId: R, ticketHash: museCredentialHash(ticket), ticketExpiresAt: new Date(Date.now() + 600_000),
+    }).returning();
+    await db.update(agents).set({ adapterConfig: { ...agent!.adapterConfig, museBindingId: binding!.id } }).where(eq(agents.id, agent!.id));
+    await instanceSettingsService(db).updateExperimental({ enableNativeRunner: true, enableMuse: true });
+    const muse = museOAuth(db, config.origin);
+    const client = await muse.register({ client_name: "Muse authd", redirect_uris: [redirectUri], token_endpoint_auth_method: "none", grant_types: ["authorization_code", "refresh_token"] }, randomUUID());
+    await expect(muse.authorize({
+      client_id: client.client_id, redirect_uri: redirectUri, response_type: "code", scope: "paperclip:agent offline_access",
+      code_challenge: challenge, code_challenge_method: "S256", pairing_ticket: ticket,
+    })).rejects.toMatchObject({ code: "access_denied", status: 403 });
     expect(await grantsOf(R)).toEqual([]);
   });
 
