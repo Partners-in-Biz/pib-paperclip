@@ -212,9 +212,12 @@ async function act(callback: () => void | Promise<void>) {
 }
 
 async function flush() {
-  await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  });
+  // Two ticks: the label list waits for the session (member-restriction gate, PAR-12930).
+  for (let tick = 0; tick < 2; tick += 1) {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
 }
 
 /**

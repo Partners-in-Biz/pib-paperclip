@@ -29,6 +29,7 @@ import { executionWorkspacesApi } from "../../api/execution-workspaces";
 import { instanceSettingsApi } from "../../api/instanceSettings";
 import { issuesApi } from "../../api/issues";
 import { useIssuePlanDocument } from "@/hooks/useIssuePlanDocument";
+import { useMemberRestrictionGate } from "@/hooks/useMemberRestrictionGate";
 import { useIssueDocuments } from "@/hooks/useIssueDocuments";
 import { useStreamlinedUiEnabled } from "@/hooks/useStreamlinedUiEnabled";
 import { selectArtifactAttachments } from "@/lib/issue-artifacts";
@@ -466,10 +467,13 @@ export function IssueProperties({
     userId: currentUserId,
   });
 
+  // Company labels are a closed list for a restricted member under `enforce` (AC-G10): no label
+  // picker; the task's own labels still show, they arrive on the task.
+  const memberGate = useMemberRestrictionGate(companyId);
   const { data: labels } = useQuery({
     queryKey: queryKeys.issues.labels(companyId!),
-    queryFn: () => issuesApi.listLabels(companyId!),
-    enabled: !!companyId,
+    queryFn: memberGate.guard(() => issuesApi.listLabels(companyId!), []),
+    enabled: !!companyId && !memberGate.closed,
   });
 
   const { data: allIssues, isFetching: isFetchingIssuePickerIssues } = useQuery({
@@ -2455,7 +2459,9 @@ export function IssueProperties({
           {projectContent}
         </PropertyPicker>
 
-        <PropertyPicker
+        {memberGate.closed ? (
+          <PropertyRow label="Labels">{labelsTrigger}</PropertyRow>
+        ) : <PropertyPicker
           inline={inline}
           label="Labels"
           open={labelsOpen}
@@ -2467,7 +2473,7 @@ export function IssueProperties({
           stacked
         >
           {labelsContent}
-        </PropertyPicker>
+        </PropertyPicker>}
       </PropertySection>
 
       <PropertySection title="Relationships" streamlined={streamlinedPropertiesEnabled}>
