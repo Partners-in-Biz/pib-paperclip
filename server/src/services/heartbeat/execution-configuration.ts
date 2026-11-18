@@ -23,6 +23,7 @@ import { PLUGIN_RUNNER_AI_CONNECTION_REQUIRED, pluginEnvironmentRunnerTaskDriver
 import { prepareConnectionInstructionDelivery } from "../connection-instructions.js";
 import { applyConnectorSkills, prepareConnectorSkillDelivery, resolveConnectorAssignments } from "../connector-runtime.js";
 import { resolveManagedGitHubIdentitySelection } from "../git-credentials.js";
+import { githubCredentialsRefused } from "../member-restriction/github-credentials.js";
 import { resolveAssignedConnectionInstructionsForRun } from "../native-runtime/assigned-mcp-tools.js";
 import { recordFailedSkillPreparation, type NativeRunHistoricalSpan } from "../native-runtime/native-run-trace.js";
 import { collectRunFailureSecretValues } from "../run-failure-diagnostics.js";
@@ -175,12 +176,17 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
       ? [...runScopedMentionedSkillKeys, ACCEPTED_PLAN_CONVERSION_SKILL_KEY]
       : runScopedMentionedSkillKeys;
   const githubSelection = githubIdentity.value;
+  // 4.6a row 5: the host's GitHub token never reaches a run whose person is
+  // restricted under `enforce`; a failed restriction read refuses preparation.
   const useHostGitHub =
     !githubSelection.configured &&
     trustPreset.kind === "standard" &&
     ["local", "ssh"].includes(
       selectedEnvironmentForConfig?.driver ?? "local",
-    );
+    ) &&
+    !(await githubCredentialsRefused(db, {
+      companyId: agent.companyId, personId: responsibleUserId, target: "github_host_credentials", runId: run.id,
+    }));
 
   const { resolvedConfig, configuredTaskEnvironment, secretKeys, secretManifest } =
     await time("configuration_secrets", () => resolveExecutionRunAdapterConfig({
