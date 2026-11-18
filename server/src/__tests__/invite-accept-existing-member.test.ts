@@ -406,6 +406,7 @@ describe("POST /invites/:token/accept", () => {
       "invitee-user",
       "owner",
       "active",
+      null,
     );
     expect(accessServiceMock.setPrincipalGrants).toHaveBeenCalledWith(
       "company-1",
@@ -438,7 +439,7 @@ describe("POST /invites/:token/accept", () => {
     });
     const res = await request(app).post("/api/invites/pcp_invite_test/accept").send({ requestType: "human" }).expect(202);
     expect(res.body.status).toBe("approved");
-    expect(accessServiceMock.ensureMembership).toHaveBeenCalledWith("company-1", "user", "invitee-user", "operator", "active");
+    expect(accessServiceMock.ensureMembership).toHaveBeenCalledWith("company-1", "user", "invitee-user", "operator", "active", null);
     expect(accessServiceMock.setPrincipalGrants).toHaveBeenCalledWith(
       "company-1", "user", "invitee-user", [...legacyGrants, { permissionKey: "commentary:view", scope: null }], "inviter-user",
     );
@@ -482,6 +483,7 @@ describe("POST /invites/:token/accept", () => {
       "invitee-user",
       "operator",
       "active",
+      null,
     );
     expect(logActivityMock).toHaveBeenCalledWith(
       expect.anything(),

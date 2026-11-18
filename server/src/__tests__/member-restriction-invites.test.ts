@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
-import { eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -83,6 +83,8 @@ describe("member-restriction invites database support", () => {
     vi.unstubAllEnvs();
     failingResolver = null;
     modeRead.fail = false;
+    await db.execute(sql`drop trigger if exists fail_insert on company_memberships`);
+    await db.execute(sql`drop trigger if exists fail_insert on principal_permission_grants`);
     await db.delete(activityLog);
     await db.delete(joinRequests);
     await db.delete(invites);
@@ -127,8 +129,16 @@ describe("member-restriction invites database support", () => {
 
   const createInvite = (companyId: string, body: Record<string, unknown>) =>
     request(app).post(`/api/companies/${companyId}/invites`).send({ allowedJoinTypes: "human", humanRole: "operator", ...body });
+  const membershipOf = (companyId: string, principalId: string) => db.select().from(companyMemberships)
+    .where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalId, principalId)))
+    .then((rows) => rows[0] ?? null);
   const grantInvite = (companyId: string, principalId: string) => db.insert(principalPermissionGrants)
     .values({ companyId, principalType: "user", principalId, permissionKey: "users:invite" }).onConflictDoNothing();
+  async function failInsertsInto(table: "company_memberships" | "principal_permission_grants") {
+    await db.execute(sql.raw(`create or replace function fail_insert() returns trigger language plpgsql as
+      $$ begin raise exception 'insert made to fail'; end $$`));
+    await db.execute(sql.raw(`create trigger fail_insert before insert on ${table} for each row execute function fail_insert()`));
+  }
 
   it("AC-I8 (lists): the invite list and the join-request list return the mark", async () => {
     const { company, member } = await setup("enforce");
@@ -149,6 +159,104 @@ describe("member-restriction invites database support", () => {
     expect(byId.get(unmarked.body.id)).toMatchObject({ memberRestriction: null });
     const joins = await request(app).get(`/api/companies/${company.id}/join-requests`);
     expect(joins.body[0].invite.memberRestriction).toEqual(mark);
+  });
+
+  it("AC-I1/AC-I8: a person who joins through a marked invite in an enforce company is restricted from his first request; the invite list returns the mark", async () => {
+    const { company, member } = await setup("enforce");
+    const owner = await member("owner");
+    as(owner.principalId, [company.id]);
+    const created = await createInvite(company.id, { restriction: { restricted: true } });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    expect(created.body.defaultsPayload.memberRestriction).toEqual({ restricted: true, pluginKeys: [], agentIds: [] });
+
+    const list = await request(app).get(`/api/companies/${company.id}/invites`);
+    expect(list.body.invites[0].memberRestriction).toEqual({ restricted: true, pluginKeys: [], agentIds: [] });
+
+    const joiner = `joiner-${randomUUID()}`;
+    as(joiner);
+    const accepted = await request(app).post(`/api/invites/${created.body.token}/accept`).send({ requestType: "human" });
+    expect(accepted.status, JSON.stringify(accepted.body)).toBe(202);
+    expect(await membershipOf(company.id, joiner)).toMatchObject({ status: "active", restricted: true });
+
+    // What his very first request is decided by: every loader and the resolver answer "restricted".
+    const { memberRestrictionFor, loadActorMemberships } = await import("../services/member-restriction/index.js");
+    expect(await memberRestrictionFor(db, joiner, company.id)).toEqual({ restricted: true, mode: "enforce", pluginKeys: [], agentIds: [] });
+    expect(await loadActorMemberships(db, { userId: joiner, activeOnly: true }))
+      .toEqual([expect.objectContaining({ companyId: company.id, restricted: true, restrictionMode: "enforce" })]);
+  });
+
+  it("AC-I2/AC-I8: a join request approved by an owner reads the mark from its invite; the join-request list returns it", async () => {
+    const { company, member } = await setup("enforce");
+    const owner = await member("owner");
+    const [helper] = await db.insert(agents)
+      .values({ companyId: company.id, name: "Helper", role: "worker", adapterType: "process", adapterConfig: {} }).returning();
+    as(owner.principalId, [company.id]);
+    const created = await createInvite(company.id, { restriction: { restricted: true, pluginKeys: ["crm"], agentIds: [helper!.id] } });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    const requester = `requester-${randomUUID()}`;
+    const [pending] = await db.insert(joinRequests).values({
+      inviteId: created.body.id, companyId: company.id, requestType: "human", status: "pending_approval",
+      requestIp: "127.0.0.1", requestingUserId: requester,
+    }).returning();
+
+    const listed = await request(app).get(`/api/companies/${company.id}/join-requests`);
+    expect(listed.body[0].invite.memberRestriction).toEqual({ restricted: true, pluginKeys: ["crm"], agentIds: [helper!.id] });
+
+    const approved = await request(app).post(`/api/companies/${company.id}/join-requests/${pending!.id}/approve`).send({});
+    expect(approved.status, JSON.stringify(approved.body)).toBe(200);
+    expect(await membershipOf(company.id, requester))
+      .toMatchObject({ restricted: true, restrictedPluginKeys: ["crm"], restrictedAgentIds: [helper!.id] });
+  });
+
+  it("AC-I3: no path leaves an active unflagged row for a marked invite", async () => {
+    const { company, member } = await setup("enforce");
+    const owner = await member("owner");
+    as(owner.principalId, [company.id]);
+    const first = await createInvite(company.id, { restriction: { restricted: true } });
+    const second = await createInvite(company.id, { restriction: { restricted: true } });
+
+    // The membership insert fails after the mark is computed: no row.
+    const one = `one-${randomUUID()}`;
+    as(one);
+    await failInsertsInto("company_memberships");
+    expect((await request(app).post(`/api/invites/${first.body.token}/accept`).send({ requestType: "human" })).status).toBe(500);
+    expect(await membershipOf(company.id, one)).toBeNull();
+    await db.execute(sql`drop trigger if exists fail_insert on company_memberships`);
+
+    // The route fails after the insert (granting fails): the row that exists is flagged.
+    const two = `two-${randomUUID()}`;
+    as(two);
+    await failInsertsInto("principal_permission_grants");
+    expect((await request(app).post(`/api/invites/${second.body.token}/accept`).send({ requestType: "human" })).status).toBe(500);
+    expect(await membershipOf(company.id, two)).toMatchObject({ restricted: true });
+  });
+
+  it("AC-I4: an invite never lowers a flag; a flagged member cannot join as admin", async () => {
+    const { access, company, member } = await setup("enforce");
+    const owner = await member("owner");
+    const flagged = await member("operator", { status: "archived", restricted: true, restrictedPluginKeys: ["crm"] });
+    as(owner.principalId, [company.id]);
+    const unmarked = await createInvite(company.id, { restriction: { restricted: false } });
+    const asAdmin = await createInvite(company.id, { humanRole: "admin", restriction: { restricted: false } });
+
+    as(flagged.principalId);
+    expect((await request(app).post(`/api/invites/${unmarked.body.token}/accept`).send({ requestType: "human" })).status).toBe(202);
+    expect(await membershipOf(company.id, flagged.principalId))
+      .toMatchObject({ status: "active", restricted: true, restrictedPluginKeys: ["crm"], restrictedAgentIds: [] });
+
+    await db.update(companyMemberships).set({ status: "archived" }).where(eq(companyMemberships.id, flagged.id));
+    const res = await request(app).post(`/api/invites/${asAdmin.body.token}/accept`).send({ requestType: "human" });
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body).toMatchObject({ code: "MEMBER_RESTRICTED_ROLE" });
+
+    // A mark raises the flag only on a row that is not yet active.
+    const mark = { restricted: true as const, pluginKeys: [], agentIds: [] };
+    const active = await member("operator");
+    await access.ensureMembership(company.id, "user", active.principalId, "operator", "active", mark);
+    expect(await membershipOf(company.id, active.principalId)).toMatchObject({ restricted: false });
+    const pending = await member("operator", { status: "pending" });
+    await access.ensureMembership(company.id, "user", pending.principalId, "operator", "active", mark);
+    expect(await membershipOf(company.id, pending.principalId)).toMatchObject({ status: "active", restricted: true });
   });
 
   it("AC-I5: who may mark, and a restricted person may not invite", async () => {
@@ -221,6 +329,19 @@ describe("member-restriction invites database support", () => {
     const unmarked = await createInvite(off.id, {});
     expect(unmarked.status).toBe(201);
     expect(unmarked.body.defaultsPayload).not.toHaveProperty("memberRestriction");
+  });
+
+  it("AC-I8: restricted in X, an unmarked invite to Y leaves him unflagged in Y and flagged in X", async () => {
+    const { company: x, newCompany, member } = await setup("enforce");
+    const y = await newCompany("enforce");
+    const person = await member("operator", { restricted: true });
+    const ownerY = await member("owner", {}, y.id);
+    as(ownerY.principalId, [y.id]);
+    const invite = await createInvite(y.id, { restriction: { restricted: false } });
+    as(person.principalId, [x.id]);
+    expect((await request(app).post(`/api/invites/${invite.body.token}/accept`).send({ requestType: "human" })).status).toBe(202);
+    expect(await membershipOf(y.id, person.principalId)).toMatchObject({ status: "active", restricted: false });
+    expect(await membershipOf(x.id, person.principalId)).toMatchObject({ restricted: true });
   });
 
   it("AC-F8 (invite path): with the kill switch `off` an enforce company behaves as mode off; any other value is ignored", async () => {
