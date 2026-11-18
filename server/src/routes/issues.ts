@@ -11708,8 +11708,9 @@ export function issueRoutes(
     );
     if (!issue) return;
     // A caller who cannot read the task gets "not found" before the board-only
-    // answer, so the 403 does not tell him it exists (PAR-12942, AC-G3).
-    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    // answer, so the 403 does not tell him it exists (PAR-12942, AC-G3). A read
+    // check only: no break-glass, and none of the agent write checks.
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Board authentication required" });
       return;
@@ -11768,8 +11769,9 @@ export function issueRoutes(
     );
     if (!issue) return;
     // A caller who cannot read the task gets "not found" before the board-only
-    // answer, so the 403 does not tell him it exists (PAR-12942, AC-G3).
-    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    // answer, so the 403 does not tell him it exists (PAR-12942, AC-G3). A read
+    // check only: no break-glass, and none of the agent write checks.
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Board authentication required" });
       return;
@@ -12019,8 +12021,9 @@ export function issueRoutes(
     );
     if (!issue) return;
     // A caller who cannot read the task gets "not found" before the board-only
-    // answer, so the 403 does not tell him it exists (PAR-12942, AC-G3).
-    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    // answer, so the 403 does not tell him it exists (PAR-12942, AC-G3). A read
+    // check only: no break-glass, and none of the agent write checks.
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Board authentication required" });
       return;

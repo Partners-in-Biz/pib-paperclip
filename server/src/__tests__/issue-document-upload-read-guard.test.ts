@@ -5,7 +5,7 @@ import path from "node:path";
 import { and, eq, inArray } from "drizzle-orm";
 import express from "express";
 import request from "supertest";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agents,
@@ -17,6 +17,7 @@ import {
   issueAttachments,
   issueComments,
   issueDocuments,
+  instanceUserRoles,
   issues,
 } from "@paperclipai/db";
 import { errorHandler } from "../middleware/index.js";
@@ -48,15 +49,16 @@ describe("issue document and upload read guard database support", () => {
   let db: ReturnType<typeof createDb>;
   let storageDir = "";
 
-  // O owns company C (a session, not the local board); U is a member of C.
-  const O = `o-${randomUUID()}`, U = `u-${randomUUID()}`;
-  const roles: Record<string, string> = { [O]: "owner", [U]: "operator" };
-  let companyId = "", otherCompanyId = "", X = "", Z = "", chatId = "", privateId = "", foreignTaskId = "";
+  // O owns company C (a session, not the local board); U is a member of C;
+  // I is an instance admin and an owner of C, not the local board.
+  const O = `o-${randomUUID()}`, U = `u-${randomUUID()}`, I = `i-${randomUUID()}`;
+  const roles: Record<string, string> = { [O]: "owner", [U]: "operator", [I]: "owner" };
+  let companyId = "", otherCompanyId = "", X = "", Z = "", chatId = "", privateId = "", foreignTaskId = "", agentTaskId = "";
   const NOT_FOUND = { error: "Issue not found" };
 
   type RequestActor = Express.Request["actor"];
   const user = (userId: string): RequestActor => ({
-    type: "board", userId, source: "session", companyIds: [companyId], isInstanceAdmin: false,
+    type: "board", userId, source: "session", companyIds: [companyId], isInstanceAdmin: userId === I,
     memberships: [{ companyId, membershipRole: roles[userId], status: "active", restricted: false, restrictionMode: "off" }],
   });
   const agent = (agentId: string): RequestActor => ({ type: "agent", agentId, companyId, source: "agent_key" });
@@ -83,7 +85,11 @@ describe("issue document and upload read guard database support", () => {
     .where(and(eq(issueDocuments.issueId, issueId), eq(issueDocuments.key, "notes"))))[0] ?? null;
   const storedFiles = async () => (await readdir(storageDir, { recursive: true, withFileTypes: true })).filter(e => e.isFile()).length;
 
+  // The private-task cases need privacy enforced; the chat rule holds in every mode.
+  beforeEach(() => { vi.stubEnv("PAPERCLIP_ISSUE_PRIVACY_MODE", "enforce"); });
+
   beforeAll(async () => {
+    vi.stubEnv("PAPERCLIP_ISSUE_PRIVACY_MODE", "enforce");
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-read-guard-");
     db = createDb(tempDb.connectionString);
     storageDir = await mkdtemp(path.join(tmpdir(), "issue-read-guard-storage-"));
@@ -94,11 +100,12 @@ describe("issue document and upload read guard database support", () => {
     ]).returning();
     companyId = c!.id; otherCompanyId = d!.id;
     const now = new Date();
-    await db.insert(authUsers).values([O, U].map(id => ({ id, name: id, email: `${id}@example.test`, createdAt: now, updatedAt: now })));
+    await db.insert(authUsers).values([O, U, I].map(id => ({ id, name: id, email: `${id}@example.test`, createdAt: now, updatedAt: now })));
     for (const [principalId, membershipRole] of Object.entries(roles)) {
       await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId, status: "active", membershipRole });
       await ensureHumanRoleDefaultGrants(db, { companyId, principalId, membershipRole: membershipRole as "owner", grantedByUserId: null });
     }
+    await db.insert(instanceUserRoles).values({ userId: I, role: "instance_admin" });
     const noWake = { heartbeat: { enabled: false, wakeOnDemand: false } };
     const [x, z] = await db.insert(agents).values([
       { companyId, name: "Writer", role: "engineer", status: "idle", adapterType: "process", runtimeConfig: noWake },
@@ -119,6 +126,9 @@ describe("issue document and upload read guard database support", () => {
     })).id;
     const [foreign] = await db.insert(issues).values({ companyId: otherCompanyId, title: "D's task", status: "todo" }).returning();
     foreignTaskId = foreign!.id;
+    // An open task of C that X works on: Z can read it.
+    const [worked] = await db.insert(issues).values({ companyId, title: "X's open task", status: "in_progress", assigneeAgentId: X }).returning();
+    agentTaskId = worked!.id;
 
     for (const issueId of [chatId, privateId]) {
       const put = await request(appFor(user(O))).put(docPath(issueId)).send({ title: "Notes", format: "markdown", body: "Notes" });
@@ -129,6 +139,7 @@ describe("issue document and upload read guard database support", () => {
   }, 120_000);
 
   afterAll(async () => {
+    vi.unstubAllEnvs();
     await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
     if (storageDir) await rm(storageDir, { recursive: true, force: true });
@@ -180,11 +191,35 @@ describe("issue document and upload read guard database support", () => {
     expect(await notesDoc(chatId)).toEqual(before);
   });
 
+  it("an agent of C that can read the task still gets the board-only 403 on lock, and no checkout is adopted", async () => {
+    const res = await writes.lock(agent(Z), agentTaskId);
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body).toEqual({ error: "Board authentication required" });
+    expect(await db.select().from(activityLog).where(eq(activityLog.action, "issue.checkout_lock_adopted"))).toEqual([]);
+  });
+
+  it("an instance admin who is not the local board gets 404 on O's chat for a message and an upload (was 403)", async () => {
+    const comment = await request(appFor(user(I))).post(`/api/issues/${chatId}/comments`).send({ body: "Hello", clientRequestId: randomUUID() });
+    expect(comment.status, JSON.stringify(comment.body)).toBe(404);
+    expect(comment.body).toEqual(NOT_FOUND);
+    const uploaded = await upload(user(I), chatId);
+    expect(uploaded.status, JSON.stringify(uploaded.body)).toBe(404);
+    expect(uploaded.body).toEqual(NOT_FOUND);
+    expect(await db.select().from(issueComments).where(eq(issueComments.issueId, chatId))).toEqual([]);
+    expect(await db.select().from(issueAttachments).where(eq(issueAttachments.issueId, chatId))).toEqual([]);
+  });
+
   it("an upload naming company C and a task of company D answers 404 like a missing task (was 422)", async () => {
     const res = await upload(user(O), foreignTaskId);
     expect(res.status, JSON.stringify(res.body)).toBe(404);
     expect(res.body).toEqual(NOT_FOUND);
     expect(await db.select().from(issueAttachments).where(eq(issueAttachments.issueId, foreignTaskId))).toEqual([]);
+  });
+
+  it("an upload naming company D, for a caller not in D, still answers 403", async () => {
+    const res = await upload(user(O), foreignTaskId, otherCompanyId);
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("User does not have access to this company");
   });
 
   it("O on his own chat and private task gets today's answers: unlock, lock, upload, comment, delete", async () => {
