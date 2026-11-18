@@ -42,6 +42,7 @@ export interface MemberRestrictionRouteEntry {
   shadows?: string;
 }
 
+const QUESTIONS_TEST = "server/src/__tests__/member-restriction-route-table-questions.test.ts";
 const TASKS_TEST = "server/src/__tests__/member-restriction-route-table-tasks.test.ts";
 const TREE_TEST = "server/src/__tests__/member-restriction-route-table-comments-projects.test.ts";
 const PROJECT_BODY_TEST = "server/src/__tests__/member-restriction-project-body-allowlist.test.ts";
@@ -222,6 +223,27 @@ export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntr
   { method: "POST", path: "/api/issues/:id/documents/:key/unlock", class: "open", test: DOCS_TEST },
   { method: "DELETE", path: "/api/issues/:id/documents/:key", class: "open", test: DOCS_TEST },
   { method: "POST", path: "/api/companies/:companyId/issues/:issueId/attachments", class: "open", test: DOCS_TEST },
+
+  // C4d-2 (PAR-13025): questions and confirmations on a task (4.6, S11): he
+  // reads, answers, skips and dismisses those on a task he can read. Every
+  // handler reads the task through `issue:read` first ("Issue not found"),
+  // agents included; the answer routes do it in
+  // `getIssueThreadInteractionResolutionAuthorization`. The run an answer
+  // starts is held to invariant A by the wake queue (4.7). Pending questions
+  // is board-only and the conversation owner's. `resolve-from-comment` records
+  // a person's reply for the agent run that read it: a run only.
+  { method: "GET", path: "/api/issues/:id/pending-questions", class: "open", test: QUESTIONS_TEST },
+  { method: "GET", path: "/api/issues/:id/interactions", class: "open", test: QUESTIONS_TEST },
+  { method: "POST", path: "/api/issues/:id/interactions", class: "open", test: QUESTIONS_TEST },
+  { method: "POST", path: "/api/issues/:id/interactions/:interactionId/accept", class: "open", test: QUESTIONS_TEST },
+  { method: "POST", path: "/api/issues/:id/interactions/:interactionId/reject", class: "open", test: QUESTIONS_TEST },
+  { method: "POST", path: "/api/issues/:id/interactions/:interactionId/respond", class: "open", test: QUESTIONS_TEST },
+  { method: "POST", path: "/api/issues/:id/interactions/:interactionId/verdicts", class: "open", test: QUESTIONS_TEST },
+  { method: "POST", path: "/api/issues/:id/interactions/:interactionId/withdraw", class: "open", test: QUESTIONS_TEST },
+  { method: "POST", path: "/api/issues/:id/interactions/:interactionId/dismiss", class: "open", test: QUESTIONS_TEST },
+  { method: "POST", path: "/api/issues/:id/interactions/:interactionId/skip", class: "open", test: QUESTIONS_TEST },
+  { method: "POST", path: "/api/issues/:id/interactions/:interactionId/cancel", class: "open", test: QUESTIONS_TEST },
+  { method: "POST", path: "/api/issues/:id/interactions/:interactionId/resolve-from-comment", class: "run", test: QUESTIONS_TEST },
 
   // C4e-1 (PAR-12733): account, session and company record. His own account
   // (4.6 and 4.6a row 8): every handler reads only `req.actor.userId`'s rows
