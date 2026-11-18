@@ -274,7 +274,9 @@ function loadActualRoutes() {
       for (const literal of match[2].matchAll(/["'`]([^"'`]+)["'`]/g)) {
         const operation = `${match[1].toUpperCase()} ${normalizeExpressPath(resolveMountedPath(file, prefix, literal[1]))}`;
         handlerSources.set(operation, handlerSource(source, match.index ?? 0));
-        position(operation, file, match.index);
+        // Each literal of an array gets its own offset (`match[0]` ends with `match[2]` and "]").
+        const literalIndex = (match.index ?? 0) + match[0].length - match[2].length - 1 + (literal.index ?? 0);
+        position(operation, file, literalIndex);
         if (explicitOpenApiOperationCoverageExclusions.has(operation)) excludedRoutes.add(operation);
         else routes.add(operation);
       }
@@ -1578,7 +1580,7 @@ async function routeTableScanErrors(
     const other = inventory.positions.get(byShape.get(routeShape(shadowed.method, shadowed.path)) ?? "");
     if (!own || !other || own.file !== other.file) {
       errors.push(`${row}: shadows ${entry.method} ${entry.shadows}, which is not registered in the same file`);
-    } else if (own.index > other.index) {
+    } else if (own.index >= other.index) {
       errors.push(`${row}: shadows ${entry.method} ${entry.shadows}, which is registered first`);
     }
   }
@@ -1608,6 +1610,8 @@ describe("member restriction route table scan", () => {
     };
     expect(mounts.has("USE /api/plugins/{pluginId}/api")).toBe(true);
     expect(routes.has("GET /api/companies/{companyId}") || routes.has("GET /api/companies")).toBe(true);
+    // Every registration has its own source offset (array literals included), so "registered first" is strict.
+    expect(new Set([...positions.values()].map(({ file, index }) => `${file}:${index}`)).size).toBe(positions.size);
     const operations = [...routes, ...excludedRoutes, ...mounts];
     expect(await routeTableScanErrors(MEMBER_RESTRICTION_ROUTE_TABLE, { operations, handlerSources, positions }, readTest)).toEqual([]);
   });
@@ -1682,6 +1686,10 @@ describe("member restriction route table scan", () => {
       "GET /api/agents/me: shadows GET /api/agents/:id, which is not registered in the same file",
     ]);
     expect(await routeTableScanErrors(table("/api/agents/:id"), inventory(at("agents.ts", 250)), readTest)).toEqual([
+      "GET /api/agents/me: shadows GET /api/agents/:id, which is registered first",
+    ]);
+    // Same offset (one registration for both, or a row shadowing its own path): not proved first.
+    expect(await routeTableScanErrors(table("/api/agents/:id"), inventory(at("agents.ts", 200)), readTest)).toEqual([
       "GET /api/agents/me: shadows GET /api/agents/:id, which is registered first",
     ]);
   });
