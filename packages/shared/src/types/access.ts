@@ -90,10 +90,18 @@ export interface Invite {
 
 export type InviteState = "active" | "revoked" | "accepted" | "expired";
 
+/** The mark stored on an invite (PAR-12608 4.2a); null when the invite is unmarked. */
+export interface InviteMemberRestriction {
+  restricted: true;
+  pluginKeys: string[];
+  agentIds: string[];
+}
+
 export interface CompanyInviteRecord extends Invite {
   companyName: string | null;
   humanRole: HumanCompanyMembershipRole | null;
   inviteMessage: string | null;
+  memberRestriction?: InviteMemberRestriction | null;
   state: InviteState;
   invitedByUser: AccessUserProfile | null;
   relatedJoinRequestId: string | null;
@@ -134,6 +142,7 @@ export interface JoinRequestInviteSummary {
   allowedJoinTypes: InviteJoinType;
   humanRole: HumanCompanyMembershipRole | null;
   inviteMessage: string | null;
+  memberRestriction?: InviteMemberRestriction | null;
   createdAt: Date;
   expiresAt: Date;
   revokedAt: Date | null;

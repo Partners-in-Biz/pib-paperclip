@@ -983,6 +983,10 @@ export type MemberRestrictionMode = (typeof MEMBER_RESTRICTION_MODES)[number];
 export const MEMBER_RESTRICTION_UNAVAILABLE_CODE = "MEMBER_RESTRICTION_UNAVAILABLE";
 /** Server-wide kill switch: only the exact value `off` forces every company to mode `off`. */
 export const MEMBER_RESTRICTION_KILL_SWITCH_ENV = "PAPERCLIP_MEMBER_RESTRICTION";
+/** Error code (HTTP 403) for a call a restricted member may not make. */
+export const MEMBER_RESTRICTED_CODE = "MEMBER_RESTRICTED";
+/** Error code (HTTP 422) for a human invite without a restriction choice while the company's mode is not `off`. */
+export const MEMBER_RESTRICTION_REQUIRED_CODE = "MEMBER_RESTRICTION_REQUIRED";
 
 export const COMPANY_MEMBERSHIP_ROLES = [
   "owner",

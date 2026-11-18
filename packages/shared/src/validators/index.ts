@@ -751,6 +751,7 @@ export {
 
 export {
   createCompanyInviteSchema,
+  inviteMemberRestrictionSchema,
   createOpenClawInvitePromptSchema,
   acceptInviteSchema,
   listCompanyInvitesQuerySchema,
@@ -772,6 +773,7 @@ export {
   updateMemberRestrictionSchema,
   updateMemberRestrictionModeSchema,
   type CreateCompanyInvite,
+  type InviteMemberRestrictionInput,
   type CreateOpenClawInvitePrompt,
   type AcceptInvite,
   type ListCompanyInvitesQuery,

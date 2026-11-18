@@ -4,6 +4,7 @@ export {
   memberRestrictionFor,
   memberRestrictionKillSwitchIgnoredValue,
   memberRestrictionKillSwitchOn,
+  memberRestrictionModeFor,
   memberRestrictionOrUnavailable,
   memberRestrictionResolver,
   memberRestrictionUnavailable,
@@ -17,6 +18,13 @@ export {
   memberRestrictionForMembership,
 } from "./actor-memberships.js";
 export { MEMBER_RESTRICTION_FORCED_OFF_ACTION, reportMemberRestrictionKillSwitchAtBoot } from "./boot.js";
+export {
+  INVITE_MEMBER_RESTRICTION_KEY,
+  assertInviterNotRestricted,
+  inviteMemberRestrictionFromDefaults,
+  markForNewInvite,
+  withoutInviteMemberRestriction,
+} from "./invite.js";
 export {
   MEMBER_RESTRICTED_ROLE_CODE,
   MEMBER_RESTRICTION_CHANGED_ACTION,

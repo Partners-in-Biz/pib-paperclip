@@ -1024,6 +1024,7 @@ export type {
   UserCompanyAccessEntry,
   UserCompanyAccessResponse,
   MemberRestriction,
+  InviteMemberRestriction,
   ActorCompanyMembership,
   SessionMemberRestriction,
 } from "./access.js";
