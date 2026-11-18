@@ -40,6 +40,7 @@ const TASKS_TEST = "server/src/__tests__/member-restriction-route-table-tasks.te
 const TREE_TEST = "server/src/__tests__/member-restriction-route-table-comments-projects.test.ts";
 const DOCS_TEST = "server/src/__tests__/member-restriction-route-table-documents.test.ts";
 const ACCOUNT_TEST = "server/src/__tests__/member-restriction-route-table-account.test.ts";
+const WORKSPACES_TEST = "server/src/__tests__/member-restriction-route-table-workspaces-assets.test.ts";
 
 export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntry[] = [
   // C4b-1a (PAR-12730): the task routes of `routes/issues.ts`. Comments,
@@ -260,6 +261,32 @@ export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntr
   { method: "PATCH", path: "/api/companies/:companyId/branding", class: "closed" },
   { method: "POST", path: "/api/companies/:companyId/archive", class: "closed" },
   { method: "DELETE", path: "/api/companies/:companyId", class: "closed" },
+
+  // C4e-2 (PAR-12734): user directory, assets and execution workspaces. The
+  // directory is reduced to id and display name where his person is
+  // restricted. An image is filed under `issues/<id>` only for a task he can
+  // read; an asset opens only through an object he can read, or as the company
+  // logo. One workspace opens only when its source task passes his strict
+  // `issue:read` ("not found" otherwise); its host fields are stripped later
+  // by C4i-c (PAR-12951). Dashboard, costs, secrets, skills, settings and the
+  // plugin config, logs and jobs pages have no row: closed.
+  { method: "GET", path: "/api/companies/:companyId/user-directory", class: "open", test: WORKSPACES_TEST },
+  { method: "POST", path: "/api/companies/:companyId/assets/images", class: "open", test: WORKSPACES_TEST },
+  { method: "GET", path: "/api/assets/:assetId/content", class: "open", test: WORKSPACES_TEST },
+  { method: "GET", path: "/api/execution-workspaces/:id", class: "open", test: WORKSPACES_TEST },
+  { method: "GET", path: "/api/execution-workspaces/:id/close-readiness", class: "open", test: WORKSPACES_TEST },
+  { method: "GET", path: "/api/execution-workspaces/:id/workspace-operations", class: "open", test: WORKSPACES_TEST },
+  // Closed: the logo is changing the company; the lists run across the
+  // company; the workspace write takes host command configuration, and the
+  // runtime controls, branch reconcile and login handoff need `runtime:*`.
+  { method: "POST", path: "/api/companies/:companyId/logo", class: "closed" },
+  { method: "GET", path: "/api/companies/:companyId/execution-workspaces", class: "closed" },
+  { method: "GET", path: "/api/companies/:companyId/workspace-overview", class: "closed" },
+  { method: "PATCH", path: "/api/execution-workspaces/:id", class: "closed" },
+  { method: "POST", path: "/api/execution-workspaces/:id/runtime-services/:action", class: "closed" },
+  { method: "POST", path: "/api/execution-workspaces/:id/runtime-commands/:action", class: "closed" },
+  { method: "POST", path: "/api/execution-workspaces/:id/reconcile-branch", class: "closed" },
+  { method: "POST", path: "/api/execution-workspaces/:id/login-handoff", class: "closed" },
 ];
 
 export type MemberRestrictionRouteMatch =

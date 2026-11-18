@@ -111,6 +111,7 @@ import {
   setMemberRestriction,
   setMemberRestrictionMode,
 } from "../services/member-restriction/admin.js";
+import { actorRestrictedInCompany } from "../services/member-restriction/company-record.js";
 import {
   claimBoardOwnership,
   inspectBoardClaimChallenge
@@ -4483,8 +4484,17 @@ export function accessRoutes(
   router.get("/companies/:companyId/user-directory", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    const restricted = await actorRestrictedInCompany(db, req.actor, companyId);
     const users = await loadCompanyUserDirectory(db, companyId);
-    res.json({ users });
+    // A restricted person sees only id and display name (PAR-12608 4.6).
+    res.json({
+      users: restricted
+        ? users.map(({ principalId, status, user }) => ({
+          principalId, status, membershipRole: null,
+          user: user ? { id: user.id, name: user.name, email: null, image: null } : null,
+        }))
+        : users,
+    });
   });
 
   router.patch(

@@ -1,5 +1,5 @@
 import { and, eq } from "drizzle-orm";
-import { assets, caseAttachments, heartbeatRuns, issues, issueAttachments, runnerApiResponseReservations, type Db } from "@paperclipai/db";
+import { assets, caseAttachments, companyLogos, heartbeatRuns, issues, issueAttachments, runnerApiResponseReservations, type Db } from "@paperclipai/db";
 import { isUuidLike } from "@paperclipai/shared";
 import { authorizationService, type AuthorizationActor } from "./authorization.js";
 import { refusedOnlyByMemberRestriction } from "./member-restriction/action-list.js";
@@ -32,6 +32,9 @@ export async function canActorReadAssetContent(db: Db, actor: AuthorizationActor
     if (!scope.allowed && !refusedOnlyByMemberRestriction(scope)) return false;
     restrictedMember = !scope.allowed;
   }
+  // The company logo stays readable to him (PAR-12608 4.6, "Assets by id").
+  if (restrictedMember && (await db.select({ id: companyLogos.id }).from(companyLogos)
+    .where(and(eq(companyLogos.assetId, asset.id), eq(companyLogos.companyId, asset.companyId))).limit(1)).length) return true;
   const parts = asset.objectKey.split("/");
   const isDraft = parts[1] === "assets" && parts[2] === "issues" && parts[3] === "drafts";
   const sourceIssueId = parts[1] === "assets" ? parts[3] : parts[2];
