@@ -822,8 +822,10 @@ export function pluginRoutes(
     companyId: string | null | undefined,
     plugin: { pluginKey: string },
     target: string,
+    recheck = false,
   ): Promise<void> {
-    return assertPluginOpenForActor({ db, resolve: resolveMemberRestriction }, req.actor, companyId, plugin.pluginKey, target);
+    return assertPluginOpenForActor({ db, resolve: resolveMemberRestriction }, req.actor, companyId, plugin.pluginKey, target,
+      recheck ? { fresh: true, record: false } : {});
   }
 
   /** The acting person a plugin receives (PAR-12608 4.10, H3); a failed restriction read throws 503. */
@@ -1913,21 +1915,47 @@ export function pluginRoutes(
       }
     };
 
+    // Each batch of events is re-checked by the gate before delivery (4.6a), so
+    // a plugin removed from his list, a flag set or a mode change ends the stream.
+    let queued: Array<[unknown, string]> = [];
+    let draining = false;
+    const drain = async () => {
+      draining = true;
+      while (queued.length > 0 && !unsubscribed) {
+        const batch = queued;
+        queued = [];
+        try {
+          await assertPluginOpenForPerson(req, companyId, plugin, "stream", true);
+        } catch {
+          queued = [];
+          safeUnsubscribe();
+          res.end("event: close\ndata: {}\n\n");
+          break;
+        }
+        for (const [event, eventType] of batch) {
+          if (unsubscribed || !res.writable) break;
+          try {
+            if (eventType !== "message") {
+              res.write(`event: ${eventType}\n`);
+            }
+            res.write(`data: ${JSON.stringify(event)}\n\n`);
+          } catch {
+            // Connection closed or write error — stop delivering
+            safeUnsubscribe();
+          }
+        }
+      }
+      draining = false;
+    };
+
     const unsubscribe = bridgeDeps.streamBus.subscribe(
       plugin.id,
       channel,
       companyId,
       (event, eventType) => {
         if (unsubscribed || !res.writable) return;
-        try {
-          if (eventType !== "message") {
-            res.write(`event: ${eventType}\n`);
-          }
-          res.write(`data: ${JSON.stringify(event)}\n\n`);
-        } catch {
-          // Connection closed or write error — stop delivering
-          safeUnsubscribe();
-        }
+        queued.push([event, eventType]);
+        if (!draining) void drain();
       },
     );
 

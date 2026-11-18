@@ -20,8 +20,9 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 
 /**
  * PAR-12740 (C5-1): the core plugin gate at every plugin call point, spec
- * PAR-12608 rev 3, 4.8 (AC-K1, AC-K3, AC-K5, AC-K6) and the plugin socket
- * of 4.6a row 16. The gate is a new caller of the resolver: kill-switch and
+ * PAR-12608 rev 3, 4.8 (AC-K1, AC-K3, AC-K5, AC-K6), the plugin socket of
+ * 4.6a row 16, and the second half of AC-M7 (an open stream of a plugin removed
+ * from his list). The gate is a new caller of the resolver: kill-switch and
  * failing-read tests below (AC-F8, AC-X1). The scan of AC-K7 is in
  * `openapi-routes.test.ts`.
  */
@@ -235,6 +236,30 @@ describeDb("core plugin gate (PAR-12608 4.8)", () => {
     workerManager.call.mockResolvedValue({ status: 502 });
     expect(await upgrade(id.crm!)).toBe(502);
     expect(workerManager.call).toHaveBeenCalledWith(id.crm, "handleApiRequest", expect.objectContaining({ routeKey: "channel" }));
+  });
+
+  it("AC-M7: R's open stream of a plugin then removed from his list delivers nothing further and ends", async () => {
+    await setList([CRM]);
+    actor = await boardFor(R);
+    const res = await fetch(`${base}/api/plugins/${id.crm}/bridge/stream/ch?companyId=${id.Y}`);
+    expect(res.status).toBe(200);
+    const reader = res.body!.getReader();
+    let text = "";
+    const until = async (pattern: string) => {
+      while (!text.includes(pattern)) {
+        const chunk = await reader.read();
+        if (chunk.done) return false;
+        text += new TextDecoder().decode(chunk.value);
+      }
+      return true;
+    };
+    await until(":ok");
+    streamBus.publish(id.crm!, "ch", id.Y!, { mark: "before" });
+    expect(await until("before")).toBe(true);
+    await setList([]);
+    streamBus.publish(id.crm!, "ch", id.Y!, { mark: "after" });
+    expect(await until("@@end-of-stream@@")).toBe(false);
+    expect(text).not.toContain("after");
   });
 
   it("report mode records a would-refuse and lets the call through", async () => {

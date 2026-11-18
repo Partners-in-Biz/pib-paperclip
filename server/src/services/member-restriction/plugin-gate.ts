@@ -20,18 +20,33 @@ export interface PluginGateDeps {
   resolve: MemberRestrictionResolver;
 }
 
+/**
+ * `fresh` ignores the membership carried by the request and reads the database
+ * (a stream re-checked per message, 4.6a); `record: false` skips the denial
+ * record, so a re-check does not log one denial per message.
+ */
+export interface PluginGateOptions {
+  fresh?: boolean;
+  record?: boolean;
+}
+
 /** Refuses (403 `MEMBER_RESTRICTED`) unless the plugin is open to the person; a failed read is 503. */
 export async function assertPluginOpenForPerson(
   deps: PluginGateDeps,
   input: { companyId: string; personId: string; pluginKey: string; target: string },
   membership: Partial<ActorCompanyMembership> | null = null,
+  options: PluginGateOptions = {},
 ): Promise<void> {
   const { companyId, personId, pluginKey } = input;
-  const restriction = await memberRestrictionForMembership(deps.resolve, personId, companyId, membership);
+  const restriction = await memberRestrictionForMembership(
+    deps.resolve, personId, companyId, options.fresh ? null : membership,
+  );
   if (!restriction.restricted || restriction.mode === "off" || restriction.pluginKeys.includes(pluginKey)) return;
-  await recordMemberRestrictionDenial(deps.db, {
-    companyId, personId, ruleId: PLUGIN_GATE_RULE_ID, target: `plugin:${pluginKey}:${input.target}`, mode: restriction.mode,
-  });
+  if (options.record !== false) {
+    await recordMemberRestrictionDenial(deps.db, {
+      companyId, personId, ruleId: PLUGIN_GATE_RULE_ID, target: `plugin:${pluginKey}:${input.target}`, mode: restriction.mode,
+    });
+  }
   if (restriction.mode === "enforce") {
     throw forbidden("Not available for your access level", { code: MEMBER_RESTRICTED_CODE });
   }
@@ -50,11 +65,14 @@ export async function assertPluginOpenForActor(
   companyId: string | null | undefined,
   pluginKey: string,
   target: string,
+  options: PluginGateOptions = {},
 ): Promise<void> {
   if (!companyId || actor.source === "local_implicit" || actor.isInstanceAdmin) return;
   const carried = actorPersonMembership(actor, companyId);
   if (!carried) return;
-  await assertPluginOpenForPerson(deps, { companyId, personId: carried.personId, pluginKey, target }, carried.membership);
+  await assertPluginOpenForPerson(
+    deps, { companyId, personId: carried.personId, pluginKey, target }, carried.membership, options,
+  );
 }
 
 export function isMemberRestricted(error: unknown): error is HttpError {
