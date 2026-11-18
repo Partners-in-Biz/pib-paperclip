@@ -21,6 +21,7 @@ import {
   issues,
 } from "@paperclipai/db";
 import { errorHandler } from "../middleware/error-handler.js";
+import { logger } from "../middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "../realtime/live-events-ws.js";
 import { companyRoutes } from "../routes/companies.js";
 import { issueRoutes } from "../routes/issues.js";
@@ -119,6 +120,7 @@ describe("read surfaces database support", () => {
     const agentRows = await db.insert(agents).values([1, 2].map((n) => ({
       companyId, name: `Agent ${n}`, adapterType: "process", status: "active",
     }))).returning();
+    id.agent = agentRows[0]!.id;
     const chatAgents = await db.insert(agents).values([1, 2].map((n) => ({
       companyId: chatCompanyId, name: `Chat agent ${n}`, adapterType: "process", status: "active",
     }))).returning();
@@ -270,46 +272,89 @@ describe("read surfaces database support", () => {
     });
   });
 
-  describe("live socket (AC-L11)", () => {
-    async function received() {
+  describe("live socket (AC-L11, 4.6)", () => {
+    type Message = { type: string; payload: Record<string, unknown> };
+    // The four kinds 4.6 drops for R: bound to no task, project or run.
+    const otherEvents = (): Parameters<typeof publishLiveEvent>[0][] => [
+      { companyId, type: "plugin.ui.updated", payload: { pluginId: "fixture-plugin" } },
+      { companyId, type: "agent.status", payload: { agentId: id.agent, status: "idle" } },
+      { companyId, type: "agent.runtime_state.updated", payload: { agentId: id.agent } },
+      { companyId, type: "activity.logged", payload: {
+        action: "agent.updated", entityType: "agent", entityId: id.agent, actorType: "user", actorId: O,
+      } },
+      { companyId, type: "external_object.updated", payload: { externalObjectId: randomUUID() } },
+    ];
+    const otherTypes = ["plugin.ui.updated", "agent.status", "agent.runtime_state.updated", "activity.logged", "external_object.updated"];
+
+    async function received(user = R): Promise<Message[]> {
       const server = createServer();
       const wss = setupLiveEventsWebSocketServer(server, db, {
         deploymentMode: "authenticated",
-        resolveCloudActor: async () => ({ userId: R, companyIds: [companyId] }),
+        resolveCloudActor: async () => ({ userId: user, companyIds: [companyId] }),
       });
       server.listen(0, "127.0.0.1");
       await once(server, "listening");
       const socket = new WebSocket(`ws://127.0.0.1:${(server.address() as AddressInfo).port}/api/companies/${companyId}/events/ws`);
-      const messages: Array<{ type: string; payload: Record<string, unknown> }> = [];
+      const messages: Message[] = [];
       socket.on("message", (bytes) => messages.push(JSON.parse(bytes.toString())));
+      const warn = vi.spyOn(logger, "warn");
+      const failures = () => warn.mock.calls.filter((call) => call[1] === "live event authorization failed").length;
       try {
         await once(socket, "open");
-        for (const issueId of [id.mine, id.others]) {
-          publishLiveEvent({ companyId, type: "activity.logged", payload: {
+        const events: Parameters<typeof publishLiveEvent>[0][] = [
+          ...[id.mine, id.others].map((issueId) => ({ companyId, type: "activity.logged" as const, payload: {
             action: "issue.updated", entityType: "issue", entityId: issueId, actorType: "user", actorId: O,
-          } });
+          } })),
+          ...otherEvents(),
+        ];
+        for (const event of events) publishLiveEvent(event);
+        if (resolverFails.on) {
+          // Nothing reaches R, so wait until the delivery refused every event.
+          await expect.poll(failures).toBe(events.length);
+        } else {
+          // Delivery is in order: once an event of R's own task arrives, all earlier ones are decided.
+          const barrier = randomUUID();
+          publishLiveEvent({ companyId, type: "agent.session.goal.changed", payload: { issueId: id.mine, barrier } });
+          await expect.poll(() => messages.some((message) => message.payload.barrier === barrier)).toBe(true);
+          return messages.filter((message) => message.payload.barrier !== barrier);
         }
-        const barrier = randomUUID();
-        publishLiveEvent({ companyId, type: "agent.status", payload: { agentId: barrier, status: "idle" } });
-        await expect.poll(() => messages.some((message) => message.payload.agentId === barrier)).toBe(true);
-        return messages.filter((message) => message.type === "activity.logged").map((message) => message.payload.entityId);
+        return messages;
       } finally {
+        warn.mockRestore();
         socket.terminate();
         wss.close();
         server.close();
       }
     }
+    const taskEvents = (messages: Message[]) => messages
+      .filter((message) => message.type === "activity.logged" && message.payload.entityType === "issue")
+      .map((message) => message.payload.entityId);
+    const others = (messages: Message[]) => messages
+      .filter((message) => !(message.type === "activity.logged" && message.payload.entityType === "issue"))
+      .map((message) => message.type);
 
     it("delivers to R only the events of tasks R can read", async () => {
-      expect(await received()).toEqual([id.mine]);
+      expect(taskEvents(await received())).toEqual([id.mine]);
     });
 
-    it("AC-F8: with the kill switch `off`, delivers both as in mode off", async () => {
+    it("4.6: R receives no plugin, agent status, agent runtime, non-task activity or external object event", async () => {
+      expect(others(await received())).toEqual([]);
+    });
+
+    it("4.6: O receives the other event types as today", async () => {
+      const messages = await received(O);
+      expect(taskEvents(messages)).toEqual([id.mine, id.others]);
+      expect(others(messages)).toEqual(otherTypes);
+    });
+
+    it("AC-F8: with the kill switch `off`, delivers both and the other event types as in mode off", async () => {
       vi.stubEnv("PAPERCLIP_MEMBER_RESTRICTION", "off");
-      expect(await received()).toEqual([id.mine, id.others]);
+      const messages = await received();
+      expect(taskEvents(messages)).toEqual([id.mine, id.others]);
+      expect(others(messages)).toEqual(otherTypes);
     });
 
-    it("AC-X1: when the resolver throws, delivers no task event", async () => {
+    it("AC-X1: when the resolver throws, delivers no event to R", async () => {
       resolverFails.on = true;
       expect(await received()).toEqual([]);
     });
