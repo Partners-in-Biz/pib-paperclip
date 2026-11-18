@@ -58,7 +58,7 @@ describe("account route rows database support", () => {
 
 type Actor = Express.Request["actor"];
 type Res = request.Response;
-type Ctx = { R: string; O: string; Y: string; X: string; oKeyId: string; oChallengeId: string; oDocId: string };
+type Ctx = { R: string; O: string; Y: string; X: string; oKeyId: string; oChallengeId: string; oDocId: string; oTaskId: string; rTaskId: string };
 type Case = { row: string; send: (c: ReturnType<typeof request>, ctx: Ctx) => request.Test; mine: (res: Res, ctx: Ctx) => void };
 
 const WRONG_TOKEN = "wrong-token-0123456789abcdef";
@@ -213,7 +213,19 @@ it("AC-G1: the closed company rows (changing the company, stats, timeline, expor
       companyId: ctx.Y, title: "O's report", latestBody: "o", format: "markdown", createdByAgentId: agent!.id,
     }).returning();
     ctx.oDocId = doc!.id;
-    await db.insert(issueDocuments).values({ companyId: ctx.Y, issueId: task!.id, documentId: doc!.id, key: "report" });
+    ctx.oTaskId = task!.id;
+    // R's readable child under O's unreadable task, with its own artifact: the grouping must not climb to O's task.
+    const [child] = await db.insert(issues).values({
+      companyId: ctx.Y, parentId: task!.id, title: "R's subtask", status: "todo", createdByUserId: ctx.O, assigneeUserId: ctx.R,
+    }).returning();
+    ctx.rTaskId = child!.id;
+    const [rDoc] = await db.insert(documents).values({
+      companyId: ctx.Y, title: "R's notes", latestBody: "r", format: "markdown", createdByAgentId: agent!.id,
+    }).returning();
+    await db.insert(issueDocuments).values([
+      { companyId: ctx.Y, issueId: task!.id, documentId: doc!.id, key: "report" },
+      { companyId: ctx.Y, issueId: child!.id, documentId: rDoc!.id, key: "notes" },
+    ]);
   }, 120_000);
 
   afterAll(async () => {
@@ -234,6 +246,26 @@ it("AC-G1: the closed company rows (changing the company, stats, timeline, expor
         expect(now.status, JSON.stringify(now.body)).toBe((await today(send)).status);
       }
     });
+  });
+
+  it("AC-G3: artifacts grouped by task never name O's unreadable parent task, and its id is \"not found\"", async () => {
+    const leaks = (res: Res) => {
+      ok(res);
+      expect(JSON.stringify(res.body)).not.toContain(ctx.oTaskId);
+      expect(JSON.stringify(res.body)).not.toContain("O's task");
+    };
+    const caller = await boardFor(ctx.R);
+    const grouped = await as(caller).get(`/api/companies/${ctx.Y}/artifacts?groupBy=parent_task`);
+    leaks(grouped);
+    expect(grouped.body.groups.map((group: { issue: { id: string } }) => group.issue.id)).toEqual([ctx.rTaskId]);
+    for (const groupBy of ["task", "parent_task"]) {
+      const selected = await as(caller).get(`/api/companies/${ctx.Y}/artifacts?groupBy=${groupBy}&groupIssueId=${ctx.oTaskId}`);
+      leaks(selected);
+      expect(selected.body.selectedGroup).toBeNull();
+    }
+    // Today's answer: with the switch `off` the parent is the group.
+    const off = await today(async () => as(caller).get(`/api/companies/${ctx.Y}/artifacts?groupBy=parent_task`));
+    expect(off.body.groups.map((group: { issue: { id: string } }) => group.issue.id)).toEqual([ctx.oTaskId]);
   });
 
   it("the company record in X, and for the admin, is the full record; in Y it is reduced", async () => {

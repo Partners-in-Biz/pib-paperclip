@@ -195,7 +195,17 @@ function pageByCursor<T extends { id: string; updatedAt: string }>(
   return { page, nextCursor };
 }
 
-async function loadIssueGroupingRows(db: Db, companyId: string, seedIssueIds: Iterable<string>) {
+/**
+ * Group headers name a task (id, identifier, title): load only tasks the caller
+ * may read. An unreadable parent ends the climb, so the artifact groups under
+ * its readable task; an unreadable `groupIssueId` is "not found" (PAR-12733).
+ */
+async function loadIssueGroupingRows(
+  db: Db,
+  companyId: string,
+  seedIssueIds: Iterable<string>,
+  readConditions: SQL[] = [],
+) {
   const rowsById = new Map<string, IssueGroupingRow>();
   let pending = [...new Set(seedIssueIds)];
 
@@ -209,7 +219,7 @@ async function loadIssueGroupingRows(db: Db, companyId: string, seedIssueIds: It
         updatedAt: issues.updatedAt,
       })
       .from(issues)
-      .where(and(eq(issues.companyId, companyId), inArray(issues.id, pending)));
+      .where(and(eq(issues.companyId, companyId), inArray(issues.id, pending), ...readConditions));
 
     const nextPending = new Set<string>();
     for (const row of rows) {
@@ -742,7 +752,7 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
 
       const issueSeedIds = new Set(artifacts.map((artifact) => artifact.issue.id));
       if (query.groupIssueId) issueSeedIds.add(query.groupIssueId);
-      const issueRows = await loadIssueGroupingRows(db, companyId, issueSeedIds);
+      const issueRows = await loadIssueGroupingRows(db, companyId, issueSeedIds, options.issueConditions);
       const groups = buildArtifactGroups({
         artifacts: sorted,
         companyPrefix: company.issuePrefix,
