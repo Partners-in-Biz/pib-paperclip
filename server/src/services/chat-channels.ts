@@ -49,6 +49,7 @@ import { createInboundAdmission } from "./chat-channels/inbound/admission.js";
 import { createInboundEnvelope } from "./chat-channels/inbound/envelope.js";
 import { sameTeamsThreadIdentity, durableExternalThreadIdentity, canonicalProviderResourceId, nonDirectDestinationAllowed, linearControlCommand, actionThreadMatchesConversation } from "./chat-channels/inbound/surfaces.js";
 import { createChatInboundAuthority } from "./chat-channels/inbound/authorization.js";
+import { RESTRICTED_SENDER_REASON, restrictedSenderNotice } from "./chat-channels/inbound/restricted-sender.js";
 import { createTeamsRoutes } from "./chat-channels/microsoft-teams/routes.js";
 import type { LiveInboundMessage } from "./chat-channels/runtime-types.js";
 import { DELIVERY_PROCESSING_STALE_MS, normalizedDeliveryThreadId, normalizedLifecycleEffect, deliveryReady, pendingInboundWakeupCondition, lifecycleRuntimeFence, normalizedLifecycleWithRuntimeFence } from "./chat-channels/inbound/delivery-ledger.js";
@@ -1855,16 +1856,29 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           ? "Connection is not active"
           : !destinationAllowed
             ? "Destination is not enabled in Paperclip"
-            : principalResolution.linkedDenied
+            : principalResolution.restricted
+              ? RESTRICTED_SENDER_REASON
+              : principalResolution.linkedDenied
               ? "Linked Paperclip account is not currently permitted"
               : !principalAllowed
                 ? endpoint.allowUnlinkedPeople
                   ? "Endpoint sponsor can no longer authorize external guests"
                   : "External identity must be linked to a Paperclip account"
                 : "Message did not address the agent or an active task thread";
-        await db.transaction(async (tx) => {
+        // PAR-12608 4.6a row 11: a restricted member's message that would
+        // otherwise have been taken gets a reply that says why it was not.
+        const restrictedNotice = principalResolution.restricted && endpointAllowed && destinationAllowed && activationAllowed
+          ? restrictedSenderNotice({
+            deliveryId: activeDelivery.id, threadId: thread.id, authorUserId: message.author.userId, resourceId: resource.id,
+            ephemeral: CAPABILITIES[endpoint.provider].ephemeralMessages && typeof thread.postEphemeral === "function",
+          })
+          : null;
+        const noticeContext = restrictedNotice
+          ? runtimeContext ?? runtimeContextForRecord((await endpointRecord(endpoint.id)) ?? (() => { throw new Error("Chat endpoint is unavailable"); })())
+          : null;
+        const notice = await db.transaction(async (tx) => {
           await notifyChatDeliveryWork(tx);
-          return tx
+          await tx
             .update(chatDeliveries)
             .set({
               state: "filtered",
@@ -1876,7 +1890,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
               updatedAt: new Date(),
             })
             .where(eq(chatDeliveries.id, activeDelivery.id));
+          return restrictedNotice && noticeContext
+            ? stageProviderEffect(tx, { endpoint, deliveryId: activeDelivery.id, ...restrictedNotice, runtimeContext: noticeContext })
+            : null;
         });
+        if (notice) await processProviderEffect(notice.id, thread);
         return;
       }
 
