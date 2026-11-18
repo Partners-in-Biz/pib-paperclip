@@ -3982,7 +3982,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const projectsSvc = projectService(db);
     const issuesSvc = issueService(db);
     const routinesSvc = routineService(db);
-    const allProjectsRaw = include.projects || include.issues ? await projectsSvc.list(companyId) : [];
+    // "system": company export is company set-up, closed to a restricted person (spec 4.6).
+    const allProjectsRaw = include.projects || include.issues ? await projectsSvc.list(companyId, { readCondition: "system" }) : [];
     const allProjects = allProjectsRaw.filter((project) => !project.archivedAt);
     const allRoutinesRaw = include.issues ? await routinesSvc.list(companyId) : [];
     const builtInRoutineRows = allRoutinesRaw.filter((routine) =>
@@ -5045,7 +5046,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         existingAgentIds.add(existing.id);
         existingSlugs.add(slug);
       }
-      const existingProjects = await projects.list(input.target.companyId);
+      // "system": name-collision check across the whole target company; rows are not returned.
+      const existingProjects = await projects.list(input.target.companyId, { readCondition: "system" });
       for (const existing of existingProjects) {
         if (!existingProjectSlugToProject.has(existing.urlKey)) {
           existingProjectSlugToProject.set(existing.urlKey, { id: existing.id, name: existing.name });
@@ -5572,7 +5574,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       const importedSlugToProjectId = new Map<string, string>();
       const importedProjectWorkspaceIdByProjectSlug = new Map<string, Map<string, string>>();
       const existingProjectSlugToId = new Map<string, string>();
-      const existingProjects = await projects.list(targetCompany.id);
+      // "system": slug lookup across the whole target company; rows are not returned.
+      const existingProjects = await projects.list(targetCompany.id, { readCondition: "system" });
       for (const existing of existingProjects) {
         existingProjectSlugToId.set(existing.urlKey, existing.id);
       }
