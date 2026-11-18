@@ -45,7 +45,7 @@ type Actor = Express.Request["actor"];
 type Res = request.Response;
 type Ids = {
   companyId: string; agentId: string; issueId: string; commentId: string; holdId: string;
-  projectId: string; workspaceId: string; memberId: string; receiptKey: string;
+  projectId: string; workspaceId: string; memberId: string;
 };
 
 /** One request per row. `hidden` says R did not get O's object. */
@@ -53,8 +53,6 @@ type Case = {
   row: string;
   send: (client: request.SuperTest<request.Test>, ids: Ids) => request.Test;
   hidden: (res: Res, ids: Ids) => boolean;
-  /** The object is hidden by the route itself, not by the restriction, so the switch-off control hides it too. */
-  hiddenWithSwitchOff?: true;
 };
 
 const notFound = (res: Res) => res.status === 404;
@@ -75,14 +73,7 @@ const CASES: Case[] = [
   // Projects (routes/projects.ts).
   { row: "GET /api/companies/:companyId/projects", send: (c, { companyId }) => c.get(`/api/companies/${companyId}/projects`),
     hidden: (res, { projectId }) => res.status === 200 && !listedIds(res).includes(projectId) },
-  // O's create receipt is keyed by O's id: R replaying O's key and body gets no project.
-  { row: "POST /api/companies/:companyId/projects", hiddenWithSwitchOff: true,
-    send: (c, { companyId, receiptKey }) => c.post(`/api/companies/${companyId}/projects`)
-      .set("X-Paperclip-Receipt-Only", "true").send({ name: `Project ${receiptKey}`, idempotencyKey: receiptKey }),
-    hidden: (res) => res.status === 204 },
   { row: "GET /api/projects/:id", send: (c, { projectId }) => c.get(`/api/projects/${projectId}`), hidden: notFound },
-  { row: "PATCH /api/projects/:id",
-    send: (c, { projectId }) => c.patch(`/api/projects/${projectId}`).send({ description: "changed" }), hidden: notFound },
   { row: "GET /api/projects/:id/external-object-summary",
     send: (c, { projectId }) => c.get(`/api/projects/${projectId}/external-object-summary`), hidden: notFound },
   { row: "GET /api/projects/:id/access-members",
@@ -93,12 +84,6 @@ const CASES: Case[] = [
   { row: "DELETE /api/projects/:id/access-members/:memberId",
     send: (c, { projectId, memberId }) => c.delete(`/api/projects/${projectId}/access-members/${memberId}`), hidden: notFound },
   { row: "GET /api/projects/:id/workspaces", send: (c, { projectId }) => c.get(`/api/projects/${projectId}/workspaces`), hidden: notFound },
-  { row: "POST /api/projects/:id/workspaces",
-    send: (c, { projectId }) => c.post(`/api/projects/${projectId}/workspaces`).send({ name: "Second", cwd: "/tmp/restriction-ws" }),
-    hidden: notFound },
-  { row: "PATCH /api/projects/:id/workspaces/:workspaceId",
-    send: (c, { projectId, workspaceId }) => c.patch(`/api/projects/${projectId}/workspaces/${workspaceId}`).send({ name: "Renamed" }),
-    hidden: notFound },
   { row: "DELETE /api/projects/:id/workspaces/:workspaceId",
     send: (c, { projectId, workspaceId }) => c.delete(`/api/projects/${projectId}/workspaces/${workspaceId}`), hidden: notFound },
   // Task tree (routes/issue-tree-control.ts).
@@ -118,6 +103,11 @@ const CLOSED_ROWS = [
   "POST /api/issues/:id/queued-comments/interrupt",
   "POST /api/issues/:id/queued-comments/:commentId/steer",
   "DELETE /api/issues/:id/queued-comments/:commentId",
+  // Closed until PAR-12933 guards host commands, `cwd`, `env` and `environmentId`.
+  "POST /api/companies/:companyId/projects",
+  "PATCH /api/projects/:id",
+  "POST /api/projects/:id/workspaces",
+  "PATCH /api/projects/:id/workspaces/:workspaceId",
   "GET /api/companies/:companyId/project-repositories",
   "GET /api/projects/:id/git-authorization",
   "PUT /api/projects/:id/git-authorization",
@@ -191,12 +181,9 @@ it("AC-G1: the closed comment, project and task-tree rows classify as closed for
     const [member] = await db.insert(projectAccessMembers).values({
       companyId, projectId: project!.id, subjectType: "agent", subjectId: agentId,
     }).returning();
-    // The project's creator replays nothing: the key exists only for the owner.
-    const receiptKey = `receipt-${randomUUID()}`;
-    await as(await boardFor(owner)).post(`/api/companies/${companyId}/projects`).send({ name: `Project ${receiptKey}`, idempotencyKey: receiptKey });
     return {
       companyId, agentId, issueId: task!.id, commentId: comment!.id, holdId: hold!.id,
-      projectId: project!.id, workspaceId: workspace!.id, memberId: member!.id, receiptKey,
+      projectId: project!.id, workspaceId: workspace!.id, memberId: member!.id,
     };
   };
   /** The same request with the kill switch on: today's answer. */
@@ -259,11 +246,11 @@ it("AC-G1: the closed comment, project and task-tree rows classify as closed for
       // Control: with the kill switch on the same call reaches O's object, so
       // the answer above is the restriction and not a broken request.
       const open = await today(send);
-      expect(entry.hidden(open.res, open.ids), JSON.stringify(open.res.body)).toBe(entry.hiddenWithSwitchOff === true);
+      expect(entry.hidden(open.res, open.ids), JSON.stringify(open.res.body)).toBe(false);
     });
 
     it("scope callers: R as owner of X, and an instance admin who is no member of Y, get today's answer", async () => {
-      // Set-up first: `ids` sends O's create request, which sets the actor.
+      // Set-up first, then the caller sets the actor.
       const callAs = async (who: () => Promise<Actor>, target: Promise<Ids>) => {
         const ready = await target;
         return entry.send(as(await who()), ready);

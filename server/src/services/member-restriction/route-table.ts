@@ -127,20 +127,26 @@ export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntr
 
   // C4b-1b: `routes/projects.ts`. Every `open` handler reads the project
   // through `project:read` (lists through `projectReadSqlCondition`) first;
-  // workspace writes then ask `project:write_workspace`, access members the
-  // privacy-owner rule (4.4, AC-P3). Creating a project is allowed (4.5).
+  // workspace delete then asks `project:write_workspace`, access members the
+  // privacy-owner rule (4.4, AC-P3).
   { method: "GET", path: "/api/companies/:companyId/projects", class: "open", test: TREE_TEST },
-  { method: "POST", path: "/api/companies/:companyId/projects", class: "open", test: TREE_TEST },
   { method: "GET", path: "/api/projects/:id", class: "open", test: TREE_TEST },
-  { method: "PATCH", path: "/api/projects/:id", class: "open", test: TREE_TEST },
   { method: "GET", path: "/api/projects/:id/external-object-summary", class: "open", test: TREE_TEST },
   { method: "GET", path: "/api/projects/:id/access-members", class: "open", test: TREE_TEST },
   { method: "POST", path: "/api/projects/:id/access-members", class: "open", test: TREE_TEST },
   { method: "DELETE", path: "/api/projects/:id/access-members/:memberId", class: "open", test: TREE_TEST },
   { method: "GET", path: "/api/projects/:id/workspaces", class: "open", test: TREE_TEST },
-  { method: "POST", path: "/api/projects/:id/workspaces", class: "open", test: TREE_TEST },
-  { method: "PATCH", path: "/api/projects/:id/workspaces/:workspaceId", class: "open", test: TREE_TEST },
   { method: "DELETE", path: "/api/projects/:id/workspaces/:workspaceId", class: "open", test: TREE_TEST },
+  // Closed until PAR-12933: project create and patch take a workspace
+  // `provisionCommand`, `env` with any company `secret_ref` and an
+  // `environmentId`; workspace create and patch take a host `cwd`, a
+  // `cleanupCommand` and runtime commands. 4.6 denies secrets, `runtime:*`
+  // and `environments:manage`; PAR-12933 adds the handler guard and reopens
+  // them (creating a project is allowed, 4.5).
+  { method: "POST", path: "/api/companies/:companyId/projects", class: "closed" },
+  { method: "PATCH", path: "/api/projects/:id", class: "closed" },
+  { method: "POST", path: "/api/projects/:id/workspaces", class: "closed" },
+  { method: "PATCH", path: "/api/projects/:id/workspaces/:workspaceId", class: "closed" },
   // Closed: repositories and git authorization are the company's tool access
   // (4.6 "tool access"); runtime services need `runtime:*`, which the action
   // list denies; deleting a project, as deleting a task, is the owner's.
