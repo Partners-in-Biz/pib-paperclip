@@ -91,7 +91,11 @@ export function authRoutes(db: Db) {
       sentryEnvironment: process.env.SENTRY_ENVIRONMENT || null,
       memberRestrictions,
     });
-    res.json({ ...session, ...(boardBootstrap ? { boardBootstrap } : {}) });
+    // The bootstrap carries full company records. A person restricted under
+    // `enforce` anywhere gets none; the screen falls back to `GET /api/companies`,
+    // which reduces those records (PAR-12608 4.6, "Company record").
+    const restrictedSomewhere = memberRestrictions.some((entry) => entry.restricted && entry.mode === "enforce");
+    res.json({ ...session, ...(boardBootstrap && !restrictedSomewhere ? { boardBootstrap } : {}) });
   });
 
   router.get("/profile", async (req, res) => {

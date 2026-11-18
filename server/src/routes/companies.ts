@@ -67,6 +67,7 @@ import {
 } from "../services/index.js";
 import { isCloudManagedInstance } from "../services/cloud-instance.js";
 import { issueReadSqlCondition } from "../services/authorization.js";
+import { companiesRestrictedForActor, companyRecordFor } from "../services/member-restriction/company-record.js";
 import { getHiddenSettings } from "../services/settings-visibility.js";
 import type { StorageService } from "../storage/types.js";
 import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo, hasCompanyAccess } from "./authz.js";
@@ -384,7 +385,10 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     if (scope !== undefined && scope !== "accessible") {
       throw badRequest("scope must be a single accessible value when provided");
     }
-    const result = await svc.list();
+    // A company where the caller's person is restricted under `enforce` is
+    // listed with its reduced record (PAR-12608 4.6).
+    const restricted = await companiesRestrictedForActor(db, req.actor);
+    const result = (await svc.list()).map((company) => companyRecordFor(company, restricted));
     // Navigation needs the same membership scope as company detail routes.
     // Instance admins can inspect the directory without membership, but that
     // visibility alone does not let them open a company's inbox or tasks.
@@ -493,12 +497,13 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     if (req.actor.type !== "agent") {
       assertBoard(req);
     }
+    const restricted = await companiesRestrictedForActor(db, req.actor);
     const company = await svc.getById(companyId);
     if (!company) {
       res.status(404).json({ error: "Company not found" });
       return;
     }
-    res.json(company);
+    res.json(companyRecordFor(company, restricted));
   });
 
   router.get("/:companyId/feedback-traces", async (req, res) => {

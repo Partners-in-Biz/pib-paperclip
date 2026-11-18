@@ -58,6 +58,11 @@ function registerCompanyRouteMocks() {
     feedbackService: () => mockFeedbackService,
     logActivity: mockLogActivity,
   }));
+  // The app's db is a stub: nobody here is restricted (PAR-12733 reads the list for the company record).
+  vi.doMock("../services/member-restriction/resolver.js", async (importOriginal) => ({
+    ...await importOriginal<typeof import("../services/member-restriction/resolver.js")>(),
+    memberRestrictionEnforcedCompanyIds: async () => [],
+  }));
 }
 
 let appImportCounter = 0;
