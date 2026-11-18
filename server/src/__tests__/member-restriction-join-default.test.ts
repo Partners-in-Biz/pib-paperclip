@@ -5,7 +5,7 @@ import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog, agents, authUsers, chatEndpoints, chatExternalPrincipals, chatIdentityLinks, companies, companyMemberships,
-  createDb, invites, issues, joinRequests, plugins, principalPermissionGrants, toolApplications, toolConnections,
+  createDb, instanceUserRoles, invites, issues, joinRequests, plugins, principalPermissionGrants, toolApplications, toolConnections,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
@@ -71,7 +71,7 @@ describe("member-restriction join default database support", () => {
     await db.delete(chatEndpoints); await db.delete(toolConnections); await db.delete(toolApplications);
     await db.delete(joinRequests); await db.delete(invites); await db.delete(issues); await db.delete(principalPermissionGrants);
     await db.delete(companyMemberships); await db.delete(agents); await db.delete(plugins);
-    await db.delete(authUsers); await db.delete(companies);
+    await db.delete(instanceUserRoles); await db.delete(authUsers); await db.delete(companies);
   });
 
   afterAll(async () => {
@@ -335,5 +335,97 @@ describe("member-restriction join default database support", () => {
     as(owner, [companyId]);
     expect((await approve(companyId, pending.id)).status).toBe(200);
     expect(await membershipOf(companyId, person)).toMatchObject({ status: "active", restricted: false, membershipRole: "operator" });
+  });
+
+  it.each([["operator", "suspended"], ["operator", "pending"], ["owner", "suspended"]] as const)(
+    "T12b: a %s row that is %s and unflagged rejoins through a no-choice operator invite flagged, as operator",
+    async (role, status) => {
+      const { companyId, owner } = await setup("enforce");
+      const person = await member(companyId, role, { status });
+      const invite = await inviteFromOff(companyId, owner);
+      as(person);
+      expect((await accept(invite.token)).status).toBe(202);
+      expect(await membershipOf(companyId, person)).toMatchObject({ ...flagged, membershipRole: "operator" });
+    },
+  );
+
+  it("T14: a bootstrap_ceo accept writes no join request and no membership", async () => {
+    await setup("enforce");
+    const token = `pcp_bootstrap_${randomUUID()}`;
+    await db.insert(invites).values({ inviteType: "bootstrap_ceo", allowedJoinTypes: "human", tokenHash: createHash("sha256").update(token).digest("hex"),
+      defaultsPayload: {}, expiresAt: new Date(Date.now() + 3_600_000) });
+    const person = await user();
+    as(person);
+    const res = await accept(token);
+    expect(res.status, JSON.stringify(res.body)).toBe(202);
+    expect(res.body).toMatchObject({ bootstrapAccepted: true });
+    expect(await db.select().from(joinRequests)).toEqual([]);
+    expect(await db.select().from(companyMemberships).where(eq(companyMemberships.principalId, person))).toEqual([]);
+  });
+
+  // PR 2 (PAR-13129): the lists show the mark the join would apply now.
+  const restrictedDefault = { restricted: true, pluginKeys: [], agentIds: [] };
+  async function listRequests(companyId: string) {
+    const res = await request(app).get(`/api/companies/${companyId}/join-requests`);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const rows = res.body as Array<{ id: string; invite: Record<string, unknown> | null }>;
+    return (id: string) => rows.find((row) => row.id === id)!.invite!;
+  }
+  async function listInvites(companyId: string) {
+    const res = await request(app).get(`/api/companies/${companyId}/invites`);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const rows = res.body.invites as Array<Record<string, unknown>>;
+    return (id: string) => rows.find((row) => row.id === id)!;
+  }
+
+  it("T13: the join-request list shows the mark approval would apply on pending rows, the stored value on decided rows", async () => {
+    const { companyId, owner } = await setup("enforce");
+    const slack = await slackRequest(companyId, await user());
+    as(owner, [companyId]);
+    const chosen = await createInvite(companyId, { restriction: { restricted: false } });
+    const notRestricted = await pendingRequest(companyId, chosen.body.id, await user());
+    await setMode(companyId, "off");
+    const decidedPerson = await user();
+    const decided = await pendingRequest(companyId, (await inviteFromOff(companyId, owner)).id, decidedPerson);
+    expect((await approve(companyId, decided.id)).status).toBe(200);
+    await setMode(companyId, "enforce");
+    as(owner, [companyId]);
+    const row = await listRequests(companyId);
+    expect(row(slack.id)).toMatchObject({ memberRestriction: restrictedDefault, memberRestrictionIsDefault: true });
+    expect(row(notRestricted.id)).toMatchObject({ memberRestriction: null, memberRestrictionIsDefault: false });
+    expect(row(decided.id).memberRestriction).toBeNull();
+    expect(row(decided.id)).not.toHaveProperty("memberRestrictionIsDefault");
+    expect(await membershipOf(companyId, decidedPerson)).toMatchObject({ status: "active", restricted: false });
+  });
+
+  it("T13b: the join-request list answers 200 with both fields omitted when the mode read throws; no default under the kill switch", async () => {
+    const { companyId, owner } = await setup("enforce");
+    const slack = await slackRequest(companyId, await user());
+    as(owner, [companyId]);
+    modeRead.fail = true;
+    const unknown = (await listRequests(companyId))(slack.id);
+    expect(unknown).not.toHaveProperty("memberRestriction");
+    expect(unknown).not.toHaveProperty("memberRestrictionIsDefault");
+    modeRead.fail = false;
+    vi.stubEnv("PAPERCLIP_MEMBER_RESTRICTION", "off");
+    expect((await listRequests(companyId))(slack.id)).toMatchObject({ memberRestriction: null, memberRestrictionIsDefault: false });
+  });
+
+  it("T13c: the invite list shows the default mark on an unaccepted no-choice invite, the stored value once accepted", async () => {
+    const { companyId, owner } = await setup("enforce");
+    const open = await inviteFromOff(companyId, owner);
+    const used = await inviteFromOff(companyId, owner);
+    await db.update(invites).set({ acceptedAt: new Date() }).where(eq(invites.id, used.id));
+    as(owner, [companyId]);
+    const chosen = await createInvite(companyId, { restriction: { restricted: false } });
+    let row = await listInvites(companyId);
+    expect(row(open.id)).toMatchObject({ memberRestriction: restrictedDefault, memberRestrictionIsDefault: true });
+    expect(row(chosen.body.id)).toMatchObject({ memberRestriction: null, memberRestrictionIsDefault: false });
+    expect(row(used.id).memberRestriction).toBeNull();
+    expect(row(used.id)).not.toHaveProperty("memberRestrictionIsDefault");
+    modeRead.fail = true;
+    row = await listInvites(companyId);
+    expect(row(open.id)).not.toHaveProperty("memberRestriction");
+    expect(row(open.id)).not.toHaveProperty("memberRestrictionIsDefault");
   });
 });
