@@ -9,6 +9,12 @@ import {
   MEMBER_AGENT_NOT_LISTED_ROUTE_MESSAGE,
   restrictedAgentIdsForActor,
 } from "../services/member-restriction/agent-read.js";
+import { memberRestrictionForActor } from "../services/member-restriction/actor-memberships.js";
+import {
+  memberRestrictionOrUnavailable,
+  memberRestrictionResolver,
+  memberRestrictionUnavailable,
+} from "../services/member-restriction/resolver.js";
 import { notifyDeferredExecutionWork } from "../services/deferred-execution-notifications.js";
 import { notifyNativeRecoveryNotices } from "../services/native-recovery-notice-notifications.js";
 import { notifyNativeStatusReassessment } from "../services/native-status-reassessment-notifications.js";
@@ -14564,10 +14570,50 @@ export function issueRoutes(
     },
   );
 
+  /**
+   * PAR-12929: the mode of the member restriction that binds this caller in
+   * one company (a restricted person, a run or key working for him, or the
+   * person who authorized the run), or null when nothing binds him: the kill
+   * switch, mode `off`, the local board, an instance admin who is no member.
+   * A failed read throws 503 `MEMBER_RESTRICTION_UNAVAILABLE`.
+   */
+  async function memberRestrictionModeBinding(req: Request, companyId: string): Promise<"report" | "enforce" | null> {
+    if (req.actor.source === "local_implicit") return null;
+    const resolve = memberRestrictionResolver(db);
+    const carried = await memberRestrictionForActor(resolve, req.actor, companyId);
+    const authorizer = req.actor.authorizingUserId && req.actor.authorizingUserId !== carried?.personId
+      ? await memberRestrictionOrUnavailable(resolve, req.actor.authorizingUserId, companyId)
+      : null;
+    const bound = [carried, authorizer].find((restriction) => restriction?.restricted && restriction.mode !== "off");
+    return bound ? (bound.mode as "report" | "enforce") : null;
+  }
+
+  /** A restricted read that cannot be answered refuses with 503; it never continues as allowed. */
+  async function restrictedRead<T>(read: () => Promise<T>): Promise<T> {
+    try {
+      return await read();
+    } catch (error) {
+      throw error instanceof HttpError ? error : memberRestrictionUnavailable(error);
+    }
+  }
+
   router.put("/issues/:id/title", validateIssueMutationBody(setIssueTitleSchema), async (req, res) => {
     const existing = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
     if (!existing) return;
-    if (req.actor.type === "agent") {
+    // PAR-12929 (AC-G3): a caller bound by the member restriction reads the
+    // task through `issue:read`, as `GET /api/issues/:id` does. `enforce`
+    // answers "not found" for a task he cannot read and then applies the
+    // check `PATCH /api/issues/:id` applies; `report` records the would-refuse
+    // and goes on as today. Every other caller keeps today's checks (AC-F2).
+    const restrictionMode = await memberRestrictionModeBinding(req, existing.companyId);
+    if (restrictionMode === "enforce") {
+      if (!(await restrictedRead(() => assertIssueReadAllowed(req, res, existing)))) return;
+      if (req.actor.type === "agent"
+        && !(await assertAgentIssueMutationAllowed(req, res, existing, { allowVisibleIssueWrite: true }))) return;
+    } else if (restrictionMode === "report") {
+      await restrictedRead(() => decideIssueAccess(req, existing, "issue:read"));
+    }
+    if (restrictionMode !== "enforce" && req.actor.type === "agent") {
       const decision = await decideIssueAccess(req, existing, "issue:mutate");
       if (!decision.allowed) {
         await denyIssueWrite(req, res, existing, issueWriteDenialCodeForDecision(decision));
