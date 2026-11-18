@@ -121,3 +121,15 @@ it("invalidates cached task audience when project membership is removed", async 
   expect(api.remove).toHaveBeenCalledWith("project", "m1", "company");
   expect(client.getQueryState(key)?.isInvalidated).toBe(true);
 });
+it("on an open project explains the list is for restricted members and offers people only (PAR-12727)", async () => {
+  render(<ProjectAccessMembers project={{ id: "project", companyId: "company", visibility: "open" } as Project} canManage />);
+  const trigger = [...document.body.querySelectorAll("button")].find(b => b.textContent?.includes("Manage restricted access"));
+  expect(trigger).toBeDefined();
+  flushSync(() => trigger!.click());
+  await settle();
+  expect(document.body.textContent).toContain("Access for restricted members");
+  expect(document.body.textContent).toContain("This list matters for restricted members only");
+  expect(document.body.textContent).toContain("Add a person");
+  expect(document.body.textContent).not.toContain("Add a person or agent");
+  expect(api.members).toHaveBeenCalledWith("project", "company");
+});
