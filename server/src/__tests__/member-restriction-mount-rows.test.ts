@@ -142,6 +142,38 @@ describe("4.6a row 19: the runner socket opens with no member's session", () => 
   });
 });
 
+describe("4.6a row 12: each GitHub callback mount hands the browser actor to the wizard", () => {
+  // The wizard skips its session and `connections:configure` checks when no actor
+  // comes in, so a mount that drops `req.actor` would let R finish a set-up.
+  const source = fs.readFileSync(path.resolve(__dirname, "../app.ts"), "utf8");
+  /** The argument text of the first `<callee>(...)` call in `text`, split at top-level commas. */
+  const callArgs = (text: string, callee: string) => {
+    const start = text.indexOf(`${callee}(`);
+    if (start < 0) return null;
+    const args: string[] = [];
+    let depth = 0, current = "";
+    for (const char of text.slice(start + callee.length + 1)) {
+      if (depth === 0 && char === ")") return [...args, current.trim()];
+      if (depth === 0 && char === ",") { args.push(current.trim()); current = ""; continue; }
+      if ("([{".includes(char)) depth += 1;
+      if (")]}".includes(char)) depth -= 1;
+      current += char;
+    }
+    return null;
+  };
+
+  it.each([
+    ["/api/chat-github/manifest/callback", "directCallback"],
+    ["/api/chat-github/cloud/callback", "cloudCallback"],
+    ["/api/chat-github/identity/callback", "identityCallback"],
+  ])("%s passes req.actor to %s", (route, method) => {
+    const mounts = source.split(`app.get("${route}"`);
+    expect(mounts, `one mount of ${route} in app.ts`).toHaveLength(2);
+    const handler = mounts[1]!.slice(0, mounts[1]!.indexOf("\n  });"));
+    expect(callArgs(handler, `chatChannels.githubWizard.${method}`)?.at(-1)).toBe("req.actor");
+  });
+});
+
 (support.supported ? describe : describe.skip)("a flagged member in a company under enforce", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   let db: ReturnType<typeof createDb>;
