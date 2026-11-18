@@ -4421,8 +4421,23 @@ export function agentRoutes(
     await assertBoardCanManageAgentsForCompany(req, agent.companyId);
 
     const sessions = await heartbeat.listTaskSessions(id);
+    // PAR-12920: drop (not redact) a session whose taskKey is a task the caller
+    // cannot read, e.g. another person's chat; its goal holds that person's words.
+    // Keys that are not tasks (plugin sessions, free task keys) stay as they are.
+    const taskKeys = [...new Set(sessions.map((session) => session.taskKey).filter(isUuidLike))];
+    const unreadableTaskKeys = new Set<string>();
+    if (taskKeys.length > 0) {
+      const inCompany = and(eq(issuesTable.companyId, agent.companyId), inArray(issuesTable.id, taskKeys));
+      const [tasks, readable] = await Promise.all([
+        db.select({ id: issuesTable.id }).from(issuesTable).where(inCompany),
+        db.select({ id: issuesTable.id }).from(issuesTable)
+          .where(and(inCompany, await issueReadSqlCondition(db, req.actor))),
+      ]);
+      const readableIds = new Set(readable.map((row) => row.id));
+      for (const task of tasks) if (!readableIds.has(task.id)) unreadableTaskKeys.add(task.id);
+    }
     res.json(
-      sessions.map((session) => ({
+      sessions.filter((session) => !unreadableTaskKeys.has(session.taskKey)).map((session) => ({
         ...session,
         sessionParamsJson: redactEventPayload(session.sessionParamsJson ?? null),
       })),
