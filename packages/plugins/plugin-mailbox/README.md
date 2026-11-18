@@ -64,6 +64,10 @@ Listens to `plugin.<sender>.mail.send.requested` for every kit `MAIL_SENDERS` pl
 - A retry first looks the message up by its Message-ID, so an attempt Gmail accepted is not sent twice.
 - Over the rate, Gmail down or the account needs reconnecting: nothing is stored and the sender's outbox retries. No connected account, a bad address, an expired attachment link or a message Gmail refuses: `failed` with `permanent: true`. The Sent tab retries by hand.
 
+## 0.9.15: a picked contact stays in To, Cc and Bcc
+
+UI-only: in the draft editor the To, Cc and Bcc fields were a `<label>`, and a click on a label goes to the first control inside it. Once an address was in the box, that control was its remove button, so a click on the field's name or on the empty part of the box took the first address away again. The field is now a plain block (the box keeps its `aria-label`); a click on the empty part of the box puts the cursor in it. A pick also drops a contact search that is still on its way and the pending check of the typed text, so the list does not open again and the search text is not flagged as a bad address. No migration, no capability change.
+
 ## 0.9.13: the skill sweep skips companies with no saved settings
 
 src-only (kit 0.14.0): the daily skill sweep skips a company with no saved settings without calling the host for it (needs_settings), when the host lists the companies a job may act for. No migration, no capability change.
