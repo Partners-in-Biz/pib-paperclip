@@ -42,7 +42,7 @@ function leadingName(arg: string) {
 /** `app.use(...)`, `app.get(...)` and the like in `app.ts`, as the mount table names them. */
 export function appRegistrations(source: string): string[] {
   const found: string[] = [];
-  for (const match of source.matchAll(/\bapp\.(use|get|post|put|patch|delete|all)\s*\(/g)) {
+  for (const match of source.matchAll(/\bapp\.(use|get|post|put|patch|delete|all|head|options|route|param)\s*\(/g)) {
     const lineStart = source.lastIndexOf("\n", match.index!) + 1;
     if (/^\s*(?:\/\/|\*)/.test(source.slice(lineStart, match.index!))) continue;
     const args = callArguments(source, match.index! + match[0].length - 1);
@@ -51,7 +51,20 @@ export function appRegistrations(source: string): string[] {
   return found;
 }
 
-/** Every non-test file under `server/src` that registers a socket upgrade handler. */
+/**
+ * The socket upgrade handlers in one file, one entry per handler: an `upgrade`
+ * listener on any receiver (`server`, `httpServer`, a client request) by any
+ * way to add one, and a `WebSocketServer` that attaches its own (no `noServer`).
+ */
+export function upgradeHandlersIn(file: string, source: string): string[] {
+  const code = source.split("\n").filter((line) => !/^\s*(?:\/\/|\*)/.test(line)).join("\n");
+  const listeners = code.match(/\.(?:on|once|addListener|prependListener|prependOnceListener)\(\s*["'`]upgrade["'`]/g) ?? [];
+  const servers = [...code.matchAll(/\bnew\s+(?:\w+\.)?WebSocketServer\s*\(/g)]
+    .filter((match) => !/\bnoServer\s*:\s*true\b/.test(callArguments(code, match.index! + match[0].length - 1).join(",")));
+  return Array.from({ length: listeners.length + servers.length }, () => `UPGRADE ${file}`);
+}
+
+/** Every socket upgrade handler in the non-test files under `server/src`. */
 function upgradeHandlers(dir = SERVER_SRC): string[] {
   const found: string[] = [];
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -59,8 +72,7 @@ function upgradeHandlers(dir = SERVER_SRC): string[] {
     if (entry.isDirectory()) {
       if (entry.name !== "__tests__" && entry.name !== "node_modules") found.push(...upgradeHandlers(file));
     } else if (entry.name.endsWith(".ts") && !entry.name.endsWith(".test.ts")) {
-      const code = fs.readFileSync(file, "utf8").split("\n").filter((line) => !/^\s*(?:\/\/|\*)/.test(line)).join("\n");
-      if (/\bserver\.on\(\s*["']upgrade["']/.test(code)) found.push(`UPGRADE ${path.relative(SERVER_SRC, file).split(path.sep).join("/")}`);
+      found.push(...upgradeHandlersIn(path.relative(SERVER_SRC, file).split(path.sep).join("/"), fs.readFileSync(file, "utf8")));
     }
   }
   return found;
@@ -88,7 +100,7 @@ export function mountTableScanErrors(
       if (rowOf.has(mount)) errors.push(`${mount}: named by two rows`);
       rowOf.set(mount, entry);
       if (!registrations.includes(mount)) errors.push(`${mount} (row ${entry.row}): no such registration; remove or correct the row`);
-      // A name the scan cannot tell apart (`<inline>`) is listed once per registration, so a new one still fails.
+      // A name the scan cannot tell apart (`<inline>`, an upgrade handler's file) is listed once per registration, so a new one still fails.
       else if (count(registrations, mount) !== count(entry.mounts, mount)) {
         errors.push(`${mount} (row ${entry.row}): ${count(registrations, mount)} registrations, ${count(entry.mounts, mount)} in the row`);
       }
@@ -133,11 +145,34 @@ describe("member restriction mount table scan (4.6a, AC-M8)", () => {
     const withoutLlms = appSource.replace("app.use(llmRoutes(db));", "");
     expect(mountTableScanErrors(MEMBER_RESTRICTION_MOUNT_TABLE, [...appRegistrations(withoutLlms), ...upgradeHandlers()], readTest))
       .toEqual(["USE llmRoutes (row 9): no such registration; remove or correct the row"]);
+    const withRoute = appSource.replace("app.use(staticUi);", "app.route(\"/api/x\").get(handler);\n  app.use(staticUi);");
+    expect(mountTableScanErrors(MEMBER_RESTRICTION_MOUNT_TABLE, [...appRegistrations(withRoute), ...upgradeHandlers()], readTest))
+      .toEqual(["ROUTE \"/api/x\": no row in the mount table of 4.6a"]);
     expect(mountTableScanErrors([{ row: 2, rule: "x", mounts: ["USE a"], toProve: "missing.test.ts" },
       { row: 9, rule: "x", mounts: ["USE a"], toProve: "PAR-1" }], ["USE a", "UPGRADE b.ts"], readTest)).toEqual([
       "UPGRADE b.ts: no row in the mount table of 4.6a", "USE a: named by two rows",
       "row 2: to-prove test missing.test.ts does not exist",
     ]);
+  });
+
+  it("fails on an upgrade handler however it is written, and on a second one in a listed file", () => {
+    const writings = [
+      "httpServer.on(\"upgrade\", handle);", "srv.once('upgrade', handle);", "server.addListener(\"upgrade\", handle);",
+      "this.server.prependListener(\n    `upgrade`,\n    handle,\n  );", "new WebSocketServer({ server, path: \"/x\" });",
+      "new ws.WebSocketServer({ port: 9 });",
+    ];
+    for (const writing of writings) {
+      const registrations = [...appRegistrations(appSource), ...upgradeHandlers(), ...upgradeHandlersIn("realtime/zz-mutation-ws.ts", writing)];
+      expect(mountTableScanErrors(MEMBER_RESTRICTION_MOUNT_TABLE, registrations, readTest), writing)
+        .toEqual(["UPGRADE realtime/zz-mutation-ws.ts: no row in the mount table of 4.6a"]);
+    }
+    expect(upgradeHandlersIn("a.ts", "new WebSocketServer({ noServer: true });\n// server.on(\"upgrade\", x);")).toEqual([]);
+    const liveEvents = fs.readFileSync(path.join(SERVER_SRC, "realtime/live-events-ws.ts"), "utf8");
+    const second = [...appRegistrations(appSource), ...upgradeHandlers(),
+      ...upgradeHandlersIn("realtime/live-events-ws.ts", "server.on(\"upgrade\", other);")];
+    expect(liveEvents).toMatch(/\.on\(\s*"upgrade"/);
+    expect(mountTableScanErrors(MEMBER_RESTRICTION_MOUNT_TABLE, second, readTest))
+      .toEqual(["UPGRADE realtime/live-events-ws.ts (row 17): 2 registrations, 1 in the row"]);
   });
 
   it("row 5: every route of the two mounted routers is classified run or closed, and no other", () => {

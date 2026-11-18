@@ -467,7 +467,7 @@ export function createRouteClassifier(entries: readonly MemberRestrictionRouteEn
 
 /**
  * The mount table of PAR-12608 section 4.6a: every registration on the Express
- * app in `app.ts` and every socket upgrade handler (`server.on("upgrade")`),
+ * app in `app.ts` and every socket upgrade handler (an `upgrade` listener),
  * none of which the `/api` middleware of 4.6 sees. Default for a caller bound
  * by R: refused. The scan in `__tests__/member-restriction-mount-table.test.ts`
  * fails the build when a registration or upgrade handler has no row, a row
@@ -480,7 +480,8 @@ export interface MemberRestrictionMountEntry {
   /**
    * The registrations as the scan reads them: for `app.ts` the method and the
    * leading name of each argument (`USE "/api/ready" readinessRoutes`,
-   * `GET "/api/x" <inline>`); for a socket, `UPGRADE <file under server/src>`.
+   * `GET "/api/x" <inline>`); for a socket, `UPGRADE <file under server/src>`,
+   * once per upgrade listener in that file.
    */
   mounts: readonly string[];
   /** The rule for R (the restricted person), in short. */
@@ -530,7 +531,9 @@ export const MEMBER_RESTRICTION_MOUNT_TABLE: readonly MemberRestrictionMountEntr
   { row: 13, rule: "connector tools refused (4.9), plugin tools through the dispatcher (4.8)", mounts: ["USE mcpGatewayProtocolRoutes"] },
   { row: 14, rule: "not gated: plugin code, no data (4.8)", mounts: ["USE pluginUiStaticRoutes"] },
   { row: 15, rule: "not bound: the screen's static files", mounts: ["USE staticUi"] },
-  { row: 16, rule: "the plugin gate at upgrade (4.8, C5-1)", mounts: ["UPGRADE realtime/plugin-api-ws.ts"] },
+  // The second listener is the proxied connection's own upgrade to the plugin worker, inside the gated handler.
+  { row: 16, rule: "the plugin gate at upgrade (4.8, C5-1)",
+    mounts: ["UPGRADE realtime/plugin-api-ws.ts", "UPGRADE realtime/plugin-api-ws.ts"] },
   { row: 17, rule: "per event at delivery: task and project events through `decide()`, run events through the run rule",
     mounts: ["UPGRADE realtime/live-events-ws.ts"] },
   { row: 18, rule: "refused", mounts: ["UPGRADE realtime/environment-custom-image-terminal-ws.ts"] },
