@@ -84,7 +84,9 @@ describe("plugin acting person database support", () => {
     const [restricted, unflagged, owner] = ["r", "u", "o"].map((p) => `${p}-${randomUUID()}`) as [string, string, string];
     for (const [id, membershipRole, flag] of [[restricted, "operator", true], [unflagged, "operator", false], [owner, "owner", false]] as const) {
       await db.insert(authUsers).values({ id, name: id, email: `${id}@fixture.invalid`, emailVerified: true, createdAt: new Date(), updatedAt: new Date() });
-      await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: id, status: "active", membershipRole, restricted: flag });
+      // R has this plugin on his list, so the core plugin gate (C5-1, PAR-12740) lets his call reach it.
+      await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: id, status: "active", membershipRole,
+        restricted: flag, restrictedPluginKeys: flag ? ["paperclip.acting"] : [] });
     }
     const [agent] = await db.insert(agents).values({ companyId, name: "Worker", adapterType: "process" }).returning();
     return { companyId, agentId: agent!.id, restricted, unflagged, owner };

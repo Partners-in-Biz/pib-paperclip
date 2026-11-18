@@ -384,6 +384,36 @@ export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntr
   { method: "GET", path: "/api/companies/:companyId/org", class: "closed" },
   { method: "GET", path: "/api/companies/:companyId/heartbeat-runs", class: "closed" },
   { method: "GET", path: "/api/companies/:companyId/live-runs", class: "closed" },
+
+  // C5-1 (PAR-12740): the plugin call points of `routes/plugins.ts` (C13). Each
+  // handler calls `assertPluginOpenForPerson` before the worker is called: a
+  // plugin not on his list is 403 `MEMBER_RESTRICTED` (4.8). The API mount also
+  // carries the plugin socket, whose upgrade is replayed through it (4.6a row 16).
+  // The tool route and `ui-contributions` are C5-2 and C5-3.
+  { method: "POST", path: "/api/plugins/:pluginId/bridge/data", class: "plugin" },
+  { method: "POST", path: "/api/plugins/:pluginId/bridge/action", class: "plugin" },
+  { method: "POST", path: "/api/plugins/:pluginId/data/:key", class: "plugin" },
+  { method: "POST", path: "/api/plugins/:pluginId/actions/:key", class: "plugin" },
+  { method: "GET", path: "/api/plugins/:pluginId/bridge/stream/:channel", class: "plugin" },
+  { method: "USE", path: "/api/plugins/:pluginId/api", class: "plugin" },
+];
+
+/**
+ * Routes under `/api/plugins/:pluginId/` that do not call the plugin gate, by
+ * design (4.8). The scan fails the build when any other route there lacks the
+ * call (AC-K7). Webhooks and jobs run with no person (P11); the set-up pages
+ * (detail, lifecycle, health, logs, config, jobs, local folders, dashboard)
+ * have no route-table row, so they are closed for him (4.6, correction 4).
+ */
+export const PLUGIN_GATE_NOT_GATED: ReadonlyArray<{ method: MemberRestrictionRouteMethod; path: string; reason: string }> = [
+  { method: "POST", path: "/api/plugins/:pluginId/webhooks/:endpointKey", reason: "webhook: no person calls it" },
+  ...([
+    ["GET", ""], ["DELETE", ""], ["POST", "/enable"], ["POST", "/disable"], ["GET", "/health"], ["GET", "/logs"],
+    ["POST", "/upgrade"], ["GET", "/config"], ["POST", "/config"], ["POST", "/config/test"], ["GET", "/jobs"],
+    ["GET", "/jobs/:jobId/runs"], ["POST", "/jobs/:jobId/trigger"], ["GET", "/dashboard"],
+    ["GET", "/companies/:companyId/local-folders"], ["GET", "/companies/:companyId/local-folders/:folderKey/status"],
+    ["POST", "/companies/:companyId/local-folders/:folderKey/validate"], ["PUT", "/companies/:companyId/local-folders/:folderKey"],
+  ] as const).map(([method, suffix]) => ({ method, path: `/api/plugins/:pluginId${suffix}`, reason: "set-up page: closed (4.6)" })),
 ];
 
 export type MemberRestrictionRouteMatch =
@@ -543,7 +573,8 @@ export const MEMBER_RESTRICTION_MOUNT_TABLE: readonly MemberRestrictionMountEntr
       "staticUi.USE staticUiFiles", "staticUi.GET /.*/ <inline>", "staticUi.GET /.*/ <inline>", "staticUi.USE vite.middlewares"] },
   // The second listener is the proxied connection's own upgrade to the plugin worker, inside the gated handler.
   { row: 16, rule: "the plugin gate at upgrade (4.8, C5-1)",
-    mounts: ["UPGRADE realtime/plugin-api-ws.ts", "UPGRADE realtime/plugin-api-ws.ts"], toProve: "PAR-12740" },
+    mounts: ["UPGRADE realtime/plugin-api-ws.ts", "UPGRADE realtime/plugin-api-ws.ts"],
+    toProve: "server/src/__tests__/member-restriction-plugin-gate.test.ts" },
   { row: 17, rule: "per event at delivery: task and project events through `decide()`, run events through the run rule",
     mounts: ["UPGRADE realtime/live-events-ws.ts"] },
   { row: 18, rule: "refused: the socket takes no session, only a token minted by " +

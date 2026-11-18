@@ -11,6 +11,7 @@ import { buildOpenApiSpec, openApiRoutes } from "../routes/openapi.js";
 import { mcpDiscoveryDocuments } from "../services/public-mcp/discovery.js";
 import {
   MEMBER_RESTRICTION_ROUTE_TABLE,
+  PLUGIN_GATE_NOT_GATED,
   createRouteClassifier,
   type MemberRestrictionRouteEntry,
 } from "../services/member-restriction/route-table.js";
@@ -1610,6 +1611,89 @@ async function routeTableScanErrors(
   }
   return errors.sort();
 }
+
+// PAR-12608 4.8, AC-K7: every route under `/plugins/:pluginId/`, and every
+// `plugin` row, calls the core plugin gate unless it is on the not-gated list.
+const PLUGIN_GATE_CALL_PATTERN = /\bassertPluginOpenForPerson\s*\(/;
+
+function pluginGateScanErrors(
+  table: readonly MemberRestrictionRouteEntry[],
+  notGated: ReadonlyArray<{ method: string; path: string }>,
+  inventory: Pick<RouteInventory, "operations" | "handlerSources">,
+) {
+  const errors: string[] = [];
+  const operations = new Map([...inventory.operations].map((operation) => {
+    const [method, routePath] = operation.split(" ");
+    return [routeShape(method!, routePath!), operation] as const;
+  }));
+  const exempt = new Set(notGated.map((entry) => routeShape(entry.method, entry.path)));
+  const pluginRows = new Set(table.filter((entry) => entry.class === "plugin").map((entry) => routeShape(entry.method, entry.path)));
+  for (const entry of notGated) {
+    const shape = routeShape(entry.method, entry.path);
+    if (!operations.has(shape)) errors.push(`${entry.method} ${entry.path}: not-gated entry matches no registered route`);
+    if (pluginRows.has(shape)) errors.push(`${entry.method} ${entry.path}: on the not-gated list and a plugin row`);
+  }
+  for (const [shape, operation] of operations) {
+    const underPlugin = / \/api\/plugins\/\{\}(\/|$)/.test(shape);
+    if ((!underPlugin && !pluginRows.has(shape)) || exempt.has(shape)) continue;
+    if (!PLUGIN_GATE_CALL_PATTERN.test(inventory.handlerSources.get(operation) ?? "")) {
+      errors.push(`${operation}: calls no assertPluginOpenForPerson and is not on the not-gated list`);
+    }
+  }
+  for (const shape of pluginRows) {
+    if (!operations.has(shape)) errors.push(`${shape}: plugin row matches no registered route`);
+  }
+  return errors.sort();
+}
+
+// The inventory only reads `router.<method>(`; a path registered on any other
+// receiver would be invisible to the scan above, so it is refused here.
+const OTHER_RECEIVER_ROUTE_PATTERN =
+  /\b([A-Za-z_$][\w$]*)\s*\.\s*(get|head|post|put|patch|delete|all|options|use|ws)\(\s*\[?\s*["'`]\//g;
+
+function otherReceiverRoutes(file: string, source: string) {
+  return [...source.matchAll(OTHER_RECEIVER_ROUTE_PATTERN)]
+    .filter((match) => match[1] !== "router")
+    .map((match) => `${file}: ${match[0]}`);
+}
+
+describe("plugin gate scan (AC-K7)", () => {
+  it("no route file registers a path on a receiver other than `router`", () => {
+    const found = fs.readdirSync(ROUTES_DIR)
+      .filter((file) => file.endsWith(".ts") && !file.endsWith(".test.ts"))
+      .flatMap((file) => otherReceiverRoutes(file, fs.readFileSync(path.join(ROUTES_DIR, file), "utf8")));
+    expect(found).toEqual([]);
+    expect(otherReceiverRoutes("plugins.ts", "const r2 = router; r2.get(\"/plugins/:pluginId/x\", h); req.get(\"x-id\");"))
+      .toEqual(["plugins.ts: r2.get(\"/"]);
+  });
+
+  it("every route under /plugins/:pluginId/ calls the gate or is on the not-gated list", () => {
+    const { routes, excludedRoutes, mounts, handlerSources } = loadActualRoutes();
+    const operations = [...routes, ...excludedRoutes, ...mounts];
+    expect(operations.filter((operation) => operation.includes("/api/plugins/{pluginId}")).length).toBeGreaterThan(20);
+    expect(pluginGateScanErrors(MEMBER_RESTRICTION_ROUTE_TABLE, PLUGIN_GATE_NOT_GATED, { operations, handlerSources })).toEqual([]);
+  });
+
+  it("fails on a route without the call, a stale not-gated entry and a plugin row without the call", () => {
+    const gated = "router.post(\"/plugins/:pluginId/actions/:key\", async (req) => { await assertPluginOpenForPerson(req, c, p, \"a\"); })";
+    const inventory = {
+      operations: ["POST /api/plugins/{pluginId}/actions/{key}", "GET /api/plugins/{pluginId}/new-data",
+        "POST /api/plugins/{pluginId}/webhooks/{endpointKey}", "GET /api/plugins/tools", "GET /api/plugins/ui-contributions"],
+      handlerSources: new Map([["POST /api/plugins/{pluginId}/actions/{key}", gated]]),
+    };
+    const table: MemberRestrictionRouteEntry[] = [
+      { method: "POST", path: "/api/plugins/:pluginId/actions/:key", class: "plugin" },
+      { method: "GET", path: "/api/plugins/ui-contributions", class: "plugin" },
+    ];
+    const notGated = [{ method: "POST", path: "/api/plugins/:pluginId/webhooks/:endpointKey" },
+      { method: "GET", path: "/api/plugins/:pluginId/gone" }];
+    expect(pluginGateScanErrors(table, notGated, inventory)).toEqual([
+      "GET /api/plugins/:pluginId/gone: not-gated entry matches no registered route",
+      "GET /api/plugins/ui-contributions: calls no assertPluginOpenForPerson and is not on the not-gated list",
+      "GET /api/plugins/{pluginId}/new-data: calls no assertPluginOpenForPerson and is not on the not-gated list",
+    ]);
+  });
+});
 
 describe("member restriction route table scan", () => {
   it("every row of the route table is true to the mounted routes", async () => {
