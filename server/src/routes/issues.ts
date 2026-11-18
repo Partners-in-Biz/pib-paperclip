@@ -17317,7 +17317,8 @@ export function issueRoutes(
       "Issue not found",
     );
     if (!issue) return;
-    if (!(await assertIssueReadAllowed(req, res, issue))) return;
+    // Same audited break-glass as GET /issues/:id (PAR-12774 plan 4.6).
+    if (!(await assertIssueReadAllowed(req, res, issue, { allowBreakGlass: true }))) return;
     const afterCommentId =
       typeof req.query.after === "string" && req.query.after.trim().length > 0
         ? req.query.after.trim()
