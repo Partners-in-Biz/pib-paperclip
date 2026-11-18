@@ -83,6 +83,8 @@ import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { isIP } from "node:net";
 import { logger } from "../middleware/logger.js";
+import { pluginActingPersonBoundByH } from "./member-restriction/acting-person.js";
+import { recordMemberRestrictionDenial } from "./member-restriction/admin.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { accessService } from "./access.js";
 import {
@@ -2142,10 +2144,34 @@ export function buildHostServices(
         if (!(await pluginCanReadIssue(issue))) return null;
         return issue as Issue;
       },
-      async create(params) {
+      async create(params, context) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        const { actorAgentId, actorUserId, actorRunId, originKind, surfaceVisibility, ...issueInput } = params;
+        const { actorAgentId, actorRunId, originKind, surfaceVisibility, ...issueInput } = params;
+        let actorUserId = params.actorUserId;
+        // H6 (PAR-12608 4.10): when core knows the acting person and rule group H
+        // binds him, he is the creator and the responsible person; a person the
+        // plugin names is ignored (`enforce`) or recorded (`report`).
+        const actingPersonId = context?.invocationScope?.actingPersonId ?? null;
+        const acting = actingPersonId ? await pluginActingPersonBoundByH(db, actingPersonId, companyId) : null;
+        const suppliedResponsible = (issueInput as Record<string, unknown>).responsibleUserId;
+        const ignored = acting
+          ? [suppliedResponsible, actorUserId].find((value): value is string =>
+              typeof value === "string" && value.trim() !== "" && value !== acting.personId) ?? null
+          : null;
+        if (acting && ignored && acting.mode === "report") {
+          await recordMemberRestrictionDenial(db, {
+            companyId, personId: acting.personId, ruleId: "H6", target: `plugin:${pluginKey}:issues.create`, mode: "report",
+          });
+        }
+        if (acting?.mode === "enforce") {
+          if (ignored) {
+            logger.warn({ pluginKey, companyId, actingPersonId: acting.personId, ignoredPersonId: ignored },
+              "plugin-named person ignored on task create (member restriction H6)");
+          }
+          actorUserId = acting.personId;
+          (issueInput as Record<string, unknown>).responsibleUserId = acting.personId;
+        }
         const normalizedOriginKind = normalizePluginOriginKind(
           surfaceVisibility === "plugin_operation" && !originKind
             ? pluginOperationIssueOriginKind(pluginKey)
@@ -2185,16 +2211,33 @@ export function buildHostServices(
             originId: issue.originId,
             billingCode: issue.billingCode,
             blockedByIssueIds: params.blockedByIssueIds ?? [],
+            ...(acting?.mode === "enforce" && ignored ? { ignoredResponsibleUserId: ignored } : {}),
           },
         });
         return issue;
       },
-      async update(params) {
+      async update(params, context) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
         const existing = requireInCompany("Issue", await issues.getById(params.issueId), companyId);
         await requirePluginReadableIssue(params.issueId, companyId);
         const patch = { ...(params.patch as Record<string, unknown>) };
+        // H6: a plugin acting for a person bound by rule group H cannot re-point
+        // the task to somebody else (dropped under `enforce`, recorded under `report`).
+        const actingPersonId = context?.invocationScope?.actingPersonId ?? null;
+        if (actingPersonId && typeof patch.responsibleUserId === "string" && patch.responsibleUserId !== actingPersonId) {
+          const acting = await pluginActingPersonBoundByH(db, actingPersonId, companyId);
+          if (acting?.mode === "report") {
+            await recordMemberRestrictionDenial(db, {
+              companyId, personId: acting.personId, ruleId: "H6", target: `plugin:${pluginKey}:issues.update`,
+              objectId: params.issueId, mode: "report",
+            });
+          } else if (acting?.mode === "enforce") {
+            logger.warn({ pluginKey, companyId, issueId: params.issueId, actingPersonId, ignoredPersonId: patch.responsibleUserId },
+              "plugin-named person ignored on task update (member restriction H6)");
+            delete patch.responsibleUserId;
+          }
+        }
         const actorAgentId = typeof patch.actorAgentId === "string" ? patch.actorAgentId : null;
         const actorUserId = typeof patch.actorUserId === "string" ? patch.actorUserId : null;
         const actorRunId = typeof patch.actorRunId === "string" ? patch.actorRunId : null;

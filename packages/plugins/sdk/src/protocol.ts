@@ -292,6 +292,12 @@ export type PluginRpcErrorCode =
  */
 export interface PluginInvocationScope {
   companyId: string;
+  /**
+   * The person the host computed for the call that opened this invocation (a
+   * signed-in user, or the person an agent works for). Host-owned: the worker
+   * never sets it. Rule H6 uses it for tasks a plugin creates.
+   */
+  actingPersonId?: string | null;
   projectGit?: { projectId: string; workspaceId?: string; runId?: string; agentId?: string; operation?: "prepare" | "inspect" | "remove" };
 }
 
