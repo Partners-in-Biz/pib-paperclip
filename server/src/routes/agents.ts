@@ -308,7 +308,10 @@ import {
 } from "../services/heartbeat-run-privacy.js";
 import { refusedOnlyByMemberRestriction } from "../services/member-restriction/action-list.js";
 import {
+  actorMayInstructAgent,
   hideUnreadableIssueIds,
+  MEMBER_AGENT_NOT_LISTED_DETAILS,
+  MEMBER_AGENT_NOT_LISTED_ROUTE_MESSAGE,
   restrictedAgentIdsForActor,
   restrictedAgentView,
   runWorksForRestrictedCaller,
@@ -1485,6 +1488,13 @@ export function agentRoutes(
       resource: { type: "agent", companyId: agent.companyId, agentId: agent.id },
     });
     if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+    await assertActorMayInstructAgent(req, agent);
+  }
+
+  /** PAR-12608 4.7: a caller working for a restricted person wakes only an agent on his list (AC-A1, AC-A4). */
+  async function assertActorMayInstructAgent(req: Request, agent: { id: string; companyId: string }) {
+    if (await actorMayInstructAgent(db, req.actor, { companyId: agent.companyId, agentId: agent.id, target: "agent:wake" })) return;
+    throw forbidden(MEMBER_AGENT_NOT_LISTED_ROUTE_MESSAGE, MEMBER_AGENT_NOT_LISTED_DETAILS);
   }
 
   async function assertCanManageAdapterLogin(
@@ -2644,7 +2654,11 @@ export function agentRoutes(
         scope: { requiresChangeGrant: true },
       })).allowed,
     });
-    return decision.allowed;
+    if (!decision.allowed) return false;
+    // C23: an agent caller's wake skips `decide()`; a run working for a
+    // restricted person still wakes only an agent on his list.
+    await assertActorMayInstructAgent(req, targetAgent);
+    return true;
   }
 
   async function assertCanResumeAgent(

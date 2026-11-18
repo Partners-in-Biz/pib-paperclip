@@ -2,7 +2,13 @@ import { confirmMcpAttachmentCleanup, recordMcpAttachmentCleanup, type McpAttach
 import { SYSTEM_CAUSING_ACTOR, wakeCausingActorFromActor, wakeCausingActorFromActorRef } from "../services/heartbeat/causing-actor.js";
 import { assertNamesOnlyHimself } from "../services/member-restriction/acting-person.js";
 import { refusedOnlyByMemberRestriction } from "../services/member-restriction/action-list.js";
-import { hideUnreadableIssueIds, restrictedAgentIdsForActor } from "../services/member-restriction/agent-read.js";
+import {
+  actorMayInstructAgent,
+  hideUnreadableIssueIds,
+  MEMBER_AGENT_NOT_LISTED_DETAILS,
+  MEMBER_AGENT_NOT_LISTED_ROUTE_MESSAGE,
+  restrictedAgentIdsForActor,
+} from "../services/member-restriction/agent-read.js";
 import { notifyDeferredExecutionWork } from "../services/deferred-execution-notifications.js";
 import { notifyNativeRecoveryNotices } from "../services/native-recovery-notice-notifications.js";
 import { notifyNativeStatusReassessment } from "../services/native-status-reassessment-notifications.js";
@@ -372,6 +378,7 @@ import {
 } from "../services/company-search-rate-limit.js";
 import {
   applyIssueExecutionPolicyTransition,
+  executionPolicyAddedAgentIds,
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
   redactIssueMonitorExternalRef,
@@ -4182,6 +4189,7 @@ export function issueRoutes(
     requestedPolicy: unknown,
   ) {
     const policy = normalizeIssueExecutionPolicy(requestedPolicy);
+    await assertExecutionPolicyAgentsListed(req, companyId, policy);
     if (req.actor.type !== "agent") return policy;
     const trust = await resolveAgentTrustForIssue(
       { agentId: req.actor.agentId, runId: req.actor.runId },
@@ -5132,8 +5140,30 @@ export function issueRoutes(
       },
       scope: assignmentScope ?? null,
     });
-    if (decision.allowed) return;
-    throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+    if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+    // PAR-12608 4.7 (AC-A2, AC-A4): naming an agent needs it on his list;
+    // naming a person, or nobody, stays allowed.
+    const agentId = assignmentScope?.assigneeAgentId;
+    if (agentId && !(await actorMayInstructAgent(db, req.actor, { companyId, agentId, target: "tasks:assign" }))) {
+      throw forbidden(MEMBER_AGENT_NOT_LISTED_ROUTE_MESSAGE, MEMBER_AGENT_NOT_LISTED_DETAILS);
+    }
+  }
+
+  /**
+   * PAR-12608 4.7 (AC-A8): an agent newly named as a stage participant
+   * (reviewer or approver) must be on the list of a restricted caller, else 422.
+   * Agents the stored policy already names stay as they are.
+   */
+  async function assertExecutionPolicyAgentsListed(
+    req: Request,
+    companyId: string,
+    policy: ReturnType<typeof normalizeIssueExecutionPolicy>,
+    previousPolicy: ReturnType<typeof normalizeIssueExecutionPolicy> = null,
+  ) {
+    for (const agentId of executionPolicyAddedAgentIds(policy, previousPolicy)) {
+      if (await actorMayInstructAgent(db, req.actor, { companyId, agentId, target: "issue:execution_policy" })) continue;
+      throw unprocessable(MEMBER_AGENT_NOT_LISTED_ROUTE_MESSAGE, { ...MEMBER_AGENT_NOT_LISTED_DETAILS, agentId });
+    }
   }
 
   async function assertCanReuseCreatedIssue(req: Request, issue: typeof issueRows.$inferSelect) {
@@ -13984,6 +14014,7 @@ export function issueRoutes(
           normalizeIssueExecutionPolicy(child.executionPolicy),
           actor.actorType,
         );
+        await assertExecutionPolicyAgentsListed(req, sourceIssue.companyId, executionPolicy);
         await assertCanManageIssueMonitor(
           access,
           req,
@@ -15038,6 +15069,16 @@ export function issueRoutes(
         ))
       )
         return;
+
+      // Before any write of this request, the interrupt included (AC-A8).
+      if (req.body.executionPolicy !== undefined) {
+        await assertExecutionPolicyAgentsListed(
+          req,
+          existing.companyId,
+          normalizeIssueExecutionPolicy(req.body.executionPolicy),
+          normalizeIssueExecutionPolicy(existing.executionPolicy ?? null),
+        );
+      }
 
       if (interruptRequested) {
         if (!commentBody) {
@@ -19608,6 +19649,9 @@ export function issueRoutes(
         }
       }
       if (!(await assertBoardCommentNotPaused(req, res, issue))) return;
+      // PAR-12608 4.7 (AC-A5): read before the comment is saved, so a failed
+      // read is a 503 with nothing written. Not bound: null.
+      const commenterAgentList = await restrictedAgentIdsForActor(db, req.actor, issue.companyId);
       const closedExecutionWorkspace =
         await getClosedIssueExecutionWorkspace(issue);
 
@@ -20598,7 +20642,11 @@ export function issueRoutes(
 
 
       await queueTaskWatchdogEvaluation(currentIssue, actor.runId);
-      res.status(201).json(comment);
+      // The wake queue starts no run of an assignee off his list for his
+      // comment; the answer says so, so the screen can tell him (AC-A5).
+      const assigneeNotListed = Boolean(commenterAgentList && currentIssue.assigneeAgentId
+        && !commenterAgentList.has(currentIssue.assigneeAgentId));
+      res.status(201).json(assigneeNotListed ? { ...comment, wakeSkipped: "agent_not_listed" } : comment);
     },
   );
 

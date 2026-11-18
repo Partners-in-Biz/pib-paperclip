@@ -2,6 +2,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import { heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import { issueReadSqlCondition, type AuthorizationActor } from "../authorization.js";
 import { actorPersonMembership, memberRestrictionForMembership } from "./actor-memberships.js";
+import { recordMemberRestrictionDenial } from "./admin.js";
 import { memberRestrictionResolver } from "./resolver.js";
 import { restrictionPersonIds } from "./strict-read.js";
 
@@ -58,6 +59,37 @@ export async function hideUnreadableIssueIds(
   const readable = new Set(rows.map((row) => row.id));
   return ids.filter((id) => readable.has(id));
 }
+
+/** Rule id of the route checks of 4.7 in `member_restriction.denied` entries. */
+export const MEMBER_AGENT_ROUTE_RULE_ID = "R-agent";
+
+/**
+ * PAR-12608 4.7, early answers at the routes (wake, assign, execution policy):
+ * whether the caller may instruct `agentId`. Under `enforce`, a restricted
+ * person the caller carries whose list lacks the agent refuses it, with one
+ * `member_restriction.denied` entry. Not bound (kill switch, mode `off` or
+ * `report`, unflagged, local board, instance admin): true. A failed read
+ * throws 503 `MEMBER_RESTRICTION_UNAVAILABLE`. The run-creation check in the
+ * wake queue stays the control; this only gives a clear answer early.
+ */
+export async function actorMayInstructAgent(
+  db: Db,
+  actor: AgentReadActor,
+  input: { companyId: string; agentId: string; target: string },
+): Promise<boolean> {
+  const bound = await restrictedPeopleForActor(db, actor, input.companyId);
+  const refusing = bound.find((entry) => !entry.agentIds.includes(input.agentId));
+  if (!refusing) return true;
+  await recordMemberRestrictionDenial(db, {
+    companyId: input.companyId, personId: refusing.personId, ruleId: MEMBER_AGENT_ROUTE_RULE_ID,
+    target: input.target, objectId: input.agentId, mode: "enforce",
+  });
+  return false;
+}
+
+/** Error details of a refusal by the route checks of 4.7 (AC-A1). */
+export const MEMBER_AGENT_NOT_LISTED_DETAILS = { reason: "deny_member_restricted", code: "agent_not_listed" } as const;
+export const MEMBER_AGENT_NOT_LISTED_ROUTE_MESSAGE = "This agent is not on the list of agents this restricted member may instruct";
 
 /** The five fields of an agent on his list (AC-G4). */
 export function restrictedAgentView(agent: { id: string; name: string; title: string | null; icon: string | null; status: string }) {
