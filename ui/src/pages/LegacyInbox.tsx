@@ -128,7 +128,7 @@ import {
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { PageTabBar } from "../components/PageTabBar";
-import type { Approval, HeartbeatRun, Issue, JoinRequest } from "@paperclipai/shared";
+import type { Approval, DashboardSummary, HeartbeatRun, Issue, JoinRequest } from "@paperclipai/shared";
 import {
   ACTIONABLE_APPROVAL_STATUSES,
   DEFAULT_INBOX_ISSUE_COLUMNS,
@@ -811,7 +811,7 @@ export function Inbox() {
     queryKey: queryKeys.access.joinRequests(selectedCompanyId!),
     queryFn: async () => {
       try {
-        return await accessApi.listJoinRequests(selectedCompanyId!, "pending_approval");
+        return await memberGate.guard(() => accessApi.listJoinRequests(selectedCompanyId!, "pending_approval"), [])();
       } catch (err) {
         if (err instanceof ApiError && (err.status === 403 || err.status === 401)) {
           return [];
@@ -819,7 +819,7 @@ export function Inbox() {
         throw err;
       }
     },
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && !memberGate.closed,
   });
   const {
     data: joinRequests = [],
@@ -832,12 +832,12 @@ export function Inbox() {
     companyId: selectedCompanyId,
     resourceKey: "dashboard",
     queryKey: dashboardQueryKey,
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && !memberGate.closed,
   });
   const dashboardQuery = useQuery({
     queryKey: dashboardQueryKey,
-    queryFn: () => dashboardApi.summary(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
+    queryFn: memberGate.guard<DashboardSummary | null>(() => dashboardApi.summary(selectedCompanyId!), null),
+    enabled: !!selectedCompanyId && !memberGate.closed,
   });
   const { data: dashboard, isLoading: isDashboardLoading, dataUpdatedAt: dashboardUpdatedAt } = dashboardQuery;
   const dashboardView = useQueryView(dashboardQuery);
@@ -925,8 +925,8 @@ export function Inbox() {
 
   const heartbeatRunsQuery = useQuery({
     queryKey: [...queryKeys.heartbeats(selectedCompanyId!), "limit", INBOX_HEARTBEAT_RUN_LIMIT],
-    queryFn: () => heartbeatsApi.list(selectedCompanyId!, undefined, INBOX_HEARTBEAT_RUN_LIMIT, { summary: true }),
-    enabled: !!selectedCompanyId,
+    queryFn: memberGate.guard(() => heartbeatsApi.list(selectedCompanyId!, undefined, INBOX_HEARTBEAT_RUN_LIMIT, { summary: true }), []),
+    enabled: !!selectedCompanyId && !memberGate.closed,
     refetchOnWindowFocus: false,
     staleTime: INBOX_HOT_PATH_STALE_MS,
   });
@@ -937,15 +937,15 @@ export function Inbox() {
     companyId: selectedCompanyId,
     resourceKey: "live-runs",
     queryKey: liveRunsQueryKey,
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && !memberGate.closed,
     // Event-sourced via LiveUpdatesProvider (GitHub issue 9627); no interval poll needed.
     refetchInterval: false,
     leaderOnly: true,
   });
   const { data: liveRuns, dataUpdatedAt: liveRunsUpdatedAt } = useQuery({
     queryKey: liveRunsQueryKey,
-    queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
-    enabled: sharedLiveRuns.enabled,
+    queryFn: memberGate.guard(() => heartbeatsApi.liveRunsForCompany(selectedCompanyId!), []),
+    enabled: sharedLiveRuns.enabled && !memberGate.closed,
     refetchInterval: sharedLiveRuns.refetchInterval,
   });
   usePublishSharedQueryData(sharedLiveRuns, liveRuns, liveRunsUpdatedAt);
@@ -2374,6 +2374,7 @@ export function Inbox() {
                 currentUserId={currentUserId}
                 enableExternalObjectFilters={externalObjectsEnabled}
                 enableAgentCreatedVisibilityFilter
+                enableLiveRunsFilter={!memberGate.closed}
                 buttonVariant="outline"
                 iconOnly
               />
@@ -2472,6 +2473,7 @@ export function Inbox() {
                 currentUserId={currentUserId}
                 enableExternalObjectFilters={externalObjectsEnabled}
                 enableAgentCreatedVisibilityFilter
+                enableLiveRunsFilter={!memberGate.closed}
                 buttonVariant="outline"
                 iconOnly
               />
