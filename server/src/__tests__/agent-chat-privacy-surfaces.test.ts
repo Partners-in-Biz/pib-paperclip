@@ -288,16 +288,26 @@ describe("agent chat privacy surfaces database support", () => {
     }
   });
 
-  it("row 9: GET /agents/:id/task-sessions as B, O, D and I during A's chat turn carries no chat title or text", async () => {
+  it("row 9: GET /agents/:id/task-sessions as B, O, D and I during A's chat turn drops the chat row; A keeps it", async () => {
     // The session of the running chat turn; its goal holds A's words, as a runner goal does.
-    await db.insert(agentTaskSessions).values({ companyId, agentId: X, adapterType: "process", taskKey: chatId,
-      sessionDisplayId: "session-1", sessionParamsJson: { sessionId: "session-1" }, lastRunId: runForA,
-      goalJson: { objective: `Hello Writer, ${WORD}`, status: "active" }, goalStatus: "active" });
+    // Beside it an ordinary task session and a plugin session, which every operator still gets.
+    const pluginKey = `plugin:chat-surfaces:session:${randomUUID()}`;
+    await db.insert(agentTaskSessions).values([
+      { companyId, agentId: X, adapterType: "process", taskKey: chatId, sessionDisplayId: "session-1",
+        sessionParamsJson: { sessionId: "session-1" }, lastRunId: runForA,
+        goalJson: { objective: `Hello Writer, ${WORD}`, status: "active" }, goalStatus: "active" },
+      { companyId, agentId: X, adapterType: "process", taskKey: taskId, sessionDisplayId: "session-2" },
+      { companyId, agentId: X, adapterType: "process", taskKey: pluginKey, sessionDisplayId: "session-3" },
+    ]);
+    const keys = (body: Array<{ taskKey: string }>) => body.map(row => row.taskKey).sort();
     for (const person of others) {
-      const res = await request(appFor(user(person))).get(`/api/agents/${X}/task-sessions`);
-      expect([200, 403], `${person}: ${JSON.stringify(res.body)}`).toContain(res.status);
-      expect(JSON.stringify(res.body), person).not.toMatch(new RegExp(`Chat with Writer|Hello Writer|Reply from Writer|${WORD}`));
+      const body = await get(user(person), `/api/agents/${X}/task-sessions`);
+      expect(JSON.stringify(body), person).not.toMatch(new RegExp(`${chatId}|Chat with Writer|Hello Writer|Reply from Writer|${WORD}`));
+      expect(keys(body), person).toEqual([taskId, pluginKey].sort());
     }
+    const forA = await get(user(A), `/api/agents/${X}/task-sessions`);
+    expect(keys(forA)).toEqual([chatId, taskId, pluginKey].sort());
+    expect(forA.find((row: { taskKey: string }) => row.taskKey === chatId).goalJson.objective).toBe(`Hello Writer, ${WORD}`);
   });
 
   it("row 14: B's public MCP subscription on A's chat gets no delivery, and B cannot subscribe; A's own subscription does", async () => {
