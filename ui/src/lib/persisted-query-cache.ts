@@ -293,7 +293,16 @@ export function startPersistedQueryCache(client: QueryClient, options: {
     let data = queryDisplayData(query.queryKey, query.state.data, deniedIssues);
     if (hashKey(query.queryKey) === hashKey(queryKeys.auth.session)) {
       const user = object(object(data)?.user)!;
-      data = { session: { userId }, user: { id: userId, name: user.name, email: user.email, image: user.image }, sentryDsn: null };
+      // A restored session keeps the person's own restriction per company (AC-G10): without it a reload
+      // reads him as unrestricted until the refetch lands, and his shell sends closed requests first.
+      const restrictions = object(data)?.memberRestrictions;
+      const memberRestrictions = Array.isArray(restrictions) ? restrictions.flatMap((entry) => {
+        const value = object(entry);
+        return value && typeof value.companyId === "string" && typeof value.restricted === "boolean" && typeof value.mode === "string"
+          ? [{ companyId: value.companyId, restricted: value.restricted, mode: value.mode }] : [];
+      }) : undefined;
+      data = { session: { userId }, user: { id: userId, name: user.name, email: user.email, image: user.image }, sentryDsn: null,
+        ...(memberRestrictions ? { memberRestrictions } : {}) };
     } else if (Array.isArray(object(data)?.pages)) {
       const value = object(data)!;
       data = { ...value, pages: (value.pages as unknown[]).slice(0, 1), pageParams: (value.pageParams as unknown[] | undefined)?.slice(0, 1) };
