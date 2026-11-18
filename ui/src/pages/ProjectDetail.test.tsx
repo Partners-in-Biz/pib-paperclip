@@ -3,7 +3,7 @@
 import { ApiError } from "../api/client";
 import { queryKeys } from "../lib/queryKeys";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { Project } from "@paperclipai/shared";
+import type { Project, SessionMemberRestriction } from "@paperclipai/shared";
 import type { ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
@@ -48,6 +48,8 @@ const mockCompanyContext = vi.hoisted(() => ({
 const mockUsePluginSlots = vi.hoisted(() => vi.fn(() => ({ slots: [] as unknown[], isLoading: false })));
 const mockPluginSlotMount = vi.hoisted(() => vi.fn());
 
+const mockSession = vi.hoisted(() => ({ memberRestrictions: [] as SessionMemberRestriction[] }));
+vi.mock("../api/auth", () => ({ authApi: { getSession: async () => ({ memberRestrictions: mockSession.memberRestrictions }) } }));
 vi.mock("../api/projects", () => ({ projectsApi: mockProjectsApi }));
 vi.mock("../api/issues", () => ({ issuesApi: mockIssuesApi }));
 vi.mock("../api/agents", () => ({ agentsApi: mockAgentsApi }));
@@ -190,6 +192,7 @@ describe("ProjectDetail", () => {
     mockLocation.pathname = "/projects/project-1/plugin-operations";
     mockLocation.search = "";
     mockParams.projectId = "project-1";
+    mockSession.memberRestrictions = [];
     mockCompanyContext.companies = [{ id: "company-1", issuePrefix: "PAP" }];
     mockCompanyContext.selectedCompanyId = "company-1";
     mockUsePluginSlots.mockReturnValue({ slots: [], isLoading: false });
@@ -263,6 +266,34 @@ describe("ProjectDetail", () => {
     expect(mockProjectsApi.update).toHaveBeenCalledWith("project-1", { visibility: "open" }, "company-1");
     expect(queryClient.getQueryState(key)?.isInvalidated).toBe(true);
     queryClient.clear();
+  });
+
+  // AC-G10 (PAR-13266): live runs are a closed list for a restricted member under `enforce`.
+  it.each([
+    ["issues", "R under enforce", "enforce"], ["plugin-operations", "R under enforce", "enforce"],
+    ["issues", "the owner", null], ["plugin-operations", "the owner", null],
+    ["issues", "R under report", "report"], ["plugin-operations", "R under report", "report"],
+  ] as const)("the %s tab requests live runs only when it may (%s)", async (tab, _who, mode) => {
+    mockLocation.pathname = `/projects/project-1/${tab}`;
+    mockSession.memberRestrictions = mode ? [{ companyId: "company-1", restricted: true, mode }] : [];
+    const read = tab === "issues" ? mockIssuesApi.listAll : mockIssuesApi.list;
+    read.mockResolvedValue([{ id: "task-1", companyId: "company-1", status: "in_progress" }]);
+    mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([{ id: "run-1", status: "running", agentId: "agent-1", issueId: "task-1" }]);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    root = createRoot(container);
+    try {
+      await act(() => root!.render(<QueryClientProvider client={client}><ProjectDetail /></QueryClientProvider>));
+      await vi.waitFor(() => expect(mockIssuesList.mock.calls.at(-1)?.[0]).toMatchObject({ issues: [{ id: "task-1" }] }));
+      await settle();
+      const live = () => [...((mockIssuesList.mock.calls.at(-1)?.[0] as { liveIssueIds?: Set<string> }).liveIssueIds ?? [])];
+      if (mode === "enforce") {
+        expect(mockHeartbeatsApi.liveRunsForCompany).not.toHaveBeenCalled();
+        expect(live()).toEqual([]);
+      } else {
+        await vi.waitFor(() => expect(live()).toEqual(["task-1"]));
+        expect(mockHeartbeatsApi.liveRunsForCompany).toHaveBeenCalledWith("company-1");
+      }
+    } finally { client.clear(); }
   });
 
   it.each(["issues", "plugin-operations"])("removes cached %s after a real task-list denial", async tab => {

@@ -18,6 +18,7 @@ import { Button } from "@/components/ui/button";
 import { FlyoutAppearanceProvider } from "@/components/ui/flyout";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
+import { useMemberRestriction } from "@/context/MemberRestrictionContext";
 import { useMemberRestrictionGate } from "@/hooks/useMemberRestrictionGate";
 import { useDialogActions } from "@/context/DialogContext";
 import { useTaskListCollection } from "@/hooks/useTaskListCollection";
@@ -34,7 +35,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { useLocation, useNavigate, useSearchParams } from "@/lib/router";
 import { loadTaskListView, saveTaskListView, taskListViews, taskListViewStorageKey, type TaskListView } from "@/lib/task-list-views";
 import { normalizeTaskViewKey, ORGANIZATION_SCOPED_PARAMS, taskView } from "@/lib/task-views";
-import type { Issue } from "@paperclipai/shared";
+import type { AttentionTaskIndex, Issue } from "@paperclipai/shared";
 
 const pageSize = 200;
 
@@ -95,6 +96,11 @@ export function CoordinatorTasks({ viewControl }: { viewControl?: ReactNode } = 
   const initialStatuses: string[] = params.has("status") ? params.getAll("status") : presetStatuses;
   const previousUrlFilters = useRef({ assignee: urlAssignee, statuses: urlStatuses, labels: urlLabels, view: urlView, routineTasksOnly });
   const needsAttention = view === "blocked";
+  // For a restricted member under `enforce` (AC-G10) the attention feed, company labels and
+  // live runs are closed lists: no "Needs attention" view option, no Label filter, no live marks.
+  const memberGate = useMemberRestrictionGate(companyId);
+  // `closed` also holds while the session loads; only a known restriction may end "loading" as empty.
+  const { enforced: memberEnforced } = useMemberRestriction();
   const query = params.get("q") ?? "";
   const deferredQuery = useDeferredValue(query.trim());
   const useListSort = layout === "list" && !deferredQuery;
@@ -131,10 +137,10 @@ export function CoordinatorTasks({ viewControl }: { viewControl?: ReactNode } = 
     enabled: !!companyId && !needsAttention,
   });
   const attention = useQuery({ queryKey: coordinatorAttentionTasksQueryKey(companyId!),
-    queryFn: () => attentionApi.taskIndex(companyId!), enabled: !!companyId && needsAttention });
+    queryFn: memberGate.guard<AttentionTaskIndex | null>(() => attentionApi.taskIndex(companyId!), null), enabled: !!companyId && needsAttention && !memberGate.closed });
   // Resolve every pending task in bounded index batches, including tasks outside
   // the first list page. Keep full task enrichment out of the collection read.
-  const attentionIds = needsAttention ? attention.data?.taskIds ?? [] : [];
+  const attentionIds = needsAttention && !memberGate.closed ? attention.data?.taskIds ?? [] : [];
   const attentionBatches = Array.from({ length: Math.ceil(attentionIds.length / 100) }, (_, index) => attentionIds.slice(index * 100, (index + 1) * 100));
   const attentionTasks = useQueries({ queries: attentionBatches.map(ids => ({
     queryKey: [...queryKeys.issues.list(companyId!), "coordinator-attention-index", userId, participantAgentId, deferredQuery, originKind, includeBlockedBy, ids],
@@ -153,11 +159,9 @@ export function CoordinatorTasks({ viewControl }: { viewControl?: ReactNode } = 
   const agents = useQuery({ queryKey: queryKeys.agents.list(companyId!), queryFn: () => agentsApi.list(companyId!), enabled: !!companyId });
   const projects = useQuery({ queryKey: queryKeys.projects.list(companyId!, { includeArchived: true }), queryFn: () => projectsApi.list(companyId!, { includeArchived: true }), enabled: !!companyId });
   const directory = useQuery({ queryKey: queryKeys.access.companyUserDirectory(companyId!), queryFn: () => accessApi.listUserDirectory(companyId!), enabled: !!companyId });
-  // Company labels are a closed list for a restricted member under `enforce` (AC-G10): no Label filter.
-  const memberGate = useMemberRestrictionGate(companyId);
   const labels = useQuery({ queryKey: queryKeys.issues.labels(companyId!), queryFn: memberGate.guard(() => issuesApi.listLabels(companyId!), []), enabled: !!companyId && !memberGate.closed });
-  const sharedLiveRuns = useSharedPollingQuery({ companyId, resourceKey: "live-runs", queryKey: queryKeys.liveRuns(companyId!), enabled: !!companyId, refetchInterval: false, leaderOnly: true });
-  const liveRuns = useQuery({ queryKey: queryKeys.liveRuns(companyId!), queryFn: () => heartbeatsApi.liveRunsForCompany(companyId!), enabled: sharedLiveRuns.enabled, refetchInterval: sharedLiveRuns.refetchInterval });
+  const sharedLiveRuns = useSharedPollingQuery({ companyId, resourceKey: "live-runs", queryKey: queryKeys.liveRuns(companyId!), enabled: !!companyId && !memberGate.closed, refetchInterval: false, leaderOnly: true });
+  const liveRuns = useQuery({ queryKey: queryKeys.liveRuns(companyId!), queryFn: memberGate.guard(() => heartbeatsApi.liveRunsForCompany(companyId!), []), enabled: sharedLiveRuns.enabled, refetchInterval: sharedLiveRuns.refetchInterval });
   usePublishSharedQueryData(sharedLiveRuns, liveRuns.data, liveRuns.dataUpdatedAt);
   const users = buildCompanyUserProfileMap(directory.data?.users);
   const agentById = new Map(agents.data?.map(agent => [agent.id, agent]));
@@ -202,7 +206,7 @@ export function CoordinatorTasks({ viewControl }: { viewControl?: ReactNode } = 
   const collection = useTaskListCollection({ items, companyId, userId, query, onQueryChange: setQuery, view: needsAttention ? "all" : view,
     layout, onLayoutChange: setLayout,
     searchMode: "server",
-    liveIssueIds: collectLiveIssueIds(liveRuns.data, records),
+    liveIssueIds: collectLiveIssueIds(memberGate.closed ? undefined : liveRuns.data, records),
     viewStorageKey,
     initialFilters: { labels: params.getAll("label").filter(Boolean), assignees: params.getAll("assignee"), statuses: initialStatuses, routineTasksOnly },
   });
@@ -255,9 +259,9 @@ export function CoordinatorTasks({ viewControl }: { viewControl?: ReactNode } = 
     ?? (view === "unread" ? parentContext.error : null)
     ?? agents.error ?? projects.error ?? directory.error ?? labels.error ?? update.error
     ?? (collection.filters.liveOnly ? liveRuns.error : null);
-  const pending = (needsAttention ? attention.isPending || attentionTasks.some(task => task.isPending) : tasks.isPending)
+  const pending = (needsAttention ? (attention.isPending && !memberEnforced) || attentionTasks.some(task => task.isPending) : tasks.isPending)
     || (view === "unread" && parentIds.length > 0 && parentContext.isPending)
-    || (collection.filters.liveOnly && liveRuns.isPending);
+    || (collection.filters.liveOnly && liveRuns.isPending && !memberEnforced);
   useWarmTaskDetailCode(!pending && !error && items.length > 0);
   const { enrichIssueRow, error: rowDetailsError, retry: retryRowDetails } = useIssueRowDetails(
     companyId, listRef,
@@ -284,6 +288,7 @@ export function CoordinatorTasks({ viewControl }: { viewControl?: ReactNode } = 
   if (!companyId) return <EmptyState icon={ListChecks} message="Select an organization to view tasks." />;
   return <FlyoutAppearanceProvider><TruncatedTextMarqueeProvider><section ref={listRef} className="coordinator-task-list task-row-design-preview flex min-w-0 flex-col gap-8" aria-label="Tasks">
     <TaskListToolbar view={view} onViewChange={setView} viewControl={viewControl}
+      viewOptions={memberGate.closed && view !== "blocked" ? taskListViews.filter(option => option.value !== "blocked") : taskListViews}
       query={collection.query} onQueryChange={collection.setQuery} layout={collection.layout} onLayoutChange={collection.setLayout}
       allExpanded={collection.allExpanded} onToggleExpanded={collection.toggleExpanded} onNewTask={() => openNewIssue()}
       filters={{ enableRoutineTasksFilter: true, state: collection.filters, onChange: updateFilters, activeFilterCount: collection.activeFilterCount,

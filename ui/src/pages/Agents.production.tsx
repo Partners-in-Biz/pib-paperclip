@@ -26,6 +26,7 @@ import { Button } from "@/components/ui/button";
 import { AlertTriangle, Bot, Plus, List, GitBranch } from "lucide-react";
 import { AGENT_ROLE_LABELS, type Agent, type Environment, type EnvironmentCapabilities } from "@paperclipai/shared";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
+import { useMemberRestrictionGate } from "../hooks/useMemberRestrictionGate";
 
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
 
@@ -237,18 +238,20 @@ export function Agents() {
     enabled: !!selectedCompanyId && environmentsEnabled,
   });
 
+  // Live runs are a closed list for a restricted member under `enforce` (AC-G10): no live marks.
+  const memberGate = useMemberRestrictionGate(selectedCompanyId);
   const runsQueryKey = [...queryKeys.liveRuns(selectedCompanyId!), "agents-page"] as const;
   const sharedRuns = useSharedPollingQuery({
     companyId: selectedCompanyId,
     resourceKey: "live-runs:agents-page",
     queryKey: runsQueryKey,
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && !memberGate.closed,
     refetchInterval: 15_000,
     leaderOnly: true,
   });
   const { data: runs, dataUpdatedAt: runsUpdatedAt } = useQuery({
     queryKey: runsQueryKey,
-    queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
+    queryFn: memberGate.guard(() => heartbeatsApi.liveRunsForCompany(selectedCompanyId!), []),
     enabled: sharedRuns.enabled,
     refetchInterval: sharedRuns.refetchInterval,
   });
@@ -257,7 +260,7 @@ export function Agents() {
   // Map agentId -> first live run + live run count
   const liveRunByAgent = useMemo(() => {
     const map = new Map<string, { runId: string; liveCount: number }>();
-    for (const r of runs ?? []) {
+    for (const r of memberGate.closed ? [] : runs ?? []) {
       if (r.status !== "running" && r.status !== "queued") continue;
       const existing = map.get(r.agentId);
       if (existing) {
@@ -267,7 +270,7 @@ export function Agents() {
       map.set(r.agentId, { runId: r.id, liveCount: 1 });
     }
     return map;
-  }, [runs]);
+  }, [memberGate.closed, runs]);
 
   const agentMap = useMemo(() => {
     const map = new Map<string, Agent>();

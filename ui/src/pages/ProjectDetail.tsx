@@ -34,6 +34,7 @@ import { collectLiveIssueIds } from "../lib/liveIssueIds";
 import { projectRouteRef } from "../lib/utils";
 import { PROJECT_ICONS } from "../lib/project-icons";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
+import { useMemberRestrictionGate } from "../hooks/useMemberRestrictionGate";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -198,19 +199,21 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
     enabled: !!companyId,
   });
 
+  // Live runs are a closed list for a restricted member under `enforce` (AC-G10): no live marks.
+  const memberGate = useMemberRestrictionGate(companyId);
   const liveRunsQueryKey = queryKeys.liveRuns(companyId);
   const sharedLiveRuns = useSharedPollingQuery({
     companyId,
     resourceKey: "live-runs",
     queryKey: liveRunsQueryKey,
-    enabled: !!companyId,
+    enabled: !!companyId && !memberGate.closed,
     // Event-sourced via LiveUpdatesProvider (issue 9627); no interval poll needed.
     refetchInterval: false,
     leaderOnly: true,
   });
   const { data: liveRuns, dataUpdatedAt: liveRunsUpdatedAt } = useQuery({
     queryKey: liveRunsQueryKey,
-    queryFn: () => heartbeatsApi.liveRunsForCompany(companyId),
+    queryFn: memberGate.guard(() => heartbeatsApi.liveRunsForCompany(companyId), []),
     enabled: sharedLiveRuns.enabled,
     refetchInterval: sharedLiveRuns.refetchInterval,
   });
@@ -228,7 +231,7 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
   });
   const { data: issues } = issuesQuery;
   const issuesView = useQueryView(issuesQuery);
-  const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns, issues), [issues, liveRuns]);
+  const liveIssueIds = useMemo(() => collectLiveIssueIds(memberGate.closed ? undefined : liveRuns, issues), [issues, liveRuns, memberGate.closed]);
 
   const updateIssue = useUpdateIssueMutation({
     companyId,
@@ -274,19 +277,21 @@ function ProjectPluginOperationsList({
     queryFn: () => projectsApi.list(companyId),
     enabled: !!companyId,
   });
+  // Live runs are a closed list for a restricted member under `enforce` (AC-G10): no live marks.
+  const memberGate = useMemberRestrictionGate(companyId);
   const liveRunsQueryKey = queryKeys.liveRuns(companyId);
   const sharedLiveRuns = useSharedPollingQuery({
     companyId,
     resourceKey: "live-runs",
     queryKey: liveRunsQueryKey,
-    enabled: !!companyId,
+    enabled: !!companyId && !memberGate.closed,
     // Event-sourced via LiveUpdatesProvider (issue 9627); no interval poll needed.
     refetchInterval: false,
     leaderOnly: true,
   });
   const { data: liveRuns, dataUpdatedAt: liveRunsUpdatedAt } = useQuery({
     queryKey: liveRunsQueryKey,
-    queryFn: () => heartbeatsApi.liveRunsForCompany(companyId),
+    queryFn: memberGate.guard(() => heartbeatsApi.liveRunsForCompany(companyId), []),
     enabled: sharedLiveRuns.enabled,
     refetchInterval: sharedLiveRuns.refetchInterval,
   });
@@ -298,7 +303,7 @@ function ProjectPluginOperationsList({
   });
   const { data: issues } = issuesQuery;
   const issuesView = useQueryView(issuesQuery);
-  const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns, issues), [issues, liveRuns]);
+  const liveIssueIds = useMemo(() => collectLiveIssueIds(memberGate.closed ? undefined : liveRuns, issues), [issues, liveRuns, memberGate.closed]);
 
   const updateIssue = useUpdateIssueMutation({
     companyId,
