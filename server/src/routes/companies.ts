@@ -531,6 +531,7 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
       to: parseDateQuery(req.query.to, "to"),
       sharedOnly: parseBooleanQuery(req.query.sharedOnly),
       includePayload: parseBooleanQuery(req.query.includePayload),
+      issueReadCondition: await issueReadSqlCondition(db, req.actor),
     });
     res.json(traces);
   });

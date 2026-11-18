@@ -1,7 +1,7 @@
 import { notifyDeliveryWork, DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
-import { and, asc, desc, eq, getTableColumns, gte, isNull, lte, ne, or } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, gte, isNull, lte, ne, or, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -1749,8 +1749,11 @@ export function feedbackService(db: Db, options: FeedbackServiceOptions = {}) {
       to?: Date;
       sharedOnly?: boolean;
       includePayload?: boolean;
+      /** Task read predicate over `issues`; rows of tasks the caller cannot read drop out. */
+      issueReadCondition?: SQL<boolean>;
     }) => {
-      const filters = [eq(feedbackExports.companyId, input.companyId)];
+      const filters: SQL[] = [eq(feedbackExports.companyId, input.companyId)];
+      if (input.issueReadCondition) filters.push(input.issueReadCondition);
       if (input.issueId) filters.push(eq(feedbackExports.issueId, input.issueId));
       if (input.projectId) filters.push(eq(feedbackExports.projectId, input.projectId));
       if (input.targetType) filters.push(eq(feedbackExports.targetType, input.targetType));
