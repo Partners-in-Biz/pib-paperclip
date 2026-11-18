@@ -6339,9 +6339,10 @@ export function issueRoutes(
     interactionId: string,
     relayedHumanUserId?: string | null,
   ) {
-    // AC-G3: a board caller who cannot read the task gets "not found" before
-    // any check that would tell them the task, the chat or the interaction exists.
-    if (req.actor.type !== "agent" && !(await assertIssueReadAllowed(req, res, issue))) return false;
+    // AC-G3: a caller who cannot read the task gets "not found" before any
+    // check that would tell them the task, the chat or the interaction exists.
+    // Agents too (PAR-13025): a run working for a restricted person.
+    if (!(await assertIssueReadAllowed(req, res, issue))) return false;
     if (issue.conversationAgentId && req.actor.type === "board" && req.actor.userId !== issue.conversationUserId) {
       throw forbidden("Only the conversation owner can respond to chat interactions");
     }
@@ -18808,7 +18809,8 @@ export function issueRoutes(
         "Issue not found",
       );
       if (!issue) return;
-      if (req.actor.type !== "agent" && !(await assertIssueReadAllowed(req, res, issue))) return;
+      // Every caller reads the task first (AC-G3; agents too, PAR-13025).
+      if (!(await assertIssueReadAllowed(req, res, issue))) return;
 
       const interactionSvc = issueThreadInteractionService(db);
       const current = await interactionSvc.getForIssue(issue, interactionId);
@@ -18937,7 +18939,8 @@ export function issueRoutes(
         "Issue not found",
       );
       if (!issue) return;
-      if (req.actor.type !== "agent" && !(await assertIssueReadAllowed(req, res, issue))) return;
+      // Read first for every caller, so an agent learns nothing of a task it cannot read (AC-G3, PAR-13025).
+      if (!(await assertIssueReadAllowed(req, res, issue))) return;
       if (req.actor.type === "agent") {
         res.status(403).json({
           error:
@@ -18996,7 +18999,8 @@ export function issueRoutes(
         "Issue not found",
       );
       if (!issue) return;
-      if (req.actor.type !== "agent" && !(await assertIssueReadAllowed(req, res, issue))) return;
+      // Read first for every caller, so an agent learns nothing of a task it cannot read (AC-G3, PAR-13025).
+      if (!(await assertIssueReadAllowed(req, res, issue))) return;
       if (req.actor.type === "agent") {
         res.status(403).json({
           error:
