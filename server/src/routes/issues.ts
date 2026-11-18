@@ -13937,10 +13937,22 @@ export function issueRoutes(
       "Issue not found",
     );
     if (!sourceIssue) return;
+    if (!(await assertIssueReadAllowed(req, res, sourceIssue))) return;
     const decompositions = await svc.listAcceptedPlanDecompositions(
       sourceIssue.id,
     );
-    res.json(decompositions);
+    // A child can be private under a readable source (PAR-12608 4.3): show it
+    // in full only when `issue:read` allows it, else the identifier-only stub.
+    const readableIds = await readableIssueEdgeIds(
+      req,
+      sourceIssue.companyId,
+      decompositions.flatMap((decomposition) => decomposition.childIssues.map((child) => child.id)),
+    );
+    res.json(decompositions.map((decomposition) => ({
+      ...decomposition,
+      childIssues: decomposition.childIssues.map((child) =>
+        readableIds.has(child.id) ? child : lockedIssueStub(child)),
+    })));
   });
 
   router.post(
@@ -14209,6 +14221,7 @@ export function issueRoutes(
       "Issue not found",
     );
     if (!issue) return;
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
     await assertCanManageIssueMonitor(
       access,
       req,

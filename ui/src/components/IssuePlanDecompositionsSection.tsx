@@ -4,6 +4,7 @@ import type { Agent, AcceptedPlanDecompositionSummary } from "@paperclipai/share
 import { ChevronRight, GitBranch, Repeat, CheckCircle2, Loader2 } from "lucide-react";
 import { Link } from "@/lib/router";
 import { issuesApi } from "../api/issues";
+import { isLockedIssueStub, LockedIssueChip } from "./LockedIssueChip";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, formatDateTime, relativeTime } from "../lib/utils";
 
@@ -131,7 +132,11 @@ export function IssuePlanDecompositionsSection({
 
               {record.childIssues && record.childIssues.length > 0 ? (
                 <ul className="mt-2 flex flex-wrap gap-1.5">
-                  {record.childIssues.map((child) => (
+                  {record.childIssues.map((child) => isLockedIssueStub(child) ? (
+                    <li key={child.id}>
+                      <LockedIssueChip identifier={child.identifier} />
+                    </li>
+                  ) : (
                     <li key={child.id}>
                       <Link
                         to={`/issues/${child.identifier ?? child.id}`}
