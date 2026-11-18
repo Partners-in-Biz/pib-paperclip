@@ -36,14 +36,14 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
  * (AC-F8) and failing-read (AC-X1) tests.
  */
 
-// AC-X1: the resolver made to throw.
-const resolverFails = vi.hoisted(() => ({ on: false }));
+// AC-X1: the resolver made to throw (after `skip` good reads, so one call site fails on its own).
+const resolverFails = vi.hoisted(() => ({ on: false, skip: 0 }));
 vi.mock("../services/member-restriction/resolver.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../services/member-restriction/resolver.js")>();
   return {
     ...actual,
     memberRestrictionResolver: (db: Parameters<typeof actual.memberRestrictionResolver>[0]) =>
-      (personId: string, companyId: string) => resolverFails.on
+      (personId: string, companyId: string) => resolverFails.on && resolverFails.skip-- <= 0
         ? Promise.reject(new actual.MemberRestrictionReadError("fixture: restriction unreadable"))
         : actual.memberRestrictionFor(db, personId, companyId),
   };
@@ -59,6 +59,7 @@ const challenge = createHash("sha256").update(verifier).digest("base64url");
 afterEach(() => {
   vi.unstubAllEnvs();
   resolverFails.on = false;
+  resolverFails.skip = 0;
 });
 
 describe("assistant connection database support", () => {
@@ -165,7 +166,7 @@ describe("assistant connection database support", () => {
     expect(await grantsOf(R)).toEqual([]);
   });
 
-  it("AC-M1, row 3: R under enforce cannot pair a Muse agent connection; no grant is written", async () => {
+  async function musePairing(operatorId: string) {
     const [agent] = await db.insert(agents).values({
       companyId, name: "Muse", role: "engineer", status: "active", adapterType: "paperclip_runner",
       adapterConfig: { provider: "muse", allowUnmeteredProvider: true, lifecycle: "per_turn" },
@@ -173,16 +174,20 @@ describe("assistant connection database support", () => {
     await db.insert(companyMemberships).values({ companyId, principalType: "agent", principalId: agent!.id, membershipRole: "member", status: "active" });
     const ticket = randomBytes(32).toString("base64url");
     const [binding] = await db.insert(museAgentBindings).values({
-      companyId, agentId: agent!.id, operatorId: R, ticketHash: museCredentialHash(ticket), ticketExpiresAt: new Date(Date.now() + 600_000),
+      companyId, agentId: agent!.id, operatorId, ticketHash: museCredentialHash(ticket), ticketExpiresAt: new Date(Date.now() + 600_000),
     }).returning();
     await db.update(agents).set({ adapterConfig: { ...agent!.adapterConfig, museBindingId: binding!.id } }).where(eq(agents.id, agent!.id));
     await instanceSettingsService(db).updateExperimental({ enableNativeRunner: true, enableMuse: true });
     const muse = museOAuth(db, config.origin);
     const client = await muse.register({ client_name: "Muse authd", redirect_uris: [redirectUri], token_endpoint_auth_method: "none", grant_types: ["authorization_code", "refresh_token"] }, randomUUID());
-    await expect(muse.authorize({
+    return () => muse.authorize({
       client_id: client.client_id, redirect_uri: redirectUri, response_type: "code", scope: "paperclip:agent offline_access",
       code_challenge: challenge, code_challenge_method: "S256", pairing_ticket: ticket,
-    })).rejects.toMatchObject({ code: "access_denied", status: 403 });
+    });
+  }
+
+  it("AC-M1, row 3: R under enforce cannot pair a Muse agent connection; no grant is written", async () => {
+    await expect((await musePairing(R))()).rejects.toMatchObject({ code: "access_denied", status: 403 });
     expect(await grantsOf(R)).toEqual([]);
   });
 
@@ -300,5 +305,26 @@ describe("assistant connection database support", () => {
       .send({ decision: "approve", companyId, allowWrites: false });
     expect(res.status).toBe(503);
     expect(res.body.code).toBe("MEMBER_RESTRICTION_UNAVAILABLE");
+  });
+
+  // PAR-13141: every call site fails closed on its own, not only the first one reached.
+  it("AC-X1 per call site: the call check, the agent-purpose person and the Muse pairing each answer 503", async () => {
+    const unavailable = { status: 503, details: { code: "MEMBER_RESTRICTION_UNAVAILABLE" } };
+    const [personal] = await db.insert(mcpOauthGrants).values({
+      companyId, userId: R, clientId, resource: config.resource, purpose: "personal", scopes: ["paperclip:read"],
+    }).returning();
+    const agentGrantId = await agentGrant(R);
+    const pair = await musePairing(R);
+    resolverFails.on = true;
+    await expect(oauth.authorizeGrant(personal!.id)).rejects.toMatchObject(unavailable);
+    await expect(pair()).rejects.toMatchObject(unavailable);
+    // Under report the call check reads and lets R through; the person read alone fails.
+    await setMode("report");
+    try {
+      resolverFails.skip = 1;
+      await expect(agentOAuth.authorizeGrant(agentGrantId)).rejects.toMatchObject(unavailable);
+    } finally {
+      await setMode("enforce");
+    }
   });
 });
