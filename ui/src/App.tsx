@@ -6,6 +6,8 @@ import { Navigate, Outlet, Route, Routes, useActiveCompanyPrefix, useLocation, u
 import { Button } from "@/components/ui/button";
 import { useTranslation } from "@/i18n";
 import { Layout } from "./components/Layout";
+import { MemberRestrictionGate } from "./components/MemberRestrictionGate";
+import { MemberRestrictionProvider } from "./context/MemberRestrictionContext";
 import { ConferenceRoomChatGate } from "./components/ConferenceRoomChatGate";
 import { CasesExperimentalGate } from "./components/CasesExperimentalGate";
 import { StatusCardsExperimentalGate } from "./components/StatusCardsExperimentalGate";
@@ -863,8 +865,13 @@ export function App() {
           <Route path="execution-workspaces/:workspaceId/runtime-logs" element={<UnprefixedExecutionWorkspaceRedirect />} />
           <Route path="execution-workspaces/:workspaceId/issues" element={<UnprefixedExecutionWorkspaceRedirect />} />
           <Route path="execution-workspaces/:workspaceId/routines" element={<UnprefixedExecutionWorkspaceRedirect />} />
-          <Route path=":companyPrefix" element={streamlinedUiEnabled ? <Layout /> : <ProductionLayout />}>
-            {boardRoutes(streamlinedUiEnabled, combinedInboxTasksEnabled)}
+          <Route
+            path=":companyPrefix"
+            element={<MemberRestrictionProvider>{streamlinedUiEnabled ? <Layout /> : <ProductionLayout />}</MemberRestrictionProvider>}
+          >
+            <Route element={<MemberRestrictionGate />}>
+              {boardRoutes(streamlinedUiEnabled, combinedInboxTasksEnabled)}
+            </Route>
           </Route>
           <Route path="*" element={<NotFoundPage scope="global" />} />
           </Route>
