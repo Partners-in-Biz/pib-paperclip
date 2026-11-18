@@ -6,6 +6,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
 import { useSidebar } from "../context/SidebarContext";
+import { useMemberRestriction } from "../context/MemberRestrictionContext";
 import { issuesApi } from "../api/issues";
 import { authApi } from "../api/auth";
 import { agentsApi } from "../api/agents";
@@ -97,6 +98,8 @@ export function CommandPalette() {
   const { selectedCompanyId } = useCompany();
   const { openNewIssue, openNewAgent } = useDialogActions();
   const { isMobile, setSidebarOpen } = useSidebar();
+  // PAR-12608 4.6: no entry for a page closed to a restricted member.
+  const { isPageHidden } = useMemberRestriction();
   const searchQuery = query.trim();
   const onIssueDetail = isOnIssueDetail(location.pathname);
   const { data: experimentalSettings } = useQuery({
@@ -337,15 +340,17 @@ export function CommandPalette() {
               <span className="ml-auto text-xs text-muted-foreground">g f</span>
             </CommandItem>
           )}
-          <CommandItem
-            onSelect={() => {
-              setOpen(false);
-              openNewAgent();
-            }}
-          >
-            <Plus className="mr-2 h-4 w-4" />
-            Create new agent
-          </CommandItem>
+          {isPageHidden("/agents/new") ? null : (
+            <CommandItem
+              onSelect={() => {
+                setOpen(false);
+                openNewAgent();
+              }}
+            >
+              <Plus className="mr-2 h-4 w-4" />
+              Create new agent
+            </CommandItem>
+          )}
           <CommandItem onSelect={() => go("/projects")}>
             <Plus className="mr-2 h-4 w-4" />
             Create new project
@@ -355,10 +360,12 @@ export function CommandPalette() {
         <CommandSeparator />
 
         <CommandGroup heading="Pages">
-          <CommandItem onSelect={() => go("/dashboard")}>
-            <LayoutDashboard className="mr-2 h-4 w-4" />
-            Dashboard
-          </CommandItem>
+          {isPageHidden("/dashboard") ? null : (
+            <CommandItem onSelect={() => go("/dashboard")}>
+              <LayoutDashboard className="mr-2 h-4 w-4" />
+              Dashboard
+            </CommandItem>
+          )}
           <CommandItem onSelect={() => go(combinedInboxTasksEnabled ? "/issues?view=mine" : "/inbox")}>
             <Inbox className="mr-2 h-4 w-4" />
             {combinedInboxTasksEnabled ? "My work" : "Inbox"}
@@ -371,22 +378,28 @@ export function CommandPalette() {
             <Hexagon className="mr-2 h-4 w-4" />
             Projects
           </CommandItem>
-          <CommandItem onSelect={() => go("/goals")}>
-            <Target className="mr-2 h-4 w-4" />
-            Goals
-          </CommandItem>
+          {isPageHidden("/goals") ? null : (
+            <CommandItem onSelect={() => go("/goals")}>
+              <Target className="mr-2 h-4 w-4" />
+              Goals
+            </CommandItem>
+          )}
           <CommandItem onSelect={() => go("/agents")}>
             <Bot className="mr-2 h-4 w-4" />
             Agents
           </CommandItem>
-          <CommandItem onSelect={() => go("/costs")}>
-            <DollarSign className="mr-2 h-4 w-4" />
-            Costs
-          </CommandItem>
-          <CommandItem onSelect={() => go("/activity")}>
-            <History className="mr-2 h-4 w-4" />
-            Activity
-          </CommandItem>
+          {isPageHidden("/costs") ? null : (
+            <CommandItem onSelect={() => go("/costs")}>
+              <DollarSign className="mr-2 h-4 w-4" />
+              Costs
+            </CommandItem>
+          )}
+          {isPageHidden("/activity") ? null : (
+            <CommandItem onSelect={() => go("/activity")}>
+              <History className="mr-2 h-4 w-4" />
+              Activity
+            </CommandItem>
+          )}
         </CommandGroup>
 
         {visibleIssues.length > 0 && (

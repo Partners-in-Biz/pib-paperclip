@@ -11,6 +11,8 @@ import { useRecentTasks } from "@/hooks/useRecentTasks";
 import { usePinnedNavigation } from "@/hooks/usePinnedNavigation";
 import { useDialogActions } from "@/context/DialogContext";
 import { useCompany } from "@/context/CompanyContext";
+import { useMemberRestriction } from "@/context/MemberRestrictionContext";
+import { RESTRICTED_MEMBER_LANDING_PATH } from "@/lib/member-restriction";
 import { PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
 import { PluginLauncherOutlet, usePluginLaunchers } from "@/plugins/launchers";
 import { useSidebar } from "@/context/SidebarContext";
@@ -129,9 +131,11 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
   });
-  const destinations = useMemo(() => experimental?.enableCases
+  // PAR-12608 4.6: no "More" or pinned entry for a page closed to a restricted member.
+  const { enforced: memberRestricted, isPageHidden } = useMemberRestriction();
+  const destinations = useMemo(() => (experimental?.enableCases
     ? [...moreDestinations, { label: "Cases", to: "/cases", icon: Boxes }]
-    : moreDestinations, [experimental?.enableCases]);
+    : [...moreDestinations]).filter((item) => !isPageHidden(item.to)), [experimental?.enableCases, isPageHidden]);
   const [moreOpen, setMoreOpen] = useState(false);
   const moreContentRef = useRef<HTMLDivElement>(null);
   const orderedPins = useMemo(() => buildPinnedNavigationItems(pinnedNavigation.pins, agents.data ?? [], destinations), [pinnedNavigation.pins, agents.data, destinations]);
@@ -182,7 +186,10 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
             {!rail && <button type="button" aria-label="New task" title="New task" onClick={() => openNewIssue()}
               className="absolute right-3 top-1/2 -translate-y-1/2 rounded-md p-1 text-muted-foreground opacity-0 transition-opacity group-hover/coordinator-new:opacity-100 group-focus-within/coordinator-new:opacity-100 pointer-coarse:opacity-100 hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring"><Plus className="size-4" /></button>}
           </div>
-          <SidebarNavItem className="design-sidebar-item" to="/decisions" label="Inbox" icon={Inbox} badge={attentionCount} badgeLabel="decisions" />
+          {/* The decision queue is closed to a restricted member; his Inbox is the task inbox (PAR-12608 4.6). */}
+          {memberRestricted
+            ? <SidebarNavItem className="design-sidebar-item" to={RESTRICTED_MEMBER_LANDING_PATH} label="Inbox" icon={Inbox} />
+            : <SidebarNavItem className="design-sidebar-item" to="/decisions" label="Inbox" icon={Inbox} badge={attentionCount} badgeLabel="decisions" />}
         </div>
         <Flyout open={moreOpen} onOpenChange={setMoreOpen}>
           <FlyoutTrigger asChild><button type="button" aria-label="More workspace pages" className="design-sidebar-item flex w-auto items-center gap-2.5 rounded-lg py-1.5 text-left transition-colors focus-visible:ring-2 focus-visible:ring-ring"><MoreHorizontal className="size-4 shrink-0" /><span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : undefined}>More</span></button></FlyoutTrigger>
