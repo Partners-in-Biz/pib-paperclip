@@ -26,6 +26,11 @@ it.each([undefined, "ready", "paused", "pending_approval", "terminated", "reject
   expect(agentLifecycleRefetchInterval(lifecycleState)).toBe(30_000);
 });
 
+it("says a resume is queued while the pause finishes", () => {
+  expect(renderToStaticMarkup(<AgentLifecycleStatus agent={{ lifecycleState: "pausing", lifecycleError: null, pauseReason: null }} onRetry={() => {}} retryPending={false} />)).toContain("Resume queued");
+  expect(renderToStaticMarkup(<AgentLifecycleStatus agent={{ lifecycleState: "pausing", lifecycleError: null, pauseReason: "manual" }} onRetry={() => {}} retryPending={false} />)).not.toContain("Resume queued");
+});
+
 it("does not promise automatic retry of a failed configuration check", () => {
   const html = renderToStaticMarkup(<AgentLifecycleStatus agent={{ lifecycleState: "verifying", lifecycleError: "Update Configuration or choose Retry now." }} onRetry={() => {}} retryPending={false} />);
   expect(html).toContain("Retry now");
