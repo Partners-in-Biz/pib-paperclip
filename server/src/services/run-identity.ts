@@ -96,6 +96,24 @@ async function lockIdentityTask(
       .for("no key update");
 }
 
+/**
+ * F12 (rule PAR-12618): a run bound to a chat works for the chat's person.
+ * Every identity context goes through `append`, so a message, steering or
+ * parent context by anyone else cannot make the run work for them.
+ */
+async function chatPersonForRun(executor: Pick<Db, "select">, companyId: string, runId: string) {
+  const [binding] = await executor
+    .select({ issueId: boundRunIssueIdSql() })
+    .from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, companyId)));
+  if (!binding?.issueId || !isUuidLike(binding.issueId)) return null;
+  const [chat] = await executor
+    .select({ agentId: issues.conversationAgentId, userId: issues.conversationUserId })
+    .from(issues)
+    .where(and(eq(issues.id, binding.issueId), eq(issues.companyId, companyId)));
+  return chat?.agentId ? chat.userId : null;
+}
+
 async function append(
   executor: Executor,
   input: {
@@ -125,10 +143,12 @@ async function append(
     .where(eq(runIdentityContexts.runId, input.runId))
     .orderBy(desc(runIdentityContexts.revision))
     .limit(1);
+  const chatPerson = await chatPersonForRun(executor, input.companyId, input.runId);
   const [created] = await executor
     .insert(runIdentityContexts)
     .values({
       ...input,
+      responsibleUserId: chatPerson ?? input.responsibleUserId,
       revision: (last?.revision ?? 0) + 1,
       acceptedAt: input.status === "pending" ? null : new Date(),
     })
