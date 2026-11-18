@@ -93,6 +93,20 @@ describe("member restriction route table matcher", () => {
     expect(await createRouteClassifier([me, byId])("GET", "/api/agents/a1")).toMatchObject({ entry: byId, params: { id: "a1" } });
   });
 
+  it("shadows: the shadowing row answers its own path, the shadowed row the rest, and closed still wins", async () => {
+    const me = { ...FIXTURE[2]!, shadows: "/api/agents/:id" };
+    const byId = { method: "GET", path: "/api/agents/:id", class: "open", test: "fixture" } as const;
+    const uuid = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const classify = createRouteClassifier([me, byId]);
+    expect(await classify("GET", "/api/agents/me")).toMatchObject({ kind: "matched", entry: { path: "/api/agents/me", class: "run" } });
+    expect(await classify("GET", `/api/agents/${uuid}`)).toMatchObject({ kind: "matched", entry: byId, params: { id: uuid } });
+    expect(await createRouteClassifier([me, { ...byId, class: "closed" }])("GET", "/api/agents/me"))
+      .toMatchObject({ kind: "matched", entry: { path: "/api/agents/:id", class: "closed" } });
+    // A row of another method hides nothing.
+    const mount = { method: "USE", path: "/api/agents/me", class: "plugin", shadows: "/api/agents/:id" } as const;
+    expect(await createRouteClassifier([mount, byId])("GET", "/api/agents/me")).toEqual({ kind: "refused", reason: "ambiguous" });
+  });
+
   it("refuses a param that does not decode", async () => {
     expect(await createRouteClassifier(FIXTURE)("GET", "/api/issues/%E0%A4%A")).toEqual({ kind: "refused", reason: "unroutable" });
   });

@@ -237,6 +237,11 @@ function loadActualRoutes() {
   const excludedRoutes = new Set<string>();
   const mounts = new Set<string>();
   const handlerSources = new Map<string, string>();
+  // Where each operation is first registered, for the `shadows` check of the route table scan.
+  const positions = new Map<string, { file: string; index: number }>();
+  const position = (operation: string, file: string, index: number | undefined) => {
+    if (!positions.has(operation)) positions.set(operation, { file, index: index ?? 0 });
+  };
   const unknownRouteFiles: string[] = [];
 
   for (const file of fs
@@ -257,6 +262,7 @@ function loadActualRoutes() {
       const routePath = match[2];
       const operation = `${method} ${normalizeExpressPath(resolveMountedPath(file, prefix, routePath))}`;
       handlerSources.set(operation, handlerSource(source, match.index ?? 0));
+      position(operation, file, match.index);
       if (explicitOpenApiOperationCoverageExclusions.has(operation)) {
         excludedRoutes.add(operation);
       } else {
@@ -268,6 +274,9 @@ function loadActualRoutes() {
       for (const literal of match[2].matchAll(/["'`]([^"'`]+)["'`]/g)) {
         const operation = `${match[1].toUpperCase()} ${normalizeExpressPath(resolveMountedPath(file, prefix, literal[1]))}`;
         handlerSources.set(operation, handlerSource(source, match.index ?? 0));
+        // Each literal of an array gets its own offset (`match[0]` ends with `match[2]` and "]").
+        const literalIndex = (match.index ?? 0) + match[0].length - match[2].length - 1 + (literal.index ?? 0);
+        position(operation, file, literalIndex);
         if (explicitOpenApiOperationCoverageExclusions.has(operation)) excludedRoutes.add(operation);
         else routes.add(operation);
       }
@@ -278,6 +287,7 @@ function loadActualRoutes() {
       const operation = `USE ${normalizeExpressPath(resolveMountedPath(file, prefix, match[1]))}`;
       mounts.add(operation);
       handlerSources.set(operation, handlerSource(source, match.index ?? 0));
+      position(operation, file, match.index);
     }
 
     if (file === "public-mcp.ts") {
@@ -333,6 +343,7 @@ function loadActualRoutes() {
     excludedRoutes,
     mounts,
     handlerSources,
+    positions,
     unknownRouteFiles: unknownRouteFiles.sort(),
   };
 }
@@ -1520,7 +1531,11 @@ function routeShape(method: string, routePath: string) {
   return `${method.toUpperCase()} ${shaped}`;
 }
 
-type RouteInventory = { operations: Iterable<string>; handlerSources: Map<string, string> };
+type RouteInventory = {
+  operations: Iterable<string>;
+  handlerSources: Map<string, string>;
+  positions: Map<string, { file: string; index: number }>;
+};
 
 async function routeTableScanErrors(
   table: readonly MemberRestrictionRouteEntry[],
@@ -1550,6 +1565,25 @@ async function routeTableScanErrors(
       errors.push(`${row}: by-company handler calls no company check of routes/authz.ts`);
     }
   }
+  // `shadows`: the router must really answer this row's route before the shadowed row's.
+  for (const entry of table) {
+    if (entry.shadows === undefined) continue;
+    const row = `${entry.method} ${entry.path}`;
+    const shadowed = table.find((other) => other.method === entry.method && other.path === entry.shadows);
+    if (!shadowed) {
+      errors.push(`${row}: shadows ${entry.method} ${entry.shadows}, which is no row`);
+      continue;
+    }
+    const caught = await createRouteClassifier([shadowed])(entry.method, entry.path.replace(/:[^/]+/g, "sample1"));
+    if (caught.kind !== "matched") errors.push(`${row}: shadows ${entry.method} ${entry.shadows}, which does not catch it`);
+    const own = inventory.positions.get(byShape.get(routeShape(entry.method, entry.path)) ?? "");
+    const other = inventory.positions.get(byShape.get(routeShape(shadowed.method, shadowed.path)) ?? "");
+    if (!own || !other || own.file !== other.file) {
+      errors.push(`${row}: shadows ${entry.method} ${entry.shadows}, which is not registered in the same file`);
+    } else if (own.index >= other.index) {
+      errors.push(`${row}: shadows ${entry.method} ${entry.shadows}, which is registered first`);
+    }
+  }
   const classify = createRouteClassifier(table);
   for (const operation of byShape.values()) {
     const [method, routePath] = operation.split(" ");
@@ -1569,15 +1603,17 @@ async function routeTableScanErrors(
 
 describe("member restriction route table scan", () => {
   it("every row of the route table is true to the mounted routes", async () => {
-    const { routes, excludedRoutes, mounts, handlerSources } = loadActualRoutes();
+    const { routes, excludedRoutes, mounts, handlerSources, positions } = loadActualRoutes();
     const readTest = (repoPath: string) => {
       const file = path.resolve(REPO_ROOT, repoPath);
       return file.startsWith(REPO_ROOT + path.sep) && fs.existsSync(file) ? fs.readFileSync(file, "utf8") : null;
     };
     expect(mounts.has("USE /api/plugins/{pluginId}/api")).toBe(true);
     expect(routes.has("GET /api/companies/{companyId}") || routes.has("GET /api/companies")).toBe(true);
+    // Every registration has its own source offset (array literals included), so "registered first" is strict.
+    expect(new Set([...positions.values()].map(({ file, index }) => `${file}:${index}`)).size).toBe(positions.size);
     const operations = [...routes, ...excludedRoutes, ...mounts];
-    expect(await routeTableScanErrors(MEMBER_RESTRICTION_ROUTE_TABLE, { operations, handlerSources }, readTest)).toEqual([]);
+    expect(await routeTableScanErrors(MEMBER_RESTRICTION_ROUTE_TABLE, { operations, handlerSources, positions }, readTest)).toEqual([]);
   });
 
   it("fails on a row with no route, a doubled row, a missing test, a by-company handler without a check and a caught route", async () => {
@@ -1588,6 +1624,7 @@ describe("member restriction route table scan", () => {
         ["GET /api/approvals/{id}", "router.get(\"/approvals/:id\", async (req, res) => { res.json({}); })"],
         ["GET /api/agents/{id}", "router.get(\"/agents/:id\", async (req, res) => { assertCompanyAccess(req, a.companyId); })"],
       ]),
+      positions: new Map(),
     };
     const tests: Record<string, string> = { "t.test.ts": "/api/issues/:id /api/approvals/:id /api/agents/:id" };
     const readTest = (repoPath: string) => tests[repoPath] ?? null;
@@ -1619,6 +1656,41 @@ describe("member restriction route table scan", () => {
       { method: "GET", path: "/api/agents/me", class: "open", test: "t.test.ts" },
     ], inventory, (repoPath) => (repoPath === "t.test.ts" ? "/api/agents/:id /api/agents/me" : null))).toEqual([
       "GET /api/agents/me: matched by rows of different classes; give it one row",
+    ]);
+  });
+
+  it("checks shadows: a row with that path and method, which catches the shadowing route, registered later in the same file", async () => {
+    const at = (file: string, index: number) => ({ file, index });
+    const inventory = (me: { file: string; index: number }): RouteInventory => ({
+      operations: ["GET /api/agents/me", "GET /api/agents/{id}", "GET /api/agents/{id}/keys"],
+      handlerSources: new Map(),
+      positions: new Map([["GET /api/agents/me", me], ["GET /api/agents/{id}", at("agents.ts", 200)],
+        ["GET /api/agents/{id}/keys", at("agents.ts", 300)]]),
+    });
+    const readTest = () => "/api/agents/me /api/agents/:id /api/agents/:id/keys";
+    const table = (shadows: string): MemberRestrictionRouteEntry[] => [
+      { method: "GET", path: "/api/agents/me", class: "run", test: "t.test.ts", shadows },
+      { method: "GET", path: "/api/agents/:id", class: "open", test: "t.test.ts" },
+      { method: "GET", path: "/api/agents/:id/keys", class: "open", test: "t.test.ts" },
+    ];
+    expect(await routeTableScanErrors(table("/api/agents/:id"), inventory(at("agents.ts", 100)), readTest)).toEqual([]);
+    expect(await routeTableScanErrors(table("/api/agents/:agentId"), inventory(at("agents.ts", 100)), readTest)).toEqual([
+      "GET /api/agents/me: matched by rows of different classes; give it one row",
+      "GET /api/agents/me: shadows GET /api/agents/:agentId, which is no row",
+    ]);
+    expect(await routeTableScanErrors(table("/api/agents/:id/keys"), inventory(at("agents.ts", 100)), readTest)).toEqual([
+      "GET /api/agents/me: matched by rows of different classes; give it one row",
+      "GET /api/agents/me: shadows GET /api/agents/:id/keys, which does not catch it",
+    ]);
+    expect(await routeTableScanErrors(table("/api/agents/:id"), inventory(at("agents-me.ts", 100)), readTest)).toEqual([
+      "GET /api/agents/me: shadows GET /api/agents/:id, which is not registered in the same file",
+    ]);
+    expect(await routeTableScanErrors(table("/api/agents/:id"), inventory(at("agents.ts", 250)), readTest)).toEqual([
+      "GET /api/agents/me: shadows GET /api/agents/:id, which is registered first",
+    ]);
+    // Same offset (one registration for both, or a row shadowing its own path): not proved first.
+    expect(await routeTableScanErrors(table("/api/agents/:id"), inventory(at("agents.ts", 200)), readTest)).toEqual([
+      "GET /api/agents/me: shadows GET /api/agents/:id, which is registered first",
     ]);
   });
 });
