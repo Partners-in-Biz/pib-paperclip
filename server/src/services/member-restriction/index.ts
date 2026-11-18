@@ -54,6 +54,12 @@ export {
   type ActingPerson,
 } from "./acting-person.js";
 export {
+  MEMBER_RESTRICTED_MESSAGE,
+  MEMBER_RESTRICTION_ROUTE_RULE_ID,
+  companyIdInPath,
+  memberRestrictionRouteGuard,
+} from "./route-middleware.js";
+export {
   memberRestrictionReadCondition,
   restrictionPersonIds,
   strictReadCondition,
