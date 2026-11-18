@@ -241,7 +241,9 @@ const answerOf = (res: request.Response) => res.status < 300 ? String(res.status
   it("whole objects: the picker, mode-only, monitor-cancel and overrides bodies keep O's stored keys", async () => {
     await setMode("enforce");
     const r = await board(R);
-    for (const body of [BODIES.patch.picker![0], BODIES.patch["mode only"]![0], adapter({ model: "r-model" })]) {
+    // A strategy without its `type` would parse to no strategy and drop O's command (Vera, PAR-12950).
+    for (const body of [BODIES.patch.picker![0], BODIES.patch["mode only"]![0], adapter({ model: "r-model" }),
+      settings({ workspaceStrategy: { baseRef: "x" } }), settings({ workspaceStrategy: null })]) {
       const { answer, after } = await send("R", "patch", body, r);
       expect(answer, JSON.stringify(body)).toBe("200");
       expectStoredKept(after, JSON.stringify(body));
