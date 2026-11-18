@@ -266,6 +266,29 @@ describe("agent list database support", () => {
     expect((await finishedRun(queued.id)).status).toBe("succeeded");
   });
 
+  it("enforce: a failed restriction read at claim leaves the run queued and unstarted (AC-X1)", async () => {
+    const s = await seed("enforce");
+    const queued = await queuedRunFor(s, s.agentY);
+    await db.execute(sql`UPDATE company_memberships SET restricted_agent_ids = '{"broken": true}'::jsonb
+      WHERE company_id = ${s.companyId} AND principal_id = ${s.restrictedId}`);
+    await heartbeat.resumeQueuedRunsForAgent(s.companyId, s.agentY);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, queued.id));
+    expect(run!.status).toBe("queued");
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, queued.wakeupRequestId!));
+    expect(wake!.status).not.toBe("skipped");
+  });
+
+  it("kill switch: a queued run of unlisted Y starts at claim and nothing is recorded (AC-F8)", async () => {
+    const s = await seed("enforce");
+    vi.stubEnv("PAPERCLIP_MEMBER_RESTRICTION", "off");
+    const queued = await queuedRunFor(s, s.agentY);
+    await heartbeat.resumeQueuedRunsForAgent(s.companyId, s.agentY);
+    expect((await finishedRun(queued.id)).status).toBe("succeeded");
+    expect(await denials(s.companyId)).toEqual([]);
+  });
+
   it.each(["terminated", "paused"] as const)("enforce: listed X, then %s, never passes the check (AC-A9)", async (status) => {
     const s = await seed("enforce");
     await db.update(agents).set({ status }).where(eq(agents.id, s.agentX));
