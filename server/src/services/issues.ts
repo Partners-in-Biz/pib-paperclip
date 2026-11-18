@@ -2033,6 +2033,9 @@ async function assertParentInCompany(db: Pick<Db, "select">, companyId: string, 
   if (!parent) throw notFound("Parent issue not found");
 }
 
+/** The 422 text for opening a chat or granting access to it (PAR-12774 4.1). */
+export const CHAT_ALWAYS_PRIVATE = "A chat is always private";
+
 /** Conversation containers cannot acquire new child edges, even with the experiment disabled. */
 async function assertExecutionTaskParent(db: Db, companyId: string, parentId?: string | null) {
   if (!parentId) return;
@@ -10746,7 +10749,17 @@ export function issueService(db: Db) {
           }
         }
 
-        if (visibility === "private" && !issueData.projectId && !inheritedPrivateSubtree) {
+        // A chat is always private and its own privacy root (PAR-12774 4.1).
+        // It keeps no project, so it skips the personal private project.
+        const isChat = Boolean(issueData.conversationAgentId);
+        if (isChat) {
+          issueData.id ??= randomUUID();
+          visibility = "private";
+          privacyRootIssueId = issueData.id;
+          inheritedPrivateSubtree = false;
+        }
+
+        if (visibility === "private" && !issueData.projectId && !inheritedPrivateSubtree && !isChat) {
           if (!responsibleUserId) {
             throw unprocessable("Private tasks require a responsible user");
           }
@@ -10835,7 +10848,8 @@ export function issueService(db: Db) {
         if (values.originKind === "routine_execution") await notifyRoutineExecutionStatus(tx, values.id, companyId);
         const [issue] = await tx.insert(issues).values(values).returning();
         await attachOwnedDraftImages(tx, issue, issue.description, { userId: issueData.createdByUserId, agentId: issueData.createdByAgentId });
-        if (issue.visibility === "private" && !inheritedPrivateSubtree && issueData.createdByAgentId) {
+        // A chat takes no grants (plan Q4): its two people read it through the chat rule.
+        if (issue.visibility === "private" && !inheritedPrivateSubtree && issueData.createdByAgentId && !isChat) {
           await tx.insert(issueAccessGrants).values({
             issueId: issue.id,
             subjectType: "agent",
@@ -10844,10 +10858,12 @@ export function issueService(db: Db) {
             grantedByAgentId: issueData.createdByAgentId,
           }).onConflictDoNothing();
         }
-        await ensureAssignmentIssueAccessGrant(tx, issue, null, {
-          agentId: issueData.createdByAgentId ?? null,
-          userId: issueData.createdByUserId ?? null,
-        });
+        if (!isChat) {
+          await ensureAssignmentIssueAccessGrant(tx, issue, null, {
+            agentId: issueData.createdByAgentId ?? null,
+            userId: issueData.createdByUserId ?? null,
+          });
+        }
         await recordChatHandoff(tx, issue, actorRunId);
         if (handoffSource) await recordAcceptedChatHandoff(tx, issue, handoffSource);
         if (idempotencyKey) {
@@ -11330,6 +11346,7 @@ export function issueService(db: Db) {
           || data.conversationBoundaryCommentId !== undefined || data.status === "done" || data.status === "cancelled") {
           throw unprocessable("Conversation identity is fixed; finish the reply instead of completing or reassigning the conversation");
         }
+        if (data.visibility === "open") throw unprocessable(CHAT_ALWAYS_PRIVATE);
       }
 
       const {
