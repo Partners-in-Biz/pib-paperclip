@@ -149,13 +149,13 @@ import {
       expect(new Set(results.map((issue) => issue.id)).size).toBe(1);
       expect((await create()).id).not.toBe(results[0].id);
       expect(
-        (await issueService(db).list(companyId)).some(
+        (await issueService(db).list(companyId, { readCondition: "system" })).some(
           (issue) => issue.id === results[0].id,
         ),
       ).toBe(false);
       expect(
         (
-          await issueService(db).list(companyId, { q: results[0].identifier! })
+          await issueService(db).list(companyId, { readCondition: "system", q: results[0].identifier! })
         ).some((issue) => issue.id === results[0].id),
       ).toBe(true);
       expect(

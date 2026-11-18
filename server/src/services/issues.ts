@@ -1865,6 +1865,20 @@ export function parseStatusFilter(
     .filter(Boolean);
 }
 
+/**
+ * Which rows a task list may return (PAR-12718, spec C 4.3, C28). Every caller
+ * of the task list functions passes one: the caller's read condition from
+ * `issueReadSqlCondition`, or the literal `"system"` when no person's request
+ * reaches the code (sweepers, the queue). There is no default, so a call that
+ * forgets it does not compile.
+ */
+export type IssueListReadScope = SQL<boolean> | "system";
+
+/** The SQL a read scope adds to a list query; `"system"` adds none. */
+export function issueListReadCondition(scope: IssueListReadScope | undefined): SQL<boolean> | undefined {
+  return scope === undefined || scope === "system" ? undefined : scope;
+}
+
 export interface IssueFilters {
   attention?: "blocked";
   status?: string | readonly string[];
@@ -1909,7 +1923,8 @@ export interface IssueFilters {
   includeLiveDescendantSummary?: boolean;
   hasPlanDocument?: boolean;
   lowTrustBoundary?: LowTrustBoundary & { companyId: string };
-  readCondition?: SQL<boolean>;
+  /** Required: the caller's read condition, or `"system"` (see `IssueListReadScope`). */
+  readCondition: IssueListReadScope;
   q?: string;
   limit?: number;
   offset?: number;
@@ -6424,7 +6439,8 @@ async function blockedInboxIssueConditions(
     visibleIssueCondition(),
     notInArray(issues.status, [...BLOCKED_INBOX_TERMINAL_STATUSES]),
   ];
-  if (filters?.readCondition) conditions.push(filters.readCondition);
+  const readCondition = issueListReadCondition(filters?.readCondition);
+  if (readCondition) conditions.push(readCondition);
   const creationCondition = creationVisibilityCondition(companyId, filters);
   if (creationCondition) conditions.push(creationCondition);
   const touchedByUserId = filters?.touchedByUserId?.trim() || undefined;
@@ -8238,7 +8254,7 @@ export function issueService(db: Db) {
       )).then((unread) => unread.map((row) => row.id));
     },
 
-    list: async (companyId: string, filters?: IssueFilters) => {
+    list: async (companyId: string, filters: IssueFilters) => {
       if (filters?.sortField === "id" && filters.attention) {
         throw unprocessable("ID ordering is not supported for blocked attention lists");
       }
@@ -8278,7 +8294,8 @@ export function issueService(db: Db) {
         }
       }
       if (filters?.afterId) conditions.push(gt(issues.id, filters.afterId));
-      if (filters?.readCondition) conditions.push(filters.readCondition);
+      const readCondition = issueListReadCondition(filters?.readCondition);
+      if (readCondition) conditions.push(readCondition);
       const creationCondition = creationVisibilityCondition(companyId, filters);
       if (creationCondition) conditions.push(creationCondition);
       const assigneeAgentFilter = parseIssueAssigneeAgentFilter(
@@ -8441,7 +8458,7 @@ export function issueService(db: Db) {
         : db.select(selectedFields)).from(issues);
       const searchedSource = hasSearch
         ? issueSource.innerJoin(sql`(
-            ${taskSearchCtes(companyId, taskSearch, true, and(...conditions), filters?.readCondition)}
+            ${taskSearchCtes(companyId, taskSearch, true, and(...conditions), readCondition)}
             SELECT m.id, ${taskSearchScore(taskSearch)} AS score FROM matched m
           ) task_search`, sql`task_search.id = ${issues.id}`)
         : issueSource;
@@ -8613,13 +8630,14 @@ export function issueService(db: Db) {
       });
     },
 
-    count: async (companyId: string, filters?: IssueFilters) => {
+    count: async (companyId: string, filters: IssueFilters) => {
       if (filters?.attention === "blocked") {
         return countBlockedInboxIssues(db, companyId, filters);
       }
 
       const conditions = [eq(issues.companyId, companyId), visibleIssueCondition()];
-      if (filters?.readCondition) conditions.push(filters.readCondition);
+      const readCondition = issueListReadCondition(filters?.readCondition);
+      if (readCondition) conditions.push(readCondition);
       const creationCondition = creationVisibilityCondition(companyId, filters);
       if (creationCondition) conditions.push(creationCondition);
       if (!filters?.q?.trim()) {

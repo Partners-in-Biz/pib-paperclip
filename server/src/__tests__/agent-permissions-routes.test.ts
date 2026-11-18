@@ -2208,6 +2208,7 @@ describe("agent permission routes", () => {
       inboxArchivedByUserId: "board-user",
       status: "backlog,todo,in_progress,in_review,blocked,done",
       limit: 500,
+      readCondition: expect.anything(),
     });
   });
 

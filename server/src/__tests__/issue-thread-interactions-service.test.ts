@@ -1336,7 +1336,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
 
     // Agent-authored suggestions nest one level: the nested suggestion would be
     // a grandchild, so it lands beside its suggested parent and records it as origin.
-    const children = await issuesSvc.list(companyId, { parentId: issueId });
+    const children = await issuesSvc.list(companyId, { readCondition: "system", parentId: issueId });
     expect(children.map((child) => child.title).sort()).toEqual([
       "Create the nested follow-up",
       "Create the root follow-up",
@@ -1345,7 +1345,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     const nestedFollowUp = children.find((child) => child.title === "Create the nested follow-up")!;
     expect(nestedFollowUp.originIssueId).toBe(rootFollowUp.id);
     expect(nestedFollowUp.requestDepth).toBe(4);
-    expect(await issuesSvc.list(companyId, { parentId: rootFollowUp.id })).toHaveLength(0);
+    expect(await issuesSvc.list(companyId, { readCondition: "system", parentId: rootFollowUp.id })).toHaveLength(0);
 
     const listed = await interactionsSvc.listForIssue(issueId);
     expect(listed).toHaveLength(1);
@@ -1355,7 +1355,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       userId: "local-board",
     })).rejects.toThrow("Interaction has already been resolved");
 
-    const childrenAfterDuplicateAccept = await issuesSvc.list(companyId, { parentId: issueId });
+    const childrenAfterDuplicateAccept = await issuesSvc.list(companyId, { readCondition: "system", parentId: issueId });
     expect(childrenAfterDuplicateAccept).toHaveLength(2);
   });
 
@@ -1426,7 +1426,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       skippedClientKeys: ["child", "sibling"],
     });
 
-    const children = await issuesSvc.list(companyId, { parentId: issueId });
+    const children = await issuesSvc.list(companyId, { readCondition: "system", parentId: issueId });
     expect(children).toHaveLength(1);
     expect(children[0]?.title).toBe("Create the root follow-up");
   });

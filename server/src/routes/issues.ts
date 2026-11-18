@@ -13047,7 +13047,9 @@ export function issueRoutes(
       const onboardingFirstTaskRequested =
         rawOnboardingFirstTask === true && req.actor.type === "board";
       let isOnboardingFirstTask = onboardingFirstTaskRequested
-        ? (await svc.count(companyId)) === 0
+        ? // "system": an existence check that gates server-owned behaviour; the
+          // count is never returned, and a reader's view must not make it zero.
+          (await svc.count(companyId, { readCondition: "system" })) === 0
         : false;
       const watchdogDiscovery =
         normalizeWatchdogDiscovery(rawWatchdogDiscovery);
