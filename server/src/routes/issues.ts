@@ -17979,6 +17979,8 @@ export function issueRoutes(
         "Issue not found",
       );
       if (!issue) return;
+      // PAR-12985: a board caller who cannot read the task gets "not found" and nothing is written.
+      if (req.actor.type !== "agent" && !(await assertIssueReadAllowed(req, res, issue))) return;
       if (req.actor.type === "agent") {
         if (
           !(await assertAgentIssueMutationAllowed(req, res, issue, {
@@ -18140,6 +18142,8 @@ export function issueRoutes(
     async (req, res) => {
       const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
       if (!issue) return;
+      // PAR-12985: read first, so a caller who cannot read the task gets 404, not 403.
+      if (req.actor.type !== "agent" && !(await assertIssueReadAllowed(req, res, issue))) return;
       if (req.actor.type !== "agent") throw forbidden("Conversational resolution requires the responding agent run");
       const [replyComment] = await db.select({ authorUserId: issueComments.authorUserId }).from(issueComments).where(and(
         eq(issueComments.id, req.body.commentId), eq(issueComments.companyId, issue.companyId),

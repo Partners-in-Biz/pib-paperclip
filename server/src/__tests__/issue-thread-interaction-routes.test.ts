@@ -774,6 +774,11 @@ describe("issue thread interaction routes", () => {
       });
 
     expect(createRes.status).toBe(201);
+    // PAR-12985: board create reads the task first.
+    expect(mockAccessDecide).toHaveBeenCalledWith(expect.objectContaining({
+      action: "issue:read",
+      resource: expect.objectContaining({ issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }),
+    }));
     expect(mockInteractionService.create).toHaveBeenCalled();
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
