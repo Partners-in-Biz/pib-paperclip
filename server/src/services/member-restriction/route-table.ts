@@ -41,6 +41,7 @@ const TREE_TEST = "server/src/__tests__/member-restriction-route-table-comments-
 const DOCS_TEST = "server/src/__tests__/member-restriction-route-table-documents.test.ts";
 const ACCOUNT_TEST = "server/src/__tests__/member-restriction-route-table-account.test.ts";
 const WORKSPACES_TEST = "server/src/__tests__/member-restriction-route-table-workspaces-assets.test.ts";
+const APPROVALS_TEST = "server/src/__tests__/member-restriction-route-table-approvals.test.ts";
 
 export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntry[] = [
   // C4b-1a (PAR-12730): the task routes of `routes/issues.ts`. Comments,
@@ -287,6 +288,27 @@ export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntr
   { method: "POST", path: "/api/execution-workspaces/:id/runtime-commands/:action", class: "closed" },
   { method: "POST", path: "/api/execution-workspaces/:id/reconcile-branch", class: "closed" },
   { method: "POST", path: "/api/execution-workspaces/:id/login-handoff", class: "closed" },
+  // C4d-1 (PAR-13024): approvals (4.6 and S11: he reads those linked to a
+  // task he can read and decides none). Every `/api/approvals/:id` handler
+  // runs `router.param("id")` first, which reads the approval through
+  // `approvalReadSqlCondition` ("not found"); under `enforce` that condition
+  // also drops an approval linked to no task. The list is filtered by it; a
+  // task's approvals read the task (`issue:read`) and then filter the same way.
+  { method: "GET", path: "/api/companies/:companyId/approvals", class: "open", test: APPROVALS_TEST },
+  { method: "GET", path: "/api/approvals/:id", class: "open", test: APPROVALS_TEST },
+  { method: "GET", path: "/api/approvals/:id/issues", class: "open", test: APPROVALS_TEST },
+  { method: "GET", path: "/api/approvals/:id/comments", class: "open", test: APPROVALS_TEST },
+  { method: "GET", path: "/api/issues/:id/approvals", class: "open", test: APPROVALS_TEST },
+  // Closed: deciding (it starts agents' runs, S11), creating, linking and
+  // unlinking. Commenting is closed too: the 4.6 row says read-only.
+  { method: "POST", path: "/api/companies/:companyId/approvals", class: "closed" },
+  { method: "POST", path: "/api/approvals/:id/approve", class: "closed" },
+  { method: "POST", path: "/api/approvals/:id/reject", class: "closed" },
+  { method: "POST", path: "/api/approvals/:id/request-revision", class: "closed" },
+  { method: "POST", path: "/api/approvals/:id/resubmit", class: "closed" },
+  { method: "POST", path: "/api/approvals/:id/comments", class: "closed" },
+  { method: "POST", path: "/api/issues/:id/approvals", class: "closed" },
+  { method: "DELETE", path: "/api/issues/:id/approvals/:approvalId", class: "closed" },
 ];
 
 export type MemberRestrictionRouteMatch =

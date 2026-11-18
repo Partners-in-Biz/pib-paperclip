@@ -42,6 +42,7 @@ import { memberRestrictionAllowsAction } from "./member-restriction/action-list.
 import { recordMemberRestrictionDenial } from "./member-restriction/admin.js";
 import { memberRestrictionFor, memberRestrictionUnavailable } from "./member-restriction/resolver.js";
 import {
+  memberRestrictionEnforcedCompanyIdsForActor,
   memberRestrictionReadCondition,
   restrictionPersonIds,
   strictReadCondition,
@@ -3354,10 +3355,24 @@ export async function executionWorkspaceReadSqlCondition(db: Db | DbTransaction,
   )`;
 }
 
-/** An approval may contain task-derived payload; every linked task must be readable. */
+/**
+ * An approval may contain task-derived payload; every linked task must be readable.
+ * In a company where the actor's person is restricted under `enforce`, the
+ * approval must also be linked to at least one task (PAR-12608 4.6): a
+ * company-wide approval (hire, budget) linked to none is not his to read.
+ */
 export async function approvalReadSqlCondition(db: Db | DbTransaction, actor: AuthorizationActor): Promise<SQL<boolean>> {
   const readable = await issueReadSqlCondition(db, actor);
-  return sql<boolean>`not exists (
+  const restrictedCompanyIds = await memberRestrictionEnforcedCompanyIdsForActor(db, actor);
+  const linkedToTask = restrictedCompanyIds.length === 0 ? sql`` : sql` and (
+    ${approvals.companyId} not in (${sql.join(restrictedCompanyIds.map((id) => sql`${id}`), sql`, `)})
+    or exists (select 1 from ${issues} where ${issues.companyId} = ${approvals.companyId}
+      and (${issues.id}::text = ${approvals.payload}->>'issueId'
+        or ${issues.id}::text = ${approvals.payload}->>'sourceIssueId'
+        or exists (select 1 from ${issueApprovals} ia where ia.approval_id = ${approvals.id}
+          and ia.company_id = ${approvals.companyId} and ia.issue_id = ${issues.id})))
+  )`;
+  return sql<boolean>`(not exists (
     select 1 from (values (${approvals.payload}->>'issueId'), (${approvals.payload}->>'sourceIssueId')) claimed(id)
       where claimed.id is not null and not exists (
         select 1 from ${issues} where ${issues.id}::text = claimed.id and ${issues.companyId} = ${approvals.companyId})
@@ -3368,7 +3383,7 @@ export async function approvalReadSqlCondition(db: Db | DbTransaction, actor: Au
         or exists (select 1 from ${issueApprovals} ia where ia.approval_id = ${approvals.id}
           and ia.company_id = ${approvals.companyId} and ia.issue_id = ${issues.id}))
       and not (${readable})
-  )`;
+  )${linkedToTask})`;
 }
 
 export async function canActorReadApproval(db: Db | DbTransaction, actor: AuthorizationActor, approvalId: string) {
