@@ -38,6 +38,7 @@ export interface MemberRestrictionRouteEntry {
 
 const TASKS_TEST = "server/src/__tests__/member-restriction-route-table-tasks.test.ts";
 const TREE_TEST = "server/src/__tests__/member-restriction-route-table-comments-projects.test.ts";
+const DOCS_TEST = "server/src/__tests__/member-restriction-route-table-documents.test.ts";
 
 export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntry[] = [
   // C4b-1a (PAR-12730): the task routes of `routes/issues.ts`. Comments,
@@ -168,6 +169,41 @@ export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntr
   { method: "GET", path: "/api/issues/:id/tree-holds/:holdId", class: "open", test: TREE_TEST },
   { method: "POST", path: "/api/issues/:id/tree-holds", class: "closed" },
   { method: "POST", path: "/api/issues/:id/tree-holds/:holdId/release", class: "closed" },
+
+  // C4b-2 (PAR-12732): documents, annotations, work products and attachments
+  // of `routes/issues.ts`. Every `open` handler reads the task through
+  // `issue:read` first ("Issue not found"); writes do it through
+  // `assertAgentIssueMutationAllowed`. Work-product and attachment routes by
+  // their own id read the object's task the same way.
+  { method: "GET", path: "/api/issues/:id/documents", class: "open", test: DOCS_TEST },
+  { method: "GET", path: "/api/issues/:id/documents/:key", class: "open", test: DOCS_TEST },
+  { method: "PUT", path: "/api/issues/:id/documents/:key", class: "open", test: DOCS_TEST },
+  { method: "GET", path: "/api/issues/:id/documents/:key/revisions", class: "open", test: DOCS_TEST },
+  { method: "GET", path: "/api/issues/:id/documents/:key/revisions/:revisionId", class: "open", test: DOCS_TEST },
+  { method: "POST", path: "/api/issues/:id/documents/:key/revisions/:revisionId/restore", class: "open", test: DOCS_TEST },
+  { method: "GET", path: "/api/issues/:id/documents/:key/annotations", class: "open", test: DOCS_TEST },
+  { method: "POST", path: "/api/issues/:id/documents/:key/annotations", class: "open", test: DOCS_TEST },
+  { method: "GET", path: "/api/issues/:id/documents/:key/annotations/:threadId", class: "open", test: DOCS_TEST },
+  { method: "PATCH", path: "/api/issues/:id/documents/:key/annotations/:threadId", class: "open", test: DOCS_TEST },
+  { method: "POST", path: "/api/issues/:id/documents/:key/annotations/:threadId/comments", class: "open", test: DOCS_TEST },
+  { method: "GET", path: "/api/issues/:id/work-products", class: "open", test: DOCS_TEST },
+  { method: "POST", path: "/api/issues/:id/work-products", class: "open", test: DOCS_TEST },
+  { method: "POST", path: "/api/issues/:id/work-products/:workProductId/review-document", class: "open", test: DOCS_TEST },
+  { method: "PATCH", path: "/api/work-products/:id", class: "open", test: DOCS_TEST },
+  { method: "DELETE", path: "/api/work-products/:id", class: "open", test: DOCS_TEST },
+  { method: "GET", path: "/api/issues/:id/attachments", class: "open", test: DOCS_TEST },
+  { method: "GET", path: "/api/attachments/:attachmentId/content", class: "open", test: DOCS_TEST },
+  { method: "DELETE", path: "/api/attachments/:attachmentId", class: "open", test: DOCS_TEST },
+  // Closed: lock, unlock and delete of a document check only the company and
+  // that the caller is a board user; they never read the task, so R could
+  // lock or delete a document on O's task. Attachment upload answers 403
+  // ("Only the conversation owner") on O's chat and 422 for a task of another
+  // company before it reads the task (AC-G3). PAR-12940 adds the task read to
+  // these four handlers and reopens them.
+  { method: "POST", path: "/api/issues/:id/documents/:key/lock", class: "closed" },
+  { method: "POST", path: "/api/issues/:id/documents/:key/unlock", class: "closed" },
+  { method: "DELETE", path: "/api/issues/:id/documents/:key", class: "closed" },
+  { method: "POST", path: "/api/companies/:companyId/issues/:issueId/attachments", class: "closed" },
 ];
 
 export type MemberRestrictionRouteMatch =
