@@ -243,10 +243,15 @@ function hasKept(map: KeptMap, stored: Record<string, unknown>): boolean {
     return kind === "allowed" ? false : typeof kind === "object" ? hasKept(kind, recordOf(value)) : !isNil(value);
   });
 }
-/** Absent or null: the stored value goes back in. Equal: kept. Anything else: refused. */
+/**
+ * Absent or null: the stored value goes back in. Equal: kept. Anything else: refused.
+ * A stored strategy is read only with its `type` (`parseExecutionWorkspaceStrategy`), so
+ * when kept keys go back the stored `type` goes with them unless the body names one.
+ */
 function mergeKept(path: string, map: KeptMap, value: Record<string, unknown>, stored: Record<string, unknown>,
   refused: string[]): Record<string, unknown> {
   const out = { ...value };
+  if (map.type === "allowed" && isNil(value.type) && !isNil(stored.type) && hasKept(map, stored)) out.type = stored.type;
   for (const key of new Set([...Object.keys(value), ...Object.keys(stored)])) {
     const kind = keptClass(map, key);
     if (kind === "allowed") continue;

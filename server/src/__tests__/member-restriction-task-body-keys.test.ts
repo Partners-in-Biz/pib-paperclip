@@ -3,6 +3,7 @@ import { z } from "zod";
 import {
   MEMBER_RESTRICTION_TASK_BODY_ALLOWLISTS, TASK_KEPT_OBJECTS, restrictedTaskBodyKeys,
 } from "../services/member-restriction/body-allowlist.js";
+import { parseIssueExecutionWorkspaceSettings } from "../services/execution-workspace-policy.js";
 
 /**
  * PAR-12950 (C4i-b) 1/2: the task body maps and the keep-stored merge, no
@@ -45,6 +46,22 @@ describe("keep-stored merge", () => {
       expect(refused).toEqual([]);
       expect(merged.executionWorkspaceSettings).toEqual({ ...STORED.executionWorkspaceSettings, mode: "isolated_workspace" });
     }
+  });
+
+  it("a strategy body without its type (null, or baseRef only) keeps O's stored strategy through the service parser", () => {
+    for (const workspaceStrategy of [null, { baseRef: "x" }, { type: null, baseRef: "x" }]) {
+      const { refused, merged } = patch({ executionWorkspaceSettings: { mode: "isolated_workspace", workspaceStrategy } });
+      expect(refused).toEqual([]);
+      const parsed = parseIssueExecutionWorkspaceSettings(merged.executionWorkspaceSettings);
+      expect(parsed?.workspaceStrategy, JSON.stringify(workspaceStrategy))
+        .toMatchObject({ type: "git_worktree", provisionCommand: "make o" });
+    }
+    // R's own type is kept; with nothing stored no type is added.
+    expect(patch({ executionWorkspaceSettings: { workspaceStrategy: { type: "project_primary" } } })
+      .merged.executionWorkspaceSettings).toMatchObject({ workspaceStrategy: { type: "project_primary", provisionCommand: "make o" } });
+    expect(patch({ executionWorkspaceSettings: { workspaceStrategy: { baseRef: "x" } } }, { ...STORED,
+      executionWorkspaceSettings: { mode: "shared_workspace", workspaceStrategy: { type: "git_worktree" } } as never })
+      .merged.executionWorkspaceSettings).toEqual({ workspaceStrategy: { baseRef: "x" } });
   });
 
   it("an equal value is kept; another value, or a null whole object over stored keys, is refused", () => {
