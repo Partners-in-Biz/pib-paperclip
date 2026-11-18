@@ -22,8 +22,12 @@ export {
   INVITE_MEMBER_RESTRICTION_KEY,
   assertInviterNotRestricted,
   inviteMemberRestrictionFromDefaults,
+  inviteRestrictionChoice,
+  markForJoin,
   markForNewInvite,
   withoutInviteMemberRestriction,
+  type InviteRestrictionChoice,
+  type JoinMark,
 } from "./invite.js";
 export {
   MEMBER_RESTRICTED_ROLE_CODE,

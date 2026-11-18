@@ -26,6 +26,12 @@ export type InviteMemberRestrictionInput = z.infer<typeof inviteMemberRestrictio
 export const createCompanyInviteSchema = z.object({
   allowedJoinTypes: z.enum(INVITE_JOIN_TYPES).default("both"),
   humanRole: z.enum(HUMAN_COMPANY_MEMBERSHIP_ROLES).optional().nullable(),
+  /**
+   * Free defaults. Invite answers echo it as stored: `memberRestriction` in it is
+   * server-written (a caller's value is dropped); `{ restricted: false }` means the
+   * creator chose not restricted; absent means no choice was recorded, and in a
+   * company on `report` or `enforce` the person then joins restricted.
+   */
   defaultsPayload: z.record(z.string(), z.unknown()).optional().nullable(),
   agentMessage: z.string().max(4000).optional().nullable(),
   /** Required for a human invite when the company's restriction mode is not `off`. */
