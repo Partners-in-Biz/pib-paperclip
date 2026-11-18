@@ -318,6 +318,49 @@ describe("CompanyAccess", () => {
     });
   });
 
+  it("shows the invite's restriction mark and lists on a pending human join (PAR-12608 4.2a)", async () => {
+    const [humanJoin, agentJoin] = await listJoinRequestsMock();
+    listJoinRequestsMock.mockResolvedValueOnce([
+      {
+        ...humanJoin,
+        invite: {
+          ...humanJoin.invite,
+          memberRestriction: { restricted: true, pluginKeys: ["acme.crm"], agentIds: ["agent-1"] },
+          memberRestrictionIsDefault: true,
+        },
+      },
+      agentJoin,
+    ]);
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <CompanyAccess />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const approve = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Approve human",
+    );
+    expect(approve).toBeTruthy();
+    const marks = container.querySelectorAll('[data-testid="invite-restriction-mark"]');
+    expect(marks).toHaveLength(1);
+    const mark = marks[0]!;
+    expect(mark.textContent).toContain("restricted");
+    expect(mark.textContent).toContain("Joins restricted: no choice was made");
+    expect(mark.textContent).toContain("Plugins: acme.crm");
+    // The agent id resolves to the company agent's name.
+    expect(mark.textContent).toContain("Agents: Codex Worker");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("shows no banner when health does not report the kill switch", async () => {
     healthMock.mockResolvedValueOnce({ status: "ok" });
     const root = createRoot(container);
@@ -701,6 +744,55 @@ describe("CompanyAccess invites tab", () => {
 
     await act(async () => {
       root.unmount();
+    });
+  });
+
+  describe("restriction choice wiring (PAR-12608 4.2a)", () => {
+    const createButton = () =>
+      Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Create invite");
+    const restrictionRadio = (value: string) =>
+      container.querySelector(`input[type="radio"][name="invite-restriction"][value="${value}"]`) as HTMLInputElement | null;
+
+    beforeEach(() => {
+      mockSearchParamsState.current = new URLSearchParams("tab=invites");
+      listMembersMock.mockResolvedValue({
+        members: [],
+        access: { currentUserRole: "owner", canManageMembers: true, canApproveJoinRequests: false },
+      });
+    });
+
+    it("keeps Create invite disabled until a choice is made when the company mode is enforce", async () => {
+      restrictionModeMock.mockResolvedValueOnce({ mode: "enforce", deniedLast7Days: 0 });
+      const root = await renderPage();
+
+      expect(restrictionModeMock).toHaveBeenCalled();
+      expect(restrictionRadio("full")?.checked).toBe(false);
+      expect(restrictionRadio("restricted")?.checked).toBe(false);
+      expect(createButton()?.disabled).toBe(true);
+      expect(container.textContent).toContain("Choose full access or restricted to create the invite.");
+
+      await act(async () => {
+        restrictionRadio("full")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flushReact();
+      expect(createButton()?.disabled).toBe(false);
+
+      await act(async () => root.unmount());
+    });
+
+    it("treats an enforce company as off under the server kill switch: no choice needed", async () => {
+      healthMock.mockResolvedValueOnce({ status: "ok", memberRestriction: "forced_off" });
+      restrictionModeMock.mockResolvedValueOnce({ mode: "enforce", deniedLast7Days: 0 });
+      const root = await renderPage();
+
+      expect(restrictionModeMock).toHaveBeenCalled();
+      expect(healthMock).toHaveBeenCalled();
+      expect(restrictionRadio("full")?.checked).toBe(false);
+      expect(restrictionRadio("restricted")?.checked).toBe(false);
+      expect(container.textContent).toContain("optional while the restriction switch is off");
+      expect(createButton()?.disabled).toBe(false);
+
+      await act(async () => root.unmount());
     });
   });
 

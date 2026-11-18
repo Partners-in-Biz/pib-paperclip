@@ -1,6 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { ToastViewport } from "@/components/ToastViewport";
 import { CompanyAccess } from "@/pages/CompanyAccess";
+import { JoinRequestQueue } from "@/pages/JoinRequestQueue";
 import { expect, userEvent, within, waitFor } from "storybook/test";
 import {
   prepareFixtureApi,
@@ -65,6 +66,60 @@ const stressAgents = Array.from({ length: 30 }, (_, i) => ({
   adapterType: i % 3 === 0 ? "claude_local" : i % 3 === 1 ? "http" : "hermes_gateway",
   permissions: { canCreateAgents: i % 5 === 0 },
 }));
+// Stress data for the invite restriction mark (PAR-12608 4.2a): long lists, a stale agent id, an
+// unmarked invite, and a join request whose mark is the server default (no choice was made).
+const inviteMark = {
+  restricted: true,
+  pluginKeys: stressPlugins.slice(0, 6).map((plugin) => plugin.pluginKey),
+  agentIds: ["agent-0", "agent-4", "agent-8", "00000000-0000-4000-8000-000000000000"],
+};
+const invitedByUser = { id: "user-review", name: restrictedMembers[0].user.name, email: null, image: null };
+const inviteRow = (id: string, memberRestriction: typeof inviteMark | null) => ({
+  id,
+  companyId: "company-storybook",
+  companyName: "Storybook",
+  inviteType: "company_join",
+  allowedJoinTypes: "human",
+  humanRole: "operator",
+  defaultsPayload: null,
+  memberRestriction,
+  expiresAt: "2026-12-01T00:00:00Z",
+  invitedByUserId: "user-review",
+  revokedAt: null,
+  acceptedAt: null,
+  createdAt: "2026-11-18T08:00:00Z",
+  updatedAt: "2026-11-18T08:00:00Z",
+  inviteMessage: null,
+  state: "active",
+  invitedByUser,
+  relatedJoinRequestId: null,
+});
+const restrictionInvites = [
+  inviteRow("invite-marked", inviteMark),
+  inviteRow("invite-empty-lists", { restricted: true, pluginKeys: [], agentIds: [] }),
+  inviteRow("invite-unmarked", null),
+];
+const joinRequest = (id: string, invite: Record<string, unknown>) => ({
+  id,
+  companyId: "company-storybook",
+  requestType: "human",
+  status: "pending_approval",
+  requestIp: "203.0.113.10",
+  requestingUserId: `user-${id}`,
+  requestEmailSnapshot: restrictedMembers[0].user.email,
+  requesterUser: { id: `user-${id}`, email: restrictedMembers[0].user.email, name: restrictedMembers[0].user.name, image: null },
+  createdAt: "2026-11-18T08:30:00Z",
+  updatedAt: "2026-11-18T08:30:00Z",
+  invite: { ...inviteRow(`invite-${id}`, null), ...invite },
+});
+const restrictionJoinRequests = [
+  joinRequest("join-marked", { memberRestriction: inviteMark }),
+  joinRequest("join-default", {
+    memberRestriction: { restricted: true, pluginKeys: [], agentIds: [] },
+    memberRestrictionIsDefault: true,
+  }),
+  joinRequest("join-unmarked", {}),
+];
 function MembershipHost() {
   return (
     <>
@@ -117,7 +172,12 @@ const meta = {
         { path: "/api/plugins", read: () => stressPlugins },
         {
           path: "/api/companies/company-storybook/join-requests",
-          read: () => [],
+          read: () => (parameters.restrictionInvites ? restrictionJoinRequests : []),
+        },
+        {
+          path: "/api/companies/company-storybook/invites",
+          method: "GET",
+          read: () => ({ invites: parameters.restrictionInvites ? restrictionInvites : [], nextOffset: null }),
         },
         {
           path: "/api/companies/company-storybook/member-restriction-mode",
@@ -163,6 +223,39 @@ export const RestrictionDialog: Story = {
     const row = (await within(canvasElement).findByText(/Bartholomew/)).closest("tr")!;
     await userEvent.click(within(row as HTMLElement).getByRole("button", { name: "Access" }));
     await within(document.body).findByText("Agents this member may instruct");
+  },
+};
+/** Company on `enforce`: pending joins show each invite's mark; one mark is the server default. */
+export const RestrictionJoinRequests: Story = {
+  parameters: { restrictionStress: true, restrictionInvites: true },
+};
+/** The join-request queue (approval screen) with the same marks. */
+export const RestrictionJoinRequestQueue: Story = {
+  parameters: { restrictionStress: true, restrictionInvites: true },
+  render: () => <JoinRequestQueue />,
+};
+const invitesTab = {
+  restrictionStress: true,
+  restrictionInvites: true,
+  initialEntries: ["/PAP/company/settings/members?tab=invites"],
+};
+/** Invites tab on `enforce` before a choice: no default, Create invite disabled, the prompt shows. */
+export const RestrictionInviteRequired: Story = {
+  parameters: invitesTab,
+  play: async ({ canvasElement }) => {
+    const c = within(canvasElement);
+    await c.findByText("Choose full access or restricted to create the invite.");
+    await expect(c.getByRole("button", { name: "Create invite" })).toBeDisabled();
+  },
+};
+/** Invites tab on `enforce` with Restricted chosen: the plugin and agent lists open. */
+export const RestrictionInviteForm: Story = {
+  parameters: invitesTab,
+  play: async ({ canvasElement }) => {
+    const c = within(canvasElement);
+    await userEvent.click(await c.findByRole("radio", { name: /^Restricted/ }));
+    await c.findByText("Agents this person may instruct");
+    await expect(c.getByRole("button", { name: "Create invite" })).toBeEnabled();
   },
 };
 export const Loading: Story = { parameters: { fixtureState: "loading" } };

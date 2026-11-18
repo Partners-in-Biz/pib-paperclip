@@ -1,5 +1,7 @@
 import type {
   AgentAdapterType,
+  InviteMemberRestriction,
+  InviteMemberRestrictionInput,
   JoinRequest,
   MemberRestrictionMode,
   PermissionKey,
@@ -188,6 +190,8 @@ export type CompanyInviteRecord = {
   createdAt: string;
   updatedAt: string;
   inviteMessage: string | null;
+  /** The restriction mark (PAR-12608 4.2a); null or absent for an unmarked invite. */
+  memberRestriction?: InviteMemberRestriction | null;
   state: "active" | "revoked" | "accepted" | "expired";
   invitedByUser: { id: string; email: string | null; name: string | null; image: string | null } | null;
   relatedJoinRequestId: string | null;
@@ -208,6 +212,9 @@ export type CompanyJoinRequest = JoinRequest & {
     allowedJoinTypes: "human" | "agent" | "both";
     humanRole: HumanCompanyRole | null;
     inviteMessage: string | null;
+    memberRestriction?: InviteMemberRestriction | null;
+    /** C1b-3: true when the mark is the server's restricted default because no choice was recorded. */
+    memberRestrictionIsDefault?: boolean;
     createdAt: string;
     expiresAt: string;
     revokedAt: string | null;
@@ -284,6 +291,8 @@ export const accessApi = {
       humanRole?: HumanCompanyRole | null;
       defaultsPayload?: Record<string, unknown> | null;
       agentMessage?: string | null;
+      /** Required for a human invite when the company's restriction mode is not `off`. */
+      restriction?: InviteMemberRestrictionInput;
     } = {},
   ) =>
     api.post<CompanyInviteCreated>(`/companies/${companyId}/invites`, input),
