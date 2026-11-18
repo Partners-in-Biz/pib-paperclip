@@ -237,6 +237,8 @@ import {
   createBoardApiKeySchema,
   updateCompanyMemberSchema,
   updateCompanyMemberWithPermissionsSchema,
+  updateMemberRestrictionSchema,
+  updateMemberRestrictionModeSchema,
   archiveCompanyMemberSchema,
   updateMemberPermissionsSchema,
   updateUserCompanyAccessSchema,
@@ -1485,6 +1487,9 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "PATCH /api/companies/{companyId}/members/{memberId}/role-and-grants",
   "POST /api/companies/{companyId}/members/{memberId}/archive",
   "PATCH /api/companies/{companyId}/members/{memberId}/permissions",
+  "PUT /api/companies/{companyId}/members/{memberId}/restriction",
+  "GET /api/companies/{companyId}/member-restriction-mode",
+  "PUT /api/companies/{companyId}/member-restriction-mode",
   "GET /api/companies/{companyId}/user-directory",
   "GET /api/companies/{companyId}/managed-agent-profiles",
   "POST /api/companies/{companyId}/managed-agent-profiles",
@@ -7342,6 +7347,34 @@ registry.registerPath({
     404: r.notFound,
   },
 });
+
+registry.registerPath({
+  method: "put",
+  path: "/api/companies/{companyId}/members/{memberId}/restriction",
+  tags: ["access"],
+  summary: "Restrict a member to his own client work, or lift the restriction",
+  description: "A signed-in person with users:manage_permissions only. Agent keys and runs are refused.",
+  request: {
+    params: z.object({ companyId: z.string(), memberId: z.string() }),
+    body: jsonBody(updateMemberRestrictionSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});
+
+for (const method of ["get", "put"] as const) {
+  registry.registerPath({
+    method,
+    path: "/api/companies/{companyId}/member-restriction-mode",
+    tags: ["access"],
+    summary: method === "get" ? "Read the company's member restriction mode" : "Set the company's member restriction mode",
+    description: "A signed-in person with users:manage_permissions only. Modes: off, report, enforce.",
+    request: {
+      params: z.object({ companyId: z.string() }),
+      ...(method === "put" ? { body: jsonBody(updateMemberRestrictionModeSchema) } : {}),
+    },
+    responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+  });
+}
 
 registry.registerPath({
   method: "post",
