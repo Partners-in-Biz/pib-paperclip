@@ -101,9 +101,9 @@ export async function sendAgentChatMessage(
     )).for("share");
     if (!membership) throw forbidden("The responsible human is no longer an active company member");
     // PAR-12608 4.6: a chat opens only with an agent on the person's list (native tool path too).
-    const listed = await restrictedAgentIdsForActor(tx, { type: "agent", agentId: actor.agentId, companyId: actor.companyId,
-      onBehalfOfUserId: actor.onBehalfOfUserId ?? userId, authorizingUserId: actor.authorizingUserId, source: actor.source },
-    actor.companyId);
+    const runActor = { type: "agent" as const, agentId: actor.agentId, companyId: actor.companyId,
+      onBehalfOfUserId: actor.onBehalfOfUserId ?? userId, authorizingUserId: actor.authorizingUserId, source: actor.source };
+    const listed = await restrictedAgentIdsForActor(tx, runActor, actor.companyId);
     if (listed && !listed.has(actor.agentId)) throw forbidden("Agent chat is limited to the agents on the person's list");
     const authActor: AuthorizationActor = { type: "agent", ...actor, keyId: actor.agentApiKeyId, keyScope: credentialScope.data,
       source: actor.source ?? "agent_jwt", onBehalfOfUserId: actor.onBehalfOfUserId ?? userId };
