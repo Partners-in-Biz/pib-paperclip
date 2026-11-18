@@ -3265,12 +3265,16 @@ describe("issue thread interaction routes", () => {
   });
 
   it("contains task-bridge resolvers at the ordinary issue mutation boundary", async () => {
-    mockAccessDecide.mockResolvedValue({
-      allowed: false,
-      action: "issue:mutate",
-      reason: "deny_task_bridge_scope",
-      explanation: "Denied by task bridge scope.",
-    });
+    // A bridge key reads the task (every caller reads it first, PAR-13025);
+    // it is held at the mutation boundary.
+    mockAccessDecide.mockImplementation(async (input: { action?: string }) => input.action === "issue:read"
+      ? { allowed: true, action: "issue:read", reason: "allow_explicit_grant", explanation: "Allowed." }
+      : {
+        allowed: false,
+        action: "issue:mutate",
+        reason: "deny_task_bridge_scope",
+        explanation: "Denied by task bridge scope.",
+      });
     const app = await createApp({
       type: "agent",
       agentId: ASSIGNEE_AGENT_ID,
