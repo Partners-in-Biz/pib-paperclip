@@ -166,14 +166,15 @@ if (process.env.CI && !support.supported) throw new Error("embedded Postgres req
     expect(await writes()).toEqual(before);
   });
 
-  it("U (board) on P keeps today's 403 on resolve-from-comment, and nothing is written", async () => {
+  // PAR-12985 (C4k-5): resolve-from-comment reads the task first, so U's 403 is now 404.
+  it("U (board) on P gets 404 on resolve-from-comment, and nothing is written", async () => {
     const confirm = await confirmation(taskId);
     const [comment] = await db.insert(issueComments).values({ companyId, issueId: taskId, authorUserId: O, body: "Yes" }).returning();
     const before = await writes();
     const res = await request(appFor(user(U))).post(`/api/issues/${taskId}/interactions/${confirm.id}/resolve-from-comment`)
       .send({ commentId: comment!.id, decision: "accept" });
-    expect(res.status, JSON.stringify(res.body)).toBe(403);
-    expect(res.body.error).toBe("Conversational resolution requires the responding agent run");
+    expect(res.status, JSON.stringify(res.body)).toBe(404);
+    expect(res.body).toEqual({ error: "Issue not found" });
     expect(await status(confirm.id)).toBe("pending");
     expect(await writes()).toEqual(before);
   });
