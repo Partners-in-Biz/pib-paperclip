@@ -1,23 +1,46 @@
 import { and, eq } from "drizzle-orm";
 import { heartbeatRuns, type Db } from "@paperclipai/db";
-import { actorPersonMembership, memberRestrictionForActor } from "./actor-memberships.js";
+import { actorPersonMembership, memberRestrictionForMembership } from "./actor-memberships.js";
 import { memberRestrictionResolver } from "./resolver.js";
+import { restrictionPersonIds } from "./strict-read.js";
 
-type AgentReadActor = Parameters<typeof memberRestrictionForActor>[1] & {
+type AgentReadActor = Parameters<typeof actorPersonMembership>[0] & Parameters<typeof restrictionPersonIds>[0] & {
   source?: string;
   isInstanceAdmin?: boolean;
 };
 
 /**
- * PAR-12608 4.6 "Agents: list and detail" and 4.7: the agents a caller who
- * works for a person restricted under `enforce` may see in one company (his
- * list), or null when the caller is not bound. The local board and instance
- * admins are never bound. A failed read throws 503 `MEMBER_RESTRICTION_UNAVAILABLE`.
+ * The people the actor carries (PAR-12608 4.1: the signed-in user, the person
+ * an agent works for, the authorizer) who are restricted in `companyId` under
+ * `enforce`, each with his agent list. A membership the actor carries as "not
+ * restricted" answers without a read. The local board and instance admins are
+ * never bound. A failed read throws 503 `MEMBER_RESTRICTION_UNAVAILABLE`.
+ */
+async function restrictedPeopleForActor(db: Db, actor: AgentReadActor, companyId: string) {
+  if (actor.source === "local_implicit" || actor.isInstanceAdmin) return [];
+  const carried = actorPersonMembership(actor, companyId);
+  const resolve = memberRestrictionResolver(db);
+  const bound: Array<{ personId: string; agentIds: string[] }> = [];
+  for (const personId of restrictionPersonIds(actor)) {
+    const membership = carried?.personId === personId ? carried.membership : null;
+    const restriction = await memberRestrictionForMembership(resolve, personId, companyId, membership);
+    if (restriction.restricted && restriction.mode === "enforce") bound.push({ personId, agentIds: restriction.agentIds });
+  }
+  return bound;
+}
+
+/**
+ * PAR-12608 4.6 "Agents: list and detail" and 4.7: the agents a caller bound
+ * by a restricted person may see in one company (his list; with more than one
+ * such person, the agents on every list), or null when the caller is not bound.
  */
 export async function restrictedAgentIdsForActor(db: Db, actor: AgentReadActor, companyId: string): Promise<Set<string> | null> {
-  if (actor.source === "local_implicit" || actor.isInstanceAdmin) return null;
-  const restriction = await memberRestrictionForActor(memberRestrictionResolver(db), actor, companyId);
-  return restriction?.restricted && restriction.mode === "enforce" ? new Set(restriction.agentIds) : null;
+  const bound = await restrictedPeopleForActor(db, actor, companyId);
+  if (bound.length === 0) return null;
+  return bound.slice(1).reduce(
+    (listed, { agentIds }) => new Set(agentIds.filter((id) => listed.has(id))),
+    new Set(bound[0]!.agentIds),
+  );
 }
 
 /** The five fields of an agent on his list (AC-G4). */
@@ -29,16 +52,18 @@ export function restrictedAgentView(agent: { id: string; name: string; title: st
  * PAR-12608 4.6 "One run's detail, log and events", AC-G5: for a caller
  * refused `company_scope:read` only by the member restriction, a run is his
  * only when it is on a task (whose `issue:read` the route checks next) and
- * works for his person (`heartbeat_runs.responsible_user_id`).
+ * works (`heartbeat_runs.responsible_user_id`) for every restricted person the
+ * caller carries in the run's company.
  */
 export async function runWorksForRestrictedCaller(
   db: Db,
   actor: AgentReadActor,
   run: { id: string; companyId: string; scopeKind?: string | null; issueId?: string | null },
 ): Promise<boolean> {
-  const personId = actorPersonMembership(actor, run.companyId)?.personId;
-  if (!personId || run.scopeKind === "company" || !run.issueId) return false;
+  if (run.scopeKind === "company" || !run.issueId) return false;
+  const people = new Set((await restrictedPeopleForActor(db, actor, run.companyId)).map((entry) => entry.personId));
+  if (people.size !== 1) return false;
   const [row] = await db.select({ responsibleUserId: heartbeatRuns.responsibleUserId }).from(heartbeatRuns)
     .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId)));
-  return row?.responsibleUserId === personId;
+  return !!row?.responsibleUserId && people.has(row.responsibleUserId);
 }

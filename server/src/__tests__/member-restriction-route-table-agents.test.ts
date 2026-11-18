@@ -268,6 +268,48 @@ it("AC-G1, AC-G4 and AC-H4: keys, configuration, instructions, pausing, the org 
     expect(res.body.conversationAgentId).toBe(listedAgent);
   });
 
+  /** A run's actor as `auth.ts` builds it: the person it works for, his memberships, and the authorizer. */
+  const runFor = async (people: { onBehalfOf?: string; authorizing?: string }): Promise<Actor> => {
+    const onBehalfOfUserId = people.onBehalfOf ?? null;
+    const onBehalfOfMemberships = onBehalfOfUserId
+      ? await loadActorMemberships(db, { userId: onBehalfOfUserId, companyId: Y, activeOnly: true }) : [];
+    return { type: "agent", agentId: listedAgent, companyId: Y, runId: randomUUID(), source: "agent_jwt", onBehalfOfUserId,
+      ...(people.authorizing ? { authorizingUserId: people.authorizing } : {}), onBehalfOfMemberships } as Actor;
+  };
+
+  describe.each([
+    { name: "a run working for R", people: { onBehalfOf: R } },
+    { name: "a run authorized by R with no person", people: { authorizing: R } },
+    { name: "a run working for O and authorized by R", people: { onBehalfOf: O, authorizing: R } },
+  ])("the open rows as $name: the same answers as R", ({ people }) => {
+    it("AC-G4: the list holds his listed agent with five fields; an agent off his list is \"not found\"", async () => {
+      const { agentId } = await ids(Y);
+      const list = await as(await runFor(people)).get(`/api/companies/${Y}/agents`);
+      ok(list);
+      expect(list.body).toEqual([{ id: listedAgent, name: "Listed", title: "Writer", icon: "pen", status: "idle" }]);
+      agentNotFound(await as(await runFor(people)).get(`/api/agents/${agentId}`));
+    });
+
+    it("AC-G5: a run on R's task working for O is \"not found\"; one working for R is readable", async () => {
+      const { runId } = await ids(Y);
+      runNotFound(await as(await runFor(people)).get(`/api/heartbeat-runs/${runId}`));
+      ok(await as(await runFor(people)).get(`/api/heartbeat-runs/${await run(Y, listedAgent, await task(Y, R), R)}`));
+    });
+  });
+
+  it("H1 control: a run that carries no person gets today's answer", async () => {
+    const target = await ids(Y);
+    for (const [path, check] of [
+      [`/api/companies/${Y}/agents`, (res: request.Response) => { ok(res); expect(agentIds(res)).toContain(target.agentId); }],
+      [`/api/agents/${target.agentId}`, (res: request.Response) => isAgent(res, target)],
+      [`/api/heartbeat-runs/${target.runId}`, isRun],
+    ] as const) {
+      const now = await as(await runFor({})).get(path);
+      check(now);
+      expect(now.body).toEqual((await today(async () => as(await runFor({})).get(path))).body);
+    }
+  });
+
   it("AC-H4: an unflagged owner's new key carries him, never another person", async () => {
     const res = await as(await boardFor(U)).post(`/api/agents/${listedAgent}/keys`).send({ name: "u-key", responsibleUserId: O });
     expect(res.status, JSON.stringify(res.body)).toBe(201);
