@@ -30,23 +30,34 @@ function callArguments(source: string, open: number): string[] {
   throw new Error(`unbalanced call at ${open}`);
 }
 
-/** An argument by its leading name: a string literal, a (dotted) name, or `<inline>` for a function. */
+/** An argument by its leading name: a string or regex literal, a (dotted) name, or `<inline>` for a function. */
 function leadingName(arg: string) {
   const text = arg.trim();
   const literal = /^["'`]([^"'`]*)["'`]/.exec(text);
   if (literal) return `"${literal[1]}"`;
+  const regex = /^\/(?![/*])(?:\\.|[^/\\\n])+\/[a-z]*/.exec(text);
+  if (regex) return regex[0];
   if (/^(?:\(|async\b|function\b)/.test(text)) return "<inline>";
   return /^[A-Za-z_$][\w$.]*/.exec(text)?.[0] ?? "<expression>";
 }
 
-/** `app.use(...)`, `app.get(...)` and the like in `app.ts`, as the mount table names them. */
+/**
+ * The registrations in `app.ts`, as the mount table names them: on the app
+ * (`USE ...`, `GET ...`) and on every other router `app.ts` creates with
+ * `Router()` (`staticUi.USE ...`). The `/api` router is the route table of 4.6.
+ */
 export function appRegistrations(source: string): string[] {
+  const routers = [...source.matchAll(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:express\.)?Router\s*\(/g)]
+    .map((match) => match[1]!).filter((name) => name !== "api");
+  const receivers = ["app", ...routers].join("|");
   const found: string[] = [];
-  for (const match of source.matchAll(/\bapp\.(use|get|post|put|patch|delete|all|head|options|route|param)\s*\(/g)) {
+  const pattern = new RegExp(`\\b(${receivers})\\.(use|get|post|put|patch|delete|all|head|options|route|param)\\s*\\(`, "g");
+  for (const match of source.matchAll(pattern)) {
     const lineStart = source.lastIndexOf("\n", match.index!) + 1;
     if (/^\s*(?:\/\/|\*)/.test(source.slice(lineStart, match.index!))) continue;
     const args = callArguments(source, match.index! + match[0].length - 1);
-    found.push(`${match[1]!.toUpperCase()} ${args.filter((arg) => arg.trim()).map(leadingName).join(" ")}`);
+    const prefix = match[1] === "app" ? "" : `${match[1]}.`;
+    found.push(`${prefix}${match[2]!.toUpperCase()} ${args.filter((arg) => arg.trim()).map(leadingName).join(" ")}`);
   }
   return found;
 }
@@ -105,10 +116,18 @@ export function mountTableScanErrors(
         errors.push(`${mount} (row ${entry.row}): ${count(registrations, mount)} registrations, ${count(entry.mounts, mount)} in the row`);
       }
     }
-    if (entry.toProve && !/^PAR-\d+$/.test(entry.toProve)) {
-      const test = readTest(entry.toProve);
-      if (test === null) errors.push(`row ${entry.row}: to-prove test ${entry.toProve} does not exist`);
-      else if (!test.includes(`4.6a row ${entry.row}`)) errors.push(`row ${entry.row}: test ${entry.toProve} does not name "4.6a row ${entry.row}"`);
+    const proofs = [{ what: `row ${entry.row}`, toProve: entry.toProve }];
+    for (const route of entry.routes ?? []) {
+      const what = `row ${entry.row} ${route.method} ${route.path}`;
+      // A closed route is closed by code that does not exist yet or by a test: it names one or the other.
+      if (route.class === "closed" && !route.toProve) errors.push(`${what}: closed with no ticket or test that closes it`);
+      proofs.push({ what, toProve: route.toProve });
+    }
+    for (const { what, toProve } of proofs) {
+      if (!toProve || /^PAR-\d+$/.test(toProve)) continue;
+      const test = readTest(toProve);
+      if (test === null) errors.push(`${what}: to-prove test ${toProve} does not exist`);
+      else if (!test.includes(`4.6a row ${entry.row}`)) errors.push(`${what}: test ${toProve} does not name "4.6a row ${entry.row}"`);
     }
   }
   for (const registration of new Set(registrations)) {
@@ -145,6 +164,15 @@ describe("member restriction mount table scan (4.6a, AC-M8)", () => {
     const withoutLlms = appSource.replace("app.use(llmRoutes(db));", "");
     expect(mountTableScanErrors(MEMBER_RESTRICTION_MOUNT_TABLE, [...appRegistrations(withoutLlms), ...upgradeHandlers()], readTest))
       .toEqual(["USE llmRoutes (row 9): no such registration; remove or correct the row"]);
+    const withIngress = appSource.replace("publicMcpIngress.use(dotPrincipalHttp.router);",
+      "publicMcpIngress.use(dotPrincipalHttp.router);\n  publicMcpIngress.use(someRoutes(db));");
+    expect(withIngress).not.toBe(appSource);
+    expect(mountTableScanErrors(MEMBER_RESTRICTION_MOUNT_TABLE, [...appRegistrations(withIngress), ...upgradeHandlers()], readTest))
+      .toEqual(["publicMcpIngress.USE someRoutes: no row in the mount table of 4.6a"]);
+    // A third router is found from its `Router()` line, not from a list of names.
+    const withRouter = appSource.replace("app.use(staticUi);", "const extra = express.Router();\n  extra.get(\"/x\", handler);\n  app.use(staticUi);");
+    expect(mountTableScanErrors(MEMBER_RESTRICTION_MOUNT_TABLE, [...appRegistrations(withRouter), ...upgradeHandlers()], readTest))
+      .toEqual(["extra.GET \"/x\" handler: no row in the mount table of 4.6a"]);
     const withRoute = appSource.replace("app.use(staticUi);", "app.route(\"/api/x\").get(handler);\n  app.use(staticUi);");
     expect(mountTableScanErrors(MEMBER_RESTRICTION_MOUNT_TABLE, [...appRegistrations(withRoute), ...upgradeHandlers()], readTest))
       .toEqual(["ROUTE \"/api/x\": no row in the mount table of 4.6a"]);
@@ -182,5 +210,11 @@ describe("member restriction mount table scan (4.6a, AC-M8)", () => {
     ];
     const row5 = MEMBER_RESTRICTION_MOUNT_TABLE.find((entry) => entry.row === 5)!;
     expect(row5.routes!.map((route) => `${route.method} ${route.path}`).sort()).toEqual(routes.sort());
+    expect(row5.routes!.find((route) => route.path === "/runtime-tools/github/credentials")).toMatchObject({ class: "closed", toProve: "PAR-13217" });
+    const unclosed = MEMBER_RESTRICTION_MOUNT_TABLE.map((entry) => entry.row !== 5 ? entry
+      : { ...entry, routes: entry.routes!.map((route) => ({ ...route, toProve: undefined })) });
+    const registrations = [...appRegistrations(appSource), ...upgradeHandlers()];
+    expect(mountTableScanErrors(unclosed, registrations, readTest))
+      .toEqual(["row 5 POST /runtime-tools/github/credentials: closed with no ticket or test that closes it"]);
   });
 });

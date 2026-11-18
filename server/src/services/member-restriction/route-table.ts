@@ -488,8 +488,11 @@ export interface MemberRestrictionMountEntry {
   rule: string;
   /** A "to prove" row: the test that proves it (it names `4.6a row <n>`), or the ticket that will. */
   toProve?: string;
-  /** Row 5: every route of the mounted routers, classified (4.6a: `run` or `closed`, to prove per route). */
-  routes?: ReadonlyArray<{ method: string; path: string; class: "run" | "closed" }>;
+  /**
+   * Row 5: every route of the mounted routers, classified (4.6a: `run` or `closed`).
+   * A `closed` route names the ticket or test that closes it for a run of a restricted person.
+   */
+  routes?: ReadonlyArray<{ method: string; path: string; class: "run" | "closed"; toProve?: string }>;
 }
 
 /** The tests of rows 2, 5, 9, 12 and 19 land with PAR-13211 (C4f-2b), which points this at its test file. */
@@ -508,11 +511,16 @@ export const MEMBER_RESTRICTION_MOUNT_TABLE: readonly MemberRestrictionMountEntr
   { row: 2, rule: "refused: only a managed-run bearer or a Cloud inspection permit, never a member's session or key",
     mounts: ["USE \"/api/customer-success/v1\" customerSuccessRoutes"], toProve: MOUNT_TEST },
   { row: 3, rule: "as row 4: an agent-purpose assistant connection", mounts: ["USE museTransportRoutes"] },
-  { row: 4, rule: "every call resolves its actor in `actorForGrant` (C4f)", mounts: ["USE publicMcpIngress"] },
-  { row: 5, rule: "a run's own run-bound token only; tools end in the dispatcher (4.8) and the connector builder (4.9)",
+  { row: 4, rule: "every call resolves its actor in `actorForGrant` (C4f)",
+    mounts: ["USE publicMcpIngress", "publicMcpIngress.USE dotPrincipalHttp.router", "publicMcpIngress.USE transfers.router",
+      "publicMcpIngress.USE grokTransfers.router", "publicMcpIngress.USE publicMcpIngressRoutes",
+      "publicMcpIngress.USE publicMcpIngressRoutes"] },
+  { row: 5, rule: "a run's own run-bound token only; connection search and request and the MCP tools end in the dispatcher (4.8) " +
+      "and the connector builder (4.9); the GitHub credentials route hands the run a company credential, so it is closed for a run " +
+      "whose person is restricted (4.9, decision 4)",
     mounts: ["USE runtimeConnectionIntentRoutes", "USE nativeRunMcpRoutes"], toProve: MOUNT_TEST,
     routes: [
-      { method: "POST", path: "/runtime-tools/github/credentials", class: "run" },
+      { method: "POST", path: "/runtime-tools/github/credentials", class: "closed", toProve: "PAR-13217" },
       { method: "GET", path: "/mcp/runtime-tools", class: "run" },
       { method: "POST", path: "/mcp/runtime-tools", class: "run" },
       { method: "POST", path: "/runtime-tools/connections/search", class: "run" },
@@ -530,12 +538,17 @@ export const MEMBER_RESTRICTION_MOUNT_TABLE: readonly MemberRestrictionMountEntr
       "GET \"/api/chat-github/identity/callback\" <inline>"], toProve: MOUNT_TEST },
   { row: 13, rule: "connector tools refused (4.9), plugin tools through the dispatcher (4.8)", mounts: ["USE mcpGatewayProtocolRoutes"] },
   { row: 14, rule: "not gated: plugin code, no data (4.8)", mounts: ["USE pluginUiStaticRoutes"] },
-  { row: 15, rule: "not bound: the screen's static files", mounts: ["USE staticUi"] },
+  { row: 15, rule: "not bound: the screen's static files",
+    mounts: ["USE staticUi", "staticUi.USE staticUiCompression", "staticUi.USE \"/assets\" staticUiFiles",
+      "staticUi.USE \"/assets\" retained.serve", "staticUi.GET <expression> <inline>", "staticUi.USE staticUiFiles",
+      "staticUi.USE staticUiFiles", "staticUi.GET /.*/ <inline>", "staticUi.GET /.*/ <inline>", "staticUi.USE vite.middlewares"] },
   // The second listener is the proxied connection's own upgrade to the plugin worker, inside the gated handler.
   { row: 16, rule: "the plugin gate at upgrade (4.8, C5-1)",
-    mounts: ["UPGRADE realtime/plugin-api-ws.ts", "UPGRADE realtime/plugin-api-ws.ts"] },
+    mounts: ["UPGRADE realtime/plugin-api-ws.ts", "UPGRADE realtime/plugin-api-ws.ts"], toProve: "PAR-12740" },
   { row: 17, rule: "per event at delivery: task and project events through `decide()`, run events through the run rule",
     mounts: ["UPGRADE realtime/live-events-ws.ts"] },
-  { row: 18, rule: "refused", mounts: ["UPGRADE realtime/environment-custom-image-terminal-ws.ts"] },
+  { row: 18, rule: "refused: the socket takes no session, only a token minted by " +
+      "`POST /api/environment-custom-image-setup-sessions/:sessionId/terminal-session-token`, which needs an instance admin " +
+      "(`assertCanAccessInstanceEnvironments`); R never binds one", mounts: ["UPGRADE realtime/environment-custom-image-terminal-ws.ts"] },
   { row: 19, rule: "not a person's entry: a registered run's own authority", mounts: ["UPGRADE realtime/runner-prp-ws.ts"], toProve: MOUNT_TEST },
 ];
