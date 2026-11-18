@@ -1555,6 +1555,10 @@ async function routeTableScanErrors(
     const [method, routePath] = operation.split(" ");
     if (method === "USE") continue;
     const result = await classify(method!, normalizeExpressPath(routePath!).replace(/\{[^}]+\}/g, "sample1"));
+    // Rows of two classes on one route are refused at run time; fail the build instead.
+    if (result.kind === "refused" && result.reason === "ambiguous") {
+      errors.push(`${operation}: matched by rows of different classes; give it one row`);
+    }
     if (result.kind !== "matched" || result.entry.class === "closed") continue;
     if (routeShape(result.entry.method, result.entry.path) !== routeShape(method!, routePath!)) {
       errors.push(`${result.entry.method} ${result.entry.path}: also catches ${operation}; give that route its own row`);
@@ -1608,6 +1612,13 @@ describe("member restriction route table scan", () => {
       "GET /api/approvals/:id: by-company row names no existing object-level test",
       "GET /api/issues/:id: a second row for the route of GET /api/Issues/:issueId/",
       "GET /api/nowhere/:id: matches no registered route",
+    ]);
+
+    expect(await routeTableScanErrors([
+      { method: "GET", path: "/api/agents/:id", class: "run", test: "t.test.ts" },
+      { method: "GET", path: "/api/agents/me", class: "open", test: "t.test.ts" },
+    ], inventory, (repoPath) => (repoPath === "t.test.ts" ? "/api/agents/:id /api/agents/me" : null))).toEqual([
+      "GET /api/agents/me: matched by rows of different classes; give it one row",
     ]);
   });
 });

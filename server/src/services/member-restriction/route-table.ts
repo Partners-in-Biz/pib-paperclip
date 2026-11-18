@@ -36,7 +36,75 @@ export interface MemberRestrictionRouteEntry {
   test?: string;
 }
 
-export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntry[] = [];
+const TASKS_TEST = "server/src/__tests__/member-restriction-route-table-tasks.test.ts";
+
+export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntry[] = [
+  // C4b-1a (PAR-12730): the task routes of `routes/issues.ts`. Comments,
+  // documents, attachments, work products, approvals, questions, inbox, search
+  // and chat are other areas. Every `open` and `run` handler reads the task
+  // through `issue:read` (or a list through `issueReadSqlCondition`) first.
+  { method: "GET", path: "/api/companies/:companyId/issues", class: "open", test: TASKS_TEST },
+  { method: "GET", path: "/api/companies/:companyId/issues/summaries", class: "open", test: TASKS_TEST },
+  { method: "GET", path: "/api/companies/:companyId/issues/count", class: "open", test: TASKS_TEST },
+  { method: "POST", path: "/api/companies/:companyId/issues", class: "open", test: TASKS_TEST },
+  { method: "GET", path: "/api/issues/:id", class: "open", test: TASKS_TEST },
+  { method: "PATCH", path: "/api/issues/:id", class: "open", test: TASKS_TEST },
+  { method: "POST", path: "/api/issues/:id/children", class: "open", test: TASKS_TEST },
+  { method: "GET", path: "/api/issues/:id/external-objects", class: "open", test: TASKS_TEST },
+  { method: "GET", path: "/api/issues/:id/external-object-summary", class: "open", test: TASKS_TEST },
+  // An agent's own work on a task.
+  { method: "GET", path: "/api/issues/:id/heartbeat-context", class: "run", test: TASKS_TEST },
+  { method: "GET", path: "/api/issues/:id/runner-goal", class: "run", test: TASKS_TEST },
+  { method: "POST", path: "/api/issues/:id/checkout", class: "run", test: TASKS_TEST },
+  { method: "POST", path: "/api/issues/:id/release", class: "run", test: TASKS_TEST },
+  // Closed on purpose: company set-up (labels), operator tools (recovery,
+  // diagnostics, watchdog, monitors, retries, review decisions, low-trust
+  // promotions, plan decompositions), sharing (grants, privacy constraints),
+  // deleting a task, and feedback traces. Several of these handlers check
+  // only the company, not the task. `PUT .../title` checks the task only for
+  // agents and answers an agent 403, not "not found" (AC-G3); renaming stays
+  // open through `PATCH /api/issues/:id`.
+  { method: "GET", path: "/api/issues", class: "closed" },
+  { method: "PUT", path: "/api/issues/:id/title", class: "closed" },
+  { method: "GET", path: "/api/companies/:companyId/labels", class: "closed" },
+  { method: "POST", path: "/api/companies/:companyId/labels", class: "closed" },
+  { method: "DELETE", path: "/api/labels/:labelId", class: "closed" },
+  { method: "POST", path: "/api/issues/:id/runner-goal/actions", class: "closed" },
+  { method: "POST", path: "/api/issues/:id/context/compact", class: "closed" },
+  { method: "GET", path: "/api/issues/:id/diagnostics/blockers", class: "closed" },
+  { method: "GET", path: "/api/issues/:id/diagnostics/wakes", class: "closed" },
+  { method: "GET", path: "/api/issues/:id/diagnostics/subtree", class: "closed" },
+  { method: "GET", path: "/api/issues/:id/watchdog", class: "closed" },
+  { method: "PUT", path: "/api/issues/:id/watchdog", class: "closed" },
+  { method: "DELETE", path: "/api/issues/:id/watchdog", class: "closed" },
+  { method: "GET", path: "/api/issues/:id/recovery-actions", class: "closed" },
+  { method: "POST", path: "/api/issues/:id/retry", class: "closed" },
+  { method: "POST", path: "/api/issues/:id/recovery-actions/recover-workspace", class: "closed" },
+  { method: "POST", path: "/api/issues/:id/recovery-actions/resume-workspace-finalization", class: "closed" },
+  { method: "POST", path: "/api/issues/:id/recovery-actions/confirm-controller-stopped", class: "closed" },
+  { method: "POST", path: "/api/issues/:id/recovery-actions/retry-workspace-export", class: "closed" },
+  { method: "POST", path: "/api/issues/:id/recovery-actions/reconstruct-workspace", class: "closed" },
+  { method: "POST", path: "/api/issues/:id/recovery-actions/resolve", class: "closed" },
+  { method: "POST", path: "/api/companies/:companyId/issues/external-object-summaries", class: "closed" },
+  { method: "POST", path: "/api/issues/:id/external-objects/refresh", class: "closed" },
+  { method: "POST", path: "/api/issues/:id/low-trust/promotions", class: "closed" },
+  { method: "GET", path: "/api/issues/:id/accepted-plan-decompositions", class: "closed" },
+  { method: "POST", path: "/api/issues/:id/accepted-plan-decompositions", class: "closed" },
+  { method: "POST", path: "/api/issues/:id/monitor/check-now", class: "closed" },
+  { method: "POST", path: "/api/issues/:id/scheduled-retry/retry-now", class: "closed" },
+  { method: "GET", path: "/api/issues/:id/privacy-constraints", class: "closed" },
+  { method: "GET", path: "/api/issues/:id/access-grants", class: "closed" },
+  { method: "POST", path: "/api/issues/:id/access-grants", class: "closed" },
+  { method: "POST", path: "/api/issues/:id/access-grants/:grantId/revoke", class: "closed" },
+  { method: "POST", path: "/api/issues/:id/stalled-review-decision", class: "closed" },
+  { method: "DELETE", path: "/api/issues/:id", class: "closed" },
+  { method: "POST", path: "/api/issues/:id/admin/force-release", class: "closed" },
+  { method: "GET", path: "/api/issues/:id/feedback-votes", class: "closed" },
+  { method: "POST", path: "/api/issues/:id/feedback-votes", class: "closed" },
+  { method: "GET", path: "/api/issues/:id/feedback-traces", class: "closed" },
+  { method: "GET", path: "/api/feedback-traces/:traceId", class: "closed" },
+  { method: "GET", path: "/api/feedback-traces/:traceId/bundle", class: "closed" },
+];
 
 export type MemberRestrictionRouteMatch =
   /** Refused before the lookup (unsafe path) or unroutable; treat as `closed`. */
