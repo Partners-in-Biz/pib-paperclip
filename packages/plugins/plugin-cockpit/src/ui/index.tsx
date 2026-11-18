@@ -3,13 +3,12 @@ import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import {
   useHostLocation,
   useHostNavigation,
-  usePluginAction,
   type PluginPageProps,
   type PluginSidebarProps,
   type PluginWidgetProps,
 } from "@paperclipai/plugin-sdk/ui";
 import { teamSetupPath } from "@partnersinbiz/pib-plugin-kit/team";
-import { Activity, Bot, Building2, Button, EmptyState, HeartPulse, Inbox, KeyRound, Lightbulb, Megaphone, Newspaper, PageFrame, PageHeader, PageMessage, ShieldCheck, Tabs, Workflow, Wrench, tokens, tone } from "@partnersinbiz/pib-plugin-ui";
+import { AccessGate, Activity, Bot, Building2, Button, EmptyState, HeartPulse, Inbox, KeyRound, Lightbulb, Megaphone, Newspaper, PageFrame, PageHeader, PageMessage, ShieldCheck, Tabs, Workflow, Wrench, tokens, tone, useAccess } from "@partnersinbiz/pib-plugin-ui";
 import { MODULES } from "@partnersinbiz/pib-plugin-kit/setup";
 import { PLUGIN_KEY } from "../constants.js";
 import { KPI_GROUP_TITLES, type RunLite } from "../merge.js";
@@ -28,6 +27,7 @@ import { ProfilePanel } from "./profile.js";
 import { NotificationsPage } from "./NotificationsPage.js";
 import { HostedView, hostedAllowed, useHostedUsage } from "./hosted.js";
 import { PaperPanel } from "./paper.js";
+import { useAccessMe, useCockpitAction } from "./actions.js";
 
 /** Tier A info cards (key outward-send:*) need no action, so they do not count as waiting. */
 const needsAction = (w: { key: string }) => !w.key.startsWith("outward-send:");
@@ -114,7 +114,17 @@ export function emptyViewText(state: { loading: boolean; error: string | null })
 
 export const CockpitPage = withHelp(CockpitPageMain);
 
-function CockpitPageMain({ context }: PluginPageProps) {
+/** The page asks `access.me` first; closed shows the "no access" page (the guard still refuses every call). */
+function CockpitPageMain(props: PluginPageProps) {
+  const access = useAccess(useAccessMe(), props.context.companyId);
+  return (
+    <AccessGate state={access} kind="page" moduleName="the Cockpit">
+      <CockpitPageBody {...props} />
+    </AccessGate>
+  );
+}
+
+function CockpitPageBody({ context }: PluginPageProps) {
   const companyId = context.companyId;
   const location = useHostLocation();
   const navigation = useHostNavigation();
@@ -122,7 +132,7 @@ function CockpitPageMain({ context }: PluginPageProps) {
   const [tab, setTab] = useState<TabId>(() => tabFromSearch(location.search));
   const [windowHours, setWindowHours] = useState(24);
   const data = useCockpitData(companyId, { windowHours });
-  const dismissCard = usePluginAction("outward-send.dismiss");
+  const dismissCard = useCockpitAction("outward-send.dismiss");
   const [memoryTick, setMemoryTick] = useState(0);
   const [profileTick, setProfileTick] = useState(0);
   const [maintenanceTick, setMaintenanceTick] = useState(0);
@@ -378,14 +388,37 @@ export function Overview({ view, load, runs, linkFor, windowHours, onWindow, onD
 // Dashboard widget and sidebar
 // ---------------------------------------------------------------------------
 
-export function CompanyTodayWidget({ context }: PluginWidgetProps) {
+/** Nothing on the dashboard for a person without the Cockpit. */
+export function CompanyTodayWidget(props: PluginWidgetProps) {
+  const access = useAccess(useAccessMe(), props.context.companyId);
+  return (
+    <AccessGate state={access} kind="widget">
+      <CompanyTodayCard {...props} />
+    </AccessGate>
+  );
+}
+
+function CompanyTodayCard({ context }: PluginWidgetProps) {
   const data = useCockpitData(context.companyId, { light: true });
   const linkFor = useWidgetLinkFor(context);
   if (!context.companyId || !data.view) return null;
   return <TodayCard waiting={data.view.waiting.filter(needsAction).length} others={data.view.waitingOthers?.length ?? 0} health={data.view.health} today={data.view.today} headline={data.view.headline} linkFor={linkFor} />;
 }
 
-export function CockpitSidebar({ context }: PluginSidebarProps) {
+/**
+ * Nothing while the access check loads, so the entry does not flash for a person without access. The Clients,
+ * Marketing, Finance and Hosted groups (nav.tsx) stay: they lead to other modules, each of which gates its own page.
+ */
+export function CockpitSidebar(props: PluginSidebarProps) {
+  const access = useAccess(useAccessMe(), props.context.companyId);
+  return (
+    <AccessGate state={access} kind="sidebar">
+      <CockpitSidebarEntry {...props} />
+    </AccessGate>
+  );
+}
+
+function CockpitSidebarEntry({ context }: PluginSidebarProps) {
   const hostNavigation = useHostNavigation();
   const location = useHostLocation();
   // Shared with the Clients / Marketing / Finance groups: one light load for the whole sidebar.
