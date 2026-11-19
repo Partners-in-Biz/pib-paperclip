@@ -94,6 +94,9 @@ vi.mock("../api/heartbeats", () => ({
   heartbeatsApi: mockHeartbeatsApi,
 }));
 
+const mockSession = vi.hoisted(() => ({ memberRestrictions: [] as Array<{ companyId: string; restricted: boolean; mode: "off" | "report" | "enforce" }> }));
+vi.mock("../api/auth", () => ({ authApi: { getSession: async () => ({ memberRestrictions: mockSession.memberRestrictions }) } }));
+
 vi.mock("../api/instanceSettings", () => ({
   instanceSettingsApi: mockInstanceSettingsApi,
 }));
@@ -379,6 +382,37 @@ describe("Agents", () => {
       updatedAt: new Date("2026-01-02T00:00:00Z"),
     });
     mockSidebarState.isMobile = false;
+    mockSession.memberRestrictions = [];
+  });
+
+  // AC-G10 (PAR-13266): live runs are a closed list for a restricted member under `enforce`.
+  it.each([
+    ["streamlined", Agents], ["production", ProductionAgents],
+  ] as const)("the %s agent list requests live runs and shows the live mark only when it may", async (_mode, AgentList) => {
+    for (const mode of ["enforce", null, "report"] as const) {
+      mockSession.memberRestrictions = mode ? [{ companyId: "company-1", restricted: true, mode }] : [];
+      mockHeartbeatsApi.liveRunsForCompany.mockClear();
+      mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([{ id: "run-1", status: "running", agentId: "agent-1" }]);
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      root = createRoot(container);
+      await act(async () => {
+        root!.render(<QueryClientProvider client={client}><TooltipProvider><ToastProvider><AgentList /></ToastProvider></TooltipProvider></QueryClientProvider>);
+      });
+      await flushReact();
+      await flushReact();
+      const liveLinks = container.querySelectorAll('a[href="/agents/alpha/runs/run-1"]').length;
+      if (mode === "enforce") {
+        expect(mockHeartbeatsApi.liveRunsForCompany).not.toHaveBeenCalled();
+        expect(liveLinks).toBe(0);
+      } else {
+        expect(mockHeartbeatsApi.liveRunsForCompany).toHaveBeenCalledWith("company-1");
+        expect(liveLinks).toBeGreaterThan(0);
+      }
+      const current = root;
+      await act(async () => { current!.unmount(); });
+      root = null;
+      client.clear();
+    }
   });
 
   afterEach(async () => {

@@ -80,6 +80,7 @@ export const RESTRICTED_MEMBER_OPEN_PAGES: readonly string[] = [
   "/agents/error",
   "/agents/builtin",
   "/agents/:agentId",
+  "/agents/:agentId/overview",
   "/agents/:agentId/dashboard",
   "/agents/:agentId/runs/:runId",
   "/chats",
