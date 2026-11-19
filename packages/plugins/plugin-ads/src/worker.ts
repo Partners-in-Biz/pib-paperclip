@@ -1,8 +1,9 @@
-import { normalizeToolResult } from "@partnersinbiz/pib-plugin-kit";
+import { createAccessGuard, normalizeToolResult, type AccessGuard } from "@partnersinbiz/pib-plugin-kit";
 import {
   definePlugin,
   runWorker,
   type PluginApiRequestInput,
+  type PluginApiResponse,
   type PluginContext,
   type PluginEvent,
   type PluginPerformActionContext,
@@ -37,6 +38,7 @@ import { refreshAllConnections, tokenFor } from "./connections.js";
 import { deleteExpiredOauthSessions, getConnection, getScope, updateConnection, audit, getAccount } from "./db.js";
 import { AdsError, errorMessage, objectParams, optionalString, requiredString } from "./domain.js";
 import { ADS_DONE_CHECKS } from "./done-checks.js";
+import { ACCESS_TABLE } from "./access-table.js";
 import { acknowledgeAlert, evaluateCompany, resolveStaleAlerts } from "./evaluate.js";
 import { executeProposal } from "./execute.js";
 import { ADS_HIRE_ROLE, ADS_MATCH_ROLE } from "./hire.js";
@@ -75,6 +77,7 @@ import { SKILLS } from "./skills.js";
 import { ADS_TOOLS } from "./tools.js";
 
 let pluginCtx: PluginContext | null = null;
+let guard: AccessGuard | null = null;
 let skillSync: SkillSyncer | null = null;
 const lastRuns: Record<string, { at: string; ok: boolean; summary?: unknown; error?: string }> = {};
 
@@ -386,7 +389,11 @@ const ACTIONS: Record<string, ActionHandler> = {
 
 // ── API routes ──────────────────────────────────────────────────────────────
 
-async function handleApiRoute(ctx: PluginContext, input: PluginApiRequestInput) {
+/** The manifest's routes, each registered through the guard. */
+const API_ROUTE_KEYS = ["oauth-complete", SETUP_STATUS_ROUTE.routeKey, COCKPIT_ROUTE.routeKey] as const;
+const NOT_FOUND = { status: 404, body: { error: "Not found" } };
+
+async function handleApiRoute(ctx: PluginContext, input: PluginApiRequestInput): Promise<PluginApiResponse> {
   if (input.routeKey === COCKPIT_ROUTE.routeKey || input.routeKey === SETUP_STATUS_ROUTE.routeKey) {
     const companyId = input.companyId;
     if (!companyId) return { status: 400, body: { error: "companyId is required" } };
@@ -396,7 +403,7 @@ async function handleApiRoute(ctx: PluginContext, input: PluginApiRequestInput) 
       return { status: 500, body: { error: errorMessage(error) } };
     }
   }
-  if (input.routeKey !== "oauth-complete") return { status: 404, body: { error: "Not found" } };
+  if (input.routeKey !== "oauth-complete") return NOT_FOUND;
   // OAuth completion (called by the static bridge page).
   try {
     if (input.actor.actorType !== "user") return { status: 403, body: { error: "Only a signed-in person can finish connecting an ad platform." } };
@@ -505,16 +512,20 @@ const plugin = definePlugin({
     pluginCtx = ctx;
     skillSync = createSkillSyncer(ctx, SKILLS);
 
+    // Every action, tool and API route goes through the access guard (PAR-12645). With the switch off it is a pass-through.
+    const g = createAccessGuard(ctx, { pluginKey: PLUGIN_ID, table: ACCESS_TABLE });
+    guard = g;
     for (const tool of ADS_TOOLS) {
-      ctx.tools.register(tool.name, tool, async (params, run) => normalizeToolResult(await runTool(ctx, tool.name, params, run)));
+      g.tool(tool.name, tool, async (params, run) => normalizeToolResult(await runTool(ctx, tool.name, params, run)));
     }
     for (const [key, handler] of Object.entries(ACTIONS)) {
-      ctx.actions.register(key, async (params, context) => {
+      g.action(key, async (params, context) => {
         const v = actionViewer(context);
         await ensureCompany(ctx, v.companyId);
         return handler(ctx, await runtimeFor(ctx, v.companyId), v, objectParams(params));
       });
     }
+    for (const routeKey of API_ROUTE_KEYS) g.apiRoute(routeKey, (input) => handleApiRoute(ctx, input));
 
     // Read the numbers (read-only), then look for anomalies and budget alerts. Every 3 hours, per company that saved its settings.
     registerJob(ctx, "sync-insights", async () => {
@@ -597,8 +608,9 @@ const plugin = definePlugin({
     };
   },
   async onApiRequest(input) {
-    if (!pluginCtx) return { status: 503, body: { error: "Paid ads plugin is not ready" } };
-    return handleApiRoute(pluginCtx, input);
+    if (!pluginCtx || !guard) return { status: 503, body: { error: "Paid ads plugin is not ready" } };
+    // An unknown key under the switch `off` answers as before; under report and enforce the guard refuses it.
+    return guard.handleApiRequest(input, async () => NOT_FOUND);
   },
 });
 
