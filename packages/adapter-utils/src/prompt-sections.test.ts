@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { selectPaperclipPromptSections as selectSections } from "./server-utils.js";
+import { omitContinuationSummarySectionsInBrief, selectPaperclipPromptSections as selectSections } from "./server-utils.js";
 import { createPromptContextFixture } from "./test-fixtures/prompt-context.js";
 
 describe("task and event section ownership", () => {
@@ -52,5 +52,55 @@ describe("task and event section ownership", () => {
     const sections = selectSections({ paperclipWake: context.paperclipWake });
     expect(sections.taskContextNote).toBe("");
     expect(sections.wakePrompt).toContain(context.paperclipWake.issue.description);
+  });
+});
+
+describe("continuation summary beside the issue brief", () => {
+  const objective = "Ship the ledger export with per-row audit trails and a nightly schedule.";
+  const criteria = "- Export runs nightly\n- Every row links to its audit entry";
+  const description = `## Objective\n\n${objective}\n\n## Acceptance Criteria\n\n${criteria}`;
+  const summary = [
+    "# Continuation Summary", "", "- Issue: PAP-1 — Release ledger", "",
+    "## Objective", "", objective, "",
+    "## Acceptance Criteria", "", criteria, "",
+    "## Next Action", "", "- Write the export job",
+  ].join("\n");
+  const contextWith = (summaryBody: string) => {
+    const context = createPromptContextFixture();
+    return {
+      ...context,
+      paperclipTaskMarkdownAssignment: `## Owned assignment\n\nIssue description:\n${description}`,
+      paperclipWake: {
+        ...context.paperclipWake,
+        issue: { ...context.paperclipWake.issue, description },
+        continuationSummary: { key: "continuation-summary", title: "Continuation Summary", body: summaryBody },
+      },
+    };
+  };
+
+  it("renders the brief once and keeps the summary's own sections", () => {
+    const { taskContextNote, wakePrompt } = selectSections(contextWith(summary));
+    const prompt = `${taskContextNote}\n${wakePrompt}`;
+    expect(prompt.split(objective)).toHaveLength(2);
+    expect(prompt.split("Every row links to its audit entry")).toHaveLength(2);
+    expect(wakePrompt).toContain("## Objective\n\n(Same as the issue description in this prompt; not repeated.)");
+    expect(wakePrompt).toContain("## Next Action\n\n- Write the export job");
+    expect(wakePrompt).toContain("- Issue: PAP-1 — Release ledger");
+    const unchanged = `${taskContextNote}\n${wakePrompt.replace("(Same as the issue description in this prompt; not repeated.)", objective)}`;
+    expect(Buffer.byteLength(prompt)).toBeLessThan(Buffer.byteLength(unchanged));
+  });
+
+  it("keeps a section that is not in the brief, and every section when no brief is shown", () => {
+    const agentWritten = summary.replace(objective, "Agent-revised objective: export only finance rows after the scope change.");
+    expect(selectSections(contextWith(agentWritten)).wakePrompt).toContain("Agent-revised objective: export only finance rows");
+    expect(omitContinuationSummarySectionsInBrief(summary, ["", ""])).toBe(summary);
+  });
+
+  it("matches a summary objective that the server truncated", () => {
+    const long = "Long objective sentence. ".repeat(80).trim();
+    const truncated = summary.replace(objective, `${long.slice(0, 1_180).trimEnd()}\n[truncated]`);
+    const result = omitContinuationSummarySectionsInBrief(truncated, [`## Objective\n\n${long}`]);
+    expect(result).not.toContain("Long objective sentence.");
+    expect(result).toContain("## Next Action");
   });
 });

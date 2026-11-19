@@ -2297,8 +2297,31 @@ export function selectPaperclipPromptSections(
       nativeWakeReaderAvailable: options.nativeWakeReaderAvailable,
       conversationMode: context?.conversationMode === true,
       suppressIssueDescription: taskContextNote.length > 0,
+      taskContextNote,
     }),
   };
+}
+
+const CONTINUATION_SUMMARY_BRIEF_SECTIONS = new Set(["objective", "acceptance criteria"]);
+const collapseWhitespace = (value: string) => value.replace(/\s+/g, " ").trim();
+
+/**
+ * The server-built continuation summary copies "## Objective" and
+ * "## Acceptance Criteria" out of the issue description. When the same prompt
+ * already shows that text, keep the heading and drop the repeated body. A
+ * section that differs from the brief (for example an agent-written one) stays.
+ */
+export function omitContinuationSummarySectionsInBrief(body: string, briefTexts: readonly string[]): string {
+  const brief = collapseWhitespace(briefTexts.filter(Boolean).join("\n"));
+  if (!brief) return body;
+  const parts = body.split(/^(?=##\s+)/m);
+  return parts.map((part) => {
+    const match = /^##\s+([^\n]+)\n([\s\S]*)$/.exec(part);
+    if (!match || !CONTINUATION_SUMMARY_BRIEF_SECTIONS.has(match[1]!.trim().toLowerCase())) return part;
+    const section = collapseWhitespace(match[2]!.replace(/\n\[truncated\]\s*$/, ""));
+    if (section.length < 40 || !brief.includes(section)) return part;
+    return `## ${match[1]!.trim()}\n\n(Same as the issue description in this prompt; not repeated.)\n\n`;
+  }).join("");
 }
 
 // Runtime-only connector skills are supplied by the server after assignment resolution.
@@ -2330,6 +2353,9 @@ function renderPaperclipWakePromptBody(
     // (the authoritative, uncapped brief) so the description is not delivered
     // twice in one prompt.
     suppressIssueDescription?: boolean;
+    // The task-context markdown sent in the same prompt. Continuation-summary
+    // sections that repeat text found in it are not rendered a second time.
+    taskContextNote?: string;
   } = {},
 ): string {
   const normalized = normalizePaperclipWakePayload(value);
@@ -3090,10 +3116,15 @@ function renderPaperclipWakePromptBody(
   }
 
   if (normalized.continuationSummary) {
+    const wakeShowsDescription = issueDescription !== null &&
+      options.suppressIssueDescription !== true && !resumeOmitsIssueDescription;
     lines.push(
       "",
       "Issue continuation summary:",
-      normalized.continuationSummary.body,
+      omitContinuationSummarySectionsInBrief(normalized.continuationSummary.body, [
+        wakeShowsDescription ? issueDescription : "",
+        options.taskContextNote ?? "",
+      ]),
     );
     if (normalized.continuationSummary.bodyTruncated) {
       lines.push("[continuation summary truncated]");
