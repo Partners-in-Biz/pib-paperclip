@@ -99,8 +99,9 @@ describe("other classes", () => {
   it.each([
     [{ resume: true }, []], [{ interrupt: true }, ["interrupt"]], [{ interrupt: false }, []], [{ reviewRequest: {} }, ["reviewRequest"]],
     [{ assigneeUserId: "someone-else" }, ["assigneeUserId"]], [{ assigneeUserId: R }, []], [{ assigneeUserId: null }, []],
-    [{ executionWorkspaceId: "ws-other" }, ["executionWorkspaceId"]], [{ executionWorkspaceId: "ws-stored" }, []],
-    [{ projectWorkspaceId: "pw" }, ["projectWorkspaceId"]], [{ blockedByIssueIds: ["t"] }, ["blockedByIssueIds"]],
+    // A reference is read-checked against the database (C4i-b2), never refused by key.
+    [{ executionWorkspaceId: "ws-other" }, []], [{ executionWorkspaceId: "ws-stored" }, []],
+    [{ projectWorkspaceId: "pw" }, []], [{ blockedByIssueIds: ["t"] }, ["blockedByIssueIds"]],
     [{ blockedByIssueIds: [] }, []], [{ projectId: "p", parentId: "t", assigneeAgentId: "a", title: "x" }, []],
     [{ executionPolicy: { ...STORED.executionPolicy, stages: [{ participants: [{ userId: "someone-else" }] }] } },
       ["executionPolicy.stages"]],
