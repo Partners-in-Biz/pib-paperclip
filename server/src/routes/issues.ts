@@ -2,6 +2,7 @@ import { confirmMcpAttachmentCleanup, recordMcpAttachmentCleanup, type McpAttach
 import { SYSTEM_CAUSING_ACTOR, wakeCausingActorFromActor, wakeCausingActorFromActorRef } from "../services/heartbeat/causing-actor.js";
 import { assertNamesOnlyHimself } from "../services/member-restriction/acting-person.js";
 import { refusedOnlyByMemberRestriction } from "../services/member-restriction/action-list.js";
+import { restrictedTaskBody } from "../services/member-restriction/body-allowlist.js";
 import {
   actorMayInstructAgent,
   hideUnreadableIssueIds,
@@ -13096,10 +13097,13 @@ export function issueRoutes(
         });
         return;
       }
+      // PAR-12950: a restricted member's body, before the first write; host keys are put back after the agent command check.
+      const restrictedBody = await restrictedTaskBody(db, req, companyId, "createIssue", req.body, null);
       assertNoAgentHostWorkspaceCommandMutation(
         req,
         collectIssueWorkspaceCommandPaths(req.body),
       );
+      req.body = restrictedBody;
       const sanitizedBody = await sanitizeIssueCreateAttribution(
         db,
         req,
@@ -13674,6 +13678,7 @@ export function issueRoutes(
         res.status(404).json({ error: "Parent issue not found" });
         return;
       }
+      const restrictedBody = await restrictedTaskBody(db, req, parent.companyId, "createChildIssue", req.body, null, parent.id);
       if (
         !isTaskBridgeKeyActor(req) &&
         !(await assertIssueWriteInfluenceAllowed(req, res, parent))
@@ -13692,6 +13697,7 @@ export function issueRoutes(
         req,
         collectIssueWorkspaceCommandPaths(req.body),
       );
+      req.body = restrictedBody;
       const sanitizedBody = await sanitizeIssueCreateAttribution(
         db,
         req,
@@ -14682,6 +14688,7 @@ export function issueRoutes(
       );
       if (!existing) return;
       if (!(await assertIssueReadAllowed(req, res, existing))) return;
+      const restrictedBody = await restrictedTaskBody(db, req, existing.companyId, "updateIssue", req.body, existing, existing.id);
       await assertNativeRunKeepsOwnExecutionLock(req, existing);
       if (req.body.expectedStatusVersion !== undefined && (
         existing.statusVersion !== req.body.expectedStatusVersion || existing.status !== "backlog"
@@ -14715,6 +14722,7 @@ export function issueRoutes(
         req,
         collectIssueWorkspaceCommandPaths(req.body),
       );
+      req.body = restrictedBody;
 
       if (req.actor.type === "agent" && req.body.onBehalfOfUserId != null) {
         await auditAgentIssueCommentAttributionSpoof({
