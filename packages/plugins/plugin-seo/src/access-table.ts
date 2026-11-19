@@ -44,7 +44,7 @@ const HANDLER_ROWS: Readonly<Record<string, AccessTableEntry>> = Object.freeze({
   ]),
   ...rows(work("edit"), [
     "update-sprint", "change-plan", "pause-sprint", "resume-sprint", "post-digest", "start-task", "attach-task-issue", "complete-task",
-    "block-task", "compact-task-thread", "skip-task", "start-tasks-now", "review-preview", "cancel-previews",
+    "block-task", "compact-task-thread", "skip-task", "start-tasks-now", "review-preview", "set-rehearsal-preview", "cancel-previews",
     "update-keyword", "retire-keyword", "update-backlink", "update-content", "link-social-post", "gsc-pull",
     "gsc-submit-sitemap", "request-indexing", "bing-submit", "needs-you-resolve", "needs-you-give", "run-audit-snapshot",
     "resolve-finding", "geo-audit", "detect-signals",
