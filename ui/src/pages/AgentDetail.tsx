@@ -15,9 +15,10 @@ import { AgentCharacter } from "../components/AgentCharacter";
 import { characterStateForAgent, HEARTBEAT_RUN_LIST_DEFAULT_LIMIT } from "@paperclipai/shared";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { useParams, useNavigate, useLocation, Link, Navigate, useBeforeUnload, type NavigateFunction } from "@/lib/router";
-import { useQuery, useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { useIsFetching, useQuery, useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import {
   agentsApi,
+  isReducedAgent,
   type AgentKey,
   type ClaudeLoginResult,
   type AgentPermissionUpdate,
@@ -60,6 +61,7 @@ import { MembershipAction } from "../components/MembershipAction";
 import { StarToggle } from "../components/StarToggle";
 import { Identity } from "../components/Identity";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { ReducedAgentView } from "../components/agents/ReducedAgentView";
 import { QueryErrorState, queryViewKind, useQueryView } from "../components/QueryView";
 import { AgentActionButtons } from "../components/AgentActionButtons";
 import { InlineBanner } from "../components/InlineBanner";
@@ -443,6 +445,13 @@ export function AgentDetail() {
   const agentLookupRef = agent?.id ?? routeAgentRef;
   const resolvedAgentId = agent?.id ?? null;
   const memberGate = useMemberRestrictionGate(resolvedCompanyId);
+  // The view (PAR-13475; Quinn PAR-13472 finding 2): (a) the body carries the reduced marker or R is
+  // known to be at `enforce`: the reduced view; (b) the gate is closed but (a) does not hold (session
+  // unknown): the loading state; (c) the full page. Operator reads wait for (c).
+  const reducedView = memberRestricted || (agent !== undefined && isReducedAgent(agent));
+  const fullView = agent !== undefined && !reducedView && !memberGate.closed;
+  // A restored session confirmed with the same data does not re-render the gate hook; this does.
+  useIsFetching({ queryKey: queryKeys.auth.session });
   const { data: boardAccess } = useQuery({
     queryKey: queryKeys.access.currentBoardAccess,
     queryFn: () => accessApi.getCurrentBoardAccess(),
@@ -464,8 +473,8 @@ export function AgentDetail() {
   const builtInAgentsEnabled = experimentalSettings?.enableBuiltInAgents === true;
   const { data: builtInStates } = useQuery({
     queryKey: queryKeys.builtInAgents.list(resolvedCompanyId!),
-    queryFn: () => builtInAgentsApi.list(resolvedCompanyId!),
-    enabled: !!resolvedCompanyId && builtInAgentsEnabled,
+    queryFn: memberGate.guard(() => builtInAgentsApi.list(resolvedCompanyId!), []),
+    enabled: !!resolvedCompanyId && builtInAgentsEnabled && fullView,
   });
   const builtInState = builtInAgentsEnabled
     ? builtInStates?.find((entry) => entry.agentId === resolvedAgentId) ?? null
@@ -533,13 +542,13 @@ export function AgentDetail() {
   const { data: runtimeState } = useQuery({
     queryKey: queryKeys.agents.runtimeState(resolvedAgentId ?? routeAgentRef),
     queryFn: memberGate.guard(() => agentsApi.runtimeState(resolvedAgentId!, resolvedCompanyId ?? undefined), undefined),
-    enabled: Boolean(resolvedAgentId) && needsOverviewData && !memberGate.closed,
+    enabled: Boolean(resolvedAgentId) && needsOverviewData && !memberGate.closed && !reducedView,
   });
 
   const { data: heartbeats } = useQuery({
     queryKey: queryKeys.heartbeats(resolvedCompanyId!, agent?.id ?? undefined),
     queryFn: memberGate.guard(() => heartbeatsApi.list(resolvedCompanyId!, agent?.id ?? undefined), []),
-    enabled: !!resolvedCompanyId && !!agent?.id && shouldLoadHeartbeats && !memberGate.closed,
+    enabled: !!resolvedCompanyId && !!agent?.id && shouldLoadHeartbeats && !memberGate.closed && !reducedView,
   });
 
   const { data: allIssues } = useQuery({
@@ -557,13 +566,13 @@ export function AgentDetail() {
   const { data: skillSnapshot } = useQuery({
     queryKey: queryKeys.agents.skills(resolvedAgentId ?? "__none__"),
     queryFn: memberGate.guard(() => agentsApi.skills(resolvedAgentId!, resolvedCompanyId ?? undefined), undefined),
-    enabled: Boolean(resolvedCompanyId && resolvedAgentId && needsOverviewData) && !memberGate.closed,
+    enabled: Boolean(resolvedCompanyId && resolvedAgentId && needsOverviewData) && !memberGate.closed && !reducedView,
   });
 
   const { data: overviewCompanySkills } = useQuery({
     queryKey: queryKeys.companySkills.list(resolvedCompanyId ?? "__none__"),
     queryFn: memberGate.guard(() => companySkillsApi.list(resolvedCompanyId!), []),
-    enabled: Boolean(resolvedCompanyId && needsOverviewData) && !memberGate.closed,
+    enabled: Boolean(resolvedCompanyId && needsOverviewData) && !memberGate.closed && !reducedView,
   });
 
   const assignedIssues = useMemo(
@@ -808,6 +817,8 @@ export function AgentDetail() {
   if (!urlRunId && !urlTab) {
     return <Navigate to={agentDetailHref(canonicalAgentRef)} replace />;
   }
+  if (reducedView) return <ReducedAgentView agent={agent} companyId={lookupCompanyId ?? agent.companyId} />;
+  if (memberGate.closed) return <PageSkeleton variant="detail" />;
   const currentAgent = lifecycle.data && (lifecycle.data.lifecycleVersion ?? 0) >= (agent.lifecycleVersion ?? 0)
     ? { ...agent, ...lifecycle.data } : agent;
   const isPendingApproval = currentAgent.status === "pending_approval";
@@ -1105,6 +1116,7 @@ export function AgentDetail() {
           directReports={directReports}
           skillNames={overviewSkillNames}
           agentRouteId={canonicalAgentRef}
+          companyId={lookupCompanyId ?? resolvedCompanyId}
           memberRestricted={memberRestricted}
         />
       )}
@@ -1443,6 +1455,7 @@ export function AgentOverview({
   assignedIssues,
   directReports = [],
   skillNames,
+  companyId: routeCompanyId,
   memberRestricted = false,
 }: {
   agent: AgentDetailRecord;
@@ -1454,11 +1467,14 @@ export function AgentOverview({
   directReports?: Agent[];
   skillNames: string[];
   agentRouteId: string;
+  /** The company in the route; the activity read keys on it, so its URL never carries `undefined`. */
+  companyId?: string | null;
   /** Restricted under `enforce` (AC-G10): cards that read or link to a closed route are left out. */
   memberRestricted?: boolean;
 }) {
   const agentRef = agentRouteRef(agent);
-  const memberGate = useMemberRestrictionGate(agent.companyId);
+  const activityCompanyId = routeCompanyId ?? agent.companyId;
+  const memberGate = useMemberRestrictionGate(activityCompanyId);
   const hasHumanCreator = Boolean(humanAgentCreatorUserId(agent.createdByUserId));
   const userDirectory = useQuery({
     queryKey: queryKeys.access.companyUserDirectory(agent.companyId),
@@ -1468,9 +1484,9 @@ export function AgentOverview({
   const creatorLabel = resolveAgentCreatorLabel(agent.createdByUserId, userDirectory.data?.users);
   const creatorFailed = hasHumanCreator && queryViewKind(userDirectory) === "error";
   const activity = useQuery({
-    queryKey: [...queryKeys.activity(agent.companyId), "agent-overview", agent.id],
-    queryFn: memberGate.guard(() => activityApi.list(agent.companyId, { agentId: agent.id, limit: OVERVIEW_ACTIVITY_LIMIT }), []),
-    enabled: !memberGate.closed,
+    queryKey: [...queryKeys.activity(activityCompanyId ?? "__none__"), "agent-overview", agent.id],
+    queryFn: memberGate.guard(() => activityApi.list(activityCompanyId!, { agentId: agent.id, limit: OVERVIEW_ACTIVITY_LIMIT }), []),
+    enabled: Boolean(activityCompanyId) && !memberGate.closed,
   });
   const now = Date.now();
   const weekAgo = now - 7 * 24 * 60 * 60 * 1000;
