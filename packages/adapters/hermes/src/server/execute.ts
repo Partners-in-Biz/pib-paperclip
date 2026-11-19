@@ -55,6 +55,8 @@ import {
   selectPaperclipPromptSections,
   stringifyPaperclipWakePayload,
   isPaperclipRecoveryWakePayload,
+  runningProcesses,
+  signalRunningProcess,
 } from "@paperclipai/adapter-utils/server-utils";
 
 import {
@@ -76,7 +78,14 @@ import {
   resolveHermesAgentSkillsDir,
 } from "./skills.js";
 import { guardEnvStrings, prepareQuery } from "./query-file.js";
-import { readSessionLineage, resolveRun, type SessionRow } from "./session-metering.js";
+import { parseSessionId, readSessionLineage, resolveRun, type SessionRow } from "./session-metering.js";
+import {
+  DEFAULT_POST_TURN_EXIT_GRACE_SEC,
+  TURN_REPORT_FILE_ENV,
+  startPostTurnStopGuard,
+  type PostTurnStopGuard,
+  type PostTurnStopOutcome,
+} from "./post-turn-stop.js";
 import {
   createRemoteSessionReader,
   killRemoteTree,
@@ -508,6 +517,8 @@ async function executeHermes(
   const model = cfgString(config.model) || DEFAULT_MODEL;
   const timeoutSec = cfgNumber(config.timeoutSec) || DEFAULT_TIMEOUT_SEC;
   const graceSec = cfgNumber(config.graceSec) || DEFAULT_GRACE_SEC;
+  // PAR-13539: seconds Hermes may keep running after its turn ended; 0 turns the stop off.
+  const postTurnExitGraceSec = Math.max(0, cfgNumber(config.postTurnExitGraceSec) ?? DEFAULT_POST_TURN_EXIT_GRACE_SEC);
   const maxTurns = cfgNumber(config.maxTurnsPerRun);
   const toolsets = cfgString(config.toolsets) || cfgStringArray(config.enabledToolsets)?.join(",");
   const extraArgs = cfgStringArray(config.extraArgs);
@@ -899,6 +910,28 @@ async function executeHermes(
     );
   }
   await ctx.onLog("stdout", `[hermes] Prompt: ${query.bytes} bytes via ${query.via}\n`);
+  // PAR-13539: Hermes reports the end of its turn before lingering on
+  // background-process notifications; stop it a short grace after that report
+  // instead of letting it run follow-up turns until timeoutSec. Local runs only:
+  // a remote report would sit on the other host.
+  let postTurnGuard: PostTurnStopGuard | null = null;
+  let postTurn: PostTurnStopOutcome | null = null;
+  if (!remote && postTurnExitGraceSec > 0) {
+    postTurnGuard = await startPostTurnStopGuard({
+      graceSec: postTurnExitGraceSec,
+      killGraceSec: graceSec,
+      getProcess: () => {
+        const running = runningProcesses.get(ctx.runId);
+        const pid = running?.child.pid;
+        if (!running || typeof pid !== "number" || running.child.exitCode !== null || running.child.signalCode !== null) {
+          return null;
+        }
+        return { pid, signal: (signal) => signalRunningProcess(running, signal) };
+      },
+      onLog: (line) => ctx.onLog("stdout", line),
+    });
+    if (postTurnGuard) env[TURN_REPORT_FILE_ENV] = postTurnGuard.reportPath;
+  }
   let result: Awaited<ReturnType<typeof runChildProcess>>;
   try {
     if (remote && remoteQuery) {
@@ -938,17 +971,37 @@ async function executeHermes(
     throw err;
   } finally {
     await query.cleanup();
+    if (postTurnGuard) postTurn = await postTurnGuard.finish();
   }
   if (streamBuffer.trim()) {
     await forwardStdoutLines("\n", true);
   }
 
+  // Stopped after its turn: the turn's own outcome is the run's outcome. Hermes
+  // prints the answer and the session_id line only at exit, so take them from
+  // the turn report and the session we know.
+  let parseStderr = result.stderr || "";
+  const stoppedTurn = postTurn?.stopped && postTurn.report && !result.timedOut ? postTurn.report : null;
+  if (stoppedTurn) {
+    await ctx.onLog(
+      "stdout",
+      `[hermes] Stopped after the turn ended (signal ${result.signal ?? "none"}${postTurn?.forceKilled ? ", force-killed" : ""}); booking the turn's exit code ${stoppedTurn.exitCode}.\n`,
+    );
+    result = { ...result, exitCode: stoppedTurn.exitCode, signal: null };
+    const knownSessionId = checkpointedSessionId ?? sessionId;
+    if (!parseSessionId(result.stdout || "", parseStderr) && knownSessionId) {
+      parseStderr += `\nsession_id: ${knownSessionId}\n`;
+    }
+  }
+
   // ── Parse output ───────────────────────────────────────────────────────
-  const parsed = parseHermesOutput(result.stdout || "", result.stderr || "");
+  const parsed = parseHermesOutput(result.stdout || "", parseStderr);
+  if (stoppedTurn?.reply) parsed.response = stoppedTurn.reply;
+  if (stoppedTurn?.error && stoppedTurn.exitCode !== 0 && !parsed.errorMessage) parsed.errorMessage = stoppedTurn.error;
   // The regexes above never match current Hermes output and read prose as cost.
   // Take the session id from the lines Hermes prints, and tokens and cost from
   // its own session record.
-  const metered = await resolveRun(result.stdout || "", result.stderr || "", hermesStoreEnv, resumeBaseline, remoteSessions);
+  const metered = await resolveRun(result.stdout || "", parseStderr, hermesStoreEnv, resumeBaseline, remoteSessions);
   parsed.sessionId = metered.sessionId ?? undefined;
   parsed.usage = metered.usage;
   parsed.costUsd = metered.costUsd;
@@ -1022,6 +1075,15 @@ async function executeHermes(
     usage: parsed.usage || null,
     cost_usd: parsed.costUsd ?? null,
     ...(echoOnly ? { agentPromptEchoWithheld: true } : {}),
+    ...(stoppedTurn
+      ? {
+          postTurnStop: {
+            reason: "hermes_post_turn_linger",
+            graceSec: postTurnExitGraceSec,
+            forceKilled: postTurn?.forceKilled === true,
+          },
+        }
+      : {}),
   };
 
   // Store session ID for next run
