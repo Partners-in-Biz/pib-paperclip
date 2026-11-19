@@ -1438,12 +1438,14 @@ describe("automatic retained workspace recovery", () => {
       await db.update(issues).set({ executionRunId: f.runId, executionAgentNameKey: "worker", executionLockedAt: new Date() }).where(eq(issues.id, f.issueId));
     }
     const enqueue = async (comment: typeof reset) => queue.enqueueWakeup(original.agentId, {
+      causingActor: "system",
       source: "automation", triggerDetail: "system", reason: "issue_commented", requestedByActorType: "user", requestedByActorId: comment.authorUserId!,
       payload: { issueId: f.issueId, commentId: comment.id, mutation: "comment", resumeIntent: true, followUpRequested: true },
       contextSnapshot: { issueId: f.issueId, taskId: f.issueId, commentId: comment.id, wakeCommentId: comment.id,
         wakeCommentIds: [comment.id], source: "issue.comment", wakeReason: "issue_commented", resumeIntent: true, followUpRequested: true },
     });
     if (kind === "system-deferred") expect(await queue.enqueueWakeup(original.agentId, {
+      causingActor: "system",
       source: "automation", triggerDetail: "system", reason: "issue_updated", requestedByActorType: "system", requestedByActorId: "second-user",
       payload: { issueId: f.issueId, mutation: "update" },
       contextSnapshot: { issueId: f.issueId, taskId: f.issueId, source: "issue.updated", wakeReason: "issue_updated", forceFreshSession: true },

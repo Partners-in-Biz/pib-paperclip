@@ -1,11 +1,19 @@
 /**
  * Ask deadline sweep: every 15 minutes, find asks with expired deadlines
  * and apply standing policy or escalate to owner.
+ *
+ * The 24-hour rule (decision rights, 11 Nov 2026): a question that is not a
+ * hard stop and has a recommended answer applies that answer by itself once it
+ * is 24 hours old, and says so on the issue. A hard stop never does: it waits
+ * for the owner however long that takes.
  */
 
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { evaluate, type PolicyAsk, type PolicyClass, POLICY_CLASSES } from "./owner-defaults-model.js";
-import { answerAskByPolicy, getAsk, type AskRow, listCompaniesWithDueAsks, listDueAsks } from "./asks.js";
+import { answerAskByPolicy, askHardStop, getAsk, type AskRow, listCompaniesWithDueAsks, listDueAsks } from "./asks.js";
+import { defaultAppliedComment } from "./ask-model.js";
+import { readDecisionRights } from "./decision-rights.js";
+import { DEFAULT_APPLY_HOURS, HARD_STOPS } from "./decision-rights-model.js";
 import { recordRepair, listRepairs } from "./repairs.js";
 import { getRoles } from "./db.js";
 import { listSubscriptionsForUser } from "./push/store.js";
@@ -13,6 +21,9 @@ import { sendPush } from "./push/send.js";
 import { readOwnerDefaults } from "./owner-defaults-store.js";
 import { message, type Env } from "./env.js";
 import { NAMESPACE } from "./namespace.js";
+
+/** The name stored as the policy of an answer applied by the 24-hour rule. */
+export const DEFAULT_RULE_NAME = "24-hour default";
 
 /**
  * Find all ancestors of an issue by walking up the parent_id chain.
@@ -223,6 +234,7 @@ export async function sweepAskDeadlines(
       // Get the real standing policy from the store
       const policy = await readOwnerDefaults(env.ctx, companyId);
       const pushConfig = (await env.ctx.config.get(companyId)) as Record<string, unknown> | undefined;
+      const { ownProducts } = await readDecisionRights(env, companyId);
 
       // Find open asks with expired deadlines and no defaultAppliedAt
       const dueAsks = await listDueAsks(env, companyId, nowTime.toISOString());
@@ -249,22 +261,23 @@ export async function sweepAskDeadlines(
             continue; // Already processed
           }
 
-          processed += 1;
-
           // Case 1: Ask has an effect -> escalate only
           if (ask.effect) {
+            processed += 1;
             await escalate(env, companyId, ask, "Ask has effect, escalation only", pushConfig?.pushEnabled === true);
             escalated += 1;
             continue;
           }
 
-          // Check if ask is safe for auto-application
+          // Check if ask is safe for auto-application: never money, legal or a grant, and never a hard stop.
           const isSafeKind = !["money", "legal", "grant"].includes(ask.kind);
+          const hardStop = askHardStop(ask, ownProducts);
           const isPolicyClassAllowed = !ask.defaultPolicy || POLICY_CLASSES.includes(ask.defaultPolicy as PolicyClass);
 
-          if (!isSafeKind || !isPolicyClassAllowed) {
-            // Dangerous kind or disallowed class -> escalate
-            const reason = !isSafeKind ? `kind=${ask.kind}` : `policyClass=${ask.defaultPolicy}`;
+          if (!isSafeKind || hardStop || !isPolicyClassAllowed) {
+            // Dangerous kind, hard stop or disallowed class -> escalate
+            const reason = !isSafeKind ? `kind=${ask.kind}` : hardStop ? `hard stop: ${HARD_STOPS[hardStop].label}` : `policyClass=${ask.defaultPolicy}`;
+            processed += 1;
             await escalate(env, companyId, ask, `Escalated: ${reason}`, pushConfig?.pushEnabled === true);
             escalated += 1;
             continue;
@@ -292,14 +305,25 @@ export async function sweepAskDeadlines(
             rootsOfIssue,
           });
 
-          if (decision.action === "apply") {
-            // Case 2: Policy covers and recommends -> apply
+          // The 24-hour rule: when the standing policy does not answer, the recommended answer still applies once the question is 24 hours old.
+          const recommended = ask.recommended && ask.options.includes(ask.recommended) ? ask.recommended : null;
+          const byRule = decision.action !== "apply" && recommended !== null;
+          if (byRule && nowTime.getTime() - Date.parse(ask.askedAt) < DEFAULT_APPLY_HOURS * 3_600_000) {
+            continue; // Not 24 hours old yet: looked at again on the next sweep.
+          }
+
+          processed += 1;
+
+          if (decision.action === "apply" || byRule) {
+            // Case 2: the policy covers it, or the 24-hour rule does -> apply
+            const answer = decision.action === "apply" ? decision.answer : recommended!;
+            const policyName = byRule ? DEFAULT_RULE_NAME : policy?.name ?? "Policy";
             const result = await answerAskByPolicy(
               env,
               companyId,
               ask.id,
-              policy?.name ?? "Policy",
-              decision.answer,
+              policyName,
+              answer,
             );
 
             // Only post comment and record repair if actually changed from open to answered
@@ -308,7 +332,7 @@ export async function sweepAskDeadlines(
               try {
                 await env.ctx.issues.createComment(
                   ask.issueId,
-                  `Applied by standing policy ${policy?.name ?? "Policy"} at ${nowTime.toISOString()}`,
+                  byRule ? defaultAppliedComment(answer) : `Applied by standing policy ${policyName} at ${nowTime.toISOString()}`,
                   companyId,
                 );
               } catch (err) {
@@ -325,18 +349,20 @@ export async function sweepAskDeadlines(
                 targetId: ask.id,
                 action: "apply_default",
                 outcome: "applied",
-                detail: `Applied by policy: ${decision.answer}`,
+                detail: byRule ? `Applied by the 24-hour rule: ${answer}` : `Applied by policy: ${answer}`,
                 actor: "cockpit-ask-deadlines",
               });
 
-              // Push owner once per 24h per issue
-              await pushOnce(
-                env,
-                companyId,
-                ask,
-                `Applied ${ask.issueIdentifier ?? ask.issueId}: ${decision.answer}`,
-                pushConfig?.pushEnabled === true,
-              );
+              // A standing-policy answer pushes the owner once per 24h per issue. A 24-hour-rule answer does not: the daily digest lists it.
+              if (!byRule) {
+                await pushOnce(
+                  env,
+                  companyId,
+                  ask,
+                  `Applied ${ask.issueIdentifier ?? ask.issueId}: ${answer}`,
+                  pushConfig?.pushEnabled === true,
+                );
+              }
               applied += 1;
               continue;
             }

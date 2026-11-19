@@ -33,10 +33,10 @@ function makeCtx(): PluginContext {
   } as unknown as PluginContext;
 }
 
-async function spend(companyId: string, generationId: string, kind: string, amount: number, at: string) {
+async function spend(companyId: string, generationId: string, kind: string, amount: number, at: string, provider = "higgsfield") {
   await pg.db.execute(
-    `INSERT INTO ${pg.db.namespace}.generations (id, group_id, company_id, provider, model, prompt, period, estimated_credits) VALUES ($1, $1, $2, 'higgsfield', 'm', 'p', '2026-11', 1) ON CONFLICT (id) DO NOTHING`,
-    [generationId, companyId],
+    `INSERT INTO ${pg.db.namespace}.generations (id, group_id, company_id, provider, model, prompt, period, estimated_credits) VALUES ($1, $1, $2, $3, 'm', 'p', '2026-11', 1) ON CONFLICT (id) DO NOTHING`,
+    [generationId, companyId, provider],
   );
   await pg.db.execute(
     `INSERT INTO ${pg.db.namespace}.credit_ledger (generation_id, kind, company_id, period, credits, created_at) VALUES ($1, $2, $3, '2026-11', $4, $5)`,
@@ -78,6 +78,14 @@ describe.skipIf(!available)("Higgsfield balance estimate (PAR-8388)", () => {
     const view = await balanceView(ctx, CO);
     expect(view).toMatchObject({ enteredUsd: 87.5, spentCreditsSince: 16, spentUsdSince: 1, estimatedUsd: 86.5, low: false });
     expect(view.estimatedCredits).toBeCloseTo(86.5 / USD_PER_CREDIT, 2);
+  });
+
+  it("ignores xAI and Stability rows: they are other accounts", async () => {
+    await setBalance(ctx, CO, "$87.50", "owner-1", new Date("2026-11-08T12:00:00Z"));
+    await spend(CO, "g1", "reserve", 16, "2026-11-08T12:05:00Z");
+    await spend(CO, "gx", "reserve", 40, "2026-11-08T12:06:00Z", "xai");
+    await spend(CO, "gs", "reserve", 1.28, "2026-11-08T12:07:00Z", "stability");
+    expect(await balanceView(ctx, CO)).toMatchObject({ spentCreditsSince: 16, estimatedUsd: 86.5 });
   });
 
   it("warns when the estimate drops below the low mark", async () => {

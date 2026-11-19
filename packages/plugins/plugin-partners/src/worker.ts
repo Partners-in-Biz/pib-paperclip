@@ -55,13 +55,15 @@ const plugin = definePlugin({
     registerRoleWatch(ctx);
     for (const tool of PARTNER_TOOLS) {
       ctx.tools.register(tool.name, tool, async (params, run) => {
-        await skillSync?.ensure(run.companyId).catch(() => undefined);
+        // A tool call never waits long for the skill sync (kit `soon`).
+        await skillSync?.soon(run.companyId);
         return runTool(ctx, tool.name, params, run).then(normalizeToolResult);
       });
     }
     ctx.actions.register("partners.load", async (params, context) => {
       const companyId = requiredCompany(context);
-      await skillSync?.ensure(companyId).catch(() => undefined);
+      // The page never waits long for the skill sync (kit `soon`).
+      await skillSync?.soon(companyId);
       // The page reports /_plugins/<installation uuid>/ui/ so Setup can link the settings page.
       await rememberPluginUiBase(ctx, params.uiBase);
       await rememberCompany(ctx, companyId);

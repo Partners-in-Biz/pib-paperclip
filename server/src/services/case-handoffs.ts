@@ -189,10 +189,11 @@ async function assertCaseContentsFitTask(tx: Db, caseRow: CaseRow, issue: IssueR
           UNION
           SELECT p.id, p.company_id, p.privacy_parent_issue_id FROM issues p
           JOIN privacy_ancestors child ON p.id = child.privacy_parent_issue_id AND p.company_id = child.company_id
-          WHERE p.visibility = 'private' OR EXISTS (
+          -- A chat passes no privacy to work started from it (PAR-12774 4.3).
+          WHERE p.conversation_agent_id IS NULL AND (p.visibility = 'private' OR EXISTS (
             SELECT 1 FROM projects project WHERE project.id = p.project_id
               AND project.company_id = p.company_id AND project.visibility = 'private'
-          )
+          ))
         )
         SELECT EXISTS (SELECT 1 FROM privacy_ancestors WHERE id = ${sourceIssue.id}) AS inherited
       `);

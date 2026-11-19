@@ -85,6 +85,7 @@ describePostgres("saved Slack invitation command in heartbeat prompts", () => {
     await db.insert(chatDeliveries).values({ id: deliveryId, companyId: f.companyId, endpointId: f.endpointId, conversationId: f.conversationId, principalId: f.principalId, providerEventId: commentId, deduplicationKey: commentId, eventKind: "message", normalizedEvent: {}, state: "processed", attempts: 1, processedAt: new Date() });
     await db.insert(chatMessageLinks).values({ companyId: f.companyId, endpointId: f.endpointId, conversationId: f.conversationId, deliveryId, commentId, providerMessageId: commentId, direction: "inbound" });
     const run = await heartbeat.wakeup(f.agentId, {
+      causingActor: "system",
       source: "automation", triggerDetail: "system", reason: "issue_commented",
       payload: { issueId: f.issueId, commentId },
       contextSnapshot: {

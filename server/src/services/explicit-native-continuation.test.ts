@@ -174,7 +174,7 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
     const heartbeat = heartbeatService(db);
     if (origin === "new") {
-      await heartbeat.wakeup(f.agentId, { source: "assignment", triggerDetail: "system", reason: "issue_assigned",
+      await heartbeat.wakeup(f.agentId, { causingActor: "system", source: "assignment", triggerDetail: "system", reason: "issue_assigned",
         requestedByActorType: "user", requestedByActorId: f.actorId,
         payload: { issueId: f.issueId, commentId: f.commentId, mutation: "update" },
         contextSnapshot: { source: "issue.update", issueId: f.issueId, wakeCommentId: f.commentId },
@@ -279,7 +279,7 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
         ...(kind === "interaction" ? { interactionId: randomUUID(), wakeReason: "connection_intent.resolved" } : {}),
       } },
     });
-    await heartbeatService(db).wakeup(nextAgentId, { source: "assignment", triggerDetail: "system", reason: "issue_assigned",
+    await heartbeatService(db).wakeup(nextAgentId, { causingActor: "system", source: "assignment", triggerDetail: "system", reason: "issue_assigned",
       requestedByActorType: "user", requestedByActorId: "board", payload: { issueId: f.issueId, interruptedRunId: f.sourceRunId },
       contextSnapshot: { issueId: f.issueId, interruptedRunId: f.sourceRunId } });
     const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, queueId));
@@ -617,7 +617,7 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
       }).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
       const blocker = await getExecutionBlocker(db, f.companyId, f.issueId, { conversationResetCommentId: f.commentId });
       if (workspaceHold) expect(blocker).not.toBeNull(); else expect(blocker).toBeNull();
-      const wake = await heartbeatService(db).wakeup(f.agentId, { source: "on_demand", triggerDetail: "manual", reason: "issue_commented",
+      const wake = await heartbeatService(db).wakeup(f.agentId, { causingActor: "system", source: "on_demand", triggerDetail: "manual", reason: "issue_commented",
         requestedByActorType: "user", requestedByActorId: scenario === "wrong_author" ? "another-user" : "board", payload: { issueId: f.issueId, commentId: f.commentId },
         contextSnapshot: { source: "issue.comment", issueId: f.issueId, wakeCommentId: f.commentId },
       });
@@ -1262,7 +1262,7 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
         // Exercise the real message admission path while keeping the provider slot occupied.
         await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
         const heartbeat = heartbeatService(db);
-        for (let n = 0; n < 2; n++) await heartbeat.wakeup(f.agentId, { source: "automation", triggerDetail: "system",
+        for (let n = 0; n < 2; n++) await heartbeat.wakeup(f.agentId, { causingActor: "system", source: "automation", triggerDetail: "system",
           reason: "issue_commented", requestedByActorType: "user", requestedByActorId: "board",
           payload: { issueId: f.issueId, commentId: f.commentId },
           contextSnapshot: { issueId: f.issueId, wakeCommentId: f.commentId } });
@@ -1492,7 +1492,7 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
   it.each(["message", "retry"])("admits an unclaimed workspace retry through the heartbeat %s path", async kind => {
     const f = await seedCancelledWorkspaceWaitRetry();
     await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
-    const successor = await heartbeatService(db).wakeup(f.agentId, { source: "on_demand", triggerDetail: "manual",
+    const successor = await heartbeatService(db).wakeup(f.agentId, { causingActor: "system", source: "on_demand", triggerDetail: "manual",
       reason: kind === "retry" ? "retry_failed_run" : "issue_commented",
       ...(kind === "retry" ? { failedRunId: f.sourceRunId } : {}), requestedByActorType: "user", requestedByActorId: "board",
       payload: { issueId: f.issueId, ...(kind === "message" ? { commentId: f.commentId } : {}) },
@@ -1594,7 +1594,7 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     expect(notice).toMatchObject({ canRetry: true, runError: "Waiting for review; this continuation never started." });
     expect(notice?.nextAction).not.toContain("Inspect the run before sending a new message");
     await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
-    const successor = await heartbeat.wakeup(f.agentId, { source: kind === "retry" ? "on_demand" : "automation", triggerDetail: "manual",
+    const successor = await heartbeat.wakeup(f.agentId, { causingActor: "system", source: kind === "retry" ? "on_demand" : "automation", triggerDetail: "manual",
       reason: kind === "retry" ? "retry_failed_run" : "issue_commented",
       ...(kind === "retry" ? { failedRunId: f.sourceRunId } : {}), requestedByActorType: "user", requestedByActorId: "board",
       payload: { issueId: f.issueId, ...(kind === "message" ? { commentId: f.commentId } : {}) },
@@ -1618,7 +1618,7 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     const leaseId = randomUUID();
     await db.insert(environmentLeases).values({ id: leaseId, companyId: f.companyId,
       heartbeatRunId: f.sourceRunId, provider: "local", status: "pending_cleanup", cleanupStatus: "failed" });
-    await heartbeat.wakeup(f.agentId, { source: "automation", reason: "issue_commented",
+    await heartbeat.wakeup(f.agentId, { causingActor: "system", source: "automation", reason: "issue_commented",
       requestedByActorType: "user", requestedByActorId: "board", payload: { issueId: f.issueId, commentId: f.commentId },
       contextSnapshot: { issueId: f.issueId, wakeCommentId: f.commentId } });
     const [waiting] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId));
@@ -1657,6 +1657,7 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({ canRetry: true });
     await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
     const successor = await heartbeatService(db).wakeup(f.agentId, {
+      causingActor: "system",
       source: "on_demand", triggerDetail: "manual", reason: kind === "retry" ? "retry_failed_run" : "issue_commented",
       ...(kind === "retry" ? { failedRunId: f.sourceRunId } : {}), requestedByActorType: "user", requestedByActorId: "board",
       payload: { issueId: f.issueId, ...(kind === "message" ? { commentId: f.commentId } : {}) },
@@ -1676,7 +1677,7 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
     await db.update(heartbeatRuns).set({ controllerLeaseExpiresAt: new Date(Date.now() + 60_000) })
       .where(eq(heartbeatRuns.id, f.sourceRunId));
-    await heartbeatService(db).wakeup(f.agentId, { source: "automation", reason: "issue_commented",
+    await heartbeatService(db).wakeup(f.agentId, { causingActor: "system", source: "automation", reason: "issue_commented",
       requestedByActorType: "user", requestedByActorId: "board", payload: { issueId: f.issueId, commentId: f.commentId },
       contextSnapshot: { issueId: f.issueId, wakeCommentId: f.commentId } });
     const [waiting] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId));
@@ -1814,7 +1815,7 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
       kind: "active_run_watchdog", cause: "uncertain_external_action", fingerprint: randomUUID(), status: "active",
       nextAction: "Waiting for the current run.", evidence: { runId: f.sourceRunId } });
     expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({ runId: f.sourceRunId });
-    await heartbeatService(db).wakeup(f.agentId, { source: "automation", triggerDetail: "system", reason: "issue_commented",
+    await heartbeatService(db).wakeup(f.agentId, { causingActor: "system", source: "automation", triggerDetail: "system", reason: "issue_commented",
       requestedByActorType: "user", requestedByActorId: "board", payload: { issueId: f.issueId, commentId: f.commentId },
       contextSnapshot: { issueId: f.issueId, wakeCommentId: f.commentId } });
     const [waiting] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId));
@@ -1953,7 +1954,8 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     } as unknown as HeartbeatEnvironmentRuntime });
     const request = { source: "on_demand" as const, triggerDetail: "manual" as const,
       reason: "retry_failed_run", failedRunId: f.sourceRunId,
-      requestedByActorType: "user" as const, requestedByActorId: "board", payload: { issueId: f.issueId } };
+      requestedByActorType: "user" as const, requestedByActorId: "board", causingActor: { type: "user" as const, userId: "board" },
+      payload: { issueId: f.issueId } };
     try {
       const [first, second] = await Promise.all([heartbeat.wakeup(f.agentId, request), heartbeat.wakeup(f.agentId, request)]);
       // A losing cleanup claim can still see the hold until the winner finishes;
@@ -1986,7 +1988,8 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     } as unknown as HeartbeatEnvironmentRuntime });
     const request = { source: "on_demand" as const, triggerDetail: "manual" as const,
       reason: "retry_failed_run", failedRunId: f.sourceRunId, requestedByActorType: "user" as const,
-      requestedByActorId: "board", payload: { issueId: f.issueId } };
+      requestedByActorId: "board", causingActor: { type: "user" as const, userId: "board" },
+      payload: { issueId: f.issueId } };
     try {
       expect(await heartbeat.wakeup(f.agentId, request)).toBeNull();
       expect(attempts).toBe(1);
@@ -2012,7 +2015,8 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     const service = heartbeatService(db);
     const request = { source: "on_demand" as const, triggerDetail: "manual" as const,
       reason: "retry_failed_run", failedRunId: f.sourceRunId,
-      requestedByActorType: "user" as const, requestedByActorId: "board", payload: { issueId: f.issueId } };
+      requestedByActorType: "user" as const, requestedByActorId: "board", causingActor: { type: "user" as const, userId: "board" },
+      payload: { issueId: f.issueId } };
     const [first, second] = await Promise.all([service.wakeup(f.agentId, request), service.wakeup(f.agentId, request)]);
     expect(first?.id).toBeTruthy();
     expect(second?.id).toBe(first?.id);
@@ -2105,7 +2109,7 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     const heartbeat = heartbeatService(db, retry ? { environmentRuntime: {
       retryPendingSandboxTeardown: async () => ({ providerLeaseId: identity.providerLeaseId, state: "destroyed" }),
     } as unknown as HeartbeatEnvironmentRuntime } : {});
-    await heartbeat.wakeup(f.agentId, { source: "automation", triggerDetail: "system", reason,
+    await heartbeat.wakeup(f.agentId, { causingActor: "system", source: "automation", triggerDetail: "system", reason,
       requestedByActorType: "user", requestedByActorId: "board", payload: { issueId: f.issueId, commentId: f.commentId },
       contextSnapshot: { issueId: f.issueId, wakeCommentId: f.commentId } });
     const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceRunId));
@@ -2139,6 +2143,7 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     // Occupy this agent's only slot so this admission test never starts a provider.
     await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
     const wake = await heartbeatService(db).wakeup(f.agentId, {
+      causingActor: "system",
       source: "automation", triggerDetail: "system", reason: "issue_commented",
       requestedByActorType: "user", requestedByActorId: "board",
       payload: { issueId: f.issueId, commentId: f.commentId },
@@ -2169,6 +2174,7 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
       await db.insert(issueRelations).values({ companyId: f.companyId, issueId: blockerId, relatedIssueId: f.issueId, type: "blocks" });
     }
     const wake = await heartbeatService(db).wakeup(f.agentId, {
+      causingActor: "system",
       source: "automation", triggerDetail: "system", reason: "issue_commented", requestedByActorType: "user", requestedByActorId: "board",
       ...(gate === "state" ? { issueStateGuard: { statuses: ["todo"], assigneeAgentId: f.agentId } } : {}),
       payload: { issueId: f.issueId, commentId: f.commentId }, contextSnapshot: { issueId: f.issueId, wakeCommentId: f.commentId },
@@ -2195,6 +2201,7 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     const f = await seed();
     await db.update(heartbeatRuns).set({ processPid: process.pid }).where(eq(heartbeatRuns.id, f.sourceRunId));
     const wake = await heartbeatService(db).wakeup(f.agentId, {
+      causingActor: "system",
       source: "automation", triggerDetail: "system", reason: "issue_commented",
       requestedByActorType: "user", requestedByActorId: "board",
       payload: { issueId: f.issueId, commentId: f.commentId },
@@ -2285,7 +2292,7 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     expect(blocker).toMatchObject({ runId: f.sourceRunId, canRetry: true });
     await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
     const service = heartbeatService(db);
-    const successor = await service.wakeup(f.agentId, { source: "on_demand", triggerDetail: "manual", reason: "retry_failed_run",
+    const successor = await service.wakeup(f.agentId, { causingActor: "system", source: "on_demand", triggerDetail: "manual", reason: "retry_failed_run",
       failedRunId: f.sourceRunId, requestedByActorType: "user", requestedByActorId: "board", payload: { issueId: f.issueId } });
     expect(successor).toMatchObject({ status: "queued", retryOfRunId: f.sourceRunId });
     expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
@@ -2380,6 +2387,7 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
       await db.insert(environmentLeases).values({ ...lease, status: "active", leasePolicy: "ephemeral" });
       const heartbeat = heartbeatService(db);
       const wake = await heartbeat.wakeup(f.agentId, {
+        causingActor: "system",
         source: "on_demand", triggerDetail: "manual", reason: "issue_commented",
         requestedByActorType: "user", requestedByActorId: "board",
         payload: { issueId: f.issueId, commentId: f.commentId },
@@ -2745,7 +2753,7 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     expect(await db.transaction(tx => admitExplicitNativeContinuation({ ...f, db: tx as unknown as typeof db, onBlocked: blocked, dryRun: true }))).toBeNull();
     expect(blocked).toHaveBeenCalledWith("finalizing_saved_result", expect.any(String));
     await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
-    const wake = await heartbeatService(db).wakeup(f.agentId, { source: "on_demand", triggerDetail: "manual", reason: "issue_commented",
+    const wake = await heartbeatService(db).wakeup(f.agentId, { causingActor: "system", source: "on_demand", triggerDetail: "manual", reason: "issue_commented",
       requestedByActorType: "user", requestedByActorId: "board", payload: { issueId: f.issueId, commentId: f.commentId },
       contextSnapshot: { source: "issue.comment", issueId: f.issueId, wakeCommentId: f.commentId },
     });
@@ -2784,7 +2792,7 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
       const blocker = await getExecutionBlocker(db, f.companyId, f.issueId);
       if (scenario === "completed") expect(blocker).toBeNull(); else expect(blocker).not.toBeNull();
       await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
-      const wake = await heartbeatService(db).wakeup(f.agentId, { source: "on_demand", triggerDetail: "manual", reason: "issue_commented",
+      const wake = await heartbeatService(db).wakeup(f.agentId, { causingActor: "system", source: "on_demand", triggerDetail: "manual", reason: "issue_commented",
         requestedByActorType: "user", requestedByActorId: "board", payload: { issueId: f.issueId, commentId: f.commentId },
         contextSnapshot: { source: "issue.comment", issueId: f.issueId, wakeCommentId: f.commentId },
       });
@@ -2812,7 +2820,7 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
         if (scenario === "remote_cleanup") await db.insert(environmentLeases).values({ companyId: f.companyId, heartbeatRunId: f.sourceRunId, provider: "daytona", providerLeaseId: "old-chat-environment", status: "active", leasePolicy: "ephemeral" });
         if (scenario === "controller") await db.update(nativeRunFinalizations).set({ leaseOwner: "old-controller" }).where(eq(nativeRunFinalizations.runId, f.sourceRunId));
         await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
-        const wake = await heartbeatService(db).wakeup(f.agentId, { source: "on_demand", triggerDetail: "manual", reason: "issue_commented",
+        const wake = await heartbeatService(db).wakeup(f.agentId, { causingActor: "system", source: "on_demand", triggerDetail: "manual", reason: "issue_commented",
           requestedByActorType: "user", requestedByActorId: "board", payload: { issueId: f.issueId, commentId: f.commentId },
           contextSnapshot: { source: "issue.comment", issueId: f.issueId, wakeCommentId: f.commentId },
         });
@@ -2921,6 +2929,7 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
         requestedByActorType: scenario === "unlinked" ? "system" : "user",
         requestedByActorId: scenario === "wrong_author" ? "another-user" : "board", requestedAt: new Date(), authorize });
       const wake = () => heartbeatService(db).wakeup(f.agentId, {
+        causingActor: "system",
         source: "assignment", triggerDetail: "system", reason: "External chat message received",
         requestedByActorType: request.requestedByActorType, requestedByActorId: request.requestedByActorId,
         payload: { issueId: f.issueId, wakeCommentId: f.commentId, mutation: "chat_message_received" },

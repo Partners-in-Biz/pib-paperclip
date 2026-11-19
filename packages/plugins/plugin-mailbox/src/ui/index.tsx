@@ -1025,9 +1025,10 @@ function MailboxPageMain({ context }: PluginPageProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [linkedMail, inbox]);
   /** Give to agent: the worker builds the prefill and, once the task exists, re-checks the client and links it. */
-  const giveButton = (row: InboxMessage, scope: "message" | "thread") => (
+  const giveButton = (row: InboxMessage, scope: "message" | "thread", compact = false) => (
     <GiveToAgentButton
       key={scope}
+      style={compact ? { height: 30, fontSize: 12.5 } : undefined}
       label={scope === "thread" ? "Give thread to agent" : "Give to agent"}
       disabled={busy}
       newIssue={newIssue}
@@ -1213,9 +1214,10 @@ function MailboxPageMain({ context }: PluginPageProps) {
                 {
                   key: "fix",
                   header: "",
-                  width: "176px",
+                  width: "300px",
                   render: (_value, row) => (
-                    <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+                    <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", flexWrap: "wrap" }}>
+                      {giveButton(row as unknown as InboxMessage, "message", true)}
                       <Button type="button" variant="secondary" style={{ height: 30, fontSize: 12.5 }} onClick={() => openCorrection(row as unknown as InboxMessage)}>Fix sorting</Button>
                       <Button type="button" variant="secondary" style={{ height: 30, fontSize: 12.5 }} disabled={busy} onClick={() => void removeMail([(row as unknown as InboxMessage).id])}>Delete</Button>
                     </div>

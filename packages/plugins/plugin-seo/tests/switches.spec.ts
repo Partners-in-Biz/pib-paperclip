@@ -723,7 +723,7 @@ describe("through the real worker: the page action and the agent tools", () => {
 
   it("the page action turns an extra on for a signed-in person, and the sprint then reads as on", async () => {
     const w = await bootWorker([sprintRow("sp-1", { seeded_at: null })]);
-    const result = await w.harness.performAction<{ changed: boolean; feature: string }>("seo.call", set, person);
+    const result = await w.harness.performAction<{ changed: boolean; feature: string }>("seo.call-settings", set, person);
     expect(result).toMatchObject({ changed: true, feature: "geo" });
     expect(w.executes.some((e) => /UPDATE plugin_seo_8099f8879a\.sprints SET geo_enabled = \$1::boolean/.test(e.sql) && e.params[0] === true && e.params[1] === "sp-1")).toBe(true);
     const read = await w.harness.executeTool<{ data?: { switches: Record<string, boolean> } }>("get-switches", { sprintId: "sp-1" }, { companyId: "co-1" });
@@ -732,8 +732,8 @@ describe("through the real worker: the page action and the agent tools", () => {
 
   it("the same page action is refused for an agent, whatever it passes, and nothing is written", async () => {
     const w = await bootWorker([sprintRow("sp-1")]);
-    await expect(w.harness.performAction("seo.call", set, bot)).rejects.toThrow(/This action is for board users/);
-    await expect(w.harness.performAction("seo.call", { tool: "set-switch", params: { ...set.params, by: "user-peet", userId: "user-peet" } }, bot)).rejects.toThrow(/This action is for board users/);
+    await expect(w.harness.performAction("seo.call-settings", set, bot)).rejects.toThrow(/This action is for board users/);
+    await expect(w.harness.performAction("seo.call-settings", { tool: "set-switch", params: { ...set.params, by: "user-peet", userId: "user-peet" } }, bot)).rejects.toThrow(/This action is for board users/);
     expect(w.executes).toEqual([]);
     expect(w.sprints[0]!.geo_enabled).toBe(false);
   });

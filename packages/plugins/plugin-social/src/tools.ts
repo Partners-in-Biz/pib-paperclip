@@ -2,6 +2,9 @@ import type { JsonSchema, PluginToolDeclaration } from "@paperclipai/plugin-sdk"
 import { growthToolDeclarations, type GrowthDeclarationOptions } from "@partnersinbiz/pib-plugin-kit";
 import { ALL_PLATFORMS, OVERRIDE_FIELDS, POST_STATUSES } from "./platforms.js";
 
+/** Gateway budget of store-rendered-asset (PAR-10249): above its 20 s Drive ack (asset-path.ts). */
+export const STORE_RENDERED_ASSET_TOOL_TIMEOUT_MS = 25_000;
+
 /** Every param has a short, exact description, and an enum where the values are fixed. */
 const text = (description: string): JsonSchema => ({ type: "string", description });
 const int = (description: string): JsonSchema => ({ type: "integer", description });
@@ -71,7 +74,7 @@ const post: Record<string, JsonSchema> = {
   replyToUrl: text("X post link to reply to (x.com/<handle>/status/<id>; not m.twitter.com). X only. \"\" clears."),
   quoteUrl: text("X post link to quote. X only; not with replyToUrl. \"\" clears."),
   note: text("Internal note, e.g. \"HOLD until PAR-1\"; never published. Max 500. \"\" clears."),
-  scheduledAt: text(`Publish time, ${ISO_TIME}. Used when a person approves.`),
+  scheduledAt: text(`Publish time, ${ISO_TIME}. Used when the post is approved.`),
   overrides: OVERRIDES,
   tags: {
     type: "array",
@@ -108,7 +111,7 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
   {
     name: "list-connected-accounts",
     displayName: "List connected accounts",
-    description: `List the social accounts of one scope with platform, handle, status (connected, expiring, needs_reconnect, disabled) and token expiry.${OWN}`,
+    description: `List the social accounts of one scope with platform, handle, status (connected, expiring, needs_reconnect, disabled) and token expiry. \`manual: true\` marks an account with no publishing link: use it like any other, and at the publish time a person posts it by hand from the post page.${OWN}`,
     parametersSchema: schema([], { ...scope, platform: choice(ALL_PLATFORMS, "Only accounts on this platform") }),
   },
   {
@@ -219,7 +222,7 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
   {
     name: "get-approval-policy",
     displayName: "Get approval policy",
-    description: `Who approves posts in one scope: whether the Reviewer's pass, a team member's approval and/or the client's approval are needed, and how long a client link stays open. Read it before you promise anyone a timeline. Only a person sets it; you cannot.${OWN}`,
+    description: `Who approves posts in one scope: whether the Reviewer's pass, a team member's approval and/or the client's approval are needed, and how long a client link stays open. \`delegate\` names the agent a person chose as the scope's delegated approver (null: none), and \`delegate.active\` says whether it may act now (\`inactiveReason\` says why not). Read it before you promise anyone a timeline. Only a person sets the policy or the delegate; you cannot.${OWN}`,
     parametersSchema: schema([], { ...scope }),
   },
   {
@@ -253,6 +256,20 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
     }),
   },
   {
+    name: "approve-post-as-delegate",
+    displayName: "Approve post as delegate",
+    description:
+      "Delegated approver only: the agent a person named for this post's scope (Social page, Approvals, Who approves), or its backup approver for the posts the delegate created. Your yes is the owner's approval. Before you call it, read the post (get-post) and get-approval-status, and check: the Reviewer passed THIS version; the text, media and alt text match the brand and the playbook; facts, prices and dates are right; nothing promises what the client has not agreed; the time is right. Anything wrong: do not approve, return it with return-post-as-delegate and one line per problem. Refused when the post is not in review, personal, yours, created before you were named, the Reviewer's pass is missing, stale, unscored or yours, the scope asks for the client, you are the Reviewer, or anything cannot be read: then a person approves. Approving schedules the post at its proposed time and closes the review issue. Never use set-post-status to approve.",
+    parametersSchema: schema(["postId"], { postId: POST_ID }),
+  },
+  {
+    name: "return-post-as-delegate",
+    displayName: "Return post as delegate",
+    description:
+      "Delegated approver (or its backup, on the delegate's own posts) only: send a post in review back to draft with notes (required: one line per problem, so the Social agent can fix each). Use it when what you checked in approve-post-as-delegate's list is wrong. The post goes to draft, the review issue is handed back to the Social agent with your notes, and nothing is posted. Same refusals as approve-post-as-delegate (not the delegate, personal post, your own post, you are the Reviewer, the scope asks for the client, anything unreadable): then a person decides.",
+    parametersSchema: schema(["postId", "notes"], { postId: POST_ID, notes: text("What has to change, one line per problem (required).") }),
+  },
+  {
     name: "request-creative",
     displayName: "Request creative",
     description:
@@ -281,6 +298,24 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
     displayName: "Schedule post",
     description: "Schedule an approved post that has no time yet. Fails if a destination would certainly fail (see validate-post).",
     parametersSchema: schema(["postId", "scheduledAt"], { postId: POST_ID, scheduledAt: text(`Publish time, ${ISO_TIME}; now or earlier publishes within 5 minutes`) }),
+  },
+  {
+    name: "unschedule-post",
+    displayName: "Unschedule post",
+    description: "Take a scheduled post back to draft so update-post works on it: body, media and accounts stay, the publish time is cleared. A reason is required; who and why are logged on the post's note. Only a scheduled post qualifies.",
+    parametersSchema: schema(["postId", "reason"], { postId: POST_ID, reason: text("Why the post is taken off the schedule") }),
+  },
+  {
+    name: "archive-post",
+    displayName: "Archive post",
+    description: "Soft-delete a post: it leaves the Cockpit lists and queues and its media is free to reuse. Reversible with unarchive-post. Accepts the full id or the 8-character short id. Archiving twice does nothing. A scheduled post must be unscheduled first; a published post is refused.",
+    parametersSchema: schema(["postId"], { postId: POST_ID }),
+  },
+  {
+    name: "unarchive-post",
+    displayName: "Unarchive post",
+    description: "Bring an archived post back to the lists, in the status it had. Accepts the full id or the 8-character short id. Does nothing if the post is not archived.",
+    parametersSchema: schema(["postId"], { postId: POST_ID }),
   },
   {
     name: "bulk-schedule",
@@ -350,6 +385,8 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
       postId: text("Post to add the asset to (optional)"),
       ...scope,
     }),
+    // The gateway cuts a tool at 10 s unless it declares more; the Drive ack inside is 20 s (asset-path.ts).
+    timeoutMs: STORE_RENDERED_ASSET_TOOL_TIMEOUT_MS,
   },
   {
     name: "list-issue-attachments",
@@ -477,6 +514,35 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
       options: ids("choice: the allowed answers"),
       levels: ids("score: the levels, lowest first"),
     }),
+  },
+  {
+    name: "set-focus",
+    displayName: "Set the monthly focus",
+    description:
+      `Set one scope's focus for this month: one theme, one audience, one ask, one number, and the real material the posts are built from. Every plan, hook and post of the month serves it. get-playbook returns it and says when it is missing or out of date. A focus of an earlier month is closed first: pass learned (what worked and what did not, from hook-board).${OWN}`,
+    parametersSchema: schema(["theme", "audience", "offer", "proof", "metric"], {
+      ...scope,
+      month: text("YYYY-MM. Default and only: this month."),
+      theme: text("What the month is about, one line. E.g. \"Getting paid on time without chasing\"."),
+      audience: text("Who it is for: one kind of person and the moment they are in."),
+      offer: text("The one thing we want them to do (book a call, install the app, reply)."),
+      proof: ids("Real material to build from: a result with its source, a client story with consent, a real screen, a number. 1-10 items. Never invented: ask for it if you have none."),
+      metric: text("The one number that says the month worked, e.g. \"booked calls from social\" or \"installs\"."),
+      learned: text("Required when an earlier month's focus is still open: what that month taught (hooks and formats to keep, and to drop)."),
+    }),
+  },
+  {
+    name: "get-cadence",
+    displayName: "Get posting cadence",
+    description: `The scope's posting cadence (posts a day per account, days, hours; a person sets it on the Growth tab) and, for the days ahead, each account's posts against it and the free slots (local time, instant and accounts). No cadence: you decide how many posts. Draft one post per free slot with that scheduledAt.${OWN}`,
+    parametersSchema: schema([], { ...scope }),
+  },
+  {
+    name: "hook-board",
+    displayName: "Hook board",
+    description:
+      `Which parts of the posts worked in one scope: published posts grouped by their tags (hook:<name>, body:<name>, cta:<name>), with people reached, actions per 100 reached, and a verdict per part (double down, keep testing, drop, or too little reach to judge). Names the control: the best hook, body and ask so far. Read it before you plan a week and when you close a month.${OWN}`,
+    parametersSchema: schema([], { ...scope, periodDays: int("Days to look back, 7-90 (default 28)") }),
   },
   {
     name: "account-analytics",

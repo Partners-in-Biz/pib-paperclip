@@ -52,7 +52,7 @@ import { getAttachment, listMailboxes } from "./agent-mail.js";
 import { clientProjectIds, resolveClientProjectId } from "@partnersinbiz/pib-plugin-kit";
 import type { ClientScope } from "@partnersinbiz/pib-plugin-kit/client-ref";
 import { prepareHandoff, recordHandoff, type HandoffDeps, type HandoffScope } from "./handoff.js";
-import { addClientMap, clientMapOverview, removeClientMap } from "./client-maps.js";
+import { addClientMap, assertNotCountOnlyEnquirer, clientMapOverview, removeClientMap } from "./client-maps.js";
 import { DELEGATE_EFFECT_KEY, ensureDefaultDelegations, mailboxDelegateEffect, removeDelegation } from "./delegations.js";
 import { sendingDomain } from "./dns.js";
 import {
@@ -97,7 +97,7 @@ import { runSyncJob, syncOne, triageRunFor } from "./gmail/sync.js";
 import type { AccountRow, ClientMapType, DomainCheckRow, DraftExtras, MessageRow, SendRow } from "./gmail/types.js";
 import type { DomainReport } from "./domain-health.js";
 import { PLUGIN_ID } from "./namespace.js";
-import { isPrivateMail, PRIVATE_BODY_NOTE, PRIVATE_STALE_DAYS } from "./private-mail.js";
+import { isPrivateMail, NEWSLETTER_RECORD_DAYS, PRIVATE_BODY_NOTE, PRIVATE_STALE_DAYS } from "./private-mail.js";
 import { cleanDisplayName, draftSendContext, parseReplyTo } from "./sender.js";
 import { preferencesLoad, preferencesSave } from "./preferences.js";
 import { SKILLS } from "./skills.js";
@@ -131,7 +131,8 @@ const plugin = definePlugin({
 
     for (const tool of MAILBOX_TOOLS) {
       ctx.tools.register(tool.name, tool, async (params, run) => {
-        await skillSync?.ensure(run.companyId).catch(() => undefined);
+        // A tool call never waits long for the skill sync (kit `soon`).
+        await skillSync?.soon(run.companyId);
         return runTool(ctx, tool.name, params, run).then(normalizeToolResult);
       });
     }
@@ -141,7 +142,8 @@ const plugin = definePlugin({
 
     ctx.actions.register("mailbox.load", async (params, context) => {
       const companyId = requiredCompany(context);
-      await skillSync?.ensure(companyId).catch(() => undefined);
+      // The page never waits long for the skill sync (kit `soon`).
+      await skillSync?.soon(companyId);
       await rememberCompany(ctx, companyId);
       return load(ctx, companyId, params);
     });
@@ -847,7 +849,7 @@ function clientMapInput(params: Record<string, unknown>) {
   const matchType = requiredString(params, "matchType");
   const clientKind = requiredString(params, "clientKind");
   if (clientKind !== "company" && clientKind !== "contact") throw new MailboxError("clientKind must be company or contact");
-  return { matchType: matchType as ClientMapType, pattern: requiredString(params, "pattern"), clientKind: clientKind as "company" | "contact", clientRef: requiredString(params, "clientRef"), note: optionalString(params, "note") ?? null };
+  return { matchType: matchType as ClientMapType, pattern: requiredString(params, "pattern"), clientKind: clientKind as "company" | "contact", clientRef: requiredString(params, "clientRef"), note: optionalString(params, "note") ?? null, ...(typeof params.countOnly === "boolean" ? { countOnly: params.countOnly } : {}) };
 }
 
 // ---------------------------------------------------------------------------
@@ -1035,7 +1037,11 @@ async function scrubPrivateMail(ctx: PluginContext, companyId: string): Promise<
     const s = requireStore();
     const bodies = await s.scrubPrivateBodies(companyId, new Date(requireEnv().now() - PRIVATE_STALE_DAYS * 86_400_000).toISOString());
     const snippets = await s.scrubPrivateSnippets(companyId);
-    if (bodies > 0 || snippets > 0) ctx.logger.info("Client message text removed", { companyId, bodies, snippets });
+    // Newsletter send records (key crm:nl:) keep no recipients or text after 30 days; the record stays so the key is still refused.
+    const newsletters = await s.redactStaleNewsletterSends(companyId, new Date(requireEnv().now() - NEWSLETTER_RECORD_DAYS * 86_400_000).toISOString());
+    if (newsletters > 0) ctx.logger.info("Old newsletter send records blanked", { companyId, newsletters });
+    // One line every run (also a clean one), so the journal proves the hourly scrub ran.
+    ctx.logger.info("Client message scrub ran", { companyId, bodies, snippets });
   } catch (error) {
     ctx.logger.info("Client message text not removed this hour", { companyId, error: errorMessage(error) });
   }
@@ -1091,6 +1097,7 @@ async function createDraft(companyId: string, agentId: string | null, params: Re
   const to = addresses(params, "to");
   const cc = addresses(params, "cc");
   const bcc = addresses(params, "bcc");
+  await assertNotCountOnlyEnquirer(requireStore(), companyId, [...to, ...cc, ...bcc]);
   const replyToMessageId = optionalString(params, "replyToMessageId") ?? null;
   const replyTo = parseReplyTo(params.replyTo);
   if (replyTo.invalid) throw new MailboxError("Invalid replyTo address");
@@ -1123,6 +1130,7 @@ async function sendDraft(companyId: string, agentId: string | null, messageId: s
   if (!row) throw new MailboxError("Draft was not found");
   if (row.status !== "draft") throw new MailboxError("Only a draft can be sent");
   if (agentId) assertMaySend(await delegationFor(row.account_id, agentId));
+  await assertNotCountOnlyEnquirer(s, companyId, [...(row.to_addrs ?? []), ...(row.cc_addrs ?? []), ...(row.bcc_addrs ?? [])]);
   const replyToMessageId = row.draft?.replyToMessageId ?? null;
   if (replyToMessageId) {
     // A reply to this message went out after this draft was saved: this is a leftover copy, sending it would answer twice (PAR-8030).

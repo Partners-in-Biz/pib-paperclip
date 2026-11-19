@@ -117,6 +117,7 @@ export const pluginToolDeclarationSchema = z.object({
   displayName: z.string().min(1),
   description: z.string().min(1),
   parametersSchema: jsonSchemaSchema,
+  timeoutMs: z.number().int().min(1_000).max(60_000).optional(),
 });
 
 const pluginEnvironmentTemplateConfigFieldSchema = z.string()

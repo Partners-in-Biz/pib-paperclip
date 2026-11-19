@@ -94,7 +94,9 @@ async function claim(ctx: PluginContext, companyId: string, key: string): Promis
 }
 
 async function release(ctx: PluginContext, companyId: string, key: string): Promise<void> {
-  await ctx.state.set(MARK(companyId, key), null).catch(() => undefined);
+  await ctx.state.delete(MARK(companyId, key)).catch((error: unknown) => {
+    ctx.logger.warn("Payroll mark release failed", { companyId, key, error: errorMessage(error) });
+  });
 }
 
 /** `key` is the once-a-month mark (`prepare:<month>`, kept as it was so a month already opened never opens twice); `originId` is the issue's. */

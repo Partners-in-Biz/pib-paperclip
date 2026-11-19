@@ -72,6 +72,23 @@ await syncAllCompanies(ctx, syncer, { companyIds: await companiesFromMyRows(), i
 
 `contract/company-created-contract.spec.ts` fails when a plugin with skills neither handles `company.created` nor is in `EXEMPT` (today only `cockpit`; remove it once the Cockpit uses `registerCompanyBootstrap`), when a plugin subscribes twice to `company.created`, or when a plugin reads the roles copy without `registerRoleWatch`. A second contract, "core event subscriptions", fails when a plugin has two handlers for the same core event name (counting what `registerHireWatch`, `registerDoneChecks` and `registerCompanyBootstrap` subscribe to for it).
 
+## The skill sync never holds a call up (`soon`, 0.13.0)
+
+`ensure` waits for the host, and on a company with many skills the host can take more than 30 seconds to reconcile or reset one skill. The syncer remembers a finished sync only in the worker's memory, so after every worker restart the first calls waited for it and ran into the host's 30-second limit (13 Nov 2026: a Cockpit release and a CRM and Mailbox release rolled back at their smoke tests).
+
+```ts
+const syncer = createSkillSyncer(ctx, SKILLS);
+ctx.tools.register(tool.name, tool, async (params, run) => {
+  await syncer.soon(run.companyId); // at most 2 s, never throws
+  return runTool(ctx, tool.name, params, run);
+});
+```
+
+* `soon(companyId, waitMs?)` starts or joins the company's sync, waits at most `SKILL_SYNC_WAIT_MS` (2 s) and lets it finish behind the caller. After a failed sync it does not start another for that company for `SKILL_SYNC_RETRY_MS` (5 minutes). Use it in every tool call, page action, page load and API route.
+* `ensure`, `force` and `check` are unchanged and still wait: a new company's bootstrap, team wiring (`force`), the sweep and the health check (`check`).
+* A plugin with two syncers puts one guard over both: `createSkillSyncGuard(async (id) => [...(await a.ensure(id)), ...(await b.ensure(id))], { logger: ctx.logger })` (SEO and Social do).
+* `contract/skill-sync-wait-contract.spec.ts` fails when a plugin adds a waiting `ensure` that is not listed there with its reason.
+
 ## Run profile per role (Q8-7, Q9-7)
 
 `RUN_PROFILES` gives every `TeamRole` a `runProfile` (model, effort, timeoutSec, maxTurnsPerRun, maxConcurrentRuns). Defaults: Sonnet for everything that writes to customers, money or the books; the Reviewer is Sonnet (the quality gate), never Haiku; Haiku / DeepSeek flash only for the Inbound Qualifier, CRM Data Steward and Sales Lead; timeout never 0 (the host reads 0 as unlimited); SEO runs 6 at once, the rest 3-4. A `HireRole` may set its own `runProfile`; otherwise `runProfileForRole(roleKey)`.

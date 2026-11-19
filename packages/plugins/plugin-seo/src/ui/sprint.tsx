@@ -4,7 +4,7 @@
  * destructive actions live in the ⋯ menu.
  */
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { DataTable, useHostNavigation, usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import { DataTable, useHostNavigation } from "@paperclipai/plugin-sdk/ui";
 import type { ClientScope } from "@partnersinbiz/pib-plugin-kit/client-ref";
 import {
   BookOpen,
@@ -17,6 +17,7 @@ import {
   Eye,
   Field,
   FileText,
+  FlaskConical,
   HeartPulse,
   Info,
   Input,
@@ -57,21 +58,26 @@ import { BusinessTypeField } from "./home.js";
 import { MoreMenu, type MenuItem } from "./menu.js";
 import { Banner, Breadcrumb, IssueLink, StatePill, StuckBanner, linkButton, shortUrl, small, top, type Crumb } from "./parts.js";
 import { PlaybookTab } from "./playbook.js";
+import { GrowthTab } from "./growth.js";
 import { BacklinksTab, ContentTab, KeywordsTab, AuditsTab, OptimizationsTab } from "./lists.js";
 import { IntegrationsTab } from "./integrations.js";
+import { PreviewsTab, awaitingCount } from "./previews.js";
 import { TEAM_SETUP_HREF } from "./role-skills.js";
 import { CHIP_LABEL, CHIP_ORDER, CHIP_TONE, changeText, healthTone, statusTone, taskSegments, trafficSeries } from "./series.js";
-import type { AgentState, CallFn, LoadResult, SprintBundle, SprintSummary, TabId, Task } from "./types.js";
+import type { AgentState, CallFn, LoadResult, PreviewFilter, SprintBundle, SprintSummary, TabId, Task } from "./types.js";
 import { STATE_LABEL, STATE_ORDER, STATE_SHORT, STATE_TONE, sprintStatusText, tabsForPhone } from "./words.js";
+import { useSeoAction, useSeoCall } from "./actions.js";
 
 const TABS: Array<{ id: TabId; label: string; icon: LucideIcon }> = [
   { id: "plan", label: "Plan", icon: ListChecks },
+  { id: "previews", label: "Previews", icon: Eye },
   { id: "keywords", label: "Keywords", icon: Target },
   { id: "backlinks", label: "Backlinks", icon: Share2 },
   { id: "content", label: "Content", icon: FileText },
   { id: "audits", label: "Audits", icon: HeartPulse },
   { id: "optimizations", label: "Optimizations", icon: Lightbulb },
   { id: "playbook", label: "Playbook", icon: BookOpen },
+  { id: "growth", label: "Growth", icon: FlaskConical },
   { id: "integrations", label: "Integrations", icon: Plug },
 ];
 
@@ -105,6 +111,10 @@ function tabCount(id: TabId, bundle: SprintBundle, canWork: boolean): { count?: 
       if (tally.stuck) return { count: tally.stuck, countTone: "bad" };
       return tally.due ? { count: tally.due } : {};
     }
+    case "previews": {
+      const waiting = awaitingCount(bundle.previews);
+      return waiting ? { count: waiting, countTone: full ? undefined : "warn" } : {};
+    }
     case "keywords": return { count: bundle.keywords.filter((k) => !k.retiredAt).length || null };
     case "backlinks": return { count: bundle.backlinks.filter((b) => b.status === "live").length || null };
     case "content": return { count: bundle.content.length || null };
@@ -133,6 +143,7 @@ export function SprintCockpit({
   scope,
   load,
   initialTab,
+  initialFilter,
   onTab,
   onRedirect,
   onMessage,
@@ -143,6 +154,8 @@ export function SprintCockpit({
   scope: ClientScope;
   load: LoadResult;
   initialTab: TabId;
+  /** `?filter=` of the Previews tab. */
+  initialFilter?: PreviewFilter;
   onTab: (tab: TabId) => void;
   /** The sprint belongs to another scope (a client, or PiB's own sites). */
   onRedirect: (client: string | null, clientName: string | null) => void;
@@ -151,12 +164,13 @@ export function SprintCockpit({
 }) {
   const nav = useHostNavigation();
   const narrow = useIsNarrow();
-  const fetchSprint = usePluginAction("seo.sprint");
-  const callAction = usePluginAction("seo.call");
-  const runDaily = usePluginAction("seo.run-daily");
-  const runWeekly = usePluginAction("seo.run-weekly");
+  const fetchSprint = useSeoAction("seo.sprint");
+  const callAction = useSeoCall();
+  const runDaily = useSeoAction("seo.run-daily");
+  const runWeekly = useSeoAction("seo.run-weekly");
   const [bundle, setBundle] = useState<SprintBundle | null>(null);
   const [tab, setTab] = useState<TabId>(SPRINT_TAB_IDS.includes(initialTab) ? initialTab : "plan");
+  const [previewFilter, setPreviewFilter] = useState<PreviewFilter>(initialFilter ?? "awaiting");
   const [working, setWorking] = useState<string | null>(null);
   const [dialog, setDialog] = useState<"link" | "autopilot" | "plan" | "archive" | "start" | "through" | null>(null);
   const client = scope ? `${scope.kind}:${scope.id}` : null;
@@ -285,12 +299,14 @@ export function SprintCockpit({
         />
       ) : null}
       {tab === "plan" && !s.legacy ? <PlanTab bundle={bundle} today={load.today} agent={load.agent} canWork={canWork} call={call} onTab={selectTab} /> : null}
+      {tab === "previews" ? <PreviewsTab bundle={bundle} filter={previewFilter} onFilter={setPreviewFilter} onChanged={reload} /> : null}
       {tab === "keywords" ? <KeywordsTab bundle={bundle} call={call} working={working} /> : null}
       {tab === "backlinks" ? <BacklinksTab bundle={bundle} call={call} /> : null}
-      {tab === "content" ? <ContentTab bundle={bundle} call={call} /> : null}
+      {tab === "content" ? <ContentTab bundle={bundle} call={call} onTab={selectTab} /> : null}
       {tab === "audits" ? <AuditsTab bundle={bundle} call={call} working={working} /> : null}
       {tab === "optimizations" ? <OptimizationsTab bundle={bundle} call={call} /> : null}
       {tab === "playbook" ? <PlaybookTab sprintId={sprintId} onChanged={reload} onMessage={onMessage} /> : null}
+      {tab === "growth" ? <GrowthTab sprintId={sprintId} onMessage={onMessage} onOpenTab={selectTab} /> : null}
       {tab === "integrations" ? <IntegrationsTab companyId={companyId} bundle={bundle} load={load} call={call} reload={reload} onMessage={onMessage} working={working} /> : null}
       {dialog === "link" ? <LinkClientModal sprint={s} onClose={() => setDialog(null)} call={call} /> : null}
       {dialog === "through" ? <RunThroughModal sprint={s} onClose={() => setDialog(null)} call={call} onChanged={onChanged} /> : null}
@@ -318,7 +334,7 @@ export function SprintCockpit({
 }
 
 function StartPlanInline({ sprint, onClose, onDone, onError }: { sprint: SprintSummary; onClose: () => void; onDone: (note: string) => Promise<void>; onError: (m: string) => void }) {
-  const upgrade = usePluginAction("seo.upgrade-legacy");
+  const upgrade = useSeoAction("seo.upgrade-legacy");
   const [type, setType] = useState<BusinessType | "">(sprint.client ? "local" : "");
   const [saving, setSaving] = useState(false);
   return (
@@ -454,7 +470,7 @@ type CrmClientOption = { client: string; kind: "company" | "contact"; id: string
 
 /** People only: move an own sprint that names a client into that client's workspace. */
 function LinkClientModal({ sprint, onClose, call }: { sprint: SprintSummary; onClose: () => void; call: CallFn }) {
-  const listClients = usePluginAction("seo.clients");
+  const listClients = useSeoAction("seo.clients");
   const [clients, setClients] = useState<CrmClientOption[] | null>(null);
   const [choice, setChoice] = useState("");
   const [error, setError] = useState("");

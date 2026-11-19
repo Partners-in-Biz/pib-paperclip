@@ -117,6 +117,8 @@ export interface AddMapInput {
   clientKind: "company" | "contact";
   clientRef: string;
   note?: string | null;
+  /** Website-form mail we only count: no reply task, no draft or send to the enquirer. */
+  countOnly?: boolean;
 }
 
 async function clientName(store: Pick<GmailStore, "crmCompany" | "crmContact">, companyId: string, kind: "company" | "contact", ref: string): Promise<string | null> {
@@ -150,7 +152,11 @@ export async function addClientMap(env: Pick<Env, "ctx" | "store" | "now">, comp
   if (existing && !(existing.client_kind === input.clientKind && existing.client_ref === input.clientRef)) {
     throw new MailboxError(`${MAP_TYPE_LABELS[input.matchType]} ${pattern} is already mapped to ${existing.client_name ?? existing.client_ref}. Remove that mapping first.`);
   }
-  const map = existing ?? (await env.store.insertClientMap({ companyId, matchType: input.matchType, pattern, clientKind: input.clientKind, clientRef: input.clientRef, clientName: name, note: input.note?.trim().slice(0, 300) || null, createdBy }));
+  let map = existing ?? (await env.store.insertClientMap({ companyId, matchType: input.matchType, pattern, clientKind: input.clientKind, clientRef: input.clientRef, clientName: name, note: input.note?.trim().slice(0, 300) || null, createdBy, countOnly: input.countOnly === true }));
+  if (existing && typeof input.countOnly === "boolean" && Boolean(existing.count_only) !== input.countOnly) {
+    await env.store.setClientMapCountOnly(companyId, existing.id, input.countOnly);
+    map = { ...existing, count_only: input.countOnly };
+  }
   const { filed, rehanded } = await fileFlaggedMail(env, companyId, map);
   return { map, filed, rehanded };
 }
@@ -163,7 +169,7 @@ export async function removeClientMap(store: Pick<GmailStore, "deleteClientMap">
 export async function clientMapOverview(store: Pick<GmailStore, "listClientMaps" | "unmappedSummary">, companyId: string, days = 30) {
   const [maps, unmapped] = await Promise.all([store.listClientMaps(companyId), store.unmappedSummary(companyId, days)]);
   return {
-    maps: maps.map((map) => ({ id: map.id, matchType: map.match_type, pattern: map.pattern, clientKind: map.client_kind, clientRef: map.client_ref, clientName: map.client_name, note: map.note, createdAt: map.created_at })),
+    maps: maps.map((map) => ({ id: map.id, matchType: map.match_type, pattern: map.pattern, clientKind: map.client_kind, clientRef: map.client_ref, clientName: map.client_name, note: map.note, countOnly: map.count_only === true, createdAt: map.created_at })),
     unmapped: unmapped.map((row) => ({ domain: row.domain, messages: Number(row.n), lastReceivedAt: row.last_at, sampleMessageId: row.sample_id })),
     days,
   };
@@ -186,6 +192,7 @@ async function fileFlaggedMail(env: Pick<Env, "ctx" | "store" | "now">, companyI
   for (const row of await env.store.flaggedMessages(companyId, 30, 200)) {
     if (matchClientMap([map], factsOf(row), own)?.id !== map.id) continue;
     const triage: StoredTriage = { ...(row.triage as StoredTriage), clientKind: map.client_kind, clientRef: map.client_ref, clientName: map.client_name, clientSource: "mapping", mapping: { id: map.id, type: map.match_type } };
+    if (map.count_only) Object.assign(triage, { countOnly: true, needsReply: 0 });
     if (bySender(map.match_type) && relayedPerson(row) && triage.category !== "spam" && (triage.phishing ?? 0) < 0.9) triage.category = "lead";
     await env.store.setTriage(companyId, row.id, {
       triage,
@@ -213,4 +220,15 @@ async function fileFlaggedMail(env: Pick<Env, "ctx" | "store" | "now">, companyI
     }
   }
   return { filed, rehanded };
+}
+
+/**
+ * Count-only mail is never answered: refuses a draft or send to an address that
+ * arrived as an enquirer of a count-only mapping (the From or Reply-To of mail
+ * it filed). The lead is still counted; the client answers its own leads.
+ */
+export async function assertNotCountOnlyEnquirer(store: Pick<GmailStore, "countOnlyEnquirers">, companyId: string, recipients: Array<{ email: string }>): Promise<void> {
+  const emails = [...new Set(recipients.map((r) => r.email.trim().toLowerCase()).filter(Boolean))];
+  const hit = await store.countOnlyEnquirers(companyId, emails);
+  if (hit.length) throw new MailboxError(`Not drafted or sent: ${hit.join(", ")} arrived as a count-only website enquiry. We only count those leads; the client answers its own enquirers. Do not contact them.`);
 }

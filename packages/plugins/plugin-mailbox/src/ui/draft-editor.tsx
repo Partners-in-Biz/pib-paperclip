@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { usePluginAction } from "@paperclipai/plugin-sdk/ui";
 import { MailContext } from "./mail-context.js";
-import { Button, Field, Input, Modal, Pill, TextArea, errorText, formatDateTime, tokens, tone } from "@partnersinbiz/pib-plugin-ui";
+import { Button, Field, Input, Modal, Pill, TextArea, errorText, formatDateTime, oneColumn, tokens, tone } from "@partnersinbiz/pib-plugin-ui";
 
 type Address = { email: string; name?: string | null };
 type FileInfo = { id: string; name: string; mime: string; bytes: number };
@@ -66,6 +66,8 @@ function RecipientField({ label, values, onChange, search }: { label: string; va
   const [open, setOpen] = useState(false);
   const [problem, setProblem] = useState("");
   const ticket = useRef(0);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const blurTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     const q = text.trim();
@@ -87,6 +89,9 @@ function RecipientField({ label, values, onChange, search }: { label: string; va
   }, [text]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function add(row: Address) {
+    // Drop a search still on its way and a pending blur check: both would act on the text from before the pick.
+    ticket.current++;
+    if (blurTimer.current) clearTimeout(blurTimer.current);
     if (!values.some((v) => v.email.toLowerCase() === row.email.toLowerCase())) onChange([...values, row]);
     setText("");
     setHits([]);
@@ -122,10 +127,13 @@ function RecipientField({ label, values, onChange, search }: { label: string; va
     } else if (event.key === "Backspace" && !text && values.length) onChange(values.slice(0, -1));
   }
 
+  // Not a <label>: a click on a label goes to its first control. With a chip in the box that control was the chip's
+  // remove button, so a click on the word "To" or on the empty part of the box took the first address away.
   return (
-    <Field label={label}>
+    <div className="pib-field" style={{ display: "grid", gridTemplateColumns: oneColumn, gap: 6, fontSize: 12, color: tokens.muted, fontWeight: 500, minWidth: 0 }}>
+      <span>{label}</span>
       <div style={{ position: "relative" }}>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", padding: "6px 8px", border: `1px solid ${tokens.border}`, borderRadius: 10, minHeight: 40 }}>
+        <div onClick={(event) => { if (event.target === event.currentTarget) inputRef.current?.focus(); }} style={{ cursor: "text", display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", padding: "6px 8px", border: `1px solid ${tokens.border}`, borderRadius: 10, minHeight: 40 }}>
           {values.map((row) => (
             <span key={row.email} style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "2px 8px", borderRadius: 999, background: tone("neutral").soft, border: `1px solid ${tokens.border}`, fontSize: 12.5, maxWidth: "100%", overflowWrap: "anywhere" }}>
               {row.name ? `${row.name} · ${row.email}` : row.email}
@@ -133,6 +141,7 @@ function RecipientField({ label, values, onChange, search }: { label: string; va
             </span>
           ))}
           <input
+            ref={inputRef}
             value={text}
             onChange={(event) => {
               setText(event.target.value);
@@ -141,7 +150,7 @@ function RecipientField({ label, values, onChange, search }: { label: string; va
             }}
             onKeyDown={onKey}
             onFocus={() => setOpen(true)}
-            onBlur={() => setTimeout(() => { setOpen(false); commit(); }, 150)}
+            onBlur={() => { blurTimer.current = setTimeout(() => { setOpen(false); commit(); }, 150); }}
             placeholder={values.length ? "" : "Search contacts or type an address"}
             aria-label={label}
             style={{ flex: "1 1 160px", minWidth: 120, border: 0, outline: 0, background: "transparent", color: "inherit", font: "inherit", fontSize: 13.5 }}
@@ -158,7 +167,7 @@ function RecipientField({ label, values, onChange, search }: { label: string; va
         ) : null}
       </div>
       {problem ? <span style={{ fontSize: 12, color: tone("bad").fg }}>{problem}</span> : null}
-    </Field>
+    </div>
   );
 }
 

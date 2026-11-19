@@ -2,12 +2,13 @@ import type { JsonSchema, PaperclipPluginManifestV1 } from "@paperclipai/plugin-
 import { PLUGIN_ID } from "./namespace.js";
 import { TEMPLATE_TOOLS } from "./template-tools.js";
 
-export const VERSION = "0.7.13";
+export const VERSION = "0.7.16";
 
 export const JOBS = {
   reemitModules: "reemit-modules",
   weeklyFinishSetup: "weekly-finish-setup",
   templateDrift: "template-drift",
+  accessResend: "access-resend",
 } as const;
 
 const instanceConfigSchema: JsonSchema = {
@@ -44,6 +45,8 @@ const manifest: PaperclipPluginManifestV1 = {
     "companies.read",
     // Entitlements: who is an owner or admin of a company (role checks on save-modules and set-entitlements).
     "access.members.read",
+    // A3 (PAR-12643): audit entries for access grant and switch changes. A new capability: a stop-first deploy.
+    "activity.log.write",
     "database.namespace.migrate",
     "database.namespace.read",
     "database.namespace.write",
@@ -71,6 +74,8 @@ const manifest: PaperclipPluginManifestV1 = {
   database: {
     namespaceSlug: "setup",
     migrationsDir: "migrations",
+    // A3 (PAR-12643): read-only; finds the acting person of a tool call and counts runs for the access confirm list. Stop-first.
+    coreReadTables: ["heartbeat_runs"],
   },
   jobs: [
     {
@@ -90,6 +95,12 @@ const manifest: PaperclipPluginManifestV1 = {
       displayName: "Template drift",
       description: "Every hour: finds agents behind the team template pack and keeps one Template drift issue per company (the sync work list). Closes it at zero and reports the templates:drift health check.",
       schedule: "30 * * * *",
+    },
+    {
+      jobKey: JOBS.accessResend,
+      displayName: "Re-send access",
+      description: "Every minute: re-sends a company's access state while a guarded plugin has not confirmed the current revision, for 15 minutes after the last change.",
+      schedule: "* * * * *",
     },
   ],
   apiRoutes: [

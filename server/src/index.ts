@@ -79,6 +79,7 @@ import { chatCompletionDeliveryService } from "./services/chat-completion-delive
 // HTTP server, so trace coverage does not depend on incidental timing.
 import { instrumentationReady, shutdownInstrumentation } from "./instrumentation.js";
 import { sentryReady, shutdownSentry, captureException } from "./sentry.js";
+import { installStreamWriteErrorNet } from "./stream-write-error-net.js";
 import { blockedIssueSweeper } from "./services/blocked-issue-sweeper.js";
 import { setSentryRunLinkResolver } from "./sentry-links.js";
 import { createSentryRunLinkResolver } from "./services/sentry-run-links.js";
@@ -92,6 +93,7 @@ import { deliverReconciledExecutions, settleUnrecoverableExecutions } from "./se
 import { deliverPendingPauseResumes } from "./services/issue-tree-resume.js";
 import { invalidateNativeReplacementDiscovery, reconcileSafeNativeReplacements } from "./services/native-runtime/native-safe-replacement.js";
 import { reconcileAbandonedExecutionControl } from "./services/execution-control-reconciliation.js";
+import { reportMemberRestrictionKillSwitchAtBoot } from "./services/member-restriction/index.js";
 import { acknowledgeNativeStartupCleanup } from "./services/native-runtime/native-startup-cleanup.js";
 import { executionControlSchedule, registerExecutionControlWork } from "./services/execution-control-work.js";
 import { connectionIntentDeliveryService } from "./services/connection-intent-delivery.js";
@@ -289,6 +291,7 @@ function initializeRuntimeConfigConsumers(config: ReturnType<typeof loadConfig>)
 }
 
 export async function startServer(): Promise<StartedServer> {
+  installStreamWriteErrorNet();
   const startupDatabase: StartupDatabaseTeardown = { close: null };
   try {
     return await startServerWithDatabaseTeardown(startupDatabase);
@@ -1185,6 +1188,13 @@ async function startServerWithDatabaseTeardown(
       logger.error({ err }, "startup reconciliation of built-in agents failed");
     }));
 
+  // Kill switch PAPERCLIP_MEMBER_RESTRICTION: boot log line, and an activity entry
+  // on each company whose member-restriction mode is not `off` (PAR-12608 4.2).
+  void trackIdleWork(reportMemberRestrictionKillSwitchAtBoot(db)
+    .catch((err) => {
+      logger.error({ err }, "startup report of the member-restriction kill switch failed");
+    }));
+
   // Force the instance onto the Kubernetes sandbox provider when configured via
   // env (PAPERCLIP_EXECUTION_MODE=kubernetes). Runs BEFORE the heartbeat resumes
   // queued runs so the policy + managed k8s environments are in place. A bad
@@ -1633,7 +1643,9 @@ async function startServerWithDatabaseTeardown(
         run: async () => {
           try {
             const result = await blockedIssueSweep.sweep(new Date());
-            if (result.moved > 0) logger.info(result, "blocked issue sweeper moved issues to todo");
+            if (result.moved > 0 || result.renotified > 0) {
+              logger.info(result, "blocked issue sweeper moved issues to todo or re-noticed owners");
+            }
           } catch (err) {
             logger.error({ err }, "blocked issue sweeper failed");
           }

@@ -210,6 +210,14 @@ export function buildInstanceConfigSchema(): JsonSchema {
         description: "Off: an agent's reply is saved as a suggestion that a person sends. On: agent replies publish immediately. Once a company has saved Preferences (Social > Overview > Preferences), those win and this field is ignored for that company.",
         default: false,
       },
+      // Host settings form only: never a company preference (Noor, PAR-9640 D2), so a company cannot widen it.
+      delegatableScopes: {
+        type: "array",
+        title: "Scopes with a delegated approver",
+        description: "Scopes where a person may name a delegated approver. Only an instance admin saves this. Own brands only. One per line: own, or company:<uuid>. Empty: no scope can have one.",
+        items: { type: "string" },
+        default: [],
+      },
       platforms: {
         type: "object",
         title: "Platforms",
@@ -263,6 +271,8 @@ export interface SocialConfig {
   publicBaseUrlError: string | null;
   timezone: string;
   allowAgentReplies: boolean;
+  /** Scope keys that may have a delegated approver. Host settings form only (an instance admin saves it); never a preference. Empty = none. */
+  delegatableScopes: string[];
   /** The client approval page's base address (settings, else the default), no trailing slash. */
   approvalBaseUrl: string;
   /** True when the settings name an address (the default is in use otherwise). */
@@ -299,6 +309,30 @@ function hasValue(value: unknown): boolean {
 function int(value: unknown, fallback: number): number {
   const n = typeof value === "number" ? value : Number(value);
   return Number.isInteger(n) && n > 0 ? n : fallback;
+}
+
+const DELEGATABLE_SCOPE = /^(own|company:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
+
+/** The saved allowlist: `own` and `company:<uuid>` only, lower case, deduplicated. Anything else (or no list) is the empty list (no scope). Pure. */
+export function parseDelegatableScopes(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const keys = raw.filter((v): v is string => typeof v === "string").map((v) => v.trim().toLowerCase());
+  return [...new Set(keys.filter((v) => DELEGATABLE_SCOPE.test(v)))];
+}
+
+/**
+ * The allowlist as the host settings form holds it. Read straight from the
+ * form, never from company Preferences; a failed read is the empty list, so no
+ * scope can have a delegated approver (fail closed).
+ */
+export async function readDelegatableScopes(ctx: PluginContext, companyId: string): Promise<string[]> {
+  try {
+    const value = await ctx.config.get(companyId);
+    return parseDelegatableScopes(value && typeof value === "object" ? (value as Record<string, unknown>).delegatableScopes : undefined);
+  } catch (error) {
+    ctx.logger.warn("Social settings unreadable; no scope can have a delegated approver", { companyId, error: error instanceof Error ? error.message : String(error) });
+    return [];
+  }
 }
 
 export function splitScopes(value: string | null): string[] | null {
@@ -369,6 +403,7 @@ export function socialConfigFrom(ctx: PluginContext, companyId: string, raw: Rec
     publicBaseUrlError,
     timezone: str(raw.timezone) ?? DEFAULT_TIMEZONE,
     allowAgentReplies: raw.allowAgentReplies === true,
+    delegatableScopes: parseDelegatableScopes(raw.delegatableScopes),
     approvalBaseUrl: (str(raw.approvalBaseUrl) ?? DEFAULT_APPROVAL_BASE).replace(/\/+$/, ""),
     approvalBaseUrlSet: Boolean(str(raw.approvalBaseUrl)),
     blueskyDefaultPds: str(obj(platforms.bluesky).defaultPdsUrl) ?? DEFAULT_BLUESKY_PDS,

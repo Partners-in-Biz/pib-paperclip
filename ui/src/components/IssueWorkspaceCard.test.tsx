@@ -38,6 +38,11 @@ vi.mock("@/lib/router", () => ({
 const visibility = vi.hoisted(() => ({ visible: true, loaded: true }));
 vi.mock("@/hooks/useWorkspaceIsolationControls", () => ({ useWorkspaceIsolationControls: () => visibility }));
 beforeEach(() => { visibility.visible = true; visibility.loaded = true; });
+const memberGate = vi.hoisted(() => ({ closed: false }));
+vi.mock("@/hooks/useMemberRestrictionGate", () => ({
+  useMemberRestrictionGate: () => ({ closed: memberGate.closed, guard: <T,>(fetch: () => Promise<T>) => fetch }),
+}));
+beforeEach(() => { memberGate.closed = false; });
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -292,4 +297,26 @@ describe("IssueWorkspaceCard", () => {
       root.unmount();
     });
   });
+
+  it.each([[true, false], [false, true]] as const)(
+    "reads environments and reusable workspaces and offers reuse only when open (gate closed: %s, PAR-12952)",
+    (closed, open) => {
+      memberGate.closed = closed;
+      const enabled: Record<string, boolean> = {};
+      useQueryMock.mockImplementation((options: { queryKey: unknown[]; enabled?: boolean }) => {
+        enabled[String(options.queryKey[0])] = options.enabled !== false;
+        if (options.queryKey[0] === "instance") return { data: { enableEnvironments: true, enableIsolatedWorkspaces: true } };
+        return { data: undefined };
+      });
+      const root = createRoot(container);
+      const issue = createIssue({ executionWorkspaceId: null, executionWorkspacePreference: null, executionWorkspaceSettings: null });
+      act(() => root.render(<IssueWorkspaceCard issue={issue} initialEditing onUpdate={vi.fn()}
+        project={{ id: "project-1", executionWorkspacePolicy: { enabled: true, defaultMode: "isolated_workspace" } }} />));
+      expect(enabled.environments).toBe(open);
+      expect(enabled["execution-workspaces"]).toBe(open);
+      expect(Boolean(container.querySelector('option[value="reuse_existing"]'))).toBe(open);
+      expect(container.querySelector('option[value="isolated_workspace"]')).not.toBeNull();
+      act(() => root.unmount());
+    },
+  );
 });

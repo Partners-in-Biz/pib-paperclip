@@ -5,6 +5,7 @@
 import type { ToneName } from "@partnersinbiz/pib-plugin-ui";
 import type { NextTask, TaskState } from "../engine/due.js";
 import { plural } from "../engine/plain.js";
+import type { PreviewFilter, PreviewItem } from "./types.js";
 
 /** A task's state as people read it (engine/due.ts decides the state). */
 export const STATE_LABEL: Record<TaskState, string> = {
@@ -114,3 +115,57 @@ export const BACKLINK_STATUS_LABEL: Record<string, string> = {
   rejected: "Rejected",
   lost: "Lost",
 };
+
+/** Previews tab filters, in the order the chips show. */
+export const PREVIEW_FILTERS: PreviewFilter[] = ["awaiting", "approved", "declined", "applied", "expired"];
+export const PREVIEW_FILTER_LABEL: Record<PreviewFilter, string> = { awaiting: "Awaiting", approved: "Approved", declined: "Declined", applied: "Applied", expired: "Expired" };
+
+export function isPreviewFilter(v: string | null | undefined): v is PreviewFilter {
+  return PREVIEW_FILTERS.includes(v as PreviewFilter);
+}
+
+/** Whole days until a preview expires (never negative). */
+export function previewDaysLeft(expiresAt: string, now: number = Date.now()): number {
+  return Math.max(0, Math.ceil((new Date(expiresAt).getTime() - now) / 86_400_000));
+}
+
+/** Amber under 7 days, red under 2. */
+export function previewExpiryTone(days: number): "neutral" | "warn" | "bad" {
+  return days < 2 ? "bad" : days < 7 ? "warn" : "neutral";
+}
+
+/** Where a decision came from, in words. */
+export function previewDecider(p: { status: string; decisionSource: string | null; decidedBy: string | null }): string {
+  const what = p.status === "approved" ? "Approved" : p.status === "declined" ? "Declined" : "Changes requested";
+  const who = p.decisionSource === "email" ? "the client" : p.decidedBy ? "a team member" : "unknown";
+  return `${what}: decided by ${who} · ${p.decisionSource === "email" ? "email" : "cockpit"}`;
+}
+
+/** The status chip of one preview. */
+export function previewStatus(p: { status: string; expired: boolean; appliedAt: string | null; confirmedAt: string | null; reviewStatus: string; decisionSource: string | null }): { label: string; tone: "ok" | "warn" | "bad" | "neutral" } {
+  if (p.appliedAt) return { label: "Applied", tone: "ok" };
+  if (p.expired) return { label: "Expired", tone: "neutral" };
+  if (p.status === "approved") return p.decisionSource === "email" && !p.confirmedAt ? { label: "Client approved", tone: "ok" } : { label: "Approved", tone: "ok" };
+  if (p.status === "declined") return { label: "Declined", tone: "bad" };
+  if (p.status === "changes_requested") return { label: "Changes requested", tone: "warn" };
+  return p.reviewStatus === "passed" ? { label: "Awaiting a decision", tone: "warn" } : { label: "Not ready", tone: "neutral" };
+}
+
+/** The previews each filter shows. Awaiting is pending, not expired. */
+export function previewsFor(previews: PreviewItem[], filter: PreviewFilter): PreviewItem[] {
+  return previews.filter((p) => {
+    if (p.superseded && filter !== "applied") return false;
+    switch (filter) {
+      case "awaiting": return p.status === "pending" && !p.expired;
+      case "approved": return p.status === "approved" && !p.appliedAt;
+      case "declined": return p.status === "declined" || p.status === "changes_requested";
+      case "applied": return Boolean(p.appliedAt);
+      case "expired": return p.expired;
+    }
+  });
+}
+
+/** The badge: pending, passed and not expired. */
+export function awaitingCount(previews: PreviewItem[] | undefined): number {
+  return (previews ?? []).filter((p) => p.status === "pending" && p.reviewStatus === "passed" && !p.expired && !p.superseded).length;
+}

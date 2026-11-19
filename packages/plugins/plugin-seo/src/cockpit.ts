@@ -23,6 +23,7 @@ import {
   type QualityMetric,
   type Tone,
   type WaitingItem,
+  type WaitsOn,
 } from "@partnersinbiz/pib-plugin-kit";
 import { teamSetupPath } from "@partnersinbiz/pib-plugin-kit/team";
 import { parseSeoConfig } from "./config.js";
@@ -37,11 +38,13 @@ import { localDate } from "./engine/time.js";
 import type { NeedsYouItem } from "./engine/needs-you.js";
 import { sprintPagePath } from "./engine/scope.js";
 import { PLUGIN_ID } from "./namespace.js";
-import type { Env } from "./service/common.js";
+import { createEnv, type Env } from "./service/common.js";
 import { announcementLine, processAnnouncements } from "./service/handoff.js";
 import { SEO_ROLE } from "./service/hire.js";
+import { MAX_GRANT_PAGES, pageApplyRefusal, taskPageSet } from "./service/page-apply.js";
 import { activeTotals, isActiveSprint, sprintOverviews, type ActiveTotals, type SprintOverview } from "./service/overview.js";
 import { seoOn } from "./service/setup-status.js";
+import { delegateAgentIds } from "./service/signoff.js";
 
 type Scoped = { sprint_id: string; site_name: string; client_kind: string | null; client_ref: string | null; client_name: string | null };
 
@@ -457,6 +460,24 @@ export interface WaitingData {
 /** Needs you item kinds that are a sign-off of a site change or content (the rest are grants, messages and tasks). */
 export const SIGNOFF_KINDS = new Set<NeedsYouItem["kind"]>(["review", "pr"]);
 
+/**
+ * One row per task: a sign-off, its `task:` line and a re-added copy from a later week all name the same single task.
+ * The first row for a (sprint, task) wins, sign-offs (review, pr) before the rest. Rows with no or several tasks stay.
+ */
+export function dedupeByTask<T extends { item: NeedsYouItem; digest: { sprint_id: string } }>(rows: T[]): T[] {
+  const rank = (r: T) => (SIGNOFF_KINDS.has(r.item.kind) ? 0 : 1);
+  const taken = new Set<string>();
+  const drop = new Set<T>();
+  for (const row of [...rows].sort((a, b) => rank(a) - rank(b))) {
+    const ids = row.item.taskIds ?? [];
+    if (ids.length !== 1) continue;
+    const k = `${row.digest.sprint_id}:${ids[0]}`;
+    if (taken.has(k)) drop.add(row);
+    else taken.add(k);
+  }
+  return rows.filter((r) => !drop.has(r));
+}
+
 async function loadWaiting(ctx: PluginContext, companyId: string): Promise<WaitingData> {
   const digests = await ctx.db.query<DigestRow>(
     `SELECT n.items, n.issue_id, s.id AS sprint_id, s.site_name, s.client_kind, s.client_ref, s.client_name
@@ -465,15 +486,16 @@ async function loadWaiting(ctx: PluginContext, companyId: string): Promise<Waiti
     [companyId],
   );
   const seen = new Set<string>();
-  const pending: WaitingData["pending"] = [];
+  const candidates: WaitingData["pending"] = [];
   for (const digest of digests) {
     for (const item of json<NeedsYouItem[]>(digest.items, [])) {
       const key = `seo:needs-you:${digest.sprint_id}:${item.key}`;
       if (item.status !== "open" || item.optional || seen.has(key)) continue;
       seen.add(key);
-      pending.push({ item, digest });
+      candidates.push({ item, digest });
     }
   }
+  const pending = dedupeByTask(candidates);
   // In safe (and off) autopilot the owner approves each optimization.
   const proposals = await ctx.db.query<ProposalRow>(
     `SELECT o.id, o.subject, o.proposed_action, o.approval_issue_id, o.created_at::text AS created_at,
@@ -484,6 +506,52 @@ async function loadWaiting(ctx: PluginContext, companyId: string): Promise<Waiti
     [companyId],
   );
   return { pending, proposals };
+}
+
+/** The Previews tab, filtered to the previews that wait for a decision. */
+export function previewsHref(row: Pick<Scoped, "sprint_id" | "client_kind" | "client_ref">): string {
+  return `${sprintHref(row, "previews")}&filter=awaiting`;
+}
+
+type AwaitingRow = Scoped & { n: number; since: string | null };
+
+/** Same rule as the tab badge: pending, passed by the Reviewer, not expired, newest preview of its page. */
+async function awaitingPreviews(ctx: PluginContext, companyId: string): Promise<{ sprints: AwaitingRow[]; tasks: Set<string> }> {
+  const rows = await ctx.db.query<Scoped & { n: string; since: string | null; task_ids: string[] | null }>(
+    `SELECT s.id AS sprint_id, s.site_name, s.client_kind, s.client_ref, s.client_name, count(*) AS n, min(l.created_at)::text AS since,
+            array_remove(array_agg(DISTINCT l.task_id), NULL) AS task_ids
+       FROM (SELECT DISTINCT ON (sprint_id, page_url) sprint_id, status, review_status, expires_at, created_at, task_id
+               FROM ${t("previews")} WHERE company_id = $1 AND status <> 'cancelled' ORDER BY sprint_id, page_url, created_at DESC) l
+       JOIN ${t("sprints")} s ON s.id = l.sprint_id
+      WHERE l.status = 'pending' AND l.review_status = 'passed' AND l.expires_at > now() AND s.status <> 'archived'
+      GROUP BY s.id ORDER BY min(l.created_at) LIMIT 30`,
+    [companyId],
+  );
+  const tasks = new Set<string>();
+  for (const r of rows) for (const id of r.task_ids ?? []) tasks.add(`${r.sprint_id}:${id}`);
+  return { sprints: rows.map((r) => ({ ...r, n: Number(r.n) })), tasks };
+}
+
+/**
+ * PAR-10548 T5: who a one-task sign-off (review or pr) waits on. The first sign-off delegate when the page grant gate
+ * (`pageApplyRefusal`, the same check approve-page-apply runs) would let that delegate approve every page the task names,
+ * with no review comment; otherwise null, so it stays the owner's. A failed read is null, never a guess.
+ */
+export async function delegateWaitsOn(env: Env, companyId: string, sprintId: string, taskId: string, delegate: string | null): Promise<WaitsOn | null> {
+  if (!delegate) return null;
+  try {
+    const sprint = await db.getSprint(env.ctx.db, companyId, sprintId);
+    const task = sprint ? await db.getTask(env.ctx.db, companyId, taskId) : null;
+    if (!sprint || !task || task.sprintId !== sprint.id) return null;
+    const pageUrls = await taskPageSet(env, companyId, task, sprint.siteUrl);
+    if (pageUrls.length === 0 || pageUrls.length > MAX_GRANT_PAGES) return null;
+    const actor = { kind: "agent" as const, agentId: delegate, runId: null, responsibleUserId: null };
+    const refusal = await pageApplyRefusal(env, companyId, actor, { sprintId, taskId, pageUrls, reviewCommentId: null });
+    return refusal === null ? { kind: "agent", agentId: delegate } : null;
+  } catch (error) {
+    env.ctx.logger.info("SEO cockpit waitsOn check failed", { sprintId, taskId, error: error instanceof Error ? error.message : String(error) });
+    return null;
+  }
 }
 
 async function waitingItems(ctx: PluginContext, companyId: string, data: WaitingData): Promise<WaitingItem[]> {
@@ -499,16 +567,37 @@ async function waitingItems(ctx: PluginContext, companyId: string, data: Waiting
     );
     for (const row of rows) if (row.issue_id) taskIssues.set(row.id, row.issue_id);
   }
+  // PAR-9131 T6: one line per sprint for the previews that await a decision; Needs you lines about a preview decision open the same list.
+  const awaiting = await awaitingPreviews(ctx, companyId);
+  for (const a of awaiting.sprints) {
+    items.push({
+      key: `seo:previews:${a.sprint_id}`,
+      title: `${prefix(a)}${plural(a.n, "preview")} ${a.n === 1 ? "awaits" : "await"} your decision`,
+      why: "The Reviewer passed them. Approve or decline each one in the Previews tab; nothing changes on the site until a person has decided.",
+      href: previewsHref(a),
+      issueId: null,
+      kind: "review",
+      since: a.since,
+    });
+  }
+  // The delegate is read once, only when a one-task sign-off is open; an empty list or a failed read means none.
+  const env = createEnv(ctx);
+  const oneTaskSignoff = (item: NeedsYouItem) => SIGNOFF_KINDS.has(item.kind) && item.taskIds?.length === 1;
+  const delegate = pending.some((p) => oneTaskSignoff(p.item)) ? (await delegateAgentIds(env, companyId))[0] ?? null : null;
   for (const { item, digest } of pending) {
     const taskIssue = item.kind === "review" && item.taskIds?.length === 1 ? taskIssues.get(item.taskIds[0]!) ?? null : null;
+    const waitsOn = oneTaskSignoff(item) ? await delegateWaitsOn(env, companyId, digest.sprint_id, item.taskIds![0]!, delegate) : null;
     items.push({
       key: `seo:needs-you:${digest.sprint_id}:${item.key}`,
       title: `${prefix(digest)}${item.title}`,
       why: clip(item.why || "Only a person can do this for the SEO sprint.", 300),
-      href: sprintHref(digest, item.key === PLAYBOOK_ITEM_KEY ? "playbook" : "integrations"),
+      href: item.key.startsWith("approval-email:") || (item.taskIds?.length === 1 && awaiting.tasks.has(`${digest.sprint_id}:${item.taskIds[0]}`))
+        ? previewsHref(digest)
+        : sprintHref(digest, item.key === PLAYBOOK_ITEM_KEY ? "playbook" : "integrations"),
       issueId: taskIssue ?? digest.issue_id,
       kind: KIND[item.kind] ?? "other",
       since: item.addedAt ?? null,
+      ...(waitsOn ? { waitsOn } : {}),
     });
   }
   for (const p of proposals) {

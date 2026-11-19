@@ -15,6 +15,12 @@ const ownerAgentId = "33333333-3333-4333-8333-333333333333";
 const peerAgentId = "44444444-4444-4444-8444-444444444444";
 const ownerRunId = "55555555-5555-4555-8555-555555555555";
 const recoveryActionId = "77777777-7777-4777-8777-777777777777";
+const managerAgentId = "a1111111-1111-4111-8111-111111111111";
+const topManagerAgentId = "a2222222-2222-4222-8222-222222222222";
+const subordinateAgentId = "a3333333-3333-4333-8333-333333333333";
+const foreignAgentId = "a4444444-4444-4444-8444-444444444444";
+const unblockOwnerForbidden =
+  "Agents may only name themselves, a manager in their reporting chain, or the board as an unblock owner";
 
 const mockIssueService = vi.hoisted(() => ({
   addComment: vi.fn(),
@@ -1827,35 +1833,162 @@ describe("agent issue mutation checkout ownership", () => {
     });
   });
 
-  it.each([
-    ["board", "board"],
-    ["a company user", { userId: "board-user" }],
-  ])("rejects an agent naming %s as unblock owner", async (_label, unblockOwner) => {
-    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_progress" }));
+  describe("unblock owner rule (PAR-9291)", () => {
+    type Org = Partial<Record<string, { reportsTo?: string | null; status?: string; companyId?: string }>>;
+    // owner (actor) -> manager -> topManager; peer -> manager; subordinate -> owner.
+    function useOrg(overrides: Org = {}) {
+      const base: Org = {
+        [ownerAgentId]: { reportsTo: managerAgentId },
+        [managerAgentId]: { reportsTo: topManagerAgentId },
+        [topManagerAgentId]: { reportsTo: null },
+        [peerAgentId]: { reportsTo: managerAgentId },
+        [subordinateAgentId]: { reportsTo: ownerAgentId },
+        [foreignAgentId]: { reportsTo: null, companyId: "99999999-0000-4000-8000-000000000000" },
+      };
+      mockAgentService.getById.mockImplementation(async (id: string) => {
+        const row = base[id] ? { ...base[id], ...overrides[id] } : null;
+        return row ? makeAgent(id, { status: "active", ...row }) : null;
+      });
+    }
+    const descriptorFor = (owner: unknown) => ({ owner, action: "Review the blocker" });
+    const routes = {
+      patch: {
+        send: (app: express.Express, owner: unknown) =>
+          request(app).patch(`/api/issues/${issueId}`).send({ status: "blocked", unblockDescriptor: descriptorFor(owner) }),
+        writer: () => mockIssueService.update,
+      },
+      create: {
+        send: (app: express.Express, owner: unknown) =>
+          request(app).post(`/api/companies/${companyId}/issues`).send({
+            title: "Blocked work", status: "blocked", unblockDescriptor: descriptorFor(owner),
+          }),
+        writer: () => mockIssueService.create,
+      },
+      children: {
+        send: (app: express.Express, owner: unknown) =>
+          request(app).post(`/api/issues/${issueId}/children`).send({
+            title: "Blocked child", status: "blocked", unblockDescriptor: descriptorFor(owner),
+          }),
+        writer: () => mockIssueService.createChild,
+      },
+      decomposition: {
+        send: (app: express.Express, owner: unknown) =>
+          request(app).post(`/api/issues/${issueId}/accepted-plan-decompositions`).send({
+            acceptedPlanRevisionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            children: [
+              { title: "Open plan child" },
+              { title: "Blocked plan child", status: "blocked", unblockDescriptor: descriptorFor(owner) },
+            ],
+          }),
+        writer: () => mockIssueService.decomposeAcceptedPlan,
+      },
+    } as const;
+    const live = {};
+    const cells: Array<[string, "agent" | "board", unknown, Org, number | "ok", string | null]> = [
+      ["agent names itself", "agent", { agentId: ownerAgentId }, live, "ok", null],
+      ["agent names its direct manager", "agent", { agentId: managerAgentId }, live, "ok", null],
+      ["agent names a manager two levels up", "agent", { agentId: topManagerAgentId }, live, "ok", null],
+      ["agent names the next live manager past a terminated one", "agent", { agentId: topManagerAgentId },
+        { [managerAgentId]: { status: "terminated" } }, "ok", null],
+      ["agent names a user", "agent", { userId: "board-user" }, live, 403, unblockOwnerForbidden],
+      ["agent names a peer", "agent", { agentId: peerAgentId }, live, 403, unblockOwnerForbidden],
+      ["agent names a subordinate", "agent", { agentId: subordinateAgentId }, live, 403, unblockOwnerForbidden],
+      ["agent names an agent of another company", "agent", { agentId: foreignAgentId }, live, 422,
+        "Unblock owner agent must belong to the issue company"],
+      ["agent names a terminated chain manager", "agent", { agentId: managerAgentId },
+        { [managerAgentId]: { status: "terminated" } }, 422, "Unblock owner agent cannot be woken"],
+      ["agent names a pending_approval chain manager", "agent", { agentId: managerAgentId },
+        { [managerAgentId]: { status: "pending_approval" } }, 422, "Unblock owner agent cannot be woken"],
+      // boardOwnerAllowed, sign-off option (b).
+      ["agent with an empty chain names the board", "agent", "board",
+        { [ownerAgentId]: { reportsTo: null } }, "ok", null],
+      ["agent whose chain is only terminated/pending_approval names the board", "agent", "board",
+        { [managerAgentId]: { status: "terminated" }, [topManagerAgentId]: { status: "pending_approval" } }, "ok", null],
+      ["agent with one live manager high in the chain names the board", "agent", "board",
+        { [managerAgentId]: { status: "terminated" } }, 403, unblockOwnerForbidden],
+      ["agent with a live direct manager names the board", "agent", "board", live, 403, unblockOwnerForbidden],
+      ["board user names a peer agent", "board", { agentId: peerAgentId }, live, "ok", null],
+      ["board user names the board", "board", "board", live, "ok", null],
+    ];
+    const matrix = (Object.keys(routes) as Array<keyof typeof routes>).flatMap((route) =>
+      cells.map((cell) => [route, ...cell] as const));
 
-    const res = await request(await createApp(ownerActor())).patch(`/api/issues/${issueId}`).send({
-      status: "blocked",
-      unblockDescriptor: { owner: unblockOwner, action: "Review the blocker" },
+    it.each(matrix)("%s: %s", async (route, _label, actorKind, owner, org, expected, error) => {
+      useOrg(org);
+      const app = await createApp(actorKind === "agent" ? ownerActor() : boardActor());
+
+      const res = await routes[route].send(app, owner);
+
+      if (expected === "ok") {
+        expect(res.status, JSON.stringify(res.body)).toBeLessThan(300);
+        expect(routes[route].writer()).toHaveBeenCalled();
+      } else {
+        expect(res.status, JSON.stringify(res.body)).toBe(expected);
+        expect(res.body.error).toBe(error);
+        expect(routes[route].writer()).not.toHaveBeenCalled();
+      }
     });
 
-    expect(res.status, JSON.stringify(res.body)).toBe(403);
-    expect(res.body.error).toBe("Agents may only name themselves as an unblock owner");
-    expect(mockIssueService.update).not.toHaveBeenCalled();
-  });
+    it("rejects an agent changing an already-blocked issue owner to a peer", async () => {
+      useOrg();
+      mockIssueService.getById.mockResolvedValue(makeIssue({ status: "blocked" }));
 
-  it.each([
-    ["board", "board"],
-    ["a company user", { userId: "board-user" }],
-  ])("rejects an agent changing an already-blocked issue owner to %s", async (_label, unblockOwner) => {
-    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "blocked" }));
+      const res = await request(await createApp(ownerActor())).patch(`/api/issues/${issueId}`).send({
+        unblockDescriptor: descriptorFor({ agentId: peerAgentId }),
+      });
 
-    const res = await request(await createApp(ownerActor())).patch(`/api/issues/${issueId}`).send({
-      unblockDescriptor: { owner: unblockOwner, action: "Review the blocker" },
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.error).toBe(unblockOwnerForbidden);
+      expect(mockIssueService.update).not.toHaveBeenCalled();
     });
 
-    expect(res.status, JSON.stringify(res.body)).toBe(403);
-    expect(res.body.error).toBe("Agents may only name themselves as an unblock owner");
-    expect(mockIssueService.update).not.toHaveBeenCalled();
+    function managerActor() {
+      return { type: "agent", agentId: managerAgentId, companyId, source: "agent_key", runId: "a5555555-5555-4555-8555-555555555555" };
+    }
+    function blockedOnManager() {
+      return makeIssue({
+        status: "blocked",
+        assigneeAgentId: ownerAgentId,
+        unblockDescriptor: descriptorFor({ agentId: managerAgentId }),
+      });
+    }
+
+    it("lets the named owner hand the issue back: blocked -> todo clears the descriptor and wakes the assignee", async () => {
+      useOrg();
+      const existing = blockedOnManager();
+      mockIssueService.getById.mockResolvedValue(existing);
+      // The service clears the descriptor on leaving blocked (services/issues.ts).
+      mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+        ...existing,
+        ...patch,
+        ...(patch.status && patch.status !== "blocked" ? { unblockDescriptor: null } : {}),
+      }));
+
+      const res = await request(await createApp(managerActor())).patch(`/api/issues/${issueId}`).send({ status: "todo" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body).toMatchObject({ status: "todo", unblockDescriptor: null });
+      expect(mockIssueService.update).toHaveBeenCalledWith(issueId, expect.objectContaining({ status: "todo" }));
+      await vi.waitFor(() => {
+        expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(ownerAgentId, expect.anything());
+      });
+    });
+
+    it.each([
+      ["a peer who is not the owner moves it to todo", "peer", "todo"],
+      ["the owner moves it to done", "manager", "done"],
+    ])("rejects %s", async (_label, who, nextStatus) => {
+      useOrg();
+      mockIssueService.getById.mockResolvedValue(blockedOnManager());
+
+      const res = await request(await createApp(who === "peer" ? peerActor() : managerActor()))
+        .patch(`/api/issues/${issueId}`)
+        .send({ status: nextStatus });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.error).toBe("Agent cannot request follow-up for another agent's issue");
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
   });
 
   it("allows a board actor to name the board as unblock owner", async () => {

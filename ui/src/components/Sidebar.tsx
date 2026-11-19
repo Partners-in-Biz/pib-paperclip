@@ -27,6 +27,7 @@ import {
 } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
+import type { AttentionFeed } from "@paperclipai/shared";
 import { SidebarSection } from "./SidebarSection";
 import { SidebarNavItem } from "./SidebarNavItem";
 import { SidebarAgents } from "./SidebarAgents";
@@ -38,6 +39,8 @@ import { SidebarRecentTasks } from "./SidebarRecentTasks";
 import { useDialogActions } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { useSidebar } from "../context/SidebarContext";
+import { useMemberRestriction } from "../context/MemberRestrictionContext";
+import { useMemberRestrictionGate } from "../hooks/useMemberRestrictionGate";
 import { attentionApi } from "../api/attention";
 import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
@@ -70,18 +73,22 @@ function ClassicSidebar({ children }: { children?: ReactNode }) {
   const { selectedCompanyId, selectedCompany } = useCompany();
   const { collapsed, peeking } = useSidebar();
   const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
+  const { enforced: memberRestricted } = useMemberRestriction();
   const rail = collapsed && !peeking;
   const inboxBadge = useInboxBadge(selectedCompanyId);
   const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
   });
+  // `live-runs` and `attention` are closed for a restricted member under `enforce` (AC-G10):
+  // no request, no live mark, no Decisions entry.
+  const memberGate = useMemberRestrictionGate(selectedCompanyId);
   const liveRunsQueryKey = queryKeys.liveRuns(selectedCompanyId!);
   const sharedLiveRuns = useSharedPollingQuery({
     companyId: selectedCompanyId,
     resourceKey: "live-runs",
     queryKey: liveRunsQueryKey,
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && !memberGate.closed,
     // Event-sourced via LiveUpdatesProvider (GitHub issue 9627) + reconnect reconcile — no
     // interval poll needed. Polling here also re-armed React Query's timer on
     // every live-event cache write, a major source of steady-state churn.
@@ -90,14 +97,14 @@ function ClassicSidebar({ children }: { children?: ReactNode }) {
   });
   const { data: liveRuns, dataUpdatedAt: liveRunsUpdatedAt } = useQuery({
     queryKey: liveRunsQueryKey,
-    queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
-    enabled: sharedLiveRuns.enabled,
+    queryFn: memberGate.guard(() => heartbeatsApi.liveRunsForCompany(selectedCompanyId!), []),
+    enabled: sharedLiveRuns.enabled && !memberGate.closed,
     refetchInterval: sharedLiveRuns.refetchInterval,
   });
   usePublishSharedQueryData(sharedLiveRuns, liveRuns, liveRunsUpdatedAt);
-  const liveRunCount = liveRuns?.length ?? 0;
+  const liveRunCount = memberGate.closed ? 0 : liveRuns?.length ?? 0;
   const liveIssueIds = new Set(
-    (liveRuns ?? []).flatMap((run) => run.issueId ? [run.issueId] : []),
+    (memberGate.closed ? [] : liveRuns ?? []).flatMap((run) => run.issueId ? [run.issueId] : []),
   );
   const chatRail = agentChatEnabled && streamlinedUiEnabled;
   // The merged Tasks page only exists in the streamlined shell, so the legacy
@@ -110,10 +117,10 @@ function ClassicSidebar({ children }: { children?: ReactNode }) {
   // Decisions (attention home) is an experimental surface (PAP-13481): the nav
   // item is hidden entirely until the flag is enabled (same no-flash pattern as
   // showWorkspacesLink — it defaults hidden, so no placeholder is needed).
-  const showDecisions = experimentalSettings?.enableDecisions === true;
+  const showDecisions = experimentalSettings?.enableDecisions === true && !memberGate.closed;
   const { data: attentionFeed } = useQuery({
     queryKey: queryKeys.attention(selectedCompanyId!),
-    queryFn: () => attentionApi.list(selectedCompanyId!),
+    queryFn: memberGate.guard<AttentionFeed | null>(() => attentionApi.list(selectedCompanyId!), null),
     enabled: !!selectedCompanyId && showDecisions,
     refetchInterval: 60_000,
   });
@@ -288,7 +295,8 @@ function ClassicSidebar({ children }: { children?: ReactNode }) {
           <>
             <SidebarProjects />
             <SidebarAgents />
-            <SidebarSection
+            {/* Every entry of this section is closed to a restricted member (PAR-12608 4.6). */}
+            {memberRestricted ? null : <SidebarSection
               label="Organization"
               collapsible={{ open: organizationOpen, onOpenChange: setOrganizationOpen }}
             >
@@ -299,7 +307,7 @@ function ClassicSidebar({ children }: { children?: ReactNode }) {
               <SidebarNavItem to="/activity" label="Activity" icon={History} />
               <SidebarNavItem to="/activity/commentary" label="Commentary" icon={History} />
               <SidebarNavItem to="/company/settings" label="Settings" icon={Settings} />
-            </SidebarSection>
+            </SidebarSection>}
           </>
         )}
 

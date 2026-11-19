@@ -51,6 +51,9 @@ d("Needs-you trigger (Postgres)", () => {
   }, 120_000);
 
   beforeEach(async () => {
+    // These tests cover a push per task that lands on the owner: the behaviour with the daily digest switched off.
+    // With the digest on (the default) only the digest and a critical issue push: see the last tests in this file.
+    pg.config.set(A, { ownerDigest: { enabled: false } });
     // Clear push_seen_assignee and push log tables before each test
     await pg.ctx.db.execute(
       `DELETE FROM plugin_cockpit_b8a99e8b16.push_seen_assignee WHERE company_id = $1`,
@@ -532,6 +535,29 @@ d("Needs-you trigger (Postgres)", () => {
       logs = await listRecentPushLog(pg.ctx, A, new Date(later.getTime() - 24 * 60 * 60 * 1000));
       sentLogs = logs.filter((l: PushLogEntry) => l.status === "sent" && l.issueRef === identifier9);
       expect(sentLogs).toHaveLength(1);
+    } finally {
+      pg.ctx.issues.get = originalGet;
+    }
+  });
+  it("digest on (the default): a task that lands on the owner does not push; the digest and a critical issue do", async () => {
+    pg.config.set(A, {});
+    const now = env.now();
+    const pushed: string[] = [];
+    const deliver = async (_ctx: any, _companyId: string, _subs: any[], payload: any) => {
+      pushed.push(payload.title);
+    };
+    const originalGet = pg.ctx.issues.get;
+    const fire = async (issue: { id: string; identifier: string; title: string; priority?: string; originKind?: string }) => {
+      pg.ctx.issues.get = async () => ({ ...issue, companyId: A, assigneeUserId: OWNER_ID } as any);
+      await onIssueNeedsYou(env, mockEvent({ issueId: issue.id, companyId: A, _previousAssigneeUserId: OTHER_USER, currentAssigneeUserId: OWNER_ID, timestamp: now }), { deliver });
+    };
+    try {
+      await fire({ id: "issue-digest-plain", identifier: "PAR-9001", title: "A question for the owner" });
+      expect(pushed).toEqual([]);
+      await fire({ id: "issue-digest-day", identifier: "PAR-9002", title: "16:00 digest 2026-10-20", originKind: "plugin:partnersinbiz.cockpit:digest" });
+      expect(pushed).toEqual(["16:00 digest 2026-10-20"]);
+      await fire({ id: "issue-digest-critical", identifier: "PAR-9003", title: "Production is down", priority: "critical" });
+      expect(pushed).toEqual(["16:00 digest 2026-10-20", "Production is down"]);
     } finally {
       pg.ctx.issues.get = originalGet;
     }

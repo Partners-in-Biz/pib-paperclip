@@ -9,6 +9,7 @@
  * - params are JSON over RPC: lists and objects travel as JSON strings cast
  *   with `$n::jsonb` (never JS arrays); dates are selected as text.
  */
+import { randomUUID } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { clientWhere, isClientKind, type ClientKind, type ClientScope } from "@partnersinbiz/pib-plugin-kit/client-ref";
 import { NAMESPACE } from "./namespace.js";
@@ -1880,16 +1881,17 @@ export interface TaskPreviewRow {
   status: string;
   reviewStatus: string;
   reviewNote: string | null;
+  decisionSource: string | null;
 }
 
 /** A task's previews, newest first (a continuation issue lists them). */
 export async function previewsForTask(db: SeoDb, companyId: string, taskId: string, limit = 30): Promise<TaskPreviewRow[]> {
   const rows = await db.query(
-    `SELECT id, page_url, title, status, review_status, review_note FROM ${t("previews")}
+    `SELECT id, page_url, title, status, review_status, review_note, decision_source FROM ${t("previews")}
       WHERE company_id = $1 AND task_id = $2 ORDER BY created_at DESC LIMIT $3::int`,
     [companyId, taskId, Math.max(1, Math.min(100, limit))],
   );
-  return rows.map((r) => ({ id: String(r.id), pageUrl: String(r.page_url), title: String(r.title), status: String(r.status), reviewStatus: String(r.review_status ?? "pending"), reviewNote: s(r.review_note) }));
+  return rows.map((r) => ({ id: String(r.id), pageUrl: String(r.page_url), title: String(r.title), status: String(r.status), reviewStatus: String(r.review_status ?? "pending"), reviewNote: s(r.review_note), decisionSource: s(r.decision_source) }));
 }
 
 /** Every open task (not started, in progress, blocked) of the company's sprints, in plan order. */
@@ -1914,11 +1916,11 @@ export async function issuesWithFailingRuns(db: SeoDb, companyId: string, issueI
   const ids = [...new Set(issueIds.filter(Boolean))].slice(0, 500);
   if (ids.length === 0) return out;
   const rows = await db.query(
-    `SELECT DISTINCT ON (r.context_snapshot->>'issueId') r.context_snapshot->>'issueId' AS issue_id, r.error_code, r.created_at::text AS at
+    `SELECT DISTINCT ON (r.issue_id::text) r.issue_id::text AS issue_id, r.error_code, r.created_at::text AS at
        FROM public.heartbeat_runs r
       WHERE r.company_id = $1 AND r.created_at >= now() - interval '30 days'
-        AND r.context_snapshot->>'issueId' IN (SELECT jsonb_array_elements_text($2::jsonb))
-      ORDER BY r.context_snapshot->>'issueId', r.created_at DESC`,
+        AND r.issue_id::text IN (SELECT jsonb_array_elements_text($2::jsonb))
+      ORDER BY r.issue_id::text, r.created_at DESC`,
     [companyId, JSON.stringify(ids)],
   );
   for (const row of rows) if (row.error_code === code && row.issue_id) out.set(String(row.issue_id), { at: s(row.at) });
@@ -1943,12 +1945,12 @@ export async function latestRuns(db: SeoDb, companyId: string, issueIds: string[
   const ids = [...new Set(issueIds.filter(Boolean))].slice(0, 500);
   if (ids.length === 0) return out;
   const rows = await db.query(
-    `SELECT DISTINCT ON (r.context_snapshot->>'issueId') r.context_snapshot->>'issueId' AS issue_id, r.error, r.created_at::text AS at,
+    `SELECT DISTINCT ON (r.issue_id::text) r.issue_id::text AS issue_id, r.error, r.created_at::text AS at,
             (r.status IN ('queued', 'running') AND r.created_at >= now() - interval '2 hours') AS active
        FROM public.heartbeat_runs r
       WHERE r.company_id = $1 AND r.created_at >= now() - ($3::int * interval '1 day')
-        AND r.context_snapshot->>'issueId' IN (SELECT jsonb_array_elements_text($2::jsonb))
-      ORDER BY r.context_snapshot->>'issueId', r.created_at DESC`,
+        AND r.issue_id::text IN (SELECT jsonb_array_elements_text($2::jsonb))
+      ORDER BY r.issue_id::text, r.created_at DESC`,
     [companyId, JSON.stringify(ids), days],
   );
   for (const row of rows) if (row.issue_id) out.set(String(row.issue_id), { error: s(row.error), at: s(row.at), active: row.active === true || row.active === "t" || row.active === "true" });
@@ -2000,6 +2002,87 @@ export async function repointPreviews(db: SeoDb, companyId: string, fromIssueId:
   return result.rowCount;
 }
 
+/** One approval to apply a task's pages (PAR-9493 T1). `pageUrls` are normalised by the caller; `grantedByAgentId` is null for a person. */
+export interface PageGrantInput {
+  companyId: string;
+  sprintId: string;
+  siteId: string;
+  taskId: string;
+  pageUrls: string[];
+  grantedBy: string;
+  grantedByAgentId: string | null;
+  reviewRef: string | null;
+  note: string | null;
+  applyUntil: string;
+}
+
+/**
+ * Opens (or extends) a grant per page of the task. A repeat on an open grant keeps the later `apply_until` (GREATEST) and takes the
+ * new label, agent, review ref and note. One statement, so the pages land together. Returns the rows written.
+ */
+export async function upsertPageGrants(db: SeoDb, input: PageGrantInput): Promise<number> {
+  const pages = [...new Set(input.pageUrls)];
+  if (pages.length === 0) return 0;
+  const rows = pages.map((page_url) => ({ id: randomUUID(), page_url }));
+  const result = await db.execute(
+    `INSERT INTO ${t("page_apply_grants")} AS a (id, company_id, sprint_id, site_id, task_id, page_url, granted_by, granted_by_agent_id, review_ref, note, apply_until)
+     SELECT v.id, $1, $2, $3, $4, v.page_url, $5, $6, $7, $8, $9::timestamptz FROM jsonb_to_recordset($10::jsonb) AS v(id text, page_url text)
+     ON CONFLICT (company_id, task_id, page_url) WHERE revoked_at IS NULL DO UPDATE SET apply_until = GREATEST(a.apply_until, EXCLUDED.apply_until),
+       granted_by = EXCLUDED.granted_by, granted_by_agent_id = EXCLUDED.granted_by_agent_id, review_ref = EXCLUDED.review_ref, note = EXCLUDED.note`,
+    [input.companyId, input.sprintId, input.siteId, input.taskId, input.grantedBy, input.grantedByAgentId, input.reviewRef, input.note, input.applyUntil, JSON.stringify(rows)],
+  );
+  return result.rowCount;
+}
+
+/** Revokes the task's open grants (`pageUrls` null = all of them). Returns how many were open and are now revoked. */
+export async function revokePageGrants(db: SeoDb, companyId: string, taskId: string, pageUrls: string[] | null, by: string): Promise<number> {
+  const result = await db.execute(
+    `UPDATE ${t("page_apply_grants")} SET revoked_at = now(), revoked_by = $3
+      WHERE company_id = $1 AND task_id = $2 AND revoked_at IS NULL AND apply_until > now()
+        AND ($4::jsonb IS NULL OR page_url IN (SELECT jsonb_array_elements_text($4::jsonb)))`,
+    [companyId, taskId, by, pageUrls === null ? null : JSON.stringify(pageUrls)],
+  );
+  return result.rowCount;
+}
+
+/**
+ * Claims the right to tell the task issue about these open grants: marks `notified_until = apply_until` where the issue was not told
+ * yet or `apply_until` moved past the told time by more than NOTICE_SLACK_MINUTES. More than 0 means this call claimed a new
+ * `apply_until` and should comment; 0 means the issue was already told. The slack keeps a repeat of the same call (whose fresh
+ * `now() + hours` is a few seconds later) from posting again (PAR-9493 T2b). The host's execute has no RETURNING, so the row
+ * count is the claim.
+ */
+export const NOTICE_SLACK_MINUTES = 15;
+export async function claimGrantNotice(db: SeoDb, companyId: string, taskId: string, pageUrls: string[]): Promise<number> {
+  if (pageUrls.length === 0) return 0;
+  const result = await db.execute(
+    `UPDATE ${t("page_apply_grants")} SET notified_until = apply_until
+      WHERE company_id = $1 AND task_id = $2 AND revoked_at IS NULL AND page_url IN (SELECT jsonb_array_elements_text($3::jsonb))
+        AND (notified_until IS NULL OR apply_until > notified_until + interval '${NOTICE_SLACK_MINUTES} minutes')`,
+    [companyId, taskId, JSON.stringify(pageUrls)],
+  );
+  return result.rowCount;
+}
+
+/** Gives back a notice claim whose comment did not go out (PAR-9493 T2b), so a repeat call claims and posts it. */
+export async function releaseGrantNotice(db: SeoDb, companyId: string, taskId: string, pageUrls: string[]): Promise<void> {
+  if (pageUrls.length === 0) return;
+  await db.execute(
+    `UPDATE ${t("page_apply_grants")} SET notified_until = NULL
+      WHERE company_id = $1 AND task_id = $2 AND revoked_at IS NULL AND page_url IN (SELECT jsonb_array_elements_text($3::jsonb))`,
+    [companyId, taskId, JSON.stringify(pageUrls)],
+  );
+}
+
+/** The task's open grants (not revoked, `apply_until` not passed): page and until (ISO). */
+export async function openPageGrants(db: SeoDb, companyId: string, taskId: string): Promise<Array<{ pageUrl: string; applyUntil: string }>> {
+  const rows = await db.query(
+    `SELECT page_url, apply_until FROM ${t("page_apply_grants")} WHERE company_id = $1 AND task_id = $2 AND revoked_at IS NULL AND apply_until > now() ORDER BY page_url`,
+    [companyId, taskId],
+  );
+  return rows.map((r: Record<string, unknown>) => ({ pageUrl: String(r.page_url), applyUntil: new Date(r.apply_until instanceof Date ? r.apply_until : String(r.apply_until)).toISOString() }));
+}
+
 /**
  * Issues an agent run has started on (last 30 days), with when the first one began. The host raises no
  * issue.updated event when an agent picks an issue up, so this is how a task learns its work started.
@@ -2009,10 +2092,10 @@ export async function issuesWithActiveRuns(db: SeoDb, companyId: string, issueId
   const ids = [...new Set(issueIds.filter(Boolean))].slice(0, 500);
   if (ids.length === 0) return new Set();
   const rows = await db.query(
-    `SELECT DISTINCT r.context_snapshot->>'issueId' AS issue_id
+    `SELECT DISTINCT r.issue_id::text AS issue_id
        FROM public.heartbeat_runs r
       WHERE r.company_id = $1 AND r.status IN ('queued', 'running') AND r.created_at >= now() - interval '2 days'
-        AND r.context_snapshot->>'issueId' IN (SELECT jsonb_array_elements_text($2::jsonb))`,
+        AND r.issue_id::text IN (SELECT jsonb_array_elements_text($2::jsonb))`,
     [companyId, JSON.stringify(ids)],
   );
   return new Set(rows.map((r) => String(r.issue_id)).filter(Boolean));
@@ -2023,10 +2106,10 @@ export async function issuesWithStartedRuns(db: SeoDb, companyId: string, issueI
   const ids = [...new Set(issueIds.filter(Boolean))].slice(0, 500);
   if (ids.length === 0) return out;
   const rows = await db.query(
-    `SELECT r.context_snapshot->>'issueId' AS issue_id, min(r.started_at)::text AS at
+    `SELECT r.issue_id::text AS issue_id, min(r.started_at)::text AS at
        FROM public.heartbeat_runs r
       WHERE r.company_id = $1 AND r.created_at >= now() - interval '30 days' AND r.started_at IS NOT NULL
-        AND r.context_snapshot->>'issueId' IN (SELECT jsonb_array_elements_text($2::jsonb))
+        AND r.issue_id::text IN (SELECT jsonb_array_elements_text($2::jsonb))
       GROUP BY 1`,
     [companyId, JSON.stringify(ids)],
   );

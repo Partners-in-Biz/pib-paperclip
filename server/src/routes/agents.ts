@@ -1,4 +1,5 @@
 import { assertProviderApiPlacementPolicy, managedCursorApiDefaultEnabled, resolveProviderApiPlacement } from "../services/native-runtime/provider-api-placement.js";
+import { wakeCausingActorFromActor } from "../services/heartbeat/causing-actor.js";
 import { isObjectJournalBusyError } from "../services/object-byte-journal.js";
 import { readTaskPanelActivations } from "../services/plugin-task-panels.js";
 import { enqueueNativeRuntimeResponse } from "../services/native-runtime/native-runtime-response-delivery.js";
@@ -51,6 +52,7 @@ import { assertAiConnectionCreateAccess, canInstallSharedAiConnectionForNewAgent
 import { isAiConnectionCompatible } from "@paperclipai/shared";
 import { applyConnectorSkills, resolveConnectorAssignments, annotateConnectorSkills, isConnectorSkill } from "../services/connector-runtime.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
+import { readNonEmptyString } from "../modules/wake-queue/domain/values.js";
 import { canRetryStoppedRun } from "../services/cancelled-native-startup.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext, type NativeReviewAssignmentContext } from "../services/native-runtime/native-review-participant.js";
 import { paperclipRunnerTransitionConfig, normalizeLegacyRunnerProvider, isPaperclipRunnerProvider, PAPERCLIP_RUNNER_ACPX_PROFILES } from "@paperclipai/adapter-utils";
@@ -139,7 +141,7 @@ import {
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { ONBOARDING_FIRST_TASK_SKILL_KEY, PAPERCLIP_CORE_SKILL_KEYS } from "../services/company-skills.js";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
-import { assertAuthenticated, assertBoard, assertCompanyAccess, assertInstanceAdmin, buildActorSecretContext, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
+import { assertAuthenticated, assertBoard, assertCompanyAccess, assertInstanceAdmin, buildActorSecretContext, decideIssueAccessForActor, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
 import { runAdapterLoginStartSpine } from "./adapter-login-route-spine.js";
 import { isLoginCommandSupportedAdapterType } from "../services/login-command.js";
 import {
@@ -161,7 +163,7 @@ import type { AdapterAuthSignal, AdapterAuthSignalResponse, CodexAccountBindingC
 import { adapterSettingsService } from "../services/adapter-settings.js";
 import { skillVersionSelectionMap } from "../services/runtime-skill-selections.js";
 import { isFixedClaudeOAuthBinding, secretService } from "../services/secrets.js";
-import { authorizationDeniedDetails } from "../services/authorization.js";
+import { authorizationDeniedDetails, issueReadSqlCondition } from "../services/authorization.js";
 import { providerTraceStore } from "../services/provider-trace-store.js";
 import {
   persistReprojectedWorkspaceDiffs,
@@ -289,6 +291,7 @@ import { recoveryService } from "../services/recovery/service.js";
 import { resolveCoreTrustPreset } from "../services/trust-preset-resolver.js";
 import { readObject } from "../lib/objects.js";
 import { listInvalidOrgChainDescendantIds } from "../services/agent-invokability.js";
+import { AGENT_WAKE_DENIED_MESSAGE, decideAgentWakeAuthority } from "../services/agent-wake-authority.js";
 import { logger } from "../middleware/logger.js";
 import {
   AGENT_PROFILE_CHANGE_CONSENT_FIELDS,
@@ -303,6 +306,16 @@ import {
   canActorReadWorkspaceOperation,
   redactHeartbeatRunListRow,
 } from "../services/heartbeat-run-privacy.js";
+import { refusedOnlyByMemberRestriction } from "../services/member-restriction/action-list.js";
+import {
+  actorMayInstructAgent,
+  hideUnreadableIssueIds,
+  MEMBER_AGENT_NOT_LISTED_DETAILS,
+  MEMBER_AGENT_NOT_LISTED_ROUTE_MESSAGE,
+  restrictedAgentIdsForActor,
+  restrictedAgentView,
+  runWorksForRestrictedCaller,
+} from "../services/member-restriction/agent-read.js";
 import {
   PaperclipRunnerProviderProfileError,
   resolvePaperclipRunnerProviderProfile,
@@ -1231,13 +1244,26 @@ export function agentRoutes(
     return false;
   }
 
-  async function assertRunTelemetryReadAllowed(req: Request, res: Response, companyId: string) {
+  async function assertRunTelemetryReadAllowed(
+    req: Request,
+    res: Response,
+    companyId: string,
+    run?: { id: string; scopeKind?: string | null; issueId?: string | null },
+  ) {
     const decision = await access.decide({
       actor: req.actor,
       action: "company_scope:read",
       resource: { type: "company", companyId },
     });
     if (decision.allowed) return true;
+    // PAR-12608 4.6, AC-G5: one run's detail, log and events stay open to a
+    // caller refused only by the member restriction when the run works for
+    // him (its task is checked next); any other run is "not found" for him.
+    if (run && refusedOnlyByMemberRestriction(decision)) {
+      if (await runWorksForRestrictedCaller(db, req.actor, { ...run, companyId })) return true;
+      res.status(404).json({ error: "Heartbeat run not found" });
+      return false;
+    }
     res.status(403).json({ error: "Run telemetry is outside this actor's authorization boundary" });
     return false;
   }
@@ -1462,6 +1488,13 @@ export function agentRoutes(
       resource: { type: "agent", companyId: agent.companyId, agentId: agent.id },
     });
     if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+    await assertActorMayInstructAgent(req, agent);
+  }
+
+  /** PAR-12608 4.7: a caller working for a restricted person wakes only an agent on his list (AC-A1, AC-A4). */
+  async function assertActorMayInstructAgent(req: Request, agent: { id: string; companyId: string }) {
+    if (await actorMayInstructAgent(db, req.actor, { companyId: agent.companyId, agentId: agent.id, target: "agent:wake" })) return;
+    throw forbidden(MEMBER_AGENT_NOT_LISTED_ROUTE_MESSAGE, MEMBER_AGENT_NOT_LISTED_DETAILS);
   }
 
   async function assertCanManageAdapterLogin(
@@ -2599,6 +2632,33 @@ export function agentRoutes(
       targetAgent,
       [agentProfileChangeTargetKey(targetAgent.id)],
     );
+  }
+
+  // Managers may wake agents below them in the reporting chain; agents with
+  // agents:configure for the target may wake it too (same authority as resume).
+  async function agentMayWakeAgent(
+    req: Request,
+    targetAgent: { id: string; companyId: string },
+  ): Promise<boolean> {
+    if (req.actor.type !== "agent") return false;
+    const actor = req.actor;
+    const decision = await decideAgentWakeAuthority({
+      actorAgentId: actor.agentId,
+      actorCompanyId: actor.companyId,
+      target: targetAgent,
+      getChainOfCommand: (agentId) => svc.getChainOfCommand(agentId),
+      canConfigureTarget: async () => (await access.decide({
+        actor,
+        action: "agent_config:update",
+        resource: { type: "agent", companyId: targetAgent.companyId, agentId: targetAgent.id },
+        scope: { requiresChangeGrant: true },
+      })).allowed,
+    });
+    if (!decision.allowed) return false;
+    // C23: an agent caller's wake skips `decide()`; a run working for a
+    // restricted person still wakes only an agent on his list.
+    await assertActorMayInstructAgent(req, targetAgent);
+    return true;
   }
 
   async function assertCanResumeAgent(
@@ -4002,7 +4062,14 @@ export function agentRoutes(
       });
       return;
     }
+    const listed = await restrictedAgentIdsForActor(db, req.actor, companyId);
     const result = await filterAgentsForActor(req, await svc.list(companyId));
+    // PAR-12608 4.6, AC-G4: a caller bound by R under `enforce` gets only the
+    // agents on his list, each reduced to six fields.
+    if (listed) {
+      res.json(result.filter((agent) => listed.has(agent.id)).map(restrictedAgentView));
+      return;
+    }
     const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
     if (canReadConfigs) {
       res.json(result.map((agent) => redactAgentRowForResponse(agent)));
@@ -4144,6 +4211,13 @@ export function agentRoutes(
       res.status(403).json({ error: trustPreset.detail });
       return;
     }
+    // PAR-12608 4.6, AC-A2: a run working for a restricted person reads its own
+    // identity only, never its configuration.
+    if (await restrictedAgentIdsForActor(db, req.actor, agent.companyId)) {
+      const { id, companyId, name, role, title, status } = agent;
+      res.json({ id, companyId, name, role, title, status });
+      return;
+    }
     if (trustPreset.kind === "low_trust_review") {
       res.json(buildLowTrustSelfView(agent));
       return;
@@ -4164,6 +4238,7 @@ export function agentRoutes(
       status: "todo,in_progress,blocked",
       includeRoutineExecutions: true,
       limit: ISSUE_LIST_DEFAULT_LIMIT,
+      readCondition: await issueReadSqlCondition(db, req.actor),
     });
     const worktreeActivation = await resolveWorktreeRunExecutionActivationState({
       getExperimental: () => instanceSettingsService(db).getExperimental(),
@@ -4179,6 +4254,9 @@ export function agentRoutes(
       issuesSvc.listDependencyReadiness(req.actor.companyId, issueIds),
       recoveryActionsSvc.listActiveForIssues(req.actor.companyId, issueIds),
     ]);
+    // PAR-12608 4.3: a blocker the caller cannot read is counted, never named.
+    const readableBlockers = new Set(await hideUnreadableIssueIds(db, req.actor, req.actor.companyId,
+      [...new Set([...dependencyReadiness.values()].flatMap((entry) => entry.unresolvedBlockerIssueIds))]));
 
     res.json(
       eligibleRows.map((issue) => ({
@@ -4195,7 +4273,8 @@ export function agentRoutes(
         activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
         dependencyReady: dependencyReadiness.get(issue.id)?.isDependencyReady ?? true,
         unresolvedBlockerCount: dependencyReadiness.get(issue.id)?.unresolvedBlockerCount ?? 0,
-        unresolvedBlockerIssueIds: dependencyReadiness.get(issue.id)?.unresolvedBlockerIssueIds ?? [],
+        unresolvedBlockerIssueIds: (dependencyReadiness.get(issue.id)?.unresolvedBlockerIssueIds ?? [])
+          .filter((id) => readableBlockers.has(id)),
       })),
     );
   });
@@ -4207,12 +4286,19 @@ export function agentRoutes(
     }
 
     const query = agentMineInboxQuerySchema.parse(req.query);
+    // PAR-12608 4.6: a run working for a restricted person reads his inbox only.
+    if (query.userId !== req.actor.onBehalfOfUserId
+      && await restrictedAgentIdsForActor(db, req.actor, req.actor.companyId)) {
+      res.json([]);
+      return;
+    }
     const issuesSvc = issueService(db);
     const rows = await issuesSvc.list(req.actor.companyId, {
       touchedByUserId: query.userId,
       inboxArchivedByUserId: query.userId,
       status: query.status,
       limit: ISSUE_LIST_DEFAULT_LIMIT,
+      readCondition: await issueReadSqlCondition(db, req.actor),
     });
 
     res.json(rows);
@@ -4229,6 +4315,13 @@ export function agentRoutes(
     const agent = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
     if (!agent) return;
     if (!(await assertAgentReadAllowed(req, res, agent))) return;
+    // PAR-12608 4.6, AC-G4: under `enforce` an agent off his list is "not found".
+    const listed = await restrictedAgentIdsForActor(db, req.actor, agent.companyId);
+    if (listed) {
+      if (listed.has(agent.id)) res.json(restrictedAgentView(agent));
+      else res.status(404).json({ error: "Agent not found" });
+      return;
+    }
     const isSelf = req.actor.type === "agent" && req.actor.agentId === id;
     if (isSelf) {
       const trustPreset = await resolveAgentSelfTrustPreset(req, agent);
@@ -4394,8 +4487,23 @@ export function agentRoutes(
     await assertBoardCanManageAgentsForCompany(req, agent.companyId);
 
     const sessions = await heartbeat.listTaskSessions(id);
+    // PAR-12920: drop (not redact) a session whose taskKey is a task the caller
+    // cannot read, e.g. another person's chat; its goal holds that person's words.
+    // Keys that are not tasks (plugin sessions, free task keys) stay as they are.
+    const taskKeys = [...new Set(sessions.map((session) => session.taskKey).filter(isUuidLike))];
+    const unreadableTaskKeys = new Set<string>();
+    if (taskKeys.length > 0) {
+      const inCompany = and(eq(issuesTable.companyId, agent.companyId), inArray(issuesTable.id, taskKeys));
+      const [tasks, readable] = await Promise.all([
+        db.select({ id: issuesTable.id }).from(issuesTable).where(inCompany),
+        db.select({ id: issuesTable.id }).from(issuesTable)
+          .where(and(inCompany, await issueReadSqlCondition(db, req.actor))),
+      ]);
+      const readableIds = new Set(readable.map((row) => row.id));
+      for (const task of tasks) if (!readableIds.has(task.id)) unreadableTaskKeys.add(task.id);
+    }
     res.json(
-      sessions.map((session) => ({
+      sessions.filter((session) => !unreadableTaskKeys.has(session.taskKey)).map((session) => ({
         ...session,
         sessionParamsJson: redactEventPayload(session.sessionParamsJson ?? null),
       })),
@@ -6156,8 +6264,8 @@ export function agentRoutes(
     if (!agent) return;
 
     if (req.actor.type === "agent") {
-      if (req.actor.agentId !== id) {
-        res.status(403).json({ error: "Agent can only invoke itself" });
+      if (!(await agentMayWakeAgent(req, agent))) {
+        res.status(403).json({ error: AGENT_WAKE_DENIED_MESSAGE });
         return;
       }
     } else {
@@ -6197,6 +6305,16 @@ export function agentRoutes(
       ) {
         throw notFound("Failed run not found");
       }
+      const failedContext = asRecord(failedRun.contextSnapshot) ?? {};
+      // The run's task, by the heartbeat rule: `issueId`, else `taskId`.
+      const issueId = readNonEmptyString(failedContext.issueId) ?? readNonEmptyString(failedContext.taskId);
+      const failedRunIssue = issueId ? await issueService(db).getById(issueId) : null;
+      // Read the task first (PAR-12608 4.6, AC-G3): a caller who cannot read it
+      // gets the unknown-run answer before any state check, and nothing is written.
+      if (failedRunIssue && failedRunIssue.companyId === agent.companyId &&
+          !(await decideIssueAccessForActor(access, req.actor, failedRunIssue, "issue:read")).allowed) {
+        throw notFound("Failed run not found");
+      }
       if (failedRun.runtimeMode === "native" && failedRun.errorCode === "native_session_cleanup_quarantined") {
         throw conflict("The stopped native session requires cleanup and reconciliation before a new attempt.", {
           code: "native_session_cleanup_quarantined",
@@ -6205,29 +6323,17 @@ export function agentRoutes(
       if (!(await canRetryStoppedRun(db, failedRun))) {
         throw conflict("Only a failed run or a verified eligible cancellation can start a new attempt.");
       }
-      const failedContext = asRecord(failedRun.contextSnapshot) ?? {};
-      const issueId =
-        typeof failedContext.issueId === "string"
-          ? failedContext.issueId
-          : null;
       if (failedRun.status === "cancelled" && (!issueId ||
           (await getExecutionBlocker(db, agent.companyId, issueId))?.runId !== failedRun.id)) {
         throw conflict("The stopped run no longer owns this task's recovery hold.");
       }
       if (issueId) {
-        const issue = await issueService(db).getById(issueId);
+        const issue = failedRunIssue;
         if (!issue || issue.companyId !== agent.companyId) throw notFound("Task not found");
         if (issue.conversationAgentId && issue.conversationUserId !== req.actor.userId) {
           throw forbidden("Only the conversation owner can retry a chat run");
         }
-        const decision = await access.decide({
-          actor: req.actor, action: "issue:comment",
-          resource: {
-            type: "issue", companyId: issue.companyId, issueId: issue.id,
-            projectId: issue.projectId, parentIssueId: issue.parentId,
-            assigneeAgentId: issue.assigneeAgentId, assigneeUserId: issue.assigneeUserId, status: issue.status,
-          },
-        });
+        const decision = await decideIssueAccessForActor(access, req.actor, issue, "issue:comment");
         if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
         const savedReviewContext = readNativeReviewAssignmentContext(failedContext);
         if (failedRun.runtimeMode === "native" && failedRun.status === "failed" &&
@@ -6347,6 +6453,7 @@ export function agentRoutes(
         ? { ...wakePayload, commentId: undefined, wakeCommentId: undefined, wakeCommentIds: undefined }
         : wakePayload,
       idempotencyKey: req.body.idempotencyKey ?? null,
+      causingActor: wakeCausingActorFromActor(getActorInfo(req)),
       requestedByActorType: req.actor.type === "agent" ? "agent" : "user",
       requestedByActorId: req.actor.type === "agent" ? req.actor.agentId ?? null : req.actor.userId ?? null,
       contextSnapshot: {
@@ -6433,8 +6540,8 @@ export function agentRoutes(
     if (!agent) return;
 
     if (req.actor.type === "agent") {
-      if (req.actor.agentId !== id) {
-        res.status(403).json({ error: "Agent can only invoke itself" });
+      if (!(await agentMayWakeAgent(req, agent))) {
+        res.status(403).json({ error: AGENT_WAKE_DENIED_MESSAGE });
         return;
       }
     } else {
@@ -6480,6 +6587,7 @@ export function agentRoutes(
       ...(req.actor.type === "board" ? { manualUserWake: true } : {}),
       source: "on_demand",
       triggerDetail: typeof body.triggerDetail === "string" ? body.triggerDetail as "manual" | "system" | "ping" | "callback" : "manual",
+      causingActor: wakeCausingActorFromActor(getActorInfo(req)),
       requestedByActorType: req.actor.type === "agent" ? "agent" : "user",
       requestedByActorId: req.actor.type === "agent" ? req.actor.agentId ?? null : req.actor.userId ?? null,
       contextSnapshot,
@@ -7237,7 +7345,7 @@ export function agentRoutes(
     const runId = readHeartbeatRunId(req);
     const run = await getAccessibleResource(req, res, heartbeat.getRun(runId), "Heartbeat run not found");
     if (!run) return;
-    if (!(await assertRunTelemetryReadAllowed(req, res, run.companyId))) return;
+    if (!(await assertRunTelemetryReadAllowed(req, res, run.companyId, run))) return;
     if (!(await assertRunReadAllowed(req, res, run))) return;
     const retryExhaustedReason = await heartbeat.getRetryExhaustedReason(runId);
     const decoratedRun = heartbeat.decorateActiveRunStatus(run);
@@ -7724,7 +7832,7 @@ export function agentRoutes(
     const runId = readHeartbeatRunId(req);
     const run = await getAccessibleResource(req, res, heartbeat.getRunReadAccess(runId), "Heartbeat run not found");
     if (!run) return;
-    if (!(await assertRunTelemetryReadAllowed(req, res, run.companyId))) return;
+    if (!(await assertRunTelemetryReadAllowed(req, res, run.companyId, run))) return;
     if (!(await assertRunReadAllowed(req, res, run))) return;
 
     if (req.query.view === "plugin-panels") {
@@ -7755,7 +7863,7 @@ export function agentRoutes(
     const runId = readHeartbeatRunId(req);
     const run = await getAccessibleResource(req, res, heartbeat.getRunLogAccess(runId), "Heartbeat run not found");
     if (!run) return;
-    if (!(await assertRunTelemetryReadAllowed(req, res, run.companyId))) return;
+    if (!(await assertRunTelemetryReadAllowed(req, res, run.companyId, run))) return;
     if (!(await assertRunReadAllowed(req, res, run))) return;
 
     const offset = Number(req.query.offset ?? 0);

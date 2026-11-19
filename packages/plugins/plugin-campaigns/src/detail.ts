@@ -72,6 +72,11 @@ export function bodyPreview(body: string | null | undefined, max = 280): { text:
   return { text: `${(lastSpace > max * 0.6 ? slice.slice(0, lastSpace) : slice).trimEnd()}…`, cut: true };
 }
 
+/** "Anna" from "Anna van der Berg"; a blank name stays blank. */
+export function firstName(name: string | null | undefined): string {
+  return (name ?? "").trim().split(/\s+/)[0] ?? "";
+}
+
 export interface ApprovalLike {
   status: string;
   approvalIssueId: string | null;
@@ -91,6 +96,33 @@ export function approvalState(campaign: ApprovalLike): { key: ApprovalKey; label
   if (campaign.launchError) return { key: "could-not-launch", label: "Approved, but it could not launch" };
   if (campaign.approvalStatus === "done") return { key: "approved", label: "Approved, launching" };
   return { key: "waiting", label: "Waiting for approval" };
+}
+
+/** The approval bar shows on a draft whose approval is open, or approved but not launched because the launch failed. */
+export function showApprovalBar(campaign: ApprovalLike, approval: { status: string } | null): boolean {
+  if (campaign.status !== "draft" || !campaign.approvalIssueId || !approval || approval.status === "cancelled") return false;
+  return approval.status !== "done" || Boolean(campaign.launchError);
+}
+
+/**
+ * What still stops Approve on the bar, in words for "Add … first". Empty means
+ * Approve is on. A client campaign needs both the link and the tick (plan 5.1).
+ */
+export function approveMissing(input: { isClient: boolean; yesRef: string; yesSeen: boolean; audienceHash: string | null; checkErrors: number }): string[] {
+  const missing: string[] = [];
+  if (input.isClient && !input.yesRef.trim()) missing.push("the link to where the client said yes");
+  if (input.isClient && !input.yesSeen) missing.push("the tick that you have seen the client's written yes");
+  if (!input.audienceHash) missing.push("an audience that can be read (reload the campaign)");
+  if (input.checkErrors > 0) missing.push(`a fix for the ${input.checkErrors === 1 ? "check error" : `${input.checkErrors} check errors`}`);
+  return missing;
+}
+
+/** "Anna, Bob, Carl and 497 more" from the first names and the full count. */
+export function namesLine(firstNames: string[], total: number): string {
+  const names = firstNames.filter(Boolean);
+  if (names.length === 0) return "";
+  const rest = total - names.length;
+  return rest > 0 ? `${names.join(", ")} and ${rest} more` : names.length === 1 ? names[0]! : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
 }
 
 /** A running enrollment, as the detail view reads it. */

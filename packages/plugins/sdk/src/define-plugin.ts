@@ -53,7 +53,7 @@ import type { AiConnectionRouterRequest, AiConnectionRouterResult } from "@paper
  * ```
  */
 
-import type { PluginContext, ResourceLifecycleEvent, ResourceLifecycleResult } from "./types.js";
+import type { PluginActingPersonContext, PluginContext, ResourceLifecycleEvent, ResourceLifecycleResult } from "./types.js";
 import type {
   PluginEnvironmentAcquireLeaseParams,
   PluginEnvironmentDestroyLeaseParams,
@@ -176,7 +176,7 @@ export interface PluginApiRequestInput {
     agentId?: string | null;
     userId?: string | null;
     runId?: string | null;
-  };
+  } & PluginActingPersonContext;
   companyId: string;
   headers: Record<string, string>;
 }

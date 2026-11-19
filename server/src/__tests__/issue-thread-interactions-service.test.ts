@@ -480,9 +480,13 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     const input = { kind: "request_confirmation" as const, payload: { version: 1 as const, prompt: "Proceed?" } };
     const actor = { agentId: fixture.agentId };
     expect(await interactionsSvc.create(scope, input, actor)).toMatchObject({ addresseeUserId: null });
-    const addresseeUserId = "paperclip-id:confirmation-reviewer";
-    await seedQuestionUser(fixture.companyId, addresseeUserId);
+    const addresseeUserId = fixture.userId;
     expect(await interactionsSvc.create(scope, { ...input, addresseeUserId }, actor)).toMatchObject({ addresseeUserId });
+    // Another person may not read the chat (PAR-12841), so cannot be its addressee.
+    const reviewer = "paperclip-id:confirmation-reviewer";
+    await seedQuestionUser(fixture.companyId, reviewer);
+    await expect(interactionsSvc.create(scope, { ...input, addresseeUserId: reviewer }, actor))
+      .rejects.toMatchObject({ status: 422, details: { code: "interaction_addressee_user_unavailable" } });
   });
 
   it("keeps ordinary task addressing optional and enforces valid explicit recipients", async () => {
@@ -1336,7 +1340,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
 
     // Agent-authored suggestions nest one level: the nested suggestion would be
     // a grandchild, so it lands beside its suggested parent and records it as origin.
-    const children = await issuesSvc.list(companyId, { parentId: issueId });
+    const children = await issuesSvc.list(companyId, { readCondition: "system", parentId: issueId });
     expect(children.map((child) => child.title).sort()).toEqual([
       "Create the nested follow-up",
       "Create the root follow-up",
@@ -1345,7 +1349,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     const nestedFollowUp = children.find((child) => child.title === "Create the nested follow-up")!;
     expect(nestedFollowUp.originIssueId).toBe(rootFollowUp.id);
     expect(nestedFollowUp.requestDepth).toBe(4);
-    expect(await issuesSvc.list(companyId, { parentId: rootFollowUp.id })).toHaveLength(0);
+    expect(await issuesSvc.list(companyId, { readCondition: "system", parentId: rootFollowUp.id })).toHaveLength(0);
 
     const listed = await interactionsSvc.listForIssue(issueId);
     expect(listed).toHaveLength(1);
@@ -1355,7 +1359,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       userId: "local-board",
     })).rejects.toThrow("Interaction has already been resolved");
 
-    const childrenAfterDuplicateAccept = await issuesSvc.list(companyId, { parentId: issueId });
+    const childrenAfterDuplicateAccept = await issuesSvc.list(companyId, { readCondition: "system", parentId: issueId });
     expect(childrenAfterDuplicateAccept).toHaveLength(2);
   });
 
@@ -1426,7 +1430,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       skippedClientKeys: ["child", "sibling"],
     });
 
-    const children = await issuesSvc.list(companyId, { parentId: issueId });
+    const children = await issuesSvc.list(companyId, { readCondition: "system", parentId: issueId });
     expect(children).toHaveLength(1);
     expect(children[0]?.title).toBe("Create the root follow-up");
   });

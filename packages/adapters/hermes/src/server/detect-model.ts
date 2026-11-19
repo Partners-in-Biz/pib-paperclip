@@ -29,6 +29,21 @@ export interface DetectedModel {
 }
 
 /**
+ * Hermes home for a seat: HERMES_HOME from the adapter env (config.env wins),
+ * then the server process env, else ~/.hermes.
+ */
+export function resolveHermesHome(
+  adapterEnv?: Record<string, unknown> | null,
+  processEnv: NodeJS.ProcessEnv = process.env,
+): string {
+  const fromAdapter = adapterEnv?.HERMES_HOME;
+  if (typeof fromAdapter === "string" && fromAdapter.trim()) return fromAdapter.trim();
+  const fromProcess = processEnv.HERMES_HOME;
+  if (typeof fromProcess === "string" && fromProcess.trim()) return fromProcess.trim();
+  return join(homedir(), ".hermes");
+}
+
+/**
  * Read the Hermes config file and extract the default model config.
  */
 export async function detectModel(

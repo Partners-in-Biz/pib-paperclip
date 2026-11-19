@@ -82,6 +82,8 @@ const manifest: PaperclipPluginManifestV1 = {
     "http.outbound",
     "projects.read",
     "projects.managed",
+    // 0.10: activity entries for the Build flow (PAR-9232). Declared alone; nothing writes activity yet.
+    "activity.log.write",
   ],
   entrypoints: {
     worker: "./dist/worker.js",

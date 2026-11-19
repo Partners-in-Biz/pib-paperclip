@@ -407,7 +407,7 @@ describe("shared blocks v2 (PAR-4023)", () => {
   const isMarkdownHeading = (line: string) => /^\s{0,3}#{1,6}\s/.test(line);
   const isTextUnderMaxSize = (text: string, max: number) => text.length <= max;
   const includedBlockNames = (text: string) => Array.from(text.matchAll(/\{\{include:([a-z0-9-]+)\}\}/g), (m) => m[1]!);
-  const tokenLeaks = (text: string) => Array.from(text.matchAll(/Peet|Elon|R500|PAR-/g));
+  const tokenLeaks = (text: string) => Array.from(text.matchAll(/Peet|R500|PAR-/g));
 
   const genericIncludesPibBlock = (templates: Array<{ key: string; body: string }>, pibKeys: Set<string>) =>
     templates.filter((t) => !pibKeys.has(t.key) && includedBlockNames(t.body).some((b) => b.startsWith("pib-"))).map((t) => t.key);

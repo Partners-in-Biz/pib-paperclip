@@ -38,6 +38,7 @@ export const ORIGIN = {
   build: `plugin:${PLUGIN_ID}:build`,
   previewReview: `plugin:${PLUGIN_ID}:preview-review`,
   chunk: `plugin:${PLUGIN_ID}:chunk`,
+  signoffDelegate: `plugin:${PLUGIN_ID}:signoff-delegate`,
 } as const;
 
 /** Origin id of a page group's issue: `seo:chunk:<chunkId>`. */
@@ -79,3 +80,8 @@ export function taskIdFromOrigin(originId: string | null | undefined): string | 
 export function isOurOrigin(originKind: unknown): boolean {
   return typeof originKind === "string" && (originKind === `plugin:${PLUGIN_ID}` || originKind.startsWith(`plugin:${PLUGIN_ID}:`));
 }
+
+/** How long a client's "approved" answer stays usable after they gave it, whatever the link's own expiry (PAR-9006). */
+export const APPROVAL_VALID_DAYS = 30;
+/** SQL: the preview row counts as live: pending ones until expires_at, approved and declined ones until APPROVAL_VALID_DAYS after the answer (a decision must not vanish before its hand-over, PAR-9131). */
+export const PREVIEW_LIVE_SQL = `(CASE WHEN status IN ('approved', 'declined') THEN decided_at > now() - interval '${APPROVAL_VALID_DAYS} days' ELSE expires_at > now() END)`;

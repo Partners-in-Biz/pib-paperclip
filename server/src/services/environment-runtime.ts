@@ -54,7 +54,9 @@ import type {
   PluginEnvironmentSyncResult,
   PluginSyncOperation,
 } from "@paperclipai/plugin-sdk";
-import { ensureSshWorkspaceReady } from "@paperclipai/adapter-utils/ssh";
+import { ensureSshWorkspaceReady, type SshRunCheck } from "@paperclipai/adapter-utils/ssh";
+import { sshRemoteRunDir } from "./ssh-run-lease.js";
+import { checkSshLease, releaseSshRunLease } from "./ssh-run-lease-release.js";
 import {
   getActiveStepContext,
   runWithRuntimeParent,
@@ -530,6 +532,8 @@ export interface EnvironmentDriverReleaseInput {
   environment: Environment;
   lease: EnvironmentLease;
   status: Extract<EnvironmentLeaseStatus, "released" | "expired" | "failed">;
+  /** ssh only: a remote check the caller already made (PAR-9919); skips the driver's own. */
+  remoteCheck?: SshRunCheck;
 }
 
 function resolvePluginSandboxRpcTimeoutMs(
@@ -1190,6 +1194,9 @@ function createSshEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
       }
 
       const { remoteCwd } = await ensureSshWorkspaceReady(parsed.config);
+      const remoteRunDir = input.heartbeatRunId
+        ? sshRemoteRunDir(parsed.config.remoteWorkspacePath, input.heartbeatRunId)
+        : null;
       return await environmentsSvc.acquireLease({
         companyId: input.companyId,
         environmentId: input.environment.id,
@@ -1208,12 +1215,15 @@ function createSshEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
           username: parsed.config.username,
           remoteWorkspacePath: parsed.config.remoteWorkspacePath,
           remoteCwd,
+          ...(remoteRunDir ? { remoteRunDir } : {}),
         },
       });
     },
 
     async releaseRunLease(input) {
-      return await environmentsSvc.releaseLease(input.lease.id, input.status);
+      // PAR-9961: a gone check writes the stop receipt; an unconfirmed
+      // cancelled run keeps its lease active (null: not released).
+      return await releaseSshRunLease(db, input);
     },
 
     async realizeWorkspace(input) {
@@ -3916,7 +3926,7 @@ export function environmentRuntimeService(
       onLeaseReleaseError?: (leaseId: string, error: unknown) => void,
       providerResourceDisposition?: ProviderResourceDisposition,
       cancelActiveWork?: boolean,
-      releaseOptions?: { respectCleanupDeadlines?: boolean },
+      releaseOptions?: { respectCleanupDeadlines?: boolean; remoteChecks?: ReadonlyMap<string, SshRunCheck> },
     ): Promise<EnvironmentRuntimeLeaseRecord[]> {
       const leaseRows = await db
         .select()
@@ -4039,6 +4049,7 @@ export function environmentRuntimeService(
             continue;
           }
           const driver = getDriver(getLeaseDriverKey(leaseSnapshot, environment));
+          const remoteCheck = releaseOptions?.remoteChecks?.get(leaseRow.id);
           if (
             providerResourceDisposition === "keep_running" &&
             leaseSnapshot.leasePolicy !== "reuse_by_environment"
@@ -4072,6 +4083,7 @@ export function environmentRuntimeService(
               ? await driver.releaseRunLease({
                   ...(cancelActiveWork ? { cancelActiveWork: true } : {}),
                   ...(providerResourceDisposition === "stop_and_retain" ? { resourceDisposition: "stop_and_retain" as const } : {}),
+                  ...(remoteCheck ? { remoteCheck } : {}),
                   environment,
                   lease: leaseSnapshot,
                   // A stopped reusable provider resource must remain eligible
@@ -4113,6 +4125,19 @@ export function environmentRuntimeService(
     // record, so a deleted or foreign-bound environment never strands it. The
     // caller owns the lease release; this dispatcher only runs the provider
     // teardown and throws when the driver teardown throws.
+    /** Read-only remote check of an ssh lease's run (PAR-9917). Never throws. */
+    async checkSshRunLease(leaseId: string): Promise<SshRunCheck> {
+      try {
+        const lease = await environmentsSvc.getLeaseById(leaseId);
+        const environment = lease?.provider === "ssh" && lease.environmentId
+          ? await environmentsSvc.getById(lease.environmentId) : null;
+        if (!lease || !environment) return { result: "unknown", basis: "check_failed", checkedAt: new Date().toISOString() };
+        return await checkSshLease(db, lease, environment);
+      } catch {
+        return { result: "unknown", basis: "check_failed", checkedAt: new Date().toISOString() };
+      }
+    },
+
     async inspectLeaseResource(leaseId: string): Promise<PluginEnvironmentLeaseObservation | undefined> {
       const lease = await environmentsSvc.getLeaseById(leaseId);
       if (!lease || lease.status !== "failed" || lease.leasePolicy !== "ephemeral" || !lease.providerLeaseId) return undefined;

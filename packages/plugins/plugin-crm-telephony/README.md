@@ -1,6 +1,6 @@
 # CRM Telephony
 
-Paperclip plugin `partnersinbiz.crm-telephony`. Version 0.5.0.
+Paperclip plugin `partnersinbiz.crm-telephony`. Version 0.5.1 (the Twilio webhook tries only the companies the call may act for; PAR-11224).
 
 Voice calls, SMS, and WhatsApp messaging integrated with CRM contacts. Secrets are managed exclusively through Paperclip's secrets system; they are never logged or persisted in plain text.
 

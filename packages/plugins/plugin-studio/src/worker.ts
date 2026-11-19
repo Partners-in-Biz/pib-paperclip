@@ -1,12 +1,15 @@
-import { definePlugin, runWorker, type PluginContext, type ToolRunContext } from "@paperclipai/plugin-sdk";
+import { definePlugin, runWorker, type PluginContext, type PluginPerformActionContext, type ToolRunContext } from "@paperclipai/plugin-sdk";
 import { registerSocialMediaSync } from "./social-media-sync.js";
-import { normalizeToolResult, registerClientProjectWatch, registerCrmProjection, scopeOfRow, toolFail } from "@partnersinbiz/pib-plugin-kit";
+import { createAccessGuard, normalizeToolResult, registerClientProjectWatch, registerCrmProjection, scopeOfRow, toolFail } from "@partnersinbiz/pib-plugin-kit";
 import { assetBytesForPerson, assetFileForAgent, assetUrlForPerson, assetUrlsForPerson, getAssetRow, importFromAttachment, linkAsset, listAssets } from "./assets.js";
 import { archiveCanvas, createCanvas, getCanvas, listCanvases, saveCanvas } from "./canvas.js";
 import { addComment, listComments, listVersions, restoreVersion, saveVersion } from "./canvas-versions.js";
 import { briefDoc } from "./canvas-brief.js";
 import { applyOpsAction, cancelRenderAction, createEditAction, deleteEditAction, getEditAction, listEditsAction, listVersionsAction, renderAction, restoreVersionAction, saveVersionAction, renderStatusAction } from "./video-edit/actions.js";
 import { captionClipAction } from "./video-edit/auto-caption.js";
+import { detectBeatsAction } from "./video-edit/beats.js";
+import { cutToBeatAction } from "./video-edit/cut-to-beat.js";
+import { cutSilencesAction } from "./video-edit/silence.js";
 import { createShare, listShares, refreshShares, revokeShare } from "./canvas-share.js";
 import { discardGive, prepareGive, recordGive } from "./give.js";
 import { reviewAsset } from "./review.js";
@@ -18,8 +21,9 @@ import { brandKitFor } from "./brand-kit.js";
 import { deleteTemplate, listSavedTemplates, saveTemplate } from "./prompt-template-store.js";
 import { deleteCanvasTemplate, listCanvasTemplates, saveCanvasTemplate } from "./canvas-template-store.js";
 import { saveLayoutPage, takeTextDraft, textDrafts, writeCardText } from "./canvas-layout.js";
-import { errorText, StudioError } from "./errors.js";
-import { guardAction } from "./refusal.js";
+import { errorText, isStudioError, StudioError } from "./errors.js";
+import { guardAction } from "@partnersinbiz/pib-plugin-kit/refusal";
+import { STUDIO_ACCESS_TABLE } from "./access-table.js";
 import { runDetached } from "./detach.js";
 import { estimateGeneration, generationStatus, processQueue, requestGeneration } from "./generation.js";
 import { agentLimitKey, isAgentLimitKey, setCap } from "./ledger.js";
@@ -32,10 +36,12 @@ import { sweepRenderWorkdirs } from "./video-edit/workdir.js";
 import { createRenderExecutor } from "./video-edit/render-pipeline.js";
 import { createRenderRunner } from "./video-edit/runner.js";
 import { isVideoEditTool, runVideoEditTool } from "./video-edit/tools.js";
+import { musicAction } from "./video-edit/music.js";
 import { voiceoverAction } from "./video-edit/voiceover.js";
 import { clientSummaries } from "./summary.js";
 import { assertReachable, loadIssue, resolveScope, scopeForWork, scopeInput } from "./scope.js";
 import { STUDIO_TOOLS } from "./tools.js";
+import { PLUGIN_ID } from "./namespace.js";
 
 function objectParams(params: unknown): Record<string, unknown> {
   return params && typeof params === "object" && !Array.isArray(params) ? (params as Record<string, unknown>) : {};
@@ -128,6 +134,14 @@ async function runTool(ctx: PluginContext, name: string, params: Record<string, 
       const work = await workOf(ctx, run, {});
       return assetFileForAgent(ctx, companyId, String(params.assetId ?? "").trim(), work.projectId);
     }
+    case "studio-drive-save": {
+      const work = await workOf(ctx, run, {});
+      const assetId = String(params.assetId ?? "").trim();
+      await assertReachable(ctx, companyId, scopeOfRow(await getAssetRow(ctx, companyId, assetId)), work.projectId);
+      return saveAssetToDrive(ctx, companyId, assetId);
+    }
+    case "studio-drive-transfer":
+      return getTransfer(companyId, String(params.transferId ?? "").trim());
     case "studio-import-from-attachment": {
       const work = await workOf(ctx, run, params);
       if (!work.issueId) throw new StudioError("issueId is required: the issue the file is attached to.", "bad_import");
@@ -160,15 +174,17 @@ async function runTool(ctx: PluginContext, name: string, params: Record<string, 
 
 const plugin = definePlugin({
   async setup(ctx) {
-    // Every page action answers a plain refusal as { ok: false, message } with a 200, not a 502 (PAR-8120).
-    type ActionHandler = Parameters<PluginContext["actions"]["register"]>[1];
-    const action = (key: string, handler: ActionHandler) => ctx.actions.register.call(ctx.actions, key, guardAction(handler));
+    // Every action and tool goes through the access guard (PAR-12578 plan 4.4; rows in access-table.ts). Every page
+    // action answers a plain refusal as { ok: false, message } with a 200, not a 502 (PAR-8120).
+    const guard = createAccessGuard(ctx, { pluginKey: PLUGIN_ID, table: STUDIO_ACCESS_TABLE });
+    type ActionHandler = (params: Record<string, unknown>, context: PluginPerformActionContext) => Promise<unknown>;
+    const action = (key: string, handler: ActionHandler) => guard.action(key, guardAction(handler, isStudioError));
     registerCrmProjection(ctx, ctx.db.namespace);
     registerClientProjectWatch(ctx);
     registerSocialMediaSync(ctx);
 
     for (const tool of STUDIO_TOOLS) {
-      ctx.tools.register(tool.name, tool, async (params, run) => {
+      guard.tool(tool.name, tool, async (params, run) => {
         try {
           const data = await runTool(ctx, tool.name, objectParams(params), run);
           return normalizeToolResult({ content: JSON.stringify(data), data });
@@ -454,9 +470,22 @@ const plugin = definePlugin({
       const me = await videoEditor(context);
       return captionClipAction(ctx, me.companyId, objectParams(params), { userId: me.userId });
     });
+    action("video-edit-detect-beats", async (params, context) => detectBeatsAction(ctx, (await person(context)).companyId, objectParams(params)));
+    action("video-edit-cut-to-beat", async (params, context) => {
+      const me = await videoEditor(context);
+      return cutToBeatAction(ctx, me.companyId, objectParams(params), { userId: me.userId });
+    });
+    action("video-edit-cut-silences", async (params, context) => {
+      const me = await videoEditor(context);
+      return cutSilencesAction(ctx, me.companyId, objectParams(params), { userId: me.userId });
+    });
     action("video-edit-voiceover", async (params, context) => {
       const me = await videoEditor(context);
       return voiceoverAction(ctx, me.companyId, objectParams(params), { userId: me.userId });
+    });
+    action("video-edit-music", async (params, context) => {
+      const me = await videoEditor(context);
+      return musicAction(ctx, me.companyId, objectParams(params), { userId: me.userId });
     });
     action("video-edit-render", async (params, context) => {
       const me = await videoEditor(context);

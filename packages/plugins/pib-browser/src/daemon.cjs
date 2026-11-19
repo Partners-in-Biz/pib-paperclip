@@ -30,7 +30,8 @@ function loadConfig(env) {
     policyPath: env.PIB_BROWSER_POLICY || '',
     sitesPath: env.PIB_BROWSER_SITES || '',
     stateDir: env.PIB_BROWSER_STATE_DIR || '/var/lib/pib-browser',
-    handoffDir: env.PIB_BROWSER_HANDOFF_DIR || '/run/pib-browser/handoff'
+    handoffDir: env.PIB_BROWSER_HANDOFF_DIR || '/run/pib-browser/handoff',
+    errorLogPath: env.PIB_BROWSER_ERROR_LOG || '/run/pib-browser/errors.log'
   };
 }
 function createServer(deps) {
@@ -73,6 +74,7 @@ function createServer(deps) {
               socket.write(JSON.stringify(result) + '\n');
               logger({ cmd, exit: result.exit, ms: Date.now() - start });
             } catch (e) {
+              console.error(`pib-browser: dispatch threw for cmd=${String(cmd).slice(0, 20)}: ${e?.name || 'Error'}`);
               const result = { exit: EXIT.USAGE, ok: false, reason: 'dispatch_error' };
               socket.write(JSON.stringify(result) + '\n');
               logger({ cmd, exit: result.exit, ms: Date.now() - start });
@@ -205,7 +207,8 @@ function buildDaemon(env = process.env, deps = {}) {
     clock: () => new Date(),
     verifyApproval: verifyApprovalFn,
     handoff,
-    checkFill
+    checkFill,
+    errorLogPath: config.errorLogPath
   });
 
   return { config, dispatch, browser, policyResult };
@@ -214,6 +217,14 @@ function buildDaemon(env = process.env, deps = {}) {
 async function main() {
   try {
     const { config, dispatch } = buildDaemon(process.env);
+    // A stray rejection from the browser driver must not take every open session
+    // down with the process (PAR-9187). Record it where agents can read it.
+    const { createErrorLog } = require('./errlog.cjs');
+    const crashLog = createErrorLog({ path: config.errorLogPath });
+    process.on('unhandledRejection', (reason) => {
+      crashLog.record({ phase: 'unhandledRejection', error: reason });
+      console.error(`pib-browser: unhandled rejection: ${reason?.name || 'Error'}`);
+    });
     const server = createServer({ dispatch, logger: () => {} });
 
     try {

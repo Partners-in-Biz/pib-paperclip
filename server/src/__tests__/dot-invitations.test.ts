@@ -103,7 +103,7 @@ it("keeps invite routes company-scoped and denies viewers and agent actors", asy
     const mode = req.headers["x-test-actor"];
     req.actor = mode === "agent" ? { type: "agent", agentId: randomUUID(), companyId: f.companyId }
       : { type: "board", source: "session", userId: f.userId, companyIds: [f.companyId],
-        memberships: [{ companyId: f.companyId, membershipRole: mode === "viewer" ? "viewer" : "owner", status: "active" }] };
+        memberships: [{ companyId: f.companyId, membershipRole: mode === "viewer" ? "viewer" : "owner", status: "active", restricted: false, restrictionMode: "off" }] };
     next();
   });
   app.use(dotRunnerRoutes(db, "https://paperclip.example/mcp/runner"));
@@ -135,7 +135,7 @@ it("reports connection setup authority separately from compatibility status", as
   const app = express();
   app.use((req, _res, next) => {
     req.actor = { type: "board", source: "session", userId: f.userId, companyIds: [f.companyId],
-      memberships: [{ companyId: f.companyId, membershipRole: "owner", status: "active" }] };
+      memberships: [{ companyId: f.companyId, membershipRole: "owner", status: "active", restricted: false, restrictionMode: "off" }] };
     next();
   });
   app.use(dotRunnerRoutes(db, "https://paperclip.example/mcp/runner"));

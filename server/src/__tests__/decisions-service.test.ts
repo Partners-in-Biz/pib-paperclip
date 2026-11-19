@@ -92,9 +92,9 @@ describePg("decisionService", () => {
   afterAll(async () => { await db?.$client.end({ timeout: 1 }); await tempDb?.cleanup(); });
 
   const agentActor = () => ({ type: "agent" as const, companyId, agentId, runId, source: "agent_jwt" as const,
-    onBehalfOfUserId: originResponsibleUserId, onBehalfOfMemberships: [{ companyId, membershipRole: "member", status: "active" }] });
+    onBehalfOfUserId: originResponsibleUserId, onBehalfOfMemberships: [{ companyId, membershipRole: "member", status: "active", restricted: false, restrictionMode: "off" as const }] });
   const boardActor = () => ({ type: "board" as const, userId: decidedByUserId, companyIds: [companyId], source: "session" as const,
-    memberships: [{ companyId, membershipRole: "member", status: "active" }] });
+    memberships: [{ companyId, membershipRole: "member", status: "active", restricted: false, restrictionMode: "off" as const }] });
   const service = () => decisionService(db, { wakeOriginAgent: async (input) => { wakes.push(input); } });
   const createCommentDecision = (staleness: "strict" | "lenient" = "lenient", extra: Record<string, unknown> = {}) => service().create({
     companyId, actor: agentActor(), agentId, runId, title: "Comment?", body: "Body", continuationPolicy: "wake_origin_agent",
@@ -347,7 +347,7 @@ describePg("decisionService", () => {
   it("rejects mutation proposals from an origin actor with read-only access", async () => {
     await db.update(companyMemberships).set({ membershipRole: "viewer" }).where(eq(companyMemberships.principalId, originResponsibleUserId));
     const readOnlyActor = { ...agentActor(),
-      onBehalfOfMemberships: [{ companyId, membershipRole: "viewer" as const, status: "active" as const }] };
+      onBehalfOfMemberships: [{ companyId, membershipRole: "viewer" as const, status: "active" as const, restricted: false, restrictionMode: "off" as const }] };
 
     await expect(service().create({
       companyId, actor: readOnlyActor, agentId, runId, title: "Update?", body: "Body",
@@ -527,7 +527,7 @@ describePg("decisionService", () => {
     expect(await service().recoverEffects()).toEqual({ resumed: 1 });
     expect((await service().get(created.id))?.executionStatus).toBe("succeeded");
     expect(await db.select().from(issueComments).where(eq(issueComments.issueId, targetIssueId))).toHaveLength(1);
-    expect(wakes).toEqual([{ companyId, agentId, issueId: originIssueId, decisionId: created.id, outcome: "decided" }]);
+    expect(wakes).toEqual([{ companyId, agentId, issueId: originIssueId, decisionId: created.id, outcome: "decided", decidedByUserId }]);
   });
 
   it("retries a terminal continuation after a crash between effects and wake delivery", async () => {
@@ -544,7 +544,7 @@ describePg("decisionService", () => {
 
     await service().sweepContinuations();
 
-    expect(wakes).toEqual([{ companyId, agentId, issueId: originIssueId, decisionId: created.id, outcome: "decided" }]);
+    expect(wakes).toEqual([{ companyId, agentId, issueId: originIssueId, decisionId: created.id, outcome: "decided", decidedByUserId }]);
     expect((await service().get(created.id))?.metadata).toMatchObject({ continuationPending: false });
     expect(await db.select().from(issueComments).where(eq(issueComments.issueId, targetIssueId))).toHaveLength(1);
   });
@@ -753,7 +753,7 @@ describePg("decisionService", () => {
     const result = await service().dismiss(created.id, decidedByUserId, boardActor(), "No");
 
     expect(result).toMatchObject({ status: "decided", chosenOptionId: "dismissed" });
-    expect(wakes).toEqual([{ companyId, agentId, issueId: originIssueId, decisionId: created.id, outcome: "decided" }]);
+    expect(wakes).toEqual([{ companyId, agentId, issueId: originIssueId, decisionId: created.id, outcome: "decided", decidedByUserId }]);
   });
   describe("continuation worker", () => {
     let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;

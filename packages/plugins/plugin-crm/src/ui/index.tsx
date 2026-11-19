@@ -72,7 +72,7 @@ import type { CrmSeries } from "../series.js";
 import { ActivityTimeline, BandPill, CrmOverview, LeadScoreCard, LIFECYCLE_LABEL, LifecyclePill, Muted, StagePill, type NeedsGroup } from "./overview.js";
 import { AccountManagerBox, type HireView } from "./agent.js";
 import { ProjectsCard, WebsitesCard, type ConnectResult, type ProjectView, type SiteView } from "./sites.js";
-import { ClientLeadsCard, ClientProfileCard, DeleteCompanyDialog, EmailStatusControl, type ClientLeadView, type ClientProfileView, type EmailStatus } from "./client.js";
+import { type BrandFromSite, ClientLeadsCard, ClientProfileCard, DeleteCompanyDialog, EmailStatusControl, type ClientLeadView, type ClientProfileView, type EmailStatus } from "./client.js";
 import { LeadFormsCard } from "./leads.js";
 import { ClientAgreementsCard, type CreatedKey } from "./agreements.js";
 import { agreementsVisible, type AgreementsView, type GrowthView } from "./agreements-view.js";
@@ -152,6 +152,7 @@ interface Stage {
   name: string;
   kind: string;
   position: number;
+  pipelineId?: string | null;
 }
 
 interface Summary {
@@ -1126,6 +1127,7 @@ interface WorkspaceDeal {
   stageId: string;
   stageName: string;
   stageKind: string;
+  pipelineId?: string | null;
   contactId: string | null;
   contactName: string | null;
   accountId: string | null;
@@ -1203,6 +1205,7 @@ function ClientWorkspace({ companyId, client, companyPrefix }: { companyId: stri
   const enroll = usePluginAction("crm.enroll");
   const scoreContact = usePluginAction("crm.score-contact");
   const updateProfile = usePluginAction("crm.update-client-profile");
+  const readBrand = usePluginAction("crm.extract-brand-from-site");
   const setEmailStatus = usePluginAction("crm.set-email-status");
   const deleteCompany = usePluginAction("crm.delete-company");
   const saveSite = usePluginAction("crm.save-client-site");
@@ -1359,7 +1362,7 @@ function ClientWorkspace({ companyId, client, companyPrefix }: { companyId: stri
   const pickReady = pickMode === "new" ? pickName.trim() !== "" : pickId !== "";
   const openDeal = openDealId ? deals.find((deal) => deal.id === openDealId) ?? null : null;
   const dealView: DealView | null = openDeal
-    ? { id: openDeal.id, title: openDeal.title, amountMinor: openDeal.amountMinor, currency: openDeal.currency, stageId: openDeal.stageId, accountId: openDeal.accountId, contactId: openDeal.contactId }
+    ? { id: openDeal.id, title: openDeal.title, amountMinor: openDeal.amountMinor, currency: openDeal.currency, stageId: openDeal.stageId, pipelineId: openDeal.pipelineId ?? null, accountId: openDeal.accountId, contactId: openDeal.contactId }
     : null;
 
   function openModal(next: Exclude<WorkspaceModal, null>) {
@@ -1497,7 +1500,7 @@ function ClientWorkspace({ companyId, client, companyPrefix }: { companyId: stri
           {company ? <CompanyDetails company={company} onSave={saveDetails} locking={locking} onLock={(keys, lock, label) => void toggleLock(keys, lock, label)} companyPrefix={companyPrefix} /> : null}
           {contact ? <ContactDetails contact={contact} onSave={saveDetails} locking={locking} onLock={(keys, lock, label) => void toggleLock(keys, lock, label)} companyPrefix={companyPrefix} /> : null}
           {/* The client's profile: a company, or a contact who is a client in their own right (a sole trader). */}
-          {company || companies.length === 0 ? <ClientProfileCard profile={data.profile ?? null} onSave={saveProfile} /> : null}
+          {company || companies.length === 0 ? <ClientProfileCard profile={data.profile ?? null} onSave={saveProfile} onReadBrand={(url) => readBrand({ client: `${client.kind}:${client.id}`, ...(url ? { url } : {}) }) as Promise<BrandFromSite>} /> : null}
           {company || companies.length === 0 ? (
             <WebsitesCard
               sites={data.sites ?? []}

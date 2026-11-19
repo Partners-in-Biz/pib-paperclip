@@ -112,6 +112,50 @@ describe("step issues", () => {
     expect(commentsOn(booted, issueId).join("\n")).not.toContain("Not done yet");
   });
 
+  it("a step sent from its task is counted as sent, once, so Results include hand-sent emails", async () => {
+    const { harness, store, issueId } = await openStep();
+    await agentCloses(harness, store, issueId);
+    const sent = () => (store.campaign_step_events ?? []).filter((row) => row.event_type === "sent");
+    expect(sent()).toHaveLength(1);
+    expect(sent()[0]).toMatchObject({ campaign_id: "camp-issue", enrollment_id: "e-ada", step_position: 1, variant: "a", source_key: "hand:step:e-ada:1" });
+    // The same close heard twice (the event and the catch-up job) counts once.
+    await issueUpdated(harness, issueId, AGENT);
+    expect(sent()).toHaveLength(1);
+  });
+
+  it("a person on arm B whose step has only an A version is counted under A, as an automatic send records it", async () => {
+    const store = stepStore();
+    store.campaign_enrollments![0]!.variant = "b";
+    const booted = await boot({ store });
+    await booted.harness.runJob("open-due-steps");
+    const issueId = store.campaign_enrollments![0]!.open_issue_id as string;
+    const issue = (await booted.harness.ctx.issues.get(issueId, CO))!;
+    (store.issues ??= []).push({ id: issueId, status: "todo", assignee_agent_id: issue.assigneeAgentId, created_at: new Date().toISOString() });
+    await agentCloses(booted.harness, store, issueId);
+    expect((store.campaign_step_events ?? []).filter((row) => row.event_type === "sent")).toMatchObject([{ enrollment_id: "e-ada", step_position: 1, variant: "a" }]);
+  });
+
+  it("a person on arm B whose step has a B version is counted under B", async () => {
+    const store = stepStore();
+    store.campaign_steps!.push(step("camp-issue", 1, "b", "Hello B {{first_name}}", "Body B"));
+    store.campaign_enrollments![0]!.variant = "b";
+    const booted = await boot({ store });
+    await booted.harness.runJob("open-due-steps");
+    const issueId = store.campaign_enrollments![0]!.open_issue_id as string;
+    const issue = (await booted.harness.ctx.issues.get(issueId, CO))!;
+    (store.issues ??= []).push({ id: issueId, status: "todo", assignee_agent_id: issue.assigneeAgentId, created_at: new Date().toISOString() });
+    await agentCloses(booted.harness, store, issueId);
+    expect((store.campaign_step_events ?? []).filter((row) => row.event_type === "sent")).toMatchObject([{ step_position: 1, variant: "b" }]);
+  });
+
+  it("a cancelled step task stops the person and counts nothing as sent", async () => {
+    const { harness, store, issueId } = await openStep();
+    await setIssueStatus(harness, store, issueId, "cancelled");
+    await issueUpdated(harness, issueId, PERSON);
+    expect(store.campaign_enrollments![0]).toMatchObject({ status: "stopped" });
+    expect((store.campaign_step_events ?? []).filter((row) => row.event_type === "sent")).toHaveLength(0);
+  });
+
   it("reopens when the close did not move the contact on", async () => {
     const { harness, store, issueId, booted } = await openStep();
     // The issue is done but the plugin's own handler has not moved the contact (it failed).

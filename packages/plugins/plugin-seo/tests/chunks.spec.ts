@@ -211,6 +211,17 @@ describe("the pages of a site", () => {
     expect(result.urls[0]).toBe("https://acme.co.za/");
   });
 
+  it("finds sitemap_index.xml when robots.txt names no sitemap, and reads it once", async () => {
+    const { fetcher, calls } = fetcherFor({
+      "https://acme.co.za/robots.txt": "User-agent: *",
+      "https://acme.co.za/sitemap_index.xml": urlset(["https://acme.co.za/a", "https://acme.co.za/b"]),
+    });
+    const result = await collectSitePages(fetcher, "https://acme.co.za");
+    expect(result).toMatchObject({ source: "sitemap", sitemapUrl: "https://acme.co.za/sitemap_index.xml" });
+    expect(result.urls).toEqual(["https://acme.co.za/", "https://acme.co.za/a", "https://acme.co.za/b"]);
+    expect(calls.filter((c) => c === "https://acme.co.za/sitemap_index.xml")).toHaveLength(1);
+  });
+
   it("calls the list partial when the sitemap answers a server error (it says nothing about the site's size)", async () => {
     const down: SiteFetcher = async (url) => (url.endsWith("/sitemap.xml") ? reply(503) : reply(404));
     expect((await collectSitePages(down, "https://acme.co.za", { known: ["https://acme.co.za/a"] })).partial).toBe(true);

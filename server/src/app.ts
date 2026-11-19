@@ -48,6 +48,7 @@ import { createMcpApiDispatch, createPublicMcpExecutor } from "./services/public
 import { createPublicMcpEvents, type PublicMcpEvents } from "./services/public-mcp/events.js";
 import { publicMcpIngressRoutes, publicMcpManagementRoutes } from "./routes/public-mcp.js";
 import { agentAvatarRoutes } from "./routes/agent-avatars.js";
+import { memberRestrictionRouteGuard } from "./services/member-restriction/route-middleware.js";
 import { decisionModelRoutes } from "./routes/decision-models.js";
 import { agentObservabilityRoutes } from "./routes/agent-observability.js";
 import { aiConnectionRoutes } from "./routes/ai-connections.js";
@@ -211,6 +212,7 @@ import {
 import { createPluginJobScheduler } from "./services/plugin-job-scheduler.js";
 import { pluginJobStore } from "./services/plugin-job-store.js";
 import { createPluginToolDispatcher } from "./services/plugin-tool-dispatcher.js";
+import { pluginToolGate } from "./services/member-restriction/tool-gate.js";
 import { createToolGatewayService } from "./services/tool-gateway.js";
 import { toolAccessService } from "./services/tool-access.js";
 import { chatChannelService } from "./services/chat-channels.js";
@@ -695,6 +697,8 @@ export async function createApp(
 
   // Mount API routes
   const api = Router();
+  // First line of the api router (PAR-12608 4.6, C10): the member-restriction route table.
+  api.use(memberRestrictionRouteGuard(db));
   const agentAvatars = agentAvatarRoutes();
   api.use(agentAvatars.router);
   api.use(boardMutationGuard());
@@ -880,6 +884,7 @@ export async function createApp(
     workerManager,
     lifecycleManager: lifecycle,
     db,
+    toolGate: pluginToolGate(db),
   });
   const gatewayOAuthAccess = toolAccessService(db, {
     deploymentMode: opts.deploymentMode,

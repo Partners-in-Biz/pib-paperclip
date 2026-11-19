@@ -25,6 +25,9 @@ const mockIssuesApi = vi.hoisted(() => ({
   listFeedbackVotes: vi.fn(),
 }));
 const mockDialogState = vi.hoisted(() => ({ onboardingOpen: false }));
+const mockAuthApi = vi.hoisted(() => ({ getSession: vi.fn() }));
+const mockBubbleRow = vi.hoisted(() => vi.fn());
+vi.mock("../api/auth", () => ({ authApi: mockAuthApi }));
 
 vi.mock("../api/agents", () => ({ agentsApi: mockAgentsApi }));
 vi.mock("../api/goals", () => ({ goalsApi: mockGoalsApi }));
@@ -59,7 +62,7 @@ vi.mock("../components/ChatComposer", () => ({
   }),
 }));
 vi.mock("../components/AgentBubbleActionRow", () => ({
-  AgentBubbleActionRow: () => null,
+  AgentBubbleActionRow: (props: unknown) => { mockBubbleRow(props); return null; },
   agentBubbleDateLabel: () => "",
 }));
 vi.mock("../components/AgentIconPicker", () => ({
@@ -130,6 +133,7 @@ describe("BoardChat staged typing intro", () => {
     mockIssuesApi.list.mockResolvedValue([BOARD_ISSUE]);
     mockIssuesApi.listComments.mockResolvedValue([]);
     mockIssuesApi.listFeedbackVotes.mockResolvedValue([]);
+    mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-1" }, memberRestrictions: [] });
   });
 
   afterEach(async () => {
@@ -218,6 +222,21 @@ describe("BoardChat staged typing intro", () => {
     await advance(700);
     expect(hasChips(container)).toBe(true);
   });
+
+  it.each([["enforce", false], ["report", true]] as const)(
+    "reads feedback votes and offers vote buttons only when open, restricted under %s (AC-G10)",
+    async (mode, open) => {
+      mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-1" },
+        memberRestrictions: [{ companyId: "company-1", restricted: true, mode }] });
+      mockIssuesApi.listComments.mockResolvedValue([USER_COMMENT,
+        { ...USER_COMMENT, id: "comment-agent-1", authorAgentId: "agent-ceo", authorUserId: null, body: "Hello" }]);
+      await render();
+      expect(mockIssuesApi.listFeedbackVotes.mock.calls.length > 0).toBe(open);
+      const row = mockBubbleRow.mock.calls.at(-1)?.[0] as { feedback?: unknown } | undefined;
+      expect(row).toBeDefined();
+      expect(Boolean(row?.feedback)).toBe(open);
+    },
+  );
 
   it("skips the staged reveal when a user comment already exists", async () => {
     mockIssuesApi.listComments.mockResolvedValue([USER_COMMENT]);

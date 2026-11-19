@@ -7,6 +7,7 @@ import { useQueryView } from "./QueryView";
 import { accessApi } from "../api/access";
 import { issuesApi } from "../api/issues";
 import { useDraftOwner, useDraftOwnerReader } from "../hooks/useDraftOwner";
+import { useMemberRestrictionGate } from "../hooks/useMemberRestrictionGate";
 import { canBoardConfirmOwnerStop, canBoardResolveRecoveryAction, isRetainedWorkspaceExportCause } from "../lib/recovery-reconcile";
 import { queryKeys } from "../lib/queryKeys";
 import { classifySendFailure, pendingSendKeyFor, readPendingSend, writePendingSend } from "../lib/pending-send";
@@ -195,11 +196,14 @@ function RetainedFilesRecovery({ action, issueId, companyId, className, onRecove
     queryFn: () => accessApi.getCurrentBoardAccess() });
   const accessView = useQueryView(access);
   const accessReady = accessView.kind === "ready" || accessView.kind === "stale";
-  const canMutate = Boolean(accessReady && owner && (access.data?.source === "local_implicit"
+  // Recovery actions are closed to a restricted member under `enforce` (AC-G10): no read, no controls.
+  const memberGate = useMemberRestrictionGate(companyId);
+  const canMutate = Boolean(!memberGate.closed && accessReady && owner && (access.data?.source === "local_implicit"
     || owner !== "signed-out" && access.data?.userId === owner)
     && canBoardResolveRecoveryAction(companyId, access.data));
   const source = useQuery({ queryKey: queryKeys.issues.recoveryActions(issueId, action.id, runId),
-    queryFn: () => issuesApi.recoveryActions(issueId, { runId, actionId: action.id }), enabled: canMutate });
+    queryFn: memberGate.guard(() => issuesApi.recoveryActions(issueId, { runId, actionId: action.id }),
+      { active: null, actions: [] }), enabled: canMutate });
   const sourceView = useQueryView(source);
   const sourceReady = sourceView.kind === "ready" || sourceView.kind === "stale";
   const storageKey = owner ? pendingSendKeyFor(`workspace-file-recovery:${companyId}:${issueId}:${action.id}:${runId}`, owner) : null;

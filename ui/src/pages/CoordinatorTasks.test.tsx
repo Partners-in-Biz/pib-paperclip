@@ -8,14 +8,18 @@ import { coordinatorAttentionTasksQueryKey } from "@/lib/coordinator-attention";
 import { MemoryRouter } from "@/lib/router";
 import { Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { CoordinatorTasks } from "./CoordinatorTasks";
+import { MemberRestrictionProvider } from "@/context/MemberRestrictionContext";
 import { Issues } from "./Issues";
 import { queryKeys } from "@/lib/queryKeys";
 import { IssueFilterPanel } from "@/components/IssueFilterPanel";
 import type { ComponentProps } from "react";
 import type { TaskListSort } from "@/lib/task-list";
 import { taskListViews, taskListViewStorageKey, type TaskListView } from "@/lib/task-list-views";
+import type { SessionMemberRestriction } from "@paperclipai/shared";
 
 const mocks = vi.hoisted(() => ({ list: vi.fn(), get: vi.fn(), attention: vi.fn(), breadcrumbs: vi.fn(), liveRuns: vi.fn(), localTrusted: false, realFilters: false, labels: [] as { id: string; name: string; color: string }[], identity: { userId: "person" as string | null, settled: true } }));
+const restriction = vi.hoisted(() => ({ entries: [] as SessionMemberRestriction[] }));
+vi.mock("@/api/auth", () => ({ authApi: { getSession: async () => ({ memberRestrictions: restriction.entries }) } }));
 vi.mock("@/api/heartbeats", () => ({ heartbeatsApi: { liveRunsForCompany: mocks.liveRuns } }));
 vi.mock("@/api/issues", () => ({ issuesApi: { list: mocks.list, listCompact: mocks.list, get: mocks.get, listLabels: async () => mocks.labels, update: vi.fn() } }));
 vi.mock("@/api/attention", () => ({ attentionApi: { taskIndex: mocks.attention } }));
@@ -29,10 +33,10 @@ vi.mock("@/hooks/useCombinedInboxTasksEnabled", () => ({ useCombinedInboxTasksEn
 vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: "company" }) }));
 vi.mock("@/context/DialogContext", () => ({ useDialogActions: () => ({ openNewIssue: vi.fn() }) }));
 vi.mock("@/context/BreadcrumbContext", () => ({ useBreadcrumbs: () => ({ setBreadcrumbs: mocks.breadcrumbs }) }));
-vi.mock("@/components/TaskListToolbar", () => ({ TaskListToolbar: ({ filters, view, onViewChange, onLayoutChange }: { filters: Omit<ComponentProps<typeof IssueFilterPanel>, "onClear">; view: TaskListView; onViewChange: (view: TaskListView) => void; onLayoutChange: (layout: "list" | "board") => void }) => <>
+vi.mock("@/components/TaskListToolbar", () => ({ TaskListToolbar: ({ filters, view, viewOptions = taskListViews, onViewChange, onLayoutChange }: { filters: Omit<ComponentProps<typeof IssueFilterPanel>, "onClear">; view: TaskListView; viewOptions?: readonly { value: TaskListView; label: string }[]; onViewChange: (view: TaskListView) => void; onLayoutChange: (layout: "list" | "board") => void }) => <>
   {mocks.realFilters ? <IssueFilterPanel {...filters} onClear={() => filters.onChange({ labels: [] })} /> : null}
   <span data-selected-view>{view}</span>
-  {taskListViews.map(option => <button key={option.value} onClick={() => onViewChange(option.value)}>{option.label}</button>)}
+  {viewOptions.map(option => <button key={option.value} onClick={() => onViewChange(option.value)}>{option.label}</button>)}
   <button onClick={() => filters.onChange({ routineTasksOnly: true })}>Routine tasks</button>
   <button onClick={() => filters.onChange({ routineTasksOnly: false })}>Show other tasks</button>
   <button onClick={() => filters.onChange({ liveOnly: true })}>Live runs only</button>
@@ -54,6 +58,7 @@ describe("Coordinator tasks using the proposed table", () => {
   const pending = createIssue({ id: "pending", companyId: "company", status: "todo", parentId: null, title: "Needs a channel answer" });
   beforeEach(() => {
     vi.clearAllMocks(); localStorage.clear();
+    restriction.entries = [];
     mocks.realFilters = false; mocks.labels = [];
     mocks.identity = { userId: "person", settled: true };
     mocks.localTrusted = false;
@@ -66,7 +71,7 @@ describe("Coordinator tasks using the proposed table", () => {
   });
   afterEach(() => { flushSync(() => root.unmount()); client.clear(); host.remove(); vi.unstubAllGlobals(); });
   async function mount(url: string) {
-    flushSync(() => root.render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[url]}><CoordinatorTasks /></MemoryRouter></QueryClientProvider>));
+    flushSync(() => root.render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[url]}><MemberRestrictionProvider><CoordinatorTasks /></MemberRestrictionProvider></MemoryRouter></QueryClientProvider>));
     await vi.waitFor(() => expect(host.textContent).not.toContain("Loading tasks"));
   }
   it.each([
@@ -557,5 +562,32 @@ describe("Coordinator tasks using the proposed table", () => {
     await mount("/issues?view=needs_attention");
     expect(host.querySelector('[role="alert"]')?.textContent).toContain("Some tasks with pending decisions couldn’t load.");
     expect(host.textContent).not.toContain("No tasks need a decision.");
+  });
+  // AC-G10 (PAR-13266): live runs and the attention feed are closed lists for a restricted member under `enforce`.
+  const enforce: SessionMemberRestriction = { companyId: "company", restricted: true, mode: "enforce" };
+  const report: SessionMemberRestriction = { companyId: "company", restricted: true, mode: "report" };
+  const viewLabels = () => [...host.querySelectorAll("button")].map(button => button.textContent);
+  it("sends no live-runs or attention request and offers no Needs attention view to R under enforce", async () => {
+    restriction.entries = [enforce];
+    await mount("/issues?view=all");
+    expect(host.querySelector("[data-task-id]")).not.toBeNull();
+    expect(viewLabels()).not.toContain("Needs attention");
+    flushSync(() => root.unmount()); root = createRoot(host);
+    await mount("/issues?view=needs_attention");
+    expect(host.textContent).toContain("No tasks need a decision.");
+    expect(host.querySelector('[role="alert"]')).toBeNull();
+    expect(mocks.liveRuns).not.toHaveBeenCalled();
+    expect(mocks.attention).not.toHaveBeenCalled();
+  });
+  it.each([["the owner", [] as SessionMemberRestriction[]], ["R under report", [report]]])("requests live runs and the attention feed for %s", async (_who, entries) => {
+    restriction.entries = entries;
+    mocks.list.mockResolvedValue([pending]);
+    await mount("/issues?view=all");
+    await vi.waitFor(() => expect(mocks.liveRuns).toHaveBeenCalledWith("company"));
+    expect(viewLabels()).toContain("Needs attention");
+    flushSync(() => root.unmount()); root = createRoot(host);
+    await mount("/issues?view=needs_attention");
+    await vi.waitFor(() => expect(host.querySelector(`[data-task-id="${pending.id}"]`)).not.toBeNull());
+    expect(mocks.attention).toHaveBeenCalledWith("company");
   });
 });

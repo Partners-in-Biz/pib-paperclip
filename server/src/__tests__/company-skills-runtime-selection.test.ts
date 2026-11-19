@@ -59,6 +59,9 @@ describeDatabase("selected runtime skill reconciliation", () => {
           delivered: entries.map(entry => entry.key) }));
         expect(entries.map(entry => entry.key).sort()).toEqual([PAPERCLIP_OPERATIONAL_SKILL_KEY, ...PAPERCLIP_FEEDBACK_SKILL_KEYS].sort());
         expect(entries.every(entry => entry.sourceStatus === "available" && entry.versionId)).toBe(true);
+        const ids = new Map((await db.select({ id: companySkills.id, key: companySkills.key }).from(companySkills)
+          .where(eq(companySkills.companyId, companyId))).map(row => [row.key, row.id]));
+        expect(entries.map(entry => entry.skillId)).toEqual(entries.map(entry => ids.get(entry.key)));
       } finally {
         select.mockRestore();
         insert.mockRestore();

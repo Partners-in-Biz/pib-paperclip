@@ -300,8 +300,8 @@ describeEmbeddedPostgres("agent task hierarchy depth", () => {
     expect(created.originIssueId).toBe(runTaskId);
     expect(created.privacyParentIssueId).toBe(childId);
 
-    const fromRunTask = await issueService(db).list(companyId, { createdFromIssueId: runTaskId });
-    const fromChild = await issueService(db).list(companyId, { createdFromIssueId: childId });
+    const fromRunTask = await issueService(db).list(companyId, { readCondition: "system", createdFromIssueId: runTaskId });
+    const fromChild = await issueService(db).list(companyId, { readCondition: "system", createdFromIssueId: childId });
     expect(fromRunTask.map((row) => row.id)).toContain(created.id);
     expect(fromChild.map((row) => row.id)).not.toContain(created.id);
     expect((await resolveIssueCreationSource(db, created))?.sourceIssue.id).toBe(runTaskId);

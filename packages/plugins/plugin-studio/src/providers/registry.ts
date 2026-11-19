@@ -8,11 +8,15 @@ import { StudioError } from "../errors.js";
 import { findModel, lipsyncMode } from "../models.js";
 import { fakeProviderOn } from "../provider.js";
 import { isTablePriced, localCredits } from "../seedance-price.js";
+import { PIB_BASIC_IDS } from "../video-edit/looks.js";
+import { STICKER_PACKS, stickerIds } from "../video-edit/sticker-packs.js";
 import { fakeSpeechToText, xaiSpeechToText, XAI_STT_MODEL, type SpeechToText } from "../video-edit/stt.js";
 import { fakeTextToSpeech, xaiTextToSpeech, XAI_VOICES, type TextToSpeech } from "../video-edit/tts.js";
 import { ttsCredits } from "../video-edit/tts-price.js";
+import { MUSIC_MAX_SECONDS, STABLE_AUDIO_USD_PER_GENERATION, musicCredits } from "../music/stable-audio-price.js";
+import { fakeMusic, stabilityMusic, type MusicGenerator } from "../music/stable-audio.js";
 
-export type Capability = "stt" | "tts";
+export type Capability = "stt" | "tts" | "music";
 
 export interface ProviderEntry {
   key: string;
@@ -23,7 +27,9 @@ export interface ProviderEntry {
 
 const XAI: ProviderEntry = { key: "xai", label: "xAI (Grok)", secret: "xai.apiKey" };
 
-export const PROVIDERS: Record<Capability, readonly ProviderEntry[]> = { stt: [XAI], tts: [XAI] };
+const STABILITY: ProviderEntry = { key: "stability", label: "Stability AI (Stable Audio)", secret: "stability.apiKey" };
+
+export const PROVIDERS: Record<Capability, readonly ProviderEntry[]> = { stt: [XAI], tts: [XAI], music: [STABILITY] };
 
 const clean = (v: unknown): string | undefined => (typeof v === "string" && v.trim() ? v.trim() : undefined);
 
@@ -46,8 +52,10 @@ export interface ProviderStatus {
 /** The provider each capability uses by default, and whether its key is set. Never returns the key. */
 export async function providerStatus(config: StudioConfig): Promise<ProviderStatus[]> {
   const out: ProviderStatus[] = [];
-  for (const capability of ["stt", "tts"] as const) {
-    const entry = resolveProvider(capability, undefined, await config.providerDefault(capability).catch(() => undefined));
+  for (const capability of ["stt", "tts", "music"] as const) {
+    // Music has one provider and no company default setting.
+    const configured = capability === "music" ? undefined : await config.providerDefault(capability).catch(() => undefined);
+    const entry = resolveProvider(capability, undefined, configured);
     out.push({ capability, provider: entry.key, label: entry.label, configured: await config.hasSecret(entry.secret) });
   }
   return out;
@@ -110,9 +118,42 @@ export function lipsyncPrice(model: string): { credits: number | null; price: st
   return each === null ? { credits: null, price: "Priced by Higgsfield when you estimate" } : { credits: each, price: `About ${each} credits per 5 s at ${resolution}` };
 }
 
+/**
+ * Look packs (PAR-10156, plan PAR-8279 slice 2). A pack is a closed list of look ids defined in code (video-edit/looks.ts);
+ * no secret and no network. Order: the clip's `look.pack`, then the company default `providers.looks`, then the first pack.
+ */
+export interface LookPackEntry {
+  key: string;
+  label: string;
+  ids: readonly string[];
+}
+
+export const LOOK_PACKS: readonly LookPackEntry[] = [{ key: "pib-basic", label: "PiB basic", ids: PIB_BASIC_IDS }];
+
+export function resolveLookPack(override?: unknown, configDefault?: unknown): LookPackEntry {
+  const key = clean(override) ?? clean(configDefault);
+  if (key === undefined) return LOOK_PACKS[0]!;
+  const found = LOOK_PACKS.find((p) => p.key === key);
+  if (!found) throw new StudioError(`Unknown look pack "${key.slice(0, 40)}". Choose one of: ${LOOK_PACKS.map((p) => p.key).join(", ")}.`, "bad_request");
+  return found;
+}
+
+/**
+ * Sticker packs (PAR-10172, plan PAR-8279 slice 4): closed lists defined in code (video-edit/sticker-packs.ts), shipped as
+ * PNGs in the plugin. Nothing to configure: no secret, no default setting, no network.
+ */
+export interface StickerPackEntry {
+  key: string;
+  label: string;
+  ids: readonly string[];
+}
+const STICKER_LABELS: Record<(typeof STICKER_PACKS)[number], string> = { "noto-emoji": "Noto Emoji", "pib-shapes": "PiB shapes" };
+export const STICKER_PACK_ENTRIES: readonly StickerPackEntry[] = STICKER_PACKS.map((key) => ({ key, label: STICKER_LABELS[key], ids: stickerIds(key) }));
+
 const VOICE_NOTES: Record<Capability, Record<string, { price: string; qualityNote: string }>> = {
   stt: { xai: { price: "Not charged to Studio credits (xAI bills the key a few cents a minute)", qualityNote: `${XAI_STT_MODEL}: timed words for captions.` } },
   tts: { xai: { price: `${ttsCredits(1000)} credits per 1,000 characters`, qualityNote: `Grok voice, ${XAI_VOICES.length} voices.` } },
+  music: { stability: { price: `USD ${STABLE_AUDIO_USD_PER_GENERATION.toFixed(2)} (${musicCredits()} credits) per track, up to ${MUSIC_MAX_SECONDS} s`, qualityNote: "Stable Audio 2.5, instrumental music and sound beds" } },
 };
 
 /** Every option per capability with its price, quality note and whether it is the company's default. Never a key. */
@@ -126,10 +167,11 @@ export async function providerOptions(config: Pick<StudioConfig, "providerDefaul
     }
   };
   const voice = async (cap: Capability) => {
-    const configured = await def(cap);
+    const configured = cap === "music" ? undefined : await def(cap);
     const chosen = safe(() => resolveProvider(cap, undefined, configured).key, () => PROVIDERS[cap][0].key);
     return PROVIDERS[cap].map((p) => ({ key: p.key, label: p.label, ...VOICE_NOTES[cap][p.key], isDefault: p.key === chosen }));
   };
+  const lookDefault = await def("looks");
   const defaults = { audio: await def("lipsync"), line: await def("lipsyncLine") };
   const chosen = {
     audio: safe(() => resolveLipsync("audio", undefined, defaults).key, () => resolveLipsync("audio").key),
@@ -139,7 +181,9 @@ export async function providerOptions(config: Pick<StudioConfig, "providerDefaul
     const input = lipsyncInputOf(e);
     return { key: e.key, label: e.label, model: e.model, input, ...lipsyncPrice(e.model), qualityNote: e.qualityNote, isDefault: chosen[input] === e.key };
   });
-  return { stt: await voice("stt"), tts: await voice("tts"), lipsync };
+  const lookChosen = safe(() => resolveLookPack(undefined, lookDefault).key, () => LOOK_PACKS[0]!.key);
+  const looks = LOOK_PACKS.map((p) => ({ key: p.key, label: p.label, ids: p.ids, isDefault: p.key === lookChosen }));
+  return { stt: await voice("stt"), tts: await voice("tts"), music: await voice("music"), lipsync, looks, stickers: STICKER_PACK_ENTRIES };
 }
 
 /** Speech to text for `override` (or the company default). Fake when PIB_STUDIO_FAKE_PROVIDER=1. */
@@ -164,4 +208,11 @@ export async function ttsFor(override: unknown, config: StudioConfig): Promise<T
     default:
       throw new StudioError(`Unknown provider "${entry.key}".`, "bad_request");
   }
+}
+
+/** Music generator (Stable Audio). Fake when PIB_STUDIO_FAKE_PROVIDER=1. */
+export async function musicFor(config: StudioConfig, override?: unknown): Promise<MusicGenerator> {
+  resolveProvider("music", override);
+  if (fakeProviderOn()) return fakeMusic();
+  return stabilityMusic(await config.stabilityKey());
 }

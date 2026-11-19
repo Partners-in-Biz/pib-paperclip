@@ -70,7 +70,7 @@ d("Critical trigger (Postgres)", () => {
   });
 
   async function run(
-    healthLevel: "ok" | "warn" | "bad" = "ok",
+    healthLevel: "ok" | "warn" | "bad" | "unknown" = "ok",
     errorCount: number = 0,
     authAgentIds: Set<string> = new Set(),
     now?: Date,
@@ -212,6 +212,22 @@ d("Critical trigger (Postgres)", () => {
     // Recurs: bad again
     result = await run("bad");
     expect(result.count).toBe(1);
+  });
+
+  it("unknown health (checks did not finish) neither fires nor clears; ok still clears", async () => {
+    expect((await run("bad")).count).toBe(1);
+    expect((await run("unknown")).count).toBe(0);
+    // The remembered level stayed: bad again does not fire.
+    expect((await run("bad")).count).toBe(0);
+    expect((await run("ok")).count).toBe(0);
+    expect((await run("bad")).count).toBe(1);
+  });
+
+  it("unknown health still runs the agent-error and auth conditions", async () => {
+    const result = await run("unknown", 4, new Set(["agent-auth-1"]));
+    expect(result.count).toBe(2);
+    const refs = result.logs.filter((l) => l.status === "sent").map((l) => l.issueRef).sort();
+    expect(refs).toEqual(["critical:agents", "critical:auth"]);
   });
 
   it("multiple conditions fire independently", async () => {

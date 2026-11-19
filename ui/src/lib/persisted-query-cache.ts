@@ -11,6 +11,15 @@ export const QUERY_CACHE_CLEARED = "paperclip:query-cache-cleared";
 export const QUERY_CACHE_MAX_AGE = 24 * 60 * 60 * 1000;
 export const QUERY_CACHE_MAX_ISSUES = 20;
 const MAX_RECORD_BYTES = 2 * 1024 * 1024;
+/**
+ * Saves rewrite every record, which can be hundreds of KB. Browsers append each
+ * localStorage write to an on-disk log, so a save on every poll grew that log by
+ * gigabytes a day on a tab left open. Save at most this often (plus on page hide),
+ * and skip records whose content has not changed.
+ */
+export const QUERY_CACHE_MIN_SAVE_INTERVAL_MS = 60_000;
+/** Rewrite an unchanged record after this long so its read times stay inside QUERY_CACHE_MAX_AGE. */
+export const QUERY_CACHE_REFRESH_UNCHANGED_MS = 30 * 60_000;
 const REVISION_PREFIX = "paperclip:query-cache-revision:";
 const controllers = new WeakMap<QueryClient, { clear: () => void }>();
 type CacheStorage = Pick<Storage, "getItem" | "setItem" | "removeItem" | "key" | "length">;
@@ -131,6 +140,7 @@ export function startPersistedQueryCache(client: QueryClient, options: {
   now?: () => number;
   eventTarget?: Window | null;
   debounceMs?: number;
+  minSaveIntervalMs?: number;
 }): { flush: () => void; clear: () => void; dispose: () => void } {
   const storage = options.storage === undefined ? browserStorage() : options.storage;
   const buildId = options.buildId;
@@ -139,6 +149,10 @@ export function startPersistedQueryCache(client: QueryClient, options: {
   let owner: string | null = null;
   let ownerRevision: string | null = null;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let lastFlushAt = Number.NEGATIVE_INFINITY;
+  const minSaveInterval = options.minSaveIntervalMs ?? QUERY_CACHE_MIN_SAVE_INTERVAL_MS;
+  /** Content (without save/read times) and time of this tab's last write, per record key. */
+  const written = new Map<string, { content: string; at: number }>();
   let suspended = false;
   let disposed = false;
   let sessionEpoch = 0;
@@ -167,6 +181,7 @@ export function startPersistedQueryCache(client: QueryClient, options: {
   };
   const cancelTimer = () => { if (timer !== undefined) clearTimeout(timer); timer = undefined; };
   const clear = () => {
+    written.clear();
     detachInflightGets();
     sessionEpoch += 1;
     cancelTimer();
@@ -197,6 +212,7 @@ export function startPersistedQueryCache(client: QueryClient, options: {
     return { flush: () => {}, clear, dispose: () => { controllers.delete(client); } };
   }
   const suspendAccount = () => {
+    written.clear();
     sessionEpoch += 1;
     removeUser(owner, true);
     suspended = true;
@@ -277,7 +293,16 @@ export function startPersistedQueryCache(client: QueryClient, options: {
     let data = queryDisplayData(query.queryKey, query.state.data, deniedIssues);
     if (hashKey(query.queryKey) === hashKey(queryKeys.auth.session)) {
       const user = object(object(data)?.user)!;
-      data = { session: { userId }, user: { id: userId, name: user.name, email: user.email, image: user.image }, sentryDsn: null };
+      // A restored session keeps the person's own restriction per company (AC-G10): without it a reload
+      // reads him as unrestricted until the refetch lands, and his shell sends closed requests first.
+      const restrictions = object(data)?.memberRestrictions;
+      const memberRestrictions = Array.isArray(restrictions) ? restrictions.flatMap((entry) => {
+        const value = object(entry);
+        return value && typeof value.companyId === "string" && typeof value.restricted === "boolean" && typeof value.mode === "string"
+          ? [{ companyId: value.companyId, restricted: value.restricted, mode: value.mode }] : [];
+      }) : undefined;
+      data = { session: { userId }, user: { id: userId, name: user.name, email: user.email, image: user.image }, sentryDsn: null,
+        ...(memberRestrictions ? { memberRestrictions } : {}) };
     } else if (Array.isArray(object(data)?.pages)) {
       const value = object(data)!;
       data = { ...value, pages: (value.pages as unknown[]).slice(0, 1), pageParams: (value.pageParams as unknown[] | undefined)?.slice(0, 1) };
@@ -329,6 +354,7 @@ export function startPersistedQueryCache(client: QueryClient, options: {
 
   const flush = () => {
     cancelTimer();
+    lastFlushAt = now();
     if (observeStorage()) return;
     if (!storage || disposed || suspended || hasUnverifiedSession(client)) return;
     const session = client.getQueryData(queryKeys.auth.session);
@@ -369,9 +395,14 @@ export function startPersistedQueryCache(client: QueryClient, options: {
         expected.add(key);
         const envelope: Envelope = { version: 1, userId, companyId, buildId, revision: ownerRevision, savedAt: now(),
           state: { mutations: [], queries: queries.filter(query => persistedQueryScope(query.queryKey, query.state.data, userId, companies) === companyId) } };
+        const content = JSON.stringify({ ...envelope, savedAt: 0, state: { ...envelope.state,
+          queries: envelope.state.queries.map(query => ({ ...query, state: { ...query.state, dataUpdatedAt: 0, dataUpdateCount: 0 } })) } });
+        const previous = written.get(key);
+        if (previous && previous.content === content && envelope.savedAt - previous.at < QUERY_CACHE_REFRESH_UNCHANGED_MS
+          && storage.getItem(key) !== null) continue;
         const serialized = JSON.stringify(envelope);
-        if (serialized.length <= MAX_RECORD_BYTES) storage.setItem(key, serialized);
-        else storage.removeItem(key);
+        if (serialized.length <= MAX_RECORD_BYTES) { storage.setItem(key, serialized); written.set(key, { content, at: envelope.savedAt }); }
+        else { storage.removeItem(key); written.delete(key); }
       }
       const userPrefix = `${QUERY_CACHE_PREFIX}${encodeURIComponent(userId)}:`;
       for (const key of storageKeys(storage)) {
@@ -451,8 +482,11 @@ export function startPersistedQueryCache(client: QueryClient, options: {
       if (userId) scrubSaved(userId, saved);
       flush(); return;
     }
-    cancelTimer();
-    timer = setTimeout(flush, options.debounceMs ?? 250);
+    // Throttle, not debounce: a pending save is kept, so steady polling still
+    // saves once per interval instead of on every response.
+    if (timer !== undefined) return;
+    const debounce = options.debounceMs ?? 250;
+    timer = setTimeout(flush, Math.max(debounce, lastFlushAt + minSaveInterval - now()));
   });
   const onStorage = (event: StorageEvent) => {
     if (owner && event.key === revisionKey(owner) && event.newValue !== ownerRevision) { suspendAccount(); return; }
@@ -464,14 +498,18 @@ export function startPersistedQueryCache(client: QueryClient, options: {
     observeStorage();
   };
   const onPageHide = () => flush();
+  const visibilityTarget = target?.document ?? null;
+  const onVisibilityChange = () => { if (visibilityTarget?.visibilityState === "hidden" && timer !== undefined) flush(); };
   target?.addEventListener("storage", onStorage);
   target?.addEventListener("pagehide", onPageHide);
+  visibilityTarget?.addEventListener("visibilitychange", onVisibilityChange);
   const dispose = () => {
     disposed = true;
     cancelTimer();
     unsubscribe();
     target?.removeEventListener("storage", onStorage);
     target?.removeEventListener("pagehide", onPageHide);
+    visibilityTarget?.removeEventListener("visibilitychange", onVisibilityChange);
     controllers.delete(client);
   };
   controllers.set(client, { clear });

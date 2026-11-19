@@ -23,6 +23,8 @@ export const stepOrigin = (enrollmentId: string, position: number) => `${CAMPAIG
 export const sendFailedOrigin = (enrollmentId: string, position: number) => `${CAMPAIGN_ORIGINS.sendFailed}${enrollmentId}:${position}`;
 export const reviseOrigin = (campaignId: string, approvalIssueId: string) => `${CAMPAIGN_ORIGINS.revise}${campaignId}:${approvalIssueId}`;
 export const replyOrigin = (enrollmentId: string, messageId: string) => `${CAMPAIGN_ORIGINS.reply}${enrollmentId}:${messageId}`;
+/** The source key of the `sent` step event for a step an agent sent from its task: one per person and step. */
+export const handSentKey = (enrollmentId: string, position: number) => `hand:step:${enrollmentId}:${position}`;
 export const approvalOrigin = (campaignId: string) => `${CAMPAIGN_ORIGINS.approval}${campaignId}`;
 
 /** `<prefix><enrollmentId>:<position>` → its parts, or null. */

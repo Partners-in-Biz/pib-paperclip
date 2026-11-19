@@ -116,12 +116,49 @@ jobs:
             ts_only server
           fi
 
+      # Blocking (PAR-12977): the PR's own added or modified test files run first, by name, so they always run and
+      # show per-file in the log. The --changed step below can time out on a PR that touches a hub file such as
+      # server/src/routes/issues.ts. `vitest list` keeps only files a root vitest project collects (runner, e2e and
+      # PiB plugin tests run in their own workflows). A timeout (exit 124) fails the step like a red test.
+      - name: Test files changed in this PR
+        env:
+          BASE_REF: ${{ github.base_ref || 'development' }}
+          CI: 'true'
+          VITE_CONFIG_NATIVE_IGNORE_WARNING: 'true'
+        run: |
+          set -euo pipefail
+          mapfile -t changed < <(git diff --name-only --diff-filter=AMR "origin/${BASE_REF}...HEAD" | grep -E '\.test\.tsx?$' || true)
+          if [ "${#changed[@]}" -eq 0 ]; then
+            echo "no changed test files"
+            exit 0
+          fi
+          printf 'changed test file: %s\n' "${changed[@]}"
+          list_json="${RUNNER_TEMP}/changed-test-files.json"
+          pnpm exec vitest list --filesOnly --json="$list_json" "${changed[@]}" >/dev/null
+          mapfile -t files < <(jq -r --arg root "$PWD/" '.[].file | ltrimstr($root)' "$list_json" | sort -u)
+          for f in "${changed[@]}"; do
+            printf '%s\n' "${files[@]}" | grep -Fxq "$f" || echo "not in a root vitest project, skipped here: $f"
+          done
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "no changed test files"
+            exit 0
+          fi
+          status=0
+          timeout 8m pnpm exec vitest run "${files[@]}" --reporter=default || status=$?
+          if [ "$status" -eq 124 ]; then
+            echo "::error::Changed test files did not finish within 8 minutes (exit 124)."
+          elif [ "$status" -ne 0 ]; then
+            echo "::error::Changed test files failed (exit ${status})."
+          fi
+          exit "$status"
+
       # Non-blocking until it has been green on a few real core PRs (some upstream server tests need services this
       # light job does not start). Make it blocking by deleting continue-on-error.
       # The job budget is 30 minutes. A large server diff spends most of that on typecheck, and an unbounded
       # vitest --changed then cancels the whole check. Stop this step first so a long non-blocking run cannot
       # erase a green typecheck.
       # In affected mode vitest runs only the root projects whose package is in the affected set.
+      # No `|| true` on the vitest line: a vitest config error (PAR-12762) must fail the step, not read as "no tests".
       - name: Tests related to the changed files
         continue-on-error: true
         env:
@@ -134,4 +171,4 @@ jobs:
               [ -n "$name" ] && projects+=(--project "$name")
             done < <(pnpm --filter "...[origin/${BASE_REF}]" list --json --depth -1 | jq -r '.[].name')
           fi
-          timeout 12m pnpm exec vitest run --changed "origin/${BASE_REF}" "${projects[@]}" --passWithNoTests || true
+          timeout 12m pnpm exec vitest run --changed "origin/${BASE_REF}" "${projects[@]}" --passWithNoTests

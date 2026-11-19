@@ -152,7 +152,7 @@ async function rollTask(env: Env, companyId: string, listed: db.SprintTask, old:
     comments: facts.comments,
     reason: facts.reason === "e2big" ? "the agent's runs were failing with spawn E2BIG" : facts.reason === "requested" ? "moved on request" : "it passed the size the plugin allows",
     task: { title: task.title, status: task.status, blockerReason: task.blockerReason, humanAsk: task.humanAsk, startedAt: task.startedAt, evidenceSummary: typeof evidence.summary === "string" ? evidence.summary : null },
-    previews: previews.map((p) => ({ pageUrl: p.pageUrl, title: p.title, status: p.status, reviewStatus: p.reviewStatus, reviewNote: p.reviewNote, previewId: p.id })),
+    previews: previews.map((p) => ({ pageUrl: p.pageUrl, title: p.title, status: p.status, reviewStatus: p.reviewStatus, reviewNote: p.reviewNote, previewId: p.id, decisionSource: p.decisionSource })),
     lastComments: last,
     sprintId: sprint.id,
   });

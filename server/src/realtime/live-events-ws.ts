@@ -13,8 +13,12 @@ import { logger } from "../middleware/logger.js";
 import { activityToastIdentity } from "./activity-toast-identity.js";
 import { taskToastEligible } from "./task-toast-eligibility.js";
 import { subscribeCompanyLiveEvents } from "../services/live-events.js";
+import { memberRestrictionEnforcedCompanyIdsForActor, restrictionPersonIds } from "../services/member-restriction/strict-read.js";
 import { trackIdleWork } from "../services/task-admission.js";
 import { createLiveRunEventRedactor } from "../services/live-run-event-redaction.js";
+import { refusedOnlyByMemberRestriction } from "../services/member-restriction/action-list.js";
+import { actorPersonMembership } from "../services/member-restriction/actor-memberships.js";
+import { hasHostKeys, withoutHostKeys } from "../services/member-restriction/response-strip.js";
 
 interface WsSocket {
   readyState: number;
@@ -294,27 +298,41 @@ export function setupLiveEventsWebSocketServer(
         }
         return event;
       }
+      // Whether a person the caller carries may be restricted here (4.6). The
+      // membership row read below rules it out for an unrestricted signed-in
+      // user without an extra query; the resolver decides every other case.
+      let mayBeRestricted = true;
       if (context!.apiKeyId) {
         const active = await db.select({ id: agentApiKeys.id }).from(agentApiKeys)
           .where(and(eq(agentApiKeys.id, context!.apiKeyId), isNull(agentApiKeys.revokedAt))).limit(1);
         if (!active.length) return null;
       } else {
-        const membership = await db.select({ id: companyMemberships.id }).from(companyMemberships)
+        const membership = await db.select({ id: companyMemberships.id, restricted: companyMemberships.restricted }).from(companyMemberships)
           .where(and(eq(companyMemberships.companyId, context!.companyId), eq(companyMemberships.principalType, "user"),
             eq(companyMemberships.principalId, context!.actorId), eq(companyMemberships.status, "active"))).limit(1);
         const admin = context!.actor.source !== "cloud_tenant" && await db.select({ id: instanceUserRoles.id }).from(instanceUserRoles)
           .where(and(eq(instanceUserRoles.userId, context!.actorId), eq(instanceUserRoles.role, "instance_admin"))).limit(1).then(rows => rows.length > 0);
         if (!membership.length && !admin) return null;
+        mayBeRestricted = membership[0]?.restricted !== false
+          || restrictionPersonIds(context!.actor).some(personId => personId !== context!.actorId);
       }
       const payload = event.payload;
       const issueId = typeof payload.issueId === "string" ? payload.issueId
         : payload.entityType === "issue" && typeof payload.entityId === "string" ? payload.entityId : null;
       const runId = typeof payload.runId === "string" ? payload.runId
         : payload.entityType === "heartbeat_run" && typeof payload.entityId === "string" ? payload.entityId : null;
+      // PAR-12608 4.6a row 17: a caller refused `company_scope:read` only by the
+      // member restriction gets a run event only for a run on a task he can
+      // read that works for him.
+      let runMustWorkFor: string | null = null;
       if (event.type === "heartbeat.run.event" || event.type === "heartbeat.run.log") {
         const decision = await access.decide({ actor: context!.actor, action: "company_scope:read",
           resource: { type: "company", companyId: event.companyId } });
-        if (!decision.allowed) return null;
+        if (!decision.allowed) {
+          runMustWorkFor = refusedOnlyByMemberRestriction(decision)
+            ? actorPersonMembership(context!.actor, event.companyId)?.personId ?? null : null;
+          if (!runMustWorkFor || !runId) return null;
+        }
       }
       const readBindings: Parameters<typeof getHeartbeatRunReadDecisions>[3][number][] = [];
       if (issueId) {
@@ -325,8 +343,10 @@ export function setupLiveEventsWebSocketServer(
           companyId: heartbeatRuns.companyId,
           scopeKind: heartbeatRuns.scopeKind,
           issueId: heartbeatRuns.issueId,
+          responsibleUserId: heartbeatRuns.responsibleUserId,
         }).from(heartbeatRuns).where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, event.companyId)));
         if (!run) return null;
+        if (runMustWorkFor && (run.scopeKind === "company" || !run.issueId || run.responsibleUserId !== runMustWorkFor)) return null;
         readBindings.push(run);
       }
       if ((await getHeartbeatRunReadDecisions(db, access, context!.actor, readBindings)).some(allowed => !allowed)) return null;
@@ -343,6 +363,19 @@ export function setupLiveEventsWebSocketServer(
         if (!project || !(await access.decide({ actor: context!.actor, action: "project:read",
           resource: { type: "project", companyId: event.companyId, projectId: project.id } })).allowed) return null;
       }
+      // PAR-12608 4.6: a caller who works for a person restricted under `enforce`
+      // in the event's company gets only the task, project and run events checked
+      // above; every other event type is dropped. A failed restriction read
+      // throws, so the delivery drops the event.
+      const boundToTaskProjectOrRun = Boolean(issueId || runId)
+        || (payload.entityType === "project" && typeof payload.entityId === "string");
+      // PAR-12951: and no host or secret key at any depth of a frame to him. A
+      // bound frame without one needs no restriction read.
+      const hostKeys = boundToTaskProjectOrRun && hasHostKeys(event.payload);
+      const enforcedHere = mayBeRestricted && (!boundToTaskProjectOrRun || hostKeys)
+        && (await memberRestrictionEnforcedCompanyIdsForActor(db, context!.actor)).includes(event.companyId);
+      if (!boundToTaskProjectOrRun && enforcedHere) return null;
+      if (hostKeys && enforcedHere) event = withoutHostKeys(event);
       if (event.type.startsWith("heartbeat.run.")) return runId ? event : null;
       if (event.type === "agent.session.goal.changed") return issueId ? event : null;
       // Company-wide invalidations carry no task-derived content. Authorized

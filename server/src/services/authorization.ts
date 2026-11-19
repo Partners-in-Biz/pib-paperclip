@@ -24,13 +24,30 @@ import {
   userInboxAgentPolicies,
 } from "@paperclipai/db";
 import type {
+  ActorCompanyMembership,
   AgentApiKeyScope,
+  MemberRestriction,
   InboxAgentPolicyMode,
   PermissionKey,
   PrincipalType,
   SkillTestAgentKeyScope,
   TaskBridgeAgentKeyScope,
 } from "@paperclipai/shared";
+import {
+  actorPersonMembership,
+  loadActorMemberships,
+  memberRestrictionForMembership,
+} from "./member-restriction/actor-memberships.js";
+import { memberRestrictionAllowsAction } from "./member-restriction/action-list.js";
+import { recordMemberRestrictionDenial } from "./member-restriction/admin.js";
+import { memberRestrictionFor, memberRestrictionUnavailable } from "./member-restriction/resolver.js";
+import {
+  memberRestrictionEnforcedCompanyIdsForActor,
+  memberRestrictionReadCondition,
+  restrictionPersonIds,
+  strictReadCondition,
+  type StrictReadResource,
+} from "./member-restriction/strict-read.js";
 import {
   LOW_TRUST_REVIEW_PRESET,
   extractAgentMentionIds,
@@ -65,8 +82,8 @@ export type AuthorizationActor =
     userId?: string | null;
     sessionId?: string | null;
     companyIds?: string[];
-    memberships?: Array<{ companyId: string; membershipRole?: string | null; status?: string }>;
-    onBehalfOfMemberships?: Array<{ companyId: string; membershipRole?: string | null; status?: string }>;
+    memberships?: ActorCompanyMembership[];
+    onBehalfOfMemberships?: ActorCompanyMembership[];
     isInstanceAdmin?: boolean;
     ignoreInstanceAdmin?: boolean;
     agentId?: string | null;
@@ -136,6 +153,13 @@ export type AuthorizationDecision = {
   explanation: string;
   inboxPolicyMode?: InboxAgentPolicyMode | "grant_override";
   code?: "RESPONSIBLE_USER_UNAUTHORIZED" | "RESPONSIBLE_USER_UNAVAILABLE";
+  /**
+   * Set on a `deny_member_restricted` from the action list when the call
+   * would otherwise have passed (PAR-12608 4.6). A consumer that keeps a
+   * surface open to a restricted member checks this, so a caller refused
+   * anyway (a low-trust run working for him) stays refused.
+   */
+  refusedOnlyByMemberRestriction?: true;
   reason:
     | "allow_low_trust_boundary"
     | "allow_local_board"
@@ -167,6 +191,7 @@ export type AuthorizationDecision = {
     | "deny_low_trust_boundary"
     | "deny_issue_private"
     | "deny_project_private"
+    | "deny_member_restricted"
     | "deny_scope"
     | "deny_unsupported_action";
   grant?: {
@@ -537,7 +562,7 @@ type ResponsibleUserSnapshot = {
   userId: string;
   companyId: string;
   userExists: boolean;
-  activeMembership: { companyId: string; membershipRole?: string | null; status?: string } | null;
+  activeMembership: ActorCompanyMembership | null;
 };
 
 type ResponsibleUserActorWithMemo = AuthorizationActor & {
@@ -610,7 +635,8 @@ function issuePrivacyPrincipalCondition(actor: AuthorizationActor): SQL<boolean>
   const implicit = principal?.type === "agent"
     ? sql`n.assignee_agent_id = ${principal.id}`
     : principal?.type === "user"
-      ? sql`(n.responsible_user_id = ${principal.id} or n.created_by_user_id = ${principal.id} or n.assignee_user_id = ${principal.id})`
+      ? sql`(n.responsible_user_id = ${principal.id} or n.created_by_user_id = ${principal.id} or n.assignee_user_id = ${principal.id}
+        or n.conversation_user_id = ${principal.id})`
       : sql`false`;
   const grant = principal ? sql`exists (
     select 1 from ${issueAccessGrants} g where g.issue_id = n.id
@@ -626,16 +652,18 @@ function issuePrivacyPrincipalCondition(actor: AuthorizationActor): SQL<boolean>
   return sql<boolean>`exists (
     with recursive privacy_ancestors as (
       select p.id, p.company_id, p.privacy_parent_issue_id, p.visibility, p.project_id,
-        p.responsible_user_id, p.created_by_user_id, p.assignee_user_id, p.assignee_agent_id
+        p.responsible_user_id, p.created_by_user_id, p.assignee_user_id, p.assignee_agent_id, p.conversation_user_id
       from issues p where p.id = ${issues.id} and p.company_id = ${issues.companyId}
       union
       (select p.id, p.company_id, p.privacy_parent_issue_id, p.visibility, p.project_id,
-        p.responsible_user_id, p.created_by_user_id, p.assignee_user_id, p.assignee_agent_id
+        p.responsible_user_id, p.created_by_user_id, p.assignee_user_id, p.assignee_agent_id, p.conversation_user_id
       from privacy_ancestors c
       cross join lateral (
         select p.id, p.company_id, p.privacy_parent_issue_id, p.visibility, p.project_id,
-          p.responsible_user_id, p.created_by_user_id, p.assignee_user_id, p.assignee_agent_id
+          p.responsible_user_id, p.created_by_user_id, p.assignee_user_id, p.assignee_agent_id, p.conversation_user_id
         from issues p where p.id = c.privacy_parent_issue_id and p.company_id = c.company_id
+          -- A chat passes no privacy to work started from it (PAR-12774 4.3).
+          and p.conversation_agent_id is null
         limit 1
       ) p
       where c.privacy_parent_issue_id is not null
@@ -669,38 +697,137 @@ export async function canActorReadIssuePrivacy(db: Db | DbTransaction, actor: Au
     .limit(1).then(rows => rows.length > 0);
 }
 
-/** Filter every externally reachable task query with the same privacy predicate. */
-export async function issueReadSqlCondition(db: Db | DbTransaction, actor: AuthorizationActor): Promise<SQL<boolean>> {
-  if (actor.authorizingUserId) return issuePrivacyCondition(actor);
-  if (issuePrivacyMode() !== "enforce") return sql<boolean>`true`;
-  if (actor.source === "local_implicit" || actor.isInstanceAdmin) return sql<boolean>`true`;
-  if (actor.type === "board" && !actor.ignoreInstanceAdmin && actor.source !== "cloud_tenant"
+async function isBoardInstanceAdminForReads(db: Db | DbTransaction, actor: AuthorizationActor): Promise<boolean> {
+  return actor.type === "board" && !actor.ignoreInstanceAdmin && actor.source !== "cloud_tenant"
     && await db.select({ id: instanceUserRoles.id }).from(instanceUserRoles)
       .where(and(eq(instanceUserRoles.userId, actor.userId ?? ""), eq(instanceUserRoles.role, "instance_admin")))
-      .limit(1).then(rows => rows.length > 0)) return sql<boolean>`true`;
-  return issuePrivacyCondition(actor);
+      .limit(1).then(rows => rows.length > 0);
+}
+
+/**
+ * The chat rule (PAR-12774 4.2). A chat, a task with `conversation_agent_id`
+ * set, is readable by its person, and by its agent while that agent works for
+ * that person (every person the run carries must be the chat's person). The
+ * local board reads every chat. Nobody else does: not an owner, admin,
+ * instance admin, grant holder, project member or plugin ("no principal").
+ * A row that is not a chat passes. Two columns of the row itself, no
+ * sub-query; never softened by the privacy mode.
+ */
+function chatReadCondition(actor: AuthorizationActor): SQL<boolean> {
+  if (actor.source === "local_implicit") return sql<boolean>`true`;
+  const notChat = sql<boolean>`${issues.conversationAgentId} is null`;
+  if (actor.type === "board" && actor.userId) {
+    return sql<boolean>`(${notChat} or ${issues.conversationUserId} = ${actor.userId})`;
+  }
+  if (actor.type !== "agent" || !actor.agentId) return notChat;
+  const people = [...new Set([actor.onBehalfOfUserId, actor.authorizingUserId].filter((id): id is string => !!id))];
+  const chatOf = [
+    sql`${issues.conversationAgentId} = ${actor.agentId}`,
+    ...people.map(id => sql`${issues.conversationUserId} = ${id}`),
+  ];
+  return sql<boolean>`(${notChat} or (${sql.join(chatOf, sql` and `)}))`;
+}
+
+/** The chat columns of a task row: `conversationAgentId` set means a chat. */
+export type ChatRow = { conversationAgentId: string | null; conversationUserId: string | null };
+
+/** `chatReadCondition` for a loaded row (the same rule, in code). */
+function chatReadableBy(actor: AuthorizationActor, row: ChatRow): boolean {
+  if (actor.source === "local_implicit" || !row.conversationAgentId) return true;
+  if (actor.type === "board") return !!actor.userId && row.conversationUserId === actor.userId;
+  if (actor.type !== "agent" || !actor.agentId || row.conversationAgentId !== actor.agentId) return false;
+  return [actor.onBehalfOfUserId, actor.authorizingUserId]
+    .every(id => !id || id === row.conversationUserId);
+}
+
+/**
+ * The chat rule for one task (PAR-12774 4.2). Loads the chat columns when the
+ * caller has not; a task that is not found or not a chat passes (the caller's
+ * own checks answer for it).
+ */
+export async function canActorReadChat(
+  db: Db | DbTransaction,
+  actor: AuthorizationActor,
+  issue: { id: string; companyId: string } & Partial<ChatRow>,
+): Promise<boolean> {
+  if (actor.source === "local_implicit") return true;
+  const row = issue.conversationAgentId !== undefined && issue.conversationUserId !== undefined
+    ? issue as ChatRow
+    : await db.select({ conversationAgentId: issues.conversationAgentId, conversationUserId: issues.conversationUserId })
+      .from(issues).where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)))
+      .then(rows => rows[0] ?? null);
+  return !row || chatReadableBy(actor, row);
+}
+
+/**
+ * The list builders' shared flow (PAR-12608 4.3, place 1). The member
+ * restriction is AND-ed onto the privacy condition; when no person the actor
+ * carries is restricted under `enforce`, the result is today's condition
+ * unchanged. Where today returns "all rows" because the privacy mode is not
+ * `enforce`, the restriction part alone is returned. The local-board and
+ * instance-admin exits stay: neither is bound by the restriction.
+ * `rowCondition` (the chat rule for tasks) is AND-ed onto every return except
+ * the local board's, whatever the mode, the instance admin included.
+ */
+async function readSqlCondition(
+  db: Db | DbTransaction,
+  actor: AuthorizationActor,
+  resource: StrictReadResource,
+  privacyCondition: (actor: AuthorizationActor) => SQL<boolean>,
+  rowCondition: SQL<boolean> | null = null,
+): Promise<SQL<boolean>> {
+  const withRestriction = (condition: SQL<boolean>, restriction: SQL<boolean> | null) =>
+    restriction ? sql<boolean>`(${condition} and ${restriction})` : condition;
+  const allRows = rowCondition ?? sql<boolean>`true`;
+  const withRow = (condition: SQL<boolean>) => withRestriction(condition, rowCondition);
+  if (actor.authorizingUserId) {
+    return withRow(withRestriction(privacyCondition(actor), await memberRestrictionReadCondition(db, actor, resource)));
+  }
+  if (actor.source === "local_implicit") return sql<boolean>`true`;
+  if (actor.isInstanceAdmin) return allRows;
+  if (issuePrivacyMode() !== "enforce") {
+    const restriction = await memberRestrictionReadCondition(db, actor, resource);
+    if (!restriction || await isBoardInstanceAdminForReads(db, actor)) return allRows;
+    return withRow(restriction);
+  }
+  if (await isBoardInstanceAdminForReads(db, actor)) return allRows;
+  return withRow(withRestriction(privacyCondition(actor), await memberRestrictionReadCondition(db, actor, resource)));
+}
+
+/** Memo key of one person's restriction in one company, shared by a read snapshot and its decisions. */
+function memberRestrictionMemoKey(personId: string, companyId: string) {
+  return `member-restriction:${personId}:${companyId}`;
+}
+
+/**
+ * The resolver's answer for one person an actor carries (PAR-12608 4.2). A
+ * carried membership that says "not restricted" answers without a read; any
+ * other case reads the database. A failed read throws 503
+ * `MEMBER_RESTRICTION_UNAVAILABLE`.
+ */
+function memberRestrictionOfActorPerson(
+  db: Db | DbTransaction,
+  actor: AuthorizationActor,
+  personId: string,
+  companyId: string,
+): Promise<MemberRestriction> {
+  const carried = actorPersonMembership(actor, companyId);
+  return memberRestrictionForMembership(
+    (person, company) => memberRestrictionFor(db as Db, person, company),
+    personId,
+    companyId,
+    carried?.personId === personId ? carried.membership : null,
+  );
+}
+
+/** Filter every externally reachable task query with the same privacy predicate. */
+export async function issueReadSqlCondition(db: Db | DbTransaction, actor: AuthorizationActor): Promise<SQL<boolean>> {
+  return readSqlCondition(db, actor, "issue", issuePrivacyCondition, chatReadCondition(actor));
 }
 
 /** SQL equivalent used for project list/search pushdown. */
 export async function projectReadSqlCondition(db: Db | DbTransaction, actor: AuthorizationActor): Promise<SQL<boolean>> {
-  if (actor.authorizingUserId) return projectPrivacyCondition(actor);
-  if (issuePrivacyMode() !== "enforce") return sql<boolean>`true`;
-  if (actor.source === "local_implicit" || actor.isInstanceAdmin) return sql<boolean>`true`;
-  if (
-    actor.type === "board"
-    && !actor.ignoreInstanceAdmin
-    && actor.source !== "cloud_tenant"
-    && Boolean(await db
-      .select({ id: instanceUserRoles.id })
-      .from(instanceUserRoles)
-      .where(and(
-        eq(instanceUserRoles.userId, actor.userId ?? ""),
-        eq(instanceUserRoles.role, "instance_admin"),
-      ))
-      .limit(1)
-      .then((rows) => rows[0] ?? null))
-  ) return sql<boolean>`true`;
-  return projectPrivacyCondition(actor);
+  return readSqlCondition(db, actor, "project", projectPrivacyCondition);
 }
 
 function responsibleUserSnapshotTtlMs() {
@@ -716,7 +843,7 @@ export function responsibleUserAuthzShadowMode() {
 }
 
 function activeActorMembership(
-  memberships: Array<{ companyId: string; membershipRole?: string | null; status?: string }> | null | undefined,
+  memberships: ActorCompanyMembership[] | null | undefined,
   companyId: string,
 ) {
   return memberships?.find((membership) => membership.companyId === companyId && membership.status === "active") ?? null;
@@ -767,9 +894,12 @@ export function authorizationDeniedDetails(decision: AuthorizationDecision) {
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
+/** Per restricted person: does the strict condition hold for this row (PAR-12608 4.3, place 3). */
+type StrictReadable = { strictReadable?: Map<string, boolean> };
+
 type ReadAuthorizationSnapshot = {
-  issues: Map<string, IssueAuthorizationRow & IssuePrivacyRow & { readable: boolean }>;
-  projects: Map<string, ProjectAuthorizationRow & ProjectPrivacyRow & { readable: boolean }>;
+  issues: Map<string, IssueAuthorizationRow & IssuePrivacyRow & ChatRow & { readable: boolean } & StrictReadable>;
+  projects: Map<string, ProjectAuthorizationRow & ProjectPrivacyRow & { readable: boolean } & StrictReadable>;
   runs: Map<string, { companyId: string; agentId: string; contextSnapshot: Record<string, unknown> } | null>;
   memo: Map<string, Promise<unknown>>;
 };
@@ -810,9 +940,38 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
       }).from(heartbeatRuns).where(inArray(heartbeatRuns.id, ids));
       for (const row of rows) runs.set(row.id, row);
     }
-    const privacyKey = (actor: AuthorizationActor) => JSON.stringify([actor.type, actor.agentId, actor.userId, actor.onBehalfOfUserId]);
+    const privacyKey = (actor: AuthorizationActor) => JSON.stringify([actor.type, actor.agentId, actor.userId, actor.onBehalfOfUserId,
+      actor.authorizingUserId, actor.source === "local_implicit"]);
     const privacyActors = [...new Map(batchActors.map(actor => [privacyKey(actor), actor])).values()];
     const privacyIndexes = batchActors.map(actor => privacyActors.findIndex(peer => privacyKey(peer) === privacyKey(actor)));
+    // PAR-12608 4.3, place 3: for every person restricted in a resource's
+    // company, the snapshot precomputes the strict condition with the builders'
+    // own function, so the base decision follows it and adds no rule or query.
+    const strictPersons: string[] = [];
+    for (const actor of batchActors) {
+      for (const personId of restrictionPersonIds(actor)) {
+        for (const companyId of new Set(resources.map(resource => resource.companyId))) {
+          const key = memberRestrictionMemoKey(personId, companyId);
+          if (!memo.has(key)) memo.set(key, memberRestrictionOfActorPerson(db, actor, personId, companyId));
+          if ((await memo.get(key) as MemberRestriction).restricted && !strictPersons.includes(personId)) strictPersons.push(personId);
+        }
+      }
+    }
+    // The condition goes in WHERE: a single-table select list drops the table
+    // names its correlated subqueries rely on.
+    async function strictReadableIds(resource: StrictReadResource, ids: string[]) {
+      const table = resource === "issue" ? issues : projects;
+      const byPerson = new Map<string, Set<string>>();
+      for (const personId of strictPersons) {
+        const rows = await db.select({ id: table.id }).from(table)
+          .where(and(inArray(table.id, ids), strictReadCondition(resource, personId)))
+          .catch((error: unknown) => { throw memberRestrictionUnavailable(error); });
+        byPerson.set(personId, new Set(rows.map(row => row.id)));
+      }
+      return (id: string) => strictPersons.length
+        ? new Map(strictPersons.map(personId => [personId, byPerson.get(personId)!.has(id)]))
+        : undefined;
+    }
     const issueIds = [...new Set(resources.flatMap(resource => resource.type === "issue" && resource.issueId ? [resource.issueId] : []))];
     const projectIds = new Set(resources.flatMap(resource => resource.type === "project" && resource.projectId ? [resource.projectId]
       : resource.type === "issue" && resource.projectId ? [resource.projectId] : []));
@@ -823,10 +982,17 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
         status: issues.status, executionPolicy: issues.executionPolicy, originKind: issues.originKind, originId: issues.originId,
         visibility: issues.visibility, privacyRootIssueId: issues.privacyRootIssueId,
         responsibleUserId: issues.responsibleUserId, createdByUserId: issues.createdByUserId,
-        readable: sql<boolean[]>`ARRAY[${sql.join(privacyActors.map(actor => issuePrivacyCondition(actor)), sql`, `)}]`,
+        conversationAgentId: issues.conversationAgentId, conversationUserId: issues.conversationUserId,
+        // PAR-12774 4.2, place 3: a chat the actor may not read is not readable.
+        readable: sql<boolean[]>`ARRAY[${sql.join(privacyActors.map(actor =>
+          sql`(${issuePrivacyCondition(actor)} and ${chatReadCondition(actor)})`), sql`, `)}]`,
       }).from(issues).where(inArray(issues.id, issueIds.slice(offset, offset + 500)));
+      const strictReadable = await strictReadableIds("issue", issueIds.slice(offset, offset + 500));
       for (const row of rows) {
-        for (let index = 0; index < snapshots.length; index++) snapshots[index].issues.set(row.id, { ...row, readable: row.readable[privacyIndexes[index]] });
+        const strict = strictReadable(row.id);
+        for (let index = 0; index < snapshots.length; index++) {
+          snapshots[index].issues.set(row.id, { ...row, readable: row.readable[privacyIndexes[index]], strictReadable: strict });
+        }
         if (row.projectId) projectIds.add(row.projectId);
       }
     }
@@ -836,8 +1002,12 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
         executionWorkspacePolicy: projects.executionWorkspacePolicy, visibility: projects.visibility,
         readable: sql<boolean[]>`ARRAY[${sql.join(privacyActors.map(actor => projectPrivacyCondition(actor)), sql`, `)}]`,
       }).from(projects).where(inArray(projects.id, ids.slice(offset, offset + 500)));
-      for (const row of rows) for (let index = 0; index < snapshots.length; index++) {
-        snapshots[index].projects.set(row.id, { ...row, readable: row.readable[privacyIndexes[index]] });
+      const strictReadable = await strictReadableIds("project", ids.slice(offset, offset + 500));
+      for (const row of rows) {
+        const strict = strictReadable(row.id);
+        for (let index = 0; index < snapshots.length; index++) {
+          snapshots[index].projects.set(row.id, { ...row, readable: row.readable[privacyIndexes[index]], strictReadable: strict });
+        }
       }
     }
     const results: AuthorizationDecision[][] = [];
@@ -895,22 +1065,7 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
         .from(authUsers)
         .where(eq(authUsers.id, userId))
         .then((rows) => rows[0] ?? null),
-      db
-        .select({
-          companyId: companyMemberships.companyId,
-          membershipRole: companyMemberships.membershipRole,
-          status: companyMemberships.status,
-        })
-        .from(companyMemberships)
-        .where(
-          and(
-            eq(companyMemberships.companyId, companyId),
-            eq(companyMemberships.principalType, "user"),
-            eq(companyMemberships.principalId, userId),
-            eq(companyMemberships.status, "active"),
-          ),
-        )
-        .then((rows) => rows[0] ?? null),
+      loadActorMemberships(db, { userId, companyId, activeOnly: true }).then((rows) => rows[0] ?? null),
     ]);
     return {
       userId,
@@ -1772,7 +1927,193 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
     });
   }
 
+  /**
+   * Task writes whose visibility step already asked `issue:read` through
+   * `decideBase` (so the member restriction ran there); the outer write is not
+   * checked a second time.
+   */
+  const restrictionCheckedWrites = new WeakSet<object>();
+
+  /** The task or project a read or a task write names, for the member restriction. */
+  function memberRestrictionTarget(input: {
+    action: AuthorizationAction;
+    resource: AuthorizationResource;
+  }): { resource: StrictReadResource; id: string } | null {
+    const { action, resource } = input;
+    if (action === "project:read") {
+      return resource.type === "project" && resource.projectId ? { resource: "project", id: resource.projectId } : null;
+    }
+    if (resource.type !== "issue") return null;
+    if (action === "issue:read") return resource.issueId ? { resource: "issue", id: resource.issueId } : null;
+    if (action === "issue:comment" || action === "issue:mutate") {
+      const id = resource.issueId ?? resource.parentIssueId;
+      return id ? { resource: "issue", id } : null;
+    }
+    return null;
+  }
+
+  /**
+   * PAR-12608 4.3 place 2, last bullet: allowed actions of the action list
+   * that never pass through `issue:read` but name a task or project. A task
+   * assignment names the task, else the new task's parent, else the project of
+   * a new top-level task; a workspace write names its project. Only the
+   * member restriction uses this; the chat rule keeps `memberRestrictionTarget`.
+   */
+  function memberRestrictionActionTarget(input: {
+    action: AuthorizationAction;
+    resource: AuthorizationResource;
+  }): { resource: StrictReadResource; id: string } | null {
+    const { action, resource } = input;
+    if (resource.type !== "issue" || (action !== "tasks:assign" && action !== "project:write_workspace")) return null;
+    if (action === "tasks:assign") {
+      const taskId = resource.issueId ?? resource.parentIssueId;
+      if (taskId) return { resource: "issue", id: taskId };
+    }
+    return resource.projectId ? { resource: "project", id: resource.projectId } : null;
+  }
+
+  /** Strict condition for one person on one row: the read snapshot's value, else one query. A failed read is 503. */
+  async function strictlyReadable(target: { resource: StrictReadResource; id: string }, companyId: string, personId: string) {
+    const retained = target.resource === "issue" ? readSnapshot?.issues.get(target.id) : readSnapshot?.projects.get(target.id);
+    const known = retained?.companyId === companyId ? retained.strictReadable?.get(personId) : undefined;
+    if (known !== undefined) return known;
+    const table = target.resource === "issue" ? issues : projects;
+    try {
+      // In WHERE, not the select list (see `strictReadableIds`). A missing row
+      // reads as "not his"; the caller answers "not found" for it anyway.
+      const rows = await db.select({ id: table.id }).from(table)
+        .where(and(eq(table.id, target.id), eq(table.companyId, companyId), strictReadCondition(target.resource, personId)))
+        .limit(1);
+      return rows.length > 0;
+    } catch (error) {
+      throw memberRestrictionUnavailable(error);
+    }
+  }
+
+  /**
+   * PAR-12608 4.3, place 2: the strict check in the `issue:read` and
+   * `project:read` path of the base decision. Governed only by the company's
+   * `member_restriction_mode` (never by `PAPERCLIP_ISSUE_PRIVACY_MODE`):
+   * `report` records a "would refuse" and allows, `enforce` records and denies
+   * with `deny_member_restricted`. Task writes reach it too: the standard agent
+   * branch through its `issue:read` visibility step, the board and low-trust
+   * branches (which never ask `issue:read`) here, on the written task or the
+   * new child's parent. The allowed actions of the action list that name a
+   * task or project without asking `issue:read` (`tasks:assign`,
+   * `project:write_workspace`) repeat it here (4.6). The local board and
+   * instance admins are never bound.
+   */
+  async function applyMemberRestriction(
+    input: { actor: AuthorizationActor; action: AuthorizationAction; resource: AuthorizationResource },
+    decision: AuthorizationDecision,
+  ): Promise<AuthorizationDecision> {
+    if (!decision.allowed || decision.reason === "allow_instance_admin" || decision.reason === "allow_local_board") {
+      return decision;
+    }
+    const target = memberRestrictionTarget(input) ?? memberRestrictionActionTarget(input);
+    if (!target || restrictionCheckedWrites.has(input)) return decision;
+    const companyId = companyIdForResource(input.resource);
+    for (const personId of restrictionPersonIds(input.actor)) {
+      const restriction = await batchRead(memberRestrictionMemoKey(personId, companyId),
+        () => memberRestrictionOfActorPerson(db, input.actor, personId, companyId));
+      if (!restriction.restricted || restriction.mode === "off") continue;
+      if (await strictlyReadable(target, companyId, personId)) continue;
+      const mode = restriction.mode;
+      await batchRead(`member-restriction-denied:${companyId}:${personId}`, () => recordMemberRestrictionDenial(db as Db, {
+        companyId, personId, ruleId: "R-read", target: input.action, objectId: target.id, mode,
+      }));
+      if (mode === "enforce") {
+        return deny({
+          action: input.action,
+          reason: "deny_member_restricted",
+          explanation: `The ${target.resource === "issue" ? "task" : "project"} is not one of this restricted member's own.`,
+        });
+      }
+    }
+    return decision;
+  }
+
+  /**
+   * PAR-12608 4.6, "The action list": the restriction step of `decide()`,
+   * after the base decision and the person intersections. For a caller who
+   * works for a restricted person, an action that is not on the list is
+   * `deny_member_restricted` under `enforce` (whatever the usual answer was)
+   * and a recorded "would refuse" under `report` when it would have passed.
+   * It runs only here, never inside `decideBase`, so a write's internal
+   * `company_scope:read` visibility step (a new top-level task) is not
+   * refused by it. The local board and instance admins are never bound.
+   */
+  async function applyMemberRestrictionActionList(
+    input: { actor: AuthorizationActor; action: AuthorizationAction; resource: AuthorizationResource },
+    decision: AuthorizationDecision,
+  ): Promise<AuthorizationDecision> {
+    if (memberRestrictionAllowsAction(input.action) || input.actor.source === "local_implicit"
+      || decision.reason === "allow_instance_admin" || decision.reason === "allow_local_board") {
+      return decision;
+    }
+    const companyId = companyIdForResource(input.resource);
+    for (const personId of restrictionPersonIds(input.actor)) {
+      const restriction = await batchRead(memberRestrictionMemoKey(personId, companyId),
+        () => memberRestrictionOfActorPerson(db, input.actor, personId, companyId));
+      if (!restriction.restricted || restriction.mode === "off") continue;
+      const mode = restriction.mode;
+      // A call refused anyway is not a refusal by the restriction: nothing to record.
+      if (decision.allowed) {
+        await batchRead(`member-restriction-action-denied:${companyId}:${personId}:${input.action}`, () =>
+          recordMemberRestrictionDenial(db as Db, {
+            companyId, personId, ruleId: "R-action", target: input.action, objectId: null, mode,
+          }));
+      }
+      if (mode === "enforce") {
+        return deny({
+          action: input.action,
+          reason: "deny_member_restricted",
+          explanation: `The action ${input.action} is not available to a restricted member.`,
+          ...(decision.allowed ? { refusedOnlyByMemberRestriction: true as const } : {}),
+        });
+      }
+    }
+    return decision;
+  }
+
+  /**
+   * PAR-12774 4.2, place 2: the chat rule in the base decision, beside the
+   * strict check, on the task a read or a task write names (`memberRestrictionTarget`).
+   * Only the local board passes it; the instance admin, owner, admin, grant
+   * holder and project member do not. It denies with `deny_issue_private`, so
+   * the 404 and break-glass stay as they are, and no privacy mode softens it.
+   */
+  async function applyChatRule(
+    input: { actor: AuthorizationActor; action: AuthorizationAction; resource: AuthorizationResource },
+    decision: AuthorizationDecision,
+  ): Promise<AuthorizationDecision> {
+    if (!decision.allowed || decision.reason === "allow_local_board" || input.actor.source === "local_implicit") return decision;
+    const target = memberRestrictionTarget(input);
+    if (target?.resource !== "issue") return decision;
+    const companyId = companyIdForResource(input.resource);
+    const retained = readSnapshot?.issues.get(target.id);
+    const issue = retained?.companyId === companyId ? retained : await batchRead(`chat-row:${companyId}:${target.id}`, () =>
+      db.select({ conversationAgentId: issues.conversationAgentId, conversationUserId: issues.conversationUserId })
+        .from(issues).where(and(eq(issues.id, target.id), eq(issues.companyId, companyId)))
+        .then(rows => rows[0] ?? null));
+    if (!issue || chatReadableBy(input.actor, issue)) return decision;
+    return deny({
+      action: input.action,
+      reason: "deny_issue_private",
+      explanation: "The task is a chat of another person or agent.",
+    });
+  }
+
   async function decideBase(input: {
+    actor: AuthorizationActor;
+    action: AuthorizationAction;
+    resource: AuthorizationResource;
+    scope?: Record<string, unknown> | null;
+  }): Promise<AuthorizationDecision> {
+    return applyChatRule(input, await applyMemberRestriction(input, await decideBaseUnchecked(input)));
+  }
+
+  async function decideBaseUnchecked(input: {
     actor: AuthorizationActor;
     action: AuthorizationAction;
     resource: AuthorizationResource;
@@ -1850,6 +2191,8 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
           explanation: `Issue write denied because the target is not visible: ${visibilityDecision.explanation}`,
         };
       }
+      // The member restriction ran on `issue:read` of the same task above.
+      if (visibilityResource.type === "issue" && visibilityResource.issueId) restrictionCheckedWrites.add(input);
 
       return allow({
         action: input.action,
@@ -2860,6 +3203,15 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
     resource: AuthorizationResource;
     scope?: Record<string, unknown> | null;
   }): Promise<AuthorizationDecision> {
+    return applyMemberRestrictionActionList(input, await decideWithoutActionList(input));
+  }
+
+  async function decideWithoutActionList(input: {
+    actor: AuthorizationActor;
+    action: AuthorizationAction;
+    resource: AuthorizationResource;
+    scope?: Record<string, unknown> | null;
+  }): Promise<AuthorizationDecision> {
     const agentDecision = await measureWorkspaceAuthorization("authorization.base", () => decideBase(input));
     const responsibleDecision = await measureWorkspaceAuthorization("authorization.responsible_user", () => applyResponsibleUserIntersection(input, agentDecision));
     const intersectedDecision = await measureWorkspaceAuthorization("authorization.authorizing_user", () => applyAuthorizingUserIntersection(input, responsibleDecision));
@@ -2979,6 +3331,8 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
     decideReadsForActors,
     projectDiscoveryCandidateIds,
     decidePrincipalGrant,
+    /** The person a run works for, with his restriction fields (read-only; PAR-12608 AC-X2). */
+    loadResponsibleUserSnapshot,
   };
 }
 
@@ -3001,10 +3355,24 @@ export async function executionWorkspaceReadSqlCondition(db: Db | DbTransaction,
   )`;
 }
 
-/** An approval may contain task-derived payload; every linked task must be readable. */
+/**
+ * An approval may contain task-derived payload; every linked task must be readable.
+ * In a company where the actor's person is restricted under `enforce`, the
+ * approval must also be linked to at least one task (PAR-12608 4.6): a
+ * company-wide approval (hire, budget) linked to none is not his to read.
+ */
 export async function approvalReadSqlCondition(db: Db | DbTransaction, actor: AuthorizationActor): Promise<SQL<boolean>> {
   const readable = await issueReadSqlCondition(db, actor);
-  return sql<boolean>`not exists (
+  const restrictedCompanyIds = await memberRestrictionEnforcedCompanyIdsForActor(db, actor);
+  const linkedToTask = restrictedCompanyIds.length === 0 ? sql`` : sql` and (
+    ${approvals.companyId} not in (${sql.join(restrictedCompanyIds.map((id) => sql`${id}`), sql`, `)})
+    or exists (select 1 from ${issues} where ${issues.companyId} = ${approvals.companyId}
+      and (${issues.id}::text = ${approvals.payload}->>'issueId'
+        or ${issues.id}::text = ${approvals.payload}->>'sourceIssueId'
+        or exists (select 1 from ${issueApprovals} ia where ia.approval_id = ${approvals.id}
+          and ia.company_id = ${approvals.companyId} and ia.issue_id = ${issues.id})))
+  )`;
+  return sql<boolean>`(not exists (
     select 1 from (values (${approvals.payload}->>'issueId'), (${approvals.payload}->>'sourceIssueId')) claimed(id)
       where claimed.id is not null and not exists (
         select 1 from ${issues} where ${issues.id}::text = claimed.id and ${issues.companyId} = ${approvals.companyId})
@@ -3015,7 +3383,7 @@ export async function approvalReadSqlCondition(db: Db | DbTransaction, actor: Au
         or exists (select 1 from ${issueApprovals} ia where ia.approval_id = ${approvals.id}
           and ia.company_id = ${approvals.companyId} and ia.issue_id = ${issues.id}))
       and not (${readable})
-  )`;
+  )${linkedToTask})`;
 }
 
 export async function canActorReadApproval(db: Db | DbTransaction, actor: AuthorizationActor, approvalId: string) {

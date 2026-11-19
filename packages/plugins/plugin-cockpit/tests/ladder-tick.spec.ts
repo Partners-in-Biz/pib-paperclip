@@ -82,7 +82,7 @@ describe("ladder state transitions", () => {
     expect(mockEscalate).toHaveBeenCalledWith(
       expect.any(Object),
       "stuck-1",
-      expect.stringContaining("24 hours"),
+      expect.stringContaining("4 hours"),
       expect.objectContaining({ startLevel: 1 }),
     );
   });

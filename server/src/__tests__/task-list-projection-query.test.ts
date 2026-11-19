@@ -13,7 +13,7 @@ describe("main task-list canonical activity index", () => {
 
   it("stops each latest-activity probe for full and index projections at one qualifying row", async () => {
     const f = await seedTaskListProjectionFixture(db, { count: 1200, chatCount: 6, history: 0, payloadBytes: 3072, descriptionBytes: 4096, activityPerIssue: 8, activityDecoys: 1000 });
-    const cases: ListFilters[] = [{ limit: 100, sortField: "updated", sortDir: "desc" }, { limit: 100, listProjection: "index" }];
+    const cases: ListFilters[] = [{ readCondition: "system", limit: 100, sortField: "updated", sortDir: "desc" }, { readCondition: "system", limit: 100, listProjection: "index" }];
     for (const filters of cases) {
       const query = await captureTaskListQuery(db, issueService, f.companyId, filters);
       const [explain] = await db.$client.unsafe(`explain (analyze, buffers, format json) ${query.sql}`, query.params as never[]);
@@ -55,15 +55,15 @@ describe("main task-list canonical activity index", () => {
     ] as never);
     await db.insert(issueComments).values({ companyId: f.companyId, issueId: id(1), authorUserId: "reader", body: "Canonical comment", createdAt: new Date("2026-01-04") });
     const svc = issueService(db), descending = [7, 6, 2, 1, 0, 5, 4, 3].map(id);
-    expect((await svc.list(f.companyId, { sortField: "updated", sortDir: "desc" })).map(row => row.id)).toEqual(descending);
-    expect((await svc.list(f.companyId, { sortField: "updated", sortDir: "asc" })).map(row => row.id)).toEqual([...descending].reverse());
-    expect((await svc.list(f.companyId)).map(row => row.id)).toEqual([6, 0, 3, 7, 2, 1, 5, 4].map(id));
-    expect((await svc.list(f.companyId, { sortField: "updated", sortDir: "desc", limit: 2, offset: 2 })).map(row => row.id)).toEqual(descending.slice(2, 4));
+    expect((await svc.list(f.companyId, { readCondition: "system", sortField: "updated", sortDir: "desc" })).map(row => row.id)).toEqual(descending);
+    expect((await svc.list(f.companyId, { readCondition: "system", sortField: "updated", sortDir: "asc" })).map(row => row.id)).toEqual([...descending].reverse());
+    expect((await svc.list(f.companyId, { readCondition: "system" })).map(row => row.id)).toEqual([6, 0, 3, 7, 2, 1, 5, 4].map(id));
+    expect((await svc.list(f.companyId, { readCondition: "system", sortField: "updated", sortDir: "desc", limit: 2, offset: 2 })).map(row => row.id)).toEqual(descending.slice(2, 4));
     expect((await svc.list(f.companyId, { sortField: "updated", sortDir: "desc", limit: 2, readCondition: sql<boolean>`${issues.id} <> ${id(7)}` })).map(row => row.id)).toEqual([id(6), id(2)]);
-    expect((await svc.list(f.companyId, { sortField: "updated", sortDir: "desc", issueIds: [id(0), id(2)] })).map(row => row.id)).toEqual([id(2), id(0)]);
+    expect((await svc.list(f.companyId, { readCondition: "system", sortField: "updated", sortDir: "desc", issueIds: [id(0), id(2)] })).map(row => row.id)).toEqual([id(2), id(0)]);
     expect(await svc.list(f.companyId, { readCondition: sql<boolean>`false`, limit: 2 })).toEqual([]);
     await db.update(issues).set({ parentId: id(0) }).where(sql`${issues.id} in (${id(6)},${id(7)})`);
-    expect((await svc.list(f.companyId, { sortField: "updated", sortDir: "desc", oneChildPerParent: true })).map(row => row.id)).toEqual([id(7), id(2)]);
+    expect((await svc.list(f.companyId, { readCondition: "system", sortField: "updated", sortDir: "desc", oneChildPerParent: true })).map(row => row.id)).toEqual([id(7), id(2)]);
   });
 
 });

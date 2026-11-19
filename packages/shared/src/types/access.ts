@@ -8,6 +8,7 @@ import type {
   JoinRequestStatus,
   JoinRequestType,
   MembershipStatus,
+  MemberRestrictionMode,
   PermissionKey,
   PrincipalType,
 } from "../constants.js";
@@ -47,6 +48,10 @@ export interface CompanyMemberRecord extends CompanyMembership {
   membershipRole: HumanCompanyMembershipRole | null;
   user: AccessUserProfile | null;
   grants: PrincipalPermissionGrant[];
+  /** Per-person access flag and lists (PAR-12608 4.2); only sent to callers who may manage members. */
+  restricted: boolean;
+  restrictedPluginKeys: string[];
+  restrictedAgentIds: string[];
   removal?: {
     canArchive: boolean;
     reason: string | null;
@@ -85,10 +90,24 @@ export interface Invite {
 
 export type InviteState = "active" | "revoked" | "accepted" | "expired";
 
+/** The mark stored on an invite (PAR-12608 4.2a); null when the invite is unmarked. */
+export interface InviteMemberRestriction {
+  restricted: true;
+  pluginKeys: string[];
+  agentIds: string[];
+}
+
 export interface CompanyInviteRecord extends Invite {
   companyName: string | null;
   humanRole: HumanCompanyMembershipRole | null;
   inviteMessage: string | null;
+  memberRestriction?: InviteMemberRestriction | null;
+  /**
+   * Set while a join can still use the invite (PAR-13096 point 4): true when
+   * `memberRestriction` is the company's restricted default, not a recorded
+   * choice. Both fields are omitted when the company's mode cannot be read.
+   */
+  memberRestrictionIsDefault?: boolean;
   state: InviteState;
   invitedByUser: AccessUserProfile | null;
   relatedJoinRequestId: string | null;
@@ -129,6 +148,13 @@ export interface JoinRequestInviteSummary {
   allowedJoinTypes: InviteJoinType;
   humanRole: HumanCompanyMembershipRole | null;
   inviteMessage: string | null;
+  memberRestriction?: InviteMemberRestriction | null;
+  /**
+   * Set while a join can still use the invite (PAR-13096 point 4): true when
+   * `memberRestriction` is the company's restricted default, not a recorded
+   * choice. Both fields are omitted when the company's mode cannot be read.
+   */
+  memberRestrictionIsDefault?: boolean;
   createdAt: Date;
   expiresAt: Date;
   revokedAt: Date | null;
@@ -167,4 +193,40 @@ export interface UserCompanyAccessResponse {
     isInstanceAdmin: boolean;
   }) | null;
   companyAccess: UserCompanyAccessEntry[];
+}
+
+/**
+ * What the member-restriction resolver answers for one person in one company.
+ * `restricted` is true only when the company's mode is `report` or `enforce`
+ * (and the server kill switch is not on) and that person's membership row is
+ * flagged, whatever the row's status.
+ */
+export interface MemberRestriction {
+  restricted: boolean;
+  mode: MemberRestrictionMode;
+  pluginKeys: string[];
+  agentIds: string[];
+}
+
+/**
+ * A company membership as a signed-in actor carries it (`actor.memberships`,
+ * `actor.onBehalfOfMemberships`, the responsible-user snapshot). Every loader
+ * fills `restricted` and `restrictionMode` with the resolver's answer at load
+ * time, so a loader that leaves them out does not compile. A membership that
+ * still lacks them at run time (an actor built by hand) is "unknown": the
+ * resolver reads the database, it never assumes "not restricted".
+ */
+export interface ActorCompanyMembership {
+  companyId: string;
+  membershipRole?: string | null;
+  status?: string;
+  restricted: boolean;
+  restrictionMode: MemberRestrictionMode;
+}
+
+/** One entry of the signed-in person's own session data, per company he belongs to. */
+export interface SessionMemberRestriction {
+  companyId: string;
+  restricted: boolean;
+  mode: MemberRestrictionMode;
 }

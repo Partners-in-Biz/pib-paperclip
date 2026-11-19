@@ -1001,6 +1001,7 @@ describe("agent live run routes", () => {
       },
       requestedByActorType: "user",
       requestedByActorId: "local-board",
+      causingActor: { type: "user", userId: "local-board" },
       contextSnapshot: {
         triggeredBy: "board",
         actorId: "local-board",
@@ -1027,6 +1028,7 @@ describe("agent live run routes", () => {
       triggerDetail: "manual",
       requestedByActorType: "user",
       requestedByActorId: "local-board",
+      causingActor: { type: "user", userId: "local-board" },
       contextSnapshot: {
         triggeredBy: "board",
         actorId: "local-board",
@@ -1084,11 +1086,12 @@ describe("agent live run routes", () => {
       expect(JSON.stringify(mockHeartbeatService.wakeup.mock.calls)).not.toContain("forged");
     });
 
-    it.each(["agent-caller", "denied-task", "foreign-company", "foreign-agent", "foreign-issue", "legacy", "unknown-error", "missing-context", "stale", "resolved", "changed-reviewer"])(
+    it.each(["agent-caller", "denied-task", "unreadable-task", "foreign-company", "foreign-agent", "foreign-issue", "legacy", "unknown-error", "missing-context", "stale", "resolved", "changed-reviewer"])(
       "rejects an ineligible exact review retry (%s)", async scenario => {
         let actor: Record<string, unknown> | undefined;
         if (scenario === "agent-caller") actor = { type: "agent", agentId: routeAgentId, companyId: "company-1" };
         if (scenario === "denied-task") mockAccessService.decide.mockImplementation(async ({ action }) => ({ allowed: action !== "issue:comment", explanation: "Denied" }));
+        if (scenario === "unreadable-task") mockAccessService.decide.mockImplementation(async ({ action }) => ({ allowed: action !== "issue:read", explanation: "Denied" }));
         if (scenario === "foreign-company") mockHeartbeatService.getRun.mockResolvedValue({ ...selectedRun, companyId: "company-2" });
         if (scenario === "foreign-agent") mockHeartbeatService.getRun.mockResolvedValue({ ...selectedRun, agentId: "other-reviewer" });
         if (scenario === "foreign-issue") mockHeartbeatService.getRun.mockResolvedValue({ ...selectedRun, nativeIssueId: "other-task" });
@@ -1101,9 +1104,9 @@ describe("agent live run routes", () => {
         const res = await requestApp(await createApp(fixture.db, actor), url => request(url).post(`/api/agents/${routeAgentId}/wakeup`).send({
           ...retryBody, payload: { ...reviewContext },
         }));
-        expect(res.status).toBe(["agent-caller", "denied-task"].includes(scenario) ? 403 : ["foreign-company", "foreign-agent"].includes(scenario) ? 404 : 409);
+        expect(res.status).toBe(["agent-caller", "denied-task"].includes(scenario) ? 403 : ["unreadable-task", "foreign-company", "foreign-agent"].includes(scenario) ? 404 : 409);
         expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
-        if (["agent-caller", "denied-task", "foreign-company", "foreign-agent", "foreign-issue", "legacy", "unknown-error", "missing-context"].includes(scenario)) {
+        if (["agent-caller", "denied-task", "unreadable-task", "foreign-company", "foreign-agent", "foreign-issue", "legacy", "unknown-error", "missing-context"].includes(scenario)) {
           expect(mockNativeReviewAssignment).not.toHaveBeenCalled();
         }
       },
@@ -1170,12 +1173,17 @@ describe("agent live run routes", () => {
         issueId: failedChatIssueId,
       } });
       mockAccessService.decide.mockImplementation(async ({ action }) => ({
-        allowed: action === "issue:comment" || action === "agent:wake", explanation: "Missing permission: agents:create",
+        allowed: action === "issue:read" || action === "issue:comment" || action === "agent:wake",
+        explanation: "Missing permission: agents:create",
       }));
       const res = await requestApp(await createApp(fixture.db, {
         type: "board", userId: "operator", source: "session", companyIds: ["company-1"],
       }), url => request(url).post(`/api/agents/${routeAgentId}/wakeup`).send(retryBody));
       expect(res.status, JSON.stringify(res.body)).toBe(202);
+      // PAR-13017: the run's task is read first, with the issue scope.
+      expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+        action: "issue:read", scope: expect.objectContaining({ issueId: failedChatIssueId }),
+      }));
       expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
         action: "issue:comment", resource: expect.objectContaining({
           type: "issue", companyId: "company-1", issueId: failedChatIssueId,
@@ -2030,6 +2038,12 @@ describe("agent live run routes", () => {
   });
 });
 
+// The stub database has no membership tables; the agent-list route check of
+// PAR-12608 4.7 has its own database test (member-restriction-agent-route-checks).
+vi.mock("../services/member-restriction/agent-read.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../services/member-restriction/agent-read.js")>()),
+  actorMayInstructAgent: async () => true,
+}));
 vi.mock("../services/agent-lifecycle.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../services/agent-lifecycle.js")>();
   return { ...actual, createAgentLifecycle: () => ({

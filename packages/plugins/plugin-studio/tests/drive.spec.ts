@@ -32,6 +32,7 @@ vi.mock("../src/config.js", () => ({
   },
 }));
 vi.mock("@partnersinbiz/pib-plugin-kit", () => ({
+  DRIVE_ACK_TIMEOUT_MS: 8_000,
   driveSave: vi.fn(),
   scopeOfRow: (r: { client_kind?: string; client_id?: string }) => (r.client_kind && r.client_id ? { kind: r.client_kind, id: r.client_id } : null),
 }));

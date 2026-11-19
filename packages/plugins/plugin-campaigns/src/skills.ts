@@ -16,7 +16,7 @@ The Growth Lab tools (\`performance-review\`, \`get-playbook\`, \`propose-playbo
 ## Build
 1. \`create-campaign\`: name, \`delivery\`, audience, \`client\`, optional \`startAt\` (no step is due before it).
 2. For a client: \`set-sender-identity\` first (below).
-3. \`add-campaign-step\` per message (\`channel\` email, sms or whatsapp; subject and body; \`delayDays\` after the previous step). \`create-ab-variant\` adds a B version; \`set-step-html\` sets an HTML body.
+3. \`add-campaign-step\` per message (\`channel\` email, sms or whatsapp; subject and body; \`delayDays\` after the previous step). \`create-ab-variant\` adds a B version; \`set-step-html\` sets an HTML body; \`edit-campaign-step\` changes the subject or plain body of a draft step (HTML stays).
 4. \`preflight-campaign\` and fix what it lists, then \`request-campaign-approval\`.
 - \`update-campaign\` edits a draft, including moving it to another client (or \`client: "own"\` for own work).
 - Templates: \`create-campaign-template\`, \`list-campaign-templates\`, \`create-campaign-from-template\`.
@@ -48,9 +48,11 @@ Merge tokens: \`{{first_name}}\`, \`{{last_name}}\`, \`{{name}}\`, \`{{company}}
 
 ## Approval and launch
 - \`preflight-campaign\` runs the checks an approval request runs: every step complete, a client sender, a configured channel, the unsubscribe, the sender's domain health, working links, and who can receive each channel. Errors block the request; warnings go to the approver.
-- \`request-campaign-approval\` opens the approval issue with the audience and its count, delivery, who it goes out as, start date and every step. With a Reviewer it checks first, comments PASS or CHANGES NEEDED and hands it to the person; nobody but a person marks it done.
-- A person marks it **done**: the campaign launches by itself and a comment says how many were enrolled. If it cannot launch, the issue goes back to the person with the reason.
-- A person **cancels** it: you get a "Revise campaign" issue. Read their comments, fix the draft, request approval again, then mark it done. Cancel the revise issue instead when they said to drop the campaign.
+- \`request-campaign-approval\` opens the approval issue with the audience and its count, delivery, who it goes out as, start date and every step. With a Reviewer it checks first and gives its verdict with \`review-campaign-approval\` (Reviewer only): pass hands it to the person, changes sends it back with a Revise task; nobody but a person approves.
+- Approval happens on the campaign screen: a person opens the campaign (the Cockpit's "Waiting on you" item links there) and clicks **Approve and launch**, or **Send back**. The campaign launches by itself and a comment says how many were enrolled. If it cannot launch, it stays in Waiting on you with the reason. A client's campaign needs the client's written yes recorded on that screen; a hand-marked issue does not launch it.
+- The Reviewer gives its verdict only with \`review-campaign-approval\`; it never marks the approval issue done.
+- Adding people to a list or tagging contacts is not a send and needs no send approval.
+- A person **cancels** it: you get a "Revise campaign" issue. Read their comments, fix the draft and request approval again. Cancel the revise issue instead when they said to drop the campaign.
 - Changing a draft after asking (steps, HTML, audience, sender, delivery, dates) cancels that approval (\`approvalReset: true\`). Request again.
 - \`launch-campaign\` is only for a paused campaign (it enrolls audience contacts not in it yet) or an approved draft that has not launched.
 

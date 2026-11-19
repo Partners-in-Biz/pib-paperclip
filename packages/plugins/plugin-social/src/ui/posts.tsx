@@ -4,10 +4,13 @@ import { editableViaDraft, PLATFORM_LABELS, isSocialPlatform, xReplyIntentUrl } 
 import { ApprovalPolicyCard, PostApproval } from "./approvals.js";
 import { Thumb } from "./composer.js";
 import { MediaViewer } from "./media-viewer.js";
-import { Banner, Card, chipStyle, DestinationStatus, ExternalLink, fmtDate, ignore, Muted, PlatformBadge, platformLabel, PostStatus, Row, SmallButton, timeLabel, toLocalInput } from "./parts.js";
-import { DEST_TONE, POST_TONE, toneOf } from "./series.js";
+import { canPostByHand, HandPost } from "./hand-post.js";
+import { Banner, Card, chipStyle, destinationLabel, DestinationStatus, ExternalLink, fmtDate, ignore, Muted, PlatformBadge, platformLabel, PostStatus, Row, SmallButton, timeLabel, toLocalInput } from "./parts.js";
+import { calendarState, DEST_TONE, POST_TONE, toneOf } from "./series.js";
+import { AccountPicker, AskForChanges, Switch, useStoredChoice } from "./post-tools.js";
+import { PostPreview, previewAccounts } from "./preview.js";
 import { PostTarget } from "./target.js";
-import type { ApprovalOutcome, Post, RunAction, Snapshot } from "./types.js";
+import type { Account, ApprovalOutcome, Post, RunAction, Snapshot } from "./types.js";
 
 const FILTERS = [
   { id: "all", label: "All" },
@@ -16,18 +19,25 @@ const FILTERS = [
   { id: "approved", label: "Approved" },
   { id: "scheduled", label: "Scheduled" },
   { id: "published", label: "Published" },
+  { id: "by_hand", label: "Post by hand" },
   { id: "problems", label: "Failed" },
 ];
+
+/** The publish time came and a person still has to post it on a manual account. */
+const waitsForHand = (post: Post): boolean => post.destinations.some((d) => d.status === "awaiting_manual");
 
 export function PostsTab({ posts, snapshot, run, onOpen, onNew }: { posts: Post[]; snapshot: Snapshot; run: RunAction; onOpen: (post: Post) => void; onNew: () => void }) {
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
+  // List: compact rows. Preview: each post as its platform shows it.
+  const [view, setView] = useStoredChoice("pib.social.posts.view", ["list", "preview"] as const, "list");
   const q = search.trim().toLowerCase();
-  const count = (id: string) => id === "all" ? posts.length : id === "problems" ? posts.filter((p) => p.status === "failed" || p.status === "partially_published").length : posts.filter((p) => p.status === id).length;
+  const count = (id: string) => id === "all" ? posts.length : id === "by_hand" ? posts.filter(waitsForHand).length : id === "problems" ? posts.filter((p) => p.status === "failed" || p.status === "partially_published").length : posts.filter((p) => p.status === id).length;
   const rows = useMemo(() => posts.filter((post) => {
     if (filter === "problems" && post.status !== "failed" && post.status !== "partially_published") return false;
     if (filter === "published" && post.status !== "published") return false;
-    if (!["all", "problems", "published"].includes(filter) && post.status !== filter) return false;
+    if (filter === "by_hand" && !waitsForHand(post)) return false;
+    if (!["all", "problems", "published", "by_hand"].includes(filter) && post.status !== filter) return false;
     return !q || post.body.toLowerCase().includes(q);
   }), [posts, filter, q]);
   return (
@@ -35,12 +45,30 @@ export function PostsTab({ posts, snapshot, run, onOpen, onNew }: { posts: Post[
       {snapshot.space === "me" ? null : <ApprovalPolicyCard snapshot={snapshot} run={run} />}
       <Toolbar search={search} onSearchChange={setSearch} searchPlaceholder="Search posts…">
         {FILTERS.map((f) => (
-          <SmallButton key={f.id} aria-pressed={filter === f.id} onClick={() => setFilter(f.id)} style={{ ...chipStyle(filter === f.id), ...(f.id === "problems" && count(f.id) && filter !== f.id ? { color: tone("bad").fg, borderColor: tone("bad").border } : {}) }}>{f.label}{count(f.id) ? ` (${count(f.id)})` : ""}</SmallButton>
+          <SmallButton key={f.id} aria-pressed={filter === f.id} onClick={() => setFilter(f.id)} style={{ ...chipStyle(filter === f.id), ...(f.id === "problems" && count(f.id) && filter !== f.id ? { color: tone("bad").fg, borderColor: tone("bad").border } : {}), ...(f.id === "by_hand" && count(f.id) && filter !== f.id ? { color: tone("warn").fg, borderColor: tone("warn").border } : {}) }}>{f.label}{count(f.id) ? ` (${count(f.id)})` : ""}</SmallButton>
         ))}
+        <Switch label="How posts are shown" value={view} onChange={setView} options={[{ id: "list", label: "List" }, { id: "preview", label: "Preview" }]} />
         {snapshot.canPost === false ? null : <Button type="button" onClick={onNew}>+ New post</Button>}
       </Toolbar>
       {rows.length === 0 ? (
         <EmptyState icon={FileText} title="No posts here" description="Write a post, pick destinations, and send it for review." action={snapshot.canPost === false ? undefined : <Button type="button" onClick={onNew}>+ New post</Button>} />
+      ) : view === "preview" ? (
+        <div style={{ display: "grid", gap: 12, gridTemplateColumns: fluidColumns(300, "auto-fill"), alignItems: "start" }}>
+          {rows.map((post) => (
+            <div key={post.id} style={{ display: "grid", gap: 8, padding: 12, borderRadius: 12, border: `1px solid ${tokens.border}`, borderTop: `3px solid ${tone(toneOf(POST_TONE, post.status)).solid}`, background: tokens.card, minWidth: 0 }}>
+              <Row style={{ justifyContent: "space-between" }}>
+                <Row>
+                  <PostStatus status={post.status} />
+                  {waitsForHand(post) ? <Pill size="sm" tone="warn" dot>post by hand</Pill> : null}
+                </Row>
+                <SmallButton onClick={() => onOpen(post)}>Open</SmallButton>
+              </Row>
+              <Muted>{timeLabel(post, snapshot.config.timezone)}</Muted>
+              <PostTarget post={post} compact />
+              <PostPreview source={post} accounts={previewAccounts(snapshot.accounts, post.destinations)} empty="No account picked yet." />
+            </div>
+          ))}
+        </div>
       ) : (
         <div style={{ display: "grid", gap: 8 }}>
           {rows.map((post) => (
@@ -53,6 +81,7 @@ export function PostsTab({ posts, snapshot, run, onOpen, onNew }: { posts: Post[
               <Row style={{ justifyContent: "space-between" }}>
                 <Row>
                   <PostStatus status={post.status} />
+                  {waitsForHand(post) ? <Pill size="sm" tone="warn" dot>post by hand</Pill> : null}
                   {post.source !== "manual" ? <Muted>{post.source.replace("_", " ")}</Muted> : null}
                 </Row>
                 <Muted>{timeLabel(post, snapshot.config.timezone)}</Muted>
@@ -61,7 +90,7 @@ export function PostsTab({ posts, snapshot, run, onOpen, onNew }: { posts: Post[
               <div style={{ fontSize: 13, lineHeight: 1.45, whiteSpace: "pre-wrap", overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical" }}>{post.body}</div>
               <Row>
                 {post.destinations.map((d) => (
-                  <Pill key={d.id} size="sm" variant="outline" tone={toneOf(DEST_TONE, d.status)} dot>{platformLabel(d.platform)} · {d.status}</Pill>
+                  <Pill key={d.id} size="sm" variant="outline" tone={toneOf(DEST_TONE, d.status)} dot>{platformLabel(d.platform)} · {destinationLabel(d.status)}</Pill>
                 ))}
                 {post.media.length ? <Muted>{post.media.length} media</Muted> : null}
               </Row>
@@ -79,6 +108,8 @@ export function PostDetail({ post, snapshot, run, onClose, onEdit }: { post: Pos
   const [approval, setApproval] = useState<ApprovalOutcome | null>(null);
   const [waiting, setWaiting] = useState<string | null>(null);
   const [viewing, setViewing] = useState<number | null>(null);
+  const [look, setLook] = useStoredChoice("pib.social.post.look", ["preview", "text"] as const, "preview");
+  const [toggling, setToggling] = useState<string | null>(null);
   const tz = snapshot.config.timezone;
   const isUser = Boolean(snapshot.viewer.userId);
   const proposed = (post.status === "draft" || post.status === "review") && post.scheduledAt ? post.scheduledAt : null;
@@ -107,6 +138,18 @@ export function PostDetail({ post, snapshot, run, onClose, onEdit }: { post: Pos
     };
   }, [post.id, post.updatedAt, post.destinations.length]);
 
+  // Accounts can change while the post can still be edited; a destination that has gone out stays.
+  const canPick = (post.status === "draft" || post.status === "review") && isUser && snapshot.canPost !== false;
+  const pickable: Account[] = canPick ? snapshot.accounts.filter((a) => (a.connected && a.status !== "needs_reconnect") || post.destinations.some((d) => d.accountId === a.id)) : [];
+  const onPost = new Set(post.destinations.map((d) => d.accountId));
+  const fixed = new Set(post.destinations.filter((d) => d.status !== "pending" && d.status !== "failed").map((d) => d.accountId));
+  const toggleAccount = (account: Account) => {
+    setToggling(account.id);
+    run(onPost.has(account.id) ? "social.detach" : "social.attach", { postId: post.id, accountId: account.id })
+      .catch(ignore)
+      .finally(() => setToggling(null));
+  };
+
   const act = (key: string, success: string, extra: Record<string, unknown> = {}) => run(key, { postId: post.id, ...extra }, success).catch(ignore);
   const failed = post.destinations.filter((d) => d.status === "failed").length;
   // A reply to an X post cannot go through the API, so it can be posted from X's own reply box instead.
@@ -116,16 +159,29 @@ export function PostDetail({ post, snapshot, run, onClose, onEdit }: { post: Pos
     <>
     <Sheet open title="Post" onClose={onClose}>
       <Row style={{ justifyContent: "space-between" }}>
-        <PostStatus status={post.status} />
+        <Row>
+          <PostStatus status={post.status} />
+          {waitsForHand(post) ? <Pill size="sm" tone="warn" dot>post by hand</Pill> : null}
+        </Row>
         <Muted>{snapshot.space === "me" ? "My Social" : post.clientName ?? "Own work"}</Muted>
       </Row>
       {post.error ? <Banner tone="error" title="Publishing problem">{post.error}{post.failureIssueId ? " An issue was opened for this post." : ""}</Banner> : null}
       <PostTarget post={post} />
-      <div style={{ fontSize: 13, lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{post.body}</div>
+      <Row style={{ justifyContent: "space-between" }}>
+        <Muted>{look === "preview" ? "As it will look when posted" : "The post's text and media"}</Muted>
+        <Switch label="How the post is shown" value={look} onChange={setLook} options={[{ id: "preview", label: "Preview" }, { id: "text", label: "Text" }]} />
+      </Row>
+      {look === "preview" ? (
+        <PostPreview source={post} accounts={previewAccounts(snapshot.accounts, post.destinations)} empty="No account picked yet: this is a general look. Pick accounts below." />
+      ) : (
+        <>
+          <div style={{ fontSize: 13, lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{post.body}</div>
+          {post.firstComment ? <Muted>First comment: {post.firstComment}</Muted> : null}
+        </>
+      )}
       {post.media.length ? (
         <Row>{post.media.map((m, i) => <Thumb key={`${m.url}-${i}`} asset={{ url: m.url, kind: m.kind, name: m.altText ?? undefined }} onClick={() => setViewing(i)} />)}</Row>
       ) : null}
-      {post.firstComment ? <Muted>First comment: {post.firstComment}</Muted> : null}
       {approval ? <Banner tone={approval.scheduled ? "info" : "warn"} title={approval.scheduled ? "Approved and scheduled" : "Approved"}>{approval.message}</Banner> : null}
       {waiting ? <Banner tone="info" title="Your approval is recorded">{waiting}</Banner> : null}
       {snapshot.space === "me" ? null : <PostApproval post={post} snapshot={snapshot} run={run} />}
@@ -147,8 +203,15 @@ export function PostDetail({ post, snapshot, run, onClose, onEdit }: { post: Pos
       ) : null}
 
       <Card style={{ gap: 8 }}>
-        <strong style={{ fontSize: 12 }}>Destinations</strong>
-        {post.destinations.length === 0 ? <Muted>No destinations yet. Edit the post and pick accounts.</Muted> : null}
+        <strong style={{ fontSize: 12 }}>{canPick ? "Post to" : "Destinations"}</strong>
+        {canPick && pickable.length ? (
+          <>
+            <Muted>Press an account to add it or take it off.{post.status === "review" ? " A change here means the post needs approving in its new form." : ""}</Muted>
+            <AccountPicker accounts={pickable} selected={onPost} locked={fixed} busyId={toggling} onToggle={toggleAccount} />
+          </>
+        ) : null}
+        {canPick && pickable.length === 0 ? <Muted>No connected accounts yet. Connect one on the Accounts tab.</Muted> : null}
+        {!canPick && post.destinations.length === 0 ? <Muted>No destinations yet. Edit the post and pick accounts.</Muted> : null}
         {post.destinations.map((d) => (
           <div key={d.id} style={{ display: "grid", gap: 4, paddingTop: 6, borderTop: `1px solid ${tokens.border}` }}>
             <Row style={{ justifyContent: "space-between" }}>
@@ -162,9 +225,12 @@ export function PostDetail({ post, snapshot, run, onClose, onEdit }: { post: Pos
               Attempts {d.attempts}
               {d.nextAttemptAt && d.status === "retrying" ? ` · next try ${fmtDate(d.nextAttemptAt, tz)}` : ""}
               {d.publishedAt ? ` · published ${fmtDate(d.publishedAt, tz)}` : ""}
+              {d.manual && d.status === "pending" ? " · a person posts this by hand at the publish time" : ""}
             </Muted>
-            {d.externalUrl ? <ExternalLink href={d.externalUrl}>View on {platformLabel(d.platform)}</ExternalLink> : null}
             {d.lastError ? <Muted style={{ color: tone("bad").fg }}>{d.lastError}</Muted> : null}
+            {canPostByHand(post, d, isUser)
+              ? <HandPost post={post} destination={d} run={run} />
+              : d.externalUrl ? <ExternalLink href={d.externalUrl}>View on {platformLabel(d.platform)}</ExternalLink> : null}
           </div>
         ))}
       </Card>
@@ -199,6 +265,8 @@ export function PostDetail({ post, snapshot, run, onClose, onEdit }: { post: Pos
         ) : null}
       </Row>
 
+      {snapshot.space === "me" ? null : <AskForChanges post={post} snapshot={snapshot} run={run} />}
+
       {post.status === "approved" ? (
         <Card style={{ gap: 8 }}>
           <Muted>{post.scheduleIssueId ? "No publish time yet: the Social agent has a task to pick one. Or set it here." : "No publish time yet. Set it here."}</Muted>
@@ -232,6 +300,7 @@ export function CalendarView({ posts, snapshot, onOpen }: { posts: Post[]; snaps
   start.setDate(start.getDate() - start.getDay() + 1 + offset * 14);
   const days = Array.from({ length: 14 }, (_, i) => new Date(start.getTime() + i * 86_400_000));
   const todayKey = dayKey(new Date().toISOString());
+  const now = Date.now();
   const byDay = new Map<string, Post[]>();
   for (const post of posts) {
     const when = post.status === "published" || post.status === "partially_published" ? post.publishedAt ?? post.scheduledAt : post.scheduledAt;
@@ -246,7 +315,7 @@ export function CalendarView({ posts, snapshot, onOpen }: { posts: Post[]; snaps
         <Muted>{fmtDate(days[0]!.toISOString(), tz, false)} – {fmtDate(days[13]!.toISOString(), tz, false)} ({tz})</Muted>
         <SmallButton onClick={() => setOffset((o) => o + 1)}>Later →</SmallButton>
       </Row>
-      <ChartLegend items={[{ label: "Scheduled", tone: "info" }, { label: "Published", tone: "ok" }, { label: "Failed", tone: "bad" }]} />
+      <ChartLegend items={[{ label: "Scheduled", tone: "info" }, { label: "Published", tone: "ok" }, { label: "Failed or missed", tone: "bad" }, { label: "Not scheduled (proposed time only)", tone: "neutral" }]} />
       <div style={{ display: "grid", gap: 8, gridTemplateColumns: fluidColumns(150, "auto-fill") }}>
         {days.map((day) => {
           const key = dayKey(day.toISOString());
@@ -257,13 +326,16 @@ export function CalendarView({ posts, snapshot, onOpen }: { posts: Post[]; snaps
                 <Muted style={{ fontWeight: 600, color: key === todayKey ? tone("accent").fg : undefined }}>{day.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" })}</Muted>
                 {list.length ? <Pill size="sm" tone="accent">{list.length}</Pill> : null}
               </Row>
-              {list.map((post) => (
-                <button key={post.id} type="button" onClick={() => onOpen(post)} style={{ appearance: "none", textAlign: "left", fontSize: 11, lineHeight: 1.35, padding: "5px 7px", borderRadius: 8, border: "none", borderLeft: `3px solid ${tone(toneOf(POST_TONE, post.status)).solid}`, background: tone(toneOf(POST_TONE, post.status)).soft, color: tokens.fg, cursor: "pointer", fontFamily: "inherit", overflowWrap: "anywhere", minWidth: 0 }}>
-                  <strong>{post.scheduledAt ? new Date(post.scheduledAt).toLocaleTimeString(undefined, { timeZone: tz, hour: "2-digit", minute: "2-digit" }) : ""}</strong>{" "}
-                  {post.body.slice(0, 60)}
-                  <div style={{ color: tokens.muted }}>{post.status.replace("_", " ")} · {post.destinations.map((d) => platformLabel(d.platform)).join(", ")}</div>
-                </button>
-              ))}
+              {list.map((post) => {
+                const state = calendarState(post, now);
+                return (
+                  <button key={post.id} type="button" onClick={() => onOpen(post)} title={state.proposal ? "Not scheduled: only a proposed time. Nothing is posted until it is approved and scheduled." : undefined} style={{ appearance: "none", textAlign: "left", fontSize: 11, lineHeight: 1.35, padding: "5px 7px", borderRadius: 8, border: "none", borderLeft: `3px ${state.proposal ? "dashed" : "solid"} ${tone(state.tone).solid}`, background: tone(state.tone).soft, color: tokens.fg, opacity: state.proposal ? 0.85 : 1, cursor: "pointer", fontFamily: "inherit", overflowWrap: "anywhere", minWidth: 0 }}>
+                    <strong>{post.scheduledAt ? new Date(post.scheduledAt).toLocaleTimeString(undefined, { timeZone: tz, hour: "2-digit", minute: "2-digit" }) : ""}</strong>{" "}
+                    {post.body.slice(0, 60)}
+                    <div style={{ color: state.tone === "bad" && state.proposal ? tone("bad").fg : tokens.muted }}>{state.label} · {post.destinations.map((d) => platformLabel(d.platform)).join(", ")}</div>
+                  </button>
+                );
+              })}
             </div>
           );
         })}

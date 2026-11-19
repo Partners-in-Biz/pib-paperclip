@@ -5,7 +5,7 @@
  * client's file only lands in that client's folder (own work goes to the company's own project).
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { driveSave as kitDriveSave, scopeOfRow, type DriveSaveOptions, type DriveSaveResult, type DriveTransferProgress } from "@partnersinbiz/pib-plugin-kit";
+import { DRIVE_ACK_TIMEOUT_MS, driveSave as kitDriveSave, scopeOfRow, type DriveSaveOptions, type DriveSaveResult, type DriveTransferProgress } from "@partnersinbiz/pib-plugin-kit";
 import { addLink, getAssetRow } from "./assets.js";
 import { StudioConfig } from "./config.js";
 import { iso, num, table } from "./db.js";
@@ -17,8 +17,8 @@ import { DRIVE_INLINE_MAX_BYTES, DRIVE_MAX_BYTES } from "./drive-limits.js";
 // The limit is checked here first, before reading from R2, for a clear message.
 export { DRIVE_INLINE_MAX_BYTES, DRIVE_MAX_BYTES };
 export const DRIVE_LINK_TYPE = "drive_file";
-// Well under the host's 30 s action limit, so people get the plain message instead of a bare 502 (PAR-8114).
-export const DRIVE_TIMEOUT_MS = 20_000;
+// Under the tool gateway's ~10 s cut (PAR-10208), so people and agents get the plain message instead of a bare 504.
+export const DRIVE_TIMEOUT_MS = DRIVE_ACK_TIMEOUT_MS;
 /** A large transfer: the longest wait between two progress replies (the CRM sends one per 8 MiB chunk). */
 export const TRANSFER_IDLE_MS = 60_000;
 /** Signed R2 links for a large transfer: long enough for 200 MB on a slow line, short enough to be worthless later. */
@@ -57,7 +57,8 @@ function mb(bytes: number): string {
 /** Plain words for a refusal from the kit, the CRM or Google. */
 export function refusalText(result: Exclude<DriveSaveResult, { status: "saved" }>): string {
   if (result.status === "no_ack") return `CRM didn't answer within ${DRIVE_TIMEOUT_MS / 1000} seconds, so the file may not be in Drive. Check that the CRM plugin is running, then try again. A retry does not make a second copy.`;
-  const hint = result.hint ? ` (${result.hint})` : "";
+  // A hint can echo a thrown message; a signed link (or any URL) must never reach a page or an agent (PAR-9264).
+  const hint = result.hint ? ` (${result.hint.replace(/https?:\/\/\S+/gi, "[link removed]")})` : "";
   switch (result.reason) {
     case "too_large":
       return `Drive transfers take files up to ${mb(DRIVE_MAX_BYTES)}, the largest file Studio keeps. Download the file and add it to Drive by hand.`;

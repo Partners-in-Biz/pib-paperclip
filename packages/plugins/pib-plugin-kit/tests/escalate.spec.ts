@@ -79,8 +79,8 @@ describe("escalate", () => {
     });
   });
 
-  describe("(c) 21st escalation of day refused, 20 succeed", () => {
-    it("allows 20 escalations, refuses 21st", async () => {
+  describe("(c) escalation past the daily cap refused, the cap itself succeeds", () => {
+    it("allows the 60th escalation of the day, refuses the 61st", async () => {
       const fake = fakeCtx({
         companies: { "co-1": { name: "Test Co", issuePrefix: "TST" } },
         agents: [
@@ -89,7 +89,7 @@ describe("escalate", () => {
         ],
       });
 
-      // Pre-seed day counter to 19
+      // Pre-seed day counter to one below the cap (ESCALATION_DAILY_CAP = 60)
       await fake.ctx.state.set(
         {
           scopeKind: "company",
@@ -97,7 +97,7 @@ describe("escalate", () => {
           namespace: "pib-escalations",
           stateKey: `count:${today}`,
         },
-        19,
+        59,
       );
 
       const issue1 = await fake.ctx.issues.create({
@@ -107,14 +107,14 @@ describe("escalate", () => {
         status: "todo",
       });
 
-      // 20th should succeed
+      // The 60th should succeed
       const result20 = await escalate(fake.ctx, issue1.id, "blocked", {
         companyId: "co-1",
         now,
       });
       expect(result20).toEqual(expect.objectContaining({ created: true }));
 
-      // Create issue 2 for 21st attempt
+      // Create issue 2 for the 61st attempt
       const issue2 = await fake.ctx.issues.create({
         companyId: "co-1",
         title: "Stuck 2",
@@ -122,8 +122,7 @@ describe("escalate", () => {
         status: "todo",
       });
 
-      // 21st should be capped (but need different originId, so we need to trigger the cap on same issue at different level or a new issue)
-      // Actually, the cap is per-company per-day, so the 21st escalation call should fail
+      // The cap is per company per day, so the 61st escalation call is refused
       const result21 = await escalate(fake.ctx, issue2.id, "blocked", {
         companyId: "co-1",
         now,

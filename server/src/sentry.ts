@@ -108,6 +108,7 @@ interface SentryCaptureContext {
 interface SentryHandle {
   captureException(error: unknown, context?: SentryCaptureContext): string;
   close(timeout?: number): Promise<boolean>;
+  flush(timeout?: number): Promise<boolean>;
 }
 
 let sentryHandle: SentryHandle | null = null;
@@ -447,6 +448,16 @@ export function shutdownSentry(): Promise<void> {
   return shutdownPromise;
 }
 
+/** Flush buffered Sentry events, capped at `timeoutMs`. Never throws; a no-op when Sentry is off. */
+export async function flushSentry(timeoutMs = 2_000): Promise<void> {
+  if (!sentryHandle) return;
+  try {
+    await sentryHandle.flush(Math.min(timeoutMs, 2_000));
+  } catch {
+    // Observability must not change control flow.
+  }
+}
+
 /**
  * The subset of the `@sentry/node` module surface the initializer needs to
  * build its options object. A structural type, not the real Sentry type —
@@ -501,7 +512,11 @@ export function buildSentryInitOptions(
           integration.name !== "Console" &&
           integration.name !== "ContextLines" &&
           integration.name !== "Http" &&
-          integration.name !== "OnUnhandledRejection",
+          integration.name !== "OnUnhandledRejection" &&
+          // The stream-write-error net owns the uncaught path: Sentry's
+          // handler latches its first error and would then never report a
+          // later fatal one once our listener keeps the process alive.
+          integration.name !== "OnUncaughtException",
       );
       return [
         ...kept,
@@ -550,6 +565,7 @@ async function bootstrapSentry(dsn: string): Promise<void> {
     sentryHandle = {
       captureException: (...args) => Sentry.captureException(...args),
       close: (timeout) => Sentry.close(timeout),
+      flush: (timeout) => Sentry.flush(timeout),
     };
   } catch (err) {
     // The exact-version gate above already confirmed @sentry/node is

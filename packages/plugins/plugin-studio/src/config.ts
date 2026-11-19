@@ -9,7 +9,7 @@ import { StudioError } from "./errors.js";
 import type { PrivateBucket } from "./storage.js";
 
 /** Keys under `providers` in the plugin settings: one default per capability, two for lip-sync (audio, typed line). */
-export type ProviderSetting = "stt" | "tts" | "lipsync" | "lipsyncLine";
+export type ProviderSetting = "stt" | "tts" | "lipsync" | "lipsyncLine" | "looks";
 
 export function instanceConfigSchema(): JsonSchema {
   return {
@@ -35,6 +35,11 @@ export function instanceConfigSchema(): JsonSchema {
         title: "xAI voice",
         properties: { apiKey: secretField("API key", "console.x.ai key for voice: auto-captions (grok-voice-transcribe) and voiceover. The Voice plugin's key works here too.") },
       },
+      stability: {
+        type: "object",
+        title: "Stability AI",
+        properties: { apiKey: secretField("Stability AI key", "platform.stability.ai key for Stable Audio music.") },
+      },
       providers: {
         type: "object",
         title: "Voice providers",
@@ -45,6 +50,8 @@ export function instanceConfigSchema(): JsonSchema {
           // Lip-sync keys: src/providers/registry.ts LIPSYNC (kept as literals so this file loads no registry code).
           lipsync: { type: "string", title: "Lip-sync to your audio", enum: ["wan-3.0-prime", "wan-2.7", "seedance-2.5-reference", "grok-video-1.5"], default: "wan-3.0-prime" },
           lipsyncLine: { type: "string", title: "Lip-sync a typed line", enum: ["seedance-2.5-dialogue"], default: "seedance-2.5-dialogue" },
+          // Look pack keys: src/providers/registry.ts LOOK_PACKS (literal, same reason).
+          looks: { type: "string", title: "Look pack for video clips", enum: ["pib-basic"], default: "pib-basic" },
         },
       },
     },
@@ -84,6 +91,12 @@ export class StudioConfig {
   async xaiKey(): Promise<string> {
     const key = await (await this.secrets).get("xai.apiKey");
     if (!key) throw new StudioError("Voice needs an xAI key: set it under \"xAI voice\" in Studio's plugin settings.", "not_configured");
+    return key;
+  }
+
+  async stabilityKey(): Promise<string> {
+    const key = await (await this.secrets).get("stability.apiKey");
+    if (!key) throw new StudioError("Music needs a Stability AI key: set it under \"Stability AI\" in Studio's plugin settings.", "not_configured");
     return key;
   }
 

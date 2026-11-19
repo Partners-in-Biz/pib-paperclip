@@ -58,7 +58,7 @@ function unprivilegedBoardActor(companyId: string): Express.Request["actor"] {
     source: "session",
     sessionId: "session-1",
     companyIds: [companyId],
-    memberships: [{ companyId, membershipRole: "operator", status: "active" }],
+    memberships: [{ companyId, membershipRole: "operator", status: "active", restricted: false, restrictionMode: "off" }],
     isInstanceAdmin: false,
   };
 }

@@ -7,6 +7,8 @@ import type { AgentEnvConfig, EnvBinding, IssueWorkMode } from "@paperclipai/sha
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
+import { useMemberRestrictionGate } from "../hooks/useMemberRestrictionGate";
+import { memberRestrictionFor } from "../lib/member-restriction";
 import { issuesApi } from "../api/issues";
 import { MissingUserSecretsBanner } from "../pages/secrets/MissingUserSecretsBanner";
 import { instanceSettingsApi } from "../api/instanceSettings";
@@ -559,6 +561,11 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
     experimentalSettings?.enableIsolatedWorkspaces === true ? (currentProject?.executionWorkspacePolicy ?? null) : null;
   const currentProjectSupportsExecutionWorkspace = Boolean(currentProjectExecutionWorkspacePolicy?.enabled);
   const canChooseWorktrees = workspaceIsolationControlsVisible && currentProjectSupportsExecutionWorkspace;
+  // PAR-12608 4.6 (AC-G10): for a restricted member at `enforce` the company's
+  // execution-workspace list is closed, so "reuse a worktree" is not offered,
+  // and no Chrome override is sent (the server keeps the stored value).
+  const memberGate = useMemberRestrictionGate(effectiveCompanyId);
+  const canReuseWorktrees = canChooseWorktrees && !memberGate.closed;
   const {
     data: reusableExecutionWorkspaces,
     isPending: worktreesLoading,
@@ -569,12 +576,20 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
       projectId,
       reuseEligible: true,
     }),
-    queryFn: () => executionWorkspacesApi.listSummaries(effectiveCompanyId!, {
+    queryFn: memberGate.guard(() => executionWorkspacesApi.listSummaries(effectiveCompanyId!, {
       projectId,
       reuseEligible: true,
-    }),
-    enabled: Boolean(effectiveCompanyId) && newIssueOpen && canChooseWorktrees,
+    }), []),
+    enabled: Boolean(effectiveCompanyId) && newIssueOpen && canReuseWorktrees,
   });
+  // `closed` also holds while the session loads; only a known `enforce` drops a reuse draft.
+  const memberEnforced = memberRestrictionFor(session?.memberRestrictions, effectiveCompanyId).enforced;
+  useEffect(() => {
+    if (!memberEnforced || executionWorkspaceMode !== "reuse_existing") return;
+    setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForProject(currentProject));
+    setSelectedExecutionWorkspaceId("");
+  }, [memberEnforced, executionWorkspaceMode, currentProject]);
+  const sendChrome = assigneeChrome && !memberGate.closed;
 
   const { data: privacyParent, isError: parentPrivacyError, refetch: refetchParentPrivacy } = useQuery({
     queryKey: queryKeys.issues.detail(parentId ?? ""),
@@ -1066,10 +1081,10 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
     if (!effectiveCompanyId || filesRestoring || (!currentTitle && !currentDescription) || createIssue.isPending || durableCreate.pending || worktreeSelectionIncomplete || parentPrivacyUnresolved) return;
     const inheritedOverrides = buildAssigneeAdapterOverrides({
       adapterType: assigneeAdapterType,
-      lane: assigneeChrome ? "custom" : assigneeModelLane,
+      lane: sendChrome ? "custom" : assigneeModelLane,
       modelOverride: assigneeModelOverride,
       thinkingEffortOverride: assigneeThinkingEffort,
-      chrome: assigneeChrome,
+      chrome: sendChrome,
     });
     const selectedProject = orderedProjects.find((project) => project.id === projectId);
     // Hidden selectors must not submit a restored draft over the managed default.
@@ -1241,7 +1256,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
   }, [currentAssignee?.adapterConfig, currentProject?.env, selectedAssigneeAgentId, status]);
   const selectableReusableWorkspaces = reusableExecutionWorkspaces ?? [];
   const selectedReusableWorktree = selectableReusableWorkspaces.find((workspace) => workspace.id === selectedExecutionWorkspaceId);
-  const worktreeSelectionIncomplete = canChooseWorktrees && executionWorkspaceMode === "reuse_existing"
+  const worktreeSelectionIncomplete = canReuseWorktrees && executionWorkspaceMode === "reuse_existing"
     && (worktreesLoading || worktreesError || !selectedReusableWorktree);
   const recentAssigneeIds = useMemo(() => getRecentAssigneeIds(), [newIssueOpen]);
   const recentProjectIds = useMemo(() => getRecentProjectIds(), [newIssueOpen]);
@@ -1377,10 +1392,10 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
   const modelAgents = useMemo(() => new Map((agents ?? []).map((agent) => [agent.id, agent])), [agents]);
   const inheritedOverrides = buildAssigneeAdapterOverrides({
     adapterType: assigneeAdapterType,
-    lane: assigneeChrome ? "custom" : assigneeModelLane,
+    lane: sendChrome ? "custom" : assigneeModelLane,
     modelOverride: assigneeModelOverride,
     thinkingEffortOverride: assigneeThinkingEffort,
-    chrome: assigneeChrome,
+    chrome: sendChrome,
   });
 
   return (
@@ -1731,6 +1746,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
                         workspaceId={selectedExecutionWorkspaceId}
                         selectedWorkspaceLabel={selectedReusableWorktree?.name}
                         workspaces={selectableReusableWorkspaces}
+                        reuse={!memberGate.closed}
                         onChange={(mode, workspaceId) => {
                           setExecutionWorkspaceMode(mode);
                           setSelectedExecutionWorkspaceId(workspaceId);

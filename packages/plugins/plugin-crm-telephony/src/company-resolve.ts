@@ -1,4 +1,5 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
+import { actionableCompanyIds } from "@partnersinbiz/pib-plugin-kit";
 import { TWILIO_AUTH_TOKEN } from "./secret-names.js";
 import { verifyTwilioWebhook } from "./twilio-signature.js";
 import { readHeader, type HeaderBag } from "./http-util.js";
@@ -42,7 +43,7 @@ type TokenEntry = { companyId: string; authToken: string };
 const tokenCache = new WeakMap<object, { at: number; entries: TokenEntry[] }>();
 
 /**
- * List companies (paginated) and resolve each one's TWILIO_AUTH_TOKEN.
+ * List the actionable companies and resolve each one's TWILIO_AUTH_TOKEN.
  * Cached briefly per plugin context so a flood of unsigned requests cannot
  * cause a company list plus one secret lookup per company on every hit.
  */
@@ -50,20 +51,10 @@ async function loadTokens(ctx: PluginContext): Promise<TokenEntry[]> {
   const cached = tokenCache.get(ctx);
   if (cached && Date.now() - cached.at < TOKEN_CACHE_TTL_MS) return cached.entries;
 
-  const ids: string[] = [];
-  let offset = 0;
-  const limit = 100;
-  try {
-    while (true) {
-      const batch = await ctx.companies.list({ offset, limit });
-      if (batch.length === 0) break;
-      for (const company of batch) ids.push(company.id);
-      if (batch.length < limit) break;
-      offset += limit;
-    }
-  } catch {
-    return [];
-  }
+  // Only companies this call may act for (saved settings). null = refused or threw: no
+  // companies, and nothing cached, so the next hit asks again.
+  const ids = await actionableCompanyIds(ctx);
+  if (!ids) return [];
 
   const entries: TokenEntry[] = [];
   for (const companyId of ids) {
@@ -77,7 +68,7 @@ async function loadTokens(ctx: PluginContext): Promise<TokenEntry[]> {
 /**
  * Find which company's TWILIO_AUTH_TOKEN can verify the webhook signature.
  *
- * Try each company in ctx.companies.list, resolve its TWILIO_AUTH_TOKEN secret,
+ * Try each actionable company, resolve its TWILIO_AUTH_TOKEN secret,
  * and verify the signature. The first company whose token verifies wins.
  * Skip companies where the secret cannot be resolved.
  *

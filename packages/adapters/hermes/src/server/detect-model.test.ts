@@ -17,6 +17,7 @@ const providerEnvKeys = [
 
 const previousEnv = {
   HOME: process.env.HOME,
+  HERMES_HOME: process.env.HERMES_HOME,
   USERPROFILE: process.env.USERPROFILE,
   HOMEDRIVE: process.env.HOMEDRIVE,
   HOMEPATH: process.env.HOMEPATH,
@@ -107,6 +108,7 @@ async function withHermesHomeConfig(
   for (const key of providerEnvKeys) {
     delete process.env[key];
   }
+  delete process.env.HERMES_HOME;
 
   try {
     await fn();
@@ -183,4 +185,21 @@ test("testEnvironment does not warn about missing API keys when Hermes config pr
     expect(codes.includes("hermes_no_api_keys")).toBe(false);
     expect(result.status).toBe("pass");
   });
+});
+
+test("testEnvironment reads provider from the seat's HERMES_HOME, not ~/.hermes", async () => {
+  const seatHome = await mkdtemp(join(tmpdir(), "hermes-seat-"));
+  try {
+    await writeFile(join(seatHome, "config.yaml"), "model:\n  default: gpt-5.4\n  provider: openai-api\n");
+    await withHermesHomeConfig(["model:", "  default: x", "  provider: anthropic"], async () => {
+      const result = await testEnvironment({
+        companyId: "company-test",
+        adapterType: "hermes_local",
+        config: { hermesCommand: "python3", provider: "openai-api", env: { HERMES_HOME: seatHome } },
+      });
+      expect(result.checks.find((c) => c.code === "hermes_provider_mismatch")).toBeUndefined();
+    });
+  } finally {
+    await rm(seatHome, { recursive: true, force: true });
+  }
 });

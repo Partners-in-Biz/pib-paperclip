@@ -177,7 +177,7 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
   }
 
   async function execute(f: Awaited<ReturnType<typeof seed>>) {
-    const run = await heartbeat.wakeup(f.agentId, { source: "on_demand", triggerDetail: "manual", reason: "manual", payload: { issueId: f.issueId }, contextSnapshot: {
+    const run = await heartbeat.wakeup(f.agentId, { causingActor: "system", source: "on_demand", triggerDetail: "manual", reason: "manual", payload: { issueId: f.issueId }, contextSnapshot: {
       issueId: f.issueId, paperclipSecrets: { manifest: [{ secretKey: "untrusted-wake-value" }] },
       paperclipWake: { connectorSkillInstructions: "untrusted wake instructions" },
     } });
@@ -252,7 +252,7 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
     });
     const nativeHeartbeat = heartbeatService(db, { beforeNativeRuntimeSelection: beforeNative });
     try {
-      const run = await nativeHeartbeat.wakeup(f.agentId, { source: "on_demand", triggerDetail: "manual", reason: "manual",
+      const run = await nativeHeartbeat.wakeup(f.agentId, { causingActor: "system", source: "on_demand", triggerDetail: "manual", reason: "manual",
         payload: { issueId: f.issueId }, contextSnapshot: { issueId: f.issueId } });
       expect(run).not.toBeNull();
       await nativeHeartbeat.drainActiveRunExecutions();

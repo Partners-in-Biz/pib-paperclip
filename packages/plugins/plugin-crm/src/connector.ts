@@ -51,6 +51,9 @@ export const CONNECTOR_ENDPOINTS = {
   // 1.2.0
   "verify/get": false,
   "verify/set": true,
+  // 1.3.0
+  "archive/get": false,
+  "archive/set": true,
 } as const;
 export type ConnectorEndpoint = keyof typeof CONNECTOR_ENDPOINTS;
 
@@ -73,6 +76,9 @@ export const CONNECTOR_V11_ENDPOINTS: readonly ConnectorEndpoint[] = [
 
 /** Endpoints that only exist from Connector 1.2.0 (protocol 1.2). An older install answers them with rest_no_route. */
 export const CONNECTOR_V12_ENDPOINTS: readonly ConnectorEndpoint[] = ["verify/get", "verify/set"];
+
+/** Endpoints that only exist from Connector 1.3.0 (protocol 1.3). An older install answers them with rest_no_route. */
+export const CONNECTOR_V13_ENDPOINTS: readonly ConnectorEndpoint[] = ["archive/get", "archive/set"];
 
 /** The first Connector version that has the 1.1 routes (and can update itself). */
 export const CONNECTOR_SELF_UPDATE_MIN_VERSION = "1.1.0";

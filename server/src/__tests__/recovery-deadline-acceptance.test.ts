@@ -192,7 +192,7 @@ describe.skipIf(!fixtureUrl)("recovery deadline producer, proof and resumed exec
       currentParticipant: { type: "agent", agentId: reviewer.id } } });
     await db.update(agents).set({ status: "idle" }).where(eq(agents.id, reviewer.id));
     await start(); await settled();
-    const source = await heartbeat.wakeup(reviewer.id, { source: "on_demand", reason: "execution_review_participant_recovery",
+    const source = await heartbeat.wakeup(reviewer.id, { causingActor: "system", source: "on_demand", reason: "execution_review_participant_recovery",
       requestedByActorType: "system", contextSnapshot: { issueId: f.issue.id, currentStageId: stageId } });
     if (!source) throw new Error("Current reviewer was not admitted");
     await vi.waitFor(async () => expect((await run(source.id)).status).toBe("failed"), { timeout: 15_000 });
@@ -210,7 +210,7 @@ describe.skipIf(!fixtureUrl)("recovery deadline producer, proof and resumed exec
       args: ["-e", companyScope ? controlledCompanyBootstrapScript : controlledOrdinaryBootstrapScript],
       cwd: process.cwd() } }).where(eq(agents.id, f.agent.id));
     await start(); await settled();
-    const admitted = await heartbeat.wakeup(f.agent.id, { source: "on_demand", reason: "manual",
+    const admitted = await heartbeat.wakeup(f.agent.id, { causingActor: "system", source: "on_demand", reason: "manual",
       requestedByActorType: "system", contextSnapshot: companyScope ? {} : { issueId: f.issue.id, taskId: f.issue.id } });
     if (!admitted) throw new Error("Company failure source was not admitted");
     await vi.waitFor(async () => expect((await run(admitted.id)).status).toBe("failed"), { timeout: 15_000 });
@@ -318,7 +318,7 @@ describe.skipIf(!fixtureUrl)("recovery deadline producer, proof and resumed exec
     expect(scheduled.dueAt.getTime() - scheduled.run.createdAt.getTime()).toBeGreaterThanOrEqual(29_000);
     expect(scheduled.run).toMatchObject({ scopeKind: "company", issueId: null, retryOfRunId: f.source.id });
     if (coalesce) {
-      const accepted = await heartbeat.wakeup(f.agent.id, { source: "on_demand", reason: "company_retry_followup",
+      const accepted = await heartbeat.wakeup(f.agent.id, { causingActor: "system", source: "on_demand", reason: "company_retry_followup",
         contextSnapshot: { companyRetryInput: "retained-input" }, requestedByActorType: "system" });
       expect(accepted?.id).toBe(scheduled.run.id);
       const receipts = await db.select().from(agentWakeupRequests).where(and(
@@ -580,7 +580,7 @@ describe.skipIf(!fixtureUrl)("recovery deadline producer, proof and resumed exec
     const jitter = vi.spyOn(Math, "random").mockReturnValue(0.5);
     try {
       await start(); await settled();
-      const admitted = await heartbeat.wakeup(f.agent.id, { source: "on_demand", reason: "manual", requestedByActorType: "system",
+      const admitted = await heartbeat.wakeup(f.agent.id, { causingActor: "system", source: "on_demand", reason: "manual", requestedByActorType: "system",
         contextSnapshot: { issueId: f.issue.id, taskId: f.issue.id } });
       if (!admitted) throw new Error("Adapter-entry negative was not admitted");
       await heartbeat.drainActiveRunExecutions(); await settled();

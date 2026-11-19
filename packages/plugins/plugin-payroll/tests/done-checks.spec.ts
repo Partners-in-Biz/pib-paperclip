@@ -43,6 +43,8 @@ function makeHost(now = "2026-09-20T08:00:00Z") {
   const issues = new Map<string, Issue>();
   const outbox = new Map<string, Record<string, unknown>>();
   const state = new Map<string, unknown>();
+  let failDelete = false;
+  const warnings: Array<{ message: string; meta: unknown }> = [];
   const skey = (k: Record<string, unknown>) => `${k.scopeKind}|${k.scopeId ?? ""}|${k.namespace ?? "default"}|${k.stateKey}`;
   let seq = 0;
   const ctx = {
@@ -69,7 +71,8 @@ function makeHost(now = "2026-09-20T08:00:00Z") {
     events: { emit: async () => undefined, on: () => undefined },
     state: {
       get: async (k: Record<string, unknown>) => state.get(skey(k)) ?? null,
-      set: async (k: Record<string, unknown>, value: unknown) => { state.set(skey(k), value); },
+      set: async (k: Record<string, unknown>, value: unknown) => { if (value === null) throw new Error("null value in column value_json violates not-null constraint"); state.set(skey(k), value); },
+      delete: async (k: Record<string, unknown>) => { if (failDelete) throw new Error("delete failed"); state.delete(skey(k)); },
     },
     agents: { get: async () => null, list: async () => [] },
     issues: {
@@ -90,7 +93,7 @@ function makeHost(now = "2026-09-20T08:00:00Z") {
     config: { get: async () => ({ ...FULL, escalation: { enabled: false } }) },
     companies: { list: async () => [{ id: C }] },
     secrets: { resolve: async () => undefined },
-    logger: { info: () => undefined, warn: () => undefined, error: () => undefined },
+    logger: { info: () => undefined, warn: (message: string, meta?: unknown) => { warnings.push({ message, meta }); }, error: () => undefined },
   } as never;
   const clock = { now: new Date(now) };
   const env = createEnv(ctx, { now: () => clock.now, config: async (companyId: string) => payrollConfigFrom(ctx, companyId, FULL) });
@@ -105,7 +108,7 @@ function makeHost(now = "2026-09-20T08:00:00Z") {
   /** What the Cockpit's ask-owner posts, and the owner's reply. */
   const ask = (issueId: string) => issues.get(issueId)!.comments.push({ id: `c-${++seq}`, body: "**Question for the owner** · Money · needed by 2026-10-07\n\nPlease file and pay the EMP201.", authorAgentId: "agent-books", authorUserId: null, deletedAt: null });
   const reply = (issueId: string, body = "Filed and paid, PRN 7123456789LC09") => issues.get(issueId)!.comments.push({ id: `c-${++seq}`, body, authorAgentId: null, authorUserId: "user-owner", deletedAt: null });
-  return { env, ctx, issues, state, clock, rules, agentCloses, lastComment, ask, reply };
+  return { env, ctx, issues, state, warnings, setFailDelete: (v: boolean) => { failDelete = v; }, clock, rules, agentCloses, lastComment, ask, reply };
 }
 
 async function addEmployee(host: ReturnType<typeof makeHost>, first = "Thandi") {

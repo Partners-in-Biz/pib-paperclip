@@ -33,10 +33,12 @@ import {
   isStarred,
   resourceMembershipState,
   starredResourceIds,
+  useResourceMembershipControls,
   useResourceMembershipMutation,
   useResourceMemberships,
 } from "../hooks/useResourceMemberships";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
+import { useMemberRestrictionGate } from "../hooks/useMemberRestrictionGate";
 import {
   AGENT_SORT_MODE_UPDATED_EVENT,
   getAgentSortModeStorageKey,
@@ -129,7 +131,7 @@ function SidebarAgentItem({
   disabled: boolean;
   isMobile: boolean;
   leaving: boolean;
-  onLeaveAgent: (agent: Agent) => void;
+  onLeaveAgent?: (agent: Agent) => void;
   onPauseResume: (agent: Agent, action: "pause" | "resume") => void;
   rail: boolean;
   runCount: number;
@@ -277,17 +279,21 @@ function SidebarAgentItem({
             {isPaused ? <PlayCircle className="size-4" /> : <PauseCircle className="size-4" />}
             <span>{pauseResumeDisabledLabel}</span>
           </DropdownMenuItem>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem
-            onClick={() => {
-              if (leaving) return;
-              onLeaveAgent(agent);
-            }}
-            disabled={leaving}
-          >
-            {leaving ? <Loader2 className="size-4 motion-safe:animate-spin" /> : <LogOut className="size-4" />}
-            <span>{leaving ? "Leaving..." : "Leave agent"}</span>
-          </DropdownMenuItem>
+          {onLeaveAgent ? (
+            <>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                onClick={() => {
+                  if (leaving) return;
+                  onLeaveAgent(agent);
+                }}
+                disabled={leaving}
+              >
+                {leaving ? <Loader2 className="size-4 motion-safe:animate-spin" /> : <LogOut className="size-4" />}
+                <span>{leaving ? "Leaving..." : "Leave agent"}</span>
+              </DropdownMenuItem>
+            </>
+          ) : null}
         </DropdownMenuContent>
       </DropdownMenu>
     </div>
@@ -319,10 +325,12 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
     enabled: !!selectedCompanyId,
   });
   const builtInAgentsEnabled = experimentalSettings?.enableBuiltInAgents === true;
+  // `built-in-agents` is closed for a restricted member under `enforce` (AC-G10): no request, no status mark.
+  const builtInAgentsGate = useMemberRestrictionGate(selectedCompanyId);
   const { data: builtInAgents } = useQuery({
     queryKey: queryKeys.builtInAgents.list(selectedCompanyId!),
-    queryFn: () => builtInAgentsApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId && builtInAgentsEnabled,
+    queryFn: builtInAgentsGate.guard(() => builtInAgentsApi.list(selectedCompanyId!), []),
+    enabled: !!selectedCompanyId && builtInAgentsEnabled && !builtInAgentsGate.closed,
   });
   const builtInStatusByAgentId = useMemo(() => {
     const map = new Map<string, BuiltInAgentStatus>();
@@ -338,32 +346,35 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
   });
   const membershipsQuery = useResourceMemberships(selectedCompanyId);
   const membershipMutation = useResourceMembershipMutation(selectedCompanyId);
+  const membershipControls = useResourceMembershipControls(selectedCompanyId);
 
+  // `live-runs` is closed for a restricted member under `enforce` (AC-G10): no request, no live mark.
+  const memberGate = useMemberRestrictionGate(selectedCompanyId);
   const liveRunsQueryKey = queryKeys.liveRuns(selectedCompanyId!);
   const sharedLiveRuns = useSharedPollingQuery({
     companyId: selectedCompanyId,
     resourceKey: "live-runs",
     queryKey: liveRunsQueryKey,
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && !memberGate.closed,
     // Event-sourced via LiveUpdatesProvider (issue 9627); no interval poll needed.
     refetchInterval: false,
     leaderOnly: true,
   });
   const { data: liveRuns, dataUpdatedAt: liveRunsUpdatedAt } = useQuery({
     queryKey: liveRunsQueryKey,
-    queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
-    enabled: sharedLiveRuns.enabled,
+    queryFn: memberGate.guard(() => heartbeatsApi.liveRunsForCompany(selectedCompanyId!), []),
+    enabled: sharedLiveRuns.enabled && !memberGate.closed,
     refetchInterval: sharedLiveRuns.refetchInterval,
   });
   usePublishSharedQueryData(sharedLiveRuns, liveRuns, liveRunsUpdatedAt);
 
   const liveCountByAgent = useMemo(() => {
     const counts = new Map<string, number>();
-    for (const run of liveRuns ?? []) {
+    for (const run of memberGate.closed ? [] : liveRuns ?? []) {
       counts.set(run.agentId, (counts.get(run.agentId) ?? 0) + 1);
     }
     return counts;
-  }, [liveRuns]);
+  }, [liveRuns, memberGate.closed]);
   const liveAgentIds = useMemo(() => {
     const ids = new Set<string>();
     for (const [agentId, count] of liveCountByAgent) {
@@ -623,14 +634,14 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
       disabled={pendingAgentIds.has(agent.id)}
       isMobile={isMobile}
       leaving={agentLeaving(agent)}
-      onLeaveAgent={leaveAgent}
+      onLeaveAgent={membershipControls ? leaveAgent : undefined}
       onPauseResume={(targetAgent, action) => pauseResumeAgent.mutate({ agent: targetAgent, action })}
       rail={rail}
       runCount={liveCountByAgent.get(agent.id) ?? 0}
       setSidebarOpen={setSidebarOpen}
       builtInStatus={builtInStatusByAgentId.get(agent.id)}
       starred={isStarredRow || isStarred(membershipsQuery.data, "agent", agent.id)}
-      onToggleStar={toggleStarAgent}
+      onToggleStar={membershipControls ? toggleStarAgent : undefined}
       starPending={agentStarPending(agent)}
     />
   );

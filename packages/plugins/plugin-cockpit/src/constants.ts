@@ -4,7 +4,7 @@
 import { COCKPIT_PLUGIN } from "@partnersinbiz/pib-plugin-kit/cockpit";
 
 export const PLUGIN_KEY = COCKPIT_PLUGIN;
-export const VERSION = "0.19.6";
+export const VERSION = "0.27.15";
 
 export const JOBS = {
   reemitRoles: "reemit-roles",
@@ -71,6 +71,14 @@ export const ORIGIN = {
   routineFailure: `plugin:${COCKPIT_PLUGIN}:routine-failure`,
   growthReview: `plugin:${COCKPIT_PLUGIN}:growth-review`,
   autoresearch: `plugin:${COCKPIT_PLUGIN}:autoresearch`,
+  /** A question routed to the seat that decides its class (decision rights): one open per asking issue. */
+  decision: `plugin:${COCKPIT_PLUGIN}:decision`,
+  /** A request for access that already exists (a tool grant, a stored secret), for the seat that decides access: one open per seat and thing. */
+  access: `plugin:${COCKPIT_PLUGIN}:access`,
+  /** The owner's one daily digest of everything that waits on them. */
+  digest: `plugin:${COCKPIT_PLUGIN}:digest`,
+  /** The Operator's task to write one edition of the Daily Paper: one per day and edition. */
+  paper: `plugin:${COCKPIT_PLUGIN}:paper`,
 } as const;
 
 /**
@@ -102,7 +110,7 @@ export const LEGACY_ORIGIN_ID = {
 } as const;
 
 /** The Cockpit page tabs (`?tab=`). */
-export const COCKPIT_TABS = { overview: "overview", flows: "flows", profile: "profile", memory: "memory" } as const;
+export const COCKPIT_TABS = { overview: "overview", paper: "paper", flows: "flows", profile: "profile", memory: "memory" } as const;
 export const PROFILE_PATH = "/cockpit?tab=profile";
 
 /** Budget use at or above this share of the monthly budget raises an alert. */

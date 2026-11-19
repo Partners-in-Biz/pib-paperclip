@@ -149,13 +149,13 @@ import {
       expect(new Set(results.map((issue) => issue.id)).size).toBe(1);
       expect((await create()).id).not.toBe(results[0].id);
       expect(
-        (await issueService(db).list(companyId)).some(
+        (await issueService(db).list(companyId, { readCondition: "system" })).some(
           (issue) => issue.id === results[0].id,
         ),
       ).toBe(false);
       expect(
         (
-          await issueService(db).list(companyId, { q: results[0].identifier! })
+          await issueService(db).list(companyId, { readCondition: "system", q: results[0].identifier! })
         ).some((issue) => issue.id === results[0].id),
       ).toBe(true);
       expect(
@@ -229,13 +229,16 @@ import {
       await instanceSettingsService(db).updateExperimental({ enableAgentChat: false });
       expect((await request(app).get(listPath)).status).toBe(200);
       await instanceSettingsService(db).updateExperimental({ enableAgentChat: true });
+      // A chat is created private (PAR-12823): a colleague gets "not found".
       expect(
         (
           await request(appFor(colleague)).get(
             `/api/issues/${resolved[0].body.id}`,
           )
         ).status,
-      ).toBe(200);
+      ).toBe(404);
+      expect((await request(app).get(`/api/issues/${resolved[0].body.id}`)).body)
+        .toMatchObject({ visibility: "private", privacyRootIssueId: resolved[0].body.id, projectId: null });
       expect(
         (await request(appFor(randomUUID(), false)).get(path)).status,
       ).toBe(403);
@@ -250,20 +253,25 @@ import {
       const queuedInterrupt = { queueId: randomUUID(), revision: "queue-revision", targetRunId: randomUUID() };
       expect((await request(appFor(colleague)).post(`/api/issues/${chatId}/queued-comments/interrupt`)
         .send(queuedInterrupt)).status).toBe(403);
+      // A colleague cannot read the private chat, so a send or an upload answers
+      // "not found" before the owner check (PAR-12942, AC-G3).
       for (const body of ["Hello", "/new"]) {
         expect((await request(appFor(colleague)).post(`/api/issues/${chatId}/comments`)
-          .send({ body, clientRequestId: randomUUID() })).status).toBe(403);
+          .send({ body, clientRequestId: randomUUID() })).status).toBe(404);
       }
       expect((await request(appFor(colleague))
         .post(`/api/companies/${companyId}/issues/${chatId}/attachments`)
-        .attach("file", Buffer.from("foreign upload"), "note.txt")).status).toBe(403);
+        .attach("file", Buffer.from("foreign upload"), "note.txt")).status).toBe(404);
 
       const [planReview] = await db.insert(issueThreadInteractions).values({
         companyId, issueId: chatId, kind: "request_confirmation", status: "pending",
         continuationPolicy: "wake_assignee_on_accept", payload: { version: 1, prompt: "Hand off this plan?" },
       }).returning();
-      expect((await request(appFor(colleague))
-        .post(`/api/issues/${chatId}/interactions/${planReview.id}/accept`).send({})).status).toBe(403);
+      // AC-G3 (PAR-12956): the colleague cannot read the chat, so "not found", not the chat-owner 403.
+      const foreignAccept = await request(appFor(colleague))
+        .post(`/api/issues/${chatId}/interactions/${planReview.id}/accept`).send({});
+      expect(foreignAccept.status).toBe(404);
+      expect(foreignAccept.body).toEqual({ error: "Issue not found" });
       expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, planReview.id)))[0].status).toBe("pending");
       const [pause] = await db.insert(issueTreeHolds).values({
         companyId, rootIssueId: chatId, mode: "pause", status: "active",
@@ -733,6 +741,7 @@ import {
 
         expect(
           await heartbeat.wakeup(runtimeAgent, {
+            causingActor: "system",
             source: "automation",
             contextSnapshot: { issueId: chat.id },
           }),
@@ -823,6 +832,7 @@ import {
         await db.update(issues).set(state).where(eq(issues.id, chat.id));
         for (const reason of ["issue_blockers_resolved", "issue_children_completed", "issue_unblock_requested"]) {
           expect(await heartbeat.wakeup(agentId, {
+            causingActor: "system",
             source: "automation",
             reason,
             contextSnapshot: { issueId: chat.id, wakeReason: reason },

@@ -653,11 +653,13 @@ describeEmbeddedPostgres("runner goal service", () => {
         queuedCommands += 1;
         return null;
       },
-      enqueueOfflineControl: async ({ requestId }) => {
+      enqueueOfflineControl: async ({ requestId, causingActor }) => {
         offlineControls.push(requestId);
+        causingActors.push(causingActor);
       },
     });
     const requestId = randomUUID();
+    const causingActors: unknown[] = [];
 
     const accepted = await service.act(binding.companyId, binding.issueId, {
       requestId,
@@ -665,12 +667,14 @@ describeEmbeddedPostgres("runner goal service", () => {
       expectedRevision: 0,
       action: "create",
       objective: "Resume this goal through a durable heartbeat",
-    });
+    }, { type: "user", userId: "user-who-asked" });
 
     expect(accepted.status).toBe("accepted");
     expect(liveDispatches).toBe(0);
     expect(queuedCommands).toBe(0);
     expect(offlineControls).toEqual([requestId]);
+    // H1: the outbox wake carries the person who asked.
+    expect(causingActors).toEqual([{ type: "user", userId: "user-who-asked" }]);
     await expect(
       db
         .select({ status: agentSessionGoalActions.status })

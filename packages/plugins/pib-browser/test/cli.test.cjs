@@ -378,3 +378,33 @@ test('probe missing PAPERCLIP_API_KEY returns exit 2', async () => {
   assert.equal(code, 2);
   assert(stderr.toString().includes('PAPERCLIP_API_KEY'));
 });
+
+test('shot writes evidence with the real default clock (no injected now)', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pib-shot-clock-'));
+  try {
+    const png = Buffer.from('fake-png-bytes');
+    const stdout = new MockOutput();
+    const stderr = new MockOutput();
+    const code = await run(
+      ['shot', '--identity', 'client:ca:meta', '--issue', 'PAR-1234', '--step', 'clock'],
+      { PAPERCLIP_API_KEY: 'tok', PIB_EVIDENCE_ROOT: root },
+      {
+        stdout,
+        stderr,
+        send: async () => ({
+          exit: 0,
+          ok: true,
+          data: {
+            bytes: png.toString('base64'),
+            sha256: crypto.createHash('sha256').update(png).digest('hex')
+          }
+        })
+      }
+    );
+    assert.equal(code, 0, stderr.toString());
+    const files = fs.readdirSync(root, { recursive: true }).filter((f) => String(f).endsWith('.png'));
+    assert.equal(files.length, 1);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

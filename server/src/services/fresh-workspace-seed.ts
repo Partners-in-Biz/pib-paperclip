@@ -82,6 +82,20 @@ export function parsePorcelainZ(status: string) {
   return changed;
 }
 
+/** A clone copies branches and tags only, so a commit reachable solely through
+ * a remote-tracking ref or a detached HEAD may be missing from staging. Fetch it
+ * from the local source clone by sha, then by ref name. Never contacts a network remote. */
+export async function ensureSeedCommit(staging: string, sourceCwd: string, commit: string, ref: string) {
+  const has = () => execFile("git", ["-C", staging, "cat-file", "-e", `${commit}^{commit}`], gitOptions).then(() => true, () => false);
+  if (await has()) return;
+  for (const name of [commit, ref]) {
+    const fetched = await execFile("git", ["-C", staging, "fetch", "--no-tags", "--", sourceCwd, name], gitOptions)
+      .then(() => true, () => false);
+    if (fetched && await has()) return;
+  }
+  throw new Error(`Fresh workspace seed: source clone ${sourceCwd} does not hold commit ${commit}; fetch the project clone`);
+}
+
 /** Seed from committed objects, never from a possibly changing old directory.
  * --no-local also prevents shared objects/hardlinks and copied Git authority.
  * The caller authorizes the source before calling this function. */
@@ -126,6 +140,7 @@ export async function materializeFreshWorkspaceSeed(input: {
       commit = resolved.stdout.trim();
       if (!/^[a-f0-9]{40,64}$/.test(commit)) throw new Error("Invalid fresh workspace seed commit");
       await execFile("git", ["clone", "--no-local", "--no-checkout", "--", input.sourceCwd, staging], gitOptions);
+      await ensureSeedCommit(staging, input.sourceCwd, commit, ref);
       await execFile("git", ["-C", staging, "-c", "core.hooksPath=/dev/null", "checkout", "--detach", commit], gitOptions);
       // The old local directory is not a publication target for this attempt.
       await execFile("git", ["-C", staging, "remote", "remove", "origin"], gitOptions);

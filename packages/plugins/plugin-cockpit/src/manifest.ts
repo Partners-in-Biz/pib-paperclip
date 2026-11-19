@@ -4,6 +4,7 @@ import { JOBS, PLUGIN_KEY, ROUTINES, ROUTINE_TITLES, SKILL_SLUGS, VERSION } from
 import { SKILLS } from "./skills.js";
 import { COCKPIT_TOOLS, TOOL_NAMES } from "./tools.js";
 import { OPS_TOOL_NAMES } from "./ops-tool-declarations.js";
+import { PAPER_TOOL_NAMES } from "./paper-tool-declarations.js";
 import { DEFAULT_PAUSE_ORDER, DEFAULT_TRIGGER_FAILURES, DEFAULT_TRIGGER_AGENTS } from "./governor-model.js";
 
 export { JOBS, VERSION };
@@ -21,7 +22,7 @@ export const DAILY_ROUTINE_DESCRIPTION = `Daily operations review. Follow the ${
 7. Check everything waiting on the owner. If an agent could do it, hand it to that agent.
 8. Make sure today's important work has an agent and is not blocked.
 9. Look at \`improvements\` (overdue first) and any close-out review or business review issue assigned to you: do them, or hand the change to the agent that owns it.
-10. Post the Daily brief with ${tool(TOOL_NAMES.postBrief)}: done yesterday, waiting on you (questions first, with links), risks, today's plan, and **Outward sends today** (the brief's \`outwardSends\`: one line each, issue | client | channel | what, then the count). Short.
+10. Write the morning edition of the Daily Paper: call ${tool(PAPER_TOOL_NAMES.assignment)} (edition morning) for the sections the owner asked for, then publish with ${tool(PAPER_TOOL_NAMES.publish)}: headline, standfirst, figures and one entry per section, with **Outward sends today** (the brief's \`outwardSends\`: one line each, issue | client | channel | what, then the count) in the client section. It posts the copy on the Daily brief issue itself; do not also call ${tool(TOOL_NAMES.postBrief)}.
 11. Close this issue with one line: fixed, handed off, waiting on the owner.
 
 Never approve money or legal items, never change budgets, never send or publish anything yourself.`;
@@ -98,6 +99,58 @@ const instanceConfigSchema: JsonSchema = {
         previousWebhookSecret: secretField("Previous webhook secret", "The old secret, still accepted for 24 hours after the rotation time below."),
         rotatedAt: { type: "string", title: "Rotated at (ISO time)", description: "When the secret was changed. The previous secret stops working 24 hours later." },
         allowedOwners: { type: "array", title: "Allowed GitHub owners", items: { type: "string" }, default: ["Partners-in-Biz"] },
+      },
+    },
+    ownerDigest: {
+      type: "object",
+      title: "Owner's daily digest",
+      description: "Once a day at 16:00 (SAST) the Cockpit opens one issue for the owner that lists everything waiting on them, grouped by where they act. While it is on, a task that lands on the owner no longer sends its own push: only the digest and a critical issue do.",
+      properties: {
+        enabled: { type: "boolean", title: "Post the daily digest", default: true },
+      },
+    },
+    decisionRights: {
+      type: "object",
+      title: "Who decides (decision rights)",
+      description:
+        "One agent decides each class of sign-off, so only the six hard stops reach the owner (client production, money over R500 or any quote, invoice, price or subscription, logins and devices only the owner has, legal text or a client commitment, a public store release, deleting data with no way back). A question an agent raises with ask-owner that is none of these goes to the seat for its class at once. Seats are agent ids, so a rename changes nothing. With no seat set, every question goes to the owner as before.",
+      properties: {
+        enabled: { type: "boolean", title: "Route questions to the deciding seats", default: true },
+        ownProducts: { type: "array", title: "Our own products", description: "Names as agents write them. A release that names none of these is treated as a client's and goes to the owner.", items: { type: "string" } },
+        seats: {
+          type: "object",
+          title: "Seats (agent ids)",
+          properties: {
+            release: { type: "string", title: "Release of our own products" },
+            planTechnical: { type: "string", title: "Technical plans" },
+            planBusiness: { type: "string", title: "Business plans" },
+            access: { type: "string", title: "Access that already exists (a stored secret, a tool grant)" },
+            social: { type: "string", title: "Social posts for our own brands" },
+            storeListing: { type: "string", title: "Store listing text and pictures" },
+            seo: { type: "string", title: "SEO page refresh or internal links on a client site" },
+            root: { type: "string", title: "Root on the server, a board-only setting" },
+            instructions: { type: "string", title: "Instruction and skill file changes" },
+            other: { type: "string", title: "Anything else (also the last seat before the owner)" },
+          },
+        },
+      },
+    },
+    standingQueueIssues: {
+      type: "array",
+      title: "Standing queue issues (never on the owner's list)",
+      description: "Issue identifiers, e.g. PAR-9356. An open issue listed here is left out of the owner's waiting list and the unassigned count: it is a queue that is worked through, not a decision.",
+      items: { type: "string", pattern: "^[A-Z][A-Z0-9]*-\\d+$" },
+      default: [],
+    },
+    access: {
+      type: "object",
+      title: "Access look-up and requests",
+      description:
+        "Agents look access up with access-check and ask the seat that decides access (Who decides, Access that already exists) with access-request. That seat gives a tool itself. Attaching a stored secret is a board-only call, so its yes puts one line on the board queue issue below. A payment, banking or personal login is never given by an agent.",
+      properties: {
+        boardQueueIssue: { type: "string", title: "Board queue issue", description: "The issue the board works through (identifier, e.g. PAR-9356). A yes for a stored secret posts one line there, in a fixed format." },
+        neverGrant: { type: "array", title: "Never grant (owner only)", description: "Plain text. A stored secret or a tool whose name contains one of these is never given by an agent, on top of the built-in rule for payment, banking and personal logins.", items: { type: "string" } },
+        grantLookupTools: { type: "boolean", title: "Keep access-check and access-request callable by every seat whose tools grant names its tools", default: true },
       },
     },
     credentialSeed: {
@@ -217,6 +270,9 @@ const manifest: PaperclipPluginManifestV1 = {
     "issues.wakeup",
     "issue.comments.create",
     "issue.comments.read",
+    // 0.21.2: waiting rows whose issue is hidden (404) or that repeat a sign-off are dropped.
+    // 0.21.1: the owner's daily digest lists the host's approval cards that wait on a person (ctx.issues.listInteractions). Read only; a new capability, so the release is stop-first.
+    "issue.interactions.read",
     "issue.relations.read",
     "issue.attachments.read",
     "approvals.read",
@@ -338,7 +394,7 @@ const manifest: PaperclipPluginManifestV1 = {
     {
       jobKey: JOBS.askDeadlines,
       displayName: "Ask deadline sweep",
-      description: "Every 15 minutes: for each company with cockpit enabled, finds asks with expired deadlines that are still open and have no defaultAppliedAt. For each due ask: if it has an effect, escalates; else if the standing policy covers it and has a recommended option, applies via policy and posts a comment; else escalates and marks waiting. Pushes owner once per ask per 24h. Idempotent.",
+      description: "Every 15 minutes: for each company with cockpit enabled, finds asks with expired deadlines that are still open and have no defaultAppliedAt. For each due ask: an effect, a money, legal or grant question and a hard stop escalate and never apply; else if the standing policy covers it, applies via policy and posts a comment; else, once the question is 24 hours old and has a recommended answer, applies that answer and says so on the issue. Idempotent. The same sweep posts the owner's one daily digest from 16:00 SAST (one issue listing everything that waits on the owner, grouped by where they act), once a day.",
       schedule: "*/15 * * * *",
     },
     {
@@ -360,6 +416,8 @@ const manifest: PaperclipPluginManifestV1 = {
     // Owner push: send critical push notifications from external systems to the owner.
     // Hosted usage (owner company only; any other company gets 403).
     { routeKey: "hosted-usage", method: "GET", path: "/hosted-usage", auth: "board", capability: "api.routes.register", companyResolution: { from: "query", key: "companyId" } },
+    // Access look-up: the names-only lists (stored secret names, tool profiles, tool names) a script on the server pushes in. Never a secret value.
+    { routeKey: "access-inventory", method: "POST", path: "/access-inventory", auth: "board", capability: "api.routes.register", companyResolution: { from: "body", key: "companyId" } },
     { routeKey: "owner-push", method: "POST", path: "/owner-push", auth: "board", capability: "api.routes.register", companyResolution: { from: "body", key: "companyId" } },
   ],
   routines: [

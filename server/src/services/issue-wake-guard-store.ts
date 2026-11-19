@@ -1,8 +1,9 @@
 import { and, eq, gt, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog, heartbeatRuns, issueComments } from "@paperclipai/db";
+import { activityLog, agentWakeupRequests, heartbeatRuns, issueComments } from "@paperclipai/db";
 import {
   readTicketRunsPerHourCap,
+  REVIEW_VERDICT_WAKE_ACTOR_ID,
   TICKET_RUN_CAP_WINDOW_MS,
   wakeLoopFlagBody,
   WAKE_LOOP_GUARD_ACTION,
@@ -55,6 +56,33 @@ export async function loadTicketRunCapState(
     runsStartedInWindow: Number(runRow?.n ?? 0),
     alreadyFlaggedInWindow: Boolean(flagRow),
   };
+}
+
+/**
+ * PAR-8960: has this issue had a non-skipped review-verdict wake in the rolling
+ * cap window? Matched on the fixed system actor id, not the reason, because
+ * deferred promotion rewrites the request reason to issue_execution_promoted.
+ */
+export async function hasReviewVerdictWakeInWindow(
+  db: Db,
+  input: { companyId: string; issueId: string; now: Date },
+): Promise<boolean> {
+  const since = new Date(input.now.getTime() - TICKET_RUN_CAP_WINDOW_MS);
+  const [row] = await db
+    .select({ id: agentWakeupRequests.id })
+    .from(agentWakeupRequests)
+    .where(
+      and(
+        eq(agentWakeupRequests.companyId, input.companyId),
+        sql`${agentWakeupRequests.payload}->>'issueId' = ${input.issueId}`,
+        eq(agentWakeupRequests.requestedByActorType, "system"),
+        eq(agentWakeupRequests.requestedByActorId, REVIEW_VERDICT_WAKE_ACTOR_ID),
+        ne(agentWakeupRequests.status, "skipped"),
+        gt(agentWakeupRequests.requestedAt, since),
+      ),
+    )
+    .limit(1);
+  return Boolean(row);
 }
 
 /**

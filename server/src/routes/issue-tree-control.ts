@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { wakeCausingActorFromActor } from "../services/heartbeat/causing-actor.js";
 import type { Request, Response } from "express";
 import {
   issues as issueRows,
@@ -349,6 +350,7 @@ export function issueTreeControlRoutes(
                 rootIssueId: root.id,
                 restoreHoldId: result.hold.id,
               },
+              causingActor: wakeCausingActorFromActor(actor),
               requestedByActorType: actor.actorType,
               requestedByActorId: actor.actorId,
               contextSnapshot: {
@@ -544,6 +546,7 @@ export function issueTreeControlRoutes(
                 rootIssueId: root.id,
                 holdId: hold.id,
               },
+              causingActor: wakeCausingActorFromActor(actor),
               requestedByActorType: actor.actorType,
               requestedByActorId: actor.actorId,
               contextSnapshot: {

@@ -11,6 +11,7 @@ import { usesNativeUsageDelivery } from "../native-runtime/native-usage-accounti
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
 import { readRemoteWorkspaceAuthority, saveRemoteWorkspace } from "../remote-workspaces.js";
 import { environmentService } from "../environments.js";
+import { markSshRunSpawnStarted } from "../ssh-run-lease.js";
 import { writeExecutionControl } from "../execution-control-notifications.js";
 import { inspectPluginWorkspaceForFinalization } from "../native-runtime/native-plugin-workspace-finalization.js";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -617,6 +618,8 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
       );
       const stopCleanup = runOptions.nativeRestartRecovery?.kind === "reattach_remote_runner"
         && await readClaimedNativeStopRecovery(db, run, runOptions.nativeLeaseOwner);
+      // Spawn marker before any ssh child of this lease can start (PAR-9917).
+      await markSshRunSpawnStarted(db, executionTarget);
       const guardedDispatch =
         await dispatchWithTiming(
           (markDispatchStarted) => {
@@ -848,6 +851,8 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
       if (managedMcpConfig) {
         adapterContext.paperclipManagedMcp = managedMcpConfig;
       }
+      // Spawn marker before any ssh child of this lease can start (PAR-9917).
+      await markSshRunSpawnStarted(db, executionTarget);
       const guardedDispatch =
         await dispatchWithTiming(
           (markDispatchStarted) => {

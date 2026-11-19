@@ -123,9 +123,11 @@ export class LeaderElection {
     const valid = lease != null && lease.expiresAt > now;
 
     if (valid && lease!.leader === this.tabId) {
-      // We already hold a valid lease — renew it (and refresh our visibility).
+      // We already hold a valid lease. Renew it only once half of it is used, or
+      // when our visibility changed: every localStorage write is appended to the
+      // browser's on-disk log, so renewing on every tick wrote it once a second.
       this.hiddenEmptySince = null;
-      this.writeClaim(visible, now);
+      if (lease!.visible !== visible || lease!.expiresAt - now <= this.ttl / 2) this.writeClaim(visible, now);
       this.role = "leader";
       return this.role;
     }

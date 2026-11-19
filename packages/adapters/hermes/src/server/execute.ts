@@ -67,6 +67,7 @@ import {
 
 import {
   detectModel,
+  resolveHermesHome,
   resolveProvider,
 } from "./detect-model.js";
 import { reconcileHermesPaperclipSkills } from "./skills.js";
@@ -535,7 +536,9 @@ async function executeHermes(
   // Remote runs use the skills already installed in the remote Hermes home.
   if (!remote && Object.prototype.hasOwnProperty.call(config, "paperclipRuntimeSkills")) {
     try {
-      const selectedSkills = await reconcileHermesPaperclipSkills(config);
+      const selectedSkills = await reconcileHermesPaperclipSkills(config, undefined, {
+        onLog: (line) => ctx.onLog("stdout", `[hermes] ${line}\n`),
+      });
       if (selectedSkills.length > 0) {
         await ctx.onLog(
           "stdout",
@@ -552,7 +555,7 @@ async function executeHermes(
   // ── Resolve provider (defense in depth) ────────────────────────────────
   // Priority chain:
   //   1. Explicit provider in adapterConfig (user override)
-  //   2. Provider from ~/.hermes/config.yaml (detected at runtime)
+  //   2. Provider from the seat's HERMES_HOME config.yaml (detected at runtime)
   //   3. Provider inferred from model name prefix
   //   4. "auto" (let Hermes decide)
   //
@@ -566,7 +569,9 @@ async function executeHermes(
   // remote runs skip detection and pass only what adapterConfig names.
   if (!explicitProvider && !remote) {
     try {
-      detectedConfig = await detectModel();
+      detectedConfig = await detectModel(
+        path.join(resolveHermesHome((config.env ?? {}) as Record<string, unknown>), "config.yaml"),
+      );
     } catch {
       // Non-fatal — detection failure shouldn't block execution
     }

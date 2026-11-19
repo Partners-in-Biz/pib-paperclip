@@ -96,7 +96,6 @@ export interface BrandLeak {
 
 const BRAND_PATTERNS: Array<{ term: string; re: RegExp }> = [
   { term: "Peet", re: /\bPeet\b/g },
-  { term: "Elon", re: /\bElon\b/g },
   { term: "Partners in Biz", re: /\bPartners in Biz\b/gi },
   { term: "PiB", re: /\bP(?:i|I)B\b/g },
 ];

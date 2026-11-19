@@ -57,7 +57,7 @@ function boardActor(company: CompanyRow): Express.Request["actor"] {
     type: "board",
     userId: "board-user",
     companyIds: [company.id],
-    memberships: [{ companyId: company.id, membershipRole: "operator", status: "active" }],
+    memberships: [{ companyId: company.id, membershipRole: "operator", status: "active", restricted: false, restrictionMode: "off" }],
     isInstanceAdmin: true,
     source: "local_implicit",
   };

@@ -100,14 +100,14 @@ describe("preflight rules", () => {
     const client = { name: "x", delivery: "email" as const, clientKind: "company" as const, clientRef: "acme", clientName: "Acme" };
     expect(codes(evaluatePreflight(facts({ campaign: client, email: { ...clientOk, replyTo: null } })))).toContain("no-reply-to");
     const tokens = evaluatePreflight(facts({ steps: [email({ body: "Why wait? Book a slot. Hi {{firstname}} and {{first_name|there}} {{ unsubscribe_url }}" })] }));
-    expect(tokens.warnings).toEqual([expect.objectContaining({ code: "unknown-token", message: expect.stringContaining("{{firstname}}") })]);
+    expect(tokens.errors).toEqual([expect.objectContaining({ code: "unfilled-placeholder", message: expect.stringContaining("{{firstname}}") })]);
   });
 
   it("links: a test address is an error, http and an unfilled token are warnings", () => {
     const result = evaluatePreflight(facts({ steps: [email({ body: "See https://staging.acme.co.za/offer, http://acme.co.za/a, https://acme.co.za/{{token}} and https://acme.co.za/ok" })] }));
-    expect(result.errors.map((e) => e.message)).toEqual([expect.stringContaining("https://staging.acme.co.za/offer looks like a test or private address")]);
+    expect(result.errors.map((e) => e.message)).toEqual(expect.arrayContaining([expect.stringContaining("https://staging.acme.co.za/offer looks like a test or private address"), expect.stringContaining("placeholder")]));
     expect(result.warnings.map((w) => w.message).join(" ")).toMatch(/not https/);
-    expect(result.warnings.map((w) => w.message).join(" ")).toMatch(/still has a \{\{token\}\}/);
+    expect(result.errors.map((e) => e.message).join(" ")).toMatch(/\{\{token\}\}/);
     for (const url of ["http://localhost:3000/x", "https://192.168.1.4/x", "https://127.0.0.1/x", "https://app.local/x", "https://example.com/x", "https://dev.acme.co.za/x", "https://acme.internal/x", "https://shop.test/x"]) {
       expect(linkProblem(url), url).toMatchObject({ level: "error" });
     }
@@ -169,7 +169,7 @@ describe("preflight rules", () => {
     const some = evaluatePreflight(facts({ campaign: auto, steps: [text("sms")], channels: ready, audience: { contacts, reach: { email: 4, sms: 3, whatsapp: 0 } } }));
     expect(some.warnings).toEqual([expect.objectContaining({ code: "partly-reachable", message: expect.stringContaining("3 of 4 contacts") })]);
     expect(codes(evaluatePreflight(facts({ audience: { contacts, reach: { email: 0, sms: 0, whatsapp: 0 } } })))).toContain("nobody-reachable");
-    expect(evaluatePreflight(facts({ audience: { contacts: [] as never, reach: { email: 0, sms: 0, whatsapp: 0 } } })).ok).toBe(true);
+    expect(codes(evaluatePreflight(facts({ audience: { contacts: [] as never, reach: { email: 0, sms: 0, whatsapp: 0 } } })))).toContain("empty-audience");
   });
 
   it("the Mailbox being off stops an automatic email campaign", () => {
@@ -282,5 +282,33 @@ describe("creative rubric in step review", () => {
   it("does not flag a claim written as the client's approved fact", () => {
     const result = evaluatePreflight(facts({ approvedFacts: ["We guarantee a reply within a day"], steps: [email({ body: "We guarantee a reply within a day" })] }));
     expect(codes(result)).not.toContain("creative-claim_unapproved");
+  });
+
+  const aud = (n: number) => ({ contacts: Array.from({ length: n }, (_, i) => ({ id: `c${i}` })) as never, reach: { email: n, sms: n, whatsapp: n } as never });
+
+  it("refuses an empty audience, email and text channels alike", () => {
+    expect(codes(evaluatePreflight(facts({ audience: aud(0) })))).toContain("empty-audience");
+    const sms = facts({ campaign: { ...facts().campaign, delivery: "auto" }, steps: [text("sms")], channels: { sms: { ready: true, reason: null, sentFrom: "+141****0100", senderError: null } }, audience: aud(0) });
+    expect(codes(evaluatePreflight(sms))).toContain("empty-audience");
+    expect(evaluatePreflight(facts({ audience: aud(3) })).ok).toBe(true);
+  });
+
+  it("refuses a placeholder in A or B, subject or body, naming the step", () => {
+    const cases: Array<[CampaignStepDraft, string]> = [
+      [email({ position: 2, body: "Your code: NOT-ISSUED-YET" }), "Step 2"],
+      [email({ position: 1, variant: "b", subject: "TODO subject" }), "Step 1B"],
+      [email({ position: 3, body: "Date to be TBC today" }), "Step 3"],
+    ];
+    for (const [step, name] of cases) {
+      const result = evaluatePreflight(facts({ steps: [step] }));
+      expect(result.errors).toEqual([expect.objectContaining({ code: "unfilled-placeholder", message: expect.stringContaining(name) })]);
+    }
+    expect(evaluatePreflight(facts({ steps: [email({ body: "Our todo list is short, see the TBCs." })] })).ok).toBe(true);
+  });
+
+  it("a campaign shaped like 39050270 fails with both errors", () => {
+    const result = evaluatePreflight(facts({ steps: [email({ body: "CODE: NOT-ISSUED-YET" })], audience: aud(0) }));
+    expect(result.ok).toBe(false);
+    expect(result.errors.map((e) => e.code).sort()).toEqual(["empty-audience", "unfilled-placeholder"]);
   });
 });

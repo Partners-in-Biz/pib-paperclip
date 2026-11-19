@@ -15,6 +15,7 @@ import {
   companies,
   companyMemberships,
   companySecrets,
+  connectionGrantDelegations,
   connectionGrants,
   createDb,
   heartbeatRuns,
@@ -570,6 +571,148 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       expect((await resolveGitHubOperationCredentials(db, input)).env).toEqual(
         {},
       );
+    });
+    it("gives a company-default run the owner's GitHub only through a delegation to that agent (PAR-9963)", async () => {
+      const input = await seed();
+      const selected = await grant(input, "A");
+      const otherAgentId = randomUUID();
+      await db.insert(agents).values({
+        id: otherAgentId,
+        companyId: input.companyId,
+        name: "Other",
+        role: "engineer",
+        adapterType: "codex_local",
+      });
+      await db
+        .update(runIdentityContexts)
+        .set({ cause: "company_default" })
+        .where(eq(runIdentityContexts.runId, input.runId));
+      // A delegation to another agent is not a delegation to this one.
+      await db.insert(connectionGrantDelegations).values({
+        companyId: input.companyId,
+        grantId: selected.id,
+        agentId: otherAgentId,
+        createdByUserId: "A",
+      });
+      expect(await resolveGitHubOperationCredentials(db, input)).toMatchObject({
+        status: "unavailable",
+        env: {},
+      });
+      const [delegation] = await db
+        .insert(connectionGrantDelegations)
+        .values({
+          companyId: input.companyId,
+          grantId: selected.id,
+          agentId: input.agentId,
+          createdByUserId: "A",
+        })
+        .returning();
+      const delegated = await resolveGitHubOperationCredentials(db, input);
+      expect(delegated).toMatchObject({
+        status: "available",
+        source: "personal",
+        login: "A",
+        grantId: selected.id,
+      });
+      expect(delegated.env.PAPERCLIP_GIT_TOKEN).toBe("test-token-A");
+      // The kill switch is read on every resolution.
+      vi.stubEnv("PAPERCLIP_GITHUB_OWNERLESS_DELEGATION", "0");
+      try {
+        expect(await resolveGitHubOperationCredentials(db, input)).toMatchObject({
+          status: "unavailable",
+          env: {},
+        });
+      } finally {
+        vi.stubEnv("PAPERCLIP_GITHUB_OWNERLESS_DELEGATION", "");
+      }
+      expect(await resolveGitHubOperationCredentials(db, input)).toMatchObject({
+        status: "available",
+        login: "A",
+      });
+      // A dedicated grant still wins over the delegation.
+      const dedicated = await grant(input, "robot", true);
+      expect(await resolveGitHubOperationCredentials(db, input)).toMatchObject({
+        status: "available",
+        source: "dedicated",
+        login: "robot",
+      });
+      await db
+        .update(connectionGrants)
+        .set({ status: "revoked" })
+        .where(eq(connectionGrants.id, dedicated.id));
+      // A revoked dedicated grant never falls back to the delegated person.
+      expect(await resolveGitHubOperationCredentials(db, input)).toMatchObject({
+        status: "unavailable",
+        source: "dedicated",
+        env: {},
+      });
+      await db
+        .delete(connectionGrants)
+        .where(eq(connectionGrants.id, dedicated.id));
+      // Removing the row removes the login; revoking the owner's grant does too.
+      await db
+        .delete(connectionGrantDelegations)
+        .where(eq(connectionGrantDelegations.id, delegation.id));
+      expect(await resolveGitHubOperationCredentials(db, input)).toMatchObject({
+        status: "unavailable",
+        env: {},
+      });
+    });
+    it("does not let a delegation change who a run with a responsible person acts as (PAR-9963)", async () => {
+      const input = await seed();
+      const ownerGrant = await grant(input, "A");
+      await grant(input, "B");
+      await db.insert(connectionGrantDelegations).values({
+        companyId: input.companyId,
+        grantId: ownerGrant.id,
+        agentId: input.agentId,
+        createdByUserId: "A",
+      });
+      await switchTo(input, "B");
+      expect(await resolveGitHubOperationCredentials(db, input)).toMatchObject({
+        status: "available",
+        login: "B",
+      });
+    });
+    it("keeps a delegation away from a low-trust company-default run (PAR-9963)", async () => {
+      const input = await seed();
+      const selected = await grant(input, "A");
+      await db.insert(connectionGrantDelegations).values({
+        companyId: input.companyId,
+        grantId: selected.id,
+        agentId: input.agentId,
+        createdByUserId: "A",
+      });
+      await db
+        .update(runIdentityContexts)
+        .set({ cause: "company_default" })
+        .where(eq(runIdentityContexts.runId, input.runId));
+      // Sanity: without the low-trust policy the delegation would resolve.
+      expect(await resolveGitHubOperationCredentials(db, input)).toMatchObject({
+        status: "available",
+        login: "A",
+      });
+      await db
+        .update(issues)
+        .set({
+          executionPolicy: {
+            authorizationPolicy: {
+              trustPreset: LOW_TRUST_REVIEW_PRESET,
+              trustBoundary: {
+                mode: LOW_TRUST_REVIEW_PRESET,
+                companyId: input.companyId,
+                rootIssueId: input.issueId,
+                issueIds: [input.issueId],
+                allowedAgentIds: [input.agentId],
+                allowedToolClasses: ["git.read", "github.pr.read"],
+              },
+            },
+          },
+        })
+        .where(eq(issues.id, input.issueId));
+      const withheld = await resolveGitHubOperationCredentials(db, input);
+      expect(withheld).toMatchObject({ status: "unavailable", env: {} });
+      expect(withheld.reason).toContain("low-trust");
     });
     it.each([false, true])(
       "withholds sponsor and dedicated credentials from every low-trust policy source (dedicated=%s)",

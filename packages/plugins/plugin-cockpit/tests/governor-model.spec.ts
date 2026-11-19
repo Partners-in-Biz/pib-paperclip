@@ -67,7 +67,7 @@ describe("pauseList", () => {
     { id: "p2", name: "Summarizer" },
     { id: "p3", name: "Plan Critic" },
     { id: "p4", name: "SEO Specialist" },
-    { id: "p5", name: "Elon" },
+    { id: "p5", name: "PiB" },
   ];
 
   it("respects order and excludes names in neverList", () => {
@@ -77,7 +77,7 @@ describe("pauseList", () => {
     expect(names).toContain("Plan Critic");
     expect(names).toContain("SEO Specialist");
     expect(names).not.toContain("Summarizer");
-    expect(names).not.toContain("Elon");
+    expect(names).not.toContain("PiB");
   });
 
   it("handles case-insensitive and whitespace-trimmed matching", () => {

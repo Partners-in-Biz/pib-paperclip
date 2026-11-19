@@ -202,12 +202,11 @@ async function pingCeoSpeedToLead(
     const usable = agents.filter((agent) => roleAgentUsable(String(agent.status ?? "")));
     const byRole = usable.find((agent) => String((agent as { role?: string }).role ?? "").trim().toLowerCase() === "ceo");
     const byName = usable.find((agent) => {
-      const name = String(agent.name ?? "").trim();
       const urlKey = String((agent as { urlKey?: string }).urlKey ?? "").trim().toLowerCase();
-      return /^elon$/i.test(name) || urlKey === "elon" || urlKey === "pib";
+      return urlKey === "pib";
     });
-    const elon = byRole ?? byName;
-    assigneeAgentId = elon ? String(elon.id) : null;
+    const ceo = byRole ?? byName;
+    assigneeAgentId = ceo ? String(ceo.id) : null;
   } catch {
     assigneeAgentId = null;
   }

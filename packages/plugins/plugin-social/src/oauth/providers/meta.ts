@@ -61,6 +61,152 @@ async function metaGet<T = Record<string, unknown>>(url: string, params: Record<
 
 // ── Facebook ────────────────────────────────────────────────────────────────
 
+type InsightRows = { data?: Array<{ name: string; values?: Array<{ value?: number }>; total_value?: { value?: number } }> };
+const cleanError = (message: string) => message.replace(/(access_token|refresh_token|token)=[^\s&"']*/gi, "").replace(/(https?:\/\/[^\s?"']*)\?[^\s"']*/gi, "$1").slice(0, 500);
+
+/** One Graph insights call as kept in snapshot.raw.insights and metricsError.calls (no token, no query string). */
+export interface InsightCall {
+  label: string;
+  path: string;
+  metric: string | null;
+  ok: boolean;
+  status?: number;
+  code?: number;
+  message?: string;
+  /** Metric names the call returned a row for. */
+  returned?: string[];
+}
+
+function graphErrorCode(body: string): number | undefined {
+  try {
+    const code = (JSON.parse(body) as { error?: { code?: unknown } }).error?.code;
+    return typeof code === "number" ? code : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Lifetime video_insights names for plays, in preference order (feed video first, then Reels). */
+const VIDEO_VIEW_METRICS = ["total_video_views", "fb_reels_total_plays", "blue_reels_play_count"];
+/** Lifetime video_insights names for unique reach, used only when the Page post call gives none. */
+const VIDEO_REACH_METRICS = ["post_impressions_unique", "total_video_impressions_unique"];
+
+/**
+ * Facebook Video id: V1 likes/comments (required); impressions/reach from the video's Page post and views from
+ * video_insights are best effort. Every insights call is recorded (label, path, HTTP status, Graph code, message, metric
+ * names returned) in raw.insights, and every failure is kept: retryable ones join into insightsError, permanent ones
+ * (non-retryable 4xx) into insightsUnavailable; a view metric Graph does not offer at all is unavailableReason. Meta removed
+ * `total_video_impressions(_unique)` (v25.0 changelog) and keeps retiring video_insights names, so when
+ * `total_video_views` has no row the call is repeated without `metric` to read what Graph does offer for this video
+ * (Reels use fb_reels_total_plays). Last resort for views is the post's `post_media_view`, which Meta reports as Views.
+ */
+async function facebookVideoMetrics(env: ProviderEnv, account: ProviderAccount, videoId: string): Promise<MetricsSnapshot> {
+  const base = graph(env);
+  const token = account.token.accessToken;
+  const data = await metaGet<{ comments?: { summary?: { total_count?: number } }; likes?: { summary?: { total_count?: number } } }>(
+    `${base}/${videoId}`,
+    { fields: "comments.summary(true).limit(0),likes.summary(true).limit(0)", access_token: token },
+    "Facebook metrics",
+  );
+  const snapshot: MetricsSnapshot = {
+    views: 0, likes: count(data.likes?.summary?.total_count), comments: count(data.comments?.summary?.total_count), shares: 0,
+    impressions: null, reach: null, raw: { fields: data, sharesSource: "not_available" },
+  };
+  const calls: InsightCall[] = [];
+  const retryable: string[] = [];
+  const permanent: string[] = [];
+  let lastFailureRetryable = false;
+  /** Returns metric name -> value for the rows Graph sent, or null when the call failed (failure recorded). */
+  const insight = async (path: string, label: string, metric: string | null, period?: string): Promise<Map<string, number | null> | null> => {
+    try {
+      const res = await metaGet<InsightRows>(`${base}/${path}`, { metric: metric ?? undefined, period, access_token: token }, `Facebook ${label}`);
+      const values = new Map<string, number | null>();
+      for (const row of res.data ?? []) {
+        if (typeof row?.name !== "string") continue;
+        const value = optionalCount(row.values?.[0]?.value ?? row.total_value?.value);
+        if (values.get(row.name) == null) values.set(row.name, value);
+      }
+      calls.push({ label, path, metric, ok: true, returned: [...values.keys()] });
+      lastFailureRetryable = false;
+      return values;
+    } catch (error) {
+      const message = cleanError(error instanceof Error ? error.message : String(error));
+      const call: InsightCall = { label, path, metric, ok: false, message };
+      if (error instanceof ProviderHttpError) {
+        call.status = error.status;
+        const code = graphErrorCode(error.body);
+        if (code !== undefined) call.code = code;
+      }
+      calls.push(call);
+      lastFailureRetryable = !(error instanceof ProviderHttpError && !error.retryable && !error.tokenInvalid);
+      (lastFailureRetryable ? retryable : permanent).push(message);
+      return null;
+    }
+  };
+
+  // The video's Page post: its `post_id` field, else the `<pageId>_<videoId>` form Page video posts use.
+  const owner = await bestEffort(() => metaGet<{ post_id?: string; permalink_url?: string }>(`${base}/${videoId}`, { fields: "post_id,permalink_url", access_token: token }, "Facebook video post"));
+  // Graph can return `post_id` bare (a story id): `/<bare id>/insights` hits the legacy Status node and fails with
+  // (#12) "singular statuses API is deprecated" (HTTP 400, PAR-11965). Page post insights need `<pageId>_<postId>`.
+  const pageId = str(account.meta.pageId) ?? account.externalId;
+  const rawPostId = str(owner.value?.post_id);
+  const bare = rawPostId !== undefined && !rawPostId.includes("_");
+  const postId = rawPostId ? (bare ? `${pageId}_${rawPostId}` : rawPostId) : `${pageId}_${videoId}`;
+  const permalink = str(owner.value?.permalink_url);
+  const ownerInfo = {
+    postIdSource: rawPostId ? (bare ? "video.post_id (page-scoped)" : "video.post_id") : "page_id_video_id",
+    ...(permalink ? { permalinkUrl: permalink, isReel: /\/reels?\//.test(permalink) } : {}),
+    ...(owner.error ? { error: cleanError(owner.error) } : {}),
+  };
+
+  const post = await insight(`${postId}/insights`, "post insights", "post_media_view,post_total_media_view_unique");
+  if (post) {
+    snapshot.impressions = post.get("post_media_view") ?? null;
+    snapshot.reach = post.get("post_total_media_view_unique") ?? null;
+    const missing = ["post_media_view", "post_total_media_view_unique"].filter((name) => post.get(name) == null);
+    if (missing.length) retryable.push(`post insights: missing ${missing.join(", ")}`);
+  }
+
+  let views: number | null = null;
+  let viewsSource: string | null = null;
+  const video = await insight(`${videoId}/video_insights`, "video insights", "total_video_views", "lifetime");
+  if (video?.get("total_video_views") != null) {
+    views = video.get("total_video_views")!;
+    viewsSource = "total_video_views";
+  }
+  let offered: Map<string, number | null> | null = null;
+  // A retryable video_insights failure (5xx, rate limit) is retried by the next window, not probed further now.
+  if ((views === null || snapshot.reach == null) && !(video === null && lastFailureRetryable)) {
+    offered = await insight(`${videoId}/video_insights`, "video insights (all)", null, "lifetime");
+    if (offered && views === null) {
+      const name = VIDEO_VIEW_METRICS.find((n) => offered!.get(n) != null);
+      if (name) [views, viewsSource] = [offered.get(name)!, name];
+    }
+    if (offered && snapshot.reach == null) {
+      const name = VIDEO_REACH_METRICS.find((n) => offered!.get(n) != null);
+      if (name) snapshot.reach = offered.get(name)!;
+    }
+  }
+  // Only once Graph has answered that video_insights offers no plays metric (a retryable failure retries next window).
+  if (views === null && offered && snapshot.impressions != null) [views, viewsSource] = [snapshot.impressions, "post_media_view"];
+  let viewsUnavailable: string | undefined;
+  if (views !== null) snapshot.views = views;
+  else if (offered) {
+    const names = [...offered.keys()];
+    viewsUnavailable = `unavailable: Graph offers no view metric for this video (video_insights returned ${names.length ? names.join(", ") : "no metrics"})`;
+    snapshot.unavailableReason = viewsUnavailable;
+  }
+
+  snapshot.raw = {
+    fields: data, sharesSource: "not_available", postId, owner: ownerInfo, viewsSource,
+    ...(viewsUnavailable ? { viewsUnavailable } : {}), insights: calls,
+  };
+  if (retryable.length) snapshot.insightsError = retryable.join("; ").slice(0, 500);
+  if (permanent.length) snapshot.insightsUnavailable = permanent.join("; ").slice(0, 500);
+  return snapshot;
+}
+
+
 export const FACEBOOK_SCOPES = [
   "pages_show_list",
   "pages_read_engagement",
@@ -276,6 +422,8 @@ export const facebookProvider: SocialProvider = {
   refresh: refreshViaFacebook,
   publish: (env, account, req) => guard(() => facebookPublish(env, account, req)),
   async metrics(env, account, externalId): Promise<MetricsSnapshot | null> {
+    // Only video publishing stores a bare id (a Video node): it has no `shares` field and uses video_insights.
+    if (!externalId.includes("_")) return facebookVideoMetrics(env, account, externalId);
     const base = graph(env);
     const token = account.token.accessToken;
     const data = await metaGet<{
@@ -293,8 +441,6 @@ export const facebookProvider: SocialProvider = {
       shares: count(data.shares?.count),
       raw: { fields: data },
     };
-    type InsightRows = { data?: Array<{ name: string; values?: Array<{ value?: number }>; total_value?: { value?: number } }> };
-    const cleanError = (message: string) => message.replace(/(access_token|refresh_token|token)=[^\s&"']*/gi, "").replace(/(https?:\/\/[^\s?"']*)\?[^\s"']*/gi, "$1").slice(0, 500);
     // Call 1: impressions and reach. Isolated so a bad clicks metric never blanks them.
     const insights = await bestEffort(() =>
       metaGet<InsightRows>(`${base}/${externalId}/insights`, {

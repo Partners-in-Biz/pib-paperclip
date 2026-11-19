@@ -4,6 +4,7 @@ import { isAiConnectionConfigurationFailure } from "./ai-auth-failure.js";
 import { and, eq, isNull, lte, asc, inArray, notInArray, desc, sql } from "drizzle-orm";
 import { connectionIntentDeliveries, issueThreadInteractions, issues, agentWakeupRequests, companyMemberships, heartbeatRuns, chatConversations, chatEndpoints, type Db } from "@paperclipai/db";
 import type { heartbeatService } from "./heartbeat.js";
+import { SYSTEM_CAUSING_ACTOR } from "./heartbeat/causing-actor.js";
 import { issueService } from "./issues.js";
 import { issueRecoveryActionService } from "./issue-recovery-actions.js";
 import { logActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
@@ -40,6 +41,7 @@ export async function wakeConnectionIntentAfterResolution(
       mutation: "interaction",
     },
     idempotencyKey: `connection-intent:${input.loaded.interaction.id}:${input.status}`,
+    causingActor: input.actorType === "system" ? SYSTEM_CAUSING_ACTOR : { type: "user", userId: input.actorId },
     requestedByActorType: input.actorType ?? "user",
     requestedByActorId: input.actorId,
     contextSnapshot: {

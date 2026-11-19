@@ -125,7 +125,8 @@ d("ask defaults (Postgres)", () => {
   });
   it.each([
     ["survives when still in options", ["A", "B"], ["A", "B"], "A"],
-    ["becomes NULL when excluded", ["A", "B"], ["X", "Y"], null],
+    // The card marks the first option as recommended, so a question whose old recommendation is gone falls back to it.
+    ["becomes the first new option when excluded", ["A", "B"], ["X", "Y"], "X"],
   ] as const)("recommended %s", async (_, opts1, opts2, expected) => {
     const w = await make();
     const iss = await issue(w);
