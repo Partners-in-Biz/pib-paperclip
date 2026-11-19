@@ -81,7 +81,7 @@ describe("stopRemote and cleanup with a fake remote runner", () => {
     await target.cleanup();
   });
 
-  it("returns the remote outcome, never throws, and removes the run dir once", async () => {
+  it("returns the remote outcome, never throws, and leaves the run dir to the lease release", async () => {
     const calls: Array<{ script: string; timeoutMs: number }> = [];
     let reply: () => Promise<{ stdout: string; stderr: string }> = async () => ({ stdout: "signalled\n", stderr: "" });
     const target = await buildSshSpawnTarget({
@@ -108,17 +108,15 @@ describe("stopRemote and cleanup with a fake remote runner", () => {
     await expect(target.stopRemote!("TERM")).resolves.toBe("error");
 
     calls.length = 0;
-    reply = async () => ({ stdout: "removed\n", stderr: "" });
     await Promise.all([target.cleanup(), target.cleanup()]);
-    expect(calls).toEqual([
-      { script: buildSshRunDirRemoveScript(WS, RUN_DIR), timeoutMs: SSH_REMOTE_STOP_TIMEOUT_MS },
-    ]);
+    // PAR-9961: the run dir is removed only after a gone check, not at run end.
+    expect(calls).toEqual([]);
     // After cleanup the auth files are gone, so no further remote call is made.
     await expect(target.stopRemote!("KILL")).resolves.toBe("error");
-    expect(calls).toHaveLength(1);
+    expect(calls).toHaveLength(0);
   });
 
-  it("still releases local auth when the remote removal fails", async () => {
+  it("releases local auth at cleanup without any remote call", async () => {
     const target = await buildSshSpawnTarget({
       spec: { ...spec(), privateKey: "-----BEGIN KEY-----\nfake\n-----END KEY-----" },
       command: "node",

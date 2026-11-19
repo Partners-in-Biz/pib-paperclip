@@ -32,6 +32,14 @@ import { agentConfigurationRevision } from "../../../lib/agent-configuration-rev
 
 const createLifecycleStore = (db: Db) => createStore(db, createAgentLifecycleEffects());
 
+// PAR-9961: a fake remote check for the ssh pause test; nothing else uses ssh here.
+const sshCheck = vi.hoisted(() => vi.fn());
+vi.mock("@paperclipai/adapter-utils/ssh", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@paperclipai/adapter-utils/ssh")>()),
+  checkRemoteRun: sshCheck,
+  runSshCommand: vi.fn(async () => ({ stdout: "removed\n", stderr: "" })),
+}));
+
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_AGENT_LIFECYCLE_TEST_DATABASE_URL");
 const support = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("agent lifecycle commands", () => {
@@ -602,6 +610,24 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       remoteExecutionTermination: remoteTerminationReceipt(lease, { providerLeaseId: lease.providerLeaseId, state: "destroyed" }),
     } }).where(eq(environmentLeases.id, lease.id));
     expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(true);
+  });
+
+  it("pauses an agent whose cancelled ssh run's remote group is gone (PAR-9961)", async () => {
+    const agent = await hire();
+    const [environment] = await db.insert(environments).values({ companyId, name: `ssh-${randomUUID()}`, driver: "ssh",
+      status: "active", config: { host: "mac.test", port: 22, username: "max", remoteWorkspacePath: "/Users/max/ws",
+        privateKey: null, knownHosts: null, strictHostKeyChecking: true } }).returning();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, status: "cancelled",
+      invocationSource: "on_demand", startedAt: new Date(), finishedAt: new Date() }).returning();
+    await db.insert(environmentLeases).values({ companyId, environmentId: environment!.id, heartbeatRunId: run!.id,
+      provider: "ssh", providerLeaseId: `ssh://max@mac.test:22/Users/max/ws`, status: "active",
+      metadata: { remoteWorkspacePath: "/Users/max/ws", remoteRunDir: `/Users/max/ws/.paperclip-runs/${run!.id}` } });
+    sshCheck.mockResolvedValue({ result: "gone", basis: "group_empty", checkedAt: new Date().toISOString() });
+    const work = worker(createLifecycleDriver(db, {} as never).runHost);
+    await createAgentLifecycle(db).pauseAgent(agent.id);
+    await work.process(agent.id);
+    expect((await current(agent.id)).lifecycleState).toBe("paused");
+    expect(sshCheck).toHaveBeenCalled();
   });
 
   it("does not prepare a proposed hire until approval", async () => {
