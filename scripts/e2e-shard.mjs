@@ -15,7 +15,7 @@ const DURATIONS_MANIFEST = path.join(HERE, "e2e-shard-durations.json");
 export const IGNORED_SPECS = [
   "in-feed-native/**", "multi-user.spec.ts", "multi-user-authenticated.spec.ts",
   // Authenticated-mode suite with its own server: tests/e2e/playwright-member-restriction.config.ts.
-  "member-restriction-in-page.spec.ts",
+  "member-restriction-in-page.spec.ts", "member-restriction-shell.spec.ts",
 ];
 
 // Enumerates the specs the default e2e lane actually runs, as repo-relative
