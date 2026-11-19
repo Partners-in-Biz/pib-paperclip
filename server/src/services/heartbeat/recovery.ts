@@ -7,6 +7,7 @@ import { legacyWorkspaceRecoveryNotMigrated } from "../legacy-workspace-recovery
 import { pendingFailedNativeRetryCancellationCondition } from "../native-runtime/native-cancellation-request.js";
 import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
 import { registerLiveRecoveryWork } from "./live-recovery-work.js";
+import { startSshRunRecoveryChecks, type SshRunGoneChecks } from "./remote-run-recovery.js";
 import { NATIVE_RETAINED_OWNER_WAIT } from "../native-runtime/native-controller-recovery.js";
 import { nativeEnvironmentSettlementDisposition, nativeEnvironmentSettlementWork } from "../native-runtime/native-environment-settlement-work.js";
 import { nativeWorkspaceFinalizationWork } from "../native-runtime/native-workspace-finalization-work.js";
@@ -188,6 +189,8 @@ export interface HeartbeatRecoveryDependencies extends Pick<HeartbeatRetryDepend
     failureReason?: string | null;
     providerResourceDisposition?: ProviderResourceDisposition;
     respectCleanupDeadlines?: boolean;
+    /** ssh gone checks by lease id, made by recovery (PAR-9919); the release makes none of its own. */
+    remoteChecks?: SshRunGoneChecks;
   }) => Promise<void>;
   acknowledgeRemoteStop: (runId: string, companyId: string) => Promise<void>;
   resumeRemoteStopComments: (run: HeartbeatRun) => Promise<void>;
@@ -2471,6 +2474,11 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
 
     const reaped: string[] = [];
     const currentNativeController = await currentNativeControllerIdentity();
+    // PAR-9919: remote checks of legacy ssh runs with a gone controller start
+    // together, under one total cap, before the serial pass below awaits them.
+    const sshRecoveryChecks = startSshRunRecoveryChecks(db, environmentRuntime, activeRuns.map(({ run }) => run), {
+      skipRunId: runId => remoteRecoveryRunIds.has(runId) || runningProcesses.has(runId) || activeRunExecutions.has(runId),
+    });
 
     for (const {
       run,
@@ -2549,7 +2557,8 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       // that its prior provider owner stopped. Keep both cases running but
       // blocked: never signal, finalize, or retry them automatically. This gate
       // intentionally precedes resumedRunIds so a claim cannot bypass the
-      // ownership check.
+      // ownership check. (A legacy ssh run is not held here: below, it is
+      // settled on a gone remote check, without a signal; PAR-9919.)
       if (
         !locallyTracked &&
         (nativeProcessPidAlive ||
@@ -2614,12 +2623,16 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       // orphan sweep and the ownership report read. A proven-gone child needs
       // no age guard. An unprovable one (another PID space, a sandbox, or an
       // ephemeral server's pre-#19871 row) is never released here; Stop is its
-      // operator action.
+      // operator action. One exception (PAR-9919): an ssh run whose controller
+      // is gone and whose remote process group the remote check proved gone is
+      // settled here on that termination evidence. No signal is sent.
       // Any recorded child is proven, whatever the adapter: a run handed over
       // by the orphan sweep (for example the `process` adapter) must never be
       // released while its child may still work.
       const legacyProcessProof = !nativeRun && (checksPersistedChildLiveness || run.processPid != null || run.processGroupId != null)
         ? await proveRunProcessGone(run, "legacy_run_process") : null;
+      const sshRemoteGone = legacyControllerGone && legacyProcessProof?.verdict === "unprovable"
+        ? await sshRecoveryChecks.remoteGone(run.id) : null;
       // Apply staleness threshold to avoid false positives
       if (staleThresholdMs > 0 && !priorBootSetupExpired && !legacyControllerGone && legacyProcessProof?.verdict !== "gone") {
         const refTime = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
@@ -2631,7 +2644,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
 
       const processPidAlive = nativeRun
         ? checksPersistedChildLiveness && !!run.processPid && isProcessAlive(run.processPid)
-        : !!legacyProcessProof && legacyProcessProof.verdict !== "gone";
+        : !!legacyProcessProof && legacyProcessProof.verdict !== "gone" && !sshRemoteGone;
       const processGroupAlive =
         nativeRun &&
         checksPersistedChildLiveness &&
@@ -2799,6 +2812,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         agentId: finalizedRun.agentId,
         status: finalizedRun.status,
         failureReason: finalizedRun.error ?? undefined,
+        ...(sshRemoteGone ? { remoteChecks: sshRemoteGone } : {}),
       });
 
       let retriedRun: typeof heartbeatRuns.$inferSelect | null = null;
