@@ -24,6 +24,7 @@ import { useCompanyLiveEvent } from "@/context/LiveUpdatesProvider";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectSeparator, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { useMemberRestrictionGate } from "@/hooks/useMemberRestrictionGate";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn, formatDateTime, relativeTime } from "@/lib/utils";
 
@@ -134,7 +135,18 @@ function setupState(state: BuiltInAgentState | undefined) {
     : null;
 }
 
-export function SummarySlotCard({
+/**
+ * Closed for a restricted member under `enforce` (AC-G10): the card renders nothing and
+ * mounts none of its queries (built-in agents, summary slots, resume). It is also held
+ * back while the session is unknown, so no closed request goes out first.
+ */
+export function SummarySlotCard(props: SummarySlotCardProps) {
+  const memberGate = useMemberRestrictionGate(props.companyId);
+  if (memberGate.closed) return null;
+  return <SummarySlotCardBody {...props} />;
+}
+
+function SummarySlotCardBody({
   companyId,
   scopeKind,
   scopeId = null,

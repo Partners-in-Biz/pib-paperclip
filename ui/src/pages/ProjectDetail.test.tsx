@@ -296,6 +296,31 @@ describe("ProjectDetail", () => {
     } finally { client.clear(); }
   });
 
+  // AC-G10 (PAR-13476): workspaces, budgets and the star control are closed for R under `enforce`.
+  it.each([
+    ["R under enforce", "enforce"], ["the owner", null], ["R under report", "report"],
+  ] as const)("workspaces and budgets are requested only when allowed (%s)", async (_who, mode) => {
+    mockLocation.pathname = "/projects/project-1/budget";
+    mockSession.memberRestrictions = mode ? [{ companyId: "company-1", restricted: true, mode }] : [];
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    root = createRoot(container);
+    try {
+      await act(() => root!.render(<QueryClientProvider client={client}><ProjectDetail /></QueryClientProvider>));
+      await settle();
+      await settle();
+      if (mode === "enforce") {
+        expect(mockExecutionWorkspacesApi.list).not.toHaveBeenCalled();
+        expect(mockBudgetsApi.overview).not.toHaveBeenCalled();
+        expect(container.textContent).not.toContain("Budget");
+      } else {
+        await vi.waitFor(() => expect(mockBudgetsApi.overview).toHaveBeenCalledWith("company-1"));
+        await vi.waitFor(() => expect(mockExecutionWorkspacesApi.list).toHaveBeenCalled());
+        expect(container.textContent).toContain("Budget");
+      }
+    } finally { client.clear(); }
+  });
+
   it.each(["issues", "plugin-operations"])("removes cached %s after a real task-list denial", async tab => {
     mockLocation.pathname = `/projects/project-1/${tab}`;
     const read = tab === "issues" ? mockIssuesApi.listAll : mockIssuesApi.list;

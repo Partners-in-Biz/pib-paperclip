@@ -2,7 +2,7 @@ import { useShowAgentCreatedTasks } from "../hooks/useShowAgentCreatedTasks";
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { Link, useParams, useNavigate, useLocation, Navigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { PROJECT_COLORS, PROJECT_ICON_NAMES, isUuidLike, type BudgetPolicySummary } from "@paperclipai/shared";
+import { PROJECT_COLORS, PROJECT_ICON_NAMES, isUuidLike, type BudgetOverview, type BudgetPolicySummary } from "@paperclipai/shared";
 import { budgetsApi } from "../api/budgets";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { instanceSettingsApi } from "../api/instanceSettings";
@@ -381,6 +381,8 @@ export function ProjectDetail() {
   const canonicalProjectRef = project ? projectRouteRef(project) : routeProjectRef;
   const projectLookupRef = project?.id ?? routeProjectRef;
   const resolvedCompanyId = project?.companyId ?? selectedCompanyId;
+  // Execution workspaces, budgets and the membership controls are closed for a restricted member under `enforce` (AC-G10).
+  const memberGate = useMemberRestrictionGate(resolvedCompanyId);
   const membershipsQuery = useResourceMemberships(resolvedCompanyId);
   const membershipMutation = useResourceMembershipMutation(resolvedCompanyId);
   const projectMembershipState = project?.id
@@ -412,7 +414,7 @@ export function ProjectDetail() {
   // disabled query reports isLoading=false — so "not loading" alone cannot
   // distinguish "contribution unavailable" from "not asked yet" on cold loads.
   const pluginTabDecisionLoaded = Boolean(resolvedCompanyId) && !pluginDetailSlotsLoading;
-  const isolatedWorkspacesEnabled = experimentalSettingsQuery.data?.enableIsolatedWorkspaces === true;
+  const isolatedWorkspacesEnabled = experimentalSettingsQuery.data?.enableIsolatedWorkspaces === true && !memberGate.closed;
   const workspaceTabProjectId = project?.id ?? null;
   const workspaceTabIssuesQuery = useQuery({
     queryKey: workspaceTabProjectId && resolvedCompanyId
@@ -427,7 +429,7 @@ export function ProjectDetail() {
     queryKey: workspaceTabProjectId && resolvedCompanyId
       ? queryKeys.executionWorkspaces.list(resolvedCompanyId, { projectId: workspaceTabProjectId })
       : ["execution-workspaces", "__workspace-tab__", "disabled"],
-    queryFn: () => executionWorkspacesApi.list(resolvedCompanyId!, { projectId: workspaceTabProjectId! }),
+    queryFn: memberGate.guard(() => executionWorkspacesApi.list(resolvedCompanyId!, { projectId: workspaceTabProjectId! }), []),
     enabled: Boolean(resolvedCompanyId && workspaceTabProjectId && isolatedWorkspacesEnabled),
   });
   const {
@@ -513,8 +515,8 @@ export function ProjectDetail() {
 
   const { data: budgetOverview } = useQuery({
     queryKey: queryKeys.budgets.overview(resolvedCompanyId ?? "__none__"),
-    queryFn: () => budgetsApi.overview(resolvedCompanyId!),
-    enabled: !!resolvedCompanyId,
+    queryFn: memberGate.guard<BudgetOverview | null>(() => budgetsApi.overview(resolvedCompanyId!), null),
+    enabled: !!resolvedCompanyId && !memberGate.closed,
     refetchInterval: 30_000,
     staleTime: 5_000,
   });
@@ -715,7 +717,7 @@ export function ProjectDetail() {
   }
   if (!project) return null;
   const showLeftProjectNotice =
-    projectMembershipState === "left" && !dismissedLeftProjectIds.has(project.id);
+    projectMembershipState === "left" && !memberGate.closed && !dismissedLeftProjectIds.has(project.id);
   const projectMembershipPending =
     membershipMutation.isPending &&
     membershipMutation.variables?.resourceType === "project" &&
@@ -812,7 +814,7 @@ export function ProjectDetail() {
           ) : null}
         </div>
         <div className="ml-auto flex items-center gap-2">
-          <StarToggle
+          {memberGate.closed ? null : <StarToggle
             size="button"
             starred={projectStarred}
             pending={projectStarPending}
@@ -823,7 +825,7 @@ export function ProjectDetail() {
               resourceName: project.name,
               starred: next,
             })}
-          />
+          />}
         </div>
       </div>
 
@@ -874,7 +876,7 @@ export function ProjectDetail() {
             ...(project.managedByPlugin ? [{ value: "plugin-operations", label: "Plugin operations" }] : []),
             ...(showWorkspacesTab ? [{ value: "workspaces", label: "Workspaces" }] : []),
             { value: "configuration", label: "Configuration" },
-            { value: "budget", label: "Budget" },
+            ...(memberGate.closed ? [] : [{ value: "budget", label: "Budget" }]),
             ...pluginTabItems.map((item) => ({
               value: item.value,
               label: item.label,
@@ -935,7 +937,7 @@ export function ProjectDetail() {
         </div>
       )}
 
-      {activeTab === "budget" && resolvedCompanyId ? (
+      {activeTab === "budget" && resolvedCompanyId && !memberGate.closed ? (
         <div className="max-w-3xl">
           <BudgetPolicyCard
             summary={projectBudgetSummary}
