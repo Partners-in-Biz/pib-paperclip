@@ -233,10 +233,12 @@ export function healthRoutes(
 
   router.get("/", async (req, res) => {
     const actorType = "actor" in req ? req.actor?.type : null;
+    // PAR-13261: a caller the route guard marked restricted at `enforce` gets
+    // the anonymous body; the token-gated fields below keep their token rule.
     const exposeFullDetails = shouldExposeFullHealthDetails(
       actorType,
       opts.deploymentMode,
-    );
+    ) && !req.actor?.memberRestrictedCompanyIds?.length;
     const runtimeEnv = opts.runtimeEnv ?? process.env;
     const startupRecovery = getStartupRecoveryState();
     const healthStatus =
