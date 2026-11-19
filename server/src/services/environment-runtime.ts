@@ -3926,7 +3926,7 @@ export function environmentRuntimeService(
       onLeaseReleaseError?: (leaseId: string, error: unknown) => void,
       providerResourceDisposition?: ProviderResourceDisposition,
       cancelActiveWork?: boolean,
-      releaseOptions?: { respectCleanupDeadlines?: boolean },
+      releaseOptions?: { respectCleanupDeadlines?: boolean; remoteChecks?: ReadonlyMap<string, SshRunCheck> },
     ): Promise<EnvironmentRuntimeLeaseRecord[]> {
       const leaseRows = await db
         .select()
@@ -4049,6 +4049,7 @@ export function environmentRuntimeService(
             continue;
           }
           const driver = getDriver(getLeaseDriverKey(leaseSnapshot, environment));
+          const remoteCheck = releaseOptions?.remoteChecks?.get(leaseRow.id);
           if (
             providerResourceDisposition === "keep_running" &&
             leaseSnapshot.leasePolicy !== "reuse_by_environment"
@@ -4082,6 +4083,7 @@ export function environmentRuntimeService(
               ? await driver.releaseRunLease({
                   ...(cancelActiveWork ? { cancelActiveWork: true } : {}),
                   ...(providerResourceDisposition === "stop_and_retain" ? { resourceDisposition: "stop_and_retain" as const } : {}),
+                  ...(remoteCheck ? { remoteCheck } : {}),
                   environment,
                   lease: leaseSnapshot,
                   // A stopped reusable provider resource must remain eligible

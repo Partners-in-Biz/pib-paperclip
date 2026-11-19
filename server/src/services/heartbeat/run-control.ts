@@ -11,6 +11,7 @@ import { readNativeStopExecutionEvidence } from "./native-stop-evidence-read.js"
 import { readTaskRetryIntent, reconcileTaskChatRetryReceipts } from "../task-retry.js";
 import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED, readNativeLocalProcessStop, recordedLocalExecutionStopped } from "../native-local-process-stop.js";
 import { isHeartbeatRunTerminalStatus } from "./run-lifecycle.js";
+import type { SshRunGoneChecks } from "./remote-run-recovery.js";
 import { pendingCaseHandoffForRun, cancelCaseHandoffsForIssue, isCaseHandoffSourceReleased } from "./case-handoff-lifecycle.js";
 import { publishActivity, type ActivityPublication } from "../activity-log.js";
 import { buildHeartbeatRunStatusLiveEventPayload } from "../heartbeat-run-status-payload.js";
@@ -384,6 +385,8 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     failureReason?: string | null;
     providerResourceDisposition?: ProviderResourceDisposition;
     respectCleanupDeadlines?: boolean;
+    /** ssh gone checks by lease id (PAR-9919); the ssh release uses them instead of its own. */
+    remoteChecks?: SshRunGoneChecks;
     nativeLifecycleTelemetry?: {
       provider: string;
       harness: string;
@@ -490,6 +493,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
         failureReason: input.failureReason ?? undefined,
         providerResourceDisposition,
         ...(input.respectCleanupDeadlines ? { respectCleanupDeadlines: true } : {}),
+        ...(input.remoteChecks ? { remoteChecks: input.remoteChecks } : {}),
         nativeLifecycleTelemetry: input.nativeLifecycleTelemetry,
       })
       .catch((err) => {
