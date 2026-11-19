@@ -458,6 +458,16 @@ async function openIssueAgent(ctx: PluginContext, companyId: string, issueId: st
   }
 }
 
+/** True only when the issue was read and is closed or gone; an unreadable or open issue is not "closed". */
+async function issueClosed(ctx: PluginContext, companyId: string, issueId: string): Promise<boolean> {
+  try {
+    const issue = (await ctx.issues.get(issueId, companyId)) as { status?: string } | null;
+    return !issue || !OPEN_ISSUE.has(String(issue.status));
+  } catch {
+    return false;
+  }
+}
+
 /** The linked Social agent's id when it can act, else null (never throws). */
 async function activeSocialAgentId(ctx: PluginContext, companyId: string): Promise<string | null> {
   const agent = await socialAgent(ctx, companyId);
@@ -511,10 +521,12 @@ async function waitingItems(ctx: PluginContext, companyId: string): Promise<Wait
     [companyId],
   );
   for (const post of unscheduled) {
-    // PAR-13579: an own-brand post (no client scope) whose schedule task is missing, closed or a person's is still the Social
-    // agent's to schedule, so it waits on that agent rather than on the owner. A client's post keeps the old rule.
+    // PAR-13579: an own-brand post (no client scope) with no schedule task, or one that is closed, is still the Social agent's
+    // to schedule, so it waits on that agent. An open task held by a person, or an unreadable one, stays with the owner (PAR-10701).
+    // A client's post keeps the old rule.
     const taskAgent = post.schedule_issue_id ? await openIssueAgent(ctx, companyId, post.schedule_issue_id) : null;
-    const scheduler = taskAgent ?? (scopeOfRow(post) ? null : await activeSocialAgentId(ctx, companyId));
+    const noLiveTask = !post.schedule_issue_id || (!taskAgent && (await issueClosed(ctx, companyId, post.schedule_issue_id)));
+    const scheduler = taskAgent ?? (!scopeOfRow(post) && noLiveTask ? await activeSocialAgentId(ctx, companyId) : null);
     items.push({
       key: `social:schedule:${post.id}`,
       title: `${clientPrefix(post)}Schedule approved post: ${snippet(post.body)}`,

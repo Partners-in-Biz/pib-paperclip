@@ -370,7 +370,7 @@ describe("waitsOn only where the delegate's own gate says yes (PAR-10701)", () =
     expect(await reviewItem(w)).toMatchObject({ title: "[PiB Brand] Waiting for the client: Spring sale starts Friday. Come and see.", waitsOn: { kind: "client" } });
   });
 
-  it("12. approved with no time: waits on the agent of an open schedule issue, else on the active Social agent (own brand, PAR-13579)", async () => {
+  it("12. approved with no time: waits on the agent of an open schedule issue, else (no task or a closed one, own brand) on the active Social agent (PAR-13579)", async () => {
     const row = (id: string, schedule: string | null) => ({ id, body: `Post ${id}`, client_kind: null, client_ref: null, client_name: null, schedule_issue_id: schedule, updated_at: "2026-11-11T00:00:00Z" });
     const w = world({}, [row("s1", "iss-open"), row("s2", null), row("s3", "iss-done"), row("s4", "iss-person"), row("s5", "iss-broken")]);
     const issues = { "iss-open": { status: "todo", assigneeAgentId: "ag-social" }, "iss-done": { status: "done", assigneeAgentId: "ag-social" }, "iss-person": { status: "todo", assigneeAgentId: null, assigneeUserId: "u1" } } as Record<string, unknown>;
@@ -383,8 +383,9 @@ describe("waitsOn only where the delegate's own gate says yes (PAR-10701)", () =
     expect(waitsOn("s1")).toEqual({ kind: "agent", agentId: "ag-social" });
     expect(waitsOn("s2")).toEqual({ kind: "agent", agentId: "ag-social" });
     expect(waitsOn("s3")).toEqual({ kind: "agent", agentId: "ag-social" });
-    expect(waitsOn("s4")).toEqual({ kind: "agent", agentId: "ag-social" });
-    expect(waitsOn("s5")).toEqual({ kind: "agent", agentId: "ag-social" });
+    // An open task held by a person, or a task that cannot be read, stays with the owner (PAR-10701).
+    expect(waitsOn("s4")).toBeUndefined();
+    expect(waitsOn("s5")).toBeUndefined();
   });
 
   it("12b. approved with no usable schedule task: an own-brand post waits on the active Social agent, a client's post does not (PAR-13579)", async () => {

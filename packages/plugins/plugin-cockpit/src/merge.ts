@@ -982,7 +982,8 @@ export function splitOwnerWaiting(entries: WaitingEntry[], filter: Partial<Owner
   const others: WaitingEntry[] = [];
   for (const entry of entries) {
     if (entry.issueId && hidden.has(entry.issueId)) continue;
-    // PAR-13579: the Operator routes unassigned work each morning, and a standing-queue company tracks setup there: neither is a decision.
+    // PAR-13579: the Operator routes unassigned work each morning, and a standing-queue company tracks setup there: neither is a decision. Intended: the unassigned row stays
+    // on others with no 7-day return, and is still listed there (the Operator brief keeps its own `unassigned` section).
     if (entry.key === UNASSIGNED_KEY || (entry.key === SETUP_KEY && filter?.setupRouted)) {
       others.push(entry);
       continue;
