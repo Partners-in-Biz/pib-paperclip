@@ -25,6 +25,7 @@ import {
   runSshCommand,
   sshControlBaseDir,
   sshControlDirFor,
+  sweepStaleSshControlDirs,
 } from "./ssh.js";
 
 const RUN_ID = "3f1d2c4b-5a6e-4f70-8b9c-0d1e2f3a4b5c";
@@ -113,5 +114,29 @@ describe("ssh control directory (AC 2)", () => {
     await cleanupSshConnectionReuse({ runId: RUN_ID });
     expect(sshCalls).toEqual([["-o", `ControlPath=${path.join(dir, "abc123")}`, "-O", "exit", "paperclip-control"]]);
     expect(await readdir(baseDir)).toEqual([]);
+  });
+});
+
+describe("startup sweep (AC 3)", () => {
+  it("removes a stale run's dir and keeps a running run's dir", async () => {
+    const running = "11111111-2222-4333-8444-555555555555";
+    expect(await prepareSshControlDir(RUN_ID)).not.toBeNull();
+    expect(await prepareSshControlDir(running)).not.toBeNull();
+    const asked: string[][] = [];
+    const result = await sweepStaleSshControlDirs({
+      activeRunIds: async (ids) => {
+        asked.push([...ids].sort());
+        return new Set([running]);
+      },
+    });
+    expect(asked).toEqual([[running, RUN_ID].sort()]);
+    expect(result).toEqual({ removed: [RUN_ID], kept: [running] });
+    expect(await readdir(baseDir)).toEqual([path.basename(sshControlDirFor(running, baseDir)!)]);
+  });
+
+  it("does nothing when no base dir exists", async () => {
+    const activeRunIds = vi.fn(async () => new Set<string>());
+    expect(await sweepStaleSshControlDirs({ activeRunIds })).toEqual({ removed: [], kept: [] });
+    expect(activeRunIds).not.toHaveBeenCalled();
   });
 });
