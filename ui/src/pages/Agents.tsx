@@ -5,8 +5,8 @@ import { AgentChatPin, useAgentChatPins } from "@/components/AgentChatPin";
 import { useAgentChatEnabled } from "../hooks/useAgentChatEnabled";
 import { useState, useEffect, useMemo, lazy, Suspense } from "react";
 import { Link, useNavigate, useLocation } from "@/lib/router";
-import { useQuery } from "@tanstack/react-query";
-import { agentsApi, type OrgNode } from "../api/agents";
+import { useIsFetching, useQuery } from "@tanstack/react-query";
+import { agentsApi, isReducedAgent, type OrgNode } from "../api/agents";
 import { builtInAgentsApi, type BuiltInAgentState } from "../api/builtInAgents";
 import { environmentsApi } from "../api/environments";
 import { heartbeatsApi } from "../api/heartbeats";
@@ -34,6 +34,8 @@ import { AlertTriangle, Bot, MessagesSquare } from "lucide-react";
 import { AGENT_ROLE_LABELS, type Agent, type Environment, type EnvironmentCapabilities } from "@paperclipai/shared";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
 import { useMemberRestrictionGate } from "../hooks/useMemberRestrictionGate";
+import { useMemberRestriction } from "../context/MemberRestrictionContext";
+import { ReducedAgentList } from "../components/agents/ReducedAgentList";
 
 import { agentDisplayAdapterType, getAdapterLabel } from "../adapters/adapter-display-registry";
 
@@ -211,17 +213,36 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
     setView(streamlinedUiEnabled ? initialView : "org");
   }, [initialView, streamlinedUiEnabled]);
 
+  const agentsQuery = useQuery({
+    queryKey: queryKeys.agents.list(selectedCompanyId!),
+    queryFn: () => agentsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+  const { data: agents, isLoading } = agentsQuery;
+  const agentsView = useQueryView(agentsQuery);
+
+  // A restricted member under `enforce` gets the reduced list (PAR-13474, AC-G10): his agents, six
+  // fields each. It shows when the session says `enforce`, or when the list came back reduced (a
+  // stale session). The full page's company-wide reads wait for a full list and an open gate.
+  const memberGate = useMemberRestrictionGate(selectedCompanyId);
+  // A restored session confirmed with the same data does not re-render the gate hook; this does,
+  // so the page leaves its loading state once the session is known.
+  useIsFetching({ queryKey: queryKeys.auth.session });
+  const { enforced: restrictionEnforced } = useMemberRestriction();
+  const reducedList = restrictionEnforced || (agents?.some(isReducedAgent) ?? false);
+  const fullListOpen = !memberGate.closed && agents !== undefined && !reducedList;
+
   const { data: instanceSettings } = useQuery({
     queryKey: queryKeys.instance.settings,
     queryFn: () => instanceSettingsApi.get(),
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && fullListOpen,
   });
   const builtInAgentsEnabled = instanceSettings?.experimental.enableBuiltInAgents === true;
   const tab: FilterTab = "all";
   const { data: builtInAgents } = useQuery({
     queryKey: queryKeys.builtInAgents.list(selectedCompanyId!),
-    queryFn: () => builtInAgentsApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId && builtInAgentsEnabled,
+    queryFn: memberGate.guard(() => builtInAgentsApi.list(selectedCompanyId!), []),
+    enabled: !!selectedCompanyId && builtInAgentsEnabled && fullListOpen,
   });
   const builtInByAgentId = useMemo(() => {
     const map = new Map<string, BuiltInAgentState>();
@@ -234,18 +255,11 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
   const builtInAgentIds = useMemo(() => new Set(builtInByAgentId.keys()), [builtInByAgentId]);
   const [configureState, setConfigureState] = useState<BuiltInAgentState | null>(null);
 
-  const agentsQuery = useQuery({
-    queryKey: queryKeys.agents.list(selectedCompanyId!),
-    queryFn: () => agentsApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
-  });
-  const { data: agents, isLoading } = agentsQuery;
-  const agentsView = useQueryView(agentsQuery);
 
   const { data: orgTree } = useQuery({
     queryKey: queryKeys.org(selectedCompanyId!),
-    queryFn: () => agentsApi.org(selectedCompanyId!),
-    enabled: !!selectedCompanyId && effectiveView === "org",
+    queryFn: memberGate.guard(() => agentsApi.org(selectedCompanyId!), []),
+    enabled: !!selectedCompanyId && effectiveView === "org" && fullListOpen,
   });
 
   const environmentsEnabled = instanceSettings?.experimental.enableEnvironments === true;
@@ -253,17 +267,16 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
   const { data: environments } = useQuery({
     queryKey: queryKeys.environments.list(selectedCompanyId!),
     queryFn: () => environmentsApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId && environmentsEnabled,
+    enabled: !!selectedCompanyId && environmentsEnabled && fullListOpen,
   });
 
   const { data: environmentCapabilities } = useQuery({
     queryKey: queryKeys.environments.capabilities(selectedCompanyId!),
     queryFn: () => environmentsApi.capabilities(selectedCompanyId!),
-    enabled: !!selectedCompanyId && environmentsEnabled,
+    enabled: !!selectedCompanyId && environmentsEnabled && fullListOpen,
   });
 
   // Live runs are a closed list for a restricted member under `enforce` (AC-G10): no live marks.
-  const memberGate = useMemberRestrictionGate(selectedCompanyId);
   const runsQueryKey = [...queryKeys.liveRuns(selectedCompanyId!), "agents-page"] as const;
   const sharedRuns = useSharedPollingQuery({
     companyId: selectedCompanyId,
@@ -348,6 +361,9 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
       />
     );
   }
+  if (reducedList) return <ReducedAgentList agents={agents ?? []} />;
+  // Session not known yet: neither list until it is (Quinn, PAR-13472 finding 2).
+  if (memberGate.closed) return <PageSkeleton variant="list" />;
 
   const filtered = filterAgents(agents ?? [], tab, builtInAgentIds, query);
   const filteredOrg = filterOrgTree(orgTree ?? [], tab, builtInAgentIds, query.trim() ? new Set(filtered.map(agent => agent.id)) : undefined);
