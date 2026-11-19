@@ -4558,6 +4558,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               projectPolicy: null,
               issueSettings,
               legacyUseProjectWorkspace: null,
+              agentRole: agent.role,
+              issueWorkMode: issue.workMode,
             });
             const workspaceManagedConfig = buildExecutionWorkspaceAdapterConfig(
               {
