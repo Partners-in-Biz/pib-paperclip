@@ -344,6 +344,7 @@ import {
   prepareGitHubExecutionEnvironment,
   startAdapterExecutionTargetPaperclipBridge,
 } from "@paperclipai/adapter-utils/execution-target";
+import { cleanupSshConnectionReuse } from "@paperclipai/adapter-utils/ssh";
 import { agentInstructionWorkingCopyService } from "./agent-instruction-working-copies.js";
 
 import fs from "node:fs/promises";
@@ -3949,6 +3950,12 @@ export function heartbeatService(
                 );
               },
             );
+          }
+          if (latestRun && isHeartbeatRunTerminalStatus(latestRun.status)) {
+            // Last ssh op of the run has settled: close its shared connection.
+            await cleanupSshConnectionReuse({ runId: run.id }).catch((err) => {
+              logger.warn({ err, runId: run.id }, "failed to close the run's shared ssh connection");
+            });
           }
           // A retained or unverified process stays above this release boundary.
           // If no stopped-copy capture occurred, preserve an explicit loss report.
