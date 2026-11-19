@@ -22,6 +22,7 @@ import * as signoff from "./service/signoff.js";
 import * as clientSignoff from "./service/client-signoff.js";
 import * as report from "./service/report.js";
 import * as cancel from "./service/cancel.js";
+import * as rehearsalPreview from "./service/rehearsal-preview.js";
 import * as preview from "./service/preview.js";
 import * as previewDecisions from "./service/preview-decisions.js";
 import * as playbook from "./service/playbook.js";
@@ -69,6 +70,7 @@ export const HANDLERS: Record<string, Handler> = {
   "propose-client-facts": (env, c, a, p) => facts.proposeClientFacts(env, c, a, p),
   "request-build": (env, c, a, p) => build.requestBuild(env, c, a, p),
   "review-preview": (env, c, a, p) => preview.reviewPreview(env, c, a, p),
+  "set-rehearsal-preview": (env, c, a, p) => rehearsalPreview.setRehearsalPreview(env, c, a, p),
   "list-previews": (env, c, _a, p) => preview.listPreviews(env, c, p),
   // pr_only page apply grants (PAR-9493): a person or a sign-off delegate opens or closes a task's pages; the handlers check the actor.
   "approve-page-apply": (env, c, a, p) => pageApply.approvePageApply(env, c, a, p),
