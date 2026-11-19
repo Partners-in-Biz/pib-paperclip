@@ -2675,6 +2675,8 @@ export function heartbeatService(
         issueSettings: issueExecutionWorkspaceSettings,
         legacyUseProjectWorkspace:
           issueAssigneeOverrides?.useProjectWorkspace ?? null,
+        agentRole: agent.role,
+        issueWorkMode: issueContext?.workMode ?? null,
       });
       const requestedExecutionWorkspaceMode = freshWorkspace?.mode === "fresh_isolated_workspace"
         ? "isolated_workspace" : trustPreset.kind === "low_trust_review" &&
