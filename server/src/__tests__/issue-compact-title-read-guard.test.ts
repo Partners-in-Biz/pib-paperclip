@@ -171,12 +171,26 @@ if (process.env.CI && !support.supported) throw new Error("embedded Postgres req
     await expectNothingWritten(await rename(user(U), issueId, `U renamed ${on}`), U, issueId, title);
   });
 
-  it("title: viewer V on open Q gets 403", async () => {
-    await expectNothingWritten(await rename(user(V), Q, "V renamed Q"), V, Q, "Q", 403);
+  // Pinned to today's answer (Ada, PAR-13016): assertCompanyAccess inside
+  // getAccessibleResource refuses every write by a session viewer before the
+  // handler runs, so V gets 403 "Viewer access is read-only" on Q and on P.
+  // On P this differs from AC-G3's 404; the 403-before-404 order is PAR-13427.
+  it.each(["open Q", "private P"] as const)("title: viewer V on %s gets today's 403 \"Viewer access is read-only\"", async (on) => {
+    const [issueId, title] = on === "open Q" ? [Q, "Q"] : [P, "P"];
+    const res = await rename(user(V), issueId, `V renamed ${title}`);
+    expect(res.body).toEqual({ error: "Viewer access is read-only" });
+    await expectNothingWritten(res, V, issueId, title, 403);
   });
 
-  it("title: viewer V on private P gets 404", async () => {
-    await expectNothingWritten(await rename(user(V), P, "V renamed P"), V, P, "P");
+  // A board caller whose request carries no memberships list passes
+  // assertCompanyAccess, can read Q, and is denied issue:mutate (viewer role in
+  // the database): the title write decision answers 403, as compact does.
+  it("title: a board caller who reads Q but is denied issue:mutate gets 403", async () => {
+    const { memberships: _omitted, ...bare } = user(V) as RequestActor & { memberships?: unknown };
+    expect((await request(appFor(bare as RequestActor)).get(`/api/issues/${Q}`)).status).toBe(200);
+    const res = await rename(bare as RequestActor, Q, "V renamed Q");
+    expect(res.body.error).not.toBe("Viewer access is read-only");
+    await expectNothingWritten(res, V, Q, "Q", 403);
   });
 
   it.each(["compact", "title"] as const)("failing read: U's %s on P answers non-2xx and writes nothing", async (route) => {

@@ -14595,6 +14595,11 @@ export function issueRoutes(
         await denyIssueWrite(req, res, existing, issueWriteDenialCodeForDecision(decision));
         return;
       }
+    } else {
+      // AC-G3: a board caller who cannot read the task gets 404, then the write decision.
+      if (!(await assertIssueReadAllowed(req, res, existing))) return;
+      const decision = await decideIssueAccess(req, existing, "issue:mutate");
+      if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
     }
     const actor = getActorInfo(req);
     const { result, publication } = await db.transaction(tx => setIssueTitle(
