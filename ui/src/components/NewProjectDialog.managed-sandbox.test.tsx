@@ -60,6 +60,8 @@ afterEach(() => {
 /** Pass `null` for `experimentalSettings` to render with the policy unresolved. */
 function render(experimentalSettings: Record<string, unknown> | null) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  // The owner: the member-restriction gate (PAR-12952) opens once the session is known.
+  client.setQueryData(queryKeys.auth.session, { memberRestrictions: [] });
   if (experimentalSettings) {
     client.setQueryData(queryKeys.instance.experimentalSettings, experimentalSettings);
   }

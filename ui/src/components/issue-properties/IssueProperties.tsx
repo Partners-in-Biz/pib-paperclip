@@ -578,12 +578,14 @@ export function IssueProperties({
       projectWorkspaceId: issue.projectWorkspaceId ?? undefined,
       reuseEligible: true,
     }),
-    queryFn: () => executionWorkspacesApi.list(companyId!, {
+    queryFn: memberGate.guard(() => executionWorkspacesApi.list(companyId!, {
       projectId: issue.projectId ?? undefined,
       projectWorkspaceId: issue.projectWorkspaceId ?? undefined,
       reuseEligible: true,
-    }),
-    enabled: Boolean(companyId) && Boolean(issue.projectId) && workspacePickerEligible && workspacePickerOpen,
+    }), []),
+    // AC-G10: closed for a restricted member at `enforce`; no "reuse" entry for him.
+    enabled: Boolean(companyId) && Boolean(issue.projectId) && workspacePickerEligible && workspacePickerOpen
+      && !memberGate.closed,
   });
   const effectiveWorkspaceSelection = currentWorkspaceSelection(issue, issueProject);
   const hasWorkspaceOverride = issue.executionWorkspacePreference != null
@@ -950,7 +952,7 @@ export function IssueProperties({
               ))}
             </div>
           </div>
-          {assigneeAdapterType === "claude_local" ? (
+          {assigneeAdapterType === "claude_local" && !memberGate.closed ? (
             <div className="flex items-center justify-between rounded-md border border-border px-2 py-1.5">
               <div className="text-xs text-muted-foreground">Enable Chrome (--chrome)</div>
               <ToggleSwitch
@@ -2831,7 +2833,7 @@ export function IssueProperties({
                       </span>
                       {activeWorkspacePickerMode === "isolated" ? <Check className="h-3.5 w-3.5 shrink-0" /> : null}
                     </button>
-                    <button
+                    {memberGate.closed ? null : <button
                       type="button"
                       className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent/50"
                       onClick={() => setWorkspacePickerStep("reuse")}
@@ -2841,7 +2843,7 @@ export function IssueProperties({
                         <span className="block text-xs text-muted-foreground">Pick a workspace to reuse</span>
                       </span>
                       {activeWorkspacePickerMode === "reuse" ? <Check className="h-3.5 w-3.5 shrink-0" /> : null}
-                    </button>
+                    </button>}
                   </div>
                   <div className="mt-1 border-t border-border px-2 py-1.5 text-xs text-muted-foreground">
                     {issue.executionWorkspaceId ? "Current workspace stays active. Applies on the next run." : "Applies on the next run."}

@@ -3755,9 +3755,11 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     queryFn: () => accessApi.getCurrentBoardAccess(),
     enabled: !!session?.user?.id,
   });
+  // The tree-control preview and the hold reads are closed for a restricted
+  // member at `enforce` (PAR-12952, C4i-a): no pause, resume or stop control.
   const canManageTreeControl = Boolean(
     selectedCompanyId && boardAccess?.companyIds?.includes(selectedCompanyId),
-  );
+  ) && !memberGate.closed;
   const canResolveBoardRecoveryAction = canBoardResolveRecoveryAction(
     selectedCompanyId,
     boardAccess,
@@ -3856,7 +3858,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         mode: "pause",
         includeMembers: true,
       }),
-    enabled: !!issueId && treeControlState?.activePauseHold?.isRoot === true,
+    enabled: !!issueId && treeControlState?.activePauseHold?.isRoot === true && !memberGate.closed,
   });
   const { data: activeCancelHolds = [] } = useQuery({
     queryKey: ["issues", "tree-holds", issueId ?? "pending", "active-cancel"],

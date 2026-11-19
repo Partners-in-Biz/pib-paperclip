@@ -1068,6 +1068,41 @@ describe("NewIssueDialog", () => {
     act(() => root.unmount());
   });
 
+  it.each([["enforce", false], ["report", true]] as const)(
+    "reads reusable workspaces and sends a Chrome override only when open, restricted under %s (PAR-12952, AC-G10)",
+    async (mode, open) => {
+      mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-1" },
+        memberRestrictions: [{ companyId: "company-1", restricted: true, mode }] });
+      mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
+      mockAgentsApi.list.mockResolvedValue([{ id: "agent-1", name: "Claude", role: "engineer", title: null,
+        status: "idle", adapterType: "claude_local", adapterConfig: {}, companyId: "company-1" }]);
+      mockProjectsApi.list.mockResolvedValue([{ id: "project-1", name: "Alpha", archivedAt: null,
+        executionWorkspacePolicy: { enabled: true, defaultMode: "shared_workspace" } }]);
+      localStorage.setItem("paperclip:issue-draft:user-1", JSON.stringify({
+        title: "Draft task", description: "", status: "todo", priority: "medium", assigneeValue: "agent:agent-1",
+        reviewerValue: "", approverValue: "", projectId: "project-1", projectWorkspaceId: "",
+        selectedExecutionWorkspaceId: "workspace-o", executionWorkspaceMode: "reuse_existing",
+        assigneeModelOverride: "", assigneeThinkingEffort: "", assigneeChrome: true, workMode: "standard",
+      }));
+      const { root } = renderDialog(container);
+      await flush();
+      await waitForAssertion(() => expect(mockProjectsApi.list).toHaveBeenCalled());
+      await flush();
+      expect(mockExecutionWorkspacesApi.listSummaries.mock.calls.length > 0).toBe(open);
+      if (!open) {
+        const create = Array.from(container.querySelectorAll("button")).find((button) => button.getAttribute("aria-label") === "Create task");
+        await waitForAssertion(() => expect(create?.hasAttribute("disabled")).toBe(false));
+        act(() => create!.click());
+        await waitForAssertion(() => expect(mockIssuesApi.create).toHaveBeenCalled());
+        const payload = mockIssuesApi.create.mock.calls[0][1];
+        expect(payload).not.toHaveProperty("executionWorkspaceId");
+        expect(payload.executionWorkspacePreference).toBe("shared_workspace");
+        expect(JSON.stringify(payload.assigneeAdapterOverrides ?? null)).not.toContain("chrome");
+      }
+      act(() => root.unmount());
+    },
+  );
+
   it("hides isolation choices and omits stale workspace draft overrides", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
     mockProjectsApi.list.mockResolvedValue([{

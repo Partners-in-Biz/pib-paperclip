@@ -3700,6 +3700,32 @@ describe("IssueDetail", () => {
     },
   );
 
+  it.each([["enforce", false], ["report", true]] as const)(
+    "reads the tree holds and offers pause controls only when open, restricted under %s (PAR-12952, AC-G10)",
+    async (mode, open) => {
+      mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-r" },
+        memberRestrictions: [{ companyId: "company-1", restricted: true, mode }] });
+      mockIssuesApi.get.mockResolvedValue(createIssue());
+      mockIssuesApi.getTreeControlState.mockResolvedValue({
+        activePauseHold: { holdId: "hold-1", rootIssueId: "issue-1", issueId: "issue-1", isRoot: true, mode: "pause",
+          reason: null, releasePolicy: { strategy: "manual", note: null } },
+      });
+      await act(async () => {
+        renderIssueView();
+      });
+      await flushReact();
+      await flushReact();
+      expect(container.textContent).toContain("Issue detail smoke");
+      expect(mockIssuesApi.getTreeControlState).toHaveBeenCalled();
+      expect(mockIssuesApi.listTreeHolds.mock.calls.length > 0).toBe(open);
+      expect(mockIssuesApi.previewTreeControl).not.toHaveBeenCalled();
+      // The paused banner still shows; resuming (which previews the tree) is the owner's.
+      const thread = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as { composerPause?: { onResume?: unknown } | null };
+      expect(thread?.composerPause).toBeTruthy();
+      expect(Boolean(thread?.composerPause?.onResume)).toBe(open);
+    },
+  );
+
   it("does not load or render decision sections in the issue header", async () => {
     mockIssuesApi.get.mockResolvedValue(
       createIssue({
