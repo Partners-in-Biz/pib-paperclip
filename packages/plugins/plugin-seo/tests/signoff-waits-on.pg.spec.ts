@@ -135,12 +135,18 @@ describePg("SEO cockpit: sign-off waitsOn follows the delegate's page grant gate
     config = async () => { throw new Error("config down"); };
     await owner();
   });
-  it("3: a sprint not on WordPress stays the owner's", async () => {
-    await sql.unsafe(`UPDATE ${S}.sprints SET site_access = 'repo'`);
+  it("3: a sprint not on WordPress: a review sign-off waits on the delegate (no page lock), a pr merge stays the owner's (PAR-13579)", async () => {
+    await sql.unsafe(`UPDATE ${S}.sprints SET site_access = 'repo', site_id = NULL, change_policy = 'merge_seo_scope'`);
+    expect(await signoff()).toMatchObject({ waitsOn: { kind: "agent", agentId: RHEA }, since: ADDED, issueId: ISSUE });
+    await needsYou("pr");
     await owner();
   });
-  it("4: a change policy other than pr_only stays the owner's", async () => {
-    await sql.unsafe(`UPDATE ${S}.sprints SET change_policy = 'merge_seo_scope'`);
+  it("4: a repo sprint's sign-off still needs an open issue that is not the delegate's own", async () => {
+    await sql.unsafe(`UPDATE ${S}.sprints SET site_access = 'repo', site_id = NULL, change_policy = 'merge_seo_scope'`);
+    issues.get(ISSUE)!.assigneeAgentId = RHEA;
+    await owner();
+    issues.get(ISSUE)!.assigneeAgentId = SOFIA;
+    await sql.unsafe(`UPDATE ${S}.sprint_tasks SET issue_id = NULL`);
     await owner();
   });
   it("5: automatic client sign-off stays the owner's", async () => {
@@ -162,8 +168,10 @@ describePg("SEO cockpit: sign-off waitsOn follows the delegate's page grant gate
     issues.get(ISSUE)!.status = "done";
     await owner();
   });
-  it("9: a task that names no page stays the owner's", async () => {
+  it("9: a task that names no page is not a page change: a review waits on the delegate, a pr stays the owner's (PAR-13579)", async () => {
     await sql.unsafe(`DELETE FROM ${S}.previews`);
+    expect(await signoff()).toMatchObject({ waitsOn: { kind: "agent", agentId: RHEA } });
+    await needsYou("pr");
     await owner();
   });
   it("10: a page without a passed preview stays the owner's", async () => {
@@ -180,5 +188,17 @@ describePg("SEO cockpit: sign-off waitsOn follows the delegate's page grant gate
     const line = (await waiting()).find((w) => w.key === "seo:previews:sp-1");
     expect(line).toMatchObject({ kind: "review" });
     expect(line!.waitsOn).toBeUndefined();
+  });
+  it("13: a rehearsal (canary) sprint's passed previews are not on the list (PAR-13579)", async () => {
+    await sql.unsafe(
+      `INSERT INTO ${S}.sprints (id, company_id, name, site_url, site_name, start_date, client_signoff, change_policy, site_access, client_kind, client_ref)
+       VALUES ('sp-c', 'co-1', 'C', 'https://par-9131-dogfood.canary.invalid', 'PiB Canary Co', '2026-10-01', 'manual', 'pr_only', 'none', 'company', 'canary-daf7b7d3')`,
+    );
+    await sql.unsafe(
+      `INSERT INTO ${S}.previews (id, company_id, sprint_id, task_id, issue_id, page_url, title, html, review_status, status, created_at, expires_at)
+       VALUES ('p-c', 'co-1', 'sp-c', NULL, NULL, 'https://par-9131-dogfood.canary.invalid/a', 'P', '<html></html>', 'passed', 'pending', now() - interval '1 hour', now() + interval '1 day')`,
+    );
+    const lines = (await waiting()).filter((w) => w.key.startsWith("seo:previews:"));
+    expect(lines.map((l) => l.key)).toEqual(["seo:previews:sp-1"]);
   });
 });

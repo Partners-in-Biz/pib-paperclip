@@ -38,7 +38,7 @@ import { clip } from "./domain.js";
 import { failedPublishSql, handoffPayload, needsReplySql, repurposeDraftCounts, repurposeRef } from "./done-checks.js";
 import { enqueueRecentLeads } from "./handoff.js";
 import { legacySocialAgent, SOCIAL_HIRE_ROLE } from "./hire.js";
-import { agentStatusActive, socialProjectId } from "./issues.js";
+import { agentStatusActive, socialAgent, socialProjectId } from "./issues.js";
 import { knownCompanies, socialOn } from "./modules.js";
 import { PLAN_HANDOFF_KIND, planScopeOfKey, postsMadeInScope } from "./plan-trigger.js";
 import { delegateForPost } from "./review.js";
@@ -458,6 +458,12 @@ async function openIssueAgent(ctx: PluginContext, companyId: string, issueId: st
   }
 }
 
+/** The linked Social agent's id when it can act, else null (never throws). */
+async function activeSocialAgentId(ctx: PluginContext, companyId: string): Promise<string | null> {
+  const agent = await socialAgent(ctx, companyId);
+  return agent.active ? agent.agentId : null;
+}
+
 async function waitingItems(ctx: PluginContext, companyId: string): Promise<WaitingItem[]> {
   const items: WaitingItem[] = [];
   // `review_since`: the last status change or edit, i.e. when the post entered review (an edit in review moves it on).
@@ -505,7 +511,10 @@ async function waitingItems(ctx: PluginContext, companyId: string): Promise<Wait
     [companyId],
   );
   for (const post of unscheduled) {
-    const scheduler = post.schedule_issue_id ? await openIssueAgent(ctx, companyId, post.schedule_issue_id) : null;
+    // PAR-13579: an own-brand post (no client scope) whose schedule task is missing, closed or a person's is still the Social
+    // agent's to schedule, so it waits on that agent rather than on the owner. A client's post keeps the old rule.
+    const taskAgent = post.schedule_issue_id ? await openIssueAgent(ctx, companyId, post.schedule_issue_id) : null;
+    const scheduler = taskAgent ?? (scopeOfRow(post) ? null : await activeSocialAgentId(ctx, companyId));
     items.push({
       key: `social:schedule:${post.id}`,
       title: `${clientPrefix(post)}Schedule approved post: ${snippet(post.body)}`,

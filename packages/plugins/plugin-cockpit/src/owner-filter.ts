@@ -18,6 +18,8 @@ const HIDDEN_LIMIT = 1000;
 
 export interface OwnerFilterResult {
   hiddenIssueIds: string[];
+  /** A standing queue is set: the Finish setup row is a board ask tracked there, so it is not the owner's decision. */
+  setupRouted: boolean;
   /** Parts whose read failed (`canary`, `standingQueue`, or `limit` when the row cap cut the list); that part is empty. */
   degraded: string[];
 }
@@ -52,5 +54,5 @@ export async function ownerFilter(env: Env, companyId: string): Promise<OwnerFil
     degraded.push("limit");
     env.ctx.logger.info("Cockpit owner filter hit its row cap", { companyId, limit: HIDDEN_LIMIT });
   }
-  return { hiddenIssueIds: rows.map((r) => String(r.id)), degraded };
+  return { hiddenIssueIds: rows.map((r) => String(r.id)), setupRouted: identifiers.length > 0, degraded };
 }

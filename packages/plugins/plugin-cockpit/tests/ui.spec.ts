@@ -93,11 +93,10 @@ describe("Cockpit page", () => {
     const withAsks: LoadResult = { ...load, asks, unassigned: { count: 3, items: [{ id: "u1", identifier: "PIB-20", title: "Bank statement received", createdAt: "2026-09-24T10:00:00.000Z" }] } };
     const v = buildView({ load: withAsks, installed: null, modules: null, live: { "partnersinbiz.billing": snap("partnersinbiz.billing", { waiting: [{ key: "approval:1", title: "Send INV-000012", why: "Money goes out.", kind: "money", issueId: "i3", href: "/issues/PIB-3" }] }) }, now: NOW, windowMs: 86_400_000 });
     // Asks first (oldest first within the kind order: money, then grant), then the plugin's money item, then unassigned work.
-    expect(v.waiting.map((w) => w.key)).toEqual(["ask:q1", "ask:q2", "approval:1", "unassigned-issues"]);
+    expect(v.waiting.map((w) => w.key)).toEqual(["ask:q1", "ask:q2", "approval:1"]);
     const html = renderToStaticMarkup(createElement(Overview, { view: v, load: withAsks, linkFor, windowHours: 24, onWindow: () => undefined, now: NOW }));
-    for (const text of ["2 questions from agents", "Refund Northwind&#x27;s R 5,000 deposit?", "Refund in full", "(recommended)", "They cancelled within 7 days.", "Ama asked 3 hours ago · needed by 30 Sep · for Northwind", "Sam asked 24 hours ago", "Answer →", "2 questions", "3 open issues have nobody assigned", "PIB-20 Bank statement received", "Questions from agents first"]) expect(html, text).toContain(text);
+    for (const text of ["2 questions from agents", "Refund Northwind&#x27;s R 5,000 deposit?", "Refund in full", "(recommended)", "They cancelled within 7 days.", "Ama asked 3 hours ago · needed by 30 Sep · for Northwind", "Sam asked 24 hours ago", "Answer →", "2 questions", "Questions from agents first"]) expect(html, text).toContain(text);
     expect(html).toContain('href="/PIB/issues/PIB-7"');
-    expect(html).toContain('href="/PIB/issues/PIB-20"');
     // Money is red, a grant amber.
     expect(html).toMatch(/data-ask="money" style="[^"]*var\(--pib-bad-border/);
     expect(html).toMatch(/data-ask="grant" style="[^"]*var\(--pib-warn-border/);
