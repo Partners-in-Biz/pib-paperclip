@@ -492,12 +492,23 @@ describe("assertGitSensitiveAdapterWorkspaceValid", () => {
     ).resolves.toBeUndefined();
   });
 
-  it("still requires git metadata when an adapter_managed run resolved the project workspace", async () => {
+  it("accepts an adapter_managed scratch dir (no branch/repo) even when the project workspace id resolved (PAR-13540)", async () => {
+    const input = buildAgentDefaultTaskDirectoryInput();
+    await expect(
+      assertGitSensitiveAdapterWorkspaceValid({
+        ...input,
+        resolvedWorkspace: { ...input.resolvedWorkspace, workspaceId: "workspace-1" },
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it("still requires git metadata when an adapter_managed workspace carries a branch", async () => {
     const input = buildAgentDefaultTaskDirectoryInput();
     await expectWorkspaceValidationFailure(
       {
         ...input,
         resolvedWorkspace: { ...input.resolvedWorkspace, workspaceId: "workspace-1" },
+        persistedExecutionWorkspace: { ...input.persistedExecutionWorkspace!, branchName: "feat/x" },
       },
       "missing_git_metadata",
       "has no .git metadata",
