@@ -173,6 +173,7 @@ import {
   requestReminderSend,
   retitleSendApprovals,
 } from "./requests.js";
+import { clearStaleApprovals } from "./stale-approvals.js";
 import { hostedRetainerCompanyIds, runHostedRetainers } from "./hosted-retainers.js";
 import { createPlan, createSubscription,listRetainers, runSubscriptions, setSubscriptionStatus, updatePlan } from "./retainers.js";
 import { teamStatus } from "./routing.js";
@@ -637,6 +638,8 @@ async function load(ctx: PluginContext, context: PluginPerformActionContext, par
   const scope = readClientScope(params) ?? null;
   // Statuses follow "as at today" before anything is read (usually nothing to change).
   await refreshAsAtStatuses(ctx, companyId).catch((error) => ctx.logger.info("As-at refresh skipped", { companyId, error: errorMessage(error) }));
+  // An approval cancelled without Billing hearing of it must not keep showing as "waiting on you".
+  await clearStaleApprovals(ctx, companyId).catch((error) => ctx.logger.info("Stale approvals not cleared", { companyId, error: errorMessage(error) }));
   const invoices = await listInvoices(ctx, companyId, scope);
   const own = await invoiceBalances(ctx, companyId, scope ? { customerKind: scope.kind, customerRef: scope.id } : {});
   const byId = new Map(own.map((b) => [b.invoice.id, b]));
@@ -1180,6 +1183,7 @@ async function markOverdueJob(ctx: PluginContext) {
     // "As at today": a payment dated in the future counts once its day comes (and an early "paid" is undone).
     await refreshAsAtStatuses(ctx, companyId).catch((error) => ctx.logger.info("As-at refresh skipped", { companyId, error: errorMessage(error) }));
     await retitleSendApprovals(ctx, companyId).catch((error) => ctx.logger.info("Approval titles not synced", { companyId, error: errorMessage(error) }));
+    await clearStaleApprovals(ctx, companyId).catch((error) => ctx.logger.info("Stale approvals not cleared", { companyId, error: errorMessage(error) }));
     // Payment links withdrawn since the last run are switched off at the provider (best effort; a failure is tried again next hour).
     if (await configSaved(ctx, companyId).catch(() => false)) {
       await housekeepPaymentLinks(ctx, companyId, await billingSettings(ctx, companyId)).catch((error) => ctx.logger.info("Payment link housekeeping skipped", { companyId, error: errorMessage(error) }));

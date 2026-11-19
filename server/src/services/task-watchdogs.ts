@@ -1,6 +1,7 @@
 import type { DeadlineReconciliationSnapshot } from "./deadline-reconciliation.js";
 import { idleDeadlineRowLimit, type IdleDeadlineSnapshot } from "./idle-deadline-types.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
+import { SYSTEM_CAUSING_ACTOR, type WakeCausingActor } from "./heartbeat/causing-actor.js";
 import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
 import { createHash } from "node:crypto";
 import { and, asc, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
@@ -222,6 +223,7 @@ type TaskWatchdogWakeupOptions = {
   reason?: string | null;
   payload?: Record<string, unknown> | null;
   idempotencyKey?: string | null;
+  causingActor: WakeCausingActor;
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
   contextSnapshot?: Record<string, unknown>;
@@ -229,7 +231,7 @@ type TaskWatchdogWakeupOptions = {
 
 type TaskWatchdogWakeup = (
   agentId: string,
-  opts?: TaskWatchdogWakeupOptions,
+  opts: TaskWatchdogWakeupOptions,
 ) => Promise<{ id: string } | null>;
 
 export type TaskWatchdogServiceDeps = {
@@ -1635,6 +1637,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         payload: context,
         contextSnapshot: context,
         idempotencyKey: taskWatchdogWakeIdempotencyKey(watchdog.id, classification.stopFingerprint),
+        causingActor: SYSTEM_CAUSING_ACTOR,
         requestedByActorType: "system",
         requestedByActorId: null,
       })

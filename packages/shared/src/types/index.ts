@@ -1023,6 +1023,10 @@ export type {
   AdminUserDirectoryEntry,
   UserCompanyAccessEntry,
   UserCompanyAccessResponse,
+  MemberRestriction,
+  InviteMemberRestriction,
+  ActorCompanyMembership,
+  SessionMemberRestriction,
 } from "./access.js";
 export type { QuotaWindow, ProviderQuotaResult } from "./quota.js";
 export type {

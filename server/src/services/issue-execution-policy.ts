@@ -412,6 +412,21 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
   };
 }
 
+/**
+ * Agents named as stage participants (reviewers, approvers) in `policy` that
+ * `previous` does not name (PAR-12608 4.7, AC-A8).
+ */
+export function executionPolicyAddedAgentIds(
+  policy: IssueExecutionPolicy | null,
+  previous: IssueExecutionPolicy | null = null,
+): string[] {
+  const agentIds = (value: IssueExecutionPolicy | null) => new Set((value?.stages ?? [])
+    .flatMap((stage) => stage.participants)
+    .flatMap((participant) => (participant.type === "agent" && participant.agentId ? [participant.agentId] : [])));
+  const before = agentIds(previous);
+  return [...agentIds(policy)].filter((agentId) => !before.has(agentId));
+}
+
 export function parseIssueExecutionState(input: unknown): IssueExecutionState | null {
   if (input == null) return null;
   const parsed = issueExecutionStateSchema.safeParse(input);

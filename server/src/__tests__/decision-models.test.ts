@@ -49,7 +49,7 @@ async function fixture() {
   const provider = vi.fn().mockResolvedValue(structuredClone(outcome));
   const service = decisionModelService(db, { provider });
   const context: DecisionContext = { companyId, feature: settingsDecisionTest,
-    actor: { type: "board", userId: "alice", source: "session", companyIds: [companyId], memberships: [{ companyId, membershipRole: "owner", status: "active" }] } };
+    actor: { type: "board", userId: "alice", source: "session", companyIds: [companyId], memberships: [{ companyId, membershipRole: "owner", status: "active", restricted: false, restrictionMode: "off" as const }] } };
   const config = { ...binding, enabled: true, allowBackground: true };
   await service.configure(companyId, "alice", config);
   return { companyId, agentId, binding, provider, service, context, config, connections };
@@ -538,7 +538,7 @@ describe("company decision service", () => {
     expect((await request(app).get(url)).body.canManage).toBe(true);
     expect((await request(app).get(`/api/companies/${other.companyId}/decision-model`)).status).toBe(403);
     await db.update(companyMemberships).set({ membershipRole: "viewer" }).where(and(eq(companyMemberships.companyId, f.companyId), eq(companyMemberships.principalId, "alice")));
-    actor = { type: "board", userId: "alice", source: "session", companyIds: [f.companyId], memberships: [{ companyId: f.companyId, status: "active", membershipRole: "viewer" }] };
+    actor = { type: "board", userId: "alice", source: "session", companyIds: [f.companyId], memberships: [{ companyId: f.companyId, status: "active", membershipRole: "viewer", restricted: false, restrictionMode: "off" as const }] };
     expect((await request(app).get(url)).body).toEqual({ canManage: false, settings: null, choices: [] });
     expect((await request(app).put(url).send(f.config)).status).toBe(403);
     expect((await request(app).post(`${url}/test`).send({ actor: { type: "system" } })).status).toBe(403);
@@ -556,7 +556,7 @@ describe("company decision service", () => {
     await db.insert(issues).values({ id: issueId, companyId: f.companyId, projectId, title: "PRIVATE TITLE", identifier: "SECRET-1" });
     await f.service.decide({ companyId: f.companyId, feature: backgroundFeature, actor: { type: "system" }, issueId }, DECISION_TEST_REQUEST);
     await db.update(companyMemberships).set({ membershipRole: "member" }).where(and(eq(companyMemberships.companyId, f.companyId), eq(companyMemberships.principalId, "alice")));
-    const actor = { type: "board" as const, userId: "alice", source: "session" as const, companyIds: [f.companyId], memberships: [{ companyId: f.companyId, status: "active", membershipRole: "member" }] };
+    const actor = { type: "board" as const, userId: "alice", source: "session" as const, companyIds: [f.companyId], memberships: [{ companyId: f.companyId, status: "active", membershipRole: "member", restricted: false, restrictionMode: "off" as const }] };
     expect(await f.service.availability({ ...f.context, actor, issueId })).toMatchObject({ available: false, reason: "access_denied" });
     const history = await f.service.history(f.companyId, actor);
     expect(history[0]).toMatchObject({ issueId: null, issueIdentifier: null, runId: null });

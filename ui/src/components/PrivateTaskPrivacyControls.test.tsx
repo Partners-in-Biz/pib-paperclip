@@ -11,6 +11,7 @@ vi.mock("@/api/projects", () => ({ projectsApi: { get: api.getProject, listAcces
   addAccessMember: api.add, removeAccessMember: api.remove } }));
 vi.mock("@/api/access", () => ({ accessApi: { listUserDirectory: api.directory } }));
 vi.mock("@/api/agents", () => ({ agentsApi: { list: () => Promise.resolve([]) } }));
+vi.mock("@/api/auth", () => ({ authApi: { getSession: async () => ({ user: null, memberRestrictions: [] }) } }));
 vi.mock("@/context/ToastContext", () => ({ useToastActions: () => ({ pushToast: vi.fn() }) }));
 import { IssuePrivacyActions } from "./IssuePrivacyActions";
 import { ProjectAccessMembers } from "./ProjectAccessMembers";
@@ -120,4 +121,16 @@ it("invalidates cached task audience when project membership is removed", async 
   await settle();
   expect(api.remove).toHaveBeenCalledWith("project", "m1", "company");
   expect(client.getQueryState(key)?.isInvalidated).toBe(true);
+});
+it("on an open project explains the list is for restricted members and offers people only (PAR-12727)", async () => {
+  render(<ProjectAccessMembers project={{ id: "project", companyId: "company", visibility: "open" } as Project} canManage />);
+  const trigger = [...document.body.querySelectorAll("button")].find(b => b.textContent?.includes("Manage restricted access"));
+  expect(trigger).toBeDefined();
+  flushSync(() => trigger!.click());
+  await settle();
+  expect(document.body.textContent).toContain("Access for restricted members");
+  expect(document.body.textContent).toContain("This list matters for restricted members only");
+  expect(document.body.textContent).toContain("Add a person");
+  expect(document.body.textContent).not.toContain("Add a person or agent");
+  expect(api.members).toHaveBeenCalledWith("project", "company");
 });

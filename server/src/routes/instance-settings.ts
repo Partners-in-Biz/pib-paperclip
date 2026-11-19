@@ -201,7 +201,13 @@ export function instanceSettingsRoutes(
     // General settings (e.g. feedbackDataSharingPreference) are readable by any
     // authenticated org member or instance admin. Only PATCH requires instance-admin.
     assertBoardOrgAccess(req);
-    res.json(await svc.getGeneral());
+    const general = await svc.getGeneral();
+    // PAR-13261: a member restricted at `enforce` gets only the log setting the shell needs.
+    if (req.actor.memberRestrictedCompanyIds?.length) {
+      res.json({ censorUsernameInLogs: general.censorUsernameInLogs });
+      return;
+    }
+    res.json(general);
   });
 
   router.patch(

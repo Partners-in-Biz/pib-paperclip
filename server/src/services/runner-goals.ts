@@ -1,4 +1,5 @@
 import { notifyExternalConversationSettlement } from "./external-conversation-settlement-notifications.js";
+import type { WakeCausingActor } from "./heartbeat/causing-actor.js";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { and, desc, eq, inArray } from "drizzle-orm";
@@ -246,6 +247,8 @@ export function runnerGoalService(
       agentId: string;
       requestId: string;
       control: RunnerGoalActionRequest;
+      /** Who asked (PAR-12608 H1); absent for a server-made action. */
+      causingActor?: WakeCausingActor;
     }) => Promise<void>;
   } = {},
 ) {
@@ -353,6 +356,7 @@ export function runnerGoalService(
     companyId: string,
     issueId: string,
     request: RunnerGoalActionRequest,
+    causingActor?: WakeCausingActor,
   ): Promise<RunnerGoalActionAccepted> {
     const binding = await readBinding(companyId, issueId, request.agentId);
     if (!binding) throw new RunnerGoalActionError("issue_not_found", "Issue not found.");
@@ -530,6 +534,7 @@ export function runnerGoalService(
           agentId: request.agentId,
           requestId: request.requestId,
           control: request,
+          causingActor,
         });
       }
       await db.update(agentSessionGoalActions).set({

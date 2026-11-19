@@ -3243,7 +3243,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       expect(actions[0]).toEqual(firstAction);
     }
     expect(copyback).not.toHaveBeenCalled();
-    expect(await issueService(db).list(companyId, { touchedByUserId: userId })).toEqual([]);
+    expect(await issueService(db).list(companyId, { readCondition: "system", touchedByUserId: userId })).toEqual([]);
     expect(await db.select().from(activityLog).where(eq(activityLog.entityId, sourceIssueId))).toHaveLength(0);
 
     // Only clearing the exact physical owner receipt makes this hold stale.
@@ -3252,7 +3252,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(cleared.body.activeRecoveryAction).toBeNull();
     const rows = await db.select().from(activityLog).where(eq(activityLog.entityId, sourceIssueId));
     expect(rows).toEqual([expect.objectContaining({ actorType: "system", actorId: "recovery", action: "issue.recovery_action_resolved" })]);
-    expect(await issueService(db).list(companyId, { touchedByUserId: userId })).toEqual([]);
+    expect(await issueService(db).list(companyId, { readCondition: "system", touchedByUserId: userId })).toEqual([]);
   });
 
   it("keeps active recovery visible when a plain comment does not create a live path", async () => {

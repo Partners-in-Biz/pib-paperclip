@@ -29,7 +29,7 @@ function sanitizeSegment(value: string): string {
   return cleaned.slice(0, MAX_SEGMENT_LENGTH);
 }
 
-function normalizeNamespace(namespace: string): string {
+export function normalizeNamespace(namespace: string): string {
   const normalized = namespace
     .split("/")
     .map((entry) => entry.trim())

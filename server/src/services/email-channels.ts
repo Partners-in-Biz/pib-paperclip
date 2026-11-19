@@ -1,4 +1,5 @@
 import { budgetServiceInTransaction } from "./budgets.js";
+import { SYSTEM_CAUSING_ACTOR } from "./heartbeat/causing-actor.js";
 import { notifyToolConnectionHealth, writeToolConnectionHealthChange } from "./tool-connection-health-notifications.js";
 import type { ConnectionManagementContext } from "./connection-management.js";
 import { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
@@ -1451,6 +1452,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
     if (event.wakePending && event.issueId) {
       await active(endpoint);
       await options.heartbeat.wakeup(endpoint.assignedAgentId, {
+        causingActor: SYSTEM_CAUSING_ACTOR,
         source: "automation",
         triggerDetail: "callback",
         reason: "email_received",

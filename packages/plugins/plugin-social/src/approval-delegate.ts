@@ -31,6 +31,13 @@ export interface DelegateEntry {
   setBy: string;
   /** ISO time it was set. */
   setAt: string;
+  /**
+   * The backup approver: takes the posts the delegate itself created, so the writer never approves its own post and those
+   * posts do not fall back to a person. Optional; a person names it.
+   */
+  backupAgentId?: string | null;
+  backupSetBy?: string | null;
+  backupSetAt?: string | null;
 }
 
 export type DelegateMap = Record<string, DelegateEntry>;
@@ -77,7 +84,22 @@ function entryOf(value: unknown): DelegateEntry | null {
   if (!value || typeof value !== "object") return null;
   const v = value as Record<string, unknown>;
   if (typeof v.agentId !== "string" || !v.agentId || typeof v.setBy !== "string" || typeof v.setAt !== "string") return null;
-  return { agentId: v.agentId, setBy: v.setBy, setAt: v.setAt };
+  const entry: DelegateEntry = { agentId: v.agentId, setBy: v.setBy, setAt: v.setAt };
+  if (typeof v.backupAgentId === "string" && v.backupAgentId && v.backupAgentId !== v.agentId) {
+    entry.backupAgentId = v.backupAgentId;
+    entry.backupSetBy = typeof v.backupSetBy === "string" ? v.backupSetBy : null;
+    entry.backupSetAt = typeof v.backupSetAt === "string" ? v.backupSetAt : null;
+  }
+  return entry;
+}
+
+/**
+ * Who approves a post in a delegated scope: the delegate, or the backup approver when the delegate created the post. Null when
+ * the delegate created it and there is no backup (or the backup created it too): a person approves then. Pure.
+ */
+export function approverOf(entry: Pick<DelegateEntry, "agentId" | "backupAgentId">, authorAgentId: string | null): string | null {
+  if (entry.agentId !== authorAgentId) return entry.agentId;
+  return entry.backupAgentId && entry.backupAgentId !== authorAgentId ? entry.backupAgentId : null;
 }
 
 /** The stored map, shape-checked (malformed entries dropped). Throws when the state cannot be read. */
@@ -155,7 +177,7 @@ export async function assertDelegateNotEditing(
   } catch (error) {
     throw new SocialError(`The delegated approvers could not be read, so this post was not changed. Try again. (${errorText(error)})`);
   }
-  const own = keys.find((key) => map[key]?.agentId === viewer.agentId);
+  const own = keys.find((key) => map[key]?.agentId === viewer.agentId || map[key]?.backupAgentId === viewer.agentId);
   if (own) {
     throw new SocialError(
       `You are the delegated approver of ${own}, so you cannot change a post another agent or a person created there. Approve it with approve-post-as-delegate, or send it back with notes with return-post-as-delegate.`,
@@ -188,6 +210,13 @@ export async function setDelegate(ctx: PluginContext, companyId: string, scope: 
   const key = normalKey(delegateScopeKey(scope));
   const current = await readForWrite(ctx, companyId);
   const entry: DelegateEntry = { agentId, setBy: byUserId, setAt: now.toISOString() };
+  // A backup stays when the delegate changes, unless it is the new delegate.
+  const previous = current[key];
+  if (previous?.backupAgentId && previous.backupAgentId !== agentId) {
+    entry.backupAgentId = previous.backupAgentId;
+    entry.backupSetBy = previous.backupSetBy ?? null;
+    entry.backupSetAt = previous.backupSetAt ?? null;
+  }
   await ctx.state.set(DELEGATE_STATE(companyId), { ...current, [key]: entry });
   const stored = await readBack(ctx, companyId);
   const got = stored[key];
@@ -195,6 +224,28 @@ export async function setDelegate(ctx: PluginContext, companyId: string, scope: 
     throw new SocialError("The delegated approver did not save (another change may have crossed it). Reload and try again.");
   }
   ctx.logger.info("Social delegated approver set", { companyId, scope: key, agentId, by: byUserId });
+  return stored;
+}
+
+/**
+ * Names (or clears, `backupAgentId: null`) the scope's backup approver. The scope must have a delegate, and the backup must
+ * be another agent. Checks nothing else about the agent: the caller runs `delegateBlockers` first. Returns the stored map.
+ */
+export async function setDelegateBackup(ctx: PluginContext, companyId: string, scope: DelegateScope, backupAgentId: string | null, byUserId: string, now: Date = new Date()): Promise<DelegateMap> {
+  if (!byUserId) throw new SocialError("A backup approver needs the person who names it.");
+  const key = normalKey(delegateScopeKey(scope));
+  const current = await readForWrite(ctx, companyId);
+  const entry = current[key];
+  if (!entry) throw new SocialError("Name the delegated approver first; the backup only takes the posts the delegate created.");
+  if (backupAgentId && backupAgentId === entry.agentId) throw new SocialError("The backup approver must be another agent than the delegated approver.");
+  const { backupAgentId: _a, backupSetBy: _b, backupSetAt: _c, ...base } = entry;
+  const next: DelegateEntry = backupAgentId ? { ...base, backupAgentId, backupSetBy: byUserId, backupSetAt: now.toISOString() } : base;
+  await ctx.state.set(DELEGATE_STATE(companyId), { ...current, [key]: next });
+  const stored = await readBack(ctx, companyId);
+  if ((stored[key]?.backupAgentId ?? null) !== (backupAgentId ?? null)) {
+    throw new SocialError("The backup approver did not save (another change may have crossed it). Reload and try again.");
+  }
+  ctx.logger.info(backupAgentId ? "Social backup approver set" : "Social backup approver cleared", { companyId, scope: key, backupAgentId, by: byUserId });
   return stored;
 }
 
@@ -290,7 +341,20 @@ export async function delegateView(ctx: PluginContext, companyId: string, scope:
       .catch(() => null),
   ]);
   const reasons = delegateBlockers(facts);
-  return { agentId: entry.agentId, name, active: reasons.length === 0, inactiveReason: reasons[0] ?? null };
+  const view: PolicyDelegate = { agentId: entry.agentId, name, active: reasons.length === 0, inactiveReason: reasons[0] ?? null };
+  if (entry.backupAgentId) {
+    const [backupFacts, backupName] = await Promise.all([delegateFacts(ctx, companyId, scope, entry.backupAgentId), agentName(ctx, companyId, entry.backupAgentId)]);
+    const backupReasons = delegateBlockers(backupFacts);
+    view.backup = { agentId: entry.backupAgentId, name: backupName, active: backupReasons.length === 0, inactiveReason: backupReasons[0] ?? null };
+  }
+  return view;
+}
+
+function agentName(ctx: PluginContext, companyId: string, agentId: string): Promise<string | null> {
+  return ctx.agents
+    .get(agentId, companyId)
+    .then((a) => (a && typeof a.name === "string" && a.name ? a.name : null))
+    .catch(() => null);
 }
 
 /**

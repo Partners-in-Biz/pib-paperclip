@@ -72,6 +72,30 @@ export const PERMISSION_CATALOG: readonly PermissionResource[] = [
   r("cockpit.dashboards", "Cockpit dashboards", ["view", "export"]),
   r("cockpit.settings", "Cockpit settings", ["view", "edit"]),
   r("setup.settings", "Setup and entitlements", ["view", "edit"]),
+  // Added for per-person access (PAR-12578 plan section 4.7). A new resource is in no older preset.
+  r("billing.expenses", "Expenses", [...CRUD, "approve", "export"]),
+  r("billing.bills", "Supplier bills", [...CRUD, "approve", "export"]),
+  r("billing.time", "Time entries", CRUD, true),
+  r("billing.plans", "Recurring plans", CRUD, true),
+  r("billing.bank", "Billing bank details", ["view", "edit"]),
+  r("accounting.bank", "Bank feeds and reconciliation", ["view", "edit", "approve"]),
+  r("accounting.assets", "Fixed assets", CRUD),
+  r("crm.desk", "Client desk", ["view", "edit"], true),
+  r("crm.sequences", "CRM sequences", CRUD, true),
+  r("crm.sites", "Client websites", CRUD, true),
+  r("crm.esign", "E-signatures", CRUD, true),
+  r("crm.care", "Client care", CRUD, true),
+  r("crm.drive", "Client Drive files", ["view", "create", "delete"], true),
+  r("mailbox.accounts", "Mailbox accounts", CRUD),
+  r("cockpit.paper", "Cockpit paperwork", ["view", "create", "edit", "approve"]),
+  r("ads.work", "Ads campaigns and reports", [...CRUD, "approve"], true),
+  r("ads.settings", "Ads settings", ["view", "edit"]),
+  r("studio.work", "Studio projects and media", [...CRUD, "export"]),
+  r("studio.settings", "Studio settings", ["view", "edit"]),
+  r("telephony.calls", "Calls", ["view", "create"]),
+  r("telephony.settings", "Telephony settings", ["view", "edit"]),
+  r("voice.use", "Voice assistant", ["view", "create"]),
+  r("voice.settings", "Voice settings", ["view", "edit"]),
 ];
 
 const RESOURCES = new Map(PERMISSION_CATALOG.map((x) => [x.id, x]));
@@ -82,7 +106,7 @@ export function isPermissionKey(key: unknown): key is string {
   return typeof key === "string" && ALL_KEYS.has(key);
 }
 
-export type PresetId = "salesperson" | "accountant" | "client" | "viewer" | "manager";
+export type PresetId = "salesperson" | "accountant" | "client" | "viewer" | "manager" | "clientManager" | "fullAccess";
 export type Preset = { id: PresetId; label: string; scope: ScopeMode; permissions: readonly string[] };
 
 /** Keys for the given resources: only the listed actions (or all of them), skipping ones a resource lacks. */
@@ -93,11 +117,37 @@ function keys(resources: readonly string[], actions?: readonly PermissionAction[
     return res.actions.filter((a) => !actions || actions.includes(a)).map((a) => permissionKey(id, a));
   });
 }
-const inArea = (...areas: string[]) => PERMISSION_CATALOG.filter((x) => areas.includes(x.area)).map((x) => x.id);
-const notSettings = (ids: string[]) => ids.filter((id) => !id.endsWith(".settings"));
-const READ_MOST = notSettings(PERMISSION_CATALOG.map((x) => x.id)).filter(
-  (id) => !id.startsWith("accounting.") && !id.startsWith("payroll."),
-);
+
+/*
+ * Presets are fixed lists of resources, never a filter over the catalog, so a
+ * resource added to the catalog is in no preset until someone puts it there.
+ * `accountant`, `viewer` and `manager` keep exactly the keys they had before the
+ * catalog grew (tests/permissions-presets.spec.ts holds all seven).
+ */
+const ACCOUNTANT_RESOURCES = [
+  "accounting.ledger", "accounting.reports", "accounting.settings",
+  "billing.invoices", "billing.quotes", "billing.reports", "billing.settings",
+];
+const VIEWER_RESOURCES = [
+  "crm.contacts", "crm.companies", "crm.deals", "crm.projects", "crm.reports",
+  "billing.invoices", "billing.quotes", "billing.reports",
+  "social.posts", "social.accounts", "mailbox.mail", "seo.work", "campaigns.campaigns",
+  "partners.grants", "cockpit.dashboards",
+];
+const MANAGER_RESOURCES = [
+  "crm.contacts", "crm.companies", "crm.deals", "crm.projects", "crm.reports", "crm.settings",
+  "billing.invoices", "billing.quotes", "billing.reports", "billing.settings",
+  "social.posts", "social.accounts", "social.settings", "mailbox.mail", "mailbox.settings",
+  "seo.work", "seo.settings", "campaigns.campaigns", "campaigns.settings",
+  "partners.grants", "cockpit.dashboards", "cockpit.settings",
+];
+/** All client work, limited to the person's own companies (scope `linked`). No settings, reports, Accounting, Payroll, Setup, Mailbox, Cockpit or Voice. */
+const CLIENT_MANAGER_RESOURCES = [
+  "crm.contacts", "crm.companies", "crm.deals", "crm.projects",
+  "billing.invoices", "billing.quotes", "seo.work", "social.posts", "social.accounts",
+  "campaigns.campaigns", "ads.work",
+  "crm.sites", "crm.esign", "crm.care", "crm.drive", "crm.desk", "crm.sequences",
+];
 
 export const PRESETS: Record<PresetId, Preset> = {
   salesperson: {
@@ -117,8 +167,7 @@ export const PRESETS: Record<PresetId, Preset> = {
     label: "Accountant",
     scope: "all",
     permissions: [
-      ...keys(inArea("accounting")),
-      ...keys(inArea("billing")),
+      ...keys(ACCOUNTANT_RESOURCES),
       ...keys(["payroll.employees", "payroll.payruns"], ["view", "export"]),
       ...keys(["crm.companies", "crm.contacts"], ["view"]),
     ],
@@ -129,13 +178,15 @@ export const PRESETS: Record<PresetId, Preset> = {
     scope: "linked",
     permissions: keys(["crm.companies", "crm.projects", "billing.invoices", "billing.quotes"], ["view"]),
   },
-  viewer: { id: "viewer", label: "Viewer", scope: "all", permissions: keys(READ_MOST, ["view"]) },
-  manager: {
-    id: "manager",
-    label: "Manager",
-    scope: "all",
-    permissions: keys(PERMISSION_CATALOG.map((x) => x.id).filter((id) => !id.startsWith("payroll.") && !id.startsWith("accounting.") && id !== "setup.settings")),
+  viewer: { id: "viewer", label: "Viewer", scope: "all", permissions: keys(VIEWER_RESOURCES, ["view"]) },
+  manager: { id: "manager", label: "Manager", scope: "all", permissions: keys(MANAGER_RESOURCES) },
+  clientManager: {
+    id: "clientManager",
+    label: "Client manager (own companies only)",
+    scope: "linked",
+    permissions: keys(CLIENT_MANAGER_RESOURCES),
   },
+  fullAccess: { id: "fullAccess", label: "Full access", scope: "all", permissions: [...ALL_KEYS] },
 };
 
 export type AccessGrant = {
@@ -231,11 +282,14 @@ export type ActorInput = { type?: string | null; userId?: string | null } | null
 
 const NAMESPACE = "access";
 const userScope = (companyId: string, userId: string) => ({ scopeKind: "company" as const, scopeId: companyId, namespace: NAMESPACE, stateKey: `u:${userId}` });
+/** Where `loadGrant` reads a person's grant; the access receiver writes there. */
+export const accessGrantScope = userScope;
 export const MAX_LINKED_COMPANIES = 200;
 const SCOPE_MODES: readonly string[] = ["all", "linked"];
 const unique = (xs: readonly string[]) => [...new Set(xs.map((x) => x.trim()).filter(Boolean))];
 
-function clean(grant: unknown, userId: string): AccessGrant | null {
+/** Normalises a stored grant; anything unreadable becomes null and unknown keys are dropped. */
+export function clean(grant: unknown, userId: string): AccessGrant | null {
   if (!grant || typeof grant !== "object" || Array.isArray(grant)) return null;
   const g = grant as Partial<AccessGrant>;
   const list = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
@@ -259,7 +313,8 @@ export async function loadGrant(ctx: PluginContext, companyId: string, userId: s
   return clean(await ctx.state.get(userScope(companyId, userId)), userId);
 }
 
-async function roleOf(ctx: PluginContext, companyId: string, userId: string): Promise<string | null> {
+/** The person's active membership role in the company, or null. Throws when members cannot be read. */
+export async function roleOf(ctx: PluginContext, companyId: string, userId: string): Promise<string | null> {
   const members = await ctx.access.members.list({ companyId });
   return members.find((m) => m.principalType === "user" && m.principalId === userId && m.status === "active")?.membershipRole ?? null;
 }
@@ -404,7 +459,7 @@ export async function clearGrant(ctx: PluginContext, action: { companyId?: strin
  * Puts the previous grant back after a failed audit write, retrying once. Returns
  * the refusal text: if the restore also fails, it says the change IS in effect but unaudited.
  */
-async function undoAfterFailedAudit(ctx: PluginContext, companyId: string, userId: string, before: AccessGrant | null): Promise<string> {
+export async function undoAfterFailedAudit(ctx: PluginContext, companyId: string, userId: string, before: AccessGrant | null): Promise<string> {
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       if (before) await ctx.state.set(userScope(companyId, userId), before);
@@ -418,7 +473,7 @@ async function undoAfterFailedAudit(ctx: PluginContext, companyId: string, userI
 }
 
 /** True when the entry was written. A change is only kept if its audit entry exists. */
-async function audit(ctx: PluginContext, companyId: string, by: string, target: string, before: AccessGrant | null, after: AccessGrant | null): Promise<boolean> {
+export async function audit(ctx: PluginContext, companyId: string, by: string, target: string, before: AccessGrant | null, after: AccessGrant | null): Promise<boolean> {
   const summary = (g: AccessGrant | null) => (g ? { preset: g.preset, allow: g.allow, deny: g.deny, linkedCompanyIds: g.linkedCompanyIds, scopeOverrides: g.scopeOverrides } : null);
   try {
     await ctx.activity.log({

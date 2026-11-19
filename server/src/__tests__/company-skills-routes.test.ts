@@ -1,7 +1,10 @@
 import express from "express";
 import { createHash } from "node:crypto";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { PgDialect } from "drizzle-orm/pg-core";
+import type { SQL } from "drizzle-orm";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { companyMemberships } from "@paperclipai/db";
 import { hoistModuleGraph } from "./helpers/hoist-module-graph.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
@@ -42,6 +45,7 @@ const mockCompanySkillService = vi.hoisted(() => ({
   updateFile: vi.fn(),
   deleteFile: vi.fn(),
   scanProjectWorkspaces: vi.fn(),
+  browseProjectWorkspace: vi.fn(),
   deleteSkill: vi.fn(),
   auditSkill: vi.fn(),
   getById: vi.fn(),
@@ -790,7 +794,7 @@ describe("company skill mutation permissions", () => {
     expect(mockCompanySkillService.scanProjectWorkspaces).toHaveBeenCalledWith("company-1", {
       mode: "preview",
       workspaceIds: [workspaceId],
-    });
+    }, expect.anything());
 
     const selective = await request(app)
       .post("/api/companies/company-1/skills/scan-projects")
@@ -804,7 +808,7 @@ describe("company skill mutation permissions", () => {
       mode: "import",
       workspaceIds: [workspaceId],
       selection: [{ workspaceId, path: ".codex/skills/review", slug: "review-project" }],
-    });
+    }, expect.anything());
     expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
       action: "skill_config:update",
       resource: { type: "company", companyId: "company-1" },
@@ -2233,5 +2237,80 @@ describe("company skill mutation permissions", () => {
     });
     expect(mockCompanySkillService.deleteSkill).toHaveBeenCalledWith("company-1", "skill-1", expect.any(Function), expect.any(Function));
     expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  /**
+   * PAR-12719: the project-workspace skill routes list projects with the
+   * caller's project read condition (spec PAR-12608 rev 3, 4.3 C28). AC-X1: a
+   * failing restriction read answers 503 MEMBER_RESTRICTION_UNAVAILABLE before
+   * the service runs. AC-F8: with the kill switch `off` the read is skipped.
+   */
+  describe("project-workspace routes read scope (PAR-12719)", () => {
+    const restrictionRead = vi.fn<() => Promise<unknown[]>>();
+    const database = {
+      select: () => ({
+        from: (table: unknown) => {
+          const rows = table === companyMemberships ? restrictionRead : async () => [];
+          const chain: Record<string, unknown> = {};
+          Object.assign(chain, {
+            innerJoin: () => chain, where: () => chain, limit: () => chain,
+            then: (resolve: (value: unknown[]) => unknown, reject: (error: unknown) => unknown) => rows().then(resolve, reject),
+          });
+          return chain;
+        },
+      }),
+    };
+    const projectId = "22222222-2222-4222-8222-222222222222";
+    const workspaceId = "11111111-1111-4111-8111-111111111111";
+    const routes = [
+      ["browse-project", mockCompanySkillService.browseProjectWorkspace, { projectId, workspaceId }],
+      ["scan-projects", mockCompanySkillService.scanProjectWorkspaces, { mode: "preview", workspaceIds: [workspaceId] }],
+    ] as const;
+    const post = (route: string, body: object) => request(createApp(boardActor("user-r", "session"), undefined, database))
+      .post(`/api/companies/company-1/skills/${route}`).send(body);
+
+    beforeEach(() => {
+      restrictionRead.mockReset();
+      mockCompanySkillService.browseProjectWorkspace.mockResolvedValue({ entries: [] });
+      mockCompanySkillService.scanProjectWorkspaces.mockResolvedValue({
+        scannedProjects: 0, scannedWorkspaces: 0, discovered: 0,
+        imported: [], updated: [], skipped: [], conflicts: [], candidates: [], warnings: [],
+      });
+    });
+    afterEach(() => vi.unstubAllEnvs());
+
+    const passedCondition = async (route: string, service: typeof mockCompanySkillService.browseProjectWorkspace, body: object) => {
+      service.mockClear();
+      const res = await post(route, body);
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      const [companyId, input, readCondition] = service.mock.calls[0]! as [string, object, SQL<boolean>];
+      expect([companyId, input]).toEqual(["company-1", body]);
+      return new PgDialect().sqlToQuery(readCondition);
+    };
+
+    it.each(routes)("%s passes the caller's read condition; a restricted caller's is narrower", async (route, service, body) => {
+      restrictionRead.mockResolvedValue([]);
+      const unrestricted = await passedCondition(route, service, body);
+      restrictionRead.mockResolvedValue([{ companyId: "company-1" }]);
+      expect(await passedCondition(route, service, body)).not.toEqual(unrestricted);
+    });
+
+    it.each(routes)("AC-X1: %s answers 503 MEMBER_RESTRICTION_UNAVAILABLE on a failing read", async (route, service, body) => {
+      restrictionRead.mockRejectedValue(new Error("connection reset"));
+      const res = await post(route, body);
+      expect(res.status).toBe(503);
+      expect(res.body.code).toBe("MEMBER_RESTRICTION_UNAVAILABLE");
+      expect(service).not.toHaveBeenCalled();
+    });
+
+    it.each(routes)("AC-F8: %s with the kill switch `off` skips the read and lists as in mode off", async (route, service, body) => {
+      restrictionRead.mockResolvedValue([]);
+      const asModeOff = await passedCondition(route, service, body);
+      vi.stubEnv("PAPERCLIP_MEMBER_RESTRICTION", "off");
+      restrictionRead.mockClear();
+      restrictionRead.mockRejectedValue(new Error("connection reset"));
+      expect(await passedCondition(route, service, body)).toEqual(asModeOff);
+      expect(restrictionRead).not.toHaveBeenCalled();
+    });
   });
 });

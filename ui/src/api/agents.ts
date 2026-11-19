@@ -38,7 +38,7 @@ import type {
   ClearAgentErrorResponse,
   AgentApiKeyScope,
 } from "@paperclipai/shared";
-import { isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
+import { deriveAgentUrlKey, isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
 import { ApiError, api, type RequestOptions } from "./client";
 
 export interface AgentKey {
@@ -101,6 +101,73 @@ export interface AgentWakeRequest {
   debug?: { providerTrace: "raw" };
 }
 
+/** The adapter type a reduced agent gets. No adapter registers it, so every adapter lookup finds nothing. */
+export const REDUCED_AGENT_ADAPTER_TYPE = "paperclip_reduced_agent_view";
+
+/** Marks an agent the server sent in its reduced view (`restrictedAgentView`, PAR-13469 decision B). */
+export interface ReducedAgentMarker {
+  reducedView: true;
+}
+
+/** The six fields a restricted member gets for an agent under `enforce` (AC-G4). */
+export type ReducedAgentBody = Pick<Agent, "id" | "companyId" | "name" | "title" | "icon" | "status">;
+
+export function isReducedAgent<T extends Agent>(agent: T): agent is T & ReducedAgentMarker {
+  return (agent as Partial<ReducedAgentMarker>).reducedView === true;
+}
+
+const EMPTY_AGENT_ACCESS: AgentDetail["access"] = { canAssignTasks: false, taskAssignSource: "none", membership: null, grants: [] };
+
+/**
+ * Completes an agent body at the API boundary (PAR-13474). It decides by the
+ * body's shape (no `adapterType` key), never by the session, so a stale
+ * session's reduced body is completed too. A full body comes back untouched.
+ * A reduced body gets every other field empty (`null`, `0`, `[]`, `{}`), so no
+ * screen reads `undefined` where the type promises a value. Left out are only
+ * the optional fields whose type has no empty value: `avatarUrl`,
+ * `lifecycleState` and `orgChainHealth`.
+ */
+export function completeAgentBody(body: Agent | ReducedAgentBody): Agent;
+export function completeAgentBody(body: AgentDetail | ReducedAgentBody, kind: "detail"): AgentDetail;
+export function completeAgentBody(body: Agent | AgentDetail | ReducedAgentBody, kind?: "detail"): Agent | AgentDetail {
+  if ("adapterType" in body) return body;
+  const agent: Agent & ReducedAgentMarker = {
+    id: body.id,
+    companyId: body.companyId,
+    name: body.name,
+    urlKey: deriveAgentUrlKey(body.name, body.id),
+    role: "general",
+    title: body.title ?? null,
+    icon: body.icon ?? null,
+    appearance: null,
+    status: body.status,
+    lifecycleVersion: 0,
+    lifecycleError: null,
+    lifecycleStatusDetail: null,
+    reportsTo: null,
+    capabilities: null,
+    adapterType: REDUCED_AGENT_ADAPTER_TYPE,
+    adapterConfig: {},
+    configurationWarnings: [],
+    runtimeConfig: {},
+    defaultEnvironmentId: null,
+    budgetMonthlyCents: 0,
+    spentMonthlyCents: 0,
+    pauseReason: null,
+    pausedAt: null,
+    errorReason: null,
+    // `{}` does not satisfy `AgentPermissions`; `canCreateAgents` is its one required key.
+    permissions: { canCreateAgents: false },
+    lastHeartbeatAt: null,
+    metadata: null,
+    createdByUserId: null,
+    createdAt: new Date(0),
+    updatedAt: new Date(0),
+    reducedView: true,
+  };
+  return kind === "detail" ? { ...agent, chainOfCommand: [], access: EMPTY_AGENT_ACCESS } : agent;
+}
+
 function withCompanyScope(path: string, companyId?: string) {
   if (!companyId) return path;
   const separator = path.includes("?") ? "&" : "?";
@@ -123,13 +190,14 @@ export const agentsApi = {
   adoptAiConnection: (agentId: string, interactionId: string, connectionId: string, companyId: string) =>
     api.post<ConnectionIntentInteraction>(withCompanyScope(`/agents/${agentId}/connection-intents/${interactionId}/adopt`, companyId), { connectionId }),
 
-  list: (companyId: string) => api.get<Agent[]>(`/companies/${companyId}/agents`),
+  list: async (companyId: string) =>
+    (await api.get<Array<Agent | ReducedAgentBody>>(`/companies/${companyId}/agents`)).map((body) => completeAgentBody(body)),
   org: (companyId: string) => api.get<OrgNode[]>(`/companies/${companyId}/org`),
   listConfigurations: (companyId: string) =>
     api.get<Record<string, unknown>[]>(`/companies/${companyId}/agent-configurations`),
   get: async (id: string, companyId?: string, options?: RequestOptions) => {
     try {
-      return await api.get<AgentDetail>(agentPath(id, companyId), options);
+      return completeAgentBody(await api.get<AgentDetail | ReducedAgentBody>(agentPath(id, companyId), options), "detail");
     } catch (error) {
       // Backward-compat fallback: if backend shortname lookup reports ambiguity,
       // resolve using company agent list while ignoring terminated agents.
@@ -145,12 +213,14 @@ export const agentsApi = {
       const urlKey = normalizeAgentUrlKey(id);
       if (!urlKey) throw error;
 
-      const agents = await api.get<Agent[]>(`/companies/${companyId}/agents`, options);
+      // Completed before the filter: a reduced body has no `urlKey` of its own.
+      const agents = (await api.get<Array<Agent | ReducedAgentBody>>(`/companies/${companyId}/agents`, options))
+        .map((body) => completeAgentBody(body));
       const matches = agents.filter(
         (agent) => agent.status !== "terminated" && normalizeAgentUrlKey(agent.urlKey) === urlKey,
       );
       if (matches.length !== 1) throw error;
-      return api.get<AgentDetail>(agentPath(matches[0]!.id, companyId), options);
+      return completeAgentBody(await api.get<AgentDetail | ReducedAgentBody>(agentPath(matches[0]!.id, companyId), options), "detail");
     }
   },
   getConfiguration: (id: string, companyId?: string) =>

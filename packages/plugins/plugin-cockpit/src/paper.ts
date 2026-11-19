@@ -11,7 +11,7 @@
  * asked for and published).
  */
 import type { PluginContext, PluginPerformActionContext, ToolResult, ToolRunContext } from "@paperclipai/plugin-sdk";
-import { createWorkIssue, toolFail, toolOk } from "@partnersinbiz/pib-plugin-kit";
+import { createWorkIssue, toolFail, toolOk, type AccessGuard } from "@partnersinbiz/pib-plugin-kit";
 import { companyBrief, postDailyBrief } from "./brief.js";
 import { assignableUser, ORIGIN, PLUGIN_KEY } from "./constants.js";
 import { getRoles, listRoles } from "./db.js";
@@ -577,32 +577,31 @@ export async function loadPaperView(env: Env, companyId: string, p: Record<strin
   };
 }
 
-export function registerPaper(env: Env): void {
-  const { ctx } = env;
-  ctx.actions.register("paper.load", async (raw, context) => loadPaperView(env, requireCompany(context), params(raw)));
-  ctx.actions.register("paper.month", async (raw, context) => {
+export function registerPaper(env: Env, guard: AccessGuard): void {
+  guard.action("paper.load", async (raw, context) => loadPaperView(env, requireCompany(context), params(raw)));
+  guard.action("paper.month", async (raw, context) => {
     const month = String(params(raw).month ?? "");
     if (!/^\d{4}-\d{2}$/.test(month)) throw new CockpitError("month must be YYYY-MM");
     return { month, entries: await listMonth(env, requireCompany(context), month) };
   });
-  ctx.actions.register("paper.save", async (raw, context) => {
+  guard.action("paper.save", async (raw, context) => {
     const { companyId, userId } = boardUser(context);
     return { settings: await savePaperSettings(env, companyId, params(raw).settings, `user:${userId}`) };
   });
-  ctx.actions.register("paper.reset", async (_raw, context) => {
+  guard.action("paper.reset", async (_raw, context) => {
     const { companyId, userId } = boardUser(context);
     const current = await readPaperSettings(env, companyId);
     return { settings: await savePaperSettings(env, companyId, { ...defaultSettings(), name: current.name }, `user:${userId}`) };
   });
   // Ask the Operator for an edition now (a fresh task, or a wake on today's open one).
-  ctx.actions.register("paper.write-now", async (raw, context) => {
+  guard.action("paper.write-now", async (raw, context) => {
     const { companyId } = boardUser(context);
     const edition = params(raw).edition;
     if (!isEdition(edition)) throw new CockpitError("edition must be morning or evening");
     return requestEdition(env, companyId, edition, { force: true, by: "The owner" });
   });
   // An edition from the numbers right now (no writer): for a first look, or a day the Operator is down.
-  ctx.actions.register("paper.compile-now", async (raw, context) => {
+  guard.action("paper.compile-now", async (raw, context) => {
     const { companyId } = boardUser(context);
     const edition = params(raw).edition;
     if (!isEdition(edition)) throw new CockpitError("edition must be morning or evening");

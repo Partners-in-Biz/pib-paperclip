@@ -216,6 +216,11 @@ export function activityRoutes(db: Db) {
       },
     });
     if (decision.allowed) return true;
+    // A task the actor may not read is "not found", as on the task routes (PAR-12774 4.2).
+    if (decision.reason === "deny_issue_private") {
+      res.status(404).json({ error: "Issue not found" });
+      return false;
+    }
     res.status(403).json({ error: "Issue activity is outside this actor's authorization boundary" });
     return false;
   }

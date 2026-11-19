@@ -61,7 +61,8 @@ describe("Cockpit page", () => {
     expect(html.match(/Fix in Setup/g)).toHaveLength(2);
     expect(html).not.toContain("Set up the team");
     // Phone-friendly: wrapping grids and a scrollable table, no fixed page widths.
-    expect(html).toContain("minmax(min(420px, 100%), 1fr)");
+    expect(html).toContain("display:flex;flex-wrap:wrap;gap:16px");
+    expect(html).toContain("flex:1 1 420px");
     expect(html).toContain("overflow-x:auto");
     // Only the agents table has a minimum width, and it sits in the scroll wrapper.
     expect(html.match(/(?<![-\w])width:\s?(1[0-9]{3}|[4-9][0-9]{2})px/g)).toBeNull();

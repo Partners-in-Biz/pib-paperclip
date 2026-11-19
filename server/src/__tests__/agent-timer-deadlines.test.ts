@@ -346,7 +346,7 @@ describe.skipIf(!support.supported)("agent timer owned deadlines", () => {
       executionWorkspaceSettings: { mode: "isolated_workspace", workspaceStrategy: { type: "git_worktree" } } }).returning();
     await start(f);
     expect(coordinator!.nextWakeAt()).toBe(now.getTime() + 600_000);
-    expect(await f.queue.enqueueWakeup(f.agent.id, { source: "assignment", triggerDetail: "system",
+    expect(await f.queue.enqueueWakeup(f.agent.id, { causingActor: "system", source: "assignment", triggerDetail: "system",
       reason: "issue_assigned", payload: { issueId: issue.id }, contextSnapshot: { issueId: issue.id, wakeReason: "issue_assigned" },
     })).toBeNull();
     expect((await db.select().from(issues).where(eq(issues.id, issue.id)))[0].status).toBe("blocked");
@@ -666,7 +666,7 @@ describe.skipIf(!support.supported)("agent timer owned deadlines", () => {
     const events: string[] = [];
     const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.agentTimers, event => events.push(event));
     try {
-      expect(await f.queue.enqueueWakeup(f.agent.id, { source: "timer", reason: "heartbeat_timer",
+      expect(await f.queue.enqueueWakeup(f.agent.id, { causingActor: "system", source: "timer", reason: "heartbeat_timer",
         ...(issue ? { contextSnapshot: { issueId: issue.id } } : {}),
       })).toBeNull();
       expect(events).toContain("settled");

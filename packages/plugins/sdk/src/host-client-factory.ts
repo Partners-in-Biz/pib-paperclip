@@ -267,8 +267,8 @@ export interface HostServices {
   issues: {
     list(params: WorkerToHostMethods["issues.list"][0]): Promise<WorkerToHostMethods["issues.list"][1]>;
     get(params: WorkerToHostMethods["issues.get"][0]): Promise<WorkerToHostMethods["issues.get"][1]>;
-    create(params: WorkerToHostMethods["issues.create"][0]): Promise<WorkerToHostMethods["issues.create"][1]>;
-    update(params: WorkerToHostMethods["issues.update"][0]): Promise<WorkerToHostMethods["issues.update"][1]>;
+    create(params: WorkerToHostMethods["issues.create"][0], context?: WorkerHostCallContext): Promise<WorkerToHostMethods["issues.create"][1]>;
+    update(params: WorkerToHostMethods["issues.update"][0], context?: WorkerHostCallContext): Promise<WorkerToHostMethods["issues.update"][1]>;
     getRelations(params: WorkerToHostMethods["issues.relations.get"][0]): Promise<WorkerToHostMethods["issues.relations.get"][1]>;
     setBlockedBy(params: WorkerToHostMethods["issues.relations.setBlockedBy"][0]): Promise<WorkerToHostMethods["issues.relations.setBlockedBy"][1]>;
     addBlockers(params: WorkerToHostMethods["issues.relations.addBlockers"][0]): Promise<WorkerToHostMethods["issues.relations.addBlockers"][1]>;
@@ -956,11 +956,11 @@ export function createHostClientHandlers(
     "issues.get": gated("issues.get", async (params) => {
       return services.issues.get(params);
     }),
-    "issues.create": gated("issues.create", async (params) => {
-      return services.issues.create(params);
+    "issues.create": gated("issues.create", async (params, context) => {
+      return services.issues.create(params, context);
     }),
-    "issues.update": gated("issues.update", async (params) => {
-      return services.issues.update(params);
+    "issues.update": gated("issues.update", async (params, context) => {
+      return services.issues.update(params, context);
     }),
     "issues.relations.get": gated("issues.relations.get", async (params) => {
       return services.issues.getRelations(params);

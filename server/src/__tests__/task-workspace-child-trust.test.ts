@@ -60,7 +60,7 @@ const support = await getEmbeddedPostgresTestSupport();
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
-      req.actor = { ...f.actor, onBehalfOfMemberships: [{ companyId: f.companyId, status: "active", membershipRole: "operator" }] };
+      req.actor = { ...f.actor, onBehalfOfMemberships: [{ companyId: f.companyId, status: "active", membershipRole: "operator", restricted: false, restrictionMode: "off" }] };
       next();
     });
     app.use("/api", issueRoutes(db, {} as unknown as Parameters<typeof issueRoutes>[1]));

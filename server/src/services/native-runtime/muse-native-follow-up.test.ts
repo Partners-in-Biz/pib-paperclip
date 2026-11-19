@@ -42,7 +42,7 @@ describe("Muse native comment follow-up", () => {
       claimedAt: new Date(), nativeAcceptedAt: new Date() }).returning();
     const comments = await db.insert(issueComments).values([1, 2].map(index => ({ companyId, issueId: task!.id,
       authorUserId: userId, body: `Follow-up ${index}` }))).returning();
-    const wake = (commentId: string) => heartbeatService(db).wakeup(agentId, { source: "assignment", triggerDetail: "system",
+    const wake = (commentId: string) => heartbeatService(db).wakeup(agentId, { causingActor: "system", source: "assignment", triggerDetail: "system",
       reason: "issue_commented", payload: { issueId: task!.id, commentId }, requestedByActorType: "user", requestedByActorId: userId,
       contextSnapshot: { issueId: task!.id, wakeCommentId: commentId, wakeReason: "issue_commented" } });
     async function history(commentIds: string[], failed = false) {

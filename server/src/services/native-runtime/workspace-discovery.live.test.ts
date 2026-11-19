@@ -50,7 +50,7 @@ it.skipIf(process.env.PAPERCLIP_LIVE_WORKSPACE_DISCOVERY !== "true")("settles wo
       const comment = await service.addComment(f.issueId, index === 0
         ? `After verifying the two workspace pages, write exactly ${marker} and a newline to discovery.txt. Read it and finish.`
         : `After verifying the two workspace pages, append exactly ${marker} and a newline once to discovery.txt. Preserve and read its existing line, then finish.`, { userId: f.userId! });
-      const run = await heartbeat.wakeup(f.agentId, { source: "automation", triggerDetail: "system", reason: "issue_reopened_via_comment",
+      const run = await heartbeat.wakeup(f.agentId, { causingActor: "system", source: "automation", triggerDetail: "system", reason: "issue_reopened_via_comment",
         requestedByActorType: "user", requestedByActorId: f.userId,
         payload: { issueId: f.issueId, commentId: comment.id, mutation: "comment", reopenedFrom: "done" },
         contextSnapshot: { issueId: f.issueId, taskId: f.issueId, wakeCommentId: comment.id, skipIssueComment: true },

@@ -3130,6 +3130,34 @@
       "when": 1794105390611,
       "tag": "0448_agent_config_revision_numbers",
       "breakpoints": true
+    },
+    {
+      "idx": 449,
+      "version": "7",
+      "when": 1794915544763,
+      "tag": "0449_member_restriction",
+      "breakpoints": true
+    },
+    {
+      "idx": 450,
+      "version": "7",
+      "when": 1794941191408,
+      "tag": "0450_plugin_core_read_views",
+      "breakpoints": true
+    },
+    {
+      "idx": 451,
+      "version": "7",
+      "when": 1794952341346,
+      "tag": "0451_plugin_core_read_runs_hashed_chat_sets",
+      "breakpoints": true
+    },
+    {
+      "idx": 452,
+      "version": "7",
+      "when": 1795066589482,
+      "tag": "0452_plugin_core_read_runs_issue_id_first",
+      "breakpoints": true
     }
   ]
 }

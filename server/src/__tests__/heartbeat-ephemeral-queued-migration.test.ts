@@ -103,7 +103,7 @@ describe.skipIf(!process.env.PAPERCLIP_TEST_S3_ENDPOINT)("queued turn after pres
       title: "Migration fixture evidence", status: "ready_for_review", reviewState: "approved" });
     const predecessor = heartbeatService(db);
     startTaskDrain({});
-    await predecessor.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", reason: "manual",
+    await predecessor.wakeup(agentId, { causingActor: "system", source: "on_demand", triggerDetail: "manual", reason: "manual",
       requestedByActorType: "user", requestedByActorId: userId, payload: { issueId }, contextSnapshot: { issueId, skipIssueComment: true } });
     await predecessor.drainActiveRunExecutions();
     const [queued] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));

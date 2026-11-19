@@ -4,7 +4,7 @@
  * destructive actions live in the ⋯ menu.
  */
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { DataTable, useHostNavigation, usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import { DataTable, useHostNavigation } from "@paperclipai/plugin-sdk/ui";
 import type { ClientScope } from "@partnersinbiz/pib-plugin-kit/client-ref";
 import {
   BookOpen,
@@ -66,6 +66,7 @@ import { TEAM_SETUP_HREF } from "./role-skills.js";
 import { CHIP_LABEL, CHIP_ORDER, CHIP_TONE, changeText, healthTone, statusTone, taskSegments, trafficSeries } from "./series.js";
 import type { AgentState, CallFn, LoadResult, PreviewFilter, SprintBundle, SprintSummary, TabId, Task } from "./types.js";
 import { STATE_LABEL, STATE_ORDER, STATE_SHORT, STATE_TONE, sprintStatusText, tabsForPhone } from "./words.js";
+import { useSeoAction, useSeoCall } from "./actions.js";
 
 const TABS: Array<{ id: TabId; label: string; icon: LucideIcon }> = [
   { id: "plan", label: "Plan", icon: ListChecks },
@@ -163,10 +164,10 @@ export function SprintCockpit({
 }) {
   const nav = useHostNavigation();
   const narrow = useIsNarrow();
-  const fetchSprint = usePluginAction("seo.sprint");
-  const callAction = usePluginAction("seo.call");
-  const runDaily = usePluginAction("seo.run-daily");
-  const runWeekly = usePluginAction("seo.run-weekly");
+  const fetchSprint = useSeoAction("seo.sprint");
+  const callAction = useSeoCall();
+  const runDaily = useSeoAction("seo.run-daily");
+  const runWeekly = useSeoAction("seo.run-weekly");
   const [bundle, setBundle] = useState<SprintBundle | null>(null);
   const [tab, setTab] = useState<TabId>(SPRINT_TAB_IDS.includes(initialTab) ? initialTab : "plan");
   const [previewFilter, setPreviewFilter] = useState<PreviewFilter>(initialFilter ?? "awaiting");
@@ -333,7 +334,7 @@ export function SprintCockpit({
 }
 
 function StartPlanInline({ sprint, onClose, onDone, onError }: { sprint: SprintSummary; onClose: () => void; onDone: (note: string) => Promise<void>; onError: (m: string) => void }) {
-  const upgrade = usePluginAction("seo.upgrade-legacy");
+  const upgrade = useSeoAction("seo.upgrade-legacy");
   const [type, setType] = useState<BusinessType | "">(sprint.client ? "local" : "");
   const [saving, setSaving] = useState(false);
   return (
@@ -469,7 +470,7 @@ type CrmClientOption = { client: string; kind: "company" | "contact"; id: string
 
 /** People only: move an own sprint that names a client into that client's workspace. */
 function LinkClientModal({ sprint, onClose, call }: { sprint: SprintSummary; onClose: () => void; call: CallFn }) {
-  const listClients = usePluginAction("seo.clients");
+  const listClients = useSeoAction("seo.clients");
   const [clients, setClients] = useState<CrmClientOption[] | null>(null);
   const [choice, setChoice] = useState("");
   const [error, setError] = useState("");

@@ -88,7 +88,7 @@ describe.skipIf(!support.supported)("inherited remote workspace heartbeat wait",
       }
     });
     try {
-      const run = await heartbeat.wakeup(agent.id, { source: "on_demand", triggerDetail: "manual", reason: "manual",
+      const run = await heartbeat.wakeup(agent.id, { causingActor: "system", source: "on_demand", triggerDetail: "manual", reason: "manual",
         requestedByActorType: "user", requestedByActorId: userId, payload: { issueId: child.id }, contextSnapshot: { issueId: child.id } });
       expect(run).not.toBeNull();
       await heartbeat.drainActiveRunExecutions();
@@ -143,7 +143,7 @@ describe.skipIf(!support.supported)("inherited remote workspace heartbeat wait",
       cwd: `/workspaces/${randomUUID()}`, metadata: { remoteWorkspace: authority } }).returning();
     await db.update(issues).set({ executionWorkspaceId: workspace.id, executionWorkspacePreference: "reuse_existing",
       executionWorkspaceSettings: { mode: "isolated_workspace" } }).where(eq(issues.id, issue.id));
-    const run = await heartbeat.wakeup(agent.id, { source: "on_demand", triggerDetail: "manual", reason: "manual",
+    const run = await heartbeat.wakeup(agent.id, { causingActor: "system", source: "on_demand", triggerDetail: "manual", reason: "manual",
       requestedByActorType: "user", requestedByActorId: userId, payload: { issueId: issue.id }, contextSnapshot: { issueId: issue.id } });
     expect(run).not.toBeNull();
     await heartbeat.drainActiveRunExecutions();

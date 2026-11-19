@@ -65,6 +65,7 @@ describePostgres("heartbeat task context delivered to an adapter", () => {
 
   async function execute(f: Awaited<ReturnType<typeof seed>>, context: Record<string, unknown>) {
     const run = await heartbeat.wakeup(f.agentId, {
+      causingActor: "system",
       source: "on_demand", triggerDetail: "manual", reason: "issue_assigned",
       payload: { issueId: f.issueId }, contextSnapshot: { issueId: f.issueId, ...context },
     });
@@ -148,7 +149,7 @@ describePostgres("heartbeat task context delivered to an adapter", () => {
     const f = await seed(), commentId = randomUUID();
     await db.insert(issueComments).values({ id: commentId, companyId: f.companyId, issueId: f.issueId,
       authorType: "user", authorUserId: "context-user", body: "discarded wake", deletedAt: new Date() });
-    const run = await heartbeat.wakeup(f.agentId, { source: "on_demand", triggerDetail: "manual", reason: "issue_commented",
+    const run = await heartbeat.wakeup(f.agentId, { causingActor: "system", source: "on_demand", triggerDetail: "manual", reason: "issue_commented",
       payload: { issueId: f.issueId }, contextSnapshot: { issueId: f.issueId, wakeCommentId: commentId, wakeCommentIds: [commentId] } });
     expect(run).not.toBeNull();
     await heartbeat.drainActiveRunExecutions();

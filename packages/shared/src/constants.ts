@@ -976,6 +976,18 @@ export type PrincipalType = (typeof PRINCIPAL_TYPES)[number];
 export const MEMBERSHIP_STATUSES = ["pending", "active", "suspended", "archived"] as const;
 export type MembershipStatus = (typeof MEMBERSHIP_STATUSES)[number];
 
+/** Per-company switch for restricted members (`companies.member_restriction_mode`). */
+export const MEMBER_RESTRICTION_MODES = ["off", "report", "enforce"] as const;
+export type MemberRestrictionMode = (typeof MEMBER_RESTRICTION_MODES)[number];
+/** Error code a caller answers (HTTP 503) when the member-restriction read fails. */
+export const MEMBER_RESTRICTION_UNAVAILABLE_CODE = "MEMBER_RESTRICTION_UNAVAILABLE";
+/** Error code (HTTP 403) of a route the route table closes for a restricted member. */
+export const MEMBER_RESTRICTED_CODE = "MEMBER_RESTRICTED";
+/** Server-wide kill switch: only the exact value `off` forces every company to mode `off`. */
+export const MEMBER_RESTRICTION_KILL_SWITCH_ENV = "PAPERCLIP_MEMBER_RESTRICTION";
+/** Error code (HTTP 422) for a human invite without a restriction choice while the company's mode is not `off`. */
+export const MEMBER_RESTRICTION_REQUIRED_CODE = "MEMBER_RESTRICTION_REQUIRED";
+
 export const COMPANY_MEMBERSHIP_ROLES = [
   "owner",
   "admin",

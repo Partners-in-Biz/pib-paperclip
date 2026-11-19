@@ -22,6 +22,8 @@ interface ComposerWorktreePickerProps {
   mobile?: boolean;
   contentStyle?: CSSProperties;
   selectedWorkspaceLabel?: string;
+  /** False leaves out "Reuse a worktree" (no list to offer, PAR-12952). */
+  reuse?: boolean;
 }
 
 const MODE_OPTIONS: WorktreeOption[] = [
@@ -35,11 +37,11 @@ const MODE_OPTIONS: WorktreeOption[] = [
 /** Reuses the searchable selector and the existing workspace recency ordering. */
 export function ComposerWorktreePicker({
   mode, workspaceId, workspaces, onChange, loading, error, onRetry,
-  disabled, mobile, contentStyle, selectedWorkspaceLabel,
+  disabled, mobile, contentStyle, selectedWorkspaceLabel, reuse = true,
 }: ComposerWorktreePickerProps) {
   const groups = useMemo(() => [
     { id: "new", options: [MODE_OPTIONS[0]!] },
-    {
+    ...!reuse ? [] : [{
       id: "reuse", label: "Reuse a worktree",
       options: orderReusableExecutionWorkspaces(workspaces).map((workspace): WorktreeOption => ({
         key: `reuse:${workspace.id}`, value: `reuse:${workspace.id}`,
@@ -47,13 +49,13 @@ export function ComposerWorktreePicker({
         description: workspace.branchName ?? "Existing workspace",
         searchText: `${workspace.branchName ?? ""} ${workspace.id}`,
       })),
-    },
+    }],
     {
       id: "other", label: "Other options",
       options: MODE_OPTIONS.filter((option) => option.mode === "shared_workspace"
         || (option.mode !== "isolated_workspace" && option.mode === mode)),
     },
-  ], [mode, workspaces]);
+  ], [mode, workspaces, reuse]);
 
   const value = mode === "reuse_existing" ? `reuse:${workspaceId}` : mode;
   return (
@@ -94,7 +96,7 @@ export function ComposerWorktreePicker({
           </>
         );
       }}
-      listFooter={loading || error || workspaces.length === 0 ? (
+      listFooter={reuse && (loading || error || workspaces.length === 0) ? (
         <div className="border-t border-border px-3 py-2 text-xs text-muted-foreground" role="status">
           {loading ? "Loading existing worktrees…" : error ? (
             <span className="flex items-center justify-between gap-2">

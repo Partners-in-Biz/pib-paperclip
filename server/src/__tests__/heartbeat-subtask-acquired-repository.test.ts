@@ -133,7 +133,7 @@ describe.skipIf(!recoveryPostgresSupport.supported)("subtask in a project that a
       childCwd = input.context.paperclipWorkspace?.cwd ?? null;
       return { exitCode: 0, signal: null, timedOut: false };
     });
-    const run = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId: child.id } });
+    const run = await heartbeat.wakeup(agentId, { causingActor: "system", source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId: child.id } });
     expect(run).not.toBeNull();
     await vi.waitFor(async () => {
       expect((await heartbeat.getRun(run!.id))?.status).toMatch(/^(succeeded|failed|cancelled|timed_out)$/);

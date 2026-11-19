@@ -8,6 +8,19 @@ export const SCHEMA = "plugin_seo_8099f8879a";
 export const DECISION_SQL = `UPDATE ${SCHEMA}.previews SET status = $2, decision_note = $3, decided_at = now(), notified_at = NULL, decision_source = 'email', decided_by = 'client:email-link'
   WHERE id = $1 AND status = 'pending' AND expires_at > now() AND review_status = 'passed'`;
 
+// Every column DECISION_SQL writes. The pib_preview role needs UPDATE on each one: a plugin migration may not GRANT, so the
+// database owner grants them by hand. One missing column makes Postgres refuse the whole UPDATE, and every client answer
+// fails with a 500 (PAR-13038: decision_source and decided_by were never granted after 0.37.0 went live).
+export const DECISION_COLUMNS = ["status", "decision_note", "decided_at", "notified_at", "decision_source", "decided_by"];
+
+// The columns of $1 (text[]) the connected role may not UPDATE on previews. Empty: answers can be stored.
+export const MISSING_GRANTS_SQL = `SELECT c AS column FROM unnest($1::text[]) AS c WHERE NOT has_column_privilege('${SCHEMA}.previews', c, 'UPDATE') ORDER BY c`;
+
+/** The statement the database owner runs to add the missing column grants. */
+export function grantFix(missing) {
+  return `GRANT UPDATE (${missing.join(", ")}) ON ${SCHEMA}.previews TO pib_preview;`;
+}
+
 // Why an answer was not taken: $1 preview id.
 export const DECISION_STATE_SQL = `SELECT status FROM ${SCHEMA}.previews WHERE id = $1`;
 

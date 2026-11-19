@@ -1,3 +1,7 @@
+import { stampWakeCausingActor, wakeCausingActorFromStoredWake } from "./causing-actor.js";
+import {
+  MEMBER_AGENT_NOT_LISTED_MESSAGE, MEMBER_RESTRICTED_AGENT_NOT_LISTED, MemberAgentNotListedError, runPersonMayUseAgent,
+} from "./member-agent-list.js";
 import { CONTEXT_COMPACTION_WAKE_REASON, ContextCompactionError, isContextCompactionRun, readContextCompactionRequest } from "../context-compaction.js";
 import { deliveredQueuedCommentIds } from "../queued-comment-delivery.js";
 import { deferredWorkIntentWait } from "../work-intent-outbox.js";
@@ -844,6 +848,40 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     }
   }
 
+  /**
+   * Invariant A at claim (PAR-12608 4.7): a run queued before its person was
+   * flagged, or before the agent left his list, is cancelled. A failed read
+   * leaves it queued and unstarted (never "not restricted").
+   */
+  async function runMayStartForItsPerson(
+    run: typeof heartbeatRuns.$inferSelect,
+    deferredPostCommitEffects?: WakeQueuePostCommitEffect[],
+  ) {
+    let allowed: boolean;
+    try {
+      allowed = await runPersonMayUseAgent(db, {
+        companyId: run.companyId, agentId: run.agentId, personId: run.responsibleUserId, target: "heartbeat.run_claim",
+      });
+    } catch (error) {
+      logger.warn({ err: error, runId: run.id }, "member restriction unreadable at claim; run left queued");
+      return false;
+    }
+    if (allowed) return true;
+    // Under the agent start lock: cancel directly, as the mention check above.
+    const now = new Date();
+    const cancelled = await setRunStatus(run.id, "cancelled", {
+      finishedAt: now, error: MEMBER_AGENT_NOT_LISTED_MESSAGE, errorCode: MEMBER_RESTRICTED_AGENT_NOT_LISTED,
+    });
+    if (cancelled) {
+      await setWakeupStatus(run.wakeupRequestId, "skipped", { finishedAt: now, error: MEMBER_AGENT_NOT_LISTED_MESSAGE });
+      await appendRunEvent(cancelled, {
+        eventType: "lifecycle", stream: "system", level: "warn", message: MEMBER_AGENT_NOT_LISTED_MESSAGE,
+      });
+      await releaseIssueExecutionAndPromote(cancelled, { suppressImmediateRecovery: true, deferredPostCommitEffects });
+    }
+    return false;
+  }
+
   async function claimQueuedRun(
     run: typeof heartbeatRuns.$inferSelect,
     companyAgents?: AgentOrgRow[],
@@ -937,6 +975,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       return null;
     }
     if (!run.startedAt && !await canStartNewExternalBotWork(agent)) return null;
+    if (!(await runMayStartForItsPerson(run, deferredPostCommitEffects))) return null;
 
     const context = parseObject(run.contextSnapshot);
     const budgetBlock = await budgets.getInvocationBlock(
@@ -2086,6 +2125,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       const actorType = (["user", "agent", "system"] as const)
         .find(t => t === wake.requestedByActorType) ?? "system";
       await enqueueWakeup(wake.agentId, {
+        causingActor: wakeCausingActorFromStoredWake(wake, context),
         source, triggerDetail,
         reason: readNonEmptyString(ownerExit.reason) ?? null,
         payload,
@@ -2196,6 +2236,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       const context = parseObject(parseObject(wake.payload)[DEFERRED_WAKE_CONTEXT_KEY]);
       const { executionWait: _wait, [DEFERRED_WAKE_CONTEXT_KEY]: _context, ...payload } = parseObject(wake.payload);
       await enqueueWakeup(wake.agentId, {
+        causingActor: wakeCausingActorFromStoredWake(wake, context),
         source: wake.source as WakeupOptions["source"], triggerDetail: wake.triggerDetail as WakeupOptions["triggerDetail"],
         reason: wake.reason ?? undefined, payload, contextSnapshot: context,
         requestedByActorType: wake.requestedByActorType as WakeupOptions["requestedByActorType"],
@@ -2595,7 +2636,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
   // already await it, so they do not need this registration.
   function trackWakeup(
     agentId: string,
-    opts: WakeupOptions = {},
+    opts: WakeupOptions,
   ): ReturnType<typeof enqueueWakeup> {
     const promise = enqueueWakeup(agentId, opts);
     activeWakeupPromises.add(promise);
@@ -2607,7 +2648,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     return promise;
   }
 
-  async function enqueueWakeup(agentId: string, opts: WakeupOptions = {}, executionWaitRequestId?: string) {
+  async function enqueueWakeup(agentId: string, opts: WakeupOptions, executionWaitRequestId?: string) {
     const source = opts.source ?? "on_demand";
     const triggerDetail = opts.triggerDetail ?? null;
     const contextSnapshot: Record<string, unknown> = {
@@ -2690,6 +2731,11 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
 
     let agent = await getAgent(agentId);
     if (!agent) throw notFound("Agent not found");
+    // H1 (PAR-12608 4.10): the server's own record of who caused this wake,
+    // in the run context and in the saved copy a deferred wake replays.
+    await stampWakeCausingActor(db, agent.companyId, [
+      enrichedContextSnapshot, payload[DEFERRED_WAKE_CONTEXT_KEY] as Record<string, unknown>,
+    ], opts.causingActor);
     if (issueId) {
       const [pending] = await db.select().from(caseHandoffs).where(and(eq(caseHandoffs.companyId, agent.companyId), eq(caseHandoffs.issueId, issueId),
         inArray(caseHandoffs.state, ["awaiting_release", "pending_dispatch"]))).limit(1);
@@ -3172,7 +3218,21 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       : false;
     let operatorResponsibleUserId: string | null = opts.manualUserWake ? opts.requestedByActorId! : null;
     let queuedResponsibleUserIdPromise: Promise<string> | null = null;
-    const resolveQueuedResponsibleUserId = () => {
+    // Invariant A (PAR-12608 4.7): the run's person is chosen, then the
+    // agent must be on his list. A refusal rolls back the run insert; the
+    // wake is recorded as skipped below.
+    const resolveQueuedResponsibleUserId = async () => {
+      const personId = await resolveQueuedRunPerson();
+      if (!(await runPersonMayUseAgent(db, {
+        companyId: agent.companyId, agentId, personId, target: "heartbeat.run_create",
+      }))) throw new MemberAgentNotListedError(personId);
+      return personId;
+    };
+    const writeAgentNotListedSkip = async () => {
+      await writeSkippedRequest(MEMBER_RESTRICTED_AGENT_NOT_LISTED, { error: MEMBER_AGENT_NOT_LISTED_MESSAGE });
+      return null;
+    };
+    const resolveQueuedRunPerson = () => {
       if (operatorResponsibleUserId) return Promise.resolve(operatorResponsibleUserId);
       queuedResponsibleUserIdPromise ??= (async () => {
         const queuedIssueContext = issueId
@@ -5188,8 +5248,11 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         .catch((error) => {
           if (isExternalChatWaitAuthorizationContention(error))
             return { kind: "deferred" as const };
+          if (error instanceof MemberAgentNotListedError) return { kind: "agent_not_listed" as const };
           throw error;
         });
+      // The transaction rolled back: nothing it collected is published.
+      if (outcome.kind === "agent_not_listed") return writeAgentNotListedSkip();
 
       for (const publication of issueActivityPublications) publishActivity(publication);
       await executeIssuePostCommitActions(db, issuePostCommitActions);
@@ -5424,8 +5487,12 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         .where(eq(agentWakeupRequests.id, wakeupRequest.id));
 
       return { kind: "queued" as const, run: newRun };
+    }).catch((error) => {
+      if (error instanceof MemberAgentNotListedError) return { kind: "agent_not_listed" as const };
+      throw error;
     });
 
+    if (queueOutcome.kind === "agent_not_listed") return writeAgentNotListedSkip();
     if (queueOutcome.kind === "skipped") return null;
     const newRun = queueOutcome.run;
 
@@ -5670,6 +5737,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
 
       try {
         const wakeRun = await enqueueWakeup(candidate.agentId, {
+          causingActor: wakeCausingActorFromStoredWake(candidate, wakeContext),
           allowRunCoalescing: false,
           source: candidate.source as WakeupOptions["source"],
           triggerDetail: (candidate.triggerDetail ??

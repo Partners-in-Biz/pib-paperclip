@@ -145,6 +145,40 @@ describe.skipIf(!available)("billing agent requests (postgres)", () => {
       expect(second.data.issueId).not.toBe(first.data.issueId);
     });
 
+    it("a cancelled approval Billing never heard of stops showing as waiting on a person (the Hunt and Gun quote)", async () => {
+      const quote = (await tool("create-quote", { currency: "ZAR", customerKind: "contact", customerRef: "ct-lumen" })).data as { id: string };
+      await tool("add-quote-line", { quoteId: quote.id, description: "Audit", quantity: 1, unitAmountMinor: 20_000 });
+      const asked = await tool("request-quote-send", { quoteId: quote.id });
+      const invoice = await draft();
+      const askedInvoice = await tool("request-invoice-send", { invoiceId: invoice.id });
+      const gone = await tool("request-invoice-send", { invoiceId: (await draft(50_000)).id });
+      type Page = { quotes: Array<{ id: string; pendingAction: string | null }>; invoices: Array<{ id: string; pendingAction: string | null }> };
+      const waiting = async () => {
+        const page = await h.call<Page>("billing.load", {});
+        return [...page.quotes, ...page.invoices].filter((d) => d.pendingAction).map((d) => d.id);
+      };
+      expect(await waiting()).toHaveLength(3);
+
+      h.issues.get(asked.data.issueId)!.status = "cancelled"; // no issue.updated reached Billing
+      h.issues.delete(gone.data.issueId); // deleted outright
+      expect(await waiting()).toEqual([invoice.id]);
+
+      h.issues.get(askedInvoice.data.issueId)!.status = "cancelled";
+      await h.runJob("mark-overdue"); // the hourly sweep does the same
+      const row = (await h.client.query(`SELECT pending_action FROM ${NAMESPACE}.invoices WHERE id = $1`, [invoice.id])).rows[0] as { pending_action: string | null };
+      expect(row.pending_action).toBeNull();
+      expect(await waiting()).toEqual([]);
+    });
+
+    it("leaves an approval that is still open, or done but unheard, alone", async () => {
+      const invoice = await draft();
+      const asked = await tool("request-invoice-send", { invoiceId: invoice.id });
+      expect((await h.call<{ invoices: Array<{ pendingAction: string | null }> }>("billing.load", {})).invoices[0].pendingAction).toBe("send");
+      h.issues.get(asked.data.issueId)!.status = "done"; // approved; the send is not guessed at
+      expect((await h.call<{ invoices: Array<{ pendingAction: string | null }> }>("billing.load", {})).invoices[0].pendingAction).toBe("send");
+      expect(await mails()).toHaveLength(0);
+    });
+
     it("sends approvals to the owner when no Billing approver is set", async () => {
       h.config.set(COMPANY, { ...SETTINGS });
       await setRoles({ ownerUserId: "owner-1" });

@@ -258,11 +258,30 @@ export interface PluginJobContext {
 // ---------------------------------------------------------------------------
 
 /**
+ * The person a call works for, as the host computed it. Sent on the action
+ * caller, the API-route caller and the tool run context. A host older than this
+ * SDK leaves both fields out; treat a missing value as unknown, not as "nobody".
+ */
+export interface PluginActingPersonContext {
+  /**
+   * The person the caller works for: a signed-in user, or the person a run, a
+   * long-lived agent key or an agent-purpose connection works for. Null for the
+   * local board and for calls with no person.
+   */
+  onBehalfOfUserId?: string | null;
+  /**
+   * True only when that person is restricted in this company and the company
+   * enforces member restrictions. False in every other case.
+   */
+  onBehalfOfRestricted?: boolean;
+}
+
+/**
  * Run context passed to a plugin tool handler when an agent invokes the tool.
  *
  * @see PLUGIN_SPEC.md §13.10 — `executeTool`
  */
-export interface ToolRunContext {
+export interface ToolRunContext extends PluginActingPersonContext {
   /** UUID of the agent invoking the tool. */
   agentId: string;
   /** UUID of the current agent run. */

@@ -6,6 +6,7 @@ import { AgentChatReadProvider } from "@/hooks/useAgentChatRead";
 import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
 import { TaskDecisionRecord } from "@/components/TaskDecisionRecord";
 import { useAccountBoundMutation } from "@/hooks/useAccountBoundMutation";
+import { useMemberRestrictionGate } from "@/hooks/useMemberRestrictionGate";
 import { bindAccount } from "@/lib/account-scope";
 import { mergeWindowComments, useIssueHistoryWindow } from "../hooks/useIssueHistoryWindow";
 import type { IssueQueuedCommentQueue } from "@paperclipai/shared";
@@ -1286,7 +1287,8 @@ type IssueDetailChatTabProps = {
   composerDisabledReason: string | null;
   composerHint: string | null;
   queuedCommentReason: "hold" | "active_run" | "other";
-  onVote: (
+  /** Absent for a restricted member under `enforce`: feedback votes are closed to him. */
+  onVote?: (
     commentId: string,
     vote: "up" | "down",
     options?: { allowSharing?: boolean; reason?: string },
@@ -3676,11 +3678,14 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   const companyLiveRunsQueryKey = resolvedCompanyId
     ? queryKeys.liveRuns(resolvedCompanyId)
     : (["live-runs", "pending"] as const);
+  // Company live runs, feedback votes, the skill panel and the privacy menu are
+  // closed to a restricted member under `enforce` (PAR-12608 4.6, AC-G10).
+  const memberGate = useMemberRestrictionGate(resolvedCompanyId);
   const sharedCompanyLiveRuns = useSharedPollingQuery<LiveRunForIssue[]>({
     companyId: resolvedCompanyId,
     resourceKey: "live-runs",
     queryKey: companyLiveRunsQueryKey,
-    enabled: !!resolvedCompanyId,
+    enabled: !!resolvedCompanyId && !memberGate.closed,
     // Event-sourced via LiveUpdatesProvider (GitHub issue 9627); no interval poll needed.
     refetchInterval: false,
     leaderOnly: true,
@@ -3688,7 +3693,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   const { data: companyLiveRuns, dataUpdatedAt: companyLiveRunsUpdatedAt } =
     useQuery({
       queryKey: companyLiveRunsQueryKey,
-      queryFn: () => heartbeatsApi.liveRunsForCompany(resolvedCompanyId!),
+      queryFn: memberGate.guard(() => heartbeatsApi.liveRunsForCompany(resolvedCompanyId!), [] as LiveRunForIssue[]),
       enabled: sharedCompanyLiveRuns.enabled,
       refetchInterval: sharedCompanyLiveRuns.refetchInterval,
       placeholderData: keepPreviousDataForSameQueryTail<LiveRunForIssue[]>(
@@ -3750,9 +3755,11 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     queryFn: () => accessApi.getCurrentBoardAccess(),
     enabled: !!session?.user?.id,
   });
+  // The tree-control preview and the hold reads are closed for a restricted
+  // member at `enforce` (PAR-12952, C4i-a): no pause, resume or stop control.
   const canManageTreeControl = Boolean(
     selectedCompanyId && boardAccess?.companyIds?.includes(selectedCompanyId),
-  );
+  ) && !memberGate.closed;
   const canResolveBoardRecoveryAction = canBoardResolveRecoveryAction(
     selectedCompanyId,
     boardAccess,
@@ -3768,8 +3775,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   );
   const { data: feedbackVotes } = useQuery({
     queryKey: queryKeys.issues.feedbackVotes(issueId!),
-    queryFn: () => issuesApi.listFeedbackVotes(issueId!),
-    enabled: !!issueId && !!currentUserId,
+    queryFn: memberGate.guard(() => issuesApi.listFeedbackVotes(issueId!), [] as FeedbackVote[]),
+    enabled: !!issueId && !!currentUserId && !memberGate.closed,
   });
   const { data: instanceGeneralSettings } = useQuery({
     queryKey: queryKeys.instance.generalSettings,
@@ -3851,7 +3858,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         mode: "pause",
         includeMembers: true,
       }),
-    enabled: !!issueId && treeControlState?.activePauseHold?.isRoot === true,
+    enabled: !!issueId && treeControlState?.activePauseHold?.isRoot === true && !memberGate.closed,
   });
   const { data: activeCancelHolds = [] } = useQuery({
     queryKey: ["issues", "tree-holds", issueId ?? "pending", "active-cancel"],
@@ -6230,7 +6237,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     mentions: mentionOptions,
     externalReferences: externalObjectsState.isEnabled ? externalObjectsState.markdownReferences : undefined,
     imageUploadHandler: async (file) => (await uploadAttachment.mutateAsync(file)).contentPath,
-    onVote: async (revisionId, vote, options) => {
+    onVote: memberGate.closed ? undefined : async (revisionId, vote, options) => {
       await feedbackVoteMutation.mutateAsync({
         targetType: "issue_document_revision", targetId: revisionId, vote,
         reason: options?.reason, allowSharing: options?.allowSharing,
@@ -6239,7 +6246,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     },
     agentMap,
     userProfileMap,
-  }), [feedbackVotes, feedbackDataSharingPreference, mentionOptions, externalObjectsState.isEnabled,
+  }), [memberGate.closed, feedbackVotes, feedbackDataSharingPreference, mentionOptions, externalObjectsState.isEnabled,
     externalObjectsState.markdownReferences, uploadAttachment.mutateAsync, feedbackVoteMutation.mutateAsync, agentMap, userProfileMap]);
 
   useLayoutEffect(() => {
@@ -8293,6 +8300,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
             <IssuePlanDecompositionsSection
               issueId={issue.id}
               issueIdentifier={issue.identifier}
+              companyId={issue.companyId}
               agentMap={agentMap}
             />
           ) : null}
@@ -8508,7 +8516,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                   retryPreparing={taskRetry.optimistic}
                   queryIssueId={issueId ?? issue.id}
                   hasLiveConnection={hasLiveConnection}
-                  onOpenSkill={handleOpenSkill}
+                  onOpenSkill={memberGate.closed ? undefined : handleOpenSkill}
                   browsers={browserQuery.data}
                   onOpenBrowser={(id) => { setOpenBrowserId(id); if (isMobile) setMobilePropsOpen(true); else openTaskSidePanel(); }}
                   threadHeader={<>{taskChatThreadHeader}<EmailTaskActivity key={issue.id} companyId={issue.companyId} issueId={issue.id} />
@@ -8681,7 +8689,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                   composerDisabledReason={issue.conversationAgentId && !instanceExperimentalSettings?.enableAgentChat ? "Agent Chat is disabled in Experimental settings." : treeControlStateError ? "Couldn’t check whether this task is paused. Refresh to try again." : null}
                   composerHint={composerHint}
                   queuedCommentReason={queuedCommentReason}
-                  onVote={handleCommentVote}
+                  onVote={memberGate.closed ? undefined : handleCommentVote}
                   onAdd={handleChatAdd}
                   onImageUpload={handleCommentImageUpload}
                   onAttachImage={handleCommentAttachImage}

@@ -143,7 +143,58 @@ function DelegateApprover({ snapshot, policy, run }: { snapshot: Snapshot; polic
       </Row>
       {error ? <Banner tone="error" title="The delegated approver was not saved">{error}</Banner> : null}
       <RecheckNote failed={failed} />
+      {delegate ? <BackupApprover snapshot={snapshot} delegate={delegate} candidates={candidates} run={run} /> : null}
       <Muted>Only on scopes an instance admin allowed. Own brands only.</Muted>
+    </div>
+  );
+}
+
+type DelegateView = NonNullable<ApprovalPolicyView["delegate"]>;
+
+/** The backup approver: approves the posts the delegated approver created itself, so they do not wait for a team member. */
+function BackupApprover({ snapshot, delegate, candidates, run }: { snapshot: Snapshot; delegate: DelegateView; candidates: Array<{ id: string; name: string }>; run: RunAction }) {
+  const backup = delegate.backup ?? null;
+  const current = backup?.agentId ?? "";
+  const [pick, setPick] = useState(current);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => setPick(current), [current]);
+  const options = candidates.filter((c) => c.id !== delegate.agentId);
+  const send = (backupAgentId: string | null) => {
+    setBusy(true);
+    setError(null);
+    return run("social.set-approval-delegate", { ...scopeParams(snapshot), backupAgentId }, backupAgentId ? "Backup approver saved" : "Backup approver cleared")
+      .catch((e: unknown) => setError(e instanceof Error && e.message ? e.message : "The change was not saved."))
+      .finally(() => setBusy(false));
+  };
+  const name = backup ? backup.name ?? backup.agentId : null;
+  return (
+    <div style={{ display: "grid", gap: 6, minWidth: 0 }}>
+      <strong style={{ fontSize: 13 }}>Backup approver</strong>
+      {backup ? (
+        <Row style={{ flexWrap: "wrap" }}>
+          <Pill tone={backup.active ? "ok" : "warn"} dot>{backup.active ? "acting" : "not acting"}</Pill>
+          <span style={{ fontSize: 13, minWidth: 0, overflowWrap: "anywhere" }}>{name}</span>
+        </Row>
+      ) : (
+        <Muted>No backup: posts the delegated approver writes itself wait for a team member.</Muted>
+      )}
+      {backup && !backup.active ? <Muted style={{ color: tokens.fg }}>Not acting because: {backup.inactiveReason ?? "a check failed"}.</Muted> : null}
+      <Row style={{ flexWrap: "wrap" }}>
+        {options.length > 0 ? (
+          <Select value={pick} onChange={(e) => setPick(e.target.value)} aria-label="Backup approver" disabled={busy} style={{ minWidth: 0, maxWidth: "100%" }}>
+            <option value="">Choose an agent</option>
+            {backup && !options.some((c) => c.id === backup.agentId) ? <option value={backup.agentId}>{name}</option> : null}
+            {options.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </Select>
+        ) : null}
+        {options.length > 0 ? (
+          <Button type="button" style={{ height: 28, fontSize: 12 }} disabled={busy || !pick || pick === current} onClick={() => void send(pick)}>Save</Button>
+        ) : null}
+        {backup ? <SmallButton disabled={busy} onClick={() => void send(null)}>Clear</SmallButton> : null}
+      </Row>
+      {error ? <Banner tone="error" title="The backup approver was not saved">{error}</Banner> : null}
+      <Muted>Approves only the posts the delegated approver created, after the Reviewer's pass. The writer never approves its own post.</Muted>
     </div>
   );
 }

@@ -57,8 +57,8 @@ describe("heartbeat queue module boundary", () => {
     let rejectSecond!: (reason: Error) => void;
     deps.getAgent.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectFirst = reject; }));
     deps.getAgent.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectSecond = reject; }));
-    const first = createHeartbeatQueue(database.db, deps).trackWakeup("first");
-    const second = createHeartbeatQueue(database.db, deps).trackWakeup("second");
+    const first = createHeartbeatQueue(database.db, deps).trackWakeup("first", { causingActor: "system" });
+    const second = createHeartbeatQueue(database.db, deps).trackWakeup("second", { causingActor: "system" });
     const firstCheck = expect(first).rejects.toThrow("first lookup failed");
     const secondCheck = expect(second).rejects.toThrow("second lookup failed");
     expect(deps.activeWakeupPromises).toEqual(new Set([first, second]));
@@ -111,7 +111,7 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     const deps = callbacks(db);
     deps.getAgent.mockResolvedValue(agent);
     const queue = createHeartbeatQueue(db, deps);
-    expect(await queue.enqueueWakeup(agent.id, { source: "timer", reason: "heartbeat_timer", requestedByActorType: "system" })).toBeNull();
+    expect(await queue.enqueueWakeup(agent.id, { causingActor: "system", source: "timer", reason: "heartbeat_timer", requestedByActorType: "system" })).toBeNull();
     expect(await db.select().from(heartbeatRuns)).toHaveLength(0);
     expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
     expect((await db.select().from(agents).where(eq(agents.id, agent.id)))[0])
@@ -164,6 +164,7 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     const requestId = randomUUID();
     const compaction = cause === "mismatched compaction";
     const pending = createHeartbeatQueue(db, deps).enqueueWakeup(agent.id, {
+      causingActor: "system",
       source: compaction ? "on_demand" : "automation", triggerDetail: compaction ? "manual" : "system",
       reason: compaction ? "context_compaction" : "issue.continuation_recovery",
       requestedByActorType: compaction ? "user" : "system", requestedByActorId: compaction ? user.id : undefined,
@@ -359,7 +360,7 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
 
   it("does not turn an ordinary waiting-conversation wake into compaction authority", async () => {
     const f = await waitingCompactionFixture();
-    expect(await f.queue.enqueueWakeup(f.agent.id, { source: "on_demand", triggerDetail: "manual",
+    expect(await f.queue.enqueueWakeup(f.agent.id, { causingActor: "system", source: "on_demand", triggerDetail: "manual",
       reason: "issue.continuation_recovery", requestedByActorType: "user", requestedByActorId: f.user.id,
       manualUserWake: true, allowRunCoalescing: false, payload: { issueId: f.issue.id },
       contextSnapshot: { issueId: f.issue.id } })).toBeNull();
@@ -415,7 +416,7 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
       await db.update(issues).set({ conversationAgentId: null, conversationUserId: null,
         conversationState: null, status: "in_progress" }).where(eq(issues.id, f.issue.id));
     }
-    const admitted = await f.queue.enqueueWakeup(f.agent.id, { source: "automation", triggerDetail: "system",
+    const admitted = await f.queue.enqueueWakeup(f.agent.id, { causingActor: "system", source: "automation", triggerDetail: "system",
       reason: cause === "ordinary task" ? "issue.continuation_recovery" : "issue_commented",
       requestedByActorType: "system", payload, contextSnapshot: context });
     expect(admitted).toMatchObject({ agentId: f.agent.id, status: "queued" });
@@ -600,7 +601,7 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
       deps.canStartNewExternalBotWork.mockResolvedValue(false);
     }
     const [originalPrimary] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.wake.id));
-    const coalesced = await queue.enqueueWakeup(admissionAgent.id, { source: "on_demand", triggerDetail: "manual", reason: "issue_commented",
+    const coalesced = await queue.enqueueWakeup(admissionAgent.id, { causingActor: "system", source: "on_demand", triggerDetail: "manual", reason: "issue_commented",
       payload: { issueId: f.issue.id, commentId: newComment.id }, contextSnapshot: { issueId: f.issue.id, wakeCommentId: newComment.id },
       requestedByActorType: "user", requestedByActorId: incomingActorId });
     if (["running", "foreign-primary", "same-named-agent"].includes(scenario)) {

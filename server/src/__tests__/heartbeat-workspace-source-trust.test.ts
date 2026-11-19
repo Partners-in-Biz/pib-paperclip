@@ -123,7 +123,7 @@ suite("heartbeat physical workspace source trust", () => {
         stderr: "", signal: null, timedOut: false,
       }) } });
     }
-    const run = await driver.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId } });
+    const run = await driver.wakeup(agentId, { causingActor: "system", source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId } });
     expect(run).not.toBeNull();
     await vi.waitFor(async () => expect((await driver.getRun(run!.id))?.status).toMatch(/^(succeeded|failed)$/), { timeout: 15_000 });
     await drainHeartbeatRunsToQuiescence(db, driver);
@@ -204,7 +204,7 @@ suite("heartbeat physical workspace source trust", () => {
       exitCode: 0, stdout: execFileSync(input.command, input.args ?? [], { cwd: root, input: input.stdin, encoding: "utf8", env: { ...process.env, ...input.env } }),
       stderr: "", signal: null, timedOut: false,
     }) } });
-    const run = await driver.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId } });
+    const run = await driver.wakeup(agentId, { causingActor: "system", source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId } });
     expect(run).not.toBeNull();
     await vi.waitFor(async () => expect((await driver.getRun(run!.id))?.status).toMatch(/^(succeeded|failed)$/), { timeout: 15_000 });
     await drainHeartbeatRunsToQuiescence(db, driver);
@@ -225,7 +225,7 @@ suite("heartbeat physical workspace source trust", () => {
     if (placement === "local" && grants === "both") await db.update(issues).set({ projectId, workspaceSelection: null }).where(eq(issues.id, issueId));
     await executionWorkspaceService(db).update(workspace.id, { metadata: { ...workspace.metadata,
       _controllerProvisionCopyOnly: false, config: { provisionCommand: `printf host-script-ran > '${marker}'` } } });
-    const resumed = await driver.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId } });
+    const resumed = await driver.wakeup(agentId, { causingActor: "system", source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId } });
     await vi.waitFor(async () => expect((await driver.getRun(resumed!.id))?.status).toMatch(/^(succeeded|failed)$/), { timeout: 15_000 });
     await drainHeartbeatRunsToQuiescence(db, driver);
     expect(await driver.getRun(resumed!.id)).toMatchObject({ status: "succeeded", error: null });

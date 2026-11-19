@@ -6,7 +6,7 @@
  * SEO's own get-playbook, propose-playbook-change, decide-playbook-change
  * remain on SEO's playbook tables (013) and continue to work on sprint playbooks.
  */
-import type { PluginContext, ToolResult, ToolRunContext } from "@paperclipai/plugin-sdk";
+import type { PluginContext, PluginToolDeclaration, ToolResult, ToolRunContext } from "@paperclipai/plugin-sdk";
 import {
   AUTOPILOT_MODES,
   createGrowthStore,
@@ -26,6 +26,7 @@ import {
   clientScopeFromInput,
   formatClientParam,
   OPEN_EXPERIMENTS,
+  type AccessGuard,
   type ApprovalIssuePort,
   type Autopilot,
   type ClientScope,
@@ -353,26 +354,22 @@ export function seoGrowthToolsHost(ctx: PluginContext): GrowthToolsHost<GrowthAc
 const NATIVE_PLAYBOOK_TOOLS = new Set(["get-playbook", "propose-playbook-change", "decide-playbook-change"]);
 export const KIT_GROWTH_TOOL_NAMES = new Set((GROWTH_TOOL_NAMES as readonly string[]).filter((n) => !NATIVE_PLAYBOOK_TOOLS.has(n)));
 
-/** Registers the kit Growth tools except the native playbook ones (registration order must not let the kit shadow them). */
-export function registerKitGrowthTools(ctx: PluginContext): void {
-  const tools = new Proxy(ctx.tools, {
-    get: (target, prop, receiver) =>
-      prop === "register"
-        ? (name: string, ...rest: unknown[]) => (NATIVE_PLAYBOOK_TOOLS.has(name) ? undefined : (target.register as (...a: unknown[]) => unknown)(name, ...rest))
-        : Reflect.get(target, prop, receiver),
-  });
-  registerGrowthTools({ ...ctx, tools } as typeof ctx, seoGrowthToolsHost(ctx));
+/** Registers the kit Growth tools except the native playbook ones (registration order must not let the kit shadow them), each through the access guard. */
+export function registerKitGrowthTools(ctx: PluginContext, guard: Pick<AccessGuard, "tool">): void {
+  const kitOnly: Pick<AccessGuard, "tool"> = { tool: (name, declaration, handler) => (NATIVE_PLAYBOOK_TOOLS.has(name) ? undefined : guard.tool(name, declaration, handler)) };
+  registerGrowthTools(ctx, seoGrowthToolsHost(ctx), kitOnly);
 }
 
-/** Registers every SEO tool the kit does not serve (incl. the three native playbook tools), then the kit Growth tools. */
+/** Registers every SEO tool the kit does not serve (incl. the three native playbook tools), then the kit Growth tools; all through the access guard (PAR-12676). */
 export function registerSeoTools(
   ctx: PluginContext,
-  tools: ReadonlyArray<{ name: string }>,
+  guard: Pick<AccessGuard, "tool">,
+  tools: ReadonlyArray<PluginToolDeclaration>,
   run: (name: string, params: unknown, runCtx: ToolRunContext) => Promise<ToolResult>,
 ): void {
   for (const tool of tools) {
     if (KIT_GROWTH_TOOL_NAMES.has(tool.name)) continue;
-    (ctx.tools.register as (...a: unknown[]) => unknown)(tool.name, tool, (params: unknown, runCtx: ToolRunContext) => run(tool.name, params, runCtx));
+    guard.tool(tool.name, tool, (params: unknown, runCtx: ToolRunContext) => run(tool.name, params, runCtx));
   }
-  registerKitGrowthTools(ctx);
+  registerKitGrowthTools(ctx, guard);
 }

@@ -3,7 +3,6 @@ import {
   DataTable,
   useHostLocation,
   useHostNavigation,
-  usePluginAction,
   usePluginToast,
   type PluginPageProps,
   type PluginSidebarProps,
@@ -30,18 +29,21 @@ import {
   TextArea,
   Timeline,
   TrendChart,
+  AccessGate,
   errorText,
   fluidColumns,
   formatDateTime,
   formatShortDate,
   tokens,
   useGroupedNav,
+  useAccess,
   useIsNarrow,
   usePluginSetupStatus,
   useUrlTab,
   type TimelineItem,
 } from "@partnersinbiz/pib-plugin-ui";
 import { ModuleOffBanner, useModuleEnabled } from "./module-switch.js";
+import { useAccessMe, useAdsAction } from "./actions.js";
 import { COMPLETE_ROUTE_PATH, PLUGIN_ID, OWN_SCOPE } from "../platforms.js";
 import { ACTION_TEXT, BUDGET_STATE_TEXT, CONNECTION_TEXT, budgetToneOf, capConfirmText, capMinorFromInput, capSubmitStep, connectionTone, inputFromMinor, minorFromInput, spendSeries, statusTone } from "./series.js";
 import type { AccountInfo, CampaignRow, AuditEntry, BudgetInfo, ConnectionInfo, Overview, ProposalDetail, ProposalSummary, Summary, SummaryGroup } from "./types.js";
@@ -83,7 +85,7 @@ const PERIODS: Array<[string, string]> = [["last_7d", "Last 7 days"], ["last_30d
 function useAdsActions(): Record<ActionKey, (params?: Record<string, unknown>) => Promise<unknown>> {
   const fns = {} as Record<ActionKey, (params?: Record<string, unknown>) => Promise<unknown>>;
   // Fixed list, fixed order: the hooks run in the same order on every render.
-  for (const key of ACTION_KEYS) fns[key] = usePluginAction(key) as (params?: Record<string, unknown>) => Promise<unknown>;
+  for (const key of ACTION_KEYS) fns[key] = useAdsAction(key) as (params?: Record<string, unknown>) => Promise<unknown>;
   return fns;
 }
 
@@ -106,7 +108,17 @@ function Facts({ rows }: { rows: Array<[string, ReactNode]> }) {
 
 const money = (minor: number | null | undefined, currency: string): string => (minor === null || minor === undefined ? "none" : `${currency} ${inputFromMinor(minor)}`);
 
-export function AdsPage({ context }: PluginPageProps) {
+/** The page asks `access.me` first; closed shows the "no access" page (the guard still refuses every call). */
+export function AdsPage(props: PluginPageProps) {
+  const access = useAccess(useAccessMe(), props.context.companyId);
+  return (
+    <AccessGate state={access} kind="page" moduleName="Paid ads">
+      <AdsPageBody {...props} />
+    </AccessGate>
+  );
+}
+
+function AdsPageBody({ context }: PluginPageProps) {
   const fns = useAdsActions();
   const fnsRef = useRef(fns);
   fnsRef.current = fns;
@@ -824,7 +836,17 @@ function BrowseModal({ conn, data, run, busy, onClose }: { conn: ConnectionInfo 
 
 // ── Sidebar ─────────────────────────────────────────────────────────────────
 
-export function AdsSidebar({ context }: PluginSidebarProps) {
+export function AdsSidebar(props: PluginSidebarProps) {
+  // Nothing while the access check loads, so the entry does not flash for a person without access.
+  const access = useAccess(useAccessMe(), props.context.companyId);
+  return (
+    <AccessGate state={access} kind="sidebar">
+      <AdsSidebarEntry {...props} />
+    </AccessGate>
+  );
+}
+
+function AdsSidebarEntry({ context }: PluginSidebarProps) {
   // Hidden when the company switched the module off in Setup; shown while loading.
   const enabled = useModuleEnabled(context.companyId, PLUGIN_ID);
   // A Cockpit group draws this page when it lists it (pib-plugin-ui NAV_GROUPS); until then the plugin shows its own row.

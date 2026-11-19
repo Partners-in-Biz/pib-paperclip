@@ -1,4 +1,5 @@
 import { projectGitAuthorizationService } from "./project-git-authorization.js";
+import { SYSTEM_CAUSING_ACTOR } from "./heartbeat/causing-actor.js";
 import { createLiveEventDelivery } from "../realtime/live-event-delivery.js";
 import { createLiveRunEventRedactor } from "./live-run-event-redaction.js";
 import { projectInstanceSecretService } from "./project-instance-secrets.js";
@@ -82,10 +83,14 @@ import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { isIP } from "node:net";
 import { logger } from "../middleware/logger.js";
+import { pluginActingPersonBoundByH } from "./member-restriction/acting-person.js";
+import { recordMemberRestrictionDenial } from "./member-restriction/admin.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { accessService } from "./access.js";
+import { markForNewInvite, withoutInviteMemberRestriction } from "./member-restriction/invite.js";
 import {
   authorizationService,
+  canActorReadChat,
   canActorReadIssuePrivacy,
   issuePrivacyMode,
   issueReadSqlCondition,
@@ -863,6 +868,9 @@ export function buildHostServices(
     issue: Parameters<typeof toIssuePrivacyRow>[0] | null | undefined,
   ): Promise<boolean> => {
     if (!issue) return false;
+    // A plugin never reads a chat by id, whatever the privacy mode (PAR-12774
+    // 4.2, AC-P5). Plugin lists and SQL are CP-4 (PAR-12818).
+    if (!(await canActorReadChat(db, pluginIssuePrivacyActor, issue))) return false;
     if (issuePrivacyMode() !== "enforce") return true;
     return canActorReadIssuePrivacy(db, pluginIssuePrivacyActor, toIssuePrivacyRow(issue));
   };
@@ -1163,6 +1171,7 @@ export function buildHostServices(
     }
 
     void heartbeat.wakeup(issue.assigneeAgentId, {
+      causingActor: { type: "user", userId: args.actorUserId },
       source: "automation",
       triggerDetail: "system",
       reason: "issue_commented",
@@ -1510,6 +1519,11 @@ export function buildHostServices(
     scope: grant.scope && typeof grant.scope === "object" ? sanitizeRecord(grant.scope) : grant.scope ?? null,
   });
 
+  // The restriction flag and lists go only to callers who may manage members (PAR-12608 4.2), never to plugins.
+  const withoutRestriction = <T extends { restricted?: unknown; restrictedPluginKeys?: unknown; restrictedAgentIds?: unknown }>(
+    { restricted: _r, restrictedPluginKeys: _p, restrictedAgentIds: _a, ...member }: T,
+  ) => member;
+
   const loadPluginMember = async (companyId: string, memberId: string) => {
     const member = await access.getMemberById(companyId, memberId);
     if (!member) return null;
@@ -1519,7 +1533,7 @@ export function buildHostServices(
       member.principalId,
     );
     return {
-      ...member,
+      ...withoutRestriction(member),
       principalType: member.principalType as PrincipalType,
       status: member.status as "pending" | "active" | "suspended" | "archived",
       grants: grants.map(redactGrant),
@@ -1929,7 +1943,9 @@ export function buildHostServices(
       async list(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        return applyWindow((await projects.list(companyId)) as Project[], params);
+        // "system": a worker-to-host call carries no person. A restricted person reaches a plugin only
+        // through the plugin gate (spec 4.6, C5) and the plugin's own access guard (stage A).
+        return applyWindow((await projects.list(companyId, { readCondition: "system" })) as Project[], params);
       },
       async get(params) {
         const companyId = ensureCompanyId(params.companyId);
@@ -2133,10 +2149,34 @@ export function buildHostServices(
         if (!(await pluginCanReadIssue(issue))) return null;
         return issue as Issue;
       },
-      async create(params) {
+      async create(params, context) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        const { actorAgentId, actorUserId, actorRunId, originKind, surfaceVisibility, ...issueInput } = params;
+        const { actorAgentId, actorRunId, originKind, surfaceVisibility, ...issueInput } = params;
+        let actorUserId = params.actorUserId;
+        // H6 (PAR-12608 4.10): when core knows the acting person and rule group H
+        // binds him, he is the creator and the responsible person; a person the
+        // plugin names is ignored (`enforce`) or recorded (`report`).
+        const actingPersonId = context?.invocationScope?.actingPersonId ?? null;
+        const acting = actingPersonId ? await pluginActingPersonBoundByH(db, actingPersonId, companyId) : null;
+        const suppliedResponsible = (issueInput as Record<string, unknown>).responsibleUserId;
+        const ignored = acting
+          ? [suppliedResponsible, actorUserId].find((value): value is string =>
+              typeof value === "string" && value.trim() !== "" && value !== acting.personId) ?? null
+          : null;
+        if (acting && ignored && acting.mode === "report") {
+          await recordMemberRestrictionDenial(db, {
+            companyId, personId: acting.personId, ruleId: "H6", target: `plugin:${pluginKey}:issues.create`, mode: "report",
+          });
+        }
+        if (acting?.mode === "enforce") {
+          if (ignored) {
+            logger.warn({ pluginKey, companyId, actingPersonId: acting.personId, ignoredPersonId: ignored },
+              "plugin-named person ignored on task create (member restriction H6)");
+          }
+          actorUserId = acting.personId;
+          (issueInput as Record<string, unknown>).responsibleUserId = acting.personId;
+        }
         const normalizedOriginKind = normalizePluginOriginKind(
           surfaceVisibility === "plugin_operation" && !originKind
             ? pluginOperationIssueOriginKind(pluginKey)
@@ -2176,16 +2216,33 @@ export function buildHostServices(
             originId: issue.originId,
             billingCode: issue.billingCode,
             blockedByIssueIds: params.blockedByIssueIds ?? [],
+            ...(acting?.mode === "enforce" && ignored ? { ignoredResponsibleUserId: ignored } : {}),
           },
         });
         return issue;
       },
-      async update(params) {
+      async update(params, context) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
         const existing = requireInCompany("Issue", await issues.getById(params.issueId), companyId);
         await requirePluginReadableIssue(params.issueId, companyId);
         const patch = { ...(params.patch as Record<string, unknown>) };
+        // H6: a plugin acting for a person bound by rule group H cannot re-point
+        // the task to somebody else (dropped under `enforce`, recorded under `report`).
+        const actingPersonId = context?.invocationScope?.actingPersonId ?? null;
+        if (actingPersonId && typeof patch.responsibleUserId === "string" && patch.responsibleUserId !== actingPersonId) {
+          const acting = await pluginActingPersonBoundByH(db, actingPersonId, companyId);
+          if (acting?.mode === "report") {
+            await recordMemberRestrictionDenial(db, {
+              companyId, personId: acting.personId, ruleId: "H6", target: `plugin:${pluginKey}:issues.update`,
+              objectId: params.issueId, mode: "report",
+            });
+          } else if (acting?.mode === "enforce") {
+            logger.warn({ pluginKey, companyId, issueId: params.issueId, actingPersonId, ignoredPersonId: patch.responsibleUserId },
+              "plugin-named person ignored on task update (member restriction H6)");
+            delete patch.responsibleUserId;
+          }
+        }
         const actorAgentId = typeof patch.actorAgentId === "string" ? patch.actorAgentId : null;
         const actorUserId = typeof patch.actorUserId === "string" ? patch.actorUserId : null;
         const actorRunId = typeof patch.actorRunId === "string" ? patch.actorRunId : null;
@@ -2442,6 +2499,7 @@ export function buildHostServices(
         }
         const contextSource = params.contextSource ?? "plugin.issue.requestWakeup";
         const run = await heartbeat.wakeup(issue.assigneeAgentId, {
+          causingActor: SYSTEM_CAUSING_ACTOR,
           source: "assignment",
           triggerDetail: "system",
           reason: params.reason ?? "plugin_issue_wakeup_requested",
@@ -2510,6 +2568,7 @@ export function buildHostServices(
           }
           const contextSource = params.contextSource ?? "plugin.issue.requestWakeups";
           const run = await heartbeat.wakeup(issue.assigneeAgentId, {
+            causingActor: SYSTEM_CAUSING_ACTOR,
             source: "assignment",
             triggerDetail: "system",
             reason: params.reason ?? "plugin_issue_wakeup_requested",
@@ -2711,6 +2770,7 @@ export function buildHostServices(
             && postCommentIssue.status !== "cancelled"
           ) {
             await heartbeat.wakeup(postCommentIssue.assigneeAgentId, {
+              causingActor: { type: "user", userId: params.actorUserId },
               source: "automation",
               triggerDetail: "system",
               reason: "issue_commented",
@@ -2975,6 +3035,7 @@ export function buildHostServices(
         // (applied) and only when a requester agent exists.
         if (applied && approval.requestedByAgentId) {
           void heartbeat.wakeup(approval.requestedByAgentId, {
+            causingActor: { type: "user", userId: params.actorUserId },
             source: "automation",
             triggerDetail: "system",
             reason: params.action === "approve" ? "approval_approved" : "approval_rejected",
@@ -3107,6 +3168,7 @@ export function buildHostServices(
         const agent = await agents.getById(params.agentId);
         requireInCompany("Agent", agent, companyId);
         const run = await heartbeat.wakeup(params.agentId, {
+          causingActor: SYSTEM_CAUSING_ACTOR,
           source: "automation",
           triggerDetail: "system",
           reason: params.reason ?? null,
@@ -3199,7 +3261,7 @@ export function buildHostServices(
           grantsByPrincipal.set(key, existing);
         }
         return visibleRows.map((member) => ({
-          ...member,
+          ...withoutRestriction(member),
           principalType: member.principalType as PrincipalType,
           status: member.status as "pending" | "active" | "suspended" | "archived",
           grants: (grantsByPrincipal.get(`${member.principalType}:${member.principalId}`) ?? []).map(redactGrant),
@@ -3253,11 +3315,23 @@ export function buildHostServices(
           : null;
         const allowedJoinTypes = params.allowedJoinTypes ?? "both";
         const humanRole = allowedJoinTypes === "agent" ? null : params.humanRole ?? "operator";
+        // A plugin cannot choose the restriction mark (the SDK has no such field), so in a
+        // company whose mode is not `off` it may create agent invites only (PAR-12608 4.2a, AC-I7).
+        await markForNewInvite(db, {
+          companyId,
+          allowedJoinTypes,
+          humanRole,
+          restriction: undefined,
+          assertCanSetLists: async () => {
+            throw new Error("A plugin cannot set restriction lists");
+          },
+        });
         const insertValues = {
           companyId,
           inviteType: "company_join" as const,
           allowedJoinTypes,
-          defaultsPayload: mergeInviteDefaults(params.defaultsPayload ?? null, normalizedAgentMessage, humanRole),
+          // The reserved restriction key is never taken from a free payload (PAR-12608 4.2a).
+          defaultsPayload: mergeInviteDefaults(withoutInviteMemberRestriction(params.defaultsPayload), normalizedAgentMessage, humanRole),
           expiresAt: new Date(Date.now() + COMPANY_INVITE_TTL_MS),
           invitedByUserId: null,
         };
@@ -3591,6 +3665,7 @@ export function buildHostServices(
         if (!session) throw new Error(`Session not found: ${params.sessionId}`);
 
         const run = await heartbeat.wakeup(session.agentId, {
+          causingActor: SYSTEM_CAUSING_ACTOR,
           source: "automation",
           triggerDetail: "system",
           reason: params.reason ?? null,
