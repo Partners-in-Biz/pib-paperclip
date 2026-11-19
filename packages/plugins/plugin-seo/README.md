@@ -127,6 +127,10 @@ node ./esbuild.config.mjs # dist/ (worker, manifest, ui, ui/oauth-callback.html 
 
 Migrations 001–019 are applied on installed instances; 0.23.0 adds `020_seo.sql` and 0.23.1 adds `021_seo.sql`. Never edit an applied one — add `022_seo.sql` and up. `012_seo.sql`: sprint site link columns (`site_project_id`, `site_access`, `repo_url`, `default_branch`, `framework`, `hosting`, `change_policy`, `verification`), `sprint_tasks.issue_project_id`, and the `needs_you` table.
 
+## 0.52.2: preview banner offset (PAR-12248)
+
+- **Hunt and Gun auction banner.** The preview bar CSS (`engine/preview.ts`) adds `@media (min-width:981px){.auctionUpdatesLiveGroup{margin-top:125px!important}}` so the site's "NEXT AUCTION" banner sits below its fixed desktop header in previews instead of under it.
+
 ## 0.52.0: previews on a rehearsal sprint (PAR-13387)
 
 - **Canned fixture page.** A page on a fixture host (`.invalid`, `engine/rehearsal.ts` `isRehearsalUrl`) never resolves, so `create-preview`, its repeat check and `list-previews checkLive` read `rehearsalPageHtml(pageUrl)` instead of the network (no DNS, no render service, no WordPress body check). The page is plain HTML, so the preview is stored with `basis: "rendered"` and a final kept-text figure. Real hosts are fetched as before; a canary client on a real host still fetches its real page.
