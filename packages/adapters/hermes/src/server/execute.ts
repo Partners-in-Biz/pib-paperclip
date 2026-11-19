@@ -19,6 +19,7 @@
  *   --source           session source tag for filtering
  */
 
+import { applyHeadlessEnv, detectInputRequired, stripInteractiveToolsets } from "./headless-input.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 
@@ -520,7 +521,9 @@ async function executeHermes(
   // PAR-13539: seconds Hermes may keep running after its turn ended; 0 turns the stop off.
   const postTurnExitGraceSec = Math.max(0, cfgNumber(config.postTurnExitGraceSec) ?? DEFAULT_POST_TURN_EXIT_GRACE_SEC);
   const maxTurns = cfgNumber(config.maxTurnsPerRun);
-  const toolsets = cfgString(config.toolsets) || cfgStringArray(config.enabledToolsets)?.join(",");
+  const toolsets = stripInteractiveToolsets(
+    cfgString(config.toolsets) || cfgStringArray(config.enabledToolsets)?.join(","),
+  );
   const extraArgs = cfgStringArray(config.extraArgs);
   const persistSession = cfgBoolean(config.persistSession) !== false;
   const worktreeMode = cfgBoolean(config.worktreeMode) === true;
@@ -767,6 +770,7 @@ async function executeHermes(
   // Scope the overlay to this child process. Read the current bundle on every
   // invocation; never infer its availability from a persisted session ID.
   // Preserve an operator's explicit overlay before Paperclip's instructions.
+  applyHeadlessEnv(env);
   env.HERMES_EPHEMERAL_SYSTEM_PROMPT = joinPromptSections([
     env.HERMES_EPHEMERAL_SYSTEM_PROMPT,
     agentInstructions,
@@ -1036,7 +1040,11 @@ async function executeHermes(
     model,
   };
 
-  if (parsed.errorMessage) {
+  const inputRequired = detectInputRequired(result.stdout || "", result.stderr || "");
+  if (inputRequired) {
+    executionResult.errorMessage = inputRequired;
+    executionResult.errorCode = "hermes_input_required";
+  } else if (parsed.errorMessage) {
     executionResult.errorMessage = parsed.errorMessage;
   } else if (!result.timedOut && typeof result.exitCode === "number" && result.exitCode !== 0) {
     executionResult.errorMessage = `Hermes exited with code ${result.exitCode}`;
