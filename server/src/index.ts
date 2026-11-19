@@ -3,6 +3,7 @@ import { registerOwnershipReconciliationWork } from "./services/native-runtime/n
 import { bindIdleDeadlineOwner } from "./services/idle-deadline-owner.js";
 import { readIdleRetrySchedule } from "./services/heartbeat/idle-retry-schedule.js";
 import { readIdleQuotaSchedule } from "./services/heartbeat/idle-quota-schedule.js";
+import { sweepStaleSshConnectionDirsAtStartup } from "./services/heartbeat/ssh-connection-sweep.js";
 import { readIdleSkillSourceSchedule } from "./services/skill-source-idle-schedule.js";
 import { registerNativeCancellationDelivery } from "./services/native-runtime/native-cancellation-delivery.js";
 import { registerNativeRuntimeResponseDelivery } from "./services/native-runtime/native-runtime-response-delivery.js";
@@ -1780,6 +1781,10 @@ async function startServerWithDatabaseTeardown(
       });
       trackHeartbeatSchedulerWork(startupHeartbeatRecovery);
       await startupHeartbeatRecovery;
+      // After recovery settles run states: drop ssh control dirs of dead runs.
+      void sweepStaleSshConnectionDirsAtStartup(db).then((result) => {
+        if (result.removed.length > 0) logger.info(result, "startup ssh control directory sweep");
+      }, (err) => logger.warn({ err }, "startup ssh control directory sweep failed"));
     }
 
     if (config.heartbeatSchedulerEnabled) await heartbeat.registerResidualRecoveryWork(deliveryWork,
