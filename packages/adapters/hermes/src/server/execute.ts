@@ -807,16 +807,26 @@ async function executeHermes(
   // the session id from the stream-json init event before the process can die.
   let streamBuffer = "";
   let checkpointedSessionId: string | null = null;
-  // Only the first id from a system/init event counts. Tool output can echo
-  // other ids; a later one must never replace the real session.
-  const noteInitSessionId = async (event: { type: string; subtype?: string; sessionId?: string }) => {
+  // Only the first id counts: from a system/init event or the gateway's stderr
+  // start banner. Tool output can echo other ids; a later one must never
+  // replace the real session.
+  const noteCheckpointSessionId = async (sessionId: string | undefined) => {
     if (checkpointedSessionId) return;
-    if (event.type !== "system" || event.subtype !== "init") return;
-    const sessionId = event.sessionId;
     if (!sessionId || !isPlausibleHermesSessionId(sessionId)) return;
     checkpointedSessionId = sessionId;
     if (ctx.onSessionCheckpoint && checkpointEnabled) {
       await ctx.onSessionCheckpoint({ sessionId });
+    }
+  };
+  const noteInitSessionId = async (event: { type: string; subtype?: string; sessionId?: string }) => {
+    if (event.type !== "system" || event.subtype !== "init") return;
+    await noteCheckpointSessionId(event.sessionId);
+  };
+  const noteBannerSessionId = async (chunk: string) => {
+    if (checkpointedSessionId) return;
+    for (const line of chunk.split(/\r?\n/)) {
+      const match = /^Session:\s+(\S+)\s*$/.exec(line);
+      if (match) return noteCheckpointSessionId(match[1]);
     }
   };
   const forwardStdoutLines = async (raw: string, flushTail: boolean) => {
@@ -842,6 +852,7 @@ async function executeHermes(
   };
   const wrappedOnLog = async (stream: "stdout" | "stderr", chunk: string) => {
     if (stream === "stderr") {
+      await noteBannerSessionId(chunk);
       const trimmed = chunk.trimEnd();
       // Benign patterns that should NOT appear as errors:
       // - Structured log lines: [timestamp] INFO/DEBUG/WARN: ...

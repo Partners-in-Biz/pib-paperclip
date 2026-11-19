@@ -54,6 +54,7 @@ import {
   selectPersistedEarlyCheckpoint,
 } from "../services/heartbeat.ts";
 import { stripHostWorkspaceProvision } from "../services/heartbeat/workspaces.js";
+import { isCanonicalSessionIdForAdapter } from "../services/heartbeat/run-state.js";
 import type { TrustPresetResolution } from "../services/trust-preset-resolver.ts";
 
 const execFile = promisify(execFileCallback);
@@ -3320,6 +3321,42 @@ describe("buildExplicitResumeSessionOverride", () => {
 });
 
 describe("resolveNextSessionState", () => {
+  // PAR-13537: gateway-backed Hermes prints `local-<sha256 hex>` ids. They were
+  // rejected as non-canonical, so session_id_after stayed NULL on ~98% of runs.
+  const gatewayHermesSessionId = `local-${"8f41a419".repeat(8)}`;
+
+  it("persists a gateway-backed Hermes local- session id after a successful run", () => {
+    const result = resolveNextSessionState({
+      adapterType: "hermes_local",
+      codec: truncatingHermesSessionCodec,
+      adapterResult: {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        sessionParams: { sessionId: gatewayHermesSessionId },
+        sessionDisplayId: gatewayHermesSessionId.slice(0, 16),
+      },
+      outcome: "succeeded",
+      previousParams: null,
+      previousDisplayId: null,
+      previousLegacySessionId: null,
+    });
+
+    expect(result.params).toEqual({ sessionId: gatewayHermesSessionId });
+    expect(result.legacySessionId).toBe(gatewayHermesSessionId);
+    expect(
+      buildEarlySessionCheckpoint({
+        enabled: true,
+        adapterType: "hermes_local",
+        sessionId: gatewayHermesSessionId,
+        cwd: null,
+        configuredModel: null,
+        sessionConfigMetadata: null,
+      })?.params,
+    ).toEqual({ sessionId: gatewayHermesSessionId });
+    expect(isCanonicalSessionIdForAdapter("hermes_local", "local-not-hex")).toBe(false);
+  });
+
   it("preserves previous valid Hermes session state when failed adapter output reports prose tokens", () => {
     const result = resolveNextSessionState({
       adapterType: "hermes_local",
