@@ -1,3 +1,4 @@
+import { requestedPauseReason } from "../services/requested-pause-reason.js";
 import { assertProviderApiPlacementPolicy, managedCursorApiDefaultEnabled, resolveProviderApiPlacement } from "../services/native-runtime/provider-api-placement.js";
 import { wakeCausingActorFromActor } from "../services/heartbeat/causing-actor.js";
 import { isObjectJournalBusyError } from "../services/object-byte-journal.js";
@@ -5963,7 +5964,9 @@ export function agentRoutes(
     if (!(await getAccessibleAgent(req, res, id))) {
       return;
     }
-    const agent = await svcLifecycle.pauseAgent(id);
+    // PAR-13561: a planned deploy pause may declare itself so recovery defers.
+    const requestedReason = requestedPauseReason(req.body);
+    const agent = await svcLifecycle.pauseAgent(id, requestedReason);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;

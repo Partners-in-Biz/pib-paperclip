@@ -101,3 +101,17 @@ describe("the waiting-on-owner tool", () => {
     expect(result.content).toContain("2 wait on others.");
   });
 });
+
+describe("splitOwnerWaiting: standing rows that are not decisions (PAR-13579)", () => {
+  const unassigned = entry("unassigned-issues", { kind: "other", source: "unassigned", since: ago(30) });
+  const setup = entry("setup:missing", { kind: "grant", source: "host", since: null });
+  it("the unassigned-issues row never stays on the owner list, however old", () => {
+    const r = split([unassigned]);
+    expect([r.owner.length, r.others.map((e) => e.key)]).toEqual([0, ["unassigned-issues"]]);
+  });
+  it("the Finish setup row moves to others only when a standing queue is set", () => {
+    expect(split([setup]).owner.map((e) => e.key)).toEqual(["setup:missing"]);
+    const r = split([setup], { ...ACTIVE, setupRouted: true } as never);
+    expect([r.owner.length, r.others.map((e) => e.key)]).toEqual([0, ["setup:missing"]]);
+  });
+});

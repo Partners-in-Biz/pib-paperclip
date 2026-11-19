@@ -210,8 +210,10 @@ describe("unassigned work", () => {
     await saveTeam(s.env, A, { operatorAgentId: "op" }, "user-1");
     const brief = await companyBrief(s.env, A);
     expect(brief.unassigned).toEqual({ count: 2, items: [expect.objectContaining({ issue: "PIB-2", href: "/PIB/issues/PIB-2" }), expect.objectContaining({ issue: "PIB-1" })] });
-    const item = brief.waiting.find((w) => w.title === "2 open issues have nobody assigned")!;
-    expect(item).toMatchObject({ kind: "other", examples: [expect.objectContaining({ title: "PIB-2 Campaign step 2", href: "/PIB/issues/PIB-2" }), expect.objectContaining({ title: "PIB-1 Bank statement received" })] });
+    // PAR-13579: the Operator routes these; they are on the waiting-on-others side, never the owner list.
+    expect(brief.waiting.some((w) => w.title.endsWith("nobody assigned"))).toBe(false);
+    const item = brief.others.items.find((w) => w.title === "2 open issues have nobody assigned")!;
+    expect(item).toMatchObject({ from: "Paperclip" });
     expect(unassignedWaiting({ count: 0, items: [] })).toEqual([]);
     expect(unassignedWaiting({ count: 1, items: [{ id: "x", identifier: "PIB-9", title: "One", createdAt: null }] })[0]).toMatchObject({ title: "1 open issue has nobody assigned", href: "/issues/PIB-9" });
     // The page gets the same from cockpit.load.
