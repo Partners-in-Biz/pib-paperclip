@@ -33,6 +33,7 @@ const { calls, restore, prepare, state } = vi.hoisted(() => {
       sessionRows:
         '[{"id":"sess_remote1","input_tokens":100,"output_tokens":40,"cache_read_tokens":0,"cache_write_tokens":0,"estimated_cost_usd":0.2}]',
       mainResult: { exitCode: 0 as number | null, signal: null as string | null, timedOut: false },
+      mainStdout: null as string | null,
     },
   };
 });
@@ -51,7 +52,7 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async (importOriginal) =>
       let stdout = "";
       if (command === "sh" && script.includes("mktemp")) stdout = "PCQ:/tmp/paperclip-hermes-query-AbC123\n";
       else if (command === "python3") stdout = `PCSESS:${state.sessionRows}\n`;
-      else if (script.includes("exec \"$@\"")) stdout = "session_id: sess_remote1\nhello from the mac\n";
+      else if (script.includes("exec \"$@\"")) stdout = state.mainStdout ?? "session_id: sess_remote1\nhello from the mac\n";
       const isMain = script.includes("exec \"$@\"");
       return { ...(isMain ? state.mainResult : { exitCode: 0, signal: null, timedOut: false }), stdout, stderr: "", pid: 1, startedAt: "" };
     }),
@@ -95,6 +96,7 @@ beforeEach(() => {
   prepare.mockClear();
   localRun.mockClear();
   state.mainResult = { exitCode: 0, signal: null, timedOut: false };
+  state.mainStdout = null;
 });
 
 const mainCall = () => calls.find((c) => c.args.join(" ").includes('exec "$@"'))!;
@@ -192,5 +194,13 @@ describe("hermes_local without an ssh target", () => {
     expect(prepare).not.toHaveBeenCalled();
     expect(calls).toHaveLength(0);
     expect(localRun).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry a remote run that printed the gateway line (PAR-9964)", async () => {
+    state.mainResult = { exitCode: 1, signal: null, timedOut: false };
+    state.mainStdout = "Error: Gateway starting: deadline\n";
+    await execute(makeCtx());
+    expect(calls.filter((c) => c.args.join(" ").includes('exec "$@"'))).toHaveLength(1);
+    expect(localRun).not.toHaveBeenCalled();
   });
 });
