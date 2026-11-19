@@ -1,8 +1,8 @@
-import { and, eq, sql } from "drizzle-orm";
-import { environmentLeases, type Db } from "@paperclipai/db";
+import { and, eq, isNull, sql } from "drizzle-orm";
+import { environmentLeases, environments, heartbeatRuns, type Db } from "@paperclipai/db";
 import type { Environment, EnvironmentLease, EnvironmentLeaseStatus } from "@paperclipai/shared";
 import {
-  buildSshRunDirRemoveScript, checkRemoteRun, runSshCommand, sshRunDirIsConfined,
+  buildSshRunDirCleanupScript, checkRemoteRun, runSshCommand, sshRunDirIsConfined,
   type SshConnectionConfig, type SshRunCheck,
 } from "@paperclipai/adapter-utils/ssh";
 import { logger } from "../middleware/logger.js";
@@ -82,7 +82,8 @@ export async function releaseSshRunLease(db: Db, input: {
     const attempts = Number(lease.metadata?.sshCheckAttempts ?? 0) + 1;
     await db.update(environmentLeases).set({
       metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({
-        sshCheckAttempts: attempts, sshNextCheckAt: nextSshCheckAt(attempts, now).toISOString(), sshLastCheckBasis: check.basis,
+        sshCheckAttempts: attempts, sshNextCheckAt: nextSshCheckAt(attempts, now).toISOString(),
+        sshLastCheckResult: check.result, sshLastCheckBasis: check.basis,
       })}::jsonb`,
     }).where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.status, "active")));
     return null;
@@ -92,14 +93,44 @@ export async function releaseSshRunLease(db: Db, input: {
   return await environmentsSvc.releaseLease(lease.id, status);
 }
 
-/** Remove `remoteRunDir` after a gone check (13.9 decision 2). Best effort. */
+/** Remove `remoteRunDir` after a gone check (13.9 decision 2), then sweep
+ * leftover sibling run dirs older than 7 days (PAR-9962). Best effort. */
 async function removeSshRunDir(db: Db, lease: EnvironmentLease, environment: Environment | null) {
   try {
     const config = await sshLeaseConfig(db, lease, environment);
     const runDir = String(lease.metadata?.remoteRunDir);
     if (!config || !sshRunDirIsConfined(config.remoteWorkspacePath, runDir)) return;
-    await runSshCommand(config, buildSshRunDirRemoveScript(config.remoteWorkspacePath, runDir), { timeoutMs: 10_000 });
+    await runSshCommand(config, buildSshRunDirCleanupScript(config.remoteWorkspacePath, runDir), { timeoutMs: 10_000 });
   } catch {
     logger.warn({ leaseId: lease.id }, "ssh run dir removal failed after a gone check");
   }
+}
+
+const clock = (value: unknown) => {
+  const at = Date.parse(String(value ?? ""));
+  return Number.isFinite(at) ? `${new Date(at).toISOString().slice(11, 16)} UTC` : "due now";
+};
+
+/** One line per unconfirmed ssh run, for the pause status (PAR-9962, 13.9 finding 5). */
+export function sshPauseWaitText(lease: { heartbeatRunId: string | null; metadata: Record<string, unknown> | null }, host: string | null): string {
+  const meta = lease.metadata ?? {};
+  const last = typeof meta.sshLastCheckBasis === "string"
+    ? `${typeof meta.sshLastCheckResult === "string" ? meta.sshLastCheckResult : "unknown"}/${meta.sshLastCheckBasis}` : "none yet";
+  return `Waiting for proof that run ${lease.heartbeatRunId} on ${host ?? "an unknown host"} has stopped `
+    + `(last check: ${last}, next ${clock(meta.sshNextCheckAt)}).`;
+}
+
+/** The pause status while a cancelled run's ssh lease is kept active by
+ * `releaseSshRunLease`; null when no such lease is left. */
+export async function sshPauseWaitDetail(db: Db, agentId: string): Promise<string | null> {
+  const rows = await db.select({ lease: environmentLeases, config: environments.config }).from(environmentLeases)
+    .innerJoin(heartbeatRuns, eq(heartbeatRuns.id, environmentLeases.heartbeatRunId))
+    .leftJoin(environments, eq(environments.id, environmentLeases.environmentId))
+    .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "cancelled"), eq(environmentLeases.provider, "ssh"),
+      eq(environmentLeases.status, "active"), isNull(environmentLeases.releasedAt)));
+  const lines = rows.filter(row => sshLeaseHasRemoteRunDir(row.lease)).map(row => {
+    const host = (row.config as Record<string, unknown> | null)?.host;
+    return sshPauseWaitText(row.lease, typeof host === "string" ? host : null);
+  });
+  return lines.length ? lines.join(" ") : null;
 }
