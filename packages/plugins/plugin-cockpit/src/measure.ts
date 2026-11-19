@@ -56,10 +56,13 @@ const ago = (now: Date, hours: number) => new Date(now.getTime() - hours * 3_600
 /** A numeric field of a run's `usage_json`, 0 when missing or not a number (never a cast error). */
 export const usage = (field: string) => `CASE WHEN r.usage_json ->> '${field}' ~ '^[0-9]+(\\.[0-9]+)?$' THEN (r.usage_json ->> '${field}')::double precision ELSE 0 END`;
 
-/** Runs since a time with the fields every aggregate needs. `$1` company, `$2` since. */
+/**
+ * Runs since a time with the fields every aggregate needs. `$1` company, `$2` since. The issue comes from
+ * `issue_id` (set by the host on insert), not `context_snapshot`, which is large: PAR-13397.
+ */
 const RUNS = `runs AS (
   SELECT r.agent_id, r.status, r.error_code, r.error, r.retry_of_run_id, r.continuation_attempt, r.started_at,
-         r.context_snapshot ->> 'issueId' AS issue_id, r.context_snapshot ->> 'wakeReason' AS wake_reason,
+         r.issue_id::text AS issue_id, r.context_snapshot ->> 'wakeReason' AS wake_reason,
          ${usage("costUsd")} AS usd, ${usage("inputTokens")} AS input_tokens, ${usage("outputTokens")} AS output_tokens, ${usage("cachedInputTokens")} AS cached_tokens,
          CASE WHEN r.finished_at IS NOT NULL AND r.finished_at >= r.started_at THEN EXTRACT(EPOCH FROM (r.finished_at - r.started_at))::double precision END AS secs
     FROM public.heartbeat_runs r
