@@ -1,5 +1,6 @@
 import { settleOwnableKind } from "../recovery/ownership-invariant-report.js";
 import { ORPHANED_RUN_LEASE_FAILURE_REASON, ORPHANED_SSH_LEASE_FAILURE_REASON, SSH_LEASE_PROVIDER, isSshLease } from "../environment-run-lease-settlement.js";
+import { sshLeaseHasRemoteRunDir, sshNextCheckDueAt } from "../ssh-run-lease-release.js";
 import { ENVIRONMENT_LEASE_CONTROLLER_KEY } from "../environment-lease-controller.js";
 import { readNativeStartupCleanup, readNativeStartupContext } from "../native-runtime/native-startup-cleanup.js";
 import { legacyWorkspaceRecoveryNotMigrated } from "../legacy-workspace-recovery-migration.js";
@@ -1589,7 +1590,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     const cursorKey = opts.leaseId ? null : opts.companyId ?? "*";
     const after = cursorKey === null ? undefined : orphanRunLeaseCursors.get(cursorKey);
     const scoped = await db
-      .select({ lease: environmentLeases })
+      .select({ lease: environmentLeases, runStatus: heartbeatRuns.status, runAgentId: heartbeatRuns.agentId })
       .from(environmentLeases)
       .leftJoin(heartbeatRuns, eq(environmentLeases.heartbeatRunId, heartbeatRuns.id))
       .where(and(
@@ -1610,6 +1611,32 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       if (lease.heartbeatRunId && !localRuns.has(lease.heartbeatRunId)
         && await nativeWorkspaceExportPendingForLease(db, lease)
         && await preserveOrphanedNativeWorkspace(db, lease, { onDeferredDeadline: opts.onDeferredDeadline })) recovered += 1;
+    }
+
+    // PAR-9961: an ssh lease with a run dir of a finished run is released by
+    // the driver's remote check, not by the owner proof below (which skips it).
+    // A gone check writes the receipt; an unconfirmed cancelled run stays active
+    // and is checked again at its sshNextCheckAt. Outside any transaction.
+    const sshDue = new Map<string, { companyId: string; agentId: string; status: string }>();
+    for (const { lease, runStatus, runAgentId } of scoped) {
+      if (!lease.heartbeatRunId || !runStatus || !runAgentId || localRuns.has(lease.heartbeatRunId)
+        || !isSshLease(lease) || !sshLeaseHasRemoteRunDir(lease)) continue;
+      const dueAt = sshNextCheckDueAt(lease);
+      if (dueAt !== null && dueAt > Date.now()) { opts.onDeferredDeadline?.(dueAt); continue; }
+      sshDue.set(lease.heartbeatRunId, { companyId: lease.companyId, agentId: runAgentId, status: runStatus });
+    }
+    for (const [runId, run] of sshDue) {
+      // One check per lease, each bounded (10 s); one that stays unknown never
+      // holds up the next run's lease.
+      await releaseEnvironmentLeasesForRun({ runId, ...run }).catch(() => {
+        logger.warn({ runId }, "ssh run lease re-check failed");
+      });
+      const [after] = await db.select({ metadata: environmentLeases.metadata })
+        .from(environmentLeases).where(and(eq(environmentLeases.heartbeatRunId, runId), eq(environmentLeases.status, "active")))
+        .limit(1);
+      const next = after ? sshNextCheckDueAt(after) : null;
+      if (next !== null) opts.onDeferredDeadline?.(next);
+      else if (!after) recovered += 1;
     }
 
     const runIds = [...new Set(scoped.flatMap(({ lease }) => lease.heartbeatRunId ? [lease.heartbeatRunId] : []))];
