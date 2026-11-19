@@ -91,9 +91,9 @@ export async function actorMayInstructAgent(
 export const MEMBER_AGENT_NOT_LISTED_DETAILS = { reason: "deny_member_restricted", code: "agent_not_listed" } as const;
 export const MEMBER_AGENT_NOT_LISTED_ROUTE_MESSAGE = "This agent is not on the list of agents this restricted member may instruct";
 
-/** The five fields of an agent on his list (AC-G4). */
-export function restrictedAgentView(agent: { id: string; name: string; title: string | null; icon: string | null; status: string }) {
-  return { id: agent.id, name: agent.name, title: agent.title, icon: agent.icon, status: agent.status };
+/** The six fields of an agent on his list (AC-G4, amended by PAR-13469). */
+export function restrictedAgentView(agent: { id: string; companyId: string; name: string; title: string | null; icon: string | null; status: string }) {
+  return { id: agent.id, companyId: agent.companyId, name: agent.name, title: agent.title, icon: agent.icon, status: agent.status };
 }
 
 /**
