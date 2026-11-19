@@ -79,8 +79,15 @@ async function instanceOwner(browser: Browser) {
     return page;
   }
   const { page, email, password } = await signUp(browser, "Shell Owner");
-  const bootstrap = tsx("packages/db/scripts/create-auth-bootstrap-invite.ts", ["--config", CONFIG, "--base-url", BASE]);
-  await api(page, "POST", `/api/invites/${new URL(bootstrap).pathname.split("/").at(-1)}/accept`, { requestType: "human" });
+  const health = await api<{ bootstrapStatus?: string }>(page, "GET", "/api/health");
+  if (health.bootstrapStatus === "ready") {
+    // member-restriction-in-page.spec.ts on the same test server claimed the instance first.
+    const session = await api<{ user: { id: string } }>(page, "GET", "/api/auth/get-session");
+    tsx("tests/e2e/fixtures/member-restriction-seed-workspace.ts", ["--config", CONFIG, "--grant-instance-admin", session.user.id]);
+  } else {
+    const bootstrap = tsx("packages/db/scripts/create-auth-bootstrap-invite.ts", ["--config", CONFIG, "--base-url", BASE]);
+    await api(page, "POST", `/api/invites/${new URL(bootstrap).pathname.split("/").at(-1)}/accept`, { requestType: "human" });
+  }
   writeFileSync(OWNER_FILE, JSON.stringify({ email, password }));
   return page;
 }
