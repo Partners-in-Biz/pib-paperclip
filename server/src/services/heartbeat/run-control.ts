@@ -95,6 +95,7 @@ import {
   sql,
 } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import type { SshRemoteStopOutcome } from "@paperclipai/adapter-utils/ssh";
 import {
   type EnvironmentLeaseStatus,
 } from "@paperclipai/shared";
@@ -1505,6 +1506,13 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
               }
             }
             if (running) {
+              // PAR-9402: on an ssh target the local pid is only the ssh
+              // client. Stop the remote process group first, then end the
+              // client as before. A failed remote stop keeps the old path.
+              if (running.stopRemote) {
+                const outcome = await running.stopRemote("TERM").catch((): SshRemoteStopOutcome => "error");
+                logger[outcome === "signalled" ? "info" : "warn"]({ runId: run.id, outcome }, "remote process group stop TERM on cancel");
+              }
               await terminateHeartbeatRunProcess({
                 pid: running.child.pid,
                 processGroupId: running.processGroupId,
