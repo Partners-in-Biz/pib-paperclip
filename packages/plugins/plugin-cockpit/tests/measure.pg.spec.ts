@@ -161,6 +161,18 @@ d("measurement layer (Postgres)", () => {
       expect(projects[0]!.projectId).toBeNull(); // costliest first
     });
 
+    it("PAR-13397: finds a run's issue by issue_id, not the context's issueId", async () => {
+      // A run bound by its context taskId only: the host's trigger sets issue_id from it; the context has no issueId.
+      await h.client.query(
+        `INSERT INTO public.heartbeat_runs (id, company_id, agent_id, status, started_at, finished_at, context_snapshot, usage_json)
+         VALUES ($1, $2, $3, 'succeeded', $4, $4, $5::jsonb, '{"costUsd": 4}'::jsonb)`,
+        [uuid(), COMPANY, A, ago(15), JSON.stringify({ taskId: ISSUE.child })],
+      );
+      const p = (await readProjectRuns(h.ctx, COMPANY, ago(24 * 7))).find((x) => x.projectId === PROJECT)!;
+      expect(p.runs).toBe(4);
+      expect(p.usd).toBeCloseTo(10, 6);
+    });
+
     it("rolls an issue tree up to its root: the epic and everything under it, with who worked on it", async () => {
       const trees = await readTreeRuns(h.ctx, COMPANY, ago(24 * 7));
       const epic = trees.find((t) => t.rootId === ISSUE.root)!;
