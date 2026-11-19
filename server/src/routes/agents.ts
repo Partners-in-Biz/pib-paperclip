@@ -4065,7 +4065,7 @@ export function agentRoutes(
     const listed = await restrictedAgentIdsForActor(db, req.actor, companyId);
     const result = await filterAgentsForActor(req, await svc.list(companyId));
     // PAR-12608 4.6, AC-G4: a caller bound by R under `enforce` gets only the
-    // agents on his list, each reduced to five fields.
+    // agents on his list, each reduced to six fields.
     if (listed) {
       res.json(result.filter((agent) => listed.has(agent.id)).map(restrictedAgentView));
       return;

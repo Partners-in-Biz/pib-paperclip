@@ -53,6 +53,7 @@ const APPROVALS_TEST = "server/src/__tests__/member-restriction-route-table-appr
 const AGENTS_TEST = "server/src/__tests__/member-restriction-route-table-agents.test.ts";
 const TASK_LIST_TEST = "server/src/__tests__/member-restriction-task-list-callers.test.ts";
 const INSTANCE_TEST = "server/src/__tests__/member-restriction-route-table-instance.test.ts";
+const AGENT_PAGES_TEST = "server/src/__tests__/member-restriction-route-table-agent-pages.test.ts";
 
 export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntry[] = [
   // C4b-1a (PAR-12730): the task routes of `routes/issues.ts`. Comments,
@@ -389,6 +390,20 @@ export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntr
   { method: "GET", path: "/api/companies/:companyId/org", class: "closed" },
   { method: "GET", path: "/api/companies/:companyId/heartbeat-runs", class: "closed" },
   { method: "GET", path: "/api/companies/:companyId/live-runs", class: "closed" },
+  // C4g-4 (PAR-13473, decision PAR-13469 section 3): the agent pages. The avatar
+  // artwork is preset art; the handler looks up no agent and no company. Closed
+  // on purpose: built-in agents, budgets and AI connections are company set-up;
+  // the resource-membership writes save a star or join on an id with no read
+  // check (the answer would tell him whether a project exists), and a read-only
+  // star list has no use.
+  { method: "GET", path: "/api/agent-avatars/:version/:palette/:file", class: "open", test: AGENT_PAGES_TEST },
+  { method: "GET", path: "/api/companies/:companyId/built-in-agents", class: "closed" },
+  { method: "GET", path: "/api/companies/:companyId/budgets/overview", class: "closed" },
+  { method: "GET", path: "/api/companies/:companyId/ai-connections", class: "closed" },
+  { method: "GET", path: "/api/companies/:companyId/resource-memberships/me", class: "closed" },
+  { method: "PUT", path: "/api/companies/:companyId/resource-memberships/me/projects/:projectId", class: "closed" },
+  { method: "PUT", path: "/api/companies/:companyId/resource-memberships/me/agents/:agentId", class: "closed" },
+  { method: "PUT", path: "/api/companies/:companyId/resource-memberships/me/documents/:documentId", class: "closed" },
 
   // C4g-3 (PAR-13263, decision PAR-13261 sections 1 to 3): what the app shell
   // reads on every page. For R at `enforce` health answers the anonymous body
