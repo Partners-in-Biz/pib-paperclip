@@ -20,6 +20,7 @@ import { cn, formatDate, formatNumber, formatProjectBudget, projectUrl } from ".
 import {
   isStarred,
   resourceMembershipState,
+  useResourceMembershipControls,
   useResourceMembershipMutation,
   useResourceMemberships,
 } from "../hooks/useResourceMemberships";
@@ -108,6 +109,7 @@ export function Projects() {
   const projectsView = useQueryView(projectsQuery);
   const membershipsQuery = useResourceMemberships(selectedCompanyId);
   const membershipMutation = useResourceMembershipMutation(selectedCompanyId);
+  const membershipControls = useResourceMembershipControls(selectedCompanyId);
   const unarchiveMutation = useMutation({
     mutationFn: (project: Project) =>
       projectsApi.update(project.id, { archivedAt: null }, selectedCompanyId!),
@@ -245,36 +247,40 @@ export function Projects() {
                               </span>
                             )}
                             <StatusBadge status={project.status} />
-                            <MembershipAction
-                              state={state}
-                              pending={joinLeavePending}
-                              pendingState={joinLeavePending ? membershipMutation.variables?.state : null}
-                              resourceName={project.name}
-                              onJoin={() => membershipMutation.mutate({
-                                resourceType: "project",
-                                resourceId: project.id,
-                                resourceName: project.name,
-                                state: "joined",
-                              })}
-                              onLeave={() => membershipMutation.mutate({
-                                resourceType: "project",
-                                resourceId: project.id,
-                                resourceName: project.name,
-                                state: "left",
-                              })}
-                            />
-                            <StarToggle
-                              size="row"
-                              starred={starred}
-                              pending={starPending}
-                              resourceName={project.name}
-                              onToggle={(next) => membershipMutation.mutate({
-                                resourceType: "project",
-                                resourceId: project.id,
-                                resourceName: project.name,
-                                starred: next,
-                              })}
-                            />
+                            {membershipControls ? (
+                              <>
+                                <MembershipAction
+                                  state={state}
+                                  pending={joinLeavePending}
+                                  pendingState={joinLeavePending ? membershipMutation.variables?.state : null}
+                                  resourceName={project.name}
+                                  onJoin={() => membershipMutation.mutate({
+                                    resourceType: "project",
+                                    resourceId: project.id,
+                                    resourceName: project.name,
+                                    state: "joined",
+                                  })}
+                                  onLeave={() => membershipMutation.mutate({
+                                    resourceType: "project",
+                                    resourceId: project.id,
+                                    resourceName: project.name,
+                                    state: "left",
+                                  })}
+                                />
+                                <StarToggle
+                                  size="row"
+                                  starred={starred}
+                                  pending={starPending}
+                                  resourceName={project.name}
+                                  onToggle={(next) => membershipMutation.mutate({
+                                    resourceType: "project",
+                                    resourceId: project.id,
+                                    resourceName: project.name,
+                                    starred: next,
+                                  })}
+                                />
+                              </>
+                            ) : null}
                           </div>
                         }
                       />
