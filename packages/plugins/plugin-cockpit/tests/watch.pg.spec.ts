@@ -188,6 +188,18 @@ d("operations watch (Postgres)", () => {
       expect(await readStorms(h.ctx, COMPANY, h.clock.now)).toEqual([]);
     });
 
+    it("PAR-13397: finds a storm by issue_id when the context names the task as taskId", async () => {
+      await issue(storm, "PAR-528", "in_progress", { title: "SEO W1 pages", agent: AGENT.seo });
+      for (let i = 0; i < 4; i += 1) {
+        await h.client.query(
+          `INSERT INTO public.heartbeat_runs (id, company_id, agent_id, status, started_at, error_code, context_snapshot) VALUES ($1, $2, $3, 'failed', $4, 'adapter_failed', $5::jsonb)`,
+          [uuid(), COMPANY, AGENT.seo, ago(10 + i), JSON.stringify({ taskId: storm })],
+        );
+      }
+      const [row] = await readStorms(h.ctx, COMPANY, h.clock.now);
+      expect(row).toMatchObject({ issueId: storm, identifier: "PAR-528", failed: 4 });
+    });
+
     it("still names an issue the host no longer has (only its id)", async () => {
       const gone = "99999999-0000-4000-8000-000000000533";
       for (let i = 0; i < 4; i += 1) await run(AGENT.seo, "failed", 10 + i, { code: "adapter_failed", issueId: gone });
