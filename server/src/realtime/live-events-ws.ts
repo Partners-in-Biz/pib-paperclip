@@ -18,6 +18,7 @@ import { trackIdleWork } from "../services/task-admission.js";
 import { createLiveRunEventRedactor } from "../services/live-run-event-redaction.js";
 import { refusedOnlyByMemberRestriction } from "../services/member-restriction/action-list.js";
 import { actorPersonMembership } from "../services/member-restriction/actor-memberships.js";
+import { hasHostKeys, withoutHostKeys } from "../services/member-restriction/response-strip.js";
 
 interface WsSocket {
   readyState: number;
@@ -368,8 +369,13 @@ export function setupLiveEventsWebSocketServer(
       // throws, so the delivery drops the event.
       const boundToTaskProjectOrRun = Boolean(issueId || runId)
         || (payload.entityType === "project" && typeof payload.entityId === "string");
-      if (!boundToTaskProjectOrRun && mayBeRestricted
-        && (await memberRestrictionEnforcedCompanyIdsForActor(db, context!.actor)).includes(event.companyId)) return null;
+      // PAR-12951: and no host or secret key at any depth of a frame to him. A
+      // bound frame without one needs no restriction read.
+      const hostKeys = boundToTaskProjectOrRun && hasHostKeys(event.payload);
+      const enforcedHere = mayBeRestricted && (!boundToTaskProjectOrRun || hostKeys)
+        && (await memberRestrictionEnforcedCompanyIdsForActor(db, context!.actor)).includes(event.companyId);
+      if (!boundToTaskProjectOrRun && enforcedHere) return null;
+      if (hostKeys && enforcedHere) event = withoutHostKeys(event);
       if (event.type.startsWith("heartbeat.run.")) return runId ? event : null;
       if (event.type === "agent.session.goal.changed") return issueId ? event : null;
       // Company-wide invalidations carry no task-derived content. Authorized
