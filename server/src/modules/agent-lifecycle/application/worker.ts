@@ -52,7 +52,8 @@ export function createLifecycleWorker(store: LifecycleStore, driver: LifecycleDr
             return;
           }
           if (host === "pending") {
-            if (!await runStep("defer", () => store.defer(agent, owner, null, new Date()))) continue;
+            const statusDetail = await driver.pendingDetail?.(agent).catch(() => null) ?? null;
+            if (!await runStep("defer", () => store.defer(agent, owner, null, new Date(), { statusDetail }))) continue;
             return;
           }
           if (!await runStep("complete_host", () => store.completeHost(agent, owner))) continue;

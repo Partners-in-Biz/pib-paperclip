@@ -1521,6 +1521,29 @@ export function buildSshRunDirRemoveScript(remoteWorkspacePath: string, remoteRu
   ].join("\n");
 }
 
+/** Days after which a leftover run dir (a run whose release never removed it) is swept. */
+export const SSH_STALE_RUN_DIR_DAYS = 7;
+
+// Sweep of leftover sibling run dirs (PAR-9962), confined as the removal above:
+// only real directories directly under `<ws>/.paperclip-runs` (resolved inside
+// the workspace), with a run-id-shaped name, untouched for over 7 days. `find`
+// without -L never follows links, so a linked entry is not a directory here.
+export function buildSshStaleRunDirSweepScript(remoteWorkspacePath: string): string {
+  return [
+    `ws=${shellQuote(trimTrailingSlashes(remoteWorkspacePath))}`,
+    `base=$(cd -P "$ws/${SSH_RUN_DIR_PARENT}" 2>/dev/null && pwd -P) || { echo sweep-absent; exit 0; }`,
+    'wsp=$(cd -P "$ws" 2>/dev/null && pwd -P) || { echo sweep-absent; exit 0; }',
+    'case "$base" in "$wsp"/?*) ;; *) echo sweep-refused; exit 0;; esac',
+    `find "$base" -mindepth 1 -maxdepth 1 -type d ! -name '*[!A-Za-z0-9_-]*' -mtime +${SSH_STALE_RUN_DIR_DAYS} -exec rm -rf -- {} + && echo swept`,
+  ].join("\n");
+}
+
+/** Removal of one run dir, then the stale sweep; the subshell keeps an early exit local. */
+export function buildSshRunDirCleanupScript(remoteWorkspacePath: string, remoteRunDir: string): string {
+  return ["(", buildSshRunDirRemoveScript(remoteWorkspacePath, remoteRunDir), ")",
+    buildSshStaleRunDirSweepScript(remoteWorkspacePath)].join("\n");
+}
+
 export async function buildSshSpawnTarget(input: {
   spec: SshRemoteExecutionSpec;
   command: string;

@@ -630,6 +630,41 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(sshCheck).toHaveBeenCalled();
   });
 
+  it("names the unconfirmed ssh run, host and last check in the pause status, and clears it once gone (PAR-9962)", async () => {
+    const agent = await hire();
+    const [environment] = await db.insert(environments).values({ name: `ssh-${randomUUID()}`, driver: "ssh",
+      status: "active", config: { host: "mac.test", port: 22, username: "max", remoteWorkspacePath: "/Users/max/ws",
+        privateKey: null, knownHosts: null, strictHostKeyChecking: true } }).returning();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, status: "cancelled",
+      invocationSource: "on_demand", startedAt: new Date(), finishedAt: new Date() }).returning();
+    const [lease] = await db.insert(environmentLeases).values({ companyId, environmentId: environment!.id, heartbeatRunId: run!.id,
+      provider: "ssh", providerLeaseId: `ssh://max@mac.test:22/Users/max/ws`, status: "active",
+      metadata: { remoteWorkspacePath: "/Users/max/ws", remoteRunDir: `/Users/max/ws/.paperclip-runs/${run!.id}` } }).returning();
+    sshCheck.mockResolvedValue({ result: "unknown", basis: "check_failed", checkedAt: new Date().toISOString() });
+    // The real driver's runHost and pendingDetail; no plugins.
+    const detailed = configureAgentLifecycle(db, { ...createLifecycleDriver(db, {} as never),
+      requiredPluginIds: async () => [], runPlugin: async () => "complete" });
+    workers.push(detailed);
+    await createAgentLifecycle(db).pauseAgent(agent.id);
+    await detailed.process(agent.id);
+    const waiting = await current(agent.id);
+    expect(waiting.lifecycleState).toBe("pausing");
+    const [held] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, lease!.id));
+    const next = String(held!.metadata?.sshNextCheckAt).slice(11, 16);
+    expect(waiting.lifecycleOperation?.statusDetail).toBe(`Waiting for proof that run ${run!.id} on mac.test has stopped `
+      + `(last check: unknown/check_failed, next ${next} UTC).`);
+
+    await db.update(environmentLeases).set({ metadata: { ...held!.metadata, sshNextCheckAt: new Date(0).toISOString() } })
+      .where(eq(environmentLeases.id, lease!.id));
+    await db.update(agents).set({ lifecycleOperation: { ...waiting.lifecycleOperation!, retryAt: new Date(0).toISOString() } })
+      .where(eq(agents.id, agent.id));
+    sshCheck.mockResolvedValue({ result: "gone", basis: "group_empty", checkedAt: new Date().toISOString() });
+    await detailed.process(agent.id);
+    const paused = await current(agent.id);
+    expect(paused.lifecycleState).toBe("paused");
+    expect(paused.lifecycleOperation?.statusDetail).toBeUndefined();
+  });
+
   it("does not prepare a proposed hire until approval", async () => {
     const observed: string[] = [];
     const work = worker(async agent => { observed.push(agent.lifecycleState); return "complete"; });
