@@ -307,6 +307,8 @@ export interface CompanyData {
   unassigned: { count: number; items: UnassignedIssue[] };
   /** Open issues that never belong on the owner's list (containers, standing queue, canary); see owner-filter.ts. */
   hiddenIssueIds?: string[];
+  /** The Finish setup row is tracked in the standing queue (owner-filter.ts). */
+  setupRouted?: boolean;
   /** Repair rows for escalation tracking. */
   repairs: RepairRow[];
 }
@@ -315,7 +317,7 @@ export interface CompanyData {
 export async function loadCompanyData(env: Env, companyId: string, days = 7, windowHours = days * 24, budget: BriefBudget = newBudget(env)): Promise<CompanyData> {
   const { guard } = budget;
   // Started first: the unassigned count leaves out the hidden issues, so it waits on this one query only.
-  const hiddenRead = guard("ownerFilter", () => ownerFilter(env, companyId), { hiddenIssueIds: [], degraded: [] } as OwnerFilterResult);
+  const hiddenRead = guard("ownerFilter", () => ownerFilter(env, companyId), { hiddenIssueIds: [], setupRouted: false, degraded: [] } as OwnerFilterResult);
   const [stored, own, agents, runStats, approvals, statuses, asks, unassigned, repairs, setup, roles] = await Promise.all([
     guard("snapshots", () => storedSnapshots(env, companyId), []),
     // The Cockpit's own checks (jobs, routines, watch, memory) read the most: when they hang, the other plugins' snapshots still answer.
@@ -364,6 +366,7 @@ export async function loadCompanyData(env: Env, companyId: string, days = 7, win
     unassigned,
     repairs,
     hiddenIssueIds: hidden.hiddenIssueIds,
+    setupRouted: hidden.setupRouted,
   };
 }
 
@@ -372,7 +375,7 @@ export function waitingFrom(data: WaitingData, now: Date = new Date()): WaitingE
   return waitingSplit(data, now).owner;
 }
 
-type WaitingData = Pick<CompanyData, "snapshots" | "approvals" | "ownerIssues" | "setupMissing"> & Partial<Pick<CompanyData, "asks" | "unassigned" | "setupIssueId" | "repairs" | "agents" | "hiddenIssueIds">>;
+type WaitingData = Pick<CompanyData, "snapshots" | "approvals" | "ownerIssues" | "setupMissing"> & Partial<Pick<CompanyData, "asks" | "unassigned" | "setupIssueId" | "repairs" | "agents" | "hiddenIssueIds" | "setupRouted">>;
 
 /** The one owner-list rule: what waits on the owner, and what waits on others (a seat that can act, or the client). */
 export function waitingSplit(data: WaitingData, now: Date = new Date()): { owner: WaitingEntry[]; others: WaitingEntry[] } {
@@ -390,7 +393,7 @@ export function waitingSplit(data: WaitingData, now: Date = new Date()): { owner
   ];
   const host = { source: "host", sourceTitle: "Paperclip", items: hostWaiting({ approvals: data.approvals, myIssues: data.ownerIssues, setupMissing: data.setupMissing, setupIssueId: data.setupIssueId }) };
   const merged = mergeWaiting([...own, { source: "unassigned", sourceTitle: "Paperclip", items: unassignedWaiting(data.unassigned, shownIssueIds([...own, host])) }, host]);
-  return splitOwnerWaiting(merged, { activeAgentIds: activeAgentIdsOf(data.agents ?? []), hiddenIssueIds: data.hiddenIssueIds ?? [] }, now);
+  return splitOwnerWaiting(merged, { activeAgentIds: activeAgentIdsOf(data.agents ?? []), hiddenIssueIds: data.hiddenIssueIds ?? [], setupRouted: data.setupRouted ?? false }, now);
 }
 
 // ---------------------------------------------------------------------------

@@ -353,7 +353,7 @@ export function unassignedWaiting(
   const oldest = items.reduce<string | null>((min, item) => (item.createdAt && (!min || Date.parse(item.createdAt) < Date.parse(min)) ? item.createdAt : min), null);
   const first = items[0];
   return [{
-    key: "unassigned-issues",
+    key: UNASSIGNED_KEY,
     title: `${count} open ${count === 1 ? "issue has" : "issues have"} nobody assigned`,
     why: "Nobody picks these up. The Operator routes them each morning; route any it missed, or assign them yourself.",
     href: count === 1 && first ? issueHref(first) : null,
@@ -439,7 +439,7 @@ export function hostWaiting(input: { approvals?: ApprovalLite[]; myIssues?: Issu
   const items: WaitingInput[] = [];
   if (input.setupMissing && input.setupMissing > 0) {
     items.push({
-      key: "setup:missing",
+      key: SETUP_KEY,
       // Kit wording, the same number as the Setup page, its sidebar badge and the weekly issue.
       title: `Finish setup: ${setupLeftLabel(input.setupMissing)}`,
       why: "Agents cannot run these parts on their own until they are set up.",
@@ -951,11 +951,15 @@ export const HEALTH_LABEL: Record<HealthStatus, string> = { ok: "All good", warn
 
 /** How long an item may wait on someone else before it comes back to the owner. Same bound SEO uses for stale Needs you items. */
 export const OTHERS_MAX_HIDE_DAYS = 7;
+const UNASSIGNED_KEY = "unassigned-issues";
+const SETUP_KEY = "setup:missing";
 
 /** What the rule needs to know: the agents that can act, and the issues that never belong on the owner's list. */
 export interface OwnerFilter {
   activeAgentIds: string[];
   hiddenIssueIds: string[];
+  /** The Finish setup row is a board ask tracked in the standing queue (PAR-13579): it waits on others, not on the owner. */
+  setupRouted?: boolean;
 }
 
 /** Ids of the agents that can act (not terminated, archived or deleted). */
@@ -978,6 +982,12 @@ export function splitOwnerWaiting(entries: WaitingEntry[], filter: Partial<Owner
   const others: WaitingEntry[] = [];
   for (const entry of entries) {
     if (entry.issueId && hidden.has(entry.issueId)) continue;
+    // PAR-13579: the Operator routes unassigned work each morning, and a standing-queue company tracks setup there: neither is a decision. Intended: the unassigned row stays
+    // on others with no 7-day return, and is still listed there (the Operator brief keeps its own `unassigned` section).
+    if (entry.key === UNASSIGNED_KEY || (entry.key === SETUP_KEY && filter?.setupRouted)) {
+      others.push(entry);
+      continue;
+    }
     const waitsOn = parseWaitsOn(entry.waitsOn);
     if (!waitsOn || (waitsOn.kind === "agent" && !active.has(waitsOn.agentId))) {
       owner.push(entry);
