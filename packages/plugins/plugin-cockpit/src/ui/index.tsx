@@ -180,7 +180,16 @@ function CockpitPageMain({ context }: PluginPageProps) {
             <Button
               type="button"
               variant="secondary"
-              onClick={() => (paperTab ? setPaperTick((n) => n + 1) : memoryTab ? setMemoryTick((n) => n + 1) : profileTab ? setProfileTick((n) => n + 1) : maintenanceTab ? setMaintenanceTick((n) => n + 1) : policyTab ? setPolicyTick((n) => n + 1) : browserTab ? setBrowserTick((n) => n + 1) : hostedTab ? void hosted.reload() : void data.reload())}
+              onClick={() => {
+                if (paperTab) setPaperTick((n) => n + 1);
+                else if (memoryTab) setMemoryTick((n) => n + 1);
+                else if (profileTab) setProfileTick((n) => n + 1);
+                else if (maintenanceTab) setMaintenanceTick((n) => n + 1);
+                else if (policyTab) setPolicyTick((n) => n + 1);
+                else if (browserTab) setBrowserTick((n) => n + 1);
+                else if (hostedTab) void hosted.reload();
+                if (!pageTab || data.error) void data.reload();
+              }}
               disabled={!pageTab && data.loading}
             >
               {!pageTab && data.loading ? "Loading…" : "Refresh"}
