@@ -25,6 +25,7 @@ describe("isDeliberateShortPause", () => {
   it("is true for a recent manual or system pause in the same company", () => {
     expect(isDeliberateShortPause(base, "c1", now)).toBe(true);
     expect(isDeliberateShortPause({ ...base, pauseReason: "system" }, "c1", now)).toBe(true);
+    expect(isDeliberateShortPause({ ...base, pauseReason: "maintenance" }, "c1", now)).toBe(true);
   });
   it("is false for other reasons, statuses, companies or an old pause", () => {
     expect(isDeliberateShortPause({ ...base, pauseReason: "budget" }, "c1", now)).toBe(false);
@@ -189,6 +190,18 @@ describePostgres("stranded-work recovery for a recently paused agent", () => {
     const f = await seed({ status: "todo" });
     await pause(f.agentId);
     await db.update(agents).set({ pausedAt: new Date(Date.now() - 25 * HOUR) }).where(eq(agents.id, f.agentId));
+    await expectEscalated(f);
+  }, 60_000);
+
+  it("maintenance pause: skips a todo task (planned deploy window)", async () => {
+    const f = await seed({ status: "todo" });
+    await createAgentLifecycle(db).pauseAgent(f.agentId, "maintenance");
+    await expectSkipped(f, "todo");
+  }, 60_000);
+
+  it("terminated assignee still escalates", async () => {
+    const f = await seed({ status: "todo" });
+    await db.update(agents).set({ status: "terminated" }).where(eq(agents.id, f.agentId));
     await expectEscalated(f);
   }, 60_000);
 

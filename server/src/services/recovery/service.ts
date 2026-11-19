@@ -239,7 +239,8 @@ export const PAUSED_AGENT_RECOVERY_GRACE_MS = 24 * 60 * 60 * 1000;
 type PausedAgentFields = Pick<typeof agents.$inferSelect, "status" | "companyId" | "pauseReason" | "pausedAt" | "updatedAt">;
 function pausedAgentGraceEndsAt(agent: PausedAgentFields | null | undefined, companyId: string) {
   if (agent?.status !== "paused" || agent.companyId !== companyId) return null;
-  if (agent.pauseReason !== "manual" && agent.pauseReason !== "system") return null;
+  // PAR-13561: "maintenance" is a planned deploy pause; treated like manual/system.
+  if (agent.pauseReason !== "manual" && agent.pauseReason !== "system" && agent.pauseReason !== "maintenance") return null;
   return (agent.pausedAt ?? agent.updatedAt).getTime() + PAUSED_AGENT_RECOVERY_GRACE_MS;
 }
 export function isDeliberateShortPause(agent: PausedAgentFields | null | undefined, companyId: string, now = new Date()) {

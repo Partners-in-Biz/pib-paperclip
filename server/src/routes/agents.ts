@@ -5963,7 +5963,9 @@ export function agentRoutes(
     if (!(await getAccessibleAgent(req, res, id))) {
       return;
     }
-    const agent = await svcLifecycle.pauseAgent(id);
+    // PAR-13561: a planned deploy pause may declare itself so recovery defers.
+    const requestedReason = req.body?.reason === "maintenance" ? "maintenance" : undefined;
+    const agent = await svcLifecycle.pauseAgent(id, requestedReason);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
