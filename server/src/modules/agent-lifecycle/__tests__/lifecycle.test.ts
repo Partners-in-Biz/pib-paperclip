@@ -614,7 +614,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
 
   it("pauses an agent whose cancelled ssh run's remote group is gone (PAR-9961)", async () => {
     const agent = await hire();
-    const [environment] = await db.insert(environments).values({ companyId, name: `ssh-${randomUUID()}`, driver: "ssh",
+    const [environment] = await db.insert(environments).values({ name: `ssh-${randomUUID()}`, driver: "ssh",
       status: "active", config: { host: "mac.test", port: 22, username: "max", remoteWorkspacePath: "/Users/max/ws",
         privateKey: null, knownHosts: null, strictHostKeyChecking: true } }).returning();
     const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, status: "cancelled",
