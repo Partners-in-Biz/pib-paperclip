@@ -2,6 +2,7 @@ import { authApi } from "@/api/auth";
 import { accessApi } from "@/api/access";
 import { canManageProjectPrivacy } from "@/lib/issuePrivacy";
 import { useWorkspaceIsolationControls } from "@/hooks/useWorkspaceIsolationControls";
+import { useMemberRestrictionGate } from "@/hooks/useMemberRestrictionGate";
 import { useState, type ReactNode } from "react";
 import { environmentDisplayLabel, filterManagedSandboxSelectableEnvironments } from "@/lib/managed-sandbox-environment";
 import { Link } from "@/lib/router";
@@ -224,6 +225,10 @@ export function ProjectProperties({ project, repositories, onUpdate, onFieldUpda
   // project's access list decides what its restricted members read.
   const restrictionMode = privacySession?.memberRestrictions?.find((entry) => entry.companyId === project.companyId)?.mode ?? "off";
   const showAccessMembers = project.visibility === "private" || restrictionMode !== "off";
+  // PAR-12608 4.6 (AC-G10): a restricted member at `enforce` gets no host
+  // configuration here (env, repositories, codebase, workspace storage,
+  // execution workspaces); its reads are closed and its writes refused.
+  const hostConfigClosed = useMemberRestrictionGate(project.companyId).closed;
   const queryClient = useQueryClient();
   const [openProjectConfirmation, setOpenProjectConfirmation] = useState(false);
   const [executionWorkspaceAdvancedOpen, setExecutionWorkspaceAdvancedOpen] = useState(false);
@@ -248,14 +253,14 @@ export function ProjectProperties({ project, repositories, onUpdate, onFieldUpda
   const { data: availableSecrets = [] } = useQuery({
     queryKey: selectedCompanyId ? queryKeys.secrets.list(selectedCompanyId) : ["secrets", "none"],
     queryFn: () => secretsApi.list(selectedCompanyId!),
-    enabled: Boolean(selectedCompanyId),
+    enabled: Boolean(selectedCompanyId) && !hostConfigClosed,
   });
   const { data: userSecretDefinitions = [] } = useQuery({
     queryKey: selectedCompanyId
       ? queryKeys.secrets.userDefinitions(selectedCompanyId)
       : ["user-secret-definitions", "none"],
     queryFn: () => secretsApi.listUserSecretDefinitions(selectedCompanyId!),
-    enabled: Boolean(selectedCompanyId),
+    enabled: Boolean(selectedCompanyId) && !hostConfigClosed,
   });
   const createSecret = useMutation({
     mutationFn: (input: { name: string; value: string }) => {
@@ -270,7 +275,7 @@ export function ProjectProperties({ project, repositories, onUpdate, onFieldUpda
   const { data: environments } = useQuery({
     queryKey: queryKeys.environments.list(selectedCompanyId!),
     queryFn: () => environmentsApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId && environmentsEnabled,
+    enabled: !!selectedCompanyId && environmentsEnabled && !hostConfigClosed,
   });
 
   const workspaces = project.workspaces ?? [];
@@ -512,9 +517,9 @@ export function ProjectProperties({ project, repositories, onUpdate, onFieldUpda
             {showAccessMembers ? <ProjectAccessMembers project={project} canManage={canManagePrivacy} /> : null}
           </div>
         </PropertyRow>
-        {repositories ?? <ProjectRepositories key={project.id} project={project} />}
-        <ProjectGitAuthorization key={`git-${project.id}`} project={project} />
-        <PropertyRow
+        {hostConfigClosed ? null : repositories ?? <ProjectRepositories key={project.id} project={project} />}
+        {hostConfigClosed ? null : <ProjectGitAuthorization key={`git-${project.id}`} project={project} />}
+        {hostConfigClosed ? null : <PropertyRow
           label={<FieldLabel label="Env" state={fieldState("env")} />}
           alignStart
           valueClassName="space-y-2"
@@ -533,7 +538,7 @@ export function ProjectProperties({ project, repositories, onUpdate, onFieldUpda
             />
 
           </div>
-        </PropertyRow>
+        </PropertyRow>}
         <PropertyRow label={<FieldLabel label="Updated" state="idle" />}>
           <span className="text-sm">{formatDate(project.updatedAt)}</span>
         </PropertyRow>
@@ -544,6 +549,7 @@ export function ProjectProperties({ project, repositories, onUpdate, onFieldUpda
         )}
       </div>
 
+      {hostConfigClosed ? null : <>
       <Separator className="my-4" />
 
       <div className="space-y-1 py-4">
@@ -1094,6 +1100,7 @@ export function ProjectProperties({ project, repositories, onUpdate, onFieldUpda
         ) : null}
 
       </div>
+      </>}
 
       {onArchive && (
         <>

@@ -67,6 +67,8 @@ export const RESTRICTED_MEMBER_OPEN_PAGES: readonly string[] = [
   "/projects/:projectId/overview",
   "/projects/:projectId/issues",
   "/projects/:projectId/issues/:filter",
+  // Name, description, visibility and archive; host configuration hidden (PAR-12952).
+  "/projects/:projectId/configuration",
   "/projects/:projectId/workspaces",
   "/projects/:projectId/workspaces/:workspaceId",
   "/execution-workspaces/:workspaceId",

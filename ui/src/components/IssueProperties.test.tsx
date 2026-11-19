@@ -3881,6 +3881,35 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
+  it.each([["enforce", false], ["report", true]] as const)(
+    "offers and reads reusable workspaces only when open, restricted under %s (PAR-12952, AC-G10)",
+    async (mode, open) => {
+      mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-1" },
+        memberRestrictions: [{ companyId: "company-1", restricted: true, mode }] });
+      mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
+      mockProjectsApi.list.mockResolvedValue([createProject({
+        executionWorkspacePolicy: { enabled: true, defaultMode: "shared_workspace" },
+      })]);
+      const onUpdate = vi.fn();
+      const root = renderProperties(container, {
+        issue: createIssue({ projectId: "project-1" }),
+        childIssues: [],
+        onUpdate,
+        inline: true,
+      });
+      await waitForAssertion(() => expect(findRowTrigger(container, "Execution")).toBeDefined());
+      act(() => findRowTrigger(container, "Execution")!.click());
+      await flush();
+      expect(container.textContent?.includes("Reuse existing workspace")).toBe(open);
+      expect(mockExecutionWorkspacesApi.list.mock.calls.length > 0).toBe(open);
+      // He still picks a mode on his own task.
+      act(() => Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent?.includes("New isolated workspace"))!.click());
+      expect(onUpdate).toHaveBeenCalledWith(expect.objectContaining({ executionWorkspacePreference: "isolated_workspace" }));
+      act(() => root.unmount());
+    },
+  );
+
   it("searches reusable workspaces and saves the selected workspace", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
     mockProjectsApi.list.mockResolvedValue([createProject({

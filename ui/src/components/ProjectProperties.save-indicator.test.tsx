@@ -55,6 +55,8 @@ function makeProject(overrides: Partial<Project> = {}): Project {
 
 function primedClient() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  // The owner: the member-restriction gate (PAR-12952) opens once the session is known.
+  client.setQueryData(queryKeys.auth.session, { memberRestrictions: [] });
   client.setQueryData(queryKeys.health, { hiddenSettings: [] });
   client.setQueryData(queryKeys.instance.experimentalSettings, { enableIsolatedWorkspaces: true });
   return client;

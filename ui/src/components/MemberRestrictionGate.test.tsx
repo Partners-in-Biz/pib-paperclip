@@ -183,6 +183,8 @@ describe("member-restriction helpers", () => {
     expect(isPageOpenForRestrictedMember("/agents/new")).toBe(false);
     expect(isPageOpenForRestrictedMember("/agents/a1/dashboard")).toBe(true);
     expect(isPageOpenForRestrictedMember("/agents/a1/configuration")).toBe(false);
+    expect(isPageOpenForRestrictedMember("/projects/p1/configuration")).toBe(true);
+    expect(isPageOpenForRestrictedMember("/projects/p1/budget")).toBe(false);
     expect(isPageOpenForRestrictedMember("/u/someone")).toBe(false);
     const enforced = memberRestrictionFor([{ companyId: "c1", restricted: true, mode: "enforce" }], "c1");
     expect(isPageHiddenForMember(enforced, "/dashboard")).toBe(true);
