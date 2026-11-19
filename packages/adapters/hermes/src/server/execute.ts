@@ -70,7 +70,11 @@ import {
   resolveHermesHome,
   resolveProvider,
 } from "./detect-model.js";
-import { reconcileHermesPaperclipSkills } from "./skills.js";
+import {
+  HERMES_AGENT_SKILLS_DIR_ENV,
+  reconcileHermesPaperclipSkills,
+  resolveHermesAgentSkillsDir,
+} from "./skills.js";
 import { guardEnvStrings, prepareQuery } from "./query-file.js";
 import { readSessionLineage, resolveRun, type SessionRow } from "./session-metering.js";
 import {
@@ -534,15 +538,23 @@ async function executeHermes(
   // marker avoids touching a developer's real Hermes home in direct unit or
   // library calls that did not opt into Paperclip runtime skills.
   // Remote runs use the skills already installed in the remote Hermes home.
+  // A profile whose skills.external_dirs names PAPERCLIP_HERMES_SKILLS_DIR gets
+  // a skills dir per agent, so seats sharing HERMES_HOME see only their own
+  // skills (PAR-13538, PAR-9915). Other profiles keep the shared skills dir.
+  let agentSkillsDir: string | null = null;
   if (!remote && Object.prototype.hasOwnProperty.call(config, "paperclipRuntimeSkills")) {
     try {
+      agentSkillsDir = await resolveHermesAgentSkillsDir(config, ctx.agent?.id);
       const selectedSkills = await reconcileHermesPaperclipSkills(config, undefined, {
         onLog: (line) => ctx.onLog("stdout", `[hermes] ${line}\n`),
+        agentSkillsDir,
       });
       if (selectedSkills.length > 0) {
         await ctx.onLog(
           "stdout",
-          `[hermes] Reconciled ${selectedSkills.length} Paperclip-managed skill(s) into the Hermes skills home.\n`,
+          agentSkillsDir
+            ? `[hermes] Reconciled ${selectedSkills.length} Paperclip-managed skill(s) into this agent's skills dir ${agentSkillsDir}.\n`
+            : `[hermes] Reconciled ${selectedSkills.length} Paperclip-managed skill(s) into the Hermes skills home.\n`,
         );
       }
     } catch (err) {
@@ -753,6 +765,9 @@ async function executeHermes(
   ]);
 
   if (ctx.runId) env.PAPERCLIP_RUN_ID = ctx.runId;
+  // Only this run's own dir, never one inherited from the server or config.env.
+  if (agentSkillsDir) env[HERMES_AGENT_SKILLS_DIR_ENV] = agentSkillsDir;
+  else delete env[HERMES_AGENT_SKILLS_DIR_ENV];
 
   // PAPERCLIP_API_KEY is never accepted from config — the harness-minted run
   // token is the only source of Paperclip API identity.
