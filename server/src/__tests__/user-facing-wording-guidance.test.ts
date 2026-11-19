@@ -1,7 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
-
 /**
  * Agents write task briefs and chat replies that people read. The Nov 2026
  * onboarding walk found raw task UUIDs in an agent-written brief ("on task
