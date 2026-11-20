@@ -70,6 +70,7 @@ const mockIssuesApi = vi.hoisted(() => ({
   get: vi.fn(),
   list: vi.fn(),
   create: vi.fn(),
+  finalizeCreation: vi.fn(),
   upsertDocument: vi.fn(),
   uploadAttachment: vi.fn(),
 }));
@@ -392,6 +393,7 @@ describe("NewIssueDialog", () => {
     toastState.pushToast.mockReset();
     navigateMock.mockReset();
     mockIssuesApi.create.mockReset();
+    mockIssuesApi.finalizeCreation.mockReset().mockResolvedValue({ ok: true });
     mockIssuesApi.list.mockReset().mockResolvedValue([]);
     mockIssuesApi.upsertDocument.mockReset();
     mockIssuesApi.uploadAttachment.mockReset();
@@ -1953,7 +1955,49 @@ describe("NewIssueDialog", () => {
       await waitForAssertion(() => expect(mockIssuesApi.uploadAttachment).toHaveBeenCalledTimes(1));
       expect(mockIssuesApi.uploadAttachment).toHaveBeenCalledWith("company-1", "image-task", retained);
       expect(mockIssuesApi.create.mock.calls[0][1].description).toBe("Keep this caption");
+      expect(mockIssuesApi.create.mock.calls[0][1].deferInitialWakeup).toBe(true);
+      await waitForAssertion(() => expect(mockIssuesApi.finalizeCreation).toHaveBeenCalledWith("image-task"));
+      expect(mockIssuesApi.uploadAttachment.mock.invocationCallOrder[0]).toBeLessThan(
+        mockIssuesApi.finalizeCreation.mock.invocationCallOrder[0]!,
+      );
       expect(mockAssetsApi.uploadImage).not.toHaveBeenCalled();
+    } finally { act(() => root.unmount()); queryClient.clear(); }
+  });
+
+  it("defers initial wakeup until all staged images and audio files finish uploading, and skips finalizeCreation when no files are staged", async () => {
+    const order: string[] = [];
+    mockIssuesApi.create.mockImplementationOnce(async (_companyId: string, body: Record<string, unknown>) => {
+      order.push(`create:defer=${String(body.deferInitialWakeup ?? false)}`);
+      return { id: "media-task", identifier: "PAP-2", companyId: "company-1" };
+    });
+    mockIssuesApi.uploadAttachment.mockImplementation(async (_companyId: string, _issueId: string, file: File) => {
+      order.push(`upload:${file.name}`);
+      return { id: `att-${file.name}` };
+    });
+    mockIssuesApi.finalizeCreation.mockImplementation(async (issueId: string) => {
+      order.push(`finalize:${issueId}`);
+      return { ok: true };
+    });
+
+    const { root, queryClient } = renderDialog(container);
+    try {
+      await flush();
+      const editor = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe a task…"]')!;
+      await typeTextareaValue(editor, "Investigate WhatsApp report");
+      const image = new File(["img"], "WhatsApp Image.jpeg", { type: "image/jpeg" });
+      const audio = new File(["ogg"], "WhatsApp Audio.opus", { type: "audio/ogg" });
+      const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
+      Object.defineProperty(input, "files", { configurable: true, value: [image, audio] });
+      await act(async () => { input.dispatchEvent(new Event("change", { bubbles: true })); });
+      await flush();
+      await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="Create task"]')!.click(); });
+      await waitForAssertion(() => expect(mockIssuesApi.finalizeCreation).toHaveBeenCalledTimes(1));
+      expect(order).toEqual([
+        "create:defer=true",
+        "upload:WhatsApp Image.jpeg",
+        "upload:WhatsApp Audio.opus",
+        "finalize:media-task",
+      ]);
     } finally { act(() => root.unmount()); queryClient.clear(); }
   });
 

@@ -636,7 +636,11 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
     }: { companyId: string; stagedFiles: StagedIssueFile[]; navigateOnCreate?: boolean } & Record<string, unknown>, { assertCurrentAccount }) => {
       const assertVerifiedOwner = () => { assertCurrentAccount(); assertCurrentOwner(); };
       assertVerifiedOwner();
-      const issue = await issuesApi.create(companyId, data);
+      const deferInitialWakeup = pendingStagedFiles.length > 0;
+      const issue = await issuesApi.create(
+        companyId,
+        deferInitialWakeup ? { ...data, deferInitialWakeup: true } : data,
+      );
       assertVerifiedOwner();
       const failures = await addStagedFilesToIssue({
         companyId,
@@ -645,6 +649,10 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
         assertCurrentOwner: assertVerifiedOwner,
         idempotencyKey: typeof data.idempotencyKey === "string" ? data.idempotencyKey : undefined,
       });
+      if (deferInitialWakeup) {
+        assertVerifiedOwner();
+        await issuesApi.finalizeCreation(issue.id);
+      }
 
       assertVerifiedOwner();
       return { issue, companyId, failures, navigateOnCreate };
@@ -659,6 +667,8 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.listMineByMe(companyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(companyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(companyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issue.id) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.attachments(issue.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) });
       if (draftTimer.current) clearTimeout(draftTimer.current);
       const prefix = (companies.find((company) => company.id === companyId)?.issuePrefix ?? "").trim();
