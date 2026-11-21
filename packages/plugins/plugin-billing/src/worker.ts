@@ -11,12 +11,17 @@ import {
   type ToolRunContext,
 } from "@paperclipai/plugin-sdk";
 import {
+  type AccessCheck,
+  cachedAccessFor,
   COCKPIT_ROUTE,
   configSaved,
   correctDecision,
+  createAccessGuard,
   createSkillSyncer,
+  judgeAccess,
   listCrmClients,
   parseClientParam,
+  permissionRefusal,
   redeliver,
   registerCrmProjection,
   registerDriveReplies,
@@ -36,6 +41,7 @@ import {
   toolFail,
   toolOk,
   trackJob,
+  type AccessGuard,
   type ClientRef,
   type ModulesPayload,
 } from "@partnersinbiz/pib-plugin-kit";
@@ -184,6 +190,7 @@ import { SKILLS } from "./skills.js";
 import { assertOwnKey } from "./storage.js";
 import { billTime, deleteTimeEntry, listTime, logTime, startTimer, stopTimer } from "./time.js";
 import { BILLING_TOOLS } from "./tools.js";
+import { ACCESS_TABLE, AUTO_SEND_ACTIONS, AUTO_SEND_PERMISSION } from "./access-table.js";
 import { openWorkIssues, refreshWorkIssueOrigins } from "./workissues.js";
 import { invoiceNumberLabel } from "./invoice-number.js";
 import {
@@ -204,6 +211,7 @@ import {
 } from "./util.js";
 
 let pluginCtx: PluginContext | null = null;
+let access: AccessGuard | null = null;
 let skillSync: ReturnType<typeof createSkillSyncer> | null = null;
 
 type Handler = (ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) => Promise<unknown>;
@@ -421,21 +429,31 @@ const plugin = definePlugin({
     registerModuleWatch(ctx);
     registerClientProjectWatch(ctx);
     registerRoleWatch(ctx);
+    // Every action, tool and API route goes through the access guard (PAR-12675). With the switch off it is a pass-through.
+    const guard = createAccessGuard(ctx, { pluginKey: PLUGIN_ID, table: ACCESS_TABLE });
+    access = guard;
     for (const tool of BILLING_TOOLS) {
-      ctx.tools.register(tool.name, tool, async (params, run) => {
+      guard.tool(tool.name, tool, async (params, run) => {
         // A tool call never waits long for the skill sync (kit `soon`).
         await skillSync?.soon(run.companyId);
         return runTool(ctx, tool.name, params, run);
       });
     }
     for (const [key, handler] of Object.entries(ACTIONS)) {
-      ctx.actions.register(key, async (params, context) => {
+      guard.action(key, async (params, context, check) => {
         // The page never waits long for the skill sync (kit `soon`).
         if (context.companyId && key === "billing.load") await skillSync?.soon(context.companyId);
+        const autoSendRefused = AUTO_SEND_ACTIONS.has(key) ? await autoSendRefusal(ctx, context, params ?? {}, check) : null;
+        if (autoSendRefused) return permissionRefusal(autoSendRefused);
         return handler(ctx, context, params ?? {});
       });
     }
-    ctx.actions.register("billing.sync-skills", async (_params, context) => ({ results: await skillSync?.force(requiredCompany(context)) }));
+    guard.action("billing.sync-skills", async (_params, context) => ({ results: await skillSync?.force(requiredCompany(context)) }));
+    guard.apiRoute("client-summary", (input) => clientSummaryRoute(ctx, input));
+    guard.apiRoute(SETUP_STATUS_ROUTE.routeKey, (input) => setupStatusRoute(ctx, input));
+    guard.apiRoute(COCKPIT_ROUTE.routeKey, (input) => cockpitRoute(ctx, input));
+    // Billing's old fall-through, now by name: the Partners page shares an invoice through it.
+    guard.apiRoute("invoice-grant", (input) => acceptGrant(ctx, input));
 
     ctx.jobs.register("mark-overdue", () => trackJob(ctx, "mark-overdue", () => markOverdueJob(ctx)));
     ctx.jobs.register("run-recurring", () => trackJob(ctx, "run-recurring", () => runRecurring(ctx)));
@@ -449,7 +467,7 @@ const plugin = definePlugin({
     ctx.jobs.register("overdue-invoices", () => trackJob(ctx, "overdue-invoices", () => overdueJob(ctx)));
     ctx.jobs.register("post-missing-journals", () => trackJob(ctx, "post-missing-journals", () => backpostJob(ctx)));
 
-    const guard = (label: string, fn: (event: PluginEvent) => Promise<void>) => async (event: PluginEvent) => {
+    const logged = (label: string, fn: (event: PluginEvent) => Promise<void>) => async (event: PluginEvent) => {
       try {
         await fn(event);
       } catch (error) {
@@ -458,21 +476,21 @@ const plugin = definePlugin({
       }
     };
     // One subscription (a second would run both twice). The issue's own handlers (approvals, decisions) run before its done check.
-    ctx.events.on("issue.updated", guard("issue update", async (event) => {
+    ctx.events.on("issue.updated", logged("issue update", async (event) => {
       await onIssueUpdated(ctx, event.entityId, event.companyId, event.actorType, event.actorId);
       await checkDoneOnUpdate(ctx, BILLING_DONE_CHECKS, event);
     }));
     ctx.events.on("plugin.partnersinbiz.partners.grant.revoked", (event) => onPartnerGrantRevoked(ctx, event.companyId, event.payload));
-    ctx.events.on(MAIL_RESULT_EVENT, guard("mail result", (event) => onMailResult(ctx, event)));
-    ctx.events.on(MAIL_RECEIVED_EVENT, guard("inbound mail", (event) => onMailReceived(ctx, event)));
-    ctx.events.on(LEDGER_RESULT_EVENT, guard("ledger result", (event) => onLedgerPostResult(ctx, event)));
-    ctx.events.on(BANK_MATCHED_EVENT, guard("bank match", (event) => onBankMatchedEvent(ctx, event)));
-    ctx.events.on(DEAL_WON_EVENT, guard("deal won", (event) => onDealWon(ctx, event)));
+    ctx.events.on(MAIL_RESULT_EVENT, logged("mail result", (event) => onMailResult(ctx, event)));
+    ctx.events.on(MAIL_RECEIVED_EVENT, logged("inbound mail", (event) => onMailReceived(ctx, event)));
+    ctx.events.on(LEDGER_RESULT_EVENT, logged("ledger result", (event) => onLedgerPostResult(ctx, event)));
+    ctx.events.on(BANK_MATCHED_EVENT, logged("bank match", (event) => onBankMatchedEvent(ctx, event)));
+    ctx.events.on(DEAL_WON_EVENT, logged("deal won", (event) => onDealWon(ctx, event)));
     // A client signed (CRM e-sign): draft the invoice, once per signed document, never send it.
-    ctx.events.on(CRM_DEAL_ACCEPTED_EVENT, guard("deal accepted", (event) => onSignedDocument(ctx, event, "deal")));
-    ctx.events.on(CRM_QUOTE_ACCEPTED_EVENT, guard("quote accepted", (event) => onSignedDocument(ctx, event, "quote")));
+    ctx.events.on(CRM_DEAL_ACCEPTED_EVENT, logged("deal accepted", (event) => onSignedDocument(ctx, event, "deal")));
+    ctx.events.on(CRM_QUOTE_ACCEPTED_EVENT, logged("quote accepted", (event) => onSignedDocument(ctx, event, "quote")));
     // After registerModuleWatch (handlers run in order): Accounting switched on → post the journals it missed.
-    ctx.events.on(`plugin.${SETUP_PLUGIN}.${SETUP_EVENTS.modulesUpdated}`, guard("module switch", (event) => onModulesUpdated(ctx, event)));
+    ctx.events.on(`plugin.${SETUP_PLUGIN}.${SETUP_EVENTS.modulesUpdated}`, logged("module switch", (event) => onModulesUpdated(ctx, event)));
     // One company.created handler (kit): remembers the company, syncs the skills, and catches up a company that missed the event.
     registerCompanyBootstrap(ctx, { syncer: skillSync });
     registerBillingErasure(ctx);
@@ -490,11 +508,9 @@ const plugin = definePlugin({
     return { status: "ok", message: "Billing plugin ready" };
   },
   async onApiRequest(input) {
-    if (!pluginCtx) return { status: 503, body: { error: "Billing plugin is not ready" } };
-    if (input.routeKey === "client-summary") return clientSummaryRoute(pluginCtx, input);
-    if (input.routeKey === SETUP_STATUS_ROUTE.routeKey) return setupStatusRoute(pluginCtx, input);
-    if (input.routeKey === COCKPIT_ROUTE.routeKey) return cockpitRoute(pluginCtx, input);
-    return acceptGrant(pluginCtx, input);
+    if (!pluginCtx || !access) return { status: 503, body: { error: "Billing plugin is not ready" } };
+    // An unknown key under the switch `off` answers as before; under report and enforce the guard refuses it.
+    return access.handleApiRequest(input, async () => NOT_FOUND);
   },
 });
 
@@ -506,7 +522,7 @@ runWorker(plugin, import.meta.url);
 type ToolMessage = string | ((data: Record<string, unknown>) => string);
 
 /** Tool name → action handler and the one-line result for the agent. */
-const TOOL_ACTIONS: Record<string, { action: string; message: ToolMessage }> = {
+export const TOOL_ACTIONS: Record<string, { action: string; message: ToolMessage }> = {
   "create-invoice": { action: "billing.create-invoice", message: "Draft invoice created. Add lines, then request-invoice-send." },
   "add-line": { action: "billing.add-line", message: "Invoice line added" },
   "update-line": { action: "billing.update-line", message: "Invoice line changed" },
@@ -947,6 +963,18 @@ async function quoteHtml(ctx: PluginContext, context: PluginPerformActionContext
 
 // ── Recurring ──────────────────────────────────────────────────────────────
 
+/**
+ * Automatic sending reaches the client with no further approval, so under `enforce` a limited person who turns it on
+ * needs `billing.invoices:approve` as well as the action's `billing.plans` row (PAR-12675). Agents cannot turn it on
+ * at all (`requirePerson`), and with the switch off or in `report` nothing changes.
+ */
+async function autoSendRefusal(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>, check: AccessCheck): Promise<string | null> {
+  if (check.mode !== "enforce" || check.caller.type !== "user" || !check.caller.userId) return null;
+  if (params.autoSend !== true && params.autoSend !== "true") return null;
+  const verdict = judgeAccess(await cachedAccessFor(ctx, requiredCompany(context), check.caller.userId), AUTO_SEND_PERMISSION);
+  return verdict.ok ? null : `Turning on automatic sending needs billing.invoices approve: ${verdict.reason}`;
+}
+
 async function createRecurringAction(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {
   const companyId = requiredCompany(context);
   const template = await requireOwnInvoice(ctx, companyId, requiredString(params, "templateInvoiceId"));
@@ -1355,8 +1383,10 @@ function firstQuery(value: string | string[] | undefined): string {
   return typeof first === "string" ? first.trim() : "";
 }
 
+const NOT_FOUND = { status: 404, body: { error: "Not found" } };
+
 async function acceptGrant(ctx: PluginContext, input: PluginApiRequestInput) {
-  if (input.routeKey !== "invoice-grant") return { status: 404, body: { error: "Not found" } };
+  if (input.routeKey !== "invoice-grant") return NOT_FOUND;
   try {
     const body = asObject(input.body);
     const invoiceId = String(body.invoiceId ?? "").trim();

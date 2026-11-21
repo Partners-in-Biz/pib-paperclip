@@ -1,7 +1,8 @@
 import { createContext, useContext, useEffect, type CSSProperties, type ReactNode } from "react";
-import { useHostNavigation, usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import { useHostNavigation } from "@paperclipai/plugin-sdk/ui";
 import { formatMoney, formatShortDate, Button, Field, Input, Pill, SectionCard, Select, fluidColumns, oneColumn, tokens, tone, useIsNarrow, usePibBaseStyles, type LucideIcon, type ToneInput } from "@partnersinbiz/pib-plugin-ui";
 import { statusTone } from "./series.js";
+import { useBillingAction } from "./actions.js";
 import type { ClientKind, ClientScope } from "@partnersinbiz/pib-plugin-kit/client-ref";
 import type { Client, Snapshot } from "./types.js";
 
@@ -28,12 +29,12 @@ const ACTION_KEYS = [
 export type ActionKey = (typeof ACTION_KEYS)[number];
 export type Call = <T = unknown>(key: ActionKey, params?: Record<string, unknown>) => Promise<T>;
 
-/** One `usePluginAction` per key (a fixed list, so hook order is stable). */
+/** One action hook per key (a fixed list, so hook order is stable). A refusal is thrown, so `run` shows it as an error. */
 export function useCall(): Call {
   const fns: Record<string, (params?: Record<string, unknown>) => Promise<unknown>> = {};
   for (const key of ACTION_KEYS) {
     // eslint-disable-next-line react-hooks/rules-of-hooks
-    fns[key] = usePluginAction(key) as (params?: Record<string, unknown>) => Promise<unknown>;
+    fns[key] = useBillingAction(key) as (params?: Record<string, unknown>) => Promise<unknown>;
   }
   return (key, params = {}) => fns[key]!(params) as Promise<never>;
 }
