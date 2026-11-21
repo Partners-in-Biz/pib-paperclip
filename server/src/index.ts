@@ -178,6 +178,7 @@ import { createSecretProposalsService } from "./services/secret-proposals.js";
 import { environmentRuntimeService } from "./services/environment-runtime.js";
 import { historicalCleanupVerificationService } from "./services/historical-cleanup-verification.js";
 import { isCloudManagedInstance } from "./services/cloud-instance.js";
+import { personalNoteService } from "./services/personal-notes.js";
 import { createDbAdapterAuthSessionStore } from "./services/device-login-service.js";
 import {
   createDeviceLoginReaper,
@@ -1963,6 +1964,31 @@ async function startServerWithDatabaseTeardown(
       idleDeadlineOwners.quota = bindIdleDeadlineOwner(scheduled.monitors.reconciliationSnapshot, readIdleQuotaSchedule,
         snapshot => ({ issueWaits: snapshot.issueWaits }));
       trackHeartbeatSchedulerWork(Promise.all([scheduled.timers.ready, scheduled.monitors.ready, scheduled.routines.ready]));
+      const personalNotesSvc = personalNoteService(db, { heartbeat });
+      let personalNotesTickInFlight = false;
+      const runPersonalNotesTick = async () => {
+        if (personalNotesTickInFlight || heartbeatSchedulerStopped || isIdleTaskDrainActive() || isWarmStandby()) return;
+        personalNotesTickInFlight = true;
+        try {
+          const result = await personalNotesSvc.tickScheduledHandoffs(new Date());
+          if (result.dispatched > 0 || result.failed > 0) {
+            logger.info({ ...result }, "personal notes scheduled handoff tick completed");
+          }
+        } catch (err) {
+          logger.warn({ err }, "personal notes scheduled handoff tick failed");
+        } finally {
+          personalNotesTickInFlight = false;
+        }
+      };
+      const personalNotesTimer = setInterval(() => {
+        if (heartbeatSchedulerStopped) {
+          clearInterval(personalNotesTimer);
+          return;
+        }
+        void runPersonalNotesTick();
+      }, 30_000);
+      personalNotesTimer.unref?.();
+      void runPersonalNotesTick();
     };
     trackHeartbeatSchedulerWork(runStartupHousekeeping().then(() => {
       if (!heartbeatSchedulerStopped) startHeartbeatScheduler();

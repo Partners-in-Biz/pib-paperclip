@@ -30,6 +30,7 @@ import { useQuery } from "@tanstack/react-query";
 import type { AttentionFeed } from "@paperclipai/shared";
 import { SidebarSection } from "./SidebarSection";
 import { SidebarNavItem } from "./SidebarNavItem";
+import { SidebarNotesDropdown } from "./SidebarNotesDropdown";
 import { SidebarAgents } from "./SidebarAgents";
 import { SidebarProjects } from "./SidebarProjects";
 import { SidebarStarredProjects } from "./SidebarStarredProjects";
@@ -237,6 +238,7 @@ function ClassicSidebar({ children }: { children?: ReactNode }) {
           ) : (
             <SidebarNavItem to="/issues" label="Tasks" icon={CircleCheck} />
           )}
+          <SidebarNotesDropdown />
           {streamlinedUiEnabled ? (
             <>
               <SidebarNavItem to="/projects" label="Projects" icon={FolderOpen} />

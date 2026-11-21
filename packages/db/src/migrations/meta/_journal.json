@@ -3158,6 +3158,27 @@
       "when": 1795066589482,
       "tag": "0452_plugin_core_read_runs_issue_id_first",
       "breakpoints": true
+    },
+    {
+      "idx": 453,
+      "version": "7",
+      "when": 1795254000000,
+      "tag": "0453_personal_notes",
+      "breakpoints": true
+    },
+    {
+      "idx": 454,
+      "version": "7",
+      "when": 1795260000000,
+      "tag": "0454_personal_notes_power_features",
+      "breakpoints": true
+    },
+    {
+      "idx": 455,
+      "version": "7",
+      "when": 1795265000000,
+      "tag": "0455_planning_canvases",
+      "breakpoints": true
     }
   ]
 }

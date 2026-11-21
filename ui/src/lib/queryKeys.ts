@@ -608,6 +608,14 @@ export const queryKeys = {
   auth: {
     session: ["auth", "session"] as const,
   },
+  personalNotes: {
+    list: (companyId: string) => ["personal-notes", companyId] as const,
+    detail: (companyId: string, noteId: string) => ["personal-notes", companyId, noteId] as const,
+  },
+  planningCanvases: {
+    list: (companyId: string) => ["planning-canvases", companyId] as const,
+    detail: (companyId: string, boardId: string) => ["planning-canvases", companyId, boardId] as const,
+  },
   inboxAgentPolicy: {
     mine: (companyId: string) =>
       ["inbox-agent-policy", companyId, "me"] as const,

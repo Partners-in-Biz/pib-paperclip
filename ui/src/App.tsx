@@ -83,6 +83,8 @@ const ProjectDetail = lazy(() => import("./pages/ProjectDetail").then((module) =
 const ProjectWorkspaceDetail = lazy(() => import("./pages/ProjectWorkspaceDetail").then((module) => ({ default: module.ProjectWorkspaceDetail })));
 const Workspaces = lazy(() => import("./pages/Workspaces").then((module) => ({ default: module.Workspaces })));
 const Search = lazy(() => import("./pages/Search").then((module) => ({ default: module.Search })));
+const Notes = lazy(() => import("./pages/Notes").then((module) => ({ default: module.Notes })));
+const PlanningCanvas = lazy(() => import("./pages/PlanningCanvas").then((module) => ({ default: module.PlanningCanvas })));
 const Routines = lazy(() => import("./pages/Routines").then((module) => ({ default: module.Routines })));
 const StatusCards = lazy(() => import("./pages/StatusCards").then((module) => ({ default: module.StatusCards })));
 const RoutineDetail = lazy(() => import("./pages/RoutineDetail").then((module) => ({ default: module.RoutineDetail })));
@@ -311,6 +313,9 @@ function boardRoutes(streamlinedUiEnabled: boolean, combinedInboxTasksEnabled: b
       </Route>
       <Route path="issues" element={<Issues />} />
       <Route path="tasks" element={<Navigate to="/issues" replace />} />
+      <Route path="notes" element={<Notes />} />
+      <Route path="notes/:noteId" element={<Notes />} />
+      <Route path="planning-canvas" element={<PlanningCanvas />} />
       <Route path="search" element={<Search />} />
       {mergedTasks ? (
         <>

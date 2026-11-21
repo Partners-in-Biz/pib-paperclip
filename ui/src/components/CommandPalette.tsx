@@ -27,6 +27,8 @@ import {
   CircleDot,
   Bot,
   Hexagon,
+  NotebookPen,
+  PenTool,
   Target,
   LayoutDashboard,
   Inbox,
@@ -97,7 +99,7 @@ export function CommandPalette() {
   const navigate = useNavigate();
   const location = useLocation();
   const { selectedCompanyId } = useCompany();
-  const { openNewIssue, openNewAgent } = useDialogActions();
+  const { openNewIssue, openNewNote, openNewAgent } = useDialogActions();
   const { isMobile, setSidebarOpen } = useSidebar();
   // PAR-12608 4.6: no entry for a page closed to a restricted member.
   const { isPageHidden } = useMemberRestriction();
@@ -331,6 +333,34 @@ export function CommandPalette() {
             <SquarePen className="mr-2 h-4 w-4" />
             Create new task
             <span className="ml-auto text-xs text-muted-foreground">C</span>
+          </CommandItem>
+          <CommandItem
+            onSelect={() => {
+              setOpen(false);
+              openNewNote();
+            }}
+          >
+            <NotebookPen className="mr-2 h-4 w-4" />
+            Create new personal note
+            <span className="ml-auto text-xs text-muted-foreground">⇧N</span>
+          </CommandItem>
+          <CommandItem
+            onSelect={() => {
+              setOpen(false);
+              navigate("/notes");
+            }}
+          >
+            <NotebookPen className="mr-2 h-4 w-4" />
+            Go to Personal Notes
+          </CommandItem>
+          <CommandItem
+            onSelect={() => {
+              setOpen(false);
+              navigate("/planning-canvas");
+            }}
+          >
+            <PenTool className="mr-2 h-4 w-4" />
+            Go to Planning Canvas
           </CommandItem>
           {onIssueDetail && fileViewerEnabled && (
             <CommandItem
