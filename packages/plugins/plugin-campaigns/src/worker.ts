@@ -90,6 +90,7 @@ import {
   type EnrollmentDraft,
 } from "./domain.js";
 import { CAMPAIGN_TOOLS } from "./tools.js";
+import { createFeedDigest } from "./feed-digest.js";
 import { SKILLS } from "./skills.js";
 import { firstName, nextSend } from "./detail.js";
 import { channelsUsed, firstChannel, launchAudience } from "./audience.js";
@@ -389,6 +390,7 @@ async function dispatch(ctx: PluginContext, name: string, body: Record<string, u
   if (name === "campaign-stats") return stats(ctx, companyId, body);
   if (name === "enroll-contact") return enroll(ctx, companyId, body);
   if (name === "request-campaign-approval") return requestApproval(ctx, companyId, body);
+  if (name === "create-feed-digest") return createFeedDigest(ctx, companyId, body, { agentId: run.agentId }, requestApproval);
   if (name === "review-campaign-approval") return reviewApprovalTool(ctx, companyId, run.agentId, body, APPROVAL_PATHS);
   if (name === "create-ab-variant") return createAbVariant(ctx, companyId, body);
   if (name === "campaign-funnel") return funnel(ctx, companyId, body);
