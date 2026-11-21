@@ -123,6 +123,12 @@ describe("runAdapterExecutionTargetShellCommand", () => {
     );
   });
 
+  it("shares the run's ssh connection for shell commands (PAR-9403)", async () => {
+    const runSshCommandSpy = vi.spyOn(ssh, "runSshCommand").mockResolvedValue({ stdout: "", stderr: "" });
+    await runAdapterExecutionTargetShellCommand("run-9403", sshExecutionTarget(), "true", { cwd: "/tmp/local", env: {} });
+    expect(runSshCommandSpy.mock.calls[0]?.[2]).toMatchObject({ connectionReuseRunId: "run-9403" });
+  });
+
   it("sanitizes inherited host env before SSH shell execution", async () => {
     vi.stubEnv("PATH", "/host/bin:/usr/bin");
     vi.stubEnv("HOME", "/Users/local");
