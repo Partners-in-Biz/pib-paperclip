@@ -787,3 +787,27 @@ describe("operator default isolated execution workspaces", () => {
     expect(resolveExecutionWorkspaceEnvironmentId(defaults)).toEqual({environmentId: "agent-env", source: "agent"});
   });
 });
+
+describe("non-code execution workspace mode (PAR-13540)", () => {
+  const isolatedPolicy = { enabled: true, defaultMode: "isolated_workspace" as const };
+  const base = { projectPolicy: isolatedPolicy, issueSettings: null, legacyUseProjectWorkspace: null };
+
+  it.each(["ceo", "pm", "cmo", "researcher"])("%s skips git worktree isolation", (agentRole) => {
+    expect(resolveExecutionWorkspaceMode({ ...base, agentRole })).toBe("agent_default");
+  });
+
+  it("planning and ask work modes skip git worktree isolation", () => {
+    expect(resolveExecutionWorkspaceMode({ ...base, agentRole: "engineer", issueWorkMode: "planning" })).toBe("agent_default");
+    expect(resolveExecutionWorkspaceMode({ ...base, agentRole: "engineer", issueWorkMode: "ask" })).toBe("agent_default");
+  });
+
+  it.each(["engineer", "devops", "qa"])("%s on a standard issue keeps the project isolated mode", (agentRole) => {
+    expect(resolveExecutionWorkspaceMode({ ...base, agentRole, issueWorkMode: "standard" })).toBe("isolated_workspace");
+  });
+
+  it("an explicit issue mode wins over the role default", () => {
+    expect(resolveExecutionWorkspaceMode({
+      ...base, agentRole: "pm", issueSettings: { mode: "isolated_workspace" },
+    })).toBe("isolated_workspace");
+  });
+});
