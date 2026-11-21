@@ -62,7 +62,7 @@ const CREATE_BODIES: Record<string, [Record<string, unknown>, boolean]> = {
   "worktreeParentDir": [settings({ workspaceStrategy: { type: "git_worktree", worktreeParentDir: "/tmp/r" } }), true],
   "authorizationPolicy": [{ executionPolicy: { authorizationPolicy: { trustPreset: "low_trust_review" } } }, true],
   "harnessKind": [{ harnessKind: "skill_test" }, true], "onboardingFirstTask": [{ onboardingFirstTask: true }, true],
-  "executionWorkspaceId": [{ executionWorkspaceId: "@WS" }, true], "blockedByIssueIds": [{ blockedByIssueIds: ["@TASK"] }, true],
+  "executionWorkspaceId": [{ executionWorkspaceId: "@WS" }, false], "blockedByIssueIds": [{ blockedByIssueIds: ["@TASK"] }, true],
   "assignee O": [{ assigneeUserId: "@O" }, true],
 };
 const BODIES: Record<Route, Record<string, [Record<string, unknown>, boolean]>> = {
