@@ -54,6 +54,7 @@ import { assertChatTaskCreationAccess, resolveChatExecutionDefaults } from "./ch
 import { issueService } from "./issues.js";
 import { logActivity } from "./activity-log.js";
 import { instanceSettingsService } from "./instance-settings.js";
+import { inboundRefusedForPerson } from "./member-restriction/inbound.js";
 import { toolAccessPolicyService } from "./tool-access-policy.js";
 import type { heartbeatService } from "./heartbeat.js";
 import type { StorageService } from "../storage/types.js";
@@ -1211,6 +1212,18 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
     // issueId and wakePending commit with the email below. Retried deliveries
     // resume that durable wake phase without reclassifying the retained message.
     if (!event.issueId) {
+      // PAR-12608 4.6a row 10: a mail is mapped to the inbox's sponsor, the
+      // person its task and wake work for. A sponsor restricted under
+      // `enforce` gets no comment, task or wake; a failed read retries.
+      if (endpoint.sponsorUserId && await inboundRefusedForPerson(db, {
+        companyId: endpoint.companyId, personId: endpoint.sponsorUserId, channel: "email", objectId: delivery.id,
+      })) {
+        await db
+          .update(chatDeliveries)
+          .set({ state: "filtered", redactedError: "Inbox sponsor is restricted in this company", processedAt: new Date() })
+          .where(eq(chatDeliveries.id, delivery.id));
+        return;
+      }
       const message =
         prefetched ??
         (await api.getMessage(endpoint.botExternalId!, event.message_id));

@@ -14,6 +14,7 @@ import { issueThreadInteractionService } from "../issue-thread-interactions.js";
 import { evaluateIssueThreadInteractionResolverAudience } from "../issue-thread-interaction-resolution.js";
 import { nativeSha256 } from "../native-runtime/canonical.js";
 import { authorizationService, type AuthorizationActor } from "../authorization.js";
+import { inboundRefusedForPerson } from "../member-restriction/inbound.js";
 import type { SpekoToolEnvelope } from "./speko-protocol.js";
 
 export type VoiceTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -51,6 +52,12 @@ export function voiceSessionStore(db: Db, options: { allowLocalBoard: boolean; n
       ? await tx.select({ id: instanceUserRoles.id }).from(instanceUserRoles).where(and(eq(instanceUserRoles.userId, caller.id), eq(instanceUserRoles.role, "instance_admin"))).for("share", options.nonblockingAuthority ? { noWait: true } : undefined)
       : await tx.select({ id: companyMemberships.id }).from(companyMemberships).where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalId, caller.id), eq(companyMemberships.principalType, "user"), eq(companyMemberships.status, "active"), sql`${companyMemberships.membershipRole} is distinct from 'viewer'`)).for("share", options.nonblockingAuthority ? { noWait: true } : undefined);
     if (!permitted.length) throw forbidden("Voice access is no longer available");
+    // PAR-12608 4.6a row 6: every call, session and tool call is mapped to its
+    // person here, before anything is written. A member restricted under
+    // `enforce` is refused, so nothing is created and no run starts.
+    if (caller.authority === "member" && await inboundRefusedForPerson(db, { companyId, personId: caller.id, channel: "voice" }, tx)) {
+      throw forbidden("Your access to this company is restricted, so voice work is not available");
+    }
   }
   async function authorizeTask(tx: VoiceTransaction, companyId: string, issueId: string, caller: VoiceCaller, work = true) {
     await authorizeCaller(tx, companyId, caller);
