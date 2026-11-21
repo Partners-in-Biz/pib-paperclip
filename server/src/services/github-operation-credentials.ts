@@ -18,6 +18,7 @@ import {
 import { secretService } from "./secrets.js";
 import { resolveCoreTrustPreset } from "./trust-preset-resolver.js";
 import { isLowTrustQuarantined } from "./source-trust.js";
+import { GITHUB_CREDENTIALS_RESTRICTED_REASON, githubCredentialsRefused } from "./member-restriction/github-credentials.js";
 
 export type GitHubCredentialSummary = {
   status: "available" | "absent" | "unavailable";
@@ -168,6 +169,16 @@ export async function resolveGitHubOperationCredentials(
       ...summary,
       env,
     };
+  }
+  // 4.6a row 5: no credential for a run whose person is restricted under
+  // `enforce`. `unavailable`, never `absent`: on `absent` the git remote
+  // provider falls back to company secrets and the server's token.
+  if (await githubCredentialsRefused(db, {
+    companyId: input.companyId, personId: run.responsibleUserId, target: "github_operation_credentials", runId: input.runId,
+  })) {
+    summary = { status: "unavailable", reason: GITHUB_CREDENTIALS_RESTRICTED_REASON };
+    await saveGitHubSummary(db, context, summary);
+    return { identityContextId: context.id, revision: context.revision, ...summary, env };
   }
   try {
     const resolved = await resolveManagedGitHubCredential(

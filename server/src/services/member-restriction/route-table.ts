@@ -585,10 +585,11 @@ export const MEMBER_RESTRICTION_MOUNT_TABLE: readonly MemberRestrictionMountEntr
       "publicMcpIngress.USE publicMcpIngressRoutes"] },
   { row: 5, rule: "a run's own run-bound token only; connection search and request and the MCP tools end in the dispatcher (4.8) " +
       "and the connector builder (4.9); the GitHub credentials route hands the run a company credential, so it is closed for a run " +
-      "whose person is restricted (4.9, decision 4; PAR-13220)",
+      "whose person is restricted (4.9, decision 4)",
     mounts: ["USE runtimeConnectionIntentRoutes", "USE nativeRunMcpRoutes"], toProve: MOUNT_TEST,
     routes: [
-      { method: "POST", path: "/runtime-tools/github/credentials", class: "closed", toProve: "PAR-13220" },
+      { method: "POST", path: "/runtime-tools/github/credentials", class: "closed",
+        toProve: "server/src/__tests__/member-restriction-github-credentials.test.ts" },
       { method: "GET", path: "/mcp/runtime-tools", class: "run" },
       { method: "POST", path: "/mcp/runtime-tools", class: "run" },
       { method: "POST", path: "/runtime-tools/connections/search", class: "run" },
