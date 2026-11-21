@@ -4,7 +4,7 @@ import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { agents, companies, createDb, heartbeatRuns, issues, pluginManagedResources, plugins, routineRuns, type Db } from "@paperclipai/db";
+import { agents, companies, createDb, heartbeatRuns, issueThreadInteractions, issues, pluginManagedResources, plugins, routineRuns, type Db } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
@@ -98,6 +98,19 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       expect(await saved(run.id)).toMatchObject({ completedAt: null, failureReason: null });
       await quiet();
     }
+  });
+  it("treats a blocked execution issue awaiting a pending interaction as paused, not failed", async () => {
+    await start(); await quiet();
+    const f = await fixture(), run = await dispatch(f), issueId = run.linkedIssueId!;
+    await db.insert(issueThreadInteractions).values({ companyId: f.companyId, issueId, kind: "request_confirmation",
+      status: "pending", payload: {} as never });
+    await issueService(db).update(issueId, { status: "blocked" });
+    await settled(); await quiet();
+    expect(await saved(run.id)).toMatchObject({ status: "issue_created", failureReason: null, completedAt: null });
+    await db.update(issueThreadInteractions).set({ status: "accepted" }).where(eq(issueThreadInteractions.issueId, issueId));
+    await issueService(db).update(issueId, { status: "done" });
+    await projected(run.id, "completed");
+    expect(errors).toEqual([]);
   });
   it("reconstructs legacy terminal debt and reopened transient failures but leaves skipped and coalesced history unchanged", async () => {
     const f = await fixture(), first = await dispatch(f), second = await dispatch(f);
