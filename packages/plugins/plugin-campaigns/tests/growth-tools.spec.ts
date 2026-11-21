@@ -21,7 +21,8 @@ describe("growth lab wiring", () => {
 
   it("the worker registers the growth tools through the factory, not the campaign dispatcher", () => {
     const worker = readFileSync(new URL("../src/worker.ts", import.meta.url), "utf8");
-    expect(worker).toContain("registerGrowthTools(ctx, campaignsGrowthToolsHost(ctx))");
+    // Through the access guard (PAR-12684): the growth helper registers each tool with guard.tool.
+    expect(worker).toContain("registerGrowthTools(ctx, campaignsGrowthToolsHost(ctx), g)");
     expect(worker).toContain("GROWTH_TOOL_NAMES");
   });
 
