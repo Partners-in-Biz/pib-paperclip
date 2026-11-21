@@ -224,7 +224,15 @@ export interface HostServices {
 
   /** Provides `companies.list`, `companies.get`. */
   companies: {
-    list(params: WorkerToHostMethods["companies.list"][0]): Promise<WorkerToHostMethods["companies.list"][1]>;
+    /**
+     * `filter.companyIds`, when set, is applied before `limit`/`offset`: only
+     * those companies are returned. The worker's own `actionableOnly` is
+     * resolved by the gate into this filter, never passed through.
+     */
+    list(
+      params: Pick<WorkerToHostMethods["companies.list"][0], "limit" | "offset">,
+      filter?: { companyIds?: readonly string[] },
+    ): Promise<WorkerToHostMethods["companies.list"][1]>;
     get(params: WorkerToHostMethods["companies.get"][0]): Promise<WorkerToHostMethods["companies.get"][1]>;
   };
 
@@ -868,12 +876,26 @@ export function createHostClientHandlers(
     }),
 
     // Companies
+    // Inside an invocation: the invocation's company (with or without
+    // `actionableOnly`). Outside one: every company, or with `actionableOnly`
+    // the companies with saved settings (`context.actionableCompanyIds`). The
+    // filter goes to the service so it runs before the window; the rows are
+    // filtered again here so a service that ignores it never widens the answer.
     "companies.list": gated("companies.list", async (params, context) => {
-      const rows = await services.companies.list(params);
       const allowedCompanyId = readNonEmptyString(context?.invocationScope?.companyId);
-      if (!allowedCompanyId) return rows;
+      const companyIds = allowedCompanyId
+        ? [allowedCompanyId]
+        : params?.actionableOnly === true
+          ? [...(context?.actionableCompanyIds ?? [])]
+          : null;
+      const window = { limit: params?.limit, offset: params?.offset };
+      const rows = companyIds
+        ? await services.companies.list(window, { companyIds })
+        : await services.companies.list(window);
+      if (!companyIds) return rows;
+      const allowed = new Set(companyIds);
       return rows.filter((company) =>
-        isRecord(company) && company.id === allowedCompanyId,
+        isRecord(company) && typeof company.id === "string" && allowed.has(company.id),
       ) as WorkerToHostMethods["companies.list"][1];
     }),
     "companies.get": gated("companies.get", async (params) => {
