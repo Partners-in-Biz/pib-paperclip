@@ -1,15 +1,20 @@
 import { isDeepStrictEqual } from "node:util";
 import type { Request } from "express";
 import type { z } from "zod";
-import type { Db } from "@paperclipai/db";
+import { and, eq, inArray } from "drizzle-orm";
+import {
+  companyMemberships, executionWorkspaces, issueRelations, issues, projects, projectWorkspaces, type Db,
+} from "@paperclipai/db";
 import {
   MEMBER_RESTRICTED_CODE, createChildIssueSchema, createIssueSchema, createProjectSchema, issueExecutionPolicySchema,
   issueExecutionWorkspaceSettingsSchema, updateIssueSchema, updateProjectSchema,
 } from "@paperclipai/shared";
-import { forbidden } from "../../errors.js";
+import { forbidden, notFound, unprocessable, type HttpError } from "../../errors.js";
 import { recordMemberRestrictionDenial } from "./admin.js";
+import { MEMBER_AGENT_NOT_LISTED_DETAILS, MEMBER_AGENT_NOT_LISTED_ROUTE_MESSAGE } from "./agent-read.js";
 import { memberRestrictionForActor } from "./actor-memberships.js";
-import { memberRestrictionOrUnavailable, memberRestrictionResolver } from "./resolver.js";
+import { memberRestrictionOrUnavailable, memberRestrictionResolver, memberRestrictionUnavailable } from "./resolver.js";
+import { strictReadCondition } from "./strict-read.js";
 
 /**
  * The body allowlist of PAR-12608 4.6 (PAR-12934, C4i-a): which keys of a
@@ -106,11 +111,13 @@ async function bodyRestrictionBinding(db: Db, actor: Request["actor"], companyId
   if (!actor || actor.type === "none" || actor.source === "local_implicit") return null;
   const resolve = memberRestrictionResolver(db);
   const carried = await memberRestrictionForActor(resolve, actor, companyId);
-  if (carried?.restricted && carried.mode !== "off") return { personId: carried.personId, mode: carried.mode };
+  if (carried?.restricted && carried.mode !== "off") {
+    return { personId: carried.personId, mode: carried.mode, agentIds: carried.agentIds };
+  }
   const authorizer = actor.authorizingUserId;
   if (!authorizer || authorizer === carried?.personId) return null;
   const answer = await memberRestrictionOrUnavailable(resolve, authorizer, companyId);
-  return answer.restricted && answer.mode !== "off" ? { personId: authorizer, mode: answer.mode } : null;
+  return answer.restricted && answer.mode !== "off" ? { personId: authorizer, mode: answer.mode, agentIds: answer.agentIds } : null;
 }
 
 /**
@@ -147,13 +154,13 @@ export async function assertRestrictedBodyAllowed(
 
 /**
  * Task bodies (PAR-12950, C4i-b). Classes beyond the project ones:
- * - `checked`: allowed; a later check in the handler answers for R (strict read, agent list, H2).
- * - `self-only`: absent, `null`, the bound person or the stored value.
+ * - `checked`: allowed; a check answers for R (strict read, agent list, H2, membership), in the
+ *   handler or in `uncheckedTaskValues` (C4i-e).
  * - `off-only`: absent or `false`.
  * - `keep-stored`: an object whose host keys R can neither set nor clear (`TASK_KEPT_OBJECTS`).
- * - `reference`: another object's id; until its read check lands (C4i-b2) only absent or `null`.
+ * - `reference`: another object's id; R must be able to read its target (`unreadableReference`, C4i-b2).
  */
-export type TaskBodyFieldClass = BodyFieldClass | "checked" | "self-only" | "off-only" | "keep-stored" | "reference";
+export type TaskBodyFieldClass = BodyFieldClass | "checked" | "off-only" | "keep-stored" | "reference";
 type KeptMap = { [key: string]: "allowed" | "keep-stored" | KeptMap };
 type KeysOf<T> = T extends unknown ? keyof T : never;
 type CreateTask = z.output<typeof createIssueSchema>;
@@ -164,14 +171,15 @@ const TASK_COMMON = {
   visibility: "allowed", labelIds: "allowed", goalId: "allowed", requestDepth: "allowed", billingCode: "allowed",
   unblockDescriptor: "allowed", executionWorkspacePreference: "allowed",
   projectId: "checked", parentId: "checked", assigneeAgentId: "checked",
-  // No read check on a blocker id and no agent-list check on a watchdog at this base: clear only.
-  blockedByIssueIds: "empty-only", assigneeUserId: "self-only",
+  // A new blocker passes R's strict read (`uncheckedTaskValues`); a user assignee must be an
+  // active member of the company (`assertAssignableUser`, services/issues.ts).
+  blockedByIssueIds: "checked", assigneeUserId: "checked",
   executionWorkspaceSettings: "keep-stored", assigneeAdapterOverrides: "keep-stored", executionPolicy: "keep-stored",
   inheritExecutionWorkspaceFromIssueId: "reference", executionWorkspaceId: "reference", projectWorkspaceId: "reference",
   harnessKind: "off-only", reviewPolicy: "off-only",
 } as const;
 const TASK_CREATE_BASE = {
-  watchdog: "empty-only", createdByUserId: "checked", responsibleUserId: "checked", workspaceSelection: "reference",
+  watchdog: "checked", createdByUserId: "checked", responsibleUserId: "checked", workspaceSelection: "reference",
 } as const;
 
 /** Task create (`POST /api/companies/:companyId/issues`). */
@@ -269,7 +277,7 @@ function mergeKept(path: string, map: KeptMap, value: Record<string, unknown>, s
   return out;
 }
 
-/** A user named on a review stage is R himself or already on the stored stages: no person check exists there yet. */
+/** The users named on review stages (C4i-e: a new one must be an active member, `uncheckedTaskValues`). */
 function stageUsers(policy: unknown): string[] {
   const stages = recordOf(policy).stages;
   return (Array.isArray(stages) ? stages : []).flatMap((stage) => {
@@ -281,7 +289,7 @@ function stageUsers(policy: unknown): string[] {
 
 /** The keys R may not send, and the body with the stored host keys put back. */
 export function restrictedTaskBodyKeys(schemaKey: MemberRestrictionTaskBodyKey, body: Record<string, unknown>,
-  stored: StoredTaskBody, personId: string): { refused: string[]; merged: Record<string, unknown> } {
+  stored: StoredTaskBody): { refused: string[]; merged: Record<string, unknown> } {
   const fields: Record<string, TaskBodyFieldClass | undefined> = MEMBER_RESTRICTION_TASK_BODY_ALLOWLISTS[schemaKey].fields;
   const kept: Record<string, KeptMap> = TASK_KEPT_OBJECTS;
   const refused: string[] = [];
@@ -289,11 +297,10 @@ export function restrictedTaskBodyKeys(schemaKey: MemberRestrictionTaskBodyKey, 
   for (const [key, value] of Object.entries(body)) {
     if (value === undefined) continue;
     const kind = Object.hasOwn(fields, key) ? fields[key] : undefined;
-    if (kind === "allowed" || kind === "checked") continue;
-    if ((kind === "empty-only" || kind === "reference") && isEmpty(value)) continue;
-    if (key === "executionWorkspaceId" && value === stored?.executionWorkspaceId) continue;
+    // A reference is read-checked by `unreadableReference`, not refused by key.
+    if (kind === "allowed" || kind === "checked" || kind === "reference") continue;
+    if (kind === "empty-only" && isEmpty(value)) continue;
     if (kind === "off-only" && value === false) continue;
-    if (kind === "self-only" && (value === null || value === personId || value === stored?.assigneeUserId)) continue;
     if (kind === "keep-stored") {
       const storedValue = recordOf(stored?.[key as keyof NonNullable<StoredTaskBody>]);
       if (value === null) {
@@ -305,8 +312,6 @@ export function restrictedTaskBodyKeys(schemaKey: MemberRestrictionTaskBodyKey, 
     }
     refused.push(key);
   }
-  const allowedUsers = new Set([personId, ...stageUsers(stored?.executionPolicy)]);
-  if (stageUsers(body.executionPolicy).some((id) => !allowedUsers.has(id))) refused.push("executionPolicy.stages");
   // A save after a read without the kept keys (C4i-c) compares against the stored policy whole.
   const storedAuthorization = recordOf(stored?.executionPolicy).authorizationPolicy;
   const expected = body.expectedExecutionPolicy;
@@ -316,23 +321,159 @@ export function restrictedTaskBodyKeys(schemaKey: MemberRestrictionTaskBodyKey, 
   return { refused: [...new Set(refused)].sort(), merged };
 }
 
+type UnreadableReference = { key: string; message: string };
+
+/**
+ * The first `reference` key whose target R cannot read, with today's
+ * not-found message; null when all pass. A target that is not there (or in
+ * another company) passes: today's code answers for it.
+ * - `inheritExecutionWorkspaceFromIssueId`: the task passes R's strict `issue:read`.
+ * - `executionWorkspaceId`, `workspaceSelection.workspaceId` (`existing`): the
+ *   stored one, or the workspace's `sourceIssueId` is a task R can read.
+ * - `projectWorkspaceId`, `workspaceSelection.projectWorkspaceId`
+ *   (`configured_source`): the workspace's project passes R's strict `project:read`.
+ */
+export async function unreadableReference(db: Db, companyId: string, body: Record<string, unknown>, stored: StoredTaskBody,
+  personId: string): Promise<UnreadableReference | null> {
+  // The condition goes in WHERE: a single-table select list drops the table
+  // names its correlated subqueries rely on (as `strictReadableIds`).
+  const readable = async (resource: "issue" | "project", id: string) => {
+    const table = resource === "issue" ? issues : projects;
+    const target = and(eq(table.id, id), eq(table.companyId, companyId));
+    const [row] = await db.select({ id: table.id }).from(table).where(and(target, strictReadCondition(resource, personId)));
+    if (row) return true;
+    return (await db.select({ id: table.id }).from(table).where(target)).length > 0 ? false : null;
+  };
+  const selection = recordOf(body.workspaceSelection);
+  const source = body.inheritExecutionWorkspaceFromIssueId;
+  if (typeof source === "string" && (await readable("issue", source)) === false) {
+    return { key: "inheritExecutionWorkspaceFromIssueId", message: "Workspace inheritance issue not found" };
+  }
+  const executionIds: [string, unknown][] = [["executionWorkspaceId", body.executionWorkspaceId],
+    ["workspaceSelection.workspaceId", selection.kind === "existing" ? selection.workspaceId : null]];
+  for (const [key, id] of executionIds) {
+    if (typeof id !== "string" || id === stored?.executionWorkspaceId) continue;
+    const [workspace] = await db.select({ sourceIssueId: executionWorkspaces.sourceIssueId }).from(executionWorkspaces)
+      .where(and(eq(executionWorkspaces.id, id), eq(executionWorkspaces.companyId, companyId)));
+    if (workspace && !(workspace.sourceIssueId && (await readable("issue", workspace.sourceIssueId)))) {
+      return { key, message: "Execution workspace not found" };
+    }
+  }
+  const projectIds: [string, unknown][] = [["projectWorkspaceId", body.projectWorkspaceId],
+    ["workspaceSelection.projectWorkspaceId", selection.kind === "configured_source" ? selection.projectWorkspaceId : null]];
+  for (const [key, id] of projectIds) {
+    if (typeof id !== "string") continue;
+    const [workspace] = await db.select({ projectId: projectWorkspaces.projectId }).from(projectWorkspaces)
+      .where(and(eq(projectWorkspaces.id, id), eq(projectWorkspaces.companyId, companyId)));
+    if (workspace && !(await readable("project", workspace.projectId))) return { key, message: "Project workspace not found" };
+  }
+  return null;
+}
+
+type TaskBodyBinding = { personId: string; mode: "report" | "enforce"; agentIds: string[] };
+type Finding = { key: string; error: HttpError };
+
+/**
+ * PAR-13315 (C4i-e): the `checked` values with no check of their own in the
+ * handler, each answered as today's code answers a missing value. Values
+ * already stored on the task (patch: `objectId` is the task) pass unchanged.
+ * - `blockedByIssueIds`: a new blocker passes R's strict `issue:read`, else
+ *   today's 422 for a blocker that is not there.
+ * - `watchdog.agentId`: on R's agent list, else 422 as an unlisted stage agent (AC-A8).
+ * - `executionPolicy.stages` user participants: a new one is an active user
+ *   member of the company, else 422 naming the user.
+ */
+async function uncheckedTaskValues(db: Db, companyId: string, body: Record<string, unknown>, stored: StoredTaskBody,
+  binding: TaskBodyBinding, objectId?: string | null): Promise<Finding[]> {
+  const findings: Finding[] = [];
+  const blockers = Array.isArray(body.blockedByIssueIds)
+    ? [...new Set(body.blockedByIssueIds.filter((id): id is string => typeof id === "string"))] : [];
+  if (blockers.length > 0) {
+    const kept = stored && objectId ? (await db.select({ id: issueRelations.issueId }).from(issueRelations)
+      .where(and(eq(issueRelations.companyId, companyId), eq(issueRelations.relatedIssueId, objectId),
+        eq(issueRelations.type, "blocks")))).map((row) => row.id) : [];
+    const added = blockers.filter((id) => !kept.includes(id));
+    const readable = added.length === 0 ? [] : await db.select({ id: issues.id }).from(issues).where(and(
+      eq(issues.companyId, companyId), inArray(issues.id, added), strictReadCondition("issue", binding.personId)));
+    if (readable.length !== added.length) {
+      findings.push({ key: "blockedByIssueIds", error: unprocessable("Blocked-by issues must belong to the same company") });
+    }
+  }
+  const agentId = recordOf(body.watchdog).agentId;
+  if (typeof agentId === "string" && !binding.agentIds.includes(agentId)) {
+    findings.push({ key: "watchdog.agentId",
+      error: unprocessable(MEMBER_AGENT_NOT_LISTED_ROUTE_MESSAGE, { ...MEMBER_AGENT_NOT_LISTED_DETAILS, agentId }) });
+  }
+  const storedUsers = new Set(stageUsers(stored?.executionPolicy));
+  const addedUsers = [...new Set(stageUsers(body.executionPolicy))].filter((id) => !storedUsers.has(id));
+  if (addedUsers.length > 0) {
+    const members = new Set((await db.select({ id: companyMemberships.principalId }).from(companyMemberships).where(and(
+      eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalType, "user"),
+      inArray(companyMemberships.principalId, addedUsers), eq(companyMemberships.status, "active")))).map((row) => row.id));
+    const userId = addedUsers.find((id) => !members.has(id));
+    if (userId) findings.push({ key: "executionPolicy.stages", error: unprocessable("Stage participant user not found", { userId }) });
+  }
+  return findings;
+}
+
+/**
+ * The guard both entry points share. `enforce`: 403 `MEMBER_RESTRICTED` naming
+ * the refused keys, then 404 with today's not-found body for an unreadable
+ * reference, else the body with the stored host keys put back. `report`: one
+ * would-refuse record per finding and the body unchanged. A failed read is 503.
+ */
+async function applyTaskBodyRestriction(db: Db, binding: TaskBodyBinding | null, companyId: string,
+  schemaKey: MemberRestrictionTaskBodyKey, body: Record<string, unknown>, stored: StoredTaskBody, target: string,
+  objectId?: string | null): Promise<Record<string, unknown>> {
+  if (!binding || !body || typeof body !== "object") return body;
+  const { refused, merged } = restrictedTaskBodyKeys(schemaKey, body, stored);
+  const record = (what: string) => recordMemberRestrictionDenial(db, {
+    companyId, personId: binding.personId, ruleId: MEMBER_RESTRICTION_BODY_RULE_ID, objectId: objectId ?? null,
+    mode: binding.mode, target: `${target} ${what}`,
+  });
+  if (refused.length > 0) {
+    await record(refused.join(","));
+    if (binding.mode === "enforce") {
+      throw forbidden(`Not available for your access level: ${refused.join(", ")}`, { code: MEMBER_RESTRICTED_CODE, refusedKeys: refused });
+    }
+  }
+  let findings: Finding[];
+  try {
+    const unreadable = await unreadableReference(db, companyId, body, stored, binding.personId);
+    findings = [...(unreadable ? [{ key: unreadable.key, error: notFound(unreadable.message) }] : []),
+      ...(await uncheckedTaskValues(db, companyId, body, stored, binding, objectId))];
+  } catch (error) {
+    throw memberRestrictionUnavailable(error);
+  }
+  for (const finding of findings) {
+    await record(finding.key);
+    if (binding.mode === "enforce") throw finding.error;
+  }
+  return binding.mode === "enforce" ? merged : body;
+}
+
 /**
  * Task create, child create and patch for a caller bound by a restricted
  * person. Call it before the handler's first write and pass the returned body
- * on. `enforce`: 403 `MEMBER_RESTRICTED` naming the keys, else the body with
- * the stored host keys put back. `report`: one would-refuse record and the
- * body unchanged. Not bound: the body unchanged.
+ * on. Not bound: the body unchanged.
  */
 export async function restrictedTaskBody(db: Db, req: Request, companyId: string, schemaKey: MemberRestrictionTaskBodyKey,
   body: Record<string, unknown>, stored: StoredTaskBody, objectId?: string | null): Promise<Record<string, unknown>> {
   const binding = await bodyRestrictionBinding(db, req.actor, companyId);
-  if (!binding || !body || typeof body !== "object") return body;
-  const { refused, merged } = restrictedTaskBodyKeys(schemaKey, body, stored, binding.personId);
-  if (refused.length === 0) return binding.mode === "enforce" ? merged : body;
-  await recordMemberRestrictionDenial(db, {
-    companyId, personId: binding.personId, ruleId: MEMBER_RESTRICTION_BODY_RULE_ID, objectId: objectId ?? null, mode: binding.mode,
-    target: `${req.method.toUpperCase()} ${(req.originalUrl ?? req.url).split("?")[0]} ${refused.join(",")}`,
-  });
-  if (binding.mode !== "enforce") return body;
-  throw forbidden(`Not available for your access level: ${refused.join(", ")}`, { code: MEMBER_RESTRICTED_CODE, refusedKeys: refused });
+  const target = `${req.method.toUpperCase()} ${(req.originalUrl ?? req.url).split("?")[0]}`;
+  return applyTaskBodyRestriction(db, binding, companyId, schemaKey, body, stored, target, objectId);
+}
+
+/**
+ * The same guard for a plugin task write made for an acting person (H3,
+ * `invocationScope.actingPersonId`). No acting person, kill switch, mode `off`
+ * or not restricted: the body unchanged. A failed read throws 503.
+ */
+export async function restrictedPluginTaskBody(db: Db, personId: string | null, companyId: string,
+  schemaKey: "createIssue" | "updateIssue", body: Record<string, unknown>, stored: StoredTaskBody, target: string,
+  objectId?: string | null): Promise<Record<string, unknown>> {
+  if (!personId) return body;
+  const answer = await memberRestrictionOrUnavailable(memberRestrictionResolver(db), personId, companyId);
+  const binding = answer.restricted && answer.mode !== "off" ? { personId, mode: answer.mode, agentIds: answer.agentIds } : null;
+  return applyTaskBodyRestriction(db, binding, companyId, schemaKey, body, stored, target, objectId);
 }
