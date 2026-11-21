@@ -1,14 +1,15 @@
-import { definePlugin, runWorker, type PluginContext } from "@paperclipai/plugin-sdk";
-import { handleApiRoute, registerSetup } from "./register.js";
+import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
+import type { AccessGuard } from "@partnersinbiz/pib-plugin-kit";
+import { registerSetup } from "./register.js";
 import { backfillEntitlements } from "./service.js";
 import { resendAllAccess } from "./access-sync.js";
 
-let pluginCtx: PluginContext | null = null;
+/** The access guard: every action, tool and API route goes through it (`./access-table.ts`). */
+let guard: AccessGuard | null = null;
 
 const plugin = definePlugin({
   async setup(ctx) {
-    pluginCtx = ctx;
-    registerSetup(ctx);
+    guard = registerSetup(ctx);
     // Entitle every company that exists now to everything, once (the hourly job retries a failure).
     try {
       const backfill = await backfillEntitlements(ctx);
@@ -29,8 +30,8 @@ const plugin = definePlugin({
   // Settings changes need no restart: every read goes to the host.
   async onConfigChanged() {},
   async onApiRequest(input) {
-    if (!pluginCtx) return { status: 503, body: { error: "Setup plugin is not ready" } };
-    return handleApiRoute(pluginCtx, input);
+    if (!guard) return { status: 503, body: { error: "Setup plugin is not ready" } };
+    return guard.handleApiRequest(input);
   },
 });
 

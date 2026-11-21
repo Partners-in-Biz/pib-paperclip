@@ -1,4 +1,5 @@
 import type { PluginContext, PluginEvent } from "@paperclipai/plugin-sdk";
+import type { AccessGuard } from "@partnersinbiz/pib-plugin-kit";
 import { NAMESPACE } from "../../src/namespace.js";
 import { createFakeDb, type Store } from "./fake-db.js";
 
@@ -118,4 +119,10 @@ export function fixedClock(iso: string) {
       now = new Date(next);
     },
   };
+}
+
+/** The tool half of the access guard with no guard: each tool goes straight to `ctx.tools.register` (read at call time). */
+export function directTools(ctx: Pick<PluginContext, "tools">): Pick<AccessGuard, "tool"> {
+  type Handler = Parameters<PluginContext["tools"]["register"]>[2];
+  return { tool: (name, declaration, handler) => ctx.tools.register(name, declaration, handler as unknown as Handler) };
 }

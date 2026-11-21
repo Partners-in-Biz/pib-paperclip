@@ -1,6 +1,7 @@
 /**
  * Host API calls from the Setup page (same-origin, board session cookie).
  */
+import { unwrapRefusal } from "@partnersinbiz/pib-plugin-ui";
 import { MODULES, type SetupStatus } from "../kit-setup.js";
 import { parseSecretCatalog, type SecretLite } from "../model-key.js";
 import { parseRuns, RUNS_LIMIT, type RunLite } from "../own-key.js";
@@ -95,7 +96,8 @@ export async function runPluginAction(pluginKey: string, actionKey: string, comp
   });
   const body = await readJson(res);
   if (!res.ok) throw errorFrom(body, `The action failed (${res.status})`);
-  return body && typeof body === "object" && "data" in body ? (body as { data: unknown }).data : body;
+  // A guarded plugin answers a refusal as a 200: throw it, so "Do it for me" does not read it as done.
+  return unwrapRefusal(body && typeof body === "object" && "data" in body ? (body as { data: unknown }).data : body);
 }
 
 export async function fetchCompanies(): Promise<CompanyLite[]> {
