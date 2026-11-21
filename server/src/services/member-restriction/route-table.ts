@@ -67,6 +67,9 @@ export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntr
   { method: "GET", path: "/api/issues/:id", class: "open", test: TASKS_TEST },
   { method: "PATCH", path: "/api/issues/:id", class: "open", test: TASKS_TEST },
   { method: "POST", path: "/api/issues/:id/children", class: "open", test: TASKS_TEST },
+  // PAR-12929: a caller the restriction binds reads the task through
+  // `issue:read` first; under `enforce` then the check of `PATCH .../:id`.
+  { method: "PUT", path: "/api/issues/:id/title", class: "open", test: TASKS_TEST },
   { method: "GET", path: "/api/issues/:id/external-objects", class: "open", test: TASKS_TEST },
   { method: "GET", path: "/api/issues/:id/external-object-summary", class: "open", test: TASKS_TEST },
   // An agent's own work on a task.
@@ -78,11 +81,8 @@ export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntr
   // diagnostics, watchdog, monitors, retries, review decisions, low-trust
   // promotions, plan decompositions), sharing (grants, privacy constraints),
   // deleting a task, and feedback traces. Several of these handlers check
-  // only the company, not the task. `PUT .../title` checks the task only for
-  // agents and answers an agent 403, not "not found" (AC-G3); renaming stays
-  // open through `PATCH /api/issues/:id`.
+  // only the company, not the task.
   { method: "GET", path: "/api/issues", class: "closed" },
-  { method: "PUT", path: "/api/issues/:id/title", class: "closed" },
   { method: "GET", path: "/api/companies/:companyId/labels", class: "closed" },
   { method: "POST", path: "/api/companies/:companyId/labels", class: "closed" },
   { method: "DELETE", path: "/api/labels/:labelId", class: "closed" },

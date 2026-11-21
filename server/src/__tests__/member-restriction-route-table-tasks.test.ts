@@ -83,6 +83,9 @@ const CASES: Case[] = [
     send: (c, { issueId }) => c.patch(`/api/issues/${issueId}`).send({ description: "changed" }), hidden: notFound },
   { row: "POST /api/issues/:id/children", caller: "board",
     send: (c, { issueId }) => c.post(`/api/issues/${issueId}/children`).send({ title: "Child" }), hidden: notFound },
+  // PAR-12929: the full caller table is in member-restriction-title-route.test.ts.
+  { row: "PUT /api/issues/:id/title", caller: "board",
+    send: (c, { issueId }) => c.put(`/api/issues/${issueId}/title`).send({ title: "Renamed" }), hidden: notFound },
   { row: "GET /api/issues/:id/external-objects", caller: "board",
     send: (c, { issueId }) => c.get(`/api/issues/${issueId}/external-objects`), hidden: notFound },
   { row: "GET /api/issues/:id/external-object-summary", caller: "board",
