@@ -62,7 +62,7 @@ export async function siteProgress(env: Env, sprint: db.Sprint, today: string): 
   };
 }
 
-/** Drafts the progress email in Gmail (the Mailbox's default account). Returns what was asked for; the draft itself appears in Gmail Drafts. */
+/** Drafts the progress email in the Paperclip Mailbox drafts (the Mailbox's default account; never Gmail Drafts). Returns what was asked for. */
 export async function draftProgressReport(env: Env, companyId: string, _actor: Actor, params: Params) {
   const sprintIds = strList(params, "sprintIds", { max: 10, itemMax: 80 });
   if (sprintIds.length === 0) throw new SeoError("Send sprintIds: the sprints the email is about (list-sprints gives the ids).");
@@ -92,5 +92,5 @@ export async function draftProgressReport(env: Env, companyId: string, _actor: A
     context: { plugin: PIB_PLUGINS.seo, kind: "seo-report", id: sprintIds[0]!, clientKind, clientRef },
   };
   await env.ctx.events.emit(MAIL_EVENTS.draftRequested, companyId, request as unknown as Record<string, unknown>);
-  return { requested: true, key, to: to.map((a) => a.email), subject: mail.subject, sites: sites.map((s) => s.siteName), note: "A Gmail draft is being created in the Mailbox's default account. Nothing is sent: a person reads it and sends it.", preview: mail.text };
+  return { requested: true, key, to: to.map((a) => a.email), subject: mail.subject, sites: sites.map((s) => s.siteName), note: "A draft is being saved in the Paperclip Mailbox drafts. Nothing is sent: a person reads it and sends it.", preview: mail.text };
 }

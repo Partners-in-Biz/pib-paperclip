@@ -191,6 +191,12 @@ export interface GmailStore {
   listInbox(companyId: string, filter: InboxFilter): Promise<MessageRow[]>;
   markDraftSent(companyId: string, id: string, fields: SentFields & { context: SendContext; sendKey: string }): Promise<void>;
   setDraftStatus(companyId: string, id: string, status: "draft" | "queued", error: string | null): Promise<void>;
+  /** Saves a draft in the Paperclip Mailbox (never in Gmail Drafts). */
+  insertDraft(row: { id: string; companyId: string; accountId: string; subject: string; body: string; to: MailAddress[]; cc: MailAddress[]; bcc: MailAddress[]; draft: DraftExtras }): Promise<void>;
+  /** Removes a draft that has not been sent; false when there is none. */
+  deleteDraft(companyId: string, id: string): Promise<boolean>;
+  /** Open drafts of one mailbox that carry this purpose key (one draft per client and purpose), newest first. */
+  draftsByPurpose(companyId: string, accountId: string, purposeKey: string): Promise<MessageRow[]>;
   // send requests
   recentClaims(accountId: string): Promise<number>;
   claimSend(input: SendRecordInput, force: boolean): Promise<boolean>;
@@ -248,6 +254,12 @@ export interface GmailStore {
   crmCompany(companyId: string, id: string): Promise<CrmClientRow | null>;
   crmClients(companyId: string, limit: number): Promise<CrmClientRow[]>;
   crmContact(companyId: string, id: string): Promise<CrmClientRow | null>;
+  /**
+   * Which of these addresses belong to an existing client: a CRM contact with that address, or a company whose domain
+   * (`domains`: the non-free domains of the addresses) or billing email matches, whose lifecycle is anything but lead or prospect
+   * (customer, churned or not set: unsure counts as a client). Returns the matching addresses, lower case.
+   */
+  clientRecipients(companyId: string, emails: string[], domains: string[]): Promise<string[]>;
   // client mail mappings
   listClientMaps(companyId: string): Promise<ClientMapRow[]>;
   insertClientMap(row: { companyId: string; matchType: ClientMapType; pattern: string; clientKind: "company" | "contact"; clientRef: string; clientName: string | null; note: string | null; createdBy: string | null; countOnly?: boolean }): Promise<ClientMapRow>;
@@ -494,6 +506,8 @@ const companyRow = (row: CrmCompanyDb): CrmClientRow => ({ kind: "company", id: 
 
 /** `https://www.acme.co.za/x` → `acme.co.za`, in SQL. */
 const DOMAIN_SQL = "split_part(regexp_replace(lower(coalesce(domain, '')), '^(https?://)?(www[.])?', ''), '/', 1)";
+
+const DOMAIN_SQL_CO = DOMAIN_SQL.replace("coalesce(domain,", "coalesce(co.domain,");
 
 export class SqlStore implements GmailStore {
   constructor(readonly db: DbClient) {}
@@ -1169,6 +1183,27 @@ export class SqlStore implements GmailStore {
     return [...companies.map(companyRow), ...contacts.map(contactRow)];
   }
 
+  async clientRecipients(companyId: string, emails: string[], domains: string[]): Promise<string[]> {
+    if (!emails.length) return [];
+    const rows = await this.db.query<{ email: string }>(
+      `SELECT DISTINCT lower(e.email) AS email FROM jsonb_array_elements_text($2::jsonb) AS e(email)
+        WHERE EXISTS (SELECT 1 FROM ${this.t("crm_contacts")} c
+                       WHERE c.company_id = $1 AND c.deleted = false
+                         AND EXISTS (SELECT 1 FROM unnest(c.emails) AS ce WHERE lower(ce) = lower(e.email))
+                         AND (coalesce(c.lifecycle, '') NOT IN ('lead', 'prospect')
+                              OR EXISTS (SELECT 1 FROM ${this.t("crm_companies")} ac
+                                          WHERE ac.company_id = $1 AND ac.deleted = false AND ac.id = ANY(c.account_ids)
+                                            AND coalesce(ac.lifecycle, '') NOT IN ('lead', 'prospect'))))
+           OR EXISTS (SELECT 1 FROM ${this.t("crm_companies")} co
+                       WHERE co.company_id = $1 AND co.deleted = false AND coalesce(co.lifecycle, '') NOT IN ('lead', 'prospect')
+                         AND (lower(co.billing ->> 'email') = lower(e.email)
+                              OR (${DOMAIN_SQL_CO} <> '' AND ${DOMAIN_SQL_CO} = split_part(lower(e.email), '@', 2)
+                                  AND split_part(lower(e.email), '@', 2) IN (SELECT lower(jsonb_array_elements_text($3::jsonb))))))`,
+      [companyId, JSON.stringify(emails), JSON.stringify(domains)],
+    );
+    return rows.map((r) => r.email);
+  }
+
   async crmContact(companyId: string, id: string): Promise<CrmClientRow | null> {
     const rows = await this.db.query<CrmContactDb>(
       `SELECT id, name, emails, account_ids FROM ${this.t("crm_contacts")} WHERE company_id = $1 AND id = $2 AND deleted = false`,
@@ -1775,6 +1810,16 @@ export class SqlStore implements GmailStore {
   async deleteDraft(companyId: string, id: string): Promise<boolean> {
     const done = await this.db.execute(`DELETE FROM ${this.t("messages")} WHERE company_id = $1 AND id = $2 AND direction = 'outbound' AND status = 'draft'`, [companyId, id]);
     return done.rowCount > 0;
+  }
+
+  async draftsByPurpose(companyId: string, accountId: string, purposeKey: string): Promise<MessageRow[]> {
+    const rows = await this.db.query<MessageRow>(
+      `SELECT ${MESSAGE_COLUMNS} FROM ${this.t("messages")}
+        WHERE company_id = $1 AND account_id = $2 AND direction = 'outbound' AND status = 'draft' AND draft ->> 'purposeKey' = $3
+        ORDER BY created_at DESC LIMIT 50`,
+      [companyId, accountId, purposeKey],
+    );
+    return rows.map(normaliseMessage);
   }
 
   /** Outbound mail on one mailbox answering one message (drafts, queued and sent), newest first: the duplicate-reply checks (PAR-8030). */

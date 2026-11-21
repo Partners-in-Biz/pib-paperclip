@@ -5,7 +5,7 @@
  *
  *  1. The Reviewer passes a preview → the task parks on the client (blocked, not the agent's, not in flight), so the rest of
  *     the week carries on. The agent is not woken.
- *  2. The 5-minute job batches passed previews into ONE approval email, drafted in Gmail (Mailbox `mail.draft.requested`),
+ *  2. The 5-minute job batches passed previews into ONE approval email, drafted in the Paperclip Mailbox drafts (Mailbox `mail.draft.requested`; never Gmail Drafts, PAR-12249),
  *     and puts one "send this draft" line on Needs you.
  *  3. The client presses Approve or Request changes on the preview link (recorded by the preview service).
  *  4. When the client has answered every preview of a task, the plugin lifts the sign-off lock for a short window, takes the
@@ -149,6 +149,23 @@ export async function previewsToDraft(env: Env, sprint: db.Sprint): Promise<Arra
   return rows.map((r) => ({ id: String(r.id), pageUrl: String(r.page_url), title: String(r.title), reviewedAt: new Date(String(r.reviewed_at)), why: whyOf((typeof r.changes === "string" ? JSON.parse(String(r.changes)) : r.changes ?? {}) as PreviewChanges) }));
 }
 
+/**
+ * Pages already asked about in an earlier approval email draft that the client has not answered and that have not expired.
+ * A newer approval draft replaces the older open one for the same client (PAR-12249), so it must carry these pages too.
+ */
+export async function openEarlierPreviews(env: Env, sprint: db.Sprint): Promise<Array<{ id: string; pageUrl: string; title: string; reviewedAt: Date; why: string }>> {
+  const rows = await env.ctx.db.query(
+    `SELECT id, page_url, title, reviewed_at, changes FROM (
+        SELECT DISTINCT ON (page_url) id, page_url, title, reviewed_at, changes, status, review_status, draft_key, draft_status, expires_at
+          FROM ${t("previews")} WHERE company_id = $1 AND sprint_id = $2 AND status <> 'cancelled' ORDER BY page_url, created_at DESC
+      ) latest
+      WHERE status = 'pending' AND review_status = 'passed' AND draft_key IS NOT NULL AND draft_status = 'drafted' AND expires_at > now()
+      ORDER BY reviewed_at`,
+    [sprint.companyId, sprint.id],
+  );
+  return rows.map((r) => ({ id: String(r.id), pageUrl: String(r.page_url), title: String(r.title), reviewedAt: new Date(String(r.reviewed_at)), why: whyOf((typeof r.changes === "string" ? JSON.parse(String(r.changes)) : r.changes ?? {}) as PreviewChanges) }));
+}
+
 /** Runs from the 5-minute job: one approval email draft per batch of passed previews, per auto sprint. Returns how many drafts it requested. */
 export async function draftApprovalRequests(env: Env): Promise<number> {
   const sprints = (await env.ctx.db.query(`SELECT id, company_id FROM ${t("sprints")} WHERE client_signoff = 'auto' AND status = 'active'`)).map((r) => ({ id: String(r.id), companyId: String(r.company_id) }));
@@ -164,17 +181,21 @@ export async function draftApprovalRequests(env: Env): Promise<number> {
       const oldest = Math.min(...waiting.map((p) => p.reviewedAt.getTime()));
       // Let a task's previews finish passing, so the client gets one email, not one per page.
       if (now - newest < DRAFT_QUIET_MINUTES * 60_000 && now - oldest < DRAFT_MAX_WAIT_HOURS * 3_600_000) continue;
-      const key = draftKeyFor(sprint.id, waiting.map((p) => p.id));
+      // One open draft per client: carry the pages of the older, unanswered draft too, since the new draft replaces it.
+      const fresh = new Set(waiting.map((p) => p.id));
+      const carried = (await openEarlierPreviews(env, sprint)).filter((p) => !fresh.has(p.id));
+      const batch = [...carried, ...waiting];
+      const key = draftKeyFor(sprint.id, batch.map((p) => p.id));
       const claimed = await env.ctx.db.execute(
-        `UPDATE ${t("previews")} SET draft_key = $3, draft_status = 'requested', drafted_at = now() WHERE company_id = $1 AND sprint_id = $2 AND id IN (SELECT jsonb_array_elements_text($4::jsonb)) AND draft_key IS NULL`,
-        [sprint.companyId, sprint.id, key, JSON.stringify(waiting.map((p) => p.id))],
+        `UPDATE ${t("previews")} SET draft_key = $3, draft_status = 'requested', drafted_at = now() WHERE company_id = $1 AND sprint_id = $2 AND id IN (SELECT jsonb_array_elements_text($4::jsonb)) AND (draft_key IS NULL OR id IN (SELECT jsonb_array_elements_text($5::jsonb)))`,
+        [sprint.companyId, sprint.id, key, JSON.stringify(batch.map((p) => p.id)), JSON.stringify(carried.map((p) => p.id))],
       );
       if (!claimed.rowCount) continue;
       const to = await approvers(env, sprint);
       const mail = approvalEmail({
         siteName: sprint.siteName,
         firstNames: to.map((a) => a.name.split(/\s+/)[0] ?? ""),
-        pages: waiting.map((p) => ({ title: p.title, pageUrl: p.pageUrl, link: previewLink(p.pageUrl, p.id), why: p.why })),
+        pages: batch.map((p) => ({ title: p.title, pageUrl: p.pageUrl, link: previewLink(p.pageUrl, p.id), why: p.why })),
         openDays: PREVIEW_OPEN_DAYS,
         signature: await companyDisplayName(env.ctx, sprint.companyId),
       });
@@ -201,32 +222,7 @@ export async function draftApprovalRequests(env: Env): Promise<number> {
   return requested;
 }
 
-/** Gmail opens a draft with `?authuser=<account>`; the older `u/<account>/` form shows a 404 where the account is not the first one signed in. */
-export function gmailDraftLink(url: string | null | undefined): string | null {
-  if (!url) return null;
-  const old = /^https:\/\/mail\.google\.com\/mail\/u\/([^/]+)\/(#.*)$/.exec(url);
-  return old && old[1] && old[1].includes("@") ? `https://mail.google.com/mail/?authuser=${encodeURIComponent(decodeURIComponent(old[1]))}${old[2]}` : url;
-}
-
-/** Drafts made before the link fix: rewrite the stored link and refresh the Needs you line. Returns how many it repaired. */
-export async function repairDraftLinks(env: Env): Promise<number> {
-  const rows = await env.ctx.db.query(
-    `SELECT DISTINCT company_id, sprint_id, draft_key, draft_url FROM ${t("previews")} WHERE draft_status = 'drafted' AND draft_url LIKE 'https://mail.google.com/mail/u/%@%' LIMIT 20`,
-  );
-  let repaired = 0;
-  for (const row of rows) {
-    const draftUrl = gmailDraftLink(String(row.draft_url));
-    if (!draftUrl || draftUrl === String(row.draft_url)) continue;
-    await onDraftResult(env, {
-      companyId: String(row.company_id),
-      payload: { key: String(row.draft_key), status: "drafted", draftUrl, context: { plugin: PIB_PLUGINS.seo, kind: DRAFT_KIND, id: String(row.sprint_id) } },
-    });
-    repaired += 1;
-  }
-  return repaired;
-}
-
-/** The Mailbox answered a draft request: record the Gmail link and put one line on Needs you (a person reads and sends it). */
+/** The Mailbox answered a draft request: record the result and put one line on Needs you (a person reads and sends it). */
 export async function onDraftResult(env: Env, event: { companyId?: string | null; payload?: unknown }): Promise<void> {
   const result = (event.payload ?? {}) as Partial<MailDraftResult>;
   if (!result.key || result.context?.plugin !== PIB_PLUGINS.seo || result.context.kind !== DRAFT_KIND) return;
@@ -236,7 +232,6 @@ export async function onDraftResult(env: Env, event: { companyId?: string | null
   const sprint = await db.getSprint(env.ctx.db, companyId, sprintId);
   if (!sprint) return;
   const drafted = result.status === "drafted";
-  result.draftUrl = gmailDraftLink(result.draftUrl);
   await env.ctx.db.execute(`UPDATE ${t("previews")} SET draft_status = $3, draft_url = $4 WHERE company_id = $1 AND draft_key = $2`, [companyId, result.key, drafted ? "drafted" : "failed", result.draftUrl ?? null]);
   const rows = await env.ctx.db.query(`SELECT id, page_url, title FROM ${t("previews")} WHERE company_id = $1 AND draft_key = $2 ORDER BY created_at`, [companyId, result.key]);
   const pages = rows.map((r) => ({ title: String(r.title), pageUrl: String(r.page_url), link: previewLink(String(r.page_url), String(r.id)) }));
@@ -247,15 +242,15 @@ export async function onDraftResult(env: Env, event: { companyId?: string | null
     kind: "task",
     title: drafted ? `Send the approval email to the client (${noun})` : `Send the approval links to the client (${noun}): the email draft could not be made`,
     why: drafted
-      ? `The Reviewer passed ${noun} for ${sprint.siteName}. The email is drafted in your Gmail (to the client's contacts on their own domain). Nothing changes on their site until they approve.`
-      : `The Reviewer passed ${noun} for ${sprint.siteName} but the Gmail draft failed (${result.error ?? "unknown error"}). Send the links yourself.`,
-    steps: drafted ? ["Open the draft in Gmail, check the addresses and the wording.", "Press Send."] : ["Send each link to the client with a short note.", ...pages.map((p) => `${p.title}: ${p.link}`)],
-    links: drafted && result.draftUrl ? [{ label: "Gmail draft", url: result.draftUrl }] : pages.map((p) => ({ label: p.title.slice(0, 60), url: p.link })),
+      ? `The Reviewer passed ${noun} for ${sprint.siteName}. The email is drafted in the Mailbox drafts (to the client's contacts on their own domain). Nothing changes on their site until they approve.`
+      : `The Reviewer passed ${noun} for ${sprint.siteName} but the Mailbox draft failed (${result.error ?? "unknown error"}). Send the links yourself.`,
+    steps: drafted ? ["Open the draft in the Mailbox drafts, check the addresses and the wording.", "Press Send."] : ["Send each link to the client with a short note.", ...pages.map((p) => `${p.title}: ${p.link}`)],
+    links: drafted ? [{ label: "Mailbox drafts", url: "/mailbox" }] : pages.map((p) => ({ label: p.title.slice(0, 60), url: p.link })),
     after: "The client's answers are picked up automatically: approved pages are applied by the SEO agent, change requests go back to it.",
     check: "manual",
     taskIds: [],
   }).catch((error: unknown) => env.ctx.logger.info("SEO approval email line not added", { sprintId, error: errorMessage(error) }));
-  if (sprint.rootIssueId && drafted) await commentOn(env, companyId, sprint.rootIssueId, `Approval email drafted in Gmail for ${noun}: ${result.draftUrl ?? "(open Gmail drafts)"}`, { dedupeKey: `draft:${result.key}` });
+  if (sprint.rootIssueId && drafted) await commentOn(env, companyId, sprint.rootIssueId, `Approval email drafted in the Mailbox drafts for ${noun} (it replaces an older unsent draft for this client): /mailbox`, { dedupeKey: `draft:${result.key}` });
 }
 
 // ---------------------------------------------------------------------------

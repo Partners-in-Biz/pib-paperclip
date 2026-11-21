@@ -36,6 +36,9 @@ export const MAILBOX_TOOLS: PluginToolDeclaration[] = [
       replyToMessageId: str("The message this answers (mailbox or Gmail id); keeps the Gmail thread."),
       replyTo: str("Where replies should go when it is not the mailbox itself (a client's address): a@b.com or Name <a@b.com>."),
       fromName: str("Display name for From (a client's name when drafting for them). Default: the mailbox's own name."),
+      purpose: str("What the mail is for: upsell, proposal, offer, outreach, referral, review-ask, promotion, newsletter, idea (all mail the client did not ask for: an agent cannot send it, a person does) or reply, followup, invoice, other. A newer draft with the same purpose and first recipient replaces the older open one."),
+      unasked: { type: "boolean", description: "True when the client did not ask for this mail. Same as an unasked purpose: send-draft is refused for an agent." },
+      purposeKey: str("Optional: your own key (client + purpose). A newer open draft with the same key replaces the older one."),
     }),
   },
   {
@@ -57,7 +60,7 @@ export const MAILBOX_TOOLS: PluginToolDeclaration[] = [
     name: "send-draft",
     displayName: "Send mailbox draft",
     description:
-      "Send a draft through Gmail when your delegation allows sending (maySend). Without a connected Gmail account it is queued for a person. Addresses on the do-not-email list are left out.",
+      "Send a draft through Gmail when your delegation allows sending (maySend). Refused for mail the client did not ask for (purpose upsell, proposal, outreach ...) and for drafts a plugin made: those wait for a person. Without a connected Gmail account it is queued for a person. Addresses on the do-not-email list are left out.",
     parametersSchema: schema(["messageId"], { messageId: str("The draft's id from create-draft.") }),
   },
   {
