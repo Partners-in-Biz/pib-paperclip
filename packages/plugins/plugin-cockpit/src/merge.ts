@@ -971,7 +971,7 @@ export function activeAgentIdsOf(agents: ReadonlyArray<{ id: string; status: str
  * Split the merged waiting list into what the owner must decide and what waits
  * on someone else. Rules, in order: (a) an issue in `hiddenIssueIds` is dropped;
  * (b) no valid `waitsOn` -> owner; (c) an agent that is not active -> owner;
- * (d) `since` missing, unreadable or older than 7 days -> owner, marked stale;
+ * (d) `since` missing, unreadable or older than 7 days -> owner, marked stale (except an active agent with a readable `since`: stays in others, marked stale, for PiB);
  * (e) otherwise -> others. No filter (an old worker) gives (b) to (e) with no
  * active agent, so agent items stay with the owner.
  */
@@ -994,7 +994,13 @@ export function splitOwnerWaiting(entries: WaitingEntry[], filter: Partial<Owner
       continue;
     }
     const since = entry.since ? Date.parse(entry.since) : Number.NaN;
-    if (!Number.isFinite(since) || now.getTime() - since > OTHERS_MAX_HIDE_DAYS * 86_400_000) {
+    const overdue = !Number.isFinite(since) || now.getTime() - since > OTHERS_MAX_HIDE_DAYS * 86_400_000;
+    // PAR-13877: a row routed to an active delegate seat that passes 7 days escalates to that seat's manager (PiB, agent-facing): it never returns to the owner.
+    if (overdue && waitsOn.kind === "agent" && Number.isFinite(since)) {
+      others.push({ ...entry, stale: true, why: `Waiting on another seat for over ${OTHERS_MAX_HIDE_DAYS} days: escalated to PiB, not the owner. ${entry.why}`.trim() });
+      continue;
+    }
+    if (overdue) {
       owner.push({ ...entry, stale: true, why: `Waiting on another seat for over ${OTHERS_MAX_HIDE_DAYS} days. ${entry.why}`.trim() });
       continue;
     }
@@ -1007,6 +1013,6 @@ export function splitOwnerWaiting(entries: WaitingEntry[], filter: Partial<Owner
 export function othersData(others: WaitingEntry[], link: (href: string | null | undefined) => string | null = (h) => h ?? null) {
   return {
     count: others.length,
-    items: others.map((w) => ({ title: w.title, href: link(w.href), waitsOn: w.waitsOn ?? null, from: w.sourceTitle, since: w.since ?? null })),
+    items: others.map((w) => ({ title: w.title, href: link(w.href), waitsOn: w.waitsOn ?? null, from: w.sourceTitle, since: w.since ?? null, ...(w.stale ? { escalatedTo: "pib" } : {}) })),
   };
 }

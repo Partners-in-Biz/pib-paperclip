@@ -35,6 +35,12 @@ describe("splitOwnerWaiting", () => {
     expect(r.owner.map((e) => [e.key, e.stale])).toEqual([["n", true], ["o", true]]);
     expect(r.owner[0]!.why).toContain("over 7 days");
   });
+  it("4b. PAR-13877: an active agent's item over 7 days stays in others for PiB, never the owner", () => {
+    const r = split([entry("d", { waitsOn: { kind: "agent", agentId: "a1" }, since: ago(OTHERS_MAX_HIDE_DAYS + 3) })]);
+    expect(r.owner).toEqual([]);
+    expect(r.others.map((e) => [e.key, e.stale])).toEqual([["d", true]]);
+    expect(r.others[0]!.why).toContain("escalated to PiB");
+  });
   it("5. no or invalid waitsOn stays (old plugin); parseSnapshot drops an invalid one and keeps a valid one", () => {
     expect(split([entry("x")]).owner).toHaveLength(1);
     const snap = parseSnapshot({ plugin: "p", title: "P", checkedAt: NOW.toISOString(), waiting: [
