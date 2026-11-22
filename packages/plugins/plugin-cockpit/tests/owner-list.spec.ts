@@ -100,7 +100,7 @@ describe("the waiting-on-owner tool", () => {
     const toolSnap = { ...snapshot, plugin: "partnersinbiz.billing", title: "Social", waiting: fixtureItems.map(({ issueId: _issueId, ...w }) => w) };
     fake.store.snapshots = [{ company_id: A, plugin_key: toolSnap.plugin, kind: "cockpit", payload: toolSnap, checked_at: NOW.toISOString(), received_at: NOW.toISOString() }] as never;
     const result = await runTool(env, TOOL_NAMES.waiting, {}, { agentId: "t", runId: "r", companyId: A, projectId: "p" });
-    const data = result.data as { count: number; items: Array<{ title: string }>; others: { count: number; items: Array<Record<string, unknown>> } };
+    const data = result.data as { count: number; items: Array<{ title: string }>; others: { count: number; escalated: number; items: Array<Record<string, unknown>> } };
     expect(data.items.map((i) => i.title).sort()).toEqual(["C", "D", "E"]);
     expect(data.count).toBe(3);
     expect(data.others.count).toBe(3);
