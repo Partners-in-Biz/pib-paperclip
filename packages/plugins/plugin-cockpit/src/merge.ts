@@ -971,7 +971,9 @@ export function activeAgentIdsOf(agents: ReadonlyArray<{ id: string; status: str
  * Split the merged waiting list into what the owner must decide and what waits
  * on someone else. Rules, in order: (a) an issue in `hiddenIssueIds` is dropped;
  * (b) no valid `waitsOn` -> owner; (c) an agent that is not active -> owner;
- * (d) `since` missing, unreadable or older than 7 days -> owner, marked stale (except an active agent with a readable `since`: stays in others, marked stale, for PiB);
+ * (d) `since` missing, unreadable or older than 7 days -> owner, marked stale;
+ * (d2) except an active agent with a readable `since`: stays in others, marked stale,
+ * for PiB (PAR-13877);
  * (e) otherwise -> others. No filter (an old worker) gives (b) to (e) with no
  * active agent, so agent items stay with the owner.
  */
@@ -1013,6 +1015,7 @@ export function splitOwnerWaiting(entries: WaitingEntry[], filter: Partial<Owner
 export function othersData(others: WaitingEntry[], link: (href: string | null | undefined) => string | null = (h) => h ?? null) {
   return {
     count: others.length,
+    escalated: others.filter((w) => w.stale).length,
     items: others.map((w) => ({ title: w.title, href: link(w.href), waitsOn: w.waitsOn ?? null, from: w.sourceTitle, since: w.since ?? null, ...(w.stale ? { escalatedTo: "pib" } : {}) })),
   };
 }

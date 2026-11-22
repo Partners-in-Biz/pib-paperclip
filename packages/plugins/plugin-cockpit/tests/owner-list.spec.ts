@@ -62,6 +62,7 @@ const fixtureItems = [
   { key: "c", title: "C", why: "w", kind: "review", issueId: "i-c", since: ago(9), waitsOn: { kind: "client" } },
   { key: "d", title: "D", why: "w", kind: "review", issueId: "i-d", since: ago(1), waitsOn: { kind: "agent", agentId: "dead" } },
   { key: "e", title: "E", why: "w", kind: "review", issueId: "i-e", since: ago(1) },
+  { key: "f", title: "F", why: "w", kind: "review", issueId: "i-f", since: ago(9), waitsOn: { kind: "agent", agentId: "a1" } },
 ];
 const snapshot = { plugin: "partnersinbiz.social", title: "Social", checkedAt: NOW.toISOString(), kpis: [], health: [], waiting: fixtureItems, activity: [], quality: [] } as unknown as CockpitSnapshot;
 const agents = [{ id: "a1", name: "A", status: "active" }, { id: "dead", name: "D", status: "terminated" }] as never[];
@@ -70,7 +71,7 @@ describe("one rule on every surface", () => {
   it("6. buildView with no ownerFilter keeps an agent item with the owner", () => {
     const load = { snapshots: { [snapshot.plugin]: { snapshot, receivedAt: NOW.toISOString() } }, setupStatuses: {}, roles: null } as unknown as LoadResult;
     const view = buildView({ load, installed: null, modules: null, live: {}, agents, now: NOW, windowMs: DAY, setupMissing: 0 });
-    expect(view.waiting.map((w) => w.key).sort()).toEqual(["a", "c", "d", "e"]);
+    expect(view.waiting.map((w) => w.key).sort()).toEqual(["a", "c", "d", "e", "f"]);
     expect(view.waitingOthers.map((w) => w.key)).toEqual(["b"]);
   });
   it("7. the tool path, the digest path and buildView give the same owner and others counts", () => {
@@ -82,10 +83,11 @@ describe("one rule on every surface", () => {
     expect(view.waiting.map((w) => w.key).sort()).toEqual(["c", "d", "e"]);
     expect(view.waiting.map((w) => w.key).sort()).toEqual(owner.map((w) => w.key).sort());
     expect(view.waitingOthers.map((w) => w.key)).toEqual(both.others.map((w) => w.key));
-    expect(both.others.map((w) => w.key).sort()).toEqual(["a", "b"]);
+    expect(both.others.map((w) => w.key).sort()).toEqual(["a", "b", "f"]);
+    expect(view.waiting.map((w) => w.key)).not.toContain("f");
     // the digest prints the others line from the same count
     const stats = { others: both.others.length, newAsks: 0, routed: 0, applied: [], history: [], unread: [] };
-    expect(renderDigest({ items: [], stats, now: NOW })).toContain("2 wait on others.");
+    expect(renderDigest({ items: [], stats, now: NOW })).toContain("3 wait on others.");
   });
 });
 
@@ -101,10 +103,13 @@ describe("the waiting-on-owner tool", () => {
     const data = result.data as { count: number; items: Array<{ title: string }>; others: { count: number; items: Array<Record<string, unknown>> } };
     expect(data.items.map((i) => i.title).sort()).toEqual(["C", "D", "E"]);
     expect(data.count).toBe(3);
-    expect(data.others.count).toBe(2);
+    expect(data.others.count).toBe(3);
+    expect(data.others.escalated).toBe(1);
+    expect(data.items.map((i) => i.title)).not.toContain("F");
+    expect(data.others.items.find((i) => i.title === "F")).toMatchObject({ escalatedTo: "pib" });
     expect(data.others.items.find((i) => i.title === "A")).toMatchObject({ title: "A", waitsOn: { kind: "agent", agentId: "a1" }, from: "Social" });
     expect(result.content).toContain("3 items wait on the owner.");
-    expect(result.content).toContain("2 wait on others.");
+    expect(result.content).toContain("3 wait on others, 1 escalated to PiB.");
   });
 });
 
