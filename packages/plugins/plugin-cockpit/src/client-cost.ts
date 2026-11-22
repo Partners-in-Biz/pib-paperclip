@@ -50,12 +50,13 @@ export async function effortSettings(ctx: PluginContext, companyId: string): Pro
   }
 }
 
-/** How many clients' project links are read at once. */
-const LINK_READ_BATCH = 100;
-/** How long one report may spend reading links (PAR-13702: 281 CRM companies at 25 a time took over 10 s for PAR). */
-const LINK_BUDGET_MS = 5_000;
-/** A client's links are kept this long between reports: they change when the CRM links a project, which is rare. */
-const LINK_TTL_MS = 60 * 60_000;
+/**
+ * How the link reads are paced (PAR-13702: 281 CRM companies at 25 a time took over 10 s for PAR). Exported so tests can shrink them.
+ * `batch`: reads at once. `budgetMs`: how long one report may read before it stops and resumes from the cache on the next load.
+ * `ttlMs`: how long a client's links are kept. `emptyTtlMs`: the same for a client with no link, kept short because a project the CRM links
+ * a minute later must not look unlinked for an hour.
+ */
+export const LINK_LIMITS = { batch: 100, budgetMs: 5_000, ttlMs: 60 * 60_000, emptyTtlMs: 60_000 };
 
 const linkCaches = new WeakMap<object, Map<string, { ids: string[]; at: number }>>();
 
@@ -72,13 +73,13 @@ async function readLinks(env: Env, companyId: string, companies: CrmClientRow[])
   const todo: CrmClientRow[] = [];
   for (const row of companies) {
     const hit = byCompany.get(`${companyId}|${row.id}`);
-    if (hit && now - hit.at < LINK_TTL_MS) out.set(row.id, hit.ids);
+    if (hit && now - hit.at < (hit.ids.length ? LINK_LIMITS.ttlMs : LINK_LIMITS.emptyTtlMs)) out.set(row.id, hit.ids);
     else todo.push(row);
   }
   const started = clockMs();
-  for (let i = 0; i < todo.length; i += LINK_READ_BATCH) {
-    if (i > 0 && clockMs() - started > LINK_BUDGET_MS) throw new Error(`client links: ${todo.length - i} of ${companies.length} not read yet, continuing on the next load`);
-    const batch = todo.slice(i, i + LINK_READ_BATCH);
+  for (let i = 0; i < todo.length; i += LINK_LIMITS.batch) {
+    if (i > 0 && clockMs() - started > LINK_LIMITS.budgetMs) throw new Error(`client links: ${todo.length - i} of ${companies.length} not read yet, continuing on the next load`);
+    const batch = todo.slice(i, i + LINK_LIMITS.batch);
     const links = await Promise.all(batch.map((row) => clientProjectIds(env.ctx, companyId, { kind: "company", id: row.id })));
     batch.forEach((row, index) => {
       out.set(row.id, links[index]!);
