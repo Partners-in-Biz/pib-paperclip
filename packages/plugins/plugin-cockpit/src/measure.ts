@@ -398,25 +398,36 @@ export async function readLimitFailures(ctx: PluginContext, companyId: string, s
 /** Done issues of the author agents, each with the review that covers it (policy stage or a linked Reviewer issue). */
 export async function readReviewRows(ctx: PluginContext, companyId: string, since: string, authors: string[], reviewers: string[], limit = 300): Promise<DoneIssueReview[]> {
   if (authors.length === 0) return [];
+  // PAR-13702: the review is matched set-wise. The old LATERAL ran two regexes per done issue over every
+  // reviewer issue's description (22 s for PAR); the mentions are now read once per reviewer issue and joined by identifier.
   const rows = await ctx.db.query<Raw>(
-    `SELECT d.id::text AS id, d.identifier, d.completed_at,
+    `WITH done AS MATERIALIZED (
+       SELECT d.id, d.identifier, d.completed_at, d.execution_policy, d.execution_state FROM public.issues d
+        WHERE d.company_id = $1::uuid AND d.status = 'done' AND d.hidden_at IS NULL AND d.completed_at >= $2::timestamptz
+          AND d.assignee_agent_id = ANY(ARRAY(SELECT jsonb_array_elements_text($3::jsonb))::uuid[])
+        ORDER BY d.completed_at DESC LIMIT $5),
+     rvi AS MATERIALIZED (
+       SELECT r.id, r.parent_id, r.created_at, r.completed_at, r.title, r.description FROM public.issues r
+        WHERE r.company_id = $1::uuid AND r.hidden_at IS NULL
+          AND r.assignee_agent_id = ANY(ARRAY(SELECT jsonb_array_elements_text($4::jsonb))::uuid[])),
+     mentions AS MATERIALIZED (
+       SELECT DISTINCT rvi.id, m[1] AS ident FROM rvi, regexp_matches(coalesce(rvi.title, '') || ' ' || coalesce(rvi.description, ''), '\\m([A-Za-z0-9]+-[0-9]+)\\M', 'g') AS m),
+     cand AS (
+       SELECT d.id AS did, r.id AS rid FROM done d JOIN rvi r ON r.parent_id = d.id AND r.id <> d.id
+       UNION
+       SELECT d.id, r.id FROM done d
+         JOIN public.issue_relations x ON x.company_id = $1::uuid AND x.type = 'blocks' AND (x.related_issue_id = d.id OR x.issue_id = d.id)
+         JOIN rvi r ON r.id <> d.id AND ((x.issue_id = r.id AND x.related_issue_id = d.id) OR (x.issue_id = d.id AND x.related_issue_id = r.id))
+       UNION
+       SELECT d.id, m.id FROM done d JOIN mentions m ON m.ident = d.identifier AND m.id <> d.id)
+     SELECT d.id::text AS id, d.identifier, d.completed_at,
             (jsonb_typeof(d.execution_policy -> 'stages') = 'array'
               AND EXISTS (SELECT 1 FROM jsonb_array_elements(d.execution_policy -> 'stages') s WHERE s ->> 'type' = 'review')
               AND d.execution_state ->> 'lastDecisionOutcome' = 'approved') AS policy_approved,
             rv.id::text AS review_issue_id, rv.created_at AS review_created_at, rv.completed_at AS review_completed_at
-       FROM public.issues d
-       LEFT JOIN LATERAL (
-         SELECT r.id, r.created_at, r.completed_at FROM public.issues r
-          WHERE r.company_id = $1::uuid AND r.id <> d.id AND r.hidden_at IS NULL
-            AND r.assignee_agent_id = ANY(ARRAY(SELECT jsonb_array_elements_text($4::jsonb))::uuid[])
-            AND (r.parent_id = d.id
-                 OR EXISTS (SELECT 1 FROM public.issue_relations x WHERE x.company_id = $1::uuid AND x.type = 'blocks'
-                              AND ((x.issue_id = r.id AND x.related_issue_id = d.id) OR (x.issue_id = d.id AND x.related_issue_id = r.id)))
-                 OR (d.identifier IS NOT NULL AND (r.title ~ ('\\m' || d.identifier || '\\M') OR r.description ~ ('\\m' || d.identifier || '\\M'))))
-          ORDER BY r.created_at LIMIT 1) rv ON true
-      WHERE d.company_id = $1::uuid AND d.status = 'done' AND d.hidden_at IS NULL AND d.completed_at >= $2::timestamptz
-        AND d.assignee_agent_id = ANY(ARRAY(SELECT jsonb_array_elements_text($3::jsonb))::uuid[])
-      ORDER BY d.completed_at DESC LIMIT $5`,
+       FROM done d
+       LEFT JOIN LATERAL (SELECT r.id, r.created_at, r.completed_at FROM rvi r JOIN cand c ON c.rid = r.id AND c.did = d.id ORDER BY r.created_at LIMIT 1) rv ON true
+      ORDER BY d.completed_at DESC`,
     [companyId, since, JSON.stringify(authors), JSON.stringify(reviewers.length ? reviewers : ["00000000-0000-0000-0000-000000000000"]), limit],
   );
   return rows.map((r) => ({
