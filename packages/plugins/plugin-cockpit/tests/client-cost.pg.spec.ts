@@ -147,7 +147,13 @@ d("effort against revenue (Postgres)", () => {
         return realGet(key);
       };
       const projects: string[] = [];
+      // The report lists at most 60 projects (readProjectRuns' cap), so only 60 clients get work; the other 190 are CRM
+      // clients without any, which still cost one link read each. 250 clients is what makes it more than one batch.
       for (let i = 0; i < 250; i += 1) {
+        if (i >= 60) {
+          await w.client.query(`INSERT INTO ${NAMESPACE}.crm_companies (id, company_id, name, lifecycle, updated_at) VALUES ($1, $2, $3, 'customer', now())`, [`cl${i}`, A, `Client ${i}`]);
+          continue;
+        }
         // projects are named differently from the client, so only the CRM link can tie them together
         const id = await clientWithWork(w, { id: `cl${i}`, name: `Client ${i}`, projectName: `Site ${i}`, usd: 10 + i });
         projects.push(id);
@@ -159,7 +165,7 @@ d("effort against revenue (Postgres)", () => {
       expect(peak).toBeGreaterThan(1); // at the same time, not one after another
       expect(peak).toBeLessThanOrEqual(LINK_LIMITS.batch); // but never all at once
       expect(peak).toBeLessThan(250);
-      expect(rows).toHaveLength(250);
+      expect(rows).toHaveLength(60); // the 60 clients with work
       expect(rows.every((r) => r.matchedBy === "link")).toBe(true);
       // every client is tied to ITS project: the spend is 10 + its number
       for (const r of rows) expect(r.usd).toBe(10 + Number(r.name.replace("Client ", "")));
