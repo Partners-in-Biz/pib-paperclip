@@ -82,17 +82,16 @@ export const BOARD_SECTIONS: Array<{ id: BoardSectionId; label: string }> = [
   { id: "archived", label: "Archived" },
 ];
 
-/** Mine = boards I own; the rest sort by scope; archived boards sit in their own section. */
-export function sectionOf(board: PlanningCanvasListItem, userId: string | null): BoardSectionId {
+/** Sorted by scope: personal boards are Mine, shared ones sit under Company or Project (whoever owns them); archived boards have their own section. */
+export function sectionOf(board: PlanningCanvasListItem): BoardSectionId {
   if (board.archivedAt) return "archived";
-  if (userId !== null && board.userId === userId) return "mine";
   if (board.scope === "company") return "company";
   if (board.scope === "project") return "project";
   return "mine";
 }
 
-export function groupBoards(boards: PlanningCanvasListItem[], userId: string | null) {
+export function groupBoards(boards: PlanningCanvasListItem[]) {
   const groups: Record<BoardSectionId, PlanningCanvasListItem[]> = { mine: [], company: [], project: [], archived: [] };
-  for (const board of boards) groups[sectionOf(board, userId)].push(board);
+  for (const board of boards) groups[sectionOf(board)].push(board);
   return BOARD_SECTIONS.map((section) => ({ ...section, boards: groups[section.id] })).filter((section) => section.boards.length > 0);
 }

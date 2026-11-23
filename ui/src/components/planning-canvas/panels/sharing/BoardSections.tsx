@@ -10,15 +10,13 @@ import { queryKeys } from "@/lib/queryKeys";
 export function BoardSelect({
   boards,
   activeId,
-  userId,
   onSelect,
 }: {
   boards: PlanningCanvasListItem[];
   activeId: string;
-  userId: string | null;
   onSelect: (id: string) => void;
 }) {
-  const groups = groupBoards(boards, userId);
+  const groups = groupBoards(boards);
   return (
     <select
       aria-label="Select canvas board"

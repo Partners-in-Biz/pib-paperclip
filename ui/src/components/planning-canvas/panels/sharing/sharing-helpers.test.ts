@@ -39,8 +39,7 @@ describe("sharing helpers", () => {
 
   it("groups boards into Mine, Company, Project and Archived", () => {
     const groups = groupBoards(
-      [board({ id: "1" }), board({ id: "2", userId: "x", scope: "company" }), board({ id: "3", userId: "x", scope: "project" }), board({ id: "4", archivedAt: "t" })],
-      "me",
+      [board({ id: "1" }), board({ id: "2", scope: "company" }), board({ id: "3", userId: "x", scope: "project" }), board({ id: "4", archivedAt: "t" })],
     );
     expect(groups.map((g) => `${g.id}:${g.boards.map((b) => b.id)}`)).toEqual(["mine:1", "company:2", "project:3", "archived:4"]);
   });
