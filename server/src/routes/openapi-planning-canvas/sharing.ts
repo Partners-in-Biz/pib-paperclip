@@ -10,6 +10,7 @@ export const PLANNING_CANVAS_SHARING_OPENAPI_ROUTES: PlanningCanvasOpenApiRoute[
     path: `${BOARD}/sharing`,
     tags: ["planning-canvases"],
     summary: "Change who can open a planning canvas board",
+    description: "Sets `scope` (personal, project, company), `projectId` for project scope, and `memberAccess` (edit, comment, view). Leaving personal needs an explicit `memberAccess`. Needs admin access.",
     body: updatePlanningCanvasSharingSchema,
   },
   {
@@ -17,11 +18,13 @@ export const PLANNING_CANVAS_SHARING_OPENAPI_ROUTES: PlanningCanvasOpenApiRoute[
     path: `${BOARD}/agent-grants`,
     tags: ["planning-canvases"],
     summary: "List the agent grants of a personal planning canvas board",
+    description: "An agent gets access to a personal board only through a grant tied to an issue (mention or handoff) made by the board owner. No route accepts a grant in its body. Owner only.",
   },
   {
     method: "delete",
     path: `${BOARD}/agent-grants/{grantId}`,
     tags: ["planning-canvases"],
     summary: "Revoke one agent grant of a planning canvas board",
+    description: "Revokes the grant; the agent loses access to the personal board at once. Owner only.",
   },
 ];
