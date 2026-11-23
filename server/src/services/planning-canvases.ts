@@ -17,7 +17,7 @@ import {
   type PlanningCanvasStrokeFields,
   type UpdatePlanningCanvas,
 } from "@paperclipai/shared";
-import { badRequest, notFound } from "../errors.js";
+import { badRequest, conflict, notFound } from "../errors.js";
 import { issueReadSqlCondition, projectReadSqlCondition, type AuthorizationActor } from "./authorization.js";
 import { publishPlanningCanvasEvent } from "./planning-canvas-events.js";
 import {
@@ -35,8 +35,12 @@ import { serializePlanningCanvasItem } from "./planning-canvas-ops.js";
 /**
  * Planning Canvas boards on item rows (plan PAR-13925 B.1, B.5, J.2, J.7).
  * Reads come from the items; the legacy `data` field of a board read is built
- * from them. Board reads and writes run the J.2 catch-up first. Access here is
- * still owner only; C3 replaces it with the access resolver.
+ * from them. Board reads and writes run the J.2 catch-up first.
+ *
+ * Two kinds of entry points: the `(companyId, userId, boardId)` ones filter on
+ * the owner (kept for owner-only callers and tests); the `...Resolved` ones
+ * take a board whose access the caller already resolved with
+ * `planningCanvasAccess` (C3 routes).
  */
 
 /** Who reads: refs and `handedOffIssueIdentifier` are hydrated with this actor's read access. */
@@ -193,12 +197,15 @@ function searchText(row: PlanningCanvasItemRow) {
 }
 
 export function planningCanvasService(db: Db) {
+  /** The board row; `ownerUserId` (when given) must own it. */
+  function boardWhere(companyId: string, boardId: string, ownerUserId: string | null) {
+    const conditions: SQL[] = [eq(planningCanvases.id, boardId), eq(planningCanvases.companyId, companyId)];
+    if (ownerUserId !== null) conditions.push(eq(planningCanvases.userId, ownerUserId));
+    return and(...conditions);
+  }
+
   async function loadOwned(companyId: string, userId: string, boardId: string) {
-    const [row] = await db
-      .select()
-      .from(planningCanvases)
-      .where(and(eq(planningCanvases.id, boardId), eq(planningCanvases.companyId, companyId), eq(planningCanvases.userId, userId)))
-      .limit(1);
+    const [row] = await db.select().from(planningCanvases).where(boardWhere(companyId, boardId, userId)).limit(1);
     if (!row) throw notFound("Planning canvas board not found");
     return row;
   }
@@ -249,16 +256,15 @@ export function planningCanvasService(db: Db) {
    * `since` (with tombstones; `resync` below `purged_through_revision`),
    * `keys`, `area` and `q` narrow the items; `format` serializes live items.
    */
-  async function read(
-    companyId: string,
-    userId: string,
-    boardId: string,
+  async function readBoard(
+    board: PlanningCanvasBoardRow,
     query: PlanningCanvasReadQuery = {},
     reader: PlanningCanvasReader = {},
   ): Promise<PlanningCanvasReadResult> {
     const format = query.format ?? "json";
     if (query.since !== undefined && format !== "json") throw badRequest("since is only for JSON reads");
-    const row = await syncIfStale(await loadOwned(companyId, userId, boardId));
+    const companyId = board.companyId;
+    const row = await syncIfStale(board);
     if (query.since !== undefined && query.since < row.purgedThroughRevision) {
       return { kind: "items", body: { resync: true, revision: row.revision, purgedThroughRevision: row.purgedThroughRevision } };
     }
@@ -293,34 +299,123 @@ export function planningCanvasService(db: Db) {
     };
   }
 
+  async function read(
+    companyId: string,
+    userId: string,
+    boardId: string,
+    query: PlanningCanvasReadQuery = {},
+    reader: PlanningCanvasReader = {},
+  ): Promise<PlanningCanvasReadResult> {
+    return readBoard(await loadOwned(companyId, userId, boardId), query, reader);
+  }
+
+  async function boardBody(board: PlanningCanvasBoardRow, reader: PlanningCanvasReader) {
+    return ((await readBoard(board, {}, reader)) as Extract<PlanningCanvasReadResult, { kind: "board" }>).body;
+  }
+
   async function getById(companyId: string, userId: string, boardId: string, reader: PlanningCanvasReader = {}) {
-    const result = await read(companyId, userId, boardId, {}, reader);
-    return (result as Extract<PlanningCanvasReadResult, { kind: "board" }>).body;
+    return boardBody(await loadOwned(companyId, userId, boardId), reader);
+  }
+
+  async function getResolved(companyId: string, boardId: string, reader: PlanningCanvasReader = {}) {
+    const [row] = await db.select().from(planningCanvases).where(boardWhere(companyId, boardId, null)).limit(1);
+    if (!row) throw notFound("Planning canvas board not found");
+    return boardBody(row, reader);
+  }
+
+  /** Summaries (legacy `data` built from live items) of boards the caller may read, newest first as given. */
+  async function summaries(
+    companyId: string,
+    rows: Array<{ board: PlanningCanvasBoardRow; stale?: boolean }>,
+    reader: PlanningCanvasReader = {},
+  ): Promise<PlanningCanvasBoardSummary[]> {
+    const boards: PlanningCanvasBoardRow[] = [];
+    for (const entry of rows) boards.push(await syncIfStale(entry.board, entry.stale));
+    if (boards.length === 0) return [];
+    const items: PlanningCanvasItemRow[] = [];
+    for (const part of chunks(boards.map((board) => board.id))) {
+      items.push(
+        ...(await db
+          .select()
+          .from(planningCanvasItems)
+          .where(and(inArray(planningCanvasItems.boardId, part), isNull(planningCanvasItems.deletedAt)))
+          .orderBy(planningCanvasItems.itemType, planningCanvasItems.zIndex, planningCanvasItems.itemKey)),
+      );
+    }
+    const refs = await hydrateRefs(db, companyId, reader.actor, items);
+    return boards.map((board) => boardSummary(board, items.filter((item) => item.boardId === board.id), refs));
+  }
+
+  /** Boards of a company with their staleness, newest first; `where` narrows them. */
+  async function listRows(companyId: string, where?: SQL) {
+    return db
+      .select({
+        board: planningCanvases,
+        stale: sql<boolean>`md5(${planningCanvases.data}::text) is distinct from ${planningCanvases.legacyDataMd5}`,
+      })
+      .from(planningCanvases)
+      .where(and(eq(planningCanvases.companyId, companyId), where))
+      .orderBy(desc(planningCanvases.updatedAt));
+  }
+
+  async function updateBoard(
+    companyId: string,
+    ownerUserId: string | null,
+    writerUserId: string,
+    boardId: string,
+    patch: UpdatePlanningCanvas,
+    reader: PlanningCanvasReader,
+  ): Promise<PlanningCanvasBoardRead & { legacyPatch: PlanningCanvasLegacyCounts | null }> {
+    const now = new Date();
+    const writes: Array<{ outcome: PlanningCanvasLegacyOutcome; writer: string | null }> = [];
+    const legacyPatch = await db.transaction(async (tx) => {
+      const [locked] = await tx.select().from(planningCanvases).where(boardWhere(companyId, boardId, ownerUserId)).for("update");
+      if (!locked) throw notFound("Planning canvas board not found");
+      if (locked.archivedAt) throw conflict("Planning canvas board is archived");
+      let board = locked;
+      const caughtUp = await catchUpLegacyBlobInTx(tx, board, now);
+      if (caughtUp) {
+        board = caughtUp.board;
+        writes.push({ outcome: caughtUp, writer: board.userId });
+      }
+      let counts: PlanningCanvasLegacyCounts | null = null;
+      if (patch.data !== undefined) {
+        const applied = await applyLegacyBlobInTx(tx, board, patch.data, writerUserId, now);
+        board = applied.board;
+        counts = applied.counts;
+        writes.push({ outcome: applied, writer: writerUserId });
+      }
+      const values: Partial<typeof planningCanvases.$inferInsert> = {};
+      if (patch.title !== undefined) values.title = patch.title;
+      if (patch.description !== undefined) values.description = patch.description;
+      if (Object.keys(values).length > 0) {
+        await tx.update(planningCanvases).set({ ...values, updatedAt: now }).where(eq(planningCanvases.id, board.id));
+      }
+      return counts;
+    });
+    for (const { outcome, writer } of writes) publishItemsEvent(outcome.board, outcome.changed, writer);
+    return { ...(await getResolved(companyId, boardId, reader)), legacyPatch };
+  }
+
+  async function removeBoard(companyId: string, ownerUserId: string | null, boardId: string): Promise<{ deleted: true }> {
+    const deleted = await db
+      .delete(planningCanvases)
+      .where(boardWhere(companyId, boardId, ownerUserId))
+      .returning({ id: planningCanvases.id });
+    if (!deleted[0]) throw notFound("Planning canvas board not found");
+    return { deleted: true };
   }
 
   return {
     read,
+    readResolved: readBoard,
     getById,
+    getResolved,
+    summaries,
+    listRows,
 
     async list(companyId: string, userId: string, reader: PlanningCanvasReader = {}): Promise<PlanningCanvasBoardSummary[]> {
-      const found = await db
-        .select({
-          board: planningCanvases,
-          stale: sql<boolean>`md5(${planningCanvases.data}::text) is distinct from ${planningCanvases.legacyDataMd5}`,
-        })
-        .from(planningCanvases)
-        .where(and(eq(planningCanvases.companyId, companyId), eq(planningCanvases.userId, userId)))
-        .orderBy(desc(planningCanvases.updatedAt));
-      const boards: PlanningCanvasBoardRow[] = [];
-      for (const entry of found) boards.push(await syncIfStale(entry.board, Boolean(entry.stale)));
-      if (boards.length === 0) return [];
-      const items = await db
-        .select()
-        .from(planningCanvasItems)
-        .where(and(inArray(planningCanvasItems.boardId, boards.map((board) => board.id)), isNull(planningCanvasItems.deletedAt)))
-        .orderBy(planningCanvasItems.itemType, planningCanvasItems.zIndex, planningCanvasItems.itemKey);
-      const refs = await hydrateRefs(db, companyId, reader.actor, items);
-      return boards.map((board) => boardSummary(board, items.filter((item) => item.boardId === board.id), refs));
+      return summaries(companyId, await listRows(companyId, eq(planningCanvases.userId, userId)), reader);
     },
 
     /** Creates the board and writes `input.data` as items; the `data` column keeps its default. */
@@ -345,56 +440,62 @@ export function planningCanvasService(db: Db) {
     /**
      * Legacy whole-board PATCH (J.2): `data` is applied upsert-only as this
      * user, after the catch-up; it never tombstones and never writes `data`.
-     * Answers the current board plus the counts.
+     * Answers the current board plus the counts. Owner only.
      */
-    async update(
-      companyId: string,
-      userId: string,
-      boardId: string,
-      patch: UpdatePlanningCanvas,
-      reader: PlanningCanvasReader = {},
-    ): Promise<PlanningCanvasBoardRead & { legacyPatch: PlanningCanvasLegacyCounts | null }> {
-      const now = new Date();
-      const writes: Array<{ outcome: PlanningCanvasLegacyOutcome; writer: string | null }> = [];
-      const legacyPatch = await db.transaction(async (tx) => {
-        const [locked] = await tx
-          .select()
-          .from(planningCanvases)
-          .where(and(eq(planningCanvases.id, boardId), eq(planningCanvases.companyId, companyId), eq(planningCanvases.userId, userId)))
-          .for("update");
-        if (!locked) throw notFound("Planning canvas board not found");
-        let board = locked;
-        const caughtUp = await catchUpLegacyBlobInTx(tx, board, now);
-        if (caughtUp) {
-          board = caughtUp.board;
-          writes.push({ outcome: caughtUp, writer: board.userId });
-        }
-        let counts: PlanningCanvasLegacyCounts | null = null;
-        if (patch.data !== undefined) {
-          const applied = await applyLegacyBlobInTx(tx, board, patch.data, userId, now);
-          board = applied.board;
-          counts = applied.counts;
-          writes.push({ outcome: applied, writer: userId });
-        }
-        const values: Partial<typeof planningCanvases.$inferInsert> = {};
-        if (patch.title !== undefined) values.title = patch.title;
-        if (patch.description !== undefined) values.description = patch.description;
-        if (Object.keys(values).length > 0) {
-          await tx.update(planningCanvases).set({ ...values, updatedAt: now }).where(eq(planningCanvases.id, board.id));
-        }
-        return counts;
-      });
-      for (const { outcome, writer } of writes) publishItemsEvent(outcome.board, outcome.changed, writer);
-      return { ...(await getById(companyId, userId, boardId, reader)), legacyPatch };
+    update(companyId: string, userId: string, boardId: string, patch: UpdatePlanningCanvas, reader: PlanningCanvasReader = {}) {
+      return updateBoard(companyId, userId, userId, boardId, patch, reader);
     },
 
-    async remove(companyId: string, userId: string, boardId: string): Promise<{ deleted: true }> {
-      const deleted = await db
-        .delete(planningCanvases)
-        .where(and(eq(planningCanvases.id, boardId), eq(planningCanvases.companyId, companyId), eq(planningCanvases.userId, userId)))
-        .returning({ id: planningCanvases.id });
-      if (!deleted[0]) throw notFound("Planning canvas board not found");
-      return { deleted: true };
+    /** The legacy PATCH on a board the caller may edit (access resolved by the route), as `writerUserId`. */
+    updateResolved(companyId: string, boardId: string, writerUserId: string, patch: UpdatePlanningCanvas, reader: PlanningCanvasReader = {}) {
+      return updateBoard(companyId, null, writerUserId, boardId, patch, reader);
+    },
+
+    remove(companyId: string, userId: string, boardId: string) {
+      return removeBoard(companyId, userId, boardId);
+    },
+
+    removeResolved(companyId: string, boardId: string) {
+      return removeBoard(companyId, null, boardId);
+    },
+
+    /**
+     * Writes the sharing fields (Q15, Q16); the route decided who may, against
+     * `seen`. The write lands only if the board still has the owner and sharing
+     * the route saw, so a decision on stale sharing (a "narrow" that became a
+     * widen after a concurrent change) answers 409 instead.
+     */
+    async setSharing(
+      seen: Pick<PlanningCanvasBoardRow, "id" | "companyId" | "userId" | "scope" | "projectId" | "memberAccess">,
+      sharing: { scope: PlanningCanvasBoardRow["scope"]; projectId: string | null; memberAccess: PlanningCanvasBoardRow["memberAccess"] },
+    ): Promise<PlanningCanvasBoardRow> {
+      const [row] = await db
+        .update(planningCanvases)
+        .set({ ...sharing, updatedAt: new Date() })
+        .where(
+          and(
+            boardWhere(seen.companyId, seen.id, null),
+            seen.userId === null ? isNull(planningCanvases.userId) : eq(planningCanvases.userId, seen.userId),
+            eq(planningCanvases.scope, seen.scope),
+            seen.projectId === null ? isNull(planningCanvases.projectId) : eq(planningCanvases.projectId, seen.projectId),
+            eq(planningCanvases.memberAccess, seen.memberAccess),
+          ),
+        )
+        .returning();
+      if (!row) throw conflict("Planning canvas sharing changed; reload and try again");
+      return row;
+    },
+
+    /** Archive (read-only, listed under Archived) or restore. Keeps the first archive time. */
+    async setArchived(companyId: string, boardId: string, archived: boolean): Promise<PlanningCanvasBoardRow> {
+      const now = new Date();
+      const [row] = await db
+        .update(planningCanvases)
+        .set({ archivedAt: archived ? sql`coalesce(${planningCanvases.archivedAt}, now())` : null, updatedAt: now })
+        .where(boardWhere(companyId, boardId, null))
+        .returning();
+      if (!row) throw notFound("Planning canvas board not found");
+      return row;
     },
   };
 }
