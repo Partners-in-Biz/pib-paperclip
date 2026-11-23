@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import * as db from "../src/db.js";
 import { companyInfo, type Actor } from "../src/service/common.js";
 import { runDailyForSprint } from "../src/service/jobs.js";
+import { adoptUnassignedAgentTasks } from "../src/service/agent.js";
 import { setSprintStatus } from "../src/service/sprints.js";
 import { materialiseDueTasks } from "../src/service/tasks.js";
 import { planTasks, sprintFor, world } from "./helpers/rehearsal-world.js";
@@ -58,6 +59,29 @@ describe("pausing a sprint parks its task issues", () => {
     await setSprintStatus(w.env, "co-1", user, { sprintId: "sp-real" }, "resume");
     expect(w.updates.filter((u) => u.patch.status === "todo").map((u) => u.id)).toEqual(["issue-1"]);
     expect(w.wakeups).toContain("issue-1");
-    expect(w.store.tasks.find((t) => t.id === "t-todo")!.evidence?.parkedByPause).toBeUndefined();
+    expect((w.store.tasks.find((t) => t.id === "t-todo")!.evidence as Record<string, unknown> | null)?.parkedByPause).toBeUndefined();
+  });
+});
+
+describe("adopting unassigned agent tasks", () => {
+  const left = (status: string) => {
+    const rows = [sprintFor("real", { root_issue_id: "root-1", status, autopilot_mode: "safe" })];
+    const w = world({
+      sprints: rows,
+      tasks: [taskRow({ id: "t-un", sprint_id: "sp-real", issue_id: "issue-1", issue_status: "backlog", assignee_kind: "unassigned", status: "in_progress" })],
+      routes: [[/FROM plugin_seo_8099f8879a\.sprints WHERE company_id = \$1/, () => rows]] as never,
+    });
+    w.ctx.issues.get = (async (id: string) => ({ id, status: "backlog", identifier: "PIB-1", assigneeAgentId: null, assigneeUserId: null })) as never;
+    return w;
+  };
+
+  it("does nothing for a paused sprint: no patch to todo, no wake; the active sprint is the control", async () => {
+    const paused = left("paused");
+    expect(await adoptUnassignedAgentTasks(paused.env, "co-1", AGENT)).toBe(0);
+    expect(paused.updates).toEqual([]);
+    expect(paused.wakeups).toEqual([]);
+    const active = left("active");
+    expect(await adoptUnassignedAgentTasks(active.env, "co-1", AGENT)).toBe(1);
+    expect(active.wakeups).toContain("issue-1");
   });
 });
