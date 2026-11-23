@@ -22,7 +22,12 @@ import {
   type PlanningCanvasTableData,
 } from "@paperclipai/shared";
 import { badRequest, conflict, notFound } from "../errors.js";
-import { publishPlanningCanvasEvent, type PlanningCanvasEventActor } from "./planning-canvas-events.js";
+import {
+  publishPlanningCanvasEvent,
+  type PlanningCanvasEventActor,
+  type PlanningCanvasOpsAppliedEvent,
+} from "./planning-canvas-events.js";
+import { catchUpLegacyBlobInTx, upsertPlanningCanvasItemRows } from "./planning-canvas-legacy.js";
 
 /**
  * Planning Canvas ops engine (plan PAR-13925 B.2-B.4, C ops, J.5).
@@ -473,36 +478,9 @@ async function purgeTombstones(tx: Tx, board: BoardRow, now: Date) {
   return purged.reduce((max, row) => Math.max(max, Number(row.revision)), board.purgedThroughRevision);
 }
 
-const WRITE_CHUNK = 1000;
-const UPSERT_COLUMNS = [
-  "kind",
-  "data",
-  "z_index",
-  "version",
-  "field_versions",
-  "revision",
-  "deleted_at",
-  "deleted_with_key",
-  "updated_by_user_id",
-  "updated_by_agent_id",
-  "updated_at",
-] as const;
-const upsertSet = Object.fromEntries(
-  UPSERT_COLUMNS.map((column) => [
-    column.replace(/_([a-z])/g, (_match, letter: string) => letter.toUpperCase()),
-    sql.raw(`excluded."${column}"`),
-  ]),
-);
-
-/** Writes every changed row (new and existing) with one upsert per 1,000 rows. */
+/** Writes every changed row (new and existing). */
 async function writeChanges(tx: Tx, state: BatchState) {
-  const rows = [...state.dirty].map((key) => state.items.get(key)!);
-  for (let start = 0; start < rows.length; start += WRITE_CHUNK) {
-    await tx
-      .insert(planningCanvasItems)
-      .values(rows.slice(start, start + WRITE_CHUNK))
-      .onConflictDoUpdate({ target: [planningCanvasItems.boardId, planningCanvasItems.itemKey], set: upsertSet });
-  }
+  await upsertPlanningCanvasItemRows(tx, [...state.dirty].map((key) => state.items.get(key)!));
 }
 
 export function planningCanvasOpsService(db: Db) {
@@ -520,13 +498,14 @@ export function planningCanvasOpsService(db: Db) {
       const actorKey = planningCanvasActorKey(input.actor);
 
       const outcome = await db.transaction(async (tx) => {
-        const [board] = await tx
+        const [locked] = await tx
           .select()
           .from(planningCanvases)
           .where(and(eq(planningCanvases.id, input.boardId), eq(planningCanvases.companyId, input.companyId)))
           .for("update");
-        if (!board) throw notFound("Planning canvas board not found");
-        if (board.archivedAt) throw conflict("Planning canvas board is archived");
+        if (!locked) throw notFound("Planning canvas board not found");
+        if (locked.archivedAt) throw conflict("Planning canvas board is archived");
+        let board = locked;
 
         await tx
           .delete(planningCanvasOpBatches)
@@ -548,7 +527,25 @@ export function planningCanvasOpsService(db: Db) {
               ),
             );
           if (stored) {
-            return { replayed: true as const, revision: board.revision, results: stored.results, event: null };
+            return { replayed: true as const, revision: board.revision, results: stored.results, event: null, catchUpEvent: null };
+          }
+        }
+
+        // J.2 catch-up: a blob written by old code since the last sync is applied first.
+        const caughtUp = await catchUpLegacyBlobInTx(tx, board, now);
+        let catchUpEvent: PlanningCanvasOpsAppliedEvent | null = null;
+        if (caughtUp) {
+          board = caughtUp.board;
+          if (caughtUp.changed.length > 0 && board.userId) {
+            catchUpEvent = {
+              type: "ops.applied",
+              companyId: board.companyId,
+              boardId: board.id,
+              revision: board.revision,
+              actor: { type: "user", id: board.userId },
+              items: caughtUp.changed.map(serializePlanningCanvasItem),
+              purgedThroughRevision: board.purgedThroughRevision,
+            };
           }
         }
 
@@ -602,10 +599,11 @@ export function planningCanvasOpsService(db: Db) {
               purgedThroughRevision,
             }
           : null;
-        return { replayed: false as const, revision, results, event };
+        return { replayed: false as const, revision, results, event, catchUpEvent };
       });
 
       // After commit only: a rolled-back transaction throws above and emits nothing.
+      if (outcome.catchUpEvent) publishPlanningCanvasEvent(outcome.catchUpEvent);
       if (outcome.event) publishPlanningCanvasEvent(outcome.event);
       return { revision: outcome.revision, results: outcome.results, replayed: outcome.replayed };
     },
