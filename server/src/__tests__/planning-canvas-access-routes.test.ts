@@ -27,6 +27,7 @@ import { errorHandler } from "../middleware/error-handler.js";
 import { planningCanvasRoutes } from "../routes/planning-canvases.js";
 import { planningCanvasSharingRoutes } from "../routes/planning-canvas-sharing.js";
 import { planningCanvasCommentRoutes } from "../routes/planning-canvas-comments.js";
+import { planningCanvasLinkRoutes } from "../routes/planning-canvas-links.js";
 import { authorizationService } from "../services/authorization.js";
 import { planningCanvasService } from "../services/planning-canvases.js";
 import { MEMBER_RESTRICTION_ROUTE_TABLE } from "../services/member-restriction/route-table.js";
@@ -62,6 +63,9 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
  *   /api/companies/:companyId/planning-canvases/:boardId/comments
  *   /api/companies/:companyId/planning-canvases/:boardId/comments/:commentId
  *   /api/companies/:companyId/planning-canvases/:boardId/comments/:commentId/resolve
+ *   /api/companies/:companyId/planning-canvases/:boardId/refs
+ *   /api/companies/:companyId/planning-canvases/:boardId/query
+ *   /api/companies/:companyId/planning-canvases/:boardId/handoff
  */
 
 const resolverFails = vi.hoisted(() => ({ on: false }));
@@ -140,6 +144,10 @@ const DENIAL_ROUTES: DenialRoute[] = [
   { method: "PATCH", path: `${P}/:boardId/comments/:commentId`, url: (ctx) => `${board(ctx)}/comments/${ctx.grantId}`, body: { body: "Hi" } },
   { method: "DELETE", path: `${P}/:boardId/comments/:commentId`, url: (ctx) => `${board(ctx)}/comments/${ctx.grantId}` },
   { method: "POST", path: `${P}/:boardId/comments/:commentId/resolve`, url: (ctx) => `${board(ctx)}/comments/${ctx.grantId}/resolve`, body: { resolved: true } },
+  // C8 (PAR-13937).
+  { method: "GET", path: `${P}/:boardId/refs`, url: (ctx) => `${board(ctx)}/refs` },
+  { method: "POST", path: `${P}/:boardId/query`, url: (ctx) => `${board(ctx)}/query`, body: { kind: "issues", filter: {}, limit: 10 } },
+  { method: "POST", path: `${P}/:boardId/handoff`, url: (ctx) => `${board(ctx)}/handoff`, body: { keys: ["n1"], mode: "single", idempotencyKey: "k" } },
 ];
 
 (support.supported ? describe : describe.skip)("planning canvas access through the real middleware (plan PAR-13925 D)", () => {
@@ -237,6 +245,7 @@ const DENIAL_ROUTES: DenialRoute[] = [
     api.use(planningCanvasRoutes(db));
     api.use(planningCanvasSharingRoutes(db));
     api.use(planningCanvasCommentRoutes(db));
+    api.use(planningCanvasLinkRoutes(db));
     app.use("/api", api);
     app.use(errorHandler);
 
