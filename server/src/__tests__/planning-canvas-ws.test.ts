@@ -42,10 +42,22 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
  * Route: /api/companies/:companyId/planning-canvases/:boardId/ws
  */
 
+/** Makes the hub's membership read (the input of every access check) throw. */
+const resolverFails = vi.hoisted(() => ({ on: false }));
+vi.mock("../services/member-restriction/actor-memberships.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/member-restriction/actor-memberships.js")>();
+  return {
+    ...actual,
+    loadActorMemberships: (...args: Parameters<typeof actual.loadActorMemberships>) =>
+      resolverFails.on ? Promise.reject(new Error("fixture: memberships unreadable")) : actual.loadActorMemberships(...args),
+  };
+});
+
 const support = await getEmbeddedPostgresTestSupport();
 
 afterEach(() => {
   vi.unstubAllEnvs();
+  resolverFails.on = false;
 });
 
 type Msg = Record<string, unknown> & { type: string };
@@ -159,6 +171,8 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
       socket.on("data", (chunk) => chunks.push(chunk));
       socket.on("error", reject);
       socket.on("close", () => resolve(Buffer.concat(chunks).toString("latin1")));
+      // An accepted upgrade stays open: answer with what arrived so far.
+      setTimeout(() => socket.destroy(), 3000).unref();
       const lines = [
         `GET ${path} HTTP/1.1`,
         `Host: 127.0.0.1:${port}`,
@@ -414,6 +428,28 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
       });
       await expectRevoked(member);
       expect(owner.closed).toBeNull();
+    });
+
+    it("fails closed: a failed restriction read refuses the upgrade, and a failed re-check leaves the socket without fan-out", async () => {
+      const board = await makeBoard({ scope: "company", memberAccess: "edit" });
+      resolverFails.on = true;
+      const refused = await rawUpgrade(wsPath(Y, board.id), sessionHeaders(MEMBER));
+      expect(refused.startsWith("HTTP/1.1 500 ")).toBe(true);
+      expect(hub.socketCount(board.id)).toBe(0);
+      resolverFails.on = false;
+
+      const member = await join(Y, board.id, sessionHeaders(MEMBER));
+      resolverFails.on = true;
+      clockOffset = 61_000;
+      publishPlanningCanvasEvent({ type: "ops.applied", companyId: Y, boardId: board.id, revision: 7, actor: { type: "user", id: OWNER }, items: [], purgedThroughRevision: 0 });
+      await sleep(200);
+      expect(member.of("ops.applied")).toEqual([]);
+      expect(member.of("resync")).toEqual([]);
+      expect(member.closed).toBeNull();
+
+      resolverFails.on = false;
+      await hub.tick();
+      expect(await member.next("resync")).toMatchObject({ revision: board.revision });
     });
 
     it("(c) the 60 s re-check timer revokes a change no event announces; a stale socket gets no fan-out, then resync", async () => {
