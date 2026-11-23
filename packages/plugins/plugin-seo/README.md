@@ -127,6 +127,10 @@ node ./esbuild.config.mjs # dist/ (worker, manifest, ui, ui/oauth-callback.html 
 
 Migrations 001–019 are applied on installed instances; 0.23.0 adds `020_seo.sql` and 0.23.1 adds `021_seo.sql`. Never edit an applied one — add `022_seo.sql` and up. `012_seo.sql`: sprint site link columns (`site_project_id`, `site_access`, `repo_url`, `default_branch`, `framework`, `hosting`, `change_policy`, `verification`), `sprint_tasks.issue_project_id`, and the `needs_you` table.
 
+## 0.52.3: sign-off delegate decides safe-autopilot approvals (PAR-13992)
+
+- **Approve an SEO change** and **Keep or discard learned playbook changes** now wait on the first sign-off delegate on the Cockpit (`waitsOn`), not the owner. In safe autopilot the delegate agent may call `approve-optimization` and `decide-playbook-change` (any other agent still may not; a person still can). With no delegate set, nothing changes.
+
 ## 0.52.2: preview banner offset (PAR-12248)
 
 - **Hunt and Gun auction banner.** The preview bar CSS (`engine/preview.ts`) adds `@media (min-width:981px){.auctionUpdatesLiveGroup{margin-top:125px!important}}` so the site's "NEXT AUCTION" banner sits below its fixed desktop header in previews instead of under it.
