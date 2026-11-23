@@ -289,6 +289,12 @@ export function planningCanvasLinksService(db: Db, deps: PlanningCanvasLinksDeps
   async function replayResult(ctx: PlanningCanvasHandoffContext, tag: string, rows: IssueRow[], keys: string[]): Promise<PlanningCanvasHandoffResult> {
     const prefix = `${ctx.board.id}:${tag}:`;
     const perNode = rows.every((row) => row.originKind === PLANNING_CANVAS_HANDOFF_ORIGIN_KIND);
+    // Issues of one call share `createdAt` (one transaction): answer in the order of the request's keys.
+    const position = (row: IssueRow) => {
+      const index = perNode ? keys.indexOf(row.originId!.slice(prefix.length)) : 0;
+      return index < 0 ? keys.length : index;
+    };
+    rows = [...rows].sort((a, b) => position(a) - position(b) || (a.originId ?? "").localeCompare(b.originId ?? ""));
     const ids = rows.map((row) => row.id);
     const readable = new Set((await readableIssues(ctx.actor, ctx.board.companyId, inArray(issues.id, ids), ids.length)).map((row) => row.id));
     return {

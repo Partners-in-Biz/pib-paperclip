@@ -245,11 +245,11 @@ describe("planning canvas links database support", () => {
   describe("handoff", () => {
     it("one_per_node: one issue per node, assigned and woken, linked on its node; a replay returns the same issues and writes nothing", async () => {
       const board = await makeBoard({ scope: "company", memberAccess: "edit", projectId: null });
-      const body = { keys: ["n1", "n2"], mode: "one_per_node", idempotencyKey: "k-one", assigneeAgentId: agentA };
+      const body = { keys: ["n2", "n1"], mode: "one_per_node", idempotencyKey: "k-one", assigneeAgentId: agentA };
       const res = await handoff(session(MEMBER), board.id, body);
       expect(res.status, res.text).toBe(201);
       expect(res.body).toMatchObject({ mode: "one_per_node", replayed: false });
-      expect(res.body.issues.map((issue: { itemKeys: string[] }) => issue.itemKeys)).toEqual([["n1"], ["n2"]]);
+      expect(res.body.issues.map((issue: { itemKeys: string[] }) => issue.itemKeys)).toEqual([["n2"], ["n1"]]);
       const created = await boardIssues(board.id);
       expect(created).toHaveLength(2);
       for (const issue of created) {
@@ -266,7 +266,8 @@ describe("planning canvas links database support", () => {
       const replay = await handoff(session(MEMBER), board.id, body);
       expect(replay.status, replay.text).toBe(200);
       expect(replay.body.replayed).toBe(true);
-      expect(replay.body.issues.map((issue: { id: string }) => issue.id)).toEqual(res.body.issues.map((issue: { id: string }) => issue.id));
+      // Same issues in the same (request) order, although they share `createdAt`.
+      expect(replay.body.issues.map((issue: { id: string; itemKeys: string[] }) => [issue.id, issue.itemKeys])).toEqual(res.body.issues.map((issue: { id: string; itemKeys: string[] }) => [issue.id, issue.itemKeys]));
       expect(await boardIssues(board.id)).toHaveLength(2);
       expect(wakes).toEqual([]);
       // Another caller with the same key is another call.
