@@ -281,3 +281,7 @@ export { budgetEvaluationWork } from "./budget_evaluation_work.js";
 export { nativeProviderArtifacts, nativeProviderArtifactReferences } from "./native_provider_artifacts.js";
 export { personalNotes, personalNoteIssueLinks } from "./personal_notes.js";
 export { planningCanvases } from "./planning_canvases.js";
+export { planningCanvasItems } from "./planning_canvas_items.js";
+export { planningCanvasComments } from "./planning_canvas_comments.js";
+export { planningCanvasAgentGrants } from "./planning_canvas_agent_grants.js";
+export { planningCanvasOpBatches } from "./planning_canvas_op_batches.js";
