@@ -1343,6 +1343,26 @@ function registerCurrentRoute(input: {
 
 for (const route of PLANNING_CANVAS_OPENAPI_ROUTES) registerCurrentRoute(route);
 
+// Routes that landed without an OpenAPI entry (the route scan in
+// __tests__/openapi-routes.test.ts failed on development without these).
+const PERSONAL_NOTES = "/api/companies/{companyId}/personal-notes";
+for (const [method, path, summary] of [
+  ["get", PERSONAL_NOTES, "List your personal notes"],
+  ["post", PERSONAL_NOTES, "Create a personal note"],
+  ["post", `${PERSONAL_NOTES}/daily`, "Open or create today's daily note"],
+  ["get", `${PERSONAL_NOTES}/{noteId}`, "Read a personal note"],
+  ["patch", `${PERSONAL_NOTES}/{noteId}`, "Update a personal note"],
+  ["delete", `${PERSONAL_NOTES}/{noteId}`, "Delete a personal note"],
+  ["post", `${PERSONAL_NOTES}/{noteId}/schedule-handoff`, "Schedule an agent handoff for a personal note"],
+  ["delete", `${PERSONAL_NOTES}/{noteId}/schedule-handoff`, "Cancel a scheduled personal note handoff"],
+  ["post", `${PERSONAL_NOTES}/{noteId}/dispatch-now`, "Hand a personal note to its agent now"],
+  ["post", `${PERSONAL_NOTES}/{noteId}/record-handoff`, "Record a personal note handoff"],
+  ["post", `${PERSONAL_NOTES}/{noteId}/split-tasks`, "Split a personal note into tasks"],
+  ["post", "/api/issues/{id}/finalize-creation", "Finish creating a task after its staged attachments upload"],
+] as const) {
+  registerCurrentRoute({ method, path, tags: [path.startsWith("/api/issues") ? "issues" : "personal-notes"], summary });
+}
+
 type OpenApiAuthLevel =
   | "public"
   | "agent_run"

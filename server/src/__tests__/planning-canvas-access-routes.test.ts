@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq, sql } from "drizzle-orm";
 import {
   activityLog,
@@ -75,6 +75,11 @@ vi.mock("../services/member-restriction/resolver.js", async (importOriginal) => 
 
 const support = await getEmbeddedPostgresTestSupport();
 
+const JWT_SECRET = "planning-canvas-access-routes";
+// Every test signs and verifies run tokens with this secret; `unstubAllEnvs` below removes it.
+beforeEach(() => {
+  vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", JWT_SECRET);
+});
 afterEach(() => {
   vi.unstubAllEnvs();
   resolverFails.on = false;
@@ -204,7 +209,6 @@ const DENIAL_ROUTES: DenialRoute[] = [
   }
 
   beforeAll(async () => {
-    vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", "planning-canvas-access-routes");
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-planning-canvas-access-");
     db = createDb(tempDb.connectionString);
     app = express();
