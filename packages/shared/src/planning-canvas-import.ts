@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { CanvasShapeVariant, PlanningCanvasItemInput } from "./types/planning-canvas.js";
+import { PLANNING_CANVAS_LIMITS, type CanvasShapeVariant, type PlanningCanvasItemInput } from "./types/planning-canvas.js";
 
 /**
  * Planning Canvas import (plan PAR-13925 sections G and L, C9). Turns a small
@@ -55,6 +55,15 @@ const STICKY_H = 120;
 const STICKY_GAP = 20;
 const STICKY_COLS = 3;
 
+/** Longest Mermaid node or subgraph id: keeps `imp-xxxxxxxx-sub-<id>-NNN` within the 100-character item key. */
+const ID_MAX = 60;
+const MAX_ITEMS = PLANNING_CANVAS_LIMITS.opsPerBatchMax;
+
+function countItem(count: number, line: number): number {
+  if (count + 1 > MAX_ITEMS) throw new PlanningCanvasImportError(line, `import would create more than ${MAX_ITEMS} items (the per-batch limit); split it`);
+  return count + 1;
+}
+
 const clip = (text: string, max: number) => (text.length > max ? text.slice(0, max - 1) + "…" : text);
 
 function frameItem(key: string, x: number, y: number, width: number, height: number, title: string, zIndex: number): PlanningCanvasItemInput {
@@ -72,11 +81,13 @@ export function importMarkdownOutline(source: string, options: PlanningCanvasImp
   const prefix = options.keyPrefix ?? "imp";
   const origin = options.at ?? { x: 0, y: 0 };
   const sections: Array<{ title: string; bullets: string[] }> = [];
+  let count = 0;
   source.split(/\r?\n/).forEach((raw, index) => {
     const line = index + 1;
     if (raw.trim() === "") return;
     const heading = HEADING.exec(raw);
     if (heading) {
+      count = countItem(count, line);
       sections.push({ title: heading[1]!, bullets: [] });
       return;
     }
@@ -84,6 +95,7 @@ export function importMarkdownOutline(source: string, options: PlanningCanvasImp
     if (bullet) {
       const section = sections[sections.length - 1];
       if (!section) throw new PlanningCanvasImportError(line, "bullet before the first heading");
+      count = countItem(count, line);
       section.bullets.push(bullet[1]!);
       return;
     }
@@ -137,10 +149,13 @@ export function importMermaidFlowchart(source: string, options: PlanningCanvasIm
   const edges: MEdge[] = [];
   const groups: MGroup[] = [];
   const stack: number[] = [];
+  let count = 0;
 
-  const declare = (id: string, text: string | null, shape: MNode["shape"] | null) => {
+  const declare = (id: string, text: string | null, shape: MNode["shape"] | null, line: number) => {
+    if (id.length > ID_MAX) throw new PlanningCanvasImportError(line, `node id \`${clip(id, 20)}\` is longer than ${ID_MAX} characters`);
     const group = stack.length ? stack[stack.length - 1]! : null;
     const existing = nodes.get(id);
+    if (!existing) count = countItem(count, line);
     if (!existing) nodes.set(id, { id, text: text ?? id, shape: shape ?? "rect", group });
     else if (text !== null) { existing.text = text; existing.shape = shape ?? existing.shape; }
   };
@@ -165,6 +180,8 @@ export function importMermaidFlowchart(source: string, options: PlanningCanvasIm
       const withTitle = /^([A-Za-z_][A-Za-z0-9_]*)\s*\[(.*)\]$/.exec(sub[1]!.trim());
       const id = withTitle ? withTitle[1]! : sub[1]!.trim();
       const title = withTitle ? unquote(withTitle[2]!) : unquote(id);
+      if (id.length > ID_MAX) throw new PlanningCanvasImportError(line, `subgraph id is longer than ${ID_MAX} characters`);
+      count = countItem(count, line);
       groups.push({ id: withTitle ? id : id.replace(/[^A-Za-z0-9_]+/g, "_") || `g${groups.length + 1}`, title, parent: stack.length ? stack[stack.length - 1]! : null });
       stack.push(groups.length - 1);
       return;
@@ -186,10 +203,10 @@ export function importMermaidFlowchart(source: string, options: PlanningCanvasIm
         const label = unquote(rest.slice(open.length, end));
         if (label === "") return fail("empty node text");
         pos += end + close.length;
-        declare(m[0], label, shape);
+        declare(m[0], label, shape, line);
         return m[0];
       }
-      declare(m[0], null, null);
+      declare(m[0], null, null, line);
       return m[0];
     };
 
@@ -201,6 +218,7 @@ export function importMermaidFlowchart(source: string, options: PlanningCanvasIm
       pos = EDGE.lastIndex;
       const next = readNode();
       const label = e[2]?.trim();
+      count = countItem(count, line);
       edges.push({ from: prev, to: next, dashed: e[1] === "-.->", ...(label ? { label: clip(label, 120) } : {}) });
       prev = next;
     }

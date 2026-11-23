@@ -386,6 +386,43 @@ const DENIAL_ROUTES: DenialRoute[] = [
     });
   });
 
+  describe("import route (C9)", () => {
+    const importUrl = (id: string) => `/api/companies/${Y}/planning-canvases/${id}/import`;
+    const itemCount = async (id: string) => (await db.select().from(planningCanvasItems).where(eq(planningCanvasItems.boardId, id))).length;
+
+    it("applies the items once; a replay with the same clientBatchId adds none", async () => {
+      // keyMember (not a fake jwt run id, whose activity_log run FK would 500 after the commit).
+      const row = await makeBoard({ scope: "project", projectId: projectP, memberAccess: "edit" });
+      const body = { format: "markdown", source: "# Plan\n- one\n- two", clientBatchId: "imp-replay-1" };
+      const first = await send(C.keyMember, "POST", importUrl(row.id), body);
+      expect(first.status, first.text).toBe(200);
+      expect(first.body.items).toBe(3);
+      expect(await itemCount(row.id)).toBe(3);
+      const second = await send(C.keyMember, "POST", importUrl(row.id), body);
+      expect(second.status, second.text).toBe(200);
+      expect(await itemCount(row.id)).toBe(3);
+    });
+
+    it("view and comment access get 403 and nothing is written", async () => {
+      const row = await makeBoard({ scope: "company", memberAccess: "comment" });
+      const body = { format: "markdown", source: "# Plan\n- one" };
+      expect((await send(C.viewer, "POST", importUrl(row.id), body)).status).toBe(403);
+      expect((await send(C.keyMember, "POST", importUrl(row.id), body)).status).toBe(403);
+      expect(await itemCount(row.id)).toBe(0);
+    });
+
+    it("an unsupported line answers 422 with details.line; an oversized import answers 422 naming the limit", async () => {
+      const row = await makeBoard({ scope: "project", projectId: projectP, memberAccess: "edit" });
+      const bad = await send(C.keyMember, "POST", importUrl(row.id), { format: "mermaid", source: "graph TD\nA-->B\nA x--x C" });
+      expect(bad.status, bad.text).toBe(422);
+      expect(bad.body.details).toMatchObject({ code: "PLANNING_CANVAS_IMPORT_UNSUPPORTED", line: 3 });
+      const big = await send(C.keyMember, "POST", importUrl(row.id), { format: "markdown", source: "# A\n" + Array.from({ length: 600 }, (_, i) => `- b${i}`).join("\n") });
+      expect(big.status, big.text).toBe(422);
+      expect(big.body.details.reason).toMatch(/500 items/);
+      expect(await itemCount(row.id)).toBe(0);
+    });
+  });
+
   describe("agent grants (Q6, Q14)", () => {
     async function grantedBoard(status = "todo") {
       const row = await makeBoard({});

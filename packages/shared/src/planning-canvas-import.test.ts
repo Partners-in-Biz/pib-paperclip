@@ -32,6 +32,25 @@ describe("markdown outline import", () => {
   });
 });
 
+describe("import limits (422 naming the limit)", () => {
+  it("markdown over 500 items names the line that crosses the cap", () => {
+    const source = "# A\n" + Array.from({ length: 600 }, (_, i) => `- b${i}`).join("\n");
+    expect(lineOf(() => importMarkdownOutline(source))).toBe(501);
+    expect(() => importMarkdownOutline(source)).toThrow(/500 items/);
+    expect(importMarkdownOutline("# A\n" + Array.from({ length: 499 }, (_, i) => `- b${i}`).join("\n"))).toHaveLength(500);
+  });
+  it("mermaid over 500 nodes and edges is rejected", () => {
+    const source = "graph TD\n" + Array.from({ length: 300 }, (_, i) => `N${i} --> M${i}`).join("\n");
+    expect(lineOf(() => importMermaidFlowchart(source))).toBe(168);
+  });
+  it("long mermaid ids are rejected so item keys stay under 100 characters", () => {
+    expect(lineOf(() => importMermaidFlowchart(`graph TD\nA-->${"x".repeat(61)}`))).toBe(2);
+    expect(lineOf(() => importMermaidFlowchart(`graph TD\nsubgraph ${"s".repeat(61)} [T]\nend`))).toBe(2);
+    const ok = importMermaidFlowchart(`graph TD\nA-->${"x".repeat(60)}\nsubgraph ${"s".repeat(60)} [T]\nB\nend`, { keyPrefix: "imp-abcdef12" });
+    expect(Math.max(...ok.map((i) => i.key.length))).toBeLessThanOrEqual(100);
+  });
+});
+
 describe("mermaid flowchart import", () => {
   it("golden: flowchart with shapes, labels, dashed edges and a subgraph", () => {
     const items = importMermaidFlowchart(
