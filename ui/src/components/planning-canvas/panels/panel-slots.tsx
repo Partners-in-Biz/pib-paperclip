@@ -3,6 +3,8 @@ import { BoardBar } from "@/components/planning-canvas/panels/BoardBar";
 import { BlueprintsDialog } from "@/components/planning-canvas/panels/blueprints/BlueprintsDialog";
 import { BottomRightControls } from "@/components/planning-canvas/panels/BottomRightControls";
 import { CheatSheet } from "@/components/planning-canvas/panels/CheatSheet";
+import { CommentPins } from "@/components/planning-canvas/panels/comments/CommentPins";
+import { CommentsPanel } from "@/components/planning-canvas/panels/comments/CommentsPanel";
 import { OutlinePanel } from "@/components/planning-canvas/panels/outline/OutlinePanel";
 import { CanvasContextMenu } from "@/components/planning-canvas/toolbar/CanvasContextMenu";
 import { ConflictDrafts } from "@/components/planning-canvas/panels/ConflictDrafts";
@@ -43,8 +45,10 @@ export const PANEL_SLOTS: Record<PanelSlotId, PanelEntry[]> = {
     { id: "blueprints-dialog", Component: BlueprintsDialog },
     { id: "cheat-sheet", Component: CheatSheet },
     { id: "context-menu", Component: CanvasContextMenu },
+    { id: "comment-pins", Component: CommentPins },
   ],
   right: [
+    { id: "comments-panel", Component: CommentsPanel },
     { id: "outline", Component: OutlinePanel },
     { id: "notes-drawer", Component: NotesDrawer },
     { id: "insert-link-panel", Component: InsertLinkPanel },

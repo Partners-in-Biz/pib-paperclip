@@ -3,6 +3,7 @@ import type {
   PlanningCanvasAccessLevel,
   PlanningCanvasBoard,
   PlanningCanvasBoardRead,
+  PlanningCanvasComment,
   PlanningCanvasFromBlueprint,
   PlanningCanvasHandoff,
   PlanningCanvasIssueQuery,
@@ -10,6 +11,7 @@ import type {
   PlanningCanvasOpBatch,
   PlanningCanvasOpBatchResponse,
   UpdatePlanningCanvas,
+  CreatePlanningCanvasComment,
 } from "@paperclipai/shared";
 import { api, requestResponse } from "./client";
 import type { QueriedIssue } from "@/components/planning-canvas/nodes/issue-board";
@@ -53,6 +55,27 @@ export interface PlanningCanvasFromBlueprintRead {
   issues: Array<PlanningCanvasIssueRef & { itemKey: string }>;
 }
 
+/** A linked issue of a thread: live status, or `hidden` when the reader may not see it. */
+export type PlanningCanvasLinkedIssue =
+  | { id: string; identifier: string | null; title: string; status: string; assigneeAgentId: string | null; hidden?: undefined }
+  | { id: string; hidden: true };
+
+export interface PlanningCanvasIssueComment {
+  issueId: string;
+  id: string;
+  body: string;
+  authorAgentId: string | null;
+  authorUserId: string | null;
+  createdAt: string;
+}
+
+/** `GET .../comments`: with a thread query, also the linked issues and their comments. */
+export interface PlanningCanvasCommentsRead {
+  comments: PlanningCanvasComment[];
+  linkedIssues: PlanningCanvasLinkedIssue[];
+  issueComments: PlanningCanvasIssueComment[];
+}
+
 const boardPath = (companyId: string, boardId: string) => `/companies/${companyId}/planning-canvases/${boardId}`;
 
 export const planningCanvasesApi = {
@@ -88,6 +111,23 @@ export const planningCanvasesApi = {
 
   handoff: (companyId: string, boardId: string, body: PlanningCanvasHandoff) =>
     api.post<PlanningCanvasHandoffRead>(`${boardPath(companyId, boardId)}/handoff`, body),
+
+  /** Every comment of the board (no linked issues): drives the pins. */
+  listComments: (companyId: string, boardId: string) =>
+    api.get<PlanningCanvasCommentsRead>(`${boardPath(companyId, boardId)}/comments`, { cache: "no-store" }),
+
+  /** One thread (a node, or `null` for the board thread) with its linked issues and their comments. */
+  readThread: (companyId: string, boardId: string, itemKey: string | null) =>
+    api.get<PlanningCanvasCommentsRead>(
+      `${boardPath(companyId, boardId)}/comments?${itemKey === null ? "thread=board" : `itemKey=${encodeURIComponent(itemKey)}`}`,
+      { cache: "no-store" },
+    ),
+
+  createComment: (companyId: string, boardId: string, data: CreatePlanningCanvasComment) =>
+    api.post<PlanningCanvasComment>(`${boardPath(companyId, boardId)}/comments`, data),
+
+  resolveComment: (companyId: string, boardId: string, commentId: string, resolved: boolean) =>
+    api.post<PlanningCanvasComment>(`${boardPath(companyId, boardId)}/comments/${commentId}/resolve`, { resolved }),
 
   create: (companyId: string, data: CreatePlanningCanvas) =>
     api.post<PlanningCanvasBoard>(`/companies/${companyId}/planning-canvases`, data),

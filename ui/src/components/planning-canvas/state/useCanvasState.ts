@@ -27,6 +27,8 @@ export function useCanvasState(ctx: CanvasData) {
 
   // Tool & interaction state
   const [tool, setTool] = useState<ToolMode>("select");
+  /** The open comment thread: a node key, or `null` for the board-level thread (PAR-13936). */
+  const [commentThread, setCommentThread] = useState<{ key: string | null } | null>(null);
   const [penColor, setPenColor] = useState<CanvasNodeColor>("blue");
   const [penHighlighter, setPenHighlighter] = useState(false);
   const [spacePressed, setSpacePressed] = useState(false);
@@ -104,6 +106,8 @@ export function useCanvasState(ctx: CanvasData) {
     setDirty,
     tool,
     setTool,
+    commentThread,
+    setCommentThread,
     penColor,
     setPenColor,
     penHighlighter,

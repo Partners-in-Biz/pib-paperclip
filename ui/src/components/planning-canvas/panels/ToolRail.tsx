@@ -1,4 +1,4 @@
-import { ArrowRight, Frame, Hand, Keyboard, Link2, ListTree, MousePointer2, FileText, Table2, Columns3, CalendarRange, NotebookPen, Pen, Shapes, StickyNote, Type } from "lucide-react";
+import { ArrowRight, Frame, Hand, Keyboard, Link2, ListTree, MessageSquare, MousePointer2, FileText, Table2, Columns3, CalendarRange, NotebookPen, Pen, Shapes, StickyNote, Type } from "lucide-react";
 import { type CanvasController } from "@/components/planning-canvas/state/useCanvasController";
 import { cn } from "@/lib/utils";
 
@@ -37,6 +37,7 @@ export function ToolRail({ c }: { c: CanvasController }) {
           { id: "text", icon: Type, label: "Text (T)" },
           { id: "connect", icon: ArrowRight, label: "Connector Arrow (L)" },
           { id: "pen", icon: Pen, label: "Freehand Pen (D)" },
+          { id: "comment", icon: MessageSquare, label: "Comment (C)" },
         ] as const
       ).map((item) => {
         const Icon = item.icon;

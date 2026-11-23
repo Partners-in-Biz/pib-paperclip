@@ -20,6 +20,7 @@ export function useCanvasPointer(ctx: CanvasData & CanvasState & CanvasBoard & C
     setViewport,
     tool,
     setTool,
+    setCommentThread,
     penColor,
     penHighlighter,
     spacePressed,
@@ -135,6 +136,8 @@ export function useCanvasPointer(ctx: CanvasData & CanvasState & CanvasBoard & C
         setTool("connect");
       } else if (e.key.toLowerCase() === "d") {
         setTool("pen");
+      } else if (e.key.toLowerCase() === "c" && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        setTool("comment");
       } else if (e.key.toLowerCase() === "p") {
         setNotesDrawerOpen((o) => !o);
       }
@@ -499,6 +502,11 @@ export function useCanvasPointer(ctx: CanvasData & CanvasState & CanvasBoard & C
 
     if (e.target !== e.currentTarget) return;
 
+    if (tool === "comment") {
+      setCommentThread({ key: null });
+      return;
+    }
+
     if (tool === "sticky" || tool === "frame" || tool === "shape" || tool === "text") {
       const world = screenToWorld(e.clientX, e.clientY);
       addNodeAt(tool, world.x, world.y);
@@ -526,6 +534,11 @@ export function useCanvasPointer(ctx: CanvasData & CanvasState & CanvasBoard & C
         origX: viewport.x,
         origY: viewport.y,
       };
+      return;
+    }
+
+    if (tool === "comment") {
+      setCommentThread({ key: node.id });
       return;
     }
 
