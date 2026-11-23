@@ -309,7 +309,7 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
     // The page never waits long for the skill sync (kit `soon`).
     await env.skills.soon(companyId);
     // The unassigned count leaves out the hidden issues; a failed read leaves none hidden.
-    const hidden = await ownerFilter(env, companyId).catch(() => ({ hiddenIssueIds: [] as string[], setupRouted: false, degraded: ["ownerFilter"] }));
+    const hidden = await ownerFilter(env, companyId).catch(() => ({ hiddenIssueIds: [] as string[], setupRouted: false, rights: undefined, degraded: ["ownerFilter"] }));
     const [roles, saved, snapshots, setup, own, health, installed, asks, unassigned, warnings] = await Promise.all([
       getRoles(ctx, companyId),
       configSaved(ctx, companyId),
@@ -337,7 +337,7 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
       unassigned,
       warningSince: warnings,
       // The same agent read as the brief (brief.ts loadCompanyData); hiddenIssueIds from owner-filter.ts.
-      ownerFilter: { activeAgentIds: activeAgentIdsOf(await listAgents(env, companyId)), hiddenIssueIds: hidden.hiddenIssueIds, setupRouted: hidden.setupRouted },
+      ownerFilter: { activeAgentIds: activeAgentIdsOf(await listAgents(env, companyId)), hiddenIssueIds: hidden.hiddenIssueIds, setupRouted: hidden.setupRouted, rights: hidden.rights },
     };
   });
 

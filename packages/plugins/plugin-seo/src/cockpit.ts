@@ -593,10 +593,14 @@ async function waitingItems(ctx: PluginContext, companyId: string, data: Waiting
   // The delegate is read once, only when a one-task sign-off is open; an empty list or a failed read means none.
   const env = createEnv(ctx);
   const oneTaskSignoff = (item: NeedsYouItem) => SIGNOFF_KINDS.has(item.kind) && item.taskIds?.length === 1;
-  const delegate = pending.some((p) => oneTaskSignoff(p.item)) ? (await delegateAgentIds(env, companyId))[0] ?? null : null;
+  // PAR-13992: the playbook batch and the safe-autopilot optimization proposals also wait on the delegate (it may decide them).
+  const playbookItem = (item: NeedsYouItem) => item.key === PLAYBOOK_ITEM_KEY;
+  const delegate = pending.some((p) => oneTaskSignoff(p.item) || playbookItem(p.item)) || proposals.length > 0 ? (await delegateAgentIds(env, companyId))[0] ?? null : null;
   for (const { item, digest } of pending) {
     const taskIssue = item.kind === "review" && item.taskIds?.length === 1 ? taskIssues.get(item.taskIds[0]!) ?? null : null;
-    const waitsOn = oneTaskSignoff(item) ? await delegateWaitsOn(env, companyId, digest.sprint_id, item.taskIds![0]!, delegate, item.kind) : null;
+    const waitsOn: WaitsOn | null = oneTaskSignoff(item)
+      ? await delegateWaitsOn(env, companyId, digest.sprint_id, item.taskIds![0]!, delegate, item.kind)
+      : playbookItem(item) && delegate ? { kind: "agent", agentId: delegate } : null;
     items.push({
       key: `seo:needs-you:${digest.sprint_id}:${item.key}`,
       title: `${prefix(digest)}${item.title}`,
@@ -619,6 +623,7 @@ async function waitingItems(ctx: PluginContext, companyId: string, data: Waiting
       issueId: p.approval_issue_id,
       kind: "judgement",
       since: p.created_at,
+      ...(delegate ? { waitsOn: { kind: "agent" as const, agentId: delegate } } : {}),
     });
   }
   return items;

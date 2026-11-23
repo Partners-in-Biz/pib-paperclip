@@ -20,6 +20,8 @@ import { MODULES, moduleOfPlugin, setupLeftLabel, setupSummary, type ModuleKey, 
 import { TEAM_ROLES } from "@partnersinbiz/pib-plugin-kit/team";
 import { BUDGET_ALERT_RATIO, PLUGIN_KEY, STALE_AFTER_MS } from "./constants.js";
 import { parseFlowReports } from "./flows.js";
+import type { DecisionRights } from "./decision-rights-model.js";
+import { routeToSeats } from "./owner-seats.js";
 
 export type { WaitsOn, ActivityItem, CockpitKpi, CockpitSnapshot, HealthCheck, HealthStatus, QualityMetric, TeamMemberReport, Tone, WaitingItem };
 
@@ -240,7 +242,7 @@ export interface WaitingAskInfo {
 }
 
 /** A waiting item as a source gives it: plain, a question for the owner, or a count with a few examples. */
-export type WaitingInput = WaitingItem & { ask?: WaitingAskInfo; examples?: WaitingExample[]; rank?: WaitingRank };
+export type WaitingInput = WaitingItem & { ask?: WaitingAskInfo; examples?: WaitingExample[]; rank?: WaitingRank; /** The issue's origin kind (host issue rows), read by the seat routing. */ originKind?: string | null };
 
 /** What ranks an item the owner must act on: how much it holds up and how long it has waited. */
 export interface WaitingRank {
@@ -260,6 +262,7 @@ export interface WaitingExample {
 }
 
 export interface WaitingEntry extends WaitingItem {
+  originKind?: string | null;
   /** Where it came from: a plugin key, `asks` or `host`. */
   source: string;
   sourceTitle: string;
@@ -385,6 +388,7 @@ export interface IssueLite {
   title: string;
   status: string;
   priority?: string | null;
+  originKind?: string | null;
   updatedAt?: string | null;
   createdAt?: string | null;
   /** Open issues this one blocks, directly or through others. */
@@ -471,6 +475,7 @@ export function hostWaiting(input: { approvals?: ApprovalLite[]; myIssues?: Issu
       issueId: issue.id,
       kind: issueKind(issue),
       since: issue.updatedAt ?? issue.createdAt ?? null,
+      originKind: issue.originKind ?? null,
       rank: {
         identifier: issue.identifier ?? null,
         link: issueHref(issue),
@@ -960,6 +965,8 @@ export interface OwnerFilter {
   hiddenIssueIds: string[];
   /** The Finish setup row is a board ask tracked in the standing queue (PAR-13579): it waits on others, not on the owner. */
   setupRouted?: boolean;
+  /** PAR-13992: the company's decision-rights seats; rows of a routed kind wait on the seat, not the owner. */
+  rights?: DecisionRights | null;
 }
 
 /** Ids of the agents that can act (not terminated, archived or deleted). */
@@ -979,6 +986,7 @@ export function activeAgentIdsOf(agents: ReadonlyArray<{ id: string; status: str
  */
 export function splitOwnerWaiting(entries: WaitingEntry[], filter: Partial<OwnerFilter> | null | undefined, now: Date): { owner: WaitingEntry[]; others: WaitingEntry[] } {
   const hidden = new Set(filter?.hiddenIssueIds ?? []);
+  entries = routeToSeats(entries, filter?.rights);
   const active = new Set(filter?.activeAgentIds ?? []);
   const owner: WaitingEntry[] = [];
   const others: WaitingEntry[] = [];
