@@ -15,8 +15,8 @@ export function AgentNode({ refId }: { refId: string | null }) {
           <Link to={`/agents/${agent.id}`} onMouseDown={(e) => e.stopPropagation()} className="min-w-0 hover:underline">
             <AgentIdentity agent={{ id: agent.id, name: agent.name }} size="sm" />
           </Link>
-          {agent.title ? <p className="truncate text-xs text-muted-foreground">{agent.title}</p> : null}
-          <div className="mt-auto">
+          {agent.title ? <p className="min-h-0 shrink truncate text-xs text-muted-foreground">{agent.title}</p> : null}
+          <div className="mt-auto shrink-0">
             <AgentStatusBadge status={agent.status} />
           </div>
         </>

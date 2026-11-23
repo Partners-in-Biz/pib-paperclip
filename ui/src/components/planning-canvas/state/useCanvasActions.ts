@@ -166,7 +166,7 @@ export function useCanvasActions(ctx: CanvasData & CanvasState & CanvasBoard) {
     (kind: PlanningCanvasRefNodeKind, refId: string) => {
       const center = getViewportCenterWorld();
       const width = 260;
-      const height = 120;
+      const height = 140;
       const key = createCanvasId(kind);
       opStore.addItem(key, {
         kind,

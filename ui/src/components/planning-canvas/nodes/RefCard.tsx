@@ -4,7 +4,7 @@ import { cn } from "@/lib/utils";
 /** Shared body of the issue, agent, project and goal cards. */
 export function RefCard({ label, icon, children }: { label: string; icon: ReactNode; children?: ReactNode }) {
   return (
-    <div className="flex h-full min-w-0 flex-col gap-1.5 overflow-hidden p-3">
+    <div className="flex h-full min-w-0 flex-col gap-1 overflow-hidden rounded-xl p-3">
       <div className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
         {icon}
         {label}
@@ -23,4 +23,5 @@ export function RefNoAccess({ className }: { className?: string }) {
   return <p className={cn("text-sm font-medium text-muted-foreground", className)}>No access</p>;
 }
 
-export const REF_CARD_CLASS = "flex flex-col overflow-hidden rounded-xl border border-border bg-card shadow-md";
+/** No overflow clipping here: the link chips hang below the card. `RefCard` clips its own body. */
+export const REF_CARD_CLASS = "rounded-xl border border-border bg-card shadow-md";
