@@ -6,6 +6,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { useDraftOwner } from "@/hooks/useDraftOwner";
 import { CanvasOpStore, type ItemFields, type OpStoreSnapshot, type StoreItem } from "@/components/planning-canvas/store/canvas-op-store";
 import { linkMetaOf, patchLinkMeta, type NodeLinkMeta } from "@/components/planning-canvas/nodes/link-meta";
+import { patchTypedMeta, typedMetaOf, type TypedNodeMeta } from "@/components/planning-canvas/nodes/typed-meta";
 import { diffElements, elementToItem, itemToElement, patchElements, type CanvasElement } from "@/components/planning-canvas/store/legacy-bridge";
 
 type Setter<T> = Dispatch<SetStateAction<T>>;
@@ -55,6 +56,8 @@ export function useCanvasOpStore(input: CanvasOpStoreInput) {
   const [loadedStore, setLoadedStore] = useState<CanvasOpStore | null>(null);
   /** Ref and link ids per node: what the page's legacy node shape cannot carry (C10). */
   const [linkMeta, setLinkMeta] = useState<ReadonlyMap<string, NodeLinkMeta>>(() => new Map());
+  /** Typed `data` of table and markdown nodes (C16). */
+  const [typedMeta, setTypedMeta] = useState<ReadonlyMap<string, TypedNodeMeta>>(() => new Map());
   /** The signed-in user (undefined until the session is known): undo stacks are per user and board. */
   const owner = useRef<string | undefined>(undefined);
   owner.current = useDraftOwner();
@@ -140,6 +143,12 @@ export function useCanvasOpStore(input: CanvasOpStoreInput) {
       if (meta) hydrated.set(key, meta);
     }
     setLinkMeta(hydrated);
+    const typed = new Map<string, TypedNodeMeta>();
+    for (const [key, item] of store.getItems()) {
+      const meta = typedMetaOf(item);
+      if (meta) typed.set(key, meta);
+    }
+    setTypedMeta(typed);
     setLoadedStore(store);
   }, [store, read.data, read.dataUpdatedAt, boardId, publish]);
 
@@ -171,6 +180,7 @@ export function useCanvasOpStore(input: CanvasOpStoreInput) {
       }
       patch(updates);
       setLinkMeta((prev) => patchLinkMeta(prev, keys, (key) => store.getItem(key)));
+      setTypedMeta((prev) => patchTypedMeta(prev, keys, (key) => store.getItem(key)));
     });
   }, [store, loaded, patch]);
 
@@ -251,7 +261,19 @@ export function useCanvasOpStore(input: CanvasOpStoreInput) {
         synced.current = { ...synced.current, nodes: patchElements(synced.current.nodes, new Map([[key, element]])) };
       }
       setLinkMeta((prev) => patchLinkMeta(prev, [key], (k) => store.getItem(k)));
+      setTypedMeta((prev) => patchTypedMeta(prev, [key], (k) => store.getItem(k)));
       store.checkpoint();
+    },
+    [store],
+  );
+
+  /** Replace the typed `data` of a table or markdown node. A table change is sent as cell ops (plan B.3). */
+  const setNodeData = useCallback(
+    (key: string, data: unknown) => {
+      const item = store?.getItem(key);
+      if (!store || !item) return;
+      store.applyLocal([{ key, item: { itemType: item.itemType, fields: { ...item.fields, data } } }]);
+      setTypedMeta((prev) => patchTypedMeta(prev, [key], (k) => store.getItem(k)));
     },
     [store],
   );
@@ -259,7 +281,9 @@ export function useCanvasOpStore(input: CanvasOpStoreInput) {
   return {
     loaded,
     linkMeta,
+    typedMeta,
     addItem,
+    setNodeData,
     /** Pull in what the server changed since the last read (a handoff links nodes server-side). */
     catchUp: useCallback(() => store?.catchUp(), [store]),
     /** The board socket announced `revision` (with its items unless truncated or a resync). */
