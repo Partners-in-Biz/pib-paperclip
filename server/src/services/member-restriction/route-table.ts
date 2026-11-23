@@ -452,6 +452,12 @@ export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntr
     ["PATCH", "/api/companies/:companyId/planning-canvases/:boardId/sharing"],
     ["GET", "/api/companies/:companyId/planning-canvases/:boardId/agent-grants"],
     ["DELETE", "/api/companies/:companyId/planning-canvases/:boardId/agent-grants/:grantId"],
+    // PAR-13935 (C6): comments. A mention also runs `restrictedTaskBody(..., "createIssue")` on the issue it would create.
+    ["GET", "/api/companies/:companyId/planning-canvases/:boardId/comments"],
+    ["POST", "/api/companies/:companyId/planning-canvases/:boardId/comments"],
+    ["PATCH", "/api/companies/:companyId/planning-canvases/:boardId/comments/:commentId"],
+    ["DELETE", "/api/companies/:companyId/planning-canvases/:boardId/comments/:commentId"],
+    ["POST", "/api/companies/:companyId/planning-canvases/:boardId/comments/:commentId/resolve"],
   ] as const).map(([method, path]) => ({ method, path, class: "open" as const, test: PLANNING_CANVAS_TEST })),
 ];
 
