@@ -615,6 +615,9 @@ export const queryKeys = {
   planningCanvases: {
     list: (companyId: string) => ["planning-canvases", companyId] as const,
     detail: (companyId: string, boardId: string) => ["planning-canvases", companyId, boardId] as const,
+    archived: (companyId: string) => ["planning-canvases", companyId, "archived"] as const,
+    project: (companyId: string, projectId: string) => ["planning-canvases", companyId, "project", projectId] as const,
+    grants: (companyId: string, boardId: string) => ["planning-canvases", companyId, boardId, "agent-grants"] as const,
   },
   /** Live link summaries of a board; its own root so a status event never refetches the board itself. */
   planningCanvasRefs: {

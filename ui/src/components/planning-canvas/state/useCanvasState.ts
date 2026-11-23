@@ -1,5 +1,6 @@
 // PAR-13933: moved verbatim from pages/PlanningCanvas.tsx; no behaviour change.
 import { useMemo, useRef, useState } from "react";
+import { useSearchParams } from "@/lib/router";
 import { type CanvasConnector, type CanvasNode, type CanvasNodeColor, type CanvasStroke, type PersonalNote } from "@paperclipai/shared";
 import { type ToolMode } from "@/components/planning-canvas/canvas-constants";
 import { type WorldRect } from "@/lib/planning-canvas-helpers";
@@ -10,7 +11,8 @@ export function useCanvasState(ctx: CanvasData) {
     boards,
   } = ctx;
 
-  const [activeBoardId, setActiveBoardId] = useState<string | null>(null);
+  const [searchParams] = useSearchParams();
+  const [activeBoardId, setActiveBoardId] = useState<string | null>(searchParams.get("board"));
   const activeBoard = useMemo(
     () => boards.find((b) => b.id === activeBoardId) ?? boards[0] ?? null,
     [boards, activeBoardId],
