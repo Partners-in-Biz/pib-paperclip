@@ -19,6 +19,7 @@ import { createLiveRunEventRedactor } from "../services/live-run-event-redaction
 import { refusedOnlyByMemberRestriction } from "../services/member-restriction/action-list.js";
 import { actorPersonMembership } from "../services/member-restriction/actor-memberships.js";
 import { hasHostKeys, withoutHostKeys } from "../services/member-restriction/response-strip.js";
+import { parsePlanningCanvasWsPath, type PlanningCanvasHub } from "./planning-canvas-ws.js";
 
 interface WsSocket {
   readyState: number;
@@ -261,6 +262,12 @@ export function setupLiveEventsWebSocketServer(
      * deployments; self-hosted instances leave it unset.
      */
     resolveCloudActor?: (req: IncomingMessage) => Promise<CloudUpgradeActor | null>;
+    /**
+     * Planning Canvas board sockets (plan PAR-13925 E): their upgrades take
+     * this dispatch and `authorizeUpgrade`, then the hub applies the canvas
+     * resolver and answers every refusal with the unknown-board bytes.
+     */
+    planningCanvasHub?: Pick<PlanningCanvasHub, "admit">;
   },
 ) {
   const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
@@ -467,7 +474,8 @@ export function setupLiveEventsWebSocketServer(
     }
 
     const url = new URL(req.url, "http://localhost");
-    const companyId = parseCompanyId(url.pathname);
+    const canvasTarget = opts.planningCanvasHub ? parsePlanningCanvasWsPath(url.pathname) : null;
+    const companyId = canvasTarget?.companyId ?? parseCompanyId(url.pathname);
     if (!companyId) {
       closeUpgradeSocket(socket);
       return;
@@ -480,7 +488,13 @@ export function setupLiveEventsWebSocketServer(
       resolveSessionFromHeaders: opts.resolveSessionFromHeaders,
       resolveCloudActor: opts.resolveCloudActor,
     })
-      .then((context) => {
+      .then(async (context) => {
+        if (canvasTarget && opts.planningCanvasHub) {
+          await opts.planningCanvasHub.admit({
+            req, socket, head, target: canvasTarget, context, beforeUpgrade: cleanupRawSocketListeners,
+          });
+          return;
+        }
         if (!context) {
           rejectUpgrade(socket, "403 Forbidden", "forbidden");
           return;

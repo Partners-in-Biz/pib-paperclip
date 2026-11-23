@@ -57,6 +57,8 @@ export const PLANNING_CANVAS_KNOWN_READERS = [
   /^server\/src\/services\/planning-canvas[a-z-]*(\.test)?\.ts$/,
   /^server\/src\/services\/planning-canvases[a-z-]*(\.test)?\.ts$/,
   /^server\/src\/routes\/planning-canvas[a-z-]*\.ts$/,
+  // The realtime hub (C11) reads the board row to re-resolve access on its sockets.
+  /^server\/src\/realtime\/planning-canvas-ws\.ts$/,
   /^server\/src\/__tests__\/planning-canvas[a-z-]*\.test\.ts$/,
   /^scripts\/planning-canvas-[a-z-]*\.(ts|mjs)$/,
 ];
