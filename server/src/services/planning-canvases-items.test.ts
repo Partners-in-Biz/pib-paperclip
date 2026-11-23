@@ -315,6 +315,30 @@ databaseSuite("planning canvas boards on items (real PostgreSQL)", () => {
       expect(planningCanvasDataSchema.safeParse(withReader.data).success).toBe(true);
     });
 
+    it("hides a private issue the reader cannot read (issue:read is applied, not just company scope)", async () => {
+      const target = await readBoard();
+      const [secret] = await db
+        .insert(issues)
+        .values({ companyId: target.companyId, title: "Private roadmap", status: "todo", identifier: `${target.identifier}0`, visibility: "private" })
+        .returning();
+      await ops(target, [addNode("p", { kind: "issue", x: 4000, ref: { id: secret!.id }, links: [{ type: "issue", issueId: secret!.id }] })], {
+        type: "user",
+        id: OWNER,
+      });
+      const sessionReader = { type: "board", userId: OWNER, source: "session" } as AuthorizationActor;
+
+      const board = await svc().getById(target.companyId, OWNER, target.boardId, { actor: sessionReader });
+      const markdown = await svc().read(target.companyId, OWNER, target.boardId, { format: "markdown" }, { actor: sessionReader });
+
+      const node = board.data.nodes.find((entry) => entry.id === "p")!;
+      expect(node.handedOffIssueId).toBe(secret!.id);
+      expect(node).not.toHaveProperty("handedOffIssueIdentifier");
+      expect((markdown as { body: string }).body).toContain("- [issue] No access `p`");
+      expect((markdown as { body: string }).body).not.toContain("Private roadmap");
+      // The same reader still sees the open issue.
+      expect(board.data.nodes.find((entry) => entry.id === "a")!.handedOffIssueIdentifier).toBe(target.identifier);
+    });
+
     it("serves markdown and Mermaid with hydrated refs; a hidden ref shows no title", async () => {
       const target = await readBoard();
       const markdown = await svc().read(target.companyId, OWNER, target.boardId, { format: "markdown" }, { actor: reader });
