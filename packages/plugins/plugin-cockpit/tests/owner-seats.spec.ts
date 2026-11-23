@@ -19,16 +19,22 @@ describe("PAR-13992 seat routing off the owner list", () => {
       expect(r.others[0]!.waitsOn).toEqual({ kind: "agent", agentId: SEATS.seo });
     }
   });
-  it("2. social experiments and playbook changes wait on the social seat; campaign experiments on the business-plan seat", () => {
-    expect(waits(row("social:experiment:e1", "[Velox] Approve an experiment: evening posts")).others[0]!.waitsOn).toEqual({ kind: "agent", agentId: SEATS.social });
-    expect(waits(row("social:playbook-change:c1", "Keep or discard a playbook change: x")).others[0]!.waitsOn).toEqual({ kind: "agent", agentId: SEATS.social });
-    const campaigns = row("issue:i1", "PAR-13895 Approve campaign experiments and playbook changes (2026-W48)", { originKind: "plugin:partnersinbiz.campaigns", issueId: "i1" });
-    expect(waits(campaigns).others[0]!.waitsOn).toEqual({ kind: "agent", agentId: SEATS.planBusiness });
+  it("2. social experiments, playbook changes and campaign/social growth issues are NOT routed (safe autopilot refuses an agent)", () => {
+    expect(waits(row("social:experiment:e1", "[Velox] Approve an experiment: evening posts")).owner).toHaveLength(1);
+    expect(waits(row("social:playbook-change:c1", "Keep or discard a playbook change: x")).owner).toHaveLength(1);
+    expect(waits(row("issue:i1", "PAR-13895 Approve campaign experiments and playbook changes (2026-W48)", { originKind: "plugin:partnersinbiz.campaigns" })).owner).toHaveLength(1);
+    expect(waits(row("issue:i2", "PAR-13896 Approve social experiments and playbook changes (2026-W48)", { originKind: "plugin:partnersinbiz.social" })).owner).toHaveLength(1);
   });
-  it("3. close-out, brief and review-week issues route (to the other seat, the other seat, the social seat)", () => {
+  it("3. close-out and brief issues route to the other seat; the own-brand review-week issue to the social seat", () => {
     expect(seatClassOf(row("issue:a", "Close-out review: LWRC", { originKind: "plugin:partnersinbiz.cockpit:closeout" }))).toBe("other");
     expect(seatClassOf(row("issue:b", "Daily brief", { originKind: "plugin:partnersinbiz.cockpit:brief" }))).toBe("other");
     expect(waits(row("issue:c", "PAR-13908 Review social posts: week of 2026-11-23", { originKind: "plugin:partnersinbiz.social" })).others[0]!.waitsOn).toEqual({ kind: "agent", agentId: SEATS.social });
+  });
+  it("3b. other issues of those plugins stay with the owner: a client's post approval, a failed publish, a campaign send", () => {
+    const social = "plugin:partnersinbiz.social";
+    for (const [t, o] of [["[AHS Law] Approve or return social post: hello", social], ["Social post failed to publish", social], ["Social: act on the hook board", social], ["[AHS Law] Review social posts: week of 2026-11-23", social], ["Approve campaign send: Black Friday to 4,000 contacts", "plugin:partnersinbiz.campaigns"], ["[AHS Law] Approve campaign: newsletter", "plugin:partnersinbiz.campaigns"]] as const) {
+      expect(waits(row("issue:x", t, { originKind: o })).owner, t).toHaveLength(1);
+    }
   });
   it("4. own-brand post approvals wait on the social seat; a client's post stays with the owner", () => {
     expect(waits(row("social:review:p1", "Approve post: 20 minutes. Then a written plan")).owner).toEqual([]);

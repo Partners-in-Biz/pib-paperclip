@@ -8,26 +8,31 @@
 import { classify, type DecisionClass, type DecisionRights } from "./decision-rights-model.js";
 import type { WaitingEntry } from "./merge.js";
 
+const REVIEW_WEEK = /^(?:[A-Z][A-Z0-9]*-\d+ )?Review social posts: week of /;
 const BRAND_PREFIX = /^\s*\[([^\]]{1,60})\]\s*/;
 
 /** Studio dogfood approvals on test data (a person closes them by design, but they decide nothing of the company's). */
 const DOGFOOD = /^(?:[A-Z][A-Z0-9]*-\d+ )?Approval: .*\bStudio dogfood\b/i;
+
+function ownBrand(title: string, ownProducts: readonly string[]): boolean {
+  const brand = BRAND_PREFIX.exec(title)?.[1];
+  return !brand || ownProducts.some((p) => p.toLowerCase() === brand.toLowerCase());
+}
 
 /** The decision class a row belongs to, or null when it is not a kind that is routed. */
 export function seatClassOf(entry: Pick<WaitingEntry, "key" | "title" | "originKind">, ownProducts: readonly string[] = []): DecisionClass | null {
   const { key, title } = entry;
   const origin = entry.originKind ?? "";
   if (key.startsWith("seo:optimization:") || /^seo:needs-you:[^:]+:playbook_changes$/.test(key)) return "seo";
-  if (key.startsWith("social:experiment:") || key.startsWith("social:playbook-change:")) return "social";
+  // Social and campaign experiments and playbook changes are NOT routed: in safe autopilot the kit gate (`mayDecide`) refuses an agent, so a seat could not act on them.
   if (key.startsWith("social:review:")) {
     // Own-brand posts only: a post under a client's name needs the client's written yes and stays with the owner.
-    const brand = BRAND_PREFIX.exec(title)?.[1];
     if (/^Waiting for the client/i.test(title.replace(BRAND_PREFIX, ""))) return null;
-    return !brand || ownProducts.some((p) => p.toLowerCase() === brand.toLowerCase()) ? "social" : null;
+    return ownBrand(title, ownProducts) ? "social" : null;
   }
   if (origin === "plugin:partnersinbiz.cockpit:closeout" || origin === "plugin:partnersinbiz.cockpit:brief" || origin === "plugin:partnersinbiz.cockpit:digest") return "other";
-  if (origin === "plugin:partnersinbiz.social") return "social";
-  if (origin === "plugin:partnersinbiz.campaigns") return "planBusiness";
+  // Only the own-brand weekly review issue, never every issue of the plugin (a client's post approval or a campaign send stays with the owner).
+  if (origin === "plugin:partnersinbiz.social" && REVIEW_WEEK.test(title)) return BRAND_PREFIX.test(title) && !ownBrand(title, ownProducts) ? null : "social";
   if ((origin === "" || origin === "manual") && DOGFOOD.test(title)) return "other";
   return null;
 }

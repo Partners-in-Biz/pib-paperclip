@@ -37,7 +37,7 @@ export async function standingQueueIssues(ctx: PluginContext, companyId: string)
 /** One query: the open issues that are containers, in the standing queue or in a canary project. A failed canary or config read leaves that part empty. */
 export async function ownerFilter(env: Env, companyId: string): Promise<OwnerFilterResult> {
   const degraded: string[] = [];
-  const part2 = async (read: () => Promise<DecisionRights>): Promise<DecisionRights> => {
+  const rightsPart = async (read: () => Promise<DecisionRights>): Promise<DecisionRights> => {
     try {
       return await read();
     } catch (error) {
@@ -55,7 +55,7 @@ export async function ownerFilter(env: Env, companyId: string): Promise<OwnerFil
       return [];
     }
   };
-  const rights = await part2(async () => parseDecisionRights(await readConfig(env.ctx, companyId)));
+  const rights = await rightsPart(async () => parseDecisionRights(await readConfig(env.ctx, companyId)));
   const [identifiers, projects] = await Promise.all([part("standingQueue", () => standingQueueIssues(env.ctx, companyId)), part("canary", () => canaryProjectIds(env.ctx, companyId))]);
   const rows = await env.ctx.db.query<{ id: string }>(
     `SELECT id FROM public.issues WHERE company_id = $1 AND hidden_at IS NULL AND status IN ('todo', 'in_progress', 'in_review', 'blocked')
