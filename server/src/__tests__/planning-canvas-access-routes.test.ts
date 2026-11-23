@@ -26,6 +26,7 @@ import { actorMiddleware } from "../middleware/auth.js";
 import { errorHandler } from "../middleware/error-handler.js";
 import { planningCanvasRoutes } from "../routes/planning-canvases.js";
 import { planningCanvasSharingRoutes } from "../routes/planning-canvas-sharing.js";
+import { planningCanvasCommentRoutes } from "../routes/planning-canvas-comments.js";
 import { authorizationService } from "../services/authorization.js";
 import { planningCanvasService } from "../services/planning-canvases.js";
 import { MEMBER_RESTRICTION_ROUTE_TABLE } from "../services/member-restriction/route-table.js";
@@ -58,6 +59,9 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
  *   /api/companies/:companyId/planning-canvases/:boardId/sharing
  *   /api/companies/:companyId/planning-canvases/:boardId/agent-grants
  *   /api/companies/:companyId/planning-canvases/:boardId/agent-grants/:grantId
+ *   /api/companies/:companyId/planning-canvases/:boardId/comments
+ *   /api/companies/:companyId/planning-canvases/:boardId/comments/:commentId
+ *   /api/companies/:companyId/planning-canvases/:boardId/comments/:commentId/resolve
  */
 
 const resolverFails = vi.hoisted(() => ({ on: false }));
@@ -130,6 +134,12 @@ const DENIAL_ROUTES: DenialRoute[] = [
   { method: "PATCH", path: `${P}/:boardId/sharing`, url: (ctx) => `${board(ctx)}/sharing`, body: { scope: "company", memberAccess: "edit" } },
   { method: "GET", path: `${P}/:boardId/agent-grants`, url: (ctx) => `${board(ctx)}/agent-grants` },
   { method: "DELETE", path: `${P}/:boardId/agent-grants/:grantId`, url: (ctx) => `${board(ctx)}/agent-grants/${ctx.grantId}` },
+  // C6 (PAR-13935). `grantId` doubles as the second path id.
+  { method: "GET", path: `${P}/:boardId/comments`, url: (ctx) => `${board(ctx)}/comments` },
+  { method: "POST", path: `${P}/:boardId/comments`, url: (ctx) => `${board(ctx)}/comments`, body: { body: "Hi" } },
+  { method: "PATCH", path: `${P}/:boardId/comments/:commentId`, url: (ctx) => `${board(ctx)}/comments/${ctx.grantId}`, body: { body: "Hi" } },
+  { method: "DELETE", path: `${P}/:boardId/comments/:commentId`, url: (ctx) => `${board(ctx)}/comments/${ctx.grantId}` },
+  { method: "POST", path: `${P}/:boardId/comments/:commentId/resolve`, url: (ctx) => `${board(ctx)}/comments/${ctx.grantId}/resolve`, body: { resolved: true } },
 ];
 
 (support.supported ? describe : describe.skip)("planning canvas access through the real middleware (plan PAR-13925 D)", () => {
@@ -226,6 +236,7 @@ const DENIAL_ROUTES: DenialRoute[] = [
     api.use(memberRestrictionRouteGuard(db));
     api.use(planningCanvasRoutes(db));
     api.use(planningCanvasSharingRoutes(db));
+    api.use(planningCanvasCommentRoutes(db));
     app.use("/api", api);
     app.use(errorHandler);
 

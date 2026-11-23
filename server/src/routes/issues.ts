@@ -3,6 +3,7 @@ import { SYSTEM_CAUSING_ACTOR, wakeCausingActorFromActor, wakeCausingActorFromAc
 import { assertNamesOnlyHimself } from "../services/member-restriction/acting-person.js";
 import { refusedOnlyByMemberRestriction } from "../services/member-restriction/action-list.js";
 import { restrictedTaskBody } from "../services/member-restriction/body-allowlist.js";
+import { assertCanAssignTasks as assertCanAssignTasksFor, type TaskAssignmentAuthorizationScope } from "./task-assignment-guard.js";
 import {
   actorMayInstructAgent,
   hideUnreadableIssueIds,
@@ -5084,14 +5085,6 @@ export function issueRoutes(
     return (req.actor.companyIds ?? []).includes(companyId);
   }
 
-  type TaskAssignmentAuthorizationScope = {
-    issueId?: string | null;
-    projectId?: string | null;
-    parentIssueId?: string | null;
-    assigneeAgentId?: string | null;
-    assigneeUserId?: string | null;
-  };
-
   async function resolveAssignmentProjectId(input: {
     companyId: string;
     projectId: string | null | undefined;
@@ -5126,28 +5119,8 @@ export function issueRoutes(
     companyId: string,
     assignmentScope?: TaskAssignmentAuthorizationScope,
   ) {
-    assertCompanyAccess(req, companyId);
-    const decision = await access.decide({
-      actor: req.actor,
-      action: "tasks:assign",
-      resource: {
-        type: "issue",
-        companyId,
-        issueId: assignmentScope?.issueId ?? null,
-        projectId: assignmentScope?.projectId ?? null,
-        parentIssueId: assignmentScope?.parentIssueId ?? null,
-        assigneeAgentId: assignmentScope?.assigneeAgentId ?? null,
-        assigneeUserId: assignmentScope?.assigneeUserId ?? null,
-      },
-      scope: assignmentScope ?? null,
-    });
-    if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
-    // PAR-12608 4.7 (AC-A2, AC-A4): naming an agent needs it on his list;
-    // naming a person, or nobody, stays allowed.
-    const agentId = assignmentScope?.assigneeAgentId;
-    if (agentId && !(await actorMayInstructAgent(db, req.actor, { companyId, agentId, target: "tasks:assign" }))) {
-      throw forbidden(MEMBER_AGENT_NOT_LISTED_ROUTE_MESSAGE, MEMBER_AGENT_NOT_LISTED_DETAILS);
-    }
+    // Shared with the canvas mention guard (PAR-13935), so both run the same checks.
+    await assertCanAssignTasksFor(db, req, companyId, assignmentScope, access);
   }
 
   /**
