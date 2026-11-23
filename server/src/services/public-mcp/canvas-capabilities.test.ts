@@ -31,7 +31,7 @@ describe("public MCP canvas tools", () => {
     expect(cap("paperclip_canvas_import").schema.safeParse({ ...ids, requestId, format: "svg", source: "x" }).success).toBe(false);
   });
   it("maps requestId to clientBatchId on ops and import", async () => {
-    const api = vi.fn(async () => ({ ok: true }));
+    const api = vi.fn(async (..._args: unknown[]) => ({ ok: true }));
     const principal = {} as never;
     await cap("paperclip_canvas_apply_ops").run(principal, { ...ids, requestId, ops: [{ op: "restore", key: "a" }] }, api, "");
     expect(api).toHaveBeenLastCalledWith(principal, "POST", `/companies/${ids.companyId}/planning-canvases/${ids.boardId}/ops`, { ops: [{ op: "restore", key: "a" }], clientBatchId: requestId });
@@ -39,10 +39,10 @@ describe("public MCP canvas tools", () => {
     expect(api).toHaveBeenLastCalledWith(principal, "POST", `/companies/${ids.companyId}/planning-canvases/${ids.boardId}/import`, { format: "markdown", source: "# A", at: { x: 1, y: 2 }, clientBatchId: requestId });
   });
   it("read returns text for markdown and the board for json", async () => {
-    const text = vi.fn(async () => "# Board");
+    const text = vi.fn(async (..._args: unknown[]) => "# Board");
     expect(await cap("paperclip_canvas_read").run({} as never, { ...ids, format: "markdown", q: "a b" }, text, "")).toEqual({ format: "markdown", text: "# Board" });
     expect(text.mock.calls[0]![2]).toBe(`/companies/${ids.companyId}/planning-canvases/${ids.boardId}?format=markdown&q=a+b`);
-    const json = vi.fn(async () => ({ id: ids.boardId }));
+    const json = vi.fn(async (..._args: unknown[]) => ({ id: ids.boardId }));
     expect(await cap("paperclip_canvas_read").run({} as never, { ...ids, format: "json" }, json, "")).toEqual({ format: "json", board: { id: ids.boardId } });
   });
 });
