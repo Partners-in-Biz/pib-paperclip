@@ -162,7 +162,7 @@ Rules over what the host lets the Cockpit read (`public.heartbeat_runs`, `public
 
 ### What 0.5.0 adds to Health
 
-`src/checks.ts` (`extraChecks`) adds these to the Cockpit's own snapshot (health, KPIs, quality and waiting). Each runs on its own: one that cannot read says nothing and logs, and each part is cached 10 minutes per company (the hourly job forces a fresh read). A refused company read between parts stops the run and the snapshot shows "Cockpit checks incomplete" naming the parts that did not finish (since 0.27.9). Pure rules sit in `*-model.ts`.
+`src/checks.ts` (`extraChecks`) adds these to the Cockpit's own snapshot (health, KPIs, quality and waiting). Each runs on its own: one that cannot read says nothing and logs, and each part is cached 10 minutes per company (the hourly job forces a fresh read). A refused company read between parts stops the run and the snapshot shows "Cockpit checks incomplete" naming the parts that did not finish (since 0.27.9). Inside a call (a page load, the brief, an action) the parts that must run go on outside the call's invocation for a company with saved settings; the call waits for them 12 seconds at most and the rest finish into the cache for the next load, so no read outlives the call and is refused (`unknown_invocation`, 0.27.19, PAR-14009). A job still waits for every part. Pure rules sit in `*-model.ts`.
 
 | Check (key) | Fires when | Status |
 |---|---|---|
