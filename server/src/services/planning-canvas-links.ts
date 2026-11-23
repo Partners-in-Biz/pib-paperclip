@@ -444,7 +444,7 @@ export function planningCanvasLinksService(db: Db, deps: PlanningCanvasLinksDeps
       for (const plan of plans) await ctx.guard(plan.body);
 
       const now = ctx.now ?? new Date();
-      const outcome = await db.transaction(async (tx) => {
+      const outcome = await db.transaction(async (tx): Promise<{ kind: "replay"; rows: IssueRow[] } | { kind: "created"; created: Array<{ issue: IssueRow; keys: string[] }> }> => {
         await lockPlanningCanvasBoardIssues(tx, board.id);
         // A concurrent replay of the same call committed while we waited for the lock.
         const raced = await tx
@@ -452,7 +452,7 @@ export function planningCanvasLinksService(db: Db, deps: PlanningCanvasLinksDeps
           .from(issues)
           .where(and(eq(issues.companyId, board.companyId), inArray(issues.originId, plans.map((plan) => plan.originId))))
           .orderBy(asc(issues.createdAt), asc(issues.id));
-        if (raced.length > 0) return { replay: raced };
+        if (raced.length > 0) return { kind: "replay", rows: raced as IssueRow[] };
 
         if (input.mode === "single") {
           const used = await countPlanningCanvasSingleBucket(tx, board, now);
@@ -503,9 +503,9 @@ export function planningCanvasLinksService(db: Db, deps: PlanningCanvasLinksDeps
           }
           created.push({ issue, keys: plan.keys });
         }
-        return { created };
+        return { kind: "created", created };
       });
-      if ("replay" in outcome) return replayResult(ctx, tag, outcome.replay, keys);
+      if (outcome.kind === "replay") return replayResult(ctx, tag, outcome.rows, keys);
 
       // After commit only: wakes, then the node links.
       for (const { issue } of outcome.created) {
