@@ -45,7 +45,7 @@ export function planningCanvasRoutes(db: Db) {
   router.get("/companies/:companyId/planning-canvases", async (req, res) => {
     const companyId = req.params.companyId as string;
     const userId = await assertCanvasAccess(req, companyId);
-    res.json(await svc.list(companyId, userId));
+    res.json(await svc.list(companyId, userId, { actor: req.actor }));
   });
 
   router.post(
@@ -54,7 +54,7 @@ export function planningCanvasRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const userId = await assertCanvasAccess(req, companyId);
-      const created = await svc.create(companyId, userId, req.body);
+      const created = await svc.create(companyId, userId, req.body, { actor: req.actor });
       res.status(201).json(created);
     },
   );
@@ -63,7 +63,7 @@ export function planningCanvasRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     const boardId = req.params.boardId as string;
     const userId = await assertCanvasAccess(req, companyId);
-    res.json(await svc.getById(companyId, userId, boardId));
+    res.json(await svc.getById(companyId, userId, boardId, { actor: req.actor }));
   });
 
   router.patch(
@@ -73,7 +73,7 @@ export function planningCanvasRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       const boardId = req.params.boardId as string;
       const userId = await assertCanvasAccess(req, companyId);
-      res.json(await svc.update(companyId, userId, boardId, req.body));
+      res.json(await svc.update(companyId, userId, boardId, req.body, { actor: req.actor }));
     },
   );
 
