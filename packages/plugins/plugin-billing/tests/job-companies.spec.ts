@@ -8,7 +8,7 @@ function recordingCtx(known: string[], actionable: string[]) {
     path = path.replace(/\.call$/, "");
     const input = (path === "ctx.companies.list" && args.length > 1 ? args[1] : args[0]) as { actionableOnly?: boolean; stateKey?: string } | undefined;
     if (path === "ctx.companies.list") return (input?.actionableOnly ? actionable : known).map((id) => ({ id }));
-    if (path === "ctx.db.query") return known.map((id) => ({ company_id: id }));
+    if (path === "ctx.db.query") return /handoffs/.test(String((args[0] as string) ?? "")) ? [] : known.map((id) => ({ company_id: id }));
     if (path.endsWith("Symbol(Symbol.toPrimitive)")) return "plugin_test";
     if (path === "ctx.state.get" && /compan/.test(input?.stateKey ?? "")) return known;
     return null;
@@ -26,6 +26,8 @@ function recordingCtx(known: string[], actionable: string[]) {
 }
 
 import { publishAllSetupStatus } from "../src/setup.js";
+import { publishAllCockpit } from "../src/cockpit.js";
+import { markOverdueJob } from "../src/worker.js";
 
 const ON = "company-configured";
 const OFF = "company-unconfigured";
@@ -35,6 +37,21 @@ describe("billing setup-status job (PAR-14008)", () => {
     const { ctx, calls } = recordingCtx([ON, OFF], [ON]);
     await publishAllSetupStatus(ctx);
     expect(calls.some((c) => c.includes(ON))).toBe(true);
+    expect(calls.filter((c) => c.includes(OFF))).toEqual([]);
+  });
+});
+
+describe("billing mark-overdue job (PAR-14008)", () => {
+  it("makes no host call for a company with no saved settings, across the whole job", async () => {
+    const { ctx, calls } = recordingCtx([ON, OFF], [ON]);
+    await markOverdueJob(ctx);
+    expect(calls.some((c) => c.includes(ON))).toBe(true);
+    expect(calls.filter((c) => c.includes(OFF) && !c.startsWith("ctx.db."))).toEqual([]);
+  });
+
+  it("the Cockpit push alone makes no host call for it", async () => {
+    const { ctx, calls } = recordingCtx([ON, OFF], [ON]);
+    await publishAllCockpit(ctx);
     expect(calls.filter((c) => c.includes(OFF))).toEqual([]);
   });
 });

@@ -35,6 +35,7 @@ import {
   TAX_CODES,
   toolFail,
   toolOk,
+  jobCompanyIds,
   trackJob,
   type ClientRef,
   type ModulesPayload,
@@ -1173,9 +1174,10 @@ function moduleCache(ctx: PluginContext): (companyId: string) => Promise<boolean
 }
 
 /** Hourly: overdue invoices (not for companies with Billing off), the setup status, the Cockpit numbers and recent hand-offs again. */
-async function markOverdueJob(ctx: PluginContext) {
+export async function markOverdueJob(ctx: PluginContext) {
   const off: string[] = [];
-  for (const companyId of await knownCompanyIds(ctx).catch(() => [] as string[])) {
+  // Companies with no saved settings are skipped (the host refuses their calls); their overdue marking still runs below, as before.
+  for (const companyId of await jobCompanyIds(ctx, await knownCompanyIds(ctx).catch(() => [] as string[]))) {
     if (!(await billingOn(ctx, companyId))) {
       off.push(companyId);
       continue;

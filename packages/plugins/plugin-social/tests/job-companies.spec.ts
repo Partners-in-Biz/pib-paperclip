@@ -38,3 +38,16 @@ describe("social cockpit job (PAR-14008)", () => {
     expect(calls.filter((c) => c.includes(OFF))).toEqual([]);
   });
 });
+
+describe("social token refresh and inbox jobs (PAR-14008)", () => {
+  it("make no host call for a company with no saved settings", async () => {
+    const { refreshTokensJob } = await import("../src/tokens.js");
+    const { pollInboxJob } = await import("../src/inbox.js");
+    for (const run of [refreshTokensJob, pollInboxJob]) {
+      const { ctx, calls } = recordingCtx([ON, OFF], [ON]);
+      await run(ctx, async () => undefined).catch(() => undefined);
+      expect(calls.some((c) => c.includes(ON))).toBe(true);
+      expect(calls.filter((c) => c.includes(OFF) && !c.startsWith("ctx.db."))).toEqual([]);
+    }
+  });
+});
