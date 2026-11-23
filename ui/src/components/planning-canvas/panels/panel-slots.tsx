@@ -1,6 +1,7 @@
 import type { ComponentType } from "react";
 import { BoardBar } from "@/components/planning-canvas/panels/BoardBar";
 import { BottomRightControls } from "@/components/planning-canvas/panels/BottomRightControls";
+import { ConflictDrafts } from "@/components/planning-canvas/panels/ConflictDrafts";
 import { NotesDrawer } from "@/components/planning-canvas/panels/NotesDrawer";
 import { ToolRail } from "@/components/planning-canvas/panels/ToolRail";
 import {
@@ -27,6 +28,7 @@ export const PANEL_SLOTS: Record<PanelSlotId, PanelEntry[]> = {
     { id: "multi-select-toolbar", Component: MultiSelectToolbar },
     { id: "connect-hint", Component: ConnectHint },
     { id: "context-toolbar", Component: ContextToolbar },
+    { id: "conflict-drafts", Component: ConflictDrafts },
   ],
   right: [{ id: "notes-drawer", Component: NotesDrawer }],
   bottomRight: [{ id: "zoom-controls", Component: BottomRightControls }],

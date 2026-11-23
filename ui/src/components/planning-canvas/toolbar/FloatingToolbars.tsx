@@ -172,7 +172,6 @@ export function ContextToolbar({ c }: { c: CanvasController }) {
     nodes,
     connectors,
     setConnectors,
-    setDirty,
     selectedConnectorId,
     setScheduleNote,
     promoteStickyToNoteMutation,
@@ -313,7 +312,6 @@ export function ContextToolbar({ c }: { c: CanvasController }) {
             setConnectors((prev) =>
               prev.map((c) => (c.id === selectedConnectorId ? { ...c, label } : c)),
             );
-            setDirty(true);
           }}
           className="h-6 w-36 rounded border border-border bg-background px-2 text-xs text-foreground outline-none focus:border-ring"
         />
