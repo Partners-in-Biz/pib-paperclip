@@ -13,7 +13,7 @@ import {
 } from "@paperclipai/db";
 import type { PlanningCanvasOp, PlanningCanvasOpResult } from "@paperclipai/shared";
 import { planningCanvasOpsService, type PlanningCanvasOpsActor } from "./planning-canvas-ops.js";
-import { subscribePlanningCanvasBoard, type PlanningCanvasEvent } from "./planning-canvas-events.js";
+import { subscribePlanningCanvasBoard, type PlanningCanvasOpsAppliedEvent } from "./planning-canvas-events.js";
 
 const external = process.env.PAPERCLIP_TEST_DATABASE_URL;
 const support = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
@@ -376,9 +376,11 @@ databaseSuite("planning canvas ops engine (real PostgreSQL)", () => {
 
   it("emits ops.applied only after commit and never for a batch that applied nothing", async () => {
     const b = await board();
-    const seen: Array<{ event: PlanningCanvasEvent; committedRevision: Promise<number> }> = [];
+    const seen: Array<{ event: PlanningCanvasOpsAppliedEvent; committedRevision: Promise<number> }> = [];
     unsubscribers.push(
       subscribePlanningCanvasBoard(b.boardId, (event) => {
+        // The ops engine emits only `ops.applied`; any other type throws into `applyOps` and fails the test.
+        if (event.type !== "ops.applied") throw new Error(`unexpected ${event.type}`);
         // Read on the second pool: only committed rows are visible there.
         seen.push({ event, committedRevision: boardRowOn(db2, b.boardId) });
       }),

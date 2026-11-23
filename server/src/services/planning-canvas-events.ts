@@ -24,7 +24,19 @@ export interface PlanningCanvasOpsAppliedEvent {
   purgedThroughRevision: number;
 }
 
-export type PlanningCanvasEvent = PlanningCanvasOpsAppliedEvent;
+/**
+ * Who may open the board may have changed (C3 sharing, archive, restore,
+ * delete, grant revoke). The realtime hub (C11) re-resolves every socket of
+ * the board on it (plan E, revocation (a)). Carries no board content.
+ */
+export interface PlanningCanvasAccessChangedEvent {
+  type: "access.changed";
+  companyId: string;
+  boardId: string;
+  reason: "sharing" | "archived" | "restored" | "deleted" | "grant_revoked";
+}
+
+export type PlanningCanvasEvent = PlanningCanvasOpsAppliedEvent | PlanningCanvasAccessChangedEvent;
 export type PlanningCanvasEventListener = (event: PlanningCanvasEvent) => void;
 
 const emitter = new EventEmitter();

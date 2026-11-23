@@ -159,6 +159,10 @@ import { serverVersion } from "./version.js";
 import { workspacePreferenceRoutes } from "./routes/workspace-preferences.js";
 import { personalNoteRoutes } from "./routes/personal-notes.js";
 import { planningCanvasRoutes } from "./routes/planning-canvases.js";
+import { planningCanvasSharingRoutes } from "./routes/planning-canvas-sharing.js";
+import { planningCanvasCommentRoutes } from "./routes/planning-canvas-comments.js";
+import { planningCanvasLinkRoutes } from "./routes/planning-canvas-links.js";
+import { planningCanvasBlueprintRoutes } from "./routes/planning-canvas-blueprints.js";
 import { primaryAgentRoutes } from "./routes/primary-agent.js";
 import { resourceMembershipRoutes } from "./routes/resource-memberships.js";
 import { inboxDismissalRoutes } from "./routes/inbox-dismissals.js";
@@ -866,6 +870,10 @@ export async function createApp(
   api.use(workspacePreferenceRoutes(db));
   api.use(personalNoteRoutes(db));
   api.use(planningCanvasRoutes(db));
+  api.use(planningCanvasSharingRoutes(db));
+  api.use(planningCanvasCommentRoutes(db));
+  api.use(planningCanvasLinkRoutes(db));
+  api.use(planningCanvasBlueprintRoutes(db));
   api.use(inboxDismissalRoutes(db));
   api.use(instanceSettingsRoutes(db, workerManager, opts.prepareIdleDatabaseBackup, opts.idleDeadlineOwners,
     input => resourceLifecycleDelivery.prepareForIdleSleep(input)));

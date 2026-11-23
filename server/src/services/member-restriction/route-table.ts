@@ -54,6 +54,7 @@ const AGENTS_TEST = "server/src/__tests__/member-restriction-route-table-agents.
 const TASK_LIST_TEST = "server/src/__tests__/member-restriction-task-list-callers.test.ts";
 const INSTANCE_TEST = "server/src/__tests__/member-restriction-route-table-instance.test.ts";
 const AGENT_PAGES_TEST = "server/src/__tests__/member-restriction-route-table-agent-pages.test.ts";
+const PLANNING_CANVAS_TEST = "server/src/__tests__/planning-canvas-access-routes.test.ts";
 
 export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntry[] = [
   // C4b-1a (PAR-12730): the task routes of `routes/issues.ts`. Comments,
@@ -435,6 +436,23 @@ export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntr
   // (`filterPluginsOpenForPerson`); without that filter this row would hand him
   // every plugin (PAR-13261).
   { method: "GET", path: "/api/plugins/ui-contributions", class: "plugin", test: "server/src/__tests__/member-restriction-ui-contributions.test.ts" },
+  // PAR-13932 (Planning Canvas C3): every board route asks the canvas access
+  // resolver (`services/planning-canvas-access.ts`), which gives a restricted
+  // person his own personal boards and a project board he passes
+  // `project:read` on, and nothing else (plan PAR-13925 section D).
+  ...([
+    ["GET", "/api/companies/:companyId/planning-canvases"],
+    ["POST", "/api/companies/:companyId/planning-canvases"],
+    ["GET", "/api/companies/:companyId/planning-canvases/:boardId"],
+    ["PATCH", "/api/companies/:companyId/planning-canvases/:boardId"],
+    ["DELETE", "/api/companies/:companyId/planning-canvases/:boardId"],
+    ["POST", "/api/companies/:companyId/planning-canvases/:boardId/ops"],
+    ["POST", "/api/companies/:companyId/planning-canvases/:boardId/archive"],
+    ["POST", "/api/companies/:companyId/planning-canvases/:boardId/restore"],
+    ["PATCH", "/api/companies/:companyId/planning-canvases/:boardId/sharing"],
+    ["GET", "/api/companies/:companyId/planning-canvases/:boardId/agent-grants"],
+    ["DELETE", "/api/companies/:companyId/planning-canvases/:boardId/agent-grants/:grantId"],
+  ] as const).map(([method, path]) => ({ method, path, class: "open" as const, test: PLANNING_CANVAS_TEST })),
 ];
 
 /**
