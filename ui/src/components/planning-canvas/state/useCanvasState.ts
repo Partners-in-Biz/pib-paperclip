@@ -45,6 +45,8 @@ export function useCanvasState(ctx: CanvasData) {
   } | null>(null);
   const [activeStroke, setActiveStroke] = useState<CanvasStroke | null>(null);
   const [notesDrawerOpen, setNotesDrawerOpen] = useState(false);
+  const [insertPanelOpen, setInsertPanelOpen] = useState(false);
+  const [handoffOpen, setHandoffOpen] = useState(false);
   const [templatesOpen, setTemplatesOpen] = useState(false);
   const [notesSearch, setNotesSearch] = useState("");
   const [boardSearch, setBoardSearch] = useState("");
@@ -121,6 +123,10 @@ export function useCanvasState(ctx: CanvasData) {
     setActiveStroke,
     notesDrawerOpen,
     setNotesDrawerOpen,
+    insertPanelOpen,
+    setInsertPanelOpen,
+    handoffOpen,
+    setHandoffOpen,
     templatesOpen,
     setTemplatesOpen,
     notesSearch,

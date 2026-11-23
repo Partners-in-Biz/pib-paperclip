@@ -3,6 +3,7 @@ import type {
   PlanningCanvasAccessLevel,
   PlanningCanvasBoard,
   PlanningCanvasBoardRead,
+  PlanningCanvasHandoff,
   PlanningCanvasItemsRead,
   PlanningCanvasOpBatch,
   PlanningCanvasOpBatchResponse,
@@ -12,6 +13,33 @@ import { api, requestResponse } from "./client";
 
 /** A full board read: the legacy `data` blob plus the item rows and the caller's access. */
 export type PlanningCanvasBoardWithItems = PlanningCanvasBoardRead & { access?: PlanningCanvasAccessLevel };
+
+/** `{ id, hidden: true }` stands for an id the reader may not read (or that does not exist). */
+export type PlanningCanvasHiddenRef = { id: string; hidden: true };
+export interface PlanningCanvasIssueRef {
+  id: string;
+  identifier: string | null;
+  title: string;
+  status: string;
+  priority: string;
+  assigneeAgentId: string | null;
+}
+export interface PlanningCanvasAgentRef { id: string; name: string; title: string | null; icon: string | null; status: string }
+export interface PlanningCanvasProjectRef { id: string; name: string; status: string; color: string | null; targetDate: string | null; archivedAt: string | null }
+export interface PlanningCanvasGoalRef { id: string; title: string; level: string; status: string; parentId: string | null }
+/** `GET .../refs` (C8): live summaries of every entity the board links to, for this reader. */
+export interface PlanningCanvasRefsRead {
+  issues: Array<PlanningCanvasIssueRef | PlanningCanvasHiddenRef>;
+  agents: Array<PlanningCanvasAgentRef | PlanningCanvasHiddenRef>;
+  projects: Array<PlanningCanvasProjectRef | PlanningCanvasHiddenRef>;
+  goals: Array<PlanningCanvasGoalRef | PlanningCanvasHiddenRef>;
+  truncated: boolean;
+}
+export interface PlanningCanvasHandoffRead {
+  mode: PlanningCanvasHandoff["mode"];
+  replayed: boolean;
+  issues: Array<(PlanningCanvasIssueRef | PlanningCanvasHiddenRef) & { itemKeys: string[] }>;
+}
 
 const boardPath = (companyId: string, boardId: string) => `/companies/${companyId}/planning-canvases/${boardId}`;
 
@@ -38,6 +66,12 @@ export const planningCanvasesApi = {
       keepalive: true,
     }).catch(() => undefined);
   },
+
+  refs: (companyId: string, boardId: string) =>
+    api.get<PlanningCanvasRefsRead>(`${boardPath(companyId, boardId)}/refs`, { cache: "no-store" }),
+
+  handoff: (companyId: string, boardId: string, body: PlanningCanvasHandoff) =>
+    api.post<PlanningCanvasHandoffRead>(`${boardPath(companyId, boardId)}/handoff`, body),
 
   create: (companyId: string, data: CreatePlanningCanvas) =>
     api.post<PlanningCanvasBoard>(`/companies/${companyId}/planning-canvases`, data),

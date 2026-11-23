@@ -1,4 +1,4 @@
-import { ArrowRight, Frame, Hand, MousePointer2, NotebookPen, Pen, Shapes, StickyNote, Type } from "lucide-react";
+import { ArrowRight, Frame, Hand, Link2, MousePointer2, NotebookPen, Pen, Shapes, StickyNote, Type } from "lucide-react";
 import { type CanvasController } from "@/components/planning-canvas/state/useCanvasController";
 import { cn } from "@/lib/utils";
 
@@ -9,6 +9,8 @@ export function ToolRail({ c }: { c: CanvasController }) {
     setConnectFromId,
     notesDrawerOpen,
     setNotesDrawerOpen,
+    insertPanelOpen,
+    setInsertPanelOpen,
   } = c;
   return (
     <div className="pointer-events-auto absolute left-3 top-1/2 z-30 flex -translate-y-1/2 flex-col gap-1 rounded-xl border border-border bg-popover/95 p-1.5 shadow-lg backdrop-blur-xs">
@@ -51,10 +53,31 @@ export function ToolRail({ c }: { c: CanvasController }) {
       <div className="my-0.5 h-px bg-border" />
       <button
         type="button"
+        title="Add live issue, agent, project or goal card"
+        aria-label="Add live card"
+        aria-pressed={insertPanelOpen}
+        onClick={() => {
+          setInsertPanelOpen((o) => !o);
+          setNotesDrawerOpen(false);
+        }}
+        className={cn(
+          "flex size-9 items-center justify-center rounded-lg transition-colors",
+          insertPanelOpen
+            ? "bg-foreground text-background shadow-xs"
+            : "text-muted-foreground hover:bg-accent hover:text-foreground",
+        )}
+      >
+        <Link2 className="size-4" />
+      </button>
+      <button
+        type="button"
         title="Drop Personal Notes onto board (P)"
         aria-label="Personal Notes drawer"
         aria-pressed={notesDrawerOpen}
-        onClick={() => setNotesDrawerOpen((o) => !o)}
+        onClick={() => {
+          setNotesDrawerOpen((o) => !o);
+          setInsertPanelOpen(false);
+        }}
         className={cn(
           "flex size-9 items-center justify-center rounded-lg transition-colors",
           notesDrawerOpen

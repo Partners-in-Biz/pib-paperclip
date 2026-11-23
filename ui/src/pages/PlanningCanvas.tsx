@@ -1,6 +1,7 @@
 import { useRef } from "react";
 import { ScheduleNoteHandoffDialog } from "@/components/ScheduleNoteHandoffDialog";
 import { ConnectorsLayer, MarqueeOverlay } from "@/components/planning-canvas/canvas/CanvasOverlays";
+import { CanvasRefsContext, useCanvasRefs } from "@/components/planning-canvas/nodes/canvas-refs";
 import { CanvasRefContext } from "@/components/planning-canvas/nodes/canvas-context";
 import { NodesLayer } from "@/components/planning-canvas/nodes/NodeView";
 import { PanelSlot } from "@/components/planning-canvas/panels/panel-slots";
@@ -15,6 +16,7 @@ export function PlanningCanvas() {
   const c = useCanvasController();
   const latest = useRef(c);
   latest.current = c;
+  const linkRefs = useCanvasRefs(c.selectedCompanyId, c.activeBoard?.id, c.opStore.linkMeta);
   const {
     selectedCompanyId,
     canvasRef,
@@ -39,6 +41,7 @@ export function PlanningCanvas() {
 
   return (
     <CanvasRefContext.Provider value={latest}>
+      <CanvasRefsContext.Provider value={linkRefs}>
       <div className="relative flex h-full min-h-0 flex-col overflow-hidden bg-background select-none">
         <PanelSlot id="top" c={c} />
 
@@ -106,6 +109,7 @@ export function PlanningCanvas() {
           projects={projects}
         />
       </div>
+      </CanvasRefsContext.Provider>
     </CanvasRefContext.Provider>
   );
 }

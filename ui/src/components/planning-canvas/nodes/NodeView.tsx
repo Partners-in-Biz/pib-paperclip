@@ -5,7 +5,16 @@ import type { CanvasNode, PersonalNote } from "@paperclipai/shared";
 import { useLatestCanvas } from "@/components/planning-canvas/nodes/canvas-context";
 import { NodeHandles } from "@/components/planning-canvas/nodes/NodeHandles";
 import { NODE_RENDERERS } from "@/components/planning-canvas/nodes/node-renderers";
+import { REF_CARD_CLASS } from "@/components/planning-canvas/nodes/RefCard";
+import { AgentNode } from "@/components/planning-canvas/nodes/AgentNode";
+import { GoalNode } from "@/components/planning-canvas/nodes/GoalNode";
+import { IssueNode } from "@/components/planning-canvas/nodes/IssueNode";
+import { ProjectNode } from "@/components/planning-canvas/nodes/ProjectNode";
+import { NodeLinks } from "@/components/planning-canvas/nodes/NodeLinks";
+import type { NodeLinkMeta } from "@/components/planning-canvas/nodes/link-meta";
 import type { CanvasController } from "@/components/planning-canvas/state/useCanvasController";
+
+const REF_NODES = { issue: IssueNode, agent: AgentNode, project: ProjectNode, goal: GoalNode } as const;
 
 type NodeViewProps = {
   node: CanvasNode;
@@ -14,6 +23,8 @@ type NodeViewProps = {
   isConnectFrom: boolean;
   showConnectHandles: boolean;
   linkedNote: PersonalNote | null | undefined;
+  /** Ref and link ids of a linked-entity node, or of any node handed to agents (C10). */
+  link: NodeLinkMeta | undefined;
 };
 
 /**
@@ -27,10 +38,14 @@ const NodeView = memo(function NodeView({
   isConnectFrom,
   showConnectHandles,
   linkedNote,
+  link,
 }: NodeViewProps) {
   const latest = useLatestCanvas();
   const theme = CANVAS_COLOR_THEMES[node.color] ?? CANVAS_COLOR_THEMES.yellow;
   const { containerClass, Render } = NODE_RENDERERS[node.kind];
+  const RefRender = link?.refKind ? REF_NODES[link.refKind] : null;
+  // A legacy node already shows its first link as a chip when the reader can see its identifier.
+  const extraLinks = link ? (RefRender || !node.handedOffIssueIdentifier ? link.links : link.links.slice(1)) : [];
 
   return (
     <div
@@ -50,10 +65,15 @@ const NodeView = memo(function NodeView({
         "pointer-events-auto absolute transition-shadow",
         isSelected && "ring-2 ring-blue-500 ring-offset-2 ring-offset-background",
         isConnectFrom && "ring-2 ring-amber-500",
-        containerClass(node, theme),
+        RefRender ? REF_CARD_CLASS : containerClass(node, theme),
       )}
     >
-      <Render node={node} isEditing={isEditing} theme={theme} linkedNote={linkedNote} c={latest.current} />
+      {RefRender ? (
+        <RefRender refId={link!.refId} />
+      ) : (
+        <Render node={node} isEditing={isEditing} theme={theme} linkedNote={linkedNote} c={latest.current} />
+      )}
+      <NodeLinks issueIds={extraLinks} />
       <NodeHandles node={node} isSelected={isSelected} isEditing={isEditing} showConnectHandles={showConnectHandles} />
     </div>
   );
@@ -61,6 +81,7 @@ const NodeView = memo(function NodeView({
 
 export function NodesLayer({ c }: { c: CanvasController }) {
   const { sortedNodes, selectedNodeIds, editingNodeId, connectFromId, notesById } = c;
+  const linkMeta = c.opStore.linkMeta;
   return (
     <>
       {sortedNodes.map((node) => {
@@ -75,6 +96,7 @@ export function NodesLayer({ c }: { c: CanvasController }) {
             isConnectFrom={connectFromId === node.id}
             showConnectHandles={isSelected && selectedNodeIds.length === 1 && !isEditing}
             linkedNote={node.noteId ? notesById.get(node.noteId) : null}
+            link={linkMeta.get(node.id)}
           />
         );
       })}

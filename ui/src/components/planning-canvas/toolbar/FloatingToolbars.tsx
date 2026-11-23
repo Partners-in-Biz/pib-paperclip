@@ -1,5 +1,5 @@
 import { CANVAS_NODE_COLORS, type CanvasShapeVariant } from "@paperclipai/shared";
-import { AlignHorizontalJustifyStart, AlignVerticalJustifyStart, CalendarClock, Copy, Eraser, Highlighter, LayoutGrid, Send, Sparkles, Trash2 } from "lucide-react";
+import { AlignHorizontalJustifyStart, AlignVerticalJustifyStart, CalendarClock, Copy, Eraser, Highlighter, LayoutGrid, ListTree, Send, Sparkles, Trash2 } from "lucide-react";
 import { type CanvasController } from "@/components/planning-canvas/state/useCanvasController";
 import { Button } from "@/components/ui/button";
 import { CANVAS_COLOR_THEMES } from "@/lib/planning-canvas-helpers";
@@ -73,6 +73,7 @@ export function MultiSelectToolbar({ c }: { c: CanvasController }) {
     duplicateSelection,
     handleAlignSelection,
     handleDelegateMultiSelection,
+    setHandoffOpen,
   } = c;
   return (
     selectedNodeIds.length > 1 ? (
@@ -124,6 +125,10 @@ export function MultiSelectToolbar({ c }: { c: CanvasController }) {
         <Button type="button" size="xs" onClick={handleDelegateMultiSelection}>
           <Send className="size-3" />
           Give {selectedNodeIds.length} to agent
+        </Button>
+        <Button type="button" size="xs" variant="outline" onClick={() => setHandoffOpen(true)}>
+          <ListTree className="size-3" />
+          Hand off…
         </Button>
         <Button
           type="button"
@@ -250,6 +255,11 @@ export function ContextToolbar({ c }: { c: CanvasController }) {
         >
           <Send className="size-3" />
           {primarySelectedNode.kind === "frame" ? "Delegate frame" : "Give to agent"}
+        </Button>
+
+        <Button type="button" size="xs" variant="outline" onClick={() => c.setHandoffOpen(true)}>
+          <ListTree className="size-3" />
+          Hand off…
         </Button>
 
         {primarySelectedNode.kind === "note" && primarySelectedNode.noteId && notesById.get(primarySelectedNode.noteId) ? (
