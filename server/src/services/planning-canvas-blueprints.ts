@@ -7,6 +7,9 @@ import {
   type PlanningCanvasBlueprint,
   type PlanningCanvasFromBlueprint,
   type PlanningCanvasItemFields,
+  type PlanningCanvasItemInput,
+  type PlanningCanvasNodeFields,
+  type PlanningCanvasNodeKind,
 } from "@paperclipai/shared";
 import { conflict, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
@@ -93,6 +96,21 @@ function boardAnswer(board: BoardRow): PlanningCanvasBlueprintApplyResult["board
     revision: board.revision,
     createdAt: board.createdAt.toISOString(),
   };
+}
+
+/** Stored fields of a blueprint item; a node that became an issue is written as an `issue` card. */
+function itemFields(item: PlanningCanvasItemInput, issueId: string | undefined): { data: PlanningCanvasItemFields; kind: PlanningCanvasNodeKind | null } {
+  if (item.itemType === "node") {
+    const { itemType: _itemType, key: _key, ...node } = item;
+    const data: PlanningCanvasNodeFields = issueId ? { ...node, kind: "issue", ref: { id: issueId } } : node;
+    return { data, kind: data.kind };
+  }
+  if (item.itemType === "connector") {
+    const { itemType: _itemType, key: _key, ...connector } = item;
+    return { data: connector, kind: null };
+  }
+  const { itemType: _itemType, key: _key, ...stroke } = item;
+  return { data: stroke, kind: null };
 }
 
 function issueBody(blueprint: PlanningCanvasBlueprint, boardId: string, boardTitle: string, fields: { title: string; content: string } | null, assigneeAgentId: string | null) {
@@ -241,20 +259,18 @@ export function planningCanvasBlueprintsService(db: Db, deps: PlanningCanvasBlue
 
         // The board's items; each chosen node is born as an issue card.
         const cards = new Map(created.flatMap(({ issue, itemKey }) => (itemKey ? [[itemKey, issue.id] as const] : [])));
+        let nextZ = 1;
         const items: PlanningCanvasItemRow[] = blueprint.items.map((item) => {
-          const { itemType, key, ...fields } = item;
-          const issueId = cards.get(key);
-          const data = (issueId ? { ...fields, kind: "issue", ref: { id: issueId } } : fields) as PlanningCanvasItemFields;
-          const kind = itemType === "node" ? (data as { kind: PlanningCanvasItemRow["kind"] }).kind : null;
+          const { data, kind } = itemFields(item, cards.get(item.key));
           return {
             id: randomUUID(),
             companyId: ctx.companyId,
             boardId,
-            itemKey: key,
-            itemType,
+            itemKey: item.key,
+            itemType: item.itemType,
             kind,
             data,
-            zIndex: itemType === "node" ? item.zIndex : 0,
+            zIndex: item.itemType === "node" ? item.zIndex : nextZ++,
             version: 1,
             fieldVersions: {},
             revision: 1,
