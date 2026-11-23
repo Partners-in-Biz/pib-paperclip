@@ -146,6 +146,7 @@ import {
 import { getOperatorSettingDefaults } from "./services/setting-defaults.js";
 import { setupEnvironmentCustomImageTerminalWebSocketServer } from "./realtime/environment-custom-image-terminal-ws.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
+import { createPlanningCanvasHub } from "./realtime/planning-canvas-ws.js";
 import { cloudActorHeaderSourceFromHeaders, resolveCloudTenantActor } from "./middleware/auth.js";
 import {
   feedbackService,
@@ -1061,8 +1062,12 @@ async function startServerWithDatabaseTeardown(
   setupEnvironmentCustomImageTerminalWebSocketServer(server, db as any, {
     pluginWorkerManager,
   });
+  // Planning Canvas board sockets; one API process assumed (plan PAR-13925 Q13).
+  const planningCanvasHub = createPlanningCanvasHub(db as any);
+  server.on("close", () => planningCanvasHub.close());
   const liveEventsWebSocketServer = setupLiveEventsWebSocketServer(server, db as any, {
     deploymentMode: config.deploymentMode,
+    planningCanvasHub,
     subscribeInvalidation: deploymentHints?.subscribeCompany,
     resolveSessionFromHeaders,
     // Cloud-proxied browsers carry trusted x-paperclip-cloud-* headers instead
@@ -2111,6 +2116,7 @@ async function startServerWithDatabaseTeardown(
     setStartupRecoveryPhase("draining");
     for (const client of liveEventsWebSocketServer.clients) client.close(1012, "Server restarting");
     liveEventsWebSocketServer.close();
+    planningCanvasHub.close();
     // Finish admitted HTTP requests while their services, workers and database
     // are still available. Railway must switch routing before signaling A.
     await closeHttpListenerForShutdown({ server, signal, timeoutMs: 30_000, log: logger,
