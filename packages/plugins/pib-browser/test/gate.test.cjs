@@ -8,6 +8,7 @@ const { createFakeBrowser } = require('./fake-browser.cjs');
 test('COMMANDS contains exactly 7 verbs', () => {
   assert.deepEqual(COMMANDS, ['open', 'goto', 'click', 'fill', 'text', 'shot', 'close']);
   assert(!COMMANDS.includes('handoff'), 'no handoff command');
+  assert(!COMMANDS.includes('handoff-open'), 'the person hand-off is not an agent verb');
   assert(!COMMANDS.includes('cookies'), 'no cookies command');
   assert(!COMMANDS.includes('storage'), 'no storage command');
   assert(!COMMANDS.includes('evaluate'), 'no evaluate command');
@@ -215,10 +216,11 @@ test('fill on loggedIn.url page => exit 7', async () => {
   assert.equal(r.ok, false);
 });
 
-test('fill with handoff active => proceeds despite page check', async () => {
-  const checkFill = ({ pageUrl, site, handoffActive }) => {
-    if (handoffActive) return { ok: true };
-    if (pageUrl === site.loggedIn.url) return { ok: false, reason: 'protected_page' };
+test('fill with handoff active => still refused: the flag is for the person, never the agent (PAR-14022)', async () => {
+  let sawHandoffActive = false;
+  const checkFill = (input) => {
+    if ('handoffActive' in input) sawHandoffActive = true;
+    if (input.pageUrl === input.site.loggedIn.url) return { ok: false, reason: 'protected_page' };
     return { ok: true };
   };
 
@@ -252,8 +254,9 @@ test('fill with handoff active => proceeds despite page check', async () => {
     identity: 'client:ca:meta',
     args: { selector: 'input#email', value: 'test@example.com' }
   });
-  assert.equal(r.exit, EXIT.DONE);
-  assert.equal(r.ok, true);
+  assert.equal(r.exit, EXIT.REFUSED_BY_POLICY);
+  assert.equal(r.reason, 'protected_page');
+  assert.equal(sawHandoffActive, false, 'the agent fill check is never told a hand-off is on');
 });
 
 module.exports = {};
