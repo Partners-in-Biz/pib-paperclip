@@ -1,13 +1,38 @@
-// PAR-13933: moved verbatim from pages/PlanningCanvas.tsx; no behaviour change.
+// PAR-13933 moved this from pages/PlanningCanvas.tsx; PAR-13934 moved item saving to the op store.
 import { useCallback, useEffect } from "react";
 import { useMutation } from "@tanstack/react-query";
-import { type CanvasConnector, type CanvasNode, type CanvasStroke, type PlanningCanvasBoard, type PlanningCanvasData } from "@paperclipai/shared";
+import {
+  canvasViewportSchema,
+  type CanvasConnector,
+  type CanvasNode,
+  type CanvasStroke,
+  type CanvasViewport,
+  type PlanningCanvasBoard,
+  type PlanningCanvasData,
+} from "@paperclipai/shared";
 import { personalNotesApi } from "@/api/personalNotes";
-import { planningCanvasesApi } from "@/api/planningCanvases";
+import { planningCanvasesApi, type PlanningCanvasBoardWithItems } from "@/api/planningCanvases";
+import { useCanvasOpStore } from "@/components/planning-canvas/store/useCanvasOpStore";
 import { CANVAS_BOARD_TEMPLATES, exportBoardToMarkdown } from "@/lib/planning-canvas-helpers";
 import { queryKeys } from "@/lib/queryKeys";
 import type { CanvasData } from "@/components/planning-canvas/state/useCanvasData";
 import type { CanvasState } from "@/components/planning-canvas/state/useCanvasState";
+
+const DEFAULT_VIEWPORT: CanvasViewport = { x: 40, y: 40, zoom: 1 };
+
+/** The viewport is this person's own: kept per board in this browser, never on the shared board. */
+function viewportKey(boardId: string) {
+  return `paperclip.planningCanvas.viewport:${boardId}`;
+}
+
+function storedViewport(boardId: string): CanvasViewport | null {
+  try {
+    const parsed = canvasViewportSchema.safeParse(JSON.parse(window.localStorage.getItem(viewportKey(boardId)) ?? "null"));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
 
 export function useCanvasBoard(ctx: CanvasData & CanvasState) {
   const {
@@ -32,10 +57,6 @@ export function useCanvasBoard(ctx: CanvasData & CanvasState) {
     setViewport,
     dirty,
     setDirty,
-    history,
-    setHistory,
-    future,
-    setFuture,
     setSelectedNodeIds,
     setSelectedConnectorId,
     setEditingNodeId,
@@ -62,22 +83,39 @@ export function useCanvasBoard(ctx: CanvasData & CanvasState) {
     },
   });
 
-  const saveBoardMutation = useMutation({
-    mutationFn: ({
-      boardId,
-      title,
-      data,
-    }: {
-      boardId: string;
-      title: string;
-      data: PlanningCanvasData;
-    }) => planningCanvasesApi.update(selectedCompanyId!, boardId, { title, data }),
+  /** Title only: items never go through the whole-board PATCH (plan B.2, J.2). */
+  const saveTitleMutation = useMutation({
+    mutationFn: ({ boardId, title }: { boardId: string; title: string }) =>
+      planningCanvasesApi.update(selectedCompanyId!, boardId, { title }),
     onSuccess: (updated) => {
       queryClient.setQueryData<PlanningCanvasBoard[]>(
         queryKeys.planningCanvases.list(selectedCompanyId!),
-        (prev) => (prev ? prev.map((b) => (b.id === updated.id ? updated : b)) : [updated]),
+        (prev) => (prev ? prev.map((b) => (b.id === updated.id ? { ...b, title: updated.title } : b)) : prev),
       );
     },
+  });
+
+  const onHydrate = useCallback((read: PlanningCanvasBoardWithItems) => {
+    setBoardTitle(read.title);
+    setViewport(storedViewport(read.id) ?? read.data.viewport ?? DEFAULT_VIEWPORT);
+    setSelectedNodeIds([]);
+    setSelectedConnectorId(null);
+    setEditingNodeId(null);
+    setConnectFromId(null);
+    setDirty(false);
+  }, []);
+
+  const opStore = useCanvasOpStore({
+    companyId: selectedCompanyId,
+    boardId: activeBoard?.id,
+    nodes,
+    connectors,
+    strokes,
+    setNodes,
+    setConnectors,
+    setStrokes,
+    notify: (body) => pushToast({ title: body, tone: "info" }),
+    onHydrate,
   });
 
   const deleteBoardMutation = useMutation({
@@ -194,77 +232,50 @@ export function useCanvasBoard(ctx: CanvasData & CanvasState) {
     }
   }, [selectedCompanyId, boardsLoading, boards.length, createBoardMutation.isPending]);
 
-  // Hydrate local canvas state when switching boards
-  useEffect(() => {
-    if (!activeBoard) return;
-    setBoardTitle(activeBoard.title);
-    setNodes(activeBoard.data.nodes ?? []);
-    setConnectors(activeBoard.data.connectors ?? []);
-    setStrokes(activeBoard.data.strokes ?? []);
-    setViewport(activeBoard.data.viewport ?? { x: 40, y: 40, zoom: 1 });
-    setSelectedNodeIds([]);
-    setSelectedConnectorId(null);
-    setEditingNodeId(null);
-    setConnectFromId(null);
-    setHistory([]);
-    setFuture([]);
-    setDirty(false);
-  }, [activeBoard?.id]);
-
-  // Debounced auto-save
+  // Debounced title save
   useEffect(() => {
     if (!dirty || !activeBoard || !selectedCompanyId) return;
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(() => {
-      saveBoardMutation.mutate({
-        boardId: activeBoard.id,
-        title: boardTitle.trim() || "Untitled Board",
-        data: { nodes, connectors, strokes, viewport },
-      });
+      saveTitleMutation.mutate({ boardId: activeBoard.id, title: boardTitle.trim() || "Untitled Board" });
       setDirty(false);
     }, 650);
     return () => {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     };
-  }, [dirty, nodes, connectors, strokes, viewport, boardTitle, activeBoard?.id, selectedCompanyId]);
+  }, [dirty, boardTitle, activeBoard?.id, selectedCompanyId]);
 
+  // Remember where this person left the board
+  useEffect(() => {
+    if (!activeBoard || !opStore.loaded) return;
+    const timer = setTimeout(() => {
+      try {
+        window.localStorage.setItem(viewportKey(activeBoard.id), JSON.stringify(viewport));
+      } catch {
+        // Storage blocked: the board opens at its default view next time.
+      }
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [viewport, activeBoard?.id, opStore.loaded]);
+
+  /** One undoable step: the whole change is one undo group. */
   const commitCanvasChange = useCallback(
     (nextNodes: CanvasNode[], nextConnectors: CanvasConnector[], nextStrokes: CanvasStroke[] = strokes) => {
-      setHistory((prev) => [...prev.slice(-39), { nodes, connectors, strokes }]);
-      setFuture([]);
+      opStore.markCommit();
       setNodes(nextNodes);
       setConnectors(nextConnectors);
       setStrokes(nextStrokes);
-      setDirty(true);
     },
-    [nodes, connectors, strokes],
+    [strokes, opStore.markCommit],
   );
 
-  const handleUndo = useCallback(() => {
-    if (history.length === 0) return;
-    const previous = history[history.length - 1]!;
-    setHistory((h) => h.slice(0, -1));
-    setFuture((f) => [{ nodes, connectors, strokes }, ...f.slice(0, 39)]);
-    setNodes(previous.nodes);
-    setConnectors(previous.connectors);
-    setStrokes(previous.strokes);
-    setDirty(true);
-  }, [history, nodes, connectors, strokes]);
-
-  const handleRedo = useCallback(() => {
-    if (future.length === 0) return;
-    const next = future[0]!;
-    setFuture((f) => f.slice(1));
-    setHistory((h) => [...h.slice(-39), { nodes, connectors, strokes }]);
-    setNodes(next.nodes);
-    setConnectors(next.connectors);
-    setStrokes(next.strokes);
-    setDirty(true);
-  }, [future, nodes, connectors, strokes]);
+  const handleUndo = opStore.undo;
+  const handleRedo = opStore.redo;
 
   return {
     createBoardMutation,
-    saveBoardMutation,
+    saveTitleMutation,
+    opStore,
     deleteBoardMutation,
     promoteStickyToNoteMutation,
     exportBoardAsNoteMutation,

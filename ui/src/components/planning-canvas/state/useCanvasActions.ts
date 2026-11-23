@@ -21,7 +21,6 @@ export function useCanvasActions(ctx: CanvasData & CanvasState & CanvasBoard) {
     connectors,
     viewport,
     setViewport,
-    setDirty,
     setTool,
     snapEnabled,
     selectedNodeIds,
@@ -184,7 +183,6 @@ export function useCanvasActions(ctx: CanvasData & CanvasState & CanvasBoard) {
     const x = Math.round((rect.width - (maxX - minX) * zoom) / 2 - minX * zoom);
     const y = Math.round((rect.height - (maxY - minY) * zoom) / 2 - minY * zoom);
     setViewport({ x, y, zoom });
-    setDirty(true);
   }, [nodes]);
 
   function handleGiveNodeToAgent(node: CanvasNode) {

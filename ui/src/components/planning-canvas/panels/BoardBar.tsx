@@ -1,7 +1,37 @@
-import { Check, FileDown, Grid2x2, LayoutTemplate, NotebookPen, Plus, Redo2, Search, Trash2, Undo2 } from "lucide-react";
+import { Check, CloudOff, FileDown, Grid2x2, LayoutTemplate, Loader2, NotebookPen, Plus, Redo2, Search, Trash2, TriangleAlert, Undo2 } from "lucide-react";
 import { type CanvasController } from "@/components/planning-canvas/state/useCanvasController";
 import { Button } from "@/components/ui/button";
 import { CANVAS_BOARD_TEMPLATES } from "@/lib/planning-canvas-helpers";
+
+/** Save state (plan F): Saved, Saving…, Offline, retrying, or Not saved after a refusal. */
+function SaveStatus({ state, titlePending }: { state: CanvasController["opStore"]["saveState"]; titlePending: boolean }) {
+  const shown = state === "saved" && titlePending ? "saving" : state;
+  return (
+    <span role="status" aria-live="polite" data-testid="planning-canvas-save-state" data-state={shown} className="ml-1 inline-flex items-center gap-1 text-xs text-muted-foreground">
+      {shown === "saving" ? (
+        <>
+          <Loader2 className="size-3 animate-spin motion-reduce:animate-none" />
+          Saving…
+        </>
+      ) : shown === "offline" ? (
+        <>
+          <CloudOff className="size-3 text-amber-500" />
+          Offline, retrying
+        </>
+      ) : shown === "failed" ? (
+        <>
+          <TriangleAlert className="size-3 text-destructive" />
+          Not saved
+        </>
+      ) : (
+        <>
+          <Check className="size-3 text-emerald-500" />
+          Saved
+        </>
+      )}
+    </span>
+  );
+}
 
 export function BoardBar({ c }: { c: CanvasController }) {
   const {
@@ -16,8 +46,6 @@ export function BoardBar({ c }: { c: CanvasController }) {
     setViewport,
     dirty,
     setDirty,
-    history,
-    future,
     snapEnabled,
     setSnapEnabled,
     notesDrawerOpen,
@@ -27,7 +55,8 @@ export function BoardBar({ c }: { c: CanvasController }) {
     boardSearch,
     setBoardSearch,
     createBoardMutation,
-    saveBoardMutation,
+    saveTitleMutation,
+    opStore,
     deleteBoardMutation,
     exportBoardAsNoteMutation,
     focusNodeOnBoard,
@@ -193,7 +222,7 @@ export function BoardBar({ c }: { c: CanvasController }) {
           type="button"
           size="icon-sm"
           variant="ghost"
-          disabled={history.length === 0}
+          disabled={!opStore.canUndo}
           title="Undo (⌘Z)"
           aria-label="Undo"
           onClick={handleUndo}
@@ -204,7 +233,7 @@ export function BoardBar({ c }: { c: CanvasController }) {
           type="button"
           size="icon-sm"
           variant="ghost"
-          disabled={future.length === 0}
+          disabled={!opStore.canRedo}
           title="Redo (⇧⌘Z)"
           aria-label="Redo"
           onClick={handleRedo}
@@ -222,18 +251,7 @@ export function BoardBar({ c }: { c: CanvasController }) {
           <Grid2x2 className="size-3.5" />
         </Button>
 
-        <span className="ml-1 text-[11px] text-muted-foreground">
-          {saveBoardMutation.isPending ? (
-            "Saving…"
-          ) : dirty ? (
-            "Unsaved"
-          ) : (
-            <span className="inline-flex items-center gap-1">
-              <Check className="size-3 text-emerald-500" />
-              Saved
-            </span>
-          )}
-        </span>
+        <SaveStatus state={opStore.saveState} titlePending={dirty || saveTitleMutation.isPending} />
       </div>
     </div>
   );

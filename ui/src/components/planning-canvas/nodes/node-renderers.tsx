@@ -8,7 +8,7 @@ import { CANVAS_COLOR_THEMES } from "@/lib/planning-canvas-helpers";
 import type { CanvasController } from "@/components/planning-canvas/state/useCanvasController";
 
 function FrameNode({ node, isEditing, theme, c }: NodeRenderProps) {
-  const { setNodes, setDirty, setEditingNodeId } = c;
+  const { setNodes, setEditingNodeId } = c;
 
   return (
     <div className="flex items-center justify-between px-3 py-2">
@@ -22,7 +22,6 @@ function FrameNode({ node, isEditing, theme, c }: NodeRenderProps) {
             setNodes((prev) =>
               prev.map((n) => (n.id === node.id ? { ...n, title: val } : n)),
             );
-            setDirty(true);
           }}
           onBlur={() => setEditingNodeId(null)}
           className="w-full bg-transparent text-xs font-bold uppercase tracking-wider outline-none"
@@ -46,7 +45,7 @@ function FrameNode({ node, isEditing, theme, c }: NodeRenderProps) {
 }
 
 function StickyNode({ node, isEditing, c }: NodeRenderProps) {
-  const { setNodes, setDirty } = c;
+  const { setNodes } = c;
 
   return (
     <>
@@ -61,7 +60,6 @@ function StickyNode({ node, isEditing, c }: NodeRenderProps) {
               setNodes((prev) =>
                 prev.map((n) => (n.id === node.id ? { ...n, title: val } : n)),
               );
-              setDirty(true);
             }}
             placeholder="Title…"
             className="w-full bg-transparent text-sm font-semibold outline-none"
@@ -73,7 +71,6 @@ function StickyNode({ node, isEditing, c }: NodeRenderProps) {
               setNodes((prev) =>
                 prev.map((n) => (n.id === node.id ? { ...n, content: val } : n)),
               );
-              setDirty(true);
             }}
             placeholder="Write idea…"
             className="flex-1 resize-none bg-transparent text-xs leading-relaxed outline-none"
@@ -171,7 +168,7 @@ function NoteNode({ node, theme, linkedNote }: NodeRenderProps) {
 }
 
 function ShapeNode({ node, isEditing, c }: NodeRenderProps) {
-  const { setNodes, setDirty, setEditingNodeId } = c;
+  const { setNodes, setEditingNodeId } = c;
 
   return (
     isEditing ? (
@@ -185,7 +182,6 @@ function ShapeNode({ node, isEditing, c }: NodeRenderProps) {
           setNodes((prev) =>
             prev.map((n) => (n.id === node.id ? { ...n, title: val } : n)),
           );
-          setDirty(true);
         }}
         onBlur={() => setEditingNodeId(null)}
         className="w-full bg-transparent text-center text-sm font-semibold text-foreground outline-none"
@@ -199,7 +195,7 @@ function ShapeNode({ node, isEditing, c }: NodeRenderProps) {
 }
 
 function TextNode({ node, isEditing, c }: NodeRenderProps) {
-  const { setNodes, setDirty, setEditingNodeId } = c;
+  const { setNodes, setEditingNodeId } = c;
 
   return (
     isEditing ? (
@@ -213,7 +209,6 @@ function TextNode({ node, isEditing, c }: NodeRenderProps) {
           setNodes((prev) =>
             prev.map((n) => (n.id === node.id ? { ...n, title: val } : n)),
           );
-          setDirty(true);
         }}
         onBlur={() => setEditingNodeId(null)}
         className="w-full bg-transparent text-xl font-bold text-foreground outline-none"
@@ -232,7 +227,7 @@ export type NodeRenderProps = {
   theme: (typeof CANVAS_COLOR_THEMES)[CanvasNodeColor];
   linkedNote: PersonalNote | null | undefined;
   /** Only the stable setters: a memoized node must not render from controller state. */
-  c: Pick<CanvasController, "setNodes" | "setDirty" | "setEditingNodeId">;
+  c: Pick<CanvasController, "setNodes" | "setEditingNodeId">;
 };
 
 type NodeRendererEntry = {

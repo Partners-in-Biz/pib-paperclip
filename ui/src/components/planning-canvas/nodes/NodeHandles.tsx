@@ -14,7 +14,7 @@ export function NodeHandles({
   showConnectHandles: boolean;
 }) {
   const latest = useLatestCanvas();
-  const { setHistory, setFuture, setDragConnect, dragConnectRef, resizeDragRef } = latest.current;
+  const { setDragConnect, dragConnectRef, resizeDragRef } = latest.current;
   return (
     <>
       {showConnectHandles ? (
@@ -56,9 +56,7 @@ export function NodeHandles({
         <div
           onMouseDown={(e) => {
             e.stopPropagation();
-            const { nodes, connectors, strokes } = latest.current;
-            setHistory((prev) => [...prev.slice(-39), { nodes, connectors, strokes }]);
-            setFuture([]);
+            latest.current.opStore.checkpoint();
             resizeDragRef.current = {
               nodeId: node.id,
               startClientX: e.clientX,

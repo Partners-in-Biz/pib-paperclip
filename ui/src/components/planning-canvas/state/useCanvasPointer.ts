@@ -1,4 +1,4 @@
-// PAR-13933: moved verbatim from pages/PlanningCanvas.tsx; no behaviour change.
+// PAR-13933 moved this from pages/PlanningCanvas.tsx; PAR-13934: drags and resizes are undo groups in the op store.
 import { type MouseEvent as ReactMouseEvent, type WheelEvent as ReactWheelEvent, useEffect } from "react";
 import { type CanvasConnector, type CanvasNode, type CanvasStroke } from "@paperclipai/shared";
 import { clampZoom } from "@/components/planning-canvas/canvas-constants";
@@ -16,9 +16,6 @@ export function useCanvasPointer(ctx: CanvasData & CanvasState & CanvasBoard & C
     strokes,
     viewport,
     setViewport,
-    setDirty,
-    setHistory,
-    setFuture,
     tool,
     setTool,
     penColor,
@@ -45,6 +42,7 @@ export function useCanvasPointer(ctx: CanvasData & CanvasState & CanvasBoard & C
     nodeDragRef,
     resizeDragRef,
     commitCanvasChange,
+    opStore,
     handleUndo,
     handleRedo,
     screenToWorld,
@@ -220,7 +218,6 @@ export function useCanvasPointer(ctx: CanvasData & CanvasState & CanvasBoard & C
     function onMouseUp(e: MouseEvent) {
       if (panDragRef.current) {
         panDragRef.current = null;
-        setDirty(true);
       }
       if (activeStrokeRef.current) {
         const finished = activeStrokeRef.current;
@@ -300,11 +297,11 @@ export function useCanvasPointer(ctx: CanvasData & CanvasState & CanvasBoard & C
       }
       if (nodeDragRef.current) {
         nodeDragRef.current = null;
-        setDirty(true);
+        opStore.endGesture();
       }
       if (resizeDragRef.current) {
         resizeDragRef.current = null;
-        setDirty(true);
+        opStore.endGesture();
       }
     }
 
@@ -314,7 +311,7 @@ export function useCanvasPointer(ctx: CanvasData & CanvasState & CanvasBoard & C
       window.removeEventListener("mousemove", onMouseMove);
       window.removeEventListener("mouseup", onMouseUp);
     };
-  }, [commitCanvasChange, connectors, nextZIndex, nodes, screenToWorld, snapEnabled, strokes, viewport.zoom]);
+  }, [commitCanvasChange, connectors, nextZIndex, nodes, opStore.endGesture, screenToWorld, snapEnabled, strokes, viewport.zoom]);
 
   function handleCanvasMouseDown(e: ReactMouseEvent<HTMLDivElement>) {
     if (e.button === 1 || tool === "hand" || spacePressed) {
@@ -454,9 +451,8 @@ export function useCanvasPointer(ctx: CanvasData & CanvasState & CanvasBoard & C
       if (movingSet.has(n.id)) origPositions.set(n.id, { x: n.x, y: n.y });
     }
 
-    // Save undo snapshot before drag starts
-    setHistory((prev) => [...prev.slice(-39), { nodes, connectors, strokes }]);
-    setFuture([]);
+    // The drag is one undo step
+    opStore.checkpoint();
 
     nodeDragRef.current = {
       startClientX: e.clientX,

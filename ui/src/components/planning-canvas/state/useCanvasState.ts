@@ -22,11 +22,8 @@ export function useCanvasState(ctx: CanvasData) {
   const [connectors, setConnectors] = useState<CanvasConnector[]>([]);
   const [strokes, setStrokes] = useState<CanvasStroke[]>([]);
   const [viewport, setViewport] = useState({ x: 40, y: 40, zoom: 1 });
+  /** The board title has unsaved edits. Items save through the op store (PAR-13934). */
   const [dirty, setDirty] = useState(false);
-
-  // Undo / redo stacks
-  const [history, setHistory] = useState<Array<{ nodes: CanvasNode[]; connectors: CanvasConnector[]; strokes: CanvasStroke[] }>>([]);
-  const [future, setFuture] = useState<Array<{ nodes: CanvasNode[]; connectors: CanvasConnector[]; strokes: CanvasStroke[] }>>([]);
 
   // Tool & interaction state
   const [tool, setTool] = useState<ToolMode>("select");
@@ -98,10 +95,6 @@ export function useCanvasState(ctx: CanvasData) {
     setViewport,
     dirty,
     setDirty,
-    history,
-    setHistory,
-    future,
-    setFuture,
     tool,
     setTool,
     penColor,
