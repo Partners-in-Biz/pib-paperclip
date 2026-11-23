@@ -5,8 +5,9 @@ import { Link } from "@/lib/router";
 
 function LinkChip({ issueId }: { issueId: string }) {
   const issue = useCanvasRef<PlanningCanvasIssueRef>(issueId);
-  if (!issue) return null;
   const className = "inline-flex max-w-full items-center gap-1 rounded-full border border-border bg-card px-2 py-0.5 text-xs font-medium text-foreground shadow-xs";
+  if (!issue) return <span aria-hidden className={className + " w-16 animate-pulse text-transparent"}>…</span>;
+  if (issue.notLoaded) return <span className={className + " text-muted-foreground"}>Not loaded</span>;
   if (issue.hidden) return <span className={className + " text-muted-foreground"}>No access</span>;
   return (
     <Link

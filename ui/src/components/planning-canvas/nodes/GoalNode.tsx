@@ -1,7 +1,7 @@
 import { Target } from "lucide-react";
 import { StatusBadge } from "@/components/StatusBadge";
-import { useCanvasRef } from "@/components/planning-canvas/nodes/canvas-refs";
-import { RefCard, RefLoading, RefNoAccess } from "@/components/planning-canvas/nodes/RefCard";
+import { isRefData, useCanvasRef } from "@/components/planning-canvas/nodes/canvas-refs";
+import { RefCard, refPlaceholder } from "@/components/planning-canvas/nodes/RefCard";
 import type { PlanningCanvasGoalRef } from "@/api/planningCanvases";
 import { Link } from "@/lib/router";
 
@@ -9,7 +9,7 @@ export function GoalNode({ refId }: { refId: string | null }) {
   const goal = useCanvasRef<PlanningCanvasGoalRef>(refId);
   return (
     <RefCard label="Goal" icon={<Target className="size-3.5" />}>
-      {!goal ? <RefLoading /> : goal.hidden ? <RefNoAccess /> : (
+      {!isRefData(goal) ? refPlaceholder(goal) : (
         <>
           <Link
             to={`/goals/${goal.id}`}

@@ -1,7 +1,7 @@
 import { QueryClient } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { queryKeys } from "@/lib/queryKeys";
-import { scheduleCanvasRefsRefresh } from "./LiveUpdatesProvider";
+import { __liveUpdatesTestUtils, scheduleCanvasRefsRefresh } from "./LiveUpdatesProvider";
 
 describe("scheduleCanvasRefsRefresh", () => {
   beforeEach(() => vi.useFakeTimers());
@@ -27,5 +27,19 @@ describe("scheduleCanvasRefsRefresh", () => {
     scheduleCanvasRefsRefresh(queryClient, "c1", "issue", "issue.comment_added");
     vi.advanceTimersByTime(5000);
     expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("is wired into the activity handler: an issue.updated event invalidates the refs", () => {
+    const queryClient = new QueryClient();
+    const spy = vi.spyOn(queryClient, "invalidateQueries");
+    __liveUpdatesTestUtils.invalidateActivityQueries(
+      queryClient,
+      "c1",
+      { entityType: "issue", entityId: "i1", action: "issue.updated", actorType: "user", actorId: "u1" },
+      { userId: "u1", agentId: null },
+    );
+    expect(spy).not.toHaveBeenCalledWith({ queryKey: queryKeys.planningCanvasRefs.all("c1") });
+    vi.advanceTimersByTime(2000);
+    expect(spy).toHaveBeenCalledWith({ queryKey: queryKeys.planningCanvasRefs.all("c1") });
   });
 });

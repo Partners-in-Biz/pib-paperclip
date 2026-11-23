@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
+import type { RefPlaceholder } from "@/components/planning-canvas/nodes/canvas-refs";
 
 /** Shared body of the issue, agent, project and goal cards. */
 export function RefCard({ label, icon, children }: { label: string; icon: ReactNode; children?: ReactNode }) {
@@ -24,4 +25,14 @@ export function RefNoAccess({ className }: { className?: string }) {
 }
 
 /** No overflow clipping here: the link chips hang below the card. `RefCard` clips its own body. */
+export function RefNotLoaded() {
+  return <p className="text-xs text-muted-foreground">Not loaded</p>;
+}
+
+/** What a card shows instead of data: loading, "No access" or "Not loaded". */
+export function refPlaceholder(ref: RefPlaceholder | undefined): ReactNode {
+  if (!ref) return <RefLoading />;
+  return ref.hidden ? <RefNoAccess /> : <RefNotLoaded />;
+}
+
 export const REF_CARD_CLASS = "rounded-xl border border-border bg-card shadow-md";

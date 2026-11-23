@@ -16,7 +16,7 @@ export function PlanningCanvas() {
   const c = useCanvasController();
   const latest = useRef(c);
   latest.current = c;
-  const linkRefs = useCanvasRefs(c.selectedCompanyId, c.activeBoard?.id, c.opStore.linkMeta);
+  const linkRefs = useCanvasRefs(c.selectedCompanyId, c.activeBoard?.id, c.opStore.linkMeta, c.opStore.saveState);
   const {
     selectedCompanyId,
     canvasRef,

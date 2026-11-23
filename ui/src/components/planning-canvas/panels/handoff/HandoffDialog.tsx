@@ -7,10 +7,16 @@ import { type CanvasController } from "@/components/planning-canvas/state/useCan
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { NativeSelect } from "@/components/ui/select";
+import { createCanvasId } from "@/lib/planning-canvas-helpers";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
 
 type Mode = PlanningCanvasHandoff["mode"];
+
+/** `crypto.randomUUID` only exists on secure origins; the key only has to be unique per attempt. */
+function newIdempotencyKey() {
+  return globalThis.crypto?.randomUUID?.() ?? `${createCanvasId("handoff")}-${Date.now().toString(36)}`;
+}
 
 const MODES: Array<{ mode: Mode; title: string; hint: (count: number) => string }> = [
   { mode: "one_per_node", title: "One issue per node", hint: (n) => `${n} issue${n === 1 ? "" : "s"}, each linked to its node` },
@@ -28,7 +34,7 @@ export function HandoffDialog({ c }: { c: CanvasController }) {
   const max = PLANNING_CANVAS_LIMITS.handoffKeysMax;
   const [mode, setMode] = useState<Mode>("one_per_node");
   const [assigneeAgentId, setAssigneeAgentId] = useState("");
-  const [idempotencyKey, setIdempotencyKey] = useState(() => crypto.randomUUID());
+  const [idempotencyKey, setIdempotencyKey] = useState(() => newIdempotencyKey());
 
   const handoff = useMutation({
     mutationFn: async () => {
@@ -58,7 +64,7 @@ export function HandoffDialog({ c }: { c: CanvasController }) {
       handoff.reset();
       setMode(count > 1 ? "one_per_node" : "single");
       setAssigneeAgentId("");
-      setIdempotencyKey(crypto.randomUUID());
+      setIdempotencyKey(newIdempotencyKey());
     }
     // Reset only when the dialog opens, not as the selection is edited behind it.
     // eslint-disable-next-line react-hooks/exhaustive-deps

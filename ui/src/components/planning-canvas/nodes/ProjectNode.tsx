@@ -1,7 +1,7 @@
 import { FolderOpen } from "lucide-react";
 import { StatusBadge } from "@/components/StatusBadge";
-import { useCanvasRef } from "@/components/planning-canvas/nodes/canvas-refs";
-import { RefCard, RefLoading, RefNoAccess } from "@/components/planning-canvas/nodes/RefCard";
+import { isRefData, useCanvasRef } from "@/components/planning-canvas/nodes/canvas-refs";
+import { RefCard, refPlaceholder } from "@/components/planning-canvas/nodes/RefCard";
 import type { PlanningCanvasProjectRef } from "@/api/planningCanvases";
 import { Link } from "@/lib/router";
 
@@ -9,7 +9,7 @@ export function ProjectNode({ refId }: { refId: string | null }) {
   const project = useCanvasRef<PlanningCanvasProjectRef>(refId);
   return (
     <RefCard label="Project" icon={<FolderOpen className="size-3.5" />}>
-      {!project ? <RefLoading /> : project.hidden ? <RefNoAccess /> : (
+      {!isRefData(project) ? refPlaceholder(project) : (
         <>
           <Link
             to={`/projects/${project.id}`}
