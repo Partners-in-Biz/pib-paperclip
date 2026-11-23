@@ -77,7 +77,7 @@ export function CommentsPanel({ c }: { c: CanvasController }) {
       aria-label="Comments"
       data-testid="canvas-comments-panel"
       className={cn(
-        "pointer-events-auto z-30 flex flex-col border-border bg-background/95 shadow-xl backdrop-blur-xs",
+        "pointer-events-auto z-30 flex flex-col border-border bg-background shadow-xl",
         "absolute inset-x-0 bottom-0 max-h-1/2 border-t md:static md:max-h-none md:w-80 md:shrink-0 md:border-l md:border-t-0",
       )}
     >
@@ -121,7 +121,7 @@ export function CommentsPanel({ c }: { c: CanvasController }) {
         ) : thread.error ? (
           <p role="alert" className="text-xs text-destructive">Could not load comments.</p>
         ) : entries.length === 0 ? (
-          <p className="text-xs text-muted-foreground">No comments yet. Mention an agent with @ to hand this node over.</p>
+          <p className="text-xs text-muted-foreground">No comments yet. Mention an agent with @ to hand work over.</p>
         ) : (
           <ul className="flex flex-col gap-3">
             {entries.map((entry) => (

@@ -32,7 +32,7 @@ export function CommentPins({ c }: { c: CanvasController }) {
               setCommentThread({ key: node.id });
             }}
             className={cn(
-              "pointer-events-auto absolute flex h-6 min-w-6 -translate-x-1/2 -translate-y-1/2 items-center gap-0.5 rounded-full border px-1.5 text-xs font-medium shadow-sm transition-colors",
+              "pointer-events-auto absolute flex h-6 min-w-6 -translate-x-1/2 -translate-y-1/2 items-center gap-0.5 whitespace-nowrap rounded-full border px-1.5 text-xs font-medium shadow-sm transition-colors",
               resolved
                 ? "border-border bg-muted text-muted-foreground"
                 : "border-primary bg-primary text-primary-foreground",
@@ -44,7 +44,7 @@ export function CommentPins({ c }: { c: CanvasController }) {
             {thread.unread ? (
               <span
                 data-testid="comment-unread-dot"
-                className="absolute -right-0.5 -top-0.5 size-2 rounded-full border border-background bg-destructive"
+                className="absolute right-0 top-0 size-2 rounded-full border border-background bg-destructive"
               />
             ) : null}
           </button>
