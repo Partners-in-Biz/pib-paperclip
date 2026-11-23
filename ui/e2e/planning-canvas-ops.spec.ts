@@ -5,6 +5,8 @@ import { expect, test, type Page } from "@playwright/test";
  * Run: pnpm test:e2e:planning-canvas-ops   (builds the UI, boots a throwaway server)
  */
 const VIEWPORT = '[data-testid="planning-canvas-viewport"]';
+/** Node elements; the realtime overlay (C15) is a tagged sibling. */
+const NODES = `${VIEWPORT} > div > div:not([data-testid])`;
 const SAVE_STATE = '[data-testid="planning-canvas-save-state"]';
 
 type Board = { companyId: string; issuePrefix: string; boardId: string };
@@ -30,12 +32,12 @@ async function seedBoard(page: Page): Promise<Board> {
 async function openBoard(page: Page, board: Board) {
   await page.addInitScript((id) => localStorage.setItem("paperclip.selectedCompanyId", id), board.companyId);
   await page.goto(`/${board.issuePrefix}/planning-canvas`, { waitUntil: "domcontentloaded" });
-  await expect(page.locator(`${VIEWPORT} > div > div`)).toHaveCount(1);
+  await expect(page.locator(NODES)).toHaveCount(1);
   await expect(page.locator(SAVE_STATE)).toHaveAttribute("data-state", "saved");
 }
 
 async function editNode(page: Page) {
-  const node = page.locator(`${VIEWPORT} > div > div`).first();
+  const node = page.locator(NODES).first();
   await node.dblclick({ position: { x: 30, y: 30 } });
   return node;
 }
@@ -66,7 +68,7 @@ test("two tabs edit different fields of one node and both survive", async ({ con
 
   for (const tab of [tabOne, tabTwo]) {
     await tab.reload({ waitUntil: "domcontentloaded" });
-    const node = tab.locator(`${VIEWPORT} > div > div`).first();
+    const node = tab.locator(NODES).first();
     await expect(node).toContainText("Title from tab one");
     await expect(node).toContainText("Body from tab two");
   }
@@ -101,6 +103,8 @@ test("a lost response is retried with the same clientBatchId and does not confli
 test("a conflict on the same text keeps my text with Keep mine, Keep theirs and Copy to new node", async ({ context, page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   const board = await seedBoard(page);
+  // No board socket (C15) here, so this tab edits before it hears of the other change.
+  await page.routeWebSocket(/\/planning-canvases\/[^/]+\/ws$/, (ws) => ws.close());
   await openBoard(page, board);
 
   // Someone else changes the body after this tab loaded.
