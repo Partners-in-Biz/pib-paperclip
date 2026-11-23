@@ -1,7 +1,9 @@
 import type {
   CreatePlanningCanvas,
   PlanningCanvasAccessLevel,
+  PlanningCanvasAgentGrant,
   PlanningCanvasBoard,
+  PlanningCanvasBoardSharing,
   PlanningCanvasBoardRead,
   PlanningCanvasComment,
   PlanningCanvasFromBlueprint,
@@ -10,6 +12,7 @@ import type {
   PlanningCanvasItemsRead,
   PlanningCanvasOpBatch,
   PlanningCanvasOpBatchResponse,
+  UpdatePlanningCanvasSharing,
   UpdatePlanningCanvas,
   CreatePlanningCanvasComment,
 } from "@paperclipai/shared";
@@ -18,6 +21,11 @@ import type { QueriedIssue } from "@/components/planning-canvas/nodes/issue-boar
 
 /** A full board read: the legacy `data` blob plus the item rows and the caller's access. */
 export type PlanningCanvasBoardWithItems = PlanningCanvasBoardRead & { access?: PlanningCanvasAccessLevel };
+
+/** A board in the list: the board plus its sharing fields and the caller's access (C3). */
+export type PlanningCanvasListItem = PlanningCanvasBoard & Partial<PlanningCanvasBoardSharing> & { access?: PlanningCanvasAccessLevel };
+export interface PlanningCanvasListFilter { archived?: boolean; scope?: PlanningCanvasBoardSharing["scope"]; projectId?: string }
+export interface PlanningCanvasAgentGrantsRead { enabled: boolean; grants: PlanningCanvasAgentGrant[] }
 
 /** `{ id, hidden: true }` stands for an id the reader may not read (or that does not exist). */
 export type PlanningCanvasHiddenRef = { id: string; hidden: true };
@@ -79,8 +87,30 @@ export interface PlanningCanvasCommentsRead {
 const boardPath = (companyId: string, boardId: string) => `/companies/${companyId}/planning-canvases/${boardId}`;
 
 export const planningCanvasesApi = {
-  list: (companyId: string) =>
-    api.get<PlanningCanvasBoard[]>(`/companies/${companyId}/planning-canvases`, { cache: "no-store" }),
+  list: (companyId: string, filter: PlanningCanvasListFilter = {}) => {
+    const query = new URLSearchParams();
+    if (filter.archived) query.set("archived", "true");
+    if (filter.scope) query.set("scope", filter.scope);
+    if (filter.projectId) query.set("projectId", filter.projectId);
+    const suffix = query.size > 0 ? `?${query}` : "";
+    return api.get<PlanningCanvasListItem[]>(`/companies/${companyId}/planning-canvases${suffix}`, { cache: "no-store" });
+  },
+
+  /** Owner widens; owner or admin narrows. Leaving `personal` needs an explicit `memberAccess` (Q15). */
+  setSharing: (companyId: string, boardId: string, body: UpdatePlanningCanvasSharing) =>
+    api.patch<PlanningCanvasBoardSharing & { id: string; userId: string | null }>(`${boardPath(companyId, boardId)}/sharing`, body),
+
+  agentGrants: (companyId: string, boardId: string) =>
+    api.get<PlanningCanvasAgentGrantsRead>(`${boardPath(companyId, boardId)}/agent-grants`, { cache: "no-store" }),
+
+  revokeAgentGrant: (companyId: string, boardId: string, grantId: string) =>
+    api.delete<PlanningCanvasAgentGrant>(`${boardPath(companyId, boardId)}/agent-grants/${grantId}`),
+
+  archive: (companyId: string, boardId: string) =>
+    api.post<{ id: string; archivedAt: string | null }>(`${boardPath(companyId, boardId)}/archive`, {}),
+
+  restore: (companyId: string, boardId: string) =>
+    api.post<{ id: string; archivedAt: string | null }>(`${boardPath(companyId, boardId)}/restore`, {}),
 
   get: (companyId: string, boardId: string) =>
     api.get<PlanningCanvasBoardWithItems>(boardPath(companyId, boardId), { cache: "no-store" }),

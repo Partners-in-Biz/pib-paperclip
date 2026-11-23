@@ -2,6 +2,9 @@ import { Check, CloudOff, FileDown, Grid2x2, LayoutTemplate, Loader2, NotebookPe
 import { PresenceAvatars } from "@/components/planning-canvas/realtime/PresenceAvatars";
 import { type CanvasController } from "@/components/planning-canvas/state/useCanvasController";
 import { Button } from "@/components/ui/button";
+import { BoardSelect } from "@/components/planning-canvas/panels/sharing/BoardSections";
+import { ShareControls } from "@/components/planning-canvas/panels/sharing/ShareControls";
+import { useSessionUserId } from "@/components/planning-canvas/panels/sharing/useSessionUserId";
 import { CANVAS_BOARD_TEMPLATES } from "@/lib/planning-canvas-helpers";
 
 /** Save state (plan F): Saved, Saving…, Offline, retrying, or Not saved after a refusal. */
@@ -66,21 +69,11 @@ export function BoardBar({ c }: { c: CanvasController }) {
     handleUndo,
     handleRedo,
   } = c;
+  const userId = useSessionUserId();
   return (
     <div className="z-20 flex flex-wrap items-center justify-between gap-2 border-b border-border bg-background/95 px-4 py-2 backdrop-blur-xs">
       <div className="flex flex-wrap items-center gap-2">
-        <select
-          aria-label="Select canvas board"
-          value={activeBoard?.id ?? ""}
-          onChange={(e) => setActiveBoardId(e.target.value)}
-          className="h-7 rounded-md border border-border bg-muted/40 px-2 text-xs font-medium text-foreground outline-none focus:border-ring"
-        >
-          {boards.map((b) => (
-            <option key={b.id} value={b.id}>
-              {b.title}
-            </option>
-          ))}
-        </select>
+        <BoardSelect boards={boards} activeId={activeBoard?.id ?? ""} userId={userId} onSelect={setActiveBoardId} />
 
         <input
           type="text"
@@ -112,6 +105,8 @@ export function BoardBar({ c }: { c: CanvasController }) {
           <LayoutTemplate className="size-3" />
           Blueprints
         </Button>
+
+        <ShareControls c={c} />
 
         {boards.length > 1 && activeBoard ? (
           <Button
