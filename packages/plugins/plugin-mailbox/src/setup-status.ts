@@ -4,6 +4,7 @@
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import {
+  jobCompanyIds,
   companyRoles,
   isSecretRef,
   knownCompanyIds,
@@ -406,7 +407,7 @@ export async function setupStatus(ctx: PluginContext, companyId: string, store: 
 /** Hourly: push the status of every company the Mailbox knows with saved settings. */
 export async function publishAllSetupStatus(ctx: PluginContext, store: AccountSource): Promise<number> {
   let published = 0;
-  for (const companyId of await knownCompanies(ctx)) {
+  for (const companyId of await jobCompanyIds(ctx, await knownCompanies(ctx))) {
     try {
       const loaded = await loadMailboxConfig(ctx, companyId);
       if (!loaded.config.saved) continue;

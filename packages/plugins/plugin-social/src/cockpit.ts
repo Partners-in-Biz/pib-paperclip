@@ -6,6 +6,7 @@
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import {
+  jobCompanyIds,
   cleanFlowReports,
   decisionStats,
   emptySnapshot,
@@ -935,7 +936,7 @@ export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Pr
  */
 export async function publishCockpitSnapshots(ctx: PluginContext): Promise<{ published: number; skipped: number; leads: number }> {
   const result = { published: 0, skipped: 0, leads: 0 };
-  for (const companyId of await knownCompanies(ctx)) {
+  for (const companyId of await jobCompanyIds(ctx, await knownCompanies(ctx))) {
     try {
       if (!(await socialOn(ctx, companyId)) || !(await loadSocialConfig(ctx, companyId)).saved) {
         result.skipped += 1;

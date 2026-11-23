@@ -153,6 +153,7 @@ describe("the Setup items", () => {
 describe("the daily domain job and the hourly housekeeping", () => {
   async function boot(config: Record<string, unknown> = {}) {
     const harness = createTestHarness({ manifest, config: { publicBaseUrl: "https://paperclip.example.com", encryptionKey: "x".repeat(20), ...config } });
+    harness.seed({ companies: [{ id: CO, name: "Co", issuePrefix: "CO" } as never] });
     const written: Array<{ sql: string; params: unknown[] }> = [];
     const account = { id: "acc-1", company_id: CO, provider: "gmail", address: "peet@partnersinbiz.online", status: "connected", token_sealed: "sealed", is_default: true, client_kind: null, client_ref: null, from_name: null, connected_at: "2026-09-26T08:00:00.000Z", created_at: "2026-09-26T08:00:00.000Z" };
     const db = {
