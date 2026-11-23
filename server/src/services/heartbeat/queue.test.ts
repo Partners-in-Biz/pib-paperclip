@@ -9,7 +9,7 @@ import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { createPostgresWakeQueueAdapter, createWakeAdmissionWriter } from "../../modules/wake-queue/adapters/postgres.js";
 import { createReleaseIssueExecution } from "../../modules/wake-queue/application/use-cases.js";
-import { createHeartbeatQueue, DEFERRED_WAKE_CONTEXT_KEY, shouldDeferFollowupWakeForSameIssue, shouldQueueFollowupForRunningIssueWake, type HeartbeatQueueDependencies } from "./queue.js";
+import { createHeartbeatQueue, DEFERRED_WAKE_CONTEXT_KEY, prioritizeQueuedRunsForClaim, QUEUED_RUN_STARVATION_AGE_MS, shouldDeferFollowupWakeForSameIssue, shouldQueueFollowupForRunningIssueWake, type HeartbeatQueueDependencies } from "./queue.js";
 import { createWakeQueue } from "../../modules/wake-queue/index.js";
 import { TransactionScope } from "../../modules/wake-queue/application/ports.js";
 import { enrichWakeContextSnapshot, mergeCoalescedContextSnapshot } from "./run-preparation.js";
@@ -26,6 +26,46 @@ function guardedDatabase() {
   const access = vi.fn(() => { throw new Error("Unexpected queue database access"); });
   return { db: new Proxy({}, { get: access }) as Db, access };
 }
+
+describe("prioritizeQueuedRunsForClaim", () => {
+  const now = new Date("2026-11-23T07:46:00.000Z");
+  const minutesAgo = (minutes: number) => new Date(now.getTime() - minutes * 60_000);
+  const run = (id: string, createdAt: Date, issueId?: string) => ({ id, createdAt, contextSnapshot: issueId ? { issueId } : {} });
+  const issueById = new Map([
+    ["active", { status: "in_progress", priority: "high" }],
+    ["routine", { status: "todo", priority: "medium" }],
+    ["waiting", { status: "todo", priority: "critical" }],
+  ]);
+  const dependencyReadiness = new Map([["waiting", { isDependencyReady: false }]]);
+  const order = (runs: ReturnType<typeof run>[]) =>
+    prioritizeQueuedRunsForClaim(runs, { issueById, dependencyReadiness, now }).map((entry) => entry.id);
+
+  it("keeps in_progress work first while every queued run is young", () => {
+    expect(order([
+      run("routine", minutesAgo(5), "routine"),
+      run("issueless", minutesAgo(6)),
+      run("active-retry", minutesAgo(1), "active"),
+    ])).toEqual(["active-retry", "routine", "issueless"]);
+  });
+
+  it("starts an aged todo assignment ahead of a newer in_progress re-wake on a one-slot agent", () => {
+    const aged = QUEUED_RUN_STARVATION_AGE_MS / 60_000 + 1;
+    expect(order([
+      run("active-retry", minutesAgo(1), "active"),
+      run("routine", minutesAgo(aged), "routine"),
+    ])[0]).toBe("routine");
+  });
+
+  it("claims aged runs oldest first, before younger runs, and keeps dependency-blocked runs last", () => {
+    expect(order([
+      run("blocked-oldest", minutesAgo(24 * 60), "waiting"),
+      run("routine-aged", minutesAgo(120), "routine"),
+      run("issueless-older", minutesAgo(20 * 60)),
+      run("active-young", minutesAgo(2), "active"),
+      run("active-aged", minutesAgo(30), "active"),
+    ])).toEqual(["issueless-older", "routine-aged", "active-aged", "active-young", "blocked-oldest"]);
+  });
+});
 
 describe("heartbeat queue module boundary", () => {
   it("constructs without querying, dispatching, or registering background work", () => {
