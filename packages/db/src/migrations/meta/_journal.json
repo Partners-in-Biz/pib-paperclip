@@ -3186,6 +3186,13 @@
       "when": 1795270000000,
       "tag": "0456_planning_canvas_items",
       "breakpoints": true
+    },
+    {
+      "idx": 457,
+      "version": "7",
+      "when": 1795275000000,
+      "tag": "0457_agent_chats_private",
+      "breakpoints": true
     }
   ]
 }
