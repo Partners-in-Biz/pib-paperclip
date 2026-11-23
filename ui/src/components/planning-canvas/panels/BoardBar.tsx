@@ -4,7 +4,6 @@ import { type CanvasController } from "@/components/planning-canvas/state/useCan
 import { Button } from "@/components/ui/button";
 import { BoardSelect } from "@/components/planning-canvas/panels/sharing/BoardSections";
 import { ShareControls } from "@/components/planning-canvas/panels/sharing/ShareControls";
-import { useSessionUserId } from "@/components/planning-canvas/panels/sharing/useSessionUserId";
 import { CANVAS_BOARD_TEMPLATES } from "@/lib/planning-canvas-helpers";
 
 /** Save state (plan F): Saved, Saving…, Offline, retrying, or Not saved after a refusal. */
@@ -69,11 +68,10 @@ export function BoardBar({ c }: { c: CanvasController }) {
     handleUndo,
     handleRedo,
   } = c;
-  const userId = useSessionUserId();
   return (
     <div className="z-20 flex flex-wrap items-center justify-between gap-2 border-b border-border bg-background/95 px-4 py-2 backdrop-blur-xs">
       <div className="flex flex-wrap items-center gap-2">
-        <BoardSelect boards={boards} activeId={activeBoard?.id ?? ""} userId={userId} onSelect={setActiveBoardId} />
+        <BoardSelect boards={boards} activeId={activeBoard?.id ?? ""} onSelect={setActiveBoardId} />
 
         <input
           type="text"

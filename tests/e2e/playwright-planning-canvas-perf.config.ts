@@ -9,7 +9,7 @@ const chromePath = process.env.PLANNING_CANVAS_CHROME_PATH;
 export default defineConfig({
   ...base,
   testDir: path.resolve(import.meta.dirname, "../../ui/e2e"),
-  testMatch: "planning-canvas-perf.spec.ts",
+  testMatch: process.env.PLANNING_CANVAS_SPEC ?? "planning-canvas-perf.spec.ts",
   testIgnore: [],
   timeout: 240_000,
   projects: [
