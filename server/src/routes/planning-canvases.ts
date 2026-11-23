@@ -3,13 +3,17 @@ import { and, eq, inArray, isNotNull, isNull, ne, or, type SQL } from "drizzle-o
 import { companies, planningCanvasAgentGrants, planningCanvases, type Db } from "@paperclipai/db";
 import {
   PLANNING_CANVAS_SCOPES,
+  PlanningCanvasImportError,
   createPlanningCanvasSchema,
+  planningCanvasImportItems,
+  planningCanvasImportSchema,
   planningCanvasReadQuerySchema,
   updatePlanningCanvasSchema,
   type PlanningCanvasAccessLevel,
 } from "@paperclipai/shared";
+import { createHash, randomBytes } from "node:crypto";
 import { z } from "zod";
-import { badRequest, conflict, forbidden, notFound } from "../errors.js";
+import { badRequest, conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { logActivity } from "../services/activity-log.js";
 import {
   planningCanvasAccessAtLeast,
@@ -189,6 +193,34 @@ export function planningCanvasRoutes(db: Db) {
     const { board } = await planningCanvasForRequest(db, req, "edit");
     const actor = opsActor(req);
     res.json(await ops.applyOps({ companyId: board.companyId, boardId: board.id, actor, batch: req.body }));
+  });
+
+  /** Markdown outline or Mermaid flowchart to frames, stickies and connectors (C9). One atomic batch. */
+  router.post("/companies/:companyId/planning-canvases/:boardId/import", async (req, res) => {
+    const { board } = await planningCanvasForRequest(db, req, "edit");
+    const actor = opsActor(req);
+    const parsed = planningCanvasImportSchema.safeParse(req.body);
+    if (!parsed.success) throw badRequest("Validation error", parsed.error.issues);
+    const { format, source, at, clientBatchId } = parsed.data;
+    // A retry with the same clientBatchId must build the same keys.
+    const keyPrefix = "imp-" + (clientBatchId ? createHash("sha256").update(clientBatchId).digest("hex") : randomBytes(8).toString("hex")).slice(0, 8);
+    let items;
+    try {
+      items = planningCanvasImportItems({ format, source }, { at, keyPrefix });
+    } catch (error) {
+      if (error instanceof PlanningCanvasImportError) {
+        throw unprocessable(error.message, { code: "PLANNING_CANVAS_IMPORT_UNSUPPORTED", line: error.line, reason: error.reason });
+      }
+      throw error;
+    }
+    const result = await ops.applyOps({
+      companyId: board.companyId,
+      boardId: board.id,
+      actor,
+      batch: { atomic: true, ...(clientBatchId ? { clientBatchId } : {}), ops: items.map((item) => ({ op: "add", item })) },
+    });
+    await logPlanningCanvasActivity(db, req, board, "planning_canvas.imported", { format, items: items.length });
+    res.json({ format, items: items.length, ...result });
   });
 
   /** Legacy whole-board PATCH (J.2) for old tabs; people only. Agents use `ops`. */

@@ -56,6 +56,7 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
  *   /api/companies/:companyId/planning-canvases
  *   /api/companies/:companyId/planning-canvases/:boardId
  *   /api/companies/:companyId/planning-canvases/:boardId/ops
+ *   /api/companies/:companyId/planning-canvases/:boardId/import
  *   /api/companies/:companyId/planning-canvases/:boardId/archive
  *   /api/companies/:companyId/planning-canvases/:boardId/restore
  *   /api/companies/:companyId/planning-canvases/:boardId/sharing
@@ -135,6 +136,7 @@ const DENIAL_ROUTES: DenialRoute[] = [
   { method: "PATCH", path: `${P}/:boardId`, url: board, body: { title: "Renamed" } },
   { method: "DELETE", path: `${P}/:boardId`, url: board },
   { method: "POST", path: `${P}/:boardId/ops`, url: (ctx) => `${board(ctx)}/ops`, body: opBody },
+  { method: "POST", path: `${P}/:boardId/import`, url: (ctx) => `${board(ctx)}/import`, body: { format: "markdown", source: "# Plan\n- one" } },
   { method: "POST", path: `${P}/:boardId/archive`, url: (ctx) => `${board(ctx)}/archive` },
   { method: "POST", path: `${P}/:boardId/restore`, url: (ctx) => `${board(ctx)}/restore` },
   { method: "PATCH", path: `${P}/:boardId/sharing`, url: (ctx) => `${board(ctx)}/sharing`, body: { scope: "company", memberAccess: "edit" } },
