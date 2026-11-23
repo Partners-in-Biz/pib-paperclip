@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import type { CanvasConnector, CanvasNode, CanvasStroke, PlanningCanvasItemType } from "@paperclipai/shared";
 import { planningCanvasesApi, type PlanningCanvasBoardWithItems } from "@/api/planningCanvases";
 import { queryKeys } from "@/lib/queryKeys";
+import { useDraftOwner } from "@/hooks/useDraftOwner";
 import { CanvasOpStore, type OpStoreSnapshot, type StoreItem } from "@/components/planning-canvas/store/canvas-op-store";
 import { diffElements, elementToItem, itemToElement, patchElements, type CanvasElement } from "@/components/planning-canvas/store/legacy-bridge";
 
@@ -51,6 +52,9 @@ export function useCanvasOpStore(input: CanvasOpStoreInput) {
   const identifiers = useRef(new Map<string, string>());
   const closeGroupAfterSync = useRef(false);
   const [loadedStore, setLoadedStore] = useState<CanvasOpStore | null>(null);
+  /** The signed-in user (undefined until the session is known): undo stacks are per user and board. */
+  const owner = useRef<string | undefined>(undefined);
+  owner.current = useDraftOwner();
 
   const read = useQuery({
     queryKey: queryKeys.planningCanvases.detail(companyId ?? "", boardId ?? ""),
@@ -73,7 +77,7 @@ export function useCanvasOpStore(input: CanvasOpStoreInput) {
         sendKeepalive: (batch) => planningCanvasesApi.applyOpsKeepalive(companyId, boardId, batch),
       },
       storage: sessionStore(),
-      storageKey: `paperclip.planningCanvas.undo:${boardId}`,
+      storageKey: () => (owner.current ? `paperclip.planningCanvas.undo:${owner.current}:${boardId}` : undefined),
       onNotice: (message) => latest.current.notify(message),
       onFatal: () => {
         latest.current.notify("Could not save your last change; the board was reloaded.");

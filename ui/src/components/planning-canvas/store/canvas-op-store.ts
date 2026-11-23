@@ -7,7 +7,7 @@ import type {
   PlanningCanvasOpBatchResponse,
   PlanningCanvasOpResult,
 } from "@paperclipai/shared";
-import { PLANNING_CANVAS_LIMITS } from "@paperclipai/shared";
+import { PLANNING_CANVAS_GEOMETRY_FIELDS, PLANNING_CANVAS_LIMITS } from "@paperclipai/shared";
 import { diffTableOps, isTableData } from "@/components/planning-canvas/store/table-ops";
 
 /**
@@ -74,7 +74,8 @@ export interface OpStoreOptions {
   undoGroupIdleMs?: number;
   /** sessionStorage-like store for the undo stacks (undo survives a reload in the session). */
   storage?: Pick<Storage, "getItem" | "setItem"> | null;
-  storageKey?: string;
+  /** Per user and board; a function is read at load time (the user may be known only later). */
+  storageKey?: string | (() => string | undefined);
   onNotice?: (message: string) => void;
   /** The server could not take the batch (not a network problem): reload the board. */
   onFatal?: (error: unknown) => void;
@@ -98,6 +99,7 @@ interface Inflight {
 }
 
 const TEXT_FIELDS = new Set(["title", "content", "label"]);
+const GEOMETRY_FIELDS = new Set<string>(PLANNING_CANVAS_GEOMETRY_FIELDS);
 const NODE_FIRST: PlanningCanvasItemType[] = ["node", "connector", "stroke"];
 const UNDO_STORAGE_MAX = 2_000_000;
 
@@ -162,6 +164,9 @@ export class CanvasOpStore {
   private viewListeners = new Set<(keys: string[]) => void>();
   private disposed = false;
   private closing = false;
+  /** The last unsent batch handed to a keepalive request (see `flushKeepalive`). */
+  private keepaliveBatch: PlanningCanvasOpBatch | null = null;
+  private undoKey: string | null = null;
   /** An add met an item we did not know: re-read everything once. */
   private unknownKeys = false;
   private readonly opts: Required<Pick<OpStoreOptions, "batchDelayMs" | "undoDepth" | "undoGroupIdleMs" | "newId">> & OpStoreOptions;
@@ -357,7 +362,8 @@ export class CanvasOpStore {
   }
 
   private persistUndo() {
-    const { storage, storageKey } = this.opts;
+    const { storage } = this.opts;
+    const storageKey = this.undoKey;
     if (!storage || !storageKey) return;
     try {
       const json = JSON.stringify({ undo: this.undoStack, redo: this.redoStack });
@@ -370,9 +376,16 @@ export class CanvasOpStore {
   private restoreUndo() {
     this.open = null;
     const { storage, storageKey } = this.opts;
-    if (!storage || !storageKey) return;
+    // Fixed at load: a later sign-in as someone else never writes into this person's stack.
+    this.undoKey = (typeof storageKey === "function" ? storageKey() : storageKey) ?? null;
+    if (!storage || !this.undoKey) {
+      this.undoStack = [];
+      this.redoStack = [];
+      return;
+    }
+    const key = this.undoKey;
     try {
-      const parsed = JSON.parse(storage.getItem(storageKey) ?? "null") as { undo?: UndoGroup[]; redo?: UndoGroup[] } | null;
+      const parsed = JSON.parse(storage.getItem(key) ?? "null") as { undo?: UndoGroup[]; redo?: UndoGroup[] } | null;
       this.undoStack = Array.isArray(parsed?.undo) ? parsed.undo.slice(-this.opts.undoDepth) : [];
       this.redoStack = Array.isArray(parsed?.redo) ? parsed.redo.slice(-this.opts.undoDepth) : [];
     } catch {
@@ -457,15 +470,22 @@ export class CanvasOpStore {
     await this.sendInflight();
   }
 
-  private buildBatch(): { batch: PlanningCanvasOpBatch; sent: Map<string, ItemFields> } | null {
+  /**
+   * Diff `base` against `view` for the dirty keys. `consume` (a real send) takes
+   * the keys out of `dirty`; a keepalive build leaves everything as it is and
+   * diffs against what the in-flight batch will leave on the server.
+   */
+  private buildBatch(consume = true): { batch: PlanningCanvasOpBatch; sent: Map<string, ItemFields> } | null {
     const buckets: PlanningCanvasOp[][] = [[], [], [], [], [], []];
     const sent = new Map<string, ItemFields>();
     const keys = [...this.dirty];
-    this.dirty.clear();
-    this.firstDirtyAt = null;
+    if (consume) {
+      this.dirty.clear();
+      this.firstDirtyAt = null;
+    }
     for (const key of keys) {
       const view = this.view.get(key);
-      const base = this.base.get(key);
+      const base = consume ? this.base.get(key) : this.baseAfterInflight(key);
       const rank = NODE_FIRST.indexOf((view ?? base)?.itemType ?? "node") === 0 ? 0 : 1;
       if (view) sent.set(key, { ...view.fields });
       if (view && !base) {
@@ -474,7 +494,7 @@ export class CanvasOpStore {
         if (base.deleted) buckets[rank * 2]!.push({ op: "restore", key });
         const fields = changedFields(base.fields, view.fields);
         if (fields.length === 0) continue;
-        const baseVersion = this.pinned.get(key) ?? base.version;
+        const baseVersion = consume ? (this.pinned.get(key) ?? base.version) : base.version;
         const set: ItemFields = {};
         for (const field of fields) set[field] = view.fields[field];
         const tableOps = "data" in set && view.fields.kind === "table" && isTableData(base.fields.data) && isTableData(set.data)
@@ -494,12 +514,48 @@ export class CanvasOpStore {
       const cutKeys = new Set(ops.slice(PLANNING_CANVAS_LIMITS.opsPerBatchMax).map(keyOf));
       ops = ops.slice(0, PLANNING_CANVAS_LIMITS.opsPerBatchMax).filter((op) => !cutKeys.has(keyOf(op)));
       for (const key of cutKeys) {
-        this.markDirty(key);
+        if (consume) this.markDirty(key);
         sent.delete(key);
       }
     }
     if (ops.length === 0) return null;
-    return { batch: { ops, clientBatchId: this.opts.newId() }, sent };
+    // A keepalive send with these exact ops may already have reached the server: reuse its id so it replays.
+    const keepalive = this.keepaliveBatch;
+    const reuse = consume && keepalive && JSON.stringify(keepalive.ops) === JSON.stringify(ops);
+    if (consume) this.keepaliveBatch = null;
+    return { batch: { ops, clientBatchId: reuse ? keepalive.clientBatchId! : this.opts.newId() }, sent };
+  }
+
+  /**
+   * The server's copy of `key` once the in-flight batch applies (assuming nobody
+   * else writes in between): its fields, and its version after each op that bumps it.
+   */
+  private baseAfterInflight(key: string): BaseItem | undefined {
+    const base = this.base.get(key);
+    const inflight = this.inflight;
+    if (!inflight) return base;
+    const ops = inflight.batch.ops.filter((op) => keyOf(op) === key);
+    if (ops.length === 0) return base;
+    const sent = inflight.sent.get(key);
+    let next: BaseItem | undefined = base ? { ...base, fields: { ...base.fields } } : undefined;
+    for (const op of ops) {
+      if (op.op === "add") {
+        next = { itemType: op.item.itemType, fields: { ...(sent ?? {}) }, version: 1, deleted: false, deletedWithKey: null };
+      } else if (!next) {
+        return undefined;
+      } else if (op.op === "delete") {
+        next.deleted = true;
+      } else if (op.op === "restore") {
+        next.deleted = false;
+      } else if (op.op === "update") {
+        next.fields = { ...next.fields, ...op.set };
+        if (Object.keys(op.set).some((field) => !GEOMETRY_FIELDS.has(field))) next.version += 1;
+      } else {
+        next.fields = { ...next.fields, data: sent?.data ?? next.fields.data };
+        next.version += 1;
+      }
+    }
+    return next;
   }
 
   private async sendInflight() {
@@ -564,12 +620,18 @@ export class CanvasOpStore {
     void this.sendInflight();
   }
 
-  /** Best effort on `beforeunload`: the in-flight batch (same id) and everything unsent. */
+  /**
+   * Best effort on `beforeunload`: the in-flight batch (same id) and everything
+   * unsent. It changes nothing, so when the person stays on the page the normal
+   * flush still sends the edits; it reuses the keepalive id, so a keepalive that
+   * did arrive replays instead of applying twice.
+   */
   flushKeepalive() {
     const send = this.opts.transport.sendKeepalive;
     if (!send) return;
     if (this.inflight) send(this.inflight.batch);
-    const built = this.buildBatch();
+    const built = this.buildBatch(false);
+    this.keepaliveBatch = built?.batch ?? null;
     if (built) send(built.batch);
   }
 

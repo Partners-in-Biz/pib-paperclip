@@ -156,6 +156,74 @@ describe("batching", () => {
     expect(keepalive[0]!.clientBatchId).toBe("id-1");
     expect(keepalive[1]!.ops).toEqual([{ op: "update", key: "b", baseVersion: 1, set: { x: 2 } }]);
   });
+
+  it("a cancelled unload (the person stays) still sends the unsent edit and ends Saved", async () => {
+    const server = new FakeCanvasServer().seed("a", "node", sticky()).seed("b", "node", sticky());
+    let online = false;
+    const keepalive: PlanningCanvasOpBatch[] = [];
+    const store = makeStore(server, "u1", {
+      transport: {
+        send: async (batch) => {
+          if (!online) throw new TypeError("Failed to fetch");
+          return server.apply("u1", batch);
+        },
+        readSince: async (s) => server.readSince(s),
+        sendKeepalive: (batch) => keepalive.push(batch), // offline: never arrives
+      },
+    });
+    edit(store, "a", { x: 1 });
+    await settle();
+    expect(store.getSnapshot().saveState).toBe("offline");
+    edit(store, "b", { x: 2 });
+    store.flushKeepalive();
+    expect(keepalive).toHaveLength(2);
+    online = true;
+    await settle(10_000);
+    expect(server.fields("a")!.x).toBe(1);
+    expect(server.fields("b")!.x).toBe(2);
+    expect(store.getSnapshot().saveState).toBe("saved");
+    expect(store.hasUnsaved()).toBe(false);
+  });
+
+  it("a keepalive that did arrive is replayed by the next flush, not applied twice", async () => {
+    const t = { columns: [{ id: "c1", name: "Name", type: "text" as const }], rows: [{ id: "r1", cells: { c1: "one" } }] };
+    const server = new FakeCanvasServer().seed("t", "node", { kind: "table", x: 0, y: 0, width: 300, height: 200, zIndex: 1, color: "slate", title: "T", data: t });
+    const onNotice = vi.fn();
+    const store = makeStore(server, "u1", {
+      onNotice,
+      transport: {
+        send: async (batch) => server.apply("u1", batch),
+        readSince: async (s) => server.readSince(s),
+        sendKeepalive: (batch) => void server.apply("u1", batch), // arrives
+      },
+    });
+    const next = structuredClone(t);
+    next.rows.push({ id: "r2", cells: { c1: "two" } });
+    edit(store, "t", { data: next });
+    store.flushKeepalive(); // then the person stays
+    await settle();
+    const ids = server.calls.map((call) => call.batch.clientBatchId);
+    expect(ids).toHaveLength(2);
+    expect(ids[1]).toBe(ids[0]);
+    expect(onNotice).not.toHaveBeenCalled();
+    expect((server.fields("t")!.data as typeof t).rows.map((row) => row.id)).toEqual(["r1", "r2"]);
+    expect(store.getSnapshot().saveState).toBe("saved");
+  });
+
+  it("a keepalive edit to an item in the in-flight batch goes against the version that batch leaves", async () => {
+    const server = new FakeCanvasServer().seed("a", "node", sticky());
+    const keepalive: PlanningCanvasOpBatch[] = [];
+    const store = makeStore(server, "u1", {
+      transport: { send: () => new Promise(() => undefined), readSince: async (s) => server.readSince(s), sendKeepalive: (b) => keepalive.push(b) },
+    });
+    edit(store, "a", { title: "First", x: 5 });
+    await settle();
+    edit(store, "a", { content: "Second" });
+    store.flushKeepalive();
+    expect(keepalive[1]!.ops).toEqual([{ op: "update", key: "a", baseVersion: 2, set: { content: "Second" } }]);
+    for (const batch of keepalive) expect(server.apply("u1", batch).results.map((r) => r.status)).toEqual(["applied"]);
+    expect(server.fields("a")).toMatchObject({ title: "First", content: "Second", x: 5 });
+  });
 });
 
 describe("conflicts", () => {
