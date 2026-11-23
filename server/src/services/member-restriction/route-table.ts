@@ -462,6 +462,8 @@ export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntr
     ["GET", "/api/companies/:companyId/planning-canvases/:boardId/refs"],
     ["POST", "/api/companies/:companyId/planning-canvases/:boardId/query"],
     ["POST", "/api/companies/:companyId/planning-canvases/:boardId/handoff"],
+    // PAR-13941 (C14): blueprint apply creates a personal board; each issue it makes runs `restrictedTaskBody(..., "createIssue")`.
+    ["POST", "/api/companies/:companyId/planning-canvases/from-blueprint"],
   ] as const).map(([method, path]) => ({ method, path, class: "open" as const, test: PLANNING_CANVAS_TEST })),
 ];
 
