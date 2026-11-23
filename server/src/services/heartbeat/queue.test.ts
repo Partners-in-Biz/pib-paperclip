@@ -985,6 +985,50 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     expect(deps.setRunStatus).not.toHaveBeenCalled();
   });
 
+  async function oneSlotStarvationFixture(routineAgeMinutes: number) {
+    const [company] = await db.insert(companies).values({ name: "One slot", issuePrefix: "OS" }).returning();
+    const [agent] = await db.insert(agents).values({ companyId: company.id, name: "One slot agent", role: "engineer",
+      status: "idle", adapterType: "process", adapterConfig: {},
+      runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } }).returning();
+    const queuedRun = async (title: string, issueStatus: string, minutesAgo: number) => {
+      const [issue] = await db.insert(issues).values({ companyId: company.id, title, status: issueStatus,
+        assigneeAgentId: agent.id }).returning();
+      const [wake] = await db.insert(agentWakeupRequests).values({ companyId: company.id, agentId: agent.id,
+        source: "assignment", status: "claimed", claimedAt: new Date() }).returning();
+      const createdAt = new Date(Date.now() - minutesAgo * 60_000);
+      const [run] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent.id, status: "queued",
+        invocationSource: "assignment", wakeupRequestId: wake.id, contextSnapshot: { issueId: issue.id },
+        responsibleUserId: "queue-test-user", createdAt, updatedAt: createdAt }).returning();
+      await db.update(issues).set({ executionRunId: run.id, executionAgentNameKey: agent.name, executionLockedAt: new Date() })
+        .where(eq(issues.id, issue.id));
+      return run;
+    };
+    const routine = await queuedRun("Weekly routine", "todo", routineAgeMinutes);
+    const rewake = await queuedRun("Failing in-progress task", "in_progress", 1);
+    const deps = callbacks(db);
+    deps.getAgent.mockResolvedValue(agent);
+    const claimed = await createHeartbeatQueue(db, deps).startNextQueuedRunForAgent(agent.id);
+    const status = async (id: string) => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)))[0].status;
+    return { routine, rewake, claimed, deps, status };
+  }
+
+  it("starts an aged todo assignment run before a newer in_progress re-wake on a one-slot agent", async () => {
+    const { routine, rewake, claimed, deps, status } =
+      await oneSlotStarvationFixture(QUEUED_RUN_STARVATION_AGE_MS / 60_000 + 5);
+    expect(claimed).toEqual([expect.objectContaining({ id: routine.id, status: "running" })]);
+    expect(await status(routine.id)).toBe("running");
+    expect(await status(rewake.id)).toBe("queued");
+    expect(deps.executeRun).toHaveBeenCalledExactlyOnceWith(routine.id);
+  });
+
+  it("keeps the in_progress re-wake first while the todo assignment run is younger than the aging threshold", async () => {
+    const { routine, rewake, claimed, deps, status } = await oneSlotStarvationFixture(5);
+    expect(claimed).toEqual([expect.objectContaining({ id: rewake.id, status: "running" })]);
+    expect(await status(rewake.id)).toBe("running");
+    expect(await status(routine.id)).toBe("queued");
+    expect(deps.executeRun).toHaveBeenCalledExactlyOnceWith(rewake.id);
+  });
+
   it("admits the same queued input after the external connection is repaired", async () => {
     const { run, agent } = await fixture("queued");
     await db.update(heartbeatRuns).set({ responsibleUserId: "queue-test-user" }).where(eq(heartbeatRuns.id, run.id));
