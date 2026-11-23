@@ -615,6 +615,9 @@ export const queryKeys = {
   planningCanvases: {
     list: (companyId: string) => ["planning-canvases", companyId] as const,
     detail: (companyId: string, boardId: string) => ["planning-canvases", companyId, boardId] as const,
+    comments: (companyId: string, boardId: string) => ["planning-canvases", companyId, boardId, "comments"] as const,
+    thread: (companyId: string, boardId: string, itemKey: string | null) =>
+      ["planning-canvases", companyId, boardId, "comments", "thread", itemKey] as const,
   },
   inboxAgentPolicy: {
     mine: (companyId: string) =>

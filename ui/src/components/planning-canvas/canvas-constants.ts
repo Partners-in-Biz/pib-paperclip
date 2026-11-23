@@ -1,6 +1,6 @@
 import type { CanvasConnector, CanvasNode, CanvasStroke } from "@paperclipai/shared";
 
-export type ToolMode = "select" | "hand" | "sticky" | "frame" | "shape" | "text" | "connect" | "pen";
+export type ToolMode = "select" | "hand" | "sticky" | "frame" | "shape" | "text" | "connect" | "pen" | "comment";
 
 export const MIN_ZOOM = 0.25;
 export const MAX_ZOOM = 2.0;
