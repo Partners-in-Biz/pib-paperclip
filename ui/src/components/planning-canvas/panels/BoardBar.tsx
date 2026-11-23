@@ -1,4 +1,5 @@
 import { Check, CloudOff, FileDown, Grid2x2, LayoutTemplate, Loader2, NotebookPen, Plus, Redo2, Search, Trash2, TriangleAlert, Undo2 } from "lucide-react";
+import { PresenceAvatars } from "@/components/planning-canvas/realtime/PresenceAvatars";
 import { type CanvasController } from "@/components/planning-canvas/state/useCanvasController";
 import { Button } from "@/components/ui/button";
 import { CANVAS_BOARD_TEMPLATES } from "@/lib/planning-canvas-helpers";
@@ -252,6 +253,7 @@ export function BoardBar({ c }: { c: CanvasController }) {
         </Button>
 
         <SaveStatus state={opStore.saveState} titlePending={dirty || saveTitleMutation.isPending} />
+        <PresenceAvatars c={c} />
       </div>
     </div>
   );

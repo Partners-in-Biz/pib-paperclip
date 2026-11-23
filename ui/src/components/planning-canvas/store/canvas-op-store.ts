@@ -149,6 +149,8 @@ export class CanvasOpStore {
   private dirty = new Set<string>();
   private firstDirtyAt: number | null = null;
   private revision = 0;
+  /** The highest revision the board socket announced (C15). */
+  private remoteRevision = 0;
   private inflight: Inflight | null = null;
   private catchingUp = false;
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -590,6 +592,8 @@ export class CanvasOpStore {
     if (this.unknownKeys) await this.catchUp(0);
     else if (!response.replayed && response.revision === before + 1) this.revision = response.revision;
     else if (response.revision > before) await this.catchUp(before);
+    // Someone else's ops were announced while our batch was out.
+    if (this.remoteRevision > this.revision) await this.catchUp();
     if (this.closing && !this.hasUnsaved()) return this.dispose();
     this.setSaveState(this.dirty.size > 0 ? "saving" : "saved");
     this.scheduleFlush();
@@ -798,10 +802,27 @@ export class CanvasOpStore {
 
   // ---- remote changes -------------------------------------------------------
 
+  /**
+   * The board socket says `revision` exists (C15). The next revision in order,
+   * with its items, merges at once; a gap, a truncated message (no items), a
+   * `resync`, or a batch or read in flight reads `?since` instead.
+   */
+  applyRemote(revision: number, items?: PlanningCanvasItem[]) {
+    if (this.disposed || revision <= this.revision) return;
+    this.remoteRevision = Math.max(this.remoteRevision, revision);
+    if (items && revision === this.revision + 1 && !this.inflight && !this.catchingUp) {
+      this.mergeRemote(items);
+      this.revision = revision;
+      return;
+    }
+    void this.catchUp();
+  }
+
   /** Pull what others wrote since `since` and merge it under our unsent edits. */
   async catchUp(since = this.revision) {
     if (this.catchingUp || this.disposed || this.inflight) return;
     this.catchingUp = true;
+    let again = false;
     try {
       const read = await this.opts.transport.readSince(since);
       if (this.disposed) return;
@@ -811,12 +832,15 @@ export class CanvasOpStore {
       }
       this.mergeRemote(read.items);
       this.revision = Math.max(this.revision, read.revision);
+      // The socket announced more while this read was out; read again (only while it makes progress).
+      again = this.remoteRevision > this.revision && read.revision > since;
     } catch {
       // The next batch or focus tries again.
     } finally {
       this.catchingUp = false;
       this.scheduleFlush();
     }
+    if (again) await this.catchUp();
   }
 
   mergeRemote(items: PlanningCanvasItem[]) {

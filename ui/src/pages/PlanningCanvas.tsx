@@ -4,6 +4,7 @@ import { ConnectorsLayer, MarqueeOverlay } from "@/components/planning-canvas/ca
 import { CanvasRefsContext, useCanvasRefs } from "@/components/planning-canvas/nodes/canvas-refs";
 import { CanvasRefContext } from "@/components/planning-canvas/nodes/canvas-context";
 import { NodesLayer } from "@/components/planning-canvas/nodes/NodeView";
+import { RealtimeOverlay } from "@/components/planning-canvas/realtime/RealtimeOverlay";
 import { PanelSlot } from "@/components/planning-canvas/panels/panel-slots";
 import { useCanvasController } from "@/components/planning-canvas/state/useCanvasController";
 import { cn } from "@/lib/utils";
@@ -90,6 +91,7 @@ export function PlanningCanvas() {
               />
               <MarqueeOverlay c={c} />
               <NodesLayer c={c} />
+              <RealtimeOverlay c={c} />
             </div>
           </div>
 

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type Dispatch, type SetStateAction } from "react";
 import { useQuery } from "@tanstack/react-query";
-import type { CanvasConnector, CanvasNode, CanvasStroke, PlanningCanvasItemType } from "@paperclipai/shared";
+import type { CanvasConnector, CanvasNode, CanvasStroke, PlanningCanvasItem, PlanningCanvasItemType } from "@paperclipai/shared";
 import { planningCanvasesApi, type PlanningCanvasBoardWithItems } from "@/api/planningCanvases";
 import { queryKeys } from "@/lib/queryKeys";
 import { useDraftOwner } from "@/hooks/useDraftOwner";
@@ -262,6 +262,8 @@ export function useCanvasOpStore(input: CanvasOpStoreInput) {
     addItem,
     /** Pull in what the server changed since the last read (a handoff links nodes server-side). */
     catchUp: useCallback(() => store?.catchUp(), [store]),
+    /** The board socket announced `revision` (with its items unless truncated or a resync). */
+    applyRemote: useCallback((revision: number, items?: PlanningCanvasItem[]) => store?.applyRemote(revision, items), [store]),
     /** Send pending edits now (a handoff names nodes by key, so the server must know them). */
     flush: useCallback(() => store?.flush(), [store]),
     saveState: snapshot.saveState,
