@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { planningCanvasOpBatchSchema } from "@paperclipai/shared";
 import { describe, expect, it } from "vitest";
 import { buildOpenApiDocument } from "../openapi.js";
 import { buildRunnerApiCatalog } from "../../services/native-runtime/runner-api-catalog.js";
@@ -38,5 +40,13 @@ describe("planning canvas OpenAPI registration", () => {
       const [method, path] = route.split(" ") as [string, string];
       expect(catalog.some((op) => op.method.toLowerCase() === method && op.path === path), route).toBe(true);
     }
+  });
+
+  it("keeps the paperclip-canvas format.md example batch valid against the op schema", () => {
+    const md = readFileSync(new URL("../../../../skills/paperclip-canvas/references/format.md", import.meta.url), "utf8");
+    const block = /```json\n([\s\S]*?)\n```/.exec(md)?.[1];
+    expect(block).toBeTruthy();
+    const parsed = planningCanvasOpBatchSchema.safeParse(JSON.parse(block!));
+    expect(parsed.success, JSON.stringify(parsed.error?.issues)).toBe(true);
   });
 });

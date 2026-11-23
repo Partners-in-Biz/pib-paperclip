@@ -18,13 +18,13 @@ List: `GET .../planning-canvases?scope=personal|project|company&projectId=<uuid>
 
 Every item has a `key` (1-100 characters), a `version` (rises on each change) and a `type`:
 
-- node: `{ itemType: "node", key, kind, x, y, width, height, data, ref?, links? }`
+- node: `{ itemType: "node", key, kind, x, y, width, height, zIndex, color, title, content, data?, ref?, links? }`. `zIndex` (int), `color` (yellow|amber|blue|emerald|rose|violet|slate), `title` (max 300) and `content` (max 20,000; use "" when unused) are required on every node. Give a new result node a higher `zIndex` than the source so it is not hidden.
 - connector: `{ itemType: "connector", key, fromKey, toKey }`
 - stroke: freehand drawing, usually not edited by agents.
 
 Node kinds and `data`:
 
-- `sticky`, `note`, `text`, `frame`, `shape`: text fields as in the JSON you read.
+- `sticky`, `note`, `text`, `frame`, `shape`: the text lives in `title` and `content` (they take no `data`). `shape` kinds may set `shape`.
 - `issue`, `agent`, `project`, `goal`: `ref: { id }`. `links` is `[{ type: "issue", issueId }]` (max 50).
 - `table`: `{ columns: [{ id, name, type: text|number|status|person|date }], rows: [{ id, cells: { <colId>: value } }] }` (max 50 columns, 500 rows).
 - `kanban`: `{ source: IssueQuery, groupBy: status|assignee|priority, collapsed: [] }`.
@@ -43,17 +43,22 @@ Limits: 64 KB per item, 500 ops per batch.
   "clientBatchId": "run-123-step-1",
   "atomic": false,
   "ops": [
-    { "op": "add", "item": { "itemType": "node", "key": "plan-result", "kind": "markdown", "x": 600, "y": 100, "width": 360, "height": 240, "data": { "markdown": "## Result\n- point" } } },
+    { "op": "add", "item": { "itemType": "node", "key": "plan-result", "kind": "markdown", "x": 600, "y": 100, "width": 360, "height": 240, "zIndex": 10, "color": "blue", "title": "Result", "content": "", "data": { "markdown": "## Result\n- point" } } },
     { "op": "add", "item": { "itemType": "connector", "key": "c-source-result", "fromKey": "source-node", "toKey": "plan-result" } },
-    { "op": "update", "key": "source-node", "baseVersion": 4, "set": { "data": { "text": "new text" } } },
-    { "op": "table.setCell", "key": "budget-table", "baseVersion": 2, "rowId": "r1", "colId": "c1", "value": "Done" },
+    { "op": "update", "key": "source-node", "baseVersion": 4, "set": { "content": "new text" } },
+    { "op": "table.setCell", "key": "budget-table", "rowId": "r1", "colId": "c1", "value": "Done" },
+    { "op": "table.addRow", "key": "budget-table", "row": { "id": "r2", "cells": { "c1": "Todo" } }, "index": 1 },
+    { "op": "table.addColumn", "key": "budget-table", "column": { "id": "c2", "name": "Owner", "type": "person" } },
+    { "op": "table.moveRow", "key": "budget-table", "rowId": "r2", "toIndex": 0 },
+    { "op": "table.removeRow", "key": "budget-table", "rowId": "r2" },
+    { "op": "table.removeColumn", "key": "budget-table", "colId": "c2" },
     { "op": "delete", "key": "old-note", "baseVersion": 1 },
     { "op": "restore", "key": "old-note" }
   ]
 }
 ```
 
-Table ops: `table.setCell`, `table.addRow`, `table.removeRow`, `table.addColumn`, `table.removeColumn`, `table.moveRow`. Check the exact fields in the OpenAPI document (`search_api` for `planning-canvases`).
+Only `update` and `delete` take `baseVersion`. Table ops take `key` plus their own fields and no `baseVersion`: `setCell` (`rowId`, `colId`, `value`), `addRow` (`row`, optional `index`), `removeRow` (`rowId`), `addColumn` (`column`, optional `index`), `removeColumn` (`colId`), `moveRow` (`rowId`, `toIndex`). A table `update` with `set.data` replaces the whole table: avoid it.
 
 Deleting a node also removes the connectors attached to it; `restore` brings them back if the other end still exists.
 
