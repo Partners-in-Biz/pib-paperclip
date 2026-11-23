@@ -173,6 +173,58 @@ export async function createTaskIssue(env: Env, mc: MaterialiseContext, task: db
   }
 }
 
+/** A paused or archived sprint is frozen: no new task issue is opened for it. */
+export function isFrozenSprint(sprint: Pick<db.Sprint, "status">): boolean {
+  return sprint.status === "paused" || sprint.status === "archived";
+}
+
+/**
+ * Pausing a sprint parks its untouched agent task issues (status todo) in backlog, so the host stops waking the agent on them.
+ * Each parked task remembers it in its evidence; resuming puts them back to todo and wakes the agent. Issues already in progress,
+ * in review or blocked are left alone. Returns how many were parked.
+ */
+export async function parkSprintTasks(env: Env, sprint: db.Sprint): Promise<number> {
+  const tasks = await db.listTasks(env.ctx.db, sprint.companyId, sprint.id, { status: ["not_started", "in_progress"] });
+  let parked = 0;
+  for (const task of tasks) {
+    if (!task.issueId || task.assigneeKind !== "agent" || task.issueStatus !== "todo") continue;
+    try {
+      const issue = await getIssue(env, sprint.companyId, task.issueId);
+      if (!issue || String(issue.status) !== "todo") continue;
+      if (!(await patchIssue(env, sprint.companyId, task.issueId, { status: "backlog" }))) continue;
+      await db.updateTask(env.ctx.db, sprint.companyId, task.id, { issue_status: "backlog", evidence: { ...(task.evidence ?? {}), parkedByPause: true } });
+      parked += 1;
+    } catch (error) {
+      env.ctx.logger.info("SEO task not parked on pause", { taskId: task.id, error: errorMessage(error) });
+    }
+  }
+  return parked;
+}
+
+/** Undo parkSprintTasks on resume: tasks it parked go back to todo and the agent is woken on each. */
+export async function unparkSprintTasks(env: Env, sprint: db.Sprint): Promise<number> {
+  const tasks = await db.listTasks(env.ctx.db, sprint.companyId, sprint.id, { status: ["not_started", "in_progress"] });
+  let back = 0;
+  for (const task of tasks) {
+    if (!task.issueId || !task.evidence?.parkedByPause) continue;
+    try {
+      const { parkedByPause: _gone, ...rest } = task.evidence as Record<string, unknown>;
+      const issue = await getIssue(env, sprint.companyId, task.issueId);
+      if (issue && String(issue.status) === "backlog") {
+        if (!(await patchIssue(env, sprint.companyId, task.issueId, { status: "todo" }))) continue;
+        await db.updateTask(env.ctx.db, sprint.companyId, task.id, { issue_status: "todo", evidence: rest });
+        await wakeIssue(env.ctx, task.issueId, sprint.companyId, `SEO sprint resumed: ${task.title}`);
+        back += 1;
+      } else {
+        await db.updateTask(env.ctx.db, sprint.companyId, task.id, { evidence: rest });
+      }
+    } catch (error) {
+      env.ctx.logger.info("SEO task not unparked on resume", { taskId: task.id, error: errorMessage(error) });
+    }
+  }
+  return back;
+}
+
 /** Open sub-issues for due tasks that have none yet (idempotent). */
 export async function materialiseDueTasks(
   env: Env,
@@ -181,6 +233,8 @@ export async function materialiseDueTasks(
 ): Promise<{ created: number; remaining: number; errors: string[] }> {
   // Nothing is due as an issue on a rehearsal sprint, and that is not an error (no root issue is expected either).
   if (isRehearsalSprint(mc.sprint)) return { created: 0, remaining: 0, errors: [] };
+  // A paused or archived sprint opens nothing, whoever asks (daily run, run-daily, plan upgrade, proposals, site link): PAR-14132.
+  if (isFrozenSprint(mc.sprint)) return { created: 0, remaining: 0, errors: [] };
   if (!mc.sprint.rootIssueId) return { created: 0, remaining: 0, errors: ["Sprint has no root issue yet"] };
   const tasks = await db.listTasks(env.ctx.db, mc.sprint.companyId, mc.sprint.id, { status: ["not_started"] });
   // An AI-search task is never opened for a sprint with AI search off (the switch retires them; this holds even if one is left over).
@@ -811,6 +865,7 @@ export function taskProjectId(sprint: db.Sprint, code: boolean, fallback: string
 export async function relocateCodeTasks(env: Env, mc: MaterialiseContext): Promise<{ moved: number; opened: number }> {
   const { sprint } = mc;
   if (sprint.siteAccess === "unlinked" && !sprint.clientProjectId) return { moved: 0, opened: 0 };
+  if (isFrozenSprint(sprint)) return { moved: 0, opened: 0 };
   let moved = 0;
   const tasks = await db.listTasks(env.ctx.db, sprint.companyId, sprint.id, { status: ["not_started", "in_progress", "blocked"] });
   for (const task of tasks) {
