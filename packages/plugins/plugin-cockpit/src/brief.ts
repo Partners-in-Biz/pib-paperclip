@@ -768,7 +768,7 @@ export async function runTool(env: Env, name: string, raw: unknown, run: ToolRun
         const degradedText = brief.degraded.length > 0 ? ` Waiting list incomplete: ${brief.degraded.join(", ")} unavailable (timed out).` : "";
         summary = `${brief.waiting.length} ${brief.waiting.length === 1 ? "item waits" : "items wait"} on the owner.${degradedText}`;
       }
-      if (brief.others.count > 0) summary += ` ${brief.others.count} wait on others.`;
+      if (brief.others.count > 0) summary += ` ${brief.others.count} wait on others${brief.others.escalated > 0 ? `, ${brief.others.escalated} escalated to PiB` : ""}.`;
       return toolOk(summary, { items: brief.waiting, count: brief.waiting.length, others: brief.others, degraded: brief.degraded });
     }
     if (name === TOOL_NAMES.scorecards) {
