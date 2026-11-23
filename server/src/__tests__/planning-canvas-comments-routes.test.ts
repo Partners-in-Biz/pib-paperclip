@@ -4,6 +4,7 @@ import request from "supertest";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq, like } from "drizzle-orm";
 import {
+  activityLog,
   agents,
   authUsers,
   companies,
@@ -16,6 +17,7 @@ import {
   planningCanvasComments,
   planningCanvases,
   planningCanvasItems,
+  principalPermissionGrants,
   projectAccessMembers,
   projects,
 } from "@paperclipai/db";
@@ -26,6 +28,7 @@ import { errorHandler } from "../middleware/error-handler.js";
 import { planningCanvasCommentRoutes } from "../routes/planning-canvas-comments.js";
 import { planningCanvasRoutes } from "../routes/planning-canvases.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
+import { MEMBER_RESTRICTION_DENIED_ACTION } from "../services/member-restriction/admin.js";
 import { memberRestrictionRouteGuard } from "../services/member-restriction/route-middleware.js";
 import { PLANNING_CANVAS_AGENT_GRANTS_ENV } from "../services/planning-canvas-access.js";
 import { PLANNING_CANVAS_SINGLE_BUCKET_PER_HOUR } from "../services/planning-canvas-comments.js";
@@ -82,6 +85,10 @@ describe("planning canvas comments database support", () => {
   const OWNER = `owner-${randomUUID()}`;
   const MEMBER = `member-${randomUUID()}`;
   const VIEWER = `viewer-${randomUUID()}`;
+  /** Restricted member; his agent list is [A(0)]. */
+  const RESTRICTED = `restricted-${randomUUID()}`;
+  /** Operator without a `tasks:assign` grant. */
+  const NOGRANT = `nogrant-${randomUUID()}`;
   let Y = "";
   let projectP = "";
   let projectQ = "";
@@ -164,18 +171,27 @@ describe("planning canvas comments database support", () => {
     const [y] = await db.insert(companies).values({ name: "Y", issuePrefix: `C${randomUUID().slice(0, 6).toUpperCase()}`, memberRestrictionMode: "enforce" }).returning();
     Y = y!.id;
     const now = new Date();
-    await db.insert(authUsers).values([OWNER, MEMBER, VIEWER].map((id) => ({
+    await db.insert(authUsers).values([OWNER, MEMBER, VIEWER, RESTRICTED, NOGRANT].map((id) => ({
       id, name: id, email: `${id}@example.test`, emailVerified: true, createdAt: now, updatedAt: now,
     })));
     await db.insert(companyMemberships).values([
       { companyId: Y, principalType: "user", principalId: OWNER, status: "active", membershipRole: "operator" },
       { companyId: Y, principalType: "user", principalId: MEMBER, status: "active", membershipRole: "operator" },
       { companyId: Y, principalType: "user", principalId: VIEWER, status: "active", membershipRole: "viewer" },
+      { companyId: Y, principalType: "user", principalId: NOGRANT, status: "active", membershipRole: "operator" },
     ]);
     const rows = await db.insert(agents).values(
       Array.from({ length: 7 }, (_, i) => ({ companyId: Y, name: `Agent ${i}`, role: "engineer", adapterType: "process", status: "idle" })),
     ).returning();
     agentIds.push(...rows.map((row) => row.id));
+    await db.insert(companyMemberships).values({
+      companyId: Y, principalType: "user", principalId: RESTRICTED, status: "active", membershipRole: "operator",
+      restricted: true, restrictedAgentIds: [A(0)],
+    });
+    // Operators assign work through the `tasks:assign` grant (owners and admins have it by role).
+    await db.insert(principalPermissionGrants).values([OWNER, MEMBER, RESTRICTED].map((principalId) => ({
+      companyId: Y, principalType: "user" as const, principalId, permissionKey: "tasks:assign",
+    })));
     const [p, q] = await db.insert(projects).values([
       { companyId: Y, name: "Open project", privacyOwnerUserId: OWNER },
       { companyId: Y, name: "Private project", privacyOwnerUserId: OWNER, visibility: "private" },
@@ -382,6 +398,44 @@ describe("planning canvas comments database support", () => {
       const edited = await request(app).patch(url(board.id, `/${created.body.id}`)).set(session(MEMBER)).send({ body: `${mention(A(0))} ${mention(A(1))}` });
       expect(edited.body.mentionState).toEqual({ [A(0)]: "sent", [A(1)]: "sent" });
       expect(await canvasIssues(board.id)).toHaveLength(2);
+    });
+  });
+
+  describe("Q11 assignment checks with the real guards (no mock switch)", () => {
+    it("a restricted member: an agent off his list is not_sent:agent_not_listed, nothing created or woken; a listed agent is sent", async () => {
+      const board = await makeBoard({ userId: RESTRICTED });
+      const off = await post(session(RESTRICTED), board.id, { itemKey: "n1", body: `Hi ${mention(A(1))}` });
+      expect(off.status, off.text).toBe(201);
+      expect(off.body.body).toBe(`Hi ${mention(A(1))}`);
+      expect(off.body.mentionState).toEqual({ [A(1)]: "not_sent:agent_not_listed" });
+      expect(await canvasIssues(board.id)).toEqual([]);
+      expect(wakes).toEqual([]);
+      const denials = await db.select().from(activityLog)
+        .where(and(eq(activityLog.companyId, Y), eq(activityLog.action, MEMBER_RESTRICTION_DENIED_ACTION)));
+      expect(denials.some((row) => JSON.stringify(row.details).includes(RESTRICTED))).toBe(true);
+
+      const listed = await post(session(RESTRICTED), board.id, { itemKey: "n2", body: mention(A(0)) });
+      expect(listed.body.mentionState).toEqual({ [A(0)]: "sent" });
+      expect(await canvasIssues(board.id)).toEqual([expect.objectContaining({ assigneeAgentId: A(0), createdByUserId: RESTRICTED })]);
+      expect(wakes).toEqual([expect.objectContaining({ agentId: A(0), reason: "issue_assigned" })]);
+    });
+
+    it("tasks:assign: a protected agent needs the grant; without it the comment is saved, not_sent, nothing created or woken", async () => {
+      // In simple mode every non-viewer member may assign; a protected agent needs an explicit `tasks:assign` grant.
+      const [guarded] = await db.insert(agents).values({
+        companyId: Y, name: "Protected", role: "engineer", adapterType: "process", status: "idle",
+        permissions: { authorizationPolicy: { assignmentPolicy: { mode: "protected" } } },
+      }).returning();
+      const board = await makeBoard({ scope: "company", memberAccess: "comment" });
+      const refused = await post(session(NOGRANT), board.id, { itemKey: "n1", body: `Hi ${mention(guarded!.id)}` });
+      expect(refused.status, refused.text).toBe(201);
+      expect(refused.body.mentionState[guarded!.id]).toMatch(/^not_sent:deny_/);
+      expect(await canvasIssues(board.id)).toEqual([]);
+      expect(wakes).toEqual([]);
+
+      const granted = await post(session(MEMBER), board.id, { itemKey: "n1", body: mention(guarded!.id) });
+      expect(granted.body.mentionState).toEqual({ [guarded!.id]: "sent" });
+      expect(await canvasIssues(board.id)).toHaveLength(1);
     });
   });
 

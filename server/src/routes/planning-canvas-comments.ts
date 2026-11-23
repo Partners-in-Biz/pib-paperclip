@@ -11,6 +11,7 @@ import {
   type PlanningCanvasCommentsDeps,
 } from "../services/planning-canvas-comments.js";
 import { assertCompanyAccess } from "./authz.js";
+import { assertCanAssignTasks } from "./task-assignment-guard.js";
 import { planningCanvasCommentListQuerySchema, updatePlanningCanvasCommentSchema } from "./openapi-planning-canvas/comments.js";
 import { logPlanningCanvasActivity, planningCanvasForRequest, planningCanvasNotFound } from "./planning-canvases.js";
 
@@ -51,10 +52,17 @@ export function planningCanvasCommentRoutes(db: Db, deps: PlanningCanvasComments
       board,
       actor: req.actor,
       author: commentAuthor(req),
-      // Q11: the same guards as `POST /companies/:companyId/issues`, on the body the canvas would create.
+      // Q11: the same guards as `POST /companies/:companyId/issues`, on the body the canvas would create,
+      // once per mentioned agent: company access, the restricted-member body check, then the assignment
+      // checks that body check leaves to the handler (`tasks:assign` with the strict project read, and
+      // the agent on a restricted member's list). Each refusal records its own denial row.
       guard: async (body) => {
         assertCompanyAccess(req, board.companyId);
         await restrictedTaskBody(db, req, board.companyId, "createIssue", body, null);
+        await assertCanAssignTasks(db, req, board.companyId, {
+          projectId: typeof body.projectId === "string" ? body.projectId : null,
+          assigneeAgentId: typeof body.assigneeAgentId === "string" ? body.assigneeAgentId : null,
+        });
       },
     };
   }

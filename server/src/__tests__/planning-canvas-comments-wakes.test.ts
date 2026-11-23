@@ -13,6 +13,7 @@ import {
   heartbeatRuns,
   issues,
   planningCanvases,
+  principalPermissionGrants,
 } from "@paperclipai/db";
 import { runningProcesses } from "../adapters/index.ts";
 import { actorMiddleware } from "../middleware/auth.js";
@@ -101,6 +102,9 @@ describe("planning canvas wake database support", () => {
     await db.insert(authUsers).values([OWNER, MEMBER, OTHER, DEFAULT].map((id) => ({ id, name: id, email: `${id}@example.test`, createdAt: now, updatedAt: now })));
     await db.insert(companyMemberships).values([OWNER, MEMBER, OTHER, DEFAULT].map((principalId) => ({
       companyId, principalType: "user" as const, principalId, status: "active", membershipRole: principalId === DEFAULT ? "owner" : "operator" })));
+    // Operators assign work through the `tasks:assign` grant, as on `POST /issues`.
+    await db.insert(principalPermissionGrants).values([MEMBER, OTHER].map((principalId) => ({
+      companyId, principalType: "user" as const, principalId, permissionKey: "tasks:assign" })));
     agentId = randomUUID();
     await db.insert(agents).values({ id: agentId, companyId, name: "Planner", role: "engineer", status: "active", adapterType: "codex_local",
       adapterConfig: {}, runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } }, permissions: {} });
