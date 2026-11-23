@@ -1,6 +1,6 @@
 // PAR-13933: moved verbatim from pages/PlanningCanvas.tsx; no behaviour change.
 import { useCallback, useMemo } from "react";
-import { type CanvasNode, type CanvasNodeColor, type PersonalNote } from "@paperclipai/shared";
+import { type CanvasNode, type CanvasNodeColor, type PersonalNote, type PlanningCanvasRefNodeKind } from "@paperclipai/shared";
 import { personalNotesApi } from "@/api/personalNotes";
 import { clampZoom } from "@/components/planning-canvas/canvas-constants";
 import { type CanvasAlignMode, alignSelectedNodes, buildFrameAgentBrief, buildSelectionAgentBrief, createCanvasId, snapToGrid } from "@/lib/planning-canvas-helpers";
@@ -31,6 +31,7 @@ export function useCanvasActions(ctx: CanvasData & CanvasState & CanvasBoard) {
     notesSearch,
     canvasRef,
     commitCanvasChange,
+    opStore,
   } = ctx;
 
   const screenToWorld = useCallback(
@@ -159,6 +160,31 @@ export function useCanvasActions(ctx: CanvasData & CanvasState & CanvasBoard) {
       setSelectedNodeIds(newIds);
     }
   }, [commitCanvasChange, connectors, nextZIndex, nodes, selectedNodeIds]);
+
+  /** Place a live issue, agent, project or goal card at the centre of the view (C10). */
+  const insertLinkNode = useCallback(
+    (kind: PlanningCanvasRefNodeKind, refId: string) => {
+      const center = getViewportCenterWorld();
+      const width = 260;
+      const height = 140;
+      const key = createCanvasId(kind);
+      opStore.addItem(key, {
+        kind,
+        ref: { id: refId },
+        x: snapToGrid(center.x - width / 2),
+        y: snapToGrid(center.y - height / 2),
+        width,
+        height,
+        zIndex: nextZIndex,
+        color: "slate",
+        title: "",
+        content: "",
+      });
+      setSelectedNodeIds([key]);
+      setTool("select");
+    },
+    [getViewportCenterWorld, nextZIndex, opStore.addItem, setSelectedNodeIds, setTool],
+  );
 
   const fitToScreen = useCallback(() => {
     const rect = canvasRef.current?.getBoundingClientRect();
@@ -312,6 +338,7 @@ export function useCanvasActions(ctx: CanvasData & CanvasState & CanvasBoard) {
     dropPersonalNoteOnCanvas,
     deleteSelection,
     duplicateSelection,
+    insertLinkNode,
     fitToScreen,
     handleGiveNodeToAgent,
     handleAlignSelection,

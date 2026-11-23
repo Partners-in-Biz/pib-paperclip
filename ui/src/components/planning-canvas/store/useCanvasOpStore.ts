@@ -4,7 +4,8 @@ import type { CanvasConnector, CanvasNode, CanvasStroke, PlanningCanvasItemType 
 import { planningCanvasesApi, type PlanningCanvasBoardWithItems } from "@/api/planningCanvases";
 import { queryKeys } from "@/lib/queryKeys";
 import { useDraftOwner } from "@/hooks/useDraftOwner";
-import { CanvasOpStore, type OpStoreSnapshot, type StoreItem } from "@/components/planning-canvas/store/canvas-op-store";
+import { CanvasOpStore, type ItemFields, type OpStoreSnapshot, type StoreItem } from "@/components/planning-canvas/store/canvas-op-store";
+import { linkMetaOf, patchLinkMeta, type NodeLinkMeta } from "@/components/planning-canvas/nodes/link-meta";
 import { diffElements, elementToItem, itemToElement, patchElements, type CanvasElement } from "@/components/planning-canvas/store/legacy-bridge";
 
 type Setter<T> = Dispatch<SetStateAction<T>>;
@@ -52,6 +53,8 @@ export function useCanvasOpStore(input: CanvasOpStoreInput) {
   const identifiers = useRef(new Map<string, string>());
   const closeGroupAfterSync = useRef(false);
   const [loadedStore, setLoadedStore] = useState<CanvasOpStore | null>(null);
+  /** Ref and link ids per node: what the page's legacy node shape cannot carry (C10). */
+  const [linkMeta, setLinkMeta] = useState<ReadonlyMap<string, NodeLinkMeta>>(() => new Map());
   /** The signed-in user (undefined until the session is known): undo stacks are per user and board. */
   const owner = useRef<string | undefined>(undefined);
   owner.current = useDraftOwner();
@@ -131,6 +134,12 @@ export function useCanvasOpStore(input: CanvasOpStoreInput) {
     synced.current = { nodes: latest.current.nodes, connectors: latest.current.connectors, strokes: latest.current.strokes };
     publish({ nodes: data.data.nodes, connectors: data.data.connectors, strokes: data.data.strokes ?? [] });
     latest.current.onHydrate(data);
+    const hydrated = new Map<string, NodeLinkMeta>();
+    for (const [key, item] of store.getItems()) {
+      const meta = linkMetaOf(item);
+      if (meta) hydrated.set(key, meta);
+    }
+    setLinkMeta(hydrated);
     setLoadedStore(store);
   }, [store, read.data, read.dataUpdatedAt, boardId, publish]);
 
@@ -161,6 +170,7 @@ export function useCanvasOpStore(input: CanvasOpStoreInput) {
         else updates.stroke.set(key, element as CanvasStroke | null);
       }
       patch(updates);
+      setLinkMeta((prev) => patchLinkMeta(prev, keys, (key) => store.getItem(key)));
     });
   }, [store, loaded, patch]);
 
@@ -228,8 +238,32 @@ export function useCanvasOpStore(input: CanvasOpStoreInput) {
     );
   }, [store]);
 
+  /** Add a linked-entity node (issue, agent, project or goal) as one undo step. */
+  const addItem = useCallback(
+    (key: string, fields: ItemFields) => {
+      if (!store) return;
+      store.checkpoint();
+      store.applyLocal([{ key, item: { itemType: "node", fields } }]);
+      const added = store.getItem(key);
+      if (added) {
+        const element = itemToElement(key, added, identifiers.current) as CanvasNode;
+        latest.current.setNodes((prev) => patchElements(prev, new Map([[key, element]])));
+        synced.current = { ...synced.current, nodes: patchElements(synced.current.nodes, new Map([[key, element]])) };
+      }
+      setLinkMeta((prev) => patchLinkMeta(prev, [key], (k) => store.getItem(k)));
+      store.checkpoint();
+    },
+    [store],
+  );
+
   return {
     loaded,
+    linkMeta,
+    addItem,
+    /** Pull in what the server changed since the last read (a handoff links nodes server-side). */
+    catchUp: useCallback(() => store?.catchUp(), [store]),
+    /** Send pending edits now (a handoff names nodes by key, so the server must know them). */
+    flush: useCallback(() => store?.flush(), [store]),
     saveState: snapshot.saveState,
     canUndo: snapshot.canUndo,
     canRedo: snapshot.canRedo,

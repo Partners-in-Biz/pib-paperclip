@@ -616,6 +616,12 @@ export const queryKeys = {
     list: (companyId: string) => ["planning-canvases", companyId] as const,
     detail: (companyId: string, boardId: string) => ["planning-canvases", companyId, boardId] as const,
   },
+  /** Live link summaries of a board; its own root so a status event never refetches the board itself. */
+  planningCanvasRefs: {
+    all: (companyId: string) => ["planning-canvas-refs", companyId] as const,
+    board: (companyId: string, boardId: string, idsKey: string) =>
+      ["planning-canvas-refs", companyId, boardId, idsKey] as const,
+  },
   inboxAgentPolicy: {
     mine: (companyId: string) =>
       ["inbox-agent-policy", companyId, "me"] as const,
