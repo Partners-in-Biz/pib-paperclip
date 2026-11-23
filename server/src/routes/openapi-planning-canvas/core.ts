@@ -3,6 +3,7 @@ import { z as zod } from "zod";
 import {
   PLANNING_CANVAS_SCOPES,
   createPlanningCanvasSchema,
+  planningCanvasImportSchema,
   planningCanvasOpBatchSchema,
   planningCanvasReadQuerySchema,
   updatePlanningCanvasSchema,
@@ -82,6 +83,15 @@ const PLANNING_CANVAS_CORE_OPENAPI_ROUTES: PlanningCanvasOpenApiRoute[] = [
     description:
       "Ops: add, update, delete, restore and the table cell ops (table.setCell, addRow, removeRow, addColumn, removeColumn, moveRow). Up to 500 ops per batch; `atomic` applies all or none; `clientBatchId` makes a retry idempotent. Send `baseVersion` (the item `version` you read) on update and delete. Each op answers `applied {key, version, revision}`, `conflict {key, current, conflictingFields}` or `rejected {key, reason}`. On `conflict`, re-read the item and re-send against `current.version`. Use cell ops for tables, never a whole-table update.",
     body: planningCanvasOpBatchSchema,
+  },
+  {
+    method: "post",
+    path: `${BOARD}/import`,
+    tags,
+    summary: "Import a markdown outline or Mermaid flowchart onto a planning canvas board",
+    description:
+      "Needs edit access. `format` is `markdown` (headings become frames, bullets become stickies inside) or `mermaid` (flowchart/graph TD|TB|LR|RL|BT; nodes A, A[t], A(t), A{t}, A((t)); edges -->, ---, -.->, ==> with optional |label|; subgraph...end becomes a frame). Anything else answers 422 with the `line` number. Items are auto-laid out from `at` and applied as one atomic ops batch; `clientBatchId` makes a retry idempotent.",
+    body: planningCanvasImportSchema,
   },
   { method: "post", path: `${BOARD}/archive`, tags, summary: "Archive a planning canvas board", description: "Needs admin access on the board." },
   { method: "post", path: `${BOARD}/restore`, tags, summary: "Restore an archived planning canvas board", description: "Needs admin access on the board." },

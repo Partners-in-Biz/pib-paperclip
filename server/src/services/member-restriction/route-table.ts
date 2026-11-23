@@ -447,6 +447,7 @@ export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntr
     ["PATCH", "/api/companies/:companyId/planning-canvases/:boardId"],
     ["DELETE", "/api/companies/:companyId/planning-canvases/:boardId"],
     ["POST", "/api/companies/:companyId/planning-canvases/:boardId/ops"],
+    ["POST", "/api/companies/:companyId/planning-canvases/:boardId/import"],
     ["POST", "/api/companies/:companyId/planning-canvases/:boardId/archive"],
     ["POST", "/api/companies/:companyId/planning-canvases/:boardId/restore"],
     ["PATCH", "/api/companies/:companyId/planning-canvases/:boardId/sharing"],

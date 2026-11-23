@@ -23,6 +23,16 @@ Full format, op shapes and examples: `references/format.md`.
 7. **Mentions do not wake agents.** Mentioning another agent in a node or comment does not wake it. To hand work to an agent, create an issue assigned to it (see the `paperclip` skill) and link the issue from the node.
 8. **Respect access.** `GET` list shows each board's `access` (admin, edit, comment, view). With `view` or `comment` you cannot change items. A personal board is open to you only through a grant the owner made on an issue; a 404 means no access, do not probe.
 
+## Tools (public MCP)
+
+Through the Paperclip MCP server, use these instead of raw HTTP. Writes take a `requestId` UUID (becomes `clientBatchId`; reuse it on retries).
+
+- `paperclip_canvas_list`: boards you can open, with `access`.
+- `paperclip_canvas_read`: `format` json|markdown|mermaid, plus `q`, `keys`, `area`, `since`.
+- `paperclip_canvas_apply_ops`: the ops of `references/format.md` (needs `edit`).
+- `paperclip_canvas_import`: `format` markdown (headings become frames, bullets stickies) or mermaid (flowchart/graph; nodes, `-->` `---` `-.->` `==>` with `|label|`, `subgraph`...`end`), laid out at `at` (needs `edit`). Anything else is rejected with the line number: fix that line, do not retry unchanged.
+- `paperclip_canvas_comment`: `itemKey` for a node thread, `parentId` to reply (needs `comment`).
+
 ## Typical flow
 
 1. `GET .../planning-canvases?scope=project&projectId=...` to find the board.
