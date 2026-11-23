@@ -5,6 +5,7 @@ import { ConflictDrafts } from "@/components/planning-canvas/panels/ConflictDraf
 import { HandoffDialog } from "@/components/planning-canvas/panels/handoff/HandoffDialog";
 import { InsertLinkPanel } from "@/components/planning-canvas/panels/InsertLinkPanel";
 import { NotesDrawer } from "@/components/planning-canvas/panels/NotesDrawer";
+import { RevokedNotice } from "@/components/planning-canvas/realtime/RevokedNotice";
 import { ToolRail } from "@/components/planning-canvas/panels/ToolRail";
 import {
   ConnectHint,
@@ -23,7 +24,10 @@ type PanelEntry = { id: string; Component: ComponentType<{ c: CanvasController }
  * panel (Outline, Comments, ...) by adding an entry here, not by editing the page.
  */
 export const PANEL_SLOTS: Record<PanelSlotId, PanelEntry[]> = {
-  top: [{ id: "board-bar", Component: BoardBar }],
+  top: [
+    { id: "board-bar", Component: BoardBar },
+    { id: "access-revoked", Component: RevokedNotice },
+  ],
   left: [{ id: "tool-rail", Component: ToolRail }],
   floating: [
     { id: "pen-toolbar", Component: PenToolbar },
