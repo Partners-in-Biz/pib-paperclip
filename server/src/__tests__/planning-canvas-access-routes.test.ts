@@ -27,6 +27,7 @@ import { errorHandler } from "../middleware/error-handler.js";
 import { planningCanvasRoutes } from "../routes/planning-canvases.js";
 import { planningCanvasSharingRoutes } from "../routes/planning-canvas-sharing.js";
 import { planningCanvasCommentRoutes } from "../routes/planning-canvas-comments.js";
+import { planningCanvasBlueprintRoutes } from "../routes/planning-canvas-blueprints.js";
 import { planningCanvasLinkRoutes } from "../routes/planning-canvas-links.js";
 import { authorizationService } from "../services/authorization.js";
 import { planningCanvasService } from "../services/planning-canvases.js";
@@ -66,6 +67,7 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
  *   /api/companies/:companyId/planning-canvases/:boardId/refs
  *   /api/companies/:companyId/planning-canvases/:boardId/query
  *   /api/companies/:companyId/planning-canvases/:boardId/handoff
+ *   /api/companies/:companyId/planning-canvases/from-blueprint
  */
 
 const resolverFails = vi.hoisted(() => ({ on: false }));
@@ -148,6 +150,8 @@ const DENIAL_ROUTES: DenialRoute[] = [
   { method: "GET", path: `${P}/:boardId/refs`, url: (ctx) => `${board(ctx)}/refs` },
   { method: "POST", path: `${P}/:boardId/query`, url: (ctx) => `${board(ctx)}/query`, body: { kind: "issues", filter: {}, limit: 10 } },
   { method: "POST", path: `${P}/:boardId/handoff`, url: (ctx) => `${board(ctx)}/handoff`, body: { keys: ["n1"], mode: "single", idempotencyKey: "k" } },
+  // C14 (PAR-13941).
+  { method: "POST", path: `${P}/from-blueprint`, url: (ctx) => `${base(ctx)}/from-blueprint`, body: { blueprintId: "retro", idempotencyKey: "k" } },
 ];
 
 (support.supported ? describe : describe.skip)("planning canvas access through the real middleware (plan PAR-13925 D)", () => {
@@ -246,6 +250,7 @@ const DENIAL_ROUTES: DenialRoute[] = [
     api.use(planningCanvasSharingRoutes(db));
     api.use(planningCanvasCommentRoutes(db));
     api.use(planningCanvasLinkRoutes(db));
+    api.use(planningCanvasBlueprintRoutes(db));
     app.use("/api", api);
     app.use(errorHandler);
 

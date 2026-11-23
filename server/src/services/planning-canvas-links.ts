@@ -114,7 +114,7 @@ export interface PlanningCanvasHandoffResult {
   issues: Array<(PlanningCanvasIssueSummary | PlanningCanvasHidden) & { itemKeys: string[] }>;
 }
 
-function issueSummary(row: IssueRow): PlanningCanvasIssueSummary {
+export function planningCanvasIssueSummary(row: IssueRow): PlanningCanvasIssueSummary {
   const iso = (value: Date | null) => (value ? value.toISOString() : null);
   return {
     id: row.id,
@@ -153,6 +153,43 @@ function rateLimited(bucket: "single" | "batch", used: number, requested: number
   });
 }
 
+/** Issues matching `where` that the actor may read: the SQL privacy predicate, then `issue:read` per row. */
+export async function planningCanvasReadableIssues(db: Db, actor: AuthorizationActor, companyId: string, where: SQL | undefined, limit: number) {
+  const authz = authorizationService(db);
+  const rows = await db
+    .select()
+    .from(issues)
+    .where(and(eq(issues.companyId, companyId), isNull(issues.hiddenAt), where, await issueReadSqlCondition(db, actor)))
+    .orderBy(desc(issues.updatedAt), asc(issues.id))
+    .limit(limit);
+  const decisions = await Promise.all(
+    rows.map((issue) =>
+      authz.decide({
+        actor,
+        action: "issue:read",
+        resource: {
+          type: "issue",
+          companyId: issue.companyId,
+          issueId: issue.id,
+          projectId: issue.projectId,
+          parentIssueId: issue.parentId,
+          assigneeAgentId: issue.assigneeAgentId,
+          assigneeUserId: issue.assigneeUserId,
+          status: issue.status,
+        },
+        scope: {
+          issueId: issue.id,
+          projectId: issue.projectId,
+          parentIssueId: issue.parentId,
+          assigneeAgentId: issue.assigneeAgentId,
+          assigneeUserId: issue.assigneeUserId,
+        },
+      }),
+    ),
+  );
+  return rows.filter((_, index) => decisions[index]?.allowed);
+}
+
 export function planningCanvasLinksService(db: Db, deps: PlanningCanvasLinksDeps = {}) {
   const issueSvc = issueService(db);
   const ops = planningCanvasOpsService(db);
@@ -160,41 +197,8 @@ export function planningCanvasLinksService(db: Db, deps: PlanningCanvasLinksDeps
   let heartbeat = deps.heartbeat;
   const wakeups = () => (heartbeat ??= heartbeatService(db));
 
-  /** Issues matching `where` that the actor may read: the SQL privacy predicate, then `issue:read` per row. */
-  async function readableIssues(actor: AuthorizationActor, companyId: string, where: SQL | undefined, limit: number) {
-    const rows = await db
-      .select()
-      .from(issues)
-      .where(and(eq(issues.companyId, companyId), isNull(issues.hiddenAt), where, await issueReadSqlCondition(db, actor)))
-      .orderBy(desc(issues.updatedAt), asc(issues.id))
-      .limit(limit);
-    const decisions = await Promise.all(
-      rows.map((issue) =>
-        authz.decide({
-          actor,
-          action: "issue:read",
-          resource: {
-            type: "issue",
-            companyId: issue.companyId,
-            issueId: issue.id,
-            projectId: issue.projectId,
-            parentIssueId: issue.parentId,
-            assigneeAgentId: issue.assigneeAgentId,
-            assigneeUserId: issue.assigneeUserId,
-            status: issue.status,
-          },
-          scope: {
-            issueId: issue.id,
-            projectId: issue.projectId,
-            parentIssueId: issue.parentId,
-            assigneeAgentId: issue.assigneeAgentId,
-            assigneeUserId: issue.assigneeUserId,
-          },
-        }),
-      ),
-    );
-    return rows.filter((_, index) => decisions[index]?.allowed);
-  }
+  const readableIssues = (actor: AuthorizationActor, companyId: string, where: SQL | undefined, limit: number) =>
+    planningCanvasReadableIssues(db, actor, companyId, where, limit);
 
   async function liveNodes(board: Pick<BoardRow, "id">, keys: string[]) {
     return db
@@ -302,7 +306,7 @@ export function planningCanvasLinksService(db: Db, deps: PlanningCanvasLinksDeps
       replayed: true,
       issues: rows.map((row) => {
         const itemKeys = perNode ? [row.originId!.slice(prefix.length)] : keys;
-        return readable.has(row.id) ? { ...issueSummary(row), itemKeys } : { id: row.id, hidden: true as const, itemKeys };
+        return readable.has(row.id) ? { ...planningCanvasIssueSummary(row), itemKeys } : { id: row.id, hidden: true as const, itemKeys };
       }),
     };
   }
@@ -382,7 +386,7 @@ export function planningCanvasLinksService(db: Db, deps: PlanningCanvasLinksDeps
       return {
         issues: wanted.issue.map((id) => {
           const row = issueRows.get(id);
-          return row ? issueSummary(row) : hidden(id);
+          return row ? planningCanvasIssueSummary(row) : hidden(id);
         }),
         agents: wanted.agent.map((id) => {
           const row = agentById.get(id);
@@ -414,7 +418,7 @@ export function planningCanvasLinksService(db: Db, deps: PlanningCanvasLinksDeps
       );
       const limit = Math.min(query.limit, PLANNING_CANVAS_LIMITS.issueQueryLimitMax);
       const rows = await readableIssues(actor, board.companyId, where, limit);
-      return { issues: rows.map(issueSummary), limit };
+      return { issues: rows.map(planningCanvasIssueSummary), limit };
     },
 
     async handoff(ctx: PlanningCanvasHandoffContext, input: PlanningCanvasHandoff): Promise<PlanningCanvasHandoffResult> {
@@ -542,7 +546,7 @@ export function planningCanvasLinksService(db: Db, deps: PlanningCanvasLinksDeps
       return {
         mode: input.mode,
         replayed: false,
-        issues: outcome.created.map(({ issue, keys: itemKeys }) => ({ ...issueSummary(issue), itemKeys })),
+        issues: outcome.created.map(({ issue, keys: itemKeys }) => ({ ...planningCanvasIssueSummary(issue), itemKeys })),
       };
     },
   };
