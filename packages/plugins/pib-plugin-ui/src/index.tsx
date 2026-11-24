@@ -663,7 +663,7 @@ export function useEscapeToClose(open: boolean, onClose: () => void, enabled = t
     const stack = overlayStack();
     stack.push(id);
     const onKey = (event: KeyboardEvent) => {
-      if (event.key !== "Escape" || stack[stack.length - 1] !== id || !latest.current.enabled) return;
+      if (event.defaultPrevented || event.key !== "Escape" || stack[stack.length - 1] !== id || !latest.current.enabled) return;
       event.stopPropagation();
       latest.current.onClose();
     };
@@ -710,7 +710,9 @@ export function Modal({ open, title, description, children, onClose, footer, wid
       style={{
         position: "fixed",
         inset: 0,
-        zIndex: 80,
+        // Stay above page chrome (bottom nav z-30, side panels z-40) but below host Radix dialogs/popovers (z-50),
+        // so host dialogs like NewIssueDialog opened from inside a plugin Modal appear in front of it.
+        zIndex: 45,
         background: "color-mix(in oklab, black 50%, transparent)",
         backdropFilter: "blur(2px)",
         display: "grid",
@@ -866,7 +868,7 @@ export function NewTaskDialog({ open, prefix, heading = "New task", initialTitle
       onMouseDown={(event) => {
         if (event.target === event.currentTarget && !busy) onClose();
       }}
-      style={{ position: "fixed", inset: 0, zIndex: 80, background: "color-mix(in oklab, black 50%, transparent)", display: "grid", placeItems: narrow ? "stretch" : "start center", padding: narrow ? 0 : "10vh 16px 16px" }}
+      style={{ position: "fixed", inset: 0, zIndex: 45, background: "color-mix(in oklab, black 50%, transparent)", display: "grid", placeItems: narrow ? "stretch" : "start center", padding: narrow ? 0 : "10vh 16px 16px" }}
     >
       <div
         ref={panelRef}
@@ -995,7 +997,7 @@ export function Sheet({ open, title, children, onClose }: {
       style={{
         position: "fixed",
         inset: 0,
-        zIndex: 70,
+        zIndex: 44,
         background: "color-mix(in oklab, black 40%, transparent)",
         backdropFilter: "blur(2px)",
         display: "flex",

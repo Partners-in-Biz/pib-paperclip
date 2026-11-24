@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { CockpitSnapshot } from "@partnersinbiz/pib-plugin-kit/cockpit";
 import { PLUGIN_KEY } from "../src/constants.js";
 import { buildView, Overview } from "../src/ui/index.js";
-import { TodayCard, fixLabel, isTeamSetupHref } from "../src/ui/components.js";
+import { TodayCard, TodayCardStatus, fixLabel, isTeamSetupHref } from "../src/ui/components.js";
 import type { LoadResult } from "../src/view.js";
 
 const NOW = new Date("2026-09-26T10:00:00.000Z");
@@ -121,5 +121,17 @@ describe("Cockpit page", () => {
     expect(html).toContain("Problems");
     expect(html).toContain("R 12,400");
     expect(html).toContain('href="/PIB/cockpit"');
+  });
+
+  it("renders a loading or retry state in the Company today widget instead of a blank card", () => {
+    const loadingHtml = renderToStaticMarkup(createElement(TodayCardStatus, { loading: true, error: null, onRetry: () => {}, linkFor }));
+    expect(loadingHtml).toContain("Company today");
+    expect(loadingHtml).toContain("Loading…");
+    expect(loadingHtml).toContain('href="/PIB/cockpit"');
+
+    const errorHtml = renderToStaticMarkup(createElement(TodayCardStatus, { loading: false, error: "Request failed (503)", onRetry: () => {}, linkFor }));
+    expect(errorHtml).toContain("Company today");
+    expect(errorHtml).toContain("Request failed (503)");
+    expect(errorHtml).toContain("Retry");
   });
 });
