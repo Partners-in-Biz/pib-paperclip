@@ -308,9 +308,14 @@ const ROUTES: RouteName[] = ["bridge/action", "actions/:key"];
     // No HTTP credential yields a system actor (`req.actor.type` is board, agent
     // or none; none is 401 before the guard), so the guard is called directly.
     for (const key of CANVAS_CARDS_ACTION_KEYS) {
-      expect(() => canvasCardsGuard({ key, manifest: manifest(CARDS, true), params: PARAMS[key](CARDS),
-        actorContext: { type: "system", onBehalfOfRestricted: false } }))
-        .toThrow(expect.objectContaining({ status: 403, details: { code: CANVAS_CARDS_PERSON_ONLY_CODE } }));
+      let thrown: unknown = null;
+      try {
+        canvasCardsGuard({ key, manifest: manifest(CARDS, true), params: PARAMS[key](CARDS),
+          actorContext: { type: "system", onBehalfOfRestricted: false } });
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown, key).toMatchObject({ status: 403, details: { code: CANVAS_CARDS_PERSON_ONLY_CODE } });
     }
   });
 
