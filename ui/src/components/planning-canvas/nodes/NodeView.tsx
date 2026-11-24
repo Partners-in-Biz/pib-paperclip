@@ -32,6 +32,8 @@ type NodeViewProps = {
   link: NodeLinkMeta | undefined;
   /** Typed data of a table or markdown node (C16). */
   typed: TypedNodeMeta | undefined;
+  /** Below zoom 0.4 (C17): a plain card in the node's colours, no content, handles or queries. */
+  lowDetail: boolean;
 };
 
 /**
@@ -47,28 +49,43 @@ const NodeView = memo(function NodeView({
   linkedNote,
   link,
   typed,
+  lowDetail,
 }: NodeViewProps) {
   const latest = useLatestCanvas();
   const theme = CANVAS_COLOR_THEMES[node.color] ?? CANVAS_COLOR_THEMES.yellow;
   const { containerClass, Render } = NODE_RENDERERS[node.kind];
   const RefRender = link?.refKind ? REF_NODES[link.refKind] : null;
+  const box = { left: node.x, top: node.y, width: node.width, height: node.height, zIndex: node.kind === "frame" ? 1 : node.zIndex };
+
+  if (lowDetail) {
+    return (
+      <div
+        data-canvas-item={node.id}
+        data-canvas-lod="low"
+        aria-label={node.title || node.kind}
+        onPointerDown={(e) => latest.current.handleNodePointerDown(e, node)}
+        style={box}
+        className={cn(
+          "pointer-events-auto absolute overflow-hidden",
+          isSelected && "ring-2 ring-blue-500 ring-offset-2 ring-offset-background",
+          RefRender || typed ? REF_CARD_CLASS : containerClass(node, theme),
+        )}
+      />
+    );
+  }
   // A legacy node already shows its first link as a chip when the reader can see its identifier.
   const extraLinks = link ? (RefRender || !node.handedOffIssueIdentifier ? link.links : link.links.slice(1)) : [];
 
   return (
     <div
-      onMouseDown={(e) => latest.current.handleNodeMouseDown(e, node)}
+      data-canvas-item={node.id}
+      data-canvas-lod="full"
+      onPointerDown={(e) => latest.current.handleNodePointerDown(e, node)}
       onDoubleClick={(e) => {
         e.stopPropagation();
         if (node.kind !== "note") latest.current.setEditingNodeId(node.id);
       }}
-      style={{
-        left: node.x,
-        top: node.y,
-        width: node.width,
-        height: node.height,
-        zIndex: node.kind === "frame" ? 1 : node.zIndex,
-      }}
+      style={box}
       className={cn(
         "pointer-events-auto absolute transition-shadow",
         isSelected && "ring-2 ring-blue-500 ring-offset-2 ring-offset-background",
@@ -95,13 +112,19 @@ const NodeView = memo(function NodeView({
   );
 });
 
-export function NodesLayer({ c }: { c: CanvasController }) {
-  const { sortedNodes, selectedNodeIds, editingNodeId, connectFromId, notesById } = c;
-  const linkMeta = c.opStore.linkMeta;
-  const typedMeta = c.opStore.typedMeta;
+type NodesLayerProps = Pick<CanvasController, "selectedNodeIds" | "editingNodeId" | "connectFromId" | "notesById"> & {
+  /** The culled nodes in paint order (C17). */
+  nodes: CanvasNode[];
+  linkMeta: CanvasController["opStore"]["linkMeta"];
+  typedMeta: CanvasController["opStore"]["typedMeta"];
+  lowDetail: boolean;
+};
+
+/** Memoized: a pan that keeps the same culled set re-renders nothing here. */
+export const NodesLayer = memo(function NodesLayer({ nodes, selectedNodeIds, editingNodeId, connectFromId, notesById, linkMeta, typedMeta, lowDetail }: NodesLayerProps) {
   return (
     <>
-      {sortedNodes.map((node) => {
+      {nodes.map((node) => {
         const isSelected = selectedNodeIds.includes(node.id);
         const isEditing = editingNodeId === node.id;
         return (
@@ -115,9 +138,10 @@ export function NodesLayer({ c }: { c: CanvasController }) {
             linkedNote={node.noteId ? notesById.get(node.noteId) : null}
             link={linkMeta.get(node.id)}
             typed={typedMeta?.get(node.id)}
+            lowDetail={lowDetail && !isEditing}
           />
         );
       })}
     </>
   );
-}
+});

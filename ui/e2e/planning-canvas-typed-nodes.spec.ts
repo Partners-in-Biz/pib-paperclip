@@ -83,6 +83,16 @@ test("table and markdown nodes render, edit, stay safe and do not overflow", asy
     await page.getByRole("button", { name: "Close", exact: true }).first().click({ timeout: 500 }).catch(() => undefined);
     await page.getByRole("button", { name: "Fit to screen" }).locator("visible=true").first().dispatchEvent("click");
     await page.waitForTimeout(400);
+    // C17 level of detail: below 40% nodes are plain cards, so zoom in about the centre until the content renders.
+    const vpBox = (await page.locator(VIEWPORT).boundingBox())!;
+    const zoomPercent = async () => Number((await page.getByTitle("Reset zoom to 100%").locator("visible=true").first().textContent())!.replace("%", ""));
+    for (let i = 0; i < 12 && (await zoomPercent()) < 40; i += 1) {
+      await page.mouse.move(vpBox.x + vpBox.width / 2, vpBox.y + vpBox.height / 2);
+      await page.keyboard.down("Control");
+      await page.mouse.wheel(0, -100);
+      await page.keyboard.up("Control");
+      await page.waitForTimeout(80);
+    }
     const inView = await page.evaluate(() => {
       const vp = { w: window.innerWidth, h: window.innerHeight };
       const visible = (el: Element) => {

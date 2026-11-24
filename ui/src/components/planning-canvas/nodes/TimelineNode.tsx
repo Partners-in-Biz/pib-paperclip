@@ -74,7 +74,7 @@ export const TimelineNode = memo(function TimelineNode({ nodeKey, data, title }:
     body = <p className="text-xs text-muted-foreground">Nothing to show on the timeline yet.</p>;
   } else {
     body = (
-      <div className="min-h-0 flex-1 overflow-auto" onMouseDown={stop} onWheel={stop}>
+      <div className="min-h-0 flex-1 overflow-auto" onPointerDown={stop} data-canvas-scroll="">
         <div className="relative flex flex-col gap-0.5" style={{ width: `${layout.widthRem}rem` }}>
           <div className={cn("relative border-b border-border", ROW)} aria-hidden>
             {layout.ticks.map((tick) => (
@@ -115,7 +115,7 @@ export const TimelineNode = memo(function TimelineNode({ nodeKey, data, title }:
 
   return (
     <RefCard label={title || "Timeline"} icon={<CalendarRange className="size-3.5" />}>
-      <div className="flex items-center gap-1" onMouseDown={stop} onDoubleClick={stop}>
+      <div className="flex items-center gap-1" onPointerDown={stop} onDoubleClick={stop}>
         <div role="group" aria-label="Scale" className="flex rounded border border-border">
           {SCALES.map((scale) => (
             <button

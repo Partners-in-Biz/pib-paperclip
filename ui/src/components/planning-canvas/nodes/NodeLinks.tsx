@@ -12,7 +12,7 @@ function LinkChip({ issueId }: { issueId: string }) {
   return (
     <Link
       to={`/issues/${issue.identifier ?? issue.id}`}
-      onMouseDown={(e) => e.stopPropagation()}
+      onPointerDown={(e) => e.stopPropagation()}
       title={issue.title}
       className={className + " hover:underline"}
     >

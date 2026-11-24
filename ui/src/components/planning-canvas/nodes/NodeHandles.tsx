@@ -32,7 +32,7 @@ export function NodeHandles({
               type="button"
               title="Drag to connect to another card (or drop on empty canvas to spawn a connected sticky)"
               aria-label={`Connect from ${handle.side}`}
-              onMouseDown={(e) => {
+              onPointerDown={(e) => {
                 e.stopPropagation();
                 const initial = {
                   fromNodeId: node.id,
@@ -54,7 +54,7 @@ export function NodeHandles({
       ) : null}
       {isSelected ? (
         <div
-          onMouseDown={(e) => {
+          onPointerDown={(e) => {
             e.stopPropagation();
             latest.current.opStore.checkpoint();
             resizeDragRef.current = {

@@ -13,7 +13,7 @@ export function ProjectNode({ refId }: { refId: string | null }) {
         <>
           <Link
             to={`/projects/${project.id}`}
-            onMouseDown={(e) => e.stopPropagation()}
+            onPointerDown={(e) => e.stopPropagation()}
             className="line-clamp-2 text-sm font-semibold leading-snug text-foreground hover:underline"
           >
             {project.name}

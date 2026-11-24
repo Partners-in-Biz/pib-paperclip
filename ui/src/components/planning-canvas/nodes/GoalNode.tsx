@@ -13,7 +13,7 @@ export function GoalNode({ refId }: { refId: string | null }) {
         <>
           <Link
             to={`/goals/${goal.id}`}
-            onMouseDown={(e) => e.stopPropagation()}
+            onPointerDown={(e) => e.stopPropagation()}
             className="line-clamp-2 text-sm font-semibold leading-snug text-foreground hover:underline"
           >
             {goal.title}

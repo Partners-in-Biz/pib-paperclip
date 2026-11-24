@@ -29,7 +29,16 @@ function render(metas: Array<[string, NodeLinkMeta]>, refs: CanvasRefMap) {
     <MemoryRouter>
       <CanvasRefContext.Provider value={{ current: c } as never}>
         <CanvasRefsContext.Provider value={refs}>
-          <NodesLayer c={c as never} />
+          <NodesLayer
+            nodes={c.sortedNodes as never}
+            selectedNodeIds={c.selectedNodeIds}
+            editingNodeId={c.editingNodeId}
+            connectFromId={c.connectFromId}
+            notesById={c.notesById}
+            linkMeta={c.opStore.linkMeta}
+            typedMeta={undefined as never}
+            lowDetail={false}
+          />
         </CanvasRefsContext.Provider>
       </CanvasRefContext.Provider>
     </MemoryRouter>,
