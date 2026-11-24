@@ -433,8 +433,23 @@ export interface GetDataParams {
   companyId?: string | null;
   /** Context and query parameters from the UI. */
   params: Record<string, unknown>;
+  /**
+   * The acting person resolved by the host, never by caller params (PAR-14297).
+   * An older host leaves it out.
+   */
+  actorContext?: PluginActingPersonContext | null;
   /** Optional launcher/container metadata from the host render environment. */
   renderEnvironment?: PluginLauncherRenderContextSnapshot | null;
+}
+
+/**
+ * The second argument of a `getData` handler: the person the read is for, as
+ * the host computed it. `actor` is `{}` when the host is older than this SDK;
+ * treat that as unknown, not as "nobody".
+ */
+export interface PluginDataContext {
+  /** Immutable acting person supplied by the host. */
+  actor: Readonly<PluginActingPersonContext>;
 }
 
 /**

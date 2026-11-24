@@ -96,6 +96,7 @@ import type {
   OnEventParams,
   RunJobParams,
   GetDataParams,
+  PluginDataContext,
   PerformActionParams,
   PluginPerformActionActorContext,
   PluginPerformActionContext,
@@ -374,7 +375,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
   const eventHandlers: EventRegistration[] = [];
   const jobHandlers = new Map<string, (job: PluginJobContext) => Promise<void>>();
   const launcherRegistrations = new Map<string, PluginLauncherRegistration>();
-  const dataHandlers = new Map<string, (params: Record<string, unknown>) => Promise<unknown>>();
+  const dataHandlers = new Map<string, (params: Record<string, unknown>, context: PluginDataContext) => Promise<unknown>>();
   const actionHandlers = new Map<
     string,
     (params: Record<string, unknown>, context: PluginPerformActionContext) => Promise<unknown>
@@ -1393,7 +1394,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       },
 
       data: {
-        register(key: string, handler: (params: Record<string, unknown>) => Promise<unknown>): void {
+        register(key: string, handler: (params: Record<string, unknown>, context: PluginDataContext) => Promise<unknown>): void {
           dataHandlers.set(key, handler);
         },
       },
@@ -2057,11 +2058,20 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     if (!handler) {
       throw new Error(`No data handler registered for key "${params.key}"`);
     }
-    return handler({
-      ...params.params,
-      ...(params.companyId === undefined ? {} : { companyId: params.companyId }),
-      ...(params.renderEnvironment === undefined ? {} : { renderEnvironment: params.renderEnvironment }),
-    });
+    return handler(
+      {
+        ...params.params,
+        ...(params.companyId === undefined ? {} : { companyId: params.companyId }),
+        ...(params.renderEnvironment === undefined ? {} : { renderEnvironment: params.renderEnvironment }),
+      },
+      dataContextFromParams(params),
+    );
+  }
+
+  /** The `getData` handler's second argument (PAR-14297): `{ actor: {} }` from an older host. */
+  function dataContextFromParams(params: GetDataParams): PluginDataContext {
+    const rawActor = params.actorContext && typeof params.actorContext === "object" ? params.actorContext : null;
+    return Object.freeze({ actor: Object.freeze(actingPersonFrom(rawActor)) });
   }
 
   function stringOrNull(value: unknown): string | null {
