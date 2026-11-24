@@ -54,7 +54,7 @@ export function PlanningCanvas() {
   return (
     <CanvasRefContext.Provider value={latest}>
       <CanvasRefsContext.Provider value={linkRefs}>
-      <div className="relative flex h-full min-h-0 flex-col overflow-hidden bg-background select-none">
+      <div className="relative flex h-full min-h-0 flex-col overflow-hidden bg-background select-none max-md:h-(--sz-canvas-mobile-h)">
         <PanelSlot id="top" c={c} />
 
         {/* Main Infinite Canvas Area */}

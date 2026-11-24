@@ -129,7 +129,7 @@ export function ZoomControls({ c }: { c: CanvasController }) {
 
 export function BottomRightControls({ c }: { c: CanvasController }) {
   return (
-    <div className="pointer-events-auto absolute bottom-3 right-3 z-20 flex flex-col items-end gap-2">
+    <div className="pointer-events-auto absolute bottom-3 right-3 z-20 flex flex-col items-end gap-2 max-md:bottom-16">
       {/* Compact Minimap */}
       <Minimap c={c} />
       <ZoomControls c={c} />

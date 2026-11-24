@@ -1,4 +1,4 @@
-import { memo } from "react";
+import { memo, useRef } from "react";
 import { CANVAS_COLOR_THEMES } from "@/lib/planning-canvas-helpers";
 import { cn } from "@/lib/utils";
 import type { CanvasNode, PersonalNote } from "@paperclipai/shared";
@@ -17,7 +17,59 @@ import { KanbanNode } from "@/components/planning-canvas/nodes/KanbanNode";
 import { TimelineNode } from "@/components/planning-canvas/nodes/TimelineNode";
 import type { TypedNodeMeta } from "@/components/planning-canvas/nodes/typed-meta";
 import type { NodeLinkMeta } from "@/components/planning-canvas/nodes/link-meta";
+import { nodeAriaLabel } from "@/components/planning-canvas/panels/outline/outline-order";
 import type { CanvasController } from "@/components/planning-canvas/state/useCanvasController";
+
+/** Hold this long on touch to open the node menu (C19). */
+const LONG_PRESS_MS = 500;
+/** A finger that moves further than this is a drag, not a press. */
+const LONG_PRESS_SLOP = 8;
+
+/** Handlers shared by both detail levels: right-click and long-press open the node menu. */
+function useNodeMenu(node: CanvasNode) {
+  const latest = useLatestCanvas();
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const origin = useRef<{ x: number; y: number } | null>(null);
+  const cancel = () => {
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = null;
+  };
+  return {
+    onContextMenu: (e: React.MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      cancel();
+      latest.current.setSelectedNodeIds([node.id]);
+      latest.current.setContextMenu({ nodeId: node.id, x: e.clientX, y: e.clientY });
+    },
+    onPointerDownCapture: (e: React.PointerEvent) => {
+      if (e.pointerType !== "touch" || !e.isPrimary) return;
+      origin.current = { x: e.clientX, y: e.clientY };
+      cancel();
+      const { clientX: x, clientY: y } = e;
+      timer.current = setTimeout(() => {
+        timer.current = null;
+        latest.current.setSelectedNodeIds([node.id]);
+        latest.current.setContextMenu({ nodeId: node.id, x, y });
+      }, LONG_PRESS_MS);
+    },
+    onPointerMoveCapture: (e: React.PointerEvent) => {
+      const o = origin.current;
+      if (timer.current && o && Math.hypot(e.clientX - o.x, e.clientY - o.y) > LONG_PRESS_SLOP) cancel();
+    },
+    onPointerUpCapture: cancel,
+    onPointerCancelCapture: cancel,
+  };
+}
+
+/** Every node is a focusable, labelled group (C19); the focus ring uses the ring token. */
+function nodeA11y(node: CanvasNode, isSelected: boolean) {
+  return {
+    role: "group" as const,
+    tabIndex: isSelected ? 0 : -1,
+    "aria-label": nodeAriaLabel(node),
+  };
+}
 
 const REF_NODES = { issue: IssueNode, agent: AgentNode, project: ProjectNode, goal: GoalNode } as const;
 
@@ -55,6 +107,7 @@ const NodeView = memo(function NodeView({
   const theme = CANVAS_COLOR_THEMES[node.color] ?? CANVAS_COLOR_THEMES.yellow;
   const { containerClass, Render } = NODE_RENDERERS[node.kind];
   const RefRender = link?.refKind ? REF_NODES[link.refKind] : null;
+  const menu = useNodeMenu(node);
   const box = { left: node.x, top: node.y, width: node.width, height: node.height, zIndex: node.kind === "frame" ? 1 : node.zIndex };
 
   if (lowDetail) {
@@ -62,11 +115,12 @@ const NodeView = memo(function NodeView({
       <div
         data-canvas-item={node.id}
         data-canvas-lod="low"
-        aria-label={node.title || node.kind}
+        {...nodeA11y(node, isSelected)}
+        {...menu}
         onPointerDown={(e) => latest.current.handleNodePointerDown(e, node)}
         style={box}
         className={cn(
-          "pointer-events-auto absolute overflow-hidden",
+          "pointer-events-auto absolute overflow-hidden focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
           isSelected && "ring-2 ring-blue-500 ring-offset-2 ring-offset-background",
           RefRender || typed ? REF_CARD_CLASS : containerClass(node, theme),
         )}
@@ -80,6 +134,8 @@ const NodeView = memo(function NodeView({
     <div
       data-canvas-item={node.id}
       data-canvas-lod="full"
+      {...nodeA11y(node, isSelected)}
+      {...menu}
       onPointerDown={(e) => latest.current.handleNodePointerDown(e, node)}
       onDoubleClick={(e) => {
         e.stopPropagation();
@@ -87,7 +143,7 @@ const NodeView = memo(function NodeView({
       }}
       style={box}
       className={cn(
-        "pointer-events-auto absolute transition-shadow",
+        "pointer-events-auto absolute transition-shadow focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
         isSelected && "ring-2 ring-blue-500 ring-offset-2 ring-offset-background",
         isConnectFrom && "ring-2 ring-amber-500",
         RefRender || typed ? REF_CARD_CLASS : containerClass(node, theme),

@@ -49,6 +49,10 @@ export function useCanvasState(ctx: CanvasData) {
   const [handoffOpen, setHandoffOpen] = useState(false);
   const [templatesOpen, setTemplatesOpen] = useState(false);
   const [blueprintsOpen, setBlueprintsOpen] = useState(false);
+  const [cheatSheetOpen, setCheatSheetOpen] = useState(false);
+  const [outlineOpen, setOutlineOpen] = useState(false);
+  /** Right-click or long-press menu (C19), in viewport client coordinates. */
+  const [contextMenu, setContextMenu] = useState<{ nodeId: string; x: number; y: number } | null>(null);
   const [notesSearch, setNotesSearch] = useState("");
   const [boardSearch, setBoardSearch] = useState("");
   const [scheduleNote, setScheduleNote] = useState<PersonalNote | null>(null);
@@ -132,6 +136,12 @@ export function useCanvasState(ctx: CanvasData) {
     setTemplatesOpen,
     blueprintsOpen,
     setBlueprintsOpen,
+    cheatSheetOpen,
+    setCheatSheetOpen,
+    outlineOpen,
+    setOutlineOpen,
+    contextMenu,
+    setContextMenu,
     notesSearch,
     setNotesSearch,
     boardSearch,

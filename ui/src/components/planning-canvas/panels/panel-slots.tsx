@@ -2,6 +2,9 @@ import type { ComponentType } from "react";
 import { BoardBar } from "@/components/planning-canvas/panels/BoardBar";
 import { BlueprintsDialog } from "@/components/planning-canvas/panels/blueprints/BlueprintsDialog";
 import { BottomRightControls } from "@/components/planning-canvas/panels/BottomRightControls";
+import { CheatSheet } from "@/components/planning-canvas/panels/CheatSheet";
+import { OutlinePanel } from "@/components/planning-canvas/panels/outline/OutlinePanel";
+import { CanvasContextMenu } from "@/components/planning-canvas/toolbar/CanvasContextMenu";
 import { ConflictDrafts } from "@/components/planning-canvas/panels/ConflictDrafts";
 import { HandoffDialog } from "@/components/planning-canvas/panels/handoff/HandoffDialog";
 import { InsertLinkPanel } from "@/components/planning-canvas/panels/InsertLinkPanel";
@@ -38,8 +41,11 @@ export const PANEL_SLOTS: Record<PanelSlotId, PanelEntry[]> = {
     { id: "conflict-drafts", Component: ConflictDrafts },
     { id: "handoff-dialog", Component: HandoffDialog },
     { id: "blueprints-dialog", Component: BlueprintsDialog },
+    { id: "cheat-sheet", Component: CheatSheet },
+    { id: "context-menu", Component: CanvasContextMenu },
   ],
   right: [
+    { id: "outline", Component: OutlinePanel },
     { id: "notes-drawer", Component: NotesDrawer },
     { id: "insert-link-panel", Component: InsertLinkPanel },
   ],
