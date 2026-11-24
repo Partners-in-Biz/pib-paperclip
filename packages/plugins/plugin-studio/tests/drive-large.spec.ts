@@ -46,7 +46,7 @@ vi.mock("../src/storage.js", () => ({
   sniffMime: (b: Uint8Array) => (String.fromCharCode(...b.subarray(4, 8)) === "ftyp" ? "video/mp4" : null),
 }));
 vi.mock("../src/config.js", () => ({ StudioConfig: class { async bucket() { return {}; } } }));
-vi.mock("../src/scope.js", () => ({ scopeInput: () => null, resolveScope: async () => ({ scope: null, client: null }) }));
+vi.mock("../src/scope.js", () => ({ assertOpenToPerson: () => undefined, scopeInput: () => null, resolveScope: async () => ({ scope: null, client: null }) }));
 vi.mock("@partnersinbiz/pib-plugin-kit", () => ({
   DRIVE_ACK_TIMEOUT_MS: 8_000,
   driveSave: vi.fn(),
@@ -164,7 +164,7 @@ describe("From Drive over 5 MiB", () => {
       return { status: "stored" as const, requestId: "r", file: FILE, size: FILE.size, sha256: SHA };
     });
     const read = vi.fn();
-    const started = await importFromDrive(ctx, "co-1", { fileId: FILE.id, size: FILE.size, mimeType: FILE.mimeType }, { userId: "u-1" }, { list: vi.fn(), read, readToR2 } as never);
+    const started = await importFromDrive(ctx, "co-1", { fileId: FILE.id, size: FILE.size, mimeType: FILE.mimeType }, { userId: "u-1", restriction: "unrestricted" }, { list: vi.fn(), read, readToR2 } as never);
     expect(started).toMatchObject({ status: "running", bytesTotal: FILE.size });
     noSecret(started);
     const done = await settle((started as { transferId: string }).transferId);
@@ -178,7 +178,7 @@ describe("From Drive over 5 MiB", () => {
   it("drops the stored copy when its bytes are not the type Drive listed", async () => {
     head = new Uint8Array(12);
     const readToR2 = vi.fn(async () => ({ status: "stored" as const, requestId: "r", file: FILE, size: FILE.size, sha256: SHA }));
-    const started = await importFromDrive(ctx, "co-1", { fileId: FILE.id, size: FILE.size, mimeType: FILE.mimeType }, { userId: null }, { list: vi.fn(), read: vi.fn(), readToR2 } as never);
+    const started = await importFromDrive(ctx, "co-1", { fileId: FILE.id, size: FILE.size, mimeType: FILE.mimeType }, { userId: null, restriction: "unrestricted" }, { list: vi.fn(), read: vi.fn(), readToR2 } as never);
     const done = await settle((started as { transferId: string }).transferId);
     expect(done).toMatchObject({ status: "failed", error: expect.stringMatching(/MP4 and MOV/) });
     expect(deleted).toHaveLength(1);
@@ -187,8 +187,8 @@ describe("From Drive over 5 MiB", () => {
 
   it("refuses too-big and unknown types before starting", async () => {
     const readers = { list: vi.fn(), read: vi.fn(), readToR2: vi.fn() } as never;
-    await expect(importFromDrive(ctx, "co-1", { fileId: FILE.id, size: 300 * MiB, mimeType: "video/mp4" }, { userId: null }, readers)).rejects.toThrow(/300\.0 MB\. Drive transfers take files up to 200\.0 MB/);
-    await expect(importFromDrive(ctx, "co-1", { fileId: FILE.id, size: 48 * MiB, mimeType: "application/zip" }, { userId: null }, readers)).rejects.toThrow(/MP4 and MOV/);
+    await expect(importFromDrive(ctx, "co-1", { fileId: FILE.id, size: 300 * MiB, mimeType: "video/mp4" }, { userId: null, restriction: "unrestricted" }, readers)).rejects.toThrow(/300\.0 MB\. Drive transfers take files up to 200\.0 MB/);
+    await expect(importFromDrive(ctx, "co-1", { fileId: FILE.id, size: 48 * MiB, mimeType: "application/zip" }, { userId: null, restriction: "unrestricted" }, readers)).rejects.toThrow(/MP4 and MOV/);
   });
 });
 

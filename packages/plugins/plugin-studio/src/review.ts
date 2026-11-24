@@ -3,11 +3,12 @@
  * (Social subscribes as `plugin.<studio id>.asset.approved` and imports the file by URL into the client's library).
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { textArrayParam } from "@partnersinbiz/pib-plugin-kit";
+import { scopeOfRow, textArrayParam, type ActingRestriction } from "@partnersinbiz/pib-plugin-kit";
 import { StudioConfig } from "./config.js";
 import { table } from "./db.js";
 import { StudioError } from "./errors.js";
 import { assetOut, getAssetRow, type AssetRow } from "./assets.js";
+import { assertOpenToPerson } from "./scope.js";
 import { objectUrl } from "./storage.js";
 
 export const ASSET_APPROVED_EVENT = "asset.approved";
@@ -69,13 +70,15 @@ export async function reviewAsset(
   ctx: PluginContext,
   companyId: string,
   params: Record<string, unknown>,
-  actor: { userId?: string | null; agentId?: string | null },
+  actor: { userId?: string | null; agentId?: string | null; restriction?: ActingRestriction },
   deps: ReviewDeps = {},
 ) {
   const assetId = String(params.assetId ?? "").trim();
   if (!assetId) throw new StudioError("assetId is required.", "bad_request");
   const decision = decisionOf(params.decision);
   const before = await getAssetRow(ctx, companyId, assetId);
+  // The page's caller (PAR-14290): a restricted member can't approve a client's file into Social, or reject it.
+  if (actor.restriction) assertOpenToPerson(scopeOfRow(before), actor.restriction);
   if (before.status === decision) return { asset: assetOut(before), changed: false, exported: false };
   if (decision === "approved" && actor.agentId && (await madeByAgent(ctx, companyId, assetId, actor.agentId))) {
     throw new StudioError(

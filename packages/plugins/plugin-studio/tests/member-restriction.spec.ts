@@ -20,6 +20,11 @@ const RUN = "a1600000-0000-4000-8000-000000000031";
 const CLIENT = "a1600000-0000-4000-8000-0000000000c1";
 const OWN_ASSET = "own-asset";
 const CLIENT_ASSET = "client-asset";
+const OWN_CANVAS = "a1600000-0000-4000-8000-0000000000b1";
+const CLIENT_CANVAS = "a1600000-0000-4000-8000-0000000000b2";
+/** A live share of the client's board, made earlier by someone allowed to. */
+const CLIENT_SHARE = "abcdefghijklmnopqrstuvwx";
+const GIVE = "a1600000-0000-4000-8000-0000000000f1";
 const MODEL = PAGE_MODELS.find((m) => m.kind === "image" && m.minRefs === 0)!.id;
 
 type Mode = "off" | "report" | "enforce";
@@ -41,7 +46,12 @@ const assetRow = (id: string, client: boolean) => ({
   current_version: 1, created_at: new Date().toISOString(), r2_key: `studio/${CO}/${client ? CLIENT : "own"}/${id}/v1.png`, mime: "image/png", bytes: 10,
 });
 
-/** Studio with storage set up, a company cap, one own and one client asset, and the CRM client Acme. */
+const canvasRow = (id: string, client: boolean) => ({
+  id, company_id: CO, client_kind: client ? "company" : null, client_ref: client ? CLIENT : null, client_name: client ? "Acme" : null,
+  project_id: null, title: id, doc: { nodes: [], edges: [] }, revision: 1, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+});
+
+/** Studio with storage set up, a company cap, one own and one client asset and canvas, and the CRM client Acme. */
 async function studio() {
   const at = new Date().toISOString();
   const member = (userId: string, role: string) => ({ id: `m-${userId}`, companyId: CO, principalType: "user" as const, principalId: userId, status: "active" as const, membershipRole: role, grants: [], createdAt: at, updatedAt: at });
@@ -56,6 +66,8 @@ async function studio() {
   db.query = async (sql, params = []) => {
     if (/FROM \S+\.assets a JOIN/.test(sql)) return params[1] === OWN_ASSET ? [assetRow(OWN_ASSET, false)] : params[1] === CLIENT_ASSET ? [assetRow(CLIENT_ASSET, true)] : [];
     if (/crm_companies/.test(sql) && params.includes(CLIENT)) return [{ id: CLIENT, name: "Acme", domain: null, lifecycle: "customer" }];
+    if (/FROM \S+\.canvases WHERE id = \$1/.test(sql)) return params[0] === OWN_CANVAS ? [canvasRow(OWN_CANVAS, false)] : params[0] === CLIENT_CANVAS ? [canvasRow(CLIENT_CANVAS, true)] : [];
+    if (/SELECT canvas_id FROM \S+\.canvas_shares/.test(sql)) return params[0] === CLIENT_SHARE ? [{ canvas_id: CLIENT_CANVAS }] : [];
     if (/credit_limits/.test(sql)) return [{ scope_key: "company", monthly_credits: 100, updated_by: OWNER, updated_at: at }];
     return [];
   };
@@ -66,7 +78,12 @@ async function studio() {
   const configReads = vi.spyOn(harness.ctx.config, "get");
   await plugin.definition.setup(harness.ctx);
   configReads.mockClear();
-  return { harness, writes, configReads };
+  // Drive, brand kit and Social all go out over the event bus: a refused call must emit nothing.
+  const emit = vi.spyOn(harness.ctx.events, "emit");
+  emit.mockClear();
+  // The access guard's own `access.request` is not client data; anything else is.
+  const emits = () => emit.mock.calls.map(([type]) => String(type)).filter((type) => !type.startsWith("access."));
+  return { harness, writes, configReads, emits };
 }
 
 /** The actor core sends: the mark is true only for a flagged person in a company on `enforce` (kill switch off). */
@@ -168,5 +185,63 @@ describe("Studio person path: restricted members get no client media or client g
     expect(actingRestriction({ onBehalfOfUserId: null })).toBe("unrestricted");
     expect(actingRestriction({})).toBe("unavailable");
     expect(actingRestriction(null)).toBe("unavailable");
+  });
+});
+
+/**
+ * The rest of the person path's client work (PAR-14290): approving into Social, Drive, giving to an agent, the brand
+ * kit and share links of a client's board. Each action is refused for a restricted member and when core's answer is
+ * missing, before any read of the client's data, any event to another plugin or any write.
+ */
+const CLIENT_WORK: Array<[string, Record<string, unknown>]> = [
+  ["review", { assetId: CLIENT_ASSET, decision: "approved" }],
+  ["drive-save", { assetId: CLIENT_ASSET }],
+  ["give-prepare", { assetId: CLIENT_ASSET }],
+  ["give-record", { assetId: CLIENT_ASSET, giveId: GIVE, issueId: "PAR-1" }],
+  ["give-discard", { assetId: CLIENT_ASSET, giveId: GIVE }],
+  ["brand-kit", { client: `company:${CLIENT}` }],
+  ["drive-list", { client: `company:${CLIENT}` }],
+  ["drive-import", { client: `company:${CLIENT}`, fileId: "1AbCdEfGhIjKlMnOp" }],
+  ["drive-thumbs", { client: `company:${CLIENT}`, fileIds: ["1AbCdEfGhIjKlMnOp"] }],
+  ["canvas-share-list", { canvasId: CLIENT_CANVAS }],
+  ["canvas-share-create", { canvasId: CLIENT_CANVAS }],
+  ["canvas-share-revoke", { shareId: CLIENT_SHARE }],
+];
+
+describe("Studio person path: the remaining client work is closed to restricted members (PAR-14290)", () => {
+  const restricted = { type: "user" as const, userId: RESTRICTED, onBehalfOfUserId: RESTRICTED, onBehalfOfRestricted: true };
+  const unmarked = { type: "user" as const, userId: MEMBER };
+
+  it.each(CLIENT_WORK)("%s: refused for a restricted member, nothing read, sent or written", async (key, params) => {
+    const { harness, writes, configReads, emits } = await studio();
+    expect(await harness.performAction(key, params, { companyId: CO, actor: restricted })).toEqual(refused(MEMBER_RESTRICTED));
+    expect(configReads).not.toHaveBeenCalled();
+    expect(emits()).toEqual([]);
+    expect(writes).toEqual([]);
+  });
+
+  it.each(CLIENT_WORK)("%s: refused with MEMBER_RESTRICTION_UNAVAILABLE when core's answer is missing", async (key, params) => {
+    const { harness, writes, configReads, emits } = await studio();
+    expect(await harness.performAction(key, params, { companyId: CO, actor: unmarked })).toEqual(refused(MEMBER_RESTRICTION_UNAVAILABLE));
+    expect(configReads).not.toHaveBeenCalled();
+    expect(emits()).toEqual([]);
+    expect(writes).toEqual([]);
+  });
+
+  it("own work still works for a restricted member", async () => {
+    const { harness } = await studio();
+    const as = { companyId: CO, actor: restricted };
+    expect(await harness.performAction("review", { assetId: OWN_ASSET, decision: "rejected" }, as)).toMatchObject({ changed: true, asset: { id: OWN_ASSET, status: "rejected" } });
+    expect(await harness.performAction("brand-kit", { client: "own" }, as)).toMatchObject({ client: null, kit: null });
+    expect(await harness.performAction("give-discard", { assetId: OWN_ASSET, giveId: GIVE }, as)).toEqual({ removed: 0 });
+    expect(await harness.performAction("canvas-share-list", { canvasId: OWN_CANVAS }, as)).toEqual({ shares: [] });
+  });
+
+  it.each(MODES)("everyone else keeps today's answer on client work (member restriction %s)", async (mode) => {
+    const { harness } = await studio();
+    const as = { companyId: CO, actor: actorFor(mode === "enforce" ? "member" : "restricted", mode) };
+    expect(await harness.performAction("review", { assetId: CLIENT_ASSET, decision: "rejected" }, as)).toMatchObject({ changed: true, asset: { id: CLIENT_ASSET } });
+    expect(await harness.performAction("give-discard", { assetId: CLIENT_ASSET, giveId: GIVE }, as)).toEqual({ removed: 0 });
+    expect(await harness.performAction("canvas-share-list", { canvasId: CLIENT_CANVAS }, as)).toEqual({ shares: [] });
   });
 });
