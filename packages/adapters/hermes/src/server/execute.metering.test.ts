@@ -87,7 +87,7 @@ describe("hermes-local adapter metering", () => {
     expect(result.billingType).toBeUndefined();
   });
 
-  it("resumes with --no-restore-cwd and books only this run's tokens", async () => {
+  it("resumes without --no-restore-cwd/--in and books only this run's tokens", async () => {
     // The session held 100 in / 10 out before the run (the baseline); Hermes
     // raises it to 150 / 30 while the run executes.
     const before = new DatabaseSync(path.join(home, "state.db"));
@@ -107,7 +107,8 @@ describe("hermes-local adapter metering", () => {
 
     const args = runs[0].args;
     expect(args[args.indexOf("--resume") + 1]).toBe("sess_live01");
-    expect(args).toContain("--no-restore-cwd");
+    expect(args).not.toContain("--no-restore-cwd");
+    expect(args).not.toContain("--in");
     expect(result.usage).toEqual({ inputTokens: 50, outputTokens: 20, cachedInputTokens: 0 });
     expect(result.costUsd).toBeCloseTo(0.2, 6);
   });
