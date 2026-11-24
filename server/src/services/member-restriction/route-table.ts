@@ -213,16 +213,15 @@ export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntr
   { method: "GET", path: "/api/issues/:id/attachments", class: "open", test: DOCS_TEST },
   { method: "GET", path: "/api/attachments/:attachmentId/content", class: "open", test: DOCS_TEST },
   { method: "DELETE", path: "/api/attachments/:attachmentId", class: "open", test: DOCS_TEST },
-  // Closed: lock, unlock and delete of a document check only the company and
-  // that the caller is a board user; they never read the task, so R could
-  // lock or delete a document on O's task. Attachment upload answers 403
-  // ("Only the conversation owner") on O's chat and 422 for a task of another
-  // company before it reads the task (AC-G3). PAR-12940 adds the task read to
-  // these four handlers and reopens them.
-  { method: "POST", path: "/api/issues/:id/documents/:key/lock", class: "closed" },
-  { method: "POST", path: "/api/issues/:id/documents/:key/unlock", class: "closed" },
-  { method: "DELETE", path: "/api/issues/:id/documents/:key", class: "closed" },
-  { method: "POST", path: "/api/companies/:companyId/issues/:issueId/attachments", class: "closed" },
+  // C4j-2 (PAR-12943): lock, unlock and delete of a document read the task
+  // through `issue:read` before the board-only 403 (PAR-12942). Upload checks
+  // the path company first (403), then answers "Issue not found" for a task of
+  // another company or one he cannot read, before the chat checks. Upload is
+  // his only way to attach a file to his own task (spec section 9).
+  { method: "POST", path: "/api/issues/:id/documents/:key/lock", class: "open", test: DOCS_TEST },
+  { method: "POST", path: "/api/issues/:id/documents/:key/unlock", class: "open", test: DOCS_TEST },
+  { method: "DELETE", path: "/api/issues/:id/documents/:key", class: "open", test: DOCS_TEST },
+  { method: "POST", path: "/api/companies/:companyId/issues/:issueId/attachments", class: "open", test: DOCS_TEST },
 
   // C4e-1 (PAR-12733): account, session and company record. His own account
   // (4.6 and 4.6a row 8): every handler reads only `req.actor.userId`'s rows
