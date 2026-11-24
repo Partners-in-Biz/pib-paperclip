@@ -682,7 +682,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     : effectiveComposerAssignee.startsWith("agent:")
       ? effectiveComposerAssignee.slice("agent:".length) || null
       : null;
-  const runnerGoal = useRunnerGoalControl(issueId, effectiveGoalAgentId);
+  const runnerGoal = useRunnerGoalControl(issueId, effectiveGoalAgentId, companyId);
 
   useEffect(() => {
     setPendingComposerAssignee(null);

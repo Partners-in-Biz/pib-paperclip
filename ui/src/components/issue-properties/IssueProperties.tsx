@@ -2783,7 +2783,8 @@ export function IssueProperties({
 
         {contextUsage !== undefined
           ? contextUsage ? <PropertyRow label="Context">{contextUsage}</PropertyRow> : null
-          : <IssueContextUsageRow issueId={issue.id} assigneeAgentId={issue.assigneeAgentId ?? null} issueStatus={issue.status} hasActiveRun={hasActiveRun} />}
+          // PAR-14342: the session context reading is closed for a restricted person (PAR-12608 4.6).
+          : memberGate.closed ? null : <IssueContextUsageRow issueId={issue.id} assigneeAgentId={issue.assigneeAgentId ?? null} issueStatus={issue.status} hasActiveRun={hasActiveRun} />}
       </PropertySection>
 
       {workspacePickerEligible || hasWorkspaceRuntimeControls || issue.currentExecutionWorkspace?.branchName || issue.currentExecutionWorkspace?.cwd || issue.executionWorkspaceId ? (
