@@ -1,5 +1,6 @@
-import type { PlanningCanvasMarkdownData, PlanningCanvasTableData } from "@paperclipai/shared";
+import type { PlanningCanvasKanbanData, PlanningCanvasMarkdownData, PlanningCanvasTableData, PlanningCanvasTimelineData } from "@paperclipai/shared";
 import type { StoreItem } from "@/components/planning-canvas/store/canvas-op-store";
+import { isKanbanData, isTimelineData } from "@/components/planning-canvas/nodes/issue-board";
 import { isTableData } from "@/components/planning-canvas/store/table-ops";
 
 /**
@@ -9,7 +10,9 @@ import { isTableData } from "@/components/planning-canvas/store/table-ops";
  */
 export type TypedNodeMeta =
   | { kind: "table"; data: PlanningCanvasTableData }
-  | { kind: "markdown"; data: PlanningCanvasMarkdownData };
+  | { kind: "markdown"; data: PlanningCanvasMarkdownData }
+  | { kind: "kanban"; data: PlanningCanvasKanbanData }
+  | { kind: "timeline"; data: PlanningCanvasTimelineData };
 
 export function typedMetaOf(item: StoreItem | undefined | null): TypedNodeMeta | null {
   if (!item || item.itemType !== "node") return null;
@@ -18,6 +21,8 @@ export function typedMetaOf(item: StoreItem | undefined | null): TypedNodeMeta |
   if (kind === "markdown" && typeof (data as PlanningCanvasMarkdownData | undefined)?.markdown === "string") {
     return { kind, data: data as PlanningCanvasMarkdownData };
   }
+  if (kind === "kanban" && isKanbanData(data)) return { kind, data };
+  if (kind === "timeline" && isTimelineData(data)) return { kind, data };
   return null;
 }
 

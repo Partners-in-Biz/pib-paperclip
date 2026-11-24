@@ -622,6 +622,12 @@ export const queryKeys = {
     board: (companyId: string, boardId: string, idsKey: string) =>
       ["planning-canvas-refs", companyId, boardId, idsKey] as const,
   },
+  /** Issue queries of kanban and timeline nodes; one root so a live issue event can refetch them all. */
+  planningCanvasQueries: {
+    all: (companyId: string) => ["planning-canvas-queries", companyId] as const,
+    run: (companyId: string, boardId: string, queryJson: string) =>
+      ["planning-canvas-queries", companyId, boardId, queryJson] as const,
+  },
   inboxAgentPolicy: {
     mine: (companyId: string) =>
       ["inbox-agent-policy", companyId, "me"] as const,
