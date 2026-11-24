@@ -396,6 +396,24 @@ export type CreatePlanningCanvasComment = z.infer<typeof createPlanningCanvasCom
 
 export const resolvePlanningCanvasCommentSchema = z.strictObject({ resolved: z.boolean() });
 
+/**
+ * Board chat message (PAR-14257 C "Interfaces"). No person and no run id: the
+ * server takes both from the signed-in caller. Item and frame keys must belong
+ * to the board; the stored comment carries the keys, never node text.
+ */
+export const planningCanvasChatMessageSchema = z.strictObject({
+  agentId: z.string().uuid(),
+  body: z.string().trim().min(1).max(L.commentBodyMaxLength),
+  context: z
+    .strictObject({
+      itemKeys: z.array(planningCanvasItemKeySchema).max(L.chatContextKeysMax).default([]),
+      frameKey: planningCanvasItemKeySchema.optional(),
+    })
+    .optional(),
+  clientRequestId: z.string().trim().min(1).max(L.chatClientRequestIdMaxLength),
+});
+export type PlanningCanvasChatMessage = z.infer<typeof planningCanvasChatMessageSchema>;
+
 export const planningCanvasHandoffSchema = z.strictObject({
   keys: z.array(planningCanvasItemKeySchema).min(1).max(L.handoffKeysMax),
   mode: z.enum(["single", "one_per_node"]),
