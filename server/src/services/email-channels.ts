@@ -1464,6 +1464,24 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
     }
     if (event.wakePending && event.issueId) {
       await active(endpoint);
+      // PAR-14331: a retry resumes here with issueId already committed and
+      // skips the check above, so the sponsor is asked again right before the
+      // wake. Restricted under `enforce` since the first attempt: the task and
+      // comment stay, no run starts. A failed read throws and retries.
+      if (endpoint.sponsorUserId && await inboundRefusedForPerson(db, {
+        companyId: endpoint.companyId, personId: endpoint.sponsorUserId, channel: "email", objectId: delivery.id,
+      })) {
+        await db
+          .update(chatDeliveries)
+          .set({
+            state: "filtered",
+            redactedError: "Inbox sponsor is restricted in this company",
+            processedAt: new Date(),
+            normalizedEvent: { ...event, wakePending: false },
+          })
+          .where(eq(chatDeliveries.id, delivery.id));
+        return;
+      }
       await options.heartbeat.wakeup(endpoint.assignedAgentId, {
         causingActor: SYSTEM_CAUSING_ACTOR,
         source: "automation",

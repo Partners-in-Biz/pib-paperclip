@@ -55,6 +55,9 @@ export function voiceSessionStore(db: Db, options: { allowLocalBoard: boolean; n
     // PAR-12608 4.6a row 6: every call, session and tool call is mapped to its
     // person here, before anything is written. A member restricted under
     // `enforce` is refused, so nothing is created and no run starts.
+    // `instance_admin` is not checked on purpose (PAR-14331): PAR-12608 2 and
+    // 4.1 never bind an instance admin, as the route guard and plugin gate skip
+    // `isInstanceAdmin`; that authority was just proven from instance_user_roles.
     if (caller.authority === "member" && await inboundRefusedForPerson(db, { companyId, personId: caller.id, channel: "voice" }, tx)) {
       throw forbidden("Your access to this company is restricted, so voice work is not available");
     }
