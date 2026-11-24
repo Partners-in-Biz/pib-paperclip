@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Loader2, MessageSquareText, X } from "lucide-react";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { Button } from "@/components/ui/button";
@@ -24,6 +24,14 @@ export function ChatPanel({ c }: { c: CanvasController }) {
   const [agentId, setAgentId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const chat = useBoardChat(selectedCompanyId ?? null, activeBoard?.id, agentId, open);
+  const list = useRef<HTMLDivElement>(null);
+  const lastId = chat.comments[chat.comments.length - 1]?.id;
+  const running = Boolean(chat.liveRun);
+  // Keep the newest reply and the run line in view.
+  useEffect(() => {
+    const el = list.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [lastId, running, open]);
 
   const choices = useMemo(() => agents.filter((a) => a.status !== "terminated"), [agents]);
   const agentName = useMemo(() => new Map(agents.map((a) => [a.id, a.name])), [agents]);
@@ -88,7 +96,7 @@ export function ChatPanel({ c }: { c: CanvasController }) {
         </p>
       ) : null}
 
-      <div className="min-h-0 flex-1 overflow-y-auto p-3">
+      <div ref={list} className="min-h-0 flex-1 overflow-y-auto p-3">
         {!agentId ? (
           <p className="text-xs text-muted-foreground">Pick an agent to start a conversation about this board.</p>
         ) : chat.loading ? (
@@ -101,8 +109,8 @@ export function ChatPanel({ c }: { c: CanvasController }) {
           <ul className="flex flex-col gap-3">
             {chat.comments.map((cm) => (
               <li key={cm.id} className="min-w-0">
-                <div className="flex items-baseline gap-2 text-xs">
-                  <span className="font-medium text-foreground">
+                <div className="flex flex-wrap items-baseline gap-x-2 text-xs">
+                  <span className="min-w-0 font-medium break-all text-foreground">
                     {cm.authorAgentId ? (agentName.get(cm.authorAgentId) ?? "Agent") : cm.authorUserId === chat.userId ? "You" : "Member"}
                   </span>
                   <span className="text-muted-foreground">{timeAgo(cm.createdAt)}</span>
@@ -134,7 +142,7 @@ export function ChatPanel({ c }: { c: CanvasController }) {
             onChange={(e) => setDraft(e.target.value)}
             disabled={chat.off}
             placeholder={agentId ? "Message the agent" : "Pick an agent first"}
-            rows={3}
+            rows={2}
             className="w-full resize-none rounded-md border border-border bg-background p-2 text-sm outline-none focus:border-ring disabled:opacity-60"
             onKeyDown={(e) => {
               if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
