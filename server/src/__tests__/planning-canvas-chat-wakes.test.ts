@@ -294,11 +294,9 @@ describe("planning canvas chat wake database support", () => {
         .set({ "x-test-session": SECOND, origin: "http://localhost" }).send(body);
       expect(res.status, res.text).toBe(200);
       const runs = await runsFor(first.body.threadIssueId, started);
-      // Rule s.2: the person whose action caused the wake (SECOND). The platform gives the thread's
-      // responsible person (the asker) in both modes, though the wake carries SECOND's H1 stamp under
-      // `enforce`. Same for every issue, not chat code: recorded in the PR's writer table and raised on
-      // PAR-14270. This pins today's result so a platform fix shows up here.
-      const expected = ASKER;
+      // Rule s.2: the person whose action caused the wake (SECOND) under `enforce` (H1, PAR-14378);
+      // under `off` the run keeps the thread's person (the asker), as today.
+      const expected = mode === "enforce" ? SECOND : ASKER;
       expect(actingPersons(runs).map((s) => s.person)).toEqual(runs.filter((r) => seen.runs.has(r.id)).map(() => expected));
     });
   });
