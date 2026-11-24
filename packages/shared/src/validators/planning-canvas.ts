@@ -173,11 +173,27 @@ export const planningCanvasMarkdownDataSchema = z.strictObject({
   markdown: z.string().max(L.markdownMaxLength),
 });
 
+const embedPropsSchema = z
+  .record(z.string().min(1).max(100), z.union([z.string().max(L.embedPropsMaxBytes), z.number().finite(), z.boolean()]))
+  .superRefine((props, ctx) => {
+    if (new TextEncoder().encode(JSON.stringify(props)).length > L.embedPropsMaxBytes) {
+      ctx.addIssue({ code: "custom", message: "embed props over limit" });
+    }
+  });
+
+export const planningCanvasEmbedDataSchema = z.strictObject({
+  plugin: z.string().min(1).max(200),
+  type: z.string().min(1).max(100),
+  assetId: z.string().min(1).max(200).optional(),
+  props: embedPropsSchema,
+});
+
 const TYPED_DATA_SCHEMAS: Partial<Record<PlanningCanvasNodeKind, z.ZodType>> = {
   table: planningCanvasTableDataSchema,
   kanban: planningCanvasKanbanDataSchema,
   timeline: planningCanvasTimelineDataSchema,
   markdown: planningCanvasMarkdownDataSchema,
+  embed: planningCanvasEmbedDataSchema,
 };
 
 export const planningCanvasTypedDataSchema = z.union([
@@ -185,6 +201,7 @@ export const planningCanvasTypedDataSchema = z.union([
   planningCanvasKanbanDataSchema,
   planningCanvasTimelineDataSchema,
   planningCanvasMarkdownDataSchema,
+  planningCanvasEmbedDataSchema,
 ]);
 
 const pointSchema = z.strictObject({ x: z.number().finite(), y: z.number().finite() });
