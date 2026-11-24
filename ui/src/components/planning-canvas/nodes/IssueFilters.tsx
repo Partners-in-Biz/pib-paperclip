@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ISSUE_STATUSES, type PlanningCanvasIssueQuery } from "@paperclipai/shared";
+import { agentsApi } from "@/api/agents";
 import { goalsApi } from "@/api/goals";
 import { issuesApi } from "@/api/issues";
 import { projectsApi } from "@/api/projects";
@@ -20,7 +21,9 @@ const titleCase = (key: string) => key.replace(/_/g, " ").replace(/^\w/, (ch) =>
 export function IssueFilters({ query, onChange }: { query: PlanningCanvasIssueQuery; onChange: (next: PlanningCanvasIssueQuery) => void }) {
   const latest = useLatestCanvas();
   const companyId = latest.current.selectedCompanyId ?? "";
-  const agents = latest.current.agents ?? [];
+  // Same key as the controller's agents read, so it is shared from cache and re-renders when it loads.
+  const agentsQuery = useQuery({ queryKey: queryKeys.agents.list(companyId), queryFn: () => agentsApi.list(companyId), enabled: !!companyId, staleTime: 30_000 });
+  const agents = agentsQuery.data ?? [];
   const projects = useQuery({ queryKey: queryKeys.projects.list(companyId), queryFn: () => projectsApi.list(companyId), enabled: !!companyId, staleTime: 30_000 });
   const goals = useQuery({ queryKey: queryKeys.goals.list(companyId), queryFn: () => goalsApi.list(companyId), enabled: !!companyId, staleTime: 30_000 });
   const parentId = query.filter.parentId;
@@ -28,6 +31,20 @@ export function IssueFilters({ query, onChange }: { query: PlanningCanvasIssueQu
   const [parentText, setParentText] = useState("");
   const [parentError, setParentError] = useState(false);
   const [statusOpen, setStatusOpen] = useState(false);
+  const statusRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!statusOpen) return;
+    const onDown = (e: PointerEvent) => {
+      if (!statusRef.current?.contains(e.target as Node)) setStatusOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setStatusOpen(false);
+    document.addEventListener("pointerdown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [statusOpen]);
   const { filter } = query;
   const set = (patch: IssueFilterPatch) => onChange(withFilter(query, patch));
   const count = activeFilterCount(filter);
@@ -73,7 +90,7 @@ export function IssueFilters({ query, onChange }: { query: PlanningCanvasIssueQu
           </option>
         ))}
       </select>
-      <div className="relative">
+      <div className="relative" ref={statusRef}>
         <button type="button" aria-expanded={statusOpen} aria-label="Filter by status" className={cn(SELECT, "text-left")} onClick={() => setStatusOpen((o) => !o)}>
           {filter.status?.length ? `Status (${filter.status.length})` : "Any status"}
         </button>

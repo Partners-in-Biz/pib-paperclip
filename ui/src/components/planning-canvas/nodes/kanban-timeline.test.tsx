@@ -16,7 +16,7 @@ import { ApiError } from "@/api/client";
 import { CanvasRefContext } from "@/components/planning-canvas/nodes/canvas-context";
 import { KanbanNode } from "@/components/planning-canvas/nodes/KanbanNode";
 import { TimelineNode } from "@/components/planning-canvas/nodes/TimelineNode";
-import { activeFilterCount, defaultQueryFor, toggleStatus, withFilter, groupIssues, issueBars, newKanban, newTimeline, projectMilestones, timelineLayout, type QueriedIssue } from "@/components/planning-canvas/nodes/issue-board";
+import { activeFilterCount, boardProjectDefault, defaultQueryFor, toggleStatus, withFilter, groupIssues, issueBars, newKanban, newTimeline, projectMilestones, timelineLayout, type QueriedIssue } from "@/components/planning-canvas/nodes/issue-board";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 afterEach(() => vi.clearAllMocks());
@@ -57,6 +57,10 @@ describe("issue filter mapping", () => {
     expect(newTimeline(A).source).toMatchObject({ kind: "issues", filter: { projectId: A } });
     expect(newKanban().source.filter).toEqual({});
     expect(defaultQueryFor(null).filter).toEqual({});
+    expect(boardProjectDefault({ scope: "project", projectId: A })).toBe(A);
+    expect(boardProjectDefault({ scope: "company", projectId: null })).toBeNull();
+    expect(boardProjectDefault({ scope: "project", projectId: null })).toBeNull();
+    expect(boardProjectDefault(null)).toBeNull();
   });
 });
 

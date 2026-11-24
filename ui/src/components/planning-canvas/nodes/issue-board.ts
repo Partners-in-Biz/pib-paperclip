@@ -37,6 +37,11 @@ export function newTimeline(projectId?: string | null): PlanningCanvasTimelineDa
   return { source: defaultQueryFor(projectId), scale: "week" };
 }
 
+/** The project a new kanban or timeline should default to: only a project board has one. */
+export function boardProjectDefault(board: { scope?: string; projectId?: string | null } | null | undefined): string | null {
+  return board?.scope === "project" ? (board.projectId ?? null) : null;
+}
+
 export type IssueFilter = PlanningCanvasIssueQuery["filter"];
 export type IssueFilterPatch = { [K in keyof IssueFilter]?: IssueFilter[K] | null };
 
