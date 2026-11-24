@@ -746,9 +746,8 @@ async function executeHermes(
   // Failed resumes remain failures. Do not infer a safe restart from CLI text.
   if (sessionId) {
     args.push("--resume", sessionId);
-    // Without this, Hermes changes into the directory the old session recorded
-    // instead of staying in the run's workspace.
-    args.push("--no-restore-cwd");
+    // Resume sends --resume only: the gateway CLI refuses --no-restore-cwd and
+    // a resume --in that differs from the session's frozen cwd.
   }
   // Init event carries session_id before any model work, so a kill still
   // leaves a checkpoint the next wake can resume (PAR-6227).
