@@ -3958,12 +3958,6 @@ export function heartbeatService(
               },
             );
           }
-          if (latestRun && isHeartbeatRunTerminalStatus(latestRun.status)) {
-            // Last ssh op of the run has settled: close its shared connection.
-            await cleanupSshConnectionReuse({ runId: run.id }).catch((err) => {
-              logger.warn({ err, runId: run.id }, "failed to close the run's shared ssh connection");
-            });
-          }
           // A retained or unverified process stays above this release boundary.
           // If no stopped-copy capture occurred, preserve an explicit loss report.
           await instructionWorkingCopy?.releaseWarmInstructionPreparation?.();
@@ -4127,6 +4121,16 @@ export function heartbeatService(
         executionControl.finish();
         if (adapterExecutionControls.get(run.id) === executionControl) {
           adapterExecutionControls.delete(run.id);
+        }
+        // Keyed on terminal status only: native ownership or an earlier
+        // teardown error must not leave the run's ssh master open (PAR-14337).
+        const sshRun = latestRun && isHeartbeatRunTerminalStatus(latestRun.status)
+          ? latestRun
+          : await getRun(run.id).catch(() => null);
+        if (sshRun && isHeartbeatRunTerminalStatus(sshRun.status)) {
+          await cleanupSshConnectionReuse({ runId: run.id }).catch((err) => {
+            logger.warn({ err, runId: run.id }, "failed to close the run's shared ssh connection");
+          });
         }
       }
       if (latestRun) await reconcileMuseNativeTerminalRun(db, latestRun);
