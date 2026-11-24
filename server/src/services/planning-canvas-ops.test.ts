@@ -490,6 +490,20 @@ databaseSuite("planning canvas ops engine (real PostgreSQL)", () => {
       await exercise(b, "u1");
     });
 
+    it("refuses points and out-of-range geometry on an unknown kind", async () => {
+      const b = await board();
+      await seedUnknown(b, "u3");
+      const points = await apply(b, [{ op: "update", key: "u3", set: { points: [{ x: 1, y: 1 }] } as never }]);
+      expect(points.results[0]).toMatchObject({ status: "rejected", reason: "unknown_kind" });
+      const color = await apply(b, [{ op: "update", key: "u3", set: { color: "blue" } as never }]);
+      expect(color.results[0]).toMatchObject({ status: "rejected", reason: "unknown_kind" });
+      const narrow = await apply(b, [{ op: "update", key: "u3", set: { width: 10 } }]);
+      expect(narrow.results[0]).toMatchObject({ status: "rejected", reason: "invalid_item" });
+      const [row] = await db.select().from(planningCanvasItems).where(and(eq(planningCanvasItems.boardId, b.boardId), eq(planningCanvasItems.itemKey, "u3")));
+      expect(row!.data).toMatchObject({ width: 200 });
+      expect(row!.data).not.toHaveProperty("points");
+    });
+
     it("refuses adding an unknown kind", async () => {
       const b = await board();
       await expect(apply(b, [node("u2", { kind: "hologram" })])).rejects.toMatchObject({ status: 400 });

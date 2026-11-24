@@ -16,9 +16,9 @@ function node(id: string, y: number) {
   return { id, kind: "note", x: 0, y, width: 260, height: 140, zIndex: 1, color: "slate", title: "", content: "" };
 }
 
-function render(metas: Array<[string, NodeLinkMeta]>, refs: CanvasRefMap) {
+function render(metas: Array<[string, NodeLinkMeta]>, refs: CanvasRefMap, kind = "note") {
   const c = {
-    sortedNodes: metas.map(([id], i) => node(id, i * 200)),
+    sortedNodes: metas.map(([id], i) => ({ ...node(id, i * 200), kind })),
     selectedNodeIds: [],
     editingNodeId: null,
     connectFromId: null,
@@ -83,5 +83,11 @@ describe("NodesLayer link nodes", () => {
     expect(html).toContain("PAR-2");
     expect(html).toContain("No access");
     expect(html.match(/rounded-full border border-border/g)).toHaveLength(3);
+  });
+
+  it("draws an unknown kind as a placeholder card with the kind name", () => {
+    const html = render([["u1", { links: [] } as never]], new Map(), "hologram-with-a-very-long-kind-name");
+    expect(html).toContain('data-canvas-placeholder="hologram-with-a-very-long-kind-name"');
+    expect(html).toContain(">hologram-with-a-very-long-kind-name<");
   });
 });
