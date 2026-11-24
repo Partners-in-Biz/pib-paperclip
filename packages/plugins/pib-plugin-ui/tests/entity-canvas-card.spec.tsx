@@ -110,4 +110,11 @@ describe("text only", () => {
     expect(container.querySelector("a")?.getAttribute("href")).toBe("/crm?client=company:c1");
     expect(container.querySelectorAll("dt")).toHaveLength(4);
   });
+  for (const href of ["/\t/evil.example", "/\n/evil.example", "/\r/evil.example"]) {
+    it(`draws no link for a control character in href ${JSON.stringify(href)}`, async () => {
+      await draw(async () => ({ cards: [summary("c1", { href })] }));
+      expect(state()).toBe("card");
+      expect(container.querySelector("a")).toBeNull();
+    });
+  }
 });

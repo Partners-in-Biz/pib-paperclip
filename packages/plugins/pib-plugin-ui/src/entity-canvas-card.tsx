@@ -22,17 +22,19 @@ export function useCardBatcher(resolve: CardsResolve): CardBatcher {
 /** The state of one card: null while loading. */
 export function useEntityCard(batcher: CardBatcher, type: string, id: string): { state: EntityCardState | null; retry: () => void } {
   const [state, setState] = useState<EntityCardState | null>(null);
+  const live = useRef(0);
   useEffect(() => {
-    let live = true;
+    const mine = ++live.current;
     setState(null);
-    void batcher.load(type, id).then((next) => live && setState(next));
+    void batcher.load(type, id).then((next) => live.current === mine && setState(next));
     return () => {
-      live = false;
+      live.current++;
     };
   }, [batcher, type, id]);
   const retry = useCallback(() => {
+    const mine = ++live.current;
     setState(null);
-    void batcher.retry(type, id).then(setState);
+    void batcher.retry(type, id).then((next) => live.current === mine && setState(next));
   }, [batcher, type, id]);
   return { state, retry };
 }

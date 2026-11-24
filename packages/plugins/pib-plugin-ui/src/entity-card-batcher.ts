@@ -61,9 +61,9 @@ function isRefusedAnswer(answer: unknown): boolean {
   return v.ok === false && !!v.error && typeof v.error === "object" && (v.error as { code?: unknown }).code === "SOCIAL_RULE";
 }
 
-/** Relative app path with exactly one leading slash. Anything else is not drawn as a link. */
+/** Relative app path with exactly one leading slash and no control characters (browsers drop tab and newline, so "/\t/x" would become "//x"). Anything else is not drawn as a link. */
 export function isCardHref(href: unknown): href is string {
-  return typeof href === "string" && /^\/(?![/\\])/.test(href);
+  return typeof href === "string" && /^\/(?![/\\])/.test(href) && !/[\u0000-\u001f\u007f]/.test(href);
 }
 
 function text(value: unknown, max: number): string | undefined {
