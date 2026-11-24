@@ -20,8 +20,8 @@ export const MarkdownNode = memo(function MarkdownNode({ nodeKey, data, title }:
     <RefCard label={title || "Markdown"} icon={<FileText className="size-3.5" />}>
       <div
         className="min-h-0 flex-1 overflow-auto text-sm"
-        onMouseDown={editing ? stop : undefined}
-        onWheel={stop}
+        onPointerDown={editing ? stop : undefined}
+        data-canvas-scroll=""
         onDoubleClick={(e) => {
           stop(e);
           setEditing(true);

@@ -38,7 +38,7 @@ export const TableNode = memo(function TableNode({ nodeKey, data, title }: { nod
 
   return (
     <RefCard label={title || "Table"} icon={<Table2 className="size-3.5" />}>
-      <div className="min-h-0 flex-1 overflow-auto" onMouseDown={stop} onDoubleClick={stop} onWheel={stop}>
+      <div className="min-h-0 flex-1 overflow-auto" onPointerDown={stop} onDoubleClick={stop} data-canvas-scroll="">
         <table className="w-full border-collapse text-left" aria-label={title || "Table"}>
           <thead>
             <tr>
@@ -93,7 +93,7 @@ export const TableNode = memo(function TableNode({ nodeKey, data, title }: { nod
           </tbody>
         </table>
       </div>
-      <div className="flex items-center gap-1 pt-1" onMouseDown={stop}>
+      <div className="flex items-center gap-1 pt-1" onPointerDown={stop}>
         <Button type="button" size="xs" variant="ghost" disabled={!canAddRow(data)} onClick={() => edit(addRow(data))}>
           <Plus className="size-3" /> Row
         </Button>

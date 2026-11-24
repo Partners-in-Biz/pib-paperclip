@@ -1,6 +1,7 @@
 import { useRef } from "react";
 import { ScheduleNoteHandoffDialog } from "@/components/ScheduleNoteHandoffDialog";
 import { ConnectorsLayer, MarqueeOverlay } from "@/components/planning-canvas/canvas/CanvasOverlays";
+import { useCanvasCulling } from "@/components/planning-canvas/canvas/useCanvasCulling";
 import { CanvasRefsContext, useCanvasRefs } from "@/components/planning-canvas/nodes/canvas-refs";
 import { CanvasRefContext } from "@/components/planning-canvas/nodes/canvas-context";
 import { NodesLayer } from "@/components/planning-canvas/nodes/NodeView";
@@ -24,13 +25,23 @@ export function PlanningCanvas() {
     tool,
     spacePressed,
     viewport,
-    handleCanvasMouseDown,
-    handleCanvasWheel,
+    handleCanvasPointerDown,
     scheduleNote,
     setScheduleNote,
     agents,
     projects,
   } = c;
+  const culled = useCanvasCulling({
+    canvasRef,
+    mountKey: `${selectedCompanyId ?? ""}:${c.activeBoard?.id ?? ""}`,
+    viewport,
+    sortedNodes: c.sortedNodes,
+    connectors: c.connectors,
+    nodeById: c.nodeById,
+    selectedNodeIds: c.selectedNodeIds,
+    editingNodeId: c.editingNodeId,
+    connectFromId: c.connectFromId,
+  });
 
   if (!selectedCompanyId) {
     return (
@@ -55,10 +66,10 @@ export function PlanningCanvas() {
           <div
             ref={canvasRef}
             data-testid="planning-canvas-viewport"
-            onMouseDown={handleCanvasMouseDown}
-            onWheel={handleCanvasWheel}
+            data-node-count={c.nodes.length}
+            onPointerDown={handleCanvasPointerDown}
             className={cn(
-              "relative flex-1 overflow-hidden",
+              "relative flex-1 touch-none overflow-hidden",
               tool === "hand" || spacePressed
                 ? "cursor-grab active:cursor-grabbing"
                 : tool === "select"
@@ -72,7 +83,7 @@ export function PlanningCanvas() {
               backgroundPosition: `${viewport.x}px ${viewport.y}px`,
             }}
           >
-            {/* Transformed World Container */}
+            {/* Transformed World Container: the one transformed layer; only culled items mount in it (C17) */}
             <div
               className="pointer-events-none absolute left-0 top-0 origin-top-left"
               style={{
@@ -80,7 +91,7 @@ export function PlanningCanvas() {
               }}
             >
               <ConnectorsLayer
-                connectors={c.connectors}
+                connectors={culled.visibleConnectors}
                 strokes={c.strokes}
                 setSelectedNodeIds={c.setSelectedNodeIds}
                 selectedConnectorId={c.selectedConnectorId}
@@ -90,7 +101,16 @@ export function PlanningCanvas() {
                 nodeById={c.nodeById}
               />
               <MarqueeOverlay c={c} />
-              <NodesLayer c={c} />
+              <NodesLayer
+                nodes={culled.visibleNodes}
+                selectedNodeIds={c.selectedNodeIds}
+                editingNodeId={c.editingNodeId}
+                connectFromId={c.connectFromId}
+                notesById={c.notesById}
+                linkMeta={c.opStore.linkMeta}
+                typedMeta={c.opStore.typedMeta}
+                lowDetail={culled.lowDetail}
+              />
               <RealtimeOverlay c={c} />
             </div>
           </div>

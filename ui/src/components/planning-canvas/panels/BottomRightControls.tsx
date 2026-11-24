@@ -1,4 +1,6 @@
 import { Maximize2, Minus, Plus } from "lucide-react";
+import { memo, useEffect, useRef } from "react";
+import type { CanvasNode } from "@paperclipai/shared";
 import { clampZoom } from "@/components/planning-canvas/canvas-constants";
 import { type CanvasController } from "@/components/planning-canvas/state/useCanvasController";
 import { Button } from "@/components/ui/button";
@@ -17,42 +19,64 @@ export function Minimap({ c }: { c: CanvasController }) {
         title="Click to fit all items in view"
         className="relative h-24 w-36 cursor-pointer overflow-hidden rounded-lg border border-border bg-popover/90 p-1.5 shadow-md backdrop-blur-xs"
       >
-        {(() => {
-          let minX = Infinity;
-          let minY = Infinity;
-          let maxX = -Infinity;
-          let maxY = -Infinity;
-          for (const n of nodes) {
-            minX = Math.min(minX, n.x);
-            minY = Math.min(minY, n.y);
-            maxX = Math.max(maxX, n.x + n.width);
-            maxY = Math.max(maxY, n.y + n.height);
-          }
-          const spanX = Math.max(400, maxX - minX);
-          const spanY = Math.max(300, maxY - minY);
-          const scale = Math.min(130 / spanX, 82 / spanY);
-          return nodes.map((n) => (
-            <div
-              key={n.id}
-              style={{
-                left: 6 + (n.x - minX) * scale,
-                top: 6 + (n.y - minY) * scale,
-                width: Math.max(4, n.width * scale),
-                height: Math.max(3, n.height * scale),
-              }}
-              className={cn(
-                "absolute rounded-[2px]",
-                n.kind === "frame"
-                  ? "border border-muted-foreground/40 bg-muted/30"
-                  : CANVAS_COLOR_THEMES[n.color]?.swatch ?? "bg-amber-400",
-              )}
-            />
-          ));
-        })()}
+        <MinimapDots nodes={nodes} />
       </div>
     ) : null
   );
 }
+
+/** Minimap size inside its padding (the card is h-24 w-36 with p-1.5). */
+const MINIMAP_W = 132;
+const MINIMAP_H = 84;
+
+/**
+ * One canvas, redrawn only when the node list changes (C17). Thousands of absolutely positioned
+ * dots made every pan frame lay all of them out again.
+ */
+const MinimapDots = memo(function MinimapDots({ nodes }: { nodes: CanvasNode[] }) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    const canvas = ref.current;
+    const ctx = canvas?.getContext("2d");
+    if (!canvas || !ctx) return;
+    const ratio = window.devicePixelRatio || 1;
+    canvas.width = MINIMAP_W * ratio;
+    canvas.height = MINIMAP_H * ratio;
+    ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    ctx.clearRect(0, 0, MINIMAP_W, MINIMAP_H);
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const n of nodes) {
+      minX = Math.min(minX, n.x);
+      minY = Math.min(minY, n.y);
+      maxX = Math.max(maxX, n.x + n.width);
+      maxY = Math.max(maxY, n.y + n.height);
+    }
+    const spanX = Math.max(400, maxX - minX);
+    const spanY = Math.max(300, maxY - minY);
+    const scale = Math.min((MINIMAP_W - 4) / spanX, (MINIMAP_H - 4) / spanY);
+    for (const n of nodes) {
+      const color = (CANVAS_COLOR_THEMES[n.color] ?? CANVAS_COLOR_THEMES.amber).strokeHex;
+      const x = (n.x - minX) * scale;
+      const y = (n.y - minY) * scale;
+      const w = Math.max(2, n.width * scale);
+      const h = Math.max(1.5, n.height * scale);
+      if (n.kind === "frame") {
+        ctx.globalAlpha = 0.45;
+        ctx.strokeStyle = color;
+        ctx.strokeRect(x, y, w, h);
+      } else {
+        ctx.globalAlpha = 0.9;
+        ctx.fillStyle = color;
+        ctx.fillRect(x, y, w, h);
+      }
+    }
+    ctx.globalAlpha = 1;
+  }, [nodes]);
+  return <canvas ref={ref} aria-hidden className="size-full" data-testid="planning-canvas-minimap" />;
+});
 
 export function ZoomControls({ c }: { c: CanvasController }) {
   const {

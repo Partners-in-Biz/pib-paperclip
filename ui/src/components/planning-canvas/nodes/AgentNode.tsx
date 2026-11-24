@@ -12,7 +12,7 @@ export function AgentNode({ refId }: { refId: string | null }) {
     <RefCard label="Agent" icon={<Bot className="size-3.5" />}>
       {!isRefData(agent) ? refPlaceholder(agent) : (
         <>
-          <Link to={`/agents/${agent.id}`} onMouseDown={(e) => e.stopPropagation()} className="min-w-0 hover:underline">
+          <Link to={`/agents/${agent.id}`} onPointerDown={(e) => e.stopPropagation()} className="min-w-0 hover:underline">
             <AgentIdentity agent={{ id: agent.id, name: agent.name }} size="sm" />
           </Link>
           {agent.title ? <p className="min-h-0 shrink truncate text-xs text-muted-foreground">{agent.title}</p> : null}

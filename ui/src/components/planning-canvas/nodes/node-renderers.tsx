@@ -34,7 +34,7 @@ function FrameNode({ node, isEditing, theme, c }: NodeRenderProps) {
       {node.handedOffIssueIdentifier ? (
         <Link
           to={`/issues/${node.handedOffIssueIdentifier}`}
-          onMouseDown={(e) => e.stopPropagation()}
+          onPointerDown={(e) => e.stopPropagation()}
           className="inline-flex items-center gap-1 rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-300"
         >
           {node.handedOffIssueIdentifier}
@@ -50,7 +50,7 @@ function StickyNode({ node, isEditing, c }: NodeRenderProps) {
   return (
     <>
       {isEditing ? (
-        <div className="flex h-full flex-col gap-1.5" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="flex h-full flex-col gap-1.5" onPointerDown={(e) => e.stopPropagation()}>
           <input
             type="text"
             autoFocus
@@ -93,7 +93,7 @@ function StickyNode({ node, isEditing, c }: NodeRenderProps) {
           {node.handedOffIssueIdentifier ? (
             <Link
               to={`/issues/${node.handedOffIssueIdentifier}`}
-              onMouseDown={(e) => e.stopPropagation()}
+              onPointerDown={(e) => e.stopPropagation()}
               className="inline-flex w-fit items-center gap-1 rounded bg-background/80 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700 hover:underline dark:text-emerald-300"
             >
               <CheckCircle2 className="size-2.5" />
@@ -125,7 +125,7 @@ function NoteNode({ node, theme, linkedNote }: NodeRenderProps) {
           {linkedNote ? (
             <Link
               to={`/notes/${linkedNote.id}`}
-              onMouseDown={(e) => e.stopPropagation()}
+              onPointerDown={(e) => e.stopPropagation()}
               title="Open in Personal Notes"
               className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
             >
@@ -154,7 +154,7 @@ function NoteNode({ node, theme, linkedNote }: NodeRenderProps) {
           {(linkedNote?.handedOffIssueIdentifier ?? node.handedOffIssueIdentifier) ? (
             <Link
               to={`/issues/${linkedNote?.handedOffIssueIdentifier ?? node.handedOffIssueIdentifier}`}
-              onMouseDown={(e) => e.stopPropagation()}
+              onPointerDown={(e) => e.stopPropagation()}
               className="inline-flex items-center gap-1 rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 hover:underline dark:text-emerald-300"
             >
               <CheckCircle2 className="size-2.5" />
@@ -176,7 +176,7 @@ function ShapeNode({ node, isEditing, c }: NodeRenderProps) {
         type="text"
         autoFocus
         value={node.title}
-        onMouseDown={(e) => e.stopPropagation()}
+        onPointerDown={(e) => e.stopPropagation()}
         onChange={(e) => {
           const val = e.target.value;
           setNodes((prev) =>
@@ -203,7 +203,7 @@ function TextNode({ node, isEditing, c }: NodeRenderProps) {
         type="text"
         autoFocus
         value={node.title}
-        onMouseDown={(e) => e.stopPropagation()}
+        onPointerDown={(e) => e.stopPropagation()}
         onChange={(e) => {
           const val = e.target.value;
           setNodes((prev) =>

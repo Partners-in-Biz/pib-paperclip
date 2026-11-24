@@ -14,7 +14,7 @@ export function IssueNode({ refId }: { refId: string | null }) {
           <div className="flex min-w-0 items-center justify-between gap-2">
             <Link
               to={`/issues/${issue.identifier ?? issue.id}`}
-              onMouseDown={(e) => e.stopPropagation()}
+              onPointerDown={(e) => e.stopPropagation()}
               className="truncate text-xs font-semibold text-foreground hover:underline"
             >
               {issue.identifier ?? "Issue"}

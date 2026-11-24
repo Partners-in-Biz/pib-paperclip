@@ -87,7 +87,7 @@ export const KanbanNode = memo(function KanbanNode({ nodeKey, data, title }: { n
     body = <p className="text-xs text-muted-foreground">No issues match this query.</p>;
   } else {
     body = (
-      <div className="flex min-h-0 flex-1 gap-2 overflow-auto" onMouseDown={stop} onWheel={stop}>
+      <div className="flex min-h-0 flex-1 gap-2 overflow-auto" onPointerDown={stop} data-canvas-scroll="">
         {columns.map((column) => {
           const collapsed = data.collapsed.includes(column.key);
           return (
@@ -152,7 +152,7 @@ export const KanbanNode = memo(function KanbanNode({ nodeKey, data, title }: { n
 
   return (
     <RefCard label={title || "Kanban"} icon={<Columns3 className="size-3.5" />}>
-      <div className="flex items-center gap-1" onMouseDown={stop} onDoubleClick={stop}>
+      <div className="flex items-center gap-1" onPointerDown={stop} onDoubleClick={stop}>
         <label className="flex items-center gap-1 text-xs text-muted-foreground">
           Group by
           <select
