@@ -6,6 +6,8 @@
  *
  *   node dist/ml/runner.mjs --selftest   load both models (hash-checked), run one zero frame through each, print one JSON line
  *   node dist/ml/runner.mjs track --in <file> --from <s> --to <s>   face boxes at 5 samples per second (`track.ts`)
+ *   node dist/ml/runner.mjs matte --engine local-fast --in <file> --from <s> --to <s> --out <file.mp4>
+ *                                   colour over grey matte, one MP4 (`matte.ts`)
  *
  * Exit codes are named (`EXIT`); on failure stdout holds `{"ok":false,"code":"<name>","error":"..."}`.
  */
@@ -16,6 +18,7 @@ import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { EXIT, RunnerError, type ExitName } from "./errors.js";
 import { parseTrackArgs, track } from "./track.js";
+import { matte, parseMatteArgs } from "./matte.js";
 
 export { EXIT, RunnerError, type ExitName };
 
@@ -124,34 +127,45 @@ export async function selftest(ml = mlDir()) {
   return { ok: true as const, runtime: { onnxruntime: ort.env.versions.node ?? ort.env.versions.common, path }, threads: THREADS, models, peakRssMb: peakRssMb() };
 }
 
-/** Face boxes for one range (`track.ts`); the YuNet model is hash-checked like the self-test. */
-export async function runTrack(argv: string[], ml = mlDir()) {
-  const args = parseTrackArgs(argv);
+/** One hash-checked model session for the length of `use`. */
+async function withSession<T>(ml: string, spec: ModelSpec, use: (ort: Ort, session: Awaited<ReturnType<Ort["InferenceSession"]["create"]>>) => Promise<T>): Promise<T> {
   const { ort } = loadRuntime(ml);
-  const { bytes } = readModel(ml, MODELS[0]!);
+  const { bytes } = readModel(ml, spec);
   let session;
   try {
     session = await ort.InferenceSession.create(bytes, { intraOpNumThreads: THREADS, interOpNumThreads: 1 });
   } catch (e) {
-    throw new RunnerError("model_bad", `${MODELS[0]!.file} failed to load: ${(e as Error).message}`);
+    throw new RunnerError("model_bad", `${spec.file} failed to load: ${(e as Error).message}`);
   }
   try {
-    return await track(args, { ort, session });
+    return await use(ort, session);
   } finally {
     await session.release();
   }
 }
 
-const USAGE = "usage: runner.mjs --selftest | track --in <file> --from <s> --to <s>\n";
+/** Face boxes for one range (`track.ts`); the YuNet model is hash-checked like the self-test. */
+export async function runTrack(argv: string[], ml = mlDir()) {
+  const args = parseTrackArgs(argv);
+  return withSession(ml, MODELS[0]!, (ort, session) => track(args, { ort, session }));
+}
+
+/** Colour over matte for one range (`matte.ts`); arguments (and the engine) are checked before any model loads. */
+export async function runMatte(argv: string[], ml = mlDir()) {
+  const args = parseMatteArgs(argv);
+  return withSession(ml, MODELS[1]!, (ort, session) => matte(args, { ort, session }));
+}
+
+const USAGE = "usage: runner.mjs --selftest | track --in <file> --from <s> --to <s> | matte --engine local-fast --in <file> --from <s> --to <s> --out <file.mp4>\n";
 
 export async function main(argv: string[]): Promise<number> {
   const mode = argv[0];
-  if (!((mode === "--selftest" && argv.length === 1) || mode === "track")) {
+  if (!((mode === "--selftest" && argv.length === 1) || mode === "track" || mode === "matte")) {
     process.stderr.write(USAGE);
     return EXIT.usage;
   }
   try {
-    const result = mode === "track" ? await runTrack(argv.slice(1)) : await selftest();
+    const result = mode === "track" ? await runTrack(argv.slice(1)) : mode === "matte" ? await runMatte(argv.slice(1)) : await selftest();
     process.stdout.write(`${JSON.stringify(result)}\n`);
     return EXIT.ok;
   } catch (e) {
