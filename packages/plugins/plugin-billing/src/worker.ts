@@ -41,6 +41,7 @@ import {
   type ModulesPayload,
 } from "@partnersinbiz/pib-plugin-kit";
 import { CRM_DEAL_ACCEPTED_EVENT, CRM_QUOTE_ACCEPTED_EVENT, onSignedDocument } from "./accepted.js";
+import { registerBillingCanvasCards } from "./canvas-cards.js";
 import { backpostTotal, postMissingJournals } from "./backpost.js";
 import { cancelPaymentLinkAction, createPaymentLinkAction, paymentLinksAction, paymentsStatusAction, publicLink, recordRefundAction, simulatePaymentAction } from "./pay/actions.js";
 import { housekeepPaymentLinks } from "./pay/links.js";
@@ -436,6 +437,7 @@ const plugin = definePlugin({
         return handler(ctx, context, params ?? {});
       });
     }
+    registerBillingCanvasCards(ctx);
     ctx.actions.register("billing.sync-skills", async (_params, context) => ({ results: await skillSync?.force(requiredCompany(context)) }));
 
     ctx.jobs.register("mark-overdue", () => trackJob(ctx, "mark-overdue", () => markOverdueJob(ctx)));
