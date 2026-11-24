@@ -97,7 +97,7 @@ export async function finalizeSummarySlotsForTerminalIssue(
  * the slot to idle/ready, so it never matches `status = 'generating'`.
  */
 export async function finalizeSummarySlotsForTerminalRun(
-  db: Pick<Db, "update">,
+  db: Pick<Db, "select" | "update">,
   run: TerminalGenerationRun,
 ) {
   if (!TERMINAL_RUN_STATUSES.has(run.status)) return [];
