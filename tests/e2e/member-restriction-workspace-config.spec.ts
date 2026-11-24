@@ -71,15 +71,11 @@ async function newTaskDialog(page: Page, f: Fixture, all: boolean) {
   const dialog = page.getByRole("dialog");
   await expect(dialog.getByText(PROJECT).first()).toBeVisible();
   await settle(page);
-  // R gets no picker at all today: his project reads come without `executionWorkspacePolicy` (MODE_PICK_GAP).
-  const picker = dialog.getByRole("combobox", { name: "Worktrees" });
-  if (all || await picker.count()) {
-    await picker.click();
-    await expect(page.getByText("Project workspace").first()).toBeVisible();
-    // The group shows only with an isolated workspace to offer (made by a run); O's list read is checked below.
-    if (!all) await shows(page.getByText("Reuse a worktree"), false);
-    await page.keyboard.press("Escape");
-  }
+  await dialog.getByRole("combobox", { name: "Worktrees" }).click();
+  await expect(page.getByText("Project workspace").first()).toBeVisible();
+  // The group shows only with an isolated workspace to offer (made by a run); O's list read is checked below.
+  if (!all) await shows(page.getByText("Reuse a worktree"), false);
+  await page.keyboard.press("Escape");
   return dialog;
 }
 
@@ -92,12 +88,9 @@ async function taskDetail(page: Page, f: Fixture, all: boolean) {
   await page.getByText(/^(Labels|Open a side panel tab)$/).first().waitFor();
   if (await page.getByText("Open a side panel tab").count()) await propertiesTab.first().click();
   await expect(page.getByText("Labels", { exact: true }).first()).toBeVisible();
-  const picker = propertyButton(page, "Execution");
-  if (!all && !await picker.count()) return false;
-  await picker.first().click();
+  await propertyButton(page, "Execution").first().click();
   await expect(page.getByText("New isolated workspace").first()).toBeVisible();
   await shows(page.getByText("Reuse existing workspace…"), all);
-  return true;
 }
 
 /** R's whole visit at 1440, with his three writes; returns the writes' answers. */
@@ -128,14 +121,15 @@ async function visitR(page: Page, f: Fixture) {
   await settle(page);
   await expectNoErrorShown(page);
 
-  // Task detail: read only here; his mode pick is the fixme test below (MODE_PICK_GAP).
-  if (await taskDetail(page, f, false)) await page.keyboard.press("Escape");
+  // Task detail: the mode picker is offered without the reuse entry; his pick is the next test.
+  await taskDetail(page, f, false);
+  await page.keyboard.press("Escape");
   return { project, task };
 }
 
 /** R picks "New isolated workspace" on his task; the PATCH's answer. */
 async function pickMode(page: Page, f: Fixture) {
-  expect(await taskDetail(page, f, false), "R is offered a workspace mode picker").toBe(true);
+  await taskDetail(page, f, false);
   // The UI patches by identifier (`/api/issues/MRC-1`), not by id.
   const picked = page.waitForResponse((r) => r.request().method() === "PATCH"
     && /^\/api\/issues\/[^/]+$/.test(new URL(r.url()).pathname));
@@ -207,11 +201,7 @@ test.describe.serial("member restriction: host configuration and tree control (C
     await shots(f.person, f, "R", testInfo);
   });
 
-  // MODE_PICK_GAP (PAR-14313): at `enforce` the server strips `executionWorkspacePolicy`
-  // from every response R gets (PAR-12951), and the three mode pickers (task properties, the
-  // workspace card, the new task dialog) render only when `project.executionWorkspacePolicy.enabled`
-  // is set. So R is offered no mode picker on the real server. Turn this on with the fix.
-  test.fixme("R at enforce picks a workspace mode on his task (200)", async () => {
+  test("R at enforce picks a workspace mode on his task (200)", async () => {
     await setMode(f, "enforce");
     await f.person.setViewportSize({ width: 1440, height: 900 });
     const mode = await pickMode(f.person, f);

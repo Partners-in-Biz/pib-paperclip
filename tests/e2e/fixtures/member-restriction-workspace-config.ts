@@ -91,9 +91,12 @@ export async function setUp(browser: Browser): Promise<Fixture> {
   const workspace = await api<{ id: string }>(owner, "POST", `/api/projects/${project.id}/workspaces`, {
     name: WORKSPACE, cwd: HOME || ROOT, isPrimary: true,
   });
-  const agent = await api<{ id: string }>(owner, "POST", `${c}/agents`, {
-    name: `Config agent ${RUN}`, role: "engineer", adapterType: "claude_local", adapterConfig: {},
+  // `runner: "legacy"`: on a host qualified for the Paperclip Runner, `auto` stores a Claude agent as
+  // `paperclip_runner`, which has no Chrome override (the toggle is `claude_local` only).
+  const agent = await api<{ id: string; adapterType: string }>(owner, "POST", `${c}/agents`, {
+    name: `Config agent ${RUN}`, role: "engineer", adapterType: "claude_local", adapterConfig: {}, runner: "legacy",
   });
+  expect(agent.adapterType).toBe("claude_local");
   // Never runs: the spec only reads its task's override row.
   await api(owner, "POST", `/api/agents/${agent.id}/pause`, {});
   const rTask = await api<{ id: string }>(owner, "POST", `${c}/issues`, {
