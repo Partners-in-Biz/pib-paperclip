@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act } from "react";
+import { act, type ReactElement } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -58,7 +58,7 @@ describe("issue-board model", () => {
   });
 });
 
-async function mount(node: JSX.Element, controller: Record<string, unknown>) {
+async function mount(node: ReactElement, controller: Record<string, unknown>) {
   const host = document.createElement("div");
   document.body.append(host);
   await act(async () => {
