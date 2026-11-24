@@ -1,4 +1,4 @@
-// PAR-13949 (C19): the keys plan section F adds. Today's tool keys, undo, duplicate, Delete, Esc and
+// PAR-13949 (C19): the keys plan section F adds (capture phase, so it wins over the app shell's `?` and `c`). Today's tool keys, undo, duplicate, Delete, Esc and
 // Space stay in useCanvasPointer; this hook owns everything new and the command palette bridge.
 import { useEffect, useRef } from "react";
 import type { CanvasNode } from "@paperclipai/shared";
@@ -123,7 +123,10 @@ export function useCanvasKeyboard(ctx: Ctx) {
       }
       if (e.altKey) return;
 
-      if (e.key === "?") { e.preventDefault(); run("cheat-sheet"); return; }
+      // The app shell (useKeyboardShortcuts) also binds `?` (app cheat sheet) and `c` (new task) on
+      // document. This listener runs in the capture phase and stops them, so on the board `?` opens
+      // the canvas cheat sheet and `C` comments.
+      if (e.key === "?") { e.preventDefault(); e.stopPropagation(); run("cheat-sheet"); return; }
 
       // Arrow nudge moves the selection; with nothing selected the arrows keep scrolling the page.
       const nudge = nudgeDelta(e);
@@ -160,6 +163,8 @@ export function useCanvasKeyboard(ctx: Ctx) {
       else if (key === "m") run("add-markdown");
       else if (key === "o") run("outline");
       else if (key === "c") {
+        e.preventDefault();
+        e.stopPropagation();
         window.dispatchEvent(new CustomEvent(CANVAS_COMMENT_EVENT, { detail: { nodeId: c.selectedNodeIds[0] ?? null } }));
       }
     }
@@ -169,10 +174,10 @@ export function useCanvasKeyboard(ctx: Ctx) {
       if (id) run(id);
     }
 
-    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keydown", onKeyDown, true);
     window.addEventListener(CANVAS_COMMAND_EVENT, onCommand);
     return () => {
-      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keydown", onKeyDown, true);
       window.removeEventListener(CANVAS_COMMAND_EVENT, onCommand);
     };
   }, []);
