@@ -105,6 +105,10 @@ export function useCanvasPointer(ctx: CanvasData & CanvasState & CanvasBoard & C
       }
 
       if (typing) return;
+      // C19: Ctrl/Cmd/Alt chords belong to the keyboard module (Ctrl+F find, Ctrl+G frame ...).
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      // A dialog (cheat sheet, handoff ...) owns its own keys.
+      if ((e.target as HTMLElement | null)?.closest?.('[role="dialog"]')) return;
 
       if (e.key === "Delete" || e.key === "Backspace") {
         e.preventDefault();

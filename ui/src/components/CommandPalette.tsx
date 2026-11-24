@@ -1,6 +1,7 @@
 import { AgentIdentity } from "@/components/AgentIdentity";
 import { useCombinedInboxTasksEnabled } from "@/hooks/useCombinedInboxTasksEnabled";
 import { useState, useEffect, useMemo } from "react";
+import { CANVAS_COMMANDS, CANVAS_COMMAND_EVENT } from "@/components/planning-canvas/keyboard/canvas-keymap";
 import { useLocation, useNavigate } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { useCompany } from "../context/CompanyContext";
@@ -104,6 +105,7 @@ export function CommandPalette() {
   // PAR-12608 4.6: no entry for a page closed to a restricted member.
   const { isPageHidden } = useMemberRestriction();
   const searchQuery = query.trim();
+  const onPlanningCanvas = /(^|\/)planning-canvas(\/|$)/.test(location.pathname);
   const onIssueDetail = isOnIssueDetail(location.pathname);
   const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
@@ -316,6 +318,27 @@ export function CommandPalette() {
                       {project.description}
                     </span>
                   ) : null}
+                </CommandItem>
+              ))}
+            </CommandGroup>
+            <CommandSeparator />
+          </>
+        )}
+
+        {onPlanningCanvas && (
+          <>
+            <CommandGroup heading="Canvas">
+              {CANVAS_COMMANDS.map((cmd) => (
+                <CommandItem
+                  key={cmd.id}
+                  onSelect={() => {
+                    setOpen(false);
+                    // The palette closes first so focus returns to the board before the action runs.
+                    setTimeout(() => window.dispatchEvent(new CustomEvent(CANVAS_COMMAND_EVENT, { detail: { id: cmd.id } })), 0);
+                  }}
+                >
+                  <PenTool className="mr-2 h-4 w-4" />
+                  {cmd.label}
                 </CommandItem>
               ))}
             </CommandGroup>

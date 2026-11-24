@@ -133,6 +133,7 @@ export function BoardBar({ c }: { c: CanvasController }) {
           <Search className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
           <input
             type="search"
+            data-canvas-find
             value={boardSearch}
             onChange={(e) => setBoardSearch(e.target.value)}
             placeholder="Find on board…"

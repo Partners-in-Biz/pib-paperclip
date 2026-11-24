@@ -2,6 +2,7 @@ import { useCanvasRealtime } from "@/components/planning-canvas/realtime/useCanv
 import { useCanvasActions } from "@/components/planning-canvas/state/useCanvasActions";
 import { useCanvasBoard } from "@/components/planning-canvas/state/useCanvasBoard";
 import { useCanvasData } from "@/components/planning-canvas/state/useCanvasData";
+import { useCanvasKeyboard } from "@/components/planning-canvas/keyboard/useCanvasKeyboard";
 import { useCanvasPointer } from "@/components/planning-canvas/state/useCanvasPointer";
 import { useCanvasState } from "@/components/planning-canvas/state/useCanvasState";
 
@@ -16,6 +17,7 @@ export function useCanvasController() {
   const realtime = useCanvasRealtime({ ...data, ...state, ...board });
   const actions = useCanvasActions({ ...data, ...state, ...board });
   const pointer = useCanvasPointer({ ...data, ...state, ...board, ...actions });
+  useCanvasKeyboard({ ...data, ...state, ...board, ...actions });
   return { ...data, ...state, ...board, ...actions, ...pointer, realtime };
 }
 

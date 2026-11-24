@@ -1,4 +1,4 @@
-import { ArrowRight, Frame, Hand, Link2, MousePointer2, FileText, Table2, Columns3, CalendarRange, NotebookPen, Pen, Shapes, StickyNote, Type } from "lucide-react";
+import { ArrowRight, Frame, Hand, Keyboard, Link2, ListTree, MousePointer2, FileText, Table2, Columns3, CalendarRange, NotebookPen, Pen, Shapes, StickyNote, Type } from "lucide-react";
 import { type CanvasController } from "@/components/planning-canvas/state/useCanvasController";
 import { cn } from "@/lib/utils";
 
@@ -12,9 +12,21 @@ export function ToolRail({ c }: { c: CanvasController }) {
     insertPanelOpen,
     setInsertPanelOpen,
     insertTypedNode,
+    outlineOpen,
+    setOutlineOpen,
+    setCheatSheetOpen,
   } = c;
+  // Under 768 px the rail is a bottom sheet (C19): a horizontal strip pinned to the bottom edge.
   return (
-    <div className="pointer-events-auto absolute left-3 top-1/2 z-30 flex -translate-y-1/2 flex-col gap-1 rounded-xl border border-border bg-popover/95 p-1.5 shadow-lg backdrop-blur-xs">
+    <div
+      role="toolbar"
+      aria-label="Canvas tools"
+      data-testid="planning-canvas-tool-rail"
+      className={cn(
+        "pointer-events-auto absolute left-3 top-1/2 z-30 flex -translate-y-1/2 flex-col gap-1 rounded-xl border border-border bg-popover/95 p-1.5 shadow-lg backdrop-blur-xs",
+        "max-md:inset-x-0 max-md:bottom-0 max-md:left-0 max-md:top-auto max-md:translate-y-0 max-md:flex-row max-md:items-center max-md:overflow-x-auto max-md:rounded-b-none max-md:border-x-0 max-md:border-b-0 max-md:pb-3",
+      )}
+    >
       {(
         [
           { id: "select", icon: MousePointer2, label: "Select (V)" },
@@ -41,7 +53,7 @@ export function ToolRail({ c }: { c: CanvasController }) {
               setConnectFromId(null);
             }}
             className={cn(
-              "flex size-9 items-center justify-center rounded-lg transition-colors",
+              "flex size-9 shrink-0 items-center justify-center rounded-lg transition-colors",
               active
                 ? "bg-foreground text-background shadow-xs"
                 : "text-muted-foreground hover:bg-accent hover:text-foreground",
@@ -51,7 +63,7 @@ export function ToolRail({ c }: { c: CanvasController }) {
           </button>
         );
       })}
-      <div className="my-0.5 h-px bg-border" />
+      <div className="my-0.5 h-px bg-border max-md:mx-0.5 max-md:h-6 max-md:w-px max-md:shrink-0" />
       {(
         [
           { kind: "table", icon: Table2, label: "Add table" },
@@ -66,7 +78,7 @@ export function ToolRail({ c }: { c: CanvasController }) {
           title={label}
           aria-label={label}
           onClick={() => insertTypedNode(kind)}
-          className="flex size-9 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          className="flex size-9 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
         >
           <Icon className="size-4" />
         </button>
@@ -81,7 +93,7 @@ export function ToolRail({ c }: { c: CanvasController }) {
           setNotesDrawerOpen(false);
         }}
         className={cn(
-          "flex size-9 items-center justify-center rounded-lg transition-colors",
+          "flex size-9 shrink-0 items-center justify-center rounded-lg transition-colors",
           insertPanelOpen
             ? "bg-foreground text-background shadow-xs"
             : "text-muted-foreground hover:bg-accent hover:text-foreground",
@@ -99,13 +111,35 @@ export function ToolRail({ c }: { c: CanvasController }) {
           setInsertPanelOpen(false);
         }}
         className={cn(
-          "flex size-9 items-center justify-center rounded-lg transition-colors",
+          "flex size-9 shrink-0 items-center justify-center rounded-lg transition-colors",
           notesDrawerOpen
             ? "bg-blue-500 text-white shadow-xs"
             : "text-muted-foreground hover:bg-accent hover:text-foreground",
         )}
       >
         <NotebookPen className="size-4" />
+      </button>
+      <button
+        type="button"
+        title="Outline (O)"
+        aria-label="Outline"
+        aria-pressed={outlineOpen}
+        onClick={() => setOutlineOpen((o) => !o)}
+        className={cn(
+          "flex size-9 shrink-0 items-center justify-center rounded-lg transition-colors",
+          outlineOpen ? "bg-foreground text-background shadow-xs" : "text-muted-foreground hover:bg-accent hover:text-foreground",
+        )}
+      >
+        <ListTree className="size-4" />
+      </button>
+      <button
+        type="button"
+        title="Keyboard shortcuts (?)"
+        aria-label="Keyboard shortcuts"
+        onClick={() => setCheatSheetOpen(true)}
+        className="flex size-9 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground max-md:hidden"
+      >
+        <Keyboard className="size-4" />
       </button>
     </div>
   );
