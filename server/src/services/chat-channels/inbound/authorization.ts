@@ -54,9 +54,18 @@ export function createChatInboundAuthority(db: Db, options: InboundAuthorityOpti
   function restrictedLinkedPerson(database: DbOrTransaction, endpoint: EndpointRow, userId: string) {
     return inboundRefusedForPerson(db, { companyId: endpoint.companyId, personId: userId, channel: "chat", objectId: endpoint.id }, database);
   }
-  async function unlessRestricted<T extends { allowed: boolean; linkedDenied: boolean; userId: string | null }>(database: DbOrTransaction, endpoint: EndpointRow, access: T) {
-    if (!access.allowed || !access.userId || !(await restrictedLinkedPerson(database, endpoint, access.userId))) return access;
-    return { ...access, allowed: false, linkedDenied: true, userId: null };
+  async function unlessRestricted<T extends { allowed: boolean; linkedDenied: boolean; userId: string | null; sponsorUserId?: string | null }>(database: DbOrTransaction, endpoint: EndpointRow, access: T) {
+    if (!access.allowed) return access;
+    if (access.userId) {
+      if (!(await restrictedLinkedPerson(database, endpoint, access.userId))) return access;
+      return { ...access, allowed: false, linkedDenied: true, userId: null };
+    }
+    // PAR-14331: a guest's turn is work for its sponsor (the GitHub guest's
+    // own sponsor). A sponsor restricted under `enforce` authorizes no guest.
+    if (access.sponsorUserId && (await restrictedLinkedPerson(database, endpoint, access.sponsorUserId))) {
+      return { ...access, allowed: false, sponsorUserId: null };
+    }
+    return access;
   }
 
   async function findAuthorizedIdentityLink(endpoint: EndpointRow, userId: string) {
@@ -184,9 +193,10 @@ export function createChatInboundAuthority(db: Db, options: InboundAuthorityOpti
         ),
       )
       .then((rows) => rows[0] ?? null);
-    return (
-      membership?.status === "active" && membership.membershipRole !== "viewer"
-    );
+    if (membership?.status !== "active" || membership.membershipRole === "viewer") return false;
+    // PAR-14331: a guest's turn is work for the sponsor, so a sponsor
+    // restricted under `enforce` authorizes no guest. A failed read throws 503.
+    return !(await restrictedLinkedPerson(db, endpoint, endpoint.sponsorUserId));
   }
 
   async function lockCurrentPrincipalAuthorization(
@@ -282,10 +292,12 @@ export function createChatInboundAuthority(db: Db, options: InboundAuthorityOpti
       )
       .for("update")
       .then((rows) => rows[0] ?? null);
+    // PAR-14331: a sponsor restricted under `enforce` authorizes no guest.
     return {
       allowed:
         sponsorMembership?.status === "active" &&
-        sponsorMembership.membershipRole !== "viewer",
+        sponsorMembership.membershipRole !== "viewer" &&
+        !(await restrictedLinkedPerson(tx, endpoint, endpoint.sponsorUserId)),
       linkedDenied: false,
       userId: null,
     };
