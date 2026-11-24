@@ -4,7 +4,7 @@
  * files Payroll prepares. Payroll never submits or pays anything to SARS.
  */
 import { useState } from "react";
-import { DataTable, usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import { DataTable } from "@paperclipai/plugin-sdk/ui";
 import {
   Button,
   CircleCheck,
@@ -30,6 +30,7 @@ import { ruleLabel, rulesCheckText } from "../rule-labels.js";
 import { plural } from "./series.js";
 import { download, Money, Muted, Notice, rand, Row, StatusPill } from "./shared.js";
 import type { Emp201FilingView, Emp201View, RunFn, Snapshot } from "./types.js";
+import { usePayrollAction } from "./actions.js";
 
 type Certificate = { employeeId: string; employeeNumber: string; name: string; kind: string; payeMinor: number; grossTaxableMinor: number; uifMinor: number; sdlMinor: number; codes: Record<string, number>; includesOpening: boolean };
 type Emp501 = { reconciled: boolean; declared: { payeMinor: number; sdlMinor: number; uifMinor: number; etiMinor: number }; certificates: { count: number; irp5: number; it3a: number; payeMinor: number }; difference: { payeMinor: number; sdlMinor: number; uifMinor: number } };
@@ -37,13 +38,13 @@ type Emp501 = { reconciled: boolean; declared: { payeMinor: number; sdlMinor: nu
 const toolbar = { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" } as const;
 
 export function StatutoryTab({ s, run, setMessage }: { s: Snapshot; run: RunFn; setMessage: (m: string) => void }) {
-  const emp201 = usePluginAction("payroll.emp201");
-  const markFiled = usePluginAction("payroll.mark-emp201-filed");
-  const unmarkFiled = usePluginAction("payroll.unmark-emp201-filed");
-  const certs = usePluginAction("payroll.certificates");
-  const emp501 = usePluginAction("payroll.emp501");
-  const exportFile = usePluginAction("payroll.export");
-  const importYtd = usePluginAction("payroll.import-ytd");
+  const emp201 = usePayrollAction("payroll.emp201");
+  const markFiled = usePayrollAction("payroll.mark-emp201-filed");
+  const unmarkFiled = usePayrollAction("payroll.unmark-emp201-filed");
+  const certs = usePayrollAction("payroll.certificates");
+  const emp501 = usePayrollAction("payroll.emp501");
+  const exportFile = usePayrollAction("payroll.export");
+  const importYtd = usePayrollAction("payroll.import-ytd");
   const narrow = useIsNarrow();
   const [month, setMonth] = useState(s.today.slice(0, 7));
   const [taxYear, setTaxYear] = useState(s.rules.taxYear);
@@ -208,8 +209,8 @@ export function StatutoryTab({ s, run, setMessage }: { s: Snapshot; run: RunFn; 
 
 /** The tax rules in plain words, the year's notes and the accountant's sign-off. */
 function TaxRulesSection({ s, run }: { s: Snapshot; run: RunFn }) {
-  const review = usePluginAction("payroll.review-rules");
-  const rulesAction = usePluginAction("payroll.rules");
+  const review = usePayrollAction("payroll.review-rules");
+  const rulesAction = usePayrollAction("payroll.rules");
   const [name, setName] = useState("");
   const [checkedOn, setCheckedOn] = useState(s.today);
   const [sources, setSources] = useState<Array<{ title: string; url: string; accessed: string }> | null>(null);
