@@ -527,6 +527,10 @@ describe("agent live run routes", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockIssueService.getByIdentifier).toHaveBeenCalledWith("PC1A2-1295");
+    // PAR-13042: the route reads the task first (the default mock allows it).
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+      action: "issue:read", resource: expect.objectContaining({ type: "issue", issueId: "issue-1" }),
+    }));
     expect(mockHeartbeatService.getRunIssueSummary).toHaveBeenCalledWith(
       "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
     );

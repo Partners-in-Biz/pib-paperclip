@@ -8029,6 +8029,12 @@ export function agentRoutes(
       "Issue not found",
     );
     if (!issue) return;
+    // Read the task first (PAR-12608 4.6, AC-G3): a caller who cannot read it
+    // gets the unknown-task answer and no run data.
+    if (!(await decideIssueAccessForActor(access, req.actor, issue, "issue:read")).allowed) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
 
     const liveRuns = await db
       .select({
@@ -8084,6 +8090,12 @@ export function agentRoutes(
   router.get("/issues/:issueId/execution", async (req, res) => {
     const issue = await getAccessibleResource(req, res, issueService(db).getById(req.params.issueId as string), "Issue not found");
     if (!issue) return;
+    // Read the task first (PAR-12608 4.6, AC-G3): a caller who cannot read it
+    // gets the unknown-task answer and no run data.
+    if (!(await decideIssueAccessForActor(access, req.actor, issue, "issue:read")).allowed) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
     const [run] = await db.select({ id: heartbeatRuns.id, agentId: heartbeatRuns.agentId }).from(heartbeatRuns).where(and(
       eq(heartbeatRuns.companyId, issue.companyId),
       sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
@@ -8102,6 +8114,12 @@ export function agentRoutes(
       "Issue not found",
     );
     if (!issue) return;
+    // Read the task first (PAR-12608 4.6, AC-G3): a caller who cannot read it
+    // gets the unknown-task answer and no run data.
+    if (!(await decideIssueAccessForActor(access, req.actor, issue, "issue:read")).allowed) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
 
     let run = issue.executionRunId ? await heartbeat.getRunIssueSummary(issue.executionRunId) : null;
     if (
