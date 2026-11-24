@@ -15,12 +15,14 @@ import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync }
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
+import type { ActingRestriction } from "@partnersinbiz/pib-plugin-kit";
 import { assetUrlForShare } from "./assets.js";
-import { getCanvas } from "./canvas.js";
+import { canvasScope, getCanvas } from "./canvas.js";
 import { StudioConfig } from "./config.js";
 import type { CanvasDoc, CanvasNode } from "./canvas-rules.js";
 import { iso, num, table } from "./db.js";
 import { StudioError } from "./errors.js";
+import { assertOpenToPerson } from "./scope.js";
 
 export const SHARE_SUBDIR = "s";
 /** Preview links on a share page last ten minutes; pages are rewritten after four and reload after four. */
@@ -133,8 +135,18 @@ async function publish(ctx: PluginContext, row: ShareRow, sign: Signer): Promise
   return false;
 }
 
-export async function createShare(ctx: PluginContext, companyId: string, params: Record<string, unknown>, actor: { userId: string }, sign: Signer = defaultSigner(ctx)) {
+/**
+ * The page's member check (PAR-14290): a share page of a client's board publishes signed links to the client's files,
+ * so a restricted member makes, lists and revokes no link on one. Unknown canvases still say "not found".
+ */
+export async function assertShareOpen(ctx: PluginContext, companyId: string, canvasId: string, restriction: ActingRestriction): Promise<void> {
+  if (restriction === "unrestricted") return; // no extra read, and today's answers for everyone else
+  assertOpenToPerson(await canvasScope(ctx, companyId, canvasId), restriction);
+}
+
+export async function createShare(ctx: PluginContext, companyId: string, params: Record<string, unknown>, actor: { userId: string; restriction?: ActingRestriction }, sign: Signer = defaultSigner(ctx)) {
   const canvasId = String(params.canvasId ?? "").trim();
+  if (actor.restriction) await assertShareOpen(ctx, companyId, canvasId, actor.restriction);
   await getCanvas(ctx, companyId, canvasId);
   const days = params.days === undefined ? DEFAULT_DAYS : Number(params.days);
   if (!Number.isInteger(days) || days < 1 || days > MAX_DAYS) throw new StudioError(`A share link lasts 1 to ${MAX_DAYS} days.`, "bad_share");
@@ -161,8 +173,12 @@ export async function listShares(ctx: PluginContext, companyId: string, canvasId
   return rows.map(shareOut);
 }
 
-export async function revokeShare(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
+export async function revokeShare(ctx: PluginContext, companyId: string, params: Record<string, unknown>, restriction?: ActingRestriction) {
   const id = String(params.shareId ?? "").trim();
+  if (restriction && isShareId(id)) {
+    const [share] = await ctx.db.query<{ canvas_id: string }>(`SELECT canvas_id FROM ${table(ctx, "canvas_shares")} WHERE id = $1 AND company_id = $2`, [id, companyId]);
+    if (share) await assertShareOpen(ctx, companyId, share.canvas_id, restriction);
+  }
   const out = isShareId(id)
     ? await ctx.db.execute(`UPDATE ${table(ctx, "canvas_shares")} SET revoked_at = now() WHERE id = $1 AND company_id = $2 AND revoked_at IS NULL`, [id, companyId])
     : { rowCount: 0 };

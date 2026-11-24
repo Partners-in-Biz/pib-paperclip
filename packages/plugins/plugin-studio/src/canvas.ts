@@ -211,6 +211,11 @@ export async function listCanvases(ctx: PluginContext, companyId: string, params
   return rows.map(summary);
 }
 
+/** The client a canvas is filed under (null for own work), for the person path's member check (PAR-14290). */
+export async function canvasScope(ctx: PluginContext, companyId: string, id: string): Promise<ClientScope> {
+  return scopeOfRow(await getRow(ctx, companyId, String(id ?? "").trim()));
+}
+
 export async function getCanvas(ctx: PluginContext, companyId: string, id: string) {
   const row = await getRow(ctx, companyId, String(id ?? "").trim());
   const doc = normalizeDoc(typeof row.doc === "string" ? JSON.parse(row.doc) : row.doc);
