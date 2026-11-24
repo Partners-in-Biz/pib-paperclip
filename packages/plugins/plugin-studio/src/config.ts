@@ -45,6 +45,13 @@ export function instanceConfigSchema(): JsonSchema {
         title: "ElevenLabs voice",
         properties: { apiKey: secretField("API key", "elevenlabs.io API key (optional: pick ElevenLabs for voiceover or auto-captions).") },
       },
+      boards: {
+        type: "object",
+        title: "Planning Canvas boards",
+        properties: {
+          cards: { type: "boolean", title: "Studio media on boards", description: "Off: every Studio card on a board shows a placeholder and the board's Studio panel is empty.", default: true },
+        },
+      },
       providers: {
         type: "object",
         title: "Voice providers",
@@ -118,6 +125,16 @@ export class StudioConfig {
     const providers = ((await this.raw).providers ?? {}) as Record<string, unknown>;
     const v = providers[cap];
     return typeof v === "string" && v.trim() ? v.trim() : undefined;
+  }
+
+  /** Studio media cards on Planning Canvas boards (PAR-14280): on unless set to false; off when the settings read fails. */
+  async boardCardsOn(): Promise<boolean> {
+    try {
+      const boards = ((await this.raw).boards ?? {}) as Record<string, unknown>;
+      return boards.cards !== false;
+    } catch {
+      return false;
+    }
   }
 
   /** Whether a secret reference resolves to a value. */

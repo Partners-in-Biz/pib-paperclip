@@ -1,6 +1,8 @@
 import { definePlugin, runWorker, type PluginContext, type PluginPerformActionContext, type ToolRunContext } from "@paperclipai/plugin-sdk";
 import { registerSocialMediaSync } from "./social-media-sync.js";
 import { actingRestriction, createAccessGuard, normalizeToolResult, registerClientProjectWatch, registerCrmProjection, scopeOfRow, toolFail } from "@partnersinbiz/pib-plugin-kit";
+import { boardLibrary } from "./board-library.js";
+import { boardScopeInput, boardTarget } from "./board-scope.js";
 import { assetBytesForPerson, assetFileForAgent, assetUrlForPerson, assetUrlsForPerson, getAssetRow, importFromAttachment, linkAsset, listAssets } from "./assets.js";
 import { archiveCanvas, createCanvas, getCanvas, listCanvases, saveCanvas } from "./canvas.js";
 import { addComment, listComments, listVersions, restoreVersion, saveVersion } from "./canvas-versions.js";
@@ -267,9 +269,25 @@ const plugin = definePlugin({
       return { role: me.role, canGenerate: canGenerate(me.role), isOwner: me.role === "owner", canSetAgentLimit: me.role === "owner" || me.role === "admin", userId: me.userId };
     });
 
+    // With `boardScope` (a Planning Canvas card, PAR-14280) the file must be the board's client's: board-scope.ts.
+    const boardFor = async (companyId: string, p: Record<string, unknown>) => {
+      const scope = boardScopeInput(p);
+      return scope ? boardTarget(ctx, companyId, scope) : undefined;
+    };
+
     action("asset-url", async (params, context) => {
       const me = await person(context);
-      return { url: await assetUrlForPerson(ctx, me.companyId, String(objectParams(params).assetId ?? ""), me.restriction) };
+      const p = objectParams(params);
+      return { url: await assetUrlForPerson(ctx, me.companyId, String(p.assetId ?? ""), me.restriction, await boardFor(me.companyId, p)) };
+    });
+
+    // The library panel on a board: only files that pass the board's scope.
+    action("board-library", async (params, context) => {
+      const me = await person(context);
+      const p = objectParams(params);
+      const scope = boardScopeInput(p);
+      if (!scope) throw new StudioError("boardScope is required.", "bad_board_scope");
+      return boardLibrary(ctx, me.companyId, scope, me.restriction, { kind: p.kind, limit: p.limit });
     });
 
     // Approve or reject on the page. Viewers can't; approving sends the file to Social.
@@ -391,10 +409,11 @@ const plugin = definePlugin({
     // Previews for a page of the library in one call. Links last five minutes.
     action("asset-urls", async (params, context) => {
       const me = await person(context);
-      const raw = objectParams(params).assetIds;
+      const p = objectParams(params);
+      const raw = p.assetIds;
       const ids = Array.isArray(raw) ? [...new Set(raw.filter((id): id is string => typeof id === "string" && id.length > 0))].slice(0, 100) : [];
       // One settings read and one secret lookup for the whole page (PAR-8102); a failure is reported, not hidden.
-      return assetUrlsForPerson(ctx, me.companyId, ids, me.restriction);
+      return assetUrlsForPerson(ctx, me.companyId, ids, me.restriction, 300, undefined, await boardFor(me.companyId, p));
     });
 
     async function generator(context: Parameters<typeof person>[0], params: unknown) {
