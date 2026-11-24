@@ -20,8 +20,10 @@ import { runningProcesses } from "../adapters/index.ts";
 import { actorMiddleware } from "../middleware/auth.js";
 import { errorHandler } from "../middleware/error-handler.js";
 import { issueRoutes } from "../routes/issues.js";
+import type { Db } from "@paperclipai/db";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { WAKE_CAUSING_ACTOR_CONTEXT_KEY } from "../services/heartbeat/causing-actor.js";
+import { createHeartbeatRunPreparation } from "../services/heartbeat/run-preparation.js";
 import { memberRestrictionRouteGuard } from "../services/member-restriction/route-middleware.js";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -78,6 +80,28 @@ vi.mock("../services/member-restriction/rule-group-h.js", async (importOriginal)
       return actual.ruleGroupHBinding(...args);
     },
   };
+});
+
+describe("H1 at run start: the enforced causing person (PAR-14378)", () => {
+  const stamped = { [WAKE_CAUSING_ACTOR_CONTEXT_KEY]: { type: "user", userId: "user-u" } };
+
+  it("a failed restriction read fails closed with 503, never as \"no causing person\"", async () => {
+    const failing = { select: vi.fn(() => { throw new Error("connection lost"); }) } as unknown as Db;
+    await expect(createHeartbeatRunPreparation(failing).resolveEnforcedCausingPersonId("company-1", { ...stamped }, null))
+      .rejects.toMatchObject({ status: 503, details: { code: "MEMBER_RESTRICTION_UNAVAILABLE" } });
+  });
+
+  it("reads nothing without a stamp, on a chat (F12) or with the kill switch", async () => {
+    const select = vi.fn(() => { throw new Error("must not read"); });
+    const prep = createHeartbeatRunPreparation({ select } as unknown as Db);
+    const chat = { conversationAgentId: "agent-1", conversationUserId: "asker" } as Parameters<typeof prep.resolveEnforcedCausingPersonId>[2];
+    expect(await prep.resolveEnforcedCausingPersonId("company-1", {}, null)).toBeNull();
+    expect(await prep.resolveEnforcedCausingPersonId("company-1", { ...stamped }, chat)).toBeNull();
+    vi.stubEnv("PAPERCLIP_MEMBER_RESTRICTION", "off");
+    expect(await prep.resolveEnforcedCausingPersonId("company-1", { ...stamped }, null)).toBeNull();
+    vi.unstubAllEnvs();
+    expect(select).not.toHaveBeenCalled();
+  });
 });
 
 const support = await getEmbeddedPostgresTestSupport();
