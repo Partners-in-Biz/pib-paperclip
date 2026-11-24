@@ -172,9 +172,12 @@ export async function resolveGitHubOperationCredentials(
   }
   // 4.6a row 5: no credential for a run whose person is restricted under
   // `enforce`. `unavailable`, never `absent`: on `absent` the git remote
-  // provider falls back to company secrets and the server's token.
+  // provider falls back to company secrets and the server's token. Both person
+  // sources are checked (the run row and the identity context the managed
+  // resolution below reads), so a divergence between them fails closed.
   if (await githubCredentialsRefused(db, {
-    companyId: input.companyId, personId: run.responsibleUserId, target: "github_operation_credentials", runId: input.runId,
+    companyId: input.companyId, personIds: [run.responsibleUserId, context.responsibleUserId],
+    target: "github_operation_credentials", objectId: input.runId,
   })) {
     summary = { status: "unavailable", reason: GITHUB_CREDENTIALS_RESTRICTED_REASON };
     await saveGitHubSummary(db, context, summary);

@@ -6,7 +6,7 @@ import express from "express";
 import request from "supertest";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { activityLog, agents, companies, companyMemberships, createDb, heartbeatRuns } from "@paperclipai/db";
+import { activityLog, agents, companies, companyMemberships, createDb, heartbeatRuns, runIdentityContexts } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { githubCredentialsFixture } from "./helpers/github-credentials-fixture.js";
 import { errorHandler } from "../middleware/index.js";
@@ -18,7 +18,8 @@ import { createGitRemoteAuthProvider, resolveManagedGitHubCredential } from "../
 import { prepareHeartbeatExecutionConfiguration } from "../services/heartbeat/execution-configuration.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { MEMBER_RESTRICTION_DENIED_ACTION } from "../services/member-restriction/admin.js";
-import { GITHUB_CREDENTIALS_RULE_ID } from "../services/member-restriction/github-credentials.js";
+import { GITHUB_CREDENTIALS_RESTRICTED_REASON, GITHUB_CREDENTIALS_RULE_ID } from "../services/member-restriction/github-credentials.js";
+import { resolveGitHubOperationCredentials } from "../services/github-operation-credentials.js";
 import { initializeRunIdentity } from "../services/run-identity.js";
 import { secretService } from "../services/secrets.js";
 
@@ -164,8 +165,82 @@ describe("4.6a row 5 database support", () => {
       { secrets: secrets as never, env: { GITHUB_TOKEN: "server-env-token" } });
     const invocation = await provider("https://github.com/acme/repo.git");
     expect(JSON.stringify(invocation)).not.toMatch(/company-secret-token|server-env-token/);
+    expect(invocation?.env).toMatchObject({ GITHUB_TOKEN: "", GH_TOKEN: "", GIT_CONFIG_GLOBAL: "/dev/null" });
     expect(secrets.getByName).not.toHaveBeenCalled();
     expect(secrets.resolveSecretValue).not.toHaveBeenCalled();
+    expect(credentialStoreRead()).toBe(0);
+    const [context] = await db.select().from(runIdentityContexts).where(eq(runIdentityContexts.runId, input.runId));
+    expect(context.github).toMatchObject({ status: "unavailable", reason: GITHUB_CREDENTIALS_RESTRICTED_REASON });
+    expect(await denials(input.companyId)).toEqual([expect.objectContaining({
+      personId: R, ruleId: GITHUB_CREDENTIALS_RULE_ID, target: "github_operation_credentials", objectId: input.runId, mode: "enforce",
+    })]);
+  });
+
+  /** A run row with a person and no identity context (one that predates identity contexts). */
+  async function contextlessRun(input: Awaited<ReturnType<typeof seed>>, person: string) {
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: input.companyId, agentId: input.agentId, status: "running",
+      responsibleUserId: person, contextSnapshot: { issueId: input.issueId } }).returning();
+    expect(run.activeIdentityContextId).toBeNull();
+    return run.id;
+  }
+  function legacySources() {
+    return {
+      secrets: { getByName: vi.fn(async () => ({ id: randomUUID() })), resolveSecretValue: vi.fn(async () => "company-secret-token") },
+      env: { GITHUB_TOKEN: "server-env-token" },
+    };
+  }
+
+  it("git remote provider, run with no identity context: R gets no managed, company-secret or server token", async () => {
+    const input = await company();
+    await grant(input, R);
+    const runId = await contextlessRun(input, R);
+    const legacy = legacySources();
+    const provider = createGitRemoteAuthProvider(db, input.companyId, { heartbeatRunId: runId, agentId: input.agentId },
+      { secrets: legacy.secrets as never, env: legacy.env });
+    const invocation = await provider("https://github.com/acme/repo.git");
+    expect(invocation?.env).toMatchObject({ GITHUB_TOKEN: "", GH_TOKEN: "", PAPERCLIP_GIT_TOKEN: "", GIT_CONFIG_GLOBAL: "/dev/null" });
+    expect(JSON.stringify(invocation)).not.toMatch(/company-secret-token|server-env-token|test-token/);
+    expect(legacy.secrets.getByName).not.toHaveBeenCalled();
+    expect(credentialStoreRead()).toBe(0);
+    expect(await denials(input.companyId)).toEqual([expect.objectContaining({
+      personId: R, ruleId: GITHUB_CREDENTIALS_RULE_ID, target: "git_remote_credentials", objectId: runId, mode: "enforce",
+    })]);
+  });
+
+  it("git remote provider, run with no identity context: O's run keeps today's company secret", async () => {
+    const input = await company();
+    const runId = await contextlessRun(input, O);
+    const legacy = legacySources();
+    const provider = createGitRemoteAuthProvider(db, input.companyId, { heartbeatRunId: runId, agentId: input.agentId },
+      { secrets: legacy.secrets as never, env: legacy.env });
+    expect((await provider("https://github.com/acme/repo.git"))?.env.GITHUB_TOKEN).toBe("company-secret-token");
+    expect(await denials(input.companyId)).toEqual([]);
+  });
+
+  it("git remote provider, caller's person (issue path, no run): R's issue gets no token; a stated run of another company fails closed", async () => {
+    const input = await company();
+    const legacy = legacySources();
+    const forIssue = createGitRemoteAuthProvider(db, input.companyId, { issueId: input.issueId, responsibleUserId: R },
+      { secrets: legacy.secrets as never, env: legacy.env });
+    expect((await forIssue("https://github.com/acme/repo.git"))?.env.GITHUB_TOKEN).toBe("");
+    const unknownRun = createGitRemoteAuthProvider(db, input.companyId, { heartbeatRunId: randomUUID() },
+      { secrets: legacy.secrets as never, env: legacy.env });
+    expect((await unknownRun("https://github.com/acme/repo.git"))?.env.GITHUB_TOKEN).toBe("");
+    expect(legacy.secrets.getByName).not.toHaveBeenCalled();
+    expect(await denials(input.companyId)).toEqual([expect.objectContaining({
+      personId: R, target: "git_remote_credentials", objectId: input.issueId, mode: "enforce",
+    })]);
+  });
+
+  it("one person source: a run row and identity context that disagree fail closed", async () => {
+    const input = await company();
+    await grant(input, O);
+    const run = await runFor(input, O);
+    await db.update(heartbeatRuns).set({ responsibleUserId: R }).where(eq(heartbeatRuns.id, run.runId));
+    const result = await resolveGitHubOperationCredentials(db, run);
+    expect(result).toMatchObject({ status: "unavailable", reason: GITHUB_CREDENTIALS_RESTRICTED_REASON, env: {} });
+    expect(credentialStoreRead()).toBe(0);
+    expect(await denials(input.companyId)).toEqual([expect.objectContaining({ personId: R, objectId: run.runId, mode: "enforce" })]);
   });
 
   it("host credentials: R's run with no managed connection on a local environment does not use the host's GitHub; O's does", async () => {

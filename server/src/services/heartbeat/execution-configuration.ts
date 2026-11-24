@@ -185,7 +185,7 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
       selectedEnvironmentForConfig?.driver ?? "local",
     ) &&
     !(await githubCredentialsRefused(db, {
-      companyId: agent.companyId, personId: responsibleUserId, target: "github_host_credentials", runId: run.id,
+      companyId: agent.companyId, personIds: [responsibleUserId, run.responsibleUserId], target: "github_host_credentials", objectId: run.id,
     }));
 
   const { resolvedConfig, configuredTaskEnvironment, secretKeys, secretManifest } =
