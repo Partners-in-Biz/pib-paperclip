@@ -203,7 +203,7 @@ export async function providerOptions(config: Pick<StudioConfig, "providerDefaul
   const voice = async (cap: Capability) => {
     const configured = cap === "music" ? undefined : await def(cap);
     const chosen = safe(() => resolveProvider(cap, undefined, configured).key, () => PROVIDERS[cap][0].key);
-    return Promise.all(PROVIDERS[cap].map(async (p) => ({ key: p.key, label: p.label, ...VOICE_NOTES[cap][p.key]!, isDefault: p.key === chosen, configured: p.key === "local-face" ? yunetReady() : config.hasSecret ? await config.hasSecret(p.secret) : undefined })));
+    return Promise.all(PROVIDERS[cap].map(async (p) => ({ key: p.key, label: p.label, ...VOICE_NOTES[cap][p.key]!, isDefault: p.key === chosen, configured: p.key === "local-face" ? yunetReady() : config.hasSecret && p.secret ? await config.hasSecret(p.secret) : undefined })));
   };
   const lookDefault = await def("looks");
   const defaults = { audio: await def("lipsync"), line: await def("lipsyncLine") };
