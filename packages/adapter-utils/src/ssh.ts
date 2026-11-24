@@ -428,10 +428,18 @@ export const SSH_CONTROL_BASE_DIR_ENV = "PAPERCLIP_SSH_CONTROL_DIR";
 // ssh first binds `<path>.<16 random chars>`, 17 more: 103 - 57 = 46.
 export const SSH_CONTROL_DIR_MAX_BYTES = 46;
 const RUN_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const CONTROL_DIR_NAME_RE = /^[A-Za-z0-9_-]{22}$/;
 
-// A run uuid as 22 base64url chars (reversible), to keep the socket path short.
+// A run uuid as 22 base64url chars, reversible so the startup sweep knows the run.
 function controlDirName(runId: string): string | null {
   return RUN_UUID_RE.test(runId) ? Buffer.from(runId.replace(/-/g, ""), "hex").toString("base64url") : null;
+}
+
+function runIdFromControlDirName(name: string): string | null {
+  if (!CONTROL_DIR_NAME_RE.test(name)) return null;
+  const hex = Buffer.from(name, "base64url").toString("hex");
+  if (hex.length !== 32 || Buffer.from(hex, "hex").toString("base64url") !== name) return null;
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 export function sshConnectionReuseEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -511,6 +519,34 @@ export async function cleanupSshConnectionReuse(input: { runId: string; baseDir?
   const dir = sshControlDirFor(input.runId, input.baseDir);
   if (!dir || !(await isPrivateOwnedDir(dir))) return;
   await closeSshControlDir(dir);
+}
+
+/** Server start: remove control directories whose run is no longer running. */
+export async function sweepStaleSshControlDirs(input: {
+  activeRunIds: (candidateRunIds: string[]) => Promise<ReadonlySet<string>>;
+  baseDir?: string;
+}): Promise<{ removed: string[]; kept: string[] }> {
+  const baseDir = input.baseDir ?? sshControlBaseDir();
+  if (!(await isPrivateOwnedDir(baseDir))) return { removed: [], kept: [] };
+  const candidates = new Map<string, string>();
+  for (const name of await fs.readdir(baseDir)) {
+    const runId = runIdFromControlDirName(name);
+    if (runId) candidates.set(runId, name);
+  }
+  if (candidates.size === 0) return { removed: [], kept: [] };
+  const active = await input.activeRunIds([...candidates.keys()]);
+  const removed: string[] = [];
+  const kept: string[] = [];
+  for (const [runId, name] of candidates) {
+    const dir = path.join(baseDir, name);
+    if (active.has(runId) || !(await isPrivateOwnedDir(dir))) {
+      kept.push(runId);
+      continue;
+    }
+    await closeSshControlDir(dir);
+    removed.push(runId);
+  }
+  return { removed, kept };
 }
 
 function tarExcludeArgs(exclude: string[] | undefined): string[] {
