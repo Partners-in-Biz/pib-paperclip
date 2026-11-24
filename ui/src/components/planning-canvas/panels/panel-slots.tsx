@@ -5,6 +5,7 @@ import { BottomRightControls } from "@/components/planning-canvas/panels/BottomR
 import { CheatSheet } from "@/components/planning-canvas/panels/CheatSheet";
 import { CommentPins } from "@/components/planning-canvas/panels/comments/CommentPins";
 import { CommentsPanel } from "@/components/planning-canvas/panels/comments/CommentsPanel";
+import { PluginCanvasPanels } from "@/components/planning-canvas/panels/PluginCanvasPanels";
 import { OutlinePanel } from "@/components/planning-canvas/panels/outline/OutlinePanel";
 import { CanvasContextMenu } from "@/components/planning-canvas/toolbar/CanvasContextMenu";
 import { ConflictDrafts } from "@/components/planning-canvas/panels/ConflictDrafts";
@@ -52,6 +53,7 @@ export const PANEL_SLOTS: Record<PanelSlotId, PanelEntry[]> = {
     { id: "outline", Component: OutlinePanel },
     { id: "notes-drawer", Component: NotesDrawer },
     { id: "insert-link-panel", Component: InsertLinkPanel },
+    { id: "plugin-panels", Component: PluginCanvasPanels },
   ],
   bottomRight: [{ id: "zoom-controls", Component: BottomRightControls }],
 };

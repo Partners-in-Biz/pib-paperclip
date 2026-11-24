@@ -270,12 +270,17 @@ export const NODE_RENDERERS: Record<CanvasNodeKind, NodeRendererEntry> = {
   },
 };
 
-function PlaceholderNode({ node }: NodeRenderProps) {
+/** The dashed card for a kind (or an embed of a plugin) this installation cannot draw. */
+export function PlaceholderCard({ kind, label }: { kind: string; label?: string }) {
   return (
-    <div data-canvas-placeholder={node.kind} className="flex h-full items-center justify-center px-3 text-center">
-      <span className="truncate text-xs font-medium text-muted-foreground">{node.kind}</span>
+    <div data-canvas-placeholder={kind} className="flex h-full items-center justify-center px-3 text-center">
+      <span className="truncate text-xs font-medium text-muted-foreground">{label ?? kind}</span>
     </div>
   );
+}
+
+function PlaceholderNode({ node }: NodeRenderProps) {
+  return <PlaceholderCard kind={node.kind} />;
 }
 
 /** Card for a stored kind this build does not know: it can still be moved, resized and deleted. */

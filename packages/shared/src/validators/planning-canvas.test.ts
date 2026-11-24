@@ -34,6 +34,7 @@ const typedPayload: Partial<Record<PlanningCanvasNodeKind, Record<string, unknow
   },
   kanban: { data: { source: issueQuery, groupBy: "status", collapsed: ["done"] } },
   timeline: { data: { source: { kind: "projects" }, scale: "week", range: { from: "2026-11-01", to: "2026-12-01" } } },
+  embed: { data: { plugin: "pib.studio", type: "card", props: { label: "x" } } },
   markdown: { data: { markdown: "# Plan\n\n```mermaid\nflowchart TD\nA-->B\n```" } },
 };
 
@@ -203,5 +204,23 @@ describe("planning canvas sharing, reads and comments", () => {
   it("leaves the legacy blob validator unchanged", () => {
     expect(planningCanvasDataSchema.safeParse({ nodes: [{ id: "n", kind: "table", x: 0, y: 0, width: 50, height: 50 }] }).success).toBe(false);
     expect(planningCanvasDataSchema.safeParse({ nodes: [{ id: "n", kind: "sticky", x: 0, y: 0, width: 50, height: 50 }] }).success).toBe(true);
+  });
+});
+
+describe("embed node (P2 W1-3a)", () => {
+  const embed = (data: unknown) => planningCanvasItemInputSchema.safeParse(nodeItem("embed", { data }));
+  it("accepts a plugin key, type and flat props", () => {
+    expect(embed({ plugin: "pib.studio", type: "card", assetId: "a1", props: { label: "x", n: 2, on: true } }).success).toBe(true);
+  });
+  it("refuses nested props, null, arrays and props over 2 KB", () => {
+    expect(embed({ plugin: "p", type: "t", props: { a: { b: 1 } } }).success).toBe(false);
+    expect(embed({ plugin: "p", type: "t", props: { a: [1] } }).success).toBe(false);
+    expect(embed({ plugin: "p", type: "t", props: { a: null } }).success).toBe(false);
+    expect(embed({ plugin: "p", type: "t", props: { a: "x".repeat(1500), b: "y".repeat(1500) } }).success).toBe(false);
+  });
+  it("refuses missing props and unknown fields; other kinds take no embed data", () => {
+    expect(embed({ plugin: "p", type: "t" }).success).toBe(false);
+    expect(embed({ plugin: "p", type: "t", props: {}, extra: 1 }).success).toBe(false);
+    expect(planningCanvasItemInputSchema.safeParse(nodeItem("sticky", { data: { plugin: "p", type: "t", props: {} } })).success).toBe(false);
   });
 });

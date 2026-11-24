@@ -111,6 +111,7 @@ export const PLANNING_CANVAS_NODE_KINDS = [
   "kanban",
   "timeline",
   "markdown",
+  "embed",
 ] as const;
 export type PlanningCanvasNodeKind = (typeof PLANNING_CANVAS_NODE_KINDS)[number];
 
@@ -143,6 +144,7 @@ export const PLANNING_CANVAS_LIMITS = {
   tableColumnsMax: 50,
   tableRowsMax: 500,
   markdownMaxLength: 50_000,
+  embedPropsMaxBytes: 2048,
   issueQueryLimitMax: 200,
   opsPerBatchMax: 500,
   clientBatchIdMaxLength: 100,
@@ -217,11 +219,26 @@ export interface PlanningCanvasMarkdownData {
   markdown: string;
 }
 
+/** One flat prop of an embed node: text, number or boolean only (core never interprets it). */
+export type PlanningCanvasEmbedProp = string | number | boolean;
+
+/**
+ * A plugin card on the board (P2 plan C). `plugin` is the stable plugin key, never an install id.
+ * `props` is flat and at most `embedPropsMaxBytes` as JSON; only the plugin reads it.
+ */
+export interface PlanningCanvasEmbedData {
+  plugin: string;
+  type: string;
+  assetId?: string;
+  props: Record<string, PlanningCanvasEmbedProp>;
+}
+
 export type PlanningCanvasTypedData =
   | PlanningCanvasTableData
   | PlanningCanvasKanbanData
   | PlanningCanvasTimelineData
-  | PlanningCanvasMarkdownData;
+  | PlanningCanvasMarkdownData
+  | PlanningCanvasEmbedData;
 
 /** Fields a node item stores in `planning_canvas_items.data`. */
 export interface PlanningCanvasNodeFields {

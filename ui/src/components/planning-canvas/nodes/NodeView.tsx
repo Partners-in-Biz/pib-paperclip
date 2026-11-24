@@ -12,6 +12,7 @@ import { IssueNode } from "@/components/planning-canvas/nodes/IssueNode";
 import { ProjectNode } from "@/components/planning-canvas/nodes/ProjectNode";
 import { NodeLinks } from "@/components/planning-canvas/nodes/NodeLinks";
 import { TableNode } from "@/components/planning-canvas/nodes/TableNode";
+import { EmbedNode } from "@/components/planning-canvas/nodes/EmbedNode";
 import { MarkdownNode } from "@/components/planning-canvas/nodes/MarkdownNode";
 import { KanbanNode } from "@/components/planning-canvas/nodes/KanbanNode";
 import { TimelineNode } from "@/components/planning-canvas/nodes/TimelineNode";
@@ -157,6 +158,8 @@ const NodeView = memo(function NodeView({
         <MarkdownNode nodeKey={node.id} data={typed.data} title={node.title} />
       ) : typed?.kind === "kanban" ? (
         <KanbanNode nodeKey={node.id} data={typed.data} title={node.title} />
+      ) : typed?.kind === "embed" ? (
+        <EmbedNode nodeKey={node.id} data={typed.data} isSelected={isSelected} />
       ) : typed?.kind === "timeline" ? (
         <TimelineNode nodeKey={node.id} data={typed.data} title={node.title} />
       ) : (
