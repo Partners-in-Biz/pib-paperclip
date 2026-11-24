@@ -77,6 +77,8 @@ function actorFor(caller: Caller, mode: Mode) {
 }
 
 const request = (client: boolean) => ({ model: MODEL, prompt: "a lighthouse at dusk", ...(client ? { client: `company:${CLIENT}` } : {}) });
+/** Lip-sync on the client's own portrait: the same generate path, so the same rule. */
+const lipsync = { portraitAssetId: CLIENT_ASSET, line: "Hello there", client: `company:${CLIENT}` };
 const refused = (code: string) => expect.objectContaining({ ok: false, refused: true, code });
 
 describe("Studio person path: restricted members get no client media or client generation (PAR-14274)", () => {
@@ -112,6 +114,9 @@ describe("Studio person path: restricted members get no client media or client g
       expect(await act("generate", request(true))).toEqual(refused(MEMBER_RESTRICTED));
       // Refused before any price, provider or reserve: no settings read and nothing written.
       expect(configReads).not.toHaveBeenCalled();
+      // The Layout card's bytes and lip-sync go through the same rule.
+      expect(await act("asset-data", { assetId: CLIENT_ASSET })).toEqual(refused(MEMBER_RESTRICTED));
+      expect(await act("studio-lipsync", lipsync)).toEqual(refused(MEMBER_RESTRICTED));
       expect(writes).toEqual([]);
     } else {
       expect(await act("asset-url", { assetId: CLIENT_ASSET })).toEqual({ url: expect.stringContaining(`/${CLIENT}/${CLIENT_ASSET}/`) });
@@ -121,6 +126,7 @@ describe("Studio person path: restricted members get no client media or client g
       expect(await act("estimate", request(true))).toMatchObject({ model: MODEL, creditsEach: expect.any(Number) });
       expect(await act("generate", request(true))).toMatchObject({ status: "queued", client: { kind: "company", id: CLIENT } });
       expect(writes.some((sql) => /INSERT INTO \S+\.generations/.test(sql))).toBe(true);
+      expect(await act("studio-lipsync", lipsync)).toMatchObject({ status: "queued", client: { kind: "company", id: CLIENT } });
     }
     // Own-work generation still queues for a restricted member.
     expect(await act("generate", request(false))).toMatchObject({ status: "queued", client: null });
@@ -144,6 +150,8 @@ describe("Studio person path: restricted members get no client media or client g
       expect(await harness.performAction("estimate", request(true), as)).toEqual(refused(MEMBER_RESTRICTION_UNAVAILABLE));
       expect(await harness.performAction("generate", request(true), as)).toEqual(refused(MEMBER_RESTRICTION_UNAVAILABLE));
       expect(configReads).not.toHaveBeenCalled();
+      expect(await harness.performAction("asset-data", { assetId: CLIENT_ASSET }, as)).toEqual(refused(MEMBER_RESTRICTION_UNAVAILABLE));
+      expect(await harness.performAction("studio-lipsync", lipsync, as)).toEqual(refused(MEMBER_RESTRICTION_UNAVAILABLE));
       expect(writes).toEqual([]);
     });
 
