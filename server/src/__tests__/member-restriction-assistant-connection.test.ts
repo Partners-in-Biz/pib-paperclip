@@ -2,7 +2,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { Request } from "express";
 import express from "express";
 import request from "supertest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -18,6 +18,7 @@ import {
   mcpOauthRequests,
   mcpOauthTokens,
   museAgentBindings,
+  principalPermissionGrants,
 } from "@paperclipai/db";
 import { museCredentialHash } from "../services/muse-identity.js";
 import { museOAuth } from "../services/muse-oauth.js";
@@ -51,6 +52,20 @@ vi.mock("../services/member-restriction/resolver.js", async (importOriginal) => 
   };
 });
 
+// PAR-14330: runs inside each refusal record, before it is written, so a test
+// can check no caller transaction still holds its row locks at that moment.
+const denialRecordHook = vi.hoisted(() => ({ before: null as null | ((denial: { personId: string }) => Promise<void>) }));
+vi.mock("../services/member-restriction/admin.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/member-restriction/admin.js")>();
+  return {
+    ...actual,
+    recordMemberRestrictionDenial: async (...args: Parameters<typeof actual.recordMemberRestrictionDenial>) => {
+      await denialRecordHook.before?.(args[1]);
+      return actual.recordMemberRestrictionDenial(...args);
+    },
+  };
+});
+
 const support = await getEmbeddedPostgresTestSupport();
 const config = { origin: "https://paperclip.example", resource: "https://paperclip.example/mcp/paperclip" };
 const agentConfig = { ...config, resource: config.origin + "/mcp/runner" };
@@ -60,6 +75,7 @@ const challenge = createHash("sha256").update(verifier).digest("base64url");
 
 afterEach(() => {
   vi.unstubAllEnvs();
+  denialRecordHook.before = null;
   resolverFails.on = false;
   resolverFails.skip = 0;
 });
@@ -417,5 +433,84 @@ describe("assistant connection database support", () => {
     const refused = await call(oauth, personalToken);
     expect(refused.status).toBe(401);
     expect(refused.headers["www-authenticate"]).toContain("invalid_token");
+  });
+  // PAR-14330: rule group H only narrows. The person on an assistant
+  // connection never widens these two actions; they stay denied as on development.
+  describe("PAR-14330: the person on an assistant connection does not widen inbox:manage or agent_instructions:update", () => {
+    // An agent that is an active company member, so the decisions below reach
+    // the inbox and instruction branches instead of the membership check.
+    let memberAgentId = "";
+    beforeAll(async () => {
+      const [agent] = await db.insert(agents).values({ companyId, name: "Member agent", role: "engineer", status: "active", adapterType: "process" }).returning();
+      memberAgentId = agent!.id;
+      await db.insert(companyMemberships).values({ companyId, principalType: "agent", principalId: memberAgentId, membershipRole: "member", status: "active" });
+      // O may edit agents, so the positive control below passes the responsible-user intersection.
+      await db.insert(principalPermissionGrants).values({ companyId, principalType: "user", principalId: O, permissionKey: "agents:configure" });
+    });
+    const company = () => ({ type: "company" as const, companyId });
+    const ownAgent = () => ({ type: "agent" as const, companyId, agentId: memberAgentId });
+    const connectionActor = async () => {
+      const { actor } = await agentOAuth.authorizeGrant(await agentGrant(U, companyId, memberAgentId));
+      expect(actor).toMatchObject({ source: "mcp_oauth", agentId: memberAgentId, onBehalfOfUserId: U });
+      return actor;
+    };
+    const decide = (actor: Request["actor"], action: "inbox:manage" | "agent_instructions:update", resource: { type: "company"; companyId: string } | { type: "agent"; companyId: string; agentId: string }, scope?: Record<string, unknown>) =>
+      authorizationService(db).decide({ actor: actor as never, action, resource, scope });
+
+    for (const mode of ["report", "enforce"] as const) {
+      it(`under ${mode}: inbox:manage with no target user is denied inbox_target_user_unresolved`, async () => {
+        await setMode(mode);
+        try {
+          const actor = await connectionActor();
+          expect(await decide(actor, "inbox:manage", company())).toMatchObject({ allowed: false, reason: "inbox_target_user_unresolved" });
+        } finally {
+          await setMode("enforce");
+        }
+      });
+
+      it(`under ${mode}: agent_instructions:update on its own agent is denied`, async () => {
+        await setMode(mode);
+        try {
+          const actor = await connectionActor();
+          expect(await decide(actor, "agent_instructions:update", ownAgent())).toMatchObject({ allowed: false, reason: "deny_missing_membership" });
+        } finally {
+          await setMode("enforce");
+        }
+      });
+    }
+
+    it("inbox:manage on the approver's own inbox (explicit scope.userId), no saved policy and no grant: denied as before", async () => {
+      const actor = await connectionActor();
+      expect(await decide(actor, "inbox:manage", company(), { userId: U })).toMatchObject({ allowed: false, reason: "deny_missing_grant" });
+    });
+
+    // Instruction edits are still intersected with the responsible user's own
+    // edit rights (agents:configure), so the control uses O, who holds it.
+    it("positive control: a run actor (agent_jwt) with a responsible user still gets allow_self for both", async () => {
+      const runActor: Request["actor"] = { type: "agent", source: "agent_jwt", agentId: memberAgentId, companyId, onBehalfOfUserId: O };
+      expect(await decide(runActor, "inbox:manage", company())).toMatchObject({ allowed: true, reason: "allow_self" });
+      expect(await decide(runActor, "agent_instructions:update", ownAgent())).toMatchObject({ allowed: true, reason: "allow_self" });
+    });
+  });
+
+  it("PAR-14330: a refused Muse pairing is recorded after its transaction rolls back, not while it holds the binding lock", async () => {
+    const P = await member("operator", true);
+    const pair = await musePairing(P);
+    const lockedAtRecord: boolean[] = [];
+    denialRecordHook.before = async (denial) => {
+      if (denial.personId !== P) return;
+      // NOWAIT fails at once if the pairing transaction still holds the row.
+      const free = await db.transaction(async (tx) => {
+        await tx.execute(sql`select id from muse_agent_bindings where operator_id = ${P} for update nowait`);
+        return true;
+      }).catch(() => false);
+      lockedAtRecord.push(!free);
+    };
+    await expect(pair()).rejects.toMatchObject({ code: "access_denied", status: 403 });
+    expect(lockedAtRecord).toEqual([false]);
+    expect(await grantsOf(P)).toEqual([]);
+    expect(await denials()).toEqual(expect.arrayContaining([expect.objectContaining({
+      personId: P, ruleId: "R-assistant-connection", target: "assistant_connection.approve", mode: "enforce",
+    })]));
   });
 });

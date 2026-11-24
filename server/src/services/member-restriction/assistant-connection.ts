@@ -1,6 +1,6 @@
 import type { Db } from "@paperclipai/db";
 import type { ActorCompanyMembership } from "@paperclipai/shared";
-import { recordMemberRestrictionDenial } from "./admin.js";
+import type { MemberRestrictionDenial } from "./admin.js";
 import { memberRestrictionForMembership } from "./actor-memberships.js";
 import { memberRestrictionResolver } from "./resolver.js";
 import { ruleGroupHBinding } from "./rule-group-h.js";
@@ -20,22 +20,30 @@ type Person = {
 };
 
 /**
+ * Receives the refusal record. The caller writes it with
+ * `recordMemberRestrictionDenial` on the root database, and only after its
+ * own transaction has committed or rolled back: never through a second
+ * connection while that transaction holds row locks (PAR-14330).
+ */
+export type AssistantConnectionDenialSink = (denial: MemberRestrictionDenial) => unknown;
+
+/**
  * True when the person is restricted under `enforce`: he may not approve a
  * connection, and one he approved stops (the caller answers an invalid grant).
- * Under `report` the refusal is recorded only. `recordDb` is the root
- * database, so the record survives the caller's rolled-back transaction. A
- * failed read throws 503 `MEMBER_RESTRICTION_UNAVAILABLE`.
+ * Under `report` the refusal is recorded only. The check only decides; the
+ * record goes to `defer` (see `AssistantConnectionDenialSink`). A failed read
+ * throws 503 `MEMBER_RESTRICTION_UNAVAILABLE`.
  */
 export async function assistantConnectionRefused(
   db: Db,
-  recordDb: Db,
+  defer: AssistantConnectionDenialSink,
   input: Person & { target: "approve" | "call" },
 ): Promise<boolean> {
   const restriction = await memberRestrictionForMembership(
     memberRestrictionResolver(db), input.personId, input.companyId, input.membership,
   );
   if (!restriction.restricted || restriction.mode === "off") return false;
-  await recordMemberRestrictionDenial(recordDb, {
+  defer({
     companyId: input.companyId,
     personId: input.personId,
     ruleId: ASSISTANT_CONNECTION_RULE_ID,
