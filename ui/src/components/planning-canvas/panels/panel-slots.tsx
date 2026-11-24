@@ -1,5 +1,6 @@
 import type { ComponentType } from "react";
 import { BoardBar } from "@/components/planning-canvas/panels/BoardBar";
+import { BlueprintsDialog } from "@/components/planning-canvas/panels/blueprints/BlueprintsDialog";
 import { BottomRightControls } from "@/components/planning-canvas/panels/BottomRightControls";
 import { ConflictDrafts } from "@/components/planning-canvas/panels/ConflictDrafts";
 import { HandoffDialog } from "@/components/planning-canvas/panels/handoff/HandoffDialog";
@@ -36,6 +37,7 @@ export const PANEL_SLOTS: Record<PanelSlotId, PanelEntry[]> = {
     { id: "context-toolbar", Component: ContextToolbar },
     { id: "conflict-drafts", Component: ConflictDrafts },
     { id: "handoff-dialog", Component: HandoffDialog },
+    { id: "blueprints-dialog", Component: BlueprintsDialog },
   ],
   right: [
     { id: "notes-drawer", Component: NotesDrawer },
