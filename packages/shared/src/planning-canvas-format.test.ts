@@ -162,6 +162,38 @@ describe("planning canvas markdown and Mermaid (golden)", () => {
   });
 });
 
+describe("planning canvas export of an entity card (PAR-14389 C.3, E path 12)", () => {
+  const embeds: PlanningCanvasFormatItem[] = [
+    node("card_1", {
+      kind: "embed", title: "Acme Holdings", content: "Acme's secret notes",
+      data: { plugin: "partnersinbiz.crm", type: "card-company", assetId: "0f6c1d4e-company", props: { name: "Acme Holdings", tier: "gold" } },
+    }),
+    node("card_2", { kind: "embed", y: 200, title: "Studio clip", data: { plugin: "partnersinbiz.studio", type: "studio-media", props: {} } }),
+    connector("rel_1", "card_1", "card_2", { label: "post" }, 1),
+  ];
+
+  it("writes plugin, type and id only, never the stored title, content or props", () => {
+    expect(planningCanvasToMarkdown({ title: "Cards" }, embeds, {})).toBe(`# Cards
+
+## Items
+
+- [embed] partnersinbiz.crm/card-company id=0f6c1d4e-company \`card_1\`
+- [embed] partnersinbiz.studio/studio-media \`card_2\`
+
+## Flowchart
+
+\`\`\`mermaid
+flowchart LR
+  card_1["partnersinbiz.crm/card-company id=0f6c1d4e-company"]
+  card_2["partnersinbiz.studio/studio-media"]
+  card_1 -->|post| card_2
+\`\`\`
+`);
+    const markdown = planningCanvasToMarkdown({ title: "Cards" }, embeds, {});
+    for (const leaked of ["Acme Holdings", "secret notes", "gold", "Studio clip"]) expect(markdown).not.toContain(leaked);
+  });
+});
+
 describe("planning canvas legacy blob shape", () => {
   it("builds an old-shape blob that passes the e33502365 validator", () => {
     const blob = planningCanvasItemsToLegacyBlob(items, { viewport: { x: 5, y: 6, zoom: 1.5 }, refs });
