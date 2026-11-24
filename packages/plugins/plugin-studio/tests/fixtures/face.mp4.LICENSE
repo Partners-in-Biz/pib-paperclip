@@ -1,0 +1,14 @@
+tests/fixtures/face.mp4 (37,646 bytes): the track-mode fixture for the Studio ML runner (PAR-10267).
+
+Source: "head-pose-face-detection-female.mp4" from https://github.com/intel-iot-devkit/sample-videos
+(Intel Corporation, sample videos for the Intel IoT Developer Kit), licensed under the Creative Commons
+Attribution 4.0 International licence (CC BY 4.0): https://creativecommons.org/licenses/by/4.0/
+The full licence text is in that repository's LICENSE file.
+
+Changes made: cut to 8 seconds (source 20 s to 28 s), scaled to 640x360 at 12 fps, audio and metadata removed,
+re-encoded as H.264 (CRF 30):
+
+  ffmpeg -ss 20 -t 8 -i head-pose-face-detection-female.mp4 -an -vf scale=640:360,fps=12 -c:v libx264 -preset veryslow \
+    -crf 30 -pix_fmt yuv420p -movflags +faststart -map_metadata -1 face.mp4
+
+No endorsement by Intel Corporation is implied.

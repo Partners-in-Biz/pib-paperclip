@@ -184,6 +184,7 @@ describeEmbeddedPostgres("unblock-owner wake reaches its owner and starts (PAR-9
     await vi.waitFor(() => expect(mockAdapterExecute).toHaveBeenCalledTimes(1), { timeout: 15_000 });
 
     const assigneeRun = await heartbeat.wakeup(ids.assigneeId, {
+      causingActor: "system",
       source: "automation", triggerDetail: "system", reason: "issue_commented",
       requestedByActorType: "user", requestedByActorId: "responsible-user",
       payload: { issueId: ids.issueId },
@@ -268,7 +269,7 @@ describeEmbeddedPostgres("unblock-owner wake reaches its owner and starts (PAR-9
   function userWake(issueId: string, reason = "issue_commented", wakeReason = reason) {
     return { source: "automation" as const, triggerDetail: "system" as const, reason,
       requestedByActorType: "user" as const, requestedByActorId: "responsible-user",
-      payload: { issueId }, contextSnapshot: { issueId, taskId: issueId, wakeReason } };
+      causingActor: { type: "user" as const, userId: "responsible-user" }, payload: { issueId }, contextSnapshot: { issueId, taskId: issueId, wakeReason } };
   }
 
   // Keeps `agentId` busy with a held run on a separate issue (maxConcurrentRuns is 1).
@@ -376,6 +377,7 @@ describeEmbeddedPostgres("unblock-owner wake reaches its owner and starts (PAR-9
       expect(notifiedAt).toBeNull();
     } else {
       const run = await heartbeat.wakeup(ids.ownerId, {
+        causingActor: "system",
         source: "automation", triggerDetail: "system", reason: wake!.reason,
         requestedByActorType: wake!.requestedByActorType,
         requestedByActorId: "requestedByActorId" in wake! ? wake!.requestedByActorId

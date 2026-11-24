@@ -1218,7 +1218,7 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
     const heartbeat = heartbeatService(db);
     let run;
     try {
-      run = await heartbeat.wakeup(agentId, { source: "assignment", triggerDetail: "system", reason: "issue_assigned",
+      run = await heartbeat.wakeup(agentId, { causingActor: "system", source: "assignment", triggerDetail: "system", reason: "issue_assigned",
         payload: { issueId }, contextSnapshot: { issueId, wakeReason: "issue_assigned" } });
     } finally { unsubscribeRoutine(); }
     expect(routineEvents).toContain("intent"); expect(routineEvents).toContain("settled");

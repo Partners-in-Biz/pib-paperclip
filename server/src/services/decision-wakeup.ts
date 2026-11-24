@@ -1,5 +1,6 @@
 import type { DecisionServiceOptions } from "./decisions.js";
 import type { ArchiveNotificationBatch } from "./decision-retention.js";
+import { SYSTEM_CAUSING_ACTOR, type WakeCausingActor } from "./heartbeat/causing-actor.js";
 
 type HeartbeatWakeup = (
   agentId: string,
@@ -8,6 +9,7 @@ type HeartbeatWakeup = (
     triggerDetail: "system";
     reason: string;
     payload: Record<string, unknown>;
+    causingActor: WakeCausingActor;
   },
 ) => Promise<unknown>;
 
@@ -24,6 +26,8 @@ export function createDecisionWakeOriginAgent(
     source: "automation",
     triggerDetail: "system",
     reason: `decision_${input.outcome}`,
+    // The person who decided caused the continuation; an expiry has no person.
+    causingActor: input.decidedByUserId ? { type: "user", userId: input.decidedByUserId } : SYSTEM_CAUSING_ACTOR,
     payload: {
       issueId: input.issueId,
       decisionId: input.decisionId,
@@ -40,6 +44,7 @@ export function createDecisionRetentionNotifyOriginAgent(
     source: "automation",
     triggerDetail: "system",
     reason: "attention_auto_archived",
+    causingActor: SYSTEM_CAUSING_ACTOR,
     payload: {
       issueIds: [...new Set(batch.items.map((item) => item.issueId))],
       archives: batch.items.map((item) => ({

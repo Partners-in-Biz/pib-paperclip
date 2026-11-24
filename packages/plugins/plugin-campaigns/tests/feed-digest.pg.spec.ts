@@ -17,6 +17,8 @@ const item = (n: number, category = "tools") =>
   `<item><title>Item ${n} &amp; co</title><link>https://toolchanges.com/p/${n}</link><guid>g-${n}</guid><pubDate>${new Date(Date.UTC(2026, 10, n)).toUTCString()}</pubDate><category>${category}</category><description>About {{first_name}} ${n}</description></item>`;
 const feedOf = (...numbers: number[]) => `<?xml version="1.0"?><rss version="2.0"><channel><title>T</title>${numbers.map((n) => item(n)).join("")}</channel></rss>`;
 
+type FeedRow = { id: string; status: string; feed_category: string | null; feed_item_keys: string[] | null; approval_issue_id: string | null };
+
 describe("017_campaigns.sql", () => {
   const sql = readFileSync(new URL("../migrations/017_campaigns.sql", import.meta.url), "utf8");
   it("passes the host guard, only adds nullable columns and an index", () => {
@@ -26,6 +28,17 @@ describe("017_campaigns.sql", () => {
     expect(code).not.toMatch(/\b(delete|drop|update)\b|ADD COLUMN[^;,]*\b(not null|default)\b/i);
     for (const column of ["feed_url text", "feed_category text", "feed_item_keys jsonb"]) expect(code).toContain(`ADD COLUMN ${column}`);
     expect(code).toContain("WHERE feed_url IS NOT NULL");
+  });
+});
+
+describe("018_campaigns.sql", () => {
+  const sql = readFileSync(new URL("../migrations/018_campaigns.sql", import.meta.url), "utf8");
+  it("passes the host guard and only adds the one-open-draft unique index", () => {
+    for (const statement of splitSqlStatements(sql)) expect(() => validateMigrationStatement(statement, NAMESPACE), statement.slice(0, 80)).not.toThrow();
+    for (const line of sql.split("\n").filter((l) => l.trim().startsWith("--"))) expect(line).not.toMatch(/['"]/);
+    const code = sql.split("\n").filter((l) => !l.trim().startsWith("--")).join("\n");
+    expect(code).not.toMatch(/\b(delete|drop|update)\b/i);
+    expect(code).toContain("CREATE UNIQUE INDEX campaigns_feed_open_draft");
   });
 });
 
@@ -48,10 +61,10 @@ describe.skipIf(!available)("create-feed-digest (postgres)", () => {
     const fetch = vi.fn(async (url: string) => (url === FEED_URL ? new Response(feed.xml, { status: 200, headers: { "content-type": "application/rss+xml" } }) : new Response("ok", { status: linkStatus })));
     (harness.ctx as unknown as { http: unknown }).http = { fetch };
     const call = async (params: Record<string, unknown> = {}) =>
-      (await harness.executeTool<{ data?: Record<string, any>; error?: string }>("create-feed-digest", { feedUrl: FEED_URL, audienceTags: ["vip"], name: "Weekly", subject: "This week", ...params }, { companyId: CO, agentId: "agent-camp" }));
+      (await harness.executeTool<{ data?: Record<string, unknown>; error?: string }>("create-feed-digest", { feedUrl: FEED_URL, audienceTags: ["vip"], name: "Weekly", subject: "This week", ...params }, { companyId: CO, agentId: "agent-camp" }));
     return { harness, store, fetch, call };
   }
-  const rows = async () => (await pg.client.query(`SELECT id, status, feed_category, feed_item_keys, approval_issue_id FROM ${T} ORDER BY created_at`)).rows as Array<Record<string, any>>;
+  const rows = async () => (await pg.client.query(`SELECT id, status, feed_category, feed_item_keys, approval_issue_id FROM ${T} ORDER BY created_at`)).rows as FeedRow[];
   const markLaunched = (id: string) => pg.client.query(`UPDATE ${T} SET status = 'scheduled' WHERE id = $1`, [id]);
 
   it("drafts 3 items newest first, keeps the keys on the row and opens the launch approval without sending", async () => {
@@ -86,6 +99,14 @@ describe.skipIf(!available)("create-feed-digest (postgres)", () => {
     const next = await call();
     expect(next.data).toMatchObject({ created: true, items: 1 });
     expect((await rows())[1]).toMatchObject({ feed_item_keys: ["g-4"] });
+  });
+
+  it("two concurrent calls open one draft: the loser gets the winner's draft", async () => {
+    const { call } = await setup({ xml: feedOf(1, 2) });
+    const [a, b] = await Promise.all([call(), call()]);
+    expect(await rows()).toHaveLength(1);
+    expect(a.data!.campaignId).toBe(b.data!.campaignId);
+    expect([a.data!.created, b.data!.created].filter(Boolean)).toHaveLength(1);
   });
 
   it("a draft whose approval was cancelled keeps its items unused: the next call returns that draft", async () => {

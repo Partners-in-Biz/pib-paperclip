@@ -110,6 +110,7 @@ describeEmbeddedPostgres("review verdict wake through the blocked gates (PAR-896
     // The exact request the comment routes send (literal, so this file runs on
     // a tree without the route helper and fails on behaviour, not on import).
     return heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "automation", triggerDetail: "system", reason: "issue_review_verdict",
       requestedByActorType: "system", requestedByActorId: "issue_review_verdict_relay",
       idempotencyKey: `review-verdict:${issueId}:${commentId}`,
@@ -152,6 +153,7 @@ describeEmbeddedPostgres("review verdict wake through the blocked gates (PAR-896
   ])("refuses a forged verdict wake from the %s (test 4)", async (_path, forged) => {
     const ids = await seed();
     const run = await heartbeat.wakeup(ids.agentId, {
+      causingActor: "system",
       source: forged.source, triggerDetail: "system", reason: "issue_review_verdict",
       payload: { issueId: ids.issueId },
       contextSnapshot: { issueId: ids.issueId, wakeReason: "issue_review_verdict", source: forged.contextSource,
@@ -181,6 +183,7 @@ describeEmbeddedPostgres("review verdict wake through the blocked gates (PAR-896
     await db.update(issues).set({ status: "todo" }).where(eq(issues.id, ids.issueId));
     await seedRuns(ids, readTicketRunsPerHourCap());
     const run = await heartbeat.wakeup(ids.agentId, {
+      causingActor: "system",
       source: "automation", triggerDetail: "system", reason: "issue_commented",
       payload: { issueId: ids.issueId },
       contextSnapshot: { issueId: ids.issueId, wakeReason: "issue_commented", reviewVerdictCapExempt: true },

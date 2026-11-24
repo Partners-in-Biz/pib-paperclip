@@ -1,4 +1,5 @@
 import { notifyChatContinuationWork, type ChatContinuationScope } from "../../chat-continuation-notifications.js";
+import { wakeCausingActorFromActorRef } from "../../heartbeat/causing-actor.js";
 import { DELIVERY_QUEUES } from "../../delivery-work-notifications.js";
 import type { createDeliveryWorkCoordinator } from "../../delivery-work-coordinator.js";
 import { registerScopedDeadlineWork } from "../../scoped-deadline-work.js";
@@ -289,6 +290,7 @@ export function createChatInteractionContinuations(db: Db, options: InteractionC
               },
               idempotencyKey,
               allowRunCoalescing: false,
+              causingActor: wakeCausingActorFromActorRef({ actorType: requestedByActorType, actorId: requestedByActorId }),
               requestedByActorType,
               requestedByActorId,
               contextSnapshot: {

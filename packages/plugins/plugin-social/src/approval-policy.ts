@@ -114,12 +114,15 @@ export interface PolicyDelegate {
   active: boolean;
   /** The first failed check when not active. */
   inactiveReason: string | null;
+  /** The backup approver: takes the posts the delegate created. Absent when none is named. */
+  backup?: { agentId: string; name: string | null; active: boolean; inactiveReason: string | null } | null;
 }
 
 /** One line saying who approves in this scope, for the page and for issue text. Pure. */
 export function policySummary(policy: ApprovalPolicy, delegate: PolicyDelegate | null = null): string {
   if (delegate?.active && policy.requireOwner && !policy.requireClient) {
-    return `the delegated approver (${delegate.name ?? delegate.agentId}) approves${policy.requireReviewer ? ", after the Reviewer passes it" : ""}; a team member can still approve`;
+    const backup = delegate.backup?.active ? ` (posts it created: the backup approver, ${delegate.backup.name ?? delegate.backup.agentId})` : "";
+    return `the delegated approver (${delegate.name ?? delegate.agentId}) approves${backup}${policy.requireReviewer ? ", after the Reviewer passes it" : ""}; a team member can still approve`;
   }
   const needs = requiredStages(policy);
   const approvers = needs.filter((stage) => stage !== "reviewer");

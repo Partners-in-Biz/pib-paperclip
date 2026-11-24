@@ -1,12 +1,15 @@
-import { definePlugin, runWorker, type PluginContext, type ToolRunContext } from "@paperclipai/plugin-sdk";
+import { definePlugin, runWorker, type PluginContext, type PluginPerformActionContext, type ToolRunContext } from "@paperclipai/plugin-sdk";
 import { registerSocialMediaSync } from "./social-media-sync.js";
-import { normalizeToolResult, registerClientProjectWatch, registerCrmProjection, scopeOfRow, toolFail } from "@partnersinbiz/pib-plugin-kit";
+import { actingRestriction, createAccessGuard, normalizeToolResult, registerClientProjectWatch, registerCrmProjection, scopeOfRow, toolFail } from "@partnersinbiz/pib-plugin-kit";
 import { assetBytesForPerson, assetFileForAgent, assetUrlForPerson, assetUrlsForPerson, getAssetRow, importFromAttachment, linkAsset, listAssets } from "./assets.js";
 import { archiveCanvas, createCanvas, getCanvas, listCanvases, saveCanvas } from "./canvas.js";
 import { addComment, listComments, listVersions, restoreVersion, saveVersion } from "./canvas-versions.js";
 import { briefDoc } from "./canvas-brief.js";
 import { applyOpsAction, cancelRenderAction, createEditAction, deleteEditAction, getEditAction, listEditsAction, listVersionsAction, renderAction, restoreVersionAction, saveVersionAction, renderStatusAction } from "./video-edit/actions.js";
 import { captionClipAction } from "./video-edit/auto-caption.js";
+import { detectBeatsAction } from "./video-edit/beats.js";
+import { cutToBeatAction } from "./video-edit/cut-to-beat.js";
+import { cutSilencesAction } from "./video-edit/silence.js";
 import { createShare, listShares, refreshShares, revokeShare } from "./canvas-share.js";
 import { discardGive, prepareGive, recordGive } from "./give.js";
 import { reviewAsset } from "./review.js";
@@ -18,8 +21,9 @@ import { brandKitFor } from "./brand-kit.js";
 import { deleteTemplate, listSavedTemplates, saveTemplate } from "./prompt-template-store.js";
 import { deleteCanvasTemplate, listCanvasTemplates, saveCanvasTemplate } from "./canvas-template-store.js";
 import { saveLayoutPage, takeTextDraft, textDrafts, writeCardText } from "./canvas-layout.js";
-import { errorText, StudioError } from "./errors.js";
-import { guardAction } from "./refusal.js";
+import { errorText, isStudioError, StudioError } from "./errors.js";
+import { guardAction } from "@partnersinbiz/pib-plugin-kit/refusal";
+import { STUDIO_ACCESS_TABLE } from "./access-table.js";
 import { runDetached } from "./detach.js";
 import { estimateGeneration, generationStatus, processQueue, requestGeneration } from "./generation.js";
 import { agentLimitKey, isAgentLimitKey, setCap } from "./ledger.js";
@@ -37,6 +41,7 @@ import { voiceoverAction } from "./video-edit/voiceover.js";
 import { clientSummaries } from "./summary.js";
 import { assertReachable, loadIssue, resolveScope, scopeForWork, scopeInput } from "./scope.js";
 import { STUDIO_TOOLS } from "./tools.js";
+import { PLUGIN_ID } from "./namespace.js";
 
 function objectParams(params: unknown): Record<string, unknown> {
   return params && typeof params === "object" && !Array.isArray(params) ? (params as Record<string, unknown>) : {};
@@ -169,15 +174,17 @@ async function runTool(ctx: PluginContext, name: string, params: Record<string, 
 
 const plugin = definePlugin({
   async setup(ctx) {
-    // Every page action answers a plain refusal as { ok: false, message } with a 200, not a 502 (PAR-8120).
-    type ActionHandler = Parameters<PluginContext["actions"]["register"]>[1];
-    const action = (key: string, handler: ActionHandler) => ctx.actions.register.call(ctx.actions, key, guardAction(handler));
+    // Every action and tool goes through the access guard (PAR-12578 plan 4.4; rows in access-table.ts). Every page
+    // action answers a plain refusal as { ok: false, message } with a 200, not a 502 (PAR-8120).
+    const guard = createAccessGuard(ctx, { pluginKey: PLUGIN_ID, table: STUDIO_ACCESS_TABLE });
+    type ActionHandler = (params: Record<string, unknown>, context: PluginPerformActionContext) => Promise<unknown>;
+    const action = (key: string, handler: ActionHandler) => guard.action(key, guardAction(handler, isStudioError));
     registerCrmProjection(ctx, ctx.db.namespace);
     registerClientProjectWatch(ctx);
     registerSocialMediaSync(ctx);
 
     for (const tool of STUDIO_TOOLS) {
-      ctx.tools.register(tool.name, tool, async (params, run) => {
+      guard.tool(tool.name, tool, async (params, run) => {
         try {
           const data = await runTool(ctx, tool.name, objectParams(params), run);
           return normalizeToolResult({ content: JSON.stringify(data), data });
@@ -242,14 +249,17 @@ const plugin = definePlugin({
     pageData("client-summaries", (companyId) => clientSummaries(ctx, companyId));
     pageData("generations", (companyId, p) => pageGenerations(ctx, companyId, p.groupIds));
 
-    /** Person-only actions: an active member of the company, never an agent. Returns the role for finer checks. */
-    async function person(context: { companyId?: string | null; actor: { type?: string | null; userId?: string | null; companyId?: string | null } }) {
+    /**
+     * Person-only actions: an active member of the company, never an agent. Returns the role for finer checks, and
+     * core's member-restriction answer: a restricted member gets no client media or client generation (PAR-14274).
+     */
+    async function person(context: Pick<PluginPerformActionContext, "companyId" | "actor">) {
       const companyId = context.companyId ?? context.actor.companyId;
       if (!companyId) throw new StudioError("Company is required");
       if (context.actor.type !== "user") throw new StudioError("Agents use the studio tools, not the Studio page.", "forbidden");
       const role = await memberRole(ctx, companyId, context.actor);
       if (!role) throw new StudioError("You are not an active member of this company.", "forbidden");
-      return { companyId, role, userId: String(context.actor.userId) };
+      return { companyId, role, userId: String(context.actor.userId), restriction: actingRestriction(context.actor) };
     }
 
     action("me", async (_params, context) => {
@@ -259,7 +269,7 @@ const plugin = definePlugin({
 
     action("asset-url", async (params, context) => {
       const me = await person(context);
-      return { url: await assetUrlForPerson(ctx, me.companyId, String(objectParams(params).assetId ?? "")) };
+      return { url: await assetUrlForPerson(ctx, me.companyId, String(objectParams(params).assetId ?? ""), me.restriction) };
     });
 
     // Approve or reject on the page. Viewers can't; approving sends the file to Social.
@@ -359,7 +369,7 @@ const plugin = definePlugin({
     // The Layout card: the picture's bytes to draw on, and saving the finished page.
     action("asset-data", async (params, context) => {
       const me = await person(context);
-      return assetBytesForPerson(ctx, me.companyId, String(objectParams(params).assetId ?? ""));
+      return assetBytesForPerson(ctx, me.companyId, String(objectParams(params).assetId ?? ""), me.restriction);
     });
     action("layout-save", async (params, context) => {
       const me = await person(context);
@@ -384,7 +394,7 @@ const plugin = definePlugin({
       const raw = objectParams(params).assetIds;
       const ids = Array.isArray(raw) ? [...new Set(raw.filter((id): id is string => typeof id === "string" && id.length > 0))].slice(0, 100) : [];
       // One settings read and one secret lookup for the whole page (PAR-8102); a failure is reported, not hidden.
-      return assetUrlsForPerson(ctx, me.companyId, ids);
+      return assetUrlsForPerson(ctx, me.companyId, ids, me.restriction);
     });
 
     async function generator(context: Parameters<typeof person>[0], params: unknown) {
@@ -393,7 +403,7 @@ const plugin = definePlugin({
       const p = objectParams(params);
       const ref = typeof p.issueId === "string" ? p.issueId.trim() : "";
       const issue = ref ? await loadIssue(ctx, me.companyId, ref) : null;
-      return { me, request: pageRequest(p), actor: { userId: me.userId, issueId: issue?.id ?? null, projectId: issue?.projectId ?? null } };
+      return { me, request: pageRequest(p), actor: { userId: me.userId, issueId: issue?.id ?? null, projectId: issue?.projectId ?? null, restriction: me.restriction } };
     }
 
     // The page's generate form: the same estimate, queue, caps and ledger as the agent tools.
@@ -416,7 +426,7 @@ const plugin = definePlugin({
       const p = objectParams(params);
       const ref = typeof p.issueId === "string" ? p.issueId.trim() : "";
       const issue = ref ? await loadIssue(ctx, me.companyId, ref) : null;
-      const out = await lipsyncAction(ctx, me.companyId, p, { userId: me.userId, issueId: issue?.id ?? null, projectId: issue?.projectId ?? null });
+      const out = await lipsyncAction(ctx, me.companyId, p, { userId: me.userId, issueId: issue?.id ?? null, projectId: issue?.projectId ?? null, restriction: me.restriction });
       runDetached(() => void processQueue(ctx).catch((error) => ctx.logger.info("Studio queue kick failed", { error: errorText(error) })));
       return out;
     });
@@ -462,6 +472,15 @@ const plugin = definePlugin({
     action("video-edit-caption", async (params, context) => {
       const me = await videoEditor(context);
       return captionClipAction(ctx, me.companyId, objectParams(params), { userId: me.userId });
+    });
+    action("video-edit-detect-beats", async (params, context) => detectBeatsAction(ctx, (await person(context)).companyId, objectParams(params)));
+    action("video-edit-cut-to-beat", async (params, context) => {
+      const me = await videoEditor(context);
+      return cutToBeatAction(ctx, me.companyId, objectParams(params), { userId: me.userId });
+    });
+    action("video-edit-cut-silences", async (params, context) => {
+      const me = await videoEditor(context);
+      return cutSilencesAction(ctx, me.companyId, objectParams(params), { userId: me.userId });
     });
     action("video-edit-voiceover", async (params, context) => {
       const me = await videoEditor(context);

@@ -13,11 +13,11 @@ import {
   useHostContext,
   useHostLocation,
   useHostNavigation,
-  usePluginAction,
   usePluginData,
   type PluginPageProps,
   type PluginSidebarProps,
 } from "@paperclipai/plugin-sdk/ui";
+import { useAccessMe, useCrmAction } from "./actions.js";
 import {
   Activity as ActivityIcon,
   Briefcase,
@@ -63,7 +63,7 @@ import {
   useUiContributions,
   IconBadge,
 } from "@partnersinbiz/pib-plugin-ui";
-import { GetStarted, missingRequired, useGroupedNav, usePluginSetupStatus, useUrlTab } from "@partnersinbiz/pib-plugin-ui";
+import { AccessGate, GetStarted, missingRequired, useGroupedNav, useAccess, usePluginSetupStatus, useUrlTab } from "@partnersinbiz/pib-plugin-ui";
 import { clientScopeFromSearch, withClientParam, type ClientRef } from "@partnersinbiz/pib-plugin-kit/client-ref";
 import { resolvePluginUiBase } from "@partnersinbiz/pib-plugin-kit/oauth-client";
 import { ModuleOffBanner, useModuleEnabled } from "./module-switch.js";
@@ -152,6 +152,7 @@ interface Stage {
   name: string;
   kind: string;
   position: number;
+  pipelineId?: string | null;
 }
 
 interface Summary {
@@ -199,7 +200,17 @@ const NEXT_ACTION_LABEL: Record<string, string> = { call: "Call", email: "Email"
 /** `/crm` is the CRM list; `/crm?client=company:<id>` (or `contact:<id>`) is that client's workspace. */
 export const CrmPage = withHelp(CrmPageMain);
 
+/** The page asks `access.me` first; closed shows the "no access" page (the guard still refuses every call). */
 function CrmPageMain(props: PluginPageProps) {
+  const access = useAccess(useAccessMe(), props.context.companyId);
+  return (
+    <AccessGate state={access} kind="page" moduleName="CRM">
+      <CrmPageBody {...props} />
+    </AccessGate>
+  );
+}
+
+function CrmPageBody(props: PluginPageProps) {
   const location = useHostLocation();
   const client = clientScopeFromSearch(location.search);
   if (client) {
@@ -229,14 +240,14 @@ function CrmList({ context }: PluginPageProps) {
   const setupStatus = usePluginSetupStatus(PLUGIN_ID, context.companyId);
   // The card below already asks for the Account Manager: the agent box would say it twice.
   const agentStepShown = missingRequired(setupStatus ?? null).slice(0, 3).some((item) => item.key === "agent");
-  const load = usePluginAction("crm.load");
-  const createCompany = usePluginAction("crm.create-company");
-  const createContact = usePluginAction("crm.create-contact");
-  const linkContact = usePluginAction("crm.link-contact");
-  const createDeal = usePluginAction("crm.create-deal");
-  const moveDeal = usePluginAction("crm.move-deal");
-  const createSequence = usePluginAction("crm.create-sequence");
-  const createProduct = usePluginAction("crm.create-product");
+  const load = useCrmAction("crm.load");
+  const createCompany = useCrmAction("crm.create-company");
+  const createContact = useCrmAction("crm.create-contact");
+  const linkContact = useCrmAction("crm.link-contact");
+  const createDeal = useCrmAction("crm.create-deal");
+  const moveDeal = useCrmAction("crm.move-deal");
+  const createSequence = useCrmAction("crm.create-sequence");
+  const createProduct = useCrmAction("crm.create-product");
 
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [message, setMessage] = useState("");
@@ -244,9 +255,9 @@ function CrmList({ context }: PluginPageProps) {
   // `?tab=` opens a tab and switching tabs updates the address, so links can point at a tab.
   // The sales desk is the landing tab: the list to work through comes before the numbers.
   const [tab, setTab] = useUrlTab<CrmTab>(TAB_IDS, "today", { path: "/crm", search: hostLocation.search, navigate: navigation.navigate });
-  const loadDesk = usePluginAction("crm.desk");
-  const logOutcome = usePluginAction("crm.log-outcome");
-  const setNextAction = usePluginAction("crm.set-next-action");
+  const loadDesk = useCrmAction("crm.desk");
+  const logOutcome = useCrmAction("crm.log-outcome");
+  const setNextAction = useCrmAction("crm.set-next-action");
   const [desk, setDesk] = useState<DeskView | null>(null);
   const [outcomeTarget, setOutcomeTarget] = useState<OutcomeTarget | null>(null);
   const [deskBusy, setDeskBusy] = useState(false);
@@ -1126,6 +1137,7 @@ interface WorkspaceDeal {
   stageId: string;
   stageName: string;
   stageKind: string;
+  pipelineId?: string | null;
   contactId: string | null;
   contactName: string | null;
   accountId: string | null;
@@ -1191,52 +1203,52 @@ type WorkSource = (typeof WORK_SOURCES)[number];
 function ClientWorkspace({ companyId, client, companyPrefix }: { companyId: string | null; client: ClientRef; companyPrefix: string | null }) {
   const navigation = useHostNavigation();
   const narrow = useIsNarrow();
-  const load = usePluginAction("crm.client-workspace");
-  const updateCompany = usePluginAction("crm.update-company");
-  const updateContact = usePluginAction("crm.update-contact");
-  const createCompany = usePluginAction("crm.create-company");
-  const createContact = usePluginAction("crm.create-contact");
-  const linkContact = usePluginAction("crm.link-contact");
-  const createDeal = usePluginAction("crm.create-deal");
-  const logActivity = usePluginAction("crm.log-activity");
-  const setHumanOwned = usePluginAction("crm.set-human-owned");
-  const enroll = usePluginAction("crm.enroll");
-  const scoreContact = usePluginAction("crm.score-contact");
-  const updateProfile = usePluginAction("crm.update-client-profile");
-  const readBrand = usePluginAction("crm.extract-brand-from-site");
-  const setEmailStatus = usePluginAction("crm.set-email-status");
-  const deleteCompany = usePluginAction("crm.delete-company");
-  const saveSite = usePluginAction("crm.save-client-site");
-  const deleteSite = usePluginAction("crm.delete-client-site");
-  const connectSite = usePluginAction("crm.connect-client-site");
-  const checkSite = usePluginAction("crm.check-client-site");
-  const linkProject = usePluginAction("crm.link-client-project");
-  const unlinkProject = usePluginAction("crm.unlink-client-project");
-  const createLeadForm = usePluginAction("crm.create-lead-endpoint");
-  const updateLeadForm = usePluginAction("crm.update-lead-source");
-  const rotateLeadForm = usePluginAction("crm.rotate-lead-key");
-  const makeLeadSecret = usePluginAction("crm.make-lead-secret");
-  const startNewClient = usePluginAction("crm.start-new-client");
+  const load = useCrmAction("crm.client-workspace");
+  const updateCompany = useCrmAction("crm.update-company");
+  const updateContact = useCrmAction("crm.update-contact");
+  const createCompany = useCrmAction("crm.create-company");
+  const createContact = useCrmAction("crm.create-contact");
+  const linkContact = useCrmAction("crm.link-contact");
+  const createDeal = useCrmAction("crm.create-deal");
+  const logActivity = useCrmAction("crm.log-activity");
+  const setHumanOwned = useCrmAction("crm.set-human-owned");
+  const enroll = useCrmAction("crm.enroll");
+  const scoreContact = useCrmAction("crm.score-contact");
+  const updateProfile = useCrmAction("crm.update-client-profile");
+  const readBrand = useCrmAction("crm.extract-brand-from-site");
+  const setEmailStatus = useCrmAction("crm.set-email-status");
+  const deleteCompany = useCrmAction("crm.delete-company");
+  const saveSite = useCrmAction("crm.save-client-site");
+  const deleteSite = useCrmAction("crm.delete-client-site");
+  const connectSite = useCrmAction("crm.connect-client-site");
+  const checkSite = useCrmAction("crm.check-client-site");
+  const linkProject = useCrmAction("crm.link-client-project");
+  const unlinkProject = useCrmAction("crm.unlink-client-project");
+  const createLeadForm = useCrmAction("crm.create-lead-endpoint");
+  const updateLeadForm = useCrmAction("crm.update-lead-source");
+  const rotateLeadForm = useCrmAction("crm.rotate-lead-key");
+  const makeLeadSecret = useCrmAction("crm.make-lead-secret");
+  const startNewClient = useCrmAction("crm.start-new-client");
   // Client care: one hook per page action the care card runs (`crm.<tool name>`).
-  const careActions: Record<string, ReturnType<typeof usePluginAction>> = {
-    "open-support-case": usePluginAction("crm.open-support-case"),
-    "update-support-case": usePluginAction("crm.update-support-case"),
-    "create-client-action": usePluginAction("crm.create-client-action"),
-    "update-client-action": usePluginAction("crm.update-client-action"),
-    "build-client-report": usePluginAction("crm.build-client-report"),
-    "send-client-report": usePluginAction("crm.send-client-report"),
-    "set-site-monitoring": usePluginAction("crm.set-site-monitoring"),
-    "set-client-sensitivity": usePluginAction("crm.set-client-sensitivity"),
+  const careActions: Record<string, ReturnType<typeof useCrmAction>> = {
+    "open-support-case": useCrmAction("crm.open-support-case"),
+    "update-support-case": useCrmAction("crm.update-support-case"),
+    "create-client-action": useCrmAction("crm.create-client-action"),
+    "update-client-action": useCrmAction("crm.update-client-action"),
+    "build-client-report": useCrmAction("crm.build-client-report"),
+    "send-client-report": useCrmAction("crm.send-client-report"),
+    "set-site-monitoring": useCrmAction("crm.set-site-monitoring"),
+    "set-client-sensitivity": useCrmAction("crm.set-client-sensitivity"),
   };
   // Agreements and growth: e-sign on or off is a person's action; a document goes out only through an approved email.
-  const agreementActions: Record<string, ReturnType<typeof usePluginAction>> = {
-    "enable-esign": usePluginAction("crm.enable-esign"),
-    "disable-esign": usePluginAction("crm.disable-esign"),
-    "send-for-signature": usePluginAction("crm.send-for-signature"),
-    "void-sign-document": usePluginAction("crm.void-sign-document"),
-    "update-event-key": usePluginAction("crm.update-event-key"),
+  const agreementActions: Record<string, ReturnType<typeof useCrmAction>> = {
+    "enable-esign": useCrmAction("crm.enable-esign"),
+    "disable-esign": useCrmAction("crm.disable-esign"),
+    "send-for-signature": useCrmAction("crm.send-for-signature"),
+    "void-sign-document": useCrmAction("crm.void-sign-document"),
+    "update-event-key": useCrmAction("crm.update-event-key"),
   };
-  const createEventKey = usePluginAction("crm.create-event-key");
+  const createEventKey = useCrmAction("crm.create-event-key");
   // Only installed modules get a card, like the workspace tabs; nothing shows while that is unknown.
   const contributions = useUiContributions();
   const sources = WORK_SOURCES.filter((source) => moduleInstalled(contributions, source.pluginKey) === true);
@@ -1263,7 +1275,7 @@ function ClientWorkspace({ companyId, client, companyPrefix }: { companyId: stri
   const [note, setNote] = useState("");
   const [enrollSequenceId, setEnrollSequenceId] = useState("");
   const [score, setScore] = useState<ScoreResult | null>(null);
-  const logOutcomeAction = usePluginAction("crm.log-outcome");
+  const logOutcomeAction = useCrmAction("crm.log-outcome");
   const [outcomeTarget, setOutcomeTarget] = useState<OutcomeTarget | null>(null);
   const [outcomeBusy, setOutcomeBusy] = useState(false);
 
@@ -1360,7 +1372,7 @@ function ClientWorkspace({ companyId, client, companyPrefix }: { companyId: stri
   const pickReady = pickMode === "new" ? pickName.trim() !== "" : pickId !== "";
   const openDeal = openDealId ? deals.find((deal) => deal.id === openDealId) ?? null : null;
   const dealView: DealView | null = openDeal
-    ? { id: openDeal.id, title: openDeal.title, amountMinor: openDeal.amountMinor, currency: openDeal.currency, stageId: openDeal.stageId, accountId: openDeal.accountId, contactId: openDeal.contactId }
+    ? { id: openDeal.id, title: openDeal.title, amountMinor: openDeal.amountMinor, currency: openDeal.currency, stageId: openDeal.stageId, pipelineId: openDeal.pipelineId ?? null, accountId: openDeal.accountId, contactId: openDeal.contactId }
     : null;
 
   function openModal(next: Exclude<WorkspaceModal, null>) {
@@ -2455,7 +2467,17 @@ function dateInputValue(value: string | null): string {
   return Number.isNaN(date.getTime()) ? "" : date.toISOString().slice(0, 10);
 }
 
-export function CrmSidebar({ context }: PluginSidebarProps) {
+/** The sidebar entry asks `access.me` too: closed hides it (access stage A, PAR-12680). */
+export function CrmSidebar(props: PluginSidebarProps) {
+  const access = useAccess(useAccessMe(), props.context.companyId);
+  return (
+    <AccessGate state={access} kind="sidebar">
+      <CrmSidebarBody {...props} />
+    </AccessGate>
+  );
+}
+
+function CrmSidebarBody({ context }: PluginSidebarProps) {
   // Hidden when the company switched the CRM module off in Setup; shown while loading.
   const enabled = useModuleEnabled(context.companyId, PLUGIN_ID);
   // The Cockpit's Clients / Marketing / Finance group shows this page instead (pib-plugin-ui NAV_GROUPS).

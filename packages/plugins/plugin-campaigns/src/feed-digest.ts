@@ -38,6 +38,27 @@ async function openDraft(ctx: PluginContext, companyId: string, feedUrl: string,
   return rows[0] ?? null;
 }
 
+/** True when an INSERT lost to the one-open-draft-per-feed unique index. */
+function isOpenDraftConflict(error: unknown): boolean {
+  const e = error as { code?: unknown; message?: unknown } | null;
+  return e?.code === "23505" || (typeof e?.message === "string" && e.message.includes("campaigns_feed_open_draft"));
+}
+
+async function openDraftResult(ctx: PluginContext, companyId: string, open: { id: string; approval_issue_id: string | null }) {
+  // A failed lookup only softens the message below; request-campaign-approval re-checks.
+  const issue = open.approval_issue_id ? await ctx.issues.get(open.approval_issue_id, companyId).catch(() => null) : null;
+  const waiting = issue !== null && issue.status !== "cancelled";
+  return {
+    campaignId: open.id,
+    created: false,
+    approvalIssueId: waiting ? open.approval_issue_id : null,
+    approvalOpened: false,
+    message: waiting
+      ? "A digest of this feed is already a draft with an open approval. Nothing new was created: approve the open one."
+      : "A digest of this feed is already a draft. Nothing new was created: fix it and call request-campaign-approval, or approve the open one.",
+  };
+}
+
 /** Item keys of the digests of this feed that were launched. */
 async function usedKeys(ctx: PluginContext, companyId: string, feedUrl: string, category: string | null): Promise<Set<string>> {
   const where = scope(feedUrl, category, 2);
@@ -75,20 +96,7 @@ export async function createFeedDigest(ctx: PluginContext, companyId: string, pa
   const category = optionalString(params, "category") || null;
 
   const open = await openDraft(ctx, companyId, feedUrl, category);
-  if (open) {
-    // A failed lookup only softens the message below; request-campaign-approval re-checks.
-    const issue = open.approval_issue_id ? await ctx.issues.get(open.approval_issue_id, companyId).catch(() => null) : null;
-    const waiting = issue !== null && issue.status !== "cancelled";
-    return {
-      campaignId: open.id,
-      created: false,
-      approvalIssueId: waiting ? open.approval_issue_id : null,
-      approvalOpened: false,
-      message: waiting
-        ? "A digest of this feed is already a draft with an open approval. Nothing new was created: approve the open one."
-        : "A digest of this feed is already a draft. Nothing new was created: fix it and call request-campaign-approval, or approve the open one.",
-    };
-  }
+  if (open) return openDraftResult(ctx, companyId, open);
 
   let items: CleanFeedItem[];
   try {
@@ -115,7 +123,16 @@ export async function createFeedDigest(ctx: PluginContext, companyId: string, pa
     feedCategory: category,
     feedItemKeys: picked.map((item) => item.key),
   };
-  await insertCampaign(ctx, campaign);
+  try {
+    await insertCampaign(ctx, campaign);
+  } catch (error) {
+    // The partial unique index (migration 018) lets one open draft per feed and category exist. A concurrent call that
+    // lost the race gets the winner's draft, the same answer the check above gives.
+    if (!isOpenDraftConflict(error)) throw error;
+    const winner = await openDraft(ctx, companyId, feedUrl, category);
+    if (!winner) throw error;
+    return openDraftResult(ctx, companyId, winner);
+  }
   await insertStep(ctx, { companyId, campaignId: campaign.id, step: { position: 1, delayDays: 0, subject, body: digestBody(picked), htmlBody: null, variant: "a" } });
 
   try {

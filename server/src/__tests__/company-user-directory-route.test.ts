@@ -112,7 +112,7 @@ describe("GET /companies/:companyId/user-directory", () => {
       source: "session",
       isInstanceAdmin: false,
       companyIds: ["company-1"],
-      memberships: [{ companyId: "company-1", membershipRole: "operator", status: "active" }],
+      memberships: [{ companyId: "company-1", membershipRole: "operator", status: "active", restricted: false, restrictionMode: "off" }],
     });
 
     const res = await request(app).get("/api/companies/company-1/user-directory");

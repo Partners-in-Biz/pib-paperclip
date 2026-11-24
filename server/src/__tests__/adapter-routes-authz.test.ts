@@ -190,7 +190,7 @@ function boardMember(
       {
         companyId: "company-1",
         membershipRole,
-        status: "active",
+        status: "active", restricted: false, restrictionMode: "off",
       },
     ],
   };

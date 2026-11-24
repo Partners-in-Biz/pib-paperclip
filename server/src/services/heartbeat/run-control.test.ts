@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
+import type { SshRemoteStopOutcome, SshRemoteStopSignal } from "@paperclipai/adapter-utils/ssh";
 import { activityLog, agents, agentWakeupRequests, caseEvents, caseHandoffs, cases, companies, environmentLeases, heartbeatRunEvents, heartbeatRuns, issueComments, issues, nativeRunFinalizations } from "@paperclipai/db";
 import { eq, inArray, sql } from "drizzle-orm";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -951,6 +952,55 @@ describe.skipIf(!runControlPostgresSupport.supported)("heartbeat run-control dat
     expect(terminateLocalService).toHaveBeenCalledTimes(2);
     // The executor still owns removal of this evidence after it observes Stop.
     expect(deps.failedProcessRunCancellations.get(run.id)?.error).toBe(failure);
+  });
+
+  describe("ssh targets stop the remote process group first (PAR-9402)", () => {
+    async function sshRun(stopRemote: (signal: SshRemoteStopSignal) => Promise<SshRemoteStopOutcome>) {
+      const { company, agent } = await fixture();
+      const run = await liveRun(company.id, agent.id);
+      runningProcesses.set(run.id, { ...runningProcesses.get(run.id)!, stopRemote });
+      return run;
+    }
+
+    it.each(["signalled", "gone", "error"] as const)(
+      "sends stopRemote(TERM) and then the local terminate when the remote stop reports %s",
+      async outcome => {
+        const calls: string[] = [];
+        const stopRemote = vi.fn(async (signal: SshRemoteStopSignal) => { calls.push(`stopRemote:${signal}`); return outcome; });
+        const run = await sshRun(stopRemote);
+        vi.mocked(terminateLocalService).mockClear();
+        vi.mocked(terminateLocalService).mockImplementationOnce(async () => { calls.push("terminate"); });
+        const deps = callbacks(db);
+        const result = await createHeartbeatRunControl(db, deps).cancelRunInternal(run.id, "Stop", { terminationGraceMs: 1 });
+        expect(result?.status).toBe("cancelled");
+        expect(calls).toEqual(["stopRemote:TERM", "terminate"]);
+        expect(stopRemote).toHaveBeenCalledTimes(1);
+        expect(terminateLocalService).toHaveBeenCalledWith({ pid: 424242, processGroupId: 424242 }, { forceAfterMs: 100, signal: "SIGINT" });
+        expect(runningProcesses.has(run.id)).toBe(false);
+      },
+    );
+
+    it("falls back to the local terminate when stopRemote rejects", async () => {
+      const run = await sshRun(vi.fn(async (): Promise<SshRemoteStopOutcome> => { throw new Error("ssh unreachable"); }));
+      vi.mocked(terminateLocalService).mockClear();
+      const deps = callbacks(db);
+      expect(await createHeartbeatRunControl(db, deps).cancelRunInternal(run.id, "Stop", { terminationGraceMs: 1 }))
+        .toMatchObject({ status: "cancelled" });
+      expect(terminateLocalService).toHaveBeenCalledTimes(1);
+      expect(terminateLocalService).toHaveBeenCalledWith({ pid: 424242, processGroupId: 424242 }, { forceAfterMs: 100, signal: "SIGINT" });
+    });
+
+    it("leaves a local process on the unchanged terminate path", async () => {
+      const { company, agent } = await fixture();
+      const run = await liveRun(company.id, agent.id);
+      expect(runningProcesses.get(run.id)).not.toHaveProperty("stopRemote");
+      vi.mocked(terminateLocalService).mockClear();
+      const deps = callbacks(db);
+      expect(await createHeartbeatRunControl(db, deps).cancelRunInternal(run.id, "Stop", { terminationGraceMs: 1 }))
+        .toMatchObject({ status: "cancelled" });
+      expect(terminateLocalService).toHaveBeenCalledTimes(1);
+      expect(terminateLocalService).toHaveBeenCalledWith({ pid: 424242, processGroupId: 424242 }, { forceAfterMs: 100, signal: "SIGINT" });
+    });
   });
 
   async function ownedAdapterRun() {

@@ -403,6 +403,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     });
 
     const followupRun = await heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "automation",
       triggerDetail: "system",
       reason: "approval_approved",
@@ -502,6 +503,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
 
     // Same shape as plugin-host-services `issues.requestWakeup`.
     const wake = await heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "assignment",
       triggerDetail: "system",
       reason: wakeReason,
@@ -585,6 +587,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     });
 
     const followupRun = await heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "automation",
       triggerDetail: "system",
       reason: "issue_recovery_action_restored",
@@ -657,6 +660,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         .returning()
         .then((rows) => rows[0]);
       const firstRun = await heartbeat.wakeup(agentId, {
+        causingActor: "system",
         source: "automation",
         triggerDetail: "system",
         reason: "issue_commented",
@@ -694,6 +698,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         .then((rows) => rows[0]);
 
       const secondRun = await heartbeat.wakeup(agentId, {
+        causingActor: "system",
         source: "automation",
         triggerDetail: "system",
         reason: "issue_commented",
@@ -708,6 +713,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         requestedByActorId: "user-1",
       });
       const thirdRun = await heartbeat.wakeup(agentId, {
+        causingActor: "system",
         source: "automation",
         triggerDetail: "system",
         reason: "issue_commented",
@@ -822,6 +828,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         .returning()
         .then((rows) => rows[0]);
       const firstRun = await heartbeat.wakeup(agentId, {
+        causingActor: "system",
         source: "automation",
         triggerDetail: "system",
         reason: "issue_commented",
@@ -852,6 +859,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         .then((rows) => rows[0]);
       expect(
         await heartbeat.wakeup(agentId, {
+          causingActor: "system",
           source: "automation",
           triggerDetail: "system",
           reason: "issue_commented",
@@ -951,6 +959,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         .returning()
         .then((rows) => rows[0]);
       const firstRun = await heartbeat.wakeup(agentId, {
+        causingActor: "system",
         source: "automation",
         triggerDetail: "system",
         reason: "issue_commented",
@@ -1000,6 +1009,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         .then((rows) => rows[0]);
 
       const followupRun = await heartbeat.wakeup(agentId, {
+        causingActor: "system",
         source: "automation",
         triggerDetail: "system",
         reason: "issue_commented",
@@ -1058,6 +1068,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         .then((rows) => rows[0]);
 
       const firstRun = await heartbeat.wakeup(agentId, {
+        causingActor: "system",
         source: "automation",
         triggerDetail: "system",
         reason: "issue_commented",
@@ -1090,6 +1101,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         .then((rows) => rows[0]);
 
       const deferredRun = await heartbeat.wakeup(agentId, {
+        causingActor: "system",
         source: "automation",
         triggerDetail: "system",
         reason: "issue_commented",
@@ -1204,6 +1216,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         .returning()
         .then((rows) => rows[0]);
       const closingRun = await heartbeat.wakeup(agentId, {
+        causingActor: "system",
         source: "automation",
         triggerDetail: "system",
         reason: "issue_commented",
@@ -1230,6 +1243,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
 
       // Same shape as plugin-host-services `issues.requestWakeup`.
       const gateWake = await heartbeat.wakeup(agentId, {
+        causingActor: "system",
         source: "assignment",
         triggerDetail: "system",
         reason: "issue_reopened_by_gate",
@@ -1324,6 +1338,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       await db.insert(issues).values(wakeIssueRow(issueId, companyId, "Agent feedback at completion boundary", assigneeAgentId, issuePrefix));
 
       const firstRun = await heartbeat.wakeup(assigneeAgentId, {
+        causingActor: "system",
         source: "assignment",
         triggerDetail: "system",
         reason: "issue_assigned",
@@ -1361,6 +1376,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         .then((rows) => rows[0]);
 
       const deferredRun = await heartbeat.wakeup(targetAgentId, {
+        causingActor: "system",
         source: "automation",
         triggerDetail: "system",
         reason: wakeReason,
@@ -1504,6 +1520,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       await db.insert(issues).values(wakeIssueRow(issueId, companyId, "Interaction continuation survives self-comment filtering", agentId, issuePrefix));
 
       const firstRun = await heartbeat.wakeup(agentId, {
+        causingActor: "system",
         source: "assignment",
         triggerDetail: "system",
         reason: "issue_assigned",
@@ -1551,6 +1568,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
 
       expect(
         await heartbeat.wakeup(agentId, {
+          causingActor: "system",
           source: "automation",
           triggerDetail: "system",
           reason: "issue_commented",
@@ -1569,6 +1587,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
 
       expect(
         await heartbeat.wakeup(agentId, {
+          causingActor: "system",
           source: "automation",
           triggerDetail: "system",
           reason: "issue_commented",
@@ -2156,6 +2175,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       await db.insert(issues).values(wakeIssueRow(issueId, companyId, "Human follow-up must survive mixed deferred batches", agentId, issuePrefix));
 
       const firstRun = await heartbeat.wakeup(agentId, {
+        causingActor: "system",
         source: "assignment",
         triggerDetail: "system",
         reason: "issue_assigned",
@@ -2192,6 +2212,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         .then((rows) => rows[0]);
 
       const firstDeferredRun = await heartbeat.wakeup(agentId, {
+        causingActor: "system",
         source: "automation",
         triggerDetail: "system",
         reason: "issue_commented",
@@ -2216,6 +2237,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         .then((rows) => rows[0]);
 
       const secondDeferredRun = await heartbeat.wakeup(agentId, {
+        causingActor: "system",
         source: "automation",
         triggerDetail: "system",
         reason: "issue_commented",
@@ -2326,6 +2348,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       await db.insert(issues).values(wakeIssueRow(issueId, companyId, "Deleted follow-up must not reopen", agentId, issuePrefix));
 
       const firstRun = await heartbeat.wakeup(agentId, {
+        causingActor: "system",
         source: "assignment",
         triggerDetail: "system",
         reason: "issue_assigned",
@@ -2357,6 +2380,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         .then((rows) => rows[0]);
 
       const deferredRun = await heartbeat.wakeup(agentId, {
+        causingActor: "system",
         source: "automation",
         triggerDetail: "system",
         reason: "issue_commented",
@@ -2465,6 +2489,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       await db.insert(issues).values(wakeIssueRow(issueId, companyId, "Self-authored note must not reopen", agentId, issuePrefix));
 
       const firstRun = await heartbeat.wakeup(agentId, {
+        causingActor: "system",
         source: "assignment",
         triggerDetail: "system",
         reason: "issue_assigned",
@@ -2501,6 +2526,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         .then((rows) => rows[0]);
 
       const deferredRun = await heartbeat.wakeup(agentId, {
+        causingActor: "system",
         source: "automation",
         triggerDetail: "system",
         reason: "issue_commented",
@@ -2618,6 +2644,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       await db.insert(issues).values(wakeIssueRow(issueId, companyId, "Interaction continuation survives self-comment filtering", agentId, issuePrefix));
 
       const firstRun = await heartbeat.wakeup(agentId, {
+        causingActor: "system",
         source: "assignment",
         triggerDetail: "system",
         reason: "issue_assigned",
@@ -2654,6 +2681,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         .then((rows) => rows[0]);
 
       expect(await heartbeat.wakeup(agentId, {
+        causingActor: "system",
         source: "automation",
         triggerDetail: "system",
         reason: "issue_commented",
@@ -2670,6 +2698,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       })).toBeNull();
 
       expect(await heartbeat.wakeup(agentId, {
+        causingActor: "system",
         source: "automation",
         triggerDetail: "system",
         reason: "issue_commented",
@@ -2749,6 +2778,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       await db.insert(issues).values(wakeIssueRow(issueId, companyId, "Require a comment", agentId, issuePrefix));
 
       const firstRun = await heartbeat.wakeup(agentId, {
+        causingActor: "system",
         source: "assignment",
         triggerDetail: "system",
         reason: "issue_assigned",
@@ -2931,6 +2961,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       });
 
       const primaryRun = await heartbeat.wakeup(primaryAgentId, {
+        causingActor: "system",
         source: "assignment",
         triggerDetail: "system",
         reason: "issue_assigned",
@@ -2954,6 +2985,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         .then((rows) => rows[0]);
 
       const mentionRun = await heartbeat.wakeup(mentionedAgentId, {
+        causingActor: "system",
         source: "automation",
         triggerDetail: "system",
         reason: "issue_comment_mentioned",
@@ -3096,6 +3128,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         .then((rows) => rows[0]);
 
       const mentionRun = await heartbeat.wakeup(mentionedAgentId, {
+        causingActor: "system",
         source: "automation",
         triggerDetail: "system",
         reason: "issue_comment_mentioned",
@@ -3157,6 +3190,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       await db.insert(issues).values(wakeIssueRow(issueId, companyId, "Use existing comment", agentId, issuePrefix));
 
       const firstRun = await heartbeat.wakeup(agentId, {
+        causingActor: "system",
         source: "assignment",
         triggerDetail: "system",
         reason: "issue_assigned",

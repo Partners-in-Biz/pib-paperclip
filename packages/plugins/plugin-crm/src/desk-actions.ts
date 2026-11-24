@@ -13,6 +13,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { buildHandoffDescription, handoffTitle, inlineData, isLocalAgent, isRunnableAgent } from "@partnersinbiz/pib-plugin-kit/handoff";
 import {
   activitiesSince,
+  dealPipelineId,
   getAccount,
   getContact,
   getDeal,
@@ -346,7 +347,7 @@ export async function givePrepare(ctx: PluginContext, viewer: Viewer, deps: Desk
   const prefix = await companyPrefix(ctx, viewer.companyId);
   const [links, stages, activities] = await Promise.all([
     listLinks(ctx, viewer.companyId),
-    recordType === "deal" ? listStages(ctx, (record as DealDraft).pipelineId) : Promise.resolve([]),
+    recordType === "deal" ? dealPipelineId(ctx, record as DealDraft).then((pipelineId) => listStages(ctx, pipelineId)) : Promise.resolve([]),
     listActivities(ctx, recordType, recordId, 12),
   ]);
 

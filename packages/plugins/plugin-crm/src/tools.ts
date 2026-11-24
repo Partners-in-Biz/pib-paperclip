@@ -1,6 +1,6 @@
 import type { JsonSchema, PluginToolDeclaration } from "@paperclipai/plugin-sdk";
 import { SITE_ACCESS_KINDS, SITE_PLATFORMS, SITE_SEO_PLUGINS } from "@partnersinbiz/pib-plugin-kit/client-sites";
-import { ACTIVITY_KINDS, COMPLETION_MODES, DEAL_STATUSES, FIELD_TYPES, FIND_KINDS, FIND_MAX, LIFECYCLES, NEXT_ACTIONS, RECORD_TYPES, SEQUENCE_DELIVERIES } from "./domain.js";
+import { ACTIVITY_KINDS, COMPLETION_MODES, DEAL_STATUSES, FIELD_TYPES, FIND_KINDS, FIND_MAX, LIFECYCLES, NEXT_ACTIONS, RECORD_TYPES, SEQUENCE_DELIVERIES, STAGE_KINDS } from "./domain.js";
 import { LEAD_INTAKES, SOURCE_STATUSES } from "./lead-form.js";
 import { CARE_TOOLS } from "./care-tools.js";
 import { ESIGN_TOOLS } from "./esign-tools.js";
@@ -104,7 +104,8 @@ export const CRM_TOOLS: PluginToolDeclaration[] = [
     description: "Deals with their stage, status, value and client ref. Filter by status, stage or client.",
     parametersSchema: schema([], {
       status: oneOf(DEAL_STATUSES, "open, won or lost."),
-      stage: text("Stage id or stage name, e.g. Proposal (see list-stages)."),
+      stage: text("Stage id or stage name, e.g. Proposal (see list-stages). A name is looked up in the given pipeline, else in all."),
+      pipeline: text("Only this pipeline's deals: its id or name (see list-stages). Omit for all pipelines."),
       client: text("Only this client's deals: company:<id> or contact:<id>. A company includes its people's deals."),
       limit: int("Most deals to return, 1 to 50 (default 25).", { minimum: 1, maximum: 50 }),
     }),
@@ -112,8 +113,30 @@ export const CRM_TOOLS: PluginToolDeclaration[] = [
   {
     name: "list-stages",
     displayName: "List pipeline stages",
-    description: "The pipeline's stages in order, with each stage's id, kind (open, won, lost) and deal count. Use the id with move-deal.",
-    parametersSchema: schema([], {}),
+    description: "The pipeline's stages in order, with each stage's id, kind (open, won, lost) and deal count. Use the id with move-deal. Also lists every pipeline.",
+    parametersSchema: schema([], { pipeline: text("Pipeline id or name. Omit for the main (default) pipeline.") }),
+  },
+  {
+    name: "create-pipeline",
+    displayName: "Create pipeline",
+    description:
+      "Create another pipeline (its own set of stages) for a separate line of deals, e.g. sponsors. The company's first pipeline, Sales, is made first if it is missing, and stays the default. Omit stages to get Discovery, Proposal, Negotiation, Won and Lost. Custom stages need at least one open, exactly one won and exactly one lost stage, with unique names. Returns the pipeline id and its stage ids (use them with create-deal / move-deal).",
+    parametersSchema: schema(["name"], {
+      name: text("The new pipeline's name, e.g. Sponsors. Must differ from the company's other pipelines (case ignored)."),
+      stages: {
+        type: "array",
+        description: "Stages in board order, e.g. [{\"name\":\"Lead\",\"kind\":\"open\"},{\"name\":\"Signed\",\"kind\":\"won\"},{\"name\":\"Declined\",\"kind\":\"lost\"}]. Omit for the default five stages.",
+        items: {
+          type: "object",
+          required: ["name", "kind"],
+          additionalProperties: false,
+          properties: {
+            name: text("The stage name, unique within this pipeline (case ignored)."),
+            kind: oneOf(STAGE_KINDS, "open, won or lost."),
+          },
+        },
+      },
+    }),
   },
   {
     name: "list-sequences",
@@ -557,8 +580,8 @@ export const CRM_TOOLS: PluginToolDeclaration[] = [
   {
     name: "pipeline-forecast",
     displayName: "Pipeline forecast",
-    description: "Open pipeline value by stage with a weighted forecast (each stage's win chance). An estimate, not a promise.",
-    parametersSchema: schema([], {}),
+    description: "Open pipeline value by stage with a weighted forecast (each stage's win chance). An estimate, not a promise. Covers the main pipeline unless you name another.",
+    parametersSchema: schema([], { pipeline: text("Pipeline id or name (see list-stages). Omit for the main pipeline.") }),
   },
   {
     name: "export-contacts",
@@ -818,6 +841,7 @@ export const CRM_TOOLS: PluginToolDeclaration[] = [
       "Create a deal (a sale in progress) in the first open stage for a client. Link it with companyRecordId and/or contactId. Returns its id. Put its id on the Billing quote so acceptance closes it.",
     parametersSchema: schema(["title"], {
       title: text("What is being sold, e.g. Website rebuild."),
+      pipeline: text("The pipeline it goes in: its id or name (see list-stages). It starts in that pipeline's first open stage. Omit for the main (default) pipeline."),
       amountMinor: P.amountMinor,
       currency: P.currency,
       companyRecordId: P.companyRecordId,
@@ -830,10 +854,11 @@ export const CRM_TOOLS: PluginToolDeclaration[] = [
     name: "move-deal",
     displayName: "Move deal",
     description:
-      "Move a deal to another stage. Won makes the client a customer, logs the win and tells Billing and the Cockpit (a first win starts onboarding). Won or lost stops the contact's sequences.",
-    parametersSchema: schema(["dealId", "stageId"], {
+      "Move a deal to another stage, also into another pipeline. Send stageId, pipeline or both. Won makes the client a customer, logs the win and tells Billing and the Cockpit (a first win starts onboarding). Won or lost stops the contact's sequences.",
+    parametersSchema: schema(["dealId"], {
       dealId: P.dealId,
-      stageId: text("Stage id from list-stages. A stage name (e.g. Proposal) or the word won or lost also works."),
+      stageId: text("Stage id from list-stages (another pipeline's stage id moves the deal there). A stage name (e.g. Proposal) or the word won or lost also works: looked up in pipeline if given, else in the deal's pipeline."),
+      pipeline: text("Pipeline id or name (see list-stages). Alone: the deal goes to that pipeline's first open stage (a deal already in it stays put). With a stage id, the stage must be in this pipeline."),
       quoteId: text("Only with stageId won: the accepted quote this deal closes (from a pick-the-deal hand-off). The deal records it."),
     }),
   },
@@ -850,6 +875,7 @@ export const CRM_TOOLS: PluginToolDeclaration[] = [
       companyRecordId: text("The CRM company this deal is for (company:<id> also works). An empty string unlinks it."),
       contactId: text("The CRM contact this deal is with (contact:<id> also works). An empty string unlinks it."),
       stageId: text("Move to this stage: id from list-stages, a stage name, or won or lost. Won makes the client a customer and tells Billing."),
+      pipeline: text("Move to this pipeline (id or name, see list-stages), as move-deal: alone, its first open stage; with stageId, where a stage name is looked up."),
     }),
   },
   {

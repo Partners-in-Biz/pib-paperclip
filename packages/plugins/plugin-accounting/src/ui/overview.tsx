@@ -1,5 +1,5 @@
 import { useEffect, useState, type MouseEvent } from "react";
-import { usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import { useAccountingAction } from "./actions.js";
 import {
   Button,
   Calculator,
@@ -95,7 +95,7 @@ function monthToDate(asOf: string): string {
 type Tone = "ok" | "warn" | "bad" | "info" | "neutral";
 
 export function OverviewTab({ data, onMessage, onOpen, refresh, today = new Date().toISOString().slice(0, 10) }: { data: LoadResult; onMessage: (m: string) => void; onOpen: (tab: string) => void; refresh: () => Promise<void>; today?: string }) {
-  const loadTrends = usePluginAction("accounting.trends");
+  const loadTrends = useAccountingAction("accounting.trends");
   const [trends, setTrends] = useState<Trends | null>(null);
   const [trendError, setTrendError] = useState("");
   useEffect(() => {

@@ -47,6 +47,13 @@
           "by": "Owner session",
           "at": "2026-11-13",
           "expires": "2026-12-13"
+        },
+        {
+          "hash": "ee2f130ce2f3ce0b",
+          "reason": "0.27.11 (PAR-11587) adds one paragraph to the asking reference: an ask refused as not found or private is not retried; use a native ask_user_questions card on a private task. No existing rule changes, and no golden scenario asks on an unreadable issue. Waived so the fix can ship; re-baseline from a live run before expiry.",
+          "by": "Leo (Senior Software Engineer)",
+          "at": "2026-11-14",
+          "expires": "2026-12-14"
         }
       ]
     },

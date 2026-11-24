@@ -4,6 +4,8 @@ import { databaseWorkScopeKey, decisions, type Db } from "@paperclipai/db";
 export type DecisionContinuationWake = (input: {
   companyId: string; agentId: string; issueId: string; decisionId: string;
   outcome: "decided" | "expired" | "cancelled";
+  /** The person who decided; absent for an expiry or cancellation. */
+  decidedByUserId?: string | null;
 }) => Promise<unknown>;
 
 const flights = new WeakMap<object, Map<string, Promise<void>>>();
@@ -27,7 +29,8 @@ export function decisionContinuationService(db: Db, wake: DecisionContinuationWa
       if (!decision) return;
       await wake({ companyId: decision.companyId, agentId: decision.originAgentId,
         issueId: decision.originIssueId, decisionId: id,
-        outcome: decision.status === "expired" ? "expired" : decision.status === "cancelled" ? "cancelled" : "decided" });
+        outcome: decision.status === "expired" ? "expired" : decision.status === "cancelled" ? "cancelled" : "decided",
+        ...(decision.status === "decided" && decision.decidedByUserId ? { decidedByUserId: decision.decidedByUserId } : {}) });
       await db.update(decisions).set({
         metadata: sql`coalesce(${decisions.metadata}, '{}'::jsonb) || jsonb_build_object(
           'continuationPending', false, 'continuationDeliveredAt', ${new Date().toISOString()}::text)`,

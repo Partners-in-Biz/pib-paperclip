@@ -181,6 +181,43 @@ describe.skipIf(!available)("Render runner against real Postgres (fake ffmpeg)",
     expect(calls).toBe(1);
   });
 
+  it("PAR-11217: recovery also kills a pass that ran beside the recorded one (any group leader naming the work folder)", async () => {
+    const job = await enqueue();
+    await createRenderRunner(ctx, { executor: async () => new Promise(() => undefined) }).tick();
+    const dir = join(scratch, `r-${job.id}-pair`);
+    const recorded = fakeFfmpeg(dir);
+    const beside = fakeFfmpeg(dir);
+    const neighbour = fakeFfmpeg(`${dir}-old`); // a prefix of its name is not the folder
+    await markStale(job.id, { pid: recorded.pid!, workdir: dir });
+    const runner = createRenderRunner(ctx);
+    expect(await runner.recover()).toBe(1);
+    expect(await exited(recorded)).toBe(true);
+    expect(await exited(beside)).toBe(true);
+    expect(beside.signalCode).toBe("SIGKILL");
+    expect(await exited(neighbour, 300)).toBe(false);
+  });
+
+  it("PAR-11217: two passes live at once: a lost claim kills both groups, and an ended pass is no longer signalled", async () => {
+    const job = await enqueue();
+    const kills: Array<[number, string]> = [];
+    const executor: RenderExecutor = async (_ctx, j, control) => {
+      await control.started({ pgid: 717171, workdir: join(scratch, `r-${j.id}`) });
+      await control.started({ pgid: 818181, workdir: join(scratch, `r-${j.id}`) });
+      await control.started({ pgid: 919191, workdir: join(scratch, `r-${j.id}`) });
+      control.passEnded(717171);
+      await new Promise<void>((resolve) => control.signal.addEventListener("abort", () => resolve()));
+      throw new RenderFailure("stopped", "infra", "cancelled");
+    };
+    const runner = createRenderRunner(ctx, { executor, heartbeatMs: 30, killGraceMs: 20, killImpl: (pid, sig) => void kills.push([pid, sig]) });
+    await runner.tick();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(runner.running()[0]).toMatchObject({ id: job.id, pgid: 919191 });
+    await cancelRender(ctx, CO, job.id);
+    await runner.settled();
+    expect(kills.filter(([, sig]) => sig === "SIGTERM").sort()).toEqual([[-818181, "SIGTERM"], [-919191, "SIGTERM"]]);
+    expect(kills.some(([pid]) => pid === -717171)).toBe(false);
+  });
+
   it("recovery never kills a process whose command line does not name the work folder; a second stale run fails", async () => {
     const job = await enqueue();
     await createRenderRunner(ctx, { executor: async () => new Promise(() => undefined) }).tick();

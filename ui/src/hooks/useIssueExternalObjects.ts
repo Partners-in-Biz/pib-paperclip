@@ -12,6 +12,7 @@ import { normalizeExternalObjectHref } from "../lib/external-object-href";
 import type { MarkdownExternalReferenceMap } from "../components/MarkdownBody";
 import type { ExternalObjectPillData } from "../components/ExternalObjectPill";
 import { instanceSettingsApi } from "../api/instanceSettings";
+import { useMemberRestrictionGate } from "./useMemberRestrictionGate";
 
 export const EXTERNAL_OBJECT_SUMMARY_BATCH_SIZE = 500;
 
@@ -215,21 +216,27 @@ export function useIssueExternalObjectSummaries(
   refetch: () => void;
 } {
   const externalObjectsFeature = useExternalObjectsFeature();
+  // A company-wide summary list: closed for a restricted member under `enforce` (AC-G10).
+  const memberGate = useMemberRestrictionGate(companyId);
   const normalizedIssueIds = useMemo(
     () => [...new Set(issueIds.filter((issueId) => issueId.length > 0))].sort(),
     [issueIds],
   );
-  const enabled = externalObjectsFeature.isEnabled && Boolean(companyId) && normalizedIssueIds.length > 0;
+  const enabled = externalObjectsFeature.isEnabled && !memberGate.closed
+    && Boolean(companyId) && normalizedIssueIds.length > 0;
   const query = useQuery({
     queryKey: queryKeys.externalObjects.issueSummaries(companyId ?? "__none__", normalizedIssueIds),
-    queryFn: () => fetchIssueExternalObjectSummariesInBatches(companyId!, normalizedIssueIds),
+    queryFn: memberGate.guard(
+      () => fetchIssueExternalObjectSummariesInBatches(companyId!, normalizedIssueIds),
+      { summaries: {} as Record<string, ExternalObjectSummary> },
+    ),
     enabled,
     staleTime: 60_000,
   });
   const view = useQueryView(query);
   const summaries = useMemo(
-    () => new Map(Object.entries(query.data?.summaries ?? {})),
-    [query.data?.summaries],
+    () => new Map(memberGate.closed ? [] : Object.entries(query.data?.summaries ?? {})),
+    [memberGate.closed, query.data?.summaries],
   );
   return {
     summaries,

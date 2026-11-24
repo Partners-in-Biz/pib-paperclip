@@ -118,6 +118,31 @@ describePg("approve-page-apply and revoke-page-apply", () => {
   const openRows = async () => sql.unsafe(`SELECT page_url, revoked_by FROM ${S}.page_apply_grants WHERE revoked_at IS NULL`);
   const lastEmit = () => emit.mock.calls.at(-1)?.[2] as Row;
 
+  describe("add-task pageUrls (PAR-12432)", () => {
+    const LYL = "https://acme.co.za/auctions/listyourlot/";
+    const add = (params: Row) => dispatch(env(), "co-1", rhea, "add-task", { sprintId: "sp-1", title: "Manual", createIssue: false, ...params }) as Promise<Row>;
+
+    it("stores the pages and approve-page-apply accepts them", async () => {
+      const added = await add({ pageUrls: [LYL, "/auctions/listyourlot"] });
+      expect(added.pageUrls).toEqual(["https://acme.co.za/auctions/listyourlot"]);
+      await sql.unsafe(`UPDATE ${S}.sprint_tasks SET issue_id = $1, issue_status = 'todo', status = 'in_progress' WHERE id = $2`, [ISSUE, added.taskId]);
+      await sql.unsafe(`UPDATE ${S}.previews SET task_id = $1, page_url = $2 WHERE id = 'p-1'`, [added.taskId, LYL]);
+      const r = await approve(rhea, { taskId: added.taskId, pageUrls: [LYL] });
+      expect(r).toMatchObject({ taskId: added.taskId, pages: [LYL.replace(/\/$/, "")], windowSent: true });
+    });
+
+    it("rejects a URL of another origin and stores nothing", async () => {
+      await expect(add({ pageUrls: ["https://other.example/page"] })).rejects.toThrow(/not on the sprint's site/);
+      expect(await sql.unsafe(`SELECT id FROM ${S}.sprint_tasks WHERE title = 'Manual'`)).toHaveLength(0);
+    });
+
+    it("a task without pageUrls still names no page", async () => {
+      const added = await add({});
+      await sql.unsafe(`UPDATE ${S}.sprint_tasks SET issue_id = $1, issue_status = 'todo', status = 'in_progress' WHERE id = $2`, [ISSUE, added.taskId]);
+      await expect(approve(rhea, { taskId: added.taskId })).rejects.toThrow(/names no page/);
+    });
+  });
+
   it("writes the grant, sends the window, comments and wakes the task issue once", async () => {
     const r = await approve(rhea);
     expect(r).toMatchObject({ sprintId: "sp-1", siteId: "site-1", taskId: "t-1", pages: [PAGE], windowSent: true, needsYouResolved: false, issueNotified: true });

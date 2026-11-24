@@ -57,7 +57,7 @@ describe("plugin tool declared timeout", () => {
 
   it("carries the declared timeout to the agent descriptor and the worker RPC", async () => {
     const { manager, call } = workerManager();
-    const dispatcher = createPluginToolDispatcher({ workerManager: manager });
+    const dispatcher = createPluginToolDispatcher({ workerManager: manager, toolGate: null });
     dispatcher.registerPluginTools(PLUGIN_KEY, MANIFEST, PLUGIN_DB_ID);
 
     const tools = dispatcher.listToolsForAgent();

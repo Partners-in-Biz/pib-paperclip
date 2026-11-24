@@ -8,7 +8,7 @@ import {
   type PluginSidebarProps,
   type PluginWidgetProps,
 } from "@paperclipai/plugin-sdk/ui";
-import { Blocks, Button, EmptyState, Field, ListChecks, Modal, Page, Pill, ProgressRing, Rocket, SectionCard, Select, Tabs, Users, breakAnywhere, errorText, fluidColumns, formatDateTime, moduleAccent, tokens, tone, useIsNarrow } from "@partnersinbiz/pib-plugin-ui";
+import { Blocks, Button, EmptyState, Field, ListChecks, Modal, Page, Pill, ProgressRing, Rocket, SectionCard, Select, ShieldCheck, Tabs, Users, breakAnywhere, errorText, fluidColumns, formatDateTime, moduleAccent, tokens, tone, useIsNarrow } from "@partnersinbiz/pib-plugin-ui";
 import { MODULES, SETUP_PLUGIN, setupLeftLabel, type ModuleKey, type SetupItem, type SetupSummary } from "../kit-setup.js";
 import { planCopy, previewValue, type CopyPlan } from "../copy.js";
 import { finishSetupSummary } from "../finish-issue.js";
@@ -18,17 +18,18 @@ import { ownKeyItem } from "../own-key.js";
 import { isMemoryAction, memorySetupParams, WIKI_PLUGIN } from "../memory.js";
 import { parseSetupStatus, PLUGINS_PAGE } from "../status.js";
 import { guidedSteps, setupFocus, teamSummary, TEAM_ANCHOR, type TeamRoleState } from "../team.js";
-import { fetchCompanies, fetchPluginConfig, fetchRecentRuns, runPluginAction, savePluginConfig, type CompanyLite, type PluginRecordLite } from "./api.js";
+import { fetchAgentNames, fetchCompanies, fetchMembers, fetchPluginConfig, fetchRecentRuns, runPluginAction, savePluginConfig, type CompanyLite, type MembersLite, type PluginRecordLite } from "./api.js";
 import { Card, Chip, ItemLink, ItemRow, Md, ModuleCard, ModuleGroup, ModuleProgressRow, ProgressBar, ProgressOverview, groupState, moduleCounts, optionalLabel, type LinkPropsFor } from "./components.js";
 import { onSetupChanged, sharedRequest, useSetupData, viewsSummary, type LoadResult, type ModuleView, type SetupData } from "./data.js";
 import { runMemorySetup } from "./memory-client.js";
 import { NewCompanySection } from "./new-company.js";
+import { isAccessAdminRole, PeopleTab } from "./people.js";
 import { GuideOwnerStep, GuideTeamStep, ownerStepNeeded, scrollToAnchor, TeamDialogs, TeamSection, useTeam, withTeamScroll, type TeamController } from "./team.js";
 
 export { resolveModuleViews, viewsSummary } from "./data.js";
 export { GuideOwnerStep, GuideTeamStep, TeamNote, TeamRoleRow, TeamSettings } from "./team.js";
 
-type TabId = "team" | "checklist" | "modules" | "new-company";
+type TabId = "team" | "people" | "checklist" | "modules" | "new-company";
 
 function useLinkFor(): LinkPropsFor {
   const navigation = useHostNavigation();
@@ -67,12 +68,14 @@ export function moduleAnchor(hash: string | null | undefined): ModuleKey | null 
   return key in MODULES ? (key as ModuleKey) : null;
 }
 
-/** The tabs the page shows, and the one it opens on: Team comes first once the modules are chosen. */
-export function setupTabs(input: { firstVisit: boolean; showTeam: boolean; requested: string | null }): { ids: TabId[]; active: TabId } {
+/**
+ * The tabs the page shows, and the one it opens on: Team comes first once the modules are chosen.
+ * People (access) sits beside Team and only for an owner or admin (`showPeople`).
+ */
+export function setupTabs(input: { firstVisit: boolean; showTeam: boolean; showPeople?: boolean; requested: string | null }): { ids: TabId[]; active: TabId } {
   // New company is always last: it is the one-run path for a company that has nothing yet, and the home of the team template pack.
-  const lead: TabId[] = input.firstVisit
-    ? (input.showTeam ? ["modules", "team"] : ["modules"])
-    : [...(input.showTeam ? (["team"] as TabId[]) : []), "checklist", "modules"];
+  const people: TabId[] = [...(input.showTeam ? (["team"] as TabId[]) : []), ...(input.showPeople ? (["people"] as TabId[]) : [])];
+  const lead: TabId[] = input.firstVisit ? ["modules", ...people] : [...people, "checklist", "modules"];
   const ids: TabId[] = [...lead, "new-company"];
   const requested = ids.find((id) => id === input.requested);
   return { ids, active: requested ?? ids[0]! };
@@ -92,6 +95,21 @@ export function pageSummary(views: ModuleView[], load: Pick<LoadResult, "modules
 // ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
+
+/** The members and the viewer's role (null while loading or when they cannot be read: no People tab). */
+function useMembers(companyId: string | null | undefined): (MembersLite & { agentNames: Record<string, string> }) | null {
+  const [state, setState] = useState<(MembersLite & { agentNames: Record<string, string> }) | null>(null);
+  useEffect(() => {
+    setState(null);
+    if (!companyId) return;
+    let live = true;
+    fetchMembers(companyId)
+      .then(async (m) => (isAccessAdminRole(m.currentUserRole) ? { ...m, agentNames: await fetchAgentNames(companyId) } : { ...m, agentNames: {} }))
+      .then((m) => { if (live) setState(m); }, () => undefined);
+    return () => { live = false; };
+  }, [companyId]);
+  return state;
+}
 
 /** The "Loading…" line shows only while a load is pending: a failed load shows its message instead. */
 export function showLoadingLine(state: { loading: boolean; load: unknown; error: string | null }): boolean {
@@ -132,7 +150,9 @@ function SetupPageMain({ context }: PluginPageProps) {
     onChanged: (pluginKey) => void data.recheck(pluginKey),
   });
   const showTeam = teamWanted && team.roles.length > 0;
-  const tabs = setupTabs({ firstVisit, showTeam, requested: focus.section ?? (focusModule ? "checklist" : null) });
+  const members = useMembers(companyId);
+  const showPeople = !!companyId && isAccessAdminRole(members?.currentUserRole);
+  const tabs = setupTabs({ firstVisit, showTeam, showPeople, requested: focus.section ?? (focusModule ? "checklist" : null) });
   const tab = tabs.active;
   const ownKey = useOwnKeyItem(companyId, tab === "checklist" && !firstVisit);
 
@@ -286,6 +306,8 @@ function SetupPageMain({ context }: PluginPageProps) {
         <Tabs
           tabs={tabs.ids.map((id) => id === "team"
             ? { id, label: "Team", icon: Users, count: teamCount.needYou || null, countTone: "bad" }
+            : id === "people"
+              ? { id, label: "People", icon: ShieldCheck }
             : id === "checklist"
               ? { id, label: "Checklist", icon: ListChecks, count: counted?.summary.requiredLeft || null, countTone: "warn" }
               : id === "new-company"
@@ -299,6 +321,8 @@ function SetupPageMain({ context }: PluginPageProps) {
       {showLoadingLine(data) ? <p style={{ margin: 0, fontSize: 13, color: tokens.muted }}>Loading…</p> : null}
 
       {tab === "team" && showTeam ? <TeamSection team={team} linkFor={linkFor} focusAnchor={focus.anchor} /> : null}
+
+      {tab === "people" && showPeople && members ? <PeopleTab companyId={companyId!} members={members.members} agentNames={members.agentNames} linkFor={linkFor} /> : null}
 
       {tab === "new-company" && data.load ? (
         <NewCompanySection data={data} team={team} companyId={companyId} linkFor={linkFor} onChanged={async () => { await data.reload(); await team.reload(); }} />

@@ -69,8 +69,8 @@ describePostgres("heartbeat provider usage limit wait", () => {
 
   async function wake(f: Awaited<ReturnType<typeof seed>>, manual = false) {
     const run = await heartbeat.wakeup(f.agentId, manual
-      ? { source: "on_demand", triggerDetail: "manual", reason: "manual", payload: { issueId: f.issueId }, contextSnapshot: { issueId: f.issueId } }
-      : { source: "automation", triggerDetail: "system", reason: "issue_assigned", payload: { issueId: f.issueId }, contextSnapshot: { issueId: f.issueId } });
+      ? { causingActor: "system", source: "on_demand", triggerDetail: "manual", reason: "manual", payload: { issueId: f.issueId }, contextSnapshot: { issueId: f.issueId } }
+      : { causingActor: "system", source: "automation", triggerDetail: "system", reason: "issue_assigned", payload: { issueId: f.issueId }, contextSnapshot: { issueId: f.issueId } });
     expect(run).not.toBeNull();
     await heartbeat.drainActiveRunExecutions();
     const [finished] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run!.id));

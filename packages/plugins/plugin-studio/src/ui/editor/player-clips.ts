@@ -1,7 +1,7 @@
 /** Pure clip lookups for the Player (PAR-8314), kept apart from React so they are unit tested. */
 import type { EditDoc, MediaClip } from "../../video-edit/timeline.js";
 
-export const clipLength = (c: MediaClip) => Math.max(0, (c.out - c.in) / (c.speed || 1));
+export const clipLength = (c: Pick<MediaClip, "in" | "out" | "speed">) => Math.max(0, (c.out - c.in) / (c.speed || 1));
 
 export function videoClips(doc: EditDoc | null): MediaClip[] {
   if (!doc) return [];

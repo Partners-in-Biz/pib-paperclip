@@ -90,7 +90,7 @@ import { companySkillService } from "./company-skills.js";
 import { companyService } from "./companies.js";
 import { validateCron } from "./cron.js";
 import { documentService } from "./documents.js";
-import { issueService } from "./issues.js";
+import { issueService, type IssueListReadScope } from "./issues.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { projectService } from "./projects.js";
 import { workProductService } from "./work-products.js";
@@ -123,6 +123,12 @@ import { remoteAgentProfileService } from "./remote-agent-profiles.js";
 
 const EXPORT_READ_CONCURRENCY = 8;
 const EXPORT_ISSUE_READ_CONCURRENCY = 2;
+/**
+ * A company export copies every task of the company (PAR-12718). Only the board
+ * or the company's CEO agent reaches it, and spec C 4.6 ("company set-up") closes
+ * it to a restricted person, so the list is not narrowed to one reader.
+ */
+const EXPORT_ISSUE_READ_SCOPE: IssueListReadScope = "system";
 
 async function mapWithConcurrency<T, R>(
   items: readonly T[],
@@ -3976,7 +3982,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const projectsSvc = projectService(db);
     const issuesSvc = issueService(db);
     const routinesSvc = routineService(db);
-    const allProjectsRaw = include.projects || include.issues ? await projectsSvc.list(companyId) : [];
+    // "system": company export is company set-up, closed to a restricted person (spec 4.6).
+    const allProjectsRaw = include.projects || include.issues ? await projectsSvc.list(companyId, { readCondition: "system" }) : [];
     const allProjects = allProjectsRaw.filter((project) => !project.archivedAt);
     const allRoutinesRaw = include.issues ? await routinesSvc.list(companyId) : [];
     const builtInRoutineRows = allRoutinesRaw.filter((routine) =>
@@ -4050,7 +4057,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         continue;
       }
       selectedProjects.set(match.id, match);
-      const projectIssues = await issuesSvc.list(companyId, { projectId: match.id });
+      const projectIssues = await issuesSvc.list(companyId, { projectId: match.id, readCondition: EXPORT_ISSUE_READ_SCOPE });
       for (const issue of projectIssues) {
         selectedIssues.set(issue.id, issue);
       }
@@ -4066,7 +4073,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     }
 
     if (include.issues && selectedIssues.size === 0) {
-      const allIssues = await issuesSvc.list(companyId);
+      const allIssues = await issuesSvc.list(companyId, { readCondition: EXPORT_ISSUE_READ_SCOPE });
       for (const issue of allIssues) {
         selectedIssues.set(issue.id, issue);
         if (issue.projectId) {
@@ -5039,7 +5046,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         existingAgentIds.add(existing.id);
         existingSlugs.add(slug);
       }
-      const existingProjects = await projects.list(input.target.companyId);
+      // "system": name-collision check across the whole target company; rows are not returned.
+      const existingProjects = await projects.list(input.target.companyId, { readCondition: "system" });
       for (const existing of existingProjects) {
         if (!existingProjectSlugToProject.has(existing.urlKey)) {
           existingProjectSlugToProject.set(existing.urlKey, { id: existing.id, name: existing.name });
@@ -5566,7 +5574,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       const importedSlugToProjectId = new Map<string, string>();
       const importedProjectWorkspaceIdByProjectSlug = new Map<string, Map<string, string>>();
       const existingProjectSlugToId = new Map<string, string>();
-      const existingProjects = await projects.list(targetCompany.id);
+      // "system": slug lookup across the whole target company; rows are not returned.
+      const existingProjects = await projects.list(targetCompany.id, { readCondition: "system" });
       for (const existing of existingProjects) {
         existingProjectSlugToId.set(existing.urlKey, existing.id);
       }

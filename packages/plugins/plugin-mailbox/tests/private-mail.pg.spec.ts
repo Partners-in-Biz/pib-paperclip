@@ -81,6 +81,7 @@ describe.skipIf(!available)("a client message keeps no text once its send has en
   /** The worker on the real database, a fake Gmail behind the global fetch (the Mailbox's Gmail calls) and a fake Resend and DNS behind the host's. */
   async function boot(config: Record<string, unknown> = ESP_ON) {
     const harness = createTestHarness({ manifest, config: { publicBaseUrl: "https://paperclip.example.com", encryptionKey: ENCRYPTION_KEY, ...config } });
+    harness.seed({ companies: [{ id: CO, name: "Co", issuePrefix: "CO" } as never] });
     const gmail = new FakeGmail();
     // Gmail reads its own sent mail back: its snippet and its text contain the link, as the real one would.
     gmail.sentText = () => TEXT;

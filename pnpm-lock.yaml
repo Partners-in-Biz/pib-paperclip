@@ -798,12 +798,21 @@ importers:
       '@types/react-dom':
         specifier: ^19.2.5
         version: 19.2.5(@types/react@19.2.18)
+      jsdom:
+        specifier: ^30.0.1
+        version: 30.0.1(@noble/hashes@2.4.0)
+      react:
+        specifier: ^19.2.8
+        version: 19.2.8
       react-dom:
         specifier: ^19.2.8
         version: 19.2.8(react@19.2.8)
       typescript:
         specifier: ^7.0.2
         version: 7.0.2
+      vitest:
+        specifier: ^4.1.11
+        version: 4.1.12(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(jsdom@30.0.1(@noble/hashes@2.4.0))(tsx@4.23.15)(yaml@2.9.1)
 
   packages/plugins/pib-wp-connector: {}
 
@@ -853,9 +862,21 @@ importers:
       '@types/react':
         specifier: ^19.2.18
         version: 19.2.18
+      '@types/react-dom':
+        specifier: ^19.2.5
+        version: 19.2.5(@types/react@19.2.18)
       esbuild:
         specifier: ^0.28.2
         version: 0.28.2
+      jsdom:
+        specifier: ^30.0.1
+        version: 30.0.1(@noble/hashes@2.4.0)
+      react:
+        specifier: ^19.2.8
+        version: 19.2.8
+      react-dom:
+        specifier: ^19.2.8
+        version: 19.2.8(react@19.2.8)
       typescript:
         specifier: ^7.0.2
         version: 7.0.2
@@ -1270,6 +1291,9 @@ importers:
       '@partnersinbiz/pib-plugin-kit':
         specifier: workspace:*
         version: link:../pib-plugin-kit
+      '@partnersinbiz/pib-plugin-ui':
+        specifier: workspace:*
+        version: link:../pib-plugin-ui
     devDependencies:
       '@paperclipai/plugin-sdk':
         specifier: workspace:*
@@ -1289,6 +1313,12 @@ importers:
       jsdom:
         specifier: ^30.0.1
         version: 30.0.1(@noble/hashes@2.4.0)
+      react:
+        specifier: ^19.2.8
+        version: 19.2.8
+      react-dom:
+        specifier: ^19.2.8
+        version: 19.2.8(react@19.2.8)
       typescript:
         specifier: ^7.0.2
         version: 7.0.2

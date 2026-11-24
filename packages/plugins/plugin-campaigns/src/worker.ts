@@ -1,4 +1,4 @@
-import { normalizeToolResult, type PreferenceValue } from "@partnersinbiz/pib-plugin-kit";
+import { createAccessGuard, normalizeToolResult, type AccessGuard, type PreferenceValue } from "@partnersinbiz/pib-plugin-kit";
 import {
   definePlugin,
   runWorker,
@@ -91,6 +91,7 @@ import {
 } from "./domain.js";
 import { CAMPAIGN_TOOLS } from "./tools.js";
 import { createFeedDigest } from "./feed-digest.js";
+import { CAMPAIGNS_ACCESS_TABLE } from "./access-table.js";
 import { SKILLS } from "./skills.js";
 import { firstName, nextSend } from "./detail.js";
 import { channelsUsed, firstChannel, launchAudience } from "./audience.js";
@@ -168,11 +169,15 @@ const ORIGIN = `plugin:${PLUGIN_ID}` as const;
 
 let pluginCtx: PluginContext | null = null;
 let skillSync: ReturnType<typeof createSkillSyncer> | null = null;
+let guard: AccessGuard | null = null;
 
 const plugin = definePlugin({
   async setup(ctx) {
     pluginCtx = ctx;
     skillSync = createSkillSyncer(ctx, SKILLS);
+    // Every action, tool and API route goes through the access guard (PAR-12578 plan 4.4; rows in access-table.ts).
+    const g = createAccessGuard(ctx, { pluginKey: PLUGIN_ID, table: CAMPAIGNS_ACCESS_TABLE });
+    guard = g;
     registerCrmProjection(ctx, ctx.db.namespace, { companies: true, contacts: true });
     registerModuleWatch(ctx);
     registerRoleWatch(ctx);
@@ -192,14 +197,14 @@ const plugin = definePlugin({
     });
     for (const tool of CAMPAIGN_TOOLS) {
       if ((GROWTH_TOOL_NAMES as readonly string[]).includes(tool.name)) continue;
-      ctx.tools.register(tool.name, tool, async (params, run) => {
+      g.tool(tool.name, tool, async (params, run) => {
         // A tool call never waits long for the skill sync (kit `soon`).
         await skillSync?.soon(run.companyId);
         return runTool(ctx, tool.name, params, run).then(normalizeToolResult);
       });
     }
-    registerGrowthTools(ctx, campaignsGrowthToolsHost(ctx));
-    ctx.actions.register("campaigns.load", async (params, context) => {
+    registerGrowthTools(ctx, campaignsGrowthToolsHost(ctx), g);
+    g.action("campaigns.load", async (params, context) => {
       // The page never waits long for the skill sync (kit `soon`).
       if (context.companyId) await skillSync?.soon(context.companyId);
       // The page reports /_plugins/<installation uuid>/ui/ so Setup can link the settings page.
@@ -207,31 +212,31 @@ const plugin = definePlugin({
       if (context.companyId) await rememberCompany(ctx, context.companyId);
       return load(ctx, context, params);
     });
-    ctx.actions.register("campaigns.preferences-load", (_params, context) => preferencesLoad(ctx, requiredCompany(context)));
-    ctx.actions.register("campaigns.preferences-save", async (params, context) => {
+    g.action("campaigns.preferences-load", (_params, context) => preferencesLoad(ctx, requiredCompany(context)));
+    g.action("campaigns.preferences-save", async (params, context) => {
       const result = await preferencesSave(ctx, context, (params.patch ?? {}) as Record<string, PreferenceValue | null>);
       if (result.ok && context.companyId) forgetMessagingSetup(context.companyId);
       return result;
     });
-    ctx.actions.register("campaigns.growth-load", (params, context) => growthReviewLoad(ctx, context, params));
-    ctx.actions.register("campaigns.growth-approve-experiment", (params, context) => growthApproveExperiment(ctx, context, params));
-    ctx.actions.register("campaigns.growth-reject-experiment", (params, context) => growthRejectExperiment(ctx, context, params));
-    ctx.actions.register("campaigns.growth-decide-change", (params, context) => growthDecideChange(ctx, context, params));
-    ctx.actions.register("campaigns.approve", (params, context) => approveAction(ctx, context, params, APPROVAL_PATHS));
-    ctx.actions.register("campaigns.send-back", (params, context) => sendBackAction(ctx, context, params, APPROVAL_PATHS));
-    ctx.actions.register("campaigns.request-approval", (params, context) => requestApproval(ctx, requiredCompany(context), params));
-    ctx.actions.register("campaigns.sync-skills", async (_params, context) => ({ results: await skillSync?.force(requiredCompany(context)) }));
-    ctx.actions.register("campaigns.create-campaign", (params, context) => createCampaignAction(ctx, context, params));
-    ctx.actions.register("campaigns.add-step", (params, context) => addStepAction(ctx, context, params));
-    ctx.actions.register("campaigns.launch", (params, context) => launchAction(ctx, context, params));
-    ctx.actions.register("campaigns.pause", (params, context) => pauseAction(ctx, context, params));
-    ctx.actions.register("campaigns.resume", (params, context) => resumeAction(ctx, context, params));
-    ctx.actions.register("campaigns.complete", (params, context) => completeAction(ctx, context, params));
-    ctx.actions.register("campaigns.stats", (params, context) => statsAction(ctx, context, params));
-    ctx.actions.register("campaigns.enroll", (params, context) => enrollAction(ctx, context, params));
-    ctx.actions.register("campaigns.detail", (params, context) => campaignDetail(ctx, requiredCompany(context), params));
-    ctx.actions.register("campaigns.ab-suggestion", (params, context) => suggestWinner(ctx, requiredCompany(context), params));
-    ctx.actions.register("campaigns.declare-winner", (params, context) => declareWinner(ctx, requiredCompany(context), params));
+    g.action("campaigns.growth-load", (params, context) => growthReviewLoad(ctx, context, params));
+    g.action("campaigns.growth-approve-experiment", (params, context) => growthApproveExperiment(ctx, context, params));
+    g.action("campaigns.growth-reject-experiment", (params, context) => growthRejectExperiment(ctx, context, params));
+    g.action("campaigns.growth-decide-change", (params, context) => growthDecideChange(ctx, context, params));
+    g.action("campaigns.approve", (params, context) => approveAction(ctx, context, params, APPROVAL_PATHS));
+    g.action("campaigns.send-back", (params, context) => sendBackAction(ctx, context, params, APPROVAL_PATHS));
+    g.action("campaigns.request-approval", (params, context) => requestApproval(ctx, requiredCompany(context), params));
+    g.action("campaigns.sync-skills", async (_params, context) => ({ results: await skillSync?.force(requiredCompany(context)) }));
+    g.action("campaigns.create-campaign", (params, context) => createCampaignAction(ctx, context, params));
+    g.action("campaigns.add-step", (params, context) => addStepAction(ctx, context, params));
+    g.action("campaigns.launch", (params, context) => launchAction(ctx, context, params));
+    g.action("campaigns.pause", (params, context) => pauseAction(ctx, context, params));
+    g.action("campaigns.resume", (params, context) => resumeAction(ctx, context, params));
+    g.action("campaigns.complete", (params, context) => completeAction(ctx, context, params));
+    g.action("campaigns.stats", (params, context) => statsAction(ctx, context, params));
+    g.action("campaigns.enroll", (params, context) => enrollAction(ctx, context, params));
+    g.action("campaigns.detail", (params, context) => campaignDetail(ctx, requiredCompany(context), params));
+    g.action("campaigns.ab-suggestion", (params, context) => suggestWinner(ctx, requiredCompany(context), params));
+    g.action("campaigns.declare-winner", (params, context) => declareWinner(ctx, requiredCompany(context), params));
     ctx.jobs.register("open-due-steps", () => trackJob(ctx, "open-due-steps", async () => {
       // Catch up on approvals and step issues whose events were missed (delivery is at-most-once).
       await catchUpApprovals(ctx);
@@ -299,6 +304,9 @@ const plugin = definePlugin({
       ...(skillSync ? { syncer: skillSync } : {}),
       ensureResources: (companyId) => ctx.projects.managed.reconcile(CAMPAIGNS_PROJECT_KEY, companyId),
     });
+    g.apiRoute(SETUP_STATUS_ROUTE.routeKey, async (input) => ({ status: 200, body: await setupStatus(ctx, input.companyId) }));
+    g.apiRoute(COCKPIT_ROUTE.routeKey, async (input) => ({ status: 200, body: await cockpitSnapshot(ctx, input.companyId) }));
+    g.apiRoute("client-summary", (input) => handleApiRoute(ctx, input));
     ctx.logger.info("Campaigns plugin ready");
   },
   async onHealth() {
@@ -309,14 +317,10 @@ const plugin = definePlugin({
     await handleWebhook(pluginCtx, input);
   },
   async onApiRequest(input) {
-    if (!pluginCtx) return { status: 503, body: { error: "Campaigns plugin is not ready" } };
-    if (input.routeKey === SETUP_STATUS_ROUTE.routeKey) {
-      return { status: 200, body: await setupStatus(pluginCtx, input.companyId) };
-    }
-    if (input.routeKey === COCKPIT_ROUTE.routeKey) {
-      return { status: 200, body: await cockpitSnapshot(pluginCtx, input.companyId) };
-    }
-    return handleApiRoute(pluginCtx, input);
+    const ctx = pluginCtx;
+    if (!ctx || !guard) return { status: 503, body: { error: "Campaigns plugin is not ready" } };
+    // An unknown key answers today's 404 with the switch off; under report and enforce the guard refuses it.
+    return guard.handleApiRequest(input, (unknown) => handleApiRoute(ctx, unknown));
   },
 });
 

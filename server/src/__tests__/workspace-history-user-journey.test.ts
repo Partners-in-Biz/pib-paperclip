@@ -88,7 +88,7 @@ describe.skipIf(!support.supported)("workspace history real process journey", ()
     const measurements: Array<{ beforeChildMs: number; childWorkMs: number }> = [];
     const runTask = async () => {
       const requestedAtUnixMs = Date.now();
-      const run = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId } });
+      const run = await heartbeat.wakeup(agentId, { causingActor: "system", source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId } });
       expect(run).not.toBeNull();
       // Hold the real child until the task is settled, avoiding an automatic
       // continuation for a process adapter that has no task-completion tool call.

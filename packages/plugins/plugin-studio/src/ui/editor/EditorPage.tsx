@@ -12,6 +12,7 @@ import { Player } from "./Player.js";
 import { Timeline } from "./Timeline.js";
 import { ClipInspector } from "./ClipInspector.js";
 import { createKeyHistory } from "./timeline-view.js";
+import { SilenceButton } from "./SilenceDialog.js";
 import { RenderPanel } from "./RenderPanel.js";
 import { VersionsPanel } from "./VersionsPanel.js";
 
@@ -66,7 +67,7 @@ export function StudioEditorPage({ context }: PluginPageProps) {
   const message = deleteError ?? state.toast ?? undefined;
   const deleteButton = state.status === "ready" ? <Button disabled={deleting} onClick={() => void remove()}>{deleting ? "Deleting…" : "Delete"}</Button> : null;
   return (
-    <Page accent="studio" title={title} description="Cut, caption and polish a video, then render it." message={message} messageTone="warning" actions={<>{state.toast ? <Button onClick={store.dismissToast}>Dismiss</Button> : null}{deleteButton}</>}>
+    <Page accent="studio" title={title} description="Cut, caption and polish a video, then render it." message={message} messageTone="warning" actions={<>{state.status === "ready" ? <SilenceButton store={store} /> : null}{state.toast ? <Button onClick={store.dismissToast}>Dismiss</Button> : null}{deleteButton}</>}>
       {state.status === "idle" || state.status === "loading" ? <PageMessage message="Loading the video…" /> : null}
       {state.status === "error" ? <EmptyState title="This video can't be opened" description={state.error ?? "Try again."} /> : null}
       {state.status === "ready" ? (

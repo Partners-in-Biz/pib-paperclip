@@ -24,6 +24,7 @@ import {
   type Db,
 } from "@paperclipai/db";
 import type { heartbeatService } from "./heartbeat.js";
+import { SYSTEM_CAUSING_ACTOR } from "./heartbeat/causing-actor.js";
 import type { RequestConfirmationResult } from "@paperclipai/shared";
 import { githubAccessDeniedInstructions, projectGitHubActionResult } from "./tool-access/github-access-errors.js";
 import { toolSourceTemplateKeySql } from "./tool-access/source-template-key.js";
@@ -327,6 +328,9 @@ export function toolActionDeliveryService(
             statuses: [issue.status],
             assigneeAgentId: agent.id,
           },
+          causingActor: first.request.decidedByUserId
+            ? { type: "user", userId: first.request.decidedByUserId }
+            : SYSTEM_CAUSING_ACTOR,
           requestedByActorType: "user",
           requestedByActorId: first.request.decidedByUserId ?? "board",
           payload: { ...context, mutation: "interaction" },

@@ -63,5 +63,50 @@ export function isRehearsalSprint(subject: RehearsalSubject): boolean {
 export const REHEARSAL_NOTE =
   "Rehearsal sprint (a fixture site on .invalid, or the canary client): its plan, tasks and keywords exist so the journey can read them, but no Paperclip issue is opened for it and no person or agent is asked for anything. archive-sprint ends it.";
 
+/** True for a page address on a fixture host (`.invalid`): it never resolves, so it is never fetched. */
+export function isRehearsalUrl(url: unknown): boolean {
+  return isRehearsalHost(hostOf(url));
+}
+
+/** The note on a preview built on the canned fixture page (PAR-13387). */
+export const REHEARSAL_PAGE_NOTE = "Rehearsal fixture: the host is .invalid, so nothing was fetched; the preview is built on the plugin's canned page for this address.";
+
+const escapeHtml = (text: string): string => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+/**
+ * The canned live page for a fixture address (PAR-13387): create-preview, its repeat check and list-previews checkLive read this
+ * instead of the network, so a rehearsal sprint can hold real previews. Same address, same page, so the live check stays "unchanged".
+ * Plain HTML (no scripts): the source is what a visitor's browser shows, so the kept-text figure is final when the preview is made.
+ */
+export function rehearsalPageHtml(pageUrl: string): string {
+  let path = "/";
+  try {
+    path = new URL(pageUrl).pathname || "/";
+  } catch {
+    // keep "/"
+  }
+  const where = escapeHtml(path);
+  const paragraphs = [
+    "This is a rehearsal fixture page. No real business lives at this address and nothing here is ever published.",
+    "The fixture lists a few services so a preview has ordinary copy to keep: planning, delivery, support and yearly reviews.",
+    "Each service has a short description, a price on request and a link to the contact page, like a small local business site.",
+    "Visitors can read about the team, the areas the business serves and the questions customers ask most often.",
+    "The page keeps a menu, a heading, several paragraphs and a footer, so the kept-text check has something to measure.",
+    "Use it to rehearse previews, reviews and decisions in the cockpit without touching a client site or sending an email.",
+  ];
+  return [
+    "<!doctype html>",
+    `<html lang="en"><head><meta charset="utf-8"><title>Fixture page ${where} | Rehearsal site</title>`,
+    `<meta name="description" content="Rehearsal fixture page for ${where}. Nothing here is real or published.">`,
+    "</head><body>",
+    '<header><nav><a href="/">Home</a> <a href="/services">Services</a> <a href="/about">About</a> <a href="/contact">Contact</a></nav></header>',
+    `<main><h1>Fixture page ${where}</h1><div class="entry-content">`,
+    ...paragraphs.map((p) => `<p>${p}</p>`),
+    "</div></main>",
+    "<footer><p>Rehearsal site. Not a real business.</p></footer>",
+    "</body></html>",
+  ].join("\n");
+}
+
 /** The answer of a tool that would open an issue for, or build something on, a rehearsal sprint. */
 export const REHEARSAL_REFUSAL = "This is a rehearsal sprint (a fixture site or the canary client): no issue is opened for it and nothing is built, previewed or handed to a person or an agent.";

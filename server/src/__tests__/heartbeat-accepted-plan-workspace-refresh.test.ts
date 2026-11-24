@@ -410,6 +410,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
 
     const heartbeat = heartbeatService(db);
     const run = await heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "automation",
       triggerDetail: "system",
       reason: "issue_commented",
@@ -572,6 +573,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
     }; });
 
     const sourceRun = await heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "automation",
       triggerDetail: "system",
       reason: "issue_commented",
@@ -680,6 +682,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
     });
 
     const childRun = await heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "automation",
       triggerDetail: "system",
       reason: "issue_assigned",
@@ -825,6 +828,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
 
     const heartbeat = heartbeatService(db);
     const run = await heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "automation",
       triggerDetail: "system",
       reason: "issue_blockers_resolved",
@@ -985,6 +989,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
 
     const heartbeat = heartbeatService(db);
     const run = await heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "automation",
       triggerDetail: "system",
       reason: "issue_commented",
@@ -1129,6 +1134,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
 
     const heartbeat = heartbeatService(db);
     const run = await heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "automation",
       triggerDetail: "system",
       reason: "issue_blockers_resolved",

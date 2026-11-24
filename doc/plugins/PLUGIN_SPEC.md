@@ -402,7 +402,9 @@ export interface PaperclipPluginManifestV1 {
         | "commentAnnotation"
         | "commentContextMenuItem"
         | "settingsPage"
-        | "companySettingsPage";
+        | "companySettingsPage"
+        | "canvasNode"
+        | "canvasPanel";
       id: string;
       displayName: string;
       /** Which export name in the UI bundle provides this component */
@@ -1292,6 +1294,8 @@ For plugins that need richer settings UX beyond what JSON Schema can express, th
 Both approaches coexist: a plugin can use the auto-generated form for simple config and add a custom settings page slot for advanced configuration or operational dashboards.
 
 For plugins that need a company-scoped settings surface, declare a `companySettingsPage` slot with a `routePath`. The host renders a sidebar item under Company Settings and mounts the component at `/:companyPrefix/company/settings/:routePath`. The page receives `companyId` and `companyPrefix` in its host context. Core settings routes such as `access`, `invites`, `environments`, and `secrets` are reserved and cannot be shadowed by plugin declarations.
+
+Planning Canvas slots: `canvasNode` draws the card of an `embed` node whose `data.plugin` is the plugin key and `data.type` is the slot id. It receives `nodeKey`, `assetId`, flat `props` (text, number, boolean; at most 2 KB; draw as text) and the board props below. `canvasPanel` mounts in the board side area. Both receive `applyOps`, `boardId`, `boardProjectId`, `accessLevel` and `selection`. Both need only `ui.sidebar.register`. Without the plugin, an embed node draws as a placeholder.
 
 ## 20. Local Tooling
 

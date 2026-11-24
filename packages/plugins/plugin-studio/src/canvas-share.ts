@@ -15,7 +15,7 @@ import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync }
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { assetUrlForPerson } from "./assets.js";
+import { assetUrlForShare } from "./assets.js";
 import { getCanvas } from "./canvas.js";
 import { StudioConfig } from "./config.js";
 import type { CanvasDoc, CanvasNode } from "./canvas-rules.js";
@@ -93,7 +93,7 @@ export function defaultSigner(ctx: PluginContext): Signer {
       config = new StudioConfig(ctx, companyId);
       configs.set(companyId, config);
     }
-    return assetUrlForPerson(ctx, companyId, assetId, SHARE_LINK_SECONDS, config);
+    return assetUrlForShare(ctx, companyId, assetId, SHARE_LINK_SECONDS, config);
   };
 }
 

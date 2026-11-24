@@ -1,3 +1,4 @@
+import { wakeCausingActorFromActorRef } from "./causing-actor.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { writeDeferredExecutionWait } from "../deferred-execution-wait.js";
 import type { DeferredReceiptRecoveryOptions } from "../deferred-execution-notifications.js";
@@ -10,6 +11,7 @@ import { readNativeStopExecutionEvidence } from "./native-stop-evidence-read.js"
 import { readTaskRetryIntent, reconcileTaskChatRetryReceipts } from "../task-retry.js";
 import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED, readNativeLocalProcessStop, recordedLocalExecutionStopped } from "../native-local-process-stop.js";
 import { isHeartbeatRunTerminalStatus } from "./run-lifecycle.js";
+import type { SshRunGoneChecks } from "./remote-run-recovery.js";
 import { pendingCaseHandoffForRun, cancelCaseHandoffsForIssue, isCaseHandoffSourceReleased } from "./case-handoff-lifecycle.js";
 import { publishActivity, type ActivityPublication } from "../activity-log.js";
 import { buildHeartbeatRunStatusLiveEventPayload } from "../heartbeat-run-status-payload.js";
@@ -94,6 +96,7 @@ import {
   sql,
 } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import type { SshRemoteStopOutcome } from "@paperclipai/adapter-utils/ssh";
 import {
   type EnvironmentLeaseStatus,
 } from "@paperclipai/shared";
@@ -382,6 +385,8 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     failureReason?: string | null;
     providerResourceDisposition?: ProviderResourceDisposition;
     respectCleanupDeadlines?: boolean;
+    /** ssh gone checks by lease id (PAR-9919); the ssh release uses them instead of its own. */
+    remoteChecks?: SshRunGoneChecks;
     nativeLifecycleTelemetry?: {
       provider: string;
       harness: string;
@@ -488,6 +493,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
         failureReason: input.failureReason ?? undefined,
         providerResourceDisposition,
         ...(input.respectCleanupDeadlines ? { respectCleanupDeadlines: true } : {}),
+        ...(input.remoteChecks ? { remoteChecks: input.remoteChecks } : {}),
         nativeLifecycleTelemetry: input.nativeLifecycleTelemetry,
       })
       .catch((err) => {
@@ -702,6 +708,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
       // atomically adopts the deferred comments and still applies every gate.
       await enqueueWakeup(run.agentId, { source: wake.source as WakeupOptions["source"], triggerDetail: (wake.triggerDetail ?? undefined) as WakeupOptions["triggerDetail"],
         reason, payload, contextSnapshot: context,
+        causingActor: wakeCausingActorFromActorRef({ actorType: "user", actorId: requestedByActorId }),
         requestedByActorType: "user", requestedByActorId,
         queuedCommentRequestId: wake.id,
         idempotencyKey: `remote-stop-comment:${run.id}:${wake.id}` }, wake.id);
@@ -816,6 +823,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     const deliveryPayload = response ? { ...payload } : withQueuedCommentIdsInWakePayload(payload, commentIds);
     delete deliveryPayload.queuedCommentInterrupt;
     await enqueueWakeup(wake.agentId, {
+      causingActor: { type: "user", userId: actorId },
       source: "on_demand", triggerDetail: "manual", reason: "issue_commented",
       payload: deliveryPayload, contextSnapshot: response
         ? { ...parseObject(payload._paperclipWakeContext), issueId, triggeredBy: "board", actorId,
@@ -848,6 +856,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     const issueId = readNonEmptyString(wake.payload?.issueId);
     if (!issueId) return;
     await enqueueWakeup(wake.agentId, { source: "on_demand", triggerDetail: "manual", reason: "task_retry",
+      causingActor: { type: "user", userId: intent.actorId },
       requestedByActorType: "user", requestedByActorId: intent.actorId, taskRetryRequestId: wake.id,
       payload: { issueId }, contextSnapshot: { issueId, triggeredBy: "board", actorId: intent.actorId,
         responsibleUserId: intent.actorId },
@@ -1501,6 +1510,13 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
               }
             }
             if (running) {
+              // PAR-9402: on an ssh target the local pid is only the ssh
+              // client. Stop the remote process group first, then end the
+              // client as before. A failed remote stop keeps the old path.
+              if (running.stopRemote) {
+                const outcome = await running.stopRemote("TERM").catch((): SshRemoteStopOutcome => "error");
+                logger[outcome === "signalled" ? "info" : "warn"]({ runId: run.id, outcome }, "remote process group stop TERM on cancel");
+              }
               await terminateHeartbeatRunProcess({
                 pid: running.child.pid,
                 processGroupId: running.processGroupId,

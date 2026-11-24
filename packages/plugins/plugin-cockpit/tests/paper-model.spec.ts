@@ -280,7 +280,7 @@ describe("the daily brief read as an edition", () => {
 
 **Consent gate**
 
-**Grok Bot work (Elon)**
+**Venture work (note)**
 - PAR-8566 blocked.`;
 
   it("takes the bold lines as sections, the note after the title as the standfirst and the waiting count as the headline", () => {
@@ -288,7 +288,7 @@ describe("the daily brief read as an edition", () => {
     expect(e.headline).toBe("65 items wait on you");
     expect(e.standfirst).toBe("Note: company-brief timed out once (504), then worked on retry.");
     // An empty section is dropped; a bracket after a title is a note, not part of it.
-    expect(e.sections.map((s) => [s.id, s.title])).toEqual([["paperclip-status", "Paperclip status"], ["waiting-on-peet", "Waiting on Peet"], ["grok-bot-work", "Grok Bot work"]]);
+    expect(e.sections.map((s) => [s.id, s.title])).toEqual([["paperclip-status", "Paperclip status"], ["waiting-on-peet", "Waiting on Peet"], ["venture-work", "Venture work"]]);
     expect(e.sections[0]!.body).toContain("[PAR-4436](/PAR/issues/PAR-4436)");
     expect(e.figures).toEqual([]);
   });

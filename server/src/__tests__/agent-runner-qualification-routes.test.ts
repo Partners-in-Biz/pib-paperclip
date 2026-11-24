@@ -49,7 +49,7 @@ describe.skipIf(!support.supported)("agent-scoped runner qualification", () => {
     app = express(); app.use(express.json());
     app.use((req, _res, next) => {
       req.actor = { type: "board", userId, companyIds: [companyId], source: "cloud_tenant", isInstanceAdmin: false,
-        memberships: [{ companyId, membershipRole: "owner", status: "active" }] };
+        memberships: [{ companyId, membershipRole: "owner", status: "active", restricted: false, restrictionMode: "off" }] };
       next();
     });
     app.use("/api", agentRoutes(db));

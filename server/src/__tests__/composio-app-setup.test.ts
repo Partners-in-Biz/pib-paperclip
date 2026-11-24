@@ -179,7 +179,7 @@ const support = await getEmbeddedPostgresTestSupport();
     const userId = randomUUID();
     await db.insert(companyMemberships).values({ companyId: f.company.id, principalType: "user", principalId: userId, membershipRole: "member", status: "active" });
     let providerCalls = 0;
-    const member: Express.Request["actor"] = { type: "board", userId, source: "session", isInstanceAdmin: false, companyIds: [f.company.id], memberships: [{ companyId: f.company.id, membershipRole: "member", status: "active" }] };
+    const member: Express.Request["actor"] = { type: "board", userId, source: "session", isInstanceAdmin: false, companyIds: [f.company.id], memberships: [{ companyId: f.company.id, membershipRole: "member", status: "active", restricted: false, restrictionMode: "off" }] };
     const actors: [Express.Request["actor"], number][] = [
       [member, 403],
       [{ ...member, companyIds: [randomUUID()], memberships: [] }, 404],

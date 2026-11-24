@@ -10,7 +10,7 @@ const companyId = "11111111-1111-4111-8111-111111111111";
 const url = `/api/companies/${companyId}/workspace-preferences/me`;
 const viewer: Express.Request["actor"] = {
   type: "board", source: "session", userId: "alice", companyIds: [companyId],
-  memberships: [{ companyId, membershipRole: "viewer", status: "active" }],
+  memberships: [{ companyId, membershipRole: "viewer", status: "active", restricted: false, restrictionMode: "off" }],
 };
 const app = (identity: Express.Request["actor"] = viewer) => {
   const result = express(); result.use(express.json());

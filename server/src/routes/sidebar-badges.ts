@@ -8,6 +8,7 @@ import { collapseDuplicatePendingHumanJoinRequests } from "../lib/join-request-d
 import { assertCompanyAccess } from "./authz.js";
 import { issueService } from "../services/issues.js";
 import { approvalReadSqlCondition, issueReadSqlCondition } from "../services/authorization.js";
+import { memberRestrictionForActor, memberRestrictionResolver } from "../services/member-restriction/index.js";
 
 function buildDismissedAtByKey(
   dismissals: Array<{ itemKey: string; kind: string; dismissedAt: Date | string; snoozedUntil: Date | string | null }>,
@@ -42,6 +43,13 @@ export function sidebarBadgeRoutes(db: Db) {
         (await access.canUser(companyId, req.actor.userId, "joins:approve"));
     } else if (req.actor.type === "agent" && req.actor.agentId) {
       canApproveJoins = await access.hasPermission(companyId, "agent", req.actor.agentId, "joins:approve");
+    }
+    // PAR-12608 4.6, AC-G7: the join-request list is closed to a caller who
+    // works for a person restricted under `enforce`, so his count is 0. A
+    // failed read throws 503 `MEMBER_RESTRICTION_UNAVAILABLE`.
+    if (canApproveJoins && req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin) {
+      const restriction = await memberRestrictionForActor(memberRestrictionResolver(db), req.actor, companyId);
+      if (restriction?.restricted && restriction.mode === "enforce") canApproveJoins = false;
     }
 
     const visibleJoinRequests = canApproveJoins

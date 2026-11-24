@@ -14,6 +14,7 @@ import {
   moneyInputValue,
   parseMoneyInput,
   quoteHref,
+  stagesForDeal,
   tabBadge,
   toggleOwned,
 } from "../src/ui/crm-view.js";
@@ -209,5 +210,21 @@ describe("sequence steps in plain words", () => {
     expect(delayText(180)).toBe("After 3 hours");
     expect(delayText(1440)).toBe("After 1 day");
     expect(delayText(4320)).toBe("After 3 days");
+  });
+});
+
+describe("stagesForDeal", () => {
+  const stages = [
+    { id: "s1", pipelineId: "sales" },
+    { id: "s2", pipelineId: "sales" },
+    { id: "j1", pipelineId: "jag" },
+  ];
+  it("offers only the deal's own pipeline stages", () => {
+    expect(stagesForDeal(stages, "jag").map((s) => s.id)).toEqual(["j1"]);
+    expect(stagesForDeal(stages, "sales").map((s) => s.id)).toEqual(["s1", "s2"]);
+  });
+  it("falls back to every stage when the pipeline is unknown", () => {
+    expect(stagesForDeal(stages, null)).toHaveLength(3);
+    expect(stagesForDeal(stages, "gone")).toHaveLength(3);
   });
 });

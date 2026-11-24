@@ -64,9 +64,9 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
   afterAll(async () => { await db?.$client.end({ timeout: 1 }); await temporary?.cleanup(); });
 
   const actor = () => ({ type: "agent" as const, companyId, agentId, runId, source: "agent_jwt" as const,
-    onBehalfOfUserId: userId, onBehalfOfMemberships: [{ companyId, membershipRole: "member", status: "active" }] });
+    onBehalfOfUserId: userId, onBehalfOfMemberships: [{ companyId, membershipRole: "member", status: "active", restricted: false, restrictionMode: "off" as const }] });
   const board = () => ({ type: "board" as const, userId, companyIds: [companyId], source: "session" as const,
-    memberships: [{ companyId, membershipRole: "member", status: "active" }] });
+    memberships: [{ companyId, membershipRole: "member", status: "active", restricted: false, restrictionMode: "off" as const }] });
   const create = (staleness: "strict" | "lenient" = "strict") => service().create({ companyId, agentId, runId, actor: actor(), title: "Comment?", body: "Body",
     continuationPolicy: "wake_origin_agent", options: [{ id: "yes", label: "Yes", effects: [
       { type: "comment_on_issue", targetIssueId: targetId, staleness, bodyMarkdown: "hello" },

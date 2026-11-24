@@ -16,6 +16,14 @@ export interface FetchLiveOpts {
   timeoutMs?: number;
 }
 export function fetchLive(url: string, opts?: FetchLiveOpts): Promise<{ status: number; url: string; html: string }>;
+export function isBlankPng(buf: Uint8Array | null | undefined): boolean;
+export function shotUntilPainted(args: {
+  take: () => Promise<unknown>;
+  read: () => Promise<Buffer>;
+  remove: () => Promise<unknown>;
+  label: string;
+  tries?: number;
+}): Promise<Buffer>;
 export function guardShot(
   args: { which: string; mobile?: boolean; liveUrl: string; proposalUrl: string; proposalHtml: string },
   deps?: FetchLiveOpts,

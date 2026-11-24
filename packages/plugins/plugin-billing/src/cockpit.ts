@@ -18,6 +18,7 @@ import {
   formatMoneyMinor,
   jobHealth,
   outboxHealth,
+  actionableCompanyIds,
   publishCockpitSnapshot,
   rolesCopyHealth,
   type CockpitSnapshot,
@@ -592,7 +593,10 @@ export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Pr
 }
 
 /** Companies with billing data, plus any whose Billing settings are saved (a new company has no data yet). */
-async function reportingCompanyIds(ctx: PluginContext): Promise<string[]> {
+export async function reportingCompanyIds(ctx: PluginContext): Promise<string[]> {
+  const actionable = await actionableCompanyIds(ctx);
+  // The host lists the companies with saved settings: a known company outside it would only be refused.
+  if (actionable) return [...new Set(actionable)];
   const ids = new Set(await knownCompanyIds(ctx).catch(() => [] as string[]));
   try {
     for (const company of await ctx.companies.list({ limit: 100 })) ids.add(company.id);

@@ -533,7 +533,7 @@ describe("native reassessment worker lifecycle", () => {
       const app = express(); app.use(express.json());
       app.use((req, _res, next) => {
         req.actor = { type: "board", userId: "board-user", companyIds: [companyId],
-          memberships: [{ companyId, membershipRole: "operator", status: "active" }],
+          memberships: [{ companyId, membershipRole: "operator", status: "active", restricted: false, restrictionMode: "off" }],
           isInstanceAdmin: true, source: "local_implicit" }; next();
       });
       app.use("/api", issueRoutes(db, {} as any)); app.use(errorHandler);

@@ -9,7 +9,7 @@ import { StudioError } from "./errors.js";
 import type { PrivateBucket } from "./storage.js";
 
 /** Keys under `providers` in the plugin settings: one default per capability, two for lip-sync (audio, typed line). */
-export type ProviderSetting = "stt" | "tts" | "lipsync" | "lipsyncLine" | "looks";
+export type ProviderSetting = "stt" | "tts" | "lipsync" | "lipsyncLine" | "looks" | "reframe";
 
 export function instanceConfigSchema(): JsonSchema {
   return {
@@ -40,18 +40,25 @@ export function instanceConfigSchema(): JsonSchema {
         title: "Stability AI",
         properties: { apiKey: secretField("Stability AI key", "platform.stability.ai key for Stable Audio music.") },
       },
+      elevenlabs: {
+        type: "object",
+        title: "ElevenLabs voice",
+        properties: { apiKey: secretField("API key", "elevenlabs.io API key (optional: pick ElevenLabs for voiceover or auto-captions).") },
+      },
       providers: {
         type: "object",
         title: "Voice providers",
         description: "Which provider each voice job uses unless the job names one.",
         properties: {
-          stt: { type: "string", title: "Speech to text", enum: ["xai"], default: "xai" },
-          tts: { type: "string", title: "Text to speech", enum: ["xai"], default: "xai" },
+          stt: { type: "string", title: "Speech to text", enum: ["xai", "elevenlabs"], default: "xai" },
+          tts: { type: "string", title: "Text to speech", enum: ["xai", "elevenlabs"], default: "xai" },
           // Lip-sync keys: src/providers/registry.ts LIPSYNC (kept as literals so this file loads no registry code).
           lipsync: { type: "string", title: "Lip-sync to your audio", enum: ["wan-3.0-prime", "wan-2.7", "seedance-2.5-reference", "grok-video-1.5"], default: "wan-3.0-prime" },
           lipsyncLine: { type: "string", title: "Lip-sync a typed line", enum: ["seedance-2.5-dialogue"], default: "seedance-2.5-dialogue" },
           // Look pack keys: src/providers/registry.ts LOOK_PACKS (literal, same reason).
           looks: { type: "string", title: "Look pack for video clips", enum: ["pib-basic"], default: "pib-basic" },
+          // Reframe keys: src/providers/registry.ts PROVIDERS.reframe (literal, same reason).
+          reframe: { type: "string", title: "Reframe for other shapes", enum: ["local-face", "centre"], default: "local-face" },
         },
       },
     },
@@ -97,6 +104,12 @@ export class StudioConfig {
   async stabilityKey(): Promise<string> {
     const key = await (await this.secrets).get("stability.apiKey");
     if (!key) throw new StudioError("Music needs a Stability AI key: set it under \"Stability AI\" in Studio's plugin settings.", "not_configured");
+    return key;
+  }
+
+  async elevenLabsKey(): Promise<string> {
+    const key = await (await this.secrets).get("elevenlabs.apiKey");
+    if (!key) throw new StudioError("Voiceover with ElevenLabs needs a key: set it under \"ElevenLabs voice\" in Studio's plugin settings.", "not_configured");
     return key;
   }
 

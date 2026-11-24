@@ -15,7 +15,7 @@ import { AccountUnavailable, moveAccountScope, publicAccount, refreshAccountToke
 import { agentSummary } from "./agent.js";
 import { approvalView, approvePostByDelegate, changeNotesFor, requestChangesByPerson, handBackFromDelegate, approvePostByPerson, returnPostByDelegate, completeApproval, tryAutoApprove, recordClientApprovalByPerson, recordReviewerVerdict, recordSignoff, routeWaitingPost, signoffState, supersedePendingLinks } from "./approval-flow.js";
 import { getPolicy, policyOut, savePolicy, scopeKeyOf } from "./approval-policy.js";
-import { assertDelegateNotEditing, clearDelegate, delegateBlockers, delegateCandidates, delegateFacts, delegateView, getDelegateStrict, setDelegate, type DelegateScope } from "./approval-delegate.js";
+import { assertDelegateNotEditing, clearDelegate, delegateBlockers, delegateCandidates, delegateFacts, delegateView, getDelegateStrict, setDelegate, setDelegateBackup, type DelegateScope } from "./approval-delegate.js";
 import { listClientApprovals, requestClientApproval } from "./client-approval.js";
 import { CONNECT_EFFECT_KEY, issueOfRun, recordConnectRequest } from "./connect-requests.js";
 import {
@@ -96,6 +96,8 @@ import {
   resetFailedDestinations,
   saveInboxReply,
   setPostOutcome,
+  resolvePostId,
+  setPostArchived,
 } from "./db.js";
 import {
   aggregateMetrics,
@@ -131,7 +133,7 @@ import { spaceOf } from "./space.js";
 import { closeManualPostIssue } from "./issues.js";
 import { buildPublishRequest, retryPost } from "./publish.js";
 import { requestCreative } from "./creative.js";
-import { closePostReview, routePostReview } from "./review.js";
+import { closePostReview, issueOpen, reviewIssueOf, routePostReview } from "./review.js";
 import { mediaCompliance } from "./media-compliance.js";
 import { reviewStats } from "./review-outcomes.js";
 import { requireCanActOnPost } from "./ownership.js";
@@ -763,6 +765,51 @@ export async function unschedulePostRecord(ctx: PluginContext, viewer: Viewer, p
   return getPostDetail(ctx, viewer, post.id);
 }
 
+/**
+ * archive-post: soft delete. The post leaves the Cockpit lists and queues; nothing is lost and unarchive-post brings it back.
+ * Accepts the 8-char short id. Archiving twice is a no-op; a published, publishing or scheduled post is refused.
+ */
+export async function archivePostRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>, archive = true) {
+  const verb = archive ? "archive" : "unarchive";
+  const ref = requiredString(params, "postId");
+  const id = await resolvePostId(ctx, viewer.companyId, ref);
+  if (!id) throw new SocialError(`No single post matches "${ref}" (use the full id or a longer prefix).`);
+  const post = await requirePost(ctx, viewer, id);
+  if (viewer.isAgent && post.scope === "personal" && post.created_by_agent_id !== viewer.agentId) {
+    throw new SocialError(`Agents can only ${verb} personal posts that they created`);
+  }
+  const isArchived = post.archived_at != null;
+  if (isArchived === archive) return { ...(await getPostDetail(ctx, viewer, post.id)), changed: false };
+  if (archive && ["published", "partially_published", "publishing"].includes(post.status)) {
+    throw new SocialError(`A ${post.status.replace("_", " ")} post cannot be archived.`);
+  }
+  if (archive && post.status === "scheduled") {
+    throw new SocialError("A scheduled post cannot be archived; unschedule it first (unschedule-post).");
+  }
+  // Archiving removes a post, it writes nothing the delegate could then approve: the daily calendar check asks the Social agent
+  // (often also the delegate) to archive stale copies other agents made. Unarchiving still counts as an edit.
+  if (!archive) await assertDelegateNotEditing(ctx, viewer, post, [postDelegateScope(post)]);
+  if (!(await setPostArchived(ctx, viewer.companyId, post.id, archive))) {
+    throw new SocialError(`The post changed while you were trying to ${verb} it. Reload and try again.`);
+  }
+  if (archive) await supersedePendingLinks(ctx, viewer.companyId, post.id);
+  if (archive) {
+    // The review task of an archived post has nothing left to review: close it so it does not sit in someone's queue.
+    try {
+      const issueId = await reviewIssueOf(ctx, viewer.companyId, post.id);
+      if (issueId && (await issueOpen(ctx, viewer.companyId, issueId))) {
+        await ctx.issues.createComment(issueId, "This post was archived, so there is nothing left to review. Unarchive it to bring it back.", viewer.companyId);
+        await ctx.issues.update(issueId, { status: "cancelled" }, viewer.companyId);
+        await ctx.db.execute(`UPDATE ${table(ctx, "posts")} SET review_issue_id = NULL WHERE id = $1 AND company_id = $2`, [post.id, viewer.companyId]);
+      }
+    } catch (error) {
+      ctx.logger.warn("Social: could not close the review issue of an archived post", { postId: post.id, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  ctx.logger.info(`Social post ${verb}d`, { companyId: viewer.companyId, postId: post.id, by: viewer.isAgent ? viewer.agentId : viewer.userId });
+  return { ...(await getPostDetail(ctx, viewer, post.id)), changed: true };
+}
+
 export async function schedulePost(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
   const post = await requirePost(ctx, viewer, requiredString(params, "postId"));
   if (viewer.isAgent && post.scope === "personal") {
@@ -901,6 +948,7 @@ export async function setApprovalDelegateRecord(ctx: PluginContext, viewer: View
   const userId = requireUser(viewer, "name a delegated approver");
   const target = await readScope(ctx, viewer, params);
   const scope: DelegateScope = spaceOf(params) === "me" ? "personal" : target.scope;
+  if ("backupAgentId" in params && !("agentId" in params)) return setBackupApprover(ctx, viewer, params, userId, target, scope);
   if (!("agentId" in params)) throw new SocialError("agentId is required (null clears the delegated approver)");
   const agentId = params.agentId;
   if (agentId === null) {
@@ -925,6 +973,26 @@ export async function setApprovalDelegateRecord(ctx: PluginContext, viewer: View
   await setDelegate(ctx, viewer.companyId, scope, agentId.trim(), userId);
   ctx.logger.info("Social delegated approver set by a person", { companyId: viewer.companyId, scope: scopeKeyOf(scope), agentId: agentId.trim(), by: userId });
   return getApprovalPolicyRecord(ctx, viewer, params);
+}
+
+/**
+ * A person names (or clears, `backupAgentId: null`) the scope's backup approver: the agent that approves the posts the
+ * delegated approver created itself (the writer never approves its own post). Setting it re-routes the scope's passed posts
+ * that wait on a team member, so the delegate's posts already with the person move to the backup.
+ */
+async function setBackupApprover(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>, userId: string, target: Awaited<ReturnType<typeof readScope>>, scope: DelegateScope) {
+  if (scope === "personal") throw new SocialError("A personal post cannot have a backup approver.");
+  const backupAgentId = params.backupAgentId;
+  if (backupAgentId === null) {
+    await setDelegateBackup(ctx, viewer.companyId, scope, null, userId);
+    return getApprovalPolicyRecord(ctx, viewer, params);
+  }
+  if (typeof backupAgentId !== "string" || !backupAgentId.trim()) throw new SocialError("backupAgentId must be an agent id, or null to clear");
+  const blockers = delegateBlockers(await delegateFacts(ctx, viewer.companyId, scope, backupAgentId.trim()));
+  if (blockers.length > 0) throw new SocialError(blockers.join(" "));
+  await setDelegateBackup(ctx, viewer.companyId, scope, backupAgentId.trim(), userId);
+  const recheck = await reevaluateReviewPosts(ctx, viewer, target.scope);
+  return { ...(await getApprovalPolicyRecord(ctx, viewer, params)), ...recheck };
 }
 
 /** What the re-check of a scope's posts in review did. `failed` counts posts that threw (and 1 when the list itself could not be read). */
@@ -1408,6 +1476,34 @@ function latestPerDestination(rows: MetricsRow[]): MetricsRow[] {
   return [...latest.values()];
 }
 
+export interface PostAnalyticsDestination {
+  destinationId: string | null;
+  accountId: string | null;
+  status: string;
+  metricWindows: string[];
+  metricsError: unknown;
+  measurable: boolean;
+  unmeasuredReason: string | null;
+  replyToUrl?: string | null;
+  quoteUrl?: string | null;
+}
+
+/**
+ * The post-analytics entry for a published post with no destination record at all. `reply_to_url` / `quote_url` is the
+ * X post it answered or quoted, not the link to what was posted, so it is reported but never measured.
+ */
+export function missingDestinationEntry(post: Pick<PostRow, "reply_to_url" | "quote_url">): PostAnalyticsDestination {
+  const text = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : null);
+  const replyToUrl = text(post.reply_to_url);
+  const quoteUrl = text(post.quote_url);
+  const answered = replyToUrl ? `; it replied to ${replyToUrl}` : quoteUrl ? `; it quoted ${quoteUrl}` : "";
+  return {
+    destinationId: null, accountId: null, status: "published", metricWindows: [], metricsError: null,
+    measurable: false, unmeasuredReason: `no destination record (no link stored; marked posted by hand or its account was deleted before 0.11.3${answered})`,
+    replyToUrl, quoteUrl,
+  };
+}
+
 export async function postAnalyticsRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
   const postId = optionalString(params, "postId");
   if (postId) {
@@ -1424,14 +1520,20 @@ export async function postAnalyticsRecord(ctx: PluginContext, viewer: Viewer, pa
       if (!isSocialPlatform(account.platform) || !providerFor(account.platform).metrics) return "platform has no metrics";
       return null;
     };
+    const destinations: PostAnalyticsDestination[] = dests.map((d) => {
+      const result = d.result && typeof d.result === "object" && !Array.isArray(d.result) ? (d.result as Record<string, unknown>) : {};
+      const reason = unmeasuredReason(d);
+      return { destinationId: d.id, accountId: d.account_id, status: d.status, metricWindows: d.metric_windows ?? [], metricsError: result.metricsError ?? null, measurable: reason === null, unmeasuredReason: reason };
+    });
+    // A published post with no destination row (legacy: before 0.11.3 deleting an account also deleted its published
+    // destinations) is never a bare empty list: say that it cannot be measured and which link, if any, is stored.
+    if (destinations.length === 0 && (post.status === "published" || post.status === "partially_published" || post.published_at != null)) {
+      destinations.push(missingDestinationEntry(post));
+    }
     return {
       postId: post.id,
       ...aggregateMetrics(latest.map(metricNumbers)),
-      destinations: dests.map((d) => {
-        const result = d.result && typeof d.result === "object" && !Array.isArray(d.result) ? (d.result as Record<string, unknown>) : {};
-        const reason = unmeasuredReason(d);
-        return { destinationId: d.id, accountId: d.account_id, status: d.status, metricWindows: d.metric_windows ?? [], metricsError: result.metricsError ?? null, measurable: reason === null, unmeasuredReason: reason };
-      }),
+      destinations,
       snapshots: rows.map((r) => ({ window: r.metric_window, platform: r.platform, destinationId: r.destination_id, recordedAt: iso(r.recorded_at), ...metricNumbers(r), impressions: r.impressions == null ? null : Number(r.impressions), reach: r.reach == null ? null : Number(r.reach), saves: r.saves == null ? null : Number(r.saves), clicks: r.clicks == null ? null : Number(r.clicks) })),
     };
   }

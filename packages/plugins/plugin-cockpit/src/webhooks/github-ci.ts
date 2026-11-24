@@ -15,7 +15,7 @@
  */
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { PluginContext, PluginWebhookInput } from "@paperclipai/plugin-sdk";
-import { readConfig, SecretResolver } from "@partnersinbiz/pib-plugin-kit";
+import { actionableCompanyIds, readConfig, SecretResolver } from "@partnersinbiz/pib-plugin-kit";
 
 export const GITHUB_CI_ENDPOINT = "github-ci";
 export const DEFAULT_ALLOWED_OWNERS = ["Partners-in-Biz"];
@@ -68,15 +68,18 @@ function matches(secret: string | undefined, rawBody: string, given: string): bo
 /** The company whose saved secret signed this body, or null. */
 async function verifiedCompany(ctx: Ctx, rawBody: string, given: string, now: Date): Promise<string | null> {
   if (!SIG.test(given)) return null;
-  for (const company of await ctx.companies.list()) {
-    const config = await readConfig(ctx as PluginContext, company.id).catch(() => ({}) as Record<string, unknown>);
+  // Only companies this call may act for (saved settings); null (list refused or threw) is a refusal.
+  const companyIds = await actionableCompanyIds(ctx as PluginContext);
+  if (!companyIds) return null;
+  for (const companyId of companyIds) {
+    const config = await readConfig(ctx as PluginContext, companyId).catch(() => ({}) as Record<string, unknown>);
     const ci = config.githubCi as { webhookSecret?: unknown; previousWebhookSecret?: unknown; rotatedAt?: string } | undefined;
     if (!ci?.webhookSecret) continue;
-    const secrets = new SecretResolver(ctx as PluginContext, company.id, config);
-    if (matches(await secrets.get("githubCi.webhookSecret").catch(() => undefined), rawBody, given)) return company.id;
+    const secrets = new SecretResolver(ctx as PluginContext, companyId, config);
+    if (matches(await secrets.get("githubCi.webhookSecret").catch(() => undefined), rawBody, given)) return companyId;
     const rotated = ci.rotatedAt ? Date.parse(ci.rotatedAt) : NaN;
     if (ci.previousWebhookSecret && Number.isFinite(rotated) && now.getTime() - rotated < ROTATION_GRACE_MS) {
-      if (matches(await secrets.get("githubCi.previousWebhookSecret").catch(() => undefined), rawBody, given)) return company.id;
+      if (matches(await secrets.get("githubCi.previousWebhookSecret").catch(() => undefined), rawBody, given)) return companyId;
     }
   }
   return null;

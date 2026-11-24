@@ -8,6 +8,7 @@ import {
 
 interface ShortcutHandlers {
   onNewIssue?: () => void;
+  onNewNote?: () => void;
   onSearch?: () => void;
   onToggleSidebar?: () => void;
   onTogglePanel?: () => void;
@@ -17,6 +18,7 @@ interface ShortcutHandlers {
 
 export function useKeyboardShortcuts({
   onNewIssue,
+  onNewNote,
   onSearch,
   onToggleSidebar,
   onTogglePanel,
@@ -118,6 +120,12 @@ export function useKeyboardShortcuts({
         onNewIssue?.();
       }
 
+      // Shift+N → New Personal Note
+      if (e.key === "N" && e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        onNewNote?.();
+      }
+
       // [ → Toggle Sidebar
       if (e.key === "[" && !e.metaKey && !e.ctrlKey) {
         e.preventDefault();
@@ -145,5 +153,5 @@ export function useKeyboardShortcuts({
       document.removeEventListener("focusin", handleFocusIn, true);
       document.removeEventListener("keydown", handleKeyDown);
     };
-  }, [onNewIssue, onSearch, onToggleSidebar, onTogglePanel, onShowShortcuts, onGoToInbox]);
+  }, [onNewIssue, onNewNote, onSearch, onToggleSidebar, onTogglePanel, onShowShortcuts, onGoToInbox]);
 }

@@ -60,7 +60,7 @@ export async function drivePreparationFailure(input: {
 }) {
   const { db, heartbeat, control, entered, persisted, companyId, agentId, issueId, run, owner } = input;
     let wakeError: unknown;
-    const waking = heartbeat.wakeup(agentId, { source: "on_demand", reason: "manual", requestedByActorType: "system",
+    const waking = heartbeat.wakeup(agentId, { causingActor: "system", source: "on_demand", reason: "manual", requestedByActorType: "system",
       contextSnapshot: { issueId: issueId, taskId: issueId } });
     void waking.catch(error => { wakeError = error; });
     await vi.waitFor(() => { if (wakeError) throw wakeError; expect(control.phases.preparing).toBe(true); }, { timeout: 15_000 });

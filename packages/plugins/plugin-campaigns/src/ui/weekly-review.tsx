@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import { useCampaignsAction } from "./actions.js";
 import { Button, EmptyState, Input, Pill, Section, errorText, tokens } from "@partnersinbiz/pib-plugin-ui";
 
 interface Arm {
@@ -80,10 +80,10 @@ function ExperimentCard({ experiment, busy, onApprove, onReject }: { experiment:
 
 /** The Weekly review tab: the experiments and playbook changes a person has to decide, and the ones already running. */
 export function WeeklyReview({ client }: { client: string | null }) {
-  const load = usePluginAction("campaigns.growth-load");
-  const approve = usePluginAction("campaigns.growth-approve-experiment");
-  const reject = usePluginAction("campaigns.growth-reject-experiment");
-  const decide = usePluginAction("campaigns.growth-decide-change");
+  const load = useCampaignsAction("campaigns.growth-load");
+  const approve = useCampaignsAction("campaigns.growth-approve-experiment");
+  const reject = useCampaignsAction("campaigns.growth-reject-experiment");
+  const decide = useCampaignsAction("campaigns.growth-decide-change");
   const [data, setData] = useState<WeeklyReviewData | null>(null);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");

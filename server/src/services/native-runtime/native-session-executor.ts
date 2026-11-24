@@ -34,6 +34,7 @@ import { notifyNativeResultCommit } from "../native-result-commit-notifications.
 import { releaseRetainedNativeSessionCleanup } from "../retained-native-session-cleanup-notifications.js";
 import { registerIdleLocalWorkProbe, type IdleLocalWork } from "../idle-local-work.js";
 import type { NativeCleanupOutcome } from "./retained-native-session-cleanup.js";
+import type { WakeCausingActor } from "../heartbeat/causing-actor.js";
 import { notifyNativeStatusReassessment } from "../native-status-reassessment-notifications.js";
 import { notifyNativeFinalizationWork } from "../native-finalization-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "../unsafe-workspace-export-notifications.js";
@@ -9169,6 +9170,7 @@ export async function executePaperclipNativeSession(input: {
       reason: "issue_assigned" | "issue_commented";
       payload: Record<string, unknown>;
       idempotencyKey: string;
+      causingActor: WakeCausingActor;
       requestedByActorType: "agent";
       requestedByActorId: string;
       contextSnapshot: Record<string, unknown>;
@@ -14044,6 +14046,7 @@ export async function createRunnerdBackend(input: {
       reason: "issue_assigned" | "issue_commented";
       payload: Record<string, unknown>;
       idempotencyKey: string;
+      causingActor: WakeCausingActor;
       requestedByActorType: "agent";
       requestedByActorId: string;
       contextSnapshot: Record<string, unknown>;

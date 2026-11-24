@@ -4,7 +4,7 @@
  * words (engine/plain.ts); the raw text is under Details, once.
  */
 import { useEffect, useState } from "react";
-import { DataTable, useHostNavigation, usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import { DataTable, useHostNavigation } from "@paperclipai/plugin-sdk/ui";
 import { rememberOAuthStart } from "@partnersinbiz/pib-plugin-kit/oauth-client";
 import { parseClientParam } from "@partnersinbiz/pib-plugin-kit/client-ref";
 import { Button, ChartColumn, CompactRows, Gauge, Input, Pill, Plug, Search, Section, Share2, breakAnywhere, errorText, formatCompact, formatDateTime, formatShortDate, tokens, useIsNarrow } from "@partnersinbiz/pib-plugin-ui";
@@ -15,6 +15,7 @@ import { ExtrasList } from "./extras.js";
 import { IssueLink, PlainProblem, RawDetails, fmt, shortUrl, small } from "./parts.js";
 import { statusTone } from "./series.js";
 import type { CallFn, LoadResult, PageHealth, SprintBundle } from "./types.js";
+import { useSeoAction } from "./actions.js";
 
 /** Lighthouse-style score: 90+ green, 50+ amber, below red. */
 function scorePill(value: number | null) {
@@ -42,9 +43,9 @@ const STATUS_WORDS: Record<string, string> = {
 export function IntegrationsTab({ companyId, bundle, load, call, reload, onMessage, working }: { companyId: string; bundle: SprintBundle; load: LoadResult; call: CallFn; reload: () => Promise<void>; onMessage: (m: string) => void; working: string | null }) {
   const narrow = useIsNarrow();
   const nav = useHostNavigation();
-  const start = usePluginAction("seo.gsc-start");
-  const disconnect = usePluginAction("seo.gsc-disconnect");
-  const setIntegration = usePluginAction("seo.integration");
+  const start = useSeoAction("seo.gsc-start");
+  const disconnect = useSeoAction("seo.gsc-disconnect");
+  const setIntegration = useSeoAction("seo.integration");
   const [properties, setProperties] = useState<Array<{ propertyUrl: string; usable: boolean }> | null>(null);
   const [bingUrl, setBingUrl] = useState("");
   const [ga4Id, setGa4Id] = useState("");

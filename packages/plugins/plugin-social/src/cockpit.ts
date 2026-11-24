@@ -6,6 +6,7 @@
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import {
+  jobCompanyIds,
   cleanFlowReports,
   decisionStats,
   emptySnapshot,
@@ -38,7 +39,7 @@ import { clip } from "./domain.js";
 import { failedPublishSql, handoffPayload, needsReplySql, repurposeDraftCounts, repurposeRef } from "./done-checks.js";
 import { enqueueRecentLeads } from "./handoff.js";
 import { legacySocialAgent, SOCIAL_HIRE_ROLE } from "./hire.js";
-import { agentStatusActive, socialProjectId } from "./issues.js";
+import { agentStatusActive, socialAgent, socialProjectId } from "./issues.js";
 import { knownCompanies, socialOn } from "./modules.js";
 import { PLAN_HANDOFF_KIND, planScopeOfKey, postsMadeInScope } from "./plan-trigger.js";
 import { delegateForPost } from "./review.js";
@@ -322,7 +323,7 @@ async function delegateHealth(ctx: PluginContext, companyId: string): Promise<He
   let stuck = 0;
   if (inactive.size > 0) {
     const rows = await ctx.db.query<Scoped & { review_issue_id: string }>(
-      `SELECT review_issue_id, client_kind, client_ref, client_name FROM ${table(ctx, "posts")} WHERE company_id = $1 AND status = 'review' AND review_issue_id IS NOT NULL LIMIT 50`,
+      `SELECT review_issue_id, client_kind, client_ref, client_name FROM ${table(ctx, "posts")} WHERE company_id = $1 AND status = 'review' AND archived_at IS NULL AND review_issue_id IS NOT NULL LIMIT 50`,
       [companyId],
     );
     for (const row of rows) {
@@ -458,12 +459,28 @@ async function openIssueAgent(ctx: PluginContext, companyId: string, issueId: st
   }
 }
 
+/** True only when the issue was read and is closed or gone; an unreadable or open issue is not "closed". */
+async function issueClosed(ctx: PluginContext, companyId: string, issueId: string): Promise<boolean> {
+  try {
+    const issue = (await ctx.issues.get(issueId, companyId)) as { status?: string } | null;
+    return !issue || !OPEN_ISSUE.has(String(issue.status));
+  } catch {
+    return false;
+  }
+}
+
+/** The linked Social agent's id when it can act, else null (never throws). */
+async function activeSocialAgentId(ctx: PluginContext, companyId: string): Promise<string | null> {
+  const agent = await socialAgent(ctx, companyId);
+  return agent.active ? agent.agentId : null;
+}
+
 async function waitingItems(ctx: PluginContext, companyId: string): Promise<WaitingItem[]> {
   const items: WaitingItem[] = [];
   // `review_since`: the last status change or edit, i.e. when the post entered review (an edit in review moves it on).
   const posts = await ctx.db.query<PostRow & { review_issue_id: string | null; review_since: string | null }>(
     `SELECT ${POST_COLS}, review_issue_id, updated_at::text AS review_since
-       FROM ${table(ctx, "posts")} WHERE company_id = $1 AND status = 'review' ORDER BY updated_at LIMIT 20`,
+       FROM ${table(ctx, "posts")} WHERE company_id = $1 AND status = 'review' AND archived_at IS NULL ORDER BY updated_at LIMIT 20`,
     [companyId],
   );
   const policies = new Map<string, Awaited<ReturnType<typeof getPolicy>>>();
@@ -501,11 +518,16 @@ async function waitingItems(ctx: PluginContext, companyId: string): Promise<Wait
   // Approved, but no time: the Social agent has a task to pick one (or a person does, when there is no agent).
   const unscheduled = await ctx.db.query<Scoped & { id: string; body: string; schedule_issue_id: string | null; updated_at: string | null }>(
     `SELECT id, body, client_kind, client_ref, client_name, schedule_issue_id, updated_at::text AS updated_at
-       FROM ${table(ctx, "posts")} WHERE company_id = $1 AND status = 'approved' ORDER BY updated_at LIMIT 20`,
+       FROM ${table(ctx, "posts")} WHERE company_id = $1 AND status = 'approved' AND archived_at IS NULL ORDER BY updated_at LIMIT 20`,
     [companyId],
   );
   for (const post of unscheduled) {
-    const scheduler = post.schedule_issue_id ? await openIssueAgent(ctx, companyId, post.schedule_issue_id) : null;
+    // PAR-13579: an own-brand post (no client scope) with no schedule task, or one that is closed, is still the Social agent's
+    // to schedule, so it waits on that agent. An open task held by a person, or an unreadable one, stays with the owner (PAR-10701).
+    // A client's post keeps the old rule.
+    const taskAgent = post.schedule_issue_id ? await openIssueAgent(ctx, companyId, post.schedule_issue_id) : null;
+    const noLiveTask = !post.schedule_issue_id || (!taskAgent && (await issueClosed(ctx, companyId, post.schedule_issue_id)));
+    const scheduler = taskAgent ?? (!scopeOfRow(post) && noLiveTask ? await activeSocialAgentId(ctx, companyId) : null);
     items.push({
       key: `social:schedule:${post.id}`,
       title: `${clientPrefix(post)}Schedule approved post: ${snippet(post.body)}`,
@@ -769,7 +791,7 @@ async function issueStillOpen(ctx: PluginContext, companyId: string, issueId: st
 
 async function draftWork(ctx: PluginContext, companyId: string): Promise<{ drafts: number; work: DraftWork[] }> {
   const posts = table(ctx, "posts");
-  const counted = await ctx.db.query<{ drafts: string }>(`SELECT count(*)::text AS drafts FROM ${posts} WHERE company_id = $1 AND status = 'draft'`, [companyId]);
+  const counted = await ctx.db.query<{ drafts: string }>(`SELECT count(*)::text AS drafts FROM ${posts} WHERE company_id = $1 AND status = 'draft' AND archived_at IS NULL`, [companyId]);
   const handoffs = await ctx.db.query<{ key: string; issue_id: string; payload: unknown; created_at: string | null }>(
     `SELECT key, issue_id, payload, created_at::text AS created_at FROM ${table(ctx, "handoffs")}
       WHERE company_id = $1 AND kind = 'repurpose' AND issue_id IS NOT NULL AND created_at >= now() - interval '30 days'
@@ -822,7 +844,7 @@ async function draftWork(ctx: PluginContext, companyId: string): Promise<{ draft
 async function approvalFlow(ctx: PluginContext, companyId: string, now: Date): Promise<FlowStageReport> {
   const rows = await ctx.db.query<{ n: string; late: string; oldest: string | null }>(
     `SELECT count(*)::text AS n, count(*) FILTER (WHERE scheduled_at IS NOT NULL AND scheduled_at < now())::text AS late, min(updated_at)::text AS oldest
-       FROM ${table(ctx, "posts")} WHERE company_id = $1 AND status = 'review'`,
+       FROM ${table(ctx, "posts")} WHERE company_id = $1 AND status = 'review' AND archived_at IS NULL`,
     [companyId],
   );
   const n = count(rows[0]?.n);
@@ -852,7 +874,7 @@ async function scheduledFlow(ctx: PluginContext, companyId: string, now: Date): 
             count(*) FILTER (WHERE ${lateApproval})::text AS approved_late,
             count(*) FILTER (WHERE ${failed})::text AS failed,
             min(p.updated_at) FILTER (WHERE (${lateApproval}) OR (${failed}))::text AS oldest
-       FROM ${table(ctx, "posts")} p WHERE p.company_id = $1`,
+       FROM ${table(ctx, "posts")} p WHERE p.company_id = $1 AND p.archived_at IS NULL`,
     [companyId],
   );
   const r = rows[0];
@@ -914,7 +936,7 @@ export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Pr
  */
 export async function publishCockpitSnapshots(ctx: PluginContext): Promise<{ published: number; skipped: number; leads: number }> {
   const result = { published: 0, skipped: 0, leads: 0 };
-  for (const companyId of await knownCompanies(ctx)) {
+  for (const companyId of await jobCompanyIds(ctx, await knownCompanies(ctx))) {
     try {
       if (!(await socialOn(ctx, companyId)) || !(await loadSocialConfig(ctx, companyId)).saved) {
         result.skipped += 1;

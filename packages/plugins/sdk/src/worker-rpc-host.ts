@@ -77,6 +77,7 @@ import type {
   PluginEvent,
   PluginJobContext,
   PluginLauncherRegistration,
+  PluginActingPersonContext,
   ScopeKey,
   ToolRunContext,
   ToolResult,
@@ -95,6 +96,7 @@ import type {
   OnEventParams,
   RunJobParams,
   GetDataParams,
+  PluginDataContext,
   PerformActionParams,
   PluginPerformActionActorContext,
   PluginPerformActionContext,
@@ -373,7 +375,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
   const eventHandlers: EventRegistration[] = [];
   const jobHandlers = new Map<string, (job: PluginJobContext) => Promise<void>>();
   const launcherRegistrations = new Map<string, PluginLauncherRegistration>();
-  const dataHandlers = new Map<string, (params: Record<string, unknown>) => Promise<unknown>>();
+  const dataHandlers = new Map<string, (params: Record<string, unknown>, context: PluginDataContext) => Promise<unknown>>();
   const actionHandlers = new Map<
     string,
     (params: Record<string, unknown>, context: PluginPerformActionContext) => Promise<unknown>
@@ -843,6 +845,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           return callHost("companies.list", {
             limit: input?.limit,
             offset: input?.offset,
+            actionableOnly: input?.actionableOnly,
           });
         },
 
@@ -1392,7 +1395,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       },
 
       data: {
-        register(key: string, handler: (params: Record<string, unknown>) => Promise<unknown>): void {
+        register(key: string, handler: (params: Record<string, unknown>, context: PluginDataContext) => Promise<unknown>): void {
           dataHandlers.set(key, handler);
         },
       },
@@ -2056,11 +2059,20 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     if (!handler) {
       throw new Error(`No data handler registered for key "${params.key}"`);
     }
-    return handler({
-      ...params.params,
-      ...(params.companyId === undefined ? {} : { companyId: params.companyId }),
-      ...(params.renderEnvironment === undefined ? {} : { renderEnvironment: params.renderEnvironment }),
-    });
+    return handler(
+      {
+        ...params.params,
+        ...(params.companyId === undefined ? {} : { companyId: params.companyId }),
+        ...(params.renderEnvironment === undefined ? {} : { renderEnvironment: params.renderEnvironment }),
+      },
+      dataContextFromParams(params),
+    );
+  }
+
+  /** The `getData` handler's second argument (PAR-14297): `{ actor: {} }` from an older host. */
+  function dataContextFromParams(params: GetDataParams): PluginDataContext {
+    const rawActor = params.actorContext && typeof params.actorContext === "object" ? params.actorContext : null;
+    return Object.freeze({ actor: Object.freeze(actingPersonFrom(rawActor)) });
   }
 
   function stringOrNull(value: unknown): string | null {
@@ -2069,6 +2081,12 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
 
   function actorTypeOrSystem(value: unknown): PluginPerformActionActorContext["type"] {
     return value === "user" || value === "agent" || value === "system" ? value : "system";
+  }
+
+  /** The host's acting person, kept only when the host sent it (an older host sends neither field). */
+  function actingPersonFrom(raw: PluginActingPersonContext | null | undefined): PluginActingPersonContext {
+    if (!raw || !("onBehalfOfUserId" in raw)) return {};
+    return { onBehalfOfUserId: stringOrNull(raw.onBehalfOfUserId), onBehalfOfRestricted: raw.onBehalfOfRestricted === true };
   }
 
   function actionContextFromParams(params: PerformActionParams): PluginPerformActionContext {
@@ -2081,6 +2099,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       agentId: stringOrNull(rawActor?.agentId),
       runId: stringOrNull(rawActor?.runId),
       companyId: stringOrNull(rawActor?.companyId),
+      ...actingPersonFrom(rawActor),
     });
     return Object.freeze({
       actor,
