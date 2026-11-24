@@ -24,11 +24,43 @@ export const UNASSIGNED = "unassigned";
 export function defaultQuery(): PlanningCanvasIssueQuery {
   return { kind: "issues", filter: {}, limit: PLANNING_CANVAS_LIMITS.issueQueryLimitMax };
 }
-export function newKanban(): PlanningCanvasKanbanData {
-  return { source: defaultQuery(), groupBy: "status", collapsed: [] };
+/** A new query, filtered to `projectId` when the node is added from a project board. */
+export function defaultQueryFor(projectId?: string | null): PlanningCanvasIssueQuery {
+  const query = defaultQuery();
+  if (projectId) query.filter = { projectId };
+  return query;
 }
-export function newTimeline(): PlanningCanvasTimelineData {
-  return { source: defaultQuery(), scale: "week" };
+export function newKanban(projectId?: string | null): PlanningCanvasKanbanData {
+  return { source: defaultQueryFor(projectId), groupBy: "status", collapsed: [] };
+}
+export function newTimeline(projectId?: string | null): PlanningCanvasTimelineData {
+  return { source: defaultQueryFor(projectId), scale: "week" };
+}
+
+export type IssueFilter = PlanningCanvasIssueQuery["filter"];
+export type IssueFilterPatch = { [K in keyof IssueFilter]?: IssueFilter[K] | null };
+
+/** Merge a filter patch into a query. A null, undefined, empty-string or empty-array value clears that key. */
+export function withFilter(query: PlanningCanvasIssueQuery, patch: IssueFilterPatch): PlanningCanvasIssueQuery {
+  const filter: Record<string, unknown> = { ...query.filter };
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === null || value === undefined || value === "" || (Array.isArray(value) && value.length === 0)) delete filter[key];
+    else filter[key] = value;
+  }
+  return { ...query, filter: filter as IssueFilter };
+}
+
+/** Add or remove one status from the filter; statuses stay in workflow order. */
+export function toggleStatus(filter: IssueFilter, status: (typeof ISSUE_STATUSES)[number]): IssueFilter["status"] {
+  const on = new Set(filter.status ?? []);
+  if (on.has(status)) on.delete(status);
+  else on.add(status);
+  const next = ISSUE_STATUSES.filter((s) => on.has(s));
+  return next.length ? next : undefined;
+}
+
+export function activeFilterCount(filter: IssueFilter) {
+  return Object.values(filter).filter((v) => (Array.isArray(v) ? v.length > 0 : !!v)).length;
 }
 
 export function isKanbanData(value: unknown): value is PlanningCanvasKanbanData {

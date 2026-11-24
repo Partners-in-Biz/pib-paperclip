@@ -34,6 +34,7 @@ export function useCanvasActions(ctx: CanvasData & CanvasState & CanvasBoard) {
     canvasRef,
     commitCanvasChange,
     opStore,
+    activeBoard,
   } = ctx;
 
   const screenToWorld = useCallback(
@@ -196,9 +197,11 @@ export function useCanvasActions(ctx: CanvasData & CanvasState & CanvasBoard) {
       const width = kind === "kanban" ? 640 : wide ? 480 : 320;
       const height = kind === "kanban" ? 360 : kind === "timeline" ? 280 : kind === "table" ? 220 : 240;
       const key = createCanvasId(kind);
+      // A kanban or timeline added from a project board starts filtered to that project.
+      const boardProjectId = activeBoard?.scope === "project" ? activeBoard.projectId : null;
       opStore.addItem(key, {
         kind,
-        data: kind === "table" ? newTable() : kind === "kanban" ? newKanban() : kind === "timeline" ? newTimeline() : { markdown: "" },
+        data: kind === "table" ? newTable() : kind === "kanban" ? newKanban(boardProjectId) : kind === "timeline" ? newTimeline(boardProjectId) : { markdown: "" },
         x: snapToGrid(center.x - width / 2),
         y: snapToGrid(center.y - height / 2),
         width,
@@ -211,7 +214,7 @@ export function useCanvasActions(ctx: CanvasData & CanvasState & CanvasBoard) {
       setSelectedNodeIds([key]);
       setTool("select");
     },
-    [getViewportCenterWorld, nextZIndex, opStore.addItem, setSelectedNodeIds, setTool],
+    [getViewportCenterWorld, nextZIndex, opStore.addItem, setSelectedNodeIds, setTool, activeBoard?.scope, activeBoard?.projectId],
   );
 
   const fitToScreen = useCallback(() => {

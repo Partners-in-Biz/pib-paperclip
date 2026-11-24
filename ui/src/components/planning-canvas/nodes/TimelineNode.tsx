@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
 import { useLatestCanvas } from "@/components/planning-canvas/nodes/canvas-context";
+import { IssueFilters } from "@/components/planning-canvas/nodes/IssueFilters";
 import { RefCard } from "@/components/planning-canvas/nodes/RefCard";
 import { useIssueQuery } from "@/components/planning-canvas/nodes/useIssueQuery";
 import {
@@ -131,6 +132,7 @@ export const TimelineNode = memo(function TimelineNode({ nodeKey, data, title }:
         </div>
         <span className="ml-auto text-xs text-muted-foreground">{model.bars.length} {projectsSource ? "projects" : "issues"}</span>
       </div>
+      {data.source.kind === "issues" ? <IssueFilters query={data.source} onChange={(source) => latest.current.opStore.setNodeData(nodeKey, { ...data, source })} /> : null}
       {capped ? (
         <p role="status" className="text-xs text-amber-700 dark:text-amber-300">
           Showing the first {issues!.length} issues. Narrow the query to see the rest.
