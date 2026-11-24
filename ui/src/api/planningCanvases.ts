@@ -3,6 +3,7 @@ import type {
   PlanningCanvasAccessLevel,
   PlanningCanvasBoard,
   PlanningCanvasBoardRead,
+  PlanningCanvasFromBlueprint,
   PlanningCanvasHandoff,
   PlanningCanvasIssueQuery,
   PlanningCanvasItemsRead,
@@ -43,6 +44,15 @@ export interface PlanningCanvasHandoffRead {
   issues: Array<(PlanningCanvasIssueRef | PlanningCanvasHiddenRef) & { itemKeys: string[] }>;
 }
 
+/** `POST .../planning-canvases/from-blueprint` (C14): the new board and the issues it created. */
+export interface PlanningCanvasFromBlueprintRead {
+  replayed: boolean;
+  blueprintId: string;
+  board: PlanningCanvasBoard;
+  parentIssue: PlanningCanvasIssueRef | null;
+  issues: Array<PlanningCanvasIssueRef & { itemKey: string }>;
+}
+
 const boardPath = (companyId: string, boardId: string) => `/companies/${companyId}/planning-canvases/${boardId}`;
 
 export const planningCanvasesApi = {
@@ -81,6 +91,9 @@ export const planningCanvasesApi = {
 
   create: (companyId: string, data: CreatePlanningCanvas) =>
     api.post<PlanningCanvasBoard>(`/companies/${companyId}/planning-canvases`, data),
+
+  fromBlueprint: (companyId: string, body: PlanningCanvasFromBlueprint) =>
+    api.post<PlanningCanvasFromBlueprintRead>(`/companies/${companyId}/planning-canvases/from-blueprint`, body),
 
   update: (companyId: string, boardId: string, data: UpdatePlanningCanvas) =>
     api.patch<PlanningCanvasBoard>(boardPath(companyId, boardId), data),

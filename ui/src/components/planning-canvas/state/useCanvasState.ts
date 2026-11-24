@@ -48,6 +48,7 @@ export function useCanvasState(ctx: CanvasData) {
   const [insertPanelOpen, setInsertPanelOpen] = useState(false);
   const [handoffOpen, setHandoffOpen] = useState(false);
   const [templatesOpen, setTemplatesOpen] = useState(false);
+  const [blueprintsOpen, setBlueprintsOpen] = useState(false);
   const [notesSearch, setNotesSearch] = useState("");
   const [boardSearch, setBoardSearch] = useState("");
   const [scheduleNote, setScheduleNote] = useState<PersonalNote | null>(null);
@@ -129,6 +130,8 @@ export function useCanvasState(ctx: CanvasData) {
     setHandoffOpen,
     templatesOpen,
     setTemplatesOpen,
+    blueprintsOpen,
+    setBlueprintsOpen,
     notesSearch,
     setNotesSearch,
     boardSearch,

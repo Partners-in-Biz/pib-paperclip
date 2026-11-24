@@ -53,6 +53,7 @@ export function BoardBar({ c }: { c: CanvasController }) {
     setNotesDrawerOpen,
     templatesOpen,
     setTemplatesOpen,
+    setBlueprintsOpen,
     boardSearch,
     setBoardSearch,
     createBoardMutation,
@@ -105,6 +106,11 @@ export function BoardBar({ c }: { c: CanvasController }) {
         >
           <Plus className="size-3" />
           New board
+        </Button>
+
+        <Button type="button" size="xs" variant="outline" onClick={() => setBlueprintsOpen(true)}>
+          <LayoutTemplate className="size-3" />
+          Blueprints
         </Button>
 
         {boards.length > 1 && activeBoard ? (
