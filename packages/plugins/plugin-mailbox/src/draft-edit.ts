@@ -17,6 +17,7 @@ import { withGmail } from "./gmail/tokens.js";
 import { loadMailboxConfig } from "./config.js";
 import type { AccountRow, DraftExtras, DraftFile, MessageRow } from "./gmail/types.js";
 import { PLUGIN_ID } from "./namespace.js";
+import { announceDraftClosed } from "./draft-purpose.js";
 
 export const MAX_DRAFT_FILES = 10;
 /** One file travels in one page request, and the server takes 10 MB of JSON: 7 MB is 9.4 MB once encoded. */
@@ -151,6 +152,8 @@ async function tellAgent(env: Env, companyId: string, agentId: string, title: st
 }
 
 function agentOf(row: MessageRow): string | null {
+  // A plugin's draft names the plugin in `by`: there is no agent to tell (PAR-14329).
+  if (row.draft?.requestKey) return null;
   const by = row.draft?.by;
   return by && by.kind === "agent" && by.id ? by.id : null;
 }
@@ -184,6 +187,8 @@ export async function deleteDraftWithReason(env: Env, companyId: string, params:
     );
     agentTold = Boolean(issueId);
   }
+  // A plugin's draft: tell that plugin it is gone, so it does not count it as still open (PAR-14329).
+  await announceDraftClosed(env.ctx, companyId, row, "deleted");
   env.ctx.logger.info("Draft deleted", { id: row.id, agentTold });
   return { deleted: true, agentTold };
 }

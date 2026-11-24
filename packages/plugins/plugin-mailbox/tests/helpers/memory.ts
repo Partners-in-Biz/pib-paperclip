@@ -381,6 +381,9 @@ export class MemoryStore implements GmailStore {
   async draftsByPurpose(companyId: string, accountId: string, purposeKey: string) {
     return [...this.messages.values()].filter((m) => m.company_id === companyId && m.account_id === accountId && m.direction === "outbound" && m.status === "draft" && m.draft?.purposeKey === purposeKey).reverse();
   }
+  async draftByRequestKey(companyId: string, requestKey: string) {
+    return [...this.messages.values()].find((m) => m.company_id === companyId && m.direction === "outbound" && m.draft?.requestKey === requestKey) ?? null;
+  }
   async setDraftStatus(companyId: string, id: string, status: "draft" | "queued", error: string | null) {
     const row = this.messages.get(id);
     if (row && row.company_id === companyId) Object.assign(row, { status, send_error: error });

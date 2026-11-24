@@ -43,11 +43,13 @@ export const MAIL_EVENTS = {
   sendResult: "mail.send.result",
   /**
    * Any plugin in MAIL_SENDERS → Mailbox: put a message in the Paperclip Mailbox drafts (never Gmail Drafts, PAR-12249) instead of sending it. A person
-   * reads it, changes it and sends it from Gmail (or deletes it). The Mailbox never sends a draft by itself.
+   * reads it, changes it and sends it from the Mailbox page (or deletes it). The Mailbox never sends a draft by itself.
    */
   draftRequested: "mail.draft.requested",
   /** Mailbox → the requesting plugin (filter on `context.plugin`): the answer to `mail.draft.requested`. */
   draftResult: "mail.draft.result",
+  /** Mailbox → the requesting plugin (filter on `context.plugin`): a draft it asked for was sent or deleted (PAR-14329). */
+  draftClosed: "mail.draft.closed",
   /** Mailbox → everyone: a new inbound message, already triaged. */
   received: "mail.received",
   /**
@@ -156,6 +158,15 @@ export interface MailDraftResult {
   error?: string | null;
   /** True when the failure will not go away on retry (bad address, no Gmail account). */
   permanent?: boolean;
+  context: MailSendRequested["context"];
+}
+
+/** `mail.draft.closed`: the draft made for request `key` left the Mailbox drafts: a person (or an agent) sent it, or a person deleted it. */
+export interface MailDraftClosed {
+  /** The `mail.draft.requested` key. */
+  key: string;
+  status: "sent" | "deleted";
+  mailboxDraftId: string;
   context: MailSendRequested["context"];
 }
 

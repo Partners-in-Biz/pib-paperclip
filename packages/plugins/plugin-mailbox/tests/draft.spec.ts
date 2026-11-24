@@ -77,6 +77,24 @@ describe("mail.draft.requested (PAR-12249: drafts live in the Paperclip Mailbox,
     expect(emitted[1]).toEqual(emitted[0]);
   });
 
+  it("a redelivery after a lost answer (no stored result) finds the draft by its request key and saves no second one", async () => {
+    const { env, store } = setup();
+    const first = await performDraft(env, CO, request());
+    const again = await performDraft(env, CO, request());
+    expect(drafts(store)).toHaveLength(1);
+    expect(again).toMatchObject({ status: "drafted", mailboxDraftId: first.mailboxDraftId });
+  });
+
+  it("a failing replacement still answers drafted (the draft is saved), and the retry saves no second draft", async () => {
+    const { env, store, host } = setup();
+    store.draftsByPurpose = async () => Promise.reject(new Error("statement timeout"));
+    const first = await performDraft(env, CO, request());
+    expect(first).toMatchObject({ status: "drafted", replacedDraftIds: [] });
+    expect(host.ctx.logger.info).toHaveBeenCalledWith("Older drafts not replaced", expect.objectContaining({ key: KEY, error: "statement timeout" }));
+    await performDraft(env, CO, request());
+    expect(drafts(store)).toHaveLength(1);
+  });
+
   it("one draft per client and purpose: a newer draft replaces the older open one", async () => {
     const { env, store } = setup();
     const ctx = { plugin: PIB_PLUGINS.seo, kind: "seo-approval", id: "sprint-1", clientKind: "company" as const, clientRef: "crm-agri" };

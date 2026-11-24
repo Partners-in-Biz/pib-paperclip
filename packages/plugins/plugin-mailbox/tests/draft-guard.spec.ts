@@ -3,7 +3,7 @@ import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 import manifest from "../src/manifest.js";
 import plugin from "../src/worker.js";
 import { NAMESPACE } from "../src/namespace.js";
-import { cleanPurpose, holdFor, purposeKeyFor, replaceOlderDrafts } from "../src/draft-purpose.js";
+import { cleanPurpose, HOLD_REASON_PLUGIN, holdFor, purposeKeyFor, replaceOlderDrafts, replaceOlderDraftsSafely } from "../src/draft-purpose.js";
 import { validateParams, validateRuntimeExecute, validateRuntimeQuery } from "./helpers/sql-guard.js";
 
 const CO = "co-1";
@@ -13,7 +13,7 @@ async function boot() {
   const harness = createTestHarness({ manifest, config: { publicBaseUrl: "https://paperclip.example.com", encryptionKey: "x".repeat(20) } });
   const rows = new Map<string, Record<string, unknown>>();
   // The CRM projection behind `clientRecipients`: addresses that belong to a customer, or a failing lookup.
-  const crm = { clients: new Set<string>(), fail: false, lookups: 0 };
+  const crm = { clients: new Set<string>(), fail: false, lookups: 0, failReplace: false };
   const db = {
     namespace: NAMESPACE,
     async query(sql: string, params: unknown[] = []) {
@@ -25,6 +25,7 @@ async function boot() {
         return (JSON.parse(String(params[1])) as string[]).filter((e) => crm.clients.has(e)).map((email) => ({ email }));
       }
       if (sql.includes(".delegations WHERE account_id")) return [{ can_read: true, can_draft: true, can_send: true }];
+      if (sql.includes("draft ->> 'purposeKey'") && crm.failReplace) throw new Error("statement timeout");
       if (sql.includes("draft ->> 'purposeKey'")) return [...rows.values()].filter((r) => (r.draft as { purposeKey?: string }).purposeKey === params[2] && r.status === "draft").reverse();
       if (sql.includes("WHERE company_id = $1 AND id = $2 LIMIT 1")) return rows.has(String(params[1])) ? [rows.get(String(params[1]))] : [];
       return [];
@@ -117,14 +118,86 @@ describe("mail the client did not ask for is held for a person (PAR-12249)", () 
   });
 });
 
+describe("untagged agent mail to an existing client waits for a person (PAR-1558, PAR-14329)", () => {
+  it("an agent's draft with NO purpose to an existing client is held and its send-draft is refused", async () => {
+    const { harness, rows, crm } = await boot();
+    crm.clients.add("ann@client.co.za");
+    const made = await harness.executeTool<Result>("create-draft", { accountId: "acc-1", subject: "Something new", to: "ann@client.co.za" }, agent);
+    expect(made.data).toMatchObject({ heldForPerson: true });
+    const sent = await harness.executeTool<Result>("send-draft", { messageId: made.data!.id }, agent);
+    expect(sent.error).toMatch(/Not sent: .*ann@client.co.za is an existing client/);
+    expect(rows.get(made.data!.id)!.status).toBe("draft");
+  });
+
+  it("purpose other is held; followup and invoice are not", async () => {
+    const { harness, crm } = await boot();
+    crm.clients.add("ann@client.co.za");
+    const other = await harness.executeTool<Result>("create-draft", { accountId: "acc-1", subject: "FYI", to: "ann@client.co.za", purpose: "other" }, agent);
+    expect((await harness.executeTool<Result>("send-draft", { messageId: other.data!.id }, agent)).error).toMatch(/existing client/);
+    for (const purpose of ["followup", "invoice"]) {
+      const made = await harness.executeTool<Result>("create-draft", { accountId: "acc-1", subject: purpose, to: "ann@client.co.za", purpose }, agent);
+      expect(made.data?.heldForPerson).toBeUndefined();
+      expect((await harness.executeTool<Result>("send-draft", { messageId: made.data!.id }, agent)).error ?? "").not.toMatch(/existing client/);
+    }
+  });
+
+  it("a draft saved with no hold and no purpose (a person's, or one from before the default hold) is held when an agent sends it", async () => {
+    const { harness, rows, crm } = await boot();
+    crm.clients.add("ann@client.co.za");
+    rows.set("legacy", { id: "legacy", company_id: CO, account_id: "acc-1", subject: "Old", body: "x", direction: "outbound", status: "draft", to_addrs: [{ email: "ann@client.co.za" }], cc_addrs: [], bcc_addrs: [], draft: {} });
+    expect((await harness.executeTool<Result>("send-draft", { messageId: "legacy" }, agent)).error).toMatch(/existing client/);
+  });
+
+  it("a plugin's draft: an agent's send-draft is refused for a client (the plugin reason), and passes the guard for a prospect", async () => {
+    const { harness, rows, crm } = await boot();
+    crm.clients.add("ann@client.co.za");
+    const plugin = (id: string, email: string) =>
+      rows.set(id, { id, company_id: CO, account_id: "acc-1", subject: "Please review", body: "x", direction: "outbound", status: "draft", to_addrs: [{ email }], cc_addrs: [], bcc_addrs: [], draft: { by: { kind: "agent", id: "partnersinbiz.seo" }, requestKey: `seo:${id}`, holdForPerson: { reason: HOLD_REASON_PLUGIN } } });
+    plugin("p-client", "ann@client.co.za");
+    plugin("p-prospect", "cold@prospect.co.za");
+    const refused = await harness.executeTool<Result>("send-draft", { messageId: "p-client" }, agent);
+    expect(refused.error).toMatch(/A plugin made this draft.*ann@client.co.za is an existing client/);
+    expect(rows.get("p-client")!.status).toBe("draft");
+    expect((await harness.executeTool<Result>("send-draft", { messageId: "p-prospect" }, agent)).error ?? "").not.toMatch(/existing client|Not sent/);
+  });
+
+  it("an agent's purposeKey stays in its own namespace: it never replaces another agent's or a plugin's draft", async () => {
+    const { harness, rows } = await boot();
+    rows.set("plugin-draft", { id: "plugin-draft", company_id: CO, account_id: "acc-1", subject: "Approval", direction: "outbound", status: "draft", to_addrs: [], draft: { purposeKey: "partnersinbiz.seo:seo-approval:acme", requestKey: "k" } });
+    const mine = await harness.executeTool<Result>("create-draft", { accountId: "acc-1", subject: "mine", to: "ann@client.co.za", purposeKey: "shared" }, agent);
+    const theirs = await harness.executeTool<Result>("create-draft", { accountId: "acc-1", subject: "theirs", to: "ann@client.co.za", purposeKey: "shared" }, { agentId: "agent-b", companyId: CO });
+    const hijack = await harness.executeTool<Result>("create-draft", { accountId: "acc-1", subject: "hijack", to: "ann@client.co.za", purposeKey: "partnersinbiz.seo:seo-approval:acme" }, agent);
+    expect(theirs.data!.replaced).toBeUndefined();
+    expect(hijack.data!.replaced).toBeUndefined();
+    expect(rows.has(mine.data!.id)).toBe(true);
+    expect(rows.has("plugin-draft")).toBe(true);
+    expect((rows.get(mine.data!.id)!.draft as { purposeKey: string }).purposeKey).toBe("agent:agent-am:shared");
+  });
+
+  it("a failing replacement does not fail create-draft: the draft is saved once and the error is logged", async () => {
+    const { harness, rows, crm } = await boot();
+    crm.failReplace = true;
+    const made = await harness.executeTool<Result>("create-draft", { accountId: "acc-1", subject: "v1", to: "ann@client.co.za", purpose: "proposal" }, agent);
+    expect(made.error).toBeUndefined();
+    expect(made.data!.id).toBeTruthy();
+    expect([...rows.keys()]).toEqual([made.data!.id]);
+  });
+});
+
 describe("draft-purpose helpers", () => {
   it("normalises purposes and builds keys", () => {
     expect(cleanPurpose(" Review Ask ")).toBe("review-ask");
     expect(cleanPurpose(5)).toBeNull();
     expect(holdFor("upsell", false)).not.toBeNull();
     expect(holdFor("reply", false)).toBeNull();
+    expect(holdFor("invoice", false)).toBeNull();
+    expect(holdFor("invoice", true)).not.toBeNull();
+    expect(holdFor(null, false)).not.toBeNull();
+    expect(holdFor("other", false)).not.toBeNull();
     expect(holdFor(null, true)).not.toBeNull();
     expect(purposeKeyFor(null, "upsell", [{ email: "Ann@Client.co.za" }])).toBe("upsell:ann@client.co.za");
+    expect(purposeKeyFor(null, "upsell", [{ email: "Ann@Client.co.za" }], "agent-1")).toBe("agent:agent-1:upsell:ann@client.co.za");
+    expect(purposeKeyFor("partnersinbiz.seo:x", null, [], "agent-1")).toBe("agent:agent-1:partnersinbiz.seo:x");
     expect(purposeKeyFor(null, null, [{ email: "a@b.co" }])).toBeNull();
     expect(purposeKeyFor("mine", null, [])).toBe("mine");
   });
@@ -136,6 +209,12 @@ describe("draft-purpose helpers", () => {
     };
     expect(await replaceOlderDrafts(store, CO, "a", "k", "new")).toEqual(["old"]);
     expect(deleted).toEqual(["old"]);
+  });
+  it("replaceOlderDraftsSafely logs a failure and reports nothing replaced", async () => {
+    const logged: string[] = [];
+    const store = { draftsByPurpose: async () => Promise.reject(new Error("boom")), deleteDraft: async () => true };
+    expect(await replaceOlderDraftsSafely(store, CO, "a", "k", "new", (message) => logged.push(message))).toEqual([]);
+    expect(logged).toEqual(["Older drafts not replaced"]);
   });
   it("replaceOlderDrafts keeps the new one", async () => {
     const deleted: string[] = [];

@@ -143,6 +143,8 @@ export interface DraftExtras {
   purposeKey?: string | null;
   /** The plugin's draft request key (plugin drafts only). */
   requestKey?: string | null;
+  /** The plugin's request context (plugin drafts only): `mail.draft.closed` goes back to that plugin when the draft is sent or deleted. */
+  requestContext?: SendContext | null;
   /** The kind of mail (upsell, proposal, outreach, approval-request, ...) the drafting agent or plugin named. */
   purpose?: string | null;
   /**

@@ -197,6 +197,8 @@ export interface GmailStore {
   deleteDraft(companyId: string, id: string): Promise<boolean>;
   /** Open drafts of one mailbox that carry this purpose key (one draft per client and purpose), newest first. */
   draftsByPurpose(companyId: string, accountId: string, purposeKey: string): Promise<MessageRow[]>;
+  /** The Mailbox message (draft, queued or sent) saved for a plugin's draft request key, or null. */
+  draftByRequestKey(companyId: string, requestKey: string): Promise<MessageRow | null>;
   // send requests
   recentClaims(accountId: string): Promise<number>;
   claimSend(input: SendRecordInput, force: boolean): Promise<boolean>;
@@ -1858,6 +1860,16 @@ export class SqlStore implements GmailStore {
       [companyId, accountId, purposeKey],
     );
     return rows.map(normaliseMessage);
+  }
+
+  async draftByRequestKey(companyId: string, requestKey: string): Promise<MessageRow | null> {
+    const rows = await this.db.query<MessageRow>(
+      `SELECT ${MESSAGE_COLUMNS} FROM ${this.t("messages")}
+        WHERE company_id = $1 AND direction = 'outbound' AND draft ->> 'requestKey' = $2
+        ORDER BY created_at LIMIT 1`,
+      [companyId, requestKey],
+    );
+    return rows[0] ? normaliseMessage(rows[0]) : null;
   }
 
   /** Outbound mail on one mailbox answering one message (drafts, queued and sent), newest first: the duplicate-reply checks (PAR-8030). */

@@ -14,7 +14,7 @@
  * The client's Approve click is the go-ahead. Nothing here edits a site: applying is the agent's work through the Connector,
  * and it can only write while the window is open.
  */
-import { MAIL_EVENTS, PIB_PLUGINS, pluginEvent, wakeIssue, type MailDraftRequested, type MailDraftResult } from "@partnersinbiz/pib-plugin-kit";
+import { MAIL_EVENTS, PIB_PLUGINS, pluginEvent, wakeIssue, type MailDraftClosed, type MailDraftRequested, type MailDraftResult } from "@partnersinbiz/pib-plugin-kit";
 import { createHash } from "node:crypto";
 import { AFTER_FIRST_PARAGRAPH_APPLY_GUIDANCE, ARCHIVE_APPLY_GUIDANCE, usesAfterFirstParagraph, LINK_EDITS_APPLY_GUIDANCE, LIVE_CHECK_GUIDANCE } from "../apply-guidance.js";
 import { PREVIEW_LIVE_SQL } from "../constants.js";
@@ -150,12 +150,14 @@ export async function previewsToDraft(env: Env, sprint: db.Sprint): Promise<Arra
 }
 
 /**
- * Pages already asked about in an earlier approval email draft that the client has not answered and that have not expired.
- * A newer approval draft replaces the older open one for the same client (PAR-12249), so it must carry these pages too.
+ * Pages already asked about in an earlier approval email draft that is still open in the Mailbox drafts, that the client has not
+ * answered and that have not expired. A newer approval draft replaces the older open one for the same client (PAR-12249), so it
+ * must carry these pages too. A draft that was sent or deleted is not open: the Mailbox says so (`mail.draft.closed` sets
+ * draft_status to sent or deleted), and its pages are never listed again (PAR-14329).
  */
-export async function openEarlierPreviews(env: Env, sprint: db.Sprint): Promise<Array<{ id: string; pageUrl: string; title: string; reviewedAt: Date; why: string }>> {
+export async function openEarlierPreviews(env: Env, sprint: db.Sprint): Promise<Array<{ id: string; pageUrl: string; title: string; reviewedAt: Date; why: string; draftKey: string }>> {
   const rows = await env.ctx.db.query(
-    `SELECT id, page_url, title, reviewed_at, changes FROM (
+    `SELECT id, page_url, title, reviewed_at, changes, draft_key FROM (
         SELECT DISTINCT ON (page_url) id, page_url, title, reviewed_at, changes, status, review_status, draft_key, draft_status, expires_at
           FROM ${t("previews")} WHERE company_id = $1 AND sprint_id = $2 AND status <> 'cancelled' ORDER BY page_url, created_at DESC
       ) latest
@@ -163,7 +165,34 @@ export async function openEarlierPreviews(env: Env, sprint: db.Sprint): Promise<
       ORDER BY reviewed_at`,
     [sprint.companyId, sprint.id],
   );
-  return rows.map((r) => ({ id: String(r.id), pageUrl: String(r.page_url), title: String(r.title), reviewedAt: new Date(String(r.reviewed_at)), why: whyOf((typeof r.changes === "string" ? JSON.parse(String(r.changes)) : r.changes ?? {}) as PreviewChanges) }));
+  return rows.map((r) => ({ id: String(r.id), pageUrl: String(r.page_url), title: String(r.title), reviewedAt: new Date(String(r.reviewed_at)), why: whyOf((typeof r.changes === "string" ? JSON.parse(String(r.changes)) : r.changes ?? {}) as PreviewChanges), draftKey: String(r.draft_key) }));
+}
+
+/**
+ * Claims a batch for one approval draft, all or nothing: a new page only while no draft holds it, a carried page only while it is
+ * still in the same open draft it was read from (compare and set on its key). A job running at the same time that got there first
+ * makes the count short: this one gives back what it took and leaves the sprint to the next run, so no page is in two drafts.
+ */
+export async function claimBatch(env: Env, sprint: db.Sprint, key: string, fresh: string[], carried: Array<{ id: string; draftKey: string }>): Promise<boolean> {
+  const earlier = JSON.stringify(Object.fromEntries(carried.map((p) => [p.id, p.draftKey])));
+  const claimed = await env.ctx.db.execute(
+    `UPDATE ${t("previews")} SET draft_key = $3, draft_status = 'requested', drafted_at = now()
+      WHERE company_id = $1 AND sprint_id = $2
+        AND ((draft_key IS NULL AND id IN (SELECT jsonb_array_elements_text($4::jsonb))) OR (draft_status = 'drafted' AND draft_key = ($5::jsonb ->> id)))`,
+    [sprint.companyId, sprint.id, key, JSON.stringify(fresh), earlier],
+  );
+  if (claimed.rowCount === fresh.length + carried.length) return true;
+  if (claimed.rowCount) await releaseBatch(env, sprint.companyId, key, earlier);
+  return false;
+}
+
+/** Gives a claimed batch back: new pages to no draft, carried pages to the open draft they came from. */
+async function releaseBatch(env: Env, companyId: string, key: string, earlier: string): Promise<void> {
+  await env.ctx.db.execute(
+    `UPDATE ${t("previews")} SET draft_key = ($3::jsonb ->> id), draft_status = CASE WHEN ($3::jsonb ->> id) IS NOT NULL THEN 'drafted' END, drafted_at = CASE WHEN ($3::jsonb ->> id) IS NOT NULL THEN drafted_at END
+      WHERE company_id = $1 AND draft_key = $2`,
+    [companyId, key, earlier],
+  );
 }
 
 /** Runs from the 5-minute job: one approval email draft per batch of passed previews, per auto sprint. Returns how many drafts it requested. */
@@ -186,11 +215,7 @@ export async function draftApprovalRequests(env: Env): Promise<number> {
       const carried = (await openEarlierPreviews(env, sprint)).filter((p) => !fresh.has(p.id));
       const batch = [...carried, ...waiting];
       const key = draftKeyFor(sprint.id, batch.map((p) => p.id));
-      const claimed = await env.ctx.db.execute(
-        `UPDATE ${t("previews")} SET draft_key = $3, draft_status = 'requested', drafted_at = now() WHERE company_id = $1 AND sprint_id = $2 AND id IN (SELECT jsonb_array_elements_text($4::jsonb)) AND (draft_key IS NULL OR id IN (SELECT jsonb_array_elements_text($5::jsonb)))`,
-        [sprint.companyId, sprint.id, key, JSON.stringify(batch.map((p) => p.id)), JSON.stringify(carried.map((p) => p.id))],
-      );
-      if (!claimed.rowCount) continue;
+      if (!(await claimBatch(env, sprint, key, waiting.map((p) => p.id), carried))) continue;
       const to = await approvers(env, sprint);
       const mail = approvalEmail({
         siteName: sprint.siteName,
@@ -211,8 +236,8 @@ export async function draftApprovalRequests(env: Env): Promise<number> {
         await env.ctx.events.emit(MAIL_EVENTS.draftRequested, sprint.companyId, request as unknown as Record<string, unknown>);
         requested += 1;
       } catch (error) {
-        // Not sent: free the previews so the next run asks again.
-        await env.ctx.db.execute(`UPDATE ${t("previews")} SET draft_key = NULL, draft_status = NULL, drafted_at = NULL WHERE company_id = $1 AND draft_key = $2`, [sprint.companyId, key]);
+        // Not sent: free the new previews so the next run asks again; carried ones go back to the draft they are still in.
+        await releaseBatch(env, sprint.companyId, key, JSON.stringify(Object.fromEntries(carried.map((p) => [p.id, p.draftKey]))));
         throw error;
       }
     } catch (error) {
@@ -232,7 +257,8 @@ export async function onDraftResult(env: Env, event: { companyId?: string | null
   const sprint = await db.getSprint(env.ctx.db, companyId, sprintId);
   if (!sprint) return;
   const drafted = result.status === "drafted";
-  await env.ctx.db.execute(`UPDATE ${t("previews")} SET draft_status = $3, draft_url = $4 WHERE company_id = $1 AND draft_key = $2`, [companyId, result.key, drafted ? "drafted" : "failed", result.draftUrl ?? null]);
+  // A draft already sent or deleted (its close can arrive first) stays closed: a late result must not make it open again.
+  await env.ctx.db.execute(`UPDATE ${t("previews")} SET draft_status = $3, draft_url = $4 WHERE company_id = $1 AND draft_key = $2 AND coalesce(draft_status, '') NOT IN ('sent', 'deleted')`, [companyId, result.key, drafted ? "drafted" : "failed", result.draftUrl ?? null]);
   const rows = await env.ctx.db.query(`SELECT id, page_url, title FROM ${t("previews")} WHERE company_id = $1 AND draft_key = $2 ORDER BY created_at`, [companyId, result.key]);
   const pages = rows.map((r) => ({ title: String(r.title), pageUrl: String(r.page_url), link: previewLink(String(r.page_url), String(r.id)) }));
   const info = await companyInfo(env, companyId);
@@ -539,9 +565,21 @@ export async function setSignoffMode(env: Env, companyId: string, actor: Actor, 
   }
   await db.updateSprint(env.ctx.db, companyId, sprint.id, { client_signoff: mode });
   if (sprint.rootIssueId) {
-    await commentOn(env, companyId, sprint.rootIssueId, mode === "auto" ? `Client sign-off set to automatic by ${actorLabel(actor)}: passed previews are emailed to the client as a Gmail draft, and what the client approves is applied by the SEO agent.` : `Client sign-off set to manual by ${actorLabel(actor)}.`);
+    await commentOn(env, companyId, sprint.rootIssueId, mode === "auto" ? `Client sign-off set to automatic by ${actorLabel(actor)}: passed previews are emailed to the client as a draft in the Mailbox drafts, and what the client approves is applied by the SEO agent.` : `Client sign-off set to manual by ${actorLabel(actor)}.`);
   }
   return { sprintId: sprint.id, mode, previous: sprint.clientSignoff };
 }
 
 export const DRAFT_RESULT_EVENT = pluginEvent(PIB_PLUGINS.mailbox, MAIL_EVENTS.draftResult);
+export const DRAFT_CLOSED_EVENT = pluginEvent(PIB_PLUGINS.mailbox, MAIL_EVENTS.draftClosed);
+
+/**
+ * The Mailbox says an approval email draft left its drafts: sent (the client has the links) or deleted by a person. Its pages
+ * are no longer in an open draft, so a later batch never carries them into a second email (PAR-14329).
+ */
+export async function onDraftClosed(env: Env, event: { companyId?: string | null; payload?: unknown }): Promise<void> {
+  const closed = (event.payload ?? {}) as Partial<MailDraftClosed>;
+  if (!closed.key || !event.companyId || closed.context?.plugin !== PIB_PLUGINS.seo || closed.context.kind !== DRAFT_KIND) return;
+  if (closed.status !== "sent" && closed.status !== "deleted") return;
+  await env.ctx.db.execute(`UPDATE ${t("previews")} SET draft_status = $3 WHERE company_id = $1 AND draft_key = $2 AND draft_status IN ('requested', 'drafted')`, [event.companyId, closed.key, closed.status]);
+}

@@ -4,9 +4,11 @@
  *
  * PAR-12249: the draft is saved in the Mailbox (table `messages`, status `draft`), never in Gmail Drafts, so a person reads,
  * edits, sends or deletes it on the Mailbox page. NOTHING IS EVER SENT here. The draft is held for a person (an agent's
- * `send-draft` is refused), and a newer draft for the same plugin, kind and client replaces the older open one.
+ * `send-draft` is refused when a recipient is an existing client), and a newer draft for the same plugin, kind and client
+ * replaces the older open one. When the draft is sent or deleted the plugin hears `mail.draft.closed`.
  *
  * - `receiveOnce` keyed `draft:<request key>`: a repeat delivery re-emits the stored result and never creates a second draft.
+ * - A redelivery whose first answer was lost finds the draft by its request key (`draft.requestKey`) and does not save it twice.
  * - No Gmail account, a bad address, an account of the email provider, or a client's mailbox asked to hold another party's
  *   mail → `failed` with `permanent: true`.
  */
@@ -14,7 +16,7 @@ import { randomUUID } from "node:crypto";
 import type { PluginEvent } from "@paperclipai/plugin-sdk";
 import { isModuleEnabled, MAIL_EVENTS, receiveOnce, type MailDraftRequested, type MailDraftResult } from "@partnersinbiz/pib-plugin-kit";
 import { loadMailboxConfig } from "../config.js";
-import { HOLD_REASON_PLUGIN, replaceOlderDrafts } from "../draft-purpose.js";
+import { HOLD_REASON_PLUGIN, replaceOlderDraftsSafely } from "../draft-purpose.js";
 import { PLUGIN_ID } from "../namespace.js";
 import { pickSender } from "../pick-sender.js";
 import { accountScopeProblem, cleanDisplayName, parseReplyTo } from "../sender.js";
@@ -74,10 +76,6 @@ function failedDraft(request: MailDraftRequested, error: string): MailDraftResul
   return { key: request.key, status: "failed", gmailDraftId: null, gmailMessageId: null, threadId: null, account: null, draftUrl: null, error, permanent: true, context: request.context };
 }
 
-export function draftUrlFor(account: string, gmailMessageId: string): string {
-  return `https://mail.google.com/mail/?authuser=${encodeURIComponent(account)}#drafts?compose=${gmailMessageId}`;
-}
-
 /** Create one draft in the Mailbox's Drafts (never in Gmail Drafts). Returns `failed` only when retrying will not help. Never sends. */
 export async function performDraft(env: Env, companyId: string, request: MailDraftRequested, problem: string | null = null): Promise<MailDraftResult> {
   if (problem) return failedDraft(request, problem);
@@ -101,8 +99,10 @@ export async function performDraft(env: Env, companyId: string, request: MailDra
   // One client = its CRM ref; with none (a sprint not linked to a client) the first recipient's address, so two sprints for one client still share one open draft.
   const who = context.clientRef ?? request.to[0]?.email?.trim().toLowerCase() ?? context.id;
   const purposeKey = `${context.plugin}:${context.kind}:${who}`.slice(0, 300);
-  const id = randomUUID();
-  await env.store.insertDraft({
+  // An earlier attempt saved it and its answer was lost: answer with that draft, never save a second one.
+  const earlier = await env.store.draftByRequestKey(companyId, request.key);
+  const id = earlier?.id ?? randomUUID();
+  if (!earlier) await env.store.insertDraft({
     id,
     companyId,
     accountId: mailbox.id,
@@ -119,10 +119,11 @@ export async function performDraft(env: Env, companyId: string, request: MailDra
       purpose: context.kind,
       purposeKey,
       requestKey: request.key,
+      requestContext: context,
       holdForPerson: { reason: HOLD_REASON_PLUGIN },
     },
   });
-  const replaced = await replaceOlderDrafts(env.store, companyId, mailbox.id, purposeKey, id);
+  const replaced = await replaceOlderDraftsSafely(env.store, companyId, earlier?.account_id ?? mailbox.id, purposeKey, id, (message, meta) => env.ctx.logger.info(message, { key: request.key, ...meta }));
   if (replaced.length) env.ctx.logger.info("Mail draft replaced older open drafts", { key: request.key, purposeKey, replaced: replaced.length });
   return {
     key: request.key,

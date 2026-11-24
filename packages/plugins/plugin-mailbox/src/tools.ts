@@ -36,9 +36,9 @@ export const MAILBOX_TOOLS: PluginToolDeclaration[] = [
       replyToMessageId: str("The message this answers (mailbox or Gmail id); keeps the Gmail thread."),
       replyTo: str("Where replies should go when it is not the mailbox itself (a client's address): a@b.com or Name <a@b.com>."),
       fromName: str("Display name for From (a client's name when drafting for them). Default: the mailbox's own name."),
-      purpose: str("What the mail is for: upsell, proposal, offer, outreach, referral, review-ask, promotion, newsletter, idea (all mail the client did not ask for: an agent cannot send it, a person does) or reply, followup, invoice, other. A newer draft with the same purpose and first recipient replaces the older open one."),
-      unasked: { type: "boolean", description: "True when the client did not ask for this mail. Same as an unasked purpose: send-draft is refused for an agent." },
-      purposeKey: str("Optional: your own key (client + purpose). A newer open draft with the same key replaces the older one."),
+      purpose: str("What the mail is for. Only reply, followup or invoice (mail the client asked for) can be sent by you to an existing client. Any other purpose (upsell, proposal, offer, outreach, referral, review-ask, promotion, newsletter, idea, other) or none at all is held: send-draft is refused when a recipient is an existing client, and a person sends it from the Mailbox drafts. A newer draft of yours with the same purpose and first recipient replaces your older open one."),
+      unasked: { type: "boolean", description: "True when the client did not ask for this mail: held whatever the purpose (send-draft is refused when a recipient is an existing client)." },
+      purposeKey: str("Optional: your own key (client + purpose). A newer open draft of yours with the same key replaces your older one; it never touches another agent's or a plugin's draft."),
     }),
   },
   {
@@ -60,7 +60,7 @@ export const MAILBOX_TOOLS: PluginToolDeclaration[] = [
     name: "send-draft",
     displayName: "Send mailbox draft",
     description:
-      "Send a draft through Gmail when your delegation allows sending (maySend). Refused for mail the client did not ask for (purpose upsell, proposal, outreach ...) and for drafts a plugin made: those wait for a person. Without a connected Gmail account it is queued for a person. Addresses on the do-not-email list are left out.",
+      "Send a draft through Gmail when your delegation allows sending (maySend). Refused when a recipient is an existing client (CRM customer by contact, domain or billing email, or the check fails) and the draft is held: any purpose other than reply, followup or invoice, no purpose, unasked, or a draft a plugin made. Those wait for a person. Mail to a prospect with no customer record is not refused. Without a connected Gmail account it is queued for a person. Addresses on the do-not-email list are left out.",
     parametersSchema: schema(["messageId"], { messageId: str("The draft's id from create-draft.") }),
   },
   {

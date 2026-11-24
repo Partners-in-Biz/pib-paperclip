@@ -92,7 +92,7 @@ import { correctTriage, markReadInGmail, readMessageBody, searchMail, type Triag
 import { handleDraftRequested } from "./gmail/draft.js";
 import { deleteMail, replyMode, startReply } from "./mail-actions.js";
 import { deleteDraftWithReason, draftAttachments, editDraft, mailboxSignature, requestRewrite, withSignature } from "./draft-edit.js";
-import { assertHeldDraftMaySend, cleanPurpose, holdFor, purposeKeyFor, replaceOlderDrafts } from "./draft-purpose.js";
+import { announceDraftClosed, assertHeldDraftMaySend, cleanPurpose, holdFor, purposeKeyFor, replaceOlderDraftsSafely } from "./draft-purpose.js";
 import { newerSentReply, removeSupersededDrafts, reusableReplyDraft } from "./reply-dedupe.js";
 import { handleSendRequested, performSend, retrySend } from "./gmail/send.js";
 import { runSyncJob, syncOne, triageRunFor } from "./gmail/sync.js";
@@ -1118,7 +1118,9 @@ async function createDraft(companyId: string, agentId: string | null, params: Re
   }
   const id = randomUUID();
   const purpose = cleanPurpose(params.purpose);
-  const purposeKey = purposeKeyFor(params.purposeKey, purpose, to);
+  // An agent's key lives in its own namespace: it can never replace another agent's or a plugin's draft (PAR-14329).
+  const purposeKey = purposeKeyFor(params.purposeKey, purpose, to, agentId);
+  const hold = agentId ? holdFor(purpose, params.unasked === true) : null;
   await requireStore().insertDraft({
     id,
     companyId,
@@ -1138,13 +1140,15 @@ async function createDraft(companyId: string, agentId: string | null, params: Re
       fromName: cleanDisplayName(params.fromName),
       purpose,
       purposeKey,
-      // Only an agent's draft is held: a person's own draft on the page is theirs to send.
-      holdForPerson: agentId ? holdFor(purpose, params.unasked === true) : null,
+      // Only an agent's draft is held: a person's own draft on the page is theirs to send. An agent's draft is held unless its
+      // purpose is a reply the client asked for (reply, followup, invoice): no purpose means held (PAR-1558, PAR-14329).
+      holdForPerson: hold,
     },
   });
-  // One draft per client and purpose: the newer version replaces the older open one (PAR-12249).
-  const replaced = purposeKey ? await replaceOlderDrafts(requireStore(), companyId, accountId, purposeKey, id) : [];
-  return { id, status: "draft", to: to.map((a) => a.email), ...(replaced.length ? { replaced } : {}), ...(agentId && holdFor(purpose, params.unasked === true) ? { heldForPerson: true, note: "Mail the client did not ask for: send-draft is refused when a recipient is an existing client (CRM customer, by contact, domain or billing email), and when that cannot be checked. Mail to a prospect with no customer record is not held." } : {}) };
+  // One draft per client and purpose: the newer version replaces the older open one (PAR-12249). The draft is saved: a failed
+  // clean-up is logged, never reported as a failed create-draft (a retry would save a second copy).
+  const replaced = purposeKey ? await replaceOlderDraftsSafely(requireStore(), companyId, accountId, purposeKey, id, (message, meta) => requireEnv().ctx.logger.warn(`mailbox: ${message}`, meta)) : [];
+  return { id, status: "draft", to: to.map((a) => a.email), ...(replaced.length ? { replaced } : {}), ...(hold ? { heldForPerson: true, note: "Held for a person: send-draft is refused when a recipient is an existing client (CRM customer, by contact, domain or billing email), and when that cannot be checked. Only purpose reply, followup or invoice is not held. Mail to a prospect with no customer record is not held." } : {}) };
 }
 
 async function sendDraft(companyId: string, agentId: string | null, messageId: string) {
@@ -1153,7 +1157,8 @@ async function sendDraft(companyId: string, agentId: string | null, messageId: s
   if (!row) throw new MailboxError("Draft was not found");
   if (row.status !== "draft") throw new MailboxError("Only a draft can be sent");
   if (agentId) {
-    // Mail the client did not ask for, and drafts a plugin made for a person: an agent never sends them (PAR-12249).
+    // Mail the client did not ask for, untagged mail, and drafts a plugin made for a person: an agent never sends them to an
+    // existing client (PAR-12249, PAR-14329).
     await assertHeldDraftMaySend(s, companyId, row);
     assertMaySend(await delegationFor(row.account_id, agentId));
   }
@@ -1218,6 +1223,8 @@ async function sendDraft(companyId: string, agentId: string | null, messageId: s
     await s.setDraftStatus(companyId, row.id, "draft", result.error ?? "Send failed");
     throw new MailboxError(`Not sent: ${result.error ?? "Send failed"}`);
   }
+  // A plugin's draft went out: tell that plugin, so it does not ask about the same pages again (PAR-14329).
+  await announceDraftClosed(requireEnv().ctx, companyId, row, "sent");
   // The other open drafts answering the same message are now leftovers: remove them so no one sends them (PAR-8030).
   let removedDrafts: string[] = [];
   if (replyToMessageId) {

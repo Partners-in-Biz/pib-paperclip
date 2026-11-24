@@ -57,7 +57,7 @@ import { asParams, assignableUser, companyInfo, createEnv, errorMessage, reqStr,
 import { gscConnectStart, gscDisconnect, gscOauthComplete } from "./service/gsc.js";
 import { deliverPreviewAnswers, handStuckPreviewsToSenior, nudgeStalledReviews, previewRows, refreshStalePreviews, reviveOrphanedChanges } from "./service/preview.js";
 import { handleCancelledPreviews } from "./service/cancel.js";
-import { DRAFT_RESULT_EVENT, draftApprovalRequests, onDraftResult, retryHandovers } from "./service/client-signoff.js";
+import { DRAFT_CLOSED_EVENT, DRAFT_RESULT_EVENT, draftApprovalRequests, onDraftClosed, onDraftResult, retryHandovers } from "./service/client-signoff.js";
 import { onSiteChanged, SITE_CHANGED_EVENT, syncApplyWindows, syncSignoff, syncWindowForIssue } from "./service/signoff.js";
 import { loadFacts } from "./service/facts.js";
 import { onBuildIssueUpdated } from "./service/build.js";
@@ -162,6 +162,10 @@ const plugin = definePlugin({
       } catch (error) {
         ctx.logger.info("SEO draft result not recorded", { error: errorMessage(error) });
       }
+    });
+    // The approval email draft was sent or deleted in the Mailbox: its pages are not carried into a later draft (PAR-14329).
+    ctx.events.on(DRAFT_CLOSED_EVENT, async (event) => {
+      await onDraftClosed(e, event).catch((error) => ctx.logger.info("SEO draft close not recorded", { error: errorMessage(error) }));
     });
     // The CRM's word that an agent write on an approved page went through: the preview counts as applied (PAR-9131 Q16).
     ctx.events.on(SITE_CHANGED_EVENT, async (event) => {

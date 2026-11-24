@@ -26,6 +26,16 @@ const latest = (rows: Row[]): Route => [/SELECT DISTINCT ON \(page_url\) id, pag
 const claimed = (rows: Row[]): Route => [/handed_at = \$3::timestamptz AND handover_done_at IS NULL ORDER BY page_url/, () => rows.map((r) => ({ apply_until: r.status === "approved" ? "2026-10-03T14:00:00.000Z" : null, ...r }))];
 /** The page window as syncSiteWindow reads it (the real host always returns one row, with the seq). */
 const windowRows = (rows: Row[]): Route => [/statement_timestamp\(\)\) \* 1000000\)::bigint::text AS seq\) o LEFT JOIN/, () => rows];
+/** The claim matches every page it names (no other job holds them), as Postgres would answer it. */
+function claimsAll(w: ReturnType<typeof world>) {
+  const execute = w.ctx.db.execute.bind(w.ctx.db);
+  w.ctx.db.execute = (async (sql: string, params: unknown[] = []) => {
+    const result = await execute(sql, params);
+    if (!/SET draft_key = \$3, draft_status = 'requested'/.test(sql)) return result;
+    return { rowCount: (JSON.parse(String(params[3])) as string[]).length + Object.keys(JSON.parse(String(params[4])) as object).length };
+  }) as typeof w.ctx.db.execute;
+  return w;
+}
 const emitted = (w: ReturnType<typeof world>) => (w.ctx.events.emit as unknown as { mock: { calls: unknown[][] } }).mock.calls.map((c) => ({ name: String(c[0]), companyId: c[1], payload: c[2] as Record<string, any> }));
 
 describe("the approval email", () => {
@@ -106,7 +116,7 @@ describe("the approval email draft", () => {
     expect(emitted(recent)).toEqual([]);
 
     const rows = [preview("p1", "a", { reviewed_at: "2026-10-03T07:00:00Z" }), preview("p2", "b", { reviewed_at: "2026-10-03T07:10:00Z" })];
-    const w = world({ sprints: [wp({ client_signoff: "auto", client_kind: "company", client_ref: "47a39f83" })], routes: draftRoutes(rows) });
+    const w = claimsAll(world({ sprints: [wp({ client_signoff: "auto", client_kind: "company", client_ref: "47a39f83" })], routes: draftRoutes(rows) }));
     expect(await draftApprovalRequests(w.env)).toBe(1);
     const [event] = emitted(w);
     expect(event!.name).toBe("mail.draft.requested");
@@ -140,7 +150,7 @@ describe("the approval email draft", () => {
 
     it("one earlier drafted-and-unanswered page and one new page: the email lists both and the old page is re-keyed", async () => {
       const { routes } = table([earlier("e1", "old-page"), fresh("p2", "new-page")]);
-      const w = world({ sprints: [wp({ client_kind: "company", client_ref: "47a39f83" })], routes });
+      const w = claimsAll(world({ sprints: [wp({ client_kind: "company", client_ref: "47a39f83" })], routes }));
       expect(await draftApprovalRequests(w.env)).toBe(1);
       const [event] = emitted(w);
       expect(event!.payload.key).toBe(draftKeyFor("sp-real", ["e1", "p2"]));
@@ -150,10 +160,10 @@ describe("the approval email draft", () => {
       expect(event!.payload.text).toContain("https://agristudies.co.za/new-page");
       const [claim] = executed(w, /SET draft_key = \$3, draft_status = 'requested'/);
       expect(claim!.params[2]).toBe(event!.payload.key);
-      expect(JSON.parse(String(claim!.params[3]))).toEqual(["e1", "p2"]);
-      // The older page may be re-keyed (it is in the carried list); a page of another batch may not.
-      expect(JSON.parse(String(claim!.params[4]))).toEqual(["e1"]);
-      expect(claim!.sql).toMatch(/draft_key IS NULL OR id IN/);
+      expect(JSON.parse(String(claim!.params[3]))).toEqual(["p2"]);
+      // The older page is re-keyed only from the open draft it was read from (compare and set); a page of another batch never.
+      expect(JSON.parse(String(claim!.params[4]))).toEqual({ e1: "seo-approval:sp-real:old" });
+      expect(claim!.sql).toMatch(/draft_status = 'drafted' AND draft_key = \(\$5::jsonb ->> id\)/);
     });
 
     it("an expired, answered or cancelled earlier page is not carried", async () => {
@@ -163,14 +173,14 @@ describe("the approval email draft", () => {
         earlier("x-cancelled", "cancelled", { status: "cancelled" }),
         fresh("p2", "new-page"),
       ]);
-      const w = world({ sprints: [wp({ client_kind: "company", client_ref: "47a39f83" })], routes });
+      const w = claimsAll(world({ sprints: [wp({ client_kind: "company", client_ref: "47a39f83" })], routes }));
       expect(await draftApprovalRequests(w.env)).toBe(1);
       const [event] = emitted(w);
       expect(event!.payload.key).toBe(draftKeyFor("sp-real", ["p2"]));
       expect(event!.payload.text).toContain("new-page");
       expect(event!.payload.text).not.toMatch(/expired|approved|cancelled/);
       const [claim] = executed(w, /SET draft_key = \$3, draft_status = 'requested'/);
-      expect(JSON.parse(String(claim!.params[4]))).toEqual([]);
+      expect(JSON.parse(String(claim!.params[4]))).toEqual({});
       // The real query keeps those pages out too: only the newest non-cancelled, still-pending, passed, unexpired, drafted page of each URL.
       const sql = seen.find((q) => q.includes("draft_key IS NOT NULL"))!;
       expect(sql).toContain("status <> 'cancelled'");
@@ -184,7 +194,15 @@ describe("the approval email draft", () => {
     const w = world({ sprints: [wp()], routes: draftRoutes([preview("p1", "a")]) });
     (w.ctx.events.emit as unknown as { mockRejectedValueOnce: (e: Error) => void }).mockRejectedValueOnce(new Error("host down"));
     expect(await draftApprovalRequests(w.env)).toBe(0);
-    expect(executed(w, /SET draft_key = NULL, draft_status = NULL/)).toHaveLength(1);
+    expect(executed(w, /SET draft_key = \(\$3::jsonb ->> id\)/)).toHaveLength(1);
+  });
+
+  it("a claim that gets fewer pages than its batch (another job got there first) gives them back and asks nothing", async () => {
+    const rows = [preview("p1", "a", { reviewed_at: "2026-10-03T07:00:00Z" }), preview("p2", "b", { reviewed_at: "2026-10-03T07:10:00Z" })];
+    const w = world({ sprints: [wp({ client_kind: "company", client_ref: "47a39f83" })], routes: draftRoutes(rows) });
+    expect(await draftApprovalRequests(w.env)).toBe(0);
+    expect(emitted(w)).toEqual([]);
+    expect(executed(w, /SET draft_key = \(\$3::jsonb ->> id\)/)).toHaveLength(1);
   });
 
   it("does not draft for a sprint on manual sign-off", async () => {
@@ -199,6 +217,8 @@ describe("the approval email draft", () => {
     const context = { plugin: "partnersinbiz.seo", kind: "seo-approval", id: "sp-real" };
     await onDraftResult(w.env, { companyId: "co-1", payload: { key, status: "drafted", mailboxDraftId: "md-1", draftUrl: null, context } });
     expect(executed(w, /SET draft_status = \$3, draft_url = \$4/)[0]!.params).toContain("drafted");
+    // A draft the Mailbox already closed (sent or deleted) is not made open again by a late result.
+    expect(executed(w, /SET draft_status = \$3, draft_url = \$4/)[0]!.sql).toContain("NOT IN ('sent', 'deleted')");
     const line = JSON.stringify(w.needsYou.at(-1)!.items);
     expect(line).toContain("Send the approval email to the client");
     expect(line).toContain("/mailbox");
