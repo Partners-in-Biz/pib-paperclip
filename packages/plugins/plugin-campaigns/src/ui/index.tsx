@@ -165,6 +165,7 @@ function NeedsAttention({ campaigns, onOpen }: { campaigns: Campaign[]; onOpen: 
 }
 
 export const CampaignsPage = withHelp(CampaignsPageMain);
+export { CampaignCanvasCard } from "./canvas-card.js";
 
 /** The page asks `access.me` first; closed shows the "no access" page (the guard still refuses every call). */
 function CampaignsPageMain(props: PluginPageProps) {
