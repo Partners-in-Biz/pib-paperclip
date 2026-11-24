@@ -118,6 +118,36 @@ describe("persisted Git workspace source", () => {
     } } });
   });
 
+  it.each([
+    ["a missing .git suffix", "https://example.invalid/original"],
+    ["a trailing slash", "https://example.invalid/original/"],
+    ["surrounding whitespace", "  https://example.invalid/original.git  "],
+  ])("resolves the owner when its origin differs from the saved repository only by %s", async (_label, origin) => {
+    const { original, input } = await fixture();
+    await exec("git", ["-C", original, "config", "remote.origin.url", origin]);
+    await expect(resolvePersistedGitWorkspaceSource(input)).resolves.toBe(original);
+  });
+
+  it("matches GitHub owner and repository case-insensitively", async () => {
+    const { original, input } = await fixture();
+    await exec("git", ["-C", original, "remote", "set-url", "origin", "https://github.com/Partners-in-Biz/pib-paperclip.git"]);
+    await expect(resolvePersistedGitWorkspaceSource({ ...input,
+      workspace: { ...input.workspace, repoUrl: "https://github.com/partners-in-biz/PIB-paperclip" } })).resolves.toBe(original);
+  });
+
+  it.each([
+    ["a different GitHub repository", "https://github.com/Partners-in-Biz/other.git"],
+    ["an ssh origin for the same GitHub repository", "git@github.com:Partners-in-Biz/pib-paperclip.git"],
+    ["another host with the same path", "https://gitlab.com/Partners-in-Biz/pib-paperclip"],
+  ])("still rejects %s after normalization", async (_label, origin) => {
+    const { original, input } = await fixture();
+    await exec("git", ["-C", original, "remote", "set-url", "origin", origin]);
+    await expect(resolvePersistedGitWorkspaceSource({ ...input,
+      workspace: { ...input.workspace, repoUrl: "https://github.com/Partners-in-Biz/pib-paperclip" } })).rejects.toMatchObject({
+      resultJson: { workspaceValidation: { reasonCode: "source_repository_mismatch" } },
+    });
+  });
+
   it("refuses an independent clone masquerading as the selected linked worktree", async () => {
     const { root, original, input } = await fixture();
     const clone = path.join(root, "clone");
