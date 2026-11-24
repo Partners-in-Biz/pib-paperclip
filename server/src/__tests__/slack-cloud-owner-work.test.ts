@@ -476,6 +476,43 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       text: "Your Paperclip account is restricted in this company, so this message was not accepted." });
   }, 60_000);
 
+  // PAR-14331: an unlinked sender on an endpoint that admits guests works for
+  // the endpoint's sponsor. A sponsor restricted under `enforce` admits no
+  // guest through the shipped message handler: no conversation, task, comment
+  // or wake. The kill switch makes `enforce` behave as `off`.
+  it.each(["enforce", "kill switch"] as const)("refuses a guest's Slack message under a restricted sponsor (%s)", async (variant) => {
+    if (variant === "kill switch") vi.stubEnv("PAPERCLIP_MEMBER_RESTRICTION", "off");
+    const endpointId = await createEndpoint(variant === "enforce" ? "GUESTSPONSOR" : "GUESTKILL");
+    await confirm(endpointId); await activate(endpointId); await confirm(endpointId);
+    // The sender (UOPERATOR) keeps no link of his own: he is a guest of the sponsor.
+    await db.delete(chatIdentityLinks).where(eq(chatIdentityLinks.endpointId, endpointId));
+    await db.update(chatEndpoints).set({ allowUnlinkedPeople: true }).where(eq(chatEndpoints.id, endpointId));
+    await db.update(companyMemberships).set({ restricted: true })
+      .where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalType, "user"), eq(companyMemberships.principalId, actorId)));
+    await db.update(companies).set({ memberRestrictionMode: "enforce" }).where(eq(companies.id, companyId));
+    const endpoint = await row(endpointId), enrolled = (await setup(endpointId)).slackCloudEvents!;
+    cloud.enqueue({ companyId, endpointId, publicId: endpoint.publicId, connectionId: endpoint.connectionId,
+      runtimeGeneration: (await setup(endpointId)).runtimeGeneration, teamId: enrolled.teamId, appId: enrolled.appId, bindingId: enrolled.bindingId }, secret, variant === "enforce" ? "EvGuestSponsor" : "EvGuestKill");
+    await githubConnectionEventService(db, { connector: cloud.connector }).pollOnce({ forDelivery: true });
+    expect(callbacks).toHaveLength(1);
+    const [received] = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpointId));
+    for (const work of deferred.splice(0)) await work();
+    const [delivery] = await db.select().from(chatDeliveries).where(eq(chatDeliveries.id, received!.id));
+    const conversations = await db.select().from(chatConversations).where(eq(chatConversations.endpointId, endpointId));
+    if (variant === "kill switch") {
+      expect(delivery!.state).not.toBe("filtered");
+      expect(conversations).toHaveLength(1);
+      return;
+    }
+    expect(delivery).toMatchObject({ state: "filtered", redactedError: "Endpoint sponsor can no longer authorize external guests" });
+    expect(conversations).toEqual([]);
+    expect(await db.select().from(issues).where(eq(issues.companyId, companyId))).toEqual([]);
+    expect(await db.select().from(issueComments).where(eq(issueComments.companyId, companyId))).toEqual([]);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId))).toEqual([]);
+    expect(await db.select().from(activityLog).where(and(eq(activityLog.companyId, companyId), eq(activityLog.action, "member_restriction.denied"))))
+      .toEqual([expect.objectContaining({ details: expect.objectContaining({ target: "inbound.chat", mode: "enforce" }) })]);
+  }, 60_000);
+
   it("public tool removal refuses a foreign company before Slack archival or retirement staging", async () => {
     const endpointId = await createEndpoint("TOOLFOREIGN"); await confirm(endpointId);
     const before = await row(endpointId), requests = vi.mocked(cloud.request).mock.calls.length;
