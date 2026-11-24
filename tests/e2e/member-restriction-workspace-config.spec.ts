@@ -136,8 +136,9 @@ async function visitR(page: Page, f: Fixture) {
 /** R picks "New isolated workspace" on his task; the PATCH's answer. */
 async function pickMode(page: Page, f: Fixture) {
   expect(await taskDetail(page, f, false), "R is offered a workspace mode picker").toBe(true);
+  // The UI patches by identifier (`/api/issues/MRC-1`), not by id.
   const picked = page.waitForResponse((r) => r.request().method() === "PATCH"
-    && new URL(r.url()).pathname === `/api/issues/${f.rTaskId}`);
+    && /^\/api\/issues\/[^/]+$/.test(new URL(r.url()).pathname));
   await page.getByText("New isolated workspace").first().click();
   const mode = await picked;
   await settle(page);
