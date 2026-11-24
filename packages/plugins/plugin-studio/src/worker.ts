@@ -12,7 +12,7 @@ import { captionClipAction } from "./video-edit/auto-caption.js";
 import { detectBeatsAction } from "./video-edit/beats.js";
 import { cutToBeatAction } from "./video-edit/cut-to-beat.js";
 import { cutSilencesAction } from "./video-edit/silence.js";
-import { createShare, listShares, refreshShares, revokeShare } from "./canvas-share.js";
+import { assertShareOpen, createShare, listShares, refreshShares, revokeShare } from "./canvas-share.js";
 import { discardGive, prepareGive, recordGive } from "./give.js";
 import { reviewAsset } from "./review.js";
 import { saveAssetToDrive } from "./drive.js";
@@ -41,7 +41,7 @@ import { isVideoEditTool, runVideoEditTool } from "./video-edit/tools.js";
 import { musicAction } from "./video-edit/music.js";
 import { voiceoverAction } from "./video-edit/voiceover.js";
 import { clientSummaries } from "./summary.js";
-import { assertReachable, loadIssue, resolveScope, scopeForWork, scopeInput } from "./scope.js";
+import { assertOpenToPerson, assertReachable, loadIssue, resolveScope, scopeForWork, scopeInput } from "./scope.js";
 import { STUDIO_TOOLS } from "./tools.js";
 import { PLUGIN_ID } from "./namespace.js";
 
@@ -294,29 +294,29 @@ const plugin = definePlugin({
     action("review", async (params, context) => {
       const me = await person(context);
       if (!canGenerate(me.role)) throw new StudioError("Viewers can look at Studio but can't approve or reject.", "forbidden");
-      return reviewAsset(ctx, me.companyId, objectParams(params), { userId: me.userId });
+      return reviewAsset(ctx, me.companyId, objectParams(params), { userId: me.userId, restriction: me.restriction });
     });
 
     // Save to Drive (PAR-8106): into the asset's own client folder, `02 Assets`. Viewers can't.
     action("drive-save", async (params, context) => {
       const me = await person(context);
       if (!canGenerate(me.role)) throw new StudioError("Viewers can look at Studio but can't save to Drive.", "forbidden");
-      return saveAssetToDrive(ctx, me.companyId, String(objectParams(params).assetId ?? "").trim());
+      return saveAssetToDrive(ctx, me.companyId, String(objectParams(params).assetId ?? "").trim(), undefined, me.restriction);
     });
 
     // Give to agent (give.ts, PAR-8138): the page opens the host's New Task popup. Prefill, then link or clean up.
     // Viewers can't give: every step checks the role again.
     action("give-prepare", async (params, context) => {
       const me = await person(context);
-      return prepareGive(ctx, me.companyId, objectParams(params), { userId: me.userId, role: me.role });
+      return prepareGive(ctx, me.companyId, objectParams(params), { userId: me.userId, role: me.role, restriction: me.restriction });
     });
     action("give-record", async (params, context) => {
       const me = await person(context);
-      return recordGive(ctx, me.companyId, objectParams(params), { userId: me.userId, role: me.role });
+      return recordGive(ctx, me.companyId, objectParams(params), { userId: me.userId, role: me.role, restriction: me.restriction });
     });
     action("give-discard", async (params, context) => {
       const me = await person(context);
-      return discardGive(ctx, me.companyId, objectParams(params), { userId: me.userId, role: me.role });
+      return discardGive(ctx, me.companyId, objectParams(params), { userId: me.userId, role: me.role, restriction: me.restriction });
     });
 
     // From Drive (PAR-8107): list and copy files from the picked client's Drive assets. People only; viewers can't import.
@@ -324,18 +324,18 @@ const plugin = definePlugin({
     action("drive-list", async (params, context) => {
       const me = await person(context);
       if (!canGenerate(me.role)) throw new StudioError("Viewers can look at Studio but can't add files from Drive.", "forbidden");
-      return listDriveFiles(ctx, me.companyId, objectParams(params));
+      return listDriveFiles(ctx, me.companyId, objectParams(params), me.restriction);
     });
     action("drive-import", async (params, context) => {
       const me = await person(context);
       if (!canGenerate(me.role)) throw new StudioError("Viewers can look at Studio but can't add files from Drive.", "forbidden");
-      return importFromDrive(ctx, me.companyId, objectParams(params), { userId: me.userId });
+      return importFromDrive(ctx, me.companyId, objectParams(params), { userId: me.userId, restriction: me.restriction });
     });
     // The picker's previews (PAR-8124): a page of small images, or one large one, through the CRM. People only.
     action("drive-thumbs", async (params, context) => {
       const me = await person(context);
       if (!canGenerate(me.role)) throw new StudioError("Viewers can look at Studio but can't add files from Drive.", "forbidden");
-      return driveThumbs(ctx, me.companyId, objectParams(params));
+      return driveThumbs(ctx, me.companyId, objectParams(params), me.restriction);
     });
     // Progress of a Drive save or import over 5 MiB (PAR-8125). The UI polls this; people only.
     action("drive-transfer", async (params, context) => {
@@ -349,7 +349,9 @@ const plugin = definePlugin({
     action("brand-kit", async (params, context) => {
       const me = await person(context);
       const requested = scopeInput({ client: objectParams(params).client ?? null });
-      return brandKitFor(ctx, me.companyId, await resolveScope(ctx, me.companyId, requested ?? null));
+      const where = await resolveScope(ctx, me.companyId, requested ?? null);
+      assertOpenToPerson(where.scope, me.restriction); // a restricted member reads no client's kit (PAR-14290)
+      return brandKitFor(ctx, me.companyId, where);
     });
 
     // The Generate page's saved prompt templates: anyone in the company can read them; viewers can't change them.
@@ -549,15 +551,17 @@ const plugin = definePlugin({
     // page data, because page data has no caller and each entry carries the secret link path.
     action("canvas-share-list", async (params, context) => {
       const me = await canvasEditor(context);
-      return { shares: await listShares(ctx, me.companyId, String(objectParams(params).canvasId ?? "")) };
+      const canvasId = String(objectParams(params).canvasId ?? "");
+      await assertShareOpen(ctx, me.companyId, canvasId, me.restriction);
+      return { shares: await listShares(ctx, me.companyId, canvasId) };
     });
     action("canvas-share-create", async (params, context) => {
       const me = await canvasEditor(context);
-      return createShare(ctx, me.companyId, objectParams(params), { userId: me.userId });
+      return createShare(ctx, me.companyId, objectParams(params), { userId: me.userId, restriction: me.restriction });
     });
     action("canvas-share-revoke", async (params, context) => {
       const me = await canvasEditor(context);
-      return revokeShare(ctx, me.companyId, objectParams(params));
+      return revokeShare(ctx, me.companyId, objectParams(params), me.restriction);
     });
     const publishShares = () => refreshShares(ctx).catch((error) => ctx.logger.warn("Studio share pages not refreshed", { error: errorText(error) }));
     runDetached(() => void publishShares());
