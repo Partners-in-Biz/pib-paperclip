@@ -1,6 +1,6 @@
 import { definePlugin, runWorker, type PluginContext, type PluginPerformActionContext, type ToolRunContext } from "@paperclipai/plugin-sdk";
 import { registerSocialMediaSync } from "./social-media-sync.js";
-import { createAccessGuard, normalizeToolResult, registerClientProjectWatch, registerCrmProjection, scopeOfRow, toolFail } from "@partnersinbiz/pib-plugin-kit";
+import { actingRestriction, createAccessGuard, normalizeToolResult, registerClientProjectWatch, registerCrmProjection, scopeOfRow, toolFail } from "@partnersinbiz/pib-plugin-kit";
 import { assetBytesForPerson, assetFileForAgent, assetUrlForPerson, assetUrlsForPerson, getAssetRow, importFromAttachment, linkAsset, listAssets } from "./assets.js";
 import { archiveCanvas, createCanvas, getCanvas, listCanvases, saveCanvas } from "./canvas.js";
 import { addComment, listComments, listVersions, restoreVersion, saveVersion } from "./canvas-versions.js";
@@ -249,14 +249,17 @@ const plugin = definePlugin({
     pageData("client-summaries", (companyId) => clientSummaries(ctx, companyId));
     pageData("generations", (companyId, p) => pageGenerations(ctx, companyId, p.groupIds));
 
-    /** Person-only actions: an active member of the company, never an agent. Returns the role for finer checks. */
-    async function person(context: { companyId?: string | null; actor: { type?: string | null; userId?: string | null; companyId?: string | null } }) {
+    /**
+     * Person-only actions: an active member of the company, never an agent. Returns the role for finer checks, and
+     * core's member-restriction answer: a restricted member gets no client media or client generation (PAR-14274).
+     */
+    async function person(context: Pick<PluginPerformActionContext, "companyId" | "actor">) {
       const companyId = context.companyId ?? context.actor.companyId;
       if (!companyId) throw new StudioError("Company is required");
       if (context.actor.type !== "user") throw new StudioError("Agents use the studio tools, not the Studio page.", "forbidden");
       const role = await memberRole(ctx, companyId, context.actor);
       if (!role) throw new StudioError("You are not an active member of this company.", "forbidden");
-      return { companyId, role, userId: String(context.actor.userId) };
+      return { companyId, role, userId: String(context.actor.userId), restriction: actingRestriction(context.actor) };
     }
 
     action("me", async (_params, context) => {
@@ -266,7 +269,7 @@ const plugin = definePlugin({
 
     action("asset-url", async (params, context) => {
       const me = await person(context);
-      return { url: await assetUrlForPerson(ctx, me.companyId, String(objectParams(params).assetId ?? "")) };
+      return { url: await assetUrlForPerson(ctx, me.companyId, String(objectParams(params).assetId ?? ""), me.restriction) };
     });
 
     // Approve or reject on the page. Viewers can't; approving sends the file to Social.
@@ -366,7 +369,7 @@ const plugin = definePlugin({
     // The Layout card: the picture's bytes to draw on, and saving the finished page.
     action("asset-data", async (params, context) => {
       const me = await person(context);
-      return assetBytesForPerson(ctx, me.companyId, String(objectParams(params).assetId ?? ""));
+      return assetBytesForPerson(ctx, me.companyId, String(objectParams(params).assetId ?? ""), me.restriction);
     });
     action("layout-save", async (params, context) => {
       const me = await person(context);
@@ -391,7 +394,7 @@ const plugin = definePlugin({
       const raw = objectParams(params).assetIds;
       const ids = Array.isArray(raw) ? [...new Set(raw.filter((id): id is string => typeof id === "string" && id.length > 0))].slice(0, 100) : [];
       // One settings read and one secret lookup for the whole page (PAR-8102); a failure is reported, not hidden.
-      return assetUrlsForPerson(ctx, me.companyId, ids);
+      return assetUrlsForPerson(ctx, me.companyId, ids, me.restriction);
     });
 
     async function generator(context: Parameters<typeof person>[0], params: unknown) {
@@ -400,7 +403,7 @@ const plugin = definePlugin({
       const p = objectParams(params);
       const ref = typeof p.issueId === "string" ? p.issueId.trim() : "";
       const issue = ref ? await loadIssue(ctx, me.companyId, ref) : null;
-      return { me, request: pageRequest(p), actor: { userId: me.userId, issueId: issue?.id ?? null, projectId: issue?.projectId ?? null } };
+      return { me, request: pageRequest(p), actor: { userId: me.userId, issueId: issue?.id ?? null, projectId: issue?.projectId ?? null, restriction: me.restriction } };
     }
 
     // The page's generate form: the same estimate, queue, caps and ledger as the agent tools.
@@ -423,7 +426,7 @@ const plugin = definePlugin({
       const p = objectParams(params);
       const ref = typeof p.issueId === "string" ? p.issueId.trim() : "";
       const issue = ref ? await loadIssue(ctx, me.companyId, ref) : null;
-      const out = await lipsyncAction(ctx, me.companyId, p, { userId: me.userId, issueId: issue?.id ?? null, projectId: issue?.projectId ?? null });
+      const out = await lipsyncAction(ctx, me.companyId, p, { userId: me.userId, issueId: issue?.id ?? null, projectId: issue?.projectId ?? null, restriction: me.restriction });
       runDetached(() => void processQueue(ctx).catch((error) => ctx.logger.info("Studio queue kick failed", { error: errorText(error) })));
       return out;
     });

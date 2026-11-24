@@ -1,14 +1,14 @@
 /** The asset library: files in private storage, tied to a company, client, project and the work that used them. */
 import { randomUUID } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { scopeOfRow, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
+import { MEMBER_RESTRICTED, scopeOfRow, type ActingRestriction, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
 import { StudioConfig } from "./config.js";
 import { iso, num, table } from "./db.js";
 import { errorText, StudioError } from "./errors.js";
 import { assertOwnKey, assetKey, extFor, getObject, kindFor, localCopy, MAX_ASSET_BYTES, objectUrl, putObject, sha256Hex, sniffMime, type PrivateBucket } from "./storage.js";
 import { cutPoster, ensurePoster, POSTER_MIME } from "./video-edit/poster.js";
 import { downloadObjectToWorkdir, withRenderWorkdir } from "./video-edit/workdir.js";
-import { assertReachable, loadIssue, scopeForWork, scopeInput } from "./scope.js";
+import { assertOpenToPerson, assertReachable, loadIssue, scopeForWork, scopeInput } from "./scope.js";
 
 export const LINK_TARGETS = ["issue", "goal", "project", "campaign", "social_post", "ad", "seo_page", "video", "book"] as const;
 
@@ -205,11 +205,18 @@ export async function assetFileForAgent(ctx: PluginContext, companyId: string, a
   return { ...assetOut(row), path };
 }
 
+/** For a person's browser, after the action's member check. Five minutes. A restricted member gets own work only. */
+export async function assetUrlForPerson(ctx: PluginContext, companyId: string, assetId: string, restriction: ActingRestriction): Promise<string> {
+  const row = await getAssetRow(ctx, companyId, assetId);
+  assertOpenToPerson(scopeOfRow(row), restriction);
+  return objectUrl(await new StudioConfig(ctx, companyId).bucket(), companyId, "GET", row.r2_key, 300);
+}
+
 /**
- * For a person's browser, after an access check in the action (or a share page). Short-lived. Pass one `config` for a
- * whole request or job run: each new StudioConfig costs a secret lookup, and the host allows 30 a minute per company.
+ * For a share page's publish job (canvas-share.ts). Short-lived. Pass one `config` for a whole job run: each new
+ * StudioConfig costs a secret lookup, and the host allows 30 a minute per company.
  */
-export async function assetUrlForPerson(ctx: PluginContext, companyId: string, assetId: string, expiresSec = 300, config: StudioConfig = new StudioConfig(ctx, companyId)): Promise<string> {
+export async function assetUrlForShare(ctx: PluginContext, companyId: string, assetId: string, expiresSec: number, config: StudioConfig): Promise<string> {
   const row = await getAssetRow(ctx, companyId, assetId);
   return objectUrl(await config.bucket(), companyId, "GET", row.r2_key, expiresSec);
 }
@@ -217,8 +224,9 @@ export async function assetUrlForPerson(ctx: PluginContext, companyId: string, a
 /** The largest picture a Layout card reads, and the bytes for it: a canvas can't read a storage link back. */
 const MAX_LAYOUT_SOURCE_BYTES = 25 * 1024 * 1024;
 
-export async function assetBytesForPerson(ctx: PluginContext, companyId: string, assetId: string): Promise<{ mime: string; base64: string }> {
+export async function assetBytesForPerson(ctx: PluginContext, companyId: string, assetId: string, restriction: ActingRestriction): Promise<{ mime: string; base64: string }> {
   const row = await getAssetRow(ctx, companyId, assetId);
+  assertOpenToPerson(scopeOfRow(row), restriction);
   const isVideo = row.mime.startsWith("video/");
   if (!isVideo && !row.mime.startsWith("image/")) throw new StudioError("Only pictures and videos can go on a Layout card, and this file isn't one.", "bad_asset");
   assertOwnKey(companyId, row.r2_key);
@@ -247,13 +255,17 @@ export interface PreviewBatch {
   failed: string[];
   /** Safe to show a person; null when every known asset got a link. */
   error: string | null;
+  /** Client assets a restricted member gets no link for (PAR-14274); the page shows a placeholder, never retries. */
+  withheld?: string[];
 }
 
 /**
  * Preview links for many assets with one settings read and one secret lookup (PAR-8102). Unknown assets are left out
- * quietly; a storage or secret failure is reported in `error` so the page can say so and retry, never hidden.
+ * quietly; a storage or secret failure is reported in `error` so the page can say so and retry, never hidden. A
+ * restricted member's client assets are `withheld`; when core's answer is missing and the page holds a client asset,
+ * the whole call is refused and nothing is signed (PAR-14274).
  */
-export async function assetUrlsForPerson(ctx: PluginContext, companyId: string, assetIds: string[], expiresSec = 300, config?: StudioConfig): Promise<PreviewBatch> {
+export async function assetUrlsForPerson(ctx: PluginContext, companyId: string, assetIds: string[], restriction: ActingRestriction, expiresSec = 300, config?: StudioConfig): Promise<PreviewBatch> {
   const urls: Record<string, string> = {};
   if (!assetIds.length) return { urls, failed: [], error: null };
   let bucket: PrivateBucket;
@@ -265,16 +277,31 @@ export async function assetUrlsForPerson(ctx: PluginContext, companyId: string, 
     return { urls, failed: [...assetIds], error: `Previews couldn't load. ${why}` };
   }
   const failed: string[] = [];
+  const withheld: string[] = [];
   for (const id of assetIds) {
+    let row: AssetRow;
     try {
-      const row = await getAssetRow(ctx, companyId, id);
-      urls[id] = objectUrl(bucket, companyId, "GET", row.r2_key, expiresSec);
+      row = await getAssetRow(ctx, companyId, id);
     } catch (error) {
-      if (error instanceof StudioError && error.code === "unknown_asset") continue;
+      if (!(error instanceof StudioError && error.code === "unknown_asset")) failed.push(id);
+      continue;
+    }
+    try {
+      assertOpenToPerson(scopeOfRow(row), restriction);
+    } catch (error) {
+      if (error instanceof StudioError && error.code === MEMBER_RESTRICTED) {
+        withheld.push(id);
+        continue;
+      }
+      throw error; // core's answer is missing: refuse the whole page, nothing signed
+    }
+    try {
+      urls[id] = objectUrl(bucket, companyId, "GET", row.r2_key, expiresSec);
+    } catch {
       failed.push(id);
     }
   }
-  return { urls, failed, error: failed.length ? `${failed.length} preview${failed.length === 1 ? "" : "s"} couldn't load.` : null };
+  return { urls, failed, error: failed.length ? `${failed.length} preview${failed.length === 1 ? "" : "s"} couldn't load.` : null, ...(withheld.length ? { withheld } : {}) };
 }
 
 export async function linkAsset(ctx: PluginContext, companyId: string, params: Record<string, unknown>, runProjectId: string | null) {
