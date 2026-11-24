@@ -1,6 +1,7 @@
 import {
   PLANNING_CANVAS_LIMITS,
   createPlanningCanvasCommentSchema,
+  planningCanvasChatMessageSchema,
   planningCanvasItemKeySchema,
   resolvePlanningCanvasCommentSchema,
 } from "@paperclipai/shared";
@@ -73,5 +74,19 @@ export const PLANNING_CANVAS_COMMENTS_OPENAPI_ROUTES: PlanningCanvasOpenApiRoute
     summary: "Resolve or reopen a planning canvas comment thread",
     description: "Needs comment access. Send `{ resolved: true }` to resolve or `{ resolved: false }` to reopen. Only a thread's first comment resolves.",
     body: resolvePlanningCanvasCommentSchema,
+  },
+  {
+    method: "post",
+    path: `${BOARD}/chat`,
+    tags,
+    summary: "Send a board chat message to an agent",
+    description:
+      "Needs edit access and a signed-in person; agents are refused (`canvas_chat_agent_caller`). Off unless " +
+      "`PLANNING_CANVAS_CHAT` is on (`canvas_chat_disabled`). One thread issue per board, agent and person: in the " +
+      "board's project, open on a company board, private on a personal board. The message becomes an issue comment by " +
+      "the person (text, item keys and a board link, never node text) and wakes the agent for that person. Context " +
+      "keys must be items of this board (`canvas_chat_unknown_context_key`). 30 messages per person per hour " +
+      "(`canvas_chat_rate_limited`, 429). A repeat `clientRequestId` answers 200 with `repeat: true` and writes nothing.",
+    body: planningCanvasChatMessageSchema,
   },
 ];

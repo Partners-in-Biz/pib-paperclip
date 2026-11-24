@@ -154,6 +154,11 @@ export const PLANNING_CANVAS_LIMITS = {
   tombstoneRetentionDays: 30,
   tombstonePurgePerBatchMax: 500,
   opBatchRetentionHours: 24,
+  /** Board chat (PAR-14257 C): messages per person per rolling hour, over all boards of the company. */
+  chatMessagesPerHourMax: 30,
+  /** Board chat: item keys one message may name as its context. */
+  chatContextKeysMax: 50,
+  chatClientRequestIdMaxLength: 100,
 } as const;
 
 export const PLANNING_CANVAS_BOARD_CAPS: Record<PlanningCanvasItemType, number> = {
@@ -415,6 +420,27 @@ export interface PlanningCanvasComment {
   createdAt: string;
   updatedAt: string;
   deletedAt: string | null;
+}
+
+/** Refusal codes of the board chat route (PAR-14257 C, D 1a). */
+export const PLANNING_CANVAS_CHAT_ERROR_CODES = {
+  disabled: "canvas_chat_disabled",
+  agentCaller: "canvas_chat_agent_caller",
+  personRequired: "canvas_chat_person_required",
+  rateLimited: "canvas_chat_rate_limited",
+  unknownContextKey: "canvas_chat_unknown_context_key",
+  unknownAgent: "canvas_chat_unknown_agent",
+} as const;
+
+/** One board chat message as the route answers it. The thread is an ordinary issue. */
+export interface PlanningCanvasChatMessageResult {
+  threadIssueId: string;
+  threadIdentifier: string | null;
+  commentId: string;
+  /** `created`: a new thread; `reopened`: a done or cancelled thread; `open`: an open one. */
+  thread: "created" | "reopened" | "open";
+  /** True when `clientRequestId` was seen before: nothing new was written. */
+  repeat: boolean;
 }
 
 export const PLANNING_CANVAS_AGENT_GRANT_SOURCES = ["mention", "handoff"] as const;

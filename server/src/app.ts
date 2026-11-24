@@ -161,6 +161,7 @@ import { personalNoteRoutes } from "./routes/personal-notes.js";
 import { planningCanvasRoutes } from "./routes/planning-canvases.js";
 import { planningCanvasSharingRoutes } from "./routes/planning-canvas-sharing.js";
 import { planningCanvasCommentRoutes } from "./routes/planning-canvas-comments.js";
+import { planningCanvasChatRoutes } from "./routes/planning-canvas-chat.js";
 import { planningCanvasLinkRoutes } from "./routes/planning-canvas-links.js";
 import { planningCanvasBlueprintRoutes } from "./routes/planning-canvas-blueprints.js";
 import { primaryAgentRoutes } from "./routes/primary-agent.js";
@@ -872,6 +873,7 @@ export async function createApp(
   api.use(planningCanvasRoutes(db));
   api.use(planningCanvasSharingRoutes(db));
   api.use(planningCanvasCommentRoutes(db));
+  api.use(planningCanvasChatRoutes(db));
   api.use(planningCanvasLinkRoutes(db));
   api.use(planningCanvasBlueprintRoutes(db));
   api.use(inboxDismissalRoutes(db));
