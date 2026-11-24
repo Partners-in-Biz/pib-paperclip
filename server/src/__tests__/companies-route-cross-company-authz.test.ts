@@ -47,6 +47,13 @@ const mockFeedbackService = vi.hoisted(() => ({
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
+// Export routes read the caller's read scope (PAR-14320); this file has no database.
+vi.mock("../services/authorization.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../services/authorization.js")>()),
+  issueReadSqlCondition: vi.fn(async () => ({ scope: "caller issues" })),
+  projectReadSqlCondition: vi.fn(async () => ({ scope: "caller projects" })),
+}));
+
 function registerCompanyRouteMocks() {
   vi.doMock("../services/index.js", () => ({
     accessService: () => mockAccessService,
