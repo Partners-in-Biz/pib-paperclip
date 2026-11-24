@@ -8,6 +8,7 @@ import {
   type PlanningCanvasBoard,
   type PlanningCanvasBoardSharing,
   type PlanningCanvasConnectorFields,
+  type PlanningCanvasEmbedData,
   type PlanningCanvasIssueLink,
   type PlanningCanvasItem,
   type PlanningCanvasItemType,
@@ -99,6 +100,24 @@ function refLabel(summary: PlanningCanvasRefSummary | undefined): string {
 export function planningCanvasNodeLabel(node: PlanningCanvasNodeFields, refs: PlanningCanvasRefMap): string {
   if (REF_KINDS.has(node.kind)) return refLabel(node.ref ? refs[node.ref.id] : undefined);
   return oneLine(node.title) || "(untitled)";
+}
+
+/**
+ * The export label of an embed (plan PAR-14389 C.3): plugin, type and record id
+ * only. No stored title or props: an agent resolves the record with its own
+ * access, and a stored name would show to readers the plugin refuses.
+ */
+function embedExportLabel(node: PlanningCanvasNodeFields): string {
+  const data = node.data as Partial<PlanningCanvasEmbedData> | undefined;
+  const plugin = oneLine(typeof data?.plugin === "string" ? data.plugin : "") || "(unknown)";
+  const type = oneLine(typeof data?.type === "string" ? data.type : "") || "(unknown)";
+  const assetId = typeof data?.assetId === "string" ? oneLine(data.assetId) : "";
+  return assetId ? `${plugin}/${type} id=${assetId}` : `${plugin}/${type}`;
+}
+
+/** The label an export (outline, Mermaid) shows for a node. */
+function exportNodeLabel(node: PlanningCanvasNodeFields, refs: PlanningCanvasRefMap): string {
+  return node.kind === "embed" ? embedExportLabel(node) : planningCanvasNodeLabel(node, refs);
 }
 
 function linkLabels(links: PlanningCanvasIssueLink[] | undefined, refs: PlanningCanvasRefMap) {
@@ -296,10 +315,12 @@ function codeSpan(value: string) {
 function outlineEntry(item: PlanningCanvasFormatItem, refs: PlanningCanvasRefMap): string[] {
   const node = item.data as PlanningCanvasNodeFields;
   const links = linkLabels(node.links, refs);
-  const head = `- [${node.kind}] ${planningCanvasNodeLabel(node, refs)} ${codeSpan(item.key)}${
+  const head = `- [${node.kind}] ${exportNodeLabel(node, refs)} ${codeSpan(item.key)}${
     links.length > 0 ? ` → ${links.join(", ")}` : ""
   }`;
-  return [head, ...nodeBodyLines(node).map((line) => (line ? `  ${line}` : ""))];
+  // An embed exports its ids only, never its stored content.
+  const body = node.kind === "embed" ? [] : nodeBodyLines(node);
+  return [head, ...body.map((line) => (line ? `  ${line}` : ""))];
 }
 
 const MERMAID_RESERVED = new Set(["end", "graph", "flowchart", "subgraph", "style", "class", "classdef", "click", "linkstyle", "direction", "default"]);
@@ -335,7 +356,7 @@ function mermaidText(value: string) {
 }
 
 function mermaidNode(id: string, node: PlanningCanvasNodeFields, refs: PlanningCanvasRefMap) {
-  const label = `"${mermaidText(planningCanvasNodeLabel(node, refs))}"`;
+  const label = `"${mermaidText(exportNodeLabel(node, refs))}"`;
   if (node.kind === "shape" && node.shape === "diamond") return `${id}{${label}}`;
   if (node.kind === "shape" && node.shape === "pill") return `${id}([${label}])`;
   return `${id}[${label}]`;
