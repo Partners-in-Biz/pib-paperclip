@@ -3,6 +3,7 @@ import { useCallback, useMemo } from "react";
 import { type CanvasNode, type CanvasNodeColor, type PersonalNote, type PlanningCanvasRefNodeKind } from "@paperclipai/shared";
 import { personalNotesApi } from "@/api/personalNotes";
 import { clampZoom } from "@/components/planning-canvas/canvas-constants";
+import { newTable } from "@/components/planning-canvas/nodes/table-edit";
 import { type CanvasAlignMode, alignSelectedNodes, buildFrameAgentBrief, buildSelectionAgentBrief, createCanvasId, snapToGrid } from "@/lib/planning-canvas-helpers";
 import { queryKeys } from "@/lib/queryKeys";
 import type { CanvasData } from "@/components/planning-canvas/state/useCanvasData";
@@ -186,6 +187,31 @@ export function useCanvasActions(ctx: CanvasData & CanvasState & CanvasBoard) {
     [getViewportCenterWorld, nextZIndex, opStore.addItem, setSelectedNodeIds, setTool],
   );
 
+  /** Add an empty table or markdown node at the viewport centre. */
+  const insertTypedNode = useCallback(
+    (kind: "table" | "markdown") => {
+      const center = getViewportCenterWorld();
+      const width = kind === "table" ? 420 : 320;
+      const height = kind === "table" ? 220 : 240;
+      const key = createCanvasId(kind);
+      opStore.addItem(key, {
+        kind,
+        data: kind === "table" ? newTable() : { markdown: "" },
+        x: snapToGrid(center.x - width / 2),
+        y: snapToGrid(center.y - height / 2),
+        width,
+        height,
+        zIndex: nextZIndex,
+        color: "slate",
+        title: "",
+        content: "",
+      });
+      setSelectedNodeIds([key]);
+      setTool("select");
+    },
+    [getViewportCenterWorld, nextZIndex, opStore.addItem, setSelectedNodeIds, setTool],
+  );
+
   const fitToScreen = useCallback(() => {
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect || nodes.length === 0) {
@@ -339,6 +365,7 @@ export function useCanvasActions(ctx: CanvasData & CanvasState & CanvasBoard) {
     deleteSelection,
     duplicateSelection,
     insertLinkNode,
+    insertTypedNode,
     fitToScreen,
     handleGiveNodeToAgent,
     handleAlignSelection,

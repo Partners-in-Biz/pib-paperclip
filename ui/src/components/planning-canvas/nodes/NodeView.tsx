@@ -11,6 +11,9 @@ import { GoalNode } from "@/components/planning-canvas/nodes/GoalNode";
 import { IssueNode } from "@/components/planning-canvas/nodes/IssueNode";
 import { ProjectNode } from "@/components/planning-canvas/nodes/ProjectNode";
 import { NodeLinks } from "@/components/planning-canvas/nodes/NodeLinks";
+import { TableNode } from "@/components/planning-canvas/nodes/TableNode";
+import { MarkdownNode } from "@/components/planning-canvas/nodes/MarkdownNode";
+import type { TypedNodeMeta } from "@/components/planning-canvas/nodes/typed-meta";
 import type { NodeLinkMeta } from "@/components/planning-canvas/nodes/link-meta";
 import type { CanvasController } from "@/components/planning-canvas/state/useCanvasController";
 
@@ -25,6 +28,8 @@ type NodeViewProps = {
   linkedNote: PersonalNote | null | undefined;
   /** Ref and link ids of a linked-entity node, or of any node handed to agents (C10). */
   link: NodeLinkMeta | undefined;
+  /** Typed data of a table or markdown node (C16). */
+  typed: TypedNodeMeta | undefined;
 };
 
 /**
@@ -39,6 +44,7 @@ const NodeView = memo(function NodeView({
   showConnectHandles,
   linkedNote,
   link,
+  typed,
 }: NodeViewProps) {
   const latest = useLatestCanvas();
   const theme = CANVAS_COLOR_THEMES[node.color] ?? CANVAS_COLOR_THEMES.yellow;
@@ -65,11 +71,15 @@ const NodeView = memo(function NodeView({
         "pointer-events-auto absolute transition-shadow",
         isSelected && "ring-2 ring-blue-500 ring-offset-2 ring-offset-background",
         isConnectFrom && "ring-2 ring-amber-500",
-        RefRender ? REF_CARD_CLASS : containerClass(node, theme),
+        RefRender || typed ? REF_CARD_CLASS : containerClass(node, theme),
       )}
     >
       {RefRender ? (
         <RefRender refId={link!.refId} />
+      ) : typed?.kind === "table" ? (
+        <TableNode nodeKey={node.id} data={typed.data} title={node.title} />
+      ) : typed?.kind === "markdown" ? (
+        <MarkdownNode nodeKey={node.id} data={typed.data} title={node.title} />
       ) : (
         <Render node={node} isEditing={isEditing} theme={theme} linkedNote={linkedNote} c={latest.current} />
       )}
@@ -82,6 +92,7 @@ const NodeView = memo(function NodeView({
 export function NodesLayer({ c }: { c: CanvasController }) {
   const { sortedNodes, selectedNodeIds, editingNodeId, connectFromId, notesById } = c;
   const linkMeta = c.opStore.linkMeta;
+  const typedMeta = c.opStore.typedMeta;
   return (
     <>
       {sortedNodes.map((node) => {
@@ -97,6 +108,7 @@ export function NodesLayer({ c }: { c: CanvasController }) {
             showConnectHandles={isSelected && selectedNodeIds.length === 1 && !isEditing}
             linkedNote={node.noteId ? notesById.get(node.noteId) : null}
             link={linkMeta.get(node.id)}
+            typed={typedMeta?.get(node.id)}
           />
         );
       })}

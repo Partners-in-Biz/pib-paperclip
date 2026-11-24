@@ -1,4 +1,4 @@
-import { ArrowRight, Frame, Hand, Link2, MousePointer2, NotebookPen, Pen, Shapes, StickyNote, Type } from "lucide-react";
+import { ArrowRight, Frame, Hand, Link2, MousePointer2, FileText, Table2, NotebookPen, Pen, Shapes, StickyNote, Type } from "lucide-react";
 import { type CanvasController } from "@/components/planning-canvas/state/useCanvasController";
 import { cn } from "@/lib/utils";
 
@@ -11,6 +11,7 @@ export function ToolRail({ c }: { c: CanvasController }) {
     setNotesDrawerOpen,
     insertPanelOpen,
     setInsertPanelOpen,
+    insertTypedNode,
   } = c;
   return (
     <div className="pointer-events-auto absolute left-3 top-1/2 z-30 flex -translate-y-1/2 flex-col gap-1 rounded-xl border border-border bg-popover/95 p-1.5 shadow-lg backdrop-blur-xs">
@@ -51,6 +52,23 @@ export function ToolRail({ c }: { c: CanvasController }) {
         );
       })}
       <div className="my-0.5 h-px bg-border" />
+      {(
+        [
+          { kind: "table", icon: Table2, label: "Add table" },
+          { kind: "markdown", icon: FileText, label: "Add markdown / Mermaid" },
+        ] as const
+      ).map(({ kind, icon: Icon, label }) => (
+        <button
+          key={kind}
+          type="button"
+          title={label}
+          aria-label={label}
+          onClick={() => insertTypedNode(kind)}
+          className="flex size-9 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+        >
+          <Icon className="size-4" />
+        </button>
+      ))}
       <button
         type="button"
         title="Add live issue, agent, project or goal card"
