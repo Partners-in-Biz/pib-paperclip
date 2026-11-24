@@ -87,6 +87,17 @@ const ENFORCED: Partial<Record<Caller, Partial<Record<Target, string>>>> = {
   "R-in-X": { otherCompany: NOT_FOUND },
 };
 
+/**
+ * PAR-13016 (#1190, merged after BASE was recorded): a board caller reads the
+ * task first, so a private task of another person he cannot read is "not
+ * found" in every mode. Reconciled in PAR-14340.
+ */
+const BOARD_READS_FIRST: Partial<Record<Caller, Partial<Record<Target, string>>>> = {
+  "R": { private: NOT_FOUND },
+  "O": { private: NOT_FOUND },
+  "R-in-X": { private: NOT_FOUND },
+};
+
 const answerOf = (res: request.Response) => {
   const code = res.body?.code ?? res.body?.details?.code;
   const text = code ?? (res.status === 200 ? "" : res.body?.error ?? "");
@@ -227,6 +238,7 @@ const answerOf = (res: request.Response) => {
         expect(renamed, `${mode}: ${answer}`).toBe(answer === "200");
         if (RECORD) continue;
         const expected = (mode === "enforce" ? ENFORCED[caller]?.[target] : undefined)
+          ?? BOARD_READS_FIRST[caller]?.[target]
           ?? BASE[caller][target][MODES.indexOf(mode)];
         expect(answer, mode).toBe(expected);
       }
