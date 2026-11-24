@@ -3,6 +3,7 @@ import { BoardBar } from "@/components/planning-canvas/panels/BoardBar";
 import { BlueprintsDialog } from "@/components/planning-canvas/panels/blueprints/BlueprintsDialog";
 import { BottomRightControls } from "@/components/planning-canvas/panels/BottomRightControls";
 import { CheatSheet } from "@/components/planning-canvas/panels/CheatSheet";
+import { ChatPanel } from "@/components/planning-canvas/panels/chat/ChatPanel";
 import { CommentPins } from "@/components/planning-canvas/panels/comments/CommentPins";
 import { CommentsPanel } from "@/components/planning-canvas/panels/comments/CommentsPanel";
 import { PluginCanvasPanels } from "@/components/planning-canvas/panels/PluginCanvasPanels";
@@ -50,6 +51,7 @@ export const PANEL_SLOTS: Record<PanelSlotId, PanelEntry[]> = {
   ],
   right: [
     { id: "comments-panel", Component: CommentsPanel },
+    { id: "board-chat", Component: ChatPanel },
     { id: "outline", Component: OutlinePanel },
     { id: "notes-drawer", Component: NotesDrawer },
     { id: "insert-link-panel", Component: InsertLinkPanel },
