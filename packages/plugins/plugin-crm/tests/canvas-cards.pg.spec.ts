@@ -21,7 +21,9 @@ const ROLES: Record<string, string> = { admin: "admin", ann: "member", bob: "mem
 const viewerOf = (userId: string): Viewer => ({ companyId: CO, userId, agentId: null, role: ROLES[userId] ?? null });
 const available = await embeddedAvailable();
 
-type Handler = (params: Record<string, unknown>, context: PluginPerformActionContext) => Promise<any>;
+type Card = { id: string; hidden?: true; title?: string };
+type Answer = { cards: Card[]; groups: Array<{ relation: string; cards: Card[] }> };
+type Handler = (params: Record<string, unknown>, context: PluginPerformActionContext) => Promise<unknown>;
 
 describe.skipIf(!available)("CRM canvas cards on a real Postgres", () => {
   let pg: PgHarness;
@@ -71,9 +73,9 @@ describe.skipIf(!available)("CRM canvas cards on a real Postgres", () => {
   }
 
   const context = (userId: string) => ({ companyId: CO, actor: { type: "user", userId, agentId: null, runId: null, companyId: CO, onBehalfOfUserId: userId, onBehalfOfRestricted: false } }) as unknown as PluginPerformActionContext;
-  const act = (key: string, params: Record<string, unknown>, userId: string) => actions.get(key)!(params, context(userId));
+  const act = async (key: string, params: Record<string, unknown>, userId: string) => (await actions.get(key)!(params, context(userId))) as Answer;
   const shown = async (userId: string, type: string, ids: string[]) =>
-    ((await act("canvas.cards.resolve", { items: ids.map((id) => ({ type, id })) }, userId)).cards as Array<{ id: string; hidden?: true }>)
+    (await act("canvas.cards.resolve", { items: ids.map((id) => ({ type, id })) }, userId)).cards
       .filter((card) => !card.hidden).map((card) => card.id);
 
   it("listAccounts + grantsFor: resolve shows own, user-granted and partner-shared companies; another company's, unknown and deleted ones are hidden", async () => {
@@ -92,20 +94,20 @@ describe.skipIf(!available)("CRM canvas cards on a real Postgres", () => {
     for (const userId of ["admin", "ann", "bob"]) {
       for (const [type, kind] of [["card-company", "company"], ["card-contact", "contact"]] as const) {
         for (const text of ["acme", "Ada", "globex.test", "zzz"]) {
-          const cards = (await act("canvas.cards.search", { type, q: text, limit: 20 }, userId)).cards as Array<{ id: string }>;
+          const { cards } = await act("canvas.cards.search", { type, q: text, limit: 20 }, userId);
           const page = await findRecords(pg.ctx, viewerOf(userId), { query: text, kind, limit: 20 });
           expect(cards.map((c) => c.id), `${userId} ${type} "${text}"`).toEqual(page.results.map((r) => r.id));
         }
       }
     }
     const ada = (await act("canvas.cards.search", { type: "card-contact", q: "Ada" }, "admin")).cards;
-    expect(ada.map((c: { id: string }) => c.id)).toEqual(["ada"]);
+    expect(ada.map((c) => c.id)).toEqual(["ada"]);
     expect(ada[0]).toMatchObject({ title: "Ada Lovelace", subtitle: "ada@acme.co.za", href: "/crm?client=contact%3Aada", meta: [{ label: "Company", value: "Acme Plumbing, Initech Acme" }] });
   });
 
   it("listLinks: related gives only visible records of this company's links, and nothing for an `of` the person cannot see", async () => {
     const related = async (userId: string, type: string, id: string) =>
-      ((await act("canvas.cards.related", { of: { plugin: "partnersinbiz.crm", type, id } }, userId)).groups as Array<{ relation: string; cards: Array<{ id: string }> }>)
+      (await act("canvas.cards.related", { of: { plugin: "partnersinbiz.crm", type, id } }, userId)).groups
         .map((g) => ({ relation: g.relation, ids: g.cards.map((c) => c.id) }));
     expect(await related("admin", "card-company", "acme")).toEqual([{ relation: "contact", ids: ["ada", "grace"] }]);
     expect(await related("ann", "card-company", "acme")).toEqual([{ relation: "contact", ids: ["ada"] }]);

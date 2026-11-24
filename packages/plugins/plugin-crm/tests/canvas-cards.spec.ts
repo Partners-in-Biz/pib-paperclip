@@ -56,7 +56,7 @@ async function crm(mode?: "enforce") {
   booted.harness.seed({ accessMembers: [member(ADMIN, "admin"), member(ANN, "member"), member(BOB, "member"), member(REFUSED, "member")] });
   if (mode) await booted.harness.ctx.state.set(accessCompanyScope(CO), { mode, rev: 1, userIds: [], receivedAt: at });
   const as = (userId: string) => ({ companyId: CO, actor: { type: "user" as const, userId, onBehalfOfUserId: userId, onBehalfOfRestricted: false } });
-  const act = <T = any>(key: string, params: Record<string, unknown>, userId: string) => booted.harness.performAction<T>(key, params, as(userId));
+  const act = <T = unknown>(key: string, params: Record<string, unknown>, userId: string) => booted.harness.performAction<T>(key, params, as(userId));
   return { ...booted, act };
 }
 
