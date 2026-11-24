@@ -315,6 +315,7 @@ import {
   MEMBER_AGENT_NOT_LISTED_ROUTE_MESSAGE,
   restrictedAgentIdsForActor,
   restrictedAgentView,
+  restrictedRunPersonForActor,
   runWorksForRestrictedCaller,
 } from "../services/member-restriction/agent-read.js";
 import {
@@ -8035,6 +8036,13 @@ export function agentRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
+    // PAR-12608 4.6, AC-G5 (PAR-14342): a caller bound by a restricted person
+    // sees only the live runs on this task that work for him.
+    const workingFor = await restrictedRunPersonForActor(db, req.actor, issue.companyId);
+    if (workingFor === false) {
+      res.json([]);
+      return;
+    }
 
     const liveRuns = await db
       .select({
@@ -8073,6 +8081,7 @@ export function agentRoutes(
           eq(heartbeatRuns.companyId, issue.companyId),
           inArray(heartbeatRuns.status, ["queued", "running"]),
           eq(heartbeatRuns.issueId, issue.id),
+          ...(workingFor ? [eq(heartbeatRuns.responsibleUserId, workingFor)] : []),
         ),
       )
       .orderBy(desc(heartbeatRuns.createdAt));

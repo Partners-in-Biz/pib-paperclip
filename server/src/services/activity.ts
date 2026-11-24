@@ -451,7 +451,15 @@ export function activityService(db: Db) {
       return limit === undefined ? query : query.limit(limit);
     },
 
-    runsForIssue: async (companyId: string, issueId: string, viewerUserId: string | null = null, limit?: number, selectedRunIds?: string[]) => {
+    runsForIssue: async (
+      companyId: string,
+      issueId: string,
+      viewerUserId: string | null = null,
+      limit?: number,
+      selectedRunIds?: string[],
+      /** PAR-14342: only runs that work for this person (`responsible_user_id`), for a restricted caller. */
+      workingForUserId?: string,
+    ) => {
       if (selectedRunIds && !selectedRunIds.length) return [];
       scheduleRunLivenessBackfill(companyId, issueId);
       const runsQuery = db
@@ -508,6 +516,7 @@ export function activityService(db: Db) {
               or coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.issueId}::text,
                 ${heartbeatRuns.contextSnapshot} ->> 'issueId', ${heartbeatRuns.contextSnapshot} ->> 'taskId') = ${issueId})`,
             ...(selectedRunIds ? [inArray(heartbeatRuns.id, selectedRunIds)] : []),
+            ...(workingForUserId ? [eq(heartbeatRuns.responsibleUserId, workingForUserId)] : []),
             or(
               eq(heartbeatRuns.issueId, issueId),
               sql`exists (
