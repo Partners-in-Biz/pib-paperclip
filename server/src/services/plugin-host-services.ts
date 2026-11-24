@@ -85,6 +85,7 @@ import { isIP } from "node:net";
 import { logger } from "../middleware/logger.js";
 import { pluginActingPersonBoundByH } from "./member-restriction/acting-person.js";
 import { recordMemberRestrictionDenial } from "./member-restriction/admin.js";
+import { restrictedPluginTaskBody } from "./member-restriction/body-allowlist.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { accessService } from "./access.js";
 import { markForNewInvite, withoutInviteMemberRestriction } from "./member-restriction/invite.js";
@@ -2182,6 +2183,12 @@ export function buildHostServices(
           actorUserId = acting.personId;
           (issueInput as Record<string, unknown>).responsibleUserId = acting.personId;
         }
+        // PAR-13309 (C4i-b2): the task body guard for a restricted acting person, before the first write.
+        // The host's own keys are not body keys.
+        const { companyId: _company, actorUserId: _actor, originId: _originId, originRunId: _originRunId, ...taskBody } =
+          issueInput as Record<string, unknown>;
+        Object.assign(issueInput, await restrictedPluginTaskBody(db, actingPersonId, companyId, "createIssue", taskBody,
+          null, `plugin:${pluginKey}:issues.create`));
         const normalizedOriginKind = normalizePluginOriginKind(
           surfaceVisibility === "plugin_operation" && !originKind
             ? pluginOperationIssueOriginKind(pluginKey)
@@ -2254,6 +2261,10 @@ export function buildHostServices(
         delete patch.actorAgentId;
         delete patch.actorUserId;
         delete patch.actorRunId;
+        // PAR-13309 (C4i-b2): the same guard as `PATCH /api/issues/:id`; `originKind` is the host's own key.
+        const { originKind: _originKind, ...taskPatch } = patch;
+        Object.assign(patch, await restrictedPluginTaskBody(db, actingPersonId, companyId, "updateIssue", taskPatch,
+          existing, `plugin:${pluginKey}:issues.update`, params.issueId));
         if (patch.originKind !== undefined) {
           patch.originKind = normalizePluginOriginKind(patch.originKind);
         }
