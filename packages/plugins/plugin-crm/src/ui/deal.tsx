@@ -4,7 +4,8 @@
  * move it, log a note, and draft its quote in Billing.
  */
 import { useEffect, useState, type FormEvent } from "react";
-import { useHostNavigation, usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import { useHostNavigation } from "@paperclipai/plugin-sdk/ui";
+import { useCrmAction } from "./actions.js";
 import {
   Button,
   Field,
@@ -65,9 +66,9 @@ export function DealSheet({ deal, stages, companies, contacts, billing, onClose,
 }) {
   const navigation = useHostNavigation();
   const narrow = useIsNarrow();
-  const updateDeal = usePluginAction("crm.update-deal");
-  const logActivity = usePluginAction("crm.log-activity");
-  const loadActivities = usePluginAction("crm.activities");
+  const updateDeal = useCrmAction("crm.update-deal");
+  const logActivity = useCrmAction("crm.log-activity");
+  const loadActivities = useCrmAction("crm.activities");
 
   const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
