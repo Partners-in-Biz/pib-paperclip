@@ -56,6 +56,7 @@ const TASK_LIST_TEST = "server/src/__tests__/member-restriction-task-list-caller
 const INSTANCE_TEST = "server/src/__tests__/member-restriction-route-table-instance.test.ts";
 const AGENT_PAGES_TEST = "server/src/__tests__/member-restriction-route-table-agent-pages.test.ts";
 const PLANNING_CANVAS_TEST = "server/src/__tests__/planning-canvas-access-routes.test.ts";
+const TASK_HISTORY_TEST = "server/src/__tests__/member-restriction-route-table-task-history.test.ts";
 
 export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntry[] = [
   // C4b-1a (PAR-12730): the task routes of `routes/issues.ts`. Comments,
@@ -79,6 +80,18 @@ export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntr
   { method: "GET", path: "/api/issues/:id/runner-goal", class: "run", test: TASKS_TEST },
   { method: "POST", path: "/api/issues/:id/checkout", class: "run", test: TASKS_TEST },
   { method: "POST", path: "/api/issues/:id/release", class: "run", test: TASKS_TEST },
+  // PAR-14342: the history of a task he can read (4.6 "task activity"). The
+  // two run lists hold only the runs that work for him (4.6 "One run's
+  // detail", AC-G5); company-wide run lists stay closed.
+  { method: "GET", path: "/api/issues/:id/activity", class: "open", test: TASK_HISTORY_TEST },
+  { method: "GET", path: "/api/issues/:id/runs", class: "open", test: TASK_HISTORY_TEST },
+  { method: "GET", path: "/api/issues/:issueId/live-runs", class: "open", test: TASK_HISTORY_TEST },
+  // Closed on purpose (PAR-14342): the session context reading and compaction
+  // (agent runtime state), task browsers (browser tools) and the email thread
+  // (email) are out of scope for him (section 2); the task page skips them.
+  { method: "GET", path: "/api/issues/:id/context-usage", class: "closed" },
+  { method: "GET", path: "/api/issues/:issueId/browsers", class: "closed" },
+  { method: "GET", path: "/api/companies/:companyId/email/tasks/:issueId", class: "closed" },
   // Closed on purpose: company set-up (labels), operator tools (recovery,
   // diagnostics, watchdog, monitors, retries, review decisions, low-trust
   // promotions, plan decompositions), sharing (grants, privacy constraints),
