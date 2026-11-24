@@ -23,6 +23,19 @@ export function ChatPanel({ c }: { c: CanvasController }) {
   const [open, setOpen] = useState(false);
   const [agentId, setAgentId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
+  // Context chips (PAR-14278): keys of the nodes or the frame the ask is about.
+  const [itemKeys, setItemKeys] = useState<string[]>([]);
+  const [frameKey, setFrameKey] = useState<string | null>(null);
+  const { chatAsk, nodeById } = c;
+  useEffect(() => {
+    if (!chatAsk) return;
+    setOpen(true);
+    setItemKeys(chatAsk.itemKeys);
+    setFrameKey(chatAsk.frameKey ?? null);
+  }, [chatAsk]);
+  // Drop chips whose node was deleted so a send never carries a stale key.
+  const liveItemKeys = itemKeys.filter((k) => nodeById.has(k));
+  const liveFrameKey = frameKey && nodeById.has(frameKey) ? frameKey : null;
   const chat = useBoardChat(selectedCompanyId ?? null, activeBoard?.id, agentId, open);
   const list = useRef<HTMLDivElement>(null);
   const lastId = chat.comments[chat.comments.length - 1]?.id;
@@ -57,7 +70,12 @@ export function ChatPanel({ c }: { c: CanvasController }) {
   const writable = canWrite(activeBoard);
   const submit = async () => {
     if (!draft.trim()) return;
-    if (await chat.send(draft)) setDraft("");
+    const context = liveFrameKey ? { itemKeys: [], frameKey: liveFrameKey } : liveItemKeys.length > 0 ? { itemKeys: liveItemKeys } : undefined;
+    if (await chat.send(draft, context)) {
+      setDraft("");
+      setItemKeys([]);
+      setFrameKey(null);
+    }
   };
 
   return (
@@ -136,6 +154,16 @@ export function ChatPanel({ c }: { c: CanvasController }) {
             void submit();
           }}
         >
+          {liveItemKeys.length > 0 || liveFrameKey ? (
+            <ul aria-label="Context" data-testid="canvas-chat-chips" className="flex min-w-0 flex-wrap gap-1">
+              {liveFrameKey ? (
+                <Chip label={`Frame: ${chipLabel(nodeById.get(liveFrameKey))}`} onRemove={() => setFrameKey(null)} />
+              ) : null}
+              {liveItemKeys.map((k) => (
+                <Chip key={k} label={chipLabel(nodeById.get(k))} onRemove={() => setItemKeys((p) => p.filter((x) => x !== k))} />
+              ))}
+            </ul>
+          ) : null}
           <textarea
             aria-label="Message"
             value={draft}
@@ -166,5 +194,20 @@ export function ChatPanel({ c }: { c: CanvasController }) {
         </p>
       )}
     </aside>
+  );
+}
+
+function chipLabel(node: { title?: string | null; kind: string } | undefined): string {
+  return node?.title?.trim() || node?.kind || "Item";
+}
+
+function Chip({ label, onRemove }: { label: string; onRemove: () => void }) {
+  return (
+    <li data-testid="canvas-chat-chip" className="flex min-w-0 max-w-full items-center gap-1 rounded-full border border-border bg-muted px-2 py-0.5 text-xs">
+      <span className="min-w-0 truncate">{label}</span>
+      <button type="button" aria-label={`Remove ${label}`} className="shrink-0 text-muted-foreground hover:text-foreground" onClick={onRemove}>
+        <X className="size-3" />
+      </button>
+    </li>
   );
 }

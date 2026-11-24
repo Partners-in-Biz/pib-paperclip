@@ -10,6 +10,9 @@ import { useSessionUserId } from "@/components/planning-canvas/panels/sharing/us
 const THREAD_ORIGIN_KIND = "planning_canvas";
 const POLL_MS = 4000;
 
+/** Keys only, never node text: the server checks them against the board. */
+export type ChatContext = { itemKeys: string[]; frameKey?: string };
+
 export type ChatNotice = { kind: "off" | "rate_limited" | "error"; message: string };
 
 function noticeFor(err: unknown): ChatNotice {
@@ -65,19 +68,24 @@ export function useBoardChat(companyId: string | null, boardId: string | undefin
   const liveRun = runs.data?.find((r) => r.status === "running" || r.status === "queued") ?? null;
 
   const mutation = useMutation({
-    mutationFn: (body: string) =>
-      planningCanvasesApi.sendChat(companyId!, boardId!, { agentId: agentId!, body, clientRequestId: requestId.current! }),
+    mutationFn: ({ body, context }: { body: string; context?: ChatContext }) =>
+      planningCanvasesApi.sendChat(companyId!, boardId!, {
+        agentId: agentId!,
+        body,
+        ...(context ? { context } : {}),
+        clientRequestId: requestId.current!,
+      }),
   });
 
   const send = useCallback(
-    async (body: string): Promise<boolean> => {
+    async (body: string, context?: ChatContext): Promise<boolean> => {
       const text = body.trim();
       if (!text || !companyId || !boardId || !agentId || off || inFlight.current) return false;
       inFlight.current = true;
       requestId.current ??= crypto.randomUUID();
       setNotice(null);
       try {
-        const result: PlanningCanvasChatMessageResult = await mutation.mutateAsync(text);
+        const result: PlanningCanvasChatMessageResult = await mutation.mutateAsync({ body: text, context });
         requestId.current = null;
         setSentThread({ agentId, issueId: result.threadIssueId });
         void client.invalidateQueries({ queryKey: ["planning-canvas-chat", companyId, boardId, agentId] });

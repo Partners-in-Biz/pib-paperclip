@@ -16,10 +16,17 @@ vi.mock("@/components/MarkdownBody", () => ({ MarkdownBody: ({ children }: { chi
 import { ChatPanel } from "./ChatPanel";
 
 const agents = [{ id: "a1", name: "Ada", status: "idle" }];
-function controller(memberAccess: string): CanvasController {
+const nodeById = new Map([
+  ["n1", { id: "n1", kind: "sticky", title: "Secret sticky text" }],
+  ["n2", { id: "n2", kind: "sticky", title: "Second" }],
+  ["f1", { id: "f1", kind: "frame", title: "Frame one" }],
+]);
+function controller(memberAccess: string, chatAsk: unknown = null): CanvasController {
   return {
     selectedCompanyId: "c1",
     agents,
+    nodeById,
+    chatAsk,
     activeBoard: { id: "b1", scope: "project", memberAccess },
   } as unknown as CanvasController;
 }
@@ -32,12 +39,13 @@ beforeEach(() => {
 });
 afterEach(() => { act(() => root.unmount()); container.remove(); });
 
-async function mount(access: string) {
+async function mount(access: string, chatAsk: unknown = null) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   await act(async () => {
-    root.render(<QueryClientProvider client={client}><ChatPanel c={controller(access)} /></QueryClientProvider>);
+    root.render(<QueryClientProvider client={client}><ChatPanel c={controller(access, chatAsk)} /></QueryClientProvider>);
   });
-  await act(async () => { (container.querySelector('[data-testid="canvas-chat-open"]') as HTMLElement).click(); });
+  const openBtn = container.querySelector('[data-testid="canvas-chat-open"]') as HTMLElement | null;
+  if (openBtn) await act(async () => { openBtn.click(); });
 }
 async function pickAndType(text: string) {
   const select = container.querySelector("select")!;
@@ -102,5 +110,35 @@ describe("ChatPanel", () => {
     await act(async () => { sendButton().click(); });
     expect(sendChat).toHaveBeenCalledTimes(2);
     expect(sendChat.mock.calls[1]![2].clientRequestId).toBe(first);
+  });
+
+  it("shows selected nodes as chips, removing one drops its key, and the payload has keys only", async () => {
+    sendChat.mockResolvedValue({ threadIssueId: "t1", threadIdentifier: "PAR-1", commentId: "m1", thread: "created", repeat: false });
+    await mount("edit", { itemKeys: ["n1", "n2"], seq: 1 });
+    expect(container.querySelectorAll('[data-testid="canvas-chat-chip"]')).toHaveLength(2);
+    await act(async () => { (container.querySelector('button[aria-label="Remove Second"]') as HTMLElement).click(); });
+    expect(container.querySelectorAll('[data-testid="canvas-chat-chip"]')).toHaveLength(1);
+    await pickAndType("what is this?");
+    await act(async () => { sendButton().click(); });
+    const payload = sendChat.mock.calls[0]![2];
+    expect(payload.context).toEqual({ itemKeys: ["n1"] });
+    expect(JSON.stringify(payload)).not.toContain("Secret sticky text");
+  });
+
+  it("a frame ask sends frameKey", async () => {
+    sendChat.mockResolvedValue({ threadIssueId: "t1", threadIdentifier: "PAR-1", commentId: "m1", thread: "created", repeat: false });
+    await mount("edit", { itemKeys: [], frameKey: "f1", seq: 1 });
+    expect(container.querySelector('[data-testid="canvas-chat-chip"]')?.textContent).toContain("Frame: Frame one");
+    await pickAndType("summarise");
+    await act(async () => { sendButton().click(); });
+    expect(sendChat.mock.calls[0]![2].context).toEqual({ itemKeys: [], frameKey: "f1" });
+  });
+
+  it("sends no context when there are no chips", async () => {
+    sendChat.mockResolvedValue({ threadIssueId: "t1", threadIdentifier: "PAR-1", commentId: "m1", thread: "created", repeat: false });
+    await mount("edit");
+    await pickAndType("hi");
+    await act(async () => { sendButton().click(); });
+    expect(sendChat.mock.calls[0]![2].context).toBeUndefined();
   });
 });

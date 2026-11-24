@@ -1,11 +1,11 @@
 import { useEffect, useRef } from "react";
-import { Copy, Pencil, Trash2 } from "lucide-react";
+import { Copy, MessageSquareText, Pencil, Trash2 } from "lucide-react";
 import { type CanvasController } from "@/components/planning-canvas/state/useCanvasController";
 import { cn } from "@/lib/utils";
 
 /** Right-click on a node, or long-press on touch (C19). Same actions as the keys. */
 export function CanvasContextMenu({ c }: { c: CanvasController }) {
-  const { contextMenu, setContextMenu, nodeById, setEditingNodeId, duplicateSelection, deleteSelection } = c;
+  const { contextMenu, setContextMenu, nodeById, setEditingNodeId, duplicateSelection, deleteSelection, selectedNodeIds, setChatAsk } = c;
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!contextMenu) return;
@@ -24,7 +24,7 @@ export function CanvasContextMenu({ c }: { c: CanvasController }) {
   }, [contextMenu, setContextMenu]);
   const node = contextMenu ? nodeById.get(contextMenu.nodeId) : null;
   if (!contextMenu || !node) return null;
-  const left = Math.max(8, Math.min(contextMenu.x, window.innerWidth - 168));
+  const left = Math.max(8, Math.min(contextMenu.x, window.innerWidth - 200));
   const top = Math.max(8, Math.min(contextMenu.y, window.innerHeight - 140));
   const item = "flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm text-foreground outline-none hover:bg-accent focus-visible:bg-accent";
   const run = (fn: () => void) => () => {
@@ -38,7 +38,7 @@ export function CanvasContextMenu({ c }: { c: CanvasController }) {
       aria-label="Node actions"
       data-testid="planning-canvas-context-menu"
       style={{ left, top }}
-      className="pointer-events-auto fixed z-50 w-40 rounded-xl border border-border bg-popover p-1 shadow-lg"
+      className="pointer-events-auto fixed z-50 w-48 rounded-xl border border-border bg-popover p-1 shadow-lg"
     >
       {node.kind !== "note" ? (
         <button type="button" role="menuitem" className={item} onClick={run(() => setEditingNodeId(node.id))}>
@@ -47,6 +47,20 @@ export function CanvasContextMenu({ c }: { c: CanvasController }) {
       ) : null}
       <button type="button" role="menuitem" className={item} onClick={run(duplicateSelection)}>
         <Copy className="size-4" /> Duplicate
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        className={item}
+        onClick={run(() =>
+          setChatAsk((p) => {
+            const seq = (p?.seq ?? 0) + 1;
+            if (node.kind === "frame") return { itemKeys: [], frameKey: node.id, seq };
+            return { itemKeys: selectedNodeIds.includes(node.id) ? [...selectedNodeIds] : [node.id], seq };
+          }),
+        )}
+      >
+        <MessageSquareText className="size-4" /> {node.kind === "frame" ? "Ask about this frame" : "Ask about selection"}
       </button>
       <button type="button" role="menuitem" className={cn(item, "text-destructive")} onClick={run(deleteSelection)}>
         <Trash2 className="size-4" /> Delete
