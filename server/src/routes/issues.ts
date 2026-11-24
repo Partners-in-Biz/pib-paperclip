@@ -1,6 +1,6 @@
 import { confirmMcpAttachmentCleanup, recordMcpAttachmentCleanup, type McpAttachmentCleanup } from "../services/public-mcp/upload-cleanup.js";
 import { SYSTEM_CAUSING_ACTOR, wakeCausingActorFromActor, wakeCausingActorFromActorRef } from "../services/heartbeat/causing-actor.js";
-import { assertNamesOnlyHimself } from "../services/member-restriction/acting-person.js";
+import { actingPersonBoundByH, assertNamesOnlyHimself } from "../services/member-restriction/acting-person.js";
 import { refusedOnlyByMemberRestriction } from "../services/member-restriction/action-list.js";
 import { restrictedTaskBody } from "../services/member-restriction/body-allowlist.js";
 import { assertCanAssignTasks as assertCanAssignTasksFor, type TaskAssignmentAuthorizationScope } from "./task-assignment-guard.js";
@@ -3519,6 +3519,11 @@ function logIssueListRequest(input: {
     );
   });
 }
+
+/** Update fields that can wake an agent (assignee, status, parent, person, comment, blockers). */
+const ISSUE_UPDATE_WAKE_FIELDS = [
+  "assigneeAgentId", "assigneeUserId", "status", "parentId", "responsibleUserId", "comment", "blockedByIssueIds",
+] as const;
 
 export function issueRoutes(
   db: Db,
@@ -15600,6 +15605,15 @@ export function issueRoutes(
             assigneeUserId: nextAssigneeUserId,
           });
         }
+      }
+
+      // H1 (PAR-14378): the wakes of this update run for the person who caused
+      // them. Read rule H before anything is written, so a failed read answers
+      // 503 `MEMBER_RESTRICTION_UNAVAILABLE` with the task unchanged instead of
+      // a saved update whose wake then fails. Reads nothing for the local
+      // board, instance admins, owners, admins or under the kill switch.
+      if (ISSUE_UPDATE_WAKE_FIELDS.some((field) => req.body[field] !== undefined)) {
+        await actingPersonBoundByH(db, req.actor, existing.companyId);
       }
 
       // Only this request may finish a mutation that intentionally stops its
