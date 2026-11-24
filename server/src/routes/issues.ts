@@ -3539,6 +3539,8 @@ export function issueRoutes(
       agentId: string,
       options: Parameters<ReturnType<typeof heartbeatService>["wakeup"]>[1],
     ) => ReturnType<ReturnType<typeof heartbeatService>["wakeup"]>;
+    /** Test seam: the wake a context compaction request queues (default heartbeat.wakeup). */
+    contextCompactionWakeup?: NonNullable<Parameters<typeof contextCompactionService>[1]>["wakeup"];
     issueListDiagnostics?: IssueListDiagnostics;
     declineToolActionRequest?: (input: {
       companyId: string;
@@ -3643,7 +3645,7 @@ export function issueRoutes(
       deliverNativeQuestionResponse(db, interaction),
   });
   const contextCompaction = contextCompactionService(db, {
-    wakeup: (agentId, options) => heartbeat.wakeup(agentId, options),
+    wakeup: opts.contextCompactionWakeup ?? ((agentId, options) => heartbeat.wakeup(agentId, options)),
   });
   const runnerGoals = runnerGoalService(db, {
     enqueueOfflineControl: async ({ issueId, agentId, requestId, control, causingActor }) => {
@@ -9631,6 +9633,8 @@ export function issueRoutes(
       "Issue not found",
     );
     if (!issue) return;
+    // AC-G3: a caller who cannot read the task gets 404 and nothing starts.
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const decision = await decideIssueAccess(req, issue, "issue:mutate");
     if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
     // An Agent Chat run starts only for the conversation's owner.
@@ -14704,6 +14708,11 @@ export function issueRoutes(
         await denyIssueWrite(req, res, existing, issueWriteDenialCodeForDecision(decision));
         return;
       }
+    } else {
+      // AC-G3: a board caller who cannot read the task gets 404, then the write decision.
+      if (!(await assertIssueReadAllowed(req, res, existing))) return;
+      const decision = await decideIssueAccess(req, existing, "issue:mutate");
+      if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
     }
     const actor = getActorInfo(req);
     const { result, publication } = await db.transaction(tx => setIssueTitle(
