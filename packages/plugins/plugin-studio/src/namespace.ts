@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
-import { PLUGIN_ID } from "./plugin-key.js";
 
-export { PLUGIN_ID, STUDIO_MEDIA_CARD } from "./plugin-key.js";
+export const PLUGIN_ID = "partnersinbiz.studio";
 export const NAMESPACE_SLUG = "studio";
+export { STUDIO_MEDIA_CARD } from "./plugin-key.js";
 
 export function pluginNamespace(pluginId = PLUGIN_ID, slug = NAMESPACE_SLUG): string {
   const hash = createHash("sha256").update(pluginId).digest("hex").slice(0, 10);

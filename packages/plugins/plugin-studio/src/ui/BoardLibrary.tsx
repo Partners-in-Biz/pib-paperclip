@@ -6,7 +6,7 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import type { PluginCanvasPanelProps } from "@paperclipai/plugin-sdk/ui";
 import { errorText, tokens } from "@partnersinbiz/pib-plugin-ui";
-import { STUDIO_MEDIA_CARD, PLUGIN_ID } from "../plugin-key.js";
+import { STUDIO_MEDIA_CARD, STUDIO_PLUGIN_KEY } from "../plugin-key.js";
 import { useStudioAction } from "./action.js";
 import { BoardCardView } from "./BoardCard.js";
 import { boardSigner, embedNodeOp, libraryLoadFromError, placeAt, RESIGN_MARGIN_MS, SIGNED_FOR_MS, type BoardLibraryItem, type BoardLibraryReply, type CardState, type LibraryLoad } from "./board-sign.js";
@@ -107,7 +107,7 @@ function StudioBoardLibraryBody(props: PluginCanvasPanelProps) {
     (item: BoardLibraryItem) => {
       setPlacing(item.id);
       setMessage(null);
-      const op = embedNodeOp({ pluginKey: PLUGIN_ID, type: STUDIO_MEDIA_CARD, assetId: item.id, name: item.name, kind: item.kind, at: placeAt(placed.current) });
+      const op = embedNodeOp({ pluginKey: STUDIO_PLUGIN_KEY, type: STUDIO_MEDIA_CARD, assetId: item.id, name: item.name, kind: item.kind, at: placeAt(placed.current) });
       props
         .applyOps([op])
         .then((out) => {

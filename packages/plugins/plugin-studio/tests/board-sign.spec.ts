@@ -5,6 +5,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { AccessRefused } from "@partnersinbiz/pib-plugin-ui";
 import { BATCH_MS, BoardSigner, cardStateFromError, cardStatesFromReply, embedNodeOp, libraryLoadFromError, MAX_BATCH, nextCheckIn, placeAt, RESIGN_MARGIN_MS, RETRY_MS, REUSE_MS, SIGNED_FOR_MS } from "../src/ui/board-sign.js";
+import { PLUGIN_ID } from "../src/namespace.js";
+import { STUDIO_PLUGIN_KEY } from "../src/plugin-key.js";
+import manifest from "../src/manifest.js";
 
 /** A clock the test moves by hand; scheduled work runs when it is due. */
 function fakeClock() {
@@ -137,6 +140,13 @@ describe("board signer (PAR-14280)", () => {
     expect(libraryLoadFromError(new AccessRefused("off", "board_cards_off"))).toEqual({ status: "off" });
     expect(libraryLoadFromError(new AccessRefused("no", "PERMISSION_DENIED"))).toEqual({ status: "error", message: "Studio isn't open to you in this company." });
     expect(libraryLoadFromError(new Error("boom"))).toMatchObject({ status: "error", message: expect.stringContaining("boom") });
+  });
+
+  it("the browser's plugin key is Studio's plugin id, and the card's slot is in the manifest", () => {
+    expect(STUDIO_PLUGIN_KEY).toBe(PLUGIN_ID);
+    expect(manifest.id).toBe(PLUGIN_ID);
+    expect(manifest.ui?.slots?.find((s) => s.type === "canvasNode")).toMatchObject({ id: "studio-media", exportName: "StudioCanvasCard" });
+    expect(manifest.ui?.slots?.find((s) => s.type === "canvasPanel")).toMatchObject({ exportName: "StudioBoardLibrary" });
   });
 
   it("places a Studio file as an embed node core accepts: plugin key, slot id, asset id, flat props", () => {
