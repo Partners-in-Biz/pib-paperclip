@@ -1361,3 +1361,7 @@ export const StudioPage = withStudioAccess(StudioPageBody, "page");
 export const StudioCanvasPage = withStudioAccess(CanvasPageBody, "page");
 export const StudioEditorPage = withStudioAccess(EditorPageBody, "page");
 export const StudioSidebar = withStudioAccess(StudioSidebarBody, "sidebar");
+// Planning Canvas slots (PAR-14280). Not page-gated: the worker's guard refuses a person without Studio, and the card
+// and panel show their placeholder for it.
+export { StudioCanvasCard } from "./BoardCard.js";
+export { StudioBoardLibrary } from "./BoardLibrary.js";
