@@ -84,6 +84,9 @@ export class StudioConfig {
   constructor(ctx: PluginContext, companyId: string) {
     this.raw = read(ctx, companyId);
     this.secrets = this.raw.then((raw) => new SecretResolver(ctx, companyId, raw));
+    // A failed settings read rejects both; a caller that reads only `raw` (boardCardsOn) must not leave `secrets` as
+    // an unhandled rejection. Callers that await `secrets` still get the error.
+    this.secrets.catch(() => undefined);
   }
 
   async bucket(): Promise<PrivateBucket> {
