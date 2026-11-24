@@ -109,6 +109,9 @@ describe("CRM pages behind the gate (4.6, PAR-12680)", () => {
     const slots = manifest.ui?.slots ?? [];
     expect(slots.length).toBeGreaterThan(0);
     for (const slot of slots) {
+      // A canvas card has no page gate: the worker answers `canvas.cards.*` per record and the card draws any refusal as
+      // "No access" (tests/canvas-cards.spec.ts).
+      if (slot.type === "canvasNode") continue;
       const kind = slot.type === "sidebar" ? "sidebar" : slot.type === "page" ? "page" : "widget";
       // A page is `withHelp(<Name>Main)` (the help contract); the gate is the first thing that function renders.
       const name = slot.type === "page" ? `${slot.exportName}Main` : slot.exportName;
