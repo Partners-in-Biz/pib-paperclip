@@ -1,8 +1,6 @@
 import {
   definePlugin,
   runWorker,
-  type PluginApiRequestInput,
-  type PluginApiResponse,
   type PluginContext,
   type PluginEvent,
   type PluginPerformActionContext,
@@ -12,6 +10,7 @@ import {
 import {
   COCKPIT_ROUTE,
   configSaved,
+  createAccessGuard,
   createSkillSyncer,
   decisionConfig,
   decisionStats,
@@ -37,7 +36,10 @@ import {
   toolOk,
   trackJob,
   unlinkAgent,
+  SETUP_STATUS_ROUTE,
+  type AccessGuard,
 } from "@partnersinbiz/pib-plugin-kit";
+import { ACCOUNTING_ACCESS_TABLE } from "./access-table.js";
 import { cockpitSnapshot, publishCockpitThrottled, recordChainCheck } from "./service/cockpit.js";
 import { acceptMany, acceptOne, listBankLinesTool, requestedAccountCode } from "./service/compact.js";
 import { registerAccountingErasure } from "./service/privacy.js";
@@ -103,6 +105,7 @@ import { vatPeriodFor } from "./domain/periods.js";
 
 let pluginCtx: PluginContext | null = null;
 let skillSync: ReturnType<typeof createSkillSyncer> | null = null;
+let guard: AccessGuard | null = null;
 
 const syncSkills = (companyId: string) => skillSync?.force(companyId) ?? Promise.resolve([]);
 
@@ -709,13 +712,13 @@ async function monthEndJob(ctx: PluginContext) {
 // API routes
 // ---------------------------------------------------------------------------
 
-export async function handleApiRequest(ctx: PluginContext, input: PluginApiRequestInput): Promise<PluginApiResponse> {
-  if (input.routeKey === "setup-status") return { status: 200, body: await setupStatus(ctx, input.companyId) };
-  if (input.routeKey === COCKPIT_ROUTE.routeKey) {
+/** Each route through the access guard (`api:<routeKey>` in `./access-table.ts`); an unknown key answers 404. */
+function registerApiRoutes(ctx: PluginContext, g: AccessGuard) {
+  g.apiRoute(SETUP_STATUS_ROUTE.routeKey, async (input) => ({ status: 200, body: await setupStatus(ctx, input.companyId) }));
+  g.apiRoute(COCKPIT_ROUTE.routeKey, async (input) => {
     if (!input.companyId) return { status: 400, body: { error: "companyId is required" } };
     return { status: 200, body: await cockpitSnapshot(ctx, input.companyId) };
-  }
-  return { status: 404, body: { error: "Not found" } };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -726,9 +729,13 @@ const plugin = definePlugin({
   async setup(ctx) {
     pluginCtx = ctx;
     skillSync = createSkillSyncer(ctx, SKILLS);
+    // Actions, tools and API routes go through the access guard (spec PAR-12578 4.4); with the switch off it passes every call.
+    const g = createAccessGuard(ctx, { pluginKey: PLUGIN_ID, table: ACCOUNTING_ACCESS_TABLE });
+    guard = g;
 
-    for (const tool of ACCOUNTING_TOOLS) ctx.tools.register(tool.name, tool, (params, run) => runTool(ctx, tool.name, params, run));
-    for (const [key, handler] of Object.entries(ACTIONS)) ctx.actions.register(key, (params, context) => runAction(ctx, key, handler, params, context));
+    for (const tool of ACCOUNTING_TOOLS) g.tool(tool.name, tool, (params, run) => runTool(ctx, tool.name, params, run));
+    for (const [key, handler] of Object.entries(ACTIONS)) g.action(key, (params, context) => runAction(ctx, key, handler, params, context));
+    registerApiRoutes(ctx, g);
 
     for (const sender of LEDGER_SOURCES) {
       ctx.events.on(pluginEvent(sender, LEDGER_EVENTS.postRequested), safely(ctx, "Ledger posting", (e) => receivePostRequest(ctx, e.companyId, e.eventType, e.payload)));
@@ -780,8 +787,8 @@ const plugin = definePlugin({
     return { status: "ok", message: "Accounting plugin ready" };
   },
   async onApiRequest(input) {
-    if (!pluginCtx) return { status: 503, body: { error: "Accounting plugin is not ready" } };
-    return handleApiRequest(pluginCtx, input);
+    if (!pluginCtx || !guard) return { status: 503, body: { error: "Accounting plugin is not ready" } };
+    return guard.handleApiRequest(input);
   },
   async onConfigChanged(_config, context) {
     const companyId = context?.companyId;
