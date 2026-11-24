@@ -1547,6 +1547,8 @@ export function pluginRoutes(
 
     const companyId = assertPluginBridgeScope(req, body.companyId);
     await assertPluginOpenForPerson(req, companyId, plugin, "bridge/data");
+    // PAR-14297: a failed restriction read throws 503 here, so the worker is never called.
+    const actorContext = await actingPerson(req, companyId);
 
     try {
       const result = await bridgeDeps.workerManager.call(
@@ -1556,6 +1558,7 @@ export function pluginRoutes(
           key: body.key,
           ...(companyId ? { companyId } : {}),
           params: body.params ?? {},
+          actorContext,
           renderEnvironment: body.renderEnvironment ?? null,
         },
       );
@@ -1737,6 +1740,8 @@ export function pluginRoutes(
 
     const companyId = assertPluginBridgeScope(req, body?.companyId);
     await assertPluginOpenForPerson(req, companyId, plugin, "data");
+    // PAR-14297: a failed restriction read throws 503 here, so the worker is never called.
+    const actorContext = await actingPerson(req, companyId);
 
     try {
       const result = await bridgeDeps.workerManager.call(
@@ -1746,6 +1751,7 @@ export function pluginRoutes(
           key,
           ...(companyId ? { companyId } : {}),
           params: body?.params ?? {},
+          actorContext,
           renderEnvironment: body?.renderEnvironment ?? null,
         },
       );

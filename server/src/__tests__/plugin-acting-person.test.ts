@@ -10,6 +10,7 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 // hand the plugin `onBehalfOfUserId` (the run's, the key's or the connection's
 // person; null for the local board) and `onBehalfOfRestricted` (true only for a
 // flagged person in an `enforce` company). A failed read answers 503, no call.
+// PAR-14297: the two getData routes (board-only) carry the same mark.
 
 const failReads = vi.hoisted(() => ({ on: false }));
 const mockRegistry = vi.hoisted(() => ({ getById: vi.fn(), getByKey: vi.fn() }));
@@ -136,8 +137,10 @@ describe("plugin acting person database support", () => {
     return server;
   }
 
-  type Entry = "action" | "api" | "tool";
+  type Entry = "action" | "api" | "tool" | "bridgeData" | "data";
   const ENTRIES: Entry[] = ["action", "api", "tool"];
+  /** The getData routes (PAR-14297): board-only, so only a signed-in user or the local board reaches them. */
+  const DATA_ENTRIES = ["bridgeData", "data"] as const;
 
   /** Calls one entry point; returns the response and what the plugin received as its caller. */
   async function callEntry(entry: Entry, f: Fixture, headers: Record<string, string>, options: Parameters<typeof app>[0] = {}, runId?: string) {
@@ -151,6 +154,16 @@ describe("plugin acting person database support", () => {
     if (entry === "api") {
       const res = await request(server).get("/api/plugins/paperclip.acting/api/whoami").query({ companyId: f.companyId }).set(headers);
       return { res, caller: call.mock.calls.find(([, method]) => method === "handleApiRequest")?.[2]?.actor };
+    }
+    if (entry === "bridgeData" || entry === "data") {
+      // A person sent in the params or body is not the mark; core computes it.
+      const spoof = { onBehalfOfUserId: "spoofed", onBehalfOfRestricted: false };
+      const res = entry === "bridgeData"
+        ? await request(server).post(`/api/plugins/${PLUGIN_ID}/bridge/data`).set(headers)
+          .send({ key: "library", companyId: f.companyId, params: spoof, actorContext: spoof })
+        : await request(server).post(`/api/plugins/${PLUGIN_ID}/data/library`).set(headers)
+          .send({ companyId: f.companyId, params: spoof, actorContext: spoof });
+      return { res, caller: call.mock.calls.find(([, method]) => method === "getData")?.[2]?.actorContext };
     }
     // A person sent in the body is dropped; core computes it.
     const res = await request(server).post("/api/plugins/tools/execute").set(headers).send({
@@ -210,7 +223,7 @@ describe("plugin acting person database support", () => {
     }
   });
 
-  it.each(["action", "api"] as const)("%s from a signed-in user carries that user", async (entry) => {
+  it.each(["action", "api", ...DATA_ENTRIES] as const)("%s from a signed-in user carries that user", async (entry) => {
     const f = await fixture("enforce");
     sessionUserId = f.restricted;
     await expectPerson(entry, f, {}, f.restricted, true);
@@ -218,7 +231,7 @@ describe("plugin acting person database support", () => {
     await expectPerson(entry, f, {}, f.owner, false);
   });
 
-  it.each(ENTRIES)("%s from the local board carries no person", async (entry) => {
+  it.each([...ENTRIES, ...DATA_ENTRIES])("%s from the local board carries no person", async (entry) => {
     await expectPerson(entry, await fixture("enforce"), {}, null, false, { local: true });
   });
 
@@ -230,6 +243,8 @@ describe("plugin acting person database support", () => {
         const { runId, headers } = await runToken(f, f.restricted);
         await expectPerson(entry, f, headers, f.restricted, false, {}, runId);
       }
+      sessionUserId = f.restricted;
+      for (const entry of DATA_ENTRIES) await expectPerson(entry, f, {}, f.restricted, false);
     });
 
   it.each(ENTRIES)("%s answers 503 MEMBER_RESTRICTION_UNAVAILABLE and never reaches the plugin when the read fails", async (entry) => {
@@ -241,5 +256,15 @@ describe("plugin acting person database support", () => {
     expect(res.body.code ?? res.body.details?.code).toBe("MEMBER_RESTRICTION_UNAVAILABLE");
     expect(call).not.toHaveBeenCalled();
     expect(executeTool).not.toHaveBeenCalled();
+  });
+
+  it.each(DATA_ENTRIES)("%s answers 503 MEMBER_RESTRICTION_UNAVAILABLE and never reaches the worker when the read fails", async (entry) => {
+    const f = await fixture("enforce");
+    sessionUserId = f.restricted;
+    failReads.on = true;
+    const { res } = await callEntry(entry, f, {});
+    expect(res.status).toBe(503);
+    expect(res.body.code ?? res.body.details?.code).toBe("MEMBER_RESTRICTION_UNAVAILABLE");
+    expect(call).not.toHaveBeenCalled();
   });
 });
