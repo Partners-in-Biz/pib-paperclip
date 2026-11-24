@@ -232,6 +232,26 @@ describe("persisted Git workspace source", () => {
     expect(materializeOriginalRepository).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    ["the saved repository without .git", "https://example.invalid/original", true],
+    ["another repository", "https://example.invalid/other.git", false],
+  ])("checks the materialized origin against %s after normalization", async (_label, origin, accepted) => {
+    const { root, original, input } = await fixture();
+    const restored = path.join(root, "restored-source");
+    const missingWorktree = path.join(root, "missing-worktree");
+    const materializeOriginalRepository = vi.fn(async () => {
+      await exec("git", ["clone", original, restored]);
+      await exec("git", ["-C", restored, "remote", "set-url", "origin", origin]);
+      return restored;
+    });
+    const result = resolvePersistedGitWorkspaceSource({ ...input,
+      workspace: { ...input.workspace, cwd: missingWorktree, providerRef: missingWorktree },
+      candidateBaseCwds: [restored], materializeOriginalRepository,
+    });
+    if (accepted) await expect(result).resolves.toBe(restored);
+    else await expect(result).rejects.toMatchObject({ resultJson: { workspaceValidation: { reasonCode: "source_repository_unavailable" } } });
+  });
+
   it("rejects a materializer result outside the retained source candidates", async () => {
     const { root, original, input } = await fixture();
     const missingWorktree = path.join(root, "missing-worktree");
@@ -283,6 +303,18 @@ describe("persisted Git workspace source", () => {
       resultJson: { workspaceValidation: { reasonCode: "source_repository_unavailable" } },
     });
   });
+  it.each([
+    ["without .git", "https://example.invalid/original", true],
+    ["for another repository", "https://example.invalid/other.git", false],
+  ])("rebuilds a missing worktree from a retained source whose origin is %s only when it is the same repository", async (_label, origin, accepted) => {
+    const { original, worktree, input } = await fixture();
+    await exec("git", ["-C", original, "worktree", "remove", "--force", worktree]);
+    await exec("git", ["-C", original, "remote", "set-url", "origin", origin]);
+    const result = resolvePersistedGitWorkspaceSource(input);
+    if (accepted) await expect(result).resolves.toBe(original);
+    else await expect(result).rejects.toMatchObject({ resultJson: { workspaceValidation: { reasonCode: "source_repository_unavailable" } } });
+  });
+
   it("accepts a symlink for the configured instance root only", async () => {
     const { root, original, input } = await fixture();
     const alias = `${root}-alias`;
