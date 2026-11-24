@@ -78,6 +78,9 @@ async function visible(ctx: PluginContext, viewer: Viewer) {
   return { accounts: visibleAccounts, contacts: visibleContacts, deals: visibleDeals, links: links.filter((link) => contactIds.has(link.contactId)) };
 }
 
+/** Every record this viewer may see, as `find-records` and `get-company` read them (the canvas cards use it). */
+export const visibleCrmRecords = visible;
+
 /** The clients this viewer may see, loaded once: for a list that must check many of them. */
 export async function visibleClients(ctx: PluginContext, viewer: Viewer): Promise<{ has: (kind: ClientKind, id: string) => boolean }> {
   const records = await visible(ctx, viewer);
