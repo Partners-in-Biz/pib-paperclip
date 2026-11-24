@@ -175,6 +175,16 @@ describe("Studio cards on boards: the board-scope check (PAR-14280)", () => {
     expect(await on.harness.performAction("asset-url", { assetId: "own-asset", ...board(null) }, on.as(MEMBER))).toEqual({ url: expect.any(String) });
   });
 
+  it("a failed settings read counts as switched off, at every board call", async () => {
+    const { harness, as } = await studio();
+    (harness.ctx.config as { get: () => Promise<unknown> }).get = async () => {
+      throw new Error("settings store down");
+    };
+    for (const [key, params] of [["asset-url", { assetId: "own-asset" }], ["asset-urls", { assetIds: ["own-asset"] }], ["board-library", {}]] as const) {
+      expect(await harness.performAction(key, { ...params, ...board(null) }, as(MEMBER)), key).toEqual(refused(BOARD_CARDS_OFF));
+    }
+  });
+
   it("a malformed board scope is refused, never read as no board", async () => {
     const { harness, as } = await studio();
     for (const boardScope of ["project-a", [], { projectId: 5 }, { projectId: "  " }, null]) {
