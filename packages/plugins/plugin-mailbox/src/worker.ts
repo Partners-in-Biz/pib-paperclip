@@ -39,6 +39,7 @@ import {
   PIB_PLUGINS,
   pluginEvent,
   pluginUiBase,
+  registerCanvasCards,
   registerCrmProjection,
   rememberPluginUiBase,
   valueAtPath,
@@ -103,6 +104,7 @@ import { preferencesLoad, preferencesSave } from "./preferences.js";
 import { SKILLS } from "./skills.js";
 import { MAILBOX_TOOLS } from "./tools.js";
 import { taskLinks, threadContext, type MailLinksDeps } from "./mail-links.js";
+import { mailCardKind } from "./canvas-cards.js";
 
 let skillSync: ReturnType<typeof createSkillSyncer> | null = null;
 let env: Env | null = null;
@@ -279,6 +281,9 @@ const plugin = definePlugin({
     user("mailbox.task-links", async (companyId, _userId, params) => ({
       links: await taskLinks(mailLinksDeps(ctx, companyId), Array.isArray(params.messageIds) ? params.messageIds.filter((id): id is string => typeof id === "string") : []),
     }));
+    // Email cards on a planning canvas (PAR-14389 C.2): resolve and related only, no search. `ctx.actions.register` itself, not `user`:
+    // the kit answers agents and restricted members, and who may see a card is who may open it through mailbox.get-message.
+    registerCanvasCards({ register: ctx.actions.register, kinds: [mailCardKind({ store: requireStore, isPrivate: isPrivateMessage })] });
     user("mailbox.handoff-record", (companyId, _userId, params) =>
       recordHandoff(handoffDeps(ctx, companyId), { messageId: requiredString(params, "messageId"), scope: handoffScope(params.scope), issueId: requiredString(params, "issueId") }),
     );
