@@ -196,6 +196,13 @@ export async function countAssetsByStatus(ctx: PluginContext, companyId: string,
   return out;
 }
 
+/** Whether any asset under these filters is filed under a client, for a person's list when core's answer is missing. */
+export async function hasClientAssets(ctx: PluginContext, companyId: string, filter: ListFilter): Promise<boolean> {
+  const { where, params } = listWhere(ctx, companyId, filter);
+  const rows = await ctx.db.query<{ one: unknown }>(`SELECT 1 AS one FROM ${table(ctx, "assets")} a ${where} AND a.client_ref IS NOT NULL LIMIT 1`, params);
+  return rows.length > 0;
+}
+
 /** Agents get a path on this machine, because the host redacts signed URLs in what they read. */
 export async function assetFileForAgent(ctx: PluginContext, companyId: string, assetId: string, projectId: string | null) {
   const row = await getAssetRow(ctx, companyId, assetId);
