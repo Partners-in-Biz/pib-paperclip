@@ -457,7 +457,7 @@ databaseSuite("planning canvas ops engine (real PostgreSQL)", () => {
         boardId: target.boardId,
         itemKey: key,
         itemType: "node",
-        kind,
+        kind: kind as never,
         data: { kind, x: 0, y: 0, width: 200, height: 120, zIndex: 1, color: "yellow", title: key, content: "" } as never,
         zIndex: 1,
         version: 1,
