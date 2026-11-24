@@ -10,6 +10,7 @@ import { PriorityIcon } from "@/components/PriorityIcon";
 import { Link } from "@/lib/router";
 import { cn } from "@/lib/utils";
 import { useLatestCanvas } from "@/components/planning-canvas/nodes/canvas-context";
+import { IssueFilters } from "@/components/planning-canvas/nodes/IssueFilters";
 import { RefCard } from "@/components/planning-canvas/nodes/RefCard";
 import { useIssueQuery } from "@/components/planning-canvas/nodes/useIssueQuery";
 import { groupIssues, isCapped, UNASSIGNED, withStatus, type KanbanGroupBy, type QueriedIssue } from "@/components/planning-canvas/nodes/issue-board";
@@ -30,7 +31,7 @@ function columnLabel(key: string, groupBy: KanbanGroupBy, agentName: (id: string
  * A kanban node: cards are real issues, read through the board's query (so access is the reader's
  * own). Grouped by status, a card drags to another column and sends `PATCH /issues/:id {status}`;
  * the card moves at once and snaps back with a toast when the server refuses (a 403 included).
- * Grouped by assignee or priority the board is read-only. Only `groupBy` and `collapsed` are saved
+ * Grouped by assignee or priority the board is read-only. Only `source` (the filter), `groupBy` and `collapsed` are saved
  * to the board, as a field-level merge of the node's own data.
  */
 export const KanbanNode = memo(function KanbanNode({ nodeKey, data, title }: { nodeKey: string; data: PlanningCanvasKanbanData; title: string }) {
@@ -170,6 +171,7 @@ export const KanbanNode = memo(function KanbanNode({ nodeKey, data, title }: { n
         </label>
         {issues ? <span className="ml-auto text-xs text-muted-foreground">{issues.length} issues</span> : null}
       </div>
+      <IssueFilters query={data.source} onChange={(source) => edit({ source })} />
       {issues && isCapped(issues.length, data.source) ? (
         <p role="status" className="text-xs text-amber-700 dark:text-amber-300">
           Showing the first {issues.length} issues. Narrow the query to see the rest.

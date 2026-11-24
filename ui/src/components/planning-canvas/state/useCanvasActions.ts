@@ -4,7 +4,7 @@ import { type CanvasNode, type CanvasNodeColor, type PersonalNote, type Planning
 import { personalNotesApi } from "@/api/personalNotes";
 import { clampZoom } from "@/components/planning-canvas/canvas-constants";
 import { newTable } from "@/components/planning-canvas/nodes/table-edit";
-import { newKanban, newTimeline } from "@/components/planning-canvas/nodes/issue-board";
+import { boardProjectDefault, newKanban, newTimeline } from "@/components/planning-canvas/nodes/issue-board";
 import { type CanvasAlignMode, alignSelectedNodes, buildFrameAgentBrief, buildSelectionAgentBrief, createCanvasId, snapToGrid } from "@/lib/planning-canvas-helpers";
 import { queryKeys } from "@/lib/queryKeys";
 import type { CanvasData } from "@/components/planning-canvas/state/useCanvasData";
@@ -34,6 +34,7 @@ export function useCanvasActions(ctx: CanvasData & CanvasState & CanvasBoard) {
     canvasRef,
     commitCanvasChange,
     opStore,
+    activeBoard,
   } = ctx;
 
   const screenToWorld = useCallback(
@@ -196,9 +197,11 @@ export function useCanvasActions(ctx: CanvasData & CanvasState & CanvasBoard) {
       const width = kind === "kanban" ? 640 : wide ? 480 : 320;
       const height = kind === "kanban" ? 360 : kind === "timeline" ? 280 : kind === "table" ? 220 : 240;
       const key = createCanvasId(kind);
+      // A kanban or timeline added from a project board starts filtered to that project.
+      const boardProjectId = boardProjectDefault(activeBoard);
       opStore.addItem(key, {
         kind,
-        data: kind === "table" ? newTable() : kind === "kanban" ? newKanban() : kind === "timeline" ? newTimeline() : { markdown: "" },
+        data: kind === "table" ? newTable() : kind === "kanban" ? newKanban(boardProjectId) : kind === "timeline" ? newTimeline(boardProjectId) : { markdown: "" },
         x: snapToGrid(center.x - width / 2),
         y: snapToGrid(center.y - height / 2),
         width,
@@ -211,7 +214,7 @@ export function useCanvasActions(ctx: CanvasData & CanvasState & CanvasBoard) {
       setSelectedNodeIds([key]);
       setTool("select");
     },
-    [getViewportCenterWorld, nextZIndex, opStore.addItem, setSelectedNodeIds, setTool],
+    [getViewportCenterWorld, nextZIndex, opStore.addItem, setSelectedNodeIds, setTool, activeBoard],
   );
 
   const fitToScreen = useCallback(() => {

@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 const api = vi.hoisted(() => ({ query: vi.fn(), update: vi.fn(), projects: vi.fn() }));
 vi.mock("@/api/planningCanvases", () => ({ planningCanvasesApi: { query: api.query } }));
 vi.mock("@/api/issues", () => ({ issuesApi: { update: api.update } }));
+vi.mock("@/api/goals", () => ({ goalsApi: { list: vi.fn().mockResolvedValue([]) } }));
 vi.mock("@/api/projects", () => ({ projectsApi: { list: api.projects } }));
 vi.mock("@/lib/router", () => ({ Link: ({ children, to }: { children: unknown; to: string }) => <a href={to}>{children as never}</a> }));
 vi.mock("@/components/StatusIcon", () => ({ StatusIcon: () => null }));
@@ -15,7 +16,7 @@ import { ApiError } from "@/api/client";
 import { CanvasRefContext } from "@/components/planning-canvas/nodes/canvas-context";
 import { KanbanNode } from "@/components/planning-canvas/nodes/KanbanNode";
 import { TimelineNode } from "@/components/planning-canvas/nodes/TimelineNode";
-import { groupIssues, issueBars, newKanban, newTimeline, projectMilestones, timelineLayout, type QueriedIssue } from "@/components/planning-canvas/nodes/issue-board";
+import { activeFilterCount, boardProjectDefault, defaultQueryFor, toggleStatus, withFilter, groupIssues, issueBars, newKanban, newTimeline, projectMilestones, timelineLayout, type QueriedIssue } from "@/components/planning-canvas/nodes/issue-board";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 afterEach(() => vi.clearAllMocks());
@@ -33,6 +34,34 @@ const issue = (n: number, over: Partial<QueriedIssue> = {}): QueriedIssue => ({
   completedAt: null,
   createdAt: "2026-11-01T00:00:00.000Z",
   ...over,
+});
+
+describe("issue filter mapping", () => {
+  const A = "11111111-1111-4111-8111-111111111111";
+  it("sets and clears each filter key without touching the rest", () => {
+    let q = newKanban().source;
+    q = withFilter(q, { projectId: A, assigneeAgentId: A, goalId: A, parentId: A, status: ["todo", "done"] });
+    expect(q.filter).toEqual({ projectId: A, assigneeAgentId: A, goalId: A, parentId: A, status: ["todo", "done"] });
+    expect(activeFilterCount(q.filter)).toBe(5);
+    q = withFilter(q, { projectId: null, status: [], goalId: "" });
+    expect(q.filter).toEqual({ assigneeAgentId: A, parentId: A });
+    expect(q.limit).toBe(newKanban().source.limit);
+  });
+  it("toggles statuses in workflow order and drops an empty list", () => {
+    const on = toggleStatus({ status: ["done"] }, "todo");
+    expect(on).toEqual(["todo", "done"]);
+    expect(toggleStatus({ status: ["todo"] }, "todo")).toBeUndefined();
+  });
+  it("defaults a node added from a project board to that project", () => {
+    expect(newKanban(A).source.filter).toEqual({ projectId: A });
+    expect(newTimeline(A).source).toMatchObject({ kind: "issues", filter: { projectId: A } });
+    expect(newKanban().source.filter).toEqual({});
+    expect(defaultQueryFor(null).filter).toEqual({});
+    expect(boardProjectDefault({ scope: "project", projectId: A })).toBe(A);
+    expect(boardProjectDefault({ scope: "company", projectId: null })).toBeNull();
+    expect(boardProjectDefault({ scope: "project", projectId: null })).toBeNull();
+    expect(boardProjectDefault(null)).toBeNull();
+  });
 });
 
 describe("issue-board model", () => {
