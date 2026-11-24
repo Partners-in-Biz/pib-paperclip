@@ -12,7 +12,8 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 // flagged person in an `enforce` company). A failed read answers 503, no call.
 // PAR-14297: the two getData routes (board-only) carry the same mark.
 
-const failReads = vi.hoisted(() => ({ on: false }));
+// `after`: how many reads succeed before they fail (0: all fail).
+const failReads = vi.hoisted(() => ({ on: false, after: 0, calls: 0 }));
 const mockRegistry = vi.hoisted(() => ({ getById: vi.fn(), getByKey: vi.fn() }));
 
 vi.mock("../services/member-restriction/resolver.js", async (importOriginal) => {
@@ -22,7 +23,9 @@ vi.mock("../services/member-restriction/resolver.js", async (importOriginal) => 
     memberRestrictionResolver: (db: Parameters<typeof real.memberRestrictionResolver>[0]) => {
       const resolve = real.memberRestrictionResolver(db);
       return (personId: string, companyId: string) =>
-        failReads.on ? Promise.reject(new Error("restriction read failed")) : resolve(personId, companyId);
+        failReads.on && ++failReads.calls > failReads.after
+          ? Promise.reject(new Error("restriction read failed"))
+          : resolve(personId, companyId);
     },
   };
 });
@@ -72,7 +75,7 @@ describe("plugin acting person database support", () => {
   });
 
   afterEach(() => {
-    failReads.on = false;
+    Object.assign(failReads, { on: false, after: 0, calls: 0 });
     sessionUserId = null;
     vi.unstubAllEnvs();
   });
@@ -263,6 +266,17 @@ describe("plugin acting person database support", () => {
     sessionUserId = f.restricted;
     failReads.on = true;
     const { res } = await callEntry(entry, f, {});
+    expect(res.status).toBe(503);
+    expect(res.body.code ?? res.body.details?.code).toBe("MEMBER_RESTRICTION_UNAVAILABLE");
+    expect(call).not.toHaveBeenCalled();
+  });
+
+  it.each(DATA_ENTRIES)("%s answers 503 when only the acting-person read fails (the plugin gate's read passed)", async (entry) => {
+    const f = await fixture("enforce");
+    sessionUserId = f.restricted;
+    Object.assign(failReads, { on: true, after: 1, calls: 0 });
+    const { res } = await callEntry(entry, f, {});
+    expect(failReads.calls, "the gate read and the acting-person read").toBe(2);
     expect(res.status).toBe(503);
     expect(res.body.code ?? res.body.details?.code).toBe("MEMBER_RESTRICTION_UNAVAILABLE");
     expect(call).not.toHaveBeenCalled();
