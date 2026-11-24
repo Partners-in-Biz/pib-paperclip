@@ -1920,8 +1920,13 @@ export function buildHostServices(
     },
 
     companies: {
-      async list(params) {
-        return applyWindow((await companies.list()) as Company[], params);
+      async list(params, filter) {
+        let rows = (await companies.list()) as Company[];
+        if (filter?.companyIds) {
+          const allowed = new Set(filter.companyIds);
+          rows = rows.filter((company) => allowed.has(company.id));
+        }
+        return applyWindow(rows, params);
       },
       async get(params) {
         await ensurePluginAvailableForCompany(params.companyId);
