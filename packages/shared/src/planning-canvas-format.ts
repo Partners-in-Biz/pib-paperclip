@@ -17,6 +17,7 @@ import {
   type PlanningCanvasStrokeFields,
   type PlanningCanvasTableData,
   type PlanningCanvasTimelineData,
+  isKnownPlanningCanvasNodeKind,
 } from "./types/planning-canvas.js";
 
 /**
@@ -182,9 +183,12 @@ export function planningCanvasItemsToLegacyBlob(
     const firstLink = fields.links?.[0];
     const linked = firstLink ? options.refs[firstLink.issueId] : undefined;
     const legacy = isLegacyPlanningCanvasNodeKind(fields.kind);
+    // A kind this build does not know passes through by name; the UI draws it as a placeholder card.
     const base = legacy
       ? { kind: fields.kind as CanvasNode["kind"], title: fields.title, content: fields.content }
-      : legacyNote(fields, options.refs);
+      : isKnownPlanningCanvasNodeKind(fields.kind)
+        ? legacyNote(fields, options.refs)
+        : { kind: String(fields.kind) as CanvasNode["kind"], title: String(fields.kind), content: "" };
     return {
       id: item.key,
       ...base,

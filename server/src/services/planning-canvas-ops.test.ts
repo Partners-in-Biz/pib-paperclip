@@ -11,7 +11,7 @@ import {
   planningCanvasOpBatches,
   startEmbeddedPostgresTestDatabase,
 } from "@paperclipai/db";
-import type { PlanningCanvasOp, PlanningCanvasOpResult } from "@paperclipai/shared";
+import { PLANNING_CANVAS_NODE_KINDS, type PlanningCanvasOp, type PlanningCanvasOpResult } from "@paperclipai/shared";
 import { planningCanvasOpsService, type PlanningCanvasOpsActor } from "./planning-canvas-ops.js";
 import { subscribePlanningCanvasBoard, type PlanningCanvasOpsAppliedEvent } from "./planning-canvas-events.js";
 
@@ -448,5 +448,64 @@ databaseSuite("planning canvas ops engine (real PostgreSQL)", () => {
     await expect(apply(b, [{ op: "nope" } as never])).rejects.toMatchObject({ status: 400 });
     await db.update(planningCanvases).set({ archivedAt: new Date() }).where(eq(planningCanvases.id, b.boardId));
     await expect(apply(b, [node("n")])).rejects.toMatchObject({ status: 409 });
+  });
+
+  describe("unknown node kinds (tolerant)", () => {
+    async function seedUnknown(target: { companyId: string; boardId: string }, key: string, kind = "hologram") {
+      await db.insert(planningCanvasItems).values({
+        companyId: target.companyId,
+        boardId: target.boardId,
+        itemKey: key,
+        itemType: "node",
+        kind,
+        data: { kind, x: 0, y: 0, width: 200, height: 120, zIndex: 1, color: "yellow", title: key, content: "" } as never,
+        zIndex: 1,
+        version: 1,
+        fieldVersions: {},
+        revision: 1,
+      });
+    }
+
+    async function exercise(target: { companyId: string; boardId: string }, key: string) {
+      const moved = await apply(target, [{ op: "update", key, set: { x: 50, y: 60 } }]);
+      expect(moved.results[0]).toMatchObject({ status: "applied" });
+      const resized = await apply(target, [{ op: "update", key, set: { width: 300, height: 90 } }]);
+      expect(resized.results[0]).toMatchObject({ status: "applied" });
+      const content = await apply(target, [{ op: "update", key, baseVersion: 1, set: { title: "x" } }]);
+      expect(content.results[0]).toMatchObject({ status: "rejected", reason: "unknown_kind" });
+      const kind = await apply(target, [{ op: "update", key, baseVersion: 1, set: { kind: "sticky" } as never }]);
+      expect(kind.results[0]).toMatchObject({ status: "rejected", reason: "unknown_kind" });
+      const deleted = await apply(target, [{ op: "delete", key }]);
+      expect(deleted.results[0]).toMatchObject({ status: "applied" });
+      const restored = await apply(target, [{ op: "restore", key }]);
+      expect(restored.results[0]).toMatchObject({ status: "applied" });
+      const [row] = await db.select().from(planningCanvasItems).where(and(eq(planningCanvasItems.boardId, target.boardId), eq(planningCanvasItems.itemKey, key)));
+      expect(row).toMatchObject({ kind: expect.any(String), deletedAt: null });
+      expect(row!.data).toMatchObject({ x: 50, y: 60, width: 300, height: 90 });
+    }
+
+    it("moves, resizes, deletes and restores a seeded unknown kind; refuses content and kind changes", async () => {
+      const b = await board();
+      await seedUnknown(b, "u1");
+      await exercise(b, "u1");
+    });
+
+    it("refuses adding an unknown kind", async () => {
+      const b = await board();
+      await expect(apply(b, [node("u2", { kind: "hologram" })])).rejects.toMatchObject({ status: 400 });
+    });
+
+    it("rollback: a kind removed from the shared list with rows present behaves the same", async () => {
+      const b = await board();
+      await seedUnknown(b, "t1", "timeline");
+      const index = PLANNING_CANVAS_NODE_KINDS.indexOf("timeline");
+      const mutable = PLANNING_CANVAS_NODE_KINDS as unknown as string[];
+      mutable.splice(index, 1);
+      try {
+        await exercise(b, "t1");
+      } finally {
+        mutable.splice(index, 0, "timeline");
+      }
+    });
   });
 });

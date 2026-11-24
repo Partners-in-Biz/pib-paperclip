@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq, inArray, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
 import { planningCanvases, planningCanvasItems, planningCanvasOpBatches, type Db } from "@paperclipai/db";
 import {
+  isKnownPlanningCanvasNodeKind,
   PLANNING_CANVAS_GEOMETRY_FIELDS,
   PLANNING_CANVAS_ITEM_TYPES,
   PLANNING_CANVAS_LIMITS,
@@ -285,6 +286,16 @@ async function applyUpdate(state: BatchState, op: Extract<PlanningCanvasOp, { op
   if (!row) return { result: rejected(op.key, "not_found") };
   if (row.deletedAt) return { result: rejected(op.key, "deleted") };
   const setFields = Object.keys(op.set);
+  // A node of a kind this build does not know: geometry only (move, resize); no kind or data change.
+  if (row.itemType === "node" && !isKnownPlanningCanvasNodeKind(row.kind)) {
+    if (setFields.some((field) => !GEOMETRY.has(field))) return { result: rejected(op.key, "unknown_kind") };
+    const merged = { ...(row.data as unknown as Record<string, unknown>), ...op.set };
+    const next = state.stamp(row, {
+      data: merged as unknown as PlanningCanvasItemFields,
+      zIndex: typeof merged.zIndex === "number" ? merged.zIndex : row.zIndex,
+    });
+    return { result: { status: "applied", key: op.key, version: next.version, revision: state.revision }, changes: [next] };
+  }
   const contentFields = setFields.filter((field) => !GEOMETRY.has(field));
   if (contentFields.length > 0) {
     if (op.baseVersion === undefined) return { result: rejected(op.key, "base_version_required") };

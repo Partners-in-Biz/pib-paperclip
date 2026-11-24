@@ -4,7 +4,7 @@ import { cn } from "@/lib/utils";
 import type { CanvasNode, PersonalNote } from "@paperclipai/shared";
 import { useLatestCanvas } from "@/components/planning-canvas/nodes/canvas-context";
 import { NodeHandles } from "@/components/planning-canvas/nodes/NodeHandles";
-import { NODE_RENDERERS } from "@/components/planning-canvas/nodes/node-renderers";
+import { nodeRenderer } from "@/components/planning-canvas/nodes/node-renderers";
 import { REF_CARD_CLASS } from "@/components/planning-canvas/nodes/RefCard";
 import { AgentNode } from "@/components/planning-canvas/nodes/AgentNode";
 import { GoalNode } from "@/components/planning-canvas/nodes/GoalNode";
@@ -105,7 +105,7 @@ const NodeView = memo(function NodeView({
 }: NodeViewProps) {
   const latest = useLatestCanvas();
   const theme = CANVAS_COLOR_THEMES[node.color] ?? CANVAS_COLOR_THEMES.yellow;
-  const { containerClass, Render } = NODE_RENDERERS[node.kind];
+  const { containerClass, Render } = nodeRenderer(node.kind);
   const RefRender = link?.refKind ? REF_NODES[link.refKind] : null;
   const menu = useNodeMenu(node);
   const box = { left: node.x, top: node.y, width: node.width, height: node.height, zIndex: node.kind === "frame" ? 1 : node.zIndex };
