@@ -20,8 +20,9 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 
 /**
  * PAR-12740 (C5-1): the core plugin gate at every plugin call point, spec
- * PAR-12608 rev 3, 4.8 (AC-K1, AC-K3, AC-K5, AC-K6) and the plugin socket
- * of 4.6a row 16. The gate is a new caller of the resolver: kill-switch and
+ * PAR-12608 rev 3, 4.8 (AC-K1, AC-K3, AC-K5, AC-K6), the plugin socket of
+ * 4.6a row 16, and the second half of AC-M7 (an open stream of a plugin removed
+ * from his list). The gate is a new caller of the resolver: kill-switch and
  * failing-read tests below (AC-F8, AC-X1). The scan of AC-K7 is in
  * `openapi-routes.test.ts`.
  */
@@ -93,6 +94,8 @@ describeDb("core plugin gate (PAR-12608 4.8)", () => {
     return { type: "board", userId, source: "session", memberships, companyIds: memberships.map((row) => row.companyId) };
   };
   const setList = (pluginKeys: string[]) => db.update(companyMemberships).set({ restrictedPluginKeys: pluginKeys })
+    .where(and(eq(companyMemberships.companyId, id.Y!), eq(companyMemberships.principalId, R)));
+  const setFlag = (restricted: boolean) => db.update(companyMemberships).set({ restricted })
     .where(and(eq(companyMemberships.companyId, id.Y!), eq(companyMemberships.principalId, R)));
   const setMode = (mode: "off" | "report" | "enforce") =>
     db.update(companies).set({ memberRestrictionMode: mode }).where(eq(companies.id, id.Y!));
@@ -166,6 +169,7 @@ describeDb("core plugin gate (PAR-12608 4.8)", () => {
     vi.clearAllMocks();
     workerManager.call.mockResolvedValue({ status: 200, body: { ok: true } });
     failRead.on = false;
+    await setFlag(true);
     await setList([]);
     await setMode("enforce");
   });
@@ -235,6 +239,59 @@ describeDb("core plugin gate (PAR-12608 4.8)", () => {
     workerManager.call.mockResolvedValue({ status: 502 });
     expect(await upgrade(id.crm!)).toBe(502);
     expect(workerManager.call).toHaveBeenCalledWith(id.crm, "handleApiRequest", expect.objectContaining({ routeKey: "channel" }));
+  });
+
+  /** Opens R's CRM stream; `until` reads until the text holds a pattern, false when the stream ends first. */
+  const openStream = async () => {
+    const res = await fetch(`${base}/api/plugins/${id.crm}/bridge/stream/ch?companyId=${id.Y}`);
+    expect(res.status).toBe(200);
+    const reader = res.body!.getReader();
+    const state = { text: "" };
+    const until = async (pattern: string) => {
+      while (!state.text.includes(pattern)) {
+        const chunk = await reader.read();
+        if (chunk.done) return false;
+        state.text += new TextDecoder().decode(chunk.value);
+      }
+      return true;
+    };
+    await until(":ok");
+    return { state, until };
+  };
+  const publish = (mark: string) => streamBus.publish(id.crm!, "ch", id.Y!, { mark });
+
+  it("AC-M7: R's open stream of a plugin then removed from his list delivers nothing further and ends", async () => {
+    await setList([CRM]);
+    actor = await boardFor(R);
+    const stream = await openStream();
+    publish("before");
+    expect(await stream.until("before")).toBe(true);
+    await setList([]);
+    publish("after");
+    expect(await stream.until("@@end-of-stream@@")).toBe(false);
+    expect(stream.state.text).not.toContain("after");
+    // The re-check records no denial: one per message would flood the log.
+    expect(await denials()).not.toContain(`plugin:${CRM}:stream`);
+  });
+
+  it("4.6a: a stream opened before his flag was set is re-checked against the database, not the carried membership", async () => {
+    await setFlag(false);
+    actor = await boardFor(R);
+    const stream = await openStream();
+    await setFlag(true);
+    publish("after");
+    expect(await stream.until("@@end-of-stream@@")).toBe(false);
+    expect(stream.state.text).not.toContain("after");
+  });
+
+  it("4.6a, AC-X1: a failed read while the stream is open ends it and delivers nothing further", async () => {
+    await setList([CRM]);
+    actor = await boardFor(R);
+    const stream = await openStream();
+    failRead.on = true;
+    publish("after");
+    expect(await stream.until("@@end-of-stream@@")).toBe(false);
+    expect(stream.state.text).not.toContain("after");
   });
 
   it("report mode records a would-refuse and lets the call through", async () => {
