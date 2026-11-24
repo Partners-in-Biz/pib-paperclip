@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq, inArray, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
 import { planningCanvases, planningCanvasItems, planningCanvasOpBatches, type Db } from "@paperclipai/db";
 import {
+  isKnownPlanningCanvasNodeKind,
   PLANNING_CANVAS_GEOMETRY_FIELDS,
   PLANNING_CANVAS_ITEM_TYPES,
   PLANNING_CANVAS_LIMITS,
@@ -60,6 +61,22 @@ export interface ApplyPlanningCanvasOpsInput {
 }
 
 const GEOMETRY = new Set<string>(PLANNING_CANVAS_GEOMETRY_FIELDS);
+/** Exact fields an unknown-kind node may change (not the whole geometry group: it includes stroke `points`). */
+const UNKNOWN_KIND_EDITABLE = new Set(["x", "y", "width", "height", "zIndex"]);
+
+/** Same bounds as the node shape in the shared validator. */
+function unknownKindGeometryValid(fields: Record<string, unknown>): boolean {
+  const inRange = (value: unknown, min: number, max: number, int = false) =>
+    typeof value === "number" && Number.isFinite(value) && value >= min && value <= max && (!int || Number.isInteger(value));
+  return (
+    inRange(fields.x, -Infinity, Infinity) &&
+    inRange(fields.y, -Infinity, Infinity) &&
+    inRange(fields.width, 40, 4000) &&
+    inRange(fields.height, 30, 4000) &&
+    inRange(fields.zIndex, 0, 100_000, true)
+  );
+}
+
 const TOMBSTONE_RETENTION_MS = PLANNING_CANVAS_LIMITS.tombstoneRetentionDays * 24 * 60 * 60 * 1000;
 const OP_BATCH_RETENTION_MS = PLANNING_CANVAS_LIMITS.opBatchRetentionHours * 60 * 60 * 1000;
 const FIELD_SCHEMAS = {
@@ -285,6 +302,17 @@ async function applyUpdate(state: BatchState, op: Extract<PlanningCanvasOp, { op
   if (!row) return { result: rejected(op.key, "not_found") };
   if (row.deletedAt) return { result: rejected(op.key, "deleted") };
   const setFields = Object.keys(op.set);
+  // A node of a kind this build does not know: geometry only (move, resize); no kind or data change.
+  if (row.itemType === "node" && !isKnownPlanningCanvasNodeKind(row.kind)) {
+    if (setFields.some((field) => !UNKNOWN_KIND_EDITABLE.has(field))) return { result: rejected(op.key, "unknown_kind") };
+    const merged = { ...(row.data as unknown as Record<string, unknown>), ...op.set };
+    if (!unknownKindGeometryValid(merged)) return { result: rejected(op.key, "invalid_item") };
+    const next = state.stamp(row, {
+      data: merged as unknown as PlanningCanvasItemFields,
+      zIndex: typeof merged.zIndex === "number" ? merged.zIndex : row.zIndex,
+    });
+    return { result: { status: "applied", key: op.key, version: next.version, revision: state.revision }, changes: [next] };
+  }
   const contentFields = setFields.filter((field) => !GEOMETRY.has(field));
   if (contentFields.length > 0) {
     if (op.baseVersion === undefined) return { result: rejected(op.key, "base_version_required") };

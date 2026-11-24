@@ -223,3 +223,19 @@ describe("planning canvas legacy blob shape", () => {
     });
   });
 });
+
+describe("planningCanvasItemsToLegacyBlob unknown kinds", () => {
+  it("keeps an unknown kind by name instead of turning it into a note", () => {
+    const items = [
+      {
+        key: "u1",
+        itemType: "node",
+        zIndex: 1,
+        data: { kind: "hologram", x: 1, y: 2, width: 200, height: 100, zIndex: 1, color: "slate", title: "", content: "" },
+      },
+    ] as unknown as PlanningCanvasFormatItem[];
+    const blob = planningCanvasItemsToLegacyBlob(items, { refs: {} });
+    expect(blob.nodes[0]).toMatchObject({ id: "u1", kind: "hologram", title: "hologram", x: 1, width: 200 });
+  });
+});
+

@@ -269,3 +269,22 @@ export const NODE_RENDERERS: Record<CanvasNodeKind, NodeRendererEntry> = {
     Render: ShapeNode,
   },
 };
+
+function PlaceholderNode({ node }: NodeRenderProps) {
+  return (
+    <div data-canvas-placeholder={node.kind} className="flex h-full items-center justify-center px-3 text-center">
+      <span className="truncate text-xs font-medium text-muted-foreground">{node.kind}</span>
+    </div>
+  );
+}
+
+/** Card for a stored kind this build does not know: it can still be moved, resized and deleted. */
+const PLACEHOLDER_RENDERER: NodeRendererEntry = {
+  containerClass: () => "flex flex-col overflow-hidden rounded-xl border border-dashed border-border bg-card",
+  Render: PlaceholderNode,
+};
+
+/** The renderer for a node; an unknown kind gets the placeholder card instead of crashing the board. */
+export function nodeRenderer(kind: string): NodeRendererEntry {
+  return Object.hasOwn(NODE_RENDERERS, kind) ? NODE_RENDERERS[kind as CanvasNodeKind] : PLACEHOLDER_RENDERER;
+}

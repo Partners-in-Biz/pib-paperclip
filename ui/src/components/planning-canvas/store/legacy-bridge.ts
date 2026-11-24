@@ -1,4 +1,5 @@
 import {
+  isKnownPlanningCanvasNodeKind,
   isLegacyPlanningCanvasNodeKind,
   planningCanvasItemsToLegacyBlob,
   planningCanvasLegacyElementFields,
@@ -23,6 +24,8 @@ export type CanvasElement = CanvasNode | CanvasConnector | CanvasStroke;
 
 const TYPED_NODE_EDITABLE = ["x", "y", "width", "height", "zIndex", "color"] as const;
 
+const UNKNOWN_NODE_EDITABLE = ["x", "y", "width", "height", "zIndex"] as const;
+
 function defined(fields: Record<string, unknown>): ItemFields {
   const out: ItemFields = {};
   for (const [key, value] of Object.entries(fields)) if (value !== undefined) out[key] = value;
@@ -34,7 +37,9 @@ export function elementToItem(itemType: PlanningCanvasItemType, element: CanvasE
   const prevFields = prev?.fields ?? {};
   if (itemType === "node" && prev && !isLegacyPlanningCanvasNodeKind(prevFields.kind as string)) {
     const fields = { ...prevFields };
-    for (const field of TYPED_NODE_EDITABLE) fields[field] = (element as CanvasNode)[field];
+    // An unknown kind takes geometry only; the server refuses any other change to it.
+    const editable = isKnownPlanningCanvasNodeKind(prevFields.kind) ? TYPED_NODE_EDITABLE : UNKNOWN_NODE_EDITABLE;
+    for (const field of editable) fields[field] = (element as CanvasNode)[field];
     return { itemType, fields };
   }
   const mapped = planningCanvasLegacyElementFields(itemType, element, prevFields.links as PlanningCanvasIssueLink[] | undefined);

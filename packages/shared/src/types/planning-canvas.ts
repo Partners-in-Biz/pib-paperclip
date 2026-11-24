@@ -114,6 +114,11 @@ export const PLANNING_CANVAS_NODE_KINDS = [
 ] as const;
 export type PlanningCanvasNodeKind = (typeof PLANNING_CANVAS_NODE_KINDS)[number];
 
+/** False for a stored kind this build does not know (newer build, or a kind removed on rollback). */
+export function isKnownPlanningCanvasNodeKind(kind: unknown): kind is PlanningCanvasNodeKind {
+  return typeof kind === "string" && (PLANNING_CANVAS_NODE_KINDS as readonly string[]).includes(kind);
+}
+
 /** Node kinds whose `ref.id` points at a Paperclip entity. */
 export const PLANNING_CANVAS_REF_NODE_KINDS = ["issue", "agent", "project", "goal"] as const;
 export type PlanningCanvasRefNodeKind = (typeof PLANNING_CANVAS_REF_NODE_KINDS)[number];
@@ -342,6 +347,7 @@ export const PLANNING_CANVAS_OP_REJECT_REASONS = [
   "not_deleted",
   "wrong_item_type",
   "invalid_item",
+  "unknown_kind",
   "item_too_large",
   "cap_exceeded",
   "missing_endpoint",
