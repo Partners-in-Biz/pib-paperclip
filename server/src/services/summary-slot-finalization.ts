@@ -1,4 +1,4 @@
-import { and, eq, inArray, ne, or, sql } from "drizzle-orm";
+import { and, eq, inArray, ne, notExists, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { heartbeatRuns, summarySlots } from "@paperclipai/db";
 import type { IssueStatus } from "@paperclipai/shared";
@@ -84,29 +84,27 @@ export async function finalizeSummarySlotsForTerminalIssue(
     .returning({ id: summarySlots.id });
 }
 
+/**
+ * Fail the generating slot of a terminal run's issue unless another queued or
+ * running run still serves that issue. The "no other active run" check lives
+ * in the UPDATE's WHERE clause (NOT EXISTS), so there is no read-then-write gap
+ * in which a new run could start and then have its slot failed.
+ *
+ * Policy: any terminal run status (including `succeeded`) fails a slot that is
+ * still `generating`. A run that succeeds without closing its issue or writing
+ * the summary did not deliver, and a `blocked` issue is stopped work; both
+ * would otherwise leave the slot stuck. A successful summary write already moves
+ * the slot to idle/ready, so it never matches `status = 'generating'`.
+ */
 export async function finalizeSummarySlotsForTerminalRun(
-  db: Pick<Db, "select" | "update">,
+  db: Pick<Db, "update">,
   run: TerminalGenerationRun,
 ) {
   if (!TERMINAL_RUN_STATUSES.has(run.status)) return [];
   const issueId = resolveRunIssueId(run);
   if (!issueId) return [];
 
-  const generatingSlots = await db
-    .select({ id: summarySlots.id })
-    .from(summarySlots)
-    .where(
-      and(
-        eq(summarySlots.companyId, run.companyId),
-        eq(summarySlots.generatingIssueId, issueId),
-        eq(summarySlots.status, "generating"),
-      ),
-    )
-    .limit(1);
-
-  if (generatingSlots.length === 0) return [];
-
-  const otherActiveRuns = await db
+  const otherActiveRuns = db
     .select({ id: heartbeatRuns.id })
     .from(heartbeatRuns)
     .where(
@@ -120,10 +118,7 @@ export async function finalizeSummarySlotsForTerminalRun(
           sql`(${heartbeatRuns.contextSnapshot} ->> 'issueId') = ${issueId}`,
         ),
       ),
-    )
-    .limit(1);
-
-  if (otherActiveRuns.length > 0) return [];
+    );
 
   return db
     .update(summarySlots)
@@ -137,6 +132,7 @@ export async function finalizeSummarySlotsForTerminalRun(
         eq(summarySlots.companyId, run.companyId),
         eq(summarySlots.generatingIssueId, issueId),
         eq(summarySlots.status, "generating"),
+        notExists(otherActiveRuns),
       ),
     )
     .returning({ id: summarySlots.id });

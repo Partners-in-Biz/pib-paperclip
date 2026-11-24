@@ -831,11 +831,33 @@ export function summarySlotService(db: Db) {
         generatingIssueId: null,
         updatedAt: new Date(),
       })
-      .where(eq(summarySlots.id, slotRow.id))
+      .where(
+        and(
+          eq(summarySlots.id, slotRow.id),
+          // Cancelling the issue above already runs the terminal-issue hook, which
+          // flips the slot to "failed" while keeping generatingIssueId, so accept
+          // both. A newer generation has a different generatingIssueId and is skipped.
+          inArray(summarySlots.status, ["generating", "failed"]),
+          cancelledIssueId === null
+            ? isNull(summarySlots.generatingIssueId)
+            : eq(summarySlots.generatingIssueId, cancelledIssueId),
+        ),
+      )
       .returning();
 
+    // A newer generation started (or the slot settled) between the read and this
+    // update: leave it alone and report its current state.
+    if (!updated) {
+      const current = await findSlotRow(sel);
+      return {
+        slot: current ? mapSlot(current) : mapSlot(slotRow),
+        cancelledIssueId,
+        activeRunIds,
+      };
+    }
+
     return {
-      slot: updated ? mapSlot(updated) : mapSlot(slotRow),
+      slot: mapSlot(updated),
       cancelledIssueId,
       activeRunIds,
     };

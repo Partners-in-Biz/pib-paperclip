@@ -388,6 +388,17 @@ describe("SummarySlotCard", () => {
     expect(container.querySelector('a[href="/issues/PAP-14000"]')).not.toBeNull();
     expect(container.querySelector('a[href="/issues/PAP-14000"]')?.closest("div")?.parentElement?.className)
       .not.toContain("border");
+  });
+
+  it("cancels an in-flight generation from the Cancel button", async () => {
+    mockSummarySlotsApi.get.mockResolvedValue({
+      slot: slot({ status: "generating", generatingIssueId: "issue-1" }),
+      document: null,
+      generatingIssue: issue({ status: "in_progress" }),
+    } satisfies GetSummarySlotResponse);
+
+    root = renderCard(container);
+    await flushQueries();
 
     mockSummarySlotsApi.cancel.mockResolvedValue({
       slot: slot({ status: "idle", generatingIssueId: null }),

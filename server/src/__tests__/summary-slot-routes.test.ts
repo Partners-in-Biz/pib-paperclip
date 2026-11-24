@@ -262,6 +262,17 @@ describe("summary slot routes", () => {
       );
     });
 
+    it("keeps the original wake error when markGenerationFailed also throws", async () => {
+      mockHeartbeatWakeup.mockRejectedValueOnce(new Error("agent paused"));
+      mockSummarySlotService.markGenerationFailed.mockRejectedValueOnce(new Error("db down"));
+      const app = await createApp(boardActor);
+      const res = await request(app).post(
+        `/api/companies/${companyId}/summary-slots/project/header/generate`,
+      ).send({ scopeId: projectId });
+      expect(res.status, JSON.stringify(res.body)).toBe(500);
+      expect(JSON.stringify(res.body)).not.toContain("db down");
+    });
+
     it("returns 404 when the summaries flag is disabled", async () => {
       mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableSummaries: false });
       const app = await createApp(boardActor);
@@ -299,6 +310,17 @@ describe("summary slot routes", () => {
           entityId: slotId,
         }),
       );
+    });
+
+    it("logs and returns run ids that fail to cancel while still resetting the slot", async () => {
+      mockHeartbeatCancelRun.mockRejectedValueOnce(new Error("run gone"));
+      const app = await createApp(boardActor);
+      const res = await request(app).post(
+        `/api/companies/${companyId}/summary-slots/project/header/cancel`,
+      ).send({ scopeId: projectId });
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body.failedRunIds).toEqual(["run-1"]);
+      expect(res.body.slot.status).toBe("idle");
     });
 
     it("denies cancel for agent actors", async () => {
