@@ -2,6 +2,8 @@
 
 Paperclip plugin `partnersinbiz.billing` (0.7). Customer-facing money for PiB: invoices, quotes, credit notes, EFT proof of payment, suppliers' bills, expenses with receipts, time, retainers and operational reports. Every financial event posts to the Accounting plugin as a journal. Money is integer minor units (cents) everywhere.
 
+**0.23.0** (PAR-14420): the invoice card for Planning Canvas boards: slot `card-invoice` with `entityCard` (search and related), and the `canvas.cards.*` actions through the kit's `registerCanvasCards`. Needs the core release with the card contract; deployed first, core drops `entityCard` and no tab shows. No migration, no capability change.
+
 **0.22.4** (PAR-14008): src-only. The hourly setup-status job acts only for companies the host lists as actionable (kit `jobCompanyIds`), so a company with no saved settings gets no host call. No migration, no capability change.
 
 **0.21.3** (skill sync never holds a call up): src-only; a tool call, a page action or the page load waits at most 2 s for the managed-skill sync and goes on while it finishes behind it; a failed sync is tried again after 5 minutes, not on every call (kit `soon`, `createSkillSyncGuard`). Before this, each call waited for the host after every worker restart, and on a company with many skills that ran into the host's 30-second limit.
