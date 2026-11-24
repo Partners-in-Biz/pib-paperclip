@@ -1,4 +1,4 @@
-import { ArrowRight, Frame, Hand, Link2, MousePointer2, FileText, Table2, NotebookPen, Pen, Shapes, StickyNote, Type } from "lucide-react";
+import { ArrowRight, Frame, Hand, Link2, MousePointer2, FileText, Table2, Columns3, CalendarRange, NotebookPen, Pen, Shapes, StickyNote, Type } from "lucide-react";
 import { type CanvasController } from "@/components/planning-canvas/state/useCanvasController";
 import { cn } from "@/lib/utils";
 
@@ -56,6 +56,8 @@ export function ToolRail({ c }: { c: CanvasController }) {
         [
           { kind: "table", icon: Table2, label: "Add table" },
           { kind: "markdown", icon: FileText, label: "Add markdown / Mermaid" },
+          { kind: "kanban", icon: Columns3, label: "Add kanban from issues" },
+          { kind: "timeline", icon: CalendarRange, label: "Add timeline from issues" },
         ] as const
       ).map(({ kind, icon: Icon, label }) => (
         <button

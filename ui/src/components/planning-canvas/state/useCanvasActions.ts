@@ -4,6 +4,7 @@ import { type CanvasNode, type CanvasNodeColor, type PersonalNote, type Planning
 import { personalNotesApi } from "@/api/personalNotes";
 import { clampZoom } from "@/components/planning-canvas/canvas-constants";
 import { newTable } from "@/components/planning-canvas/nodes/table-edit";
+import { newKanban, newTimeline } from "@/components/planning-canvas/nodes/issue-board";
 import { type CanvasAlignMode, alignSelectedNodes, buildFrameAgentBrief, buildSelectionAgentBrief, createCanvasId, snapToGrid } from "@/lib/planning-canvas-helpers";
 import { queryKeys } from "@/lib/queryKeys";
 import type { CanvasData } from "@/components/planning-canvas/state/useCanvasData";
@@ -189,14 +190,15 @@ export function useCanvasActions(ctx: CanvasData & CanvasState & CanvasBoard) {
 
   /** Add an empty table or markdown node at the viewport centre. */
   const insertTypedNode = useCallback(
-    (kind: "table" | "markdown") => {
+    (kind: "table" | "markdown" | "kanban" | "timeline") => {
       const center = getViewportCenterWorld();
-      const width = kind === "table" ? 420 : 320;
-      const height = kind === "table" ? 220 : 240;
+      const wide = kind === "table" || kind === "kanban" || kind === "timeline";
+      const width = kind === "kanban" ? 640 : wide ? 480 : 320;
+      const height = kind === "kanban" ? 360 : kind === "timeline" ? 280 : kind === "table" ? 220 : 240;
       const key = createCanvasId(kind);
       opStore.addItem(key, {
         kind,
-        data: kind === "table" ? newTable() : { markdown: "" },
+        data: kind === "table" ? newTable() : kind === "kanban" ? newKanban() : kind === "timeline" ? newTimeline() : { markdown: "" },
         x: snapToGrid(center.x - width / 2),
         y: snapToGrid(center.y - height / 2),
         width,

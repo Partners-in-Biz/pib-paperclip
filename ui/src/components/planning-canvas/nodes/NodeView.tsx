@@ -13,6 +13,8 @@ import { ProjectNode } from "@/components/planning-canvas/nodes/ProjectNode";
 import { NodeLinks } from "@/components/planning-canvas/nodes/NodeLinks";
 import { TableNode } from "@/components/planning-canvas/nodes/TableNode";
 import { MarkdownNode } from "@/components/planning-canvas/nodes/MarkdownNode";
+import { KanbanNode } from "@/components/planning-canvas/nodes/KanbanNode";
+import { TimelineNode } from "@/components/planning-canvas/nodes/TimelineNode";
 import type { TypedNodeMeta } from "@/components/planning-canvas/nodes/typed-meta";
 import type { NodeLinkMeta } from "@/components/planning-canvas/nodes/link-meta";
 import type { CanvasController } from "@/components/planning-canvas/state/useCanvasController";
@@ -80,6 +82,10 @@ const NodeView = memo(function NodeView({
         <TableNode nodeKey={node.id} data={typed.data} title={node.title} />
       ) : typed?.kind === "markdown" ? (
         <MarkdownNode nodeKey={node.id} data={typed.data} title={node.title} />
+      ) : typed?.kind === "kanban" ? (
+        <KanbanNode nodeKey={node.id} data={typed.data} title={node.title} />
+      ) : typed?.kind === "timeline" ? (
+        <TimelineNode nodeKey={node.id} data={typed.data} title={node.title} />
       ) : (
         <Render node={node} isEditing={isEditing} theme={theme} linkedNote={linkedNote} c={latest.current} />
       )}

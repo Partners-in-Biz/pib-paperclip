@@ -4,12 +4,14 @@ import type {
   PlanningCanvasBoard,
   PlanningCanvasBoardRead,
   PlanningCanvasHandoff,
+  PlanningCanvasIssueQuery,
   PlanningCanvasItemsRead,
   PlanningCanvasOpBatch,
   PlanningCanvasOpBatchResponse,
   UpdatePlanningCanvas,
 } from "@paperclipai/shared";
 import { api, requestResponse } from "./client";
+import type { QueriedIssue } from "@/components/planning-canvas/nodes/issue-board";
 
 /** A full board read: the legacy `data` blob plus the item rows and the caller's access. */
 export type PlanningCanvasBoardWithItems = PlanningCanvasBoardRead & { access?: PlanningCanvasAccessLevel };
@@ -69,6 +71,10 @@ export const planningCanvasesApi = {
 
   refs: (companyId: string, boardId: string) =>
     api.get<PlanningCanvasRefsRead>(`${boardPath(companyId, boardId)}/refs`, { cache: "no-store" }),
+
+  /** `POST .../query` (C8): the issues this reader may see that match, newest first, capped at 200. */
+  query: (companyId: string, boardId: string, body: PlanningCanvasIssueQuery) =>
+    api.post<{ issues: QueriedIssue[]; limit: number }>(`${boardPath(companyId, boardId)}/query`, body),
 
   handoff: (companyId: string, boardId: string, body: PlanningCanvasHandoff) =>
     api.post<PlanningCanvasHandoffRead>(`${boardPath(companyId, boardId)}/handoff`, body),
