@@ -72,6 +72,8 @@ export * from "./richtext.js";
 export * from "./module-state.js";
 export * from "./access.js";
 export * from "./refusal.js";
+export * from "./entity-card-batcher.js";
+export * from "./entity-canvas-card.js";
 export * from "./display.js";
 
 const focusRing: CSSProperties = {
