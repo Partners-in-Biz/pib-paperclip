@@ -57,6 +57,8 @@ export function useCanvasState(ctx: CanvasData) {
   const [outlineOpen, setOutlineOpen] = useState(false);
   /** Right-click or long-press menu (C19), in viewport client coordinates. */
   const [contextMenu, setContextMenu] = useState<{ nodeId: string; x: number; y: number } | null>(null);
+  /** "Ask about selection / this frame" (PAR-14278): keys the chat opens with. `seq` re-fires an identical ask. */
+  const [chatAsk, setChatAsk] = useState<{ itemKeys: string[]; frameKey?: string; seq: number } | null>(null);
   const [notesSearch, setNotesSearch] = useState("");
   const [boardSearch, setBoardSearch] = useState("");
   const [scheduleNote, setScheduleNote] = useState<PersonalNote | null>(null);
@@ -148,6 +150,8 @@ export function useCanvasState(ctx: CanvasData) {
     setOutlineOpen,
     contextMenu,
     setContextMenu,
+    chatAsk,
+    setChatAsk,
     notesSearch,
     setNotesSearch,
     boardSearch,

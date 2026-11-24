@@ -1,5 +1,5 @@
 import { CANVAS_NODE_COLORS, type CanvasShapeVariant } from "@paperclipai/shared";
-import { AlignHorizontalJustifyStart, AlignVerticalJustifyStart, CalendarClock, Copy, Eraser, Highlighter, LayoutGrid, ListTree, Send, Sparkles, Trash2 } from "lucide-react";
+import { AlignHorizontalJustifyStart, AlignVerticalJustifyStart, CalendarClock, Copy, Eraser, Highlighter, LayoutGrid, ListTree, MessageSquareText, Send, Sparkles, Trash2 } from "lucide-react";
 import { type CanvasController } from "@/components/planning-canvas/state/useCanvasController";
 import { Button } from "@/components/ui/button";
 import { CANVAS_COLOR_THEMES } from "@/lib/planning-canvas-helpers";
@@ -132,6 +132,15 @@ export function MultiSelectToolbar({ c }: { c: CanvasController }) {
         </Button>
         <Button
           type="button"
+          size="xs"
+          variant="outline"
+          onClick={() => c.setChatAsk((p) => ({ itemKeys: [...selectedNodeIds], seq: (p?.seq ?? 0) + 1 }))}
+        >
+          <MessageSquareText className="size-3" />
+          Ask about selection
+        </Button>
+        <Button
+          type="button"
           size="icon-sm"
           variant="ghost"
           title="Duplicate (⌘D)"
@@ -260,6 +269,22 @@ export function ContextToolbar({ c }: { c: CanvasController }) {
         <Button type="button" size="xs" variant="outline" onClick={() => c.setHandoffOpen(true)}>
           <ListTree className="size-3" />
           Hand off…
+        </Button>
+
+        <Button
+          type="button"
+          size="xs"
+          variant="outline"
+          onClick={() =>
+            c.setChatAsk((p) =>
+              primarySelectedNode.kind === "frame"
+                ? { itemKeys: [], frameKey: primarySelectedNode.id, seq: (p?.seq ?? 0) + 1 }
+                : { itemKeys: [primarySelectedNode.id], seq: (p?.seq ?? 0) + 1 },
+            )
+          }
+        >
+          <MessageSquareText className="size-3" />
+          {primarySelectedNode.kind === "frame" ? "Ask about this frame" : "Ask about this"}
         </Button>
 
         {primarySelectedNode.kind === "note" && primarySelectedNode.noteId && notesById.get(primarySelectedNode.noteId) ? (
