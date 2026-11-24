@@ -24,17 +24,22 @@ export const MEMBER_RESTRICTION_STRIPPED_KEYS: ReadonlySet<string> = new Set([
   "localFolder", "managedFolder", "effectiveLocalFolder",
 ]);
 
-/** The only `adapterConfig` keys a bound caller sees: the four he may set (C4i-b). */
-const ALLOWED_ADAPTER_CONFIG_KEYS: ReadonlySet<string> = new Set(
+/**
+ * The only `adapterConfig` keys a bound caller sees: the four he may set (C4i-b).
+ * Built on first use: this module and `body-allowlist.ts` sit in one import cycle, so when
+ * `body-allowlist.ts` is loaded first its map does not exist yet while this module loads.
+ */
+let allowedAdapterConfigKeys: ReadonlySet<string> | null = null;
+const isAllowedAdapterConfigKey = (name: string) => (allowedAdapterConfigKeys ??= new Set(
   Object.keys(TASK_KEPT_OBJECTS.assigneeAdapterOverrides.adapterConfig),
-);
+)).has(name);
 
 function stripReplacer(this: unknown, key: string, value: unknown): unknown {
   // Array indexes are not names; only an object's own keys are stripped.
   if (Array.isArray(this)) return value;
   if (MEMBER_RESTRICTION_STRIPPED_KEYS.has(key)) return undefined;
   if (key === "adapterConfig" && value && typeof value === "object" && !Array.isArray(value)) {
-    return Object.fromEntries(Object.entries(value).filter(([name]) => ALLOWED_ADAPTER_CONFIG_KEYS.has(name)));
+    return Object.fromEntries(Object.entries(value).filter(([name]) => isAllowedAdapterConfigKey(name)));
   }
   return value;
 }
@@ -46,7 +51,7 @@ export function hasHostKeys(value: unknown): boolean {
   for (const [key, inner] of Object.entries(value)) {
     if (MEMBER_RESTRICTION_STRIPPED_KEYS.has(key)) return true;
     if (key === "adapterConfig" && inner && typeof inner === "object" && !Array.isArray(inner)
-      && Object.keys(inner).some((name) => !ALLOWED_ADAPTER_CONFIG_KEYS.has(name))) return true;
+      && Object.keys(inner).some((name) => !isAllowedAdapterConfigKey(name))) return true;
     if (hasHostKeys(inner)) return true;
   }
   return false;
