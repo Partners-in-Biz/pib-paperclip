@@ -9,6 +9,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import type { Env } from "./env.js";
 import { message } from "./env.js";
 import { canaryProjectIds } from "./clients.js";
+import { NO_DECISION_RIGHTS, parseDecisionRights, type DecisionRights } from "./decision-rights-model.js";
 
 /** Issues with these origins are containers: they hold work and are never the owner's to decide. */
 export const CONTAINER_ORIGIN_KINDS = ["plugin:partnersinbiz.seo:sprint"];
@@ -18,6 +19,10 @@ const HIDDEN_LIMIT = 1000;
 
 export interface OwnerFilterResult {
   hiddenIssueIds: string[];
+  /** A standing queue is set: the Finish setup row is a board ask tracked there, so it is not the owner's decision. */
+  setupRouted: boolean;
+  /** PAR-13992: the decision-rights seats, so rows of a routed kind wait on their seat. Absent when the settings could not be read. */
+  rights?: DecisionRights;
   /** Parts whose read failed (`canary`, `standingQueue`, or `limit` when the row cap cut the list); that part is empty. */
   degraded: string[];
 }
@@ -32,6 +37,15 @@ export async function standingQueueIssues(ctx: PluginContext, companyId: string)
 /** One query: the open issues that are containers, in the standing queue or in a canary project. A failed canary or config read leaves that part empty. */
 export async function ownerFilter(env: Env, companyId: string): Promise<OwnerFilterResult> {
   const degraded: string[] = [];
+  const rightsPart = async (read: () => Promise<DecisionRights>): Promise<DecisionRights> => {
+    try {
+      return await read();
+    } catch (error) {
+      degraded.push("decisionRights");
+      env.ctx.logger.info("Cockpit owner filter part failed", { companyId, part: "decisionRights", error: message(error) });
+      return NO_DECISION_RIGHTS;
+    }
+  };
   const part = async (name: string, read: () => Promise<string[]>): Promise<string[]> => {
     try {
       return await read();
@@ -41,6 +55,7 @@ export async function ownerFilter(env: Env, companyId: string): Promise<OwnerFil
       return [];
     }
   };
+  const rights = await rightsPart(async () => parseDecisionRights(await readConfig(env.ctx, companyId)));
   const [identifiers, projects] = await Promise.all([part("standingQueue", () => standingQueueIssues(env.ctx, companyId)), part("canary", () => canaryProjectIds(env.ctx, companyId))]);
   const rows = await env.ctx.db.query<{ id: string }>(
     `SELECT id FROM public.issues WHERE company_id = $1 AND hidden_at IS NULL AND status IN ('todo', 'in_progress', 'in_review', 'blocked')
@@ -52,5 +67,5 @@ export async function ownerFilter(env: Env, companyId: string): Promise<OwnerFil
     degraded.push("limit");
     env.ctx.logger.info("Cockpit owner filter hit its row cap", { companyId, limit: HIDDEN_LIMIT });
   }
-  return { hiddenIssueIds: rows.map((r) => String(r.id)), degraded };
+  return { hiddenIssueIds: rows.map((r) => String(r.id)), setupRouted: identifiers.length > 0, rights, degraded };
 }

@@ -1,12 +1,8 @@
 'use strict';
 const { EXIT } = require('./exit-codes.cjs');
 
-function checkFill({ field, pageUrl, site, handoffActive }) {
-  // Hand-off mode lifts all restrictions
-  if (handoffActive === true) {
-    return { ok: true };
-  }
-
+// An agent's fill. Nothing lifts these rules, not even a hand-off: then the person types into their own window.
+function checkFill({ field, pageUrl, site }) {
   // a. field missing/not an object => fail closed
   if (!field || typeof field !== 'object') {
     return { exit: EXIT.REFUSED_BY_POLICY, ok: false, reason: 'field_unknown' };

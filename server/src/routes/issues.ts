@@ -3,6 +3,7 @@ import { SYSTEM_CAUSING_ACTOR, wakeCausingActorFromActor, wakeCausingActorFromAc
 import { assertNamesOnlyHimself } from "../services/member-restriction/acting-person.js";
 import { refusedOnlyByMemberRestriction } from "../services/member-restriction/action-list.js";
 import { restrictedTaskBody } from "../services/member-restriction/body-allowlist.js";
+import { assertCanAssignTasks as assertCanAssignTasksFor, type TaskAssignmentAuthorizationScope } from "./task-assignment-guard.js";
 import {
   actorMayInstructAgent,
   hideUnreadableIssueIds,
@@ -5084,14 +5085,6 @@ export function issueRoutes(
     return (req.actor.companyIds ?? []).includes(companyId);
   }
 
-  type TaskAssignmentAuthorizationScope = {
-    issueId?: string | null;
-    projectId?: string | null;
-    parentIssueId?: string | null;
-    assigneeAgentId?: string | null;
-    assigneeUserId?: string | null;
-  };
-
   async function resolveAssignmentProjectId(input: {
     companyId: string;
     projectId: string | null | undefined;
@@ -5126,28 +5119,8 @@ export function issueRoutes(
     companyId: string,
     assignmentScope?: TaskAssignmentAuthorizationScope,
   ) {
-    assertCompanyAccess(req, companyId);
-    const decision = await access.decide({
-      actor: req.actor,
-      action: "tasks:assign",
-      resource: {
-        type: "issue",
-        companyId,
-        issueId: assignmentScope?.issueId ?? null,
-        projectId: assignmentScope?.projectId ?? null,
-        parentIssueId: assignmentScope?.parentIssueId ?? null,
-        assigneeAgentId: assignmentScope?.assigneeAgentId ?? null,
-        assigneeUserId: assignmentScope?.assigneeUserId ?? null,
-      },
-      scope: assignmentScope ?? null,
-    });
-    if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
-    // PAR-12608 4.7 (AC-A2, AC-A4): naming an agent needs it on his list;
-    // naming a person, or nobody, stays allowed.
-    const agentId = assignmentScope?.assigneeAgentId;
-    if (agentId && !(await actorMayInstructAgent(db, req.actor, { companyId, agentId, target: "tasks:assign" }))) {
-      throw forbidden(MEMBER_AGENT_NOT_LISTED_ROUTE_MESSAGE, MEMBER_AGENT_NOT_LISTED_DETAILS);
-    }
+    // Shared with the canvas mention guard (PAR-13935), so both run the same checks.
+    await assertCanAssignTasksFor(db, req, companyId, assignmentScope, access);
   }
 
   /**
@@ -13119,8 +13092,11 @@ export function issueRoutes(
       const {
         watchdogDiscovery: rawWatchdogDiscovery,
         onboardingFirstTask: rawOnboardingFirstTask,
+        deferInitialWakeup: rawDeferInitialWakeup,
         ...rawCreateBody
       } = sanitizedBody;
+      const deferInitialWakeup =
+        rawDeferInitialWakeup === true && req.actor.type === "board";
       // The onboarding first-task marker grants privileged, server-owned behavior:
       // it stamps the onboarding origin (which suppresses the seeded description in
       // the UI) and seeds a comment authored *as the assigned agent*. Honor it only
@@ -13422,12 +13398,12 @@ export function issueRoutes(
         },
       };
       const createAcceptedIssue = (data: typeof createInput) => {
-        if (actor.actorType !== "user" || isOnboardingFirstTask || !data.assigneeAgentId || ["backlog", "done", "cancelled"].includes(data.status ?? "")) {
+        if (deferInitialWakeup || actor.actorType !== "user" || isOnboardingFirstTask || !data.assigneeAgentId || ["backlog", "done", "cancelled"].includes(data.status ?? "")) {
           return svc.create(companyId, data);
         }
         return db.transaction(async tx => {
         const created = await svc.create(companyId, data, tx);
-        if (!deduplicationReason && !isOnboardingFirstTask && actor.actorType === "user" && created.assigneeAgentId && !["backlog", "done", "cancelled"].includes(created.status)) {
+        if (!deduplicationReason && !deferInitialWakeup && !isOnboardingFirstTask && actor.actorType === "user" && created.assigneeAgentId && !["backlog", "done", "cancelled"].includes(created.status)) {
           await enqueueFastResponse(tx as unknown as Db, { companyId, issueId: created.id, agentId: created.assigneeAgentId,
             responsibleUserId: actor.actorId, sourceKey: `issue:${created.id}`, acceptedAt: new Date(created.createdAt) });
         }
@@ -13636,7 +13612,7 @@ export function issueRoutes(
       // cancelled is a record, not work: like restoring an assignee on closed
       // work, it must not wake the assignee. Every other create keeps its wake.
 
-      if (!isOnboardingFirstTask && !isClosedIssueStatus(issue.status)) {
+      if (!deferInitialWakeup && !isOnboardingFirstTask && !isClosedIssueStatus(issue.status)) {
         void queueIssueAssignmentWakeup({
           heartbeat,
           issue,
@@ -13647,7 +13623,9 @@ export function issueRoutes(
           requestedByActorId: actor.actorId,
         });
       }
-      await queueTaskWatchdogEvaluation(issue, actor.runId);
+      if (!deferInitialWakeup) {
+        await queueTaskWatchdogEvaluation(issue, actor.runId);
+      }
 
     const visibleReferenceSummary = await redactIssueReferenceEdges(req, companyId, referenceSummary);
       res.status(201).json({
@@ -13657,6 +13635,95 @@ export function issueRoutes(
       });
     },
   );
+
+  router.post("/issues/:id/finalize-creation", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await getAccessibleResource(
+      req,
+      res,
+      svc.getById(id),
+      "Issue not found",
+    );
+    if (!issue) return;
+    if (
+      req.actor.type !== "board" ||
+      !(await decideIssueAccess(req, issue, "issue:mutate")).allowed
+    ) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    const existingAttachments = await svc.listAttachments(issue.id);
+    const initialAttachments = existingAttachments
+      .filter((attachment) => attachment.issueCommentId === null && !attachment.originatingRunId)
+      .sort((a, b) => {
+        const diff = new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+        return diff !== 0 ? diff : a.id.localeCompare(b.id);
+      });
+    const currentDescription = issue.description ?? "";
+    const missingRefLines = initialAttachments
+      .filter((attachment) => !currentDescription.includes(buildAttachmentContentPath(attachment.id)))
+      .map((attachment) => {
+        const name = (attachment.originalFilename?.trim() || "attachment").replace(/[\\[\]]/g, "\\$&");
+        const isImage = (attachment.contentType ?? "").toLowerCase().split(";")[0]?.trim().startsWith("image/");
+        return `${isImage ? "!" : ""}[${name}](${buildAttachmentContentPath(attachment.id)})`;
+      });
+
+    let updatedIssue = issue;
+    if (missingRefLines.length > 0) {
+      const nextDescription = [currentDescription.trim(), missingRefLines.join("\n")]
+        .filter(Boolean)
+        .join("\n\n");
+      const saved = await svc.update(issue.id, { description: nextDescription });
+      if (saved) updatedIssue = saved;
+    }
+
+    const finalizeKey = `issue-create-finalize:${updatedIssue.id}`;
+    const [existingWake] = await db
+      .select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, updatedIssue.companyId),
+          eq(agentWakeupRequests.idempotencyKey, finalizeKey),
+        ),
+      )
+      .limit(1);
+
+    const isOnboardingFirstTask = updatedIssue.originKind === ONBOARDING_FIRST_TASK_ORIGIN_KIND;
+    if (!existingWake && !updatedIssue.executionRunId) {
+      if (!isOnboardingFirstTask && !isClosedIssueStatus(updatedIssue.status)) {
+        if (
+          actor.actorType === "user" &&
+          updatedIssue.assigneeAgentId &&
+          !["backlog", "done", "cancelled"].includes(updatedIssue.status)
+        ) {
+          await enqueueFastResponse(db, {
+            companyId: updatedIssue.companyId,
+            issueId: updatedIssue.id,
+            agentId: updatedIssue.assigneeAgentId,
+            responsibleUserId: actor.actorId,
+            sourceKey: `issue:${updatedIssue.id}`,
+            acceptedAt: new Date(),
+          });
+        }
+        void queueIssueAssignmentWakeup({
+          heartbeat,
+          issue: updatedIssue,
+          reason: "issue_assigned",
+          mutation: "create",
+          contextSource: "issue.create",
+          requestedByActorType: actor.actorType,
+          requestedByActorId: actor.actorId,
+          idempotencyKey: finalizeKey,
+        });
+      }
+      await queueTaskWatchdogEvaluation(updatedIssue, actor.runId);
+    }
+
+    res.status(200).json({ ok: true, issue: updatedIssue });
+  });
 
   router.post(
     "/issues/:id/children",

@@ -396,6 +396,77 @@ function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
+/**
+ * A queued run older than this claims ahead of every younger runnable run,
+ * oldest first. Without it, retries and re-wakes on `in_progress` issues
+ * (rank 0) take a one-slot agent's slot every time it frees, and older runs
+ * on `todo` issues or with no issue never start (PAR-13973).
+ */
+export const QUEUED_RUN_STARVATION_AGE_MS = 15 * 60 * 1000;
+
+function issueRunPriorityRank(priority: string | null | undefined) {
+  switch (priority) {
+    case "critical":
+      return 0;
+    case "high":
+      return 1;
+    case "medium":
+      return 2;
+    case "low":
+      return 3;
+    default:
+      return 4;
+  }
+}
+
+/**
+ * Claim order for an agent's queued runs. Runs whose issue dependencies are
+ * not ready always go last. Among the rest, runs waiting at least
+ * QUEUED_RUN_STARVATION_AGE_MS go first in createdAt order; younger runs then
+ * follow by rank (in_progress issue, other issue, no issue), issue priority
+ * and createdAt.
+ */
+export function prioritizeQueuedRunsForClaim<
+  T extends { createdAt: Date; contextSnapshot: unknown },
+>(
+  queuedRuns: readonly T[],
+  input: {
+    issueById: ReadonlyMap<string, { status: string; priority: string | null }>;
+    dependencyReadiness: ReadonlyMap<string, { isDependencyReady: boolean }>;
+    now: Date;
+  },
+): T[] {
+  const keyed = queuedRuns.map((run) => {
+    const issueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+    const ready = issueId
+      ? (input.dependencyReadiness.get(issueId)?.isDependencyReady ?? true)
+      : true;
+    const issue = issueId ? input.issueById.get(issueId) : undefined;
+    const rank = issueId
+      ? ready
+        ? issue?.status === "in_progress"
+          ? 0
+          : 1
+        : 3
+      : 2;
+    const createdAtMs = run.createdAt.getTime();
+    const aged = ready && input.now.getTime() - createdAtMs >= QUEUED_RUN_STARVATION_AGE_MS;
+    return { run, rank, aged, priorityRank: issueRunPriorityRank(issue?.priority), createdAtMs };
+  });
+  keyed.sort((left, right) => {
+    const leftBlocked = left.rank === 3;
+    const rightBlocked = right.rank === 3;
+    if (leftBlocked !== rightBlocked) return leftBlocked ? 1 : -1;
+    if (left.aged !== right.aged) return left.aged ? -1 : 1;
+    if (!left.aged) {
+      if (left.rank !== right.rank) return left.rank - right.rank;
+      if (left.priorityRank !== right.priorityRank) return left.priorityRank - right.priorityRank;
+    }
+    return left.createdAtMs - right.createdAtMs;
+  });
+  return keyed.map((entry) => entry.run);
+}
+
 export async function claimDueTimerHeartbeatForAgent(
   db: Db,
   agent: typeof agents.$inferSelect,
@@ -542,21 +613,6 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
 
   const claimDueTimerHeartbeat = (agent: typeof agents.$inferSelect, now: Date, intervalSec: number) =>
     claimDueTimerHeartbeatForAgent(db, agent, now, intervalSec);
-
-  function issueRunPriorityRank(priority: string | null | undefined) {
-    switch (priority) {
-      case "critical":
-        return 0;
-      case "high":
-        return 1;
-      case "medium":
-        return 2;
-      case "low":
-        return 3;
-      default:
-        return 4;
-    }
-  }
 
   async function listQueuedRunDependencyReadiness(
     companyId: string,
@@ -2530,47 +2586,10 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         );
       const issueById = new Map(issueRows.map((row) => [row.id, row]));
       const companyAgents = await listCompanyAgentOrgRows(agent.companyId);
-      const prioritizedRuns = [...queuedRuns].sort((left, right) => {
-        const leftIssueId = readNonEmptyString(
-          parseObject(left.contextSnapshot).issueId,
-        );
-        const rightIssueId = readNonEmptyString(
-          parseObject(right.contextSnapshot).issueId,
-        );
-        const leftReadiness = leftIssueId
-          ? dependencyReadiness.get(leftIssueId)
-          : null;
-        const rightReadiness = rightIssueId
-          ? dependencyReadiness.get(rightIssueId)
-          : null;
-        const leftReady = leftIssueId
-          ? (leftReadiness?.isDependencyReady ?? true)
-          : true;
-        const rightReady = rightIssueId
-          ? (rightReadiness?.isDependencyReady ?? true)
-          : true;
-        const leftIssue = leftIssueId ? issueById.get(leftIssueId) : null;
-        const rightIssue = rightIssueId ? issueById.get(rightIssueId) : null;
-        const leftRank = leftIssueId
-          ? leftReady
-            ? leftIssue?.status === "in_progress"
-              ? 0
-              : 1
-            : 3
-          : 2;
-        const rightRank = rightIssueId
-          ? rightReady
-            ? rightIssue?.status === "in_progress"
-              ? 0
-              : 1
-            : 3
-          : 2;
-        if (leftRank !== rightRank) return leftRank - rightRank;
-        const leftPriorityRank = issueRunPriorityRank(leftIssue?.priority);
-        const rightPriorityRank = issueRunPriorityRank(rightIssue?.priority);
-        if (leftPriorityRank !== rightPriorityRank)
-          return leftPriorityRank - rightPriorityRank;
-        return left.createdAt.getTime() - right.createdAt.getTime();
+      const prioritizedRuns = prioritizeQueuedRunsForClaim(queuedRuns, {
+        issueById,
+        dependencyReadiness,
+        now: new Date(),
       });
 
       const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];

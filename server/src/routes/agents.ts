@@ -1,3 +1,4 @@
+import { requestedPauseReason } from "../services/requested-pause-reason.js";
 import { assertProviderApiPlacementPolicy, managedCursorApiDefaultEnabled, resolveProviderApiPlacement } from "../services/native-runtime/provider-api-placement.js";
 import { wakeCausingActorFromActor } from "../services/heartbeat/causing-actor.js";
 import { isObjectJournalBusyError } from "../services/object-byte-journal.js";
@@ -4065,7 +4066,7 @@ export function agentRoutes(
     const listed = await restrictedAgentIdsForActor(db, req.actor, companyId);
     const result = await filterAgentsForActor(req, await svc.list(companyId));
     // PAR-12608 4.6, AC-G4: a caller bound by R under `enforce` gets only the
-    // agents on his list, each reduced to five fields.
+    // agents on his list, each reduced to six fields.
     if (listed) {
       res.json(result.filter((agent) => listed.has(agent.id)).map(restrictedAgentView));
       return;
@@ -5963,7 +5964,9 @@ export function agentRoutes(
     if (!(await getAccessibleAgent(req, res, id))) {
       return;
     }
-    const agent = await svcLifecycle.pauseAgent(id);
+    // PAR-13561: a planned deploy pause may declare itself so recovery defers.
+    const requestedReason = requestedPauseReason(req.body);
+    const agent = await svcLifecycle.pauseAgent(id, requestedReason);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;

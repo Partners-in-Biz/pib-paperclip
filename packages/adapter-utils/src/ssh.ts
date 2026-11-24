@@ -1500,8 +1500,8 @@ export function buildSshRemoteStopScript(remoteRunDir: string, signal: SshRemote
   ].join("\n");
 }
 
-// Run-end removal (AC 4, temporary until PAR-9961 moves it into the lease
-// release). Deletes inside the user's workspace, so it removes only
+// Run dir removal, run by the ssh lease release only after a gone check
+// (PAR-9961, 13.9 decision 2). Deletes inside the user's workspace, so it removes only
 // `<ws>/.paperclip-runs/<runId>` after resolving links: a `.paperclip-runs`
 // that resolves outside the workspace, or a run dir that is a link, is left.
 export function buildSshRunDirRemoveScript(remoteWorkspacePath: string, remoteRunDir: string): string {
@@ -1519,6 +1519,29 @@ export function buildSshRunDirRemoveScript(remoteWorkspacePath: string, remoteRu
     'if [ ! -e "$base/$name" ]; then echo absent; exit 0; fi',
     'rm -rf -- "$base/$name" && echo removed',
   ].join("\n");
+}
+
+/** Days after which a leftover run dir (a run whose release never removed it) is swept. */
+export const SSH_STALE_RUN_DIR_DAYS = 7;
+
+// Sweep of leftover sibling run dirs (PAR-9962), confined as the removal above:
+// only real directories directly under `<ws>/.paperclip-runs` (resolved inside
+// the workspace), with a run-id-shaped name, untouched for over 7 days. `find`
+// without -L never follows links, so a linked entry is not a directory here.
+export function buildSshStaleRunDirSweepScript(remoteWorkspacePath: string): string {
+  return [
+    `ws=${shellQuote(trimTrailingSlashes(remoteWorkspacePath))}`,
+    `base=$(cd -P "$ws/${SSH_RUN_DIR_PARENT}" 2>/dev/null && pwd -P) || { echo sweep-absent; exit 0; }`,
+    'wsp=$(cd -P "$ws" 2>/dev/null && pwd -P) || { echo sweep-absent; exit 0; }',
+    'case "$base" in "$wsp"/?*) ;; *) echo sweep-refused; exit 0;; esac',
+    `find "$base" -mindepth 1 -maxdepth 1 -type d ! -name '*[!A-Za-z0-9_-]*' -mtime +${SSH_STALE_RUN_DIR_DAYS} -exec rm -rf -- {} + && echo swept`,
+  ].join("\n");
+}
+
+/** Removal of one run dir, then the stale sweep; the subshell keeps an early exit local. */
+export function buildSshRunDirCleanupScript(remoteWorkspacePath: string, remoteRunDir: string): string {
+  return ["(", buildSshRunDirRemoveScript(remoteWorkspacePath, remoteRunDir), ")",
+    buildSshStaleRunDirSweepScript(remoteWorkspacePath)].join("\n");
 }
 
 export async function buildSshSpawnTarget(input: {
@@ -1580,8 +1603,9 @@ export async function buildSshSpawnTarget(input: {
     return { command: "ssh", args: sshArgs, cleanup: auth.cleanup };
   }
 
-  // Stop and removal connections reuse the spawn's auth files and skip the
-  // login profiles. After cleanup the auth files are gone: stopRemote is "error".
+  // Stop connections reuse the spawn's auth files and skip the login profiles.
+  // After cleanup the auth files are gone: stopRemote is "error". The run dir
+  // stays: the lease release removes it after a gone check (PAR-9961).
   let authCleaned = false;
   let cleanupPromise: Promise<void> | null = null;
   const runRemote: SshRemoteCommandRunner =
@@ -1608,16 +1632,7 @@ export async function buildSshSpawnTarget(input: {
     cleanup: () =>
       (cleanupPromise ??= (async () => {
         authCleaned = true;
-        try {
-          await runRemote(
-            buildSshRunDirRemoveScript(input.spec.remoteWorkspacePath, remoteRunDir),
-            SSH_REMOTE_STOP_TIMEOUT_MS,
-          );
-        } catch {
-          // Best effort: a leftover dir holds one small 0600 file, git-excluded.
-        } finally {
-          await auth.cleanup();
-        }
+        await auth.cleanup();
       })()),
   };
 }

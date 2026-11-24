@@ -72,6 +72,10 @@ await syncAllCompanies(ctx, syncer, { companyIds: await companiesFromMyRows(), i
 
 `contract/company-created-contract.spec.ts` fails when a plugin with skills neither handles `company.created` nor is in `EXEMPT` (today only `cockpit`; remove it once the Cockpit uses `registerCompanyBootstrap`), when a plugin subscribes twice to `company.created`, or when a plugin reads the roles copy without `registerRoleWatch`. A second contract, "core event subscriptions", fails when a plugin has two handlers for the same core event name (counting what `registerHireWatch`, `registerDoneChecks` and `registerCompanyBootstrap` subscribe to for it).
 
+**`jobCompanyIds(ctx, known)` (0.22.0, PAR-14008).** In a job or webhook, wrap the plugin's own company list: `for (const id of await jobCompanyIds(ctx, await knownCompanies(ctx)))`. It returns `known` filtered to the host's actionable list (companies with saved settings), or `known` unchanged when that list is unknown (old host, call refused). Never use it inside an action, tool or event: there the host's list is only that call's company.
+
+**`actingRestriction(actor)` (0.23.0, PAR-14274).** Reads core's member-restriction mark on an action caller, route caller or tool run (`onBehalfOfRestricted`): `restricted` (flagged, company on `enforce`), `unrestricted` (everyone else: `off`, `report`, the kill switch, the local board), or `unavailable` (the host sent no mark). Refuse with `MEMBER_RESTRICTED` or `MEMBER_RESTRICTION_UNAVAILABLE` where the answer matters; never read `unavailable` as "not restricted". Studio uses it to keep client media from restricted members.
+
 ## The skill sync never holds a call up (`soon`, 0.13.0)
 
 `ensure` waits for the host, and on a company with many skills the host can take more than 30 seconds to reconcile or reset one skill. The syncer remembers a finished sync only in the worker's memory, so after every worker restart the first calls waited for it and ran into the host's 30-second limit (13 Nov 2026: a Cockpit release and a CRM and Mailbox release rolled back at their smoke tests).

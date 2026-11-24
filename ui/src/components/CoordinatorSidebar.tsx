@@ -21,6 +21,7 @@ import { Link, useLocation } from "@/lib/router";
 import { agentRouteRef, cn, projectRouteRef, SIDEBAR_RAIL_HIDDEN_LABEL } from "@/lib/utils";
 import { SidebarCompanyMenu } from "./SidebarCompanyMenu";
 import { SidebarNavItem } from "./SidebarNavItem";
+import { SidebarNotesDropdown } from "./SidebarNotesDropdown";
 import { SidebarSection } from "./SidebarSection";
 import { TruncatedTextMarqueeProvider } from "./TruncatedText";
 import { useScrollbarWhileScrolling } from "./side-panel/use-scrollbar-while-scrolling";
@@ -190,6 +191,7 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
           {memberRestricted
             ? <SidebarNavItem className="design-sidebar-item" to={RESTRICTED_MEMBER_LANDING_PATH} label="Inbox" icon={Inbox} />
             : <SidebarNavItem className="design-sidebar-item" to="/decisions" label="Inbox" icon={Inbox} badge={attentionCount} badgeLabel="decisions" />}
+          <SidebarNotesDropdown coordinator />
         </div>
         <Flyout open={moreOpen} onOpenChange={setMoreOpen}>
           <FlyoutTrigger asChild><button type="button" aria-label="More workspace pages" className="design-sidebar-item flex w-auto items-center gap-2.5 rounded-lg py-1.5 text-left transition-colors focus-visible:ring-2 focus-visible:ring-ring"><MoreHorizontal className="size-4 shrink-0" /><span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : undefined}>More</span></button></FlyoutTrigger>

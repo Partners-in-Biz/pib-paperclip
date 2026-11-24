@@ -927,13 +927,15 @@ function StreamlinedInbox({
     queryFn: memberGate.guard(() => issuesApi.listLabels(selectedCompanyId!), []),
     enabled: !!selectedCompanyId && !memberGate.closed,
   });
-  const isolatedWorkspacesEnabled = experimentalSettings?.enableIsolatedWorkspaces === true;
+  // Execution workspaces are a closed list for a restricted member under `enforce` (AC-G10):
+  // no request, and no workspace grouping, column or filter.
+  const isolatedWorkspacesEnabled = experimentalSettings?.enableIsolatedWorkspaces === true && !memberGate.closed;
   const externalObjectsEnabled = experimentalSettings?.enableExternalObjects === true && !memberGate.closed;
   const { data: executionWorkspaces = [], isLoading: isWorkspacesLoading } = useQuery({
     queryKey: selectedCompanyId
       ? queryKeys.executionWorkspaces.summaryList(selectedCompanyId)
       : ["execution-workspaces", "__disabled__"],
-    queryFn: () => executionWorkspacesApi.listSummaries(selectedCompanyId!),
+    queryFn: memberGate.guard(() => executionWorkspacesApi.listSummaries(selectedCompanyId!), []),
     enabled: !!selectedCompanyId && isolatedWorkspacesEnabled,
   });
 

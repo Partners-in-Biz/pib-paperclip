@@ -11,14 +11,23 @@ import { Card, Muted } from "./components.js";
 const wrap = { overflowWrap: "anywhere", minWidth: 0 } as const;
 const code = { display: "block", margin: 0, padding: "8px 10px", borderRadius: 8, background: tokens.secondary, border: `1px solid ${tokens.border}`, fontFamily: "ui-monospace, monospace", fontSize: 12.5, color: tokens.fg, whiteSpace: "pre-wrap", overflowWrap: "anywhere", minWidth: 0 } as const;
 
-/** The flag the daemon looks for (root-owned file named after the identity, `handoff.cjs`). */
+/**
+ * Starts a hand-off (PAR-14022, root part PAR-9356): makes the root-owned flag the daemon checks (`handoff.cjs`),
+ * starts screen sharing of display :99 on the server's localhost:5900, and opens the login window (`pib-browser handoff-open`).
+ */
 export function handoffCommand(identity: string): string {
-  return `sudo touch /run/pib-browser/handoff/${identity}`;
+  return `sudo pib-root browser-handoff-start ${identity}`;
 }
-/** Forwards the server's remote-desktop port; `<server>` and the port are the Sysadmin's to confirm. */
+/** Ends it: removes the flag (only root can) and stops the screen sharing. */
+export function handoffStopCommand(identity: string): string {
+  return `sudo pib-root browser-handoff-stop ${identity}`;
+}
+/** Forwards the server's localhost-only screen-sharing port to the person's computer. */
 export function tunnelCommand(): string {
-  return "ssh -L 5900:localhost:5900 <server>";
+  return "ssh -N -L 5900:localhost:5900 <you>@<server>";
 }
+/** Where the person's VNC client connects once the tunnel is open. */
+export const VNC_ADDRESS = "localhost:5900";
 
 function when(iso: string | null): string {
   const t = iso ? Date.parse(iso) : NaN;
@@ -57,11 +66,15 @@ export function BrowserBody({ view, identity, hrefFor }: { view: BrowserView; id
       {selected ? (
         <Card title={`Log in again: ${selected.identity}`} subtitle="Hand-off mode lets a person use the browser for this login.">
           <div style={{ display: "grid", gap: 8, minWidth: 0 }}>
-            <span style={{ fontSize: 12, color: tokens.muted }}>1. On the server, as root, put this login in hand-off mode</span>
+            <span style={{ fontSize: 12, color: tokens.muted }}>1. On the server, start the hand-off. It starts screen sharing on the server only and opens the login window.</span>
             <code style={code}>{handoffCommand(selected.identity)}</code>
-            <span style={{ fontSize: 12, color: tokens.muted }}>2. From your computer, open the tunnel, then log in in the window</span>
+            <span style={{ fontSize: 12, color: tokens.muted }}>2. On your computer, open the tunnel and leave it open</span>
             <code style={code}>{tunnelCommand()}</code>
-            <span style={{ fontSize: 12, color: tokens.muted }}>3. Remove the file, then run the browser status check again</span>
+            <span style={{ fontSize: 12, color: tokens.muted }}>3. Connect a VNC client to this address and log in in the window. It closes by itself once you are logged in, or after 30 minutes.</span>
+            <code style={code}>{VNC_ADDRESS}</code>
+            <span style={{ fontSize: 12, color: tokens.muted }}>4. On the server, end the hand-off</span>
+            <code style={code}>{handoffStopCommand(selected.identity)}</code>
+            <span style={{ fontSize: 12, color: tokens.muted }}>5. Run the browser status check again. This login then shows Working.</span>
           </div>
         </Card>
       ) : null}

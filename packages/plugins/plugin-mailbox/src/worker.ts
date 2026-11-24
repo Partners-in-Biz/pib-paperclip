@@ -1,4 +1,4 @@
-import { normalizeToolResult } from "@partnersinbiz/pib-plugin-kit";
+import { jobCompanyIds, normalizeToolResult } from "@partnersinbiz/pib-plugin-kit";
 import { DAILY_DAYS, shapeDaily } from "./daily.js";
 import { randomUUID } from "node:crypto";
 import {
@@ -292,7 +292,7 @@ const plugin = definePlugin({
     ctx.jobs.register(SETUP_STATUS_JOB_KEY, async () => {
       await trackJob(ctx, SETUP_STATUS_JOB_KEY, async () => {
         // First, so the Setup status below shows today's answer: can the Mailbox's own one-click link work?
-        await probeCompanies(requireEnv(), await knownCompanies(ctx));
+        await probeCompanies(requireEnv(), await jobCompanyIds(ctx, await knownCompanies(ctx)));
         await publishAllSetupStatus(ctx, requireStore());
         await publishAllCockpit(ctx);
         await reannounceSuppressions(requireEnv());
@@ -1002,7 +1002,7 @@ async function senderDomainHealthTool(companyId: string, domainOrAddress: string
 
 /** Daily job body: every company that has the Mailbox on, settings saved and the checks not switched off. */
 async function runAllDomainChecks(ctx: PluginContext): Promise<void> {
-  for (const companyId of await knownCompanies(ctx)) {
+  for (const companyId of await jobCompanyIds(ctx, await knownCompanies(ctx))) {
     try {
       if (!(await configSaved(ctx, companyId)) || !(await isModuleEnabled(ctx, companyId, PLUGIN_ID))) continue;
       await purgeProviderHistory(ctx, companyId);
@@ -1054,7 +1054,7 @@ async function hourlyHousekeeping(ctx: PluginContext): Promise<void> {
   } catch (error) {
     ctx.logger.info("Mailbox skill sweep failed", { error: errorMessage(error) });
   }
-  for (const companyId of await knownCompanies(ctx)) {
+  for (const companyId of await jobCompanyIds(ctx, await knownCompanies(ctx))) {
     try {
       if (!(await configSaved(ctx, companyId))) continue;
       await scrubPrivateMail(ctx, companyId);

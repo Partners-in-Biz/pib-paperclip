@@ -2915,3 +2915,10 @@ export {
   TASK_IDENTITY_CHANGED_FIELD,
   issueActivityChangesTaskIdentity,
 } from "./issue-activity-identity.js";
+export * from "./types/personal-note.js";
+export * from "./validators/personal-note.js";
+export * from "./types/planning-canvas.js";
+export * from "./validators/planning-canvas.js";
+export * from "./planning-canvas-format.js";
+export * from "./planning-canvas-blueprints.js";
+export * from "./planning-canvas-import.js";

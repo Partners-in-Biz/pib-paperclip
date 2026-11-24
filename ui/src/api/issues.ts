@@ -407,6 +407,8 @@ export const issuesApi = {
     api.put<{ id: string; title: string; titleNeedsGeneration: boolean; changed: boolean }>(`/issues/${id}/title`, data),
   create: (companyId: string, data: Record<string, unknown>) =>
     api.post<Issue>(`/companies/${companyId}/issues`, data),
+  finalizeCreation: (id: string) =>
+    api.post<{ ok: boolean; issue?: Issue }>(`/issues/${id}/finalize-creation`, {}),
   update: (id: string, data: Record<string, unknown>) => {
     const response = api.patch<IssueUpdateResponse>(`/issues/${id}`, data);
     return typeof data.comment === "string"

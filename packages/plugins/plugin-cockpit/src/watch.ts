@@ -75,6 +75,13 @@ const num = (value: unknown): number => Number(value) || 0;
 
 const ago = (now: Date, hours: number) => new Date(now.getTime() - hours * 3_600_000).toISOString();
 
+/**
+ * The issue a run worked on. `issue_id` is set by the host from the run's context on insert, so no
+ * `context_snapshot` (large, a detoast per row) is read for it; only a run whose issue is gone (the host
+ * sets `issue_id` NULL on delete) or that has no issue falls back to the context. PAR-13397.
+ */
+const RUN_ISSUE_ID = `coalesce(issue_id::text, context_snapshot ->> 'issueId')`;
+
 /** Finished runs in the window, per agent, status and error code (one GROUP BY row each). */
 export async function readRateRows(ctx: PluginContext, companyId: string, now: Date): Promise<RateRow[]> {
   const rows = await ctx.db.query<Raw>(
@@ -91,7 +98,7 @@ export async function readRateRows(ctx: PluginContext, companyId: string, now: D
 export async function readStreakRuns(ctx: PluginContext, companyId: string, now: Date): Promise<StreakRun[]> {
   const rows = await ctx.db.query<Raw>(
     `SELECT t.agent_id, t.status, t.error_code, t.started_at, t.issue_id, i.identifier
-       FROM (SELECT agent_id, status, error_code, started_at, context_snapshot ->> 'issueId' AS issue_id,
+       FROM (SELECT agent_id, status, error_code, started_at, ${RUN_ISSUE_ID} AS issue_id,
                     row_number() OVER (PARTITION BY agent_id ORDER BY started_at DESC) AS rn
                FROM public.heartbeat_runs
               WHERE company_id = $1 AND started_at >= $2::timestamptz AND status IN (${FINISHED})) t
@@ -107,7 +114,7 @@ export async function readStreakRuns(ctx: PluginContext, companyId: string, now:
 export async function readStorms(ctx: PluginContext, companyId: string, now: Date): Promise<StormRow[]> {
   const rows = await ctx.db.query<Raw>(
     `SELECT g.issue_id, g.failed::text AS failed, g.codes::text AS codes, g.error_code, g.agent_id, g.first_failed_at, g.last_error, i.identifier, i.title
-       FROM (SELECT context_snapshot ->> 'issueId' AS issue_id,
+       FROM (SELECT ${RUN_ISSUE_ID} AS issue_id,
                     count(*) FILTER (WHERE status IN (${FAILED})) AS failed,
                     count(DISTINCT error_code) FILTER (WHERE status IN (${FAILED})) AS codes,
                     (array_agg(status ORDER BY started_at DESC))[1] AS last_status,
@@ -116,8 +123,8 @@ export async function readStorms(ctx: PluginContext, companyId: string, now: Dat
                     (array_agg(agent_id ORDER BY started_at DESC))[1]::text AS agent_id,
                     min(started_at) FILTER (WHERE status IN (${FAILED})) AS first_failed_at
                FROM public.heartbeat_runs
-              WHERE company_id = $1 AND started_at >= $2::timestamptz AND status IN (${FINISHED}) AND context_snapshot ->> 'issueId' IS NOT NULL
-              GROUP BY context_snapshot ->> 'issueId'
+              WHERE company_id = $1 AND started_at >= $2::timestamptz AND status IN (${FINISHED}) AND ${RUN_ISSUE_ID} IS NOT NULL
+              GROUP BY ${RUN_ISSUE_ID}
              HAVING count(*) FILTER (WHERE status IN (${FAILED})) >= ${WATCH.stormMin}) g
        LEFT JOIN public.issues i ON i.company_id = $3 AND i.id::text = g.issue_id
       WHERE g.last_status IN (${FAILED}) AND (i.status IS NULL OR i.status NOT IN ('done', 'cancelled'))
@@ -186,7 +193,7 @@ function reblockedAfterSweepSql(param: string): string {
   // The sweeper's wake is a run on the issue with context source `blocked_issue_sweeper`
   // (heartbeat_runs is a core table this plugin may read; activity_log is not).
   return `EXISTS (SELECT 1 FROM public.heartbeat_runs hr
-          WHERE hr.company_id = i.company_id AND hr.context_snapshot ->> 'issueId' = i.id::text
+          WHERE hr.company_id = i.company_id AND hr.issue_id = i.id
             AND hr.context_snapshot ->> 'source' = 'blocked_issue_sweeper'
             AND coalesce(hr.started_at, hr.created_at) > ${param}::timestamptz
             AND coalesce(hr.started_at, hr.created_at) <= coalesce(i.blocked_transition_at, i.updated_at))`;
@@ -278,13 +285,13 @@ export async function readReconciliationRuns(ctx: PluginContext, companyId: stri
     `SELECT h.id AS run_id, i.id, i.identifier, i.title, h.error, i.assignee_agent_id,
             coalesce(h.started_at, h.finished_at, h.created_at) AS run_time
        FROM public.heartbeat_runs h
-       JOIN public.issues i ON i.company_id = h.company_id AND i.id::text = h.context_snapshot ->> 'issueId'
+       JOIN public.issues i ON i.company_id = h.company_id AND i.id = h.issue_id
       WHERE h.company_id = $1 AND h.error_code = 'execution_reconciliation_required'
         AND i.status NOT IN ('done', 'cancelled') AND i.hidden_at IS NULL AND i.assignee_agent_id IS NOT NULL
         AND NOT EXISTS (
           SELECT 1 FROM public.heartbeat_runs h2
           WHERE h2.company_id = h.company_id
-            AND h2.context_snapshot ->> 'issueId' = h.context_snapshot ->> 'issueId'
+            AND h2.issue_id = h.issue_id
             AND h2.status = 'succeeded' AND coalesce(h2.started_at, h2.created_at) > coalesce(h.started_at, h.finished_at, h.created_at))
       ORDER BY coalesce(h.started_at, h.finished_at, h.created_at) DESC
       LIMIT 500`,

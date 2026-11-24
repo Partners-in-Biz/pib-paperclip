@@ -21,7 +21,8 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
  * table. Spec PAR-12608 rev 3, 4.6 and 4.7. AC-G3: R (restricted in Y) asking
  * through each `open` row for an object that is not his gets "not found" or a
  * list without it; with the kill switch `off`, today's answer (AC-F8). AC-G4:
- * the agent list holds exactly his listed agents with five fields. AC-G5: a
+ * the agent list holds exactly his listed agents with six fields (amended by
+ * PAR-13469: `companyId` is the sixth). AC-G5: a
  * run on his task is his only when it works for him. AC-G1 and AC-H4: the key,
  * configuration and company-wide run routes classify as closed. Scope callers
  * (section 8): R as owner of X, and an instance admin who is no member of Y,
@@ -262,15 +263,15 @@ it("AC-G1, AC-G4 and AC-H4: keys, configuration, instructions, pausing, the org 
     });
   });
 
-  it("AC-G4: the list holds exactly his listed agent with the five fields; the listed agent by id has the same five", async () => {
+  it("AC-G4: the list holds exactly his listed agent with the six fields; the listed agent by id has the same six", async () => {
     await agent(Y);
     const list = await as(await boardFor(R)).get(`/api/companies/${Y}/agents`);
     ok(list);
-    const five = { id: listedAgent, name: "Listed", title: "Writer", icon: "pen", status: "idle" };
-    expect(list.body).toEqual([five]);
+    const six = { id: listedAgent, companyId: Y, name: "Listed", title: "Writer", icon: "pen", status: "idle" };
+    expect(list.body).toEqual([six]);
     const detail = await as(await boardFor(R)).get(`/api/agents/${listedAgent}`);
     ok(detail);
-    expect(detail.body).toEqual(five);
+    expect(detail.body).toEqual(six);
   });
 
   it("AC-G5: a run on his task is readable when it works for him and \"not found\" when it works for O; a run working for him on O's task is \"not found\"", async () => {
@@ -307,11 +308,11 @@ it("AC-G1, AC-G4 and AC-H4: keys, configuration, instructions, pausing, the org 
     { name: "a run authorized by R with no person", people: { authorizing: R } },
     { name: "a run working for O and authorized by R", people: { onBehalfOf: O, authorizing: R } },
   ])("the open rows as $name: the same answers as R", ({ people }) => {
-    it("AC-G4: the list holds his listed agent with five fields; an agent off his list is \"not found\"", async () => {
+    it("AC-G4: the list holds his listed agent with six fields; an agent off his list is \"not found\"", async () => {
       const { agentId } = await ids(Y);
       const list = await as(await runFor(people)).get(`/api/companies/${Y}/agents`);
       ok(list);
-      expect(list.body).toEqual([{ id: listedAgent, name: "Listed", title: "Writer", icon: "pen", status: "idle" }]);
+      expect(list.body).toEqual([{ id: listedAgent, companyId: Y, name: "Listed", title: "Writer", icon: "pen", status: "idle" }]);
       agentNotFound(await as(await runFor(people)).get(`/api/agents/${agentId}`));
     });
 

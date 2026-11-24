@@ -52,6 +52,9 @@ const WORKSPACES_TEST = "server/src/__tests__/member-restriction-route-table-wor
 const APPROVALS_TEST = "server/src/__tests__/member-restriction-route-table-approvals.test.ts";
 const AGENTS_TEST = "server/src/__tests__/member-restriction-route-table-agents.test.ts";
 const TASK_LIST_TEST = "server/src/__tests__/member-restriction-task-list-callers.test.ts";
+const INSTANCE_TEST = "server/src/__tests__/member-restriction-route-table-instance.test.ts";
+const AGENT_PAGES_TEST = "server/src/__tests__/member-restriction-route-table-agent-pages.test.ts";
+const PLANNING_CANVAS_TEST = "server/src/__tests__/planning-canvas-access-routes.test.ts";
 
 export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntry[] = [
   // C4b-1a (PAR-12730): the task routes of `routes/issues.ts`. Comments,
@@ -388,6 +391,36 @@ export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntr
   { method: "GET", path: "/api/companies/:companyId/org", class: "closed" },
   { method: "GET", path: "/api/companies/:companyId/heartbeat-runs", class: "closed" },
   { method: "GET", path: "/api/companies/:companyId/live-runs", class: "closed" },
+  // C4g-4 (PAR-13473, decision PAR-13469 section 3): the agent pages. The avatar
+  // artwork is preset art; the handler looks up no agent and no company. Closed
+  // on purpose: built-in agents, budgets and AI connections are company set-up;
+  // the resource-membership writes save a star or join on an id with no read
+  // check (the answer would tell him whether a project exists), and a read-only
+  // star list has no use.
+  { method: "GET", path: "/api/agent-avatars/:version/:palette/:file", class: "open", test: AGENT_PAGES_TEST },
+  { method: "GET", path: "/api/companies/:companyId/built-in-agents", class: "closed" },
+  { method: "GET", path: "/api/companies/:companyId/budgets/overview", class: "closed" },
+  { method: "GET", path: "/api/companies/:companyId/ai-connections", class: "closed" },
+  { method: "GET", path: "/api/companies/:companyId/resource-memberships/me", class: "closed" },
+  { method: "PUT", path: "/api/companies/:companyId/resource-memberships/me/projects/:projectId", class: "closed" },
+  { method: "PUT", path: "/api/companies/:companyId/resource-memberships/me/agents/:agentId", class: "closed" },
+  { method: "PUT", path: "/api/companies/:companyId/resource-memberships/me/documents/:documentId", class: "closed" },
+
+  // C4g-3 (PAR-13263, decision PAR-13261 sections 1 to 3): what the app shell
+  // reads on every page. For R at `enforce` health answers the anonymous body
+  // and the general settings only `{ censorUsernameInLogs }`; a primary agent
+  // off his list is null on read and "Agent not found" on write. The dev-server
+  // restart, the full settings, every settings write, the lifecycle and task
+  // drain routes have no row.
+  { method: "GET", path: "/api/health", class: "open", test: INSTANCE_TEST },
+  { method: "GET", path: "/api/instance/settings/experimental", class: "open", test: INSTANCE_TEST },
+  { method: "GET", path: "/api/instance/settings/general", class: "open", test: INSTANCE_TEST },
+  { method: "GET", path: "/api/announcements/current", class: "open", test: INSTANCE_TEST },
+  { method: "GET", path: "/api/announcements/:id/image", class: "open", test: INSTANCE_TEST },
+  { method: "GET", path: "/api/announcements/:id/animation", class: "open", test: INSTANCE_TEST },
+  { method: "POST", path: "/api/announcements/:id/dismiss", class: "open", test: INSTANCE_TEST },
+  { method: "GET", path: "/api/companies/:companyId/primary-agent/me", class: "open", test: INSTANCE_TEST },
+  { method: "PUT", path: "/api/companies/:companyId/primary-agent/me", class: "open", test: INSTANCE_TEST },
 
   // C5-1 (PAR-12740): the plugin call points of `routes/plugins.ts` (C13). Each
   // handler calls `assertPluginOpenForPerson` before the worker is called: a
@@ -403,6 +436,36 @@ export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntr
   // (`filterPluginsOpenForPerson`); without that filter this row would hand him
   // every plugin (PAR-13261).
   { method: "GET", path: "/api/plugins/ui-contributions", class: "plugin", test: "server/src/__tests__/member-restriction-ui-contributions.test.ts" },
+  // PAR-13932 (Planning Canvas C3): every board route asks the canvas access
+  // resolver (`services/planning-canvas-access.ts`), which gives a restricted
+  // person his own personal boards and a project board he passes
+  // `project:read` on, and nothing else (plan PAR-13925 section D).
+  ...([
+    ["GET", "/api/companies/:companyId/planning-canvases"],
+    ["POST", "/api/companies/:companyId/planning-canvases"],
+    ["GET", "/api/companies/:companyId/planning-canvases/:boardId"],
+    ["PATCH", "/api/companies/:companyId/planning-canvases/:boardId"],
+    ["DELETE", "/api/companies/:companyId/planning-canvases/:boardId"],
+    ["POST", "/api/companies/:companyId/planning-canvases/:boardId/ops"],
+    ["POST", "/api/companies/:companyId/planning-canvases/:boardId/import"],
+    ["POST", "/api/companies/:companyId/planning-canvases/:boardId/archive"],
+    ["POST", "/api/companies/:companyId/planning-canvases/:boardId/restore"],
+    ["PATCH", "/api/companies/:companyId/planning-canvases/:boardId/sharing"],
+    ["GET", "/api/companies/:companyId/planning-canvases/:boardId/agent-grants"],
+    ["DELETE", "/api/companies/:companyId/planning-canvases/:boardId/agent-grants/:grantId"],
+    // PAR-13935 (C6): comments. A mention also runs `restrictedTaskBody(..., "createIssue")` on the issue it would create.
+    ["GET", "/api/companies/:companyId/planning-canvases/:boardId/comments"],
+    ["POST", "/api/companies/:companyId/planning-canvases/:boardId/comments"],
+    ["PATCH", "/api/companies/:companyId/planning-canvases/:boardId/comments/:commentId"],
+    ["DELETE", "/api/companies/:companyId/planning-canvases/:boardId/comments/:commentId"],
+    ["POST", "/api/companies/:companyId/planning-canvases/:boardId/comments/:commentId/resolve"],
+    // PAR-13937 (C8): refs and query read only what the caller may read; a handoff runs `restrictedTaskBody(..., "createIssue")` per issue.
+    ["GET", "/api/companies/:companyId/planning-canvases/:boardId/refs"],
+    ["POST", "/api/companies/:companyId/planning-canvases/:boardId/query"],
+    ["POST", "/api/companies/:companyId/planning-canvases/:boardId/handoff"],
+    // PAR-13941 (C14): blueprint apply creates a personal board; each issue it makes runs `restrictedTaskBody(..., "createIssue")`.
+    ["POST", "/api/companies/:companyId/planning-canvases/from-blueprint"],
+  ] as const).map(([method, path]) => ({ method, path, class: "open" as const, test: PLANNING_CANVAS_TEST })),
 ];
 
 /**

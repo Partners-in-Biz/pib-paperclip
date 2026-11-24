@@ -10,6 +10,7 @@ import {
   memberRestrictionUnavailable,
   type MemberRestrictionResolver,
 } from "./resolver.js";
+import { stripHostKeysFromResponses } from "./response-strip.js";
 import { createRouteClassifier, type MemberRestrictionRouteEntry, type MemberRestrictionRouteMatch } from "./route-table.js";
 import { restrictionPersonIds } from "./strict-read.js";
 
@@ -160,6 +161,8 @@ export function memberRestrictionRouteGuard(
 
     if (decision.pass) {
       if (decision.markByCompany) actor.memberRestrictionByCompany = true;
+      // PAR-12951: no host or secret key at any depth of a JSON response to him.
+      if (deciding.mode === "enforce") stripHostKeysFromResponses(res);
       return next();
     }
     await recordMemberRestrictionDenial(db, {

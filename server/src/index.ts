@@ -146,6 +146,7 @@ import {
 import { getOperatorSettingDefaults } from "./services/setting-defaults.js";
 import { setupEnvironmentCustomImageTerminalWebSocketServer } from "./realtime/environment-custom-image-terminal-ws.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
+import { createPlanningCanvasHub } from "./realtime/planning-canvas-ws.js";
 import { cloudActorHeaderSourceFromHeaders, resolveCloudTenantActor } from "./middleware/auth.js";
 import {
   feedbackService,
@@ -178,6 +179,7 @@ import { createSecretProposalsService } from "./services/secret-proposals.js";
 import { environmentRuntimeService } from "./services/environment-runtime.js";
 import { historicalCleanupVerificationService } from "./services/historical-cleanup-verification.js";
 import { isCloudManagedInstance } from "./services/cloud-instance.js";
+import { personalNoteService } from "./services/personal-notes.js";
 import { createDbAdapterAuthSessionStore } from "./services/device-login-service.js";
 import {
   createDeviceLoginReaper,
@@ -1060,8 +1062,12 @@ async function startServerWithDatabaseTeardown(
   setupEnvironmentCustomImageTerminalWebSocketServer(server, db as any, {
     pluginWorkerManager,
   });
+  // Planning Canvas board sockets; one API process assumed (plan PAR-13925 Q13).
+  const planningCanvasHub = createPlanningCanvasHub(db as any);
+  server.on("close", () => planningCanvasHub.close());
   const liveEventsWebSocketServer = setupLiveEventsWebSocketServer(server, db as any, {
     deploymentMode: config.deploymentMode,
+    planningCanvasHub,
     subscribeInvalidation: deploymentHints?.subscribeCompany,
     resolveSessionFromHeaders,
     // Cloud-proxied browsers carry trusted x-paperclip-cloud-* headers instead
@@ -1963,6 +1969,31 @@ async function startServerWithDatabaseTeardown(
       idleDeadlineOwners.quota = bindIdleDeadlineOwner(scheduled.monitors.reconciliationSnapshot, readIdleQuotaSchedule,
         snapshot => ({ issueWaits: snapshot.issueWaits }));
       trackHeartbeatSchedulerWork(Promise.all([scheduled.timers.ready, scheduled.monitors.ready, scheduled.routines.ready]));
+      const personalNotesSvc = personalNoteService(db, { heartbeat });
+      let personalNotesTickInFlight = false;
+      const runPersonalNotesTick = async () => {
+        if (personalNotesTickInFlight || heartbeatSchedulerStopped || isIdleTaskDrainActive() || isWarmStandby()) return;
+        personalNotesTickInFlight = true;
+        try {
+          const result = await personalNotesSvc.tickScheduledHandoffs(new Date());
+          if (result.dispatched > 0 || result.failed > 0) {
+            logger.info({ ...result }, "personal notes scheduled handoff tick completed");
+          }
+        } catch (err) {
+          logger.warn({ err }, "personal notes scheduled handoff tick failed");
+        } finally {
+          personalNotesTickInFlight = false;
+        }
+      };
+      const personalNotesTimer = setInterval(() => {
+        if (heartbeatSchedulerStopped) {
+          clearInterval(personalNotesTimer);
+          return;
+        }
+        void runPersonalNotesTick();
+      }, 30_000);
+      personalNotesTimer.unref?.();
+      void runPersonalNotesTick();
     };
     trackHeartbeatSchedulerWork(runStartupHousekeeping().then(() => {
       if (!heartbeatSchedulerStopped) startHeartbeatScheduler();
@@ -2085,6 +2116,7 @@ async function startServerWithDatabaseTeardown(
     setStartupRecoveryPhase("draining");
     for (const client of liveEventsWebSocketServer.clients) client.close(1012, "Server restarting");
     liveEventsWebSocketServer.close();
+    planningCanvasHub.close();
     // Finish admitted HTTP requests while their services, workers and database
     // are still available. Railway must switch routing before signaling A.
     await closeHttpListenerForShutdown({ server, signal, timeoutMs: 30_000, log: logger,

@@ -428,6 +428,19 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
       dryRun: flag("Default true: change nothing and report; send false to cancel"),
     }),
   },
+  {
+    group: "Site",
+    name: "set-rehearsal-preview",
+    displayName: "Set a rehearsal preview's check and expiry",
+    description:
+      "Rehearsal sprints only (a fixture site on .invalid, or the canary client); every other sprint is refused. A rehearsal sprint opens no review issue, so this sets what a test or dogfood journey needs on one pending preview: reviewStatus (passed, changes_needed or pending) and/or expiresInHours (from now; negative = already expired). It writes only those fields: nothing is sent, commented or woken, and it never decides a preview (decide-preview is for board users). On a real sprint the Reviewer checks with review-preview.",
+    parametersSchema: schema(["sprintId", "previewId"], {
+      sprintId,
+      previewId: text("The preview id (from create-preview or list-previews)."),
+      reviewStatus: choice(["passed", "changes_needed", "pending"], "The Reviewer result to set"),
+      expiresInHours: int("Expiry in hours from now, -720 to 720; negative = already expired"),
+    }),
+  },
   // Keywords
   { group: "Keywords", name: "list-keywords", displayName: "List keywords", description: "Tracked keywords with current position, impressions, clicks, CTR, intent and target URL.", parametersSchema: schema(["sprintId"], { sprintId, includeRetired: flag("Include retired keywords (default false)") }) },
   {

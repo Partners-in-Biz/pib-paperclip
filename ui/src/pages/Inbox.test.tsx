@@ -2362,6 +2362,30 @@ describe("Inbox closed requests for a restricted member", () => {
     } finally { await cleanup(); }
   });
 
+  it.each([true, false])("workspace summaries are requested only when allowed (streamlined=%s)", async (streamlined) => {
+    for (const [who, restriction] of [["R enforce", ENFORCED], ["owner", null], ["R report", { ...ENFORCED, mode: "report" as const }]] as const) {
+      resetInboxApiMocks(); localStorage.clear();
+      routerMock.location.pathname = "/inbox/all";
+      apiMocks.experimentalSettings.mockResolvedValue({ enableIsolatedWorkspaces: true, enableStreamlinedUi: streamlined });
+      apiMocks.authSession.mockResolvedValue({ user: { id: "local-board" }, session: { userId: "local-board" }, memberRestrictions: restriction ? [restriction] : [] });
+      apiMocks.executionWorkspaceSummaries.mockResolvedValue([]);
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: 0 } } });
+      const container = document.createElement("div"); document.body.appendChild(container);
+      const root = createRoot(container);
+      await act(async () => root.render(<QueryClientProvider client={client}><Inbox /></QueryClientProvider>));
+      await vi.waitFor(() => expect(apiMocks.authSession).toHaveBeenCalled());
+      await vi.waitFor(() => expect(client.isFetching()).toBe(0));
+      if (who === "R enforce") {
+        await vi.waitFor(() => expect(apiMocks.experimentalSettings).toHaveBeenCalled());
+        await act(async () => { await new Promise((r) => setTimeout(r, 30)); });
+        expect(apiMocks.executionWorkspaceSummaries, who).not.toHaveBeenCalled();
+      } else {
+        await vi.waitFor(() => expect(apiMocks.executionWorkspaceSummaries, who).toHaveBeenCalled());
+      }
+      await act(async () => root.unmount()); client.clear(); container.remove();
+    }
+  });
+
   it.each([true, false])("a stale session switched to enforce stops the next refetch (streamlined=%s)", async (streamlined) => {
     const { client, container, cleanup } = await renderInbox(streamlined, { ...ENFORCED, mode: "report" });
     try {

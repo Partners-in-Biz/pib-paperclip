@@ -1,6 +1,6 @@
 import { runCalendarCheck } from "./calendar-check.js";
 import { getCadenceRecord, setCadenceRecord } from "./cadence-record.js";
-import { GROWTH_TOOL_NAMES, normalizeToolResult, registerGrowthTools, type GrowthToolsHost } from "@partnersinbiz/pib-plugin-kit";
+import { jobCompanyIds, GROWTH_TOOL_NAMES, normalizeToolResult, registerGrowthTools, type GrowthToolsHost } from "@partnersinbiz/pib-plugin-kit";
 import {
   definePlugin,
   runWorker,
@@ -644,7 +644,7 @@ export async function companyUsesSocial(ctx: PluginContext, companyId: string): 
 /** Hourly: push each known company's setup checklist to the Setup plugin. */
 export async function publishSetupStatuses(ctx: PluginContext): Promise<{ published: number; skipped: number }> {
   const result = { published: 0, skipped: 0 };
-  for (const companyId of await knownCompanies(ctx)) {
+  for (const companyId of await jobCompanyIds(ctx, await knownCompanies(ctx))) {
     try {
       // Off in Setup, or settings never saved (the host refuses company calls): the status route still answers on demand.
       if (!(await companyUsesSocial(ctx, companyId))) {

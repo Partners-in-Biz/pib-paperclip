@@ -179,7 +179,7 @@ const TASK_CREATE_BASE = {
 /** Task create (`POST /api/companies/:companyId/issues`). */
 export const CREATE_TASK_BODY_ALLOWLIST = {
   ...TASK_COMMON, ...TASK_CREATE_BASE, watchdogDiscovery: "allowed", initialPlan: "allowed", idempotencyKey: "allowed",
-  allowDuplicate: "allowed", onboardingFirstTask: "off-only",
+  allowDuplicate: "allowed", deferInitialWakeup: "allowed", onboardingFirstTask: "off-only",
 } as const satisfies Record<keyof CreateTask, TaskBodyFieldClass>;
 /** Child create (`POST /api/issues/:id/children`). */
 const { parentId: _parent, inheritExecutionWorkspaceFromIssueId: _inherit, ...TASK_CHILD_COMMON } = TASK_COMMON;

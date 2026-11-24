@@ -3049,8 +3049,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       : null
   );
   const renderBrief = useCallback(
-    () => issueBrief ? <><TaskChatDescriptionBubble brief={issueBrief} />{historyControl}</> : null,
-    [issueBrief, historyControl],
+    () => issueBrief ? <><TaskChatDescriptionBubble brief={issueBrief} attachments={attachments} />{historyControl}</> : null,
+    [issueBrief, attachments, historyControl],
   );
 
   const assignedAgentForNotice = useMemo(() => {

@@ -745,7 +745,9 @@ export function IssuesList({
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
   const experimentalSettingsLoaded = experimentalSettings !== undefined;
-  const isolatedWorkspacesEnabled = experimentalSettings?.enableIsolatedWorkspaces === true;
+  // Execution workspaces are a closed list for a restricted member under `enforce` (AC-G10):
+  // no request, and no workspace grouping, column or filter.
+  const isolatedWorkspacesEnabled = experimentalSettings?.enableIsolatedWorkspaces === true && !memberGate.closed;
   const externalObjectsEnabled = experimentalSettings?.enableExternalObjects === true && !memberGate.closed;
 
   // Scope the storage key per company so folding/view state is independent across companies.
@@ -888,7 +890,7 @@ export function IssuesList({
     queryKey: selectedCompanyId
       ? queryKeys.executionWorkspaces.summaryList(selectedCompanyId)
       : ["execution-workspaces", "__disabled__"],
-    queryFn: () => executionWorkspacesApi.listSummaries(selectedCompanyId!),
+    queryFn: memberGate.guard(() => executionWorkspacesApi.listSummaries(selectedCompanyId!), []),
     enabled: !!selectedCompanyId && isolatedWorkspacesEnabled,
   });
 

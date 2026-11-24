@@ -6,7 +6,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { HANDOFF_EVENTS, PIB_PLUGINS, pluginEvent, rememberClientProjects } from "@partnersinbiz/pib-plugin-kit";
 import { extraChecks } from "../src/checks.js";
-import { clientEffortReport, effortSettings, readPayments, recordPayment } from "../src/client-cost.js";
+import { LINK_LIMITS, clientEffortReport, effortSettings, readPayments, recordPayment } from "../src/client-cost.js";
 import { NAMESPACE } from "../src/namespace.js";
 import { saveTeam } from "../src/roles.js";
 import { COMPANY, OTHER_COMPANY, embeddedAvailable } from "./helpers/pg.js";
@@ -126,11 +126,13 @@ d("effort against revenue (Postgres)", () => {
       const projectId = await clientWithWork(w, { id: "nw1", name: "Northwind", projectName: "Menu site 2026", usd: 80 });
       expect((await clientEffortReport(w.env, A)).rows).toEqual([]);
       await rememberClientProjects(w.ctx, A, { clientKind: "company", clientRef: "nw1", projectIds: [projectId], updatedAt: NOW });
+      // a client with no link is remembered for only a minute, so the new link shows up on the next look after that
+      (w.env as unknown as { now: () => Date }).now = () => new Date(Date.parse(NOW) + LINK_LIMITS.emptyTtlMs + 1);
       const { rows } = await clientEffortReport(w.env, A);
       expect(rows[0]).toMatchObject({ clientRef: "company:nw1", matchedBy: "link", usd: 80 });
     });
 
-    it("reads the project links of every client, in batches, and ties each to its own project (60 clients: more than one batch)", async () => {
+    it("reads the project links of every client, in batches, and ties each to its own project (250 clients: more than one batch)", async () => {
       const w = await make();
       let reads = 0;
       let live = 0;
@@ -145,7 +147,13 @@ d("effort against revenue (Postgres)", () => {
         return realGet(key);
       };
       const projects: string[] = [];
-      for (let i = 0; i < 60; i += 1) {
+      // The report lists at most 60 projects (readProjectRuns' cap), so only 60 clients get work; the other 190 are CRM
+      // clients without any, which still cost one link read each. 250 clients is what makes it more than one batch.
+      for (let i = 0; i < 250; i += 1) {
+        if (i >= 60) {
+          await w.client.query(`INSERT INTO ${NAMESPACE}.crm_companies (id, company_id, name, lifecycle, updated_at) VALUES ($1, $2, $3, 'customer', now())`, [`cl${i}`, A, `Client ${i}`]);
+          continue;
+        }
         // projects are named differently from the client, so only the CRM link can tie them together
         const id = await clientWithWork(w, { id: `cl${i}`, name: `Client ${i}`, projectName: `Site ${i}`, usd: 10 + i });
         projects.push(id);
@@ -153,13 +161,43 @@ d("effort against revenue (Postgres)", () => {
       }
       reads = 0;
       const { rows } = await clientEffortReport(w.env, A);
-      expect(reads).toBe(60); // one read per client
+      expect(reads).toBe(250); // one read per client
       expect(peak).toBeGreaterThan(1); // at the same time, not one after another
-      expect(peak).toBeLessThanOrEqual(25); // but never all at once
-      expect(rows).toHaveLength(60);
+      expect(peak).toBeLessThanOrEqual(LINK_LIMITS.batch); // but never all at once
+      expect(peak).toBeLessThan(250);
+      expect(rows).toHaveLength(60); // the 60 clients with work
       expect(rows.every((r) => r.matchedBy === "link")).toBe(true);
       // every client is tied to ITS project: the spend is 10 + its number
       for (const r of rows) expect(r.usd).toBe(10 + Number(r.name.replace("Client ", "")));
+    });
+
+    it("a cold read that runs out of its time budget throws, then the next load finishes from the cache without re-reading", async () => {
+      const w = await make();
+      let reads = 0;
+      const realGet = w.ctx.state.get.bind(w.ctx.state);
+      (w.ctx.state as unknown as { get: typeof realGet }).get = async (key) => {
+        reads += 1;
+        return realGet(key);
+      };
+      for (let i = 0; i < 6; i += 1) {
+        const id = await clientWithWork(w, { id: `bd${i}`, name: `Budget ${i}`, projectName: `Budget site ${i}`, usd: 10 });
+        await rememberClientProjects(w.ctx, A, { clientKind: "company", clientRef: `bd${i}`, projectIds: [id], updatedAt: NOW });
+      }
+      const saved = { ...LINK_LIMITS };
+      try {
+        LINK_LIMITS.batch = 2;
+        LINK_LIMITS.budgetMs = -1; // spent before the second batch
+        reads = 0;
+        await expect(clientEffortReport(w.env, A)).rejects.toThrow(/not read yet/);
+        expect(reads).toBe(2); // one batch, then it stopped
+        LINK_LIMITS.budgetMs = saved.budgetMs;
+        reads = 0;
+        const { rows } = await clientEffortReport(w.env, A);
+        expect(reads).toBe(4); // only the four not yet read
+        expect(rows).toHaveLength(6);
+      } finally {
+        Object.assign(LINK_LIMITS, saved);
+      }
     });
 
     it("a lead's effort is listed but never alerted, and other companies' work is not counted", async () => {

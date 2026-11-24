@@ -656,6 +656,8 @@ export function buildPreviewHtml(live: string, pageUrl: string, changes: Preview
     `#pib-preview-bar,#pib-preview-bar *{box-sizing:border-box}` +
     `#pib-preview-spacer{height:72px}` +
     `.whatsapp-button,.telegram-button{box-sizing:border-box!important;width:100%!important;max-width:100%!important;float:none!important;display:block!important}` +
+    // Hunt and Gun's fixed desktop header (menu wraps to rows) covers its own "NEXT AUCTION" banner: push the banner below it (PAR-12248).
+    `@media (min-width:981px){.auctionUpdatesLiveGroup{margin-top:125px!important}}` +
     `@media (max-width:640px){#pib-preview-spacer{height:210px}` +
     `#pib-preview-bar{padding:10px 12px!important;flex-direction:column;align-items:stretch!important;gap:8px!important}` +
     `#pib-preview-bar form{flex-direction:column;align-items:stretch!important;width:100%}` +
