@@ -100,7 +100,7 @@ export const TimelineNode = memo(function TimelineNode({ nodeKey, data, title }:
               <div key={bar.id} className={cn("relative", ROW)}>
                 <div
                   title={bar.label}
-                  className={cn("absolute top-0.5 bottom-0.5 overflow-hidden whitespace-nowrap rounded px-1 text-xs leading-4", bar.done ? "bg-emerald-500/30 text-foreground" : "bg-blue-500/30 text-foreground")}
+                  className={cn("absolute top-0.5 bottom-0.5 truncate rounded px-1 text-xs leading-4", bar.done ? "bg-emerald-500/30 text-foreground" : "bg-blue-500/30 text-foreground")}
                   style={{ left: `${left}%`, width: `${width}%` }}
                 >
                   {bar.label}

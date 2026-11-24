@@ -1,4 +1,4 @@
-import { memo, useMemo, useState } from "react";
+import { memo, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { ChevronDown, ChevronRight, Columns3, RefreshCw } from "lucide-react";
 import type { PlanningCanvasKanbanData } from "@paperclipai/shared";
@@ -37,7 +37,13 @@ export const KanbanNode = memo(function KanbanNode({ nodeKey, data, title }: { n
   const latest = useLatestCanvas();
   const queryClient = useQueryClient();
   const { read, key, companyId } = useIssueQuery(data.source);
-  const [dragId, setDragId] = useState<string | null>(null);
+  const [dragId, setDragIdState] = useState<string | null>(null);
+  // The ref is what the drop handlers read: a drag event can follow dragstart before React re-renders.
+  const dragRef = useRef<string | null>(null);
+  const setDragId = (id: string | null) => {
+    dragRef.current = id;
+    setDragIdState(id);
+  };
   const [overKey, setOverKey] = useState<string | null>(null);
 
   const issues = read.data?.issues;
@@ -89,7 +95,7 @@ export const KanbanNode = memo(function KanbanNode({ nodeKey, data, title }: { n
               key={column.key}
               aria-label={columnLabel(column.key, data.groupBy, agentName)}
               onDragOver={(e) => {
-                if (!canDrag || !dragId) return;
+                if (!canDrag || !dragRef.current) return;
                 e.preventDefault();
                 setOverKey(column.key);
               }}
@@ -97,7 +103,7 @@ export const KanbanNode = memo(function KanbanNode({ nodeKey, data, title }: { n
               onDrop={(e) => {
                 e.preventDefault();
                 setOverKey(null);
-                if (canDrag && dragId) void move(dragId, column.key);
+                if (canDrag && dragRef.current) void move(dragRef.current, column.key);
                 setDragId(null);
               }}
               className={cn("flex w-40 shrink-0 flex-col gap-1 rounded-lg bg-muted/40 p-1.5", overKey === column.key && "ring-2 ring-blue-500")}
