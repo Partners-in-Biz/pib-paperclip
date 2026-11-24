@@ -51,6 +51,7 @@ import {
 import { companyTransferRunService } from "../services/company-transfer-runs.js";
 import { agentInstructionsBundleMode } from "../services/agent-instructions.js";
 import { resolvePortableExportAgentSelection } from "../services/company-portability-agent-selection.js";
+import type { CompanyExportReadScope } from "../services/company-portability.js";
 import {
   accessService,
   agentService,
@@ -363,6 +364,19 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     assertCompanyAccess(req, target.companyId);
   }
 
+  /**
+   * The caller's read scope for a company export (PAR-14320): the bundle holds
+   * only the tasks and projects he can read, so a member does not export
+   * another person's private tasks or chats.
+   */
+  async function exportReadScope(req: Request): Promise<CompanyExportReadScope> {
+    const [issues, projects] = await Promise.all([
+      issueReadSqlCondition(db, req.actor),
+      projectReadSqlCondition(db, req.actor),
+    ]);
+    return { issues, projects };
+  }
+
   async function assertSameCompanyCeoAgentOrBoard(req: Request, companyId: string, capability: string) {
     assertCompanyAccess(req, companyId);
     if (req.actor.type === "board") {
@@ -541,7 +555,8 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     await assertSameCompanyCeoAgentOrBoard(req, companyId, "company exports");
     const body = companyPortabilityExportSchema.parse(req.body);
     const allowExternalInstructions = await assertExternalInstructionExportAllowed(req, companyId, body);
-    const result = await portability.exportBundle(companyId, body, { allowExternalInstructions });
+    const readScope = await exportReadScope(req);
+    const result = await portability.exportBundle(companyId, body, { readScope, allowExternalInstructions });
     res.json(result);
   });
 
@@ -1137,7 +1152,8 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     await assertSameCompanyCeoAgentOrBoard(req, companyId, "company exports");
     const body = companyPortabilityExportSchema.parse(req.body);
     const allowExternalInstructions = await assertExternalInstructionExportAllowed(req, companyId, body);
-    const preview = await portability.previewExport(companyId, body, { allowExternalInstructions });
+    const readScope = await exportReadScope(req);
+    const preview = await portability.previewExport(companyId, body, { readScope, allowExternalInstructions });
     res.json(preview);
   });
 
@@ -1146,7 +1162,8 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     await assertSameCompanyCeoAgentOrBoard(req, companyId, "company exports");
     const body = companyPortabilityExportSchema.parse(req.body);
     const allowExternalInstructions = await assertExternalInstructionExportAllowed(req, companyId, body);
-    const result = await portability.exportBundle(companyId, body, { allowExternalInstructions });
+    const readScope = await exportReadScope(req);
+    const result = await portability.exportBundle(companyId, body, { readScope, allowExternalInstructions });
     res.json(result);
   });
 
