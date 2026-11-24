@@ -64,9 +64,9 @@ describe.skipIf(!available)("Studio canvases against real Postgres", () => {
     expect(open.doc.nodes.map((n) => n.id)).toEqual(["s", "p", "i"]);
     expect(open.doc.edges).toHaveLength(2);
     expect(open.cards).toBe(3);
-    expect((await listCanvases(ctx, CO, {})).map((c) => c.id)).toEqual([made.id]);
-    expect(await listCanvases(ctx, CO, { client: "own" })).toHaveLength(1);
-    expect(await listCanvases(ctx, CO, { client: "company:acme" })).toHaveLength(0);
+    expect((await listCanvases(ctx, CO, {}, "unrestricted")).map((c) => c.id)).toEqual([made.id]);
+    expect(await listCanvases(ctx, CO, { client: "own" }, "unrestricted")).toHaveLength(1);
+    expect(await listCanvases(ctx, CO, { client: "company:acme" }, "unrestricted")).toHaveLength(0);
   });
 
   it("refuses a save from an older revision, so a second tab can't overwrite the first", async () => {
@@ -93,7 +93,7 @@ describe.skipIf(!available)("Studio canvases against real Postgres", () => {
   it("archives a canvas out of the list", async () => {
     const made = await createCanvas(ctx, CO, { title: "Old" }, USER);
     await archiveCanvas(ctx, CO, made.id);
-    expect(await listCanvases(ctx, CO, {})).toHaveLength(0);
+    expect(await listCanvases(ctx, CO, {}, "unrestricted")).toHaveLength(0);
     await expect(getCanvas(ctx, CO, made.id)).rejects.toThrow(/not found/);
   });
 });

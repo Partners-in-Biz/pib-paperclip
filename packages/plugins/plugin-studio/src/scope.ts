@@ -89,8 +89,27 @@ export async function scopeForWork(ctx: PluginContext, companyId: string, reques
  */
 export function assertOpenToPerson(target: ClientScope, restriction: ActingRestriction): void {
   if (!target || restriction === "unrestricted") return;
+  refusePerson(restriction);
+}
+
+function refusePerson(restriction: Exclude<ActingRestriction, "unrestricted">): never {
   if (restriction === "restricted") throw new StudioError("Your access in this company doesn't include client work in Studio. Ask a company owner.", MEMBER_RESTRICTED);
   throw new StudioError("Studio couldn't check your access just now, so client work stays closed. Try again in a moment.", MEMBER_RESTRICTION_UNAVAILABLE);
+}
+
+/**
+ * The client filter a person's list runs with (PAR-14298). A restricted member's list holds own work only, and a filter
+ * on one client is refused like that client's row. With core's answer missing the filter stands, and the list is
+ * refused only if a client row is in it (`assertListOpen`).
+ */
+export function personFilter(filter: ClientScope | undefined, restriction: ActingRestriction): ClientScope | undefined {
+  if (filter) assertOpenToPerson(filter, restriction);
+  return restriction === "restricted" ? null : filter;
+}
+
+/** Refuses a person's list that holds a client row when he may not see client work, or when core's answer is missing. */
+export function assertListOpen(hasClientRow: boolean, restriction: ActingRestriction): void {
+  if (hasClientRow && restriction !== "unrestricted") refusePerson(restriction);
 }
 
 /** Refuses when a run working for one client reaches for a file of another scope. */
