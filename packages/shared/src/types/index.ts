@@ -26,6 +26,7 @@ export type {
   InteractionResolverKindGovernance,
 } from "./company.js";
 export type {
+  CancelSummarySlotResponse,
   GenerateSummarySlotRequest,
   GenerateSummarySlotResponse,
   GetSummarySlotResponse,

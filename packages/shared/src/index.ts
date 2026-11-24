@@ -750,6 +750,7 @@ export type {
   InteractionResolverGovernance,
   InteractionResolverKindGovernance,
   GenerateSummarySlotRequest,
+  CancelSummarySlotResponse,
   GenerateSummarySlotResponse,
   GetSummarySlotResponse,
   ListSummarySlotRevisionsResponse,

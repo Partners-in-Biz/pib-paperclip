@@ -1,15 +1,17 @@
-import { and, desc, eq, gte, inArray, isNull } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   documentRevisions,
   documents,
   executionWorkspaces,
+  heartbeatRuns,
   issues,
   projectWorkspaces,
   projects,
   summarySlots,
 } from "@paperclipai/db";
 import {
+  type CancelSummarySlotResponse,
   type GenerateSummarySlotResponse,
   type GetSummarySlotResponse,
   type IssueStatus,
@@ -33,7 +35,7 @@ import { issueService } from "./issues.js";
 export const SUMMARIZER_BUILT_IN_KEY = "summarizer";
 
 /** Generation issues in these statuses are no longer active and can be superseded. */
-const TERMINAL_ISSUE_STATUSES = new Set<IssueStatus>(["done", "cancelled"]);
+const TERMINAL_ISSUE_STATUSES = new Set<IssueStatus>(["done", "cancelled", "blocked"]);
 
 const DEFAULT_SUMMARY_FORMAT = "markdown";
 const SUMMARY_SLOT_REVISION_LIMIT = 20;
@@ -754,10 +756,97 @@ export function summarySlotService(db: Db) {
     };
   }
 
+  async function markGenerationFailed(
+    input: SummarySlotSelectorInput,
+    generatingIssueId: string,
+    failureReason: string,
+  ): Promise<SummarySlot | null> {
+    const sel = resolveSelector(input);
+    const [updated] = await db
+      .update(summarySlots)
+      .set({
+        status: "failed",
+        failureReason,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(summarySlots.companyId, sel.companyId),
+          eq(summarySlots.scopeKind, sel.scopeKind),
+          eq(summarySlots.slotKey, sel.slotKey),
+          sel.scopeId === null ? isNull(summarySlots.scopeId) : eq(summarySlots.scopeId, sel.scopeId),
+          eq(summarySlots.generatingIssueId, generatingIssueId),
+          eq(summarySlots.status, "generating"),
+        ),
+      )
+      .returning();
+    return updated ? mapSlot(updated) : null;
+  }
+
+  async function cancel(
+    input: SummarySlotSelectorInput,
+  ): Promise<CancelSummarySlotResponse & { activeRunIds: string[] }> {
+    const sel = resolveSelector(input);
+    await assertTargetVisible(sel);
+
+    const slotRow = await findSlotRow(sel);
+    if (!slotRow || slotRow.status !== "generating") {
+      return {
+        slot: slotRow ? mapSlot(slotRow) : null,
+        cancelledIssueId: null,
+        activeRunIds: [],
+      };
+    }
+
+    const cancelledIssueId = slotRow.generatingIssueId ?? null;
+    let activeRunIds: string[] = [];
+
+    if (cancelledIssueId) {
+      const issueRef = await loadIssueRef(sel.companyId, cancelledIssueId);
+      if (issueRef.row && issueRef.row.status !== "done" && issueRef.row.status !== "cancelled") {
+        await issuesSvc.update(cancelledIssueId, { status: "cancelled" });
+      }
+      const activeRuns = await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, sel.companyId),
+            inArray(heartbeatRuns.status, ["queued", "running"]),
+            or(
+              eq(heartbeatRuns.issueId, cancelledIssueId),
+              eq(heartbeatRuns.nativeIssueId, cancelledIssueId),
+              sql`(${heartbeatRuns.contextSnapshot} ->> 'issueId') = ${cancelledIssueId}`,
+            ),
+          ),
+        );
+      activeRunIds = activeRuns.map((run) => run.id);
+    }
+
+    const [updated] = await db
+      .update(summarySlots)
+      .set({
+        status: "idle",
+        failureReason: null,
+        generatingIssueId: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(summarySlots.id, slotRow.id))
+      .returning();
+
+    return {
+      slot: updated ? mapSlot(updated) : mapSlot(slotRow),
+      cancelledIssueId,
+      activeRunIds,
+    };
+  }
+
   return {
     getSlot,
     listRevisions,
     generate,
+    cancel,
+    markGenerationFailed,
     write,
   };
 }

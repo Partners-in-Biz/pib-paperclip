@@ -54,7 +54,7 @@ export function summarySlotRoutes(db: Db) {
     req: Request,
     input: {
       companyId: string;
-      action: "summary_slot.generate_requested" | "summary_slot.write";
+      action: "summary_slot.generate_requested" | "summary_slot.generate_cancelled" | "summary_slot.write";
       slotId: string;
       details: Record<string, unknown>;
     },
@@ -133,28 +133,85 @@ export function summarySlotRoutes(db: Db) {
         },
       });
       if (!result.alreadyGenerating) {
-        await queueIssueAssignmentWakeup({
-          heartbeat,
-          issue: {
-            id: result.generatingIssue.id,
-            assigneeAgentId: result.generatingIssue.assigneeAgentId ?? null,
-            status: result.generatingIssue.status,
-          },
-          reason: "summary_slot_generation_requested",
-          mutation: "summary_slot.generate",
-          contextSource: "summary-slot.generate",
-          requestedByActorType: actor.actorType === "agent" ? "agent" : "user",
-          requestedByActorId: actor.actorId,
-          taskKey: summarySlotSessionTaskKey({
-            companyId,
-            scopeKind: result.slot.scopeKind,
-            slotKey: result.slot.slotKey,
-            scopeId: result.slot.scopeId,
-          }),
-          rethrowOnError: true,
-        });
+        try {
+          await queueIssueAssignmentWakeup({
+            heartbeat,
+            issue: {
+              id: result.generatingIssue.id,
+              assigneeAgentId: result.generatingIssue.assigneeAgentId ?? null,
+              status: result.generatingIssue.status,
+            },
+            reason: "summary_slot_generation_requested",
+            mutation: "summary_slot.generate",
+            contextSource: "summary-slot.generate",
+            requestedByActorType: actor.actorType === "agent" ? "agent" : "user",
+            requestedByActorId: actor.actorId,
+            taskKey: summarySlotSessionTaskKey({
+              companyId,
+              scopeKind: result.slot.scopeKind,
+              slotKey: result.slot.slotKey,
+              scopeId: result.slot.scopeId,
+            }),
+            rethrowOnError: true,
+          });
+        } catch (err) {
+          const reason = err instanceof Error && err.message.trim().length > 0
+            ? `Failed to wake Summarizer: ${err.message.trim()}`
+            : "Failed to wake Summarizer.";
+          await svc.markGenerationFailed(
+            {
+              companyId,
+              scopeKind: result.slot.scopeKind,
+              slotKey: result.slot.slotKey,
+              scopeId: result.slot.scopeId,
+            },
+            result.generatingIssue.id,
+            reason,
+          );
+          throw err;
+        }
       }
       res.status(result.alreadyGenerating ? 200 : 202).json(result);
+    },
+  );
+
+  router.post(
+    "/companies/:companyId/summary-slots/:scopeKind/:slotKey/cancel",
+    validate(generateSummarySlotSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      await assertSummariesEnabled();
+      await assertCanGenerateSummary(req, companyId);
+      const result = await svc.cancel({
+        companyId,
+        scopeKind: req.params.scopeKind as string,
+        slotKey: req.params.slotKey as string,
+        scopeId: (req.body?.scopeId as string | null | undefined) ?? readScopeId(req),
+      });
+      if (result.activeRunIds.length > 0) {
+        await Promise.all(
+          result.activeRunIds.map((runId) =>
+            heartbeat.cancelRun(runId, "Summary generation cancelled by operator").catch(() => null),
+          ),
+        );
+      }
+      if (result.slot && result.cancelledIssueId) {
+        await logSummaryMutation(req, {
+          companyId,
+          action: "summary_slot.generate_cancelled",
+          slotId: result.slot.id,
+          details: {
+            scopeKind: result.slot.scopeKind,
+            scopeId: result.slot.scopeId,
+            slotKey: result.slot.slotKey,
+            cancelledIssueId: result.cancelledIssueId,
+          },
+        });
+      }
+      res.json({
+        slot: result.slot,
+        cancelledIssueId: result.cancelledIssueId,
+      });
     },
   );
 

@@ -89,6 +89,11 @@ export interface GenerateSummarySlotResponse {
   alreadyGenerating: boolean;
 }
 
+export interface CancelSummarySlotResponse {
+  slot: SummarySlot | null;
+  cancelledIssueId: string | null;
+}
+
 export interface WriteSummarySlotRequest {
   scopeId?: string | null;
   markdown: string;

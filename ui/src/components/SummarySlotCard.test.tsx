@@ -30,6 +30,7 @@ const mockSummarySlotsApi = vi.hoisted(() => ({
   get: vi.fn(),
   revisions: vi.fn(),
   generate: vi.fn(),
+  cancel: vi.fn(),
 }));
 const mockBuiltInAgentsApi = vi.hoisted(() => ({ list: vi.fn() }));
 const mockAgentsApi = vi.hoisted(() => ({ resume: vi.fn() }));
@@ -387,6 +388,39 @@ describe("SummarySlotCard", () => {
     expect(container.querySelector('a[href="/issues/PAP-14000"]')).not.toBeNull();
     expect(container.querySelector('a[href="/issues/PAP-14000"]')?.closest("div")?.parentElement?.className)
       .not.toContain("border");
+
+    mockSummarySlotsApi.cancel.mockResolvedValue({
+      slot: slot({ status: "idle", generatingIssueId: null }),
+      cancelledIssueId: "issue-1",
+    });
+    const cancelButton = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent?.includes("Cancel"),
+    );
+    expect(cancelButton).toBeDefined();
+    flushSync(() => {
+      cancelButton?.click();
+    });
+    await flushQueries();
+    expect(mockSummarySlotsApi.cancel).toHaveBeenCalledWith({
+      companyId: "company-1",
+      scopeKind: "project",
+      scopeId: "project-1",
+      slotKey: "header",
+    });
+  });
+
+  it("does not stay stuck in generating state when the linked issue is blocked", async () => {
+    mockSummarySlotsApi.get.mockResolvedValue({
+      slot: slot({ status: "generating", generatingIssueId: "issue-1" }),
+      document: null,
+      generatingIssue: issue({ status: "blocked" }),
+    } satisfies GetSummarySlotResponse);
+
+    root = renderCard(container);
+    await flushQueries();
+
+    expect(container.textContent).not.toContain("Generating summary");
+    expect(container.textContent).toContain("Generate summary");
   });
 
   it("renders the latest generated markdown", async () => {

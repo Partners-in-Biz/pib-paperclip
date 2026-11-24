@@ -22,11 +22,14 @@ const mockSummarySlotService = vi.hoisted(() => ({
   getSlot: vi.fn(),
   listRevisions: vi.fn(),
   generate: vi.fn(),
+  cancel: vi.fn(),
+  markGenerationFailed: vi.fn(),
   write: vi.fn(),
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockHeartbeatWakeup = vi.hoisted(() => vi.fn());
+const mockHeartbeatCancelRun = vi.hoisted(() => vi.fn());
 
 function slot(overrides: Record<string, unknown> = {}) {
   return {
@@ -62,7 +65,7 @@ function generatingIssue(overrides: Record<string, unknown> = {}) {
 function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
     accessService: () => mockAccessService,
-    heartbeatService: () => ({ wakeup: mockHeartbeatWakeup }),
+    heartbeatService: () => ({ wakeup: mockHeartbeatWakeup, cancelRun: mockHeartbeatCancelRun }),
     instanceSettingsService: () => mockInstanceSettingsService,
     logActivity: mockLogActivity,
   }));
@@ -114,6 +117,7 @@ describe("summary slot routes", () => {
     mockAccessService.canUser.mockResolvedValue(true);
     mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableSummaries: true });
     mockHeartbeatWakeup.mockResolvedValue({ id: "run-1" });
+    mockHeartbeatCancelRun.mockResolvedValue(null);
     mockSummarySlotService.getSlot.mockResolvedValue({ slot: slot(), document: null, generatingIssue: null });
     mockSummarySlotService.listRevisions.mockResolvedValue({ slot: slot(), revisions: [] });
     mockSummarySlotService.generate.mockResolvedValue({
@@ -121,6 +125,14 @@ describe("summary slot routes", () => {
       generatingIssue: generatingIssue(),
       alreadyGenerating: false,
     });
+    mockSummarySlotService.cancel.mockResolvedValue({
+      slot: slot({ status: "idle", generatingIssueId: null }),
+      cancelledIssueId: generatingIssueId,
+      activeRunIds: ["run-1"],
+    });
+    mockSummarySlotService.markGenerationFailed.mockResolvedValue(
+      slot({ status: "failed", generatingIssueId, failureReason: "Failed to wake Summarizer: boom" }),
+    );
     mockSummarySlotService.write.mockResolvedValue({
       slot: slot({ documentId: "doc-1", status: "idle" }),
       document: { id: "doc-1", companyId, format: "markdown", body: "# Summary" },
@@ -236,6 +248,20 @@ describe("summary slot routes", () => {
       expect(mockSummarySlotService.generate).not.toHaveBeenCalled();
     });
 
+    it("marks the slot failed when waking the Summarizer throws", async () => {
+      mockHeartbeatWakeup.mockRejectedValueOnce(new Error("agent paused"));
+      const app = await createApp(boardActor);
+      const res = await request(app).post(
+        `/api/companies/${companyId}/summary-slots/project/header/generate`,
+      ).send({ scopeId: projectId });
+      expect(res.status, JSON.stringify(res.body)).toBe(500);
+      expect(mockSummarySlotService.markGenerationFailed).toHaveBeenCalledWith(
+        { companyId, scopeKind: "project", slotKey: "header", scopeId: projectId },
+        generatingIssueId,
+        "Failed to wake Summarizer: agent paused",
+      );
+    });
+
     it("returns 404 when the summaries flag is disabled", async () => {
       mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableSummaries: false });
       const app = await createApp(boardActor);
@@ -244,6 +270,44 @@ describe("summary slot routes", () => {
       ).send({});
       expect(res.status, JSON.stringify(res.body)).toBe(404);
       expect(mockSummarySlotService.generate).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("cancel route", () => {
+    it("cancels an in-flight generation, cancels active runs, and logs activity", async () => {
+      const app = await createApp(boardActor);
+      const res = await request(app).post(
+        `/api/companies/${companyId}/summary-slots/project/header/cancel`,
+      ).send({ scopeId: projectId });
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body.cancelledIssueId).toBe(generatingIssueId);
+      expect(mockSummarySlotService.cancel).toHaveBeenCalledWith({
+        companyId,
+        scopeKind: "project",
+        slotKey: "header",
+        scopeId: projectId,
+      });
+      expect(mockHeartbeatCancelRun).toHaveBeenCalledWith(
+        "run-1",
+        "Summary generation cancelled by operator",
+      );
+      expect(mockLogActivity).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: "summary_slot.generate_cancelled",
+          entityType: "summary_slot",
+          entityId: slotId,
+        }),
+      );
+    });
+
+    it("denies cancel for agent actors", async () => {
+      const app = await createApp(agentActor);
+      const res = await request(app).post(
+        `/api/companies/${companyId}/summary-slots/project/header/cancel`,
+      ).send({});
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(mockSummarySlotService.cancel).not.toHaveBeenCalled();
     });
   });
 
