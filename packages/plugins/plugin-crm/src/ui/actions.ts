@@ -13,3 +13,6 @@ export const useCrmAction = withRefusal(usePluginAction);
 
 /** The guard's `access.me` action, for `useAccess`. */
 export const useAccessMe = () => usePluginAction("access.me");
+
+/** `canvas.cards.resolve` for the board cards: the card batcher reads every refusal shape itself (it draws "No access"), so it gets the answer as it is. */
+export const useCardsResolve = () => usePluginAction("canvas.cards.resolve");
