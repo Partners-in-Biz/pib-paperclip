@@ -24,7 +24,9 @@ import { loadActorMemberships } from "../services/member-restriction/actor-membe
 import {
   MEMBER_RESTRICTION_BODY_ALLOWLISTS, MEMBER_RESTRICTION_TASK_BODY_ALLOWLISTS, TASK_KEPT_OBJECTS,
 } from "../services/member-restriction/body-allowlist.js";
-import { MEMBER_RESTRICTION_STRIPPED_KEYS } from "../services/member-restriction/response-strip.js";
+import {
+  MEMBER_RESTRICTION_POLICY_FIELDS, MEMBER_RESTRICTION_PROJECTED_KEYS, MEMBER_RESTRICTION_STRIPPED_KEYS, hasHostKeys, withoutHostKeys,
+} from "../services/member-restriction/response-strip.js";
 import { memberRestrictionRouteGuard } from "../services/member-restriction/route-middleware.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
@@ -85,16 +87,49 @@ it("tripwire: every `refused` and `keep-stored` key of the C4i maps is in the st
   for (const key of expected) expect(MEMBER_RESTRICTION_STRIPPED_KEYS.has(key), key).toBe(true);
 });
 
+describe("execution workspace policy projection (PAR-14313)", () => {
+  const policy = {
+    enabled: true, allowIssueOverride: false, defaultMode: "isolated_workspace", environmentId: "env-1",
+    storageProviderPluginId: "plugin-1", defaultProjectWorkspaceId: "pw-1", sharedWorkspaceConcurrency: "serial",
+    workspaceStrategy: { type: "git_worktree", worktreeParentDir: "/srv/o", provisionCommand: "make o" },
+    workspaceRuntime: { services: [] }, branchPolicy: { prefix: "o/" }, pullRequestPolicy: { base: "main" },
+    runtimePolicy: { x: 1 }, cleanupPolicy: { y: 1 }, authorizationPolicy: { trustPreset: "standard" },
+  };
+  const safe = { enabled: true, allowIssueOverride: false, defaultMode: "isolated_workspace" };
+
+  it("keeps only enabled, allowIssueOverride and defaultMode, at any depth", () => {
+    const body = { executionWorkspacePolicy: policy, workspaceProvider: { pluginId: "plugin-1", effectivePolicy: policy },
+      issues: [{ project: { executionWorkspacePolicy: policy } }] };
+    expect(hasHostKeys(body)).toBe(true);
+    expect(withoutHostKeys(body)).toEqual({ executionWorkspacePolicy: safe, workspaceProvider: { pluginId: "plugin-1", effectivePolicy: safe },
+      issues: [{ project: { executionWorkspacePolicy: safe } }] });
+  });
+
+  it("fails closed on a field of the wrong type and on a value that is not an object", () => {
+    expect(withoutHostKeys({ executionWorkspacePolicy: { enabled: "yes", allowIssueOverride: 1, defaultMode: "/srv/o" } }))
+      .toEqual({ executionWorkspacePolicy: {} });
+    expect(withoutHostKeys({ executionWorkspacePolicy: null })).toEqual({ executionWorkspacePolicy: null });
+    expect(withoutHostKeys({ executionWorkspacePolicy: "/srv/o", effectivePolicy: ["/srv/o"] })).toEqual({});
+  });
+});
+
 type Actor = Express.Request["actor"];
 type Mode = "off" | "report" | "enforce" | "kill";
 const ALLOWED_ADAPTER_KEYS = Object.keys(TASK_KEPT_OBJECTS.assigneeAdapterOverrides.adapterConfig);
 
-/** Every strip-set key found at any depth, and `adapterConfig.<key>` for a key outside the four allows. */
+/** A projected policy: null, or an object of the projection's fields only. */
+const isProjected = (value: unknown) => value === null || (Boolean(value) && typeof value === "object" && !Array.isArray(value)
+  && Object.keys(value as object).every((name) => MEMBER_RESTRICTION_POLICY_FIELDS.includes(name)));
+
+/**
+ * Every strip-set key found at any depth (a projected key only when it carries more than
+ * the projection), and `adapterConfig.<key>` for a key outside the four allows.
+ */
 function hostKeys(value: unknown, found = new Set<string>()): string[] {
   if (Array.isArray(value)) value.forEach((item) => hostKeys(item, found));
   else if (value && typeof value === "object") {
     for (const [key, inner] of Object.entries(value)) {
-      if (MEMBER_RESTRICTION_STRIPPED_KEYS.has(key)) found.add(key);
+      if (MEMBER_RESTRICTION_PROJECTED_KEYS.has(key) ? !isProjected(inner) : MEMBER_RESTRICTION_STRIPPED_KEYS.has(key)) found.add(key);
       if (key === "adapterConfig" && inner && typeof inner === "object") {
         for (const name of Object.keys(inner)) if (!ALLOWED_ADAPTER_KEYS.includes(name)) found.add(`adapterConfig.${name}`);
       }
@@ -154,7 +189,8 @@ function hostKeys(value: unknown, found = new Set<string>()): string[] {
 
   let envId = "";
   const STORED_ENV = { TOKEN: { type: "secret_ref", secretId: randomUUID() }, PLAIN: { type: "plain", value: "o" } };
-  const storedPolicy = () => ({ enabled: true, defaultMode: "isolated_workspace", environmentId: envId,
+  const storedPolicy = () => ({ enabled: true, allowIssueOverride: true, defaultMode: "isolated_workspace", environmentId: envId,
+    branchPolicy: { prefix: "o/" }, cleanupPolicy: { removeAfterDays: 3 },
     workspaceStrategy: { type: "git_worktree", worktreeParentDir: "/srv/o", provisionCommand: "make o", teardownCommand: "make clean" },
     authorizationPolicy: { trustPreset: "standard" } });
   /** A task the person is responsible for, with O's workspace settings and adapter overrides. */
@@ -241,6 +277,13 @@ function hostKeys(value: unknown, found = new Set<string>()): string[] {
     expect(task.body).toMatchObject({ id: taskId, projectId, executionWorkspaceId: workspaceId,
       executionWorkspaceSettings: { mode: "isolated_workspace", workspaceStrategy: { type: "git_worktree" } },
       assigneeAdapterOverrides: { adapterConfig: { model: "o-model" } } });
+    // PAR-14313: the mode pickers still learn that the project allows a mode, and nothing else of its policy.
+    const safePolicy = { enabled: true, allowIssueOverride: true, defaultMode: "isolated_workspace" };
+    const project = await (await as(R)).get(`/api/projects/${projectId}`);
+    expect(project.body.executionWorkspacePolicy).toEqual(safePolicy);
+    expect(project.body.workspaceProvider.effectivePolicy).toEqual(safePolicy);
+    const list = await (await as(R)).get(`/api/companies/${Y}/projects`);
+    expect(list.body.find((row: { id: string }) => row.id === projectId).executionWorkspacePolicy).toEqual(safePolicy);
   }, 300_000);
 
   it("AC-X1: when the resolver throws, R gets 503 MEMBER_RESTRICTION_UNAVAILABLE and no data", async () => {

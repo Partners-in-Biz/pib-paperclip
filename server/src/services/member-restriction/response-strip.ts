@@ -1,4 +1,5 @@
 import type { Response } from "express";
+import type { ProjectExecutionWorkspaceDefaultMode } from "@paperclipai/shared";
 import { TASK_KEPT_OBJECTS } from "./body-allowlist.js";
 
 /**
@@ -22,7 +23,34 @@ export const MEMBER_RESTRICTION_STRIPPED_KEYS: ReadonlySet<string> = new Set([
   "cwd", "repoUrl", "setupCommand", "cleanupCommand", "runtimeConfig", "remoteWorkspaceRef", "sharedWorkspaceKey",
   // The host folders of a project's `codebase`.
   "localFolder", "managedFolder", "effectiveLocalFolder",
+  // A project's `workspaceProvider.effectivePolicy`: the same policy, resolved (projected below).
+  "effectivePolicy",
 ]);
+
+/**
+ * PAR-14313 (AC-G10, spec 4.6): R still picks a workspace mode on his own task,
+ * and the three mode pickers need to know the project allows one. These keys
+ * are not dropped but cut to the named fields, each a boolean or a mode name;
+ * no host path, command, environment, strategy or policy object passes.
+ */
+const WORKSPACE_MODES: ReadonlySet<string> = new Set([
+  "shared_workspace", "isolated_workspace", "operator_branch", "adapter_default",
+] satisfies ProjectExecutionWorkspaceDefaultMode[]);
+const POLICY_PROJECTION: Record<string, (value: unknown) => boolean> = {
+  enabled: (value) => typeof value === "boolean",
+  allowIssueOverride: (value) => typeof value === "boolean",
+  defaultMode: (value) => typeof value === "string" && WORKSPACE_MODES.has(value),
+};
+export const MEMBER_RESTRICTION_PROJECTED_KEYS: ReadonlySet<string> = new Set(["executionWorkspacePolicy", "effectivePolicy"]);
+export const MEMBER_RESTRICTION_POLICY_FIELDS: readonly string[] = Object.keys(POLICY_PROJECTION);
+
+/** The policy as a bound caller sees it: null stays null; anything but an object is dropped. */
+function projectedPolicy(value: unknown): Record<string, unknown> | null | undefined {
+  if (value === null) return null;
+  if (typeof value !== "object" || Array.isArray(value)) return undefined;
+  return Object.fromEntries(Object.entries(value)
+    .filter(([name, inner]) => Object.hasOwn(POLICY_PROJECTION, name) && POLICY_PROJECTION[name]!(inner)));
+}
 
 /**
  * The only `adapterConfig` keys a bound caller sees: the four he may set (C4i-b).
@@ -37,6 +65,7 @@ const isAllowedAdapterConfigKey = (name: string) => (allowedAdapterConfigKeys ??
 function stripReplacer(this: unknown, key: string, value: unknown): unknown {
   // Array indexes are not names; only an object's own keys are stripped.
   if (Array.isArray(this)) return value;
+  if (MEMBER_RESTRICTION_PROJECTED_KEYS.has(key)) return projectedPolicy(value);
   if (MEMBER_RESTRICTION_STRIPPED_KEYS.has(key)) return undefined;
   if (key === "adapterConfig" && value && typeof value === "object" && !Array.isArray(value)) {
     return Object.fromEntries(Object.entries(value).filter(([name]) => isAllowedAdapterConfigKey(name)));
