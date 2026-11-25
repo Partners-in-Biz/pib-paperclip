@@ -166,7 +166,7 @@ const instanceConfigSchema: JsonSchema = {
       description:
         "Pick a company secret for each provider and the daily check calls it once (one cheap read, never storing or showing the value) to see whether the credential is still accepted and, for GitHub and Cloudflare, when it expires. Without one the register still warns before an expiry date you recorded.",
       properties: {
-        github: secretField("GitHub token", "The company secret holding the GitHub token agents push with (read-only check: GET /user)."),
+        github: secretField("GitHub token", "The company secret holding the GitHub token agents push with (read-only check: GET /user). The hourly merged-PR check also reads pull request state with it, so a question asking the owner to merge a PR is settled once it is merged."),
         cloudflare: secretField("Cloudflare API token", "A Cloudflare API token (checked with the token verify call)."),
         resend: secretField("Resend API key", "The Resend key (checked with a read-only call; a sending-only key counts as live)."),
       },
