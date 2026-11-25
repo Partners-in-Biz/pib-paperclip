@@ -64,6 +64,17 @@ Listens to `plugin.<sender>.mail.send.requested` for every kit `MAIL_SENDERS` pl
 - A retry first looks the message up by its Message-ID, so an attempt Gmail accepted is not sent twice.
 - Over the rate, Gmail down or the account needs reconnecting: nothing is stored and the sender's outbox retries. No connected account, a bad address, an expired attachment link or a message Gmail refuses: `failed` with `permanent: true`. The Sent tab retries by hand.
 
+## 0.9.19: email cards on a planning canvas
+
+An email can sit on a planning canvas as a card (`canvasNode` slot `card-mail`, `entityCard` `{ kind: "mail", search: false, related: true }`; PAR-14389 C.2, PAR-14421). The card shows the subject, the other party's address (subtitle), the date and sent or received, never the body or the snippet; a client message (`private-mail.ts`) shows its subject only. "Open" goes to `/mailbox?tab=inbox&mail=<id>`.
+
+- `canvas.cards.resolve`: the messages of this company among the ids (`messagesByIds`). Who sees a card is who can open the mail through `mailbox.get-message` on the page (any person of the company); another company's id, an unknown id and a deleted mail are `{ hidden: true }`.
+- `canvas.cards.related` for a CRM company or contact (`of` `partnersinbiz.crm` `card-company` / `card-contact`): `mailForClient`, the mail tagged with the client, or with one of its addresses (a contact's emails; a company's domain, not a free-mail one, on the part after `@`) in from, reply-to, to, cc or bcc. Drafts and Trash are left out; newest first, at most 50. A client this company's CRM projection does not know answers nothing.
+- No `canvas.cards.search`: the Mailbox adds no new way to list mail (plan Risk 2).
+- Registered through the kit's `registerCanvasCards` with `ctx.actions.register`: agents are refused, a restricted member gets hidden cards and no groups. Deployed before the core release with the `entityCard` field, core strips the field and no picker tab appears: expected.
+
+No migration, no capability change.
+
 ## 0.9.15: a picked contact stays in To, Cc and Bcc
 
 UI-only: in the draft editor the To, Cc and Bcc fields were a `<label>`, and a click on a label goes to the first control inside it. Once an address was in the box, that control was its remove button, so a click on the field's name or on the empty part of the box took the first address away again. The field is now a plain block (the box keeps its `aria-label`); a click on the empty part of the box puts the cursor in it. A pick also drops a contact search that is still on its way and the pending check of the typed text, so the list does not open again and the search text is not flagged as a bad address. No migration, no capability change.

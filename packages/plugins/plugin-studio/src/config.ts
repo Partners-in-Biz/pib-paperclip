@@ -9,7 +9,7 @@ import { StudioError } from "./errors.js";
 import type { PrivateBucket } from "./storage.js";
 
 /** Keys under `providers` in the plugin settings: one default per capability, two for lip-sync (audio, typed line). */
-export type ProviderSetting = "stt" | "tts" | "lipsync" | "lipsyncLine" | "looks";
+export type ProviderSetting = "stt" | "tts" | "lipsync" | "lipsyncLine" | "looks" | "reframe";
 
 export function instanceConfigSchema(): JsonSchema {
   return {
@@ -40,18 +40,32 @@ export function instanceConfigSchema(): JsonSchema {
         title: "Stability AI",
         properties: { apiKey: secretField("Stability AI key", "platform.stability.ai key for Stable Audio music.") },
       },
+      elevenlabs: {
+        type: "object",
+        title: "ElevenLabs voice",
+        properties: { apiKey: secretField("API key", "elevenlabs.io API key (optional: pick ElevenLabs for voiceover or auto-captions).") },
+      },
+      boards: {
+        type: "object",
+        title: "Planning Canvas boards",
+        properties: {
+          cards: { type: "boolean", title: "Studio media on boards", description: "Off: every Studio card on a board shows a placeholder and the board's Studio panel is empty.", default: true },
+        },
+      },
       providers: {
         type: "object",
         title: "Voice providers",
         description: "Which provider each voice job uses unless the job names one.",
         properties: {
-          stt: { type: "string", title: "Speech to text", enum: ["xai"], default: "xai" },
-          tts: { type: "string", title: "Text to speech", enum: ["xai"], default: "xai" },
+          stt: { type: "string", title: "Speech to text", enum: ["xai", "elevenlabs"], default: "xai" },
+          tts: { type: "string", title: "Text to speech", enum: ["xai", "elevenlabs"], default: "xai" },
           // Lip-sync keys: src/providers/registry.ts LIPSYNC (kept as literals so this file loads no registry code).
           lipsync: { type: "string", title: "Lip-sync to your audio", enum: ["wan-3.0-prime", "wan-2.7", "seedance-2.5-reference", "grok-video-1.5"], default: "wan-3.0-prime" },
           lipsyncLine: { type: "string", title: "Lip-sync a typed line", enum: ["seedance-2.5-dialogue"], default: "seedance-2.5-dialogue" },
           // Look pack keys: src/providers/registry.ts LOOK_PACKS (literal, same reason).
           looks: { type: "string", title: "Look pack for video clips", enum: ["pib-basic"], default: "pib-basic" },
+          // Reframe keys: src/providers/registry.ts PROVIDERS.reframe (literal, same reason).
+          reframe: { type: "string", title: "Reframe for other shapes", enum: ["local-face", "centre"], default: "local-face" },
         },
       },
     },
@@ -70,6 +84,9 @@ export class StudioConfig {
   constructor(ctx: PluginContext, companyId: string) {
     this.raw = read(ctx, companyId);
     this.secrets = this.raw.then((raw) => new SecretResolver(ctx, companyId, raw));
+    // A failed settings read rejects both; a caller that reads only `raw` (boardCardsOn) must not leave `secrets` as
+    // an unhandled rejection. Callers that await `secrets` still get the error.
+    this.secrets.catch(() => undefined);
   }
 
   async bucket(): Promise<PrivateBucket> {
@@ -100,11 +117,27 @@ export class StudioConfig {
     return key;
   }
 
+  async elevenLabsKey(): Promise<string> {
+    const key = await (await this.secrets).get("elevenlabs.apiKey");
+    if (!key) throw new StudioError("Voiceover with ElevenLabs needs a key: set it under \"ElevenLabs voice\" in Studio's plugin settings.", "not_configured");
+    return key;
+  }
+
   /** The company default provider key for a capability, as set in the plugin settings (undefined when unset). */
   async providerDefault(cap: ProviderSetting): Promise<string | undefined> {
     const providers = ((await this.raw).providers ?? {}) as Record<string, unknown>;
     const v = providers[cap];
     return typeof v === "string" && v.trim() ? v.trim() : undefined;
+  }
+
+  /** Studio media cards on Planning Canvas boards (PAR-14280): on unless set to false; off when the settings read fails. */
+  async boardCardsOn(): Promise<boolean> {
+    try {
+      const boards = ((await this.raw).boards ?? {}) as Record<string, unknown>;
+      return boards.cards !== false;
+    } catch {
+      return false;
+    }
   }
 
   /** Whether a secret reference resolves to a value. */

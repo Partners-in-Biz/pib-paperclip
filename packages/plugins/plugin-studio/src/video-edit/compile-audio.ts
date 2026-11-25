@@ -121,10 +121,16 @@ export function buildAudioGraph(doc: EditDoc, sources: CompileInputs, firstInput
   if (labels.length === 0) return { inputArgs, filters, outLabel: null };
 
   const duration = num(editDuration(doc));
-  const mix = labels.length > 1 ? [`amix=inputs=${labels.length}:duration=longest:normalize=0`] : [];
+  // With more than one clip, a silent bed as long as the edit joins the mix. Without it, ffmpeg 8.x (8.0.1, 8.1.3) intermittently
+  // ended `amix duration=longest` at the last clip's end and `apad` did not extend it, so about 1 render in 7 came out
+  // short (7.5 s of 8 s, PAR-12746). The bed is zeros, so the sum is bit-identical, and the output is the edit's length.
+  const bed = labels.length > 1 ? "abed" : null;
+  if (bed) filters.push(`anullsrc=r=${SAMPLE_RATE}:cl=stereo:d=${duration},aformat=sample_fmts=fltp[${bed}]`);
+  const inputs = bed ? [...labels, bed] : labels;
+  const mix = bed ? [`amix=inputs=${inputs.length}:duration=longest:normalize=0`] : [];
   const tail = [...mix, ...(options.loudnorm ? [LOUDNORM] : []), `apad=whole_dur=${duration}`, `atrim=duration=${duration}`];
   const outLabel = "aout";
-  filters.push(`${labels.map((l) => `[${l}]`).join("")}${tail.join(",")}[${outLabel}]`);
+  filters.push(`${inputs.map((l) => `[${l}]`).join("")}${tail.join(",")}[${outLabel}]`);
   return { inputArgs, filters, outLabel };
 }
 

@@ -214,6 +214,16 @@ function createRuntimeRequestDbStub(row: Record<string, unknown>) {
   return { select: vi.fn(() => query) };
 }
 
+/** The manual-wake task read (PAR-13041) loads each payload task; this one is in company-1. */
+function createWakeTaskDbStub(issueId: string) {
+  const query = {
+    from: vi.fn().mockReturnThis(),
+    where: vi.fn().mockReturnThis(),
+    then: (resolve: (value: unknown[]) => unknown) => Promise.resolve([{ id: issueId, companyId: "company-1" }]).then(resolve),
+  };
+  return { select: vi.fn(() => query) };
+}
+
 function createFailedChatRetryDb(chatBound = true) {
   const predicates: ReturnType<PgDialect["sqlToQuery"]>[] = [];
   const order: string[] = [];
@@ -517,6 +527,10 @@ describe("agent live run routes", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockIssueService.getByIdentifier).toHaveBeenCalledWith("PC1A2-1295");
+    // PAR-13042: the route reads the task first (the default mock allows it).
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+      action: "issue:read", resource: expect.objectContaining({ type: "issue", issueId: "issue-1" }),
+    }));
     expect(mockHeartbeatService.getRunIssueSummary).toHaveBeenCalledWith(
       "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
     );
@@ -970,7 +984,8 @@ describe("agent live run routes", () => {
   });
 
   it("passes scoped wake fields through the legacy heartbeat invoke route", async () => {
-    const res = await requestApp(await createApp(), (baseUrl) =>
+    const issueId = "11111111-1111-4111-8111-111111111111";
+    const res = await requestApp(await createApp(createWakeTaskDbStub(issueId)), (baseUrl) =>
       request(baseUrl)
         .post(
           `/api/agents/${routeAgentId}/heartbeat/invoke?companyId=company-1`,
@@ -978,9 +993,9 @@ describe("agent live run routes", () => {
         .send({
           reason: "issue_assigned",
           payload: {
-            issueId: "issue-1",
-            taskId: "issue-1",
-            taskKey: "issue-1",
+            issueId,
+            taskId: issueId,
+            taskKey: issueId,
           },
           forceFreshSession: true,
         }),
@@ -995,9 +1010,9 @@ describe("agent live run routes", () => {
       triggerDetail: "manual",
       reason: "issue_assigned",
       payload: {
-        issueId: "issue-1",
-        taskId: "issue-1",
-        taskKey: "issue-1",
+        issueId,
+        taskId: issueId,
+        taskKey: issueId,
       },
       requestedByActorType: "user",
       requestedByActorId: "local-board",
@@ -1646,7 +1661,7 @@ describe("agent live run routes", () => {
 
   it("marks traced re-runs as explicit resumes so terminal issue context can execute", async () => {
     const issueId = "22222222-2222-4222-8222-222222222222";
-    const res = await requestApp(await createApp(), (baseUrl) =>
+    const res = await requestApp(await createApp(createWakeTaskDbStub(issueId)), (baseUrl) =>
       request(baseUrl)
         .post(`/api/agents/${routeAgentId}/wakeup?companyId=company-1`)
         .send({

@@ -1,10 +1,11 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import { constants as fsConstants, createReadStream, createWriteStream, promises as fs } from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { Transform } from "node:stream";
+import { resolvePaperclipInstanceRoot } from "@paperclipai/shared/home-paths";
 import { pipeIntoChildStdin, writeChildStdin } from "./child-stdin.js";
 import type { CommandManagedRuntimeRunner } from "./command-managed-runtime.js";
 import {
@@ -49,6 +50,7 @@ export function createSshCommandManagedRuntimeRunner(input: {
   spec: SshRemoteExecutionSpec;
   defaultCwd?: string | null;
   maxBufferBytes?: number | null;
+  connectionReuseRunId?: string | null;
 }): CommandManagedRuntimeRunner {
   const defaultCwd = input.defaultCwd?.trim() || input.spec.remoteCwd;
   const maxBufferBytes =
@@ -80,6 +82,7 @@ export function createSshCommandManagedRuntimeRunner(input: {
           stdin: commandInput.stdin,
           timeoutMs: commandInput.timeoutMs,
           maxBuffer: maxBufferBytes,
+          connectionReuseRunId: input.connectionReuseRunId,
         });
         if (result.stdout) await commandInput.onLog?.("stdout", result.stdout);
         if (result.stderr) await commandInput.onLog?.("stderr", result.stderr);
@@ -413,6 +416,137 @@ async function createSshAuthArgs(
       await Promise.all(tempFiles.map((cleanup) => cleanup()));
     },
   };
+}
+
+// One ssh connection per run for bridge and control ops (PAR-9403). Only
+// `runSshCommand` multiplexes; the agent's long-lived spawn keeps its own
+// connection. Runners are built per operation, so the control directory is
+// derived from the run id, never held by a runner.
+export const SSH_CONNECTION_REUSE_ENV = "PAPERCLIP_SSH_CONNECTION_REUSE";
+export const SSH_CONTROL_BASE_DIR_ENV = "PAPERCLIP_SSH_CONTROL_DIR";
+// Unix socket paths hold 103 bytes on macOS (107 on Linux). `%C` adds 40, and
+// ssh first binds `<path>.<16 random chars>`, 17 more: 103 - 57 = 46.
+export const SSH_CONTROL_DIR_MAX_BYTES = 46;
+const RUN_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const CONTROL_DIR_NAME_RE = /^[A-Za-z0-9_-]{22}$/;
+
+// A run uuid as 22 base64url chars, reversible so the startup sweep knows the run.
+function controlDirName(runId: string): string | null {
+  return RUN_UUID_RE.test(runId) ? Buffer.from(runId.replace(/-/g, ""), "hex").toString("base64url") : null;
+}
+
+function runIdFromControlDirName(name: string): string | null {
+  if (!CONTROL_DIR_NAME_RE.test(name)) return null;
+  const hex = Buffer.from(name, "base64url").toString("hex");
+  if (hex.length !== 32 || Buffer.from(hex, "hex").toString("base64url") !== name) return null;
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+export function sshConnectionReuseEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env[SSH_CONNECTION_REUSE_ENV]?.trim() !== "0";
+}
+
+/** Short, per OS user and per instance, so two instances never sweep each other. */
+export function sshControlBaseDir(env: NodeJS.ProcessEnv = process.env): string {
+  const override = env[SSH_CONTROL_BASE_DIR_ENV]?.trim();
+  if (override) return path.resolve(override);
+  let instanceRoot = "";
+  try {
+    instanceRoot = resolvePaperclipInstanceRoot();
+  } catch {
+    // An invalid instance id still gets a per-user directory.
+  }
+  const uid = typeof process.getuid === "function" ? process.getuid() : 0;
+  const key = createHash("sha256").update(`${uid}\0${instanceRoot}`).digest("hex").slice(0, 6);
+  return `/tmp/pcs-${key}`;
+}
+
+/** `null` when the run id is not a uuid or the path would be too long. */
+export function sshControlDirFor(runId: string, baseDir: string = sshControlBaseDir()): string | null {
+  const name = controlDirName(runId);
+  if (!name) return null;
+  const dir = path.join(baseDir, name);
+  return Buffer.byteLength(`${dir}/`, "utf8") <= SSH_CONTROL_DIR_MAX_BYTES ? dir : null;
+}
+
+async function isPrivateOwnedDir(dir: string): Promise<boolean> {
+  const stats = await fs.lstat(dir).catch(() => null);
+  if (!stats?.isDirectory()) return false;
+  if (typeof process.getuid === "function" && stats.uid !== process.getuid()) return false;
+  return (stats.mode & 0o077) === 0;
+}
+
+async function ensurePrivateDir(dir: string): Promise<boolean> {
+  try {
+    await fs.mkdir(dir, { mode: 0o700 });
+    await fs.chmod(dir, 0o700);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") return false;
+  }
+  return await isPrivateOwnedDir(dir);
+}
+
+/** Creates `<base>/<runId>` with mode 0700; `null` (no reuse) if it is not private to us. */
+export async function prepareSshControlDir(runId: string, baseDir?: string): Promise<string | null> {
+  const dir = sshControlDirFor(runId, baseDir);
+  if (!dir) return null;
+  if (!(await ensurePrivateDir(path.dirname(dir))) || !(await ensurePrivateDir(dir))) return null;
+  return dir;
+}
+
+export function sshConnectionReuseArgs(controlDir: string): string[] {
+  return [
+    "-o", "ControlMaster=auto",
+    "-o", `ControlPath=${controlDir}/%C`,
+    "-o", "ControlPersist=60",
+    "-o", "ServerAliveInterval=15",
+    "-o", "ServerAliveCountMax=3",
+  ];
+}
+
+async function closeSshControlDir(dir: string): Promise<void> {
+  const entries = await fs.readdir(dir).catch(() => [] as string[]);
+  // An explicit ControlPath has no tokens, so the destination is never used.
+  await Promise.all(entries.map((name) =>
+    execFileText("ssh", ["-o", `ControlPath=${path.join(dir, name)}`, "-O", "exit", "paperclip-control"], {
+      timeout: 5_000,
+    }).catch(() => undefined)));
+  await fs.rm(dir, { recursive: true, force: true });
+}
+
+/** Run end: stop the run's masters, then remove its control directory. */
+export async function cleanupSshConnectionReuse(input: { runId: string; baseDir?: string }): Promise<void> {
+  const dir = sshControlDirFor(input.runId, input.baseDir);
+  if (!dir || !(await isPrivateOwnedDir(dir))) return;
+  await closeSshControlDir(dir);
+}
+
+/** Server start: remove control directories whose run is no longer running. */
+export async function sweepStaleSshControlDirs(input: {
+  activeRunIds: (candidateRunIds: string[]) => Promise<ReadonlySet<string>>;
+  baseDir?: string;
+}): Promise<{ removed: string[]; kept: string[] }> {
+  const baseDir = input.baseDir ?? sshControlBaseDir();
+  if (!(await isPrivateOwnedDir(baseDir))) return { removed: [], kept: [] };
+  const candidates = new Map<string, string>();
+  for (const name of await fs.readdir(baseDir)) {
+    const runId = runIdFromControlDirName(name);
+    if (runId) candidates.set(runId, name);
+  }
+  if (candidates.size === 0) return { removed: [], kept: [] };
+  const active = await input.activeRunIds([...candidates.keys()]);
+  const removed: string[] = [];
+  const kept: string[] = [];
+  for (const [runId, name] of candidates) {
+    const dir = path.join(baseDir, name);
+    if (active.has(runId) || !(await isPrivateOwnedDir(dir))) {
+      kept.push(runId);
+      continue;
+    }
+    await closeSshControlDir(dir);
+    removed.push(runId);
+  }
+  return { removed, kept };
 }
 
 function tarExcludeArgs(exclude: string[] | undefined): string[] {
@@ -1293,6 +1427,8 @@ export async function runSshCommand(
     stdin?: string;
     timeoutMs?: number;
     maxBuffer?: number;
+    /** Run that owns the shared connection; absent, or reuse off: a fresh connection. */
+    connectionReuseRunId?: string | null;
   } = {},
 ): Promise<SshCommandResult> {
   let cleanup: () => Promise<void> = () => Promise.resolve();
@@ -1300,6 +1436,10 @@ export async function runSshCommand(
     const auth = await createSshAuthArgs(config);
     cleanup = auth.cleanup;
     const sshArgs = [...auth.args];
+    const controlDir = options.connectionReuseRunId && sshConnectionReuseEnabled()
+      ? await prepareSshControlDir(options.connectionReuseRunId)
+      : null;
+    if (controlDir) sshArgs.push(...sshConnectionReuseArgs(controlDir));
     const envEntries = Object.entries(options.env ?? {})
       .filter((entry): entry is [string, string] => typeof entry[1] === "string");
     for (const [key] of envEntries) {

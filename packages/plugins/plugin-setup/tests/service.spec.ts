@@ -30,7 +30,7 @@ describe("manifest and migration", () => {
     expect(PLUGIN_ID).toBe(SETUP_PLUGIN);
     expect(NAMESPACE).toBe("plugin_setup_48494712db");
     expect(manifest.database?.namespaceSlug).toBe("setup");
-    expect(manifest.version).toBe("0.7.16");
+    expect(manifest.version).toBe("0.7.17");
     expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe(manifest.version);
     for (const capability of ["ui.page.register", "ui.sidebar.register", "ui.dashboardWidget.register", "api.routes.register", "events.emit", "events.subscribe", "jobs.schedule", "issues.read", "issues.create", "issues.update", "issues.wakeup", "plugin.state.read", "plugin.state.write", "companies.read", "database.namespace.migrate", "database.namespace.read", "database.namespace.write"]) {
       expect(manifest.capabilities).toContain(capability);
@@ -116,6 +116,16 @@ describe("module choice", () => {
       { name: SETUP_EVENTS.modulesUpdated, companyId: A, payload: expect.objectContaining({ companyId: A, updatedAt: "2026-09-26T08:00:00.000Z" }) },
       { name: SUMMARY_EVENT, companyId: A, payload: expect.objectContaining({ companyId: A, requiredLeft: expect.any(Number) }) },
     ]);
+  });
+
+  it("makes no config call for a company outside the host's actionable list (PAR-14008)", async () => {
+    const { ctx, emitted, configCalls } = fakeCtx({ savedConfigs: { [A]: { weeklyIssue: true } } });
+    await saveModules(ctx, { companyId: A, modules: { seo: false }, userId: "u" }, fixedClock("2026-09-26T08:00:00.000Z"));
+    await saveModules(ctx, { companyId: B, modules: {}, userId: "u" }, fixedClock("2026-09-26T08:05:00.000Z"));
+    emitted.length = 0;
+    configCalls.length = 0;
+    expect(await reemitModules(ctx)).toEqual({ emitted: 1, skipped: 1, failed: 0 });
+    expect(configCalls).not.toContain(B);
   });
 
   it("wires the action to board users only, with the hourly job", async () => {

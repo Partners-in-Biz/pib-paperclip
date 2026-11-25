@@ -775,7 +775,27 @@ export function fastResponseService(
                 ),
               )
               .limit(5)
-          : [];
+          : await db
+              .select({
+                name: assets.originalFilename,
+                type: assets.contentType,
+              })
+              .from(issueAttachments)
+              .innerJoin(
+                assets,
+                and(
+                  eq(assets.id, issueAttachments.assetId),
+                  eq(assets.companyId, request.companyId),
+                ),
+              )
+              .where(
+                and(
+                  eq(issueAttachments.companyId, request.companyId),
+                  eq(issueAttachments.issueId, request.issueId),
+                  isNull(issueAttachments.issueCommentId),
+                ),
+              )
+              .limit(5);
         prompt = fastResponsePrompt({
           attachments: attachments.map((a) => `${a.name} (${a.type})`),
           agentName: agent?.name ?? "Board assistant",

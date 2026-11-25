@@ -35,3 +35,10 @@ describe("buildPreviewHtml on builder and plain layouts (PAR-10107)", () => {
     }
   }
 });
+
+describe("preview bar CSS (PAR-12248)", () => {
+  it("offsets the Hunt and Gun auction banner below the fixed desktop header", () => {
+    const out = buildPreviewHtml("<html><head></head><body><main><p>Hello</p></main></body></html>", "https://x.co.za/page/", { bodyHtml: "<p>NEW</p>" }, opts).html;
+    expect(out).toMatch(/@media \(min-width:981px\)\{\.auctionUpdatesLiveGroup\{margin-top:125px!important\}\}/);
+  });
+});

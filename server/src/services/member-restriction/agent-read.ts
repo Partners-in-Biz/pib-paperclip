@@ -46,6 +46,19 @@ export async function restrictedAgentIdsForActor(db: Db, actor: AgentReadActor, 
 }
 
 /**
+ * PAR-12608 4.6 "One run's detail", AC-G5, for the run lists of one task
+ * (PAR-14342): the person a run must work for (`heartbeat_runs.responsible_user_id`)
+ * to be listed to the caller in `companyId`; `false` when no run may be listed
+ * (he carries more than one restricted person, as `runWorksForRestrictedCaller`);
+ * null when the caller is not bound. A failed read throws 503.
+ */
+export async function restrictedRunPersonForActor(db: Db, actor: AgentReadActor, companyId: string): Promise<string | false | null> {
+  const people = new Set((await restrictedPeopleForActor(db, actor, companyId)).map((entry) => entry.personId));
+  if (people.size === 0) return null;
+  return people.size === 1 ? [...people][0]! : false;
+}
+
+/**
  * PAR-12608 4.3: of `ids` (task ids a route answers with, e.g. unresolved
  * blockers), the ones the caller may read, in their order. A caller not bound
  * by a restricted person gets `ids` with no extra query.

@@ -402,7 +402,9 @@ export interface PaperclipPluginManifestV1 {
         | "commentAnnotation"
         | "commentContextMenuItem"
         | "settingsPage"
-        | "companySettingsPage";
+        | "companySettingsPage"
+        | "canvasNode"
+        | "canvasPanel";
       id: string;
       displayName: string;
       /** Which export name in the UI bundle provides this component */
@@ -675,6 +677,16 @@ Examples:
 - "link GitHub issue"
 - "create branch from issue"
 - "restart process"
+
+The `canvas.cards.` key prefix is reserved for board entity cards (PAR-14389).
+Only `canvas.cards.resolve`, `canvas.cards.search` and `canvas.cards.related`
+exist, and only for a plugin that declares an `entityCard` on a `canvasNode`
+slot; any other key under the prefix answers 404. The host answers people only
+(an agent key, a run token or a system caller gets 403
+`CANVAS_CARDS_PERSON_ONLY`), checks the params against the shared schemas in
+`@paperclipai/shared` (`canvas-cards.ts`, 400 on failure), and answers a member
+restricted under `enforce` itself (hidden cards, empty lists) without calling
+the worker.
 
 ### 13.10 `executeTool`
 
@@ -1292,6 +1304,8 @@ For plugins that need richer settings UX beyond what JSON Schema can express, th
 Both approaches coexist: a plugin can use the auto-generated form for simple config and add a custom settings page slot for advanced configuration or operational dashboards.
 
 For plugins that need a company-scoped settings surface, declare a `companySettingsPage` slot with a `routePath`. The host renders a sidebar item under Company Settings and mounts the component at `/:companyPrefix/company/settings/:routePath`. The page receives `companyId` and `companyPrefix` in its host context. Core settings routes such as `access`, `invites`, `environments`, and `secrets` are reserved and cannot be shadowed by plugin declarations.
+
+Planning Canvas slots: `canvasNode` draws the card of an `embed` node whose `data.plugin` is the plugin key and `data.type` is the slot id. It receives `nodeKey`, `assetId`, flat `props` (text, number, boolean; at most 2 KB; draw as text) and the board props below. `canvasPanel` mounts in the board side area. Both receive `applyOps`, `boardId`, `boardProjectId`, `accessLevel` and `selection`. Both need only `ui.sidebar.register`. Without the plugin, an embed node draws as a placeholder.
 
 ## 20. Local Tooling
 

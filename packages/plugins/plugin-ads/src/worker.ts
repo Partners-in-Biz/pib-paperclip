@@ -1,4 +1,4 @@
-import { createAccessGuard, normalizeToolResult, type AccessGuard } from "@partnersinbiz/pib-plugin-kit";
+import { jobCompanyIds, createAccessGuard, normalizeToolResult, type AccessGuard } from "@partnersinbiz/pib-plugin-kit";
 import {
   definePlugin,
   runWorker,
@@ -448,7 +448,7 @@ function registerJob(ctx: PluginContext, key: string, run: () => Promise<unknown
 /** Every company that uses Ads, one at a time: a failure in one never stops the others. */
 async function forEachCompany<T>(ctx: PluginContext, run: (rt: AdsRuntime) => Promise<T>): Promise<Array<{ companyId: string; result?: T; error?: string }>> {
   const out: Array<{ companyId: string; result?: T; error?: string }> = [];
-  for (const companyId of await knownCompanies(ctx)) {
+  for (const companyId of await jobCompanyIds(ctx, await knownCompanies(ctx))) {
     try {
       if (!(await companyUsesAds(ctx, companyId))) continue;
       out.push({ companyId, result: await run(await runtimeFor(ctx, companyId)) });
@@ -462,7 +462,7 @@ async function forEachCompany<T>(ctx: PluginContext, run: (rt: AdsRuntime) => Pr
 
 export async function publishSetupStatuses(ctx: PluginContext): Promise<{ published: number; skipped: number }> {
   const result = { published: 0, skipped: 0 };
-  for (const companyId of await knownCompanies(ctx)) {
+  for (const companyId of await jobCompanyIds(ctx, await knownCompanies(ctx))) {
     try {
       if (!(await adsOn(ctx, companyId))) {
         result.skipped += 1;

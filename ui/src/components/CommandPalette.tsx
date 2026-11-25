@@ -1,6 +1,7 @@
 import { AgentIdentity } from "@/components/AgentIdentity";
 import { useCombinedInboxTasksEnabled } from "@/hooks/useCombinedInboxTasksEnabled";
 import { useState, useEffect, useMemo } from "react";
+import { CANVAS_COMMANDS, CANVAS_COMMAND_EVENT } from "@/components/planning-canvas/keyboard/canvas-keymap";
 import { useLocation, useNavigate } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { useCompany } from "../context/CompanyContext";
@@ -27,6 +28,8 @@ import {
   CircleDot,
   Bot,
   Hexagon,
+  NotebookPen,
+  PenTool,
   Target,
   LayoutDashboard,
   Inbox,
@@ -97,11 +100,12 @@ export function CommandPalette() {
   const navigate = useNavigate();
   const location = useLocation();
   const { selectedCompanyId } = useCompany();
-  const { openNewIssue, openNewAgent } = useDialogActions();
+  const { openNewIssue, openNewNote, openNewAgent } = useDialogActions();
   const { isMobile, setSidebarOpen } = useSidebar();
   // PAR-12608 4.6: no entry for a page closed to a restricted member.
   const { isPageHidden } = useMemberRestriction();
   const searchQuery = query.trim();
+  const onPlanningCanvas = /(^|\/)planning-canvas(\/|$)/.test(location.pathname);
   const onIssueDetail = isOnIssueDetail(location.pathname);
   const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
@@ -321,6 +325,27 @@ export function CommandPalette() {
           </>
         )}
 
+        {onPlanningCanvas && (
+          <>
+            <CommandGroup heading="Canvas">
+              {CANVAS_COMMANDS.map((cmd) => (
+                <CommandItem
+                  key={cmd.id}
+                  onSelect={() => {
+                    setOpen(false);
+                    // The palette closes first so focus returns to the board before the action runs.
+                    setTimeout(() => window.dispatchEvent(new CustomEvent(CANVAS_COMMAND_EVENT, { detail: { id: cmd.id } })), 0);
+                  }}
+                >
+                  <PenTool className="mr-2 h-4 w-4" />
+                  {cmd.label}
+                </CommandItem>
+              ))}
+            </CommandGroup>
+            <CommandSeparator />
+          </>
+        )}
+
         <CommandGroup heading="Actions">
           <CommandItem
             onSelect={() => {
@@ -331,6 +356,34 @@ export function CommandPalette() {
             <SquarePen className="mr-2 h-4 w-4" />
             Create new task
             <span className="ml-auto text-xs text-muted-foreground">C</span>
+          </CommandItem>
+          <CommandItem
+            onSelect={() => {
+              setOpen(false);
+              openNewNote();
+            }}
+          >
+            <NotebookPen className="mr-2 h-4 w-4" />
+            Create new personal note
+            <span className="ml-auto text-xs text-muted-foreground">⇧N</span>
+          </CommandItem>
+          <CommandItem
+            onSelect={() => {
+              setOpen(false);
+              navigate("/notes");
+            }}
+          >
+            <NotebookPen className="mr-2 h-4 w-4" />
+            Go to Personal Notes
+          </CommandItem>
+          <CommandItem
+            onSelect={() => {
+              setOpen(false);
+              navigate("/planning-canvas");
+            }}
+          >
+            <PenTool className="mr-2 h-4 w-4" />
+            Go to Planning Canvas
           </CommandItem>
           {onIssueDetail && fileViewerEnabled && (
             <CommandItem

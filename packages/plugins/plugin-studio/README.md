@@ -16,6 +16,10 @@ Not here yet: review, export to Social, the generate form and Photo Studio (Phas
 - **Share link:** an editor makes a view-only link from the canvas toolbar (Share). It is a static page `dist/ui/s/<24 random characters>.html` served by the host to anyone with the link: the board drawn as HTML, no script, no controls. Preview links on it last 10 minutes; the one-minute job rewrites the page every 4 minutes and the page reloads. Links expire after 7 days (1 to 30) and Revoke deletes the page at once. Agents never get a share or a signed link.
 - **Agent tool `canvas-create-from-brief`:** a title, prompts (image or video) and optional library asset ids become a new board: prompt cards wired to image/video cards, references as source cards feeding them. It never generates or spends; a person opens the board and presses Generate. Installing grants nobody: grant it to the agents that plan creative work.
 
+## Restricted members (page data and boards from 0.1.70)
+
+A member core marks restricted (`onBehalfOfRestricted`) gets nothing filed under a client on the Studio page: no client file, generation, board, video edit, Drive or brand kit, and no client in the page data (lists hold own work only; one client row or a client filter is refused `MEMBER_RESTRICTED`). Own work stays open to him. When core's answer is missing, client work is refused `MEMBER_RESTRICTION_UNAVAILABLE`, and a list only when a client row would be in it. Deploy core (acting person on page data and actions) before Studio, or the page refuses client rows to everyone. Agents' tools keep their own client rule.
+
 ## The higgsfield skill
 
 `skills/higgsfield/SKILL.md` is the source of the company library skill `higgsfield` (a `local_path` company skill, not shipped in `dist`). It sends agents to the Studio tools only. Cut-over after merge (a deploy step, not done by the PR): copy it over the company skill's `SKILL.md` and remove the old `hf.py` next to it. `tests/higgsfield-skill.spec.ts` keeps it in step with `src/tools.ts`.
