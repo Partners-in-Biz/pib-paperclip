@@ -11608,7 +11608,10 @@ export function issueService(db: Db) {
             .select({ projectId: executionWorkspaces.projectId })
             .from(executionWorkspaces)
             .where(eq(executionWorkspaces.id, nextExecutionWorkspaceId));
-          if (!existingEw || (nextProjectId && existingEw.projectId !== nextProjectId)) {
+          // A projectless (task-owned) workspace is not tied to any project, so
+          // a project edit must keep it; only a workspace owned by another
+          // project is cleared.
+          if (!existingEw || (nextProjectId && existingEw.projectId && existingEw.projectId !== nextProjectId)) {
             nextExecutionWorkspaceId = null;
             patch.executionWorkspaceId = null;
           }
