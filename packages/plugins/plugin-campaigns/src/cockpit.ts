@@ -18,6 +18,7 @@ import {
   publishCockpitSnapshot,
   readConfig,
   skillSyncCheck,
+  withClientParam,
   type ActivityItem,
   type CockpitSnapshot,
   type FlowStageReport,
@@ -27,7 +28,7 @@ import {
   type WaitingItem,
 } from "@partnersinbiz/pib-plugin-kit";
 import { getCampaign, listSteps } from "./db.js";
-import { clientPrefix } from "./domain.js";
+import { campaignScope, clientPrefix } from "./domain.js";
 import { unsubscribeLinkProblem } from "./links.js";
 import { abSuggestionFor } from "./mail.js";
 import { gatherPreflight } from "./preflight.js";
@@ -336,6 +337,7 @@ interface ApprovalRow {
   name: string;
   client_name: string | null;
   client_ref: string | null;
+  client_kind?: string | null;
   approval_issue_id: string;
   launch_error: string | null;
   issue_status: string;
@@ -357,7 +359,7 @@ export function approvalWaiting(rows: ApprovalRow[], now = Date.now()): WaitingI
   const items: WaitingItem[] = [];
   for (const row of rows) {
     const title = `${clientPrefix(row.client_ref ? row.client_name : null)}Approve campaign ${row.name}`;
-    const href = `/campaigns?campaign=${row.id}`;
+    const href = withClientParam(`/campaigns?campaign=${row.id}`, campaignScope({ clientKind: row.client_kind === "contact" ? "contact" : "company", clientRef: row.client_ref }));
     if (row.issue_status === "done") {
       items.push({
         key: `launch:${row.id}`,
@@ -403,7 +405,7 @@ export function approvalWaiting(rows: ApprovalRow[], now = Date.now()): WaitingI
 
 async function waitingItems(ctx: PluginContext, companyId: string): Promise<WaitingItem[]> {
   const rows = await ctx.db.query<ApprovalRow>(
-    `SELECT c.id, c.name, c.client_name, c.client_ref, c.approval_issue_id, c.launch_error, i.status AS issue_status,
+    `SELECT c.id, c.name, c.client_name, c.client_ref, c.client_kind, c.approval_issue_id, c.launch_error, i.status AS issue_status,
             i.assignee_agent_id AS issue_agent_id, i.created_at::text AS created_at, i.updated_at::text AS updated_at
        FROM ${t(ctx, "campaigns")} c JOIN public.issues i ON i.id::text = c.approval_issue_id
       WHERE c.company_id = $1 AND c.status = 'draft' AND c.approval_issue_id IS NOT NULL AND i.status <> 'cancelled'
