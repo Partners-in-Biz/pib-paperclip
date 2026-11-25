@@ -28,6 +28,7 @@ import { planningCanvasRoutes } from "../routes/planning-canvases.js";
 import { planningCanvasSharingRoutes } from "../routes/planning-canvas-sharing.js";
 import { planningCanvasCommentRoutes } from "../routes/planning-canvas-comments.js";
 import { planningCanvasChatRoutes } from "../routes/planning-canvas-chat.js";
+import { planningCanvasSourceRoutes } from "../routes/planning-canvas-sources.js";
 import { planningCanvasBlueprintRoutes } from "../routes/planning-canvas-blueprints.js";
 import { planningCanvasLinkRoutes } from "../routes/planning-canvas-links.js";
 import { authorizationService } from "../services/authorization.js";
@@ -151,6 +152,9 @@ const DENIAL_ROUTES: DenialRoute[] = [
   { method: "POST", path: `${P}/:boardId/comments/:commentId/resolve`, url: (ctx) => `${board(ctx)}/comments/${ctx.grantId}/resolve`, body: { resolved: true } },
   // Board chat (PAR-14276).
   { method: "POST", path: `${P}/:boardId/chat`, url: (ctx) => `${board(ctx)}/chat`, body: { agentId: "00000000-0000-4000-8000-000000000000", body: "Hi", clientRequestId: "r1" } },
+  // Connector sources (PAR-14282).
+  { method: "GET", path: `${P}/:boardId/agents/:agentId/read-actions`, url: (ctx) => `${board(ctx)}/agents/00000000-0000-4000-8000-000000000000/read-actions` },
+  { method: "POST", path: `${P}/:boardId/items/:itemKey/refresh`, url: (ctx) => `${board(ctx)}/items/n1/refresh`, body: { clientRequestId: "r1" } },
   // C8 (PAR-13937).
   { method: "GET", path: `${P}/:boardId/refs`, url: (ctx) => `${board(ctx)}/refs` },
   { method: "POST", path: `${P}/:boardId/query`, url: (ctx) => `${board(ctx)}/query`, body: { kind: "issues", filter: {}, limit: 10 } },
@@ -255,6 +259,7 @@ const DENIAL_ROUTES: DenialRoute[] = [
     api.use(planningCanvasSharingRoutes(db));
     api.use(planningCanvasCommentRoutes(db));
     api.use(planningCanvasChatRoutes(db));
+    api.use(planningCanvasSourceRoutes(db));
     api.use(planningCanvasLinkRoutes(db));
     api.use(planningCanvasBlueprintRoutes(db));
     app.use("/api", api);
