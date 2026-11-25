@@ -86,6 +86,7 @@ import { runPushDigest } from "./push/digest.js";
 import { reviewRoundsCheck } from "./register-w1c-rounds.js";
 import { registerW1cEdge } from "./register-w1c-edge.js";
 import { registerBrowserStatus } from "./browser-status.js";
+import { BROWSER_LIVE_ROUTE_KEY, handleBrowserLiveRoute, registerBrowserLive } from "./browser-live.js";
 import { jobHandler } from "./run-trigger.js";
 import { registerW1cPolicy } from "./register-w1c-policy.js";
 import { riskTierCloseCheck } from "./register-w1c-done.js";
@@ -239,6 +240,8 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
   registerPaper(env, guard);
   // The Browser tab: the pib-browser logins, read from the status file (owner company only).
   registerBrowserStatus(env, guard);
+  // Watch live (PAR-14514 S3): the ticket and the daemon status; the websocket route is in handleApiRoute.
+  registerBrowserLive(env, guard);
 
   for (const pluginKey of REPORTING_PLUGINS) {
     ctx.events.on(pluginEvent(pluginKey, COCKPIT_EVENTS.snapshot), async (event) => {
@@ -864,6 +867,8 @@ export async function handleApiRoute(env: Env, input: PluginApiRequestInput): Pr
       return { status: 409, body: result };
     }
     if (input.routeKey === "access-inventory") return await handleAccessInventory(env, input);
+    // Never throws: every failure is the one refusal (PAR-14514 S3).
+    if (input.routeKey === BROWSER_LIVE_ROUTE_KEY) return await handleBrowserLiveRoute(env, input);
     if (input.routeKey === "owner-push") {
       return await handleOwnerPush(env, input);
     }
