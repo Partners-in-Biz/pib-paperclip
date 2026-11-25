@@ -217,6 +217,7 @@ function CampaignsPageBody({ context }: PluginPageProps) {
   const loadDetail = useCampaignsAction("campaigns.detail");
   const loadClientSummary = useCampaignsAction("campaigns.client-summary");
   const [clientRows, setClientRows] = useState<ClientSummaryRow[]>([]);
+  const [clientError, setClientError] = useState<string | null>(null);
   const createCampaign = useCampaignsAction("campaigns.create-campaign");
   const loadPreferences = useCampaignsAction("campaigns.preferences-load");
   const savePreferences = useCampaignsAction("campaigns.preferences-save");
@@ -281,11 +282,16 @@ function CampaignsPageBody({ context }: PluginPageProps) {
   useEffect(() => {
     if (!context.companyId || scope) {
       setClientRows([]);
+      setClientError(null);
       return;
     }
+    setClientError(null);
     loadClientSummary({})
       .then((result) => setClientRows(((result as { clients?: ClientSummaryRow[] }).clients ?? [])))
-      .catch(() => setClientRows([]));
+      .catch((err: unknown) => {
+        setClientRows([]);
+        setClientError(err instanceof Error && err.message ? err.message : "Could not load the client campaigns summary.");
+      });
   }, [context.companyId, scopeKey]);
 
   useEffect(() => {
@@ -720,6 +726,7 @@ function CampaignsPageBody({ context }: PluginPageProps) {
       message={pageMessage}
       actions={headerAction}
     >
+      {clientError ? <p role="alert" data-testid="client-summary-error" style={{ margin: "0 0 12px", fontSize: 13, color: tokens.fg, overflowWrap: "anywhere" }}>Client campaigns summary unavailable: {clientError}</p> : null}
       {clientRows.length > 0 ? <ClientSummaryLine rows={clientRows} linkProps={linkProps} /> : null}
       {body}
     </Page>

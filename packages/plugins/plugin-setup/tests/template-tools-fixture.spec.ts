@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { subagentExtraArgs, type SubagentPolicy } from "../src/subagents.js";
-import { fakeCtx } from "./helpers/fake-ctx.js";
+import { directTools, fakeCtx } from "./helpers/fake-ctx.js";
 import type { AgentTemplate, TemplatePack } from "../src/templates.js";
 
 const fixtureHostOwned: AgentTemplate = {
@@ -54,7 +54,7 @@ import { registerTemplateTools } from "../src/template-tools.js";
 describe("template-tools fixture", () => {
   it("host-owned get returns {hostOwned:true}, no raw/rendered/hash", async () => {
     const { ctx } = fakeCtx({ companies: { "t": { name: "T" } } });
-    const { templateGet } = registerTemplateTools(ctx);
+    const { templateGet } = registerTemplateTools(ctx, directTools(ctx));
     const r = await templateGet({ key: "f-host" }, { companyId: "t" });
     expect(r.data!.hostOwned).toBe(true);
     expect(r.data!.raw).toBeUndefined();
@@ -64,14 +64,14 @@ describe("template-tools fixture", () => {
 
   it("list hash null for host-owned", async () => {
     const { ctx } = fakeCtx();
-    const { templateList } = registerTemplateTools(ctx);
+    const { templateList } = registerTemplateTools(ctx, directTools(ctx));
     const r = await templateList({}, {});
     expect(r.data!.templates[0].hash).toBeNull();
   });
 
   it("get subagents template returns subagents, non-empty extraArgs", async () => {
     const { ctx } = fakeCtx({ companies: { "t": { name: "T" } } });
-    const { templateGet } = registerTemplateTools(ctx);
+    const { templateGet } = registerTemplateTools(ctx, directTools(ctx));
     const r = await templateGet({ key: "f-sub" }, { companyId: "t" });
     if (r.error) throw new Error(`Handler returned error: ${r.error}`);
     expect(r.data!.subagents).toEqual(fixtureSubagents.subagents);
@@ -81,7 +81,7 @@ describe("template-tools fixture", () => {
 
   it("companyId defaults to run.companyId, uses company vars", async () => {
     const { ctx } = fakeCtx({ companies: { "c1": { name: "Co One" } } });
-    const { templateGet } = registerTemplateTools(ctx);
+    const { templateGet } = registerTemplateTools(ctx, directTools(ctx));
     const r = await templateGet({ key: "f-sub" }, { companyId: "c1" });
     if (r.error) throw new Error(`Handler returned error: ${r.error}`);
     expect(r.data!.rendered).toContain("Co One");
@@ -89,14 +89,14 @@ describe("template-tools fixture", () => {
 
   it("rejects mismatched companyId", async () => {
     const { ctx } = fakeCtx({ companies: { "c1": { name: "C1" }, "c2": { name: "C2" } } });
-    const { templateGet } = registerTemplateTools(ctx);
+    const { templateGet } = registerTemplateTools(ctx, directTools(ctx));
     const r = await templateGet({ key: "f-sub", companyId: "c2" }, { companyId: "c1" });
     expect(r.error).toContain("must match");
   });
 
   it("company literally named 'the company' is reported as found", async () => {
     const { ctx } = fakeCtx({ companies: { "c": { name: "the company" } } });
-    const { templateGet } = registerTemplateTools(ctx);
+    const { templateGet } = registerTemplateTools(ctx, directTools(ctx));
     const r = await templateGet({ key: "f-sub" }, { companyId: "c" });
     if (r.error) throw new Error(`Handler returned error: ${r.error}`);
     expect(r.data!.rendered).toContain("the company");
@@ -104,14 +104,14 @@ describe("template-tools fixture", () => {
 
   it("returns error when company not found", async () => {
     const { ctx } = fakeCtx({ companies: { "c": { name: "C" } } });
-    const { templateGet } = registerTemplateTools(ctx);
+    const { templateGet } = registerTemplateTools(ctx, directTools(ctx));
     const r = await templateGet({ key: "f-sub", companyId: "x" }, { companyId: "x" });
     expect(r.error).toContain("not found");
   });
 
   it("returns error for unknown key", async () => {
     const { ctx } = fakeCtx();
-    const { templateGet } = registerTemplateTools(ctx);
+    const { templateGet } = registerTemplateTools(ctx, directTools(ctx));
     const r = await templateGet({ key: "x" }, { companyId: "t" });
     expect(r.error).toContain("unknown template");
   });

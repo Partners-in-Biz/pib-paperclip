@@ -1,6 +1,6 @@
 /** Newsletter lead sources (intake newsletter), stage 1: the settings, their checks, the hidden confirmation secret, and a webhook that refuses them for now. */
 import { describe, expect, it } from "vitest";
-import { crmIssues, tool } from "./helpers/crm.js";
+import { CO, crmIssues, tool } from "./helpers/crm.js";
 import { bootLeads, delivery, lead, makeSource, makeSourceAsPerson, signedDelivery, type Booted } from "./helpers/leads.js";
 import { handleLeadWebhook, NEWSLETTER_NO_SECRET } from "../src/lead-capture.js";
 import { parseApplyTags, parseConfirmUrl } from "../src/lead-newsletter.js";
@@ -66,6 +66,9 @@ describe("creating a newsletter form", () => {
       [{ applyTags: ["x".repeat(61)] }, /1 to 60/],
       [{ applyTags: undefined }, /applyTags must be a list/],
       [{ confirmDailyCap: 301 }, /1 to 300/],
+      [{ confirmHourlyCap: 0 }, /confirmHourlyCap is a whole number from 1 to 300/],
+      [{ confirmHourlyCap: 301 }, /confirmHourlyCap is a whole number from 1 to 300/],
+      [{ confirmHourlyCap: 1.5 }, /confirmHourlyCap is a whole number from 1 to 300/],
       [{ confirmSecret: "pibs_mine" }, /never set or shown/],
       [{ projectId: "p1" }, /report form/],
     ];
@@ -98,6 +101,30 @@ describe("creating a newsletter form", () => {
     await makeSource(booted, { label: "Newsletter", siteUrl: SITE });
     expect(await refused(newsletter(booted))).toMatch(/never changes to or from newsletter/);
     expect(booted.store.lead_sources).toHaveLength(1);
+  });
+
+  it("confirmHourlyCap (PAR-11288): none by default, set on create, shown in list-lead-sources, cleared with null; a lead or report form refuses it", async () => {
+    const booted = await bootLeads();
+    const plain = await newsletter(booted);
+    expect(booted.store.lead_sources[0]).toMatchObject({ confirm_hourly_cap: null });
+    expect(plain.source.newsletter).toMatchObject({ confirmHourlyCap: null });
+    const capped = await newsletter(booted, { label: "Jobs list", confirmHourlyCap: 30 });
+    expect(booted.store.lead_sources[1]).toMatchObject({ confirm_hourly_cap: 30 });
+    const listed = await tool(booted.harness, "list-lead-sources", {});
+    expect(listed.sources.find((row: { id: string }) => row.id === capped.source.id)).toMatchObject({ newsletter: { confirmHourlyCap: 30 } });
+    const daily = await tool(booted.harness, "update-lead-source", { sourceId: capped.source.id, confirmDailyCap: 100 });
+    expect(daily.source.newsletter).toMatchObject({ confirmDailyCap: 100, confirmHourlyCap: 30 });
+    expect(await refused(tool(booted.harness, "update-lead-source", { sourceId: capped.source.id, confirmHourlyCap: 301 }))).toMatch(/1 to 300/);
+    const cleared = await tool(booted.harness, "update-lead-source", { sourceId: capped.source.id, confirmHourlyCap: null });
+    expect(cleared.source.newsletter).toMatchObject({ confirmHourlyCap: null });
+    expect(booted.store.lead_sources[1]).toMatchObject({ confirm_hourly_cap: null });
+
+    const lead = await makeSource(booted, { label: "Contact", siteUrl: SITE });
+    booted.harness.seed({ projects: [{ id: "p1", companyId: CO, name: "RemoteSaffa" } as never] });
+    expect(await refused(makeSource(booted, { label: "Quote", confirmHourlyCap: 30 }))).toMatch(/confirmHourlyCap belong to a newsletter form/);
+    expect(await refused(makeSource(booted, { label: "Bugs", intake: "issue", projectId: "p1", confirmHourlyCap: 30 }))).toMatch(/confirmHourlyCap belong to a newsletter form/);
+    expect(await refused(tool(booted.harness, "update-lead-source", { sourceId: lead.source.id, confirmHourlyCap: 30 }))).toMatch(/confirmHourlyCap belong to a newsletter form/);
+    expect(booted.store.lead_sources.map((row) => row.confirm_hourly_cap)).toEqual([null, null, null]);
   });
 });
 

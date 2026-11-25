@@ -1,7 +1,7 @@
 import { notifyRoutineExecutionStatus, type RoutineExecutionStatusScope } from "./routine-execution-status-notifications.js";
 import { and, eq, inArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { issues, routineRuns, routines } from "@paperclipai/db";
+import { issueThreadInteractions, issues, routineRuns, routines } from "@paperclipai/db";
 
 const EXECUTION_ISSUE_TRANSIENT_FAILURE_CODE = "execution_issue_status";
 const EXECUTION_ISSUE_TRANSIENT_FAILURE_STATUSES = ["blocked", "cancelled"] as const;
@@ -35,6 +35,20 @@ function legacyExecutionIssueTransientFailureStatus(
   return EXECUTION_ISSUE_TRANSIENT_FAILURE_STATUSES.find(
     (status) => failureReason === executionIssueTransientFailureReason(status),
   ) ?? null;
+}
+
+// A blocked execution issue waiting on a pending interaction (approval, question) is a
+// normal pause for a person's decision, not a failed routine run.
+function issueAwaitsPendingInteraction() {
+  return sql`exists (select 1 from ${issueThreadInteractions} where ${issueThreadInteractions.issueId} = ${issues.id}
+    and ${issueThreadInteractions.companyId} = ${issues.companyId} and ${issueThreadInteractions.status} = 'pending')`;
+}
+
+async function hasPendingInteraction(executor: Db, issueId: string, companyId: string) {
+  const rows = await executor.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions)
+    .where(and(eq(issueThreadInteractions.issueId, issueId), eq(issueThreadInteractions.companyId, companyId),
+      eq(issueThreadInteractions.status, "pending"))).limit(1);
+  return rows.length > 0;
 }
 
 export async function finalizeRoutineRun(executor: Db, runId: string, patch: Partial<typeof routineRuns.$inferInsert>) {
@@ -107,7 +121,9 @@ async function syncLockedRoutineRunStatusForIssue(executor: Db, issueId: string)
         : {}),
     });
   }
-  if (issue.status === "blocked" || issue.status === "cancelled") {
+  const awaitingPendingInteraction = issue.status === "blocked"
+    && await hasPendingInteraction(executor, issue.id, issue.companyId);
+  if ((issue.status === "blocked" && !awaitingPendingInteraction) || issue.status === "cancelled") {
     const failureReason = executionIssueTransientFailureReason(issue.status);
     if (run.status === "failed" && run.failureReason === failureReason && run.completedAt) return null;
     return finalizeRoutineRun(executor, issue.originRunId, {
@@ -153,12 +169,15 @@ export function routineExecutionStatusDebtCondition() {
   const transientFailure = sql`((${routineRuns.triggerPayload} -> 'transientFailure' ->> 'code' = ${EXECUTION_ISSUE_TRANSIENT_FAILURE_CODE}
       and ${routineRuns.triggerPayload} -> 'transientFailure' ->> 'status' in ('blocked', 'cancelled'))
     or ${routineRuns.failureReason} in ('Execution issue moved to blocked', 'Execution issue moved to cancelled'))`;
+  const blockedAwaitingInteraction = and(eq(issues.status, "blocked"), issueAwaitsPendingInteraction());
+  const blockedFailure = and(eq(issues.status, "blocked"), sql`not ${issueAwaitsPendingInteraction()}`);
   return or(
-    and(eq(routineRuns.status, "issue_created"), inArray(issues.status, ["done", "blocked", "cancelled"])),
-    and(eq(routineRuns.status, "completed"), or(inArray(issues.status, ["blocked", "cancelled"]),
+    and(eq(routineRuns.status, "issue_created"), or(inArray(issues.status, ["done", "cancelled"]), blockedFailure)),
+    and(eq(routineRuns.status, "completed"), or(eq(issues.status, "cancelled"), blockedFailure,
       and(eq(issues.status, "done"), sql`(${routineRuns.completedAt} is null or ${routineRuns.failureReason} is not null)`))),
     and(eq(routineRuns.status, "failed"), transientFailure,
       sql`(${issues.status} not in ('blocked', 'cancelled')
+        or ${blockedAwaitingInteraction}
         or ${routineRuns.completedAt} is null
         or ${routineRuns.failureReason} is distinct from 'Execution issue moved to ' || ${issues.status})`),
   );

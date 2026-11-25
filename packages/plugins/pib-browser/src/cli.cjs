@@ -3,10 +3,11 @@ const net = require('node:net');
 const fs = require('node:fs');
 const path = require('node:path');
 const { parseRegion } = require('./redact.cjs');
-const { writeShot } = require('./shot.cjs');
+const { parseViewport } = require('./netlog.cjs');
+const { writeShot, writeNet } = require('./shot.cjs');
 const { probeAll } = require('./probe.cjs');
 
-const COMMANDS = ['open', 'goto', 'click', 'fill', 'text', 'shot', 'close'];
+const COMMANDS = ['open', 'goto', 'click', 'drag', 'fill', 'text', 'shot', 'net', 'close'];
 const MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
 // open launches Chromium and waits for networkidle (~7 s on Paperclip), so 5 s was too short.
 const SOCKET_TIMEOUT_MS = Number(process.env.PIB_BROWSER_CLI_TIMEOUT_MS) || 60000;
@@ -103,6 +104,12 @@ function parseArgs(argv) {
       args.region = argv[++i];
     } else if (arg === '--approval') {
       args.approval = argv[++i];
+    } else if (arg === '--viewport') {
+      args.viewport = argv[++i];
+    } else if (arg === '--from') {
+      args.from = argv[++i];
+    } else if (arg === '--to') {
+      args.to = argv[++i];
     } else if (arg === '--step') {
       args.step = argv[++i];
     } else if (!arg.startsWith('--')) {
@@ -122,9 +129,11 @@ Commands:
   open      Open a browser context
   goto      Navigate to a URL
   click     Click an element
+  drag      Drag one element onto another (approval-gated like click)
   fill      Fill a form field
   text      Get text from an element
   shot      Take a screenshot
+  net       Show the session's network log (method, redacted URL, status, time)
   close     Close the browser context
   probe     Check browser session status for identities
   handoff-open  Open the login window for a person on display :99 (only while root's
@@ -135,6 +144,8 @@ Options:
   --issue PAR-N         Issue identifier (required)
   --url URL            URL to navigate to (for goto)
   --selector SEL       CSS selector (for click, fill, text)
+  --viewport WxH       Viewport for open/goto, 320x320 up to 3840x2160 (e.g. 390x844)
+  --from SEL --to SEL  Drag source and target selectors (for drag)
   --value VAL          Value to fill (for fill)
   --expect TEXT        Text to expect before screenshot
   --redact-region X,Y,W,H  Region to redact in screenshot
@@ -295,8 +306,18 @@ async function run(argv, env, deps = {}) {
     return 2;
   }
 
+  if (parsed.viewport !== undefined && !['open', 'goto'].includes(cmd)) {
+    stderr.write('Error: --viewport is only for open and goto\n');
+    return 2;
+  }
+  if (parsed.viewport !== undefined && !parseViewport(parsed.viewport)) {
+    stderr.write('Error: invalid --viewport (use WxH, 320x320 to 3840x2160)\n');
+    return 2;
+  }
+
   // Build request
   const args = {};
+  if (parsed.viewport !== undefined) args.viewport = parsed.viewport;
   if (cmd === 'goto') {
     if (!parsed.url) {
       stderr.write('Error: --url is required for goto\n');
@@ -310,6 +331,14 @@ async function run(argv, env, deps = {}) {
     }
     args.selector = parsed.selector;
     if (parsed.text) args.text = parsed.text;
+    if (parsed.approval) args.approval = parsed.approval;
+  } else if (cmd === 'drag') {
+    if (!parsed.from || !parsed.to) {
+      stderr.write('Error: --from and --to are required for drag\n');
+      return 2;
+    }
+    args.from = parsed.from;
+    args.to = parsed.to;
     if (parsed.approval) args.approval = parsed.approval;
   } else if (cmd === 'fill') {
     if (!parsed.selector || !parsed.value) {
@@ -384,6 +413,23 @@ async function run(argv, env, deps = {}) {
       stdout.write(JSON.stringify(output) + '\n');
     } else {
       stdout.write(`Screenshot written to ${writeResult.path}\n`);
+    }
+    return 0;
+  }
+
+  if (cmd === 'net' && exitCode === 0 && ok && data) {
+    const evidenceRoot = env.PIB_EVIDENCE_ROOT || '/home/paperclip/qa-evidence';
+    const entries = Array.isArray(data.entries) ? data.entries : [];
+    const w = writeNet({ fs: fsLib, root: evidenceRoot, issue, step: parsed.step || 'net', now: typeof now === 'function' ? now() : now, entries });
+    if (w.exit && w.exit !== 0) {
+      stderr.write('Error: failed to write evidence\n');
+      return w.exit;
+    }
+    if (parsed.json) {
+      stdout.write(JSON.stringify({ path: w.path, entries }) + '\n');
+    } else {
+      for (const e of entries) stdout.write(`${e.time} ${e.method} ${e.status} ${e.url}\n`);
+      stdout.write(`Network log written to ${w.path}\n`);
     }
     return 0;
   }

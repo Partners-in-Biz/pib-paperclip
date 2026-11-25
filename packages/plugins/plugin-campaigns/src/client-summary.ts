@@ -12,7 +12,7 @@ interface Row {
   waiting: string;
 }
 
-/** Counts of running (active) and waiting-for-approval campaigns per client, for the own page's summary line. Clients with neither are left out. */
+/** Counts of running (active) and waiting-for-approval campaigns per client, for the own page's summary line. Clients with neither are left out. No row limit: the UI sums these rows, so cutting them would undercount the totals. */
 export async function ownClientCounts(ctx: PluginContext, companyId: string): Promise<ClientSummaryRow[]> {
   const rows = await ctx.db.query<Row>(
     `SELECT c.client_kind, c.client_ref, max(c.client_name) AS client_name,
@@ -24,8 +24,7 @@ export async function ownClientCounts(ctx: PluginContext, companyId: string): Pr
       GROUP BY c.client_kind, c.client_ref
      HAVING count(*) FILTER (WHERE c.status = 'active') > 0
          OR count(*) FILTER (WHERE c.status = 'draft' AND i.id IS NOT NULL AND i.status <> 'cancelled') > 0
-      ORDER BY max(c.client_name) NULLS LAST, c.client_ref
-      LIMIT 50`,
+      ORDER BY max(c.client_name) NULLS LAST, c.client_ref`,
     [companyId],
   );
   return rows.map((row) => {

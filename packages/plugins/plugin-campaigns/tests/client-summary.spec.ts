@@ -32,6 +32,12 @@ describe("client summary (PAR-9231)", () => {
     expect(sql).not.toContain("'done'");
   });
 
+  it("does not cut rows with a LIMIT (the UI sums them)", async () => {
+    const query = vi.fn().mockResolvedValue([]);
+    await ownClientCounts({ db: { query, namespace: "plugin_campaigns" } } as never, "company-1");
+    expect(String(query.mock.calls[0]![0])).not.toMatch(/\bLIMIT\b/i);
+  });
+
   it("the approval link carries client= for a client campaign and not for an own one", async () => {
     const client = { ...(base as object), clientKind: "company", clientRef: "co-1" } as never;
     expect(await campaignPageLink(ctx("PIB"), "x", client)).toBe("/PIB/campaigns?campaign=c1&client=company%3Aco-1");

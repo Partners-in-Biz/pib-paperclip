@@ -5138,6 +5138,71 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     expect(child.executionWorkspaceId).not.toBe(executionWorkspaceId);
   });
 
+  it("rejects a projectWorkspaceId from a different project on create and update, and resets workspaces on project move", async () => {
+    const companyId = randomUUID();
+    const projectAId = randomUUID();
+    const projectBId = randomUUID();
+    const workspaceAId = randomUUID();
+    const workspaceBId = randomUUID();
+    const execWorkspaceAId = randomUUID();
+
+    await seedIssueCompany(db, companyId);
+    await db.insert(projects).values([
+      { id: projectAId, companyId, name: "Project A", status: "in_progress" },
+      { id: projectBId, companyId, name: "Project B", status: "in_progress" },
+    ]);
+    await db.insert(projectWorkspaces).values([
+      { id: workspaceAId, companyId, projectId: projectAId, name: "repo-a", isPrimary: true },
+      { id: workspaceBId, companyId, projectId: projectBId, name: "repo-b", isPrimary: true },
+    ]);
+    await db.insert(executionWorkspaces).values({
+      id: execWorkspaceAId,
+      companyId,
+      projectId: projectAId,
+      projectWorkspaceId: workspaceAId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Worktree A",
+      status: "active",
+      providerType: "git_worktree",
+    });
+
+    // 1. create() rejects cross-project workspace when projectId is set
+    await expect(
+      svc.create(companyId, {
+        title: "Mismatched create",
+        projectId: projectBId,
+        projectWorkspaceId: workspaceAId,
+      }),
+    ).rejects.toThrow("Project workspace must belong to the selected project");
+
+    // 2. create() with projectId=null still allows company-scoped workspace
+    const projectless = await svc.create(companyId, {
+      title: "Project-optional workspace task",
+      projectId: null,
+      projectWorkspaceId: workspaceAId,
+    });
+    expect(projectless.projectId).toBeNull();
+    expect(projectless.projectWorkspaceId).toBe(workspaceAId);
+
+    // 3. update() rejects explicit cross-project projectWorkspaceId
+    const issueA = await svc.create(companyId, {
+      title: "Issue in A",
+      projectId: projectAId,
+      projectWorkspaceId: workspaceAId,
+      executionWorkspaceId: execWorkspaceAId,
+    });
+    await expect(
+      svc.update(issueA.id, { projectWorkspaceId: workspaceBId }),
+    ).rejects.toThrow("Project workspace must belong to the selected project");
+
+    // 4. update() moving projectId without specifying projectWorkspaceId resets to target project's default and clears stale executionWorkspaceId
+    const moved = await svc.update(issueA.id, { projectId: projectBId });
+    expect(moved?.projectId).toBe(projectBId);
+    expect(moved?.projectWorkspaceId).toBe(workspaceBId);
+    expect(moved?.executionWorkspaceId).toBeNull();
+  });
+
   it("rejects explicitly pinned isolated git worktrees without a project or reusable workspace", async () => {
     const companyId = randomUUID();
 

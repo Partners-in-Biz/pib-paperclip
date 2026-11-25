@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { UserPlus2 } from "lucide-react";
 import { accessApi } from "@/api/access";
+import { agentsApi } from "@/api/agents";
+import { InviteRestrictionMark } from "@/components/access/InviteRestriction";
 import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -38,6 +40,12 @@ export function JoinRequestQueue() {
     enabled: !!selectedCompanyId,
   });
   const requestsView = useQueryView(requestsQuery);
+  // Agent names for the restriction mark's agent list; ids show while this loads or if it fails.
+  const agentsQuery = useQuery({
+    queryKey: queryKeys.agents.list(selectedCompanyId ?? ""),
+    queryFn: () => agentsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
 
   const approveMutation = useMutation({
     mutationFn: (requestId: string) => accessApi.approveJoinRequest(selectedCompanyId!, requestId),
@@ -136,7 +144,7 @@ export function JoinRequestQueue() {
           requestsQuery.data!.map((request) => (
             <Card key={request.id} className="block p-4">
               <div className="flex flex-wrap items-start justify-between gap-4">
-                <div className="space-y-2">
+                <div className="min-w-0 flex-1 space-y-2 wrap-anywhere">
                   <div className="flex flex-wrap items-center gap-2">
                     <Badge variant={request.status === "pending_approval" ? "secondary" : request.status === "approved" ? "outline" : "destructive"}>
                       {request.status.replace("_", " ")}
@@ -187,6 +195,15 @@ export function JoinRequestQueue() {
                   </div>
                   {request.invite?.inviteMessage ? (
                     <div className="mt-2 text-foreground">{request.invite.inviteMessage}</div>
+                  ) : null}
+                  {request.invite?.memberRestriction ? (
+                    <div className="mt-2">
+                      <InviteRestrictionMark
+                        restriction={request.invite.memberRestriction}
+                        isDefault={request.invite.memberRestrictionIsDefault}
+                        agents={agentsQuery.data}
+                      />
+                    </div>
                   ) : null}
                 </div>
                 <div className="rounded-lg border border-border bg-background px-3 py-2">

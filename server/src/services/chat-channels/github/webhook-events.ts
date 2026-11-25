@@ -35,6 +35,7 @@ export function createGitHubWebhookEvents(db: Db, options: EventOptions) {
       identity_revoked: "The GitHub author's identity link was revoked.",
       guest_automatic_reviews_disabled: "Automatic runs are off for external contributors.",
       responsible_user_unavailable: "The member responsible for automatic tasks is unavailable.",
+      responsible_user_restricted: "The member responsible for automatic tasks is restricted in this company.",
       repository_disabled: "Destination is not enabled in Paperclip",
       bot_tools_disabled: "This bot's GitHub tools are disabled.",
     };

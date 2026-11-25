@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   HUMAN_COMPANY_MEMBERSHIP_ROLE_LABELS,
@@ -34,6 +34,7 @@ import { PageTabBar } from "@/components/PageTabBar";
 import { useHiddenSettings } from "@/hooks/useHiddenSettings";
 import { useCloudInstance } from "@/hooks/useCloudInstance";
 import { InvitesSection } from "@/components/access/InvitesSection";
+import { InviteRestrictionMark } from "@/components/access/InviteRestriction";
 import { describeError } from "@/api/errors";
 import { authApi } from "@/api/auth";
 import { healthApi } from "@/api/health";
@@ -386,6 +387,13 @@ export function CompanyAccess() {
                       ? `${request.invite.allowedJoinTypes} join invite${request.invite.humanRole ? ` • default role ${request.invite.humanRole}` : ""}`
                       : "Invite metadata unavailable"
                   }
+                  mark={
+                    <InviteRestrictionMark
+                      restriction={request.invite?.memberRestriction}
+                      isDefault={request.invite?.memberRestrictionIsDefault}
+                      agents={agentsQuery.data}
+                    />
+                  }
                   detail={`Submitted ${new Date(request.createdAt).toLocaleString()}`}
                   approveLabel="Approve human"
                   rejectLabel="Reject human"
@@ -657,7 +665,12 @@ export function CompanyAccess() {
         </TabsContent>
         {!hideInvitesTab && (
           <TabsContent value="invites">
-            <InvitesSection />
+            <InvitesSection
+              canManageMembers={!!access?.canManageMembers}
+              restrictionMode={restrictionModeQuery.data?.mode}
+              forcedOff={restrictionForcedOff}
+              agents={agentsQuery.data ?? []}
+            />
           </TabsContent>
         )}
       </Tabs>
@@ -751,6 +764,7 @@ function PendingJoinRequestCard({
   title,
   subtitle,
   context,
+  mark,
   detail,
   detailSecondary,
   approveLabel,
@@ -762,6 +776,8 @@ function PendingJoinRequestCard({
   title: string;
   subtitle: string;
   context: string;
+  /** The invite's restriction mark; the approval keeps it (PAR-12608 4.2a). */
+  mark?: ReactNode;
   detail: string;
   detailSecondary?: string;
   approveLabel: string;
@@ -773,12 +789,13 @@ function PendingJoinRequestCard({
   return (
     <div className="py-3">
       <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="space-y-2">
+        <div className="min-w-0 flex-1 space-y-2 wrap-anywhere">
           <div>
             <div className="font-medium">{title}</div>
             <div className="text-sm text-muted-foreground">{subtitle}</div>
           </div>
           <div className="text-sm text-muted-foreground">{context}</div>
+          {mark}
           <div className="text-sm text-muted-foreground">{detail}</div>
           {detailSecondary ? <div className="text-sm text-muted-foreground">{detailSecondary}</div> : null}
         </div>

@@ -57,7 +57,7 @@ import { asParams, assignableUser, companyInfo, createEnv, errorMessage, reqStr,
 import { gscConnectStart, gscDisconnect, gscOauthComplete } from "./service/gsc.js";
 import { deliverPreviewAnswers, handStuckPreviewsToSenior, nudgeStalledReviews, previewRows, refreshStalePreviews, reviveOrphanedChanges } from "./service/preview.js";
 import { handleCancelledPreviews } from "./service/cancel.js";
-import { DRAFT_RESULT_EVENT, draftApprovalRequests, onDraftResult, repairDraftLinks, retryHandovers } from "./service/client-signoff.js";
+import { DRAFT_CLOSED_EVENT, DRAFT_KEPT_EVENT, DRAFT_RESULT_EVENT, draftApprovalRequests, onDraftClosed, onDraftKept, onDraftResult, retryHandovers } from "./service/client-signoff.js";
 import { onSiteChanged, SITE_CHANGED_EVENT, syncApplyWindows, syncSignoff, syncWindowForIssue } from "./service/signoff.js";
 import { loadFacts } from "./service/facts.js";
 import { onBuildIssueUpdated } from "./service/build.js";
@@ -144,7 +144,6 @@ const plugin = definePlugin({
         return 0;
       });
       if (drafted > 0) ctx.logger.info("SEO approval email drafts requested", { drafted });
-      await repairDraftLinks(e).catch((error) => ctx.logger.info("SEO draft links not repaired", { error: errorMessage(error) }));
       // Review rounds are what grew two task threads past the limit: check them here, not only hourly.
       const moved = await db.listSprintCompanies(ctx.db).then((companies) => guardTaskThreads(e, companies)).catch((error) => {
         ctx.logger.info("SEO thread guard failed", { error: errorMessage(error) });
@@ -156,13 +155,21 @@ const plugin = definePlugin({
       const result = await trackJob(ctx, WEEKLY_JOB_KEY, () => runWeeklyJob(e, { force: job.trigger === "manual" }));
       ctx.logger.info("SEO weekly job finished", { ...result, trigger: job.trigger });
     });
-    // The Mailbox's answer to an approval email draft request: the Gmail link goes on the sprint's Needs you.
+    // The Mailbox's answer to an approval email draft request: one line on the sprint's Needs you (the draft is in the Mailbox drafts).
     ctx.events.on(DRAFT_RESULT_EVENT, async (event) => {
       try {
         await onDraftResult(e, event);
       } catch (error) {
         ctx.logger.info("SEO draft result not recorded", { error: errorMessage(error) });
       }
+    });
+    // The approval email draft was sent, deleted or replaced in the Mailbox: its pages are marked or moved (PAR-14329, PAR-14558).
+    ctx.events.on(DRAFT_CLOSED_EVENT, async (event) => {
+      await onDraftClosed(e, event).catch((error) => ctx.logger.info("SEO draft close not recorded", { error: errorMessage(error) }));
+    });
+    // A person edited the approval email draft: the Mailbox keeps it, so its pages stay in it alone (PAR-14558).
+    ctx.events.on(DRAFT_KEPT_EVENT, async (event) => {
+      await onDraftKept(e, event).catch((error) => ctx.logger.info("SEO draft edit not recorded", { error: errorMessage(error) }));
     });
     // The CRM's word that an agent write on an approved page went through: the preview counts as applied (PAR-9131 Q16).
     ctx.events.on(SITE_CHANGED_EVENT, async (event) => {

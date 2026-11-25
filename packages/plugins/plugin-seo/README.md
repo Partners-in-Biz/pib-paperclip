@@ -127,6 +127,17 @@ node ./esbuild.config.mjs # dist/ (worker, manifest, ui, ui/oauth-callback.html 
 
 Migrations 001–019 are applied on installed instances; 0.23.0 adds `020_seo.sql` and 0.23.1 adds `021_seo.sql`. Never edit an applied one — add `022_seo.sql` and up. `012_seo.sql`: sprint site link columns (`site_project_id`, `site_access`, `repo_url`, `default_branch`, `framework`, `hosting`, `change_policy`, `verification`), `sprint_tasks.issue_project_id`, and the `needs_you` table.
 
+## 0.52.5: approval emails in the Mailbox drafts; one open draft per sprint (PAR-12249, PAR-14558)
+
+- The approval email and the progress email are drafts in the Paperclip Mailbox drafts (Mailbox 0.9.20), never Gmail Drafts.
+- A newer approval draft for a sprint replaces the older open one and lists its unanswered pages too. A carried page keeps `draft_key` (the draft it is in) and gets `carry_key` (migration 030, the newer draft that lists it). It moves to the newer draft only when the Mailbox says the older one is gone (`mail.draft.closed` `replaced` or `deleted`). How an approval draft can end, and what happens to its pages:
+  - sent: every page in it or carried into it is `sent` and never listed again;
+  - deleted by a person: carried pages move to the newer draft, the rest is `deleted` (not asked again);
+  - replaced: carried pages move to the newer draft, other unanswered pages are freed and asked about in the next batch; its Needs you line closes;
+  - edited by a person (`mail.draft.kept`): its pages are `kept`, stay in it alone and are not listed in a later draft;
+  - another sprint of the same client: never replaces it (the Mailbox key has the sprint id).
+- A failed newer draft drops its `carry_key`s: the pages stay only in the draft they are in.
+
 ## 0.52.3: sign-off delegate decides safe-autopilot approvals (PAR-13992)
 
 - **Approve an SEO change** and **Keep or discard learned playbook changes** now wait on the first sign-off delegate on the Cockpit (`waitsOn`), not the owner. In safe autopilot the delegate agent may call `approve-optimization` and `decide-playbook-change` (any other agent still may not; a person still can). With no delegate set, nothing changes.
@@ -156,7 +167,7 @@ Now the sitemap submit, the IndexNow ping and each URL's inspection start togeth
 ## 0.26.17: a dropped page no longer expires a newer revision; draft-progress-report
 Found on Agri Auctions SA (2026-10-06): `dropFailingPage` expired every live preview of a page, including a newer revision made while the Senior Developer was working, so good copy vanished with the failing one. It now does nothing when a newer pending or passed preview of the page exists, and otherwise expires only previews made at or before the one the Reviewer failed.
 
-New agent tool `draft-progress-report` (`sprintIds`, `to`, `greetingName`): the plugin writes a per-site progress email (done in weeks 0 to 3, pages written and approved, what is open and for whom, the plan for weeks 4 to 7) from the sprints' own records (`engine/progress-email.ts`, `service/report.ts`) and asks the Mailbox for a Gmail draft. It never sends: a person reads and sends it.
+New agent tool `draft-progress-report` (`sprintIds`, `to`, `greetingName`): the plugin writes a per-site progress email (done in weeks 0 to 3, pages written and approved, what is open and for whom, the plan for weeks 4 to 7) from the sprints' own records (`engine/progress-email.ts`, `service/report.ts`) and asks the Mailbox for a draft (Gmail then; the Paperclip Mailbox drafts since 0.52.5). It never sends: a person reads and sends it.
 
 ## 0.26.16: an idle agent is told once per version that earlier tool failures are fixed
 Found on Agri Auctions SA (2026-10-05): after the NUL-byte fault in `create-preview` was fixed, the home-page agent kept answering "create-preview still fails, the plugin fix is not live yet" and never retried, so every wake ended with no concrete action (the host's "plan only" liveness state). `nudgeIdleAgentTasks` now comments once per plugin version and issue that the plugin was updated and a tool that failed earlier should be called again. The version lives in `namespace.ts` (`PLUGIN_VERSION`, used by the manifest).
@@ -209,7 +220,7 @@ At the round cap (two Reviewer "changes" on one page) the fix now goes to the Se
 ## 0.26.0: automatic client sign-off, run the plan by itself, fact sheet from the client's pages
 For WordPress sites on `pr_only` (Hunt and Gun, Agri Auctions SA, Agri Studies) the client must approve anything visible before it goes live. Until 0.26.0 a person carried every preview link from the Reviewer to the client and back. A sprint can now be set to **automatic client sign-off** (sprint menu, page-only `set-signoff-mode`):
 1. The agent makes one `create-preview` per page and ends its turn. The Reviewer checks each (unchanged). When every preview of the task has a verdict and none is with the agent for changes, the plugin **parks the task on the client** (blocked, `assignee_kind = client`, not in flight), so the rest of the week and the next weeks carry on. The agent is not woken and never uses Needs you or `block-task` for sign-off.
-2. The 5-minute job batches passed previews (quiet for 30 min, or the oldest waited 4 h) into **one approval email**: it emits `mail.draft.requested` (kit contract) and the Mailbox (0.6.4) creates a real Gmail draft (`users.drafts.create`, never sends) to the client's CRM contacts on the site's own domain. `mail.draft.result` brings the link back; one Needs you line "Send the approval email" carries it (closed when the client answers). A failed draft puts the links on Needs you instead.
+2. The 5-minute job batches passed previews (quiet for 30 min, or the oldest waited 4 h) into **one approval email**: it emits `mail.draft.requested` (kit contract) and the Mailbox (0.6.4) creates a real Gmail draft (`users.drafts.create`, never sends; since 0.52.5 a draft in the Paperclip Mailbox drafts instead, PAR-12249) to the client's CRM contacts on the site's own domain. `mail.draft.result` brings the link back; one Needs you line "Send the approval email" carries it (closed when the client answers). A failed draft puts the links on Needs you instead.
 3. The client answers on the preview link (recorded by the preview service). Once the client has answered **every** preview of a task, the plugin opens the CRM sign-off lock for the approved pages only, for 6 hours (`site.write-approved`, page-scoped since 0.40.0), takes the task back to the agent and wakes it once with what to apply (approved) and what to revise (changes requested). Answers are handed over once (`previews.handed_at`). The agent applies only the approved pages, verifies live and completes the task only when every page is applied or dropped; revised previews park the task again by themselves.
 - *Limits:* a client who leaves one preview unanswered holds the whole task's approvals; the email is a draft a person reads and sends (the one human step).
 

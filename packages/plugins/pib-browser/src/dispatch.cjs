@@ -7,12 +7,13 @@ const { EXIT } = require('./exit-codes.cjs');
 const { authenticate, ISSUE_RE } = require('./auth.cjs');
 const { parseIdentity, originsFor, authorise } = require('./policy.cjs');
 const { redactText, parseRegion } = require('./redact.cjs');
+const { parseViewport, redactUrl } = require('./netlog.cjs');
 const { checkFill: defaultCheckFill } = require('./fill-rules.cjs');
 const { createErrorLog } = require('./errlog.cjs');
 const { createHandoffSessions, DEFAULT_TIMEOUT_MS } = require('./handoff-session.cjs');
 
 // The agent verbs. They all need an agent token and act on that agent's own session.
-const COMMANDS = Object.freeze(['open', 'goto', 'click', 'fill', 'text', 'shot', 'close']);
+const COMMANDS = Object.freeze(['open', 'goto', 'click', 'drag', 'fill', 'text', 'shot', 'net', 'close']);
 // Person hand-off (PAR-14022): authorised by root's flag, not by an agent token. Opens a window only a person
 // on the VNC screen can use; no agent verb can reach it.
 const HANDOFF_COMMANDS = Object.freeze(['handoff-open']);
@@ -119,6 +120,12 @@ function createDispatcher(deps = {}) {
 
       const sessionKey = `${agentId}|${identityStr}`;
 
+      let viewport;
+      if ((cmd === 'open' || cmd === 'goto') && args.viewport !== undefined) {
+        viewport = parseViewport(args.viewport);
+        if (!viewport) return { exit: EXIT.USAGE, ok: false, reason: 'viewport_invalid' };
+      }
+
       if (cmd === 'open') {
         if (!sites) {
           return { exit: EXIT.USAGE, ok: false, reason: 'sites_required' };
@@ -166,7 +173,8 @@ function createDispatcher(deps = {}) {
             ctx = browser.newContext({
               origins,
               guard: makeGuard(origins),
-              identity: identityStr
+              identity: identityStr,
+              ...(viewport ? { viewport } : {})
             });
 
             await ctx.goto(site.loggedIn.url);
@@ -221,22 +229,30 @@ function createDispatcher(deps = {}) {
             return { exit: authResult.exit, ok: false, reason: authResult.reason };
           }
 
+          if (viewport) await ctx.setViewport(viewport);
           await ctx.goto(url);
           const violation = await afterOp(ctx, sessionKey);
           return violation || { exit: EXIT.DONE, ok: true };
         }
 
-        if (cmd === 'click') {
-          const { selector, text, approval } = args;
+        if (cmd === 'click' || cmd === 'drag') {
+          const { text, approval } = args;
+          const { from, to } = args;
+          // A drag is gated like a click on both ends: the destructive-word check sees both selectors.
+          const selector = cmd === 'drag' ? (from && to ? `${from} => ${to}` : '') : args.selector;
           if (!selector) {
-            return { exit: EXIT.USAGE, ok: false, reason: 'selector_required' };
+            return { exit: EXIT.USAGE, ok: false, reason: cmd === 'drag' ? 'from_and_to_required' : 'selector_required' };
           }
 
           // The element's own label (aria-label / visible text) also counts toward
           // the destructive check, so `#btn-3` that reads "Save" still needs approval.
           let label;
           if (typeof ctx.label === 'function') {
-            try { label = await ctx.label(selector, text); } catch (e) { label = undefined; }
+            try {
+              label = cmd === 'drag'
+                ? [await ctx.label(from), await ctx.label(to)].filter(Boolean).join(' ')
+                : await ctx.label(selector, text);
+            } catch (e) { label = undefined; }
           }
           const click = { selector, text, label };
 
@@ -256,7 +272,7 @@ function createDispatcher(deps = {}) {
               approvalResult = await verifyApproval({
                 approval,
                 identity: identityStr,
-                action: [selector, text].filter(Boolean),
+                action: cmd === 'drag' ? [from, to] : [selector, text].filter(Boolean),
                 companyId: auth.companyId
               }, { token });
             } catch (e) {
@@ -286,7 +302,8 @@ function createDispatcher(deps = {}) {
             return { exit: authResult.exit, ok: false, reason: authResult.reason };
           }
 
-          await ctx.click(selector, text);
+          if (cmd === 'drag') await ctx.drag(from, to);
+          else await ctx.click(selector, text);
           const violation = await afterOp(ctx, sessionKey);
           return violation || { exit: EXIT.DONE, ok: true };
         }
@@ -411,6 +428,13 @@ function createDispatcher(deps = {}) {
             if (c.drop) await dropSession(ctx, sessionKey);
             return { exit: c.drop ? c.exit : EXIT.NO_SCREENSHOT, ok: false, reason: c.reason };
           }
+        }
+
+        if (cmd === 'net') {
+          const raw = typeof ctx.net === 'function' ? ctx.net() : [];
+          // Redact again on the way out: the log never leaves the daemon with a query value in it.
+          const entries = raw.map((e) => ({ time: e.time, method: e.method, url: redactUrl(e.url), status: e.status }));
+          return { exit: EXIT.DONE, ok: true, data: { entries } };
         }
 
         if (cmd === 'close') {

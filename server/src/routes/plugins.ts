@@ -76,6 +76,7 @@ import {
   assertBoardOrgAccess,
   assertCompanyAccess,
   assertInstanceAdmin,
+  decideIssueAccessForActor,
   getActorInfo,
   hasCompanyAccess,
 } from "./authz.js";
@@ -659,7 +660,14 @@ export function pluginRoutes(
     const issueId = params[resolution.param ?? ""];
     if (!issueId) return null;
     const issue = await issuesSvc.getById(issueId);
-    return issue?.companyId ?? null;
+    // Read the task first (PAR-12608 4.6, AC-G3): unknown, cross-company and
+    // unreadable tasks share one 404. No assertCompanyAccess here: its write-path
+    // 403 before the read decision would tell an unreadable task from an unknown
+    // id; dispatch calls it right after this resolver.
+    if (!issue || !hasCompanyAccess(req, issue.companyId)) throw notFound("Issue not found");
+    const decision = await decideIssueAccessForActor(authorizationService(db), req.actor, issue, "issue:read");
+    if (!decision.allowed) throw notFound("Issue not found");
+    return issue.companyId;
   }
 
   function assertScopedApiAuth(req: Request, route: PluginApiRouteDeclaration) {

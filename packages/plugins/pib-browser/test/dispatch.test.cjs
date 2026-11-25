@@ -27,7 +27,7 @@ const h = (o = {}) => {
 };
 
 test('COMMANDS and invalid commands', async () => {
-  assert.deepEqual(COMMANDS, ['open', 'goto', 'click', 'fill', 'text', 'shot', 'close']);
+  assert.deepEqual(COMMANDS, ['open', 'goto', 'click', 'drag', 'fill', 'text', 'shot', 'net', 'close']);
   assert(Object.isFrozen(COMMANDS), 'frozen');
 
   for (const [cmd] of [['cookies'], ['storage'], ['evaluate'], [''], ['unknown'], [null]]) {

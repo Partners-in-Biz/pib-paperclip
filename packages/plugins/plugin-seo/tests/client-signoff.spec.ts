@@ -1,6 +1,6 @@
 /**
  * Automatic client sign-off (0.26.0): a passed preview parks the task on the client without holding the rest of the week; one
- * approval email is drafted in Gmail per batch; the client's answers lift the lock and wake the agent once every preview of a
+ * approval email is drafted in the Mailbox drafts per batch; the client's answers lift the lock and wake the agent once every preview of a
  * task is answered. Each "does X" test has the manual-sign-off sprint as its control.
  */
 import { describe, expect, it } from "vitest";
@@ -26,6 +26,16 @@ const latest = (rows: Row[]): Route => [/SELECT DISTINCT ON \(page_url\) id, pag
 const claimed = (rows: Row[]): Route => [/handed_at = \$3::timestamptz AND handover_done_at IS NULL ORDER BY page_url/, () => rows.map((r) => ({ apply_until: r.status === "approved" ? "2026-10-03T14:00:00.000Z" : null, ...r }))];
 /** The page window as syncSiteWindow reads it (the real host always returns one row, with the seq). */
 const windowRows = (rows: Row[]): Route => [/statement_timestamp\(\)\) \* 1000000\)::bigint::text AS seq\) o LEFT JOIN/, () => rows];
+/** The claim matches every page it names (no other job holds them), as Postgres would answer it. */
+function claimsAll(w: ReturnType<typeof world>) {
+  const execute = w.ctx.db.execute.bind(w.ctx.db);
+  w.ctx.db.execute = (async (sql: string, params: unknown[] = []) => {
+    const result = await execute(sql, params);
+    if (!/SET draft_key = coalesce\(draft_key, \$3\)/.test(sql)) return result;
+    return { rowCount: (JSON.parse(String(params[3])) as string[]).length + Object.keys(JSON.parse(String(params[4])) as object).length };
+  }) as typeof w.ctx.db.execute;
+  return w;
+}
 const emitted = (w: ReturnType<typeof world>) => (w.ctx.events.emit as unknown as { mock: { calls: unknown[][] } }).mock.calls.map((c) => ({ name: String(c[0]), companyId: c[1], payload: c[2] as Record<string, any> }));
 
 describe("the approval email", () => {
@@ -106,7 +116,7 @@ describe("the approval email draft", () => {
     expect(emitted(recent)).toEqual([]);
 
     const rows = [preview("p1", "a", { reviewed_at: "2026-10-03T07:00:00Z" }), preview("p2", "b", { reviewed_at: "2026-10-03T07:10:00Z" })];
-    const w = world({ sprints: [wp({ client_signoff: "auto", client_kind: "company", client_ref: "47a39f83" })], routes: draftRoutes(rows) });
+    const w = claimsAll(world({ sprints: [wp({ client_signoff: "auto", client_kind: "company", client_ref: "47a39f83" })], routes: draftRoutes(rows) }));
     expect(await draftApprovalRequests(w.env)).toBe(1);
     const [event] = emitted(w);
     expect(event!.name).toBe("mail.draft.requested");
@@ -116,14 +126,85 @@ describe("the approval email draft", () => {
     expect(event!.payload.text).toContain("/p/");
     expect(event!.payload.context).toMatchObject({ plugin: "partnersinbiz.seo", kind: "seo-approval", id: "sp-real" });
     // The previews are claimed before the event goes out, so the next run does not ask again.
-    expect(executed(w, /SET draft_key = \$3, draft_status = 'requested'/)).toHaveLength(1);
+    expect(executed(w, /SET draft_key = coalesce\(draft_key, \$3\)/)).toHaveLength(1);
+  });
+
+  describe("one open draft per sprint: the newer draft lists the older unanswered pages (PAR-12249, PAR-14558)", () => {
+    /** A small previews table behind both queries: the earlier-open one (draft_key IS NOT NULL) and the to-draft one. */
+    const table = (rows: Row[]) => {
+      const seen: string[] = [];
+      const alive = (r: Row) => r.status === "pending" && r.review_status === "passed" && r.expires_at !== "expired";
+      const routes: Route[] = [
+        [/SELECT id, company_id FROM plugin_seo_8099f8879a\.sprints WHERE client_signoff = 'auto'/, () => [{ id: "sp-real", company_id: "co-1" }]],
+        [/FROM \(\s*SELECT DISTINCT ON \(page_url\) id, page_url, title, reviewed_at/, (_params, sql) => {
+          seen.push(sql);
+          const earlier = sql.includes("draft_key IS NOT NULL");
+          return rows.filter((r) => alive(r) && (earlier ? r.draft_key != null && r.draft_status === "drafted" : r.draft_key == null));
+        }],
+        [/FROM plugin_seo_8099f8879a\.crm_contacts WHERE company_id = \$1 AND \$2 = ANY\(account_ids\)/, () => [{ name: "Elle van Zyl", emails: ["elle@agristudies.co.za"] }]],
+      ];
+      return { routes, seen };
+    };
+    const earlier = (id: string, page: string, extra: Row = {}) => preview(id, page, { draft_key: "seo-approval:sp-real:old", draft_status: "drafted", expires_at: "later", ...extra });
+    const fresh = (id: string, page: string) => preview(id, page, { expires_at: "later" });
+
+    it("one earlier drafted-and-unanswered page and one new page: the email lists both; the old page stays in its draft and only notes the newer one", async () => {
+      const { routes } = table([earlier("e1", "old-page"), fresh("p2", "new-page")]);
+      const w = claimsAll(world({ sprints: [wp({ client_kind: "company", client_ref: "47a39f83" })], routes }));
+      expect(await draftApprovalRequests(w.env)).toBe(1);
+      const [event] = emitted(w);
+      expect(event!.payload.key).toBe(draftKeyFor("sp-real", ["e1", "p2"]));
+      expect(event!.payload.subject).toBe("Please review 2 proposed changes for Agri Studies");
+      expect(event!.payload.text).toContain("/p/");
+      expect(event!.payload.text).toContain("https://agristudies.co.za/old-page");
+      expect(event!.payload.text).toContain("https://agristudies.co.za/new-page");
+      const [claim] = executed(w, /SET draft_key = coalesce\(draft_key, \$3\)/);
+      expect(claim!.params[2]).toBe(event!.payload.key);
+      expect(JSON.parse(String(claim!.params[3]))).toEqual(["p2"]);
+      // The older page is claimed only from the open draft and carry it was read with (compare and set); it keeps its draft_key
+      // and gets carry_key (PAR-14558): it moves only when the Mailbox says the older draft was replaced or deleted.
+      expect(JSON.parse(String(claim!.params[4]))).toEqual({ e1: { draftKey: "seo-approval:sp-real:old", carryKey: null } });
+      expect(claim!.sql).toMatch(/draft_status = 'drafted' AND draft_key = \(\$5::jsonb -> id ->> 'draftKey'\) AND carry_key IS NOT DISTINCT FROM/);
+      expect(claim!.sql).toMatch(/carry_key = CASE WHEN draft_key IS NULL THEN NULL ELSE \$3 END/);
+    });
+
+    it("an expired, answered or cancelled earlier page is not carried", async () => {
+      const { routes, seen } = table([
+        earlier("x-expired", "expired", { expires_at: "expired" }),
+        earlier("x-approved", "approved", { status: "approved" }),
+        earlier("x-cancelled", "cancelled", { status: "cancelled" }),
+        fresh("p2", "new-page"),
+      ]);
+      const w = claimsAll(world({ sprints: [wp({ client_kind: "company", client_ref: "47a39f83" })], routes }));
+      expect(await draftApprovalRequests(w.env)).toBe(1);
+      const [event] = emitted(w);
+      expect(event!.payload.key).toBe(draftKeyFor("sp-real", ["p2"]));
+      expect(event!.payload.text).toContain("new-page");
+      expect(event!.payload.text).not.toMatch(/expired|approved|cancelled/);
+      const [claim] = executed(w, /SET draft_key = coalesce\(draft_key, \$3\)/);
+      expect(JSON.parse(String(claim!.params[4]))).toEqual({});
+      // The real query keeps those pages out too: only the newest non-cancelled, still-pending, passed, unexpired, drafted page of each URL.
+      const sql = seen.find((q) => q.includes("draft_key IS NOT NULL"))!;
+      expect(sql).toContain("status <> 'cancelled'");
+      expect(sql).toContain("status = 'pending' AND review_status = 'passed'");
+      expect(sql).toContain("draft_status = 'drafted'");
+      expect(sql).toContain("expires_at > now()");
+    });
   });
 
   it("asks again when the event could not be sent", async () => {
     const w = world({ sprints: [wp()], routes: draftRoutes([preview("p1", "a")]) });
     (w.ctx.events.emit as unknown as { mockRejectedValueOnce: (e: Error) => void }).mockRejectedValueOnce(new Error("host down"));
     expect(await draftApprovalRequests(w.env)).toBe(0);
-    expect(executed(w, /SET draft_key = NULL, draft_status = NULL/)).toHaveLength(1);
+    expect(executed(w, /SET draft_key = CASE WHEN draft_key = \$2 THEN NULL ELSE draft_key END/)).toHaveLength(1);
+  });
+
+  it("a claim that gets fewer pages than its batch (another job got there first) gives them back and asks nothing", async () => {
+    const rows = [preview("p1", "a", { reviewed_at: "2026-10-03T07:00:00Z" }), preview("p2", "b", { reviewed_at: "2026-10-03T07:10:00Z" })];
+    const w = world({ sprints: [wp({ client_kind: "company", client_ref: "47a39f83" })], routes: draftRoutes(rows) });
+    expect(await draftApprovalRequests(w.env)).toBe(0);
+    expect(emitted(w)).toEqual([]);
+    expect(executed(w, /SET draft_key = CASE WHEN draft_key = \$2 THEN NULL ELSE draft_key END/)).toHaveLength(1);
   });
 
   it("does not draft for a sprint on manual sign-off", async () => {
@@ -131,16 +212,19 @@ describe("the approval email draft", () => {
     expect(await draftApprovalRequests(w.env)).toBe(0);
   });
 
-  it("records the Gmail draft and puts one line on Needs you; a failed draft puts the links there instead", async () => {
-    const rows: Route[] = [[/FROM plugin_seo_8099f8879a\.previews WHERE company_id = \$1 AND draft_key = \$2/, () => [{ id: "p1", page_url: "https://agristudies.co.za/a", title: "Page a" }]]];
+  it("records the Mailbox draft and puts one line on Needs you; a failed draft puts the links there instead", async () => {
+    const rows: Route[] = [[/FROM plugin_seo_8099f8879a\.previews WHERE company_id = \$1 AND \(draft_key = \$2 OR carry_key = \$2\)/, () => [{ id: "p1", page_url: "https://agristudies.co.za/a", title: "Page a" }]]];
     const w = world({ sprints: [wp()], routes: rows });
     const key = "seo-approval:sp-real:abc";
     const context = { plugin: "partnersinbiz.seo", kind: "seo-approval", id: "sp-real" };
-    await onDraftResult(w.env, { companyId: "co-1", payload: { key, status: "drafted", draftUrl: "https://mail.google.com/mail/u/x/#drafts?compose=1", context } });
-    expect(executed(w, /SET draft_status = \$3, draft_url = \$4/)[0]!.params).toContain("https://mail.google.com/mail/u/x/#drafts?compose=1");
+    await onDraftResult(w.env, { companyId: "co-1", payload: { key, status: "drafted", mailboxDraftId: "md-1", draftUrl: null, context } });
+    expect(executed(w, /SET draft_status = \$3, draft_url = \$4/)[0]!.params).toContain("drafted");
+    // A draft the Mailbox already closed (sent, deleted, replaced) or a person took over is not made open again by a late result.
+    expect(executed(w, /SET draft_status = \$3, draft_url = \$4/)[0]!.sql).toContain("NOT IN ('sent', 'deleted', 'replaced', 'kept')");
     const line = JSON.stringify(w.needsYou.at(-1)!.items);
     expect(line).toContain("Send the approval email to the client");
-    expect(line).toContain("compose=1");
+    expect(line).toContain("/mailbox");
+    expect(line).not.toContain("mail.google.com");
     const failed = world({ sprints: [wp()], routes: rows });
     await onDraftResult(failed.env, { companyId: "co-1", payload: { key, status: "failed", error: "no gmail", context } });
     expect(JSON.stringify(failed.needsYou.at(-1)!.items)).toContain("the email draft could not be made");
@@ -303,30 +387,6 @@ describe("a page already on the owner's list is handed to the Senior Developer",
     expect(await handStuckPreviewsToSenior(w.env)).toBe(1);
     expect(w.created.filter((c) => c.input.assigneeAgentId === "sen-1").length).toBe(fixes);
     expect(JSON.stringify(w.needsYou.at(-1)!.items)).toContain("Skipped after");
-  });
-});
-
-describe("the Gmail draft link", () => {
-  it("is rewritten from the u/<account> form (a Gmail 404 where the account is not first) to authuser", async () => {
-    const { gmailDraftLink } = await import("../src/service/client-signoff.js");
-    expect(gmailDraftLink("https://mail.google.com/mail/u/peet.stander@partnersinbiz.online/#drafts?compose=1a10")).toBe("https://mail.google.com/mail/?authuser=peet.stander%40partnersinbiz.online#drafts?compose=1a10");
-    expect(gmailDraftLink("https://mail.google.com/mail/?authuser=a%40b.co#drafts?compose=1")).toBe("https://mail.google.com/mail/?authuser=a%40b.co#drafts?compose=1");
-    expect(gmailDraftLink("https://mail.google.com/mail/u/0/#drafts?compose=1")).toBe("https://mail.google.com/mail/u/0/#drafts?compose=1");
-    expect(gmailDraftLink(null)).toBeNull();
-  });
-
-  it("repairs a stored old link and refreshes the Needs you line", async () => {
-    const { repairDraftLinks } = await import("../src/service/client-signoff.js");
-    const w = world({
-      sprints: [wp()],
-      routes: [
-        [/SELECT DISTINCT company_id, sprint_id, draft_key, draft_url FROM/, () => [{ company_id: "co-1", sprint_id: "sp-real", draft_key: "seo-approval:sp-real:abc", draft_url: "https://mail.google.com/mail/u/peet@pib.online/#drafts?compose=1" }]],
-        [/FROM plugin_seo_8099f8879a\.previews WHERE company_id = \$1 AND draft_key = \$2/, () => [{ id: "p1", page_url: "https://agristudies.co.za/", title: "Home" }]],
-      ],
-    });
-    expect(await repairDraftLinks(w.env)).toBe(1);
-    expect(executed(w, /SET draft_status = \$3, draft_url = \$4/)[0]!.params).toContain("https://mail.google.com/mail/?authuser=peet%40pib.online#drafts?compose=1");
-    expect(JSON.stringify(w.needsYou.at(-1)!.items)).toContain("authuser=peet%40pib.online");
   });
 });
 
