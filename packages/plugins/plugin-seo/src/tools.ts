@@ -16,6 +16,7 @@ import { THREAD_ROLL_BYTES } from "./engine/thread.js";
 import { BUSINESS_TYPES } from "./templates/plans.js";
 import { BING_VERIFY_SITE_TOOL_TIMEOUT_MS } from "./integrations/bing.js";
 import { RUN_PAGESPEED_TOOL_TIMEOUT_MS } from "./integrations/pagespeed.js";
+import { CREATE_PREVIEW_TOOL_TIMEOUT_MS } from "./engine/request-key.js";
 
 const text = (description: string): JsonSchema => ({ type: "string", description });
 const int = (description: string): JsonSchema => ({ type: "integer", description });
@@ -157,7 +158,7 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
       dueOnly: flag("Only tasks due by today"),
     }),
   },
-  { group: "Tasks", name: "start-task", displayName: "Start sprint task", description: "Mark a task in progress.", parametersSchema: schema(["taskId"], { taskId, note: text("Comment posted on the task's issue (max 2000 chars)") }) },
+  { group: "Tasks", name: "start-task", displayName: "Start sprint task", description: "Mark a task in progress. A task with no issue gets its issue opened now.", parametersSchema: schema(["taskId"], { taskId, note: text("Comment posted on the task's issue (max 2000 chars)") }) },
   {
     group: "Tasks",
     name: "complete-task",
@@ -222,6 +223,7 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
     }),
   },
   { group: "Tasks", name: "skip-task", displayName: "Skip sprint task", description: "Mark a task skipped (not relevant for this site) with the reason; cancels its issue.", parametersSchema: schema(["taskId", "reason"], { taskId, reason: text("Why the task does not apply to this site (max 2000 chars)") }) },
+  { group: "Tasks", name: "attach-task-issue", displayName: "Attach an issue to a sprint task", description: "Attach an existing issue to a task that has none (add-task could not open one). start-task also opens a missing issue; this repairs the rest. approve-page-apply needs the task's issue.", parametersSchema: schema(["taskId", "issueId"], { taskId, issueId: text("The Paperclip issue id to attach (same company, not another task's)") }) },
   {
     group: "Tasks",
     name: "add-task",
@@ -235,6 +237,7 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
       owner: choice(["agent", "human"], "Who does it (default agent); human = on Needs you unless autopilot is off. Site code changes stay agent work"),
       week: int("Sprint week; default the current week"),
       autopilotEligible: flag("false = needs sign-off in safe mode"),
+      pageUrls: list("Pages this task is about (same site as the sprint, up to 50); approve-page-apply treats them as the task's pages"),
       createIssue: flag("Open its issue now when it is due (default true; else the daily run opens it)"),
     }),
   },
@@ -295,7 +298,8 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
     name: "create-preview",
     displayName: "Create a client preview link",
     description:
-      "Make a link the client can open to see proposed copy on their own page before anything is live. Use it for every WordPress change on a pr_only sprint: send the page (pageUrl, must be on the sprint's site) and the proposed title, metaDescription, h1 and/or bodyHtml (the main content, plain HTML: headings, paragraphs, lists, links, images). The server shows your copy on top of the live page with a 'Proposed, not live' bar and Approve / Request changes buttons. Copy is ADDED to the page (before or after the existing content); the preview is refused if it would lose over 30% of the live page's text. Every preview is held until the Reviewer has compared it with the live page: end your turn, you are woken with the result, and only then give the owner the link. Nothing is changed on the site. Existing pages only; the link expires after 30 days.",
+      "Make a link the client can open to see proposed copy on their own page before anything is live. Use it for every WordPress change on a pr_only sprint: send the page (pageUrl, must be on the sprint's site) and the proposed title, metaDescription, h1 and/or bodyHtml (the main content, plain HTML: headings, paragraphs, lists, links, images). The server shows your copy on top of the live page with a 'Proposed, not live' bar and Approve / Request changes buttons. Copy is ADDED to the page (before or after the existing content); the preview is refused if it would lose over 30% of the live page's text. Every preview is held until the Reviewer has compared it with the live page: end your turn, you are woken with the result, and only then give the owner the link. Nothing is changed on the site. To link an existing phrase to another page of the site without adding a block, send linkEdits (1 to 5 of { text, href }): the text must occur exactly once as plain text on the page (letters, digits, spaces, commas, full stops, colons, hyphens; no quotes or &), href a path like /buy-a-gun/ or a full URL on the same site. Existing pages only; the link expires after 30 days. `reused: true` means this exact preview already existed (for example after a gateway timeout): use that previewId and do not call again. bodyMode afterFirstParagraph puts the copy right after the intro paragraph; on pages whose own scripts rewrite paragraphs (for example Hunt and Gun) a link must go in a <div>, not a <p>.",
+    timeoutMs: CREATE_PREVIEW_TOOL_TIMEOUT_MS,
     parametersSchema: schema(["sprintId", "pageUrl"], {
       sprintId,
       pageUrl: text("The live page to preview a change on: a full URL or a path like /about on the sprint's site."),
@@ -304,9 +308,14 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
       metaDescription: text("Proposed meta description (about 150-160 characters)."),
       h1: text("Proposed H1. Replaces the page's own H1 inside the content; a theme heading elsewhere is never touched (the new one goes at the top of the content)."),
       bodyHtml: text("Copy to ADD to the page, as plain HTML (headings, paragraphs, lists, links). It is added to the existing content, never instead of it, unless bodyMode is replace."),
-      bodyMode: choice(["before", "after", "replace"], "before (default, above the existing content), after (below it) or replace (whole content area; needs allowReplace)"),
+      bodyMode: choice(["before", "after", "replace", "afterFirstParagraph"], "before (default, above the existing content), after (below it), afterFirstParagraph (right after the intro paragraph) or replace (whole content area; needs allowReplace)"),
       css: text("Redesign tasks only: styles shown on the preview (colours, fonts, spacing, layout). Imports, scripts and event handlers are removed."),
       contentSelector: text("Content area override: #id, .class, tag, tag.class or tag#id (e.g. .comment-form). First match wins; other selectors or no match are refused."),
+      linkEdits: {
+        type: "array",
+        description: "Inline links, 1 to 5: wrap one exact phrase already on the page in a link. No new text is added.",
+        items: { type: "object", required: ["text", "href"], properties: { text: text("The phrase, exactly once on the page as plain text (3 to 200 characters)."), href: text("A path such as /buy-a-gun/ or a full http(s) URL on the sprint's own site.") }, additionalProperties: false },
+      },
       allowReplace: flag("With bodyMode replace only: you really are rewriting the whole page (say why in the summary)"),
       why: text("One sentence for the client, under this page in their approval email: why we changed it and how it should help search. Say should or helps; never promise a result."),
       label: text("Short name for the proposal, shown on the Needs you item."),
@@ -391,7 +400,7 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
     name: "list-previews",
     displayName: "List client previews",
     description:
-      "Previews made for a sprint, newest first, as short rows (id, page, status, review status, and the client's and the Reviewer's notes cut short). The default is the 20 newest; narrow with taskId, status or reviewStatus, or pass previewId for one preview in full (link, whole notes, figures, review link, and the approved copy as changes: title, metaDescription, h1, bodyHtml, bodyMode; includeHtml true adds the stored page html). Check it before applying a change: apply only what the owner has confirmed as approved.",
+      "Previews made for a sprint, newest first, as short rows (id, page, status, review status, and the client's and the Reviewer's notes cut short). The default is the 20 newest; narrow with taskId, status or reviewStatus, or pass previewId for one preview in full (link, whole notes, figures, review link, and the approved copy as changes: title, metaDescription, h1, bodyHtml, bodyMode, linkEdits; includeHtml true adds the stored page html). Check it before applying a change: apply only what the owner has confirmed as approved.",
     parametersSchema: schema(["sprintId"], {
       sprintId,
       previewId: text("One preview id: returns just that preview with every field in full (whole notes, figures, review link)"),
@@ -417,6 +426,19 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
       allowApproved: flag("Also cancel previews the client already approved (default false: they are skipped)"),
       allowLast: flag("Also cancel the last live preview of a page (default false: such previews are skipped as lastOnPage)"),
       dryRun: flag("Default true: change nothing and report; send false to cancel"),
+    }),
+  },
+  {
+    group: "Site",
+    name: "set-rehearsal-preview",
+    displayName: "Set a rehearsal preview's check and expiry",
+    description:
+      "Rehearsal sprints only (a fixture site on .invalid, or the canary client); every other sprint is refused. A rehearsal sprint opens no review issue, so this sets what a test or dogfood journey needs on one pending preview: reviewStatus (passed, changes_needed or pending) and/or expiresInHours (from now; negative = already expired). It writes only those fields: nothing is sent, commented or woken, and it never decides a preview (decide-preview is for board users). On a real sprint the Reviewer checks with review-preview.",
+    parametersSchema: schema(["sprintId", "previewId"], {
+      sprintId,
+      previewId: text("The preview id (from create-preview or list-previews)."),
+      reviewStatus: choice(["passed", "changes_needed", "pending"], "The Reviewer result to set"),
+      expiresInHours: int("Expiry in hours from now, -720 to 720; negative = already expired"),
     }),
   },
   // Keywords
@@ -607,7 +629,7 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
   },
   { group: "Site checks", name: "check-canonical", displayName: "Check canonical", description: "Canonical link/header vs the served URL.", parametersSchema: schema([], { ...urlOrSprint }) },
   { group: "Site checks", name: "validate-schema", displayName: "Validate structured data", description: "Extract and parse JSON-LD; report types, missing required properties and FAQ problems.", parametersSchema: schema([], { ...urlOrSprint }) },
-  { group: "Site checks", name: "internal-link-audit", displayName: "Internal link audit", description: "Crawl up to 40 sitemap pages in one call (9 s budget, under the 10 s tool gateway limit): inbound internal links per page, orphans, linked pages missing from the sitemap. A slow site returns partial: true with nextStartAt: call again with startAt = nextStartAt to crawl the next pages. Orphans are only returned by a complete crawl from startAt 0.", parametersSchema: schema([], { ...urlOrSprint, sitemapUrl: text(`Sitemap to crawl, URL or path (${FOUND_SITEMAP})`), maxPages: int("Pages to crawl, 1–40 (default 25)"), startAt: int("Offset into the crawl list (home page, then the de-duplicated sitemap URLs) to start from; pass nextStartAt from a partial result (default 0)") }) },
+  { group: "Site checks", name: "internal-link-audit", displayName: "Internal link audit", description: "Crawl up to 40 sitemap pages in one call (7.5 s budget, under the 10 s tool gateway limit): inbound internal links per page, orphans, linked pages missing from the sitemap. A slow site returns partial: true with nextStartAt: call again with startAt = nextStartAt to crawl the next pages (the sitemap and pages still loading are kept for the next call, so later calls are faster and never repeat a page). Orphans are only returned by a complete crawl from startAt 0.", parametersSchema: schema([], { ...urlOrSprint, sitemapUrl: text(`Sitemap to crawl, URL or path (${FOUND_SITEMAP})`), maxPages: int("Pages to crawl, 1–40 (default 25)"), startAt: int("Offset into the crawl list (home page, then the de-duplicated sitemap URLs) to start from; pass nextStartAt from a partial result (default 0)") }) },
   { group: "Site checks", name: "crawler-sim", displayName: "Crawler view", description: "Fetch as Googlebot: status, redirects, robots.txt block, noindex (meta and X-Robots-Tag), canonical, h1, text size, images without alt, indexable yes/no.", parametersSchema: schema([], { ...urlOrSprint }) },
   { group: "Site checks", name: "check-soft404", displayName: "Check soft-404", description: "Request a random nonexistent path on the site origin; flag if HTTP 200 is returned (app shell issue).", parametersSchema: schema([], { ...urlOrSprint }) },
   { group: "Site checks", name: "check-thin-content", displayName: "Check thin content", description: "Measure server-rendered text size and flag pages below threshold (default 200 chars, configurable).", parametersSchema: schema([], { ...urlOrSprint, minChars: int("Text length threshold in characters (50–1000, default 200)") }) },
@@ -689,7 +711,7 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
   },
   { group: "Indexing and Bing", name: "bing-add-site", displayName: "Add site to Bing", description: "Bing Webmaster API AddSite; returns BingSiteAuth.xml and the msvalidate.01 meta tag to add through the repo, or on a WordPress site with a Connector 1.2+ through the CRM's wp-verify (metaTags [{ name: \"msvalidate.01\", content }] or files [{ path: \"/BingSiteAuth.xml\", content }]; the result carries the call). Without an API key it puts the key on Needs you.", parametersSchema: schema(["sprintId"], { sprintId, siteUrl: text("Site URL to add in Bing (default <site origin>/)"), taskId: bingTaskId }) },
   { group: "Indexing and Bing", name: "bing-verify-site", displayName: "Verify site in Bing", description: "Bing VerifySite once BingSiteAuth.xml or the msvalidate.01 tag is live (repo deploy, or wp-verify set on a WordPress site; fetch it on the live site first); enables Bing on the sprint and submits the sitemap.", parametersSchema: schema(["sprintId"], { sprintId, submitSitemap: flag("Also submit <site origin>/sitemap.xml to Bing (default true)"), taskId: bingTaskId }), timeoutMs: BING_VERIFY_SITE_TOOL_TIMEOUT_MS },
-  { group: "Indexing and Bing", name: "bing-submit", displayName: "Submit to Bing", description: "SubmitSitemap and/or SubmitUrlBatch (up to 500 URLs).", parametersSchema: schema(["sprintId"], { sprintId, urls: list("URLs or paths to submit (max 500)"), sitemapUrl: text("Sitemap URL or path to submit; without urls, default <site origin>/sitemap.xml"), taskId: bingTaskId }) },
+  { group: "Indexing and Bing", name: "bing-submit", displayName: "Submit to Bing", description: "SubmitFeed (sitemap) and/or SubmitUrlBatch (up to 500 URLs).", parametersSchema: schema(["sprintId"], { sprintId, urls: list("URLs or paths to submit (max 500)"), sitemapUrl: text("Sitemap URL or path to submit; without urls, default <site origin>/sitemap.xml"), taskId: bingTaskId }) },
 
   // Site repo
   { group: "Site repo", name: "list-site-projects", displayName: "List site projects", description: "Paperclip projects that could hold the site repo (repo URL from their workspace), best match first, plus how to create one. With sprintId also the client's WordPress sites from the CRM (wordpressSites: siteId, url, summary, Connector status) for wordpress mode.", parametersSchema: schema([], { sprintId }) },

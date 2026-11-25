@@ -245,6 +245,21 @@ const EXECUTION_STAGE_HANDOFF_WAKE_REASONS = new Set([
   "execution_approval_requested",
 ]);
 
+/**
+ * Wake contextSnapshot.source values only the server may set. Guards above
+ * trust them (the execution-stage cap exemption, the review-verdict wake), so
+ * any path that copies a caller-supplied source (plugin issues.requestWakeup
+ * and batch wakeups) must refuse them.
+ */
+export const SERVER_RESERVED_WAKE_SOURCES: ReadonlySet<string> = new Set([
+  EXECUTION_STAGE_WAKE_SOURCE,
+  "issue.comment.review_verdict",
+]);
+
+export function isServerReservedWakeSource(source: unknown): boolean {
+  return typeof source === "string" && SERVER_RESERVED_WAKE_SOURCES.has(source);
+}
+
 export function isExecutionStageHandoffWake(input: {
   contextSource?: unknown;
   wakeReason?: string | null;

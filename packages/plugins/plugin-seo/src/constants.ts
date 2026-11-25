@@ -38,6 +38,7 @@ export const ORIGIN = {
   build: `plugin:${PLUGIN_ID}:build`,
   previewReview: `plugin:${PLUGIN_ID}:preview-review`,
   chunk: `plugin:${PLUGIN_ID}:chunk`,
+  signoffDelegate: `plugin:${PLUGIN_ID}:signoff-delegate`,
 } as const;
 
 /** Origin id of a page group's issue: `seo:chunk:<chunkId>`. */

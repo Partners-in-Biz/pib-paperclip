@@ -12,6 +12,7 @@ import { Player } from "./Player.js";
 import { Timeline } from "./Timeline.js";
 import { ClipInspector } from "./ClipInspector.js";
 import { createKeyHistory } from "./timeline-view.js";
+import { SilenceButton } from "./SilenceDialog.js";
 import { RenderPanel } from "./RenderPanel.js";
 import { VersionsPanel } from "./VersionsPanel.js";
 
@@ -28,15 +29,17 @@ export function StudioEditorPage({ context }: PluginPageProps) {
   const opsAction = useStudioAction("video-edit-apply-ops");
   const captionAction = useStudioAction("video-edit-caption");
   const voiceoverAction = useStudioAction("video-edit-voiceover");
+  const musicAction = useStudioAction("video-edit-music");
   // Actions go through refs so the store is built once per company, not once per render.
-  const actions = useRef({ getAction, opsAction, captionAction, voiceoverAction });
-  actions.current = { getAction, opsAction, captionAction, voiceoverAction };
+  const actions = useRef({ getAction, opsAction, captionAction, voiceoverAction, musicAction });
+  actions.current = { getAction, opsAction, captionAction, voiceoverAction, musicAction };
   const store = useMemo(() => {
     const api: EditorApi = {
       get: (id) => actions.current.getAction({ companyId, editId: id }),
       applyOps: (p) => actions.current.opsAction({ companyId, ...p }),
       caption: (p) => actions.current.captionAction({ companyId, ...p }),
       voiceover: (p) => actions.current.voiceoverAction({ companyId, ...p }),
+      music: (p) => actions.current.musicAction({ companyId, ...p }),
     };
     return createEditorStore(api);
   }, [companyId]);
@@ -64,7 +67,7 @@ export function StudioEditorPage({ context }: PluginPageProps) {
   const message = deleteError ?? state.toast ?? undefined;
   const deleteButton = state.status === "ready" ? <Button disabled={deleting} onClick={() => void remove()}>{deleting ? "Deleting…" : "Delete"}</Button> : null;
   return (
-    <Page accent="studio" title={title} description="Cut, caption and polish a video, then render it." message={message} messageTone="warning" actions={<>{state.toast ? <Button onClick={store.dismissToast}>Dismiss</Button> : null}{deleteButton}</>}>
+    <Page accent="studio" title={title} description="Cut, caption and polish a video, then render it." message={message} messageTone="warning" actions={<>{state.status === "ready" ? <SilenceButton store={store} /> : null}{state.toast ? <Button onClick={store.dismissToast}>Dismiss</Button> : null}{deleteButton}</>}>
       {state.status === "idle" || state.status === "loading" ? <PageMessage message="Loading the video…" /> : null}
       {state.status === "error" ? <EmptyState title="This video can't be opened" description={state.error ?? "Try again."} /> : null}
       {state.status === "ready" ? (

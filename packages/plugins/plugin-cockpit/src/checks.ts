@@ -3,8 +3,19 @@
  * (`watch.ts`): the kit's drift, grant, approval and run-profile checks, the
  * measurement alerts, the registers and confirmations, and what waits on the
  * owner. Each runs on its own: one that cannot read its data says nothing
- * (and logs) instead of failing the snapshot, and the whole set is cached for
- * ten minutes per company because the snapshot is read on every page load.
+ * (and logs) instead of failing the snapshot. Each part is cached for ten
+ * minutes per company because the snapshot is read on every page load.
+ *
+ * A run reads the company before its first part and after each part that ran
+ * (the "probe", PAR-11071 rules 2-3). Once the plugin call that started it has
+ * ended, every company-named read is refused (-32005), and a part would turn
+ * that into "nothing to flag". So a refused probe stops the run: the part that
+ * just ran is `lost` (not stored), the parts still due are `notRun`, and the
+ * snapshot shows one row naming them (`OWN_CHECKS_INCOMPLETE_KEY`).
+ *
+ * A call never lets the parts outlive it (PAR-14009): for a company with saved
+ * settings they run outside the call's invocation and the call waits for them
+ * only so long (`runDueParts`); the rest land in the cache for the next load.
  *
  * Findings: Q9-8 / Q9-13 (role drift, run profile), RC5 (unrouted approvals,
  * blocked, grants), Q8-3 / Q8-8 / Q9-12 (measurement), Q1b-14 (client effort),
@@ -17,6 +28,7 @@ import {
   backlogWaitingItems,
   dbBlockedByLookup,
   blockersUnreadableCheck,
+  configSaved,
   isModuleEnabled,
   MEMORY_GRANT_EFFECT_KEY,
   MODULES,
@@ -55,6 +67,9 @@ import { feedbackSignal } from "./memory/signal.js";
 import { NAMESPACE } from "./namespace.js";
 import { proofGapCheck, unreviewedApprovalCheck } from "./quality.js";
 import { currentRoles } from "./roles.js";
+import { runDetached } from "./detach.js";
+import { clockMs, recordString, timed, type PartRecord } from "./run-record.js";
+import { currentTrigger } from "./run-trigger.js";
 import { attestationChecks, attestationState, membersCheck, readAttestations } from "./security.js";
 
 export interface ExtraChecks {
@@ -62,10 +77,65 @@ export interface ExtraChecks {
   kpis: CockpitKpi[];
   quality: QualityMetric[];
   waiting: WaitingItem[];
+  /** Each part's name, state and time, in run order; absent when every part was served from the cache. */
+  run?: PartRecord[];
+  /** Set when a refused company read stopped the run: the part it cut off ("" when no part could start) and the error's numeric code (0 when it had none). */
+  stop?: { lostPart: string; code: number };
 }
 
 const TTL_MS = 10 * 60_000;
-const caches = new WeakMap<object, Map<string, { at: number; value: ExtraChecks }>>();
+
+/** What a part returned (`failed`: it threw, stored empty). */
+interface StoredPart {
+  at: number;
+  value: Partial<ExtraChecks>;
+  failed: boolean;
+}
+
+/** One company's cache: each part's last result, its losses in a row, and until when a part lost twice is left alone. */
+interface CompanyChecks {
+  parts: Map<string, StoredPart>;
+  losses: Map<string, number>;
+  heldUntil: Map<string, number>;
+}
+
+const caches = new WeakMap<object, Map<string, CompanyChecks>>();
+
+function companyChecks(env: Env, companyId: string): CompanyChecks {
+  let byCompany = caches.get(env);
+  if (!byCompany) caches.set(env, (byCompany = new Map()));
+  let entry = byCompany.get(companyId);
+  if (!entry) byCompany.set(companyId, (entry = { parts: new Map(), losses: new Map(), heldUntil: new Map() }));
+  return entry;
+}
+
+/** The row's key; PAR-11233 reads the row back by it. */
+export const OWN_CHECKS_INCOMPLETE_KEY = "own_checks_incomplete";
+const PARTS_LEAD = "Not finished this time: ";
+const NOT_STARTED = "The checks that were due could not run: the Cockpit could no longer read this company. ";
+
+/** The row's `detail`: the unfinished parts by name. `notStarted` when no part could start. Read back with `parseIncompleteParts` only. */
+export function formatIncompleteParts(names: string[], options: { notStarted?: boolean } = {}): string {
+  return `${options.notStarted ? NOT_STARTED : ""}${PARTS_LEAD}${names.length ? names.join(", ") : "none"}. Until they finish they say nothing, so a problem only they find is not shown; the next page load or the hourly check runs them again.`;
+}
+
+/** The part names in a `detail` written by `formatIncompleteParts` (none for any other text). */
+export function parseIncompleteParts(detail: string | null | undefined): string[] {
+  if (!detail) return [];
+  const at = detail.indexOf(PARTS_LEAD);
+  if (at < 0) return [];
+  const rest = detail.slice(at + PARTS_LEAD.length);
+  const end = rest.indexOf(".");
+  const list = (end < 0 ? rest : rest.slice(0, end)).trim();
+  if (!list || list === "none") return [];
+  return list.split(",").map((name) => name.trim()).filter(Boolean);
+}
+
+/** The numeric `code` of a refused read (-32005 is a scope refusal), else 0. Never the text. */
+function errorCode(error: unknown): number {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === "number" && Number.isFinite(code) ? code : 0;
+}
 
 /** The modules the company has switched on, as the kit's role drift check wants them. */
 async function moduleMap(env: Env, companyId: string): Promise<Partial<Record<ModuleKey, boolean>>> {
@@ -80,20 +150,184 @@ async function moduleMap(env: Env, companyId: string): Promise<Partial<Record<Mo
 
 type Part = () => Promise<Partial<ExtraChecks>>;
 
-/** Runs the parts one after another (each may fail alone), merging what they return. */
-async function gather(env: Env, companyId: string, parts: Array<[string, Part]>): Promise<ExtraChecks> {
-  const out: ExtraChecks = { health: [], kpis: [], quality: [], waiting: [] };
-  for (const [name, run] of parts) {
+function merge(out: ExtraChecks, got: Partial<ExtraChecks>): void {
+  out.health.push(...(got.health ?? []));
+  out.kpis.push(...(got.kpis ?? []));
+  out.quality.push(...(got.quality ?? []));
+  out.waiting.push(...(got.waiting ?? []));
+}
+
+/**
+ * How long a call (a page load, the brief, an action) waits for the parts that must run (PAR-14009). The host ends a
+ * plugin call after 30 s and then refuses every read the call still makes (`unknown_invocation`); `cockpit.load` also
+ * reads other things around the checks. A test may lower it.
+ */
+export const CALL_LIMITS = { waitMs: 12_000 };
+
+type Start = (company: { issuePrefix?: string | null } | null) => Promise<void>;
+
+/** One run of the due parts: what each did, what each returned, and why it stopped. Filled in as the parts finish. */
+interface Progress {
+  record: PartRecord[];
+  values: Map<string, Partial<ExtraChecks>>;
+  stop?: { lostPart: string; code: number };
+  done: boolean;
+  /** The call stopped waiting before the run ended (the run went on outside the call). */
+  outlived: boolean;
+}
+
+const newProgress = (): Progress => ({ record: [], values: new Map(), done: false, outlived: false });
+
+/** The run of the due parts in flight for each company, outside any call; a second load waits on it instead of starting another. */
+const inFlight = new WeakMap<object, Map<string, { progress: Progress; finished: Promise<void> }>>();
+
+function inFlightFor(env: Env): Map<string, { progress: Progress; finished: Promise<void> }> {
+  let byCompany = inFlight.get(env);
+  if (!byCompany) inFlight.set(env, (byCompany = new Map()));
+  return byCompany;
+}
+
+/**
+ * Runs the due parts in order (each may fail alone) and stores each result. Before the first part, and after each
+ * part that ran, the company is read; a refusal stops the run (see the file comment). `start` reads what the parts
+ * share, once, after the first probe. Past `deadline` (a `clockMs` value) no part starts: the rest are `notRun`.
+ */
+async function runDue(env: Env, companyId: string, now: number, store: CompanyChecks, due: Array<[string, Part]>, start: Start, progress: Progress, deadline: number | null): Promise<void> {
+  const record = progress.record;
+  const probe = () => env.ctx.companies.get(companyId);
+  let started = false;
+  for (const [name, run] of due) {
+    if (progress.stop || (deadline !== null && clockMs() > deadline)) {
+      record.push({ name, state: "notRun", ms: 0 });
+      continue;
+    }
+    if (!started) {
+      started = true;
+      let company: { issuePrefix?: string | null } | null;
+      try {
+        company = await probe();
+      } catch (error) {
+        progress.stop = { lostPart: "", code: errorCode(error) };
+        record.push({ name, state: "notRun", ms: 0 });
+        continue;
+      }
+      await start(company);
+    }
+    let got: Partial<ExtraChecks> = {};
+    let failure: unknown;
     try {
-      const got = await run();
-      out.health.push(...(got.health ?? []));
-      out.kpis.push(...(got.kpis ?? []));
-      out.quality.push(...(got.quality ?? []));
-      out.waiting.push(...(got.waiting ?? []));
+      got = await timed(record, name, run);
     } catch (error) {
-      env.ctx.logger.info("Cockpit check failed", { companyId, check: name, error: message(error) });
+      failure = error;
+    }
+    try {
+      await probe();
+    } catch (error) {
+      // Whatever the part returned or threw, it may have read nothing: not stored, not merged.
+      record[record.length - 1]!.state = "lost";
+      progress.stop = { lostPart: name, code: errorCode(error) };
+      const losses = (store.losses.get(name) ?? 0) + 1;
+      store.losses.set(name, losses);
+      if (losses >= 2) store.heldUntil.set(name, now + TTL_MS);
+      continue;
+    }
+    store.losses.delete(name);
+    store.heldUntil.delete(name);
+    if (failure !== undefined) {
+      env.ctx.logger.info("Cockpit check failed", { companyId, check: name, error: message(failure) });
+      store.parts.set(name, { at: now, value: {}, failed: true });
+      continue;
+    }
+    store.parts.set(name, { at: now, value: got, failed: false });
+    progress.values.set(name, got);
+  }
+}
+
+/**
+ * Where the due parts run (PAR-14009). A job runs them in place and waits for all of them. A call must end inside
+ * the host's 30 s, and every read made after that is refused (the bursts of `state.get` refusals were `client-effort`
+ * reading each CRM client's project links after `cockpit.load` had timed out). So for a company with saved settings
+ * a call runs them outside its invocation (`runDetached`, the scope the hourly job uses), waits `CALL_LIMITS.waitMs`
+ * at most, and the parts still running finish into the cache for the next load. A company without saved settings
+ * is refused that scope: its call runs them in place and starts no part after the wait.
+ */
+async function runDueParts(env: Env, companyId: string, now: number, store: CompanyChecks, due: Array<[string, Part]>, start: Start): Promise<Progress> {
+  if (currentTrigger() === "job") {
+    const progress = newProgress();
+    await runDue(env, companyId, now, store, due, start, progress, null);
+    return progress;
+  }
+  const begun = clockMs();
+  if (!(await configSaved(env.ctx, companyId))) {
+    const progress = newProgress();
+    await runDue(env, companyId, now, store, due, start, progress, begun + CALL_LIMITS.waitMs);
+    return progress;
+  }
+  const flights = inFlightFor(env);
+  let flight = flights.get(companyId);
+  if (!flight) {
+    const progress = newProgress();
+    const finished = runDetached(() => runDue(env, companyId, now, store, due, start, progress, null))
+      .catch((error) => env.ctx.logger.info("Cockpit checks failed", { companyId, error: message(error) }))
+      .finally(() => {
+        progress.done = true;
+        if (flights.get(companyId)?.progress === progress) flights.delete(companyId);
+        if (progress.outlived) env.ctx.logger.info("Cockpit checks finished after the call", { companyId, totalMs: Math.round(clockMs() - begun), parts: recordString(progress.record) });
+      });
+    flight = { progress, finished };
+    flights.set(companyId, flight);
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const waited = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, Math.max(0, begun + CALL_LIMITS.waitMs - clockMs()));
+    timer.unref?.();
+  });
+  try {
+    await Promise.race([flight.finished, waited]);
+  } finally {
+    clearTimeout(timer);
+  }
+  if (!flight.progress.done) flight.progress.outlived = true;
+  return flight.progress;
+}
+
+/**
+ * Runs the due parts and merges what they return with what the cache holds, in part order. The map is read first: a
+ * part stored inside ten minutes is `cached`, a held one `held`, and neither reads the host. A due part that has not
+ * finished when the call stops waiting is `notRun` (it is still running; the next load reads it from the cache).
+ */
+async function gather(env: Env, companyId: string, now: number, parts: Array<[string, Part]>, start: Start): Promise<ExtraChecks> {
+  const store = companyChecks(env, companyId);
+  const out: ExtraChecks = { health: [], kpis: [], quality: [], waiting: [] };
+  const due: Array<[string, Part]> = [];
+  const plan: Array<{ name: string; state: "cached" | "held" | "due"; value?: Partial<ExtraChecks> }> = [];
+  for (const [name, run] of parts) {
+    const stored = store.parts.get(name);
+    if (stored && now - stored.at < TTL_MS) plan.push({ name, state: "cached", value: stored.value });
+    else if ((store.heldUntil.get(name) ?? 0) > now) plan.push({ name, state: "held" });
+    else {
+      plan.push({ name, state: "due" });
+      due.push([name, run]);
     }
   }
+  const progress = due.length ? await runDueParts(env, companyId, now, store, due, start) : newProgress();
+  // A snapshot of the run so far: a run still going on outside the call keeps adding to it.
+  const ran = new Map(progress.record.map((r) => [r.name, { ...r }]));
+  const record: PartRecord[] = [];
+  for (const step of plan) {
+    if (step.state !== "due") {
+      if (step.value) merge(out, step.value);
+      record.push({ name: step.name, state: step.state, ms: 0 });
+      continue;
+    }
+    const value = progress.values.get(step.name);
+    const done = ran.get(step.name);
+    if (value && done) merge(out, value);
+    record.push(done ?? { name: step.name, state: "notRun", ms: 0 });
+  }
+  // Every part from the cache: not a run, no record.
+  if (record.some((r) => r.state !== "cached")) out.run = record;
+  if (progress.stop) out.stop = { ...progress.stop };
   return out;
 }
 
@@ -106,15 +340,17 @@ async function openCockpitAsk(env: Env, companyId: string, effectKey: string): P
 }
 
 export async function extraChecks(env: Env, companyId: string, options: { fresh?: boolean } = {}): Promise<ExtraChecks> {
-  let cache = caches.get(env);
-  if (!cache) caches.set(env, (cache = new Map()));
+  // `fresh` recomputes every part, as if the cache had just been forgotten (results are stored as usual).
+  if (options.fresh) forgetChecks(env, companyId);
   const now = env.now();
-  const hit = cache.get(companyId);
-  if (!options.fresh && hit && now.getTime() - hit.at < TTL_MS) return hit.value;
   const ctx = env.ctx;
-  const company = await ctx.companies.get(companyId).catch(() => null);
-  const prefix = company?.issuePrefix ?? null;
-  const roles = await getRoles(ctx, companyId).catch(() => null);
+  // Read once, after the first probe, and only when a part must run.
+  let prefix: string | null = null;
+  let roles: Awaited<ReturnType<typeof getRoles>> | null = null;
+  const start = async (company: { issuePrefix?: string | null } | null) => {
+    prefix = company?.issuePrefix ?? null;
+    roles = await getRoles(ctx, companyId).catch(() => null);
+  };
 
   const parts: Array<[string, Part]> = [
     // Skills and tool access of the staffed agents, and agents with no model or timeout pinned (Q9-8, Q9-13, Q8-7).
@@ -239,13 +475,13 @@ export async function extraChecks(env: Env, companyId: string, options: { fresh?
       return { quality: [{ key: "memory_feedback_signal", label: "Memory brief feedback coverage (30 days)", value: signal.level === "none" ? "No signal" : `${stats.feedback30d.briefsWithFeedback} of ${stats.briefs30d.total}`, raw: stats.feedback30d.briefsWithFeedback, tone: signal.level === "ok" ? "ok" : "warn" }] };
     }],
   ];
-  const value = await gather(env, companyId, parts);
-  cache.set(companyId, { at: now.getTime(), value });
-  return value;
+  return gather(env, companyId, now.getTime(), parts, start);
 }
 
-/** Forget a company's cached checks (after a change that should show at once). */
+/** Forget a company's cached parts, losses and holds (after a change that should show at once). */
 export function forgetChecks(env: Env, companyId: string): void {
   caches.get(env)?.delete(companyId);
+  // A run still going on writes to the forgotten cache; the next call starts its own.
+  inFlight.get(env)?.delete(companyId);
 }
 

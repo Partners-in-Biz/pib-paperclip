@@ -17,6 +17,8 @@ export interface FakeDbOptions {
   namespace: string;
   coreReadTables?: string[];
   routes?: Route[];
+  /** Writes the generic parser cannot run (a correlated subquery); the rows a handler returns are the row count. */
+  executeRoutes?: Route[];
   /** Column defaults per table, applied on INSERT. */
   defaults?: Record<string, Row>;
 }
@@ -272,6 +274,7 @@ export function createFakeDb(store: Store, options: FakeDbOptions) {
       validateRuntimeExecute(sql, ns);
       validateParams(sql, params);
       log.executes.push({ sql, params });
+      for (const [pattern, handler] of options.executeRoutes ?? []) if (pattern.test(sql)) return { rowCount: handler(params, store, sql).length };
       const head = sql.trim().slice(0, 6).toUpperCase();
       if (head === "INSERT") return insert(sql, params);
       if (head === "UPDATE") return update(sql, params);

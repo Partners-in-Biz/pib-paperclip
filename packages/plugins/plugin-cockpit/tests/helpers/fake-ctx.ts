@@ -114,7 +114,7 @@ export function fakeCtx(options: {
       // The operations watch (watch.ts): rows a test seeds in `store.watch_<rule>` (an Error there makes that read fail); none by default.
       // They come before the generic routes below.
       [/row_number\(\) OVER/i, (_params, s) => seeded(s.watch_streak)],
-      [/GROUP BY context_snapshot/i, (_params, s) => seeded(s.watch_storm)],
+      [/GROUP BY coalesce\(issue_id::text, context_snapshot ->> 'issueId'\)/i, (_params, s) => seeded(s.watch_storm)],
       [/GROUP BY agent_id, status, error_code/i, (_params, s) => seeded(s.watch_rate)],
       // Blocked issues that name an agent owner (the owner check), before the generic blocked read, which shares the same function name.
       [/unblock_descriptor -> 'owner' ->> 'agentId' IS NOT NULL/i, (_params, s) => seeded(s.watch_blocked_owned)],
@@ -206,6 +206,8 @@ export function fakeCtx(options: {
     state: {
       get: async (key: Parameters<typeof stateKey>[0]) => state.get(stateKey(key)) ?? null,
       set: async (key: Parameters<typeof stateKey>[0], value: unknown) => {
+        // plugin_state.value_json is NOT NULL: the host refuses null.
+        if (value === null || value === undefined) throw new Error("null value in column \"value_json\" of relation \"plugin_state\" violates not-null constraint");
         state.set(stateKey(key), value);
       },
       delete: async (key: Parameters<typeof stateKey>[0]) => {

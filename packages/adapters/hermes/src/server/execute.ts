@@ -19,6 +19,7 @@
  *   --source           session source tag for filtering
  */
 
+import { applyHeadlessEnv, detectInputRequired, stripInteractiveToolsets } from "./headless-input.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 
@@ -55,6 +56,8 @@ import {
   selectPaperclipPromptSections,
   stringifyPaperclipWakePayload,
   isPaperclipRecoveryWakePayload,
+  runningProcesses,
+  signalRunningProcess,
 } from "@paperclipai/adapter-utils/server-utils";
 
 import {
@@ -70,9 +73,20 @@ import {
   resolveHermesHome,
   resolveProvider,
 } from "./detect-model.js";
-import { reconcileHermesPaperclipSkills } from "./skills.js";
+import {
+  HERMES_AGENT_SKILLS_DIR_ENV,
+  reconcileHermesPaperclipSkills,
+  resolveHermesAgentSkillsDir,
+} from "./skills.js";
 import { guardEnvStrings, prepareQuery } from "./query-file.js";
-import { readSessionLineage, resolveRun, type SessionRow } from "./session-metering.js";
+import { parseSessionId, readSessionLineage, resolveRun, type SessionRow } from "./session-metering.js";
+import {
+  DEFAULT_POST_TURN_EXIT_GRACE_SEC,
+  TURN_REPORT_FILE_ENV,
+  startPostTurnStopGuard,
+  type PostTurnStopGuard,
+  type PostTurnStopOutcome,
+} from "./post-turn-stop.js";
 import {
   createRemoteSessionReader,
   killRemoteTree,
@@ -523,8 +537,12 @@ async function executeHermes(
   const model = cfgString(config.model) || DEFAULT_MODEL;
   const timeoutSec = cfgNumber(config.timeoutSec) || DEFAULT_TIMEOUT_SEC;
   const graceSec = cfgNumber(config.graceSec) || DEFAULT_GRACE_SEC;
+  // PAR-13539: seconds Hermes may keep running after its turn ended; 0 turns the stop off.
+  const postTurnExitGraceSec = Math.max(0, cfgNumber(config.postTurnExitGraceSec) ?? DEFAULT_POST_TURN_EXIT_GRACE_SEC);
   const maxTurns = cfgNumber(config.maxTurnsPerRun);
-  const toolsets = cfgString(config.toolsets) || cfgStringArray(config.enabledToolsets)?.join(",");
+  const toolsets = stripInteractiveToolsets(
+    cfgString(config.toolsets) || cfgStringArray(config.enabledToolsets)?.join(","),
+  );
   const extraArgs = cfgStringArray(config.extraArgs);
   const persistSession = cfgBoolean(config.persistSession) !== false;
   const worktreeMode = cfgBoolean(config.worktreeMode) === true;
@@ -553,13 +571,23 @@ async function executeHermes(
   // marker avoids touching a developer's real Hermes home in direct unit or
   // library calls that did not opt into Paperclip runtime skills.
   // Remote runs use the skills already installed in the remote Hermes home.
+  // A profile whose skills.external_dirs names PAPERCLIP_HERMES_SKILLS_DIR gets
+  // a skills dir per agent, so seats sharing HERMES_HOME see only their own
+  // skills (PAR-13538, PAR-9915). Other profiles keep the shared skills dir.
+  let agentSkillsDir: string | null = null;
   if (!remote && Object.prototype.hasOwnProperty.call(config, "paperclipRuntimeSkills")) {
     try {
-      const selectedSkills = await reconcileHermesPaperclipSkills(config);
+      agentSkillsDir = await resolveHermesAgentSkillsDir(config, ctx.agent?.id);
+      const selectedSkills = await reconcileHermesPaperclipSkills(config, undefined, {
+        onLog: (line) => ctx.onLog("stdout", `[hermes] ${line}\n`),
+        agentSkillsDir,
+      });
       if (selectedSkills.length > 0) {
         await ctx.onLog(
           "stdout",
-          `[hermes] Reconciled ${selectedSkills.length} Paperclip-managed skill(s) into the Hermes skills home.\n`,
+          agentSkillsDir
+            ? `[hermes] Reconciled ${selectedSkills.length} Paperclip-managed skill(s) into this agent's skills dir ${agentSkillsDir}.\n`
+            : `[hermes] Reconciled ${selectedSkills.length} Paperclip-managed skill(s) into the Hermes skills home.\n`,
         );
       }
     } catch (err) {
@@ -737,9 +765,8 @@ async function executeHermes(
   // Failed resumes remain failures. Do not infer a safe restart from CLI text.
   if (sessionId) {
     args.push("--resume", sessionId);
-    // Without this, Hermes changes into the directory the old session recorded
-    // instead of staying in the run's workspace.
-    args.push("--no-restore-cwd");
+    // Resume sends --resume only: the gateway CLI refuses --no-restore-cwd and
+    // a resume --in that differs from the session's frozen cwd.
   }
   // Init event carries session_id before any model work, so a kill still
   // leaves a checkpoint the next wake can resume (PAR-6227).
@@ -761,6 +788,7 @@ async function executeHermes(
   // Scope the overlay to this child process. Read the current bundle on every
   // invocation; never infer its availability from a persisted session ID.
   // Preserve an operator's explicit overlay before Paperclip's instructions.
+  applyHeadlessEnv(env);
   env.HERMES_EPHEMERAL_SYSTEM_PROMPT = joinPromptSections([
     env.HERMES_EPHEMERAL_SYSTEM_PROMPT,
     agentInstructions,
@@ -770,6 +798,9 @@ async function executeHermes(
   ]);
 
   if (ctx.runId) env.PAPERCLIP_RUN_ID = ctx.runId;
+  // Only this run's own dir, never one inherited from the server or config.env.
+  if (agentSkillsDir) env[HERMES_AGENT_SKILLS_DIR_ENV] = agentSkillsDir;
+  else delete env[HERMES_AGENT_SKILLS_DIR_ENV];
 
   // PAPERCLIP_API_KEY is never accepted from config — the harness-minted run
   // token is the only source of Paperclip API identity.
@@ -824,16 +855,26 @@ async function executeHermes(
   // the session id from the stream-json init event before the process can die.
   let streamBuffer = "";
   let checkpointedSessionId: string | null = null;
-  // Only the first id from a system/init event counts. Tool output can echo
-  // other ids; a later one must never replace the real session.
-  const noteInitSessionId = async (event: { type: string; subtype?: string; sessionId?: string }) => {
+  // Only the first id counts: from a system/init event or the gateway's stderr
+  // start banner. Tool output can echo other ids; a later one must never
+  // replace the real session.
+  const noteCheckpointSessionId = async (sessionId: string | undefined) => {
     if (checkpointedSessionId) return;
-    if (event.type !== "system" || event.subtype !== "init") return;
-    const sessionId = event.sessionId;
     if (!sessionId || !isPlausibleHermesSessionId(sessionId)) return;
     checkpointedSessionId = sessionId;
     if (ctx.onSessionCheckpoint && checkpointEnabled) {
       await ctx.onSessionCheckpoint({ sessionId });
+    }
+  };
+  const noteInitSessionId = async (event: { type: string; subtype?: string; sessionId?: string }) => {
+    if (event.type !== "system" || event.subtype !== "init") return;
+    await noteCheckpointSessionId(event.sessionId);
+  };
+  const noteBannerSessionId = async (chunk: string) => {
+    if (checkpointedSessionId) return;
+    for (const line of chunk.split(/\r?\n/)) {
+      const match = /^Session:\s+(\S+)\s*$/.exec(line);
+      if (match) return noteCheckpointSessionId(match[1]);
     }
   };
   const forwardStdoutLines = async (raw: string, flushTail: boolean) => {
@@ -859,6 +900,7 @@ async function executeHermes(
   };
   const wrappedOnLog = async (stream: "stdout" | "stderr", chunk: string) => {
     if (stream === "stderr") {
+      await noteBannerSessionId(chunk);
       const trimmed = chunk.trimEnd();
       // Benign patterns that should NOT appear as errors:
       // - Structured log lines: [timestamp] INFO/DEBUG/WARN: ...
@@ -890,6 +932,28 @@ async function executeHermes(
     );
   }
   await ctx.onLog("stdout", `[hermes] Prompt: ${query.bytes} bytes via ${query.via}\n`);
+  // PAR-13539: Hermes reports the end of its turn before lingering on
+  // background-process notifications; stop it a short grace after that report
+  // instead of letting it run follow-up turns until timeoutSec. Local runs only:
+  // a remote report would sit on the other host.
+  let postTurnGuard: PostTurnStopGuard | null = null;
+  let postTurn: PostTurnStopOutcome | null = null;
+  if (!remote && postTurnExitGraceSec > 0) {
+    postTurnGuard = await startPostTurnStopGuard({
+      graceSec: postTurnExitGraceSec,
+      killGraceSec: graceSec,
+      getProcess: () => {
+        const running = runningProcesses.get(ctx.runId);
+        const pid = running?.child.pid;
+        if (!running || typeof pid !== "number" || running.child.exitCode !== null || running.child.signalCode !== null) {
+          return null;
+        }
+        return { pid, signal: (signal) => signalRunningProcess(running, signal) };
+      },
+      onLog: (line) => ctx.onLog("stdout", line),
+    });
+    if (postTurnGuard) env[TURN_REPORT_FILE_ENV] = postTurnGuard.reportPath;
+  }
   let result: Awaited<ReturnType<typeof runChildProcess>>;
   const meteredBox: { last: Awaited<ReturnType<typeof resolveRun>> | null } = { last: null };
   const parseAttempt = async (attempt: typeof result) => {
@@ -968,13 +1032,33 @@ async function executeHermes(
     throw err;
   } finally {
     await query.cleanup();
+    if (postTurnGuard) postTurn = await postTurnGuard.finish();
   }
   if (streamBuffer.trim()) {
     await forwardStdoutLines("\n", true);
   }
 
+  // Stopped after its turn: the turn's own outcome is the run's outcome. Hermes
+  // prints the answer and the session_id line only at exit, so take them from
+  // the turn report and the session we know.
+  let parseStderr = result.stderr || "";
+  const stoppedTurn = postTurn?.stopped && postTurn.report && !result.timedOut ? postTurn.report : null;
+  if (stoppedTurn) {
+    await ctx.onLog(
+      "stdout",
+      `[hermes] Stopped after the turn ended (signal ${result.signal ?? "none"}${postTurn?.forceKilled ? ", force-killed" : ""}); booking the turn's exit code ${stoppedTurn.exitCode}.\n`,
+    );
+    result = { ...result, exitCode: stoppedTurn.exitCode, signal: null };
+    const knownSessionId = checkpointedSessionId ?? sessionId;
+    if (!parseSessionId(result.stdout || "", parseStderr) && knownSessionId) {
+      parseStderr += `\nsession_id: ${knownSessionId}\n`;
+    }
+  }
+
   // ── Parse output ───────────────────────────────────────────────────────
-  parsed = parsed ?? (await parseAttempt(result));
+  parsed = stoppedTurn ? await parseAttempt({ ...result, stderr: parseStderr }) : (parsed ?? (await parseAttempt(result)));
+  if (stoppedTurn?.reply) parsed.response = stoppedTurn.reply;
+  if (stoppedTurn?.error && stoppedTurn.exitCode !== 0 && !parsed.errorMessage) parsed.errorMessage = stoppedTurn.error;
   const lastMetered = meteredBox.last;
   if (lastMetered?.usage) {
     await ctx.onLog(
@@ -999,7 +1083,11 @@ async function executeHermes(
     model,
   };
 
-  if (parsed.errorMessage) {
+  const inputRequired = detectInputRequired(result.stdout || "", result.stderr || "");
+  if (inputRequired) {
+    executionResult.errorMessage = inputRequired;
+    executionResult.errorCode = "hermes_input_required";
+  } else if (parsed.errorMessage) {
     executionResult.errorMessage = parsed.errorMessage;
   } else if (!result.timedOut && typeof result.exitCode === "number" && result.exitCode !== 0) {
     executionResult.errorMessage = `Hermes exited with code ${result.exitCode}`;
@@ -1038,6 +1126,15 @@ async function executeHermes(
     usage: parsed.usage || null,
     cost_usd: parsed.costUsd ?? null,
     ...(echoOnly ? { agentPromptEchoWithheld: true } : {}),
+    ...(stoppedTurn
+      ? {
+          postTurnStop: {
+            reason: "hermes_post_turn_linger",
+            graceSec: postTurnExitGraceSec,
+            forceKilled: postTurn?.forceKilled === true,
+          },
+        }
+      : {}),
   };
 
   // Store session ID for next run

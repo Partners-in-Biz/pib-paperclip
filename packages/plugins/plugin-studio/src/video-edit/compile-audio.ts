@@ -10,14 +10,20 @@
  * track), optionally run through `loudnorm`, and padded/cut to the edit's length. Encoded as AAC 48 kHz stereo 160k.
  * An edit with no sound has no segments: the output then has no audio stream at all (`-an`).
  */
-import { CompileError, filePath, inputKey, num, type CompileInputs } from "./compile-video.js";
+import { CompileError, GRAPH_FILE, filePath, inputKey, num, sourceKey, type CompileInputs } from "./compile-video.js";
+import type { CompiledVideo } from "./compile-video.js";
 import { toFfmpegExpr } from "./keyframes.js";
-import { clipDuration, editDuration, type AudioClip, type EditDoc, type MediaClip } from "./timeline.js";
+import { clipDuration, editDuration, type AudioClip, type EditDoc, type MediaClip, type TrackKind } from "./timeline.js";
 
 export interface AudioOptions { loudnorm?: boolean }
 /** The sound half of a render: extra input args, graph lines, and the final label (`null`: the edit is silent). */
 export interface AudioGraph { inputArgs: string[]; filters: string[]; outLabel: string | null }
 
+/**
+ * Multi-pass stems and intermediates: lossless 32-bit float PCM, so the final pass is the only lossy audio encode. Float,
+ * not s16: the single pass sums clips in float, and a stem whose sum passes full scale would clip in s16 (PAR-10465).
+ */
+export const INTERMEDIATE_AUDIO_ENCODER_ARGS = ["-c:a", "pcm_f32le", "-ar", "48000", "-ac", "2"] as const;
 export const AUDIO_ENCODER_ARGS = ["-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", "2"] as const;
 /** EBU R128 single pass, aimed at social platforms (-14 LUFS); loudnorm resamples to 192 kHz, so resample back after. */
 export const LOUDNORM = "loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000";
@@ -42,6 +48,17 @@ export function atempoChain(speed: number): number[] {
 
 type SoundClip = (MediaClip | AudioClip) & { fromTrack: "picture" | "audio" };
 
+/**
+ * Whether a clip on a track of `kind` adds a sound input (its own `-i`): every audio-track clip, and a video/overlay
+ * clip whose source the probe found sound in. The render planner weighs and labels passes with this same rule.
+ */
+export function clipHasSound(kind: TrackKind, clip: Parameters<typeof sourceKey>[0], sources: CompileInputs): boolean {
+  if (kind === "audio") return true;
+  if (kind !== "video" && kind !== "overlay") return false;
+  const source = sources[sourceKey(clip)];
+  return source?.kind === "video" && source.hasAudio === true;
+}
+
 /** The clips that carry sound, in timeline order (ties: track order). */
 function soundClips(doc: EditDoc, sources: CompileInputs): SoundClip[] {
   const out: SoundClip[] = [];
@@ -49,13 +66,15 @@ function soundClips(doc: EditDoc, sources: CompileInputs): SoundClip[] {
     if (track.kind === "audio") {
       for (const clip of track.clips) out.push({ ...clip, fromTrack: "audio" });
     } else if (track.kind === "video" || track.kind === "overlay") {
-      for (const clip of track.clips) {
-        const source = sources[inputKey(clip.assetId, clip.version)];
-        if (source?.kind === "video" && source.hasAudio === true) out.push({ ...clip, fromTrack: "picture" });
-      }
+      for (const clip of track.clips) if ("assetId" in clip && clipHasSound(track.kind, clip, sources)) out.push({ ...clip, fromTrack: "picture" }); // a sticker has no sound
     }
   }
   return out.map((c, i) => ({ c, i })).sort((a, b) => a.c.start - b.c.start || a.i - b.i).map(({ c }) => c);
+}
+
+/** Whether the compiled edit has an audio stream (`buildAudioGraph` returns a label exactly when this is true). */
+export function hasClipAudio(doc: EditDoc, sources: CompileInputs): boolean {
+  return soundClips(doc, sources).length > 0;
 }
 
 /** Builds the sound graph. Input indexes start at `firstInput` (the picture graph's input count). */
@@ -92,7 +111,9 @@ export function buildAudioGraph(doc: EditDoc, sources: CompileInputs, firstInput
     if (fadeIn > 0) steps.push(`afade=t=in:st=0:d=${num(fadeIn)}`);
     if (clip.fadeOut > 0) steps.push(`afade=t=out:st=${num(length - clip.fadeOut)}:d=${num(clip.fadeOut)}`);
     const delay = Math.round(clip.start * 1000);
-    if (delay > 0) steps.push(`adelay=delays=${delay}:all=1`);
+    // adelay gives its lead-in silence no timestamps (ffmpeg 6.1 to 9.0), so the `atrim` in the tail dropped it and a
+    // lone delayed clip (no amix to re-time it) played from 0, cut short; numbering samples again keeps it (PAR-10465).
+    if (delay > 0) steps.push(`adelay=delays=${delay}:all=1`, "asetpts=N/SR/TB");
     const label = `aud${labels.length}`;
     filters.push(`[${index}:a]${steps.join(",")}[${label}]`);
     labels.push(label);
@@ -100,9 +121,34 @@ export function buildAudioGraph(doc: EditDoc, sources: CompileInputs, firstInput
   if (labels.length === 0) return { inputArgs, filters, outLabel: null };
 
   const duration = num(editDuration(doc));
-  const mix = labels.length > 1 ? [`amix=inputs=${labels.length}:duration=longest:normalize=0`] : [];
+  // With more than one clip, a silent bed as long as the edit joins the mix. Without it, ffmpeg 8.x (8.0.1, 8.1.3) intermittently
+  // ended `amix duration=longest` at the last clip's end and `apad` did not extend it, so about 1 render in 7 came out
+  // short (7.5 s of 8 s, PAR-12746). The bed is zeros, so the sum is bit-identical, and the output is the edit's length.
+  const bed = labels.length > 1 ? "abed" : null;
+  if (bed) filters.push(`anullsrc=r=${SAMPLE_RATE}:cl=stereo:d=${duration},aformat=sample_fmts=fltp[${bed}]`);
+  const inputs = bed ? [...labels, bed] : labels;
+  const mix = bed ? [`amix=inputs=${inputs.length}:duration=longest:normalize=0`] : [];
   const tail = [...mix, ...(options.loudnorm ? [LOUDNORM] : []), `apad=whole_dur=${duration}`, `atrim=duration=${duration}`];
   const outLabel = "aout";
-  filters.push(`${labels.map((l) => `[${l}]`).join("")}${tail.join(",")}[${outLabel}]`);
+  filters.push(`${inputs.map((l) => `[${l}]`).join("")}${tail.join(",")}[${outLabel}]`);
   return { inputArgs, filters, outLabel };
+}
+
+/**
+ * ffmpeg args for one audio stem pass: the edit's sound only (same per-clip chain as `buildAudioGraph`, no loudnorm, which
+ * runs once in the final pass), as float PCM 48 kHz stereo WAV. Throws if the edit has no sound.
+ */
+export function compileAudioStem(doc: EditDoc, sources: CompileInputs, outputPath: string): CompiledVideo {
+  const audio = buildAudioGraph(doc, sources, 0);
+  if (!audio.outLabel) throw new CompileError("unsupported_feature", "stem_without_audio");
+  const args = [
+    "-hide_banner", "-nostdin", "-y",
+    ...audio.inputArgs,
+    "-filter_complex_script", GRAPH_FILE,
+    "-map", `[${audio.outLabel}]`,
+    ...INTERMEDIATE_AUDIO_ENCODER_ARGS,
+    "-t", num(editDuration(doc)),
+    filePath(outputPath),
+  ];
+  return { args, files: [{ name: GRAPH_FILE, content: `${audio.filters.join(";\n")}\n` }] };
 }

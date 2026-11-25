@@ -21,7 +21,7 @@ import { dailyStaggerHours, isRunning, issueRoom, nextSprintStatus, type AgentAv
 import { daysBetween } from "../engine/time.js";
 import { fetchBingLinkCounts } from "../integrations/bing.js";
 import { runPagespeed } from "../integrations/pagespeed.js";
-import { configSaved } from "@partnersinbiz/pib-plugin-kit";
+import { actionableCompanyIds, configSaved } from "@partnersinbiz/pib-plugin-kit";
 import { ensureProject, linkPendingHire, resolveAgent } from "./agent.js";
 import { ga4Daily } from "./analytics.js";
 import { healChunks } from "./chunks.js";
@@ -369,12 +369,17 @@ export async function linkPendingHires(env: Env): Promise<number> {
   } catch (error) {
     env.ctx.logger.info("SEO hire check: sprint companies unavailable", { error: errorMessage(error) });
   }
-  try {
-    for (const company of await env.ctx.companies.list({ limit: 100 })) {
-      if (!companies.has(company.id) && (await configSaved(env.ctx, company.id))) companies.add(company.id);
+  const actionable = await actionableCompanyIds(env.ctx);
+  if (actionable) {
+    for (const id of actionable) companies.add(id);
+  } else {
+    try {
+      for (const company of await env.ctx.companies.list({ limit: 100 })) {
+        if (!companies.has(company.id) && (await configSaved(env.ctx, company.id))) companies.add(company.id);
+      }
+    } catch (error) {
+      env.ctx.logger.info("SEO hire check: company list unavailable", { error: errorMessage(error) });
     }
-  } catch (error) {
-    env.ctx.logger.info("SEO hire check: company list unavailable", { error: errorMessage(error) });
   }
   let linked = 0;
   for (const companyId of companies) {

@@ -7,8 +7,9 @@
 import { createHash } from "node:crypto";
 import { configSaved, createWorkIssue, isModuleEnabled, readConfig, repairUnroutedApprovals, syncAllCompanies, wakeIssue, type SkillSyncer as KitSkillSyncer } from "@partnersinbiz/pib-plugin-kit";
 import { reannounceEffects, reconcileAsks } from "./asks.js";
+import { reconcileMergedPrAsks } from "./pr-merge.js";
 import { ensureAuthCard } from "./auth-card.js";
-import { forgetChecks } from "./checks.js";
+import { forgetChecks, OWN_CHECKS_INCOMPLETE_KEY, parseIncompleteParts } from "./checks.js";
 import { ensureCockpitAsks } from "./effects.js";
 import { ORIGIN, ORIGIN_ID, PLUGIN_KEY } from "./constants.js";
 import { clearHealthIssue, getHealthIssue, getRoles, listRoles, listSnapshots, saveHealthIssue } from "./db.js";
@@ -99,6 +100,24 @@ export interface Problems {
   entries: HealthEntry[];
   /** Stable keys, to notice new problems. */
   keys: string[];
+  /**
+   * Set when the Cockpit's own checks did not all finish this run: the unfinished
+   * parts by name (`["unknown"]` when the row is there but names none). Then an
+   * empty list is not "all ok": nothing closes, quietens or resets.
+   */
+  ownIncomplete?: string[];
+}
+
+/** The unfinished own parts named by the Cockpit snapshot's incomplete row, else null. Fails closed: a row with no readable names is `["unknown"]`. */
+export function ownIncompleteParts(snapshots: CockpitSnapshot[]): string[] | null {
+  for (const snapshot of snapshots) {
+    if (snapshot.plugin !== PLUGIN_KEY) continue;
+    const row = snapshot.health.find((check) => check.key === OWN_CHECKS_INCOMPLETE_KEY);
+    if (!row) continue;
+    const names = parseIncompleteParts(row.detail);
+    return names.length ? names : ["unknown"];
+  }
+  return null;
 }
 
 /** A warning that lasts longer than this reaches the System health issue (a "bad" check goes there at once). */
@@ -121,8 +140,11 @@ export async function warningSince(env: Env, companyId: string): Promise<Record<
   }
 }
 
-/** Remembers when each current warning was first seen and forgets the ones that cleared (hourly job). */
-export async function trackWarnings(env: Env, companyId: string, keys: string[], now: string): Promise<Record<string, string>> {
+/**
+ * Remembers when each current warning was first seen and forgets the ones that cleared (hourly job).
+ * `incomplete`: some checks did not finish, so a missing warning may only be unchecked; nothing is forgotten.
+ */
+export async function trackWarnings(env: Env, companyId: string, keys: string[], now: string, options: { incomplete?: boolean } = {}): Promise<Record<string, string>> {
   const known = await warningSince(env, companyId);
   const current = new Set(keys);
   for (const key of current) {
@@ -133,6 +155,7 @@ export async function trackWarnings(env: Env, companyId: string, keys: string[],
     );
     known[key] = now;
   }
+  if (options.incomplete) return known;
   for (const key of Object.keys(known)) {
     if (current.has(key)) continue;
     await env.ctx.db.execute(`DELETE FROM ${WARNINGS} WHERE company_id = $1 AND key = $2`, [companyId, key]);
@@ -161,8 +184,9 @@ export async function collectProblems(env: Env, companyId: string, input?: { sna
   const roles = input?.listeningSince !== undefined ? null : await getRoles(env.ctx, companyId);
   const listeningSince = input?.listeningSince !== undefined ? input.listeningSince : roles?.createdAt ?? null;
   const now = env.now();
+  const ownIncomplete = ownIncompleteParts(stored.map(({ snapshot }) => snapshot));
   const warnKeys = stored.flatMap(({ snapshot }) => snapshot.health.filter((check) => check.status === "warn").map((check) => `${snapshot.plugin}:${check.key}`));
-  const since = input?.trackWarnings ? await trackWarnings(env, companyId, warnKeys, now.toISOString()) : await warningSince(env, companyId);
+  const since = input?.trackWarnings ? await trackWarnings(env, companyId, warnKeys, now.toISOString(), { incomplete: !!ownIncomplete }) : await warningSince(env, companyId);
   const entries: HealthEntry[] = [];
   for (const { snapshot } of stored) {
     for (const check of snapshot.health) {
@@ -187,7 +211,8 @@ export async function collectProblems(env: Env, companyId: string, input?: { sna
   entries.push(...agentHealth(input?.agents ?? (await listAgents(env, companyId))));
   const rank = { bad: 0, warn: 1, ok: 2 } as const;
   entries.sort((a, b) => rank[a.status] - rank[b.status] || a.pluginTitle.localeCompare(b.pluginTitle) || a.title.localeCompare(b.title));
-  return { entries, keys: entries.map((entry) => `${entry.plugin}:${entry.key}`) };
+  const keys = entries.map((entry) => `${entry.plugin}:${entry.key}`);
+  return ownIncomplete ? { entries, keys, ownIncomplete } : { entries, keys };
 }
 
 export interface HealthIssueContent {
@@ -195,8 +220,16 @@ export interface HealthIssueContent {
   description: string;
 }
 
-/** Title and description of the System health issue (pure). Null when all is ok. */
-export function healthIssueContent(entries: HealthEntry[], prefix: string | null): HealthIssueContent | null {
+/** The line a System health issue carries while some checks did not finish. */
+export function incompleteSentence(parts: string[]): string {
+  return `Some checks did not finish this time: ${parts.join(", ")}. Problems they find are not in this update.`;
+}
+
+/**
+ * Title and description of the System health issue (pure). Null when no entry.
+ * `incomplete`: the unfinished parts; the description says so (and so its fingerprint differs from a complete run's).
+ */
+export function healthIssueContent(entries: HealthEntry[], prefix: string | null, incomplete?: string[] | null): HealthIssueContent | null {
   if (entries.length === 0) return null;
   const bad = entries.filter((entry) => entry.status === "bad").length;
   const lines = [
@@ -204,6 +237,7 @@ export function healthIssueContent(entries: HealthEntry[], prefix: string | null
     "",
     `[Open the Cockpit](${linkFor("/cockpit", prefix)})`,
   ];
+  if (incomplete?.length) lines.splice(1, 0, "", incompleteSentence(incomplete));
   let group = "";
   for (const entry of entries) {
     if (entry.pluginTitle !== group) {
@@ -227,15 +261,8 @@ export function healthIssueContent(entries: HealthEntry[], prefix: string | null
 
 export type HealthRefresh =
   | { action: "skipped"; reason: string }
+  | { action: "kept"; reason: string; issueId: string | null }
   | { action: "created" | "updated" | "unchanged" | "closed" | "none"; issueId: string | null; problems: number };
-
-async function companyPrefix(env: Env, companyId: string): Promise<string | null> {
-  try {
-    return (await env.ctx.companies.get(companyId))?.issuePrefix ?? null;
-  } catch {
-    return null;
-  }
-}
 
 async function healthIssueOn(env: Env, companyId: string): Promise<boolean> {
   try {
@@ -245,19 +272,50 @@ async function healthIssueOn(env: Env, companyId: string): Promise<boolean> {
   }
 }
 
+/**
+ * The oldest open issue with the health origin, or null. Several: the oldest is
+ * adopted and the rest are left alone. A refused list falls back to creating.
+ */
+async function findOpenByOrigin(env: Env, companyId: string) {
+  try {
+    const rows = await env.ctx.issues.list({ companyId, originKind: ORIGIN.health as `plugin:${string}`, originId: `${ORIGIN_ID.health}${companyId}`, limit: 50 });
+    const openRows = rows
+      .filter((row) => !CLOSED.has(String(row.status)))
+      .sort((a, b) => new Date(String(a.createdAt)).getTime() - new Date(String(b.createdAt)).getTime());
+    if (openRows.length > 1) env.ctx.logger.info("Several open health issues; adopting the oldest", { companyId, adopted: openRows[0]!.id, others: openRows.slice(1).map((row) => row.id) });
+    return openRows[0] ?? null;
+  } catch (error) {
+    env.ctx.logger.info("Health issue look-up by origin failed", { companyId, error: message(error) });
+    return null;
+  }
+}
+
 /** Keep the one System health issue for the company current. */
 export async function refreshHealthIssue(env: Env, companyId: string, problems?: Problems): Promise<HealthRefresh> {
   const roles = await getRoles(env.ctx, companyId);
   if (!roles) return { action: "skipped", reason: "Cockpit settings not saved" };
   if (!(await healthIssueOn(env, companyId))) return { action: "skipped", reason: "health issue switched off" };
   const found = problems ?? (await collectProblems(env, companyId, { trackWarnings: true }));
-  const content = healthIssueContent(found.entries, await companyPrefix(env, companyId));
+  // One uncaught read. When the plugin call has ended the host refuses it; then the
+  // tracked issue cannot be read either, so touch nothing (no close, create or record delete).
+  let company: Awaited<ReturnType<Env["ctx"]["companies"]["get"]>>;
+  try {
+    company = await env.ctx.companies.get(companyId);
+  } catch {
+    return { action: "kept", reason: "company not readable", issueId: null };
+  }
+  // Some own checks did not finish: an empty list is not "all ok", and a key missing now may only be unchecked.
+  const incomplete = found.ownIncomplete?.length ? found.ownIncomplete : null;
+  const content = healthIssueContent(found.entries, company?.issuePrefix ?? null, incomplete);
   const existing = await getHealthIssue(env.ctx, companyId);
   const issue = existing ? await env.ctx.issues.get(existing.issueId, companyId).catch(() => null) : null;
-  const open = issue && !CLOSED.has(String(issue.status)) ? issue : null;
+  let open = issue && !CLOSED.has(String(issue.status)) ? issue : null;
+  let tracked = existing;
   const now = env.now().toISOString();
 
   if (!content) {
+    // Unfinished checks never close the issue nor forget the record.
+    if (incomplete) return open ? { action: "kept", reason: "checks incomplete", issueId: open.id } : { action: "none", issueId: null, problems: 0 };
     if (open) {
       await env.ctx.issues.update(open.id, { status: "done" }, companyId);
       try {
@@ -272,6 +330,15 @@ export async function refreshHealthIssue(env: Env, companyId: string, problems?:
     return { action: "none", issueId: null, problems: 0 };
   }
 
+  // No tracked open issue: a create whose record save failed leaves an open issue with our origin.
+  if (!open) {
+    const adopted = await findOpenByOrigin(env, companyId);
+    if (adopted) {
+      open = adopted;
+      if (tracked?.issueId !== adopted.id) tracked = null;
+    }
+  }
+
   const operator = await operatorAgentId(env, companyId);
   const owner = roles.ownerUserId;
   const print = fingerprint(content.title, content.description);
@@ -283,10 +350,12 @@ export async function refreshHealthIssue(env: Env, companyId: string, problems?:
       : !open.assigneeAgentId && !open.assigneeUserId && owner
         ? { assigneeUserId: owner }
         : null;
-    if (existing?.fingerprint === print && !reassign) return { action: "unchanged", issueId: open.id, problems: found.entries.length };
+    if (tracked?.fingerprint === print && !reassign) return { action: "unchanged", issueId: open.id, problems: found.entries.length };
     await env.ctx.issues.update(open.id, { title: content.title, description: content.description, ...(reassign ?? {}) }, companyId);
-    await saveHealthIssue(env.ctx, { companyId, issueId: open.id, fingerprint: print, problemKeys: found.keys }, now);
-    const before = new Set(existing?.problemKeys ?? []);
+    // Incomplete: keep the earlier keys too, so a problem of an unfinished part that shows again is not new.
+    const problemKeys = incomplete ? [...new Set([...found.keys, ...(tracked?.problemKeys ?? [])])] : found.keys;
+    await saveHealthIssue(env.ctx, { companyId, issueId: open.id, fingerprint: print, problemKeys }, now);
+    const before = new Set(tracked?.problemKeys ?? []);
     const fresh = found.keys.some((key) => !before.has(key));
     const assignee = reassign?.assigneeAgentId ?? open.assigneeAgentId ?? null;
     if ((fresh || reassign) && assignee) await wakeIssue(env.ctx, open.id, companyId, "New system health problems");
@@ -325,6 +394,13 @@ export async function healthAlerts(env: Env): Promise<Record<string, number>> {
         if (asks.answered || asks.closed) counts.asksSettled = (counts.asksSettled ?? 0) + asks.answered + asks.closed;
       } catch (error) {
         env.ctx.logger.info("Question check failed", { companyId: row.companyId, error: message(error) });
+      }
+      try {
+        // A question that only asked the owner to merge a PR is settled once GitHub says it is merged (PAR-14492).
+        const merged = await reconcileMergedPrAsks(env, row.companyId);
+        if (merged.handedBack || merged.closed) counts.asksSettledByMerge = (counts.asksSettledByMerge ?? 0) + merged.handedBack + merged.closed;
+      } catch (error) {
+        env.ctx.logger.info("Merged-PR question check failed", { companyId: row.companyId, error: message(error) });
       }
       try {
         const effects = await reannounceEffects(env, row.companyId);
@@ -387,7 +463,9 @@ export async function healthAlerts(env: Env): Promise<Record<string, number>> {
         const authAgentsMap = authStreakAgents(runs);
         const authAgentIds = new Set(authAgentsMap.keys());
         const problems = await collectProblems(env, row.companyId, { trackWarnings: false });
-        const healthLevel = problems.entries.length === 0 ? "ok" : problems.entries.some((e) => e.status === "bad") ? "bad" : "warn";
+        // Unfinished checks with nothing bad: the level is unknown, which neither pushes nor clears.
+        const anyBad = problems.entries.some((e) => e.status === "bad");
+        const healthLevel = anyBad ? "bad" : problems.ownIncomplete?.length ? "unknown" : problems.entries.length === 0 ? "ok" : "warn";
         const criticalsNotified = await checkCriticalTriggers(env.ctx, row.companyId, {
           agents: agents.map((a) => ({ status: a.status, id: a.id, name: a.name })),
           authAgentIds,

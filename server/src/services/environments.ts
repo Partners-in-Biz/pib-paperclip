@@ -1,4 +1,5 @@
 import { createReusableLeaseHandoff, preserveReusableLeaseHandoff, withoutReusableLeaseHandoff } from "./environment-lease-handoff.js";
+import { preserveSshRunLeaseFacts } from "./ssh-run-lease.js";
 import { promoteDeferredWorkIntents } from "./work-intent-outbox.js";
 import { clearRemoteWorkspaceLocationForReleasedLease } from "./remote-workspace-snapshot-retention.js";
 import { notifyNativeEnvironmentSettlement } from "./native-environment-settlement-notifications.js";
@@ -1735,7 +1736,10 @@ export function environmentService(db: Db) {
       const now = new Date();
       const releaseMetadata = options?.remoteExecutionTermination
         ? sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({ remoteExecutionTermination: options.remoteExecutionTermination })}::jsonb`
-        : sql`${environmentLeases.metadata} - 'remoteExecutionTermination'`;
+        // An ssh receipt proves one run's group gone and stays true; a later
+        // release without the option must not strip it (PAR-9961, 13.9).
+        : sql`case when ${environmentLeases.provider} = 'ssh' then ${environmentLeases.metadata}
+            else ${environmentLeases.metadata} - 'remoteExecutionTermination' end`;
       const cleanupSettled = options?.expectedPendingCleanupAttemptId && options.cleanupStatus === "success"
         && status !== "pending_cleanup";
       const row = await db.transaction(async tx => {
@@ -1893,7 +1897,7 @@ export function environmentService(db: Db) {
         await notifyEnvironmentCleanup(tx, { companyId: lease.companyId, runId: lease.heartbeatRunId ?? undefined, leaseId: id });
         return tx.update(environmentLeases)
         .set({
-          metadata: preserveReusableLeaseHandoff(lease.metadata, withoutCleanupVerification(metadata)),
+          metadata: preserveSshRunLeaseFacts(lease.metadata, preserveReusableLeaseHandoff(lease.metadata, withoutCleanupVerification(metadata))),
           lastUsedAt: new Date(),
           updatedAt: new Date(),
         })

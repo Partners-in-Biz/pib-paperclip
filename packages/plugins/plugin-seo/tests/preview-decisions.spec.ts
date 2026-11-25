@@ -446,6 +446,24 @@ describePg("cockpit decisions on previews", () => {
     });
   });
 
+  it("closes the task's sign-off and the approval-email line only once every preview they cover is decided (PAR-9147)", async () => {
+    await reset();
+    await put("a", { draft_key: "k1" });
+    await put("b", { draft_key: "k1" });
+    const line = (key: string, kind: string, taskIds: string[]): Row => ({ key, kind, title: key, why: "why", steps: [], links: [], after: "after", check: "manual", taskIds, status: "open", addedAt: "2026-09-29T00:00:00Z" });
+    const digest: Row = { id: "ny-1", company_id: "co-1", sprint_id: "sp-1", week_start: "2026-09-28", issue_id: null, issue_identifier: null, status: "open", items: [line("review:t-1", "review", ["t-1"]), line("approval-email:k1", "task", [])] };
+    const saved = (h: ReturnType<typeof host>) => h.executes.filter((e) => /INSERT INTO plugin_seo_8099f8879a\.needs_you /.test(e.sql));
+    const closed = (h: ReturnType<typeof host>) => saved(h).flatMap((e) => e.params.flatMap((x) => (typeof x === "string" && x.startsWith("[") ? (JSON.parse(x) as Row[]) : []))).filter((i) => i.status === "done");
+    const routes: Route[] = [[/needs_you WHERE company_id = \$1/, () => [digest]]];
+    const h = host(AUTO, { routes });
+    await decide(h, USER, { previewIds: ["a"], decision: "approved" });
+    expect(closed(h)).toEqual([]);
+    await decide(h, USER, { previewIds: ["b"], decision: "approved" });
+    const done = closed(h);
+    expect(done.map((i) => i.key).sort()).toEqual(["approval-email:k1", "review:t-1"]);
+    expect(done.every((i) => i.doneBy === "decided in Previews")).toBe(true);
+  });
+
   it("checks its input: decision, list size and ids", async () => {
     const h = host(AUTO);
     await expect(decide(h, USER, { previewIds: ["a"], decision: "maybe" })).rejects.toThrow(/decision must be one of/);

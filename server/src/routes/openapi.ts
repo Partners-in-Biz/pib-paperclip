@@ -1,6 +1,7 @@
 import { MUSE_ASSET_VERSION, museStopBoundarySchema, museDetectorCleanupAttestationSchema, createGrokInvitationSchema, configureGrokRoutineSchema, verifyGrokRoutineSchema, recoverGrokRoutineSchema, pairGrokBindingSchema, stopGrokWorkSchema, retryGrokDeliverySchema, updateFastResponseSchema } from "@paperclipai/shared";
 import { slackTestMessageSchema, slackTestMessageResultSchema, slackManagerAuthorizationSchema, slackSetupOptionsSchema, slackManagedProvisionSchema, slackManagedResultSchema, slackRegistrationSchema, slackSetupActionSchema, slackInstallAuthorizationSchema, slackRegistrationStateSchema, slackAppConfigurationSchema, slackAvatarStateSchema, slackAccountStateSchema } from "@paperclipai/shared";
 import { experimentalApiMetadata } from "./experimental-api-metadata.js";
+import { PLANNING_CANVAS_OPENAPI_ROUTES } from "./openapi-planning-canvas/core.js";
 import { ATTENTION_SOURCE_KINDS } from "@paperclipai/shared";
 import { agentCaseHandoffSchema, caseWorkflowDocumentTextSchema, doneCaseHandoffSchema, createWorkflowSchema, updateWorkflowSchema, listWorkflowsSchema, readWorkflowQuerySchema } from "@paperclipai/shared";
 import {
@@ -237,6 +238,8 @@ import {
   createBoardApiKeySchema,
   updateCompanyMemberSchema,
   updateCompanyMemberWithPermissionsSchema,
+  updateMemberRestrictionSchema,
+  updateMemberRestrictionModeSchema,
   archiveCompanyMemberSchema,
   updateMemberPermissionsSchema,
   updateUserCompanyAccessSchema,
@@ -1338,6 +1341,28 @@ function registerCurrentRoute(input: {
   });
 }
 
+for (const route of PLANNING_CANVAS_OPENAPI_ROUTES) registerCurrentRoute(route);
+
+// Routes that landed without an OpenAPI entry (the route scan in
+// __tests__/openapi-routes.test.ts failed on development without these).
+const PERSONAL_NOTES = "/api/companies/{companyId}/personal-notes";
+for (const [method, path, summary] of [
+  ["get", PERSONAL_NOTES, "List your personal notes"],
+  ["post", PERSONAL_NOTES, "Create a personal note"],
+  ["post", `${PERSONAL_NOTES}/daily`, "Open or create today's daily note"],
+  ["get", `${PERSONAL_NOTES}/{noteId}`, "Read a personal note"],
+  ["patch", `${PERSONAL_NOTES}/{noteId}`, "Update a personal note"],
+  ["delete", `${PERSONAL_NOTES}/{noteId}`, "Delete a personal note"],
+  ["post", `${PERSONAL_NOTES}/{noteId}/schedule-handoff`, "Schedule an agent handoff for a personal note"],
+  ["delete", `${PERSONAL_NOTES}/{noteId}/schedule-handoff`, "Cancel a scheduled personal note handoff"],
+  ["post", `${PERSONAL_NOTES}/{noteId}/dispatch-now`, "Hand a personal note to its agent now"],
+  ["post", `${PERSONAL_NOTES}/{noteId}/record-handoff`, "Record a personal note handoff"],
+  ["post", `${PERSONAL_NOTES}/{noteId}/split-tasks`, "Split a personal note into tasks"],
+  ["post", "/api/issues/{id}/finalize-creation", "Finish creating a task after its staged attachments upload"],
+] as const) {
+  registerCurrentRoute({ method, path, tags: [path.startsWith("/api/issues") ? "issues" : "personal-notes"], summary });
+}
+
 type OpenApiAuthLevel =
   | "public"
   | "agent_run"
@@ -1485,6 +1510,9 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "PATCH /api/companies/{companyId}/members/{memberId}/role-and-grants",
   "POST /api/companies/{companyId}/members/{memberId}/archive",
   "PATCH /api/companies/{companyId}/members/{memberId}/permissions",
+  "PUT /api/companies/{companyId}/members/{memberId}/restriction",
+  "GET /api/companies/{companyId}/member-restriction-mode",
+  "PUT /api/companies/{companyId}/member-restriction-mode",
   "GET /api/companies/{companyId}/user-directory",
   "GET /api/companies/{companyId}/managed-agent-profiles",
   "POST /api/companies/{companyId}/managed-agent-profiles",
@@ -4266,6 +4294,20 @@ registry.registerPath({
   request: { params: z.object({ companyId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
+
+for (const method of ["get", "post"] as const) {
+  registry.registerPath({
+    method,
+    path: "/api/companies/{companyId}/chats/{agentRef}",
+    tags: ["issues"],
+    summary: method === "get" ? "Get the board user's conversation with one agent" : "Open the board user's conversation with one agent",
+    description: method === "get"
+      ? "Requires Agent Chat to be enabled. Returns the one conversation of this user with the agent (id or reference), or null. Read-only."
+      : "Requires Agent Chat to be enabled. Returns the one conversation of this user with the agent (id or reference), and creates it when there is none.",
+    request: { params: z.object({ companyId: z.string(), agentRef: z.string() }) },
+    responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+  });
+}
 
 registry.registerPath({
   method: "get",
@@ -7344,6 +7386,34 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "put",
+  path: "/api/companies/{companyId}/members/{memberId}/restriction",
+  tags: ["access"],
+  summary: "Restrict a member to his own client work, or lift the restriction",
+  description: "A signed-in person with users:manage_permissions only. Agent keys and runs are refused.",
+  request: {
+    params: z.object({ companyId: z.string(), memberId: z.string() }),
+    body: jsonBody(updateMemberRestrictionSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});
+
+for (const method of ["get", "put"] as const) {
+  registry.registerPath({
+    method,
+    path: "/api/companies/{companyId}/member-restriction-mode",
+    tags: ["access"],
+    summary: method === "get" ? "Read the company's member restriction mode" : "Set the company's member restriction mode",
+    description: "A signed-in person with users:manage_permissions only. Modes: off, report, enforce.",
+    request: {
+      params: z.object({ companyId: z.string() }),
+      ...(method === "put" ? { body: jsonBody(updateMemberRestrictionModeSchema) } : {}),
+    },
+    responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+  });
+}
+
+registry.registerPath({
   method: "post",
   path: "/api/companies/{companyId}/members/{memberId}/archive",
   tags: ["access"],
@@ -7513,8 +7583,12 @@ registry.registerPath({
   path: "/api/auth/get-session",
   tags: ["auth"],
   summary: "Get current session",
-  description: "Authenticated board sessions can include an optional same-user boardBootstrap with accessible companies and boardAccess. Existing session fields are unchanged; clients retain ordinary company and access reads when the optional projection is absent.",
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  description: "Authenticated board sessions can include an optional same-user boardBootstrap with accessible companies and boardAccess. Existing session fields are unchanged; clients retain ordinary company and access reads when the optional projection is absent. memberRestrictions lists, per company the signed-in person belongs to, whether he is restricted there and the company's restriction mode (off, report, enforce).",
+  responses: {
+    200: r.ok(),
+    401: r.unauthorized,
+    503: { description: "Member restriction could not be read (MEMBER_RESTRICTION_UNAVAILABLE)" },
+  },
 });
 
 registry.registerPath({

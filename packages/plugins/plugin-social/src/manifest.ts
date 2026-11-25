@@ -3,13 +3,14 @@ import { COCKPIT_ROUTE, SETUP_STATUS_ROUTE, withMemoryInstruction } from "@partn
 import { buildInstanceConfigSchema, DEFAULT_TIMEZONE } from "./config.js";
 import { SOCIAL_AGENT_CAPABILITIES, SOCIAL_AGENT_ICON, SOCIAL_AGENT_NAME, SOCIAL_HIRE_INSTRUCTIONS, SOCIAL_HIRE_ROLE } from "./hire.js";
 import { PLAN_ROUTINE_KEY, PLUGIN_ID, SOCIAL_AGENT_KEY, SOCIAL_PROJECT_KEY } from "./platforms.js";
+import { POST_CARD_SLOT } from "./slots.js";
 import { DESIRED_SKILLS, PIB_ONLY_SKILLS, PLAN_ROUTINE_DESCRIPTION, PLAN_ROUTINE_TITLE, SKILLS } from "./skills.js";
 import { SOCIAL_TOOLS } from "./tools.js";
 
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.10.37",
+  version: "0.15.2",
   displayName: "Social",
   description:
     "Connect social accounts for PiB's own work or one CRM client at a time (Meta, LinkedIn, X, TikTok, YouTube, Pinterest, Reddit, Bluesky, Mastodon, Dribbble), draft posts, approve them (a team member by default; a client can approve on a link) and publish on schedule with retries. Inbox triage; Growth Lab. " +
@@ -206,6 +207,8 @@ const manifest: PaperclipPluginManifestV1 = {
       { type: "page", id: "social-page", displayName: "Social", exportName: "SocialPage", routePath: "social" },
       { type: "page", id: "my-social-page", displayName: "My Social", exportName: "MySocialPage", routePath: "mysocial" },
       { type: "sidebar", id: "social-sidebar", displayName: "Social", exportName: "SocialSidebar", order: 41 },
+      // Planning Canvas (PAR-14389 C.2): the card of a Social post; the worker answers canvas.cards.* for it.
+      { type: "canvasNode", id: POST_CARD_SLOT, displayName: "Social post", exportName: "SocialPostCard", entityCard: { kind: POST_CARD_SLOT, search: true, related: true } },
     ],
   },
 };

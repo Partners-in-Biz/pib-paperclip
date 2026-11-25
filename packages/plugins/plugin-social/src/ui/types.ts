@@ -30,6 +30,8 @@ export interface Account extends Scoped {
   externalId: string | null;
   avatarUrl: string | null;
   connected: boolean;
+  /** No publishing link: a person posts for this account by hand. Absent from older workers. */
+  manual?: boolean;
   tokenExpiresAt: string | null;
   lastRefreshedAt: string | null;
   lastError: string | null;
@@ -57,7 +59,11 @@ export interface Destination {
   platform: SocialPlatform | null;
   accountName: string;
   accountStatus: string | null;
-  status: "pending" | "publishing" | "retrying" | "published" | "failed";
+  status: "pending" | "publishing" | "retrying" | "awaiting_manual" | "published" | "failed";
+  /** The account has no publishing link. Absent from older workers. */
+  manual?: boolean;
+  /** What a person needs to post this destination by hand; null once it is published. */
+  handPost?: { text: string; title: string | null; firstComment: string | null; url: string; prefilled: boolean; mediaByHand: boolean } | null;
   attempts: number;
   nextAttemptAt: string | null;
   externalId: string | null;
@@ -235,7 +241,14 @@ export interface ApprovalPolicyView {
   custom: boolean;
   summary: string;
   /** The scope's delegated approver (an agent a person named); null when none is set. */
-  delegate?: { agentId: string; name: string | null; active: boolean; inactiveReason: string | null } | null;
+  delegate?: {
+    agentId: string;
+    name: string | null;
+    active: boolean;
+    inactiveReason: string | null;
+    /** Approves the posts the delegate created itself. */
+    backup?: { agentId: string; name: string | null; active: boolean; inactiveReason: string | null } | null;
+  } | null;
   updatedBy: string | null;
   updatedAt: string | null;
 }
@@ -441,7 +454,52 @@ export interface RankedType {
   observedPosts: number;
 }
 
+export interface GrowthFocus {
+  month: string;
+  theme: string;
+  audience: string;
+  offer: string;
+  proof: string[];
+  metric: string;
+  setBy?: string;
+  setAt?: string;
+  learned?: string | null;
+}
+
+export interface GrowthFocusView {
+  focus: GrowthFocus | null;
+  state: "none" | "current" | "next" | "expired";
+  thisMonth: string;
+  note?: string;
+  past: GrowthFocus[];
+}
+
+export interface GrowthPartRow {
+  name: string;
+  posts: number;
+  reach: number;
+  actions: number;
+  rate: number | null;
+  verdict: "double down" | "keep testing" | "drop" | "too little reach";
+}
+
+export interface GrowthHookBoard {
+  periodDays: number;
+  published: number;
+  tagged: number;
+  reach: number;
+  minReach: number;
+  control: { hook: string | null; body: string | null; cta: string | null };
+  hooks: GrowthPartRow[];
+  bodies: GrowthPartRow[];
+  ctas: GrowthPartRow[];
+  notes: string[];
+}
+
 export interface GrowthSnapshot {
+  /** Since 0.13.0; absent from an older worker. */
+  focus?: GrowthFocusView;
+  hookBoard?: GrowthHookBoard;
   program: GrowthProgram;
   periodDays: number;
   summary: { postsScored: number; postsWithLift: number; medianLift: number | null };

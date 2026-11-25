@@ -19,6 +19,7 @@ import { useSignOut } from "@/hooks/useSignOut";
 import { useStagingCommit } from "@/hooks/useStagingCommit";
 import { userProfilePath } from "@/lib/userProfileLinks";
 import { useSidebar } from "../context/SidebarContext";
+import { useMemberRestriction } from "../context/MemberRestrictionContext";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -135,11 +136,14 @@ export function SidebarAccountMenu({
   // instance admins, local boards). The server checks the actual grants.
   const canInviteMembers = useCanInviteCompanyMembers(!isCloud);
   const inviteHref = isCloud ? cloudInviteUrl : canInviteMembers ? INVITES_PATH : null;
+  const memberRestriction = useMemberRestriction();
   const showInvite =
     hiddenSettingsLoaded &&
     inviteHref !== null &&
     !hidesCompanyPage(hiddenSettings, "company.members") &&
-    !hidesCompanyPage(hiddenSettings, "company.invites");
+    !hidesCompanyPage(hiddenSettings, "company.invites") &&
+    // PAR-12608 4.6: invites and the profile directory are closed to a restricted member.
+    !memberRestriction.enforced;
   const [internalOpen, setInternalOpen] = useState(false);
   const { isMobile, setSidebarOpen, collapsed, peeking } = useSidebar();
   const rail = collapsed && !peeking;
@@ -198,12 +202,12 @@ export function SidebarAccountMenu({
           <div className="-mt-8 px-4 pb-4">
             {/* The profile link is a stretched overlay so the staging SHA anchor can sit beside the email without nesting anchors. */}
             <div className="relative flex items-start gap-3">
-              <Link
+              {memberRestriction.isPageHidden(profileHref) ? null : <Link
                 to={profileHref}
                 aria-label="View profile"
                 onClick={closeNavigationChrome}
                 className="absolute inset-0 rounded-xl transition-colors hover:bg-accent/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              />
+              />}
               <div className="pointer-events-none relative rounded-2xl border-4 border-popover bg-popover p-0.5 shadow-sm">
                 <Avatar size="lg">
                   {session?.user.image ? <AvatarImage src={session.user.image} alt={displayName} /> : null}

@@ -22,7 +22,7 @@ describe("skill budget", () => {
   it("references carry what does not fit, and each stays a readable size", () => {
     for (const s of SKILLS) for (const file of s.files ?? []) expect(file.content.length, `${s.skillKey}/${file.path}`).toBeLessThan(16_000);
     expect(skill("social-publish").files!.map((f) => f.path)).toEqual(["references/approvals.md"]);
-    expect(skill("social-content").files!.map((f) => f.path)).toEqual(["references/platforms.md", "references/media-studio.md"]);
+    expect(skill("social-content").files!.map((f) => f.path)).toEqual(["references/platforms.md", "references/media-studio.md", "references/social-craft.md"]);
   });
 
   it("every skill points at the references it needs", () => {
@@ -30,10 +30,17 @@ describe("skill budget", () => {
     expect(skill("social-publish").markdown).toContain("references/media-studio.md");
     expect(skill("social-content").markdown).toContain("references/media-studio.md");
     expect(skill("social-content").markdown).toContain("pib-media-studio");
+    expect(skill("social-content").markdown).toContain("references/social-craft.md");
   });
 });
 
 describe("what the skills tell agents", () => {
+  it("the social craft reference names the brand kit tools and no company", () => {
+    const craft = skill("social-content").files!.find((f) => f.path === "references/social-craft.md")!.content;
+    for (const text of ["partnersinbiz.crm:get-client-profile", "partnersinbiz.cockpit:company-profile", "partnersinbiz.crm:extract-brand-from-site", "One real thing per post", "Format first, then words"]) expect(craft, text).toContain(text);
+    expect(craft).not.toMatch(/Peet|Partners in Biz|Velox/);
+  });
+
   it("names every tool, so a tool is never missing from the guidance", () => {
     const publish = skill("social-publish").markdown;
     for (const tool of SOCIAL_TOOLS) expect(publish, tool.name).toContain(tool.name);

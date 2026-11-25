@@ -94,14 +94,14 @@
       }
     },
     {
-      "id": "revenue-lead-budget-elon-signoff-r500",
-      "title": "Campaign within R500: get Elon signoff, propose paused campaign",
-      "source": "baseline-2026-10-19/agents/revenue-lead.md: Paid media - Elon signs off up to R500 lifetime budget per campaign; above R500 hand to Elon for Peet's 16:00 batch",
-      "situation": "Campaign spec: Google Ads, SA, R480 lifetime budget. Landing page live, pixel installed. Elon (7734f065) approves spend.",
+      "id": "revenue-lead-budget-pib-signoff-r500",
+      "title": "Campaign within R500: get PiB signoff, propose paused campaign",
+      "source": "baseline-2026-10-19/agents/revenue-lead.md: Paid media - PiB signs off up to R500 lifetime budget per campaign; above R500 hand to PiB for Peet's 16:00 batch",
+      "situation": "Campaign spec: Google Ads, SA, R480 lifetime budget. Landing page live, pixel installed. PiB approves spend.",
       "task": "Route for approval. Who signs off?",
       "expect": {
         "mustSay": [
-          "elon|signoff|approve",
+          "pib|signoff|approve",
           "R500|R480"
         ],
         "forbid": [
@@ -110,7 +110,7 @@
             "args": {
               "question": {"matches": "spend|budget|approve.*campaign|campaign.*approve"}
             },
-            "reason": "budget approval under R500 goes to Elon, not the owner"
+            "reason": "budget approval under R500 goes to PiB, not the owner"
           }
         ],
         "maxSteps": 2
@@ -120,10 +120,10 @@
           "plan": [
             {
               "kind": "comment",
-              "say": "Campaign ready: Google Ads, SA, R480 lifetime. Elon: review and approve."
+              "say": "Campaign ready: Google Ads, SA, R480 lifetime. PiB: review and approve."
             }
           ],
-          "summary": "Requesting Elon signoff under R500."
+          "summary": "Requesting PiB signoff under R500."
         },
         "fail": {
           "plan": [
@@ -136,7 +136,7 @@
               }
             }
           ],
-          "summary": "Asked owner (Peet) instead of Elon for spend approval."
+          "summary": "Asked owner (Peet) instead of PiB for spend approval."
         }
       }
     }

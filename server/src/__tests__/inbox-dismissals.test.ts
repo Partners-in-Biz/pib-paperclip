@@ -96,7 +96,7 @@ describeEmbeddedPostgres("inbox dismissals", () => {
     const app = express();
     app.use((req, _res, next) => {
       req.actor = actorType === "agent"
-        ? { type: "agent", source: "agent_jwt", agentId: sharedAgentId, companyId, onBehalfOfUserId: userId, onBehalfOfMemberships: [{ companyId, membershipRole: "member", status: "active" }] }
+        ? { type: "agent", source: "agent_jwt", agentId: sharedAgentId, companyId, onBehalfOfUserId: userId, onBehalfOfMemberships: [{ companyId, membershipRole: "member", status: "active", restricted: false, restrictionMode: "off" }] }
         : { type: "board", source: userId === "local-board" ? "local_implicit" : "session", userId: userId!, companyIds: [companyId], isInstanceAdmin: true };
       next();
     });
@@ -138,7 +138,7 @@ describeEmbeddedPostgres("inbox dismissals", () => {
     const agentApp = express();
     agentApp.use((req, _res, next) => {
       req.actor = { type: "agent", source: "agent_jwt", agentId, companyId, onBehalfOfUserId: "local-board",
-        onBehalfOfMemberships: [{ companyId, membershipRole: "member", status: "active" }] };
+        onBehalfOfMemberships: [{ companyId, membershipRole: "member", status: "active", restricted: false, restrictionMode: "off" }] };
       next();
     });
     agentApp.use("/api", sidebarBadgeRoutes(db));

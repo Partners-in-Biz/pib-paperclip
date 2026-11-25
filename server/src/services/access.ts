@@ -25,8 +25,9 @@ import {
   toolConnections,
   userSecretDeclarations,
 } from "@paperclipai/db";
-import type { PermissionKey, PrincipalType } from "@paperclipai/shared";
+import type { InviteMemberRestriction, PermissionKey, PrincipalType } from "@paperclipai/shared";
 import { conflict } from "../errors.js";
+import { assertRoleAllowedForRestriction } from "./member-restriction/admin.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
 import { authorizationService, type AuthorizationActor, type AuthorizationResource } from "./authorization.js";
 import { ensureHumanRoleDefaultGrants } from "./principal-access-compatibility.js";
@@ -560,6 +561,7 @@ export function accessService(db: Db) {
       const nextMembershipRole =
         data.membershipRole !== undefined ? data.membershipRole : existing.membershipRole;
       const nextStatus = data.status ?? existing.status;
+      if (nextMembershipRole !== existing.membershipRole) assertRoleAllowedForRestriction(existing, nextMembershipRole);
 
       if(nextStatus==="active"&&(existing.principalType==="agent"||nextMembershipRole!=="viewer")
         &&(existing.status!=="active"||existing.principalType==="user"&&existing.membershipRole==="viewer"))
@@ -908,6 +910,7 @@ export function accessService(db: Db) {
         const existingMembership = existingByCompany.get(companyId);
         if (existingMembership) {
           if (existingMembership.status !== "active") {
+            assertRoleAllowedForRestriction(existingMembership, existingMembership.membershipRole);
             if (existingMembership.membershipRole !== "viewer") {
               await notifyChatCompanyAuthorityChange(tx, { companyId });
               await notifyMuseContactVerification(tx,{companyId,operatorId:userId});
@@ -944,14 +947,25 @@ export function accessService(db: Db) {
     principalId: string,
     membershipRole: string | null = "member",
     status: "pending" | "active" | "suspended" = "active",
+    /** The restriction mark of the invite this membership comes from (PAR-12608 4.2a); persons only. */
+    restriction: InviteMemberRestriction | null = null,
   ) {
+    const mark = principalType === "user" && restriction?.restricted ? restriction : null;
     return db.transaction(async tx => {
       const existing = await tx.select().from(companyMemberships).where(and(
         eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalType, principalType),
         eq(companyMemberships.principalId, principalId),
       )).for("update").then(rows => rows[0] ?? null);
       if (existing) {
-        if (existing.status !== status || existing.membershipRole !== membershipRole) {
+        // Never lowered: a mark raises the flag only on a row that is not yet
+        // active and not flagged; it never clears the flag or changes the lists.
+        const raise = mark && existing.status !== "active" && !existing.restricted
+          ? { restricted: true, restrictedPluginKeys: mark.pluginKeys, restrictedAgentIds: mark.agentIds }
+          : null;
+        if (existing.status !== status || existing.membershipRole !== membershipRole || raise) {
+          if (existing.membershipRole !== membershipRole || raise) {
+            assertRoleAllowedForRestriction({ restricted: existing.restricted || Boolean(raise) }, membershipRole);
+          }
           if(status==="active"&&(principalType==="agent"||membershipRole!=="viewer")
             &&(existing.status!=="active"||principalType==="user"&&existing.membershipRole==="viewer"))
             await notifyMuseContactVerification(tx,{companyId,...(principalType==="user"?{operatorId:principalId}:{agentId:principalId})});
@@ -961,7 +975,7 @@ export function accessService(db: Db) {
           }
           const updated = await tx
             .update(companyMemberships)
-            .set({ status, membershipRole, updatedAt: new Date() })
+            .set({ status, membershipRole, ...raise, updatedAt: new Date() })
             .where(eq(companyMemberships.id, existing.id))
             .returning()
             .then((rows) => rows[0] ?? null);
@@ -970,6 +984,7 @@ export function accessService(db: Db) {
         return existing;
       }
 
+      if (mark) assertRoleAllowedForRestriction({ restricted: true }, membershipRole);
       if(status==="active"&&(principalType==="agent"||membershipRole!=="viewer"))await notifyMuseContactVerification(tx,{companyId,...(principalType==="user"?{operatorId:principalId}:{agentId:principalId})});
       if (principalType === "user" && status === "active" && membershipRole !== "viewer") {
         await notifyChatCompanyAuthorityChange(tx, { companyId });
@@ -982,6 +997,7 @@ export function accessService(db: Db) {
           principalId,
           status,
           membershipRole,
+          ...(mark ? { restricted: true, restrictedPluginKeys: mark.pluginKeys, restrictedAgentIds: mark.agentIds } : {}),
         })
         .returning()
         .then((rows) => rows[0]);
@@ -1165,6 +1181,7 @@ export function accessService(db: Db) {
       const nextMembershipRole =
         data.membershipRole !== undefined ? data.membershipRole : existing.membershipRole;
       const nextStatus = data.status ?? existing.status;
+      if (nextMembershipRole !== existing.membershipRole) assertRoleAllowedForRestriction(existing, nextMembershipRole);
 
       if(nextStatus==="active"&&(existing.principalType==="agent"||nextMembershipRole!=="viewer")
         &&(existing.status!=="active"||existing.principalType==="user"&&existing.membershipRole==="viewer"))

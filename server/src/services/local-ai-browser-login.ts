@@ -1,3 +1,4 @@
+import { guardChildStdin } from "@paperclipai/adapter-utils";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { open } from "node:fs/promises";
 import { constants } from "node:fs";
@@ -83,6 +84,7 @@ export function startLocalBrowserLogin(provider: "anthropic" | "openai" | "googl
       };
       return new Promise((resolve, reject) => {
         child = spawn("python3", ["-u", "-c", PYTHON_PTY_BRIDGE, executable, ...args], { env, stdio: ["pipe", "pipe", "pipe"] });
+        guardChildStdin(child, "local-ai-browser-login:pty");
         child.stdout.on("data", (bytes: Buffer) => onData(bytes.toString("utf8")));
         // Provider output may contain secrets. Never log or retain stderr.
         child.stderr.resume();
@@ -93,7 +95,7 @@ export function startLocalBrowserLogin(provider: "anthropic" | "openai" | "googl
         child.once("close", (exitCode) => resolve({ exitCode }));
       });
     },
-    write(input: string) { child?.stdin.write(input); },
+    write(input: string) { if (child && child.stdin.writable) child.stdin.write(input); },
     stop() { child?.kill("SIGTERM"); },
     async dispose() { child?.kill("SIGTERM"); },
     async readFile(file: string) { const { readLocalAiCredentialFile } = await import("./local-ai-credential-file.js"); return Buffer.from(await readLocalAiCredentialFile(file)); },

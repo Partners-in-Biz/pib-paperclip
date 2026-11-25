@@ -164,6 +164,19 @@ describe("the client's answers", () => {
     expect(w.store.tasks[0]!.assignee_kind).toBe("client");
   });
 
+  it("adds the afterFirstParagraph guidance only when an approved preview uses the mode", async () => {
+    const run = async (changes: unknown) => {
+      const answered = [preview("p1", "a", { status: "approved", changes })];
+      const window = windowRows([{ page_url: "https://agristudies.co.za/a/", apply_until: "2026-10-03T14:00:00.000Z", seq: "1793692800000000" }]);
+      const w = world({ sprints: [wp()], tasks: [parked({ assignee_kind: "client" })], routes: [latest(answered), claimed(answered), window] });
+      const sprint = (await db.getSprint(w.env.ctx.db, "co-1", "sp-real"))!;
+      await handleClientAnswer(w.env, sprint, answer());
+      return w.comments.at(-1)!.body;
+    };
+    expect(await run({ bodyHtml: "<p>x</p>", bodyMode: "afterFirstParagraph" })).toContain("bodyMode afterFirstParagraph: read post_content");
+    expect(await run({ bodyHtml: "<p>x</p>", bodyMode: "before" })).not.toContain("bodyMode afterFirstParagraph: read post_content");
+  });
+
   it("when every preview is answered: lifts the lock for the window, takes the task back and wakes the agent once with what to apply and what to revise", async () => {
     const answered = [preview("p1", "a", { status: "approved" }), preview("p2", "b", { status: "changes_requested", decision_note: "Use our logo colours" })];
     const window = windowRows([{ page_url: "https://agristudies.co.za/a/", apply_until: "2026-10-03T14:00:00.000Z", seq: "1793692800000000" }]);

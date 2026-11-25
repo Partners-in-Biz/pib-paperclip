@@ -1,3 +1,4 @@
+import { guardChildStdin } from "@paperclipai/adapter-utils";
 import { isNewHumanIntentAfterToolRejection } from "./tool-action-replay-intent.js";
 import { notifyChatRunMilestones } from "./chat-run-milestone-notifications.js";
 import { writeToolConnectionHealthChange } from "./tool-connection-health-notifications.js";
@@ -44,6 +45,9 @@ import { emitConnectionInvoked } from "./connector-telemetry.js";
 import { resolveManagedGitHubIdentitySelection } from "./git-credentials.js";
 import { extractRemoteMcpPending } from "./remote-mcp-pending.js";
 import { logger } from "../middleware/logger.js";
+import type { StorageService } from "../storage/types.js";
+import { createRunResponseCapture } from "./run-response-capture.js";
+import { binarySpillRunScope, findBinarySpillCandidates, spillBinaryLeaves } from "./tool-gateway-binary-spill.js";
 import {
   assertValidConnectionAuthorizationPayload,
   connectionAuthorizationTargetKey,
@@ -187,6 +191,14 @@ import {
 import { recordToolRuntimeAuditWriteFailure } from "./tool-runtime-metrics.js";
 import { unresolvedRecoveryToolInvocation } from "./recovery-effect-receipts.js";
 import { isRetiredComposioConnection, RETIRED_COMPOSIO_MESSAGE } from "@paperclipai/shared";
+import { MEMBER_RESTRICTED_CODE, MEMBER_RESTRICTION_UNAVAILABLE_CODE } from "@paperclipai/shared";
+import {
+  isMemberRestrictionUnavailable,
+  memberRestrictionResolver,
+  pluginActingPersonForUser,
+  type PluginActingPerson,
+} from "./member-restriction/index.js";
+import { TOOL_RUN_NOT_FOUND_CODE, assertConnectorToolOpen, connectorToolsClosedFor } from "./member-restriction/tool-gate.js";
 import {
   createPaperclipCloudConnector,
   isPaperclipCloudConnectorStrategy,
@@ -393,6 +405,23 @@ export class ToolGatewayHttpError extends Error {
   ) {
     super(message);
   }
+}
+
+/**
+ * A member-restriction refusal from core (403 `MEMBER_RESTRICTED`, 503
+ * `MEMBER_RESTRICTION_UNAVAILABLE`, a run that cannot be found) keeps its
+ * status and code through the gateway instead of turning into a 502.
+ */
+const MEMBER_RESTRICTION_REFUSAL_CODES = new Set([
+  MEMBER_RESTRICTED_CODE, MEMBER_RESTRICTION_UNAVAILABLE_CODE, TOOL_RUN_NOT_FOUND_CODE,
+]);
+function gatewayRefusal(error: unknown): unknown {
+  if (!(error instanceof HttpError)) return error;
+  const details = error.details && typeof error.details === "object" && !Array.isArray(error.details)
+    ? error.details as Record<string, unknown>
+    : {};
+  if (typeof details.code !== "string" || !MEMBER_RESTRICTION_REFUSAL_CODES.has(details.code)) return error;
+  return new ToolGatewayHttpError(error.status, error.message, details.code, details);
 }
 
 /** Repeated discovery rows are one tool; conflicting bindings stay ambiguous. */
@@ -1214,9 +1243,38 @@ export function createToolGatewayService(
       sessionSetup: Partial<McpGatewayRateLimitConfig>;
     }>;
     now?: () => number;
+    /** Test seam for run-scoped binary result files. */
+    storage?: StorageService;
   } = {},
 ) {
   const injectionPrevention = promptInjectionPreventionService(db, { budgetHooks: options.budgetHooks, provider: options.promptInjectionProvider });
+  /**
+   * Saves oversized binary result leaves as files of the session's running
+   * run (PAR-9905). No run, another state or an approved execution: the
+   * result is unchanged and `validateToolContent` withholds as before.
+   */
+  async function spillBinaryResult(session: ToolGatewaySession, result: unknown, approvedAction: boolean, invocationId: string) {
+    const unchanged = { value: result, savedFiles: [] };
+    const scope = binarySpillRunScope(session, approvedAction);
+    if (!scope || !asRecord(result)) return unchanged;
+    const { companyId, agentId, runId } = scope;
+    const candidates = findBinarySpillCandidates(result);
+    if (!candidates.length) return unchanged;
+    const runOfSession = and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId));
+    const [current] = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(runOfSession).limit(1);
+    if (!current || !ACTIVE_GATEWAY_RUN_STATUSES.has(current.status)) return unchanged;
+    const authorize = async (tx: Db) => {
+      const [run] = await tx.select().from(heartbeatRuns).where(runOfSession).for("update");
+      if (!run || !ACTIVE_GATEWAY_RUN_STATUSES.has(run.status)) {
+        throw new ToolGatewayHttpError(403, "Run is not active", "run_inactive");
+      }
+      return { run };
+    };
+    return spillBinaryLeaves(result, candidates, (bytes, contentType) => createRunResponseCapture({
+      db, storage: options.storage, companyId, agentId, runId, issueId: null, source: "tool_gateway", authorize,
+    }).captureOnce(bytes, contentType, bytes.length), error => logger.warn({ err: error, invocationId }, "tool gateway binary result capture failed"));
+  }
+
   function resultClassifier(session: ToolGatewaySession, tool: ToolGatewayDescriptor, toolInvocationId: string | null,
     { approvedAction = false, signal: callerSignal }: { approvedAction?: boolean; signal?: AbortSignal } = {}) {
     // Approved actions retain historical run attribution, not that run's lifetime.
@@ -3063,7 +3121,8 @@ export function createToolGatewayService(
     const hasOnDemandTargets = connectedTools.some(isOnDemandRemoteTool);
     const virtualTools = hasOnDemandTargets ? VIRTUAL_TOOLS : [];
     const githubBotTools = await githubBotToolsForSession(db, session);
-    const tool = [...allTools(), ...connectedTools, ...virtualTools, ...githubBotTools, ...await slackToolsForSession(db, session), ...await spekoToolsForSession(db, session)]
+    const coreTools = allTools();
+    const tool = [...coreTools, ...connectedTools, ...virtualTools, ...githubBotTools, ...await slackToolsForSession(db, session), ...await spekoToolsForSession(db, session)]
       .filter(
         (candidate) =>
           session.agentId ||
@@ -3078,6 +3137,11 @@ export function createToolGatewayService(
         "tool_not_found",
         { tool: toolName },
       );
+    }
+    // Every tool that is not core's own (built-in, plugin, the on-demand search) is a connector tool:
+    // closed for a restricted person's run, checked on every call (4.9 decision 4, AC-M6).
+    if (!coreTools.includes(tool) && !virtualTools.includes(tool)) {
+      await assertConnectorToolOpen({ db }, session, tool.name).catch((error) => { throw gatewayRefusal(error); });
     }
     const guestBotConnection = await githubGuestBotConnectionForSession(db, session);
     if (guestBotConnection && tool.connectionId && (tool.connectionId !== guestBotConnection || tool.providerType !== "paperclip_github_chat"))
@@ -3280,6 +3344,8 @@ export function createToolGatewayService(
 
   /** Shared connection descriptors and task restrictions; no provider calls. */
   async function connectionToolsForContext(session: ToolGatewaySession): Promise<ToolGatewayDescriptor[]> {
+    // None for a run working for a restricted person (PAR-12608 4.9 decision 4); every list reads this.
+    if (await connectorToolsClosedFor({ db }, session).catch((error) => { throw gatewayRefusal(error); })) return [];
     const guestBotConnection = await measureRunPhase("connectors.discovery.github", () => githubGuestBotConnectionForSession(db, session));
     let connectedTools = (await measureRunPhase("connectors.discovery.connections", () => connectedMcpToolsForCompany(session.companyId)))
       .filter(tool => !guestBotConnection || !tool.connectionId || (tool.connectionId === guestBotConnection && tool.providerType === "paperclip_github_chat"));
@@ -4735,6 +4801,31 @@ export function createToolGatewayService(
     });
   }
 
+  /**
+   * The acting person a plugin tool called through this session receives
+   * (PAR-12608 4.10, H3): the run's person, read as `resolveConnectionGrant`
+   * reads it. A failed restriction read refuses the call with 503.
+   */
+  async function pluginActingPersonForSession(session: ToolGatewaySession): Promise<PluginActingPerson> {
+    let personId = session.responsibleUserId ?? null;
+    if (session.runId && !session.identityContextId) {
+      const [run] = await db
+        .select({ responsibleUserId: heartbeatRuns.responsibleUserId })
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.id, session.runId), eq(heartbeatRuns.companyId, session.companyId)))
+        .limit(1);
+      personId = run?.responsibleUserId ?? personId;
+    }
+    try {
+      return await pluginActingPersonForUser(memberRestrictionResolver(db), personId, session.companyId);
+    } catch (error) {
+      if (!isMemberRestrictionUnavailable(error)) throw error;
+      throw new ToolGatewayHttpError(503, error.message, MEMBER_RESTRICTION_UNAVAILABLE_CODE, {
+        code: MEMBER_RESTRICTION_UNAVAILABLE_CODE,
+      });
+    }
+  }
+
   async function resolveConnectionGrant(
     session: ToolGatewaySession,
     connection: typeof toolConnections.$inferSelect,
@@ -5409,6 +5500,39 @@ export function createToolGatewayService(
         reject: (error: Error) => void;
       }
     >();
+    let exited = false;
+    let exitedCode: number | null = null;
+    let exitedSignal: NodeJS.Signals | null = null;
+    const exitedError = (code: number | null, signal: NodeJS.Signals | null) =>
+      new ToolGatewayHttpError(
+        502,
+        "Local stdio MCP command exited before responding",
+        "local_stdio_process_exited",
+        {
+          connectionId: input.connection.id,
+          catalogEntryId: input.entry?.id ?? null,
+          code,
+          signal,
+          stderr,
+        },
+      );
+    guardChildStdin(
+      child,
+      "tool-gateway:stdio-mcp",
+      (error) => {
+        const gatewayError = new ToolGatewayHttpError(
+          502,
+          "Local stdio MCP command stdin failed",
+          "local_stdio_stdin_failed",
+          { connectionId: input.connection.id, message: error.message },
+        );
+        for (const { reject: rejectPending } of pending.values()) {
+          rejectPending(gatewayError);
+        }
+        pending.clear();
+      },
+      { includePipeClosed: true },
+    );
     const timer = setTimeout(() => {
       child.kill("SIGTERM");
       for (const { reject } of pending.values()) {
@@ -5497,25 +5621,15 @@ export function createToolGatewayService(
         reject(gatewayError);
       });
       child.on("exit", (code, signal) => {
+        exited = true;
+        exitedCode = code;
+        exitedSignal = signal;
         if (pending.size === 0) {
           resolve();
           return;
         }
         for (const { reject: rejectPending } of pending.values()) {
-          rejectPending(
-            new ToolGatewayHttpError(
-              502,
-              "Local stdio MCP command exited before responding",
-              "local_stdio_process_exited",
-              {
-                connectionId: input.connection.id,
-                catalogEntryId: input.entry?.id ?? null,
-                code,
-                signal,
-                stderr,
-              },
-            ),
-          );
+          rejectPending(exitedError(code, signal));
         }
         pending.clear();
         resolve();
@@ -5524,9 +5638,11 @@ export function createToolGatewayService(
     const request = (method: string, params: Record<string, unknown>) => {
       const id = nextId;
       nextId += 1;
+      if (exited) return Promise.reject(exitedError(exitedCode, exitedSignal));
       const promise = new Promise<unknown>((resolve, reject) => {
         pending.set(id, { resolve, reject });
       });
+      if (!child.stdin.writable) return promise;
       child.stdin.write(
         `${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`,
       );
@@ -5538,9 +5654,11 @@ export function createToolGatewayService(
         capabilities: {},
         clientInfo: { name: "paperclip-tool-gateway", version: "0.3.1" },
       });
-      child.stdin.write(
-        `${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized", params: {} })}\n`,
-      );
+      if (child.stdin.writable) {
+        child.stdin.write(
+          `${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized", params: {} })}\n`,
+        );
+      }
       return await request(
         input.protocolMethod ?? "tools/call",
         input.protocolParams ?? {
@@ -11263,6 +11381,7 @@ export function createToolGatewayService(
                     runId: session.runId!,
                     companyId: session.companyId,
                     projectId: session.projectId ?? "",
+                    ...await pluginActingPersonForSession(session),
                   },
                 ),
                 executionTimeoutMs,
@@ -11272,8 +11391,9 @@ export function createToolGatewayService(
                 executionTimeoutMs,
               ));
 
+        const spilled = await spillBinaryResult(session, result, Boolean(input.approvedActionRequestId), invocationId);
         const resultValidation = await validateToolContent({
-          value: result,
+          value: spilled.value,
           direction: "result",
           sensitiveMode: "redact",
           promptInjectionMode: "block", classifier: resultClassifier(session, tool, invocationId, { approvedAction: Boolean(input.approvedActionRequestId), signal: input.signal }),
@@ -11383,7 +11503,9 @@ export function createToolGatewayService(
           status: "completed" as const,
           tool: virtualToolName ?? tool.name,
           targetTool: virtualToolName ? tool.name : undefined,
-          result: resultValidation.value,
+          result: spilled.savedFiles.length
+            ? { ...asRecord(resultValidation.value), savedFiles: spilled.savedFiles }
+            : resultValidation.value,
         };
       } catch (err) {
         const normalizedError =
@@ -11394,7 +11516,7 @@ export function createToolGatewayService(
                 err.reasonCode,
                 err.details,
               )
-            : err;
+            : gatewayRefusal(err);
         const status =
           normalizedError instanceof ToolGatewayHttpError
             ? normalizedError.status
@@ -11738,7 +11860,8 @@ export function createToolGatewayService(
         // execution report both outcomes.
         void emitConnectionInvoked(db, invocationId);
         return resultValidation.value as typeof result;
-      } catch (err) {
+      } catch (caught) {
+        const err = gatewayRefusal(caught);
         const status = err instanceof ToolGatewayHttpError ? err.status : 502;
         const reasonCode =
           err instanceof ToolContentValidationError

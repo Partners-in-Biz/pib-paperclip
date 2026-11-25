@@ -438,12 +438,26 @@ function record(value: unknown): Record<string, unknown> {
 
 function wakeAttachmentSelections(value: unknown): Array<{
   readonly id: string;
-  readonly commentId: string;
+  readonly commentId: string | null;
 }> {
   const wake = record(record(value).paperclipWake);
   const comments = Array.isArray(wake.comments) ? wake.comments : [];
-  const selected: Array<{ id: string; commentId: string }> = [];
+  const selected: Array<{ id: string; commentId: string | null }> = [];
   const seen = new Set<string>();
+  const issue = record(wake.issue);
+  const issueAttachmentsList = Array.isArray(issue.attachments) ? issue.attachments : [];
+  for (const attachmentCandidate of issueAttachmentsList) {
+    const attachment = record(attachmentCandidate);
+    if (
+      typeof attachment.id !== "string" ||
+      !/^[0-9a-f-]{36}$/iu.test(attachment.id) ||
+      seen.has(attachment.id)
+    ) {
+      continue;
+    }
+    seen.add(attachment.id);
+    selected.push({ id: attachment.id, commentId: null });
+  }
   for (const candidate of comments) {
     const comment = record(candidate);
     if (typeof comment.id !== "string" || !Array.isArray(comment.attachments)) {

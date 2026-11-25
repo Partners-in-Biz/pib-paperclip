@@ -27,9 +27,12 @@ import {
   groupKpis,
   healthGroups,
   hostWaiting,
+  activeAgentIdsOf,
   mergeWaiting,
+  othersData,
   setupMissingCount,
   shownIssueIds,
+  splitOwnerWaiting,
   staleChecks,
   todayLine,
   unassignedWaiting,
@@ -37,11 +40,15 @@ import {
   type AgentLite,
   type ApprovalLite,
   type CockpitSnapshot,
+  type WaitingItem,
   type IssueLite,
   type RunStat,
   type WaitingEntry,
 } from "./merge.js";
 import { ownSnapshot } from "./own.js";
+import { withTriggerIfUnset } from "./run-trigger.js";
+import { ownerFilter, type OwnerFilterResult } from "./owner-filter.js";
+import type { DecisionRights } from "./decision-rights-model.js";
 import { currentRoles } from "./roles.js";
 import { TOOL_NAMES } from "./tools.js";
 import { mondayLabel, weekKey } from "./week.js";
@@ -71,15 +78,26 @@ export async function listApprovals(ctx: PluginContext, companyId: string): Prom
 }
 
 /** Statuses that mean the work is over: nothing waits on the owner any more. */
-const CLOSED_ISSUE = new Set(["done", "cancelled"]);
+const CLOSED_ISSUE = new Set(["done", "cancelled", "hidden"]);
 
 /** `<prefix>:(review|task):<id>`, e.g. `seo:needs-you:<sprintId>:review:<taskId>`, `social:review:<postId>`. Prefix keeps sprints apart. */
 const REVIEW_OR_TASK_KEY = /^(.*):(review|task):([^:]+)$/;
 
+function dedupeId(w: WaitingItem): string {
+  return `${w.kind}|${w.title.trim().replace(/\s+/g, " ").toLowerCase()}`;
+}
+
+function sinceTime(w: WaitingItem): number {
+  const t = w.since ? Date.parse(w.since) : Number.NaN;
+  return Number.isNaN(t) ? 0 : t;
+}
+
 /**
  * Plugins list their own waiting rows and can leave stale ones behind. Drop a row whose linked issue is done,
- * cancelled or gone (`statuses` has no entry), and a `<prefix>:task:<id>` row when the same sign-off already shows as `<prefix>:review:<id>`.
- * `statuses` is null when the lookup failed: then only the duplicate rule runs (never hide a row on a failed read).
+ * cancelled, hidden or gone (`statuses` has no entry), and a `<prefix>:task:<id>` row when the same sign-off already shows as `<prefix>:review:<id>`.
+ * Then, among the rows left, a sign-off (`…:review:<id>` / `…:task:<id>` key) repeated under the same kind and title is listed once, newest kept.
+ * Other rows (e.g. two quote approvals of the same size) are never merged by title.
+ * `statuses` is null when the lookup failed: then only the duplicate rules run (never hide a row on a failed read).
  */
 export function pruneStaleWaiting(snapshots: CockpitSnapshot[], statuses: Map<string, string> | null): CockpitSnapshot[] {
   return snapshots.map((snapshot) => {
@@ -88,7 +106,8 @@ export function pruneStaleWaiting(snapshots: CockpitSnapshot[], statuses: Map<st
       const m = REVIEW_OR_TASK_KEY.exec(w.key);
       if (m && m[2] === "review") reviewKeys.add(`${m[1]}|${m[3]}`);
     }
-    const waiting = snapshot.waiting.filter((w) => {
+    // Stale first, so a closed newer row cannot hide a still-open older one.
+    const live = snapshot.waiting.filter((w) => {
       const m = REVIEW_OR_TASK_KEY.exec(w.key);
       if (m && m[2] === "task" && reviewKeys.has(`${m[1]}|${m[3]}`)) return false;
       if (statuses && w.issueId) {
@@ -97,6 +116,14 @@ export function pruneStaleWaiting(snapshots: CockpitSnapshot[], statuses: Map<st
       }
       return true;
     });
+    const newest = new Map<string, WaitingItem>();
+    for (const w of live) {
+      if (!REVIEW_OR_TASK_KEY.test(w.key)) continue;
+      const id = dedupeId(w);
+      const cur = newest.get(id);
+      if (!cur || sinceTime(w) > sinceTime(cur)) newest.set(id, w);
+    }
+    const waiting = live.filter((w) => !REVIEW_OR_TASK_KEY.test(w.key) || newest.get(dedupeId(w)) === w);
     return waiting.length === snapshot.waiting.length ? snapshot : { ...snapshot, waiting };
   });
 }
@@ -105,7 +132,7 @@ export async function issueStatuses(ctx: PluginContext, companyId: string, ids: 
   const out = new Map<string, string>();
   if (!ids.length) return out;
   // The ids go as one JSON value: the host binds each array element as its own parameter, so an array cannot be cast to text[].
-  const rows = await ctx.db.query<Record<string, unknown>>(`SELECT id, status FROM public.issues WHERE company_id = $1 AND id::text IN (SELECT jsonb_array_elements_text($2::jsonb))`, [companyId, JSON.stringify(ids)]);
+  const rows = await ctx.db.query<Record<string, unknown>>(`SELECT id, CASE WHEN hidden_at IS NOT NULL THEN 'hidden' ELSE status END AS status FROM public.issues WHERE company_id = $1 AND id::text IN (SELECT jsonb_array_elements_text($2::jsonb))`, [companyId, JSON.stringify(ids)]);
   for (const row of rows) out.set(String(row.id), String(row.status ?? ""));
   return out;
 }
@@ -124,7 +151,7 @@ export async function listUserIssues(ctx: PluginContext, companyId: string, user
   try {
     while (offset < OWNER_ISSUE_CEILING) {
       const rows = await ctx.db.query<Record<string, unknown>>(
-        `SELECT id, identifier, title, status, priority, updated_at, created_at, count(*) OVER () AS total FROM public.issues
+        `SELECT id, identifier, title, status, priority, origin_kind, updated_at, created_at, count(*) OVER () AS total FROM public.issues
           WHERE company_id = $1 AND assignee_user_id = $2 AND hidden_at IS NULL AND status IN ('todo', 'in_progress', 'in_review', 'blocked')
             AND origin_kind IS DISTINCT FROM '${ORIGIN.digest}'
           ORDER BY updated_at DESC, id LIMIT $3 OFFSET $4`,
@@ -143,6 +170,7 @@ export async function listUserIssues(ctx: PluginContext, companyId: string, user
           title: String(row.title ?? ""),
           status: String(row.status ?? ""),
           priority: row.priority == null ? null : String(row.priority),
+          originKind: row.origin_kind == null ? null : String(row.origin_kind),
           updatedAt: iso(row.updated_at),
           createdAt: iso(row.created_at),
         });
@@ -171,16 +199,17 @@ export interface UnassignedIssue {
  * ago: the count and the first 50 (most urgent, then oldest). The page and the
  * brief leave out the ones listed on their own row and show five.
  */
-export async function listUnassigned(ctx: PluginContext, companyId: string): Promise<{ count: number; items: UnassignedIssue[] }> {
+export async function listUnassigned(ctx: PluginContext, companyId: string, excludeIds: string[] = []): Promise<{ count: number; items: UnassignedIssue[] }> {
   const where = `company_id = $1 AND assignee_agent_id IS NULL AND assignee_user_id IS NULL AND hidden_at IS NULL
-        AND status IN ('todo', 'in_progress', 'in_review', 'blocked') AND created_at < now() - interval '1 day'`;
+        AND status IN ('todo', 'in_progress', 'in_review', 'blocked') AND created_at < now() - interval '1 day'
+        AND NOT (id = ANY(ARRAY(SELECT jsonb_array_elements_text($2::jsonb))::uuid[]))`;
   try {
     const [count, rows] = await Promise.all([
-      ctx.db.query<{ n: string }>(`SELECT count(*)::text AS n FROM public.issues WHERE ${where}`, [companyId]),
+      ctx.db.query<{ n: string }>(`SELECT count(*)::text AS n FROM public.issues WHERE ${where}`, [companyId, JSON.stringify(excludeIds)]),
       ctx.db.query<Record<string, unknown>>(
         `SELECT id, identifier, title, status, priority, created_at FROM public.issues WHERE ${where}
           ORDER BY CASE priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, created_at LIMIT 50`,
-        [companyId],
+        [companyId, JSON.stringify(excludeIds)],
       ),
     ]);
     return {
@@ -278,6 +307,11 @@ export interface CompanyData {
   asks: AskView[];
   /** Open issues nobody is assigned to (older than a day). */
   unassigned: { count: number; items: UnassignedIssue[] };
+  /** Open issues that never belong on the owner's list (containers, standing queue, canary); see owner-filter.ts. */
+  hiddenIssueIds?: string[];
+  /** The Finish setup row is tracked in the standing queue (owner-filter.ts). */
+  setupRouted?: boolean;
+  ownerRights?: DecisionRights;
   /** Repair rows for escalation tracking. */
   repairs: RepairRow[];
 }
@@ -285,20 +319,24 @@ export interface CompanyData {
 /** Each read gets a time limit through `budget`; one that hangs gives its empty value and is named in the budget's `degraded` list. */
 export async function loadCompanyData(env: Env, companyId: string, days = 7, windowHours = days * 24, budget: BriefBudget = newBudget(env)): Promise<CompanyData> {
   const { guard } = budget;
+  // Started first: the unassigned count leaves out the hidden issues, so it waits on this one query only.
+  const hiddenRead = guard("ownerFilter", () => ownerFilter(env, companyId), { hiddenIssueIds: [], setupRouted: false, degraded: [] } as OwnerFilterResult);
   const [stored, own, agents, runStats, approvals, statuses, asks, unassigned, repairs, setup, roles] = await Promise.all([
     guard("snapshots", () => storedSnapshots(env, companyId), []),
     // The Cockpit's own checks (jobs, routines, watch, memory) read the most: when they hang, the other plugins' snapshots still answer.
-    guard("ownChecks", () => ownSnapshot(env, companyId), { ...emptySnapshot(PLUGIN_KEY, "Cockpit"), checkedAt: env.now().toISOString() }),
+    guard("ownChecks", () => withTriggerIfUnset("brief", () => ownSnapshot(env, companyId)), { ...emptySnapshot(PLUGIN_KEY, "Cockpit"), checkedAt: env.now().toISOString() }),
     guard("agents", () => listAgents(env, companyId), []),
     guard("runs", () => listRuns(env.ctx, companyId, { now: env.now(), days: Math.max(days, 7), windowHours }), []),
     guard("approvals", () => listApprovals(env.ctx, companyId), []),
     guard("setup", () => setupStatuses(env, companyId), {} as Record<string, SetupStatus>),
     guard("asks", () => openAskViews(env, companyId), [] as AskView[]),
-    guard("unassigned", () => listUnassigned(env.ctx, companyId), { count: 0, items: [] }),
+    guard("unassigned", async () => listUnassigned(env.ctx, companyId, (await hiddenRead).hiddenIssueIds), { count: 0, items: [] }),
     guard("askRepairs", () => listRepairs(env.ctx, companyId, { kind: "ask_deadline", limit: 500 }), [] as RepairRow[]),
     guard("setupSummary", () => readSetupSummaryThrows(env, companyId), null),
     guard("ownerRoles", () => getRoles(env.ctx, companyId), null),
   ]);
+  const hidden = await hiddenRead;
+  for (const name of hidden.degraded) if (!budget.degraded.includes(name)) budget.degraded.push(name);
   // ownerIssues depends on roles, so fetch it after roles are available
   const ownerList = await guard("ownerIssues", () => listUserIssues(env.ctx, companyId, roles?.ownerUserId ?? null), { items: [], total: 0, more: false });
   const holds = await guard("holdsUp", () => readHoldsUp(env.ctx, companyId, ownerList.items.map((i) => i.id)), new Map<string, number>());
@@ -315,7 +353,7 @@ export async function loadCompanyData(env: Env, companyId: string, days = 7, win
     ? null
     : setup ? setup.requiredLeft : setupMissingCount(Object.fromEntries(Object.entries(statuses).filter(([key]) => enabled[key])), null);
   return {
-    snapshots: [...pruneStaleWaiting(stored.map((s) => s.snapshot), waitingIssueStatuses), own],
+    snapshots: pruneStaleWaiting([...stored.map((s) => s.snapshot), own], waitingIssueStatuses),
     receivedAt: Object.fromEntries(stored.map((s) => [s.snapshot.plugin, s.receivedAt])),
     agents,
     runStats,
@@ -330,11 +368,21 @@ export async function loadCompanyData(env: Env, companyId: string, days = 7, win
     asks,
     unassigned,
     repairs,
+    hiddenIssueIds: hidden.hiddenIssueIds,
+    setupRouted: hidden.setupRouted,
+    ownerRights: hidden.rights,
   };
 }
 
 /** Everything waiting: questions for the owner first, then each plugin's items, unassigned work and the host's approvals and issues; each issue once. */
-export function waitingFrom(data: Pick<CompanyData, "snapshots" | "approvals" | "ownerIssues" | "setupMissing"> & Partial<Pick<CompanyData, "asks" | "unassigned" | "setupIssueId" | "repairs">>): WaitingEntry[] {
+export function waitingFrom(data: WaitingData, now: Date = new Date()): WaitingEntry[] {
+  return waitingSplit(data, now).owner;
+}
+
+type WaitingData = Pick<CompanyData, "snapshots" | "approvals" | "ownerIssues" | "setupMissing"> & Partial<Pick<CompanyData, "asks" | "unassigned" | "setupIssueId" | "repairs" | "agents" | "hiddenIssueIds" | "setupRouted" | "ownerRights">>;
+
+/** The one owner-list rule: what waits on the owner, and what waits on others (a seat that can act, or the client). */
+export function waitingSplit(data: WaitingData, now: Date = new Date()): { owner: WaitingEntry[]; others: WaitingEntry[] } {
   // Build a map of ask id -> escalation time for asks with escalate_ask repairs
   const escalatedAsks = new Map<string, string>();
   for (const repair of data.repairs ?? []) {
@@ -348,7 +396,8 @@ export function waitingFrom(data: Pick<CompanyData, "snapshots" | "approvals" | 
     ...data.snapshots.map((snapshot) => ({ source: snapshot.plugin, sourceTitle: snapshot.title, items: snapshot.waiting })),
   ];
   const host = { source: "host", sourceTitle: "Paperclip", items: hostWaiting({ approvals: data.approvals, myIssues: data.ownerIssues, setupMissing: data.setupMissing, setupIssueId: data.setupIssueId }) };
-  return mergeWaiting([...own, { source: "unassigned", sourceTitle: "Paperclip", items: unassignedWaiting(data.unassigned, shownIssueIds([...own, host])) }, host]);
+  const merged = mergeWaiting([...own, { source: "unassigned", sourceTitle: "Paperclip", items: unassignedWaiting(data.unassigned, shownIssueIds([...own, host])) }, host]);
+  return splitOwnerWaiting(merged, { activeAgentIds: activeAgentIdsOf(data.agents ?? []), hiddenIssueIds: data.hiddenIssueIds ?? [], setupRouted: data.setupRouted ?? false, rights: data.ownerRights }, now);
 }
 
 // ---------------------------------------------------------------------------
@@ -488,7 +537,9 @@ export async function companyBrief(env: Env, companyId: string, options: { windo
     : staleChecks({ expected, lastSnapshot: Object.fromEntries(data.snapshots.map((s) => [s.plugin, s.checkedAt])), now, listeningSince: data.listeningSince });
   const groups = healthGroups(data.snapshots, stale);
   // Tier A info cards need no action: keep them out of the owner's waiting count and brief.
-  const waiting = waitingFrom(data).filter((w) => !w.key.startsWith("outward-send:"));
+  const split = waitingSplit(data, now);
+  const waiting = split.owner.filter((w) => !w.key.startsWith("outward-send:"));
+  const others = split.others.filter((w) => !w.key.startsWith("outward-send:"));
   const agents = agentRows(data.agents, { stats: data.runStats, snapshots: data.snapshots, since: new Date(now.getTime() - 7 * 86_400_000) });
   const activity = activityGroups({ snapshots: data.snapshots, stats: data.runStats, agents: data.agents, now, windowMs: windowHours * 3_600_000, perGroup: 6 });
   const kpis = groupKpis(data.snapshots);
@@ -523,6 +574,8 @@ export async function companyBrief(env: Env, companyId: string, options: { windo
       ...(w.ask ? { question: { askKind: w.ask.kind, options: w.ask.options, askedBy: w.ask.askedBy, dueBy: w.ask.dueBy } } : {}),
       ...(w.examples ? { examples: w.examples.map((e) => ({ title: e.title, href: link(e.href), since: e.since ?? null })) } : {}),
     })),
+    /** Items that wait on another seat or the client, not the owner (a seat that can act now; back to the owner after 7 days). */
+    others: othersData(others, link),
     /** Owner issues counted, and whether some are not shown (list stops at the ceiling). */
     ownerIssues: { total: data.ownerIssuesTotal ?? data.ownerIssues.length, moreNotShown: data.ownerIssuesMore ?? false },
     /** Questions agents asked the owner, oldest first: answered on the issue, they go back to the agent. */
@@ -719,7 +772,8 @@ export async function runTool(env: Env, name: string, raw: unknown, run: ToolRun
         const degradedText = brief.degraded.length > 0 ? ` Waiting list incomplete: ${brief.degraded.join(", ")} unavailable (timed out).` : "";
         summary = `${brief.waiting.length} ${brief.waiting.length === 1 ? "item waits" : "items wait"} on the owner.${degradedText}`;
       }
-      return toolOk(summary, { items: brief.waiting, count: brief.waiting.length, degraded: brief.degraded });
+      if (brief.others.count > 0) summary += ` ${brief.others.count} wait on others${brief.others.escalated > 0 ? `, ${brief.others.escalated} escalated to PiB` : ""}.`;
+      return toolOk(summary, { items: brief.waiting, count: brief.waiting.length, others: brief.others, degraded: brief.degraded });
     }
     if (name === TOOL_NAMES.scorecards) {
       const brief = await companyBrief(env, companyId, { windowHours: 168 });

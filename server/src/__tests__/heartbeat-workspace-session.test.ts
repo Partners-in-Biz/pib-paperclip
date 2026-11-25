@@ -54,6 +54,7 @@ import {
   selectPersistedEarlyCheckpoint,
 } from "../services/heartbeat.ts";
 import { stripHostWorkspaceProvision } from "../services/heartbeat/workspaces.js";
+import { isCanonicalSessionIdForAdapter } from "../services/heartbeat/run-state.js";
 import type { TrustPresetResolution } from "../services/trust-preset-resolver.ts";
 
 const execFile = promisify(execFileCallback);
@@ -448,6 +449,69 @@ describe("assertGitSensitiveAdapterWorkspaceValid", () => {
           cwd,
         },
       }),
+      "missing_git_metadata",
+      "has no .git metadata",
+    );
+  });
+
+  // PAR-12160: an agent_default issue in a git_repo project with no cwd keeps
+  // the project's default projectWorkspaceId, but runs in its own empty task
+  // directory (persisted as adapter_managed). That must not need a checkout.
+  function buildAgentDefaultTaskDirectoryInput(
+    overrides: Partial<WorkspaceValidationInput> = {},
+  ): WorkspaceValidationInput {
+    const input = buildWorkspaceValidationInput({ adapterType: "hermes_local" });
+    const cwd = "/tmp/paperclip-instance/isolated-workspaces/company-1/issue-1";
+    return {
+      ...input,
+      resolvedWorkspace: buildResolvedWorkspace({
+        cwd,
+        source: "task_session",
+        projectId: null,
+        workspaceId: null,
+      }),
+      executionWorkspace: {
+        ...input.executionWorkspace,
+        baseCwd: cwd,
+        source: "task_session",
+        projectId: null,
+        workspaceId: null,
+        cwd,
+      },
+      persistedExecutionWorkspace: {
+        ...input.persistedExecutionWorkspace!,
+        mode: "adapter_managed",
+        cwd,
+      },
+      ...overrides,
+    };
+  }
+
+  it("accepts an agent_default task directory without git metadata when the issue keeps a project workspace id", async () => {
+    await expect(
+      assertGitSensitiveAdapterWorkspaceValid(buildAgentDefaultTaskDirectoryInput()),
+    ).resolves.toBeUndefined();
+  });
+
+  it("still requires git metadata when an adapter_managed run resolved the project workspace", async () => {
+    const input = buildAgentDefaultTaskDirectoryInput();
+    await expectWorkspaceValidationFailure(
+      {
+        ...input,
+        resolvedWorkspace: { ...input.resolvedWorkspace, workspaceId: "workspace-1" },
+      },
+      "missing_git_metadata",
+      "has no .git metadata",
+    );
+  });
+
+  it("still requires git metadata for a git_worktree execution workspace in adapter_managed mode", async () => {
+    const input = buildAgentDefaultTaskDirectoryInput();
+    await expectWorkspaceValidationFailure(
+      {
+        ...input,
+        executionWorkspace: { ...input.executionWorkspace, strategy: "git_worktree" },
+      },
       "missing_git_metadata",
       "has no .git metadata",
     );
@@ -3257,6 +3321,42 @@ describe("buildExplicitResumeSessionOverride", () => {
 });
 
 describe("resolveNextSessionState", () => {
+  // PAR-13537: gateway-backed Hermes prints `local-<sha256 hex>` ids. They were
+  // rejected as non-canonical, so session_id_after stayed NULL on ~98% of runs.
+  const gatewayHermesSessionId = `local-${"8f41a419".repeat(8)}`;
+
+  it("persists a gateway-backed Hermes local- session id after a successful run", () => {
+    const result = resolveNextSessionState({
+      adapterType: "hermes_local",
+      codec: truncatingHermesSessionCodec,
+      adapterResult: {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        sessionParams: { sessionId: gatewayHermesSessionId },
+        sessionDisplayId: gatewayHermesSessionId.slice(0, 16),
+      },
+      outcome: "succeeded",
+      previousParams: null,
+      previousDisplayId: null,
+      previousLegacySessionId: null,
+    });
+
+    expect(result.params).toEqual({ sessionId: gatewayHermesSessionId });
+    expect(result.legacySessionId).toBe(gatewayHermesSessionId);
+    expect(
+      buildEarlySessionCheckpoint({
+        enabled: true,
+        adapterType: "hermes_local",
+        sessionId: gatewayHermesSessionId,
+        cwd: null,
+        configuredModel: null,
+        sessionConfigMetadata: null,
+      })?.params,
+    ).toEqual({ sessionId: gatewayHermesSessionId });
+    expect(isCanonicalSessionIdForAdapter("hermes_local", "local-not-hex")).toBe(false);
+  });
+
   it("preserves previous valid Hermes session state when failed adapter output reports prose tokens", () => {
     const result = resolveNextSessionState({
       adapterType: "hermes_local",

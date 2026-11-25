@@ -27,7 +27,8 @@ export type RemoteRun = (
 
 const QUERY_MARK = "PCQ:";
 const SESSION_MARK = "PCSESS:";
-const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{5,63}$/;
+// Same shape as session-metering.ts: gateway ids are `local-<sha256 hex>` (70 chars).
+const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{5,127}$/;
 
 /** Create a private dir on the remote host and write the prompt into it. */
 const STAGE_SCRIPT = [

@@ -1,3 +1,7 @@
+import { stampWakeCausingActor, wakeCausingActorFromStoredWake } from "./causing-actor.js";
+import {
+  MEMBER_AGENT_NOT_LISTED_MESSAGE, MEMBER_RESTRICTED_AGENT_NOT_LISTED, MemberAgentNotListedError, runPersonMayUseAgent,
+} from "./member-agent-list.js";
 import { CONTEXT_COMPACTION_WAKE_REASON, ContextCompactionError, isContextCompactionRun, readContextCompactionRequest } from "../context-compaction.js";
 import { deliveredQueuedCommentIds } from "../queued-comment-delivery.js";
 import { deferredWorkIntentWait } from "../work-intent-outbox.js";
@@ -90,10 +94,14 @@ import {
   isNull,
   lte,
   ne,
+  not,
   notInArray,
   or,
   sql,
 } from "drizzle-orm";
+import {
+  escalateStuckOwnerExitWait, isEscalatedOwnerExitWait, ownerExitEscalatedSql, ownerExitRetryExhausted,
+} from "./owner-exit-retry.js";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -284,11 +292,18 @@ export class ChatControlRecoveryUnresolvedError extends Error {
   }
 }
 
+// A plugin done-check (close-out checklist gate) reopened the issue the
+// running turn just closed. That turn has finished with the issue, so merging
+// the wake into it loses it (PAR-11130). Plugins send this through
+// `issues.requestWakeup`; the kit's `DONE_CHECK_REOPEN_WAKE_REASON` matches.
+export const ISSUE_REOPENED_BY_GATE_WAKE_REASON = "issue_reopened_by_gate";
+
 const RUNNING_ISSUE_WAKE_REASONS_REQUIRING_FOLLOWUP = new Set([
   CHAT_COMPLETION_WAKE_REASON,
   "approval_approved",
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
   "issue_recovery_action_restored",
+  ISSUE_REOPENED_BY_GATE_WAKE_REASON,
 ]);
 
 
@@ -383,6 +398,77 @@ const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON = "execution_review_part
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+/**
+ * A queued run older than this claims ahead of every younger runnable run,
+ * oldest first. Without it, retries and re-wakes on `in_progress` issues
+ * (rank 0) take a one-slot agent's slot every time it frees, and older runs
+ * on `todo` issues or with no issue never start (PAR-13973).
+ */
+export const QUEUED_RUN_STARVATION_AGE_MS = 15 * 60 * 1000;
+
+function issueRunPriorityRank(priority: string | null | undefined) {
+  switch (priority) {
+    case "critical":
+      return 0;
+    case "high":
+      return 1;
+    case "medium":
+      return 2;
+    case "low":
+      return 3;
+    default:
+      return 4;
+  }
+}
+
+/**
+ * Claim order for an agent's queued runs. Runs whose issue dependencies are
+ * not ready always go last. Among the rest, runs waiting at least
+ * QUEUED_RUN_STARVATION_AGE_MS go first in createdAt order; younger runs then
+ * follow by rank (in_progress issue, other issue, no issue), issue priority
+ * and createdAt.
+ */
+export function prioritizeQueuedRunsForClaim<
+  T extends { createdAt: Date; contextSnapshot: unknown },
+>(
+  queuedRuns: readonly T[],
+  input: {
+    issueById: ReadonlyMap<string, { status: string; priority: string | null }>;
+    dependencyReadiness: ReadonlyMap<string, { isDependencyReady: boolean }>;
+    now: Date;
+  },
+): T[] {
+  const keyed = queuedRuns.map((run) => {
+    const issueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+    const ready = issueId
+      ? (input.dependencyReadiness.get(issueId)?.isDependencyReady ?? true)
+      : true;
+    const issue = issueId ? input.issueById.get(issueId) : undefined;
+    const rank = issueId
+      ? ready
+        ? issue?.status === "in_progress"
+          ? 0
+          : 1
+        : 3
+      : 2;
+    const createdAtMs = run.createdAt.getTime();
+    const aged = ready && input.now.getTime() - createdAtMs >= QUEUED_RUN_STARVATION_AGE_MS;
+    return { run, rank, aged, priorityRank: issueRunPriorityRank(issue?.priority), createdAtMs };
+  });
+  keyed.sort((left, right) => {
+    const leftBlocked = left.rank === 3;
+    const rightBlocked = right.rank === 3;
+    if (leftBlocked !== rightBlocked) return leftBlocked ? 1 : -1;
+    if (left.aged !== right.aged) return left.aged ? -1 : 1;
+    if (!left.aged) {
+      if (left.rank !== right.rank) return left.rank - right.rank;
+      if (left.priorityRank !== right.priorityRank) return left.priorityRank - right.priorityRank;
+    }
+    return left.createdAtMs - right.createdAtMs;
+  });
+  return keyed.map((entry) => entry.run);
 }
 
 export async function claimDueTimerHeartbeatForAgent(
@@ -531,21 +617,6 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
 
   const claimDueTimerHeartbeat = (agent: typeof agents.$inferSelect, now: Date, intervalSec: number) =>
     claimDueTimerHeartbeatForAgent(db, agent, now, intervalSec);
-
-  function issueRunPriorityRank(priority: string | null | undefined) {
-    switch (priority) {
-      case "critical":
-        return 0;
-      case "high":
-        return 1;
-      case "medium":
-        return 2;
-      case "low":
-        return 3;
-      default:
-        return 4;
-    }
-  }
 
   async function listQueuedRunDependencyReadiness(
     companyId: string,
@@ -837,6 +908,40 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     }
   }
 
+  /**
+   * Invariant A at claim (PAR-12608 4.7): a run queued before its person was
+   * flagged, or before the agent left his list, is cancelled. A failed read
+   * leaves it queued and unstarted (never "not restricted").
+   */
+  async function runMayStartForItsPerson(
+    run: typeof heartbeatRuns.$inferSelect,
+    deferredPostCommitEffects?: WakeQueuePostCommitEffect[],
+  ) {
+    let allowed: boolean;
+    try {
+      allowed = await runPersonMayUseAgent(db, {
+        companyId: run.companyId, agentId: run.agentId, personId: run.responsibleUserId, target: "heartbeat.run_claim",
+      });
+    } catch (error) {
+      logger.warn({ err: error, runId: run.id }, "member restriction unreadable at claim; run left queued");
+      return false;
+    }
+    if (allowed) return true;
+    // Under the agent start lock: cancel directly, as the mention check above.
+    const now = new Date();
+    const cancelled = await setRunStatus(run.id, "cancelled", {
+      finishedAt: now, error: MEMBER_AGENT_NOT_LISTED_MESSAGE, errorCode: MEMBER_RESTRICTED_AGENT_NOT_LISTED,
+    });
+    if (cancelled) {
+      await setWakeupStatus(run.wakeupRequestId, "skipped", { finishedAt: now, error: MEMBER_AGENT_NOT_LISTED_MESSAGE });
+      await appendRunEvent(cancelled, {
+        eventType: "lifecycle", stream: "system", level: "warn", message: MEMBER_AGENT_NOT_LISTED_MESSAGE,
+      });
+      await releaseIssueExecutionAndPromote(cancelled, { suppressImmediateRecovery: true, deferredPostCommitEffects });
+    }
+    return false;
+  }
+
   async function claimQueuedRun(
     run: typeof heartbeatRuns.$inferSelect,
     companyAgents?: AgentOrgRow[],
@@ -930,6 +1035,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       return null;
     }
     if (!run.startedAt && !await canStartNewExternalBotWork(agent)) return null;
+    if (!(await runMayStartForItsPerson(run, deferredPostCommitEffects))) return null;
 
     const context = parseObject(run.contextSnapshot);
     const budgetBlock = await budgets.getInvocationBlock(
@@ -2029,6 +2135,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         eq(agentWakeupRequests.reason, "execution_reconciliation_required"),
         sql`${agentWakeupRequests.payload} #> '{executionWait,ownerExit}' is not null`,
         sql`${agentWakeupRequests.payload} #> '{executionWait,redeliveredAt}' is null`,
+        // An escalated receipt replays only on its own release hint.
+        scope.requestId ? undefined : not(ownerExitEscalatedSql),
         gte(agentWakeupRequests.createdAt, since),
         inArray(issues.status, ["todo", "in_progress", "in_review"]),
         isNull(issues.assigneeUserId),
@@ -2056,8 +2164,18 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${issueId}`,
         gt(heartbeatRuns.createdAt, wake.createdAt))).limit(1);
       if (later) { seen.add(key); await markRedelivered(wake.id, "already_ran"); continue; }
-      // Still exiting: leave the receipt for the next pass.
-      if (await getExecutionBlocker(db, wake.companyId, issueId)) continue;
+      // Still exiting: leave the receipt for the next timed re-check. A lease
+      // still held past the cap is escalated once and leaves timed retries
+      // (PAR-14473); its release hint can still replay it.
+      const blocker = await getExecutionBlocker(db, wake.companyId, issueId);
+      if (blocker) {
+        if (blocker.cause === OWNER_EXIT_BLOCKER_CAUSE && !isEscalatedOwnerExitWait(wake.payload)
+            && ownerExitRetryExhausted(wake.createdAt)) {
+          await escalateStuckOwnerExitWait(db, { wakeId: wake.id, companyId: wake.companyId, issueId,
+            agentId: wake.agentId, blockingRunId: blocker.runId ?? null, nextAction: blocker.nextAction });
+        }
+        continue;
+      }
       seen.add(key);
       const payload = { ...parseObject(wake.payload) };
       const wait = parseObject(payload.executionWait);
@@ -2079,6 +2197,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       const actorType = (["user", "agent", "system"] as const)
         .find(t => t === wake.requestedByActorType) ?? "system";
       await enqueueWakeup(wake.agentId, {
+        causingActor: wakeCausingActorFromStoredWake(wake, context),
         source, triggerDetail,
         reason: readNonEmptyString(ownerExit.reason) ?? null,
         payload,
@@ -2189,6 +2308,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       const context = parseObject(parseObject(wake.payload)[DEFERRED_WAKE_CONTEXT_KEY]);
       const { executionWait: _wait, [DEFERRED_WAKE_CONTEXT_KEY]: _context, ...payload } = parseObject(wake.payload);
       await enqueueWakeup(wake.agentId, {
+        causingActor: wakeCausingActorFromStoredWake(wake, context),
         source: wake.source as WakeupOptions["source"], triggerDetail: wake.triggerDetail as WakeupOptions["triggerDetail"],
         reason: wake.reason ?? undefined, payload, contextSnapshot: context,
         requestedByActorType: wake.requestedByActorType as WakeupOptions["requestedByActorType"],
@@ -2482,47 +2602,10 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         );
       const issueById = new Map(issueRows.map((row) => [row.id, row]));
       const companyAgents = await listCompanyAgentOrgRows(agent.companyId);
-      const prioritizedRuns = [...queuedRuns].sort((left, right) => {
-        const leftIssueId = readNonEmptyString(
-          parseObject(left.contextSnapshot).issueId,
-        );
-        const rightIssueId = readNonEmptyString(
-          parseObject(right.contextSnapshot).issueId,
-        );
-        const leftReadiness = leftIssueId
-          ? dependencyReadiness.get(leftIssueId)
-          : null;
-        const rightReadiness = rightIssueId
-          ? dependencyReadiness.get(rightIssueId)
-          : null;
-        const leftReady = leftIssueId
-          ? (leftReadiness?.isDependencyReady ?? true)
-          : true;
-        const rightReady = rightIssueId
-          ? (rightReadiness?.isDependencyReady ?? true)
-          : true;
-        const leftIssue = leftIssueId ? issueById.get(leftIssueId) : null;
-        const rightIssue = rightIssueId ? issueById.get(rightIssueId) : null;
-        const leftRank = leftIssueId
-          ? leftReady
-            ? leftIssue?.status === "in_progress"
-              ? 0
-              : 1
-            : 3
-          : 2;
-        const rightRank = rightIssueId
-          ? rightReady
-            ? rightIssue?.status === "in_progress"
-              ? 0
-              : 1
-            : 3
-          : 2;
-        if (leftRank !== rightRank) return leftRank - rightRank;
-        const leftPriorityRank = issueRunPriorityRank(leftIssue?.priority);
-        const rightPriorityRank = issueRunPriorityRank(rightIssue?.priority);
-        if (leftPriorityRank !== rightPriorityRank)
-          return leftPriorityRank - rightPriorityRank;
-        return left.createdAt.getTime() - right.createdAt.getTime();
+      const prioritizedRuns = prioritizeQueuedRunsForClaim(queuedRuns, {
+        issueById,
+        dependencyReadiness,
+        now: new Date(),
       });
 
       const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
@@ -2588,7 +2671,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
   // already await it, so they do not need this registration.
   function trackWakeup(
     agentId: string,
-    opts: WakeupOptions = {},
+    opts: WakeupOptions,
   ): ReturnType<typeof enqueueWakeup> {
     const promise = enqueueWakeup(agentId, opts);
     activeWakeupPromises.add(promise);
@@ -2600,7 +2683,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     return promise;
   }
 
-  async function enqueueWakeup(agentId: string, opts: WakeupOptions = {}, executionWaitRequestId?: string) {
+  async function enqueueWakeup(agentId: string, opts: WakeupOptions, executionWaitRequestId?: string) {
     const source = opts.source ?? "on_demand";
     const triggerDetail = opts.triggerDetail ?? null;
     const contextSnapshot: Record<string, unknown> = {
@@ -2683,6 +2766,11 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
 
     let agent = await getAgent(agentId);
     if (!agent) throw notFound("Agent not found");
+    // H1 (PAR-12608 4.10): the server's own record of who caused this wake,
+    // in the run context and in the saved copy a deferred wake replays.
+    await stampWakeCausingActor(db, agent.companyId, [
+      enrichedContextSnapshot, payload[DEFERRED_WAKE_CONTEXT_KEY] as Record<string, unknown>,
+    ], opts.causingActor);
     if (issueId) {
       const [pending] = await db.select().from(caseHandoffs).where(and(eq(caseHandoffs.companyId, agent.companyId), eq(caseHandoffs.issueId, issueId),
         inArray(caseHandoffs.state, ["awaiting_release", "pending_dispatch"]))).limit(1);
@@ -3165,7 +3253,21 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       : false;
     let operatorResponsibleUserId: string | null = opts.manualUserWake ? opts.requestedByActorId! : null;
     let queuedResponsibleUserIdPromise: Promise<string> | null = null;
-    const resolveQueuedResponsibleUserId = () => {
+    // Invariant A (PAR-12608 4.7): the run's person is chosen, then the
+    // agent must be on his list. A refusal rolls back the run insert; the
+    // wake is recorded as skipped below.
+    const resolveQueuedResponsibleUserId = async () => {
+      const personId = await resolveQueuedRunPerson();
+      if (!(await runPersonMayUseAgent(db, {
+        companyId: agent.companyId, agentId, personId, target: "heartbeat.run_create",
+      }))) throw new MemberAgentNotListedError(personId);
+      return personId;
+    };
+    const writeAgentNotListedSkip = async () => {
+      await writeSkippedRequest(MEMBER_RESTRICTED_AGENT_NOT_LISTED, { error: MEMBER_AGENT_NOT_LISTED_MESSAGE });
+      return null;
+    };
+    const resolveQueuedRunPerson = () => {
       if (operatorResponsibleUserId) return Promise.resolve(operatorResponsibleUserId);
       queuedResponsibleUserIdPromise ??= (async () => {
         const queuedIssueContext = issueId
@@ -4029,6 +4131,9 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               const ownerExit = executionBlocker.cause === OWNER_EXIT_BLOCKER_CAUSE && !executionBlocker.recoveryActionId
                 ? { runId: executionBlocker.runId ?? null, reason: reason ?? null }
                 : null;
+              // PAR-14473: start the receipt's bounded re-check now, not at the
+              // next reconstruction pass.
+              if (ownerExit) await notifyDeferredExecutionWork(tx, { companyId: agent.companyId });
               await recordExecutionWait(tx as unknown as Db, {
                 issueId: issue.id,
                 condition: ownerExit ? { ...condition, ownerExit } : condition,
@@ -4631,6 +4736,32 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             }
           }
 
+          // PAR-10086: the named unblock owner's run never takes or waits on
+          // the issue execution lock (claim binds it only for the assignee),
+          // so its wake does not park behind another agent's holder, whatever
+          // the holder's status. It is admitted against the owner's own live
+          // run on this issue instead: a repeat owner wake coalesces into it,
+          // so one agent never gets two runs on one issue.
+          const unblockOwnerAdmission =
+            activeExecutionRun?.agentId !== agentId &&
+            isSystemUnblockOwnerWake(
+              { reason, requestedByActorType: opts.requestedByActorType, requestedByActorId: opts.requestedByActorId },
+              enrichedContextSnapshot,
+              issue,
+              agentId,
+            );
+          if (unblockOwnerAdmission) {
+            activeExecutionRun = await tx.select().from(heartbeatRuns).where(and(
+              eq(heartbeatRuns.companyId, issue.companyId),
+              eq(heartbeatRuns.agentId, agentId),
+              inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
+              sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+            )).orderBy(
+              sql`case when ${heartbeatRuns.status} = 'running' then 0 else 1 end`,
+              asc(heartbeatRuns.createdAt),
+            ).limit(1).then((rows) => rows[0] ?? null);
+          }
+
           if (activeExecutionRun) {
             // The case ledger owns retry. Do not place its exact receipt in a
             // generic deferred queue that cannot retain handoff authority.
@@ -4709,7 +4840,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                 issueId: issue.id,
                 agentId,
                 agentNameKey,
-                issueExecutionAgentNameKey: issue.executionAgentNameKey,
+                // The issue's key names the lock holder, not the owner's own run.
+                issueExecutionAgentNameKey: unblockOwnerAdmission ? null : issue.executionAgentNameKey,
                 activeExecutionRun: {
                   id: activeExecutionRun.id,
                   agentId: activeExecutionRun.agentId,
@@ -5154,8 +5286,11 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         .catch((error) => {
           if (isExternalChatWaitAuthorizationContention(error))
             return { kind: "deferred" as const };
+          if (error instanceof MemberAgentNotListedError) return { kind: "agent_not_listed" as const };
           throw error;
         });
+      // The transaction rolled back: nothing it collected is published.
+      if (outcome.kind === "agent_not_listed") return writeAgentNotListedSkip();
 
       for (const publication of issueActivityPublications) publishActivity(publication);
       await executeIssuePostCommitActions(db, issuePostCommitActions);
@@ -5390,8 +5525,12 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         .where(eq(agentWakeupRequests.id, wakeupRequest.id));
 
       return { kind: "queued" as const, run: newRun };
+    }).catch((error) => {
+      if (error instanceof MemberAgentNotListedError) return { kind: "agent_not_listed" as const };
+      throw error;
     });
 
+    if (queueOutcome.kind === "agent_not_listed") return writeAgentNotListedSkip();
     if (queueOutcome.kind === "skipped") return null;
     const newRun = queueOutcome.run;
 
@@ -5636,6 +5775,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
 
       try {
         const wakeRun = await enqueueWakeup(candidate.agentId, {
+          causingActor: wakeCausingActorFromStoredWake(candidate, wakeContext),
           allowRunCoalescing: false,
           source: candidate.source as WakeupOptions["source"],
           triggerDetail: (candidate.triggerDetail ??

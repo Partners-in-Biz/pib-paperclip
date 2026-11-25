@@ -50,7 +50,7 @@ import { plural } from "../engine/plain.js";
 import { extraOn } from "./extras.js";
 import { RawDetails, fmt, pct, shortUrl, small, top } from "./parts.js";
 import { backlinkSegments, optimizationSegments, positionBuckets, positionTrendTone, severitySegments, statusTone } from "./series.js";
-import type { Backlink, CallFn, Content, Finding, GeoSummary, Keyword, Optimization, PreviewItem, Snapshot, SprintBundle } from "./types.js";
+import type { Backlink, CallFn, Content, Finding, GeoSummary, Keyword, Optimization, PreviewItem, Snapshot, SprintBundle, TabId } from "./types.js";
 import { BACKLINK_STATUS_LABEL, BACKLINK_TYPE_LABEL } from "./words.js";
 
 const grid = (min: number, gap = 16) => ({ display: "grid", gap, gridTemplateColumns: fluidColumns(min), minWidth: 0 }) as const;
@@ -367,13 +367,13 @@ function copyText(text: string) {
 }
 
 /** The preview links for the client, with who has checked them and what the client answered. */
-function PreviewsSection({ previews }: { previews: PreviewItem[] }) {
+function PreviewsSection({ previews, onOpen }: { previews: PreviewItem[]; onOpen?: () => void }) {
   const [showOld, setShowOld] = useState(false);
   const current = previews.filter((p) => !p.superseded);
   const rows = showOld ? previews : current;
   if (previews.length === 0) return null;
   return (
-    <SectionCard title="Client previews" subtitle={`${current.length} page${current.length === 1 ? "" : "s"} · a link opens for the client only after the Reviewer has checked it`} icon={Eye}>
+    <SectionCard title="Client previews" subtitle={`${current.length} page${current.length === 1 ? "" : "s"} · a link opens for the client only after the Reviewer has checked it`} icon={Eye} actions={onOpen ? <Button type="button" variant="secondary" onClick={onOpen}>Open Previews tab</Button> : undefined}>
       <div style={{ display: "grid", gap: 8 }}>
         {rows.map((p) => (
           <div key={p.id} style={{ display: "grid", gap: 4, padding: "8px 0", borderTop: `1px solid ${tokens.border}`, opacity: p.superseded ? 0.6 : 1 }}>
@@ -444,7 +444,7 @@ function ClientFactsSection({ sprintId, facts, call }: { sprintId: string; facts
 }
 
 
-export function ContentTab({ bundle, call }: { bundle: SprintBundle; call: CallFn }) {
+export function ContentTab({ bundle, call, onTab }: { bundle: SprintBundle; call: CallFn; onTab?: (tab: TabId) => void }) {
   const narrow = useIsNarrow();
   const [adding, setAdding] = useState(false);
   const [form, setForm] = useState({ title: "", type: "post", targetKeywordId: "", targetUrl: "" });
@@ -463,7 +463,7 @@ export function ContentTab({ bundle, call }: { bundle: SprintBundle; call: CallF
   };
   return (
     <div style={{ display: "grid", gap: 12, minWidth: 0 }}>
-      <PreviewsSection previews={bundle.previews ?? []} />
+      <PreviewsSection previews={bundle.previews ?? []} onOpen={onTab ? () => onTab("previews") : undefined} />
       {bundle.clientFacts ? <ClientFactsSection sprintId={bundle.sprint.sprintId} facts={bundle.clientFacts} call={call} /> : null}
       {bundle.content.length ? (
         <div style={grid(150, 10)}>

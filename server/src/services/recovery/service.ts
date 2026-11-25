@@ -1,4 +1,5 @@
 import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
+import { SYSTEM_CAUSING_ACTOR, type WakeCausingActor } from "../heartbeat/causing-actor.js";
 import { promoteDeferredWorkIntents } from "../work-intent-outbox.js";
 import { isContextCompactionRun } from "../context-compaction.js";
 import { notifyNativeEnvironmentSettlement } from "../native-environment-settlement-notifications.js";
@@ -231,6 +232,27 @@ export const STRANDED_RECENT_PROGRESS_EXEMPTION_MS = Math.max(
   Number(process.env.STRANDED_RECENT_PROGRESS_EXEMPTION_MS) || 30 * 60 * 1000,
 );
 
+// PAR-10283: a manual or system pause (e.g. a release restart) is usually short.
+// Stranded-work recovery leaves the paused agent's tasks alone for this long;
+// nothing moves an escalated task back on resume.
+export const PAUSED_AGENT_RECOVERY_GRACE_MS = 24 * 60 * 60 * 1000;
+type PausedAgentFields = Pick<typeof agents.$inferSelect, "status" | "companyId" | "pauseReason" | "pausedAt" | "updatedAt">;
+// A company-wide pause stores "company_paused" as the agent's pause reason (agent
+// lifecycle holds), so a fleet pause for a deploy looks like this, not "manual".
+const DELIBERATE_SHORT_PAUSE_REASONS = new Set<string | null>(["manual", "system", "company_paused"]);
+// PAR-13561: "maintenance" marks a planned deploy window. It defers recovery for
+// as long as the pause lasts (no 24h cutoff); resume ends it.
+function pausedAgentGraceEndsAt(agent: PausedAgentFields | null | undefined, companyId: string): number | null {
+  if (agent?.status !== "paused" || agent.companyId !== companyId) return null;
+  if (!DELIBERATE_SHORT_PAUSE_REASONS.has(agent.pauseReason)) return null;
+  return (agent.pausedAt ?? agent.updatedAt).getTime() + PAUSED_AGENT_RECOVERY_GRACE_MS;
+}
+export function isDeliberateShortPause(agent: PausedAgentFields | null | undefined, companyId: string, now = new Date()) {
+  if (agent?.status === "paused" && agent.companyId === companyId && agent.pauseReason === "maintenance") return true;
+  const endsAt = pausedAgentGraceEndsAt(agent, companyId);
+  return endsAt !== null && now.getTime() < endsAt;
+}
+
 // PAR-1838: cap on consecutive automatic continuation wakes the stranded-issue
 // sweeper queues for one `in_progress` issue without a status change. Read per
 // sweep so a restart with a new env value (and tests) pick it up. Clamped 1..10;
@@ -255,6 +277,7 @@ type RecoveryWakeupOptions = {
   reason?: string | null;
   payload?: Record<string, unknown> | null;
   idempotencyKey?: string | null;
+  causingActor: WakeCausingActor;
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
   contextSnapshot?: Record<string, unknown>;
@@ -266,7 +289,7 @@ type RecoveryWakeupOptions = {
 
 type RecoveryWakeup = (
   agentId: string,
-  opts?: RecoveryWakeupOptions,
+  opts: RecoveryWakeupOptions,
 ) => Promise<typeof heartbeatRuns.$inferSelect | null>;
 
 type ResolvedDependencyWakeBackstopSource =
@@ -2197,6 +2220,7 @@ export function recoveryService(
         return null;
     }
     const queued = await deps.enqueueWakeup(input.agentId, {
+      causingActor: SYSTEM_CAUSING_ACTOR,
       source: "automation",
       triggerDetail: "system",
       reason: input.reason,
@@ -2255,6 +2279,7 @@ export function recoveryService(
     agentId: string,
   ) {
     return deps.enqueueWakeup(agentId, {
+      causingActor: SYSTEM_CAUSING_ACTOR,
       source: "assignment",
       triggerDetail: "system",
       reason: "issue_assigned",
@@ -2408,6 +2433,7 @@ export function recoveryService(
       });
 
       const queued = await deps.enqueueWakeup(creatorAgent.id, {
+        causingActor: SYSTEM_CAUSING_ACTOR,
         source: "automation",
         triggerDetail: "system",
         reason: "issue_assigned",
@@ -3428,6 +3454,7 @@ export function recoveryService(
       try {
         if (timing.delayMs === 0) {
           const enqueuedRun = await deps.enqueueWakeup(agentId, {
+            causingActor: SYSTEM_CAUSING_ACTOR,
             source: "automation",
             triggerDetail: "system",
             reason: ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
@@ -4909,6 +4936,15 @@ export function recoveryService(
         result.skipped += 1;
         continue;
       }
+      // PAR-10283: `agentId` is the current reviewer for `in_review` and the
+      // assignee otherwise; every paused-agent escalation below is deferred.
+      // Resume notifies this queue; the deadline covers a pause that lasts.
+      if (isDeliberateShortPause(agent, issue.companyId)) {
+        const graceEndsAt = pausedAgentGraceEndsAt(agent, issue.companyId);
+        if (graceEndsAt !== null) opts?.onDeferredDeadline?.(graceEndsAt);
+        result.skipped += 1;
+        continue;
+      }
       const agentInvokable =
         agent && agent.companyId === issue.companyId
           ? await isAgentInvokable(agent)
@@ -6253,6 +6289,7 @@ export function recoveryService(
 
         try {
           const wake = await deps.enqueueWakeup(agentId, {
+            causingActor: SYSTEM_CAUSING_ACTOR,
             source: "automation",
             triggerDetail: "system",
             reason: ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,

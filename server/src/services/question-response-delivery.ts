@@ -1,4 +1,5 @@
 import { notifyChatRunMilestones } from "./chat-run-milestone-notifications.js";
+import { wakeCausingActorFromActorRef } from "./heartbeat/causing-actor.js";
 import { and, asc, desc, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -1204,6 +1205,7 @@ export function questionResponseDeliveryService(
                 },
                 idempotencyKey: wakeIdempotencyKey,
                 allowRunCoalescing: !externalChatBoundary,
+                causingActor: wakeCausingActorFromActorRef(actor),
                 requestedByActorType: actor.actorType,
                 requestedByActorId: actor.actorId,
                 contextSnapshot: {

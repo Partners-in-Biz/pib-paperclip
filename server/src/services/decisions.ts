@@ -2,10 +2,11 @@ import { decisionTargetService, notifyDecisionTargetWork } from "./decision-targ
 import { randomUUID } from "node:crypto";
 import { and, asc, count, desc, eq, gte, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { databaseWorkScopeKey, companyMemberships, decisionBundles, decisionEffectExecutions, decisionRetention, decisions, decisionTargetIssues, heartbeatRuns, issueRelations, issues } from "@paperclipai/db";
+import { databaseWorkScopeKey, decisionBundles, decisionEffectExecutions, decisionRetention, decisions, decisionTargetIssues, heartbeatRuns, issueRelations, issues } from "@paperclipai/db";
 import { ATTENTION_SOURCE_KINDS, decisionEffectTargetIssueIds } from "@paperclipai/shared";
 import type { AttentionArchiveManifestEntry, DecisionEffect, DecisionInput, DecisionOption, DecisionStatsCounts, DecisionStatsResponse } from "@paperclipai/shared";
 import { conflict, forbidden, notFound, tooManyRequests, unprocessable } from "../errors.js";
+import { loadActorMemberships } from "./member-restriction/actor-memberships.js";
 import { authorizationService, type AuthorizationActor } from "./authorization.js";
 import { logActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
 import { signDecisionSpec, verifyDecisionSpec } from "./decision-signing.js";
@@ -151,10 +152,7 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
   }
 
   async function recoveryActor(companyId: string, userId: string): Promise<AuthorizationActor> {
-    const membership = await db.select({ companyId: companyMemberships.companyId, membershipRole: companyMemberships.membershipRole,
-      status: companyMemberships.status }).from(companyMemberships).where(and(eq(companyMemberships.companyId, companyId),
-      eq(companyMemberships.principalType, "user"), eq(companyMemberships.principalId, userId), eq(companyMemberships.status, "active")))
-      .then((rows) => rows[0] ?? null);
+    const membership = await loadActorMemberships(db, { userId, companyId, activeOnly: true }).then((rows) => rows[0] ?? null);
     if (!membership) return { type: "none", source: "none" };
     return { type: "board", userId, companyIds: [companyId], memberships: [membership], source: "session" };
   }

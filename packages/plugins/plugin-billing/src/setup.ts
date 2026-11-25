@@ -8,6 +8,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import {
   configSaved,
   isModuleEnabled,
+  jobCompanyIds,
   LEDGER_EVENTS,
   PIB_PLUGINS,
   pluginUiBase,
@@ -299,7 +300,7 @@ export async function setupStatus(ctx: PluginContext, companyId: string): Promis
 /** Push the status of every known company to the Setup plugin. Never throws. */
 export async function publishAllSetupStatus(ctx: PluginContext): Promise<number> {
   let published = 0;
-  for (const companyId of await knownCompanyIds(ctx).catch(() => [] as string[])) {
+  for (const companyId of await jobCompanyIds(ctx, await knownCompanyIds(ctx).catch(() => [] as string[]))) {
     try {
       await publishSetupStatus(ctx, companyId, await setupStatus(ctx, companyId));
       published += 1;

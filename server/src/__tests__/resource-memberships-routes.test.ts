@@ -38,7 +38,7 @@ function boardActor(companyId: string, role: "admin" | "operator" | "viewer" = "
     source: "session" as const,
     isInstanceAdmin: false,
     companyIds: [companyId],
-    memberships: [{ companyId, membershipRole: role, status: "active" }],
+    memberships: [{ companyId, membershipRole: role, status: "active", restricted: false, restrictionMode: "off" as const }],
   };
 }
 

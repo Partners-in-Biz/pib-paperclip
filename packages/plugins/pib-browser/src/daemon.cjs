@@ -7,6 +7,7 @@ const { createApprovalStore, verifyApproval } = require('./approval.cjs');
 const { createHandoff } = require('./handoff.cjs');
 const { checkFill } = require('./fill-rules.cjs');
 const { authenticate: authFn } = require('./auth.cjs');
+const { handoffTimeoutMs } = require('./handoff-session.cjs');
 
 const MAX_LINE_SIZE = 64 * 1024; // 64 KiB
 
@@ -31,6 +32,7 @@ function loadConfig(env) {
     sitesPath: env.PIB_BROWSER_SITES || '',
     stateDir: env.PIB_BROWSER_STATE_DIR || '/var/lib/pib-browser',
     handoffDir: env.PIB_BROWSER_HANDOFF_DIR || '/run/pib-browser/handoff',
+    handoffTimeoutMs: handoffTimeoutMs(env),
     errorLogPath: env.PIB_BROWSER_ERROR_LOG || '/run/pib-browser/errors.log'
   };
 }
@@ -207,6 +209,7 @@ function buildDaemon(env = process.env, deps = {}) {
     clock: () => new Date(),
     verifyApproval: verifyApprovalFn,
     handoff,
+    handoffTimeoutMs: config.handoffTimeoutMs,
     checkFill,
     errorLogPath: config.errorLogPath
   });

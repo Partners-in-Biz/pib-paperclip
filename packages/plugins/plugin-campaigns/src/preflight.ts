@@ -85,6 +85,22 @@ export const PLACEHOLDER_MARKERS = ["NOT-ISSUED-YET", "TODO", "TBC"] as const;
 
 const KNOWN_TOKENS = new Set(["first_name", "last_name", "name", "company", "email", "unsubscribe_url"]);
 
+/**
+ * What was never filled in, in the subject and body (text and html) of one step or A/B version: an unknown
+ * merge field such as `{{code}}`, or a leftover marker such as NOT-ISSUED-YET. Empty when the text is ready.
+ */
+export function unfilledPlaceholders(step: { subject: string; body: string; htmlBody?: string | null }): string[] {
+  const text = `${step.subject} ${step.body} ${step.htmlBody ?? ""}`;
+  const unfilled: string[] = [];
+  for (const match of text.matchAll(/\{\{\s*([a-z_]+)\s*(?:\|[^}]*)?\}\}/gi)) {
+    if (!KNOWN_TOKENS.has(match[1]!.toLowerCase()) && !unfilled.includes(`{{${match[1]}}}`)) unfilled.push(`{{${match[1]}}}`);
+  }
+  for (const marker of PLACEHOLDER_MARKERS) {
+    if (new RegExp(`(?<![A-Za-z0-9-])${marker}(?![A-Za-z0-9-])`).test(text)) unfilled.push(marker);
+  }
+  return unfilled;
+}
+
 function stepName(step: CampaignStepDraft): string {
   return `Step ${step.position}${step.variant === "b" ? "B" : ""}`;
 }
@@ -143,14 +159,7 @@ export function evaluatePreflight(facts: PreflightFacts): PreflightResult {
       for (const blocker of rubric.blockers) add("warning", `creative-${blocker.rule}`, `${where}: ${blocker.text}`);
       if (rubric.score < CREATIVE_PASS_SCORE) add("warning", "creative-score", `${where} scores ${rubric.score} of 100 on the creative rubric (it passes at ${CREATIVE_PASS_SCORE}). ${rubric.notes.filter((n) => !n.startsWith("Tone is not scored")).slice(0, 3).join(" ")}`.trim());
     }
-    // Subject and body (text and html) of this step or A/B version: an unresolved merge field or a leftover marker.
-    const unfilled: string[] = [];
-    for (const match of `${step.subject} ${step.body} ${step.htmlBody ?? ""}`.matchAll(/\{\{\s*([a-z_]+)\s*(?:\|[^}]*)?\}\}/gi)) {
-      if (!KNOWN_TOKENS.has(match[1]!.toLowerCase()) && !unfilled.includes(`{{${match[1]}}}`)) unfilled.push(`{{${match[1]}}}`);
-    }
-    for (const marker of PLACEHOLDER_MARKERS) {
-      if (new RegExp(`(?<![A-Za-z0-9-])${marker}(?![A-Za-z0-9-])`).test(`${step.subject} ${step.body} ${step.htmlBody ?? ""}`)) unfilled.push(marker);
-    }
+    const unfilled = unfilledPlaceholders(step);
     if (unfilled.length > 0) add("error", "unfilled-placeholder", `${where} still has a placeholder that was never filled in: ${unfilled.join(", ")}. Known merge fields: first_name, last_name, name, company, email, unsubscribe_url.`, "update-campaign-step with the real text");
     for (const url of extractLinks(`${step.body} ${step.htmlBody ?? ""}`)) {
       const problem = linkProblem(url);

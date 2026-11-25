@@ -1,5 +1,7 @@
 import { describeError } from "../api/errors";
 import { useSelectedHeartbeatRun } from "../hooks/useSelectedHeartbeatRun";
+import { useMemberRestrictionGate } from "../hooks/useMemberRestrictionGate";
+import { useMemberRestriction } from "../context/MemberRestrictionContext";
 import { grokBotApi } from "@/api/grokBot";
 import { GrokBotWorkSummary } from "@/components/GrokBotWorkSummary";
 import { PrimaryAgentCrownButton } from "@/components/primary-agent/PrimaryAgentPresentation";
@@ -13,9 +15,10 @@ import { AgentCharacter } from "../components/AgentCharacter";
 import { characterStateForAgent, HEARTBEAT_RUN_LIST_DEFAULT_LIMIT } from "@paperclipai/shared";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { useParams, useNavigate, useLocation, Link, Navigate, useBeforeUnload, type NavigateFunction } from "@/lib/router";
-import { useQuery, useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { useIsFetching, useQuery, useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import {
   agentsApi,
+  isReducedAgent,
   type AgentKey,
   type ClaudeLoginResult,
   type AgentPermissionUpdate,
@@ -58,6 +61,7 @@ import { MembershipAction } from "../components/MembershipAction";
 import { StarToggle } from "../components/StarToggle";
 import { Identity } from "../components/Identity";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { ReducedAgentView } from "../components/agents/ReducedAgentView";
 import { QueryErrorState, queryViewKind, useQueryView } from "../components/QueryView";
 import { AgentActionButtons } from "../components/AgentActionButtons";
 import { InlineBanner } from "../components/InlineBanner";
@@ -366,7 +370,11 @@ export function AgentDetail() {
   const location = useLocation();
   const [actionError, setActionError] = useState<string | null>(null);
   const [dismissedLeftAgentIds, setDismissedLeftAgentIds] = useState<Set<string>>(() => new Set());
-  const activeView: AgentDetailView = urlRunId ? "run-detail"
+  // A restricted member under `enforce` (AC-G10) gets the overview only: every other
+  // view reads a route closed to him (table in PAR-13266), so its address lands here.
+  const { enforced: memberRestricted, loading: memberRestrictionLoading } = useMemberRestriction();
+  const activeView: AgentDetailView = memberRestricted ? "overview"
+    : urlRunId ? "run-detail"
     : parseAgentDetailView(urlTab ?? null);
   const legacyAuditSection = !urlRunId ? agentLegacyAuditSection(urlTab ?? null) : null;
   const legacyView = urlRunId
@@ -436,6 +444,14 @@ export function AgentDetail() {
   }, [canonicalAgentRef, navigate, prepareAgentNavigation, routeAgentRef]);
   const agentLookupRef = agent?.id ?? routeAgentRef;
   const resolvedAgentId = agent?.id ?? null;
+  const memberGate = useMemberRestrictionGate(resolvedCompanyId);
+  // The view (PAR-13475; Quinn PAR-13472 finding 2): (a) the body carries the reduced marker or R is
+  // known to be at `enforce`: the reduced view; (b) the gate is closed but (a) does not hold (session
+  // unknown): the loading state; (c) the full page. Operator reads wait for (c).
+  const reducedView = memberRestricted || (agent !== undefined && isReducedAgent(agent));
+  const fullView = agent !== undefined && !reducedView && !memberGate.closed;
+  // A restored session confirmed with the same data does not re-render the gate hook; this does.
+  useIsFetching({ queryKey: queryKeys.auth.session });
   const { data: boardAccess } = useQuery({
     queryKey: queryKeys.access.currentBoardAccess,
     queryFn: () => accessApi.getCurrentBoardAccess(),
@@ -457,8 +473,8 @@ export function AgentDetail() {
   const builtInAgentsEnabled = experimentalSettings?.enableBuiltInAgents === true;
   const { data: builtInStates } = useQuery({
     queryKey: queryKeys.builtInAgents.list(resolvedCompanyId!),
-    queryFn: () => builtInAgentsApi.list(resolvedCompanyId!),
-    enabled: !!resolvedCompanyId && builtInAgentsEnabled,
+    queryFn: memberGate.guard(() => builtInAgentsApi.list(resolvedCompanyId!), []),
+    enabled: !!resolvedCompanyId && builtInAgentsEnabled && fullView,
   });
   const builtInState = builtInAgentsEnabled
     ? builtInStates?.find((entry) => entry.agentId === resolvedAgentId) ?? null
@@ -525,14 +541,14 @@ export function AgentDetail() {
 
   const { data: runtimeState } = useQuery({
     queryKey: queryKeys.agents.runtimeState(resolvedAgentId ?? routeAgentRef),
-    queryFn: () => agentsApi.runtimeState(resolvedAgentId!, resolvedCompanyId ?? undefined),
-    enabled: Boolean(resolvedAgentId) && needsOverviewData,
+    queryFn: memberGate.guard(() => agentsApi.runtimeState(resolvedAgentId!, resolvedCompanyId ?? undefined), undefined),
+    enabled: Boolean(resolvedAgentId) && needsOverviewData && !memberGate.closed && !reducedView,
   });
 
   const { data: heartbeats } = useQuery({
     queryKey: queryKeys.heartbeats(resolvedCompanyId!, agent?.id ?? undefined),
-    queryFn: () => heartbeatsApi.list(resolvedCompanyId!, agent?.id ?? undefined),
-    enabled: !!resolvedCompanyId && !!agent?.id && shouldLoadHeartbeats,
+    queryFn: memberGate.guard(() => heartbeatsApi.list(resolvedCompanyId!, agent?.id ?? undefined), []),
+    enabled: !!resolvedCompanyId && !!agent?.id && shouldLoadHeartbeats && !memberGate.closed && !reducedView,
   });
 
   const { data: allIssues } = useQuery({
@@ -549,14 +565,14 @@ export function AgentDetail() {
 
   const { data: skillSnapshot } = useQuery({
     queryKey: queryKeys.agents.skills(resolvedAgentId ?? "__none__"),
-    queryFn: () => agentsApi.skills(resolvedAgentId!, resolvedCompanyId ?? undefined),
-    enabled: Boolean(resolvedCompanyId && resolvedAgentId && needsOverviewData),
+    queryFn: memberGate.guard(() => agentsApi.skills(resolvedAgentId!, resolvedCompanyId ?? undefined), undefined),
+    enabled: Boolean(resolvedCompanyId && resolvedAgentId && needsOverviewData) && !memberGate.closed && !reducedView,
   });
 
   const { data: overviewCompanySkills } = useQuery({
     queryKey: queryKeys.companySkills.list(resolvedCompanyId ?? "__none__"),
-    queryFn: () => companySkillsApi.list(resolvedCompanyId!),
-    enabled: Boolean(resolvedCompanyId && needsOverviewData),
+    queryFn: memberGate.guard(() => companySkillsApi.list(resolvedCompanyId!), []),
+    enabled: Boolean(resolvedCompanyId && needsOverviewData) && !memberGate.closed && !reducedView,
   });
 
   const assignedIssues = useMemo(
@@ -603,7 +619,7 @@ export function AgentDetail() {
   useEffect(() => {
     if (!agent) return;
     if (activeView === "advanced" && (configSaving || configDirty)) return;
-    if (urlRunId) {
+    if (urlRunId && activeView === "run-detail") {
       if (routeAgentRef !== canonicalAgentRef) {
         navigate(`/agents/${canonicalAgentRef}/runs/${urlRunId}`, { replace: true });
       }
@@ -792,7 +808,8 @@ export function AgentDetail() {
     return () => window.removeEventListener("popstate", handlePopState, true);
   }, [configDirty, prepareAgentNavigation]);
 
-  if (isLoading || agentView.kind === "reconnecting") return <PageSkeleton variant="detail" />;
+  // No tab mounts (and sends its reads) before the restriction is known.
+  if (isLoading || memberRestrictionLoading || agentView.kind === "reconnecting") return <PageSkeleton variant="detail" />;
   if (agentView.kind === "error") {
     return <QueryErrorState size="page" error={error} action="load this agent" onRetry={agentView.retry} retrying={agentView.isFetching} />;
   }
@@ -800,6 +817,8 @@ export function AgentDetail() {
   if (!urlRunId && !urlTab) {
     return <Navigate to={agentDetailHref(canonicalAgentRef)} replace />;
   }
+  if (reducedView) return <ReducedAgentView agent={agent} companyId={lookupCompanyId ?? agent.companyId} />;
+  if (memberGate.closed) return <PageSkeleton variant="detail" />;
   const currentAgent = lifecycle.data && (lifecycle.data.lifecycleVersion ?? 0) >= (agent.lifecycleVersion ?? 0)
     ? { ...agent, ...lifecycle.data } : agent;
   const isPendingApproval = currentAgent.status === "pending_approval";
@@ -902,16 +921,22 @@ export function AgentDetail() {
             <PrimaryAgentCrownButton agent={agent} />
           </div>
           <div className="mt-1 flex min-w-0 items-center gap-2 text-sm leading-5 text-muted-foreground">
-            <Link
-              to={agentDetailHref(canonicalAgentRef, "runtime")}
-              aria-label={`Open ${getAdapterDisplay(agentDisplayAdapterType(agent)).label} harness settings`}
-              className="flex shrink-0 items-center gap-1 rounded-sm no-underline transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-            >
-              {agent.adapterType === "claude_local" || agent.adapterType === "codex_local"
-                ? <img src={`/brands/${agent.adapterType === "claude_local" ? "claude" : "codex"}-color.svg`} className="-ml-0.5 size-4" alt="" />
-                : null}
-              <span>{getAdapterDisplay(agentDisplayAdapterType(agent)).label}</span>
-            </Link>
+            {/* The harness settings page is closed to a restricted member: the label stays, the link goes. */}
+            {(() => {
+              const harness = <>
+                {agent.adapterType === "claude_local" || agent.adapterType === "codex_local"
+                  ? <img src={`/brands/${agent.adapterType === "claude_local" ? "claude" : "codex"}-color.svg`} className="-ml-0.5 size-4" alt="" />
+                  : null}
+                <span>{getAdapterDisplay(agentDisplayAdapterType(agent)).label}</span>
+              </>;
+              return memberRestricted ? <span className="flex shrink-0 items-center gap-1">{harness}</span> : (
+                <Link
+                  to={agentDetailHref(canonicalAgentRef, "runtime")}
+                  aria-label={`Open ${getAdapterDisplay(agentDisplayAdapterType(agent)).label} harness settings`}
+                  className="flex shrink-0 items-center gap-1 rounded-sm no-underline transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                >{harness}</Link>
+              );
+            })()}
             <span aria-hidden="true">•</span>
             <InlineEditor
               fitContent
@@ -932,7 +957,7 @@ export function AgentDetail() {
           showChat
           showStatus={false}
           workActionsInMenu
-          menuItems={[{ label: "Agent history", icon: HistoryIcon, onSelect: () => setHistoryOpen(true) }]}
+          menuItems={memberRestricted ? [] : [{ label: "Agent history", icon: HistoryIcon, onSelect: () => setHistoryOpen(true) }]}
           actionsDisabled={agentAction.isPending || (activeView === "advanced" && configSaving)}
           workActionsDisabled={hasInvalidOrgChain}
           workActionsDisabledReason="Repair this agent's reporting chain before assigning tasks or starting runs"
@@ -1091,6 +1116,8 @@ export function AgentDetail() {
           directReports={directReports}
           skillNames={overviewSkillNames}
           agentRouteId={canonicalAgentRef}
+          companyId={lookupCompanyId ?? resolvedCompanyId}
+          memberRestricted={memberRestricted}
         />
       )}
 
@@ -1428,6 +1455,8 @@ export function AgentOverview({
   assignedIssues,
   directReports = [],
   skillNames,
+  companyId: routeCompanyId,
+  memberRestricted = false,
 }: {
   agent: AgentDetailRecord;
   runs: HeartbeatRun[];
@@ -1438,8 +1467,14 @@ export function AgentOverview({
   directReports?: Agent[];
   skillNames: string[];
   agentRouteId: string;
+  /** The company in the route; the activity read keys on it, so its URL never carries `undefined`. */
+  companyId?: string | null;
+  /** Restricted under `enforce` (AC-G10): cards that read or link to a closed route are left out. */
+  memberRestricted?: boolean;
 }) {
   const agentRef = agentRouteRef(agent);
+  const activityCompanyId = routeCompanyId ?? agent.companyId;
+  const memberGate = useMemberRestrictionGate(activityCompanyId);
   const hasHumanCreator = Boolean(humanAgentCreatorUserId(agent.createdByUserId));
   const userDirectory = useQuery({
     queryKey: queryKeys.access.companyUserDirectory(agent.companyId),
@@ -1449,8 +1484,9 @@ export function AgentOverview({
   const creatorLabel = resolveAgentCreatorLabel(agent.createdByUserId, userDirectory.data?.users);
   const creatorFailed = hasHumanCreator && queryViewKind(userDirectory) === "error";
   const activity = useQuery({
-    queryKey: [...queryKeys.activity(agent.companyId), "agent-overview", agent.id],
-    queryFn: () => activityApi.list(agent.companyId, { agentId: agent.id, limit: OVERVIEW_ACTIVITY_LIMIT }),
+    queryKey: [...queryKeys.activity(activityCompanyId ?? "__none__"), "agent-overview", agent.id],
+    queryFn: memberGate.guard(() => activityApi.list(activityCompanyId!, { agentId: agent.id, limit: OVERVIEW_ACTIVITY_LIMIT }), []),
+    enabled: Boolean(activityCompanyId) && !memberGate.closed,
   });
   const now = Date.now();
   const weekAgo = now - 7 * 24 * 60 * 60 * 1000;
@@ -1464,6 +1500,7 @@ export function AgentOverview({
   return (
     <div className="flex flex-col gap-(--agent-detail-band-gap)">
       <div className="grid grid-cols-1 gap-(--agent-detail-module-gap) sm:grid-cols-2 lg:grid-cols-4">
+        {!memberRestricted && <>
         <AgentMetricTile
           icon={ActivityIcon}
           value={activity.isLoading ? "–" : formatWindowCount(activityThisWeek)}
@@ -1492,6 +1529,7 @@ export function AgentOverview({
           description={budgetPercent === null ? "No monthly budget set" : `of ${formatCents(budget)} this month`}
           to={agentDetailHref(agentRef, "budgets")}
         />
+        </>}
         <AgentPanel title="Profile" className="min-h-(--agent-detail-tile-min-h) sm:col-span-2" aria-label="Profile"
           meta={<span className={creatorFailed ? "text-destructive" : undefined}>
             {creatorFailed ? "Could not load creator" : creatorLabel ? `Created by ${creatorLabel} · ${formatDate(agent.createdAt)}` : `Created ${formatDate(agent.createdAt)}`}
@@ -1505,7 +1543,7 @@ export function AgentOverview({
 
           </div>
         </AgentPanel>
-        <AgentPanel
+        {!memberRestricted && <AgentPanel
           title="Skills"
           meta={<span>{skillNames.length} enabled</span>}
           className="min-h-(--agent-detail-tile-min-h) sm:col-span-2"
@@ -1520,7 +1558,7 @@ export function AgentOverview({
           ) : (
             <p className="px-(--agent-detail-module-inset) pt-1 pb-(--agent-detail-module-inset) text-sm text-muted-foreground">No skills enabled.</p>
           )}
-        </AgentPanel>
+        </AgentPanel>}
       </div>
 
       <section className="flex flex-col gap-3" aria-label="Recent tasks">

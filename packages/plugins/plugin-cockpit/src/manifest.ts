@@ -4,6 +4,7 @@ import { JOBS, PLUGIN_KEY, ROUTINES, ROUTINE_TITLES, SKILL_SLUGS, VERSION } from
 import { SKILLS } from "./skills.js";
 import { COCKPIT_TOOLS, TOOL_NAMES } from "./tools.js";
 import { OPS_TOOL_NAMES } from "./ops-tool-declarations.js";
+import { PAPER_TOOL_NAMES } from "./paper-tool-declarations.js";
 import { DEFAULT_PAUSE_ORDER, DEFAULT_TRIGGER_FAILURES, DEFAULT_TRIGGER_AGENTS } from "./governor-model.js";
 
 export { JOBS, VERSION };
@@ -21,7 +22,7 @@ export const DAILY_ROUTINE_DESCRIPTION = `Daily operations review. Follow the ${
 7. Check everything waiting on the owner. If an agent could do it, hand it to that agent.
 8. Make sure today's important work has an agent and is not blocked.
 9. Look at \`improvements\` (overdue first) and any close-out review or business review issue assigned to you: do them, or hand the change to the agent that owns it.
-10. Post the Daily brief with ${tool(TOOL_NAMES.postBrief)}: done yesterday, waiting on you (questions first, with links), risks, today's plan, and **Outward sends today** (the brief's \`outwardSends\`: one line each, issue | client | channel | what, then the count). Short.
+10. Write the morning edition of the Daily Paper: call ${tool(PAPER_TOOL_NAMES.assignment)} (edition morning) for the sections the owner asked for, then publish with ${tool(PAPER_TOOL_NAMES.publish)}: headline, standfirst, figures and one entry per section, with **Outward sends today** (the brief's \`outwardSends\`: one line each, issue | client | channel | what, then the count) in the client section. It posts the copy on the Daily brief issue itself; do not also call ${tool(TOOL_NAMES.postBrief)}.
 11. Close this issue with one line: fixed, handed off, waiting on the owner.
 
 Never approve money or legal items, never change budgets, never send or publish anything yourself.`;
@@ -134,6 +135,13 @@ const instanceConfigSchema: JsonSchema = {
         },
       },
     },
+    standingQueueIssues: {
+      type: "array",
+      title: "Standing queue issues (never on the owner's list)",
+      description: "Issue identifiers, e.g. PAR-9356. An open issue listed here is left out of the owner's waiting list and the unassigned count: it is a queue that is worked through, not a decision. With any issue listed, the Finish setup row (a board ask) also waits on the queue, not on the owner.",
+      items: { type: "string", pattern: "^[A-Z][A-Z0-9]*-\\d+$" },
+      default: [],
+    },
     access: {
       type: "object",
       title: "Access look-up and requests",
@@ -158,7 +166,7 @@ const instanceConfigSchema: JsonSchema = {
       description:
         "Pick a company secret for each provider and the daily check calls it once (one cheap read, never storing or showing the value) to see whether the credential is still accepted and, for GitHub and Cloudflare, when it expires. Without one the register still warns before an expiry date you recorded.",
       properties: {
-        github: secretField("GitHub token", "The company secret holding the GitHub token agents push with (read-only check: GET /user)."),
+        github: secretField("GitHub token", "The company secret holding the GitHub token agents push with (read-only check: GET /user). The hourly merged-PR check also reads pull request state with it, so a question asking the owner to merge a PR is settled once it is merged."),
         cloudflare: secretField("Cloudflare API token", "A Cloudflare API token (checked with the token verify call)."),
         resend: secretField("Resend API key", "The Resend key (checked with a read-only call; a sending-only key counts as live)."),
       },
@@ -262,6 +270,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "issues.wakeup",
     "issue.comments.create",
     "issue.comments.read",
+    // 0.21.2: waiting rows whose issue is hidden (404) or that repeat a sign-off are dropped.
     // 0.21.1: the owner's daily digest lists the host's approval cards that wait on a person (ctx.issues.listInteractions). Read only; a new capability, so the release is stop-first.
     "issue.interactions.read",
     "issue.relations.read",

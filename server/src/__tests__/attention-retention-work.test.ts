@@ -376,7 +376,7 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     for (const rootId of batch.deferredRootIds) expect(batch.attention.get(rootId)).toMatchObject({
       state: "needs_attention", reason: "attention_required", terminalBlockerIssueId: rootId,
     });
-    const listed = await issueService(db).list(companyId, { status: "blocked", includeBlockedBy: true });
+    const listed = await issueService(db).list(companyId, { readCondition: "system", status: "blocked", includeBlockedBy: true });
     expect(listed).toHaveLength(roots.length);
     for (const root of listed) expect((root as typeof root & { blockerAttention?: unknown }).blockerAttention).toMatchObject({ state: "needs_attention", terminalBlockerIssueId: root.id });
     const feed = await attentionService(db).list(companyId, { all: true, allowUnscopedAll: true });

@@ -165,6 +165,7 @@ describeEmbeddedPostgres("heartbeat lock release on cross-agent reassignment", (
 
     const heartbeat = heartbeatService(db);
     const followupRun = await heartbeat.wakeup(reviewerAgentId, {
+      causingActor: "system",
       source: "automation",
       triggerDetail: "system",
       reason: "issue_assigned",
@@ -324,6 +325,7 @@ describeEmbeddedPostgres("heartbeat lock release on cross-agent reassignment", (
 
     const heartbeat = heartbeatService(db);
     const newAssigneeRun = await heartbeat.wakeup(reviewerAgentId, {
+      causingActor: "system",
       source: "automation",
       triggerDetail: "system",
       reason: "issue_assigned",

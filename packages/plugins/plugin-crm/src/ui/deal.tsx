@@ -4,7 +4,8 @@
  * move it, log a note, and draft its quote in Billing.
  */
 import { useEffect, useState, type FormEvent } from "react";
-import { useHostNavigation, usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import { useHostNavigation } from "@paperclipai/plugin-sdk/ui";
+import { useCrmAction } from "./actions.js";
 import {
   Button,
   Field,
@@ -21,7 +22,7 @@ import {
   useIsNarrow,
 } from "@partnersinbiz/pib-plugin-ui";
 import { withClientParam } from "@partnersinbiz/pib-plugin-kit/client-ref";
-import { moneyInputValue, parseMoneyInput, quoteHref } from "./crm-view.js";
+import { moneyInputValue, parseMoneyInput, quoteHref, stagesForDeal } from "./crm-view.js";
 import { ActivityTimeline, StagePill, type ActivityLike } from "./overview.js";
 
 export interface DealView {
@@ -30,6 +31,8 @@ export interface DealView {
   amountMinor: number;
   currency: string;
   stageId: string;
+  /** The pipeline of the deal's stage; null when unknown (all stages are offered). */
+  pipelineId?: string | null;
   accountId: string | null;
   contactId: string | null;
 }
@@ -44,6 +47,7 @@ export interface StageOption {
   name: string;
   kind: string;
   position: number;
+  pipelineId?: string | null;
 }
 
 const byName = (a: NamedOption, b: NamedOption) => a.name.localeCompare(b.name);
@@ -62,9 +66,9 @@ export function DealSheet({ deal, stages, companies, contacts, billing, onClose,
 }) {
   const navigation = useHostNavigation();
   const narrow = useIsNarrow();
-  const updateDeal = usePluginAction("crm.update-deal");
-  const logActivity = usePluginAction("crm.log-activity");
-  const loadActivities = usePluginAction("crm.activities");
+  const updateDeal = useCrmAction("crm.update-deal");
+  const logActivity = useCrmAction("crm.log-activity");
+  const loadActivities = useCrmAction("crm.activities");
 
   const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -102,7 +106,7 @@ export function DealSheet({ deal, stages, companies, contacts, billing, onClose,
   const contactName = current.contactId ? contacts.find((row) => row.id === current.contactId)?.name ?? "A contact" : null;
   const hasClient = Boolean(current.accountId || current.contactId);
   const quote = billing ? quoteHref(current, billing.prefill) : null;
-  const orderedStages = [...stages].sort((a, b) => a.position - b.position);
+  const orderedStages = [...stagesForDeal(stages, current.pipelineId ?? stage?.pipelineId)].sort((a, b) => a.position - b.position);
 
   function startEdit() {
     setTitle(current.title);

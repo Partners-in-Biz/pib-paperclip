@@ -304,7 +304,7 @@ describe("managed AI connections", () => {
     const binding = { provider: "github", method: "api_key", mode: "shared", ...account };
     const probe = vi.spyOn(copilotProbe, "probeCopilotConnection").mockResolvedValue({ status: "verified", version: "1.0.88", profileDigest: "fixture-profile", promptSent: false, models: [{ id: "gpt-5.6-luna", label: "GPT" }] });
     const app = express(); app.use(express.json());
-    app.use((req, _res, next) => { req.actor = { type: "board", source: "session", userId: String(req.headers["x-test-user"] ?? audience), companyIds: [companyId], memberships: [{ companyId, membershipRole: "member", status: "active" }] }; next(); });
+    app.use((req, _res, next) => { req.actor = { type: "board", source: "session", userId: String(req.headers["x-test-user"] ?? audience), companyIds: [companyId], memberships: [{ companyId, membershipRole: "member", status: "active", restricted: false, restrictionMode: "off" }] }; next(); });
     app.use("/api", agentRoutes(db)); app.use(errorHandler);
     const url = `/api/companies/${companyId}/adapters/paperclip_runner/models`;
     const query = { provider: "acpx", acpxAgent: "copilot", aiConnection: JSON.stringify(binding) };
@@ -1509,7 +1509,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     if (manager) await db.insert(principalPermissionGrants).values({ companyId, principalType: "user", principalId: userId, permissionKey: "tools:manage_connections" });
     const app = express();
     app.use((req, _res, next) => {
-      req.actor = { type: "board", source: "session", userId, companyIds: [companyId], memberships: [{ companyId, status: "active", membershipRole: "member" }] };
+      req.actor = { type: "board", source: "session", userId, companyIds: [companyId], memberships: [{ companyId, status: "active", membershipRole: "member", restricted: false, restrictionMode: "off" }] };
       next();
     });
     app.use("/api", aiConnectionRoutes(db));
@@ -2448,7 +2448,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     app.use((req, _res, next) => {
       const userId = String(req.headers["x-test-user"] ?? "alice");
       const role = req.headers["x-test-role"] === "viewer" ? "viewer" : "member";
-      req.actor = { type: "board", source: "session", userId, companyIds: [companyId], memberships: [{ companyId, membershipRole: role, status: "active" }] };
+      req.actor = { type: "board", source: "session", userId, companyIds: [companyId], memberships: [{ companyId, membershipRole: role, status: "active", restricted: false, restrictionMode: "off" }] };
       next();
     });
     app.use("/api", aiConnectionRoutes(db));
@@ -2483,7 +2483,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     const first = await service.save(testCompany, owner, { provider: "openai", method: "api_key", ownership: "personal", name: "Default cost", agentIds: [], allAgents: false }, "fixture-cost");
     const app = express();
     app.use((req, _res, next) => {
-      req.actor = { type: "board", source: "session", userId: owner, companyIds: [testCompany], memberships: [{ companyId: testCompany, membershipRole: "member", status: "active" }] };
+      req.actor = { type: "board", source: "session", userId: owner, companyIds: [testCompany], memberships: [{ companyId: testCompany, membershipRole: "member", status: "active", restricted: false, restrictionMode: "off" }] };
       next();
     });
     app.get("/probe", async (_req, res) => { await db.execute(sql`select 1`); res.sendStatus(200); });
@@ -2550,7 +2550,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
-      req.actor = { type: "board", source: req.headers["x-local"] === "yes" ? "local_implicit" : "session", userId: String(req.headers["x-test-user"] ?? "alice"), companyIds: [companyId], memberships: [{ companyId, status: "active", membershipRole: "member" }] };
+      req.actor = { type: "board", source: req.headers["x-local"] === "yes" ? "local_implicit" : "session", userId: String(req.headers["x-test-user"] ?? "alice"), companyIds: [companyId], memberships: [{ companyId, status: "active", membershipRole: "member", restricted: false, restrictionMode: "off" }] };
       next();
     });
     app.use("/api", aiConnectionRoutes(db));
@@ -2586,7 +2586,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
-      req.actor = { type: "board", source: "session", userId: "alice", companyIds: [companyId], memberships: [{ companyId, status: "active", membershipRole: "member" }] };
+      req.actor = { type: "board", source: "session", userId: "alice", companyIds: [companyId], memberships: [{ companyId, status: "active", membershipRole: "member", restricted: false, restrictionMode: "off" }] };
       next();
     });
     app.use("/api", aiConnectionRoutes(db, { deploymentMode: "authenticated", deploymentExposure: "public", trustedLocalStdioRuntimeHost: "" }));
@@ -2609,7 +2609,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
-      req.actor = { type: "board", source: "session", userId: String(req.headers["x-test-user"] ?? owner), companyIds: [companyId], memberships: [{ companyId, status: "active", membershipRole: req.headers["x-viewer"] ? "viewer" : "member" }] };
+      req.actor = { type: "board", source: "session", userId: String(req.headers["x-test-user"] ?? owner), companyIds: [companyId], memberships: [{ companyId, status: "active", membershipRole: req.headers["x-viewer"] ? "viewer" : "member", restricted: false, restrictionMode: "off" }] };
       next();
     });
     app.use("/api", aiConnectionRoutes(db));
@@ -2687,7 +2687,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     const account = await service.save(companyId, "alice", { provider: "anthropic", method: "api_key", ownership: "shared", name: "Restricted shared", apiKey: "fixture", agentIds: [], allAgents: false }, "fixture-restricted");
     const selected = { provider: "anthropic", method: "api_key", mode: "shared", ...account } as const;
     const futureAgentId = randomUUID();
-    const req = (userId: string, role = "member") => ({ actor: { type: "board", source: "session", userId, companyIds: [companyId], memberships: [{ companyId, membershipRole: role, status: "active" }] } }) as express.Request;
+    const req = (userId: string, role = "member") => ({ actor: { type: "board", source: "session", userId, companyIds: [companyId], memberships: [{ companyId, membershipRole: role, status: "active", restricted: false, restrictionMode: "off" }] } }) as express.Request;
     expect(await canInstallSharedAiConnectionForNewAgent(db, req("alice"), companyId, selected)).toBe(true);
     expect(await canInstallSharedAiConnectionForNewAgent(db, req("bob"), companyId, selected)).toBe(false);
     expect(await canInstallSharedAiConnectionForNewAgent(db, req("alice", "viewer"), companyId, selected)).toBe(false);

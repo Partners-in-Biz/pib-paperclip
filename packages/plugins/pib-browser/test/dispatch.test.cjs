@@ -264,3 +264,37 @@ test('real authenticate via dispatcher hits <apiBase>/api/agents/me (PAR-8357)',
   assert.equal(urls[0], 'http://api.test/api/agents/me');
   assert.notEqual(r.reason, 'fetch_error');
 });
+
+test('open: a refused origin reached while waiting for the logged-in text is an origin wall, not a session (2026-11-12)', async () => {
+  for (const textShows of [true, false]) {
+    const violations = [];
+    let closes = 0;
+    const ctx = {
+      goto: async () => {},
+      hasText: async (text, opts) => {
+        assert.ok(opts && opts.timeoutMs > 0, 'open waits for the logged-in text');
+        violations.push({ url: 'https://evil.example.net/landing', kind: 'navigation' });
+        return textShows;
+      },
+      text: async () => '', shot: async () => null, click: async () => {}, fill: async () => {},
+      close: async () => { closes += 1; }, violations: () => violations
+    };
+    const { dispatch } = h({ browser: { newContext: () => ctx } });
+    const r = await dispatch({ cmd: 'open', token: 'valid', issue: 'PAR-1234', identity: 'client:ca:meta' });
+    assert.equal(r.exit, EXIT.REFUSED_BY_POLICY, `textShows=${textShows}`);
+    assert.equal(r.reason, 'origin_wall: evil.example.net');
+    assert.ok(closes >= 1, 'the context is closed');
+    const after = await dispatch({ cmd: 'text', token: 'valid', issue: 'PAR-1234', identity: 'client:ca:meta', args: { selector: 'body' } });
+    assert.equal(after.reason, 'no_session', 'no session is kept');
+  }
+});
+
+test('open: a browser that dies while waiting is browser_closed, not session_expired (2026-11-12)', async () => {
+  const dead = () => { const e = new Error('Target page, context or browser has been closed'); e.name = 'TargetClosedError'; return e; };
+  const ctx = { goto: async () => {}, hasText: async () => { throw dead(); }, close: async () => {}, violations: () => [] };
+  const { dispatch } = h({ browser: { newContext: () => ctx } });
+  const r = await dispatch({ cmd: 'open', token: 'valid', issue: 'PAR-1234', identity: 'client:ca:meta' });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'browser_closed');
+});
+

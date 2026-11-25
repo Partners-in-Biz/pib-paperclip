@@ -18,10 +18,12 @@ import {
   setDestinationExternal,
   setDestinationMetricsError,
   type DestinationRow,
+  type MetricsErrorRecord,
 } from "./db.js";
 import { dueMetricWindow, SocialError } from "./domain.js";
 import { ProviderHttpError, PublishRejected } from "./oauth/http.js";
 import { providerFor } from "./oauth/registry.js";
+import type { MetricsSnapshot } from "./oauth/types.js";
 import { socialOn } from "./modules.js";
 import { isSocialPlatform } from "./platforms.js";
 import { freshAccount } from "./tokens.js";
@@ -34,6 +36,23 @@ export function sanitizeMetricsMessage(message: string): string {
     .replace(/(access_token|refresh_token|token)=[^\s&"']*/gi, "")
     .replace(/(https?:\/\/[^\s?"']*)\?[^\s"']*/gi, "$1")
     .slice(0, 500);
+}
+
+/**
+ * The destination's metricsError for a snapshot's best-effort gaps, or null when nothing is missing. Every gap is kept
+ * (retryable, permanent and not-offered), with the provider's per-call results, so one failure never hides another.
+ */
+export function snapshotGap(snapshot: MetricsSnapshot, window: string): MetricsErrorRecord | null {
+  const parts = [snapshot.insightsError, snapshot.insightsUnavailable, snapshot.unavailableReason].filter((p): p is string => Boolean(p));
+  if (!parts.length) return null;
+  const calls = Array.isArray(snapshot.raw?.insights) ? (snapshot.raw!.insights as unknown[]) : undefined;
+  return {
+    at: new Date().toISOString(),
+    window,
+    kind: snapshot.insightsError || snapshot.insightsUnavailable ? "insights" : "unavailable",
+    message: sanitizeMetricsMessage(parts.join("; ")),
+    ...(calls ? { calls } : {}),
+  };
 }
 
 type CollectResult = "captured" | "skipped" | "waiting" | "error" | "partial";
@@ -89,13 +108,14 @@ async function collectOne(ctx: PluginContext, config: SocialConfig, dest: Destin
     if (snapshot.externalId && snapshot.externalId !== dest.external_id) {
       await setDestinationExternal(ctx, dest.id, snapshot.externalId, snapshot.url ?? null);
     }
-    if (snapshot.insightsError) {
-      await setDestinationMetricsError(ctx, dest.id, { at: new Date().toISOString(), window: decision.capture, kind: "insights", message: sanitizeMetricsMessage(snapshot.insightsError) });
+    const gap = snapshotGap(snapshot, decision.capture);
+    if (gap && snapshot.insightsError) {
+      await setDestinationMetricsError(ctx, dest.id, gap);
       if (decision.skip.length) await markMetricWindows(ctx, dest.id, decision.skip);
       return "partial";
     }
-    if (snapshot.insightsUnavailable) {
-      await setDestinationMetricsError(ctx, dest.id, { at: new Date().toISOString(), window: decision.capture, kind: "insights", message: sanitizeMetricsMessage(snapshot.insightsUnavailable) });
+    if (gap) {
+      await setDestinationMetricsError(ctx, dest.id, gap);
       await markMetricWindows(ctx, dest.id, allWindows);
       return "captured";
     }
@@ -212,10 +232,15 @@ async function recollectOne(ctx: PluginContext, config: SocialConfig, dest: Dest
       clicks: snapshot.clicks ?? null,
       raw: { ...(snapshot.raw ?? {}), backfill: true },
     });
-    if (snapshot.insightsError) {
-      const message = sanitizeMetricsMessage(snapshot.insightsError);
-      await setDestinationMetricsError(ctx, dest.id, { at: new Date().toISOString(), window, kind: "insights", message });
-      return { ...base, window, action, message };
+    const gap = snapshotGap(snapshot, window);
+    if (gap && snapshot.insightsError) {
+      await setDestinationMetricsError(ctx, dest.id, gap);
+      return { ...base, window, action, message: gap.message };
+    }
+    if (gap) {
+      await setDestinationMetricsError(ctx, dest.id, gap);
+      await markMetricWindows(ctx, dest.id, [window]);
+      return { ...base, window, action, message: gap.message };
     }
     await clearDestinationMetricsError(ctx, dest.id);
     await markMetricWindows(ctx, dest.id, [window]);

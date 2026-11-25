@@ -166,19 +166,103 @@ The social-content skill gets a **Media studio (pib-media-studio)** section and 
 3. Sync the skills for every company (Setup → Team → Fix skills, or the hourly sweep).
 4. A person sets a client's policy on Social → Posts → **Who approves** when that client should approve their own posts. Nothing changes for any scope until then.
 
+## 0.13.4: the skill sweep skips companies with no saved settings
+
+src-only (kit 0.14.0): the daily skill sweep skips a company with no saved settings without calling the host for it (needs_settings), when the host lists the companies a job may act for. No migration, no capability change.
+
+## 0.13.3: the skill sync never holds a call up
+
+src-only. Through `createCompanyBootstrap().ensure`, a tool call, a page action or the page load waits at most 2 s for the managed-skill sync and goes on while it finishes behind it; a failed sync is tried again after 5 minutes, not on every call (kit `soon`, `createSkillSyncGuard`). Before this, each call waited for the host after every worker restart, and on a company with many skills that ran into the host's 30-second limit. The same bounded wait applies to the OAuth route and to each job tick. Only a new company's bootstrap (`company.created`) still waits for the sync.
+
+## 0.13.2: store-rendered-asset budget
+
+src-only (PAR-10249). `store-rendered-asset` now waits 20 s for the Drive ack (0.11.4 set 8 s as a stopgap under the 10 s cut) and declares `timeoutMs` 25 s, so the gateway no longer cuts it at 10 s.
+
+## 0.13.1: the Cockpit waits on the delegate only when it could approve (PAR-10701)
+
+Src-only (no migration, no new capability). Who may approve does not change.
+
+- A post in review is labelled "Waiting for the delegated approver" and carries `waitsOn: {kind:"agent"}` only when the delegate's own approve gate would accept it now (`delegateApprovalRefusal`, the read-only part of `approve-post-as-delegate`: Reviewer pass of this version, scored, by another agent; post created after the delegate was named; not its own post; the delegate may act). Otherwise it is "Approve post" for the owner. Before, an active delegate alone was enough.
+- Client-only scopes carry `waitsOn: {kind:"client"}`. An approved post with no time waits on the agent of its open schedule issue; no issue, a closed one, a person's, or a failed read: no `waitsOn`.
+- The review item's `since` is when the post entered review (its last status change or edit).
+
+## 0.13.0: one focus a month, hooks tested and doubled down
+
+Src-only (no migration, no new capability). **Changes what agents do for every company's own work and its clients**: the skill text, the weekly plan and the reviewer's checks.
+
+- **Focus.** Each scope (own work, each client) has one focus a month: theme, audience, the ask, the real proof to build from and the number that says it worked. It lives in the scope's Growth program (`constraints.focus`, closed ones in `constraints.focusLog`, 12 at most). Tool `set-focus` (the current month only; a focus of another month is closed with `learned`), page action `social.growth-set-focus` (a person). `get-playbook` returns `focus` with its state (`none`, `current`, `next`, `expired`) and what to do.
+- **Parts.** A post names its parts in its tags: `hook:<name>`, `body:<name>`, `cta:<name>`. An edit keeps a post's tags (and its platform overrides) unless it sends new ones: before, any `update-post` without `overrides` and every save in the page's editor wiped them. Many hooks are tried over a few bodies and asks. Once a scope has a focus for the month, an agent's post without a hook tag is refused at `request-review` (replies, quotes and My Social are exempt).
+- **Hook board.** Tool `hook-board` (and the Growth tab): per part, the posts, people reached, actions per 100 reached, and a verdict (double down, keep testing, drop, too little reach). Under 100 people a part gets no verdict. It names the control: the best hook, body and ask so far.
+- **No reused pictures.** The Reviewer's pass is refused when the post's image or video was on another post of the same scope, on one of the same accounts, in the last 60 days (the same picture on another platform's account is allowed, and the two arms of one experiment may share media). The reply lists the earlier post and asks for new media.
+- **Guidance.** `references/social-craft.md` gains "One focus a month" and "Hooks, bodies, asks: test many, then double down"; the weekly plan routine starts from the focus and the board; three reviewer checks are new (worth stopping for, the picture itself, the hook tag).
+
+## 0.12.0: post preview, account picker, ask for changes
+
+Src-only (no migration, no new capability). Three things for a person on the Social page:
+
+- **Preview.** A post shows as each platform shows it in its feed (the account's name and picture, the text that platform gets, where the feed cuts it with "more", the media, the first comment), with a chip per account. On the post (Preview | Text), in the editor (live while typing) and on the Posts tab (List | Preview); the choice is kept in the browser. Under each mock-up: the character count and what the platform would refuse (over the limit, needs an image or video, too many media).
+- **Post to.** On a draft or a post in review the accounts are buttons on the post itself: press one to add it or take it off (`social.attach` / `social.detach`, as before; an account the post already went out on stays). The editor uses the same buttons, with All and None.
+- **Ask for changes.** A person writes what to change and sends it to the Social agent: page action `social.request-changes` (`postId`, `notes`, optional `remember`). A person only, never My Social. A draft stays a draft; a post in review, approved or scheduled goes back to draft, so it does not publish until it is approved again. The note is an owner/changes/ui row in `review_outcomes` (the statistics `review-outcomes` reads) and reaches the agent on the post's own issue (`review:<postId>`, reused when open, else a new one), woken. With `remember` the note tells the agent to propose it as a playbook rule (`propose-playbook-change`). `social.change-notes` lists a post's change requests (Reviewer, team, delegated approver, client) for the page.
+
+## 0.11.4: Drive ack before the gateway cut
+
+Src-only (PAR-10212). `store-rendered-asset` and the published post's Drive copy wait 8 s for the CRM's ack (the kit's `DRIVE_ACK_TIMEOUT_MS`; was 30 s and 10 s). The tool gateway cuts a call at about 10 s, so a slow Drive now answers `drive.ok: false` (`no_ack`) instead of a 504; the R2 asset is kept either way.
+
+## 0.11.3: Facebook video reach, published history kept on account delete
+
+- Facebook video posts: Meta removed `total_video_impressions(_unique)` from `video_insights` (Graph API v25.0 changelog, for every API version once v26.0 shipped); the call still answered but without the rows, so impressions and reach stayed null with "video insights: missing total_video_impressions". Impressions and reach now come from the video's Page post (`post_id` on the Video, page-scoped to `<pageId>_<postId>` when Graph returns it bare (0.13.7), else `<pageId>_<videoId>`): `post_media_view` and `post_total_media_view_unique`, as for any other Page post. Views stay `total_video_views`.
+- **Delete** refuses a disconnected account that has a published destination: the cascade would erase what a post published there and its metrics (a hand-marked X post lost its destination this way, PAR-10115). The account stays disconnected and post-analytics keeps listing the destination as not measurable. The junk-account sweep skips such accounts too. src-only.
+
+## 0.13.7: Facebook video post insights on the page-scoped post id
+
+Facebook video metrics: Graph can return the Video's `post_id` bare (a story id, no `<pageId>_` prefix). `/<bare id>/insights` hits the legacy Status node and Graph answers `(#12) singular statuses API is deprecated for versions v2.4 and higher` (HTTP 400), so impressions and reach stayed null while the video calls worked (PAR-11965). A bare `post_id` is now page-scoped to `<pageId>_<postId>` before the Page post insights call; `raw.owner.postIdSource` says `video.post_id (page-scoped)`. A `post_id` that already has the prefix is used as is. src-only.
+
+## 0.13.6: Facebook video insights show every failure; published posts without a destination
+
+**Facebook video metrics** record every insights call (label, path, HTTP status, Graph error code, message, metric names returned) in the snapshot's `raw.insights` and in the destination's `metricsError.calls`. A permanent Page-post insights 4xx is no longer hidden behind a later "missing total_video_views": `metricsError.message` joins every retryable, permanent and not-offered gap. When `total_video_views` has no row, `video_insights` is read again without `metric` and the first offered plays metric is used (`total_video_views`, then the Reels names `fb_reels_total_plays`, `blue_reels_play_count`); reach falls back to `post_impressions_unique`. Last resort for views is the Page post's `post_media_view` (Meta's Views). If Graph offers no view metric at all, the destination shows `kind: "unavailable"` with `unavailable: Graph offers no view metric for this video (...)` instead of an error, and impressions/reach from the post call are kept. `raw.viewsSource` names the metric used. A fill on an existing snapshot row also stores the new `insights`, `viewsSource` and `viewsUnavailable`. `recollect-post-metrics` now records permanent and not-offered gaps too (before it cleared them). src-only.
+
+**post-analytics** on a published post with no destination row returns one entry `{destinationId: null, accountId: null, status: "published", measurable: false, unmeasuredReason: "no destination record (no link stored; marked posted by hand or its account was deleted before 0.11.3...)"}` with the replied-to or quoted link, never an empty list. Such rows are legacy: before 0.11.3 deleting an account cascaded to its published destinations (PAR-10115 fixed that). src-only.
+
+## 0.13.5: archive-post / unarchive-post
+
+`archive-post` (`postId`, full id or 8-char short id) soft-deletes a post: `archived_at` is set (migration 021), the post leaves the Cockpit lists and queues, nothing is lost. Archiving twice is a no-op; published, publishing and scheduled posts are refused (unschedule first). `unarchive-post` clears the flag. Same scope rules as `update-post`. Archived posts are left out of: the post lists (`list-posts` and the personal list), the Cockpit draft, review, approved and failed counts and queues, the approval and scheduled flow stages, the review-issue check for inactive delegates, the "pick a time" done-check, the similarity window of the approval check, and the scope summary's failed count. They are still counted in stats and the plan-trigger totals (history of what was written). Archiving a post in review cancels its open review issue and detaches it; a pending client approval link is superseded. Archiving does not touch media: the files stay in the library and are only reachable through the unarchived post. Unarchiving does not reopen the review issue; send the post for review again.
+
+## 0.11.2: unschedule-post
+
+`unschedule-post` (`postId`, required `reason`) takes a scheduled post back to draft: body, media and accounts stay, the time is cleared, and who and why go to the log and the post's internal note. Only a scheduled post qualifies; same scope rules as `update-post`, which works on the post afterwards. src-only.
+
+## 0.11.1: social craft reference
+
+The content skill gains `references/social-craft.md` and one line that sends the agent there before it drafts: start from the brand kit (the CRM client profile, or the Cockpit company profile for own work; fill a missing kit with the CRM's `extract-brand-from-site`), one real thing per post, the first line earns the second, format before words (a carousel and a short video each week), write the way the brand talks (the plain-writing rules are for reports), never make the review process the subject, do not repeat the last ten posts, one ask with a reason, learn from each post. Every gate stays as it is. src-only.
+
+## 0.11.0: manual accounts and posting by hand
+
+A **manual account** is a platform account with no publishing link: the platform has not approved our app yet (TikTok), or a person wants to post there themselves. A person adds it on Accounts ("Add a manual account": platform and handle; nothing is signed in and no token is stored). It works in every space: own work, a client's workspace, and My Social.
+
+- Posts to a manual account are drafted, validated, reviewed, approved and scheduled like any other. `list-connected-accounts` shows it with `manual: true` and `connected: true`.
+- At the publish time the destination moves to `awaiting_manual` (migration 020) instead of going to a provider, and one **"Post by hand"** issue per post goes to a person (the post's owner, else who added the account, else the default person). The post stays `publishing` until then; the publish job leaves it alone.
+- The post page shows a panel per such destination: copy the caption, send the media to the platform's app through the phone's share sheet (or save it), open the platform's own composer, and **Mark as posted** with the link. `composeIntent` (`platforms.ts`) builds the composer link: the text is in the box on X, LinkedIn, Threads, Bluesky, Mastodon, Reddit and Pinterest. TikTok, Instagram, YouTube, Facebook and Dribbble document no link that fills in a post, so the caption is copied and the upload page opens.
+- `social.mark-destination-posted` records one destination (a person only). The post rolls up as after a publish run, and the issue closes when nothing waits. A destination whose automatic publish **failed** gets the same panel, so a person can post it themselves and settle it.
+- **Skip** on a waiting destination (`social.skip-destination`) removes the account from the post. Nothing is recorded as a failure, so health counts stay true and a retry cannot bring it back. With no destination left the post returns to `approved`.
+- One live task per post: a destination that waits again never reuses the id of an old issue, and a task the host refused at the publish time is opened by a later job run. Removing the last waiting account closes the task.
+- A post with a published part cannot be deleted.
+- A post can be hand-posted before its time; it keeps its status until the last destination is out.
+- No metrics come from the platform for a manual account: agents record what a person gives them with `record-post-metrics`.
+- When the platform later approves the app, connect the account the normal way and switch the manual one off. Posts already attached to the manual account stay with it.
+
 ## 0.10.37: delegated approver, agent text and docs (PAR-9688)
 
 In a scope with a delegated approver (named by a person under Social → Posts → Who approves), the delegate approves after a scored Reviewer pass, a person still can, the Social agent never does, and the delegate does not edit what it approves. The skills, the hire text, the composer and routine copy, the tool help and `references/approvals.md` now say so. Growth autopilot lines (experiments) are unchanged: a person approves those. Release: src-only (no migration, no capabilities or coreReadTables change).
 
 ## 0.10.24: Facebook video metrics, X link on hand-marked posts (PAR-8613)
 
-- Facebook video posts (stored as a bare Video id) are measured with `video_insights`: likes and comments from the Video node, impressions and reach from `total_video_impressions(_unique)`, views from `total_video_views`. A Video has no share count: shares are stored as 0 with `raw.sharesSource: "not_available"`. A permanent insights error (non-retryable 4xx) keeps the row, records `metricsError` kind `insights` and closes the window; a 5xx stays partial and retries.
+- Facebook video posts (stored as a bare Video id) are measured with `video_insights`: likes and comments from the Video node, impressions and reach from its Page post (`post_media_view`, `post_total_media_view_unique`; since 0.11.3), views from `total_video_views`. A Video has no share count: shares are stored as 0 with `raw.sharesSource: "not_available"`. A permanent insights error (non-retryable 4xx) keeps the row, records `metricsError` kind `insights` and closes the window; a 5xx stays partial and retries.
 - `social.mark-posted` with an `x.com/<handle>/status/<id>` (or twitter.com) link of the destination's own account stores the tweet id, so the post can be measured. On an already published post, the link attaches to hand-marked X destinations without an id (status, `published_at` and the post's error stay); no matching destination is an error.
 - `post-analytics` destinations carry `measurable` and `unmeasuredReason`. No migration.
 
 ## 0.10.23: delete a disconnected account
 
-Accounts → **Delete** (shown once an account is disconnected) removes it for good: its inbox items, metrics and RSS feed links go, and its destinations on posts (with their scores) go by cascade, so posts stay but no longer list it. A connected account is refused: disconnect it first. Action `social.delete-account` (a person only; a personal account only by its owner). No migration.
+Accounts → **Delete** (shown once an account is disconnected) removes it for good: its inbox items, metrics and RSS feed links go, and its destinations on posts (with their scores) go by cascade, so posts stay but no longer list it. A connected account is refused: disconnect it first. Since 0.11.3 an account with a published destination is refused too, so a post never loses what it published. Action `social.delete-account` (a person only; a personal account only by its owner). No migration.
 
 ## 0.9.21: X replies and quotes, draft note (PAR-4452)
 

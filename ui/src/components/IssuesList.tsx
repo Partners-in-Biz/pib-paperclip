@@ -22,6 +22,7 @@ import { authApi } from "../api/auth";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { queryKeys } from "../lib/queryKeys";
 import { useIssueExternalObjectSummaries } from "../hooks/useIssueExternalObjects";
+import { useMemberRestrictionGate } from "../hooks/useMemberRestrictionGate";
 import {
   shouldBlurPageSearchOnEnter,
   shouldBlurPageSearchOnEscape,
@@ -778,6 +779,8 @@ function StreamlinedIssuesList({
     setSelectedNavKey((prev) => (prev === null ? prev : null));
   }, []);
   const { selectedCompanyId } = useCompany();
+  // Labels and external-object summaries are closed lists for a restricted member under `enforce` (AC-G10).
+  const memberGate = useMemberRestrictionGate(selectedCompanyId);
   const { openNewIssue } = useDialogActions();
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
@@ -794,8 +797,10 @@ function StreamlinedIssuesList({
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
   const experimentalSettingsLoaded = experimentalSettings !== undefined;
-  const isolatedWorkspacesEnabled = experimentalSettings?.enableIsolatedWorkspaces === true;
-  const externalObjectsEnabled = experimentalSettings?.enableExternalObjects === true;
+  // Execution workspaces are a closed list for a restricted member under `enforce` (AC-G10):
+  // no request, and no workspace grouping, column or filter.
+  const isolatedWorkspacesEnabled = experimentalSettings?.enableIsolatedWorkspaces === true && !memberGate.closed;
+  const externalObjectsEnabled = experimentalSettings?.enableExternalObjects === true && !memberGate.closed;
 
   // Scope the storage key per company so folding/view state is independent across companies.
   const scopedKey = selectedCompanyId ? `${viewStateKey}:${selectedCompanyId}` : viewStateKey;
@@ -982,7 +987,7 @@ function StreamlinedIssuesList({
     queryKey: selectedCompanyId
       ? queryKeys.executionWorkspaces.summaryList(selectedCompanyId)
       : ["execution-workspaces", "__disabled__"],
-    queryFn: () => executionWorkspacesApi.listSummaries(selectedCompanyId!),
+    queryFn: memberGate.guard(() => executionWorkspacesApi.listSummaries(selectedCompanyId!), []),
     enabled: !!selectedCompanyId && isolatedWorkspacesEnabled,
   });
 
@@ -1310,8 +1315,8 @@ function StreamlinedIssuesList({
 
   const { data: labels } = useQuery({
     queryKey: queryKeys.issues.labels(selectedCompanyId!),
-    queryFn: () => issuesApi.listLabels(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
+    queryFn: memberGate.guard(() => issuesApi.listLabels(selectedCompanyId!), []),
+    enabled: !!selectedCompanyId && !memberGate.closed,
   });
 
   const activeFilterCount = countActiveIssueFilters(viewState, enableAgentCreatedVisibilityFilter);
@@ -1990,7 +1995,7 @@ function StreamlinedIssuesList({
             agents={agents}
             creators={creatorOptions}
             projects={projects?.map((project) => ({ id: project.id, name: project.name }))}
-            labels={labels?.map((label) => ({ id: label.id, name: label.name, color: label.color }))}
+            labels={memberGate.closed ? undefined : labels?.map((label) => ({ id: label.id, name: label.name, color: label.color }))}
             currentUserId={currentUserId}
             enableExternalObjectFilters={externalObjectsEnabled}
             enableAgentCreatedVisibilityFilter={enableAgentCreatedVisibilityFilter}

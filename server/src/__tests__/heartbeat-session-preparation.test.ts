@@ -62,6 +62,7 @@ describePostgres("heartbeat session preparation through adapter dispatch", () =>
   async function execute(f: Awaited<ReturnType<typeof seed>>, context: Record<string, unknown> = {}) {
     await db.update(issues).set({ status: "todo" }).where(eq(issues.id, f.issueId));
     const run = await heartbeat.wakeup(f.agentId, {
+      causingActor: "system",
       source: "on_demand", triggerDetail: "manual", reason: "manual",
       payload: { issueId: f.issueId }, contextSnapshot: { issueId: f.issueId, ...context },
     });

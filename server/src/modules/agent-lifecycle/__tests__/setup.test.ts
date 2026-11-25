@@ -142,7 +142,7 @@ const support = await getEmbeddedPostgresTestSupport();
     function app(userId: string) {
       const value = express(); value.use(express.json());
       value.use((req, _res, next) => { req.actor = { type: "board", source: "session", userId,
-        companyIds: [companyId], memberships: [{ companyId, membershipRole: "member", status: "active" }] }; next(); });
+        companyIds: [companyId], memberships: [{ companyId, membershipRole: "member", status: "active", restricted: false, restrictionMode: "off" }] }; next(); });
       value.use("/api", agentRoutes(db)); value.use(errorHandler); return value;
     }
     const updated = await request(app("setup-owner")).patch(`/api/agents/${draft.id}`).send({ runtimeConfig: { heartbeat: { enabled: false } } });

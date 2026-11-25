@@ -111,6 +111,8 @@ export interface MetricsSnapshot {
   insightsError?: string;
   /** Set when a best-effort sub-call failed permanently (non-retryable 4xx); the collector closes the window. */
   insightsUnavailable?: string;
+  /** A metric the platform does not offer for this post at all (not an error); the collector closes the window and says so. */
+  unavailableReason?: string;
   /** Updated external id (TikTok resolves the public post id later). */
   externalId?: string;
   url?: string;

@@ -64,6 +64,40 @@ Listens to `plugin.<sender>.mail.send.requested` for every kit `MAIL_SENDERS` pl
 - A retry first looks the message up by its Message-ID, so an attempt Gmail accepted is not sent twice.
 - Over the rate, Gmail down or the account needs reconnecting: nothing is stored and the sender's outbox retries. No connected account, a bad address, an expired attachment link or a message Gmail refuses: `failed` with `permanent: true`. The Sent tab retries by hand.
 
+## 0.9.19: email cards on a planning canvas
+
+An email can sit on a planning canvas as a card (`canvasNode` slot `card-mail`, `entityCard` `{ kind: "mail", search: false, related: true }`; PAR-14389 C.2, PAR-14421). The card shows the subject, the other party's address (subtitle), the date and sent or received, never the body or the snippet; a client message (`private-mail.ts`) shows its subject only. "Open" goes to `/mailbox?tab=inbox&mail=<id>`.
+
+- `canvas.cards.resolve`: the messages of this company among the ids (`messagesByIds`). Who sees a card is who can open the mail through `mailbox.get-message` on the page (any person of the company); another company's id, an unknown id and a deleted mail are `{ hidden: true }`.
+- `canvas.cards.related` for a CRM company or contact (`of` `partnersinbiz.crm` `card-company` / `card-contact`): `mailForClient`, the mail tagged with the client, or with one of its addresses (a contact's emails; a company's domain, not a free-mail one, on the part after `@`) in from, reply-to, to, cc or bcc. Drafts and Trash are left out; newest first, at most 50. A client this company's CRM projection does not know answers nothing.
+- No `canvas.cards.search`: the Mailbox adds no new way to list mail (plan Risk 2).
+- Registered through the kit's `registerCanvasCards` with `ctx.actions.register`: agents are refused, a restricted member gets hidden cards and no groups. Deployed before the core release with the `entityCard` field, core strips the field and no picker tab appears: expected.
+
+No migration, no capability change.
+
+## 0.9.15: a picked contact stays in To, Cc and Bcc
+
+UI-only: in the draft editor the To, Cc and Bcc fields were a `<label>`, and a click on a label goes to the first control inside it. Once an address was in the box, that control was its remove button, so a click on the field's name or on the empty part of the box took the first address away again. The field is now a plain block (the box keeps its `aria-label`); a click on the empty part of the box puts the cursor in it. A pick also drops a contact search that is still on its way and the pending check of the typed text, so the list does not open again and the search text is not flagged as a bad address. No migration, no capability change.
+
+## 0.9.13: the skill sweep skips companies with no saved settings
+
+src-only (kit 0.14.0): the daily skill sweep skips a company with no saved settings without calling the host for it (needs_settings), when the host lists the companies a job may act for. No migration, no capability change.
+
+## 0.9.12: the skill sync never holds a call up
+
+- src-only: a tool call, a page action or the page load waits at most 2 s for the managed-skill sync and goes on while it finishes behind it; a failed sync is tried again after 5 minutes, not on every call (kit `soon`, `createSkillSyncGuard`). Before this, each call waited for the host after every worker restart, and on a company with many skills that ran into the host's 30-second limit (13 Nov 2026: a CRM and Mailbox release rolled back at its smoke test for this).
+
+## 0.9.11: newsletter send records are blanked after 30 days
+
+- The hourly private-mail job also blanks recipients, subject and request of every send record whose key starts `crm:nl:` and is older than 30 days (the same statement erasure uses). The record stays, so a repeated key is still refused. No migration.
+
+## 0.9.10: client asks open a task; Give to agent on every row
+
+- **Who gets a Reply needed task.** One rule (`opensReplyTask`, shared by sync and the done-check): lead, client or support mail at needs-reply 0.7, as before. A **known client** (a client mail mapping or a person's correction) now also opens one when answering mail we sent (category `reply`: a go-ahead, "it errors when I approve") and from 0.5. Replies from anyone else stay with the plugin that sent the mail. Bulk and likely phishing never open one.
+- **Jev's needs-reply question asks about action too**: a problem or bug report, a change or fix request, or approving something we proposed counts, also inside a thank-you. Only a bare thank-you scores low.
+- **Inbox rows have Give to agent** next to Fix sorting (the same hand-off as the open mail).
+- Mail sorted before the update is not re-scored. No migration.
+
 ## 0.9.9: delete a mailbox
 
 Mailboxes → More → **Delete** on a disconnected (or never connected) mailbox removes it for good: the account, its synced mail and drafts in Paperclip (and their sorting decisions), agent access, Reply-needed thread links and its place on CRM contacts. Unsent sends from it end as failed; sent records stay. Gmail itself is not touched. A connected mailbox is refused: disconnect it first. Action `mailbox.delete-account` (a signed-in person only). No migration.

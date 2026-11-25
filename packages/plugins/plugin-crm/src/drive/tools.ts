@@ -10,13 +10,16 @@ import { driveBindingDiscover, driveBindingSet, driveBindingStatus, effectiveSha
 import { planFolders, folderTarget, companyFolderName, DRIVE_SUBFOLDERS, type DriveFacts, type Sibling, type DriveBranch } from "./convention.js";
 import { readConfig } from "@partnersinbiz/pib-plugin-kit";
 import { table, getAccount, listAccounts, getContact, listLinks } from "../db.js";
-import { getProjectDriveKind, setProjectDriveKind, listProjectDriveKinds } from "./store.js";
+import { getProjectDriveKind, setProjectDriveKind, listProjectDriveKinds, listDriveFiles } from "./store.js";
 import { saveDriveFile, type SaveDriveFileInput, type SaveDriveFileResult } from "./save.js";
 import { driveJobStatus, type DriveJobView } from "./jobs.js";
 
 const schema = (req: string[], props: Record<string, JsonSchema>): JsonSchema => ({ type: "object", required: req, properties: props, additionalProperties: false });
 const text = (d: string, len?: number): JsonSchema => ({ type: "string", description: d, ...(len ? { maxLength: len } : {}) });
 const oneOf = (vals: readonly string[], d: string): JsonSchema => ({ type: "string", enum: [...vals], description: d });
+
+/** Gateway budget of the tools that wait on Drive (PAR-10249); the gateway cuts a tool at 10 s otherwise. */
+export const DRIVE_TOOL_TIMEOUT_MS = 25_000;
 
 export const DRIVE_TOOLS: PluginToolDeclaration[] = [
   {
@@ -30,6 +33,7 @@ export const DRIVE_TOOLS: PluginToolDeclaration[] = [
     displayName: "Ensure Drive folder",
     description: "Create (once) the standard Drive folder for a project or CRM company, with its standard sub-folders, and return its path and URL. A client's project uses the client's folder (Clients/<Company (Contact)> with Assets/Images, Assets/Video, Assets/Brand, Assets/Social, Deliverables, Contracts & Quotes, Meetings & Notes, Shared with client); a product project gets Products/<Product> (Brand, Design, Marketing assets/Images, Marketing assets/Video, App store, Shared externally). Call drive_folder_resolve first; call this only when resolve says not_found. It is safe to call again: an existing folder (also one a person made by hand) is used as it is and nothing is duplicated. Never hard-code a Drive ID. Returns needs_human_look (no folder created) when another project or company would get the same folder name — ask a human, do not retry or rename.",
     parametersSchema: schema(["entity_type", "entity_id"], { entity_type: oneOf(["project", "crm_company"], "The kind of entity: Paperclip project or CRM company."), entity_id: text("The entity's id: a project id or a CRM company record id.", 100) }),
+    timeoutMs: DRIVE_TOOL_TIMEOUT_MS,
   },
   {
     name: "drive_file_save",
@@ -46,6 +50,7 @@ export const DRIVE_TOOLS: PluginToolDeclaration[] = [
       subfolder: oneOf([...DRIVE_SUBFOLDERS], "Optional: save to a sub-folder of the project's Drive folder. A client's folder has Assets/Images, Assets/Video, Assets/Brand, Assets/Social, Deliverables, Contracts & Quotes, Meetings & Notes, Shared with client; a product's has Brand, Design, Marketing assets/Images, Marketing assets/Video, App store, Shared externally. A name the project's folder does not have is refused (invalid_subfolder lists the real ones); book, company and marketing folders have none, so the file goes into the folder itself. Omit to save into the folder itself."),
       requestId: text("Optional: request ID for correlation.", 100),
     }),
+    timeoutMs: DRIVE_TOOL_TIMEOUT_MS,
   },
   {
     name: "drive_project_kind_set",
@@ -92,7 +97,50 @@ export const DRIVE_TOOLS: PluginToolDeclaration[] = [
       fileId: text("The Google Drive file id (from the file's Drive link), not a name or URL.", 200),
     }),
   },
+  {
+    name: "drive_files_list",
+    displayName: "List saved Drive files",
+    description: "The files the CRM saved to Drive for a Paperclip project (newest first): name, Drive link, sub-folder and the Drive id of the folder it sits in, plus the project's own Drive folder (path and link). A client's project lists into the client's folder. Use it to check that a save landed (a producer's save runs in the background, so its tool answer can time out while the file still lands). Read-only.",
+    parametersSchema: schema(["projectId"], {
+      projectId: text("The Paperclip project id (list-client-projects shows a client's).", 100),
+      subfolder: oneOf([...DRIVE_SUBFOLDERS], "Optional: only files in this sub-folder of the project's folder."),
+      nameContains: text("Optional: only files whose name contains this text (case-sensitive).", 200),
+      limit: { type: "integer", minimum: 1, maximum: 100, description: "Optional: at most this many files (default 20)." },
+    }),
+    timeoutMs: DRIVE_TOOL_TIMEOUT_MS,
+  },
+  {
+    name: "drive_file_trash",
+    displayName: "Trash a Drive file",
+    description: "Move one file on this company's bound Shared Drive to the Drive trash (recoverable for 30 days; never a permanent delete). Pass the Google file id. Refuses a file that is not on this company's Shared Drive (not_found) and a folder unless allowFolder is true (is_folder). Trashing a file that is already in the trash is fine (alreadyTrashed). Returns id, name and trashed: true. Use it only for files a person or a decision said to remove (test proof files, canary folders); say which decision on the issue.",
+    parametersSchema: schema(["fileId"], {
+      fileId: text("The Google Drive file id (from the Drive link).", 200),
+      allowFolder: { type: "boolean", description: "Set true to trash a folder (and everything in it), e.g. a canary folder. Default false: a folder is refused." },
+    }),
+    timeoutMs: DRIVE_TOOL_TIMEOUT_MS,
+  },
 ];
+
+/** The files saved to a project's Drive folder (PAR-7712): what a check reads to prove a save landed, without trusting the producer's answer. */
+export async function driveFilesList(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>): Promise<unknown> {
+  const projectId = typeof params.projectId === "string" ? params.projectId.trim() : "";
+  if (!projectId) throw new CrmError("projectId is required (list-client-projects shows a client's projects)");
+  const project = await ctx.projects.get(projectId, viewer.companyId);
+  if (!project) throw new CrmError("Project not found");
+  const subfolder = typeof params.subfolder === "string" && params.subfolder.trim() ? params.subfolder.trim() : undefined;
+  if (subfolder && !(DRIVE_SUBFOLDERS as readonly string[]).includes(subfolder)) throw new CrmError(`subfolder must be one of: ${DRIVE_SUBFOLDERS.join(", ")}`);
+  const nameContains = typeof params.nameContains === "string" && params.nameContains ? params.nameContains : null;
+  const limit = typeof params.limit === "number" && Number.isFinite(params.limit) ? Math.max(1, Math.min(Math.floor(params.limit), 100)) : 20;
+  // Read wider than the limit when filtering by name, so a name match is not cut off by newer files of other names.
+  const rows = await listDriveFiles(ctx, viewer.companyId, { projectId, ...(subfolder ? { subfolder } : {}), limit: nameContains ? 500 : limit });
+  const files = rows
+    .filter((f) => !nameContains || f.name.includes(nameContains))
+    .slice(0, limit)
+    .map((f) => ({ name: f.name, url: f.webUrl, subfolder: f.subfolder, folderId: f.folderId, kind: f.kind, createdAt: f.createdAt }));
+  // The folder the files belong to; a Drive problem leaves it out, the stored rows still answer.
+  const folder = await driveFolderResolve(ctx, viewer, { entity_type: "project", entity_id: projectId }).catch(() => null);
+  return { projectId, folder, count: files.length, files };
+}
 
 export async function driveFolderResolve(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>): Promise<unknown> {
   const type = params.entity_type as DriveEntityType;
@@ -131,16 +179,31 @@ async function notConfiguredFallback(ctx: PluginContext, viewer: Viewer, type: D
   }
 }
 
+/** Stage timing of one folder ensure (PAR-10249); numbers only. */
+export interface EnsureTiming { resolveMs?: number; siblingsMs?: number; ensureMs?: number; ensureLockWaitMs?: number; driveLookups?: number; adoptedUntagged?: number; fast?: boolean; factsMs?: number; findSubfolderMs?: number }
+
 export async function driveFolderEnsure(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>): Promise<unknown> {
   const type = params.entity_type as DriveEntityType;
   const id = params.entity_id as string;
-  const include_tree = params.include_tree as boolean | undefined; // Internal param: get tree for already-ensured folders
+  const want_subfolder = typeof params.want_subfolder === "string" && params.want_subfolder ? params.want_subfolder : undefined; // Internal param (PAR-10250): one query for this sub-folder; a miss falls back to the full tree
+  const include_tree = (params.include_tree as boolean | undefined) || Boolean(want_subfolder); // Internal param: get tree for already-ensured folders
+  // Internal param (PAR-10249): the save fills it with this ensure's stage timing.
+  const stage = params.timing && typeof params.timing === "object" ? (params.timing as EnsureTiming) : undefined;
+  const clock = Date.now;
+  let mark = clock();
+  const lap = (): number => { const n = clock(); const d = n - mark; mark = n; return d; };
   if (type !== "project" && type !== "crm_company") throw new CrmError(`Invalid entity_type: ${type}`);
   if (!id) throw new CrmError("Missing entity_id");
 
-  let broker;
+  // Timing logs (PAR-10212): which step of an ensure is slow (broker set-up, the folder look-up, the plan's steps).
+  const startedAt = Date.now();
+  const timing = (outcome: string, extra: Record<string, unknown>) =>
+    ctx.logger.info("Drive folder ensure", { companyId: viewer.companyId, entityType: type, entityId: id, includeTree: include_tree === true, outcome, elapsedMs: Date.now() - startedAt, ...extra });
+
+  // Internal param: the save's own broker, so one save reads the config, binding and key once.
+  let broker: Broker | null | undefined = isBroker(params.broker) ? params.broker : undefined;
   try {
-    broker = await createBrokerForCompany(ctx, viewer.companyId);
+    if (!broker) broker = await createBrokerForCompany(ctx, viewer.companyId);
   } catch (e) {
     if (e instanceof DriveNotBoundError) {
       return { status: "drive_not_bound", hint: "Bind this company's Shared Drive in the CRM settings (drive.sharedDriveId)." };
@@ -151,19 +214,43 @@ export async function driveFolderEnsure(ctx: PluginContext, viewer: Viewer, para
 
   // A client's project has no folder of its own: it is ensured as its company's folder, and that folder is what comes back.
   // The contact's name (it is part of the folder name) is looked up only when the folder has to be planned, not on the hot "exists" path.
+  const factsStart = Date.now();
   const projectFacts = type === "project" ? await loadProjectFacts(ctx, viewer, id, false) : null;
+  if (stage) stage.factsMs = Date.now() - factsStart;
   const target = projectFacts ? folderTarget(projectFacts) : { entityType: type, entityId: id };
 
+  const brokerMs = Date.now() - startedAt;
+
   let existing: any;
+  const resolveStartedAt = Date.now();
+  lap();
   try {
     existing = await broker.resolve(target.entityType, target.entityId);
+    if (stage) stage.resolveMs = lap();
   } catch (e) {
+    timing("resolve_failed", { brokerMs, resolveMs: Date.now() - resolveStartedAt });
     if (e instanceof BrokerError) throw new CrmError(`Drive broker failed: ${e.message}`);
     throw new CrmError(`Drive broker failed: ${e instanceof Error ? e.message : String(e)}`);
   }
   // If the folder exists, is complete (all its standard sub-folders made) and we don't need the tree, return early.
   // An interrupted ensure leaves complete:false, and the plan below resumes it.
-  if (existing && existing.complete !== false && !include_tree) return { status: "exists", path: existing.path, url: existing.folder_url, folder_id: existing.folder_id, tree: [] };
+  const resolveMs = Date.now() - resolveStartedAt;
+  if (existing && existing.complete !== false && !include_tree) {
+    timing("exists", { brokerMs, resolveMs });
+    return { status: "exists", path: existing.path, url: existing.folder_url, folder_id: existing.folder_id, tree: [] };
+  }
+
+  // Fast path (PAR-10250): the folder is complete and the wanted sub-folder is there, chained under it: one query, no sibling scan, no ensure.
+  if (existing && existing.complete !== false && want_subfolder && broker.findSubfolder) {
+    const findStart = Date.now();
+    const hit = await broker.findSubfolder(target.entityType, target.entityId, want_subfolder, existing.folder_id);
+    if (stage) stage.findSubfolderMs = Date.now() - findStart;
+    if (hit) {
+      if (stage) stage.fast = true;
+      timing("exists_subfolder", { brokerMs, resolveMs });
+      return { status: "exists", path: existing.path, url: existing.folder_url, folder_id: existing.folder_id, tree: [{ path: `${existing.path}/${want_subfolder}`, folderId: hit.folder_id }] };
+    }
+  }
 
   let facts = type === "project" ? projectFacts : await loadDriveFacts(ctx, viewer, type, id);
   if (!facts) throw new CrmError("project not found");
@@ -171,16 +258,28 @@ export async function driveFolderEnsure(ctx: PluginContext, viewer: Viewer, para
     facts = { ...facts, contactName: (await getPrimaryContact(ctx, viewer.companyId, facts.companyEntityId))?.name };
   }
   // Collisions are checked for the folder that is actually made: a client's project is checked as its company (against the other companies).
+  lap();
   const siblings = await loadDriveSiblings(ctx, viewer, target.entityType, target.entityId);
+  if (stage) stage.siblingsMs = lap();
   const plan = planFolders(facts, siblings, viewer.runId ?? undefined);
 
   if (plan.kind === "invalid_name") return { status: "invalid_name", problem: plan.problem, name: plan.name, hint: "rename the project/company to a plain human-readable name (no ID, issue key or slash) and retry" };
   if (plan.kind === "needs_human_look") return { status: "needs_human_look", reason: plan.reason, conflictsWith: plan.conflictsWith };
 
   let lastResult = null;
+  const ensureStartedAt = Date.now();
   try {
-    for (const step of plan.steps) lastResult = await broker.ensure(step);
+    for (const step of plan.steps) {
+      lastResult = await broker.ensure(step);
+      if (stage && lastResult.stats) {
+        stage.ensureLockWaitMs = (stage.ensureLockWaitMs ?? 0) + lastResult.stats.lockWaitMs;
+        stage.driveLookups = (stage.driveLookups ?? 0) + lastResult.stats.driveLookups;
+        stage.adoptedUntagged = (stage.adoptedUntagged ?? 0) + lastResult.stats.adoptedUntagged;
+      }
+    }
+    if (stage) stage.ensureMs = lap();
   } catch (e) {
+    timing("ensure_failed", { brokerMs, resolveMs, steps: plan.steps.length, ensureMs: Date.now() - ensureStartedAt });
     if (e instanceof BrokerError && e.retryable) {
       const details = e.folderId || e.path ? ` (folderId: ${e.folderId}) (path: ${e.path})` : "";
       throw new CrmError(`Drive broker failed part-way (retryable)${details}. Nothing was renamed or deleted. Call drive_folder_ensure again with the same arguments; it resumes and adopts what was already created (no duplicates).`);
@@ -188,6 +287,7 @@ export async function driveFolderEnsure(ctx: PluginContext, viewer: Viewer, para
     throw new CrmError(`Drive broker failed: ${e instanceof Error ? e.message : String(e)}`);
   }
 
+  timing("ensured", { brokerMs, resolveMs, steps: plan.steps.length, ensureMs: Date.now() - ensureStartedAt, existed: Boolean(existing) });
   if (!lastResult) throw new CrmError("No plan steps executed");
   // The tree is the leaf folder's standard sub-folders, and nothing else: a book, company or marketing folder has none, so its tree is
   // empty (the steps above it, the layout folders, are not part of what a save can choose from).
@@ -215,8 +315,14 @@ export async function createBrokerForCompany(ctx: PluginContext, companyId: stri
 const isBadCredential = (e: unknown): boolean => e instanceof BrokerError && (e.code === "bad_credential" || e.status === 401);
 
 /** Methods whose input can be sent again: a stream (upload chunks, a download body) is used once and is never retried. */
-const REPLAYABLE = ["resolve", "ensure", "identity", "uploadFile", "listFiles", "fileMeta", "downloadFile", "thumbnail"] as const;
+const REPLAYABLE = ["resolve", "findSubfolder", "ensure", "identity", "uploadFile", "listFiles", "fileMeta", "trashFile", "downloadFile", "thumbnail"] as const;
 const ONE_SHOT = ["uploadFileStream", "downloadStream"] as const;
+
+/** An internal param arrives through the raw tool body: accept only a real broker, never a JSON object an agent sent. */
+function isBroker(b: unknown): b is Broker {
+  const x = b as Partial<Broker> | null | undefined;
+  return !!x && typeof x === "object" && typeof x.resolve === "function" && typeof x.ensure === "function";
+}
 
 /**
  * The broker on the cached key. When Google refuses the key, the secret is read once more; a different key (rotated
@@ -518,4 +624,35 @@ export async function driveFileSave(ctx: PluginContext, viewer: Viewer, params: 
   }
 
   return saveDriveFile(ctx, viewer, input);
+}
+
+const TRASH_FILE_ID = /^[A-Za-z0-9_-]{10,200}$/;
+
+/** `drive_file_trash` (PAR-11108): Drive trash for one file on the company's Shared Drive. Logs one activity entry per trash. */
+export async function driveFileTrash(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>, deps: { brokerFor?: (ctx: PluginContext, companyId: string) => Promise<Broker | null> } = {}): Promise<unknown> {
+  const fileId = typeof params.fileId === "string" ? params.fileId.trim() : "";
+  if (!TRASH_FILE_ID.test(fileId)) return { status: "invalid_input", hint: "fileId is a Google Drive file id (letters, digits, - and _)." };
+  const allowFolder = params.allowFolder === true;
+  try {
+    const broker = await (deps.brokerFor ?? createBrokerForCompany)(ctx, viewer.companyId);
+    if (!broker) return { status: "drive_not_bound", hint: "Bind Drive in CRM settings (drive.sharedDriveId)." };
+    if (!broker.trashFile) return { status: "not_supported", hint: "This Drive connection can't trash files." };
+    const r = await broker.trashFile(fileId, { allowFolder });
+    if (r.status === "not_found") return { status: "not_found", hint: "No such file on this company's Shared Drive." };
+    if (r.status !== "trashed") return { status: "is_folder", hint: "That is a folder. Pass allowFolder: true to trash it and everything in it." };
+    if (!r.alreadyTrashed) {
+      await ctx.activity.log({
+        companyId: viewer.companyId,
+        message: `Moved Drive file "${r.name}" to the trash`,
+        entityType: "drive_file",
+        entityId: r.id,
+        metadata: { agentId: viewer.agentId, runId: viewer.runId ?? null, fileId: r.id, name: r.name, mimeType: r.mimeType, allowFolder },
+      }).catch((e: unknown) => ctx.logger.warn("drive_file_trash activity log failed", { error: e instanceof Error ? e.message : String(e) }));
+    }
+    return { id: r.id, name: r.name, trashed: true, ...(r.alreadyTrashed ? { alreadyTrashed: true } : {}) };
+  } catch (e) {
+    if (e instanceof DriveNotBoundError) return { status: "drive_not_bound", hint: "Bind Drive in CRM settings (drive.sharedDriveId)." };
+    if (e instanceof BrokerError) return { status: "broker_error", hint: `Google Drive refused the trash (${e.status}).`, retryable: e.retryable };
+    throw e;
+  }
 }

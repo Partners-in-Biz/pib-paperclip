@@ -9,9 +9,15 @@ type LeaseIdentity = {
   provider: string | null; providerLeaseId: string | null;
 };
 
+/** What an ssh check saw when it confirmed the run gone (PAR-9917; written from PAR-9961). */
+export type RemoteTerminationEvidence = {
+  basis: string; pgid?: number; leaderStart?: string; checkedAt: string;
+  coverage: "process group only; detached sessions (setsid) not covered";
+};
+
 /** Bind a provider receipt to the exact host-owned lease and run. Old plugins
  * return void; that remains supported but grants no continuation authority. */
-export function remoteTerminationReceipt(lease: LeaseIdentity, value: unknown) {
+export function remoteTerminationReceipt(lease: LeaseIdentity, value: unknown, evidence?: RemoteTerminationEvidence) {
   const receipt = value as { providerLeaseId?: unknown; state?: unknown } | null;
   if (!lease.heartbeatRunId || !lease.provider || lease.provider === "local" ||
       !lease.providerLeaseId || receipt?.providerLeaseId !== lease.providerLeaseId ||
@@ -20,7 +26,7 @@ export function remoteTerminationReceipt(lease: LeaseIdentity, value: unknown) {
     schema: "paperclip.remote-termination.v1", companyId: lease.companyId,
     runId: lease.heartbeatRunId, leaseId: lease.id, provider: lease.provider,
     providerLeaseId: lease.providerLeaseId, state: receipt!.state,
-    confirmedAt: new Date().toISOString(),
+    confirmedAt: new Date().toISOString(), ...(evidence ? { evidence } : {}),
   };
 }
 

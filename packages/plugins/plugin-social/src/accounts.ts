@@ -8,6 +8,8 @@ import { sameClient, scopeColumns, scopeLabel, scopeOfRow, scopeOut, type Client
 import type { SocialConfig } from "./config.js";
 import {
   accountMeta,
+  accountUsable,
+  isManual,
   detachAccountFromOtherFeeds,
   getAccount,
   iso,
@@ -152,7 +154,9 @@ export function publicAccount(row: AccountRow): Record<string, unknown> {
     handle: row.handle ?? null,
     externalId: row.external_id ?? null,
     avatarUrl: row.avatar_url ?? null,
-    connected: Boolean(row.token_enc) && row.status !== "disabled",
+    connected: accountUsable(row),
+    /** No publishing link: a person posts for this account by hand. */
+    manual: isManual(row),
     tokenExpiresAt: iso(row.token_expires_at),
     lastRefreshedAt: iso(row.last_refreshed_at),
     lastError: row.last_error ?? null,

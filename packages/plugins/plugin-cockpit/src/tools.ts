@@ -8,7 +8,8 @@
 import type { JsonSchema, PluginToolDeclaration } from "@paperclipai/plugin-sdk";
 import { ACCEPTANCE_TOOLS } from "./acceptance-tool-declarations.js";
 import { ACCESS_TOOLS } from "./access-tool-declarations.js";
-import { ASK_KINDS, ASK_LIMITS } from "./ask-model.js";
+import { PAPER_TOOLS } from "./paper-tool-declarations.js";
+import { ASK_KINDS, ASK_LIMITS, UNREADABLE_ISSUE_HINT } from "./ask-model.js";
 import { HARD_STOPS } from "./decision-rights-model.js";
 import { EVAL_TOOLS } from "./eval-tool-declarations.js";
 import { MEMORY_TOOL_DECLARATIONS } from "./memory/declarations.js";
@@ -92,7 +93,7 @@ export const COCKPIT_TOOLS: PluginToolDeclaration[] = [
     name: TOOL_NAMES.askOwner,
     displayName: "Ask the owner",
     description:
-      "Ask the owner. ONLY the six hard stops reach the owner: (1) a client's site or app going to main or live, or a production database change; (2) a spend over R500, a new subscription, or any quote, invoice or price; (3) a login, key or account only the owner holds, or their hands on a device; (4) legal text, or a message that commits the company to a client; (5) a new app version going public in a store; (6) deleting client or production data with no way back. Anything else is not the owner's to decide: where the company has set deciding seats the tool hands your question to the seat for its class at once (the result names the seat and the Decision issue; you are woken when it is closed) and nothing reaches the owner. Once per issue; asking again updates the question. A hard stop goes to the owner (in review), reaches them in the one daily digest at 16:00 and in the Cockpit's Waiting on you, and comes back to you with the answer (you are woken on it). Every question needs a link to the exact screen where the owner acts (for a plain decision, the issue itself), and a grant needs the steps. Put your recommended option first: a decision or info question that is not a hard stop applies it by itself after 24 hours with no reply, and says so on the issue. With effect, a yes also does the thing and checks it before you are woken. Not for sending, publishing or paying: those go through the module's approval tool. Returns askId, the issue link and what happens next.",
+      `Ask the owner. ONLY the six hard stops reach the owner: (1) a client's site or app going to main or live, or a production database change; (2) a spend over R500, a new subscription, or any quote, invoice or price; (3) a login, key or account only the owner holds, or their hands on a device; (4) legal text, or a message that commits the company to a client; (5) a new app version going public in a store; (6) deleting client or production data with no way back. Anything else is not the owner's to decide: where the company has set deciding seats the tool hands your question to the seat for its class at once (the result names the seat and the Decision issue; you are woken when it is closed) and nothing reaches the owner. Once per issue; asking again updates the question. A hard stop goes to the owner (in review), reaches them in the one daily digest at 16:00 and in the Cockpit's Waiting on you, and comes back to you with the answer (you are woken on it). Every question needs a link to the exact screen where the owner acts (for a plain decision, the issue itself), and a grant needs the steps. Put your recommended option first: a decision or info question that is not a hard stop applies it by itself after 24 hours with no reply, and says so on the issue. With effect, a yes also does the thing and checks it before you are woken. Not for sending, publishing or paying: those go through the module's approval tool. The Cockpit cannot read a private task, so an issue it cannot read is refused as not found. ${UNREADABLE_ISSUE_HINT} Returns askId, the issue link and what happens next.`,
     parametersSchema: schema(["issueId", "question", "why", "kind"], {
       issueId: { type: "string", description: "The issue you are working on, which waits for the answer (id or identifier, e.g. PIB-23)." },
       question: { type: "string", maxLength: ASK_LIMITS.question, description: `One clear question (at most ${ASK_LIMITS.question} characters).` },
@@ -136,14 +137,14 @@ export const COCKPIT_TOOLS: PluginToolDeclaration[] = [
     name: TOOL_NAMES.profile,
     displayName: "Company profile",
     description:
-      "The company's own profile: legal and trading name, VAT number, address, website, booking link, sender name and email, what we sell, audience, brand voice and banned words. Read it before writing anything in the company's name (posts, emails, invoices, replies). For a client's details use the CRM's client profile. Returns the profile, the missing fields and the page where the owner edits it.",
+      "The company's own profile: legal and trading name, VAT number, address, website, booking link, sender name and email, what we sell, audience, brand voice and banned words, and the brand kit for own work (tagline, main, second and accent colour, fonts, logo address, visual style). Read it before writing or making anything in the company's name (posts, images, video, emails, invoices, replies). For a client's details use the CRM's client profile. Returns the profile, the missing fields and the page where the owner edits it.",
     parametersSchema: schema([], {}),
   },
   {
     name: TOOL_NAMES.updateProfile,
     displayName: "Fill in the company profile",
     description:
-      "Fill EMPTY fields of the company profile from what you found (the website, past work). Fields that already have a value are never changed: to change one, ask the owner with ask-owner (kind decision) and quote the new value. Returns which fields were filled, which were kept and why.",
+      "Fill EMPTY fields of the company profile from what you found (the website, past work). For the brand kit fields, read our own website first with partnersinbiz.crm:extract-brand-from-site (pass url, no client) and save the colours, fonts and logo address it finds here. Fields that already have a value are kept, except for PiB (the CEO seat), who may overwrite them; the old value is kept in history. Any other agent that needs a set value changed asks PiB in an issue and quotes the new value. What we sell: never prices; quoted after a call. Returns which fields were filled, overwritten or kept, and why.",
     parametersSchema: schema([], {
       ...PROFILE_PROPERTIES,
       issueId: { type: "string", description: "The issue you are working on, for the record (optional)." },
@@ -193,4 +194,5 @@ export const COCKPIT_TOOLS: PluginToolDeclaration[] = [
   ...EVAL_TOOLS,
   ...REVIEW_FINDING_TOOLS,
   ...ACCESS_TOOLS,
+  ...PAPER_TOOLS,
 ];

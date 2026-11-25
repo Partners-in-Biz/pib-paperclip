@@ -43,6 +43,8 @@ export type PrivacyScenario = {
   draft?: boolean;
   classic?: boolean;
   taskProject?: boolean;
+  /** The company's member-restriction switch as the session reports it (PAR-12608 4.4). */
+  restrictionMode?: "off" | "report" | "enforce";
 };
 
 export const privacyUsers = [
@@ -331,6 +333,9 @@ export function createPrivacyState(options: PrivacyScenario = {}) {
       ...storybookAuthSession,
       user,
       session: { ...storybookAuthSession.session!, userId: user.id },
+      memberRestrictions: options.restrictionMode
+        ? [{ companyId: privacyCompanyId, restricted: false, mode: options.restrictionMode }]
+        : undefined,
     },
     projects,
     tasks,
@@ -425,6 +430,7 @@ export function installPrivacyApi(state: PrivacyState) {
     if (!path.startsWith("/api/")) return previous(input, init);
     if (path.includes("/email/tasks/")) return json({ messages: [], publications: [] });
     if (path.endsWith("/budgets/overview")) return json({ policies: [] });
+    if (path.endsWith("/git-authorization")) return json({ grantId: null, authorizedByUserId: null, options: [] });
     if (path === "/api/auth/get-session") return json(state.session);
     if (path === "/api/cli-auth/me") return json(state.access);
     if (path === "/api/companies") return json(storybookCompanies);

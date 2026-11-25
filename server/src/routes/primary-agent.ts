@@ -5,6 +5,7 @@ import { updatePrimaryAgentSchema } from "@paperclipai/shared";
 import { forbidden, notFound } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { accessService } from "../services/access.js";
+import { restrictedAgentIdsForActor } from "../services/member-restriction/agent-read.js";
 import { primaryAgentService } from "../services/primary-agent.js";
 import { assertBoard, hasCompanyAccess } from "./authz.js";
 
@@ -34,6 +35,10 @@ export function primaryAgentRoutes(db: Db) {
       const decision = await access.decide({ actor: req.actor, action: "agent:read",
         resource: { type: "agent", companyId: preference.companyId, agentId: preference.primaryAgentId } });
       if (!decision.allowed) preference.primaryAgentId = null;
+      // PAR-13261: under `enforce` an agent off the restricted member's list is not his primary.
+      const listed = preference.primaryAgentId
+        ? await restrictedAgentIdsForActor(db, req.actor, req.params.companyId as string) : null;
+      if (listed && !listed.has(preference.primaryAgentId!)) preference.primaryAgentId = null;
     }
     res.json(preference);
   });
@@ -42,6 +47,9 @@ export function primaryAgentRoutes(db: Db) {
     const agentId = req.body.primaryAgentId as string;
     const agent = await db.query.agents.findFirst({ where: and(eq(agents.companyId, companyId), eq(agents.id, agentId)) });
     if (!agent) throw notFound("Agent not found");
+    // PAR-13261, as `GET /api/agents/:id`: an agent off his list is answered as an unknown id, before anything is written.
+    const listed = await restrictedAgentIdsForActor(db, req.actor, companyId);
+    if (listed && !listed.has(agentId)) throw notFound("Agent not found");
     const decision = await access.decide({ actor: req.actor, action: "agent:read",
       resource: { type: "agent", companyId, agentId } });
     if (!decision.allowed) throw forbidden("Agent is outside this actor's authorization boundary");

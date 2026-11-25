@@ -17,10 +17,11 @@
  * were not read instead of pretending there are none.
  */
 import type { PluginPerformActionContext } from "@paperclipai/plugin-sdk";
+import type { AccessGuard } from "@partnersinbiz/pib-plugin-kit";
 import { DEFAULT_APPLY_HOURS, defaultAnswer } from "./decision-rights-model.js";
 import { readDecisionRights, ROUTED_REPAIR_KIND } from "./decision-rights.js";
 import { askHardStop, getAsk, listOpenAsks, type AskRow } from "./asks.js";
-import { loadCompanyData, waitingFrom } from "./brief.js";
+import { loadCompanyData, waitingSplit } from "./brief.js";
 import { briefBudget } from "./budget.js";
 import { assignableUser, ORIGIN } from "./constants.js";
 import { getRoles, listRoles } from "./db.js";
@@ -238,7 +239,9 @@ export async function buildOwnerDigest(env: Env, companyId: string): Promise<Own
     items.set(item.key, item);
     if (item.issueId) byIssue.set(item.issueId, item.key);
   };
-  for (const w of waitingFrom(data)) {
+  const split = waitingSplit(data, now);
+  const othersCount = split.others.filter((w) => !w.key.startsWith("outward-send:")).length;
+  for (const w of split.owner) {
     // Tier A info cards need no action, and setup has its own page.
     if (w.key.startsWith("outward-send:") || w.key === "setup:missing") continue;
     if (w.issueId && skip.has(w.issueId)) continue;
@@ -315,7 +318,7 @@ export async function buildOwnerDigest(env: Env, companyId: string): Promise<Own
     applied.push({ identifier, href: identifier ? abs(`/issues/${identifier}`) : null, answer: ask?.answer ?? repair.detail });
   }
   const history = state.history.filter((d) => d.date !== sastDate(now));
-  const stats: DigestStats = { newAsks, routed: routedRows ? routedRows.filter((r) => r.outcome === "routed").length : null, applied, history, unread };
+  const stats: DigestStats = { others: othersCount, newAsks, routed: routedRows ? routedRows.filter((r) => r.outcome === "routed").length : null, applied, history, unread };
 
   const oldest = oldestItem(list);
   const oldestMs = oldest?.since ? Date.parse(oldest.since) : Number.NaN;
@@ -411,13 +414,13 @@ function boardCompany(context: PluginPerformActionContext): string {
   return context.companyId;
 }
 
-export function registerOwnerDigest(env: Env): void {
+export function registerOwnerDigest(env: Env, guard: AccessGuard): void {
   // The digest as it would be posted now, without posting it.
-  env.ctx.actions.register("ownerDigest.preview", async (_params, context) => {
+  guard.action("ownerDigest.preview", async (_params, context) => {
     const digest = await buildOwnerDigest(env, boardCompany(context));
     if (!digest) return { owner: false };
     return { owner: true, date: digest.date, title: digest.title, body: digest.body, items: digest.items.length, today: digest.today, unread: digest.stats.unread };
   });
   // Posts today's digest now (a missed day, or a first check after a release). `force` posts a second one the same day.
-  env.ctx.actions.register("ownerDigest.post", async (params, context) => postOwnerDigest(env, boardCompany(context), { force: (params as Record<string, unknown> | null)?.force === true }));
+  guard.action("ownerDigest.post", async (params, context) => postOwnerDigest(env, boardCompany(context), { force: (params as Record<string, unknown> | null)?.force === true }));
 }

@@ -18,6 +18,8 @@ type RouteCtx = Pick<PluginContext, "events" | "logger">;
 export interface DriveSaveRouteDeps {
   resolveProject: (ctx: any, companyId: string, client: { kind?: string; clientKind?: string; clientRef?: string; ownWork?: boolean; projectId?: string }) => Promise<string | null | undefined>;
   save: (ctx: any, viewer: Parameters<typeof saveDriveFile>[1], input: Parameters<typeof saveDriveFile>[2]) => Promise<{ status: string; driveFileId?: string; url?: string; hint?: string }>;
+  /** Clock for the timing logs; tests pin it. */
+  now?: () => number;
 }
 
 const DEFAULT_DEPS: DriveSaveRouteDeps = {
@@ -29,7 +31,14 @@ const str = (value: unknown): string | undefined => (typeof value === "string" ?
 
 export function registerDriveSaveRoute(ctx: RouteCtx, deps: DriveSaveRouteDeps = DEFAULT_DEPS, producers: readonly string[] = DRIVE_PRODUCER_PLUGINS): void {
   // Producer allowlist, host-set company and bare reply names all live in registerProducerRoute.
+  const now = deps.now ?? Date.now;
   const handle = async ({ producer, companyId, requestId, payload, reply: send }: ProducerRequest) => {
+    // Timing logs (PAR-10212): one line when the request arrives and one when it ends, each with elapsed ms, so a slow
+    // save (project lookup, folder ensure, upload) can be told from a hung one in the journal. Ids, sizes and steps only:
+    // never the file name, its bytes or the signed link.
+    const startedAt = now();
+    const finish = (outcome: string, extra: Record<string, unknown> = {}) =>
+      ctx.logger.info("Drive save finished", { requestId, producer, companyId, outcome, elapsedMs: now() - startedAt, ...extra });
     const reply = (name: string, _companyId: string, body: Record<string, unknown>) => {
       const { requestId: _ignored, ...rest } = body;
       return send(name, rest);
@@ -37,14 +46,26 @@ export function registerDriveSaveRoute(ctx: RouteCtx, deps: DriveSaveRouteDeps =
     const { kind, name, mimeType, contentBase64, publicUrl, sha256, subfolder, clientKind, clientRef } = payload;
     const ownWork = payload.ownWork === true;
     const workProjectId = str(payload.projectId)?.trim() || undefined;
+    ctx.logger.info("Drive save request received", {
+      requestId,
+      producer,
+      companyId,
+      kind: str(kind),
+      subfolder: str(subfolder),
+      mimeType: str(mimeType),
+      mode: typeof payload.r2Url === "string" && payload.r2Url ? "r2" : contentBase64 ? "bytes" : publicUrl ? "public_url" : "none",
+      base64Length: typeof contentBase64 === "string" ? contentBase64.length : undefined,
+    });
 
     try {
       // Never mix clients (PAR-8128): the own folder is only for a producer that says the work is ours. A save that
       // names no client, no project and no ownWork lost its client somewhere, so it is refused, not filed as ours.
       if (!workProjectId && !ownWork && !(str(clientKind) && str(clientRef))) {
         await reply(DRIVE_EVENTS.failed, companyId, { requestId, reason: "no_client", hint: "The save named no client and was not marked as the company's own work (ownWork), so it was not filed anywhere." });
+        finish("no_client");
         return;
       }
+      const resolveStartedAt = now();
       const projectId = await deps.resolveProject(ctx, companyId, { kind: str(kind), clientKind: str(clientKind), clientRef: str(clientRef), ...(ownWork ? { ownWork } : {}), ...(workProjectId ? { projectId: workProjectId } : {}) });
       if (!projectId) {
         const hint = workProjectId
@@ -53,8 +74,10 @@ export function registerDriveSaveRoute(ctx: RouteCtx, deps: DriveSaveRouteDeps =
             ? "No project is linked to this client in the CRM. Link one (client projects) and retry."
             : "No project is set for the company's own Drive folder. Set drive.ownProjectId in the CRM settings.";
         await reply(DRIVE_EVENTS.failed, companyId, { requestId, reason: "no_project", hint });
+        finish("no_project", { resolveProjectMs: now() - resolveStartedAt });
         return;
       }
+      const resolveProjectMs = now() - resolveStartedAt;
       const input: Parameters<typeof saveDriveFile>[2] = {
         companyId,
         projectId,
@@ -77,15 +100,18 @@ export function registerDriveSaveRoute(ctx: RouteCtx, deps: DriveSaveRouteDeps =
       }
 
       // A system viewer: the producer already checked its own user; the CRM writes on the company's behalf.
+      const saveStartedAt = now();
       const result = await deps.save(ctx, { companyId, userId: null, agentId: null, role: null }, input);
+      const saveMs = now() - saveStartedAt;
       if (result.status === "saved") {
         await reply(DRIVE_EVENTS.saved, companyId, { requestId, driveFileId: result.driveFileId, url: result.url });
       } else {
         await reply(DRIVE_EVENTS.failed, companyId, { requestId, reason: result.status, hint: result.hint });
       }
+      finish(result.status, { projectId, resolveProjectMs, saveMs });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      ctx.logger.info("Drive save event handler failed", { requestId, producer, error: message });
+      ctx.logger.info("Drive save event handler failed", { requestId, producer, error: message, elapsedMs: now() - startedAt });
       await reply(DRIVE_EVENTS.failed, companyId, { requestId, reason: "handler_error", hint: message }).catch(() => undefined);
     }
   };

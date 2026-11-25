@@ -16,7 +16,7 @@ vi.mock("@partnersinbiz/pib-plugin-kit", async () => {
   };
 });
 
-import { routineFailureTick } from "../src/routine-failures.js";
+import { routineFailureTick, routineFailureStateKey } from "../src/routine-failures.js";
 import { createEnv } from "../src/register.js";
 import { fakeCtx, fixedClock } from "./helpers/fake-ctx.js";
 import * as kitModule from "@partnersinbiz/pib-plugin-kit";
@@ -140,6 +140,29 @@ describe("routine failure detection and escalation", () => {
     expect(mockEscalate).toHaveBeenCalled();
     const escalateCall = mockEscalate.mock.calls[0];
     expect(escalateCall[2]).toBe("routine_failed");
+  });
+
+  it("A tick with no failing routine removes the record and does not throw", async () => {
+    const s = setup();
+    s.env.ctx.routines.managed.reconcile("cockpit-daily-operations", A, { assigneeAgentId: "agent-1" });
+    mockRoutineHealth.mockResolvedValue([
+      { key: "routine:cockpit-daily-operations", title: "t", status: "bad", detail: "d", since: NOW } as HealthCheck,
+    ]);
+    await routineFailureTick(s.env, A);
+    expect([...s.state.keys()].some((k) => k.includes("routine-failures"))).toBe(true);
+
+    mockRoutineHealth.mockResolvedValue([]);
+    await expect(routineFailureTick(s.env, A)).resolves.toBeDefined();
+    expect([...s.state.keys()].some((k) => k.includes("routine-failures"))).toBe(false);
+  });
+
+  it("A stale record is removed and a tick with no record and no failure does not throw", async () => {
+    const s = setup();
+    await s.env.ctx.state.set(routineFailureStateKey(A), { "gone-routine": { since: NOW, count: 3 } });
+    mockRoutineHealth.mockResolvedValue([]);
+    await routineFailureTick(s.env, A);
+    expect(await s.env.ctx.state.get(routineFailureStateKey(A))).toBeNull();
+    await expect(routineFailureTick(s.env, A)).resolves.toBeDefined();
   });
 
   it("Healthy routine resets counter for next failure", async () => {

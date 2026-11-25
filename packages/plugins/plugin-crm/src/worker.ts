@@ -1,3 +1,4 @@
+import { extractBrandFromSiteTool } from "./brand-from-site.js";
 import { randomUUID } from "node:crypto";
 import { APPROVAL_EVENT, onApprovalEvent, onSignoffEvent, SIGNOFF_EVENT } from "./site-signoff.js";
 import { registerCallNotedSubscriber } from "./call-noted.js";
@@ -17,6 +18,7 @@ import {
 import {
   clientScopeFromInput,
   COCKPIT_ROUTE,
+  createAccessGuard,
   createSkillSyncer,
   createWorkIssue,
   HOSTED_TIERS,
@@ -26,6 +28,7 @@ import {
   MAIL_EVENTS,
   normalizeToolResult,
   PIB_PLUGINS,
+  registerCanvasCards,
   pluginEvent,
   publishCockpitSnapshot,
   readConfig,
@@ -38,8 +41,10 @@ import {
   startHire,
   trackJob,
   unlinkAgent,
+  type AccessGuard,
   type ClientRef,
 } from "@partnersinbiz/pib-plugin-kit";
+import { ACCESS_TABLE } from "./access-table.js";
 import {
   accountManager,
   ACCOUNT_MANAGER_ROLE,
@@ -69,7 +74,13 @@ import {
   mergeContacts,
   enrollmentsForContact,
   enrollmentsForSequence,
+  deletePipeline,
+  dealPipelineId,
   ensurePipeline,
+  insertPipeline,
+  insertStages,
+  listCompanyStages,
+  listPipelines,
   getAccount,
   getContact,
   getDeal,
@@ -169,8 +180,11 @@ import {
   type RecordType,
   type SequenceStepDraft,
   type Viewer,
+  DEFAULT_STAGES,
+  STAGE_KINDS,
 } from "./domain.js";
 import { PLUGIN_ID } from "./namespace.js";
+import { crmCardKinds } from "./canvas-cards.js";
 import { CRM_TOOLS } from "./tools.js";
 import { SKILLS } from "./skills.js";
 import { CRM_MUTATIONS, crmCompanyIds, emitChanges, emitContactDeleted, touchContact } from "./sync.js";
@@ -194,7 +208,7 @@ import { closeStands, CRM_DONE_CHECKS, doneCheckIssue } from "./done-checks.js";
 import { originFor } from "./origins.js";
 import { LEAD_EVENTS, onLeadCaptured, processHeldLeads } from "./leads.js";
 import { clientLeadForms, createLeadEndpoint, handleLeadWebhook, listLeadSourcesTool, makeLeadSecret, retryClientLeadIssues, rotateLeadKey, updateLeadSource } from "./lead-capture.js";
-import { purgeHits } from "./lead-store.js";
+import { expireUnconfirmedCaptures, purgeHits } from "./lead-store.js";
 import { purgePublicHits } from "./esign-store.js";
 import { dayOf, ROLLUP_KEEP_DAYS } from "./site-events-form.js";
 import { purgeRollup } from "./site-events-store.js";
@@ -205,7 +219,7 @@ import { ESIGN_PERSON_ACTIONS, ESIGN_TOOL_NAMES, isEsignTool, runEsignTool } fro
 import { EVENTS_ENDPOINT_KEY, SIGN_ENDPOINT_KEY } from "./endpoints.js";
 import { handleSignWebhook } from "./esign-public.js";
 import { GROWTH_TOOL_NAMES, isGrowthTool, runGrowthTool } from "./growth-dispatch.js";
-import { driveFolderResolve, driveFolderEnsure, driveProjectKindSet, driveProjectKindList, driveFileSave, driveTransferStatus, createBrokerForCompany } from "./drive/tools.js";
+import { driveFolderResolve, driveFolderEnsure, driveProjectKindSet, driveProjectKindList, driveFileSave, driveTransferStatus, driveFilesList, driveFileTrash, createBrokerForCompany } from "./drive/tools.js";
 import { driveFileFetch } from "./drive/fetch.js";
 import { driveBindingDiscover, driveBindingSet, driveBindingStatus, onDriveBindingSetEvent } from "./drive/binding.js";
 import { registerDriveSaveRoute } from "./drive/save-route.js";
@@ -230,12 +244,14 @@ import {
   listDealsTool,
   listSequencesTool,
   listStagesTool,
+  pipelineParam,
   parseClientRef,
   pickProfile,
   updateClientProfile,
 } from "./lookup.js";
 import { companyPrefix, crmLink, refOf } from "./refs.js";
 import { contactAssignee } from "./mail.js";
+import { onNewsletterSendResult, purgeSettledSignupMails } from "./newsletter-send-result.js";
 import { publishAllSetupStatus, recordFullShare, rememberCompany, setupStatus } from "./setup-status.js";
 import { getClientProfile, handoffCompanies, heldLeadStats, listClientLeads } from "./store.js";
 import {
@@ -270,6 +286,8 @@ import {
 } from "./sites.js";
 
 let pluginCtx: PluginContext | null = null;
+let accessGuard: AccessGuard | null = null;
+const NOT_FOUND = { status: 404, body: { error: "Not found" } };
 let skillSync: ReturnType<typeof createSkillSyncer> | null = null;
 
 /** Syncs the CRM skills for a company (always resolves; failures are logged by the kit). */
@@ -286,20 +304,28 @@ const plugin = definePlugin({
     // Subscribe to call.noted events from the Telephony plugin to write idempotent call notes.
     registerCallNotedSubscriber(ctx);
     registerPrivacy(ctx);
+    // Every action, tool and API route goes through the access guard (PAR-12679). With the switch off it is a pass-through.
+    const guard = createAccessGuard(ctx, { pluginKey: PLUGIN_ID, table: ACCESS_TABLE });
+    accessGuard = guard;
     const registerAction = (
       key: string,
       handler: (params: Record<string, unknown>, context: PluginPerformActionContext) => Promise<unknown>,
     ) => {
-      ctx.actions.register(key, async (params, context) => {
-        if (context.companyId) await skillSync?.ensure(context.companyId).catch(() => undefined);
+      guard.action(key, async (params, context) => {
+        // A page action never waits long for the skill sync (kit `soon`).
+        if (context.companyId) await skillSync?.soon(context.companyId);
         const result = await handler(params, context);
         if (context.companyId && CRM_MUTATIONS.has(key)) await afterMutation(ctx, context.companyId, key, params);
         return result;
       });
     };
     for (const tool of CRM_TOOLS) {
-      ctx.tools.register(tool.name, tool, async (params, run) => normalizeToolResult(await runTool(ctx, tool.name, params, run)));
+      guard.tool(tool.name, tool, async (params, run) => normalizeToolResult(await runTool(ctx, tool.name, params, run)));
     }
+    // The manifest's API routes, each through the guard (`api:<routeKey>` rows).
+    guard.apiRoute(SETUP_STATUS_ROUTE.routeKey, async (input) => ({ status: 200, body: await setupStatus(ctx, input.companyId) }));
+    guard.apiRoute(COCKPIT_ROUTE.routeKey, async (input) => ({ status: 200, body: await cockpitSnapshot(ctx, input.companyId) }));
+    guard.apiRoute("record-grant", (input) => acceptPartnerGrant(ctx, input));
     registerAction("crm.load", async (params, context) => {
       // The page reports /_plugins/<installation uuid>/ui/ so Setup can link the settings page.
       await rememberPluginUiBase(ctx, params.uiBase);
@@ -336,6 +362,8 @@ const plugin = definePlugin({
     registerAction("crm.update-contact", (params, context) => updateContactAction(ctx, context, params));
     registerAction("crm.set-email-status", (params, context) => emailStatusAction(ctx, context, params));
     registerAction("crm.update-client-profile", async (params, context) => updateClientProfile(ctx, await actionViewer(ctx, context), params, actionSource(context)));
+    // The page only reads the site and puts what it finds in the form: the person saves (apply is always off here).
+    registerAction("crm.extract-brand-from-site", async (params, context) => extractBrandFromSiteTool(ctx, await actionViewer(ctx, context), { ...params, apply: false }, actionSource(context)));
     registerAction("crm.link-contact", (params, context) => linkAction(ctx, context, params));
     registerAction("crm.create-deal", (params, context) => createDealAction(ctx, context, params));
     registerAction("crm.move-deal", (params, context) => moveDealAction(ctx, context, params));
@@ -370,6 +398,13 @@ const plugin = definePlugin({
     registerAction("crm.update-lead-source", async (params, context) => updateLeadSource(ctx, await actionViewer(ctx, context), params, actionSource(context)));
     registerAction("crm.start-new-client", async (params, context) => startNewClient(ctx, await actionViewer(ctx, context), params, actionSource(context)));
     registerAction("crm.find-records", async (params, context) => findRecords(ctx, await actionViewer(ctx, context), params));
+    // Company and contact cards on a planning canvas (PAR-14416): the kit helper, straight on the guard (no skill sync wait).
+    registerCanvasCards({
+      register: guard.action,
+      kinds: crmCardKinds(ctx, (call) => viewerFor(ctx, {
+        companyId: call.companyId, userId: call.context.actor.userId, agentId: call.context.actor.agentId, runId: call.context.actor.runId,
+      })),
+    });
     registerAction("crm.create-canary-client", async (params, context) => ensureCanaryClient(ctx, await actionViewer(ctx, context), params));
     registerAction("crm.cleanup-canary", async (params, context) => cleanupCanary(ctx, await actionViewer(ctx, context), params));
     registerAction("crm.run-services-check", async (_params, context) => runServicesCheck(ctx, new Date(), { companyId: requireCompany(context) }));
@@ -449,8 +484,8 @@ const plugin = definePlugin({
     ctx.jobs.register("open-due-steps", () => trackJob(ctx, "open-due-steps", () => openDueSteps(ctx)));
     ctx.jobs.register("redeliver-mail", async () => {
       await trackJob(ctx, "redeliver-mail", async () => {
-        const result = await redeliverMail(ctx);
-        if (result.emitted || result.failed || result.handedOver) ctx.logger.info("CRM mail redelivery", result);
+        const result = { ...(await redeliverMail(ctx)), signupMailsCleared: await purgeSettledSignupMails(ctx) };
+        if (result.emitted || result.failed || result.handedOver || result.signupMailsCleared) ctx.logger.info("CRM mail redelivery", result);
       });
     });
     ctx.events.on(pluginEvent(PIB_PLUGINS.seo, SIGNOFF_EVENT), (event) => onSignoffEvent(ctx, event).catch((error) => ctx.logger.info("CRM sign-off event failed", { error: String(error) })));
@@ -503,6 +538,8 @@ const plugin = definePlugin({
     ctx.events.on(pluginEvent(PIB_PLUGINS.mailbox, MAIL_EVENTS.sendResult), (event) => onSendResult(ctx, event));
     // The Mailbox's answer for an approved email to a client (keys crm:msg:...); sequence emails (crm:seq:...) are handled above.
     ctx.events.on(pluginEvent(PIB_PLUGINS.mailbox, MAIL_EVENTS.sendResult), (event) => onCareSendResult(ctx, event));
+    // The answer for a newsletter confirmation mail (keys crm:nl:...).
+    ctx.events.on(pluginEvent(PIB_PLUGINS.mailbox, MAIL_EVENTS.sendResult), (event) => onNewsletterSendResult(ctx, event));
     ctx.jobs.register("emit-recent", () => trackJob(ctx, "emit-recent", () => emitForAllCompanies(ctx, 1800)));
     ctx.jobs.register("emit-all", () => trackJob(ctx, "emit-all", () => emitForAllCompanies(ctx, null)));
     ctx.jobs.register("sales-daily", async () => {
@@ -522,6 +559,8 @@ const plugin = definePlugin({
       await trackJob(ctx, "setup-status", async () => {
         // First, so a failing step below can never leave the lead form's request log to grow.
         await purgeHits(ctx, new Date(Date.now() - 2 * 86_400_000).toISOString()).catch(() => undefined);
+        // A newsletter signup nobody confirmed is not kept: 30 days, then the row (with its keyed address hash) goes.
+        await expireUnconfirmedCaptures(ctx, new Date(Date.now() - 30 * 86_400_000).toISOString()).catch(() => undefined);
         // The signing page's and the site events' request logs (keyed address hashes), and daily counts past their retention.
         await purgePublicHits(ctx, new Date(Date.now() - 2 * 86_400_000).toISOString()).catch(() => undefined);
         await purgeRollup(ctx, dayOf(Date.now() - ROLLUP_KEEP_DAYS * 86_400_000)).catch(() => undefined);
@@ -558,8 +597,8 @@ const plugin = definePlugin({
       if (event.companyId) await skillSync?.ensure(event.companyId);
     });
     // Skill sync runs in the background so start-up never waits on it (a core upgrade that changes every
-    // managed skill made it outlast the host's 15 s initialize limit, 2026-11-08). Actions, tools and
-    // events still wait for their company's sync through skillSync.ensure.
+    // managed skill made it outlast the host's 15 s initialize limit, 2026-11-08). Actions and tools
+    // wait at most 2 s for their company's sync (skillSync.soon); company.created waits for it (skillSync.ensure).
     void syncKnownCompanies(ctx);
     // A deploy empties the folder the signing pages live in: write them again from the records (never blocks start).
     void syncAllPages(ctx).catch((error) => ctx.logger.info("CRM signing pages not synced at start", { error: error instanceof Error ? error.message : String(error) }));
@@ -643,14 +682,9 @@ const plugin = definePlugin({
   },
 
   async onApiRequest(input) {
-    if (!pluginCtx) return { status: 503, body: { error: "CRM plugin is not ready" } };
-    if (input.routeKey === SETUP_STATUS_ROUTE.routeKey) {
-      return { status: 200, body: await setupStatus(pluginCtx, input.companyId) };
-    }
-    if (input.routeKey === COCKPIT_ROUTE.routeKey) {
-      return { status: 200, body: await cockpitSnapshot(pluginCtx, input.companyId) };
-    }
-    return acceptPartnerGrant(pluginCtx, input);
+    if (!pluginCtx || !accessGuard) return { status: 503, body: { error: "CRM plugin is not ready" } };
+    // An unknown key under the switch `off` answers 404 as before; under report and enforce the guard refuses it.
+    return accessGuard.handleApiRequest(input, async () => NOT_FOUND);
   },
 });
 
@@ -717,7 +751,8 @@ async function runTool(ctx: PluginContext, name: string, params: unknown, run: T
       runId: run.runId,
     });
     const body = objectParams(params);
-    await skillSync?.ensure(run.companyId).catch(() => undefined);
+    // A tool call never waits long for the skill sync (kit `soon`).
+    await skillSync?.soon(run.companyId);
     let data = await dispatch(ctx, viewer, name, body, "agent");
     if (CRM_MUTATIONS.has(name)) await afterMutation(ctx, run.companyId, name, body);
     const kind = RECORD_TOOLS[name];
@@ -762,6 +797,8 @@ async function dispatch(
       return logOutcome(ctx, viewer, DESK_DEPS, body, source);
     case "create-deal":
       return createDeal(ctx, viewer, body);
+    case "create-pipeline":
+      return createPipeline(ctx, viewer, body);
     case "move-deal":
       return moveDeal(ctx, viewer, body);
     case "update-deal":
@@ -801,7 +838,7 @@ async function dispatch(
     case "contact-graph":
       return contactGraph(ctx, viewer, body);
     case "pipeline-forecast":
-      return pipelineForecast(ctx, viewer);
+      return pipelineForecast(ctx, viewer, body);
     case "add-deal-product":
       return addDealProduct(ctx, viewer, body);
     case "list-deal-products":
@@ -817,7 +854,7 @@ async function dispatch(
     case "list-deals":
       return listDealsTool(ctx, viewer, body);
     case "list-stages":
-      return listStagesTool(ctx, viewer);
+      return listStagesTool(ctx, viewer, body);
     case "list-sequences":
       return listSequencesTool(ctx, viewer);
     case "get-client-profile": {
@@ -827,6 +864,8 @@ async function dispatch(
     }
     case "update-client-profile":
       return updateClientProfile(ctx, viewer, body, source);
+    case "extract-brand-from-site":
+      return extractBrandFromSiteTool(ctx, viewer, body, source);
     case "set-email-status":
       return setEmailStatusRecord(ctx, viewer, body, source);
     case "list-client-sites":
@@ -877,6 +916,10 @@ async function dispatch(
       return driveTransferStatus(viewer, body);
     case "drive_file_fetch":
       return driveFileFetch(ctx, viewer, body);
+    case "drive_files_list":
+      return driveFilesList(ctx, viewer, body);
+    case "drive_file_trash":
+      return driveFileTrash(ctx, viewer, body);
     default:
       if (WP_TOOL_NAMES.includes(name)) return runWpTool(ctx, viewer, name, body, source);
       if (isCareTool(name)) return runCareTool(ctx, viewer, name, body, source);
@@ -895,13 +938,14 @@ const DESK_DEPS: DeskDeps = {
 
 async function visibleRecords(ctx: PluginContext, viewer: Viewer) {
   const pipeline = await ensurePipeline(ctx, viewer.companyId);
-  const [accounts, contacts, deals, links, sequences, stages] = await Promise.all([
+  const [accounts, contacts, deals, links, sequences, stages, pipelines] = await Promise.all([
     listAccounts(ctx, viewer.companyId),
     listContacts(ctx, viewer.companyId),
     listDeals(ctx, viewer.companyId),
     listLinks(ctx, viewer.companyId),
     listSequences(ctx, viewer.companyId),
-    listStages(ctx, pipeline.pipelineId),
+    listCompanyStages(ctx, viewer.companyId),
+    listPipelines(ctx, viewer.companyId),
   ]);
   const [accountGrants, contactGrants, dealGrants] = await Promise.all([
     grantsFor(ctx, "company", viewer.companyId),
@@ -913,7 +957,7 @@ async function visibleRecords(ctx: PluginContext, viewer: Viewer) {
   const visibleDeals = deals.filter((row) => canSeeRecord(viewer, row, dealGrants.get(row.id) ?? []));
   const contactIds = new Set(visibleContacts.map((row) => row.id));
   const visibleLinks = links.filter((link) => contactIds.has(link.contactId));
-  return { pipeline, visibleAccounts, visibleContacts, visibleDeals, visibleLinks, sequences, stages };
+  return { pipeline, defaultPipelineId: pipeline.pipelineId, pipelines, visibleAccounts, visibleContacts, visibleDeals, visibleLinks, sequences, stages };
 }
 
 async function load(ctx: PluginContext, context: PluginPerformActionContext) {
@@ -922,7 +966,11 @@ async function load(ctx: PluginContext, context: PluginPerformActionContext) {
     visibleRecords(ctx, viewer),
     listProducts(ctx, viewer.companyId),
   ]);
-  const { visibleAccounts, visibleContacts, visibleDeals, visibleLinks, sequences, stages } = records;
+  const { visibleAccounts, visibleContacts, visibleLinks, sequences } = records;
+  // The board and the figures show the default pipeline only; a deal belongs to the pipeline of its stage.
+  const stages = records.stages.filter((stage) => stage.pipeline_id === records.defaultPipelineId);
+  const boardStageIds = new Set(stages.map((stage) => stage.id));
+  const visibleDeals = records.visibleDeals.filter((deal) => boardStageIds.has(deal.stageId));
 
   const linkedContactIds = new Set(visibleLinks.map((link) => link.contactId));
   const openStageIds = new Set(stages.filter((stage) => stage.kind === "open").map((stage) => stage.id));
@@ -1006,6 +1054,8 @@ async function load(ctx: PluginContext, context: PluginPerformActionContext) {
       sequenceCount: sequences.length,
       openDealCount: openDeals.length,
       openPipelineByCurrency,
+      defaultPipelineName: records.pipelines.find((row) => row.isDefault)?.name ?? null,
+      pipelineCount: records.pipelines.length,
       byStage,
       accountLifecycle,
       contactLifecycle,
@@ -1128,6 +1178,7 @@ async function clientWorkspace(ctx: PluginContext, viewer: Viewer, ref: ClientRe
       stageId: deal.stageId,
       stageName: stageById.get(deal.stageId)?.name ?? deal.stageId,
       stageKind: stageById.get(deal.stageId)?.kind ?? "open",
+      pipelineId: stageById.get(deal.stageId)?.pipeline_id ?? null,
       contactId: deal.contactId,
       contactName: deal.contactId ? contactById.get(deal.contactId)?.name ?? null : null,
       accountId: deal.accountId,
@@ -1159,7 +1210,7 @@ async function clientWorkspace(ctx: PluginContext, viewer: Viewer, ref: ClientRe
     companies,
     deals,
     activities,
-    stages: stages.map((stage) => ({ id: stage.id, name: stage.name, kind: stage.kind, position: stage.position })),
+    stages: stages.map((stage) => ({ id: stage.id, name: stage.name, kind: stage.kind, position: stage.position, pipelineId: stage.pipeline_id })),
     sequences: sequences.map((row) => ({ id: row.id, name: row.name, completionMode: row.completion_mode })),
     options: {
       companies: visibleAccounts.map((row) => ({ id: row.id, name: row.name })),
@@ -1464,15 +1515,19 @@ async function contactGraph(ctx: PluginContext, viewer: Viewer, params: Record<s
   };
 }
 
-async function pipelineForecast(ctx: PluginContext, viewer: Viewer) {
-  const pipeline = await ensurePipeline(ctx, viewer.companyId);
-  const stages = await listStages(ctx, pipeline.pipelineId);
+export async function pipelineForecast(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown> = {}) {
+  const picked = await pipelineParam(ctx, viewer.companyId, params.pipeline);
+  const pipelineId = picked?.id ?? (await ensurePipeline(ctx, viewer.companyId)).pipelineId;
+  const [stages, pipelines] = await Promise.all([listStages(ctx, pipelineId), listPipelines(ctx, viewer.companyId)]);
   const deals = await listDeals(ctx, viewer.companyId);
   const visibleDeals = deals.filter((deal) => canSeeRecord(viewer, deal, []));
-  return forecastPipeline({
+  // A deal belongs to the pipeline of its stage, so only deals on this pipeline's stages count.
+  const stageIds = new Set(stages.map((stage) => stage.id));
+  const forecast = forecastPipeline({
     stages: stages.map((stage) => ({ id: stage.id, name: stage.name, kind: stageKind(stage.kind), position: stage.position })),
-    deals: visibleDeals.map((deal) => ({ stageId: deal.stageId, amountMinor: deal.amountMinor, currency: deal.currency })),
+    deals: visibleDeals.filter((deal) => stageIds.has(deal.stageId)).map((deal) => ({ stageId: deal.stageId, amountMinor: deal.amountMinor, currency: deal.currency })),
   });
+  return { ...forecast, pipeline: { id: pipelineId, name: pipelines.find((row) => row.id === pipelineId)?.name ?? "" } };
 }
 
 async function addDealProduct(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
@@ -1778,8 +1833,54 @@ async function logActivity(ctx: PluginContext, viewer: Viewer, params: Record<st
   return { id, recordType, recordId, kind };
 }
 
+export async function createPipeline(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
+  // The company's first pipeline (Sales) must exist and stay the default, so it is made before this one.
+  await ensurePipeline(ctx, viewer.companyId);
+  const name = requiredString(params, "name").trim();
+  if (!name) throw new CrmError("name is required");
+  const given = params.stages;
+  if (given != null && !Array.isArray(given)) throw new CrmError("stages must be a list of {name, kind}");
+  const stages = (given == null ? DEFAULT_STAGES.map(({ name: stage, kind }) => ({ name: stage, kind: kind as string })) : (given as unknown[]).map((raw) => {
+    const item = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+    return { name: typeof item.name === "string" ? item.name.trim() : "", kind: String(item.kind ?? "") };
+  })).map((stage, position) => ({ ...stage, position }));
+  const seen = new Set<string>();
+  for (const stage of stages) {
+    if (!stage.name) throw new CrmError("Every stage needs a name");
+    if (!(STAGE_KINDS as readonly string[]).includes(stage.kind)) throw new CrmError(`Stage "${stage.name}" has kind "${stage.kind}"; use open, won or lost`);
+    const key = stage.name.toLowerCase();
+    if (seen.has(key)) throw new CrmError(`Two stages are named "${stage.name}"; stage names must be unique`);
+    seen.add(key);
+  }
+  const count = (kind: string) => stages.filter((stage) => stage.kind === kind).length;
+  if (count("open") < 1) throw new CrmError("A pipeline needs at least one open stage");
+  if (count("won") !== 1) throw new CrmError(`A pipeline needs exactly one won stage (got ${count("won")})`);
+  if (count("lost") !== 1) throw new CrmError(`A pipeline needs exactly one lost stage (got ${count("lost")})`);
+  const existing = await listPipelines(ctx, viewer.companyId);
+  if (existing.some((row) => row.name.trim().toLowerCase() === name.toLowerCase())) throw new CrmError(`A pipeline named "${name}" already exists`);
+  const pipelineId = randomUUID();
+  await insertPipeline(ctx, viewer.companyId, pipelineId, name);
+  try {
+    await insertStages(ctx, viewer.companyId, pipelineId, stages);
+  } catch (error) {
+    // Best effort: a row left behind has no stages, so every reader and the default rule ignore it.
+    await deletePipeline(ctx, viewer.companyId, pipelineId).catch(() => undefined);
+    throw error;
+  }
+  const saved = await listStages(ctx, pipelineId);
+  return {
+    pipelineId,
+    name,
+    isDefault: false,
+    stages: saved.map((stage) => ({ id: stage.id, name: stage.name, kind: stage.kind, position: stage.position })),
+  };
+}
+
 async function createDeal(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
   const pipeline = await ensurePipeline(ctx, viewer.companyId);
+  // `pipeline` (id or name) puts the deal in that pipeline's first open stage; omitted: the default pipeline's.
+  const picked = await pipelineParam(ctx, viewer.companyId, params.pipeline);
+  const start = picked ? await firstOpenStage(ctx, picked) : { pipeline_id: pipeline.pipelineId, id: pipeline.openStageId };
   const accountId = optionalId(params, "companyRecordId", "company");
   const contactId = optionalId(params, "contactId", "contact");
   if (accountId) await requireAccount(ctx, viewer, accountId);
@@ -1787,8 +1888,8 @@ async function createDeal(ctx: PluginContext, viewer: Viewer, params: Record<str
   const deal: DealDraft = {
     id: randomUUID(),
     companyId: viewer.companyId,
-    pipelineId: pipeline.pipelineId,
-    stageId: pipeline.openStageId,
+    pipelineId: start.pipeline_id,
+    stageId: start.id,
     accountId: accountId ?? null,
     contactId: contactId ?? null,
     title: requiredString(params, "title"),
@@ -1808,7 +1909,8 @@ async function createDeal(ctx: PluginContext, viewer: Viewer, params: Record<str
 
 async function moveDeal(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>, how = "in the CRM") {
   const deal = await requireDeal(ctx, viewer, requiredString(params, "dealId"));
-  const stage = await resolveStage(ctx, deal, requiredString(params, "stageId"));
+  const stage = await moveTarget(ctx, deal, params);
+  if (!stage) throw new CrmError("move-deal needs stageId, pipeline or both (list-stages has them).");
   // The accepted quote this move closes (a "pick the deal" hand-off): the deal records it.
   const quoteId = optionalString(params, "quoteId");
   if (quoteId && stageKind(stage.kind) !== "won") throw new CrmError("quoteId goes with stageId won: an accepted quote closes the deal.");
@@ -1873,8 +1975,7 @@ async function updateDealRecord(ctx: PluginContext, viewer: Viewer, params: Reco
   }
 
   const how = source === "human" ? "in the CRM" : "by an agent in the CRM";
-  const stageValue = optionalString(params, "stageId");
-  const stage = stageValue ? await resolveStage(ctx, next, stageValue) : null;
+  const stage = await moveTarget(ctx, next, params);
   let won: Awaited<ReturnType<typeof onDealWon>> | null = null;
   let saved = next;
   if (stage && stage.id !== deal.stageId) {
@@ -1883,15 +1984,17 @@ async function updateDealRecord(ctx: PluginContext, viewer: Viewer, params: Reco
     saved = moved.deal;
     won = moved.won;
   } else {
+    // Its stage's pipeline (repairs a legacy row whose own pipeline_id disagrees).
+    const current = await getStage(ctx, next.stageId);
+    if (current) next.pipelineId = current.pipeline_id;
     await saveDeal(ctx, next);
     // A deal won without a client could not make anyone a customer or tell Billing: linking its client now does.
     const hadClient = Boolean(deal.accountId || deal.contactId);
-    const isWon = stageKind((await listStages(ctx, deal.pipelineId).catch(() => [])).find((row) => row.id === next.stageId)?.kind ?? "open") === "won";
+    const isWon = stageKind(current?.kind ?? "open") === "won";
     if (isWon && !hadClient && (next.accountId || next.contactId)) won = await onDealWon(ctx, next, `${how}, when its client was linked`);
   }
   await insertFacts(ctx, deal.companyId, "deal", deal.id, facts);
-  const stages = await listStages(ctx, saved.pipelineId).catch(() => []);
-  const current = stages.find((row) => row.id === saved.stageId);
+  const current = await getStage(ctx, saved.stageId).catch(() => null);
   return {
     ...saved,
     stageName: current?.name ?? null,
@@ -1937,14 +2040,39 @@ async function sequenceDetail(ctx: PluginContext, viewer: Viewer, params: Record
   };
 }
 
-/** A stage by id, by name (case-insensitive) or by the words won / lost. */
-async function resolveStage(ctx: PluginContext, deal: DealDraft, value: string) {
+/**
+ * The stage a move-deal / update-deal call asks for, or null when it asks for no move. `stageId` (an id, a name or won / lost)
+ * and/or `pipeline` (id or name). A stage id may be in another pipeline of the deal's company: a cross-pipeline move.
+ * `pipeline` alone: that pipeline's first open stage (a deal already in it stays in its stage).
+ */
+async function moveTarget(ctx: PluginContext, deal: DealDraft, params: Record<string, unknown>) {
+  const pipeline = await pipelineParam(ctx, deal.companyId, params.pipeline);
+  const stageValue = optionalString(params, "stageId");
+  if (stageValue) return resolveStage(ctx, deal, stageValue, pipeline);
+  if (!pipeline) return null;
+  const current = await getStage(ctx, deal.stageId);
+  if (current && current.company_id === deal.companyId && current.pipeline_id === pipeline.id) return current;
+  return firstOpenStage(ctx, pipeline);
+}
+
+async function firstOpenStage(ctx: PluginContext, pipeline: { id: string; name: string }) {
+  const open = (await listStages(ctx, pipeline.id)).find((stage) => stageKind(stage.kind) === "open");
+  if (!open) throw new CrmError(`Pipeline ${pipeline.name} has no open stage`);
+  return open;
+}
+
+/**
+ * A stage by id, by name (case-insensitive) or by the words won / lost. A name or won / lost is looked up in `pipeline` when
+ * given, else in the deal's pipeline (its stage's). A stage id of another company is not found; one outside `pipeline` is refused.
+ */
+async function resolveStage(ctx: PluginContext, deal: DealDraft, value: string, pipeline: { id: string; name: string } | null = null) {
   const byId = await getStage(ctx, value);
   if (byId) {
     if (byId.company_id !== deal.companyId) throw new CrmError("Stage was not found");
+    if (pipeline && byId.pipeline_id !== pipeline.id) throw new CrmError(`Stage ${byId.name} is not in pipeline ${pipeline.name}: send the stage of that pipeline, or leave pipeline out.`);
     return byId;
   }
-  const stages = await listStages(ctx, deal.pipelineId);
+  const stages = await listStages(ctx, pipeline?.id ?? (await dealPipelineId(ctx, deal)));
   const lower = value.trim().toLowerCase();
   const byName = stages.find((stage) => stage.name.toLowerCase() === lower);
   if (byName) return byName;

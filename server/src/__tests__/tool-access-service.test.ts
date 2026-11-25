@@ -478,7 +478,7 @@ function boardSessionActor(
     isInstanceAdmin: false,
     source: "session",
     companyIds: [companyId],
-    memberships: [{ companyId, membershipRole, status: "active" }],
+    memberships: [{ companyId, membershipRole, status: "active", restricted: false, restrictionMode: "off" as const }],
   };
 }
 
@@ -898,7 +898,7 @@ function memberActor(allowedCompany: IdRef, isInstanceAdmin: boolean): Express.R
       {
         companyId: allowedCompany.id,
         membershipRole: "owner",
-        status: "active",
+        status: "active", restricted: false, restrictionMode: "off" as const,
       },
     ],
     isInstanceAdmin: isInstanceAdmin,
@@ -3448,7 +3448,7 @@ describeEmbeddedPostgres("tool access service", () => {
       source: "session",
       companyIds: [company.id],
       memberships: [
-        { companyId: company.id, membershipRole: "operator", status: "active" },
+        { companyId: company.id, membershipRole: "operator", status: "active", restricted: false, restrictionMode: "off" as const },
       ],
     };
     await db.insert(companyMemberships).values({
@@ -13244,7 +13244,7 @@ describeEmbeddedPostgres("tool access service", () => {
         {
           companyId: company.id,
           membershipRole: "viewer" as const,
-          status: "active",
+          status: "active", restricted: false, restrictionMode: "off" as const,
         },
       ],
     };

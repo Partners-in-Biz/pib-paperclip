@@ -17,7 +17,7 @@
 import type { PluginEvent, ToolRunContext } from "@paperclipai/plugin-sdk";
 import { askAnsweredKey, askCardProblems, askEffectComment, askEffectKeys, emitAskAnswered, runAskEffect, type AskAnswered, type AskEffectResult } from "@partnersinbiz/pib-plugin-kit";
 import { recordActivity } from "./activity.js";
-import { askComment, AskError, ASK_LIMITS, describeEffect, INTERNAL_EFFECTS, parseAskInput, wakeReason, type AskEffect, type AskInput, type AskKind, type AskView } from "./ask-model.js";
+import { askComment, AskError, ASK_LIMITS, describeEffect, INTERNAL_EFFECTS, parseAskInput, unreadableIssueMessage, wakeReason, type AskEffect, type AskInput, type AskKind, type AskView } from "./ask-model.js";
 import { readDecisionRights, routeAskToSeat } from "./decision-rights.js";
 import { askText, classify, DECISION_CLASS_LABEL, DEFAULT_APPLY_HOURS, defaultAnswer, HARD_STOPS, routeAsk, type HardStopKey } from "./decision-rights-model.js";
 import { crmClient } from "./clients.js";
@@ -355,6 +355,14 @@ export interface AskOwnerResult {
   autoApply?: { answer: string; at: string } | null;
 }
 
+/**
+ * An open ask whose issue reads as null (deleted, or a private task the Cockpit cannot read) is treated as closed or cancelled.
+ * One log line names the ask and the issue so the close can be traced (PAR-11587).
+ */
+export function logUnreadableAskIssue(env: Env, ask: Pick<AskRow, "id" | "issueId" | "companyId">, where: string): void {
+  env.ctx.logger.info("ask-owner: the ask's issue could not be read (missing, or a private task); treated as closed", { askId: ask.id, issueId: ask.issueId, companyId: ask.companyId, where });
+}
+
 /** The tool. Throws AskError with a message the agent can act on. */
 export async function askOwner(env: Env, run: Pick<ToolRunContext, "agentId" | "runId" | "companyId">, raw: Record<string, unknown>): Promise<AskOwnerResult> {
   const companyId = run.companyId;
@@ -369,7 +377,7 @@ export async function askOwner(env: Env, run: Pick<ToolRunContext, "agentId" | "
   const problems = askCardProblems({ kind: input.kind, links: input.links, steps: input.steps, effect: input.effect });
   if (problems.length > 0) throw new AskError(`The question is not ready to send:\n- ${problems.join("\n- ")}`);
   const issue = await env.ctx.issues.get(input.issueId, companyId).catch(() => null);
-  if (!issue) throw new AskError(`Issue ${input.issueId} was not found in this company. Pass the issue you are working on (id or identifier, e.g. PIB-23).`);
+  if (!issue) throw new AskError(unreadableIssueMessage(input.issueId));
   if (CLOSED.has(String(issue.status))) throw new AskError(`Issue ${issue.identifier ?? issue.id} is closed. Ask on an open issue: the one waiting for the answer.`);
   const now = env.now().toISOString();
 
@@ -532,8 +540,11 @@ export async function askOwner(env: Env, run: Pick<ToolRunContext, "agentId" | "
 // The answer, and closing
 // ---------------------------------------------------------------------------
 
-/** Hand the issue back with the answer and wake the agent. `effect` is what the answer's effect did, told to the agent in the wake reason. */
-async function handBack(env: Env, ask: AskRow, answer: string, effect: string | null = null, byDefault = false): Promise<{ agentId: string | null; woke: boolean }> {
+/**
+ * Hand the issue back with the answer and wake the agent. `effect` is what the answer's effect did, told to the agent in the wake reason.
+ * `fact`: settled by a fact (a merged PR), not by a person; its words replace the wake reason and the activity line.
+ */
+async function handBack(env: Env, ask: AskRow, answer: string, effect: string | null = null, byDefault = false, fact: { wakeReason: string; activity: (agentName: string, ref: string) => string } | null = null): Promise<{ agentId: string | null; woke: boolean }> {
   const companyId = ask.companyId;
   let target = (await usableAgent(env, companyId, ask.returnAgentId)) ?? (await usableAgent(env, companyId, ask.agentId));
   if (!target) {
@@ -554,7 +565,7 @@ async function handBack(env: Env, ask: AskRow, answer: string, effect: string | 
   await env.ctx.issues.createComment(ask.issueId, `Answer recorded. Handed back to **${target.name}**, who carries on.`, companyId).catch(() => undefined);
   let woke = false;
   try {
-    await env.ctx.issues.requestWakeup(ask.issueId, companyId, { reason: wakeReason({ identifier: ask.issueIdentifier, answer, options: ask.options, effect, byDefault }), idempotencyKey: `ask:${ask.id}:answered` });
+    await env.ctx.issues.requestWakeup(ask.issueId, companyId, { reason: fact?.wakeReason ?? wakeReason({ identifier: ask.issueIdentifier, answer, options: ask.options, effect, byDefault }), idempotencyKey: `ask:${ask.id}:answered` });
     woke = true;
   } catch (error) {
     env.ctx.logger.info("ask-owner: wake skipped", { issueId: ask.issueId, error: message(error) });
@@ -563,7 +574,7 @@ async function handBack(env: Env, ask: AskRow, answer: string, effect: string | 
     key: `ask:${ask.id}:answered`,
     kind: "ask_answered",
     at: env.now().toISOString(),
-    text: byDefault ? `${target.name}'s question on ${ref} got no reply, so the recommended answer was applied` : `The owner answered ${target.name}'s question on ${ref}`,
+    text: fact ? fact.activity(target.name, ref) : byDefault ? `${target.name}'s question on ${ref} got no reply, so the recommended answer was applied` : `The owner answered ${target.name}'s question on ${ref}`,
     href: `/issues/${ref}`,
     agentId: target.id,
   }).catch(() => false);
@@ -598,6 +609,7 @@ async function applyAnswer(env: Env, ask: AskRow, source: ApplyAnswerSource): Pr
   }
 
   const issue = await env.ctx.issues.get(ask.issueId, ask.companyId).catch(() => null);
+  if (!issue) logUnreadableAskIssue(env, ask, "answer");
   const closedIssue = !issue || CLOSED.has(String(issue.status));
   // For owner path, preserve original status logic. For policy, always close with "answered"
   const status = source.kind === "policy"
@@ -641,6 +653,41 @@ export async function answerAskByPolicy(env: Env, companyId: string, askId: stri
   const result = await applyAnswer(env, ask, { kind: "policy", policy, answer });
   if (!result) return null; // closeAsk guard prevented the update
   return getAsk(env, companyId, askId); // return the updated ask
+}
+
+/** Where a fact-settled ask leaves its issue. `skipped`: nothing changed (closed, moved on, or another run got there first). */
+export type FactSettleOutcome = "handed_back" | "closed" | "skipped";
+
+/**
+ * Settles an open ask by a checked fact, not a person's reply (PAR-14492: the
+ * PR it asked the owner to merge is merged). Acts only while the issue still
+ * waits on a person (assigned to a user, `in_review` or `blocked`). The ask
+ * is closed first, so a second run or a racing reply cannot act twice.
+ * `closeIssue`: the issue held nothing but this ask (an Unblock issue), so it
+ * closes `done`; otherwise it goes back to the agent, woken with `wakeReason`.
+ */
+export async function settleAskByFact(env: Env, ask: AskRow, fact: { policy: string; answer: string; comment: string; wakeReason: string; closeIssue: boolean }): Promise<FactSettleOutcome> {
+  const companyId = ask.companyId;
+  const issue = await env.ctx.issues.get(ask.issueId, companyId).catch(() => null);
+  if (!issue || CLOSED.has(String(issue.status))) return "skipped";
+  if (!issue.assigneeUserId || issue.assigneeAgentId || !["in_review", "blocked"].includes(String(issue.status))) return "skipped";
+  const now = env.now().toISOString();
+  const closed = await closeAsk(env, ask, { status: fact.closeIssue ? "resolved" : "answered", answer: fact.answer.slice(0, ASK_LIMITS.answerChars), defaultAppliedAt: now, defaultPolicy: fact.policy }, now);
+  if (!closed) return "skipped";
+  await env.ctx.issues.createComment(ask.issueId, fact.comment, companyId).catch((error) => env.ctx.logger.info("ask-owner: the settled-by-fact comment was not posted", { askId: ask.id, error: message(error) }));
+  const ref = ask.issueIdentifier ?? ask.issueId;
+  if (fact.closeIssue) {
+    try {
+      await env.ctx.issues.update(ask.issueId, { status: "done" }, companyId);
+      await recordActivity(env.ctx, companyId, { key: `ask:${ask.id}:answered`, kind: "ask_answered", at: now, text: `A merged PR settled the question on ${ref}; it was closed`, href: `/issues/${ref}`, agentId: ask.agentId }).catch(() => false);
+      return "closed";
+    } catch (error) {
+      // Could not close it: hand it back instead, so it never stays with the owner for nothing.
+      env.ctx.logger.info("ask-owner: the settled Unblock issue was not closed; handing it back", { askId: ask.id, error: message(error) });
+    }
+  }
+  const back = await handBack(env, ask, fact.answer, null, false, { wakeReason: fact.wakeReason, activity: (name, r) => `A merged PR settled ${name}'s question on ${r}` });
+  return back.agentId ? "handed_back" : "skipped";
 }
 
 // ---------------------------------------------------------------------------
@@ -721,6 +768,7 @@ export async function settleEffect(env: Env, ask: AskRow, result: Pick<AskEffect
     agentId: ask.returnAgentId,
   }).catch(() => false);
   const issue = await env.ctx.issues.get(ask.issueId, ask.companyId).catch(() => null);
+  if (!issue) logUnreadableAskIssue(env, ask, "effect");
   if (!issue || CLOSED.has(String(issue.status))) return true;
   if (ask.source === "cockpit" && (result.status === "applied" || result.status === "already_applied")) {
     await env.ctx.issues.update(ask.issueId, { status: "done" }, ask.companyId).catch((error) => env.ctx.logger.info("ask-owner: the finished question was not closed", { askId: ask.id, error: message(error) }));
@@ -824,6 +872,7 @@ export async function onAskComment(env: Env, event: Pick<PluginEvent, "companyId
 async function settleByIssue(env: Env, ask: AskRow): Promise<"resolved" | "cancelled" | "open"> {
   const issue = await env.ctx.issues.get(ask.issueId, ask.companyId).catch(() => null);
   const now = env.now().toISOString();
+  if (!issue) logUnreadableAskIssue(env, ask, "issue-update");
   if (!issue || issue.status === "cancelled") {
     await closeAsk(env, ask, { status: "cancelled" }, now);
     return "cancelled";

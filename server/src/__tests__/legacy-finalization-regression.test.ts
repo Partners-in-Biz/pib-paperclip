@@ -120,6 +120,7 @@ describe("P6-32 legacy finalization regression", () => {
     });
     const heartbeat = heartbeatService(db);
     const queued = await heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "automation",
       triggerDetail: "system",
       reason: "issue_commented",

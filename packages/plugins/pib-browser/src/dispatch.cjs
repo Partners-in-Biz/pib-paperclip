@@ -9,8 +9,17 @@ const { parseIdentity, originsFor, authorise } = require('./policy.cjs');
 const { redactText, parseRegion } = require('./redact.cjs');
 const { checkFill: defaultCheckFill } = require('./fill-rules.cjs');
 const { createErrorLog } = require('./errlog.cjs');
+const { createHandoffSessions, DEFAULT_TIMEOUT_MS } = require('./handoff-session.cjs');
 
+// The agent verbs. They all need an agent token and act on that agent's own session.
 const COMMANDS = Object.freeze(['open', 'goto', 'click', 'fill', 'text', 'shot', 'close']);
+// Person hand-off (PAR-14022): authorised by root's flag, not by an agent token. Opens a window only a person
+// on the VNC screen can use; no agent verb can reach it.
+const HANDOFF_COMMANDS = Object.freeze(['handoff-open']);
+
+// How long to wait for a text that the page renders after its document has loaded.
+const OPEN_EXPECT_WAIT_MS = 15000;
+const SHOT_EXPECT_WAIT_MS = 5000;
 
 // Sort a driver error into a reason that names the cause (PAR-9187). Only a dead
 // browser/context ends the session; a missing or ambiguous target, a slow page or
@@ -36,7 +45,6 @@ function createDispatcher(deps = {}) {
       errorLog.record({ cmd: request?.cmd, issue: request?.issue, identity: request?.identity, phase, error });
     } catch (e) {}
   };
-  const noopHandoff = { isActive: () => false };
 
   const makeGuard = (origins) => (url, kind) => {
     try {
@@ -51,6 +59,25 @@ function createDispatcher(deps = {}) {
     try { await ctx.close(); } catch (e) {}
     sessions.delete(key);
   };
+
+  const handoffs = createHandoffSessions({
+    browser: deps.browser,
+    policy: deps.policy,
+    sites: deps.sites,
+    handoff,
+    makeGuard,
+    // One Chromium per profile directory: end every agent session on the identity before the person's window opens.
+    beforeOpen: async (identity) => {
+      for (const [key, s] of [...sessions]) {
+        if (key.endsWith(`|${identity}`)) await dropSession(s.ctx, key);
+      }
+    },
+    timeoutMs: deps.handoffTimeoutMs || DEFAULT_TIMEOUT_MS,
+    pollMs: deps.handoffPollMs,
+    now: deps.handoffNow,
+    sleep: deps.handoffSleep,
+    logError: (req, phase, e) => logError(req, phase, e)
+  });
 
   const afterOp = async (ctx, key) => {
     const v = ctx.violations();
@@ -70,6 +97,8 @@ function createDispatcher(deps = {}) {
 
     try {
       const { cmd, token, issue, identity: identityStr, args = {} } = request || {};
+
+      if (cmd === 'handoff-open') return await handoffs.start(identityStr);
 
       // Validate command before auth
       if (!cmd || typeof cmd !== 'string' || !COMMANDS.includes(cmd)) {
@@ -116,6 +145,11 @@ function createDispatcher(deps = {}) {
           return { exit: EXIT.NO_BROWSER, ok: false, reason: 'no_browser' };
         }
 
+        // A person is logging in on this profile: Chromium allows one window per profile directory.
+        if (handoffs.isOpen(identityStr)) {
+          return { exit: EXIT.NO_BROWSER, ok: false, reason: 'handoff_open' };
+        }
+
         // Close existing context if one exists for same agentId|identity key
         const existingSession = sessions.get(sessionKey);
         if (existingSession) {
@@ -144,7 +178,13 @@ function createDispatcher(deps = {}) {
           const violation = await afterOp(ctx, sessionKey);
           if (violation) return violation;
 
-          if (!(await ctx.hasText(site.loggedIn.expect))) {
+          // The logged-in text can render a moment after the document: wait for it before calling the session expired.
+          const loggedIn = await ctx.hasText(site.loggedIn.expect, { timeoutMs: OPEN_EXPECT_WAIT_MS });
+          // The page can navigate or open a popup while we wait. Check the origin wall again before deciding
+          // anything: a refused origin is reported as such, and never keeps a session or hides behind "expired".
+          const lateViolation = await afterOp(ctx, sessionKey);
+          if (lateViolation) return lateViolation;
+          if (!loggedIn) {
             await ctx.close();
             return { exit: EXIT.SESSION_EXPIRED, ok: false, reason: 'session_expired' };
           }
@@ -269,14 +309,11 @@ function createDispatcher(deps = {}) {
             pageUrl = undefined;
           }
 
+          // The hand-off flag never lifts these rules for an agent: during a hand-off the person types the
+          // password into their own window (handoff-open), never through `fill` (PAR-14022).
           const checkFillFn = deps.checkFill || defaultCheckFill;
           try {
-            const fillCheck = checkFillFn({
-              field,
-              pageUrl,
-              site,
-              handoffActive: (handoff || noopHandoff).isActive(identityStr)
-            });
+            const fillCheck = checkFillFn({ field, pageUrl, site });
             if (!fillCheck || fillCheck.ok !== true) {
               await dropSession(ctx, sessionKey);
               return { exit: EXIT.REFUSED_BY_POLICY, ok: false, reason: fillCheck?.reason || 'fill_check_failed' };
@@ -318,7 +355,7 @@ function createDispatcher(deps = {}) {
 
           let expectMatched = false;
           if (expect) {
-            if (!(await ctx.hasText(expect))) {
+            if (!(await ctx.hasText(expect, { timeoutMs: SHOT_EXPECT_WAIT_MS }))) {
               return { exit: EXIT.EXPECT_MISSING, ok: false, reason: 'expect_missing' };
             }
             expectMatched = true;
@@ -395,7 +432,7 @@ function createDispatcher(deps = {}) {
     }
   }
 
-  return { dispatch, sessions, COMMANDS };
+  return { dispatch, sessions, handoffs, COMMANDS };
 }
 
-module.exports = { createDispatcher, classifyDriverError, COMMANDS };
+module.exports = { createDispatcher, classifyDriverError, COMMANDS, HANDOFF_COMMANDS };

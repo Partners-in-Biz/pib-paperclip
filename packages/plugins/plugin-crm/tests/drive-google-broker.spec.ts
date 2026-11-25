@@ -486,6 +486,39 @@ describe("Shared Drive layout: never the Drive root", () => {
   });
 });
 
+describe("trashFile (PAR-11108)", () => {
+  const add = (g: ReturnType<typeof fakeGoogle>, f: Partial<(typeof g.files)[number]> & { id: string }) => g.files.push({ name: f.id, mimeType: "text/plain", parents: [DRIVE_ID], ...f });
+
+  it("moves a file on the bound drive to the trash with trashed:true only, and a repeat is already-trashed", async () => {
+    const g = fakeGoogle();
+    add(g, { id: "file00000001", name: "W4 proof campaigns" });
+    const b = broker(g);
+    expect(await b.trashFile!("file00000001")).toEqual({ status: "trashed", id: "file00000001", name: "W4 proof campaigns", mimeType: "text/plain" });
+    expect(g.files[0]!.trashed).toBe(true);
+    expect(g.calls.some((c) => c.includes("DELETE"))).toBe(false);
+    expect(await b.trashFile!("file00000001")).toMatchObject({ status: "trashed", alreadyTrashed: true });
+  });
+
+  it("refuses a file on another Shared Drive and a missing file, touching nothing", async () => {
+    const g = fakeGoogle();
+    add(g, { id: "other0000001", driveId: "someone-elses-drive" });
+    const b = broker(g);
+    expect(await b.trashFile!("other0000001")).toEqual({ status: "not_found" });
+    expect(await b.trashFile!("missing00001")).toEqual({ status: "not_found" });
+    expect(g.files[0]!.trashed).toBeUndefined();
+  });
+
+  it("refuses a folder unless allowFolder is set", async () => {
+    const g = fakeGoogle();
+    add(g, { id: "folder000001", mimeType: "application/vnd.google-apps.folder" });
+    const b = broker(g);
+    expect(await b.trashFile!("folder000001")).toEqual({ status: "is_folder" });
+    expect(g.files[0]!.trashed).toBeUndefined();
+    expect(await b.trashFile!("folder000001", { allowFolder: true })).toMatchObject({ status: "trashed" });
+    expect(g.files[0]!.trashed).toBe(true);
+  });
+});
+
 describe("parseServiceAccountKey", () => {
   it("rejects non-JSON, non-service-account and keyless input", () => {
     expect(() => parseServiceAccountKey("nope")).toThrow(/not valid JSON/);

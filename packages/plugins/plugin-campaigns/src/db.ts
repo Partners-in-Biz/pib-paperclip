@@ -167,6 +167,23 @@ export async function listCampaigns(ctx: PluginContext, companyId: string, scope
   return rows.map(mapCampaign);
 }
 
+/**
+ * PiB's own campaigns whose name or status contains `q` (the page's search box: case-insensitive, name or status),
+ * newest first. A blank `q` lists them all.
+ */
+export async function searchCampaigns(ctx: PluginContext, companyId: string, q: string, limit: number): Promise<CampaignDraft[]> {
+  const rows = await ctx.db.query<CampaignRow>(
+    `SELECT ${CAMPAIGN_COLUMNS}
+       FROM ${table(ctx, "campaigns")}
+      WHERE company_id = $1 AND client_ref IS NULL
+        AND (strpos(lower(name), $2) > 0 OR strpos(lower(status), $2) > 0)
+      ORDER BY created_at DESC
+      LIMIT $3`,
+    [companyId, q.trim().toLowerCase(), limit],
+  );
+  return rows.map(mapCampaign);
+}
+
 export async function getCampaign(ctx: PluginContext, id: string): Promise<CampaignDraft | null> {
   const rows = await ctx.db.query<CampaignRow>(
     `SELECT ${CAMPAIGN_COLUMNS}
@@ -698,6 +715,24 @@ export async function setStepHtml(
         SET html_body = $5
       WHERE company_id = $1 AND campaign_id = $2 AND position = $3 AND variant = $4`,
     [input.companyId, input.campaignId, input.position, input.variant, input.html],
+  );
+  return result != null;
+}
+
+export async function updateStepText(
+  ctx: PluginContext,
+  input: { companyId: string; campaignId: string; position: number; variant: string; subject?: string; body?: string },
+): Promise<boolean> {
+  const sets: string[] = [];
+  const values: unknown[] = [input.companyId, input.campaignId, input.position, input.variant];
+  if (input.subject !== undefined) { values.push(input.subject); sets.push(`subject = $${values.length}`); }
+  if (input.body !== undefined) { values.push(input.body); sets.push(`body = $${values.length}`); }
+  if (sets.length === 0) return false;
+  const result = await ctx.db.execute(
+    `UPDATE ${table(ctx, "campaign_steps")}
+        SET ${sets.join(", ")}
+      WHERE company_id = $1 AND campaign_id = $2 AND position = $3 AND variant = $4`,
+    values,
   );
   return result != null;
 }

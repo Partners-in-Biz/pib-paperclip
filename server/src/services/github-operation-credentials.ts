@@ -116,6 +116,28 @@ async function saveGitHubSummary(
     .where(eq(runIdentityContexts.id, context.id));
 }
 
+const OWNERLESS_DELEGATION_KILL_SWITCH_ENV = "PAPERCLIP_GITHUB_OWNERLESS_DELEGATION";
+
+/**
+ * PiB fork (PAR-9963, approved by the owner on 2026-11-12). A run nobody
+ * started by hand (identity cause `company_default`: plugin-created tasks,
+ * sweeper wakes, and the tasks made under them) never uses the company
+ * default person's GitHub. Upstream gives such a run a login only through a
+ * grant dedicated to the agent. This fork also accepts the owner's standing
+ * delegation: a `connection_grant_delegations` row that a connection manager
+ * created for exactly this agent and this grant. No row, no login. The
+ * low-trust gate above this call is unchanged, a dedicated grant still wins,
+ * and runs that have a responsible person never read delegations.
+ * `PAPERCLIP_GITHUB_OWNERLESS_DELEGATION=0` switches it off; it is read on
+ * every resolution.
+ */
+function allowsOwnerlessDelegation(context: RunIdentityContext | null | undefined) {
+  return (
+    context?.cause === "company_default" &&
+    process.env[OWNERLESS_DELEGATION_KILL_SWITCH_ENV] !== "0"
+  );
+}
+
 /** No company secrets or ambient credentials are consulted by this path. */
 export async function resolveGitHubOperationCredentials(
   db: Db,
@@ -155,7 +177,7 @@ export async function resolveGitHubOperationCredentials(
       {
         agentId: input.agentId,
         heartbeatRunId: input.runId,
-        allowStandingDelegation: false,
+        allowStandingDelegation: allowsOwnerlessDelegation(context),
         responsibleUserId:
           context?.cause === "company_default"
             ? null

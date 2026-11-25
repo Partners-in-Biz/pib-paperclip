@@ -4,16 +4,17 @@
  * applied to the site here; a person approves, then the agent applies the change through the Connector.
  */
 import { randomBytes } from "node:crypto";
-import { reviewerAgentId, wakeIssue } from "@partnersinbiz/pib-plugin-kit";
+import { reviewerAgentId, wakeIssue, type SafeFetchResult } from "@partnersinbiz/pib-plugin-kit";
 import * as db from "../db.js";
 import { t } from "../db.js";
 import { checkClaims } from "../engine/claims.js";
 import { checkWhy } from "../engine/why.js";
 import { rubricLines, scorePreviewCopy, type PreviewRubric } from "../engine/rubric.js";
-import { isRehearsalSprint } from "../engine/rehearsal.js";
+import { isRehearsalSprint, isRehearsalUrl, REHEARSAL_PAGE_NOTE, rehearsalPageHtml } from "../engine/rehearsal.js";
 import { loadFacts } from "./facts.js";
-import { buildPreviewHtml, countBySelector, MIN_KEPT_PCT, parseContentSelector, fingerprintChanges, liveFingerprint, previewStats, visibleWords, type LiveFingerprint, withDoctype, type BodyMode, type PreviewChanges } from "../engine/preview.js";
+import { buildPreviewHtml, checkLinkText, countBySelector, MIN_KEPT_PCT, parseContentSelector, fingerprintChanges, liveFingerprint, previewStats, visibleWords, type LiveFingerprint, withDoctype, type BodyMode, type LinkEdit, type PreviewChanges } from "../engine/preview.js";
 import { ORIGIN } from "../constants.js";
+import { IN_FLIGHT_MAX_MS, previewRequestKey, REUSE_RECHECK_MS, REUSE_WINDOW_MINUTES } from "../engine/request-key.js";
 import { capComment, commentFingerprint } from "../engine/thread.js";
 import { actorId, assignableUser, bool, errorMessage, num, oneOf, reqStr, SeoError, str, type Actor, type Env, type Params } from "./common.js";
 import { assertWritable, loadSprintContext } from "./context.js";
@@ -27,10 +28,42 @@ import { exportToDrive, sprintDriveTarget } from "./drive-export.js";
 export const PREVIEW_DAYS = 30;
 const MAX_HTML = 1_500_000;
 export { PREVIEW_BASE, previewLink, previewSlug } from "./preview-links.js";
+import { assertInsertArea, assertWpBodyApplicable, needsWpBodyCheck, wpPostContent } from "./wp-body.js";
 import { PREVIEW_RENDER_URL, previewLink, previewSlug } from "./preview-links.js";
 
 function hostOf(url: string): string {
   return new URL(/^https?:\/\//i.test(url) ? url : `https://${url}`).hostname.replace(/^www\./, "").toLowerCase();
+}
+
+/** A link target for linkEdits: http/https, no userinfo, this sprint's own host. Returns what is stored. Never a prefix or substring test. */
+export function parseLinkHref(raw: string, siteUrl: string): string {
+  const refuse = (why: string): never => {
+    throw new SeoError(`linkEdits href "${raw.slice(0, 120).replace(/[\u0000-\u001f\u007f]/g, "?")}" refused: ${why}.`);
+  };
+  if (/[\u0000-\u001f\u007f\s\\]/.test(raw)) refuse("it has a control character, space or backslash");
+  const relative = raw.startsWith("/") && !raw.startsWith("//");
+  let url: URL;
+  try {
+    url = relative ? new URL(raw, siteUrl) : new URL(raw);
+  } catch {
+    return refuse("it is not a full http(s) address or a path starting with one /");
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") refuse("only http and https links are allowed");
+  if (url.username || url.password) refuse("it carries a username or password");
+  if (hostOf(url.href) !== hostOf(siteUrl)) refuse(`links must go to ${siteUrl}'s own site`);
+  return relative ? `${url.pathname}${url.search}${url.hash}` : url.href;
+}
+
+function linkEditsOf(params: Params, siteUrl: string): LinkEdit[] | undefined {
+  const raw = params.linkEdits;
+  if (raw === undefined || raw === null) return undefined;
+  if (!Array.isArray(raw) || raw.length < 1 || raw.length > 5) throw new SeoError("linkEdits must be 1 to 5 entries of { text, href }.");
+  return raw.map((entry) => {
+    const e = entry as { text?: unknown; href?: unknown } | null;
+    if (!e || typeof e.text !== "string" || typeof e.href !== "string") throw new SeoError("Each linkEdits entry needs text and href (strings).");
+    checkLinkText(e.text);
+    return { text: e.text, href: parseLinkHref(e.href, siteUrl) };
+  });
 }
 
 /** Postgres text and jsonb cannot hold a NUL (0x00): a page that has one (a stray byte in a script or an attribute) made every preview of it fail to save. */
@@ -64,6 +97,12 @@ export const SOURCE_BASIS_NOTICE = "Made from the page source: header and script
 const RENDER_START_BY_MS = 12_000;
 const RENDER_TIMEOUT_MS = 15_000;
 
+/** Pause before asking a busy render service (503) again. */
+const RENDER_BUSY_WAIT_MS = 1_500;
+const RENDER_BUSY_TRIES = 6;
+const askRender = (env: Env, url: string) =>
+  env.fetch(PREVIEW_RENDER_URL, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ url }), signal: AbortSignal.timeout(RENDER_TIMEOUT_MS) });
+
 const basisOf = (stats: { basis?: unknown } | null | undefined): "rendered" | "source" => (stats?.basis === "rendered" ? "rendered" : "source");
 
 /**
@@ -76,8 +115,15 @@ async function renderedLive(env: Env, url: string, source: string, selector: str
   if (elapsed >= RENDER_START_BY_MS) return fallback(`${Math.round(elapsed / 1000)} s already spent fetching the page`);
   let html: unknown;
   try {
-    const r = await env.fetch(PREVIEW_RENDER_URL, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ url }), signal: AbortSignal.timeout(RENDER_TIMEOUT_MS) });
-    if (r.status !== 200) return fallback(`the render service answered ${r.status}`);
+    const waitFrom = Date.now();
+    let r = await askRender(env, url);
+    // 503 = another render is running (one at a time, a few seconds each): wait for it while there is still room,
+    // rather than build from the source on a busy minute (PAR-9945: a source-built preview lost the page's tabs).
+    for (let tries = 1; r.status === 503 && tries < RENDER_BUSY_TRIES && Date.now() - waitFrom + RENDER_BUSY_WAIT_MS < RENDER_START_BY_MS - elapsed; tries++) {
+      await new Promise((done) => setTimeout(done, RENDER_BUSY_WAIT_MS));
+      r = await askRender(env, url);
+    }
+    if (r.status !== 200) return fallback(`the render service answered ${r.status}${r.status === 503 ? " (busy with another render)" : ""}`);
     const text = await r.text();
     try {
       html = (JSON.parse(text) as { html?: unknown } | null)?.html;
@@ -120,17 +166,19 @@ export async function createPreview(env: Env, companyId: string, actor: Actor, p
     metaDescription: str(params, "metaDescription", { max: 500 }),
     h1: str(params, "h1", { max: 300 }),
     bodyHtml: str(params, "bodyHtml", { max: 200_000 }),
-    bodyMode: oneOf(params, "bodyMode", ["before", "after", "replace"] as const) as BodyMode | undefined,
+    bodyMode: oneOf(params, "bodyMode", ["before", "after", "replace", "afterFirstParagraph"] as const) as BodyMode | undefined,
     css: str(params, "css", { max: 80_000 }),
     contentSelector: str(params, "contentSelector", { max: 100 }),
   };
+  const linkEdits = linkEditsOf(params, sprint.siteUrl);
+  if (linkEdits) changes.linkEdits = linkEdits;
   if (changes.contentSelector) parseContentSelector(changes.contentSelector);
   else delete changes.contentSelector;
   const why = checkWhy(str(params, "why", { max: 1000 }));
   if (why.error) throw new SeoError(why.error);
   if (why.why) changes.why = why.why;
   const allowReplace = bool(params, "allowReplace") ?? false;
-  if (!changes.title && !changes.metaDescription && !changes.h1 && !changes.bodyHtml && !changes.css) throw new SeoError("Send at least one proposed change: title, metaDescription, h1 or bodyHtml.");
+  if (!changes.title && !changes.metaDescription && !changes.h1 && !changes.bodyHtml && !changes.css && !changes.linkEdits) throw new SeoError("Send at least one proposed change: title, metaDescription, h1, bodyHtml or linkEdits.");
   let taskId = str(params, "taskId", { max: 80 });
   // A corrected preview made without a taskId (a developer's fix) belongs to the task the page's earlier preview belonged to.
   if (!taskId) {
@@ -158,39 +206,219 @@ export async function createPreview(env: Env, companyId: string, actor: Actor, p
     );
   }
 
-  const res = await env.site(pageUrl, { maxChars: MAX_HTML });
+  const label = str(params, "label", { max: 200 });
+  const rubric = scorePreviewCopy(changes);
+  const requestKey = previewRequestKey({ companyId, sprintId, pageUrl, taskId: task?.id ?? null, changes: withoutNul(changes), allowReplace, label, client, rubric });
+  const req: PreviewRequestContext = { companyId, sprintId, sprint, pageUrl, changes, allowReplace, task, redesign, label, client, rubric, requestKey, startedAt };
+  return onceInFlight(requestKey, env.now().getTime(), async () => (await reuseStoredPreview(env, req)) ?? (await freshPreview(env, actor, req)));
+}
+
+/** A type, not an interface: callers read it as a plain record. */
+export type CreatePreviewResult = {
+  previewId: string;
+  url: string;
+  pageUrl: string;
+  expiresAt: string;
+  applied?: string[];
+  stats: StoredPreviewStats;
+  basis: "rendered" | "source";
+  reviewStatus: string;
+  reviewIssueId: string | null;
+  rubric?: PreviewRubric;
+  notes?: string[];
+  /** true: this exact preview already existed (a repeated call); use its previewId and do not call again. */
+  reused: boolean;
+  next: string;
+};
+
+interface PreviewRequestContext {
+  companyId: string;
+  sprintId: string;
+  sprint: db.Sprint;
+  pageUrl: string;
+  changes: PreviewChanges;
+  allowReplace: boolean;
+  task: db.SprintTask | null;
+  redesign: boolean;
+  label: string | undefined;
+  client: ReturnType<typeof previewClient>;
+  rubric: PreviewRubric | null;
+  requestKey: string;
+  startedAt: number;
+}
+
+/**
+ * Identical create-preview calls running at the same time share one build. One worker process serves the plugin, so this map
+ * sees every concurrent call; an entry older than IN_FLIGHT_MAX_MS is treated as hung and dropped, so a stuck call blocks retries
+ * for at most that long. After a restart the map is empty and the stored lookup (reuseStoredPreview) answers instead.
+ */
+const IN_FLIGHT = new Map<string, { promise: Promise<CreatePreviewResult>; startedAt: number }>();
+
+/** Running create-preview builds (tests). */
+export const inFlightPreviewCount = (): number => IN_FLIGHT.size;
+
+async function onceInFlight(key: string, now: number, run: () => Promise<CreatePreviewResult>): Promise<CreatePreviewResult> {
+  const running = IN_FLIGHT.get(key);
+  if (running) {
+    if (now - running.startedAt < IN_FLIGHT_MAX_MS) return { ...(await running.promise), reused: true };
+    if (IN_FLIGHT.get(key) === running) IN_FLIGHT.delete(key);
+  }
+  const entry = { promise: run(), startedAt: now };
+  IN_FLIGHT.set(key, entry);
+  try {
+    return await entry.promise;
+  } finally {
+    if (IN_FLIGHT.get(key) === entry) IN_FLIGHT.delete(key);
+  }
+}
+
+const isoOf = (value: unknown): string => (value instanceof Date ? value : new Date(String(value))).toISOString();
+
+/** The newest pending, not sent-back, unexpired preview made for this exact request in the last REUSE_WINDOW_MINUTES. */
+export async function findReusablePreview(env: Env, companyId: string, requestKey: string): Promise<Record<string, unknown> | null> {
+  const rows = await env.ctx.db.query(
+    `SELECT id, created_at, expires_at, stats, review_status, review_issue_id, review_key, task_id FROM ${t("previews")}
+      WHERE company_id = $1 AND request_key = $2 AND status = 'pending' AND review_status <> 'changes_needed'
+        AND expires_at > now() AND created_at > now() - interval '${REUSE_WINDOW_MINUTES} minutes'
+      ORDER BY created_at DESC LIMIT 1`,
+    [companyId, requestKey],
+  );
+  return rows[0] ?? null;
+}
+
+/**
+ * The live page source. A fixture address (host `.invalid`, PAR-13387) never resolves, so it gets the canned fixture page and the
+ * network is not asked; every other address goes through the guarded site fetcher.
+ */
+async function livePage(env: Env, url: string): Promise<SafeFetchResult> {
+  if (isRehearsalUrl(url)) return { status: 200, url, redirects: [], headers: { "content-type": "text/html; charset=utf-8" }, text: rehearsalPageHtml(url), ms: 0 };
+  return env.site(url, { maxChars: MAX_HTML });
+}
+
+/** The page source, or null when it cannot be read within `ms` (no render: this only checks whether the page changed). */
+async function sourceWithin(env: Env, url: string, ms: number): Promise<string | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const res = await Promise.race([livePage(env, url), new Promise<null>((done) => { timer = setTimeout(() => done(null), ms); })]);
+    return res && res.status < 400 && res.text ? res.text : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** The open review issue a first call opened for this preview but did not record (it was cut off), if any. */
+async function openReviewIssueOf(env: Env, companyId: string, previewId: string): Promise<string | null | undefined> {
+  try {
+    const found = await env.ctx.issues.list({ companyId, originKind: ORIGIN.previewReview, originId: `preview-review:${previewId}`, limit: 5 });
+    return found.find((i) => i.status !== "done" && i.status !== "cancelled")?.id ?? null;
+  } catch (error) {
+    env.ctx.logger.info("SEO preview review lookup failed", { previewId, error: errorMessage(error) });
+    return undefined;
+  }
+}
+
+/**
+ * A repeated call (for example after a gateway timeout): return the stored preview instead of building a second one, and
+ * finish what the first call may not have done (the review issue, parking the task). Null when there is none to reuse or the
+ * live page changed since.
+ */
+async function reuseStoredPreview(env: Env, req: PreviewRequestContext): Promise<CreatePreviewResult | null> {
+  const row = await findReusablePreview(env, req.companyId, req.requestKey);
+  if (!row) return null;
+  const stats = (typeof row.stats === "string" ? JSON.parse(row.stats) : row.stats ?? {}) as StoredPreviewStats;
+  const madeAt = isoOf(row.created_at);
+  const notes = [`This exact preview was already made at ${madeAt} (a repeated call, for example after a gateway timeout). No new preview was made.`];
+  if (stats.liveFingerprint && typeof stats.liveFingerprint.title === "string") {
+    const source = await sourceWithin(env, req.pageUrl, REUSE_RECHECK_MS);
+    if (source === null) notes.push(`Could not re-check the live page; reused the preview made at ${madeAt}.`);
+    else if (fingerprintChanges(stats.liveFingerprint, liveFingerprint(source)).length > 0) return null;
+  }
+  const previewId = String(row.id);
+  const reviewStatus = String(row.review_status);
+  let reviewIssueId = row.review_issue_id ? String(row.review_issue_id) : null;
+  const title = req.changes.title ?? req.changes.h1 ?? req.pageUrl;
+  // A passed preview's task was already handed back to the agent: parking it again would wait for a verdict that came.
+  if (reviewStatus === "pending") {
+    if (!reviewIssueId && !isRehearsalSprint(req.sprint)) {
+      const existing = await openReviewIssueOf(env, req.companyId, previewId);
+      if (existing) {
+        await env.ctx.db.execute(`UPDATE ${t("previews")} SET review_issue_id = $2 WHERE id = $1 AND company_id = $3`, [previewId, existing, req.companyId]);
+        reviewIssueId = existing;
+      } else if (existing === null) {
+        const c = req.changes;
+        const applied = [c.title && "title", c.metaDescription && "metaDescription", c.h1 && "h1", c.bodyHtml && "bodyHtml", c.linkEdits?.length && "links", c.css && "css"].filter((a): a is string => typeof a === "string");
+        reviewIssueId = await routePreviewReview(env, req.sprint, { rubric: req.rubric, id: previewId, key: String(row.review_key), pageUrl: req.pageUrl, title, stats, applied, notes: [], taskIssueId: req.task?.issueId ?? null, redesign: req.redesign, linkEdits: c.linkEdits });
+      }
+    }
+    await parkTaskForReview(env, req.companyId, row.task_id ? String(row.task_id) : null, title);
+  }
+  return {
+    previewId,
+    url: previewLink(req.sprint.siteUrl, previewId),
+    pageUrl: req.pageUrl,
+    expiresAt: isoOf(row.expires_at),
+    stats,
+    basis: basisOf(stats),
+    reviewStatus,
+    reviewIssueId,
+    reused: true,
+    notes,
+    next: reviewStatus === "passed" ? "The Reviewer already passed this preview: use this previewId and link. Do not make it again." : nextAfterPreview(req.sprint),
+  };
+}
+
+const nextAfterPreview = (sprint: db.Sprint): string =>
+  sprint.clientSignoff === "auto"
+    ? "The link is HELD: the client sees a 'being checked' page until the Reviewer has compared it with the live page and passed it. Make a preview for every page of this task, then END your turn. The plugin does the rest: it parks this task on the client, drafts one approval email in Gmail for a person to send, and wakes you when the client has answered every preview of the task (with what to apply and what to revise). Do not put the links on Needs you and do not use block-task for this. Apply nothing before then."
+    : "The link is HELD: the client sees a 'being checked' page until the Reviewer has compared it with the live page and passed it. End your turn after making your previews; you are woken on this task's issue with the result. Only then put the link on Needs you for the owner. If the Reviewer asks for changes, fix and make a new preview. Apply anything through the Connector only after the client approved and the owner confirmed.";
+
+async function freshPreview(env: Env, actor: Actor, req: PreviewRequestContext): Promise<CreatePreviewResult> {
+  const { companyId, sprintId, sprint, pageUrl, changes, allowReplace, task, redesign, label, client, rubric, requestKey, startedAt } = req;
+  const res = await livePage(env, pageUrl);
   if (res.status >= 400 || !res.text) throw new SeoError(`The live page answered ${res.status}; check the URL (a new page that is not live yet cannot be previewed on top of a live page).`);
   const token = randomBytes(24).toString("base64url");
   const sourceUrl = res.url || pageUrl;
   // Build from the page as a visitor sees it (scripts ran) when the preview service can render it; else from the source.
-  const render = await renderedLive(env, sourceUrl, res.text, changes.contentSelector, startedAt);
-  const liveHtml = withoutNul("html" in render ? render.html : res.text);
+  // The WordPress body check (PAR-10302) runs beside the render; wpPostContent never throws.
+  // A fixture page has no scripts and no WordPress behind it: its source is the rendered page, and neither service is asked.
+  const fixture = isRehearsalUrl(sourceUrl);
+  const wpBody = !fixture && needsWpBodyCheck(changes) ? wpPostContent(env, res.text, sourceUrl) : null;
+  const render = fixture ? null : await renderedLive(env, sourceUrl, res.text, changes.contentSelector, startedAt);
+  const renderedHtml: string | null = render === null ? res.text : "html" in render ? (render as { html: string }).html : null;
+  const wp = wpBody ? await wpBody : ({ kind: "none" } as const);
+  assertWpBodyApplicable(wp, changes);
+  const liveHtml = withoutNul(renderedHtml ?? res.text);
+  const areaNote = assertInsertArea(wp, liveHtml, changes);
   const built = buildPreviewHtml(liveHtml, sourceUrl, withoutNul(changes), { token, clientName: sprint.clientName });
   if (built.applied.length === 0) throw new SeoError(`None of the changes could be placed on the page. ${built.notes.join(" ")}`.trim());
-  built.notes.unshift(render.note);
+  built.notes.unshift(render?.note ?? REHEARSAL_PAGE_NOTE);
+  if (wp.kind === "skip") built.notes.push(wp.note);
+  if (areaNote) built.notes.push(areaNote);
   const figure = previewStats(liveHtml, built.html);
   // One stored figure: on the rendered basis it is `stats.rendered` (the review page never recomputes it); on the
   // source basis the review page measures `stats.rendered` on first open.
   const stats: StoredPreviewStats = {
-    ...("html" in render ? { basis: "rendered" as const, rendered: { ...figure, at: env.now().toISOString() } } : { ...figure, basis: "source" as const }),
+    ...(renderedHtml !== null ? { basis: "rendered" as const, rendered: { ...figure, at: env.now().toISOString() } } : { ...figure, basis: "source" as const }),
     // The live page as it was when the preview was made (the page source, the same thing checkLive fetches); list-previews checkLive compares it later.
     liveFingerprint: liveFingerprint(res.text),
   };
   if (figure.keptPct < MIN_KEPT_PCT && !(changes.bodyMode === "replace" && allowReplace)) {
     throw new SeoError(
-      `This preview would keep only ${figure.keptPct}% of the live page's text (${figure.removedWords} of ${figure.liveWords} words gone). A change is added to the page, it does not wipe it: use bodyMode "before" or "after" to add copy next to the existing content. Only if you really are rewriting the whole page, send bodyMode "replace" with allowReplace true and say why in the summary.`,
+      `This preview would keep only ${figure.keptPct}% of the live page's text (${figure.removedWords} of ${figure.liveWords} words gone). A change is added to the page, it does not wipe it: use bodyMode "before", "after" or "afterFirstParagraph" to add copy next to the existing content. Only if you really are rewriting the whole page, send bodyMode "replace" with allowReplace true and say why in the summary.`,
     );
   }
   const reviewKey = randomBytes(18).toString("base64url");
   const expiresAt = new Date(env.now().getTime() + PREVIEW_DAYS * 86_400_000).toISOString();
   await env.ctx.db.execute(
-    `INSERT INTO ${t("previews")} (id, company_id, sprint_id, task_id, issue_id, page_url, title, html, changes, expires_at, created_by, review_key, stats)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::timestamptz, $11, $12, $13::jsonb)`,
-    [token, companyId, sprintId, task?.id ?? null, task?.issueId ?? sprint.rootIssueId ?? null, pageUrl, withoutNul(str(params, "label", { max: 200 }) ?? changes.title ?? changes.h1 ?? pageUrl), withoutNul(built.html), JSON.stringify(withoutNul(changes)), expiresAt, actorId(actor), reviewKey, JSON.stringify(withoutNul(stats))],
+    `INSERT INTO ${t("previews")} (id, company_id, sprint_id, task_id, issue_id, page_url, title, html, changes, expires_at, created_by, review_key, stats, request_key)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::timestamptz, $11, $12, $13::jsonb, $14)`,
+    [token, companyId, sprintId, task?.id ?? null, task?.issueId ?? sprint.rootIssueId ?? null, pageUrl, withoutNul(label ?? changes.title ?? changes.h1 ?? pageUrl), withoutNul(built.html), JSON.stringify(withoutNul(changes)), expiresAt, actorId(actor), reviewKey, JSON.stringify(withoutNul(stats)), requestKey],
   );
   // Save preview to Drive (non-blocking, errors only log warnings)
   const today = env.now().toISOString().split("T")[0]!;
-  const previewLabel = str(params, "label", { max: 200 }) ?? changes.title ?? changes.h1 ?? "preview";
+  const previewLabel = label ?? changes.title ?? changes.h1 ?? "preview";
   const driveName = `${today} SEO preview ${previewLabel.slice(0, 80).replace(/[/\\:*?"<>|]/g, "")} v01.html`;
   // The sprint's own client wins over the caller's; an own sprint asks for the own folder (PAR-8128). null = no copy.
   const driveTarget = sprintDriveTarget(sprint, client);
@@ -202,13 +430,11 @@ export async function createPreview(env: Env, companyId: string, actor: Actor, p
     mimeType: "text/html",
     bytes: Buffer.from(withoutNul(built.html)),
     subfolder: "03 Deliverables",
-    timeoutMs: 5000,
     ...driveTarget,
   }).catch(() => {
     // Suppress errors; exportToDrive never throws but we catch any unexpected issue
   });
-  const rubric = scorePreviewCopy(changes);
-  const review = await routePreviewReview(env, sprint, { rubric, id: token, key: reviewKey, pageUrl, title: changes.title ?? changes.h1 ?? pageUrl, stats, applied: built.applied, notes: built.notes, taskIssueId: task?.issueId ?? null, redesign });
+  const review = await routePreviewReview(env, sprint, { rubric, id: token, key: reviewKey, pageUrl, title: changes.title ?? changes.h1 ?? pageUrl, stats, applied: built.applied, notes: built.notes, taskIssueId: task?.issueId ?? null, redesign, linkEdits: changes.linkEdits });
   await parkTaskForReview(env, companyId, task?.id ?? null, changes.title ?? changes.h1 ?? pageUrl);
   return {
     previewId: token,
@@ -222,9 +448,8 @@ export async function createPreview(env: Env, companyId: string, actor: Actor, p
     reviewIssueId: review,
     ...(rubric ? { rubric } : {}),
     ...(built.notes.length > 0 ? { notes: built.notes } : {}),
-    next: sprint.clientSignoff === "auto"
-      ? "The link is HELD: the client sees a 'being checked' page until the Reviewer has compared it with the live page and passed it. Make a preview for every page of this task, then END your turn. The plugin does the rest: it parks this task on the client, drafts one approval email in Gmail for a person to send, and wakes you when the client has answered every preview of the task (with what to apply and what to revise). Do not put the links on Needs you and do not use block-task for this. Apply nothing before then."
-      : "The link is HELD: the client sees a 'being checked' page until the Reviewer has compared it with the live page and passed it. End your turn after making your previews; you are woken on this task's issue with the result. Only then put the link on Needs you for the owner. If the Reviewer asks for changes, fix and make a new preview. Apply anything through the Connector only after the client approved and the owner confirmed.",
+    reused: false,
+    next: nextAfterPreview(sprint),
   };
 }
 
@@ -273,7 +498,7 @@ export async function listPreviews(env: Env, companyId: string, params: Params) 
       return {
         previewId: String(r.id),
         // The approved copy, readable for any status and expiry (the stored html is only returned with includeHtml).
-        changes: { title: stored.title ?? null, metaDescription: stored.metaDescription ?? null, h1: stored.h1 ?? null, bodyHtml: stored.bodyHtml ?? null, bodyMode: stored.bodyHtml ? stored.bodyMode ?? "before" : null },
+        changes: { title: stored.title ?? null, metaDescription: stored.metaDescription ?? null, h1: stored.h1 ?? null, bodyHtml: stored.bodyHtml ?? null, bodyMode: stored.bodyHtml ? stored.bodyMode ?? "before" : null, linkEdits: stored.linkEdits ?? null },
         ...(includeHtml ? { html: String(r.html ?? "") } : {}),
         url: previewLink(String(r.page_url), String(r.id)),
         taskId: r.task_id ? String(r.task_id) : null,
@@ -423,7 +648,7 @@ const REDESIGN_CHECKS = [
 async function routePreviewReview(
   env: Env,
   sprint: db.Sprint,
-  p: { rubric?: PreviewRubric | null; id: string; key: string; pageUrl: string; title: string; stats: StoredPreviewStats; applied: string[]; notes: string[]; taskIssueId: string | null; redesign?: boolean },
+  p: { rubric?: PreviewRubric | null; id: string; key: string; pageUrl: string; title: string; stats: StoredPreviewStats; applied: string[]; notes: string[]; taskIssueId: string | null; redesign?: boolean; linkEdits?: LinkEdit[] },
 ): Promise<string | null> {
   if (isRehearsalSprint(sprint)) return null;
   try {
@@ -441,6 +666,7 @@ async function routePreviewReview(
         ? `Text kept from the live page: ${p.stats.rendered.keptPct}% (${p.stats.rendered.liveWords} words live, +${p.stats.rendered.addedWords} added, -${p.stats.rendered.removedWords} removed).`
         : "Kept-text figure: measured when the review page is first opened (made from the page source).",
       ...(p.notes.length ? ["", ...p.notes.map((n) => `Note: ${n}`)] : []),
+      ...(p.linkEdits?.length ? ["", ...p.linkEdits.map((l) => `Link added: "${l.text}" -> ${l.href}`)] : []),
       ...(p.rubric ? ["", ...rubricLines(p.rubric)] : []),
       "",
       "## The client fact sheet (what the copy may claim)",
@@ -602,17 +828,47 @@ export interface PreviewRow {
   url: string;
   reviewUrl: string | null;
   superseded: boolean;
+  /** The sprint task and its issue (the Previews tab groups by task). */
+  taskId: string | null;
+  issueId: string | null;
+  issueIdentifier: string | null;
+  /** Which fields the proposal changes, in words the tab shows. */
+  changedFields: string[];
+  /** The proposed copy the drawer shows (no html: the proposal link shows the page). */
+  changes: { title: string | null; metaDescription: string | null; h1: string | null; bodyMode: string | null };
+  /** Why the SEO agent proposes it. */
+  why: string | null;
+  decidedBy: string | null;
+  decisionSource: string | null;
+  decidedAt: string | null;
+  confirmedAt: string | null;
+  appliedAt: string | null;
+  /** Pending and past its expiry: nobody decided in time. */
+  expired: boolean;
+  /** Other pending previews of the same page (read-only note, no gating). */
+  overlapIds: string[];
 }
+
+const strOrNull = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v : null);
+
+const CHANGE_FIELDS: Array<[string, string]> = [["title", "Title"], ["metaDescription", "Meta description"], ["h1", "Heading"], ["bodyHtml", "Body copy"], ["css", "Styles"], ["linkEdits", "Links"]];
 
 /** The sprint's previews for the SEO page (staff only: includes the review link). A newer preview of the same page supersedes older ones. */
 export async function previewRows(env: Env, companyId: string, sprintId: string): Promise<PreviewRow[]> {
   const rows = await env.ctx.db.query(
-    `SELECT id, page_url, title, status, review_status, review_note, decision_note, review_key, stats, created_at, expires_at FROM ${t("previews")}
-      WHERE company_id = $1 AND sprint_id = $2 AND status <> 'cancelled' ORDER BY created_at DESC LIMIT 200`,
+    `SELECT p.id, p.page_url, p.title, p.status, p.review_status, p.review_note, p.decision_note, p.review_key, p.stats, p.created_at, p.expires_at,
+        p.task_id, COALESCE(p.issue_id, st.issue_id) AS issue_id, st.issue_identifier, p.changes, p.decided_by, p.decision_source, p.decided_at,
+        p.confirmed_at, p.applied_at, (p.status = 'pending' AND p.expires_at <= now()) AS expired
+      FROM ${t("previews")} p LEFT JOIN ${t("sprint_tasks")} st ON st.id = p.task_id
+      WHERE p.company_id = $1 AND p.sprint_id = $2 AND p.status <> 'cancelled' ORDER BY p.created_at DESC LIMIT 200`,
     [companyId, sprintId],
   );
   const seen = new Set<string>();
+  const iso = (v: unknown): string | null => (v == null ? null : (v instanceof Date ? v : new Date(String(v))).toISOString());
+  const livePending = rows.filter((r) => r.status === "pending" && !r.expired);
   return rows.map((r) => {
+    const changes = (typeof r.changes === "string" ? JSON.parse(String(r.changes)) : (r.changes ?? {})) as Record<string, unknown>;
+    const overlapIds = livePending.filter((o) => o.page_url === r.page_url && o.id !== r.id).map((o) => String(o.id));
     const stats = typeof r.stats === "string" ? (JSON.parse(String(r.stats)) as Record<string, number>) : ((r.stats ?? {}) as Record<string, number>);
     const rendered = (stats as unknown as { rendered?: { keptPct?: number; addedWords?: number } }).rendered;
     const page = String(r.page_url);
@@ -635,6 +891,19 @@ export async function previewRows(env: Env, companyId: string, sprintId: string)
       url: previewLink(page, String(r.id)),
       reviewUrl: r.review_key ? `${previewLink(page, String(r.id))}/review?key=${String(r.review_key)}` : null,
       superseded,
+      taskId: r.task_id ? String(r.task_id) : null,
+      issueId: r.issue_id ? String(r.issue_id) : null,
+      issueIdentifier: r.issue_identifier ? String(r.issue_identifier) : null,
+      changedFields: CHANGE_FIELDS.filter(([key]) => Boolean(changes[key])).map(([, label]) => label),
+      changes: { title: strOrNull(changes.title), metaDescription: strOrNull(changes.metaDescription), h1: strOrNull(changes.h1), bodyMode: changes.bodyHtml ? strOrNull(changes.bodyMode) ?? "before" : null },
+      why: strOrNull(changes.why),
+      decidedBy: r.decided_by ? String(r.decided_by) : null,
+      decisionSource: r.decision_source ? String(r.decision_source) : null,
+      decidedAt: iso(r.decided_at),
+      confirmedAt: iso(r.confirmed_at),
+      appliedAt: iso(r.applied_at),
+      expired: Boolean(r.expired),
+      overlapIds,
     };
   });
 }
@@ -1018,7 +1287,7 @@ async function liveCheckOf(env: Env, pageUrl: string, stored: LiveFingerprint | 
   if (!stored || typeof stored.title !== "string") return { result: "unknown", reason: "This preview has no stored copy of the live page (made before the check existed)." };
   let res: Awaited<ReturnType<Env["site"]>>;
   try {
-    res = await env.site(pageUrl, { maxChars: MAX_HTML });
+    res = await livePage(env, pageUrl);
   } catch (error) {
     return { result: "unknown", reason: `The live page could not be read: ${errorMessage(error)}` };
   }

@@ -157,7 +157,7 @@ describeEmbeddedPostgres("remote native retry execution admission", () => {
     dependencies.getAgent.mockResolvedValue(agent);
     dependencies.instanceSettings.getExperimental.mockImplementation(() => instanceSettingsService(f.db).getExperimental());
     dependencies.wakeQueue.admitWakeBehindIssueExecution.mockResolvedValue({ kind: "deferred" });
-    await createHeartbeatQueue(f.db, dependencies).enqueueWakeup(f.agentId, { source: "assignment", reason: "issue_assigned",
+    await createHeartbeatQueue(f.db, dependencies).enqueueWakeup(f.agentId, { causingActor: "system", source: "assignment", reason: "issue_assigned",
       requestedByActorType: "system", payload: { issueId: f.issueId }, contextSnapshot: { issueId: f.issueId } });
     expect(dependencies.executeRun).not.toHaveBeenCalled();
     expect(dependencies.wakeQueue.admitWakeBehindIssueExecution).toHaveBeenCalledOnce();

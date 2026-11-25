@@ -25,6 +25,8 @@ import { IssuesList } from "../components/IssuesList";
 import { PageTabBar } from "../components/PageTabBar";
 import { SummarySlotCard } from "../components/SummarySlotCard";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
+import { useMemberRestrictionGate } from "../hooks/useMemberRestrictionGate";
+import { useMemberRestriction } from "../context/MemberRestrictionContext";
 import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
 import {
   RoutineRunVariablesDialog,
@@ -533,25 +535,27 @@ function ExecutionWorkspaceIssuesList({
     enabled: !!companyId,
   });
 
+  // Live runs are a closed list for a restricted member under `enforce` (AC-G10): no live marks.
+  const memberGate = useMemberRestrictionGate(companyId);
   const liveRunsQueryKey = queryKeys.liveRuns(companyId);
   const sharedLiveRuns = useSharedPollingQuery({
     companyId,
     resourceKey: "live-runs",
     queryKey: liveRunsQueryKey,
-    enabled: !!companyId,
+    enabled: !!companyId && !memberGate.closed,
     // Event-sourced via LiveUpdatesProvider (issue 9627); no interval poll needed.
     refetchInterval: false,
     leaderOnly: true,
   });
   const { data: liveRuns, dataUpdatedAt: liveRunsUpdatedAt } = useQuery({
     queryKey: liveRunsQueryKey,
-    queryFn: () => heartbeatsApi.liveRunsForCompany(companyId),
+    queryFn: memberGate.guard(() => heartbeatsApi.liveRunsForCompany(companyId), []),
     enabled: sharedLiveRuns.enabled,
     refetchInterval: sharedLiveRuns.refetchInterval,
   });
   usePublishSharedQueryData(sharedLiveRuns, liveRuns, liveRunsUpdatedAt);
 
-  const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns, issues), [issues, liveRuns]);
+  const liveIssueIds = useMemo(() => collectLiveIssueIds(memberGate.closed ? undefined : liveRuns, issues), [issues, liveRuns, memberGate.closed]);
 
   const updateIssue = useUpdateIssueMutation({
     companyId,
@@ -655,9 +659,12 @@ function ExecutionWorkspaceRoutinesList({
   const [runDialogRoutine, setRunDialogRoutine] = useState<RoutineListItem | null>(null);
   const [runningRoutineId, setRunningRoutineId] = useState<string | null>(null);
 
+  // The routine list is closed for a restricted member under `enforce` (AC-G10); its tab is hidden too.
+  const memberGate = useMemberRestrictionGate(workspace.companyId);
   const routinesQuery = useQuery({
     queryKey: queryKeys.routines.list(workspace.companyId, { projectId: workspace.projectId }),
-    queryFn: () => routinesApi.list(workspace.companyId, { projectId: workspace.projectId }),
+    queryFn: memberGate.guard(() => routinesApi.list(workspace.companyId, { projectId: workspace.projectId }), []),
+    enabled: !memberGate.closed,
   });
   // Read the routine list through the shared view: cached rows stay usable
   // during a transient refetch failure,and a no-data failure shows readable
@@ -868,12 +875,15 @@ export function ExecutionWorkspaceDetail() {
     })),
     [workspacePluginDetailSlots],
   );
+  // A restricted member under `enforce` gets no tab for a page closed to him (AC-G10).
+  const { isPageHidden } = useMemberRestriction();
   const workspaceTabItems = useMemo(
     () => orderExecutionWorkspaceTabItems([
-      ...EXECUTION_WORKSPACE_BASE_TAB_ITEMS.filter((item) => item.value !== "configuration" || workspaceIsolationControlsVisible),
+      ...EXECUTION_WORKSPACE_BASE_TAB_ITEMS.filter((item) => (item.value !== "configuration" || workspaceIsolationControlsVisible)
+        && !(workspaceId && isPageHidden(executionWorkspaceTabPath(workspaceId, item.value as ExecutionWorkspaceBaseTab)))),
       ...workspacePluginTabItems,
     ]),
-    [workspacePluginTabItems, workspaceIsolationControlsVisible],
+    [workspacePluginTabItems, workspaceIsolationControlsVisible, workspaceId, isPageHidden],
   );
   const inheritedRuntimeConfig = linkedProjectWorkspace?.runtimeConfig?.workspaceRuntime ?? null;
   const effectiveRuntimeConfig = workspace?.config?.workspaceRuntime ?? inheritedRuntimeConfig;

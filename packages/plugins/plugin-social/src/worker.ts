@@ -1,4 +1,6 @@
-import { GROWTH_TOOL_NAMES, normalizeToolResult, registerGrowthTools, type GrowthToolsHost } from "@partnersinbiz/pib-plugin-kit";
+import { runCalendarCheck } from "./calendar-check.js";
+import { getCadenceRecord, setCadenceRecord } from "./cadence-record.js";
+import { jobCompanyIds, GROWTH_TOOL_NAMES, registerCanvasCards, normalizeToolResult, registerGrowthTools, type GrowthToolsHost } from "@partnersinbiz/pib-plugin-kit";
 import {
   definePlugin,
   runWorker,
@@ -33,6 +35,7 @@ import {
 import { hireOptions, onSocialAgentLinked, resumeHint, resyncAgent, tryLinkSocialHire } from "./agent.js";
 import { clientAnswersJob } from "./client-approval.js";
 import { scopeFromParams } from "./clients.js";
+import { addManualAccountRecord, markDestinationPostedRecord, skipDestinationRecord } from "./manual.js";
 import { createCompanyBootstrap, type CompanyBootstrap } from "./company.js";
 import { CONNECT_EFFECT_KEY, connectEffect } from "./connect-requests.js";
 import { eraseSubject } from "./erasure.js";
@@ -56,6 +59,9 @@ import {
   performanceReview,
   proposeExperiment,
   proposeFeatureQuestion,
+  setFocus,
+  hookBoardRecord,
+  hookGivePrepareRecord,
   proposePlaybookChange,
   rejectExperiment,
   savePlaybookRecord,
@@ -111,6 +117,8 @@ import {
   recordReviewVerdictRecord,
   approvePostAsDelegateRecord,
   returnPostAsDelegateRecord,
+  requestChangesRecord,
+  changeNotesRecord,
   refreshAccountRecord,
   replyInboxRecord,
   requestClientApprovalRecord,
@@ -127,10 +135,14 @@ import {
   transitionPost,
   updateAccountRecord,
   updatePostRecord,
+  unschedulePostRecord,
+  archivePostRecord,
   validatePostRecord,
   type Viewer,
 } from "./service.js";
 import { growthAction } from "./growth/action.js";
+import { createPostCardKind } from "./canvas-cards.js";
+import { REFUSABLE_ACTIONS, refusalAsResult } from "./refusal.js";
 import { createPersonalDraftRecord } from "./personal-draft.js";
 import { loadPreferencesAction, savePreferencesAction } from "./preferences.js";
 import {
@@ -225,6 +237,12 @@ async function dispatchTool(ctx: PluginContext, viewer: Viewer, name: string, p:
       return detachDestination(ctx, viewer, p);
     case "request-review":
       return transitionPost(ctx, viewer, requiredString(p, "postId"), "review");
+    case "archive-post":
+      return archivePostRecord(ctx, viewer, p, true);
+    case "unarchive-post":
+      return archivePostRecord(ctx, viewer, p, false);
+    case "unschedule-post":
+      return unschedulePostRecord(ctx, viewer, p);
     case "schedule-post":
       return schedulePost(ctx, viewer, p);
     case "bulk-schedule":
@@ -293,6 +311,12 @@ async function dispatchTool(ctx: PluginContext, viewer: Viewer, name: string, p:
     // Growth Lab (eight of its tools come from the kit factory, registered in setup)
     case "propose-feature-question":
       return proposeFeatureQuestion(growthEnv(ctx), viewer, p);
+    case "set-focus":
+      return setFocus(growthEnv(ctx), viewer, p);
+    case "hook-board":
+      return hookBoardRecord(growthEnv(ctx), viewer, p);
+    case "get-cadence":
+      return getCadenceRecord(ctx, viewer, p);
     default:
       throw new SocialError(`Unknown social tool ${name}`);
   }
@@ -371,11 +395,16 @@ const ACTIONS: Record<string, ActionHandler> = {
   "social.get-post": (ctx, v, p) => getPostDetail(ctx, v, requiredString(p, "postId")),
   "social.validate-post": (ctx, v, p) => validatePostRecord(ctx, v, requiredString(p, "postId")),
   "social.mark-posted": (ctx, v, p) => markPostPostedRecord(ctx, v, p),
+  "social.mark-destination-posted": (ctx, v, p) => markDestinationPostedRecord(ctx, v, p),
+  "social.skip-destination": (ctx, v, p) => skipDestinationRecord(ctx, v, p),
+  "social.add-manual-account": (ctx, v, p) => addManualAccountRecord(ctx, v, p),
   "social.delete-post": (ctx, v, p) => deletePostRecord(ctx, v, requiredString(p, "postId")),
   "social.attach": (ctx, v, p) => attachDestination(ctx, v, p),
   "social.detach": (ctx, v, p) => detachDestination(ctx, v, p),
   "social.review": (ctx, v, p) => transitionPost(ctx, v, requiredString(p, "postId"), "review"),
   "social.back-to-draft": (ctx, v, p) => transitionPost(ctx, v, requiredString(p, "postId"), "draft"),
+  "social.request-changes": (ctx, v, p) => requestChangesRecord(ctx, v, p),
+  "social.change-notes": (ctx, v, p) => changeNotesRecord(ctx, v, p),
   "social.approve": (ctx, v, p) => {
     requireUser(v, "approve a post");
     return transitionPost(ctx, v, requiredString(p, "postId"), "approved");
@@ -451,7 +480,14 @@ const ACTIONS: Record<string, ActionHandler> = {
   // Growth Lab (people): the Growth tab.
   "social.growth-load": (ctx, v, p) => growthSnapshot(growthEnv(ctx), v, { ...p, client: p.client ?? null }),
   "social.growth-update-program": growthAction((ctx, v, p) => updateProgramRecord(growthEnv(ctx), v, p)),
+  "social.hook-give-prepare": growthAction((ctx, v, p) => hookGivePrepareRecord(growthEnv(ctx), v, p)),
+  "social.get-cadence": (ctx, v, p) => getCadenceRecord(ctx, v, p),
+  "social.set-cadence": (ctx, v, p) => setCadenceRecord(ctx, v, p),
   "social.growth-save-playbook": growthAction((ctx, v, p) => savePlaybookRecord(growthEnv(ctx), v, p)),
+  "social.growth-set-focus": growthAction((ctx, v, p) => {
+    requireUser(v, "set the monthly focus");
+    return setFocus(growthEnv(ctx), v, p);
+  }),
   "social.growth-approve-experiment": growthAction((ctx, v, p) => {
     requireUser(v, "approve an experiment");
     return approveExperiment(growthEnv(ctx), v, p);
@@ -578,6 +614,8 @@ async function hourlyUpkeep(ctx: PluginContext, companyId: string): Promise<void
   await tryLinkSocialHire(ctx, companyId);
   const plans = await planSweep(ctx, companyId);
   if (plans.opened) ctx.logger.info("Social plan sweep opened first plans", { companyId, ...plans });
+  const calendar = await runCalendarCheck(ctx, companyId);
+  if (calendar.ran) ctx.logger.info("Social calendar check ran", { companyId, ...calendar });
 }
 
 function registerJob(ctx: PluginContext, key: string, run: () => Promise<unknown>) {
@@ -607,7 +645,7 @@ export async function companyUsesSocial(ctx: PluginContext, companyId: string): 
 /** Hourly: push each known company's setup checklist to the Setup plugin. */
 export async function publishSetupStatuses(ctx: PluginContext): Promise<{ published: number; skipped: number }> {
   const result = { published: 0, skipped: 0 };
-  for (const companyId of await knownCompanies(ctx)) {
+  for (const companyId of await jobCompanyIds(ctx, await knownCompanies(ctx))) {
     try {
       // Off in Setup, or settings never saved (the host refuses company calls): the status route still answers on demand.
       if (!(await companyUsesSocial(ctx, companyId))) {
@@ -640,9 +678,12 @@ const plugin = definePlugin({
       ctx.tools.register(tool.name, tool, async (params, run) => normalizeToolResult(await runTool(ctx, tool.name, params, run)));
     }
     registerGrowthTools(ctx, socialGrowthToolsHost(ctx));
-    for (const [key, handler] of Object.entries(ACTIONS)) {
+    for (const [key, raw] of Object.entries(ACTIONS)) {
+      const handler = REFUSABLE_ACTIONS.has(key) ? refusalAsResult(raw) : raw;
       ctx.actions.register(key, async (params, context) => handler(ctx, await actionViewer(ctx, context), objectParams(params)));
     }
+    // Planning Canvas post cards (PAR-14389 B3a): registered with ctx.actions.register itself; the helper repeats core's person rules.
+    registerCanvasCards({ register: (key, handler) => ctx.actions.register(key, handler), kinds: [createPostCardKind(ctx)] });
     // Company preferences: the kit checks the caller is an owner or admin of the company (agents are refused).
     ctx.actions.register("social.preferences-load", async (_params, context) => loadPreferencesAction(ctx, context));
     ctx.actions.register("social.preferences-save", async (params, context) => savePreferencesAction(ctx, context, objectParams(params)));
@@ -686,7 +727,7 @@ const plugin = definePlugin({
     // This is the plugin's only issue.updated subscription (a second one would deliver each event twice).
     registerDoneChecks(ctx, SOCIAL_DONE_CHECKS);
     // The one company.created wiring (kit): remembers the company, syncs the skills, checks the weekly routine's stored template.
-    registerCompanyBootstrap(ctx, { ensureResources: ensure });
+    registerCompanyBootstrap(ctx, { ensureResources: (companyId) => bootstrap!.ensure(companyId, { waitForSkills: true }) });
     registerCrmProjection(ctx, ctx.db.namespace);
     // The CRM's client-to-project links: a client's Social issues open in the client's own project (Q1a-12).
     registerClientProjectWatch(ctx);

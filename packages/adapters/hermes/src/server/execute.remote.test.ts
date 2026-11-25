@@ -154,7 +154,8 @@ describe("hermes_local on an ssh target", () => {
     await execute(ctx);
     const argv = mainCall().args.slice(3);
     expect(argv[argv.indexOf("--resume") + 1]).toBe("sess_remote1");
-    expect(argv).toContain("--no-restore-cwd");
+    expect(argv).not.toContain("--no-restore-cwd");
+    expect(argv).not.toContain("--in");
   });
 
   it("starts a new session when the remote store no longer has it (Session not found)", async () => {

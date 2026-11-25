@@ -256,6 +256,7 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
       .where(eq(agents.id, agentId));
     startTaskDrain({});
     await heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "assignment", triggerDetail: "system", reason: "issue_assigned",
       payload: { issueId }, contextSnapshot: { issueId, wakeReason: "issue_assigned" },
       requestedByActorType: "system", requestedByActorId: "issue_assignment",
@@ -334,6 +335,7 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
       await db.update(agents).set({ defaultEnvironmentId: environmentId }).where(eq(agents.id, agentId));
       startTaskDrain({});
       await heartbeat.wakeup(agentId, {
+        causingActor: "system",
         source: "assignment", triggerDetail: "system", reason: "issue_assigned",
         payload: { issueId }, contextSnapshot: { issueId, wakeReason: "issue_assigned" },
         requestedByActorType: "system", requestedByActorId: "issue_assignment",
@@ -375,6 +377,7 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
     const heartbeat = heartbeatService(db);
     startTaskDrain({});
     await heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "assignment", triggerDetail: "system", reason: "issue_assigned",
       payload: { issueId }, contextSnapshot: { issueId, wakeReason: "issue_assigned" },
       requestedByActorType: "system", requestedByActorId: "issue_assignment",
@@ -407,6 +410,7 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
     // as `skipped` and the issue sat in `todo` with no run and no path.)
     startTaskDrain({});
     await heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "assignment",
       triggerDetail: "system",
       reason: "issue_assigned",
