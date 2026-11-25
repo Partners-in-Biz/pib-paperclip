@@ -743,3 +743,4 @@ describe("agent-scoped plugin POST routes do not leak agent existence to read-on
     });
   }
 });
+// proof
