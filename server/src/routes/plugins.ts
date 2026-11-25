@@ -23,6 +23,7 @@ import { access, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { pluginApiUpgrade, proxyPluginApiWebSocket } from "../realtime/plugin-api-ws.js";
+import { PLUGIN_LOCAL_WS_CAPABILITY, pluginLocalWsPublicKey, resolvePluginLocalWsTarget } from "../services/plugin-local-ws.js";
 import { trustedBoardMutationOrigin } from "../middleware/board-mutation-guard.js";
 import { authorizationService } from "../services/authorization.js";
 import { fileURLToPath } from "node:url";
@@ -483,7 +484,8 @@ interface PluginScopedApiRequest {
 }
 
 interface PluginScopedApiResponse {
-  websocket?: { url: string; headers?: Record<string, string> };
+  /** A remote `wss:` upstream, or a local unix socket core signs (`websocket.local`, PAR-14514 S1). */
+  websocket?: { url: string; headers?: Record<string, string> } | { local: { socket: string; path: string } };
   status?: number;
   headers?: Record<string, string>;
   body?: unknown;
@@ -973,6 +975,17 @@ export function pluginRoutes(
   router.get("/plugins/examples", async (req, res) => {
     assertBoardOrgAccess(req);
     res.json(await listBundledPlugins());
+  });
+
+  /**
+   * GET /api/plugins/local-ws-key
+   *
+   * The public half of the key that signs local plugin WebSocket upgrades
+   * (PAR-14514 S1). Public on purpose: no sign-in.
+   */
+  router.get("/plugins/local-ws-key", (_req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    res.json(pluginLocalWsPublicKey());
   });
 
   // IMPORTANT: Static routes must come before parameterized routes
@@ -2044,7 +2057,9 @@ export function pluginRoutes(
     try {
       const upgrade = (req as Request & { [pluginApiUpgrade]?: unknown })[pluginApiUpgrade];
       if (match.route.transport === "websocket") {
-        if (!upgrade || req.method !== "GET" || match.route.auth !== "board" || !plugin.manifestJson.capabilities.includes("http.outbound")) {
+        const capabilities: readonly string[] = plugin.manifestJson.capabilities;
+        if (!upgrade || req.method !== "GET" || match.route.auth !== "board"
+          || (!capabilities.includes("http.outbound") && !capabilities.includes(PLUGIN_LOCAL_WS_CAPABILITY))) {
           res.status(426).json({ error: "Browser WebSocket required" });
           return;
         }
@@ -2104,8 +2119,17 @@ export function pluginRoutes(
         input,
       ) as PluginScopedApiResponse;
       if (match.route.transport === "websocket") {
-        if (result.websocket) {
-          proxyPluginApiWebSocket(req, res, result.websocket, () => bridgeDeps.workerManager.isRunning(plugin.id));
+        const available = () => bridgeDeps.workerManager.isRunning(plugin.id);
+        const websocket = result.websocket && typeof result.websocket === "object" ? result.websocket : undefined;
+        if (websocket && "local" in websocket) {
+          // Core decides a local target: capability, operator list, signed-in person (design 1c).
+          const target = resolvePluginLocalWsTarget({
+            pluginKey: plugin.pluginKey, capabilities: plugin.manifestJson.capabilities, actor: req.actor, websocket,
+          });
+          if (target) proxyPluginApiWebSocket(req, res, target, available);
+          else res.status(502).json({ error: "Plugin connection unavailable" });
+        } else if (websocket && plugin.manifestJson.capabilities.includes("http.outbound")) {
+          proxyPluginApiWebSocket(req, res, websocket, available);
         } else {
           res.status(result.status && result.status >= 400 && result.status <= 599 ? result.status : 502).json({ error: "Plugin connection unavailable" });
         }

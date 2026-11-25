@@ -1,5 +1,6 @@
-import { ServerResponse, type IncomingMessage, type RequestListener, type Server } from "node:http";
+import { ServerResponse, request as httpRequest, type ClientRequest, type IncomingMessage, type RequestListener, type Server } from "node:http";
 import { request as httpsRequest } from "node:https";
+import { isPluginLocalWsPath, isPluginLocalWsSocketPath } from "../services/plugin-local-ws.js";
 import type { Socket } from "node:net";
 import type { Duplex } from "node:stream";
 import { validateHeaderName, validateHeaderValue } from "node:http";
@@ -31,29 +32,46 @@ export function setupPluginApiWebSocketServer(server: Server, handler: RequestLi
   });
 }
 
-/** Only worker-selected WSS targets and credentials reach the upstream. */
+/** A remote WSS target, or a core-checked local unix socket with its one signed header. */
+export type PluginApiWebSocketTarget =
+  | { url: string; headers?: Record<string, string> }
+  | { local: { socket: string; path: string }; signature: { name: string; value: string } };
+
+/** Only worker-selected targets and credentials reach the upstream. Neither a local path nor its signature is logged. */
 export function proxyPluginApiWebSocket(
   req: Request,
   res: Response,
-  target: { url: string; headers?: Record<string, string> },
+  target: PluginApiWebSocketTarget,
   available: () => boolean,
 ) {
   const upgrade = (req as UpgradeRequest)[pluginApiUpgrade];
   if (!upgrade || upgrade.socket.destroyed) return;
   const { socket, head } = upgrade;
-  let url: URL;
+  const headers: Record<string, string | string[]> = {};
+  let open: () => ClientRequest;
   try {
-    url = new URL(target.url);
-    if (url.protocol !== "wss:" || url.username || url.password || url.hash) throw new Error();
-    for (const [name, value] of Object.entries(target.headers ?? {})) { validateHeaderName(name); validateHeaderValue(name, value); }
-    // A plugin may supply upstream authorization, never browser cookies/origin.
-    if (Object.keys(target.headers ?? {}).some(key => /^(cookie|origin|host|connection|upgrade|sec-websocket-|x-forwarded-)/i.test(key))) throw new Error();
+    if ("local" in target) {
+      const { socket: socketPath, path } = target.local;
+      if (!isPluginLocalWsSocketPath(socketPath) || !isPluginLocalWsPath(path)) throw new Error();
+      validateHeaderName(target.signature.name); validateHeaderValue(target.signature.name, target.signature.value);
+      // No plugin headers, cookie, origin, authorization or forwarding: only the signed statement.
+      headers[target.signature.name] = target.signature.value;
+      open = () => httpRequest({ socketPath, path, method: "GET", headers, timeout: 15_000 });
+    } else {
+      const url = new URL(target.url);
+      if (url.protocol !== "wss:" || url.username || url.password || url.hash) throw new Error();
+      for (const [name, value] of Object.entries(target.headers ?? {})) { validateHeaderName(name); validateHeaderValue(name, value); }
+      // A plugin may supply upstream authorization, never browser cookies/origin.
+      if (Object.keys(target.headers ?? {}).some(key => /^(cookie|origin|host|connection|upgrade|sec-websocket-|x-forwarded-)/i.test(key))) throw new Error();
+      url.protocol = "https:";
+      Object.assign(headers, target.headers);
+      open = () => httpsRequest(url, { method: "GET", headers, timeout: 15_000 });
+    }
   } catch {
     res.status(502).json({ error: "Plugin connection unavailable" });
     return;
   }
-  url.protocol = "https:";
-  const headers: Record<string, string | string[]> = { ...target.headers, Connection: "Upgrade", Upgrade: "websocket" };
+  Object.assign(headers, { Connection: "Upgrade", Upgrade: "websocket" });
   for (const name of ["sec-websocket-key", "sec-websocket-version", "sec-websocket-protocol", "sec-websocket-extensions"]) {
     if (req.headers[name]) headers[name] = req.headers[name]!;
   }
@@ -63,8 +81,8 @@ export function proxyPluginApiWebSocket(
     if (!connected && !socket.destroyed && !res.headersSent) res.status(502).json({ error: "Plugin connection unavailable" });
     else socket.destroy();
   };
-  let connection: ReturnType<typeof httpsRequest>;
-  try { connection = httpsRequest(url, { method: "GET", headers, timeout: 15_000 }); }
+  let connection: ClientRequest;
+  try { connection = open(); }
   catch { fail(); return; }
   const cleanup = () => { clearInterval(watch); clearTimeout(lifetime); connection.destroy(); upstream?.destroy(); };
   // Periodic reconnect reauthorizes the browser through HTTP; it also bounds

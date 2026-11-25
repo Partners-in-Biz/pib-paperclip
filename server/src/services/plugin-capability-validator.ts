@@ -488,6 +488,13 @@ export function pluginCapabilityValidator(): PluginCapabilityValidator {
         }
       }
 
+      // WebSocket routes reach an upstream: a remote one (`http.outbound`) or a
+      // local unix socket (`websocket.local`). Either capability is enough here.
+      if ((manifest.apiRoutes ?? []).some((route) => route.transport === "websocket")
+        && !declared.has("http.outbound") && !declared.has("websocket.local")) {
+        allMissing.push("http.outbound");
+      }
+
       // Check UI slots → required capabilities
       const uiSlots = manifest.ui?.slots ?? [];
       if (uiSlots.length > 0) {
