@@ -48,7 +48,7 @@ import {
   ACPX_STALLED_TOOL_TIMEOUT_MS,
 } from "./constants.js";
 import { sessionCodec } from "./session-codec.js";
-import { runChildProcess } from "../server-utils.js";
+import { boundContinuationHistory, runChildProcess } from "../server-utils.js";
 import { createPromptContextFixture } from "../test-fixtures/prompt-context.js";
 import { setExpensiveWorkspaceGitExecutor } from "../git-workspace-sync.js";
 import { createWorkspaceRestoreTeardown } from "../workspace-restore-teardown.js";
@@ -872,7 +872,7 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(promptMetrics?.runtimeNoteChars).toBeGreaterThan(0);
   });
 
-  it("keeps large continuation history in ACP turns and preserves resume deltas", async () => {
+  it("bounds large continuation history in fresh ACP turns and preserves resume deltas", async () => {
     const root = await makeTempRoot();
     const config = {
       agent: "claude", cwd: root, stateDir: path.join(root, "state"), mode: "persistent",
@@ -915,8 +915,17 @@ describe("shared ACPX engine runtime behavior", () => {
       expect(prompt).not.toContain("stale configured wake");
       for (const action of completedActions) expect(prompt).toContain(JSON.stringify(action));
     }
+    // Turn 1 carries a bounded history window (PAR-13536): pinned + newest messages, older ones by cursor.
     const freshPrompt = String(fresh.turnInputs[0]?.text);
-    for (const message of messages) expect(freshPrompt).toContain(JSON.stringify(message));
+    const window = boundContinuationHistory(continuation);
+    expect(window.omitted).not.toBeNull();
+    expect(window.messages.map((message) => message.id)).toEqual(expect.arrayContaining(["message-0", "message-49"]));
+    for (const message of window.messages) expect(freshPrompt).toContain(JSON.stringify(message));
+    for (const message of messages.filter((candidate) => !window.messages.includes(candidate))) {
+      expect(freshPrompt).not.toContain(JSON.stringify(message));
+    }
+    expect(freshPrompt).toContain(`"historyWindow":${JSON.stringify(window.omitted)}`);
+    expect(freshPrompt).toContain(`${window.omitted!.omittedMessages} older messages are omitted (historyWindow)`);
     const resumedPrompt = String(resumed.turnInputs[0]?.text);
     expect(resumedPrompt).toContain(JSON.stringify(changedMessage));
     expect(resumedPrompt).not.toContain(messages[0]!.body);
