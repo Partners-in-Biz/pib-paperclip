@@ -35,6 +35,8 @@ export interface CampaignDetailData {
     approvalIssueId: string | null;
     approvalStatus: string | null;
     winnerVariant?: "a" | "b" | null;
+    /** Its client is one of our own brands: no client's written yes is needed. */
+    ownBrand?: boolean;
     /** The client's written yes, once recorded by Approve on a client campaign. */
     clientYes?: { ref: string; by: string | null; at: string | null } | null;
     steps: DetailStep[];
@@ -72,6 +74,8 @@ export interface CampaignDetailData {
   /** Before launch: who would get it. */
   audiencePeople?: AudiencePerson[] | null;
   results?: CampaignResults | null;
+  /** Where a person may move this draft: our own work or one of our own brands (`client` null is our own). Empty when it cannot move. */
+  moveTargets?: Array<{ client: string | null; name: string }>;
 }
 
 export interface DetailActions {
@@ -86,6 +90,8 @@ export interface DetailActions {
   onAb: () => void;
   onApprove: (input: ApproveInput) => void;
   onSendBack: (note: string) => void;
+  /** Move a draft to our own work (null) or to one of our own brands (`company:<id>`). */
+  onMove?: (client: string | null) => void;
 }
 
 /** "All contacts", "Contacts tagged vip, hot", "Contacts at Northwind", "Northwind only". */
@@ -227,6 +233,17 @@ export function CampaignDetail({ data, actions, linkFor, now = new Date(), initi
             {entry.sentFrom ?? <span style={{ color: tone("warn").fg }}>{entry.note ?? "not set up"}</span>}
           </Fact>
         ))}
+        <Fact term="Belongs to">
+          {campaign.client ? <>{campaign.client.name ?? "A client"}<span style={{ color: tokens.muted }}> · {campaign.ownBrand ? "one of our own brands" : "a client"}</span></> : "Our own campaigns"}
+          {data.moveTargets?.length && actions.onMove ? (
+            <span style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginTop: 4 }}>
+              <span style={{ fontSize: 12.5, color: tokens.muted }}>Move to</span>
+              {data.moveTargets.map((target) => (
+                <Button key={target.client ?? "own"} type="button" variant="secondary" style={{ height: 26, fontSize: 12 }} disabled={actions.busy} onClick={() => actions.onMove!(target.client)}>{target.name}</Button>
+              ))}
+            </span>
+          ) : null}
+        </Fact>
         <Fact term="Audience">
           {audienceText(campaign)}
           {audience ? <span style={{ color: tokens.muted }}> · {plural(audience.matching, "contact")} match now</span> : null}
