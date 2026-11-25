@@ -70,6 +70,8 @@ export async function openBillingApproval(ctx: PluginContext, settings: BillingS
     ...(input.priority ? { priority: input.priority } : {}),
     outward: input.outward,
     actorUserId: input.actorUserId ?? null,
+    // The person who asked from the page is the task's creator ("Created by").
+    createdByUserId: input.actorUserId ?? null,
     ...(input.brief ? { reviewerBrief: () => input.brief!(approver) } : {}),
   };
   if (route.reviewerAgentId || !configured) {
@@ -86,6 +88,7 @@ export async function openBillingApproval(ctx: PluginContext, settings: BillingS
       ...(projectId ? { projectId } : {}),
       ...(input.priority ? { priority: input.priority } : {}),
       assigneeUserId: configured,
+      actingUserId: input.actorUserId ?? null,
       wake: false,
     } as Parameters<typeof createWorkIssue>[1]);
     return { id: created.id, assignedTo: "person", reviewer: false, approver: configured };

@@ -6,7 +6,6 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import {
   useHostLocation,
   useHostNavigation,
-  usePluginAction,
   usePluginToast,
   type PluginActionFn,
   type PluginPageProps,
@@ -31,11 +30,14 @@ import {
   Tabs,
   type TabItem,
   TrendingUp,
+  AccessGate,
   errorText,
   tokens,
+  useAccess,
   usePluginSetupStatus,
 } from "@partnersinbiz/pib-plugin-ui";
 import { useGroupedNav } from "@partnersinbiz/pib-plugin-ui";
+import { useAccessMe, useSocialAction } from "./actions.js";
 import { AccountsTab, PickerModal, SetupBanners } from "./accounts.js";
 import { Composer } from "./composer.js";
 import { chipStyle, platformLabel, Row, SmallButton } from "./parts.js";
@@ -119,7 +121,7 @@ const TAB_IDS: TabId[] = ["overview", "posts", "calendar", "accounts", "inbox", 
 function useSocialActions(): Record<string, PluginActionFn> {
   const fns: Record<string, PluginActionFn> = {};
   // Fixed list, fixed order: the hooks run in the same order on every render.
-  for (const key of ACTION_KEYS) fns[key] = usePluginAction(key);
+  for (const key of ACTION_KEYS) fns[key] = useSocialAction(key);
   return fns;
 }
 
@@ -155,12 +157,22 @@ function SpaceSwitch({ me, linkProps }: { me: boolean; linkProps: ReturnType<typ
 export const SocialPage = withHelp(SocialPageMain);
 
 function SocialPageMain(props: PluginPageProps) {
-  return <SocialWorkspace {...props} space="company" />;
+  return <GatedWorkspace {...props} space="company" />;
 }
 
 /** The signed-in user's own socials: the same workspace, filled from their personal rows only. */
 export function MySocialPage(props: PluginPageProps) {
-  return <SocialWorkspace {...props} space="me" />;
+  return <GatedWorkspace {...props} space="me" />;
+}
+
+/** The page asks `access.me` first; closed shows the "no access" page (the guard still refuses every call). */
+function GatedWorkspace(props: PluginPageProps & { space: "company" | "me" }) {
+  const access = useAccess(useAccessMe(), props.context.companyId);
+  return (
+    <AccessGate state={access} kind="page" moduleName={props.space === "me" ? "My Social" : "Social"}>
+      <SocialWorkspace {...props} />
+    </AccessGate>
+  );
 }
 
 function SocialWorkspace({ context, space }: PluginPageProps & { space: "company" | "me" }) {
@@ -394,7 +406,17 @@ function SocialWorkspace({ context, space }: PluginPageProps & { space: "company
   );
 }
 
-export function SocialSidebar({ context }: PluginSidebarProps) {
+export function SocialSidebar(props: PluginSidebarProps) {
+  // Nothing while the access check loads, so the entry does not flash for a person without access.
+  const access = useAccess(useAccessMe(), props.context.companyId);
+  return (
+    <AccessGate state={access} kind="sidebar">
+      <SocialSidebarEntry {...props} />
+    </AccessGate>
+  );
+}
+
+function SocialSidebarEntry({ context }: PluginSidebarProps) {
   // Nothing when the company switched Social off; shown while the check runs.
   const enabled = useModuleEnabled(context.companyId);
   // The Cockpit's Clients / Marketing / Finance group shows this page instead (pib-plugin-ui NAV_GROUPS).

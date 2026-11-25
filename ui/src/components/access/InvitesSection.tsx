@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Check, Copy } from "lucide-react";
+import { MEMBER_RESTRICTION_REQUIRED_CODE, type Agent, type MemberRestrictionMode } from "@paperclipai/shared";
 import { accessApi } from "@/api/access";
 import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
@@ -10,7 +11,13 @@ import { Link } from "@/lib/router";
 import { queryKeys } from "@/lib/queryKeys";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { Badge } from "@/components/ui/badge";
-import { describeError } from "@/api/errors";
+import { describeError, errorCodes } from "@/api/errors";
+import {
+  InviteRestrictionChoice,
+  InviteRestrictionMark,
+  isProtectedInviteRole,
+  type InviteRestrictionChoiceValue,
+} from "./InviteRestriction";
 
 const inviteRoleOptions = [
   {
@@ -47,11 +54,33 @@ function isInviteHistoryRow(value: unknown): value is Awaited<ReturnType<typeof 
 }
 
 /** The Invites tab of the Members page (extracted from the former standalone Invites page). */
-export function InvitesSection() {
+export function InvitesSection({
+  canManageMembers = false,
+  restrictionMode,
+  forcedOff = false,
+  agents = [],
+}: {
+  /** May set the plugin and agent lists of a restricted invite (`users:manage_permissions`). */
+  canManageMembers?: boolean;
+  /** The company's stored restriction mode; undefined when this person cannot read it. */
+  restrictionMode?: MemberRestrictionMode;
+  /** The server kill switch forces every company to mode `off`. */
+  forcedOff?: boolean;
+  agents?: Agent[];
+} = {}) {
   const { selectedCompanyId } = useCompany();
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
   const [humanRole, setHumanRole] = useState<"owner" | "admin" | "operator" | "viewer">("operator");
+  // PAR-12608 4.2a: the choice has no default, and is required unless the company is on `off`.
+  const [restrictionChoice, setRestrictionChoice] = useState<InviteRestrictionChoiceValue | null>(null);
+  const [restrictionPluginKeys, setRestrictionPluginKeys] = useState<string[]>([]);
+  const [restrictionAgentIds, setRestrictionAgentIds] = useState<string[]>([]);
+  // Someone who cannot read the mode learns it is not `off` from the server's 422.
+  const [serverRequiresChoice, setServerRequiresChoice] = useState(false);
+  const effectiveMode = forcedOff ? "off" : restrictionMode;
+  const restrictionRequired = effectiveMode ? effectiveMode !== "off" : serverRequiresChoice;
+  const canSubmitInvite = !restrictionRequired || restrictionChoice !== null;
   const [latestInviteUrl, setLatestInviteUrl] = useState<string | null>(null);
   const [latestInviteCopied, setLatestInviteCopied] = useState(false);
   const latestInviteInputRef = useRef<HTMLInputElement | null>(null);
@@ -115,10 +144,22 @@ export function InvitesSection() {
         allowedJoinTypes: "human",
         humanRole,
         agentMessage: null,
+        ...(restrictionChoice === null
+          ? {}
+          : {
+              restriction:
+                restrictionChoice === "restricted"
+                  ? { restricted: true, pluginKeys: restrictionPluginKeys, agentIds: restrictionAgentIds }
+                  : { restricted: false, pluginKeys: [], agentIds: [] },
+            }),
       }),
     onSuccess: async (invite) => {
       setLatestInviteUrl(invite.inviteUrl);
       setLatestInviteCopied(false);
+      // Each invite is chosen afresh: no choice carries over to the next one.
+      setRestrictionChoice(null);
+      setRestrictionPluginKeys([]);
+      setRestrictionAgentIds([]);
       const copied = await copyText(invite.inviteUrl, "Copy the invite URL manually from the field below.");
 
       await queryClient.invalidateQueries({ queryKey: inviteHistoryQueryKey });
@@ -129,6 +170,7 @@ export function InvitesSection() {
       });
     },
     onError: (error) => {
+      if (errorCodes(error).includes(MEMBER_RESTRICTION_REQUIRED_CODE)) setServerRequiresChoice(true);
       pushToast({
         title: "Failed to create invite",
         body: describeError(error).body,
@@ -205,7 +247,12 @@ export function InvitesSection() {
                     name="invite-role"
                     value={option.value}
                     checked={checked}
-                    onChange={() => setHumanRole(option.value)}
+                    onChange={() => {
+                      setHumanRole(option.value);
+                      if (isProtectedInviteRole(option.value) && restrictionChoice === "restricted") {
+                        setRestrictionChoice(null);
+                      }
+                    }}
                     className="mt-1 h-4 w-4 border-border text-foreground"
                   />
                   <span className="min-w-0 space-y-1">
@@ -226,12 +273,29 @@ export function InvitesSection() {
           </div>
         </fieldset>
 
+        <InviteRestrictionChoice
+          companyId={selectedCompanyId}
+          value={restrictionChoice}
+          onChange={setRestrictionChoice}
+          required={restrictionRequired}
+          humanRole={humanRole}
+          canSetLists={canManageMembers}
+          agents={agents}
+          pluginKeys={restrictionPluginKeys}
+          agentIds={restrictionAgentIds}
+          onPluginKeysChange={setRestrictionPluginKeys}
+          onAgentIdsChange={setRestrictionAgentIds}
+        />
+
         <div className="rounded-lg border border-border px-4 py-3 text-sm text-muted-foreground">
           Each invite link is single-use. Human invitees get the selected role immediately after sign-in; agent invites still create a join request for approval.
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
-          <Button onClick={() => createInviteMutation.mutate()} disabled={createInviteMutation.isPending}>
+          <Button
+            onClick={() => createInviteMutation.mutate()}
+            disabled={createInviteMutation.isPending || !canSubmitInvite}
+          >
             {createInviteMutation.isPending ? "Creating…" : "Create invite"}
           </Button>
           <span className="text-sm text-muted-foreground">Invite history below keeps the audit trail.</span>
@@ -308,6 +372,7 @@ export function InvitesSection() {
                   <tr className="border-b border-border">
                     <th className="px-5 py-3 font-medium text-muted-foreground">State</th>
                     <th className="px-5 py-3 font-medium text-muted-foreground">For</th>
+                    <th className="px-5 py-3 font-medium text-muted-foreground">Restriction</th>
                     <th className="px-5 py-3 font-medium text-muted-foreground">Invited by</th>
                     <th className="px-5 py-3 font-medium text-muted-foreground">Created</th>
                     <th className="px-5 py-3 font-medium text-muted-foreground">Join request</th>
@@ -323,6 +388,9 @@ export function InvitesSection() {
                         </Badge>
                       </td>
                       <td className="px-5 py-3 align-top">{formatInviteAudience(invite)}</td>
+                      <td className="min-w-56 px-5 py-3 align-top">
+                        <InviteRestrictionMark restriction={invite.memberRestriction} agents={agents} emptyLabel="—" />
+                      </td>
                       <td className="px-5 py-3 align-top">
                         <div>{invite.invitedByUser?.name || invite.invitedByUser?.email || "Unknown inviter"}</div>
                         {invite.invitedByUser?.email && invite.invitedByUser.name ? (

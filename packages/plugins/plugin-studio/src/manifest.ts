@@ -1,12 +1,12 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 import { instanceConfigSchema } from "./config.js";
-import { NAMESPACE_SLUG, PLUGIN_ID, STUDIO_MEDIA_CARD } from "./namespace.js";
+import { NAMESPACE_SLUG, PLUGIN_ID, STUDIO_GENERATE_CARD, STUDIO_MEDIA_CARD } from "./namespace.js";
 import { STUDIO_TOOLS } from "./tools.js";
 
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.1.70",
+  version: "0.1.71",
   displayName: "Studio",
   description: "Creative assets and image and video generation for people and agents. Every file is saved to private storage and tied to a company, client, project and task. Credits are tracked per client, under monthly caps a company owner sets.",
   author: "Partners in Biz",
@@ -72,6 +72,8 @@ const manifest: PaperclipPluginManifestV1 = {
       // Planning Canvas (PAR-14280): the card of an embed node { plugin: PLUGIN_ID, type: "studio-media" }, and the
       // board's library panel. Both need only ui.sidebar.register (plan PAR-14257 C).
       { type: "canvasNode", id: STUDIO_MEDIA_CARD, displayName: "Studio media", exportName: "StudioCanvasCard" },
+      // The generate card (PAR-14281): model, estimate and confirm, queue state; the output is its own studio-media card.
+      { type: "canvasNode", id: STUDIO_GENERATE_CARD, displayName: "Studio generate", exportName: "StudioGenerateCard" },
       { type: "canvasPanel", id: "studio-board-library", displayName: "Studio library", exportName: "StudioBoardLibrary" },
     ],
   },

@@ -5,7 +5,6 @@ import { useHostLocation,
   DataTable,
   useHostNewIssue,
   useHostNavigation,
-  usePluginAction,
   type PluginPageProps,
   type PluginSidebarProps,
 } from "@paperclipai/plugin-sdk/ui";
@@ -13,6 +12,7 @@ import { rememberOAuthStart, resolvePluginUiBase } from "@partnersinbiz/pib-plug
 import { DraftEditor } from "./draft-editor.js";
 import { MailContext, TaskChip, type TaskLink } from "./mail-context.js";
 import { ModuleOffBanner, useModuleEnabled } from "./module-switch.js";
+import { useAccessMe, useMailboxAction } from "./actions.js";
 import {
   BarChart,
   BarList,
@@ -60,7 +60,7 @@ import {
   useIsNarrow,
   type Segment,
 } from "@partnersinbiz/pib-plugin-ui";
-import { GetStarted, useGroupedNav, usePluginSetupStatus, useUrlTab } from "@partnersinbiz/pib-plugin-ui";
+import { AccessGate, GetStarted, useAccess, useGroupedNav, usePluginSetupStatus, useUrlTab } from "@partnersinbiz/pib-plugin-ui";
 import type { DailySeries } from "../daily.js";
 import { CATEGORY_NAMES, SEND_SERIES, accountTone, categoryColor, categorySegments, categoryTone, draftTone, isSyncing, receivedColumns, sendColumns, sendTone } from "./series.js";
 import { taskLinkLine } from "./view.js";
@@ -467,40 +467,50 @@ function OneRow({ children }: { children: ReactNode }) {
 
 export const MailboxPage = withHelp(MailboxPageMain);
 
-function MailboxPageMain({ context }: PluginPageProps) {
-  const load = usePluginAction("mailbox.load");
-  const connectStart = usePluginAction("mailbox.connect-start");
-  const disconnect = usePluginAction("mailbox.disconnect");
-  const deleteAccount = usePluginAction("mailbox.delete-account");
-  const setDefault = usePluginAction("mailbox.set-default");
-  const syncNow = usePluginAction("mailbox.sync-now");
-  const loadInbox = usePluginAction("mailbox.inbox");
-  const loadSent = usePluginAction("mailbox.sent");
-  const retrySend = usePluginAction("mailbox.retry-send");
-  const correctTriage = usePluginAction("mailbox.correct-triage");
-  const loadStats = usePluginAction("mailbox.triage-stats");
-  const sendDraft = usePluginAction("mailbox.send-draft");
-  const getMessage = usePluginAction("mailbox.get-message");
-  const startReply = usePluginAction("mailbox.start-reply");
-  const deleteMail = usePluginAction("mailbox.delete-mail");
-  const createAccount = usePluginAction("mailbox.create-account");
-  const createDelegation = usePluginAction("mailbox.create-delegation");
-  const createDraft = usePluginAction("mailbox.create-draft");
-  const removeDelegation = usePluginAction("mailbox.remove-delegation");
-  const checkDomain = usePluginAction("mailbox.check-domain");
-  const setAccountClient = usePluginAction("mailbox.set-account-client");
-  const addClientMap = usePluginAction("mailbox.add-client-map");
-  const removeClientMap = usePluginAction("mailbox.remove-client-map");
-  const loadCrmClients = usePluginAction("mailbox.crm-clients");
-  const addSendingDomain = usePluginAction("mailbox.add-sending-domain");
-  const refreshSendingDomain = usePluginAction("mailbox.refresh-sending-domain");
-  const setSendingDomain = usePluginAction("mailbox.set-sending-domain");
-  const clearHold = usePluginAction("mailbox.clear-reputation-hold");
-  const loadPreferences = usePluginAction("mailbox.preferences-load");
-  const savePreferences = usePluginAction("mailbox.preferences-save");
-  const handoffPrepare = usePluginAction("mailbox.handoff-prepare");
-  const handoffRecord = usePluginAction("mailbox.handoff-record");
-  const loadTaskLinks = usePluginAction("mailbox.task-links");
+/** The page asks `access.me` first; closed shows the "no access" page (the guard still refuses every call). */
+function MailboxPageMain(props: PluginPageProps) {
+  const access = useAccess(useAccessMe(), props.context.companyId);
+  return (
+    <AccessGate state={access} kind="page" moduleName="Mailbox">
+      <MailboxPageBody {...props} />
+    </AccessGate>
+  );
+}
+
+function MailboxPageBody({ context }: PluginPageProps) {
+  const load = useMailboxAction("mailbox.load");
+  const connectStart = useMailboxAction("mailbox.connect-start");
+  const disconnect = useMailboxAction("mailbox.disconnect");
+  const deleteAccount = useMailboxAction("mailbox.delete-account");
+  const setDefault = useMailboxAction("mailbox.set-default");
+  const syncNow = useMailboxAction("mailbox.sync-now");
+  const loadInbox = useMailboxAction("mailbox.inbox");
+  const loadSent = useMailboxAction("mailbox.sent");
+  const retrySend = useMailboxAction("mailbox.retry-send");
+  const correctTriage = useMailboxAction("mailbox.correct-triage");
+  const loadStats = useMailboxAction("mailbox.triage-stats");
+  const sendDraft = useMailboxAction("mailbox.send-draft");
+  const getMessage = useMailboxAction("mailbox.get-message");
+  const startReply = useMailboxAction("mailbox.start-reply");
+  const deleteMail = useMailboxAction("mailbox.delete-mail");
+  const createAccount = useMailboxAction("mailbox.create-account");
+  const createDelegation = useMailboxAction("mailbox.create-delegation");
+  const createDraft = useMailboxAction("mailbox.create-draft");
+  const removeDelegation = useMailboxAction("mailbox.remove-delegation");
+  const checkDomain = useMailboxAction("mailbox.check-domain");
+  const setAccountClient = useMailboxAction("mailbox.set-account-client");
+  const addClientMap = useMailboxAction("mailbox.add-client-map");
+  const removeClientMap = useMailboxAction("mailbox.remove-client-map");
+  const loadCrmClients = useMailboxAction("mailbox.crm-clients");
+  const addSendingDomain = useMailboxAction("mailbox.add-sending-domain");
+  const refreshSendingDomain = useMailboxAction("mailbox.refresh-sending-domain");
+  const setSendingDomain = useMailboxAction("mailbox.set-sending-domain");
+  const clearHold = useMailboxAction("mailbox.clear-reputation-hold");
+  const loadPreferences = useMailboxAction("mailbox.preferences-load");
+  const savePreferences = useMailboxAction("mailbox.preferences-save");
+  const handoffPrepare = useMailboxAction("mailbox.handoff-prepare");
+  const handoffRecord = useMailboxAction("mailbox.handoff-record");
+  const loadTaskLinks = useMailboxAction("mailbox.task-links");
   const newIssue = useHostNewIssue();
 
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
@@ -2034,7 +2044,17 @@ function MailboxPageMain({ context }: PluginPageProps) {
   );
 }
 
-export function MailboxSidebar({ context }: PluginSidebarProps) {
+export function MailboxSidebar(props: PluginSidebarProps) {
+  // Nothing while the access check loads, so the entry does not flash for a person without access.
+  const access = useAccess(useAccessMe(), props.context.companyId);
+  return (
+    <AccessGate state={access} kind="sidebar">
+      <MailboxSidebarEntry {...props} />
+    </AccessGate>
+  );
+}
+
+function MailboxSidebarEntry({ context }: PluginSidebarProps) {
   // Hidden when the company switched the Mailbox off in Setup; shown while loading.
   const enabled = useModuleEnabled(context.companyId, PLUGIN_KEY);
   // The Cockpit's Clients / Marketing / Finance group shows this page instead (pib-plugin-ui NAV_GROUPS).

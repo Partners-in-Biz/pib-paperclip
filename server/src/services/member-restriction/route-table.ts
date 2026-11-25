@@ -147,9 +147,8 @@ export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntr
   { method: "GET", path: "/api/issues/:id/comments/:commentId", class: "open", test: TREE_TEST },
   { method: "DELETE", path: "/api/issues/:id/comments/:commentId", class: "open", test: TREE_TEST },
   { method: "GET", path: "/api/issues/:id/queued-comments", class: "open", test: TREE_TEST },
-  // Closed: the queued-comment writes check only the company (edit, reorder,
-  // discard) or answer a denied `issue:comment` with 403 (interrupt, steer),
-  // which tells R that O's task exists (AC-G3).
+  // Closed: spec PAR-12608 section 9 does not open them for the restricted
+  // member; since C4k-2 each reads the task first (404).
   { method: "PATCH", path: "/api/issues/:id/queued-comments/:commentId", class: "closed" },
   { method: "PUT", path: "/api/issues/:id/queued-comments/order", class: "closed" },
   { method: "POST", path: "/api/issues/:id/queued-comments/interrupt", class: "closed" },
@@ -656,10 +655,11 @@ export const MEMBER_RESTRICTION_MOUNT_TABLE: readonly MemberRestrictionMountEntr
       "publicMcpIngress.USE publicMcpIngressRoutes"] },
   { row: 5, rule: "a run's own run-bound token only; connection search and request and the MCP tools end in the dispatcher (4.8) " +
       "and the connector builder (4.9); the GitHub credentials route hands the run a company credential, so it is closed for a run " +
-      "whose person is restricted (4.9, decision 4; PAR-13220)",
+      "whose person is restricted (4.9, decision 4)",
     mounts: ["USE runtimeConnectionIntentRoutes", "USE nativeRunMcpRoutes"], toProve: MOUNT_TEST,
     routes: [
-      { method: "POST", path: "/runtime-tools/github/credentials", class: "closed", toProve: "PAR-13220" },
+      { method: "POST", path: "/runtime-tools/github/credentials", class: "closed",
+        toProve: "server/src/__tests__/member-restriction-github-credentials.test.ts" },
       { method: "GET", path: "/mcp/runtime-tools", class: "run" },
       { method: "POST", path: "/mcp/runtime-tools", class: "run" },
       { method: "POST", path: "/runtime-tools/connections/search", class: "run" },

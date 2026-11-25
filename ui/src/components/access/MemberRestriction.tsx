@@ -206,9 +206,9 @@ export function agentRestrictionMarks(agent: Agent | undefined, agents: Agent[])
   return { usable, risky: configures || shell, marks };
 }
 
-type ChoiceRow = { id: string; label: string; marks: string[]; warn: boolean; stale: boolean };
+export type ChoiceRow = { id: string; label: string; marks: string[]; warn: boolean; stale: boolean };
 
-function ChoiceList({
+export function ChoiceList({
   legend,
   rows,
   selected,

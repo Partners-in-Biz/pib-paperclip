@@ -3,6 +3,7 @@
  * Pure declarations and handlers (no I/O except company lookup in get).
  */
 import type { JsonSchema, PluginContext, PluginToolDeclaration } from "@paperclipai/plugin-sdk";
+import type { AccessGuard } from "@partnersinbiz/pib-plugin-kit";
 import { loadPack, packSources, templateByKey, templateVars, type AgentTemplate, type TemplateVars } from "./templates.js";
 import { renderInstructions } from "./templates-render.js";
 import { renderHash } from "./render-hash.js";
@@ -209,8 +210,8 @@ async function previewTemplate(ctx: PluginContext, key: string, unifiedDiff: str
   };
 }
 
-/** Register the three tools with ctx.tools.register. */
-export function registerTemplateTools(ctx: PluginContext): { templateList: any; templateGet: any; templatePreview: any } {
+/** Register the three tools through the access guard (`tool:<name>` rows in `./access-table.ts`). */
+export function registerTemplateTools(ctx: PluginContext, guard: Pick<AccessGuard, "tool">): { templateList: any; templateGet: any; templatePreview: any } {
   const templateList = async (_params: unknown, _run: any) => {
     try {
       const data = listTemplates();
@@ -278,9 +279,9 @@ export function registerTemplateTools(ctx: PluginContext): { templateList: any; 
     }
   };
 
-  ctx.tools.register("template-list", TEMPLATE_TOOLS[0]!, templateList);
-  ctx.tools.register("template-get", TEMPLATE_TOOLS[1]!, templateGet);
-  ctx.tools.register("template-preview", TEMPLATE_TOOLS[2]!, templatePreview);
+  guard.tool("template-list", TEMPLATE_TOOLS[0]!, templateList);
+  guard.tool("template-get", TEMPLATE_TOOLS[1]!, templateGet);
+  guard.tool("template-preview", TEMPLATE_TOOLS[2]!, templatePreview);
 
   return { templateList, templateGet, templatePreview };
 }

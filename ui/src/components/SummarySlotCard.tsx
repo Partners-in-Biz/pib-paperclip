@@ -8,7 +8,7 @@ import type {
   SummarySlotRevision,
   SummarySlotScopeKind,
 } from "@paperclipai/shared";
-import { Bot, Clock3, History, Loader2, RefreshCw, Sparkles } from "lucide-react";
+import { Bot, Clock3, History, Loader2, RefreshCw, Sparkles, X } from "lucide-react";
 
 import { agentsApi } from "@/api/agents";
 import { builtInAgentsApi, type BuiltInAgentState } from "@/api/builtInAgents";
@@ -29,7 +29,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { cn, formatDateTime, relativeTime } from "@/lib/utils";
 
 const SUMMARIZER_KEY = "summarizer";
-const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
+const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled", "blocked"]);
 const LATEST_REVISION_SELECT_VALUE = "__latest__";
 const MAX_REVISION_OPTIONS = 30;
 
@@ -218,6 +218,27 @@ function SummarySlotCardBody({
     },
   });
 
+  const cancelMutation = useMutation({
+    mutationFn: () => summarySlotsApi.cancel(selector!),
+    onMutate: () => setActionError(null),
+    onSuccess: async (result) => {
+      // The slot is reset either way, but a run that failed to cancel keeps
+      // running; tell the operator instead of hiding it.
+      if (result.failedRunIds.length > 0) {
+        setActionError(
+          `The summary was cancelled, but ${result.failedRunIds.length} run${result.failedRunIds.length === 1 ? "" : "s"} could not be stopped and may keep running (${result.failedRunIds.join(", ")}).`,
+        );
+      }
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: slotQueryKey }),
+        queryClient.invalidateQueries({ queryKey: revisionsQueryKey }),
+      ]);
+    },
+    onError: (error) => {
+      setActionError(error instanceof Error ? error.message : "Summary generation could not be cancelled.");
+    },
+  });
+
   const resumeSummarizer = useMutation({
     mutationFn: (agentId: string) => agentsApi.resume(agentId, companyId ?? undefined),
     onSuccess: async () => {
@@ -400,46 +421,62 @@ function SummarySlotCardBody({
       ) : null}
 
       {slotReady && isGenerating && generatingIssue ? (
-        <div className="flex items-start gap-3 text-sm">
-          <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
-          <div className="min-w-0 space-y-1">
-            <p className="font-medium text-foreground">Generating summary</p>
-            {generationStatusLine ? (
-              <p
-                className="animate-pulse truncate text-muted-foreground"
-                aria-live="polite"
-                data-testid="summary-generation-status-line"
-                title={generationStatusLine}
-              >
-                {generationStatusLine}
+        <div className="flex items-start justify-between gap-3 text-sm">
+          <div className="flex min-w-0 items-start gap-3">
+            <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
+            <div className="min-w-0 space-y-1">
+              <p className="font-medium text-foreground">Generating summary</p>
+              {generationStatusLine ? (
+                <p
+                  className="animate-pulse truncate text-muted-foreground"
+                  aria-live="polite"
+                  data-testid="summary-generation-status-line"
+                  title={generationStatusLine}
+                >
+                  {generationStatusLine}
+                </p>
+              ) : null}
+              {draftStream.draft ? (
+                <div
+                  className="mt-2 rounded-md border border-border bg-muted/20 p-3"
+                  data-testid="summary-generation-draft"
+                  aria-live="polite"
+                >
+                  <MarkdownBody className="text-sm leading-7 text-foreground">
+                    {draftStream.draft}
+                  </MarkdownBody>
+                  {!draftStream.draftClosed ? (
+                    <span
+                      className="mt-1 inline-block h-4 w-px animate-pulse bg-foreground align-text-bottom"
+                      aria-hidden="true"
+                      data-testid="summary-generation-caret"
+                    />
+                  ) : null}
+                </div>
+              ) : null}
+              <p className="text-muted-foreground">
+                Summarizer is working in{" "}
+                <Link className="underline" to={`/issues/${generatingIssue.identifier ?? generatingIssue.id}`}>
+                  {issueLabel(generatingIssue)}
+                </Link>
+                .
               </p>
-            ) : null}
-            {draftStream.draft ? (
-              <div
-                className="mt-2 rounded-md border border-border bg-muted/20 p-3"
-                data-testid="summary-generation-draft"
-                aria-live="polite"
-              >
-                <MarkdownBody className="text-sm leading-7 text-foreground">
-                  {draftStream.draft}
-                </MarkdownBody>
-                {!draftStream.draftClosed ? (
-                  <span
-                    className="mt-1 inline-block h-4 w-px animate-pulse bg-foreground align-text-bottom"
-                    aria-hidden="true"
-                    data-testid="summary-generation-caret"
-                  />
-                ) : null}
-              </div>
-            ) : null}
-            <p className="text-muted-foreground">
-              Summarizer is working in{" "}
-              <Link className="underline" to={`/issues/${generatingIssue.identifier ?? generatingIssue.id}`}>
-                {issueLabel(generatingIssue)}
-              </Link>
-              .
-            </p>
+            </div>
           </div>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="shrink-0"
+            onClick={() => {
+              if (!selector || cancelMutation.isPending) return;
+              cancelMutation.mutate();
+            }}
+            disabled={!selector || cancelMutation.isPending}
+          >
+            {cancelMutation.isPending ? <Loader2 className="animate-spin" /> : <X />}
+            {cancelMutation.isPending ? "Cancelling..." : "Cancel"}
+          </Button>
         </div>
       ) : null}
 

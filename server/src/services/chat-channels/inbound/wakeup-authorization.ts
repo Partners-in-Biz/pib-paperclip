@@ -171,7 +171,7 @@ export function createInboundWakeAuthority(db: Db, options: WakeAuthorityOptions
     );
     if (notice?.taskRetry && !githubTaskRetryDestinationMatches(delivery, conversation, resource)) throw deny("destination_binding");
     if (endpoint.provider === "github") {
-      const automatic = await resolveGitHubWakeAuthority(tx, endpoint, delivery);
+      const automatic = await resolveGitHubWakeAuthority(tx, endpoint, delivery, db);
       if (automatic.kind === "denied") throw deny("automatic_policy");
       if (automatic.kind === "allowed") authorization.userId = automatic.userId;
     }

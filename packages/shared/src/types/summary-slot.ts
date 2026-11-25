@@ -89,6 +89,13 @@ export interface GenerateSummarySlotResponse {
   alreadyGenerating: boolean;
 }
 
+export interface CancelSummarySlotResponse {
+  slot: SummarySlot | null;
+  cancelledIssueId: string | null;
+  /** Run ids whose cancellation failed; the slot is still reset. */
+  failedRunIds: string[];
+}
+
 export interface WriteSummarySlotRequest {
   scopeId?: string | null;
   markdown: string;

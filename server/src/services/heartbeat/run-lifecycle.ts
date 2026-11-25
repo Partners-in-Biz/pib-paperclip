@@ -59,6 +59,7 @@ import {
 import { terminalizeLegacyExecution } from "../legacy-execution-recovery.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { buildHeartbeatRunStatusLiveEventPayload } from "../heartbeat-run-status-payload.js";
+import { settleSummarySlotsForTerminalRun } from "../summary-slot-finalization.js";
 import { randomUUID } from "node:crypto";
 import {
   and,
@@ -1198,6 +1199,9 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
       });
       publishRunLifecyclePluginEvent(updated);
       emitTerminalAgentTaskRun(updated, previousStatus?.status ?? null);
+      if (isHeartbeatRunTerminalStatus(updated.status)) {
+        await settleSummarySlotsForTerminalRun(db, updated);
+      }
     }
 
     return updated;
@@ -1337,6 +1341,9 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
       });
       publishRunLifecyclePluginEvent(updated);
       emitTerminalAgentTaskRun(updated, previousStatus?.status ?? null, failureReport);
+      if (isHeartbeatRunTerminalStatus(updated.status)) {
+        await settleSummarySlotsForTerminalRun(db, updated);
+      }
       return { run: updated, updated: true as const };
     }
 

@@ -969,6 +969,12 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
       const nextWorkMode = isIssueWorkMode(draft.workMode) ? draft.workMode : "standard";
       const restoredProjectId = newIssueDefaults.projectId ?? draft.projectId;
       const restoredProject = orderedProjects.find((project) => project.id === restoredProjectId);
+      const draftMatchesRestoredProject = !restoredProjectId || draft.projectId === restoredProjectId;
+      const draftProjectWorkspaceValid =
+        draftMatchesRestoredProject &&
+        Boolean(draft.projectWorkspaceId) &&
+        (!restoredProject ||
+          (restoredProject.workspaces ?? []).some((workspace) => workspace.id === draft.projectWorkspaceId));
       const hasExplicitProjectWorkspaceId = newIssueDefaults.projectWorkspaceId !== undefined;
       const hasExplicitExecutionWorkspaceId = newIssueDefaults.executionWorkspaceId !== undefined;
       const hasExplicitExecutionWorkspaceMode = newIssueDefaults.executionWorkspaceMode !== undefined;
@@ -992,7 +998,9 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
       setProjectWorkspaceId(
         hasExplicitProjectWorkspaceId
           ? (newIssueDefaults.projectWorkspaceId ?? "")
-          : (draft.projectWorkspaceId ?? defaultProjectWorkspaceIdForProject(restoredProject)),
+          : (draftProjectWorkspaceValid
+              ? (draft.projectWorkspaceId ?? "")
+              : defaultProjectWorkspaceIdForProject(restoredProject)),
       );
       setAssigneeModelLane(draft.assigneeModelLane ?? "primary");
       setAssigneeModelOverride(draft.assigneeModelOverride ?? "");
@@ -1001,19 +1009,23 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
       setExecutionWorkspaceMode(
         hasExplicitExecutionWorkspaceId || hasExplicitExecutionWorkspaceMode
           ? defaultExecutionWorkspaceModeForIssueDefaults(newIssueDefaults, restoredProject)
-          : (draft.executionWorkspaceMode ??
-              (draft.useIsolatedExecutionWorkspace
-                ? "isolated_workspace"
-                : defaultExecutionWorkspaceModeForProject(restoredProject))),
+          : (draftMatchesRestoredProject
+              ? (draft.executionWorkspaceMode ??
+                  (draft.useIsolatedExecutionWorkspace
+                    ? "isolated_workspace"
+                    : defaultExecutionWorkspaceModeForProject(restoredProject)))
+              : defaultExecutionWorkspaceModeForProject(restoredProject)),
       );
       setWorkMode(nextWorkMode);
       setSelectedExecutionWorkspaceId(
         hasExplicitExecutionWorkspaceId
           ? (newIssueDefaults.executionWorkspaceId ?? "")
-          : (draft.selectedExecutionWorkspaceId ?? ""),
+          : (draftMatchesRestoredProject ? (draft.selectedExecutionWorkspaceId ?? "") : ""),
       );
       executionWorkspaceDefaultProjectId.current =
-        hasExplicitProjectWorkspaceId || hasExplicitExecutionWorkspaceId || draft.projectWorkspaceId || restoredProject
+        hasExplicitProjectWorkspaceId ||
+        (draftMatchesRestoredProject && (hasExplicitExecutionWorkspaceId || draftProjectWorkspaceValid)) ||
+        restoredProject
           ? restoredProjectId || null
           : null;
     } else {
@@ -1112,11 +1124,18 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
     const executionWorkspaceSettings = executionWorkspacePolicy?.enabled
       ? { mode: requestedExecutionWorkspaceMode }
       : null;
-    const requestedProjectWorkspaceId = !workspaceIsolationControlsVisible
+    const rawRequestedProjectWorkspaceId = !workspaceIsolationControlsVisible
       ? (newIssueDefaults.projectId === projectId ? newIssueDefaults.projectWorkspaceId : undefined)
       : canChooseWorktrees && executionWorkspaceMode === "reuse_existing" && selectedReusableExecutionWorkspace
         ? selectedReusableExecutionWorkspace.projectWorkspaceId
         : projectWorkspaceId;
+    const requestedProjectWorkspaceId =
+      rawRequestedProjectWorkspaceId &&
+      selectedProject &&
+      (selectedProject.workspaces ?? []).length > 0 &&
+      !(selectedProject.workspaces ?? []).some((workspace) => workspace.id === rawRequestedProjectWorkspaceId)
+        ? defaultProjectWorkspaceIdForProject(selectedProject)
+        : rawRequestedProjectWorkspaceId;
     // A task launched from a workspace (or its parent task) keeps that explicit
     // context. Draft-only choices are ignored while the selector is hidden.
     const contextualWorkspaceId =

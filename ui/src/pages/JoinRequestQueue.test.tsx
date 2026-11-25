@@ -21,6 +21,12 @@ vi.mock("@/api/access", () => ({
   },
 }));
 
+vi.mock("@/api/agents", () => ({
+  agentsApi: {
+    list: () => Promise.resolve([{ id: "agent-1", companyId: "company-1", name: "Client Agent" }]),
+  },
+}));
+
 vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({
     selectedCompanyId: "company-1",
@@ -135,6 +141,47 @@ describe("JoinRequestQueue", () => {
     expect(container.textContent).toContain("Board User");
     expect(container.querySelector('[data-query-view="error"]')).toBeNull();
 
+    await act(async () => root.unmount());
+  });
+
+  it("shows the invite's restriction mark and the lists before approval (PAR-12608 4.2a)", async () => {
+    listJoinRequestsMock.mockResolvedValue([
+      {
+        ...pendingRequest,
+        invite: {
+          ...pendingRequest.invite,
+          memberRestriction: { restricted: true, pluginKeys: ["acme.crm"], agentIds: ["agent-1"] },
+        },
+      },
+      {
+        ...pendingRequest,
+        id: "join-2",
+        invite: {
+          ...pendingRequest.invite,
+          memberRestriction: { restricted: true, pluginKeys: [], agentIds: [] },
+          memberRestrictionIsDefault: true,
+        },
+      },
+    ]);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const root = await renderPage(client);
+
+    const marks = Array.from(container.querySelectorAll('[data-testid="invite-restriction-mark"]'));
+    expect(marks).toHaveLength(2);
+    expect(marks[0].textContent).toContain("restricted");
+    expect(marks[0].textContent).toContain("Plugins: acme.crm");
+    expect(marks[0].textContent).toContain("Agents: Client Agent");
+    expect(marks[0].textContent).not.toContain("no choice was made");
+    expect(marks[1].textContent).toContain("Joins restricted: no choice was made");
+    expect(marks[1].textContent).toContain("Plugins: none");
+
+    await act(async () => root.unmount());
+  });
+
+  it("shows no mark for an unmarked invite", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const root = await renderPage(client);
+    expect(container.querySelector('[data-testid="invite-restriction-mark"]')).toBeNull();
     await act(async () => root.unmount());
   });
 

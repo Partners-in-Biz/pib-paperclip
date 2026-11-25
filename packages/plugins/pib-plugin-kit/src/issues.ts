@@ -10,12 +10,24 @@ import { ownerUserFor } from "./cockpit.js";
 
 type CreateInput = Parameters<PluginContext["issues"]["create"]>[0];
 
+/**
+ * `actingUserId`: the person whose click made the plugin create this task. It
+ * becomes the task's creator ("Created by" shows that person). Leave it out for
+ * automation-made tasks: they show their origin (`originKind`) by name instead.
+ * An explicit `actor` in the input wins.
+ */
+export function creatorActor(actingUserId: string | null | undefined): CreateInput["actor"] | undefined {
+  const userId = typeof actingUserId === "string" ? actingUserId.trim() : "";
+  return userId ? { actorUserId: userId } : undefined;
+}
+
 export async function createWorkIssue(
   ctx: PluginContext,
-  input: CreateInput & { wake?: boolean; wakeReason?: string },
+  input: CreateInput & { wake?: boolean; wakeReason?: string; actingUserId?: string | null },
 ): Promise<{ id: string; woke: boolean }> {
-  const { wake = true, wakeReason, ...create } = input;
-  const issue = await ctx.issues.create({ status: "todo", ...create });
+  const { wake = true, wakeReason, actingUserId, ...create } = input;
+  const actor = create.actor ?? creatorActor(actingUserId);
+  const issue = await ctx.issues.create({ status: "todo", ...create, ...(actor ? { actor } : {}) });
   let woke = false;
   if (wake && create.assigneeAgentId) {
     try {

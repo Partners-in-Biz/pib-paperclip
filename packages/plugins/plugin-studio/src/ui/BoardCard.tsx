@@ -8,7 +8,8 @@ import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 
 import type { PluginCanvasNodeProps } from "@paperclipai/plugin-sdk/ui";
 import { tokens } from "@partnersinbiz/pib-plugin-ui";
 import { useStudioAction } from "./action.js";
-import { boardSigner, nextCheckIn, RETRY_MS, type CardState } from "./board-sign.js";
+import { isOpen, POLL_MS, queueLabel, queueStateFromReply } from "./board-generate.js";
+import { boardSigner, cardStateFromError, nextCheckIn, RETRY_MS, type CardState } from "./board-sign.js";
 import { posterFrameUrl } from "./library.js";
 
 const frame: CSSProperties = { position: "relative", height: "100%", width: "100%", minWidth: 0, overflow: "hidden", borderRadius: 12, background: tokens.card, color: tokens.fg };
@@ -43,6 +44,12 @@ export function BoardCardView({ state, onMediaError }: { state: CardState; onMed
     case "error":
       body = <Note title="Studio media" line="Couldn't load. Trying again…" />;
       break;
+    case "pending":
+      body = <Note title="Studio generation" line={state.label} />;
+      break;
+    case "failed":
+      body = <Note title="Studio generation" line={state.message} />;
+      break;
     default:
       body = <Note title="Studio media" line="Loading…" />;
   }
@@ -65,14 +72,48 @@ function Note({ title, line }: { title: string; line: string }) {
 export function StudioCanvasCard(props: PluginCanvasNodeProps) {
   const companyId = props.context?.companyId ?? null;
   const projectId = props.boardProjectId ?? null;
-  const assetId = props.assetId;
+  // An output card of a board generation holds the generation id until its file exists (PAR-14281).
+  const generationId = typeof props.props?.generationId === "string" && props.props.generationId ? props.props.generationId : null;
+  const [madeAsset, setMadeAsset] = useState<string | null>(null);
+  const assetId = props.assetId ?? madeAsset;
   const call = useStudioAction("asset-urls");
+  const status = useStudioAction("board-generation");
   const [state, setState] = useState<CardState>({ state: "loading" });
   const [round, setRound] = useState(0);
   const lastErrorResign = useRef(0);
 
+  // The generation's queue state, checked against the board, until it has a file or failed.
+  useEffect(() => {
+    if (props.assetId || !generationId || !companyId) return;
+    let live = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const tick = () => {
+      status({ companyId, boardScope: { projectId }, generationId })
+        .then((out) => {
+          if (!live) return;
+          const q = queueStateFromReply(out);
+          if (q.status === "succeeded" && q.assetId) return setMadeAsset(q.assetId);
+          if (q.status === "failed") return setState({ state: "failed", message: queueLabel(q) });
+          setState({ state: "pending", label: queueLabel(q) });
+          if (isOpen(q)) timer = setTimeout(tick, POLL_MS);
+        })
+        .catch((error: unknown) => {
+          if (!live) return;
+          const next = cardStateFromError(error, Date.now());
+          setState(next.state === "error" ? { state: "pending", label: "Checking…" } : next);
+          if (next.state === "error") timer = setTimeout(tick, RETRY_MS);
+        });
+    };
+    tick();
+    return () => {
+      live = false;
+      if (timer) clearTimeout(timer);
+    };
+  }, [status, companyId, projectId, generationId, props.assetId]);
+
   // Ask on every draw, and again on each new round (expiry, retry, image error).
   useEffect(() => {
+    if (!assetId && generationId) return;
     if (!assetId || !companyId) {
       setState({ state: "removed" });
       return;
@@ -84,7 +125,7 @@ export function StudioCanvasCard(props: PluginCanvasNodeProps) {
     return () => {
       live = false;
     };
-  }, [call, companyId, projectId, assetId, round]);
+  }, [call, companyId, projectId, assetId, generationId, round]);
 
   // Re-sign before the link expires (300 s), or retry after a failure.
   useEffect(() => {

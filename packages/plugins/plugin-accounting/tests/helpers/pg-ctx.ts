@@ -28,6 +28,7 @@ export interface TestIssue {
   originKind: string;
   originId: string | null;
   createdAt: string;
+  actor?: { actorUserId?: string | null; actorAgentId?: string | null } | null;
 }
 
 export interface PgCtx {
@@ -134,6 +135,7 @@ export async function startPgCtx(): Promise<PgCtx> {
           originKind: String(input.originKind),
           originId: (input.originId as string) ?? null,
           createdAt: new Date().toISOString(),
+          actor: (input.actor as TestIssue["actor"]) ?? null,
         };
         issues.set(issue.id, issue);
         return issue;

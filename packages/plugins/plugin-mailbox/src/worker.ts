@@ -16,6 +16,7 @@ import {
   COCKPIT_EVENTS,
   COCKPIT_ROUTE,
   configSaved,
+  createAccessGuard,
   createSkillSyncer,
   decisionStats,
   HANDOFF_EVENTS,
@@ -46,8 +47,10 @@ import {
   type MailAddress,
   type PreferenceValue,
   type MailSendRequested,
+  type AccessGuard,
   type RolesPayload,
 } from "@partnersinbiz/pib-plugin-kit";
+import { ACCESS_TABLE } from "./access-table.js";
 import { espReadiness, espWebhookUrl, gmailRedirectUri, loadMailboxConfig, parseSelectors, r2Configured, validateMailboxConfig, type LoadedConfig } from "./config.js";
 import { getAttachment, listMailboxes } from "./agent-mail.js";
 import { clientProjectIds, resolveClientProjectId } from "@partnersinbiz/pib-plugin-kit";
@@ -92,6 +95,7 @@ import { correctTriage, markReadInGmail, readMessageBody, searchMail, type Triag
 import { handleDraftRequested } from "./gmail/draft.js";
 import { deleteMail, replyMode, startReply } from "./mail-actions.js";
 import { deleteDraftWithReason, draftAttachments, editDraft, mailboxSignature, requestRewrite, withSignature } from "./draft-edit.js";
+import { announceDraftClosed, assertHeldDraftMaySend, cleanPurpose, holdFor, purposeKeyFor, replaceOlderDraftsSafely } from "./draft-purpose.js";
 import { newerSentReply, removeSupersededDrafts, reusableReplyDraft } from "./reply-dedupe.js";
 import { handleSendRequested, performSend, retrySend } from "./gmail/send.js";
 import { runSyncJob, syncOne, triageRunFor } from "./gmail/sync.js";
@@ -109,13 +113,19 @@ import { mailCardKind } from "./canvas-cards.js";
 let skillSync: ReturnType<typeof createSkillSyncer> | null = null;
 let env: Env | null = null;
 let store: SqlStore | null = null;
+let guard: AccessGuard | null = null;
+
+/** The manifest's routes, each registered through the guard. */
+const API_ROUTE_KEYS = ["oauth-complete", SETUP_STATUS_ROUTE.routeKey, COCKPIT_ROUTE.routeKey] as const;
+const UNKNOWN_ROUTE = { status: 404, body: { error: "Unknown route" } };
 
 const plugin = definePlugin({
   async setup(ctx) {
     store = new SqlStore(ctx.db);
     env = createEnv(ctx, store);
     skillSync = createSkillSyncer(ctx, SKILLS);
-    registerCrmProjection(ctx, ctx.db.namespace);
+    // companyBilling: a client's billing email is one way to tell that a recipient belongs to a customer (PAR-12249).
+    registerCrmProjection(ctx, ctx.db.namespace, { companies: true, contacts: true, companyBilling: true });
     registerModuleWatch(ctx);
     registerRoleWatch(ctx);
     // The CRM's client-to-project links: a reply issue opens in the client's own project.
@@ -131,8 +141,13 @@ const plugin = definePlugin({
     registerEraseReceiver(ctx, { plugin: PLUGIN_ID, erase: (request, companyId) => eraseSubject(requireEnv(), companyId, request) });
     registerConsentReceiver(ctx, { plugin: PLUGIN_ID, onConsent: (companyId, consent) => onConsentRecorded(requireEnv(), companyId, consent) });
 
+    // Every action, tool and API route goes through the access guard (PAR-12682). With the switch off it is a pass-through.
+    const g = createAccessGuard(ctx, { pluginKey: PLUGIN_ID, table: ACCESS_TABLE });
+    guard = g;
+    for (const routeKey of API_ROUTE_KEYS) g.apiRoute(routeKey, (input) => handleApiRoute(requireEnv(), input));
+
     for (const tool of MAILBOX_TOOLS) {
-      ctx.tools.register(tool.name, tool, async (params, run) => {
+      g.tool(tool.name, tool, async (params, run) => {
         // A tool call never waits long for the skill sync (kit `soon`).
         await skillSync?.soon(run.companyId);
         return runTool(ctx, tool.name, params, run).then(normalizeToolResult);
@@ -140,23 +155,23 @@ const plugin = definePlugin({
     }
 
     const user = (key: string, fn: (companyId: string, userId: string, params: Record<string, unknown>) => Promise<unknown>) =>
-      ctx.actions.register(key, (params, context) => fn(requiredCompany(context), requiredUser(context), params));
+      g.action(key, (params, context) => fn(requiredCompany(context), requiredUser(context), params));
 
-    ctx.actions.register("mailbox.load", async (params, context) => {
+    g.action("mailbox.load", async (params, context) => {
       const companyId = requiredCompany(context);
       // The page never waits long for the skill sync (kit `soon`).
       await skillSync?.soon(companyId);
       await rememberCompany(ctx, companyId);
       return load(ctx, companyId, params);
     });
-    ctx.actions.register("mailbox.preferences-load", (_params, context) => preferencesLoad(ctx, requiredCompany(context)));
-    ctx.actions.register("mailbox.preferences-save", (params, context) => preferencesSave(ctx, context, (params.patch ?? {}) as Record<string, PreferenceValue | null>));
-    ctx.actions.register("mailbox.sync-skills", async (_params, context) => ({ results: await skillSync?.force(requiredCompany(context)) }));
-    ctx.actions.register("mailbox.create-draft", (params, context) =>
+    g.action("mailbox.preferences-load", (_params, context) => preferencesLoad(ctx, requiredCompany(context)));
+    g.action("mailbox.preferences-save", (params, context) => preferencesSave(ctx, context, (params.patch ?? {}) as Record<string, PreferenceValue | null>));
+    g.action("mailbox.sync-skills", async (_params, context) => ({ results: await skillSync?.force(requiredCompany(context)) }));
+    g.action("mailbox.create-draft", (params, context) =>
       createDraft(requiredCompany(context), context.actor.agentId, params, context.actor.type === "agent", drafter(context)),
     );
-    ctx.actions.register("mailbox.create-email-template", (params, context) => createEmailTemplateAction(requiredCompany(context), params));
-    ctx.actions.register("mailbox.list-email-templates", (_params, context) => requireStore().listTemplates(requiredCompany(context)));
+    g.action("mailbox.create-email-template", (params, context) => createEmailTemplateAction(requiredCompany(context), params));
+    g.action("mailbox.list-email-templates", (_params, context) => requireStore().listTemplates(requiredCompany(context)));
 
     // The host lets any agent with company access call an action, and an action has no delegation check. So what hands out
     // access or reads mail is for a signed-in person only; an agent uses the tools of the same names, which check its delegation.
@@ -281,9 +296,9 @@ const plugin = definePlugin({
     user("mailbox.task-links", async (companyId, _userId, params) => ({
       links: await taskLinks(mailLinksDeps(ctx, companyId), Array.isArray(params.messageIds) ? params.messageIds.filter((id): id is string => typeof id === "string") : []),
     }));
-    // Email cards on a planning canvas (PAR-14389 C.2): resolve and related only, no search. `ctx.actions.register` itself, not `user`:
+    // Email cards on a planning canvas (PAR-14389 C.2): resolve and related only, no search. Through the guard (`g.action`, mailbox.mail view), not `user`:
     // the kit answers agents and restricted members, and who may see a card is who may open it through mailbox.get-message.
-    registerCanvasCards({ register: ctx.actions.register, kinds: [mailCardKind({ store: requireStore, isPrivate: isPrivateMessage })] });
+    registerCanvasCards({ register: g.action, kinds: [mailCardKind({ store: requireStore, isPrivate: isPrivateMessage })] });
     user("mailbox.handoff-record", (companyId, _userId, params) =>
       recordHandoff(handoffDeps(ctx, companyId), { messageId: requiredString(params, "messageId"), scope: handoffScope(params.scope), issueId: requiredString(params, "issueId") }),
     );
@@ -315,7 +330,7 @@ const plugin = definePlugin({
       ctx.events.on(pluginEvent(sender, MAIL_EVENTS.sendRequested), async (event) => {
         await handleSendRequested(requireEnv(), event);
       });
-      // A Gmail draft instead of a send: the message waits in Drafts for a person (nothing is sent).
+      // A draft instead of a send: the message waits in the Paperclip Mailbox drafts for a person (nothing is sent, never Gmail Drafts).
       ctx.events.on(pluginEvent(sender, MAIL_EVENTS.draftRequested), async (event) => {
         await handleDraftRequested(requireEnv(), event);
       });
@@ -372,20 +387,25 @@ const plugin = definePlugin({
   },
 
   async onApiRequest(input: PluginApiRequestInput): Promise<PluginApiResponse> {
-    if (!env) return { status: 503, body: { error: "Mailbox plugin is not ready" } };
-    try {
-      if (input.routeKey === "oauth-complete") return await oauthComplete(env, input);
-      if (input.routeKey === SETUP_STATUS_ROUTE.routeKey) return { status: 200, body: await setupStatus(env.ctx, input.companyId, env.store) };
-      if (input.routeKey === COCKPIT_ROUTE.routeKey) return { status: 200, body: await cockpitSnapshot(env.ctx, input.companyId) };
-      return { status: 404, body: { error: "Unknown route" } };
-    } catch (error) {
-      return { status: error instanceof MailboxError ? 400 : 500, body: { error: errorMessage(error) } };
-    }
+    if (!env || !guard) return { status: 503, body: { error: "Mailbox plugin is not ready" } };
+    // An unknown key under the switch `off` answers as before; under report and enforce the guard refuses it.
+    return guard.handleApiRequest(input, async () => UNKNOWN_ROUTE);
   },
 });
 
 export default plugin;
 runWorker(plugin, import.meta.url);
+
+async function handleApiRoute(env: Env, input: PluginApiRequestInput): Promise<PluginApiResponse> {
+  try {
+    if (input.routeKey === "oauth-complete") return await oauthComplete(env, input);
+    if (input.routeKey === SETUP_STATUS_ROUTE.routeKey) return { status: 200, body: await setupStatus(env.ctx, input.companyId, env.store) };
+    if (input.routeKey === COCKPIT_ROUTE.routeKey) return { status: 200, body: await cockpitSnapshot(env.ctx, input.companyId) };
+    return UNKNOWN_ROUTE;
+  } catch (error) {
+    return { status: error instanceof MailboxError ? 400 : 500, body: { error: errorMessage(error) } };
+  }
+}
 
 function requireEnv(): Env {
   if (!env) throw new MailboxError("Mailbox plugin is not ready");
@@ -1107,14 +1127,22 @@ async function createDraft(companyId: string, agentId: string | null, params: Re
   const replyTo = parseReplyTo(params.replyTo);
   if (replyTo.invalid) throw new MailboxError("Invalid replyTo address");
   let threadId: string | null = null;
+  // The message this draft answers, when it is one this company holds: what lets `reply`/`followup` go without a hold.
+  let answers: string | null = null;
   if (replyToMessageId) {
     const original = await findMessage(companyId, replyToMessageId);
     threadId = original?.gmail_thread_id ?? null;
+    answers = original ? original.id : null;
     // A repeat create-draft for the same message (a retry seconds later) gets the first draft back, not a second copy (PAR-8030).
     const open = reusableReplyDraft(await requireStore().replyDrafts(companyId, accountId, replyToMessageId));
     if (open) return { id: open.id, status: "draft", to: (open.to_addrs ?? []).map((a) => a.email), reused: true };
   }
   const id = randomUUID();
+  const purpose = cleanPurpose(params.purpose);
+  // An agent's key lives in its own namespace: it can never replace another agent's or a plugin's draft (PAR-14329).
+  const purposeKey = purposeKeyFor(params.purposeKey, purpose, to, agentId);
+  // `reply`/`followup` without a stored message to answer is held: the label alone is the agent's word (PAR-14558).
+  const hold = agentId ? holdFor(purpose, params.unasked === true, answers) : null;
   await requireStore().insertDraft({
     id,
     companyId,
@@ -1124,9 +1152,25 @@ async function createDraft(companyId: string, agentId: string | null, params: Re
     to,
     cc,
     bcc,
-    draft: { html: optionalString(params, "html") ?? null, replyToMessageId, threadId, by, sourceIssueId, replyTo: replyTo.address, fromName: cleanDisplayName(params.fromName) },
+    draft: {
+      html: optionalString(params, "html") ?? null,
+      replyToMessageId,
+      threadId,
+      by,
+      sourceIssueId,
+      replyTo: replyTo.address,
+      fromName: cleanDisplayName(params.fromName),
+      purpose,
+      purposeKey,
+      // Only an agent's draft is held: a person's own draft on the page is theirs to send. An agent's draft is held unless its
+      // purpose is a reply the client asked for (reply, followup, invoice): no purpose means held (PAR-1558, PAR-14329).
+      holdForPerson: hold,
+    },
   });
-  return { id, status: "draft", to: to.map((a) => a.email) };
+  // One draft per client and purpose: the newer version replaces the older open one (PAR-12249). The draft is saved: a failed
+  // clean-up is logged, never reported as a failed create-draft (a retry would save a second copy).
+  const replaced = purposeKey ? await replaceOlderDraftsSafely(requireStore(), companyId, accountId, purposeKey, id, (message, meta) => requireEnv().ctx.logger.warn(`mailbox: ${message}`, meta)) : [];
+  return { id, status: "draft", to: to.map((a) => a.email), ...(replaced.length ? { replaced } : {}), ...(hold ? { heldForPerson: true, note: "Held for a person: send-draft is refused when a recipient is an existing client (CRM customer, by contact, domain or billing email), and when that cannot be checked. Only purpose reply or followup answering a stored message (replyToMessageId), or invoice, is not held. Mail to a prospect with no customer record is not held." } : {}) };
 }
 
 async function sendDraft(companyId: string, agentId: string | null, messageId: string) {
@@ -1134,7 +1178,12 @@ async function sendDraft(companyId: string, agentId: string | null, messageId: s
   const row = await s.getMessage(companyId, messageId);
   if (!row) throw new MailboxError("Draft was not found");
   if (row.status !== "draft") throw new MailboxError("Only a draft can be sent");
-  if (agentId) assertMaySend(await delegationFor(row.account_id, agentId));
+  if (agentId) {
+    // Mail the client did not ask for, untagged mail, and drafts a plugin made for a person: an agent never sends them to an
+    // existing client (PAR-12249, PAR-14329).
+    await assertHeldDraftMaySend(s, companyId, row);
+    assertMaySend(await delegationFor(row.account_id, agentId));
+  }
   await assertNotCountOnlyEnquirer(s, companyId, [...(row.to_addrs ?? []), ...(row.cc_addrs ?? []), ...(row.bcc_addrs ?? [])]);
   const replyToMessageId = row.draft?.replyToMessageId ?? null;
   if (replyToMessageId) {
@@ -1196,6 +1245,8 @@ async function sendDraft(companyId: string, agentId: string | null, messageId: s
     await s.setDraftStatus(companyId, row.id, "draft", result.error ?? "Send failed");
     throw new MailboxError(`Not sent: ${result.error ?? "Send failed"}`);
   }
+  // A plugin's draft went out: tell that plugin, so it does not ask about the same pages again (PAR-14329).
+  await announceDraftClosed(requireEnv().ctx, companyId, row, "sent");
   // The other open drafts answering the same message are now leftovers: remove them so no one sends them (PAR-8030).
   let removedDrafts: string[] = [];
   if (replyToMessageId) {

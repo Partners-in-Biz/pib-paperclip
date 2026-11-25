@@ -290,3 +290,20 @@ describe("issue filters", () => {
     expect(filtered).toEqual([]);
   });
 });
+
+describe("creator kind filter", () => {
+  const issues = [
+    { id: "p", createdByUserId: "u1", createdByAgentId: null, originKind: "manual" },
+    { id: "a", createdByUserId: null, createdByAgentId: "a1", originKind: "manual" },
+    { id: "s", createdByUserId: null, createdByAgentId: null, originKind: "plugin:partnersinbiz.seo" },
+    { id: "r", createdByUserId: null, createdByAgentId: null, originKind: "routine_execution" },
+  ] as unknown as Issue[];
+  const ids = (creators: string[]) =>
+    applyIssueFilters(issues, { ...defaultIssueFilterState, creators, showAgentCreatedTasks: true }).map((i) => i.id);
+  it("filters by kind", () => {
+    expect(ids(["kind:person"])).toEqual(["p"]);
+    expect(ids(["kind:agent"])).toEqual(["a"]);
+    expect(ids(["kind:automation"])).toEqual(["s", "r"]);
+    expect(ids(["kind:person", "kind:agent"])).toEqual(["p", "a"]);
+  });
+});

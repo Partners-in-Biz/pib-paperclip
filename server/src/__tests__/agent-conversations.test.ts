@@ -251,8 +251,10 @@ import {
       ).toBe(422);
       const chatId = resolved[0].body.id;
       const queuedInterrupt = { queueId: randomUUID(), revision: "queue-revision", targetRunId: randomUUID() };
+      // PAR-12957: the interrupt reads the task first, so the colleague gets
+      // 404 and never learns the chat exists.
       expect((await request(appFor(colleague)).post(`/api/issues/${chatId}/queued-comments/interrupt`)
-        .send(queuedInterrupt)).status).toBe(403);
+        .send(queuedInterrupt)).status).toBe(404);
       // A colleague cannot read the private chat, so a send or an upload answers
       // "not found" before the owner check (PAR-12942, AC-G3).
       for (const body of ["Hello", "/new"]) {

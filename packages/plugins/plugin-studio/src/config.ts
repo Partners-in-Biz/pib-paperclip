@@ -8,6 +8,9 @@ import { SecretResolver, secretField } from "@partnersinbiz/pib-plugin-kit";
 import { StudioError } from "./errors.js";
 import type { PrivateBucket } from "./storage.js";
 
+/** Board generations per person per UTC day when the setting is absent (Ada's number, plan PAR-14257 3c). */
+export const DEFAULT_BOARD_DAILY_LIMIT = 20;
+
 /** Keys under `providers` in the plugin settings: one default per capability, two for lip-sync (audio, typed line). */
 export type ProviderSetting = "stt" | "tts" | "lipsync" | "lipsyncLine" | "looks" | "reframe";
 
@@ -50,6 +53,14 @@ export function instanceConfigSchema(): JsonSchema {
         title: "Planning Canvas boards",
         properties: {
           cards: { type: "boolean", title: "Studio media on boards", description: "Off: every Studio card on a board shows a placeholder and the board's Studio panel is empty.", default: true },
+          generate: { type: "boolean", title: "Generate on boards", description: "On: people (and agents working from a board's chat) can generate images and videos from a board. Off by default.", default: false },
+          boardGenerationDailyLimit: {
+            type: "integer",
+            title: "Board generations per person per day",
+            description: "Abuse guard, counted per person per UTC day (failed generations don't count). The monthly credit cap is the spend control.",
+            minimum: 0,
+            default: DEFAULT_BOARD_DAILY_LIMIT,
+          },
         },
       },
       providers: {
@@ -137,6 +148,26 @@ export class StudioConfig {
       return boards.cards !== false;
     } catch {
       return false;
+    }
+  }
+
+  /** Generation from a board (PAR-14281): off unless set to true; off when the settings read fails. */
+  async boardGenerationOn(): Promise<boolean> {
+    try {
+      const boards = ((await this.raw).boards ?? {}) as Record<string, unknown>;
+      return boards.generate === true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Board generations one person may start per UTC day. A missing or malformed value is the default. */
+  async boardGenerationDailyLimit(): Promise<number> {
+    try {
+      const value = (((await this.raw).boards ?? {}) as Record<string, unknown>).boardGenerationDailyLimit;
+      return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : DEFAULT_BOARD_DAILY_LIMIT;
+    } catch {
+      return DEFAULT_BOARD_DAILY_LIMIT;
     }
   }
 

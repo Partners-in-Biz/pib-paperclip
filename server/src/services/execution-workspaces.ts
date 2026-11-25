@@ -1537,7 +1537,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       eq(issues.id, input.issueId), eq(issues.companyId, input.companyId),
     )) : [];
     const assigneeAgentId = task ? task.assigneeAgentId : input.assigneeAgentId;
-    const [agent] = assigneeAgentId ? await reader.select({ adapterConfig: agents.adapterConfig, permissions: agents.permissions }).from(agents)
+    const [agent] = assigneeAgentId ? await reader.select({ adapterConfig: agents.adapterConfig, permissions: agents.permissions, role: agents.role }).from(agents)
       .where(and(eq(agents.id, assigneeAgentId), eq(agents.companyId, input.companyId))) : [];
     const overrides = assigneeAgentId ? parseIssueAssigneeAdapterOverrides(task ? task.assigneeAdapterOverrides : input.assigneeAdapterOverrides) : null;
     const experimental = await instanceSettingsService(db).getExperimental();
@@ -1564,7 +1564,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       project: organization, workspaceSourceProject: { companyId: input.companyId, executionWorkspacePolicy: input.executionWorkspacePolicy },
       issue: { companyId: input.companyId, executionPolicy: task ? task.executionPolicy : input.executionPolicy } });
     if (trust.kind === "denied") throw forbidden(trust.detail);
-    const resolvedMode = resolveExecutionWorkspaceMode({ projectPolicy, issueSettings, legacyUseProjectWorkspace: overrides?.useProjectWorkspace ?? null });
+    const resolvedMode = resolveExecutionWorkspaceMode({ projectPolicy, issueSettings, legacyUseProjectWorkspace: overrides?.useProjectWorkspace ?? null, agentRole: agent?.role ?? null });
     const mode = trust.kind === "low_trust_review" && resolvedMode === "shared_workspace" ? "isolated_workspace" : resolvedMode;
     const config = buildExecutionWorkspaceAdapterConfig({ agentConfig: parseObject(agent?.adapterConfig), projectPolicy, issueSettings, mode,
       legacyUseProjectWorkspace: overrides?.useProjectWorkspace ?? null, adapterConfigOverrides: overrides?.adapterConfig });

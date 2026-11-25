@@ -4,10 +4,11 @@ import { githubResponseCommentService } from "../../chat-github-response-comment
 import type { DbOrTransaction, EndpointRow } from "../runtime-types.js";
 import type { chatDeliveries } from "@paperclipai/db";
 import type { GitHubAutomaticEventContext } from "@paperclipai/shared";
-export async function resolveGitHubWakeAuthority(tx: DbOrTransaction, endpoint: EndpointRow, delivery: typeof chatDeliveries.$inferSelect): Promise<{ kind: "not_automatic" } | { kind: "denied" } | { kind: "allowed"; userId: string | null }> {
+export async function resolveGitHubWakeAuthority(tx: DbOrTransaction, endpoint: EndpointRow, delivery: typeof chatDeliveries.$inferSelect, recordOn?: Db): Promise<{ kind: "not_automatic" } | { kind: "denied" } | { kind: "allowed"; userId: string | null }> {
   const automatic = (delivery.normalizedEvent.githubAutomatic ?? delivery.normalizedEvent.githubIssue) as { context: GitHubAutomaticEventContext } | undefined;
   if (!automatic) return { kind: "not_automatic" };
-  const admission = await githubAutomaticAdmission(tx, endpoint, automatic.context);
+  // A responsible user restricted under `enforce` is denied here too (PAR-14560).
+  const admission = await githubAutomaticAdmission(tx, endpoint, automatic.context, { recordOn });
   if (!admission?.allowed) return { kind: "denied" };
   return { kind: "allowed", userId: admission.responsibleUserId ?? null };
 }

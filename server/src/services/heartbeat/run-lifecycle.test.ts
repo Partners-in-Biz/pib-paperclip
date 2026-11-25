@@ -1,7 +1,7 @@
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
-import { agents, agentWakeupRequests, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRunEvents, heartbeatRuns, issues, subscribeDatabaseWork } from "@paperclipai/db";
+import { agents, agentWakeupRequests, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRunEvents, heartbeatRuns, issues, subscribeDatabaseWork, summarySlots } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -369,5 +369,50 @@ describe.skipIf(!support.supported)("heartbeat lifecycle database wiring", () =>
       expect(text).not.toContain("test-credential-material");
       expect(published.find(event => event.payload?.seq === row.seq)?.payload).toMatchObject({ message: row.message, payload: row.payload });
     }
+  });
+
+  describe("summary slot finalization hook", () => {
+    async function slotFixture(patch: Partial<typeof heartbeatRuns.$inferInsert> = {}) {
+      const base = await fixture();
+      const [issue] = await db.insert(issues).values({
+        companyId: base.company.id, title: "Summarize project", status: "in_progress", identifier: "LM-1", issueNumber: 1,
+      }).returning();
+      const [run] = await db.update(heartbeatRuns)
+        .set({ contextSnapshot: { issueId: issue.id }, ...patch }).where(eq(heartbeatRuns.id, base.run.id)).returning();
+      const [slot] = await db.insert(summarySlots).values({
+        companyId: base.company.id, scopeKind: "project", scopeId: randomUUID(), slotKey: "header",
+        status: "generating", generatingIssueId: issue.id,
+      }).returning();
+      return { ...base, issue, run, slot };
+    }
+    const slotStatus = async (id: string) =>
+      (await db.select().from(summarySlots).where(eq(summarySlots.id, id)))[0]!;
+
+    it.each(["setRunStatus", "setRunStatusFromLive"] as const)("%s fails the generating slot when the run fails", async (operation) => {
+      const { run, slot } = await slotFixture();
+      const lifecycle = createHeartbeatLifecycle(db, callbacks(db));
+      if (operation === "setRunStatus") await lifecycle.setRunStatus(run.id, "failed", { error: "provider down", finishedAt: new Date() });
+      else await lifecycle.setRunStatusFromLive(run.id, "failed", ["running"], { error: "provider down", finishedAt: new Date() });
+      const after = await slotStatus(slot.id);
+      expect(after.status).toBe("failed");
+      expect(after.failureReason).toContain("Summary generation run failed before writing a summary (provider down)");
+    });
+
+    it.each(["setRunStatus", "setRunStatusFromLive"] as const)("%s leaves the slot generating while another run is active for the issue", async (operation) => {
+      const { run, slot, company, agent, issue } = await slotFixture();
+      await db.insert(heartbeatRuns).values({
+        companyId: company.id, agentId: agent.id, status: "running", runtimeMode: "native", contextSnapshot: { issueId: issue.id },
+      });
+      const lifecycle = createHeartbeatLifecycle(db, callbacks(db));
+      if (operation === "setRunStatus") await lifecycle.setRunStatus(run.id, "failed", { finishedAt: new Date() });
+      else await lifecycle.setRunStatusFromLive(run.id, "failed", ["running"], { finishedAt: new Date() });
+      expect((await slotStatus(slot.id)).status).toBe("generating");
+    });
+
+    it("fails the slot when the run succeeds without writing a summary", async () => {
+      const { run, slot } = await slotFixture();
+      await createHeartbeatLifecycle(db, callbacks(db)).setRunStatus(run.id, "succeeded", { finishedAt: new Date() });
+      expect((await slotStatus(slot.id)).status).toBe("failed");
+    });
   });
 });
