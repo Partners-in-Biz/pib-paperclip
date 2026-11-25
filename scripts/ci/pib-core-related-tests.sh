@@ -6,6 +6,8 @@
 #   pib-core-related-tests.sh shard <index> <count>
 #       Print shard <index> (1-based) of <count>: the sorted list, every <count>-th file starting at <index>.
 #       Round-robin over the sorted paths mixes server, ui and package tests so no shard gets only the heavy ones.
+#   pib-core-related-tests.sh has-chat
+#       Print "true" when the related list holds the chat integration suite, else "false" (see CHAT_SUITE).
 #   pib-core-related-tests.sh run-shard <index> <count>
 #       Run that shard and gate on regressions only (PAR-14647). A hub PR selects the whole suite, and the light job
 #       does not start every service the suite expects, so some tests are red on the base branch itself. When a
@@ -34,6 +36,11 @@ SKIP_FILES=(
   'packages/adapter-utils/src/acpx-engine/execute.test.ts'
   'ui/src/components/NewIssueDialog.test.tsx'
 )
+
+# One 3.6 MB file (70,000+ lines) that alone outlasts a 30 minute shard (PAR-14647, run 45649825029, shard 6). The
+# repo's own PR workflow runs it through `test:run:general --group general-chat`, which splits it by line range, so the
+# related-chat job does the same and the generic shards leave it out.
+CHAT_SUITE='server/src/__tests__/chat-channels.integration.test.ts'
 
 related_files() {
   if [ -n "${RELATED_FILES_OVERRIDE:-}" ]; then sort -u "$RELATED_FILES_OVERRIDE"; return; fi
@@ -115,13 +122,17 @@ case "${1:-}" in
   shard)
     index="${2:?shard index (1-based)}"
     count="${3:?shard count}"
-    related_files | awk -v i="$index" -v n="$count" '(NR - 1) % n == i - 1'
+    related_files | grep -vxF -e "$CHAT_SUITE" | awk -v i="$index" -v n="$count" '(NR - 1) % n == i - 1' || true
+    ;;
+  has-chat)
+    # grep -c, not -q: -q exits early and pipefail would then fail the pipeline on the writer's SIGPIPE.
+    if [ "$(related_files | grep -cxF -e "$CHAT_SUITE" || true)" -gt 0 ]; then echo true; else echo false; fi
     ;;
   run-shard)
     run_shard "${2:?shard index (1-based)}" "${3:?shard count}"
     ;;
   *)
-    echo "usage: $0 list | shard <index> <count> | run-shard <index> <count>" >&2
+    echo "usage: $0 list | shard <index> <count> | has-chat | run-shard <index> <count>" >&2
     exit 2
     ;;
 esac
