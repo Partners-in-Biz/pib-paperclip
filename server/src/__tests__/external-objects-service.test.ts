@@ -723,7 +723,7 @@ describe("GitHub external object provider", () => {
         if (url.endsWith("/repos/acme/app")) return response({ private: false });
         return response(body);
       });
-      const provider = createGitHubExternalObjectProvider({} as any, {
+      const provider = createGitHubExternalObjectProvider({} as never, {
         fetch,
         credentialProvider: async () => ({ token: "t", source, secretName: null }),
       });

@@ -26,6 +26,19 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 
 const support = await getEmbeddedPostgresTestSupport();
 
+/** Fails only `memberRestrictionResolver`, the read the 4.6a row 5 gate makes. */
+const resolverFails = vi.hoisted(() => ({ on: false }));
+vi.mock("../services/member-restriction/resolver.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/member-restriction/resolver.js")>();
+  return {
+    ...actual,
+    memberRestrictionResolver: (db: Parameters<typeof actual.memberRestrictionResolver>[0]) =>
+      (personId: string, companyId: string) => resolverFails.on
+        ? Promise.reject(new actual.MemberRestrictionReadError("fixture: restriction unreadable"))
+        : actual.memberRestrictionFor(db, personId, companyId),
+  };
+});
+
 describe("GitHub external object read rule database support", () => {
   it.runIf(Boolean(process.env.CI))("runs its database tests under CI", () => {
     expect(support.supported).toBe(true);
@@ -166,6 +179,7 @@ const PUBLIC_TITLE = "acme/open#3: Public PR title";
 
   afterEach(async () => {
     vi.unstubAllEnvs();
+    resolverFails.on = false;
     await db.delete(activityLog).where(eq(activityLog.companyId, Y));
   });
 
@@ -222,6 +236,22 @@ const PUBLIC_TITLE = "acme/open#3: Public PR title";
     const recorded = await denials();
     expect(recorded).toHaveLength(1);
     expect(recorded[0]!.details).toMatchObject({ personId: R, ruleId: GITHUB_EXTERNAL_OBJECTS_RULE_ID, mode: "report" });
+  });
+
+  it("a failed restriction read is 503 on each route, never the resolved fields", async () => {
+    await setMode("enforce");
+    const r = await boardFor(R);
+    resolverFails.on = true;
+    for (const path of [
+      `/api/issues/${issueId}/external-objects`,
+      `/api/issues/${issueId}/external-object-summary`,
+      `/api/projects/${projectId}/external-object-summary`,
+    ]) {
+      const res = await as(r).get(path);
+      expect(res.status, `${path} ${JSON.stringify(res.body)}`).toBe(503);
+      expect(res.body.code ?? res.body.details?.code).toBe("MEMBER_RESTRICTION_UNAVAILABLE");
+      expect(JSON.stringify(res.body)).not.toContain("Rename the billing table");
+    }
   });
 
   it("off, and the kill switch under enforce: R gets today's answer and nothing is recorded", async () => {
