@@ -259,14 +259,14 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
     name: "approve-post-as-delegate",
     displayName: "Approve post as delegate",
     description:
-      "Delegated approver only: the agent a person named for this post's scope (Social page, Approvals, Who approves). Your yes is the owner's approval. Before you call it, read the post (get-post) and get-approval-status, and check: the Reviewer passed THIS version; the text, media and alt text match the brand and the playbook; facts, prices and dates are right; nothing promises what the client has not agreed; the time is right. Anything wrong: do not approve, return it with return-post-as-delegate and one line per problem. Refused when the post is not in review, personal, yours, created before you were named, the Reviewer's pass is missing, stale, unscored or yours, the scope asks for the client, you are the Reviewer, or anything cannot be read: then a person approves. Approving schedules the post at its proposed time and closes the review issue. Never use set-post-status to approve.",
+      "Delegated approver only: the agent a person named for this post's scope (Social page, Approvals, Who approves), or its backup approver for the posts the delegate created. Your yes is the owner's approval. Before you call it, read the post (get-post) and get-approval-status, and check: the Reviewer passed THIS version; the text, media and alt text match the brand and the playbook; facts, prices and dates are right; nothing promises what the client has not agreed; the time is right. Anything wrong: do not approve, return it with return-post-as-delegate and one line per problem. Refused when the post is not in review, personal, yours, created before you were named, the Reviewer's pass is missing, stale, unscored or yours, the scope asks for the client, you are the Reviewer, or anything cannot be read: then a person approves. Approving schedules the post at its proposed time and closes the review issue. Never use set-post-status to approve.",
     parametersSchema: schema(["postId"], { postId: POST_ID }),
   },
   {
     name: "return-post-as-delegate",
     displayName: "Return post as delegate",
     description:
-      "Delegated approver only: send a post in review back to draft with notes (required: one line per problem, so the Social agent can fix each). Use it when what you checked in approve-post-as-delegate's list is wrong. The post goes to draft, the review issue is handed back to the Social agent with your notes, and nothing is posted. Same refusals as approve-post-as-delegate (not the delegate, personal post, your own post, you are the Reviewer, the scope asks for the client, anything unreadable): then a person decides.",
+      "Delegated approver (or its backup, on the delegate's own posts) only: send a post in review back to draft with notes (required: one line per problem, so the Social agent can fix each). Use it when what you checked in approve-post-as-delegate's list is wrong. The post goes to draft, the review issue is handed back to the Social agent with your notes, and nothing is posted. Same refusals as approve-post-as-delegate (not the delegate, personal post, your own post, you are the Reviewer, the scope asks for the client, anything unreadable): then a person decides.",
     parametersSchema: schema(["postId", "notes"], { postId: POST_ID, notes: text("What has to change, one line per problem (required).") }),
   },
   {
@@ -530,6 +530,12 @@ export const SOCIAL_TOOLS: PluginToolDeclaration[] = [
       metric: text("The one number that says the month worked, e.g. \"booked calls from social\" or \"installs\"."),
       learned: text("Required when an earlier month's focus is still open: what that month taught (hooks and formats to keep, and to drop)."),
     }),
+  },
+  {
+    name: "get-cadence",
+    displayName: "Get posting cadence",
+    description: `The scope's posting cadence (posts a day per account, days, hours; a person sets it on the Growth tab) and, for the days ahead, each account's posts against it and the free slots (local time, instant and accounts). No cadence: you decide how many posts. Draft one post per free slot with that scheduledAt.${OWN}`,
+    parametersSchema: schema([], { ...scope }),
   },
   {
     name: "hook-board",

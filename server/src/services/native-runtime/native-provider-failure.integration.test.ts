@@ -253,6 +253,7 @@ describe("native completed failure diagnostics", () => {
           const occupiedRunId = randomUUID();
           await db.insert(heartbeatRuns).values({ id: occupiedRunId, companyId, agentId, status: "running", startedAt: new Date() });
           const retryRun = await heartbeatService(db, { runtimeEnv: {} }).wakeup(agentId, {
+            causingActor: "system",
             failedRunId: runId, source: "on_demand", triggerDetail: "manual", reason: "retry_failed_run",
             requestedByActorType: "user", requestedByActorId: "review-repair-operator",
             payload: { issueId }, contextSnapshot: { ...reviewContext },

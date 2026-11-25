@@ -3,10 +3,10 @@
  * abandons here through the four `seo.growth-*` worker actions (PAR-10100).
  */
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
-import { usePluginAction } from "@paperclipai/plugin-sdk/ui";
 import { Button, EmptyState, FlaskConical, Input, Pill, SectionCard, breakAnywhere, errorText, formatShortDate, tokens, type ToneName } from "@partnersinbiz/pib-plugin-ui";
 import type { GrowthExperimentRow, GrowthLoad, TabId } from "./types.js";
 import { GROWTH_UNLINKED_TEXT, canStart, growthDecider, growthScopeLabel, playbookPointer, splitExperiments } from "./growth-words.js";
+import { useSeoAction } from "./actions.js";
 
 const muted: CSSProperties = { fontSize: 12, color: tokens.muted, margin: 0, ...breakAnywhere };
 const small: CSSProperties = { minHeight: 40, fontSize: 12 };
@@ -120,10 +120,10 @@ function FinishedCard({ x }: { x: GrowthExperimentRow }) {
 }
 
 export function GrowthTab({ sprintId, onMessage, onOpenTab }: { sprintId: string; onMessage: (m: string) => void; onOpenTab: (tab: TabId) => void }) {
-  const fetchGrowth = usePluginAction("seo.growth-experiments");
-  const approve = usePluginAction("seo.growth-approve-experiment");
-  const reject = usePluginAction("seo.growth-reject-experiment");
-  const abandon = usePluginAction("seo.growth-abandon-experiment");
+  const fetchGrowth = useSeoAction("seo.growth-experiments");
+  const approve = useSeoAction("seo.growth-approve-experiment");
+  const reject = useSeoAction("seo.growth-reject-experiment");
+  const abandon = useSeoAction("seo.growth-abandon-experiment");
   const [data, setData] = useState<GrowthLoad | null>(null);
   const [error, setError] = useState<string | null>(null);
 

@@ -487,6 +487,11 @@ export {
   LIVE_EVENT_TYPES,
   PRINCIPAL_TYPES,
   MEMBERSHIP_STATUSES,
+  MEMBER_RESTRICTION_MODES,
+  MEMBER_RESTRICTION_UNAVAILABLE_CODE,
+  MEMBER_RESTRICTED_CODE,
+  MEMBER_RESTRICTION_KILL_SWITCH_ENV,
+  MEMBER_RESTRICTION_REQUIRED_CODE,
   COMPANY_MEMBERSHIP_ROLES,
   HUMAN_COMPANY_MEMBERSHIP_ROLES,
   HUMAN_COMPANY_MEMBERSHIP_ROLE_LABELS,
@@ -675,6 +680,7 @@ export {
   type LiveEventType,
   type PrincipalType,
   type MembershipStatus,
+  type MemberRestrictionMode,
   type CompanyMembershipRole,
   type HumanCompanyMembershipRole,
   type InstanceUserRole,
@@ -1335,6 +1341,10 @@ export type {
   AdminUserDirectoryEntry,
   UserCompanyAccessEntry,
   UserCompanyAccessResponse,
+  MemberRestriction,
+  InviteMemberRestriction,
+  ActorCompanyMembership,
+  SessionMemberRestriction,
   CompanyPortabilityInclude,
   CompanyPortabilityEnvInput,
   CompanyPortabilityFileEntry,
@@ -2358,6 +2368,7 @@ export {
   createAssetImageMetadataSchema,
   sanitizeAssetNamespace,
   createCompanyInviteSchema,
+  inviteMemberRestrictionSchema,
   createOpenClawInvitePromptSchema,
   acceptInviteSchema,
   listCompanyInvitesQuerySchema,
@@ -2376,11 +2387,14 @@ export {
   updateMemberPermissionsSchema,
   searchAdminUsersQuerySchema,
   updateUserCompanyAccessSchema,
+  updateMemberRestrictionSchema,
+  updateMemberRestrictionModeSchema,
   type CreateCostEvent,
   type CreateFinanceEvent,
   type UpdateBudget,
   type CreateAssetImageMetadata,
   type CreateCompanyInvite,
+  type InviteMemberRestrictionInput,
   type CreateOpenClawInvitePrompt,
   type AcceptInvite,
   type ListCompanyInvitesQuery,
@@ -2399,6 +2413,8 @@ export {
   type UpdateMemberPermissions,
   type SearchAdminUsersQuery,
   type UpdateUserCompanyAccess,
+  type UpdateMemberRestriction,
+  type UpdateMemberRestrictionMode,
   companySkillSourceTypeSchema,
   companySkillTrustLevelSchema,
   companySkillCompatibilitySchema,
@@ -2904,3 +2920,11 @@ export {
   TASK_IDENTITY_CHANGED_FIELD,
   issueActivityChangesTaskIdentity,
 } from "./issue-activity-identity.js";
+export * from "./types/personal-note.js";
+export * from "./validators/personal-note.js";
+export * from "./types/planning-canvas.js";
+export * from "./validators/planning-canvas.js";
+export * from "./planning-canvas-format.js";
+export * from "./planning-canvas-blueprints.js";
+export * from "./planning-canvas-import.js";
+export * from "./canvas-cards.js";

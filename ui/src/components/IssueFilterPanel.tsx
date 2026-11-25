@@ -29,14 +29,14 @@ function FilterRow({ label, checked, onToggle, icon }: { label: string; checked:
 }
 
 /** The collection retains ownership of filter state. */
-export function IssueFilterPanel({ state, onChange, activeFilterCount, agents = [], projects = [], labels = [], creators = [], currentUserId, onClear, enableRoutineTasksFilter, enableAgentCreatedVisibilityFilter, enableLiveRunsFilter = true }: PanelProps) {
+export function IssueFilterPanel({ state, onChange, activeFilterCount, agents = [], projects = [], labels, creators = [], currentUserId, onClear, enableRoutineTasksFilter, enableAgentCreatedVisibilityFilter, enableLiveRunsFilter = true }: PanelProps) {
   const [queries, setQueries] = useState({ projects: "", creators: "", assignees: "", labels: "" });
   const search = (key: keyof typeof queries) => (value: string) => setQueries(current => ({ ...current, [key]: value }));
   const visibleProjects = searchIssueFilterOptions(projects, queries.projects, option => option.name);
   const visibleCreators = searchIssueFilterOptions(creators, queries.creators, option => `${option.label} ${option.searchText ?? ""}`);
   const assignees = [{ id: "__unassigned", name: "No assignee", icon: null }, ...(currentUserId ? [{ id: "__me", name: "Me", icon: <User /> }] : []), ...agents.map(agent => ({ ...agent, icon: null }))];
   const visibleAssignees = searchIssueFilterOptions(assignees, queries.assignees, option => option.name);
-  const visibleLabels = searchIssueFilterOptions(labels, queries.labels, option => option.name);
+  const visibleLabels = searchIssueFilterOptions(labels ?? [], queries.labels, option => option.name);
   return <>
     <FlyoutHeader className="task-filters-header"><span>Filters</span>{activeFilterCount ? <Button variant="ghost" onClick={() => { onClear(); setQueries({ projects: "", creators: "", assignees: "", labels: "" }); }}>Clear</Button> : null}</FlyoutHeader>
     <div className="task-filters-grid">
@@ -62,10 +62,11 @@ export function IssueFilterPanel({ state, onChange, activeFilterCount, agents = 
         {visibleAssignees.map(assignee => <FilterRow key={assignee.id} label={assignee.name} checked={state.assignees.includes(assignee.id)} onToggle={() => onChange({ assignees: toggleIssueFilterValue(state.assignees, assignee.id) })} icon={assignee.icon} />)}
         {!visibleAssignees.length ? <p className="task-filter-empty">No assignees match.</p> : null}
       </FilterGroup>
-      <FilterGroup title="Label" optionsKey="labels" searchLabel="labels" query={queries.labels} onQueryChange={search("labels")}>
+      {/* No `labels` given: the list is not loaded, or closed for a restricted member (AC-G10). */}
+      {labels ? <FilterGroup title="Label" optionsKey="labels" searchLabel="labels" query={queries.labels} onQueryChange={search("labels")}>
         {visibleLabels.map(label => <FilterRow key={label.id} label={label.name} checked={state.labels.includes(label.id)} onToggle={() => onChange({ labels: toggleIssueFilterValue(state.labels, label.id) })} icon={<span className="task-filter-label-dot" style={{ "--task-filter-label-color": label.color } as CSSProperties} />} />)}
         {!visibleLabels.length ? <p className="task-filter-empty">{queries.labels ? "No labels match." : "No labels available."}</p> : null}
-      </FilterGroup>
+      </FilterGroup> : null}
     </div>
   </>;
 }

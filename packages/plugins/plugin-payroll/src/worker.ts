@@ -1,6 +1,7 @@
 /**
  * Payroll worker: page actions (board), agent tools (masked, prepare-only),
  * event handlers (approval issues, Accounting and Mailbox results) and jobs.
+ * Actions, tools and API routes go through the access guard (`./access-table.ts`).
  */
 import {
   definePlugin,
@@ -12,6 +13,7 @@ import {
 } from "@paperclipai/plugin-sdk";
 import {
   COCKPIT_ROUTE,
+  createAccessGuard,
   createSkillSyncer,
   hireStatus,
   hireTaskDraft,
@@ -32,8 +34,11 @@ import {
   tryLinkPendingHire,
   unlinkAgent,
   MAIL_EVENTS,
+  type AccessGuard,
 } from "@partnersinbiz/pib-plugin-kit";
+import { PAYROLL_ACCESS_TABLE } from "./access-table.js";
 import { mergeComponents } from "./components.js";
+import { PLUGIN_ID } from "./namespace.js";
 import * as db from "./db.js";
 import type { Actor } from "./domain.js";
 import { CLERK_ROLE, clerkOnLinked } from "./hire.js";
@@ -75,20 +80,24 @@ export const MAIL_RESULT_EVENT = pluginEvent(PIB_PLUGINS.mailbox, MAIL_EVENTS.se
 
 let env: Env | null = null;
 let skills: ReturnType<typeof createSkillSyncer> | null = null;
+let guard: AccessGuard | null = null;
 
 const plugin = definePlugin({
   async setup(ctx) {
     env = createEnv(ctx);
     skills = createSkillSyncer(ctx, SKILLS);
     const e = env;
+    const g = createAccessGuard(ctx, { pluginKey: PLUGIN_ID, table: PAYROLL_ACCESS_TABLE });
+    guard = g;
     const onLinked = clerkOnLinked(ctx, (companyId) => skills!.force(companyId));
     registerHireWatch(ctx, [{ role: CLERK_ROLE, onLinked }]);
     registerModuleWatch(ctx);
     registerRoleWatch(ctx);
-    registerActions(e, onLinked);
+    registerActions(e, g, onLinked);
+    registerApiRoutes(e, g);
 
     for (const tool of PAYROLL_TOOLS) {
-      ctx.tools.register(tool.name, tool, async (params, run) => {
+      g.tool(tool.name, tool, async (params, run) => {
         // A tool call never waits long for the skill sync (kit `soon`).
         await skills?.soon(run.companyId);
         return runTool(e, tool.name, asParams(params), run);
@@ -141,23 +150,8 @@ const plugin = definePlugin({
     return { status: "ok", message: "Payroll plugin ready" };
   },
   async onApiRequest(input: PluginApiRequestInput): Promise<PluginApiResponse> {
-    if (!env) return { status: 503, body: { error: "Payroll plugin is not ready" } };
-    if (input.routeKey === SETUP_STATUS_ROUTE.routeKey) {
-      try {
-        return { status: 200, body: await setupStatus(env, input.companyId) };
-      } catch (error) {
-        return { status: 500, body: { error: errorMessage(error) } };
-      }
-    }
-    if (input.routeKey === COCKPIT_ROUTE.routeKey) {
-      if (!input.companyId) return { status: 400, body: { error: "companyId is required" } };
-      try {
-        return { status: 200, body: await cockpitSnapshot(env, input.companyId) };
-      } catch (error) {
-        return { status: 500, body: { error: errorMessage(error) } };
-      }
-    }
-    return { status: 404, body: { error: "Unknown route" } };
+    if (!env || !guard) return { status: 503, body: { error: "Payroll plugin is not ready" } };
+    return guard.handleApiRequest(input);
   },
 });
 
@@ -170,13 +164,35 @@ function statusOf(payload: unknown): string | undefined {
 }
 
 // ---------------------------------------------------------------------------
+// API routes
+// ---------------------------------------------------------------------------
+
+function registerApiRoutes(e: Env, g: AccessGuard) {
+  g.apiRoute(SETUP_STATUS_ROUTE.routeKey, async (input) => {
+    try {
+      return { status: 200, body: await setupStatus(e, input.companyId) };
+    } catch (error) {
+      return { status: 500, body: { error: errorMessage(error) } };
+    }
+  });
+  g.apiRoute(COCKPIT_ROUTE.routeKey, async (input) => {
+    if (!input.companyId) return { status: 400, body: { error: "companyId is required" } };
+    try {
+      return { status: 200, body: await cockpitSnapshot(e, input.companyId) };
+    } catch (error) {
+      return { status: 500, body: { error: errorMessage(error) } };
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Page actions
 // ---------------------------------------------------------------------------
 
-function registerActions(e: Env, onLinked: ReturnType<typeof clerkOnLinked>) {
+function registerActions(e: Env, g: AccessGuard, onLinked: ReturnType<typeof clerkOnLinked>) {
   const { ctx } = e;
   const action = (key: string, fn: (companyId: string, actor: Actor, params: Record<string, unknown>) => Promise<unknown>) =>
-    ctx.actions.register(key, async (params, context: PluginPerformActionContext) => {
+    g.action(key, async (params, context: PluginPerformActionContext) => {
       if (!context.companyId) throw new PayrollError("Open Payroll inside a company");
       // A page action never waits long for the skill sync (kit `soon`).
       await skills?.soon(context.companyId);

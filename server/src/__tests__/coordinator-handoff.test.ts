@@ -402,7 +402,7 @@ const support = externalDatabase ? { supported: true } : await getEmbeddedPostgr
     const taskId = accepted.createdIssues[0]!.id;
     expect(accepted.interaction.result).toMatchObject({ createdTasks: [{ issueId: taskId, parentIssueId: null }] });
     const [task] = await db.select().from(issues).where(eq(issues.id, taskId));
-    expect(task).toMatchObject({ assigneeAgentId: f.agentId, assigneeUserId: null, parentId: null, visibility: "private", privacyParentIssueId: f.conversationId, privacyRootIssueId: f.conversationId });
+    expect(task).toMatchObject({ assigneeAgentId: f.agentId, assigneeUserId: null, parentId: null, visibility: "open", privacyParentIssueId: f.conversationId, privacyRootIssueId: null });
     expect(await db.select().from(chatTaskHandoffs).where(eq(chatTaskHandoffs.taskId, taskId))).toMatchObject([
       { conversationId: f.conversationId, agentId: f.agentId, sessionGeneration: 0 },
     ]);

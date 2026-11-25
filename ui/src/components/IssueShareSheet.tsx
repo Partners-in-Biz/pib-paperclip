@@ -38,6 +38,7 @@ import { agentsApi } from "@/api/agents";
 import { accessApi } from "@/api/access";
 import { issuesApi } from "@/api/issues";
 import { useToastActions } from "@/context/ToastContext";
+import { useMemberRestrictionGate } from "@/hooks/useMemberRestrictionGate";
 import { queryKeys } from "@/lib/queryKeys";
 import { timeAgo } from "@/lib/timeAgo";
 import { cn } from "@/lib/utils";
@@ -187,10 +188,11 @@ export function IssueShareSheet({
   const [addSelection, setAddSelection] = useState<string>(initialAddSelection);
   const [revokeTarget, setRevokeTarget] = useState<IssueAccessGrant | null>(null);
 
+  const memberGate = useMemberRestrictionGate(companyId);
   const grantsQuery = useQuery({
     queryKey: queryKeys.issues.accessGrants(issueId),
-    queryFn: () => issuesApi.listAccessGrants(issueId),
-    enabled: open,
+    queryFn: memberGate.guard(() => issuesApi.listAccessGrants(issueId), [] as IssueAccessGrant[]),
+    enabled: open && !memberGate.closed,
   });
   const directoryQuery = useQuery({
     queryKey: queryKeys.access.companyUserDirectory(companyId),

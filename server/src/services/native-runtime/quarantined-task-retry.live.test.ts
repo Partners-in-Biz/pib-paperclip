@@ -49,7 +49,7 @@ it.skipIf(process.env.PAPERCLIP_LIVE_QUARANTINED_RETRY !== "true")("starts a fre
     heartbeat = heartbeatService(db);
     const service = issueService(db);
     const first = await service.addComment(f.issueId, `Write exactly ${markers[0]} and a newline to retry-proof.txt. Read it, then finish.`, { userId: f.userId! });
-    const run = await heartbeat.wakeup(f.agentId, { source: "automation", triggerDetail: "system", reason: "issue_commented",
+    const run = await heartbeat.wakeup(f.agentId, { causingActor: "system", source: "automation", triggerDetail: "system", reason: "issue_commented",
       requestedByActorType: "user", requestedByActorId: f.userId,
       payload: { issueId: f.issueId, commentId: first.id },
       contextSnapshot: { issueId: f.issueId, taskId: f.issueId, wakeCommentId: first.id, skipIssueComment: true },

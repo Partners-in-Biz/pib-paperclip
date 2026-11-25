@@ -31,6 +31,7 @@ import { executionWorkspacesApi } from "../../api/execution-workspaces";
 import { instanceSettingsApi } from "../../api/instanceSettings";
 import { issuesApi } from "../../api/issues";
 import { useIssuePlanDocument } from "@/hooks/useIssuePlanDocument";
+import { useMemberRestrictionGate } from "@/hooks/useMemberRestrictionGate";
 import { useIssueDocuments } from "@/hooks/useIssueDocuments";
 import { useStreamlinedUiEnabled } from "@/hooks/useStreamlinedUiEnabled";
 import { selectArtifactAttachments } from "@/lib/issue-artifacts";
@@ -267,6 +268,8 @@ export function IssueProperties({
   const { isMobile } = useSidebar();
   const queryClient = useQueryClient();
   const companyId = issue.companyId ?? selectedCompanyId;
+  // Closed lists for a restricted member under `enforce` (AC-G10): labels, accepted plans.
+  const memberGate = useMemberRestrictionGate(companyId);
   const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
@@ -308,8 +311,8 @@ export function IssueProperties({
   );
   const { data: paneTabAcceptedPlans } = useQuery({
     queryKey: queryKeys.issues.acceptedPlanDecompositions(issue.id),
-    queryFn: () => issuesApi.listAcceptedPlanDecompositions(issue.id),
-    enabled: taskChatShellEnabled,
+    queryFn: memberGate.guard(() => issuesApi.listAcceptedPlanDecompositions(issue.id), []),
+    enabled: taskChatShellEnabled && !memberGate.closed,
   });
   const { data: paneTabAttachments } = useQuery({
     queryKey: queryKeys.issues.attachments(issue.id),
@@ -468,10 +471,12 @@ export function IssueProperties({
     userId: currentUserId,
   });
 
+  // Company labels are a closed list for a restricted member under `enforce` (AC-G10): no label
+  // picker; the task's own labels still show, they arrive on the task.
   const { data: labels } = useQuery({
     queryKey: queryKeys.issues.labels(companyId!),
-    queryFn: () => issuesApi.listLabels(companyId!),
-    enabled: !!companyId,
+    queryFn: memberGate.guard(() => issuesApi.listLabels(companyId!), []),
+    enabled: !!companyId && !memberGate.closed,
   });
 
   const { data: allIssues, isFetching: isFetchingIssuePickerIssues } = useQuery({
@@ -575,12 +580,14 @@ export function IssueProperties({
       projectWorkspaceId: issue.projectWorkspaceId ?? undefined,
       reuseEligible: true,
     }),
-    queryFn: () => executionWorkspacesApi.list(companyId!, {
+    queryFn: memberGate.guard(() => executionWorkspacesApi.list(companyId!, {
       projectId: issue.projectId ?? undefined,
       projectWorkspaceId: issue.projectWorkspaceId ?? undefined,
       reuseEligible: true,
-    }),
-    enabled: Boolean(companyId) && Boolean(issue.projectId) && workspacePickerEligible && workspacePickerOpen,
+    }), []),
+    // AC-G10: closed for a restricted member at `enforce`; no "reuse" entry for him.
+    enabled: Boolean(companyId) && Boolean(issue.projectId) && workspacePickerEligible && workspacePickerOpen
+      && !memberGate.closed,
   });
   const effectiveWorkspaceSelection = currentWorkspaceSelection(issue, issueProject);
   const hasWorkspaceOverride = issue.executionWorkspacePreference != null
@@ -947,7 +954,7 @@ export function IssueProperties({
               ))}
             </div>
           </div>
-          {assigneeAdapterType === "claude_local" ? (
+          {assigneeAdapterType === "claude_local" && !memberGate.closed ? (
             <div className="flex items-center justify-between rounded-md border border-border px-2 py-1.5">
               <div className="text-xs text-muted-foreground">Enable Chrome (--chrome)</div>
               <ToggleSwitch
@@ -2458,7 +2465,9 @@ export function IssueProperties({
           {projectContent}
         </PropertyPicker>
 
-        <PropertyPicker
+        {memberGate.closed ? (
+          <PropertyRow label="Labels">{labelsTrigger}</PropertyRow>
+        ) : <PropertyPicker
           inline={inline}
           label="Labels"
           open={labelsOpen}
@@ -2470,7 +2479,7 @@ export function IssueProperties({
           stacked
         >
           {labelsContent}
-        </PropertyPicker>
+        </PropertyPicker>}
       </PropertySection>
 
       <PropertySection title="Relationships" streamlined={streamlinedPropertiesEnabled}>
@@ -2491,7 +2500,7 @@ export function IssueProperties({
         </PropertyPicker>
 
         {issue.originKind === "routine_execution" && issue.originId ? (
-          <RoutineOriginRow routineId={issue.originId} />
+          <RoutineOriginRow routineId={issue.originId} companyId={issue.companyId} />
         ) : null}
 
         {streamlinedPropertiesEnabled ? (
@@ -2777,7 +2786,8 @@ export function IssueProperties({
 
         {contextUsage !== undefined
           ? contextUsage ? <PropertyRow label="Context">{contextUsage}</PropertyRow> : null
-          : <IssueContextUsageRow issueId={issue.id} assigneeAgentId={issue.assigneeAgentId ?? null} issueStatus={issue.status} hasActiveRun={hasActiveRun} />}
+          // PAR-14342: the session context reading is closed for a restricted person (PAR-12608 4.6).
+          : memberGate.closed ? null : <IssueContextUsageRow issueId={issue.id} assigneeAgentId={issue.assigneeAgentId ?? null} issueStatus={issue.status} hasActiveRun={hasActiveRun} />}
       </PropertySection>
 
       {workspacePickerEligible || hasWorkspaceRuntimeControls || issue.currentExecutionWorkspace?.branchName || issue.currentExecutionWorkspace?.cwd || issue.executionWorkspaceId ? (
@@ -2827,7 +2837,7 @@ export function IssueProperties({
                       </span>
                       {activeWorkspacePickerMode === "isolated" ? <Check className="h-3.5 w-3.5 shrink-0" /> : null}
                     </button>
-                    <button
+                    {memberGate.closed ? null : <button
                       type="button"
                       className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent/50"
                       onClick={() => setWorkspacePickerStep("reuse")}
@@ -2837,7 +2847,7 @@ export function IssueProperties({
                         <span className="block text-xs text-muted-foreground">Pick a workspace to reuse</span>
                       </span>
                       {activeWorkspacePickerMode === "reuse" ? <Check className="h-3.5 w-3.5 shrink-0" /> : null}
-                    </button>
+                    </button>}
                   </div>
                   <div className="mt-1 border-t border-border px-2 py-1.5 text-xs text-muted-foreground">
                     {issue.executionWorkspaceId ? "Current workspace stays active. Applies on the next run." : "Applies on the next run."}

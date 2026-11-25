@@ -2,6 +2,7 @@ import type { PluginApiRequestInput, PluginApiResponse, PluginContext, PluginEve
 import {
   COCKPIT_EVENTS,
   configSaved,
+  createAccessGuard,
   createSkillSyncer,
   HANDOFF_EVENTS,
   hireTaskDraft,
@@ -21,6 +22,7 @@ import {
   startHire,
   trackJob,
   unlinkAgent,
+  type AccessGuard,
   type SetupStatus,
 } from "@partnersinbiz/pib-plugin-kit";
 import { ACCEPTANCE_MATCH_ROLE, ACCEPTANCE_ROLE, ACCEPTANCE_ROLE_KEY, acceptanceAgentId, linkPendingAcceptance, onAcceptanceLinked } from "./acceptance-role.js";
@@ -52,6 +54,8 @@ import { confirmAttestation } from "./security.js";
 import { listUnassigned, onSetupSummary, runTool } from "./brief.js";
 import { ownerFilter } from "./owner-filter.js";
 import { assignableUser, JOBS, PLUGIN_KEY, type RoleKind } from "./constants.js";
+import { COCKPIT_ACCESS_TABLE } from "./access-table.js";
+import manifest from "./manifest.js";
 import { getHealthIssue, getRoles, listRoles, listSnapshots, upsertSnapshot } from "./db.js";
 import { doneCheckFor } from "./done-checks.js";
 import { outwardGateFor } from "./outward-gate.js";
@@ -195,8 +199,15 @@ export async function governorTick(env: Env): Promise<{ tried: number; disabled:
   return results;
 }
 
+/** The access guard of each set-up context, for `handleCockpitApiRequest`. */
+const GUARDS = new WeakMap<PluginContext, AccessGuard>();
+
 /** Registers everything; exported for tests. */
 export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): Env {
+  // Every action, tool and API route goes through the access guard (PAR-12700). With the switch off it passes every call on.
+  const guard = createAccessGuard(ctx, { pluginKey: PLUGIN_KEY, table: COCKPIT_ACCESS_TABLE });
+  GUARDS.set(ctx, guard);
+  for (const { routeKey } of manifest.apiRoutes ?? []) guard.apiRoute(routeKey, (input) => handleApiRoute(env, input));
   registerModuleWatch(ctx);
   // Every CRM client (name, domain) for company memory, asks and onboarding.
   registerCrmProjection(ctx, NAMESPACE);
@@ -223,11 +234,11 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
   // Edge watch: announce when new blocker edges are created.
   registerW1cEdge(env);
   // The owner's standing-approval policy: written only by the owner, through these two actions.
-  registerW1cPolicy(env);
-  registerOwnerDigest(env);
-  registerPaper(env);
+  registerW1cPolicy(env, guard);
+  registerOwnerDigest(env, guard);
+  registerPaper(env, guard);
   // The Browser tab: the pib-browser logins, read from the status file (owner company only).
-  registerBrowserStatus(env);
+  registerBrowserStatus(env, guard);
 
   for (const pluginKey of REPORTING_PLUGINS) {
     ctx.events.on(pluginEvent(pluginKey, COCKPIT_EVENTS.snapshot), async (event) => {
@@ -291,14 +302,14 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
     }
   });
 
-  ctx.actions.register("cockpit.load", async (params, context) => {
+  guard.action("cockpit.load", async (params, context) => {
     const companyId = requiredCompany(context);
     if (params.installed) await rememberInstalled(ctx, params.installed);
     if (params.uiBase) await rememberPluginUiBase(ctx, params.uiBase);
     // The page never waits long for the skill sync (kit `soon`).
     await env.skills.soon(companyId);
     // The unassigned count leaves out the hidden issues; a failed read leaves none hidden.
-    const hidden = await ownerFilter(env, companyId).catch(() => ({ hiddenIssueIds: [] as string[], degraded: ["ownerFilter"] }));
+    const hidden = await ownerFilter(env, companyId).catch(() => ({ hiddenIssueIds: [] as string[], setupRouted: false, rights: undefined, degraded: ["ownerFilter"] }));
     const [roles, saved, snapshots, setup, own, health, installed, asks, unassigned, warnings] = await Promise.all([
       getRoles(ctx, companyId),
       configSaved(ctx, companyId),
@@ -326,11 +337,11 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
       unassigned,
       warningSince: warnings,
       // The same agent read as the brief (brief.ts loadCompanyData); hiddenIssueIds from owner-filter.ts.
-      ownerFilter: { activeAgentIds: activeAgentIdsOf(await listAgents(env, companyId)), hiddenIssueIds: hidden.hiddenIssueIds },
+      ownerFilter: { activeAgentIds: activeAgentIdsOf(await listAgents(env, companyId)), hiddenIssueIds: hidden.hiddenIssueIds, setupRouted: hidden.setupRouted, rights: hidden.rights },
     };
   });
 
-  ctx.actions.register("cockpit.save-team", async (params, context) => {
+  guard.action("cockpit.save-team", async (params, context) => {
     const companyId = requiredCompany(context);
     const userId = requireUser(context);
     const result = await saveTeam(env, companyId, parseTeamInput(params), userId);
@@ -343,7 +354,7 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
     return { ...result, health };
   });
 
-  ctx.actions.register("cockpit.hire-options", async (params, context) => {
+  guard.action("cockpit.hire-options", async (params, context) => {
     const companyId = requiredCompany(context);
     requireUser(context);
     const agents = await listCompanyAgents(ctx, companyId);
@@ -351,7 +362,7 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
     return { draft: hireTaskDraft(hire), agents, defaultAssigneeAgentId: agents.find((a) => a.role === "ceo")?.id ?? null };
   });
 
-  ctx.actions.register("cockpit.start-hire", async (params, context) => {
+  guard.action("cockpit.start-hire", async (params, context) => {
     const companyId = requiredCompany(context);
     const userId = requireUser(context);
     const acceptance = params.role === ACCEPTANCE_ROLE_KEY;
@@ -374,7 +385,7 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
   const acceptanceOnly = (params: Record<string, unknown>) => {
     if (params.role !== ACCEPTANCE_ROLE_KEY) throw new CockpitError("The Operator and the Reviewer are linked with cockpit.save-team; this is for the Acceptance agent (role: acceptance)");
   };
-  ctx.actions.register("cockpit.link-agent", async (params, context) => {
+  guard.action("cockpit.link-agent", async (params, context) => {
     const companyId = requiredCompany(context);
     const userId = requireUser(context);
     acceptanceOnly(params);
@@ -383,14 +394,14 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
     const { agent, steps } = await linkAgent(ctx, companyId, ACCEPTANCE_MATCH_ROLE, agentId, { by: "manual", userId, onLinked: onAcceptanceLinked(env) });
     return { agent, steps };
   });
-  ctx.actions.register("cockpit.unlink-agent", async (params, context) => {
+  guard.action("cockpit.unlink-agent", async (params, context) => {
     const companyId = requiredCompany(context);
     requireUser(context);
     acceptanceOnly(params);
     await unlinkAgent(ctx, companyId, ACCEPTANCE_MATCH_ROLE);
     return { ok: true };
   });
-  ctx.actions.register("cockpit.resync-agent", async (params, context) => {
+  guard.action("cockpit.resync-agent", async (params, context) => {
     const companyId = requiredCompany(context);
     const userId = requireUser(context);
     acceptanceOnly(params);
@@ -399,7 +410,7 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
     return { steps: await onAcceptanceLinked(env)(companyId, agentId, { userId }) };
   });
   // A person asks for an acceptance check now (all journeys, or the named ones).
-  ctx.actions.register("acceptance.request", async (params, context) => {
+  guard.action("acceptance.request", async (params, context) => {
     const companyId = requiredCompany(context);
     requireUser(context);
     const keys = Array.isArray(params.journeys) ? params.journeys.filter((k): k is string => typeof k === "string") : null;
@@ -411,7 +422,7 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
     }
   });
   // The exact skill-policy body for the board to apply (Q2-10): a plugin cannot write the policy itself.
-  ctx.actions.register("cockpit.skill-policy-plan", async (params, context) => {
+  guard.action("cockpit.skill-policy-plan", async (params, context) => {
     const companyId = requiredCompany(context);
     requireUser(context);
     const agents = (await ctx.agents.list({ companyId, limit: 200 })) as unknown as Array<Record<string, unknown>>;
@@ -421,19 +432,19 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
     return { ...plan, coach: coach ? { id: String(coach.id), name: String(coach.name ?? "") } : null, apply: `PUT /api/companies/${companyId}/skill-policy with this body (a board action). Read the current revision first: GET /api/companies/${companyId}/skill-policy. Check that the coach id is the agent you provisioned.` };
   });
 
-  ctx.actions.register("cockpit.agents", async (_params, context) => {
+  guard.action("cockpit.agents", async (_params, context) => {
     const companyId = requiredCompany(context);
     return { agents: await listCompanyAgents(ctx, companyId) };
   });
 
-  ctx.actions.register("cockpit.refresh-health", async (_params, context) => refreshHealthIssue(env, requiredCompany(context)));
+  guard.action("cockpit.refresh-health", async (_params, context) => refreshHealthIssue(env, requiredCompany(context)));
 
   // The company profile (Cockpit → Profile).
-  ctx.actions.register("profile.load", async (_params, context) => readProfile(ctx, requiredCompany(context)));
+  guard.action("profile.load", async (_params, context) => readProfile(ctx, requiredCompany(context)));
   // Hosted clients (owner company only): `allowed: false` for any other company, so the UI hides the entry.
-  ctx.actions.register("hosted-usage.load", async (_params, context) => listHostedUsage(env, requiredCompany(context)));
-  ctx.actions.register("maintenance.load", async (_params, context) => loadMaintenance(ctx, requiredCompany(context), env.now()));
-  ctx.actions.register("profile.save", async (params, context) => {
+  guard.action("hosted-usage.load", async (_params, context) => listHostedUsage(env, requiredCompany(context)));
+  guard.action("maintenance.load", async (_params, context) => loadMaintenance(ctx, requiredCompany(context), env.now()));
+  guard.action("profile.save", async (params, context) => {
     const companyId = requiredCompany(context);
     if (context.actor.type !== "user") throw new CockpitError("Only a board user can edit the company profile here");
     const input = params.profile && typeof params.profile === "object" && !Array.isArray(params.profile) ? (params.profile as Record<string, unknown>) : {};
@@ -446,7 +457,7 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
   });
 
   // Things only the owner can confirm (Setup's Confirm buttons call these; an agent never can).
-  ctx.actions.register("cockpit.attest", async (params, context) => {
+  guard.action("cockpit.attest", async (params, context) => {
     const companyId = requiredCompany(context);
     if (context.actor.type !== "user") throw new CockpitError("Only a board user can confirm this");
     const userId = assignableUser(context.actor.userId ?? null) ?? context.actor.userId ?? null;
@@ -455,14 +466,14 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
     forgetChecks(env, companyId);
     return { confirmed: row };
   });
-  ctx.actions.register("outward-send.dismiss", async (params, context) => {
+  guard.action("outward-send.dismiss", async (params, context) => {
     const companyId = requiredCompany(context);
     if (context.actor.type !== "user") throw new CockpitError("Only a board user can dismiss an info card");
     const done = await dismissInfoCard(env, companyId, typeof params.id === "string" ? params.id : "");
     forgetChecks(env, companyId);
     return done;
   });
-  ctx.actions.register("goals.confirm", async (params, context) => {
+  guard.action("goals.confirm", async (params, context) => {
     const companyId = requiredCompany(context);
     if (context.actor.type !== "user") throw new CockpitError("Only a board user can confirm goals");
     const userId = assignableUser(context.actor.userId ?? null) ?? context.actor.userId ?? null;
@@ -475,7 +486,7 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
   });
 
   // Push page actions
-  ctx.actions.register("cockpit.push.publicKey", async (_params, context) => {
+  guard.action("cockpit.push.publicKey", async (_params, context) => {
     requireUser(context);
     try {
       return await publicKey(ctx);
@@ -487,7 +498,7 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
     }
   });
 
-  ctx.actions.register("cockpit.push.subscribe", async (params, context) => {
+  guard.action("cockpit.push.subscribe", async (params, context) => {
     const companyId = requiredCompany(context);
     const userId = requireUser(context);
     if (!userId) throw new CockpitError("Invalid user");
@@ -500,14 +511,14 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
     }
   });
 
-  ctx.actions.register("cockpit.push.devices", async (_params, context) => {
+  guard.action("cockpit.push.devices", async (_params, context) => {
     const companyId = requiredCompany(context);
     const userId = requireUser(context);
     if (!userId) throw new CockpitError("Invalid user");
     return { devices: await devices(ctx, companyId, userId) };
   });
 
-  ctx.actions.register("cockpit.push.mute", async (params, context) => {
+  guard.action("cockpit.push.mute", async (params, context) => {
     const companyId = requiredCompany(context);
     const userId = requireUser(context);
     if (!userId) throw new CockpitError("Invalid user");
@@ -520,7 +531,7 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
     }
   });
 
-  ctx.actions.register("cockpit.push.unsubscribe", async (params, context) => {
+  guard.action("cockpit.push.unsubscribe", async (params, context) => {
     const companyId = requiredCompany(context);
     const userId = requireUser(context);
     if (!userId) throw new CockpitError("Invalid user");
@@ -533,7 +544,7 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
     }
   });
 
-  ctx.actions.register("cockpit.push.test", async (params, context) => {
+  guard.action("cockpit.push.test", async (params, context) => {
     const companyId = requiredCompany(context);
     const userId = requireUser(context);
     if (!userId) throw new CockpitError("Invalid user");
@@ -615,7 +626,7 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
     }
   });
 
-  registerMemoryActions(env);
+  registerMemoryActions(env, guard);
 
   // A person's reply answers an open question; **Learned:** lines in agents' and people's comments become company memory.
   ctx.events.on("issue.comment.created", async (event) => {
@@ -689,7 +700,7 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
   });
 
   for (const tool of COCKPIT_TOOLS) {
-    ctx.tools.register(tool.name, tool, async (params, run) => {
+    guard.tool(tool.name, tool, async (params, run) => {
       // A tool call never waits long for the skill sync (kit `soon`).
       await env.skills.soon(run.companyId);
       const result = MEMORY_TOOL_NAMES.has(tool.name)
@@ -727,6 +738,13 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
     });
   }
   return env;
+}
+
+/** The worker's `onApiRequest`: the access guard first, then `handleApiRoute`. */
+export function handleCockpitApiRequest(env: Env, input: PluginApiRequestInput): Promise<PluginApiResponse> {
+  const guard = GUARDS.get(env.ctx);
+  if (!guard) throw new CockpitError("Cockpit plugin is not set up");
+  return guard.handleApiRequest(input);
 }
 
 export async function handleApiRoute(env: Env, input: PluginApiRequestInput): Promise<PluginApiResponse> {

@@ -16,8 +16,9 @@ import type { LipsyncOption } from "./lipsync-form.js";
 import { useNarrow } from "./narrow.js";
 import { usePreviewUrls } from "./previews.js";
 
-export { StudioCanvasPage } from "./CanvasPage.js";
-export { StudioEditorPage } from "./editor/EditorPage.js";
+import { StudioCanvasPage as CanvasPageBody } from "./CanvasPage.js";
+import { StudioEditorPage as EditorPageBody } from "./editor/EditorPage.js";
+import { withStudioAccess } from "./access-gate.js";
 import { BarList, Blocks, Building2, Button, ButtonLink, CircleCheck, Coins, EmptyState, errorText, Field, Gauge, Hourglass, Input, MetricCard, MetricRow, Package, Page, PageMessage, ProgressBar, Section, Select, Sparkles, Tabs, tone, useGroupedNav, usePibBaseStyles } from "@partnersinbiz/pib-plugin-ui";
 import { formatDuration, humanTitle, metaLine, posterFrameUrl, statusLabel, statusTone } from "./library.js";
 import { disabledNote, durationChips } from "../canvas-settings.js";
@@ -75,6 +76,7 @@ interface ProviderChoice {
   price: string;
   qualityNote: string;
   isDefault: boolean;
+  configured?: boolean;
 }
 
 interface Overview {
@@ -162,7 +164,7 @@ function CreditsMetric({ data }: { data: Overview }) {
   return <MetricCard icon={Coins} value={left} label="Credits left this month" description={`${used} used of ${cap.monthlyCredits}`} tone={left === 0 ? "bad" : low ? "warn" : undefined} />;
 }
 
-export function StudioPage({ context }: PluginPageProps) {
+function StudioPageBody({ context }: PluginPageProps) {
   usePibBaseStyles();
   const host = useHostContext();
   const companyId = context.companyId ?? host.companyId ?? null;
@@ -1207,6 +1209,13 @@ function Usage({ companyId, data, me, refresh }: { companyId: string; data: Over
               </span>
             </div>
           ))}
+          {(data.providerOptions?.tts ?? []).filter((o) => !o.isDefault).map((o) => (
+            <div key={o.key} style={{ ...row, padding: "4px 0" }}>
+              <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>
+                Text to speech option: {o.label} - {o.configured ? "key set" : "not configured"}
+              </span>
+            </div>
+          ))}
           {data.providerOptions?.lipsync?.length ? (
             <>
               {(["audio", "line"] as const).map((input) => {
@@ -1221,7 +1230,7 @@ function Usage({ companyId, data, me, refresh }: { companyId: string; data: Over
               })}
             </>
           ) : null}
-          <p style={{ ...muted, marginTop: 8 }}>The key and the default provider are set under "xAI voice" and "Voice providers" in Studio's plugin settings.</p>
+          <p style={{ ...muted, marginTop: 8 }}>The key and the default provider are set under "xAI voice", "ElevenLabs voice" and "Voice providers" in Studio's plugin settings.</p>
         </Section>
       ) : null}
       {data.musicUsage ? (
@@ -1320,7 +1329,7 @@ function Usage({ companyId, data, me, refresh }: { companyId: string; data: Over
   );
 }
 
-export function StudioSidebar(_props: PluginSidebarProps) {
+function StudioSidebarBody(_props: PluginSidebarProps) {
   // The Cockpit's Marketing group shows this page instead (pib-plugin-ui NAV_GROUPS); keep our own row only until that group exists.
   const grouped = useGroupedNav("partnersinbiz.studio");
   const navigation = useHostNavigation();
@@ -1346,3 +1355,13 @@ export function StudioSidebar(_props: PluginSidebarProps) {
     </a>
   );
 }
+
+// Every page and the sidebar entry ask `access.me` first (access stage A, PAR-12688); the guard is still the gate.
+export const StudioPage = withStudioAccess(StudioPageBody, "page");
+export const StudioCanvasPage = withStudioAccess(CanvasPageBody, "page");
+export const StudioEditorPage = withStudioAccess(EditorPageBody, "page");
+export const StudioSidebar = withStudioAccess(StudioSidebarBody, "sidebar");
+// Planning Canvas slots (PAR-14280). Not page-gated: the worker's guard refuses a person without Studio, and the card
+// and panel show their placeholder for it.
+export { StudioCanvasCard } from "./BoardCard.js";
+export { StudioBoardLibrary } from "./BoardLibrary.js";

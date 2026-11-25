@@ -54,7 +54,7 @@ const instanceConfigSchema: JsonSchema = {
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.4.10",
+  version: "0.5.1",
   displayName: "Accounting",
   description: "Partners in Biz's books: chart of accounts, journals every plugin posts to, bank reconciliation, VAT201, reports, assets and the accountant pack.",
   author: "Partners in Biz",
@@ -62,6 +62,8 @@ const manifest: PaperclipPluginManifestV1 = {
   instanceConfigSchema,
   capabilities: [
     "companies.read",
+    // A3 (PAR-12643): the access guard reads the caller's role (ctx.access.members.list). A new capability: a stop-first deploy.
+    "access.members.read",
     "database.namespace.migrate",
     "database.namespace.read",
     "database.namespace.write",
@@ -87,7 +89,8 @@ const manifest: PaperclipPluginManifestV1 = {
     "api.routes.register",
   ],
   entrypoints: { worker: "./dist/worker.js", ui: "./dist/ui" },
-  database: { namespaceSlug: "accounting", migrationsDir: "migrations", coreReadTables: ["issues"] },
+  // A3 (PAR-12643): heartbeat_runs is read-only; the access guard finds the acting person of a tool call. Stop-first.
+  database: { namespaceSlug: "accounting", migrationsDir: "migrations", coreReadTables: ["issues", "heartbeat_runs"] },
   tools: ACCOUNTING_TOOLS,
   apiRoutes: [SETUP_STATUS_ROUTE, COCKPIT_ROUTE],
   jobs: [

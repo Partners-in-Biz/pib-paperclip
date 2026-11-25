@@ -114,7 +114,7 @@ suite("task project repository provisioning", () => {
         description: [referencedProjectId, deniedProjectId].map((id) => `[@Reference](${buildProjectMentionHref(id)})`).join(" "),
         executionWorkspaceSettings: { mode: "isolated_workspace" },
       });
-      const run = await sandboxHeartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId, projectId } });
+      const run = await sandboxHeartbeat.wakeup(agentId, { causingActor: "system", source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId, projectId } });
       expect(run).not.toBeNull();
       await vi.waitFor(async () => {
         const latest = await sandboxHeartbeat.getRun(run!.id);
@@ -142,7 +142,7 @@ suite("task project repository provisioning", () => {
     const reassignedAgentId = randomUUID();
     await db.insert(agents).values({ ...originalAgent, id: reassignedAgentId, name: "Next agent", status: "idle" });
     await db.update(issues).set({ status: "todo", assigneeAgentId: reassignedAgentId }).where(eq(issues.id, issueIds[0]));
-    const reassignedRun = await sandboxHeartbeat.wakeup(reassignedAgentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId: issueIds[0], projectId } });
+    const reassignedRun = await sandboxHeartbeat.wakeup(reassignedAgentId, { causingActor: "system", source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId: issueIds[0], projectId } });
     await vi.waitFor(async () => {
       const latest = await sandboxHeartbeat.getRun(reassignedRun!.id);
       expect({ status: latest?.status, error: latest?.error }).toEqual({ status: "succeeded", error: null });
@@ -187,7 +187,7 @@ suite("task project repository provisioning", () => {
       id: issueId, companyId, projectId, title: "Write a report", status: "todo", assigneeAgentId: agentId,
       executionWorkspaceSettings: explicitIsolation === "issue" ? { mode: "isolated_workspace" } : null,
     });
-    const run = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId, projectId } });
+    const run = await heartbeat.wakeup(agentId, { causingActor: "system", source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId, projectId } });
     expect(run).not.toBeNull();
     await vi.waitFor(async () => {
       const latest = await heartbeat.getRun(run!.id);
@@ -243,7 +243,7 @@ suite("task project repository provisioning", () => {
         await writeFile(path.join(cwd, "output.txt"), admission === 0 ? "first admission" : "continued");
         return defaultExecute(input);
       });
-      const run = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId } });
+      const run = await heartbeat.wakeup(agentId, { causingActor: "system", source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId } });
       await vi.waitFor(async () => { expect(await heartbeat.getRun(run!.id)).toMatchObject({ status: "succeeded", error: null }); }, { timeout: 15_000 });
       await drainHeartbeatRunsToQuiescence(db, heartbeat);
       expect(execute.mock.calls.filter(([input]) => input.runId === run!.id)).toHaveLength(1);
@@ -271,7 +271,7 @@ suite("task project repository provisioning", () => {
     let bindingId: string | undefined;
     for (let admission = 0; admission < 2; admission++) {
       await db.update(issues).set({ status: "todo" }).where(eq(issues.id, issueId));
-      const run = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId, projectId } });
+      const run = await heartbeat.wakeup(agentId, { causingActor: "system", source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId, projectId } });
       await vi.waitFor(async () => { expect(await heartbeat.getRun(run!.id)).toMatchObject({ status: "succeeded", error: null }); }, { timeout: 15_000 });
       await drainHeartbeatRunsToQuiescence(db, heartbeat);
       const [task] = await db.select().from(issues).where(eq(issues.id, issueId));
@@ -303,7 +303,7 @@ suite("task project repository provisioning", () => {
       workspaceSelection: kind === "default" ? null : { version: 1, source: "explicit", selection: kind === "configured_source"
         ? { kind, projectWorkspaceId: sourceId, mode: "shared" } : { kind } },
     });
-    const run = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId } });
+    const run = await heartbeat.wakeup(agentId, { causingActor: "system", source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId } });
     await vi.waitFor(async () => { expect(await heartbeat.getRun(run!.id)).toMatchObject({ status: "succeeded", error: null }); }, { timeout: 15_000 });
     await drainHeartbeatRunsToQuiescence(db, heartbeat);
     const call = execute.mock.calls.find(([input]) => input.runId === run!.id)![0];
@@ -336,7 +336,7 @@ suite("task project repository provisioning", () => {
       workspaceSelection: selection === "default" ? null : { version: 1, source: "explicit", selection: selection === "configured_source"
         ? { kind: selection, projectWorkspaceId: sourceId, mode: "shared" } : { kind: selection } },
     });
-    const run = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId } });
+    const run = await heartbeat.wakeup(agentId, { causingActor: "system", source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId } });
     await vi.waitFor(async () => { expect(await heartbeat.getRun(run!.id)).toMatchObject({ status: "failed" }); }, { timeout: 15_000 });
     await drainHeartbeatRunsToQuiescence(db, heartbeat);
     expect(execute.mock.calls.filter(([input]) => input.runId === run!.id)).toHaveLength(0);
@@ -364,7 +364,7 @@ suite("task project repository provisioning", () => {
       projectWorkspaceId: sourceId, executionWorkspaceSettings: { mode: "shared_workspace" },
       workspaceSelection: { version: 1, source: "explicit", selection: { kind: "configured_source", projectWorkspaceId: sourceId, mode: "shared" } } });
     const admit = async () => {
-      const run = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId } });
+      const run = await heartbeat.wakeup(agentId, { causingActor: "system", source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId } });
       expect(run).not.toBeNull();
       await vi.waitFor(async () => expect((await heartbeat.getRun(run!.id))?.status).toMatch(/^(succeeded|failed)$/), { timeout: 15_000 });
       await drainHeartbeatRunsToQuiescence(db, heartbeat);
@@ -413,7 +413,7 @@ suite("task project repository provisioning", () => {
     const actor = { type: "agent" as const, agentId, companyId, source: "agent_jwt" as const, onBehalfOfUserId: "responsible-user" };
     expect(await accessService(db).decide({ actor, action: "tasks:assign", resource: { type: "issue", companyId, issueId, assigneeAgentId: agentId },
       scope: { assigneeAgentId: agentId } })).toMatchObject({ allowed: false });
-    const run = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId } });
+    const run = await heartbeat.wakeup(agentId, { causingActor: "system", source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId } });
     expect(run).not.toBeNull();
     await vi.waitFor(async () => expect(await heartbeat.getRun(run!.id)).toMatchObject({ status: "succeeded", error: null }), { timeout: 15_000 });
     await drainHeartbeatRunsToQuiescence(db, heartbeat);
@@ -446,7 +446,7 @@ suite("task project repository provisioning", () => {
     expect(await accessService(db).decide({ actor, action: "project:read", resource: { type: "project", companyId, projectId } })).toMatchObject({ allowed: true });
     expect(await accessService(db).decide({ actor, action: "tasks:assign", resource: { type: "issue", companyId, projectId, assigneeAgentId: agentId },
       scope: { projectId, assigneeAgentId: agentId } })).toMatchObject({ allowed: false });
-    const run = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId } });
+    const run = await heartbeat.wakeup(agentId, { causingActor: "system", source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId } });
     expect(run).not.toBeNull();
     await vi.waitFor(async () => expect((await heartbeat.getRun(run!.id))?.status).toMatch(/^(succeeded|failed)$/), { timeout: 15_000 });
     await drainHeartbeatRunsToQuiescence(db, heartbeat);
@@ -509,7 +509,7 @@ suite("task project repository provisioning", () => {
         { companyId, principalType: "user", principalId: "responsible-user", permissionKey: "tasks:assign_scope", scope: { projectId, assigneeAgentId: agentId } },
       ]);
       const admit = async () => {
-        const run = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId } });
+        const run = await heartbeat.wakeup(agentId, { causingActor: "system", source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId } });
         expect(run).not.toBeNull();
         await vi.waitFor(async () => expect((await heartbeat.getRun(run!.id))?.status).toMatch(/^(succeeded|failed)$/), { timeout: 15_000 });
         await drainHeartbeatRunsToQuiescence(db, heartbeat);
@@ -589,7 +589,7 @@ suite("task project repository provisioning", () => {
       workspaceSelection: { version: 1, source: "explicit", selection: { kind: "configured_source", projectWorkspaceId: sourceId, mode: "shared" } } });
     const admit = async () => {
       await db.update(issues).set({ status: "todo" }).where(eq(issues.id, issueId));
-      const run = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId } });
+      const run = await heartbeat.wakeup(agentId, { causingActor: "system", source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId } });
       expect(run).not.toBeNull();
       await vi.waitFor(async () => expect((await heartbeat.getRun(run!.id))?.status).toMatch(/^(succeeded|failed)$/), { timeout: 15_000 });
       await drainHeartbeatRunsToQuiescence(db, heartbeat);
@@ -617,7 +617,7 @@ suite("task project repository provisioning", () => {
       await db.update(projects).set({ visibility: "private" }).where(eq(projects.id, projectId));
       await db.update(issues).set({ status: "todo" }).where(eq(issues.id, issueId));
       const callsBeforeRevocation = execute.mock.calls.length;
-      expect(await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId } })).toBeNull();
+      expect(await heartbeat.wakeup(agentId, { causingActor: "system", source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId } })).toBeNull();
       await drainHeartbeatRunsToQuiescence(db, heartbeat);
       expect(execute.mock.calls).toHaveLength(callsBeforeRevocation);
     } else {
@@ -677,7 +677,7 @@ suite("task project repository provisioning", () => {
         signal: input.signal,
       });
     });
-    const run = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId, projectId } });
+    const run = await heartbeat.wakeup(agentId, { causingActor: "system", source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId, projectId } });
     await vi.waitFor(async () => expect((await heartbeat.getRun(run!.id))?.errorCode).toBe(code), { timeout: 15_000 });
     expect(execute.mock.calls.filter(([input]) => input.runId === run!.id)).toHaveLength(0);
     await heartbeat.drainActiveRunExecutions();
@@ -765,7 +765,7 @@ suite("task project repository provisioning", () => {
         workspaceSelection: { version: 1, source: "explicit", selection: { kind: "configured_source", projectWorkspaceId: sourceId, mode: "managed_isolated" } } });
       const admit = async () => {
         await db.update(issues).set({ status: "todo" }).where(eq(issues.id, issueId));
-        const run = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", manualUserWake: true,
+        const run = await heartbeat.wakeup(agentId, { causingActor: "system", source: "on_demand", triggerDetail: "manual", manualUserWake: true,
           requestedByActorType: "user", requestedByActorId: "responsible-user", contextSnapshot: { issueId } });
         expect(run).not.toBeNull();
         await vi.waitFor(async () => expect((await heartbeat.getRun(run!.id))?.status).toMatch(/^(succeeded|failed)$/), { timeout: 15_000 });
@@ -876,7 +876,7 @@ suite("task project repository provisioning", () => {
       await db.delete(issueAccessGrants).where(eq(issueAccessGrants.issueId, privateIssueId));
       const admit = async () => {
         await db.update(issues).set({ status: "todo" }).where(eq(issues.id, issueId));
-        const run = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId } });
+        const run = await heartbeat.wakeup(agentId, { causingActor: "system", source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId } });
         expect(run).not.toBeNull();
         await vi.waitFor(async () => expect((await heartbeat.getRun(run!.id))?.status).toMatch(/^(succeeded|failed)$/), { timeout: 15_000 });
         await drainHeartbeatRunsToQuiescence(db, heartbeat);
@@ -930,7 +930,7 @@ suite("task project repository provisioning", () => {
     await db.insert(projectWorkspaces).values(repositoryRows);
     await db.insert(agents).values({ id: agentId, companyId, name: "Test", role: "engineer", status: "idle", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} });
     await db.insert(issues).values({ id: issueId, companyId, projectId, title: "Use project repositories", status: "todo", assigneeAgentId: agentId });
-    const run = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId, projectId } });
+    const run = await heartbeat.wakeup(agentId, { causingActor: "system", source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId, projectId } });
     expect(run).not.toBeNull();
     await vi.waitFor(async () => {
       const latest = await heartbeat.getRun(run!.id);

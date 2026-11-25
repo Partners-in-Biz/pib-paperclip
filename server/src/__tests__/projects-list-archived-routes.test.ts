@@ -28,7 +28,7 @@ function boardActor(companyId: string): Express.Request["actor"] {
     source: "session",
     isInstanceAdmin: true,
     companyIds: [companyId],
-    memberships: [{ companyId, membershipRole: "admin", status: "active" }],
+    memberships: [{ companyId, membershipRole: "admin", status: "active", restricted: false, restrictionMode: "off" }],
   };
 }
 
@@ -165,7 +165,7 @@ describeEmbeddedPostgres("private project route visibility", { concurrent: false
       source: "session",
       isInstanceAdmin: false,
       companyIds: [companyId],
-      memberships: [{ companyId, membershipRole: "admin", status: "active" }],
+      memberships: [{ companyId, membershipRole: "admin", status: "active", restricted: false, restrictionMode: "off" }],
     });
 
     const outsiderApp = createApp(db, actorFor("project-outsider"));

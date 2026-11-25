@@ -17,7 +17,7 @@ import { lookup } from "node:dns/promises";
 import { request as httpsRequest } from "node:https";
 import { isIP, type LookupFunction } from "node:net";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { scopeOfRow, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
+import { scopeOfRow, type ActingRestriction, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
 import { getAssetRow, storeAsset } from "./assets.js";
 import { StudioConfig } from "./config.js";
 import { credits, iso, num, table } from "./db.js";
@@ -26,7 +26,7 @@ import { adjust, assertFits, assertRunFits, capCheck, currentPeriod, refund, res
 import { DEFAULT_PRESET_MODEL, DEFAULT_PRESET_RATIO, PHOTO_PRESETS, buildPhotoPresetPrompt, getPhotoPreset } from "./presets.js";
 import { assertAudioCount, assertJobCeiling, assertReferenceCount, findModel, referenceIds } from "./models.js";
 import { assertModel, FAKE_OUTPUT_PNG_BASE64, fakeProvider, fakeProviderOn, higgsfieldProvider, ProviderError, type GenerationProvider } from "./provider.js";
-import { assertReachable, scopeForWork, scopeInput, type ResolvedScope } from "./scope.js";
+import { assertOpenToPerson, assertReachable, scopeForWork, scopeInput, type ResolvedScope } from "./scope.js";
 import { isTablePriced, localCredits } from "./seedance-price.js";
 import { MAX_ASSET_BYTES, objectUrl, sniffMime } from "./storage.js";
 
@@ -265,6 +265,12 @@ export interface Actor {
   userId?: string | null;
   issueId?: string | null;
   projectId?: string | null;
+  /**
+   * Set on the person path (the page's actions): core's member-restriction answer. A restricted member's client work
+   * is refused right after the scope is known, before any price, reserve or provider call (PAR-14274). Agent tools
+   * leave it out: their run's project limits them (`scopeForWork`).
+   */
+  restriction?: ActingRestriction;
 }
 
 /** The one duration check: the model's own field, a listed whole number of seconds, else the model's default. */
@@ -332,6 +338,7 @@ export async function estimateGeneration(ctx: PluginContext, companyId: string, 
   const { model, body, references, audio } = requestBody(params);
   const batch = batchSize(params);
   const where = await scopeForWork(ctx, companyId, scopeInput(params), actor.projectId ?? null);
+  if (actor.restriction) assertOpenToPerson(where.scope, actor.restriction);
   const config = new StudioConfig(ctx, companyId);
   const refs = [...(await referenceRows(ctx, companyId, where.scope, references, "image")), ...(await referenceRows(ctx, companyId, where.scope, audio, "audio"))];
   const each = await estimateEach(await runtime.provider(config), model, await withReferences(config, companyId, model, body, refs));
@@ -359,6 +366,7 @@ export async function requestGeneration(ctx: PluginContext, companyId: string, p
   const batch = batchSize(params);
   const projectId = actor.projectId ?? null;
   const where: ResolvedScope = await scopeForWork(ctx, companyId, scopeInput(params), projectId);
+  if (actor.restriction) assertOpenToPerson(where.scope, actor.restriction);
   const config = new StudioConfig(ctx, companyId);
   const refs = [...(await referenceRows(ctx, companyId, where.scope, references, "image")), ...(await referenceRows(ctx, companyId, where.scope, audio, "audio"))];
   const provider = await runtime.provider(config);

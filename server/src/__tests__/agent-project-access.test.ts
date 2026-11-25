@@ -189,7 +189,7 @@ describe("additive project access", () => {
     const f = await seed(), other = await seed(), userId = randomUUID();
     await db.insert(authUsers).values({ id: userId, name: "Viewer", email: `${userId}@example.test`, emailVerified: true, createdAt: new Date(), updatedAt: new Date() });
     await db.insert(companyMemberships).values({ companyId: f.companyId, principalType: "user", principalId: userId, membershipRole: "viewer", status: "active" });
-    const api = app({ type: "board", source: "session", userId, companyIds: [f.companyId], memberships: [{ companyId: f.companyId, membershipRole: "viewer", status: "active" }] });
+    const api = app({ type: "board", source: "session", userId, companyIds: [f.companyId], memberships: [{ companyId: f.companyId, membershipRole: "viewer", status: "active", restricted: false, restrictionMode: "off" }] });
     expect((await request(api).get(`/agents/${f.agentId}/project-access`)).body).toMatchObject({ canManage: false });
     expect((await request(api).post(`/agents/${f.agentId}/project-access`).send({ projectIds: [f.selected[1]!.id] })).status).toBe(403);
     expect((await request(api).get(`/agents/${other.agentId}/project-access`)).status).toBe(404);

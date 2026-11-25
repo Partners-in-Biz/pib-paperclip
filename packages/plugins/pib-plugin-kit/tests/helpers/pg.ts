@@ -24,6 +24,15 @@ export async function embeddedAvailable(): Promise<boolean> {
   }
 }
 
+/**
+ * True where a database spec must not skip: in CI, but not in the VPS deploy gate. That gate sets CI=1
+ * (pnpm-pinned.sh, so pnpm never prompts) and runs as root, where `embeddedAvailable` is false on purpose.
+ * A check that only read `CI` failed there and refused every plugin deploy (2026-11-17).
+ */
+export function databaseRequired(): boolean {
+  return Boolean(process.env.CI) && process.getuid?.() !== 0;
+}
+
 export interface Pg {
   client: PgClient;
   /** Reset all tables in the given namespace. */

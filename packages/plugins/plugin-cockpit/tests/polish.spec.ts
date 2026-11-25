@@ -14,10 +14,10 @@ import { agentRows, type AgentLite, type HealthGroup, type KpiEntry, type RunLit
 import { plainDetail, rawErrorAt } from "../src/plain.js";
 import { createEnv } from "../src/register.js";
 import { buildView, type LoadResult } from "../src/view.js";
-import { ActivityList, AgentsTable, HealthList, TodayHero, WaitingRow, agentRunHref, agentStatusLabel } from "../src/ui/components.js";
+import { ActivityList, AgentsTable, HealthList, KpiGroup, TodayHero, WaitingRow, agentRunHref, agentStatusLabel } from "../src/ui/components.js";
 import { clearSidebarCache, livePluginKeys, loadRawData, setupCount, sharedSidebarView } from "../src/ui/data.js";
 import { Overview, prefixFromPath, withCompanyPrefix } from "../src/ui/index.js";
-import { dedupeKpis, isQuietKpi, kpiParts, readableDates, visibleKpis } from "../src/ui/kpis.js";
+import { dedupeKpis, isQuietKpi, kpiPanelWide, kpiParts, readableDates, visibleKpis } from "../src/ui/kpis.js";
 import { clientOptions, listParams, plainMemoryMessage, refsFor, DEFAULT_FILTERS } from "../src/ui/memory-model.js";
 import { LegalCopiesNote } from "../src/ui/profile.js";
 import { runAlert, runStats } from "../src/ui/series.js";
@@ -129,9 +129,10 @@ describe("Waiting on you: once each, the whole row tappable", () => {
       now: NOW,
       windowMs: 86_400_000,
     });
-    expect(view.waiting.map((w) => w.title)).toEqual(expect.arrayContaining(["Finish setup: 29 steps left", "Approve sending invoice INV-9F0D9A85", "1 open issue has nobody assigned"]));
+    expect(view.waiting.map((w) => w.title)).toEqual(expect.arrayContaining(["Finish setup: 29 steps left", "Approve sending invoice INV-9F0D9A85"]));
+    expect(view.waiting.some((w) => w.key === "unassigned-issues")).toBe(false);
     expect(view.waiting.filter((w) => /Finish setup/.test(w.title))).toHaveLength(1);
-    expect(view.waiting.find((w) => w.key === "unassigned-issues")!.examples!.map((e) => e.title)).toEqual(["PIB-2 Fix the title tag"]);
+    expect(view.waitingOthers.find((w) => w.key === "unassigned-issues")!.examples!.map((e) => e.title)).toEqual(["PIB-2 Fix the title tag"]);
   });
 
   it("the whole row is one link with the arrow on the right", () => {
@@ -207,8 +208,31 @@ describe("calm numbers", () => {
     expect(html).not.toContain(">Delivery<");
     expect(html).toContain("2 more numbers are at zero (nothing to report in Money, Delivery).");
     expect(html).toContain("Show all numbers");
-    // Tiles in a half-width panel: two to a row, filling it.
+    // Tiles fill each row of their panel.
     expect(html).toContain("repeat(auto-fit, minmax(min(190px, 100%), 1fr))");
+  });
+
+  it("gives a long group its own row and keeps every panel's content at the top", () => {
+    expect([0, 1, 4].map(kpiPanelWide)).toEqual([false, false, false]);
+    expect([5, 12].map(kpiPanelWide)).toEqual([true, true]);
+    const tiles = (group: KpiEntry["group"], count: number): KpiEntry[] => Array.from({ length: count }, (_, i) => kpi({ key: `${group}-${i}`, label: `${group} ${i}`, value: String(i + 1), raw: i + 1, group }));
+    const panel = (group: "money" | "marketing", count: number) => renderToStaticMarkup(createElement(KpiGroup, { group, kpis: tiles(group, count), linkFor, now: NOW }));
+    // Two tiles beside twelve: Money stays a part-width panel, Marketing takes the row.
+    expect(panel("money", 2)).toContain("flex:1 1 420px");
+    expect(panel("marketing", 12)).toContain("flex:1 1 100%");
+    // Beside a taller panel the title and the tiles stay together at the top (they spread apart before).
+    for (const html of [panel("money", 2), panel("marketing", 12)]) expect(html).toContain("align-content:start");
+    const view = buildView({
+      load,
+      installed: null,
+      modules: null,
+      live: { "partnersinbiz.billing": snap("partnersinbiz.billing", { title: "Billing", kpis: [...tiles("money", 2), ...tiles("marketing", 12)] }) },
+      now: NOW,
+      windowMs: 86_400_000,
+    });
+    const page = renderToStaticMarkup(createElement(Overview, { view, load, linkFor, windowHours: 24, onWindow: () => undefined, now: NOW }));
+    expect(page).toContain("display:flex;flex-wrap:wrap;gap:16px");
+    expect(page).not.toContain("minmax(min(420px, 100%), 1fr)");
   });
 });
 

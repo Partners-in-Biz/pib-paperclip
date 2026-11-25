@@ -227,7 +227,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         responsibleUserId: "responsible-user" },
     ]);
     try {
-      const parentRun = await heartbeat.wakeup(agentId, { source: "assignment", triggerDetail: "system",
+      const parentRun = await heartbeat.wakeup(agentId, { causingActor: "system", source: "assignment", triggerDetail: "system",
         reason: "issue_assigned", payload: { issueId }, contextSnapshot: { issueId, wakeReason: "issue_assigned" } });
       expect(parentRun).not.toBeNull();
       await db.insert(issueComments).values({ companyId, issueId, authorAgentId: agentId,
@@ -295,7 +295,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     await db.insert(issues).values({ id: issueId, companyId, title: "Continue repository verification", status: "todo",
       assigneeAgentId: agentId, responsibleUserId: "responsible-user" });
     try {
-      const predecessor = await heartbeat.wakeup(agentId, { source: "assignment", triggerDetail: "system", reason: "issue_assigned",
+      const predecessor = await heartbeat.wakeup(agentId, { causingActor: "system", source: "assignment", triggerDetail: "system", reason: "issue_assigned",
         payload: { issueId }, contextSnapshot: { issueId, source: "initial-repository-request" } });
       expect(predecessor).not.toBeNull();
       expect(await waitForCondition(async () => mockAdapterExecute.mock.calls.length === 1, 30_000)).toBe(true);
@@ -630,6 +630,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     });
 
     const blockedWake = await heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "assignment",
       triggerDetail: "system",
       reason: "issue_assigned",
@@ -675,6 +676,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       body: "Explain the current dependency without starting blocked work.",
     });
     const interactionWake = await heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "automation",
       triggerDetail: "system",
       reason: "issue_commented",
@@ -727,6 +729,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     });
 
     const readyWake = await heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "assignment",
       triggerDetail: "system",
       reason: "issue_assigned",
@@ -767,6 +770,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       .where(eq(issues.id, blockerId));
 
     const promotedWake = await heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "automation",
       triggerDetail: "system",
       reason: "issue_blockers_resolved",
@@ -893,6 +897,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
 
     const idempotencyKey = `issue_blockers_resolved:${blockedIssueId}:${blockerId}`;
     const wake = await heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "automation",
       triggerDetail: "system",
       reason: "issue_blockers_resolved",
@@ -1006,6 +1011,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
 
     try {
       const firstWake = await heartbeat.wakeup(agentId, {
+        causingActor: "system",
         source: "assignment",
         triggerDetail: "system",
         reason: "issue_assigned",
@@ -1035,6 +1041,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       expect(firstAdapterStarted).toBe(true);
 
       const secondWake = await heartbeat.wakeup(agentId, {
+        causingActor: "system",
         source: "assignment",
         triggerDetail: "system",
         reason: "issue_assigned",
@@ -1365,6 +1372,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       .returning();
 
     const blockedWake = await heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "automation",
       triggerDetail: "system",
       reason: "issue_blockers_resolved",
@@ -1393,6 +1401,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     });
 
     const forgedChildCommentWake = await heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "on_demand",
       triggerDetail: "manual",
       reason: "issue_commented",
@@ -1403,6 +1412,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     expect(forgedChildCommentWake).toBeNull();
 
     const childCommentWake = await heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "automation",
       triggerDetail: "system",
       reason: "issue_commented",
@@ -1492,6 +1502,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     });
 
     const rootCommentWake = await heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "automation",
       triggerDetail: "system",
       reason: "issue_commented",

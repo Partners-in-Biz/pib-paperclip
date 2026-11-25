@@ -1,4 +1,5 @@
 import { and, asc, eq, gte, inArray, isNull, sql } from "drizzle-orm";
+import { SYSTEM_CAUSING_ACTOR } from "./heartbeat/causing-actor.js";
 import type { Db } from "@paperclipai/db";
 import { activityLog, agents, companies, heartbeatRuns, issues } from "@paperclipai/db";
 import { isAgentInvokable } from "@paperclipai/shared";
@@ -261,6 +262,7 @@ export function blockedIssueSweeper(db: Db, heartbeat: IssueAssignmentWakeupDeps
           let wakeFailed = false;
           try {
             await heartbeat.wakeup(renotice.ownerAgentId, {
+              causingActor: SYSTEM_CAUSING_ACTOR,
               source: "automation",
               triggerDetail: "system",
               reason: "issue_unblock_requested",
@@ -313,6 +315,7 @@ export function blockedIssueSweeper(db: Db, heartbeat: IssueAssignmentWakeupDeps
           // wake queue treats this as the same wake and does not start a second run.
           await heartbeat
             .wakeup(assigneeAgentId, {
+              causingActor: SYSTEM_CAUSING_ACTOR,
               source: "automation",
               triggerDetail: "system",
               reason: "issue_blockers_resolved",

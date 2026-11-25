@@ -7,6 +7,8 @@ import type { AgentEnvConfig, EnvBinding, IssueWorkMode } from "@paperclipai/sha
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
+import { useMemberRestrictionGate } from "../hooks/useMemberRestrictionGate";
+import { memberRestrictionFor } from "../lib/member-restriction";
 import { issuesApi } from "../api/issues";
 import { MissingUserSecretsBanner } from "../pages/secrets/MissingUserSecretsBanner";
 import { instanceSettingsApi } from "../api/instanceSettings";
@@ -559,6 +561,11 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
     experimentalSettings?.enableIsolatedWorkspaces === true ? (currentProject?.executionWorkspacePolicy ?? null) : null;
   const currentProjectSupportsExecutionWorkspace = Boolean(currentProjectExecutionWorkspacePolicy?.enabled);
   const canChooseWorktrees = workspaceIsolationControlsVisible && currentProjectSupportsExecutionWorkspace;
+  // PAR-12608 4.6 (AC-G10): for a restricted member at `enforce` the company's
+  // execution-workspace list is closed, so "reuse a worktree" is not offered,
+  // and no Chrome override is sent (the server keeps the stored value).
+  const memberGate = useMemberRestrictionGate(effectiveCompanyId);
+  const canReuseWorktrees = canChooseWorktrees && !memberGate.closed;
   const {
     data: reusableExecutionWorkspaces,
     isPending: worktreesLoading,
@@ -569,12 +576,20 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
       projectId,
       reuseEligible: true,
     }),
-    queryFn: () => executionWorkspacesApi.listSummaries(effectiveCompanyId!, {
+    queryFn: memberGate.guard(() => executionWorkspacesApi.listSummaries(effectiveCompanyId!, {
       projectId,
       reuseEligible: true,
-    }),
-    enabled: Boolean(effectiveCompanyId) && newIssueOpen && canChooseWorktrees,
+    }), []),
+    enabled: Boolean(effectiveCompanyId) && newIssueOpen && canReuseWorktrees,
   });
+  // `closed` also holds while the session loads; only a known `enforce` drops a reuse draft.
+  const memberEnforced = memberRestrictionFor(session?.memberRestrictions, effectiveCompanyId).enforced;
+  useEffect(() => {
+    if (!memberEnforced || executionWorkspaceMode !== "reuse_existing") return;
+    setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForProject(currentProject));
+    setSelectedExecutionWorkspaceId("");
+  }, [memberEnforced, executionWorkspaceMode, currentProject]);
+  const sendChrome = assigneeChrome && !memberGate.closed;
 
   const { data: privacyParent, isError: parentPrivacyError, refetch: refetchParentPrivacy } = useQuery({
     queryKey: queryKeys.issues.detail(parentId ?? ""),
@@ -621,7 +636,11 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
     }: { companyId: string; stagedFiles: StagedIssueFile[]; navigateOnCreate?: boolean } & Record<string, unknown>, { assertCurrentAccount }) => {
       const assertVerifiedOwner = () => { assertCurrentAccount(); assertCurrentOwner(); };
       assertVerifiedOwner();
-      const issue = await issuesApi.create(companyId, data);
+      const deferInitialWakeup = pendingStagedFiles.length > 0;
+      const issue = await issuesApi.create(
+        companyId,
+        deferInitialWakeup ? { ...data, deferInitialWakeup: true } : data,
+      );
       assertVerifiedOwner();
       const failures = await addStagedFilesToIssue({
         companyId,
@@ -630,6 +649,10 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
         assertCurrentOwner: assertVerifiedOwner,
         idempotencyKey: typeof data.idempotencyKey === "string" ? data.idempotencyKey : undefined,
       });
+      if (deferInitialWakeup) {
+        assertVerifiedOwner();
+        await issuesApi.finalizeCreation(issue.id);
+      }
 
       assertVerifiedOwner();
       return { issue, companyId, failures, navigateOnCreate };
@@ -644,6 +667,8 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.listMineByMe(companyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(companyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(companyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issue.id) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.attachments(issue.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) });
       if (draftTimer.current) clearTimeout(draftTimer.current);
       const prefix = (companies.find((company) => company.id === companyId)?.issuePrefix ?? "").trim();
@@ -944,6 +969,12 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
       const nextWorkMode = isIssueWorkMode(draft.workMode) ? draft.workMode : "standard";
       const restoredProjectId = newIssueDefaults.projectId ?? draft.projectId;
       const restoredProject = orderedProjects.find((project) => project.id === restoredProjectId);
+      const draftMatchesRestoredProject = !restoredProjectId || draft.projectId === restoredProjectId;
+      const draftProjectWorkspaceValid =
+        draftMatchesRestoredProject &&
+        Boolean(draft.projectWorkspaceId) &&
+        (!restoredProject ||
+          (restoredProject.workspaces ?? []).some((workspace) => workspace.id === draft.projectWorkspaceId));
       const hasExplicitProjectWorkspaceId = newIssueDefaults.projectWorkspaceId !== undefined;
       const hasExplicitExecutionWorkspaceId = newIssueDefaults.executionWorkspaceId !== undefined;
       const hasExplicitExecutionWorkspaceMode = newIssueDefaults.executionWorkspaceMode !== undefined;
@@ -967,7 +998,9 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
       setProjectWorkspaceId(
         hasExplicitProjectWorkspaceId
           ? (newIssueDefaults.projectWorkspaceId ?? "")
-          : (draft.projectWorkspaceId ?? defaultProjectWorkspaceIdForProject(restoredProject)),
+          : (draftProjectWorkspaceValid
+              ? (draft.projectWorkspaceId ?? "")
+              : defaultProjectWorkspaceIdForProject(restoredProject)),
       );
       setAssigneeModelLane(draft.assigneeModelLane ?? "primary");
       setAssigneeModelOverride(draft.assigneeModelOverride ?? "");
@@ -976,19 +1009,23 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
       setExecutionWorkspaceMode(
         hasExplicitExecutionWorkspaceId || hasExplicitExecutionWorkspaceMode
           ? defaultExecutionWorkspaceModeForIssueDefaults(newIssueDefaults, restoredProject)
-          : (draft.executionWorkspaceMode ??
-              (draft.useIsolatedExecutionWorkspace
-                ? "isolated_workspace"
-                : defaultExecutionWorkspaceModeForProject(restoredProject))),
+          : (draftMatchesRestoredProject
+              ? (draft.executionWorkspaceMode ??
+                  (draft.useIsolatedExecutionWorkspace
+                    ? "isolated_workspace"
+                    : defaultExecutionWorkspaceModeForProject(restoredProject)))
+              : defaultExecutionWorkspaceModeForProject(restoredProject)),
       );
       setWorkMode(nextWorkMode);
       setSelectedExecutionWorkspaceId(
         hasExplicitExecutionWorkspaceId
           ? (newIssueDefaults.executionWorkspaceId ?? "")
-          : (draft.selectedExecutionWorkspaceId ?? ""),
+          : (draftMatchesRestoredProject ? (draft.selectedExecutionWorkspaceId ?? "") : ""),
       );
       executionWorkspaceDefaultProjectId.current =
-        hasExplicitProjectWorkspaceId || hasExplicitExecutionWorkspaceId || draft.projectWorkspaceId || restoredProject
+        hasExplicitProjectWorkspaceId ||
+        (draftMatchesRestoredProject && (hasExplicitExecutionWorkspaceId || draftProjectWorkspaceValid)) ||
+        restoredProject
           ? restoredProjectId || null
           : null;
     } else {
@@ -1066,10 +1103,10 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
     if (!effectiveCompanyId || filesRestoring || (!currentTitle && !currentDescription) || createIssue.isPending || durableCreate.pending || worktreeSelectionIncomplete || parentPrivacyUnresolved) return;
     const inheritedOverrides = buildAssigneeAdapterOverrides({
       adapterType: assigneeAdapterType,
-      lane: assigneeChrome ? "custom" : assigneeModelLane,
+      lane: sendChrome ? "custom" : assigneeModelLane,
       modelOverride: assigneeModelOverride,
       thinkingEffortOverride: assigneeThinkingEffort,
-      chrome: assigneeChrome,
+      chrome: sendChrome,
     });
     const selectedProject = orderedProjects.find((project) => project.id === projectId);
     // Hidden selectors must not submit a restored draft over the managed default.
@@ -1087,11 +1124,18 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
     const executionWorkspaceSettings = executionWorkspacePolicy?.enabled
       ? { mode: requestedExecutionWorkspaceMode }
       : null;
-    const requestedProjectWorkspaceId = !workspaceIsolationControlsVisible
+    const rawRequestedProjectWorkspaceId = !workspaceIsolationControlsVisible
       ? (newIssueDefaults.projectId === projectId ? newIssueDefaults.projectWorkspaceId : undefined)
       : canChooseWorktrees && executionWorkspaceMode === "reuse_existing" && selectedReusableExecutionWorkspace
         ? selectedReusableExecutionWorkspace.projectWorkspaceId
         : projectWorkspaceId;
+    const requestedProjectWorkspaceId =
+      rawRequestedProjectWorkspaceId &&
+      selectedProject &&
+      (selectedProject.workspaces ?? []).length > 0 &&
+      !(selectedProject.workspaces ?? []).some((workspace) => workspace.id === rawRequestedProjectWorkspaceId)
+        ? defaultProjectWorkspaceIdForProject(selectedProject)
+        : rawRequestedProjectWorkspaceId;
     // A task launched from a workspace (or its parent task) keeps that explicit
     // context. Draft-only choices are ignored while the selector is hidden.
     const contextualWorkspaceId =
@@ -1241,7 +1285,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
   }, [currentAssignee?.adapterConfig, currentProject?.env, selectedAssigneeAgentId, status]);
   const selectableReusableWorkspaces = reusableExecutionWorkspaces ?? [];
   const selectedReusableWorktree = selectableReusableWorkspaces.find((workspace) => workspace.id === selectedExecutionWorkspaceId);
-  const worktreeSelectionIncomplete = canChooseWorktrees && executionWorkspaceMode === "reuse_existing"
+  const worktreeSelectionIncomplete = canReuseWorktrees && executionWorkspaceMode === "reuse_existing"
     && (worktreesLoading || worktreesError || !selectedReusableWorktree);
   const recentAssigneeIds = useMemo(() => getRecentAssigneeIds(), [newIssueOpen]);
   const recentProjectIds = useMemo(() => getRecentProjectIds(), [newIssueOpen]);
@@ -1377,10 +1421,10 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
   const modelAgents = useMemo(() => new Map((agents ?? []).map((agent) => [agent.id, agent])), [agents]);
   const inheritedOverrides = buildAssigneeAdapterOverrides({
     adapterType: assigneeAdapterType,
-    lane: assigneeChrome ? "custom" : assigneeModelLane,
+    lane: sendChrome ? "custom" : assigneeModelLane,
     modelOverride: assigneeModelOverride,
     thinkingEffortOverride: assigneeThinkingEffort,
-    chrome: assigneeChrome,
+    chrome: sendChrome,
   });
 
   return (
@@ -1731,6 +1775,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
                         workspaceId={selectedExecutionWorkspaceId}
                         selectedWorkspaceLabel={selectedReusableWorktree?.name}
                         workspaces={selectableReusableWorkspaces}
+                        reuse={!memberGate.closed}
                         onChange={(mode, workspaceId) => {
                           setExecutionWorkspaceMode(mode);
                           setSelectedExecutionWorkspaceId(workspaceId);

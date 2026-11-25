@@ -1,7 +1,9 @@
 import { notifyStatusCardIssueChange } from "../services/status-card-notifications.js";
+import { wakeCausingActorFromActor } from "../services/heartbeat/causing-actor.js";
 import { removePluginWorkspace } from "../services/plugin-workspaces.js";
 import { canActorReadWorkspaceOperation } from "../services/heartbeat-run-privacy.js";
 import { canActorReadExecutionWorkspace, executionWorkspaceReadSqlCondition } from "../services/authorization.js";
+import { actorRestrictedInCompany } from "../services/member-restriction/company-record.js";
 import { spawn } from "node:child_process";
 import { accessSync, constants as fsConstants, existsSync, readFileSync } from "node:fs";
 import path from "node:path";
@@ -119,6 +121,24 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
     return false;
   }
 
+  /**
+   * One workspace by id. A restricted person (PAR-12608 4.6) reads it only
+   * through its task: the source task must pass his strict `issue:read`;
+   * otherwise "not found". It replaces the company-wide read he is refused.
+   */
+  async function assertWorkspaceReadAllowed(req: Request, res: Response, workspace: { companyId: string; sourceIssueId: string | null }) {
+    if (!(await actorRestrictedInCompany(db, req.actor, workspace.companyId))) {
+      return assertExecutionWorkspaceReadAllowed(req, res, workspace.companyId);
+    }
+    const allowed = !!workspace.sourceIssueId && (await access.decide({
+      actor: req.actor,
+      action: "issue:read",
+      resource: { type: "issue", companyId: workspace.companyId, issueId: workspace.sourceIssueId },
+    })).allowed;
+    if (!allowed) res.status(404).json({ error: "Execution workspace not found" });
+    return allowed;
+  }
+
   async function assertRuntimeManageAllowed(req: Request, res: Response, companyId: string) {
     const decision = await access.decide({
       actor: req.actor,
@@ -181,7 +201,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
     const workspace = await getAccessibleResource(req, res, svc.getById(id), "Execution workspace not found");
     if (!workspace) return;
     if (!(await assertWorkspacePrivacy(req, res, workspace.id))) return;
-    if (!(await assertExecutionWorkspaceReadAllowed(req, res, workspace.companyId))) return;
+    if (!(await assertWorkspaceReadAllowed(req, res, workspace))) return;
     res.json(workspace);
   });
 
@@ -190,7 +210,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
     const workspace = await getAccessibleResource(req, res, svc.getById(id), "Execution workspace not found");
     if (!workspace) return;
     if (!(await assertWorkspacePrivacy(req, res, workspace.id))) return;
-    if (!(await assertExecutionWorkspaceReadAllowed(req, res, workspace.companyId))) return;
+    if (!(await assertWorkspaceReadAllowed(req, res, workspace))) return;
     const readiness = await svc.getCloseReadiness(id);
     if (!readiness) {
       res.status(404).json({ error: "Execution workspace not found" });
@@ -286,7 +306,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
     const workspace = await getAccessibleResource(req, res, svc.getById(id), "Execution workspace not found");
     if (!workspace) return;
     if (!(await assertWorkspacePrivacy(req, res, workspace.id))) return;
-    if (!(await assertExecutionWorkspaceReadAllowed(req, res, workspace.companyId))) return;
+    if (!(await assertWorkspaceReadAllowed(req, res, workspace))) return;
     const operations = await workspaceOperationsSvc.listForExecutionWorkspace(id);
     const visibleOperations = [];
     for (const operation of operations) {
@@ -1160,6 +1180,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
           rescueRef: result.rescueRef?.branchName ?? null,
           mutation: "execution_workspace_quarantine_restore",
         },
+        causingActor: wakeCausingActorFromActor(actor),
         requestedByActorType: actor.actorType,
         requestedByActorId: actor.actorId,
         contextSnapshot: {

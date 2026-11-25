@@ -403,7 +403,8 @@ function createBroker(db: Db) {
       const heartbeat = await admissionHeartbeat(db);
       try {
         const run = await heartbeat.wakeup(b.agentId, { source: "assignment", triggerDetail: "system", reason: "issue_assigned",
-          payload: { issueId, dotRequestId: requestId }, contextSnapshot: { issueId, ...(b.providerKind === "grok_bot" ? { grokProactiveRequest: { requestId, bindingId: b.id, bindingGeneration: b.generation } } : {}) }, idempotencyKey: key, requestedByActorType: "agent", requestedByActorId: b.agentId,
+          payload: { issueId, dotRequestId: requestId }, contextSnapshot: { issueId, ...(b.providerKind === "grok_bot" ? { grokProactiveRequest: { requestId, bindingId: b.id, bindingGeneration: b.generation } } : {}) }, idempotencyKey: key,
+          causingActor: { type: "agent", agentId: b.agentId, runId: null }, requestedByActorType: "agent", requestedByActorId: b.agentId,
           allowRunCoalescing: false, durableDotRequest: { id: receiptId, companyId: b.companyId, agentId: b.agentId, issueId, requestId, idempotencyKey: key, requestedAt: new Date() } });
         const reserved = await receipt();
         return reserved ? replay(reserved) : { status: "requested", runId: run?.id ?? null, message: admissionMessage };

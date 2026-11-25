@@ -1,4 +1,5 @@
 import { withHelp } from "./help-page.js";
+export { MailCanvasCard } from "./canvas-card.js";
 import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { useHostLocation,
   DataTable,

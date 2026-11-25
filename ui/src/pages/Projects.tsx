@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Project } from "@paperclipai/shared";
 import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useToastActions } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
 import { EntityRow } from "../components/EntityRow";
 import { ProjectTile } from "../components/ProjectTile";
@@ -15,16 +16,18 @@ import { ArtifactEmptyGraphic } from "@/components/artifacts/v1/ArtifactEmptyGra
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { QueryErrorState, useQueryView } from "../components/QueryView";
-import { formatDate, formatNumber, formatProjectBudget, projectUrl } from "../lib/utils";
+import { cn, formatDate, formatNumber, formatProjectBudget, projectUrl } from "../lib/utils";
 import {
   isStarred,
   resourceMembershipState,
+  useResourceMembershipControls,
   useResourceMembershipMutation,
   useResourceMemberships,
 } from "../hooks/useResourceMemberships";
 import { ProjectsToolbar, type ProjectSortField, type ProjectSortDir } from "@/components/ProjectsToolbar";
-import { Hexagon } from "lucide-react";
+import { ArchiveRestore, ChevronRight, Hexagon, Loader2 } from "lucide-react";
 import { Lock } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 
 function compareProjectNames(left: Project, right: Project) {
@@ -68,6 +71,19 @@ function sortProjects(projects: Project[], sortField: ProjectSortField, sortDir:
   });
 }
 
+function matchProjects(projects: Project[], query: string) {
+  const words = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
+  return projects.filter(project => {
+    const text = `${project.name} ${project.description ?? ""}`.toLocaleLowerCase();
+    return words.every(word => text.includes(word));
+  });
+}
+
+function taskCountLabel(project: Project) {
+  const count = project.taskCount ?? 0;
+  return `${formatNumber(count)} task${count === 1 ? "" : "s"}`;
+}
+
 export function Projects() {
   const { selectedCompanyId } = useCompany();
   const { openNewProject } = useDialogActions();
@@ -75,35 +91,54 @@ export function Projects() {
   const [query, setQuery] = useState("");
   const [sortField, setSortField] = useState<ProjectSortField>("name");
   const [sortDir, setSortDir] = useState<ProjectSortDir>("asc");
+  const [archivedOpen, setArchivedOpen] = useState(false);
+  const queryClient = useQueryClient();
+  const { pushToast } = useToastActions();
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Projects" }]);
   }, [setBreadcrumbs]);
 
   const projectsQuery = useQuery({
-    queryKey: queryKeys.projects.list(selectedCompanyId!),
-    queryFn: () => projectsApi.list(selectedCompanyId!),
+    // Archived projects come along so the page can list them for unarchiving.
+    queryKey: queryKeys.projects.list(selectedCompanyId!, { includeArchived: true }),
+    queryFn: () => projectsApi.list(selectedCompanyId!, { includeArchived: true }),
     enabled: !!selectedCompanyId,
   });
   const { data: allProjects, isLoading } = projectsQuery;
   const projectsView = useQueryView(projectsQuery);
   const membershipsQuery = useResourceMemberships(selectedCompanyId);
   const membershipMutation = useResourceMembershipMutation(selectedCompanyId);
+  const membershipControls = useResourceMembershipControls(selectedCompanyId);
+  const unarchiveMutation = useMutation({
+    mutationFn: (project: Project) =>
+      projectsApi.update(project.id, { archivedAt: null }, selectedCompanyId!),
+    onSuccess: (_updated, project) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.projects.all(selectedCompanyId!) });
+      pushToast({ title: `"${project.name}" has been unarchived`, tone: "success" });
+    },
+    onError: () => {
+      pushToast({ title: "Failed to unarchive project", tone: "error" });
+    },
+  });
   const projects = useMemo(
-    () => allProjects ?? [],
+    () => (allProjects ?? []).filter(project => !project.archivedAt),
+    [allProjects],
+  );
+  const archivedProjects = useMemo(
+    () => (allProjects ?? []).filter(project => !!project.archivedAt),
     [allProjects],
   );
   const sortedProjects = useMemo(
-    () => {
-      const words = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
-      const matching = projects.filter(project => {
-        const text = `${project.name} ${project.description ?? ""}`.toLocaleLowerCase();
-        return words.every(word => text.includes(word));
-      });
-      return sortProjects(matching, sortField, sortDir);
-    },
+    () => sortProjects(matchProjects(projects, query), sortField, sortDir),
     [projects, query, sortDir, sortField],
   );
+  const sortedArchivedProjects = useMemo(
+    () => sortProjects(matchProjects(archivedProjects, query), sortField, sortDir),
+    [archivedProjects, query, sortDir, sortField],
+  );
+  // A search opens the section, so a match in an archived project is never hidden.
+  const showArchivedRows = archivedOpen || query.trim().length > 0;
   const groupedProjects = useMemo(() => {
     const groups = {
       mine: [] as typeof sortedProjects,
@@ -145,7 +180,7 @@ export function Projects() {
       <ProjectsToolbar query={query} onQueryChange={setQuery} sortField={sortField} sortDir={sortDir}
         onSortChange={(field, direction) => { setSortField(field); setSortDir(direction); }} onNewProject={openNewProject} />
 
-      {!isLoading && projects.length === 0 && (
+      {!isLoading && projects.length === 0 && archivedProjects.length === 0 && (
         <EmptyState
           icon={Hexagon}
           graphic={<ArtifactEmptyGraphic stack />}
@@ -156,7 +191,7 @@ export function Projects() {
         />
       )}
 
-      {projects.length > 0 && sortedProjects.length === 0 && <p className="text-sm text-muted-foreground">No projects match your search.</p>}
+      {projects.length + archivedProjects.length > 0 && query.trim().length > 0 && sortedProjects.length === 0 && sortedArchivedProjects.length === 0 && <p className="text-sm text-muted-foreground">No projects match your search.</p>}
 
       {sortedProjects.length > 0 && (
         <div className="space-y-6">
@@ -212,36 +247,40 @@ export function Projects() {
                               </span>
                             )}
                             <StatusBadge status={project.status} />
-                            <MembershipAction
-                              state={state}
-                              pending={joinLeavePending}
-                              pendingState={joinLeavePending ? membershipMutation.variables?.state : null}
-                              resourceName={project.name}
-                              onJoin={() => membershipMutation.mutate({
-                                resourceType: "project",
-                                resourceId: project.id,
-                                resourceName: project.name,
-                                state: "joined",
-                              })}
-                              onLeave={() => membershipMutation.mutate({
-                                resourceType: "project",
-                                resourceId: project.id,
-                                resourceName: project.name,
-                                state: "left",
-                              })}
-                            />
-                            <StarToggle
-                              size="row"
-                              starred={starred}
-                              pending={starPending}
-                              resourceName={project.name}
-                              onToggle={(next) => membershipMutation.mutate({
-                                resourceType: "project",
-                                resourceId: project.id,
-                                resourceName: project.name,
-                                starred: next,
-                              })}
-                            />
+                            {membershipControls ? (
+                              <>
+                                <MembershipAction
+                                  state={state}
+                                  pending={joinLeavePending}
+                                  pendingState={joinLeavePending ? membershipMutation.variables?.state : null}
+                                  resourceName={project.name}
+                                  onJoin={() => membershipMutation.mutate({
+                                    resourceType: "project",
+                                    resourceId: project.id,
+                                    resourceName: project.name,
+                                    state: "joined",
+                                  })}
+                                  onLeave={() => membershipMutation.mutate({
+                                    resourceType: "project",
+                                    resourceId: project.id,
+                                    resourceName: project.name,
+                                    state: "left",
+                                  })}
+                                />
+                                <StarToggle
+                                  size="row"
+                                  starred={starred}
+                                  pending={starPending}
+                                  resourceName={project.name}
+                                  onToggle={(next) => membershipMutation.mutate({
+                                    resourceType: "project",
+                                    resourceId: project.id,
+                                    resourceName: project.name,
+                                    starred: next,
+                                  })}
+                                />
+                              </>
+                            ) : null}
                           </div>
                         }
                       />
@@ -252,6 +291,74 @@ export function Projects() {
             );
           })}
         </div>
+      )}
+
+      {sortedArchivedProjects.length > 0 && (
+        <section className="space-y-2" data-testid="archived-projects">
+          <div className="flex items-center justify-between">
+            <button
+              type="button"
+              aria-expanded={showArchivedRows}
+              onClick={() => setArchivedOpen(open => !open)}
+              className="flex items-center gap-1 text-sm font-medium text-muted-foreground hover:text-foreground"
+            >
+              <ChevronRight className={cn("size-4 transition-transform", showArchivedRows && "rotate-90")} />
+              <span>Archived</span>
+            </button>
+            <span className="text-xs text-muted-foreground">
+              {sortedArchivedProjects.length} project{sortedArchivedProjects.length === 1 ? "" : "s"}
+            </span>
+          </div>
+          {showArchivedRows && (
+            <Card className="block py-0 overflow-hidden divide-y divide-border">
+              {sortedArchivedProjects.map((project) => {
+                const pending = unarchiveMutation.isPending && unarchiveMutation.variables?.id === project.id;
+                return (
+                  <EntityRow
+                    key={project.id}
+                    leading={<ProjectTile color={project.color ?? null} icon={project.icon ?? null} size="sm" />}
+                    title={project.name}
+                    subtitle={project.description ?? undefined}
+                    reserveSubtitleSpace
+                    to={projectUrl(project)}
+                    className="text-foreground/55"
+                    trailing={
+                      <div className="flex items-center gap-3">
+                        {project.visibility === "private" ? <Lock className="size-4 shrink-0 text-muted-foreground" aria-label="Private project" /> : null}
+                        <span className="hidden text-xs text-muted-foreground tabular-nums sm:inline" title={taskCountLabel(project)}>
+                          {taskCountLabel(project)}
+                        </span>
+                        {project.archivedAt && (
+                          <span className="hidden text-xs text-muted-foreground md:inline">
+                            Archived {formatDate(project.archivedAt)}
+                          </span>
+                        )}
+                        <Button
+                          type="button"
+                          size="xs"
+                          variant="outline"
+                          aria-label={`Unarchive ${project.name}`}
+                          aria-busy={pending ? "true" : undefined}
+                          disabled={pending}
+                          onClick={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            if (!pending) unarchiveMutation.mutate(project);
+                          }}
+                        >
+                          {pending
+                            ? <Loader2 className="h-3 w-3 motion-safe:animate-spin" />
+                            : <ArchiveRestore className="h-3 w-3" />}
+                          <span>{pending ? "Unarchiving..." : "Unarchive"}</span>
+                        </Button>
+                      </div>
+                    }
+                  />
+                );
+              })}
+            </Card>
+          )}
+        </section>
       )}
     </div>
   );

@@ -11,6 +11,13 @@ const mockIssueService = vi.hoisted(() => ({
   listComments: vi.fn(),
 }));
 const mockSpawn = vi.hoisted(() => vi.fn());
+// PAR-12718: the route passes the caller's read condition to the task list.
+const readConditionOfCaller = vi.hoisted(() => ({ readConditionOf: "board-chat caller" }));
+const mockIssueReadSqlCondition = vi.hoisted(() => vi.fn(async () => readConditionOfCaller));
+
+vi.mock("../services/authorization.js", () => ({
+  issueReadSqlCondition: mockIssueReadSqlCondition,
+}));
 
 vi.mock("../services/index.js", () => ({
   instanceSettingsService: () => ({ getExperimental: mockGetExperimental }),
@@ -86,12 +93,30 @@ describe("POST /api/board/chat/stream feature flag guard (PAP-137)", () => {
   });
 });
 
+describe("board-chat Board Operations lookup (PAR-12718)", () => {
+  it("lists tasks with the caller's read condition", async () => {
+    mockGetExperimental.mockResolvedValue({ enableConferenceRoomChat: true });
+    mockIssueService.list.mockRejectedValueOnce(new Error("stop after the lookup"));
+    const app = await createApp();
+
+    await request(app).post("/api/board/chat/stream").send({ companyId: "company-1", message: "hello" });
+
+    expect(mockIssueReadSqlCondition).toHaveBeenCalledTimes(1);
+    expect(mockIssueService.list).toHaveBeenCalledWith("company-1", {
+      q: "Board Operations",
+      readCondition: readConditionOfCaller,
+    });
+    expect(mockSpawn).not.toHaveBeenCalled();
+  });
+});
+
 describe("board-chat client disconnect", () => {
   function makeFakeProc() {
     const proc = new EventEmitter() as any;
     proc.stdout = new EventEmitter();
     proc.stderr = new EventEmitter();
-    proc.stdin = { write: vi.fn(), end: vi.fn() };
+    // The stdin guard (PAR-9714) listens for errors, so stdin is an emitter.
+    proc.stdin = Object.assign(new EventEmitter(), { write: vi.fn(), end: vi.fn() });
     proc.exitCode = null;
     proc.killed = false;
     proc.kill = vi.fn(() => {

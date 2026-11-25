@@ -102,7 +102,7 @@ describePostgres("heartbeat instruction working-copy lifecycle", () => {
     // a cleared blocker. This actor-less manual wake follows a run whose review-path
     // recovery may leave the ticket blocked, so reopen it first.
     await db.update(issues).set({ status: "todo" }).where(eq(issues.id, f.issueId));
-    const run = await heartbeat.wakeup(f.agentId, { source: "on_demand", triggerDetail: "manual", reason: "manual", payload: { issueId: f.issueId }, contextSnapshot: { issueId: f.issueId } });
+    const run = await heartbeat.wakeup(f.agentId, { causingActor: "system", source: "on_demand", triggerDetail: "manual", reason: "manual", payload: { issueId: f.issueId }, contextSnapshot: { issueId: f.issueId } });
     expect(run).not.toBeNull();
     await heartbeat.drainActiveRunExecutions();
     const [finished] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run!.id));

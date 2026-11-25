@@ -158,7 +158,7 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
       dueOnly: flag("Only tasks due by today"),
     }),
   },
-  { group: "Tasks", name: "start-task", displayName: "Start sprint task", description: "Mark a task in progress.", parametersSchema: schema(["taskId"], { taskId, note: text("Comment posted on the task's issue (max 2000 chars)") }) },
+  { group: "Tasks", name: "start-task", displayName: "Start sprint task", description: "Mark a task in progress. A task with no issue gets its issue opened now.", parametersSchema: schema(["taskId"], { taskId, note: text("Comment posted on the task's issue (max 2000 chars)") }) },
   {
     group: "Tasks",
     name: "complete-task",
@@ -223,6 +223,7 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
     }),
   },
   { group: "Tasks", name: "skip-task", displayName: "Skip sprint task", description: "Mark a task skipped (not relevant for this site) with the reason; cancels its issue.", parametersSchema: schema(["taskId", "reason"], { taskId, reason: text("Why the task does not apply to this site (max 2000 chars)") }) },
+  { group: "Tasks", name: "attach-task-issue", displayName: "Attach an issue to a sprint task", description: "Attach an existing issue to a task that has none (add-task could not open one). start-task also opens a missing issue; this repairs the rest. approve-page-apply needs the task's issue.", parametersSchema: schema(["taskId", "issueId"], { taskId, issueId: text("The Paperclip issue id to attach (same company, not another task's)") }) },
   {
     group: "Tasks",
     name: "add-task",
@@ -425,6 +426,19 @@ export const SEO_TOOL_DECLARATIONS: SeoToolDeclaration[] = [
       allowApproved: flag("Also cancel previews the client already approved (default false: they are skipped)"),
       allowLast: flag("Also cancel the last live preview of a page (default false: such previews are skipped as lastOnPage)"),
       dryRun: flag("Default true: change nothing and report; send false to cancel"),
+    }),
+  },
+  {
+    group: "Site",
+    name: "set-rehearsal-preview",
+    displayName: "Set a rehearsal preview's check and expiry",
+    description:
+      "Rehearsal sprints only (a fixture site on .invalid, or the canary client); every other sprint is refused. A rehearsal sprint opens no review issue, so this sets what a test or dogfood journey needs on one pending preview: reviewStatus (passed, changes_needed or pending) and/or expiresInHours (from now; negative = already expired). It writes only those fields: nothing is sent, commented or woken, and it never decides a preview (decide-preview is for board users). On a real sprint the Reviewer checks with review-preview.",
+    parametersSchema: schema(["sprintId", "previewId"], {
+      sprintId,
+      previewId: text("The preview id (from create-preview or list-previews)."),
+      reviewStatus: choice(["passed", "changes_needed", "pending"], "The Reviewer result to set"),
+      expiresInHours: int("Expiry in hours from now, -720 to 720; negative = already expired"),
     }),
   },
   // Keywords

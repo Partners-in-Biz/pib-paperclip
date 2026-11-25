@@ -89,7 +89,7 @@ describeEmbeddedPostgres("human assignee unread comments", () => {
     const first = await svc.addComment(issue.id, "Keep this live update", { userId: authorId });
     const second = await svc.addComment(issue.id, "Remove this later update", { userId: authorId });
     const observation = async () => {
-      const [row] = await svc.list(companyId, { touchedByUserId: userId }) as IssueRowForUser[];
+      const [row] = await svc.list(companyId, { readCondition: "system", touchedByUserId: userId }) as IssueRowForUser[];
       return { row, count: await svc.countUnreadTouchedByUser(companyId, userId) };
     };
     await svc.tombstoneComment(second.id, { actorType: "user", userId });

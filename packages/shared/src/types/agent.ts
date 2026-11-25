@@ -102,6 +102,8 @@ export interface Agent {
   lifecycleState?: AgentLifecycleState;
   lifecycleVersion?: number;
   lifecycleError?: string | null;
+  /** What a pending lifecycle step waits on, e.g. an unconfirmed ssh run (PAR-9962). */
+  lifecycleStatusDetail?: string | null;
   reportsTo: string | null;
   capabilities: string | null;
   adapterType: AgentAdapterType;

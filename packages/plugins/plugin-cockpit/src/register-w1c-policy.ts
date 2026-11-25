@@ -5,6 +5,7 @@
  * never from the params). No tool calls it, so no agent can switch it on.
  */
 import type { PluginPerformActionContext } from "@paperclipai/plugin-sdk";
+import type { AccessGuard } from "@partnersinbiz/pib-plugin-kit";
 import { assignableUser } from "./constants.js";
 import { getRoles } from "./db.js";
 import { CockpitError, type Env } from "./env.js";
@@ -158,7 +159,7 @@ export async function saveOwnerDefaults(env: Env, context: PluginPerformActionCo
   return { changed: true, enabled: saved.enabled };
 }
 
-export function registerW1cPolicy(env: Env): void {
-  env.ctx.actions.register("ownerDefaults.load", async (_params, context) => loadPolicyView(env, context));
-  env.ctx.actions.register("ownerDefaults.save", async (params, context) => saveOwnerDefaults(env, context, params));
+export function registerW1cPolicy(env: Env, guard: AccessGuard): void {
+  guard.action("ownerDefaults.load", async (_params, context) => loadPolicyView(env, context));
+  guard.action("ownerDefaults.save", async (params, context) => saveOwnerDefaults(env, context, params));
 }

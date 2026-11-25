@@ -23,7 +23,7 @@ describe("assertCompanyAccess", () => {
         source: "session",
         companyIds: ["company-1"],
         memberships: [
-          { companyId: "company-1", membershipRole: "viewer", status: "active" },
+          { companyId: "company-1", membershipRole: "viewer", status: "active", restricted: false, restrictionMode: "off" },
         ],
       },
     });
@@ -40,7 +40,7 @@ describe("assertCompanyAccess", () => {
         source: "session",
         companyIds: ["company-1"],
         memberships: [
-          { companyId: "company-1", membershipRole: "viewer", status: "active" },
+          { companyId: "company-1", membershipRole: "viewer", status: "active", restricted: false, restrictionMode: "off" },
         ],
       },
     });
@@ -137,7 +137,7 @@ describe("assertCompanyAccess", () => {
         companyId: "company-1",
         onBehalfOfUserId: "user-1",
         onBehalfOfMemberships: [
-          { companyId: "company-1", membershipRole: "viewer", status: "active" },
+          { companyId: "company-1", membershipRole: "viewer", status: "active", restricted: false, restrictionMode: "off" },
         ],
         source: "agent_jwt",
       },
@@ -185,7 +185,7 @@ describe("assertCompanyAccess", () => {
         companyId: "company-1",
         onBehalfOfUserId: "user-1",
         onBehalfOfMemberships: [
-          { companyId: "company-1", membershipRole: "operator", status: "active" },
+          { companyId: "company-1", membershipRole: "operator", status: "active", restricted: false, restrictionMode: "off" },
         ],
         source: "agent_jwt",
       },
@@ -203,7 +203,7 @@ describe("hasCompanyAccess", () => {
         userId: "user-1",
         source: "session",
         companyIds: ["company-1"],
-        memberships: [{ companyId: "company-1", membershipRole: "viewer", status: "active" }],
+        memberships: [{ companyId: "company-1", membershipRole: "viewer", status: "active", restricted: false, restrictionMode: "off" }],
       },
     });
 
@@ -217,7 +217,7 @@ describe("hasCompanyAccess", () => {
         userId: "user-1",
         source: "session",
         companyIds: ["company-1"],
-        memberships: [{ companyId: "company-1", membershipRole: "operator", status: "active" }],
+        memberships: [{ companyId: "company-1", membershipRole: "operator", status: "active", restricted: false, restrictionMode: "off" }],
       },
     });
 
@@ -275,7 +275,7 @@ describe("assertBoardOrgAccess", () => {
         userId: "user-1",
         source: "session",
         companyIds: ["company-1"],
-        memberships: [{ companyId: "company-1", membershipRole: "operator", status: "active" }],
+        memberships: [{ companyId: "company-1", membershipRole: "operator", status: "active", restricted: false, restrictionMode: "off" }],
         isInstanceAdmin: false,
       },
     });

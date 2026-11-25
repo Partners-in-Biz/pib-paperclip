@@ -53,6 +53,7 @@ describe.skipIf(!available)("the email provider on a real Postgres", () => {
   /** The worker booted on the real database, the fake provider and a DNS table behind `ctx.http.fetch`. */
   async function boot(config: Record<string, unknown> = ESP_ON) {
     const harness = createTestHarness({ manifest, config: { publicBaseUrl: "https://paperclip.example.com", encryptionKey: "x".repeat(20), ...config } });
+    harness.seed({ companies: [{ id: CO, name: "Co", issuePrefix: "CO" } as never] });
     const resend = new FakeResend();
     const dns: { records: Record<string, string[]> } = { records: {} };
     (harness.ctx as unknown as { db: unknown }).db = pg.db;

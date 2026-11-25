@@ -831,7 +831,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       },
     ]);
 
-    await expect(svc.list(companyId, { touchedByUserId: userId })).resolves.toEqual([]);
+    await expect(svc.list(companyId, { readCondition: "system", touchedByUserId: userId })).resolves.toEqual([]);
 
     await db.insert(activityLog).values({
       companyId,
@@ -842,7 +842,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       entityId: issueId,
     });
 
-    await expect(svc.list(companyId, { touchedByUserId: userId })).resolves.toEqual([
+    await expect(svc.list(companyId, { readCondition: "system", touchedByUserId: userId })).resolves.toEqual([
       expect.objectContaining({ id: issueId }),
     ]);
   });
@@ -870,9 +870,9 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     })));
 
     const expectedIds = variants.filter(v => v.counts).map(v => v.id).sort();
-    expect((await svc.list(companyId, { touchedByUserId: userId })).map(v => v.id).sort()).toEqual(expectedIds);
+    expect((await svc.list(companyId, { readCondition: "system", touchedByUserId: userId })).map(v => v.id).sort()).toEqual(expectedIds);
     expect(await svc.countUnreadTouchedByUser(companyId, userId)).toBe(expectedIds.length);
-    const rows = await svc.list(companyId, {}) as IssueListRow[];
+    const rows = await svc.list(companyId, { readCondition: "system" }) as IssueListRow[];
     for (const variant of variants) {
       expect(rows.find(v => v.id === variant.id)?.lastActivityAt).toEqual(variant.counts ? recent : old);
     }
@@ -1416,7 +1416,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       details: { changed: true },
     });
 
-    const result = await svc.list(companyId, { participantAgentId: agentId });
+    const result = await svc.list(companyId, { readCondition: "system", participantAgentId: agentId });
     const resultIds = new Set(result.map((issue) => issue.id));
 
     expect(resultIds).toEqual(new Set([
@@ -1459,6 +1459,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     ]);
 
     const result = await svc.list(companyId, {
+      readCondition: "system",
       participantAgentId: agentId,
       q: "invoice",
     });
@@ -1505,9 +1506,9 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       },
     ]);
 
-    const result = await svc.list(companyId, { assigneeAgentId: "null" });
+    const result = await svc.list(companyId, { readCondition: "system", assigneeAgentId: "null" });
     expect(result.map((issue) => issue.id)).toEqual([unassignedIssueId]);
-    await expect(svc.count(companyId, { assigneeAgentId: "null" })).resolves.toBe(1);
+    await expect(svc.count(companyId, { readCondition: "system", assigneeAgentId: "null" })).resolves.toBe(1);
   });
 
   it("filters and counts only issues assigned to the requested UUID", async () => {
@@ -1572,9 +1573,9 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       },
     ]);
 
-    const result = await svc.list(companyId, { assigneeAgentId });
+    const result = await svc.list(companyId, { readCondition: "system", assigneeAgentId });
     expect(result.map((issue) => issue.id)).toEqual([assignedIssueId]);
-    await expect(svc.count(companyId, { assigneeAgentId })).resolves.toBe(1);
+    await expect(svc.count(companyId, { readCondition: "system", assigneeAgentId })).resolves.toBe(1);
   });
 
   it("rejects malformed assigneeAgentId filters in list and count", async () => {
@@ -1589,10 +1590,10 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     });
 
     await expect(
-      svc.list(companyId, { assigneeAgentId: "not-a-uuid" }),
+      svc.list(companyId, { readCondition: "system", assigneeAgentId: "not-a-uuid" }),
     ).rejects.toThrow(/assigneeAgentId/i);
     await expect(
-      svc.count(companyId, { assigneeAgentId: "not-a-uuid" }),
+      svc.count(companyId, { readCondition: "system", assigneeAgentId: "not-a-uuid" }),
     ).rejects.toThrow(/assigneeAgentId/i);
   });
 
@@ -1633,6 +1634,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     ]);
 
     const result = await svc.list(companyId, {
+      readCondition: "system",
       q: "search",
       limit: 2,
     });
@@ -1698,8 +1700,8 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       },
     ]);
 
-    const withPlan = await svc.list(companyId, { hasPlanDocument: true });
-    const withoutPlan = await svc.list(companyId, { hasPlanDocument: false });
+    const withPlan = await svc.list(companyId, { readCondition: "system", hasPlanDocument: true });
+    const withoutPlan = await svc.list(companyId, { readCondition: "system", hasPlanDocument: false });
 
     expect(withPlan.map((issue) => issue.id)).toEqual([withPlanId]);
     expect(withoutPlan.map((issue) => issue.id)).toEqual([withoutPlanId]);
@@ -1732,6 +1734,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     ]);
 
     const result = await svc.list(companyId, {
+      readCondition: "system",
       limit: 1,
       sortField: "updated",
       sortDir: "desc",
@@ -1772,6 +1775,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     });
 
     const result = await svc.list(companyId, {
+      readCondition: "system",
       q: "pull/3303",
       limit: 2,
       includeRoutineExecutions: true,
@@ -1822,7 +1826,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       },
     ]);
 
-    const result = await svc.list(companyId, { descendantOf: rootId });
+    const result = await svc.list(companyId, { readCondition: "system", descendantOf: rootId });
 
     expect(new Set(result.map((issue) => issue.id))).toEqual(new Set([childId, grandchildId]));
   });
@@ -1869,7 +1873,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       },
     ]);
 
-    const result = await svc.list(companyId, { descendantOf: rootId, q: "needle" });
+    const result = await svc.list(companyId, { readCondition: "system", descendantOf: rootId, q: "needle" });
 
     expect(result.map((issue) => issue.id)).toEqual([grandchildId]);
   });
@@ -1974,7 +1978,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       },
     ]);
 
-    const result = await svc.list(companyId, { executionWorkspaceId: targetWorkspaceId });
+    const result = await svc.list(companyId, { readCondition: "system", executionWorkspaceId: targetWorkspaceId });
 
     expect(result.map((issue) => issue.id)).toEqual([linkedIssueId]);
   });
@@ -2044,8 +2048,8 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       },
     ]);
 
-    const executionResult = await svc.list(companyId, { workspaceId: executionWorkspaceId });
-    const projectResult = await svc.list(companyId, { workspaceId: projectWorkspaceId });
+    const executionResult = await svc.list(companyId, { readCondition: "system", workspaceId: executionWorkspaceId });
+    const projectResult = await svc.list(companyId, { readCondition: "system", workspaceId: projectWorkspaceId });
 
     expect(executionResult.map((issue) => issue.id)).toEqual([executionLinkedIssueId]);
     expect(projectResult.map((issue) => issue.id).sort()).toEqual([executionLinkedIssueId, projectLinkedIssueId].sort());
@@ -2132,7 +2136,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       },
     ]);
 
-    const defaultIssueIds = (await svc.list(companyId)).map((issue) => issue.id);
+    const defaultIssueIds = (await svc.list(companyId, { readCondition: "system" })).map((issue) => issue.id);
     expect(defaultIssueIds).toContain(normalIssueId);
     expect(defaultIssueIds).toContain(pluginVisibleIssueId);
     expect(defaultIssueIds).not.toContain(operationIssueId);
@@ -2140,6 +2144,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(defaultIssueIds).not.toContain(legacyContentMachineOperationIssueId);
 
     const inboxIssueIds = (await svc.list(companyId, {
+      readCondition: "system",
       assigneeAgentId: agentId,
       status: "todo,in_progress,blocked",
       includeRoutineExecutions: true,
@@ -2149,22 +2154,22 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(inboxIssueIds).not.toContain(typedOperationIssueId);
     expect(inboxIssueIds).not.toContain(legacyContentMachineOperationIssueId);
 
-    await expect(svc.list(companyId, { originKind: "plugin:paperclip.missions:operation" }))
+    await expect(svc.list(companyId, { readCondition: "system", originKind: "plugin:paperclip.missions:operation" }))
       .resolves.toEqual([expect.objectContaining({ id: operationIssueId })]);
-    await expect(svc.list(companyId, { originId: "mission-alpha:operation-1" }))
+    await expect(svc.list(companyId, { readCondition: "system", originId: "mission-alpha:operation-1" }))
       .resolves.toEqual([expect.objectContaining({ id: operationIssueId })]);
-    await expect(svc.list(companyId, { originKindPrefix: "plugin:paperclip.missions:operation" }))
+    await expect(svc.list(companyId, { readCondition: "system", originKindPrefix: "plugin:paperclip.missions:operation" }))
       .resolves.toEqual(expect.arrayContaining([
         expect.objectContaining({ id: operationIssueId }),
         expect.objectContaining({ id: typedOperationIssueId }),
       ]));
 
-    const projectIssueIds = (await svc.list(companyId, { projectId })).map((issue) => issue.id);
+    const projectIssueIds = (await svc.list(companyId, { readCondition: "system", projectId })).map((issue) => issue.id);
     expect(projectIssueIds).toContain(operationIssueId);
     expect(projectIssueIds).toContain(typedOperationIssueId);
     expect(projectIssueIds).toContain(legacyContentMachineOperationIssueId);
 
-    const advancedIssueIds = (await svc.list(companyId, { includePluginOperations: true })).map((issue) => issue.id);
+    const advancedIssueIds = (await svc.list(companyId, { readCondition: "system", includePluginOperations: true })).map((issue) => issue.id);
     expect(advancedIssueIds).toContain(operationIssueId);
     expect(advancedIssueIds).toContain(typedOperationIssueId);
     expect(advancedIssueIds).toContain(legacyContentMachineOperationIssueId);
@@ -2247,12 +2252,12 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       },
     ]);
 
-    const resultIds = (await svc.list(companyId, { status: ["todo", "in_progress"] }))
+    const resultIds = (await svc.list(companyId, { readCondition: "system", status: ["todo", "in_progress"] }))
       .map((issue) => issue.id);
 
     expect(resultIds).toEqual(expect.arrayContaining([todoIssueId, inProgressIssueId]));
     expect(resultIds).not.toContain(doneIssueId);
-    await expect(svc.count(companyId, { status: ["todo", "in_progress"] })).resolves.toBe(2);
+    await expect(svc.count(companyId, { readCondition: "system", status: ["todo", "in_progress"] })).resolves.toBe(2);
   });
 
   it("hides archived inbox issues until new external activity arrives", async () => {
@@ -2312,6 +2317,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     });
 
     const archivedFiltered = await svc.list(companyId, {
+      readCondition: "system",
       touchedByUserId: userId,
       inboxArchivedByUserId: userId,
     });
@@ -2324,6 +2330,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     await svc.unarchiveInbox(companyId, archivedIssueId, userId);
 
     const afterUnarchive = await svc.list(companyId, {
+      readCondition: "system",
       touchedByUserId: userId,
       inboxArchivedByUserId: userId,
     });
@@ -2386,6 +2393,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     }
 
     const listVisibleIds = async () => new Set((await svc.list(companyId, {
+      readCondition: "system",
       touchedByUserId: userId,
       inboxArchivedByUserId: userId,
     })).map((issue) => issue.id));
@@ -2578,7 +2586,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       },
     ]);
 
-    const result = await svc.list(companyId, {}) as IssueListRow[];
+    const result = await svc.list(companyId, { readCondition: "system" }) as IssueListRow[];
 
     expect(result.map((issue) => issue.id)).toEqual([
       activityIssueId,
@@ -2872,10 +2880,10 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       type: "blocks",
     });
 
-    const defaultResult = await svc.list(companyId) as IssueListRow[];
+    const defaultResult = await svc.list(companyId, { readCondition: "system" }) as IssueListRow[];
     expect(defaultResult.find((issue) => issue.id === blockedId)?.blockedBy).toBeUndefined();
 
-    const result = await svc.list(companyId, { includeBlockedBy: true }) as IssueListRow[];
+    const result = await svc.list(companyId, { readCondition: "system", includeBlockedBy: true }) as IssueListRow[];
     const byId = new Map(result.map((issue) => [issue.id, issue]));
 
     expect(byId.get(blockedId)?.blockedBy).toEqual([
@@ -2928,7 +2936,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       },
     ]);
 
-    const byId = new Map((await svc.list(companyId) as IssueListRow[]).map((issue) => [issue.id, issue]));
+    const byId = new Map((await svc.list(companyId, { readCondition: "system" }) as IssueListRow[]).map((issue) => [issue.id, issue]));
     const result = byId.get(issueId);
 
     expect(result).toBeTruthy();
@@ -4668,7 +4676,7 @@ const dependencyTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_ISSU
       startedAt: new Date("2026-05-23T22:05:00.000Z"),
     });
     expect(await svc.listWakeableBlockedDependents(blockerId)).toEqual([]);
-    const pendingDependent = (await svc.list(companyId, { status: "blocked" }) as IssueListRow[])
+    const pendingDependent = (await svc.list(companyId, { readCondition: "system", status: "blocked" }) as IssueListRow[])
       .find((issue) => issue.id === dependentId);
     expect(pendingDependent?.blockerAttention).toMatchObject({
       state: "needs_attention",
@@ -4724,6 +4732,41 @@ const dependencyTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_ISSU
     });
   });
 
+  // PAR-14472: worktree_cleanup archived the workspace, then a late
+  // workspace_finalize failed against the deleted worktree.
+  it.each(["archived", "closed-after-cleanup", "reprepared-after-cleanup"])(
+    "settles a done blocker whose worktree cleanup won the race against a failed finalize: %s", async kind => {
+      const f = await seedSharedWorkspaceDependency();
+      const at = (seconds: number) => new Date(Date.UTC(2026, 10, 25, 4, 1, seconds));
+      await db.insert(workspaceOperations).values([
+        { companyId: f.companyId, executionWorkspaceId: f.executionWorkspaceId, issueId: f.blockerId,
+          phase: "worktree_prepare", status: "succeeded", startedAt: at(0) },
+        { companyId: f.companyId, executionWorkspaceId: f.executionWorkspaceId, issueId: null,
+          phase: "worktree_cleanup", status: "succeeded", startedAt: at(4) },
+        ...(kind === "reprepared-after-cleanup" ? [{ companyId: f.companyId,
+          executionWorkspaceId: f.executionWorkspaceId, issueId: null,
+          phase: "worktree_prepare", status: "succeeded", startedAt: at(6) }] : []),
+        { companyId: f.companyId, executionWorkspaceId: f.executionWorkspaceId, issueId: f.blockerId,
+          phase: "workspace_finalize", status: "failed", startedAt: at(8) },
+      ]);
+      await db.update(executionWorkspaces).set({
+        status: kind === "archived" ? "archived" : "cleanup_failed",
+        closedAt: at(4),
+      }).where(eq(executionWorkspaces.id, f.executionWorkspaceId));
+
+      const ready = kind !== "reprepared-after-cleanup";
+      expect((await svc.listWakeableBlockedDependents(f.blockerId)).map(issue => issue.id))
+        .toEqual(ready ? [f.dependentId] : []);
+      await expect(svc.getDependencyReadiness(f.dependentId)).resolves.toMatchObject({
+        isDependencyReady: ready,
+        pendingFinalizeBlockerIssueIds: ready ? [] : [f.blockerId],
+      });
+      const listed = (await svc.list(f.companyId, { readCondition: "system", status: "blocked" }) as IssueListRow[])
+        .find(issue => issue.id === f.dependentId);
+      expect(listed?.blockerAttention?.pendingFinalizeBlockerIssueIds ?? []).toEqual(ready ? [] : [f.blockerId]);
+    },
+  );
+
   it.each(["covered", "foreign-run", "unfinished", "failed-finalize", "late-finish", "later-operation"])(
     "requires a successful owning finalize to cover a nested snapshot: %s", async kind => {
       const f = await seedSharedWorkspaceDependency();
@@ -4755,7 +4798,7 @@ const dependencyTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_ISSU
         isDependencyReady: ready,
         pendingFinalizeBlockerIssueIds: ready ? [] : [f.blockerId],
       });
-      const listed = (await svc.list(f.companyId, { status: "blocked" }) as IssueListRow[]).find(issue => issue.id === f.dependentId);
+      const listed = (await svc.list(f.companyId, { readCondition: "system", status: "blocked" }) as IssueListRow[]).find(issue => issue.id === f.dependentId);
       expect(listed?.blockerAttention?.pendingFinalizeBlockerIssueIds ?? []).toEqual(ready ? [] : [f.blockerId]);
     },
   );
@@ -5093,6 +5136,71 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     expect(child.projectId).toBe(targetProjectId);
     expect(child.projectWorkspaceId).toBe(targetProjectWorkspaceId);
     expect(child.executionWorkspaceId).not.toBe(executionWorkspaceId);
+  });
+
+  it("rejects a projectWorkspaceId from a different project on create and update, and resets workspaces on project move", async () => {
+    const companyId = randomUUID();
+    const projectAId = randomUUID();
+    const projectBId = randomUUID();
+    const workspaceAId = randomUUID();
+    const workspaceBId = randomUUID();
+    const execWorkspaceAId = randomUUID();
+
+    await seedIssueCompany(db, companyId);
+    await db.insert(projects).values([
+      { id: projectAId, companyId, name: "Project A", status: "in_progress" },
+      { id: projectBId, companyId, name: "Project B", status: "in_progress" },
+    ]);
+    await db.insert(projectWorkspaces).values([
+      { id: workspaceAId, companyId, projectId: projectAId, name: "repo-a", isPrimary: true },
+      { id: workspaceBId, companyId, projectId: projectBId, name: "repo-b", isPrimary: true },
+    ]);
+    await db.insert(executionWorkspaces).values({
+      id: execWorkspaceAId,
+      companyId,
+      projectId: projectAId,
+      projectWorkspaceId: workspaceAId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Worktree A",
+      status: "active",
+      providerType: "git_worktree",
+    });
+
+    // 1. create() rejects cross-project workspace when projectId is set
+    await expect(
+      svc.create(companyId, {
+        title: "Mismatched create",
+        projectId: projectBId,
+        projectWorkspaceId: workspaceAId,
+      }),
+    ).rejects.toThrow("Project workspace must belong to the selected project");
+
+    // 2. create() with projectId=null still allows company-scoped workspace
+    const projectless = await svc.create(companyId, {
+      title: "Project-optional workspace task",
+      projectId: null,
+      projectWorkspaceId: workspaceAId,
+    });
+    expect(projectless.projectId).toBeNull();
+    expect(projectless.projectWorkspaceId).toBe(workspaceAId);
+
+    // 3. update() rejects explicit cross-project projectWorkspaceId
+    const issueA = await svc.create(companyId, {
+      title: "Issue in A",
+      projectId: projectAId,
+      projectWorkspaceId: workspaceAId,
+      executionWorkspaceId: execWorkspaceAId,
+    });
+    await expect(
+      svc.update(issueA.id, { projectWorkspaceId: workspaceBId }),
+    ).rejects.toThrow("Project workspace must belong to the selected project");
+
+    // 4. update() moving projectId without specifying projectWorkspaceId resets to target project's default and clears stale executionWorkspaceId
+    const moved = await svc.update(issueA.id, { projectId: projectBId });
+    expect(moved?.projectId).toBe(projectBId);
+    expect(moved?.projectWorkspaceId).toBe(workspaceBId);
+    expect(moved?.executionWorkspaceId).toBeNull();
   });
 
   it("rejects explicitly pinned isolated git worktrees without a project or reusable workspace", async () => {
@@ -6139,7 +6247,7 @@ describeEmbeddedPostgres("accepted plan decomposition", () => {
     expect(childrenRows).toHaveLength(2);
     expect(childrenRows.map((row) => row.id).sort()).toEqual([...first.childIssueIds].sort());
 
-    const companyIssues = await svc.list(companyId, { parentId: sourceIssueId });
+    const companyIssues = await svc.list(companyId, { readCondition: "system", parentId: sourceIssueId });
     expect(companyIssues).toHaveLength(2);
   });
 

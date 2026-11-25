@@ -4,9 +4,10 @@ import { AgentCharacter } from "../components/AgentCharacter";
 import { characterStateForAgent } from "@paperclipai/shared";
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { useParams, useNavigate, useLocation, Link, Navigate, useBeforeUnload, type NavigateFunction } from "@/lib/router";
-import { useQuery, useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { useIsFetching, useQuery, useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import {
   agentsApi,
+  isReducedAgent,
   type AgentKey,
   type ClaudeLoginResult,
   type AgentPermissionUpdate,
@@ -50,6 +51,9 @@ import { StarToggle } from "../components/StarToggle";
 import { Identity } from "../components/Identity";
 import { AuditFeed } from "./audit/AuditFeed.production";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { ReducedAgentView } from "../components/agents/ReducedAgentView";
+import { useMemberRestrictionGate } from "../hooks/useMemberRestrictionGate";
+import { useMemberRestriction } from "../context/MemberRestrictionContext";
 import { QueryErrorState, useQueryView } from "../components/QueryView";
 import { AgentActionButtons } from "../components/AgentActionButtons";
 import { InlineBanner } from "../components/InlineBanner";
@@ -331,6 +335,15 @@ export function AgentDetail() {
   const canonicalAgentRef = agent ? agentRouteRef(agent) : routeAgentRef;
   const agentLookupRef = agent?.id ?? routeAgentRef;
   const resolvedAgentId = agent?.id ?? null;
+  // The view (PAR-13475; Quinn PAR-13472 finding 2): (a) the body carries the reduced marker or R is
+  // known to be at `enforce`: the reduced view; (b) the gate is closed but (a) does not hold (session
+  // unknown): the loading state; (c) the full page. Operator reads wait for (c).
+  const memberGate = useMemberRestrictionGate(resolvedCompanyId);
+  const { enforced: memberRestricted } = useMemberRestriction();
+  const reducedView = memberRestricted || (agent !== undefined && isReducedAgent(agent));
+  const fullView = agent !== undefined && !reducedView && !memberGate.closed;
+  // A restored session confirmed with the same data does not re-render the gate hook; this does.
+  useIsFetching({ queryKey: queryKeys.auth.session });
   const membershipsQuery = useResourceMemberships(resolvedCompanyId);
   const membershipMutation = useResourceMembershipMutation(resolvedCompanyId);
   const agentMembershipState = resolvedAgentId
@@ -345,8 +358,8 @@ export function AgentDetail() {
   const builtInAgentsEnabled = experimentalSettings?.enableBuiltInAgents === true;
   const { data: builtInStates } = useQuery({
     queryKey: queryKeys.builtInAgents.list(resolvedCompanyId!),
-    queryFn: () => builtInAgentsApi.list(resolvedCompanyId!),
-    enabled: !!resolvedCompanyId && builtInAgentsEnabled,
+    queryFn: memberGate.guard(() => builtInAgentsApi.list(resolvedCompanyId!), []),
+    enabled: !!resolvedCompanyId && builtInAgentsEnabled && fullView,
   });
   const builtInState = builtInAgentsEnabled
     ? builtInStates?.find((entry) => entry.agentId === resolvedAgentId) ?? null
@@ -413,14 +426,14 @@ export function AgentDetail() {
 
   const { data: runtimeState } = useQuery({
     queryKey: queryKeys.agents.runtimeState(resolvedAgentId ?? routeAgentRef),
-    queryFn: () => agentsApi.runtimeState(resolvedAgentId!, resolvedCompanyId ?? undefined),
-    enabled: Boolean(resolvedAgentId) && needsDashboardData,
+    queryFn: memberGate.guard(() => agentsApi.runtimeState(resolvedAgentId!, resolvedCompanyId ?? undefined), undefined),
+    enabled: Boolean(resolvedAgentId) && needsDashboardData && fullView,
   });
 
   const { data: heartbeats } = useQuery({
     queryKey: queryKeys.heartbeats(resolvedCompanyId!, agent?.id ?? undefined),
-    queryFn: () => heartbeatsApi.list(resolvedCompanyId!, agent?.id ?? undefined),
-    enabled: !!resolvedCompanyId && !!agent?.id && shouldLoadHeartbeats,
+    queryFn: memberGate.guard(() => heartbeatsApi.list(resolvedCompanyId!, agent?.id ?? undefined), []),
+    enabled: !!resolvedCompanyId && !!agent?.id && shouldLoadHeartbeats && fullView,
   });
 
   const { data: allIssues } = useQuery({
@@ -437,8 +450,8 @@ export function AgentDetail() {
 
   const { data: budgetOverview } = useQuery({
     queryKey: queryKeys.budgets.overview(resolvedCompanyId ?? "__none__"),
-    queryFn: () => budgetsApi.overview(resolvedCompanyId!),
-    enabled: !!resolvedCompanyId,
+    queryFn: memberGate.guard(() => budgetsApi.overview(resolvedCompanyId!), undefined),
+    enabled: !!resolvedCompanyId && fullView,
     refetchInterval: 30_000,
     staleTime: 5_000,
   });
@@ -728,6 +741,8 @@ export function AgentDetail() {
   if (!urlRunId && !urlTab) {
     return <Navigate to={`/agents/${canonicalAgentRef}/dashboard`} replace />;
   }
+  if (reducedView) return <ReducedAgentView agent={agent} companyId={lookupCompanyId ?? agent.companyId} />;
+  if (memberGate.closed) return <PageSkeleton variant="detail" />;
   const isPendingApproval = agent.status === "pending_approval";
   const hasInvalidOrgChain = agent.orgChainHealth?.status === "invalid_org_chain";
   const pausedEscalationWarning = !hasInvalidOrgChain ? agent.orgChainHealth?.escalationWarning ?? null : null;

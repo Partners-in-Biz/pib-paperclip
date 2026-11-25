@@ -290,6 +290,7 @@ describe("SidebarProjects", () => {
     mockAuthApi.getSession.mockResolvedValue({
       session: { id: "session-1", userId: "user-1" },
       user: { id: "user-1" },
+      memberRestrictions: [],
     });
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableIsolatedWorkspaces: false,
@@ -488,5 +489,17 @@ describe("SidebarProjects", () => {
       { state: "left" },
     );
     expect(projectLinkLabels(container)).toEqual(["Bravo", "Charlie"]);
+  });
+
+  it("R under enforce: no memberships request and no Leave project item (AC-G10, PAR-13477)", async () => {
+    mockAuthApi.getSession.mockResolvedValue({
+      session: { id: "session-1", userId: "user-1" },
+      user: { id: "user-1" },
+      memberRestrictions: [{ companyId: "company-1", restricted: true, mode: "enforce" }],
+    });
+    await renderSidebarProjects();
+    expect(mockResourceMembershipsApi.listMine).not.toHaveBeenCalled();
+    expect(document.body.querySelector('button[aria-label="Open actions for Alpha"]')).toBeNull();
+    expect([...projectLinkLabels(container)].sort()).toEqual(["Alpha", "Bravo", "Charlie"]);
   });
 });

@@ -98,4 +98,15 @@ describe("case handoff retained private task ancestry", () => {
     await expect(caseHandoffService(db).handoff(f.companyId, board, f.input)).rejects.toMatchObject({ status: 422 });
     expect(await db.select().from(caseHandoffs).where(and(eq(caseHandoffs.companyId, f.companyId), eq(caseHandoffs.caseId, f.caseId)))).toHaveLength(0);
   });
+
+  it("does not climb into a chat: a task started from a private chat does not inherit the chat's case boundary (PAR-12821)", async () => {
+    const f = await fixture();
+    // The retained source is a private chat; the target's privacy parent is that chat.
+    await db.update(issues).set({ conversationAgentId: f.ownerId, conversationUserId: "chat-owner", conversationState: "waiting" })
+      .where(eq(issues.id, f.sourceId));
+    await db.update(issues).set({ privacyParentIssueId: f.sourceId, privacyRootIssueId: f.targetId }).where(eq(issues.id, f.targetId));
+    await expect(caseHandoffService(db).handoff(f.companyId, board, f.input))
+      .rejects.toMatchObject({ status: 422, message: "Primary task must preserve the case's private task boundary" });
+    expect(await db.select().from(caseHandoffs).where(and(eq(caseHandoffs.companyId, f.companyId), eq(caseHandoffs.caseId, f.caseId)))).toHaveLength(0);
+  });
 });

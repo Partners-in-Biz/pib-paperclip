@@ -23,7 +23,7 @@ if (!support.supported) console.warn(`Workspace preference database tests unavai
 
   const actor = (companyId: string, userId: string): Express.Request["actor"] => ({
     type: "board", source: "session", userId, companyIds: [companyId],
-    memberships: [{ companyId, membershipRole: "viewer", status: "active" }],
+    memberships: [{ companyId, membershipRole: "viewer", status: "active", restricted: false, restrictionMode: "off" }],
   });
   const app = (identity: Express.Request["actor"]) => {
     const result = express(); result.use(express.json());

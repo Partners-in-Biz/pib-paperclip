@@ -20,6 +20,8 @@ import { useSignOut } from "@/hooks/useSignOut";
 import { useStagingCommit } from "@/hooks/useStagingCommit";
 import { userProfilePath } from "@/lib/userProfileLinks";
 import { useSidebar } from "../context/SidebarContext";
+import { useMemberRestriction } from "../context/MemberRestrictionContext";
+import { RESTRICTED_MEMBER_SETTINGS_PATH } from "../lib/member-restriction";
 import { Popover, PopoverTrigger } from "@/components/ui/popover";
 import { FlyoutContent, FlyoutHeader, FlyoutOptions } from "@/components/ui/flyout";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -139,11 +141,14 @@ export function SidebarAccountMenu({
   // instance admins, local boards). The server checks the actual grants.
   const canInviteMembers = useCanInviteCompanyMembers(!isCloud);
   const inviteHref = isCloud ? cloudInviteUrl : canInviteMembers ? INVITES_PATH : null;
+  const memberRestriction = useMemberRestriction();
   const showInvite =
     hiddenSettingsLoaded &&
     inviteHref !== null &&
     !hidesCompanyPage(hiddenSettings, "company.members") &&
-    !hidesCompanyPage(hiddenSettings, "company.invites");
+    !hidesCompanyPage(hiddenSettings, "company.invites") &&
+    // PAR-12608 4.6: invites and the profile directory are closed to a restricted member.
+    !memberRestriction.enforced;
   const [internalOpen, setInternalOpen] = useState(false);
   const { isMobile, setSidebarOpen, collapsed, peeking } = useSidebar();
   const rail = collapsed && !peeking && !forceExpanded;
@@ -202,12 +207,12 @@ export function SidebarAccountMenu({
           >
             {/* The profile link is a stretched overlay so the staging SHA anchor can sit beside the email without nesting anchors. */}
             <FlyoutHeader data-flyout-profile data-marquee-surface className="relative flex h-(--profile-popover-header-height) shrink-0 items-center gap-2.5 px-3.5">
-              <Link
+              {memberRestriction.isPageHidden(profileHref) ? null : <Link
                 to={profileHref}
                 aria-label="View profile"
                 onClick={closeNavigationChrome}
                 className="absolute inset-0 transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
-              />
+              />}
               <Avatar className="pointer-events-none relative size-9">
                 {session?.user.image ? <AvatarImage src={session.user.image} alt={displayName} /> : null}
                 <AvatarFallback className="text-xs text-foreground">{initials}</AvatarFallback>
@@ -238,7 +243,8 @@ export function SidebarAccountMenu({
               <MenuAction
                 label="Settings"
                 icon={Settings}
-                href="/company/settings"
+                // A restricted member's settings are his own profile (PAR-12608 4.6).
+                href={memberRestriction.enforced ? RESTRICTED_MEMBER_SETTINGS_PATH : "/company/settings"}
                 onClick={closeNavigationChrome}
               />
               {showInvite && inviteHref ? (

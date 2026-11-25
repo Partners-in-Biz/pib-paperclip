@@ -130,3 +130,6 @@ export function requirePublicBaseUrl(value: unknown): string {
 }
 export * from "./claims.js";
 export * from "./permissions.js";
+export * from "./guarded-plugins.js";
+export * from "./access/index.js";
+export * from "./canvas-cards.js";

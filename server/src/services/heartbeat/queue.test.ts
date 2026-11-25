@@ -9,7 +9,7 @@ import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { createPostgresWakeQueueAdapter, createWakeAdmissionWriter } from "../../modules/wake-queue/adapters/postgres.js";
 import { createReleaseIssueExecution } from "../../modules/wake-queue/application/use-cases.js";
-import { createHeartbeatQueue, DEFERRED_WAKE_CONTEXT_KEY, shouldDeferFollowupWakeForSameIssue, shouldQueueFollowupForRunningIssueWake, type HeartbeatQueueDependencies } from "./queue.js";
+import { createHeartbeatQueue, DEFERRED_WAKE_CONTEXT_KEY, prioritizeQueuedRunsForClaim, QUEUED_RUN_STARVATION_AGE_MS, shouldDeferFollowupWakeForSameIssue, shouldQueueFollowupForRunningIssueWake, type HeartbeatQueueDependencies } from "./queue.js";
 import { createWakeQueue } from "../../modules/wake-queue/index.js";
 import { TransactionScope } from "../../modules/wake-queue/application/ports.js";
 import { enrichWakeContextSnapshot, mergeCoalescedContextSnapshot } from "./run-preparation.js";
@@ -26,6 +26,46 @@ function guardedDatabase() {
   const access = vi.fn(() => { throw new Error("Unexpected queue database access"); });
   return { db: new Proxy({}, { get: access }) as Db, access };
 }
+
+describe("prioritizeQueuedRunsForClaim", () => {
+  const now = new Date("2026-11-23T07:46:00.000Z");
+  const minutesAgo = (minutes: number) => new Date(now.getTime() - minutes * 60_000);
+  const run = (id: string, createdAt: Date, issueId?: string) => ({ id, createdAt, contextSnapshot: issueId ? { issueId } : {} });
+  const issueById = new Map([
+    ["active", { status: "in_progress", priority: "high" }],
+    ["routine", { status: "todo", priority: "medium" }],
+    ["waiting", { status: "todo", priority: "critical" }],
+  ]);
+  const dependencyReadiness = new Map([["waiting", { isDependencyReady: false }]]);
+  const order = (runs: ReturnType<typeof run>[]) =>
+    prioritizeQueuedRunsForClaim(runs, { issueById, dependencyReadiness, now }).map((entry) => entry.id);
+
+  it("keeps in_progress work first while every queued run is young", () => {
+    expect(order([
+      run("routine", minutesAgo(5), "routine"),
+      run("issueless", minutesAgo(6)),
+      run("active-retry", minutesAgo(1), "active"),
+    ])).toEqual(["active-retry", "routine", "issueless"]);
+  });
+
+  it("starts an aged todo assignment ahead of a newer in_progress re-wake on a one-slot agent", () => {
+    const aged = QUEUED_RUN_STARVATION_AGE_MS / 60_000 + 1;
+    expect(order([
+      run("active-retry", minutesAgo(1), "active"),
+      run("routine", minutesAgo(aged), "routine"),
+    ])[0]).toBe("routine");
+  });
+
+  it("claims aged runs oldest first, before younger runs, and keeps dependency-blocked runs last", () => {
+    expect(order([
+      run("blocked-oldest", minutesAgo(24 * 60), "waiting"),
+      run("routine-aged", minutesAgo(120), "routine"),
+      run("issueless-older", minutesAgo(20 * 60)),
+      run("active-young", minutesAgo(2), "active"),
+      run("active-aged", minutesAgo(30), "active"),
+    ])).toEqual(["issueless-older", "routine-aged", "active-aged", "active-young", "blocked-oldest"]);
+  });
+});
 
 describe("heartbeat queue module boundary", () => {
   it("constructs without querying, dispatching, or registering background work", () => {
@@ -57,8 +97,8 @@ describe("heartbeat queue module boundary", () => {
     let rejectSecond!: (reason: Error) => void;
     deps.getAgent.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectFirst = reject; }));
     deps.getAgent.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectSecond = reject; }));
-    const first = createHeartbeatQueue(database.db, deps).trackWakeup("first");
-    const second = createHeartbeatQueue(database.db, deps).trackWakeup("second");
+    const first = createHeartbeatQueue(database.db, deps).trackWakeup("first", { causingActor: "system" });
+    const second = createHeartbeatQueue(database.db, deps).trackWakeup("second", { causingActor: "system" });
     const firstCheck = expect(first).rejects.toThrow("first lookup failed");
     const secondCheck = expect(second).rejects.toThrow("second lookup failed");
     expect(deps.activeWakeupPromises).toEqual(new Set([first, second]));
@@ -111,7 +151,7 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     const deps = callbacks(db);
     deps.getAgent.mockResolvedValue(agent);
     const queue = createHeartbeatQueue(db, deps);
-    expect(await queue.enqueueWakeup(agent.id, { source: "timer", reason: "heartbeat_timer", requestedByActorType: "system" })).toBeNull();
+    expect(await queue.enqueueWakeup(agent.id, { causingActor: "system", source: "timer", reason: "heartbeat_timer", requestedByActorType: "system" })).toBeNull();
     expect(await db.select().from(heartbeatRuns)).toHaveLength(0);
     expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
     expect((await db.select().from(agents).where(eq(agents.id, agent.id)))[0])
@@ -164,6 +204,7 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     const requestId = randomUUID();
     const compaction = cause === "mismatched compaction";
     const pending = createHeartbeatQueue(db, deps).enqueueWakeup(agent.id, {
+      causingActor: "system",
       source: compaction ? "on_demand" : "automation", triggerDetail: compaction ? "manual" : "system",
       reason: compaction ? "context_compaction" : "issue.continuation_recovery",
       requestedByActorType: compaction ? "user" : "system", requestedByActorId: compaction ? user.id : undefined,
@@ -359,7 +400,7 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
 
   it("does not turn an ordinary waiting-conversation wake into compaction authority", async () => {
     const f = await waitingCompactionFixture();
-    expect(await f.queue.enqueueWakeup(f.agent.id, { source: "on_demand", triggerDetail: "manual",
+    expect(await f.queue.enqueueWakeup(f.agent.id, { causingActor: "system", source: "on_demand", triggerDetail: "manual",
       reason: "issue.continuation_recovery", requestedByActorType: "user", requestedByActorId: f.user.id,
       manualUserWake: true, allowRunCoalescing: false, payload: { issueId: f.issue.id },
       contextSnapshot: { issueId: f.issue.id } })).toBeNull();
@@ -415,7 +456,7 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
       await db.update(issues).set({ conversationAgentId: null, conversationUserId: null,
         conversationState: null, status: "in_progress" }).where(eq(issues.id, f.issue.id));
     }
-    const admitted = await f.queue.enqueueWakeup(f.agent.id, { source: "automation", triggerDetail: "system",
+    const admitted = await f.queue.enqueueWakeup(f.agent.id, { causingActor: "system", source: "automation", triggerDetail: "system",
       reason: cause === "ordinary task" ? "issue.continuation_recovery" : "issue_commented",
       requestedByActorType: "system", payload, contextSnapshot: context });
     expect(admitted).toMatchObject({ agentId: f.agent.id, status: "queued" });
@@ -600,7 +641,7 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
       deps.canStartNewExternalBotWork.mockResolvedValue(false);
     }
     const [originalPrimary] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.wake.id));
-    const coalesced = await queue.enqueueWakeup(admissionAgent.id, { source: "on_demand", triggerDetail: "manual", reason: "issue_commented",
+    const coalesced = await queue.enqueueWakeup(admissionAgent.id, { causingActor: "system", source: "on_demand", triggerDetail: "manual", reason: "issue_commented",
       payload: { issueId: f.issue.id, commentId: newComment.id }, contextSnapshot: { issueId: f.issue.id, wakeCommentId: newComment.id },
       requestedByActorType: "user", requestedByActorId: incomingActorId });
     if (["running", "foreign-primary", "same-named-agent"].includes(scenario)) {
@@ -942,6 +983,50 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     expect((await db.select().from(issues).where(eq(issues.id, issue.id)))[0].status).toBe("todo");
     expect(deps.executeRun).not.toHaveBeenCalled();
     expect(deps.setRunStatus).not.toHaveBeenCalled();
+  });
+
+  async function oneSlotStarvationFixture(routineAgeMinutes: number) {
+    const [company] = await db.insert(companies).values({ name: "One slot", issuePrefix: "OS" }).returning();
+    const [agent] = await db.insert(agents).values({ companyId: company.id, name: "One slot agent", role: "engineer",
+      status: "idle", adapterType: "process", adapterConfig: {},
+      runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } }).returning();
+    const queuedRun = async (title: string, issueStatus: string, minutesAgo: number) => {
+      const [issue] = await db.insert(issues).values({ companyId: company.id, title, status: issueStatus,
+        assigneeAgentId: agent.id }).returning();
+      const [wake] = await db.insert(agentWakeupRequests).values({ companyId: company.id, agentId: agent.id,
+        source: "assignment", status: "claimed", claimedAt: new Date() }).returning();
+      const createdAt = new Date(Date.now() - minutesAgo * 60_000);
+      const [run] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent.id, status: "queued",
+        invocationSource: "assignment", wakeupRequestId: wake.id, contextSnapshot: { issueId: issue.id },
+        responsibleUserId: "queue-test-user", createdAt, updatedAt: createdAt }).returning();
+      await db.update(issues).set({ executionRunId: run.id, executionAgentNameKey: agent.name, executionLockedAt: new Date() })
+        .where(eq(issues.id, issue.id));
+      return run;
+    };
+    const routine = await queuedRun("Weekly routine", "todo", routineAgeMinutes);
+    const rewake = await queuedRun("Failing in-progress task", "in_progress", 1);
+    const deps = callbacks(db);
+    deps.getAgent.mockResolvedValue(agent);
+    const claimed = await createHeartbeatQueue(db, deps).startNextQueuedRunForAgent(agent.id);
+    const status = async (id: string) => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)))[0].status;
+    return { routine, rewake, claimed, deps, status };
+  }
+
+  it("starts an aged todo assignment run before a newer in_progress re-wake on a one-slot agent", async () => {
+    const { routine, rewake, claimed, deps, status } =
+      await oneSlotStarvationFixture(QUEUED_RUN_STARVATION_AGE_MS / 60_000 + 5);
+    expect(claimed).toEqual([expect.objectContaining({ id: routine.id, status: "running" })]);
+    expect(await status(routine.id)).toBe("running");
+    expect(await status(rewake.id)).toBe("queued");
+    expect(deps.executeRun).toHaveBeenCalledExactlyOnceWith(routine.id);
+  });
+
+  it("keeps the in_progress re-wake first while the todo assignment run is younger than the aging threshold", async () => {
+    const { routine, rewake, claimed, deps, status } = await oneSlotStarvationFixture(5);
+    expect(claimed).toEqual([expect.objectContaining({ id: rewake.id, status: "running" })]);
+    expect(await status(rewake.id)).toBe("running");
+    expect(await status(routine.id)).toBe("queued");
+    expect(deps.executeRun).toHaveBeenCalledExactlyOnceWith(rewake.id);
   });
 
   it("admits the same queued input after the external connection is repaired", async () => {

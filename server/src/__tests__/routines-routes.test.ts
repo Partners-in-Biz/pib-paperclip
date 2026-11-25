@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const companyId = "22222222-2222-4222-8222-222222222222";
 const agentId = "11111111-1111-4111-8111-111111111111";
@@ -172,8 +172,15 @@ async function createApp(actor: Record<string, unknown>) {
   const { routineRoutes } = await import("../routes/routines.js");
   const app = express();
   app.use(express.json({ verify: (req, _res, buf) => { (req as any).rawBody = buf; } }));
+  // Signed-in actors carry their memberships with the restriction fields, as
+  // the actor middleware loads them; rule H6 then needs no database read here.
+  const memberships = actor.type === "board" && actor.source !== "local_implicit"
+    ? ((actor.memberships as Array<Record<string, unknown>> | undefined)
+      ?? [{ companyId, membershipRole: "operator", status: "active" }])
+      .map((membership) => ({ restricted: false, restrictionMode: "off", ...membership }))
+    : actor.memberships;
   app.use((req, _res, next) => {
-    (req as any).actor = actor;
+    (req as any).actor = { ...actor, ...(memberships ? { memberships } : {}) };
     next();
   });
   app.use("/api", routineRoutes({} as any));
@@ -182,6 +189,9 @@ async function createApp(actor: Record<string, unknown>) {
 }
 
 describe("routine routes", () => {
+  // The first route import is slow on a loaded host; keep it out of the first test's time.
+  beforeAll(async () => { await createApp({ type: "none" }); }, 60_000);
+
   it("forwards the Fireflies signature and exact raw JSON to the public handler", async () => {
     const app = await createApp({ type: "none" });
     const raw = '{ "event": "meeting.summarized", "meeting_id": "meeting-1", "timestamp": 1780000000000 }';

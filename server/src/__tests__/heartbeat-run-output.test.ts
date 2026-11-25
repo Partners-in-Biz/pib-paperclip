@@ -54,7 +54,7 @@ describePostgres("heartbeat output through adapter dispatch and finalization", (
     return { companyId, agentId, issueId };
   }
   async function execute(f: Awaited<ReturnType<typeof seed>>) {
-    const run = await heartbeat.wakeup(f.agentId, { source: "on_demand", triggerDetail: "manual", reason: "manual", payload: { issueId: f.issueId }, contextSnapshot: { issueId: f.issueId } });
+    const run = await heartbeat.wakeup(f.agentId, { causingActor: "system", source: "on_demand", triggerDetail: "manual", reason: "manual", payload: { issueId: f.issueId }, contextSnapshot: { issueId: f.issueId } });
     expect(run).not.toBeNull();
     await heartbeat.drainActiveRunExecutions();
     const finished = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run!.id)).then(rows => rows[0]);

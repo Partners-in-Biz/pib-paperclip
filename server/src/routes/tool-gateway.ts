@@ -17,6 +17,7 @@ import { assertBoard, assertBoardOrAgent, assertCompanyAccess, getActorInfo } fr
 import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-gateway.js";
 import { forbidden, HttpError } from "../errors.js";
 import { accessService } from "../services/index.js";
+import { agentKeyRunNamingError, toolRouteCallerError } from "../services/member-restriction/rule-group-h.js";
 import { listConnectionLifecycleEvents } from "../services/tool-connection-activity.js";
 
 // Cloudflare replaces origin 502/504 bodies with "error code: 5xx"; upstream tool
@@ -528,6 +529,20 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
         return;
       }
       assertCompanyAccess(req, companyId);
+      // PAR-12608 4.9 decision 2 (signed-in callers, C12) and H5 (a long-lived
+      // key naming a run in the body; a header run was checked at auth).
+      const restrictionError = await toolRouteCallerError(db, req.actor, companyId, "POST /tool-gateway/sessions")
+        ?? (req.actor.source === "agent_key" && req.actor.onBehalfOfUserId && runId !== req.actor.runId
+          ? await agentKeyRunNamingError(db, {
+              companyId,
+              agentId,
+              personId: req.actor.onBehalfOfUserId,
+              runId,
+              membership: req.actor.onBehalfOfMemberships?.find((m) => m.companyId === companyId) ?? null,
+              target: "POST /tool-gateway/sessions",
+            })
+          : null);
+      if (restrictionError) throw restrictionError;
 
       const session = await toolGateway.createSession({
         companyId,

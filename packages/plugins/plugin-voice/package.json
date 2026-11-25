@@ -1,6 +1,6 @@
 {
   "name": "@partnersinbiz/plugin-voice",
-  "version": "0.1.9",
+  "version": "0.1.11",
   "private": true,
   "type": "module",
   "description": "Voice notes and live two-way voice with your agents, in every Paperclip chat box. Runs on Grok voice (xAI).",
@@ -27,6 +27,8 @@
     "@types/react-dom": "^19.2.5",
     "esbuild": "^0.28.2",
     "jsdom": "^30.0.1",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
     "typescript": "^7.0.2",
     "vitest": "^4.1.11"
   },
@@ -38,6 +40,7 @@
     "node": ">=24.11.0"
   },
   "dependencies": {
-    "@partnersinbiz/pib-plugin-kit": "workspace:*"
+    "@partnersinbiz/pib-plugin-kit": "workspace:*",
+    "@partnersinbiz/pib-plugin-ui": "workspace:*"
   }
 }

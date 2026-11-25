@@ -1,7 +1,7 @@
 /** The hidden-issue set (PAR-10548 T2): every SQL clause against a real Postgres. */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { rememberClientProjects } from "@partnersinbiz/pib-plugin-kit";
-import { listUnassigned, loadCompanyData, waitingSplit } from "../src/brief.js";
+import { companyBrief, listUnassigned, loadCompanyData, waitingSplit } from "../src/brief.js";
 import { NAMESPACE } from "../src/namespace.js";
 import { ownerFilter } from "../src/owner-filter.js";
 import { buildView, type LoadResult } from "../src/view.js";
@@ -158,5 +158,33 @@ d("hidden issue set (Postgres)", () => {
     const load = (await w.actions.get("cockpit.load")!({ team: false }, { companyId: A, actor: { type: "user", userId: "u1" } })) as { unassigned: { count: number; items: { id: string }[] }; ownerFilter: { hiddenIssueIds: string[] } };
     expect([...load.ownerFilter.hiddenIssueIds].sort()).toEqual([sprint, queue].sort());
     expect([load.unassigned.count, load.unassigned.items.map((i) => i.id)]).toEqual([1, [other]]);
+  });
+
+  it("11. setupRouted is true only when a standing queue is set, through ownerFilter, loadCompanyData, cockpit.load and companyBrief", async () => {
+    const ctxOf = { companyId: A, actor: { type: "user", userId: "u1" } };
+    const routed = await make({ standingQueueIssues: ["PAR-9356"] });
+    expect((await hidden(routed)).setupRouted).toBe(true);
+    expect((await loadCompanyData(routed.env, A)).setupRouted).toBe(true);
+    const load = (await routed.actions.get("cockpit.load")!({ team: false }, ctxOf)) as { ownerFilter: { setupRouted?: boolean } };
+    expect(load.ownerFilter.setupRouted).toBe(true);
+    const plain = await make();
+    expect((await hidden(plain)).setupRouted).toBe(false);
+    expect((await loadCompanyData(plain.env, A)).setupRouted).toBe(false);
+    const plainLoad = (await plain.actions.get("cockpit.load")!({ team: false }, ctxOf)) as { ownerFilter: { setupRouted?: boolean } };
+    expect(plainLoad.ownerFilter.setupRouted).toBe(false);
+    // The Finish setup row: with the owner when no queue is set, with others when one is (brief and page).
+    const setupKeys = async (w: Hybrid) => {
+      await w.ctx.state.set({ scopeKind: "company", scopeId: A, namespace: "cockpit", stateKey: "setup-summary" }, { requiredLeft: 2, requiredDone: 1, requiredTotal: 3, optionalLeft: 0, finishIssueId: null, updatedAt: NOW });
+      const brief = await companyBrief(w.env, A);
+      return { waiting: brief.waiting.filter((i) => /Finish setup/.test(i.title)).length, others: brief.others.items.filter((i) => /Finish setup/.test(i.title)).length, missing: brief.setupMissing };
+    };
+    const r = await setupKeys(routed);
+    const p = await setupKeys(plain);
+    expect(r.missing).toBeGreaterThan(0);
+    expect(r).toMatchObject({ waiting: 0, others: 1 });
+    expect(p).toMatchObject({ waiting: 1, others: 0 });
+    const view = (l: { ownerFilter: unknown }, missing: number) => buildView({ load: { snapshots: {}, setupStatuses: {}, roles: null, ownerFilter: l.ownerFilter } as unknown as LoadResult, installed: null, modules: null, live: {}, agents: [], now: new Date(NOW), windowMs: 86_400_000, setupMissing: missing, myIssues: [] } as never);
+    expect(view(load, 2).waitingOthers.map((e) => e.key)).toContain("setup:missing");
+    expect(view(plainLoad, 2).waiting.map((e) => e.key)).toContain("setup:missing");
   });
 });

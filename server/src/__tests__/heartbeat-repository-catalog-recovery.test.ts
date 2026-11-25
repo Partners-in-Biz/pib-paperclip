@@ -124,7 +124,7 @@ describe.skipIf(!recoveryPostgresSupport.supported)("repository catalog bootstra
     app.use(express.json());
     app.use((req, _res, next) => {
       req.actor = { type: "board", source: "session", userId: f.userId, companyIds: [f.companyId],
-        memberships: [{ companyId: f.companyId, membershipRole: "owner", status: "active" }], isInstanceAdmin: false };
+        memberships: [{ companyId: f.companyId, membershipRole: "owner", status: "active", restricted: false, restrictionMode: "off" }], isInstanceAdmin: false };
       next();
     });
     app.use("/api", taskWorkspaceRoutes(db));
@@ -165,7 +165,7 @@ describe.skipIf(!recoveryPostgresSupport.supported)("repository catalog bootstra
 
   it("does not retry a genuine catalog permission denial or start provider work", async () => {
     const f = await fixture(403, true);
-    const run = await heartbeat.wakeup(f.agentId, { source: "on_demand", triggerDetail: "manual",
+    const run = await heartbeat.wakeup(f.agentId, { causingActor: "system", source: "on_demand", triggerDetail: "manual",
       contextSnapshot: { issueId: f.issueId } });
     await vi.waitFor(async () => { expect(await heartbeat.getRun(run!.id)).toMatchObject({ status: "failed", errorCode: "setup_failed" }); }, { timeout: 15_000 });
     await drainHeartbeatRunsToQuiescence(db, heartbeat);
@@ -179,7 +179,7 @@ describe.skipIf(!recoveryPostgresSupport.supported)("repository catalog bootstra
     const f = await fixture(503);
     f.recover();
     execute.mockRejectedValue(new RepositoryCatalogUnavailableError());
-    const run = await heartbeat.wakeup(f.agentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId: f.issueId } });
+    const run = await heartbeat.wakeup(f.agentId, { causingActor: "system", source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId: f.issueId } });
     await vi.waitFor(async () => { expect(await heartbeat.getRun(run!.id)).toMatchObject({ status: "failed", errorCode: "adapter_failed" }); }, { timeout: 15_000 });
     await drainHeartbeatRunsToQuiescence(db, heartbeat);
     expect(execute).toHaveBeenCalledTimes(1);
@@ -193,7 +193,7 @@ describe.skipIf(!recoveryPostgresSupport.supported)("repository catalog bootstra
 
   it("preserves an operator Stop before the automatic successor becomes due", async () => {
     const f = await fixture(503);
-    const run = await heartbeat.wakeup(f.agentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId: f.issueId } });
+    const run = await heartbeat.wakeup(f.agentId, { causingActor: "system", source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId: f.issueId } });
     await vi.waitFor(async () => { expect(await heartbeat.getRun(run!.id)).toMatchObject({ status: "failed" }); }, { timeout: 15_000 });
     await drainHeartbeatRunsToQuiescence(db, heartbeat);
     const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run!.id));
@@ -210,7 +210,7 @@ describe.skipIf(!recoveryPostgresSupport.supported)("repository catalog bootstra
 
   it.each([403, 503])("retries a real HTTP%s catalog refusal before provider work and continues only after fresh discovery", async status => {
     const f = await fixture(status);
-    const run = await heartbeat.wakeup(f.agentId, { source: "on_demand", triggerDetail: "manual",
+    const run = await heartbeat.wakeup(f.agentId, { causingActor: "system", source: "on_demand", triggerDetail: "manual",
       contextSnapshot: { issueId: f.issueId } });
     expect(run).not.toBeNull();
     await vi.waitFor(async () => { expect(await heartbeat.getRun(run!.id)).toMatchObject({ status: "failed" }); }, { timeout: 15_000 });

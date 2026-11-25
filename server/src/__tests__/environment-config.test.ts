@@ -75,6 +75,24 @@ describe("environment config helpers", () => {
     ).toThrow("absolute");
   });
 
+  it.each([
+    ["host", "-oProxyCommand=x"],
+    ["username", "-x"],
+    ["host", "ssh.example.test -oProxyCommand=x"],
+  ])("rejects an SSH %s that ssh could read as an option (%j)", (field, value) => {
+    expect(() =>
+      normalizeEnvironmentConfig({
+        driver: "ssh",
+        config: {
+          host: "ssh.example.test",
+          username: "ssh-user",
+          remoteWorkspacePath: "/srv/paperclip",
+          [field]: value,
+        },
+      }),
+    ).toThrow(/must not start with '-'/);
+  });
+
   it("parses a persisted SSH environment into a typed driver config", () => {
     const parsed = parseEnvironmentDriverConfig({
       driver: "ssh",

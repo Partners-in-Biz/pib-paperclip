@@ -1,4 +1,6 @@
-import { GROWTH_TOOL_NAMES, normalizeToolResult, registerGrowthTools, type GrowthToolsHost } from "@partnersinbiz/pib-plugin-kit";
+import { runCalendarCheck } from "./calendar-check.js";
+import { getCadenceRecord, setCadenceRecord } from "./cadence-record.js";
+import { jobCompanyIds, GROWTH_TOOL_NAMES, registerCanvasCards, normalizeToolResult, registerGrowthTools, type GrowthToolsHost } from "@partnersinbiz/pib-plugin-kit";
 import {
   definePlugin,
   runWorker,
@@ -59,6 +61,7 @@ import {
   proposeFeatureQuestion,
   setFocus,
   hookBoardRecord,
+  hookGivePrepareRecord,
   proposePlaybookChange,
   rejectExperiment,
   savePlaybookRecord,
@@ -138,6 +141,8 @@ import {
   type Viewer,
 } from "./service.js";
 import { growthAction } from "./growth/action.js";
+import { createPostCardKind } from "./canvas-cards.js";
+import { REFUSABLE_ACTIONS, refusalAsResult } from "./refusal.js";
 import { createPersonalDraftRecord } from "./personal-draft.js";
 import { loadPreferencesAction, savePreferencesAction } from "./preferences.js";
 import {
@@ -310,6 +315,8 @@ async function dispatchTool(ctx: PluginContext, viewer: Viewer, name: string, p:
       return setFocus(growthEnv(ctx), viewer, p);
     case "hook-board":
       return hookBoardRecord(growthEnv(ctx), viewer, p);
+    case "get-cadence":
+      return getCadenceRecord(ctx, viewer, p);
     default:
       throw new SocialError(`Unknown social tool ${name}`);
   }
@@ -473,6 +480,9 @@ const ACTIONS: Record<string, ActionHandler> = {
   // Growth Lab (people): the Growth tab.
   "social.growth-load": (ctx, v, p) => growthSnapshot(growthEnv(ctx), v, { ...p, client: p.client ?? null }),
   "social.growth-update-program": growthAction((ctx, v, p) => updateProgramRecord(growthEnv(ctx), v, p)),
+  "social.hook-give-prepare": growthAction((ctx, v, p) => hookGivePrepareRecord(growthEnv(ctx), v, p)),
+  "social.get-cadence": (ctx, v, p) => getCadenceRecord(ctx, v, p),
+  "social.set-cadence": (ctx, v, p) => setCadenceRecord(ctx, v, p),
   "social.growth-save-playbook": growthAction((ctx, v, p) => savePlaybookRecord(growthEnv(ctx), v, p)),
   "social.growth-set-focus": growthAction((ctx, v, p) => {
     requireUser(v, "set the monthly focus");
@@ -604,6 +614,8 @@ async function hourlyUpkeep(ctx: PluginContext, companyId: string): Promise<void
   await tryLinkSocialHire(ctx, companyId);
   const plans = await planSweep(ctx, companyId);
   if (plans.opened) ctx.logger.info("Social plan sweep opened first plans", { companyId, ...plans });
+  const calendar = await runCalendarCheck(ctx, companyId);
+  if (calendar.ran) ctx.logger.info("Social calendar check ran", { companyId, ...calendar });
 }
 
 function registerJob(ctx: PluginContext, key: string, run: () => Promise<unknown>) {
@@ -633,7 +645,7 @@ export async function companyUsesSocial(ctx: PluginContext, companyId: string): 
 /** Hourly: push each known company's setup checklist to the Setup plugin. */
 export async function publishSetupStatuses(ctx: PluginContext): Promise<{ published: number; skipped: number }> {
   const result = { published: 0, skipped: 0 };
-  for (const companyId of await knownCompanies(ctx)) {
+  for (const companyId of await jobCompanyIds(ctx, await knownCompanies(ctx))) {
     try {
       // Off in Setup, or settings never saved (the host refuses company calls): the status route still answers on demand.
       if (!(await companyUsesSocial(ctx, companyId))) {
@@ -666,9 +678,12 @@ const plugin = definePlugin({
       ctx.tools.register(tool.name, tool, async (params, run) => normalizeToolResult(await runTool(ctx, tool.name, params, run)));
     }
     registerGrowthTools(ctx, socialGrowthToolsHost(ctx));
-    for (const [key, handler] of Object.entries(ACTIONS)) {
+    for (const [key, raw] of Object.entries(ACTIONS)) {
+      const handler = REFUSABLE_ACTIONS.has(key) ? refusalAsResult(raw) : raw;
       ctx.actions.register(key, async (params, context) => handler(ctx, await actionViewer(ctx, context), objectParams(params)));
     }
+    // Planning Canvas post cards (PAR-14389 B3a): registered with ctx.actions.register itself; the helper repeats core's person rules.
+    registerCanvasCards({ register: (key, handler) => ctx.actions.register(key, handler), kinds: [createPostCardKind(ctx)] });
     // Company preferences: the kit checks the caller is an owner or admin of the company (agents are refused).
     ctx.actions.register("social.preferences-load", async (_params, context) => loadPreferencesAction(ctx, context));
     ctx.actions.register("social.preferences-save", async (params, context) => savePreferencesAction(ctx, context, objectParams(params)));

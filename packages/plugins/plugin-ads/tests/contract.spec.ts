@@ -106,9 +106,10 @@ describe("the manifest matches the package and the code", () => {
       expect(pattern.test(text), cap).toBe(true);
       expect(caps.has(cap as never), cap).toBe(true);
     }
-    // Not declared, not used: no routines, no managed agents, no webhooks, no core table reads.
+    // Not declared, not used: no routines, no managed agents, no webhooks. The one core table read is
+    // heartbeat_runs (A3, PAR-12643), declared ahead of the access guard (A4) that reads it.
     expect(text).not.toMatch(/routines\.managed|agents\.managed|public\./);
-    expect(manifest.database).toEqual({ namespaceSlug: "ads", migrationsDir: "migrations" });
+    expect(manifest.database).toEqual({ namespaceSlug: "ads", migrationsDir: "migrations", coreReadTables: ["heartbeat_runs"] });
     expect((manifest as { routines?: unknown[] }).routines).toBeUndefined();
     expect((manifest as { webhooks?: unknown[] }).webhooks).toBeUndefined();
   });

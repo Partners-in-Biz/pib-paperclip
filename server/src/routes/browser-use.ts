@@ -11,14 +11,20 @@ import {
 import {
   assertBoard,
   assertCompanyAccess,
+  decideIssueAccessForActor,
   getActorInfo,
   getAccessibleResource,
 } from "./authz.js";
 import { browserUseService } from "../services/browser-use.js";
+import { accessService } from "../services/index.js";
 
 const issueIdSchema = z.string().uuid();
 
-export function browserUseRoutes(db: Db, service = browserUseService(db)) {
+export function browserUseRoutes(
+  db: Db,
+  service = browserUseService(db),
+  access: Pick<ReturnType<typeof accessService>, "decide"> = accessService(db),
+) {
   const router = Router();
   router.use("/issues/:issueId/browsers", async (req, res, next) => {
     assertBoard(req);
@@ -30,12 +36,25 @@ export function browserUseRoutes(db: Db, service = browserUseService(db)) {
       return;
     }
     const [issue] = await db
-      .select({ companyId: issues.companyId })
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        projectId: issues.projectId,
+        parentId: issues.parentId,
+        assigneeAgentId: issues.assigneeAgentId,
+        assigneeUserId: issues.assigneeUserId,
+        status: issues.status,
+      })
       .from(issues)
       .where(eq(issues.id, req.params.issueId))
       .limit(1);
     if (!(await getAccessibleResource(req, res, issue, "Task not found")))
       return;
+    // Read the task first (PAR-12608 4.6, AC-G3): same body as a missing task.
+    if (!(await decideIssueAccessForActor(access, req.actor, issue, "issue:read")).allowed) {
+      res.status(404).json({ error: "Task not found" });
+      return;
+    }
     res.locals.browserCompanyId = issue.companyId;
     res.setHeader("Cache-Control", "no-store");
     next();

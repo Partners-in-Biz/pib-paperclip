@@ -15,7 +15,7 @@ import { AccountUnavailable, moveAccountScope, publicAccount, refreshAccountToke
 import { agentSummary } from "./agent.js";
 import { approvalView, approvePostByDelegate, changeNotesFor, requestChangesByPerson, handBackFromDelegate, approvePostByPerson, returnPostByDelegate, completeApproval, tryAutoApprove, recordClientApprovalByPerson, recordReviewerVerdict, recordSignoff, routeWaitingPost, signoffState, supersedePendingLinks } from "./approval-flow.js";
 import { getPolicy, policyOut, savePolicy, scopeKeyOf } from "./approval-policy.js";
-import { assertDelegateNotEditing, clearDelegate, delegateBlockers, delegateCandidates, delegateFacts, delegateView, getDelegateStrict, setDelegate, type DelegateScope } from "./approval-delegate.js";
+import { assertDelegateNotEditing, clearDelegate, delegateBlockers, delegateCandidates, delegateFacts, delegateView, getDelegateStrict, setDelegate, setDelegateBackup, type DelegateScope } from "./approval-delegate.js";
 import { listClientApprovals, requestClientApproval } from "./client-approval.js";
 import { CONNECT_EFFECT_KEY, issueOfRun, recordConnectRequest } from "./connect-requests.js";
 import {
@@ -623,6 +623,7 @@ export async function listPostsRecord(ctx: PluginContext, viewer: Viewer, params
   const { scope } = await readScope(ctx, viewer, params);
   const rows = await listPosts(ctx, viewer.companyId, {
     status: optionalString(params, "status"),
+    q: optionalString(params, "q"),
     scope,
     limit: positiveInt(params.limit, "limit", 50),
   });
@@ -786,7 +787,9 @@ export async function archivePostRecord(ctx: PluginContext, viewer: Viewer, para
   if (archive && post.status === "scheduled") {
     throw new SocialError("A scheduled post cannot be archived; unschedule it first (unschedule-post).");
   }
-  await assertDelegateNotEditing(ctx, viewer, post, [postDelegateScope(post)]);
+  // Archiving removes a post, it writes nothing the delegate could then approve: the daily calendar check asks the Social agent
+  // (often also the delegate) to archive stale copies other agents made. Unarchiving still counts as an edit.
+  if (!archive) await assertDelegateNotEditing(ctx, viewer, post, [postDelegateScope(post)]);
   if (!(await setPostArchived(ctx, viewer.companyId, post.id, archive))) {
     throw new SocialError(`The post changed while you were trying to ${verb} it. Reload and try again.`);
   }
@@ -946,6 +949,7 @@ export async function setApprovalDelegateRecord(ctx: PluginContext, viewer: View
   const userId = requireUser(viewer, "name a delegated approver");
   const target = await readScope(ctx, viewer, params);
   const scope: DelegateScope = spaceOf(params) === "me" ? "personal" : target.scope;
+  if ("backupAgentId" in params && !("agentId" in params)) return setBackupApprover(ctx, viewer, params, userId, target, scope);
   if (!("agentId" in params)) throw new SocialError("agentId is required (null clears the delegated approver)");
   const agentId = params.agentId;
   if (agentId === null) {
@@ -970,6 +974,26 @@ export async function setApprovalDelegateRecord(ctx: PluginContext, viewer: View
   await setDelegate(ctx, viewer.companyId, scope, agentId.trim(), userId);
   ctx.logger.info("Social delegated approver set by a person", { companyId: viewer.companyId, scope: scopeKeyOf(scope), agentId: agentId.trim(), by: userId });
   return getApprovalPolicyRecord(ctx, viewer, params);
+}
+
+/**
+ * A person names (or clears, `backupAgentId: null`) the scope's backup approver: the agent that approves the posts the
+ * delegated approver created itself (the writer never approves its own post). Setting it re-routes the scope's passed posts
+ * that wait on a team member, so the delegate's posts already with the person move to the backup.
+ */
+async function setBackupApprover(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>, userId: string, target: Awaited<ReturnType<typeof readScope>>, scope: DelegateScope) {
+  if (scope === "personal") throw new SocialError("A personal post cannot have a backup approver.");
+  const backupAgentId = params.backupAgentId;
+  if (backupAgentId === null) {
+    await setDelegateBackup(ctx, viewer.companyId, scope, null, userId);
+    return getApprovalPolicyRecord(ctx, viewer, params);
+  }
+  if (typeof backupAgentId !== "string" || !backupAgentId.trim()) throw new SocialError("backupAgentId must be an agent id, or null to clear");
+  const blockers = delegateBlockers(await delegateFacts(ctx, viewer.companyId, scope, backupAgentId.trim()));
+  if (blockers.length > 0) throw new SocialError(blockers.join(" "));
+  await setDelegateBackup(ctx, viewer.companyId, scope, backupAgentId.trim(), userId);
+  const recheck = await reevaluateReviewPosts(ctx, viewer, target.scope);
+  return { ...(await getApprovalPolicyRecord(ctx, viewer, params)), ...recheck };
 }
 
 /** What the re-check of a scope's posts in review did. `failed` counts posts that threw (and 1 when the list itself could not be read). */
