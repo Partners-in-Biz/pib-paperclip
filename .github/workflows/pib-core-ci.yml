@@ -2,8 +2,9 @@
 #
 # Added 2026-10-11 (Actions-minutes slim, approved by Peet) to replace upstream's ~40-job PR suite (pr.yml), which
 # now only runs on PRs into master or with the `full-upstream-ci` label. PiB plugin code is covered by
-# pib-plugins-ci.yml. This runs one job: install, typecheck the workspace, and the vitest tests related to the files
-# the PR changes (vitest --changed against the base branch).
+# pib-plugins-ci.yml. The core job installs, typechecks the workspace and runs the vitest tests related to the files
+# the PR changes (vitest --changed against the base branch). A hub PR whose related set is huge (PAR-14647) runs
+# that set in the related-sharded job instead, split over parallel shards.
 name: PiB core CI
 
 on:
@@ -18,12 +19,19 @@ on:
       - 'packages/plugins/sdk/**'
       - 'patches/**'
       - 'pnpm-lock.yaml'
+      - 'scripts/ci/pib-core-related-tests.sh'
       - '.github/workflows/pib-core-ci.yml'
       - '!**/*.md'
   workflow_dispatch:
 
 permissions:
   contents: read
+
+env:
+  # PAR-14647: related-test sets over this many files run sharded in the related-sharded job.
+  RELATED_SHARD_THRESHOLD: 300
+  # Keep in step with the matrix.shard list in the related-sharded job.
+  RELATED_SHARD_COUNT: 8
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -36,6 +44,9 @@ jobs:
     # used to share the VPS with production).
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    outputs:
+      large: ${{ steps.related.outputs.large }}
+      mode: ${{ steps.scope.outputs.mode }}
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7 (same pin as upstream's workflows)
@@ -154,41 +165,95 @@ jobs:
 
       # Blocking (PAR-12891): a red test fails the job. If a test needs services this light job does not start,
       # exclude that file in its project's vitest config; never re-add continue-on-error.
-      # Skipped below because they fail on development itself (PAR-14632, not caused by a PR). CLI --exclude is ignored
-      # when the root config uses `projects`, and a vitest config edit would rerun every test of that project, so the
-      # step lists the affected files, drops these two paths and runs the rest:
-      #   packages/adapters/hermes/src/server/execute.instructions.test.ts (3 tests: --resume / system prompt capture)
-      #   server/src/__tests__/plugin-scoped-api-routes.test.ts ('dispatches a board GET route ...')
-      # Remove a path from the grep below once its test is fixed on development.
+      # Files that fail on development itself are skipped in scripts/ci/pib-core-related-tests.sh (SKIP_FILES, PAR-14632 and
+      # PAR-14647); remove a path there once its test is fixed.
       # The job budget is 30 minutes. A large server diff spends most of that on typecheck, and an unbounded
       # vitest --changed then cancels the whole check. Stop this step first so a long run cannot
       # erase a green typecheck.
+      # Size gate (PAR-14647): a hub PR (packages/shared, tool-gateway.ts) selects thousands of files, which no single
+      # 12 minute step can run. Over RELATED_SHARD_THRESHOLD files this step runs nothing and sets large=true; the
+      # related-sharded job below then runs the same list split over RELATED_SHARD_COUNT parallel jobs. Both paths are
+      # blocking, and a PR under the threshold behaves as before.
       # In affected mode vitest runs only the root projects whose package is in the affected set.
-      # No `|| true` on the vitest line: a vitest config error (PAR-12762) must fail the step, not read as "no tests".
       - name: Tests related to the changed files
+        id: related
         env:
           MODE: ${{ steps.scope.outputs.mode }}
           BASE_REF: ${{ github.base_ref || 'development' }}
         run: |
-          projects=()
-          if [ "$MODE" = "affected" ]; then
-            while IFS= read -r name; do
-              [ -n "$name" ] && projects+=(--project "$name")
-            done < <(pnpm --filter "...[origin/${BASE_REF}]" list --json --depth -1 | jq -r '.[].name')
-          fi
-          list_json="${RUNNER_TEMP}/related-test-files.json"
-          pnpm exec vitest list --filesOnly --json="$list_json" --changed "origin/${BASE_REF}" "${projects[@]}" >/dev/null
-          mapfile -t files < <(jq -r --arg root "$PWD/" '.[].file | ltrimstr($root)' "$list_json" | sort -u \
-            | grep -vxF -e 'packages/adapters/hermes/src/server/execute.instructions.test.ts' \
-                        -e 'server/src/__tests__/plugin-scoped-api-routes.test.ts' || true)
+          mapfile -t files < <(bash scripts/ci/pib-core-related-tests.sh list)
           if [ "${#files[@]}" -eq 0 ]; then
             echo "no related test files"
+            exit 0
+          fi
+          if [ "${#files[@]}" -gt "$RELATED_SHARD_THRESHOLD" ]; then
+            echo "large=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::${#files[@]} related test files (over ${RELATED_SHARD_THRESHOLD}): running them in ${RELATED_SHARD_COUNT} parallel shards in the related-sharded job."
             exit 0
           fi
           printf 'related test file: %s\n' "${files[@]}"
           rc=0
           timeout 12m pnpm exec vitest run "${files[@]}" || rc=$?
           if [ "$rc" -eq 124 ]; then
-            echo "::error::Changed-file tests hit the 12 minute limit and were stopped. This is a failure, not a pass: run them locally or split the PR."
+            echo "::error::Changed-file tests hit the 12 minute limit and were stopped. This is a failure, not a pass: split the PR."
+          fi
+          exit "$rc"
+
+  # PAR-14647: runs only when the related set is over the threshold. A skipped job counts as passed; a red or
+  # timed-out shard fails the workflow run.
+  related-sharded:
+    name: Related tests (shard ${{ matrix.shard }})
+    needs: core
+    if: needs.core.outputs.large == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7 (same pin as upstream's workflows)
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+
+      - name: Set up Node 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install (frozen lockfile)
+        run: pnpm install --frozen-lockfile --prefer-offline
+
+      # Same prerequisite the typecheck step has: server imports the runner's emitted d.ts.
+      - name: Build runner types
+        run: |
+          pnpm --filter '@paperclipai/paperclip-runner' build:typescript
+          pnpm --filter @paperclipai/plugin-sdk ensure-build-deps
+
+      - name: Related tests, shard ${{ matrix.shard }} of ${{ env.RELATED_SHARD_COUNT }}
+        env:
+          MODE: ${{ needs.core.outputs.mode }}
+          BASE_REF: ${{ github.base_ref || 'development' }}
+          SHARD: ${{ matrix.shard }}
+          CI: 'true'
+          VITE_CONFIG_NATIVE_IGNORE_WARNING: 'true'
+        run: |
+          mapfile -t files < <(bash scripts/ci/pib-core-related-tests.sh shard "$SHARD" "$RELATED_SHARD_COUNT")
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "no related test files in this shard"
+            exit 0
+          fi
+          echo "shard ${SHARD}/${RELATED_SHARD_COUNT}: ${#files[@]} test files"
+          printf 'related test file: %s\n' "${files[@]}"
+          rc=0
+          timeout 28m pnpm exec vitest run "${files[@]}" || rc=$?
+          if [ "$rc" -eq 124 ]; then
+            echo "::error::Shard ${SHARD} hit the 28 minute limit and was stopped. This is a failure, not a pass."
           fi
           exit "$rc"
