@@ -6,13 +6,16 @@ import { AdsError, minorField, objectParams, optionalString, requiredString, str
 import { addDays, isDay, todayIn } from "./dates.js";
 import { getAccount, getCampaign, type AccountRow, type ScopeRow } from "./db.js";
 import { validateResponsiveSearchAd } from "./rsa.js";
+import { appSettingsFrom, GOOGLE_APP_CHANNEL } from "./providers/google-app.js";
+import { GOOGLE_VIDEO_CHANNEL, videoObjective, videoSettingsFrom } from "./providers/google-video.js";
+import { videoAdFrom } from "./providers/google-video-ad.js";
 import { asksForActive } from "./owner-route.js";
 import { PROPOSAL_KINDS, type ProposalKind } from "./platforms.js";
 import type { SpendAddition } from "./budgets.js";
 import type { AdsRuntime } from "./runtime.js";
 
 export const META_OBJECTIVES = ["OUTCOME_LEADS", "OUTCOME_TRAFFIC", "OUTCOME_SALES", "OUTCOME_AWARENESS", "OUTCOME_ENGAGEMENT", "OUTCOME_APP_PROMOTION"] as const;
-export const GOOGLE_CHANNELS = ["SEARCH"] as const;
+export const GOOGLE_CHANNELS = ["SEARCH", GOOGLE_APP_CHANNEL, GOOGLE_VIDEO_CHANNEL] as const;
 export const META_SPECIAL_CATEGORIES = ["CREDIT", "EMPLOYMENT", "HOUSING", "ISSUES_ELECTIONS_POLITICS", "ONLINE_GAMBLING_AND_GAMING", "FINANCIAL_PRODUCTS_SERVICES"] as const;
 export const OPTIMIZATION_GOALS = ["LINK_CLICKS", "LANDING_PAGE_VIEWS", "IMPRESSIONS", "REACH", "OFFSITE_CONVERSIONS", "APP_INSTALLS"] as const;
 export const BILLING_EVENTS = ["IMPRESSIONS", "LINK_CLICKS"] as const;
@@ -100,9 +103,11 @@ export async function normalizeProposal(rt: AdsRuntime, scope: ScopeRow, input: 
     const account = await accountFor(rt, scope, requiredString(input, "accountId"));
     const name = requiredString(input, "name", 120);
     if (name.length < 3) throw new AdsError("name is too short");
-    const objective = (optionalString(input, "objective", 40) ?? (account.platform === "google" ? "SEARCH" : "OUTCOME_LEADS")).toUpperCase();
+    const asked = (optionalString(input, "objective", 40) ?? (account.platform === "google" ? "SEARCH" : "OUTCOME_LEADS")).toUpperCase();
+    // Google's API cannot create a VIDEO campaign; a YouTube video campaign is a YouTube-only Demand Gen campaign.
+    const objective = account.platform === "google" ? videoObjective(asked) : asked;
     const allowed: readonly string[] = account.platform === "google" ? GOOGLE_CHANNELS : account.platform === "meta" ? META_OBJECTIVES : [...META_OBJECTIVES, ...GOOGLE_CHANNELS];
-    if (!allowed.includes(objective)) throw new AdsError(`objective must be one of ${allowed.join(", ")} for ${account.platform === "google" ? "Google Ads (version 0.1 creates search campaigns)" : "this platform"}`);
+    if (!allowed.includes(objective)) throw new AdsError(`objective must be one of ${allowed.join(", ")} for ${account.platform === "google" ? "Google Ads (SEARCH, MULTI_CHANNEL for an App campaign, or DEMAND_GEN for a YouTube video campaign)" : "this platform"}`);
     const dailyBudgetMinor = minorField(input, "dailyBudgetMinor", { required: true })!;
     if (dailyBudgetMinor <= 0) throw new AdsError("dailyBudgetMinor must be more than zero");
     const startDate = optionalString(input, "startDate", 10);
@@ -114,6 +119,10 @@ export async function normalizeProposal(rt: AdsRuntime, scope: ScopeRow, input: 
     const capMinor = minorField(input, "capMinor") ?? null;
     if (capMinor !== null && capMinor <= 0) throw new AdsError("capMinor must be more than zero");
     const creative = creativeFrom(input.creative);
+    // An App campaign names its app, install goal and locations up front: Google needs them to create it.
+    const app = objective === GOOGLE_APP_CHANNEL ? appSettingsFrom(input, dailyBudgetMinor) : null;
+    // A YouTube video campaign names its bidding and locations up front: they go on the campaign and its YouTube-only ad group.
+    const video = objective === GOOGLE_VIDEO_CHANNEL ? videoSettingsFrom(input, dailyBudgetMinor) : null;
     const days = startDate && endDate ? Math.round((Date.parse(`${endDate}T00:00:00Z`) - Date.parse(`${startDate}T00:00:00Z`)) / 86_400_000) + 1 : null;
     return {
       kind,
@@ -135,6 +144,8 @@ export async function normalizeProposal(rt: AdsRuntime, scope: ScopeRow, input: 
         specialAdCategories: categories,
         audience: optionalString(input, "audience", 1000) ?? null,
         creative,
+        app,
+        video,
         notes: optionalString(input, "notes", 2000) ?? null,
         reason,
         // The plugin creates the campaign PAUSED with its budget. Ad sets, audiences and ads are built in the platform (version 0.1).
@@ -207,7 +218,7 @@ export async function normalizeProposal(rt: AdsRuntime, scope: ScopeRow, input: 
 
   if (kind === "create_ad_set") {
     const account = await accountFor(rt, scope, requiredString(input, "accountId"));
-    if (account.platform !== "meta") throw new AdsError("Ad sets are only supported on Meta (Facebook and Instagram).");
+    if (account.platform !== "meta") throw new AdsError(account.platform === "google" ? "Google has no ad sets with their own budget: use create_ad_group under a SEARCH campaign, or create_campaign with DEMAND_GEN (its YouTube ad group is made with it)." : "Ad sets are only supported on Meta (Facebook and Instagram).");
     const name = requiredString(input, "name", 120);
     if (name.length < 3) throw new AdsError("name is too short");
     const campaignExternalId = requiredString(input, "campaignExternalId");
@@ -272,7 +283,7 @@ export async function normalizeProposal(rt: AdsRuntime, scope: ScopeRow, input: 
 
   if (kind === "create_ad_creative") {
     const account = await accountFor(rt, scope, requiredString(input, "accountId"));
-    if (account.platform !== "meta") throw new AdsError("Ad creatives are only supported on Meta (Facebook and Instagram).");
+    if (account.platform !== "meta") throw new AdsError(account.platform === "google" ? "Google has no standalone creatives: the copy and media go in the ad. Use upload-ad-media, then create_ad with videoAssets, logoImageAsset and the copy." : "Ad creatives are only supported on Meta (Facebook and Instagram).");
     const name = requiredString(input, "name", 120);
     if (name.length < 3) throw new AdsError("name is too short");
     const pageId = requiredString(input, "pageId", 40);
@@ -319,15 +330,19 @@ export async function normalizeProposal(rt: AdsRuntime, scope: ScopeRow, input: 
 
   if (kind === "create_ad") {
     const account = await accountFor(rt, scope, requiredString(input, "accountId"));
-    if (account.platform !== "meta") throw new AdsError("Ads are only supported on Meta (Facebook and Instagram).");
+    if (account.platform !== "meta" && account.platform !== "google") throw new AdsError("Ads are only supported on Meta (Facebook and Instagram) and Google.");
+    const google = account.platform === "google";
     const name = requiredString(input, "name", 120);
     if (name.length < 3) throw new AdsError("name is too short");
     const adSetExternalId = requiredString(input, "adSetExternalId", 100);
     if (adSetExternalId.length === 0) throw new AdsError("adSetExternalId must be a non-empty string");
-    const creativeExternalId = requiredString(input, "creativeExternalId", 100);
-    if (creativeExternalId.length === 0) throw new AdsError("creativeExternalId must be a non-empty string");
+    if (google && !/^\d+$/.test(adSetExternalId)) throw new AdsError("adSetExternalId on Google is the ad group's id (digits), e.g. the YouTube ad group of a DEMAND_GEN campaign");
+    // Google: no standalone creative, the copy and media are in the ad itself.
+    const creativeExternalId = google ? null : requiredString(input, "creativeExternalId", 100);
+    if (creativeExternalId !== null && creativeExternalId.length === 0) throw new AdsError("creativeExternalId must be a non-empty string");
     if (input.status !== undefined && input.status !== "PAUSED") throw new AdsError("Ads must be created PAUSED; once created, you can change the status in a separate proposal.");
-    if (input.dailyBudgetMinor !== undefined) throw new AdsError("Budget is set on the ad set, not on individual ads.");
+    if (input.dailyBudgetMinor !== undefined) throw new AdsError(google ? "Budget is set on the campaign, not on individual ads." : "Budget is set on the ad set, not on individual ads.");
+    const videoAd = google ? videoAdFrom(input, account.external_id.replace(/\D/g, "") || null) : null;
     return {
       kind,
       accountId: account.id,
@@ -340,15 +355,27 @@ export async function normalizeProposal(rt: AdsRuntime, scope: ScopeRow, input: 
         name,
         adSetExternalId,
         creativeExternalId,
+        ...(videoAd ? { videoAd } : {}),
         status: "PAUSED",
-        creates: "ad, paused (Meta reviews it before it can deliver)",
+        creates: google ? "Demand Gen video ad, paused (Google reviews it before it can serve)" : "ad, paused (Meta reviews it before it can deliver)",
         notes: optionalString(input, "notes", 2000) ?? null,
         reason,
       },
       title: `New ad "${name}"`,
-      summary: `Create ad "${name}" on ${account.name} with the specified ad set and creative. It is created paused; Meta reviews it before it can deliver.`,
+      summary: videoAd
+        ? `Create video ad "${name}" in ad group ${adSetExternalId} on ${account.name} with ${videoAd.videoAssets.length} YouTube video${videoAd.videoAssets.length === 1 ? "" : "s"}, landing on ${videoAd.finalUrl}. It is created paused; Google reviews it before it can serve.`
+        : `Create ad "${name}" on ${account.name} with the specified ad set and creative. It is created paused; Meta reviews it before it can deliver.`,
       addition: null,
-      creative: null,
+      creative: videoAd ? { headline: videoAd.headlines[0]!, primaryText: videoAd.descriptions[0]!, description: videoAd.longHeadlines[0]!, callToAction: null, landingUrl: videoAd.finalUrl } : null,
+      ...(videoAd
+        ? {
+            extraCopy: [
+              ...videoAd.headlines.slice(1).map((text, i) => ({ where: `headlines[${i + 1}]`, field: "headline" as const, text })),
+              ...videoAd.longHeadlines.slice(1).map((text, i) => ({ where: `longHeadlines[${i + 1}]`, field: "description" as const, text })),
+              ...videoAd.descriptions.slice(1).map((text, i) => ({ where: `descriptions[${i + 1}]`, field: "description" as const, text })),
+            ],
+          }
+        : {}),
       specialAdCategories: [],
     };
   }

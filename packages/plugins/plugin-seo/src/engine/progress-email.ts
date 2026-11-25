@@ -13,7 +13,7 @@ export interface ProgressSite {
   open: Array<{ title: string; /** The email goes to the client, so "you" is the client and "us" is Partners in Biz. */
   waitingFor: "you" | "us" }>;
   /** Pages the client was asked about: prepared and checked, asked about, approved. */
-  pages: { prepared: number; asked: number; approved: number; held: number };
+  pages: { prepared: number; asked: number; approved: number; declined?: number; held: number };
   /** The plan's weeks 4 to 7. */
   next: Array<{ week: number; titles: string[] }>;
 }
@@ -37,6 +37,7 @@ function pagesLine(p: ProgressSite["pages"]): string | null {
   const parts = [`${plural(p.prepared, "page")} written and checked by our reviewer`];
   if (p.asked > 0) parts.push(`${p.asked} waiting for your approval`);
   if (p.approved > 0) parts.push(`${p.approved} approved by you`);
+  if ((p.declined ?? 0) > 0) parts.push(`${p.declined} not going ahead`);
   if (p.held > 0) parts.push(`${plural(p.held, "page")} put on hold because the copy did not pass our quality checks (we will come back to ${p.held === 1 ? "it" : "them"})`);
   return `${parts.join("; ")}.`;
 }

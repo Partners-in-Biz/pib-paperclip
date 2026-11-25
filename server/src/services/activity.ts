@@ -393,16 +393,24 @@ export function activityService(db: Db) {
         .from(activityLog)
         .leftJoin(
           issues,
-          and(
-            eq(activityLog.entityType, sql`'issue'`),
-            eq(activityLog.entityId, issueIdAsText),
+          or(
+            and(
+              eq(activityLog.entityType, sql`'issue'`),
+              eq(activityLog.entityId, issueIdAsText),
+            ),
+            // An access grant row names its issue in `details.issueId`: it is read under that issue's rule,
+            // so the feed does not list a private issue's id to someone who cannot read it (PAR-14276).
+            and(
+              eq(activityLog.entityType, sql`'issue_access_grant'`),
+              eq(sql`${activityLog.details}->>'issueId'`, issueIdAsText),
+            ),
           ),
         )
         .where(
           and(
             ...conditions,
             or(
-              sql`${activityLog.entityType} != 'issue'`,
+              sql`${activityLog.entityType} not in ('issue', 'issue_access_grant')`,
               and(visibleIssueCondition(), filters.readCondition ?? sql<boolean>`true`),
             ),
           ),
@@ -443,7 +451,15 @@ export function activityService(db: Db) {
       return limit === undefined ? query : query.limit(limit);
     },
 
-    runsForIssue: async (companyId: string, issueId: string, viewerUserId: string | null = null, limit?: number, selectedRunIds?: string[]) => {
+    runsForIssue: async (
+      companyId: string,
+      issueId: string,
+      viewerUserId: string | null = null,
+      limit?: number,
+      selectedRunIds?: string[],
+      /** PAR-14342: only runs that work for this person (`responsible_user_id`), for a restricted caller. */
+      workingForUserId?: string,
+    ) => {
       if (selectedRunIds && !selectedRunIds.length) return [];
       scheduleRunLivenessBackfill(companyId, issueId);
       const runsQuery = db
@@ -500,6 +516,7 @@ export function activityService(db: Db) {
               or coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.issueId}::text,
                 ${heartbeatRuns.contextSnapshot} ->> 'issueId', ${heartbeatRuns.contextSnapshot} ->> 'taskId') = ${issueId})`,
             ...(selectedRunIds ? [inArray(heartbeatRuns.id, selectedRunIds)] : []),
+            ...(workingForUserId ? [eq(heartbeatRuns.responsibleUserId, workingForUserId)] : []),
             or(
               eq(heartbeatRuns.issueId, issueId),
               sql`exists (

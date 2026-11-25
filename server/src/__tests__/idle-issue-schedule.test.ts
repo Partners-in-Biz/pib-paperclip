@@ -79,13 +79,17 @@ if (!support.supported) console.warn(`Skipping issue schedule Postgres tests: ${
     const f = await seed();
     const transition = new Date(now - 5000);
     const descriptor = { owner: { agentId: f.agentId }, action: "Provide the missing input" };
+    // PAR-9390: the owner is not the assignee; an owner who is the assignee gets no unblock-owner wake.
+    const assigneeAgentId = randomUUID();
+    await db.insert(agents).values({ id: assigneeAgentId, companyId: f.companyId, name: "Assignee agent", role: "engineer", status: "idle", adapterType: "process" });
     const [issue] = await db.insert(issues).values({ companyId: f.companyId, title: "Waiting for unblock input",
-      status: "blocked", assigneeAgentId: f.agentId, unblockDescriptor: descriptor,
+      status: "blocked", assigneeAgentId, unblockDescriptor: descriptor,
       blockedTransitionAt: transition, blockedOwnerNotifiedAt: new Date(now - 4000),
     }).returning();
     await db.update(heartbeatRuns).set({ finishedAt: new Date(now - 1000), contextSnapshot: { issueId: issue.id } }).where(eq(heartbeatRuns.id, f.runId));
     const [wake] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId,
       source: "automation", reason: "issue_unblock_requested", status: "coalesced", runId: f.runId,
+      requestedByActorType: "system", requestedByActorId: "routable_blocked",
       finishedAt: new Date(now - 2000), idempotencyKey: `issue-unblock:${issue.id}:${transition.toISOString()}`,
       payload: { issueId: issue.id, action: descriptor.action },
     }).returning();

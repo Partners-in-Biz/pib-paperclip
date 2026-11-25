@@ -1,4 +1,5 @@
 import { logger } from "../middleware/logger.js";
+import { wakeCausingActorFromActor } from "../services/heartbeat/causing-actor.js";
 import { managedSkillContent } from "../services/managed-skill-content.js";
 import type { SkillContentPublication } from "../services/managed-skill-content.js";
 import { projectSkillSetupIdentity } from "../services/project-skill-source-bindings.js";
@@ -67,7 +68,7 @@ import {
   normalizeSkillPolicySourceType,
   type SkillPolicyPrincipal,
 } from "../services/company-skill-policy.js";
-import { authorizationDeniedDetails, type AuthorizationActor } from "../services/authorization.js";
+import { authorizationDeniedDetails, projectReadSqlCondition, type AuthorizationActor } from "../services/authorization.js";
 import {
   normalizeSkillPolicySourceLocator,
   type SkillPolicyAction,
@@ -830,6 +831,7 @@ export function companySkillRoutes(db: Db, options: { pluginWorkerManager?: Plug
           triggerDetail: "system",
           reason: "skill_test_run_created",
           payload: { issueId, skillId },
+          causingActor: wakeCausingActorFromActor(actor),
           requestedByActorType: actor.actorType,
           requestedByActorId: actor.actorId,
           contextSnapshot: { issueId, source: "company.skill_test_run" },
@@ -1650,7 +1652,7 @@ export function companySkillRoutes(db: Db, options: { pluginWorkerManager?: Plug
     async (req, res) => {
       const companyId = req.params.companyId as string;
       await assertCanMutateCompanySkills(req, companyId, "skills.import", { sourceType: "workspace" });
-      const result = await svc.browseProjectWorkspace(companyId, req.body);
+      const result = await svc.browseProjectWorkspace(companyId, req.body, await projectReadSqlCondition(db, req.actor));
       res.json(result);
     },
   );
@@ -1661,7 +1663,7 @@ export function companySkillRoutes(db: Db, options: { pluginWorkerManager?: Plug
     async (req, res) => {
       const companyId = req.params.companyId as string;
       await assertCanMutateCompanySkills(req, companyId, "skills.import", { sourceType: "workspace" });
-      const result = await svc.scanProjectWorkspaces(companyId, req.body);
+      const result = await svc.scanProjectWorkspaces(companyId, req.body, await projectReadSqlCondition(db, req.actor));
 
       const actor = getActorInfo(req);
       await logActivity(db, {

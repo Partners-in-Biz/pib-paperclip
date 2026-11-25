@@ -58,7 +58,7 @@ export function driftBody(input: { companyId: string; rows: Array<{ drift: Agent
   return [
     "Agents whose instructions no longer match the team template pack. Kept up to date by the Setup plugin's hourly `template-drift` job; it closes this issue when nothing is behind.",
     "",
-    "For the sync script: call `partnersinbiz.setup:template-get` with `key` and this company's `companyId` for each row, apply the rendered text and stamp `metadata.pibPack` with the returned `renderHash`. Do not use the hash from `template-list` (it renders with default variables). Skip rows marked running now and pick them up next hour. Rows with mode distilled are never overwritten; built-in and plugin-managed agents are not listed.",
+    "For the sync script: call `partnersinbiz.setup:template-get` with `key` and this company's `companyId` for each row, apply the rendered text and stamp `metadata.pibPack` with the returned `renderHash` and, when the response has `evalFile`, that `evalFile` too (Cockpit's weekly agent research skips a pack without it); keep every other `pibPack` field. Do not use the hash from `template-list` (it renders with default variables). Skip rows marked running now and pick them up next hour. Rows with mode distilled are never overwritten; built-in and plugin-managed agents are not listed.",
     "",
     ...lines,
     "",

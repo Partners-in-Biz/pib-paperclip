@@ -78,6 +78,14 @@ export {
   parseEnvVars,
 } from "./env-bindings.js";
 export { createRuntimeProgressReporter } from "./runtime-progress.js";
+export {
+  guardChildStdin,
+  isPipeClosedError,
+  pipeIntoChildStdin,
+  writeChildStdin,
+  type ChildStdinErrorHandler,
+  type ChildStdinGuardOptions,
+} from "./child-stdin.js";
 export type {
   RuntimeProgressSink,
   RuntimeProgressPhase,

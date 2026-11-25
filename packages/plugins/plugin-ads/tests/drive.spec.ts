@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
+import { DRIVE_ACK_TIMEOUT_MS } from "@partnersinbiz/pib-plugin-kit";
 import { creativeFileName, saveCreativeToDrive, type DriveSaveFn } from "../src/drive.js";
 
 const warn = vi.fn();
@@ -18,7 +19,7 @@ describe("saveCreativeToDrive", () => {
     const fake = vi.fn<DriveSaveFn>(async () => ({ status: "saved", requestId: "r", driveFileId: "d", url: "https://drive/x" }));
     expect(await saveCreativeToDrive(ctx, { ...base, driveSave: fake })).toBe(true);
     const opts = fake.mock.calls[0]![1];
-    expect(opts).toMatchObject({ companyId: "c1", kind: "ads", subfolder: "02 Assets", mimeType: "application/json", name: "2026-10-20 meta Q4 creative 1234abcd v01.json" });
+    expect(opts).toMatchObject({ companyId: "c1", kind: "ads", subfolder: "02 Assets", mimeType: "application/json", name: "2026-10-20 meta Q4 creative 1234abcd v01.json", timeoutMs: DRIVE_ACK_TIMEOUT_MS });
     expect(opts.name).toMatch(/^\d{4}-\d{2}-\d{2}\s+.+\s+v\d+\.\w+$/);
     expect(JSON.parse(Buffer.from(opts.bytes as Buffer).toString("utf-8"))).toMatchObject({ name: "Q4 creative", headline: "Q4 Sale" });
   });

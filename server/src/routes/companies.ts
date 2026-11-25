@@ -51,6 +51,7 @@ import {
 import { companyTransferRunService } from "../services/company-transfer-runs.js";
 import { agentInstructionsBundleMode } from "../services/agent-instructions.js";
 import { resolvePortableExportAgentSelection } from "../services/company-portability-agent-selection.js";
+import type { CompanyExportReadScope } from "../services/company-portability.js";
 import {
   accessService,
   agentService,
@@ -66,6 +67,8 @@ import {
   workTimelineService,
 } from "../services/index.js";
 import { isCloudManagedInstance } from "../services/cloud-instance.js";
+import { issueReadSqlCondition, projectReadSqlCondition } from "../services/authorization.js";
+import { companiesRestrictedForActor, companyRecordFor } from "../services/member-restriction/company-record.js";
 import { getHiddenSettings } from "../services/settings-visibility.js";
 import type { StorageService } from "../storage/types.js";
 import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo, hasCompanyAccess } from "./authz.js";
@@ -361,6 +364,19 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     assertCompanyAccess(req, target.companyId);
   }
 
+  /**
+   * The caller's read scope for a company export (PAR-14320): the bundle holds
+   * only the tasks and projects he can read, so a member does not export
+   * another person's private tasks or chats.
+   */
+  async function exportReadScope(req: Request): Promise<CompanyExportReadScope> {
+    const [issues, projects] = await Promise.all([
+      issueReadSqlCondition(db, req.actor),
+      projectReadSqlCondition(db, req.actor),
+    ]);
+    return { issues, projects };
+  }
+
   async function assertSameCompanyCeoAgentOrBoard(req: Request, companyId: string, capability: string) {
     assertCompanyAccess(req, companyId);
     if (req.actor.type === "board") {
@@ -383,7 +399,10 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     if (scope !== undefined && scope !== "accessible") {
       throw badRequest("scope must be a single accessible value when provided");
     }
-    const result = await svc.list();
+    // A company where the caller's person is restricted under `enforce` is
+    // listed with its reduced record (PAR-12608 4.6).
+    const restricted = await companiesRestrictedForActor(db, req.actor);
+    const result = (await svc.list()).map((company) => companyRecordFor(company, restricted));
     // Navigation needs the same membership scope as company detail routes.
     // Instance admins can inspect the directory without membership, but that
     // visibility alone does not let them open a company's inbox or tasks.
@@ -426,6 +445,9 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     const query = companyArtifactsQuerySchema.parse(req.query);
     res.json(await artifacts.list(companyId, query, {
       userId: query.starred && req.actor.type === "board" ? req.actor.userId : undefined,
+      // Every artifact belongs to a task: list only those of tasks the caller may read (PAR-12720).
+      issueConditions: [await issueReadSqlCondition(db, req.actor)],
+      projectConditions: [await projectReadSqlCondition(db, req.actor)],
     }));
   });
 
@@ -490,12 +512,13 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     if (req.actor.type !== "agent") {
       assertBoard(req);
     }
+    const restricted = await companiesRestrictedForActor(db, req.actor);
     const company = await svc.getById(companyId);
     if (!company) {
       res.status(404).json({ error: "Company not found" });
       return;
     }
-    res.json(company);
+    res.json(companyRecordFor(company, restricted));
   });
 
   router.get("/:companyId/feedback-traces", async (req, res) => {
@@ -522,6 +545,7 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
       to: parseDateQuery(req.query.to, "to"),
       sharedOnly: parseBooleanQuery(req.query.sharedOnly),
       includePayload: parseBooleanQuery(req.query.includePayload),
+      issueReadCondition: await issueReadSqlCondition(db, req.actor),
     });
     res.json(traces);
   });
@@ -531,7 +555,8 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     await assertSameCompanyCeoAgentOrBoard(req, companyId, "company exports");
     const body = companyPortabilityExportSchema.parse(req.body);
     const allowExternalInstructions = await assertExternalInstructionExportAllowed(req, companyId, body);
-    const result = await portability.exportBundle(companyId, body, { allowExternalInstructions });
+    const readScope = await exportReadScope(req);
+    const result = await portability.exportBundle(companyId, body, { readScope, allowExternalInstructions });
     res.json(result);
   });
 
@@ -1127,7 +1152,8 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     await assertSameCompanyCeoAgentOrBoard(req, companyId, "company exports");
     const body = companyPortabilityExportSchema.parse(req.body);
     const allowExternalInstructions = await assertExternalInstructionExportAllowed(req, companyId, body);
-    const preview = await portability.previewExport(companyId, body, { allowExternalInstructions });
+    const readScope = await exportReadScope(req);
+    const preview = await portability.previewExport(companyId, body, { readScope, allowExternalInstructions });
     res.json(preview);
   });
 
@@ -1136,7 +1162,8 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     await assertSameCompanyCeoAgentOrBoard(req, companyId, "company exports");
     const body = companyPortabilityExportSchema.parse(req.body);
     const allowExternalInstructions = await assertExternalInstructionExportAllowed(req, companyId, body);
-    const result = await portability.exportBundle(companyId, body, { allowExternalInstructions });
+    const readScope = await exportReadScope(req);
+    const result = await portability.exportBundle(companyId, body, { readScope, allowExternalInstructions });
     res.json(result);
   });
 

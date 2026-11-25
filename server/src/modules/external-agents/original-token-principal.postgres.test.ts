@@ -32,7 +32,7 @@ describe.skipIf(!url)("actual OAuth producer and original-token principal leaf; 
     app.use((req,_res,next)=>{req.actor={type:"none",source:"none"};next();});
     const personal=createPublicMcpOAuth(db,{origin,resource:origin+"/mcp/paperclip"}),dispatch=createMcpApiDispatch(express.Router());
     app.use(publicMcpIngressRoutes(oauth,createPublicMcpExecutor(db,oauth,dispatch)));
-    app.use((req,_res,next)=>{if(req.get("x-selected-operator")===userId)req.actor={type:"board",source:"session",userId,companyIds:[companyId],memberships:[{companyId,membershipRole:"owner",status:"active"}]};next();});
+    app.use((req,_res,next)=>{if(req.get("x-selected-operator")===userId)req.actor={type:"board",source:"session",userId,companyIds:[companyId],memberships:[{companyId,membershipRole:"owner",status:"active",restricted:false,restrictionMode:"off"}]};next();});
     app.use("/api",publicMcpManagementRoutes(personal,oauth));app.use(errorHandler);
   });
   afterEach(async()=>{if(db)await db.$client.end({timeout:1});if(url)await closeRegisteredClients(url,{scope:"database"});});

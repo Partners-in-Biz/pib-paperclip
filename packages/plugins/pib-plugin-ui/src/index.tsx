@@ -70,6 +70,10 @@ export { PreferencesPanel, PreferencesView, type PreferencesViewProps } from "./
 export * from "./preferences-logic.js";
 export * from "./richtext.js";
 export * from "./module-state.js";
+export * from "./access.js";
+export * from "./refusal.js";
+export * from "./entity-card-batcher.js";
+export * from "./entity-canvas-card.js";
 export * from "./display.js";
 
 const focusRing: CSSProperties = {
@@ -661,7 +665,7 @@ export function useEscapeToClose(open: boolean, onClose: () => void, enabled = t
     const stack = overlayStack();
     stack.push(id);
     const onKey = (event: KeyboardEvent) => {
-      if (event.key !== "Escape" || stack[stack.length - 1] !== id || !latest.current.enabled) return;
+      if (event.defaultPrevented || event.key !== "Escape" || stack[stack.length - 1] !== id || !latest.current.enabled) return;
       event.stopPropagation();
       latest.current.onClose();
     };
@@ -708,7 +712,9 @@ export function Modal({ open, title, description, children, onClose, footer, wid
       style={{
         position: "fixed",
         inset: 0,
-        zIndex: 80,
+        // Stay above page chrome (bottom nav z-30, side panels z-40) but below host Radix dialogs/popovers (z-50),
+        // so host dialogs like NewIssueDialog opened from inside a plugin Modal appear in front of it.
+        zIndex: 45,
         background: "color-mix(in oklab, black 50%, transparent)",
         backdropFilter: "blur(2px)",
         display: "grid",
@@ -864,7 +870,7 @@ export function NewTaskDialog({ open, prefix, heading = "New task", initialTitle
       onMouseDown={(event) => {
         if (event.target === event.currentTarget && !busy) onClose();
       }}
-      style={{ position: "fixed", inset: 0, zIndex: 80, background: "color-mix(in oklab, black 50%, transparent)", display: "grid", placeItems: narrow ? "stretch" : "start center", padding: narrow ? 0 : "10vh 16px 16px" }}
+      style={{ position: "fixed", inset: 0, zIndex: 45, background: "color-mix(in oklab, black 50%, transparent)", display: "grid", placeItems: narrow ? "stretch" : "start center", padding: narrow ? 0 : "10vh 16px 16px" }}
     >
       <div
         ref={panelRef}
@@ -993,7 +999,7 @@ export function Sheet({ open, title, children, onClose }: {
       style={{
         position: "fixed",
         inset: 0,
-        zIndex: 70,
+        zIndex: 44,
         background: "color-mix(in oklab, black 40%, transparent)",
         backdropFilter: "blur(2px)",
         display: "flex",
@@ -1183,7 +1189,7 @@ export interface HandoffNewIssue {
  * person created the task, has the module record the link. Pass `useHostNewIssue()` as `newIssue`. The module's worker
  * builds the text (buildHandoffDescription in the plugin kit) and re-checks the client on `record`.
  */
-export function GiveToAgentButton({ newIssue, prepare, record, onDone, onError, label = "Give to agent", variant = "secondary", disabled }: {
+export function GiveToAgentButton({ newIssue, prepare, record, onDone, onError, label = "Give to agent", variant = "secondary", disabled, style }: {
   newIssue: HandoffNewIssue;
   prepare: () => Promise<HandoffIssueDefaults>;
   record: (issue: HandoffCreatedIssue) => Promise<{ message?: string | null; warning?: string | null } | void>;
@@ -1192,6 +1198,7 @@ export function GiveToAgentButton({ newIssue, prepare, record, onDone, onError, 
   label?: string;
   variant?: "primary" | "secondary";
   disabled?: boolean;
+  style?: CSSProperties;
 }) {
   const [busy, setBusy] = useState(false);
   async function give() {
@@ -1209,7 +1216,7 @@ export function GiveToAgentButton({ newIssue, prepare, record, onDone, onError, 
       setBusy(false);
     }
   }
-  return <Button type="button" variant={variant} disabled={disabled || busy} onClick={() => void give()}>{busy ? "Opening…" : label}</Button>;
+  return <Button type="button" variant={variant} style={style} disabled={disabled || busy} onClick={() => void give()}>{busy ? "Opening…" : label}</Button>;
 }
 
 export function Button({ variant = "primary", ...props }: ButtonHTMLAttributes<HTMLButtonElement> & {

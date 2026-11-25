@@ -4000,4 +4000,62 @@ describe("issue comment reopen routes", () => {
       ),
     );
   });
+
+  describe("review verdict wake (PAR-8960)", () => {
+    const ISSUE_ID = "11111111-1111-4111-8111-111111111111";
+    const ASSIGNEE_ID = "22222222-2222-4222-8222-222222222222";
+    const QA_ID = "99999999-9999-4999-8999-999999999999";
+
+    async function commentAsQa(method: "post" | "patch", body: string, opts: {
+      status?: "blocked" | "cancelled" | "in_progress"; role?: string; assigneeAgentId?: string | null;
+    } = {}) {
+      const issue = { ...makeIssue(opts.status ?? "blocked"),
+        assigneeAgentId: opts.assigneeAgentId === undefined ? ASSIGNEE_ID : opts.assigneeAgentId };
+      mockIssueService.getById.mockResolvedValue(issue);
+      mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) =>
+        makeIssueUpdateReceipt(issue, patch));
+      mockIssueService.addComment.mockResolvedValue({ id: "comment-verdict", issueId: ISSUE_ID,
+        companyId: "company-1", body, authorAgentId: QA_ID, authorUserId: null });
+      mockAgentService.getById.mockImplementation(async (id: string) =>
+        id === QA_ID ? { id, companyId: "company-1", role: opts.role ?? "qa" } : null);
+      const app = await installActor(createApp(), agentActor(QA_ID));
+      const res = method === "post"
+        ? await request(app).post(`/api/issues/${ISSUE_ID}/comments`).send({ body })
+        : await request(app).patch(`/api/issues/${ISSUE_ID}`).send({ comment: body });
+      expect(res.status).toBe(method === "post" ? 201 : 200);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+
+    it.each(["patch", "post"] as const)("wakes the blocked assignee once on a qa verdict via %s (tests 1-2)", async (method) => {
+      await commentAsQa(method, "PASS: ok");
+      await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(ASSIGNEE_ID, expect.objectContaining({
+        reason: "issue_review_verdict",
+        requestedByActorType: "system",
+        requestedByActorId: "issue_review_verdict_relay",
+        idempotencyKey: `review-verdict:${ISSUE_ID}:comment-verdict`,
+        contextSnapshot: expect.objectContaining({ issueId: ISSUE_ID, wakeCommentId: "comment-verdict",
+          wakeReason: "issue_review_verdict" }),
+      }));
+    });
+
+    it.each([
+      ["a non-qa agent", "PASS: ok", { role: "engineer" }],
+      ["qa chatter", "Looking at it now", {}],
+      ["a lowercase pass", "pass", {}],
+      ["the qa agent being the assignee", "PASS: ok", { assigneeAgentId: QA_ID }],
+      ["no agent assignee", "PASS: ok", { assigneeAgentId: null }],
+      ["a cancelled issue", "PASS: ok", { status: "cancelled" }],
+    ] as const)("does not wake for %s (test 5)", async (_label, body, opts) => {
+      await commentAsQa("post", body, opts);
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    });
+
+    it("keeps a single issue_commented wake on a non-blocked issue (test 9)", async () => {
+      await commentAsQa("post", "PASS: ok", { status: "in_progress" });
+      await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(ASSIGNEE_ID,
+        expect.objectContaining({ reason: "issue_commented" }));
+    });
+  });
 });

@@ -117,6 +117,7 @@ export const pluginToolDeclarationSchema = z.object({
   displayName: z.string().min(1),
   description: z.string().min(1),
   parametersSchema: jsonSchemaSchema,
+  timeoutMs: z.number().int().min(1_000).max(60_000).optional(),
 });
 
 const pluginEnvironmentTemplateConfigFieldSchema = z.string()
@@ -399,6 +400,11 @@ export const pluginUiSlotDeclarationSchema = z.object({
     availabilityPath: z.string().regex(/^\/(?:[a-zA-Z0-9_-]+\/)*:entityId(?:\/[a-zA-Z0-9_-]+)*$/),
     activation: z.object({ namespace: runtimeActivityIdentifierSchema, activityKey: runtimeActivityIdentifierSchema }).strict().optional(),
   }).strict().optional(),
+  entityCard: z.object({
+    kind: z.string().min(1).max(100),
+    search: z.boolean(),
+    related: z.boolean(),
+  }).strict().optional(),
   routePath: z.string().regex(/^[a-z0-9][a-z0-9-]*$/, {
     message: "routePath must be a lowercase single-segment slug (letters, numbers, hyphens)",
   }).optional(),
@@ -406,6 +412,9 @@ export const pluginUiSlotDeclarationSchema = z.object({
 }).superRefine((value, ctx) => {
   if (value.taskSidePanel && (value.type !== "detailTab" || !value.entityTypes?.includes("agent"))) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: "taskSidePanel requires an agent detailTab", path: ["taskSidePanel"] });
+  }
+  if (value.entityCard && value.type !== "canvasNode") {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "entityCard is only supported on canvasNode slots", path: ["entityCard"] });
   }
   // context-sensitive slots require explicit entity targeting.
   const entityScopedTypes = ["detailTab", "taskDetailView", "contextMenuItem", "commentAnnotation", "commentContextMenuItem", "projectSidebarItem"];

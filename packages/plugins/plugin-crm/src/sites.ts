@@ -12,7 +12,7 @@
  *
  * One statement per call, writes only to the CRM namespace, lists as JSON text.
  */
-import { signoffBlock } from "./site-signoff.js";
+import { SITE_CHANGED_EVENT, signoffCheck, type SiteChangedPayload } from "./site-signoff.js";
 import { randomUUID } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import {
@@ -40,6 +40,7 @@ import {
   CONNECTOR_SELF_UPDATE_MIN_VERSION,
   CONNECTOR_V11_ENDPOINTS,
   CONNECTOR_V12_ENDPOINTS,
+  CONNECTOR_V13_ENDPOINTS,
   ConnectorError,
   connectorKeyId,
   isConnectionFailure,
@@ -256,12 +257,12 @@ export async function deleteSitesOfClient(ctx: PluginContext, companyId: string,
 
 async function recordChange(
   ctx: PluginContext,
-  input: { companyId: string; siteId: string; endpoint: string; target: string | null; reason: string | null; changeRef: string | null; ok: boolean; error: string | null; actor: string | null },
+  input: { companyId: string; siteId: string; endpoint: string; target: string | null; reason: string | null; changeRef: string | null; ok: boolean; error: string | null; actor: string | null; pageUrl?: string | null; at?: string },
 ): Promise<void> {
   await ctx.db.execute(
-    `INSERT INTO ${table(ctx, "site_changes")} (id, company_id, site_id, endpoint, target, reason, change_ref, ok, error, actor)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-    [randomUUID(), input.companyId, input.siteId, input.endpoint, input.target, input.reason, input.changeRef, input.ok, input.error, input.actor],
+    `INSERT INTO ${table(ctx, "site_changes")} (id, company_id, site_id, endpoint, target, reason, change_ref, ok, error, actor, page_url, created_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+    [randomUUID(), input.companyId, input.siteId, input.endpoint, input.target, input.reason, input.changeRef, input.ok, input.error, input.actor, input.pageUrl ?? null, input.at ?? new Date().toISOString()],
   );
 }
 
@@ -802,6 +803,7 @@ const WP_TOOLS: Record<string, Record<string, ConnectorEndpoint>> = {
     publish: "posts/publish",
   },
   "wp-verify": { get: "verify/get", set: "verify/set" },
+  "wp-archive": { get: "archive/get", set: "archive/set" },
   "wp-connector": { update: "self/update", rollback: "self/rollback" },
   "wp-log": { get: "log" },
   "wp-undo": { set: "undo" },
@@ -840,6 +842,8 @@ export const PASS: Partial<Record<ConnectorEndpoint, string[]>> = {
   "posts/publish": ["postId", "reason"],
   "verify/get": [],
   "verify/set": ["metaTags", "files", "reason"],
+  "archive/get": ["url", "termId", "taxonomy"],
+  "archive/set": ["url", "termId", "taxonomy", "html", "position", "reason"],
   "self/update": [],
   "self/rollback": ["backupId", "reason"],
   log: ["limit"],
@@ -890,15 +894,16 @@ async function planConnectorUpdate(ctx: PluginContext, viewer: Viewer, site: Sit
 
 /** rest_no_route on a 1.1 endpoint from a site that answers health means an older Connector, not a missing one. */
 async function explainMissingRoute(ctx: PluginContext, site: SiteRecord, endpoint: ConnectorEndpoint, actor: string | null): Promise<CrmError | null> {
+  const needs13 = CONNECTOR_V13_ENDPOINTS.includes(endpoint);
   const needs12 = CONNECTOR_V12_ENDPOINTS.includes(endpoint);
-  if (!needs12 && !CONNECTOR_V11_ENDPOINTS.includes(endpoint)) return null;
+  if (!needs13 && !needs12 && !CONNECTOR_V11_ENDPOINTS.includes(endpoint)) return null;
   try {
     const health = await callConnector(ctx, site, "health", {}, { actor });
     await saveHealth(ctx, site, health);
     const installed = typeof asRecord(health.connector).version === "string" ? String(asRecord(health.connector).version) : "unknown version";
     const zipUrl = await connectorZipUrl(ctx, site.companyId);
     const how = connectorVersionWarning(installed, zipUrl) ?? `Run wp-health and check that the plugin is current.`;
-    return new CrmError(`${site.url} has no ${endpoint} route: it runs Connector ${installed}, which is older than the ${needs12 ? "1.2" : "1.1"} routes this tool needs. ${how}`);
+    return new CrmError(`${site.url} has no ${endpoint} route: it runs Connector ${installed}, which is older than the ${needs13 ? "1.3" : needs12 ? "1.2" : "1.1"} routes this tool needs. ${how}`);
   } catch {
     return null;
   }
@@ -918,9 +923,12 @@ export async function runWpTool(ctx: PluginContext, viewer: Viewer, name: string
   }
   const writes = CONNECTOR_ENDPOINTS[endpoint];
   const reason = typeof params.reason === "string" ? params.reason.trim().slice(0, 500) : "";
+  // The approved page an open page grant lets this agent write change (PAR-9131 T2b): its success emits site.changed.
+  let grantedPage: string | null = null;
   if (writes && source === "agent") {
-    const blocked = await signoffBlock(ctx, site.id);
-    if (blocked) throw new CrmError(blocked);
+    const check = await signoffCheck(ctx, site, endpoint, params);
+    if (check.refusal) throw new CrmError(check.refusal);
+    grantedPage = check.page;
   }
   if (writes && !reason) throw new CrmError("reason is required for a change: one line on why (it is kept in the site's log)");
   if (endpoint === "plugins/install" || endpoint === "plugins/rollback") {
@@ -946,17 +954,14 @@ export async function runWpTool(ctx: PluginContext, viewer: Viewer, name: string
     sent = true;
     const data = await callConnector(ctx, site, endpoint, body, { actor });
     if (writes) {
-      await recordChange(ctx, {
-        companyId: viewer.companyId,
-        siteId: site.id,
-        endpoint,
-        target,
-        reason: reason || null,
-        changeRef: typeof data.changeId === "string" ? data.changeId : null,
-        ok: true,
-        error: null,
-        actor,
-      });
+      const changeRef = typeof data.changeId === "string" ? data.changeId : null;
+      const at = new Date().toISOString();
+      await recordChange(ctx, { companyId: viewer.companyId, siteId: site.id, endpoint, target, reason: reason || null, changeRef, ok: true, error: null, actor, pageUrl: grantedPage, at });
+      if (grantedPage) {
+        const changed: SiteChangedPayload = { siteId: site.id, url: grantedPage, endpoint, changeId: changeRef, at };
+        // A lost event is sent again by the 5-minute replay, so a failure here never fails the write.
+        await ctx.events.emit(SITE_CHANGED_EVENT, viewer.companyId, changed as unknown as Record<string, unknown>).catch((error) => ctx.logger.info("CRM site.changed emit failed", { siteId: site.id, error: String(error) }));
+      }
     }
     if (endpoint === "self/update" || endpoint === "self/rollback") {
       // The installed version changed: read it back so the site record and every module show the new one.

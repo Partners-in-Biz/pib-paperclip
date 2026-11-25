@@ -67,7 +67,7 @@ export async function liveAccountsInScope(ctx: PluginContext, companyId: string,
   const w = clientWhere(scope, 2);
   return ctx.db.query<LiveAccount>(
     `SELECT platform, display_name FROM ${table(ctx, "accounts")}
-      WHERE company_id = $1 AND token_enc IS NOT NULL AND status IN ('connected', 'expiring') AND scope = 'org' AND ${w.sql}
+      WHERE company_id = $1 AND (token_enc IS NOT NULL OR manual = true) AND status IN ('connected', 'expiring') AND scope = 'org' AND ${w.sql}
       ORDER BY platform, display_name LIMIT 50`,
     [companyId, ...w.params],
   );
@@ -196,7 +196,7 @@ export async function planSweep(ctx: PluginContext, companyId: string): Promise<
   try {
     const rows = await ctx.db.query<{ client_kind: string | null; client_ref: string | null; client_name: string | null }>(
       `SELECT client_kind, client_ref, max(client_name) AS client_name FROM ${table(ctx, "accounts")}
-        WHERE company_id = $1 AND token_enc IS NOT NULL AND status IN ('connected', 'expiring') AND scope = 'org'
+        WHERE company_id = $1 AND (token_enc IS NOT NULL OR manual = true) AND status IN ('connected', 'expiring') AND scope = 'org'
         GROUP BY client_kind, client_ref ORDER BY client_ref NULLS FIRST LIMIT ${SWEEP_SCOPES}`,
       [companyId],
     );

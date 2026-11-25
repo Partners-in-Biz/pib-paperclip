@@ -36,7 +36,7 @@ function stlInput(overrides: Partial<SpeedToLeadInput> = {}): SpeedToLeadInput {
 async function openSpeedToLeadApproval(overrides: Partial<SpeedToLeadInput> = {}) {
   const booted = await bootCare();
   booted.harness.seed({
-    agents: [{ id: "elon-1", companyId: CO, name: "Elon", role: "ceo", status: "idle", urlKey: "elon" } as never],
+    agents: [{ id: "ceo-1", companyId: CO, name: "PiB", role: "ceo", status: "idle", urlKey: "pib" } as never],
   });
   const result = await onLeadStoredForSpeedToLead(booted.harness.ctx, stlInput(overrides));
   expect(result.skipped).toBe(false);
@@ -196,7 +196,7 @@ describe("speed-to-lead spam gate", () => {
   it("still drafts a real SEO prospect enquiry", async () => {
     const { harness, emit } = await bootCare();
     harness.seed({
-      agents: [{ id: "elon-1", companyId: CO, name: "Elon", role: "ceo", status: "idle", urlKey: "elon" } as never],
+      agents: [{ id: "ceo-1", companyId: CO, name: "PiB", role: "ceo", status: "idle", urlKey: "pib" } as never],
     });
     const result = await onLeadStoredForSpeedToLead(
       harness.ctx,
@@ -241,7 +241,7 @@ describe("speed-to-lead draft-only", () => {
   it("creates approval + mail.draft.requested, never a send", async () => {
     const { harness, store, emit } = await bootCare();
     harness.seed({
-      agents: [{ id: "elon-1", companyId: CO, name: "Elon", role: "ceo", status: "idle", urlKey: "elon" } as never],
+      agents: [{ id: "ceo-1", companyId: CO, name: "PiB", role: "ceo", status: "idle", urlKey: "pib" } as never],
     });
     const result = await onLeadStoredForSpeedToLead(harness.ctx, stlInput({ leadKey: "form:stl-1" }));
     expect(result.skipped).toBe(false);
@@ -258,7 +258,7 @@ describe("speed-to-lead CEO ping", () => {
     const { harness, result, row } = await openSpeedToLeadApproval({ leadKey: "form:stl-ping" });
     const ping = (await harness.ctx.issues.list({ companyId: CO, originKind: "plugin:partnersinbiz.crm", originId: `crm:stl-ping:${result.approvalId}`, limit: 1 }))[0];
     expect(ping).toBeTruthy();
-    expect(ping!.assigneeAgentId).toBe("elon-1");
+    expect(ping!.assigneeAgentId).toBe("ceo-1");
     const body = String(ping!.description ?? "");
     const lines = body.trim().split("\n").filter(Boolean);
     expect(lines).toHaveLength(3);
@@ -339,7 +339,7 @@ describe("speed-to-lead Jagter / sequence reply", () => {
   it("drafts with sequence_reply source and keeps the Gmail thread on the approval", async () => {
     const { harness, store, emit } = await bootCare();
     harness.seed({
-      agents: [{ id: "elon-1", companyId: CO, name: "Elon", role: "ceo", status: "idle", urlKey: "elon" } as never],
+      agents: [{ id: "ceo-1", companyId: CO, name: "PiB", role: "ceo", status: "idle", urlKey: "pib" } as never],
     });
     const result = await onLeadStoredForSpeedToLead(
       harness.ctx,
@@ -365,7 +365,7 @@ describe("speed-to-lead client-org leads (PAR-6363)", () => {
   async function bootWithCeo() {
     const booted = await bootCare();
     booted.harness.seed({
-      agents: [{ id: "elon-1", companyId: CO, name: "Elon", role: "ceo", status: "idle", urlKey: "elon" } as never],
+      agents: [{ id: "ceo-1", companyId: CO, name: "PiB", role: "ceo", status: "idle", urlKey: "pib" } as never],
     });
     return booted;
   }

@@ -13,6 +13,12 @@ packages:
   - ui
   - cli
 
+# Keep in sync with package.json#pnpm.neverBuiltDependencies (newer pnpm reads
+# it only from here). onnxruntime-node's install script only downloads CUDA and
+# TensorRT libraries; its CPU binaries ship in the tarball (PAR-10126).
+neverBuiltDependencies:
+  - onnxruntime-node
+
 # Keep in sync with package.json#pnpm.patchedDependencies. Newer pnpm
 # versions read patch configuration only from the workspace manifest.
 patchedDependencies:

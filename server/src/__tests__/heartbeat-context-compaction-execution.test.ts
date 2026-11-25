@@ -105,7 +105,7 @@ describe.skipIf(!support.supported)("heartbeat context compaction execution", ()
     try {
       const [message] = await f.db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issue.id,
         authorType: "user", authorUserId: f.userId, body: "Start this conversation." }).returning();
-      const first = await heartbeat.wakeup(f.agentId, { source: "on_demand", triggerDetail: "manual", reason: "issue_commented",
+      const first = await heartbeat.wakeup(f.agentId, { causingActor: "system", source: "on_demand", triggerDetail: "manual", reason: "issue_commented",
         requestedByActorType: "user", requestedByActorId: f.userId, manualUserWake: true,
         payload: { issueId: f.issue.id, commentId: message.id },
         contextSnapshot: { issueId: f.issue.id, taskKey: f.issue.id, wakeCommentId: message.id } });
@@ -146,7 +146,7 @@ describe.skipIf(!support.supported)("heartbeat context compaction execution", ()
       expect(await f.db.select().from(issueComments).where(eq(issueComments.issueId, f.issue.id))).toEqual(commentsBefore);
       expect(await f.db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, f.issue.id))).toEqual(interactionsBefore);
       if (question) expect(question.status).toBe("pending");
-      expect(await heartbeat.wakeup(f.agentId, { source: "automation", triggerDetail: "system", reason: "issue.continuation_recovery",
+      expect(await heartbeat.wakeup(f.agentId, { causingActor: "system", source: "automation", triggerDetail: "system", reason: "issue.continuation_recovery",
         requestedByActorType: "system", payload: { issueId: f.issue.id }, contextSnapshot: { issueId: f.issue.id } })).toBeNull();
       expect(backend.startTurn).toHaveBeenCalledTimes(2);
     } finally {

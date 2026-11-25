@@ -76,3 +76,15 @@ export function visibleKpis(kpis: KpiEntry[], showAll: boolean): KpiEntry[] {
   const unique = dedupeKpis(kpis);
   return showAll ? unique : unique.filter((kpi) => !isQuietKpi(kpi));
 }
+
+/** The most tiles a group shows in a part-width panel (two rows of two). */
+export const KPI_PANEL_MAX = 4;
+
+/**
+ * True when a group takes the whole row. A group with many tiles next to one
+ * with two made the short panels as tall as the long one, mostly empty; on its
+ * own row the long group's tiles run across the page and every panel is full.
+ */
+export function kpiPanelWide(count: number): boolean {
+  return count > KPI_PANEL_MAX;
+}

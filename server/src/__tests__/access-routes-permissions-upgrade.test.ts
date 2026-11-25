@@ -44,7 +44,7 @@ async function createApp(db: Db, companyId: string, userId: string) {
       userId,
       source: "local_implicit",
       companyIds: [companyId],
-      memberships: [{ companyId, membershipRole: "owner", status: "active" }],
+      memberships: [{ companyId, membershipRole: "owner", status: "active", restricted: false, restrictionMode: "off" }],
       isInstanceAdmin: true,
     };
     next();

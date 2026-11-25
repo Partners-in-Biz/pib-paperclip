@@ -32,6 +32,14 @@ import { agentConfigurationRevision } from "../../../lib/agent-configuration-rev
 
 const createLifecycleStore = (db: Db) => createStore(db, createAgentLifecycleEffects());
 
+// PAR-9961: a fake remote check for the ssh pause test; nothing else uses ssh here.
+const sshCheck = vi.hoisted(() => vi.fn());
+vi.mock("@paperclipai/adapter-utils/ssh", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@paperclipai/adapter-utils/ssh")>()),
+  checkRemoteRun: sshCheck,
+  runSshCommand: vi.fn(async () => ({ stdout: "removed\n", stderr: "" })),
+}));
+
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_AGENT_LIFECYCLE_TEST_DATABASE_URL");
 const support = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("agent lifecycle commands", () => {
@@ -227,7 +235,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       value.use("/api", agentRoutes(db)); value.use(errorHandler); return value;
     }
     const board: Express.Request["actor"] = { type: "board", source: "session", userId: "board", companyIds: [companyId],
-      memberships: [{ companyId, membershipRole: "member", status: "active" }] };
+      memberships: [{ companyId, membershipRole: "member", status: "active", restricted: false, restrictionMode: "off" }] };
     const setupId = randomUUID();
     const body = { setupId, name: "Wizard agent", adapterType: "process" };
     const url = `/api/companies/${companyId}/agents`;
@@ -649,6 +657,59 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await db.update(agents).set({ lifecycleOperation: sql`${agents.lifecycleOperation} - 'retryAt'` }).where(eq(agents.id, agent.id));
     await work.process(agent.id); await work.process(agent.id);
     expect(await current(agent.id)).toMatchObject({ lifecycleState: "ready", lifecycleHolds: [] });
+  });
+
+  it("pauses an agent whose cancelled ssh run's remote group is gone (PAR-9961)", async () => {
+    const agent = await hire();
+    const [environment] = await db.insert(environments).values({ name: `ssh-${randomUUID()}`, driver: "ssh",
+      status: "active", config: { host: "mac.test", port: 22, username: "max", remoteWorkspacePath: "/Users/max/ws",
+        privateKey: null, knownHosts: null, strictHostKeyChecking: true } }).returning();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, status: "cancelled",
+      invocationSource: "on_demand", startedAt: new Date(), finishedAt: new Date() }).returning();
+    await db.insert(environmentLeases).values({ companyId, environmentId: environment!.id, heartbeatRunId: run!.id,
+      provider: "ssh", providerLeaseId: `ssh://max@mac.test:22/Users/max/ws`, status: "active",
+      metadata: { remoteWorkspacePath: "/Users/max/ws", remoteRunDir: `/Users/max/ws/.paperclip-runs/${run!.id}` } });
+    sshCheck.mockResolvedValue({ result: "gone", basis: "group_empty", checkedAt: new Date().toISOString() });
+    const work = worker(createLifecycleDriver(db, {} as never).runHost);
+    await createAgentLifecycle(db).pauseAgent(agent.id);
+    await work.process(agent.id);
+    expect((await current(agent.id)).lifecycleState).toBe("paused");
+    expect(sshCheck).toHaveBeenCalled();
+  });
+
+  it("names the unconfirmed ssh run, host and last check in the pause status, and clears it once gone (PAR-9962)", async () => {
+    const agent = await hire();
+    const [environment] = await db.insert(environments).values({ name: `ssh-${randomUUID()}`, driver: "ssh",
+      status: "active", config: { host: "mac.test", port: 22, username: "max", remoteWorkspacePath: "/Users/max/ws",
+        privateKey: null, knownHosts: null, strictHostKeyChecking: true } }).returning();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, status: "cancelled",
+      invocationSource: "on_demand", startedAt: new Date(), finishedAt: new Date() }).returning();
+    const [lease] = await db.insert(environmentLeases).values({ companyId, environmentId: environment!.id, heartbeatRunId: run!.id,
+      provider: "ssh", providerLeaseId: `ssh://max@mac.test:22/Users/max/ws`, status: "active",
+      metadata: { remoteWorkspacePath: "/Users/max/ws", remoteRunDir: `/Users/max/ws/.paperclip-runs/${run!.id}` } }).returning();
+    sshCheck.mockResolvedValue({ result: "unknown", basis: "check_failed", checkedAt: new Date().toISOString() });
+    // The real driver's runHost and pendingDetail; no plugins.
+    const detailed = configureAgentLifecycle(db, { ...createLifecycleDriver(db, {} as never),
+      requiredPluginIds: async () => [], runPlugin: async () => "complete" });
+    workers.push(detailed);
+    await createAgentLifecycle(db).pauseAgent(agent.id);
+    await detailed.process(agent.id);
+    const waiting = await current(agent.id);
+    expect(waiting.lifecycleState).toBe("pausing");
+    const [held] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, lease!.id));
+    const next = String(held!.metadata?.sshNextCheckAt).slice(11, 16);
+    expect(waiting.lifecycleOperation?.statusDetail).toBe(`Waiting for proof that run ${run!.id} on mac.test has stopped `
+      + `(last check: unknown/check_failed, next ${next} UTC).`);
+
+    await db.update(environmentLeases).set({ metadata: { ...held!.metadata, sshNextCheckAt: new Date(0).toISOString() } })
+      .where(eq(environmentLeases.id, lease!.id));
+    await db.update(agents).set({ lifecycleOperation: { ...waiting.lifecycleOperation!, retryAt: new Date(0).toISOString() } })
+      .where(eq(agents.id, agent.id));
+    sshCheck.mockResolvedValue({ result: "gone", basis: "group_empty", checkedAt: new Date().toISOString() });
+    await detailed.process(agent.id);
+    const paused = await current(agent.id);
+    expect(paused.lifecycleState).toBe("paused");
+    expect(paused.lifecycleOperation?.statusDetail).toBeUndefined();
   });
 
   it("does not prepare a proposed hire until approval", async () => {
@@ -1084,7 +1145,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       app.use("/api", agentRoutes(db)); app.use(errorHandler); return app;
     }
     const board: Express.Request["actor"] = { type: "board", source: "session", userId: "board", companyIds: [companyId],
-      memberships: [{ companyId, membershipRole: "admin", status: "active" }] };
+      memberships: [{ companyId, membershipRole: "admin", status: "active", restricted: false, restrictionMode: "off" }] };
     await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "board", membershipRole: "admin" });
     await db.insert(principalPermissionGrants).values(["agents:create", "agents:configure"].map(permissionKey => ({ companyId, principalType: "user", principalId: "board", permissionKey })));
     const url = `/api/agents/${agent.id}/lifecycle/retry`;

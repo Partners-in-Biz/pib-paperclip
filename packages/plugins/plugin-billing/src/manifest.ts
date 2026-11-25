@@ -51,6 +51,8 @@ const instanceConfigSchema: JsonSchema = {
         phone: text("Phone"),
         vatNumber: text("VAT number", "When set, documents are titled Tax invoice / Tax credit note."),
         registrationNumber: text("Company registration number"),
+        logoUrl: text("Logo address", "An https link to your logo as a PNG or JPEG (up to 2 MB). It prints top left on invoices, quotes, credit notes and statements. Wide logos look best."),
+        brandColor: text("Brand colour", "A hex colour such as #14304f for headings, the table header and the amount due. Empty: navy."),
       },
     },
     payment: {
@@ -200,7 +202,7 @@ const instanceConfigSchema: JsonSchema = {
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.21.2",
+  version: "0.23.0",
   displayName: "Billing",
   description: "Invoices, quotes, credit notes, EFT proof of payment, bills, expenses, time and retainers. Agents draft and ask; a person approves sending and money.",
   author: "Partners in Biz",
@@ -236,7 +238,8 @@ const manifest: PaperclipPluginManifestV1 = {
     "access.members.read",
   ],
   entrypoints: { worker: "./dist/worker.js", ui: "./dist/ui" },
-  database: { namespaceSlug: "billing", migrationsDir: "migrations", coreReadTables: ["issues"] },
+  // A3 (PAR-12643): heartbeat_runs is read-only; the access guard finds the acting person of a tool call. Stop-first.
+  database: { namespaceSlug: "billing", migrationsDir: "migrations", coreReadTables: ["issues", "heartbeat_runs"] },
   tools: BILLING_TOOLS,
   webhooks: [
     {
@@ -358,6 +361,8 @@ const manifest: PaperclipPluginManifestV1 = {
     slots: [
       { type: "page", id: "billing-page", displayName: "Billing", exportName: "BillingPage", routePath: "billing" },
       { type: "sidebar", id: "billing-sidebar", displayName: "Billing", exportName: "BillingSidebar", order: 42 },
+      // A board card for one invoice (PAR-14420). The worker answers the three `canvas.cards.*` actions.
+      { type: "canvasNode", id: "card-invoice", displayName: "Invoice", exportName: "BillingInvoiceCard", entityCard: { kind: "invoice", search: true, related: true } },
     ],
   },
 };

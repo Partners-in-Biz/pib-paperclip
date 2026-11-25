@@ -23,6 +23,8 @@ import { INSTANCE_SETTINGS_PATH_PREFIX } from "@/lib/instance-settings";
 import { SIDEBAR_SCROLL_RESET_STATE } from "@/lib/navigation-scroll";
 import { queryKeys } from "@/lib/queryKeys";
 import { useCompany } from "@/context/CompanyContext";
+import { useMemberRestriction } from "@/context/MemberRestrictionContext";
+import { RESTRICTED_MEMBER_LANDING_PATH } from "@/lib/member-restriction";
 import { useCloudInstance } from "@/hooks/useCloudInstance";
 import { useHiddenSettings } from "@/hooks/useHiddenSettings";
 import { usePluginSlots } from "@/plugins/slots";
@@ -44,6 +46,7 @@ function isSandboxProviderOnly(plugin: PluginRecord): boolean {
 
 export function CompanySettingsSidebar() {
   const { selectedCompanyId } = useCompany();
+  const { enforced: memberRestricted } = useMemberRestriction();
   const { hidden: hiddenSettings } = useHiddenSettings();
   const showPage = (pageKey: string) => !hiddenSettings.has(pageKey);
   const showPlugins = showPage("instance.plugins");
@@ -93,7 +96,8 @@ export function CompanySettingsSidebar() {
         className="flex h-(--sz-60px) shrink-0 items-center px-3"
       >
         <div data-slot="settings-back-group" className={`${primarySidebarStyles.group} w-full`}>
-          <SidebarNavItem to="/dashboard" label="Back to app" icon={ArrowLeft} />
+          {/* A restricted member has no dashboard; his way back is his inbox (PAR-12608 4.6). */}
+          <SidebarNavItem to={memberRestricted ? RESTRICTED_MEMBER_LANDING_PATH : "/dashboard"} label="Back to app" icon={ArrowLeft} />
         </div>
       </div>
       <nav

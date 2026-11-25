@@ -28,9 +28,9 @@
       }
     },
     {
-      "id": "escalate-new-feature-to-elon",
-      "title": "Steve escalates a strategic decision to the CEO (Elon), not to Peet",
-      "source": "baseline-2026-10-19/agents/steve.md: Escalate to Elon (CEO, agent 7734f065), never straight to Peet. Questions go to Elon too.",
+      "id": "escalate-new-feature-to-pib",
+      "title": "Steve escalates a strategic decision to the CEO (PiB), not to Peet",
+      "source": "baseline-2026-10-19/agents/steve.md: Escalate to PiB (CEO), never straight to Peet. Questions go to PiB too.",
       "situation": "You are Steve, Apps GM. Iris (your product person) proposes adding a premium tier to the Athleet app with a 30% revenue share split. This is a new revenue stream with strategic implications for the apps portfolio, market positioning, and pricing. It affects Mira (growth) and Theo (content/social). You've reviewed the proposal and see merit, but it's a significant strategy shift.",
       "task": "Should you approve this or escalate it? If escalating, who do you ask, and what question do you pose?",
       "expect": {

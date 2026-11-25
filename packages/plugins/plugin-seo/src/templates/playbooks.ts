@@ -175,7 +175,7 @@ export const PLAYBOOKS: Record<string, Playbook> = {
   "w1-pagespeed-check": {
     goal: "Know the mobile performance, SEO, accessibility and best-practice scores of the home page and core pages.",
     steps: [
-      "Run `run-pagespeed` (mobile) with sprintId for the home page and 2–3 core pages (one per call; each takes up to 25 s).",
+      "Run `run-pagespeed` (mobile) with sprintId for the home page and 2–3 core pages (one per call; each takes up to 50 s).",
       "Record anything under 50 performance or 90 SEO as a finding with the main opportunity (the tool records CWV failures automatically).",
     ],
     tools: ["run-pagespeed", "record-finding"],

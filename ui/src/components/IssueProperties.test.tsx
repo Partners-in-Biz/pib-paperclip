@@ -212,9 +212,12 @@ async function act(callback: () => void | Promise<void>) {
 }
 
 async function flush() {
-  await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  });
+  // Two ticks: the label list waits for the session (member-restriction gate, PAR-12930).
+  for (let tick = 0; tick < 2; tick += 1) {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
 }
 
 /**
@@ -1263,6 +1266,28 @@ describe("IssueProperties", () => {
 
     act(() => root.unmount());
   });
+
+  it.each([["enforce", false], ["report", true]] as const)(
+    "reads accepted plans and the source routine only when open, restricted under %s (AC-G10)",
+    async (mode, open) => {
+      mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-1" },
+        memberRestrictions: [{ companyId: "company-1", restricted: true, mode }] });
+      mockIssuesApi.listAcceptedPlanDecompositions.mockClear();
+      mockRoutinesApi.get.mockResolvedValue({ id: "routine-1", title: "Nightly triage" });
+      const root = renderProperties(container, {
+        issue: createIssue({ originKind: "routine_execution", originId: "routine-1" }),
+        childIssues: [],
+        onUpdate: vi.fn(),
+        inline: true,
+      });
+      await flush();
+      await flush();
+      expect(mockIssuesApi.listAcceptedPlanDecompositions.mock.calls.length > 0).toBe(open);
+      expect(mockRoutinesApi.get.mock.calls.length > 0).toBe(open);
+      expect(container.textContent?.includes("Nightly triage")).toBe(open);
+      act(() => root.unmount());
+    },
+  );
 
   it("omits the Routine row while the source routine is still loading", async () => {
     mockRoutinesApi.get.mockReturnValue(new Promise(() => {}));
@@ -3855,6 +3880,35 @@ describe("IssueProperties", () => {
     });
     act(() => root.unmount());
   });
+
+  it.each([["enforce", false], ["report", true]] as const)(
+    "offers and reads reusable workspaces only when open, restricted under %s (PAR-12952, AC-G10)",
+    async (mode, open) => {
+      mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-1" },
+        memberRestrictions: [{ companyId: "company-1", restricted: true, mode }] });
+      mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
+      mockProjectsApi.list.mockResolvedValue([createProject({
+        executionWorkspacePolicy: { enabled: true, defaultMode: "shared_workspace" },
+      })]);
+      const onUpdate = vi.fn();
+      const root = renderProperties(container, {
+        issue: createIssue({ projectId: "project-1" }),
+        childIssues: [],
+        onUpdate,
+        inline: true,
+      });
+      await waitForAssertion(() => expect(findRowTrigger(container, "Execution")).toBeDefined());
+      act(() => findRowTrigger(container, "Execution")!.click());
+      await flush();
+      expect(container.textContent?.includes("Reuse existing workspace")).toBe(open);
+      expect(mockExecutionWorkspacesApi.list.mock.calls.length > 0).toBe(open);
+      // He still picks a mode on his own task.
+      act(() => Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent?.includes("New isolated workspace"))!.click());
+      expect(onUpdate).toHaveBeenCalledWith(expect.objectContaining({ executionWorkspacePreference: "isolated_workspace" }));
+      act(() => root.unmount());
+    },
+  );
 
   it("searches reusable workspaces and saves the selected workspace", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });

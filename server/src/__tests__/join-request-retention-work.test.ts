@@ -62,7 +62,7 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     return Number((BigInt(row!.micros) + 999n) / 1000n) + delay;
   }
   const authActor = () => ({ type: "board" as const, source: "local_implicit" as const, userId, companyIds: [companyId], isInstanceAdmin: true,
-    memberships: [{ companyId, membershipRole: "owner", status: "active" }] });
+    memberships: [{ companyId, membershipRole: "owner", status: "active", restricted: false, restrictionMode: "off" as const }] });
   const mutation = (id: string) => ({ companyId, sourceKind: "join_request" as const, sourceId: id, authActor: authActor(),
     actor: { actorType: "user" as const, actorId: userId, agentId: null, userId, runId: null, agentApiKeyId: null, responsibleUserId: userId } });
   async function invite(database: Db = db) {

@@ -8,6 +8,8 @@ const { probeAll } = require('./probe.cjs');
 
 const COMMANDS = ['open', 'goto', 'click', 'fill', 'text', 'shot', 'close'];
 const MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
+// open launches Chromium and waits for networkidle (~7 s on Paperclip), so 5 s was too short.
+const SOCKET_TIMEOUT_MS = Number(process.env.PIB_BROWSER_CLI_TIMEOUT_MS) || 60000;
 
 async function send(request, { socketPath = '/run/pib-browser/sock', maxResponseBytes = MAX_RESPONSE_BYTES } = {}) {
   return new Promise((resolve, reject) => {
@@ -19,7 +21,7 @@ async function send(request, { socketPath = '/run/pib-browser/sock', maxResponse
     const timeout = setTimeout(() => {
       client.destroy();
       reject(new Error('Socket timeout'));
-    }, 5000);
+    }, SOCKET_TIMEOUT_MS);
 
     client.on('connect', () => {
       client.write(JSON.stringify(request) + '\n');
@@ -125,6 +127,8 @@ Commands:
   shot      Take a screenshot
   close     Close the browser context
   probe     Check browser session status for identities
+  handoff-open  Open the login window for a person on display :99 (only while root's
+                hand-off flag exists; needs --identity only, no token or issue)
 
 Options:
   --identity ID         Identity string (required for most commands)
@@ -163,6 +167,39 @@ async function run(argv, env, deps = {}) {
   }
 
   const { cmd } = parsed;
+
+  // Hand-off window for a person (PAR-14022). Root's flag authorises it, so no agent token or issue is needed:
+  // `pib-root browser-handoff-start` runs it as root right after it makes the flag.
+  if (cmd === 'handoff-open') {
+    const identity = parsed.identity;
+    if (!identity) {
+      stderr.write('Error: --identity is required\n');
+      return 2;
+    }
+    let response;
+    try {
+      response = await sendFn({ cmd: 'handoff-open', identity, args: {} }, {
+        socketPath: env.PIB_BROWSER_SOCKET || '/run/pib-browser/sock',
+        maxResponseBytes
+      });
+    } catch (e) {
+      stderr.write('Error: connection failed\n');
+      return 3;
+    }
+    const { exit: exitCode = 2, ok, reason, data } = response || {};
+    if (exitCode !== 0 || !ok) {
+      stderr.write(`Error: ${reason || 'handoff_open_failed'}\n`);
+      return exitCode || 2;
+    }
+    if (parsed.json) {
+      stdout.write(JSON.stringify(data) + '\n');
+    } else {
+      const minutes = Math.round((data?.timeoutMs || 0) / 60000);
+      stdout.write(`Hand-off window open for ${identity} on display :99 at ${data?.url || 'the login page'}.\n`
+        + `It closes by itself once you are logged in, when the hand-off flag is removed, or after ${minutes} min.\n`);
+    }
+    return 0;
+  }
 
   // Handle probe command (doesn't require identity)
   if (cmd === 'probe') {
@@ -324,7 +361,7 @@ async function run(argv, env, deps = {}) {
       root: evidenceRoot,
       issue,
       step,
-      now,
+      now: typeof now === 'function' ? now() : now,
       b64: data.bytes,
       sha256: data.sha256
     });

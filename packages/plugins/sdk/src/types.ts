@@ -56,7 +56,7 @@ import type {
   PrincipalType,
   EnvSecretRefBinding,
 } from "@paperclipai/shared";
-import type { PluginPerformActionContext } from "./protocol.js";
+import type { PluginDataContext, PluginPerformActionContext } from "./protocol.js";
 
 // ---------------------------------------------------------------------------
 // Re-exports from @paperclipai/shared (plugin authors import from one place)
@@ -258,11 +258,30 @@ export interface PluginJobContext {
 // ---------------------------------------------------------------------------
 
 /**
+ * The person a call works for, as the host computed it. Sent on the action
+ * caller, the API-route caller and the tool run context. A host older than this
+ * SDK leaves both fields out; treat a missing value as unknown, not as "nobody".
+ */
+export interface PluginActingPersonContext {
+  /**
+   * The person the caller works for: a signed-in user, or the person a run, a
+   * long-lived agent key or an agent-purpose connection works for. Null for the
+   * local board and for calls with no person.
+   */
+  onBehalfOfUserId?: string | null;
+  /**
+   * True only when that person is restricted in this company and the company
+   * enforces member restrictions. False in every other case.
+   */
+  onBehalfOfRestricted?: boolean;
+}
+
+/**
  * Run context passed to a plugin tool handler when an agent invokes the tool.
  *
  * @see PLUGIN_SPEC.md §13.10 — `executeTool`
  */
-export interface ToolRunContext {
+export interface ToolRunContext extends PluginActingPersonContext {
   /** UUID of the agent invoking the tool. */
   agentId: string;
   /** UUID of the current agent run. */
@@ -1011,9 +1030,14 @@ export interface PluginDataClient {
    * Register a handler for a plugin-defined data key.
    *
    * @param key - Stable string identifier for this data type (e.g. `"sync-health"`)
-   * @param handler - Async function that receives request params and returns JSON-serializable data
+   * @param handler - Async function that receives request params plus the
+   *   host's immutable acting person (`context.actor`, `{}` from an older host)
+   *   and returns JSON-serializable data. Handlers may ignore the second argument.
    */
-  register(key: string, handler: (params: Record<string, unknown>) => Promise<unknown>): void;
+  register(
+    key: string,
+    handler: (params: Record<string, unknown>, context: PluginDataContext) => Promise<unknown>,
+  ): void;
 }
 
 /**
@@ -1189,8 +1213,18 @@ export interface PluginTelemetryClient {
 export interface PluginCompaniesClient {
   /**
    * List companies visible to this plugin.
+   *
+   * Inside a host invocation (action, data, tool, page route) the answer is the
+   * invocation's company. Outside one (jobs, timers, webhooks, start-up) it is
+   * every company.
+   *
+   * `actionableOnly: true` returns only the companies this call may act for:
+   * inside an invocation, the invocation's company (saved settings or not);
+   * outside one, the companies with saved settings for this plugin. Both
+   * filters run before `limit` and `offset`. A host that predates the
+   * parameter ignores it and returns the plain answer.
    */
-  list(input?: { limit?: number; offset?: number }): Promise<Company[]>;
+  list(input?: { limit?: number; offset?: number; actionableOnly?: boolean }): Promise<Company[]>;
 
   /**
    * Get one company by ID.

@@ -17,7 +17,20 @@ Daemon and CLI for capturing logged-in browser evidence. Not installed by defaul
 
 ### Status and Evidence
 - `pib-browser probe --all --identities <list>` - Check browser session status for identities, writes `/home/paperclip/pib-tools/browser-status.json`
-- `pib-evidence <png-file> --issue PAR-N --step <name>` - Upload a PNG screenshot to an issue as an artifact (step: required, string; returns attachmentId and sha256 of local file)
+- `pib-evidence <png-file> --issue PAR-N --step <name>` - Upload a PNG screenshot to an issue as an artifact (step: required, string; returns attachmentId, sha256 of local file and url of the stored artifact; finds the upload script via PIB_UPLOAD_ARTIFACT_SCRIPT, the checkout, or the instance skills store, and names the paths it tried if none exists)
+
+### Person hand-off (log in again by hand)
+- `pib-browser handoff-open --identity <id>` - Open a headed Chromium window on display `:99` with the identity's profile, on the site's `loggedIn.url` (a logged-out profile lands on the site's login page). Needs no token or issue: root's flag is the authority. Refused (exit 7 `handoff_not_active`) unless the root-owned flag `/run/pib-browser/handoff/<id>` exists, and refused (exit 2 `handoff_already_open`) while a window for that identity is open.
+
+The window stays open (no `session_expired` close, unlike `open`) and closes by itself when the `loggedIn.expect` text shows (logged in), the flag is removed, the person closes it, or after 30 min (`PIB_BROWSER_HANDOFF_TIMEOUT_MS`). The origin wall still applies, so a site that logs in on another origin needs that origin in `sites.json`. While it is open, an agent `open` on that identity gets exit 3 `handoff_open` (Chromium allows one window per profile); any agent session on the identity is closed when the window opens. No agent verb can reach the window, and the flag no longer lifts the `fill` rules: agents still cannot fill a password field, only the person types it.
+
+Procedure (root part from PAR-9356):
+
+1. On the server: `sudo pib-root browser-handoff-start <id>` makes the flag, starts `pib-vnc` (x11vnc on `:99`, bound to 127.0.0.1:5900, stops after 30 min) and runs `pib-browser handoff-open --identity <id>`.
+2. On your computer: `ssh -N -L 5900:localhost:5900 <user>@<server>` and keep it open.
+3. Point a VNC client at `localhost:5900` and log in in the window. It closes by itself when you are logged in.
+4. On the server: `sudo pib-root browser-handoff-stop <id>` removes the flag (root-owned; only root can) and stops `pib-vnc`.
+5. An agent runs `pib-browser probe --all --identities <id> --issue PAR-N`; the login shows ok.
 
 ## Exit Codes
 
@@ -31,6 +44,15 @@ Daemon and CLI for capturing logged-in browser evidence. Not installed by defaul
 | 6    | Browser session expired |
 | 7    | Refused by policy |
 | 8    | Approval required |
+
+## Sessions, write clicks and errors
+
+- A session opened with `open` stays open until `close`, an origin-wall or policy refusal (exit 7), or a dead browser (`browser_closed`). A missing or ambiguous click target, a slow page or a write click without approval leaves it open.
+- `click` needs `--approval` when the selector, the `--text` filter or the target element's own label (aria-label, title, value or visible text) contains a word from the site's `destructive.text` list (for Paperclip: save, create, assign, close and so on). `button:has-text(Save)` without `--approval` returns exit 8 `needs_approval` and nothing is clicked.
+- Error reasons name the cause: `browser_launch_failed`, `browser_closed` (exit 3); `timeout`, `target_ambiguous` (exit 4); anything else is `internal: <ErrorName>`.
+- The daemon writes one JSON line per failure to `/run/pib-browser/errors.log` (readable by the `paperclip` group; `PIB_BROWSER_ERROR_LOG` overrides). Each line has the time, command, issue, identity, phase, error name, the first message line and up to ten stack frames. Tokens, query strings, fill values and page content are never logged. `/run` is cleared when the service restarts; the previous file rotates to `errors.log.1` at 1 MB.
+
+  `tail -n 5 /run/pib-browser/errors.log | jq .`
 
 ## Policy and Credentials
 
@@ -51,8 +73,11 @@ The daemon reads the following environment variables at startup:
 | `PIB_BROWSER_HANDOFF_DIR` | `/run/pib-browser/handoff` | Directory for handoff state |
 | `PIB_BROWSER_SOCKET` | (required) | Unix socket path for daemon |
 | `PIB_BROWSER_SOCKET_MODE` | `0o660` | Socket file permissions (octal) |
+| `PIB_BROWSER_ERROR_LOG` | `/run/pib-browser/errors.log` | Agent-readable error log (JSON lines, no secrets or page content) |
 | `PIB_BROWSER_CHROMIUM` | (unset) | Explicit path to Chromium executable |
 | `PIB_BROWSER_HEADLESS` | `0` | `0` for headed (default), `1` for headless |
+| `PIB_BROWSER_FAKE_MIC` | unset | `1` launches Chromium with a fake microphone (beep tone, not speech) and grants mic permission. For voice/Talk checks. |
+| `PIB_BROWSER_MOBILE` | unset | `1` uses a 390x844 touch viewport with an iPhone user agent. |
 | `DISPLAY` | `:99` | X server display for headed mode (typically set by systemd service to `:99` via Xvfb) |
 
 ## Build and Test

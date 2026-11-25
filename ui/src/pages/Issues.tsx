@@ -16,6 +16,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { collectLiveIssueIds } from "../lib/liveIssueIds";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "@/hooks/useSharedPolling";
+import { useMemberRestrictionGate } from "../hooks/useMemberRestrictionGate";
 import { queryKeys } from "../lib/queryKeys";
 import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
 import { EmptyState } from "../components/EmptyState";
@@ -241,19 +242,21 @@ function OrganizationIssues({
     enabled: !!selectedCompanyId,
   });
 
+  // Live runs are a closed list for a restricted member under `enforce` (AC-G10): no live marks.
+  const memberGate = useMemberRestrictionGate(selectedCompanyId);
   const liveRunsQueryKey = queryKeys.liveRuns(selectedCompanyId!);
   const sharedLiveRuns = useSharedPollingQuery({
     companyId: selectedCompanyId,
     resourceKey: "live-runs",
     queryKey: liveRunsQueryKey,
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && !memberGate.closed,
     // Event-sourced via LiveUpdatesProvider (GitHub issue 9627); no interval poll needed.
     refetchInterval: false,
     leaderOnly: true,
   });
   const { data: liveRuns, dataUpdatedAt: liveRunsUpdatedAt } = useQuery({
     queryKey: liveRunsQueryKey,
-    queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
+    queryFn: memberGate.guard(() => heartbeatsApi.liveRunsForCompany(selectedCompanyId!), []),
     enabled: sharedLiveRuns.enabled,
     refetchInterval: sharedLiveRuns.refetchInterval,
   });
@@ -315,7 +318,7 @@ function OrganizationIssues({
   const { data: issuePages, isFetchingNextPage, hasNextPage, fetchNextPage } = issuesQuery;
   const issuesView = useQueryView(issuesQuery);
   const issues = useMemo(() => mergeIssuePagesStable(issuePages?.pages ?? []) as Issue[], [issuePages]);
-  const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns, issues), [issues, liveRuns]);
+  const liveIssueIds = useMemo(() => collectLiveIssueIds(memberGate.closed ? undefined : liveRuns, issues), [issues, liveRuns, memberGate.closed]);
   const hasMoreServerIssues = syncedSearch.trim().length === 0
     && hasNextPage === true;
   const loadMoreServerIssues = useCallback(() => {

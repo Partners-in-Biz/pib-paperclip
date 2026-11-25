@@ -74,7 +74,8 @@ export async function checkCriticalTriggers(
   input: {
     agents: Array<{ status: string; id: string; name: string }>;
     authAgentIds: Set<string>;
-    healthLevel: "ok" | "warn" | "bad";
+    /** `unknown`: some checks did not finish and nothing is bad; condition 1 neither fires nor clears. */
+    healthLevel: "ok" | "warn" | "bad" | "unknown";
     publicBaseUrl?: string;
   },
   deps?: NotifyOwnerDeps,
@@ -90,31 +91,34 @@ export async function checkCriticalTriggers(
     const publicBaseUrl = input.publicBaseUrl || "https://paperclip.partnersinbiz.online";
     const cockpitUrl = `${publicBaseUrl.replace(/\/+$/, "")}/cockpit`;
 
-    // Condition 1: Health level is "bad" and new or worse
-    const levelKey = `critical:health:${companyId}`;
-    const rememberedLevel = await readCriticalLevel(ctx, levelKey);
-    // Map "ok" -> 0, "warn" -> 1, "bad" -> 2 for comparison
-    const levelMap = { ok: 0, warn: 1, bad: 2 };
-    const currentLevel = levelMap[input.healthLevel];
-    const previousLevel = rememberedLevel !== null ? parseInt(rememberedLevel, 10) : -1;
+    // Condition 1: Health level is "bad" and new or worse. "unknown" (checks did not finish) skips
+    // only this block: the remembered level stays, and conditions 2 and 3 still run.
+    if (input.healthLevel !== "unknown") {
+      const levelKey = `critical:health:${companyId}`;
+      const rememberedLevel = await readCriticalLevel(ctx, levelKey);
+      // Map "ok" -> 0, "warn" -> 1, "bad" -> 2 for comparison
+      const levelMap = { ok: 0, warn: 1, bad: 2 };
+      const currentLevel = levelMap[input.healthLevel];
+      const previousLevel = rememberedLevel !== null ? parseInt(rememberedLevel, 10) : -1;
 
-    // Fire if level is critical and (new or worse)
-    if (currentLevel === 2 && (previousLevel < 0 || currentLevel > previousLevel)) {
-      await notifyOwner(ctx, {
-        companyId,
-        class: "critical",
-        title: "System health critical",
-        body: "Critical system health issues detected. Check the Cockpit.",
-        issueRef: "critical:health",
-        ownerUserId,
-        url: cockpitUrl,
-      }, deps);
-      notified += 1;
-      // Deliberate: send notification, then upsert (duplicate over silence if upsert fails)
-      await upsertCriticalLevel(ctx, levelKey, String(currentLevel));
-    } else if (currentLevel < 2 && previousLevel >= 0) {
-      // Clear memory when condition clears (drops back below critical)
-      await upsertCriticalLevel(ctx, levelKey, null);
+      // Fire if level is critical and (new or worse)
+      if (currentLevel === 2 && (previousLevel < 0 || currentLevel > previousLevel)) {
+        await notifyOwner(ctx, {
+          companyId,
+          class: "critical",
+          title: "System health critical",
+          body: "Critical system health issues detected. Check the Cockpit.",
+          issueRef: "critical:health",
+          ownerUserId,
+          url: cockpitUrl,
+        }, deps);
+        notified += 1;
+        // Deliberate: send notification, then upsert (duplicate over silence if upsert fails)
+        await upsertCriticalLevel(ctx, levelKey, String(currentLevel));
+      } else if (currentLevel < 2 && previousLevel >= 0) {
+        // Clear memory when condition clears (drops back below critical)
+        await upsertCriticalLevel(ctx, levelKey, null);
+      }
     }
 
     // Condition 2: 4+ agents in error

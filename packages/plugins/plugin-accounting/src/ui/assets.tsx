@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import { useAccountingAction } from "./actions.js";
 import { Button, CompactRows, Field, Input, Modal, Section, Sheet, formatDate, formatMoney, formatMonth, tokens, useIsNarrow } from "@partnersinbiz/pib-plugin-ui";
 import type { LoadResult } from "./overview.js";
 import { AccountSelect, accountLabel, Muted, Row, small, StatusPill, Table, Td, toCents, today, useRunner } from "./shared.js";
@@ -52,13 +52,13 @@ const MAIN_CURRENCIES = ["USD", "EUR", "GBP", "AUD", "CAD", "CHF", "CNY", "JPY",
 
 export function AssetsTab({ data, onMessage }: { data: LoadResult; onMessage: (m: string) => void }) {
   const narrow = useIsNarrow();
-  const list = usePluginAction("accounting.assets");
-  const save = usePluginAction("accounting.save-asset");
-  const dispose = usePluginAction("accounting.dispose-asset");
-  const depreciate = usePluginAction("accounting.run-depreciation");
-  const fx = usePluginAction("accounting.fx");
-  const fetchFx = usePluginAction("accounting.fetch-fx");
-  const revalue = usePluginAction("accounting.revalue-fx");
+  const list = useAccountingAction("accounting.assets");
+  const save = useAccountingAction("accounting.save-asset");
+  const dispose = useAccountingAction("accounting.dispose-asset");
+  const depreciate = useAccountingAction("accounting.run-depreciation");
+  const fx = useAccountingAction("accounting.fx");
+  const fetchFx = useAccountingAction("accounting.fetch-fx");
+  const revalue = useAccountingAction("accounting.revalue-fx");
   const { busy, run } = useRunner(onMessage);
   const [assets, setAssets] = useState<Asset[] | null>(null);
   const [detail, setDetail] = useState<{ asset: Asset; schedule: ScheduleRow[] } | null>(null);

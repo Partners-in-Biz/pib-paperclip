@@ -19,6 +19,15 @@ const mockNavigate = vi.hoisted(() => vi.fn());
 const listInvitesMock = vi.hoisted(() => vi.fn());
 const listCloudStacksMock = vi.hoisted(() => vi.fn());
 const mockSearchParamsState = vi.hoisted(() => ({ current: new URLSearchParams() }));
+// Like the real client in jsdom, health fails unless a test answers it, so seeded health cache data stays.
+const healthMock = vi.hoisted(() => vi.fn(async (): Promise<Record<string, unknown>> => {
+  throw new Error("health unavailable in tests");
+}));
+const restrictionModeMock = vi.hoisted(() => vi.fn(async () => ({ mode: "off", deniedLast7Days: 0 })));
+
+vi.mock("@/api/health", () => ({ healthApi: { get: () => healthMock() } }));
+const sessionMock = vi.hoisted(() => vi.fn(async () => ({ user: { id: "user-1" } })));
+vi.mock("@/api/auth", () => ({ authApi: { getSession: () => sessionMock() } }));
 
 vi.mock("@/api/cloud", () => ({
   cloudApi: { listStacks: listCloudStacksMock },
@@ -39,6 +48,8 @@ vi.mock("@/api/access", () => ({
     listInvites: (companyId: string, options: unknown) => listInvitesMock(companyId, options),
     createCompanyInvite: vi.fn(),
     revokeInvite: vi.fn(),
+    getMemberRestrictionMode: () => restrictionModeMock(),
+    setMemberRestrictionMode: vi.fn(),
   },
 }));
 
@@ -272,6 +283,130 @@ describe("CompanyAccess", () => {
     expect(document.body.textContent).toContain("Update organization role and membership status");
     expect(document.body.textContent).not.toContain("Implicit grants from role");
     expect(document.body.textContent).not.toContain("permissionKey");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("shows the kill-switch banner, the switch count and the state label per member", async () => {
+    healthMock.mockResolvedValueOnce({ status: "ok", memberRestriction: "forced_off" });
+    restrictionModeMock.mockResolvedValueOnce({ mode: "enforce", deniedLast7Days: 2 });
+    const base = await listMembersMock();
+    base.members[1] = { ...base.members[1], restricted: true, restrictedPluginKeys: [], restrictedAgentIds: [] };
+    listMembersMock.mockResolvedValueOnce(base);
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <CompanyAccess />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.querySelector("[role='alert']")?.textContent).toContain("switched off for the whole server");
+    expect(container.textContent).toContain("2 would-refuse entries in the last 7 days");
+    // Under the kill switch an `enforce` company still reads "flag set, not enforced".
+    expect(container.textContent).toContain("flag set, not enforced");
+    expect(container.textContent).toContain("Full access");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("shows no banner when health does not report the kill switch", async () => {
+    healthMock.mockResolvedValueOnce({ status: "ok" });
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <CompanyAccess />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(healthMock).toHaveBeenCalled();
+    expect(container.textContent).toContain("Full access");
+    expect(container.querySelector("[role='alert']")).toBeNull();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("offers the Access control per member, locked on owner, admin and the signed-in person", async () => {
+    sessionMock.mockResolvedValueOnce({ user: { id: "user-4" } });
+    const base = await listMembersMock();
+    const extra = (id: string, role: string) => ({
+      ...base.members[1],
+      id: `member-${id}`,
+      principalId: `user-${id}`,
+      membershipRole: role,
+      user: { id: `user-${id}`, email: `${id}@example.test`, name: `Person ${id}`, image: null },
+    });
+    base.members.push(extra("3", "admin"), extra("4", "viewer"));
+    listMembersMock.mockResolvedValueOnce(base);
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <CompanyAccess />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const accessButton = (email: string) => {
+      const row = [...container.querySelectorAll("tr")].find((entry) => entry.textContent?.includes(email))!;
+      return [...row.querySelectorAll("button")].find((button) => button.textContent === "Access")!;
+    };
+    expect(accessButton("codexcoder@paperclip.local").disabled).toBe(true);
+    expect(accessButton("codexcoder@paperclip.local").parentElement?.title).toBe("Owners and admins cannot be restricted");
+    expect(accessButton("3@example.test").disabled).toBe(true);
+    expect(accessButton("4@example.test").disabled).toBe(true);
+    expect(accessButton("4@example.test").parentElement?.title).toBe("You cannot change your own access");
+    expect(accessButton("board@paperclip.local").disabled).toBe(false);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("hides the switch and skips the mode request for a member who cannot manage members", async () => {
+    const base = await listMembersMock();
+    base.members[1] = { ...base.members[1], restricted: true, restrictedPluginKeys: [], restrictedAgentIds: [] };
+    base.access = { ...base.access, currentUserRole: "operator", canManageMembers: false };
+    listMembersMock.mockReset();
+    listMembersMock.mockResolvedValue(base);
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <CompanyAccess />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.querySelector("[aria-label='Member restriction switch']")).toBeNull();
+    expect(restrictionModeMock).not.toHaveBeenCalled();
+    expect([...container.querySelectorAll("button")].some((button) => button.textContent === "Access")).toBe(false);
+    // Without the switch the page does not know the mode, so the flagged member reads plain "flag set".
+    expect(container.textContent).toContain("flag set");
+    expect(container.textContent).not.toContain("flag set, not enforced");
+    expect(container.textContent).not.toContain("restricted");
+    expect(container.textContent).toContain("Full access");
 
     await act(async () => {
       root.unmount();

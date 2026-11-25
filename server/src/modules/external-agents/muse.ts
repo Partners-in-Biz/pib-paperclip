@@ -591,7 +591,7 @@ function createMuseBroker(db:Db, publicOrigin?:string) {
     try {
       // The existing wake receipt PK reserves identity in the same transaction
       // as its queued run, including requests competing under different issues.
-      const run=await(await heartbeat()).wakeup(s.agentId,{source:"assignment",triggerDetail:"system",reason:"issue_assigned",payload:{issueId,museRequestId:c.requestId,museBindingId:b.id,museBindingGeneration:b.generation,museRequestDigest:requestDigest},contextSnapshot:{issueId},idempotencyKey:requestKey,requestedByActorType:"agent",requestedByActorId:s.agentId,allowRunCoalescing:false,
+      const run=await(await heartbeat()).wakeup(s.agentId,{source:"assignment",triggerDetail:"system",reason:"issue_assigned",payload:{issueId,museRequestId:c.requestId,museBindingId:b.id,museBindingGeneration:b.generation,museRequestDigest:requestDigest},contextSnapshot:{issueId},idempotencyKey:requestKey,causingActor:{type:"agent",agentId:s.agentId,runId:null},requestedByActorType:"agent",requestedByActorId:s.agentId,allowRunCoalescing:false,
         durableMuseRequest:{id:receiptId,companyId:s.companyId,agentId:s.agentId,issueId,requestId:c.requestId,idempotencyKey:requestKey,requestedAt:new Date(),bindingId:b.id,bindingGeneration:b.generation,requestDigest}});
       const reserved=await receipt();return reserved?replay(reserved):{status:"requested",issueId,runId:run?.id??null};
     } catch(error) {

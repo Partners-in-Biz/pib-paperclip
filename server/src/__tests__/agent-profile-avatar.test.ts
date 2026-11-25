@@ -79,7 +79,7 @@ it("rejects other agents, companies, viewers, and foreign asset references", asy
   for (const actor of [
     { type: "agent", agentId: other.agent.id, companyId: f.company.id },
     { type: "agent", agentId: other.agent.id, companyId: other.company.id },
-    { type: "board", source: "session", companyIds: [f.company.id], memberships: [{ companyId: f.company.id, status: "active", membershipRole: "viewer" }] },
+    { type: "board", source: "session", companyIds: [f.company.id], memberships: [{ companyId: f.company.id, status: "active", membershipRole: "viewer", restricted: false, restrictionMode: "off" }] },
   ] satisfies Request["actor"][]) await request(appFor(actor)).put(path).send({ imageBase64 }).expect(403);
   await request(appFor({ type: "none" })).put(path).send({ imageBase64 }).expect(401);
   const foreign = await setAgentProfileAvatar(db, storage, other.company.id, other.agent.id, { imageBase64 }, other.actor);
@@ -92,7 +92,7 @@ it("requires an agent configuration grant for board avatar changes", async () =>
   const userId = randomUUID();
   await db.insert(authUsers).values({ id: userId, name: "Member", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
   await db.insert(companyMemberships).values({ companyId: f.company.id, principalType: "user", principalId: userId, membershipRole: "member", status: "active" });
-  const app = appFor({ type: "board", source: "session", userId, companyIds: [f.company.id], memberships: [{ companyId: f.company.id, status: "active", membershipRole: "member" }] });
+  const app = appFor({ type: "board", source: "session", userId, companyIds: [f.company.id], memberships: [{ companyId: f.company.id, status: "active", membershipRole: "member", restricted: false, restrictionMode: "off" }] });
   const path = `/api/companies/${f.company.id}/agents/${f.agent.id}/avatar`;
   await request(app).put(path).send({ imageBase64 }).expect(403);
   await request(app).put(path).send({ imageBase64: null }).expect(403);

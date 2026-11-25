@@ -54,6 +54,7 @@ jobs:
   # 4-CPU / 16 GB machine and runs don't queue behind each other. It used to run on the VPS runner (pib-vps), where it
   # shared disk and memory with production: the disk guard stopped CI at 80% and a cancelled job's leftovers took a
   # runner offline. A fork pull request is safe here too (no VPS, read-only token).
+  # ffmpeg is installed in the job (the hosted image has none) so the Studio real-ffmpeg specs run instead of skipping.
   pib-plugins-ci:
     name: PiB plugins CI
     runs-on: ubuntu-latest
@@ -202,6 +203,13 @@ jobs:
         run: |
           read -ra f <<< "$PIB_FILTERS"
           pnpm -r --workspace-concurrency=3 "${f[@]}" --if-present run typecheck
+
+      - name: Install ffmpeg (Studio real-ffmpeg specs)
+        if: steps.scope.outputs.scope != 'none'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          ffmpeg -version | head -1
 
       - name: Test
         if: steps.scope.outputs.scope != 'none'

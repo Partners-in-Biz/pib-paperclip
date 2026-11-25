@@ -11,6 +11,7 @@ import {
 import {
   COCKPIT_ROUTE,
   configSaved,
+  createAccessGuard,
   hireTaskDraft,
   linkAgent,
   listCompanyAgents,
@@ -20,7 +21,6 @@ import {
   registerCrmProjection,
   registerCrmSiteProjection,
   registerDriveReplies,
-  registerGrowthTools,
   registerHireWatch,
   registerModuleWatch,
   registerRoleWatch,
@@ -31,15 +31,16 @@ import {
   toolOk,
   trackJob,
   unlinkAgent,
-  GROWTH_TOOL_NAMES,
+  type AccessGuard,
 } from "@partnersinbiz/pib-plugin-kit";
+import { ACCESS_TABLE, SEO_CALL_ACTIONS, seoCallAction } from "./access-table.js";
 import { cockpitSnapshot } from "./cockpit.js";
 import { gscRedirectUri, validateSeoConfig } from "./config.js";
 import { DAILY_JOB_KEY, PREVIEW_JOB_KEY, SKILL_CANONICAL_KEY, WEEKLY_JOB_KEY } from "./constants.js";
 import * as db from "./db.js";
 import { dispatch, HANDLERS, toolSummary, UI_ONLY_HANDLERS } from "./dispatch.js";
 import { scopeParamValue, scopeRedirect, sprintScope } from "./engine/scope.js";
-import { NAMESPACE } from "./namespace.js";
+import { NAMESPACE, PLUGIN_ID } from "./namespace.js";
 import { loadPreferencesView, savePreferencesFor } from "./preferences.js";
 import {
   defaultHireAssignee,
@@ -55,8 +56,9 @@ import {
 import { asParams, assignableUser, companyInfo, createEnv, errorMessage, reqStr, SeoError, str, type Actor, type Env } from "./service/common.js";
 import { gscConnectStart, gscDisconnect, gscOauthComplete } from "./service/gsc.js";
 import { deliverPreviewAnswers, handStuckPreviewsToSenior, nudgeStalledReviews, previewRows, refreshStalePreviews, reviveOrphanedChanges } from "./service/preview.js";
-import { DRAFT_RESULT_EVENT, draftApprovalRequests, onDraftResult, repairDraftLinks } from "./service/client-signoff.js";
-import { syncSignoff } from "./service/signoff.js";
+import { handleCancelledPreviews } from "./service/cancel.js";
+import { DRAFT_RESULT_EVENT, draftApprovalRequests, onDraftResult, repairDraftLinks, retryHandovers } from "./service/client-signoff.js";
+import { onSiteChanged, SITE_CHANGED_EVENT, syncApplyWindows, syncSignoff, syncWindowForIssue } from "./service/signoff.js";
 import { loadFacts } from "./service/facts.js";
 import { onBuildIssueUpdated } from "./service/build.js";
 import { ga4Summary, ga4View } from "./service/analytics.js";
@@ -77,6 +79,7 @@ import { guardTaskThreads } from "./service/thread.js";
 import { checkAgentClose } from "./service/done-checks.js";
 import { needsYouView, onNeedsYouIssueUpdated, parkTasksWaitingOnYou } from "./service/needs-you.js";
 import { playbookSummary } from "./service/playbook.js";
+import { growthAbandon, growthApprove, growthExperiments, growthReject } from "./growth-actions.js";
 import { setupChecklist } from "./service/setup.js";
 import { MODULE_OFF_MESSAGE, seoOn, seoSetupStatus } from "./service/setup-status.js";
 import { routineViews, saveRoutineReport } from "./service/routines.js";
@@ -84,9 +87,14 @@ import { siteLinkView, siteProjectOptions, wordPressSiteOptions } from "./servic
 import { sprintWordPressSite } from "./service/wordpress.js";
 import { loadServiceAccount } from "./service/google-access.js";
 import { SEO_TOOLS, GROWTH_TOOLS } from "./tools.js";
-import { seoGrowthToolsHost } from "./growth-host.js";
+import { registerSeoTools } from "./growth-host.js";
 
 let env: Env | null = null;
+let guard: AccessGuard | null = null;
+
+/** The manifest's routes, each registered through the guard. */
+const API_ROUTE_KEYS = ["oauth-start", "oauth-complete", "client-summary", SETUP_STATUS_ROUTE.routeKey, COCKPIT_ROUTE.routeKey] as const;
+const UNKNOWN_ROUTE = { status: 404, body: { error: "Unknown route" } };
 
 const plugin = definePlugin({
   multiCompanyConfig: true,
@@ -95,12 +103,12 @@ const plugin = definePlugin({
     const e = createEnv(ctx);
     env = e;
     registerDriveReplies(ctx);
-    for (const tool of SEO_TOOLS) {
-      if ((GROWTH_TOOL_NAMES as readonly string[]).includes(tool.name)) continue;
-      ctx.tools.register(tool.name, tool, (params, run) => runTool(e, tool.name, params, run));
-    }
-    registerGrowthTools(ctx, seoGrowthToolsHost(ctx));
-    registerActions(e);
+    // Every action, tool and API route goes through the access guard (PAR-12676). With the switch off it is a pass-through.
+    const g = createAccessGuard(ctx, { pluginKey: PLUGIN_ID, table: ACCESS_TABLE });
+    guard = g;
+    registerSeoTools(ctx, g, SEO_TOOLS, (name, params, run) => runTool(e, name, params, run));
+    registerActions(e, g);
+    for (const routeKey of API_ROUTE_KEYS) g.apiRoute(routeKey, (input) => handleApiRoute(e, input));
     ctx.jobs.register(DAILY_JOB_KEY, async (job) => {
       // Recorded for the Cockpit's job health (kit jobHealth).
       const result = await trackJob(ctx, DAILY_JOB_KEY, () => runDailyJob(e, { force: job.trigger === "manual" }));
@@ -125,6 +133,11 @@ const plugin = definePlugin({
       await handStuckPreviewsToSenior(e).catch((error) => ctx.logger.info("SEO stuck previews not handed over", { error: errorMessage(error) }));
       const sent = await deliverPreviewAnswers(e);
       if (sent > 0) ctx.logger.info("SEO preview answers delivered", { sent });
+      await handleCancelledPreviews(e).catch((error) => ctx.logger.info("SEO cancelled previews not followed up", { error: errorMessage(error) }));
+      // Hand-overs a crash left half done, and person decisions nobody handed over yet (bounded: 25 rows, 5 tries each).
+      await retryHandovers(e).catch((error) => ctx.logger.info("SEO hand-overs not retried", { error: errorMessage(error) }));
+      // The backstop of the page-scoped apply windows: a task closed unseen, or an apply_until that passed, closes its pages.
+      await syncApplyWindows(e).catch((error) => ctx.logger.info("SEO apply windows not synced", { error: errorMessage(error) }));
       // Sprints on automatic client sign-off: one approval email draft per batch of passed previews.
       const drafted = await draftApprovalRequests(e).catch((error) => {
         ctx.logger.info("SEO approval drafts failed", { error: errorMessage(error) });
@@ -151,21 +164,32 @@ const plugin = definePlugin({
         ctx.logger.info("SEO draft result not recorded", { error: errorMessage(error) });
       }
     });
+    // The CRM's word that an agent write on an approved page went through: the preview counts as applied (PAR-9131 Q16).
+    ctx.events.on(SITE_CHANGED_EVENT, async (event) => {
+      if (!event.companyId) return;
+      await onSiteChanged(e, event.companyId, event.payload).catch((error) => ctx.logger.info("SEO site change not recorded", { error: errorMessage(error) }));
+    });
     // One subscription for every issue event (a second one, e.g. kit registerDoneChecks, would deliver each event twice).
     ctx.events.on("issue.updated", async (event) => {
       if (!event.entityId || !event.companyId) return;
+      const companyId = event.companyId;
+      const issueId = event.entityId;
       try {
-        if (await onNeedsYouIssueUpdated(e, event.companyId, event.entityId)) return;
-        if (await onBuildIssueUpdated(e, event.companyId, event.entityId)) return;
-        // A page group of a site-wide task: sync it, open the next group, wake the task when the last one closes.
-        if (await onChunkIssueUpdated(e, event.companyId, event.entityId)) return;
-        // An agent's close of a task issue is checked first: reopened when the sprint data does not show the work,
-        // so an early close never marks the task done, tells Social or opens a merge task.
-        if (await checkAgentClose(ctx, event)) return;
-        await onIssueUpdated(e, event.companyId, event.entityId);
+        await (async () => {
+          if (await onNeedsYouIssueUpdated(e, companyId, issueId)) return;
+          if (await onBuildIssueUpdated(e, companyId, issueId)) return;
+          // A page group of a site-wide task: sync it, open the next group, wake the task when the last one closes.
+          if (await onChunkIssueUpdated(e, companyId, issueId)) return;
+          // An agent's close of a task issue is checked first: reopened when the sprint data does not show the work,
+          // so an early close never marks the task done, tells Social or opens a merge task.
+          if (await checkAgentClose(ctx, event)) return;
+          await onIssueUpdated(e, companyId, issueId);
+        })();
       } catch (error) {
-        ctx.logger.info("SEO issue sync failed", { issueId: event.entityId, error: errorMessage(error) });
+        ctx.logger.info("SEO issue sync failed", { issueId, error: errorMessage(error) });
       }
+      // After the task mirrors the issue: a task done or cancelled drops its pages from the apply window (PAR-9131 T3).
+      await syncWindowForIssue(e, companyId, issueId).catch((error) => ctx.logger.info("SEO apply window not synced", { issueId, error: errorMessage(error) }));
     });
     ctx.events.on("company.created", async (event) => {
       if (event.companyId) await e.skills.ensure(event.companyId).catch(() => []);
@@ -214,34 +238,39 @@ const plugin = definePlugin({
   },
 
   async onApiRequest(input: PluginApiRequestInput): Promise<PluginApiResponse> {
-    if (!env) return { status: 503, body: { error: "SEO plugin is not ready" } };
-    try {
-      if (input.routeKey === "oauth-complete") return await gscOauthComplete(env, input);
-      if (input.routeKey === "client-summary") return await clientSummaryRoute(env, input);
-      if (input.routeKey === SETUP_STATUS_ROUTE.routeKey) {
-        if (!input.companyId) return { status: 400, body: { error: "companyId is required" } };
-        return { status: 200, body: await seoSetupStatus(env, input.companyId) };
-      }
-      if (input.routeKey === COCKPIT_ROUTE.routeKey) {
-        if (!input.companyId) return { status: 400, body: { error: "companyId is required" } };
-        return { status: 200, body: await cockpitSnapshot(env.ctx, input.companyId) };
-      }
-      if (input.routeKey === "oauth-start") {
-        const actor: Actor = input.actor.actorType === "user" ? { kind: "user", userId: input.actor.userId ?? input.actor.actorId } : { kind: "system" };
-        const sprintId = Array.isArray(input.query.sprintId) ? input.query.sprintId[0] : input.query.sprintId;
-        const returnTo = Array.isArray(input.query.returnTo) ? input.query.returnTo[0] : input.query.returnTo;
-        const body = await gscConnectStart(env, input.companyId, actor, { sprintId, returnTo });
-        return { status: 200, body };
-      }
-      return { status: 404, body: { error: "Unknown route" } };
-    } catch (error) {
-      return { status: error instanceof SeoError ? 400 : 500, body: { error: errorMessage(error) } };
-    }
+    if (!env || !guard) return { status: 503, body: { error: "SEO plugin is not ready" } };
+    // An unknown key under the switch `off` answers as before; under report and enforce the guard refuses it.
+    return guard.handleApiRequest(input, async () => UNKNOWN_ROUTE);
   },
 });
 
 export default plugin;
 runWorker(plugin, import.meta.url);
+
+async function handleApiRoute(env: Env, input: PluginApiRequestInput): Promise<PluginApiResponse> {
+  try {
+    if (input.routeKey === "oauth-complete") return await gscOauthComplete(env, input);
+    if (input.routeKey === "client-summary") return await clientSummaryRoute(env, input);
+    if (input.routeKey === SETUP_STATUS_ROUTE.routeKey) {
+      if (!input.companyId) return { status: 400, body: { error: "companyId is required" } };
+      return { status: 200, body: await seoSetupStatus(env, input.companyId) };
+    }
+    if (input.routeKey === COCKPIT_ROUTE.routeKey) {
+      if (!input.companyId) return { status: 400, body: { error: "companyId is required" } };
+      return { status: 200, body: await cockpitSnapshot(env.ctx, input.companyId) };
+    }
+    if (input.routeKey === "oauth-start") {
+      const actor: Actor = input.actor.actorType === "user" ? { kind: "user", userId: input.actor.userId ?? input.actor.actorId } : { kind: "system" };
+      const sprintId = Array.isArray(input.query.sprintId) ? input.query.sprintId[0] : input.query.sprintId;
+      const returnTo = Array.isArray(input.query.returnTo) ? input.query.returnTo[0] : input.query.returnTo;
+      const body = await gscConnectStart(env, input.companyId, actor, { sprintId, returnTo });
+      return { status: 200, body };
+    }
+    return UNKNOWN_ROUTE;
+  } catch (error) {
+    return { status: error instanceof SeoError ? 400 : 500, body: { error: errorMessage(error) } };
+  }
+}
 
 async function toolActor(ctx: PluginContext, run: ToolRunContext): Promise<Actor> {
   let responsibleUserId: string | null = null;
@@ -263,7 +292,9 @@ async function runTool(e: Env, name: string, params: unknown, run: ToolRunContex
   try {
     // Switched off in Setup: agents (and the SEO routines) get a clear refusal.
     if (!(await seoOn(e, run.companyId))) return toolFail(MODULE_OFF_MESSAGE);
-    await e.skills.ensure(run.companyId).catch(() => []);
+    // Never wait on the managed-skill sync: the host call can take 30 s+ and the tool result does not depend on the copy (PAR-11023).
+    // `soon` never throws and leaves a failed sync alone for 5 minutes, so a slow host is not asked again on every call.
+    void e.skills.soon(run.companyId);
     const data = await dispatch(e, run.companyId, await toolActor(e.ctx, run), name, params);
     // MCP clients need structuredContent to be an object: never return null, arrays or bare values.
     return toolOk(toolSummary(name, data), data);
@@ -287,22 +318,23 @@ function actionActor(context: PluginPerformActionContext): Actor {
 }
 
 function requireUser(actor: Actor): Extract<Actor, { kind: "user" }> {
-  if (actor.kind !== "user") throw new SeoError("This action is for board users");
+  if (actor.kind !== "user") throw new SeoError("This action is for board users. Do not retry.");
   return actor;
 }
 
-function registerActions(e: Env) {
+function registerActions(e: Env, guard: AccessGuard) {
   const { ctx } = e;
   const action = (key: string, fn: (companyId: string, actor: Actor, params: Record<string, unknown>) => Promise<unknown>) =>
-    ctx.actions.register(key, async (params, context) => {
+    guard.action(key, async (params, context) => {
       const companyId = actionCompany(context);
-      await e.skills.ensure(companyId).catch(() => []);
+      // Not awaited (PAR-11023); `soon` adds the 5-minute pause after a failed sync.
+      void e.skills.soon(companyId);
       return fn(companyId, actionActor(context), asParams(params));
     });
 
   // Company preferences: the kit checks that the caller is an owner or admin of this company (fails closed).
-  ctx.actions.register("seo.preferences-load", async (_params, context) => loadPreferencesView(ctx, actionCompany(context)));
-  ctx.actions.register("seo.preferences-save", async (params, context) => {
+  guard.action("seo.preferences-load", async (_params, context) => loadPreferencesView(ctx, actionCompany(context)));
+  guard.action("seo.preferences-save", async (params, context) => {
     actionCompany(context);
     return savePreferencesFor(ctx, context, asParams(params).patch);
   });
@@ -474,11 +506,16 @@ function registerActions(e: Env) {
     };
   });
 
-  action("seo.call", async (companyId, actor, params) => {
-    const tool = reqStr(params, "tool");
-    if (!HANDLERS[tool] && !UI_ONLY_HANDLERS[tool]) throw new SeoError(`Unknown tool ${tool}`);
-    return dispatch(e, companyId, requireUser(actor), tool, params.params ?? {});
-  });
+  // One call action per permission (access-table.ts): the guard decides the handler's own permission.
+  for (const key of Object.keys(SEO_CALL_ACTIONS)) {
+    action(key, async (companyId, actor, params) => {
+      const tool = reqStr(params, "tool");
+      if (!HANDLERS[tool] && !UI_ONLY_HANDLERS[tool]) throw new SeoError(`Unknown tool ${tool}`);
+      const via = seoCallAction(tool);
+      if (via !== key) throw new SeoError(`${tool} is called through ${via ?? "no page action"}, not ${key}. Do not retry.`);
+      return dispatch(e, companyId, requireUser(actor), tool, params.params ?? {});
+    });
+  }
 
   action("seo.create-sprint", async (companyId, actor, params) => {
     const user = requireUser(actor);
@@ -560,6 +597,10 @@ function registerActions(e: Env) {
   });
 
   // "Re-sync": wires the linked agent again. It never creates an agent.
+  action("seo.growth-experiments", async (companyId, actor, params) => growthExperiments(e, companyId, requireUser(actor), params));
+  action("seo.growth-approve-experiment", async (companyId, actor, params) => growthApprove(e, companyId, requireUser(actor), params));
+  action("seo.growth-reject-experiment", async (companyId, actor, params) => growthReject(e, companyId, requireUser(actor), params));
+  action("seo.growth-abandon-experiment", async (companyId, actor, params) => growthAbandon(e, companyId, requireUser(actor), params));
   action("seo.activate-agent", async (companyId, actor) => resyncAgent(e, companyId, requireUser(actor)));
   action("seo.sync-skills", async (companyId, actor) => {
     requireUser(actor);

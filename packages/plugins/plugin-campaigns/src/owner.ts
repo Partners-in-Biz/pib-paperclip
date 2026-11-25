@@ -50,6 +50,14 @@ export function assigneeFields(owner: WorkAssignee): { assigneeAgentId?: string;
   return {};
 }
 
+/**
+ * The company owner by the kit's chain (F18), without the caller as a source:
+ * used to check who may approve, so the person asking never becomes the answer.
+ */
+export async function companyOwnerUserId(ctx: PluginContext, companyId: string): Promise<string | null> {
+  return (await ownerUserFor(ctx, companyId, { lastKnown: true })).userId;
+}
+
 /** The person who approves a launch: the company owner by the kit's chain; the campaign's creator (a person) is the fallback. */
 export async function approverUserId(ctx: PluginContext, companyId: string, campaign: Pick<CampaignDraft, "ownerUserId">): Promise<string | null> {
   const creator = campaign.ownerUserId && campaign.ownerUserId !== LOCAL_BOARD_USER_ID ? campaign.ownerUserId : null;

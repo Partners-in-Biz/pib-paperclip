@@ -13,14 +13,15 @@
  *   after the reply, or the address on the do-not-email list.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { getCrmContact, type DoneCheckIssue, type DoneCheckResult, type DoneCheckRule } from "@partnersinbiz/pib-plugin-kit";
+import { type DoneCheckIssue, type DoneCheckResult, type DoneCheckRule } from "@partnersinbiz/pib-plugin-kit";
 import { campaignEditedAt, contactSuppressed, enrollmentById, enrollmentState, getCampaign, replyLogged } from "./db.js";
 import { CAMPAIGN_ORIGINS, parsePairOrigin, parseStepOrigin } from "./origins.js";
+import { resolveRecipient } from "./recipient.js";
 
 const done: DoneCheckResult = { done: true };
 
 async function contactName(ctx: PluginContext, companyId: string, contactId: string): Promise<{ name: string; emails: string[] }> {
-  const contact = await getCrmContact(ctx, ctx.db.namespace, companyId, contactId).catch(() => null);
+  const contact = await resolveRecipient(ctx, companyId, contactId).catch(() => null);
   return { name: contact?.name ?? `contact:${contactId}`, emails: contact?.emails ?? [] };
 }
 
@@ -59,7 +60,7 @@ export async function checkRevise(ctx: PluginContext, issue: DoneCheckIssue): Pr
     asked = Boolean(approval && approval.status !== "cancelled");
   }
   const missing: string[] = [];
-  if (!edited) missing.push(`Campaign "${campaign.name}" has not changed since its approval was refused: fix what the approver asked for (\`update-campaign\`, \`add-campaign-step\`, \`create-ab-variant\` or \`set-step-html\`).`);
+  if (!edited) missing.push(`Campaign "${campaign.name}" has not changed since its approval was refused: fix what the approver asked for (\`update-campaign\`, \`add-campaign-step\`, \`create-ab-variant\` \`set-step-html\` or \`edit-campaign-step\`).`);
   if (!asked) missing.push(`Campaign "${campaign.name}" has no new approval: \`request-campaign-approval\` (campaignId \`${campaign.id}\`) once it is fixed.`);
   return missing.length ? { done: false, missing } : done;
 }

@@ -242,16 +242,15 @@ export function pluginManagedSkillService(
       ...skill.fileInventory.map((entry) => entry.path),
     ]);
 
+    // One inventory refresh for the whole skill, not one per file (PAR-11024).
+    const otherPaths = [...paths].filter((filePath) => filePath !== "SKILL.md");
+    const loaded = otherPaths.length > 0
+      ? await skills.readFiles(companyId, skill.id, otherPaths).catch(() => null)
+      : null;
     for (const filePath of paths) {
-      if (filePath === "SKILL.md") {
-        currentFiles[filePath] = skill.markdown;
-        continue;
-      }
-      try {
-        currentFiles[filePath] = (await skills.readFile(companyId, skill.id, filePath))?.content ?? null;
-      } catch {
-        currentFiles[filePath] = null;
-      }
+      currentFiles[filePath] = filePath === "SKILL.md"
+        ? skill.markdown
+        : loaded?.get(filePath)?.content ?? null;
     }
 
     const changedFiles = [...paths]

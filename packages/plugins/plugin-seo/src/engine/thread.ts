@@ -165,6 +165,8 @@ export function continuationStatus(status: string): "todo" | "blocked" {
   return status === "blocked" ? "blocked" : "todo";
 }
 
+const DECISION_SOURCE_LABEL: Record<string, string> = { cockpit: "in the cockpit", email: "by email", api: "through the API" };
+
 export interface PreviewLine {
   pageUrl: string;
   title: string;
@@ -172,6 +174,8 @@ export interface PreviewLine {
   reviewStatus: string;
   reviewNote: string | null;
   previewId: string;
+  /** Where the decision came from (cockpit, email, api); null while undecided or for answers older than migration 026. */
+  decisionSource?: string | null;
 }
 
 export interface LastComment {
@@ -225,7 +229,8 @@ export function continuationSummary(input: {
     lines.push("", `## Previews on this task (${input.previews.length}, newest first)`);
     for (const p of input.previews.slice(0, 12)) {
       const note = p.reviewNote ? ` — ${clip(oneLine(p.reviewNote), 220)}` : "";
-      lines.push(`- ${p.pageUrl} · ${p.status.replace(/_/g, " ")}, review ${p.reviewStatus.replace(/_/g, " ")} (previewId \`${p.previewId}\`)${note}`);
+      const source = p.decisionSource ? ` (${DECISION_SOURCE_LABEL[p.decisionSource] ?? p.decisionSource})` : "";
+      lines.push(`- ${p.pageUrl} · ${p.status.replace(/_/g, " ")}${source}, review ${p.reviewStatus.replace(/_/g, " ")} (previewId \`${p.previewId}\`)${note}`);
     }
     if (input.previews.length > 12) lines.push(`- …and ${input.previews.length - 12} older ones.`);
     lines.push(`Full notes: \`partnersinbiz.seo:list-previews\` with \`sprintId\` \`${input.sprintId}\` and a \`previewId\`.`);

@@ -2,6 +2,7 @@ import type { JsonSchema, PaperclipPluginManifestV1 } from "@paperclipai/plugin-
 import { COCKPIT_ROUTE, jevConfigSchema, secretField, SETUP_STATUS_ROUTE } from "@partnersinbiz/pib-plugin-kit";
 import { LEAD_ENDPOINT_KEY } from "./lead-form.js";
 import { EVENTS_ENDPOINT_KEY, SIGN_ENDPOINT_KEY } from "./endpoints.js";
+import { CARD_COMPANY, CARD_CONTACT } from "./card-types.js";
 import { PLUGIN_ID, PLUGIN_VERSION } from "./namespace.js";
 import { SKILLS } from "./skills.js";
 import { CRM_TOOLS } from "./tools.js";
@@ -150,6 +151,8 @@ const manifest: PaperclipPluginManifestV1 = {
     "webhooks.receive",
     "ui.page.register",
     "ui.sidebar.register",
+    // drive_file_trash writes one activity entry per trash (0.51.0, PAR-11108: a stop-first deploy, like any new capability).
+    "activity.log.write",
   ],
   entrypoints: {
     worker: "./dist/worker.js",
@@ -232,7 +235,7 @@ const manifest: PaperclipPluginManifestV1 = {
     {
       jobKey: "site-monitor",
       displayName: "Check client websites",
-      description: "Every 5 minutes: one GET of the address of each client website that is due (twice a day its certificate, once a day its domain expiry). A site down for 5 minutes, a certificate under 14 days or a domain under 30 days opens an issue for the Delivery Lead.",
+      description: "Every 5 minutes: one GET of the address of each client website that is due (twice a day its certificate, once a day its domain expiry). A site down for 5 minutes, a certificate under 14 days or a domain under 30 days opens an issue for the Delivery Lead. It also re-sends site.changed for agent writes an approval for pages allowed (sites whose approval is open or closed under an hour ago, at most 50 each).",
       schedule: "*/5 * * * *",
     },
     {
@@ -295,6 +298,9 @@ const manifest: PaperclipPluginManifestV1 = {
         exportName: "CrmSidebar",
         order: 40,
       },
+      // Company and contact cards on a planning canvas (PAR-14416): the worker answers `canvas.cards.*` per person.
+      { type: "canvasNode", id: CARD_COMPANY, displayName: "CRM company", exportName: "CrmCompanyCard", entityCard: { kind: "company", search: true, related: true } },
+      { type: "canvasNode", id: CARD_CONTACT, displayName: "CRM contact", exportName: "CrmContactCard", entityCard: { kind: "contact", search: true, related: true } },
     ],
   },
 };

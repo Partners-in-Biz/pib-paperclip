@@ -1,6 +1,7 @@
 import { useMutation } from "@tanstack/react-query";
 import { ENVIRONMENT_LEASE_POLICIES, WORKSPACE_SOURCE_VERIFICATION_REASONS } from "@paperclipai/shared";
 import { issuesApi } from "../api/issues";
+import { useMemberRestrictionGate } from "../hooks/useMemberRestrictionGate";
 import { Button } from "./ui/button";
 import { formatDateTime } from "../lib/utils";
 import { WorkspaceExportRecovery } from "./WorkspaceExportRecovery";
@@ -21,8 +22,12 @@ function recordedFailure(evidence: Record<string, unknown>): string {
 }
 
 export function RunWorkspaceSourceInspection({ issueId, runId, companyId }: { issueId: string; runId: string; companyId: string }) {
-  const listing = useMutation({ mutationFn: () => issuesApi.recoveryActions(issueId, { runId }) });
+  // Recovery actions are closed to a restricted member under `enforce` (AC-G10): no inspection.
+  const memberGate = useMemberRestrictionGate(companyId);
+  const listing = useMutation({ mutationFn: memberGate.guard(() => issuesApi.recoveryActions(issueId, { runId }),
+    { active: null, actions: [] }) });
   const inspection = useMutation({ mutationFn: (actionId: string) => issuesApi.recoveryActions(issueId, { runId, actionId }) });
+  if (memberGate.closed) return null;
   const pending = listing.isPending || inspection.isPending;
   const error = listing.error ?? inspection.error;
   const current = inspection.data?.sourceInspection;

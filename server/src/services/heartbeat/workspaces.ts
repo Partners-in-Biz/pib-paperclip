@@ -1141,6 +1141,17 @@ export async function assertGitSensitiveAdapterWorkspaceValid(input: {
     Boolean(issue.projectWorkspaceId) ||
     Boolean(input.resolvedWorkspace.workspaceId) ||
     input.executionWorkspace.strategy === "git_worktree";
+  // agent_default (persisted as adapter_managed) never binds the project
+  // workspace: the run gets its own task directory, which has no checkout.
+  // Issue creation still fills issue.projectWorkspaceId from the project
+  // default, so that id alone must not demand git metadata (PAR-12160).
+  const agentDefaultTaskDirectory =
+    input.persistedExecutionWorkspace?.mode === "adapter_managed" &&
+    input.persistedExecutionWorkspace.strategyType !== "git_worktree" &&
+    input.executionWorkspace.strategy !== "git_worktree" &&
+    !input.resolvedWorkspace.workspaceId;
+  const gitMetadataExpectation =
+    workspaceExpectation && !agentDefaultTaskDirectory;
 
   const fail = (
     reason: string,
@@ -1268,7 +1279,7 @@ export async function assertGitSensitiveAdapterWorkspaceValid(input: {
   }
 
   if (
-    workspaceExpectation &&
+    gitMetadataExpectation &&
     !(input.resolvedWorkspace.localPathOnlyWorkspace === true && input.executionWorkspace.strategy === "project_primary" && !input.executionWorkspace.repoUrl && !input.executionWorkspace.branchName) &&
     effectiveCwd &&
     !(await hasGitMetadata(effectiveCwd))
@@ -1732,7 +1743,9 @@ export async function resolveRunReferencedProjects(
       !anchorHydrated && anchorProjectId
         ? [anchorProjectId, ...batchCandidateIds]
         : batchCandidateIds;
-    const hydrated = await projects.listByIds(companyId, hydrateIds);
+    // "system": run preparation in the queue. The anchor keeps its issue/run authorization and every
+    // additional project gets its own `project:read` decision below, so no list condition is needed.
+    const hydrated = await projects.listByIds(companyId, hydrateIds, { readCondition: "system" });
     const byId = new Map(hydrated.map((project) => [project.id, project]));
 
     if (!anchorHydrated && anchorProjectId) {
@@ -1755,7 +1768,7 @@ export async function resolveRunReferencedProjects(
 
   // Hydrate the anchor on its own if the candidate loop never ran (no mentions to co-hydrate it with).
   if (!anchorHydrated && anchorProjectId) {
-    const hydrated = await projects.listByIds(companyId, [anchorProjectId]);
+    const hydrated = await projects.listByIds(companyId, [anchorProjectId], { readCondition: "system" });
     anchorRecord =
       hydrated.find((project) => project.id === anchorProjectId) ?? null;
     anchorHydrated = true;
@@ -2876,11 +2889,15 @@ export async function buildEffectiveRunSessionConfigMetadata(input: {
   }
   // A selected immutable skill version is its identity; source is merely its
   // disposable projection. Unversioned/local skills retain their path boundary.
+  // skillId is link bookkeeping, not config, so it never enters the fingerprint.
   const versionedSkills = (value: unknown) => Array.isArray(value) ? value.map(entry => {
     const skill = parseObject(entry);
-    return readNonEmptyString(skill.versionId)
-      ? { key: skill.key, runtimeName: skill.runtimeName, versionId: skill.versionId }
-      : entry;
+    if (readNonEmptyString(skill.versionId)) {
+      return { key: skill.key, runtimeName: skill.runtimeName, versionId: skill.versionId };
+    }
+    if (!("skillId" in skill)) return entry;
+    const { skillId: _skillId, ...rest } = skill;
+    return rest;
   }) : value;
   if (effectiveAdapterConfig.paperclipRuntimeSkills !== undefined) {
     effectiveAdapterConfig.paperclipRuntimeSkills = versionedSkills(effectiveAdapterConfig.paperclipRuntimeSkills);

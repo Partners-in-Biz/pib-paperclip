@@ -20,6 +20,7 @@ vi.mock("@/hooks/useRecentTasks", () => ({ useRecentTasks: () => ({ entries: fix
 vi.mock("@/api/issues", () => ({ issuesApi: { listCompact: fixture.projectTasks } }));
 vi.mock("@/context/DialogContext", () => ({ useDialogActions: () => ({ openNewIssue: fixture.openNewIssue }) }));
 vi.mock("@/context/SidebarContext", () => ({ useSidebar: () => ({ collapsed: fixture.collapsed, peeking: false, isMobile: false, setSidebarOpen: vi.fn() }) }));
+vi.mock("@/api/auth", () => ({ authApi: { getSession: async () => ({ session: { id: "s", userId: "u" }, user: null, memberRestrictions: [] }) } }));
 vi.mock("@/api/attention", () => ({ attentionApi: { list: fixture.attention, summary: fixture.summary } }));
 vi.mock("@/api/instanceSettings", () => ({ instanceSettingsApi: { getExperimental: async () => ({ enableCases: fixture.enableCases }) } }));
 vi.mock("@/api/projects", () => ({ projectsApi: { list: async () => fixture.projects } }));
@@ -61,6 +62,8 @@ beforeEach(() => {
   fixture.summary.mockResolvedValue(summary([pending("question"), pending("review")]));
   container = document.createElement("div"); document.body.appendChild(container); root = createRoot(container);
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  // The shell has the session first; the attention badge waits for it (AC-G10 gate).
+  client.setQueryData(["auth", "session"], { session: { id: "s", userId: "u" }, user: null, memberRestrictions: [] });
 });
 
 describe("Coordinator task creation", () => {

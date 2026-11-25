@@ -60,7 +60,7 @@ describe("volume keyframes", () => {
   const curve = "volume=eval=frame:volume='if(lt(t,0),0,if(lt(t,2),0+1*((t-0)/2),1))'";
   it("on an audio clip: replaces the static volume, before fades and delay", () => {
     const g = graph(compile([video(media("c1", "a", 0, 4)), audio(media("m1", "music", 1, 3, { volume: 0.4, fadeOut: 0.5, keyframes: { volume: lin([0, 0], [2, 1]) } }))]));
-    expect(g).toContain(`atrim=duration=3,${curve},afade=t=out:st=2.5:d=0.5,adelay=delays=1000:all=1[aud1]`);
+    expect(g).toContain(`atrim=duration=3,${curve},afade=t=out:st=2.5:d=0.5,adelay=delays=1000:all=1,asetpts=N/SR/TB[aud1]`);
     expect(g).not.toContain("volume=0.4");
   });
 

@@ -1,4 +1,5 @@
 import { resolveNewTaskParent } from "./issue-hierarchy.js";
+import { SYSTEM_CAUSING_ACTOR } from "./heartbeat/causing-actor.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { notifyMergeConfirmationWork, type MergeConfirmationScope } from "./merged-pr-confirmation-notifications.js";
 import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
@@ -201,6 +202,7 @@ type InteractionWakeup = (
     payload: Record<string, unknown>;
     idempotencyKey: string;
     allowRunCoalescing?: boolean;
+    causingActor: typeof SYSTEM_CAUSING_ACTOR;
     requestedByActorType: "system";
     requestedByActorId: string;
     contextSnapshot: Record<string, unknown>;
@@ -3321,6 +3323,7 @@ export function issueThreadInteractionService(
           // provider conversation. Keep its continuation causally isolated
           // from unrelated queued chat/internal work on the same task.
           allowRunCoalescing: false,
+          causingActor: SYSTEM_CAUSING_ACTOR,
           requestedByActorType: "system",
           requestedByActorId: "system:pr-merged",
           contextSnapshot: {

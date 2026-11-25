@@ -25,7 +25,8 @@
  * Only a campaign's own sends are read: the event's context must be `campaign_step` of this plugin and its key `campaigns:step:<enrollment>:<n>`.
  */
 import type { PluginContext, PluginEvent } from "@paperclipai/plugin-sdk";
-import { getCrmContact, MAIL_DELIVERY_TYPES, MAIL_EVENTS, PIB_PLUGINS, receiveOnce, suppressionEmail, type MailDelivery, type MailDeliveryType } from "@partnersinbiz/pib-plugin-kit";
+import { MAIL_DELIVERY_TYPES, MAIL_EVENTS, PIB_PLUGINS, receiveOnce, suppressionEmail, type MailDelivery, type MailDeliveryType } from "@partnersinbiz/pib-plugin-kit";
+import { resolveRecipient } from "./recipient.js";
 import { enrollmentById, getCampaign, insertStepEventOnce, sentEventByKey, type StepEventType } from "./db.js";
 import { campaignAddress, campaignSenderKey } from "./domain.js";
 import { PLUGIN_ID } from "./namespace.js";
@@ -135,7 +136,7 @@ export async function handleDelivery(ctx: PluginContext, companyId: string, deli
   if (delivery.type === "bounced" && delivery.bounce?.kind === "soft") return out;
   const sent = await sentEventByKey(ctx, companyId, delivery.sendKey);
   const sentTo = typeof sent?.meta.to === "string" && sent.meta.to ? suppressionEmail(sent.meta.to) : null;
-  const contact = await getCrmContact(ctx, ctx.db.namespace, companyId, enrollment.contactId).catch(() => null);
+  const contact = await resolveRecipient(ctx, companyId, enrollment.contactId).catch(() => null);
   const expected = sentTo ?? (campaignAddress(contact?.emails) ? suppressionEmail(campaignAddress(contact?.emails)!) : null);
   const address = delivery.recipient ?? expected;
   if (!address) return out;

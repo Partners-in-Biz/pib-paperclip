@@ -459,6 +459,40 @@ describe("sandbox callback bridge", () => {
     }
   });
 
+  it("names finished steps and the stalled step in the request timeout warning", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-step-timing-"));
+    cleanupDirs.push(rootDir);
+    const queueDir = path.join(rootDir, "queue");
+    const directories = sandboxCallbackBridgeDirectories(queueDir);
+    const client = createFileSystemSandboxCallbackBridgeQueueClient();
+    await mkdir(directories.requestsDir, { recursive: true });
+    await writeFile(
+      path.join(directories.requestsDir, "stall.json"),
+      JSON.stringify({ id: "stall", method: "GET", path: "/api/openapi.json", body: "" }),
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const worker = await startSandboxCallbackBridgeWorker({
+        queueDir,
+        iterationTimeoutMs: 150,
+        handleRequest: vi.fn(async () => ({ status: 200, body: "" })),
+        // Fake runner: the read step never settles.
+        client: { ...client, readTextFile: () => new Promise<string>(() => {}) },
+      });
+      cleanupFns.push(() => worker.stop());
+      await vi.waitFor(() => {
+        expect(warn).toHaveBeenCalledWith(
+          expect.stringMatching(
+            /process request stall\.json timed out after 150ms\..*finished steps: list=\d+ms size=\d+ms; timed out in step: read \(\d+ms so far\); mode queue_v1/,
+          ),
+        );
+      }, { timeout: 3000 });
+      await worker.stop();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("serves schema discovery over the queue and denies schema mutations and lookalikes", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-schema-"));
     cleanupDirs.push(rootDir);

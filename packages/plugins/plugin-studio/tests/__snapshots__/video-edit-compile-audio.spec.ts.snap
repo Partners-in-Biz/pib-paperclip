@@ -6,12 +6,16 @@ exports[`compile audio snapshots > mixed music + voiceover + clip audio: amix no
     "-hide_banner",
     "-nostdin",
     "-y",
+    "-threads",
+    "2",
     "-ss",
     "0",
     "-t",
     "4",
     "-i",
     "file:in/a.mp4",
+    "-threads",
+    "2",
     "-ss",
     "0",
     "-t",
@@ -36,6 +40,8 @@ exports[`compile audio snapshots > mixed music + voiceover + clip audio: amix no
     "3",
     "-i",
     "file:in/vo.wav",
+    "-filter_complex_threads",
+    "4",
     "-filter_complex_script",
     "video.graph",
     "-map",
@@ -64,6 +70,8 @@ exports[`compile audio snapshots > mixed music + voiceover + clip audio: amix no
     "12M",
     "-pix_fmt",
     "yuv420p",
+    "-threads",
+    "4",
     "-r",
     "30",
     "-t",
@@ -80,8 +88,9 @@ exports[`compile audio snapshots > mixed music + voiceover + clip audio: amix no
 [cat2]format=yuv420p,setsar=1[vout];
 [2:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,atrim=duration=4,asetpts=PTS-STARTPTS,atrim=duration=4,afade=t=in:st=0:d=0.5[aud0];
 [3:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,atrim=duration=6,asetpts=PTS-STARTPTS,atrim=duration=6,volume=0.3,afade=t=out:st=5:d=1[aud1];
-[4:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,atrim=duration=3,asetpts=PTS-STARTPTS,atrim=duration=3,volume=1.5,adelay=delays=1500:all=1[aud2];
-[aud0][aud1][aud2]amix=inputs=3:duration=longest:normalize=0,apad=whole_dur=6,atrim=duration=6[aout]
+[4:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,atrim=duration=3,asetpts=PTS-STARTPTS,atrim=duration=3,volume=1.5,adelay=delays=1500:all=1,asetpts=N/SR/TB[aud2];
+anullsrc=r=48000:cl=stereo:d=6,aformat=sample_fmts=fltp[abed];
+[aud0][aud1][aud2][abed]amix=inputs=4:duration=longest:normalize=0,apad=whole_dur=6,atrim=duration=6[aout]
 ",
       "name": "video.graph",
     },
@@ -95,12 +104,16 @@ exports[`compile audio snapshots > silent edit: no audio input, no audio map, -a
     "-hide_banner",
     "-nostdin",
     "-y",
+    "-threads",
+    "2",
     "-ss",
     "0",
     "-t",
     "3",
     "-i",
     "file:in/mute.mp4",
+    "-threads",
+    "2",
     "-loop",
     "1",
     "-framerate",
@@ -109,6 +122,8 @@ exports[`compile audio snapshots > silent edit: no audio input, no audio map, -a
     "1",
     "-i",
     "file:in/logo.png",
+    "-filter_complex_threads",
+    "4",
     "-filter_complex_script",
     "video.graph",
     "-map",
@@ -128,6 +143,8 @@ exports[`compile audio snapshots > silent edit: no audio input, no audio map, -a
     "12M",
     "-pix_fmt",
     "yuv420p",
+    "-threads",
+    "4",
     "-r",
     "30",
     "-t",
@@ -155,6 +172,8 @@ exports[`compile audio snapshots > speed 0.25: clip audio slowed with a chained 
     "-hide_banner",
     "-nostdin",
     "-y",
+    "-threads",
+    "2",
     "-ss",
     "1",
     "-t",
@@ -167,6 +186,8 @@ exports[`compile audio snapshots > speed 0.25: clip audio slowed with a chained 
     "1",
     "-i",
     "file:in/a.mp4",
+    "-filter_complex_threads",
+    "4",
     "-filter_complex_script",
     "video.graph",
     "-map",
@@ -195,6 +216,8 @@ exports[`compile audio snapshots > speed 0.25: clip audio slowed with a chained 
     "12M",
     "-pix_fmt",
     "yuv420p",
+    "-threads",
+    "4",
     "-r",
     "30",
     "-t",
@@ -222,6 +245,8 @@ exports[`compile audio snapshots > speed 4: clip audio sped up with a chained at
     "-hide_banner",
     "-nostdin",
     "-y",
+    "-threads",
+    "2",
     "-ss",
     "0",
     "-t",
@@ -234,6 +259,8 @@ exports[`compile audio snapshots > speed 4: clip audio sped up with a chained at
     "8",
     "-i",
     "file:in/a.mp4",
+    "-filter_complex_threads",
+    "4",
     "-filter_complex_script",
     "video.graph",
     "-map",
@@ -262,6 +289,8 @@ exports[`compile audio snapshots > speed 4: clip audio sped up with a chained at
     "12M",
     "-pix_fmt",
     "yuv420p",
+    "-threads",
+    "4",
     "-r",
     "30",
     "-t",
@@ -276,6 +305,51 @@ exports[`compile audio snapshots > speed 4: clip audio sped up with a chained at
 [seg0]format=yuv420p,setsar=1[vout];
 [1:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,atrim=duration=8,asetpts=PTS-STARTPTS,atempo=2,atempo=2,atrim=duration=2[aud0];
 [aud0]apad=whole_dur=2,atrim=duration=2[aout]
+",
+      "name": "video.graph",
+    },
+  ],
+}
+`;
+
+exports[`compileAudioStem > emits PCM WAV with no loudnorm and the same per-clip chain as buildAudioGraph 1`] = `
+{
+  "args": [
+    "-hide_banner",
+    "-nostdin",
+    "-y",
+    "-ss",
+    "0",
+    "-t",
+    "2",
+    "-i",
+    "file:in/a.mp4",
+    "-ss",
+    "0",
+    "-t",
+    "3",
+    "-i",
+    "file:in/music.m4a",
+    "-filter_complex_script",
+    "video.graph",
+    "-map",
+    "[aout]",
+    "-c:a",
+    "pcm_f32le",
+    "-ar",
+    "48000",
+    "-ac",
+    "2",
+    "-t",
+    "2",
+    "file:stem.wav",
+  ],
+  "files": [
+    {
+      "content": "[0:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,atrim=duration=2,asetpts=PTS-STARTPTS,atrim=duration=2,volume=0.5,afade=t=in:st=0:d=0.2[aud0];
+[1:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,atrim=duration=3,asetpts=PTS-STARTPTS,atempo=2,atrim=duration=1.5,adelay=delays=500:all=1,asetpts=N/SR/TB[aud1];
+anullsrc=r=48000:cl=stereo:d=2,aformat=sample_fmts=fltp[abed];
+[aud0][aud1][abed]amix=inputs=3:duration=longest:normalize=0,apad=whole_dur=2,atrim=duration=2[aout]
 ",
       "name": "video.graph",
     },

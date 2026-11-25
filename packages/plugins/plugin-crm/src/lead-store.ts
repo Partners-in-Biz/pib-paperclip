@@ -7,7 +7,7 @@
 import { randomUUID } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { asRecord, table } from "./db.js";
-import { SOURCE_STATUSES, type SourceStatus } from "./lead-form.js";
+import { LEAD_INTAKES, SOURCE_STATUSES, emailHash, type LeadIntake, type SourceStatus } from "./lead-form.js";
 import type { ClientKind } from "./refs.js";
 
 function iso(value: unknown): string | null {
@@ -26,7 +26,10 @@ function int(value: unknown): number {
 // Lead sources
 // ---------------------------------------------------------------------------
 
-export { SOURCE_STATUSES, type SourceStatus };
+export { LEAD_INTAKES, SOURCE_STATUSES, type LeadIntake, type SourceStatus };
+
+/** Confirmation mails a newsletter source sends in 24 hours unless set otherwise; the column default of migration 023. */
+export const DEFAULT_CONFIRM_DAILY_CAP = 300;
 
 export interface LeadSource {
   id: string;
@@ -55,6 +58,20 @@ export interface LeadSource {
   lastSubmissionAt: string | null;
   createdBy: string | null;
   createdAt: string | null;
+  /** `lead` (default): a submission becomes a lead. `issue`: it opens one issue in `targetProjectId`, with no contact and no consent record. */
+  intake: LeadIntake;
+  targetProjectId: string | null;
+  targetAgentId: string | null;
+  /** Newsletter only: the tags a confirmed subscriber receives. Empty for every other intake. */
+  applyTags: string[];
+  /** Newsletter only: the https page the confirmation link opens, on the host of `siteUrl`. */
+  confirmUrl: string | null;
+  /** Newsletter only: the address the confirmation mail is sent from. */
+  confirmFrom: string | null;
+  /** Newsletter only: signs confirmation links. Made by the plugin; no tool, view, export or log returns it. */
+  confirmSecret: string | null;
+  /** Newsletter only: the most confirmation mails the source sends in 24 hours. */
+  confirmDailyCap: number;
 }
 
 interface SourceRow {
@@ -81,11 +98,25 @@ interface SourceRow {
   last_submission_at: unknown;
   created_by: string | null;
   created_at: unknown;
+  intake?: string | null;
+  target_project_id?: string | null;
+  target_agent_id?: string | null;
+  apply_tags?: unknown;
+  confirm_url?: string | null;
+  confirm_from?: string | null;
+  confirm_secret?: string | null;
+  confirm_daily_cap?: unknown;
 }
 
 const SOURCE_COLUMNS = `id, company_id, client_kind, client_ref, label, site_id, site_url, public_key, previous_key, previous_key_until, signing_secret,
   status, canary, consent_text, privacy_url, success_message, turnstile_site_key, rate_limit_per_hour, accepted_count, rejected_count,
-  last_submission_at, created_by, created_at`;
+  last_submission_at, created_by, created_at, intake, target_project_id, target_agent_id,
+  apply_tags, confirm_url, confirm_from, confirm_secret, confirm_daily_cap`;
+
+function tagList(value: unknown): string[] {
+  const list = typeof value === "string" ? (() => { try { return JSON.parse(value) as unknown; } catch { return []; } })() : value;
+  return Array.isArray(list) ? list.filter((tag): tag is string => typeof tag === "string") : [];
+}
 
 function mapSource(row: SourceRow): LeadSource {
   return {
@@ -112,6 +143,14 @@ function mapSource(row: SourceRow): LeadSource {
     lastSubmissionAt: iso(row.last_submission_at),
     createdBy: row.created_by ?? null,
     createdAt: iso(row.created_at),
+    intake: row.intake === "issue" || row.intake === "newsletter" ? row.intake : "lead",
+    targetProjectId: row.target_project_id ?? null,
+    targetAgentId: row.target_agent_id ?? null,
+    applyTags: tagList(row.apply_tags),
+    confirmUrl: row.confirm_url ?? null,
+    confirmFrom: row.confirm_from ?? null,
+    confirmSecret: row.confirm_secret ?? null,
+    confirmDailyCap: int(row.confirm_daily_cap) || DEFAULT_CONFIRM_DAILY_CAP,
   };
 }
 
@@ -119,8 +158,9 @@ export async function insertLeadSource(ctx: PluginContext, source: LeadSource): 
   await ctx.db.execute(
     `INSERT INTO ${table(ctx, "lead_sources")}
       (id, company_id, client_kind, client_ref, label, site_id, site_url, public_key, signing_secret, status, canary,
-       consent_text, privacy_url, success_message, turnstile_site_key, rate_limit_per_hour, created_by)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
+       consent_text, privacy_url, success_message, turnstile_site_key, rate_limit_per_hour, created_by, intake, target_project_id, target_agent_id,
+       apply_tags, confirm_url, confirm_from, confirm_secret, confirm_daily_cap)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21::jsonb, $22, $23, $24, $25)`,
     [
       source.id,
       source.companyId,
@@ -139,6 +179,14 @@ export async function insertLeadSource(ctx: PluginContext, source: LeadSource): 
       source.turnstileSiteKey,
       source.rateLimitPerHour,
       source.createdBy,
+      source.intake,
+      source.targetProjectId,
+      source.targetAgentId,
+      JSON.stringify(source.applyTags),
+      source.confirmUrl,
+      source.confirmFrom,
+      source.confirmSecret,
+      source.confirmDailyCap,
     ],
   );
 }
@@ -148,9 +196,13 @@ export async function saveLeadSourceSettings(ctx: PluginContext, source: LeadSou
   await ctx.db.execute(
     `UPDATE ${table(ctx, "lead_sources")}
         SET label = $3, site_id = $4, site_url = $5, status = $6, consent_text = $7, privacy_url = $8, success_message = $9,
-            turnstile_site_key = $10, rate_limit_per_hour = $11, updated_at = now()
+            turnstile_site_key = $10, rate_limit_per_hour = $11, apply_tags = $12::jsonb, confirm_url = $13, confirm_from = $14,
+            confirm_daily_cap = $15, updated_at = now()
       WHERE company_id = $1 AND id = $2`,
-    [source.companyId, source.id, source.label, source.siteId, source.siteUrl, source.status, source.consentText, source.privacyUrl, source.successMessage, source.turnstileSiteKey, source.rateLimitPerHour],
+    [
+      source.companyId, source.id, source.label, source.siteId, source.siteUrl, source.status, source.consentText, source.privacyUrl, source.successMessage, source.turnstileSiteKey, source.rateLimitPerHour,
+      JSON.stringify(source.applyTags), source.confirmUrl, source.confirmFrom, source.confirmDailyCap,
+    ],
   );
 }
 
@@ -171,6 +223,11 @@ export async function saveRotatedKeys(
 /** Replaces a form's signing secret (a person made a new one): the old one stops working at once. The public key is untouched. */
 export async function saveSigningSecret(ctx: PluginContext, companyId: string, id: string, signingSecret: string): Promise<void> {
   await ctx.db.execute(`UPDATE ${table(ctx, "lead_sources")} SET signing_secret = $3, updated_at = now() WHERE company_id = $1 AND id = $2`, [companyId, id, signingSecret]);
+}
+
+/** Replaces a newsletter source's confirmation-link secret: every link already sent stops working at once. Nothing else changes. */
+export async function saveConfirmSecret(ctx: PluginContext, companyId: string, id: string, confirmSecret: string): Promise<void> {
+  await ctx.db.execute(`UPDATE ${table(ctx, "lead_sources")} SET confirm_secret = $3, updated_at = now() WHERE company_id = $1 AND id = $2 AND intake = 'newsletter'`, [companyId, id, confirmSecret]);
 }
 
 export async function getLeadSource(ctx: PluginContext, companyId: string, id: string): Promise<LeadSource | null> {
@@ -264,6 +321,15 @@ export async function purgeHits(ctx: PluginContext, beforeIso: string): Promise<
   await ctx.db.execute(`UPDATE ${table(ctx, "lead_captures")} SET ip_hash = NULL WHERE ip_hash IS NOT NULL AND created_at < $1::timestamptz`, [beforeIso]);
 }
 
+/** Capture rows of a signup that was never confirmed (outcome `pending_confirmation` or `confirmation_failed`) older than `beforeIso`. Any other outcome stays. */
+export async function expireUnconfirmedCaptures(ctx: PluginContext, beforeIso: string): Promise<number> {
+  const res = await ctx.db.execute(
+    `DELETE FROM ${table(ctx, "lead_captures")} WHERE outcome = ANY(ARRAY(SELECT jsonb_array_elements_text($1::jsonb))) AND created_at < $2::timestamptz`,
+    [JSON.stringify(["pending_confirmation", "confirmation_failed"]), beforeIso],
+  );
+  return res?.rowCount ?? 0;
+}
+
 // ---------------------------------------------------------------------------
 // Captures
 // ---------------------------------------------------------------------------
@@ -336,7 +402,16 @@ export async function insertCapture(
   return (res?.rowCount ?? 0) > 0;
 }
 
-/** The capture row of a lead that is being removed with its client. */
+/** Capture rows of one source since `sinceIso`, counted up to `cap` (a newsletter's daily ceiling; index `lead_captures_source`). */
+export async function countCaptures(ctx: PluginContext, companyId: string, sourceId: string, sinceIso: string, cap: number): Promise<number> {
+  const rows = await ctx.db.query<{ id: string }>(
+    `SELECT id FROM ${table(ctx, "lead_captures")} WHERE company_id = $1 AND source_id = $2 AND created_at >= $3::timestamptz LIMIT ${Math.max(1, Math.trunc(cap))}`,
+    [companyId, sourceId, sinceIso],
+  );
+  return rows.length;
+}
+
+/** The capture row of a lead that is being removed with its client, or of a signup whose confirmation mail could not be queued. */
 export async function deleteCapture(ctx: PluginContext, companyId: string, key: string): Promise<void> {
   await ctx.db.execute(`DELETE FROM ${table(ctx, "lead_captures")} WHERE company_id = $1 AND key = $2`, [companyId, key]);
 }
@@ -344,6 +419,25 @@ export async function deleteCapture(ctx: PluginContext, companyId: string, key: 
 /** Marks a held capture as stored once the CRM added the lead. */
 export async function settleCapture(ctx: PluginContext, companyId: string, key: string, contactId: string | null): Promise<void> {
   await ctx.db.execute(`UPDATE ${table(ctx, "lead_captures")} SET outcome = 'stored', contact_id = $3 WHERE company_id = $1 AND key = $2`, [companyId, key, contactId]);
+}
+
+/**
+ * A newsletter signup whose confirmation mail failed for good: `pending_confirmation` becomes `confirmation_failed`. Only one caller
+ * makes the change (the update is conditional), so a repeated or concurrent answer gets null and counts nothing twice.
+ */
+export async function failCapture(ctx: PluginContext, companyId: string, key: string): Promise<{ sourceId: string } | null> {
+  const capture = await captureByKey(ctx, companyId, key);
+  if (!capture || capture.outcome !== "pending_confirmation") return null;
+  const res = await ctx.db.execute(
+    `UPDATE ${table(ctx, "lead_captures")} SET outcome = 'confirmation_failed' WHERE company_id = $1 AND key = $2 AND outcome = 'pending_confirmation'`,
+    [companyId, key],
+  );
+  return (res.rowCount ?? 0) > 0 ? { sourceId: capture.sourceId } : null;
+}
+
+/** Marks a newsletter capture `confirmed` (and names the contact) when the row still exists. */
+export async function confirmCapture(ctx: PluginContext, companyId: string, key: string, contactId: string): Promise<void> {
+  await ctx.db.execute(`UPDATE ${table(ctx, "lead_captures")} SET outcome = 'confirmed', contact_id = $3 WHERE company_id = $1 AND key = $2`, [companyId, key, contactId]);
 }
 
 /** Captures of one source, newest first, for the source's recent-leads view (attribution only: no personal data). */
@@ -461,7 +555,8 @@ export async function putConsent(ctx: PluginContext, row: Omit<ConsentRow, "id">
   await ctx.db.execute(
     `INSERT INTO ${table(ctx, "consent_records")}
       (id, company_id, sender_key, subject_key, email, contact_id, purpose, basis, granted, source, wording, form_id, url, policy_version, ip_hash, recorded_at, expires_at, recorded_by)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::timestamptz, $17::timestamptz, $18)`,
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::timestamptz, $17::timestamptz, $18)
+     ON CONFLICT (company_id, sender_key, subject_key, purpose) DO NOTHING`,
     [row.id ?? randomUUID(), row.companyId, row.senderKey, row.subjectKey, row.email, row.contactId, row.purpose, row.basis, row.granted, row.source, row.wording, row.formId, row.url, row.policyVersion, row.ipHash, row.recordedAt, row.expiresAt, row.recordedBy],
   );
 }
@@ -488,6 +583,16 @@ export async function eraseFormData(ctx: PluginContext, companyId: string, email
   if (contactIds.length) {
     const res = await ctx.db.execute(`DELETE FROM ${table(ctx, "lead_captures")} WHERE company_id = $1 AND contact_id = ANY(ARRAY(SELECT jsonb_array_elements_text($2::jsonb)))`, [companyId, JSON.stringify([...contactIds])]);
     captures += res?.rowCount ?? 0;
+  }
+  // A newsletter signup nobody confirmed has a capture row and no contact: reach it by the keyed hash of the address in its key.
+  const { ipSalt } = await import("./lead-capture.js");
+  const hashes = [...new Set([emailHash(address, await ipSalt(ctx)), emailHash(address)])];
+  for (const source of await listLeadSources(ctx, companyId)) {
+    for (const hash of hashes) {
+      const prefix = `form:${source.id}:${hash}:`.replace(/[\\%_]/g, "\\$&");
+      const res = await ctx.db.execute(`DELETE FROM ${table(ctx, "lead_captures")} WHERE company_id = $1 AND key LIKE $2`, [companyId, `${prefix}%`]);
+      captures += res?.rowCount ?? 0;
+    }
   }
   const consent = await ctx.db.execute(`DELETE FROM ${table(ctx, "consent_records")} WHERE company_id = $1 AND email = $2`, [companyId, address]);
   const leads = await ctx.db.execute(`DELETE FROM ${table(ctx, "client_leads")} WHERE company_id = $1 AND source = 'form' AND email = $2`, [companyId, address]);

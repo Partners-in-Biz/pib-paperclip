@@ -26,7 +26,7 @@ import { formatMoneyMinor, readConfig, type HealthCheck, type SetupItem } from "
 import { isCanaryId } from "./canary-flag.js";
 import { approvalsOfSubject, type ApprovalRecord, type ClientKey } from "./care-store.js";
 import { clientContacts, clientInfo, clientProjectOf, firstName, logOnClient, pickRecipient } from "./care-clients.js";
-import { getDeal, insertActivityOnce, listStages, saveDeal, stageKind } from "./db.js";
+import { dealPipelineId, getDeal, insertActivityOnce, listStages, saveDeal, stageKind } from "./db.js";
 import { CrmError, type Viewer } from "./domain.js";
 import { appendEvent, loadTrail } from "./esign-audit.js";
 import { generatePageId, pagesWritable } from "./esign-pages.js";
@@ -674,7 +674,7 @@ async function markDealAccepted(ctx: PluginContext, doc: SignDocument): Promise<
   const deal = await getDeal(ctx, doc.dealId);
   if (!deal || deal.companyId !== doc.companyId) return { moved: false };
   const linked = { ...deal, custom: { ...deal.custom, signedDocumentId: doc.id, signedDocumentTitle: doc.title, signedDocumentSha256: doc.contentSha256, signedAt: doc.signedAt, ...(doc.quoteId ? { quoteId: doc.quoteId, ...(doc.quoteNumber ? { quoteNumber: doc.quoteNumber } : {}) } : {}) } };
-  const stages = await listStages(ctx, deal.pipelineId);
+  const stages = await listStages(ctx, await dealPipelineId(ctx, deal)); // the deal's stage's pipeline
   const open = stageKind(stages.find((stage) => stage.id === deal.stageId)?.kind ?? "open") === "open";
   const won = stages.find((stage) => stageKind(stage.kind) === "won");
   if (!open || !won) {

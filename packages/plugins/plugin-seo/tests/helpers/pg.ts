@@ -1,7 +1,9 @@
 /**
  * A real Postgres (embedded-postgres from the monorepo) behind a minimal
  * PluginContext (db, issues.get, logger) that enforces SQL rules for growth tables.
- * Tests that need it skip when embedded-postgres is not installed.
+ * Tests that need it skip when embedded-postgres is not installed, or when the
+ * process runs as root (the VPS deploy gate): embedded-postgres then spawns
+ * initdb as the postgres user, which cannot reach a tree under /root (PAR-9296).
  */
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -17,6 +19,7 @@ const EMBEDDED = join(PLUGIN_ROOT, "../../db/node_modules/embedded-postgres/dist
 type PgClient = { query: (sql: string, values?: unknown[]) => Promise<{ rows: unknown[]; rowCount: number | null }>; connect: () => Promise<void>; end: () => Promise<void> };
 
 export async function embeddedAvailable(): Promise<boolean> {
+  if (process.getuid?.() === 0) return false; // Postgres refuses to start as root
   try {
     await import(EMBEDDED);
     return true;

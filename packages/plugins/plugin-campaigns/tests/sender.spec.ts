@@ -129,7 +129,7 @@ describe("a client's email goes out as the client", () => {
   });
 
   it("sends nothing at launch time when the sender was removed after approval, and hands the approval back with the reason", async () => {
-    const s = clientStore({ approval_issue_id: "appr-1" });
+    const s = clientStore({ approval_issue_id: "appr-1", client_yes_ref: "https://mail.example/t/1", client_yes_by: "user-peet", client_yes_at: "2026-11-11T10:00:00Z" });
     const { harness, comments } = await boot({ store: s });
     seedIssue(harness, s, { id: "appr-1", status: "done", assigneeUserId: "user-peet", description: "- **Audience:** Contacts at Acme Plumbing (1)." });
     await issueUpdated(harness, "appr-1", PERSON);

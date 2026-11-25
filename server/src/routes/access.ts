@@ -37,6 +37,7 @@ import {
   claimJoinRequestApiKeySchema,
   createBoardApiKeySchema,
   createCompanyInviteSchema,
+  type InviteMemberRestrictionInput,
   createOpenClawInvitePromptSchema,
   listCompanyInvitesQuerySchema,
   listJoinRequestsQuerySchema,
@@ -47,6 +48,8 @@ import {
   archiveCompanyMemberSchema,
   updateMemberPermissionsSchema,
   updateUserCompanyAccessSchema,
+  updateMemberRestrictionSchema,
+  updateMemberRestrictionModeSchema,
   PERMISSION_KEYS,
   isUuidLike,
 } from "@paperclipai/shared";
@@ -102,6 +105,29 @@ import {
   findReusableHumanJoinRequest,
 } from "../lib/join-request-dedupe.js";
 import { assertAuthenticated, assertCompanyAccess } from "./authz.js";
+import {
+  MEMBER_RESTRICTION_CHANGED_ACTION,
+  MEMBER_RESTRICTION_MODE_CHANGED_ACTION,
+  getMemberRestrictionMode,
+  setMemberRestriction,
+  setMemberRestrictionMode,
+} from "../services/member-restriction/admin.js";
+import { actorRestrictedInCompany } from "../services/member-restriction/company-record.js";
+import {
+  INVITE_MEMBER_RESTRICTION_KEY,
+  assertInviterNotRestricted,
+  inviteMemberRestrictionFromDefaults,
+  inviteRestrictionChoice,
+  joinMarkPreview,
+  markForJoin,
+  markForNewInvite,
+  withoutInviteMemberRestriction,
+  type JoinMark,
+} from "../services/member-restriction/invite.js";
+import {
+  memberRestrictionResolver,
+  type MemberRestrictionResolver,
+} from "../services/member-restriction/resolver.js";
 import {
   claimBoardOwnership,
   inspectBoardClaimChallenge
@@ -1431,6 +1457,24 @@ function inviteStateWhereClause(
   }
 }
 
+/**
+ * The restriction fields a list shows for one invite (PAR-13096 point 4). An
+ * invite a join can still use shows the mark that join would apply now; any
+ * other shows what is stored. Both fields are omitted when the mode is unknown.
+ */
+async function listedInviteRestriction(
+  preview: ReturnType<typeof joinMarkPreview>,
+  invite: typeof invites.$inferSelect,
+  joinStillOpen: boolean,
+): Promise<{ memberRestriction?: JoinMark["mark"]; memberRestrictionIsDefault?: boolean }> {
+  if (!joinStillOpen) return { memberRestriction: inviteMemberRestrictionFromDefaults(invite.defaultsPayload) };
+  const joinMark = await preview({
+    defaultsPayload: invite.defaultsPayload,
+    membershipRole: resolveHumanInviteRole(invite.defaultsPayload as Record<string, unknown> | null),
+  });
+  return joinMark ? { memberRestriction: joinMark.mark, memberRestrictionIsDefault: joinMark.isDefault } : {};
+}
+
 async function loadCompanyInviteRecords(
   db: Db,
   companyId: string,
@@ -1482,19 +1526,25 @@ async function loadCompanyInviteRecords(
   const joinRequestIdByInviteId = new Map(
     joinRows.map((row: { inviteId: string; id: string }) => [row.inviteId, row.id]),
   );
+  const preview = joinMarkPreview(db, companyId);
 
   return {
-    invites: visibleRows.map((invite) => ({
+    invites: await Promise.all(visibleRows.map(async (invite) => ({
       ...invite,
       companyName,
       humanRole: extractInviteHumanRole(invite),
       inviteMessage: extractInviteMessage(invite),
+      ...(await listedInviteRestriction(
+        preview,
+        invite,
+        invite.acceptedAt === null && invite.allowedJoinTypes !== "agent",
+      )),
       state: inviteState(invite),
       invitedByUser: invite.invitedByUserId
         ? userMap.get(invite.invitedByUserId) ?? null
         : null,
       relatedJoinRequestId: joinRequestIdByInviteId.get(invite.id) ?? null,
-    })),
+    }))),
     nextOffset: hasMore ? options.offset + options.limit : null,
   };
 }
@@ -1526,8 +1576,9 @@ async function loadJoinRequestRecords(db: Db, companyId: string) {
   ];
   const userMap = await loadUsersById(db, userIds);
   const inviteMap = new Map(inviteRows.map((invite) => [invite.id, invite]));
+  const preview = joinMarkPreview(db, companyId);
 
-  return rows.map((row) => {
+  return Promise.all(rows.map(async (row) => {
     const invite = inviteMap.get(row.inviteId) ?? null;
     return {
       ...toJoinRequestResponse(row),
@@ -1547,6 +1598,11 @@ async function loadJoinRequestRecords(db: Db, companyId: string) {
             allowedJoinTypes: invite.allowedJoinTypes,
             humanRole: extractInviteHumanRole(invite),
             inviteMessage: extractInviteMessage(invite),
+            ...(await listedInviteRestriction(
+              preview,
+              invite,
+              row.status === "pending_approval" && row.requestType === "human",
+            )),
             createdAt: invite.createdAt,
             expiresAt: invite.expiresAt,
             revokedAt: invite.revokedAt,
@@ -1557,7 +1613,7 @@ async function loadJoinRequestRecords(db: Db, companyId: string) {
           }
         : null,
     };
-  });
+  }));
 }
 
 async function loadUserCompanyAccessResponse(
@@ -2644,10 +2700,13 @@ export function accessRoutes(
     cliAuthCreateRateLimiter?: InviteRateLimiter;
     cliAuthPollRateLimiter?: InviteRateLimiter;
     authPublicBaseUrl?: string;
+    /** Test seam: the member-restriction resolver (PAR-12608 4.2). */
+    memberRestrictionResolver?: MemberRestrictionResolver;
   }
 ) {
   const router = Router();
   const access = accessService(db);
+  const resolveMemberRestriction = opts.memberRestrictionResolver ?? memberRestrictionResolver(db);
   const boardAuth = boardAuthService(db);
   const agents = agentService(db);
   const agentsLifecycle = createAgentLifecycle(db);
@@ -3035,6 +3094,17 @@ export function accessRoutes(
     if (!allowed) throw forbidden("Permission denied");
   }
 
+  /**
+   * A restricted inviter gets 403 `MEMBER_RESTRICTED` (AC-I5); a failed
+   * restriction read is 503. Runs before the permission check: `users:invite`
+   * is off the action list (4.6), so `canUser` would refuse him first with a
+   * bare "Permission denied".
+   */
+  async function assertInviterAllowed(req: Request, companyId: string) {
+    assertCompanyAccess(req, companyId);
+    await assertInviterNotRestricted(db, resolveMemberRestriction, req.actor, companyId);
+  }
+
   async function createCompanyInviteForCompany(input: {
     req: Request;
     companyId: string;
@@ -3042,6 +3112,7 @@ export function accessRoutes(
     humanRole?: "owner" | "admin" | "operator" | "viewer" | null;
     defaultsPayload?: Record<string, unknown> | null;
     agentMessage?: string | null;
+    restriction?: InviteMemberRestrictionInput;
   }) {
     const normalizedAgentMessage =
       typeof input.agentMessage === "string"
@@ -3060,15 +3131,27 @@ export function accessRoutes(
         }
       }
     }
+    const memberRestriction = await markForNewInvite(db, {
+      companyId: input.companyId,
+      allowedJoinTypes: input.allowedJoinTypes,
+      humanRole: effectiveHumanRole,
+      restriction: input.restriction,
+      assertCanSetLists: () => assertCompanyPermission(input.req, input.companyId, "users:manage_permissions"),
+    });
+    // The reserved key comes from `restriction` only, never from the free payload (AC-I6).
+    const mergedDefaults = mergeInviteDefaults(
+      withoutInviteMemberRestriction(input.defaultsPayload),
+      normalizedAgentMessage,
+      effectiveHumanRole,
+    );
     const insertValues = {
       companyId: input.companyId,
       inviteType: "company_join" as const,
       allowedJoinTypes: input.allowedJoinTypes,
-      defaultsPayload: mergeInviteDefaults(
-        input.defaultsPayload ?? null,
-        normalizedAgentMessage,
-        effectiveHumanRole,
-      ),
+      // A stored `{ restricted: false }` records the choice; only no key gets the default at the join.
+      defaultsPayload: memberRestriction
+        ? { ...mergedDefaults, [INVITE_MEMBER_RESTRICTION_KEY]: memberRestriction }
+        : mergedDefaults,
       expiresAt: companyInviteExpiresAt(),
       invitedByUserId: input.req.actor.userId ?? null
     };
@@ -3107,6 +3190,8 @@ export function accessRoutes(
     invite: typeof invites.$inferSelect;
     joinRequest: typeof joinRequests.$inferSelect;
     companyId: string;
+    /** From `markForJoin` on this invite, computed before the accept wrote anything (PAR-13096 E1). */
+    mark: JoinMark;
   }) {
     if (input.joinRequest.requestType !== "human") {
       throw badRequest("Only human join requests can be approved through a human invite");
@@ -3124,6 +3209,7 @@ export function accessRoutes(
       input.joinRequest.requestingUserId,
       membershipRole,
       "active",
+      input.mark.mark,
     );
     const grants = humanJoinGrantsFromDefaults(
       input.invite.defaultsPayload as Record<string, unknown> | null,
@@ -3167,6 +3253,7 @@ export function accessRoutes(
         requestType: "human",
         inviteId: input.invite.id,
         source: "human_invite_accept",
+        memberRestrictionIsDefault: input.mark.isDefault,
       },
     });
 
@@ -3300,6 +3387,7 @@ export function accessRoutes(
     validate(createCompanyInviteSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
+      await assertInviterAllowed(req, companyId);
       await assertCompanyPermission(req, companyId, "users:invite");
       const { token, created, normalizedAgentMessage } =
         await createCompanyInviteForCompany({
@@ -3308,7 +3396,8 @@ export function accessRoutes(
           allowedJoinTypes: req.body.allowedJoinTypes,
           humanRole: req.body.humanRole ?? null,
           defaultsPayload: req.body.defaultsPayload ?? null,
-          agentMessage: req.body.agentMessage ?? null
+          agentMessage: req.body.agentMessage ?? null,
+          restriction: req.body.restriction
         });
 
       await logActivity(db, {
@@ -3326,7 +3415,9 @@ export function accessRoutes(
           allowedJoinTypes: created.allowedJoinTypes,
           expiresAt: created.expiresAt.toISOString(),
           humanRole: extractInviteHumanRole(created),
-          hasAgentMessage: Boolean(normalizedAgentMessage)
+          hasAgentMessage: Boolean(normalizedAgentMessage),
+          memberRestriction: inviteMemberRestrictionFromDefaults(created.defaultsPayload),
+          restrictionChoice: inviteRestrictionChoice(created.defaultsPayload)
         }
       });
 
@@ -3356,6 +3447,7 @@ export function accessRoutes(
     validate(createOpenClawInvitePromptSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
+      await assertInviterAllowed(req, companyId);
       await assertCanGenerateOpenClawInvitePrompt(req, companyId);
       const { token, created, normalizedAgentMessage } =
         await createCompanyInviteForCompany({
@@ -3766,6 +3858,18 @@ export function accessRoutes(
       if (inviteAlreadyAccepted && !replayJoinRequestId) {
         throw conflict("Join request not found");
       }
+      // The mark is decided before the invite is consumed or a join request is
+      // written, so a failed read (503) leaves the accept retryable (PAR-13096 E1).
+      const humanJoinMark =
+        requestType === "human"
+          ? await markForJoin(db, {
+              companyId,
+              defaultsPayload: invite.defaultsPayload,
+              membershipRole: resolveHumanInviteRole(
+                invite.defaultsPayload as Record<string, unknown> | null,
+              ),
+            })
+          : null;
 
       const replayMergedDefaults = inviteAlreadyAccepted
         ? mergeJoinDefaultsPayloadForReplay(
@@ -4079,6 +4183,7 @@ export function accessRoutes(
           invite,
           joinRequest: created,
           companyId,
+          mark: humanJoinMark!,
         });
       }
 
@@ -4204,18 +4309,27 @@ export function accessRoutes(
       if (!invite) throw notFound("Invite not found");
 
       let createdAgentId: string | null = existing.createdAgentId ?? null;
+      let joinMark: JoinMark | null = null;
       if (existing.requestType === "human") {
         if (!existing.requestingUserId)
           throw conflict("Join request missing user identity");
         const membershipRole = resolveHumanInviteRole(
           invite.defaultsPayload as Record<string, unknown> | null,
         );
+        // The mark is decided from the request's own invite at approval, before
+        // anything is written: its choice, or the restricted default (PAR-13096).
+        joinMark = await markForJoin(db, {
+          companyId,
+          defaultsPayload: invite.defaultsPayload,
+          membershipRole,
+        });
         await access.ensureMembership(
           companyId,
           "user",
           existing.requestingUserId,
           membershipRole,
-          "active"
+          "active",
+          joinMark.mark,
         );
         const grants = humanJoinGrantsFromDefaults(
           invite.defaultsPayload as Record<string, unknown> | null,
@@ -4309,7 +4423,11 @@ export function accessRoutes(
         action: "join.approved",
         entityType: "join_request",
         entityId: requestId,
-        details: { requestType: existing.requestType, createdAgentId }
+        details: {
+          requestType: existing.requestType,
+          createdAgentId,
+          ...(joinMark ? { memberRestrictionIsDefault: joinMark.isDefault } : {})
+        }
       });
 
       if (createdAgentId) {
@@ -4474,8 +4592,17 @@ export function accessRoutes(
   router.get("/companies/:companyId/user-directory", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    const restricted = await actorRestrictedInCompany(db, req.actor, companyId);
     const users = await loadCompanyUserDirectory(db, companyId);
-    res.json({ users });
+    // A restricted person sees only id and display name (PAR-12608 4.6).
+    res.json({
+      users: restricted
+        ? users.map(({ principalId, status, user }) => ({
+          principalId, status, membershipRole: null,
+          user: user ? { id: user.id, name: user.name, email: null, image: null } : null,
+        }))
+        : users,
+    });
   });
 
   router.patch(
@@ -4632,6 +4759,84 @@ export function accessRoutes(
       );
       if (!member) throw notFound("Member not found");
       res.json(member);
+    }
+  );
+
+  /** Only a signed-in person sets restriction: no agent, plugin or assistant connection (PAR-12608 4.2). */
+  function assertPersonForMemberRestriction(req: Request) {
+    if (req.actor.type !== "board" || req.actor.source === "mcp_oauth") {
+      throw forbidden("Only a signed-in person can change member restriction");
+    }
+  }
+
+  router.put(
+    "/companies/:companyId/members/:memberId/restriction",
+    validate(updateMemberRestrictionSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const memberId = req.params.memberId as string;
+      assertPersonForMemberRestriction(req);
+      await assertCompanyPermission(req, companyId, "users:manage_permissions");
+      const memberToUpdate = await access.getMemberById(companyId, memberId);
+      if (!memberToUpdate) throw notFound("Member not found");
+      if (memberToUpdate.principalType === "user" && memberToUpdate.principalId === req.actor.userId) {
+        throw forbidden("You cannot change your own restriction");
+      }
+      // A flag on an owner or admin is 422 (inside setMemberRestriction), before the rank check below.
+      const protectedTarget = memberToUpdate.membershipRole === "owner" || memberToUpdate.membershipRole === "admin";
+      if (!(protectedTarget && req.body.restricted)) {
+        await assertCanManageCompanyMember(req, access, companyId, memberToUpdate);
+      }
+
+      const result = await setMemberRestriction(db, companyId, memberId, req.body);
+      if (!result) throw notFound("Member not found");
+      if (JSON.stringify(result.before) !== JSON.stringify(result.after)) {
+        await logActivity(db, {
+          companyId,
+          actorType: "user",
+          actorId: req.actor.userId ?? "board",
+          action: MEMBER_RESTRICTION_CHANGED_ACTION,
+          entityType: "company_membership",
+          entityId: memberId,
+          details: { principalId: result.principalId, old: result.before, new: result.after },
+        });
+      }
+      const member = (await loadCompanyMemberRecords(db, companyId)).find((entry) => entry.id === memberId);
+      if (!member) throw notFound("Member not found");
+      res.json(member);
+    }
+  );
+
+  router.get("/companies/:companyId/member-restriction-mode", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertPersonForMemberRestriction(req);
+    await assertCompanyPermission(req, companyId, "users:manage_permissions");
+    const result = await getMemberRestrictionMode(db, companyId);
+    if (!result) throw notFound("Company not found");
+    res.json(result);
+  });
+
+  router.put(
+    "/companies/:companyId/member-restriction-mode",
+    validate(updateMemberRestrictionModeSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertPersonForMemberRestriction(req);
+      await assertCompanyPermission(req, companyId, "users:manage_permissions");
+      const result = await setMemberRestrictionMode(db, companyId, req.body.mode);
+      if (!result) throw notFound("Company not found");
+      if (result.changed) {
+        await logActivity(db, {
+          companyId,
+          actorType: "user",
+          actorId: req.actor.userId ?? "board",
+          action: MEMBER_RESTRICTION_MODE_CHANGED_ACTION,
+          entityType: "company",
+          entityId: companyId,
+          details: { oldMode: result.oldMode, newMode: result.newMode, deniedLast7Days: result.deniedLast7Days },
+        });
+      }
+      res.json({ mode: result.newMode, deniedLast7Days: result.deniedLast7Days });
     }
   );
 

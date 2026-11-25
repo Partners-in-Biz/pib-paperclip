@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   companies,
@@ -16,6 +16,18 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { companySkillService } from "../services/company-skills.js";
 import { buildHostServices } from "../services/plugin-host-services.js";
+
+const { measureRunPhaseSpy } = vi.hoisted(() => ({ measureRunPhaseSpy: vi.fn() }));
+vi.mock("../services/execution-preparation-timing.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/execution-preparation-timing.js")>();
+  measureRunPhaseSpy.mockImplementation(actual.measureRunPhase);
+  return { ...actual, measureRunPhase: measureRunPhaseSpy };
+});
+
+function inventoryRefreshCount() {
+  // Each full company inventory refresh runs exactly one "skills.inventory.bundled" phase.
+  return measureRunPhaseSpy.mock.calls.filter(([phase]) => phase === "skills.inventory.bundled").length;
+}
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -278,6 +290,25 @@ describeEmbeddedPostgres("plugin-managed skills", () => {
 
     const reset = await services.skills.managedReset({ companyId, skillKey: "wiki-maintainer" });
     expect(reset.defaultDrift).toBeNull();
+  });
+
+  it("refreshes the company skill inventory once per drift check, not once per file", async () => {
+    const pluginManifest = manifest();
+    const fileCount = 6;
+    pluginManifest.skills![0]!.files = Array.from({ length: fileCount }, (_, index) => ({
+      path: `references/ref-${index}.md`,
+      content: `# Reference ${index}\n`,
+    }));
+    const { companyId, services } = await seedCompanyAndPlugin(pluginManifest);
+    const created = await services.skills.managedReconcile({ companyId, skillKey: "wiki-maintainer" });
+    expect(created.skill?.fileInventory).toHaveLength(fileCount + 1);
+    expect(created.defaultDrift).toBeNull();
+
+    const before = inventoryRefreshCount();
+    const resolved = await services.skills.managedGet({ companyId, skillKey: "wiki-maintainer" });
+
+    expect(resolved.defaultDrift).toBeNull();
+    expect(inventoryRefreshCount() - before).toBe(1);
   });
 
   it("preserves unrelated YAML while replacing quoted and multiline identity fields", async () => {

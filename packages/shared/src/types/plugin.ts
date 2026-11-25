@@ -118,6 +118,12 @@ export interface PluginToolDeclaration {
   description: string;
   /** JSON Schema describing the tool's input parameters. */
   parametersSchema: JsonSchema;
+  /**
+   * Optional execution budget in milliseconds for a slow tool. The tool
+   * gateway uses it when the caller sends no `timeoutMs` (gateway maximum
+   * 60 000 ms); the host also uses it for the worker `executeTool` RPC.
+   */
+  timeoutMs?: number;
 }
 
 /**
@@ -511,6 +517,16 @@ export interface PluginUiSlotDeclaration {
     availabilityPath: string;
     /** Runtime activity that requests automatic opening; manual selection needs no mapping. */
     activation?: { namespace: string; activityKey: string };
+  };
+  /**
+   * A board card for one record kind (PAR-14389 C.1); `canvasNode` slots only.
+   * The plugin answers the fixed `canvas.cards.*` actions for `kind`; `search`
+   * and `related` say which of the optional two it offers.
+   */
+  entityCard?: {
+    kind: string;
+    search: boolean;
+    related: boolean;
   };
 
   /**

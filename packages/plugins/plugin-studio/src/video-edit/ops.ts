@@ -16,12 +16,24 @@
  * - `setProps` sets `keyframes` per property (a list replaces that property's keys, `[]` or null removes them,
  *   `keyframes: null` removes all) and `transitionIn` of any `TRANSITIONS` type on video and overlay clips (overlay
  *   transitions are still refused when rendering); text clips only fade in.
- * - `reorder` sets the track order (first track is the bottom layer); `removeTrack` removes the track with its clips.
+ * - `setProps` on video and overlay clips also sets `adjust` (schema v3; merged per field, a neutral value removes that
+ *   field, `adjust: null` removes all) and `look` (merged with the clip's look, so `{intensity}` alone changes the
+ *   strength; `look: null` removes it). `split`, `trim` and `move` keep both on every part.
+ * - `setProps` on overlay clips also sets `blendMode` (schema v4; "normal" removes it), `chromaKey` and `frame` (merged
+ *   per field like `look`; null removes them). A clip moved to the video track drops all three (they are overlay-only).
+ * - `reorder` sets the order of all tracks at once (first track is the bottom layer) and moves no clips; `moveTrack`
+ *   moves one track to `toIndex` (0..tracks-1, the others keep their order). Its undo is `moveTrack` back to the old
+ *   index (`moveTrackUndo`). `removeTrack` removes the track with its clips.
+ * - Schema v5: `setProps` on video and overlay clips sets `effects` (the list replaces the clip's; [] or null removes
+ *   them). On overlay clips `sticker {pack, id}` swaps the source to a bundled sticker (assetId and version go) and
+ *   `assetId` swaps it back (sticker goes); a sticker clip can't move to the video track. On text clips `animation` is
+ *   merged per field like `look` (`{in: null}` removes the entry side; `animation: null` removes both). `split` keeps
+ *   the entry animation on the left part and the exit on the right, each shortened to fit; `trim` works on stickers.
  */
-import { clipDuration, EditError, KEYFRAME_PROPS, LIMITS, normalizeEdit, type Clip, type EditDoc, type EditErrorReason, type Keyframe, type Keyframes, type Track, type TrackKind, type Transition } from "./timeline.js";
+import { clipDuration, EditError, KEYFRAME_PROPS, LIMITS, normalizeEdit, type Clip, type EditDoc, type EditErrorReason, type Keyframe, type Keyframes, type TextAnimation, type Track, type TrackKind, type Transition } from "./timeline.js";
 
 export const MAX_OPS = 500;
-export const OP_NAMES = ["addClip", "split", "trim", "move", "delete", "reorder", "setProps", "addTrack", "removeTrack", "setProject"] as const;
+export const OP_NAMES = ["addClip", "split", "trim", "move", "delete", "reorder", "moveTrack", "setProps", "addTrack", "removeTrack", "setProject"] as const;
 export type OpName = (typeof OP_NAMES)[number];
 
 export type EditOp =
@@ -31,6 +43,7 @@ export type EditOp =
   | { op: "move"; clipId: string; start?: number; trackId?: string }
   | { op: "delete"; clipId: string }
   | { op: "reorder"; trackIds: string[] }
+  | { op: "moveTrack"; trackId: string; toIndex: number }
   | { op: "setProps"; clipId: string; props: Record<string, unknown> }
   | { op: "addTrack"; track: { id: string; kind: TrackKind; clips?: unknown[] }; index?: number }
   | { op: "removeTrack"; trackId: string }
@@ -47,10 +60,10 @@ export class OpError extends EditError {
 const SOURCE_PROPS = ["assetId", "version", "in", "out", "start", "speed", "volume", "fadeIn", "fadeOut"];
 /** What `setProps` may change, per track kind. `id` never changes: delete and add instead. */
 const PROPS: Record<TrackKind, readonly string[]> = {
-  video: [...SOURCE_PROPS, "transform", "transitionIn", "keyframes"],
-  overlay: [...SOURCE_PROPS, "transform", "transitionIn", "keyframes"],
+  video: [...SOURCE_PROPS, "transform", "transitionIn", "keyframes", "adjust", "look", "effects"],
+  overlay: [...SOURCE_PROPS, "sticker", "transform", "transitionIn", "keyframes", "adjust", "look", "effects", "blendMode", "chromaKey", "frame"],
   audio: [...SOURCE_PROPS, "keyframes"],
-  text: ["text", "start", "duration", "font", "color", "fontSize", "fadeIn", "fadeOut", "transform", "transitionIn", "keyframes"],
+  text: ["text", "start", "duration", "font", "color", "fontSize", "fadeIn", "fadeOut", "transform", "transitionIn", "keyframes", "animation"],
   caption: ["start", "style", "words"],
 };
 
@@ -110,6 +123,15 @@ function fitFades(clip: Clip, length: number): Clip {
   }
   if (c.transitionIn && c.transitionIn.duration > length) c.transitionIn = { ...c.transitionIn, duration: length };
   return c;
+}
+/**
+ * A text clip's animation for one part of a split: `keep` is the side the part still has, shortened to `length`.
+ * A part shorter than the shortest animation loses it (as `fitFades` drops fades), so a sliver split can't be refused.
+ */
+function splitAnimation(animation: TextAnimation | undefined, keep: "in" | "out", length: number): { animation?: TextAnimation } {
+  const preset = animation?.[keep];
+  if (!preset || length < LIMITS.animationDuration[0]) return { animation: undefined };
+  return { animation: { [keep]: preset, [`${keep}Duration`]: Math.min(animation[`${keep}Duration`] ?? length, length) } };
 }
 
 /** How the move from one key to the next runs (the earlier key's ease), 0..1 -> 0..1; `hold` jumps at the next key. */
@@ -177,8 +199,8 @@ function split(doc: EditDoc, o: Args, i: number): void {
     right = { ...clip, id: newId, start: at, words: after.map((w) => ({ ...w, start: ms(w.start - offset), end: ms(w.end - offset) })) };
   } else if ("duration" in clip) {
     const rest = ms(end - at);
-    left = fitFades({ ...clip, duration: offset, fadeOut: 0, ...fitKeys(clip.keyframes, 0, offset, { end: true }, i) }, offset);
-    right = fitFades({ ...clip, id: newId, start: at, duration: rest, fadeIn: 0, transitionIn: null, ...fitKeys(clip.keyframes, offset, rest, { start: true }, i) }, rest);
+    left = fitFades({ ...clip, duration: offset, fadeOut: 0, ...fitKeys(clip.keyframes, 0, offset, { end: true }, i), ...splitAnimation(clip.animation, "in", offset) }, offset);
+    right = fitFades({ ...clip, id: newId, start: at, duration: rest, fadeIn: 0, transitionIn: null, ...fitKeys(clip.keyframes, offset, rest, { start: true }, i), ...splitAnimation(clip.animation, "out", rest) }, rest);
   } else {
     const cut = ms(clip.in + offset * clip.speed);
     if (cut <= clip.in || cut >= clip.out) fail(i, "out_of_range", "at", "is too close to the clip's edge at this speed.");
@@ -206,7 +228,7 @@ function run(doc: EditDoc, raw: unknown, i: number): void {
       return split(doc, o, i);
     case "trim": {
       const { track, index, clip } = findClip(doc, idArg(o, "clipId", i), i);
-      if (!("assetId" in clip)) fail(i, "invalid", "clipId", `clip ${clip.id} has no source to trim; change its duration or words with setProps.`);
+      if (!("in" in clip)) fail(i, "invalid", "clipId", `clip ${clip.id} has no source to trim; change its duration or words with setProps.`);
       const inPoint = numArg(o, "in", i);
       const out = numArg(o, "out", i);
       if (inPoint === undefined && out === undefined) fail(i, "invalid", "", "give in, out or both.");
@@ -261,6 +283,14 @@ function run(doc: EditDoc, raw: unknown, i: number): void {
       doc.tracks = (ids as string[]).map((x) => doc.tracks[have.indexOf(x)]);
       return;
     }
+    case "moveTrack": {
+      const { track, index } = findTrack(doc, idArg(o, "trackId", i), i, "trackId");
+      const to = o.toIndex;
+      if (typeof to !== "number" || !Number.isInteger(to) || to < 0 || to >= doc.tracks.length) fail(i, "out_of_range", "toIndex", `must be a whole number from 0 to ${doc.tracks.length - 1}.`);
+      doc.tracks.splice(index, 1);
+      doc.tracks.splice(to, 0, track);
+      return;
+    }
     case "setProps": {
       const { track, index, clip } = findClip(doc, idArg(o, "clipId", i), i);
       const props = objArg(o, "props", i);
@@ -287,6 +317,22 @@ function run(doc: EditDoc, raw: unknown, i: number): void {
         if (props.keyframes !== null && !keys) fail(i, "invalid", "props.keyframes", "must be an object of property lists, or null.");
         (next as { keyframes?: unknown }).keyframes = keys ? { ...("keyframes" in clip ? clip.keyframes : {}), ...keys } : undefined;
       }
+      // A clip shows an asset or a sticker, never both: setting one source drops the other (normalizeEdit checks the result).
+      const swap = next as { assetId?: unknown; version?: unknown; sticker?: unknown };
+      if (props.sticker !== undefined && props.sticker !== null && props.assetId === undefined) {
+        delete swap.assetId;
+        delete swap.version;
+      }
+      if (props.assetId !== undefined && props.assetId !== null && props.sticker === undefined) delete swap.sticker;
+      if ("animation" in props && "text" in clip && record(props.animation) && clip.animation) (next as typeof clip).animation = { ...clip.animation, ...record(props.animation) };
+      // adjust and look merge into what the clip has; null removes them (normalizeEdit checks the result).
+      if ("in" in clip && "transform" in clip) {
+        const media = next as typeof clip;
+        if (record(props.adjust) && clip.adjust) media.adjust = { ...clip.adjust, ...record(props.adjust) };
+        if (record(props.look) && clip.look) media.look = { ...clip.look, ...record(props.look) } as typeof clip.look;
+        if (record(props.chromaKey) && clip.chromaKey) media.chromaKey = { ...clip.chromaKey, ...record(props.chromaKey) } as typeof clip.chromaKey;
+        if (record(props.frame) && clip.frame) media.frame = { ...clip.frame, ...record(props.frame) } as typeof clip.frame;
+      }
       clipsOf(track)[index] = next;
       sortClips(track);
       return;
@@ -311,6 +357,13 @@ function run(doc: EditDoc, raw: unknown, i: number): void {
     default:
       fail(i, "invalid", "op", `must be one of ${OP_NAMES.join(", ")}.`);
   }
+}
+
+/** The op that undoes `moveTrack { trackId, toIndex }` on `before` (the doc it applies to): the track back to its index. */
+export function moveTrackUndo(before: EditDoc, trackId: string): EditOp & { op: "moveTrack" } {
+  const toIndex = before.tracks.findIndex((t) => t.id === trackId);
+  if (toIndex < 0) throw new OpError(`there is no track ${trackId}.`, "not_found", "trackId", -1);
+  return { op: "moveTrack", trackId, toIndex };
 }
 
 /** Applies `ops` in order to a copy of `edit` and returns the normalised result. Throws `OpError` and applies nothing on any failure. */

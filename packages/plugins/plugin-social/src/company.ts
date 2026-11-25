@@ -4,7 +4,7 @@
  * Never iterates companies itself: jobs take company ids from our own rows.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { createPibOnlySkillSyncer, createSkillSyncer } from "@partnersinbiz/pib-plugin-kit";
+import { createPibOnlySkillSyncer, createSkillSyncGuard, createSkillSyncer } from "@partnersinbiz/pib-plugin-kit";
 import { deleteJunkAccounts, flagLegacyTokens } from "./db.js";
 import { rememberCompany } from "./modules.js";
 import { healPlanRoutine } from "./routine-template.js";
@@ -17,20 +17,31 @@ export function createCompanyBootstrap(ctx: PluginContext) {
   const skills = createSkillSyncer(ctx, SKILLS);
   // Own-company notes: synced for the PAR company only (the kit wrapper does nothing for any other).
   const ownSkills = createPibOnlySkillSyncer(ctx, PIB_ONLY_SKILLS);
+  const syncBoth = async (companyId: string) => [...(await skills.ensure(companyId)), ...(await ownSkills.ensure(companyId))];
+  // Tool calls, page actions, routes and job ticks never wait long for the skill sync (kit `createSkillSyncGuard`):
+  // at most 2 s, then it finishes behind the caller; a failed sync is left alone for 5 minutes.
+  const skillsSoon = createSkillSyncGuard(syncBoth, { logger: ctx.logger });
   const cleaned = new Set<string>();
   // Next time (ms) the weekly routine's stored template may be checked for a company; Infinity once it is right.
   const routineCheckAt = new Map<string, number>();
   return {
     skills,
     ownSkills,
-    async ensure(companyId: string): Promise<void> {
+    /**
+     * `waitForSkills` is for a new company's bootstrap only (an event, nobody waits on the answer): it waits for the
+     * host to finish the sync. Every other caller gets the bounded wait.
+     */
+    async ensure(companyId: string, options: { waitForSkills?: boolean } = {}): Promise<void> {
       if (!companyId) return;
       await rememberCompany(ctx, companyId);
-      try {
-        await skills.ensure(companyId);
-        await ownSkills.ensure(companyId);
-      } catch (error) {
-        ctx.logger.info("Social skill sync skipped", { companyId, error: error instanceof Error ? error.message : String(error) });
+      if (options.waitForSkills) {
+        try {
+          await syncBoth(companyId);
+        } catch (error) {
+          ctx.logger.info("Social skill sync skipped", { companyId, error: error instanceof Error ? error.message : String(error) });
+        }
+      } else {
+        await skillsSoon(companyId);
       }
       // Once per process (a worker restart after an upgrade checks again): an old stored issue template makes the host fail the weekly routine's dispatch.
       if (Date.now() >= (routineCheckAt.get(companyId) ?? 0)) {

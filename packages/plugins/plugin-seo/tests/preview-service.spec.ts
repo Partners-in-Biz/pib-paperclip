@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { NAMESPACE } from "../src/namespace.js";
 import { createEnv, type Actor } from "../src/service/common.js";
+import { liveFingerprint } from "../src/engine/preview.js";
 import { assertPreviewLinksChecked, createPreview, listPreviews, previewLink, previewRows, previewSlug, reviewPreview, SOURCE_BASIS_NOTICE } from "../src/service/preview.js";
 import { PREVIEW_RENDER_URL } from "../src/service/preview-links.js";
 import { ORIGIN } from "../src/constants.js";
@@ -32,7 +33,7 @@ type FetchMock = (url: string, init?: RequestInit) => Promise<Response>;
 // No render service in tests unless one is given: create-preview falls back to the source.
 const noRender: FetchMock = async () => { throw new TypeError("fetch failed"); };
 
-function host(previewRow?: Row, rounds = 0, evidence: Row | null = null, opts: { fetch?: FetchMock; siteMs?: number } = {}) {
+function host(previewRow?: Row, rounds = 0, evidence: Row | null = null, opts: { fetch?: FetchMock; siteMs?: number; live?: string } = {}) {
   const executes: Array<{ sql: string; params: unknown[] }> = [];
   const created: Array<Record<string, unknown>> = [];
   const comments: Array<{ id: string; body: string }> = [];
@@ -65,7 +66,7 @@ function host(previewRow?: Row, rounds = 0, evidence: Row | null = null, opts: {
   let clock = Date.parse("2026-10-02T12:00:00Z");
   const site = vi.fn(async (_url: string) => {
     clock += opts.siteMs ?? 0;
-    return { status: 200, url: "https://acme.co.za/", redirects: [], headers: {}, text: LIVE, ms: 1 };
+    return { status: 200, url: "https://acme.co.za/", redirects: [], headers: {}, text: opts.live ?? LIVE, ms: 1 };
   });
   const fetch = vi.fn(opts.fetch ?? noRender);
   return { env: createEnv(ctx, { now: () => new Date(clock), site: site as never, fetch }), executes, created, comments, wakes, updates, site, fetch };
@@ -78,6 +79,8 @@ const base = { sprintId: "sp-1", taskId: "t-1", pageUrl: "/", h1: "New heading" 
 describe("create-preview", () => {
   it("refuses a body that would wipe most of the live page", async () => {
     await expect(createPreview(host().env, "co-1", seo, { ...base, bodyHtml: "<p>short intro</p>", bodyMode: "replace" })).rejects.toThrow(/keep only \d+% of the live page/);
+    // The kept-text message names every add mode, including afterFirstParagraph.
+    await expect(createPreview(host().env, "co-1", seo, { ...base, bodyHtml: "<p>short intro</p>", bodyMode: "replace" })).rejects.toThrow(/"before", "after" or "afterFirstParagraph"/);
   });
 
   it("adds copy by default, holds the preview and opens a review issue for the owner or Reviewer", async () => {
@@ -232,7 +235,7 @@ describe("create-preview from the rendered live page (PAR-8787)", () => {
     const { html, stats } = stored(h);
     expect(html).toContain("live auction update banner");
     expect(html.match(/<!DOCTYPE html>/gi)).toHaveLength(1);
-    expect(Object.keys(stats).sort()).toEqual(["basis", "rendered"]);
+    expect(Object.keys(stats).sort()).toEqual(["basis", "liveFingerprint", "rendered"]);
     expect(stats.basis).toBe("rendered");
     expect(stats).not.toHaveProperty("keptPct");
     expect(stats.rendered).toMatchObject({ keptPct: 100, liveWords: 203, at: "2026-10-02T12:00:00.000Z" });
@@ -246,7 +249,7 @@ describe("create-preview from the rendered live page (PAR-8787)", () => {
     expect(h.fetch).toHaveBeenCalledTimes(1);
     const [url, init] = h.fetch.mock.calls[0]!;
     expect(url).toBe(PREVIEW_RENDER_URL);
-    expect(url).toBe("http://127.0.0.1:3032/render");
+    expect(url).toBe("http://127.0.0.1:3033/render");
     expect(init).toMatchObject({ method: "POST", body: JSON.stringify({ url: "https://acme.co.za/" }) });
     expect(init!.signal).toBeInstanceOf(AbortSignal);
     expect(h.site.mock.calls.map((c) => c[0])).toEqual(["https://acme.co.za/"]);
@@ -313,6 +316,74 @@ describe("create-preview from the rendered live page (PAR-8787)", () => {
     expect(list.previews[0]).toMatchObject({ keptPct: kept, basis: "rendered" });
     expect((await previewRows(host(row).env, "co-1", "sp-1"))[0]).toMatchObject({ keptPct: kept, basis: "rendered", renderedChecked: true });
     await expect(reviewPreview(host(row).env, "co-1", reviewer, { sprintId: "sp-1", previewId: "p1", verdict: "pass" })).rejects.toThrow(`only ${kept}%`);
+  });
+
+  it("previewRows adds expired, overlapIds and changedFields for the Previews tab (PAR-9145)", async () => {
+    const mk = (id: string, status: string, expired: boolean, changes: unknown) => ({ id, task_id: "t-1", issue_id: "iss-1", issue_identifier: "PAR-1", page_url: "https://acme.co.za/", title: "Home", status, review_status: "passed", expires_at: "2026-11-30", created_at: "2026-11-01", total: 3, stats: "{}", expired, changes: JSON.stringify(changes) });
+    const rowsIn = [mk("a", "pending", false, { title: "x", h1: "y", why: "Searchers want the price" }), mk("b", "pending", false, { bodyHtml: "<p>z</p>" }), mk("c", "pending", true, {})];
+    const h = host();
+    (h.env.ctx.db as { query: (sql: string) => Promise<Row[]> }).query = async (sql: string) => (/FROM plugin_seo_8099f8879a\.previews/.test(sql) ? rowsIn : []);
+    const out = await previewRows(h.env, "co-1", "sp-1");
+    expect(out.map((r) => r.expired)).toEqual([false, false, true]);
+    expect(out[0]).toMatchObject({ issueIdentifier: "PAR-1", changedFields: ["Title", "Heading"], overlapIds: ["b"] });
+    expect(out[1]!.changedFields).toEqual(["Body copy"]);
+    expect(out[0]).toMatchObject({ changes: { title: "x", metaDescription: null, h1: "y", bodyMode: null }, why: "Searchers want the price" });
+    expect(out[1]).toMatchObject({ changes: { bodyMode: "before" }, why: null });
+    expect(out[2]!.overlapIds).toEqual(["a", "b"]);
+  });
+
+  describe("live fingerprint and checkLive (PAR-9006)", () => {
+    const pageHtml = (title: string, h1 = "Old heading", extra = "") => `<html><head><title>${title}</title><meta name="description" content="Old description"></head><body><h1>${h1}</h1><main><div class="entry-content">${"<p>auction lot listing word </p>".repeat(40)}${extra}</div></main></body></html>`;
+    const fp = { title: "Old", metaDescription: "Old description", h1: "Old heading", words: 163, counter: 2 };
+    const row = (stats: unknown) => ({ id: "p1", task_id: "t-1", page_url: "https://acme.co.za/", title: "Home", status: "approved", review_status: "passed", expires_at: "2020-01-01", created_at: "2020-01-01", total: 1, stats: JSON.stringify(stats), changes: "{}" });
+    const check = async (stats: unknown, live: string | Error, extra: Record<string, unknown> = { checkLive: true }) => {
+      const h = host(row(stats));
+      h.site.mockImplementation((async () => { if (live instanceof Error) throw live; return { status: 200, url: "https://acme.co.za/", redirects: [], headers: {}, text: live, ms: 1 }; }) as never);
+      const out = (await listPreviews(h.env, "co-1", { sprintId: "sp-1", previewId: "p1", ...extra })) as { previews: Array<Record<string, unknown>> };
+      return out.previews[0]!;
+    };
+
+    it("create-preview stores stats.liveFingerprint of the live page", async () => {
+      const h = host();
+      await createPreview(h.env, "co-1", seo, { ...base, bodyHtml: "<p>new intro words</p>" });
+      expect(stored(h).stats.liveFingerprint).toEqual({ title: "Old", metaDescription: "", h1: "Old heading", words: 163, counter: 2 });
+    });
+
+    it("unchanged when the live page still matches", async () => {
+      const first = await check({ liveFingerprint: fp }, pageHtml("Old"));
+      expect(first.liveCheck).toEqual({ result: "unchanged" });
+    });
+
+    it("changed names the fields that moved", async () => {
+      const out = await check({ liveFingerprint: fp }, pageHtml("New title", "New heading", "<p>more words here</p>"));
+      expect(out.liveCheck).toEqual({ result: "changed", fields: ["title", "h1", "words"] });
+    });
+
+    it("unknown without a stored fingerprint, or when the live page cannot be read", async () => {
+      expect(((await check({}, pageHtml("Old"))).liveCheck as { result: string }).result).toBe("unknown");
+      expect(((await check({ liveFingerprint: fp }, new Error("timeout"))).liveCheck as { result: string }).result).toBe("unknown");
+    });
+
+    it("is not run unless asked, and a listing page skips the word count", async () => {
+      expect(await check({ liveFingerprint: fp }, pageHtml("Old"), {})).not.toHaveProperty("liveCheck");
+      const listing = `<html><head><title>Cat</title></head><body><h1>Cat</h1><article><p>a</p></article><article><p>b</p></article></body></html>`;
+      expect(liveFingerprint(listing)).toEqual({ title: "Cat", metaDescription: "", h1: "Cat", words: null, counter: 2 });
+      const out = await check({ liveFingerprint: { title: "Cat", metaDescription: "", h1: "Cat", words: null } }, listing.replace("<p>b</p>", "<p>b b b b</p>"));
+      expect(out.liveCheck).toEqual({ result: "unchanged" });
+    });
+  });
+
+  it("previewId returns the approved copy as changes (and the stored html only with includeHtml); compact rows stay without it", async () => {
+    const row = { id: "p1", task_id: "t-1", page_url: "https://acme.co.za/category/x/", title: "X", status: "cancelled", review_status: "passed", expires_at: "2020-01-01", created_at: "2020-01-01", total: 1, stats: {}, html: "<html>stored</html>", changes: JSON.stringify({ title: "T", metaDescription: "M", h1: "H", bodyHtml: "<p>b</p>", bodyMode: "after", css: "x{}" }) };
+    type Out = { previews: Array<Record<string, unknown>> };
+    const plain = (await listPreviews(host(row).env, "co-1", { sprintId: "sp-1", previewId: "p1" })) as Out;
+    expect(plain.previews[0]!.changes).toEqual({ title: "T", metaDescription: "M", h1: "H", bodyHtml: "<p>b</p>", bodyMode: "after", linkEdits: null });
+    expect(plain.previews[0]).not.toHaveProperty("html");
+    const withHtml = (await listPreviews(host(row).env, "co-1", { sprintId: "sp-1", previewId: "p1", includeHtml: true })) as Out;
+    expect(withHtml.previews[0]!.html).toBe("<html>stored</html>");
+    const compact = (await listPreviews(host(row).env, "co-1", { sprintId: "sp-1" })) as Out;
+    expect(compact.previews[0]).not.toHaveProperty("changes");
+    expect(compact.previews[0]).not.toHaveProperty("html");
   });
 
   it("an old row without a basis lists as source", async () => {

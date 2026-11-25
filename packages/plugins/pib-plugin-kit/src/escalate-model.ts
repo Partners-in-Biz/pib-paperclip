@@ -8,8 +8,8 @@ import { teamRoleHealth } from "./team.js";
 
 export const ESCALATION_MARK = "pib:escalation";
 export const ESCALATION_COOLDOWN_MS = 24 * 3600_000;
-export const ESCALATION_DAILY_CAP = 20;
-export const ESCALATION_DEADLINE_MS = 24 * 3600_000;
+export const ESCALATION_DAILY_CAP = 60;
+export const ESCALATION_DEADLINE_MS = 8 * 3600_000;
 
 export type EscalationTarget = { kind: "agent"; agentId: string } | { kind: "coo"; agentId: string };
 export type EscalationLevel = { level: number; target: EscalationTarget };
@@ -196,11 +196,11 @@ export function buildUnblockIssue(input: {
     "**Last comments by the assignee:**",
     commentLines,
     "",
-    "**Ways out:**",
-    "1. Reassign to a better-suited agent.",
-    "2. Split into smaller issues.",
-    "3. Cancel with a reason in a comment.",
-    "4. Use the `ask-owner` tool when only the owner can unblock.",
+    "**You are the next one up. Do not hand it back unchanged.**",
+    "1. Do it yourself if you hold the access or permission the assignee lacks (a grant, a setting, an approval you may give, a login you have). Then move the stuck issue to `todo` with a comment saying what you did, and close this one.",
+    "2. Reassign it to an agent that can do it, or split it into smaller issues.",
+    "3. Cancel it with a reason in a comment.",
+    "4. If you cannot clear it either, block THIS issue and say exactly what is missing: it then goes to your manager. Only when a person must act, use the `ask-owner` tool, as one grouped ask.",
     "",
     `**Deadline:** ${deadline}`,
     "",

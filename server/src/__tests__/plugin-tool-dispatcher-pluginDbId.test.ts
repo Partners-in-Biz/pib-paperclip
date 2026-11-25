@@ -113,7 +113,7 @@ function createDbStub(plugin: {
 describe("dispatcher.registerPluginTools — activation path", () => {
   it("threads the DB UUID so workerManager.isRunning resolves correctly", async () => {
     const workerManager = createUuidKeyedWorkerManager();
-    const dispatcher = createPluginToolDispatcher({ workerManager });
+    const dispatcher = createPluginToolDispatcher({ workerManager, toolGate: null });
 
     // Mirrors plugin-loader: passes (pluginKey, manifest, pluginId).
     dispatcher.registerPluginTools(PLUGIN_KEY, MANIFEST, PLUGIN_DB_ID);
@@ -146,7 +146,7 @@ describe("dispatcher.registerPluginTools — activation path", () => {
 
   it("throws when pluginDbId is empty — no silent fallback to pluginKey", () => {
     const workerManager = createUuidKeyedWorkerManager();
-    const dispatcher = createPluginToolDispatcher({ workerManager });
+    const dispatcher = createPluginToolDispatcher({ workerManager, toolGate: null });
 
     // The previous optional signature let callers omit the UUID and silently
     // fall back to pluginKey, masking missed plumbing as a runtime "worker
@@ -174,7 +174,7 @@ describe("dispatcher — lifecycle path (plugin.enabled → registerFromDb)", ()
   it("registers tools by UUID when plugin.enabled fires (initialize + event re-entry)", async () => {
     const workerManager = createUuidKeyedWorkerManager();
     const lifecycleManager = createLifecycleManager();
-    const dispatcher = createPluginToolDispatcher({ workerManager, lifecycleManager: lifecycleManager as any });
+    const dispatcher = createPluginToolDispatcher({ workerManager, lifecycleManager: lifecycleManager as any, toolGate: null });
 
     // We exercise the public surface directly (no DB shim needed): the
     // dispatcher's lifecycle handler internally calls registry.registerPlugin
@@ -208,7 +208,7 @@ describe("dispatcher — lifecycle path (plugin.enabled → registerFromDb)", ()
 describe("dispatcher — disable → enable cycle (re-entry)", () => {
   it("re-registers with the same UUID after unregister, no fallback to pluginKey", async () => {
     const workerManager = createUuidKeyedWorkerManager();
-    const dispatcher = createPluginToolDispatcher({ workerManager });
+    const dispatcher = createPluginToolDispatcher({ workerManager, toolGate: null });
 
     // 1. First activation — UUID threaded.
     dispatcher.registerPluginTools(PLUGIN_KEY, MANIFEST, PLUGIN_DB_ID);
@@ -236,7 +236,7 @@ describe("dispatcher — disable → enable cycle (re-entry)", () => {
 
   it("idempotent re-registration with the same UUID does not duplicate tools", () => {
     const workerManager = createUuidKeyedWorkerManager();
-    const dispatcher = createPluginToolDispatcher({ workerManager });
+    const dispatcher = createPluginToolDispatcher({ workerManager, toolGate: null });
 
     dispatcher.registerPluginTools(PLUGIN_KEY, MANIFEST, PLUGIN_DB_ID);
     dispatcher.registerPluginTools(PLUGIN_KEY, MANIFEST, PLUGIN_DB_ID);
@@ -274,7 +274,7 @@ describe("dispatcher — worker re-spawn after container restart", () => {
       call,
     } as unknown as PluginWorkerManager;
 
-    const dispatcher = createPluginToolDispatcher({ workerManager });
+    const dispatcher = createPluginToolDispatcher({ workerManager, toolGate: null });
     dispatcher.registerPluginTools(PLUGIN_KEY, MANIFEST, PLUGIN_DB_ID);
 
     // First dispatch — worker up, succeeds.

@@ -130,7 +130,7 @@ import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
 import { agentService } from "./agents.js";
 import { issueDocumentSelect, mapIssueDocumentRow } from "./documents.js";
 import { toIssueWorkProduct } from "./work-products.js";
-import { projectService } from "./projects.js";
+import { projectService, type ProjectListReadScope } from "./projects.js";
 import { normalizePortablePath } from "./portable-path.js";
 import { folderService } from "./folders.js";
 import {
@@ -680,6 +680,7 @@ function readCanonicalSkillKey(frontmatter: Record<string, unknown>, metadata: R
 export const PAPERCLIP_CORE_SKILL_KEYS = [
   "paperclipai/paperclip/paperclip",
   "paperclipai/paperclip/paperclip-board",
+  "paperclipai/paperclip/paperclip-canvas",
   "paperclipai/paperclip/paperclip-converting-plans-to-tasks",
   "paperclipai/paperclip/paperclip-create-agent",
   "paperclipai/paperclip/para-memory-files",
@@ -3014,7 +3015,8 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
       });
     }
     await assertLocalImportOutsideSkillPackageCache(sourceRealPath, resolveManagedSkillsRoot(companyId));
-    const projectRows = await projects.list(companyId);
+    // "system": an allowlist of import roots that gates server behaviour; the rows are never shown.
+    const projectRows = await projects.list(companyId, { readCondition: "system" });
     const configuredRoots = [
       resolveManagedSkillsRoot(companyId),
       ...projectRows.flatMap((project) => project.workspaces.map((workspace) => workspace.cwd)),
@@ -4455,12 +4457,41 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     };
   }
 
-  async function readFile(companyId: string, skillId: string, relativePath: string): Promise<CompanySkillFileDetail | null> {
-    await ensureSkillInventoryCurrent(companyId);
+  async function readFile(
+    companyId: string,
+    skillId: string,
+    relativePath: string,
+    options: { skipInventoryRefresh?: boolean } = {},
+  ): Promise<CompanySkillFileDetail | null> {
+    // Callers that read many files must refresh once (readFiles or an earlier
+    // list/listFull), not once per file: a refresh walks the whole company
+    // inventory (PAR-11024).
+    if (!options.skipInventoryRefresh) await ensureSkillInventoryCurrent(companyId);
     const skill = await getById(companyId, skillId);
     if (!skill) return null;
 
     return readLoadedSkillFile(skill, relativePath);
+  }
+
+  /**
+   * Reads several files of one skill with a single inventory refresh and a
+   * single visibility-checked lookup. Returns null when the skill is missing or
+   * not visible; a file that cannot be read maps to null.
+   */
+  async function readFiles(
+    companyId: string,
+    skillId: string,
+    relativePaths: Iterable<string>,
+  ): Promise<Map<string, CompanySkillFileDetail | null> | null> {
+    await ensureSkillInventoryCurrent(companyId);
+    const skill = await getById(companyId, skillId);
+    if (!skill) return null;
+    const files = new Map<string, CompanySkillFileDetail | null>();
+    for (const relativePath of relativePaths) {
+      if (files.has(relativePath)) continue;
+      files.set(relativePath, await readLoadedSkillFile(skill, relativePath).catch(() => null));
+    }
+    return files;
   }
 
   async function readLoadedSkillFile(skill: CompanySkill, relativePath: string): Promise<CompanySkillFileDetail> {
@@ -5155,8 +5186,9 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
   async function browseProjectWorkspace(
     companyId: string,
     input: CompanySkillProjectBrowseRequest,
+    readCondition: ProjectListReadScope,
   ): Promise<CompanySkillProjectBrowseResult> {
-    const project = (await projects.listByIds(companyId, [input.projectId]))[0];
+    const project = (await projects.listByIds(companyId, [input.projectId], { readCondition }))[0];
     if (!project) throw notFound("Project not found");
     const workspace = project.workspaces.find((entry) => entry.id === input.workspaceId);
     if (!workspace) throw notFound("Project workspace not found");
@@ -5214,14 +5246,15 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
 
   async function scanProjectWorkspaces(
     companyId: string,
-    input: CompanySkillProjectScanRequest = {},
+    input: CompanySkillProjectScanRequest,
+    readCondition: ProjectListReadScope,
   ): Promise<CompanySkillProjectScanResult> {
     await ensureSkillInventoryCurrent(companyId);
     const mode = input.mode ?? "import";
     const selectiveImport = mode === "import" && input.selection !== undefined;
     const projectRows = input.projectIds?.length
-      ? await projects.listByIds(companyId, input.projectIds)
-      : await projects.list(companyId);
+      ? await projects.listByIds(companyId, input.projectIds, { readCondition })
+      : await projects.list(companyId, { readCondition });
     const workspaceFilter = new Set(input.workspaceIds ?? []);
     const skipped: CompanySkillProjectScanSkipped[] = [];
     const conflicts: CompanySkillProjectScanConflict[] = [];
@@ -6220,7 +6253,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
         versionSelections: new Map([[selection.key, selection.versionId]]),
       });
       if (!sourceResolution) continue;
-      out.push({ key: selection.key, runtimeName: selection.runtimeName, versionId: selection.versionId,
+      out.push({ key: selection.key, runtimeName: selection.runtimeName, skillId: selection.skillId, versionId: selection.versionId,
         currentVersionId: selection.currentVersionId, source: sourceResolution.source,
         sourceStatus: sourceResolution.status,
         missingDetail: sourceResolution.status === "missing" ? sourceResolution.detail : null });
@@ -7521,6 +7554,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     renameSkill,
     updateStatus,
     readFile,
+    readFiles,
     updateSkill,
     updateFile,
     deleteFile,

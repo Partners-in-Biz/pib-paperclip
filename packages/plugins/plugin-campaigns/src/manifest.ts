@@ -82,6 +82,8 @@ const manifest: PaperclipPluginManifestV1 = {
     "http.outbound",
     "projects.read",
     "projects.managed",
+    // 0.10: activity entries for the Build flow (PAR-9232). Declared alone; nothing writes activity yet.
+    "activity.log.write",
   ],
   entrypoints: {
     worker: "./dist/worker.js",
@@ -164,6 +166,14 @@ const manifest: PaperclipPluginManifestV1 = {
         displayName: "Campaigns",
         exportName: "CampaignsSidebar",
         order: 50,
+      },
+      // Planning Canvas (PAR-14423): the card of an embed node { plugin, type: "card-campaign", assetId: <campaign id> }.
+      {
+        type: "canvasNode",
+        id: "card-campaign",
+        displayName: "Campaign",
+        exportName: "CampaignCanvasCard",
+        entityCard: { kind: "campaign", search: true, related: true },
       },
     ],
   },

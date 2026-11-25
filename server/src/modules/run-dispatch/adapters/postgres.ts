@@ -41,6 +41,10 @@ import { evaluateAgentInvokabilityFromDb } from "../../../services/agent-invokab
 import { budgetService, budgetServiceInTransaction, recheckAdmittedRunBudgetReadOnly } from "../../../services/budgets.js";
 import { lockRunBudgetRecoveryOwnerInTransaction, recheckRunBudgetReservationInTransaction } from "../../../services/budget-reservations.js";
 import { isCompletedOnboardingHandoffWake } from "../../../services/chat-completion-delivery.js";
+import {
+  ISSUE_UNBLOCK_REQUESTED_WAKE_REASON,
+  isSystemUnblockOwnerWake,
+} from "../../../services/issue-wake-guards.js";
 import { isUnstartedTaskQuestionAnswer } from "../../../services/unstarted-task-question-answer.js";
 import { isHeartbeatWakeOnDemandEnabled } from "../../../services/heartbeat-policy.js";
 import { notifyChatRunMilestones } from "../../../services/chat-run-milestone-notifications.js";
@@ -582,6 +586,7 @@ export function createPostgresRunDispatchAdapter(
         executionRunId: issues.executionRunId,
         checkoutRunId: issues.checkoutRunId,
         executionState: issues.executionState,
+        unblockDescriptor: issues.unblockDescriptor,
       })
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, input.companyId)));
@@ -643,6 +648,23 @@ export function createPostgresRunDispatchAdapter(
             .then((rows) => Boolean(rows[0]))
         : false;
 
+    // PAR-9390: the named unblock owner is not the assignee; the same helper
+    // the heartbeat start guard uses decides it against the live descriptor.
+    const unblockWakeRequest = issue && wakeReason === ISSUE_UNBLOCK_REQUESTED_WAKE_REASON
+      ? await dbOrTx
+          .select({
+            reason: agentWakeupRequests.reason,
+            requestedByActorType: agentWakeupRequests.requestedByActorType,
+            requestedByActorId: agentWakeupRequests.requestedByActorId,
+          })
+          .from(heartbeatRuns)
+          .innerJoin(agentWakeupRequests, eq(agentWakeupRequests.id, heartbeatRuns.wakeupRequestId))
+          .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId)))
+          .limit(1)
+          .then((rows) => rows[0] ?? null)
+      : null;
+    const isUnblockOwnerWake = isSystemUnblockOwnerWake(unblockWakeRequest, context, issue, input.agentId);
+
     const retryReasonKind = classifyRetryReasonKind(retryReason);
     // Dependency edges can change after scheduled promotion without changing
     // the displayed status. Read them again under the queued/final issue lock.
@@ -673,6 +695,7 @@ export function createPostgresRunDispatchAdapter(
         || context.source === "connection_tools.refreshed",
       isInteractionWake,
       isAuthorizedSourceScopedRecovery,
+      isSystemUnblockOwnerWake: isUnblockOwnerWake,
       isNonAssigneeWorkspaceBusyRetry: isNonAssigneeWorkspaceBusyRetry(retryReason, context),
       resumeIntent,
       wakeCommentIdPresent: Boolean(wakeCommentId),
