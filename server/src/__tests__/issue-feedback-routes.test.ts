@@ -22,6 +22,7 @@ const mockIssueService = vi.hoisted(() => ({
 const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(),
   hasPermission: vi.fn(),
+  decide: vi.fn(),
 }));
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -165,6 +166,8 @@ describe("issue feedback trace routes", () => {
     mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1"]);
     mockRoutineService.syncRunStatusForIssue.mockResolvedValue(undefined);
     mockLogActivity.mockResolvedValue(undefined);
+    // The vote route reads the task first (PAR-12958): the caller may read issue-1.
+    mockAccessService.decide.mockResolvedValue({ allowed: true, reason: "allow_role_default" });
   });
 
   it("returns the saved vote without waiting for feedback uploads", async () => {
@@ -204,6 +207,7 @@ describe("issue feedback trace routes", () => {
       });
 
     expect([200, 201]).toContain(res.status);
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:read" }));
     expect(mockFeedbackService.saveIssueVote).toHaveBeenCalledTimes(1);
     expect(mockFeedbackService.flushPendingFeedbackTraces).not.toHaveBeenCalled();
 

@@ -96,7 +96,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
     isMobile,
     setForceCollapsed,
   } = useSidebar();
-  const { openNewIssue, openOnboarding } = useDialogActions();
+  const { openNewIssue, openNewNote, openOnboarding } = useDialogActions();
   const { togglePanelVisible, setPanelVisible } = usePanel();
   // Optional: Layout also renders in harnesses without a ToastProvider.
   const pushToast = useOptionalToastActions()?.pushToast ?? null;
@@ -462,6 +462,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
 
   useKeyboardShortcuts({
     onNewIssue: () => openNewIssue(),
+    onNewNote: () => openNewNote(),
     onSearch: openSearch,
     onToggleSidebar: toggleSidebar,
     onTogglePanel: togglePanel,

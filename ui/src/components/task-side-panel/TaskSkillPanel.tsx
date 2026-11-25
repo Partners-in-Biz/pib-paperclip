@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { ExternalLink, FileText, Loader2, Wrench } from "lucide-react";
 import { companySkillsApi } from "@/api/companySkills";
+import { useMemberRestrictionGate } from "@/hooks/useMemberRestrictionGate";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
@@ -10,13 +11,17 @@ import { parseFrontmatterMarkdown } from "@paperclipai/shared";
 
 export function TaskSkillPanel({ companyId, skillId }: { companyId: string; skillId: string }) {
   const navigate = useNavigate();
+  // Skills are closed to a restricted member under `enforce` (AC-G10): the panel is not offered.
+  const memberGate = useMemberRestrictionGate(companyId);
   const query = useQuery({
     queryKey: queryKeys.companySkills.detail(companyId, skillId),
-    queryFn: () => companySkillsApi.detail(companyId, skillId),
+    queryFn: memberGate.guard(() => companySkillsApi.detail(companyId, skillId), null),
+    enabled: !memberGate.closed,
     refetchOnWindowFocus: true,
     refetchOnMount: "always",
   });
   const view = useQueryView(query);
+  if (memberGate.closed) return null;
   if (query.isLoading || view.kind === "reconnecting") {
     return (
       <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground" role="status">

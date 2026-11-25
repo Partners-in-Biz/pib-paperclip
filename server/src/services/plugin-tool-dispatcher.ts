@@ -76,7 +76,19 @@ export interface PluginToolDispatcherOptions {
   lifecycleManager?: PluginLifecycleManager;
   /** Database connection for looking up plugin records. */
   db?: Db;
+  /**
+   * The core plugin gate for tools (PAR-12608 4.8): asked before every tool
+   * run with the plugin's key and the run. Required, so a dispatcher cannot be
+   * built without deciding; `null` only where no person can call (tests).
+   */
+  toolGate: PluginToolGate | null;
 }
+
+export type PluginToolGate = (input: {
+  pluginKey: string;
+  toolName: string;
+  runContext: ToolRunContext;
+}) => Promise<void>;
 
 // ---------------------------------------------------------------------------
 // PluginToolDispatcher interface
@@ -213,6 +225,7 @@ export interface PluginToolDispatcher {
  *   workerManager,
  *   lifecycleManager,
  *   db,
+ *   toolGate: pluginToolGate(db),
  * });
  * await dispatcher.initialize();
  *
@@ -228,9 +241,9 @@ export interface PluginToolDispatcher {
  * ```
  */
 export function createPluginToolDispatcher(
-  options: PluginToolDispatcherOptions = {},
+  options: PluginToolDispatcherOptions,
 ): PluginToolDispatcher {
-  const { workerManager, lifecycleManager, db } = options;
+  const { workerManager, lifecycleManager, db, toolGate } = options;
   const log = logger.child({ service: "plugin-tool-dispatcher" });
 
   // Create the underlying tool registry, backed by the worker manager
@@ -415,6 +428,12 @@ export function createPluginToolDispatcher(
         },
         "dispatching tool execution",
       );
+
+      // Every path to a plugin tool ends here (C11), so the gate covers them all.
+      const tool = registry.getTool(namespacedName);
+      if (tool && toolGate) {
+        await toolGate({ pluginKey: tool.pluginId, toolName: namespacedName, runContext });
+      }
 
       const result = await registry.executeTool(
         namespacedName,

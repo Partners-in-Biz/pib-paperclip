@@ -15,6 +15,7 @@ export type { ApiDispatch } from "./contracts.js";
 import { McpApiError, McpCapabilityError, type ApiDispatch, type Capability, company, task, requestId, boundedLimit, object, pick, rows, taskFields, commentFields, documentFields, pathId, stable } from "./contracts.js";
 import { fileTransferCapabilities, type PublicMcpTransfers } from "./file-transfers.js";
 import { expandedMcpCapabilities } from "./expanded-capabilities.js";
+import { canvasMcpCapabilities } from "./canvas-capabilities.js";
 
 /** Internal HTTP dispatch reuses domain authorization, validation, audit and scheduling.
  * Neither an arbitrary path nor an actor is accepted from the MCP client.
@@ -56,7 +57,9 @@ export function createMcpApiDispatch(api: Router, parentLocals?: Record<string, 
       }
       throw new McpApiError(response.statusCode, safe);
     }
-    return response.statusCode === 204 || !response.payload ? null : response.json<unknown>();
+    if (response.statusCode === 204 || !response.payload) return null;
+    // Canvas markdown/mermaid reads answer text, not JSON.
+    return String(response.headers["content-type"] ?? "").includes("json") ? response.json<unknown>() : response.payload;
   };
 }
 
@@ -147,7 +150,7 @@ export const publicMcpCapabilities: Capability[] = [
       url: origin + "/" + pathId(p.company.issuePrefix) + "/approvals/" + pathId(object(v).id),
     })) }),
   },
-  ...expandedMcpCapabilities, ...fileTransferCapabilities,
+  ...expandedMcpCapabilities, ...fileTransferCapabilities, ...canvasMcpCapabilities,
 ];
 
 publicMcpCapabilities.push({

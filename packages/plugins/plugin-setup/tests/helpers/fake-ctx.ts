@@ -33,6 +33,7 @@ export function fakeCtx(options: { agents?: Record<string, unknown[]>; savedConf
   const issues = new Map<string, FakeIssue>();
   const state = new Map<string, unknown>();
   const configs = options.savedConfigs ?? {};
+  const configCalls: string[] = [];
   let seq = 0;
   const stateKey = (key: { scopeKind: string; scopeId?: string; namespace?: string; stateKey: string }) => `${key.scopeKind}:${key.scopeId ?? ""}:${key.namespace ?? ""}:${key.stateKey}`;
   const ctx = {
@@ -50,7 +51,12 @@ export function fakeCtx(options: { agents?: Record<string, unknown[]>; savedConf
     actions: { register: (key: string, fn: (params: Record<string, unknown>, context: unknown) => Promise<unknown>) => actions.set(key, fn) },
     jobs: { register: (key: string, fn: () => Promise<void>) => jobs.set(key, fn) },
     tools: { register: (name: string, _decl: unknown, fn: (params: unknown, context: unknown) => Promise<unknown>) => tools.set(name, fn) },
-    config: { get: async (companyId: string) => configs[companyId] ?? {} },
+    config: {
+      get: async (companyId: string) => {
+        configCalls.push(companyId);
+        return configs[companyId] ?? {};
+      },
+    },
     state: {
       get: async (key: Parameters<typeof stateKey>[0]) => state.get(stateKey(key)) ?? null,
       set: async (key: Parameters<typeof stateKey>[0], value: unknown) => {
@@ -64,8 +70,8 @@ export function fakeCtx(options: { agents?: Record<string, unknown[]>; savedConf
       },
     },
     companies: {
-      list: async (input: { limit?: number; offset?: number } = {}) =>
-        Object.keys(options.companies ?? {}).slice(input.offset ?? 0, (input.offset ?? 0) + (input.limit ?? 100)).map((id) => ({ id, ...options.companies![id] })),
+      list: async (input: { limit?: number; offset?: number; actionableOnly?: boolean } = {}) =>
+        Object.keys(input.actionableOnly ? configs : (options.companies ?? {})).slice(input.offset ?? 0, (input.offset ?? 0) + (input.limit ?? 100)).map((id) => ({ id, ...options.companies?.[id] })),
       get: async (companyId: string) => {
         if (options.companies?.[companyId]) return { id: companyId, ...options.companies[companyId] };
         return options.prefixes?.[companyId] ? { id: companyId, issuePrefix: options.prefixes[companyId] } : null;
@@ -107,7 +113,7 @@ export function fakeCtx(options: { agents?: Record<string, unknown[]>; savedConf
     for (const fn of handlers.get(name) ?? []) await fn({ eventId: "e", eventType: name as PluginEvent["eventType"], occurredAt: new Date().toISOString(), companyId: "", payload: null, ...event } as PluginEvent);
   }
 
-  return { ctx, store, db, emitted, handlers, actions, jobs, tools, issues, state, configs, fire, wakes };
+  return { ctx, store, db, emitted, handlers, actions, jobs, tools, issues, state, configs, configCalls, fire, wakes };
 }
 
 export function fixedClock(iso: string) {

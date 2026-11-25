@@ -37,6 +37,10 @@ export const ACCESS_TABLE: AccessTable = Object.freeze({
   "social.post-analytics": posts("view"),
   "social.growth-load": posts("view"),
   "social.get-cadence": posts("view"),
+  // Planning Canvas post cards (PAR-14389 B3a): reading posts, so `view`.
+  "canvas.cards.resolve": posts("view"),
+  "canvas.cards.search": posts("view"),
+  "canvas.cards.related": posts("view"),
   "social.create-post": posts("create"),
   "social.create-template": posts("create"),
   "social.media-presign": posts("create"),

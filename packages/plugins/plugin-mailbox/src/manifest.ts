@@ -1,7 +1,7 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 import { COCKPIT_ROUTE, SETUP_STATUS_ROUTE } from "@partnersinbiz/pib-plugin-kit";
 import { instanceConfigSchema } from "./config.js";
-import { DOMAIN_JOB_KEY, ESP_ENDPOINT, SES_ENDPOINT, SETUP_STATUS_JOB_KEY, SYNC_JOB_KEY, UNSUBSCRIBE_ENDPOINT } from "./constants.js";
+import { DOMAIN_JOB_KEY, ESP_ENDPOINT, MAIL_CARD, SES_ENDPOINT, SETUP_STATUS_JOB_KEY, SYNC_JOB_KEY, UNSUBSCRIBE_ENDPOINT } from "./constants.js";
 import { PLUGIN_ID, PLUGIN_VERSION } from "./namespace.js";
 import { SKILLS } from "./skills.js";
 import { MAILBOX_TOOLS } from "./tools.js";
@@ -107,6 +107,8 @@ const manifest: PaperclipPluginManifestV1 = {
     slots: [
       { type: "page", id: "mailbox-page", displayName: "Mailbox", exportName: "MailboxPage", routePath: "mailbox" },
       { type: "sidebar", id: "mailbox-sidebar", displayName: "Mailbox", exportName: "MailboxSidebar", order: 43 },
+      // An email on a planning canvas (PAR-14389 C.2): added by id or through Related on a CRM company or contact; no search (Risk 2).
+      { type: "canvasNode", id: MAIL_CARD, displayName: "Email", exportName: "MailCanvasCard", entityCard: { kind: "mail", search: false, related: true } },
     ],
   },
 };

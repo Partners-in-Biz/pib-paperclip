@@ -1,7 +1,7 @@
 /** What the page and the tools share: who is asking, and the usage and cap views. */
 import { balanceView } from "./balance.js";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { formatClientParam, listCrmClients, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
+import { formatClientParam, listCrmClients, type ActingRestriction, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
 import { listAssets } from "./assets.js";
 import { capCheck, capHistory, currentPeriod, isAgentLimitKey, listCaps, usage } from "./ledger.js";
 import { StudioConfig } from "./config.js";
@@ -9,6 +9,10 @@ import { providerOptions, providerStatus } from "./providers/registry.js";
 import { musicCapCredits, musicUsage, STABLE_AUDIO_MONTHLY_USD_CAP } from "./music/stable-audio-price.js";
 import { USD_PER_CREDIT } from "./seedance-price.js";
 import { PAGE_MODELS, UNAVAILABLE_MODELS } from "./page.js";
+import { assertListOpen } from "./scope.js";
+
+/** A cap key of one client (`company:<id>`, `contact:<id>`), not the company's or an agent's. */
+const isClientKey = (key: string) => key.includes(":") && !isAgentLimitKey(key);
 
 const LOCAL_BOARD = "local-board";
 
@@ -65,25 +69,33 @@ async function musicUsageView(ctx: PluginContext, period: string) {
   }
 }
 
-/** The Studio page's data. The host checks the caller's company access (see worker.ts); the owner check is on the write action. */
-export async function overview(ctx: PluginContext, companyId: string) {
+/**
+ * The Studio page's data. The host checks the caller's company access (see worker.ts); the owner check is on the write
+ * action. A restricted member gets no client: no client list, cap, usage or file. With core's answer missing it is
+ * refused when a client would show (PAR-14298).
+ */
+export async function overview(ctx: PluginContext, companyId: string, restriction: ActingRestriction) {
   const period = currentPeriod();
-  const [caps, history, clients, assets, companyUsed, projects, agents, balance, providers] = await Promise.all([
+  const restricted = restriction === "restricted";
+  const [allCaps, allHistory, clients, assets, companyUsed, projects, agents, balance, providers] = await Promise.all([
     listCaps(ctx, companyId),
     capHistory(ctx, companyId),
-    listCrmClients(ctx, ctx.db.namespace, companyId).catch(() => []),
-    listAssets(ctx, companyId, { limit: 24 }),
+    restricted ? [] : listCrmClients(ctx, ctx.db.namespace, companyId).catch(() => []),
+    listAssets(ctx, companyId, { limit: 24, ...(restricted ? { scope: null } : {}) }),
     usage(ctx, companyId, period),
     ctx.projects.list({ companyId, limit: 200 }).catch(() => []),
     ctx.agents.list({ companyId, limit: 500 }).catch(() => []),
     balanceView(ctx, companyId).catch(() => null),
     providerStatus(new StudioConfig(ctx, companyId)).catch(() => []),
   ]);
+  const caps = restricted ? allCaps.filter((c) => !isClientKey(c.scopeKey)) : allCaps;
+  const history = restricted ? allHistory.filter((h) => !isClientKey(h.scopeKey)) : allHistory;
+  assertListOpen(clients.length > 0 || assets.some((a) => a.client) || caps.some((c) => isClientKey(c.scopeKey)) || history.some((h) => isClientKey(h.scopeKey)), restriction);
   // Every option per capability (stt, tts, lipsync) with its price, quality note and default flag (PAR-8436).
   const providerChoices = await providerOptions(new StudioConfig(ctx, companyId));
   const clientUsage = await Promise.all(
     caps
-      .filter((c) => c.scopeKey.includes(":") && !isAgentLimitKey(c.scopeKey))
+      .filter((c) => isClientKey(c.scopeKey))
       .map(async (c) => {
         const [kind, id] = c.scopeKey.split(":") as ["company" | "contact", string];
         return { scopeKey: c.scopeKey, used: await usage(ctx, companyId, period, { kind, id }) };

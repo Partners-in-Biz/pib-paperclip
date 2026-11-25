@@ -516,7 +516,7 @@ Gaps: Do not infer existing private descendants became public from parent or pro
 
 ### `break-glass-read`
 
-API: `present` — GET /api/issues/{id}?breakGlass=true.
+API: `present` — GET /api/issues/{id}?breakGlass=true; GET /api/issues/{id}/comments?breakGlass=true.
 
 Agent access: `restricted` — eligible board company owner/admin explicit read, no agent path; instance/local normal admin bypass separate.
 

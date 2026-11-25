@@ -9,6 +9,7 @@ import {
   listPaperclipSkillEntries,
   removeMaintainerOnlySkillSymlinks,
 } from "@paperclipai/adapter-utils/server-utils";
+import { readPaperclipSkillWithReferences } from "./paperclip-skill-text.js";
 
 async function makeTempDir(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -265,7 +266,7 @@ describe("paperclip skill utils", () => {
   });
 
   it("documents artifact uploads in the installed Paperclip skill", async () => {
-    const skillBody = await fs.readFile(path.resolve("skills/paperclip/SKILL.md"), "utf8");
+    const skillBody = readPaperclipSkillWithReferences();
     const referenceBody = await fs.readFile(path.resolve("skills/paperclip/references/artifacts.md"), "utf8");
     const helperBody = await fs.readFile(path.resolve("skills/paperclip/scripts/paperclip-upload-artifact.sh"), "utf8");
     const normalizedReferenceBody = referenceBody.replace(/\s+/g, " ");
@@ -295,7 +296,7 @@ describe("paperclip skill utils", () => {
   });
 
   it("tells agents to batch independent human-input questions into one card", async () => {
-    const skillBody = (await fs.readFile(path.resolve("skills/paperclip/SKILL.md"), "utf8")).replace(/\s+/g, " ");
+    const skillBody = readPaperclipSkillWithReferences().replace(/\s+/g, " ");
     const referenceBody = (await fs.readFile(path.resolve("skills/paperclip/references/api-reference.md"), "utf8"))
       .replace(/\s+/g, " ");
     const humanInput = skillBody.split("**Human input questions.**")[1]?.split("When a saved interaction is answered")[0];
@@ -309,7 +310,7 @@ describe("paperclip skill utils", () => {
   });
 
   it("honors only the current scoped runtime claim without removing legacy disposition", async () => {
-    const body = await fs.readFile(path.resolve("skills/paperclip/SKILL.md"), "utf8");
+    const body = readPaperclipSkillWithReferences();
     const checkout = body.split("**Step 5 — Checkout.**")[1]?.split("**Step 6")[0];
     expect(checkout).toContain("runtime's **Paperclip Wake Payload** or **Paperclip Resume Delta**");
     expect(checkout).toContain("only to that issue in that run");
@@ -322,7 +323,7 @@ describe("paperclip skill utils", () => {
   });
 
   it("keeps the external-chat shortcut behind the server-verified harness boundary", async () => {
-    const skillBody = await fs.readFile(path.resolve("skills/paperclip/SKILL.md"), "utf8");
+    const skillBody = readPaperclipSkillWithReferences();
     const shortcut = skillBody.match(
       /## Server-Verified External Chat Turns(?<body>[\s\S]*?)\n## The Heartbeat Procedure/,
     )?.groups?.body;
@@ -546,7 +547,7 @@ describe("paperclip skill utils", () => {
   });
 
   it("uses the authoritative PATCH response to confirm monitor scheduling", async () => {
-    const skillBody = await fs.readFile(path.resolve("skills/paperclip/SKILL.md"), "utf8");
+    const skillBody = readPaperclipSkillWithReferences();
 
     expect(skillBody).toContain("Use that request's default full response");
     expect(skillBody).toContain("do not issue a confirming GET");
@@ -556,7 +557,7 @@ describe("paperclip skill utils", () => {
   });
 
   it("requires issue-update writes to be verified, not inferred", async () => {
-    const skillBody = await fs.readFile(path.resolve("skills/paperclip/SKILL.md"), "utf8");
+    const skillBody = readPaperclipSkillWithReferences();
 
     expect(skillBody).toContain("Verify writes — never infer them");
     expect(skillBody).toContain("An empty response body means the write FAILED");

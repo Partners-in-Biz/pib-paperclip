@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const logActivityMock = vi.fn();
 const canUserMock = vi.fn();
@@ -72,6 +72,7 @@ function createDbStub() {
               return Promise.resolve([{
                 name: "Acme Robotics",
                 logoAssetId: "logo-1",
+                mode: "off",
               }]);
             },
           };
@@ -95,7 +96,9 @@ async function createApp(source: "local_implicit" | "session" = "local_implicit"
       source,
       userId: source === "session" ? "inviter-1" : null,
       companyIds: ["company-1"],
-      memberships: [{ companyId: "company-1", membershipRole: "operator", status: "active" }],
+      memberships: [{
+        companyId: "company-1", membershipRole: "operator", status: "active", restricted: false, restrictionMode: "off",
+      }],
     };
     next();
   });
@@ -113,6 +116,11 @@ async function createApp(source: "local_implicit" | "session" = "local_implicit"
 }
 
 describe("POST /companies/:companyId/invites", () => {
+  // The first import of the access routes graph is slow on a loaded host; warm it outside the 15 s test budget.
+  beforeAll(async () => {
+    await import("../routes/access.js");
+  }, 60_000);
+
   beforeEach(() => {
     vi.resetModules();
     vi.doUnmock("../services/index.js");

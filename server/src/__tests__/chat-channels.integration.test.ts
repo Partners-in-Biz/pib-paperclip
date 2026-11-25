@@ -7417,7 +7417,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect(comments[0].body).toContain("untrusted provider data");
       expect(comments[0].authorUserId).toBe("owner-user");
       expect(comments[0].metadata?.sourceChannel).toBe("github");
-      const inbox = await issueService(db).list(f.companyId, { touchedByUserId: "owner-user" });
+      const inbox = await issueService(db).list(f.companyId, { readCondition: "system", touchedByUserId: "owner-user" });
       expect(inbox.map((issue) => issue.id)).not.toContain(task.id);
       const [run] = await db.insert(heartbeatRuns).values({
         companyId: f.companyId,

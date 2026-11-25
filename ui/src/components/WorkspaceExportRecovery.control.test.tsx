@@ -77,6 +77,14 @@ describe("governed retained-file recovery", () => {
     expect(container.textContent).not.toContain("Saved files recovered");
   });
 
+  it("reads no recovery action and offers no control to a person restricted under enforce (AC-G10)", async () => {
+    client.setQueryData(queryKeys.auth.session, { user: { id: "board-1" },
+      memberRestrictions: [{ companyId: "company-1", restricted: true, mode: "enforce" }] });
+    await mount();
+    expect(api.inspect).not.toHaveBeenCalled();
+    expect(button("Recover saved files")).toBeUndefined();
+  });
+
   it.each(["access", "source"])("retains loaded recovery controls through a transient %s refresh failure", async kind => {
     await mount();
     const key = kind === "access" ? queryKeys.access.currentBoardAccess

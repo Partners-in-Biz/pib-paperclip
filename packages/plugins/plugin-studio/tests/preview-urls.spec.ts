@@ -30,7 +30,7 @@ function fakeCtx(resolve: () => Promise<string>) {
 describe("asset-urls: one secret lookup per request (PAR-8102)", () => {
   it("signs 40 previews with one settings read and one secret resolve", async () => {
     const { ctx, secrets, config } = fakeCtx(async () => "SK");
-    const out = await assetUrlsForPerson(ctx, CO, ids);
+    const out = await assetUrlsForPerson(ctx, CO, ids, "unrestricted");
     expect(secrets.resolve).toHaveBeenCalledTimes(1);
     expect(config.get).toHaveBeenCalledTimes(1);
     expect(Object.keys(out.urls)).toHaveLength(40);
@@ -40,7 +40,7 @@ describe("asset-urls: one secret lookup per request (PAR-8102)", () => {
 
   it("leaves a missing asset out quietly", async () => {
     const { ctx } = fakeCtx(async () => "SK");
-    const out = await assetUrlsForPerson(ctx, CO, ["asset-1", "gone"]);
+    const out = await assetUrlsForPerson(ctx, CO, ["asset-1", "gone"], "unrestricted");
     expect(Object.keys(out.urls)).toEqual(["asset-1"]);
     expect(out.error).toBeNull();
   });
@@ -49,7 +49,7 @@ describe("asset-urls: one secret lookup per request (PAR-8102)", () => {
     const { ctx, secrets } = fakeCtx(async () => {
       throw new Error("Rate limit exceeded for secret resolution");
     });
-    const out = await assetUrlsForPerson(ctx, CO, ids);
+    const out = await assetUrlsForPerson(ctx, CO, ids, "unrestricted");
     expect(secrets.resolve).toHaveBeenCalledTimes(1);
     expect(out.urls).toEqual({});
     expect(out.failed).toHaveLength(40);
@@ -60,13 +60,13 @@ describe("asset-urls: one secret lookup per request (PAR-8102)", () => {
 
   it("says when storage isn't set up", async () => {
     const { ctx } = fakeCtx(async () => "");
-    const out = await assetUrlsForPerson(ctx, CO, ["asset-1"]);
+    const out = await assetUrlsForPerson(ctx, CO, ["asset-1"], "unrestricted");
     expect(out.error).toMatch(/not set up/);
   });
 
   it("does nothing for an empty list", async () => {
     const { ctx, secrets, config } = fakeCtx(async () => "SK");
-    expect(await assetUrlsForPerson(ctx, CO, [])).toEqual({ urls: {}, failed: [], error: null });
+    expect(await assetUrlsForPerson(ctx, CO, [], "unrestricted")).toEqual({ urls: {}, failed: [], error: null });
     expect(secrets.resolve).not.toHaveBeenCalled();
     expect(config.get).not.toHaveBeenCalled();
   });

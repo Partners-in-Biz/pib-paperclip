@@ -766,6 +766,9 @@ importers:
 
   packages/plugins/pib-plugin-kit:
     dependencies:
+      '@paperclipai/shared':
+        specifier: workspace:*
+        version: link:../../shared
       pdf-lib:
         specifier: ^1.17.1
         version: 1.17.1
@@ -862,9 +865,21 @@ importers:
       '@types/react':
         specifier: ^19.2.18
         version: 19.2.18
+      '@types/react-dom':
+        specifier: ^19.2.5
+        version: 19.2.5(@types/react@19.2.18)
       esbuild:
         specifier: ^0.28.2
         version: 0.28.2
+      jsdom:
+        specifier: ^30.0.1
+        version: 30.0.1(@noble/hashes@2.4.0)
+      react:
+        specifier: ^19.2.8
+        version: 19.2.8
+      react-dom:
+        specifier: ^19.2.8
+        version: 19.2.8(react@19.2.8)
       typescript:
         specifier: ^7.0.2
         version: 7.0.2
@@ -1279,6 +1294,9 @@ importers:
       '@partnersinbiz/pib-plugin-kit':
         specifier: workspace:*
         version: link:../pib-plugin-kit
+      '@partnersinbiz/pib-plugin-ui':
+        specifier: workspace:*
+        version: link:../pib-plugin-ui
     devDependencies:
       '@paperclipai/plugin-sdk':
         specifier: workspace:*
@@ -1298,6 +1316,12 @@ importers:
       jsdom:
         specifier: ^30.0.1
         version: 30.0.1(@noble/hashes@2.4.0)
+      react:
+        specifier: ^19.2.8
+        version: 19.2.8
+      react-dom:
+        specifier: ^19.2.8
+        version: 19.2.8(react@19.2.8)
       typescript:
         specifier: ^7.0.2
         version: 7.0.2

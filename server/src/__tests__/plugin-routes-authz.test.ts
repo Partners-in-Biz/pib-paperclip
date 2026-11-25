@@ -809,6 +809,7 @@ describe("plugin tool and bridge authz", () => {
       key: "health",
       companyId: companyA,
       params: { view: "compact" },
+      actorContext: boardPerson(),
       renderEnvironment: null,
     });
   });

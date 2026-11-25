@@ -4,7 +4,7 @@ import type { AiConnectionBinding, AiRuntimeConnectionBinding } from "@paperclip
 import { getServerAdapter } from "../../adapters/index.js";
 import type { prepareManagedAiRuntime } from "../ai-connection-runtime.js";
 import { aiConnectionSessionCompatibilityInputs, managedAiSessionIdentityCompatible } from "../ai-connection-session.js";
-import { createNativeSessionHandoffLoader } from "../native-runtime/native-session-handoff.js";
+import { createNativeSessionHandoffLoader, currentRequestHistoryCommentIds } from "../native-runtime/native-session-handoff.js";
 import { agentInstructionsService } from "../agent-instructions.js";
 import {
   describeSessionResetReason, shouldResetTaskSessionForWake, isCanonicalSessionIdForAdapter,
@@ -296,6 +296,8 @@ export async function prepareHeartbeatSession(db: Db, input: HeartbeatSessionPre
   const getFreshSessionHandoff = issueRef ? createNativeSessionHandoffLoader({
     db, companyId: agent.companyId, issueId: issueRef.id, agentId: agent.id, before: run.createdAt,
     throughCommentId: readNonEmptyString(context.conversationReplayThroughCommentId) ?? (context.interactionKind ? null : wakeCommentId),
+    // The fresh prompt renders this wake's full-history comments; do not repeat them.
+    currentRequestCommentIds: () => currentRequestHistoryCommentIds(context.paperclipWake),
   }) : undefined;
   const previousSessionParams =
     explicitResumeSessionParams ??

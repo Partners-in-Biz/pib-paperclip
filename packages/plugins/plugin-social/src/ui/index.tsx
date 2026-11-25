@@ -455,3 +455,4 @@ function SidebarNavLink({ to, label, icon }: { to: string; label: string; icon: 
 }
 
 /** Personal social accounts page (own work only). */
+export { SocialPostCard } from "./PostCard.js";

@@ -5,8 +5,9 @@
  * client's file only lands in that client's folder (own work goes to the company's own project).
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { DRIVE_ACK_TIMEOUT_MS, driveSave as kitDriveSave, scopeOfRow, type DriveSaveOptions, type DriveSaveResult, type DriveTransferProgress } from "@partnersinbiz/pib-plugin-kit";
+import { DRIVE_ACK_TIMEOUT_MS, driveSave as kitDriveSave, scopeOfRow, type ActingRestriction, type DriveSaveOptions, type DriveSaveResult, type DriveTransferProgress } from "@partnersinbiz/pib-plugin-kit";
 import { addLink, getAssetRow } from "./assets.js";
+import { assertOpenToPerson } from "./scope.js";
 import { StudioConfig } from "./config.js";
 import { iso, num, table } from "./db.js";
 import { StudioError } from "./errors.js";
@@ -91,9 +92,17 @@ export async function driveCopies(ctx: PluginContext, companyId: string, assetId
  * Two people saving at once both reach the CRM; it and the broker dedupe on folder + name + sha256, so both get the
  * same file id and the link insert is idempotent.
  */
-export async function saveAssetToDrive(ctx: PluginContext, companyId: string, assetId: string, save: DriveSaveFn = kitDriveSave): Promise<DriveCopy | TransferView> {
+export async function saveAssetToDrive(
+  ctx: PluginContext,
+  companyId: string,
+  assetId: string,
+  save: DriveSaveFn = kitDriveSave,
+  restriction?: ActingRestriction,
+): Promise<DriveCopy | TransferView> {
   if (!assetId) throw new StudioError("assetId is required.", "bad_request");
   const row = await getAssetRow(ctx, companyId, assetId);
+  // The page's caller (PAR-14290): a restricted member puts no client file into the client's Drive. Agents pass none.
+  if (restriction) assertOpenToPerson(scopeOfRow(row), restriction);
   const size = num(row.bytes);
   if (size > DRIVE_MAX_BYTES) {
     throw new StudioError(`This file is ${mb(size)}. Drive transfers take files up to ${mb(DRIVE_MAX_BYTES)}, the largest file Studio keeps. Download it and add it to Drive by hand.`, "too_large");

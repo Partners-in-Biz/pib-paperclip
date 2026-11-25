@@ -18,6 +18,7 @@ import {
 import {
   clientScopeFromInput,
   COCKPIT_ROUTE,
+  createAccessGuard,
   createSkillSyncer,
   createWorkIssue,
   HOSTED_TIERS,
@@ -27,6 +28,7 @@ import {
   MAIL_EVENTS,
   normalizeToolResult,
   PIB_PLUGINS,
+  registerCanvasCards,
   pluginEvent,
   publishCockpitSnapshot,
   readConfig,
@@ -39,8 +41,10 @@ import {
   startHire,
   trackJob,
   unlinkAgent,
+  type AccessGuard,
   type ClientRef,
 } from "@partnersinbiz/pib-plugin-kit";
+import { ACCESS_TABLE } from "./access-table.js";
 import {
   accountManager,
   ACCOUNT_MANAGER_ROLE,
@@ -180,6 +184,7 @@ import {
   STAGE_KINDS,
 } from "./domain.js";
 import { PLUGIN_ID } from "./namespace.js";
+import { crmCardKinds } from "./canvas-cards.js";
 import { CRM_TOOLS } from "./tools.js";
 import { SKILLS } from "./skills.js";
 import { CRM_MUTATIONS, crmCompanyIds, emitChanges, emitContactDeleted, touchContact } from "./sync.js";
@@ -281,6 +286,8 @@ import {
 } from "./sites.js";
 
 let pluginCtx: PluginContext | null = null;
+let accessGuard: AccessGuard | null = null;
+const NOT_FOUND = { status: 404, body: { error: "Not found" } };
 let skillSync: ReturnType<typeof createSkillSyncer> | null = null;
 
 /** Syncs the CRM skills for a company (always resolves; failures are logged by the kit). */
@@ -297,11 +304,14 @@ const plugin = definePlugin({
     // Subscribe to call.noted events from the Telephony plugin to write idempotent call notes.
     registerCallNotedSubscriber(ctx);
     registerPrivacy(ctx);
+    // Every action, tool and API route goes through the access guard (PAR-12679). With the switch off it is a pass-through.
+    const guard = createAccessGuard(ctx, { pluginKey: PLUGIN_ID, table: ACCESS_TABLE });
+    accessGuard = guard;
     const registerAction = (
       key: string,
       handler: (params: Record<string, unknown>, context: PluginPerformActionContext) => Promise<unknown>,
     ) => {
-      ctx.actions.register(key, async (params, context) => {
+      guard.action(key, async (params, context) => {
         // A page action never waits long for the skill sync (kit `soon`).
         if (context.companyId) await skillSync?.soon(context.companyId);
         const result = await handler(params, context);
@@ -310,8 +320,12 @@ const plugin = definePlugin({
       });
     };
     for (const tool of CRM_TOOLS) {
-      ctx.tools.register(tool.name, tool, async (params, run) => normalizeToolResult(await runTool(ctx, tool.name, params, run)));
+      guard.tool(tool.name, tool, async (params, run) => normalizeToolResult(await runTool(ctx, tool.name, params, run)));
     }
+    // The manifest's API routes, each through the guard (`api:<routeKey>` rows).
+    guard.apiRoute(SETUP_STATUS_ROUTE.routeKey, async (input) => ({ status: 200, body: await setupStatus(ctx, input.companyId) }));
+    guard.apiRoute(COCKPIT_ROUTE.routeKey, async (input) => ({ status: 200, body: await cockpitSnapshot(ctx, input.companyId) }));
+    guard.apiRoute("record-grant", (input) => acceptPartnerGrant(ctx, input));
     registerAction("crm.load", async (params, context) => {
       // The page reports /_plugins/<installation uuid>/ui/ so Setup can link the settings page.
       await rememberPluginUiBase(ctx, params.uiBase);
@@ -384,6 +398,13 @@ const plugin = definePlugin({
     registerAction("crm.update-lead-source", async (params, context) => updateLeadSource(ctx, await actionViewer(ctx, context), params, actionSource(context)));
     registerAction("crm.start-new-client", async (params, context) => startNewClient(ctx, await actionViewer(ctx, context), params, actionSource(context)));
     registerAction("crm.find-records", async (params, context) => findRecords(ctx, await actionViewer(ctx, context), params));
+    // Company and contact cards on a planning canvas (PAR-14416): the kit helper, straight on the guard (no skill sync wait).
+    registerCanvasCards({
+      register: guard.action,
+      kinds: crmCardKinds(ctx, (call) => viewerFor(ctx, {
+        companyId: call.companyId, userId: call.context.actor.userId, agentId: call.context.actor.agentId, runId: call.context.actor.runId,
+      })),
+    });
     registerAction("crm.create-canary-client", async (params, context) => ensureCanaryClient(ctx, await actionViewer(ctx, context), params));
     registerAction("crm.cleanup-canary", async (params, context) => cleanupCanary(ctx, await actionViewer(ctx, context), params));
     registerAction("crm.run-services-check", async (_params, context) => runServicesCheck(ctx, new Date(), { companyId: requireCompany(context) }));
@@ -661,14 +682,9 @@ const plugin = definePlugin({
   },
 
   async onApiRequest(input) {
-    if (!pluginCtx) return { status: 503, body: { error: "CRM plugin is not ready" } };
-    if (input.routeKey === SETUP_STATUS_ROUTE.routeKey) {
-      return { status: 200, body: await setupStatus(pluginCtx, input.companyId) };
-    }
-    if (input.routeKey === COCKPIT_ROUTE.routeKey) {
-      return { status: 200, body: await cockpitSnapshot(pluginCtx, input.companyId) };
-    }
-    return acceptPartnerGrant(pluginCtx, input);
+    if (!pluginCtx || !accessGuard) return { status: 503, body: { error: "CRM plugin is not ready" } };
+    // An unknown key under the switch `off` answers 404 as before; under report and enforce the guard refuses it.
+    return accessGuard.handleApiRequest(input, async () => NOT_FOUND);
   },
 });
 

@@ -3,6 +3,7 @@ import { settingsStateKey, templateSyncStateKey } from "../src/settings.js";
 import { registerSettingsActions } from "../src/settings-actions.js";
 import { TELEPHONY_SECRET_NAMES } from "../src/secret-names.js";
 import type { PluginContext, PluginPerformActionContext } from "@paperclipai/plugin-sdk";
+import type { AccessGuard } from "@partnersinbiz/pib-plugin-kit";
 
 class FakeCtx {
   state: Map<string, Record<string, unknown>> = new Map();
@@ -63,7 +64,9 @@ describe("Settings Actions", () => {
   beforeEach(() => {
     fake = new FakeCtx();
     ctx = makeFakeCtx(fake);
-    registerSettingsActions(ctx);
+    // The guard itself is tested in access-guard.spec.ts; here it only hands the handler on.
+    const guard = { action: (key: string, fn: (params: unknown, context: PluginPerformActionContext) => Promise<unknown>) => ctx.actions.register(key, fn as never) };
+    registerSettingsActions(ctx, guard as unknown as AccessGuard);
     fake.companies.set("companyA", { id: "companyA", name: "Company A" });
     fake.companies.set("companyB", { id: "companyB", name: "Company B" });
   });

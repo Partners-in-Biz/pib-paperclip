@@ -1,4 +1,5 @@
 import type { PluginContext, PluginPerformActionContext } from "@paperclipai/plugin-sdk";
+import type { AccessGuard } from "@partnersinbiz/pib-plugin-kit";
 import { checkVoiceAccess } from "./access.js";
 import { playRecording, type PlaybackError } from "./playback.js";
 import { getTimeline, getTranscript, listUnmatched, setContactPrefs, type TimelineResult } from "./timeline.js";
@@ -87,8 +88,8 @@ function optionalBoolean(obj: unknown, key: string): boolean | undefined {
   return val;
 }
 
-export async function registerTimelineHandlers(ctx: PluginContext): Promise<void> {
-  ctx.actions.register("telephony.timeline", async (params, context) => {
+export async function registerTimelineHandlers(ctx: PluginContext, guard: AccessGuard): Promise<void> {
+  guard.action("telephony.timeline", async (params, context) => {
     const companyId = requiredCompany(context);
     const settings = await readSettings(ctx, companyId);
 
@@ -114,7 +115,7 @@ export async function registerTimelineHandlers(ctx: PluginContext): Promise<void
     }
   });
 
-  ctx.actions.register("telephony.transcript", async (params, context) => {
+  guard.action("telephony.transcript", async (params, context) => {
     const companyId = requiredCompany(context);
     const settings = await readSettings(ctx, companyId);
 
@@ -138,7 +139,7 @@ export async function registerTimelineHandlers(ctx: PluginContext): Promise<void
     }
   });
 
-  ctx.actions.register("telephony.unmatched", async (params, context) => {
+  guard.action("telephony.unmatched", async (params, context) => {
     const companyId = requiredCompany(context);
     const settings = await readSettings(ctx, companyId);
 
@@ -160,7 +161,7 @@ export async function registerTimelineHandlers(ctx: PluginContext): Promise<void
     }
   });
 
-  ctx.actions.register("telephony.contact-prefs.set", async (params, context) => {
+  guard.action("telephony.contact-prefs.set", async (params, context) => {
     const companyId = requiredCompany(context);
     const settings = await readSettings(ctx, companyId);
 
@@ -191,7 +192,7 @@ export async function registerTimelineHandlers(ctx: PluginContext): Promise<void
     }
   });
 
-  ctx.actions.register("telephony.recording.play", async (params, context) => {
+  guard.action("telephony.recording.play", async (params, context) => {
     const companyId = requiredCompany(context);
     const settings = await readSettings(ctx, companyId);
 

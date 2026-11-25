@@ -69,6 +69,7 @@ const COUNTS = {
 
 async function boot(data: Data, config: Record<string, unknown> = FULL) {
   const harness = createTestHarness({ manifest, config });
+  harness.seed({ companies: [{ id: CO, name: "Co", issuePrefix: "CO" } as never] });
   const fake = cockpitDb(data);
   (harness.ctx as unknown as { db: typeof fake.db }).db = fake.db;
   await plugin.definition.setup(harness.ctx);

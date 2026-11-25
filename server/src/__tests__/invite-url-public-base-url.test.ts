@@ -69,6 +69,7 @@ function createDbStub() {
               return Promise.resolve([{
                 name: "Acme Robotics",
                 logoAssetId: null,
+                mode: "off",
               }]);
             },
           };

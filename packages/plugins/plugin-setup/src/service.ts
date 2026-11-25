@@ -5,7 +5,7 @@
  */
 import { createHash } from "node:crypto";
 import type { PluginContext, PluginEvent } from "@paperclipai/plugin-sdk";
-import { PIB_PLUGINS, configSaved, createWorkIssue, readConfig } from "@partnersinbiz/pib-plugin-kit";
+import { PIB_PLUGINS, actionableCompanyIds, configSaved, createWorkIssue, readConfig } from "@partnersinbiz/pib-plugin-kit";
 import { DRIVE_BINDING_EVENT, DRIVE_BINDING_SET_EVENT, parseDriveBindingEvent, type DriveBinding } from "./drive-checklist.js";
 import { listAllCompanies } from "./access.js";
 import { ENTITLEMENT_STATES, entitledModules, isPlan, planModules, type EntitlementRow, type EntitlementState } from "./entitlements.js";
@@ -143,8 +143,11 @@ export async function reemitModules(ctx: PluginContext): Promise<{ emitted: numb
   const result = { emitted: 0, skipped: 0, failed: 0 };
   // Companies with a saved choice, and companies with entitlements but no choice yet (they get exactly their entitlements).
   const companyIds = [...new Set([...(await listChoices(ctx)).map((choice) => choice.companyId), ...(await companiesWithEntitlements(ctx))])].sort();
+  // The host's actionable list is the companies with saved settings; null (unknown) keeps the per-company probe.
+  const actionable = await actionableCompanyIds(ctx);
+  const allowed = actionable ? new Set(actionable) : null;
   for (const companyId of companyIds) {
-    if (!(await configSaved(ctx, companyId))) {
+    if (allowed ? !allowed.has(companyId) : !(await configSaved(ctx, companyId))) {
       result.skipped += 1;
       continue;
     }

@@ -219,6 +219,8 @@ function createDirectHumanInviteDbStub(defaultsPayload: Record<string, unknown> 
   const selectResponses = [
     [invite],
     [{ email: "invitee@example.com" }],
+    // The company's restriction mode, read by `markForJoin` before the invite is consumed.
+    [{ mode: "off" }],
     [],
   ];
   const updateResponses = [[], [approvedJoinRequest]];
@@ -302,6 +304,7 @@ function createAcceptedHumanInviteReplayDbStub() {
     [invite],
     [pendingJoinRequest],
     [{ email: "invitee@example.com" }],
+    [{ mode: "off" }],
     [pendingJoinRequest],
   ];
   const updateResponses = [[replayedJoinRequest], [approvedJoinRequest]];
@@ -406,6 +409,7 @@ describe("POST /invites/:token/accept", () => {
       "invitee-user",
       "owner",
       "active",
+      null,
     );
     expect(accessServiceMock.setPrincipalGrants).toHaveBeenCalledWith(
       "company-1",
@@ -438,7 +442,7 @@ describe("POST /invites/:token/accept", () => {
     });
     const res = await request(app).post("/api/invites/pcp_invite_test/accept").send({ requestType: "human" }).expect(202);
     expect(res.body.status).toBe("approved");
-    expect(accessServiceMock.ensureMembership).toHaveBeenCalledWith("company-1", "user", "invitee-user", "operator", "active");
+    expect(accessServiceMock.ensureMembership).toHaveBeenCalledWith("company-1", "user", "invitee-user", "operator", "active", null);
     expect(accessServiceMock.setPrincipalGrants).toHaveBeenCalledWith(
       "company-1", "user", "invitee-user", [...legacyGrants, { permissionKey: "commentary:view", scope: null }], "inviter-user",
     );
@@ -482,6 +486,7 @@ describe("POST /invites/:token/accept", () => {
       "invitee-user",
       "operator",
       "active",
+      null,
     );
     expect(logActivityMock).toHaveBeenCalledWith(
       expect.anything(),
