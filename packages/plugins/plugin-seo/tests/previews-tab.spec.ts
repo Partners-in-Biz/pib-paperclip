@@ -60,3 +60,12 @@ describe("previews tab filters and badge (PAR-9145)", async () => {
     expect(awaitingCount(undefined)).toBe(0);
   });
 });
+
+describe("client redirect keeps the page's query (PAR-14506)", async () => {
+  const { reopenParams } = await import("../src/ui/words.js");
+  it("carries tab and filter, and omits what is unset", () => {
+    expect(reopenParams(new URLSearchParams("sprint=s1&tab=previews&filter=declined"))).toEqual({ tab: "previews", filter: "declined" });
+    expect(reopenParams(new URLSearchParams("sprint=s1&tab=previews"))).toEqual({ tab: "previews" });
+    expect(reopenParams(new URLSearchParams("sprint=s1"))).toEqual({});
+  });
+});

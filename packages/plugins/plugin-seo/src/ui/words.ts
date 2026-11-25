@@ -169,3 +169,13 @@ export function previewsFor(previews: PreviewItem[], filter: PreviewFilter): Pre
 export function awaitingCount(previews: PreviewItem[] | undefined): number {
   return previewsFor(previews ?? [], "awaiting").length;
 }
+
+/** The query a sprint page keeps when it reopens in its client's workspace: `tab` and `filter`, when set. */
+export function reopenParams(search: { get(name: string): string | null }): Record<string, string> {
+  const out: Record<string, string> = {};
+  const tab = search.get("tab");
+  const filter = search.get("filter");
+  if (tab) out.tab = tab;
+  if (filter) out.filter = filter;
+  return out;
+}
