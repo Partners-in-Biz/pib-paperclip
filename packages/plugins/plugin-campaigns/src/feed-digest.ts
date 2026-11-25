@@ -8,7 +8,7 @@
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { readConfig } from "@partnersinbiz/pib-plugin-kit";
-import { insertCampaign, insertStep, table } from "./db.js";
+import { deleteCampaignRow, insertCampaign, insertStep, table } from "./db.js";
 import { CampaignError, createCampaign, type CampaignDraft } from "./domain.js";
 import { fetchFeed, FeedError, parseRss, pickItems, sanitizeItem, type CleanFeedItem } from "./feed.js";
 import { optionalString, requiredString, stringList } from "./params.js";
@@ -133,7 +133,14 @@ export async function createFeedDigest(ctx: PluginContext, companyId: string, pa
     if (!winner) throw error;
     return openDraftResult(ctx, companyId, winner);
   }
-  await insertStep(ctx, { companyId, campaignId: campaign.id, step: { position: 1, delayDays: 0, subject, body: digestBody(picked), htmlBody: null, variant: "a" } });
+  try {
+    await insertStep(ctx, { companyId, campaignId: campaign.id, step: { position: 1, delayDays: 0, subject, body: digestBody(picked), htmlBody: null, variant: "a" } });
+  } catch (error) {
+    // ctx.db has no transaction and execute() takes one plain statement, so undo the campaign row: a stepless draft would
+    // otherwise hold the feed's one open-draft slot (index 018) with nothing to send.
+    await deleteCampaignRow(ctx, companyId, campaign.id).catch(() => undefined);
+    throw error;
+  }
 
   try {
     const approval = await requestApproval(ctx, companyId, { campaignId: campaign.id });

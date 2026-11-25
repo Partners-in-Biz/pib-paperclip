@@ -46,13 +46,13 @@ export async function fetchFeed(ctx: PluginContext, url: string): Promise<string
 
   let res: Response;
   try {
-    res = await ctx.http.fetch(parsed.toString(), { method: "GET", redirect: "manual", headers: { accept: "application/rss+xml, application/xml, text/xml" } });
+    res = await ctx.http.fetch(parsed.toString(), { method: "GET", headers: { accept: "application/rss+xml, application/xml, text/xml" } });
   } catch (error) {
     const cause = error instanceof Error ? error.message : String(error);
     throw new FeedError(`Feed ${url} could not be fetched: ${cause}`);
   }
   // The host http.fetch uses node http.request, which never follows redirects, and the SDK sends only method, headers and
-  // body, so redirect: "manual" is not forwarded. A 3xx answer fails the status check below. This guard covers a host that
+  // body, so a redirect option would not be forwarded. A 3xx answer fails the status check below. This guard covers a host that
   // does follow redirects: refuse a final URL on another origin (or res.redirected) before the body is read.
   if (res.redirected || (res.url && new URL(res.url).origin !== parsed.origin)) throw new FeedError(`Feed ${url} refused: it redirects to another address.`);
   if (res.status < 200 || res.status > 299) throw new FeedError(`Feed ${url} answered with status ${res.status}.`);

@@ -368,6 +368,11 @@ export async function listSteps(ctx: PluginContext, campaignId: string): Promise
   }));
 }
 
+/** Removes a campaign row by id; used only to undo an insert whose steps could not be written (the host has no multi-statement transaction). */
+export async function deleteCampaignRow(ctx: PluginContext, companyId: string, campaignId: string): Promise<void> {
+  await ctx.db.execute(`DELETE FROM ${table(ctx, "campaigns")} WHERE company_id = $1 AND id = $2`, [companyId, campaignId]);
+}
+
 export async function insertStep(
   ctx: PluginContext,
   input: { companyId: string; campaignId: string; step: CampaignStepDraft },
