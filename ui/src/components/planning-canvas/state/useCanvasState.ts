@@ -59,6 +59,8 @@ export function useCanvasState(ctx: CanvasData) {
   const [contextMenu, setContextMenu] = useState<{ nodeId: string; x: number; y: number } | null>(null);
   /** "Ask about selection / this frame" (PAR-14278): keys the chat opens with. `seq` re-fires an identical ask. */
   const [chatAsk, setChatAsk] = useState<{ itemKeys: string[]; frameKey?: string; seq: number } | null>(null);
+  /** Node key the Related panel is open for (PAR-14418). */
+  const [relatedFor, setRelatedFor] = useState<string | null>(null);
   const [notesSearch, setNotesSearch] = useState("");
   const [boardSearch, setBoardSearch] = useState("");
   const [scheduleNote, setScheduleNote] = useState<PersonalNote | null>(null);
@@ -152,6 +154,8 @@ export function useCanvasState(ctx: CanvasData) {
     setContextMenu,
     chatAsk,
     setChatAsk,
+    relatedFor,
+    setRelatedFor,
     notesSearch,
     setNotesSearch,
     boardSearch,

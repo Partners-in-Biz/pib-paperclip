@@ -2,17 +2,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Loader2, MessageSquareText, X } from "lucide-react";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { Button } from "@/components/ui/button";
+import { canEditBoard } from "@/components/planning-canvas/panels/related/related-source";
 import { useBoardChat } from "@/components/planning-canvas/panels/chat/useBoardChat";
 import type { CanvasController } from "@/components/planning-canvas/state/useCanvasController";
 import { timeAgo } from "@/lib/timeAgo";
 import { cn } from "@/lib/utils";
-
-/** Edit access may write; comment and view read. A personal board is its owner's, so edit. */
-function canWrite(board: CanvasController["activeBoard"]): boolean {
-  if (!board) return false;
-  const level = board.scope && board.scope !== "personal" ? (board.memberAccess ?? "view") : "edit";
-  return level === "edit";
-}
 
 /**
  * Board chat (PAR-14277): pick an agent of the company, message it, read its replies and see its run.
@@ -67,7 +61,7 @@ export function ChatPanel({ c }: { c: CanvasController }) {
     );
   }
 
-  const writable = canWrite(activeBoard);
+  const writable = canEditBoard(activeBoard);
   const submit = async () => {
     if (!draft.trim()) return;
     const context = liveFrameKey ? { itemKeys: [], frameKey: liveFrameKey } : liveItemKeys.length > 0 ? { itemKeys: liveItemKeys } : undefined;
