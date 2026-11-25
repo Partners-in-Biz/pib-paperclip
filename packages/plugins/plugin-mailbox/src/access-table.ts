@@ -31,6 +31,7 @@ export const ACCESS_TABLE: AccessTable = Object.freeze({
     "mailbox.load", "mailbox.list-email-templates", "mailbox.list-inbox", "mailbox.list-threads", "mailbox.inbox",
     "mailbox.sent", "mailbox.triage-stats", "mailbox.contact-search", "mailbox.gmail-signature", "mailbox.get-message",
     "mailbox.handoff-prepare", "mailbox.thread-context", "mailbox.task-links", "mailbox.crm-clients",
+    "canvas.cards.resolve", "canvas.cards.related",
   ]),
   ...rows(mail("create"), [
     "mailbox.create-draft", "mailbox.create-email-template", "mailbox.start-reply", "mailbox.send-draft", "mailbox.retry-send",
