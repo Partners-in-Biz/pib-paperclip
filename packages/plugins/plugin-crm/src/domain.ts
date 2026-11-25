@@ -1,6 +1,23 @@
 import { randomUUID } from "node:crypto";
 import type { LeadScore } from "./lead-levels.js";
 
+/**
+ * Lifecycle `lead` is read in more than one place (the Cockpit counts, the reply
+ * router, the done-check). EVERY reader of lifecycle `lead` that counts leads must
+ * leave out newsletter subscribers: use `NOT_NEWSLETTER_ORIGIN_SQL` in SQL or
+ * `isNewsletterOrigin` in TypeScript. A subscriber stops being one when a real lead
+ * form clears `custom.origin` (`handleLead`). `tests/lifecycle-lead-readers.spec.ts`
+ * fails on a reader that is neither the helper nor on its allowlist.
+ */
+export const NEWSLETTER_ORIGIN = "newsletter";
+
+/** SQL condition for a `contacts` query: not a newsletter subscriber. */
+export const NOT_NEWSLETTER_ORIGIN_SQL = `COALESCE(custom ->> 'origin', '') <> '${NEWSLETTER_ORIGIN}'`;
+
+/** The same condition for a contact already in memory. */
+export const isNewsletterOrigin = (custom: unknown): boolean =>
+  typeof custom === "object" && custom !== null && (custom as Record<string, unknown>).origin === NEWSLETTER_ORIGIN;
+
 export const LIFECYCLES = ["lead", "prospect", "customer", "churned"] as const;
 export type Lifecycle = (typeof LIFECYCLES)[number];
 

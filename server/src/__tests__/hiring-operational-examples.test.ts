@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { createAgentHireSchema, createIssueThreadInteractionSchema, updateIssueSchema } from "@paperclipai/shared";
 import { runnerApiReference } from "../services/native-runtime/runner-api-reference.js";
+import { readPaperclipSkillWithReferences } from "./paperclip-skill-text.js";
 
 const reference = readFileSync(new URL("../../../skills/paperclip/references/api-reference.md", import.meta.url), "utf8");
 const uuid = "11111111-1111-4111-8111-111111111111";
@@ -30,12 +31,17 @@ describe("published hiring and human-input examples", () => {
   });
 
   it("includes a complete valid text-field recipe in the skill itself", () => {
-    const skill = readFileSync(new URL("../../../skills/paperclip/SKILL.md", import.meta.url), "utf8");
-    const section = skill.split("**Asking a free-text question.**")[1]!;
+    const skill = readPaperclipSkillWithReferences();
+    const section = skill.split('<a id="asking-for-human-input"></a>')[1]!;
     const body = JSON.parse(section.match(/```json\n([\s\S]*?)\n```/)![1]);
-    expect(createIssueThreadInteractionSchema.safeParse(substituteIds(body))).toMatchObject({ success: true });
+    const normalized = createIssueThreadInteractionSchema.parse(substituteIds(body));
+    expect(body).toMatchObject({ resolverPolicy: "human_only", continuationPolicy: "wake_assignee" });
+    expect(body).not.toHaveProperty("addresseeUserId");
     expect(body.payload.questionSet.questions[0]).toMatchObject({ answerMode: "text" });
-    expect(body.payload.questions[0].id).toBe(body.payload.questionSet.questions[0].id);
+    expect(body.payload).not.toHaveProperty("questions");
+    expect(normalized.kind).toBe("ask_user_questions");
+    if (normalized.kind !== "ask_user_questions") throw new Error("expected questions");
+    expect(normalized.payload.questions[0].id).toBe(body.payload.questionSet.questions[0].id);
   });
 
   it("keeps these examples in the generated runner reference without displacing confirmations", () => {

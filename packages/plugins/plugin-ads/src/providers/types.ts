@@ -12,6 +12,9 @@
  * - Money is integer minor units of the account's currency.
  */
 import type { AdPlatform, AdPolicyStatus, StoredPlatform } from "../platforms.js";
+import type { GoogleAppSettings } from "./google-app.js";
+import type { GoogleVideoSettings } from "./google-video.js";
+import type { GoogleVideoAd } from "./google-video-ad.js";
 
 export type { AdPolicyStatus };
 
@@ -102,11 +105,15 @@ export interface AccountRef {
 
 export interface CreateCampaignRequest {
   name: string;
-  /** Meta ODAX objective (`OUTCOME_LEADS`...), or Google channel (`SEARCH`). */
+  /** Meta ODAX objective (`OUTCOME_LEADS`...), or Google channel (`SEARCH`, `MULTI_CHANNEL` for an App campaign, `DEMAND_GEN` for a YouTube video campaign). */
   objective: string;
   dailyBudgetMinor: number;
   /** Meta only. */
   specialAdCategories?: string[];
+  /** Google `MULTI_CHANNEL` only: the app, the install goal and where it shows (`./google-app.ts`). */
+  app?: GoogleAppSettings;
+  /** Google `DEMAND_GEN` only: bidding and locations of a YouTube-only video campaign (`./google-video.ts`). */
+  video?: GoogleVideoSettings;
   /** Always "PAUSED": execute.ts passes it explicitly on every create (PAR-6684). */
   status?: "PAUSED";
 }
@@ -144,7 +151,10 @@ export interface CreateAdCreativeRequest {
 export interface CreateAdRequest {
   name: string;
   adSetExternalId: string;
+  /** Meta only; Google has no standalone creative (the copy and media are in `videoAd`). */
   creativeExternalId: string;
+  /** Google only: the Demand Gen video responsive ad made in the ad group `adSetExternalId` (`./google-video-ad.ts`). */
+  videoAd?: GoogleVideoAd;
   /** Always "PAUSED" from execute.ts (PAR-6684); a payload asking for ACTIVE is refused before any request is built. */
   status?: "PAUSED" | "ACTIVE";
 }

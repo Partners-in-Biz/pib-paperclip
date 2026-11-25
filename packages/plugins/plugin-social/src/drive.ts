@@ -2,7 +2,7 @@
  * Save published posts and media to company Drive.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { driveSave, DRIVE_SUBFOLDERS, type DriveSaveOptions, type DriveSaveResult } from "@partnersinbiz/pib-plugin-kit";
+import { DRIVE_ACK_TIMEOUT_MS, driveSave, DRIVE_SUBFOLDERS, type DriveSaveOptions, type DriveSaveResult } from "@partnersinbiz/pib-plugin-kit";
 import type { MediaRef } from "./db.js";
 import type { SocialPlatform } from "./platforms.js";
 
@@ -67,7 +67,7 @@ export async function saveToDrive(ctx: PluginContext, opts: SaveToDriveOptions):
       mimeType: "text/plain",
       bytes: captionBytes,
       subfolder: "02 Assets",
-      timeoutMs: 10000,
+      timeoutMs: DRIVE_ACK_TIMEOUT_MS,
       ...target,
     });
     if (result.status !== "saved") {
@@ -94,7 +94,7 @@ export async function saveToDrive(ctx: PluginContext, opts: SaveToDriveOptions):
         mimeType: media.mime || "application/octet-stream",
         publicUrl: media.url,
         subfolder: "02 Assets",
-        timeoutMs: 10000,
+        timeoutMs: DRIVE_ACK_TIMEOUT_MS,
         ...target,
       });
 

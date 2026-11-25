@@ -1,7 +1,7 @@
 import { useCallback, useMemo } from "react";
 import { NavLink, useLocation } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
-import { Loader2, LogOut, MoreHorizontal, Star } from "lucide-react";
+import { Lock, Loader2, LogOut, MoreHorizontal, Star } from "lucide-react";
 import { useCompany } from "../context/CompanyContext";
 import { useSidebar } from "../context/SidebarContext";
 import { projectsApi } from "../api/projects";
@@ -11,6 +11,7 @@ import { cn, projectRouteRef, SIDEBAR_RAIL_HIDDEN_LABEL } from "../lib/utils";
 import {
   isStarred,
   starredResourceIds,
+  useResourceMembershipControls,
   useResourceMembershipMutation,
   useResourceMemberships,
 } from "../hooks/useResourceMemberships";
@@ -52,6 +53,7 @@ export function SidebarStarredProjects() {
   });
   const membershipsQuery = useResourceMemberships(selectedCompanyId);
   const membershipMutation = useResourceMembershipMutation(selectedCompanyId);
+  const membershipControls = useResourceMembershipControls(selectedCompanyId);
 
   const projectMatch = location.pathname.match(/^\/(?:[^/]+\/)?projects\/([^/]+)/);
   const activeProjectRef = projectMatch?.[1] ?? null;
@@ -96,7 +98,8 @@ export function SidebarStarredProjects() {
   );
 
   // Don't render anything until memberships load — no skeleton flash in the nav.
-  if (!membershipsQuery.isSuccess) return null;
+  // Closed for a restricted member under `enforce` (AC-G10): the section is hidden, not a spinner.
+  if (!membershipControls || !membershipsQuery.isSuccess) return null;
 
   // Empty starred groups should not add a placeholder row or extra sidebar spacing.
   if (starredProjects.length === 0) {
@@ -130,6 +133,7 @@ export function SidebarStarredProjects() {
           >
             <ProjectTile color={project.color ?? null} icon={project.icon ?? null} size="xs" />
             <span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : "flex-1 truncate"}>{project.name}</span>
+            {!rail && project.visibility === "private" ? <Lock className="size-3.5 shrink-0 text-muted-foreground" aria-label="Private project" /> : null}
             {!rail && project.pauseReason === "budget" ? (
               <BudgetSidebarMarker title="Project paused by budget" />
             ) : null}

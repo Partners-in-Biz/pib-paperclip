@@ -250,6 +250,17 @@ export const CAMPAIGN_TOOLS: PluginToolDeclaration[] = [
     parametersSchema: schema(["campaignId"], { campaignId }),
   },
   {
+    name: "review-campaign-approval",
+    displayName: "Review campaign approval",
+    description:
+      "The Reviewer's verdict on a launch approval assigned to it (the Reviewer agent only). pass: your note goes on the issue and it moves to the approver, a person, who approves or sends back. changes: the approval is cancelled and the campaign's agent gets a task to revise it with your note.",
+    parametersSchema: schema(["campaignId", "verdict", "note"], {
+      campaignId,
+      verdict: { type: "string", enum: ["pass", "changes"], description: "pass: ready for a person to decide. changes: send it back to be fixed." },
+      note: str("What you checked (pass) or what to change (changes). Goes on the approval issue."),
+    }),
+  },
+  {
     name: "create-ab-variant",
     displayName: "Create A/B variant",
     description: "Add a B version of a draft's step (same channel as its A version); contacts are split evenly between A and B. Cancels a pending approval (ask again).",
@@ -291,6 +302,18 @@ export const CAMPAIGN_TOOLS: PluginToolDeclaration[] = [
       position: int("Step number (1 is the first step).", 1),
       html: str("Full HTML body. The merge tokens work here too."),
       variant,
+    }),
+  },
+  {
+    name: "edit-campaign-step",
+    displayName: "Edit campaign step",
+    description: "Change the subject and/or the plain-text body of one step of a draft campaign; the HTML body stays as it is. Give at least one of subject or body. Cancels a pending approval (ask again) and returns the preflight of the edited campaign.",
+    parametersSchema: schema(["campaignId", "position"], {
+      campaignId,
+      position: int("Step number (1 is the first step).", 1),
+      variant,
+      subject: str("New subject line (email steps)."),
+      body: str("New plain-text body."),
     }),
   },
   {

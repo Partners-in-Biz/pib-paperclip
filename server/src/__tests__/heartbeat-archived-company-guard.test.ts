@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  costEvents,
   agents,
   agentWakeupRequests,
   companies,
@@ -35,6 +36,7 @@ describeEmbeddedPostgres("heartbeat archived-company guard", () => {
 
   afterEach(async () => {
     await db.delete(heartbeatRunEvents);
+    await db.delete(costEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(issues);
@@ -157,6 +159,7 @@ describeEmbeddedPostgres("heartbeat archived-company guard", () => {
 
     const heartbeat = heartbeatService(db);
     const run = await heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "automation",
       triggerDetail: "system",
       reason: "issue_commented",
@@ -246,6 +249,7 @@ describeEmbeddedPostgres("heartbeat archived-company guard", () => {
     const heartbeat = heartbeatService(db);
 
     await expect(heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "on_demand",
       triggerDetail: "manual",
       requestedByActorType: "user",
@@ -268,6 +272,7 @@ describeEmbeddedPostgres("heartbeat archived-company guard", () => {
     const heartbeat = heartbeatService(db);
 
     await expect(heartbeat.wakeup(childId, {
+      causingActor: "system",
       source: "on_demand",
       triggerDetail: "manual",
       requestedByActorType: "user",

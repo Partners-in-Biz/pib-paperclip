@@ -9,11 +9,14 @@ const mockAgentService = vi.hoisted(() => ({
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
+  list: vi.fn(async () => []),
   buildRunOutputSilence: vi.fn(),
   decorateActiveRunStatus: vi.fn(),
   getRunIssueSummary: vi.fn(),
   getActiveRunIssueSummaryForAgent: vi.fn(),
+  getRunReadAccess: vi.fn(),
   getRunLogAccess: vi.fn(),
+  getRunWorkspaceAccess: vi.fn(),
   readLog: vi.fn(),
   wakeup: vi.fn(),
   getRun: vi.fn(),
@@ -23,6 +26,7 @@ const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   getByIdentifier: vi.fn(),
 }));
+const mockNativeReviewAssignment = vi.hoisted(() => vi.fn());
 
 const mockExecutionProjection = vi.hoisted(() => ({
   executionProjectionForRun: vi.fn(async () => null),
@@ -79,6 +83,10 @@ const mockChatRunRetries = vi.hoisted(() => ({
 }));
 
 function registerModuleMocks() {
+  vi.doMock("../services/native-runtime/native-review-participant.js", async () => ({
+    ...(await vi.importActual<typeof import("../services/native-runtime/native-review-participant.js")>("../services/native-runtime/native-review-participant.js")),
+    getNativeReviewAssignment: mockNativeReviewAssignment,
+  }));
   vi.doMock("../services/execution-projection.js", () => mockExecutionProjection);
   vi.doMock("../routes/authz.js", async () =>
     vi.importActual("../routes/authz.js"),
@@ -149,6 +157,9 @@ function registerModuleMocks() {
   }));
 }
 
+let agentRoutes: typeof import("../routes/agents.js")["agentRoutes"];
+let errorHandler: typeof import("../middleware/index.js")["errorHandler"];
+
 async function createApp(
   db: Record<string, unknown> = {},
   actor: Record<string, unknown> = {
@@ -160,15 +171,6 @@ async function createApp(
   },
   options: { chatRunRetries?: typeof mockChatRunRetries } = {},
 ) {
-  // Vitest tracks factory-mock resolution in one shared call stack. Importing
-  // these graphs concurrently can drop the services/index factory mock and
-  // accidentally run real DB-backed activity logging against this test stub.
-  const { agentRoutes } = await vi.importActual<
-    typeof import("../routes/agents.js")
-  >("../routes/agents.js");
-  const { errorHandler } = await vi.importActual<
-    typeof import("../middleware/index.js")
-  >("../middleware/index.js");
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -208,6 +210,16 @@ function createRuntimeRequestDbStub(row: Record<string, unknown>) {
     where: vi.fn().mockReturnThis(),
     orderBy: vi.fn().mockReturnThis(),
     limit: vi.fn(async () => [row]),
+  };
+  return { select: vi.fn(() => query) };
+}
+
+/** The manual-wake task read (PAR-13041) loads each payload task; this one is in company-1. */
+function createWakeTaskDbStub(issueId: string) {
+  const query = {
+    from: vi.fn().mockReturnThis(),
+    where: vi.fn().mockReturnThis(),
+    then: (resolve: (value: unknown[]) => unknown) => Promise.resolve([{ id: issueId, companyId: "company-1" }]).then(resolve),
   };
   return { select: vi.fn(() => query) };
 }
@@ -272,7 +284,18 @@ async function requestApp(
 }
 
 describe("agent live run routes", () => {
-  beforeEach(() => {
+  it.each([
+    ["", 200], ["?limit=10&agentId=agent-1&summary=true", 10],
+    ["?limit=99999", 1000], ["?limit=invalid", 200], ["?limit=-10", 1],
+  ])("bounds company history reads for %s", async (query, limit) => {
+    const app = await createApp({});
+    const response = await requestApp(app, baseUrl => request(baseUrl).get(`/api/companies/company-1/heartbeat-runs${query}`));
+    expect(response.status).toBe(200);
+    expect(mockHeartbeatService.list).toHaveBeenCalledWith("company-1", query.includes("agentId") ? "agent-1" : undefined,
+      limit, { summary: query.includes("summary=true") });
+    expect(mockRunSecretRedactionRegistry.redactForRuns).toHaveBeenCalled();
+  });
+  beforeEach(async () => {
     vi.resetModules();
     vi.doUnmock("../services/agents.js");
     vi.doUnmock("../services/heartbeat.js");
@@ -287,6 +310,7 @@ describe("agent live run routes", () => {
     vi.clearAllMocks();
     mockChatRunRetries.prepareFailedChatRunRetry.mockReset();
     mockChatRunRetries.processFailedChatRunRetry.mockReset();
+    mockNativeReviewAssignment.mockReset().mockResolvedValue(null);
     mockAccessService.canUser.mockResolvedValue(true);
     mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
       allowed: true,
@@ -345,11 +369,23 @@ describe("agent live run routes", () => {
       null,
     );
     mockHeartbeatService.buildRunOutputSilence.mockResolvedValue(null);
+    mockHeartbeatService.getRunReadAccess.mockResolvedValue({
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      scopeKind: "company",
+      issueId: null,
+    });
     mockHeartbeatService.getRunLogAccess.mockResolvedValue({
       id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       companyId: "company-1",
+      scopeKind: "company",
+      issueId: null,
       logStore: "local_file",
       logRef: "logs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.ndjson",
+    });
+    mockHeartbeatService.getRunWorkspaceAccess.mockResolvedValue({
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", companyId: "company-1", scopeKind: "company", issueId: null,
+      executionWorkspaceId: null,
     });
     mockHeartbeatService.readLog.mockResolvedValue({
       runId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -392,6 +428,17 @@ describe("agent live run routes", () => {
       skipped: 0,
       skipReasons: [],
     });
+
+    // Module loading is fixture setup; each behavioral case keeps its own timeout.
+    // Vitest tracks factory-mock resolution in one shared call stack. Importing
+    // these graphs concurrently can drop the services/index factory mock and
+    // accidentally run real DB-backed activity logging against this test stub.
+    ({ agentRoutes } = await vi.importActual<
+      typeof import("../routes/agents.js")
+    >("../routes/agents.js"));
+    ({ errorHandler } = await vi.importActual<
+      typeof import("../middleware/index.js")
+    >("../middleware/index.js"));
   });
 
   describe("heartbeat run ID validation", () => {
@@ -422,6 +469,7 @@ describe("agent live run routes", () => {
           expect(response.body).toEqual({ error: "Invalid heartbeat run ID" });
         }
         expect(mockHeartbeatService.getRun).not.toHaveBeenCalled();
+        expect(mockHeartbeatService.getRunReadAccess).not.toHaveBeenCalled();
         expect(mockHeartbeatService.getRunLogAccess).not.toHaveBeenCalled();
         expect(mockHeartbeatService.readLog).not.toHaveBeenCalled();
         expect(mockProviderTraceStore.inspect).not.toHaveBeenCalled();
@@ -438,9 +486,11 @@ describe("agent live run routes", () => {
       expect(mockHeartbeatService.getRunLogAccess).toHaveBeenCalledWith(runId);
     });
 
-    it.each(["get", "log"])("keeps missing and cross-company %s lookups indistinguishable", async (kind) => {
-      const lookup = kind === "log" ? mockHeartbeatService.getRunLogAccess : mockHeartbeatService.getRun;
-      const suffix = kind === "log" ? "/log" : "";
+    it.each(["get", "log", "events"])("keeps missing and cross-company %s lookups indistinguishable", async (kind) => {
+      const lookup = kind === "events"
+        ? mockHeartbeatService.getRunReadAccess
+        : kind === "log" ? mockHeartbeatService.getRunLogAccess : mockHeartbeatService.getRun;
+      const suffix = kind === "get" ? "" : `/${kind}`;
       const app = await createApp({}, {
         type: "board", userId: "test-user", source: "session", companyIds: ["company-1"],
       });
@@ -477,6 +527,10 @@ describe("agent live run routes", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockIssueService.getByIdentifier).toHaveBeenCalledWith("PC1A2-1295");
+    // PAR-13042: the route reads the task first (the default mock allows it).
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+      action: "issue:read", resource: expect.objectContaining({ type: "issue", issueId: "issue-1" }),
+    }));
     expect(mockHeartbeatService.getRunIssueSummary).toHaveBeenCalledWith(
       "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
     );
@@ -579,10 +633,10 @@ describe("agent live run routes", () => {
     });
   });
 
-  it("uses narrow run log metadata lookups for log polling", async () => {
+  it.each([false, true])("uses narrow run log metadata lookups (aligned tail: %s)", async (aligned) => {
     const res = await requestApp(await createApp(), (baseUrl) =>
       request(baseUrl).get(
-        "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/log?offset=12&limitBytes=64",
+        `/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/log?offset=12&limitBytes=64${aligned ? "&alignStartToRecord=true" : ""}`,
       ),
     );
 
@@ -592,12 +646,16 @@ describe("agent live run routes", () => {
       {
         id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         companyId: "company-1",
+      scopeKind: "company",
+      issueId: null,
         logStore: "local_file",
         logRef: "logs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.ndjson",
       },
       {
         offset: 12,
         limitBytes: 64,
+        signal: expect.any(AbortSignal),
+        ...(aligned ? { alignStartToRecord: true } : {}),
       },
     );
     expect(res.body).toEqual({
@@ -635,6 +693,7 @@ describe("agent live run routes", () => {
         "/api/companies/company-1/live-runs",
         "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/events",
+        "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/events?view=plugin-panels",
         "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/log",
         "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/workspace-operations",
         "/api/workspace-operations/operation-1/log",
@@ -654,6 +713,38 @@ describe("agent live run routes", () => {
       }));
     },
   );
+
+  it("reads persisted plugin activation only after normal run-read authorization", async () => {
+    const limit = vi.fn(async () => [{ payload: { namespace: "example.runtime", activityKey: "desktop.used" }, pluginKey: "example.live-view",
+      manifest: { ui: { slots: [{ id: "screen", type: "detailTab", entityTypes: ["agent"], taskSidePanel: { availabilityPath: "/agents/:entityId/ready", activation: { namespace: "example.runtime", activityKey: "desktop.used" } } }] } } }]);
+    const query = { from: vi.fn().mockReturnThis(), innerJoin: vi.fn().mockReturnThis(), where: vi.fn().mockReturnThis(), limit };
+    const db = { selectDistinct: vi.fn(() => query) };
+    const response = await requestApp(await createApp(db), url => request(url).get(
+      "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/events?view=plugin-panels"));
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual([{ pluginKey: "example.live-view", slotId: "screen" }]);
+    expect(limit).toHaveBeenCalledWith(128);
+    expect(mockRunSecretRedactionRegistry.redactForRun).toHaveBeenCalledWith("company-1", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", [{ pluginKey: "example.live-view", slotId: "screen" }]);
+    mockHeartbeatService.getRunReadAccess.mockResolvedValue(null);
+    const denied = await requestApp(await createApp(db), url => request(url).get(
+      "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/events?view=plugin-panels"));
+    expect(denied.status).toBe(404); expect(limit).toHaveBeenCalledTimes(1);
+  });
+
+  it("lists workspace operations using narrow current run access", async () => {
+    mockHeartbeatService.getRunWorkspaceAccess.mockResolvedValue({
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", companyId: "company-1", scopeKind: "company", issueId: null,
+      executionWorkspaceId: " workspace-one ",
+    });
+    mockWorkspaceOperationService.listForRun.mockResolvedValue([]);
+    const response = await requestApp(await createApp(), baseUrl => request(baseUrl)
+      .get("/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/workspace-operations"));
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual([]);
+    expect(mockHeartbeatService.getRunWorkspaceAccess).toHaveBeenCalledWith("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+    expect(mockHeartbeatService.getRun).not.toHaveBeenCalled();
+    expect(mockWorkspaceOperationService.listForRun).toHaveBeenCalledWith("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "workspace-one");
+  });
 
   it("caps company live run polling by default", async () => {
     const rows = Array.from({ length: 75 }, (_, index) => ({
@@ -681,7 +772,8 @@ describe("agent live run routes", () => {
       lastOutputStream: null,
       lastOutputBytes: 0,
       processStartedAt: null,
-      issueId: "issue-1",
+      scopeKind: "company",
+      issueId: null,
     }));
     const { db, limit } = createLiveRunsDbStub(rows);
 
@@ -725,7 +817,8 @@ describe("agent live run routes", () => {
       lastOutputStream: null,
       lastOutputBytes: 0,
       processStartedAt: null,
-      issueId: "issue-1",
+      scopeKind: "company",
+      issueId: null,
     }));
     const { db, limit } = createLiveRunsDbStub(rows);
 
@@ -768,7 +861,8 @@ describe("agent live run routes", () => {
       lastOutputStream: null,
       lastOutputBytes: 0,
       processStartedAt: null,
-      issueId: "issue-1",
+      scopeKind: "company",
+      issueId: null,
     }));
 
     const selectCalls: Array<ReturnType<typeof vi.fn>> = [];
@@ -828,7 +922,8 @@ describe("agent live run routes", () => {
       lastOutputStream: null,
       lastOutputBytes: 0,
       processStartedAt: null,
-      issueId: "issue-1",
+      scopeKind: "company",
+      issueId: null,
     }));
     const recentRows = Array.from({ length: 4 }, (_, index) => ({
       id: `run-recent-${index}`,
@@ -855,7 +950,8 @@ describe("agent live run routes", () => {
       lastOutputStream: null,
       lastOutputBytes: 0,
       processStartedAt: null,
-      issueId: "issue-1",
+      scopeKind: "company",
+      issueId: null,
     }));
 
     let selectCallCount = 0;
@@ -888,7 +984,8 @@ describe("agent live run routes", () => {
   });
 
   it("passes scoped wake fields through the legacy heartbeat invoke route", async () => {
-    const res = await requestApp(await createApp(), (baseUrl) =>
+    const issueId = "11111111-1111-4111-8111-111111111111";
+    const res = await requestApp(await createApp(createWakeTaskDbStub(issueId)), (baseUrl) =>
       request(baseUrl)
         .post(
           `/api/agents/${routeAgentId}/heartbeat/invoke?companyId=company-1`,
@@ -896,9 +993,9 @@ describe("agent live run routes", () => {
         .send({
           reason: "issue_assigned",
           payload: {
-            issueId: "issue-1",
-            taskId: "issue-1",
-            taskKey: "issue-1",
+            issueId,
+            taskId: issueId,
+            taskKey: issueId,
           },
           forceFreshSession: true,
         }),
@@ -913,12 +1010,13 @@ describe("agent live run routes", () => {
       triggerDetail: "manual",
       reason: "issue_assigned",
       payload: {
-        issueId: "issue-1",
-        taskId: "issue-1",
-        taskKey: "issue-1",
+        issueId,
+        taskId: issueId,
+        taskKey: issueId,
       },
       requestedByActorType: "user",
       requestedByActorId: "local-board",
+      causingActor: { type: "user", userId: "local-board" },
       contextSnapshot: {
         triggeredBy: "board",
         actorId: "local-board",
@@ -945,6 +1043,7 @@ describe("agent live run routes", () => {
       triggerDetail: "manual",
       requestedByActorType: "user",
       requestedByActorId: "local-board",
+      causingActor: { type: "user", userId: "local-board" },
       contextSnapshot: {
         triggeredBy: "board",
         actorId: "local-board",
@@ -964,6 +1063,69 @@ describe("agent live run routes", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(202);
     expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "agent:wake" }));
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(routeAgentId, expect.objectContaining({ manualUserWake: true }));
+  });
+
+  describe("exact native model-rejected review retry", () => {
+    const reviewContext = {
+      nativeReviewInteractionId: "55555555-5555-4555-8555-555555555555",
+      nativeReviewDecisionId: "66666666-6666-4666-8666-666666666666",
+    };
+    const selectedRun = {
+      id: failedChatRunId, companyId: "company-1", agentId: routeAgentId,
+      status: "failed", runtimeMode: "native", errorCode: "native_provider_model_rejected",
+      nativeIssueId: failedChatIssueId,
+      contextSnapshot: { issueId: failedChatIssueId, ...reviewContext },
+    };
+    const selectedIssue = { id: failedChatIssueId, companyId: "company-1", status: "in_review", assigneeAgentId: "worker", assigneeUserId: null };
+    const retryBody = { failedRunId: failedChatRunId, reason: "retry_failed_run" };
+    beforeEach(() => {
+      mockAgentService.getById.mockResolvedValue({ id: routeAgentId, companyId: "company-1" });
+      mockHeartbeatService.getRun.mockResolvedValue(selectedRun);
+      mockIssueService.getById.mockResolvedValue(selectedIssue);
+      mockNativeReviewAssignment.mockResolvedValue({ interaction: { status: "pending" } });
+    });
+
+    it("permits the Board to retry the exact pending review using only saved context", async () => {
+      const fixture = createFailedChatRetryDb(false);
+      const res = await requestApp(await createApp(fixture.db), url => request(url).post(`/api/agents/${routeAgentId}/wakeup`).send({
+        ...retryBody, payload: { issueId: "forged", nativeReviewInteractionId: "forged", nativeReviewDecisionId: "forged" },
+      }));
+      expect(res.status, JSON.stringify(res.body)).toBe(202);
+      expect(mockNativeReviewAssignment).toHaveBeenCalledExactlyOnceWith(fixture.db, {
+        companyId: "company-1", issueId: failedChatIssueId, agentId: routeAgentId, contextSnapshot: reviewContext,
+      });
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledExactlyOnceWith(routeAgentId, expect.objectContaining({
+        failedRunId: failedChatRunId, reason: "retry_failed_run", payload: { issueId: failedChatIssueId },
+        requestedByActorType: "user", contextSnapshot: expect.objectContaining(reviewContext),
+      }));
+      expect(JSON.stringify(mockHeartbeatService.wakeup.mock.calls)).not.toContain("forged");
+    });
+
+    it.each(["agent-caller", "denied-task", "unreadable-task", "foreign-company", "foreign-agent", "foreign-issue", "legacy", "unknown-error", "missing-context", "stale", "resolved", "changed-reviewer"])(
+      "rejects an ineligible exact review retry (%s)", async scenario => {
+        let actor: Record<string, unknown> | undefined;
+        if (scenario === "agent-caller") actor = { type: "agent", agentId: routeAgentId, companyId: "company-1" };
+        if (scenario === "denied-task") mockAccessService.decide.mockImplementation(async ({ action }) => ({ allowed: action !== "issue:comment", explanation: "Denied" }));
+        if (scenario === "unreadable-task") mockAccessService.decide.mockImplementation(async ({ action }) => ({ allowed: action !== "issue:read", explanation: "Denied" }));
+        if (scenario === "foreign-company") mockHeartbeatService.getRun.mockResolvedValue({ ...selectedRun, companyId: "company-2" });
+        if (scenario === "foreign-agent") mockHeartbeatService.getRun.mockResolvedValue({ ...selectedRun, agentId: "other-reviewer" });
+        if (scenario === "foreign-issue") mockHeartbeatService.getRun.mockResolvedValue({ ...selectedRun, nativeIssueId: "other-task" });
+        if (scenario === "legacy") mockHeartbeatService.getRun.mockResolvedValue({ ...selectedRun, runtimeMode: "legacy" });
+        if (scenario === "unknown-error") mockHeartbeatService.getRun.mockResolvedValue({ ...selectedRun, errorCode: "adapter_failed" });
+        if (scenario === "missing-context") mockHeartbeatService.getRun.mockResolvedValue({ ...selectedRun, contextSnapshot: { issueId: failedChatIssueId } });
+        if (scenario === "stale" || scenario === "changed-reviewer") mockNativeReviewAssignment.mockResolvedValue(null);
+        if (scenario === "resolved") mockNativeReviewAssignment.mockResolvedValue({ interaction: { status: "accepted" } });
+        const fixture = createFailedChatRetryDb(false);
+        const res = await requestApp(await createApp(fixture.db, actor), url => request(url).post(`/api/agents/${routeAgentId}/wakeup`).send({
+          ...retryBody, payload: { ...reviewContext },
+        }));
+        expect(res.status).toBe(["agent-caller", "denied-task"].includes(scenario) ? 403 : ["unreadable-task", "foreign-company", "foreign-agent"].includes(scenario) ? 404 : 409);
+        expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+        if (["agent-caller", "denied-task", "unreadable-task", "foreign-company", "foreign-agent", "foreign-issue", "legacy", "unknown-error", "missing-context"].includes(scenario)) {
+          expect(mockNativeReviewAssignment).not.toHaveBeenCalled();
+        }
+      },
+    );
   });
 
   describe("exact failed chat run retry", () => {
@@ -1026,12 +1188,17 @@ describe("agent live run routes", () => {
         issueId: failedChatIssueId,
       } });
       mockAccessService.decide.mockImplementation(async ({ action }) => ({
-        allowed: action === "issue:comment" || action === "agent:wake", explanation: "Missing permission: agents:create",
+        allowed: action === "issue:read" || action === "issue:comment" || action === "agent:wake",
+        explanation: "Missing permission: agents:create",
       }));
       const res = await requestApp(await createApp(fixture.db, {
         type: "board", userId: "operator", source: "session", companyIds: ["company-1"],
       }), url => request(url).post(`/api/agents/${routeAgentId}/wakeup`).send(retryBody));
       expect(res.status, JSON.stringify(res.body)).toBe(202);
+      // PAR-13017: the run's task is read first, with the issue scope.
+      expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+        action: "issue:read", scope: expect.objectContaining({ issueId: failedChatIssueId }),
+      }));
       expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
         action: "issue:comment", resource: expect.objectContaining({
           type: "issue", companyId: "company-1", issueId: failedChatIssueId,
@@ -1163,7 +1330,7 @@ describe("agent live run routes", () => {
         expect(res.status, JSON.stringify(res.body)).toBe(202);
         expect(res.body).toEqual(receipt);
         expect(mockHeartbeatService.getRun).toHaveBeenCalledWith(
-          failedChatRunId,
+          failedChatRunId, { includeExecutionEvidence: true },
         );
         expect(
           mockChatRunRetries.prepareFailedChatRunRetry,
@@ -1494,7 +1661,7 @@ describe("agent live run routes", () => {
 
   it("marks traced re-runs as explicit resumes so terminal issue context can execute", async () => {
     const issueId = "22222222-2222-4222-8222-222222222222";
-    const res = await requestApp(await createApp(), (baseUrl) =>
+    const res = await requestApp(await createApp(createWakeTaskDbStub(issueId)), (baseUrl) =>
       request(baseUrl)
         .post(`/api/agents/${routeAgentId}/wakeup?companyId=company-1`)
         .send({
@@ -1796,6 +1963,28 @@ describe("agent live run routes", () => {
     );
   });
 
+  it("returns a retryable busy response for workspace-diff repair and permits a later retry", async () => {
+    const app = await createApp();
+    const { ObjectJournalBusyError } = await import("../services/object-byte-journal.js");
+    mockProviderTraceStore.getByRun.mockResolvedValue({
+      id: "trace-1", status: "complete", deletedAt: null,
+      expiresAt: new Date("2099-01-01T00:00:00.000Z"),
+    });
+    mockProviderTraceStore.readExactEntries.mockRejectedValueOnce(new ObjectJournalBusyError());
+    const route = "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/provider-trace/reproject-workspace-diffs";
+    const busy = await requestApp(app, baseUrl => request(baseUrl).post(route));
+    expect(busy.status).toBe(503);
+    expect(busy.headers["retry-after"]).toBe("2");
+    expect(busy.body.code).toBe("object_journal_io_busy");
+    expect(mockWorkspaceDiffReprojection.project).not.toHaveBeenCalled();
+    expect(mockWorkspaceDiffReprojection.persist).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+
+    const retried = await requestApp(app, baseUrl => request(baseUrl).post(route));
+    expect(retried.status).toBe(200);
+    expect(mockWorkspaceDiffReprojection.persist).toHaveBeenCalledOnce();
+  });
+
   it.each([
     ["unavailable", null, "trace_unavailable"],
     [
@@ -1862,4 +2051,16 @@ describe("agent live run routes", () => {
     expect(mockHeartbeatService.getRun).not.toHaveBeenCalled();
     expect(mockWorkspaceDiffReprojection.persist).not.toHaveBeenCalled();
   });
+});
+
+// The stub database has no membership tables; the agent-list route check of
+// PAR-12608 4.7 has its own database test (member-restriction-agent-route-checks).
+vi.mock("../services/member-restriction/agent-read.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../services/member-restriction/agent-read.js")>()),
+  actorMayInstructAgent: async () => true,
+}));
+vi.mock("../services/agent-lifecycle.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/agent-lifecycle.js")>();
+  return { ...actual, createAgentLifecycle: () => ({
+  }) };
 });

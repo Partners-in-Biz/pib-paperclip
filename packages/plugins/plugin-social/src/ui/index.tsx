@@ -63,6 +63,7 @@ const ACTION_KEYS = [
   "social.approve",
   "social.approval-policy",
   "social.set-approval-policy",
+  "social.set-approval-delegate",
   "social.approval-status",
   "social.request-client-approval",
   "social.record-client-approval",
@@ -74,7 +75,11 @@ const ACTION_KEYS = [
   "social.oauth-pending",
   "social.oauth-confirm",
   "social.connect-bluesky",
+  "social.add-manual-account",
+  "social.mark-destination-posted",
+  "social.skip-destination",
   "social.disconnect-account",
+  "social.delete-account",
   "social.update-account",
   "social.refresh-account",
   "social.media-presign",
@@ -90,17 +95,23 @@ const ACTION_KEYS = [
   "social.correct-triage",
   "social.growth-load",
   "social.growth-update-program",
+  "social.hook-give-prepare",
+  "social.get-cadence",
+  "social.set-cadence",
   "social.growth-save-playbook",
+  "social.growth-set-focus",
   "social.growth-approve-experiment",
   "social.growth-reject-experiment",
   "social.growth-abandon-experiment",
   "social.growth-decide-change",
   "social.growth-retire-question",
   "social.routine-report",
+  "social.request-changes",
+  "social.change-notes",
 ] as const;
 
 /** Calls that do not change anything: no snapshot reload afterwards. */
-const READ_ONLY = new Set(["social.load", "social.clients", "social.get-post", "social.validate-post", "social.approval-policy", "social.approval-status", "social.request-client-approval", "social.oauth-start", "social.oauth-pending", "social.media-presign", "social.growth-load", "social.routine-report"]);
+const READ_ONLY = new Set(["social.load", "social.clients", "social.get-post", "social.validate-post", "social.approval-policy", "social.approval-status", "social.request-client-approval", "social.oauth-start", "social.oauth-pending", "social.media-presign", "social.growth-load", "social.routine-report", "social.change-notes"]);
 
 type TabId = "overview" | "posts" | "calendar" | "accounts" | "inbox" | "growth" | "media" | "feeds" | "templates";
 const TAB_IDS: TabId[] = ["overview", "posts", "calendar", "accounts", "inbox", "growth", "media", "feeds", "templates"];
@@ -422,3 +433,4 @@ function SidebarNavLink({ to, label, icon }: { to: string; label: string; icon: 
 }
 
 /** Personal social accounts page (own work only). */
+export { SocialPostCard } from "./PostCard.js";

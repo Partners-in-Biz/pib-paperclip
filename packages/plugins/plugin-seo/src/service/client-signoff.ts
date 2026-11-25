@@ -16,6 +16,8 @@
  */
 import { MAIL_EVENTS, PIB_PLUGINS, pluginEvent, wakeIssue, type MailDraftRequested, type MailDraftResult } from "@partnersinbiz/pib-plugin-kit";
 import { createHash } from "node:crypto";
+import { AFTER_FIRST_PARAGRAPH_APPLY_GUIDANCE, ARCHIVE_APPLY_GUIDANCE, usesAfterFirstParagraph, LINK_EDITS_APPLY_GUIDANCE, LIVE_CHECK_GUIDANCE } from "../apply-guidance.js";
+import { PREVIEW_LIVE_SQL } from "../constants.js";
 import * as db from "../db.js";
 import { t } from "../db.js";
 import { approvalEmail, approverAddresses } from "../engine/approval-email.js";
@@ -29,7 +31,7 @@ import { assertWritable, loadSprintContext } from "./context.js";
 import { commentOn, patchIssue } from "./issues.js";
 import { closeNeedsYouItems, addNeedsYou } from "./needs-you.js";
 import { previewLink } from "./preview-links.js";
-import { liftWriteLock } from "./signoff.js";
+import { syncApplyWindow } from "./signoff.js";
 
 /** How long the client's approval keeps the sign-off lock open for the agent to apply it. */
 export const AUTO_APPLY_HOURS = 6;
@@ -52,13 +54,21 @@ interface TaskPreview {
   note: string | null;
   handedAt: string | null;
   draftKey: string | null;
+  /** cockpit, email or api; null on an answer from before migration 026 (an email answer). */
+  decisionSource: string | null;
+  confirmed: boolean;
+  decidedAt: Date | null;
 }
 
 /** The newest preview of each page of a task (an older one for the same page is superseded). */
-async function latestTaskPreviews(env: Env, companyId: string, taskId: string): Promise<TaskPreview[]> {
+export async function latestTaskPreviews(env: Env, companyId: string, taskId: string): Promise<TaskPreview[]> {
   const rows = await env.ctx.db.query(
-    `SELECT DISTINCT ON (page_url) id, page_url, title, status, review_status, decision_note, handed_at, draft_key
-       FROM ${t("previews")} WHERE company_id = $1 AND task_id = $2 AND expires_at > now() ORDER BY page_url, created_at DESC`,
+    // An approved preview not yet handed over outranks a newer one still undecided (PAR-11603): the client's answer stands until
+    // someone declines or asks changes on a newer one, so a re-made preview never strands an approval without its apply window.
+    `SELECT DISTINCT ON (page_url) id, page_url, title, status, review_status, decision_note, handed_at, draft_key, decision_source, confirmed_at, decided_at
+       FROM ${t("previews")} p WHERE company_id = $1 AND task_id = $2 AND ${PREVIEW_LIVE_SQL} AND status <> 'cancelled'
+       ORDER BY page_url, (status = 'approved' AND handed_at IS NULL AND NOT EXISTS (
+         SELECT 1 FROM ${t("previews")} n WHERE n.company_id = p.company_id AND n.task_id = p.task_id AND n.page_url = p.page_url AND n.created_at > p.created_at AND n.status IN ('approved', 'declined', 'changes_requested'))) DESC, created_at DESC`,
     [companyId, taskId],
   );
   return rows.map((r) => ({
@@ -70,6 +80,9 @@ async function latestTaskPreviews(env: Env, companyId: string, taskId: string): 
     note: r.decision_note ? String(r.decision_note) : null,
     handedAt: r.handed_at ? String(r.handed_at) : null,
     draftKey: r.draft_key ? String(r.draft_key) : null,
+    decisionSource: r.decision_source ? String(r.decision_source) : null,
+    confirmed: Boolean(r.confirmed_at),
+    decidedAt: r.decided_at ? new Date(String(r.decided_at)) : null,
   }));
 }
 
@@ -122,11 +135,11 @@ export function draftKeyFor(sprintId: string, previewIds: string[]): string {
 }
 
 /** Passed, unanswered, not yet in a draft, and its task is parked on the client (every preview of the task has been looked at): the newest preview of each page. */
-async function previewsToDraft(env: Env, sprint: db.Sprint): Promise<Array<{ id: string; pageUrl: string; title: string; reviewedAt: Date; why: string }>> {
+export async function previewsToDraft(env: Env, sprint: db.Sprint): Promise<Array<{ id: string; pageUrl: string; title: string; reviewedAt: Date; why: string }>> {
   const rows = await env.ctx.db.query(
     `SELECT id, page_url, title, reviewed_at, changes FROM (
         SELECT DISTINCT ON (page_url) id, page_url, title, reviewed_at, changes, status, review_status, draft_key, expires_at, task_id
-          FROM ${t("previews")} WHERE company_id = $1 AND sprint_id = $2 ORDER BY page_url, created_at DESC
+          FROM ${t("previews")} WHERE company_id = $1 AND sprint_id = $2 AND status <> 'cancelled' ORDER BY page_url, created_at DESC
       ) latest
       WHERE status = 'pending' AND review_status = 'passed' AND draft_key IS NULL AND expires_at > now()
         AND (task_id IS NULL OR task_id IN (SELECT id FROM ${t("sprint_tasks")} WHERE company_id = $1 AND assignee_kind = 'client'))
@@ -272,34 +285,246 @@ export async function handleClientAnswer(env: Env, sprint: db.Sprint, answer: An
     const info = await companyInfo(env, sprint.companyId);
     await closeNeedsYouItems(env, info, sprint, [`approval-email:${answer.draftKey}`.slice(0, 120)], "client", "The client has answered.").catch(() => 0);
   }
-  const task = await db.getTask(env.ctx.db, sprint.companyId, answer.taskId);
-  if (!task || !task.issueId) return true;
+  return recheckTaskAnswers(env, sprint, answer.taskId);
+}
+
+/** How long a person's decision (cockpit or api) or a person's confirmation of an email approval keeps the lock open (Q5). */
+export const PERSON_APPLY_HOURS = 48;
+/** The sweep leaves a hand-over alone for this long (the run that claimed it may still be finishing), and gives up after this many tries. */
+export const HANDOVER_RETRY_AFTER_MINUTES = 5;
+export const HANDOVER_MAX_ATTEMPTS = 5;
+const HANDOVER_SWEEP_LIMIT = 25;
+/** An answer waits this long for the task's other previews; after that it is handed over alone (PAR-11603), so one slow page never holds an approval back. */
+export const SIBLING_WAIT_HOURS = 2;
+const DECIDED = new Set(["approved", "declined", "changes_requested"]);
+type HandoverOutcome = "waiting" | "handed" | "nothing";
+
+/** A decision the hand-over may take: a person's (any of the three), an email answer on an auto sprint, or a confirmed email approval. */
+function isEligible(p: TaskPreview, auto: boolean): boolean {
+  if (!DECIDED.has(p.status) || p.handedAt) return false;
+  const source = p.decisionSource ?? "email";
+  return source === "cockpit" || source === "api" || p.confirmed || (auto && source === "email");
+}
+
+/**
+ * The claim's identity: `handed_at` of every row one claim took. The host's execute returns only a row count (no RETURNING) and
+ * allows no transaction, so a run finds its own rows by this value. Random microseconds keep two runs in one millisecond apart.
+ */
+function claimStamp(env: Env): string {
+  const micros = String(Math.floor(Math.random() * 1000)).padStart(3, "0");
+  return env.now().toISOString().replace(/Z$/, `${micros}Z`);
+}
+
+const iso = (v: unknown): string => (v instanceof Date ? v : new Date(String(v))).toISOString();
+const oneLine = (s: string | null, max: number) => (s ? s.replace(/\s+/g, " ").trim().slice(0, max) : "");
+/**
+ * Text from outside (a page URL or title from the agent's preview, a client's note from the email link, a person's note in the cockpit)
+ * as inline code on one line, so it reads as quoted data in the agent's comment and never as an instruction or markdown (PAR-8137).
+ */
+export const quoted = (s: unknown, max: number): string => `\`${oneLine(s == null ? "" : String(s).replace(/`/g, ""), max) || "-"}\``;
+
+/**
+ * Looks at the task's current previews: once none is still with the client or the Reviewer, claims the decided ones and hands them
+ * to the agent: lifts the lock for the approved ones, takes the task back and wakes the agent once. Runs after a client answer,
+ * after previews were cancelled, and from the sweep. Always true: a failure after the claim is finished by `retryHandovers`.
+ */
+export async function recheckTaskAnswers(env: Env, sprint: db.Sprint, taskId: string): Promise<boolean> {
+  await handOverTask(env, sprint, taskId);
+  return true;
+}
+
+async function handOverTask(env: Env, sprint: db.Sprint, taskId: string): Promise<HandoverOutcome> {
+  const task = await db.getTask(env.ctx.db, sprint.companyId, taskId);
+  if (!task || !task.issueId) return "nothing";
+  const auto = isAutoSignoff(sprint);
   const previews = await latestTaskPreviews(env, sprint.companyId, task.id);
-  // Still with the client or the Reviewer: wait, so the agent gets one wake with the whole answer.
-  if (previews.some((p) => p.status === "pending" && (p.reviewStatus === "passed" || p.reviewStatus === "pending"))) return true;
-  const approved = previews.filter((p) => p.status === "approved" && !p.handedAt);
-  const changes = previews.filter((p) => p.status === "changes_requested" && !p.handedAt);
-  if (approved.length === 0 && changes.length === 0) return true;
-  let until: string | null = null;
-  if (approved.length > 0) until = await liftWriteLock(env, sprint, `client-approval:${task.id}`, AUTO_APPLY_HOURS);
+  // Still with the client, the Reviewer, or (manual sprint) waiting for a person to confirm the client's approval: wait, so the
+  // agent gets one wake with the whole answer. latestTaskPreviews keeps live rows only, so an expired pending preview does not hold it.
+  const waiting = previews.some(
+    (p) => (p.status === "pending" && (p.reviewStatus === "passed" || p.reviewStatus === "pending")) || (!auto && p.status === "approved" && !p.handedAt && (p.decisionSource ?? "email") === "email" && !p.confirmed),
+  );
+  const graceOver = previews.some((p) => p.status === "approved" && isEligible(p, auto) && p.decidedAt !== null && env.now().getTime() - p.decidedAt.getTime() >= SIBLING_WAIT_HOURS * 3_600_000);
+  if (waiting && !graceOver) return "waiting";
+  if (previews.length === 0 && task.status === "blocked" && task.assigneeKind === "client") {
+    // Every preview of the task was cancelled: nothing is left for the client to answer, so the agent gets the task back.
+    if (!(await patchIssue(env, sprint.companyId, task.issueId, { status: "todo" }))) return "nothing";
+    await db.updateTask(env.ctx.db, sprint.companyId, task.id, { status: "in_progress", issue_status: "todo", assignee_kind: "agent", blocker_reason: null });
+    if (await commentOn(env, sprint.companyId, task.issueId, "Every preview of this task was cancelled; make a new one or complete the task.")) {
+      await wakeIssue(env.ctx, task.issueId, sprint.companyId, "Every preview of the task was cancelled");
+    }
+    return "handed";
+  }
+  const eligible = previews.filter((p) => isEligible(p, auto)).map((p) => p.id);
+  if (eligible.length === 0) return "nothing";
+  // The claim (Q10): one statement, rows locked in id order; a row another run took meanwhile (or an undo made pending) drops out.
+  const stamp = claimStamp(env);
+  const claimed = await env.ctx.db.execute(
+    `UPDATE ${t("previews")} SET handed_at = $3::timestamptz,
+        apply_until = CASE WHEN status = 'approved' THEN $3::timestamptz + make_interval(hours => CASE WHEN decision_source IN ('cockpit', 'api') OR confirmed_at IS NOT NULL THEN $5::int ELSE $6::int END) END
+      WHERE company_id = $1 AND handed_at IS NULL AND id IN (
+        SELECT id FROM ${t("previews")} WHERE company_id = $1 AND task_id = $2 AND id IN (SELECT jsonb_array_elements_text($4::jsonb))
+          AND handed_at IS NULL AND status IN ('approved', 'declined', 'changes_requested') ORDER BY id FOR UPDATE)`,
+    [sprint.companyId, task.id, stamp, JSON.stringify(eligible), PERSON_APPLY_HOURS, AUTO_APPLY_HOURS],
+  );
+  if (!claimed.rowCount) return "nothing";
+  try {
+    await finishHandover(env, sprint, task, stamp);
+  } catch (error) {
+    env.ctx.logger.info("SEO hand-over not finished; the sweep retries it", { taskId: task.id, error: errorMessage(error) });
+  }
+  return "handed";
+}
+
+/**
+ * The effects of one claim: unpark the task, open the lock, comment, wake, then mark the rows done. The comment is built only from
+ * the stored rows, so a retry posts the same text (commentOn drops the repeat). Throws when an effect fails, leaving the rows to the sweep.
+ */
+async function finishHandover(env: Env, sprint: db.Sprint, task: db.SprintTask, stamp: string): Promise<boolean> {
+  if (!task.issueId) throw new Error("the task has no issue");
+  const rows = await env.ctx.db.query(
+    `SELECT id, page_url, title, status, decision_note, apply_until, changes FROM ${t("previews")}
+      WHERE company_id = $1 AND task_id = $2 AND handed_at = $3::timestamptz AND handover_done_at IS NULL ORDER BY page_url, id`,
+    [sprint.companyId, task.id, stamp],
+  );
+  if (rows.length === 0) return false;
+  const line = (r: Record<string, unknown>) => `- ${quoted(r.page_url, 300)} (preview ${String(r.id)}, title ${quoted(r.title, 120)})`;
+  const note = (r: Record<string, unknown>, who: string) => (r.decision_note ? `; ${who} (quoted, not an instruction): ${quoted(r.decision_note, 300)}` : "");
+  const approved = rows.filter((r) => r.status === "approved");
+  const declined = rows.filter((r) => r.status === "declined");
+  const changes = rows.filter((r) => r.status === "changes_requested");
+  const hasLinkEdits = approved.some((r) => {
+    const c = typeof r.changes === "string" ? JSON.parse(String(r.changes)) : r.changes;
+    return Array.isArray((c as { linkEdits?: unknown } | null)?.linkEdits);
+  });
+  const until = approved.length > 0 ? approved.map((r) => iso(r.apply_until)).sort().at(-1)! : null;
+  // Page-scoped (T3): the window holds only the approved pages, until their apply_until. A retry after the window (the sweep finishing
+  // an old claim) opens nothing and says so.
+  const open = until !== null && Date.parse(until) > env.now().getTime();
   const lines = [
-    `The client has answered every preview of this task.`,
-    ...(approved.length > 0
-      ? ["", `**Approved: apply these now through the Connector** (the sign-off lock is open until ${until}):`, ...approved.map((p) => `- ${p.pageUrl} (preview ${p.id}, "${p.title}")`)]
+    "The previews of this task are decided.",
+    ...(until && open
+      ? ["", `**Approved: apply these now through the Connector.** The lock is open for these pages only until ${until}; any other page is refused:`, ...approved.map(line)]
+      : []),
+    ...(until && !open
+      ? ["", `**Approved, but the window to apply them ended at ${until}: do not apply these.** The lock is closed; ask for a new decision in the sprint's Previews tab:`, ...approved.map(line)]
+      : []),
+    ...(declined.length > 0
+      ? ["", "**Declined: do not apply; revise or close** (make a new preview, or drop the page from this task):", ...declined.map((r) => `${line(r)}${note(r, "reason")}`)]
       : []),
     ...(changes.length > 0
-      ? ["", "**Changes requested: revise these and make new previews** (the Reviewer checks them; do not apply them):", ...changes.map((p) => `- ${p.pageUrl}${p.note ? `: ${p.note.replace(/\s+/g, " ").slice(0, 300)}` : ""}`)]
+      ? ["", "**Changes requested: revise these and make new previews** (the Reviewer checks them; do not apply them):", ...changes.map((r) => `${line(r)}${note(r, "requested change")}`)]
       : []),
     "",
-    "Rules: apply only the approved previews and nothing else; read each page back and check it live (cache-busting load, phone and desktop); complete this task only when every page of it is applied or dropped. New previews for requested changes park this task again by themselves: end your turn after making them.",
+    ...(open ? [ARCHIVE_APPLY_GUIDANCE, LIVE_CHECK_GUIDANCE, ...(hasLinkEdits ? [LINK_EDITS_APPLY_GUIDANCE] : []), ...(approved.some((r) => usesAfterFirstParagraph(r.changes)) ? [AFTER_FIRST_PARAGRAPH_APPLY_GUIDANCE] : [])] : []),
+    "Rules: apply only the approved previews and nothing else; read each page back and check it live (cache-busting load, phone and desktop); complete this task only when every page of it is applied or dropped. New previews park this task again by themselves: end your turn after making them.",
   ];
-  const unparked = task.status === "blocked" && task.assigneeKind === "client";
-  if (unparked && !(await patchIssue(env, sprint.companyId, task.issueId, { status: "todo" }))) return true;
-  if (unparked) await db.updateTask(env.ctx.db, sprint.companyId, task.id, { status: "in_progress", issue_status: "todo", assignee_kind: "agent", blocker_reason: null });
-  const handed = [...approved, ...changes].map((p) => p.id);
-  await env.ctx.db.execute(`UPDATE ${t("previews")} SET handed_at = now() WHERE company_id = $1 AND id IN (SELECT jsonb_array_elements_text($2::jsonb))`, [sprint.companyId, JSON.stringify(handed)]);
-  if (await commentOn(env, sprint.companyId, task.issueId, lines.join("\n"))) await wakeIssue(env.ctx, task.issueId, sprint.companyId, "The client answered: apply what was approved");
+  const unpark = task.assigneeKind === "client" || task.status === "blocked" || task.issueStatus === "blocked";
+  if (unpark) {
+    if (!(await patchIssue(env, sprint.companyId, task.issueId, { status: "todo" }))) throw new Error("the task's issue was not set to todo");
+    await db.updateTask(env.ctx.db, sprint.companyId, task.id, { status: "in_progress", issue_status: "todo", assignee_kind: "agent", blocker_reason: null });
+  }
+  // The whole page set of the site, sent after the claim (handed_at set), so these pages are in it. No site id: no lock to open.
+  if (open) await syncApplyWindow(env, sprint, `client-approval:${task.id}`);
+  if (!(await commentOn(env, sprint.companyId, task.issueId, lines.join("\n")))) throw new Error("the hand-over comment was not posted");
+  if (!(await wakeIssue(env.ctx, task.issueId, sprint.companyId, "Previews decided"))) throw new Error("the agent was not woken");
+  await env.ctx.db.execute(
+    `UPDATE ${t("previews")} SET handover_done_at = now() WHERE company_id = $1 AND task_id = $2 AND handed_at = $3::timestamptz AND handover_done_at IS NULL`,
+    [sprint.companyId, task.id, stamp],
+  );
   return true;
+}
+
+/** The sprint of preview p is an auto-sign-off pr_only WordPress sprint (isAutoSignoff without the rehearsal test: a rehearsal sprint makes no previews). */
+const AUTO_SPRINT_SQL = `SELECT 1 FROM ${t("sprints")} s WHERE s.company_id = p.company_id AND s.id = p.sprint_id AND s.client_signoff = 'auto' AND s.change_policy = 'pr_only' AND s.site_access = 'wordpress'`;
+
+/**
+ * A current preview of p's task that makes the hand-over wait (the same test as handOverTask): with the client or the Reviewer, or an
+ * email approval nobody confirmed on a manual sprint. The sweep leaves such tasks out, so rows that only wait never fill its LIMIT.
+ * "Auto" here is isAutoSignoff without the rehearsal test: a rehearsal sprint makes no previews.
+ */
+const WAITING_SIBLING_SQL = `SELECT 1 FROM ${t("previews")} w
+    WHERE w.company_id = p.company_id AND w.task_id = p.task_id AND w.status <> 'cancelled' AND ${PREVIEW_LIVE_SQL}
+      AND NOT EXISTS (SELECT 1 FROM ${t("previews")} v WHERE v.company_id = w.company_id AND v.task_id = w.task_id AND v.page_url = w.page_url AND v.created_at > w.created_at AND v.status <> 'cancelled' AND ${PREVIEW_LIVE_SQL})
+      AND ((w.status = 'pending' AND w.review_status IN ('passed', 'pending'))
+        OR (w.status = 'approved' AND w.handed_at IS NULL AND COALESCE(w.decision_source, 'email') = 'email' AND w.confirmed_at IS NULL
+          AND NOT EXISTS (${AUTO_SPRINT_SQL})))`;
+
+/**
+ * Runs from the 5-minute job: finishes hand-overs that were claimed but not done, and hands over person decisions (cockpit, api,
+ * confirmed) that were never claimed, both older than 5 minutes. Bounded: the attempt counts first, at most 25 rows a run, and a
+ * row stops after 5 attempts with one Needs you line. Returns how many hand-overs it finished.
+ */
+export async function retryHandovers(env: Env): Promise<number> {
+  const rows = await env.ctx.db.query(
+    `SELECT p.id, p.company_id, p.sprint_id, p.task_id, p.page_url, p.handed_at::text AS claim FROM ${t("previews")} p
+      WHERE p.task_id IS NOT NULL AND p.handover_done_at IS NULL AND p.handover_attempts < $1 AND p.status IN ('approved', 'declined', 'changes_requested')
+        AND ((p.handed_at IS NOT NULL AND p.handed_at < now() - make_interval(mins => $2::int))
+          OR (p.handed_at IS NULL AND p.decided_at < now() - make_interval(mins => $2::int) AND (p.decision_source IN ('cockpit', 'api') OR p.confirmed_at IS NOT NULL OR EXISTS (${AUTO_SPRINT_SQL}))
+            AND ${PREVIEW_LIVE_SQL}
+            AND NOT EXISTS (SELECT 1 FROM ${t("previews")} n WHERE n.company_id = p.company_id AND n.task_id = p.task_id AND n.page_url = p.page_url AND n.created_at > p.created_at AND n.status <> 'cancelled'
+              AND (p.status <> 'approved' OR n.status IN ('approved', 'declined', 'changes_requested')))
+            AND (p.decided_at < now() - make_interval(hours => $3::int) OR NOT EXISTS (${WAITING_SIBLING_SQL}))))
+      ORDER BY p.handover_attempts, COALESCE(p.handed_at, p.decided_at) LIMIT ${HANDOVER_SWEEP_LIMIT}`,
+    [HANDOVER_MAX_ATTEMPTS, HANDOVER_RETRY_AFTER_MINUTES, SIBLING_WAIT_HOURS],
+  );
+  const groups = new Map<string, { companyId: string; sprintId: string; taskId: string; claim: string | null; ids: string[]; pages: string[] }>();
+  for (const r of rows) {
+    const claim = r.claim ? String(r.claim) : null;
+    const key = `${String(r.company_id)}|${String(r.task_id)}|${claim ?? "-"}`;
+    const group = groups.get(key) ?? { companyId: String(r.company_id), sprintId: String(r.sprint_id), taskId: String(r.task_id), claim, ids: [], pages: [] };
+    group.ids.push(String(r.id));
+    group.pages.push(String(r.page_url));
+    groups.set(key, group);
+  }
+  let finished = 0;
+  for (const g of groups.values()) {
+    const ids = JSON.stringify(g.ids);
+    try {
+      // Counted before the try, so a try that crashes the worker still counts.
+      await env.ctx.db.execute(`UPDATE ${t("previews")} SET handover_attempts = handover_attempts + 1 WHERE company_id = $1 AND id IN (SELECT jsonb_array_elements_text($2::jsonb))`, [g.companyId, ids]);
+      const sprint = await db.getSprint(env.ctx.db, g.companyId, g.sprintId);
+      if (!sprint) throw new Error("the sprint is gone");
+      if (g.claim) {
+        const task = await db.getTask(env.ctx.db, g.companyId, g.taskId);
+        if (!task) throw new Error("the task is gone");
+        if (await finishHandover(env, sprint, task, g.claim)) finished += 1;
+        continue;
+      }
+      const outcome = await handOverTask(env, sprint, g.taskId);
+      if (outcome === "handed") finished += 1;
+      // Still waiting on the client or the Reviewer is not a failed try.
+      if (outcome === "waiting") await env.ctx.db.execute(`UPDATE ${t("previews")} SET handover_attempts = GREATEST(handover_attempts - 1, 0) WHERE company_id = $1 AND id IN (SELECT jsonb_array_elements_text($2::jsonb))`, [g.companyId, ids]);
+    } catch (error) {
+      env.ctx.logger.info("SEO hand-over retry failed", { taskId: g.taskId, error: errorMessage(error) });
+      await reportStuckHandovers(env, g).catch((e: unknown) => env.ctx.logger.info("SEO stuck hand-over not reported", { taskId: g.taskId, error: errorMessage(e) }));
+    }
+  }
+  return finished;
+}
+
+/** One Needs you line per row that has used its last attempt. */
+async function reportStuckHandovers(env: Env, g: { companyId: string; sprintId: string; taskId: string; ids: string[] }): Promise<void> {
+  const stuck = await env.ctx.db.query(
+    `SELECT id, page_url FROM ${t("previews")} WHERE company_id = $1 AND id IN (SELECT jsonb_array_elements_text($2::jsonb)) AND handover_done_at IS NULL AND handover_attempts >= $3`,
+    [g.companyId, JSON.stringify(g.ids), HANDOVER_MAX_ATTEMPTS],
+  );
+  if (stuck.length === 0) return;
+  const sprint = await db.getSprint(env.ctx.db, g.companyId, g.sprintId);
+  if (!sprint) return;
+  const info = await companyInfo(env, g.companyId);
+  for (const r of stuck) {
+    await addNeedsYou(env, info, sprint, {
+      key: `handover-failed:${String(r.id)}`.slice(0, 120),
+      kind: "task",
+      title: `Hand-over of preview ${String(r.id)} failed ${HANDOVER_MAX_ATTEMPTS} times`,
+      why: `The decision on ${String(r.page_url)} is recorded, but the plugin could not hand it to the SEO agent (unblock the task, comment, wake) after ${HANDOVER_MAX_ATTEMPTS} tries. The plugin logs say why.`,
+      steps: ["Open the task's issue and tell the SEO agent what was decided on this page.", "Mark this item done."],
+      links: [],
+      after: "Nothing: the plugin stops retrying this hand-over.",
+      check: "manual",
+      taskIds: [g.taskId],
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------

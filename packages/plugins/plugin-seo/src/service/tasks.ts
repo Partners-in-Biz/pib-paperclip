@@ -3,7 +3,7 @@
  * the task tools (start, complete, block, skip, add).
  */
 import { randomUUID } from "node:crypto";
-import { reviewerAgentId, wakeIssue } from "@partnersinbiz/pib-plugin-kit";
+import { normalisePageUrl, reviewerAgentId, sameSite, wakeIssue } from "@partnersinbiz/pib-plugin-kit";
 import { ORIGIN, taskOriginId } from "../constants.js";
 import * as db from "../db.js";
 import { BLOCK_COMMENT_MAX, blockComment, completionComment, taskIssueDescription, taskIssueTitle, type EvidenceArtifact, type SiteCopy, type TaskCopy } from "../engine/copy.js";
@@ -34,18 +34,19 @@ import {
   SeoError,
   str,
   strList,
+  urlParam,
   type Actor,
   type CompanyInfo,
   type Env,
   type Params,
 } from "./common.js";
 import { assertWritable, loadSprintContext, sprintCopy } from "./context.js";
-import { commentOn, getIssue, OPEN_ISSUE_STATUSES, openIssue, patchIssue } from "./issues.js";
+import { commentOn, getIssue, OPEN_ISSUE_STATUSES, openIssue, patchIssue, readIssueStrict } from "./issues.js";
 import { isAutoSignoff } from "./client-signoff.js";
 import { PLUGIN_VERSION } from "../namespace.js";
 import { resolveAgent } from "./agent.js";
 import { assertPreviewLinksChecked } from "./preview.js";
-import { addNeedsYou, closeNeedsYouItems, STANDARD_KEYS } from "./needs-you.js";
+import { addNeedsYou, closeItemsForClosedTask, closeNeedsYouItems, STANDARD_KEYS } from "./needs-you.js";
 import { publishTaskDone, releaseAnnouncements } from "./handoff.js";
 import { signoffReviewBrief } from "./review.js";
 import { linkSiteItem } from "../engine/items.js";
@@ -172,6 +173,58 @@ export async function createTaskIssue(env: Env, mc: MaterialiseContext, task: db
   }
 }
 
+/** A paused or archived sprint is frozen: no new task issue is opened for it. */
+export function isFrozenSprint(sprint: Pick<db.Sprint, "status">): boolean {
+  return sprint.status === "paused" || sprint.status === "archived";
+}
+
+/**
+ * Pausing a sprint parks its untouched agent task issues (status todo) in backlog, so the host stops waking the agent on them.
+ * Each parked task remembers it in its evidence; resuming puts them back to todo and wakes the agent. Issues already in progress,
+ * in review or blocked are left alone. Returns how many were parked.
+ */
+export async function parkSprintTasks(env: Env, sprint: db.Sprint): Promise<number> {
+  const tasks = await db.listTasks(env.ctx.db, sprint.companyId, sprint.id, { status: ["not_started", "in_progress"] });
+  let parked = 0;
+  for (const task of tasks) {
+    if (!task.issueId || task.assigneeKind !== "agent" || task.issueStatus !== "todo") continue;
+    try {
+      const issue = await getIssue(env, sprint.companyId, task.issueId);
+      if (!issue || String(issue.status) !== "todo") continue;
+      if (!(await patchIssue(env, sprint.companyId, task.issueId, { status: "backlog" }))) continue;
+      await db.updateTask(env.ctx.db, sprint.companyId, task.id, { issue_status: "backlog", evidence: { ...(task.evidence ?? {}), parkedByPause: true } });
+      parked += 1;
+    } catch (error) {
+      env.ctx.logger.info("SEO task not parked on pause", { taskId: task.id, error: errorMessage(error) });
+    }
+  }
+  return parked;
+}
+
+/** Undo parkSprintTasks on resume: tasks it parked go back to todo and the agent is woken on each. */
+export async function unparkSprintTasks(env: Env, sprint: db.Sprint): Promise<number> {
+  const tasks = await db.listTasks(env.ctx.db, sprint.companyId, sprint.id, { status: ["not_started", "in_progress"] });
+  let back = 0;
+  for (const task of tasks) {
+    if (!task.issueId || !task.evidence?.parkedByPause) continue;
+    try {
+      const { parkedByPause: _gone, ...rest } = task.evidence as Record<string, unknown>;
+      const issue = await getIssue(env, sprint.companyId, task.issueId);
+      if (issue && String(issue.status) === "backlog") {
+        if (!(await patchIssue(env, sprint.companyId, task.issueId, { status: "todo" }))) continue;
+        await db.updateTask(env.ctx.db, sprint.companyId, task.id, { issue_status: "todo", evidence: rest });
+        await wakeIssue(env.ctx, task.issueId, sprint.companyId, `SEO sprint resumed: ${task.title}`);
+        back += 1;
+      } else {
+        await db.updateTask(env.ctx.db, sprint.companyId, task.id, { evidence: rest });
+      }
+    } catch (error) {
+      env.ctx.logger.info("SEO task not unparked on resume", { taskId: task.id, error: errorMessage(error) });
+    }
+  }
+  return back;
+}
+
 /** Open sub-issues for due tasks that have none yet (idempotent). */
 export async function materialiseDueTasks(
   env: Env,
@@ -180,6 +233,8 @@ export async function materialiseDueTasks(
 ): Promise<{ created: number; remaining: number; errors: string[] }> {
   // Nothing is due as an issue on a rehearsal sprint, and that is not an error (no root issue is expected either).
   if (isRehearsalSprint(mc.sprint)) return { created: 0, remaining: 0, errors: [] };
+  // A paused or archived sprint opens nothing, whoever asks (daily run, run-daily, plan upgrade, proposals, site link): PAR-14132.
+  if (isFrozenSprint(mc.sprint)) return { created: 0, remaining: 0, errors: [] };
   if (!mc.sprint.rootIssueId) return { created: 0, remaining: 0, errors: ["Sprint has no root issue yet"] };
   const tasks = await db.listTasks(env.ctx.db, mc.sprint.companyId, mc.sprint.id, { status: ["not_started"] });
   // An AI-search task is never opened for a sprint with AI search off (the switch retires them; this holds even if one is left over).
@@ -254,6 +309,9 @@ export async function onIssueUpdated(env: Env, companyId: string, issueId: strin
     const mergeTaskId = await followUpApprovedPr(env, task);
     await publishTaskDone(env, companyId, task.id, mergeTaskId);
     await releaseAnnouncements(env, companyId, task.id);
+  }
+  if (result.changed && (result.status === "done" || result.status === "skipped")) {
+    await closeItemsForClosedTask(env, companyId, task.sprintId, task.id, result.status === "done" ? "The task was closed." : "The task was cancelled.").catch((error) => env.ctx.logger.info("SEO Needs you rows not closed for closed task", { taskId: task.id, error: errorMessage(error) }));
   }
   if (result.changed && (result.status === "done" || result.status === "skipped" || result.status === "blocked") && task.status !== result.status) await openNextQueuedTask(env, companyId, task);
 }
@@ -373,16 +431,69 @@ export async function startTask(env: Env, companyId: string, actor: Actor, param
   const patch: Record<string, unknown> = { status: "in_progress", blocker_reason: null };
   if (!task.startedAt) patch.started_at = new Date().toISOString();
   await db.updateTask(env.ctx.db, companyId, task.id, patch);
+  // A task with no issue (add-task could not open one, PAR-13216) gets its issue now, so approve-page-apply has one to tell.
+  const opened = task.issueId ? { issueId: task.issueId, why: null } : await openMissingTaskIssue(env, companyId, task);
+  const issueId = opened.issueId;
   const note = str(params, "note", { max: 2000 });
-  if (note && task.issueId) await commentOn(env, companyId, task.issueId, `Started by ${actorLabel(actor)}: ${note}`);
+  if (note && issueId) await commentOn(env, companyId, issueId, `Started by ${actorLabel(actor)}: ${note}`);
   // A site-wide task started on a site bigger than one run can do well is split into page groups now (existing sprints included).
-  const split = actor.kind === "agent" ? await splitOnStart(env, task) : null;
+  const split = actor.kind === "agent" && issueId ? await splitOnStart(env, { ...task, issueId }) : null;
   return {
-    ...taskView({ ...task, status: "in_progress" }),
+    ...taskView({ ...task, issueId, status: "in_progress" }),
+    ...(!issueId && opened.why ? { issueNote: opened.why } : {}),
     ...(split
       ? { split: { groups: split.groups, pages: split.pages, firstGroupIssueId: split.firstGroupIssueId, next: "This task is now split into page groups (child issues, one open at a time). End your run on this issue: the pages are the group issues' work, and you are woken here when the last one is done." } }
       : {}),
   };
+}
+
+/** Open the issue of a task that has none. Never throws: the task still starts; the reason comes back as a note. */
+async function openMissingTaskIssue(env: Env, companyId: string, task: db.SprintTask): Promise<{ issueId: string | null; why: string | null }> {
+  try {
+    const ctx = await loadSprintContext(env, companyId, task.sprintId);
+    if (isRehearsalSprint(ctx.sprint)) return { issueId: null, why: "This is a rehearsal sprint: no issue is opened." };
+    if (!ctx.sprint.rootIssueId) return { issueId: null, why: "The sprint has no root issue yet, so no task issue could be opened." };
+    if (ctx.sprint.status === "paused") return { issueId: null, why: "The sprint is paused, so no task issue was opened." };
+    const issueId = await createTaskIssue(env, { info: ctx.info, sprint: ctx.sprint, day: ctx.clock.day, agent: await resolveAgent(env, companyId), projectId: ctx.sprint.projectId }, task);
+    if (issueId) return { issueId, why: null };
+    const fresh = await db.getTask(env.ctx.db, companyId, task.id);
+    if (fresh?.issueId) return { issueId: fresh.issueId, why: null };
+    return { issueId: null, why: "No issue was opened (a person's task goes on Needs you; a code task waits for the site repo link). Use attach-task-issue to attach one." };
+  } catch (error) {
+    return { issueId: null, why: `The task issue could not be opened: ${errorMessage(error)}. Use attach-task-issue to attach one.` };
+  }
+}
+
+/**
+ * Attach an existing issue to a task that has none (PAR-13216): the way to repair a task whose issue never opened.
+ * The issue must be in the company and not belong to another task. An agent cannot attach an issue assigned to itself
+ * (approve-page-apply rules out self-approval through the task issue's assignee).
+ */
+export async function attachTaskIssue(env: Env, companyId: string, actor: Actor, params: Params) {
+  const task = await requireTask(env, companyId, params);
+  const issueId = reqStr(params, "issueId", { max: 80 });
+  if (task.issueId === issueId) return { ...taskView(task), attached: false, note: "This issue is already the task's issue." };
+  if (task.issueId) throw new SeoError(`This task already has an issue (${task.issueIdentifier ?? task.issueId}); it is not replaced.`);
+  const sprint = await db.getSprint(env.ctx.db, companyId, task.sprintId);
+  if (sprint) assertWritable(sprint);
+  if (sprint && isRehearsalSprint(sprint)) throw new SeoError(REHEARSAL_REFUSAL);
+  const read = await readIssueStrict(env, companyId, issueId);
+  if (read.kind === "missing") throw new SeoError(`Issue ${issueId} was not found in this company.`);
+  if (read.kind === "error") throw new SeoError("The issue could not be read. Try again later.");
+  const issue = read.issue as { id: string; identifier?: string | null; status: unknown; projectId?: string | null; assigneeAgentId?: string | null };
+  const other = await db.getTaskByIssue(env.ctx.db, companyId, issue.id);
+  if (other && other.id !== task.id) throw new SeoError(`That issue already belongs to task ${other.id}.`);
+  if (actor.kind === "agent" && issue.assigneeAgentId && issue.assigneeAgentId.toLowerCase() === actor.agentId.toLowerCase()) {
+    throw new SeoError("You are the assignee of that issue: attach an issue assigned to someone else, or ask a person.");
+  }
+  await db.updateTask(env.ctx.db, companyId, task.id, {
+    issue_id: issue.id,
+    issue_identifier: issue.identifier ?? null,
+    issue_status: String(issue.status),
+    issue_project_id: issue.projectId ?? null,
+  });
+  await commentOn(env, companyId, issue.id, `Attached to the SEO sprint task "${task.title}" by ${actorLabel(actor)}.`);
+  return { ...taskView({ ...task, issueId: issue.id, issueIdentifier: issue.identifier ?? null }), attached: true };
 }
 
 function parseEvidence(params: Params): { summary: string; links: string[]; artifacts: EvidenceArtifact[] } {
@@ -560,6 +671,13 @@ export async function addTask(env: Env, companyId: string, actor: Actor, params:
   // Site changes are agent work: the agent makes them through the site repo.
   const codeWork = isCodeTask({ taskType, title, source: "manual" });
   const owner = requestedOwner === "human" && codeWork ? "agent" : requestedOwner;
+  // Pages the task names (PAR-12432): same site as the sprint; approve-page-apply reads them as the task's pages.
+  const pageUrls = [...new Set(strList(params, "pageUrls", { max: 50, itemMax: 1000 }).map((u) => {
+    const page = normalisePageUrl(urlParam(u, ctx.sprint.siteUrl));
+    if (!page) throw new SeoError(`${u} is not a page address (a full http(s) URL without ? or #).`);
+    if (!sameSite(page, ctx.sprint.siteUrl)) throw new SeoError(`${u} is not on the sprint's site (${ctx.sprint.siteUrl}).`);
+    return page;
+  }))];
   const id = randomUUID();
   const dueNow = week <= ctx.clock.week;
   await db.insertTasks(env.ctx.db, [{
@@ -581,6 +699,7 @@ export async function addTask(env: Env, companyId: string, actor: Actor, params:
     parentOptimizationId: null,
     context: actor.kind === "agent" ? `Added by the SEO Specialist.` : null,
   }]);
+  if (pageUrls.length > 0) await db.updateTask(env.ctx.db, companyId, id, { evidence: { pageUrls } });
   let issueId: string | null = null;
   const createIssue = bool(params, "createIssue") ?? true;
   if (createIssue && dueNow && ctx.sprint.rootIssueId && ctx.sprint.status !== "paused") {
@@ -601,7 +720,11 @@ export async function addTask(env: Env, companyId: string, actor: Actor, params:
     week,
     owner,
     issueId,
+    ...(pageUrls.length > 0 ? { pageUrls } : {}),
     due: dueNow,
+    ...(!issueId && owner === "agent"
+      ? { issueNote: !createIssue ? "createIssue was false: no issue yet. start-task opens it." : !dueNow ? "The task is not due yet: the daily run opens its issue (or start-task does)." : !ctx.sprint.rootIssueId ? "The sprint has no root issue yet, so no task issue was opened. start-task retries; attach-task-issue attaches an existing one." : "No issue was opened. start-task retries; attach-task-issue attaches an existing one." }
+      : {}),
     ...(owner !== requestedOwner ? { note: "Code and content changes are agent work: the SEO Specialist makes them through the site repo, so this task is the agent's." } : {}),
     ...(owner === "human" ? { note: "Tasks for a person go on the sprint's weekly Needs you issue instead of an issue of their own." } : {}),
   };
@@ -742,6 +865,7 @@ export function taskProjectId(sprint: db.Sprint, code: boolean, fallback: string
 export async function relocateCodeTasks(env: Env, mc: MaterialiseContext): Promise<{ moved: number; opened: number }> {
   const { sprint } = mc;
   if (sprint.siteAccess === "unlinked" && !sprint.clientProjectId) return { moved: 0, opened: 0 };
+  if (isFrozenSprint(sprint)) return { moved: 0, opened: 0 };
   let moved = 0;
   const tasks = await db.listTasks(env.ctx.db, sprint.companyId, sprint.id, { status: ["not_started", "in_progress", "blocked"] });
   for (const task of tasks) {
@@ -767,6 +891,8 @@ export async function relocateCodeTasks(env: Env, mc: MaterialiseContext): Promi
 /** A task handed to the SEO agent whose issue has sat in todo or in_progress this long with no run is woken again (a wake can be coalesced into a run that was ending, and a run can end without anything finishing the task). */
 export const IDLE_TASK_MINUTES = 25;
 export const IDLE_TASK_MAX_NUDGES = 4;
+/** An issue already in_progress (a run started on it before) is woken this many times at most. */
+export const IDLE_IN_PROGRESS_MAX_NUDGES = 1;
 /** After this many wakes with no run, the task gets a fresh issue (at most IDLE_TASK_MAX_REISSUES times). */
 export const IDLE_TASK_REISSUE_AFTER = 3;
 export const IDLE_TASK_MAX_REISSUES = 2;
@@ -795,6 +921,9 @@ export async function nudgeIdleAgentTasks(env: Env): Promise<number> {
       if ((await db.issuesWithActiveRuns(env.ctx.db, companyId, [issueId])).has(issueId)) continue;
       const issue = await getIssue(env, companyId, issueId);
       if (!issue || !["todo", "backlog", "in_progress"].includes(String(issue.status))) continue;
+      // An issue left in_progress already had a run (the agent checked it out): one wake is enough. Repeating it only produced ~13 s runs
+      // where the agent found nothing new (109 such wakes for one agent in a week). Only an untouched todo issue is worth more wakes.
+      if (String(issue.status) === "in_progress" && nudges >= IDLE_IN_PROGRESS_MAX_NUDGES) continue;
       // Woken IDLE_TASK_REISSUE_AFTER times with no run ever starting: the host is holding this issue (a recovery action from an interrupted
       // run: "execution reconciliation required", which waits for a board operator). The plugin opens a fresh issue for the task instead.
       if (nudges >= IDLE_TASK_REISSUE_AFTER && Number(evidence.reissues ?? 0) < IDLE_TASK_MAX_REISSUES) {
@@ -882,9 +1011,9 @@ export async function reissueTask(env: Env, companyId: string, taskId: string, o
 }
 
 
-/** Whether any client preview has been made for the task. */
+/** Whether any client preview has been made for the task (a cancelled one is not a preview the client can answer). */
 export async function taskHasPreview(env: Env, companyId: string, taskId: string): Promise<boolean> {
-  const rows = await env.ctx.db.query(`SELECT 1 FROM ${db.t("previews")} WHERE company_id = $1 AND task_id = $2 LIMIT 1`, [companyId, taskId]);
+  const rows = await env.ctx.db.query(`SELECT 1 FROM ${db.t("previews")} WHERE company_id = $1 AND task_id = $2 AND status <> 'cancelled' LIMIT 1`, [companyId, taskId]);
   return rows.length > 0;
 }
 
@@ -897,7 +1026,7 @@ export async function reclaimPersonHandOffs(env: Env): Promise<number> {
   const rows = await env.ctx.db.query(
     `SELECT t.id, t.company_id, t.sprint_id, t.issue_id, t.evidence, t.human_ask FROM ${db.t("sprint_tasks")} t JOIN ${db.t("sprints")} s ON s.id = t.sprint_id
       WHERE s.status = 'active' AND s.client_signoff = 'auto' AND t.task_type = 'page-write' AND t.status = 'blocked' AND t.issue_id IS NOT NULL
-        AND NOT EXISTS (SELECT 1 FROM ${db.t("previews")} p WHERE p.task_id = t.id) LIMIT 20`,
+        AND NOT EXISTS (SELECT 1 FROM ${db.t("previews")} p WHERE p.task_id = t.id AND p.status <> 'cancelled') LIMIT 20`,
   );
   let taken = 0;
   for (const row of rows) {

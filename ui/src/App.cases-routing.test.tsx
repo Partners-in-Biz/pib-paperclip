@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 // Regression guard for PAP-13002: the experimental Cases UI emits *unprefixed*
-// links (`/cases`, `/cases/:id`) — the same global-unprefixed pattern Pipelines
+// links (`/cases`, `/cases/:id`) — the same global-unprefixed pattern Routines
 // uses. Those only resolve if `cases` and `cases/:caseIdentifier` are registered
 // as reserved unprefixed redirect routes in <App>; otherwise the first path
 // segment is parsed as a company prefix ("CASES") and the page 404s with
@@ -54,6 +54,16 @@ vi.mock("./components/Layout", async () => {
 vi.mock("./components/CasesExperimentalGate", () => ({
   CasesExperimentalGate: ({ children }: { children: ReactNode }) => <>{children}</>,
 }));
+
+// The member-restriction gate reads the session through React Query (PAR-12739);
+// these routing tests render without a QueryClient and no restricted member.
+vi.mock("./context/MemberRestrictionContext", () => ({
+  MemberRestrictionProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
+}));
+vi.mock("./components/MemberRestrictionGate", async () => {
+  const { Outlet } = await import("react-router-dom");
+  return { MemberRestrictionGate: () => <Outlet /> };
+});
 
 // Rendered by <App> outside <Routes> and needs DialogProvider; irrelevant here.
 vi.mock("./components/OnboardingWizardVariant", () => ({

@@ -1,7 +1,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
-import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
+import type { Company, PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import {
   createHostClientHandlers,
   JsonRpcCallError,
@@ -27,10 +27,13 @@ vi.mock("../middleware/logger.js", () => {
 });
 
 import { logger } from "../middleware/logger.js";
+import { PluginWorkerUnavailableError, PLUGIN_WORKER_UNAVAILABLE_CODE } from "../services/plugin-worker-unavailable-error.js";
+import { withRunExecutionTiming } from "../services/execution-preparation-timing.js";
 import {
   appendStderrExcerpt,
   createDuplexRouteSlotController,
   createPluginWorkerHandle,
+  createPluginWorkerManager,
   formatWorkerFailureMessage,
   resolveRpcCallTimeoutMs,
 } from "../services/plugin-worker-manager.js";
@@ -55,6 +58,46 @@ const TEST_MANIFEST: PaperclipPluginManifestV1 = {
   capabilities: [],
   entrypoints: { worker: "dist/worker.js" },
 };
+
+describe("worker configuration completion", () => {
+  it("notifies only after a successful config callback and releases subscriptions", async () => {
+    const manager = createPluginWorkerManager();
+    const applied = vi.fn(), unsubscribe = manager.onConfigApplied(applied);
+    try {
+      await manager.startWorker("test.plugin", {
+        entrypointPath: DELAYED_WORKER_ENTRYPOINT, manifest: TEST_MANIFEST, config: {},
+        instanceInfo: { instanceId: "instance-1", hostVersion: "1.0.0" }, apiVersion: 1, hostHandlers: {},
+      });
+      expect(applied).not.toHaveBeenCalled();
+      const updating = manager.call("test.plugin", "configChanged", { companyId: "company-1", config: { delayMs: 20 } });
+      expect(applied).not.toHaveBeenCalled();
+      await updating; expect(applied).toHaveBeenCalledTimes(1);
+      await expect(manager.call("test.plugin", "configChanged", { companyId: "company-1", config: { fail: true } })).rejects.toThrow("configuration rejected");
+      expect(applied).toHaveBeenCalledTimes(1);
+      unsubscribe();
+      await manager.call("test.plugin", "configChanged", { companyId: "company-1", config: {} });
+      expect(applied).toHaveBeenCalledTimes(1);
+    } finally { unsubscribe(); await manager.stopAll(); }
+  });
+});
+
+describe("plugin worker unavailable refusals", () => {
+  it("refuses calls to a stopped or missing worker with a typed, unsent error", async () => {
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: DELAYED_WORKER_ENTRYPOINT, manifest: TEST_MANIFEST, config: {},
+      instanceInfo: { instanceId: "instance-1", hostVersion: "1.0.0" }, apiVersion: 1, hostHandlers: {},
+    });
+    const settled = vi.fn();
+    const stopped = await handle.call("environmentExecute", {} as never, undefined, undefined, settled).catch(error => error);
+    expect(stopped).toBeInstanceOf(PluginWorkerUnavailableError);
+    expect(stopped).toMatchObject({ code: PLUGIN_WORKER_UNAVAILABLE_CODE, pluginId: "test.plugin", workerStatus: "stopped",
+      message: 'Cannot call "environmentExecute" — worker for "test.plugin" is stopped' });
+    expect(settled).toHaveBeenCalledTimes(1);
+    const missing = await createPluginWorkerManager().call("missing.plugin", "environmentExecute", {} as never).catch(error => error);
+    expect(missing).toBeInstanceOf(PluginWorkerUnavailableError);
+    expect(missing).toMatchObject({ workerStatus: null, message: 'No worker registered for plugin "missing.plugin"' });
+  });
+});
 
 describe("resolveRpcCallTimeoutMs", () => {
   const MAX_RPC_TIMEOUT_MS = 15 * 60 * 1_000;
@@ -213,7 +256,8 @@ describe("plugin-worker-manager stderr failure context", () => {
     }
   });
 
-  it("does not emit an unhandled rejection when a plugin responds with terminated before callers attach handlers", async () => {
+  it.each(["", "http://collector.test"])("does not emit an unhandled rejection before callers attach handlers (endpoint %s)", async endpoint => {
+    vi.stubEnv("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint);
     const unhandledRejection = vi.fn();
     process.on("unhandledRejection", unhandledRejection);
 
@@ -232,29 +276,63 @@ describe("plugin-worker-manager stderr failure context", () => {
     try {
       await handle.start();
 
-      const pendingCall = handle.call(
-        "environmentExecute" as keyof HostToWorkerMethods,
-        {
-          driverKey: "e2b",
-          companyId: "company-1",
-          environmentId: "environment-1",
-          config: {},
-          lease: { providerLeaseId: "lease-1" },
-          command: "echo",
-        } as HostToWorkerMethods[keyof HostToWorkerMethods][0],
-      );
+      await withRunExecutionTiming("early-worker-error", async () => {
+        let settled!: () => void;
+        const workerSettled = new Promise<void>(resolve => { settled = resolve; });
+        const pendingCall = handle.call(
+          "environmentExecute" as keyof HostToWorkerMethods,
+          {
+            driverKey: "e2b",
+            companyId: "company-1",
+            environmentId: "environment-1",
+            config: {},
+            lease: { providerLeaseId: "lease-1" },
+            command: "echo",
+          } as HostToWorkerMethods[keyof HostToWorkerMethods][0],
+          undefined, undefined, settled,
+        );
 
-      await new Promise((resolve) => setImmediate(resolve));
+        await workerSettled;
+        await new Promise((resolve) => setImmediate(resolve));
 
-      await expect(pendingCall).rejects.toBeInstanceOf(JsonRpcCallError);
-      await expect(pendingCall).rejects.toMatchObject({
-        message: expect.stringContaining("terminated"),
+        await expect(pendingCall).rejects.toBeInstanceOf(JsonRpcCallError);
+        await expect(pendingCall).rejects.toMatchObject({
+          message: expect.stringContaining("terminated"),
+        });
+        expect(unhandledRejection).not.toHaveBeenCalled();
       });
-      expect(unhandledRejection).not.toHaveBeenCalled();
     } finally {
       process.off("unhandledRejection", unhandledRejection);
       await handle.stop().catch(() => undefined);
+      vi.unstubAllEnvs();
     }
+  });
+
+  it("mints project Git scope only for project lifecycle and workspace operations", async () => {
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT, manifest: TEST_MANIFEST, config: {},
+      instanceInfo: { instanceId: "instance-1", hostVersion: "1.0.0" }, apiVersion: 1,
+      hostHandlers: { "companies.get": (async (_params: unknown, context?: { invocationScope?: unknown }) => context?.invocationScope) as never },
+    });
+    const common = { companyId: "company-a", params: { mode: "echo", requestedCompanyId: "company-a" } };
+    try {
+      await handle.start();
+      await expect(handle.call("resourceLifecycle", { ...common, resourceType: "project", resourceId: "project-a" } as never))
+        .resolves.toEqual({ companyId: "company-a", projectGit: { projectId: "project-a" } });
+      await expect(handle.call("resourceLifecycle", { ...common, resourceType: "agent", resourceId: "agent-a" } as never))
+        .resolves.toEqual({ companyId: "company-a" });
+      for (const kind of ["prepare", "inspect", "remove", "finalize"]) {
+        const params = { ...common, projectId: "project-a", runId: "run-a", agentId: "agent-a", operation: {
+          kind, source: { id: "workspace-a" }, binding: { projectWorkspaceId: "workspace-a" } } };
+        await expect(handle.call("workspaceOperation", params as never)).resolves.toEqual({ companyId: "company-a",
+          ...(kind === "finalize" ? {} : { projectGit: { projectId: "project-a", workspaceId: "workspace-a", operation: kind,
+            ...(kind === "prepare" ? { runId: "run-a", agentId: "agent-a" } : {}) } }) });
+      }
+      await expect(handle.call("workspaceOperation", { ...common, projectId: "project-a", runId: null, agentId: null,
+        operation: { kind: "prepare", source: { id: "workspace-a" } } } as never)).resolves.toEqual({ companyId: "company-a", projectGit: { projectId: "project-a", workspaceId: "workspace-a", operation: "prepare" } });
+      await expect(handle.call("workspaceOperation", { ...common, projectId: "project-a", runId: null, agentId: "agent-a",
+        operation: { kind: "prepare", source: { id: "workspace-a" } } } as never)).resolves.toEqual({ companyId: "company-a" });
+    } finally { await handle.stop().catch(() => undefined); }
   });
 
   it("passes performAction invocation scope to nested worker host calls", async () => {
@@ -302,15 +380,47 @@ describe("plugin-worker-manager stderr failure context", () => {
       });
       expect(companiesGet).toHaveBeenCalledWith(
         { companyId: "company-a" },
-        { invocationScope: { companyId: "company-a" } },
+        { invocationScope: { companyId: "company-a" }, traceparent: undefined, providerSpanBudget: { remaining: 256 } },
       );
     } finally {
       await handle.stop().catch(() => undefined);
     }
   });
 
+  it("records the host-computed acting person on the invocation scope (H6)", async () => {
+    const companiesGet = vi.fn(async (params: { companyId: string }) => ({ id: params.companyId }));
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT,
+      manifest: TEST_MANIFEST,
+      config: {},
+      instanceInfo: { instanceId: "instance-1", hostVersion: "1.0.0" },
+      apiVersion: 1,
+      hostHandlers: { "companies.get": companiesGet as never },
+    });
+    const call = (actorContext: Record<string, unknown>) => handle.call("performAction", {
+      key: "probe",
+      params: { mode: "echo", requestedCompanyId: "company-a" },
+      actorContext: { userId: null, agentId: null, runId: null, companyId: "company-a", ...actorContext },
+      renderEnvironment: null,
+    } as never);
+
+    try {
+      await handle.start();
+      await call({ type: "agent", agentId: "agent-1", onBehalfOfUserId: "person-u" });
+      await call({ type: "user", userId: "local-board", onBehalfOfUserId: null });
+      await call({ type: "user", userId: "person-o" });
+      expect(companiesGet.mock.calls.map(([, context]) => (context as { invocationScope?: unknown }).invocationScope)).toEqual([
+        { companyId: "company-a", actingPersonId: "person-u" },
+        { companyId: "company-a" },
+        { companyId: "company-a", actingPersonId: "person-o" },
+      ]);
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
   it("passes echoed invocation scope to worker-to-host handlers", async () => {
-    const companiesGet = vi.fn(async () => ({ id: "company-1" }));
+    const companiesGet = vi.fn(async () => ({ id: "company-1" }) as Company);
     const handle = createPluginWorkerHandle("test.plugin", {
       entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT,
       manifest: TEST_MANIFEST,
@@ -339,7 +449,7 @@ describe("plugin-worker-manager stderr failure context", () => {
 
       expect(companiesGet).toHaveBeenCalledWith(
         { companyId: "company-1" },
-        { invocationScope: { companyId: "company-1" } },
+        { invocationScope: { companyId: "company-1" }, traceparent: undefined, providerSpanBudget: { remaining: 256 } },
       );
     } finally {
       await handle.stop().catch(() => undefined);
@@ -387,7 +497,9 @@ describe("plugin-worker-manager stderr failure context", () => {
         renderEnvironment: null,
       })).rejects.toMatchObject({
         code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED,
-        message: expect.stringContaining("unknown invocation scope"),
+        // PAR-11072: a call with no invocation id no longer reads live
+        // invocations; company-b has no saved settings, so it gets that text.
+        message: expect.stringContaining('company "company-b" has no saved settings for this plugin'),
       });
     } finally {
       await handle.stop().catch(() => undefined);
@@ -605,12 +717,14 @@ describe("plugin proactive company scope (LOOA-629)", () => {
   }) {
     const companiesGet = overrides?.companiesGet ?? vi.fn(async () => ({ id: "company-1", name: "Co" }));
     const stateGet = overrides?.stateGet ?? vi.fn(async () => ({ value: "ok" }));
+    const listLifecycle = vi.fn(async () => [{ id: "1", companyId: "company-1" }]);
     const hostHandlers = createHostClientHandlers({
       pluginId: "test.plugin",
-      capabilities: ["companies.read", "plugin.state.read"],
+      capabilities: ["companies.read", "plugin.state.read", "events.subscribe"],
       services: {
         companies: { get: companiesGet },
         state: { get: stateGet },
+        events: { listLifecycle },
       } as unknown as HostServices,
     });
     const handle = createPluginWorkerHandle("test.plugin", {
@@ -621,7 +735,7 @@ describe("plugin proactive company scope (LOOA-629)", () => {
       apiVersion: 1,
       hostHandlers,
     });
-    return { handle, companiesGet, stateGet };
+    return { handle, companiesGet, stateGet, listLifecycle };
   }
 
   it("denies a proactive company-scoped call when no company is authorized", async () => {
@@ -635,6 +749,25 @@ describe("plugin proactive company scope (LOOA-629)", () => {
         message: expect.stringContaining("company context is required"),
       });
       expect(companiesGet).not.toHaveBeenCalled();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("admits lifecycle polling only for configured proactive companies", async () => {
+    const { handle, listLifecycle } = makeHandle();
+    const poll = (companyId: string) => handle.call("getData", {
+      params: { mode: "omit", hostMethod: "events.listLifecycle", requestedCompanyId: companyId },
+    } as unknown as HostToWorkerMethods["getData"][0]);
+    try {
+      await handle.start();
+      await expect(poll("company-1")).rejects.toMatchObject({ code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED });
+      handle.setProactiveCompanyScopes(["company-1"]);
+      expect(await poll("company-1")).toEqual([{ id: "1", companyId: "company-1" }]);
+      await expect(poll("company-2")).rejects.toMatchObject({ code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED });
+      handle.setProactiveCompanyScopes([]);
+      await expect(poll("company-1")).rejects.toMatchObject({ code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED });
+      expect(listLifecycle).toHaveBeenCalledTimes(1);
     } finally {
       await handle.stop().catch(() => undefined);
     }
@@ -726,7 +859,7 @@ describe("plugin proactive events.subscribe: options-seeded scope + filter parit
   // Each case drives a real worker so the subscribe flows through the manager's
   // context resolution exactly as it does in production.
   function makeEventsHandle(seededCompanies: readonly string[]) {
-    const eventsSubscribe = vi.fn(async () => undefined);
+    const eventsSubscribe = vi.fn(async (_params: unknown) => undefined);
     const hostHandlers = createHostClientHandlers({
       pluginId: "test.plugin",
       capabilities: ["events.subscribe"],
@@ -794,6 +927,200 @@ describe("plugin proactive events.subscribe: options-seeded scope + filter parit
         code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED,
       });
       expect(eventsSubscribe).not.toHaveBeenCalled();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+});
+
+describe("plugin calls without an invocation id: deterministic scope rule (PAR-11072)", () => {
+  // Each case runs idle (the outer getData names no company, so no invocation
+  // is registered) and busy (the outer getData registers an invocation for
+  // "company-live", which is not configured). The nested call carries no
+  // invocation id and goes through the real manager context resolution into
+  // the real createHostClientHandlers gate.
+  const RULE3 = (id: string) =>
+    `company context is required: company "${id}" has no saved settings for this plugin; ` +
+    "calls made outside a host invocation (jobs, timers, start-up) can act only for companies with saved settings";
+  const STATES = ["idle", "busy"] as const;
+
+  function makeHandle(onStreamNotification?: (method: string, params: Record<string, unknown>) => void) {
+    const ok = () => vi.fn(async () => ({ ok: true }));
+    const services = {
+      config: { get: ok() },
+      companies: { get: ok() },
+      state: { get: ok() },
+      events: { subscribe: vi.fn(async () => undefined) },
+      http: { fetch: ok() },
+      db: { query: ok() },
+    };
+    const hostHandlers = createHostClientHandlers({
+      pluginId: "test.plugin",
+      capabilities: ["companies.read", "plugin.state.read", "events.subscribe", "http.outbound", "database.namespace.read"],
+      services: services as unknown as HostServices,
+    });
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT, manifest: TEST_MANIFEST, config: {},
+      instanceInfo: { instanceId: "instance-1", hostVersion: "1.0.0" }, apiVersion: 1,
+      hostHandlers, proactiveCompanyScopes: ["company-1", "company-2"], onStreamNotification,
+    });
+    return { handle, services };
+  }
+
+  function callNoId(
+    handle: ReturnType<typeof makeHandle>["handle"],
+    state: (typeof STATES)[number],
+    nested: Record<string, unknown>,
+  ) {
+    return handle.call("getData", {
+      key: "probe",
+      ...(state === "busy" ? { companyId: "company-live" } : {}),
+      params: { mode: "omit", ...nested },
+    } as unknown as HostToWorkerMethods["getData"][0]);
+  }
+
+  async function withHandle(run: (h: ReturnType<typeof makeHandle>) => Promise<void>, onStream?: Parameters<typeof makeHandle>[0]) {
+    vi.mocked(logger.warn).mockClear();
+    vi.mocked(logger.error).mockClear();
+    const h = makeHandle(onStream);
+    try {
+      await h.handle.start();
+      await run(h);
+    } finally {
+      await h.handle.stop().catch(() => undefined);
+    }
+  }
+
+  function expectWarn(method: string, reason: string, requestedCompanyId?: string) {
+    expect(logger.warn).toHaveBeenCalledWith(
+      { pluginId: "test.plugin", method, reason, requestedCompanyId },
+      "plugin scope refusal",
+    );
+    expect(logger.error).not.toHaveBeenCalledWith(expect.anything(), "host handler error");
+  }
+
+  // Shape -> nested call and the service it reaches. `id` is the company named.
+  const companyShapes = (id: string) => [
+    { shape: "companyId", nested: { hostMethod: "config.get", requestedCompanyId: id }, service: "config" },
+    { shape: "scopeKind company + scopeId", nested: { hostMethod: "state.get", requestedCompanyId: id }, service: "state" },
+    { shape: "events.subscribe filter.companyId", nested: { hostMethod: "events.subscribe", requestedCompanyId: id }, service: "events" },
+    { shape: "companies.get", nested: { hostMethod: "companies.get", requestedCompanyId: id }, service: "companies" },
+  ] as const;
+  const serviceFn = (services: ReturnType<typeof makeHandle>["services"], name: string) =>
+    Object.values(services[name as keyof typeof services])[0] as ReturnType<typeof vi.fn>;
+
+  describe.each(STATES)("worker %s", (state) => {
+    it.each([
+      { shape: "instance state", nested: { hostMethod: "state.get", nestedParams: { scopeKind: "instance", namespace: "ns", stateKey: "k" } }, service: "state" },
+      { shape: "http.fetch", nested: { hostMethod: "http.fetch", nestedParams: { url: "https://example.test" } }, service: "http" },
+      { shape: "db.query", nested: { hostMethod: "db.query", nestedParams: { sql: "select 1" } }, service: "db" },
+      { shape: "unfiltered events.subscribe", nested: { hostMethod: "events.subscribe", nestedParams: { eventPattern: "issue.updated" } }, service: "events" },
+    ])("admits a call that needs no company: $shape", ({ nested, service }) => withHandle(async ({ handle, services }) => {
+      await callNoId(handle, state, nested);
+      expect(serviceFn(services, service)).toHaveBeenCalledTimes(1);
+    }));
+
+    it.each(companyShapes("company-1"))("admits a configured company: $shape", ({ nested, service }) =>
+      withHandle(async ({ handle, services }) => {
+        await callNoId(handle, state, nested);
+        expect(serviceFn(services, service)).toHaveBeenCalledTimes(1);
+      }));
+
+    it.each(companyShapes("company-9"))("refuses an unconfigured company with the rule 3 text: $shape", ({ nested, service }) =>
+      withHandle(async ({ handle, services }) => {
+        const err = await callNoId(handle, state, nested).catch((e: unknown) => e);
+        expect(err).toMatchObject({ code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED });
+        expect((err as Error).message).toBe(`Plugin "test.plugin" is not allowed to perform "${nested.hostMethod}": ${RULE3("company-9")}`);
+        expect(serviceFn(services, service)).not.toHaveBeenCalled();
+        expectWarn(nested.hostMethod, "unconfigured_company", "company-9");
+      }));
+
+    it("refuses a wildcard company key with no_company, never the configured set", () => withHandle(async ({ handle, services }) => {
+      const err = await callNoId(handle, state, {
+        hostMethod: "state.get", nestedParams: { scopeKind: "company", namespace: "ns", stateKey: "k" },
+      }).catch((e: unknown) => e) as Error;
+      expect(err.message).toMatch(/: company context is required$/);
+      expect(services.state.get).not.toHaveBeenCalled();
+      expectWarn("state.get", "no_company");
+    }));
+
+    it("refuses a call that needs a company and names none with no_company", () => withHandle(async ({ handle, services }) => {
+      const err = await callNoId(handle, state, { hostMethod: "config.get", nestedParams: {} }).catch((e: unknown) => e) as Error;
+      expect(err.message).toMatch(/: company context is required$/);
+      expect(services.config.get).not.toHaveBeenCalled();
+      expectWarn("config.get", "no_company");
+    }));
+
+    it("refuses an unknown invocation id with unknown_invocation", () => withHandle(async ({ handle, services }) => {
+      const err = await callNoId(handle, state, { mode: "unknown", hostMethod: "companies.get", requestedCompanyId: "company-1" })
+        .catch((e: unknown) => e) as Error;
+      expect(err.message).toContain("missing, expired, or unknown invocation scope");
+      expect(services.companies.get).not.toHaveBeenCalled();
+      expectWarn("companies.get", "unknown_invocation");
+    }));
+
+    it("keeps the live-invocation check for stream notifications", async () => {
+      const delivered: string[] = [];
+      await withHandle(async ({ handle }) => {
+        await callNoId(handle, state, { hostMethod: "streams.emit", requestedCompanyId: "company-9" });
+        await callNoId(handle, state, { hostMethod: "streams.emit", requestedCompanyId: "company-1" });
+      }, (_method, params) => delivered.push(String(params.companyId)));
+      // Configured company: delivered either way. Unconfigured: dropped while busy.
+      expect(delivered).toEqual(state === "busy" ? ["company-1"] : ["company-9", "company-1"]);
+    });
+  });
+
+  it("logs other handler errors at ERROR, not as a scope refusal", () => withHandle(async ({ handle, services }) => {
+    services.companies.get.mockRejectedValueOnce(new Error("db down"));
+    await expect(callNoId(handle, "idle", { hostMethod: "companies.get", requestedCompanyId: "company-1" }))
+      .rejects.toThrow("db down");
+    expect(logger.error).toHaveBeenCalledWith({ method: "companies.get", err: "db down" }, "host handler error");
+    expect(logger.warn).not.toHaveBeenCalledWith(expect.anything(), "plugin scope refusal");
+  }));
+});
+
+describe("companies.list from calls without an invocation id (PAR-11072 T2)", () => {
+  // Real worker -> real manager context resolution -> real gate. The service
+  // filters before its window like the host service. "company-live" has a
+  // live invocation and no saved settings; company-1 and company-3 are configured.
+  const ALL = ["company-1", "company-2", "company-3", "company-live"];
+  function makeHandle() {
+    const list = vi.fn(async (params: { limit?: number; offset?: number }, filter?: { companyIds?: readonly string[] }) => {
+      const rows = ALL.filter((id) => !filter?.companyIds || filter.companyIds.includes(id)).map((id) => ({ id }));
+      const offset = params.offset ?? 0;
+      return rows.slice(offset, params.limit == null ? undefined : offset + params.limit);
+    });
+    const hostHandlers = createHostClientHandlers({
+      pluginId: "test.plugin",
+      capabilities: ["companies.read"],
+      services: { companies: { list } } as unknown as HostServices,
+    });
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT, manifest: TEST_MANIFEST, config: {},
+      instanceInfo: { instanceId: "instance-1", hostVersion: "1.0.0" }, apiVersion: 1,
+      hostHandlers, proactiveCompanyScopes: ["company-1", "company-3"],
+    });
+    return { handle, list };
+  }
+  const listIds = async (handle: ReturnType<typeof makeHandle>["handle"], mode: string, nestedParams: Record<string, unknown>) =>
+    ((await handle.call("getData", {
+      key: "probe",
+      companyId: "company-live",
+      params: { mode, hostMethod: "companies.list", nestedParams },
+    } as unknown as HostToWorkerMethods["getData"][0])) as Array<{ id: string }>).map((row) => row.id);
+
+  it.each([
+    { name: "no param: every company while another invocation is live", mode: "omit", nestedParams: {}, expected: ALL },
+    { name: "actionableOnly: only the configured set", mode: "omit", nestedParams: { actionableOnly: true }, expected: ["company-1", "company-3"] },
+    { name: "actionableOnly filters before the window", mode: "omit", nestedParams: { actionableOnly: true, limit: 1, offset: 1 }, expected: ["company-3"] },
+    { name: "inside the invocation: filtered before limit", mode: "echo", nestedParams: { limit: 1 }, expected: ["company-live"] },
+    { name: "inside the invocation: its company", mode: "echo", nestedParams: {}, expected: ["company-live"] },
+    { name: "inside the invocation, actionableOnly: its company though unconfigured", mode: "echo", nestedParams: { actionableOnly: true }, expected: ["company-live"] },
+  ])("$name", async ({ mode, nestedParams, expected }) => {
+    const { handle } = makeHandle();
+    try {
+      await handle.start();
+      expect(await listIds(handle, mode, nestedParams)).toEqual(expected);
     } finally {
       await handle.stop().catch(() => undefined);
     }

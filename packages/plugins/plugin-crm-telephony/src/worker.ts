@@ -1,5 +1,6 @@
 import { definePlugin, runWorker, type PluginContext, type PluginWebhookInput, type ToolRunContext, type PluginPerformActionContext } from "@paperclipai/plugin-sdk";
-import { registerCrmProjection } from "@partnersinbiz/pib-plugin-kit";
+import { createAccessGuard, registerCrmProjection } from "@partnersinbiz/pib-plugin-kit";
+import { ACCESS_TABLE } from "./access-table.js";
 import { readSettings, secretStatus, withSeededNumbers } from "./settings.js";
 import { registerSettingsActions } from "./settings-actions.js";
 import { TELEPHONY_SECRET_NAMES } from "./secret-names.js";
@@ -173,8 +174,11 @@ const plugin = definePlugin({
 
     registerCrmProjection(pluginCtx, pluginCtx.db.namespace, { companies: false, contacts: true });
 
+    // Every action and tool goes through the access guard (PAR-12683). With the switch off it is a pass-through.
+    const guard = createAccessGuard(pluginCtx, { pluginKey: PLUGIN_ID, table: ACCESS_TABLE });
+
     // Register settings actions
-    registerSettingsActions(pluginCtx);
+    registerSettingsActions(pluginCtx, guard);
 
     // Register call note ack listener
     registerNoteAck(pluginCtx);
@@ -216,22 +220,22 @@ const plugin = definePlugin({
     for (const tool of TELEPHONY_TOOLS) {
       const handler = toolHandlers[tool.name];
       if (!handler) throw new Error(`No handler registered for tool: ${tool.name}`);
-      pluginCtx.tools.register(tool.name, tool, (params, run) => handler(pluginCtx, params, run));
+      guard.tool(tool.name, tool, (params, run) => handler(pluginCtx, params, run));
     }
 
-    pluginCtx.actions.register("voice-token", async (_params, context: PluginPerformActionContext) => {
+    guard.action("voice-token", async (_params, context: PluginPerformActionContext) => {
       return voiceTokenAction(pluginCtx, context);
     });
 
     // The Dialer: place a call (Twilio rings the browser, then dials the contact) and watch it.
-    pluginCtx.actions.register("voice-dial", async (params, context: PluginPerformActionContext) => {
+    guard.action("voice-dial", async (params, context: PluginPerformActionContext) => {
       return voiceDialAction(pluginCtx, params, context);
     });
-    pluginCtx.actions.register("voice-call", async (params, context: PluginPerformActionContext) => {
+    guard.action("voice-call", async (params, context: PluginPerformActionContext) => {
       return voiceCallLookupAction(pluginCtx, params, context);
     });
 
-    await registerTimelineHandlers(pluginCtx);
+    await registerTimelineHandlers(pluginCtx, guard);
   },
 
   async onWebhook(input: PluginWebhookInput) {

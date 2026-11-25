@@ -1,4 +1,8 @@
-import { agentAppearanceSchema } from "@paperclipai/shared";
+import { notifyAttentionRetentionWork } from "./retention-work-notifications.js";
+import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
+import { createAgentLifecycle } from "./agent-lifecycle.js";
+import { agentAppearanceSchema, agentHarnessType, paperclipRunnerProfileForHarness, agentRunner, type AgentRunnerChoice } from "@paperclipai/shared";
+import { resolveNewAgentRunnerForCompany } from "./agent-runner-selection.js";
 import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { execFile } from "node:child_process";
@@ -8,6 +12,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import {
   builtInManagedResources,
   issueRelations,
+  issues as issuesTable,
   principalPermissionGrants,
   type Db,
 } from "@paperclipai/db";
@@ -79,15 +84,16 @@ import { accessService } from "./access.js";
 import { agentService } from "./agents.js";
 import { agentInstructionsBundleMode, agentInstructionsService } from "./agent-instructions.js";
 import { assetService } from "./assets.js";
+import { isRunnerApiResponseAsset } from "./asset-content-access.js";
 import { generateReadme } from "./company-export-readme.js";
 import { renderOrgChartPng, type OrgNode } from "../routes/org-chart-svg.js";
 import { companySkillService } from "./company-skills.js";
 import { companyService } from "./companies.js";
 import { validateCron } from "./cron.js";
 import { documentService } from "./documents.js";
-import { issueService } from "./issues.js";
+import { issueService, type IssueListReadScope } from "./issues.js";
 import { instanceSettingsService } from "./instance-settings.js";
-import { projectService } from "./projects.js";
+import { projectService, type ProjectListReadScope } from "./projects.js";
 import { workProductService } from "./work-products.js";
 import { nightlyDreamingEnabled, portableRoutineIsNightlyDreaming } from "./nightly-dreaming.js";
 import { routineService } from "./routines.js";
@@ -110,12 +116,28 @@ import type {
 import {
   PaperclipRunnerProviderProfileError,
   resolvePaperclipRunnerProviderProfile,
+  validatePaperclipRunnerDotConfig,
+  validatePaperclipRunnerMuseConfig,
 } from "./native-runtime/provider-profile.js";
 import { managedAgentProfileService } from "./managed-agent-profiles.js";
 import { remoteAgentProfileService } from "./remote-agent-profiles.js";
 
 const EXPORT_READ_CONCURRENCY = 8;
 const EXPORT_ISSUE_READ_CONCURRENCY = 2;
+
+/**
+ * Which tasks and projects a company export may copy (PAR-14320). A request
+ * route passes the caller's `issueReadSqlCondition` and
+ * `projectReadSqlCondition`, so a member's export holds only what he can read:
+ * another person's private tasks and chats stay out, with their comments,
+ * documents, work products and attachments. `"system"` is for callers no
+ * person's request reaches. There is no default, so a call that forgets it
+ * does not compile.
+ */
+export interface CompanyExportReadScope {
+  issues: IssueListReadScope;
+  projects: ProjectListReadScope;
+}
 
 async function mapWithConcurrency<T, R>(
   items: readonly T[],
@@ -3083,6 +3105,16 @@ function readAgentSkillRefs(frontmatter: Record<string, unknown>) {
   ));
 }
 
+/** Uploaded avatars belong to one company/agent; portable packages retain the preset fallback. */
+function portableAgentAppearance(value: unknown, warnings: string[], slug: string) {
+  const appearance = agentAppearanceSchema.parse(value);
+  if (appearance.customAvatarAssetId) {
+    delete appearance.customAvatarAssetId;
+    warnings.push(`Agent ${slug} uploaded avatar was omitted because image assets are instance-local. Upload it again after import.`);
+  }
+  return appearance;
+}
+
 function buildManifestFromPackageFiles(
   files: Record<string, CompanyPortabilityFileEntry>,
   opts?: { sourceLabel?: { companyId: string; companyName: string } | null },
@@ -3223,6 +3255,12 @@ function buildManifestFromPackageFiles(
     const slug = asString(frontmatter.slug) ?? fallbackSlug;
     const extension = isPlainRecord(paperclipAgents[slug]) ? paperclipAgents[slug] : {};
     const extensionAdapter = isPlainRecord(extension.adapter) ? extension.adapter : null;
+    const runner = extensionAdapter?.runner;
+    if (runner !== undefined && (typeof runner !== "string" || !["auto", "paperclip", "legacy"].includes(runner))) {
+      throw unprocessable(`Invalid runner choice for agent ${slug}. Use auto, paperclip, or legacy.`, {
+        code: "agent_runner_choice_invalid", field: `agents.${slug}.adapter.runner`,
+      });
+    }
     const extensionRuntime = isPlainRecord(extension.runtime) ? extension.runtime : null;
     const extensionPermissions = isPlainRecord(extension.permissions) ? extension.permissions : null;
     const extensionPermissionGrants = normalizePortablePermissionGrants(extension.permissionGrants);
@@ -3241,11 +3279,12 @@ function buildManifestFromPackageFiles(
       role: asString(extension.role) ?? asString(frontmatter.role) ?? "agent",
       title,
       icon: asString(extension.icon),
-      appearance: extension.appearance == null ? undefined : agentAppearanceSchema.parse(extension.appearance),
+      appearance: extension.appearance == null ? undefined : portableAgentAppearance(extension.appearance, warnings, slug),
       capabilities: asString(extension.capabilities),
       reportsToSlug: asString(frontmatter.reportsTo) ?? asString(extension.reportsTo),
       reportsToExistingAgentId: asString(extension.reportsToExistingAgentId),
       reportsToExistingAgentSlug: asString(extension.reportsToExistingAgentSlug),
+      runner: runner as AgentRunnerChoice | undefined,
       adapterType: asString(extensionAdapter?.type) ?? "process",
       adapterConfig,
       runtimeConfig,
@@ -3549,8 +3588,9 @@ export function parseGitHubSourceUrl(rawUrl: string) {
 export function companyPortabilityService(db: Db, storage?: StorageService) {
   const companies = companyService(db);
   const agents = agentService(db);
+  const agentsLifecycle = createAgentLifecycle(db);
   const assetRecords = assetService(db);
-  const instructions = agentInstructionsService();
+  const instructions = agentInstructionsService(db);
   const access = accessService(db);
   const projects = projectService(db);
   const issues = issueService(db);
@@ -3601,6 +3641,14 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     if (adapterType === "paperclip_runner") {
       let profile;
       try {
+        if (adapterConfig.provider === "muse") {
+          validatePaperclipRunnerMuseConfig(adapterConfig, false);
+          return;
+        }
+        if (adapterConfig.provider === "openai_dot") {
+          validatePaperclipRunnerDotConfig(adapterConfig, false);
+          return;
+        }
         profile = resolvePaperclipRunnerProviderProfile(adapterConfig);
       } catch (error) {
         if (error instanceof PaperclipRunnerProviderProfileError) {
@@ -3637,8 +3685,14 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     adapterConfig: Record<string, unknown>,
     desiredSkills: string[],
     mode: ImportMode,
+    runner?: AgentRunnerChoice,
+    defaultEnvironmentId?: string | null,
   ) {
-    const effectiveAdapterType = assertKnownImportAdapterType(adapterType);
+    const resolved = await resolveNewAgentRunnerForCompany(db, companyId, {
+      adapterType, adapterConfig, runner, defaultEnvironmentId,
+    });
+    adapterConfig = resolved.adapterConfig;
+    const effectiveAdapterType = assertKnownImportAdapterType(resolved.adapterType);
     if (mode === "agent_safe" && IMPORT_FORBIDDEN_ADAPTER_TYPES.has(effectiveAdapterType)) {
       throw forbidden(`Adapter type "${effectiveAdapterType}" is not allowed in safe imports`);
     }
@@ -3841,8 +3895,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
   async function exportBundle(
     companyId: string,
     input: CompanyPortabilityExport,
-    options: { preview?: boolean; allowExternalInstructions?: boolean } = {},
+    options: { readScope: CompanyExportReadScope; preview?: boolean; allowExternalInstructions?: boolean },
   ): Promise<CompanyPortabilityExportResult> {
+    const issueReadScope = options.readScope.issues;
+    const projectReadScope = options.readScope.projects;
     const include = normalizeInclude({
       ...input.include,
       agents: input.agents && input.agents.length > 0 ? true : input.include?.agents,
@@ -3886,6 +3942,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const allAgentRows = include.agents ? await agents.list(companyId, { includeTerminated: true }) : [];
     const agentSelection = resolvePortableExportAgentSelection(allAgentRows, input.agents, include.agents);
     const companySkillRowsRaw = include.skills ? await companySkills.listFull(companyId) : [];
+    if (companySkillRowsRaw.some(skill => skill.accessSourceId)) {
+      throw unprocessable("Project-restricted skills cannot be exported until the package can preserve their project access.");
+    }
     const managedSkillRows = companySkillRowsRaw.filter((skill) => managedSkillIds.has(skill.id));
     const companySkillRows = companySkillRowsRaw.filter((skill) => !managedSkillIds.has(skill.id));
     warnings.push(...agentSelection.warnings);
@@ -3934,9 +3993,16 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const projectsSvc = projectService(db);
     const issuesSvc = issueService(db);
     const routinesSvc = routineService(db);
-    const allProjectsRaw = include.projects || include.issues ? await projectsSvc.list(companyId) : [];
+    // The caller's read scope (PAR-14320): a project he cannot read is not exported.
+    const allProjectsRaw = include.projects || include.issues
+      ? await projectsSvc.list(companyId, { readCondition: projectReadScope })
+      : [];
     const allProjects = allProjectsRaw.filter((project) => !project.archivedAt);
-    const allRoutinesRaw = include.issues ? await routinesSvc.list(companyId) : [];
+    const readableProjectIds = new Set(allProjectsRaw.map((project) => project.id));
+    // A routine of a project the caller cannot read goes with that project.
+    const allRoutinesRaw = include.issues
+      ? (await routinesSvc.list(companyId)).filter((routine) => !routine.projectId || readableProjectIds.has(routine.projectId))
+      : [];
     const builtInRoutineRows = allRoutinesRaw.filter((routine) =>
       managedRoutineIds.has(routine.id) || routine.originKind === "built_in_agent_bundle"
     );
@@ -3971,9 +4037,19 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const resolveIssueBySelector = async (selector: string) => {
       const trimmed = selector.trim();
       if (!trimmed) return null;
-      return trimmed.includes("-")
-        ? issuesSvc.getByIdentifier(trimmed)
-        : issuesSvc.getById(trimmed);
+      const issue = trimmed.includes("-")
+        ? await issuesSvc.getByIdentifier(trimmed)
+        : await issuesSvc.getById(trimmed);
+      if (!issue || issue.companyId !== companyId) return null;
+      // A task named by id or identifier passes the caller's read scope too
+      // (PAR-14320); one he cannot read reads as "not found".
+      if (issueReadScope === "system") return issue;
+      const readable = await db
+        .select({ id: issuesTable.id })
+        .from(issuesTable)
+        .where(and(eq(issuesTable.id, issue.id), eq(issuesTable.companyId, companyId), issueReadScope))
+        .limit(1);
+      return readable.length > 0 ? issue : null;
     };
     for (const selector of input.issues ?? []) {
       const issue = await resolveIssueBySelector(selector);
@@ -4008,7 +4084,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         continue;
       }
       selectedProjects.set(match.id, match);
-      const projectIssues = await issuesSvc.list(companyId, { projectId: match.id });
+      const projectIssues = await issuesSvc.list(companyId, { projectId: match.id, readCondition: issueReadScope });
       for (const issue of projectIssues) {
         selectedIssues.set(issue.id, issue);
       }
@@ -4024,7 +4100,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     }
 
     if (include.issues && selectedIssues.size === 0) {
-      const allIssues = await issuesSvc.list(companyId);
+      const allIssues = await issuesSvc.list(companyId, { readCondition: issueReadScope });
       for (const issue of allIssues) {
         selectedIssues.set(issue.id, issue);
         if (issue.projectId) {
@@ -4100,6 +4176,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         const logoAsset = await assetRecords.getById(company.logoAssetId);
         if (!logoAsset) {
           warnings.push(`Skipped company logo ${company.logoAssetId} because the asset record was not found.`);
+        } else if (await isRunnerApiResponseAsset(db, logoAsset)) {
+          warnings.push("Skipped private API response snapshot used as a company logo.");
         } else {
           try {
             const object = await storage.getObject(company.id, logoAsset.objectKey);
@@ -4162,8 +4240,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         skillFileJobs.push({
           filePath: `${packageDir}/${inventoryEntry.path}`,
           load: async () => {
+            // listFull above already refreshed the inventory; skip it per file (PAR-11024).
             const fileDetail = await companySkills
-              .readFile(companyId, skill.id, inventoryEntry.path)
+              .readFile(companyId, skill.id, inventoryEntry.path, { skipInventoryRefresh: true })
               .catch(() => null);
             if (!fileDetail) return null;
             return inventoryEntry.path === "SKILL.md"
@@ -4258,10 +4337,11 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         const extension = stripEmptyValues({
           role: agent.role !== "agent" ? agent.role : undefined,
           icon: agent.icon ?? null,
-          appearance: agent.appearance,
+          appearance: agent.appearance == null ? undefined : portableAgentAppearance(agent.appearance, warnings, slug),
           capabilities: agent.capabilities ?? null,
           adapter: {
             type: agent.adapterType,
+            runner: agentRunner(agent.adapterType),
             config: portableAdapterConfig,
           },
           runtime: portableRuntimeConfig,
@@ -4643,7 +4723,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         // Embedded references only pull bytes for assets owned by the
         // exporting company: a crafted URL naming another company's asset id
         // must not leak that asset's bytes into the bundle.
-        if (!asset || asset.companyId !== companyId) {
+        if (!asset || asset.companyId !== companyId || await isRunnerApiResponseAsset(db, asset)) {
           unownedEmbeddedAssetRefCount += 1;
           continue;
         }
@@ -4674,8 +4754,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     }
     if (unownedEmbeddedAssetRefCount > 0) {
       warnings.push(unownedEmbeddedAssetRefCount === 1
-        ? "1 embedded image reference points at an asset that does not belong to this company or no longer exists; its image was not exported."
-        : `${unownedEmbeddedAssetRefCount} embedded image references point at assets that do not belong to this company or no longer exist; their images were not exported.`);
+        ? "1 embedded image reference points at an asset that is unavailable for export (missing, outside this company, or a private API response snapshot); its image was not exported."
+        : `${unownedEmbeddedAssetRefCount} embedded image references point at assets that are unavailable for export (missing, outside this company, or private API response snapshots); their images were not exported.`);
     }
 
     const paperclipExtensionPath = ".paperclip.yaml";
@@ -4780,7 +4860,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
   async function previewExport(
     companyId: string,
     input: CompanyPortabilityExport,
-    options: { allowExternalInstructions?: boolean } = {},
+    options: { readScope: CompanyExportReadScope; allowExternalInstructions?: boolean },
   ): Promise<CompanyPortabilityExportPreviewResult> {
     const previewInput: CompanyPortabilityExport = {
       ...input,
@@ -4796,6 +4876,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       previewInput.include.issues = false;
     }
     const exported = await exportBundle(companyId, previewInput, {
+      readScope: options.readScope,
       preview: true,
       allowExternalInstructions: options.allowExternalInstructions,
     });
@@ -4993,7 +5074,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         existingAgentIds.add(existing.id);
         existingSlugs.add(slug);
       }
-      const existingProjects = await projects.list(input.target.companyId);
+      // "system": name-collision check across the whole target company; rows are not returned.
+      const existingProjects = await projects.list(input.target.companyId, { readCondition: "system" });
       for (const existing of existingProjects) {
         if (!existingProjectSlugToProject.has(existing.urlKey)) {
           existingProjectSlugToProject.set(existing.urlKey, { id: existing.id, name: existing.name });
@@ -5249,19 +5331,29 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           .filter((entry) => entry.action !== "skip")
           .map((entry) => entry.slug),
       );
-      const selectsNativeRunner = sourceManifest.agents.some((agent) =>
+      const runnerSelections = sourceManifest.agents.filter((agent) =>
         importedAgentSlugs.has(agent.slug)
         && (input.adapterOverrides?.[agent.slug]?.adapterType ?? agent.adapterType)
           === "paperclip_runner",
       );
-      if (
-        selectsNativeRunner
-        && (await instanceSettingsService(db).getExperimental()).enableNativeRunner !== true
-      ) {
-        throw unprocessable(
-          "Paperclip Runner is experimental and disabled on this instance.",
-          { code: "paperclip_runner_rollout_disabled" },
-        );
+      if (runnerSelections.length > 0) {
+        const experimental = await instanceSettingsService(db).getExperimental();
+        for (const agent of runnerSelections) {
+          const config = input.adapterOverrides?.[agent.slug]?.adapterConfig ?? agent.adapterConfig;
+          if (config.provider === "muse") {
+            if (experimental.enableMuse !== true || experimental.enableNativeRunner !== true) throw unprocessable("Muse and Paperclip Runner must be enabled before importing a Muse agent.", {code:"paperclip_runner_muse_disabled"});
+          } else if (config.provider === "openai_dot") {
+            if (experimental.enableOpenAiDot !== true) throw unprocessable(
+              "OpenAI Dot is experimental and disabled on this instance.",
+              { code: "paperclip_runner_dot_disabled" },
+            );
+          } else if (config.provider !== "codex" && config.provider !== "opencode" && config.provider !== undefined && !["claude_local", "pi_local", "grok_local"].includes(agentHarnessType("paperclip_runner", config)) && experimental.enableNativeRunner !== true) {
+            throw unprocessable(
+              "Paperclip Runner is experimental and disabled on this instance.",
+              { code: "paperclip_runner_rollout_disabled" },
+            );
+          }
+        }
       }
     }
 
@@ -5510,7 +5602,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       const importedSlugToProjectId = new Map<string, string>();
       const importedProjectWorkspaceIdByProjectSlug = new Map<string, Map<string, string>>();
       const existingProjectSlugToId = new Map<string, string>();
-      const existingProjects = await projects.list(targetCompany.id);
+      // "system": slug lookup across the whole target company; rows are not returned.
+      const existingProjects = await projects.list(targetCompany.id, { readCondition: "system" });
       for (const existing of existingProjects) {
         existingProjectSlugToId.set(existing.urlKey, existing.id);
       }
@@ -5585,19 +5678,45 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             : { ...manifestAgent.adapterConfig } as Record<string, unknown>;
 
           const desiredSkills = (manifestAgent.skills ?? []).map((skillRef) => desiredSkillRefMap.get(skillRef) ?? skillRef);
+          const existingImportAgent = planAgent.action === "update" && planAgent.existingAgentId
+            ? await agents.getById(planAgent.existingAgentId) : null;
+          let selectedAdapterType = adapterOverride?.adapterType ?? manifestAgent.adapterType;
+          const selectedHarness = agentHarnessType(selectedAdapterType, baseAdapterConfig);
+          let runner = adapterOverride?.runner;
+          if (runner === undefined && adapterOverride?.adapterType !== "paperclip_runner") {
+            if (selectedHarness === agentHarnessType(manifestAgent.adapterType, manifestAgent.adapterConfig)) {
+              runner = manifestAgent.runner;
+            }
+            if (runner === undefined && existingImportAgent
+              && selectedHarness === agentHarnessType(existingImportAgent.adapterType, existingImportAgent.adapterConfig)) {
+              runner = agentRunner(existingImportAgent.adapterType);
+            }
+          }
+          const retainedNative = runner === "paperclip" && Boolean(paperclipRunnerProfileForHarness(selectedHarness))
+            ? [manifestAgent, existingImportAgent].find((agent) => agent?.adapterType === "paperclip_runner"
+              && agentHarnessType(agent.adapterType, agent.adapterConfig) === selectedHarness)
+            : undefined;
+          if (retainedNative) {
+            selectedAdapterType = "paperclip_runner";
+            for (const field of ["provider", "acpxAgent", "acpxMode"]) {
+              if (retainedNative.adapterConfig[field] !== undefined) baseAdapterConfig[field] = retainedNative.adapterConfig[field];
+            }
+          }
           const normalizedAdapter = await prepareImportedAgentAdapter(
             targetCompany.id,
-            adapterOverride?.adapterType ?? manifestAgent.adapterType,
+            selectedAdapterType,
             baseAdapterConfig,
             desiredSkills,
             mode,
+            runner,
+            existingImportAgent?.defaultEnvironmentId,
           );
           const patch = {
             name: planAgent.plannedName,
             role: manifestAgent.role,
             title: manifestAgent.title,
             icon: manifestAgent.icon,
-            ...(manifestAgent.appearance ? { appearance: manifestAgent.appearance } : {}),
+            ...(manifestAgent.appearance ? { appearance: portableAgentAppearance(manifestAgent.appearance, warnings, manifestAgent.slug) } : {}),
             capabilities: manifestAgent.capabilities,
             reportsTo: null,
             adapterType: normalizedAdapter.adapterType,
@@ -5620,9 +5739,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             : {};
 
           if (planAgent.action === "update" && planAgent.existingAgentId) {
+            if (pauseAutomations) await agentsLifecycle.pauseAgent(planAgent.existingAgentId, "import");
             let updated = await agents.update(planAgent.existingAgentId, {
               ...patch,
-              ...automationPausePatch,
             });
             if (!updated) {
               warnings.push(`Skipped update for missing agent ${planAgent.existingAgentId}.`);
@@ -5668,11 +5787,12 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             continue;
           }
 
-          let created = await agents.create(targetCompany.id, {
+          let created = await agentsLifecycle.requestHire(targetCompany.id, {
             ...patch,
+            runner: agentRunner(patch.adapterType),
             ...automationPausePatch,
             status: pauseAutomations ? "paused" : "idle",
-          });
+          }, { createdByUserId: actorUserId });
           await access.ensureMembership(targetCompany.id, "agent", created.id, "member", "active");
           await access.setPrincipalPermission(
             targetCompany.id,
@@ -6399,7 +6519,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           }
           if (relationRows.length > 0) {
             const relationCompanyId = targetCompany.id;
-            await db
+            await db.transaction(async tx => {
+              await notifyAttentionRetentionWork(tx, { companyId: relationCompanyId });
+              await notifyIssueRecovery(tx, { companyId: relationCompanyId });
+              await tx
               .insert(issueRelations)
               .values(relationRows.map((row) => ({
                 companyId: relationCompanyId,
@@ -6410,6 +6533,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
                 createdByUserId: actorUserId ?? null,
               })))
               .onConflictDoNothing();
+            });
           }
         }
 

@@ -12,6 +12,8 @@ import {
   listExperimentsRecord,
   type GrowthActor,
 } from "@partnersinbiz/pib-plugin-kit";
+import { parseClientParam } from "@partnersinbiz/pib-plugin-kit/client-ref";
+import { eventCounts, listCampaigns } from "./db.js";
 import { CampaignError } from "./domain.js";
 import { campaignsGrowthEnv, rejectCampaignExperiment } from "./growth-host.js";
 
@@ -37,11 +39,21 @@ export async function growthReviewLoad(ctx: PluginContext, context: PluginPerfor
   return {
     programId: experiments.programId,
     client: experiments.client,
+    // Emails sent so far by this scope's campaigns: an experiment has nothing to measure until the first one goes out. Null when it could not be counted.
+    sent: await scopeSends(ctx, actor.companyId, typeof params.client === "string" ? params.client : null).catch(() => null),
     autopilot: playbook.autopilot,
     playbookVersion: playbook.playbookVersion,
     experiments: experiments.experiments,
     changes: playbook.pendingChanges,
   };
+}
+
+/** Emails sent by the campaigns of one scope (our own, or one client's). */
+async function scopeSends(ctx: PluginContext, companyId: string, client: string | null): Promise<number> {
+  const campaigns = await listCampaigns(ctx, companyId, parseClientParam(client));
+  const ids = new Set(campaigns.map((campaign) => campaign.id));
+  const counts = await eventCounts(ctx, companyId);
+  return counts.filter((row) => row.event_type === "sent" && ids.has(row.campaign_id)).reduce((total, row) => total + Number(row.count ?? 0), 0);
 }
 
 export async function growthApproveExperiment(ctx: PluginContext, context: PluginPerformActionContext, params: Params) {

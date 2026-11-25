@@ -9,8 +9,9 @@ import { usePluginData, useHostContext } from "@paperclipai/plugin-sdk/ui";
 import { Button, Field, Input, Modal, PageMessage } from "@partnersinbiz/pib-plugin-ui";
 import { usePreviewUrls } from "../previews.js";
 import { clientParam } from "./AddClipDialog.js";
-import { addAudioOps, audioClips, audioEditOps, audioMute, findAudioClip, formOf, VOLUME_RANGE, type AudioForm } from "./audio-track.js";
-import type { EditorStore } from "./editor-store.js";
+import { addAudioOps, audioClips, audioEditOps, audioMute, findAudioClip, formOf, MUSIC_DEFAULT_SECONDS, MUSIC_MAX_PROMPT_CHARS, MUSIC_PRICE_LABEL, musicParams, VOICEOVER_MAX_CHARS, VOICEOVER_VOICES, voiceoverCredits, voiceoverParams, VOLUME_RANGE, type AudioForm } from "./audio-track.js";
+import { BeatPanel } from "./BeatPanel.js";
+import type { EditorStore, MusicOutcome } from "./editor-store.js";
 import { formatTime } from "./timeline-view.js";
 
 interface LibraryAsset { id: string; name: string; kind: string; status?: string; version?: number }
@@ -100,6 +101,105 @@ function PickDialog({ companyId, client, busy, onPick, onClose }: {
   );
 }
 
+function VoiceoverDialog({ busy, at, onSpeak, onClose }: {
+  busy: boolean;
+  at: number;
+  /** Resolves null when it saved (the dialog closes), else the message to show. */
+  onSpeak: (p: { script: string; voice: string; at: number }) => Promise<string | null>;
+  onClose: () => void;
+}) {
+  const [text, setText] = useState("");
+  const [voice, setVoice] = useState<string>(VOICEOVER_VOICES[0]);
+  const [problem, setProblem] = useState<string | null>(null);
+  const chars = text.trim().length;
+  const made = voiceoverParams(text, voice, at);
+  const speak = async () => {
+    if ("error" in made || busy) return;
+    const failed = await onSpeak(made);
+    if (failed) setProblem(failed);
+    else onClose();
+  };
+  return (
+    <Modal
+      open
+      width={560}
+      title="Voiceover from script"
+      description={`Type the words; Studio speaks them and places the voiceover on the audio track at ${formatTime(at)}.`}
+      onClose={onClose}
+      footer={
+        <>
+          <Button type="button" variant="secondary" disabled={busy} onClick={onClose}>Cancel</Button>
+          <Button type="button" disabled={"error" in made || busy} onClick={() => void speak()}>{busy ? "Making the voiceover…" : "Make voiceover"}</Button>
+        </>
+      }
+    >
+      <Field label="Script"><textarea aria-label="Voiceover script" data-voiceover-text value={text} rows={6} onChange={(e) => setText(e.target.value)} style={{ ...input, resize: "vertical", font: "inherit" }} /></Field>
+      <span data-voiceover-count style={{ fontSize: 12, opacity: 0.75, overflowWrap: "anywhere", color: chars > VOICEOVER_MAX_CHARS ? "#e5484d" : undefined }}>
+        {chars} / {VOICEOVER_MAX_CHARS} characters · about {voiceoverCredits(chars)} credits
+      </span>
+      <Field label="Voice">
+        <select aria-label="Voice" value={voice} onChange={(e) => setVoice(e.target.value)} style={input}>
+          {VOICEOVER_VOICES.map((v) => <option key={v} value={v}>{v}</option>)}
+        </select>
+      </Field>
+      {problem ? <PageMessage tone="danger" message={problem} /> : null}
+    </Modal>
+  );
+}
+
+function MusicDialog({ busy, at, onMake, onClose }: {
+  busy: boolean;
+  at: number;
+  onMake: (p: { prompt: string; duration: number; at: number }) => Promise<MusicOutcome>;
+  onClose: () => void;
+}) {
+  const [text, setText] = useState("");
+  const [seconds, setSeconds] = useState(String(MUSIC_DEFAULT_SECONDS));
+  const [problem, setProblem] = useState<string | null>(null);
+  /** Set when the money may be spent or the job still runs: the form is replaced by this message, with no retry. */
+  const [final, setFinal] = useState<string | null>(null);
+  const [working, setWorking] = useState(false);
+  const made = musicParams(text, seconds, at);
+  const chars = text.trim().length;
+  const make = async () => {
+    if ("error" in made || busy || working || final) return;
+    setWorking(true);
+    setProblem(null);
+    const out = await onMake(made);
+    setWorking(false);
+    if (out.kind === "placed") return onClose();
+    if (out.kind === "synthesizing") return setFinal(out.message);
+    if (out.retry) return setProblem(out.message);
+    setFinal(out.message);
+  };
+  return (
+    <Modal
+      open
+      width={560}
+      title="Make music"
+      description={`Describe the music; Stable Audio makes it and places it on the audio track at ${formatTime(at)}. ${MUSIC_PRICE_LABEL}.`}
+      onClose={onClose}
+      footer={
+        <>
+          <Button type="button" variant="secondary" disabled={busy || working} onClick={onClose}>{final ? "Close" : "Cancel"}</Button>
+          {final ? null : <Button type="button" disabled={"error" in made || busy || working} onClick={() => void make()}>{working ? "Making the music…" : "Make music"}</Button>}
+        </>
+      }
+    >
+      {final ? <PageMessage tone="warning" message={final} /> : (
+        <>
+          <Field label="Prompt"><textarea aria-label="Music prompt" data-music-text value={text} rows={5} onChange={(e) => setText(e.target.value)} style={{ ...input, resize: "vertical", font: "inherit" }} /></Field>
+          <span data-music-count style={{ fontSize: 12, opacity: 0.75, overflowWrap: "anywhere", color: chars > MUSIC_MAX_PROMPT_CHARS ? "#e5484d" : undefined }}>{chars} / {MUSIC_MAX_PROMPT_CHARS} characters</span>
+          <Field label="Length (seconds)"><input aria-label="Music length in seconds" type="number" min={1} max={180} step={1} value={seconds} onChange={(e) => setSeconds(e.target.value)} style={input} /></Field>
+          <span data-music-price style={{ fontSize: 12, opacity: 0.75 }}>{MUSIC_PRICE_LABEL}</span>
+          {"error" in made && text.trim() ? <span role="alert" style={{ fontSize: 12, color: "#e5484d", overflowWrap: "anywhere" }}>{made.error}</span> : null}
+          {problem ? <PageMessage tone="danger" message={problem} /> : null}
+        </>
+      )}
+    </Modal>
+  );
+}
+
 export function AudioTrack({ store }: { store: EditorStore }) {
   const { doc, edit, playhead, selectedClipId, busy, revision } = useSyncExternalStore(store.subscribe, store.getState, store.getState);
   const companyId = useHostContext().companyId ?? "";
@@ -109,6 +209,11 @@ export function AudioTrack({ store }: { store: EditorStore }) {
   const [form, setForm] = useState<AudioForm | null>(clip ? formOf(clip) : null);
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  const [speaking, setSpeaking] = useState(false);
+  const [composing, setComposing] = useState(false);
+  // Only the music button depends on this read: Add audio and the rest work when it fails or music is off.
+  const overview = usePluginData<{ providers?: Array<{ capability: string; configured: boolean }> }>("overview", companyId ? { companyId } : undefined);
+  const musicOn = Boolean(overview.data?.providers?.some((p) => p.capability === "music" && p.configured));
   useEffect(() => {
     setForm(clip ? formOf(clip) : null);
     setError(null);
@@ -121,6 +226,17 @@ export function AudioTrack({ store }: { store: EditorStore }) {
     if (!(await store.applyOps(made.ops))) return store.getState().toast ?? "The audio wasn't added. Try again.";
     store.selectClip(made.clipId);
     return null;
+  };
+  const speakPicked = async (p: { script: string; voice: string; at: number }) => {
+    const clipId = await store.voiceover(p);
+    if (!clipId) return store.getState().toast ?? "The voiceover wasn't added. Try again.";
+    store.selectClip(clipId);
+    return null;
+  };
+  const makePicked = async (p: { prompt: string; duration: number; at: number }): Promise<MusicOutcome> => {
+    const out = await store.music(p);
+    if (out.kind === "placed") store.selectClip(out.clipId);
+    return out;
   };
   const save = () => {
     if (!clip || !form || busy) return;
@@ -143,6 +259,8 @@ export function AudioTrack({ store }: { store: EditorStore }) {
         <button type="button" aria-pressed={muted} disabled={!trackId} onClick={() => trackId && audioMute.toggle(trackId)} title="Silences the audio track in the preview only; a render still includes it" style={btn(Boolean(trackId))}>
           {muted ? "Unmute track" : "Mute track"}
         </button>
+        <button type="button" onClick={() => setSpeaking(true)} disabled={busy || !doc || !companyId} title={`Speak a script onto the audio track at ${formatTime(playhead)}`} style={btn(!busy && Boolean(doc) && Boolean(companyId))}>Voiceover from script</button>
+        {musicOn ? <button type="button" onClick={() => setComposing(true)} disabled={busy || !doc || !companyId} title={`Make music onto the audio track at ${formatTime(playhead)} (${MUSIC_PRICE_LABEL})`} style={btn(!busy && Boolean(doc) && Boolean(companyId))}>Make music</button> : null}
         <button type="button" onClick={() => setAdding(true)} disabled={busy || !doc || !companyId} title={`Add audio at ${formatTime(playhead)}`} style={btn(!busy && Boolean(doc) && Boolean(companyId))}>Add audio</button>
       </div>
       {clip && form ? (
@@ -155,7 +273,10 @@ export function AudioTrack({ store }: { store: EditorStore }) {
           </div>
         </form>
       ) : null}
+      {clip ? <BeatPanel store={store} clip={clip} /> : null}
       {error ? <div role="alert" style={{ color: "#e5484d", fontSize: 12, overflowWrap: "anywhere" }}>{error}</div> : null}
+      {speaking ? <VoiceoverDialog busy={busy} at={playhead} onSpeak={speakPicked} onClose={() => setSpeaking(false)} /> : null}
+      {composing ? <MusicDialog busy={busy} at={playhead} onMake={makePicked} onClose={() => setComposing(false)} /> : null}
       {adding ? <PickDialog companyId={companyId} client={client} busy={busy} onPick={addPicked} onClose={() => setAdding(false)} /> : null}
     </div>
   );

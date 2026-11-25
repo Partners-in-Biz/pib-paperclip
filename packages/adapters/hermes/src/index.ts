@@ -88,6 +88,7 @@ tools, persistent memory, session persistence, skills, and MCP support.
 | provider | string | (auto) | API provider: auto, openrouter, nous, openai-codex, zai, kimi-coding, minimax, minimax-cn. Usually not needed — Hermes auto-detects from model name. |
 | timeoutSec | number | 300 | Execution timeout in seconds |
 | graceSec | number | 10 | Grace period after SIGTERM before SIGKILL |
+| postTurnExitGraceSec | number | 30 | Seconds Hermes may keep running after its turn ended (it lingers on background-process notifications) before it and its background process groups are stopped; 0 turns this off |
 
 ## Tool Configuration
 
@@ -99,6 +100,7 @@ tools, persistent memory, session persistence, skills, and MCP support.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
+| cwd | string | (assigned task workspace) | Absolute working directory override; otherwise use Paperclip's resolved task workspace |
 | persistSession | boolean | true | Resume sessions across heartbeats |
 | worktreeMode | boolean | false | Use git worktree for isolated changes |
 | checkpoints | boolean | false | Enable filesystem checkpoints |
@@ -112,6 +114,14 @@ tools, persistent memory, session persistence, skills, and MCP support.
 | extraArgs | string[] | [] | Additional CLI arguments |
 | env | object | {} | Extra environment variables |
 | promptTemplate | string | (default) | Custom prompt template with {{variable}} placeholders |
+
+Managed \`instructionsFilePath\` bundles and standard Paperclip API guidance use
+Hermes's native \`HERMES_EPHEMERAL_SYSTEM_PROMPT\` overlay on every run, including
+resume and reset. They are applied at request time and are not appended to user
+history. The query keeps current runtime identity, wake/task content, and custom
+templates. Use a Hermes CLI that supports this environment hook. An explicit
+overlay in \`env\` is preserved; the hook takes precedence over Hermes's configured
+profile personality/system prompt.
 
 ## Hermes-Originated Paperclip Tasks
 

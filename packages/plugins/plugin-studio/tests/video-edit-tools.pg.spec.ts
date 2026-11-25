@@ -18,7 +18,7 @@ const BUCKET: PrivateBucket = { accountId: "acct", bucket: "b", accessKeyId: "k"
 
 describe("video edit tool declarations", () => {
   const tools = STUDIO_TOOLS.filter((t) => t.name.startsWith("video-edit-"));
-  it("declares the eight tools, registered through the manifest", () => {
+  it("declares the nine tools, registered through the manifest", () => {
     expect(tools.map((t) => t.name).sort()).toEqual([...VIDEO_EDIT_TOOL_NAMES].sort());
     expect(manifest.tools).toBe(STUDIO_TOOLS);
     expect(manifest.capabilities).toContain("agent.tools.register");
@@ -39,6 +39,10 @@ describe("video edit tool declarations", () => {
     expect(by["video-edit-render-status"]!.required).toEqual(["renderId"]);
     expect(by["video-edit-cancel-render"]!.required).toEqual(["renderId"]);
     expect(by["video-edit-delete"]!.required).toEqual(["editId"]);
+    expect(by["video-edit-detect-beats"]!.required).toEqual(["editId", "clipId"]);
+    expect(by["video-edit-cut-to-beat"]!.required).toEqual(["editId", "baseRevision", "musicClipId"]);
+    expect(by["video-edit-cut-to-beat"]!.properties.every!.enum).toEqual([1, 2, 4]);
+    expect(by["video-edit-cut-silences"]!.required).toEqual(["editId", "baseRevision", "clipId"]);
   });
 
   it("takes no spending or company fields", () => {

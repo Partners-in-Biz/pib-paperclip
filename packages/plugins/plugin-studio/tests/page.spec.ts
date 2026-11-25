@@ -10,6 +10,11 @@ describe("Studio page form", () => {
   it("offers only priced models: no Veo; Seedance only with its per-job ceiling", () => {
     expect(PAGE_MODELS.length).toBeGreaterThan(0);
     for (const m of PAGE_MODELS) expect(m.id).not.toMatch(/veo/i);
+    // Lip-sync entries (PAR-8435) wait for the page's own lip-sync mode (T8).
+    for (const id of ["alibaba/wan-3.0-prime/reference-to-video", "bytedance/seedance-2.5/reference-to-video", "bytedance/seedance-2.5/image-to-video", "wan/v2.7/image-to-video"]) {
+      expect(findModel(id)?.maxCreditsPerJob).toBe(30);
+      expect(PAGE_MODELS.some((m) => m.id === id)).toBe(false);
+    }
     const seedance = PAGE_MODELS.filter((m) => /seedance/i.test(m.id));
     expect(seedance.map((m) => [m.id, m.resolutions, m.ratios, findModel(m.id)?.maxCreditsPerJob])).toEqual([
       ["bytedance/seedance-2.0/text-to-video", ["480p", "720p", "1080p"], ["16:9"], 60],
@@ -29,7 +34,7 @@ describe("Studio page form", () => {
     expect(MODEL_CATALOG.find((m) => m.registryId === "seedance_2_5")).toMatchObject({ offered: true, priced: true });
     // Every registry model is accounted for, once as offered or listed.
     const ids = new Set(MODEL_CATALOG.map((m) => m.registryId));
-    expect(ids.size).toBe(24);
+    expect(ids.size).toBe(28);
   });
 
   it("writes the chosen duration to the model's own field and refuses one it lacks", () => {

@@ -1,4 +1,5 @@
 /** Draws a Layout card with the browser's canvas: the picture, then real text. The worker sends the picture's bytes, because storage links can't be read back from a canvas. */
+import { loadedFamily } from "./font-names.js";
 import { coverCrop, FONT_STACKS, planPage, type LayoutOptions, type PagePlan } from "../layout.js";
 
 const images = new Map<string, Promise<HTMLImageElement>>();
@@ -30,7 +31,7 @@ export function drawPage(canvas: HTMLCanvasElement, image: HTMLImageElement, tex
   if (!ctx) throw new Error("This browser can't draw the page.");
   ctx.setTransform(scale, 0, 0, scale, 0, 0);
   const weight = options.style === "headline" ? 700 : 400;
-  const font = (size: number) => `${weight} ${size}px ${FONT_STACKS[options.font]}`;
+  const font = (size: number) => `${weight} ${size}px ${loadedFamily(options.font)}, ${FONT_STACKS[options.font]}`;
   const plan = planPage(width, height, text, options, (t, size) => {
     ctx.font = font(size);
     return ctx.measureText(t).width;

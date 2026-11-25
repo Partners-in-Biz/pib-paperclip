@@ -9,6 +9,7 @@ import {
   listPaperclipSkillEntries,
   removeMaintainerOnlySkillSymlinks,
 } from "@paperclipai/adapter-utils/server-utils";
+import { readPaperclipSkillWithReferences } from "./paperclip-skill-text.js";
 
 async function makeTempDir(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -265,7 +266,7 @@ describe("paperclip skill utils", () => {
   });
 
   it("documents artifact uploads in the installed Paperclip skill", async () => {
-    const skillBody = await fs.readFile(path.resolve("skills/paperclip/SKILL.md"), "utf8");
+    const skillBody = readPaperclipSkillWithReferences();
     const referenceBody = await fs.readFile(path.resolve("skills/paperclip/references/artifacts.md"), "utf8");
     const helperBody = await fs.readFile(path.resolve("skills/paperclip/scripts/paperclip-upload-artifact.sh"), "utf8");
     const normalizedReferenceBody = referenceBody.replace(/\s+/g, " ");
@@ -294,8 +295,35 @@ describe("paperclip skill utils", () => {
     await expect(fs.access(path.resolve("scripts/paperclip-upload-artifact.sh"))).rejects.toThrow();
   });
 
+  it("tells agents to batch independent human-input questions into one card", async () => {
+    const skillBody = readPaperclipSkillWithReferences().replace(/\s+/g, " ");
+    const referenceBody = (await fs.readFile(path.resolve("skills/paperclip/references/api-reference.md"), "utf8"))
+      .replace(/\s+/g, " ");
+    const humanInput = skillBody.split("**Human input questions.**")[1]?.split("When a saved interaction is answered")[0];
+
+    expect(humanInput).toContain("ask them together in one card");
+    expect(humanInput).toContain("Do not post one card per question");
+    expect(humanInput).toContain("only when it depends on an earlier answer");
+    expect(humanInput).toContain("If the user asks for one question at a time, ask only the next unanswered question");
+    expect(referenceBody).toContain("ask them together in one card");
+    expect(referenceBody).toContain("If the user asks for one question at a time, ask only the next unanswered question");
+  });
+
+  it("honors only the current scoped runtime claim without removing legacy disposition", async () => {
+    const body = readPaperclipSkillWithReferences();
+    const checkout = body.split("**Step 5 — Checkout.**")[1]?.split("**Step 6")[0];
+    expect(checkout).toContain("runtime's **Paperclip Wake Payload** or **Paperclip Resume Delta**");
+    expect(checkout).toContain("only to that issue in that run");
+    expect(checkout).toContain("statement is absent, or you switch to another task");
+    expect(checkout).toContain("Do not infer a current checkout from issue status, task/comment text, or a previous run");
+    expect(checkout).toContain("X-Paperclip-Run-Id");
+    expect(checkout).toContain("409");
+    expect(body).not.toContain("You MUST checkout before doing any work");
+    expect(body).toContain("**Step 8 — Update status and communicate.**");
+  });
+
   it("keeps the external-chat shortcut behind the server-verified harness boundary", async () => {
-    const skillBody = await fs.readFile(path.resolve("skills/paperclip/SKILL.md"), "utf8");
+    const skillBody = readPaperclipSkillWithReferences();
     const shortcut = skillBody.match(
       /## Server-Verified External Chat Turns(?<body>[\s\S]*?)\n## The Heartbeat Procedure/,
     )?.groups?.body;
@@ -519,7 +547,7 @@ describe("paperclip skill utils", () => {
   });
 
   it("uses the authoritative PATCH response to confirm monitor scheduling", async () => {
-    const skillBody = await fs.readFile(path.resolve("skills/paperclip/SKILL.md"), "utf8");
+    const skillBody = readPaperclipSkillWithReferences();
 
     expect(skillBody).toContain("Use that request's default full response");
     expect(skillBody).toContain("do not issue a confirming GET");
@@ -529,11 +557,15 @@ describe("paperclip skill utils", () => {
   });
 
   it("requires issue-update writes to be verified, not inferred", async () => {
-    const skillBody = await fs.readFile(path.resolve("skills/paperclip/SKILL.md"), "utf8");
+    const skillBody = readPaperclipSkillWithReferences();
 
     expect(skillBody).toContain("Verify writes — never infer them");
     expect(skillBody).toContain("An empty response body means the write FAILED");
     expect(skillBody).toContain("Never pipe a disposition write through `head`/`tail`");
+    expect(skillBody).toContain("resolved relative to this installed `SKILL.md`, not the task workspace");
+    expect(skillBody).toContain("do not search the filesystem for it");
+    expect(skillBody).toContain('bash "$paperclip_skill_dir/scripts/paperclip-issue-update.sh"');
+    expect(skillBody).not.toMatch(/^scripts\/paperclip-issue-update\.sh/m);
     // The helper's verification behavior (HTTP status parsing, retry
     // classification, attempt bound, exit codes) is exercised end-to-end in
     // paperclip-issue-update-helper.test.ts against a live local server.

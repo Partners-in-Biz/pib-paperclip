@@ -1,4 +1,11 @@
-import type { AgentAdapterType, JoinRequest, PermissionKey } from "@paperclipai/shared";
+import type {
+  AgentAdapterType,
+  InviteMemberRestriction,
+  JoinRequest,
+  MemberRestrictionMode,
+  PermissionKey,
+  UpdateMemberRestriction,
+} from "@paperclipai/shared";
 import { api } from "./client";
 
 export type HumanCompanyRole = "owner" | "admin" | "operator" | "viewer";
@@ -125,10 +132,20 @@ export type CompanyMember = {
   updatedAt: string;
   user: { id: string; email: string | null; name: string | null; image: string | null } | null;
   grants: CompanyMemberGrant[];
+  /** Per-person access flag and lists (PAR-12608 4.2); absent from servers before C1-2. */
+  restricted?: boolean;
+  restrictedPluginKeys?: string[];
+  restrictedAgentIds?: string[];
   removal?: {
     canArchive: boolean;
     reason: string | null;
   };
+};
+
+/** The company's stored restriction switch and the 7-day count of "would refuse" entries. */
+export type MemberRestrictionModeState = {
+  mode: MemberRestrictionMode;
+  deniedLast7Days: number;
 };
 
 export type ArchiveCompanyMemberResponse = {
@@ -149,6 +166,7 @@ export type CompanyMembersResponse = {
 export type CompanyUserDirectoryEntry = {
   principalId: string;
   status: "active";
+  membershipRole: string | null;
   user: { id: string; email: string | null; name: string | null; image: string | null } | null;
 };
 
@@ -171,6 +189,8 @@ export type CompanyInviteRecord = {
   createdAt: string;
   updatedAt: string;
   inviteMessage: string | null;
+  memberRestriction?: InviteMemberRestriction | null;
+  memberRestrictionIsDefault?: boolean;
   state: "active" | "revoked" | "accepted" | "expired";
   invitedByUser: { id: string; email: string | null; name: string | null; image: string | null } | null;
   relatedJoinRequestId: string | null;
@@ -191,6 +211,8 @@ export type CompanyJoinRequest = JoinRequest & {
     allowedJoinTypes: "human" | "agent" | "both";
     humanRole: HumanCompanyRole | null;
     inviteMessage: string | null;
+    memberRestriction?: InviteMemberRestriction | null;
+    memberRestrictionIsDefault?: boolean;
     createdAt: string;
     expiresAt: string;
     revokedAt: string | null;
@@ -329,6 +351,15 @@ export const accessApi = {
       status?: "pending" | "active" | "suspended";
     },
   ) => api.patch<CompanyMember>(`/companies/${companyId}/members/${memberId}`, input),
+
+  setMemberRestriction: (companyId: string, memberId: string, input: UpdateMemberRestriction) =>
+    api.put<CompanyMember>(`/companies/${companyId}/members/${memberId}/restriction`, input),
+
+  getMemberRestrictionMode: (companyId: string) =>
+    api.get<MemberRestrictionModeState>(`/companies/${companyId}/member-restriction-mode`),
+
+  setMemberRestrictionMode: (companyId: string, mode: MemberRestrictionMode) =>
+    api.put<MemberRestrictionModeState>(`/companies/${companyId}/member-restriction-mode`, { mode }),
 
   updateMemberPermissions: (
     companyId: string,

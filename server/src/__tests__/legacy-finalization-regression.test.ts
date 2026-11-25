@@ -4,7 +4,9 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import {
   agents,
+  authUsers,
   companies,
+  companyMemberships,
   completionContracts,
   createDb,
   heartbeatRuns,
@@ -67,6 +69,13 @@ describe("P6-32 legacy finalization regression", () => {
       status: "active",
       defaultResponsibleUserId: "responsible-user",
     });
+    await db.insert(authUsers).values({
+      id: "responsible-user", name: "Responsible user", email: "legacy-finalization@example.test",
+      createdAt: new Date(), updatedAt: new Date(),
+    });
+    await db.insert(companyMemberships).values({
+      companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "member",
+    });
     await db.insert(projects).values({ id: projectId, companyId, name: "Legacy project", status: "active" });
     await db.insert(projectWorkspaces).values({
       id: projectWorkspaceId,
@@ -111,6 +120,7 @@ describe("P6-32 legacy finalization regression", () => {
     });
     const heartbeat = heartbeatService(db);
     const queued = await heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "automation",
       triggerDetail: "system",
       reason: "issue_commented",

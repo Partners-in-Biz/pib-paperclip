@@ -6,6 +6,7 @@ import type { JsonSchema, PluginContext, PluginToolDeclaration } from "@papercli
 import { loadPack, packSources, templateByKey, templateVars, type AgentTemplate, type TemplateVars } from "./templates.js";
 import { renderInstructions } from "./templates-render.js";
 import { renderHash } from "./render-hash.js";
+import { shippedEvalFile } from "./shipped-evals.js";
 import { varsFor } from "./new-company.js";
 import { subagentExtraArgs, type SubagentPolicy } from "./subagents.js";
 import { applyUnifiedDiff } from "./unified-diff.js";
@@ -82,6 +83,7 @@ type TemplateGetResult =
       raw: string;
       rendered: string;
       renderHash: string;
+      evalFile?: string;
       subagents?: SubagentPolicy;
       extraArgs?: string[];
     };
@@ -139,6 +141,7 @@ async function getTemplate(ctx: PluginContext, key: string, companyId?: string):
     raw: string;
     rendered: string;
     renderHash: string;
+    evalFile?: string;
     subagents?: SubagentPolicy;
     extraArgs?: string[];
   } = {
@@ -151,6 +154,10 @@ async function getTemplate(ctx: PluginContext, key: string, companyId?: string):
     renderHash: renderHash(rendered),
   };
 
+  const evalFile = shippedEvalFile(template.evalFile ?? `${key}.json`);
+  if (evalFile) {
+    result.evalFile = evalFile;
+  }
   if (template.subagents) {
     result.subagents = template.subagents;
   }

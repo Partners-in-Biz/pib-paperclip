@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { localCredits, SEEDANCE_PIXELS, SEEDANCE_RATES, USD_PER_CREDIT } from "../src/seedance-price.js";
+import { isTablePriced, localCredits, SEEDANCE_PIXELS, SEEDANCE_RATES, USD_PER_CREDIT } from "../src/seedance-price.js";
 import { creditsIn, higgsfieldProvider } from "../src/provider.js";
 
 const V20 = "bytedance/seedance-2.0/text-to-video";
@@ -73,5 +73,21 @@ describe("provider price guard", () => {
   it("estimate still passes a real price through", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ type: "estimate", credits: "8.960", usd: "0.560" }), { status: 200, headers: { "content-type": "application/json" } })));
     await expect(higgsfieldProvider("id:secret").estimate("kling-video/v3.0/turbo/text-to-video", body())).resolves.toBe(8.96);
+  });
+});
+
+describe("per-second lip-sync prices (PAR-8435)", () => {
+  const WAN3 = "alibaba/wan-3.0-prime/reference-to-video";
+  const SD_I2V = "bytedance/seedance-2.5/image-to-video";
+  const media = { image_urls: ["https://x/a.png"], audio_urls: ["https://x/a.mp3"] };
+  it("prices duration x the per-second rate, the portrait and audio included", () => {
+    expect(localCredits(WAN3, { prompt: "hi", duration: 5, resolution: "480p", ...media })).toBe(5.44);
+    expect(localCredits(SD_I2V, { prompt: "hi", duration: 5, resolution: "480p", generate_audio: true, image_url: "https://x/a.png" })).toBe(16.448);
+    expect(isTablePriced(WAN3)).toBe(true);
+  });
+  it("refuses an unpriced resolution, a missing duration and a video reference", () => {
+    for (const body of [{ duration: 5, resolution: "720p" }, { duration: 5, resolution: "1080p" }, { resolution: "480p" }, { duration: 5, resolution: "480p", video_urls: ["https://x/v.mp4"] }]) {
+      expect(() => localCredits(WAN3, body)).toThrow(expect.objectContaining({ code: "no_price" }));
+    }
   });
 });

@@ -1,10 +1,14 @@
 import { AgentIdentity } from "@/components/AgentIdentity";
+import { useCombinedInboxTasksEnabled } from "@/hooks/useCombinedInboxTasksEnabled";
 import { useState, useEffect, useMemo } from "react";
+import { CANVAS_COMMANDS, CANVAS_COMMAND_EVENT } from "@/components/planning-canvas/keyboard/canvas-keymap";
 import { useLocation, useNavigate } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
 import { useSidebar } from "../context/SidebarContext";
+import { useMemberRestriction } from "../context/MemberRestrictionContext";
+import { useMemberRestrictionGate } from "../hooks/useMemberRestrictionGate";
 import { issuesApi } from "../api/issues";
 import { authApi } from "../api/auth";
 import { agentsApi } from "../api/agents";
@@ -24,6 +28,8 @@ import {
   CircleDot,
   Bot,
   Hexagon,
+  NotebookPen,
+  PenTool,
   Target,
   LayoutDashboard,
   Inbox,
@@ -94,15 +100,18 @@ export function CommandPalette() {
   const navigate = useNavigate();
   const location = useLocation();
   const { selectedCompanyId } = useCompany();
-  const { openNewIssue, openNewAgent } = useDialogActions();
+  const { openNewIssue, openNewNote, openNewAgent } = useDialogActions();
   const { isMobile, setSidebarOpen } = useSidebar();
+  // PAR-12608 4.6: no entry for a page closed to a restricted member.
+  const { isPageHidden } = useMemberRestriction();
   const searchQuery = query.trim();
+  const onPlanningCanvas = /(^|\/)planning-canvas(\/|$)/.test(location.pathname);
   const onIssueDetail = isOnIssueDetail(location.pathname);
   const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
-    retry: false,
   });
+  const { enabled: combinedInboxTasksEnabled } = useCombinedInboxTasksEnabled();
   const fileViewerEnabled = experimentalSettings?.enableExperimentalFileViewer === true;
 
   useEffect(() => {
@@ -137,11 +146,14 @@ export function CommandPalette() {
     [allProjects],
   );
 
-  const { data: labels = [] } = useQuery({
+  // Company labels are a closed list for a restricted member under `enforce` (AC-G10): no `label:` matching.
+  const memberGate = useMemberRestrictionGate(selectedCompanyId);
+  const { data: labelData = [] } = useQuery({
     queryKey: queryKeys.issues.labels(selectedCompanyId!),
-    queryFn: () => issuesApi.listLabels(selectedCompanyId!),
-    enabled: !!selectedCompanyId && open,
+    queryFn: memberGate.guard(() => issuesApi.listLabels(selectedCompanyId!), []),
+    enabled: !!selectedCompanyId && open && !memberGate.closed,
   });
+  const labels = memberGate.closed ? [] : labelData;
 
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
@@ -313,6 +325,27 @@ export function CommandPalette() {
           </>
         )}
 
+        {onPlanningCanvas && (
+          <>
+            <CommandGroup heading="Canvas">
+              {CANVAS_COMMANDS.map((cmd) => (
+                <CommandItem
+                  key={cmd.id}
+                  onSelect={() => {
+                    setOpen(false);
+                    // The palette closes first so focus returns to the board before the action runs.
+                    setTimeout(() => window.dispatchEvent(new CustomEvent(CANVAS_COMMAND_EVENT, { detail: { id: cmd.id } })), 0);
+                  }}
+                >
+                  <PenTool className="mr-2 h-4 w-4" />
+                  {cmd.label}
+                </CommandItem>
+              ))}
+            </CommandGroup>
+            <CommandSeparator />
+          </>
+        )}
+
         <CommandGroup heading="Actions">
           <CommandItem
             onSelect={() => {
@@ -323,6 +356,34 @@ export function CommandPalette() {
             <SquarePen className="mr-2 h-4 w-4" />
             Create new task
             <span className="ml-auto text-xs text-muted-foreground">C</span>
+          </CommandItem>
+          <CommandItem
+            onSelect={() => {
+              setOpen(false);
+              openNewNote();
+            }}
+          >
+            <NotebookPen className="mr-2 h-4 w-4" />
+            Create new personal note
+            <span className="ml-auto text-xs text-muted-foreground">⇧N</span>
+          </CommandItem>
+          <CommandItem
+            onSelect={() => {
+              setOpen(false);
+              navigate("/notes");
+            }}
+          >
+            <NotebookPen className="mr-2 h-4 w-4" />
+            Go to Personal Notes
+          </CommandItem>
+          <CommandItem
+            onSelect={() => {
+              setOpen(false);
+              navigate("/planning-canvas");
+            }}
+          >
+            <PenTool className="mr-2 h-4 w-4" />
+            Go to Planning Canvas
           </CommandItem>
           {onIssueDetail && fileViewerEnabled && (
             <CommandItem
@@ -336,15 +397,17 @@ export function CommandPalette() {
               <span className="ml-auto text-xs text-muted-foreground">g f</span>
             </CommandItem>
           )}
-          <CommandItem
-            onSelect={() => {
-              setOpen(false);
-              openNewAgent();
-            }}
-          >
-            <Plus className="mr-2 h-4 w-4" />
-            Create new agent
-          </CommandItem>
+          {isPageHidden("/agents/new") ? null : (
+            <CommandItem
+              onSelect={() => {
+                setOpen(false);
+                openNewAgent();
+              }}
+            >
+              <Plus className="mr-2 h-4 w-4" />
+              Create new agent
+            </CommandItem>
+          )}
           <CommandItem onSelect={() => go("/projects")}>
             <Plus className="mr-2 h-4 w-4" />
             Create new project
@@ -354,13 +417,15 @@ export function CommandPalette() {
         <CommandSeparator />
 
         <CommandGroup heading="Pages">
-          <CommandItem onSelect={() => go("/dashboard")}>
-            <LayoutDashboard className="mr-2 h-4 w-4" />
-            Dashboard
-          </CommandItem>
-          <CommandItem onSelect={() => go("/inbox")}>
+          {isPageHidden("/dashboard") ? null : (
+            <CommandItem onSelect={() => go("/dashboard")}>
+              <LayoutDashboard className="mr-2 h-4 w-4" />
+              Dashboard
+            </CommandItem>
+          )}
+          <CommandItem onSelect={() => go(combinedInboxTasksEnabled ? "/issues?view=mine" : "/inbox")}>
             <Inbox className="mr-2 h-4 w-4" />
-            Inbox
+            {combinedInboxTasksEnabled ? "My work" : "Inbox"}
           </CommandItem>
           <CommandItem onSelect={() => go("/issues")}>
             <CircleDot className="mr-2 h-4 w-4" />
@@ -370,22 +435,28 @@ export function CommandPalette() {
             <Hexagon className="mr-2 h-4 w-4" />
             Projects
           </CommandItem>
-          <CommandItem onSelect={() => go("/goals")}>
-            <Target className="mr-2 h-4 w-4" />
-            Goals
-          </CommandItem>
+          {isPageHidden("/goals") ? null : (
+            <CommandItem onSelect={() => go("/goals")}>
+              <Target className="mr-2 h-4 w-4" />
+              Goals
+            </CommandItem>
+          )}
           <CommandItem onSelect={() => go("/agents")}>
             <Bot className="mr-2 h-4 w-4" />
             Agents
           </CommandItem>
-          <CommandItem onSelect={() => go("/costs")}>
-            <DollarSign className="mr-2 h-4 w-4" />
-            Costs
-          </CommandItem>
-          <CommandItem onSelect={() => go("/activity")}>
-            <History className="mr-2 h-4 w-4" />
-            Activity
-          </CommandItem>
+          {isPageHidden("/costs") ? null : (
+            <CommandItem onSelect={() => go("/costs")}>
+              <DollarSign className="mr-2 h-4 w-4" />
+              Costs
+            </CommandItem>
+          )}
+          {isPageHidden("/activity") ? null : (
+            <CommandItem onSelect={() => go("/activity")}>
+              <History className="mr-2 h-4 w-4" />
+              Activity
+            </CommandItem>
+          )}
         </CommandGroup>
 
         {visibleIssues.length > 0 && (

@@ -1,8 +1,10 @@
+import { PrimaryAgentIndicator } from "@/components/primary-agent/PrimaryAgentPresentation";
+import { AgentBulkRoster } from "@/components/agents/AgentBulkRoster";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { useState, useEffect, useMemo, lazy, Suspense } from "react";
 import { Link, useNavigate, useLocation } from "@/lib/router";
-import { useQuery } from "@tanstack/react-query";
-import { agentsApi, type OrgNode } from "../api/agents";
+import { useIsFetching, useQuery } from "@tanstack/react-query";
+import { agentsApi, isReducedAgent, type OrgNode } from "../api/agents";
 import { builtInAgentsApi, type BuiltInAgentState } from "../api/builtInAgents";
 import { environmentsApi } from "../api/environments";
 import { heartbeatsApi } from "../api/heartbeats";
@@ -14,25 +16,19 @@ import { useSidebar } from "../context/SidebarContext";
 import { queryKeys } from "../lib/queryKeys";
 import { isPlatformManagedEnvironment } from "../lib/managed-sandbox-environment";
 import { AgentStatusBadge, AgentStatusCapsule } from "../components/StatusBadge";
-import { MembershipAction } from "../components/MembershipAction";
-import { StarToggle } from "../components/StarToggle";
 import { EntityRow } from "../components/EntityRow";
 import { BuiltInLifecycleChip } from "../components/BuiltInAgentBadges";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { QueryErrorState, useQueryView } from "../components/QueryView";
 import { relativeTime, cn, agentRouteRef, agentUrl } from "../lib/utils";
-import { PageTabBar } from "../components/PageTabBar";
-import { Tabs } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { AlertTriangle, Bot, Plus, List, GitBranch } from "lucide-react";
 import { AGENT_ROLE_LABELS, type Agent, type Environment, type EnvironmentCapabilities } from "@paperclipai/shared";
-import {
-  isStarred,
-  resourceMembershipState,
-  useResourceMembershipMutation,
-  useResourceMemberships,
-} from "../hooks/useResourceMemberships";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
+import { useMemberRestrictionGate } from "../hooks/useMemberRestrictionGate";
+import { useMemberRestriction } from "../context/MemberRestrictionContext";
+import { ReducedAgentList } from "../components/agents/ReducedAgentList";
 
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
 
@@ -48,14 +44,6 @@ const ConfigureBuiltInAgentModal = lazy(() =>
 
 export const AGENT_FILTER_TABS = ["all", "active", "paused", "error", "builtin"] as const;
 type FilterTab = (typeof AGENT_FILTER_TABS)[number];
-
-const AGENT_FILTER_TAB_ITEMS: { value: FilterTab; label: string }[] = [
-  { value: "all", label: "All" },
-  { value: "active", label: "Active" },
-  { value: "paused", label: "Paused" },
-  { value: "error", label: "Error" },
-  { value: "builtin", label: "Built-in" },
-];
 
 function isFilterTab(value: string): value is FilterTab {
   return (AGENT_FILTER_TABS as readonly string[]).includes(value);
@@ -201,22 +189,36 @@ export function Agents() {
   const forceListView = isMobile;
   const effectiveView: "list" | "org" = forceListView ? "list" : view;
 
+  const agentsQuery = useQuery({
+    queryKey: queryKeys.agents.list(selectedCompanyId!),
+    queryFn: () => agentsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+  const { data: agents, isLoading } = agentsQuery;
+  const agentsView = useQueryView(agentsQuery);
+
+  // A restricted member under `enforce` gets the reduced list (PAR-13474, AC-G10): his agents, six
+  // fields each. It shows when the session says `enforce`, or when the list came back reduced (a
+  // stale session). The full page's company-wide reads wait for a full list and an open gate.
+  const memberGate = useMemberRestrictionGate(selectedCompanyId);
+  // A restored session confirmed with the same data does not re-render the gate hook; this does,
+  // so the page leaves its loading state once the session is known.
+  useIsFetching({ queryKey: queryKeys.auth.session });
+  const { enforced: restrictionEnforced } = useMemberRestriction();
+  const reducedList = restrictionEnforced || (agents?.some(isReducedAgent) ?? false);
+  const fullListOpen = !memberGate.closed && agents !== undefined && !reducedList;
+
   const { data: instanceSettings } = useQuery({
     queryKey: queryKeys.instance.settings,
     queryFn: () => instanceSettingsApi.get(),
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && fullListOpen,
   });
   const builtInAgentsEnabled = instanceSettings?.experimental.enableBuiltInAgents === true;
-  const tab: FilterTab = requestedTab === "builtin" && !builtInAgentsEnabled ? "all" : requestedTab;
-  const visibleTabItems = useMemo(
-    () => AGENT_FILTER_TAB_ITEMS.filter((item) => item.value !== "builtin" || builtInAgentsEnabled),
-    [builtInAgentsEnabled],
-  );
-
+  const tab: FilterTab = "all";
   const { data: builtInAgents } = useQuery({
     queryKey: queryKeys.builtInAgents.list(selectedCompanyId!),
-    queryFn: () => builtInAgentsApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId && builtInAgentsEnabled,
+    queryFn: memberGate.guard(() => builtInAgentsApi.list(selectedCompanyId!), []),
+    enabled: !!selectedCompanyId && builtInAgentsEnabled && fullListOpen,
   });
   const builtInByAgentId = useMemo(() => {
     const map = new Map<string, BuiltInAgentState>();
@@ -229,16 +231,11 @@ export function Agents() {
   const builtInAgentIds = useMemo(() => new Set(builtInByAgentId.keys()), [builtInByAgentId]);
   const [configureState, setConfigureState] = useState<BuiltInAgentState | null>(null);
 
-  const { data: agents, isLoading, error } = useQuery({
-    queryKey: queryKeys.agents.list(selectedCompanyId!),
-    queryFn: () => agentsApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
-  });
 
   const { data: orgTree } = useQuery({
     queryKey: queryKeys.org(selectedCompanyId!),
-    queryFn: () => agentsApi.org(selectedCompanyId!),
-    enabled: !!selectedCompanyId && effectiveView === "org",
+    queryFn: memberGate.guard(() => agentsApi.org(selectedCompanyId!), []),
+    enabled: !!selectedCompanyId && effectiveView === "org" && fullListOpen,
   });
 
   const environmentsEnabled = instanceSettings?.experimental.enableEnvironments === true;
@@ -246,38 +243,37 @@ export function Agents() {
   const { data: environments } = useQuery({
     queryKey: queryKeys.environments.list(selectedCompanyId!),
     queryFn: () => environmentsApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId && environmentsEnabled,
+    enabled: !!selectedCompanyId && environmentsEnabled && fullListOpen,
   });
 
   const { data: environmentCapabilities } = useQuery({
     queryKey: queryKeys.environments.capabilities(selectedCompanyId!),
     queryFn: () => environmentsApi.capabilities(selectedCompanyId!),
-    enabled: !!selectedCompanyId && environmentsEnabled,
+    enabled: !!selectedCompanyId && environmentsEnabled && fullListOpen,
   });
 
+  // Live runs are a closed list for a restricted member under `enforce` (AC-G10): no live marks.
   const runsQueryKey = [...queryKeys.liveRuns(selectedCompanyId!), "agents-page"] as const;
   const sharedRuns = useSharedPollingQuery({
     companyId: selectedCompanyId,
     resourceKey: "live-runs:agents-page",
     queryKey: runsQueryKey,
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && !memberGate.closed,
     refetchInterval: 15_000,
     leaderOnly: true,
   });
   const { data: runs, dataUpdatedAt: runsUpdatedAt } = useQuery({
     queryKey: runsQueryKey,
-    queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
+    queryFn: memberGate.guard(() => heartbeatsApi.liveRunsForCompany(selectedCompanyId!), []),
     enabled: sharedRuns.enabled,
     refetchInterval: sharedRuns.refetchInterval,
   });
   usePublishSharedQueryData(sharedRuns, runs, runsUpdatedAt);
-  const membershipsQuery = useResourceMemberships(selectedCompanyId);
-  const membershipMutation = useResourceMembershipMutation(selectedCompanyId);
 
   // Map agentId -> first live run + live run count
   const liveRunByAgent = useMemo(() => {
     const map = new Map<string, { runId: string; liveCount: number }>();
-    for (const r of runs ?? []) {
+    for (const r of memberGate.closed ? [] : runs ?? []) {
       if (r.status !== "running" && r.status !== "queued") continue;
       const existing = map.get(r.agentId);
       if (existing) {
@@ -287,7 +283,7 @@ export function Agents() {
       map.set(r.agentId, { runId: r.id, liveCount: 1 });
     }
     return map;
-  }, [runs]);
+  }, [memberGate.closed, runs]);
 
   const agentMap = useMemo(() => {
     const map = new Map<string, Agent>();
@@ -322,18 +318,34 @@ export function Agents() {
   }, [setBreadcrumbs]);
 
   useEffect(() => {
-    if (selectedCompanyId && requestedTab === "builtin" && instanceSettings && !builtInAgentsEnabled) {
+    if (requestedTab !== "all") {
       navigate("/agents/all", { replace: true });
     }
-  }, [builtInAgentsEnabled, instanceSettings, navigate, requestedTab, selectedCompanyId]);
+  }, [navigate, requestedTab]);
 
   if (!selectedCompanyId) {
     return <EmptyState icon={Bot} message="Select a company to view agents." />;
   }
 
-  if (isLoading) {
+  // Keep a loaded list on screen through a failed refetch; only a real
+  // failure, or an outage before the first load, replaces the page.
+  if (isLoading || agentsView.kind === "reconnecting") {
     return <PageSkeleton variant="list" />;
   }
+  if (agentsView.kind === "error") {
+    return (
+      <QueryErrorState
+        size="page"
+        error={agentsView.error}
+        action="load agents"
+        onRetry={agentsView.retry}
+        retrying={agentsView.isFetching}
+      />
+    );
+  }
+  if (reducedList) return <ReducedAgentList agents={agents ?? []} />;
+  // Session not known yet: neither list until it is (Quinn, PAR-13472 finding 2).
+  if (memberGate.closed) return <PageSkeleton variant="list" />;
 
   const filtered = filterAgents(agents ?? [], tab, builtInAgentIds);
   const filteredOrg = filterOrgTree(orgTree ?? [], tab, builtInAgentIds);
@@ -347,13 +359,6 @@ export function Agents() {
 
   const renderAgentRow = (agent: Agent) => {
     const hasInvalidOrgChain = agent.orgChainHealth?.status === "invalid_org_chain";
-    const agentPending =
-      membershipMutation.isPending &&
-      membershipMutation.variables?.resourceType === "agent" &&
-      membershipMutation.variables.resourceId === agent.id;
-    const agentStarPending = agentPending && membershipMutation.variables?.starred !== undefined;
-    const agentJoinLeavePending = agentPending && membershipMutation.variables?.starred === undefined;
-    const agentStarred = isStarred(membershipsQuery.data, "agent", agent.id);
     const builtInState = builtInByAgentId.get(agent.id);
     const showBuiltInLifecycle = builtInState?.status === "needs_setup" || builtInState?.status === "pending_approval";
     // Lifecycle chip + inline `Set up`. Rendered inline in
@@ -385,110 +390,53 @@ export function Agents() {
       <EntityRow
         key={agent.id}
         title={agent.name}
+        titleAccessory={<PrimaryAgentIndicator agentId={agent.id} companyId={agent.companyId} />}
         // Fixed (truncating) title width at xl so the `meta` group starts at a
         // constant x on every row — that's what makes the model + timestamp
         // columns line up vertically. Below xl the meta columns are hidden, so
         // the title flexes instead: a fixed width there let the shrink-0
         // trailing actions squeeze the name to zero width on mobile.
-        titleClassName="flex-1 xl:flex-none xl:w-56"
+        titleClassName="flex-1"
         titleTextClassName="whitespace-normal break-words xl:truncate xl:whitespace-nowrap"
         subtitleClassName="whitespace-normal break-words xl:truncate xl:whitespace-nowrap"
         subtitle={`${roleLabels[agent.role] ?? agent.role}${agent.title ? ` - ${agent.title}` : ""}`}
         to={agentUrl(agent)}
-        className={cn(
-          "group",
-          agent.pausedAt && tab !== "paused" ? "opacity-50" : "",
-          resourceMembershipState(membershipsQuery.data, "agent", agent.id) === "left" ? "sm:text-foreground/55" : "",
-        )}
+        className="agent-roster-identity group py-3"
         leading={hasInvalidOrgChain ? (
           <AlertTriangle className="h-3.5 w-3.5 text-amber-500" aria-label="Invalid reporting chain" />
         ) : (
           <AgentAvatar agent={agent} size={32} />
         )}
-        secondaryRow={
-          builtInCluster ? (
-            <div className="xl:hidden flex flex-wrap items-center gap-1.5">
-              {builtInCluster}
-            </div>
-          ) : undefined
-        }
-        meta={
-          <div className="flex items-center gap-3">
-            {builtInCluster && (
-              <div className="hidden xl:flex items-center gap-1.5">
-                {builtInCluster}
-              </div>
-            )}
-            <div className="hidden xl:flex items-center gap-3">
-              <AgentMetaColumns
-                agent={agent}
-                environment={resolveRenderedEnvironment(agent.id)}
-                showEnvironment={showEnvironmentColumn}
-              />
-            </div>
+        secondaryRowClassName={cn("pl-11", !builtInCluster && !showEnvironmentColumn && !agent.lastHeartbeatAt && "sm:hidden")}
+        secondaryRow={(agent.status === "paused" || builtInCluster || showEnvironmentColumn || agent.lastHeartbeatAt) && (
+          <div className="flex flex-wrap items-center gap-2">
+            {builtInCluster}
+            {showEnvironmentColumn && <span className="text-xs text-muted-foreground" title={resolveRenderedEnvironment(agent.id).title}>
+              {resolveRenderedEnvironment(agent.id).label} · {resolveRenderedEnvironment(agent.id).detail}
+            </span>}
+            {agent.lastHeartbeatAt && <span className="text-xs text-muted-foreground" title="Last heartbeat">{relativeTime(agent.lastHeartbeatAt)}</span>}
           </div>
-        }
-        metaSpacerClassName="hidden xl:block"
-        trailing={
-          <div className="flex items-center gap-3">
-            <div className="hidden sm:flex items-center gap-3">
-              {liveRunByAgent.has(agent.id) && (
-                <LiveRunIndicator
-                  agentRef={agentRouteRef(agent)}
-                  runId={liveRunByAgent.get(agent.id)!.runId}
-                  liveCount={liveRunByAgent.get(agent.id)!.liveCount}
-                />
-              )}
-              <span className="w-20 flex justify-end">
-                <AgentStatusBadge status={agent.status} />
-              </span>
-              <StarToggle
-                size="row"
-                starred={agentStarred}
-                pending={agentStarPending}
-                resourceName={agent.name}
-                onToggle={(next) => membershipMutation.mutate({
-                  resourceType: "agent",
-                  resourceId: agent.id,
-                  resourceName: agent.name,
-                  starred: next,
-                })}
-              />
-            </div>
-            <MembershipAction
-              state={resourceMembershipState(membershipsQuery.data, "agent", agent.id)}
-              pending={agentJoinLeavePending}
-              pendingState={agentJoinLeavePending ? membershipMutation.variables?.state ?? null : null}
-              resourceName={agent.name}
-              onJoin={() => membershipMutation.mutate({
-                resourceType: "agent",
-                resourceId: agent.id,
-                resourceName: agent.name,
-                state: "joined",
-              })}
-              onLeave={() => membershipMutation.mutate({
-                resourceType: "agent",
-                resourceId: agent.id,
-                resourceName: agent.name,
-                state: "left",
-              })}
-            />
-          </div>
-        }
+        )}
       />
     );
   };
 
+  const renderAgentStatus = (agent: Agent) => (
+    <div className="flex items-center gap-3">
+      {liveRunByAgent.has(agent.id) && (
+        <LiveRunIndicator
+          agentRef={agentRouteRef(agent)}
+          runId={liveRunByAgent.get(agent.id)!.runId}
+          liveCount={liveRunByAgent.get(agent.id)!.liveCount}
+        />
+      )}
+      <AgentStatusBadge status={agent.status} />
+    </div>
+  );
+
   return (
     <div className="space-y-4">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <Tabs value={tab} onValueChange={(v) => navigate(`/agents/${v}`)}>
-          <PageTabBar
-            items={visibleTabItems}
-            value={tab}
-            onValueChange={(v) => navigate(`/agents/${v}`)}
-          />
-        </Tabs>
+      <div className="flex justify-end">
         <div className="flex items-center gap-2">
           {/* View toggle */}
           {!forceListView && (
@@ -530,8 +478,6 @@ export function Agents() {
         <p className="text-xs text-muted-foreground">{filtered.length} agent{filtered.length !== 1 ? "s" : ""}</p>
       )}
 
-      {error && <p className="text-sm text-destructive">{error.message}</p>}
-
       {agents && agents.length === 0 && (
         <EmptyState
           icon={Bot}
@@ -542,17 +488,13 @@ export function Agents() {
       )}
 
       {/* List view */}
-      {effectiveView === "list" && filtered.length > 0 && (
-        <div>
-          {filtered.map(renderAgentRow)}
-        </div>
+      {effectiveView === "list" && agents && agents.length > 0 && (
+        <AgentBulkRoster key={selectedCompanyId} companyId={selectedCompanyId}
+          agents={agents.filter(agent => !HIDDEN_AGENT_STATUSES.has(agent.status))}
+          visibleAgents={filtered} renderAgent={renderAgentRow} renderStatus={renderAgentStatus} />
       )}
 
-      {effectiveView === "list" && agents && agents.length > 0 && filtered.length === 0 && (
-        <p className="text-sm text-muted-foreground text-center py-8">
-          No agents match the selected status.
-        </p>
-      )}
+
 
       {/* Org chart view */}
       {effectiveView === "org" && filteredOrg.length > 0 && (
@@ -567,9 +509,6 @@ export function Agents() {
               environmentByAgentId={environmentByAgentId}
               environmentDataLoading={environmentDataLoading}
               showEnvironment={showEnvironmentColumn}
-              tab={tab}
-              memberships={membershipsQuery.data}
-              membershipMutation={membershipMutation}
               builtInByAgentId={builtInByAgentId}
               onConfigureBuiltIn={setConfigureState}
             />
@@ -612,9 +551,6 @@ function OrgTreeNode({
   environmentByAgentId,
   environmentDataLoading,
   showEnvironment,
-  tab,
-  memberships,
-  membershipMutation,
   builtInByAgentId,
   onConfigureBuiltIn,
 }: {
@@ -625,9 +561,6 @@ function OrgTreeNode({
   environmentByAgentId: Map<string, EnvironmentDescriptor>;
   environmentDataLoading: boolean;
   showEnvironment: boolean;
-  tab: FilterTab;
-  memberships: ReturnType<typeof useResourceMemberships>["data"];
-  membershipMutation: ReturnType<typeof useResourceMembershipMutation>;
   builtInByAgentId: Map<string, BuiltInAgentState>;
   onConfigureBuiltIn: (state: BuiltInAgentState) => void;
 }) {
@@ -635,23 +568,12 @@ function OrgTreeNode({
   const builtInState = builtInByAgentId.get(node.id);
   const showBuiltInLifecycle = builtInState?.status === "needs_setup" || builtInState?.status === "pending_approval";
   const hasInvalidOrgChain = Boolean(agent && agent.orgChainHealth?.status === "invalid_org_chain");
-  const membershipState = resourceMembershipState(memberships, "agent", node.id);
-  const pending = membershipMutation.isPending &&
-    membershipMutation.variables?.resourceType === "agent" &&
-    membershipMutation.variables.resourceId === node.id;
-  const starPending = pending && membershipMutation.variables?.starred !== undefined;
-  const joinLeavePending = pending && membershipMutation.variables?.starred === undefined;
-  const starred = isStarred(memberships, "agent", node.id);
 
   return (
     <div style={{ paddingLeft: depth * 24 }}>
       <Link
         to={agent ? agentUrl(agent) : `/agents/${node.id}`}
-        className={cn(
-          "group flex items-center gap-3 rounded-lg px-3 py-2 hover:bg-accent/50 transition-colors w-full text-left no-underline text-inherit",
-          agent?.pausedAt && tab !== "paused" && "opacity-50",
-          membershipState === "left" && "sm:text-foreground/55",
-        )}
+        className="group flex items-center gap-3 rounded-lg px-3 py-2 hover:bg-accent/50 transition-colors w-full text-left no-underline text-inherit"
       >
         {hasInvalidOrgChain ? (
           <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label="Invalid reporting chain" />
@@ -724,38 +646,6 @@ function OrgTreeNode({
               <AgentStatusBadge status={node.status} />
             </span>
           </div>
-          <MembershipAction
-            state={membershipState}
-            pending={joinLeavePending}
-            pendingState={joinLeavePending ? membershipMutation.variables?.state : null}
-            resourceName={node.name}
-            onJoin={() => membershipMutation.mutate({
-              resourceType: "agent",
-              resourceId: node.id,
-              resourceName: node.name,
-              state: "joined",
-            })}
-            onLeave={() => membershipMutation.mutate({
-              resourceType: "agent",
-              resourceId: node.id,
-              resourceName: node.name,
-              state: "left",
-            })}
-          />
-          <div className="hidden sm:flex items-center gap-3">
-            <StarToggle
-              size="row"
-              starred={starred}
-              pending={starPending}
-              resourceName={node.name}
-              onToggle={(next) => membershipMutation.mutate({
-                resourceType: "agent",
-                resourceId: node.id,
-                resourceName: node.name,
-                starred: next,
-              })}
-            />
-          </div>
         </div>
       </Link>
       {node.reports && node.reports.length > 0 && (
@@ -770,9 +660,6 @@ function OrgTreeNode({
               environmentByAgentId={environmentByAgentId}
               environmentDataLoading={environmentDataLoading}
               showEnvironment={showEnvironment}
-              tab={tab}
-              memberships={memberships}
-              membershipMutation={membershipMutation}
               builtInByAgentId={builtInByAgentId}
               onConfigureBuiltIn={onConfigureBuiltIn}
             />

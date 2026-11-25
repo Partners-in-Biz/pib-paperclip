@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createHash } from "node:crypto";
-import { driveSave, registerDriveReplies, DRIVE_EVENTS, DRIVE_SUBFOLDERS } from "../src/drive.js";
+import { driveSave, registerDriveReplies, DRIVE_ACK_TIMEOUT_MS, DRIVE_EVENTS, DRIVE_SUBFOLDERS } from "../src/drive.js";
 import { CRM_PLUGIN_ID } from "../src/crm-projection.js";
 import { fakeCtx } from "./helpers/fake-ctx.js";
 
@@ -53,12 +53,12 @@ describe("drive save", () => {
   });
 
   it("(4) never throws: emit failures + invalid inputs", async () => {
-    let result = await driveSave({ events: { on: vi.fn(), emit: vi.fn().mockRejectedValue(new Error("E")) } },
+    let result = await driveSave({ events: { on: vi.fn(), emit: vi.fn().mockRejectedValue(new Error("E")), listLifecycle: vi.fn(), acknowledgeLifecycle: vi.fn() } },
       { companyId: "co-1", kind: "x", name: "x", mimeType: "x", bytes: Buffer.from("x") });
     expect(result.status).toBe("failed");
     if (result.status === "failed") expect(result.reason).toBe("emit_failed");
 
-    result = await driveSave({ events: { on: vi.fn(), emit: vi.fn(() => { throw new Error("E"); }) } },
+    result = await driveSave({ events: { on: vi.fn(), emit: vi.fn(() => { throw new Error("E"); }), listLifecycle: vi.fn(), acknowledgeLifecycle: vi.fn() } },
       { companyId: "co-1", kind: "x", name: "x", mimeType: "x", bytes: Buffer.from("x") });
     if (result.status === "failed") expect(result.reason).toBe("emit_failed");
 
@@ -190,5 +190,12 @@ describe("subfolder and client (PAR-4064)", () => {
     expect(result.status).toBe("failed");
     if (result.status === "failed") expect(result.reason).toBe("invalid_input");
     expect(fake.emitted).toHaveLength(0);
+  });
+});
+
+describe("DRIVE_ACK_TIMEOUT_MS (PAR-10212)", () => {
+  it("ends the ack wait before the tool gateway's ~10 s cut, with room for the reply", () => {
+    expect(DRIVE_ACK_TIMEOUT_MS).toBeGreaterThanOrEqual(5_000);
+    expect(DRIVE_ACK_TIMEOUT_MS).toBeLessThanOrEqual(8_000);
   });
 });

@@ -3,9 +3,11 @@ import { NavLink } from "@/lib/router";
 import { SIDEBAR_SCROLL_RESET_STATE } from "../lib/navigation-scroll";
 import { cn, SIDEBAR_RAIL_HIDDEN_LABEL } from "../lib/utils";
 import { useSidebar } from "../context/SidebarContext";
+import { useMemberRestriction } from "../context/MemberRestrictionContext";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { LucideIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { TruncatedText } from "./TruncatedText";
 
 /**
  * Forces the full-label (non-rail) presentation for any `SidebarNavItem`
@@ -91,10 +93,13 @@ export function SidebarNavItem({
   // A contextual takeover forces full labels even when the saved global app
   // sidebar preference is collapsed.
   const forceExpanded = useSidebarNavExpanded();
+  // PAR-12608 4.6: no menu entry for a page closed to a restricted member.
+  const { isPageHidden } = useMemberRestriction();
   // The icon-only rail presentation only applies when pinned collapsed and not
   // peeking; a peek/expanded panel — or a contextual takeover — restores
   // the full label + badge.
   const rail = collapsed && !peeking && !forceExpanded;
+  if (isPageHidden(to)) return null;
 
   const hasBadge = badge != null && badge > 0;
   const hasLive = liveCount != null && liveCount > 0;
@@ -167,7 +172,7 @@ export function SidebarNavItem({
           )}
         </span>
       ) : null}
-      <span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : cn("min-w-0 flex-1 truncate", labelClassName)}>{label}</span>
+      <TruncatedText className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : cn("min-w-0 flex-1 truncate", labelClassName)}>{label}</TruncatedText>
       {!rail && trailing}
       {!rail && textBadge && (
         <Badge variant="ghost"
@@ -197,6 +202,7 @@ export function SidebarNavItem({
       )}
       {!rail && hasBadge && (
         <Badge variant="ghost"
+          aria-label={badgeLabel ? `${badge} ${badgeLabel}` : undefined}
           className={cn(
             "ml-auto px-1.5 leading-none",
             badgeTone === "danger"

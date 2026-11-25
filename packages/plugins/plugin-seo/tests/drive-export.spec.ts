@@ -1,9 +1,13 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
+import { DRIVE_ACK_TIMEOUT_MS } from "@partnersinbiz/pib-plugin-kit";
 import { NAMESPACE } from "../src/namespace.js";
 import { createEnv, type Actor } from "../src/service/common.js";
 import { createPreview } from "../src/service/preview.js";
 import { captureSnapshot } from "../src/service/snapshots.js";
+
+// createPreview does a cold module import and a real render; the deploy runner is loaded, so 5s/1s defaults flake.
+vi.setConfig({ testTimeout: 30_000 });
 
 // Mock driveSave at the kit level
 const { fakeDriveSave } = vi.hoisted(() => ({ fakeDriveSave: vi.fn() }));
@@ -62,12 +66,14 @@ describe("createPreview saves HTML preview to Drive", () => {
 
     expect(result).toHaveProperty("previewId");
     expect(result.reviewStatus).toBe("pending");
-    await vi.waitFor(() => expect(fakeDriveSave).toHaveBeenCalled());
+    await vi.waitFor(() => expect(fakeDriveSave).toHaveBeenCalled(), { timeout: 15_000 });
 
     const opts = fakeDriveSave.mock.calls[0]![1] as Record<string, unknown>;
     expect(opts.subfolder).toBe("03 Deliverables");
     expect(opts.mimeType).toBe("text/html");
     expect(String(opts.name)).toMatch(/^\d{4}-\d{2}-\d{2} .+ v\d{2}\.html$/);
+    // PAR-10212: the kit's shared ack wait, under the tool gateway's ~10 s cut.
+    expect(opts.timeoutMs).toBe(DRIVE_ACK_TIMEOUT_MS);
   });
 
   it.each([{ status: "failed" as const, reason: "drive_not_bound" }, { status: "no_ack" as const }, { rejected: true }])
@@ -80,7 +86,7 @@ describe("createPreview saves HTML preview to Drive", () => {
 
     expect(result).toHaveProperty("previewId");
     expect(result.reviewStatus).toBe("pending");
-    await vi.waitFor(() => expect(fakeDriveSave).toHaveBeenCalled());
+    await vi.waitFor(() => expect(fakeDriveSave).toHaveBeenCalled(), { timeout: 15_000 });
   });
 });
 
@@ -114,7 +120,7 @@ describe("captureSnapshot saves JSON audit to Drive", () => {
 
     expect(result).toHaveProperty("snapshotId");
     expect(result.created).toBe(true);
-    await vi.waitFor(() => expect(fakeDriveSave).toHaveBeenCalled());
+    await vi.waitFor(() => expect(fakeDriveSave).toHaveBeenCalled(), { timeout: 15_000 });
 
     const opts = fakeDriveSave.mock.calls[0]![1] as Record<string, unknown>;
     expect(opts.subfolder).toBe("04 Reports");
@@ -141,6 +147,6 @@ describe("captureSnapshot saves JSON audit to Drive", () => {
 
     expect(result).toHaveProperty("snapshotId");
     expect(result.created).toBe(true);
-    await vi.waitFor(() => expect(fakeDriveSave).toHaveBeenCalled());
+    await vi.waitFor(() => expect(fakeDriveSave).toHaveBeenCalled(), { timeout: 15_000 });
   });
 });

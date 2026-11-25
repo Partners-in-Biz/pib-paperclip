@@ -19,12 +19,25 @@ import {
 } from "./domain.js";
 import { PARTNER_TOOLS } from "./tools.js";
 import { SKILLS } from "./skills.js";
-import { COCKPIT_ROUTE, createSkillSyncer, registerModuleWatch, registerRoleWatch, rememberPluginUiBase, SETUP_STATUS_ROUTE, trackJob } from "@partnersinbiz/pib-plugin-kit";
+import {
+  COCKPIT_ROUTE,
+  createAccessGuard,
+  createSkillSyncer,
+  registerModuleWatch,
+  registerRoleWatch,
+  rememberPluginUiBase,
+  SETUP_STATUS_ROUTE,
+  trackJob,
+  type AccessGuard,
+} from "@partnersinbiz/pib-plugin-kit";
+import { ACCESS_TABLE } from "./access-table.js";
+import { PLUGIN_ID } from "./namespace.js";
 import { cockpitSnapshot, publishAllCockpit } from "./cockpit.js";
 import { publishAllSetupStatus, rememberCompany, setupStatus } from "./setup-status.js";
 
 let skillSync: ReturnType<typeof createSkillSyncer> | null = null;
 let pluginCtx: PluginContext | null = null;
+let guard: AccessGuard | null = null;
 
 interface LinkRow {
   id: string;
@@ -53,26 +66,33 @@ const plugin = definePlugin({
     skillSync = createSkillSyncer(ctx, SKILLS);
     registerModuleWatch(ctx);
     registerRoleWatch(ctx);
+    // Every action, tool and API route goes through the access guard (PAR-12681). With the switch off it is a pass-through.
+    const g = createAccessGuard(ctx, { pluginKey: PLUGIN_ID, table: ACCESS_TABLE });
+    guard = g;
     for (const tool of PARTNER_TOOLS) {
-      ctx.tools.register(tool.name, tool, async (params, run) => {
-        await skillSync?.ensure(run.companyId).catch(() => undefined);
+      g.tool(tool.name, tool, async (params, run) => {
+        // A tool call never waits long for the skill sync (kit `soon`).
+        await skillSync?.soon(run.companyId);
         return runTool(ctx, tool.name, params, run).then(normalizeToolResult);
       });
     }
-    ctx.actions.register("partners.load", async (params, context) => {
+    g.action("partners.load", async (params, context) => {
       const companyId = requiredCompany(context);
-      await skillSync?.ensure(companyId).catch(() => undefined);
+      // The page never waits long for the skill sync (kit `soon`).
+      await skillSync?.soon(companyId);
       // The page reports /_plugins/<installation uuid>/ui/ so Setup can link the settings page.
       await rememberPluginUiBase(ctx, params.uiBase);
       await rememberCompany(ctx, companyId);
       return load(ctx, companyId);
     });
-    ctx.actions.register("partners.sync-skills", async (_params, context) => ({ results: await skillSync?.force(requiredCompany(context)) }));
-    ctx.actions.register("partners.propose-link", (params, context) => proposeLink(ctx, requiredCompany(context), params));
-    ctx.actions.register("partners.accept-link", (params, context) => acceptLink(ctx, requiredCompany(context), params));
-    ctx.actions.register("partners.propose-grant", (params, context) => proposeNamedGrant(ctx, requiredCompany(context), params));
-    ctx.actions.register("partners.accept-grant", (params, context) => acceptNamedGrant(ctx, context, params));
-    ctx.actions.register("partners.revoke-grant", (params, context) => revokeGrant(ctx, requiredCompany(context), params));
+    g.action("partners.sync-skills", async (_params, context) => ({ results: await skillSync?.force(requiredCompany(context)) }));
+    g.action("partners.propose-link", async (params, context) => proposeLink(ctx, requiredCompany(context), params));
+    g.action("partners.accept-link", async (params, context) => acceptLink(ctx, requiredCompany(context), params));
+    g.action("partners.propose-grant", async (params, context) => proposeNamedGrant(ctx, requiredCompany(context), params));
+    g.action("partners.accept-grant", async (params, context) => acceptNamedGrant(ctx, context, params));
+    g.action("partners.revoke-grant", async (params, context) => revokeGrant(ctx, requiredCompany(context), params));
+    g.apiRoute(SETUP_STATUS_ROUTE.routeKey, async (input) => ({ status: 200, body: await setupStatus(ctx, input.companyId) }));
+    g.apiRoute(COCKPIT_ROUTE.routeKey, async (input) => ({ status: 200, body: await cockpitSnapshot(ctx, input.companyId) }));
     ctx.events.on("company.created", async (event) => {
       if (event.companyId) await skillSync?.ensure(event.companyId);
     });
@@ -87,14 +107,9 @@ const plugin = definePlugin({
     return { status: "ok", message: "Partners plugin ready" };
   },
   async onApiRequest(input) {
-    if (!pluginCtx) return { status: 503, body: { error: "Partners plugin is not ready" } };
-    if (input.routeKey === SETUP_STATUS_ROUTE.routeKey) {
-      return { status: 200, body: await setupStatus(pluginCtx, input.companyId) };
-    }
-    if (input.routeKey === COCKPIT_ROUTE.routeKey) {
-      return { status: 200, body: await cockpitSnapshot(pluginCtx, input.companyId) };
-    }
-    return { status: 404, body: { error: "Not found" } };
+    if (!pluginCtx || !guard) return { status: 503, body: { error: "Partners plugin is not ready" } };
+    // An unknown key under the switch `off` answers as before (404); under report and enforce the guard refuses it.
+    return guard.handleApiRequest(input, async () => ({ status: 404, body: { error: "Not found" } }));
   },
 });
 

@@ -1,5 +1,20 @@
 import { createContext, useCallback, useContext, useMemo, useRef, useState, type ReactNode } from "react";
-import type { IssueWorkMode } from "@paperclipai/shared";
+import type { IssueWorkMode, PersonalNote, PersonalNoteColor } from "@paperclipai/shared";
+
+export interface NewNoteDefaults {
+  title?: string;
+  body?: string;
+  tags?: string[];
+  color?: PersonalNoteColor;
+  pinned?: boolean;
+  projectId?: string | null;
+  navigateOnCreate?: boolean;
+}
+
+export interface NewNoteHandlers {
+  onCreated?: (note: PersonalNote) => void;
+  onClosed?: () => void;
+}
 
 interface NewIssueDefaults {
   status?: string;
@@ -13,11 +28,12 @@ interface NewIssueDefaults {
   parentTitle?: string;
   executionWorkspaceId?: string;
   executionWorkspaceMode?: string;
-  parentExecutionWorkspaceLabel?: string;
   assigneeAgentId?: string;
   assigneeUserId?: string;
   title?: string;
   description?: string;
+  /** Open the created task after submission; disabled unless the caller opts in. */
+  navigateOnCreate?: boolean;
 }
 
 /** The created issue, as reported back to whoever opened the New Task dialog. */
@@ -55,6 +71,11 @@ interface DialogContextValue {
   closeNewIssue: () => void;
   /** Called by the New Task dialog after it created an issue. */
   notifyNewIssueCreated: (issue: NewIssueCreatedSummary) => void;
+  newNoteOpen: boolean;
+  newNoteDefaults: NewNoteDefaults;
+  openNewNote: (defaults?: NewNoteDefaults, handlers?: NewNoteHandlers) => void;
+  closeNewNote: () => void;
+  notifyNewNoteCreated: (note: PersonalNote) => void;
   newProjectOpen: boolean;
   openNewProject: () => void;
   closeNewProject: () => void;
@@ -80,6 +101,8 @@ type DialogStateValue = Pick<
   DialogContextValue,
   | "newIssueOpen"
   | "newIssueDefaults"
+  | "newNoteOpen"
+  | "newNoteDefaults"
   | "newProjectOpen"
   | "newGoalOpen"
   | "newGoalDefaults"
@@ -97,6 +120,8 @@ const DialogActionsContext = createContext<DialogActionsValue | null>(null);
 export function DialogProvider({ children }: { children: ReactNode }) {
   const [newIssueOpen, setNewIssueOpen] = useState(false);
   const [newIssueDefaults, setNewIssueDefaults] = useState<NewIssueDefaults>({});
+  const [newNoteOpen, setNewNoteOpen] = useState(false);
+  const [newNoteDefaults, setNewNoteDefaults] = useState<NewNoteDefaults>({});
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [newGoalOpen, setNewGoalOpen] = useState(false);
   const [newGoalDefaults, setNewGoalDefaults] = useState<NewGoalDefaults>({});
@@ -106,6 +131,17 @@ export function DialogProvider({ children }: { children: ReactNode }) {
   const [onboardingRouteDismissed, setOnboardingRouteDismissed] = useState(false);
 
   const newIssueHandlersRef = useRef<NewIssueHandlers | null>(null);
+  const newNoteHandlersRef = useRef<NewNoteHandlers | null>(null);
+
+  const endNewNoteHandlers = useCallback(() => {
+    const handlers = newNoteHandlersRef.current;
+    newNoteHandlersRef.current = null;
+    try {
+      handlers?.onClosed?.();
+    } catch {
+      // A caller's callback must never break the host dialog.
+    }
+  }, []);
 
   const endNewIssueHandlers = useCallback(() => {
     const handlers = newIssueHandlersRef.current;
@@ -135,6 +171,29 @@ export function DialogProvider({ children }: { children: ReactNode }) {
     if (newIssueHandlersRef.current) newIssueHandlersRef.current.onCreated = undefined;
     try {
       onCreated?.(issue);
+    } catch {
+      // A caller's callback must never break the host dialog.
+    }
+  }, []);
+
+  const openNewNote = useCallback((defaults: NewNoteDefaults = {}, handlers?: NewNoteHandlers) => {
+    endNewNoteHandlers();
+    newNoteHandlersRef.current = handlers ?? null;
+    setNewNoteDefaults(defaults);
+    setNewNoteOpen(true);
+  }, [endNewNoteHandlers]);
+
+  const closeNewNote = useCallback(() => {
+    endNewNoteHandlers();
+    setNewNoteOpen(false);
+    setNewNoteDefaults({});
+  }, [endNewNoteHandlers]);
+
+  const notifyNewNoteCreated = useCallback((note: PersonalNote) => {
+    const onCreated = newNoteHandlersRef.current?.onCreated;
+    if (newNoteHandlersRef.current) newNoteHandlersRef.current.onCreated = undefined;
+    try {
+      onCreated?.(note);
     } catch {
       // A caller's callback must never break the host dialog.
     }
@@ -180,6 +239,8 @@ export function DialogProvider({ children }: { children: ReactNode }) {
     () => ({
       newIssueOpen,
       newIssueDefaults,
+      newNoteOpen,
+      newNoteDefaults,
       newProjectOpen,
       newGoalOpen,
       newGoalDefaults,
@@ -191,6 +252,8 @@ export function DialogProvider({ children }: { children: ReactNode }) {
     [
       newIssueOpen,
       newIssueDefaults,
+      newNoteOpen,
+      newNoteDefaults,
       newProjectOpen,
       newGoalOpen,
       newGoalDefaults,
@@ -206,6 +269,9 @@ export function DialogProvider({ children }: { children: ReactNode }) {
       openNewIssue,
       closeNewIssue,
       notifyNewIssueCreated,
+      openNewNote,
+      closeNewNote,
+      notifyNewNoteCreated,
       openNewProject,
       closeNewProject,
       openNewGoal,
@@ -220,6 +286,9 @@ export function DialogProvider({ children }: { children: ReactNode }) {
       openNewIssue,
       closeNewIssue,
       notifyNewIssueCreated,
+      openNewNote,
+      closeNewNote,
+      notifyNewNoteCreated,
       openNewProject,
       closeNewProject,
       openNewGoal,

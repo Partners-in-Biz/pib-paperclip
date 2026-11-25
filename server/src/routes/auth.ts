@@ -10,6 +10,26 @@ import {
 import { unauthorized } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { resolveSentryDsns } from "../sentry-dsn.js";
+import { logger } from "../middleware/logger.js";
+import { loadBoardBootstrap } from "../services/board-bootstrap.js";
+import {
+  memberRestrictionForMembership,
+  memberRestrictionResolver,
+} from "../services/member-restriction/index.js";
+
+/**
+ * The signed-in person's own restriction in each company he belongs to, from
+ * the fields his actor memberships already carry; a membership without them is
+ * read through the resolver (a failed read answers 503, never "not restricted").
+ */
+async function loadSessionMemberRestrictions(db: Db, actor: Express.Request["actor"]) {
+  if (!actor.userId) return [];
+  const resolve = memberRestrictionResolver(db);
+  return Promise.all((actor.memberships ?? []).map(async (membership) => {
+    const restriction = await memberRestrictionForMembership(resolve, actor.userId!, membership.companyId, membership);
+    return { companyId: membership.companyId, restricted: restriction.restricted, mode: restriction.mode };
+  }));
+}
 
 async function loadCurrentUserProfile(db: Db, userId: string) {
   const user = await db
@@ -43,8 +63,20 @@ export function authRoutes(db: Db) {
       throw unauthorized("Board authentication required");
     }
 
-    const user = await loadCurrentUserProfile(db, req.actor.userId);
-    res.json(authSessionSchema.parse({
+    const bootstrap = (req.actor.source === "session" || req.actor.source === "cloud_tenant")
+      && Array.isArray(req.actor.companyIds)
+      ? loadBoardBootstrap(db, { userId: req.actor.userId, companyIds: req.actor.companyIds }).catch((err) => {
+        logger.warn({ err }, "failed to load optional board bootstrap");
+        return undefined;
+      })
+      : Promise.resolve(undefined);
+    const [user, boardBootstrap, memberRestrictions] = await Promise.all([
+      loadCurrentUserProfile(db, req.actor.userId),
+      bootstrap,
+      loadSessionMemberRestrictions(db, req.actor),
+    ]);
+    res.setHeader("Cache-Control", "private, no-store");
+    const session = authSessionSchema.parse({
       session: {
         id: `paperclip:${req.actor.source ?? "none"}:${req.actor.userId}`,
         userId: req.actor.userId,
@@ -57,7 +89,13 @@ export function authRoutes(db: Db) {
       sentryDsn: resolveSentryDsns().frontend,
       // Match the server SDK's runtime environment, including in reused images.
       sentryEnvironment: process.env.SENTRY_ENVIRONMENT || null,
-    }));
+      memberRestrictions,
+    });
+    // The bootstrap carries full company records. A person restricted under
+    // `enforce` anywhere gets none; the screen falls back to `GET /api/companies`,
+    // which reduces those records (PAR-12608 4.6, "Company record").
+    const restrictedSomewhere = memberRestrictions.some((entry) => entry.restricted && entry.mode === "enforce");
+    res.json({ ...session, ...(boardBootstrap && !restrictedSomewhere ? { boardBootstrap } : {}) });
   });
 
   router.get("/profile", async (req, res) => {

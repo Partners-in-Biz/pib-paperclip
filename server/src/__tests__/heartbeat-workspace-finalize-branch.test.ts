@@ -1,3 +1,4 @@
+import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -7,12 +8,15 @@ import { promisify } from "node:util";
 import { and, asc, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  costEvents,
   activityLog,
   agentRuntimeState,
   agentTaskSessions,
   agentWakeupRequests,
   agents,
   companies,
+  authUsers,
+  companyMemberships,
   companySkills,
   createDb,
   documentRevisions,
@@ -41,7 +45,7 @@ import { instanceSettingsService } from "../services/instance-settings.ts";
 const execFileAsync = promisify(execFile);
 
 const adapterExecute = vi.hoisted(() =>
-  vi.fn(async () => ({
+  vi.fn(async (_input?: unknown) => ({
     exitCode: 0,
     signal: null,
     timedOut: false,
@@ -121,6 +125,7 @@ async function deleteHeartbeatRowsAfterActivityLogDrains(db: Db) {
     await db.delete(activityLog);
     await db.delete(heartbeatRunEvents);
     try {
+      await db.delete(costEvents);
       await db.delete(heartbeatRuns);
       await db.delete(agentWakeupRequests);
       return;
@@ -164,6 +169,8 @@ async function seedRunTarget(db: Db, repoRoot: string) {
     createdAt: new Date(),
     updatedAt: new Date(),
   });
+  await db.insert(authUsers).values({ id: "responsible-user", name: "Fixture user", email: "responsible-user@example.test", createdAt: new Date(), updatedAt: new Date() }).onConflictDoNothing();
+  await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "member" });
   await db.insert(projects).values({
     id: projectId,
     companyId,
@@ -223,6 +230,7 @@ async function seedRunTarget(db: Db, repoRoot: string) {
 
 async function wakeIssue(heartbeat: Heartbeat, agentId: string, issueId: string) {
   return heartbeat.wakeup(agentId, {
+    causingActor: "system",
     source: "automation",
     triggerDetail: "system",
     reason: "issue_commented",
@@ -263,7 +271,7 @@ describeEmbeddedPostgres("heartbeat workspace finalization branch guard", () => 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-finalize-branch-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   afterEach(async () => {
     // Await every in-flight background heartbeat run to quiescence before the
@@ -297,15 +305,17 @@ describeEmbeddedPostgres("heartbeat workspace finalization branch guard", () => 
     await deleteHeartbeatRowsAfterActivityLogDrains(db);
     await db.delete(issueComments);
     await db.delete(issues);
+    await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
     await db.delete(projects);
     await db.delete(agentWakeupRequests);
     await db.delete(agentRuntimeState);
     await db.delete(agents);
-    await db.delete(executionWorkspaces);
     await db.delete(environments);
     await db.delete(companySkills);
+    await db.delete(companyMemberships);
     await db.delete(companies);
+    await db.delete(authUsers).where(eq(authUsers.id, "responsible-user"));
   });
 
   afterAll(async () => {
@@ -533,5 +543,51 @@ describeEmbeddedPostgres("heartbeat workspace finalization branch guard", () => 
         actualBranchName: publishBranch,
       },
     });
+  }, 20_000);
+
+  // PAR-14472: worktree cleanup can archive the workspace and delete the
+  // worktree before finalize runs. Finalize must not record a failure then.
+  it("skips the branch check when cleanup archived the worktree before finalization", async () => {
+    const repoRoot = await createGitRepo();
+    tempRoots.push(repoRoot);
+    const { agentId, issueId } = await seedRunTarget(db, repoRoot);
+    let executionWorkspaceId: string | null = null;
+
+    adapterExecute.mockImplementationOnce(async (input) => {
+      const workspace = readAdapterWorkspace(input);
+      executionWorkspaceId = workspace.executionWorkspaceId;
+      await db.update(issues).set({ status: "done", updatedAt: new Date() }).where(eq(issues.id, issueId));
+      await runGit(repoRoot, ["worktree", "remove", "--force", workspace.cwd]);
+      await db.update(executionWorkspaces)
+        .set({ status: "archived", closedAt: new Date(), updatedAt: new Date() })
+        .where(eq(executionWorkspaces.id, workspace.executionWorkspaceId));
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        summary: "Adapter completed; cleanup archived the worktree first.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const heartbeat = heartbeatService(db);
+    const run = await wakeIssue(heartbeat, agentId, issueId);
+    expect(run).not.toBeNull();
+    const finishedRun = await waitForRunToFinish(heartbeat, run!.id);
+    expect(finishedRun).toMatchObject({ status: "succeeded", errorCode: null, error: null });
+    await waitForRuntimeStateLastRun(db, agentId, run!.id);
+
+    const finalizeOps = await listFinalizeOperations(db, run!.id);
+    expect(finalizeOps).toHaveLength(1);
+    expect(finalizeOps[0]).toMatchObject({ status: "succeeded", executionWorkspaceId });
+    expect(finalizeOps[0]?.metadata).toMatchObject({
+      closedWorkspaceSkip: {
+        executionWorkspaceId,
+        status: "archived",
+        reason: "workspace_closed_before_finalize",
+      },
+    });
+    expect(finalizeOps[0]?.metadata).not.toHaveProperty("managedGitWorktreeBranch");
   }, 20_000);
 });

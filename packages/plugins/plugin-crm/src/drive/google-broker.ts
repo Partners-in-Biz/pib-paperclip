@@ -26,7 +26,7 @@ import {
 } from "./broker.js";
 import { DRIVE_TRANSFER_MAX_BYTES } from "@partnersinbiz/pib-plugin-kit";
 import { GoogleAuthError, serviceAccountToken, type GoogleFetch, type ServiceAccountKey } from "./google-sa.js";
-import type { DriveFileInfo, DriveThumbnail } from "./broker.js";
+import type { DriveFileInfo, DriveThumbnail, TrashResult } from "./broker.js";
 
 const DRIVE = "https://www.googleapis.com/drive/v3";
 const DRIVE_UPLOAD = "https://www.googleapis.com/upload/drive/v3";
@@ -218,6 +218,37 @@ export function createGoogleDriveBroker(
     return file ? toRegistry(type, id, file) : null;
   }
 
+  /**
+   * ONE query for the sub-folder at `subPath` below an entity folder (PAR-10250): every prefix of the path is tagged
+   * `pibEntityType=subfolder` with `pibEntityId=idTag(<id>/<prefix>)`. The chain is checked in code (first folder under the
+   * entity folder, each next under the previous, each prefix found once); anything else is null and the caller takes the full path.
+   * `folderId` is the entity folder when the caller already resolved it (no second lookup).
+   */
+  async function findSubfolder(type: DriveEntityType, id: string, subPath: string, folderId?: string): Promise<{ folder_id: string } | null> {
+    const segments = subPath.split("/").filter(Boolean);
+    if (segments.length === 0) return null;
+    const prefixes = segments.map((_, i) => segments.slice(0, i + 1).join("/"));
+    const rootId = folderId ?? (await resolve(type, id))?.folder_id;
+    if (!rootId) return null;
+    const ids = prefixes.map((p) => `appProperties has { key='pibEntityId' and value=${q(idTag(`${id}/${p}`))} }`).join(" or ");
+    const files = await list(
+      `mimeType = '${FOLDER_MIME}' and trashed = false and appProperties has { key='pibEntityType' and value='subfolder' } and (${ids})`,
+      FOLDER_FIELDS,
+      prefixes.length * 2 + 2,
+    );
+    let parentId = rootId;
+    let found: DriveFile | undefined;
+    for (const prefix of prefixes) {
+      const tag = idTag(`${id}/${prefix}`);
+      const matches = files.filter((f) => f.appProperties?.pibEntityType === "subfolder" && f.appProperties?.pibEntityId === tag);
+      if (matches.length !== 1) return null;
+      found = matches[0]!;
+      if (!found.parents?.includes(parentId)) return null;
+      parentId = found.id;
+    }
+    return found ? { folder_id: found.id } : null;
+  }
+
   async function createFolder(name: string, parentId: string, path: string, props: Record<string, string>): Promise<DriveFile> {
     return json<DriveFile>("POST", `${DRIVE}/files?${shared}&fields=${encodeURIComponent(FOLDER_FIELDS)}`, {
       name,
@@ -235,9 +266,13 @@ export function createGoogleDriveBroker(
   }
 
   function ensure(body: EnsureBody): Promise<EnsureResult> {
-    return serialized(`${sharedDriveId}|${body.entity_type}|${body.entity_id}`, () => ensureUnlocked(body));
+    const queuedAt = now();
+    return serialized(`${sharedDriveId}|${body.entity_type}|${body.entity_id}`, () => ensureUnlocked(body, now() - queuedAt));
   }
-  async function ensureUnlocked(body: EnsureBody): Promise<EnsureResult> {
+  async function ensureUnlocked(body: EnsureBody, lockWaitMs = 0): Promise<EnsureResult> {
+    const counts = { driveLookups: 0, adoptedUntagged: 0 };
+    const lookupRegistered = (t: DriveEntityType, i: string) => { counts.driveLookups++; return findRegistered(t, i); };
+    const childFolder = (p: string, n: string) => { counts.driveLookups++; return findChildFolder(p, n); };
     const { entity_type: type, entity_id: id, name } = body;
     // A fixed root such as "root:products" is the existing folder at its known path, not a new folder.
     const fixed = type === "root" ? DRIVE_ANCHORS[id] : undefined;
@@ -249,7 +284,7 @@ export function createGoogleDriveBroker(
     // pibComplete marks a folder whose standard sub-folders all exist; a folder that wants some gets it only after the last one.
     const tag: Record<string, string> = { pibEntityType: type, pibEntityId: idTag(body.entity_id), ...(wantsSubfolders ? {} : { pibComplete: "1" }), ...(body.created_by_run ? { pibRun: body.created_by_run.slice(0, 100) } : {}) };
 
-    let folder = await findRegistered(type, id);
+    let folder = await lookupRegistered(type, id);
     let created = false;
     if (!folder) {
       // The parent (and the fixed anchor folders above it) matter only when the folder has to be made or adopted.
@@ -271,7 +306,7 @@ export function createGoogleDriveBroker(
         parentPath = parent.path;
       }
       const path = parentPath ? `${parentPath}/${name}` : name;
-      const sameName = await findChildFolder(parentId, name);
+      const sameName = await childFolder(parentId, name);
       if (sameName && sameName.appProperties?.pibEntityType && sameName.appProperties.pibEntityType !== "subfolder") {
         throw new BrokerError(`Folder conflict: "${name}" under ${parentPath || "the Shared Drive root"} already belongs to ${sameName.appProperties.pibEntityType} ${sameName.appProperties.pibEntityId ?? ""}`, 409, false, sameName.id, path);
       }
@@ -301,7 +336,8 @@ export function createGoogleDriveBroker(
           child = known;
           leafCreated = false;
         } else {
-          const found = await findChildFolder(parent.id, segments[i]!);
+          const found = await childFolder(parent.id, segments[i]!);
+          if (found && found.appProperties?.pibEntityType !== "subfolder") counts.adoptedUntagged++;
           leafCreated = !found;
           child = found ?? (await createFolder(segments[i]!, parent.id, `${registered.path}/${here}`, { pibEntityType: "subfolder", pibEntityId: idTag(`${id}/${here}`) }));
           walked.set(here, child);
@@ -319,7 +355,7 @@ export function createGoogleDriveBroker(
       const done = await json<DriveFile>("PATCH", `${DRIVE}/files/${folder.id}?${shared}&fields=${encodeURIComponent(FOLDER_FIELDS)}`, { appProperties: { pibComplete: "1" } });
       registered = toRegistry(type, id, { ...folder, ...done, appProperties: { ...folder.appProperties, ...done.appProperties } });
     }
-    return { folder: registered, created, tree };
+    return { folder: registered, created, tree, stats: { lockWaitMs, ...counts } };
   }
 
   async function identity(overrideSharedDriveId?: string): Promise<IdentityResult> {
@@ -336,14 +372,16 @@ export function createGoogleDriveBroker(
     return { serviceAccountEmail: key.clientEmail, isMember };
   }
 
-  async function uploadFile(input: { name: string; bytes: Uint8Array; mimeType: string; parentFolderId?: string }): Promise<UploadResult> {
+  async function uploadFile(input: { name: string; bytes: Uint8Array; mimeType: string; parentFolderId?: string; timing?: { listMs?: number; postMs?: number } }): Promise<UploadResult> {
     if (input.bytes.byteLength > MAX_UPLOAD_BYTES) {
       throw new BrokerError(`File too large (${input.bytes.byteLength} bytes exceeds 5 MiB limit)`, 413, false, undefined, undefined, "too_large");
     }
     const parentId = input.parentFolderId || sharedDriveId;
     const sha256 = createHash("sha256").update(input.bytes).digest("hex");
 
+    const listStart = Date.now();
     const same = await list(`${q(parentId)} in parents and name = ${q(input.name)} and trashed = false`, "id,name,mimeType,size,webViewLink,parents,appProperties");
+    if (input.timing) input.timing.listMs = Date.now() - listStart;
     const dup = same.find((f) => f.appProperties?.pibSha256 === sha256);
     if (dup) {
       return { fileId: dup.id, name: dup.name, mimeType: dup.mimeType ?? input.mimeType, size: Number(dup.size ?? input.bytes.byteLength), sha256, webViewLink: dup.webViewLink ?? `https://drive.google.com/file/d/${dup.id}/view`, parentFolderId: parentId, deduplicated: true };
@@ -356,10 +394,12 @@ export function createGoogleDriveBroker(
       Buffer.from(input.bytes),
       Buffer.from(`\r\n--${boundary}--`),
     ]);
+    const postStart = Date.now();
     const res = await request("POST", `${DRIVE_UPLOAD}/files?uploadType=multipart&${shared}&fields=${encodeURIComponent("id,name,mimeType,size,webViewLink,parents")}`, {
       body,
       headers: { "Content-Type": `multipart/related; boundary=${boundary}` },
     });
+    if (input.timing) input.timing.postMs = Date.now() - postStart;
     if (res.status < 200 || res.status >= 300) throw toBrokerError(res.status, res.text);
     const file = JSON.parse(res.text) as DriveFile;
     if (typeof file.id !== "string") throw new BrokerError("Unexpected upload response", 200, false);
@@ -387,13 +427,37 @@ export function createGoogleDriveBroker(
   }
 
   async function fileMeta(fileId: string): Promise<DriveFileInfo | null> {
-    const res = await request("GET", `${DRIVE}/files/${encodeURIComponent(fileId)}?${shared}&fields=${encodeURIComponent("id,name,mimeType,size,parents,driveId,trashed")}`);
+    const res = await request("GET", `${DRIVE}/files/${encodeURIComponent(fileId)}?${shared}&fields=${encodeURIComponent("id,name,mimeType,size,parents,driveId,trashed,appProperties")}`);
     if (res.status === 404) return null;
     if (res.status < 200 || res.status >= 300) throw toBrokerError(res.status, res.text);
     const file = JSON.parse(res.text) as DriveFile & { driveId?: string; trashed?: boolean };
     // Only this company's Shared Drive: a file the service account can see elsewhere is not reachable here.
     if (typeof file.id !== "string" || file.trashed || file.driveId !== sharedDriveId) return null;
-    return fileInfo(file);
+    // A streamed save stores the file's sha256 (uploadFileStream); a fetch checks the bytes against it.
+    const sha = file.appProperties?.pibSha256;
+    return { ...fileInfo(file), ...(typeof sha === "string" && /^[0-9a-f]{64}$/i.test(sha) ? { sha256: sha.toLowerCase() } : {}) };
+  }
+
+  /** PAR-11108: Drive trash only (`trashed: true`, recoverable 30 days). Same Shared Drive check as fileMeta; folders need allowFolder. */
+  async function trashFile(fileId: string, opts: { allowFolder?: boolean } = {}): Promise<TrashResult> {
+    const url = `${DRIVE}/files/${encodeURIComponent(fileId)}?${shared}`;
+    const res = await request("GET", `${url}&fields=${encodeURIComponent("id,name,mimeType,driveId,trashed")}`);
+    if (res.status === 404) return { status: "not_found" };
+    if (res.status < 200 || res.status >= 300) throw toBrokerError(res.status, res.text);
+    const file = JSON.parse(res.text) as DriveFile & { driveId?: string; trashed?: boolean };
+    if (typeof file.id !== "string" || file.driveId !== sharedDriveId) return { status: "not_found" };
+    const mimeType = file.mimeType ?? "application/octet-stream";
+    if (mimeType === "application/vnd.google-apps.folder" && opts.allowFolder !== true) return { status: "is_folder" };
+    if (file.trashed) return { status: "trashed", id: file.id, name: file.name, mimeType, alreadyTrashed: true };
+    const patch = await request("PATCH", `${url}&fields=${encodeURIComponent("id,name,mimeType,trashed")}`, {
+      body: JSON.stringify({ trashed: true }),
+      headers: { "Content-Type": "application/json" },
+    });
+    if (patch.status === 404) return { status: "not_found" };
+    if (patch.status < 200 || patch.status >= 300) throw toBrokerError(patch.status, patch.text);
+    const done = JSON.parse(patch.text) as DriveFile & { trashed?: boolean };
+    if (done.trashed !== true) throw new BrokerError("Drive did not confirm the trash", 502, true);
+    return { status: "trashed", id: file.id, name: done.name ?? file.name, mimeType };
   }
 
   async function bearer(): Promise<string> {
@@ -574,5 +638,5 @@ export function createGoogleDriveBroker(
     return { body: res.body as ReadableStream<Uint8Array>, size: size !== null && Number.isFinite(size) ? size : null };
   }
 
-  return { resolve, ensure, identity, uploadFile, uploadFileStream, listFiles, fileMeta, downloadFile, downloadStream, thumbnail };
+  return { resolve, findSubfolder, ensure, identity, uploadFile, uploadFileStream, listFiles, fileMeta, trashFile, downloadFile, downloadStream, thumbnail };
 }

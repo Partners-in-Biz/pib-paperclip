@@ -13,6 +13,10 @@
  * - USD_PER_CREDIT: live `/estimate` answers (Kling 3.0 Turbo 8.960 credits = $0.560; Soul 1.500 credits = $0.094).
  *
  * Rates are before any customer discount, so the table never prices below what Higgsfield charges.
+ *
+ * Lip-sync endpoints (PAR-8435) are billed per second of output: `PER_SECOND_USD`, from the PAR-8432 bake-off submits
+ * (Seedance 2.5 480p $0.2056/s, i.e. the 16:9 token rate above; Wan 3.0 Prime 480p $0.068/s). Only those resolutions
+ * are priced; any other is refused as `no_price`. The settle check below catches drift on the real bill.
  */
 import { StudioError } from "./errors.js";
 
@@ -24,6 +28,13 @@ export const SEEDANCE_RATES: Readonly<Record<string, Readonly<Record<string, num
   "bytedance/seedance-2.5/text-to-video": { "480p": 0.0214, "720p": 0.0214 },
 };
 
+/** Lip-sync model id -> resolution -> USD per second of output. */
+export const PER_SECOND_USD: Readonly<Record<string, Readonly<Record<string, number>>>> = {
+  "alibaba/wan-3.0-prime/reference-to-video": { "480p": 0.068 },
+  "bytedance/seedance-2.5/reference-to-video": { "480p": 0.2056 },
+  "bytedance/seedance-2.5/image-to-video": { "480p": 0.2056 },
+};
+
 /** resolution -> aspect ratio -> [width, height]. Only ratios Higgsfield's pricing pins (see header). */
 export const SEEDANCE_PIXELS: Readonly<Record<string, Readonly<Record<string, readonly [number, number]>>>> = {
   "480p": { "16:9": [854, 480] },
@@ -33,6 +44,8 @@ export const SEEDANCE_PIXELS: Readonly<Record<string, Readonly<Record<string, re
 
 /** Body keys that do not change the price. Any other key (a reference image, video or audio) means no local price. */
 const NEUTRAL_KEYS = new Set(["prompt", "duration", "resolution", "aspect_ratio", "bitrate_mode", "output_format", "generate_audio", "seed"]);
+/** Per-second models: the portrait and the audio don't change the price either; a video or document reference does. */
+const PER_SECOND_NEUTRAL_KEYS = new Set([...NEUTRAL_KEYS, "image_url", "image_urls", "audio_url", "audio_urls"]);
 
 function own<T>(table: Readonly<Record<string, T>>, key: unknown): T | undefined {
   return typeof key === "string" && Object.prototype.hasOwnProperty.call(table, key) ? table[key] : undefined;
@@ -40,7 +53,12 @@ function own<T>(table: Readonly<Record<string, T>>, key: unknown): T | undefined
 
 /** True when Studio prices this model from the table above, not from the provider's `/estimate`. */
 export function isTablePriced(modelId: string): boolean {
-  return own(SEEDANCE_RATES, modelId) !== undefined;
+  return own(SEEDANCE_RATES, modelId) !== undefined || own(PER_SECOND_USD, modelId) !== undefined;
+}
+
+/** Credits in thousandths, ceiled; integer maths so float noise never ceils a whole step up. */
+function ceilCredits(usd: number): number {
+  return Math.ceil(Number(((usd / USD_PER_CREDIT) * 1000).toFixed(6))) / 1000;
 }
 
 /**
@@ -48,11 +66,21 @@ export function isTablePriced(modelId: string): boolean {
  * provider). A table-priced model with any setting the table cannot price throws `no_price`; there are no defaults.
  */
 export function localCredits(modelId: string, body: Record<string, unknown>): number | null {
-  const rates = own(SEEDANCE_RATES, modelId);
-  if (!rates) return null;
   const refuse = (why: string): never => {
     throw new StudioError(`Studio has no price for ${modelId} ${why}, so nothing was started.`, "no_price");
   };
+  const perSecond = own(PER_SECOND_USD, modelId);
+  if (perSecond) {
+    const extra = Object.keys(body).find((key) => !PER_SECOND_NEUTRAL_KEYS.has(key));
+    if (extra !== undefined) refuse(`with "${extra}"`);
+    const { duration, resolution } = body;
+    if (typeof duration !== "number" || !Number.isInteger(duration) || duration <= 0) refuse("without a whole-second duration");
+    const usd = own(perSecond, resolution);
+    if (usd === undefined) refuse(`at resolution ${String(resolution)}`);
+    return ceilCredits((duration as number) * (usd as number));
+  }
+  const rates = own(SEEDANCE_RATES, modelId);
+  if (!rates) return null;
   const extra = Object.keys(body).find((key) => !NEUTRAL_KEYS.has(key));
   if (extra !== undefined) refuse(`with "${extra}" (only text-to-video without references is priced)`);
   const { duration, resolution, aspect_ratio: ratio } = body;

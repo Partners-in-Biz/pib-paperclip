@@ -292,3 +292,44 @@ describe("pages without landmarks", () => {
     expect(() => buildPreviewHtml(html, "https://x.co.za/", { bodyHtml: "<p>NEW</p>" }, opts)).toThrow(/contentSelector/);
   });
 });
+
+describe("buildPreviewHtml social tags (PAR-8665)", () => {
+  // Shape of the agriauctionssa.co.za head: theme + SEO plugin both print og/twitter tags, some twice, with
+  // name= and property= mixed, plus an SVG <title> in the body that must stay.
+  const LIVE_DUP = `<!doctype html><html><head><title>Live &amp; Online Farm Auctions | Agri Auctions SA</title>
+<meta name="description" content="Old description">
+<meta property="og:title" content="AGRI AUCTIONS SA"><meta property="og:title" content="AGRI AUCTIONS SA">
+<meta property="og:title" content="Live &amp; Online Farm Auctions | Agri Auctions SA">
+<meta property="og:description" content="Old og description"><meta name="og:description" content="Old og description 2">
+<meta name="twitter:title" content="Old twitter title"><meta property="twitter:title" content="Old twitter title 2">
+<meta name="twitter:description" content="Old twitter description"><title>Second title</title>
+<meta property="og:image" content="https://x.co.za/img.jpg"></head>
+<body><main><div class="entry-content"><svg><title>Logo</title></svg><p>copy</p></div></main></body></html>`;
+  const TITLE = "Farm Equipment Auctions Near Me | Agri Auctions SA";
+  const DESC = "Find farm equipment auctions near you across South Africa.";
+  const out = buildPreviewHtml(LIVE_DUP, "https://x.co.za/auctions/", { title: TITLE, metaDescription: DESC }, { token: "tok" });
+  const head = out.html.slice(0, out.html.search(/<\/head>/i));
+  const metas = (key: string) => [...head.matchAll(new RegExp(`<meta\\b[^>]*(?:name|property)="${key}"[^>]*content="([^"]*)"`, "gi"))].map((m) => m[1]);
+
+  it("outputs exactly one of each title/description tag, all matching the proposal", () => {
+    expect(metas("og:title")).toEqual([TITLE]);
+    expect(metas("twitter:title")).toEqual([TITLE]);
+    expect(metas("og:description")).toEqual([DESC]);
+    expect(metas("twitter:description")).toEqual([DESC]);
+    expect(metas("description")).toEqual([DESC]);
+    expect([...head.matchAll(/<title>([^<]*)<\/title>/gi)].map((m) => m[1])).toEqual([TITLE]);
+    expect(out.html).not.toMatch(/AGRI AUCTIONS SA"|Old (og|twitter)|Second title/);
+  });
+
+  it("leaves other head tags and body <title> elements alone", () => {
+    expect(metas("og:image")).toEqual(["https://x.co.za/img.jpg"]);
+    expect(out.html).toContain("<svg><title>Logo</title></svg>");
+  });
+
+  it("adds the social tags when the live page has none", () => {
+    const bare = buildPreviewHtml("<html><head></head><body><main><p>x</p></main></body></html>", "https://x.co.za/", { title: TITLE, metaDescription: DESC }, { token: "tok" });
+    const h = bare.html.slice(0, bare.html.search(/<\/head>/i));
+    for (const k of ["og:title", "twitter:title", "og:description", "twitter:description"]) expect(h).toContain(`"${k}"`);
+    expect(h).toContain(`<title>${TITLE}</title>`);
+  });
+});

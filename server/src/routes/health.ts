@@ -35,6 +35,7 @@ import {
   WORKSPACE_READINESS_USER_ID_HEADER,
 } from "../auth/workspace-login-handoff.js";
 import { serverVersion } from "../version.js";
+import { memberRestrictionKillSwitchOn } from "../services/member-restriction/index.js";
 import { getStartupRecoveryState } from "../startup-recovery-state.js";
 import { nativeRestartRecoverySummary } from "../services/native-runtime/native-restart-recovery.js";
 import {
@@ -127,6 +128,7 @@ export function healthRoutes(
     serverInfo?: ServerInfoSnapshot;
     databaseBackupHealth?: InspectDatabaseBackupHealthOptions;
     runtimeEnv?: CloudInstanceEnv;
+    isWarmStandby?: () => boolean;
   } = {
     deploymentMode: "local_trusted",
     deploymentExposure: "private",
@@ -231,10 +233,12 @@ export function healthRoutes(
 
   router.get("/", async (req, res) => {
     const actorType = "actor" in req ? req.actor?.type : null;
+    // PAR-13261: a caller the route guard marked restricted at `enforce` gets
+    // the anonymous body; the token-gated fields below keep their token rule.
     const exposeFullDetails = shouldExposeFullHealthDetails(
       actorType,
       opts.deploymentMode,
-    );
+    ) && !req.actor?.memberRestrictedCompanyIds?.length;
     const runtimeEnv = opts.runtimeEnv ?? process.env;
     const startupRecovery = getStartupRecoveryState();
     const healthStatus =
@@ -290,6 +294,23 @@ export function healthRoutes(
               ...(hiddenSettings.length ? { hiddenSettings } : {}),
             },
       );
+      return;
+    }
+
+    // Startup has already validated the empty database. During warm standby,
+    // readiness means the HTTP app can accept a signed claim; probing SQL would
+    // keep the idle database awake. The claim itself still performs durable SQL,
+    // and claimed instances retain the normal live database check below.
+    if (opts.isWarmStandby?.()) {
+      res.json({
+        status: healthStatus,
+        deploymentMode: opts.deploymentMode,
+        deploymentExposure: opts.deploymentExposure,
+        commit,
+        warmStandby: true,
+        ...(cloud ? { cloud } : {}),
+        ...(hiddenSettings.length ? { hiddenSettings } : {}),
+      });
       return;
     }
 
@@ -426,6 +447,7 @@ export function healthRoutes(
       serverInfo,
       startupRecovery,
       nativeRecovery,
+      ...(memberRestrictionKillSwitchOn() ? { memberRestriction: "forced_off" as const } : {}),
       ...(databaseBackup ? { databaseBackup } : {}),
       ...(warnings ? { warnings } : {}),
       ...(devServer ? { devServer } : {}),

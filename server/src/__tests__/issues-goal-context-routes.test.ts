@@ -1,6 +1,9 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { PgDialect } from "drizzle-orm/pg-core";
+import type { SQL } from "drizzle-orm";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { companyMemberships } from "@paperclipai/db";
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
 
@@ -34,7 +37,8 @@ const mockDocumentsService = vi.hoisted(() => ({
 }));
 
 const mockExecutionWorkspaceService = vi.hoisted(() => ({
-  getById: vi.fn(),
+  getById: vi.fn(() => { throw new Error("Task routes must not inspect a workspace"); }),
+  getStoredById: vi.fn(),
 }));
 
 const mockAccessService = vi.hoisted(() => ({
@@ -99,6 +103,11 @@ const mockDb = vi.hoisted(() => ({
   execute: vi.fn(),
 }));
 
+vi.mock("../services/task-interruption-presentation.js", () => ({
+  taskInterruptionPresentation: vi.fn(async () => null),
+  taskInterruptionPresentations: vi.fn(async () => new Map()),
+}));
+
 vi.mock("../services/index.js", () => ({
   companyService: () => ({
     getById: vi.fn(async () => ({ id: "company-1" })),
@@ -139,17 +148,19 @@ vi.mock("../services/execution-workspaces.js", () => ({
   STALE_REOPEN_PENDING_CONSUMPTION_GRACE_MS: 5 * 60 * 1000,
 }));
 
-function createApp() {
+const localBoardActor = {
+  type: "board",
+  userId: "local-board",
+  companyIds: ["company-1"],
+  source: "local_implicit",
+  isInstanceAdmin: false,
+};
+
+function createApp(actor: Record<string, unknown> = localBoardActor) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as any).actor = {
-      type: "board",
-      userId: "local-board",
-      companyIds: ["company-1"],
-      source: "local_implicit",
-      isInstanceAdmin: false,
-    };
+    (req as any).actor = actor;
     next();
   });
   app.use("/api", issueRoutes(mockDb as any, {} as any));
@@ -190,7 +201,7 @@ const projectGoal = {
   updatedAt: new Date("2026-03-20T00:00:00Z"),
 };
 
-describe.sequential("issue goal context routes", () => {
+describe("issue goal context routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockAccessService.decide.mockResolvedValue({
@@ -216,7 +227,7 @@ describe.sequential("issue goal context routes", () => {
     mockIssueService.listAttachments.mockResolvedValue([]);
     mockDocumentsService.getIssueDocumentPayload.mockResolvedValue({});
     mockDocumentsService.getIssueDocumentByKey.mockResolvedValue(null);
-    mockExecutionWorkspaceService.getById.mockResolvedValue(null);
+    mockExecutionWorkspaceService.getStoredById.mockResolvedValue(null);
     const emptyQuery: any = {};
     emptyQuery.from = vi.fn(() => emptyQuery);
     emptyQuery.innerJoin = vi.fn(() => emptyQuery);
@@ -388,7 +399,7 @@ describe.sequential("issue goal context routes", () => {
         updatedAt: new Date("2026-03-20T00:00:00Z"),
       },
     });
-    mockExecutionWorkspaceService.getById.mockResolvedValueOnce({
+    mockExecutionWorkspaceService.getStoredById.mockResolvedValueOnce({
       id: workspaceId,
       companyId: "company-1",
       projectId: legacyProjectLinkedIssue.projectId,
@@ -462,6 +473,9 @@ describe.sequential("issue goal context routes", () => {
     );
     expect(mockGoalService.getDefaultCompanyGoal).not.toHaveBeenCalled();
     expect(res.body.attachments).toEqual([]);
+    expect(res.body.taskQuestionContext).toEqual({
+      questions: [], truncated: false, guidance: expect.stringContaining("Historical questions remain answerable"),
+    });
   });
 
   it("preserves direct continuation summary lookup in GET /issues/:id/heartbeat-context", async () => {
@@ -518,12 +532,12 @@ describe.sequential("issue goal context routes", () => {
     ]);
   });
 
-  it("surfaces the current execution workspace from GET /issues/:id/heartbeat-context", async () => {
+  it.each(["", "/heartbeat-context"])("reads stored workspace context without Git inspection: %s", async (suffix) => {
     mockIssueService.getById.mockResolvedValue({
       ...legacyProjectLinkedIssue,
       executionWorkspaceId: "55555555-5555-4555-8555-555555555555",
     });
-    mockExecutionWorkspaceService.getById.mockResolvedValue({
+    mockExecutionWorkspaceService.getStoredById.mockResolvedValue({
       id: "55555555-5555-4555-8555-555555555555",
       name: "PAP-581 workspace",
       mode: "isolated_workspace",
@@ -541,11 +555,12 @@ describe.sequential("issue goal context routes", () => {
     });
 
     const res = await request(createApp()).get(
-      "/api/issues/11111111-1111-4111-8111-111111111111/heartbeat-context",
+      `/api/issues/11111111-1111-4111-8111-111111111111${suffix}`,
     );
 
     expect(res.status).toBe(200);
-    expect(mockExecutionWorkspaceService.getById).toHaveBeenCalledWith("55555555-5555-4555-8555-555555555555");
+    expect(mockExecutionWorkspaceService.getById).not.toHaveBeenCalled();
+    expect(mockExecutionWorkspaceService.getStoredById).toHaveBeenCalledWith("company-1", "55555555-5555-4555-8555-555555555555", { includeRuntimeServices: true });
     expect(res.body.currentExecutionWorkspace).toEqual(expect.objectContaining({
       id: "55555555-5555-4555-8555-555555555555",
       mode: "isolated_workspace",
@@ -556,5 +571,77 @@ describe.sequential("issue goal context routes", () => {
         }),
       ],
     }));
+  });
+});
+
+/**
+ * PAR-12719: the issue detail route lists the projects a task mentions with the
+ * caller's project read condition (spec PAR-12608 rev 3, 4.3 C28). AC-X1: a
+ * failing restriction read answers 503 MEMBER_RESTRICTION_UNAVAILABLE. AC-F8:
+ * with the kill switch `off` the read is skipped and the list runs as in mode off.
+ */
+describe("issue detail mentioned projects read scope (PAR-12719)", () => {
+  const sessionActor = {
+    type: "board", userId: "user-r", companyIds: ["company-1"], source: "session", isInstanceAdmin: false,
+  };
+  const mentionedProjectId = "66666666-6666-4666-8666-666666666666";
+  const restrictionRead = vi.fn<() => Promise<unknown[]>>();
+
+  beforeEach(() => {
+    mockIssueService.findMentionedProjectIds.mockResolvedValue([mentionedProjectId]);
+    restrictionRead.mockReset();
+    const fallback = mockDb.select();
+    mockDb.select.mockImplementation(() => ({
+      ...fallback,
+      from: (table: unknown) => {
+        if (table !== companyMemberships) return fallback.from(table);
+        const chain: Record<string, unknown> = {};
+        Object.assign(chain, {
+          innerJoin: () => chain, where: () => chain, limit: () => chain,
+          then: (resolve: (rows: unknown[]) => unknown, reject: (error: unknown) => unknown) =>
+            restrictionRead().then(resolve, reject),
+        });
+        return chain;
+      },
+    }));
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  const get = () => request(createApp(sessionActor)).get(`/api/issues/${legacyProjectLinkedIssue.id}`);
+  const listedCondition = async () => {
+    const res = await get();
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const call = mockProjectService.listByIds.mock.calls.at(-1)! as [string, string[], { readCondition: SQL<boolean> }];
+    expect(call.slice(0, 2)).toEqual(["company-1", [mentionedProjectId]]);
+    return new PgDialect().sqlToQuery(call[2].readCondition);
+  };
+
+  it("passes the caller's read condition; a restricted caller's condition is narrower", async () => {
+    restrictionRead.mockResolvedValue([]);
+    const unrestricted = await listedCondition();
+    restrictionRead.mockResolvedValue([{ companyId: "company-1" }]);
+    expect(await listedCondition()).not.toEqual(unrestricted);
+  });
+
+  it("AC-X1: a failing restriction read answers 503 MEMBER_RESTRICTION_UNAVAILABLE and returns no task", async () => {
+    restrictionRead.mockRejectedValue(new Error("connection reset"));
+    const res = await get();
+    expect(res.status).toBe(503);
+    expect(res.body.code).toBe("MEMBER_RESTRICTION_UNAVAILABLE");
+    expect(res.body.mentionedProjects).toBeUndefined();
+    expect(mockProjectService.listByIds).not.toHaveBeenCalled();
+  });
+
+  it("AC-F8: with the kill switch `off` the read is skipped and the list runs as in mode off", async () => {
+    restrictionRead.mockResolvedValue([]);
+    const asModeOff = await listedCondition();
+    vi.stubEnv("PAPERCLIP_MEMBER_RESTRICTION", "off");
+    restrictionRead.mockClear();
+    restrictionRead.mockRejectedValue(new Error("connection reset"));
+    expect(await listedCondition()).toEqual(asModeOff);
+    expect(restrictionRead).not.toHaveBeenCalled();
   });
 });

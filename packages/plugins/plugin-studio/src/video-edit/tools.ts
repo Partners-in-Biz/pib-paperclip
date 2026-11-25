@@ -7,6 +7,11 @@ import type { PluginContext, ToolRunContext } from "@paperclipai/plugin-sdk";
 import { StudioError } from "../errors.js";
 import { applyOpsAction, cancelRenderAction, createEditAction, deleteEditAction, getEditAction, listEditsAction, renderAction, renderStatusAction, type ActionDeps } from "./actions.js";
 import { captionClipAction, type CaptionDeps } from "./auto-caption.js";
+import { detectBeatsAction, type BeatDeps } from "./beats.js";
+import { cutToBeatAction } from "./cut-to-beat.js";
+import { musicAction, type MusicDeps } from "./music.js";
+import { cutSilencesAction, type SilenceDeps } from "./silence.js";
+import { voiceoverAction, type VoiceoverDeps } from "./voiceover.js";
 
 export const VIDEO_EDIT_TOOL_NAMES = [
   "video-edit-create",
@@ -18,6 +23,11 @@ export const VIDEO_EDIT_TOOL_NAMES = [
   "video-edit-render-status",
   "video-edit-cancel-render",
   "video-edit-delete",
+  "video-edit-voiceover",
+  "video-edit-music",
+  "video-edit-detect-beats",
+  "video-edit-cut-to-beat",
+  "video-edit-cut-silences",
 ] as const;
 
 export const isVideoEditTool = (name: string): boolean => (VIDEO_EDIT_TOOL_NAMES as readonly string[]).includes(name);
@@ -27,9 +37,9 @@ export async function runVideoEditTool(
   ctx: PluginContext,
   name: string,
   params: Record<string, unknown>,
-  run: Pick<ToolRunContext, "companyId" | "agentId">,
-  work: { projectId: string | null },
-  deps: ActionDeps & CaptionDeps = {},
+  run: Pick<ToolRunContext, "companyId" | "agentId"> & { runId?: string },
+  work: { projectId: string | null; issueId?: string | null },
+  deps: ActionDeps & CaptionDeps & { voiceover?: VoiceoverDeps; music?: MusicDeps; beats?: BeatDeps; silence?: SilenceDeps } = {},
 ): Promise<unknown> {
   const companyId = run.companyId;
   const actor = { agentId: run.agentId };
@@ -54,6 +64,17 @@ export async function runVideoEditTool(
       return cancelRenderAction(ctx, companyId, params, actor);
     case "video-edit-delete":
       return deleteEditAction(ctx, companyId, params, actor);
+    case "video-edit-voiceover":
+      // The run id lets the per-run spend limit apply, like studio-generate.
+      return voiceoverAction(ctx, companyId, params, { agentId: run.agentId, runId: run.runId ?? null, issueId: work.issueId ?? null }, deps.voiceover);
+    case "video-edit-music":
+      return musicAction(ctx, companyId, params, { agentId: run.agentId, runId: run.runId ?? null, issueId: work.issueId ?? null }, deps.music);
+    case "video-edit-detect-beats":
+      return detectBeatsAction(ctx, companyId, params, deps.beats);
+    case "video-edit-cut-to-beat":
+      return cutToBeatAction(ctx, companyId, params, actor, deps.beats);
+    case "video-edit-cut-silences":
+      return cutSilencesAction(ctx, companyId, params, actor, deps.silence);
     default:
       throw new StudioError(`Unknown tool ${name}`);
   }

@@ -1,0 +1,190 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`animated text compiles to ASS > bounce: ASS document 1`] = `
+"[Script Info]
+ScriptType: v4.00+
+PlayResX: 1080
+PlayResY: 1920
+WrapStyle: 2
+ScaledBorderAndShadow: yes
+YCbCr Matrix: None
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: t,Inter,77.438,&H000088FF,&H000088FF,&H66000000,&H00000000,-1,0,0,0,100,100,0,0,1,3,0,5,0,0,0,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:01.00,0:00:01.60,t,,0,0,0,,{\\pos(540,960)\\fade(255,0,0,0,250,600,600)\\fscx0\\fscy0\\t(0,240,\\fscx120\\fscy120)\\t(240,420,\\fscx90\\fscy90)\\t(420,600,\\fscx100\\fscy100)\\1a&HFF&\\3a&HFF&\\t(0,120,\\1a&H00&\\3a&H66&)}Go \\{now\\}
+Dialogue: 0,0:00:01.60,0:00:02.60,t,,0,0,0,,{\\pos(540,960)}Go \\{now\\}
+Dialogue: 0,0:00:02.60,0:00:03.00,t,,0,0,0,,{\\pos(540,960)\\fscx100\\fscy100\\t(0,120,\\fscx90\\fscy90)\\t(120,240,\\fscx120\\fscy120)\\t(240,400,\\fscx0\\fscy0)\\1a&H00&\\3a&H66&\\t(320,400,\\1a&HFF&\\3a&HFF&)}Go \\{now\\}
+"
+`;
+
+exports[`animated text compiles to ASS > fadeUp: ASS document 1`] = `
+"[Script Info]
+ScriptType: v4.00+
+PlayResX: 1080
+PlayResY: 1920
+WrapStyle: 2
+ScaledBorderAndShadow: yes
+YCbCr Matrix: None
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: t,Inter,77.438,&H000088FF,&H000088FF,&H66000000,&H00000000,-1,0,0,0,100,100,0,0,1,3,0,5,0,0,0,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:01.00,0:00:01.60,t,,0,0,0,,{\\move(540,1014,540,960,0,600)\\fade(255,0,0,0,250,600,600)\\1a&HFF&\\3a&HFF&\\t(0,600,\\1a&H00&\\3a&H66&)}Go \\{now\\}
+Dialogue: 0,0:00:01.60,0:00:02.60,t,,0,0,0,,{\\pos(540,960)}Go \\{now\\}
+Dialogue: 0,0:00:02.60,0:00:03.00,t,,0,0,0,,{\\move(540,960,540,906,0,400)\\1a&H00&\\3a&H66&\\t(0,400,\\1a&HFF&\\3a&HFF&)}Go \\{now\\}
+"
+`;
+
+exports[`animated text compiles to ASS > pop: ASS document 1`] = `
+"[Script Info]
+ScriptType: v4.00+
+PlayResX: 1080
+PlayResY: 1920
+WrapStyle: 2
+ScaledBorderAndShadow: yes
+YCbCr Matrix: None
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: t,Inter,77.438,&H000088FF,&H000088FF,&H66000000,&H00000000,-1,0,0,0,100,100,0,0,1,3,0,5,0,0,0,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:01.00,0:00:01.60,t,,0,0,0,,{\\pos(540,960)\\fade(255,0,0,0,250,600,600)\\fscx0\\fscy0\\t(0,360,\\fscx110\\fscy110)\\t(360,600,\\fscx100\\fscy100)\\1a&HFF&\\3a&HFF&\\t(0,180,\\1a&H00&\\3a&H66&)}Go \\{now\\}
+Dialogue: 0,0:00:01.60,0:00:02.60,t,,0,0,0,,{\\pos(540,960)}Go \\{now\\}
+Dialogue: 0,0:00:02.60,0:00:03.00,t,,0,0,0,,{\\pos(540,960)\\fscx100\\fscy100\\t(0,160,\\fscx110\\fscy110)\\t(160,400,\\fscx0\\fscy0)\\1a&H00&\\3a&H66&\\t(280,400,\\1a&HFF&\\3a&HFF&)}Go \\{now\\}
+"
+`;
+
+exports[`animated text compiles to ASS > slideDown: ASS document 1`] = `
+"[Script Info]
+ScriptType: v4.00+
+PlayResX: 1080
+PlayResY: 1920
+WrapStyle: 2
+ScaledBorderAndShadow: yes
+YCbCr Matrix: None
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: t,Inter,77.438,&H000088FF,&H000088FF,&H66000000,&H00000000,-1,0,0,0,100,100,0,0,1,3,0,5,0,0,0,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:01.00,0:00:01.60,t,,0,0,0,,{\\move(540,744,540,960,0,600)\\fade(255,0,0,0,250,600,600)\\1a&HFF&\\3a&HFF&\\t(0,300,\\1a&H00&\\3a&H66&)}Go \\{now\\}
+Dialogue: 0,0:00:01.60,0:00:02.60,t,,0,0,0,,{\\pos(540,960)}Go \\{now\\}
+Dialogue: 0,0:00:02.60,0:00:03.00,t,,0,0,0,,{\\move(540,960,540,1176,0,400)\\1a&H00&\\3a&H66&\\t(200,400,\\1a&HFF&\\3a&HFF&)}Go \\{now\\}
+"
+`;
+
+exports[`animated text compiles to ASS > slideLeft: ASS document 1`] = `
+"[Script Info]
+ScriptType: v4.00+
+PlayResX: 1080
+PlayResY: 1920
+WrapStyle: 2
+ScaledBorderAndShadow: yes
+YCbCr Matrix: None
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: t,Inter,77.438,&H000088FF,&H000088FF,&H66000000,&H00000000,-1,0,0,0,100,100,0,0,1,3,0,5,0,0,0,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:01.00,0:00:01.60,t,,0,0,0,,{\\move(756,960,540,960,0,600)\\fade(255,0,0,0,250,600,600)\\1a&HFF&\\3a&HFF&\\t(0,300,\\1a&H00&\\3a&H66&)}Go \\{now\\}
+Dialogue: 0,0:00:01.60,0:00:02.60,t,,0,0,0,,{\\pos(540,960)}Go \\{now\\}
+Dialogue: 0,0:00:02.60,0:00:03.00,t,,0,0,0,,{\\move(540,960,324,960,0,400)\\1a&H00&\\3a&H66&\\t(200,400,\\1a&HFF&\\3a&HFF&)}Go \\{now\\}
+"
+`;
+
+exports[`animated text compiles to ASS > slideRight: ASS document 1`] = `
+"[Script Info]
+ScriptType: v4.00+
+PlayResX: 1080
+PlayResY: 1920
+WrapStyle: 2
+ScaledBorderAndShadow: yes
+YCbCr Matrix: None
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: t,Inter,77.438,&H000088FF,&H000088FF,&H66000000,&H00000000,-1,0,0,0,100,100,0,0,1,3,0,5,0,0,0,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:01.00,0:00:01.60,t,,0,0,0,,{\\move(324,960,540,960,0,600)\\fade(255,0,0,0,250,600,600)\\1a&HFF&\\3a&HFF&\\t(0,300,\\1a&H00&\\3a&H66&)}Go \\{now\\}
+Dialogue: 0,0:00:01.60,0:00:02.60,t,,0,0,0,,{\\pos(540,960)}Go \\{now\\}
+Dialogue: 0,0:00:02.60,0:00:03.00,t,,0,0,0,,{\\move(540,960,756,960,0,400)\\1a&H00&\\3a&H66&\\t(200,400,\\1a&HFF&\\3a&HFF&)}Go \\{now\\}
+"
+`;
+
+exports[`animated text compiles to ASS > slideUp: ASS document 1`] = `
+"[Script Info]
+ScriptType: v4.00+
+PlayResX: 1080
+PlayResY: 1920
+WrapStyle: 2
+ScaledBorderAndShadow: yes
+YCbCr Matrix: None
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: t,Inter,77.438,&H000088FF,&H000088FF,&H66000000,&H00000000,-1,0,0,0,100,100,0,0,1,3,0,5,0,0,0,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:01.00,0:00:01.60,t,,0,0,0,,{\\move(540,1176,540,960,0,600)\\fade(255,0,0,0,250,600,600)\\1a&HFF&\\3a&HFF&\\t(0,300,\\1a&H00&\\3a&H66&)}Go \\{now\\}
+Dialogue: 0,0:00:01.60,0:00:02.60,t,,0,0,0,,{\\pos(540,960)}Go \\{now\\}
+Dialogue: 0,0:00:02.60,0:00:03.00,t,,0,0,0,,{\\move(540,960,540,744,0,400)\\1a&H00&\\3a&H66&\\t(200,400,\\1a&HFF&\\3a&HFF&)}Go \\{now\\}
+"
+`;
+
+exports[`animated text compiles to ASS > typewriter: ASS document 1`] = `
+"[Script Info]
+ScriptType: v4.00+
+PlayResX: 1080
+PlayResY: 1920
+WrapStyle: 2
+ScaledBorderAndShadow: yes
+YCbCr Matrix: None
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: t,Inter,77.438,&H000088FF,&H000088FF,&H66000000,&H00000000,-1,0,0,0,100,100,0,0,1,3,0,5,0,0,0,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:01.00,0:00:01.60,t,,0,0,0,,{\\pos(540,960)\\fade(255,0,0,0,250,600,600)}{\\1a&H00&\\3a&H66&}G{\\1a&HFF&\\3a&HFF&\\t(75,76,\\1a&H00&\\3a&H66&)}o{\\1a&HFF&\\3a&HFF&\\t(150,151,\\1a&H00&\\3a&H66&)} {\\1a&HFF&\\3a&HFF&\\t(225,226,\\1a&H00&\\3a&H66&)}\\{{\\1a&HFF&\\3a&HFF&\\t(300,301,\\1a&H00&\\3a&H66&)}n{\\1a&HFF&\\3a&HFF&\\t(375,376,\\1a&H00&\\3a&H66&)}o{\\1a&HFF&\\3a&HFF&\\t(450,451,\\1a&H00&\\3a&H66&)}w{\\1a&HFF&\\3a&HFF&\\t(525,526,\\1a&H00&\\3a&H66&)}\\}
+Dialogue: 0,0:00:01.60,0:00:02.60,t,,0,0,0,,{\\pos(540,960)}Go \\{now\\}
+Dialogue: 0,0:00:02.60,0:00:03.00,t,,0,0,0,,{\\pos(540,960)}{\\1a&H00&\\3a&H66&\\t(400,401,\\1a&HFF&\\3a&HFF&)}G{\\1a&H00&\\3a&H66&\\t(350,351,\\1a&HFF&\\3a&HFF&)}o{\\1a&H00&\\3a&H66&\\t(300,301,\\1a&HFF&\\3a&HFF&)} {\\1a&H00&\\3a&H66&\\t(250,251,\\1a&HFF&\\3a&HFF&)}\\{{\\1a&H00&\\3a&H66&\\t(200,201,\\1a&HFF&\\3a&HFF&)}n{\\1a&H00&\\3a&H66&\\t(150,151,\\1a&HFF&\\3a&HFF&)}o{\\1a&H00&\\3a&H66&\\t(100,101,\\1a&HFF&\\3a&HFF&)}w{\\1a&H00&\\3a&H66&\\t(50,51,\\1a&HFF&\\3a&HFF&)}\\}
+"
+`;
+
+exports[`animated text compiles to ASS > wordByWord: ASS document 1`] = `
+"[Script Info]
+ScriptType: v4.00+
+PlayResX: 1080
+PlayResY: 1920
+WrapStyle: 2
+ScaledBorderAndShadow: yes
+YCbCr Matrix: None
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: t,Inter,77.438,&H000088FF,&H000088FF,&H66000000,&H00000000,-1,0,0,0,100,100,0,0,1,3,0,5,0,0,0,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:01.00,0:00:01.60,t,,0,0,0,,{\\pos(540,960)\\fade(255,0,0,0,250,600,600)}{\\1a&H00&\\3a&H66&}Go {\\1a&HFF&\\3a&HFF&\\t(300,301,\\1a&H00&\\3a&H66&)}\\{now\\}
+Dialogue: 0,0:00:01.60,0:00:02.60,t,,0,0,0,,{\\pos(540,960)}Go \\{now\\}
+Dialogue: 0,0:00:02.60,0:00:03.00,t,,0,0,0,,{\\pos(540,960)}{\\1a&H00&\\3a&H66&\\t(400,401,\\1a&HFF&\\3a&HFF&)}Go {\\1a&H00&\\3a&H66&\\t(200,201,\\1a&HFF&\\3a&HFF&)}\\{now\\}
+"
+`;

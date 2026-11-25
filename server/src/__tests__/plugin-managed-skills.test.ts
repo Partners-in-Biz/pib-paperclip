@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   companies,
@@ -14,7 +14,20 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { companySkillService } from "../services/company-skills.js";
 import { buildHostServices } from "../services/plugin-host-services.js";
+
+const { measureRunPhaseSpy } = vi.hoisted(() => ({ measureRunPhaseSpy: vi.fn() }));
+vi.mock("../services/execution-preparation-timing.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/execution-preparation-timing.js")>();
+  measureRunPhaseSpy.mockImplementation(actual.measureRunPhase);
+  return { ...actual, measureRunPhase: measureRunPhaseSpy };
+});
+
+function inventoryRefreshCount() {
+  // Each full company inventory refresh runs exactly one "skills.inventory.bundled" phase.
+  return measureRunPhaseSpy.mock.calls.filter(([phase]) => phase === "skills.inventory.bundled").length;
+}
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -119,9 +132,11 @@ describeEmbeddedPostgres("plugin-managed skills", () => {
 
     expect(created.status).toBe("created");
     expect(created.skill).toMatchObject({
-      name: "Wiki Maintainer Skill",
+      name: "plugin-managed-skills-test-wiki-maintainer",
+      slug: "plugin-managed-skills-test-wiki-maintainer",
       key: "plugin/paperclip-managed-skills-test/wiki-maintainer",
-      sourceType: "catalog",
+      sourceType: "managed",
+      sourceLocator: null,
       fileInventory: expect.arrayContaining([
         expect.objectContaining({ path: "SKILL.md", kind: "skill" }),
         expect.objectContaining({ path: "references/wiki-style.md", kind: "reference" }),
@@ -144,6 +159,35 @@ describeEmbeddedPostgres("plugin-managed skills", () => {
     });
   });
 
+  it("keeps a same-slug user skill separate through automatic install, reset, and relinking", async () => {
+    const { companyId, services } = await seedCompanyAndPlugin();
+    const original = await companySkillService(db).createLocalSkill(companyId, { name: "Wiki Maintainer Skill", markdown: "# User instructions\n" });
+    const created = await services.skills.managedReconcile({ companyId, skillKey: "wiki-maintainer" });
+    expect(created.skillId).not.toBe(original.id);
+    expect(created.skill!.key).toBe("plugin/paperclip-managed-skills-test/wiki-maintainer");
+    expect(created.skill!.slug).toBe("plugin-managed-skills-test-wiki-maintainer");
+    expect(created.skill!.markdown).toContain('name: "plugin-managed-skills-test-wiki-maintainer"');
+    await services.skills.managedReset({ companyId, skillKey: "wiki-maintainer" });
+    await db.delete(pluginManagedResources).where(eq(pluginManagedResources.resourceId, created.skillId!));
+    const relinked = await services.skills.managedReconcile({ companyId, skillKey: "wiki-maintainer" });
+    expect(relinked.skillId).toBe(created.skillId);
+    expect((await db.select().from(companySkills).where(eq(companySkills.id, original.id)))[0]).toMatchObject({ key: original.key, slug: original.slug, markdown: original.markdown });
+  });
+
+  it("claims the plugin name while preserving a conflicting company skill as a separate record", async () => {
+    const { companyId, services } = await seedCompanyAndPlugin();
+    const original = await companySkillService(db).createLocalSkill(companyId, {
+      name: "plugin-managed-skills-test-wiki-maintainer", markdown: "# User instructions\n",
+    });
+    const installed = await services.skills.managedReconcile({ companyId, skillKey: "wiki-maintainer" });
+    expect(installed.skill!.slug).toBe(original.slug);
+    expect(installed.skill!.id).not.toBe(original.id);
+    await services.skills.managedReset({ companyId, skillKey: "wiki-maintainer" });
+    const records = (await db.select().from(companySkills)).filter(skill => [original.key, installed.skill!.key].includes(skill.key));
+    expect(records).toHaveLength(2);
+    expect(records.find(skill => skill.id === original.id)).toMatchObject({ key: original.key, markdown: original.markdown });
+    expect(await db.select().from(pluginManagedResources)).toEqual([expect.objectContaining({ resourceId: installed.skill!.id })]);
+  });
   it("preserves operator edits during reconcile and restores manifest defaults on reset", async () => {
     const { companyId, services } = await seedCompanyAndPlugin();
     const created = await services.skills.managedReconcile({ companyId, skillKey: "wiki-maintainer" });
@@ -168,7 +212,7 @@ describeEmbeddedPostgres("plugin-managed skills", () => {
     const reset = await services.skills.managedReset({ companyId, skillKey: "wiki-maintainer" });
     expect(reset.status).toBe("reset");
     expect(reset.skill).toMatchObject({
-      name: "Wiki Maintainer Skill",
+      name: "plugin-managed-skills-test-wiki-maintainer",
       description: "Use LLM Wiki tools to maintain company knowledge.",
     });
     expect(reset.skill?.markdown).toContain("key: \"plugin/paperclip-managed-skills-test/wiki-maintainer\"");
@@ -248,6 +292,37 @@ describeEmbeddedPostgres("plugin-managed skills", () => {
     expect(reset.defaultDrift).toBeNull();
   });
 
+  it("refreshes the company skill inventory once per drift check, not once per file", async () => {
+    const pluginManifest = manifest();
+    const fileCount = 6;
+    pluginManifest.skills![0]!.files = Array.from({ length: fileCount }, (_, index) => ({
+      path: `references/ref-${index}.md`,
+      content: `# Reference ${index}\n`,
+    }));
+    const { companyId, services } = await seedCompanyAndPlugin(pluginManifest);
+    const created = await services.skills.managedReconcile({ companyId, skillKey: "wiki-maintainer" });
+    expect(created.skill?.fileInventory).toHaveLength(fileCount + 1);
+    expect(created.defaultDrift).toBeNull();
+
+    const before = inventoryRefreshCount();
+    const resolved = await services.skills.managedGet({ companyId, skillKey: "wiki-maintainer" });
+
+    expect(resolved.defaultDrift).toBeNull();
+    expect(inventoryRefreshCount() - before).toBe(1);
+  });
+
+  it("preserves unrelated YAML while replacing quoted and multiline identity fields", async () => {
+    const declaration = manifest();
+    declaration.skills = [{ skillKey: "yaml-skill", displayName: "YAML skill", markdown:
+      '---\n"name": |\n  Previous name\nslug: old-slug\ndescription: >\n  Keep this folded description.\nmetadata:\n  "category": desktop\n# Keep this comment.\n---\nBody stays unchanged.\n' }];
+    const { companyId, services } = await seedCompanyAndPlugin(declaration);
+    const created = await services.skills.managedReconcile({ companyId, skillKey: "yaml-skill" });
+    expect(created.skill!.markdown).toContain('name: "plugin-managed-skills-test-yaml-skill"');
+    expect(created.skill!.markdown).not.toContain("Previous name");
+    expect(created.skill!.markdown).toContain('description: >\n  Keep this folded description.\nmetadata:\n  "category": desktop\n# Keep this comment.');
+    expect(created.skill!.markdown).toMatch(/Body stays unchanged\.\n$/);
+    await services.skills.managedReset({ companyId, skillKey: "yaml-skill" });
+  });
   it("adds the canonical managed key to manifest-provided markdown skills", async () => {
     const pluginManifest = manifest();
     pluginManifest.skills = [
@@ -274,8 +349,8 @@ describeEmbeddedPostgres("plugin-managed skills", () => {
     expect(created.status).toBe("created");
     expect(created.skill).toMatchObject({
       key: "plugin/paperclip-managed-skills-test/markdown-skill",
-      name: "markdown-skill",
+      name: "plugin-managed-skills-test-markdown-skill",
     });
-    expect(created.skill?.markdown).toContain("key: \"plugin/paperclip-managed-skills-test/markdown-skill\"");
+    expect(created.skill?.markdown).toContain('key: "plugin/paperclip-managed-skills-test/markdown-skill"');
   });
 });

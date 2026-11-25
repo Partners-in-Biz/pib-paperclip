@@ -11,13 +11,14 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { assertOwnKey, MAX_ASSET_BYTES, type PrivateBucket } from "../src/storage.js";
 import { AUDIO_ENCODER_ARGS } from "../src/video-edit/compile-audio.js";
-import { ENCODER_ARGS } from "../src/video-edit/compile-video.js";
-import { createRenderExecutor, verifyOutput } from "../src/video-edit/render-pipeline.js";
+import { ENCODER_ARGS, inputKey, type CompileInputs } from "../src/video-edit/compile-video.js";
+import { DEFAULT_AS_LIMIT_BYTES, FSIZE_BYTES, pidsInGroup, TIMEOUT_SEC } from "../src/video-edit/ffmpeg.js";
+import { createRenderExecutor, INTERMEDIATE_FSIZE_BYTES, PASS_CONCURRENCY, renderPasses, verifyOutput, type PassOptions } from "../src/video-edit/render-pipeline.js";
 import { enqueueRender, getRender } from "../src/video-edit/render-queue.js";
-import { createRenderRunner } from "../src/video-edit/runner.js";
+import { cmdlineNames, createRenderRunner, RenderFailure } from "../src/video-edit/runner.js";
 import type { ProbeResult } from "../src/video-edit/probe.js";
 import { PREVIEW_FILE, previewKeyFor, proxyArgs } from "../src/video-edit/proxy.js";
-import { LIMITS } from "../src/video-edit/timeline.js";
+import { LIMITS, normalizeEdit } from "../src/video-edit/timeline.js";
 import { embeddedAvailable, startPg, type Pg } from "./helpers/pg.js";
 
 const CO = "11111111-1111-4111-8111-111111111111";
@@ -166,6 +167,8 @@ describe("verifyOutput", () => {
 });
 
 describe.skipIf(!available)("Render pipeline against real Postgres (fake ffmpeg)", () => {
+  // Each case copies fake media and runs the pipeline against Postgres; on the loaded CI runner some take ~5 s, over vitest's default (PAR-9343).
+  vi.setConfig({ testTimeout: 30_000 });
   it("downloads inputs by their rows, compiles, runs, verifies, uploads and records the asset", async () => {
     await addAsset("src-a", { content: fakeSource({ duration: 10, audio: true }, { duration: 4.05, audio: true }) });
     const done = await render(doc("src-a"));
@@ -199,6 +202,29 @@ describe.skipIf(!available)("Render pipeline against real Postgres (fake ffmpeg)
     expect(puts).toEqual([]);
     expect(await assetRows()).toEqual([]);
     expect(await workFolders()).toEqual([]);
+  });
+
+  it("an audio-kind clip on the audio track is downloaded, probed and mixed in: the edit has sound", async () => {
+    await addAsset("mute", { content: fakeSource({ duration: 10, audio: false }, { duration: 4, audio: true }) });
+    await addAsset("vo", { kind: "audio", mime: "audio/mpeg", key: `studio/${CO}/own/vo/v1.mp3`, content: fakeSource({ duration: 6, audio: true }, { duration: 4, audio: true }) });
+    const d = { ...doc("mute"), tracks: [...doc("mute").tracks, { id: "a", kind: "audio", clips: [{ id: "vo1", assetId: "vo", version: 1, in: 0, out: 4, start: 0 }] }] };
+    const done = await render(d);
+    expect(done).toMatchObject({ status: "succeeded", errorKind: null });
+    expect(gets).toEqual([`studio/${CO}/own/mute/v1.mp4`, `studio/${CO}/own/vo/v1.mp3`]);
+    const out = JSON.parse(new TextDecoder().decode(r2.get(`studio/${CO}/own/${done.id}/v1.mp4`)));
+    expect(out.args).toContain("[aout]");
+    expect(out.args.some((a: string) => a.endsWith("in-1.mp3"))).toBe(true);
+    expect(out.args).not.toContain("-an");
+  });
+
+  it("an audio-kind asset with no readable sound fails deterministic before ffmpeg runs", async () => {
+    await addAsset("mute", { content: fakeSource({ duration: 10, audio: false }, { duration: 4, audio: false }) });
+    await addAsset("vo", { kind: "audio", mime: "audio/wav", key: `studio/${CO}/own/vo/v1.wav`, content: fakeSource({ duration: 6, audio: false }, { duration: 4, audio: false }) });
+    const d = { ...doc("mute"), tracks: [...doc("mute").tracks, { id: "a", kind: "audio", clips: [{ id: "vo1", assetId: "vo", version: 1, in: 0, out: 4, start: 0 }] }] };
+    const done = await render(d);
+    expect(done).toMatchObject({ status: "failed", errorKind: "deterministic" });
+    expect(done.error).toMatch(/no sound Studio can read/);
+    expect(puts).toEqual([]);
   });
 
   it("a silent edit must render silent", async () => {
@@ -273,14 +299,282 @@ describe.skipIf(!available)("Render pipeline against real Postgres (fake ffmpeg)
     await addAsset("src-a", { content: fakeSource({ duration: 10, audio: true }, { duration: 4, audio: true }) });
     const first = await render(doc("src-a"));
     const executor = createRenderExecutor({ bucket, statfs, run: { bins } });
-    const control = { signal: new AbortController().signal, started: async () => true, uploading: async () => true };
+    const control = { signal: new AbortController().signal, started: async () => true, passEnded: () => undefined, uploading: async () => true };
     gets.length = 0;
     expect(await executor(ctx, { ...first, claimToken: "t" }, control)).toEqual({ assetId: first.id });
     expect(gets).toEqual([]);
   });
 });
 
+/**
+ * Multi-pass (PAR-10466): a fake ffmpeg run by the real `runContained` (timeout, prlimit, nice, own group) logs, per run,
+ * its pass, pgid, prlimit limits, the `timeout` seconds of its parent and the work folder listing, then writes a JSON
+ * "media" file whose probe follows its args (`-t`, `-an`, `.wav`). `mp.json` steers it: sleep, fail, drift, mute, linger.
+ */
+const hasContainment = ["/usr/bin/timeout", "/usr/bin/prlimit", "/usr/bin/nice", "/proc/self/limits"].every(existsSync);
+describe.skipIf(!hasContainment)("Multi-pass render (real runContained, fake ffmpeg)", () => {
+  vi.setConfig({ testTimeout: 30_000 });
+  type Run = { id: string; pid: number; pgid: number; fsize: string; as: string; timeout: string; ls: string[]; graph: boolean };
+  let mpBins: { ffmpeg: string; ffprobe: string };
+  const log = () => join(scratch, "mp.log");
+  const runs = async (): Promise<Run[]> => (await readFile(log(), "utf8").catch(() => "")).split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  const steer = (cfg: Record<string, unknown>) => writeFile(join(scratch, "mp.json"), JSON.stringify(cfg));
+
+  beforeEach(async () => {
+    const ffmpeg = join(scratch, "mp-ffmpeg");
+    await writeFile(
+      ffmpeg,
+      `#!${process.execPath}
+const fs = require("fs"), path = require("path");
+const args = process.argv.slice(2);
+const out = args[args.length - 1].replace(/^file:/, "");
+const cfgFile = ${JSON.stringify(join(scratch, "mp.json"))};
+const cfg = fs.existsSync(cfgFile) ? JSON.parse(fs.readFileSync(cfgFile, "utf8")) : {};
+const graph = args.includes("-filter_complex_script");
+const id = !graph ? "proxy" : path.isAbsolute(out) ? path.basename(path.dirname(out)) : "final";
+const root = path.isAbsolute(out) ? path.dirname(path.dirname(out)) : process.cwd();
+const stat = fs.readFileSync("/proc/self/stat", "utf8");
+const pgid = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[2]);
+const limit = (name) => fs.readFileSync("/proc/self/limits", "utf8").split("\\n").find((l) => l.startsWith(name)).slice(26).trim().split(/\\s+/)[0];
+const parent = fs.readFileSync("/proc/" + process.ppid + "/cmdline", "utf8").split("\\0");
+fs.appendFileSync(${JSON.stringify(join(scratch, "mp.log"))}, JSON.stringify({ id, pid: process.pid, pgid, fsize: limit("Max file size"), as: limit("Max address space"), timeout: parent[3], ls: fs.readdirSync(root).sort(), graph: fs.existsSync("video.graph") }) + "\\n");
+if (cfg.linger) require("child_process").spawn("sleep", ["30"], { stdio: "ignore" }).unref();
+process.stderr.write("frame=1\\n");
+setTimeout(() => {
+  if (cfg.fail && cfg.fail[id]) { process.stderr.write("boom " + id); process.exit(1); }
+  if (!graph) {
+    const input = args[args.indexOf("-i") + 1].replace(/^file:/, "");
+    fs.writeFileSync(out, JSON.stringify({ probe: JSON.parse(fs.readFileSync(input, "utf8")).probe }));
+    return;
+  }
+  const t = Number(args[args.lastIndexOf("-t") + 1]) + ((cfg.drift && cfg.drift[id]) || 0);
+  const audio = !args.includes("-an") && !(cfg.mute && cfg.mute[id]);
+  const streams = [...(out.endsWith(".wav") ? [] : [{ codec_type: "video", codec_name: "h264", width: 1080, height: 1920 }]), ...(audio ? [{ codec_type: "audio", codec_name: "pcm_s16le" }] : [])];
+  fs.writeFileSync(out, JSON.stringify({ probe: { format: { duration: String(t) }, streams } }));
+}, (cfg.sleep && cfg.sleep[id]) || 20);
+`,
+    );
+    await chmod(ffmpeg, 0o755);
+    mpBins = { ffmpeg, ffprobe: bins.ffprobe };
+  });
+
+  const clips = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `c${i}`, assetId: "src-a", version: 1, in: 0, out: 1, start: i }));
+  const mainDoc = (n: number) => ({ schemaVersion: 1, project: { size: "9:16", fps: 30 }, tracks: [{ id: "v", kind: "video", clips: clips(n) }] });
+
+  /** `renderPasses` on an `n`-clip edit of one 1080x1920 source (weight 1 a clip) at pass budget 3, in a fresh folder. */
+  async function passes(n: number, opts: { audio?: boolean; options?: PassOptions; onStart?: (k: number, pgid: number) => void; abort?: AbortController } = {}) {
+    const dir = await mkdtemp(join(scratch, "render-"));
+    await writeFile(join(dir, "in-0.mp4"), JSON.stringify({ probe: probeJson(10, !!opts.audio) }));
+    const sources: CompileInputs = { [inputKey("src-a", 1)]: { path: join(dir, "in-0.mp4"), kind: "video", hasAudio: !!opts.audio, width: 1080, height: 1920 } };
+    const abort = opts.abort ?? new AbortController();
+    const kills: Array<[number, string]> = [];
+    const started: Array<{ pgid: number; workdir: string; names: boolean; leftover: number[]; endedBefore: number }> = [];
+    let ended = 0;
+    const control = {
+      signal: abort.signal,
+      async started(info: { pgid: number; workdir: string }) {
+        // The previous pass's group is empty by the time the next pass is up.
+        const leftover = started.length ? await pidsInGroup(started[started.length - 1].pgid) : [];
+        // /proc/<pgid>/cmdline is read right after spawn: on a loaded host the child can still be pre-exec, so poll briefly.
+        let names = await cmdlineNames(info.pgid, dir);
+        for (let i = 0; !names && i < 50; i++) {
+          await new Promise((res) => setTimeout(res, 20));
+          names = await cmdlineNames(info.pgid, dir);
+        }
+        started.push({ ...info, names, leftover, endedBefore: ended });
+        opts.onStart?.(started.length, info.pgid);
+        return true;
+      },
+      passEnded: () => void (ended += 1),
+    };
+    // One pass at a time unless a test asks for more (the side-by-side chunk tests below).
+    const options: PassOptions = { statfs, passConcurrency: 1, ...opts.options, plan: { passBudget: 3, ...opts.options?.plan }, run: {
+        bins: mpBins,
+        killImpl: (pid, sig) => {
+          kills.push([pid, sig]);
+          process.kill(pid, sig);
+        },
+        ...opts.options?.run,
+      },
+    };
+    const result = await renderPasses(normalizeEdit(mainDoc(n)), sources, dir, control, options).then((r) => ({ ok: r }), (e: unknown) => ({ error: e as RenderFailure }));
+    return { dir, result, started, ended: () => ended, kills, abort, runs: await runs(), left: await readdir(dir) };
+  }
+
+  it("AC1/5/6: passes run one at a time in dir/<pass-id>/, each pgid started then ended, intermediates go after use", async () => {
+    await steer({ linger: true, sleep: { final: 300 } });
+    const r = await passes(8);
+    expect(r.result).toMatchObject({ ok: { plan: "multi", passes: ["chunk-0-0", "chunk-0-1", "chunk-0-2", "chunk-0-3", "chunk-1-0", "chunk-1-1"] } });
+    expect(r.runs.map((x) => x.id)).toEqual(["chunk-0-0", "chunk-0-1", "chunk-0-2", "chunk-0-3", "chunk-1-0", "chunk-1-1", "final"]);
+    // Every pass's own group went through started() (one per spawn), then passEnded(); none outlived its pass.
+    expect(r.started.map((s) => s.pgid)).toEqual(r.runs.map((x) => x.pgid));
+    expect(r.started.every((s) => s.workdir === r.dir && s.leftover.length === 0)).toBe(true);
+    expect(r.ended()).toBe(7);
+    for (const s of r.started) expect(await pidsInGroup(s.pgid)).toEqual([]);
+    // The final pass of an edit with no music and no overlays names the work folder (absolute chunk paths).
+    expect(r.started[6].names).toBe(true);
+    expect(r.runs.every((x) => x.graph)).toBe(true);
+    // chunk-1-0 read chunk-0-0/1: gone before chunk-1-1; the final pass only sees what it reads; nothing is left after.
+    expect(r.runs[5].ls.filter((f) => f.startsWith("chunk-"))).toEqual(["chunk-0-2", "chunk-0-3", "chunk-1-0", "chunk-1-1"]);
+    expect(r.runs[6].ls.filter((f) => f.startsWith("chunk-"))).toEqual(["chunk-1-0", "chunk-1-1"]);
+    expect(r.left.filter((f) => f.startsWith("chunk-"))).toEqual([]);
+    expect(r.left).toContain("out.mp4");
+    // Intermediates may grow to INTERMEDIATE_FSIZE_BYTES (6 GiB), the delivery file to 200 MB; the address space cap is the same for all.
+    expect(r.runs.map((x) => Number(x.fsize))).toEqual([...Array(6).fill(INTERMEDIATE_FSIZE_BYTES), FSIZE_BYTES]);
+    expect(r.runs.every((x) => Number(x.as) === DEFAULT_AS_LIMIT_BYTES)).toBe(true);
+  });
+
+  it("PAR-10764: a multi-pass plan on a low disk fails disk_low before any pass spawns; single-pass is unchanged", async () => {
+    await steer({});
+    const low = (async () => ({ bavail: 10 * 1024 ** 3, bsize: 1 })) as never;
+    const r = await passes(8, { options: { statfs: low } });
+    expect(r.result).toMatchObject({ error: { code: "disk_low" } });
+    expect(r.started).toEqual([]);
+    expect(r.runs).toEqual([]);
+    const ok = await passes(2, { options: { statfs: low } });
+    expect(ok.result).toMatchObject({ ok: { plan: "single" } });
+  });
+
+  it("AC1: cancelling during pass 2 kills only that group and starts no later pass", async () => {
+    await steer({ linger: true, sleep: { "chunk-0-1": 20_000 } });
+    const abort = new AbortController();
+    const r = await passes(4, { abort, onStart: (k) => void (k === 2 && setTimeout(() => abort.abort(new RenderFailure("The render claim was lost.", "infra", "cancelled")), 100)) });
+    expect(r.result).toMatchObject({ error: { code: "cancelled", kind: "infra" } });
+    expect(r.runs.map((x) => x.id)).toEqual(["chunk-0-0", "chunk-0-1"]);
+    const [first, second] = r.started.map((s) => s.pgid);
+    expect(r.kills.filter(([, sig]) => sig === "SIGTERM")).toEqual([[-second, "SIGTERM"]]);
+    expect(r.kills.filter(([pid]) => pid === -first)).toEqual([[-first, "SIGKILL"]]); // its own exit sweep, before pass 2
+    expect(await pidsInGroup(second)).toEqual([]);
+    expect(r.ended()).toBe(2);
+  });
+
+  it("AC2: one deadline from the first spawn; each pass gets what is left, under 60 s left fails timeout without spawning", async () => {
+    await steer({});
+    let t = 1_000_000;
+    const clock = { now: () => t };
+    const ok = await passes(4, { options: clock, onStart: () => void (t += 500_000) });
+    expect(ok.result).toMatchObject({ ok: { plan: "multi" } });
+    expect(ok.runs.map((x) => Number(x.timeout))).toEqual([TIMEOUT_SEC, TIMEOUT_SEC - 500, TIMEOUT_SEC - 1000]);
+    await rm(log(), { force: true });
+    const late = await passes(4, { options: clock, onStart: () => void (t += 1_150_000) });
+    expect(late.result).toMatchObject({ error: { code: "timeout", kind: "infra" } });
+    expect(late.runs.map((x) => x.id)).toEqual(["chunk-0-0"]);
+  });
+
+  it("AC3: a failed pass ends the render with its own failure", async () => {
+    await steer({ fail: { "chunk-0-1": true } });
+    const r = await passes(4);
+    expect(r.result).toMatchObject({ error: { code: "ffmpeg_failed", kind: "deterministic", stderrTail: expect.stringContaining("boom chunk-0-1") } });
+    expect(r.runs.map((x) => x.id)).toEqual(["chunk-0-0", "chunk-0-1"]);
+  });
+
+  it("AC4: a pass output off by more than a frame, or with the wrong sound, fails verify_failed before the next pass", async () => {
+    await steer({ drift: { "chunk-0-0": 0.1 } });
+    const long = await passes(4);
+    expect(long.result).toMatchObject({ error: { code: "verify_failed", kind: "deterministic", message: expect.stringMatching(/chunk-0-0: it lasts 2.100 s; the plan says 2.000 s/) } });
+    expect(long.runs.map((x) => x.id)).toEqual(["chunk-0-0"]);
+    await rm(log(), { force: true });
+    await steer({ drift: { "chunk-0-0": 0.03 } }); // within one frame (1/30 s)
+    expect((await passes(4)).result).toMatchObject({ ok: { plan: "multi" } });
+    await rm(log(), { force: true });
+    await steer({ mute: { "chunk-0-0": true } });
+    const mute = await passes(4, { audio: true, options: { plan: { passBudget: 4 } } }); // 1.1 a clip: two to a chunk
+    expect(mute.result).toMatchObject({ error: { code: "verify_failed", message: expect.stringMatching(/chunk-0-0: it lost its sound/) } });
+    expect(mute.runs).toHaveLength(1);
+  });
+
+  it.skipIf(!available)("through the runner: a multi-pass render uploads one verified file; a failed pass leaves no work folder", async () => {
+    await steer({});
+    await addAsset("src-a", { content: new TextEncoder().encode(JSON.stringify({ probe: probeJson(10, false) })) });
+    const done = await render(mainDoc(4), null, { run: { bins: mpBins }, plan: { passBudget: 3 } });
+    expect(done).toMatchObject({ status: "succeeded", errorKind: null });
+    expect(puts).toEqual([`studio/${CO}/own/${done.id}/v1.mp4`, `studio/${CO}/own/${done.id}/${PREVIEW_FILE}`]);
+    // The two chunks run side by side (PASS_CONCURRENCY), in either order; then the final pass and the proxy.
+    const ids = (await runs()).map((x) => x.id);
+    expect(ids.slice(0, 2).sort()).toEqual(["chunk-0-0", "chunk-0-1"]);
+    expect(ids.slice(2)).toEqual(["final", "proxy"]);
+    expect(await workFolders()).toEqual([]);
+    await pg.db.execute(`DELETE FROM ${pg.db.namespace}.video_renders`);
+    await steer({ fail: { "chunk-0-1": true } });
+    const failed = await render(mainDoc(4), null, { run: { bins: mpBins }, plan: { passBudget: 3 } });
+    expect(failed).toMatchObject({ status: "failed", errorKind: "deterministic", attempts: 1 });
+    expect(await workFolders()).toEqual([]);
+  });
+
+  it.skipIf(!available)("AC7: one input too heavy for any pass fails TooComplexError after the probe, before any ffmpeg run", async () => {
+    await steer({});
+    const uhd120 = { ...probeJson(10, false), streams: [{ codec_type: "video", codec_name: "h264", width: 3840, height: 2160, avg_frame_rate: "120/1" }] };
+    await addAsset("src-a", { content: new TextEncoder().encode(JSON.stringify({ probe: uhd120 })) });
+    for (let i = 0; i < 2; i++) {
+      await pg.db.execute(`DELETE FROM ${pg.db.namespace}.video_renders`);
+      const done = await render(mainDoc(1), null, { run: { bins: mpBins } });
+      expect(done).toMatchObject({ status: "failed", errorKind: "deterministic", attempts: 1, error: "One clip is too large to render (resolution x frame rate). Use a smaller source." });
+    }
+    expect(await runs()).toEqual([]);
+    expect(gets).toEqual([`studio/${CO}/own/src-a/v1.mp4`, `studio/${CO}/own/src-a/v1.mp4`]);
+    expect(puts).toEqual([]);
+  });
+
+  it("PAR-11217: the chunks of one level run two at a time; the next level and the final pass wait for all of them", async () => {
+    await steer({ linger: true, sleep: { "chunk-0-0": 300, "chunk-0-1": 300, "chunk-0-2": 300, "chunk-0-3": 300 } });
+    const r = await passes(8, { options: { passConcurrency: PASS_CONCURRENCY } });
+    expect(PASS_CONCURRENCY).toBe(2);
+    expect(r.result).toMatchObject({ ok: { plan: "multi", passes: ["chunk-0-0", "chunk-0-1", "chunk-0-2", "chunk-0-3", "chunk-1-0", "chunk-1-1"] } });
+    const ids = r.runs.map((x) => x.id);
+    expect(ids.slice(0, 2).sort()).toEqual(["chunk-0-0", "chunk-0-1"]);
+    expect(ids.at(-1)).toBe("final");
+    // Side by side, the log order and the started() order can differ: match each run to its own group.
+    const pgidOf = (id: string) => r.runs.find((x) => x.id === id)!.pgid;
+    const at = (id: string) => r.started.find((s) => s.pgid === pgidOf(id))!.endedBefore;
+    // Both first chunks were up before either ended; a third waits for a free lane, level 1 for all of level 0.
+    expect([at("chunk-0-0"), at("chunk-0-1")]).toEqual([0, 0]);
+    expect(at("chunk-0-2")).toBeGreaterThanOrEqual(1);
+    expect(Math.min(at("chunk-1-0"), at("chunk-1-1"))).toBe(4);
+    expect(at("final")).toBe(6);
+    expect(r.ended()).toBe(7);
+    for (const s of r.started) expect(await pidsInGroup(s.pgid)).toEqual([]);
+    expect(r.left.filter((f) => f.startsWith("chunk-"))).toEqual([]);
+  });
+
+  it("PAR-11217: a failed chunk cancels the one beside it and starts nothing more", async () => {
+    await steer({ linger: true, fail: { "chunk-0-0": true }, sleep: { "chunk-0-0": 200, "chunk-0-1": 20_000 } });
+    const r = await passes(8, { options: { passConcurrency: 2 } });
+    expect(r.result).toMatchObject({ error: { code: "ffmpeg_failed", kind: "deterministic", stderrTail: expect.stringContaining("boom chunk-0-0") } });
+    expect(r.runs.map((x) => x.id).sort()).toEqual(["chunk-0-0", "chunk-0-1"]);
+    // The log order of two side-by-side runs is not their start order; the run logs its own group.
+    const sibling = r.runs.find((x) => x.id === "chunk-0-1")!.pgid;
+    expect(r.started.map((s) => s.pgid)).toContain(sibling);
+    expect(r.kills).toContainEqual([-sibling, "SIGTERM"]);
+    for (const s of r.started) expect(await pidsInGroup(s.pgid)).toEqual([]);
+    expect(r.ended()).toBe(2);
+  });
+
+  it("AC8: an edit within the budget is today's single pass with today's encoder and limits", async () => {
+    await steer({});
+    const r = await passes(3);
+    expect(r.result).toMatchObject({ ok: { plan: "single", passes: [] } });
+    expect(r.runs).toMatchObject([{ id: "final", timeout: String(TIMEOUT_SEC), fsize: String(FSIZE_BYTES) }]);
+    expect(ENCODER_ARGS).toContain("-crf");
+  });
+});
+
 describe.skipIf(!available || !hasFfmpeg)("Render pipeline with real ffmpeg", () => {
+  it("a silent video plus the MP3 fixture on the audio track renders with sound", async () => {
+    const src = join(scratch, "mute.mp4");
+    const made = spawnSync("ffmpeg", ["-nostdin", "-v", "error", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=30", "-t", "1", "-c:v", "libx264", "-preset", "ultrafast", "-an", src]);
+    expect(made.status).toBe(0);
+    await addAsset("mute", { content: new Uint8Array(await readFile(src)) });
+    const mp3 = new Uint8Array(await readFile(join(import.meta.dirname, "fixtures", "tone.mp3")));
+    await addAsset("vo", { kind: "audio", mime: "audio/mpeg", key: `studio/${CO}/own/vo/v1.mp3`, content: mp3 });
+    const d = { ...doc("mute", 0.5), tracks: [...doc("mute", 0.5).tracks, { id: "a", kind: "audio", clips: [{ id: "vo1", assetId: "vo", version: 1, in: 0, out: 0.5, start: 0 }] }] };
+    const done = await render(d, null, { run: {} });
+    expect(done).toMatchObject({ status: "succeeded", errorKind: null });
+    const file = join(scratch, "out-vo.mp4");
+    await writeFile(file, r2.get(`studio/${CO}/own/${done.id}/v1.mp4`)!);
+    const probe = JSON.parse(spawnSync("ffprobe", ["-v", "error", "-print_format", "json", "-show_streams", file]).stdout.toString());
+    expect(probe.streams.some((s: { codec_type: string }) => s.codec_type === "audio")).toBe(true);
+  }, 120_000);
+
   // The longest edit (180 s) at 1080x1920 through the whole pipeline: ~30 s on pib-vps (4 threads), well under 200 MB.
   it("renders a 180 s testsrc+sine edit into a verified 1080x1920 MP4 with sound, under 200 MB", async () => {
     const src = join(scratch, "src.mp4");

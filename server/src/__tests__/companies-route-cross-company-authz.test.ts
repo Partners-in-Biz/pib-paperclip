@@ -47,6 +47,13 @@ const mockFeedbackService = vi.hoisted(() => ({
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
+// Export routes read the caller's read scope (PAR-14320); this file has no database.
+vi.mock("../services/authorization.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../services/authorization.js")>()),
+  issueReadSqlCondition: vi.fn(async () => ({ scope: "caller issues" })),
+  projectReadSqlCondition: vi.fn(async () => ({ scope: "caller projects" })),
+}));
+
 function registerCompanyRouteMocks() {
   vi.doMock("../services/index.js", () => ({
     accessService: () => mockAccessService,
@@ -57,6 +64,11 @@ function registerCompanyRouteMocks() {
     companyService: () => mockCompanyService,
     feedbackService: () => mockFeedbackService,
     logActivity: mockLogActivity,
+  }));
+  // The app's db is a stub: nobody here is restricted (PAR-12733 reads the list for the company record).
+  vi.doMock("../services/member-restriction/resolver.js", async (importOriginal) => ({
+    ...await importOriginal<typeof import("../services/member-restriction/resolver.js")>(),
+    memberRestrictionEnforcedCompanyIds: async () => [],
   }));
 }
 
@@ -215,7 +227,7 @@ function boardActor(input: {
   };
 }
 
-describe.sequential("company route cross-company authorization", () => {
+describe("company route cross-company authorization", () => {
   beforeEach(() => {
     vi.resetModules();
     vi.doUnmock("../routes/authz.js");

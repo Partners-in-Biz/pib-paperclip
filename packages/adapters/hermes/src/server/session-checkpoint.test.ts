@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   extractHermesSessionId,
+  isPlausibleHermesSessionId,
   parseHermesStreamJsonLine,
   parseHermesStreamJsonOutput,
   sessionCheckpointResumeEnabled,
@@ -22,6 +23,14 @@ describe("hermes session checkpoint", () => {
 
   it("ignores non-session ids", () => {
     expect(extractHermesSessionId('{"session_id":"not-a-session"}')).toBeNull();
+    expect(isPlausibleHermesSessionId("local-not-hex-at-all")).toBe(false);
+  });
+
+  it("accepts gateway-backed local-<sha256> session ids (PAR-13537)", () => {
+    const id = `local-${"a83174a7".repeat(8)}`;
+    expect(isPlausibleHermesSessionId(id)).toBe(true);
+    expect(extractHermesSessionId(`{"type":"system","subtype":"init","session_id":"${id}"}`)).toBe(id);
+    expect(extractHermesSessionId(`session_id: ${id}\n`)).toBe(id);
   });
 
   it("defaults the rollback flag on and honours an explicit off", () => {

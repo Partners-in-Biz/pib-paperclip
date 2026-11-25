@@ -1,20 +1,10 @@
 import { redactCommandText } from "@paperclipai/adapter-utils";
-import { isPublicExecutorToolSelector } from "@paperclipai/adapter-utils/command-redaction";
+import { isPublicExecutorToolSelector, looksLikeCredentialJwt } from "@paperclipai/adapter-utils/command-redaction";
 
-const SECRET_FIELD_NAME_CORE = String.raw`(?:api[-_]?key|access[-_]?token|auth(?:_?token)?|token|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring|browser[-_]?code|login[-_]?url)`;
+const SECRET_FIELD_NAME_PATTERN = String.raw`[A-Za-z0-9_-]*(?:api[-_]?key|access[-_]?token|auth(?:_?token)?|token|authorization(?:[-_]?code)?|bearer|secrets?|passwd|passwords?|credentials?|jwt|private[-_]?key|cookie|connectionstring|browser[-_]?code|login[-_]?url)(?:[-_]?(?:value|header|prod(?:uction)?|dev(?:elopment)?|test|staging|primary|secondary))*`;
+const SECRET_FIELD_NAME_START = String.raw`(?<![A-Za-z0-9_-])`;
 
-// A secret field name is any identifier run that contains one of the core
-// words. Do not express this as `[A-Za-z0-9_-]*core[A-Za-z0-9_-]*` in an
-// unanchored scan: on a long identifier run (base64url attachment bodies, hex
-// dumps) the leading star backtracks at every start position and the scan is
-// quadratic. That froze the server's main thread for minutes (PAR-8028).
-// Match the whole run once, then test it for a core word.
-const SECRET_FIELD_NAME_CORE_RE = new RegExp(SECRET_FIELD_NAME_CORE, "i");
-const IDENTIFIER_RUN = String.raw`(?<![A-Za-z0-9_-])([A-Za-z0-9_-]+)(?![A-Za-z0-9_-])`;
-
-// Unanchored `.test()` of `X*core X*` is true exactly when `core` occurs, so
-// the core regex alone keeps the old key semantics without the backtracking.
-const SECRET_PAYLOAD_KEY_RE = SECRET_FIELD_NAME_CORE_RE;
+const SECRET_PAYLOAD_KEY_RE = new RegExp(`^(?:${SECRET_FIELD_NAME_PATTERN})(?:_plain|_ref)?$`, "i");
 
 /**
  * Longest string the secret scanner reads. Longer text is withheld whole and
@@ -77,16 +67,13 @@ function isAuditCountField(key: string, value: unknown): boolean {
 const COMMAND_PAYLOAD_KEY_RE =
   /(^command$|^cmd$|command[-_]?line|resolved[-_]?command|PAPERCLIP_RESOLVED_COMMAND)/i;
 const COMMAND_ARGS_PAYLOAD_KEY_RE = /^(commandArgs|command_?args|argv)$/i;
-const JWT_VALUE_RE =
-  /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)?$/;
-// Durable protocol schema identifiers share JWT's broad dotted shape but are
-// public discriminators, not credentials. Exempt the Paperclip schema
-// namespace only in fields that actually declare a schema; the same value in
-// arbitrary provider data remains subject to the fail-closed JWT guard.
+// Public protocol discriminators are retained verbatim. A dotted identifier
+// alone is not a credential; JWT detection requires an encoded JSON header.
 const PAPERCLIP_SCHEMA_FIELDS = new Set(["schema", "runtimeSchema"]);
 export const PAPERCLIP_PUBLIC_SCHEMA_IDS = new Set([
   "paperclip.artifact.generated.v1",
   "paperclip.artifact.viewed.v1",
+  "paperclip.auth.credentials.updated.v1",
   "paperclip.capability-discovery.v1",
   "paperclip.capability.authorization-record.v1",
   "paperclip.capability.control-plane.v1",
@@ -125,6 +112,11 @@ export const PAPERCLIP_PUBLIC_SCHEMA_IDS = new Set([
   "paperclip.native-execution-input.v2",
   "paperclip.native-execution-input.v3",
   "paperclip.native-execution-input.v4",
+  "paperclip.native-execution-input.v5",
+  "paperclip.native-execution-input.v7",
+  "paperclip.native-execution-input.v8",
+  "paperclip.native-execution-input.v9",
+  "paperclip.native-execution-input.v10",
   "paperclip.native-finalization.v1",
   "paperclip.native-finalization.v2",
   "paperclip.native-harness-backup-stamp.v1",
@@ -132,6 +124,7 @@ export const PAPERCLIP_PUBLIC_SCHEMA_IDS = new Set([
   "paperclip.native-harness-backup.v1",
   "paperclip.native-model-envelope.v1",
   "paperclip.native-model-envelope.v2",
+  "paperclip.native-model-envelope.v3",
   "paperclip.native-session-scope.v2",
   "paperclip.native-session-supervisor.v1",
   "paperclip.plan.updated.v1",
@@ -172,6 +165,7 @@ export const PAPERCLIP_PUBLIC_SCHEMA_IDS = new Set([
   "paperclip.runner.conformance.fixture.v1",
   "paperclip.runner.conformance.output.v1",
   "paperclip.runner.durable.control-plane-state.v1",
+  "paperclip.runner.durable.control-plane-state.v2",
   "paperclip.runner.durable.diagnostics.v1",
   "paperclip.runner.durable.state.v1",
   "paperclip.runner.durable.trace.v1",
@@ -248,11 +242,14 @@ export const PRP_V1_EVENT_TYPES = new Set([
   "workspace.change.updated",
   "workspace.diff.recorded",
   "workspace.file.referenced",
+  "auth.credentials.updated",
+  "runtime.activity.recorded",
   "harness.starting",
   "harness.ready",
   "harness.exited",
   "harness.diagnostic",
   "plan.updated",
+  "plan.proposed",
   "tool.execution.started",
   "tool.execution.progressed",
   "tool.execution.completed",
@@ -359,13 +356,26 @@ const NATIVE_RUN_SPAN_NAMES = new Set([
   "native.result.finalize",
   "native.session.execute",
   "provider.session.continuity_break",
+  "provider.session.load",
   "provider.session.resume",
   "provider.time_to_first_agent_event",
   "provider.turn.queue",
   "question_response.to_run_created",
+  "harness_state.inspect",
+  "harness_state.path_check",
+  "harness_state.launch_material",
+  "provider_pack.select",
+  "provider_pack.discover",
+  "provider_pack.verify",
+  "provider_pack.verify_preinstalled",
+  "provider_pack.verify_uploaded",
+  "provider_pack.link_preinstalled",
+  "provider_pack.clear_stale",
+  "provider_pack.upload",
   "runner.artifact.discover",
   "runner.artifact.prepare",
   "runner.prp.authenticate",
+  "runner.process.launch",
   "runner.prp.route.register",
   "runner.runtime.stage",
   "runner.session.bootstrap",
@@ -376,53 +386,26 @@ const NATIVE_RUN_SPAN_NAMES = new Set([
   "runner.turn.submit",
   "task.prepare",
   "task.run",
+  "task.provider_session",
   "task.run.measured",
+  "task.provider_session.measured",
   "task.settle",
 ]);
-const CLI_FLAG_SHAPE_RE = /^-{1,2}[A-Za-z0-9_-]+$/;
-function isCliSecretFlag(value: string): boolean {
-  return CLI_FLAG_SHAPE_RE.test(value) && SECRET_FIELD_NAME_CORE_RE.test(value);
-}
-// Groups: 1 = text through the opening value quote, 2 = field name,
-// 3 = closing value quote. The name is matched as a whole identifier run and
-// checked in redactSecretFieldText (see SECRET_FIELD_NAME_CORE_RE).
+const CLI_SECRET_FLAG_RE = new RegExp(
+  String.raw`^-{1,2}${SECRET_FIELD_NAME_PATTERN}$`,
+  "i",
+);
 const JSON_SECRET_FIELD_TEXT_RE = new RegExp(
-  String.raw`((?:"|')?${IDENTIFIER_RUN}(?:"|')?\s*:\s*(?:"|'))[^"'` +
+  String.raw`((?:"|')?${SECRET_FIELD_NAME_START}${SECRET_FIELD_NAME_PATTERN}(?:"|')?\s*:\s*(?:"|'))[^"'` +
     "`" +
     String.raw`\r\n]+((?:"|'))`,
-  "g",
+  "gi",
 );
 const ESCAPED_JSON_SECRET_FIELD_TEXT_RE = new RegExp(
-  String.raw`((?:\\")?${IDENTIFIER_RUN}(?:\\")?\s*:\s*(?:\\"))[^\\\r\n]+((?:\\"))`,
-  "g",
+  String.raw`((?:\\")?${SECRET_FIELD_NAME_START}${SECRET_FIELD_NAME_PATTERN}(?:\\")?\s*:\s*(?:\\"))[^\\\r\n]+((?:\\"))`,
+  "gi",
 );
 
-function redactSecretFieldText(input: string, fieldRe: RegExp): string {
-  const parts: string[] = [];
-  let copiedThrough = 0;
-  let match: RegExpExecArray | null;
-  fieldRe.lastIndex = 0;
-  while ((match = fieldRe.exec(input)) !== null) {
-    const name = match[2];
-    if (!SECRET_FIELD_NAME_CORE_RE.test(name)) {
-      // Not a secret field. Resume right after the name, not after the value,
-      // so a secret field that starts inside this value is still found, as
-      // the old backtracking regex did.
-      fieldRe.lastIndex = match.index + match[0].indexOf(name) + name.length;
-      continue;
-    }
-    parts.push(
-      input.slice(copiedThrough, match.index),
-      match[1],
-      REDACTED_EVENT_VALUE,
-      match[3],
-    );
-    copiedThrough = match.index + match[0].length;
-  }
-  if (copiedThrough === 0) return input;
-  parts.push(input.slice(copiedThrough));
-  return parts.join("");
-}
 const SECRET_TEXT_HINTS = [
   "api",
   "key",
@@ -726,24 +709,20 @@ function authorizationCredentialRange(
 function redactAuthorizationCredentials(input: string): string {
   // Include compound diagnostic labels such as proxyAuthorization while the
   // value parser still requires a Basic/Bearer scheme before redacting.
-  // Match whole identifier runs and test them, instead of
-  // `\b[A-Za-z0-9_-]*Authorization[A-Za-z0-9_-]*\b`, which backtracks
-  // quadratically on long identifier runs (PAR-8028). The old trailing `\b`
-  // dropped trailing dashes from the word; keep that.
-  const identifierRun = new RegExp(IDENTIFIER_RUN, "g");
+  const authorizationWord = /(?<![A-Za-z0-9_-])[A-Za-z0-9_-]*Authorization[A-Za-z0-9_-]*\b/gi;
   const parts: string[] = [];
   let copiedThrough = 0;
   let match: RegExpExecArray | null;
 
-  while ((match = identifierRun.exec(input)) !== null) {
-    let wordEnd = match.index + match[0].length;
-    while (wordEnd > match.index && input[wordEnd - 1] === "-") wordEnd -= 1;
-    if (!/authorization/i.test(input.slice(match.index, wordEnd))) continue;
-    const range = authorizationCredentialRange(input, wordEnd);
+  while ((match = authorizationWord.exec(input)) !== null) {
+    const range = authorizationCredentialRange(
+      input,
+      match.index + match[0].length,
+    );
     if (!range || range.start < copiedThrough) continue;
     parts.push(input.slice(copiedThrough, range.start), range.replacement);
     copiedThrough = range.end;
-    identifierRun.lastIndex = range.end;
+    authorizationWord.lastIndex = range.end;
   }
 
   if (copiedThrough === 0) return input;
@@ -792,6 +771,10 @@ function redactStandaloneBearerCredentials(input: string): string {
       }
     }
 
+    const candidate = input.slice(credentialStart, end);
+    // Preserve known authentication terms after bearer, unless explicitly quoted.
+    // Named Authorization fields are already handled independently above.
+    if (/^(?:tokens?|authentication|authorization|credentials?|schemes?|flows?)[.,;:!?]?$/i.test(candidate)) continue;
     if (credentialStart < copiedThrough) continue;
     parts.push(input.slice(copiedThrough, credentialStart), replacement);
     copiedThrough = end;
@@ -818,7 +801,7 @@ function sanitizeValue(value: unknown): unknown {
   // string leaf after validated protocol discriminators have had a chance to
   // opt in above in sanitizeRecord.
   if (typeof value === "string") {
-    return JWT_VALUE_RE.test(value) && !isPublicExecutorToolSelector(value)
+    return looksLikeCredentialJwt(value) && !isPublicExecutorToolSelector(value)
       ? REDACTED_EVENT_VALUE
       : redactSensitiveText(value);
   }
@@ -922,7 +905,7 @@ function sanitizeCommandArgs(args: unknown[]): unknown[] {
       return REDACTED_EVENT_VALUE;
     }
     if (typeof arg !== "string") return sanitizeValue(arg);
-    if (isCliSecretFlag(arg.trim())) {
+    if (CLI_SECRET_FLAG_RE.test(arg.trim())) {
       redactNext = true;
       return arg;
     }
@@ -972,7 +955,7 @@ export function sanitizeRecord(
       continue;
     }
     if (
-      SECRET_PAYLOAD_KEY_RE.test(key) &&
+      (SECRET_PAYLOAD_KEY_RE.test(key) || AUDIT_COUNT_PAYLOAD_KEYS.has(key)) &&
       !AUDIT_REASON_PAYLOAD_KEY_RE.test(key) &&
       !isAuditCountField(key, value)
     ) {
@@ -991,9 +974,7 @@ export function sanitizeRecord(
       redacted[key] = REDACTED_EVENT_VALUE;
       continue;
     }
-    // Interpret a validated schema field before applying generic value-shape
-    // heuristics. The exemption is deliberately closed to this one PRP v1
-    // discriminator; the same dotted string in any other field is redacted.
+    // Preserve public protocol identities before scanning diagnostic values.
     if (isKnownPrpEventDiscriminator(record, key, value)) {
       redacted[key] = value;
       continue;
@@ -1008,7 +989,7 @@ export function sanitizeRecord(
     }
     if (
       typeof value === "string" &&
-      JWT_VALUE_RE.test(value) &&
+      looksLikeCredentialJwt(value) &&
       !isPublicExecutorToolSelector(value) &&
       !isPaperclipSchemaDiscriminator(key, value)
     ) {
@@ -1079,13 +1060,12 @@ export function redactSensitiveText(input: string): string {
     return withheldTextPlaceholder(input.length, MAX_REDACTION_SCAN_CHARS);
   }
   return redactCommandText(
-    redactSecretFieldText(
-      redactSecretFieldText(
-        redactStandaloneBearerCredentials(redactAuthorizationCredentials(input)),
-        JSON_SECRET_FIELD_TEXT_RE,
+    redactStandaloneBearerCredentials(redactAuthorizationCredentials(input))
+      .replace(JSON_SECRET_FIELD_TEXT_RE, `$1${REDACTED_EVENT_VALUE}$2`)
+      .replace(
+        ESCAPED_JSON_SECRET_FIELD_TEXT_RE,
+        `$1${REDACTED_EVENT_VALUE}$2`,
       ),
-      ESCAPED_JSON_SECRET_FIELD_TEXT_RE,
-    ),
     REDACTED_EVENT_VALUE,
   );
 }

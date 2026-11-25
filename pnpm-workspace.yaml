@@ -13,6 +13,12 @@ packages:
   - ui
   - cli
 
+# Keep in sync with package.json#pnpm.neverBuiltDependencies (newer pnpm reads
+# it only from here). onnxruntime-node's install script only downloads CUDA and
+# TensorRT libraries; its CPU binaries ship in the tarball (PAR-10126).
+neverBuiltDependencies:
+  - onnxruntime-node
+
 # Keep in sync with package.json#pnpm.patchedDependencies. Newer pnpm
 # versions read patch configuration only from the workspace manifest.
 patchedDependencies:
@@ -32,8 +38,8 @@ patchedDependencies:
 # Agent CLIs share the current runtime used by the native provider pack.
 # pnpm patches change package files, but overrides control dependency resolution.
 overrides:
-  "@agentclientprotocol/codex-acp@1.6.2>@openai/codex": "0.156.0"
-  "@agentclientprotocol/claude-agent-acp@0.73.0>@anthropic-ai/claude-agent-sdk": "0.3.280"
+  "@agentclientprotocol/codex-acp@1.6.2>@openai/codex": "0.160.0"
+  "@agentclientprotocol/claude-agent-acp@0.73.0>@anthropic-ai/claude-agent-sdk": "0.3.286"
   rollup: ">=4.59.0"
   react: "^19.2.8"
   react-dom: "^19.2.8"

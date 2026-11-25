@@ -6,7 +6,7 @@ export interface ReviewAsset { id: string; name: string; kind: string; status?: 
 export interface ReviewItem {
   assetId: string;
   cardId: string;
-  kind: "image" | "video";
+  kind: "image" | "video" | "audio";
   status: string;
   title: string;
   prompt: string;
@@ -35,7 +35,7 @@ export function reviewQueue(cards: ReadonlyArray<ReviewCard>, assets: ReadonlyAr
     seen.add(assetId);
     const a = byId.get(assetId);
     const prompt = (a?.prompt ?? "").trim() || promptFor(c.id).trim() || (c.data.prompt ?? "").trim();
-    const kind = a?.kind === "video" || (!a && c.type === "video") ? "video" : "image";
+    const kind = a?.kind === "audio" ? "audio" : a?.kind === "video" || (!a && c.type === "video") ? "video" : "image";
     items.push({ assetId, cardId: c.id, kind, status: a?.status ?? "", title: humanTitle(prompt, a?.name || c.data.label || "Result"), prompt, model: a?.model ?? null, credits: typeof a?.credits === "number" ? a.credits : null });
   }
   // Stable sort keeps reading order inside each group.

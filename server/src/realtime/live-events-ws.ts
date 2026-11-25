@@ -1,19 +1,32 @@
+import { createLiveEventDelivery } from "./live-event-delivery.js";
+import { skillAccessService } from "../services/skill-access.js";
 import { createHash } from "node:crypto";
 import type { IncomingMessage, Server as HttpServer } from "node:http";
 import { createRequire } from "node:module";
 import type { Duplex } from "node:stream";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agentApiKeys, companyMemberships, instanceUserRoles } from "@paperclipai/db";
-import type { DeploymentMode } from "@paperclipai/shared";
+import { agentApiKeys, companyMemberships, instanceUserRoles, heartbeatRuns, projects } from "@paperclipai/db";
+import { issueActivityChangesTaskIdentity, type DeploymentMode, type LiveEvent } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "../middleware/logger.js";
+import { activityToastIdentity } from "./activity-toast-identity.js";
+import { taskToastEligible } from "./task-toast-eligibility.js";
 import { subscribeCompanyLiveEvents } from "../services/live-events.js";
+import { memberRestrictionEnforcedCompanyIdsForActor, restrictionPersonIds } from "../services/member-restriction/strict-read.js";
+import { trackIdleWork } from "../services/task-admission.js";
+import { createLiveRunEventRedactor } from "../services/live-run-event-redaction.js";
+import { refusedOnlyByMemberRestriction } from "../services/member-restriction/action-list.js";
+import { actorPersonMembership } from "../services/member-restriction/actor-memberships.js";
+import { hasHostKeys, withoutHostKeys } from "../services/member-restriction/response-strip.js";
+import { parsePlanningCanvasWsPath, type PlanningCanvasHub } from "./planning-canvas-ws.js";
 
 interface WsSocket {
   readyState: number;
   ping(): void;
-  send(data: string): void;
+  bufferedAmount?: number;
+  send(data: string, callback?: (error?: Error) => void): void;
+  on(event: "message", listener: (data: Buffer, isBinary: boolean) => void): void;
   terminate(): void;
   close(code?: number, reason?: string): void;
   on(event: "pong", listener: () => void): void;
@@ -23,6 +36,7 @@ interface WsSocket {
 
 interface WsServer {
   clients: Set<WsSocket>;
+  close(): void;
   on(event: "connection", listener: (socket: WsSocket, req: IncomingMessage) => void): void;
   on(event: "close", listener: () => void): void;
   handleUpgrade(
@@ -37,10 +51,16 @@ interface WsServer {
 const require = createRequire(import.meta.url);
 const { WebSocket, WebSocketServer } = require("ws") as {
   WebSocket: { OPEN: number };
-  WebSocketServer: new (opts: { noServer: boolean }) => WsServer;
+  WebSocketServer: new (opts: { noServer: boolean; maxPayload: number }) => WsServer;
 };
 
+import { authorizationService, type AuthorizationActor } from "../services/authorization.js";
+import { getHeartbeatRunReadDecisions } from "../services/heartbeat-run-privacy.js";
+import { canActorReadCase } from "../services/case-access.js";
+
 interface UpgradeContext {
+  actor: AuthorizationActor;
+  apiKeyId?: string;
   companyId: string;
   actorType: "board" | "agent";
   actorId: string;
@@ -143,6 +163,7 @@ async function authorizeUpgrade(
         companyId,
         actorType: "board",
         actorId: "board",
+        actor: { type: "board", userId: "local-board", source: "local_implicit" },
       };
     }
 
@@ -161,6 +182,7 @@ async function authorizeUpgrade(
           companyId,
           actorType: "board",
           actorId: cloudActor.userId,
+          actor: { type: "board", userId: cloudActor.userId, source: "cloud_tenant", companyIds: cloudActor.companyIds },
         };
       }
     }
@@ -198,6 +220,7 @@ async function authorizeUpgrade(
       companyId,
       actorType: "board",
       actorId: userId,
+      actor: { type: "board", userId, source: "session", companyIds: memberships.map(m => m.companyId) },
     };
   }
 
@@ -208,7 +231,7 @@ async function authorizeUpgrade(
     .where(and(eq(agentApiKeys.keyHash, tokenHash), isNull(agentApiKeys.revokedAt)))
     .then((rows) => rows[0] ?? null);
 
-  if (!key || key.companyId !== companyId) {
+  if (!key || key.companyId !== companyId || key.scopeConfig) {
     return null;
   }
 
@@ -221,6 +244,8 @@ async function authorizeUpgrade(
     companyId,
     actorType: "agent",
     actorId: key.agentId,
+    apiKeyId: key.id,
+    actor: { type: "agent", agentId: key.agentId, companyId, source: "agent_key", onBehalfOfUserId: key.responsibleUserId },
   };
 }
 
@@ -229,6 +254,7 @@ export function setupLiveEventsWebSocketServer(
   db: Db,
   opts: {
     deploymentMode: DeploymentMode;
+    subscribeInvalidation?: (companyId: string, resync: () => void) => () => void;
     resolveSessionFromHeaders?: (headers: Headers) => Promise<BetterAuthSessionResult | null>;
     /**
      * Resolves a Cloud-proxied browser's identity from the trusted
@@ -236,9 +262,16 @@ export function setupLiveEventsWebSocketServer(
      * deployments; self-hosted instances leave it unset.
      */
     resolveCloudActor?: (req: IncomingMessage) => Promise<CloudUpgradeActor | null>;
+    /**
+     * Planning Canvas board sockets (plan PAR-13925 E): their upgrades take
+     * this dispatch and `authorizeUpgrade`, then the hub applies the canvas
+     * resolver and answers every refusal with the unknown-board bytes.
+     */
+    planningCanvasHub?: Pick<PlanningCanvasHub, "admit">;
   },
 ) {
-  const wss = new WebSocketServer({ noServer: true });
+  const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
+  const redactRunEvent = createLiveRunEventRedactor(db);
   const cleanupByClient = new Map<WsSocket, () => void>();
   const aliveByClient = new Map<WsSocket, boolean>();
 
@@ -260,12 +293,143 @@ export function setupLiveEventsWebSocketServer(
       return;
     }
 
-    const unsubscribe = subscribeCompanyLiveEvents(context.companyId, (event) => {
-      if (socket.readyState !== WebSocket.OPEN) return;
-      socket.send(JSON.stringify(event));
+    const access = authorizationService(db);
+    async function visibleEvent(event: LiveEvent): Promise<LiveEvent | null> {
+      if (event.payload.entityType === "case" && (typeof event.payload.entityId !== "string"
+        || !(await canActorReadCase(db, context!.actor, { id: event.payload.entityId, companyId: event.companyId })))) return null;
+      if (context!.actor.source === "local_implicit") {
+        if (event.type === "activity.logged" && event.payload.entityType === "issue") {
+          return { ...event, payload: { ...event.payload,
+            taskIdentityChanged: issueActivityChangesTaskIdentity(event.payload.action, event.payload.details),
+            ...await activityToastIdentity(db, event.companyId, event.payload) } };
+        }
+        return event;
+      }
+      // Whether a person the caller carries may be restricted here (4.6). The
+      // membership row read below rules it out for an unrestricted signed-in
+      // user without an extra query; the resolver decides every other case.
+      let mayBeRestricted = true;
+      if (context!.apiKeyId) {
+        const active = await db.select({ id: agentApiKeys.id }).from(agentApiKeys)
+          .where(and(eq(agentApiKeys.id, context!.apiKeyId), isNull(agentApiKeys.revokedAt))).limit(1);
+        if (!active.length) return null;
+      } else {
+        const membership = await db.select({ id: companyMemberships.id, restricted: companyMemberships.restricted }).from(companyMemberships)
+          .where(and(eq(companyMemberships.companyId, context!.companyId), eq(companyMemberships.principalType, "user"),
+            eq(companyMemberships.principalId, context!.actorId), eq(companyMemberships.status, "active"))).limit(1);
+        const admin = context!.actor.source !== "cloud_tenant" && await db.select({ id: instanceUserRoles.id }).from(instanceUserRoles)
+          .where(and(eq(instanceUserRoles.userId, context!.actorId), eq(instanceUserRoles.role, "instance_admin"))).limit(1).then(rows => rows.length > 0);
+        if (!membership.length && !admin) return null;
+        mayBeRestricted = membership[0]?.restricted !== false
+          || restrictionPersonIds(context!.actor).some(personId => personId !== context!.actorId);
+      }
+      const payload = event.payload;
+      const issueId = typeof payload.issueId === "string" ? payload.issueId
+        : payload.entityType === "issue" && typeof payload.entityId === "string" ? payload.entityId : null;
+      const runId = typeof payload.runId === "string" ? payload.runId
+        : payload.entityType === "heartbeat_run" && typeof payload.entityId === "string" ? payload.entityId : null;
+      // PAR-12608 4.6a row 17: a caller refused `company_scope:read` only by the
+      // member restriction gets a run event only for a run on a task he can
+      // read that works for him.
+      let runMustWorkFor: string | null = null;
+      if (event.type === "heartbeat.run.event" || event.type === "heartbeat.run.log") {
+        const decision = await access.decide({ actor: context!.actor, action: "company_scope:read",
+          resource: { type: "company", companyId: event.companyId } });
+        if (!decision.allowed) {
+          runMustWorkFor = refusedOnlyByMemberRestriction(decision)
+            ? actorPersonMembership(context!.actor, event.companyId)?.personId ?? null : null;
+          if (!runMustWorkFor || !runId) return null;
+        }
+      }
+      const readBindings: Parameters<typeof getHeartbeatRunReadDecisions>[3][number][] = [];
+      if (issueId) {
+        readBindings.push({ companyId: event.companyId, scopeKind: "issue", issueId });
+      }
+      if (runId) {
+        const [run] = await db.select({
+          companyId: heartbeatRuns.companyId,
+          scopeKind: heartbeatRuns.scopeKind,
+          issueId: heartbeatRuns.issueId,
+          responsibleUserId: heartbeatRuns.responsibleUserId,
+        }).from(heartbeatRuns).where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, event.companyId)));
+        if (!run) return null;
+        if (runMustWorkFor && (run.scopeKind === "company" || !run.issueId || run.responsibleUserId !== runMustWorkFor)) return null;
+        readBindings.push(run);
+      }
+      if ((await getHeartbeatRunReadDecisions(db, access, context!.actor, readBindings)).some(allowed => !allowed)) return null;
+      if (["company_skill", "company_skill_source"].includes(String(payload.entityType)) && typeof payload.entityId === "string") {
+        try {
+          const skills = skillAccessService(db, context!.actor);
+          if (payload.entityType === "company_skill") await skills.assertSkill(event.companyId, payload.entityId);
+          else await skills.assertSource(event.companyId, payload.entityId);
+        } catch { return null; }
+      }
+      if (payload.entityType === "project" && typeof payload.entityId === "string") {
+        const [project] = await db.select({ id: projects.id }).from(projects)
+          .where(and(eq(projects.id, payload.entityId), eq(projects.companyId, event.companyId))).limit(1);
+        if (!project || !(await access.decide({ actor: context!.actor, action: "project:read",
+          resource: { type: "project", companyId: event.companyId, projectId: project.id } })).allowed) return null;
+      }
+      // PAR-12608 4.6: a caller who works for a person restricted under `enforce`
+      // in the event's company gets only the task, project and run events checked
+      // above; every other event type is dropped. A failed restriction read
+      // throws, so the delivery drops the event.
+      const boundToTaskProjectOrRun = Boolean(issueId || runId)
+        || (payload.entityType === "project" && typeof payload.entityId === "string");
+      // PAR-12951: and no host or secret key at any depth of a frame to him. A
+      // bound frame without one needs no restriction read.
+      const hostKeys = boundToTaskProjectOrRun && hasHostKeys(event.payload);
+      const enforcedHere = mayBeRestricted && (!boundToTaskProjectOrRun || hostKeys)
+        && (await memberRestrictionEnforcedCompanyIdsForActor(db, context!.actor)).includes(event.companyId);
+      if (!boundToTaskProjectOrRun && enforcedHere) return null;
+      if (hostKeys && enforcedHere) event = withoutHostKeys(event);
+      if (event.type.startsWith("heartbeat.run.")) return runId ? event : null;
+      if (event.type === "agent.session.goal.changed") return issueId ? event : null;
+      // Company-wide invalidations carry no task-derived content. Authorized
+      // clients obtain details through viewer-filtered HTTP reads.
+      if (event.type === "activity.logged") return { ...event, payload: {
+        action: payload.action, entityType: payload.entityType, entityId: payload.entityId,
+        // A handoff can attach the first case to a task. Its already-authorized
+        // task identity lets an empty cases panel refresh without exposing content.
+        ...(payload.entityType === "case" && String(payload.action).startsWith("case.handoff_") && issueId ? { issueId } : {}),
+        // A closed boolean derived from details, so task pickers can tell a
+        // created, deleted, hidden or renamed task from routine progress.
+        ...(payload.entityType === "issue"
+          ? { taskIdentityChanged: issueActivityChangesTaskIdentity(payload.action, payload.details) }
+          : {}),
+        // The task read check above authorizes attribution, but not arbitrary details.
+        ...(issueId ? await activityToastIdentity(db, event.companyId, payload) : {}),
+      } };
+      if (event.type === "agent.status") return { ...event, payload: { agentId: payload.agentId, status: payload.status } };
+      if (event.type === "agent.runtime_state.updated") return { ...event, payload: { agentId: payload.agentId } };
+      if (event.type === "external_object.updated") return { ...event, payload: { externalObjectId: payload.externalObjectId } };
+      if (event.type.startsWith("plugin.")) return event;
+      return null;
+    }
+    const delivery = createLiveEventDelivery({ socket, authorize: async event => {
+      const visible = await visibleEvent(event);
+      if (!visible || visible.type !== "heartbeat.run.event") return visible;
+      const payload = visible.payload.payload;
+      if (!payload || typeof payload !== "object" || Array.isArray(payload) || !("prpEvent" in payload)) return visible;
+      return redactRunEvent(visible);
+    },
+      decorate: async visible => {
+        let toastEligible = false;
+        try {
+          toastEligible = await taskToastEligible(db, visible,
+            context.actor.type === "board" ? context.actor.userId ?? null : null);
+        } catch (err) { logger.warn({ err, companyId: context.companyId }, "task toast eligibility failed"); }
+        return { ...visible, toastEligible };
+      },
+      onError: err => logger.warn({ err, companyId: context.companyId }, "live event authorization failed"),
     });
-
-    cleanupByClient.set(socket, unsubscribe);
+    const unsubscribe = subscribeCompanyLiveEvents(context.companyId, event => delivery.enqueue(event));
+    const unsubscribeInvalidation = opts.subscribeInvalidation?.(context.companyId, delivery.requestResync);
+    socket.on("message", (data, isBinary) => {
+      if (isBinary) { socket.close(1003, "text messages required"); return; }
+      delivery.receive(data.toString());
+    });
+    cleanupByClient.set(socket, () => { unsubscribe(); unsubscribeInvalidation?.(); delivery.dispose(); });
     aliveByClient.set(socket, true);
 
     socket.on("pong", () => {
@@ -310,18 +474,27 @@ export function setupLiveEventsWebSocketServer(
     }
 
     const url = new URL(req.url, "http://localhost");
-    const companyId = parseCompanyId(url.pathname);
+    const canvasTarget = opts.planningCanvasHub ? parsePlanningCanvasWsPath(url.pathname) : null;
+    const companyId = canvasTarget?.companyId ?? parseCompanyId(url.pathname);
     if (!companyId) {
       closeUpgradeSocket(socket);
       return;
     }
 
-    void authorizeUpgrade(db, req, companyId, url, {
+    // Upgrade admission precedes this async authentication. An idle hold or
+    // socket close must not make its accepted database writes disappear.
+    void trackIdleWork(authorizeUpgrade(db, req, companyId, url, {
       deploymentMode: opts.deploymentMode,
       resolveSessionFromHeaders: opts.resolveSessionFromHeaders,
       resolveCloudActor: opts.resolveCloudActor,
     })
-      .then((context) => {
+      .then(async (context) => {
+        if (canvasTarget && opts.planningCanvasHub) {
+          await opts.planningCanvasHub.admit({
+            req, socket, head, target: canvasTarget, context, beforeUpgrade: cleanupRawSocketListeners,
+          });
+          return;
+        }
         if (!context) {
           rejectUpgrade(socket, "403 Forbidden", "forbidden");
           return;
@@ -343,7 +516,7 @@ export function setupLiveEventsWebSocketServer(
       .catch((err) => {
         logger.error({ err, path: req.url }, "failed websocket upgrade authorization");
         rejectUpgrade(socket, "500 Internal Server Error", "upgrade failed");
-      });
+      }));
   });
 
   return wss;

@@ -80,10 +80,40 @@ export class CapabilityDeniedError extends Error {
 export class InvocationScopeDeniedError extends Error {
   override readonly name = "InvocationScopeDeniedError";
   readonly code = PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED;
+  readonly pluginId: string;
+  readonly method: string;
+  /** Why the call was refused; unset for a cross-company call inside an invocation. */
+  readonly reason?: InvocationScopeDenialReason;
+  /** The single company the call named, when it named one. */
+  readonly requestedCompanyId?: string;
 
-  constructor(pluginId: string, method: string, message: string) {
+  constructor(
+    pluginId: string,
+    method: string,
+    message: string,
+    details: { reason?: InvocationScopeDenialReason; requestedCompanyId?: string } = {},
+  ) {
     super(`Plugin "${pluginId}" is not allowed to perform "${method}": ${message}`);
+    this.pluginId = pluginId;
+    this.method = method;
+    this.reason = details.reason;
+    this.requestedCompanyId = details.requestedCompanyId;
   }
+}
+
+/**
+ * - `unconfigured_company`: a call outside a host invocation named a company
+ *   with no saved settings for the plugin.
+ * - `no_company`: the call needs one company and has no company context.
+ * - `unknown_invocation`: the call carried a missing, expired or unknown
+ *   invocation id.
+ */
+export type InvocationScopeDenialReason = "unconfigured_company" | "no_company" | "unknown_invocation";
+
+/** Rule 3 text (PAR-11072): starts with "company context is required" so existing matchers keep working. */
+export function unconfiguredCompanyMessage(companyId: string): string {
+  return `company context is required: company "${companyId}" has no saved settings for this plugin; ` +
+    "calls made outside a host invocation (jobs, timers, start-up) can act only for companies with saved settings";
 }
 
 // ---------------------------------------------------------------------------
@@ -139,6 +169,8 @@ export interface HostServices {
 
   /** Provides `events.emit` and `events.subscribe`. */
   events: {
+    listLifecycle(params: WorkerToHostMethods["events.listLifecycle"][0]): Promise<WorkerToHostMethods["events.listLifecycle"][1]>;
+    acknowledgeLifecycle(params: WorkerToHostMethods["events.acknowledgeLifecycle"][0]): Promise<void>;
     emit(params: WorkerToHostMethods["events.emit"][0]): Promise<void>;
     subscribe(params: WorkerToHostMethods["events.subscribe"][0]): Promise<void>;
   };
@@ -192,7 +224,15 @@ export interface HostServices {
 
   /** Provides `companies.list`, `companies.get`. */
   companies: {
-    list(params: WorkerToHostMethods["companies.list"][0]): Promise<WorkerToHostMethods["companies.list"][1]>;
+    /**
+     * `filter.companyIds`, when set, is applied before `limit`/`offset`: only
+     * those companies are returned. The worker's own `actionableOnly` is
+     * resolved by the gate into this filter, never passed through.
+     */
+    list(
+      params: Pick<WorkerToHostMethods["companies.list"][0], "limit" | "offset">,
+      filter?: { companyIds?: readonly string[] },
+    ): Promise<WorkerToHostMethods["companies.list"][1]>;
     get(params: WorkerToHostMethods["companies.get"][0]): Promise<WorkerToHostMethods["companies.get"][1]>;
   };
 
@@ -200,6 +240,8 @@ export interface HostServices {
   projects: {
     list(params: WorkerToHostMethods["projects.list"][0]): Promise<WorkerToHostMethods["projects.list"][1]>;
     get(params: WorkerToHostMethods["projects.get"][0]): Promise<WorkerToHostMethods["projects.get"][1]>;
+    resolveGitCredential(params: WorkerToHostMethods["projects.resolveGitCredential"][0], context: WorkerHostCallContext): Promise<string | null>;
+    getInstanceSecrets(params: WorkerToHostMethods["projects.getInstanceSecrets"][0]): Promise<WorkerToHostMethods["projects.getInstanceSecrets"][1]>;
     listWorkspaces(params: WorkerToHostMethods["projects.listWorkspaces"][0]): Promise<WorkerToHostMethods["projects.listWorkspaces"][1]>;
     getPrimaryWorkspace(params: WorkerToHostMethods["projects.getPrimaryWorkspace"][0]): Promise<WorkerToHostMethods["projects.getPrimaryWorkspace"][1]>;
     getWorkspaceForIssue(params: WorkerToHostMethods["projects.getWorkspaceForIssue"][0]): Promise<WorkerToHostMethods["projects.getWorkspaceForIssue"][1]>;
@@ -233,8 +275,8 @@ export interface HostServices {
   issues: {
     list(params: WorkerToHostMethods["issues.list"][0]): Promise<WorkerToHostMethods["issues.list"][1]>;
     get(params: WorkerToHostMethods["issues.get"][0]): Promise<WorkerToHostMethods["issues.get"][1]>;
-    create(params: WorkerToHostMethods["issues.create"][0]): Promise<WorkerToHostMethods["issues.create"][1]>;
-    update(params: WorkerToHostMethods["issues.update"][0]): Promise<WorkerToHostMethods["issues.update"][1]>;
+    create(params: WorkerToHostMethods["issues.create"][0], context?: WorkerHostCallContext): Promise<WorkerToHostMethods["issues.create"][1]>;
+    update(params: WorkerToHostMethods["issues.update"][0], context?: WorkerHostCallContext): Promise<WorkerToHostMethods["issues.update"][1]>;
     getRelations(params: WorkerToHostMethods["issues.relations.get"][0]): Promise<WorkerToHostMethods["issues.relations.get"][1]>;
     setBlockedBy(params: WorkerToHostMethods["issues.relations.setBlockedBy"][0]): Promise<WorkerToHostMethods["issues.relations.setBlockedBy"][1]>;
     addBlockers(params: WorkerToHostMethods["issues.relations.addBlockers"][0]): Promise<WorkerToHostMethods["issues.relations.addBlockers"][1]>;
@@ -271,6 +313,8 @@ export interface HostServices {
   /** Provides `agents.list`, `agents.get`, `agents.pause`, `agents.resume`, `agents.invoke`. */
   agents: {
     list(params: WorkerToHostMethods["agents.list"][0]): Promise<WorkerToHostMethods["agents.list"][1]>;
+    getRuntimeIdentity?(params: WorkerToHostMethods["agents.getRuntimeIdentity"][0]): Promise<WorkerToHostMethods["agents.getRuntimeIdentity"][1]>;
+    getRuntime?(params: WorkerToHostMethods["agents.getRuntime"][0]): Promise<WorkerToHostMethods["agents.getRuntime"][1]>;
     get(params: WorkerToHostMethods["agents.get"][0]): Promise<WorkerToHostMethods["agents.get"][1]>;
     pause(params: WorkerToHostMethods["agents.pause"][0]): Promise<WorkerToHostMethods["agents.pause"][1]>;
     resume(params: WorkerToHostMethods["agents.resume"][0]): Promise<WorkerToHostMethods["agents.resume"][1]>;
@@ -405,6 +449,8 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   // Events
   "events.emit": "events.emit",
   "events.subscribe": "events.subscribe",
+  "events.listLifecycle": "events.subscribe",
+  "events.acknowledgeLifecycle": "events.subscribe",
 
   // HTTP
   "http.fetch": "http.outbound",
@@ -424,8 +470,8 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   // Logger — always allowed
   "log": null,
 
-  // Provider span sink — only a plugin that registers environment drivers may
-  // emit a provider span. The gate rejects a span from any other plugin.
+  // Timing sink for environment drivers or workspace providers. Parentage
+  // still derives solely from the current host-owned invocation.
   "span.record": "environment.drivers.register",
 
   // Companies
@@ -435,6 +481,8 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   // Projects
   "projects.list": "projects.read",
   "projects.get": "projects.read",
+  "projects.getInstanceSecrets": "projects.instance-secrets",
+  "projects.resolveGitCredential": "projects.git-credentials",
   "projects.listWorkspaces": "project.workspaces.read",
   "projects.getPrimaryWorkspace": "project.workspaces.read",
   "projects.getWorkspaceForIssue": "project.workspaces.read",
@@ -487,6 +535,8 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   // Agents
   "agents.list": "agents.read",
   "agents.get": "agents.read",
+  "agents.getRuntime": "agents.lifecycle.manage",
+  "agents.getRuntimeIdentity": "agents.lifecycle.manage",
   "agents.pause": "agents.pause",
   "agents.resume": "agents.resume",
   "agents.invoke": "agents.invoke",
@@ -591,6 +641,50 @@ export function createHostClientHandlers(
     return noCompanyScope;
   }
 
+  function unknownInvocationError(method: WorkerToHostMethodName): InvocationScopeDeniedError {
+    return new InvocationScopeDeniedError(
+      pluginId,
+      method,
+      "the worker referenced a missing, expired, or unknown invocation scope",
+      { reason: "unknown_invocation" },
+    );
+  }
+
+  /**
+   * The call has no company context. When the host says the call (made outside
+   * an invocation) names a company with no saved settings, the refusal says so;
+   * otherwise it is the plain "company context is required".
+   */
+  function missingCompanyContextError(
+    method: WorkerToHostMethodName,
+    requestedCompanyId: string | null,
+    context?: WorkerHostCallContext,
+  ): InvocationScopeDeniedError {
+    if (requestedCompanyId && readNonEmptyString(context?.unconfiguredCompanyId) === requestedCompanyId) {
+      return new InvocationScopeDeniedError(pluginId, method, unconfiguredCompanyMessage(requestedCompanyId), {
+        reason: "unconfigured_company",
+        requestedCompanyId,
+      });
+    }
+    return new InvocationScopeDeniedError(pluginId, method, "company context is required", {
+      reason: "no_company",
+      ...(requestedCompanyId ? { requestedCompanyId } : {}),
+    });
+  }
+
+  function crossCompanyError(
+    method: WorkerToHostMethodName,
+    requestedCompanyId: string,
+    allowedCompanyId: string,
+  ): InvocationScopeDeniedError {
+    return new InvocationScopeDeniedError(
+      pluginId,
+      method,
+      `requested company "${requestedCompanyId}" but the current invocation is scoped to company "${allowedCompanyId}"`,
+      { requestedCompanyId },
+    );
+  }
+
   function requireInvocationCompanyScope(
     method: WorkerToHostMethodName,
     params: unknown,
@@ -599,21 +693,13 @@ export function createHostClientHandlers(
     const requested = requestedCompanyScope(method, params);
     if (requested.kind === "none") return;
 
-    if (context?.invalidInvocationScope) {
-      throw new InvocationScopeDeniedError(
-        pluginId,
-        method,
-        "the worker referenced a missing, expired, or unknown invocation scope",
-      );
-    }
+    if (context?.invalidInvocationScope) throw unknownInvocationError(method);
 
     const allowedCompanyId = readNonEmptyString(context?.invocationScope?.companyId);
 
     if (requested.kind === "all") {
       if (method === "companies.list") return;
-      if (!allowedCompanyId) {
-        throw new InvocationScopeDeniedError(pluginId, method, "company context is required");
-      }
+      if (!allowedCompanyId) throw missingCompanyContextError(method, null, context);
       throw new InvocationScopeDeniedError(
         pluginId,
         method,
@@ -621,16 +707,9 @@ export function createHostClientHandlers(
       );
     }
 
-    if (!allowedCompanyId) {
-      throw new InvocationScopeDeniedError(pluginId, method, "company context is required");
-    }
-
+    if (!allowedCompanyId) throw missingCompanyContextError(method, requested.companyId, context);
     if (requested.companyId !== allowedCompanyId) {
-      throw new InvocationScopeDeniedError(
-        pluginId,
-        method,
-        `requested company "${requested.companyId}" but the current invocation is scoped to company "${allowedCompanyId}"`,
-      );
+      throw crossCompanyError(method, requested.companyId, allowedCompanyId);
     }
   }
 
@@ -639,33 +718,21 @@ export function createHostClientHandlers(
     params: unknown,
     context?: WorkerHostCallContext,
   ): string {
-    if (context?.invalidInvocationScope) {
-      throw new InvocationScopeDeniedError(
-        pluginId,
-        method,
-        "the worker referenced a missing, expired, or unknown invocation scope",
-      );
-    }
+    if (context?.invalidInvocationScope) throw unknownInvocationError(method);
 
     const requested = requestedCompanyScope(method, params);
     const scopedCompanyId = readNonEmptyString(context?.invocationScope?.companyId);
     if (requested.kind === "single") {
-      if (!scopedCompanyId) {
-        throw new InvocationScopeDeniedError(pluginId, method, "company context is required");
-      }
+      if (!scopedCompanyId) throw missingCompanyContextError(method, requested.companyId, context);
       if (requested.companyId !== scopedCompanyId) {
-        throw new InvocationScopeDeniedError(
-          pluginId,
-          method,
-          `requested company "${requested.companyId}" but the current invocation is scoped to company "${scopedCompanyId}"`,
-        );
+        throw crossCompanyError(method, requested.companyId, scopedCompanyId);
       }
       return scopedCompanyId;
     }
 
     if (scopedCompanyId) return scopedCompanyId;
 
-    throw new InvocationScopeDeniedError(pluginId, method, "company context is required");
+    throw missingCompanyContextError(method, null, context);
   }
 
   /**
@@ -678,6 +745,7 @@ export function createHostClientHandlers(
     const required = METHOD_CAPABILITY_MAP[method];
     if (required === null) return; // No capability required
     if (capabilitySet.has(required)) return;
+    if (method === "span.record" && capabilitySet.has("workspaces.manage")) return;
     throw new CapabilityDeniedError(pluginId, method, required);
   }
 
@@ -762,6 +830,8 @@ export function createHostClientHandlers(
     }),
 
     // Events
+    "events.listLifecycle": gated("events.listLifecycle", async (params) => services.events.listLifecycle(params)),
+    "events.acknowledgeLifecycle": gated("events.acknowledgeLifecycle", async (params) => services.events.acknowledgeLifecycle(params)),
     "events.emit": gated("events.emit", async (params) => {
       return services.events.emit(params);
     }),
@@ -806,12 +876,26 @@ export function createHostClientHandlers(
     }),
 
     // Companies
+    // Inside an invocation: the invocation's company (with or without
+    // `actionableOnly`). Outside one: every company, or with `actionableOnly`
+    // the companies with saved settings (`context.actionableCompanyIds`). The
+    // filter goes to the service so it runs before the window; the rows are
+    // filtered again here so a service that ignores it never widens the answer.
     "companies.list": gated("companies.list", async (params, context) => {
-      const rows = await services.companies.list(params);
       const allowedCompanyId = readNonEmptyString(context?.invocationScope?.companyId);
-      if (!allowedCompanyId) return rows;
+      const companyIds = allowedCompanyId
+        ? [allowedCompanyId]
+        : params?.actionableOnly === true
+          ? [...(context?.actionableCompanyIds ?? [])]
+          : null;
+      const window = { limit: params?.limit, offset: params?.offset };
+      const rows = companyIds
+        ? await services.companies.list(window, { companyIds })
+        : await services.companies.list(window);
+      if (!companyIds) return rows;
+      const allowed = new Set(companyIds);
       return rows.filter((company) =>
-        isRecord(company) && company.id === allowedCompanyId,
+        isRecord(company) && typeof company.id === "string" && allowed.has(company.id),
       ) as WorkerToHostMethods["companies.list"][1];
     }),
     "companies.get": gated("companies.get", async (params) => {
@@ -821,6 +905,18 @@ export function createHostClientHandlers(
     // Projects
     "projects.list": gated("projects.list", async (params) => {
       return services.projects.list(params);
+    }),
+    "projects.resolveGitCredential": gated("projects.resolveGitCredential", async (params, context) => {
+      const companyId = resolveRequiredCompanyId("projects.resolveGitCredential", params, context);
+      const scope = context?.invocationScope?.projectGit;
+      if (!scope || scope.projectId !== params.projectId || (scope.workspaceId && scope.workspaceId !== params.workspaceId)) {
+        throw new Error("Git credentials require a matching host project operation");
+      }
+      return services.projects.resolveGitCredential({ ...params, companyId }, context!);
+    }),
+    "projects.getInstanceSecrets": gated("projects.getInstanceSecrets", async (params, context) => {
+      const companyId = resolveRequiredCompanyId("projects.getInstanceSecrets", params, context);
+      return services.projects.getInstanceSecrets({ ...params, companyId });
     }),
     "projects.get": gated("projects.get", async (params) => {
       return services.projects.get(params);
@@ -882,11 +978,11 @@ export function createHostClientHandlers(
     "issues.get": gated("issues.get", async (params) => {
       return services.issues.get(params);
     }),
-    "issues.create": gated("issues.create", async (params) => {
-      return services.issues.create(params);
+    "issues.create": gated("issues.create", async (params, context) => {
+      return services.issues.create(params, context);
     }),
-    "issues.update": gated("issues.update", async (params) => {
-      return services.issues.update(params);
+    "issues.update": gated("issues.update", async (params, context) => {
+      return services.issues.update(params, context);
     }),
     "issues.relations.get": gated("issues.relations.get", async (params) => {
       return services.issues.getRelations(params);
@@ -972,6 +1068,14 @@ export function createHostClientHandlers(
     // Agents
     "agents.list": gated("agents.list", async (params) => {
       return services.agents.list(params);
+    }),
+    "agents.getRuntimeIdentity": gated("agents.getRuntimeIdentity", async (params) => {
+      if (!services.agents.getRuntimeIdentity) throw new Error("Agent runtime identity is unavailable");
+      return services.agents.getRuntimeIdentity(params);
+    }),
+    "agents.getRuntime": gated("agents.getRuntime", async (params) => {
+      if (!services.agents.getRuntime) throw new Error("Agent runtime state is unavailable");
+      return services.agents.getRuntime(params);
     }),
     "agents.get": gated("agents.get", async (params) => {
       return services.agents.get(params);

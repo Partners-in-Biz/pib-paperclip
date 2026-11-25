@@ -56,10 +56,10 @@ function stored(value: unknown): StoredBalance | null {
   return { usd: amount, setAt: v.setAt, setBy: String(v.setBy ?? "") };
 }
 
-/** Credits in the company's ledger written at or after `since`, across all months and clients. */
+/** Higgsfield credits in the company's ledger (xAI and Stability rows are other accounts) written at or after `since`, across all months and clients. */
 export async function spentSince(ctx: PluginContext, companyId: string, since: string): Promise<number> {
   const rows = await ctx.db.query<{ spent: unknown }>(
-    `SELECT COALESCE(SUM(credits), 0) AS spent FROM ${table(ctx, "credit_ledger")} WHERE company_id = $1 AND created_at >= $2`,
+    `SELECT COALESCE(SUM(l.credits), 0) AS spent FROM ${table(ctx, "credit_ledger")} l JOIN ${table(ctx, "generations")} g ON g.id = l.generation_id WHERE l.company_id = $1 AND l.created_at >= $2 AND g.provider = 'higgsfield'`,
     [companyId, since],
   );
   return credits(num(rows[0]?.spent));

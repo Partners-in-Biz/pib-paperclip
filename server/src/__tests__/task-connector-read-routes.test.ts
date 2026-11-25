@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import type { Db } from "@paperclipai/db";
+import { companies, companyMemberships, instanceUserRoles, issues, type Db } from "@paperclipai/db";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { errorHandler } from "../middleware/error-handler.js";
 import { chatChannelRoutes } from "../routes/chat-channels.js";
@@ -18,6 +18,7 @@ const boardActor: Express.Request["actor"] = {
 };
 const chat = { getIssueBinding: vi.fn(), get: vi.fn() };
 const email = { authorizeRead: vi.fn(), thread: vi.fn() };
+const access = { decide: vi.fn() };
 
 function app(actor = boardActor) {
   const instance = express();
@@ -25,11 +26,23 @@ function app(actor = boardActor) {
     req.actor = actor;
     next();
   });
-  instance.use("/api", chatChannelRoutes({} as Db, {
+  // Supply the resource and active membership that the management read guard
+  // now resolves. Connector service behavior stays isolated in this unit suite.
+  const db = { select: () => ({ from: (table: unknown) => {
+    const rows = table === issues ? [{ id: issueId, companyId, projectId: null }]
+      : table === companyMemberships ? [{ companyId, principalType: "user", principalId: boardActor.userId, membershipRole: "operator", status: "active" }]
+      : table === instanceUserRoles ? []
+      : table === companies ? [{ mode: "off" }]
+      : null;
+    if (!rows) throw new Error("Unexpected resource query in task read fixture");
+    return { where: () => Object.assign(Promise.resolve(rows), { limit: async () => rows }) };
+  } }) } as unknown as Db;
+  instance.use("/api", chatChannelRoutes(db, {
     service: chat as unknown as ChatChannelService,
+    access: access as never,
     heartbeat: { wakeup: vi.fn() },
   }));
-  instance.use("/api", emailRoutes({} as Db, email as unknown as EmailChannelService));
+  instance.use("/api", emailRoutes(db, email as unknown as EmailChannelService));
   instance.use(errorHandler);
   return instance;
 }
@@ -37,6 +50,7 @@ function app(actor = boardActor) {
 beforeEach(() => {
   vi.resetAllMocks();
   chat.getIssueBinding.mockResolvedValue(null);
+  access.decide.mockResolvedValue({ allowed: true });
   email.authorizeRead.mockResolvedValue(undefined);
   email.thread.mockResolvedValue(null);
 });
@@ -69,7 +83,7 @@ describe("task connector read routes", () => {
 
   it.each([issueId, `chat:${issueId}`])("retains authentication checks for %s", async (id) => {
     const server = app({ type: "none", source: "none" });
-    await request(server).get(`/api/issues/${id}/chat-binding`).expect(403);
+    await request(server).get(`/api/issues/${id}/chat-binding`).expect(401);
     await request(server).get(`/api/companies/${companyId}/email/tasks/${id}`).expect(401);
     expect(chat.getIssueBinding).not.toHaveBeenCalled();
     expect(email.authorizeRead).not.toHaveBeenCalled();
@@ -83,6 +97,22 @@ describe("task connector read routes", () => {
     await request(app()).get(`/api/issues/${issueId}/chat-binding`).expect(200, binding);
     chat.get.mockResolvedValue({ companyId: "other-company" });
     await request(app()).get(`/api/issues/${issueId}/chat-binding`).expect(404);
+  });
+
+  it("answers the guard's not-found body when the caller cannot read the task, before any binding lookup", async () => {
+    access.decide.mockResolvedValue({ allowed: false });
+    chat.getIssueBinding.mockResolvedValue({ endpointId: "test-endpoint" });
+    await request(app()).get(`/api/issues/${issueId}/chat-binding`)
+      .expect(404, { error: "Connection management resource not found" });
+    expect(chat.getIssueBinding).not.toHaveBeenCalled();
+    expect(chat.get).not.toHaveBeenCalled();
+    expect(access.decide).toHaveBeenCalledTimes(1);
+    expect(access.decide).toHaveBeenCalledWith({
+      actor: boardActor,
+      action: "issue:read",
+      resource: expect.objectContaining({ type: "issue", companyId, issueId }),
+      scope: expect.objectContaining({ issueId }),
+    });
   });
 
   it.each([issueId, `chat:${issueId}`])("retains company isolation for email task %s", async (id) => {

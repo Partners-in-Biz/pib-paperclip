@@ -11,6 +11,7 @@ import { randomUUID } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { iso, num, table } from "../db.js";
 import { errorText, StudioError } from "../errors.js";
+import { normalizeEdit } from "./timeline.js";
 
 export type RenderStatus = "queued" | "rendering" | "uploading" | "succeeded" | "failed" | "cancelled";
 export type RenderErrorKind = "deterministic" | "infra";
@@ -132,10 +133,12 @@ export async function enqueueRender(ctx: PluginContext, input: EnqueueRenderInpu
   const preset = required(input.preset, "a preset", 40);
   if (!Number.isInteger(input.editRevision) || input.editRevision < 1) bad("A render needs the edit's revision.");
   if (input.doc == null || typeof input.doc !== "object") bad("A render needs the edit document.");
+  // Stored normalized, so the render row holds the same schema version the edit was saved with (a v1 doc stays v1).
+  const doc = normalizeEdit(input.doc);
   const id = randomUUID();
   await ctx.db.execute(
     `INSERT INTO ${table(ctx, "video_renders")} (id, company_id, client_kind, client_ref, edit_id, edit_revision, doc, preset) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-    [id, companyId, input.client?.kind ?? null, input.client?.id ?? null, editId, input.editRevision, JSON.stringify(input.doc), preset],
+    [id, companyId, input.client?.kind ?? null, input.client?.id ?? null, editId, input.editRevision, JSON.stringify(doc), preset],
   );
   return getRender(ctx, companyId, id);
 }

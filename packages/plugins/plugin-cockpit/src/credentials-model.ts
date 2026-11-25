@@ -249,6 +249,10 @@ export function credentialBrief(row: CredentialRow, now: Date): Record<string, u
 
 /** The status file is written by `pib-evidence status` roughly daily; older than this and nobody vouches for the logins. */
 export const BROWSER_STATUS_MAX_AGE_MS = 36 * 3_600_000;
+/** Reasons that mean the probe is misconfigured, not that a login expired: no owner card is raised for them. */
+export function isBrowserConfigReason(reason: string): boolean {
+  return reason === "site_not_found";
+}
 export const BROWSER_SEED_PREFIX = "browser:";
 const IDENTITY = /^[a-z0-9][a-z0-9:_.-]{0,79}$/;
 
@@ -293,6 +297,8 @@ function text_(value: unknown, max: number): string {
 
 /** What the register records for one identity: ok only when the file is fresh and says so; otherwise expired, with the reason. */
 export function browserVerdict(status: Extract<BrowserStatus, { state: "read" }>, id: BrowserIdentity): { status: "ok" | "expired"; detail: string } {
+  // site_not_found is a probe/config problem (identity has no site entry), never a login that lapsed.
+  if (!status.stale && !id.ok && id.reason === "site_not_found") return { status: "expired", detail: "The browser check has no site entry for this identity (site_not_found): a configuration problem, not a login." };
   if (status.stale) return { status: "expired", detail: "The browser status file is more than 36 hours old, so this login is not vouched for." };
   if (!id.ok) return { status: "expired", detail: id.reason ? `The browser could not use this login (${id.reason}).` : "The browser could not use this login." };
   return { status: "ok", detail: "The browser used this login at the last check." };

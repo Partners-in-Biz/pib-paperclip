@@ -16,7 +16,7 @@ import { readFileSync } from "node:fs";
 import { promisify } from "node:util";
 
 import { HERMES_CLI, DEFAULT_MODEL, ADAPTER_TYPE, VALID_PROVIDERS } from "../shared/constants.js";
-import { detectModel, resolveProvider, inferProviderFromModel } from "./detect-model.js";
+import { detectModel, resolveHermesHome, resolveProvider, inferProviderFromModel } from "./detect-model.js";
 import { resolveHermesCommand } from "./execute.js";
 
 const execFileAsync = promisify(execFile);
@@ -151,8 +151,7 @@ async function checkApiKeys(
   // accurate results for keys that Hermes already knows about.
   const hermesEnvKeys: Record<string, string> = {};
   try {
-    const homeDir = process.env.HOME || process.env.USERPROFILE || "/root";
-    const hermesEnvPath = `${homeDir}/.hermes/.env`;
+    const hermesEnvPath = `${resolveHermesHome(envConfig)}/.env`;
     const content = readFileSync(hermesEnvPath, "utf-8");
     for (const line of content.split("\n")) {
       const trimmed = line.trim();
@@ -270,7 +269,7 @@ async function checkProviderConsistency(
   if (explicitProvider && detectedConfig?.provider && explicitProvider !== detectedConfig.provider) {
     return {
       level: "warn",
-      message: `Provider mismatch: adapterConfig has "${explicitProvider}" but ~/.hermes/config.yaml has "${detectedConfig.provider}". Using adapterConfig value.`,
+      message: `Provider mismatch: adapterConfig has "${explicitProvider}" but the seat's Hermes config.yaml has "${detectedConfig.provider}". Using adapterConfig value.`,
       hint: `Model "${model}" may not work correctly with provider "${explicitProvider}". Consider aligning with your Hermes config or removing the explicit provider to use auto-detection.`,
       code: "hermes_provider_mismatch",
     };
@@ -332,6 +331,34 @@ export async function testEnvironment(
   const command = resolveHermesCommand(config);
   const checks: AdapterEnvironmentCheck[] = [];
 
+  // Managed connections must prove the selected destination with the isolated
+  // runtime environment. Host credentials and ~/.hermes are not evidence.
+  if (config.managedAiRouting) {
+    const remote = ctx.executionTarget?.kind === "remote";
+    if (remote) {
+      checks.push({ level: "error", code: "hermes_remote_probe_unsupported", message: "Hermes connection testing requires a local execution environment." });
+    } else {
+      const env = { ...process.env };
+      for (const [key, value] of Object.entries((config.env ?? {}) as Record<string, unknown>)) {
+        if (typeof value === "string") env[key] = value;
+      }
+      const args = ["chat", "-Q", "-q", "Respond with hello. Do not use tools.", "--max-turns", "1"];
+      if (asString(config.model)) args.push("-m", asString(config.model)!);
+      const provider = asString(config.provider);
+      if (provider && provider !== "auto") args.push("--provider", provider);
+      try {
+        const { stdout } = await execFileAsync(command, args, {
+          env, cwd: asString(config.cwd), timeout: 45_000, maxBuffer: 1024 * 1024,
+        });
+        if (!/\bhello\b/i.test(stdout)) throw new Error("No hello response");
+        checks.push({ level: "info", code: "hermes_hello_probe_passed", message: "Hermes responded through the selected connection." });
+      } catch {
+        checks.push({ level: "error", code: "hermes_hello_probe_failed", message: "Hermes could not complete a request through this connection.", hint: "Check the Hermes installation, endpoint, credential, and model, then test again." });
+      }
+    }
+    return { adapterType: ADAPTER_TYPE, status: checks.some(check => check.level === "error") ? "fail" : "pass", checks, testedAt: new Date().toISOString() };
+  }
+
   // 1. CLI installed?
   const cliCheck = await checkCliInstalled(command);
   if (cliCheck) {
@@ -361,7 +388,9 @@ export async function testEnvironment(
   // 5. Detect Hermes config once for the remaining checks.
   let detectedConfig: Awaited<ReturnType<typeof detectModel>> | null = null;
   try {
-    detectedConfig = await detectModel();
+    detectedConfig = await detectModel(
+      `${resolveHermesHome((config.env ?? {}) as Record<string, unknown>)}/config.yaml`,
+    );
   } catch {
     // Non-fatal
   }

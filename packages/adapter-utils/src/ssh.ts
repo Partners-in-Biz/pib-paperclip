@@ -1,15 +1,21 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import { constants as fsConstants, createReadStream, createWriteStream, promises as fs } from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { Transform } from "node:stream";
+import { resolvePaperclipInstanceRoot } from "@paperclipai/shared/home-paths";
+import { pipeIntoChildStdin, writeChildStdin } from "./child-stdin.js";
 import type { CommandManagedRuntimeRunner } from "./command-managed-runtime.js";
 import {
   createUnrelatedHistoryGraftCommit,
   GIT_SYNC_COMMIT_IDENTITY_ARGS,
+  listProjectRepositoryStagingPaths,
+  PROJECT_REPOSITORIES_DIR,
+  PROJECT_REPOSITORY_STAGING_PATTERN,
   readSanitizedOriginRemoteUrl,
+  resetLocalGitIndexToHead,
 } from "./git-workspace-sync.js";
 import type { RunProcessResult } from "./server-utils.js";
 import type { DirectorySnapshot } from "./workspace-restore-merge.js";
@@ -44,6 +50,7 @@ export function createSshCommandManagedRuntimeRunner(input: {
   spec: SshRemoteExecutionSpec;
   defaultCwd?: string | null;
   maxBufferBytes?: number | null;
+  connectionReuseRunId?: string | null;
 }): CommandManagedRuntimeRunner {
   const defaultCwd = input.defaultCwd?.trim() || input.spec.remoteCwd;
   const maxBufferBytes =
@@ -59,17 +66,15 @@ export function createSshCommandManagedRuntimeRunner(input: {
       const cwd = commandInput.cwd?.trim() || defaultCwd;
       const envEntries = Object.entries(commandInput.env ?? {})
         .filter((entry): entry is [string, string] => typeof entry[1] === "string");
+      for (const [key] of envEntries) {
+        if (!isValidShellEnvKey(key)) {
+          throw new Error(`Invalid SSH environment variable key: ${key}`);
+        }
+      }
       const envPrefix = envEntries.length > 0
-        ? `env ${envEntries.map(([key, value]) => `${key}=${shellQuote(value)}`).join(" ")} `
+        ? `env ${envEntries.map(([key, value]) => shellQuote(`${key}=${value}`)).join(" ")} `
         : "";
-      const exportPrefix = envEntries.length > 0
-        ? envEntries.map(([key, value]) => `export ${key}=${shellQuote(value)};`).join(" ") + " "
-        : "";
-      const commandScript = command === "sh" || command === "bash"
-        ? (args[0] === "-c" || args[0] === "-lc") && typeof args[1] === "string"
-          ? `${exportPrefix}${args[1]}`
-          : `${envPrefix}exec ${[shellQuote(command), ...args.map((arg) => shellQuote(arg))].join(" ")}`
-        : `${envPrefix}exec ${[shellQuote(command), ...args.map((arg) => shellQuote(arg))].join(" ")}`;
+      const commandScript = `exec ${envPrefix}${[shellQuote(command), ...args.map((arg) => shellQuote(arg))].join(" ")}`;
       const remoteCommand = `cd ${shellQuote(cwd)} && ${commandScript}`;
 
       try {
@@ -77,6 +82,7 @@ export function createSshCommandManagedRuntimeRunner(input: {
           stdin: commandInput.stdin,
           timeoutMs: commandInput.timeoutMs,
           maxBuffer: maxBufferBytes,
+          connectionReuseRunId: input.connectionReuseRunId,
         });
         if (result.stdout) await commandInput.onLog?.("stdout", result.stdout);
         if (result.stderr) await commandInput.onLog?.("stderr", result.stderr);
@@ -159,6 +165,31 @@ function isValidShellEnvKey(value: string) {
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
 }
 
+/**
+ * True when `value` is safe as the user or host half of an ssh `user@host`
+ * destination: non-empty, no leading `-` (ssh would read it as an option, e.g.
+ * `-oProxyCommand=...`), no whitespace, control characters or `@`.
+ */
+export function isSafeSshDestinationPart(value: string): boolean {
+  // eslint-disable-next-line no-control-regex
+  return value.length > 0 && !value.startsWith("-") && !/[\s\u0000-\u001f\u007f@]/.test(value);
+}
+
+/**
+ * Builds the `user@host` ssh destination argument. Throws when either half
+ * could be read by ssh as an option or split into another argument, so a
+ * config that skipped `parseSshRemoteExecutionSpec` still cannot inject one.
+ */
+export function sshDestination(username: string, host: string): string {
+  if (!isSafeSshDestinationPart(username)) {
+    throw new Error("Invalid SSH username: it must not be empty, start with '-' or contain whitespace, control characters or '@'.");
+  }
+  if (!isSafeSshDestinationPart(host)) {
+    throw new Error("Invalid SSH host: it must not be empty, start with '-' or contain whitespace, control characters or '@'.");
+  }
+  return `${username}@${host}`;
+}
+
 export function parseSshRemoteExecutionSpec(value: unknown): SshRemoteExecutionSpec | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return null;
@@ -170,6 +201,9 @@ export function parseSshRemoteExecutionSpec(value: unknown): SshRemoteExecutionS
   const remoteCwd = typeof parsed.remoteCwd === "string" ? parsed.remoteCwd.trim() : "";
   const portValue = typeof parsed.port === "number" ? parsed.port : Number(parsed.port);
   if (!host || !username || !remoteCwd || !Number.isInteger(portValue) || portValue < 1 || portValue > 65535) {
+    return null;
+  }
+  if (!isSafeSshDestinationPart(host) || !isSafeSshDestinationPart(username)) {
     return null;
   }
 
@@ -320,8 +354,12 @@ async function spawnText(
       }));
     });
 
-    if (options.stdin != null && child.stdin) {
-      child.stdin.end(options.stdin);
+    if (options.stdin != null) {
+      // Pipe-closed codes are left to the close handler; other codes reject.
+      writeChildStdin(child, options.stdin, "ssh.spawnText", (error) => {
+        child.kill("SIGTERM");
+        finishReject(Object.assign(error, { code: null }));
+      });
     }
   });
 }
@@ -406,6 +444,137 @@ async function createSshAuthArgs(
       await Promise.all(tempFiles.map((cleanup) => cleanup()));
     },
   };
+}
+
+// One ssh connection per run for bridge and control ops (PAR-9403). Only
+// `runSshCommand` multiplexes; the agent's long-lived spawn keeps its own
+// connection. Runners are built per operation, so the control directory is
+// derived from the run id, never held by a runner.
+export const SSH_CONNECTION_REUSE_ENV = "PAPERCLIP_SSH_CONNECTION_REUSE";
+export const SSH_CONTROL_BASE_DIR_ENV = "PAPERCLIP_SSH_CONTROL_DIR";
+// Unix socket paths hold 103 bytes on macOS (107 on Linux). `%C` adds 40, and
+// ssh first binds `<path>.<16 random chars>`, 17 more: 103 - 57 = 46.
+export const SSH_CONTROL_DIR_MAX_BYTES = 46;
+const RUN_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const CONTROL_DIR_NAME_RE = /^[A-Za-z0-9_-]{22}$/;
+
+// A run uuid as 22 base64url chars, reversible so the startup sweep knows the run.
+function controlDirName(runId: string): string | null {
+  return RUN_UUID_RE.test(runId) ? Buffer.from(runId.replace(/-/g, ""), "hex").toString("base64url") : null;
+}
+
+function runIdFromControlDirName(name: string): string | null {
+  if (!CONTROL_DIR_NAME_RE.test(name)) return null;
+  const hex = Buffer.from(name, "base64url").toString("hex");
+  if (hex.length !== 32 || Buffer.from(hex, "hex").toString("base64url") !== name) return null;
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+export function sshConnectionReuseEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env[SSH_CONNECTION_REUSE_ENV]?.trim() !== "0";
+}
+
+/** Short, per OS user and per instance, so two instances never sweep each other. */
+export function sshControlBaseDir(env: NodeJS.ProcessEnv = process.env): string {
+  const override = env[SSH_CONTROL_BASE_DIR_ENV]?.trim();
+  if (override) return path.resolve(override);
+  let instanceRoot = "";
+  try {
+    instanceRoot = resolvePaperclipInstanceRoot();
+  } catch {
+    // An invalid instance id still gets a per-user directory.
+  }
+  const uid = typeof process.getuid === "function" ? process.getuid() : 0;
+  const key = createHash("sha256").update(`${uid}\0${instanceRoot}`).digest("hex").slice(0, 6);
+  return `/tmp/pcs-${key}`;
+}
+
+/** `null` when the run id is not a uuid or the path would be too long. */
+export function sshControlDirFor(runId: string, baseDir: string = sshControlBaseDir()): string | null {
+  const name = controlDirName(runId);
+  if (!name) return null;
+  const dir = path.join(baseDir, name);
+  return Buffer.byteLength(`${dir}/`, "utf8") <= SSH_CONTROL_DIR_MAX_BYTES ? dir : null;
+}
+
+async function isPrivateOwnedDir(dir: string): Promise<boolean> {
+  const stats = await fs.lstat(dir).catch(() => null);
+  if (!stats?.isDirectory()) return false;
+  if (typeof process.getuid === "function" && stats.uid !== process.getuid()) return false;
+  return (stats.mode & 0o077) === 0;
+}
+
+async function ensurePrivateDir(dir: string): Promise<boolean> {
+  try {
+    await fs.mkdir(dir, { mode: 0o700 });
+    await fs.chmod(dir, 0o700);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") return false;
+  }
+  return await isPrivateOwnedDir(dir);
+}
+
+/** Creates `<base>/<runId>` with mode 0700; `null` (no reuse) if it is not private to us. */
+export async function prepareSshControlDir(runId: string, baseDir?: string): Promise<string | null> {
+  const dir = sshControlDirFor(runId, baseDir);
+  if (!dir) return null;
+  if (!(await ensurePrivateDir(path.dirname(dir))) || !(await ensurePrivateDir(dir))) return null;
+  return dir;
+}
+
+export function sshConnectionReuseArgs(controlDir: string): string[] {
+  return [
+    "-o", "ControlMaster=auto",
+    "-o", `ControlPath=${controlDir}/%C`,
+    "-o", "ControlPersist=60",
+    "-o", "ServerAliveInterval=15",
+    "-o", "ServerAliveCountMax=3",
+  ];
+}
+
+async function closeSshControlDir(dir: string): Promise<void> {
+  const entries = await fs.readdir(dir).catch(() => [] as string[]);
+  // An explicit ControlPath has no tokens, so the destination is never used.
+  await Promise.all(entries.map((name) =>
+    execFileText("ssh", ["-o", `ControlPath=${path.join(dir, name)}`, "-O", "exit", "paperclip-control"], {
+      timeout: 5_000,
+    }).catch(() => undefined)));
+  await fs.rm(dir, { recursive: true, force: true });
+}
+
+/** Run end: stop the run's masters, then remove its control directory. */
+export async function cleanupSshConnectionReuse(input: { runId: string; baseDir?: string }): Promise<void> {
+  const dir = sshControlDirFor(input.runId, input.baseDir);
+  if (!dir || !(await isPrivateOwnedDir(dir))) return;
+  await closeSshControlDir(dir);
+}
+
+/** Server start: remove control directories whose run is no longer running. */
+export async function sweepStaleSshControlDirs(input: {
+  activeRunIds: (candidateRunIds: string[]) => Promise<ReadonlySet<string>>;
+  baseDir?: string;
+}): Promise<{ removed: string[]; kept: string[] }> {
+  const baseDir = input.baseDir ?? sshControlBaseDir();
+  if (!(await isPrivateOwnedDir(baseDir))) return { removed: [], kept: [] };
+  const candidates = new Map<string, string>();
+  for (const name of await fs.readdir(baseDir)) {
+    const runId = runIdFromControlDirName(name);
+    if (runId) candidates.set(runId, name);
+  }
+  if (candidates.size === 0) return { removed: [], kept: [] };
+  const active = await input.activeRunIds([...candidates.keys()]);
+  const removed: string[] = [];
+  const kept: string[] = [];
+  for (const [runId, name] of candidates) {
+    const dir = path.join(baseDir, name);
+    if (active.has(runId) || !(await isPrivateOwnedDir(dir))) {
+      kept.push(runId);
+      continue;
+    }
+    await closeSshControlDir(dir);
+    removed.push(runId);
+  }
+  return { removed, kept };
 }
 
 function tarExcludeArgs(exclude: string[] | undefined): string[] {
@@ -647,18 +816,20 @@ async function readLocalGitWorkspaceSnapshot(localDir: string): Promise<LocalGit
   }
 }
 
-async function streamLocalFileToSsh(input: {
+/** @internal Exported for tests only. */
+export async function streamLocalFileToSsh(input: {
   spec: SshConnectionConfig;
   localFile: string;
   remoteScript: string;
   progress?: TransferProgress;
 }): Promise<void> {
+  const destination = sshDestination(input.spec.username, input.spec.host);
   const auth = await createSshAuthArgs(input.spec);
   const sshArgs = [
     ...auth.args,
     "-p",
     String(input.spec.port),
-    `${input.spec.username}@${input.spec.host}`,
+    destination,
     `sh -c ${shellQuote(input.remoteScript)}`,
   ];
 
@@ -686,11 +857,13 @@ async function streamLocalFileToSsh(input: {
     ssh.on("error", fail);
     if (input.progress) {
       input.progress.counter.on("error", fail);
-      source.pipe(input.progress.counter).pipe(ssh.stdin ?? null);
+      pipeIntoChildStdin(source.pipe(input.progress.counter), ssh, "ssh.streamLocalFileToSsh", fail);
     } else {
-      source.pipe(ssh.stdin ?? null);
+      pipeIntoChildStdin(source, ssh, "ssh.streamLocalFileToSsh", fail);
     }
     ssh.on("close", (code) => {
+      // ssh may close before reading the whole file; free the read stream.
+      source.destroy();
       if (settled) return;
       settled = true;
       if ((code ?? 0) !== 0) {
@@ -708,12 +881,13 @@ async function streamSshToLocalFile(input: {
   localFile: string;
   progress?: TransferProgress;
 }): Promise<void> {
+  const destination = sshDestination(input.spec.username, input.spec.host);
   const auth = await createSshAuthArgs(input.spec);
   const sshArgs = [
     ...auth.args,
     "-p",
     String(input.spec.port),
-    `${input.spec.username}@${input.spec.host}`,
+    destination,
     `sh -c ${shellQuote(input.remoteScript)}`,
   ];
 
@@ -1071,6 +1245,92 @@ async function removeDeletedPathsOnSsh(input: {
   });
 }
 
+const PROJECT_REPOSITORY_NAME_PATTERN = /^[a-zA-Z0-9_-]+$/;
+
+async function isLocalGitRepositoryRoot(localDir: string): Promise<boolean> {
+  try {
+    const toplevel = await runLocalGit(localDir, ["rev-parse", "--show-toplevel"], {
+      timeout: 10_000,
+      maxBuffer: 16 * 1024,
+    });
+    const [directory, repository] = await Promise.all([
+      fs.realpath(localDir),
+      fs.realpath(toplevel.stdout.trim()),
+    ]);
+    return directory === repository;
+  } catch {
+    return false;
+  }
+}
+
+export async function listLocalProjectRepositories(localDir: string): Promise<string[]> {
+  const root = path.join(localDir, PROJECT_REPOSITORIES_DIR);
+  const rootStat = await fs.lstat(root).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  if (!rootStat) return [];
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+    throw new Error("Invalid project repositories directory");
+  }
+  const repositories: string[] = [];
+  for (const entry of await fs.readdir(root, { withFileTypes: true })) {
+    if (entry.isDirectory() && PROJECT_REPOSITORY_STAGING_PATTERN.test(entry.name)) continue;
+    if (!entry.isDirectory() || !PROJECT_REPOSITORY_NAME_PATTERN.test(entry.name)) {
+      throw new Error("Invalid project repository directory");
+    }
+    const relative = `${PROJECT_REPOSITORIES_DIR}/${entry.name}`;
+    if (!(await isLocalGitRepositoryRoot(path.join(localDir, relative)))) {
+      throw new Error(`Project repository is not a Git checkout: ${relative}`);
+    }
+    repositories.push(relative);
+  }
+  return repositories.sort();
+}
+
+async function transportGitWorkspaceToSsh(input: {
+  spec: SshRemoteExecutionSpec;
+  localDir: string;
+  remoteDir: string;
+  snapshot: LocalGitWorkspaceSnapshot;
+  exclude?: string[];
+  onProgress?: RuntimeProgressSink;
+  progressLabel: string;
+}): Promise<void> {
+  await importGitWorkspaceToSsh({
+    spec: input.spec,
+    localDir: input.localDir,
+    remoteDir: input.remoteDir,
+    snapshot: input.snapshot,
+    onProgress: input.onProgress,
+  });
+  await syncDirectoryToSsh({
+    spec: input.spec,
+    localDir: input.localDir,
+    remoteDir: input.remoteDir,
+    exclude: [".git", ".paperclip-runtime", ...(input.exclude ?? [])],
+    onProgress: input.onProgress,
+    progressLabel: input.progressLabel,
+  });
+  await removeDeletedPathsOnSsh({
+    spec: input.spec,
+    remoteDir: input.remoteDir,
+    deletedPaths: input.snapshot.deletedPaths,
+  });
+}
+
+async function excludeProjectRepositoriesOnSsh(spec: SshConnectionConfig, remoteDir: string): Promise<void> {
+  const pattern = `/${PROJECT_REPOSITORIES_DIR}/`;
+  const excludeFile = path.posix.join(remoteDir, ".git", "info", "exclude");
+  await runSshScript(
+    spec,
+    `mkdir -p ${shellQuote(path.posix.dirname(excludeFile))} && ` +
+      `{ grep -qxF ${shellQuote(pattern)} ${shellQuote(excludeFile)} 2>/dev/null || ` +
+      `printf '\\n%s\\n' ${shellQuote(pattern)} >> ${shellQuote(excludeFile)}; }`,
+    { timeoutMs: 30_000 },
+  );
+}
+
 async function allocateLoopbackPort(host: string): Promise<number> {
   return await new Promise<number>((resolve, reject) => {
     const server = net.createServer();
@@ -1197,6 +1457,8 @@ export async function runSshCommand(
     stdin?: string;
     timeoutMs?: number;
     maxBuffer?: number;
+    /** Run that owns the shared connection; absent, or reuse off: a fresh connection. */
+    connectionReuseRunId?: string | null;
   } = {},
 ): Promise<SshCommandResult> {
   let cleanup: () => Promise<void> = () => Promise.resolve();
@@ -1204,6 +1466,10 @@ export async function runSshCommand(
     const auth = await createSshAuthArgs(config);
     cleanup = auth.cleanup;
     const sshArgs = [...auth.args];
+    const controlDir = options.connectionReuseRunId && sshConnectionReuseEnabled()
+      ? await prepareSshControlDir(options.connectionReuseRunId)
+      : null;
+    if (controlDir) sshArgs.push(...sshConnectionReuseArgs(controlDir));
     const envEntries = Object.entries(options.env ?? {})
       .filter((entry): entry is [string, string] => typeof entry[1] === "string");
     for (const [key] of envEntries) {
@@ -1237,7 +1503,7 @@ export async function runSshCommand(
     sshArgs.push(
       "-p",
       String(config.port),
-      `${config.username}@${config.host}`,
+      sshDestination(config.username, config.host),
       `sh -c ${shellQuote(remoteScript)}`,
     );
 
@@ -1256,21 +1522,219 @@ export async function runSshCommand(
   }
 }
 
+// Run record, format version 1 (PAR-9960). The ssh spawn script writes it to
+// `<remoteRunDir>/record` before `exec`, so after a server exit the host can
+// find the remote process group. Three `key=value` lines, newline after each:
+// `v=1`, `pgid=<decimal>` (from `ps -o pgid=`), `lstart=<text>` (from
+// `ps -o lstart=`, compared as an exact string on the same machine, never
+// parsed to a date). Readers: PAR-9917 (lease) and PAR-9399 (stopRemote).
+export const SSH_RUN_RECORD_FILE = "record";
+export const SSH_RUN_RECORD_VERSION = "1";
+export const SSH_RUN_RECORD_EXCLUDE_PATTERN = "/.paperclip-runs/";
+export const SSH_RUN_DIR_REFUSED_EXIT_CODE = 125;
+
+export type SshRunRecordParseResult =
+  | { status: "readable"; pgid: number; lstart: string }
+  | { status: "unreadable" };
+
+/** Pure parser of the version-1 run record. Never throws. */
+export function parseSshRunRecord(text: unknown): SshRunRecordParseResult {
+  const unreadable = { status: "unreadable" } as const;
+  if (typeof text !== "string" || !text.endsWith("\n")) return unreadable;
+  const lines = text.slice(0, -1).split("\n");
+  if (lines.length !== 3) return unreadable;
+  const fields = new Map<string, string>();
+  for (const line of lines) {
+    const eq = line.indexOf("=");
+    if (eq <= 0) return unreadable;
+    const key = line.slice(0, eq);
+    if (fields.has(key)) return unreadable;
+    fields.set(key, line.slice(eq + 1));
+  }
+  const pgidText = fields.get("pgid");
+  const lstart = fields.get("lstart");
+  if (fields.get("v") !== SSH_RUN_RECORD_VERSION || pgidText == null || lstart == null) return unreadable;
+  if (!/^[0-9]+$/.test(pgidText)) return unreadable;
+  const pgid = Number(pgidText);
+  if (!Number.isSafeInteger(pgid) || pgid <= 1) return unreadable;
+  if (lstart.trim().length === 0 || lstart !== lstart.trim()) return unreadable;
+  return { status: "readable", pgid, lstart };
+}
+
+function trimTrailingSlashes(value: string): string {
+  const trimmed = value.replace(/\/+$/, "");
+  return trimmed.length > 0 ? trimmed : "/";
+}
+
+// POSIX sh block run in a subshell (so `umask` and `LC_ALL` do not reach the
+// agent command). Exit 125 with one stderr line when the run dir is not
+// confined to the workspace: lexically before `mkdir`, then physically
+// (symlinks resolved) on the deepest existing ancestor and on the made dir.
+function buildSshRunRecordScript(remoteWorkspacePath: string, remoteRunDir: string): string {
+  const exclude = shellQuote(SSH_RUN_RECORD_EXCLUDE_PATTERN);
+  return [
+    "(",
+    "export LC_ALL=C",
+    `ws=${shellQuote(trimTrailingSlashes(remoteWorkspacePath))}`,
+    `rd=${shellQuote(remoteRunDir)}`,
+    `refuse() { printf '%s\\n' "paperclip: remote run dir refused: $1" >&2; exit ${SSH_RUN_DIR_REFUSED_EXIT_CODE}; }`,
+    'case "$rd" in /*) ;; *) refuse "not absolute";; esac',
+    'case "$rd/" in */./*|*/../*|*//*) refuse "dot or empty path part";; esac',
+    'case "$rd" in "$ws"/?*) ;; *) refuse "outside workspace";; esac',
+    'wsp=$(cd -P "$ws" 2>/dev/null && pwd -P) || refuse "workspace missing"',
+    'inws() { r=$(cd -P "$1" 2>/dev/null && pwd -P) || return 1; case "$r" in "$wsp"|"$wsp"/*) return 0;; esac; return 1; }',
+    'p=$rd; while [ -n "$p" ] && [ ! -d "$p" ]; do p=${p%/*}; done',
+    'inws "${p:-/}" || refuse "outside workspace after resolving links"',
+    'umask 077',
+    'mkdir -p "$rd" || exit 1',
+    'inws "$rd" || refuse "outside workspace after resolving links"',
+    "pg=$(ps -o pgid= -p $$ | tr -d ' ')",
+    "st=$(ps -o lstart= -p \"$pg\" | sed 's/^ *//;s/ *$//')",
+    `printf 'v=${SSH_RUN_RECORD_VERSION}\\npgid=%s\\nlstart=%s\\n' "$pg" "$st" > "$rd/record.tmp.$$" || exit 1`,
+    `mv -f "$rd/record.tmp.$$" "$rd/${SSH_RUN_RECORD_FILE}" || exit 1`,
+    'if top=$(git -C "$ws" rev-parse --show-toplevel 2>/dev/null) && [ "$top" = "$wsp" ] &&',
+    '  ex=$(git -C "$ws" rev-parse --git-path info/exclude 2>/dev/null); then',
+    '  case "$ex" in /*) ;; *) ex="$ws/$ex";; esac',
+    `  grep -qxF ${exclude} "$ex" 2>/dev/null || { mkdir -p "\${ex%/*}" && printf '\\n%s\\n' ${exclude} >> "$ex"; } || true`,
+    "fi",
+    ")",
+  ].join("\n");
+}
+
+// The run directory layout of plan 13.9: `<remoteWorkspacePath>/.paperclip-runs/<runId>`.
+// One function, so the adapter and the lease (PAR-9917) name the same path.
+// Null for a run id that is not a plain token: no record, no stopRemote.
+export const SSH_RUN_DIR_PARENT = ".paperclip-runs";
+export function sshRemoteRunDirFor(remoteWorkspacePath: string, runId: string): string | null {
+  if (!/^[A-Za-z0-9_-]+$/.test(runId) || !remoteWorkspacePath.startsWith("/")) return null;
+  const ws = trimTrailingSlashes(remoteWorkspacePath);
+  return `${ws === "/" ? "" : ws}/${SSH_RUN_DIR_PARENT}/${runId}`;
+}
+
+// PAR-9399: a signal to the local ssh client never reaches the remote process
+// group. stopRemote reads the version-1 record over a second ssh connection
+// and signals that group.
+export type SshRemoteStopSignal = "TERM" | "KILL";
+export type SshRemoteStopOutcome =
+  | "signalled"
+  | "gone"
+  | "leader-gone"
+  | "mismatch"
+  | "refused"
+  | "missing"
+  | "unreadable"
+  | "failed"
+  | "error";
+export type SshRemoteCommandRunner = (script: string, timeoutMs: number) => Promise<SshCommandResult>;
+
+export const SSH_REMOTE_STOP_TIMEOUT_MS = 10_000;
+const SSH_REMOTE_STOP_OUTCOMES = new Set<string>([
+  "signalled", "gone", "leader-gone", "mismatch", "refused", "missing", "unreadable", "failed",
+]);
+
+// Reads `<runDir>/record` with the rules of parseSshRunRecord (exactly the
+// three keys once each, newline-terminated, `v=1`, decimal pgid, lstart with
+// no edge spaces; the shell is stricter on a leading zero or over 15 digits).
+// Then: refuses group 0/1 and its own group, requires the group to exist and
+// the leader's start time to equal the recorded one, so a reused id is never
+// signalled. Prints one outcome token. `kill -s SIG -- -pgid`, because dash
+// (Ubuntu's /bin/sh) rejects `kill -SIG -- -pgid`.
+export function buildSshRemoteStopScript(remoteRunDir: string, signal: SshRemoteStopSignal): string {
+  return [
+    "export LC_ALL=C",
+    `f=${shellQuote(`${remoteRunDir}/${SSH_RUN_RECORD_FILE}`)}`,
+    'if [ ! -f "$f" ]; then echo missing; exit 0; fi',
+    "bad() { echo unreadable; exit 0; }",
+    "n=0; v=; pg=; want=; hv=; hp=; hl=",
+    "while IFS= read -r l; do",
+    "  n=$((n+1))",
+    "  case \"$l\" in",
+    "    v=*) [ -z \"$hv\" ] || bad; hv=1; v=${l#v=};;",
+    "    pgid=*) [ -z \"$hp\" ] || bad; hp=1; pg=${l#pgid=};;",
+    "    lstart=*) [ -z \"$hl\" ] || bad; hl=1; want=${l#lstart=};;",
+    "    *) bad;;",
+    "  esac",
+    "done < \"$f\"",
+    "[ -z \"$l\" ] || bad",
+    `[ "$n" -eq 3 ] && [ "$v" = ${SSH_RUN_RECORD_VERSION} ] || bad`,
+    "case \"$pg\" in ''|0?*|*[!0-9]*|????????????????*) bad;; esac",
+    "case \"$want\" in ''|[[:space:]]*|*[[:space:]]) bad;; esac",
+    'if [ "$pg" -le 1 ]; then echo refused; exit 0; fi',
+    "self=$(ps -o pgid= -p $$ | tr -d ' ')",
+    'if [ "$pg" = "$self" ]; then echo refused; exit 0; fi',
+    'if ! kill -s 0 -- "-$pg" 2>/dev/null; then echo gone; exit 0; fi',
+    "have=$(ps -o lstart= -p \"$pg\" 2>/dev/null | sed 's/^ *//;s/ *$//')",
+    'if [ -z "$have" ]; then echo leader-gone; exit 0; fi',
+    'if [ "$have" != "$want" ]; then echo mismatch; exit 0; fi',
+    `if kill -s ${signal} -- "-$pg"; then echo signalled; else echo failed; fi`,
+  ].join("\n");
+}
+
+// Run dir removal, run by the ssh lease release only after a gone check
+// (PAR-9961, 13.9 decision 2). Deletes inside the user's workspace, so it removes only
+// `<ws>/.paperclip-runs/<runId>` after resolving links: a `.paperclip-runs`
+// that resolves outside the workspace, or a run dir that is a link, is left.
+export function buildSshRunDirRemoveScript(remoteWorkspacePath: string, remoteRunDir: string): string {
+  return [
+    `ws=${shellQuote(trimTrailingSlashes(remoteWorkspacePath))}`,
+    `rd=${shellQuote(remoteRunDir)}`,
+    `case "$rd" in "$ws"/${SSH_RUN_DIR_PARENT}/?*) ;; *) echo refused; exit 0;; esac`,
+    'name=${rd##*/}',
+    `case "$name" in ''|*[!A-Za-z0-9_-]*) echo refused; exit 0;; esac`,
+    `[ "$rd" = "$ws/${SSH_RUN_DIR_PARENT}/$name" ] || { echo refused; exit 0; }`,
+    `base=$(cd -P "$ws/${SSH_RUN_DIR_PARENT}" 2>/dev/null && pwd -P) || { echo absent; exit 0; }`,
+    'wsp=$(cd -P "$ws" 2>/dev/null && pwd -P) || { echo absent; exit 0; }',
+    'case "$base" in "$wsp"/?*) ;; *) echo refused; exit 0;; esac',
+    'if [ -L "$base/$name" ]; then echo refused; exit 0; fi',
+    'if [ ! -e "$base/$name" ]; then echo absent; exit 0; fi',
+    'rm -rf -- "$base/$name" && echo removed',
+  ].join("\n");
+}
+
+/** Days after which a leftover run dir (a run whose release never removed it) is swept. */
+export const SSH_STALE_RUN_DIR_DAYS = 7;
+
+// Sweep of leftover sibling run dirs (PAR-9962), confined as the removal above:
+// only real directories directly under `<ws>/.paperclip-runs` (resolved inside
+// the workspace), with a run-id-shaped name, untouched for over 7 days. `find`
+// without -L never follows links, so a linked entry is not a directory here.
+export function buildSshStaleRunDirSweepScript(remoteWorkspacePath: string): string {
+  return [
+    `ws=${shellQuote(trimTrailingSlashes(remoteWorkspacePath))}`,
+    `base=$(cd -P "$ws/${SSH_RUN_DIR_PARENT}" 2>/dev/null && pwd -P) || { echo sweep-absent; exit 0; }`,
+    'wsp=$(cd -P "$ws" 2>/dev/null && pwd -P) || { echo sweep-absent; exit 0; }',
+    'case "$base" in "$wsp"/?*) ;; *) echo sweep-refused; exit 0;; esac',
+    `find "$base" -mindepth 1 -maxdepth 1 -type d ! -name '*[!A-Za-z0-9_-]*' -mtime +${SSH_STALE_RUN_DIR_DAYS} -exec rm -rf -- {} + && echo swept`,
+  ].join("\n");
+}
+
+/** Removal of one run dir, then the stale sweep; the subshell keeps an early exit local. */
+export function buildSshRunDirCleanupScript(remoteWorkspacePath: string, remoteRunDir: string): string {
+  return ["(", buildSshRunDirRemoveScript(remoteWorkspacePath, remoteRunDir), ")",
+    buildSshStaleRunDirSweepScript(remoteWorkspacePath)].join("\n");
+}
+
 export async function buildSshSpawnTarget(input: {
   spec: SshRemoteExecutionSpec;
   command: string;
   args: string[];
   env: Record<string, string>;
+  /** Absolute run directory under `spec.remoteWorkspacePath`; absent: script unchanged. */
+  remoteRunDir?: string;
+  /** Test seam: runs a stop/removal script on the remote. Defaults to ssh. */
+  remoteRunner?: SshRemoteCommandRunner;
 }): Promise<{
   command: string;
   args: string[];
   cleanup: () => Promise<void>;
+  stopRemote?: (signal: SshRemoteStopSignal) => Promise<SshRemoteStopOutcome>;
 }> {
   for (const key of Object.keys(input.env)) {
     if (!isValidShellEnvKey(key)) {
       throw new Error(`Invalid SSH environment variable key: ${key}`);
     }
   }
+  const userAtHost = sshDestination(input.spec.username, input.spec.host);
   const auth = await createSshAuthArgs(input.spec);
   const sshArgs = [...auth.args];
   const envArgs = Object.entries(input.env)
@@ -1293,24 +1757,147 @@ export async function buildSshSpawnTarget(input: {
     'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
     'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; elif [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc" >/dev/null 2>&1 || true; fi',
     'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
+    ...(input.remoteRunDir != null
+      ? [buildSshRunRecordScript(input.spec.remoteWorkspacePath, input.remoteRunDir)]
+      : []),
     `cd ${shellQuote(input.spec.remoteCwd)}`,
     envArgs.length > 0
       ? `exec env ${envArgs.join(" ")} ${remoteCommandParts}`
       : `exec ${remoteCommandParts}`,
   ].join(" && ");
 
-  sshArgs.push(
-    "-p",
-    String(input.spec.port),
-    `${input.spec.username}@${input.spec.host}`,
-    `sh -c ${shellQuote(remoteScript)}`,
-  );
+  const destination = ["-p", String(input.spec.port), userAtHost];
+  sshArgs.push(...destination, `sh -c ${shellQuote(remoteScript)}`);
+
+  const remoteRunDir = input.remoteRunDir;
+  if (remoteRunDir == null) {
+    return { command: "ssh", args: sshArgs, cleanup: auth.cleanup };
+  }
+
+  // Stop connections reuse the spawn's auth files and skip the login profiles.
+  // After cleanup the auth files are gone: stopRemote is "error". The run dir
+  // stays: the lease release removes it after a gone check (PAR-9961).
+  let authCleaned = false;
+  let cleanupPromise: Promise<void> | null = null;
+  const runRemote: SshRemoteCommandRunner =
+    input.remoteRunner ??
+    ((script, timeoutMs) =>
+      execFileText("ssh", [...auth.args, ...destination, `sh -c ${shellQuote(script)}`], {
+        timeout: timeoutMs,
+      }));
+  const stopRemote = async (signal: SshRemoteStopSignal): Promise<SshRemoteStopOutcome> => {
+    if (authCleaned) return "error";
+    try {
+      const result = await runRemote(buildSshRemoteStopScript(remoteRunDir, signal), SSH_REMOTE_STOP_TIMEOUT_MS);
+      const token = result.stdout.trim().split(/\s+/).at(-1) ?? "";
+      return SSH_REMOTE_STOP_OUTCOMES.has(token) ? (token as SshRemoteStopOutcome) : "error";
+    } catch {
+      return "error";
+    }
+  };
 
   return {
     command: "ssh",
     args: sshArgs,
-    cleanup: auth.cleanup,
+    stopRemote,
+    cleanup: () =>
+      (cleanupPromise ??= (async () => {
+        authCleaned = true;
+        await auth.cleanup();
+      })()),
   };
+}
+
+// Remote run check (PAR-9917, plan 13.9 finding 2). The remote part only
+// prints facts; `decideSshRunCheck` decides on the host.
+export type SshRunCheckBasis =
+  | "never_spawned" | "no_record" | "legacy_lease" | "group_empty"
+  | "leader_gone_members_live" | "leader_live" | "group_reused" | "check_failed" | "refused";
+export interface SshRunCheck {
+  result: "alive" | "gone" | "unknown";
+  basis: SshRunCheckBasis;
+  pgid?: number;
+  leaderStart?: string;
+  checkedAt: string;
+}
+type SshRunCheckDecision = Omit<SshRunCheck, "checkedAt">;
+const SSH_RUN_CHECK_HEADER = "paperclip-run-check 1\n";
+const SSH_RUN_CHECK_TIMEOUT_MS = 10_000;
+
+/** Lexical: absolute, no `.`/`..`/empty parts, strictly below the workspace. */
+export function sshRunDirIsConfined(remoteWorkspacePath: string, remoteRunDir: string): boolean {
+  if (!remoteRunDir.startsWith("/") || /(^|\/)\.{0,2}(\/|$)/.test(remoteRunDir.slice(1))) return false;
+  const ws = trimTrailingSlashes(remoteWorkspacePath);
+  return remoteRunDir.length > ws.length + 1 && remoteRunDir.startsWith(ws === "/" ? "/" : `${ws}/`);
+}
+
+export function buildSshRunCheckScript(remoteWorkspacePath: string, remoteRunDir: string): string {
+  return [
+    "export LC_ALL=C",
+    `ws=${shellQuote(trimTrailingSlashes(remoteWorkspacePath))}`,
+    `rd=${shellQuote(remoteRunDir)}`,
+    `printf '${SSH_RUN_CHECK_HEADER.trim()}\\n'`,
+    'wsp=$(cd -P "$ws" 2>/dev/null && pwd -P) || { printf "refused\\nend\\n"; exit 0; }',
+    'if r=$(cd -P "$rd" 2>/dev/null && pwd -P); then case "$r" in "$wsp"/?*) ;; *) printf "refused\\nend\\n"; exit 0;; esac; fi',
+    'if [ ! -f "$rd/record" ]; then printf "norecord\\nend\\n"; exit 0; fi',
+    `printf 'record\\n'; cat "$rd/record" || exit 1; printf '\\037\\n'`,
+    `pg=$(sed -n 's/^pgid=\\([0-9][0-9]*\\)$/\\1/p' "$rd/record" | head -n 1)`,
+    'if [ -n "$pg" ]; then',
+    "  all=$(ps -A -o pgid=) || exit 1",
+    `  printf 'pgid=%s\\n' "$pg"`,
+    `  printf '%s\\n' "$all" | awk -v g="$pg" '$1==g{n++} END{printf "members=%d total=%d\\n", n, NR}'`,
+    `  printf 'leader=%s\\n' "$(ps -o lstart= -p "$pg" 2>/dev/null | sed 's/^ *//;s/ *$//')"`,
+    "fi",
+    "printf 'end\\n'",
+  ].join("\n");
+}
+
+/** Pure decision over the lease facts and the remote output. Never throws. */
+export function decideSshRunCheck(input: { spawnMarked: boolean; stdout: string | null }): SshRunCheckDecision {
+  const failed = { result: "unknown", basis: "check_failed" } as const;
+  const noRecord: SshRunCheckDecision = input.spawnMarked
+    ? { result: "unknown", basis: "no_record" } : { result: "gone", basis: "never_spawned" };
+  const at = input.stdout?.indexOf(SSH_RUN_CHECK_HEADER) ?? -1;
+  if (input.stdout == null || at < 0 || (at > 0 && input.stdout[at - 1] !== "\n")) return failed;
+  const out = input.stdout.slice(at + SSH_RUN_CHECK_HEADER.length);
+  if (!out.endsWith("end\n")) return failed;
+  if (out === "refused\nend\n") return { result: "unknown", basis: "refused" };
+  if (out === "norecord\nend\n") return noRecord;
+  const sep = out.indexOf("\x1f\n");
+  if (!out.startsWith("record\n") || sep < 0) return failed;
+  const record = parseSshRunRecord(out.slice("record\n".length, sep));
+  if (record.status !== "readable") return noRecord;
+  const facts = /^pgid=(\d+)\nmembers=(\d+) total=(\d+)\nleader=([^\n]*)\nend\n$/.exec(out.slice(sep + 2));
+  if (!facts || Number(facts[1]) !== record.pgid || Number(facts[3]) === 0) return failed;
+  const leaderStart = facts[4]!;
+  const base = { pgid: record.pgid, ...(leaderStart ? { leaderStart } : {}) };
+  if (Number(facts[2]) === 0) return { result: "gone", basis: "group_empty", ...base };
+  if (!leaderStart) return { result: "alive", basis: "leader_gone_members_live", ...base };
+  return leaderStart === record.lstart
+    ? { result: "alive", basis: "leader_live", ...base }
+    : { result: "gone", basis: "group_reused", ...base };
+}
+
+/** One ssh command, 10 s limit, never throws. `lease` is the ssh lease's metadata. */
+export async function checkRemoteRun(
+  config: SshConnectionConfig,
+  lease: { remoteRunDir?: unknown; remoteSpawnStartedAt?: unknown } | null,
+  options: { run?: typeof runSshCommand; now?: () => Date } = {},
+): Promise<SshRunCheck> {
+  const checkedAt = (options.now ?? (() => new Date()))().toISOString();
+  const runDir = lease?.remoteRunDir;
+  if (typeof runDir !== "string" || runDir.length === 0) return { result: "unknown", basis: "legacy_lease", checkedAt };
+  if (!sshRunDirIsConfined(config.remoteWorkspacePath, runDir)) return { result: "unknown", basis: "refused", checkedAt };
+  let stdout: string | null = null;
+  try {
+    const result = await (options.run ?? runSshCommand)(
+      config, buildSshRunCheckScript(config.remoteWorkspacePath, runDir), { timeoutMs: SSH_RUN_CHECK_TIMEOUT_MS });
+    stdout = result.stdout;
+  } catch {
+    stdout = null;
+  }
+  const spawnMarked = typeof lease?.remoteSpawnStartedAt === "string" && lease.remoteSpawnStartedAt.length > 0;
+  return { ...decideSshRunCheck({ spawnMarked, stdout }), checkedAt };
 }
 
 export async function syncDirectoryToSsh(input: {
@@ -1322,12 +1909,13 @@ export async function syncDirectoryToSsh(input: {
   onProgress?: RuntimeProgressSink;
   progressLabel?: string;
 }): Promise<void> {
+  const destination = sshDestination(input.spec.username, input.spec.host);
   const auth = await createSshAuthArgs(input.spec);
   const sshArgs = [
     ...auth.args,
     "-p",
     String(input.spec.port),
-    `${input.spec.username}@${input.spec.host}`,
+    destination,
     `sh -c ${shellQuote(`mkdir -p ${shellQuote(input.remoteDir)} && tar -xf - -C ${shellQuote(input.remoteDir)}`)}`,
   ];
 
@@ -1382,7 +1970,7 @@ export async function syncDirectoryToSsh(input: {
         return;
       }
       settled = true;
-      if ((tarExitCode ?? 0) !== 0) {
+      if (!tarStopped && (tarExitCode ?? 0) !== 0) {
         reject(new Error(tarStderr.trim() || `tar exited with code ${tarExitCode ?? -1}`));
         return;
       }
@@ -1403,11 +1991,21 @@ export async function syncDirectoryToSsh(input: {
       reject(error);
     };
 
-    if (progress) {
-      progress.counter.on("error", fail);
-      tar.stdout?.pipe(progress.counter).pipe(ssh.stdin ?? null);
-    } else {
-      tar.stdout?.pipe(ssh.stdin ?? null);
+    // Peer-kill rule: when ssh stops reading, tar blocks on a full pipe and
+    // never exits. Stop tar and let maybeFinish report ssh's own exit code and
+    // stderr, rather than failing with a bare EPIPE. A tar whose output already
+    // ended is exiting by itself and keeps its own exit code; a stopped one's
+    // exit code is ignored.
+    let tarStopped = false;
+    const stopTar = () => {
+      if (tarExited || tar.stdout?.readableEnded) return;
+      tarStopped = true;
+      tar.kill("SIGTERM");
+    };
+    if (tar.stdout) {
+      const tarOut = progress ? tar.stdout.pipe(progress.counter) : tar.stdout;
+      progress?.counter.on("error", fail);
+      pipeIntoChildStdin(tarOut, ssh, "ssh.syncDirectoryToSsh", stopTar, { includePipeClosed: true });
     }
     tar.stderr?.on("data", (chunk) => {
       tarStderr += String(chunk);
@@ -1426,6 +2024,7 @@ export async function syncDirectoryToSsh(input: {
     ssh.on("close", (code) => {
       sshExited = true;
       sshExitCode = code;
+      stopTar();
       maybeFinish();
     });
     }).finally(auth.cleanup);
@@ -1445,6 +2044,7 @@ export async function syncDirectoryFromSsh(input: {
   onProgress?: RuntimeProgressSink;
   progressLabel?: string;
 }): Promise<void> {
+  const destination = sshDestination(input.spec.username, input.spec.host);
   const auth = await createSshAuthArgs(input.spec);
   const stagingDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-sync-back-"));
   const remoteTarScript = [
@@ -1455,7 +2055,7 @@ export async function syncDirectoryFromSsh(input: {
     ...auth.args,
     "-p",
     String(input.spec.port),
-    `${input.spec.username}@${input.spec.host}`,
+    destination,
     `sh -c ${shellQuote(remoteTarScript)}`,
   ];
 
@@ -1495,7 +2095,7 @@ export async function syncDirectoryFromSsh(input: {
       const maybeFinish = () => {
         if (settled || !sshExited || !tarExited) return;
         settled = true;
-        if ((sshExitCode ?? 0) !== 0) {
+        if (!sshStopped && (sshExitCode ?? 0) !== 0) {
           reject(new Error(sshStderr.trim() || `ssh exited with code ${sshExitCode ?? -1}`));
           return;
         }
@@ -1514,11 +2114,19 @@ export async function syncDirectoryFromSsh(input: {
         reject(error);
       };
 
-      if (progress) {
-        progress.counter.on("error", fail);
-        ssh.stdout?.pipe(progress.counter).pipe(tar.stdin ?? null);
-      } else {
-        ssh.stdout?.pipe(tar.stdin ?? null);
+      // Peer-kill rule (see syncDirectoryToSsh): when tar stops reading, ssh
+      // blocks on a full pipe. Stop ssh and let tar's exit decide: OpenSSH
+      // exits 255 on SIGTERM, so a stopped ssh's exit code is ignored.
+      let sshStopped = false;
+      const stopSsh = () => {
+        if (sshExited || ssh.stdout?.readableEnded) return;
+        sshStopped = true;
+        ssh.kill("SIGTERM");
+      };
+      if (ssh.stdout) {
+        const sshOut = progress ? ssh.stdout.pipe(progress.counter) : ssh.stdout;
+        progress?.counter.on("error", fail);
+        pipeIntoChildStdin(sshOut, tar, "ssh.syncDirectoryFromSsh", stopSsh, { includePipeClosed: true });
       }
       ssh.stderr?.on("data", (chunk) => {
         sshStderr += String(chunk);
@@ -1537,6 +2145,7 @@ export async function syncDirectoryFromSsh(input: {
       tar.on("close", (code) => {
         tarExited = true;
         tarExitCode = code;
+        stopSsh();
         maybeFinish();
       });
     });
@@ -1558,32 +2167,43 @@ export async function prepareWorkspaceForSshExecution(input: {
   localDir: string;
   remoteDir?: string;
   onProgress?: RuntimeProgressSink;
-}): Promise<{ gitBacked: boolean }> {
+  workspaceFileMode?: "all";
+  workspaceExclude?: string[];
+}): Promise<{ gitBacked: boolean; repositories?: string[]; excludedPaths?: string[] }> {
   const remoteDir = input.remoteDir ?? input.spec.remoteCwd;
-  const gitSnapshot = await readLocalGitWorkspaceSnapshot(input.localDir);
+  const gitSnapshot = input.workspaceFileMode === "all" ? null : await readLocalGitWorkspaceSnapshot(input.localDir);
+  const excludedPaths = await listProjectRepositoryStagingPaths(input.localDir);
+  const excludedResult = excludedPaths.length > 0 ? { excludedPaths } : {};
 
   if (gitSnapshot) {
-    await importGitWorkspaceToSsh({
+    const repositories = await listLocalProjectRepositories(input.localDir);
+    await transportGitWorkspaceToSsh({
       spec: input.spec,
       localDir: input.localDir,
       remoteDir,
       snapshot: gitSnapshot,
-      onProgress: input.onProgress,
-    });
-    await syncDirectoryToSsh({
-      spec: input.spec,
-      localDir: input.localDir,
-      remoteDir,
-      exclude: [".git", ".paperclip-runtime", ".paperclip"],
+      // PAR-3341: never upload the local .paperclip/ instance directory.
+      exclude: [".paperclip", ...(repositories.length > 0 ? [PROJECT_REPOSITORIES_DIR] : excludedPaths)],
       onProgress: input.onProgress,
       progressLabel: "workspace",
     });
-    await removeDeletedPathsOnSsh({
-      spec: input.spec,
-      remoteDir,
-      deletedPaths: gitSnapshot.deletedPaths,
-    });
-    return { gitBacked: true };
+    if (repositories.length > 0) {
+      await excludeProjectRepositoriesOnSsh(input.spec, remoteDir);
+    }
+    for (const relative of repositories) {
+      const localDir = path.join(input.localDir, relative);
+      const snapshot = await readLocalGitWorkspaceSnapshot(localDir);
+      if (!snapshot) throw new Error(`Cannot read the Git state of project repository: ${relative}`);
+      await transportGitWorkspaceToSsh({
+        spec: input.spec,
+        localDir,
+        remoteDir: path.posix.join(remoteDir, relative),
+        snapshot,
+        onProgress: input.onProgress,
+        progressLabel: relative,
+      });
+    }
+    return { gitBacked: true, ...(repositories.length > 0 ? { repositories } : {}), ...excludedResult };
   }
 
   await clearRemoteDirectory({
@@ -1595,11 +2215,11 @@ export async function prepareWorkspaceForSshExecution(input: {
     spec: input.spec,
     localDir: input.localDir,
     remoteDir,
-    exclude: [".paperclip-runtime", ".paperclip"],
+    exclude: [".paperclip-runtime", ".paperclip", ...excludedPaths, ...(input.workspaceFileMode === "all" ? input.workspaceExclude ?? [] : [])],
     onProgress: input.onProgress,
     progressLabel: "workspace",
   });
-  return { gitBacked: false };
+  return { gitBacked: false, ...excludedResult };
 }
 
 export async function restoreWorkspaceFromSshExecution(input: {
@@ -1609,8 +2229,62 @@ export async function restoreWorkspaceFromSshExecution(input: {
   baselineSnapshot?: DirectorySnapshot;
   restoreGitHistory?: boolean;
   onProgress?: RuntimeProgressSink;
+  repositories?: Array<{ path: string; baselineSnapshot?: DirectorySnapshot }>;
 }): Promise<void> {
   const remoteDir = input.remoteDir ?? input.spec.remoteCwd;
+  const repositories = input.repositories ?? [];
+  for (const repository of repositories) {
+    if (
+      path.posix.dirname(repository.path) !== PROJECT_REPOSITORIES_DIR ||
+      !PROJECT_REPOSITORY_NAME_PATTERN.test(path.posix.basename(repository.path))
+    ) {
+      throw new Error(`Invalid project repository path: ${repository.path}`);
+    }
+    if (input.baselineSnapshot && !repository.baselineSnapshot) {
+      throw new Error(`Project repository has no workspace baseline: ${repository.path}`);
+    }
+  }
+  if (
+    input.baselineSnapshot &&
+    repositories.length > 0 &&
+    !input.baselineSnapshot.exclude.includes(PROJECT_REPOSITORIES_DIR)
+  ) {
+    throw new Error(`Workspace baseline must exclude ${PROJECT_REPOSITORIES_DIR} when project repositories are restored separately`);
+  }
+  for (const repository of repositories) {
+    await restoreWorkspaceRootFromSsh({
+      spec: input.spec,
+      localDir: path.join(input.localDir, repository.path),
+      remoteDir: path.posix.join(remoteDir, repository.path),
+      baselineSnapshot: repository.baselineSnapshot,
+      restoreGitHistory: input.restoreGitHistory,
+      onProgress: input.onProgress,
+      progressLabel: repository.path,
+    });
+  }
+  await restoreWorkspaceRootFromSsh({
+    spec: input.spec,
+    localDir: input.localDir,
+    remoteDir,
+    baselineSnapshot: input.baselineSnapshot,
+    restoreGitHistory: input.restoreGitHistory,
+    onProgress: input.onProgress,
+    progressLabel: "workspace",
+    hasProjectRepositories: repositories.length > 0,
+  });
+}
+
+async function restoreWorkspaceRootFromSsh(input: {
+  spec: SshRemoteExecutionSpec;
+  localDir: string;
+  remoteDir: string;
+  baselineSnapshot?: DirectorySnapshot;
+  restoreGitHistory?: boolean;
+  onProgress?: RuntimeProgressSink;
+  progressLabel: string;
+  hasProjectRepositories?: boolean;
+}): Promise<void> {
+  const remoteDir = input.remoteDir;
   if (input.baselineSnapshot) {
     const stagingDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-sync-back-"));
     const importedRef = input.restoreGitHistory
@@ -1633,7 +2307,7 @@ export async function restoreWorkspaceFromSshExecution(input: {
         localDir: stagingDir,
         exclude: input.baselineSnapshot.exclude,
         onProgress: input.onProgress,
-        progressLabel: "workspace",
+        progressLabel: input.progressLabel,
       });
       await mergeDirectoryWithBaseline({
         baseline: input.baselineSnapshot,
@@ -1647,6 +2321,13 @@ export async function restoreWorkspaceFromSshExecution(input: {
               localDir: input.localDir,
               importedHead,
             });
+          }
+          : undefined,
+        // integrateImportedGitHead moves the branch with update-ref, which leaves the index
+        // on the old tip. Reset it to HEAD as the sandbox restore does (#8595).
+        afterApply: importedHead
+          ? async () => {
+            await resetLocalGitIndexToHead({ localDir: input.localDir });
           }
           : undefined,
       });
@@ -1664,6 +2345,7 @@ export async function restoreWorkspaceFromSshExecution(input: {
   const gitSnapshot = await readLocalGitWorkspaceSnapshot(input.localDir);
 
   if (gitSnapshot) {
+    const projectRepositoryEntries = input.hasProjectRepositories ? [PROJECT_REPOSITORIES_DIR] : [];
     await exportGitWorkspaceFromSsh({
       spec: input.spec,
       remoteDir,
@@ -1674,10 +2356,11 @@ export async function restoreWorkspaceFromSshExecution(input: {
       spec: input.spec,
       remoteDir,
       localDir: input.localDir,
-      exclude: [".git", ".paperclip-runtime", ".paperclip"],
-      preserveLocalEntries: [".git", ".paperclip"],
+      // PAR-3341: .paperclip is not synced, so keep the local copy on restore.
+      exclude: [".git", ".paperclip-runtime", ".paperclip", ...projectRepositoryEntries],
+      preserveLocalEntries: [".git", ".paperclip", ...projectRepositoryEntries],
       onProgress: input.onProgress,
-      progressLabel: "workspace",
+      progressLabel: input.progressLabel,
     });
     return;
   }
@@ -1689,7 +2372,7 @@ export async function restoreWorkspaceFromSshExecution(input: {
     exclude: [".paperclip-runtime", ".paperclip"],
     preserveLocalEntries: [".paperclip"],
     onProgress: input.onProgress,
-    progressLabel: "workspace",
+    progressLabel: input.progressLabel,
   });
 }
 

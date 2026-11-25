@@ -30,7 +30,7 @@ async function loadManifests(): Promise<Manifest[]> {
 }
 
 /**
- * Plugins whose skill text is scrubbed of the owner company's names (Peet, Elon,
+ * Plugins whose skill text is scrubbed of the owner company's names (Peet,
  * "Partners in Biz", "PiB"): the lint below asserts `findBrandLeaks` finds
  * nothing in them. Starts empty. Each text child of the hosted-clients scrub
  * adds its plugin here in the same PR, so the lint grows with the scope.

@@ -120,9 +120,15 @@ function boardActor(overrides: Record<string, unknown> = {}) {
     source: "session",
     isInstanceAdmin: false,
     companyIds: [companyA],
+    // An owner: the tool execute route admits only owners and admins (PAR-12714).
+    memberships: [{ companyId: companyA, membershipRole: "owner", status: "active", restricted: false, restrictionMode: "off" }],
     ...overrides,
   };
 }
+
+/** The acting person core adds to every plugin caller (PAR-12715, H3). */
+const noPerson = { onBehalfOfUserId: null, onBehalfOfRestricted: false };
+const boardPerson = (userId = "user-1") => ({ onBehalfOfUserId: userId, onBehalfOfRestricted: false });
 
 function agentActor(overrides: Record<string, unknown> = {}) {
   return {
@@ -144,7 +150,7 @@ function readyPlugin() {
   });
 }
 
-describe.sequential("plugin install and upgrade authz", () => {
+describe("plugin install and upgrade authz", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -156,7 +162,7 @@ describe.sequential("plugin install and upgrade authz", () => {
 
     expect(res.status).toBe(200);
     const packageNames = res.body.map((plugin: { packageName: string }) => plugin.packageName);
-    const byPackageName = new Map(
+    const byPackageName = new Map<string, { experimental: boolean; hasBuiltEntrypoints: boolean }>(
       res.body.map((plugin: { packageName: string; experimental: boolean; hasBuiltEntrypoints: boolean }) => [plugin.packageName, plugin]),
     );
     expect(packageNames).toContain("@paperclipai/plugin-workspace-diff");
@@ -410,7 +416,7 @@ describe.sequential("plugin install and upgrade authz", () => {
   }, 20_000);
 });
 
-describe.sequential("scoped plugin API routes", () => {
+describe("scoped plugin API routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -452,6 +458,7 @@ describe.sequential("scoped plugin API routes", () => {
         source: "session",
         isInstanceAdmin: false,
         companyIds: ["company-1"],
+        memberships: [{ companyId: "company-1", status: "active", restricted: false, restrictionMode: "off" }],
       },
       {},
       { bridgeDeps: { workerManager } },
@@ -476,7 +483,7 @@ describe.sequential("scoped plugin API routes", () => {
   }, 20_000);
 });
 
-describe.sequential("plugin local folder routes", () => {
+describe("plugin local folder routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockRegistry.getCompanySettings.mockResolvedValue(null);
@@ -531,7 +538,7 @@ describe.sequential("plugin local folder routes", () => {
   });
 });
 
-describe.sequential("plugin tool and bridge authz", () => {
+describe("plugin tool and bridge authz", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -669,8 +676,97 @@ describe.sequential("plugin tool and bridge authz", () => {
         runId: runA,
         companyId: companyA,
         projectId: projectA,
+        ...boardPerson(),
       },
     );
+  });
+
+  it("allows tool execution for a run with no project and skips the project lookup", async () => {
+    const executeTool = vi.fn().mockResolvedValue({ content: "ok" });
+    const { app } = await createApp(boardActor(), {}, {
+      // Only the agent and run lookups. A project lookup would get no row and fail.
+      db: createSelectQueueDb([
+        [{ companyId: companyA }],
+        [{ companyId: companyA, agentId: agentA }],
+      ]),
+      toolDeps: {
+        toolDispatcher: {
+          listToolsForAgent: vi.fn(),
+          getTool: vi.fn(() => ({ name: "paperclip.example:search" })),
+          executeTool,
+        },
+      },
+    });
+
+    const res = await request(app)
+      .post("/api/plugins/tools/execute")
+      .send({
+        tool: "paperclip.example:search",
+        parameters: {},
+        runContext: { agentId: agentA, runId: runA, companyId: companyA, projectId: "" },
+      });
+
+    expect(res.status).toBe(200);
+    expect(executeTool).toHaveBeenCalledWith(
+      "paperclip.example:search",
+      {},
+      { agentId: agentA, runId: runA, companyId: companyA, projectId: "", ...boardPerson() },
+    );
+  });
+
+  it.each([
+    ["missing", {}],
+    ["null", { projectId: null }],
+  ])("passes an empty projectId to the plugin when runContext.projectId is %s", async (_label, project) => {
+    const executeTool = vi.fn().mockResolvedValue({ content: "ok" });
+    const { app } = await createApp(boardActor(), {}, {
+      db: createSelectQueueDb([
+        [{ companyId: companyA }],
+        [{ companyId: companyA, agentId: agentA }],
+      ]),
+      toolDeps: {
+        toolDispatcher: {
+          listToolsForAgent: vi.fn(),
+          getTool: vi.fn(() => ({ name: "paperclip.example:search" })),
+          executeTool,
+        },
+      },
+    });
+
+    const res = await request(app)
+      .post("/api/plugins/tools/execute")
+      .send({
+        tool: "paperclip.example:search",
+        parameters: {},
+        runContext: { agentId: agentA, runId: runA, companyId: companyA, ...project },
+      });
+
+    expect(res.status).toBe(200);
+    expect(executeTool).toHaveBeenCalledWith(
+      "paperclip.example:search",
+      {},
+      { agentId: agentA, runId: runA, companyId: companyA, projectId: "", ...boardPerson() },
+    );
+  });
+
+  it("rejects tool execution when runContext.projectId is not a string", async () => {
+    const executeTool = vi.fn();
+    const { app } = await createApp(boardActor(), {}, {
+      toolDeps: {
+        toolDispatcher: { listToolsForAgent: vi.fn(), getTool: vi.fn(), executeTool },
+      },
+    });
+
+    const res = await request(app)
+      .post("/api/plugins/tools/execute")
+      .send({
+        tool: "paperclip.example:search",
+        parameters: {},
+        runContext: { agentId: agentA, runId: runA, companyId: companyA, projectId: 42 },
+      });
+
+    expect(res.status).toBe(400);
+    expect(executeTool).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -713,6 +809,7 @@ describe.sequential("plugin tool and bridge authz", () => {
       key: "health",
       companyId: companyA,
       params: { view: "compact" },
+      actorContext: boardPerson(),
       renderEnvironment: null,
     });
   });
@@ -744,6 +841,7 @@ describe.sequential("plugin tool and bridge authz", () => {
         agentId: null,
         runId: null,
         companyId: null,
+        ...boardPerson("admin-1"),
       },
       renderEnvironment: null,
     });
@@ -781,6 +879,7 @@ describe.sequential("plugin tool and bridge authz", () => {
         agentId: null,
         runId: runA,
         companyId: companyA,
+        ...boardPerson(),
       },
       renderEnvironment: null,
     });
@@ -841,6 +940,7 @@ describe.sequential("plugin tool and bridge authz", () => {
         agentId: agentA,
         runId: runA,
         companyId: companyA,
+        ...noPerson,
       },
       renderEnvironment: null,
     });
@@ -870,6 +970,7 @@ describe.sequential("plugin tool and bridge authz", () => {
         agentId: agentA,
         runId: runA,
         companyId: companyA,
+        ...noPerson,
       },
       renderEnvironment: null,
     });
@@ -1038,7 +1139,7 @@ describe.sequential("plugin tool and bridge authz", () => {
     expect(executeTool).toHaveBeenCalledWith(
       "paperclip.example:search",
       { q: "test" },
-      { agentId: agentA, runId: runA, companyId: companyA, projectId: projectA },
+      { agentId: agentA, runId: runA, companyId: companyA, projectId: projectA, ...noPerson },
     );
   });
 
@@ -1104,7 +1205,7 @@ describe.sequential("plugin tool and bridge authz", () => {
   });
 });
 
-describe.sequential("operator-hidden plugin management floor", () => {
+describe("operator-hidden plugin management floor", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     process.env.PAPERCLIP_HIDDEN_SETTINGS = "instance.plugins";

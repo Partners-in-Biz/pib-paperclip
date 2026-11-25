@@ -18,6 +18,7 @@ Run `pnpm test && pnpm typecheck` here after any change. `pnpm test` also runs t
 | `waiting.ts` | The waiting list nobody sees: unrouted approvals, blocked issues with no way out |
 | `privacy.ts` | Consent and erasure contract (Q10-13) |
 | `sender-scope.ts` | Per-sender suppression, sender identities, unsubscribe tokens (Q1a-3) |
+| `canvas-cards.ts` | **`registerCanvasCards({ register, kinds })`**: the three `canvas.cards.*` actions for entity cards on a planning canvas. `register` is `guard.action` (guarded plugins) or `ctx.actions.register` itself. Repeats core's person rules (people only; restricted: hidden/empty; no restriction answer: `MEMBER_RESTRICTION_UNAVAILABLE` refusal), caps text, refuses an `href` that is not one-slash relative. Keys and schemas come from `@paperclipai/shared/canvas-cards`; a plugin that uses it bundles zod (PAR-14389 C.1) |
 | `skills.ts`, `memory.ts`, `agent-hire.ts`, `done-checks.ts`, `outbox.ts`, `flows.ts`, … | Unchanged helpers (see their headers) |
 
 ## Q5-6: why approvals opened unassigned (root cause)
@@ -71,6 +72,27 @@ await syncAllCompanies(ctx, syncer, { companyIds: await companiesFromMyRows(), i
 `registerCompanyBootstrap` also runs lazily (once per worker, retried after an error) on `company.updated` and `project.created` for a company that never saw `company.created`. It deliberately does not listen to `agent.created`: `registerHireWatch` already subscribes to the agent events in six plugins, the host runs every handler subscribed to a name on each delivery, and a second one would run twice. `skillSyncCheck(ctx, companyId, "CRM")` tells the Cockpit which company needs its settings saved; `skillsBehind` says which skills a company has not received at their current version.
 
 `contract/company-created-contract.spec.ts` fails when a plugin with skills neither handles `company.created` nor is in `EXEMPT` (today only `cockpit`; remove it once the Cockpit uses `registerCompanyBootstrap`), when a plugin subscribes twice to `company.created`, or when a plugin reads the roles copy without `registerRoleWatch`. A second contract, "core event subscriptions", fails when a plugin has two handlers for the same core event name (counting what `registerHireWatch`, `registerDoneChecks` and `registerCompanyBootstrap` subscribe to for it).
+
+**`jobCompanyIds(ctx, known)` (0.22.0, PAR-14008).** In a job or webhook, wrap the plugin's own company list: `for (const id of await jobCompanyIds(ctx, await knownCompanies(ctx)))`. It returns `known` filtered to the host's actionable list (companies with saved settings), or `known` unchanged when that list is unknown (old host, call refused). Never use it inside an action, tool or event: there the host's list is only that call's company.
+
+**`actingRestriction(actor)` (0.23.0, PAR-14274).** Reads core's member-restriction mark on an action caller, route caller or tool run (`onBehalfOfRestricted`): `restricted` (flagged, company on `enforce`), `unrestricted` (everyone else: `off`, `report`, the kill switch, the local board), or `unavailable` (the host sent no mark). Refuse with `MEMBER_RESTRICTED` or `MEMBER_RESTRICTION_UNAVAILABLE` where the answer matters; never read `unavailable` as "not restricted". Studio uses it to keep client media from restricted members.
+
+## The skill sync never holds a call up (`soon`, 0.13.0)
+
+`ensure` waits for the host, and on a company with many skills the host can take more than 30 seconds to reconcile or reset one skill. The syncer remembers a finished sync only in the worker's memory, so after every worker restart the first calls waited for it and ran into the host's 30-second limit (13 Nov 2026: a Cockpit release and a CRM and Mailbox release rolled back at their smoke tests).
+
+```ts
+const syncer = createSkillSyncer(ctx, SKILLS);
+ctx.tools.register(tool.name, tool, async (params, run) => {
+  await syncer.soon(run.companyId); // at most 2 s, never throws
+  return runTool(ctx, tool.name, params, run);
+});
+```
+
+* `soon(companyId, waitMs?)` starts or joins the company's sync, waits at most `SKILL_SYNC_WAIT_MS` (2 s) and lets it finish behind the caller. After a failed sync it does not start another for that company for `SKILL_SYNC_RETRY_MS` (5 minutes). Use it in every tool call, page action, page load and API route.
+* `ensure`, `force` and `check` are unchanged and still wait: a new company's bootstrap, team wiring (`force`), the sweep and the health check (`check`).
+* A plugin with two syncers puts one guard over both: `createSkillSyncGuard(async (id) => [...(await a.ensure(id)), ...(await b.ensure(id))], { logger: ctx.logger })` (SEO and Social do).
+* `contract/skill-sync-wait-contract.spec.ts` fails when a plugin adds a waiting `ensure` that is not listed there with its reason.
 
 ## Run profile per role (Q8-7, Q9-7)
 

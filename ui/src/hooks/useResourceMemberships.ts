@@ -4,9 +4,12 @@ import type {
   ResourceMembershipState,
   ResourceMemberships,
 } from "@paperclipai/shared";
+import { authApi } from "../api/auth";
+import { memberRestrictionFor } from "../lib/member-restriction";
 import { resourceMembershipsApi } from "../api/resourceMemberships";
 import { useToastActions } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
+import { useMemberRestrictionGate } from "./useMemberRestrictionGate";
 
 type MutationVariables = {
   resourceType: JoinableResourceType;
@@ -17,6 +20,9 @@ type MutationVariables = {
   /** Star / unstar transition. Omit to only change join/leave state. */
   starred?: boolean;
 };
+
+/** Thrown instead of sending a closed write; no toast, no cache change. */
+class ClosedMembershipsError extends Error {}
 
 type JoinableResourceType = Exclude<ResourceMembershipResourceType, "document">;
 
@@ -33,6 +39,12 @@ function emptyMemberships(): ResourceMemberships {
     updatedAt: null,
   };
 }
+
+/**
+ * The fixed answer for a restricted member under `enforce` (AC-G10): `resource-memberships/me`
+ * is closed for him, so nothing is requested and the absent answer reads as "joined, not starred".
+ */
+export const EMPTY_RESOURCE_MEMBERSHIPS: ResourceMemberships = emptyMemberships();
 
 function starKeys(resourceType: JoinableResourceType) {
   return resourceType === "project"
@@ -137,20 +149,38 @@ export function starredResourceIds(
 }
 
 export function useResourceMemberships(companyId: string | null | undefined) {
+  const gate = useMemberRestrictionGate(companyId);
+  const { data: session } = useQuery({
+    queryKey: queryKeys.auth.session,
+    queryFn: () => authApi.getSession(),
+  });
+  const enforced = memberRestrictionFor(session?.memberRestrictions, companyId).enforced;
   return useQuery({
     queryKey: queryKeys.resourceMemberships.mine(companyId ?? "__none__"),
-    queryFn: () => resourceMembershipsApi.listMine(companyId!),
-    enabled: !!companyId,
+    queryFn: gate.guard(() => resourceMembershipsApi.listMine(companyId!), EMPTY_RESOURCE_MEMBERSHIPS),
+    enabled: !!companyId && !gate.closed,
+    // A returned value, never written to the cache: an owner must not inherit "no stars".
+    placeholderData: enforced ? EMPTY_RESOURCE_MEMBERSHIPS : undefined,
   });
+}
+
+/**
+ * Whether the star and join controls show. False for a restricted member under `enforce`
+ * and while the session is unknown: his memberships are closed, so the controls would only fail.
+ */
+export function useResourceMembershipControls(companyId: string | null | undefined): boolean {
+  return !useMemberRestrictionGate(companyId).closed;
 }
 
 export function useResourceMembershipMutation(companyId: string | null | undefined) {
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
   const queryKey = queryKeys.resourceMemberships.mine(companyId ?? "__none__");
+  const closed = useMemberRestrictionGate(companyId).closed;
 
   return useMutation({
     mutationFn: (variables: MutationVariables) => {
+      if (closed) throw new ClosedMembershipsError();
       if (!companyId) throw new Error("Select an organization first.");
       const body = { state: variables.state, starred: variables.starred };
       return variables.resourceType === "project"
@@ -158,6 +188,7 @@ export function useResourceMembershipMutation(companyId: string | null | undefin
         : resourceMembershipsApi.updateAgent(companyId, variables.resourceId, body);
     },
     onMutate: async (variables) => {
+      if (closed) return { previous: undefined };
       await queryClient.cancelQueries({ queryKey });
       const previous = queryClient.getQueryData<ResourceMemberships>(queryKey);
       queryClient.setQueryData<ResourceMemberships>(
@@ -170,6 +201,7 @@ export function useResourceMembershipMutation(companyId: string | null | undefin
       return { previous };
     },
     onError: (error, variables, context) => {
+      if (error instanceof ClosedMembershipsError) return;
       if (context?.previous) {
         queryClient.setQueryData(queryKey, context.previous);
       }
@@ -193,6 +225,8 @@ export function useResourceMembershipMutation(companyId: string | null | undefin
       );
     },
     onSettled: () => {
+      if (closed) return;
+      queryClient.invalidateQueries({ queryKey: ["primary-agent", companyId] });
       queryClient.invalidateQueries({ queryKey });
     },
   });

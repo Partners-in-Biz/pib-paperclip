@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  costEvents,
   activityLog,
   agentRuntimeState,
   agentWakeupRequests,
@@ -93,6 +94,7 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
         await db.delete(issues);
         await db.delete(heartbeatRunEvents);
         await db.delete(activityLog);
+        await db.delete(costEvents);
         await db.delete(heartbeatRuns);
         await db.delete(agentWakeupRequests);
         await db.delete(agentRuntimeState);
@@ -232,6 +234,7 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
 
   function assignmentWake(agentId: string, issueId: string) {
     return heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "assignment",
       triggerDetail: "system",
       reason: "issue_assigned",
@@ -303,6 +306,7 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
     await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 10 });
 
     const commentWake = await heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "automation",
       triggerDetail: "system",
       reason: "issue_commented",
@@ -330,6 +334,7 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
       entityId: issueId,
     });
     const throttledAgentCommentWake = await heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "automation",
       triggerDetail: "system",
       reason: "issue_commented",
@@ -355,6 +360,7 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
     });
     const nextAgentCommentId = randomUUID();
     const admittedAfterHumanInput = await heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "automation",
       triggerDetail: "system",
       reason: "issue_commented",
@@ -384,6 +390,7 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
 
     const commentId = randomUUID();
     const resumeWake = await heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "automation",
       triggerDetail: "system",
       reason: "issue_reopened_via_comment",

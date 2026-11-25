@@ -46,6 +46,31 @@ async function activeCount(): Promise<number> {
 }
 
 describe.skipIf(!available)("Render queue against real Postgres", () => {
+  it("enqueueRender stores the normalized doc: v1 stays v1, v2 stays v2, an unreadable doc is refused (PAR-8442)", async () => {
+    const ctx = ctxs[0];
+    const stored = async (doc: unknown) => {
+      const job = await enqueueRender(ctx, { companyId: CO, editId: `e-${Math.random()}`, editRevision: 1, doc, preset: "9:16" });
+      const [row] = await (pg.db.query as (sql: string, params: unknown[]) => Promise<{ doc: unknown }[]>)(`SELECT doc FROM ${pg.db.namespace}.video_renders WHERE id = $1`, [job.id]);
+      await cancelRender(ctx, CO, job.id);
+      return typeof row.doc === "string" ? JSON.parse(row.doc) : row.doc;
+    };
+    expect(await stored({ project: { size: "1:1" }, tracks: [], junk: true })).toEqual({ schemaVersion: 1, project: { size: "1:1", width: 1080, height: 1080, fps: 30 }, tracks: [] });
+    const clip = { id: "c", assetId: "a", version: 1, in: 0, out: 2, start: 0, keyframes: { scale: [{ t: 0, value: 1 }, { t: 2, value: 2 }] } };
+    expect(await stored({ ...DOC, schemaVersion: 2, tracks: [{ id: "v", kind: "video", clips: [clip] }] })).toMatchObject({ schemaVersion: 2, tracks: [{ clips: [{ keyframes: { scale: [{}, {}] } }] }] });
+    const styled = { ...clip, keyframes: undefined, adjust: { brightness: 0.2, contrast: 1 }, look: { id: "mono" } };
+    expect(await stored({ ...DOC, schemaVersion: 1, tracks: [{ id: "v", kind: "video", clips: [styled] }] })).toMatchObject({ schemaVersion: 3, tracks: [{ clips: [{ adjust: { brightness: 0.2 }, look: { pack: "pib-basic", id: "mono", intensity: 1 } }] }] });
+    const layered = { ...clip, keyframes: undefined, blendMode: "multiply", chromaKey: { color: "#00ff00" }, frame: { cornerRadius: 10 } };
+    expect(await stored({ ...DOC, schemaVersion: 1, tracks: [{ id: "o", kind: "overlay", clips: [layered] }] })).toMatchObject({ schemaVersion: 4, tracks: [{ clips: [{ blendMode: "multiply", chromaKey: { color: "#00FF00", similarity: 0.1 }, frame: { borderWidth: 0, borderColor: "#FFFFFF", cornerRadius: 10 } }] }] });
+    expect(await stored({ ...DOC, schemaVersion: 4, tracks: [{ id: "o", kind: "overlay", clips: [{ ...layered, blendMode: "normal", chromaKey: null, frame: null }] }] })).toMatchObject({ schemaVersion: 1 });
+    const fx = { ...clip, keyframes: undefined, effects: [{ id: "shake", intensity: 0.4 }] };
+    const sticker = { id: "s", sticker: { pack: "pib-shapes", id: "star" }, in: 0, out: 2, start: 0 };
+    const title = { id: "t", start: 0, text: "Hi", duration: 2, animation: { out: "slideLeft" } };
+    expect(await stored({ ...DOC, schemaVersion: 1, tracks: [{ id: "v", kind: "video", clips: [fx] }, { id: "o", kind: "overlay", clips: [sticker] }, { id: "x", kind: "text", clips: [title] }] })).toMatchObject({ schemaVersion: 5, tracks: [{ clips: [{ effects: [{ id: "shake", intensity: 0.4 }] }] }, { clips: [{ sticker: { pack: "pib-shapes", id: "star" } }] }, { clips: [{ animation: { out: "slideLeft", outDuration: 0.5 } }] }] });
+    expect(await stored({ ...DOC, schemaVersion: 5, tracks: [{ id: "v", kind: "video", clips: [{ ...fx, effects: [] }] }] })).toMatchObject({ schemaVersion: 1 });
+    await expect(enqueueRender(ctx, { companyId: CO, editId: "e", editRevision: 1, doc: { ...DOC, tracks: [{ id: "o", kind: "overlay", clips: [{ ...sticker, sticker: { pack: "pib-shapes", id: "../x" } }] }] }, preset: "9:16" })).rejects.toMatchObject({ reason: "unknown_sticker", code: "bad_edit" });
+    await expect(enqueueRender(ctx, { companyId: CO, editId: "e", editRevision: 1, doc: { schemaVersion: 6 }, preset: "9:16" })).rejects.toMatchObject({ reason: "unsupported_version", code: "bad_edit" });
+  });
+
   let ctx: PluginContext;
   beforeEach(async () => {
     await pg.reset();

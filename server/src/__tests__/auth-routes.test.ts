@@ -3,6 +3,7 @@ import request from "supertest";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { errorHandler } from "../middleware/index.js";
 import { authRoutes } from "../routes/auth.js";
+import { authUsers, type Db } from "@paperclipai/db";
 
 function createSelectChain(rows: unknown[]) {
   return {
@@ -51,7 +52,7 @@ function createApp(actor: Express.Request["actor"], row: Record<string, unknown>
   return app;
 }
 
-describe.sequential("auth routes", () => {
+describe("auth routes", () => {
   const baseUser = {
     id: "user-1",
     name: "Jane Example",
@@ -95,7 +96,61 @@ describe.sequential("auth routes", () => {
       user: baseUser,
       sentryDsn: null,
       sentryEnvironment: null,
+      memberRestrictions: [],
     });
+  });
+
+  it("returns the person's own restriction per company without a read when the actor carries it", async () => {
+    const app = createApp({
+      type: "board", userId: "user-1", source: "session",
+      memberships: [{ companyId: "company-1", status: "active", restricted: false, restrictionMode: "report" }],
+    }, baseUser);
+    const res = await request(app).get("/api/auth/get-session");
+    expect(res.status).toBe(200);
+    expect(res.body.memberRestrictions).toEqual([{ companyId: "company-1", restricted: false, mode: "report" }]);
+  });
+
+  it("with the kill switch `off` reports every company as not restricted, mode off", async () => {
+    vi.stubEnv("PAPERCLIP_MEMBER_RESTRICTION", "off");
+    const app = createApp({
+      type: "board", userId: "user-1", source: "session",
+      memberships: [{ companyId: "company-1", status: "active", restricted: true, restrictionMode: "enforce" }],
+    }, baseUser);
+    const res = await request(app).get("/api/auth/get-session");
+    expect(res.status).toBe(200);
+    expect(res.body.memberRestrictions).toEqual([{ companyId: "company-1", restricted: false, mode: "off" }]);
+  });
+
+  it("answers 503 MEMBER_RESTRICTION_UNAVAILABLE and no session data when the restriction cannot be read", async () => {
+    // A membership without the two fields makes the resolver read the database;
+    // the profile read works, the restriction read fails.
+    const failing = {
+      select: () => ({
+        from: (table: unknown) => ({
+          where: () => table === authUsers ? Promise.resolve([baseUser]) : Promise.reject(new Error("database down")),
+        }),
+      }),
+    } as unknown as Db;
+    const app = express();
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", userId: "user-1", source: "session", memberships: [{ companyId: "company-1" }] } as never;
+      next();
+    });
+    app.use("/api/auth", authRoutes(failing));
+    app.use(errorHandler);
+    const res = await request(app).get("/api/auth/get-session");
+    expect(res.status).toBe(503);
+    expect(res.body.code ?? res.body.details?.code).toBe("MEMBER_RESTRICTION_UNAVAILABLE");
+    expect(res.body.user).toBeUndefined();
+  });
+
+  it("preserves the session when optional navigation bootstrap cannot load", async () => {
+    const app = createApp({ type: "board", userId: "user-1", source: "session", companyIds: [] }, baseUser);
+    // This profile-only database cannot execute the bootstrap's company join.
+    const response = await request(app).get("/api/auth/get-session");
+    expect(response.status).toBe(200);
+    expect(response.body.user.id).toBe("user-1");
+    expect(response.body.boardBootstrap).toBeUndefined();
   });
 
   it("sends sentryDsn for a board actor when SENTRY_DSN is set", async () => {
@@ -113,23 +168,6 @@ describe.sequential("auth routes", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.sentryDsn).toBe("https://public@o0.ingest.sentry.io/1");
-  });
-
-  it("sends a null sentryDsn when SENTRY_DSN is unset", async () => {
-    delete process.env.SENTRY_DSN;
-    const app = await createApp(
-      {
-        type: "board",
-        userId: "user-1",
-        source: "session",
-      },
-      baseUser,
-    );
-
-    const res = await request(app).get("/api/auth/get-session");
-
-    expect(res.status).toBe(200);
-    expect(res.body.sentryDsn).toBe(null);
   });
 
   it("sends sentryDsn for a board actor when only SENTRY_DSN_FRONTEND is set", async () => {

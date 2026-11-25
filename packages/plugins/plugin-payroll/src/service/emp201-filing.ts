@@ -59,7 +59,7 @@ export async function unmarkEmp201Filed(env: Env, companyId: string, actor: Acto
   const month = reqStr(params, "month", 7);
   const before = await emp201Filing(env, companyId, month);
   if (!before) return { month, filed: false };
-  await env.ctx.state.set(KEY(companyId, month), null);
+  await env.ctx.state.delete(KEY(companyId, month));
   await db.audit(env.ctx, companyId, { userId: actor.userId, agentId: null }, "emp201.unfiled", "emp201", month, { filedOn: before.filedOn });
   return { month, filed: false };
 }

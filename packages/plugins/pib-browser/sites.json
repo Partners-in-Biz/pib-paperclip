@@ -194,6 +194,57 @@
           "remove"
         ]
       }
+    },
+    "paperclip": {
+      "label": "Paperclip (PiB board)",
+      "origins": [
+        "https://paperclip.partnersinbiz.online"
+      ],
+      "loggedIn": {
+        "url": "https://paperclip.partnersinbiz.online/PAR/dashboard",
+        "expect": "New task"
+      },
+      "confirm": [
+        {
+          "step": "page-loaded",
+          "expect": "New task"
+        }
+      ],
+      "redact": [
+        "input[type=password]",
+        "[data-pib-redact]",
+        "[autocomplete*=password i]"
+      ],
+      "destructive": {
+        "selectors": [
+          "[data-action=delete]",
+          "[aria-label=Delete]",
+          "[aria-label*=Remove i]",
+          "[type=submit]"
+        ],
+        "text": [
+          "delete",
+          "remove",
+          "archive",
+          "terminate",
+          "cancel",
+          "pause",
+          "resume",
+          "approve",
+          "reject",
+          "revoke",
+          "deploy",
+          "restart",
+          "apply",
+          "publish",
+          "send",
+          "invite",
+          "save",
+          "create",
+          "assign",
+          "close"
+        ]
+      }
     }
   }
 }

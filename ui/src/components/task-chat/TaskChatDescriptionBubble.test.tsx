@@ -27,6 +27,8 @@ vi.mock("@/components/MarkdownEditor", () => ({
 }));
 
 import { ThemeProvider } from "@/context/ThemeContext";
+import type { IssueAttachment } from "@paperclipai/shared";
+import { CoordinatorPresentation } from "../coordinator/CoordinatorPresentation";
 import { TaskChatDescriptionBubble, type TaskChatIssueBrief } from "./TaskChatDescriptionBubble";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -57,11 +59,11 @@ describe("TaskChatDescriptionBubble (PAP-375)", () => {
     container.remove();
   });
 
-  function render(brief: TaskChatIssueBrief) {
+  function render(brief: TaskChatIssueBrief, attachments?: IssueAttachment[]) {
     act(() =>
       root!.render(
         <ThemeProvider>
-          <TaskChatDescriptionBubble brief={brief} />
+          <TaskChatDescriptionBubble brief={brief} attachments={attachments} />
         </ThemeProvider>,
       ),
     );
@@ -87,6 +89,18 @@ describe("TaskChatDescriptionBubble (PAP-375)", () => {
     // Markdown renders (bold), not raw asterisks.
     expect(body?.querySelector("strong")?.textContent).toBe("Friday");
     expect(bubble?.querySelector('[data-testid="task-chat-description-edit"]')).toBeNull();
+  });
+
+  it("uses the task creation time relatively in Coordinator and preserves Classic time formatting", () => {
+    const createdAt = new Date(Date.now() - 5 * 60_000).toISOString();
+    act(() => root!.render(<ThemeProvider><CoordinatorPresentation.Provider value>
+      <TaskChatDescriptionBubble brief={makeBrief({ createdAt })} />
+    </CoordinatorPresentation.Provider></ThemeProvider>));
+    expect(container.querySelector("time")?.getAttribute("datetime")).toBe(createdAt);
+    expect(container.querySelector("time")?.textContent).toMatch(/\d+m ago/);
+    render(makeBrief({ createdAt }));
+    expect(container.querySelector("time")).toBeNull();
+    expect(container.textContent).not.toContain("m ago");
   });
 
   it("renders an agent-created task as the agent-side bubble with the avatar author header", () => {
@@ -183,6 +197,88 @@ describe("TaskChatDescriptionBubble (PAP-375)", () => {
       stubScrollHeight(120);
       render(makeBrief());
       expect(container.textContent).not.toContain("Show more");
+    });
+  });
+
+  describe("attachments", () => {
+    function makeAttachment(overrides: Partial<IssueAttachment> = {}): IssueAttachment {
+      return {
+        id: "att-1",
+        companyId: "company-1",
+        issueId: "issue-1",
+        issueCommentId: null,
+        assetId: "asset-1",
+        provider: "local_disk",
+        objectKey: "k",
+        contentType: "audio/ogg",
+        byteSize: 49600,
+        sha256: "abc",
+        originalFilename: "WhatsApp Audio.opus",
+        createdByAgentId: null,
+        createdByUserId: "user-1",
+        createdAt: new Date("2026-11-20T05:00:00Z"),
+        updatedAt: new Date("2026-11-20T05:00:00Z"),
+        contentPath: "/api/attachments/att-1/content",
+        ...overrides,
+      };
+    }
+
+    it("extracts image and audio attachment refs from description and renders them cleanly", () => {
+      const attachments = [
+        makeAttachment({
+          id: "img-1",
+          contentType: "image/jpeg",
+          originalFilename: "WhatsApp Image.jpeg",
+          contentPath: "/api/attachments/img-1/content",
+          byteSize: 536700,
+        }),
+        makeAttachment({
+          id: "aud-1",
+          contentType: "audio/ogg",
+          originalFilename: "WhatsApp Audio.opus",
+          contentPath: "/api/attachments/aud-1/content",
+          byteSize: 49600,
+        }),
+      ];
+      render(
+        makeBrief({
+          description: [
+            "Please investigate the following:",
+            "![WhatsApp Image.jpeg](/api/attachments/img-1/content)",
+            "[WhatsApp Audio.opus](/api/attachments/aud-1/content)",
+          ].join("\n\n"),
+        }),
+        attachments,
+      );
+
+      const bubble = container.querySelector('[data-testid="task-chat-description-bubble"]');
+      expect(bubble).not.toBeNull();
+      const body = bubble?.querySelector(".bg-\\(--liveness-blue\\)");
+      expect(body?.textContent).toContain("Please investigate the following:");
+      expect(body?.textContent).not.toContain("WhatsApp Audio.opus");
+      expect(container.querySelector('[data-testid="task-chat-description-media"]')).not.toBeNull();
+      expect(container.querySelector('[data-testid="task-chat-description-attachments"]')?.textContent).toContain("WhatsApp Audio.opus");
+    });
+
+    it("renders attachment-only descriptions without showing the empty ghost button", () => {
+      const attachments = [
+        makeAttachment({
+          id: "aud-only",
+          contentType: "audio/ogg",
+          originalFilename: "Voice Note.opus",
+          contentPath: "/api/attachments/aud-only/content",
+        }),
+      ];
+      render(
+        makeBrief({
+          description: "[Voice Note.opus](/api/attachments/aud-only/content)",
+        }),
+        attachments,
+      );
+
+      expect(container.querySelector('[data-testid="task-chat-description-ghost"]')).toBeNull();
+      expect(container.querySelector('[data-testid="task-chat-description-bubble"]')).not.toBeNull();
+      expect(container.querySelector('[data-testid="task-chat-description-attachments"]')?.textContent).toContain("Voice Note.opus");
     });
   });
 });

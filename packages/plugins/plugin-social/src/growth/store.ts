@@ -12,6 +12,9 @@ export interface ProgramConstraints {
   brandVoice?: string;
   platforms?: string;
   cadence?: string;
+  /** This month's focus and the closed ones before it (`focus.ts`). */
+  focus?: unknown;
+  focusLog?: unknown;
 }
 
 export interface Program {

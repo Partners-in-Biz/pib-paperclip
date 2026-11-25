@@ -22,6 +22,10 @@ const parked = (extra: Row = {}) => taskRow({ id: "t1", sprint_id: "sp-real", te
 const preview = (id: string, page: string, extra: Row = {}): Row => ({ id, page_url: `https://agristudies.co.za/${page}`, title: `Page ${page}`, status: "pending", review_status: "passed", decision_note: null, handed_at: null, draft_key: null, reviewed_at: "2026-10-03T07:00:00Z", ...extra });
 
 const latest = (rows: Row[]): Route => [/SELECT DISTINCT ON \(page_url\) id, page_url, title, status, review_status, decision_note, handed_at, draft_key/, () => rows];
+/** The rows a hand-over claimed, as finishHandover reads them back (the fake execute claims every eligible row). */
+const claimed = (rows: Row[]): Route => [/handed_at = \$3::timestamptz AND handover_done_at IS NULL ORDER BY page_url/, () => rows.map((r) => ({ apply_until: r.status === "approved" ? "2026-10-03T14:00:00.000Z" : null, ...r }))];
+/** The page window as syncSiteWindow reads it (the real host always returns one row, with the seq). */
+const windowRows = (rows: Row[]): Route => [/statement_timestamp\(\)\) \* 1000000\)::bigint::text AS seq\) o LEFT JOIN/, () => rows];
 const emitted = (w: ReturnType<typeof world>) => (w.ctx.events.emit as unknown as { mock: { calls: unknown[][] } }).mock.calls.map((c) => ({ name: String(c[0]), companyId: c[1], payload: c[2] as Record<string, any> }));
 
 describe("the approval email", () => {
@@ -160,26 +164,45 @@ describe("the client's answers", () => {
     expect(w.store.tasks[0]!.assignee_kind).toBe("client");
   });
 
+  it("adds the afterFirstParagraph guidance only when an approved preview uses the mode", async () => {
+    const run = async (changes: unknown) => {
+      const answered = [preview("p1", "a", { status: "approved", changes })];
+      const window = windowRows([{ page_url: "https://agristudies.co.za/a/", apply_until: "2026-10-03T14:00:00.000Z", seq: "1793692800000000" }]);
+      const w = world({ sprints: [wp()], tasks: [parked({ assignee_kind: "client" })], routes: [latest(answered), claimed(answered), window] });
+      const sprint = (await db.getSprint(w.env.ctx.db, "co-1", "sp-real"))!;
+      await handleClientAnswer(w.env, sprint, answer());
+      return w.comments.at(-1)!.body;
+    };
+    expect(await run({ bodyHtml: "<p>x</p>", bodyMode: "afterFirstParagraph" })).toContain("bodyMode afterFirstParagraph: read post_content");
+    expect(await run({ bodyHtml: "<p>x</p>", bodyMode: "before" })).not.toContain("bodyMode afterFirstParagraph: read post_content");
+  });
+
   it("when every preview is answered: lifts the lock for the window, takes the task back and wakes the agent once with what to apply and what to revise", async () => {
-    const w = world({ sprints: [wp()], tasks: [parked({ assignee_kind: "client" })], routes: [latest([preview("p1", "a", { status: "approved" }), preview("p2", "b", { status: "changes_requested", decision_note: "Use our logo colours" })])] });
+    const answered = [preview("p1", "a", { status: "approved" }), preview("p2", "b", { status: "changes_requested", decision_note: "Use our logo colours" })];
+    const window = windowRows([{ page_url: "https://agristudies.co.za/a/", apply_until: "2026-10-03T14:00:00.000Z", seq: "1793692800000000" }]);
+    const w = world({ sprints: [wp()], tasks: [parked({ assignee_kind: "client" })], routes: [latest(answered), claimed(answered), window] });
     const sprint = (await db.getSprint(w.env.ctx.db, "co-1", "sp-real"))!;
     expect(await handleClientAnswer(w.env, sprint, answer())).toBe(true);
     const [grant] = lock(w);
-    expect(grant!.payload).toMatchObject({ siteId: "site-1", by: "client-approval:t1" });
+    expect(grant!.payload).toMatchObject({ siteId: "site-1", scope: "pages", pages: ["https://agristudies.co.za/a"], seq: "1793692800000000", by: "client-approval:t1" });
     expect(new Date(String(grant!.payload.until)).getTime() - new Date("2026-10-03T08:00:00Z").getTime()).toBe(AUTO_APPLY_HOURS * 3_600_000);
     expect(w.store.tasks[0]).toMatchObject({ status: "in_progress", assignee_kind: "agent", blocker_reason: null });
     expect(w.wakeups).toEqual(["iss-1"]);
     const body = w.comments.at(-1)!.body;
     expect(body).toMatch(/Approved: apply these now/);
+    expect(body).toContain("wp-archive set (html = <h1>h1</h1> + bodyHtml, position = bodyMode before or after); never wp-content update");
+    expect(body).toContain("bodyMode replace on an archive cannot be applied");
     expect(body).toContain("https://agristudies.co.za/a");
     expect(body).toMatch(/Changes requested: revise/);
     expect(body).toContain("Use our logo colours");
     expect(body).toMatch(/complete this task only when every page of it is applied/);
-    expect(executed(w, /SET handed_at = now\(\)/)[0]!.params[1]).toBe(JSON.stringify(["p1", "p2"]));
+    expect(executed(w, /SET handed_at = \$3::timestamptz/)[0]!.params[3]).toBe(JSON.stringify(["p1", "p2"]));
+    expect(executed(w, /SET handover_done_at = now\(\)/)).toHaveLength(1);
   });
 
   it("changes requested only: no lock is lifted", async () => {
-    const w = world({ sprints: [wp()], tasks: [parked({ assignee_kind: "client" })], routes: [latest([preview("p2", "b", { status: "changes_requested", decision_note: "no" })])] });
+    const answered = [preview("p2", "b", { status: "changes_requested", decision_note: "no" })];
+    const w = world({ sprints: [wp()], tasks: [parked({ assignee_kind: "client" })], routes: [latest(answered), claimed(answered)] });
     await handleClientAnswer(w.env, (await db.getSprint(w.env.ctx.db, "co-1", "sp-real"))!, answer({ id: "p2", status: "changes_requested" }));
     expect(lock(w)).toEqual([]);
     expect(w.wakeups).toEqual(["iss-1"]);
@@ -311,7 +334,7 @@ describe("a page that keeps failing, on automatic sign-off, is dropped instead o
   const page = "https://agristudies.co.za/product/national-certificate-animal-production/";
   const seniorTried = { builds: [{ issueId: "fix-9", agentId: "sen-1", at: "x", kind: "preview-fix", level: "senior", pageUrl: page }] };
   const routes = (): Route[] => [
-    [/SELECT id, task_id, issue_id, page_url, title, created_by, changes, review_key FROM plugin_seo_8099f8879a\.previews WHERE id/, () => [{ id: "p1", task_id: "t1", issue_id: "iss-1", page_url: page, title: "Animal production", created_by: "seo-1", changes: {}, review_key: "rk" }]],
+    [/SELECT id, task_id, issue_id, page_url, title, created_by, changes, review_key, status FROM plugin_seo_8099f8879a\.previews WHERE id/, () => [{ id: "p1", task_id: "t1", issue_id: "iss-1", page_url: page, title: "Animal production", created_by: "seo-1", changes: {}, review_key: "rk" }]],
     [/count\(\*\)::int AS n FROM plugin_seo_8099f8879a\.previews/, () => [{ n: 2 }]],
     latest([preview("p0", "product/other", { status: "approved" })]),
   ];
@@ -348,7 +371,7 @@ describe("on automatic sign-off a page's change is never handed to a person", ()
 
   it("allows it once a preview exists, and on a manual sprint (the controls)", async () => {
     const { blockTask } = await import("../src/service/tasks.js");
-    const withPreview = world({ sprints: [wp()], tasks: [parked({ status: "in_progress", assignee_kind: "agent", task_type: "page-write" })], routes: [[/SELECT 1 FROM plugin_seo_8099f8879a\.previews WHERE company_id = \$1 AND task_id = \$2 LIMIT 1/, () => [{ "?column?": 1 }]]] });
+    const withPreview = world({ sprints: [wp()], tasks: [parked({ status: "in_progress", assignee_kind: "agent", task_type: "page-write" })], routes: [[/SELECT 1 FROM plugin_seo_8099f8879a\.previews WHERE company_id = \$1 AND task_id = \$2 AND status <> 'cancelled' LIMIT 1/, () => [{ "?column?": 1 }]]] });
     await expect(blockTask(withPreview.env, "co-1", agent, blockParams)).resolves.toBeTruthy();
     const manual = world({ sprints: [wp({ client_signoff: "manual" })], tasks: [parked({ status: "in_progress", assignee_kind: "agent", task_type: "page-write" })] });
     await expect(blockTask(manual.env, "co-1", agent, blockParams)).resolves.toBeTruthy();
@@ -402,7 +425,7 @@ describe("dropping a failing page does not kill a newer revision of it", () => {
   const page = "https://agriauctionssa.co.za/category/skape-sheep/";
   const seniorTried = { builds: [{ issueId: "fix-9", agentId: "sen-1", at: "x", kind: "preview-fix", level: "senior", pageUrl: page }] };
   const base = (): Route[] => [
-    [/SELECT id, task_id, issue_id, page_url, title, created_by, changes, review_key FROM plugin_seo_8099f8879a\.previews WHERE id/, () => [{ id: "p1", task_id: "t1", issue_id: "iss-1", page_url: page, title: "Sheep", created_by: "seo-1", changes: {}, review_key: "rk" }]],
+    [/SELECT id, task_id, issue_id, page_url, title, created_by, changes, review_key, status FROM plugin_seo_8099f8879a\.previews WHERE id/, () => [{ id: "p1", task_id: "t1", issue_id: "iss-1", page_url: page, title: "Sheep", created_by: "seo-1", changes: {}, review_key: "rk" }]],
     [/count\(\*\)::int AS n FROM plugin_seo_8099f8879a\.previews/, () => [{ n: 2 }]],
   ];
   const run = async (newer: boolean) => {

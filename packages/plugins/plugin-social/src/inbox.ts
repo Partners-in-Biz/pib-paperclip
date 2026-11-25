@@ -26,6 +26,7 @@ import { socialOn } from "./modules.js";
 import { isSocialPlatform, PLATFORM_LABELS } from "./platforms.js";
 import { freshAccount } from "./tokens.js";
 import { triageInbox } from "./triage.js";
+import { jobCompanyIds } from "@partnersinbiz/pib-plugin-kit";
 
 /** Platforms whose inbox reads comments per published post (the others read account-level mentions). */
 const PER_POST_INBOX = new Set(["facebook", "instagram", "threads", "youtube"]);
@@ -91,7 +92,7 @@ async function pollAccount(ctx: PluginContext, config: SocialConfig, row: Accoun
 
 export async function pollInboxJob(ctx: PluginContext, ensureCompany: (companyId: string) => Promise<void>) {
   const summary = { accounts: 0, added: 0, errors: 0, triaged: 0, spam: 0, queued: 0, escalated: 0 };
-  for (const companyId of await companiesWithAccounts(ctx)) {
+  for (const companyId of await jobCompanyIds(ctx, await companiesWithAccounts(ctx))) {
     if (!(await socialOn(ctx, companyId))) continue;
     await ensureCompany(companyId).catch(() => undefined);
     const config = await loadSocialConfig(ctx, companyId);

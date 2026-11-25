@@ -7,8 +7,8 @@ import {
 } from "../lib/keyboardShortcuts";
 
 interface ShortcutHandlers {
-  enabled?: boolean;
   onNewIssue?: () => void;
+  onNewNote?: () => void;
   onSearch?: () => void;
   onToggleSidebar?: () => void;
   onTogglePanel?: () => void;
@@ -17,8 +17,8 @@ interface ShortcutHandlers {
 }
 
 export function useKeyboardShortcuts({
-  enabled = true,
   onNewIssue,
+  onNewNote,
   onSearch,
   onToggleSidebar,
   onTogglePanel,
@@ -26,8 +26,6 @@ export function useKeyboardShortcuts({
   onGoToInbox,
 }: ShortcutHandlers) {
   useEffect(() => {
-    if (!enabled) return;
-
     // g → i chord state. IssueDetail runs its own capture-phase handler with
     // extra chords (g c, g f) and stops propagation when it handles one, so
     // this bubble-phase chord only fires outside the issue detail page.
@@ -94,12 +92,14 @@ export function useKeyboardShortcuts({
         return;
       }
 
+      // Don't fire shortcuts over a modal dialog. The dialog owns the
+      // keyboard until it closes (Escape or its own controls).
+      if (hasBlockingShortcutDialog()) {
+        return;
+      }
+
       // / → Page search when available, otherwise quick search
       if (e.key === "/" && !e.metaKey && !e.ctrlKey && !e.altKey) {
-        if (hasBlockingShortcutDialog()) {
-          return;
-        }
-
         e.preventDefault();
         if (!focusPageSearchShortcutTarget()) {
           onSearch?.();
@@ -118,6 +118,12 @@ export function useKeyboardShortcuts({
       if (e.key === "c" && !e.metaKey && !e.ctrlKey && !e.altKey) {
         e.preventDefault();
         onNewIssue?.();
+      }
+
+      // Shift+N → New Personal Note
+      if (e.key === "N" && e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        onNewNote?.();
       }
 
       // [ → Toggle Sidebar
@@ -147,5 +153,5 @@ export function useKeyboardShortcuts({
       document.removeEventListener("focusin", handleFocusIn, true);
       document.removeEventListener("keydown", handleKeyDown);
     };
-  }, [enabled, onNewIssue, onSearch, onToggleSidebar, onTogglePanel, onShowShortcuts, onGoToInbox]);
+  }, [onNewIssue, onNewNote, onSearch, onToggleSidebar, onTogglePanel, onShowShortcuts, onGoToInbox]);
 }

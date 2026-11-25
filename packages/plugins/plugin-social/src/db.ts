@@ -106,14 +106,27 @@ export interface AccountRow {
   created_by_user_id: string | null;
   reconnect_issue_id: string | null;
   last_refreshed_at: unknown;
+  /** No API link: a person posts for this account by hand (`isManual`). It never holds a token. */
+  manual: boolean;
   created_at: unknown;
   updated_at: unknown;
+}
+
+/** A manual account: posts to it wait for a person, who posts them by hand from the post page. */
+export function isManual(row: Pick<AccountRow, "manual">): boolean {
+  return row.manual === true;
+}
+
+/** Usable as a destination: a live token, or a manual account that is not switched off. */
+export function accountUsable(row: Pick<AccountRow, "manual" | "token_enc" | "status">): boolean {
+  if (row.status === "disabled") return false;
+  return isManual(row) || Boolean(row.token_enc);
 }
 
 const ACCOUNT_COLS = [
   "id", "company_id", "platform", "scope", "owner_user_id", "status", "secret_ref", "display_name", "external_id", "handle",
   "avatar_url", "token_enc", "refresh_token_enc", "token_expires_at", "scopes", "client_kind", "client_ref", "client_name", "last_error", "meta",
-  "key_version", "created_by_user_id", "reconnect_issue_id", "last_refreshed_at", "created_at", "updated_at",
+  "key_version", "created_by_user_id", "reconnect_issue_id", "last_refreshed_at", "manual", "created_at", "updated_at",
 ].join(", ");
 
 export function accountMeta(row: AccountRow): Record<string, unknown> {
@@ -267,6 +280,51 @@ export async function upsertAccount(ctx: PluginContext, input: AccountWrite): Pr
   return { id, created: true };
 }
 
+export interface ManualAccountWrite {
+  company_id: string;
+  platform: SocialPlatform;
+  display_name: string;
+  external_id: string;
+  handle: string;
+  meta: Record<string, unknown>;
+  scope: "org" | "personal";
+  owner_user_id: string | null;
+  client_kind: string | null;
+  client_ref: string | null;
+  client_name: string | null;
+  created_by_user_id: string | null;
+}
+
+/**
+ * Add a manual account (no token). `secret_ref = 'manual'` is a second marker beside the `manual` column: code from
+ * before 0.11.0 deletes a row with neither a token nor a secret ref, so a rolled-back deploy leaves these rows alone.
+ */
+export async function insertManualAccount(ctx: PluginContext, input: ManualAccountWrite): Promise<{ id: string }> {
+  const id = randomUUID();
+  await ctx.db.execute(
+    `INSERT INTO ${table(ctx, "accounts")}
+      (id, company_id, platform, scope, owner_user_id, status, secret_ref, display_name, external_id, handle, avatar_url,
+       token_enc, refresh_token_enc, token_expires_at, scopes, meta, key_version, client_kind, client_ref, client_name,
+       created_by_user_id, manual)
+     VALUES ($1, $2, $3, $4, $5, 'connected', 'manual', $6, $7, $8, NULL, NULL, NULL, NULL, '[]'::jsonb, $9::jsonb, NULL, $10, $11, $12, $13, true)`,
+    [
+      id, input.company_id, input.platform, input.scope, input.owner_user_id, input.display_name, input.external_id, input.handle,
+      JSON.stringify(input.meta), input.client_kind, input.client_ref, input.client_name, input.created_by_user_id,
+    ],
+  );
+  return { id };
+}
+
+/** Switch a manual account off (it has no token to remove). It can then be deleted like any disabled account. */
+export async function disableManualAccount(ctx: PluginContext, companyId: string, id: string, note: string): Promise<number> {
+  const result = await ctx.db.execute(
+    `UPDATE ${table(ctx, "accounts")} SET status = 'disabled', last_error = $3, updated_at = now()
+      WHERE id = $1 AND company_id = $2 AND manual = true`,
+    [id, companyId, note],
+  );
+  return result.rowCount;
+}
+
 export async function saveAccountToken(ctx: PluginContext, id: string, fields: {
   tokenEnc: string;
   keyVersion: number;
@@ -374,7 +432,7 @@ export async function unpublishedDestinationsOutside(
     `SELECT p.id AS post_id, p.status AS post_status, p.client_ref, p.client_name
        FROM ${table(ctx, "destinations")} d
        JOIN ${table(ctx, "posts")} p ON p.id = d.post_id
-      WHERE d.account_id = $1 AND d.company_id = $2 AND d.status IN ('pending', 'retrying', 'publishing')
+      WHERE d.account_id = $1 AND d.company_id = $2 AND d.status IN ('pending', 'retrying', 'publishing', 'awaiting_manual')
         AND NOT COALESCE((${w.sql}), false)
       ORDER BY p.created_at DESC
       LIMIT 50`,
@@ -390,6 +448,42 @@ export async function disconnectAccount(ctx: PluginContext, companyId: string, i
             updated_at = now()
       WHERE id = $1 AND company_id = $2`,
     [id, companyId, note],
+  );
+  return result.rowCount;
+}
+
+/** SQL: the account (`accounts` row aliased `a`) has a published destination, so deleting it would cascade away a post's record. */
+const HAS_PUBLISHED = (ctx: PluginContext, alias: string) =>
+  `EXISTS (SELECT 1 FROM ${table(ctx, "destinations")} d WHERE d.account_id = ${alias}.id AND d.status = 'published')`;
+
+/** How many destinations of this account are published (a post's record of what went out). */
+export async function publishedDestinationCount(ctx: PluginContext, companyId: string, accountId: string): Promise<number> {
+  const rows = await ctx.db.query<{ n: number | string }>(
+    `SELECT count(*) AS n FROM ${table(ctx, "destinations")} WHERE company_id = $1 AND account_id = $2 AND status = 'published'`,
+    [companyId, accountId],
+  );
+  return Number(rows[0]?.n ?? 0);
+}
+
+/**
+ * Delete a disconnected account for good (a wrong account connected by mistake). Its inbox items, metrics and RSS feed links go; its
+ * destinations on posts (and their scores) go by cascade, so the posts stay but no longer list it. Only a disabled row with no
+ * published destination is removed: the cascade would erase what a post published there and its metrics (PAR-10115).
+ */
+export async function deleteDisabledAccount(ctx: PluginContext, companyId: string, id: string): Promise<number> {
+  if ((await publishedDestinationCount(ctx, companyId, id)) > 0) return 0;
+  await ctx.db.execute(`DELETE FROM ${table(ctx, "inbox_items")} WHERE company_id = $1 AND account_id = $2`, [companyId, id]);
+  await ctx.db.execute(`DELETE FROM ${table(ctx, "post_metrics")} WHERE company_id = $1 AND account_id = $2`, [companyId, id]);
+  await ctx.db.execute(
+    `UPDATE ${table(ctx, "rss_feeds")}
+        SET account_ids = array_remove(account_ids, $2),
+            account_id = CASE WHEN account_id = $2 THEN NULL ELSE account_id END
+      WHERE company_id = $1 AND ($2 = ANY(account_ids) OR account_id = $2)`,
+    [companyId, id],
+  );
+  const result = await ctx.db.execute(
+    `DELETE FROM ${table(ctx, "accounts")} a WHERE a.company_id = $1 AND a.id = $2 AND a.status = 'disabled' AND NOT ${HAS_PUBLISHED(ctx, "a")}`,
+    [companyId, id],
   );
   return result.rowCount;
 }
@@ -426,8 +520,9 @@ export async function flagLegacyTokens(ctx: PluginContext, companyId: string): P
 /** Remove leftover rows that never had a credential (e.g. the fake LinkedIn row). */
 export async function deleteJunkAccounts(ctx: PluginContext, companyId: string): Promise<number> {
   const result = await ctx.db.execute(
-    `DELETE FROM ${table(ctx, "accounts")}
-      WHERE company_id = $1 AND token_enc IS NULL AND secret_ref IS NULL AND status <> 'disabled'`,
+    `DELETE FROM ${table(ctx, "accounts")} a
+      WHERE a.company_id = $1 AND a.token_enc IS NULL AND a.secret_ref IS NULL AND a.manual = false AND a.status <> 'disabled'
+        AND NOT ${HAS_PUBLISHED(ctx, "a")}`,
     [companyId],
   );
   return result.rowCount;
@@ -605,14 +700,16 @@ export interface PostRow {
   experiment_arm?: string | null;
   /** The Social agent task that picks a time for this approved post (none when it had a time). */
   schedule_issue_id?: string | null;
+  /** Set when the post is archived (soft delete); null otherwise. */
+  archived_at?: unknown;
   created_at: unknown;
   updated_at: unknown;
 }
 
-const POST_COLS = [
+export const POST_COLS = [
   "id", "company_id", "body", "overrides", "media", "status", "scheduled_at", "scope", "owner_user_id", "client_kind", "client_ref", "client_name",
   "first_comment", "source", "source_ref", "failure_issue_id", "published_at", "error", "created_by_agent_id", "experiment_id", "experiment_arm",
-  "schedule_issue_id", "reply_to_url", "quote_url", "note", "created_at", "updated_at",
+  "schedule_issue_id", "reply_to_url", "quote_url", "note", "archived_at", "created_at", "updated_at",
 ].join(", ");
 
 export function postMedia(row: Pick<PostRow, "media">): MediaRef[] {
@@ -649,15 +746,22 @@ export function postOverrides(row: Pick<PostRow, "overrides">): Partial<Record<S
 }
 
 /** Posts, newest first. `scope` undefined = every scope (jobs); null = own work. Excludes personal posts unless includePersonal (own work is the company's posts, never a person's My Social drafts). */
-export async function listPosts(ctx: PluginContext, companyId: string, filter: { status?: string; scope?: ClientScope; limit?: number; includePersonal?: boolean } = {}): Promise<PostRow[]> {
+export async function listPosts(ctx: PluginContext, companyId: string, filter: { status?: string; scope?: ClientScope; limit?: number; includePersonal?: boolean; q?: string } = {}): Promise<PostRow[]> {
   const params: unknown[] = [companyId];
   let where = "company_id = $1";
   if (filter.status) {
     params.push(filter.status);
     where += ` AND status = $${params.length}`;
   }
+  // Text search (board cards): the words are matched in the body, case-insensitive; % _ and \ in the text are literal.
+  const q = filter.q?.trim();
+  if (q) {
+    params.push(`%${q.replace(/[\\%_]/g, "\\$&")}%`);
+    where += ` AND body ILIKE $${params.length}`;
+  }
   where += scopeClause(filter.scope, params);
   if (!filter.includePersonal) where += orgOnlyClause();
+  where += " AND archived_at IS NULL";
   params.push(Math.min(Math.max(filter.limit ?? 500, 1), 1000));
   return ctx.db.query<PostRow>(
     `SELECT ${POST_COLS} FROM ${table(ctx, "posts")} WHERE ${where} ORDER BY created_at DESC LIMIT $${params.length}`,
@@ -669,7 +773,7 @@ export async function listPosts(ctx: PluginContext, companyId: string, filter: {
 export async function listPersonalPosts(ctx: PluginContext, companyId: string, viewerUserId: string, filter: { status?: string; limit?: number } = {}): Promise<PostRow[]> {
   const params: unknown[] = [companyId];
   const personalFilter = personalScopeClause(viewerUserId, params);
-  let where = `company_id = $1${personalFilter}`;
+  let where = `company_id = $1 AND archived_at IS NULL${personalFilter}`;
   if (filter.status) {
     params.push(filter.status);
     where += ` AND status = $${params.length}`;
@@ -687,6 +791,30 @@ export async function getPost(ctx: PluginContext, companyId: string, id: string)
     [id, companyId],
   );
   return rows[0] ?? null;
+}
+
+/** Full post id from a full id or an unambiguous prefix (the 8-char short id). Null when none or several match. */
+export async function resolvePostId(ctx: PluginContext, companyId: string, idOrPrefix: string): Promise<string | null> {
+  const key = idOrPrefix.trim();
+  if (!key) return null;
+  const exact = await getPost(ctx, companyId, key);
+  if (exact) return exact.id;
+  if (!/^[A-Za-z0-9-]{4,}$/.test(key)) return null;
+  const rows = await ctx.db.query<{ id: string }>(
+    `SELECT id FROM ${table(ctx, "posts")} WHERE company_id = $1 AND id LIKE $2 LIMIT 2`,
+    [companyId, `${key}%`],
+  );
+  return rows.length === 1 ? rows[0].id : null;
+}
+
+/** Sets or clears archived_at. True when a row changed (false: already in that state). */
+export async function setPostArchived(ctx: PluginContext, companyId: string, id: string, archived: boolean): Promise<boolean> {
+  const result = await ctx.db.execute(
+    `UPDATE ${table(ctx, "posts")} SET archived_at = ${archived ? "now()" : "NULL"}, updated_at = now()
+      WHERE id = $1 AND company_id = $2 AND (archived_at IS NULL) = $3::boolean AND status NOT IN ('published', 'partially_published', 'publishing', 'scheduled')`,
+    [id, companyId, archived],
+  );
+  return result.rowCount === 1;
 }
 
 export interface PostWrite {
@@ -856,7 +984,7 @@ export async function scheduledPostsWithoutWork(ctx: PluginContext): Promise<Arr
       WHERE p.status IN ('scheduled', 'publishing') AND p.scheduled_at IS NOT NULL AND p.scheduled_at <= now() - interval '2 minutes'
         AND NOT EXISTS (
           SELECT 1 FROM ${table(ctx, "destinations")} d
-           WHERE d.post_id = p.id AND d.status IN ('pending', 'retrying', 'publishing')
+           WHERE d.post_id = p.id AND d.status IN ('pending', 'retrying', 'publishing', 'awaiting_manual')
         )
       LIMIT 200`,
   );
@@ -943,7 +1071,7 @@ export async function insertDestination(ctx: PluginContext, input: { companyId: 
 export async function deleteDestination(ctx: PluginContext, companyId: string, postId: string, accountId: string): Promise<number> {
   const result = await ctx.db.execute(
     `DELETE FROM ${table(ctx, "destinations")}
-      WHERE post_id = $1 AND account_id = $2 AND company_id = $3 AND status IN ('pending', 'failed')`,
+      WHERE post_id = $1 AND account_id = $2 AND company_id = $3 AND status IN ('pending', 'failed', 'awaiting_manual')`,
     [postId, accountId, companyId],
   );
   return result.rowCount;
@@ -999,6 +1127,49 @@ export async function saveDestinationOutcome(ctx: PluginContext, id: string, fie
 export async function setDestinationIssue(ctx: PluginContext, postId: string, issueId: string): Promise<void> {
   await ctx.db.execute(
     `UPDATE ${table(ctx, "destinations")} SET issue_id = $2, updated_at = now() WHERE post_id = $1 AND status = 'failed' AND issue_id IS NULL`,
+    [postId, issueId],
+  );
+}
+
+/**
+ * Park a claimed destination for a person to post by hand. Its issue id is cleared: an id left from an earlier
+ * failure issue or a closed post-by-hand task must not stand in for a live task.
+ */
+export async function parkForHand(ctx: PluginContext, id: string): Promise<void> {
+  await ctx.db.execute(
+    `UPDATE ${table(ctx, "destinations")}
+        SET status = 'awaiting_manual', next_attempt_at = NULL, last_error = NULL, claim_token = NULL, issue_id = NULL,
+            result = $2::jsonb, updated_at = now()
+      WHERE id = $1 AND status <> 'published'`,
+    [id, JSON.stringify({ ok: false, manual: true, awaiting: true, at: new Date().toISOString() })],
+  );
+}
+
+/** Remove a destination that waits to be posted by hand (a person skipped it). */
+export async function deleteAwaitingDestination(ctx: PluginContext, companyId: string, id: string): Promise<number> {
+  const result = await ctx.db.execute(
+    `DELETE FROM ${table(ctx, "destinations")} WHERE id = $1 AND company_id = $2 AND status = 'awaiting_manual'`,
+    [id, companyId],
+  );
+  return result.rowCount;
+}
+
+/** Posts with a destination that waits for a person but has no task yet (the task could not be opened at the time). */
+export async function postsAwaitingHandWithoutIssue(ctx: PluginContext, limit = 50): Promise<Array<{ id: string; company_id: string }>> {
+  return ctx.db.query<{ id: string; company_id: string }>(
+    `SELECT DISTINCT p.id, p.company_id
+       FROM ${table(ctx, "destinations")} d
+       JOIN ${table(ctx, "posts")} p ON p.id = d.post_id
+      WHERE d.status = 'awaiting_manual' AND d.issue_id IS NULL AND d.updated_at <= now() - interval '4 minutes'
+      LIMIT $1`,
+    [limit],
+  );
+}
+
+/** Point a post's hand-post destinations at the task that asks a person to post them. */
+export async function setManualIssue(ctx: PluginContext, postId: string, issueId: string): Promise<void> {
+  await ctx.db.execute(
+    `UPDATE ${table(ctx, "destinations")} SET issue_id = $2, updated_at = now() WHERE post_id = $1 AND status = 'awaiting_manual' AND issue_id IS NULL`,
     [postId, issueId],
   );
 }
@@ -1079,6 +1250,17 @@ export async function setDestinationExternal(ctx: PluginContext, id: string, ext
   );
 }
 
+/** Attach a link to a hand-marked destination; clears metric_windows so the collector takes the latest due window. */
+export async function attachDestinationLink(ctx: PluginContext, id: string, externalId: string, externalUrl: string): Promise<number> {
+  const result = await ctx.db.execute(
+    `UPDATE ${table(ctx, "destinations")}
+        SET external_id = $2, external_url = $3, metric_windows = '{}', updated_at = now()
+      WHERE id = $1 AND status = 'published' AND external_id IS NULL AND result->>'manual' = 'true'`,
+    [id, externalId, externalUrl],
+  );
+  return result.rowCount;
+}
+
 // ── Templates ───────────────────────────────────────────────────────────────
 
 export interface TemplateRow {
@@ -1157,6 +1339,9 @@ export async function insertMetrics(ctx: PluginContext, input: {
   raw?: Record<string, unknown>;
 }): Promise<MetricsInsertOutcome> {
   // ctx.db.execute has no RETURNING, so a pre-read tells "inserted" from "filled" (informational only).
+  // A fill keeps the first raw but takes the newest per-call insights detail, so a recollect shows what Graph said now.
+  // When the newest reply carries insights, its insights/viewsSource/viewsUnavailable replace the old set as a whole
+  // (a key that is now null or absent is dropped, so no stale viewsSource sits next to newer calls).
   let existed = false;
   if (input.destinationId && input.window) {
     const found = await ctx.db.query<{ id: string }>(
@@ -1176,7 +1361,10 @@ export async function insertMetrics(ctx: PluginContext, input: {
        clicks = COALESCE(post_metrics.clicks, EXCLUDED.clicks),
        saves = COALESCE(post_metrics.saves, EXCLUDED.saves),
        views = CASE WHEN post_metrics.views = 0 THEN EXCLUDED.views ELSE post_metrics.views END,
-       raw = post_metrics.raw || jsonb_build_object('filledAt', now())
+       raw = (CASE WHEN EXCLUDED.raw ? 'insights' THEN post_metrics.raw - 'insights' - 'viewsSource' - 'viewsUnavailable' ELSE post_metrics.raw END)
+         || jsonb_build_object('filledAt', now())
+         || (SELECT COALESCE(jsonb_object_agg(e.key, e.value), '{}'::jsonb) FROM jsonb_each(EXCLUDED.raw) e
+              WHERE e.key IN ('insights', 'viewsSource', 'viewsUnavailable') AND e.value <> 'null'::jsonb)
      WHERE post_metrics.impressions IS NULL OR post_metrics.reach IS NULL OR post_metrics.clicks IS NULL OR post_metrics.saves IS NULL`,
     [
       randomUUID(), input.companyId, input.postId, input.destinationId ?? null, input.accountId ?? null, input.platform ?? null,
@@ -1193,9 +1381,11 @@ export type MetricsInsertOutcome = "inserted" | "filled" | "unchanged";
 export interface MetricsErrorRecord {
   at: string;
   window: string;
-  kind: "provider" | "insights" | "unsupported";
+  kind: "provider" | "insights" | "unsupported" | "unavailable";
   status?: number;
   message: string;
+  /** Per-call insights results (label, path, status, Graph code, metric names returned) so no failure is hidden. */
+  calls?: unknown[];
 }
 
 /** Atomic jsonb merge: never read-modify-write `result` (publish.ts keeps firstCommentId/firstCommentError there). */
@@ -1691,11 +1881,11 @@ export async function scopeSummary(ctx: PluginContext, companyId: string, scope:
   const rows = await ctx.db.query<ScopeSummaryRow>(
     `SELECT
        (SELECT count(*) FROM ${accounts} WHERE company_id = $1 AND ${w.sql}
-          AND token_enc IS NOT NULL AND status IN ('connected', 'expiring')) AS connected,
+          AND (token_enc IS NOT NULL OR manual = true) AND status IN ('connected', 'expiring')) AS connected,
        (SELECT count(*) FROM ${accounts} WHERE company_id = $1 AND ${w.sql} AND status = 'needs_reconnect') AS needs_reconnect,
        (SELECT count(*) FROM ${posts} WHERE company_id = $1 AND ${w.sql} AND status = 'scheduled'
           AND scheduled_at >= now() AND scheduled_at < now() + interval '7 days') AS scheduled_week,
-       (SELECT count(*) FROM ${posts} WHERE company_id = $1 AND ${w.sql} AND status IN ('failed', 'partially_published')
+       (SELECT count(*) FROM ${posts} WHERE company_id = $1 AND ${w.sql} AND status IN ('failed', 'partially_published') AND archived_at IS NULL
           AND updated_at >= now() - interval '30 days') AS failed,
        (SELECT max(published_at) FROM ${posts} WHERE company_id = $1 AND ${w.sql}) AS last_published`,
     params,

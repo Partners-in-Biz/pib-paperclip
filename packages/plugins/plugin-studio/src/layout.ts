@@ -204,7 +204,7 @@ export function layoutInputs(nodes: readonly InputNode[], edges: ReadonlyArray<{
     .map((id) => byId.get(id))
     .filter((n): n is InputNode => Boolean(n))
     .sort((a, b) => pos(a).y - pos(b).y || pos(a).x - pos(b).x);
-  const pictures = incoming.filter((n) => n.type === "image" || n.type === "output" || n.type === "source");
+  const pictures = incoming.filter((n) => n.type === "image" || n.type === "output" || n.type === "source" || n.type === "edit");
   const texts = incoming.filter((n) => n.type === "text");
   const imageAssetId = pictures.map((n) => n.data?.assetId).find((id): id is string => Boolean(id)) ?? null;
   const text = texts.map((n) => partText(n.data?.text, card?.data?.part)).filter(Boolean).join("\n\n");

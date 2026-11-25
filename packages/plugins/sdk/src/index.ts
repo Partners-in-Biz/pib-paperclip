@@ -59,6 +59,7 @@ export {
   getRequiredCapability,
   CapabilityDeniedError,
   InvocationScopeDeniedError,
+  unconfiguredCompanyMessage,
 } from "./host-client-factory.js";
 
 // JSON-RPC protocol helpers and constants
@@ -109,6 +110,7 @@ export type {
 export type {
   TestHarness,
   TestHarnessOptions,
+  TestHarnessGetDataOptions,
   TestHarnessLogEntry,
   EnvironmentTestHarness,
   EnvironmentTestHarnessOptions,
@@ -131,6 +133,7 @@ export type {
   HostServices,
   HostClientFactoryOptions,
   HostClientHandlers,
+  InvocationScopeDenialReason,
 } from "./host-client-factory.js";
 
 // JSON-RPC protocol types
@@ -157,6 +160,7 @@ export type {
   OnEventParams,
   RunJobParams,
   GetDataParams,
+  PluginDataContext,
   PerformActionParams,
   PluginPerformActionActorType,
   PluginPerformActionActorContext,
@@ -180,11 +184,14 @@ export type {
   PluginEnvironmentProbeParams,
   PluginEnvironmentProbeResult,
   PluginEnvironmentLease,
+  PluginEnvironmentWorkspaceAllocationFiles,
   PluginEnvironmentAcquireLeaseParams,
   PluginEnvironmentResumeLeaseParams,
   PluginEnvironmentReleaseLeaseParams,
   PluginEnvironmentTerminationReceipt,
   PluginEnvironmentDestroyLeaseParams,
+  PluginEnvironmentInspectLeaseParams,
+  PluginEnvironmentLeaseObservation,
   PluginEnvironmentRealizeWorkspaceParams,
   PluginEnvironmentRealizeWorkspaceResult,
   PluginEnvironmentExecuteParams,
@@ -238,6 +245,8 @@ export type {
   PluginLocalFolderListing,
   PluginLocalFoldersClient,
   PluginEventsClient,
+  ResourceLifecycleEvent,
+  ResourceLifecycleResult,
   PluginJobsClient,
   PluginLaunchersClient,
   PluginHttpClient,
@@ -268,6 +277,10 @@ export type {
   PluginIssueSubtree,
   PluginIssueSummariesClient,
   PluginAgentsClient,
+  PluginAgentRuntimeState,
+  PluginAgentRuntimeIdentity,
+  PluginAgentConnectionAssignments,
+  PluginAgentRuntimeSkill,
   PluginAccessClient,
   PluginAccessMembersClient,
   PluginAccessInvitesClient,
@@ -305,6 +318,7 @@ export type {
   PluginEvent,
   PluginJobContext,
   PluginLauncherRegistration,
+  PluginActingPersonContext,
   ToolRunContext,
   ToolResult,
   PluginEntityUpsert,
@@ -449,5 +463,31 @@ export {
   PRINCIPAL_TYPES,
 } from "@paperclipai/shared";
 
-export { PluginEnvironmentCreationCleanupError, environmentCreationCleanupErrorData, readEnvironmentCreationCleanupError } from "./environment-creation-cleanup.js";
-export type { PluginEnvironmentCreationCleanup } from "./environment-creation-cleanup.js";
+export { PluginEnvironmentCreationCleanupError, environmentCreationCleanupErrorData, readEnvironmentCreationCleanupError, readEnvironmentAcquisitionDiagnostic, ENVIRONMENT_ACQUISITION_PROVIDER_STATES } from "./environment-creation-cleanup.js";
+export type { PluginEnvironmentCreationCleanup, PluginEnvironmentAcquisitionDiagnostic, PluginEnvironmentAcquisitionProviderState } from "./environment-creation-cleanup.js";
+export { preserveEnvironmentSyncErrorDiagnostic, environmentSyncErrorData, readEnvironmentSyncErrorDiagnostic, withEnvironmentSyncErrorCapture, withEnvironmentSyncTransferStep, recordEnvironmentSyncError } from "./environment-sync-error.js";
+export type { PluginEnvironmentSyncErrorDiagnostic } from "./environment-sync-error.js";
+export { PluginEnvironmentRunnerIngressError, environmentRunnerIngressErrorData, readEnvironmentRunnerIngressFailure } from "./environment-runner-ingress-error.js";
+export type { PluginEnvironmentRunnerIngressFailure } from "./environment-runner-ingress-error.js";
+export { ENVIRONMENT_TASK_ERROR_CODES, PluginEnvironmentTaskError, environmentTaskErrorCodeData, readEnvironmentTaskErrorCode } from "./environment-task-error.js";
+export type { PluginEnvironmentTaskErrorCode } from "./environment-task-error.js";
+export { WORKSPACE_OPERATION_FAILURE_REASONS, PluginWorkspaceOperationError, workspaceOperationErrorData, readWorkspaceOperationFailureReason } from "./workspace-operation-error.js";
+export type { PluginWorkspaceOperationFailureReason } from "./workspace-operation-error.js";
+export { PluginEnvironmentStopError, environmentStopErrorData, readEnvironmentStopFailure } from "./environment-stop-error.js";
+export type { PluginEnvironmentStopFailure, PluginEnvironmentStopFailureReason } from "./environment-stop-error.js";
+export { environmentResumeErrorData, readEnvironmentResumeErrorDiagnostic } from "./environment-resume-error.js";
+export type { PluginEnvironmentResumeErrorDiagnostic } from "./environment-resume-error.js";
+export { environmentAcquireErrorData, readEnvironmentAcquireErrorDiagnostic } from "./environment-acquire-error.js";
+export type { PluginEnvironmentAcquireErrorDiagnostic } from "./environment-acquire-error.js";
+export { environmentTaskErrorData, readEnvironmentTaskErrorDiagnostic } from "./environment-task-error.js";
+export type { PluginEnvironmentTaskErrorDiagnostic } from "./environment-task-error.js";
+
+export type { AiConnectionPool, AiConnectionPoolConfig, AiConnectionPoolMember, AiConnectionRouterRequest, AiConnectionRouterResult, AiConnectionRouterSelection } from "@paperclipai/shared";
+
+export { MAX_ENVIRONMENT_TASK_FILE_BYTES, environmentRunnerLaunchRequirementsSchema, environmentTaskOperationSchema, environmentTaskResultSchema, environmentTaskCredentialSchema, parseEnvironmentTaskResult } from "./environment-tasks.js";
+export type { PluginEnvironmentTaskOperation, PluginEnvironmentTaskParams, PluginEnvironmentTaskResult, PluginEnvironmentTaskCredential, PluginEnvironmentTaskExecutionContext } from "./environment-tasks.js";
+export type { AgentLifecycleRequest, AgentLifecycleResult } from "@paperclipai/shared";
+
+export type { PluginEnvironmentRunnerLaunchRequirements, PluginEnvironmentPreparedLaunch } from "./environment-tasks.js";
+
+export * from "./workspace-provider.js";

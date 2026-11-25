@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useHostContext, useHostLocation, useHostNavigation, usePluginData, type PluginPageProps, type PluginSidebarProps } from "@paperclipai/plugin-sdk/ui";
 import { useStudioAction } from "./action.js";
+import { musicUsageLine } from "./editor/audio-track.js";
 import { useMakerLabel } from "./maker.js";
 import { BrandKitBox } from "./BrandKit.js";
 import { ChipGroup } from "./ChipGroup.js";
@@ -10,11 +11,14 @@ import { ClientCards } from "./ClientCards.js";
 import { SaveToDrive } from "./SaveToDrive.js";
 import { GiveButton, GivenList } from "./GiveToAgent.js";
 import { FromDrive } from "./FromDrive.js";
+import { LipsyncForm } from "./LipsyncForm.js";
+import type { LipsyncOption } from "./lipsync-form.js";
 import { useNarrow } from "./narrow.js";
 import { usePreviewUrls } from "./previews.js";
 
-export { StudioCanvasPage } from "./CanvasPage.js";
-export { StudioEditorPage } from "./editor/EditorPage.js";
+import { StudioCanvasPage as CanvasPageBody } from "./CanvasPage.js";
+import { StudioEditorPage as EditorPageBody } from "./editor/EditorPage.js";
+import { withStudioAccess } from "./access-gate.js";
 import { BarList, Blocks, Building2, Button, ButtonLink, CircleCheck, Coins, EmptyState, errorText, Field, Gauge, Hourglass, Input, MetricCard, MetricRow, Package, Page, PageMessage, ProgressBar, Section, Select, Sparkles, Tabs, tone, useGroupedNav, usePibBaseStyles } from "@partnersinbiz/pib-plugin-ui";
 import { formatDuration, humanTitle, metaLine, posterFrameUrl, statusLabel, statusTone } from "./library.js";
 import { disabledNote, durationChips } from "../canvas-settings.js";
@@ -66,10 +70,22 @@ interface Balance {
   outOfFundsAt: string | null;
 }
 
+interface ProviderChoice {
+  key: string;
+  label: string;
+  price: string;
+  qualityNote: string;
+  isDefault: boolean;
+  configured?: boolean;
+}
+
 interface Overview {
   period: string;
   companyUsed: number;
   balance?: Balance | null;
+  providerOptions?: { stt: ProviderChoice[]; tts: ProviderChoice[]; lipsync: LipsyncOption[] };
+  musicUsage?: { status: "ok" | "unknown"; usedUsd?: number; capUsd?: number; remainingUsd?: number };
+  providers?: Array<{ capability: "stt" | "tts" | "music"; provider: string; label: string; configured: boolean }>;
   caps: Cap[];
   clientUsage: Array<{ scopeKey: string; used: number }>;
   history: Array<{ scopeKey: string; oldCredits: number | null; newCredits: number | null; changedBy: string; createdAt: string | null }>;
@@ -148,7 +164,7 @@ function CreditsMetric({ data }: { data: Overview }) {
   return <MetricCard icon={Coins} value={left} label="Credits left this month" description={`${used} used of ${cap.monthlyCredits}`} tone={left === 0 ? "bad" : low ? "warn" : undefined} />;
 }
 
-export function StudioPage({ context }: PluginPageProps) {
+function StudioPageBody({ context }: PluginPageProps) {
   usePibBaseStyles();
   const host = useHostContext();
   const companyId = context.companyId ?? host.companyId ?? null;
@@ -246,6 +262,7 @@ function Preview({ kind, name, url, height = 160 }: { kind: string; name: string
   const box = { width: "100%", height, objectFit: "cover" as const, borderRadius: 8, background: "rgba(127,127,127,0.12)", display: "block" };
   if (!url) return <div style={{ ...box, display: "grid", placeItems: "center", ...muted }}>{kind}</div>;
   if (kind === "video") return <video src={url} style={{ ...box, objectFit: "contain" }} muted playsInline controls preload="metadata" />;
+  if (kind === "audio") return <div style={{ ...box, display: "grid", placeItems: "center", padding: 8, boxSizing: "border-box" }}><audio src={url} controls preload="metadata" aria-label={name} style={{ width: "100%", maxWidth: "100%" }} /></div>;
   return <img src={url} alt={name} style={box} loading="lazy" />;
 }
 
@@ -261,34 +278,40 @@ function LibraryCard({ asset, url, meta, onOpen }: { asset: Asset; url: string |
   const t = tone(statusTone(asset.status));
   const media = { width: "100%", height: "100%", objectFit: "cover" as const, display: "block" };
   const isVideo = asset.kind === "video";
+  const isAudio = asset.kind === "audio";
+  const openLabel = `Open ${humanTitle(asset.prompt, asset.name)}`;
+  const resetBtn = { background: "none", border: 0, padding: 0, margin: 0, cursor: "pointer", color: "inherit", font: "inherit", textAlign: "left" as const };
+  // A div, not a button: the audio player must not sit inside interactive button content.
   return (
-    <button
-      type="button"
-      onClick={onOpen}
-      aria-label={`Open ${humanTitle(asset.prompt, asset.name)}`}
+    <div
       title={asset.prompt ?? asset.name}
       className="pib-link-card"
-      style={{ ...cardBox, textAlign: "left", background: "color-mix(in oklab, var(--background) 70%, transparent)", padding: 0, cursor: "pointer", color: "inherit", font: "inherit", display: "flex", flexDirection: "column" }}
+      style={{ ...cardBox, textAlign: "left", background: "color-mix(in oklab, var(--background) 70%, transparent)", color: "inherit", display: "flex", flexDirection: "column" }}
     >
       <div style={{ position: "relative", aspectRatio: "4 / 3", background: "var(--muted)", width: "100%" }}>
-        {!url ? null : isVideo ? (
+        {!url ? null : isAudio ? (
+          <div style={{ ...media, display: "grid", placeItems: "center", padding: 8, boxSizing: "border-box" }}>
+            <audio src={url} controls preload="metadata" aria-label={asset.name} style={{ width: "100%", maxWidth: "100%" }} />
+          </div>
+        ) : isVideo ? (
           <video src={posterFrameUrl(url)} style={media} muted playsInline preload="metadata" aria-label={asset.name} onLoadedMetadata={(e) => setDuration(e.currentTarget.duration)} />
         ) : (
           <img src={url} alt={asset.altText ?? asset.name} style={media} loading="lazy" />
         )}
-        <span style={{ position: "absolute", top: 8, left: 8, padding: "2px 8px", borderRadius: 999, fontSize: 12, fontWeight: 600, background: `color-mix(in srgb, ${t.solid} 30%, ${scrim})`, border: `1px solid ${t.border}`, color: "var(--foreground)" }}>{statusLabel(asset.status)}</span>
+        {isAudio ? null : <button type="button" onClick={onOpen} aria-label={openLabel} style={{ ...resetBtn, position: "absolute", inset: 0, width: "100%", height: "100%" }} />}
+        <span style={{ position: "absolute", top: 8, left: 8, padding: "2px 8px", borderRadius: 999, fontSize: 12, fontWeight: 600, background: `color-mix(in srgb, ${t.solid} 30%, ${scrim})`, border: `1px solid ${t.border}`, color: "var(--foreground)", pointerEvents: "none", whiteSpace: "nowrap" }}>{statusLabel(asset.status)}</span>
         {isVideo ? (
-          <span aria-hidden="true" style={{ position: "absolute", top: "50%", left: "50%", transform: "translate(-50%, -50%)", width: 36, height: 36, borderRadius: 999, display: "grid", placeItems: "center", background: scrim, color: "var(--foreground)", fontSize: 14 }}>
+          <span aria-hidden="true" style={{ position: "absolute", top: "50%", left: "50%", transform: "translate(-50%, -50%)", width: 36, height: 36, borderRadius: 999, display: "grid", placeItems: "center", background: scrim, color: "var(--foreground)", fontSize: 14, pointerEvents: "none" }}>
             ▶
           </span>
         ) : null}
-        {isVideo && duration ? <span style={{ position: "absolute", right: 8, bottom: 8, padding: "1px 6px", borderRadius: 6, fontSize: 12, background: scrim, color: "var(--foreground)", fontVariantNumeric: "tabular-nums" }}>{formatDuration(duration)}</span> : null}
+        {isVideo && duration ? <span style={{ position: "absolute", right: 8, bottom: 8, padding: "1px 6px", borderRadius: 6, fontSize: 12, background: scrim, color: "var(--foreground)", fontVariantNumeric: "tabular-nums", pointerEvents: "none" }}>{formatDuration(duration)}</span> : null}
       </div>
-      <div style={{ padding: "8px 10px 10px", minWidth: 0, width: "100%", boxSizing: "border-box" }}>
+      <button type="button" onClick={onOpen} aria-label={isAudio ? openLabel : undefined} tabIndex={isAudio ? 0 : -1} style={{ ...resetBtn, padding: "8px 10px 10px", minWidth: 0, width: "100%", boxSizing: "border-box", display: "block" }}>
         <div style={{ fontSize: 13.5, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{humanTitle(asset.prompt, asset.name)}</div>
         <div style={{ ...muted, fontSize: 12, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{meta}</div>
-      </div>
-    </button>
+      </button>
+    </div>
   );
 }
 
@@ -351,7 +374,7 @@ function Library({ companyId, data, version, presetClient, canReview }: { compan
             onChange={setStatus}
             options={[["", "All", counts.all], ["draft", "Draft", counts.draft], ["approved", "Approved", counts.approved], ["rejected", "Rejected", counts.rejected]]}
           />
-          <ChipGroup label="Kind" value={kind} onChange={setKind} options={[["", "All kinds"], ["image", "Images"], ["video", "Videos"]]} />
+          <ChipGroup label="Kind" value={kind} onChange={setKind} options={[["", "All kinds"], ["image", "Images"], ["video", "Videos"], ["audio", "Audio"]]} />
           {narrow ? null : clientSelect}
           {narrow ? null : projectSelect}
           <Select aria-label="Sort" value={sort} onChange={(e) => setSort(e.target.value === "oldest" ? "oldest" : "newest")} style={{ width: "auto", marginLeft: narrow ? undefined : "auto" }}>
@@ -656,6 +679,7 @@ function Generate({ companyId, data, me, onStored }: { companyId: string; data: 
   const [template, setTemplate] = useState<PromptTemplate | null>(null);
   const [fields, setFields] = useState<Record<string, string>>({});
   const [naming, setNaming] = useState<string | null>(null);
+  const [mode, setMode] = useState<"generate" | "lipsync">("generate");
   const composerRef = useRef<HTMLElement | null>(null);
   const estimateAction = useStudioAction("estimate");
   const generateAction = useStudioAction("generate");
@@ -797,6 +821,22 @@ function Generate({ companyId, data, me, onStored }: { companyId: string; data: 
   const cap = effectiveCap(data);
   const heading = preset ? preset.label : template ? template.title : "Your own prompt";
 
+  const lipsyncOptions = data.providerOptions?.lipsync ?? [];
+  if (mode === "lipsync" && lipsyncOptions.length) {
+    return (
+      <>
+        <section aria-label="Lip-sync" style={{ display: "grid", gap: 12, maxWidth: 560, padding: 16, borderRadius: 12, border: "1px solid var(--border)", background: "var(--card)" }}>
+          <div style={{ ...row, justifyContent: "space-between" }}>
+            <strong style={{ fontSize: 15 }}>Lip-sync</strong>
+            <Button variant="secondary" style={{ height: 28, fontSize: 12 }} onClick={() => setMode("generate")}>Back to Generate</Button>
+          </div>
+          <LipsyncForm companyId={companyId} options={lipsyncOptions} canGenerate={!viewer} onQueued={(id) => { if (id) setGroups((g) => [id, ...g].slice(0, 10)); }} />
+        </section>
+        {groups.length > 0 ? <Progress companyId={companyId} groups={groups} onStored={onStored} /> : null}
+      </>
+    );
+  }
+
   return (
     <>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 20, alignItems: "flex-start", minWidth: 0 }}>
@@ -811,6 +851,7 @@ function Generate({ companyId, data, me, onStored }: { companyId: string; data: 
           <div style={{ ...row, justifyContent: "space-between", gap: 8 }}>
             <strong style={{ fontSize: 15, minWidth: 0, overflowWrap: "anywhere" }}>{heading}</strong>
             {preset || template ? <Button variant="secondary" style={{ height: 28, fontSize: 12 }} onClick={startBlank}>Start blank</Button> : null}
+            {lipsyncOptions.length ? <Button variant="secondary" style={{ height: 28, fontSize: 12 }} onClick={() => setMode("lipsync")}>Lip-sync</Button> : null}
           </div>
           {cap ? <ProgressBar done={roundCredits(data.companyUsed)} total={cap.monthlyCredits} tone="budget" label="Credits this month" size="sm" /> : null}
           {viewer ? <PageMessage tone="warning" message="Viewers can look at Studio but can't generate. Ask a company owner for member access." /> : null}
@@ -1159,6 +1200,44 @@ function Usage({ companyId, data, me, refresh }: { companyId: string; data: Over
           />
         </Section>
       ) : null}
+      {data.providers?.length ? (
+        <Section title="Providers">
+          {data.providers.map((p) => (
+            <div key={p.capability} style={{ ...row, padding: "4px 0" }}>
+              <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>
+                {p.capability === "stt" ? "Speech to text" : p.capability === "music" ? "Music" : "Text to speech"}: {p.label} - {p.configured ? "key set" : "not set"}
+              </span>
+            </div>
+          ))}
+          {(data.providerOptions?.tts ?? []).filter((o) => !o.isDefault).map((o) => (
+            <div key={o.key} style={{ ...row, padding: "4px 0" }}>
+              <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>
+                Text to speech option: {o.label} - {o.configured ? "key set" : "not configured"}
+              </span>
+            </div>
+          ))}
+          {data.providerOptions?.lipsync?.length ? (
+            <>
+              {(["audio", "line"] as const).map((input) => {
+                const def = data.providerOptions?.lipsync.find((o) => o.input === input && o.isDefault);
+                return def ? (
+                  <div key={input} style={{ ...row, padding: "4px 0" }}>
+                    <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>
+                      {input === "audio" ? "Lip-sync to your audio" : "Lip-sync a typed line"}: {def.label} - {def.price}
+                    </span>
+                  </div>
+                ) : null;
+              })}
+            </>
+          ) : null}
+          <p style={{ ...muted, marginTop: 8 }}>The key and the default provider are set under "xAI voice", "ElevenLabs voice" and "Voice providers" in Studio's plugin settings.</p>
+        </Section>
+      ) : null}
+      {data.musicUsage ? (
+        <Section title="Music">
+          <p data-music-usage style={{ ...muted, overflowWrap: "anywhere", margin: 0 }}>{musicUsageLine(data.musicUsage)}</p>
+        </Section>
+      ) : null}
       <Section title="Monthly credit caps">
         <CapRow label="Company" hint="All of this company's work, clients included." scopeKey={COMPANY_SCOPE} cap={capOf(COMPANY_SCOPE)} used={data.companyUsed} save={save} busy={busy} editable={owner} />
         <CapRow label="Default" hint="Used when the company cap is blank." scopeKey={DEFAULT_SCOPE} cap={capOf(DEFAULT_SCOPE)} save={save} busy={busy} editable={owner} />
@@ -1250,7 +1329,7 @@ function Usage({ companyId, data, me, refresh }: { companyId: string; data: Over
   );
 }
 
-export function StudioSidebar(_props: PluginSidebarProps) {
+function StudioSidebarBody(_props: PluginSidebarProps) {
   // The Cockpit's Marketing group shows this page instead (pib-plugin-ui NAV_GROUPS); keep our own row only until that group exists.
   const grouped = useGroupedNav("partnersinbiz.studio");
   const navigation = useHostNavigation();
@@ -1276,3 +1355,13 @@ export function StudioSidebar(_props: PluginSidebarProps) {
     </a>
   );
 }
+
+// Every page and the sidebar entry ask `access.me` first (access stage A, PAR-12688); the guard is still the gate.
+export const StudioPage = withStudioAccess(StudioPageBody, "page");
+export const StudioCanvasPage = withStudioAccess(CanvasPageBody, "page");
+export const StudioEditorPage = withStudioAccess(EditorPageBody, "page");
+export const StudioSidebar = withStudioAccess(StudioSidebarBody, "sidebar");
+// Planning Canvas slots (PAR-14280). Not page-gated: the worker's guard refuses a person without Studio, and the card
+// and panel show their placeholder for it.
+export { StudioCanvasCard } from "./BoardCard.js";
+export { StudioBoardLibrary } from "./BoardLibrary.js";

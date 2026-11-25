@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { PluginContext, PluginPerformActionContext } from "@paperclipai/plugin-sdk";
 import { decodeAudio, keytermsFor, liveSessionAction, requireBoardUser, statusAction, transcribeAction } from "../src/actions.js";
 import { settingsFrom, splitKeyterms } from "../src/config.js";
+import { agentVoiceData, setAgentVoiceAction } from "../src/actions.js";
 import { MAX_AUDIO_BYTES } from "../src/xai.js";
 
 const COMPANY = "11111111-1111-4111-8111-111111111111";
@@ -127,5 +128,57 @@ describe("liveSessionAction", () => {
   it("refuses when live voice is switched off", async () => {
     const { ctx } = fakeCtx({ xaiApiKey: { type: "secret_ref", secretId: "s" }, liveEnabled: false });
     await expect(liveSessionAction(ctx, userAction(), vi.fn() as unknown as typeof fetch)).rejects.toThrow(/switched off/);
+  });
+});
+
+describe("per-agent voice", () => {
+  const A1 = "agent-1";
+  const A2 = "agent-2";
+  const cfg = { xaiApiKey: { type: "secret_ref", secretId: "s" }, voice: "ara" };
+  function withState(initial: Record<string, unknown> = {}) {
+    const { ctx } = fakeCtx(cfg);
+    const store = new Map<string, unknown>(Object.entries(initial));
+    const key = (s: { scopeId?: string }) => String(s.scopeId);
+    (ctx as unknown as { agents: unknown }).agents = { list: vi.fn(async () => [{ id: A1, name: "A" }, { id: A2, name: "B" }]) };
+    (ctx as unknown as { state: unknown }).state = {
+      get: vi.fn(async (s: { scopeId?: string }) => store.get(key(s)) ?? null),
+      set: vi.fn(async (s: { scopeId?: string }, v: unknown) => void store.set(key(s), v)),
+      delete: vi.fn(async (s: { scopeId?: string }) => void store.delete(key(s))),
+    };
+    return { ctx, store };
+  }
+  const mint = () => vi.fn(async () => jsonResponse({ value: "t", expires_at: 9 })) as unknown as typeof fetch;
+
+  it("gives an agent with a voice that voice, and the worker returns it for the session request", async () => {
+    const { ctx } = withState({ [A1]: "rex" });
+    expect(await liveSessionAction(ctx, userAction(), mint(), { agentId: A1 })).toMatchObject({ voice: "rex" });
+  });
+
+  it("gives an agent without one the company voice", async () => {
+    const { ctx } = withState({ [A1]: "rex" });
+    expect(await liveSessionAction(ctx, userAction(), mint(), { agentId: A2 })).toMatchObject({ voice: "ara" });
+    expect(await liveSessionAction(ctx, userAction(), mint(), {})).toMatchObject({ voice: "ara" });
+  });
+
+  it("falls back to the company voice for an invalid stored id or an agent outside the company", async () => {
+    const { ctx } = withState({ [A1]: "not-a-voice", other: "leo" });
+    expect(await liveSessionAction(ctx, userAction(), mint(), { agentId: A1 })).toMatchObject({ voice: "ara" });
+    expect(await liveSessionAction(ctx, userAction(), mint(), { agentId: "other" })).toMatchObject({ voice: "ara" });
+  });
+
+  it("saves a valid voice, refuses unknown ids and other companies' agents, and clears on empty", async () => {
+    const { ctx, store } = withState();
+    expect(await setAgentVoiceAction(ctx, { agentId: A1, voice: "Leo" }, userAction())).toEqual({ agentVoice: "leo" });
+    expect(store.get(A1)).toBe("leo");
+    await expect(setAgentVoiceAction(ctx, { agentId: A1, voice: "zed" }, userAction())).rejects.toThrow(/Unknown voice/);
+    await expect(setAgentVoiceAction(ctx, { agentId: "nope", voice: "eve" }, userAction())).rejects.toThrow(/not in this company/);
+    expect(store.get(A1)).toBe("leo");
+    await setAgentVoiceAction(ctx, { agentId: A1, voice: "" }, userAction());
+    expect(store.has(A1)).toBe(false);
+  });
+
+  it("lists the valid voices with the effective one", async () => {
+    const { ctx } = withState({ [A1]: "sal" });
+    expect(await agentVoiceData(ctx, COMPANY, A1)).toEqual({ voices: ["eve", "ara", "rex", "sal", "leo"], companyVoice: "ara", agentVoice: "sal", effective: "sal" });
   });
 });

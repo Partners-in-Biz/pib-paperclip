@@ -3,8 +3,10 @@
  * React); TextTrack.tsx and Overlay.tsx draw with it. Every change is an ops batch the worker validates.
  */
 import type { LayoutFont } from "../../layout.js";
-import type { Clip, EditDoc, TextClip } from "../../video-edit/timeline.js";
+import { LIMITS, TEXT_ANIMATIONS, type Clip, type EditDoc, type TextAnimationPreset, type TextClip } from "../../video-edit/timeline.js";
 import { freeId } from "./timeline-view.js";
+import { fontStack, UI_FONTS } from "../font-names.js";
+import { revealUnits, textAnimationAt, PRESETS, phases } from "../../video-edit/text-animation.js";
 
 /** A5a's font ids (`src/video-edit/fonts.ts` FONT_IDS; a test keeps them equal). Copied, not imported: fonts.ts reads the disk. */
 export const TEXT_FONTS = ["sans", "serif", "rounded"] as const satisfies readonly LayoutFont[];
@@ -16,7 +18,18 @@ export const MAX_TEXT = 500;
 const COLOR = /^#[0-9A-F]{6}$/;
 const ms = (n: number) => Math.round(n * 1000) / 1000;
 
-export interface TextForm { text: string; font: string; fontSize: string; color: string; x: string; y: string; start: string; duration: string }
+export interface TextForm {
+  text: string; font: string; fontSize: string; color: string; x: string; y: string; start: string; duration: string;
+  /** Animation presets ("" = none) and their lengths in seconds (PAR-10180). */
+  animIn: string; animInDuration: string; animOut: string; animOutDuration: string;
+}
+/** The presets the picker offers, in the order the schema lists them, with a person's name for each. */
+export const ANIMATION_LABELS: Record<TextAnimationPreset, string> = {
+  fadeUp: "Fade up", slideLeft: "Slide left", slideRight: "Slide right", slideUp: "Slide up", slideDown: "Slide down",
+  pop: "Pop", bounce: "Bounce", typewriter: "Typewriter", wordByWord: "Word by word",
+};
+export const ANIMATION_PRESETS: readonly TextAnimationPreset[] = TEXT_ANIMATIONS;
+export const DEFAULT_ANIMATION_SECONDS = 0.5;
 type Ops = { ops: Record<string, unknown>[] };
 
 /** Every text clip with its track, in timeline order. */
@@ -55,7 +68,34 @@ export function formOf(clip: TextClip): TextForm {
   return {
     text: clip.text, font: clip.font ?? "sans", fontSize: String(clip.fontSize), color: clip.color,
     x: String(clip.transform.x), y: String(clip.transform.y), start: String(clip.start), duration: String(clip.duration),
+    animIn: clip.animation?.in ?? "", animInDuration: String(clip.animation?.inDuration ?? DEFAULT_ANIMATION_SECONDS),
+    animOut: clip.animation?.out ?? "", animOutDuration: String(clip.animation?.outDuration ?? DEFAULT_ANIMATION_SECONDS),
   };
+}
+
+/**
+ * The `animation` prop that turns the clip's animation into the form's: undefined when it is the same, null to remove it
+ * (both sides "none"), else the merge object ({in: null} removes one side). A string is the error to show.
+ */
+function animationProp(clip: TextClip, form: TextForm, length: number): { in: string | null; inDuration?: number; out: string | null; outDuration?: number } | null | undefined | string {
+  const known = (v: string) => v === "" || (ANIMATION_PRESETS as readonly string[]).includes(v);
+  if (!known(form.animIn) || !known(form.animOut)) return "Pick an animation from the list.";
+  const [lo, hi] = LIMITS.animationDuration;
+  const seconds = (v: string, label: string): number | string => {
+    const n = Number(v.trim());
+    return v.trim() !== "" && Number.isFinite(n) && n >= lo && n <= hi ? ms(n) : `${label} must be a number from ${lo} to ${hi}.`;
+  };
+  const inLen = form.animIn ? seconds(form.animInDuration, "The in-animation length") : 0;
+  const outLen = form.animOut ? seconds(form.animOutDuration, "The out-animation length") : 0;
+  if (typeof inLen === "string") return inLen;
+  if (typeof outLen === "string") return outLen;
+  if (inLen + outLen > length + 1e-9) return "The in and out animations together are longer than the text clip.";
+  const was = clip.animation;
+  const same = (was?.in ?? "") === form.animIn && (was?.out ?? "") === form.animOut
+    && (!form.animIn || (was?.inDuration ?? DEFAULT_ANIMATION_SECONDS) === inLen) && (!form.animOut || (was?.outDuration ?? DEFAULT_ANIMATION_SECONDS) === outLen);
+  if (same) return undefined;
+  if (!form.animIn && !form.animOut) return null;
+  return { in: form.animIn || null, ...(form.animIn ? { inDuration: inLen } : {}), out: form.animOut || null, ...(form.animOut ? { outDuration: outLen } : {}) };
 }
 
 /** The one `setProps` op that turns `clip` into `form`; null when nothing changed, or an error a person can act on. */
@@ -87,13 +127,13 @@ export function textEditOps(clip: TextClip, form: TextForm): Ops | { error: stri
     if (clip.transitionIn && clip.transitionIn.duration > (duration as number)) props.transitionIn = null;
   }
   if (x !== clip.transform.x || y !== clip.transform.y) props.transform = { x, y };
+  const animation = animationProp(clip, form, (duration as number));
+  if (typeof animation === "string") return { error: animation };
+  if (animation !== undefined) props.animation = animation;
   if (!Object.keys(props).length) return null;
   return { ops: [{ op: "setProps", clipId: clip.id, props }] };
 }
 
-export const PREVIEW_NOTE = "preview; the render uses the exact font";
-/** Generic stacks per font id: no FontFace, no font download. */
-export const PREVIEW_FONT: Record<LayoutFont, string> = { sans: "system-ui, sans-serif", serif: "Georgia, serif", rounded: "ui-rounded, system-ui, sans-serif" };
 
 /** The text clips showing at `t`, bottom track first, with the opacity their fades give them there. */
 export function visibleText(doc: EditDoc | null, t: number): { clip: TextClip; opacity: number }[] {
@@ -117,7 +157,7 @@ export function overlayStyle(clip: TextClip, project: { width: number; height: n
     left: `${ms(50 + (clip.transform.x / project.width) * 100)}%`,
     top: `${ms(50 + (clip.transform.y / project.height) * 100)}%`,
     transform: `translate(-50%, -50%) rotate(${clip.transform.rotate}deg)`,
-    fontFamily: PREVIEW_FONT[(clip.font ?? "sans") as LayoutFont] ?? PREVIEW_FONT.sans,
+    fontFamily: fontStack(((clip.font ?? "sans") as LayoutFont) in UI_FONTS ? ((clip.font ?? "sans") as LayoutFont) : "sans"),
     // Size against the frame height, like fontsize= against the output height.
     fontSize: `${ms(((clip.fontSize * clip.transform.scale) / project.height) * 100)}cqh`,
     // The render draws the bold face with a thin dark border.
@@ -129,4 +169,32 @@ export function overlayStyle(clip: TextClip, project: { width: number; height: n
     whiteSpace: "pre",
     textAlign: "center",
   } as const;
+}
+
+/**
+ * The preview of an animated text clip (schema v5, D4d2) at playhead `t`: the render's own motion curves
+ * (`text-animation.ts`, shared with the ASS writer) give the centre, size and opacity multipliers; a reveal preset
+ * (typewriter, wordByWord) lays every unit out and hides the ones not shown yet, as the render does with alpha.
+ * A clip without `animation` is `overlayStyle` as before (`units` null).
+ */
+export function animatedOverlay(clip: TextClip, project: { width: number; height: number }, t: number, opacity: number): { style: Record<string, string | number>; units: { text: string; hidden: boolean }[] | null } {
+  if (!clip.animation) return { style: overlayStyle(clip, project, opacity), units: null };
+  const local = t - clip.start;
+  // The render picks the reveal kind per phase, so the preview does too (none outside a phase).
+  const active = phases(clip.animation, clip.duration).find((p) => local >= p.from && local <= p.to);
+  const kind = active ? PRESETS[active.preset].reveal : undefined;
+  const split = kind ? revealUnits(clip.text, kind) : null;
+  const state = textAnimationAt(clip, project, local, split?.units.length ?? 0);
+  const base: Record<string, string | number> = overlayStyle(clip, project, ms(opacity * state.alpha));
+  const style: Record<string, string | number> = {
+    ...base,
+    left: `${ms((state.x / project.width) * 100)}%`,
+    top: `${ms((state.y / project.height) * 100)}%`,
+    transform: `translate(-50%, -50%) rotate(${clip.transform.rotate}deg) scale(${ms(state.scale)})`,
+  };
+  if (!split) return { style, units: null };
+  const shown = state.shown ?? split.units.length;
+  const units = split.units.map((u, i) => ({ text: u.prefix + u.text, hidden: i >= shown }));
+  if (split.tail) units.push({ text: split.tail, hidden: false });
+  return { style, units };
 }

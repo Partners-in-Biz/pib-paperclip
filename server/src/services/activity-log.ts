@@ -1,5 +1,10 @@
+import { notifyActiveRunSilence } from "./live-run-recovery-notifications.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
+import { beginRunPhase } from "./execution-preparation-timing.js";
+import type { ActivityPublication } from "../types/activity-publication.js";
+export type { ActivityPublication } from "../types/activity-publication.js";
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNotNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { activityLog, agentApiKeys, companies, heartbeatRuns, issues } from "@paperclipai/db";
 import { isUuidLike, PLUGIN_EVENT_TYPES, type PluginEventType } from "@paperclipai/shared";
@@ -64,13 +69,9 @@ export interface LogActivityInput {
   issueId?: string | null;
   details?: Record<string, unknown> | null;
   responsibleUserIdOverride?: string | null;
+  authorization?: { action: string; operation: string; reason: string };
 }
 
-export interface ActivityPublication {
-  companyId: string;
-  payload: Record<string, unknown>;
-  pluginEvent: PluginEvent | null;
-}
 
 export async function createActivityDetailsRedactor(db: Db) {
   const currentUserRedactionOptions = {
@@ -149,18 +150,39 @@ export async function resolveResponsibleUserIdForActivity(db: Db, input: LogActi
 }
 
 export function publishActivity(publication: ActivityPublication) {
+  const finish = beginRunPhase("execution.realtime");
+  try {
   publishLiveEvent({
     companyId: publication.companyId,
     type: "activity.logged",
     payload: publication.payload,
   });
   if (publication.pluginEvent) publishPluginDomainEvent(publication.pluginEvent);
+  } catch (error) {
+    finish(true);
+    throw error;
+  } finally { finish(); }
 }
 
-export async function persistActivity(db: Db, input: LogActivityInput) {
-  const redactedDetails = await redactActivityDetails(db, input.details ?? null);
+/** True when the task is a chat with an agent; true as well when the check fails, so a chat never leaks to a plugin. */
+async function taskIsChatForPluginEvents(db: Db, companyId: string, issueId: string | null | undefined) {
+  if (!issueId || !isUuidLike(issueId)) return false;
+  try {
+    const [chat] = await db.select({ id: issues.id }).from(issues).where(and(
+      eq(issues.companyId, companyId), eq(issues.id, issueId), isNotNull(issues.conversationAgentId),
+    )).limit(1);
+    return Boolean(chat);
+  } catch (err) {
+    logger.warn({ err, issueId }, "chat check for a plugin event failed; treating the task as a chat");
+    return true;
+  }
+}
+
+export async function persistActivity(db: Db, input: LogActivityInput, receipt?: { id: string }) {
+  const redactedDetails = await redactActivityDetails(db, input.authorization ? { ...input.details, permissionDecision: input.authorization, ...(input.agentApiKeyId ? { agentApiKeyId: input.agentApiKeyId } : {}) } : input.details ?? null);
   const responsibleUserId = await resolveResponsibleUserIdForActivity(db, input);
-  const [activity] = await db.insert(activityLog).values({
+  const insert = (runner: Db) => runner.insert(activityLog).values({
+    ...(receipt ? { id: receipt.id } : {}),
     companyId: input.companyId,
     actorType: input.actorType,
     actorId: input.actorId,
@@ -172,8 +194,17 @@ export async function persistActivity(db: Db, input: LogActivityInput) {
     responsibleUserId,
     details: redactedDetails,
   }).returning({ id: activityLog.id });
+  const [activity] = input.entityType === "issue"
+    ? await db.transaction(async tx => {
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpEvents, `task:${input.entityId}`);
+      if (input.runId && input.action === "issue.updated" && ["done", "cancelled"].includes(String(input.details?.status)))
+        await notifyActiveRunSilence(tx, { companyId: input.companyId, runId: input.runId });
+      return insert(tx as unknown as Db);
+    })
+    : await insert(db);
 
   const payload = {
+    issueId: input.issueId ?? (input.entityType === "issue" ? input.entityId : null),
     actorType: input.actorType,
     actorId: input.actorId,
     action: input.action,
@@ -185,7 +216,8 @@ export async function persistActivity(db: Db, input: LogActivityInput) {
     details: redactedDetails,
   };
   const pluginEventType = eventTypeForActivityAction(input.action);
-  const pluginEvent: PluginEvent | null = pluginEventType
+  // A chat is private to its person and agent: no plugin gets an event for it (PAR-12829).
+  const pluginEvent: PluginEvent | null = pluginEventType && !(await taskIsChatForPluginEvents(db, input.companyId, payload.issueId))
     ? {
         eventId: randomUUID(),
         eventType: pluginEventType,

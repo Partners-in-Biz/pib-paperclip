@@ -45,7 +45,7 @@ pibt_test(
 		update_option( 'pib_connector_settings', array( 'features' => array( 'seo' => true, 'plugins' => false ) ) );
 		pibt_eq( true, PIB_Connector_Settings::features()['verify'], 'default applied to old settings' );
 		$h = pibt_ok( pibt_call( 'health' ), 'health' );
-		pibt_eq( '1.2', $h['connector']['protocol'], 'protocol' );
+		pibt_eq( '1.3', $h['connector']['protocol'], 'protocol' );
 		pibt_assert( in_array( 'verify/get', $h['connector']['endpoints'], true ) && in_array( 'verify/set', $h['connector']['endpoints'], true ), 'endpoints listed' );
 		pibt_eq( true, $h['connector']['features']['verify'], 'feature reported' );
 		pibt_err( pibt_call( 'verify/get', array(), array( 'key_id' => '000000000000' ) ), 401, 'pib_bad_signature', 'signature first' );

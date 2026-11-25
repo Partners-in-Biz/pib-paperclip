@@ -13,8 +13,9 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { ASK_OWNER_TOOL, reviewerAgentId, withClientParam } from "@partnersinbiz/pib-plugin-kit";
 import { AccountUnavailable, moveAccountScope, publicAccount, refreshAccountToken } from "./accounts.js";
 import { agentSummary } from "./agent.js";
-import { approvalView, approvePostByPerson, completeApproval, tryAutoApprove, recordClientApprovalByPerson, recordReviewerVerdict, recordSignoff, routeWaitingPost, signoffState, supersedePendingLinks } from "./approval-flow.js";
-import { getPolicy, policyOut, savePolicy } from "./approval-policy.js";
+import { approvalView, approvePostByDelegate, changeNotesFor, requestChangesByPerson, handBackFromDelegate, approvePostByPerson, returnPostByDelegate, completeApproval, tryAutoApprove, recordClientApprovalByPerson, recordReviewerVerdict, recordSignoff, routeWaitingPost, signoffState, supersedePendingLinks } from "./approval-flow.js";
+import { getPolicy, policyOut, savePolicy, scopeKeyOf } from "./approval-policy.js";
+import { assertDelegateNotEditing, clearDelegate, delegateBlockers, delegateCandidates, delegateFacts, delegateView, getDelegateStrict, setDelegate, setDelegateBackup, type DelegateScope } from "./approval-delegate.js";
 import { listClientApprovals, requestClientApproval } from "./client-approval.js";
 import { CONNECT_EFFECT_KEY, issueOfRun, recordConnectRequest } from "./connect-requests.js";
 import {
@@ -39,11 +40,17 @@ import { loadSocialConfig } from "./config.js";
 import { handoffPayload } from "./done-checks.js";
 import {
   accountMetrics,
+  attachDestinationLink,
   deleteDestination,
   deletePost,
   destinationsForPost,
   destinationsForScope,
+  deleteDisabledAccount,
+  publishedDestinationCount,
+  disableManualAccount,
   disconnectAccount,
+  isManual,
+  accountMeta,
   getAccount,
   getAccountsByIds,
   getInboxItem,
@@ -89,6 +96,8 @@ import {
   resetFailedDestinations,
   saveInboxReply,
   setPostOutcome,
+  resolvePostId,
+  setPostArchived,
 } from "./db.js";
 import {
   aggregateMetrics,
@@ -104,12 +113,13 @@ import {
   SocialError,
   type AccountScope,
 } from "./domain.js";
-import { experimentOptions, growthEnv, planExperimentTag, writeExperimentTag } from "./growth/service.js";
+import { experimentOptions, growthEnv, missingHookTag, planExperimentTag, writeExperimentTag } from "./growth/service.js";
 import { replyToInboxItem } from "./inbox.js";
 import { assetOut, foreignMedia, mediaFromAssetIds } from "./media.js";
 import { providerFor } from "./oauth/registry.js";
 import {
   ALL_PLATFORMS,
+  composeIntent,
   CONNECT_MODE,
   isSocialPlatform,
   OVERRIDE_FIELDS,
@@ -120,9 +130,10 @@ import {
   type SocialPlatform,
 } from "./platforms.js";
 import { spaceOf } from "./space.js";
-import { retryPost } from "./publish.js";
+import { closeManualPostIssue } from "./issues.js";
+import { buildPublishRequest, retryPost } from "./publish.js";
 import { requestCreative } from "./creative.js";
-import { closePostReview, routePostReview } from "./review.js";
+import { closePostReview, issueOpen, reviewIssueOf, routePostReview } from "./review.js";
 import { mediaCompliance } from "./media-compliance.js";
 import { reviewStats } from "./review-outcomes.js";
 import { requireCanActOnPost } from "./ownership.js";
@@ -213,6 +224,26 @@ function postVisibility(params: Record<string, unknown>): AccountScope {
   return value;
 }
 
+/**
+ * The overrides an edit writes. An edit that sends neither `overrides` nor `tags` leaves them alone (undefined). New
+ * `overrides` without a `tags` key keep the post's tags: they name the post's parts (`hook:`, `body:`, `cta:`) and the
+ * page's editor does not send them. `tags` (also `[]`, which clears) or `overrides.tags` replace them.
+ */
+export function overridesForEdit(current: unknown, overrides: unknown, tags: unknown): Record<string, unknown> | undefined {
+  if (overrides === undefined && tags === undefined) return undefined;
+  let stored: Record<string, unknown> = {};
+  try {
+    const parsed = typeof current === "string" ? JSON.parse(current) : current;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) stored = parsed as Record<string, unknown>;
+  } catch {
+    stored = {};
+  }
+  if (overrides !== undefined && overrides !== null && (typeof overrides !== "object" || Array.isArray(overrides))) throw new SocialError("overrides must be an object keyed by platform");
+  const base = overrides === undefined ? stored : ((overrides as Record<string, unknown> | null) ?? {});
+  const nextTags = Array.isArray(tags) ? tags : "tags" in base ? base.tags : stored.tags;
+  return normalizeOverrides({ ...base, tags: nextTags }) ?? {};
+}
+
 /** Validate and normalise the platform-keyed overrides object and reserved tags key. */
 export function normalizeOverrides(value: unknown): Record<string, unknown> | undefined {
   if (value === undefined) return undefined;
@@ -289,13 +320,46 @@ export function requireUser(viewer: Viewer, what: string): string {
 
 // ── output shapes ───────────────────────────────────────────────────────────
 
-function destinationOut(d: DestinationRow, account: AccountRow | undefined) {
+/**
+ * What a person needs to post this destination by hand: the text as that platform gets it and the platform's own
+ * composer. Present while the destination is not published and its account still exists.
+ */
+function handPostOut(d: DestinationRow, account: AccountRow | undefined, post: PostRow | undefined) {
+  if (!post || !account || d.status === "published" || d.status === "publishing" || !isSocialPlatform(account.platform)) return null;
+  // Only where a person can act on it: a manual account, or a destination whose automatic publish failed.
+  if (!isManual(account) && d.status !== "failed") return null;
+  const request = buildPublishRequest(post, account.platform);
+  const meta = accountMeta(account);
+  const text = request.text;
+  const intent = composeIntent(account.platform, {
+    text,
+    title: request.title ?? null,
+    link: request.link ?? null,
+    subreddit: request.subreddit ?? (typeof meta.defaultSubreddit === "string" ? meta.defaultSubreddit : null),
+    imageUrl: request.media.find((m) => m.kind === "image")?.url ?? null,
+    instanceUrl: typeof meta.instanceUrl === "string" ? meta.instanceUrl : null,
+  });
+  return {
+    /** The caption to copy: the text, then the link when the platform shows links. */
+    text: request.link && !text.includes(request.link) ? `${text}\n\n${request.link}` : text,
+    title: request.title ?? null,
+    firstComment: request.firstComment ?? null,
+    url: intent.url,
+    prefilled: intent.prefilled,
+    mediaByHand: intent.mediaByHand,
+  };
+}
+
+function destinationOut(d: DestinationRow, account: AccountRow | undefined, post?: PostRow) {
   return {
     id: d.id,
     accountId: d.account_id,
     platform: account?.platform ?? null,
     accountName: account?.display_name ?? "Removed account",
     accountStatus: account?.status ?? null,
+    /** The account has no publishing link: a person posts this destination by hand. */
+    manual: account ? isManual(account) : false,
+    handPost: handPostOut(d, account, post),
     status: d.status,
     attempts: d.attempts,
     nextAttemptAt: iso(d.next_attempt_at),
@@ -342,7 +406,7 @@ export function postOut(row: PostRow, destinations: DestinationRow[] = [], accou
     failureIssueId: row.failure_issue_id,
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),
-    destinations: destinations.map((d) => destinationOut(d, accounts.get(d.account_id))),
+    destinations: destinations.map((d) => destinationOut(d, accounts.get(d.account_id), row)),
   };
 }
 
@@ -456,6 +520,11 @@ export function changedTarget(params: Record<string, unknown>) {
   return fields;
 }
 
+/** The delegate scope a post sits in: `personal` for a person's own post (never delegatable). */
+function postDelegateScope(post: PostRow): DelegateScope {
+  return post.scope === "personal" ? "personal" : rowScope(post).scope;
+}
+
 export async function updatePostRecord(ctx: PluginContext, viewer: Viewer, input: Record<string, unknown>) {
   const params = postParams(input);
   const post = await requirePost(ctx, viewer, requiredString(params, "postId"));
@@ -470,6 +539,8 @@ export async function updatePostRecord(ctx: PluginContext, viewer: Viewer, input
   const requested = scopeInput(params);
   const target: ResolvedScope = requested === undefined || sameClient(requested, current.scope) ? current : await resolveScope(ctx, viewer.companyId, requested);
   const moving = !sameClient(target.scope, current.scope);
+  // Q10: the delegate of the post's scope, or of the scope it moves to, does not change another's post.
+  await assertDelegateNotEditing(ctx, viewer, post, [postDelegateScope(post), ...(moving ? [target.scope] : [])]);
   const body = params.body === undefined ? undefined : requiredString(params, "body");
   if (viewer.isAgent && (body !== undefined || moving || params.overrides !== undefined || params.firstComment !== undefined)) {
     await assertClientFiling(ctx, viewer.companyId, {
@@ -501,13 +572,10 @@ export async function updatePostRecord(ctx: PluginContext, viewer: Viewer, input
   const growth = growthEnv(ctx);
   const tagInput = moving && params.experimentId === undefined && post.experiment_id ? { experimentId: null } : { experimentId: params.experimentId, arm: params.arm };
   const tag = await planExperimentTag(growth, viewer.companyId, nextScope, tagInput);
-  // Merge tags into overrides if provided
-  const baseOverrides = (params.overrides as Record<string, unknown>) ?? {};
-  const overridesWithTags = params.tags && Array.isArray(params.tags) ? { ...baseOverrides, tags: params.tags } : baseOverrides;
   await updatePostContent(ctx, viewer.companyId, post.id, {
     body,
     media,
-    overrides: normalizeOverrides(overridesWithTags),
+    overrides: overridesForEdit(post.overrides, params.overrides, params.tags),
     firstComment: params.firstComment === undefined ? undefined : optionalString(params, "firstComment") ?? null,
     scope: moving ? scopeColumns(target) : undefined,
     scheduledAt: proposedTime(params),
@@ -555,6 +623,7 @@ export async function listPostsRecord(ctx: PluginContext, viewer: Viewer, params
   const { scope } = await readScope(ctx, viewer, params);
   const rows = await listPosts(ctx, viewer.companyId, {
     status: optionalString(params, "status"),
+    q: optionalString(params, "q"),
     scope,
     limit: positiveInt(params.limit, "limit", 50),
   });
@@ -575,6 +644,7 @@ export async function attachDestination(ctx: PluginContext, viewer: Viewer, para
   if (viewer.isAgent && post.scope === "personal" && post.created_by_agent_id !== viewer.agentId) {
     throw new SocialError("Agents can only attach destinations to personal drafts they created");
   }
+  await assertDelegateNotEditing(ctx, viewer, post, [postDelegateScope(post)]);
   if (post.status === "published" || post.status === "publishing") throw new SocialError(`A ${post.status} post cannot take new destinations`);
   const accounts = await loadAccounts(ctx, viewer, [requiredString(params, "accountId")]);
   // When viewer is agent and post is personal, account must be personal and owned by post owner
@@ -596,8 +666,16 @@ export async function detachDestination(ctx: PluginContext, viewer: Viewer, para
   if (viewer.isAgent && post.scope === "personal" && post.created_by_agent_id !== viewer.agentId) {
     throw new SocialError("Agents can only detach destinations from personal drafts they created");
   }
-  const removed = await deleteDestination(ctx, viewer.companyId, post.id, requiredString(params, "accountId"));
+  await assertDelegateNotEditing(ctx, viewer, post, [postDelegateScope(post)]);
+  const accountId = requiredString(params, "accountId");
+  const before = await destinationsForPost(ctx, post.id);
+  const target = before.find((d) => d.account_id === accountId);
+  const removed = await deleteDestination(ctx, viewer.companyId, post.id, accountId);
   if (!removed) throw new SocialError("Only pending or failed destinations can be removed");
+  // It waited to be posted by hand and was the last one on its task: the task has nothing left to ask.
+  if (target?.status === "awaiting_manual" && target.issue_id && !before.some((d) => d.id !== target.id && d.status === "awaiting_manual" && d.issue_id === target.issue_id)) {
+    await closeManualPostIssue(ctx, viewer.companyId, target.issue_id, "The account was removed from this post. Closing this issue.");
+  }
   await supersedePendingLinks(ctx, viewer.companyId, post.id);
   return getPostDetail(ctx, viewer, post.id);
 }
@@ -620,6 +698,10 @@ export async function transitionPost(ctx: PluginContext, viewer: Viewer, postId:
   if (viewer.isAgent) assertAgentTransition(post.status, to);
   else assertTransition(post.status, to);
   if (to === "approved") requireUser(viewer, "approve a post");
+  if (to === "review" && viewer.isAgent) {
+    const untagged = await missingHookTag(growthEnv(ctx), viewer.companyId, post).catch(() => null);
+    if (untagged) throw new SocialError(untagged);
+  }
   if (to === "approved" && post.status === "review") {
     // Approval needs every sign-off the scope's policy asks for (a team member's click is one of them); the post is
     // approved, scheduled at its proposed time, and its review issue closed once they are all in (approval-flow.ts).
@@ -654,6 +736,79 @@ export async function transitionPost(ctx: PluginContext, viewer: Viewer, postId:
   }
   await closePostReview(ctx, viewer, post, to);
   return getPostDetail(ctx, viewer, post.id);
+}
+
+/**
+ * Takes a scheduled post back to draft so it can be edited (update-post): body, media and accounts stay, the time is
+ * cleared. A reason is required; who and why are logged and appended to the post's internal note.
+ */
+export async function unschedulePostRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
+  const post = await requirePost(ctx, viewer, requiredString(params, "postId"));
+  const reason = requiredString(params, "reason").trim();
+  if (!reason) throw new SocialError("A reason is required to unschedule a post.");
+  // Same scope rules as update-post.
+  if (viewer.isAgent && post.scope === "personal" && post.created_by_agent_id !== viewer.agentId) {
+    throw new SocialError("Agents can only unschedule personal posts that they created");
+  }
+  if (post.status !== "scheduled") {
+    throw new SocialError(`Only a scheduled post can be unscheduled; this one is ${post.status.replace("_", " ")}.`);
+  }
+  await assertDelegateNotEditing(ctx, viewer, post, [postDelegateScope(post)]);
+  if (!(await setPostStatus(ctx, viewer.companyId, post.id, ["scheduled"], "draft", null))) {
+    throw new SocialError("The post changed while you were unscheduling it (it may be publishing now). Reload and try again.");
+  }
+  const who = viewer.isAgent ? `agent ${viewer.agentId ?? "unknown"}${viewer.runId ? ` (run ${viewer.runId})` : ""}` : `user ${viewer.userId ?? "unknown"}`;
+  const line = `Unscheduled by ${who}: ${reason}`;
+  const note = [post.note, line].filter(Boolean).join("\n");
+  await updatePostContent(ctx, viewer.companyId, post.id, { note: note.length > 500 ? note.slice(note.length - 500) : note });
+  ctx.logger.info("Social post unscheduled", { companyId: viewer.companyId, postId: post.id, by: who, reason });
+  await supersedePendingLinks(ctx, viewer.companyId, post.id);
+  return getPostDetail(ctx, viewer, post.id);
+}
+
+/**
+ * archive-post: soft delete. The post leaves the Cockpit lists and queues; nothing is lost and unarchive-post brings it back.
+ * Accepts the 8-char short id. Archiving twice is a no-op; a published, publishing or scheduled post is refused.
+ */
+export async function archivePostRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>, archive = true) {
+  const verb = archive ? "archive" : "unarchive";
+  const ref = requiredString(params, "postId");
+  const id = await resolvePostId(ctx, viewer.companyId, ref);
+  if (!id) throw new SocialError(`No single post matches "${ref}" (use the full id or a longer prefix).`);
+  const post = await requirePost(ctx, viewer, id);
+  if (viewer.isAgent && post.scope === "personal" && post.created_by_agent_id !== viewer.agentId) {
+    throw new SocialError(`Agents can only ${verb} personal posts that they created`);
+  }
+  const isArchived = post.archived_at != null;
+  if (isArchived === archive) return { ...(await getPostDetail(ctx, viewer, post.id)), changed: false };
+  if (archive && ["published", "partially_published", "publishing"].includes(post.status)) {
+    throw new SocialError(`A ${post.status.replace("_", " ")} post cannot be archived.`);
+  }
+  if (archive && post.status === "scheduled") {
+    throw new SocialError("A scheduled post cannot be archived; unschedule it first (unschedule-post).");
+  }
+  // Archiving removes a post, it writes nothing the delegate could then approve: the daily calendar check asks the Social agent
+  // (often also the delegate) to archive stale copies other agents made. Unarchiving still counts as an edit.
+  if (!archive) await assertDelegateNotEditing(ctx, viewer, post, [postDelegateScope(post)]);
+  if (!(await setPostArchived(ctx, viewer.companyId, post.id, archive))) {
+    throw new SocialError(`The post changed while you were trying to ${verb} it. Reload and try again.`);
+  }
+  if (archive) await supersedePendingLinks(ctx, viewer.companyId, post.id);
+  if (archive) {
+    // The review task of an archived post has nothing left to review: close it so it does not sit in someone's queue.
+    try {
+      const issueId = await reviewIssueOf(ctx, viewer.companyId, post.id);
+      if (issueId && (await issueOpen(ctx, viewer.companyId, issueId))) {
+        await ctx.issues.createComment(issueId, "This post was archived, so there is nothing left to review. Unarchive it to bring it back.", viewer.companyId);
+        await ctx.issues.update(issueId, { status: "cancelled" }, viewer.companyId);
+        await ctx.db.execute(`UPDATE ${table(ctx, "posts")} SET review_issue_id = NULL WHERE id = $1 AND company_id = $2`, [post.id, viewer.companyId]);
+      }
+    } catch (error) {
+      ctx.logger.warn("Social: could not close the review issue of an archived post", { postId: post.id, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  ctx.logger.info(`Social post ${verb}d`, { companyId: viewer.companyId, postId: post.id, by: viewer.isAgent ? viewer.agentId : viewer.userId });
+  return { ...(await getPostDetail(ctx, viewer, post.id)), changed: true };
 }
 
 export async function schedulePost(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
@@ -697,26 +852,51 @@ export async function retryPostRecord(ctx: PluginContext, viewer: Viewer, postId
   return { ...result, message: `${result.reset} destination(s) will be retried within 5 minutes.`, post: await getPostDetail(ctx, viewer, post.id) };
 }
 
+const X_STATUS_LINK = /^https:\/\/(www\.)?(x|twitter)\.com\/([A-Za-z0-9_]{1,15})\/status\/(\d{5,25})(?:[/?#].*)?$/;
+
+/** The tweet id of `url` when it is a status link of this X account; null for any other link or account. */
+export function xStatusIdFor(account: Pick<AccountRow, "platform" | "handle"> | undefined, url: string | null): string | null {
+  if (!account || account.platform !== "x" || !url) return null;
+  const handle = account.handle?.replace(/^@/, "").toLowerCase();
+  const match = X_STATUS_LINK.exec(url);
+  if (!match || !handle || handle === "i") return null;
+  return match[3]!.toLowerCase() === handle ? match[4]! : null;
+}
+
 /**
  * A person posted this themselves (an X reply the API cannot send): record it as published so it leaves the queue.
- * `url` is the link to what they posted, if they have it.
+ * `url` is the link to what they posted, if they have it. On an already published post, `url` attaches the link
+ * to hand-marked destinations that have none, so their metrics can be collected.
  */
 export async function markPostPostedRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
   requireUser(viewer, "mark a post as posted");
   const post = await requirePost(ctx, viewer, requiredString(params, "postId"));
-  if (post.status === "published" || post.status === "publishing" || post.status === "draft" || post.status === "review") {
+  const url = optionalString(params, "url")?.trim() || null;
+  const attach = post.status === "published" && url !== null;
+  if (!attach && (post.status === "published" || post.status === "publishing" || post.status === "draft" || post.status === "review")) {
     throw new SocialError(`A ${post.status} post cannot be marked as posted. Approve it first.`);
   }
-  const url = optionalString(params, "url")?.trim() || null;
   if (url && !/^https?:\/\//i.test(url)) throw new SocialError("The link must start with https://");
   const destinations = await destinationsForPost(ctx, post.id);
   if (destinations.length === 0) throw new SocialError("This post has no destinations to mark as posted");
+  const accounts = new Map((await getAccountsByIds(ctx, viewer.companyId, [...new Set(destinations.map((d) => d.account_id))])).map((a) => [a.id, a]));
+  if (attach) {
+    let changed = 0;
+    for (const d of destinations) {
+      const manual = d.result && typeof d.result === "object" && (d.result as Record<string, unknown>).manual === true;
+      if (d.status !== "published" || !manual || d.external_id !== null) continue;
+      const externalId = xStatusIdFor(accounts.get(d.account_id), url);
+      if (externalId) changed += await attachDestinationLink(ctx, d.id, externalId, url!);
+    }
+    if (changed === 0) throw new SocialError("No hand-marked destination on this post accepts this link");
+    return getPostDetail(ctx, viewer, post.id);
+  }
   for (const d of destinations) {
     if (d.status === "published") continue;
     await saveDestinationOutcome(ctx, d.id, {
       status: "published",
       nextAttemptAt: null,
-      externalId: null,
+      externalId: xStatusIdFor(accounts.get(d.account_id), url),
       externalUrl: url,
       lastError: null,
       result: { ok: true, manual: true, at: new Date().toISOString(), by: viewer.userId ?? null },
@@ -729,6 +909,10 @@ export async function markPostPostedRecord(ctx: PluginContext, viewer: Viewer, p
 export async function deletePostRecord(ctx: PluginContext, viewer: Viewer, postId: string) {
   requireUser(viewer, "delete a post");
   const post = await requirePost(ctx, viewer, postId);
+  // Part of it is already out (posted by hand before its time): deleting would lose the record of what was published.
+  if ((await destinationsForPost(ctx, post.id)).some((d) => d.status === "published")) {
+    throw new SocialError("Part of this post is already published, so it cannot be deleted. Remove the accounts that are not posted yet instead.");
+  }
   if (!(await deletePost(ctx, viewer.companyId, post.id))) throw new SocialError("Only draft, review, approved or failed posts can be deleted");
   return { deleted: post.id };
 }
@@ -737,7 +921,8 @@ export async function deletePostRecord(ctx: PluginContext, viewer: Viewer, postI
 
 export async function getApprovalPolicyRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
   const { scope } = await readScope(ctx, viewer, params);
-  return policyOut(await getPolicy(ctx, viewer.companyId, scope));
+  const [policy, delegate] = await Promise.all([getPolicy(ctx, viewer.companyId, scope), delegateView(ctx, viewer.companyId, scope)]);
+  return policyOut(policy, delegate);
 }
 
 /** A person sets who approves posts in a scope. An agent cannot: the policy delegates authority. */
@@ -747,33 +932,107 @@ export async function setApprovalPolicyRecord(ctx: PluginContext, viewer: Viewer
   if (params.requireReviewer === true && !(await reviewerAgentId(ctx, viewer.companyId))) {
     throw new SocialError("There is no running Reviewer to require. Set one in Setup → Team (and switch on \"review outward-facing work\"), or leave the Reviewer's pass off.");
   }
-  const saved = await savePolicy(ctx, viewer.companyId, { scope: target.scope, clientName: target.client?.name ?? null }, params, userId);
+  // A delegated approver locks the Reviewer and the team member on and the client off. Read strictly: an unreadable store refuses.
+  const delegated = (await getDelegateStrict(ctx, viewer.companyId, target.scope)) !== null;
+  const saved = await savePolicy(ctx, viewer.companyId, { scope: target.scope, clientName: target.client?.name ?? null }, params, userId, delegated);
   // A looser policy can leave posts in review with every sign-off already in: approve those now.
-  const { approved, routed } = await reevaluateReviewPosts(ctx, viewer, target.scope);
-  return { ...policyOut(saved), approved, routed };
+  const { approved, routed, failed } = await reevaluateReviewPosts(ctx, viewer, target.scope);
+  return { ...policyOut(saved, await delegateView(ctx, viewer.companyId, target.scope)), approved, routed, failed };
 }
+
+/**
+ * A person names (or clears, `agentId: null`) the agent whose yes will count as the team member's approval in one scope,
+ * after the Reviewer's pass (PAR-9561). An agent cannot, not even with a responsible user on its run. Setting it turns the
+ * Reviewer's pass on; clearing it leaves the policy as it is.
+ */
+export async function setApprovalDelegateRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
+  const userId = requireUser(viewer, "name a delegated approver");
+  const target = await readScope(ctx, viewer, params);
+  const scope: DelegateScope = spaceOf(params) === "me" ? "personal" : target.scope;
+  if ("backupAgentId" in params && !("agentId" in params)) return setBackupApprover(ctx, viewer, params, userId, target, scope);
+  if (!("agentId" in params)) throw new SocialError("agentId is required (null clears the delegated approver)");
+  const agentId = params.agentId;
+  if (agentId === null) {
+    if (scope === "personal") throw new SocialError("A personal post cannot have a delegated approver.");
+    // Read strictly first: the review issues the cleared agent holds go back to the person (T7b, findings 13).
+    const cleared = (await getDelegateStrict(ctx, viewer.companyId, scope))?.agentId;
+    await clearDelegate(ctx, viewer.companyId, scope, userId);
+    ctx.logger.info("Social delegated approver cleared by a person", { companyId: viewer.companyId, scope: scopeKeyOf(scope), by: userId });
+    const recheck = cleared ? await reevaluateReviewPosts(ctx, viewer, target.scope, cleared) : { approved: 0, routed: 0, handedBack: 0, failed: 0 };
+    return { ...(await getApprovalPolicyRecord(ctx, viewer, params)), ...recheck };
+  }
+  if (typeof agentId !== "string" || !agentId.trim()) throw new SocialError("agentId must be an agent id, or null to clear");
+  const blockers = delegateBlockers(await delegateFacts(ctx, viewer.companyId, scope, agentId.trim()));
+  if (blockers.length > 0) throw new SocialError(blockers.join(" "));
+  if (scope === "personal") throw new SocialError("A personal post cannot have a delegated approver.");
+  if (!(await reviewerAgentId(ctx, viewer.companyId))) {
+    throw new SocialError("There is no running Reviewer to require. Set one in Setup → Team (and switch on \"review outward-facing work\"), or leave the Reviewer's pass off.");
+  }
+  // The delegate approves only after the Reviewer's pass: turn it on first, so a failed save leaves no delegate behind.
+  // Nothing is re-routed on set: a post created before the delegate was named stays with the person (check 9, Quinn 2.4).
+  await savePolicy(ctx, viewer.companyId, { scope, clientName: target.client?.name ?? null }, { requireReviewer: true }, userId);
+  await setDelegate(ctx, viewer.companyId, scope, agentId.trim(), userId);
+  ctx.logger.info("Social delegated approver set by a person", { companyId: viewer.companyId, scope: scopeKeyOf(scope), agentId: agentId.trim(), by: userId });
+  return getApprovalPolicyRecord(ctx, viewer, params);
+}
+
+/**
+ * A person names (or clears, `backupAgentId: null`) the scope's backup approver: the agent that approves the posts the
+ * delegated approver created itself (the writer never approves its own post). Setting it re-routes the scope's passed posts
+ * that wait on a team member, so the delegate's posts already with the person move to the backup.
+ */
+async function setBackupApprover(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>, userId: string, target: Awaited<ReturnType<typeof readScope>>, scope: DelegateScope) {
+  if (scope === "personal") throw new SocialError("A personal post cannot have a backup approver.");
+  const backupAgentId = params.backupAgentId;
+  if (backupAgentId === null) {
+    await setDelegateBackup(ctx, viewer.companyId, scope, null, userId);
+    return getApprovalPolicyRecord(ctx, viewer, params);
+  }
+  if (typeof backupAgentId !== "string" || !backupAgentId.trim()) throw new SocialError("backupAgentId must be an agent id, or null to clear");
+  const blockers = delegateBlockers(await delegateFacts(ctx, viewer.companyId, scope, backupAgentId.trim()));
+  if (blockers.length > 0) throw new SocialError(blockers.join(" "));
+  await setDelegateBackup(ctx, viewer.companyId, scope, backupAgentId.trim(), userId);
+  const recheck = await reevaluateReviewPosts(ctx, viewer, target.scope);
+  return { ...(await getApprovalPolicyRecord(ctx, viewer, params)), ...recheck };
+}
+
+/** What the re-check of a scope's posts in review did. `failed` counts posts that threw (and 1 when the list itself could not be read). */
+export interface RecheckResult { approved: number; routed: number; handedBack: number; failed: number }
+
+/** Posts in review the re-check reads in one go (Quinn 2.4: 50 left the rest of a busy scope unchecked). */
+const RECHECK_LIMIT = 1000;
 
 /**
  * Posts in review in a scope whose sign-offs are all in under the current policy are approved. A post that still waits on an agent's
  * step with no open review issue to say so (the policy began to ask for the client after the post went to review) gets its issue.
+ * With `clearedDelegate`, a review issue that agent holds for a passed post waiting on the owner goes back to the person (T7b).
+ * One post that throws is logged at warn and counted in `failed`; the others are still checked.
  */
-async function reevaluateReviewPosts(ctx: PluginContext, viewer: Viewer, scope: ClientScope): Promise<{ approved: number; routed: number }> {
-  let approved = 0;
-  let routed = 0;
+async function reevaluateReviewPosts(ctx: PluginContext, viewer: Viewer, scope: ClientScope, clearedDelegate?: string): Promise<RecheckResult> {
+  const result: RecheckResult = { approved: 0, routed: 0, handedBack: 0, failed: 0 };
+  let posts: PostRow[];
   try {
-    for (const post of (await listPosts(ctx, viewer.companyId, { status: "review", scope, limit: 50 })).filter((p) => postVisible(viewer, p))) {
+    posts = (await listPosts(ctx, viewer.companyId, { status: "review", scope, limit: RECHECK_LIMIT })).filter((p) => postVisible(viewer, p));
+  } catch (error) {
+    ctx.logger.warn("Social policy re-check could not list posts in review", { companyId: viewer.companyId, error: error instanceof Error ? error.message : String(error) });
+    return { ...result, failed: 1 };
+  }
+  for (const post of posts) {
+    try {
       const state = await signoffState(ctx, viewer.companyId, post);
       if (state.missing.length > 0) {
-        if (await routeWaitingPost(ctx, viewer, post)) routed += 1;
+        if (clearedDelegate && (await handBackFromDelegate(ctx, viewer, post, state, clearedDelegate))) result.handedBack += 1;
+        else if (await routeWaitingPost(ctx, viewer, post)) result.routed += 1;
         continue;
       }
       await completeApproval(ctx, viewer, post, "A person (the policy changed)");
-      approved += 1;
+      result.approved += 1;
+    } catch (error) {
+      result.failed += 1;
+      ctx.logger.warn("Social policy re-check failed for a post", { companyId: viewer.companyId, postId: post.id, error: error instanceof Error ? error.message : String(error) });
     }
-  } catch (error) {
-    ctx.logger.info("Social policy re-check skipped", { companyId: viewer.companyId, error: error instanceof Error ? error.message : String(error) });
   }
-  return { approved, routed };
+  return result;
 }
 
 /** Where a post's approval stands: the policy, each sign-off for the current version, what is missing, and the client's links (never the links themselves). */
@@ -806,6 +1065,36 @@ export async function recordReviewVerdictRecord(ctx: PluginContext, viewer: View
     throw new SocialError("toneScore must be a whole number from 0 to 20");
   }
   return recordReviewerVerdict(ctx, viewer.companyId, post, { agentId: viewer.agentId, verdict, notes: optionalString(params, "notes") ?? null, toneScore, toneReason: optionalString(params, "toneReason") ?? null });
+}
+
+/** `approve-post-as-delegate`: only the agent a person named as the scope's delegated approver (checks in `approvePostByDelegate`). */
+export async function approvePostAsDelegateRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
+  if (!viewer.isAgent || !viewer.agentId) throw new SocialError("Only the delegated approver agent uses this tool. People approve on the Social page.");
+  const post = await requirePost(ctx, viewer, requiredString(params, "postId"));
+  const progress = await approvePostByDelegate(ctx, viewer, post);
+  return { ...(await getPostDetail(ctx, viewer, post.id)), ...(progress.approval ? { approval: progress.approval } : {}), signoff: { completed: progress.completed, pending: progress.pending, message: progress.message } };
+}
+
+/** `return-post-as-delegate`: the delegated approver sends a post in review back to draft with notes (checks in `returnPostByDelegate`). */
+export async function returnPostAsDelegateRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
+  if (!viewer.isAgent || !viewer.agentId) throw new SocialError("Only the delegated approver agent uses this tool. People approve on the Social page.");
+  const post = await requirePost(ctx, viewer, requiredString(params, "postId"));
+  const result = await returnPostByDelegate(ctx, viewer, post, optionalString(params, "notes"));
+  return { ...(await getPostDetail(ctx, viewer, post.id)), ...result };
+}
+
+/** Page action `social.request-changes`: a person's note on a post goes to the Social agent and the post ends as a draft (`requestChangesByPerson`). */
+export async function requestChangesRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
+  requireUser(viewer, "send changes to the agent");
+  const post = await requirePost(ctx, viewer, requiredString(params, "postId"));
+  const result = await requestChangesByPerson(ctx, viewer, post, optionalString(params, "notes"), { remember: params.remember === true });
+  return { ...(await getPostDetail(ctx, viewer, post.id)), changes: result };
+}
+
+/** Page action `social.change-notes`: the change requests a post has had, newest first. */
+export async function changeNotesRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
+  const post = await requirePost(ctx, viewer, requiredString(params, "postId"));
+  return { postId: post.id, notes: await changeNotesFor(ctx, viewer.companyId, post.id) };
 }
 
 /** `request-creative`: the hand-off issue for a post's image or video. */
@@ -868,7 +1157,7 @@ export async function updateAccountRecord(ctx: PluginContext, viewer: Viewer, pa
   let status: string | undefined;
   if (params.enabled === false) status = "disabled";
   if (params.enabled === true) {
-    if (!account.token_enc) throw new SocialError("This account has no token; reconnect it instead");
+    if (!account.token_enc && !isManual(account)) throw new SocialError("This account has no token; reconnect it instead");
     status = "connected";
   }
   const move = target ? await moveAccountScope(ctx, viewer.companyId, account, target) : null;
@@ -885,13 +1174,30 @@ export async function updateAccountRecord(ctx: PluginContext, viewer: Viewer, pa
 export async function disconnectAccountRecord(ctx: PluginContext, viewer: Viewer, accountId: string) {
   const userId = requireUser(viewer, "disconnect an account");
   const account = await requireAccount(ctx, viewer, accountId);
-  await disconnectAccount(ctx, viewer.companyId, account.id, `Disconnected by a person (${userId})`);
+  if (isManual(account)) await disableManualAccount(ctx, viewer.companyId, account.id, `Switched off by a person (${userId})`);
+  else await disconnectAccount(ctx, viewer.companyId, account.id, `Disconnected by a person (${userId})`);
   return { accountId: account.id, status: "disabled" };
+}
+
+export async function deleteAccountRecord(ctx: PluginContext, viewer: Viewer, accountId: string) {
+  requireUser(viewer, "delete an account");
+  const account = await requireAccount(ctx, viewer, accountId);
+  if (account.status !== "disabled") throw new SocialError(`Disconnect ${account.display_name} first, then delete it`);
+  const published = await publishedDestinationCount(ctx, viewer.companyId, account.id);
+  if (published > 0) {
+    throw new SocialError(
+      `${account.display_name} has ${published} published post${published === 1 ? "" : "s"}. Deleting it would erase what was published there and its metrics, so it stays disconnected.`,
+    );
+  }
+  const removed = await deleteDisabledAccount(ctx, viewer.companyId, account.id);
+  if (!removed) throw new SocialError(`${account.display_name} was not deleted: it is no longer disconnected`);
+  return { accountId: account.id, deleted: true };
 }
 
 export async function refreshAccountRecord(ctx: PluginContext, viewer: Viewer, accountId: string) {
   const account = await requireAccount(ctx, viewer, accountId);
   if (!isSocialPlatform(account.platform)) throw new SocialError("Unsupported platform");
+  if (isManual(account)) return { accountId: account.id, refreshed: false, reason: "A manual account has no token: a person posts for it by hand" };
   const provider = providerFor(account.platform);
   if (!provider.refresh || provider.refreshKind === "none") {
     return { accountId: account.id, refreshed: false, reason: `${PLATFORM_LABELS[account.platform]} tokens do not expire or cannot be refreshed` };
@@ -925,7 +1231,7 @@ export function connectInstructions(platformInput: string, redirectUri: string |
     label,
     link: accountsPath,
     steps,
-    instructions: `A person connects ${label} (signing in is a one-time grant). Ask once with ${ASK_OWNER_TOOL}: say why you need it, give this link and these steps. You can post to it once list-connected-accounts shows it connected.`,
+    instructions: `A person connects ${label} (signing in is a one-time grant). Ask once with ${ASK_OWNER_TOOL}: say why you need it, give this link and these steps. You can post to it once list-connected-accounts shows it connected. Where ${label} has not approved our app yet, the person can add it as a manual account on the same page ("Add a manual account"): you draft, review and schedule as usual, and a person posts it by hand at the time.`,
     redirectUri,
   };
 }
@@ -1171,6 +1477,34 @@ function latestPerDestination(rows: MetricsRow[]): MetricsRow[] {
   return [...latest.values()];
 }
 
+export interface PostAnalyticsDestination {
+  destinationId: string | null;
+  accountId: string | null;
+  status: string;
+  metricWindows: string[];
+  metricsError: unknown;
+  measurable: boolean;
+  unmeasuredReason: string | null;
+  replyToUrl?: string | null;
+  quoteUrl?: string | null;
+}
+
+/**
+ * The post-analytics entry for a published post with no destination record at all. `reply_to_url` / `quote_url` is the
+ * X post it answered or quoted, not the link to what was posted, so it is reported but never measured.
+ */
+export function missingDestinationEntry(post: Pick<PostRow, "reply_to_url" | "quote_url">): PostAnalyticsDestination {
+  const text = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : null);
+  const replyToUrl = text(post.reply_to_url);
+  const quoteUrl = text(post.quote_url);
+  const answered = replyToUrl ? `; it replied to ${replyToUrl}` : quoteUrl ? `; it quoted ${quoteUrl}` : "";
+  return {
+    destinationId: null, accountId: null, status: "published", metricWindows: [], metricsError: null,
+    measurable: false, unmeasuredReason: `no destination record (no link stored; marked posted by hand or its account was deleted before 0.11.3${answered})`,
+    replyToUrl, quoteUrl,
+  };
+}
+
 export async function postAnalyticsRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
   const postId = optionalString(params, "postId");
   if (postId) {
@@ -1178,13 +1512,29 @@ export async function postAnalyticsRecord(ctx: PluginContext, viewer: Viewer, pa
     const rows = await metricsForPost(ctx, viewer.companyId, post.id);
     const latest = latestPerDestination(rows);
     const dests = await destinationsForPost(ctx, post.id);
+    const accounts = new Map<string, AccountRow | null>();
+    for (const id of new Set(dests.map((d) => d.account_id))) accounts.set(id, await getAccount(ctx, viewer.companyId, id));
+    const unmeasuredReason = (d: DestinationRow): string | null => {
+      const account = accounts.get(d.account_id);
+      if (!d.external_id) return "no external id (marked posted by hand without a link)";
+      if (!account || account.status === "disabled" || !account.token_enc) return "account disabled or disconnected";
+      if (!isSocialPlatform(account.platform) || !providerFor(account.platform).metrics) return "platform has no metrics";
+      return null;
+    };
+    const destinations: PostAnalyticsDestination[] = dests.map((d) => {
+      const result = d.result && typeof d.result === "object" && !Array.isArray(d.result) ? (d.result as Record<string, unknown>) : {};
+      const reason = unmeasuredReason(d);
+      return { destinationId: d.id, accountId: d.account_id, status: d.status, metricWindows: d.metric_windows ?? [], metricsError: result.metricsError ?? null, measurable: reason === null, unmeasuredReason: reason };
+    });
+    // A published post with no destination row (legacy: before 0.11.3 deleting an account also deleted its published
+    // destinations) is never a bare empty list: say that it cannot be measured and which link, if any, is stored.
+    if (destinations.length === 0 && (post.status === "published" || post.status === "partially_published" || post.published_at != null)) {
+      destinations.push(missingDestinationEntry(post));
+    }
     return {
       postId: post.id,
       ...aggregateMetrics(latest.map(metricNumbers)),
-      destinations: dests.map((d) => {
-        const result = d.result && typeof d.result === "object" && !Array.isArray(d.result) ? (d.result as Record<string, unknown>) : {};
-        return { destinationId: d.id, accountId: d.account_id, status: d.status, metricWindows: d.metric_windows ?? [], metricsError: result.metricsError ?? null };
-      }),
+      destinations,
       snapshots: rows.map((r) => ({ window: r.metric_window, platform: r.platform, destinationId: r.destination_id, recordedAt: iso(r.recorded_at), ...metricNumbers(r), impressions: r.impressions == null ? null : Number(r.impressions), reach: r.reach == null ? null : Number(r.reach), saves: r.saves == null ? null : Number(r.saves), clicks: r.clicks == null ? null : Number(r.clicks) })),
     };
   }
@@ -1268,6 +1618,10 @@ export async function loadSnapshot(ctx: PluginContext, viewer: Viewer, params: R
   ]);
   const accountMap = await accountsFor(ctx, viewer.companyId, accounts, destinations);
   const byPost = groupByPost(destinations);
+  // The scope's delegated approver; the agents a person may pick (never shown to an agent).
+  const [delegate, candidates] = me
+    ? [null, []]
+    : await Promise.all([delegateView(ctx, viewer.companyId, scope), viewer.isAgent || !viewer.userId ? Promise.resolve([]) : delegateCandidates(ctx, viewer.companyId, scope)]);
   // Own page: the weekly routine, so the page (a board user) can read its trigger and switch it on.
   const routine = scope || me ? null : await weeklyRoutine(ctx, viewer.companyId);
   let redirectUri: string | null = null;
@@ -1314,7 +1668,8 @@ export async function loadSnapshot(ctx: PluginContext, viewer: Viewer, params: R
     inbox: inbox.map(inboxOut),
     experiments,
     stats,
-    approvalPolicy: policyOut(policy),
+    approvalPolicy: policyOut(policy, delegate),
+    delegateCandidates: candidates,
     agent,
     pendingPickers: pickers
       .filter((p) => (jsonObject(p.extra).accountScope === "personal") === Boolean(me))

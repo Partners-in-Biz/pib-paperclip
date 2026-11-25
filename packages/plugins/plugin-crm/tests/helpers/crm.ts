@@ -9,6 +9,7 @@ import manifest from "../../src/manifest.js";
 import plugin from "../../src/worker.js";
 import { NAMESPACE } from "../../src/namespace.js";
 import { clearJevCache } from "../../src/jev.js";
+import { clearDriveKeyCache } from "../../src/drive/sa-secret.js";
 import { createFakeDb, type Route, type Row, type Store } from "./fake-db.js";
 
 export const CO = "co-1";
@@ -17,6 +18,19 @@ export const NOW = Date.now();
 export const ago = (minutes: number) => new Date(NOW - minutes * 60_000).toISOString();
 
 const mine = (rows: Row[] | undefined, p: unknown[]) => (rows ?? []).filter((row) => row.company_id === p[0]);
+
+/** `addContactTags`: the tags of the contact not already there (case-insensitive) are appended; nothing else changes. */
+export const EXECUTE_ROUTES: Route[] = [
+  [/SET tags = c\.tags \|\|/, (p, s) => {
+    const row = (s.contacts ?? []).find((contact) => contact.id === p[0] && contact.company_id === p[1]);
+    if (!row) return [];
+    const have = new Set((row.tags as string[]).map((tag) => tag.toLowerCase()));
+    const missing = (JSON.parse(String(p[2])) as string[]).filter((tag) => !have.has(tag.toLowerCase()));
+    if (!missing.length) return [];
+    row.tags = [...row.tags, ...missing];
+    return [row];
+  }],
+];
 
 export const ROUTES: Route[] = [
   // Lists that also include records shared by partner grants: company scope is enough here.
@@ -197,6 +211,7 @@ export function liveHostDocuments(harness: ReturnType<typeof createTestHarness>)
 /** `routes` are tried before the shared ones (e.g. the Cockpit's aggregate queries). */
 export async function boot(options: { store?: Store; config?: Record<string, unknown>; routes?: Route[] } = {}) {
   clearJevCache();
+  clearDriveKeyCache();
   const store = options.store ?? seed();
   const harness = createTestHarness({ manifest, config: options.config ?? { timezone: "Africa/Johannesburg" } });
   harness.seed({ companies: [{ id: CO, issuePrefix: "PIB", name: "PiB" } as never] });
@@ -204,13 +219,18 @@ export async function boot(options: { store?: Store; config?: Record<string, unk
     namespace: NAMESPACE,
     coreReadTables: ["heartbeat_runs", "issues", "cost_events"],
     routes: [...(options.routes ?? []), ...ROUTES],
+    executeRoutes: EXECUTE_ROUTES,
     defaults: {
       outbox: { status: "pending", attempts: 0, last_error: null, result: null },
       handoffs: { created_at: new Date(NOW).toISOString() },
       activities: { created_at: new Date(NOW).toISOString() },
       contacts: { email_status: "ok", created_at: new Date(NOW).toISOString(), updated_at: new Date(NOW).toISOString() },
       // Column defaults of migration 009 that the inserts rely on.
-      lead_sources: { accepted_count: 0, rejected_count: 0, previous_key: null, previous_key_until: null, last_submission_at: null },
+      // Migration 023 (newsletter intake): every source that is not a newsletter has these values.
+      lead_sources: {
+        accepted_count: 0, rejected_count: 0, previous_key: null, previous_key_until: null, last_submission_at: null,
+        intake: "lead", apply_tags: [], confirm_url: null, confirm_from: null, confirm_secret: null, confirm_daily_cap: 300,
+      },
       client_leads: { phone: null, meta: {}, issue_id: null, outcome: "new", value_minor: null, value_currency: null, outcome_at: null },
       // Column defaults of migration 012 that the counters and the signing flow rely on.
       event_keys: { accepted_count: 0, rejected_count: 0, previous_key: null, previous_key_until: null, last_event_at: null },

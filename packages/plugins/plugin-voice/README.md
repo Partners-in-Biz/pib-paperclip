@@ -29,3 +29,11 @@ Two buttons in every Paperclip chat box (board chat, task threads, task chat), o
 - Voice notes: up to 10 minutes, recorded at 48 kbps (the upload cap is 7 MB).
 - Live talk hangs up after 4 quiet minutes.
 - It needs HTTPS and microphone permission for the Paperclip site.
+
+## Per-agent voice
+
+In a live call, the header has a voice picker for the agent you are talking to (the chat page's agent, else the CEO). It lists the built-in Grok voices (eve, ara, rex, sal, leo; see https://docs.x.ai/docs/guides/voice/agent) and takes effect on the next call. "Company default" clears it and uses the `Live voice` setting. The choice is stored in plugin state on the agent; unknown ids are refused by the worker and fall back to the company voice.
+
+## Who may use it (access stage A)
+
+Version 0.1.11 (PAR-12678): every action goes through the kit's access guard with the table in `src/access-table.ts`. `transcribe` and `live-session` need `voice.use` create; `set-agent-voice` needs `voice.settings` edit. Owners and admins always pass. No preset but Full access holds a voice permission, so a limited person gets the mic only when an owner turns `voice.use` on for him in Setup, under People. The overlay asks `access.me` first: without `voice.use` there is no mic and no waveform in any chat box. The two data handlers (`status`, `agent-voice`) carry no caller and stay as they are until stage C. With the company's access switch off (every company today) the guard is a pass-through. No migration, no capability change.

@@ -86,7 +86,17 @@ export interface WaitingItem {
   /** money / legal / grant / judgement / review — drives ordering. */
   kind: "money" | "legal" | "grant" | "judgement" | "review" | "other";
   since?: string | null;
+  /**
+   * Who must act. Absent or null = the owner (today's behaviour). Set it only
+   * when that seat's own gate would accept the action right now (an agent that
+   * can approve, a client who must reply). `since` is required for it to hide:
+   * the Cockpit lists it under "wait on others" for at most 7 days from `since`,
+   * then it comes back to the owner.
+   */
+  waitsOn?: WaitsOn | null;
 }
+
+export type WaitsOn = { kind: "agent"; agentId: string } | { kind: "client" };
 
 export interface ActivityItem {
   at: string;

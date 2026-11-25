@@ -1,3 +1,8 @@
+import type { PluginWorkspaceParams, PluginWorkspaceResult } from "./workspace-provider.js";
+import type { PluginEnvironmentTaskParams, PluginEnvironmentTaskResult } from "./environment-tasks.js";
+import type { PluginAgentRuntimeState, PluginAgentRuntimeIdentity } from "./types.js";
+import type { AgentLifecycleRequest, AgentLifecycleResult } from "@paperclipai/shared";
+import type { AiConnectionRouterRequest, AiConnectionRouterResult } from "@paperclipai/shared";
 /**
  * JSON-RPC 2.0 message types and protocol helpers for the host ↔ worker IPC
  * channel.
@@ -30,7 +35,7 @@ import type {
   IssueAssigneeAdapterOverrides,
   IssueAttachment,
   IssueThreadInteraction,
-  CreateIssueThreadInteraction,
+  CreateIssueThreadInteractionInput,
   Approval,
   PluginManagedAgentResolution,
   PluginManagedProjectResolution,
@@ -53,6 +58,8 @@ export type { PluginLauncherRenderContextSnapshot } from "@paperclipai/shared";
 
 import type {
   PluginEvent,
+  ResourceLifecycleEvent,
+  ResourceLifecycleResult,
   PluginIssueCheckoutOwnership,
   PluginIssueOrchestrationSummary,
   PluginIssueRelationSummary,
@@ -63,6 +70,7 @@ import type {
   PluginJobContext,
   PluginExecutionWorkspaceMetadata,
   PluginWorkspace,
+  PluginActingPersonContext,
   ToolRunContext,
   ToolResult,
   PluginLocalFolderListing,
@@ -265,6 +273,8 @@ export const PLUGIN_RPC_ERROR_CODES = {
    * `multiCompanyConfig: true` on its definition.
    */
   CROSS_TENANT_CONFIG: -32006,
+  /** A plugin refused the request because of a rate limit; the webhook route answers 429. */
+  RATE_LIMITED: -32007,
   /** A catch-all for errors that do not fit other categories. */
   UNKNOWN: -32099,
 } as const;
@@ -282,6 +292,13 @@ export type PluginRpcErrorCode =
  */
 export interface PluginInvocationScope {
   companyId: string;
+  /**
+   * The person the host computed for the call that opened this invocation (a
+   * signed-in user, or the person an agent works for). Host-owned: the worker
+   * never sets it. Rule H6 uses it for tasks a plugin creates.
+   */
+  actingPersonId?: string | null;
+  projectGit?: { projectId: string; workspaceId?: string; runId?: string; agentId?: string; operation?: "prepare" | "inspect" | "remove" };
 }
 
 /**
@@ -306,8 +323,24 @@ export interface PluginInvocationContext {
  * host-issued invocation id.
  */
 export interface WorkerHostCallContext {
+  /** Host-owned aggregate timing budget; never received from the worker. */
+  providerSpanBudget?: { remaining: number };
   invocationScope?: PluginInvocationScope | null;
   invalidInvocationScope?: boolean;
+  /**
+   * Set by the host for a call made outside a host invocation (no invocation
+   * id: jobs, timers, start-up) that names a company with no saved settings for
+   * this plugin. The gate refuses it with a text that says so. It never grants
+   * access: `invocationScope` stays unset.
+   */
+  unconfiguredCompanyId?: string;
+  /**
+   * Set by the host for a `companies.list` call made outside a host invocation:
+   * the companies with saved settings for this plugin, which are the companies
+   * such a call may act for. `companies.list({ actionableOnly: true })` answers
+   * from it. It never grants access by itself.
+   */
+  actionableCompanyIds?: readonly string[];
   /**
    * The W3C `traceparent` the host minted for the echoed invocation. The host
    * recovers it from its own invocation record, not from the worker, so a worker
@@ -407,8 +440,23 @@ export interface GetDataParams {
   companyId?: string | null;
   /** Context and query parameters from the UI. */
   params: Record<string, unknown>;
+  /**
+   * The acting person resolved by the host, never by caller params (PAR-14297).
+   * An older host leaves it out.
+   */
+  actorContext?: PluginActingPersonContext | null;
   /** Optional launcher/container metadata from the host render environment. */
   renderEnvironment?: PluginLauncherRenderContextSnapshot | null;
+}
+
+/**
+ * The second argument of a `getData` handler: the person the read is for, as
+ * the host computed it. `actor` is `{}` when the host is older than this SDK;
+ * treat that as unknown, not as "nobody".
+ */
+export interface PluginDataContext {
+  /** Immutable acting person supplied by the host. */
+  actor: Readonly<PluginActingPersonContext>;
 }
 
 /**
@@ -418,7 +466,7 @@ export interface GetDataParams {
  */
 export type PluginPerformActionActorType = "user" | "agent" | "system";
 
-export interface PluginPerformActionActorContext {
+export interface PluginPerformActionActorContext extends PluginActingPersonContext {
   /** Authenticated principal type resolved by the Paperclip host. */
   type: PluginPerformActionActorType;
   /** Authenticated board user id when `type === "user"`, otherwise null. */
@@ -608,6 +656,12 @@ export interface PluginEnvironmentProbeResult {
   metadata?: Record<string, unknown>;
 }
 
+export interface PluginEnvironmentWorkspaceAllocationFiles {
+  providerLeaseId: string;
+  remoteCwd: string;
+  files: Array<{ relativePath: string; sha256: string }>;
+}
+
 export interface PluginEnvironmentLease {
   providerLeaseId: string | null;
   metadata?: Record<string, unknown>;
@@ -631,6 +685,12 @@ export interface PluginEnvironmentRunnerIngressEndpointParams
 
 export interface PluginEnvironmentAcquireLeaseParams extends PluginEnvironmentDriverBaseParams {
   runId: string;
+  creationOperationId?: string;
+  /** Explicit platform probes may request a provider-owned immutable snapshot
+   * identity. Supporting providers create by that ID and return snapshotIdentity
+   * in lease metadata. Older providers may omit it; the host then cannot qualify
+   * a mutable snapshot name. Ordinary discovery must not allocate a sandbox. */
+  resolveSnapshotIdentity?: boolean;
   workspaceMode?: string;
   requestedCwd?: string;
   agentId?: string;
@@ -657,11 +717,17 @@ export interface PluginEnvironmentAcquireLeaseParams extends PluginEnvironmentDr
 }
 
 export interface PluginEnvironmentResumeLeaseParams extends PluginEnvironmentDriverBaseParams {
+  /** New run authority for a retained task; omitted by legacy environment consumers. */
+  runId?: string;
   providerLeaseId: string;
   leaseMetadata?: Record<string, unknown>;
+  requestedCwd?: string;
 }
 
 export interface PluginEnvironmentReleaseLeaseParams extends PluginEnvironmentDriverBaseParams {
+  /** Stop the exact allocation while preserving its files, regardless of its
+   * ordinary release policy. A failed stop must throw, never fall back to delete. */
+  resourceDisposition?: "stop_and_retain";
   /** Explicit operator cancellation: terminate active work instead of waiting
    * for command/sync activity to drain. Still requires a provider receipt. */
   cancelActiveWork?: boolean;
@@ -677,6 +743,21 @@ export interface PluginEnvironmentTerminationReceipt {
 }
 
 export interface PluginEnvironmentDestroyLeaseParams extends PluginEnvironmentReleaseLeaseParams {}
+
+/** Observe this exact allocation without starting, stopping or deleting it.
+ * Missing resources must be distinguished from permission/transport failures. */
+export interface PluginEnvironmentInspectLeaseParams extends PluginEnvironmentDriverBaseParams {
+  creationOperation?: { id: string; runId: string };
+  providerLeaseId: string;
+  leaseMetadata?: Record<string, unknown>;
+}
+
+export interface PluginEnvironmentLeaseObservation {
+  creationLease?: PluginEnvironmentLease;
+  creationCleanup?: import("./environment-creation-cleanup.js").PluginEnvironmentCreationCleanup;
+  providerLeaseId: string;
+  state: "active" | "stopped" | "destroyed" | "unknown";
+}
 
 export interface PluginEnvironmentRealizeWorkspaceParams extends PluginEnvironmentDriverBaseParams {
   lease: PluginEnvironmentLease;
@@ -707,6 +788,10 @@ export interface PluginEnvironmentExecuteParams extends PluginEnvironmentDriverB
   env?: Record<string, string>;
   stdin?: string;
   timeoutMs?: number;
+  /** Optional total command execution budget, in milliseconds. A session
+   * provider must keep this distinct from individual observation timeouts.
+   * Zero disables this deadline. Absence keeps the existing session lifetime. */
+  commandTimeoutMs?: number;
   /**
    * Run this command outside the lease's persistent session.
    *
@@ -763,13 +848,21 @@ export interface PluginSyncFileMapping {
    * shows the bytes only to code that already runs in that sandbox.
    */
   mode?: number;
-  /** Glob patterns to exclude when `kind` is `"directory"`. */
+  /** Directory glob patterns; literal root-relative paths when preserving source entries. */
   exclude?: string[];
   /**
    * Symlink handling for `kind: "directory"` transfers. Falsy preserves symlinks
    * as links; `true` dereferences them to their target bytes. Mirrors tar's `-h`.
    */
   followSymlinks?: boolean;
+  /**
+   * Outbound directory transfers preserve source entry names, including `._*`
+   * and provider scratch-like names. In this mode `exclude` contains literal
+   * root-relative paths; providers omit only those paths and scratch paths
+   * created by this exact transfer. Archive member and symlink validation stay
+   * unchanged. Ignored for syncIn/files.
+   */
+  preserveSourceEntries?: boolean;
   /**
    * Advisory read-write intent for the sandbox target. `"rw"` means the author
    * expects the agent to change the bytes at the target and keep the change.
@@ -851,11 +944,13 @@ export interface PluginSyncOperation {
 export interface PluginEnvironmentSyncInParams extends PluginEnvironmentDriverBaseParams {
   lease: PluginEnvironmentLease;
   operations: PluginSyncOperation[];
+  minimumTimeoutMs?: number;
 }
 
 export interface PluginEnvironmentSyncOutParams extends PluginEnvironmentDriverBaseParams {
   lease: PluginEnvironmentLease;
   operations: PluginSyncOperation[];
+  minimumTimeoutMs?: number;
 }
 
 /** Per-operation transfer accounting returned by a sync hook, for observability. */
@@ -1325,6 +1420,8 @@ export interface HostToWorkerMethods {
   health: [params: Record<string, never>, result: PluginHealthDiagnostics];
   /** @see PLUGIN_SPEC.md §12.5 */
   shutdown: [params: Record<string, never>, result: void];
+  prepareIdleSleep: [params: { ownerId: string; expiresAt: number }, result: { ownerId: string; expiresAt: number; backgroundWork: "none" | "present" | "unknown" }];
+  releaseIdleSleep: [params: { ownerId: string }, result: void];
   /** @see PLUGIN_SPEC.md §13.3 */
   validateConfig: [params: ValidateConfigParams, result: PluginConfigValidationResult];
   /** @see PLUGIN_SPEC.md §13.4 */
@@ -1338,6 +1435,8 @@ export interface HostToWorkerMethods {
   /** Scoped plugin API route dispatch. */
   handleApiRequest: [params: PluginApiRequestInput, result: PluginApiResponse];
   /** @see PLUGIN_SPEC.md §13.8 */
+  agentLifecycle: [params: AgentLifecycleRequest, result: AgentLifecycleResult];
+  resourceLifecycle: [params: ResourceLifecycleEvent, result: ResourceLifecycleResult];
   getData: [params: GetDataParams, result: unknown];
   /** @see PLUGIN_SPEC.md §13.9 */
   performAction: [params: PerformActionParams, result: unknown];
@@ -1347,6 +1446,7 @@ export interface HostToWorkerMethods {
     params: DetectExternalObjectsParams,
     result: DetectExternalObjectsResult,
   ];
+  routeAiConnection: [params: AiConnectionRouterRequest, result: AiConnectionRouterResult];
   resolveExternalObject: [
     params: ResolveExternalObjectParams,
     result: PluginExternalObjectResolveResult,
@@ -1359,6 +1459,8 @@ export interface HostToWorkerMethods {
     params: PluginEnvironmentValidateConfigParams,
     result: PluginEnvironmentValidationResult,
   ];
+  workspaceOperation: [params: PluginWorkspaceParams, result: PluginWorkspaceResult];
+  environmentTask: [params: PluginEnvironmentTaskParams, result: PluginEnvironmentTaskResult];
   environmentProbe: [
     params: PluginEnvironmentProbeParams,
     result: PluginEnvironmentProbeResult,
@@ -1375,9 +1477,17 @@ export interface HostToWorkerMethods {
     params: PluginEnvironmentReleaseLeaseParams,
     result: PluginEnvironmentTerminationReceipt | void,
   ];
+  environmentStopLease: [
+    params: PluginEnvironmentReleaseLeaseParams,
+    result: PluginEnvironmentTerminationReceipt,
+  ];
   environmentDestroyLease: [
     params: PluginEnvironmentDestroyLeaseParams,
     result: PluginEnvironmentTerminationReceipt | void,
+  ];
+  environmentInspectLease: [
+    params: PluginEnvironmentInspectLeaseParams,
+    result: PluginEnvironmentLeaseObservation,
   ];
   environmentRealizeWorkspace: [
     params: PluginEnvironmentRealizeWorkspaceParams,
@@ -1461,24 +1571,33 @@ export const HOST_TO_WORKER_REQUIRED_METHODS: readonly HostToWorkerMethodName[] 
 
 /** Optional methods the worker MAY implement. */
 export const HOST_TO_WORKER_OPTIONAL_METHODS: readonly HostToWorkerMethodName[] = [
+  "prepareIdleSleep",
+  "releaseIdleSleep",
   "validateConfig",
   "configChanged",
   "onEvent",
   "runJob",
   "handleWebhook",
   "handleApiRequest",
+  "agentLifecycle",
+  "resourceLifecycle",
+  "workspaceOperation",
   "getData",
   "performAction",
   "executeTool",
   "detectExternalObjects",
+  "routeAiConnection",
   "resolveExternalObject",
   "refreshExternalObjects",
   "environmentValidateConfig",
+  "environmentTask",
   "environmentProbe",
   "environmentAcquireLease",
   "environmentResumeLease",
   "environmentReleaseLease",
+  "environmentStopLease",
   "environmentDestroyLease",
+  "environmentInspectLease",
   "environmentRealizeWorkspace",
   "environmentExecute",
   "environmentRunnerIngressEndpoint",
@@ -1509,6 +1628,18 @@ export const HOST_TO_WORKER_OPTIONAL_METHODS: readonly HostToWorkerMethodName[] 
  * These represent the SDK client calls that the worker makes back to the
  * host to access platform services (state, entities, config, etc.).
  */
+export interface PluginSpanRecord {
+  name: string;
+  /** A completed remote lifecycle is linked to its observer, never made its child. */
+  relationship?: "linked";
+  attributes?: Record<string, string | number | boolean>;
+  status?: { code: number; message?: string };
+  startTimeMs?: number;
+  endTimeMs?: number;
+  /** Nested timing receipts, bounded and validated again by the host. */
+  children?: PluginSpanRecord[];
+}
+
 export interface WorkerToHostMethods {
   // Config
   "config.get": [params: { companyId?: string }, result: Record<string, unknown>];
@@ -1631,6 +1762,8 @@ export interface WorkerToHostMethods {
   ];
 
   // Events
+  "events.listLifecycle": [params: { companyId: string; limit?: number; afterId?: string }, result: ResourceLifecycleEvent[]];
+  "events.acknowledgeLifecycle": [params: { companyId: string; eventId: string }, result: void];
   "events.emit": [
     params: { name: string; companyId: string; payload: unknown },
     result: void,
@@ -1700,31 +1833,15 @@ export interface WorkerToHostMethods {
   // real tracer. The worker never sends the parent `traceparent`; the host
   // recovers it from the echoed invocation id. The RPC is capability-gated.
   "span.record": [
-    params: {
-      /** The bounded span name (for example `pack` or `transfer`). The host
-       * clamps it to a closed set, so a name never carries free-form data. */
-      name: string;
-      /** The span attributes. The host drops every key that is not on the closed
-       * plugin-span allowlist and re-clamps each remaining value. */
-      attributes?: Record<string, string | number | boolean>;
-      /** The optional span status. */
-      status?: { code: number; message?: string };
-      /** The optional span start time as epoch milliseconds (`Date.now()`).
-       * The worker captures it when it opens the span. The host validates the
-       * pair and records the span with its true native width. An omitted value
-       * makes the host fall back to a synchronous open-and-end. */
-      startTimeMs?: number;
-      /** The optional span end time as epoch milliseconds (`Date.now()`). The
-       * worker captures it when it ends the span. The host uses it as the span
-       * end time when the pair passes the clock-safety check. */
-      endTimeMs?: number;
-    },
+    params: PluginSpanRecord,
     result: void,
   ];
 
   // Companies (read)
+  // `actionableOnly`: only companies this call may act for (see
+  // `PluginCompaniesClient.list`). Hosts that predate it ignore it.
   "companies.list": [
-    params: { limit?: number; offset?: number },
+    params: { limit?: number; offset?: number; actionableOnly?: boolean },
     result: Company[],
   ];
   "companies.get": [
@@ -1736,6 +1853,14 @@ export interface WorkerToHostMethods {
   "projects.list": [
     params: { companyId: string; limit?: number; offset?: number },
     result: Project[],
+  ];
+  "projects.resolveGitCredential": [
+    params: { projectId: string; workspaceId: string; companyId: string },
+    result: string | null,
+  ];
+  "projects.getInstanceSecrets": [
+    params: { projectId: string; companyId: string },
+    result: Record<string, string>,
   ];
   "projects.get": [
     params: { projectId: string; companyId: string },
@@ -1995,7 +2120,7 @@ export interface WorkerToHostMethods {
     params: {
       issueId: string;
       companyId: string;
-      interaction: CreateIssueThreadInteraction;
+      interaction: CreateIssueThreadInteractionInput;
       authorAgentId?: string | null;
     },
     result: IssueThreadInteraction,
@@ -2084,6 +2209,14 @@ export interface WorkerToHostMethods {
   "agents.list": [
     params: { companyId: string; status?: string; limit?: number; offset?: number },
     result: Agent[],
+  ];
+  "agents.getRuntimeIdentity": [
+    params: { agentId: string; companyId: string },
+    result: PluginAgentRuntimeIdentity | null,
+  ];
+  "agents.getRuntime": [
+    params: { agentId: string; companyId: string; environmentId?: string; installEnvironmentSkills?: boolean },
+    result: PluginAgentRuntimeState | null,
   ];
   "agents.get": [
     params: { agentId: string; companyId: string },

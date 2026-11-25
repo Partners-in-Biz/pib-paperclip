@@ -6,12 +6,12 @@
  */
 import { randomUUID } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { sameClient, scopeOfRow, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
+import { sameClient, scopeOfRow, type ActingRestriction, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
 import { iso, num, table } from "../db.js";
 import { StudioError } from "../errors.js";
 import { clientFilter } from "../page.js";
-import { scopeForWork, scopeInput } from "../scope.js";
-import { editDuration, normalizeEdit, type EditDoc } from "./timeline.js";
+import { assertListOpen, assertOpenToPerson, personFilter, scopeForWork, scopeInput } from "../scope.js";
+import { editDuration, normalizeEdit, type EditDoc, type MediaClip, type StickerClip } from "./timeline.js";
 
 export const MAX_EDIT_TITLE = 200;
 export const MAX_EDIT_VERSIONS = 100;
@@ -19,6 +19,8 @@ export const MAX_EDIT_VERSIONS = 100;
 export interface EditActor {
   userId?: string | null;
   agentId?: string | null;
+  /** The person path's member check (PAR-14298): a restricted member makes no client edit. Agents' tools pass none. */
+  restriction?: ActingRestriction;
 }
 
 interface EditRow {
@@ -123,6 +125,23 @@ export async function assertAssets(ctx: PluginContext, companyId: string, scope:
   }
 }
 
+/**
+ * `normalizeEdit` for a write. Volume keyframes need sound: a picture asset has none, so a doc that animates a picture's
+ * volume is refused here with `no_audio` (a video without an audio stream is only known after probing; the compiler
+ * refuses that one). Docs without volume keyframes cost no extra query.
+ */
+export async function normalizeForWrite(ctx: PluginContext, companyId: string, input: unknown): Promise<EditDoc> {
+  const doc = normalizeEdit(input);
+  const shown = doc.tracks.flatMap((t): Array<MediaClip | StickerClip> => (t.kind === "video" || t.kind === "overlay" ? t.clips : []));
+  const animated = shown.filter((c): c is MediaClip => "assetId" in c && Boolean(c.keyframes?.volume)); // normalizeEdit refuses volume keys on a sticker
+  if (!animated.length) return doc;
+  const ids = [...new Set(animated.map((c) => c.assetId))];
+  const marks = ids.map((_, i) => `$${i + 2}`).join(", ");
+  const rows = await ctx.db.query<{ id: string }>(`SELECT id FROM ${table(ctx, "assets")} WHERE company_id = $1 AND kind = 'image' AND id IN (${marks})`, [companyId, ...ids]);
+  const pictures = new Set(rows.map((r) => r.id));
+  return pictures.size ? normalizeEdit(input, { hasAudio: (assetId) => !pictures.has(assetId) }) : doc;
+}
+
 export async function createVideoEdit(ctx: PluginContext, companyId: string, params: Record<string, unknown>, actor: EditActor) {
   const name = text(params.title, "video edit", MAX_EDIT_TITLE);
   const projectId = typeof params.projectId === "string" && params.projectId.trim() ? params.projectId.trim() : null;
@@ -131,7 +150,8 @@ export async function createVideoEdit(ctx: PluginContext, companyId: string, par
     if (!project) throw new StudioError(`Project ${projectId} was not found in this company.`, "unknown_project");
   }
   const where = await scopeForWork(ctx, companyId, scopeInput(params), projectId);
-  const doc = normalizeEdit(params.doc === undefined ? { tracks: [] } : params.doc);
+  if (actor.restriction) assertOpenToPerson(where.scope, actor.restriction);
+  const doc = await normalizeForWrite(ctx, companyId, params.doc === undefined ? { tracks: [] } : params.doc);
   const sourceAssetId = typeof params.sourceAssetId === "string" && params.sourceAssetId.trim() ? params.sourceAssetId.trim() : null;
   await assertAssets(ctx, companyId, where.scope, [...new Set([...editAssetIds(doc), ...(sourceAssetId ? [sourceAssetId] : [])])]);
   const id = randomUUID();
@@ -143,10 +163,12 @@ export async function createVideoEdit(ctx: PluginContext, companyId: string, par
   return getVideoEdit(ctx, companyId, id);
 }
 
-export async function listVideoEdits(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
+/** With a person's `restriction` (PAR-14298) a restricted member's list holds own work only. Agents' tools pass none. */
+export async function listVideoEdits(ctx: PluginContext, companyId: string, params: Record<string, unknown>, restriction?: ActingRestriction) {
   const values: unknown[] = [companyId];
   let where = "WHERE company_id = $1 AND archived_at IS NULL";
-  const scope = clientFilter(params.client);
+  const filter = clientFilter(params.client);
+  const scope = restriction ? personFilter(filter, restriction) : filter;
   if (scope) {
     values.push(scope.kind, scope.id);
     where += ` AND client_kind = $${values.length - 1} AND client_ref = $${values.length}`;
@@ -157,7 +179,13 @@ export async function listVideoEdits(ctx: PluginContext, companyId: string, para
   }
   values.push(Math.min(Math.max(typeof params.limit === "number" ? params.limit : 50, 1), 200));
   const rows = await ctx.db.query<EditRow>(`SELECT * FROM ${table(ctx, "video_edits")} ${where} ORDER BY updated_at DESC LIMIT $${values.length}`, values);
+  if (restriction) assertListOpen(rows.some((r) => r.client_ref), restriction);
   return rows.map(summary);
+}
+
+/** The client a video edit is filed under (null for own work), for the person path's member check (PAR-14298). */
+export async function videoEditScope(ctx: PluginContext, companyId: string, id: string): Promise<ClientScope> {
+  return scopeOfRow(await getRow(ctx, companyId, editId(id)));
 }
 
 export async function getVideoEdit(ctx: PluginContext, companyId: string, id: string) {
@@ -172,7 +200,7 @@ export async function saveVideoEdit(ctx: PluginContext, companyId: string, param
   const base = Number(params.baseRevision);
   if (!Number.isInteger(base) || base < 1) bad("baseRevision is required: the revision this save starts from.");
   const row = await getRow(ctx, companyId, id);
-  const doc = normalizeEdit(params.doc);
+  const doc = await normalizeForWrite(ctx, companyId, params.doc);
   await assertAssets(ctx, companyId, scopeOfRow(row), editAssetIds(doc));
   const name = params.title === undefined ? row.title : text(params.title, "video edit", MAX_EDIT_TITLE);
   const out = await ctx.db.execute(
@@ -239,4 +267,36 @@ export async function listEditVersions(ctx: PluginContext, companyId: string, id
     [companyId, edit.id],
   );
   return rows.map(versionView);
+}
+
+/**
+ * Restores a saved version: its timeline is saved as a NEW revision (history is never rewritten), only if nobody saved
+ * since `baseRevision` (else `edit_conflict`). The timeline being replaced is first kept as a version named
+ * "Before restore", unless the edit is already at MAX_EDIT_VERSIONS (then the restore still goes ahead).
+ */
+export async function restoreEditVersion(ctx: PluginContext, companyId: string, params: Record<string, unknown>, actor: EditActor) {
+  const id = editId(params.editId);
+  const base = Number(params.baseRevision);
+  if (!Number.isInteger(base) || base < 1) bad("baseRevision is required: the revision this restore starts from.");
+  const versionId = String(params.versionId ?? "").trim();
+  const edit = await getVideoEdit(ctx, companyId, id);
+  const [version] = await ctx.db.query<{ id: string; name: string; doc: unknown }>(
+    `SELECT id, name, doc FROM ${table(ctx, "video_edit_versions")} WHERE id = $1 AND company_id = $2 AND edit_id = $3`,
+    [versionId, companyId, edit.id],
+  );
+  if (!version) throw new StudioError("That version was not found for this video edit.", "unknown_version");
+  if (edit.revision !== base) {
+    throw new StudioError(`Someone saved this video edit since you opened it (now revision ${edit.revision}). Reload to see their changes.`, "edit_conflict");
+  }
+  const restored = normalizeEdit(parse(version.doc));
+  const [count] = await ctx.db.query<{ n: number | string }>(`SELECT count(*) AS n FROM ${table(ctx, "video_edit_versions")} WHERE company_id = $1 AND edit_id = $2`, [companyId, id]);
+  const keepCurrent = num(count?.n) < MAX_EDIT_VERSIONS;
+  const saved = await saveVideoEdit(ctx, companyId, { editId: id, baseRevision: base, doc: restored }, actor);
+  if (keepCurrent) {
+    await ctx.db.execute(
+      `INSERT INTO ${table(ctx, "video_edit_versions")} (id, company_id, edit_id, name, doc, revision, created_by_user_id, created_by_agent_id) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8)`,
+      [randomUUID(), companyId, id, `Before restore (revision ${base})`, JSON.stringify(edit.doc), base, actor.userId ?? null, actor.agentId ?? null],
+    );
+  }
+  return { id, revision: saved.revision, restoredVersionId: version.id, keptPrevious: keepCurrent };
 }

@@ -8,9 +8,9 @@ import {
 import { Shield, ShieldCheck, Trash2, UserPlus } from "lucide-react";
 import { accessApi, type CompanyMember } from "@/api/access";
 import { agentsApi } from "@/api/agents";
-import { ApiError } from "@/api/client";
 import { cloudApi } from "@/api/cloud";
 import { issuesApi } from "@/api/issues";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -34,9 +34,28 @@ import { PageTabBar } from "@/components/PageTabBar";
 import { useHiddenSettings } from "@/hooks/useHiddenSettings";
 import { useCloudInstance } from "@/hooks/useCloudInstance";
 import { InvitesSection } from "@/components/access/InvitesSection";
+import { describeError } from "@/api/errors";
+import { authApi } from "@/api/auth";
+import { healthApi } from "@/api/health";
+import {
+  KillSwitchBanner,
+  MemberRestrictionDialog,
+  MemberRestrictionSummary,
+  MemberRestrictionSwitch,
+  useMemberRestrictionMode,
+} from "@/components/access/MemberRestriction";
 
 const reassignmentIssueStatuses = "backlog,todo,in_progress,in_review,blocked,failed,timed_out";
 type EditableMemberStatus = "pending" | "active" | "suspended";
+
+/** Why a member's restriction cannot be changed from this row, or null when it can (PAR-12608 4.2). */
+function restrictionLockReason(member: CompanyMember, currentUserId: string | null) {
+  if (member.membershipRole === "owner" || member.membershipRole === "admin") {
+    return "Owners and admins cannot be restricted";
+  }
+  if (currentUserId && member.principalId === currentUserId) return "You cannot change your own access";
+  return null;
+}
 
 export function CompanyAccess() {
   const { selectedCompany, selectedCompanyId } = useCompany();
@@ -50,12 +69,12 @@ export function CompanyAccess() {
     queryFn: () => cloudApi.listStacks(),
     enabled: Boolean(cloud && selectedCompanyId),
     staleTime: 30_000,
-    retry: false,
   });
+  const cloudStacksView = useQueryView(cloudStacksQuery);
   const currentStack = cloudStacksQuery.data?.stacks.find((stack) => stack.isCurrent);
   // Company roles can differ from Cloud roles. Only the current stack's
   // owner/admin may invite, even if another portfolio entry grants ownership.
-  const cloudInviteUrl = cloud && !cloudStacksQuery.isError &&
+  const cloudInviteUrl = cloud && cloudStacksView.kind !== "error" &&
     (currentStack?.role === "owner" || currentStack?.role === "admin")
     ? cloudStackInviteUrl(cloud.cloudBaseUrl, currentStack.stackSlug)
     : null;
@@ -80,6 +99,7 @@ export function CompanyAccess() {
     );
   };
   const [editingMemberId, setEditingMemberId] = useState<string | null>(null);
+  const [restrictingMemberId, setRestrictingMemberId] = useState<string | null>(null);
   const [removingMemberId, setRemovingMemberId] = useState<string | null>(null);
   const [reassignmentTarget, setReassignmentTarget] = useState<string>("__unassigned");
   const [draftRole, setDraftRole] = useState<CompanyMember["membershipRole"]>(null);
@@ -98,12 +118,21 @@ export function CompanyAccess() {
     queryFn: () => accessApi.listMembers(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  const membersView = useQueryView(membersQuery);
 
   const agentsQuery = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId ?? ""),
     queryFn: () => agentsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+
+  const healthQuery = useQuery({ queryKey: queryKeys.health, queryFn: () => healthApi.get() });
+  const restrictionModeQuery = useMemberRestrictionMode(
+    membersQuery.data?.access.canManageMembers ? selectedCompanyId : null,
+  );
+  const restrictionForcedOff = healthQuery.data?.memberRestriction === "forced_off";
+  const sessionQuery = useQuery({ queryKey: queryKeys.auth.session, queryFn: () => authApi.getSession() });
+  const currentUserId = sessionQuery.data?.user?.id ?? sessionQuery.data?.session?.userId ?? null;
 
   const joinRequestsQuery = useQuery({
     queryKey: queryKeys.access.joinRequests(selectedCompanyId ?? "", "pending_approval"),
@@ -136,7 +165,7 @@ export function CompanyAccess() {
     onError: (error) => {
       pushToast({
         title: "Failed to update member",
-        body: error instanceof Error ? error.message : "Unknown error",
+        body: describeError(error).body,
         tone: "error",
       });
     },
@@ -154,7 +183,7 @@ export function CompanyAccess() {
     onError: (error) => {
       pushToast({
         title: "Failed to approve join request",
-        body: error instanceof Error ? error.message : "Unknown error",
+        body: describeError(error).body,
         tone: "error",
       });
     },
@@ -172,7 +201,7 @@ export function CompanyAccess() {
     onError: (error) => {
       pushToast({
         title: "Failed to reject join request",
-        body: error instanceof Error ? error.message : "Unknown error",
+        body: describeError(error).body,
         tone: "error",
       });
     },
@@ -181,6 +210,10 @@ export function CompanyAccess() {
   const editingMember = useMemo(
     () => membersQuery.data?.members.find((member) => member.id === editingMemberId) ?? null,
     [editingMemberId, membersQuery.data?.members],
+  );
+  const restrictingMember = useMemo(
+    () => membersQuery.data?.members.find((member) => member.id === restrictingMemberId) ?? null,
+    [restrictingMemberId, membersQuery.data?.members],
   );
   const removingMember = useMemo(
     () => membersQuery.data?.members.find((member) => member.id === removingMemberId) ?? null,
@@ -228,7 +261,7 @@ export function CompanyAccess() {
     onError: (error) => {
       pushToast({
         title: "Failed to remove member",
-        body: error instanceof Error ? error.message : "Unknown error",
+        body: describeError(error).body,
         tone: "error",
       });
     },
@@ -249,18 +282,23 @@ export function CompanyAccess() {
     return <div className="text-sm text-muted-foreground">Select an organization to manage access.</div>;
   }
 
-  if (membersQuery.isLoading) {
+  if (membersQuery.isLoading || membersView.kind === "reconnecting") {
     return <div className="text-sm text-muted-foreground">Loading organization access…</div>;
   }
 
-  if (membersQuery.error) {
-    const message =
-      membersQuery.error instanceof ApiError && membersQuery.error.status === 403
-        ? "You do not have permission to manage organization members."
-        : membersQuery.error instanceof Error
-          ? membersQuery.error.message
-          : "Failed to load organization members.";
-    return <div className="text-sm text-destructive">{message}</div>;
+  if (membersView.kind === "error") {
+    if (membersView.errorKind === "forbidden") {
+      return <div className="text-sm text-destructive">You do not have permission to manage organization members.</div>;
+    }
+    return (
+      <QueryErrorState
+        size="page"
+        error={membersQuery.error}
+        action="load organization members"
+        onRetry={membersView.retry}
+        retrying={membersView.isFetching}
+      />
+    );
   }
 
   const members = membersQuery.data?.members ?? [];
@@ -311,6 +349,9 @@ export function CompanyAccess() {
           This account can manage access here through instance-admin privileges, but it does not currently hold an active organization membership.
         </div>
       )}
+
+      {restrictionForcedOff ? <KillSwitchBanner /> : null}
+      {access?.canManageMembers ? <MemberRestrictionSwitch companyId={selectedCompanyId} /> : null}
 
       <section className="space-y-4">
         {access?.canApproveJoinRequests && pendingHumanJoinRequests.length > 0 ? (
@@ -365,13 +406,15 @@ export function CompanyAccess() {
                 <th className="px-3 py-2 font-medium">Email</th>
                 <th className="px-3 py-2 font-medium">Role</th>
                 <th className="px-3 py-2 font-medium">Status</th>
-                <th className="px-3 py-2 text-right font-medium">Action</th>
+                <th className="px-3 py-2 font-medium">Access</th>
+                {/* Sticky so the row actions stay on screen at phone width while the table scrolls. */}
+                <th className="sticky right-0 bg-background px-3 py-2 text-right font-medium">Action</th>
               </tr>
             </thead>
             <tbody>
               {members.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="px-3 py-8 text-muted-foreground">
+                  <td colSpan={6} className="px-3 py-8 text-muted-foreground">
                     No user memberships found for this organization yet.
                   </td>
                 </tr>
@@ -387,10 +430,10 @@ export function CompanyAccess() {
                           {member.user?.image ? <AvatarImage src={member.user.image} alt={displayName} /> : null}
                           <AvatarFallback>{memberInitials(member)}</AvatarFallback>
                         </Avatar>
-                        <span className="truncate font-medium">{displayName}</span>
+                        <span className="max-w-56 truncate font-medium" title={displayName}>{displayName}</span>
                       </div>
                     </td>
-                    <td className="px-3 py-3 text-muted-foreground">
+                    <td className="min-w-48 max-w-64 break-all px-3 py-3 text-muted-foreground">
                       {member.user?.email || member.principalId}
                     </td>
                     <td className="px-3 py-3">
@@ -403,11 +446,31 @@ export function CompanyAccess() {
                         {member.status.replace("_", " ")}
                       </Badge>
                     </td>
-                    <td className="px-3 py-3 text-right">
-                      <div className="flex justify-end gap-2">
+                    <td className="px-3 py-3">
+                      <MemberRestrictionSummary
+                        member={member}
+                        mode={restrictionModeQuery.data?.mode}
+                        forcedOff={restrictionForcedOff}
+                        agents={agentsQuery.data}
+                      />
+                    </td>
+                    <td className="sticky right-0 bg-background px-3 py-3 text-right">
+                      <div className="flex flex-col items-end gap-2 sm:flex-row sm:justify-end">
                         <Button size="sm" variant="outline" onClick={() => setEditingMemberId(member.id)}>
                           Edit
                         </Button>
+                        {access?.canManageMembers ? (
+                          <span className="inline-flex" title={restrictionLockReason(member, currentUserId) ?? undefined}>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => setRestrictingMemberId(member.id)}
+                              disabled={!!restrictionLockReason(member, currentUserId)}
+                            >
+                              Access
+                            </Button>
+                          </span>
+                        ) : null}
                         <span
                           className="inline-flex"
                           title={!canArchive ? removalReason ?? undefined : undefined}
@@ -498,6 +561,13 @@ export function CompanyAccess() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <MemberRestrictionDialog
+        companyId={selectedCompanyId}
+        member={restrictingMember}
+        agents={agentsQuery.data ?? []}
+        onClose={() => setRestrictingMemberId(null)}
+      />
 
       <Dialog open={!!removingMember} onOpenChange={(open) => !open && setRemovingMemberId(null)}>
         <DialogContent className="max-w-xl">

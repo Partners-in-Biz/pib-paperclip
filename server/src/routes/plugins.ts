@@ -22,10 +22,13 @@
 import { access, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { pluginApiUpgrade, proxyPluginApiWebSocket } from "../realtime/plugin-api-ws.js";
+import { trustedBoardMutationOrigin } from "../middleware/board-mutation-guard.js";
+import { authorizationService } from "../services/authorization.js";
 import { fileURLToPath } from "node:url";
 import { Router } from "express";
 import type { Request, Response } from "express";
-import { and, desc, eq, gte } from "drizzle-orm";
+import { and, desc, eq, gte, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -46,6 +49,8 @@ import {
   PLUGIN_STATUSES,
 } from "@paperclipai/shared";
 import { pluginRegistryService } from "../services/plugin-registry.js";
+import { canvasCardsGuard } from "../services/plugin-canvas-cards-guard.js";
+import { agentKeyRunNamingError, toolRouteCallerError } from "../services/member-restriction/rule-group-h.js";
 import { pluginLifecycleManager } from "../services/plugin-lifecycle.js";
 import {
   getPluginUiContributionMetadata,
@@ -72,6 +77,7 @@ import {
   assertCompanyAccess,
   assertInstanceAdmin,
   getActorInfo,
+  hasCompanyAccess,
 } from "./authz.js";
 import { validateInstanceConfig } from "../services/plugin-config-validator.js";
 import {
@@ -91,7 +97,18 @@ import {
 import { isCloudManagedInstance } from "../services/cloud-instance.js";
 import { getHiddenSettings } from "../services/settings-visibility.js";
 import { secretService } from "../services/secrets.js";
-import { badRequest, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
+import { badRequest, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
+import {
+  isMemberRestrictionUnavailable,
+  memberRestrictionResolver,
+  pluginActingPersonForActor,
+  type PluginActingPerson,
+} from "../services/member-restriction/index.js";
+import {
+  assertPluginOpenForActor,
+  filterPluginsOpenForPerson,
+  isMemberRestricted,
+} from "../services/member-restriction/plugin-gate.js";
 
 /**
  * Floor: when the hosting operator hides the Plugins settings surface
@@ -460,12 +477,13 @@ interface PluginScopedApiRequest {
     agentId?: string | null;
     userId?: string | null;
     runId?: string | null;
-  };
+  } & PluginActingPerson;
   companyId: string;
   headers: Record<string, string>;
 }
 
 interface PluginScopedApiResponse {
+  websocket?: { url: string; headers?: Record<string, string> };
   status?: number;
   headers?: Record<string, string>;
   body?: unknown;
@@ -477,8 +495,8 @@ interface PluginToolExecuteRequest {
   tool: string;
   /** Parameters matching the tool's declared JSON Schema. */
   parameters?: unknown;
-  /** Agent run context. */
-  runContext: ToolRunContext;
+  /** Agent run context. projectId may be omitted or null when the run has no project. */
+  runContext: Omit<ToolRunContext, "projectId"> & { projectId?: string | null };
 }
 
 /**
@@ -541,6 +559,7 @@ export function pluginRoutes(
     workerManager: bridgeDeps?.workerManager ?? webhookDeps?.workerManager,
   });
   const issuesSvc = issueService(db);
+  const resolveMemberRestriction = memberRestrictionResolver(db);
 
   function matchScopedApiRoute(route: PluginApiRouteDeclaration, method: string, requestPath: string) {
     if (route.method !== method) return null;
@@ -627,6 +646,16 @@ export function pluginRoutes(
       return typeof value === "string" ? value : null;
     }
 
+    if (resolution.from === "agent") {
+      const id = params[resolution.param];
+      if (!id) return null;
+      const [agent] = await db.select({ id: agents.id, companyId: agents.companyId }).from(agents).where(eq(agents.id, id)).limit(1);
+      if (!agent || !hasCompanyAccess(req, agent.companyId)) throw notFound("Agent not found");
+      const decision = await authorizationService(db).decide({ actor: req.actor, action: "agent:read", resource: { type: "agent", companyId: agent.companyId, agentId: agent.id } });
+      if (!decision.allowed) throw notFound("Agent not found");
+      return agent.companyId;
+    }
+
     const issueId = params[resolution.param ?? ""];
     if (!issueId) return null;
     const issue = await issuesSvc.getById(issueId);
@@ -679,6 +708,27 @@ export function pluginRoutes(
       throw forbidden("Agent authentication required");
     }
     await issuesSvc.assertCheckoutOwner(issueId, req.actor.agentId, runId);
+  }
+
+  /**
+   * Company ids that bound tenant-attributed plugin reads.
+   *
+   * `plugin_logs`, `plugin_job_runs` and `plugin_webhook_deliveries` carry a
+   * `company_id` attribution (NULL for instance-scope rows). Instance
+   * administrators (and the local implicit board) keep the instance-wide view;
+   * every other board actor is restricted to its own companies, so a member of
+   * one company cannot read another company's operational rows.
+   *
+   * Returns `null` for the unscoped instance-wide view.
+   */
+  function pluginOperationalReadCompanyIds(req: Request): string[] | null {
+    if (req.actor.type !== "board") {
+      return [];
+    }
+    if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) {
+      return null;
+    }
+    return req.actor.companyIds ?? [];
   }
 
   async function resolvePluginAuditCompanyIds(req: Request): Promise<string[]> {
@@ -766,8 +816,31 @@ export function pluginRoutes(
     }
   }
 
-  function performActionActorContext(req: Request, companyId: string | undefined): PluginPerformActionActorContext {
+  /**
+   * The core plugin gate (PAR-12608 4.8): a restricted person's call, or a call
+   * for him, reaches only a plugin on his list (403 `MEMBER_RESTRICTED`); a
+   * failed restriction read throws 503. Every route under `/plugins/:pluginId/`
+   * calls it or is on the scan's not-gated list (AC-K7).
+   */
+  function assertPluginOpenForPerson(
+    req: Request,
+    companyId: string | null | undefined,
+    plugin: { pluginKey: string },
+    target: string,
+    recheck = false,
+  ): Promise<void> {
+    return assertPluginOpenForActor({ db, resolve: resolveMemberRestriction }, req.actor, companyId, plugin.pluginKey, target,
+      recheck ? { fresh: true, record: false } : {});
+  }
+
+  /** The acting person a plugin receives (PAR-12608 4.10, H3); a failed restriction read throws 503. */
+  function actingPerson(req: Request, companyId: string | null | undefined): Promise<PluginActingPerson> {
+    return pluginActingPersonForActor(resolveMemberRestriction, req.actor, companyId);
+  }
+
+  async function performActionActorContext(req: Request, companyId: string | undefined): Promise<PluginPerformActionActorContext> {
     const scopedCompanyId = companyId ?? null;
+    const person = await actingPerson(req, scopedCompanyId);
     if (req.actor.type === "agent") {
       return {
         type: "agent",
@@ -775,6 +848,7 @@ export function pluginRoutes(
         agentId: req.actor.agentId ?? null,
         runId: req.actor.runId ?? null,
         companyId: scopedCompanyId,
+        ...person,
       };
     }
     if (req.actor.type === "board") {
@@ -784,6 +858,7 @@ export function pluginRoutes(
         agentId: null,
         runId: req.actor.runId ?? null,
         companyId: scopedCompanyId,
+        ...person,
       };
     }
     return {
@@ -792,7 +867,26 @@ export function pluginRoutes(
       agentId: null,
       runId: req.actor.runId ?? null,
       companyId: scopedCompanyId,
+      ...person,
     };
+  }
+
+  /**
+   * The core guard on `canvas.cards.*` (PAR-14389 C.1), called by both action
+   * routes after the core plugin gate and `performActionActorContext`. Throws
+   * 404/403/400, or answers a restricted person itself; true when it answered.
+   */
+  function answeredByCanvasCardsGuard(
+    res: Response,
+    key: string,
+    plugin: { manifestJson: PaperclipPluginManifestV1 | null },
+    actorContext: PluginPerformActionActorContext,
+    params: unknown,
+  ): boolean {
+    const outcome = canvasCardsGuard({ key, manifest: plugin.manifestJson, actorContext, params });
+    if (outcome.kind === "worker") return false;
+    res.json({ data: outcome.data });
+    return true;
   }
 
   function actionParamsWithAuthorizedCompanyScope(
@@ -825,13 +919,15 @@ export function pluginRoutes(
       return '"runContext.runId" does not belong to "runContext.agentId"';
     }
 
-    const [project] = await db
-      .select({ companyId: projects.companyId })
-      .from(projects)
-      .where(eq(projects.id, runContext.projectId))
-      .limit(1);
-    if (!project || project.companyId !== runContext.companyId) {
-      return '"runContext.projectId" does not belong to "runContext.companyId"';
+    if (runContext.projectId) {
+      const [project] = await db
+        .select({ companyId: projects.companyId })
+        .from(projects)
+        .where(eq(projects.id, runContext.projectId))
+        .limit(1);
+      if (!project || project.companyId !== runContext.companyId) {
+        return '"runContext.projectId" does not belong to "runContext.companyId"';
+      }
     }
 
     return null;
@@ -917,11 +1013,18 @@ export function pluginRoutes(
    * ]
    * ```
    *
+   * A user restricted under `enforce` gets only the plugins open to him
+   * (PAR-12608 4.8, AC-K4); a failed restriction read is 503.
+   *
    * Response: PluginUiContribution[]
    */
   router.get("/plugins/ui-contributions", async (req, res) => {
     assertBoardOrgAccess(req);
-    const plugins = await registry.listByStatus("ready");
+    const plugins = await filterPluginsOpenForPerson(
+      { db, resolve: resolveMemberRestriction },
+      req.actor,
+      await registry.listByStatus("ready"),
+    );
 
     const contributions: PluginUiContribution[] = plugins
       .map((plugin) => {
@@ -1023,7 +1126,7 @@ export function pluginRoutes(
       return;
     }
 
-    const { tool, parameters, runContext } = body;
+    const { tool, parameters, runContext: requestedRunContext } = body;
 
     // Validate required fields
     if (!tool || typeof tool !== "string") {
@@ -1031,24 +1134,51 @@ export function pluginRoutes(
       return;
     }
 
-    if (!runContext || typeof runContext !== "object") {
+    if (!requestedRunContext || typeof requestedRunContext !== "object") {
       res.status(400).json({ error: '"runContext" is required and must be an object' });
       return;
     }
 
-    if (!runContext.agentId || !runContext.runId || !runContext.companyId || !runContext.projectId) {
+    if (!requestedRunContext.agentId || !requestedRunContext.runId || !requestedRunContext.companyId) {
       res.status(400).json({
-        error: '"runContext" must include agentId, runId, companyId, and projectId',
+        error: '"runContext" must include agentId, runId, and companyId',
       });
       return;
     }
 
+    const requestedProjectId: unknown = requestedRunContext.projectId;
+    if (requestedProjectId != null && typeof requestedProjectId !== "string") {
+      res.status(400).json({ error: '"runContext.projectId" must be a string when present' });
+      return;
+    }
+    // A run can have no project. Plugins then get an empty projectId, the same
+    // value the tool gateway sends, so both paths give plugins one contract.
+    // The acting person is core's to compute; a value in the request body is dropped.
+    const { onBehalfOfUserId: _requestedPerson, onBehalfOfRestricted: _requestedMark, ...requestedIds } =
+      requestedRunContext as ToolRunContext;
+    const runContext: ToolRunContext = { ...requestedIds, projectId: requestedProjectId ?? "" };
+
     assertCompanyAccess(req, runContext.companyId);
+    // PAR-12608 4.9 decision 1 (signed-in callers) and H5 (a long-lived key
+    // naming a run in the tool run context). The header was checked at auth.
+    const restrictionError = await toolRouteCallerError(db, req.actor, runContext.companyId, "POST /plugins/tools/execute")
+      ?? (req.actor.source === "agent_key" && req.actor.onBehalfOfUserId && runContext.runId !== req.actor.runId
+        ? await agentKeyRunNamingError(db, {
+            companyId: runContext.companyId,
+            agentId: runContext.agentId,
+            personId: req.actor.onBehalfOfUserId,
+            runId: runContext.runId,
+            membership: req.actor.onBehalfOfMemberships?.find((m) => m.companyId === runContext.companyId) ?? null,
+            target: "POST /plugins/tools/execute",
+          })
+        : null);
+    if (restrictionError) throw restrictionError;
     const scopeError = await validateToolRunContextScope(runContext);
     if (scopeError) {
       res.status(403).json({ error: scopeError });
       return;
     }
+    Object.assign(runContext, await actingPerson(req, runContext.companyId));
 
     if (req.actor.type === "agent" && toolGatewayDeps) {
       try {
@@ -1094,6 +1224,8 @@ export function pluginRoutes(
       );
       res.json(result);
     } catch (err) {
+      // The dispatcher's plugin gate (4.8) answers through the error handler with its status and code.
+      if (err instanceof HttpError) throw err;
       const message = err instanceof Error ? err.message : String(err);
 
       // Distinguish between "worker not running" (502) and other errors (500)
@@ -1435,6 +1567,9 @@ export function pluginRoutes(
     }
 
     const companyId = assertPluginBridgeScope(req, body.companyId);
+    await assertPluginOpenForPerson(req, companyId, plugin, "bridge/data");
+    // PAR-14297: a failed restriction read throws 503 here, so the worker is never called.
+    const actorContext = await actingPerson(req, companyId);
 
     try {
       const result = await bridgeDeps.workerManager.call(
@@ -1444,6 +1579,7 @@ export function pluginRoutes(
           key: body.key,
           ...(companyId ? { companyId } : {}),
           params: body.params ?? {},
+          actorContext,
           renderEnvironment: body.renderEnvironment ?? null,
         },
       );
@@ -1528,6 +1664,9 @@ export function pluginRoutes(
     }
 
     const companyId = assertPluginBridgeScope(req, body.companyId);
+    await assertPluginOpenForPerson(req, companyId, plugin, "bridge/action");
+    const actorContext = await performActionActorContext(req, companyId);
+    if (answeredByCanvasCardsGuard(res, body.key, plugin, actorContext, body.params)) return;
 
     try {
       const result = await bridgeDeps.workerManager.call(
@@ -1536,7 +1675,7 @@ export function pluginRoutes(
         {
           key: body.key,
           params: actionParamsWithAuthorizedCompanyScope(body.params, companyId),
-          actorContext: performActionActorContext(req, companyId),
+          actorContext,
           renderEnvironment: body.renderEnvironment ?? null,
         },
       );
@@ -1622,6 +1761,9 @@ export function pluginRoutes(
     } | undefined;
 
     const companyId = assertPluginBridgeScope(req, body?.companyId);
+    await assertPluginOpenForPerson(req, companyId, plugin, "data");
+    // PAR-14297: a failed restriction read throws 503 here, so the worker is never called.
+    const actorContext = await actingPerson(req, companyId);
 
     try {
       const result = await bridgeDeps.workerManager.call(
@@ -1631,6 +1773,7 @@ export function pluginRoutes(
           key,
           ...(companyId ? { companyId } : {}),
           params: body?.params ?? {},
+          actorContext,
           renderEnvironment: body?.renderEnvironment ?? null,
         },
       );
@@ -1712,6 +1855,9 @@ export function pluginRoutes(
     } | undefined;
 
     const companyId = assertPluginBridgeScope(req, body?.companyId);
+    await assertPluginOpenForPerson(req, companyId, plugin, "actions");
+    const actorContext = await performActionActorContext(req, companyId);
+    if (answeredByCanvasCardsGuard(res, key, plugin, actorContext, body?.params)) return;
 
     try {
       const result = await bridgeDeps.workerManager.call(
@@ -1720,7 +1866,7 @@ export function pluginRoutes(
         {
           key,
           params: actionParamsWithAuthorizedCompanyScope(body?.params, companyId),
-          actorContext: performActionActorContext(req, companyId),
+          actorContext,
           renderEnvironment: body?.renderEnvironment ?? null,
         },
       );
@@ -1787,6 +1933,7 @@ export function pluginRoutes(
     }
 
     assertCompanyAccess(req, companyId);
+    await assertPluginOpenForPerson(req, companyId, plugin, "stream");
 
     // Set SSE headers
     res.writeHead(200, {
@@ -1808,21 +1955,47 @@ export function pluginRoutes(
       }
     };
 
+    // Each batch of events is re-checked by the gate before delivery (4.6a), so
+    // a plugin removed from his list, a flag set or a mode change ends the stream.
+    let queued: Array<[unknown, string]> = [];
+    let draining = false;
+    const drain = async () => {
+      draining = true;
+      while (queued.length > 0 && !unsubscribed) {
+        const batch = queued;
+        queued = [];
+        try {
+          await assertPluginOpenForPerson(req, companyId, plugin, "stream", true);
+        } catch {
+          queued = [];
+          safeUnsubscribe();
+          res.end("event: close\ndata: {}\n\n");
+          break;
+        }
+        for (const [event, eventType] of batch) {
+          if (unsubscribed || !res.writable) break;
+          try {
+            if (eventType !== "message") {
+              res.write(`event: ${eventType}\n`);
+            }
+            res.write(`data: ${JSON.stringify(event)}\n\n`);
+          } catch {
+            // Connection closed or write error — stop delivering
+            safeUnsubscribe();
+          }
+        }
+      }
+      draining = false;
+    };
+
     const unsubscribe = bridgeDeps.streamBus.subscribe(
       plugin.id,
       channel,
       companyId,
       (event, eventType) => {
         if (unsubscribed || !res.writable) return;
-        try {
-          if (eventType !== "message") {
-            res.write(`event: ${eventType}\n`);
-          }
-          res.write(`data: ${JSON.stringify(event)}\n\n`);
-        } catch {
-          // Connection closed or write error — stop delivering
-          safeUnsubscribe();
-        }
+        queued.push([event, eventType]);
+        if (!draining) void drain();
       },
     );
 
@@ -1869,6 +2042,20 @@ export function pluginRoutes(
     }
 
     try {
+      const upgrade = (req as Request & { [pluginApiUpgrade]?: unknown })[pluginApiUpgrade];
+      if (match.route.transport === "websocket") {
+        if (!upgrade || req.method !== "GET" || match.route.auth !== "board" || !plugin.manifestJson.capabilities.includes("http.outbound")) {
+          res.status(426).json({ error: "Browser WebSocket required" });
+          return;
+        }
+        if (!req.header("origin") || trustedBoardMutationOrigin(req) !== req.header("origin")?.toLowerCase()) {
+          res.status(403).json({ error: "Trusted browser origin required" });
+          return;
+        }
+      } else if (upgrade) {
+        res.status(400).json({ error: "Route does not accept WebSockets" });
+        return;
+      }
       assertScopedApiAuth(req, match.route);
       const companyId = await resolveScopedApiCompanyId(match.route, match.params, req);
       if (!companyId) {
@@ -1876,6 +2063,8 @@ export function pluginRoutes(
         return;
       }
       assertCompanyAccess(req, companyId);
+      // Also the plugin socket's gate: its upgrade is replayed through this handler (4.6a row 16).
+      await assertPluginOpenForPerson(req, companyId, plugin, "api");
       await enforceScopedApiCheckout(req, match.route, match.params, companyId);
       if (req.method !== "GET" && req.headers["content-type"] && !req.is("application/json")) {
         res.status(415).json({ error: "Plugin API routes accept JSON requests only" });
@@ -1889,6 +2078,7 @@ export function pluginRoutes(
       }
 
       const actor = getActorInfo(req);
+      const person = await actingPerson(req, companyId);
       const input: PluginScopedApiRequest = {
         routeKey: match.route.routeKey,
         method: req.method,
@@ -1902,6 +2092,7 @@ export function pluginRoutes(
           agentId: actor.agentId,
           userId: actor.actorType === "user" ? actor.actorId : null,
           runId: actor.runId,
+          ...person,
         },
         companyId,
         headers: sanitizePluginRequestHeaders(req),
@@ -1912,6 +2103,14 @@ export function pluginRoutes(
         "handleApiRequest",
         input,
       ) as PluginScopedApiResponse;
+      if (match.route.transport === "websocket") {
+        if (result.websocket) {
+          proxyPluginApiWebSocket(req, res, result.websocket, () => bridgeDeps.workerManager.isRunning(plugin.id));
+        } else {
+          res.status(result.status && result.status >= 400 && result.status <= 599 ? result.status : 502).json({ error: "Plugin connection unavailable" });
+        }
+        return;
+      }
       const status = Number.isInteger(result.status) && Number(result.status) >= 200 && Number(result.status) <= 599
         ? Number(result.status)
         : 200;
@@ -1922,6 +2121,8 @@ export function pluginRoutes(
         res.status(status).json(result.body ?? null);
       }
     } catch (err) {
+      // A failed restriction read answers through the error handler: 503 with its code, no data.
+      if (isMemberRestrictionUnavailable(err) || isMemberRestricted(err)) throw err;
       const status = typeof (err as { status?: unknown }).status === "number"
         ? (err as { status: number }).status
         : err instanceof JsonRpcCallError && (
@@ -2182,7 +2383,16 @@ export function pluginRoutes(
     const level = req.query.level as string | undefined;
     const since = req.query.since as string | undefined;
 
+    const companyIds = pluginOperationalReadCompanyIds(req);
+    if (companyIds && companyIds.length === 0) {
+      res.json([]);
+      return;
+    }
+
     const conditions = [eq(pluginLogs.pluginId, plugin.id)];
+    if (companyIds) {
+      conditions.push(inArray(pluginLogs.companyId, companyIds));
+    }
     if (level) {
       conditions.push(eq(pluginLogs.level, level));
     }
@@ -2611,7 +2821,11 @@ export function pluginRoutes(
     }
 
     try {
-      const runs = await jobDeps.jobStore.listRunsByJob(jobId, limit);
+      const runs = await jobDeps.jobStore.listRunsByJob(
+        jobId,
+        limit,
+        pluginOperationalReadCompanyIds(req),
+      );
       res.json(runs);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -2687,6 +2901,7 @@ export function pluginRoutes(
    * Errors:
    * - 404 if plugin not found or endpointKey not declared
    * - 400 if plugin is not in ready state or lacks webhooks.receive capability
+   * - 429 if the plugin refused with `PLUGIN_RPC_ERROR_CODES.RATE_LIMITED`
    * - 502 if the worker is unavailable or the RPC call fails
    */
   router.post("/plugins/:pluginId/webhooks/:endpointKey", async (req, res) => {
@@ -2814,7 +3029,10 @@ export function pluginRoutes(
         })
         .where(eq(pluginWebhookDeliveries.id, delivery.id));
 
-      res.status(502).json({
+      // A plugin's rate-limit refusal is the caller's to retry later (429, no Retry-After:
+      // the plugin's limits differ per path). Every other worker error stays 502.
+      const rateLimited = err instanceof JsonRpcCallError && err.code === PLUGIN_RPC_ERROR_CODES.RATE_LIMITED;
+      res.status(rateLimited ? 429 : 502).json({
         deliveryId: delivery.id,
         status: "failed",
         error: errorMessage,
@@ -2995,6 +3213,8 @@ export function pluginRoutes(
       return;
     }
 
+    const companyIds = pluginOperationalReadCompanyIds(req);
+
     // --- Worker diagnostics ---
     let worker: {
       status: string;
@@ -3042,7 +3262,7 @@ export function pluginRoutes(
 
     if (jobDeps) {
       try {
-        const runs = await jobDeps.jobStore.listRunsByPlugin(plugin.id, undefined, 10);
+        const runs = await jobDeps.jobStore.listRunsByPlugin(plugin.id, undefined, 10, companyIds);
         // Also fetch job definitions so we can include jobKey
         const jobs = await jobDeps.jobStore.listJobs(plugin.id);
         const jobKeyMap = new Map(jobs.map((j) => [j.id, j.jobKey]));
@@ -3079,6 +3299,10 @@ export function pluginRoutes(
     }> = [];
 
     try {
+      const deliveryConditions = [eq(pluginWebhookDeliveries.pluginId, plugin.id)];
+      if (companyIds) {
+        deliveryConditions.push(inArray(pluginWebhookDeliveries.companyId, companyIds));
+      }
       const deliveries = await db
         .select({
           id: pluginWebhookDeliveries.id,
@@ -3091,7 +3315,7 @@ export function pluginRoutes(
           createdAt: pluginWebhookDeliveries.createdAt,
         })
         .from(pluginWebhookDeliveries)
-        .where(eq(pluginWebhookDeliveries.pluginId, plugin.id))
+        .where(and(...deliveryConditions))
         .orderBy(desc(pluginWebhookDeliveries.createdAt))
         .limit(10);
 

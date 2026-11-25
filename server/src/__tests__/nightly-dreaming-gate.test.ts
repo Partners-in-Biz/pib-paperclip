@@ -1,3 +1,4 @@
+import { createAgentLifecycle } from "../services/agent-lifecycle.js";
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import express from "express";
@@ -59,7 +60,7 @@ describeEmbeddedPostgres("nightly dreaming generic gates", () => {
         defaultResponsibleUserId: "responsible-user",
         requireBoardApprovalForNewAgents: false,
       });
-      await agentService(db).create(companyId, {
+      await createAgentLifecycle(db).requestHire(companyId, {
         name: "CEO",
         role: "ceo",
         status: "idle",
@@ -93,7 +94,7 @@ describeEmbeddedPostgres("nightly dreaming generic gates", () => {
       app.use(express.json());
       app.use((req, _res, next) => {
         const url = req.originalUrl;
-        (req as express.Request).actor = url.includes("/skills/")
+        (req as express.Request).actor = /\/skills(\/|$|\?)/.test(url)
           ? { type: "agent", companyId, agentId: coachId, source: "agent_key" }
           : { type: "board", source: "local_implicit", userId: "board-user", isInstanceAdmin: true };
         next();
@@ -126,8 +127,11 @@ describeEmbeddedPostgres("nightly dreaming generic gates", () => {
       expect(run.status, JSON.stringify(run.body)).toBe(409);
       expect(run.body.code).toBe("nightly_dreaming_disabled");
 
+      // Upstream now resolves :skillId before the handler (404 for an unknown id),
+      // so probe the policy with a create, which runs the same skill-policy guard.
       const skillWrite = await request(app)
-        .delete(`/api/companies/${companyId}/skills/${randomUUID()}`);
+        .post(`/api/companies/${companyId}/skills`)
+        .send({ name: "Dreamed skill" });
       expect(skillWrite.status, JSON.stringify(skillWrite.body)).toBe(403);
       expect(skillWrite.body.code).toBe("skill_policy_denied");
 

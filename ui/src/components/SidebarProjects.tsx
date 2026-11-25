@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { NavLink, useLocation } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
-import { FolderOpen, Loader2, LogOut, MoreHorizontal, Plus } from "lucide-react";
+import { FolderOpen, Lock, Loader2, LogOut, MoreHorizontal, Plus } from "lucide-react";
 import {
   DndContext,
   MouseSensor,
@@ -21,7 +21,7 @@ import { SIDEBAR_SCROLL_RESET_STATE } from "../lib/navigation-scroll";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, projectRouteRef, SIDEBAR_RAIL_HIDDEN_LABEL } from "../lib/utils";
 import { useProjectOrder } from "../hooks/useProjectOrder";
-import { resourceMembershipState, useResourceMembershipMutation, useResourceMemberships } from "../hooks/useResourceMemberships";
+import { resourceMembershipState, useResourceMembershipControls, useResourceMembershipMutation, useResourceMemberships } from "../hooks/useResourceMemberships";
 import { useProjectExternalObjectSummary } from "../hooks/useIssueExternalObjects";
 import { BudgetSidebarMarker } from "./BudgetSidebarMarker";
 import { ExternalObjectStatusSummary } from "./ExternalObjectStatusSummary";
@@ -64,7 +64,8 @@ type ProjectItemProps = {
   projectSidebarSlots: ProjectSidebarSlot[];
   rail: boolean;
   setSidebarOpen: (open: boolean) => void;
-  onLeaveProject: (project: Project) => void;
+  /** Absent when the member controls are closed (restricted member under `enforce`). */
+  onLeaveProject?: (project: Project) => void;
   leaving?: boolean;
   isDragging?: boolean;
 };
@@ -146,6 +147,7 @@ function ProjectItem({
     >
       <ProjectTile color={project.color ?? null} icon={project.icon ?? null} size="xs" />
       <span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : "flex-1 truncate"}>{project.name}</span>
+            {!rail && project.visibility === "private" ? <Lock className="size-3.5 shrink-0 text-muted-foreground" aria-label="Private project" /> : null}
       {!rail ? <ExternalObjectStatusSummary summary={externalObjectsSummary} compact /> : null}
       {!rail && project.pauseReason === "budget" ? <BudgetSidebarMarker title="Project paused by budget" /> : null}
     </NavLink>
@@ -170,7 +172,7 @@ function ProjectItem({
           link
         )}
 
-        {!rail && (
+        {!rail && onLeaveProject && (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button
@@ -268,6 +270,7 @@ export function SidebarProjects() {
   });
   const membershipsQuery = useResourceMemberships(selectedCompanyId);
   const membershipMutation = useResourceMembershipMutation(selectedCompanyId);
+  const membershipControls = useResourceMembershipControls(selectedCompanyId);
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
@@ -402,7 +405,7 @@ export function SidebarProjects() {
       projectSidebarSlots={projectSidebarSlots}
       rail={rail}
       setSidebarOpen={setSidebarOpen}
-      onLeaveProject={leaveProject}
+      onLeaveProject={membershipControls ? leaveProject : undefined}
       leaving={projectLeaving(project)}
     />
   );
@@ -450,7 +453,7 @@ export function SidebarProjects() {
                   projectSidebarSlots={projectSidebarSlots}
                   rail={rail}
                   setSidebarOpen={setSidebarOpen}
-                  onLeaveProject={leaveProject}
+                  onLeaveProject={membershipControls ? leaveProject : undefined}
                   leaving={projectLeaving(project)}
                 />
               ))}

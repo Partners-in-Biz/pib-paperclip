@@ -16,6 +16,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import type { Issue } from "@paperclipai/shared";
 import { issueService } from "../services/issues.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -27,9 +28,16 @@ if (!embeddedPostgresSupport.supported) {
   );
 }
 
+// The inferred list() return type drops the attention fields that its rows carry at runtime.
+type IssueServiceWithListProjection = Omit<ReturnType<typeof issueService>, "list"> & {
+  list(
+    ...args: Parameters<ReturnType<typeof issueService>["list"]>
+  ): Promise<Array<Awaited<ReturnType<ReturnType<typeof issueService>["list"]>>[number] & Pick<Issue, "reviewAttention">>>;
+};
+
 describeEmbeddedPostgres("issue review attention", () => {
   let db!: ReturnType<typeof createDb>;
-  let svc!: ReturnType<typeof issueService>;
+  let svc!: IssueServiceWithListProjection;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
@@ -103,7 +111,7 @@ describeEmbeddedPostgres("issue review attention", () => {
     const { companyId, agentId } = await seed();
     const issueId = await insertReview({ companyId, agentId, identifier: "RVA-1" });
 
-    let row = (await svc.list(companyId, { status: "in_review" })).find((issue) => issue.id === issueId);
+    let row = (await svc.list(companyId, { readCondition: "system", status: "in_review" })).find((issue) => issue.id === issueId);
     expect(row?.reviewAttention).toMatchObject({
       state: "stalled",
       paths: [],
@@ -128,7 +136,7 @@ describeEmbeddedPostgres("issue review attention", () => {
       },
     });
 
-    row = (await svc.list(companyId, { status: "in_review" })).find((issue) => issue.id === issueId);
+    row = (await svc.list(companyId, { readCondition: "system", status: "in_review" })).find((issue) => issue.id === issueId);
     expect(row?.reviewAttention).toMatchObject({
       state: "covered",
       paths: [expect.objectContaining({ kind: "queued_wake", responder: "Review Agent" })],
@@ -210,7 +218,7 @@ describeEmbeddedPostgres("issue review attention", () => {
       nextAction: "Restore review path",
     });
 
-    const rows = await svc.list(companyId, { status: "in_review" });
+    const rows = await svc.list(companyId, { readCondition: "system", status: "in_review" });
     const byId = new Map(rows.map((row) => [row.id, row.reviewAttention]));
     const expectedKinds = new Map([
       [interactionIssueId, "interaction"],

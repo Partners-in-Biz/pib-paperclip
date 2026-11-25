@@ -8,6 +8,7 @@ import { fileStem, LAYOUT_SIZES, layoutInputs, layoutOptions, pageOrder, sizeByI
 import { useStudioAction } from "./action.js";
 import type { FlowNode } from "./board.js";
 import { makePdf, makeZip } from "./export-files.js";
+import { loadStudioFonts, useStudioFonts } from "./fonts.js";
 import { drawPage, loadAsset, pageJpeg, saveFile, toBase64 } from "./layout-render.js";
 
 const muted: CSSProperties = { color: "var(--muted-foreground)", fontSize: "var(--text-xs, 12px)", overflowWrap: "anywhere" };
@@ -48,6 +49,7 @@ export function LayoutBody({ id, data, companyId, canvasId, canEdit, set }: { id
   const [busy, setBusy] = useState(false);
   const [clipped, setClipped] = useState(false);
   const ready = Boolean(inputs.imageAssetId) && Boolean(inputs.text);
+  const fontsReady = useStudioFonts();
 
   useEffect(() => {
     if (!inputs.imageAssetId) return;
@@ -65,10 +67,11 @@ export function LayoutBody({ id, data, companyId, canvasId, canEdit, set }: { id
     };
     // `options` is compared through its key; `fetchFor` only depends on the action.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [inputs.imageAssetId, inputs.text, size.id, optionKey, companyId]);
+  }, [inputs.imageAssetId, inputs.text, size.id, optionKey, companyId, fontsReady]);
 
   async function fullPage(): Promise<Uint8Array<ArrayBuffer>> {
     const canvas = document.createElement("canvas");
+    await loadStudioFonts();
     const img = await loadAsset(inputs.imageAssetId as string, fetchFor(companyId));
     drawPage(canvas, img, inputs.text, size.width, size.height, options);
     return pageJpeg(canvas);
@@ -165,7 +168,6 @@ export function LayoutConfigure({ data, edit, beforeEdit, parts }: { data: Recor
       <Chips label="Align" value={o.align} options={[["center", "Centre"], ["left", "Left"]]} onPick={(align) => edit({ align })} />
       <Chips label="Font" value={o.font} options={[["sans", "Clean"], ["serif", "Book"], ["rounded", "Friendly"]]} onPick={(font) => edit({ font })} />
       <Chips label="Colour" value={o.colour} options={[["light", "White words"], ["dark", "Dark words"]]} onPick={(colour) => edit({ colour })} />
-      <span style={muted}>Fonts come from the device that exports, so export a set from one computer.</span>
     </>
   );
 }

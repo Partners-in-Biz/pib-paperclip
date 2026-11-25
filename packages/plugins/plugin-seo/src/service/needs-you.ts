@@ -47,7 +47,9 @@ import { requireSprint, sprintCopy } from "./context.js";
 import { loadServiceAccount } from "./google-access.js";
 import { bingKeyItem, githubTokenItem, linkSiteItem, serviceAccountItem } from "../engine/items.js";
 import { settingsPath } from "./settings-path.js";
-import { commentOn, getIssue, OPEN_ISSUE_STATUSES, openIssue, patchIssue } from "./issues.js";
+import { agentInstruction, agentRouteFor, isPageChangeTitle, needsPageWindow, type AgentRoute, type HandoffSite } from "../engine/needs-you-handoff.js";
+import { findSeoClientProject } from "./site.js";
+import { commentOn, getIssue, OPEN_ISSUE_STATUSES, openIssue, patchIssue, readIssueStrict } from "./issues.js";
 import { routePrReview } from "./review.js";
 import { setVerifyFailure, sprintVerifyRoute, sprintWordPressSite, verifyFailureOf, sprintHasSftp, wpConnectorItemFor, wpSftpItemFor } from "./wordpress.js";
 
@@ -59,7 +61,7 @@ const nowIso = (env: Env) => env.now().toISOString();
  * week's open items). `rollover`: create this week's only when last week
  * still has open items (the daily run, so each week gets its own issue).
  */
-async function currentDigest(env: Env, info: CompanyInfo, sprint: db.Sprint, mode: "read" | "write" | "rollover"): Promise<db.NeedsYouDigest | null> {
+export async function currentDigest(env: Env, info: CompanyInfo, sprint: db.Sprint, mode: "read" | "write" | "rollover"): Promise<db.NeedsYouDigest | null> {
   const week = weekStart(info.today);
   const existing = await db.getNeedsYou(env.ctx.db, sprint.companyId, sprint.id, week);
   if (existing) return existing;
@@ -104,8 +106,7 @@ async function syncDigestIssue(env: Env, info: CompanyInfo, sprint: db.Sprint, d
     // Every digest of the week points at the one issue (this sprint joins one a sibling opened).
     for (const d of all) if (d.issueId !== id) await db.setNeedsYouIssue(env.ctx.db, sprint.companyId, d.id, id, ident);
   };
-  if (!issueId) {
-    if (open.length === 0 || loud.length === 0) return null;
+  const create = async (): Promise<string | null> => {
     try {
       const created = await openIssue(env, {
         companyId: sprint.companyId,
@@ -126,9 +127,20 @@ async function syncDigestIssue(env: Env, info: CompanyInfo, sprint: db.Sprint, d
       env.ctx.logger.info("SEO needs-you issue not created", { sprintId: sprint.id, error: errorMessage(error) });
       return null;
     }
+  };
+  if (!issueId) {
+    if (open.length === 0 || loud.length === 0) return null;
+    return create();
   }
   if (issueId !== digest.issueId) await link(issueId, identifier);
-  const issue = await getIssue(env, sprint.companyId, issueId);
+  const read = await readIssueStrict(env, sprint.companyId, issueId);
+  if (read.kind === "error") {
+    // A failed read says nothing about the issue: no unlink, no patch, no create.
+    env.ctx.logger.info("SEO needs-you sync skipped: issue read failed", { issueId, error: errorMessage(read.error) });
+    return issueId;
+  }
+  if (read.kind === "missing") return repairMissingDigestIssue(env, sprint, digest, all, issueId, loud.length > 0, link, create);
+  const issue = read.issue;
   const isOpen = issue ? OPEN_ISSUE_STATUSES.has(String(issue.status)) : false;
   if (open.length === 0) {
     if (isOpen || issue?.description !== description) await patchIssue(env, sprint.companyId, issueId, { description, ...(isOpen ? { status: "done" } : {}) });
@@ -144,6 +156,55 @@ async function syncDigestIssue(env: Env, info: CompanyInfo, sprint: db.Sprint, d
     if (digest.status === "done") await db.upsertNeedsYou(env.ctx.db, { ...digest, status: "open" });
   }
   return issueId;
+}
+
+const recreatedKey = (companyId: string, weekStartDate: string) => ({ scopeKind: "company" as const, scopeId: companyId, namespace: "seo-needs-you", stateKey: `needs-you-recreated:${weekStartDate}` });
+const missingLoggedKey = (companyId: string, weekStartDate: string) => ({ scopeKind: "company" as const, scopeId: companyId, namespace: "seo-needs-you", stateKey: `needs-you-missing-logged:${weekStartDate}` });
+
+/**
+ * The linked weekly issue reads as missing (the host returns null for a deleted, other-company or private issue).
+ * Never patch it. Once per week: unlink the dead id, adopt a readable open issue with the week's origin, else open one
+ * when loud items are open. After that recreation, keep the link and stay quiet (one log line a week).
+ */
+async function repairMissingDigestIssue(
+  env: Env,
+  sprint: db.Sprint,
+  digest: db.NeedsYouDigest,
+  all: db.NeedsYouDigest[],
+  deadId: string,
+  hasLoud: boolean,
+  link: (id: string, ident: string | null) => Promise<void>,
+  create: () => Promise<string | null>,
+): Promise<string | null> {
+  const companyId = sprint.companyId;
+  if (await env.ctx.state.get(recreatedKey(companyId, digest.weekStart))) {
+    const logged = missingLoggedKey(companyId, digest.weekStart);
+    if (!(await env.ctx.state.get(logged))) {
+      env.ctx.logger.info("SEO needs-you issue missing again after this week's recreation: link kept, no update", { issueId: deadId, weekStart: digest.weekStart });
+      await env.ctx.state.set(logged, env.now().toISOString());
+    }
+    return deadId;
+  }
+  for (const d of await db.getNeedsYouForWeek(env.ctx.db, companyId, digest.weekStart)) {
+    if (d.issueId === deadId) await db.setNeedsYouIssue(env.ctx.db, companyId, d.id, null, null);
+  }
+  let found: Array<{ id: string }> = [];
+  try {
+    found = (await env.ctx.issues.list({ companyId, originKind: ORIGIN.needsYou, originId: `weekly:${digest.weekStart}`, limit: 20 })) as Array<{ id: string }>;
+  } catch (error) {
+    env.ctx.logger.info("SEO needs-you origin lookup failed", { error: errorMessage(error) });
+  }
+  for (const candidate of found) {
+    if (candidate.id === deadId) continue;
+    const read = await readIssueStrict(env, companyId, candidate.id);
+    if (read.kind !== "found" || !OPEN_ISSUE_STATUSES.has(String(read.issue.status))) continue;
+    await link(candidate.id, read.issue.identifier ?? null);
+    return candidate.id;
+  }
+  if (!hasLoud) return null;
+  const id = await create();
+  if (id) await env.ctx.state.set(recreatedKey(companyId, digest.weekStart), env.now().toISOString());
+  return id;
 }
 
 /** The weekly issue's description: the items of every sprint that has some, grouped by client. */
@@ -200,6 +261,7 @@ export async function addNeedsYou(env: Env, info: CompanyInfo, sprint: db.Sprint
   if (merged.added && issueId && digest.issueId && !item.quiet) {
     await commentOn(env, sprint.companyId, issueId, `New item for ${sprintLabel(sprint)}: **${item.title}**. ${item.why}`, { pointer: "the whole item is on the client's SEO page" });
   }
+  await tellSignoffDelegate(env, sprint.companyId, sprint.id);
   return { issueId, added: merged.added, key: item.key };
 }
 
@@ -241,7 +303,7 @@ export async function parkTasksWaitingOnYou(env: Env): Promise<number> {
  * The client asked for changes: the sign-off items that waited on that answer for this one task are no longer
  * waiting (and must not park the task again). Setup items (logins, repo links) are left alone.
  */
-export async function closeSignoffItems(env: Env, companyId: string, sprintId: string, taskId: string, note: string): Promise<number> {
+export async function closeSignoffItems(env: Env, companyId: string, sprintId: string, taskId: string, note: string, by = "client"): Promise<number> {
   const sprint = await requireSprint(env, companyId, sprintId);
   const info = await companyInfo(env, companyId);
   const digest = await currentDigest(env, info, sprint, "read");
@@ -251,13 +313,45 @@ export async function closeSignoffItems(env: Env, companyId: string, sprintId: s
     const only = (item.taskIds ?? []).length === 1 && item.taskIds![0] === taskId;
     if (item.status !== "open" || !only || (STANDARD_KEYS as readonly string[]).includes(item.key)) return item;
     closed += 1;
-    return { ...item, status: "done" as const, doneAt: nowIso(env), doneBy: "client", note };
+    return { ...item, status: "done" as const, doneAt: nowIso(env), doneBy: by, note };
   });
   if (closed === 0) return 0;
   const next = { ...digest, items };
   await db.upsertNeedsYou(env.ctx.db, next);
   await syncDigestIssue(env, info, sprint, next);
+  await tellSignoffDelegate(env, sprint.companyId, sprint.id);
   return closed;
+}
+
+/**
+ * A sprint task closed (done or cancelled): its Needs you rows are over. Closes, on every recent digest of the sprint,
+ * the open `review:<taskId>` / `task:<taskId>` rows and any row whose taskIds are all closed tasks (a row that lists
+ * several tasks stays open while one of them is still open). Setup items (logins, repo links) are left alone.
+ */
+export async function closeItemsForClosedTask(env: Env, companyId: string, sprintId: string, taskId: string, note: string): Promise<number> {
+  const sprint = await requireSprint(env, companyId, sprintId);
+  const info = await companyInfo(env, companyId);
+  const digests = (await db.recentNeedsYouDigests(env.ctx.db, companyId, sprintId)).filter((d) => d.items.some((i) => i.status === "open"));
+  let total = 0;
+  for (const digest of digests) {
+    let closed = 0;
+    const items: NeedsYouItem[] = [];
+    for (const item of digest.items) {
+      const ids = item.taskIds ?? [];
+      const lists = ids.includes(taskId) || item.key === `review:${taskId}` || item.key === `task:${taskId}`;
+      if (item.status !== "open" || !lists || (STANDARD_KEYS as readonly string[]).includes(item.key)) { items.push(item); continue; }
+      const others = ids.filter((id) => id !== taskId);
+      if (others.length > 0 && (await tasksAllTerminal(env, sprint, others)) !== true) { items.push(item); continue; }
+      closed += 1;
+      items.push({ ...item, status: "done" as const, doneAt: nowIso(env), doneBy: "plugin", note });
+    }
+    if (closed === 0) continue;
+    const next = { ...digest, items };
+    await db.upsertNeedsYou(env.ctx.db, next);
+    if (digest.status === "open") await syncDigestIssue(env, info, sprint, next);
+    total += closed;
+  }
+  return total;
 }
 
 /**
@@ -433,13 +527,17 @@ export async function resolveNeedsYou(env: Env, info: CompanyInfo, sprint: db.Sp
   const tasksContinued = (await continueTasks(env, fresh, item.taskIds ?? [], by, note)) + (key.startsWith("chunk:") ? await continueGroup(env, fresh, key.slice("chunk:".length), by) : 0);
   const issueId = await syncDigestIssue(env, info, fresh, next);
   if (issueId && openItems(next.items).length > 0) await commentOn(env, sprint.companyId, issueId, `Done: **${item.title}** (${by}). ${item.after}`);
+  await tellSignoffDelegate(env, sprint.companyId, sprint.id);
   return { resolved: true, stillOpen: null, tasksContinued };
 }
 
 /** Daily: close items the plugin can see done. */
 export async function recheckNeedsYou(env: Env, info: CompanyInfo, sprint: db.Sprint): Promise<number> {
   const digest = await currentDigest(env, info, sprint, "rollover");
-  if (!digest) return 0;
+  if (!digest) {
+    await tellSignoffDelegate(env, sprint.companyId, sprint.id);
+    return 0;
+  }
   // A new week: open this week's issue for the carried items (last week's closed on rollover). An existing issue is
   // re-rendered too, so its summary never falls behind while this sprint's own items stay quiet.
   if (digest.issueId || openItems(digest.items).length > 0) await syncDigestIssue(env, info, sprint, digest);
@@ -459,6 +557,8 @@ export async function recheckNeedsYou(env: Env, info: CompanyInfo, sprint: db.Sp
       env.ctx.logger.info("SEO needs-you check failed", { key: item.key, error: errorMessage(error) });
     }
   }
+  // The daily job is also the backstop: a delegate who became eligible (a preview passed) is told here.
+  await tellSignoffDelegate(env, sprint.companyId, sprint.id);
   return resolved;
 }
 
@@ -497,13 +597,28 @@ export function itemView(item: NeedsYouItem) {
   return { key: item.key, kind: item.kind, title: item.title, why: item.why, steps: item.steps, links: item.links, after: item.after, copy: item.copy ?? null, optional: Boolean(item.optional), status: item.status, check: item.check, taskIds: item.taskIds ?? [], addedAt: item.addedAt, doneAt: item.doneAt ?? null };
 }
 
+/** The site facts that decide which items the SEO agent can take over (Give to agent). */
+export async function handoffSite(env: Env, sprint: db.Sprint): Promise<HandoffSite> {
+  const wp = sprint.siteAccess === "wordpress" ? await sprintWordPressSite(env, sprint).catch(() => null) : null;
+  return {
+    siteAccess: sprint.siteAccess,
+    changePolicy: sprint.changePolicy,
+    clientSignoff: sprint.clientSignoff,
+    connectorConnected: wp?.connector_status === "connected",
+    sftp: Boolean(wp && Array.isArray(wp.access) && wp.access.includes("sftp")),
+  };
+}
+
 export async function needsYouView(env: Env, info: CompanyInfo, sprint: db.Sprint) {
   const digest = await currentDigest(env, info, sprint, "read");
+  const open = digest ? openItems(digest.items) : [];
+  const site = open.length > 0 ? await handoffSite(env, sprint) : null;
   return {
     weekStart: digest?.weekStart ?? weekStart(info.today),
     issueId: digest?.issueId ?? null,
     issueIdentifier: digest?.issueIdentifier ?? null,
-    open: digest ? openItems(digest.items).map(itemView) : [],
+    // agent: the route when the SEO agent can do the item itself (the page shows Give to agent), else null.
+    open: open.map((item) => ({ ...itemView(item), agent: site ? agentRouteFor(item, site) : null })),
     done: digest ? digest.items.filter((i) => i.status === "done").map(itemView) : [],
   };
 }
@@ -598,7 +713,7 @@ export async function needsYouAddTool(env: Env, companyId: string, actor: Actor,
   if (sprint.clientSignoff === "auto" && ["task", "review", "pr"].includes(kind) && taskIds.length > 0) {
     const pages = await env.ctx.db.query(
       `SELECT t.id FROM ${db.t("sprint_tasks")} t WHERE t.company_id = $1 AND t.id IN (SELECT jsonb_array_elements_text($2::jsonb)) AND t.task_type = 'page-write'
-         AND NOT EXISTS (SELECT 1 FROM ${db.t("previews")} p WHERE p.task_id = t.id)`,
+         AND NOT EXISTS (SELECT 1 FROM ${db.t("previews")} p WHERE p.task_id = t.id AND p.status <> 'cancelled')`,
       [companyId, JSON.stringify(taskIds)],
     );
     if (pages.length > 0) {
@@ -637,17 +752,190 @@ export async function needsYouAddTool(env: Env, companyId: string, actor: Actor,
       await setVerifyFailure(env, sprint, verifyKind, tried);
     }
   }
+  // A page change or template markup the agent can make itself is not a person's job (the Give to agent rules). A real
+  // person-only step that the rules mistake for one is let through with personOnly saying why (kept on the item).
+  const route = verifyKind ? null : agentRouteFor({ ...item, status: "open" }, await handoffSite(env, sprint));
+  if (route === "content" || route === "theme") {
+    const personOnly = str(params, "personOnly", { max: 500 });
+    if (!personOnly) {
+      throw new SeoError(`Not a Needs you item: you can do this yourself. ${agentInstruction(route, await handoffSite(env, sprint), sprint.id)} Only if it truly needs a person (wp-admin, an account, a judgement), call needs-you-add again with personOnly saying exactly what only a person can do.`);
+    }
+    item.why = `${item.why}\n\nOnly a person: ${personOnly}`.slice(0, 2600);
+  }
   const result = await addNeedsYou(env, info, sprint, item, { reopen: true });
+  // A page change set on a pr_only manual sign-off WordPress sprint is opened for applying by needs-you-resolve with pageUrls,
+  // which needs the task: without it the resolver must pass taskId. A wording heuristic, so a warning, never a refusal.
+  const warning = taskIds.length === 0 && needsPageWindow(sprint) && isPageChangeTitle(item.title) ? PAGE_CHANGE_NO_TASK_WARNING : null;
   // An out-of-scope PR is outward-facing: the Cockpit Reviewer checks it before the owner merges.
   const reviewIssueId = kind === "pr" && result.added ? await routePrReview(env, sprint, item) : null;
-  return { sprintId: sprint.id, ...result, ...(reviewIssueId ? { reviewIssueId } : {}), by: actorLabel(actor) };
+  return { sprintId: sprint.id, ...result, ...(reviewIssueId ? { reviewIssueId } : {}), ...(warning ? { warning } : {}), by: actorLabel(actor) };
+}
+
+export const PAGE_CHANGE_NO_TASK_WARNING =
+  "Added, but with no taskIds: this looks like a page change set on a pr_only site, and opening its apply window needs the task. Call needs-you-add again with the same key and taskIds = the sprint task of the page, or whoever resolves it must pass taskId.";
+const NOT_OPENED_NEXT =
+  "Resolved, but no apply window was opened: on this pr_only site the agent still may not write the page. To open it, call partnersinbiz.seo:approve-page-apply (sprintId, taskId, pageUrls, note; reviewCommentId when the pages have no passed preview), or needs-you-resolve with pageUrls and taskId next time.";
+
+/** The task a page approval on an item is for: `taskId` (one of the item's tasks when it names any), else its only task. */
+function pageApprovalTask(item: NeedsYouItem, taskId: string | null): string {
+  const ids = item.taskIds ?? [];
+  if (taskId) {
+    if (ids.length > 0 && !ids.includes(taskId)) throw new SeoError(`Task ${taskId} is not one of this item's tasks (${ids.join(", ")}).`);
+    return taskId;
+  }
+  if (ids.length === 1) return ids[0]!;
+  throw new SeoError(`${ids.length === 0 ? "This item names no task" : `This item names ${ids.length} tasks (${ids.join(", ")})`}: pass taskId (the sprint task whose pages these are) with pageUrls.`);
 }
 
 export async function needsYouResolveTool(env: Env, companyId: string, actor: Actor, params: Params) {
   const sprint = await requireSprint(env, companyId, reqStr(params, "sprintId"));
   const info = await companyInfo(env, companyId);
   const key = reqStr(params, "key", { max: 120 });
-  const result = await resolveNeedsYou(env, info, sprint, key, actorLabel(actor), str(params, "note", { max: 1000 }) ?? null, { person: actor.kind === "user" });
+  const note = str(params, "note", { max: 1000 }) ?? null;
+  const pageUrls = strList(params, "pageUrls");
+  const digest = await currentDigest(env, info, sprint, "read");
+  const item = digest?.items.find((i) => i.key === key && i.status === "open") ?? null;
+  if (pageUrls.length > 0) {
+    // Opens the window first (approve-page-apply resolves the item as its own step): a refused grant leaves the item open.
+    if (!item) throw new SeoError(`No open Needs you item ${key} on this sprint`);
+    const taskId = pageApprovalTask(item, str(params, "taskId", { max: 100 }) ?? null);
+    const reviewCommentId = str(params, "reviewCommentId", { max: 100 });
+    // Loaded on use: page-apply imports resolveNeedsYou from this module, so a static import would be a cycle.
+    const { approvePageApply } = await import("./page-apply.js");
+    const grant = await approvePageApply(env, companyId, actor, {
+      sprintId: sprint.id, taskId, pageUrls, needsYouKey: key, note: note ?? `Needs you item resolved: ${item.title}`.slice(0, 1000),
+      ...(reviewCommentId ? { reviewCommentId } : {}),
+    });
+    return { ...grant, sprintId: sprint.id, key, resolved: grant.needsYouResolved, applyWindow: "opened" as const };
+  }
+  const result = await resolveNeedsYou(env, info, sprint, key, actorLabel(actor), note, { person: actor.kind === "user" });
   if (!result.resolved && !result.stillOpen) throw new SeoError(`No open Needs you item ${key} on this sprint`);
+  // Any caller: a person may also resolve a page change set without knowing the agent still may not write it.
+  if (result.resolved && item && needsPageWindow(sprint) && isPageChangeTitle(item.title)) {
+    return { sprintId: sprint.id, key, ...result, applyWindow: "not_opened" as const, next: NOT_OPENED_NEXT };
+  }
   return { sprintId: sprint.id, key, ...result };
+}
+
+// ---------------------------------------------------------------------------
+// Give to agent (SEO page, Integrations → Needs you)
+// ---------------------------------------------------------------------------
+
+/** Items one "give all" hands over; the rest stay on the page for another press. */
+export const GIVE_ALL_MAX = 60;
+const GIVE_WHY_MAX = 600;
+const GIVE_STEP_MAX = 300;
+
+function handoffSection(item: NeedsYouItem, route: AgentRoute, site: HandoffSite, sprintId: string, n: number | null): string[] {
+  const lines = [`### ${n ? `${n}. ` : ""}${clip(item.title, 200)}`, "", agentInstruction(route, site, sprintId), "", `**What the item said:** ${clip(item.why, GIVE_WHY_MAX)}`];
+  if (item.steps.length > 0) lines.push("", ...item.steps.slice(0, 6).map((step, i) => `${i + 1}. ${clip(step, GIVE_STEP_MAX)}`));
+  if ((item.taskIds ?? []).length > 0) lines.push("", `Sprint tasks: ${(item.taskIds ?? []).map((id) => `\`${id}\``).join(", ")}`);
+  lines.push("", `<sub>Needs you key \`${item.key}\`: the whole item (links, copy-ready text) is in partnersinbiz.seo:needs-you with this key.</sub>`, "");
+  return lines;
+}
+
+/**
+ * A person gives Needs you items the SEO agent can do back to it: one item (`key`) or every such item (`all`). Each item is
+ * closed as handed over; tasks it waited on go back to the agent with the item's instructions as a comment, and items with
+ * no open task become one issue for the agent in the client's project. Items only a person can do are refused.
+ */
+export async function giveNeedsYouToAgent(env: Env, companyId: string, actor: Actor, params: Params) {
+  if (actor.kind !== "user") throw new SeoError("Give to agent is a button for people on the SEO page.");
+  const sprint = await requireSprint(env, companyId, reqStr(params, "sprintId"));
+  if (isRehearsalSprint(sprint)) throw new SeoError("A rehearsal sprint hands nothing to anybody.");
+  const info = await companyInfo(env, companyId);
+  const digest = await currentDigest(env, info, sprint, "read");
+  const key = str(params, "key", { max: 200 });
+  const all = bool(params, "all") === true;
+  if (!key && !all) throw new SeoError("Pass key (one item) or all: true.");
+  const site = await handoffSite(env, sprint);
+  const open = digest ? openItems(digest.items) : [];
+  const picked = (key ? open.filter((i) => i.key === key) : open)
+    .map((item) => ({ item, route: agentRouteFor(item, site) }))
+    .filter((x): x is { item: NeedsYouItem; route: AgentRoute } => x.route !== null)
+    .slice(0, GIVE_ALL_MAX);
+  if (key && open.every((i) => i.key !== key)) throw new SeoError(`No open Needs you item ${key} on this sprint.`);
+  if (picked.length === 0) throw new SeoError(key ? "Only a person can do this one: it stays on Needs you." : "Nothing on Needs you is something the agent can do itself.");
+  const agent = await resolveAgent(env, companyId);
+  if (!agent || ["paused", "pending_approval", "terminated"].includes(agent.status)) {
+    throw new SeoError("The SEO Specialist is not available (not hired, paused or terminated): nothing was handed over.");
+  }
+  const by = `${actorLabel(actor)}, given to the SEO Specialist`;
+
+  // Tasks the items waited on: each goes back to the agent once, with every item that named it.
+  const byTask = new Map<string, Array<{ item: NeedsYouItem; route: AgentRoute }>>();
+  const loose: Array<{ item: NeedsYouItem; route: AgentRoute }> = [];
+  for (const entry of picked) {
+    let placed = false;
+    for (const taskId of entry.item.taskIds ?? []) {
+      const task = await db.getTask(env.ctx.db, companyId, taskId);
+      if (!task?.issueId || (TERMINAL_TASK_STATUSES as string[]).includes(task.status)) continue;
+      byTask.set(task.id, [...(byTask.get(task.id) ?? []), entry]);
+      placed = true;
+      break;
+    }
+    if (!placed) loose.push(entry);
+  }
+
+  // Close first, so the 5-minute job does not park a task again while it still sees the item open.
+  const issues: string[] = [];
+  await closeNeedsYouItems(env, info, sprint, picked.map((p) => p.item.key), by, "Given to the SEO Specialist from the SEO page.");
+
+  let tasksResumed = 0;
+  for (const [taskId, entries] of byTask) {
+    const task = await db.getTask(env.ctx.db, companyId, taskId);
+    if (!task?.issueId) continue;
+    const updated = await patchIssue(env, companyId, task.issueId, { status: "todo", assigneeAgentId: agent.id, assigneeUserId: null });
+    if (!updated) {
+      loose.push(...entries);
+      continue;
+    }
+    await db.updateTask(env.ctx.db, companyId, task.id, { status: "in_progress", issue_status: "todo", assignee_kind: "agent", blocker_reason: null });
+    const body = [`A person gave this back to you from the Needs you list: you can do ${entries.length === 1 ? "it" : "these"} yourself.`, "", ...entries.flatMap((e) => handoffSection(e.item, e.route, site, sprint.id, null))];
+    await commentOn(env, companyId, task.issueId, body.join("\n").trimEnd());
+    try {
+      await env.ctx.issues.requestWakeup(task.issueId, companyId, { reason: "Needs you item given to the SEO Specialist", idempotencyKey: `give:${task.issueId}:${Date.now()}` });
+    } catch (error) {
+      env.ctx.logger.info("SEO wake skipped", { issueId: task.issueId, error: errorMessage(error) });
+    }
+    issues.push(task.issueId);
+    tasksResumed += 1;
+  }
+
+  let createdIssueId: string | null = null;
+  if (loose.length > 0) {
+    const projectId = sprint.clientProjectId ?? (await findSeoClientProject(env, sprint).catch(() => null));
+    const title = loose.length === 1 ? `Do it yourself: ${clip(loose[0]!.item.title, 180)}` : `Needs you items given back to you: ${sprintLabel(sprint)} (${loose.length})`;
+    const description = [
+      `A person gave ${loose.length === 1 ? "this item" : `these ${loose.length} items`} from ${sprintLabel(sprint)}'s Needs you list back to you (sprintId ${sprint.id}): you can do ${loose.length === 1 ? "it" : "them"} yourself.`,
+      "",
+      loose.length > 1 ? "Several items often describe the same page change (refresh, apply, approve): treat those as one piece of work. Work through them in one run where you can; complete this issue when every item is done or explained." : "Complete this issue when it is done or explained.",
+      "",
+      ...loose.flatMap((e, i) => handoffSection(e.item, e.route, site, sprint.id, loose.length > 1 ? i + 1 : null)),
+    ].join("\n").trimEnd();
+    const created = await openIssue(env, {
+      companyId,
+      sprint,
+      title,
+      description,
+      originKind: ORIGIN.needsYou,
+      originId: `give:${sprint.id}:${env.now().getTime()}`,
+      ...(projectId ? { projectId } : {}),
+      assigneeAgentId: agent.id,
+      priority: "medium",
+      wake: true,
+      wakeReason: "Needs you items given to the SEO Specialist",
+    });
+    createdIssueId = created.id;
+    issues.push(created.id);
+  }
+
+  const left = open.length - picked.length;
+  return { sprintId: sprint.id, given: picked.length, tasksResumed, issueId: createdIssueId, issueIds: issues, stillNeedYou: left };
+}
+
+/** Loaded on use: signoff-delegate reaches page-apply (via cockpit), which imports this module, so a static import would be a cycle. */
+async function tellSignoffDelegate(env: Env, companyId: string, sprintId: string): Promise<void> {
+  const { tellSignoffDelegate: tell } = await import("./signoff-delegate.js");
+  await tell(env, companyId, sprintId);
 }

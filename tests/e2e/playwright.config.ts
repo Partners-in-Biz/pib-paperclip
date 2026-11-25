@@ -35,7 +35,8 @@ export default defineConfig({
   testMatch: "**/*.spec.ts",
   // These suites target dedicated multi-user configurations/ports and are
   // intentionally not part of the default local_trusted e2e run.
-  testIgnore: ["in-feed-native/**", "multi-user.spec.ts", "multi-user-authenticated.spec.ts"],
+  testIgnore: ["in-feed-native/**", "multi-user.spec.ts", "multi-user-authenticated.spec.ts", "member-restriction-in-page.spec.ts", "member-restriction-shell.spec.ts", "member-restriction-workspace-config.spec.ts",
+    "member-restriction-task-detail.spec.ts"],
   timeout: 60_000,
   retries: 0,
   // All specs share one throwaway server, and several toggle instance-level
@@ -76,10 +77,13 @@ export default defineConfig({
     stdout: "pipe",
     stderr: "pipe",
     env: {
+      // PiB fork (PAR-6202): signoff journeys run more than three runs on one ticket within an
+      // hour; the per-ticket hourly cap is covered by unit and integration tests instead.
+      PIB_TICKET_RUNS_PER_HOUR_CAP: "20",
       ...process.env,
       NODE_ENV: "test",
       PAPERCLIP_UI_DEV_MIDDLEWARE: "false",
-      NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --import=${path.resolve(import.meta.dirname, "fixtures/agent-chat-github.mjs")}`,
+      NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --import=${path.resolve(import.meta.dirname, "fixtures/agent-chat-github.mjs")} --import=${path.resolve(import.meta.dirname, "fixtures/ai-connection-provider.mjs")}`,
       PORT: String(PORT),
       PAPERCLIP_OPEN_ON_LISTEN: "false",
       PAPERCLIP_API_URL: BASE_URL,
@@ -95,5 +99,13 @@ export default defineConfig({
     },
   },
   outputDir: "./test-results",
-  reporter: [["list"], ["html", { open: "never", outputFolder: "./playwright-report" }]],
+  reporter: [
+    ["list"], ["html", { open: "never", outputFolder: "./playwright-report" }],
+    ...(process.env.GITHUB_ACTIONS === "true"
+      ? [[path.resolve(import.meta.dirname, "../../scripts/ci/oversized-test-files-playwright.mjs")] as [string]]
+      : []),
+    ...(process.env.PAPERCLIP_CI_PROFILE === "true"
+      ? [[path.resolve(import.meta.dirname, "../../scripts/ci-profile/playwright-reporter.mjs")] as [string]]
+      : []),
+  ],
 });

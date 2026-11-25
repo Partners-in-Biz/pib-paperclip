@@ -49,6 +49,8 @@ class PIB_Connector_Router {
 			'posts/update'     => array( 'content', array( 'PIB_Connector_Content', 'endpoint_update' ) ),
 			'posts/create'     => array( 'content', array( 'PIB_Connector_Content', 'endpoint_create' ) ),
 			'posts/publish'    => array( 'content', array( 'PIB_Connector_Content', 'endpoint_publish' ) ),
+			'archive/get'      => array( 'content', array( 'PIB_Connector_Archive', 'endpoint_get' ) ),
+			'archive/set'      => array( 'content', array( 'PIB_Connector_Archive', 'endpoint_set' ) ),
 			'verify/get'       => array( 'verify', array( 'PIB_Connector_Verify', 'endpoint_get' ) ),
 			'verify/set'       => array( 'verify', array( 'PIB_Connector_Verify', 'endpoint_set' ) ),
 			'self/update'      => array( 'selfupdate', array( 'PIB_Connector_SelfUpdate', 'endpoint_update' ) ),

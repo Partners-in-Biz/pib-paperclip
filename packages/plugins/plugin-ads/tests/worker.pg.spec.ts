@@ -501,7 +501,9 @@ describe.skipIf(!available)("hiring the ads agent", () => {
     expect(options.draft.title).toContain("Paid Ads Manager");
     expect(options.draft.description).toContain("claude-sonnet-5-5");
     expect(options.draft.description).toContain("partnersinbiz.ads");
-    const hire = await act(w, "ads.start-hire", { assigneeAgentId: OPERATOR_ID }, userActor);
+    // Setup → Team sends the full template back (about 5,000 characters), so the action must take it.
+    expect(options.draft.description.length).toBeGreaterThan(2000);
+    const hire = await act(w, "ads.start-hire", { assigneeAgentId: OPERATOR_ID, title: options.draft.title, description: options.draft.description }, userActor);
     expect(hire).toMatchObject({ status: "open" });
     const linked = await act(w, "ads.link-agent", { agentId: ADS_AGENT }, userActor);
     expect(linked.steps.join(" ")).toMatch(/Granted .* access to plugin tools|already has plugin tool access/);

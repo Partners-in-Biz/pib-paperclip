@@ -6,7 +6,7 @@ export const DRIVE_ID = "0ADRIVE";
 const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { type: "pkcs8", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" } });
 export const KEY_JSON = JSON.stringify({ type: "service_account", client_email: "drive-sa@proj.iam.gserviceaccount.com", private_key: privateKey, private_key_id: "kid1", project_id: "proj" });
 
-export interface FakeFile { id: string; name: string; mimeType: string; parents: string[]; description?: string; appProperties?: Record<string, string>; size?: string; trashed?: boolean }
+export interface FakeFile { id: string; name: string; mimeType: string; parents: string[]; description?: string; appProperties?: Record<string, string>; size?: string; trashed?: boolean; driveId?: string }
 
 export interface FakeGoogleOptions {
   member?: boolean;
@@ -172,11 +172,11 @@ export function fakeGoogle(opts: FakeGoogleOptions = {}) {
       const parent = /'([^']+)' in parents/.exec(q)?.[1];
       const name = /name = '((?:[^'\\]|\\.)*)'/.exec(q)?.[1]?.replace(/\\(.)/g, "$1");
       const type = /key='pibEntityType' and value='([^']*)'/.exec(q)?.[1];
-      const id = /key='pibEntityId' and value='([^']*)'/.exec(q)?.[1];
+      const ids = [...q.matchAll(/key='pibEntityId' and value='([^']*)'/g)].map((m) => m[1]!); // an OR of several ids matches any of them (findSubfolder)
       const folderOnly = q.includes("vnd.google-apps.folder");
       const hits = files.filter(
         (f) => !f.trashed && (!folderOnly || f.mimeType.includes("folder")) && (!parent || f.parents.includes(parent)) && (name === undefined || f.name === name) &&
-          (type === undefined || f.appProperties?.pibEntityType === type) && (id === undefined || f.appProperties?.pibEntityId === id),
+          (type === undefined || f.appProperties?.pibEntityType === type) && (ids.length === 0 || ids.includes(f.appProperties?.pibEntityId ?? "")),
       );
       return json(200, { files: hits.map(view) });
     }
@@ -191,8 +191,19 @@ export function fakeGoogle(opts: FakeGoogleOptions = {}) {
       return json(200, view(f));
     }
     const patch = /^\/drive\/v3\/files\/([^/]+)$/.exec(u.pathname);
+    if (patch && method === "GET") {
+      expect(u.searchParams.get("supportsAllDrives")).toBe("true");
+      const f = files.find((x) => x.id === patch[1]);
+      if (!f) return json(404, { error: { message: "File not found" } });
+      return json(200, { ...view(f), driveId: f.driveId ?? driveId, trashed: f.trashed === true });
+    }
     if (patch && method === "PATCH") {
       const f = files.find((x) => x.id === patch[1])!;
+      if (typeof JSON.parse(init.body as string).trashed === "boolean") {
+        expect(u.searchParams.get("supportsAllDrives")).toBe("true");
+        f.trashed = JSON.parse(init.body as string).trashed;
+        return json(200, { ...view(f), trashed: f.trashed });
+      }
       const body = JSON.parse(init.body as string);
       const fault = takeFault("PATCH");
       if (fault && !fault.applyFirst) return json(fault.status, { error: { message: "injected failure" } });

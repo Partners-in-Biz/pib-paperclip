@@ -42,9 +42,9 @@ vi.mock("../dev-server-status.js", () => ({
 
 function createApp(
   db?: Db,
-  serverInfo = testServerInfo,
-  databaseBackupHealth?: Parameters<typeof healthRoutes>[1]["databaseBackupHealth"],
-  runtimeEnv?: Parameters<typeof healthRoutes>[1]["runtimeEnv"],
+  serverInfo: NonNullable<Parameters<typeof healthRoutes>[1]>["serverInfo"] = testServerInfo,
+  databaseBackupHealth?: NonNullable<Parameters<typeof healthRoutes>[1]>["databaseBackupHealth"],
+  runtimeEnv?: NonNullable<Parameters<typeof healthRoutes>[1]>["runtimeEnv"],
 ) {
   const app = express();
   app.use(
@@ -136,6 +136,29 @@ describe("GET /health", () => {
     expect(Object.prototype.hasOwnProperty.call(res.body, "hiddenSettings")).toBe(false);
   });
 
+  it("reveals staging experiments while retaining other Cloud settings restrictions", async () => {
+    const env = {
+      PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN: "tenant-token",
+      PAPERCLIP_PRIMARY_HOST: "team.paperclip.app",
+      PAPERCLIP_HIDDEN_SETTINGS: "instance.plugins,instance.experimental,instance.experimental.*",
+    };
+    const app = createApp(undefined, testServerInfo, undefined, env);
+    const production = await request(app).get("/health");
+    expect(production.body.hiddenSettings).toContain("instance.experimental");
+    expect(production.body.hiddenSettings).toContain("instance.experimental.enableChatConnectors");
+
+    env.PAPERCLIP_PRIMARY_HOST = "team.staging.paperclip.app";
+    const staging = await request(app).get("/health");
+    expect(staging.body.hiddenSettings).toContain("instance.plugins");
+    expect(staging.body.hiddenSettings).toContain("instance.experimental.enableManagedSandboxOnly");
+    expect(staging.body.hiddenSettings).toContain("instance.experimental.enableOwnerInstanceAdmin");
+    expect(staging.body.hiddenSettings).not.toContain("instance.experimental");
+    expect(staging.body.hiddenSettings).not.toContain("instance.experimental.enableChatConnectors");
+
+    env.PAPERCLIP_PRIMARY_HOST = "team.paperclip.app";
+    expect((await request(app).get("/health")).body.hiddenSettings).toEqual(production.body.hiddenSettings);
+  });
+
   it("publishes concrete wildcard restrictions to the UI and refreshes changed exceptions", async () => {
     const env = { PAPERCLIP_HIDDEN_SETTINGS: "instance.plugins,instance.experimental.*,!instance.experimental.enableEnvironments" };
     const app = createApp(undefined, testServerInfo, undefined, env);
@@ -167,6 +190,22 @@ describe("GET /health", () => {
       version: serverVersion,
       serverInfo: testServerInfo,
     });
+  });
+
+  it("shows memberRestriction forced_off only when PAPERCLIP_MEMBER_RESTRICTION is exactly off (AC-F9)", async () => {
+    const db = createHealthyDb();
+    const app = createApp(db);
+
+    vi.stubEnv("PAPERCLIP_MEMBER_RESTRICTION", "off");
+    const forced = await request(app).get("/health");
+    expect(forced.status).toBe(200);
+    expect(forced.body.memberRestriction).toBe("forced_off");
+
+    for (const value of ["OFF ", "false", "0", ""]) {
+      vi.stubEnv("PAPERCLIP_MEMBER_RESTRICTION", value);
+      const res = await request(app).get("/health");
+      expect(res.body).not.toHaveProperty("memberRestriction");
+    }
   });
 
   it("returns 503 when the database probe fails", async () => {
@@ -384,7 +423,7 @@ describe("GET /health", () => {
 
   it("redacts detailed metadata for anonymous requests in authenticated mode", async () => {
     const devServerStatus = await import("../dev-server-status.js");
-    vi.spyOn(devServerStatus, "readPersistedDevServerStatus").mockReturnValue(undefined);
+    vi.spyOn(devServerStatus, "readPersistedDevServerStatus").mockReturnValue(null);
     const { healthRoutes } = await import("../routes/health.js");
     const db = {
       execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),
@@ -427,7 +466,7 @@ describe("GET /health", () => {
 
   it("redacts detailed metadata when authenticated mode is reached without auth middleware", async () => {
     const devServerStatus = await import("../dev-server-status.js");
-    vi.spyOn(devServerStatus, "readPersistedDevServerStatus").mockReturnValue(undefined);
+    vi.spyOn(devServerStatus, "readPersistedDevServerStatus").mockReturnValue(null);
     const { healthRoutes } = await import("../routes/health.js");
     const db = {
       execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),
@@ -466,7 +505,7 @@ describe("GET /health", () => {
 
   it("keeps detailed metadata for authenticated requests in authenticated mode", async () => {
     const devServerStatus = await import("../dev-server-status.js");
-    vi.spyOn(devServerStatus, "readPersistedDevServerStatus").mockReturnValue(undefined);
+    vi.spyOn(devServerStatus, "readPersistedDevServerStatus").mockReturnValue(null);
     const { healthRoutes } = await import("../routes/health.js");
     const db = {
       execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),

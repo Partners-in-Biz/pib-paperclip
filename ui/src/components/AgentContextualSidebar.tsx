@@ -1,8 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
 import {
   Activity,
-  BadgeDollarSign,
-  BookOpenText,
+  FileCode2,
+  Fingerprint,
+  Gauge,
   History,
   KeyRound,
   Library,
@@ -14,9 +15,10 @@ import {
   Sparkles,
   Wrench,
 } from "lucide-react";
+import { usePluginSlots } from "@/plugins/slots";
 import { agentsApi } from "@/api/agents";
 import { useCompany } from "@/context/CompanyContext";
-import { useChatConnectorsEnabled } from "@/hooks/useChatConnectorsEnabled";
+import { useMemberRestriction } from "@/context/MemberRestrictionContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { ContextualSidebarFrame } from "./ContextualSidebarFrame";
 import { SidebarNavItem } from "./SidebarNavItem";
@@ -24,35 +26,32 @@ import { contextualSidebarStyles } from "./contextual-sidebar-styles";
 import {
   AGENT_DETAIL_NAVIGATION,
   agentDetailHref,
-  agentScopedAuditHref,
   type AgentLocalDetailView,
 } from "@/pages/agent-detail-navigation";
 
 const localIcons = {
   overview: Sparkles,
-  instructions: BookOpenText,
+  instructions: Fingerprint,
   skills: Library,
   runtime: Settings2,
-  secrets: ShieldCheck,
+  secrets: KeyRound,
   tools: Wrench,
   channels: MessageSquare,
   permissions: ShieldCheck,
   "api-keys": KeyRound,
   revisions: History,
+  advanced: FileCode2,
+  activity: Activity,
+  runs: PlayCircle,
+  costs: ReceiptText,
+  budgets: Gauge,
 } satisfies Record<AgentLocalDetailView, typeof Sparkles>;
-
-const auditItems = [
-  { section: "activity", label: "Activity", icon: Activity },
-  { section: "runs", label: "Runs", icon: PlayCircle },
-  { section: "costs", label: "Costs", icon: ReceiptText },
-  { section: "budgets", label: "Budgets", icon: BadgeDollarSign },
-] as const;
 
 export function AgentContextualSidebar({
   agentRef,
   agentId,
   agentName,
-  labels = { secrets: "Secrets & variables" },
+  labels,
 }: {
   agentRef: string;
   agentId?: string;
@@ -60,7 +59,6 @@ export function AgentContextualSidebar({
   labels?: Partial<Record<AgentLocalDetailView, string>>;
 }) {
   const { selectedCompanyId } = useCompany();
-  const { enabled: chatConnectorsEnabled } = useChatConnectorsEnabled();
   const shouldResolveAgent = !agentId || !agentName;
   const { data: resolvedAgent } = useQuery({
     queryKey: [...queryKeys.agents.detail(agentRef), selectedCompanyId ?? null, "contextual-sidebar"],
@@ -68,7 +66,23 @@ export function AgentContextualSidebar({
     enabled: shouldResolveAgent && Boolean(agentRef && selectedCompanyId),
   });
   const resolvedId = agentId ?? resolvedAgent?.id;
+  const { slots: pluginTabs } = usePluginSlots({ slotTypes: ["detailTab"], entityType: "agent", companyId: resolvedAgent?.companyId ?? selectedCompanyId, enabled: Boolean(resolvedId) });
   const resolvedName = agentName ?? resolvedAgent?.name ?? "Agent";
+  // A restricted member under `enforce` sees no closed tab (AC-G10); a section left empty is dropped with its label.
+  const { isPageHidden } = useMemberRestriction();
+  const sections = AGENT_DETAIL_NAVIGATION
+    .map((section) => ({ ...section, items: section.items.filter((item) => !isPageHidden(agentDetailHref(agentRef, item.value))) }))
+    .filter((section) => section.items.length > 0);
+  // Plugin tabs sit before Audit; when R's filter drops Audit they stay, at the end (plugin pages are C4g-2c-1's).
+  const hasAuditSection = sections.some((section) => section.label === "Audit");
+  const appsSection = pluginTabs.length > 0 ? (
+    <div data-slot="contextual-sidebar-section" className={contextualSidebarStyles.section}>
+      <p className={contextualSidebarStyles.sectionLabel}>Apps</p>
+      <div className={contextualSidebarStyles.group}>
+        {pluginTabs.map(slot => <SidebarNavItem key={`${slot.pluginKey}:${slot.id}`} to={`/agents/${encodeURIComponent(agentRef)}/${encodeURIComponent(`plugin:${slot.pluginKey}:${slot.id}`)}`} label={slot.displayName} icon={Wrench} />)}
+      </div>
+    </div>
+  ) : null;
 
   return (
     <ContextualSidebarFrame
@@ -83,56 +97,27 @@ export function AgentContextualSidebar({
         data-slot="contextual-sidebar-nav"
         className={contextualSidebarStyles.nav}
       >
-        {AGENT_DETAIL_NAVIGATION.map((section) => (
-          <div
-            key={section.label}
-            data-slot="contextual-sidebar-section"
-            className={contextualSidebarStyles.section}
-          >
-            <p
-              data-slot="contextual-sidebar-section-label"
-              className={contextualSidebarStyles.sectionLabel}
-            >
-              {section.label}
-            </p>
-            <div data-slot="contextual-sidebar-group" className={contextualSidebarStyles.group}>
-              {section.items
-                .filter((item) => item.value !== "channels" || chatConnectorsEnabled)
-                .map((item) => {
-                  const href = agentDetailHref(agentRef, item.value);
-                  return (
-                    <SidebarNavItem
-                      key={item.value}
-                      to={href}
-                      label={labels?.[item.value] ?? item.label}
-                      icon={localIcons[item.value]}
-                    />
-                  );
-                })}
+        {sections.map((section) => (
+          <div key={section.label} className="contents">
+            {section.label === "Audit" ? appsSection : null}
+            <div data-slot="contextual-sidebar-section" className={contextualSidebarStyles.section}>
+              <p data-slot="contextual-sidebar-section-label" className={contextualSidebarStyles.sectionLabel}>
+                {section.label}
+              </p>
+              <div data-slot="contextual-sidebar-group" className={contextualSidebarStyles.group}>
+                {section.items.map((item) => (
+                  <SidebarNavItem
+                    key={item.value}
+                    to={agentDetailHref(agentRef, item.value)}
+                    label={labels?.[item.value] ?? item.label}
+                    icon={localIcons[item.value]}
+                  />
+                ))}
+              </div>
             </div>
           </div>
         ))}
-
-        <div data-slot="contextual-sidebar-section" className={contextualSidebarStyles.section}>
-          <p
-            data-slot="contextual-sidebar-section-label"
-            className={contextualSidebarStyles.sectionLabel}
-          >
-            Audit
-          </p>
-          <div data-slot="contextual-sidebar-group" className={contextualSidebarStyles.group}>
-            {resolvedId ? auditItems.map((item) => (
-              <SidebarNavItem
-                key={item.section}
-                to={agentScopedAuditHref(resolvedId, item.section)}
-                label={item.label}
-                icon={item.icon}
-              />
-            )) : (
-              <p className="px-2 py-1.5 text-xs text-muted-foreground">Loading audit links…</p>
-            )}
-          </div>
-        </div>
+        {hasAuditSection ? null : appsSection}
       </nav>
     </ContextualSidebarFrame>
   );

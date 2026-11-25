@@ -11,6 +11,9 @@ import { deliverClientAnswers, requestClientApproval } from "../src/client-appro
 import { loadSocialConfig } from "../src/config.js";
 import { checkReview, SOCIAL_DONE_CHECKS } from "../src/done-checks.js";
 import { recordClientApprovalRecord, setApprovalPolicyRecord, transitionPost } from "../src/service.js";
+import { defaultPolicy } from "../src/approval-policy.js";
+import { handToDelegate, reviewerVerdictBrief, routePostReview } from "../src/review.js";
+import { delegateWorld } from "./delegate-world.js";
 import { approvalWorld, PERSON, postRow, REVIEWER_AGENT, SOCIAL_AGENT, type World } from "./world.js";
 
 const CLIENT_ONLY = { require_owner: false, require_client: true };
@@ -282,5 +285,59 @@ describe("the agent that opened a post is the one the issue goes to", () => {
     await transitionPost(w.ctx, SOCIAL_AGENT, "p1", "review");
     expect(w.created).toHaveLength(1);
     expect(w.created[0]).toMatchObject({ originId: "review:p1", assigneeAgentId: "ag-social" });
+  });
+});
+
+describe("PAR-9561 T7a: the delegated approver's review issue", () => {
+  it("a closed review issue is replaced by a fresh one for the same post, assigned to the delegate and woken", async () => {
+    const w = delegateWorld();
+    w.setIssueStatus("iss-9", "done");
+    const id = await handToDelegate(w.ctx, "co", postRow(w), "ag-rhea", "Next: the scope's delegated approver.");
+    expect(id).toBe("iss-1");
+    expect(w.created).toHaveLength(1);
+    expect(w.created[0]).toMatchObject({ title: expect.stringContaining("Approve or return social post: "), assigneeAgentId: "ag-rhea", originId: "review:p1" });
+    expect(String(w.created[0]!.description)).toContain("Next: the scope's delegated approver.");
+    expect(String(w.created[0]!.description)).toContain("Post id: `p1`");
+    expect(w.wakeups).toEqual(["iss-1"]);
+    expect(w.reviewIssueId()).toBe("iss-1");
+    expect(w.updates.filter((u) => u.id === "iss-9")).toEqual([]);
+  });
+
+  it("an open review issue is reused, not duplicated", async () => {
+    const w = delegateWorld();
+    expect(await handToDelegate(w.ctx, "co", postRow(w), "ag-rhea", "Next.")).toBe("iss-9");
+    expect(w.created).toEqual([]);
+    expect(w.wakeups).toEqual(["iss-9"]);
+  });
+
+  it("a failed create returns null (the caller hands the post to the person)", async () => {
+    const w = delegateWorld();
+    w.setIssueStatus("iss-9", "done");
+    (w.ctx.issues as unknown as { create: () => Promise<unknown> }).create = async () => {
+      throw new Error("host refused");
+    };
+    expect(await handToDelegate(w.ctx, "co", postRow(w), "ag-rhea", "Next.")).toBeNull();
+  });
+
+  it("the Reviewer's issue names the delegate as who approves after a pass; without one it names the person", async () => {
+    const w = delegateWorld();
+    w.setIssueStatus("iss-9", "done");
+    await routePostReview(w.ctx, { companyId: "co", userId: "owner-1", isAgent: false }, postRow(w));
+    const text = String(w.created[0]!.description);
+    expect(text).toContain("## Reviewer: check before the delegated approver approves");
+    expect(text).toContain("after a pass to the scope's delegated approver, agent `ag-rhea`");
+
+    const none = delegateWorld({ delegate: null });
+    none.setIssueStatus("iss-9", "done");
+    await routePostReview(none.ctx, { companyId: "co", userId: "owner-1", isAgent: false }, postRow(none));
+    const plain = String(none.created[0]!.description);
+    expect(plain).toContain("## Reviewer: check before the person approves");
+    expect(plain).not.toContain("delegated approver");
+  });
+
+  it("reviewerVerdictBrief keeps the person's label without a delegate and the Social agent when the client approves", () => {
+    const policy = { ...defaultPolicy(null), requireReviewer: true };
+    expect(reviewerVerdictBrief(policy, { userId: "u", label: "user `u`" })).toContain("after a pass to user `u`");
+    expect(reviewerVerdictBrief({ ...policy, requireClient: true }, { userId: "u", label: "x", delegateAgentId: "ag-rhea" })).toContain("check before the person approves");
   });
 });

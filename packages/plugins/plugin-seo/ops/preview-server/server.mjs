@@ -4,13 +4,16 @@
 import http from "node:http";
 import { createRequire } from "node:module";
 import { execFile } from "node:child_process";
-import { mkdir, readFile, stat } from "node:fs/promises";
+import { mkdir, readFile, stat, unlink } from "node:fs/promises";
+import { DECISION_COLUMNS, DECISION_SQL, DECISION_STATE_SQL, DECLINED_PAGE, grantFix, MISSING_GRANTS_SQL, refusedAnswer, SCHEMA } from "./decision.mjs";
+import { guardShot, proposalState, shotUntilPainted } from "./capture.mjs";
+import { startEgressProxy } from "./egress.mjs";
+import { createRenderService, keptTextFigure, RENDER_PORT, wordsOf } from "./render.mjs";
 import { chromiumEnv, domArgs, findChrome, makeProfile, SHOT_MAX_AGE_MS, shotArgs, sweepProfiles, sweepShots } from "./sweep.mjs";
 
 const require = createRequire("/home/paperclip/paperclip-runtime/current/node_modules/");
 const { Pool } = require("pg");
 
-const SCHEMA = "plugin_seo_8099f8879a";
 const PORT = Number(process.env.PORT ?? 3031);
 // CHROME_PATH pins one binary; otherwise the newest Playwright Chromium is looked up on each run (findChrome in sweep.mjs).
 const CHROME_PATH = process.env.CHROME_PATH;
@@ -43,6 +46,22 @@ async function withChromium(run) {
 const pool = new Pool({ connectionString: process.env.PREVIEW_DATABASE_URL, max: 4 });
 
 const PREVIEW_ORIGIN = process.env.PREVIEW_ORIGIN ?? "https://preview.partnersinbiz.online";
+
+// PAR-13038: answers fail with a 500 while pib_preview lacks UPDATE on a column DECISION_SQL writes. Checked at startup and by
+// /health (cached a minute), which answers 503 with the GRANT to run, so a missed deploy step shows before a client presses Approve.
+let grantCheck = { at: 0, problem: null };
+async function decisionGrantProblem() {
+  if (Date.now() - grantCheck.at < 60_000) return grantCheck.problem;
+  let problem = null;
+  try {
+    const { rows } = await pool.query(MISSING_GRANTS_SQL, [DECISION_COLUMNS]);
+    if (rows.length) problem = `client answers will fail: run as the database owner: ${grantFix(rows.map((r) => r.column))}`;
+  } catch (error) {
+    problem = `grant check failed: ${error instanceof Error ? error.message : error}`;
+  }
+  grantCheck = { at: Date.now(), problem };
+  return problem;
+}
 
 const SECURITY = {
   "X-Robots-Tag": "noindex, nofollow, noarchive",
@@ -83,59 +102,6 @@ async function readForm(req) {
 }
 
 const esc = (v) => String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-
-const WORD = /[\p{L}\p{N}][\p{L}\p{N}'’-]*/gu;
-
-/** Remove every element whose opening tag matches openRe, with its whole subtree (nested same-name tags balanced). */
-function stripElements(html, openRe) {
-  const VOID = /^(area|base|br|col|embed|hr|img|input|link|meta|source|track|wbr)$/i;
-  let out = "";
-  let pos = 0;
-  openRe.lastIndex = 0;
-  let m;
-  while ((m = openRe.exec(html))) {
-    if (m.index < pos) continue;
-    let end = m.index + m[0].length;
-    if (!VOID.test(m[1]) && !/\/>$/.test(m[0])) {
-      const tagRe = new RegExp("<(/?)" + m[1] + "\\b[^>]*>", "gi");
-      tagRe.lastIndex = end;
-      let depth = 1;
-      let t;
-      end = html.length;
-      while ((t = tagRe.exec(html))) {
-        if (t[1]) depth--;
-        else if (!/\/>$/.test(t[0])) depth++;
-        if (depth === 0) { end = t.index + t[0].length; break; }
-      }
-    }
-    out += html.slice(pos, m.index) + " ";
-    pos = end;
-    openRe.lastIndex = end;
-  }
-  return out + html.slice(pos);
-}
-
-/** Remove Google Translate widget elements to avoid counting their text as page content. */
-function stripGoogleTranslateWidget(html) {
-  // Main widget container
-  html = stripElements(html, /<(div)\b[^>]*\bid\s*=\s*["']?google_translate_element\b[^>]*>/gi);
-  // Elements with the skiptranslate class
-  html = stripElements(html, /<(\w+)\b[^>]*class\s*=\s*["']?[^"'>]*skiptranslate[^"'>]*["']?[^>]*>/gi);
-  // Generated goog-te-* / VIpgJd UI
-  html = stripElements(html, /<(\w+)\b[^>]*class\s*=\s*["']?[^"'>]*(?:goog-te|VIpgJd)[^"'>]*["']?[^>]*>/gi);
-  return html;
-}
-
-function wordsOf(html) {
-  const text = stripGoogleTranslateWidget(html)
-    .replace(/<(script|style|noscript|template|svg)\b[\s\S]*?<\/\1\s*>/gi, " ")
-    .replace(/<div id="pib-preview-bar"[\s\S]*?<\/form><\/div><div style="height:64px"><\/div>/i, " ")
-    .replace(/<!--[\s\S]*?-->/g, " ")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;|&#160;/g, " ")
-    .replace(/&amp;/g, "&");
-  return (text.toLowerCase().match(WORD) ?? []).slice(0, 200_000);
-}
 
 /** What a visitor's browser ends up showing (scripts run), as HTML. */
 function renderedDom(url) {
@@ -210,8 +176,16 @@ async function shotFor(row, token, which, mobile = false) {
     if (Date.now() - st.mtimeMs < SHOT_REUSE_MS) return readFile(file);
   } catch {}
   const url = which === "live" ? row.page_url : `http://127.0.0.1:${PORT}/p/${token}?key=${encodeURIComponent(row.review_key)}`;
-  await screenshot(url, file, mobile);
-  return readFile(file);
+  // Fail loudly rather than save a picture of an error page or another site (PAR-9042).
+  await guardShot({ which, mobile, liveUrl: row.page_url, proposalUrl: url, proposalHtml: row.html });
+  // agriauctionssa.co.za intermittently gives a blank shot: a deferred script on a host that hangs holds the first paint
+  // (PAR-12454). A one-colour shot is retaken up to twice; a still-blank one is deleted (never cached) and answers 502.
+  return shotUntilPainted({
+    take: () => screenshot(url, file, mobile),
+    read: () => readFile(file),
+    remove: () => unlink(file),
+    label: `${which}${mobile ? "-mobile" : ""}`,
+  });
 }
 
 function reviewPage(token, key, row) {
@@ -222,17 +196,7 @@ function reviewPage(token, key, row) {
 <body style="font:15px/1.5 system-ui,sans-serif;margin:0;padding:16px;background:#f3f4f6;color:#111">
 <h1 style="font-size:20px;margin:0 0 4px">Check before the client sees it</h1>
 <p style="margin:0 0 12px">${esc(row.title)}<br><a href="${esc(row.page_url)}">${esc(row.page_url)}</a> · review status: <strong>${esc(row.review_status)}</strong></p>
-${(() => {
-  const r = st.rendered;
-  if (!r) return `<p style="background:#fef3c7;padding:8px 12px;border-radius:6px">The rendered check could not be made. Do not pass this preview until it works: reload this page.</p>`;
-  const bad = r.keptPct < 70;
-  return `<p style="background:${bad ? "#fee2e2" : "#dcfce7"};padding:8px 12px;border-radius:6px;margin:0 0 12px"><strong>What a visitor sees:</strong> the proposal still shows <strong>${esc(r.keptPct)}%</strong> of the live page's text (${esc(r.liveWords)} words live, ${esc(r.removedWords)} missing, ${esc(r.addedWords)} new). ${bad ? "A lot of the live page is missing from the proposal. Do not pass it." : "Now compare the screenshots for layout, listings and images."}</p>`;
-})()}
-<p style="margin:0 0 4px;color:#555">Figures from the page source (before scripts run):</p>
-<table style="border-collapse:collapse;background:#fff;margin-bottom:12px"><tbody>
-<tr><td style="padding:4px 12px">Words on the live page</td><td><strong>${esc(st.liveWords)}</strong></td></tr>
-<tr><td style="padding:4px 12px">Words on the proposal</td><td><strong>${esc(st.previewWords)}</strong></td></tr>
-<tr><td style="padding:4px 12px">Live text kept</td><td><strong>${esc(st.keptPct)}%</strong> (added ${esc(st.addedWords)}, removed ${esc(st.removedWords)})</td></tr></tbody></table>
+${keptTextFigure(st)}
 <p style="margin:0 0 8px">Left: the live page as it is now (with its scripts, so listings and menus show). Right: the proposal (static copy of the same page with the new copy added). Anything on the left that is missing on the right is a problem. Images: <a href="${base}/shot/live?${q}">live.png</a> · <a href="${base}/shot/proposed?${q}">proposed.png</a> (first load takes up to a minute).</p>
 <div style="display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap">
 <figure style="margin:0;flex:1;min-width:300px"><figcaption><strong>Live now</strong></figcaption><img style="width:100%;border:1px solid #ccc;background:#fff" src="${base}/shot/live?${q}" alt="live"></figure>
@@ -254,7 +218,10 @@ const server = http.createServer(async (req, res) => {
   try {
     const ip = String(req.headers["x-forwarded-for"] ?? req.socket.remoteAddress ?? "").split(",")[0].trim();
     const url = new URL(req.url ?? "/", "http://x");
-    if (url.pathname === "/health") return send(res, 200, "ok", "text/plain");
+    if (url.pathname === "/health") {
+      const problem = await decisionGrantProblem();
+      return problem ? send(res, 503, problem, "text/plain") : send(res, 200, "ok", "text/plain");
+    }
     if (limited(ip)) return send(res, 429, page("Too many requests. Please try again in a minute."));
     // /p/<site>/<token>[...]: the site name is only there to read; the token is the secret. /p/<token> (older links) works too.
     const m = /^\/p\/(?:[a-z0-9-]{1,30}\/)?([A-Za-z0-9_-]{20,64})(\/decision|\/review|\/shot\/(?:live|proposed)(?:-mobile)?)?$/.exec(url.pathname);
@@ -267,14 +234,16 @@ const server = http.createServer(async (req, res) => {
     };
     const sub = m[2] ?? "";
     if (req.method === "GET" && sub === "") {
-      const { rows } = await pool.query(`SELECT html, review_status, review_key, expires_at < now() AS expired FROM ${SCHEMA}.previews WHERE id = $1`, [token]);
+      const { rows } = await pool.query(`SELECT html, status, review_status, review_key, decided_at, expires_at < now() AS expired, (status = 'approved' AND decided_at > now() - interval '30 days') AS approved_live FROM ${SCHEMA}.previews WHERE id = $1`, [token]);
       if (!rows[0]) return send(res, 404, page("This preview link is not valid."));
-      if (rows[0].expired) return send(res, 410, page("This preview has expired. Ask us for a fresh link."));
-      let html = rows[0].html;
-      html = rewriteFormAction(html, PREVIEW_ORIGIN);
-      if (key && key === rows[0].review_key) return send(res, 200, html);
-      if (rows[0].review_status !== "passed") return send(res, 200, page("This preview is being checked and is not ready yet. Please try again later."));
-      return send(res, 200, html);
+      const state = proposalState(rows[0], key);
+      if (state === "cancelled") return send(res, 410, page("This preview was replaced by a newer version. We will send you the current link."));
+      if (state === "declined") return send(res, 410, page(DECLINED_PAGE));
+      // An approved answer stays valid 30 days after it was given (APPROVAL_VALID_DAYS), whatever the link's expiry; no form, POST stays refused.
+      if (state === "approved") return send(res, 200, page(`You approved this on ${new Date(rows[0].decided_at).toISOString().slice(0, 10)}. We are applying it.`));
+      if (state === "expired") return send(res, 410, page("This preview has expired. Ask us for a fresh link."));
+      if (state === "hold") return send(res, 200, page("This preview is being checked and is not ready yet. Please try again later."));
+      return send(res, 200, rewriteFormAction(rows[0].html, PREVIEW_ORIGIN));
     }
     if (req.method === "GET" && sub === "/review") {
       const row = await staff();
@@ -307,11 +276,11 @@ const server = http.createServer(async (req, res) => {
       const decision = form.get("decision");
       if (decision !== "approved" && decision !== "changes_requested") return send(res, 400, page("Please choose Approve or Request changes."));
       const note = (form.get("note") ?? "").trim().slice(0, 1000) || null;
-      const { rowCount } = await pool.query(
-        `UPDATE ${SCHEMA}.previews SET status = $2, decision_note = $3, decided_at = now(), notified_at = NULL WHERE id = $1 AND expires_at > now() AND review_status = 'passed'`,
-        [token, decision, note],
-      );
-      if (!rowCount) return send(res, 409, page("This preview is not ready for an answer yet, or has expired."));
+      const { rowCount } = await pool.query(DECISION_SQL, [token, decision, note]);
+      if (!rowCount) {
+        const { rows } = await pool.query(DECISION_STATE_SQL, [token]);
+        return send(res, 409, page(refusedAnswer(rows[0]?.status)));
+      }
       return send(res, 200, page(decision === "approved" ? "Thank you. We have your approval and will make the change." : "Thank you. We have your comments and will send an updated version."));
     }
     return send(res, 405, page("Not allowed."));
@@ -324,4 +293,29 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, "127.0.0.1", () => {
   console.log(`preview service on 127.0.0.1:${PORT}`);
   void housekeeping();
+  void decisionGrantProblem().then((problem) => problem && console.error(`preview error: ${problem}`));
 });
+
+// /render (PAR-8799): loopback only, fixed port, for the SEO plugin's create-preview. Never on PORT, never behind Caddy.
+const egress = await startEgressProxy({ log: (line) => console.log(line) });
+const render = createRenderService({
+  proxyPort: egress.port,
+  chrome: () => findChrome(PLAYWRIGHT_DIR, CHROME_PATH),
+  withChromium,
+  before: housekeeping,
+  log: (line) => console.error(line),
+});
+const renderServer = http.createServer(render.handle);
+// A busy port must not take the public service on PORT down with it.
+renderServer.on("error", (error) => console.error(`render server on ${RENDER_PORT} failed`, error instanceof Error ? error.message : error));
+renderServer.listen(RENDER_PORT, "127.0.0.1", () => console.log(`render on 127.0.0.1:${RENDER_PORT}, egress proxy on 127.0.0.1:${egress.port}`));
+
+for (const signal of ["SIGTERM", "SIGINT"]) {
+  process.once(signal, () => {
+    render.stop();
+    void egress.close();
+    server.close();
+    renderServer.close();
+    setTimeout(() => process.exit(0), 500).unref();
+  });
+}

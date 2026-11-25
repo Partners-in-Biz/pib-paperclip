@@ -1,9 +1,11 @@
 import { and, eq, gt, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog, heartbeatRuns, issueComments } from "@paperclipai/db";
+import { activityLog, agentWakeupRequests, heartbeatRuns, issueComments } from "@paperclipai/db";
 import {
+  readTicketRunsPerHourCap,
+  REVIEW_VERDICT_WAKE_ACTOR_ID,
   TICKET_RUN_CAP_WINDOW_MS,
-  WAKE_LOOP_FLAG_BODY,
+  wakeLoopFlagBody,
   WAKE_LOOP_GUARD_ACTION,
 } from "./issue-wake-guards.js";
 
@@ -57,6 +59,33 @@ export async function loadTicketRunCapState(
 }
 
 /**
+ * PAR-8960: has this issue had a non-skipped review-verdict wake in the rolling
+ * cap window? Matched on the fixed system actor id, not the reason, because
+ * deferred promotion rewrites the request reason to issue_execution_promoted.
+ */
+export async function hasReviewVerdictWakeInWindow(
+  db: Db,
+  input: { companyId: string; issueId: string; now: Date },
+): Promise<boolean> {
+  const since = new Date(input.now.getTime() - TICKET_RUN_CAP_WINDOW_MS);
+  const [row] = await db
+    .select({ id: agentWakeupRequests.id })
+    .from(agentWakeupRequests)
+    .where(
+      and(
+        eq(agentWakeupRequests.companyId, input.companyId),
+        sql`${agentWakeupRequests.payload}->>'issueId' = ${input.issueId}`,
+        eq(agentWakeupRequests.requestedByActorType, "system"),
+        eq(agentWakeupRequests.requestedByActorId, REVIEW_VERDICT_WAKE_ACTOR_ID),
+        ne(agentWakeupRequests.status, "skipped"),
+        gt(agentWakeupRequests.requestedAt, since),
+      ),
+    )
+    .limit(1);
+  return Boolean(row);
+}
+
+/**
  * One activity event and one system comment per window. Direct insert so the
  * flag cannot itself enqueue a wake. Does not change the ticket status.
  */
@@ -87,6 +116,7 @@ export async function recordWakeLoopFlag(
     .limit(1);
   if (existing) return;
 
+  const maxRuns = readTicketRunsPerHourCap();
   await db.insert(activityLog).values({
     companyId: input.companyId,
     actorType: "system",
@@ -97,7 +127,7 @@ export async function recordWakeLoopFlag(
     agentId: input.agentId ?? null,
     details: {
       runsStartedInWindow: input.runsStartedInWindow,
-      maxRuns: 3,
+      maxRuns,
       windowMs: TICKET_RUN_CAP_WINDOW_MS,
     },
     createdAt: now,
@@ -106,7 +136,7 @@ export async function recordWakeLoopFlag(
     companyId: input.companyId,
     issueId: input.issueId,
     authorType: "system",
-    body: WAKE_LOOP_FLAG_BODY,
+    body: wakeLoopFlagBody(maxRuns),
     createdAt: now,
     updatedAt: now,
   });

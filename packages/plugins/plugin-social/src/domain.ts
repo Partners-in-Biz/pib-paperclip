@@ -43,7 +43,7 @@ export function assertTransition(from: PostStatus, to: PostStatus): void {
 
 export function assertAgentTransition(from: PostStatus, to: PostStatus): void {
   if (to === "approved" || to === "published" || to === "partially_published") {
-    throw new SocialError("Agents draft and schedule. A person approves before publishing.");
+    throw new SocialError("The Social agent drafts and schedules and never approves. A person, or the scope's delegated approver, approves before publishing.");
   }
   assertTransition(from, to);
 }
@@ -103,7 +103,8 @@ export function nextDestinationState(attempts: number, outcome: AttemptOutcome, 
 /** Roll the destination statuses up into the post status. */
 export function rollupPostStatus(statuses: DestinationStatus[]): PostStatus {
   if (statuses.length === 0) return "failed";
-  if (statuses.some((s) => s === "pending" || s === "publishing" || s === "retrying")) return "publishing";
+  // A destination that waits for a person to post it by hand keeps the post open, like one still in flight.
+  if (statuses.some((s) => s === "pending" || s === "publishing" || s === "retrying" || s === "awaiting_manual")) return "publishing";
   const published = statuses.filter((s) => s === "published").length;
   if (published === statuses.length) return "published";
   if (published > 0) return "partially_published";

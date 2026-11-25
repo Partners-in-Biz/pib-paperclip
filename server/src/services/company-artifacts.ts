@@ -148,6 +148,7 @@ function buildArtifactsGroupHref(
   params.set("groupIssueId", groupIssueId);
   if (query.kind !== "all") params.set("kind", query.kind);
   if (query.projectId) params.set("projectId", query.projectId);
+  if (query.agentId) params.set("agentId", query.agentId);
   if (query.q) params.set("q", query.q);
   return `/${encodeURIComponent(companyPrefix)}/artifacts?${params.toString()}`;
 }
@@ -194,7 +195,17 @@ function pageByCursor<T extends { id: string; updatedAt: string }>(
   return { page, nextCursor };
 }
 
-async function loadIssueGroupingRows(db: Db, companyId: string, seedIssueIds: Iterable<string>) {
+/**
+ * Group headers name a task (id, identifier, title): load only tasks the caller
+ * may read. An unreadable parent ends the climb, so the artifact groups under
+ * its readable task; an unreadable `groupIssueId` is "not found" (PAR-12733).
+ */
+async function loadIssueGroupingRows(
+  db: Db,
+  companyId: string,
+  seedIssueIds: Iterable<string>,
+  readConditions: SQL[] = [],
+) {
   const rowsById = new Map<string, IssueGroupingRow>();
   let pending = [...new Set(seedIssueIds)];
 
@@ -208,7 +219,7 @@ async function loadIssueGroupingRows(db: Db, companyId: string, seedIssueIds: It
         updatedAt: issues.updatedAt,
       })
       .from(issues)
-      .where(and(eq(issues.companyId, companyId), inArray(issues.id, pending)));
+      .where(and(eq(issues.companyId, companyId), inArray(issues.id, pending), ...readConditions));
 
     const nextPending = new Set<string>();
     for (const row of rows) {
@@ -320,7 +331,7 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
     list: async (
       companyId: string,
       rawQuery: Partial<CompanyArtifactsQuery> = {},
-      options: { issueConditions?: SQL[]; userId?: string } = {},
+      options: { issueConditions?: SQL[]; projectConditions?: SQL[]; userId?: string } = {},
     ): Promise<CompanyArtifactsResponse> => {
       const query = companyArtifactsQuerySchema.parse(rawQuery);
       const cursor = decodeCursor(query.cursor);
@@ -344,6 +355,8 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
         isNull(issues.harnessKind),
         ...(options.issueConditions ?? []),
       ];
+      // A readable task can sit in a project the caller may not read: such a project joins as null.
+      const projectConditions = options.projectConditions ?? [];
       const artifacts: CompanyArtifact[] = [];
       const artifactSortDates = new Map<string, string>();
       const workProductAttachmentIds = new Set<string>();
@@ -374,6 +387,7 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
         if (documentCursor) documentConditions.push(documentCursor);
         if (groupBy === "task" && query.groupIssueId) documentConditions.push(eq(issues.id, query.groupIssueId));
         if (query.projectId) documentConditions.push(eq(issues.projectId, query.projectId));
+        if (query.agentId) documentConditions.push(sql`coalesce(${createdAgent.id}, ${updatedAgent.id}) = ${query.agentId}`);
         if (q) {
           documentConditions.push(sql`(
             coalesce(${documents.title}, '') ILIKE ${q} ESCAPE '\\'
@@ -428,6 +442,7 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
             and(
               eq(issues.projectId, projects.id),
               eq(projects.companyId, issues.companyId),
+              ...projectConditions,
             ),
           )
           .leftJoin(
@@ -502,6 +517,9 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
           workProductBaseConditions.push(projectCondition);
           workProductConditions.push(projectCondition);
         }
+        // Agent filter applies to the listed rows only; the attachment dedupe
+        // below stays company-wide so a work product's file never re-lists.
+        if (query.agentId) workProductConditions.push(eq(workProductAgent.id, query.agentId));
         if (q) {
           const searchCondition = sql`(
             ${issueWorkProducts.title} ILIKE ${q} ESCAPE '\\'
@@ -542,6 +560,7 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
             and(
               eq(issues.projectId, projects.id),
               eq(projects.companyId, issueWorkProducts.companyId),
+              ...projectConditions,
             ),
           )
           .leftJoin(
@@ -627,6 +646,7 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
         if (groupBy === "task" && query.groupIssueId) attachmentConditions.push(eq(issues.id, query.groupIssueId));
         if (attachmentKind) attachmentConditions.push(attachmentKind);
         if (query.projectId) attachmentConditions.push(eq(issues.projectId, query.projectId));
+        if (query.agentId) attachmentConditions.push(eq(attachmentAgent.id, query.agentId));
         if (q) {
           attachmentConditions.push(sql`(
             coalesce(${assets.originalFilename}, '') ILIKE ${q} ESCAPE '\\'
@@ -673,6 +693,7 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
             and(
               eq(issues.projectId, projects.id),
               eq(projects.companyId, issues.companyId),
+              ...projectConditions,
             ),
           )
           .leftJoin(
@@ -736,7 +757,7 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
 
       const issueSeedIds = new Set(artifacts.map((artifact) => artifact.issue.id));
       if (query.groupIssueId) issueSeedIds.add(query.groupIssueId);
-      const issueRows = await loadIssueGroupingRows(db, companyId, issueSeedIds);
+      const issueRows = await loadIssueGroupingRows(db, companyId, issueSeedIds, options.issueConditions);
       const groups = buildArtifactGroups({
         artifacts: sorted,
         companyPrefix: company.issuePrefix,

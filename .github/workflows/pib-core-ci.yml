@@ -32,13 +32,11 @@ concurrency:
 jobs:
   core:
     name: PiB core CI
-    runs-on: [self-hosted, pib-vps]
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    # GitHub-hosted since 2026-11-08 (public repo: free, a clean 4-CPU / 16 GB machine, no queue behind other runs; it
+    # used to share the VPS with production).
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - name: Root disk before
-        run: df -h /
-
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7 (same pin as upstream's workflows)
         with:
@@ -83,7 +81,7 @@ jobs:
           MODE: ${{ steps.scope.outputs.mode }}
           BASE_REF: ${{ github.base_ref || 'development' }}
         run: |
-          # The pib-vps runner has no Rust toolchain (cargo). paperclip-runner's `typecheck` runs
+          # No Rust step here (written for the pib-vps runner, which had no cargo). paperclip-runner's `typecheck` runs
           # `typecheck:rust` (cargo fmt/check) and server's `typecheck` first runs the runner's full `build`
           # (cargo build --release). On this runner both run only their TypeScript halves: the runner's
           # `typecheck:typescript`, and for server `build:typescript` of the runner (emits the d.ts server
@@ -118,12 +116,49 @@ jobs:
             ts_only server
           fi
 
+      # Blocking (PAR-12977): the PR's own added or modified test files run first, by name, so they always run and
+      # show per-file in the log. The --changed step below can time out on a PR that touches a hub file such as
+      # server/src/routes/issues.ts. `vitest list` keeps only files a root vitest project collects (runner, e2e and
+      # PiB plugin tests run in their own workflows). A timeout (exit 124) fails the step like a red test.
+      - name: Test files changed in this PR
+        env:
+          BASE_REF: ${{ github.base_ref || 'development' }}
+          CI: 'true'
+          VITE_CONFIG_NATIVE_IGNORE_WARNING: 'true'
+        run: |
+          set -euo pipefail
+          mapfile -t changed < <(git diff --name-only --diff-filter=AMR "origin/${BASE_REF}...HEAD" | grep -E '\.test\.tsx?$' || true)
+          if [ "${#changed[@]}" -eq 0 ]; then
+            echo "no changed test files"
+            exit 0
+          fi
+          printf 'changed test file: %s\n' "${changed[@]}"
+          list_json="${RUNNER_TEMP}/changed-test-files.json"
+          pnpm exec vitest list --filesOnly --json="$list_json" "${changed[@]}" >/dev/null
+          mapfile -t files < <(jq -r --arg root "$PWD/" '.[].file | ltrimstr($root)' "$list_json" | sort -u)
+          for f in "${changed[@]}"; do
+            printf '%s\n' "${files[@]}" | grep -Fxq "$f" || echo "not in a root vitest project, skipped here: $f"
+          done
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "no changed test files"
+            exit 0
+          fi
+          status=0
+          timeout 8m pnpm exec vitest run "${files[@]}" --reporter=default || status=$?
+          if [ "$status" -eq 124 ]; then
+            echo "::error::Changed test files did not finish within 8 minutes (exit 124)."
+          elif [ "$status" -ne 0 ]; then
+            echo "::error::Changed test files failed (exit ${status})."
+          fi
+          exit "$status"
+
       # Non-blocking until it has been green on a few real core PRs (some upstream server tests need services this
       # light job does not start). Make it blocking by deleting continue-on-error.
       # The job budget is 30 minutes. A large server diff spends most of that on typecheck, and an unbounded
       # vitest --changed then cancels the whole check. Stop this step first so a long non-blocking run cannot
       # erase a green typecheck.
       # In affected mode vitest runs only the root projects whose package is in the affected set.
+      # No `|| true` on the vitest line: a vitest config error (PAR-12762) must fail the step, not read as "no tests".
       - name: Tests related to the changed files
         continue-on-error: true
         env:
@@ -136,15 +171,4 @@ jobs:
               [ -n "$name" ] && projects+=(--project "$name")
             done < <(pnpm --filter "...[origin/${BASE_REF}]" list --json --depth -1 | jq -r '.[].name')
           fi
-          timeout 12m pnpm exec vitest run --changed "origin/${BASE_REF}" "${projects[@]}" --passWithNoTests || true
-
-      - name: Prune pnpm store
-        if: always()
-        run: pnpm store prune || true
-
-      - name: Root disk after (must stay under 80%)
-        if: always()
-        run: |
-          df -h /
-          use="$(df --output=pcent / | tail -1 | tr -dc 0-9)"
-          test "$use" -lt 80 || { echo "root disk at ${use}%"; exit 1; }
+          timeout 12m pnpm exec vitest run --changed "origin/${BASE_REF}" "${projects[@]}" --passWithNoTests

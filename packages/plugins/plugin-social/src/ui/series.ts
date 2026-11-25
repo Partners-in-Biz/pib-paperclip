@@ -24,6 +24,7 @@ export const DEST_TONE: Record<string, ToneName> = {
   pending: "warn",
   publishing: "info",
   retrying: "warn",
+  awaiting_manual: "warn",
   published: "ok",
   failed: "bad",
 };
@@ -174,7 +175,7 @@ export function liftTrend(stats: ScopeStats | null | undefined): { labels: strin
 }
 
 const POST_ORDER = ["published", "scheduled", "approved", "review", "draft", "publishing", "partially_published", "failed"];
-const DEST_ORDER = ["published", "publishing", "pending", "retrying", "failed"];
+const DEST_ORDER = ["published", "publishing", "pending", "retrying", "awaiting_manual", "failed"];
 
 function words(status: string): string {
   const text = status.replace(/_/g, " ");
@@ -256,3 +257,19 @@ export const PLATFORM_MONOGRAM: Record<string, string> = {
   mastodon: "M",
   dribbble: "Dr",
 };
+
+/** Statuses that sit on the calendar at a proposed time only: nothing publishes them until they are approved and scheduled. */
+const NOT_SCHEDULED = new Set(["draft", "review", "approved"]);
+
+/**
+ * How a post shows on the calendar. A draft, a post in review or an approved post without a schedule is only a proposal: it is
+ * drawn dashed and says it is not scheduled; once its slot has passed it says it was missed. Pure.
+ */
+export function calendarState(post: { status: string; scheduledAt: string | null }, now: number): { label: string; tone: ToneName; proposal: boolean } {
+  if (!NOT_SCHEDULED.has(post.status)) return { label: post.status.replace("_", " "), tone: toneOf(POST_TONE, post.status), proposal: false };
+  const at = post.scheduledAt ? Date.parse(post.scheduledAt) : Number.NaN;
+  const missed = Number.isFinite(at) && at < now;
+  const what = post.status === "review" ? "in review" : post.status;
+  if (missed) return { label: post.status === "approved" ? "missed: approved, never scheduled" : `missed: ${what}, never approved`, tone: "bad", proposal: true };
+  return { label: `${what} · not scheduled`, tone: "neutral", proposal: true };
+}

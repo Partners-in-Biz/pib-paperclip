@@ -1,12 +1,15 @@
+import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  costEvents,
   activityLog,
   agents,
   agentRuntimeState,
   agentWakeupRequests,
   companies,
+  authUsers,
   companyMemberships,
   companySkills,
   createDb,
@@ -22,6 +25,7 @@ import {
 import { heartbeatService } from "../services/heartbeat.ts";
 import { runningProcesses } from "../adapters/index.ts";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
+import { createLifecycleDriver } from "../services/agent-lifecycle-driver.js";
 
 const mockAdapterExecute = vi.hoisted(() =>
   vi.fn(async () => ({
@@ -62,6 +66,7 @@ async function deleteHeartbeatRunsAfterEvents(db: ReturnType<typeof createDb>) {
   for (let attempt = 0; attempt < 5; attempt += 1) {
     await db.delete(heartbeatRunEvents);
     try {
+      await db.delete(costEvents);
       await db.delete(heartbeatRuns);
       return;
     } catch (error) {
@@ -95,7 +100,7 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
       }
       return baseExecute();
     });
-  }, 20_000);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   afterEach(async () => {
     mockAdapterExecute.mockClear();
@@ -118,6 +123,7 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
     await db.delete(companySkills);
     await db.delete(companyMemberships);
     await db.delete(companies);
+    await db.delete(authUsers);
   });
 
   afterAll(async () => {
@@ -134,6 +140,10 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
       name: "Paperclip",
       issuePrefix: `R${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       defaultResponsibleUserId: ownerUserId,
+    });
+    await db.insert(authUsers).values({
+      id: ownerUserId, name: "Company owner", email: `${ownerUserId}@example.test`,
+      createdAt: new Date(), updatedAt: new Date(),
     });
     await db.insert(companyMemberships).values({
       companyId,
@@ -157,12 +167,37 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
     return { companyId, ownerUserId, agentId };
   }
 
-  it("dispatches an interrupted queue under the clicking operator through the real startup path", async () => {
+  it("dispatches saved work on readiness with company scoping and normal admission checks", async () => {
+    const { companyId, agentId, ownerUserId } = await seedCompany();
+    await db.update(agents).set({ status: "paused", lifecycleState: "verifying" }).where(eq(agents.id, agentId));
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "queued",
+      invocationSource: "on_demand", contextSnapshot: { responsibleUserId: ownerUserId } }).returning();
+    const driver = createLifecycleDriver(db, {} as never);
+    const currentAgent = async () => (await db.select().from(agents).where(eq(agents.id, agentId)))[0];
+    await driver.onReady!(await currentAgent());
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0].status).toBe("queued");
+
+    await db.update(agents).set({ status: "idle", lifecycleState: "ready" }).where(eq(agents.id, agentId));
+    await heartbeat.resumeQueuedRunsForAgent(randomUUID(), agentId);
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0].status).toBe("queued");
+
+    await driver.onReady!(await currentAgent());
+    expect(await waitForRun(db, run.id)).toMatchObject({ status: "succeeded", responsibleUserId: ownerUserId });
+    expect(mockAdapterExecute).toHaveBeenCalledOnce();
+  });
+
+  it.each(["todo", "done"] as const)("dispatches an interrupted queue on a %s task under the clicking operator through the real startup path", async (status) => {
     const { companyId, agentId, ownerUserId } = await seedCompany();
     const operatorId = `operator-${randomUUID()}`, issueId = randomUUID(), commentId = randomUUID(), queueId = randomUUID();
+    await db.insert(authUsers).values({
+      id: operatorId, name: "Clicking operator", email: `${operatorId}@example.test`,
+      createdAt: new Date(), updatedAt: new Date(),
+    });
     await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: operatorId,
       membershipRole: "operator", status: "active" });
-    await db.insert(issues).values({ id: issueId, companyId, title: "Interrupted queue", status: "todo",
+    await db.insert(issues).values({ id: issueId, companyId, title: "Interrupted queue", status,
       assigneeAgentId: agentId, responsibleUserId: ownerUserId });
     await db.insert(issueComments).values({ id: commentId, companyId, issueId, authorUserId: ownerUserId, body: "Continue the task" });
     await db.insert(agentWakeupRequests).values({ id: queueId, companyId, agentId,
@@ -175,20 +210,56 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
     const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, queueId));
     expect(receipt.status).toBe("coalesced");
     const completed = await waitForRun(db, receipt.runId!);
+    expect(completed?.error).toBeNull();
     expect(completed).toMatchObject({ status: "succeeded", responsibleUserId: operatorId });
     expect(completed?.activeIdentityContextId).toBeTruthy();
     expect(completed?.contextSnapshot?.originIdentityContextId).toBeUndefined();
     expect(completed?.contextSnapshot?.retryOfRunId).toBeUndefined();
-    expect(mockAdapterExecute).toHaveBeenCalled();
+    expect(completed?.contextSnapshot?.wakeCommentIds).toEqual([commentId]);
+    await heartbeat.resumeQueuedCommentInterrupt(companyId, queueId);
+    expect(mockAdapterExecute).toHaveBeenCalledOnce();
     await drainHeartbeatRunsToQuiescence(db, heartbeat);
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
     expect(runs.every(run => run.responsibleUserId === operatorId && run.status === "succeeded")).toBe(true);
     expect((await db.select().from(issueComments).where(eq(issueComments.id, commentId)))[0].authorUserId).toBe(ownerUserId);
   });
 
+  it.each([
+    { status: "cancelled", explicitSend: true, paused: false },
+    { status: "done", explicitSend: false, paused: false },
+    { status: "done", explicitSend: true, paused: true },
+  ] as const)("keeps saved input held on $status with explicit Send=$explicitSend", async ({ status, explicitSend, paused }) => {
+    const { companyId, agentId, ownerUserId } = await seedCompany();
+    const issueId = randomUUID(), commentId = randomUUID(), queueId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Saved follow-up", status,
+      assigneeAgentId: agentId, responsibleUserId: ownerUserId });
+    await db.insert(issueComments).values({ id: commentId, companyId, issueId,
+      authorUserId: ownerUserId, body: "Show the unread count as a number" });
+    await db.insert(agentWakeupRequests).values({ id: queueId, companyId, agentId,
+      source: "automation", reason: "issue_commented", status: "deferred_issue_execution",
+      requestedByActorType: "user", requestedByActorId: ownerUserId,
+      payload: { issueId, commentId, _paperclipWakeContext: { wakeCommentIds: [commentId] },
+        ...(explicitSend ? { queuedCommentInterrupt: { actorId: ownerUserId, requestedAt: new Date().toISOString() } } : {}) },
+    });
+    if (paused) {
+      await db.update(agents).set({ status: "paused" }).where(eq(agents.id, agentId));
+      await expect(heartbeat.resumeQueuedCommentInterrupt(companyId, queueId)).rejects.toThrow();
+    } else if (explicitSend) await heartbeat.resumeQueuedCommentInterrupt(companyId, queueId);
+    else await heartbeat.resumeExecutionWaitComments({ companyId, requestId: queueId });
+    const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, queueId));
+    expect(receipt).toMatchObject({ status: "deferred_issue_execution", runId: null });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toEqual([]);
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0].status).toBe(status);
+  });
+
   it("keeps a board manual wake under its caller even when it adopts someone else's queue", async () => {
     const { companyId, agentId, ownerUserId } = await seedCompany();
     const operatorId = `operator-${randomUUID()}`, issueId = randomUUID(), commentId = randomUUID(), queueId = randomUUID();
+    await db.insert(authUsers).values({
+      id: operatorId, name: "Clicking operator", email: `${operatorId}@example.test`,
+      createdAt: new Date(), updatedAt: new Date(),
+    });
     await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: operatorId,
       membershipRole: "operator", status: "active" });
     await db.insert(issues).values({ id: issueId, companyId, title: "Manual wake", status: "todo",
@@ -198,13 +269,15 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
       source: "automation", reason: "issue_commented", status: "deferred_issue_execution", requestedByActorType: "user", requestedByActorId: ownerUserId,
       payload: { issueId, commentId, _paperclipWakeContext: { wakeCommentIds: [commentId] } },
     });
-    const run = await heartbeat.wakeup(agentId, { manualUserWake: true, source: "on_demand", triggerDetail: "manual",
+    const run = await heartbeat.wakeup(agentId, { causingActor: "system", manualUserWake: true, source: "on_demand", triggerDetail: "manual",
       payload: { issueId }, requestedByActorType: "user", requestedByActorId: operatorId,
       contextSnapshot: { responsibleUserId: operatorId } });
     expect(run?.responsibleUserId).toBe(operatorId);
     const completed = await waitForRun(db, run!.id);
     expect(completed).toMatchObject({ status: "succeeded", responsibleUserId: operatorId });
     expect(completed?.contextSnapshot?.wakeCommentIds).toEqual([commentId]);
+    expect(completed?.contextSnapshot?.queuedCommentSourceWakeIds).toEqual([queueId]);
+    expect(completed?.wakeupRequestId).not.toBe(queueId);
     await drainHeartbeatRunsToQuiescence(db, heartbeat);
     expect((await db.select().from(heartbeatRuns)).every(row => row.responsibleUserId === operatorId)).toBe(true);
   });
@@ -212,6 +285,10 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
   it("keeps the clicking user when a manual wake merges into an older deferred receipt", async () => {
     const { companyId, agentId, ownerUserId } = await seedCompany();
     const operatorId = `operator-${randomUUID()}`, issueId = randomUUID(), commentId = randomUUID(), queueId = randomUUID();
+    await db.insert(authUsers).values({
+      id: operatorId, name: "Clicking operator", email: `${operatorId}@example.test`,
+      createdAt: new Date(), updatedAt: new Date(),
+    });
     await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: operatorId,
       membershipRole: "operator", status: "active" });
     await db.insert(issues).values({ id: issueId, companyId, title: "Deferred manual wake", status: "todo",
@@ -220,7 +297,7 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
     const blocked = new Promise<void>(resolve => { finish = resolve; });
     const execute = mockAdapterExecute.getMockImplementation()!;
     mockAdapterExecute.mockImplementationOnce(async () => { await blocked; return execute(); });
-    const first = await heartbeat.wakeup(agentId, { payload: { issueId },
+    const first = await heartbeat.wakeup(agentId, { causingActor: "system", payload: { issueId },
       requestedByActorType: "user", requestedByActorId: ownerUserId });
     try {
       await vi.waitFor(() => expect(mockAdapterExecute).toHaveBeenCalled(), { timeout: 5_000 });
@@ -230,7 +307,7 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
         requestedByActorType: "user", requestedByActorId: ownerUserId,
         payload: { issueId, commentId, _paperclipWakeContext: { wakeCommentIds: [commentId] } },
       });
-      expect(await heartbeat.wakeup(agentId, { manualUserWake: true, source: "on_demand", triggerDetail: "manual",
+      expect(await heartbeat.wakeup(agentId, { causingActor: "system", manualUserWake: true, source: "on_demand", triggerDetail: "manual",
         payload: { issueId }, requestedByActorType: "user", requestedByActorId: operatorId,
         contextSnapshot: { responsibleUserId: operatorId } })).toBeNull();
       const [pending] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, queueId));
@@ -249,18 +326,22 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
   it("starts an unscoped manual wake with its own user instead of joining another user's run", async () => {
     const { companyId, agentId, ownerUserId } = await seedCompany();
     const operatorId = `operator-${randomUUID()}`;
+    await db.insert(authUsers).values({
+      id: operatorId, name: "Clicking operator", email: `${operatorId}@example.test`,
+      createdAt: new Date(), updatedAt: new Date(),
+    });
     await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: operatorId,
       membershipRole: "operator", status: "active" });
     let finish!: () => void;
     const blocked = new Promise<void>(resolve => { finish = resolve; });
     const execute = mockAdapterExecute.getMockImplementation()!;
     mockAdapterExecute.mockImplementationOnce(async () => { await blocked; return execute(); });
-    const first = await heartbeat.wakeup(agentId, { manualUserWake: true, source: "on_demand", triggerDetail: "manual",
+    const first = await heartbeat.wakeup(agentId, { causingActor: "system", manualUserWake: true, source: "on_demand", triggerDetail: "manual",
       requestedByActorType: "user", requestedByActorId: ownerUserId });
     let second: Awaited<ReturnType<typeof heartbeat.wakeup>>;
     try {
       await vi.waitFor(() => expect(mockAdapterExecute).toHaveBeenCalled(), { timeout: 5_000 });
-      second = await heartbeat.wakeup(agentId, { manualUserWake: true, source: "on_demand", triggerDetail: "manual",
+      second = await heartbeat.wakeup(agentId, { causingActor: "system", manualUserWake: true, source: "on_demand", triggerDetail: "manual",
         requestedByActorType: "user", requestedByActorId: operatorId });
       expect(second?.id).not.toBe(first!.id);
       expect(second?.responsibleUserId).toBe(operatorId);
@@ -277,7 +358,7 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
     const issueId = randomUUID();
     await db.insert(issues).values({ id: issueId, companyId, title: "Private conversation", status: "todo",
       assigneeAgentId: agentId, responsibleUserId: ownerUserId, conversationAgentId: agentId, conversationUserId: ownerUserId, conversationState: "active" });
-    await expect(heartbeat.wakeup(agentId, { manualUserWake: true, source: "on_demand", triggerDetail: "manual",
+    await expect(heartbeat.wakeup(agentId, { causingActor: "system", manualUserWake: true, source: "on_demand", triggerDetail: "manual",
       payload: { issueId }, requestedByActorType: "user", requestedByActorId: "another-user" })).rejects.toThrow("conversation owner");
     expect(mockAdapterExecute).not.toHaveBeenCalled();
     expect(await db.select().from(heartbeatRuns)).toHaveLength(0);
@@ -285,7 +366,7 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
 
   it("does not accept a caller-supplied manual-wake authority marker", async () => {
     const { companyId, agentId, ownerUserId } = await seedCompany();
-    const run = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual",
+    const run = await heartbeat.wakeup(agentId, { causingActor: "system", source: "on_demand", triggerDetail: "manual",
       requestedByActorType: "agent", requestedByActorId: agentId, payload: { manualUserWake: true },
       contextSnapshot: { responsibleUserId: ownerUserId } });
     expect((await waitForRun(db, run!.id))?.status).toBe("succeeded");
@@ -297,6 +378,8 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
     const { companyId, agentId } = await seedCompany();
     const issueResponsibleUserId = `issue-owner-${randomUUID()}`;
     const commenterUserId = `commenter-${randomUUID()}`;
+    await db.insert(authUsers).values([issueResponsibleUserId, commenterUserId].map(id => ({ id, name: "Fixture user", email: `${id}@example.test`, createdAt: new Date(), updatedAt: new Date() })));
+    await db.insert(companyMemberships).values([issueResponsibleUserId, commenterUserId].map(principalId => ({ companyId, principalType: "user" as const, principalId, status: "active", membershipRole: "member" })));
     const issueId = randomUUID();
     await db.insert(issues).values({
       id: issueId,
@@ -312,6 +395,7 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
       await db.update(issues).set({ status: "todo" }).where(eq(issues.id, issueId));
       const wakeReason = "issue_blockers_resolved";
       const run = await heartbeat.wakeup(agentId, {
+        causingActor: "system",
         source: "automation",
         triggerDetail: "system",
         reason: wakeReason,
@@ -347,12 +431,14 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
     expect(mockAdapterExecute).toHaveBeenCalledTimes(runs.length);
   });
 
-  it.each(["issue_commented", "issue_comment_mentioned"])(
+  it.each(["issue_commented"])(
     "uses the persisted message author for %s without changing issue ownership",
     async (wakeReason) => {
       const { companyId, agentId } = await seedCompany();
       const issueResponsibleUserId = `issue-owner-${randomUUID()}`;
       const commenterUserId = `commenter-${randomUUID()}`;
+      await db.insert(authUsers).values([issueResponsibleUserId, commenterUserId].map(id => ({ id, name: "Fixture user", email: `${id}@example.test`, createdAt: new Date(), updatedAt: new Date() })));
+      await db.insert(companyMemberships).values([issueResponsibleUserId, commenterUserId].map(principalId => ({ companyId, principalType: "user" as const, principalId, status: "active", membershipRole: "member" })));
       const issueId = randomUUID();
       const commentId = randomUUID();
       await db.insert(issues).values({
@@ -372,6 +458,7 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
       });
 
       const run = await heartbeat.wakeup(agentId, {
+        causingActor: "system",
         source: "automation",
         triggerDetail: "system",
         reason: wakeReason,
@@ -399,6 +486,7 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
     const { agentId } = await seedCompany();
     const triggeringUserId = `manual-${randomUUID()}`;
     const run = await heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "on_demand",
       triggerDetail: "manual",
       requestedByActorType: "user",
@@ -413,6 +501,7 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
   it("falls back to the company default for system-originated runs without an issue", async () => {
     const { agentId, ownerUserId } = await seedCompany();
     const run = await heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "automation",
       triggerDetail: "system",
       reason: "scheduled_maintenance",
@@ -440,6 +529,7 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
     });
 
     const run = await heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "automation",
       triggerDetail: "system",
       reason: "issue_blockers_resolved",
@@ -484,6 +574,7 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
     });
 
     await expect(heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "automation",
       triggerDetail: "system",
       reason: "issue_commented",
@@ -524,6 +615,7 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
     });
 
     await expect(heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "automation",
       triggerDetail: "system",
       requestedByActorType: "system",

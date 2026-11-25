@@ -2,7 +2,13 @@ import type { Request, Response } from "express";
 import type { SecretBindingTargetType } from "@paperclipai/shared";
 import { forbidden, HttpError, unauthorized } from "../errors.js";
 import { logger } from "../middleware/logger.js";
-import { responsibleUserAuthzShadowMode } from "../services/authorization.js";
+import {
+  responsibleUserAuthzShadowMode,
+  type AuthorizationAction,
+  type AuthorizationActor,
+  type AuthorizationDecision,
+  type AuthorizationResource,
+} from "../services/authorization.js";
 
 function throwOrShadowResponsibleUserCompanyAccessDeny(
   req: Request,
@@ -21,6 +27,55 @@ function throwOrShadowResponsibleUserCompanyAccessDeny(
   }, "responsible-user company access intersection denied");
   if (responsibleUserAuthzShadowMode()) return;
   throw new HttpError(403, message, { code });
+}
+
+/**
+ * One task-access decision with the same `resource` and `scope` as
+ * `decideIssueAccess` in routes/issues.ts. Takes the access service as a
+ * parameter so this module imports no service.
+ */
+export async function decideIssueAccessForActor(
+  access: {
+    decide(input: {
+      actor: AuthorizationActor;
+      action: AuthorizationAction;
+      resource: AuthorizationResource;
+      scope?: Record<string, unknown> | null;
+    }): Promise<AuthorizationDecision>;
+  },
+  actor: Request["actor"],
+  issue: {
+    id: string;
+    companyId: string;
+    projectId: string | null;
+    parentId: string | null;
+    assigneeAgentId: string | null;
+    assigneeUserId: string | null;
+    status: string;
+  },
+  action: "issue:comment" | "issue:read" | "issue:mutate",
+): Promise<AuthorizationDecision> {
+  return access.decide({
+    actor,
+    action,
+    resource: {
+      type: "issue",
+      companyId: issue.companyId,
+      issueId: issue.id,
+      projectId: issue.projectId,
+      parentIssueId: issue.parentId,
+      assigneeAgentId: issue.assigneeAgentId,
+      assigneeUserId: issue.assigneeUserId,
+      status: issue.status,
+    },
+    scope: {
+      issueId: issue.id,
+      projectId: issue.projectId,
+      parentIssueId: issue.parentId,
+      assigneeAgentId: issue.assigneeAgentId,
+      assigneeUserId: issue.assigneeUserId,
+    },
+  });
 }
 
 export function assertAuthenticated(req: Request) {
@@ -210,7 +265,7 @@ export function getActorInfo(req: Request): (
     agentId: null;
     runId: string | null;
     agentApiKeyId: null;
-    actorSource: "local_implicit" | "session" | "board_key" | "cloud_tenant";
+    actorSource: "local_implicit" | "session" | "board_key" | "mcp_oauth" | "cloud_tenant";
   }
 ) {
   assertAuthenticated(req);
@@ -229,7 +284,8 @@ export function getActorInfo(req: Request): (
   const actorSource =
     req.actor.source === "local_implicit" ||
       req.actor.source === "board_key" ||
-      req.actor.source === "cloud_tenant"
+      req.actor.source === "cloud_tenant" ||
+      req.actor.source === "mcp_oauth"
       ? req.actor.source
       : "session";
 
@@ -256,7 +312,7 @@ export type ActorSecretContext = {
   consumerId: string;
   actorType: "agent" | "user";
   actorId: string | null;
-  actorSource: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "cloud_tenant";
+  actorSource: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "mcp_oauth" | "cloud_tenant";
   responsibleUserId: string | null;
 };
 

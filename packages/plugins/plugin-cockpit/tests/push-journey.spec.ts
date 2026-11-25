@@ -49,7 +49,8 @@ d("Push acceptance journey (Postgres)", () => {
     };
 
     // Enable push in config
-    pg.config.set(COMPANY_ID, { pushEnabled: true });
+    // The journey covers a push per task for the owner: the behaviour with the daily digest switched off.
+    pg.config.set(COMPANY_ID, { pushEnabled: true, ownerDigest: { enabled: false } });
 
     // Seed roles with owner
     await saveRoles(pg.ctx, {

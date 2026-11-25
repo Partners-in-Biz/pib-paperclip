@@ -44,6 +44,15 @@ export const instanceConfigSchema: JsonSchema = {
   },
 };
 
+/** Built-in xAI voices. Source: https://docs.x.ai/docs/guides/voice/agent ("Available Voices"). */
+export const XAI_VOICES = ["eve", "ara", "rex", "sal", "leo"] as const;
+
+/** A known built-in voice id (case-insensitive), lower-cased; otherwise null. */
+export function validVoice(raw: unknown): string | null {
+  const id = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+  return (XAI_VOICES as readonly string[]).includes(id) ? id : null;
+}
+
 export interface VoiceSettings {
   voice: string;
   language: string;

@@ -123,3 +123,19 @@ export async function disconnect(env: Env, companyId: string, accountId: string)
   env.tokenCache.delete(accountId);
   return { id: accountId, status: "disconnected" };
 }
+
+/**
+ * Deletes a mailbox for good (a wrong account connected by mistake, an old address). Only a disconnected or never-connected one: a working
+ * mailbox is disconnected first, so nobody removes the company's sending address with one click. Closes its open reconnect issue.
+ */
+export async function removeAccount(env: Env, companyId: string, accountId: string) {
+  const account = await env.store.getAccount(companyId, accountId);
+  if (!account) throw new MailboxError("Mailbox not found");
+  if (account.status !== "disconnected" && account.status !== "manual") {
+    throw new MailboxError(`Disconnect ${account.address} first, then delete it`);
+  }
+  await closeReconnectIssue(env, account);
+  const { messages } = await env.store.deleteAccount(companyId, accountId);
+  env.tokenCache.delete(accountId);
+  return { id: accountId, deleted: true, address: account.address, messages };
+}

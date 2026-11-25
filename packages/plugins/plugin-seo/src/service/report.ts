@@ -35,7 +35,7 @@ export async function siteProgress(env: Env, sprint: db.Sprint, today: string): 
     }));
   const previews = await env.ctx.db.query(
     `SELECT status, review_status, draft_key, expires_at > now() AS live FROM (
-        SELECT DISTINCT ON (page_url) status, review_status, draft_key, expires_at FROM ${t("previews")} WHERE company_id = $1 AND sprint_id = $2 ORDER BY page_url, created_at DESC
+        SELECT DISTINCT ON (page_url) status, review_status, draft_key, expires_at FROM ${t("previews")} WHERE company_id = $1 AND sprint_id = $2 AND status <> 'cancelled' ORDER BY page_url, created_at DESC
       ) latest`,
     [sprint.companyId, sprint.id],
   );
@@ -55,6 +55,7 @@ export async function siteProgress(env: Env, sprint: db.Sprint, today: string): 
       prepared: live.filter((p) => String(p.review_status) === "passed").length,
       asked: live.filter((p) => String(p.review_status) === "passed" && String(p.status) === "pending" && p.draft_key).length,
       approved: live.filter((p) => String(p.status) === "approved").length,
+      declined: live.filter((p) => String(p.status) === "declined").length,
       held: dropped.size,
     },
     next: byWeek(NEXT_WEEKS, (x) => x.status !== "skipped" && x.status !== "na"),

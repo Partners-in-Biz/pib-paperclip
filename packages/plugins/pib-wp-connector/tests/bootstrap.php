@@ -516,6 +516,10 @@ function delete_term_meta( $id, $key ) {
 	unset( $GLOBALS['pibt']['termmeta'][ $id ][ $key ] );
 	return true;
 }
+function did_action( $tag ) { return isset( $GLOBALS['pibt']['did'][ $tag ] ) ? $GLOBALS['pibt']['did'][ $tag ] : 0; }
+function wp_is_block_theme() { return ! empty( $GLOBALS['pibt']['block_theme'] ); }
+function clean_term_cache( $ids, $taxonomy = '' ) { $GLOBALS['pibt']['term_cache_cleared'][] = (int) $ids; }
+function wp_kses_post( $s ) { return preg_replace( '/<script\b[^>]*>.*?<\/script\s*>/is', '', (string) $s ); }
 function post_type_exists( $t ) { return isset( $GLOBALS['pibt']['post_types'][ $t ] ); }
 function post_type_supports( $t, $f ) { return 'attachment' !== $t; }
 function get_post_type_object( $t ) {

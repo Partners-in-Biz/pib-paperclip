@@ -44,7 +44,7 @@ async function createApp(db: Db, companyId: string, userId: string) {
       userId,
       source: "local_implicit",
       companyIds: [companyId],
-      memberships: [{ companyId, membershipRole: "owner", status: "active" }],
+      memberships: [{ companyId, membershipRole: "owner", status: "active", restricted: false, restrictionMode: "off" }],
       isInstanceAdmin: true,
     };
     next();
@@ -201,7 +201,7 @@ describeEmbeddedPostgres("access routes permissions upgrade compatibility", () =
       companyId: company.id,
       applicationKey: `route-app-${randomUUID()}`,
       name: "Route personal app",
-      type: "mcp",
+      type: "mcp_http",
       status: "active",
     }).returning().then((rows) => rows[0]!);
     const connection = await db.insert(toolConnections).values({

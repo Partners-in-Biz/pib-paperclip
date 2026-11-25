@@ -5,15 +5,16 @@
  */
 import { givenIssues } from "./give.js";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { clientScopeFromInput, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
-import { assetOut, getAssetRow, countAssetsByStatus, listAssets } from "./assets.js";
+import { clientScopeFromInput, scopeOfRow, type ActingRestriction, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
+import { assetOut, getAssetRow, countAssetsByStatus, hasClientAssets, listAssets } from "./assets.js";
 import { iso, num, table } from "./db.js";
 import { DRIVE_LINK_TYPE, driveCopies } from "./drive.js";
 import { driveProvenance } from "./drive-import.js";
 import { StudioError } from "./errors.js";
 import { DEFAULT_PRESET_RATIO, getPhotoPreset } from "./presets.js";
-import { assertReferenceCount, isSelectable, MODEL_CATALOG, referenceIds } from "./models.js";
+import { assertReferenceCount, isLipsyncOnly, isSelectable, MODEL_CATALOG, referenceIds } from "./models.js";
 import type { GenerationRow } from "./generation.js";
+import { assertListOpen, assertOpenToPerson, personFilter } from "./scope.js";
 
 export interface PageModel {
   id: string;
@@ -33,7 +34,7 @@ export interface PageModel {
  * the real cost of the request as sent. Seedance (billed by tokens) and Veo (not on REST) are listed in
  * UNAVAILABLE_MODELS with the reason instead; agents keep the full tool surface.
  */
-export const PAGE_MODELS: readonly PageModel[] = MODEL_CATALOG.filter(isSelectable).map(({ id, label, kind, ratios, resolutions, minRefs, maxRefs, durations, durationField, defaultDuration }) => ({
+export const PAGE_MODELS: readonly PageModel[] = MODEL_CATALOG.filter((m) => isSelectable(m) && !isLipsyncOnly(m)).map(({ id, label, kind, ratios, resolutions, minRefs, maxRefs, durations, durationField, defaultDuration }) => ({
   id,
   label,
   kind,
@@ -95,26 +96,33 @@ export function clientFilter(value: unknown): ClientScope | undefined {
 
 export const ASSET_STATUSES = ["draft", "approved", "rejected", "archived"] as const;
 
-export async function pageAssets(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
+/**
+ * The library for a person. A restricted member's holds own work only; with core's answer missing it is refused when a
+ * client's file is under these filters (PAR-14298).
+ */
+export async function pageAssets(ctx: PluginContext, companyId: string, params: Record<string, unknown>, restriction: ActingRestriction) {
   const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : null);
   const kind = str(params.kind);
-  if (kind && kind !== "image" && kind !== "video") throw new StudioError("kind is image or video.", "bad_request");
+  if (kind && kind !== "image" && kind !== "video" && kind !== "audio") throw new StudioError("kind is image, video or audio.", "bad_request");
   const filter = {
-    scope: clientFilter(params.client),
+    scope: personFilter(clientFilter(params.client), restriction),
     projectId: str(params.projectId),
     kind,
     status: str(params.status),
     limit: typeof params.limit === "number" ? params.limit : 60,
     sort: params.sort === "oldest" ? ("oldest" as const) : ("newest" as const),
   };
+  // The status counts span every status, so the check does too.
+  if (restriction === "unavailable" && filter.scope === undefined) assertListOpen(await hasClientAssets(ctx, companyId, { ...filter, status: null }), restriction);
   const [assets, counts] = await Promise.all([listAssets(ctx, companyId, filter), countAssetsByStatus(ctx, companyId, filter)]);
   return { assets, counts };
 }
 
-/** One asset with where it came from: prompt, model, cost, who made it, and what it's linked to. */
-export async function assetDetail(ctx: PluginContext, companyId: string, assetId: string) {
+/** One asset with where it came from: prompt, model, cost, who made it, and what it's linked to. A client's is for people who may see client work. */
+export async function assetDetail(ctx: PluginContext, companyId: string, assetId: string, restriction: ActingRestriction) {
   if (!assetId) throw new StudioError("assetId is required.", "bad_request");
   const row = await getAssetRow(ctx, companyId, assetId);
+  assertOpenToPerson(scopeOfRow(row), restriction);
   const [made] = await ctx.db.query<{ created_by_agent_id: string | null; created_by_user_id: string | null; source_ref: string | null }>(
     `SELECT created_by_agent_id, created_by_user_id, source_ref FROM ${table(ctx, "assets")} WHERE company_id = $1 AND id = $2`,
     [companyId, assetId],
@@ -153,15 +161,16 @@ export async function assetDetail(ctx: PluginContext, companyId: string, assetId
   };
 }
 
-/** The progress of the batches a person asked for on the page, by group id. */
-export async function pageGenerations(ctx: PluginContext, companyId: string, groupIds: unknown) {
+/** The progress of the batches a person asked for on the page, by group id. A restricted member sees own work only. */
+export async function pageGenerations(ctx: PluginContext, companyId: string, groupIds: unknown, restriction: ActingRestriction) {
   const ids = Array.isArray(groupIds) ? groupIds.filter((g): g is string => typeof g === "string" && g.length > 0).slice(0, 20) : [];
   if (ids.length === 0) return { generations: [] };
   const rows = await ctx.db.query<GenerationRow>(
-    `SELECT * FROM ${table(ctx, "generations")} WHERE company_id = $1 AND group_id IN (SELECT jsonb_array_elements_text($2::jsonb)) ORDER BY created_at DESC`,
+    `SELECT * FROM ${table(ctx, "generations")} WHERE company_id = $1 AND group_id IN (SELECT jsonb_array_elements_text($2::jsonb))${restriction === "restricted" ? " AND client_ref IS NULL" : ""} ORDER BY created_at DESC`,
     // The host expands a JS array param into a tuple, so arrays go in as JSON.
     [companyId, JSON.stringify(ids)],
   );
+  assertListOpen(rows.some((r) => r.client_ref), restriction);
   return {
     generations: rows.map((r) => ({
       id: r.id,

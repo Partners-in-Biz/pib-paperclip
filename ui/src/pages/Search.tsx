@@ -20,6 +20,8 @@ import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useDialogActions } from "../context/DialogContext";
 import { searchApi } from "../api/search";
+import { describeError } from "../api/errors";
+import { useQueryView } from "../components/QueryView";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
 import { issuesApi } from "../api/issues";
@@ -45,6 +47,7 @@ import { SearchFilterSheet, SearchFilterSheetTrigger } from "../components/searc
 import { SearchSortMenu } from "../components/search/SearchSortMenu";
 import { ZeroResultsRecovery } from "../components/search/ZeroResultsRecovery";
 import { useSidebar } from "../context/SidebarContext";
+import { useMemberRestrictionGate } from "../hooks/useMemberRestrictionGate";
 import {
   SORT_LABELS,
   countActiveFilters,
@@ -123,11 +126,11 @@ export function buildSearchUrl(
 
 function shapeError(error: unknown): { message: string; status?: number } {
   if (!error) return { message: "Unknown error" };
-  if (error instanceof Error) {
-    const status = (error as Error & { status?: number }).status;
-    return { message: error.message, status: typeof status === "number" ? status : undefined };
-  }
-  return { message: String(error) };
+  const status = (error as { status?: number } | null)?.status;
+  return {
+    message: describeError(error, { action: "run that search" }).body,
+    status: typeof status === "number" ? status : undefined,
+  };
 }
 
 export function Search() {
@@ -190,11 +193,14 @@ export function Search() {
     enabled: !!selectedCompanyId,
   });
 
-  const { data: labels = [] } = useQuery({
+  // Company labels are a closed list for a restricted member under `enforce` (AC-G10): no Label filter.
+  const memberGate = useMemberRestrictionGate(selectedCompanyId);
+  const { data: labelData = [] } = useQuery({
     queryKey: queryKeys.issues.labels(selectedCompanyId!),
-    queryFn: () => issuesApi.listLabels(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
+    queryFn: memberGate.guard(() => issuesApi.listLabels(selectedCompanyId!), []),
+    enabled: !!selectedCompanyId && !memberGate.closed,
   });
+  const labels = memberGate.closed ? [] : labelData;
 
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
@@ -304,7 +310,7 @@ export function Search() {
   const displayQuery = committedQuery.trim();
   const queryEnabled = !!selectedCompanyId && (trimmedQuery.length > 0 || hasSearchFilters(activeFilters));
 
-  const { data, isFetching, error, refetch } = useQuery<CompanySearchResponse>({
+  const searchQuery = useQuery<CompanySearchResponse>({
     queryKey: [
       ...queryKeys.companySearch.search(
         selectedCompanyId ?? "__no-company__",
@@ -327,6 +333,7 @@ export function Search() {
     enabled: queryEnabled,
     placeholderData: (previousData) => previousData,
   });
+  const { data, isFetching } = searchQuery;
 
   const agentsById = useMemo<ReadonlyMap<string, Pick<Agent, "id" | "name" | "appearance">>>(() => {
     const map = new Map<string, Pick<Agent, "id" | "name" | "appearance">>();
@@ -354,9 +361,10 @@ export function Search() {
       agents: agents as Agent[],
       projects: projects as Project[],
       labels: labels as IssueLabel[],
+      labelsClosed: memberGate.closed,
       currentUserId,
     }),
-    [data?.filterOptionCounts, agents, projects, labels, currentUserId],
+    [data?.filterOptionCounts, agents, projects, labels, memberGate.closed, currentUserId],
   );
 
   const filtersActive = hasSearchFilters(activeFilters);
@@ -499,11 +507,14 @@ export function Search() {
     [draftQuery, inputFocused],
   );
   const showInitialState = !displayQuery && !hasSearchFilters(activeFilters);
-  const isLoading = queryEnabled && isFetching && !data;
+  const searchView = useQueryView(searchQuery);
+  // Loaded results stay on screen through a failed refetch (`stale`); an
+  // outage before the first result shows the search skeleton (`reconnecting`).
+  const isLoading = queryEnabled && (searchView.kind === "loading" || searchView.kind === "reconnecting");
   const hasResults = !!data && totalResults > 0;
   const isEmpty = !!data && !isFetching && totalResults === 0;
-  const hasError = !!error && !isLoading;
-  const apiError = hasError ? shapeError(error) : null;
+  const hasError = queryEnabled && searchView.kind === "error";
+  const apiError = hasError ? shapeError(searchView.error) : null;
   const apiMessage = data?.results === undefined && data ? null : null;
   void apiMessage;
 
@@ -676,7 +687,7 @@ export function Search() {
                 showAllScope={showAllScope}
                 navigateIssuesFallback={navigateIssuesFallback}
                 openNewIssue={() => openNewIssue({ title: searchDisplayLabel })}
-                refetch={() => void refetch()}
+                refetch={searchView.retry}
                 recentSearches={recentSearches}
                 onRecentClick={handleRecentClick}
                 results={data?.results ?? []}

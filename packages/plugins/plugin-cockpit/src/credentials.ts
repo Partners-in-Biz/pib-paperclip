@@ -19,6 +19,7 @@ import { CLIENT_CREDENTIAL_TEMPLATE, CREDENTIAL_SEED, type SeedCredential } from
 import {
   BROWSER_SEED_PREFIX,
   browserVerdict,
+  isBrowserConfigReason,
   parseBrowserStatus,
   CredentialError,
   credentialBrief,
@@ -398,6 +399,8 @@ export async function syncBrowserIdentities(env: Env, companyId: string, path = 
     out.identities += 1;
     if (verdict.status !== "expired") continue;
     out.expired += 1;
+    // A configuration problem (site_not_found) stays on the register row / health line; it is not a "log in again" for Peet.
+    if (!status.stale && isBrowserConfigReason(id.reason)) continue;
     const hash = createHash("sha1").update(id.identity).digest("hex").slice(0, 8);
     const card = await openCockpitAsk(env, companyId, {
       originKey: `browser-login-${hash}`,

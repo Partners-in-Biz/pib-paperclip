@@ -108,16 +108,24 @@ const MIME_EXT: Record<string, string> = {
   "image/webp": "webp",
   "video/mp4": "mp4",
   "video/quicktime": "mov",
+  "audio/mpeg": "mp3",
+  "audio/wav": "wav",
 };
 
 export function extFor(mime: string): string {
   const ext = MIME_EXT[mime];
-  if (!ext) throw new StudioError(`Studio stores images and videos, not ${mime}`, "unsupported_type");
+  if (!ext) throw new StudioError(`Studio stores images, videos and sound (MP3, WAV), not ${mime}`, "unsupported_type");
   return ext;
 }
 
-export function kindFor(mime: string): "image" | "video" {
+export function kindFor(mime: string): "image" | "video" | "audio" {
+  if (mime.startsWith("audio/")) return "audio";
   return mime.startsWith("video/") ? "video" : "image";
+}
+
+/** An MPEG audio layer III frame header: 11 sync bits, a real version (not reserved), layer III. ADTS AAC (layer 0) is not one. */
+function mp3FrameSync(b: Uint8Array): boolean {
+  return b[0] === 0xff && (b[1] & 0xe0) === 0xe0 && ((b[1] >> 3) & 3) !== 1 && ((b[1] >> 1) & 3) === 1;
 }
 
 /** The file's real type, from its first bytes. A provider's or uploader's stated type is not trusted. */
@@ -129,6 +137,8 @@ export function sniffMime(b: Uint8Array): string | null {
   if (ascii(0, 4) === "GIF8") return "image/gif";
   if (ascii(0, 4) === "RIFF" && ascii(8, 12) === "WEBP") return "image/webp";
   if (ascii(4, 8) === "ftyp") return ascii(8, 12) === "qt  " ? "video/quicktime" : "video/mp4";
+  if (ascii(0, 4) === "RIFF" && ascii(8, 12) === "WAVE") return "audio/wav";
+  if (ascii(0, 3) === "ID3" || mp3FrameSync(b)) return "audio/mpeg";
   return null;
 }
 

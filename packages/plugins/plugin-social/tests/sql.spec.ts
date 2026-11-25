@@ -14,7 +14,7 @@ describe("migrations", () => {
 
   it("every statement passes the host migration guard", () => {
     const files = readdirSync(MIGRATIONS).filter((f) => f.endsWith(".sql")).sort();
-    expect(files.slice(-5)).toEqual(["015_social.sql", "016_social.sql", "017_social.sql", "018_social.sql", "019_social.sql"]);
+    expect(files.slice(-5)).toEqual(["017_social.sql", "018_social.sql", "019_social.sql", "020_social.sql", "021_social.sql"]);
     for (const file of files) {
       for (const statement of splitStatements(readFileSync(new URL(file, MIGRATIONS), "utf8"))) {
         expect(() => assertMigrationStatement(statement), `${file}: ${statement.slice(0, 70)}`).not.toThrow();
@@ -102,6 +102,7 @@ describe("runtime SQL passes the host guard", () => {
       () => db.setAccountState(ctx, "a1", { status: "needs_reconnect", lastError: "x", reconnectIssueId: "i" }),
       () => db.updateAccountSettings(ctx, "co", "a1", { meta: { boardId: "b" }, status: "disabled" }),
       () => db.disconnectAccount(ctx, "co", "a1", "note"),
+      () => db.deleteDisabledAccount(ctx, "co", "a1"),
       () => db.lockAccountRefresh(ctx, "a1"),
       () => db.unlockAccountRefresh(ctx, "a1"),
       () => db.deleteJunkAccounts(ctx, "co"),

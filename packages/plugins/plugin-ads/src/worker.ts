@@ -1,8 +1,9 @@
-import { normalizeToolResult } from "@partnersinbiz/pib-plugin-kit";
+import { jobCompanyIds, createAccessGuard, normalizeToolResult, type AccessGuard } from "@partnersinbiz/pib-plugin-kit";
 import {
   definePlugin,
   runWorker,
   type PluginApiRequestInput,
+  type PluginApiResponse,
   type PluginContext,
   type PluginEvent,
   type PluginPerformActionContext,
@@ -37,6 +38,7 @@ import { refreshAllConnections, tokenFor } from "./connections.js";
 import { deleteExpiredOauthSessions, getConnection, getScope, updateConnection, audit, getAccount } from "./db.js";
 import { AdsError, errorMessage, objectParams, optionalString, requiredString } from "./domain.js";
 import { ADS_DONE_CHECKS } from "./done-checks.js";
+import { ACCESS_TABLE } from "./access-table.js";
 import { acknowledgeAlert, evaluateCompany, resolveStaleAlerts } from "./evaluate.js";
 import { executeProposal } from "./execute.js";
 import { ADS_HIRE_ROLE, ADS_MATCH_ROLE } from "./hire.js";
@@ -65,6 +67,7 @@ import {
   summaryRecord,
   variantsRecord,
 } from "./records.js";
+import { diagnoseGoogleCampaign } from "./providers/google.js";
 import { runtimeFor, providerEnv, type AdsRuntime } from "./runtime.js";
 import { adsSetupStatus } from "./setup-status.js";
 import { sweepCaps } from "./sweeper.js";
@@ -74,6 +77,7 @@ import { SKILLS } from "./skills.js";
 import { ADS_TOOLS } from "./tools.js";
 
 let pluginCtx: PluginContext | null = null;
+let guard: AccessGuard | null = null;
 let skillSync: SkillSyncer | null = null;
 const lastRuns: Record<string, { at: string; ok: boolean; summary?: unknown; error?: string }> = {};
 
@@ -105,8 +109,9 @@ function requireUser(v: Viewer, what: string): string {
   return v.userId;
 }
 
+/** Before a tool call, a page action or the page load: never waits long for the skill sync (kit `soon`). */
 async function ensureCompany(ctx: PluginContext, companyId: string): Promise<void> {
-  await skillSync?.ensure(companyId).catch(() => undefined);
+  await skillSync?.soon(companyId);
 }
 
 // ── agent tools ─────────────────────────────────────────────────────────────
@@ -178,11 +183,21 @@ async function dispatchTool(rt: AdsRuntime, v: Viewer, name: string, raw: Record
       );
       return { ...result, bannedWordsChecked: (scope?.banned_words.length ?? 0) + extra.length, note: `A machine check only. It also scores the copy on the shared creative rubric (out of 100; 80 passes) with score ${result.rubric?.score ?? 0}. A score under 80 is advisory: the gaps are in rubric.notes; only blockers fail the check. It never clears copy: propose it (creative_check, or inside create_campaign) and the Reviewer reads it against the client's brand profile.` };
     }
+    case "diagnose-google-campaign": {
+      const account = await getAccount(rt.ctx, rt.companyId, requiredString(p, "accountId"));
+      if (!account || account.status !== "active") throw new AdsError("That ad account was not found or is not active.");
+      if (account.platform !== "google") throw new AdsError("diagnose-google-campaign only works on a Google ad account.");
+      const conn = account.connection_id ? await getConnection(rt.ctx, rt.companyId, account.connection_id) : null;
+      if (!conn || (conn.status !== "connected" && conn.status !== "expiring")) throw new AdsError("The connection for this ad account needs signing in again.");
+      const token = await tokenFor(rt, conn);
+      const env = await providerEnv(rt, "google");
+      return diagnoseGoogleCampaign(env, token, { externalId: account.external_id, currency: account.currency, loginCustomerId: account.login_customer_id }, requiredString(p, "campaignId"));
+    }
     case "upload-ad-media": {
       const accountId = requiredString(p, "accountId");
       const account = await getAccount(rt.ctx, rt.companyId, accountId);
       if (!account || account.status !== "active") throw new AdsError("That ad account was not found or is not active.");
-      if (account.platform !== "meta") throw new AdsError("Media upload is only supported on Meta (Facebook and Instagram).");
+      if (account.platform !== "meta" && account.platform !== "google") throw new AdsError("Media upload is only supported on Meta (Facebook and Instagram) and Google.");
       const mediaType = requiredString(p, "mediaType");
       if (mediaType !== "image" && mediaType !== "video") throw new AdsError("mediaType must be image or video");
       const conn = account.connection_id ? await getConnection(rt.ctx, rt.companyId, account.connection_id) : null;
@@ -191,7 +206,8 @@ async function dispatchTool(rt: AdsRuntime, v: Viewer, name: string, raw: Record
       const token = await tokenFor(rt, conn);
       const provider = rt.provider(account.platform);
       const env = await providerEnv(rt, account.platform);
-      const accountRef = { externalId: account.external_id, currency: account.currency, loginCustomerId: null };
+      // Google needs the manager account (login-customer-id) when the account is reached through one.
+      const accountRef = { externalId: account.external_id, currency: account.currency, loginCustomerId: account.login_customer_id };
       if (mediaType === "image") {
         const imageBase64 = requiredString(p, "imageBase64");
         const decoded = Buffer.from(imageBase64, "base64");
@@ -199,7 +215,7 @@ async function dispatchTool(rt: AdsRuntime, v: Viewer, name: string, raw: Record
         return await provider.uploadAdImage(env, token, accountRef, { filename: requiredString(p, "filename"), imageBase64 });
       } else {
         const videoUrl = requiredString(p, "videoUrl");
-        if (!videoUrl.startsWith("https://")) throw new AdsError("Video URL must be https");
+        if (!videoUrl.startsWith("https://")) throw new AdsError(account.platform === "google" ? "Video URL must be an https YouTube link (Google ads use YouTube videos)" : "Video URL must be https");
         return await provider.uploadAdVideo(env, token, accountRef, { videoUrl, title: optionalString(p, "title") });
       }
     }
@@ -349,7 +365,7 @@ const ACTIONS: Record<string, ActionHandler> = {
     const actorUserId = requireUser(v, "hires the ads agent");
     return startHire(ctx, v.companyId, ADS_HIRE_ROLE, {
       title: optionalString(p, "title"),
-      description: optionalString(p, "description"),
+      description: optionalString(p, "description", 50_000),
       assigneeAgentId: optionalString(p, "assigneeAgentId") ?? null,
       assigneeUserId: optionalString(p, "assigneeUserId") ?? null,
       actorUserId,
@@ -373,7 +389,11 @@ const ACTIONS: Record<string, ActionHandler> = {
 
 // ── API routes ──────────────────────────────────────────────────────────────
 
-async function handleApiRoute(ctx: PluginContext, input: PluginApiRequestInput) {
+/** The manifest's routes, each registered through the guard. */
+const API_ROUTE_KEYS = ["oauth-complete", SETUP_STATUS_ROUTE.routeKey, COCKPIT_ROUTE.routeKey] as const;
+const NOT_FOUND = { status: 404, body: { error: "Not found" } };
+
+async function handleApiRoute(ctx: PluginContext, input: PluginApiRequestInput): Promise<PluginApiResponse> {
   if (input.routeKey === COCKPIT_ROUTE.routeKey || input.routeKey === SETUP_STATUS_ROUTE.routeKey) {
     const companyId = input.companyId;
     if (!companyId) return { status: 400, body: { error: "companyId is required" } };
@@ -383,7 +403,7 @@ async function handleApiRoute(ctx: PluginContext, input: PluginApiRequestInput) 
       return { status: 500, body: { error: errorMessage(error) } };
     }
   }
-  if (input.routeKey !== "oauth-complete") return { status: 404, body: { error: "Not found" } };
+  if (input.routeKey !== "oauth-complete") return NOT_FOUND;
   // OAuth completion (called by the static bridge page).
   try {
     if (input.actor.actorType !== "user") return { status: 403, body: { error: "Only a signed-in person can finish connecting an ad platform." } };
@@ -428,7 +448,7 @@ function registerJob(ctx: PluginContext, key: string, run: () => Promise<unknown
 /** Every company that uses Ads, one at a time: a failure in one never stops the others. */
 async function forEachCompany<T>(ctx: PluginContext, run: (rt: AdsRuntime) => Promise<T>): Promise<Array<{ companyId: string; result?: T; error?: string }>> {
   const out: Array<{ companyId: string; result?: T; error?: string }> = [];
-  for (const companyId of await knownCompanies(ctx)) {
+  for (const companyId of await jobCompanyIds(ctx, await knownCompanies(ctx))) {
     try {
       if (!(await companyUsesAds(ctx, companyId))) continue;
       out.push({ companyId, result: await run(await runtimeFor(ctx, companyId)) });
@@ -442,7 +462,7 @@ async function forEachCompany<T>(ctx: PluginContext, run: (rt: AdsRuntime) => Pr
 
 export async function publishSetupStatuses(ctx: PluginContext): Promise<{ published: number; skipped: number }> {
   const result = { published: 0, skipped: 0 };
-  for (const companyId of await knownCompanies(ctx)) {
+  for (const companyId of await jobCompanyIds(ctx, await knownCompanies(ctx))) {
     try {
       if (!(await adsOn(ctx, companyId))) {
         result.skipped += 1;
@@ -492,16 +512,20 @@ const plugin = definePlugin({
     pluginCtx = ctx;
     skillSync = createSkillSyncer(ctx, SKILLS);
 
+    // Every action, tool and API route goes through the access guard (PAR-12645). With the switch off it is a pass-through.
+    const g = createAccessGuard(ctx, { pluginKey: PLUGIN_ID, table: ACCESS_TABLE });
+    guard = g;
     for (const tool of ADS_TOOLS) {
-      ctx.tools.register(tool.name, tool, async (params, run) => normalizeToolResult(await runTool(ctx, tool.name, params, run)));
+      g.tool(tool.name, tool, async (params, run) => normalizeToolResult(await runTool(ctx, tool.name, params, run)));
     }
     for (const [key, handler] of Object.entries(ACTIONS)) {
-      ctx.actions.register(key, async (params, context) => {
+      g.action(key, async (params, context) => {
         const v = actionViewer(context);
         await ensureCompany(ctx, v.companyId);
         return handler(ctx, await runtimeFor(ctx, v.companyId), v, objectParams(params));
       });
     }
+    for (const routeKey of API_ROUTE_KEYS) g.apiRoute(routeKey, (input) => handleApiRoute(ctx, input));
 
     // Read the numbers (read-only), then look for anomalies and budget alerts. Every 3 hours, per company that saved its settings.
     registerJob(ctx, "sync-insights", async () => {
@@ -584,8 +608,9 @@ const plugin = definePlugin({
     };
   },
   async onApiRequest(input) {
-    if (!pluginCtx) return { status: 503, body: { error: "Paid ads plugin is not ready" } };
-    return handleApiRoute(pluginCtx, input);
+    if (!pluginCtx || !guard) return { status: 503, body: { error: "Paid ads plugin is not ready" } };
+    // An unknown key under the switch `off` answers as before; under report and enforce the guard refuses it.
+    return guard.handleApiRequest(input, async () => NOT_FOUND);
   },
 });
 

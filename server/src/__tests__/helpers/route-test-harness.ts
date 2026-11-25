@@ -110,7 +110,7 @@ export async function seedCompanyWithBoardAccess(db: Db, name: string): Promise<
       source: "session",
       userId,
       companyIds: [companyId],
-      memberships: [{ companyId, membershipRole: "owner", status: "active" }],
+      memberships: [{ companyId, membershipRole: "owner", status: "active", restricted: false, restrictionMode: "off" as const }],
       isInstanceAdmin: false,
     },
   };

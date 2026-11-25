@@ -1,9 +1,11 @@
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { generateReadme } from "../services/company-export-readme.js";
+import { readPaperclipSkillWithReferences } from "./paperclip-skill-text.js";
 
 // The Paperclip CLI is unsafe when an operator or an agent runs it through
 // `pnpm paperclipai <sub> <arg>` with a content-bearing argument. `pnpm` treats
@@ -367,6 +369,13 @@ function isTestFile(relPath: string): boolean {
 
 function listGuidanceFiles(rootDir = repoRoot): string[] {
   const found: string[] = [];
+  // Include tracked files and new authored files, while respecting gitignored
+  // local settings. A tracked file remains scanned even if an ignore matches.
+  const authored = new Set(execFileSync(
+    "git",
+    ["ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+    { cwd: rootDir, encoding: "utf8" },
+  ).split("\0"));
 
   function walk(absDir: string, relDir: string): void {
     for (const entry of readdirSync(absDir, { withFileTypes: true })) {
@@ -382,7 +391,7 @@ function listGuidanceFiles(rootDir = repoRoot): string[] {
       if (!SCAN_EXTENSIONS.has(path.extname(entry.name))) continue;
       if (isTestFile(relPath)) continue;
       if (SKIP_PATH_PREFIXES.some((prefix) => relPath.startsWith(prefix))) continue;
-      found.push(relPath);
+      if (authored.has(relPath)) found.push(relPath);
     }
   }
 
@@ -486,6 +495,7 @@ describe("paperclipai CLI invocation safety", () => {
       "tests/runner-e2e/catalog.ts",
     ];
     try {
+      execFileSync("git", ["init", "--quiet"], { cwd: root });
       for (const relPath of [
         ...sourcePaths,
         "tests/runner-e2e/results/campaign/attempt-1/snapshots/api-state.json",
@@ -503,6 +513,7 @@ describe("paperclipai CLI invocation safety", () => {
   it("excludes root runtime recordings but still scans unsafe docs and source guidance", () => {
     const fixtureRoot = mkdtempSync(path.join(os.tmpdir(), "paperclip-cli-guidance-"));
     try {
+      execFileSync("git", ["init", "--quiet"], { cwd: fixtureRoot });
       const fixtures = [
         "doc/CLI.md",
         "src/guidance.ts",
@@ -525,6 +536,26 @@ describe("paperclipai CLI invocation safety", () => {
       }
     } finally {
       rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("scans tracked and ordinary untracked guidance but excludes ignored untracked files", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "paperclip-cli-guidance-"));
+    try {
+      execFileSync("git", ["init", "--quiet"], { cwd: root });
+      writeFileSync(path.join(root, ".gitignore"), "ignored.md\ntracked.md\n");
+      for (const name of ["ignored.md", "untracked.md", "tracked.md"]) {
+        writeFileSync(path.join(root, name), "pnpm paperclipai issue get issue-1\n");
+      }
+      execFileSync("git", ["add", "--force", "tracked.md"], { cwd: root });
+
+      const files = listGuidanceFiles(root).sort();
+      expect(files).toEqual(["tracked.md", "untracked.md"]);
+      for (const name of files) {
+        expect(scanText(name, readFileSync(path.join(root, name), "utf8"))).toHaveLength(1);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 
@@ -901,7 +932,7 @@ describe("paperclipai CLI invocation safety", () => {
   });
 
   it("documents the safe form in the agent-facing skill", () => {
-    const skill = read("skills/paperclip/SKILL.md");
+    const skill = readPaperclipSkillWithReferences();
     expect(skill).toContain("CLI safety");
     expect(skill).toContain("npx paperclipai");
     expect(skill).toContain("Do not use `pnpm paperclipai`");

@@ -1,5 +1,6 @@
-import { useCallback, useMemo } from "react";
+import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useQueryView } from "../components/QueryView";
 import type {
   ExternalObjectMention,
   ExternalObjectMentionGroup,
@@ -11,6 +12,7 @@ import { normalizeExternalObjectHref } from "../lib/external-object-href";
 import type { MarkdownExternalReferenceMap } from "../components/MarkdownBody";
 import type { ExternalObjectPillData } from "../components/ExternalObjectPill";
 import { instanceSettingsApi } from "../api/instanceSettings";
+import { useMemberRestrictionGate } from "./useMemberRestrictionGate";
 
 export const EXTERNAL_OBJECT_SUMMARY_BATCH_SIZE = 500;
 
@@ -71,11 +73,13 @@ function useExternalObjectsFeature() {
   const query = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
-    retry: false,
   });
+  const view = useQueryView(query);
   return {
     isEnabled: query.data?.enableExternalObjects === true,
-    isLoaded: query.data !== undefined || query.isError,
+    isLoaded: query.data !== undefined,
+    error: query.error,
+    view,
   };
 }
 
@@ -168,17 +172,18 @@ export function useIssueExternalObjects(issueId: string | null | undefined): Iss
     return result;
   }, [groups]);
 
-  const refetch = useCallback(() => {
-    void query.refetch();
-  }, [query.refetch]);
+  const view = useQueryView(query);
 
+  // Loaded objects stay on screen through an outage; only a real failure is
+  // reported as an error, and an outage before the first load counts as loading.
+  const viewKind = view.kind;
   return {
     isEnabled: externalObjectsFeature.isEnabled,
     groups,
     markdownReferences,
-    isLoading: enabled && query.isLoading,
-    isError: query.isError,
-    refetch,
+    isLoading: enabled && (query.isLoading || viewKind === "reconnecting"),
+    isError: viewKind === "error",
+    refetch: view.retry,
   };
 }
 
@@ -207,27 +212,39 @@ export function useIssueExternalObjectSummaries(
   summaries: Map<string, ExternalObjectSummary>;
   isLoading: boolean;
   isReady: boolean;
+  error: Error | null;
+  refetch: () => void;
 } {
   const externalObjectsFeature = useExternalObjectsFeature();
+  // A company-wide summary list: closed for a restricted member under `enforce` (AC-G10).
+  const memberGate = useMemberRestrictionGate(companyId);
   const normalizedIssueIds = useMemo(
     () => [...new Set(issueIds.filter((issueId) => issueId.length > 0))].sort(),
     [issueIds],
   );
-  const enabled = externalObjectsFeature.isEnabled && Boolean(companyId) && normalizedIssueIds.length > 0;
+  const enabled = externalObjectsFeature.isEnabled && !memberGate.closed
+    && Boolean(companyId) && normalizedIssueIds.length > 0;
   const query = useQuery({
     queryKey: queryKeys.externalObjects.issueSummaries(companyId ?? "__none__", normalizedIssueIds),
-    queryFn: () => fetchIssueExternalObjectSummariesInBatches(companyId!, normalizedIssueIds),
+    queryFn: memberGate.guard(
+      () => fetchIssueExternalObjectSummariesInBatches(companyId!, normalizedIssueIds),
+      { summaries: {} as Record<string, ExternalObjectSummary> },
+    ),
     enabled,
     staleTime: 60_000,
   });
+  const view = useQueryView(query);
   const summaries = useMemo(
-    () => new Map(Object.entries(query.data?.summaries ?? {})),
-    [query.data?.summaries],
+    () => new Map(memberGate.closed ? [] : Object.entries(query.data?.summaries ?? {})),
+    [memberGate.closed, query.data?.summaries],
   );
   return {
     summaries,
-    isLoading: enabled && query.isLoading,
-    isReady: externalObjectsFeature.isLoaded && (!enabled || query.isSuccess),
+    isLoading: (!externalObjectsFeature.isLoaded && externalObjectsFeature.view.kind !== "error")
+      || (enabled && (query.isLoading || view.kind === "reconnecting")),
+    isReady: externalObjectsFeature.isLoaded && (!enabled || query.data !== undefined),
+    error: externalObjectsFeature.view.kind === "error" ? externalObjectsFeature.error : view.kind === "error" ? query.error : null,
+    refetch: externalObjectsFeature.view.kind === "error" ? externalObjectsFeature.view.retry : view.retry,
   };
 }
 

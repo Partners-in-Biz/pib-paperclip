@@ -85,6 +85,12 @@ export const ROUTES: Route[] = [
   // listCampaigns for one client (kit clientWhere uses COALESCE on the kind).
   [/FROM \S+\.campaigns\s+WHERE company_id = \$1 AND client_ref = \$3 AND COALESCE\(client_kind/, (p, s) =>
     (s.campaigns ?? []).filter((c) => c.company_id === p[0] && c.client_ref === p[2] && (c.client_kind ?? "company") === p[1])],
+  // searchCampaigns (canvas card search): PiB's own campaigns whose name or status contains the text; the SQL runs for real in canvas-cards.pg.spec.ts.
+  [/strpos\(lower\(name\), \$2\)/, (p, s) =>
+    (s.campaigns ?? [])
+      .filter((c) => c.company_id === p[0] && c.client_ref == null && (String(c.name).toLowerCase().includes(String(p[1])) || String(c.status).toLowerCase().includes(String(p[1]))))
+      .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))
+      .slice(0, Number(p[2]))],
   // crmContactsByPhone: projected contacts whose phone ends in the same nine digits.
   [/right\(regexp_replace/, (p, s) =>
     (s.crm_contacts ?? []).filter((row) => row.company_id === p[0] && !row.deleted && ((row.phones ?? []) as string[]).some((phone) => phone.replace(/\D/g, "").slice(-9) === p[1]))],

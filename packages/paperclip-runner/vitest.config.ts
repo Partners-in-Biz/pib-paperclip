@@ -1,9 +1,20 @@
+import { availableParallelism } from "node:os";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
+import { RunnerSequencer } from "./scripts/vitest-sequencer.mjs";
+import { retryReporterEnabled, vitestRetryCount } from "../../scripts/ci/vitest-retry.mjs";
 
 const packageRoot = fileURLToPath(new URL(".", import.meta.url));
+const ciReporters = [
+  ...(process.env.GITHUB_ACTIONS === "true" ? [resolve(packageRoot, "../../scripts/ci/oversized-test-files.mjs")] : []),
+  ...(process.env.PAPERCLIP_CI_PROFILE === "true" ? [resolve(packageRoot, "../../scripts/ci-profile/vitest-reporter.mjs")] : []),
+  ...(retryReporterEnabled() ? [resolve(packageRoot, "../../scripts/ci/retry-reporter.mjs")] : []),
+];
+// One retry in PR CI only (run-pr-vitest-lane.mjs runs `vitest run` here
+// without the root wrapper); see scripts/ci/vitest-retry.mjs.
+const retry = vitestRetryCount();
 
 export default defineConfig({
   resolve: {
@@ -16,7 +27,15 @@ export default defineConfig({
     // PAR-7244: hard cap for local/agent runs on the shared VPS; larger only on the self-hosted CI runner.
     // GitHub-hosted runners have 4 vCPUs, so they keep vitest's default (cores - 1) instead of running 8.
     maxWorkers: process.env.RUNNER_ENVIRONMENT === "github-hosted" ? undefined : process.env.CI ? 8 : 4,
+    ...(ciReporters.length > 0 ? { reporters: [...configDefaults.reporters, ...ciReporters] } : {}),
+    ...(retry > 0 ? { retry } : {}),
     environment: "node",
+    // Hermetic files also launch Runner and sidecar processes. Reserve CPU
+    // capacity for their startup within the original readiness deadlines.
+    ...(process.env.GITHUB_ACTIONS === "true"
+      ? { maxWorkers: Math.min(4, Math.max(1, Math.floor(availableParallelism() / 2))) }
+      : {}),
+    sequence: { sequencer: RunnerSequencer },
     include: [
       "src/**/*.test.ts",
       "src/**/*.test.tsx",
@@ -27,6 +46,7 @@ export default defineConfig({
       "examples/scenario-explorer/src/**/*.test.tsx",
       "scripts/local-runner-browser-server.test.mjs",
       "scripts/live-console-browser-server.test.mjs",
+      "scripts/vitest-sequencer.test.mjs",
     ],
   },
 });
