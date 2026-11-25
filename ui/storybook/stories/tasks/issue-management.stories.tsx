@@ -458,7 +458,7 @@ function ColumnConfigurationMatrix() {
           <span>Issue</span>
           <span className="grid grid-cols-[6rem_6rem_7rem_9rem_6rem_4.5rem] gap-2">
             <span>Assignee</span>
-            <span>Kicked off by</span>
+            <span>Created by</span>
             <span>Project</span>
             <span>Workspace</span>
             <span>Tags</span>

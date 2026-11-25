@@ -35,6 +35,9 @@ Procedure (root part from PAR-9356):
 4. On the server: `sudo pib-root browser-handoff-stop <id>` removes the flag (root-owned; only root can) and stops `pib-vnc`.
 5. An agent runs `pib-browser probe --all --identities <id> --issue PAR-N`; the login shows ok.
 
+### Live view (PAR-14514)
+A second socket, `/run/pib-browser/live.sock` (mode 0660, `PIB_BROWSER_LIVE_SOCKET`), streams display `:99` to Cockpit over a WebSocket, view only. `GET /stream?mode=view` is accepted only with the core server's signed header `x-paperclip-local-ws-signature` (`doc/plugins/PLUGIN_SPEC.md`): it must verify against the key from `PIB_BROWSER_API`/`api/plugins/local-ws-key`, name this socket, the plugin `PIB_BROWSER_LIVE_PLUGIN_KEY` (default `partnersinbiz.cockpit`) and the exact path, be under 30 s old and use a fresh nonce. Any other process on the box, an agent included, gets 401. Each stream runs its own `x11vnc -inetd -viewonly` (no TCP port), handed a socket through a one-use 0700 folder in the private temp folder; at most two streams, 20 minutes each, a ping every 20 s, and `x11vnc` is killed when either side closes or the daemon stops. `mode=control` is refused until the take-over ticket (PAR-14536). `GET /status` (unsigned) returns `{viewers, agentSessions, lease, waiting}`. Neither the path, the header nor any stream byte is logged. If the live service cannot start (for example `ws` missing), the agent socket runs as before.
+
 ## Exit Codes
 
 | Code | Meaning |

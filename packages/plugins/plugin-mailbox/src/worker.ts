@@ -16,6 +16,7 @@ import {
   COCKPIT_EVENTS,
   COCKPIT_ROUTE,
   configSaved,
+  createAccessGuard,
   createSkillSyncer,
   decisionStats,
   HANDOFF_EVENTS,
@@ -46,8 +47,10 @@ import {
   type MailAddress,
   type PreferenceValue,
   type MailSendRequested,
+  type AccessGuard,
   type RolesPayload,
 } from "@partnersinbiz/pib-plugin-kit";
+import { ACCESS_TABLE } from "./access-table.js";
 import { espReadiness, espWebhookUrl, gmailRedirectUri, loadMailboxConfig, parseSelectors, r2Configured, validateMailboxConfig, type LoadedConfig } from "./config.js";
 import { getAttachment, listMailboxes } from "./agent-mail.js";
 import { clientProjectIds, resolveClientProjectId } from "@partnersinbiz/pib-plugin-kit";
@@ -110,6 +113,11 @@ import { mailCardKind } from "./canvas-cards.js";
 let skillSync: ReturnType<typeof createSkillSyncer> | null = null;
 let env: Env | null = null;
 let store: SqlStore | null = null;
+let guard: AccessGuard | null = null;
+
+/** The manifest's routes, each registered through the guard. */
+const API_ROUTE_KEYS = ["oauth-complete", SETUP_STATUS_ROUTE.routeKey, COCKPIT_ROUTE.routeKey] as const;
+const UNKNOWN_ROUTE = { status: 404, body: { error: "Unknown route" } };
 
 const plugin = definePlugin({
   async setup(ctx) {
@@ -133,8 +141,13 @@ const plugin = definePlugin({
     registerEraseReceiver(ctx, { plugin: PLUGIN_ID, erase: (request, companyId) => eraseSubject(requireEnv(), companyId, request) });
     registerConsentReceiver(ctx, { plugin: PLUGIN_ID, onConsent: (companyId, consent) => onConsentRecorded(requireEnv(), companyId, consent) });
 
+    // Every action, tool and API route goes through the access guard (PAR-12682). With the switch off it is a pass-through.
+    const g = createAccessGuard(ctx, { pluginKey: PLUGIN_ID, table: ACCESS_TABLE });
+    guard = g;
+    for (const routeKey of API_ROUTE_KEYS) g.apiRoute(routeKey, (input) => handleApiRoute(requireEnv(), input));
+
     for (const tool of MAILBOX_TOOLS) {
-      ctx.tools.register(tool.name, tool, async (params, run) => {
+      g.tool(tool.name, tool, async (params, run) => {
         // A tool call never waits long for the skill sync (kit `soon`).
         await skillSync?.soon(run.companyId);
         return runTool(ctx, tool.name, params, run).then(normalizeToolResult);
@@ -142,23 +155,23 @@ const plugin = definePlugin({
     }
 
     const user = (key: string, fn: (companyId: string, userId: string, params: Record<string, unknown>) => Promise<unknown>) =>
-      ctx.actions.register(key, (params, context) => fn(requiredCompany(context), requiredUser(context), params));
+      g.action(key, (params, context) => fn(requiredCompany(context), requiredUser(context), params));
 
-    ctx.actions.register("mailbox.load", async (params, context) => {
+    g.action("mailbox.load", async (params, context) => {
       const companyId = requiredCompany(context);
       // The page never waits long for the skill sync (kit `soon`).
       await skillSync?.soon(companyId);
       await rememberCompany(ctx, companyId);
       return load(ctx, companyId, params);
     });
-    ctx.actions.register("mailbox.preferences-load", (_params, context) => preferencesLoad(ctx, requiredCompany(context)));
-    ctx.actions.register("mailbox.preferences-save", (params, context) => preferencesSave(ctx, context, (params.patch ?? {}) as Record<string, PreferenceValue | null>));
-    ctx.actions.register("mailbox.sync-skills", async (_params, context) => ({ results: await skillSync?.force(requiredCompany(context)) }));
-    ctx.actions.register("mailbox.create-draft", (params, context) =>
+    g.action("mailbox.preferences-load", (_params, context) => preferencesLoad(ctx, requiredCompany(context)));
+    g.action("mailbox.preferences-save", (params, context) => preferencesSave(ctx, context, (params.patch ?? {}) as Record<string, PreferenceValue | null>));
+    g.action("mailbox.sync-skills", async (_params, context) => ({ results: await skillSync?.force(requiredCompany(context)) }));
+    g.action("mailbox.create-draft", (params, context) =>
       createDraft(requiredCompany(context), context.actor.agentId, params, context.actor.type === "agent", drafter(context)),
     );
-    ctx.actions.register("mailbox.create-email-template", (params, context) => createEmailTemplateAction(requiredCompany(context), params));
-    ctx.actions.register("mailbox.list-email-templates", (_params, context) => requireStore().listTemplates(requiredCompany(context)));
+    g.action("mailbox.create-email-template", (params, context) => createEmailTemplateAction(requiredCompany(context), params));
+    g.action("mailbox.list-email-templates", (_params, context) => requireStore().listTemplates(requiredCompany(context)));
 
     // The host lets any agent with company access call an action, and an action has no delegation check. So what hands out
     // access or reads mail is for a signed-in person only; an agent uses the tools of the same names, which check its delegation.
@@ -283,9 +296,9 @@ const plugin = definePlugin({
     user("mailbox.task-links", async (companyId, _userId, params) => ({
       links: await taskLinks(mailLinksDeps(ctx, companyId), Array.isArray(params.messageIds) ? params.messageIds.filter((id): id is string => typeof id === "string") : []),
     }));
-    // Email cards on a planning canvas (PAR-14389 C.2): resolve and related only, no search. `ctx.actions.register` itself, not `user`:
+    // Email cards on a planning canvas (PAR-14389 C.2): resolve and related only, no search. Through the guard (`g.action`, mailbox.mail view), not `user`:
     // the kit answers agents and restricted members, and who may see a card is who may open it through mailbox.get-message.
-    registerCanvasCards({ register: ctx.actions.register, kinds: [mailCardKind({ store: requireStore, isPrivate: isPrivateMessage })] });
+    registerCanvasCards({ register: g.action, kinds: [mailCardKind({ store: requireStore, isPrivate: isPrivateMessage })] });
     user("mailbox.handoff-record", (companyId, _userId, params) =>
       recordHandoff(handoffDeps(ctx, companyId), { messageId: requiredString(params, "messageId"), scope: handoffScope(params.scope), issueId: requiredString(params, "issueId") }),
     );
@@ -374,20 +387,25 @@ const plugin = definePlugin({
   },
 
   async onApiRequest(input: PluginApiRequestInput): Promise<PluginApiResponse> {
-    if (!env) return { status: 503, body: { error: "Mailbox plugin is not ready" } };
-    try {
-      if (input.routeKey === "oauth-complete") return await oauthComplete(env, input);
-      if (input.routeKey === SETUP_STATUS_ROUTE.routeKey) return { status: 200, body: await setupStatus(env.ctx, input.companyId, env.store) };
-      if (input.routeKey === COCKPIT_ROUTE.routeKey) return { status: 200, body: await cockpitSnapshot(env.ctx, input.companyId) };
-      return { status: 404, body: { error: "Unknown route" } };
-    } catch (error) {
-      return { status: error instanceof MailboxError ? 400 : 500, body: { error: errorMessage(error) } };
-    }
+    if (!env || !guard) return { status: 503, body: { error: "Mailbox plugin is not ready" } };
+    // An unknown key under the switch `off` answers as before; under report and enforce the guard refuses it.
+    return guard.handleApiRequest(input, async () => UNKNOWN_ROUTE);
   },
 });
 
 export default plugin;
 runWorker(plugin, import.meta.url);
+
+async function handleApiRoute(env: Env, input: PluginApiRequestInput): Promise<PluginApiResponse> {
+  try {
+    if (input.routeKey === "oauth-complete") return await oauthComplete(env, input);
+    if (input.routeKey === SETUP_STATUS_ROUTE.routeKey) return { status: 200, body: await setupStatus(env.ctx, input.companyId, env.store) };
+    if (input.routeKey === COCKPIT_ROUTE.routeKey) return { status: 200, body: await cockpitSnapshot(env.ctx, input.companyId) };
+    return UNKNOWN_ROUTE;
+  } catch (error) {
+    return { status: error instanceof MailboxError ? 400 : 500, body: { error: errorMessage(error) } };
+  }
+}
 
 function requireEnv(): Env {
   if (!env) throw new MailboxError("Mailbox plugin is not ready");

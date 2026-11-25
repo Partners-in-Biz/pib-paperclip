@@ -196,7 +196,8 @@ describe("cockpit route and job tracking (SDK harness)", () => {
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ plugin: "partnersinbiz.social", title: "Social" });
     const missing = await plugin.definition.onApiRequest!({ routeKey: "cockpit", query: {}, companyId: "", actor: { actorType: "user" } } as never);
-    expect(missing.status).toBe(400);
+    // Core answers 400 before such a call reaches the plugin; the access guard's backstop refuses it (PAR-12677).
+    expect(missing.status).toBe(403);
     // The harness namespace is not a host namespace, so the job fails: the failure is recorded for jobHealth.
     await expect(harness.runJob("poll-rss")).rejects.toThrow("Unsafe identifier");
     const record = await harness.ctx.state.get({ scopeKind: "instance", namespace: "pib-cockpit-jobs", stateKey: "job:poll-rss" });
