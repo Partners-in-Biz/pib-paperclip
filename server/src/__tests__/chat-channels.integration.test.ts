@@ -7305,6 +7305,49 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toEqual([]);
       expect(f.wakeup).not.toHaveBeenCalled();
     });
+    // PAR-14560: a GitHub guest's mention is work for the guest's sponsor. A
+    // sponsor restricted under `enforce` admits no guest through the shipped
+    // message handler; `report` records a would-refuse and admits; a failed
+    // read creates nothing and leaves the delivery to retry.
+    it.each(["enforce", "report", "failed read"] as const)("maps a GitHub guest's mention to its restricted sponsor through the message handler (%s)", async (variant) => {
+      const f = await reviewBotFixture();
+      const initial = await f.management.configuration(f.endpoint.id, "owner-user");
+      await f.management.saveConfiguration(f.endpoint.id, {
+        expectedRevision: initial.revision,
+        configuration: { ...initial.configuration, people: [{ kind: "guest", githubUserId: "84", login: "contributor",
+          sponsorUserId: "owner-user", permissionProfile: "restricted", automaticReviews: false }] },
+      }, "owner-user");
+      await db.update(companyMemberships).set({ restricted: true }).where(and(eq(companyMemberships.companyId, f.companyId),
+        eq(companyMemberships.principalType, "user"), eq(companyMemberships.principalId, "owner-user")));
+      if (variant === "failed read") {
+        await db.execute(sql`UPDATE company_memberships SET restricted_plugin_keys = '"broken"'::jsonb WHERE company_id = ${f.companyId} AND principal_id = 'owner-user'`);
+      }
+      await db.update(companies).set({ memberRestrictionMode: variant === "report" ? "report" : "enforce" }).where(eq(companies.id, f.companyId));
+      const thread = makeThread({ channelId: "paperclipai/paperclip", id: "github:paperclipai/paperclip:95", name: "Guest review" }).thread;
+      const delivered = deliverMessage({ callbacks: f.callbacks, endpointId: f.endpoint.id, provider: "github", thread, trigger: "mention",
+        message: makeMessage({ id: "guest-restricted-sponsor", text: "Please review this PR", userId: "84", userName: "contributor", mentioned: true }) });
+      if (variant === "failed read") await expect(delivered).rejects.toMatchObject({ status: 503, details: { code: "MEMBER_RESTRICTION_UNAVAILABLE" } });
+      else await delivered;
+      const deliveries = (await readChatDeliveriesByEndpointId(f.endpoint.id)).map((row) => [row.eventKind, row.state, row.redactedError]);
+      const denied = await db.select().from(activityLog)
+        .where(and(eq(activityLog.companyId, f.companyId), eq(activityLog.action, "member_restriction.denied")))
+        .then((rows) => rows.map((row) => row.details));
+      const conversations = await readChatConversationsByEndpointId(f.endpoint.id);
+      if (variant === "report") {
+        expect(deliveries).toEqual([["mention", "processed", null]]);
+        expect(conversations).toHaveLength(1);
+        expect(denied).toEqual([expect.objectContaining({ personId: "owner-user", target: "inbound.chat", mode: "report" })]);
+        return;
+      }
+      expect(deliveries).toEqual([variant === "enforce"
+        ? ["mention", "filtered", "Endpoint sponsor can no longer authorize external guests"]
+        : ["mention", "retry", "Member restriction could not be read"]]);
+      expect(denied).toEqual(variant === "enforce" ? [expect.objectContaining({ personId: "owner-user", target: "inbound.chat", mode: "enforce" })] : []);
+      expect(conversations).toEqual([]);
+      expect(await db.select().from(issues).where(eq(issues.companyId, f.companyId))).toEqual([]);
+      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toEqual([]);
+      expect(f.wakeup).not.toHaveBeenCalled();
+    });
     it("offers Retry for a saved automatic PR event after a successful older review", async () => {
       const f = await reviewBotFixture();
       const payload = {
