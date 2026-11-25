@@ -12,6 +12,7 @@ A Planning Canvas board is a shared whiteboard of nodes (sticky, note, frame, sh
 
 Full format, op shapes and examples: `references/format.md`.
 Cards for CRM, billing, mail, social and campaign records (`embed` nodes, ids only): `references/entity-cards.md`.
+Generate Studio images or video and place them on a board as a card: `references/studio.md`.
 
 ## Rules (read these first)
 
