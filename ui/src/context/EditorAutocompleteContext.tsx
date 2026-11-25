@@ -5,6 +5,7 @@ import { companySkillsApi } from "../api/companySkills";
 import { routinesApi } from "../api/routines";
 import { useCompany } from "./CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
+import { useMemberRestrictionGate } from "../hooks/useMemberRestrictionGate";
 
 export interface SkillCommandOption {
   id: string;
@@ -51,23 +52,26 @@ const EditorAutocompleteContext = createContext<EditorAutocompleteContextValue>(
 
 export function EditorAutocompleteProvider({ children }: { children: ReactNode }) {
   const { selectedCompanyId } = useCompany();
+  // `skills` and `routines` are closed for a restricted member under `enforce` (AC-G10):
+  // no request, and the `/` menu offers neither.
+  const memberGate = useMemberRestrictionGate(selectedCompanyId);
   const { data: companySkills = [] } = useQuery({
     queryKey: selectedCompanyId
       ? queryKeys.companySkills.list(selectedCompanyId)
       : ["company-skills", "__none__"],
-    queryFn: () => companySkillsApi.list(selectedCompanyId!),
-    enabled: Boolean(selectedCompanyId),
+    queryFn: memberGate.guard(() => companySkillsApi.list(selectedCompanyId!), []),
+    enabled: Boolean(selectedCompanyId) && !memberGate.closed,
   });
   const { data: routines = [] } = useQuery({
     queryKey: selectedCompanyId
       ? queryKeys.routines.list(selectedCompanyId)
       : ["routines", "__none__", "__all-projects__"],
-    queryFn: () => routinesApi.list(selectedCompanyId!),
-    enabled: Boolean(selectedCompanyId),
+    queryFn: memberGate.guard(() => routinesApi.list(selectedCompanyId!), []),
+    enabled: Boolean(selectedCompanyId) && !memberGate.closed,
   });
 
   const value = useMemo<EditorAutocompleteContextValue>(() => ({
-    slashCommands: [
+    slashCommands: memberGate.closed ? [] : [
       ...companySkills.map((skill) => ({
         id: `skill:${skill.id}`,
         kind: "skill" as const,
@@ -92,7 +96,7 @@ export function EditorAutocompleteProvider({ children }: { children: ReactNode }
           aliases: [`routine:${routine.title}`, routine.title, routine.id],
         })),
     ],
-  }), [companySkills, routines]);
+  }), [companySkills, memberGate.closed, routines]);
 
   return (
     <EditorAutocompleteContext.Provider value={value}>

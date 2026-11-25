@@ -1,5 +1,5 @@
 /**
- * One dispatcher for agent tools and the UI's generic `seo.call` action.
+ * One dispatcher for agent tools and the UI's `seo.call*` actions (one per permission, src/access-table.ts).
  */
 import * as analytics from "./service/analytics.js";
 import * as checks from "./service/checks.js";
@@ -9,6 +9,7 @@ import * as data from "./service/data.js";
 import * as gsc from "./service/gsc.js";
 import * as indexing from "./service/indexing.js";
 import * as needsYou from "./service/needs-you.js";
+import * as pageApply from "./service/page-apply.js";
 import * as pageTools from "./service/page-tools.js";
 import * as setup from "./service/setup.js";
 import * as site from "./service/site.js";
@@ -21,6 +22,7 @@ import * as signoff from "./service/signoff.js";
 import * as clientSignoff from "./service/client-signoff.js";
 import * as report from "./service/report.js";
 import * as cancel from "./service/cancel.js";
+import * as rehearsalPreview from "./service/rehearsal-preview.js";
 import * as preview from "./service/preview.js";
 import * as previewDecisions from "./service/preview-decisions.js";
 import * as playbook from "./service/playbook.js";
@@ -54,6 +56,7 @@ export const HANDLERS: Record<string, Handler> = {
   "complete-task": (env, c, a, p) => tasks.completeTask(env, c, a, p),
   "block-task": (env, c, a, p) => tasks.blockTask(env, c, a, p),
   "skip-task": (env, c, a, p) => tasks.skipTask(env, c, a, p),
+  "attach-task-issue": (env, c, a, p) => tasks.attachTaskIssue(env, c, a, p),
   "add-task": (env, c, a, p) => tasks.addTask(env, c, a, p),
   "start-tasks-now": (env, c, a, p) => tasks.startTasksNow(env, c, a, p),
   "compact-task-thread": (env, c, _a, p) => thread.compactTaskThreadTool(env, c, p),
@@ -67,7 +70,11 @@ export const HANDLERS: Record<string, Handler> = {
   "propose-client-facts": (env, c, a, p) => facts.proposeClientFacts(env, c, a, p),
   "request-build": (env, c, a, p) => build.requestBuild(env, c, a, p),
   "review-preview": (env, c, a, p) => preview.reviewPreview(env, c, a, p),
+  "set-rehearsal-preview": (env, c, a, p) => rehearsalPreview.setRehearsalPreview(env, c, a, p),
   "list-previews": (env, c, _a, p) => preview.listPreviews(env, c, p),
+  // pr_only page apply grants (PAR-9493): a person or a sign-off delegate opens or closes a task's pages; the handlers check the actor.
+  "approve-page-apply": (env, c, a, p) => pageApply.approvePageApply(env, c, a, p),
+  "revoke-page-apply": (env, c, a, p) => pageApply.revokePageApply(env, c, a, p),
   // Keywords
   "list-keywords": (env, c, _a, p) => data.listKeywordsTool(env, c, p),
   "add-keywords": (env, c, a, p) => data.addKeywords(env, c, a, p),
@@ -148,7 +155,7 @@ export const HANDLERS: Record<string, Handler> = {
   "decide-playbook-change": (env, c, a, p) => playbook.decidePlaybookChangeTool(env, c, a, p),
 };
 
-/** Page-only actions (people press a button; no agent tool): reached through the UI's `seo.call`. */
+/** Page-only actions (people press a button; no agent tool): reached through the UI's `seo.call*` action of their permission. */
 export const UI_ONLY_HANDLERS: Record<string, Handler> = {
   "approve-site-writes": (env, c, a, p) => signoff.approveSiteWrites(env, c, a, p),
   "add-redesign": (env, c, a, p) => redesign.addRedesign(env, c, a, p),

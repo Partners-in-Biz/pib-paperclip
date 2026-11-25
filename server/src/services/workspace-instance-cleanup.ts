@@ -23,7 +23,9 @@ export function deriveWorktreeInstanceId(workspacePath: string): string {
     .replace(/[^a-z0-9_-]+/g, "-")
     .replace(/-+/g, "-")
     .replace(/^[-_]+|[-_]+$/g, "");
-  const prefix = (normalized || "worktree").slice(0, 48);
+  // Trim after truncating: a cut that lands on "-" would otherwise yield a
+  // double dash that the seeded .env (sanitized) never contains.
+  const prefix = (normalized || "worktree").slice(0, 48).replace(/-+$/g, "") || "worktree";
   const pathHash = createHash("sha256").update(resolvedWorkspacePath).digest("hex").slice(0, 12);
   return `${prefix}-${pathHash}`;
 }

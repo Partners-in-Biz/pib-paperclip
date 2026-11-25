@@ -3,17 +3,19 @@
  * WordPress site, and which pages. A person may; an agent only while it is in the `signoffDelegateAgentIds` setting and is
  * not the live assignee of the task's issue (no self-approval). The pages must be the task's own pages, each needs a Reviewer
  * PASS (a passed preview, or a Reviewer comment on the task issue or a child of it), and a site holds at most 10 open grant
- * pages. This file only authorises and writes the grant rows; the window sync, comment and wake come with the tool (T2b).
+ * pages. `approvePageApply` (T2b) writes the rows, sends the window, resolves the Needs you item and tells the task issue once
+ * per `apply_until`; `revokePageApply` closes grants early.
  */
-import { normalisePageUrl, reviewerAgentId, sameSite, siteKey } from "@partnersinbiz/pib-plugin-kit";
+import { normalisePageUrl, reviewerAgentId, sameSite, siteKey, wakeIssue } from "@partnersinbiz/pib-plugin-kit";
 import * as db from "../db.js";
 import { t } from "../db.js";
 import { APPROVAL_VALID_DAYS } from "../constants.js";
 import { TERMINAL_TASK_STATUSES } from "../engine/sprint.js";
-import { actorLabel, num, reqStr, SeoError, str, strList, type Actor, type Env, type Params } from "./common.js";
+import { actorLabel, companyInfo, errorMessage, num, reqStr, SeoError, str, strList, type Actor, type Env, type Params } from "./common.js";
 import { assertWritable, requireSprint } from "./context.js";
-import { getIssue } from "./issues.js";
-import { APPROVAL_DEFAULT_HOURS, delegateAgentIds } from "./signoff.js";
+import { commentOn, getIssue } from "./issues.js";
+import { resolveNeedsYou } from "./needs-you.js";
+import { APPROVAL_DEFAULT_HOURS, delegateAgentIds, syncApplyWindow } from "./signoff.js";
 
 export const MAX_GRANT_PAGES = 10;
 const MAX_NOTE = 1000;
@@ -38,6 +40,8 @@ export async function taskPageSet(env: Env, companyId: string, task: db.SprintTa
   const previews = await env.ctx.db.query(`SELECT page_url FROM ${t("previews")} WHERE company_id = $1 AND task_id = $2`, [companyId, task.id]);
   raw.push(...previews.map((r: Record<string, unknown>) => String(r.page_url ?? "")));
   for (const chunk of await db.listChunks(env.ctx.db, companyId, task.id)) raw.push(...chunk.urls);
+  const named = ((task.evidence ?? {}) as { pageUrls?: unknown }).pageUrls;
+  if (Array.isArray(named)) for (const u of named) if (typeof u === "string") raw.push(u);
   const dropped = ((task.evidence ?? {}) as { droppedPages?: Array<{ pageUrl?: unknown }> }).droppedPages;
   if (Array.isArray(dropped)) for (const d of dropped) if (typeof d?.pageUrl === "string") raw.push(d.pageUrl);
   return [...new Set(raw.map((u) => normalisePageUrl(u, siteUrl)).filter((u): u is string => u !== null))].sort();
@@ -109,8 +113,16 @@ export interface AuthorisedGrant {
   input: db.PageGrantInput;
 }
 
-/** Checks the call (plan Approach 3, in that order) and returns the grant to write. Throws a SeoError naming the first refusal. */
-export async function authorisePageApply(env: Env, companyId: string, actor: Actor, params: Params): Promise<AuthorisedGrant> {
+/** What the grant gate checks, without the grant's own `note` and `hours`. */
+export interface PageApplyCheck {
+  sprintId: string;
+  taskId: string;
+  pageUrls: string[];
+  reviewCommentId: string | null;
+}
+
+/** Gate step 1: who may approve at all. Throws the refusal. */
+async function assertGrantActor(env: Env, companyId: string, actor: Actor): Promise<void> {
   if (actor.kind === "system") throw new SeoError("Only a person or a sign-off delegate agent can approve applying page changes.");
   if (actor.kind === "agent") {
     const delegates = await delegateAgentIds(env, companyId);
@@ -118,12 +130,88 @@ export async function authorisePageApply(env: Env, companyId: string, actor: Act
       throw new SeoError("You are not a sign-off delegate (SEO setting signoffDelegateAgentIds, saved by an instance admin). Put the change set on Needs you (needs-you-add, with the task id) for the delegate or a person.");
     }
   }
+}
+
+/**
+ * Whether `actor` may approve applying these pages right now (PAR-10548 T5): every check of `authorisePageApply` except
+ * parsing `note` and `hours`, in the same order and with the same sentences. Read-only. Returns the first refusal, or null
+ * when the gate would say yes. A failure that is not a refusal (a database error) is thrown, never read as a yes.
+ */
+export async function pageApplyRefusal(env: Env, companyId: string, actor: Actor, input: PageApplyCheck): Promise<string | null> {
+  try {
+    await assertGrantActor(env, companyId, actor);
+    await checkGrant(env, companyId, actor, input);
+    return null;
+  } catch (error) {
+    if (error instanceof SeoError) return error.message;
+    throw error;
+  }
+}
+
+/** A sprint whose site has the page lock (WordPress, pr_only): only there does a page change need approve-page-apply. */
+export function hasPageLock(sprint: Pick<db.Sprint, "siteAccess" | "siteId" | "changePolicy">): boolean {
+  return sprint.siteAccess === "wordpress" && Boolean(sprint.siteId) && sprint.changePolicy === "pr_only";
+}
+
+/**
+ * PAR-13579: whether a sign-off delegate may decide a sign-off that is not a page change set on a locked site (a repo or
+ * merge_seo_scope sprint, or a task that names no page: outreach drafts, reports). No window is opened for it: the delegate
+ * resolves the Needs you item (needs-you-resolve). Same guards as the page gate where they apply: the actor is a delegate,
+ * the sprint is writable, the task is on the sprint and open, and its issue is readable, open and not the delegate's own
+ * (no self-approval). Returns the first refusal, or null. A failure that is not a refusal is thrown.
+ */
+export async function signoffRefusal(env: Env, companyId: string, actor: Actor, input: { sprintId: string; taskId: string }): Promise<string | null> {
+  try {
+    await assertGrantActor(env, companyId, actor);
+    const sprint = await requireSprint(env, companyId, input.sprintId);
+    assertWritable(sprint);
+    const task = await db.getTask(env.ctx.db, companyId, input.taskId);
+    if (!task || task.sprintId !== sprint.id) throw new SeoError(`Task ${input.taskId} is not on this sprint.`);
+    if ((TERMINAL_TASK_STATUSES as string[]).includes(task.status)) throw new SeoError(`The task is ${task.status}; there is nothing left to sign off.`);
+    if (!task.issueId) throw new SeoError("The task has no issue to tell, so an agent cannot sign it off. Ask a person.");
+    const issue = await getIssue(env, companyId, task.issueId);
+    if (!issue) throw new SeoError("The task's issue could not be read, so self-approval cannot be ruled out. Try again later.");
+    if (issue.status === "done" || issue.status === "cancelled") throw new SeoError(`The task's issue is ${issue.status}; there is nothing left to sign off.`);
+    if (actor.kind === "agent" && issue.assigneeAgentId && issue.assigneeAgentId.toLowerCase() === actor.agentId.toLowerCase()) {
+      throw new SeoError("You are the assignee of the task's issue: no self-approval.");
+    }
+    return null;
+  } catch (error) {
+    if (error instanceof SeoError) return error.message;
+    throw error;
+  }
+}
+
+/** Checks the call (plan Approach 3, in that order) and returns the grant to write. Throws a SeoError naming the first refusal. */
+export async function authorisePageApply(env: Env, companyId: string, actor: Actor, params: Params): Promise<AuthorisedGrant> {
+  await assertGrantActor(env, companyId, actor);
   const sprintId = reqStr(params, "sprintId");
   const taskId = reqStr(params, "taskId");
   const note = reqStr(params, "note", { max: MAX_NOTE });
   const hours = num(params, "hours", { min: 1, max: 72, integer: true }) ?? APPROVAL_DEFAULT_HOURS;
   const reviewCommentId = str(params, "reviewCommentId") ?? null;
   const urls = strList(params, "pageUrls");
+  const { sprint, task, pages: unique, reviewRef } = await checkGrant(env, companyId, actor, { sprintId, taskId, pageUrls: urls, reviewCommentId });
+
+  const label = actor.kind === "agent" ? `${actorLabel(actor)} (sign-off delegate)` : actorLabel(actor);
+  const applyUntil = new Date(env.now().getTime() + hours * 3_600_000).toISOString();
+  return {
+    sprint,
+    task,
+    input: {
+      companyId, sprintId: sprint.id, siteId: sprint.siteId!, taskId: task.id, pageUrls: unique, grantedBy: label,
+      grantedByAgentId: actor.kind === "agent" ? actor.agentId.toLowerCase() : null, reviewRef, note, applyUntil,
+    },
+  };
+}
+
+/** The gate after step 1 and the parse: the sprint, the task and its issue, the pages, the Reviewer PASS and the cap. Read-only. */
+async function checkGrant(
+  env: Env,
+  companyId: string,
+  actor: Actor,
+  { sprintId, taskId, pageUrls: urls, reviewCommentId }: PageApplyCheck,
+): Promise<{ sprint: db.Sprint; task: db.SprintTask; pages: string[]; reviewRef: string }> {
   if (urls.length < 1 || urls.length > MAX_GRANT_PAGES) throw new SeoError(`pageUrls must list 1 to ${MAX_GRANT_PAGES} pages`);
 
   const sprint = await requireSprint(env, companyId, sprintId);
@@ -174,17 +262,7 @@ export async function authorisePageApply(env: Env, companyId: string, actor: Act
   );
   const total = Number(open[0]?.n ?? 0);
   if (total > MAX_GRANT_PAGES) throw new SeoError(`This would leave ${total} pages open for applying on the site; at most ${MAX_GRANT_PAGES}. Revoke or finish other grants first.`);
-
-  const label = actor.kind === "agent" ? `${actorLabel(actor)} (sign-off delegate)` : actorLabel(actor);
-  const applyUntil = new Date(env.now().getTime() + hours * 3_600_000).toISOString();
-  return {
-    sprint,
-    task,
-    input: {
-      companyId, sprintId: sprint.id, siteId: sprint.siteId, taskId: task.id, pageUrls: unique, grantedBy: label,
-      grantedByAgentId: actor.kind === "agent" ? actor.agentId.toLowerCase() : null, reviewRef, note, applyUntil,
-    },
-  };
+  return { sprint, task, pages: unique, reviewRef };
 }
 
 /** Authorises and writes the grant rows (a repeat keeps the later apply_until, one row per page). No emit, comment or wake yet (T2b). */
@@ -192,4 +270,127 @@ export async function grantPageApply(env: Env, companyId: string, actor: Actor, 
   const grant = await authorisePageApply(env, companyId, actor, params);
   const written = await db.upsertPageGrants(env.ctx.db, grant.input);
   return { ...grant, written };
+}
+
+export const PAGE_APPLY_RETRY = "call approve-page-apply again with the same input; it only does the missing steps";
+/** The CRM's url-only write rule for a page window (plugin-crm site-signoff.ts), said to the agent with the pages. */
+const URL_ONLY_RULE =
+  "Change only these pages, with posts/update, posts/img-alt, seo/set or schema/set by url alone; any other write is refused and needs a new preview and approval.";
+
+/** Whether the sprint's Needs you item `key` is already done (on any recent week). */
+async function needsYouItemDone(env: Env, sprint: db.Sprint, key: string): Promise<boolean> {
+  const digests = await db.recentNeedsYouDigests(env.ctx.db, sprint.companyId, sprint.id);
+  return digests.some((d) => d.items.some((i) => i.key === key && i.status === "done"));
+}
+
+/**
+ * approve-page-apply (plan Approach 3): authorise, then claim then effect (PAR-9133): (a) write the grants; (b) send the site's
+ * window (a failure leaves the rows; the 5-minute job re-sends); (c) resolve `needsYouKey` (an item already done counts);
+ * (d) claim the notice and, only when this call claimed a new `apply_until`, comment on the task issue and wake it. A failed
+ * comment gives the claim back, so a repeat call posts it; the same input again posts nothing.
+ */
+export async function approvePageApply(env: Env, companyId: string, actor: Actor, params: Params) {
+  const needsYouKey = str(params, "needsYouKey", { max: 120 }) ?? null;
+  const { sprint, task, input } = await authorisePageApply(env, companyId, actor, params);
+  await db.upsertPageGrants(env.ctx.db, input);
+  const pages = input.pageUrls;
+  const warnings: string[] = [];
+  let failed = false;
+
+  let windowSent = false;
+  try {
+    await syncApplyWindow(env, sprint, input.grantedBy);
+    windowSent = true;
+  } catch (error) {
+    failed = true;
+    warnings.push(`The apply window did not reach the CRM yet (${errorMessage(error)}); the grant is saved and the 5-minute job sends it.`);
+  }
+
+  let needsYouResolved = false;
+  if (needsYouKey) {
+    try {
+      const result = await resolveNeedsYou(env, await companyInfo(env, companyId), sprint, needsYouKey, input.grantedBy, input.note, { person: actor.kind === "user" });
+      if (result.resolved || (!result.stillOpen && (await needsYouItemDone(env, sprint, needsYouKey)))) needsYouResolved = true;
+      else if (result.stillOpen) {
+        failed = true;
+        warnings.push(result.stillOpen);
+      } else warnings.push(`No Needs you item ${needsYouKey} on this sprint; nothing was resolved.`);
+    } catch (error) {
+      failed = true;
+      warnings.push(`Needs you item ${needsYouKey} was not resolved (${errorMessage(error)}).`);
+    }
+  }
+
+  const open = (await db.openPageGrants(env.ctx.db, companyId, task.id)).filter((g) => pages.includes(g.pageUrl));
+  const applyUntil = open.map((g) => g.applyUntil).sort().at(-1) ?? input.applyUntil;
+  let issueNotified = false;
+  if (task.issueId) {
+    const claimed = await db.claimGrantNotice(env.ctx.db, companyId, task.id, pages);
+    if (claimed === 0) issueNotified = true; // this apply_until was already told
+    else {
+      const body = [
+        `Approved to apply by ${input.grantedBy}, until ${applyUntil}:`,
+        ...pages.map((p) => `- ${p}`),
+        "",
+        `Note: ${input.note}`,
+        `Review: ${input.reviewRef}`,
+        "",
+        `${URL_ONLY_RULE} Then verify each page live with check-meta and complete-task with the evidence.`,
+      ].join("\n");
+      if (await commentOn(env, companyId, task.issueId, body, { dedupeKey: `page-apply:${task.id}:${applyUntil}` })) {
+        issueNotified = true;
+        await wakeIssue(env.ctx, task.issueId, companyId, "Page changes approved: apply them");
+      } else {
+        failed = true;
+        warnings.push("The task issue could not be told.");
+        await db.releaseGrantNotice(env.ctx.db, companyId, task.id, pages).catch((error: unknown) => {
+          env.ctx.logger.info("SEO grant notice release failed", { taskId: task.id, error: errorMessage(error) });
+        });
+      }
+    }
+  }
+  return {
+    sprintId: sprint.id, siteId: sprint.siteId, taskId: task.id, pages, applyUntil, windowSent, needsYouResolved, issueNotified,
+    ...(warnings.length > 0 ? { warnings } : {}), ...(failed ? { retry: PAGE_APPLY_RETRY } : {}),
+  };
+}
+
+/**
+ * revoke-page-apply (plan Approach 4): a person, or a sign-off delegate (any grant on the site), closes the task's open grants
+ * (`pageUrls` empty = all), re-sends the window and tells the task issue once. Nothing open: `revoked: 0`, no comment.
+ */
+export async function revokePageApply(env: Env, companyId: string, actor: Actor, params: Params) {
+  if (actor.kind === "system") throw new SeoError("Only a person or a sign-off delegate agent can revoke a page apply grant.");
+  if (actor.kind === "agent" && !(await delegateAgentIds(env, companyId)).includes(actor.agentId.toLowerCase())) {
+    throw new SeoError("You are not a sign-off delegate (SEO setting signoffDelegateAgentIds), so you cannot revoke a page apply grant. Ask the delegate or a person.");
+  }
+  const sprint = await requireSprint(env, companyId, reqStr(params, "sprintId"));
+  const taskId = reqStr(params, "taskId");
+  const task = await db.getTask(env.ctx.db, companyId, taskId);
+  if (!task || task.sprintId !== sprint.id) throw new SeoError(`Task ${taskId} is not on this sprint.`);
+  const wanted = strList(params, "pageUrls").map((url) => {
+    const page = normalisePageUrl(url);
+    if (!page) throw new SeoError(`${url} is not a page address (a full http(s) URL without ? or #).`);
+    return pageKey(page);
+  });
+  const open = await db.openPageGrants(env.ctx.db, companyId, task.id);
+  const target = open.map((g) => g.pageUrl).filter((p) => wanted.length === 0 || wanted.includes(pageKey(p)));
+  const label = actor.kind === "agent" ? `${actorLabel(actor)} (sign-off delegate)` : actorLabel(actor);
+  const revoked = target.length > 0 ? await db.revokePageGrants(env.ctx.db, companyId, task.id, target, label) : 0;
+  if (revoked === 0) return { sprintId: sprint.id, siteId: sprint.siteId, taskId: task.id, revoked: 0, pages: [] };
+
+  const warnings: string[] = [];
+  let windowSent = false;
+  try {
+    await syncApplyWindow(env, sprint, label);
+    windowSent = true;
+  } catch (error) {
+    warnings.push(`The closed window did not reach the CRM yet (${errorMessage(error)}); the 5-minute job re-sends it within the hour.`);
+  }
+  let issueNotified = false;
+  if (task.issueId) {
+    issueNotified = await commentOn(env, companyId, task.issueId, `The apply window is closed for ${target.join(", ")} (${label}): do not write to these pages.`);
+    if (!issueNotified) warnings.push("The task issue could not be told.");
+  }
+  return { sprintId: sprint.id, siteId: sprint.siteId, taskId: task.id, revoked, pages: target, windowSent, issueNotified, ...(warnings.length > 0 ? { warnings } : {}) };
 }

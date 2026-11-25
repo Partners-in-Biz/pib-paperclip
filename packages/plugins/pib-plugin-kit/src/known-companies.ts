@@ -2,19 +2,23 @@
  * The companies a plugin has served, remembered in instance-scoped state.
  *
  * Why. A plugin job needs company ids from somewhere. `ctx.companies.list` is
- * the obvious source, but the host refuses it with "unknown invocation scope"
- * whenever another call (a tool, an action, an event) is in flight in the same
- * worker: live logs show hundreds of those refusals for billing, payroll and
- * SEO ("Company list unavailable for the Cockpit push"). Instance-scoped state
+ * the obvious source, but the host used to refuse it with "unknown invocation
+ * scope" whenever another call (a tool, an action, an event) was in flight in
+ * the same worker: live logs showed hundreds of those refusals for billing,
+ * payroll and SEO ("Company list unavailable for the Cockpit push"). Since the
+ * host change of PAR-11072 a job gets the list, and "unknown invocation scope"
+ * means only a stale invocation id; the plugin's own memory stays the source a
+ * job can rely on with an older host. Instance-scoped state
  * names no company, so the host never gates it. Every company-scoped entry point
  * that reaches the kit (`createSkillSyncer`, `registerCompanyBootstrap`,
  * `syncAllCompanies`) remembers its company here, and jobs read the list back.
  *
  * This list only says which companies exist for the plugin. It does not let a
  * job act for them: the host still lets a job name only companies that have a
- * saved config row for the plugin (see `syncAllCompanies`).
+ * saved config row for the plugin (see `syncAllCompanies`, `actionableCompanyIds`).
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
+import { runDetached } from "./detached.js";
 
 const KNOWN_COMPANIES_STATE = { scopeKind: "instance" as const, namespace: "pib-kit", stateKey: "known-companies" };
 const MAX_KNOWN = 500;
@@ -46,7 +50,8 @@ function idsOf(value: unknown): string[] {
 export function rememberCompany(ctx: PluginContext, companyId: string | null | undefined): Promise<void> {
   const memo = memoOf(ctx);
   if (!companyId || memo.written.has(companyId)) return Promise.resolve();
-  const next = memo.chain.then(async () => {
+  // Detached: the write finishes after the caller's invocation may have ended (PAR-13342).
+  const next = runDetached(() => memo.chain.then(async () => {
     try {
       const ids = idsOf(await ctx.state.get(KNOWN_COMPANIES_STATE));
       if (!ids.includes(companyId)) await ctx.state.set(KNOWN_COMPANIES_STATE, { ids: [...ids, companyId].slice(-MAX_KNOWN) });
@@ -54,7 +59,7 @@ export function rememberCompany(ctx: PluginContext, companyId: string | null | u
     } catch {
       // state unavailable: the next call tries again
     }
-  });
+  }));
   memo.chain = next;
   return next;
 }

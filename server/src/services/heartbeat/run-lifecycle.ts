@@ -1,3 +1,4 @@
+import { SYSTEM_CAUSING_ACTOR } from "./causing-actor.js";
 import { readNativeStartupCleanup } from "../native-runtime/native-startup-cleanup.js";
 import { isContextCompactionRun } from "../context-compaction.js";
 import { notifyStrandedAgentStatus } from "../live-run-recovery-notifications.js";
@@ -64,6 +65,7 @@ import {
   desc,
   eq,
   inArray,
+  isNotNull,
   isNull,
   ne,
   not,
@@ -72,6 +74,7 @@ import {
   sql,
 } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import type { PluginEvent } from "@paperclipai/plugin-sdk";
 import {
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   type HeartbeatRunStatusPhase,
@@ -1449,6 +1452,20 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
     });
   }
 
+  /** True when the run's task is a chat; true as well when the check fails, so a chat's error text never leaks. */
+  async function runTaskIsChat(companyId: string, issueId: string | null) {
+    if (!issueId) return false;
+    try {
+      const [chat] = await db.select({ id: issues.id }).from(issues).where(and(
+        eq(issues.companyId, companyId), eq(issues.id, issueId), isNotNull(issues.conversationAgentId),
+      )).limit(1);
+      return Boolean(chat);
+    } catch (err) {
+      logger.warn({ err, issueId }, "chat check for a run plugin event failed; dropping the error text");
+      return true;
+    }
+  }
+
   function publishRunLifecyclePluginEventData(run: {
     companyId: string;
     runId: string;
@@ -1473,7 +1490,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
               ? "agent.run.cancelled"
               : null;
     if (!eventType) return;
-    publishPluginDomainEvent({
+    const event = {
       eventId: randomUUID(),
       eventType,
       occurredAt: new Date().toISOString(),
@@ -1496,7 +1513,15 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
           ? new Date(run.finishedAt).toISOString()
           : null,
       },
-    });
+    } satisfies PluginEvent;
+    if (!event.payload.error) {
+      publishPluginDomainEvent(event);
+      return;
+    }
+    // A chat is private: its run events still go out, without the error text (PAR-12829).
+    void runTaskIsChat(run.companyId, run.issueId)
+      .then((chat) => publishPluginDomainEvent(chat ? { ...event, payload: { ...event.payload, error: null } } : event))
+      .catch((err: unknown) => logger.warn({ err, runId: run.runId }, "run lifecycle plugin event failed"));
   }
 
   async function setWakeupStatus(
@@ -1641,6 +1666,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
     if (decision.kind !== "enqueue") return;
 
     const continuationRun = await enqueueWakeup(run.agentId, {
+      causingActor: { type: "agent", agentId: run.agentId, runId: run.id },
       source: "automation",
       triggerDetail: "system",
       reason: RUN_LIVENESS_CONTINUATION_REASON,
@@ -2032,6 +2058,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
     }
 
     const handoffRun = await enqueueWakeup(decision.targetAgentId, {
+      causingActor: { type: "agent", agentId: run.agentId, runId: run.id },
       source: "automation",
       triggerDetail: "system",
       reason: FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
@@ -2151,6 +2178,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
     if (decision.kind !== "enqueue") return;
 
     const recoveryRun = await enqueueWakeup(issue.assigneeAgentId, {
+      causingActor: SYSTEM_CAUSING_ACTOR,
       source: "automation",
       triggerDetail: "system",
       reason: ISSUE_REVIEW_PATH_LOST_WAKE_REASON,

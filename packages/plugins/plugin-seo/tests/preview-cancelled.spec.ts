@@ -177,7 +177,7 @@ describePg("cancelled previews", () => {
       await put("sp", { status: "pending", ...expired });
       const server = readFileSync(join(import.meta.dirname, "../ops/preview-server/server.mjs"), "utf8");
       expect(server).toContain("We are applying it.");
-      expect(server.indexOf("rows[0].expired && rows[0].approved_live")).toBeLessThan(server.indexOf("rows[0].expired) return send(res, 410"));
+      expect(server.indexOf('state === "approved"')).toBeLessThan(server.indexOf('state === "expired") return send(res, 410'));
       const get = server.match(/SELECT html, status, review_status[^`]*/)![0].replaceAll("${SCHEMA}", SCHEMA);
       const read = async (id: string) => (await sql.unsafe(get.replace("$1", `'${id}'`)))[0];
       expect(await read("s10")).toMatchObject({ expired: true, approved_live: true });
@@ -312,9 +312,9 @@ describePg("cancelled previews", () => {
     await reset();
     await put("srv", { status: "cancelled", cancelled_prev_status: "pending", expires_at: ago(-HOURS) });
     const server = readFileSync(join(import.meta.dirname, "../ops/preview-server/server.mjs"), "utf8");
-    const cancelledAt = server.indexOf('rows[0].status === "cancelled"');
+    const cancelledAt = server.indexOf('state === "cancelled"');
     expect(cancelledAt).toBeGreaterThan(0);
-    expect(cancelledAt).toBeLessThan(server.indexOf("rows[0].expired) return send(res, 410"));
+    expect(cancelledAt).toBeLessThan(server.indexOf('state === "expired") return send(res, 410'));
     expect(server).toContain("This preview was replaced by a newer version. We will send you the current link.");
     const post = DECISION_SQL;
     const r = await sql.unsafe(post, ["srv", "approved", null]);

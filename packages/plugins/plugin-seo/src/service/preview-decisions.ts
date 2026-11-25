@@ -11,11 +11,12 @@ import { wakeIssue } from "@partnersinbiz/pib-plugin-kit";
 import { PREVIEW_LIVE_SQL } from "../constants.js";
 import * as db from "../db.js";
 import { t } from "../db.js";
-import { errorMessage, oneOf, reqStr, SeoError, str, type Actor, type Env, type Params } from "./common.js";
+import { companyInfo, errorMessage, oneOf, reqStr, SeoError, str, type Actor, type Env, type Params } from "./common.js";
 import { assertWritable, loadSprintContext } from "./context.js";
 import { commentOn } from "./issues.js";
 import { quoted, recheckTaskAnswers } from "./client-signoff.js";
 import { syncApplyWindow } from "./signoff.js";
+import { closeNeedsYouItems, closeSignoffItems } from "./needs-you.js";
 
 export const BOARD_ONLY = "This action is for board users. Do not retry.";
 export const MIN_REASON = 10;
@@ -135,6 +136,36 @@ async function handOver(env: Env, sprint: db.Sprint, taskIds: Iterable<string>):
   }
 }
 
+/**
+ * PAR-9131 T6: a Needs you line about a preview decision is over once every preview it covers is decided: the task's sign-off lines
+ * (when no live preview of the task is still undecided) and the "send the approval email" line of each email batch (when no
+ * preview of that batch is still undecided). Never throws: the decision is already recorded.
+ */
+export async function closeDecidedItems(env: Env, sprint: db.Sprint, previewIds: string[]): Promise<void> {
+  if (previewIds.length === 0) return;
+  const BY = "decided in Previews";
+  try {
+    const rows = await env.ctx.db.query(
+      `SELECT DISTINCT d.task_id, d.draft_key,
+          NOT EXISTS (SELECT 1 FROM ${t("previews")} x WHERE x.company_id = d.company_id AND x.task_id = d.task_id AND x.status = 'pending' AND x.expires_at > now()) AS task_done,
+          NOT EXISTS (SELECT 1 FROM ${t("previews")} x WHERE x.company_id = d.company_id AND x.draft_key = d.draft_key AND x.status = 'pending' AND x.expires_at > now()) AS draft_done
+         FROM ${t("previews")} d WHERE d.company_id = $1 AND d.sprint_id = $2 AND d.id IN (SELECT jsonb_array_elements_text($3::jsonb))`,
+      [sprint.companyId, sprint.id, JSON.stringify(previewIds)],
+    );
+    const info = await companyInfo(env, sprint.companyId);
+    const draftKeys = new Set<string>();
+    const taskIds = new Set<string>();
+    for (const r of rows) {
+      if (r.task_id && r.task_done === true) taskIds.add(String(r.task_id));
+      if (r.draft_key && r.draft_done === true) draftKeys.add(`approval-email:${String(r.draft_key)}`.slice(0, 120));
+    }
+    for (const taskId of taskIds) await closeSignoffItems(env, sprint.companyId, sprint.id, taskId, "Every preview of the task is decided.", BY);
+    if (draftKeys.size > 0) await closeNeedsYouItems(env, info, sprint, [...draftKeys], BY, "Every preview in the email is decided.");
+  } catch (error) {
+    env.ctx.logger.info("SEO Needs you lines not closed after a preview decision", { sprintId: sprint.id, error: errorMessage(error) });
+  }
+}
+
 function audit(env: Env, action: string, companyId: string, sprintId: string, userId: string, done: string[], skipped: Skipped[], extra: Record<string, unknown> = {}): void {
   env.ctx.logger.info(`SEO preview ${action}`, { action, companyId, sprintId, actor: { kind: "user", userId }, previewIds: done, skipped: skipped.map((s) => s.id), ...extra });
 }
@@ -182,6 +213,7 @@ export async function decidePreview(env: Env, companyId: string, actor: Actor, p
   for (const id of candidates) if (!mine.has(id)) skipped.push({ id, reason: "It changed while you decided (someone else answered, or it expired). Reload and try again." });
   const decided = candidates.filter((id) => mine.has(id));
   audit(env, "decide", companyId, sprint.id, userId, decided, skipped, { decision });
+  await closeDecidedItems(env, sprint, decided);
   await handOver(env, sprint, decided.map((id) => rows.get(id)!.taskId).filter((x): x is string => Boolean(x)));
   return { sprintId: sprint.id, decision, decided, skipped };
 }

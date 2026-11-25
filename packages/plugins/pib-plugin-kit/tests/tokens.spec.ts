@@ -105,9 +105,9 @@ describe("isOwnerCompany", () => {
 });
 
 describe("findBrandLeaks", () => {
-  it("finds the owner's names, the agency name and PiB, with line numbers", () => {
-    const leaks = findBrandLeaks("ok line\nAsk Peet to approve.\nElon holds the key.\nWelcome to Partners in Biz!\nthe PiB plugins\nPIB rules");
-    expect(leaks.map((l) => [l.term, l.line])).toEqual([["Peet", 2], ["Elon", 3], ["Partners in Biz", 4], ["PiB", 5], ["PiB", 6]]);
+  it("finds the owner's name, the agency name and PiB, with line numbers", () => {
+    const leaks = findBrandLeaks("ok line\nAsk Peet to approve.\nWelcome to Partners in Biz!\nthe PiB plugins\nPIB rules");
+    expect(leaks.map((l) => [l.term, l.line])).toEqual([["Peet", 2], ["Partners in Biz", 3], ["PiB", 4], ["PiB", 5]]);
     expect(leaks[0]!.excerpt).toBe("Ask Peet to approve.");
   });
 

@@ -4,7 +4,10 @@ import { accountChecks, cockpitSnapshot, formatLift, publishCockpitSnapshots, ra
 import manifest from "../src/manifest.js";
 import { NAMESPACE } from "../src/namespace.js";
 import plugin from "../src/worker.js";
+import { approvePostByDelegate, delegateApprovalRefusal } from "../src/approval-flow.js";
+import { delegateWorld, RHEA } from "./delegate-world.js";
 import { fakeCtx } from "./helpers.js";
+import { postRow } from "./world.js";
 
 const T = (name: string) => `${NAMESPACE}.${name}`;
 const HOUR = 3600_000;
@@ -198,5 +201,217 @@ describe("cockpit route and job tracking (SDK harness)", () => {
     await expect(harness.runJob("poll-rss")).rejects.toThrow("Unsafe identifier");
     const record = await harness.ctx.state.get({ scopeKind: "instance", namespace: "pib-cockpit-jobs", stateKey: "job:poll-rss" });
     expect(record).toMatchObject({ consecutiveFailures: 1, lastError: "Unsafe identifier", lastOkAt: null });
+  });
+});
+
+describe("delegated approver in the cockpit (PAR-9687)", () => {
+  const CO = "co";
+  const SCOPE = "company:0b5c3a52-9a0f-4c8e-8a1e-1d2f3a4b5c6d";
+  const REVIEW_POST = { id: "p1", body: "Rhea's post", client_kind: "company", client_ref: "0b5c3a52-9a0f-4c8e-8a1e-1d2f3a4b5c6d", client_name: "Brand", review_issue_id: "iss-r1", owner_user_id: null, updated_at: "2026-09-26T08:00:00Z" };
+
+  function build(o: { status?: string; allow?: string[]; reviewer?: boolean; assignee?: string; noAgent?: boolean; delegateStored?: boolean } = {}) {
+    const state: State = {
+      "social-approval:delegates": o.delegateStored === false ? null : { [SCOPE]: { agentId: "ag-d", setBy: "u1", setAt: "2026-11-01T00:00:00Z" } },
+      "pib-cockpit:roles": { companyId: CO, operatorAgentId: null, reviewerAgentId: "ag-v", reviewerStatus: o.reviewer === false ? "paused" : "active", ownerUserId: "u1", reviewOutward: true, updatedAt: "2026-11-01T00:00:00Z" },
+    };
+    const rows = (sql: string) => {
+      if (sql.includes("status = 'review'")) return [REVIEW_POST];
+      if (sql.includes("approval_policies")) return [];
+      return [];
+    };
+    return ctxWith(rows, state, {
+      config: { get: vi.fn(async () => ({ delegatableScopes: o.allow ?? [SCOPE] })) },
+      agents: {
+        get: vi.fn(async (id: string) => (o.noAgent && id === "ag-d" ? null : { id, companyId: CO, name: id === "ag-d" ? "Rhea" : "Vera", status: id === "ag-d" ? (o.status ?? "idle") : "active" })),
+        managed: { get: vi.fn(async () => ({ agentId: null })) },
+      },
+      issues: { get: vi.fn(async () => ({ id: "iss-r1", status: "todo", assigneeAgentId: o.assignee ?? "ag-v" })), list: vi.fn(async () => []) },
+    });
+  }
+  const check = (snap: Awaited<ReturnType<typeof cockpitSnapshot>>) => snap.health.find((h) => h.key === "approval-delegate");
+
+  it("an active delegate alone is not enough: with no Reviewer pass the owner approves (PAR-10701)", async () => {
+    const snap = await cockpitSnapshot(build(), CO);
+    const item = snap.waiting.find((w) => w.key === "social:review:p1");
+    expect(item?.title).toBe("[Brand] Approve post: Rhea's post");
+    expect(item?.waitsOn).toBeUndefined();
+    expect(check(snap)).toBeUndefined();
+  });
+
+  it("falls back to Approve post when the delegate is paused", async () => {
+    const snap = await cockpitSnapshot(build({ status: "paused" }), CO);
+    expect(snap.waiting.find((w) => w.key === "social:review:p1")?.title).toContain("Approve post");
+  });
+
+  it("health: delegate paused, and its review issue still assigned to it", async () => {
+    const c = check(await cockpitSnapshot(build({ status: "paused", assignee: "ag-d" }), CO));
+    expect(c?.detail).toContain("the delegate is paused");
+    expect(c?.detail).toContain("1 review issue still assigned to an inactive delegate");
+  });
+
+  it("health: delegate terminated or archived", async () => {
+    expect(check(await cockpitSnapshot(build({ status: "terminated" }), CO))?.detail).toContain("the delegate is terminated");
+    expect(check(await cockpitSnapshot(build({ status: "archived" }), CO))?.detail).toContain("the delegate is archived");
+  });
+
+  it("health: scope removed from the allowlist", async () => {
+    expect(check(await cockpitSnapshot(build({ allow: [] }), CO))?.detail).toContain("removed from the delegatable scopes list");
+  });
+
+  it("health: no running Reviewer, with the way out", async () => {
+    const c = check(await cockpitSnapshot(build({ reviewer: false }), CO));
+    expect(c?.detail).toContain("no Reviewer is running (clear the delegated approver, then turn the Reviewer's pass off)");
+  });
+
+  it("health: a delegate that cannot be read counts as not found", async () => {
+    expect(check(await cockpitSnapshot(build({ noAgent: true }), CO))?.detail).toContain("the delegate was not found");
+  });
+
+  it("falls back to Approve post when the delegate state cannot be read", async () => {
+    const ctx = build();
+    (ctx.state.get as ReturnType<typeof vi.fn>).mockImplementation(async (k: { namespace?: string }) => {
+      if (k.namespace === "social-approval") throw new Error("state down");
+      return null;
+    });
+    const snap = await cockpitSnapshot(ctx, CO);
+    expect(snap.waiting.find((w) => w.key === "social:review:p1")?.title).toContain("Approve post");
+  });
+});
+
+describe("waitsOn only where the delegate's own gate says yes (PAR-10701)", () => {
+  const SINCE = "2026-11-10T08:00:00.000Z";
+  type World = ReturnType<typeof delegateWorld>;
+
+  /** The delegate world, with the Cockpit's review and unscheduled queries answered from its post. */
+  function world(opts: Parameters<typeof delegateWorld>[0] = {}, approved: Array<Record<string, unknown>> = []): World {
+    const w = delegateWorld(opts);
+    const db = w.ctx.db as unknown as { query: (sql: string, params: unknown[]) => Promise<unknown[]> };
+    const base = db.query;
+    db.query = async (sql, params) => {
+      if (sql.includes(`FROM ${T("posts")} WHERE company_id = $1 AND status = 'review' AND archived_at IS NULL ORDER BY updated_at`)) {
+        return w.post.status === "review" ? [{ ...postRow(w), review_issue_id: "iss-9", review_since: SINCE }] : [];
+      }
+      if (sql.includes(`FROM ${T("posts")} WHERE company_id = $1 AND status = 'approved'`)) return approved;
+      return base(sql, params);
+    };
+    return w;
+  }
+  const reviewItem = async (w: World) => (await cockpitSnapshot(w.ctx, "co")).waiting.find((i) => i.key === "social:review:p1");
+  async function owner(w: World) {
+    const item = await reviewItem(w);
+    expect(item?.title).toBe("[PiB Brand] Approve post: Spring sale starts Friday. Come and see.");
+    expect(item?.waitsOn).toBeUndefined();
+  }
+
+  it("1. the delegate's gate says yes: waits on the delegate, since the post entered review", async () => {
+    const w = world();
+    w.pass();
+    const item = await reviewItem(w);
+    expect(item).toMatchObject({ title: "[PiB Brand] Waiting for the delegated approver (ag-rhea): Spring sale starts Friday. Come and see.", waitsOn: { kind: "agent", agentId: "ag-rhea" }, since: SINCE });
+    // Read-only: the check wrote nothing.
+    expect(w.ownerRows()).toEqual([]);
+    expect(w.ctx.fakeDb.executes).toEqual([]);
+  });
+
+  it("2. no Reviewer pass: the owner", async () => owner(world()));
+
+  it("3. the Reviewer asked for changes: the owner", async () => {
+    const w = world();
+    w.pass();
+    w.pass({ outcome: "changes" });
+    await owner(w);
+  });
+
+  it("4. the pass is on an older version: the owner", async () => {
+    const w = world();
+    w.pass({ content_hash: "0".repeat(64) });
+    await owner(w);
+  });
+
+  it("5. an unscored pass: the owner", async () => {
+    const w = world();
+    w.pass({ via: "unscored" });
+    await owner(w);
+  });
+
+  it("6. a pass with no actor: the owner", async () => {
+    const w = world();
+    w.pass({ actor_agent_id: null });
+    await owner(w);
+  });
+
+  it("7. the pass was recorded by the delegate: the owner", async () => {
+    const w = world();
+    w.pass({ actor_agent_id: "ag-rhea" });
+    await owner(w);
+  });
+
+  it("8. the post was created before the delegate was named (D3): the owner", async () => {
+    const w = world({ setAt: new Date(Date.now() + HOUR).toISOString() });
+    w.pass();
+    await owner(w);
+  });
+
+  it("9. the delegate's own post: the owner", async () => {
+    const w = world();
+    w.post.created_by_agent_id = "ag-rhea";
+    w.pass();
+    await owner(w);
+  });
+
+  it("10. the delegate cannot act (scope off the delegatable list): the owner", async () => {
+    const w = world({ allowlist: [] });
+    w.pass();
+    await owner(w);
+  });
+
+  it("11. the client alone approves: waits on the client", async () => {
+    const w = world({ policy: { require_owner: false, require_client: true } });
+    expect(await reviewItem(w)).toMatchObject({ title: "[PiB Brand] Waiting for the client: Spring sale starts Friday. Come and see.", waitsOn: { kind: "client" } });
+  });
+
+  it("12. approved with no time: waits on the agent of an open schedule issue, else (no task or a closed one, own brand) on the active Social agent (PAR-13579)", async () => {
+    const row = (id: string, schedule: string | null) => ({ id, body: `Post ${id}`, client_kind: null, client_ref: null, client_name: null, schedule_issue_id: schedule, updated_at: "2026-11-11T00:00:00Z" });
+    const w = world({}, [row("s1", "iss-open"), row("s2", null), row("s3", "iss-done"), row("s4", "iss-person"), row("s5", "iss-broken")]);
+    const issues = { "iss-open": { status: "todo", assigneeAgentId: "ag-social" }, "iss-done": { status: "done", assigneeAgentId: "ag-social" }, "iss-person": { status: "todo", assigneeAgentId: null, assigneeUserId: "u1" } } as Record<string, unknown>;
+    (w.ctx.issues as unknown as { get: unknown }).get = vi.fn(async (id: string) => {
+      if (id === "iss-broken") throw new Error("host down");
+      return issues[id] ? { id, ...(issues[id] as object) } : null;
+    });
+    const waiting = (await cockpitSnapshot(w.ctx, "co")).waiting;
+    const waitsOn = (id: string) => waiting.find((i) => i.key === `social:schedule:${id}`)?.waitsOn;
+    expect(waitsOn("s1")).toEqual({ kind: "agent", agentId: "ag-social" });
+    expect(waitsOn("s2")).toEqual({ kind: "agent", agentId: "ag-social" });
+    expect(waitsOn("s3")).toEqual({ kind: "agent", agentId: "ag-social" });
+    // An open task held by a person, or a task that cannot be read, stays with the owner (PAR-10701).
+    expect(waitsOn("s4")).toBeUndefined();
+    expect(waitsOn("s5")).toBeUndefined();
+  });
+
+  it("12b. approved with no usable schedule task: an own-brand post waits on the active Social agent, a client's post does not (PAR-13579)", async () => {
+    const row = (id: string, schedule: string | null, client: string | null) => ({ id, body: `Post ${id}`, client_kind: client ? "company" : null, client_ref: client, client_name: client ? "Acme" : null, schedule_issue_id: schedule, updated_at: "2026-11-11T00:00:00Z" });
+    const w = world({}, [row("o1", null, null), row("o2", "iss-done", null), row("c1", null, "c-1")]);
+    const agents = w.ctx.agents as unknown as { get: unknown; managed: { get: unknown } };
+    agents.managed.get = vi.fn(async () => ({ agentId: "ag-social" }));
+    const base = agents.get as (id: string, co: string) => Promise<unknown>;
+    agents.get = vi.fn(async (id: string, co: string) => (id === "ag-social" ? { id, companyId: co, name: "Social", status: "idle" } : base(id, co)));
+    (w.ctx.issues as unknown as { get: unknown }).get = vi.fn(async (id: string) => (id === "iss-done" ? { id, status: "done", assigneeAgentId: "ag-social" } : null));
+    const waiting = (await cockpitSnapshot(w.ctx, "co")).waiting;
+    const waitsOn = (id: string) => waiting.find((i) => i.key === `social:schedule:${id}`)?.waitsOn;
+    expect(waitsOn("o1")).toEqual({ kind: "agent", agentId: "ag-social" });
+    expect(waitsOn("o2")).toEqual({ kind: "agent", agentId: "ag-social" });
+    expect(waitsOn("c1")).toBeUndefined();
+  });
+
+  it("13. delegateApprovalRefusal returns the sentence the approve tool throws, and null when it would approve", async () => {
+    const refusing = world();
+    const text = await delegateApprovalRefusal(refusing.ctx, RHEA, postRow(refusing));
+    expect(text).toBe("The Reviewer has not passed this post yet. Its pass comes first.");
+    await expect(approvePostByDelegate(refusing.ctx, RHEA, postRow(refusing))).rejects.toThrow(text!);
+    const ok = world();
+    ok.pass();
+    expect(await delegateApprovalRefusal(ok.ctx, RHEA, postRow(ok))).toBeNull();
+    expect(ok.post.status).toBe("review");
+    expect(ok.ownerRows()).toEqual([]);
   });
 });

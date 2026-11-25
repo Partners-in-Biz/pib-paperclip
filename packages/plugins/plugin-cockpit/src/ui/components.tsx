@@ -10,6 +10,7 @@ import {
   BarChart,
   Banknote,
   Bot,
+  Button,
   ChartColumn,
   ChevronRight,
   Circle,
@@ -64,7 +65,7 @@ import { TEAM_SETUP_PATH } from "@partnersinbiz/pib-plugin-kit/team";
 import { ASK_KIND_LABEL, askTone } from "../ask-model.js";
 import type { BackupInfo } from "../view.js";
 import { plainDetail } from "../plain.js";
-import { kpiParts, readableDates } from "./kpis.js";
+import { kpiPanelWide, kpiParts, readableDates } from "./kpis.js";
 import { healthCounts, runColumns, runsPerDay } from "./series.js";
 
 export type LinkPropsFor = (href: string) => AnchorHTMLAttributes<HTMLAnchorElement>;
@@ -127,7 +128,7 @@ export function Chip({ children, tone: t = "neutral", icon }: { children: ReactN
   return <Pill tone={t} icon={icon}>{children}</Pill>;
 }
 
-export function Card({ title, actions, children, id, icon, subtitle, tone: t, strip }: {
+export function Card({ title, actions, children, id, icon, subtitle, tone: t, strip, style }: {
   title: string;
   actions?: ReactNode;
   children: ReactNode;
@@ -136,8 +137,9 @@ export function Card({ title, actions, children, id, icon, subtitle, tone: t, st
   subtitle?: ReactNode;
   tone?: ToneInput;
   strip?: boolean;
+  style?: CSSProperties;
 }) {
-  return <SectionCard id={id} title={title} icon={icon} subtitle={subtitle} tone={t} strip={strip} actions={actions}>{children}</SectionCard>;
+  return <SectionCard id={id} title={title} icon={icon} subtitle={subtitle} tone={t} strip={strip} actions={actions} style={style}>{children}</SectionCard>;
 }
 
 export function Muted({ children }: { children: ReactNode }) {
@@ -466,6 +468,42 @@ export function WaitingList({ items, linkFor, now, limit, onDismiss }: { items: 
   );
 }
 
+/** Who an item waits on: the agent's name from the view's agents, or "the client". */
+export function waitsOnText(waitsOn: WaitingEntry["waitsOn"], agents: Array<{ id: string; name: string }>): string {
+  if (!waitsOn) return "someone else";
+  if (waitsOn.kind === "client") return "the client";
+  return agents.find((a) => a.id === waitsOn.agentId)?.name ?? "another agent";
+}
+
+/** "3d" / "5h" since an ISO time; empty when unreadable. */
+export function sinceText(since: string | null | undefined, now: Date): string {
+  const t = since ? Date.parse(since) : NaN;
+  if (!Number.isFinite(t)) return "";
+  const hours = Math.max(0, Math.floor((now.getTime() - t) / 3_600_000));
+  return hours < 24 ? `${hours}h` : `${Math.floor(hours / 24)}d`;
+}
+
+/** Collapsed "Waiting on others (N)": items an agent or the client can act on. Renders nothing when there are none. */
+export function WaitingOthers({ items, agents, linkFor, now }: { items: WaitingEntry[]; agents: Array<{ id: string; name: string }>; linkFor: LinkPropsFor; now: Date }) {
+  if (items.length === 0) return null;
+  return (
+    <details style={{ minWidth: 0 }}>
+      <summary style={{ cursor: "pointer", minHeight: 40, display: "flex", alignItems: "center", fontSize: 13, fontWeight: 650, color: tokens.muted }}>Waiting on others ({items.length})</summary>
+      <div style={{ display: "grid", gap: 8, minWidth: 0 }}>
+        {items.map((item) => {
+          const age = sinceText(item.since, now);
+          return (
+            <div key={item.key} style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap", minWidth: 0, fontSize: 13, color: tokens.fg }}>
+              <Anchor href={item.href} linkFor={linkFor} style={{ color: tokens.primary, fontWeight: 600, minWidth: 0, flex: "1 1 220px", overflowWrap: "anywhere" }}>{item.title}</Anchor>
+              <span style={{ color: tokens.muted, minWidth: 0, overflowWrap: "anywhere" }}>waits on {waitsOnText(item.waitsOn, agents)}{age ? ` · ${age}` : ""}</span>
+            </div>
+          );
+        })}
+      </div>
+    </details>
+  );
+}
+
 /** Counts per kind as toned pills (for the Waiting card header); questions from agents first. */
 export function WaitingKinds({ items }: { items: WaitingEntry[] }) {
   const asks = items.filter((item) => item.ask);
@@ -524,10 +562,16 @@ function kpiLabel(label: string, now?: Date): string {
   return readableDates(label, now);
 }
 
+/** The row of number groups: part-width panels side by side, a group with many tiles on a row of its own. */
+export const KPI_GROUPS_ROW: CSSProperties = { display: "flex", flexWrap: "wrap", gap: 16, minWidth: 0 };
+
 /**
  * A group of numbers (Money, Pipeline, …): the tiles it is given (by default
- * the ones that are not zero or need attention), two to a row in a half-width
- * panel, filling the row.
+ * the ones that are not zero or need attention), filling each row of the
+ * panel. A group with up to four tiles is a part-width panel beside the
+ * others; a longer one takes the whole row (`kpiPanelWide`). The panel keeps
+ * its content at the top, so a panel beside a taller one never spreads its
+ * title and tiles apart.
  */
 export function KpiGroup({ group, kpis, linkFor, hidden = 0, now }: { group: keyof typeof KPI_GROUP_TITLES; kpis: KpiEntry[]; linkFor: LinkPropsFor; hidden?: number; now?: Date }) {
   const narrow = useIsNarrow();
@@ -538,6 +582,7 @@ export function KpiGroup({ group, kpis, linkFor, hidden = 0, now }: { group: key
       title={KPI_GROUP_TITLES[group]}
       icon={KPI_GROUP_ICON[group]}
       actions={bad ? <Pill tone="bad" size="sm" dot>{bad} to fix</Pill> : warn ? <Pill tone="warn" size="sm" dot>{warn} to watch</Pill> : null}
+      style={{ alignContent: "start", flex: kpiPanelWide(kpis.length) ? "1 1 100%" : "1 1 420px" }}
     >
       {kpis.length === 0
         ? <Muted>{hidden ? `Nothing to report: ${hidden} ${hidden === 1 ? "number is" : "numbers are"} at zero.` : "No numbers reported yet."}</Muted>
@@ -883,13 +928,11 @@ export function HealthList({ groups, linkFor, now, backup, showAll = false }: { 
 // Dashboard widget
 // ---------------------------------------------------------------------------
 
-/** The dashboard widget body. */
-export function TodayCard({ waiting, health, today, headline, linkFor }: { waiting: number; health: HealthStatus; today: string; headline: KpiEntry[]; linkFor: LinkPropsFor }) {
+function TodayCardShell({ barColor, linkFor, children }: { barColor: string; linkFor: LinkPropsFor; children: ReactNode }) {
   const accent = moduleAccent("cockpit");
-  const t = tone(health);
   return (
     <div style={{ position: "relative", display: "grid", gap: 12, padding: 16, borderRadius: 14, border: `1px solid ${tokens.border}`, background: tokens.card, color: tokens.fg, minWidth: 0 }}>
-      <span aria-hidden="true" style={{ position: "absolute", top: -1, left: -1, right: -1, height: 3, borderRadius: "14px 14px 0 0", background: t.solid }} />
+      <span aria-hidden="true" style={{ position: "absolute", top: -1, left: -1, right: -1, height: 3, borderRadius: "14px 14px 0 0", background: barColor }} />
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
         <span style={{ display: "inline-flex", alignItems: "center", gap: 10 }}>
           <span aria-hidden="true" style={{ width: 28, height: 28, borderRadius: 8, display: "inline-grid", placeItems: "center", background: accent.soft, boxShadow: `inset 0 0 0 1px ${accent.border}` }}>
@@ -899,15 +942,43 @@ export function TodayCard({ waiting, health, today, headline, linkFor }: { waiti
         </span>
         <a {...linkFor("/cockpit")} style={{ fontSize: 13, fontWeight: 600, color: tokens.primary, textDecoration: "none" }}>Open Cockpit →</a>
       </div>
+      {children}
+    </div>
+  );
+}
+
+/** Loading or error fallback for the dashboard widget so it never leaves a blank card. */
+export function TodayCardStatus({ loading, error, onRetry, linkFor }: { loading: boolean; error: string | null; onRetry: () => void; linkFor: LinkPropsFor }) {
+  const accent = moduleAccent("cockpit");
+  const barColor = error ? tone("bad").solid : accent.solid;
+  return (
+    <TodayCardShell barColor={barColor} linkFor={linkFor}>
+      {error ? (
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 12.5, color: tone("bad").fg, lineHeight: 1.45 }}>{error}</span>
+          <Button type="button" variant="secondary" onClick={onRetry}>Retry</Button>
+        </div>
+      ) : (
+        <p style={{ margin: 0, fontSize: 12.5, color: tokens.muted, lineHeight: 1.45 }}>{loading ? "Loading…" : "Unavailable."}</p>
+      )}
+    </TodayCardShell>
+  );
+}
+
+/** The dashboard widget body. */
+export function TodayCard({ waiting, others = 0, health, today, headline, linkFor }: { waiting: number; others?: number; health: HealthStatus; today: string; headline: KpiEntry[]; linkFor: LinkPropsFor }) {
+  const t = tone(health);
+  return (
+    <TodayCardShell barColor={t.solid} linkFor={linkFor}>
       <div style={{ display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" }}>
         <Light status={health} size={12} />
         <a {...linkFor("/cockpit")} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 13, fontWeight: 600, color: tokens.fg, textDecoration: "none" }}>
           <Inbox size={14} color={waiting ? tone("warn").solid : tokens.muted} aria-hidden="true" />
-          {waiting === 0 ? "Nothing waiting on you" : `${waiting} waiting on you`}
+          {waiting === 0 ? "Nothing waiting on you" : `${waiting} waiting on you`}{others > 0 ? ` · ${others} on others` : ""}
         </a>
       </div>
       <p style={{ margin: 0, fontSize: 12.5, color: tokens.muted, lineHeight: 1.45 }}>{today}</p>
       {headline.length > 0 ? <div style={grid(130, 8)}>{headline.map((kpi) => <KpiTile key={`${kpi.plugin}:${kpi.key}`} kpi={kpi} linkFor={linkFor} size="sm" />)}</div> : null}
-    </div>
+    </TodayCardShell>
   );
 }

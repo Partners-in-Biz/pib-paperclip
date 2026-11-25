@@ -153,6 +153,7 @@ describe("the Setup items", () => {
 describe("the daily domain job and the hourly housekeeping", () => {
   async function boot(config: Record<string, unknown> = {}) {
     const harness = createTestHarness({ manifest, config: { publicBaseUrl: "https://paperclip.example.com", encryptionKey: "x".repeat(20), ...config } });
+    harness.seed({ companies: [{ id: CO, name: "Co", issuePrefix: "CO" } as never] });
     const written: Array<{ sql: string; params: unknown[] }> = [];
     const account = { id: "acc-1", company_id: CO, provider: "gmail", address: "peet@partnersinbiz.online", status: "connected", token_sealed: "sealed", is_default: true, client_kind: null, client_ref: null, from_name: null, connected_at: "2026-09-26T08:00:00.000Z", created_at: "2026-09-26T08:00:00.000Z" };
     const db = {
@@ -214,6 +215,14 @@ describe("the daily domain job and the hourly housekeeping", () => {
     await harness.runJob("setup-status");
     const status = (await harness.ctx.state.get({ scopeKind: "instance", namespace: "pib-kit", stateKey: "skill-sync-status" })) as { companies: Record<string, { status: string; plugin?: string }> };
     expect(status.companies[CO]).toMatchObject({ plugin: "partnersinbiz.mailbox" });
+  });
+
+  it("logs one line per company for every hourly client message scrub, also when nothing was removed", async () => {
+    const { harness } = await boot();
+    await harness.runJob("setup-status");
+    const lines = harness.logs.filter((l) => l.message === "Client message scrub ran");
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.meta).toMatchObject({ companyId: CO, bodies: expect.any(Number), snippets: expect.any(Number) });
   });
 
   it("every hour the Mailbox posts to its own public address to prove the unsubscribe proxy rule, and records the answer before it reports Setup", async () => {

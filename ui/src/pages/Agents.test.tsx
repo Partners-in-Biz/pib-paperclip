@@ -13,6 +13,11 @@ import type { BuiltInAgentState } from "../api/builtInAgents";
 import { Agents, filterAgents, filterOrgTree } from "./Agents";
 import { Agents as ProductionAgents } from "./Agents.production";
 import type { AgentOrgChainHealth } from "@paperclipai/shared";
+import { completeAgentBody, type ReducedAgentBody } from "../api/agents";
+import { MemberRestrictionProvider } from "../context/MemberRestrictionContext";
+import { markCachedSession } from "../lib/cached-session";
+import { startPersistedQueryCache } from "../lib/persisted-query-cache";
+import { queryKeys } from "../lib/queryKeys";
 
 const mockRouterState = vi.hoisted(() => ({
   pathname: "/agents/all",
@@ -58,6 +63,7 @@ vi.mock("@/lib/router", () => ({
   ),
   useLocation: () => ({ pathname: mockRouterState.pathname, search: "", hash: "", state: null }),
   useNavigate: () => mockRouterState.navigate,
+  useParams: () => ({}),
 }));
 
 vi.mock("../context/CompanyContext", () => ({
@@ -76,9 +82,11 @@ vi.mock("../context/SidebarContext", () => ({
   useSidebar: () => ({ isMobile: mockSidebarState.isMobile }),
 }));
 
-vi.mock("../api/ai-connections", () => ({ aiConnectionsApi: { list: vi.fn(async () => ({ currentUserId: "board", canManageConnections: true, connections: [] })) } }));
+const mockAiConnectionsApi = vi.hoisted(() => ({ list: vi.fn(async () => ({ currentUserId: "board", canManageConnections: true, connections: [] })) }));
+vi.mock("../api/ai-connections", () => ({ aiConnectionsApi: mockAiConnectionsApi }));
 
-vi.mock("../api/agents", () => ({
+vi.mock("../api/agents", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../api/agents")>(),
   agentsApi: mockAgentsApi,
 }));
 
@@ -93,6 +101,15 @@ vi.mock("../api/environments", () => ({
 vi.mock("../api/heartbeats", () => ({
   heartbeatsApi: mockHeartbeatsApi,
 }));
+
+const mockSession = vi.hoisted(() => ({
+  memberRestrictions: [] as Array<{ companyId: string; restricted: boolean; mode: "off" | "report" | "enforce" }>,
+  pending: null as Promise<void> | null,
+}));
+vi.mock("../api/auth", () => ({ authApi: { getSession: async () => {
+  if (mockSession.pending) await mockSession.pending;
+  return { session: { id: "s", userId: "u" }, user: { id: "u" }, memberRestrictions: mockSession.memberRestrictions };
+} } }));
 
 vi.mock("../api/instanceSettings", () => ({
   instanceSettingsApi: mockInstanceSettingsApi,
@@ -379,6 +396,37 @@ describe("Agents", () => {
       updatedAt: new Date("2026-01-02T00:00:00Z"),
     });
     mockSidebarState.isMobile = false;
+    mockSession.memberRestrictions = [];
+  });
+
+  // AC-G10 (PAR-13266): live runs are a closed list for a restricted member under `enforce`.
+  it.each([
+    ["streamlined", Agents], ["production", ProductionAgents],
+  ] as const)("the %s agent list requests live runs and shows the live mark only when it may", async (_mode, AgentList) => {
+    for (const mode of ["enforce", null, "report"] as const) {
+      mockSession.memberRestrictions = mode ? [{ companyId: "company-1", restricted: true, mode }] : [];
+      mockHeartbeatsApi.liveRunsForCompany.mockClear();
+      mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([{ id: "run-1", status: "running", agentId: "agent-1" }]);
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      root = createRoot(container);
+      await act(async () => {
+        root!.render(<QueryClientProvider client={client}><MemberRestrictionProvider><TooltipProvider><ToastProvider><AgentList /></ToastProvider></TooltipProvider></MemberRestrictionProvider></QueryClientProvider>);
+      });
+      await flushReact();
+      await flushReact();
+      const liveLinks = container.querySelectorAll('a[href="/agents/alpha/runs/run-1"]').length;
+      if (mode === "enforce") {
+        expect(mockHeartbeatsApi.liveRunsForCompany).not.toHaveBeenCalled();
+        expect(liveLinks).toBe(0);
+      } else {
+        expect(mockHeartbeatsApi.liveRunsForCompany).toHaveBeenCalledWith("company-1");
+        expect(liveLinks).toBeGreaterThan(0);
+      }
+      const current = root;
+      await act(async () => { current!.unmount(); });
+      root = null;
+      client.clear();
+    }
   });
 
   afterEach(async () => {
@@ -582,6 +630,8 @@ describe("Agents", () => {
     });
     await flushReact();
     await flushReact();
+    // Settings wait for the agent list and the session (PAR-13474); environments wait for settings.
+    await flushReact();
 
     expect(container.textContent).toContain("Daytona Sandbox");
     expect(container.textContent).toContain("Daytona sandbox provider");
@@ -608,6 +658,8 @@ describe("Agents", () => {
       renderAgentsView(root, queryClient);
     });
     await flushReact();
+    await flushReact();
+    // Settings wait for the agent list and the session (PAR-13474); environments wait for settings.
     await flushReact();
 
     expect(container.textContent).toContain("Dev Laptop");
@@ -775,6 +827,8 @@ describe("Agents", () => {
     });
     await flushReact();
     await flushReact();
+    // Settings wait for the agent list and the session (PAR-13474); environments wait for settings.
+    await flushReact();
 
     const fallbackRow = findAgentRow(container, "Fallback Agent");
     const overrideRow = findAgentRow(container, "Override Agent");
@@ -812,6 +866,8 @@ describe("Agents", () => {
       renderAgentsView(root, queryClient);
     });
     await flushReact();
+    await flushReact();
+    // Settings wait for the agent list and the session (PAR-13474); environments wait for settings.
     await flushReact();
 
     expect(container.textContent).toContain("Custom Sandbox");
@@ -1014,6 +1070,127 @@ describe("Agents", () => {
 
     expect(container.textContent).toContain("Alpha");
     expect(container.querySelector('[aria-label="Invalid reporting chain"]')).not.toBeNull();
+  });
+
+  // PAR-13474 (AC-G10, decision PAR-13469 B part 2): the reduced list for a restricted member.
+  describe("reduced list", () => {
+    const SIX_FIELD_BODIES: ReducedAgentBody[] = [
+      { id: "agent-r1", companyId: "company-1", name: "Acme Content Writer For The Northern Region Accounts", title: "Writer", icon: "brain", status: "idle" },
+      { id: "agent-r2", companyId: "company-1", name: "Beta", title: null, icon: null, status: "paused" },
+    ];
+    const PAGES = [["streamlined", Agents], ["production", ProductionAgents]] as const;
+    const VIEWS = ["org", "list"] as const;
+
+    function page(AgentList: (typeof PAGES)[number][1], view: (typeof VIEWS)[number]) {
+      mockSidebarState.isMobile = view === "list";
+      return AgentList === Agents ? <Agents initialView={view} /> : <ProductionAgents />;
+    }
+
+    async function renderGuarded(client: QueryClient, element: ReactNode) {
+      root = createRoot(container);
+      await act(async () => {
+        root!.render(<QueryClientProvider client={client}><MemberRestrictionProvider><TooltipProvider><ToastProvider>{element}</ToastProvider></TooltipProvider></MemberRestrictionProvider></QueryClientProvider>);
+      });
+      await flushReact();
+      await flushReact();
+    }
+
+    async function unmount(client: QueryClient) {
+      const current = root;
+      await act(async () => { current!.unmount(); });
+      root = null;
+      client.clear();
+    }
+
+    const gatedCalls = () => [
+      mockAgentsApi.org, mockBuiltInAgentsApi.list, mockInstanceSettingsApi.get, mockAiConnectionsApi.list,
+      mockEnvironmentsApi.list, mockEnvironmentsApi.capabilities,
+    ].map((mock) => mock.mock.calls.length);
+
+    beforeEach(() => {
+      mockInstanceSettingsApi.get.mockResolvedValue(makeInstanceSettings({ enableBuiltInAgents: true }));
+    });
+
+    it.each(PAGES)("%s: shows the four values from a six-field body and sends no closed request", async (_mode, AgentList) => {
+      // Gate closed (session says `enforce`) and gate open (a stale session: the server already enforces).
+      for (const sessionMode of ["enforce", "stale"] as const) {
+        for (const view of VIEWS) {
+          mockSession.memberRestrictions = sessionMode === "enforce" ? [{ companyId: "company-1", restricted: true, mode: "enforce" }] : [];
+          mockAgentsApi.list.mockResolvedValue(SIX_FIELD_BODIES.map((body) => completeAgentBody(body)));
+          vi.clearAllMocks();
+          const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+          // Settings another page already loaded: built-in agents and environments switched on.
+          client.setQueryData(queryKeys.instance.settings, makeInstanceSettings({ enableBuiltInAgents: true }));
+          await renderGuarded(client, page(AgentList, view));
+          const where = `${sessionMode} ${view}`;
+          expect(container.querySelector('[data-query-view="error"]'), where).toBeNull();
+          const list = container.querySelector('[data-testid="reduced-agent-list"]');
+          expect(list, where).not.toBeNull();
+          expect(list!.textContent).toContain("Acme Content Writer For The Northern Region Accounts");
+          expect(list!.textContent).toContain("Writer");
+          expect(list!.querySelector('[data-agent-icon="brain"]')).not.toBeNull();
+          expect(list!.textContent).toContain("paused");
+          expect(list!.querySelector('a[href="/agents/beta"]')).not.toBeNull();
+          expect(gatedCalls(), where).toEqual([0, 0, 0, 0, 0, 0]);
+          await unmount(client);
+        }
+      }
+    });
+
+    it.each(PAGES)("%s: the owner gets the full page and its requests", async (_mode, AgentList) => {
+      for (const view of VIEWS) {
+        vi.clearAllMocks();
+        const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+        await renderGuarded(client, page(AgentList, view));
+        expect(container.querySelector('[data-testid="reduced-agent-list"]')).toBeNull();
+        expect(container.textContent, view).toContain("Alpha");
+        expect(mockInstanceSettingsApi.get, view).toHaveBeenCalled();
+        expect(mockBuiltInAgentsApi.list, view).toHaveBeenCalledWith("company-1");
+        if (view === "org") expect(mockAgentsApi.org).toHaveBeenCalledWith("company-1");
+        else expect(mockAiConnectionsApi.list).toHaveBeenCalledWith("company-1");
+        await unmount(client);
+      }
+    });
+
+    it.each(PAGES.flatMap(([mode, AgentList]) => VIEWS.flatMap((view) => [
+      [mode, view, "pending", AgentList], [mode, view, "restored from the saved cache", AgentList],
+    ] as const)))("%s %s view: while the session is %s the owner sees the loading state, then the full page once", async (_mode, view, session, AgentList) => {
+      let release!: () => void;
+      mockSession.pending = new Promise<void>((resolve) => { release = resolve; });
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      const cache = session === "pending" ? null : startPersistedQueryCache(client, { storage: null, buildId: "test", eventTarget: null });
+      if (cache) {
+        client.setQueryData(queryKeys.auth.session, { session: { id: "s", userId: "u" }, user: { id: "u" }, memberRestrictions: [] });
+        void client.invalidateQueries({ queryKey: queryKeys.auth.session, refetchType: "none" });
+        markCachedSession(client);
+      }
+      let reducedPainted = false;
+      const observer = new MutationObserver(() => {
+        if (container.querySelector('[data-testid="reduced-agent-list"]')) reducedPainted = true;
+      });
+      observer.observe(container, { childList: true, subtree: true });
+      try {
+        await renderGuarded(client, page(AgentList, view));
+        expect(mockAgentsApi.list).toHaveBeenCalled();
+        expect(container.textContent).not.toContain("Alpha");
+        expect(container.querySelector('[data-testid="reduced-agent-list"]')).toBeNull();
+        expect(gatedCalls()).toEqual([0, 0, 0, 0, 0, 0]);
+
+        await act(async () => { release(); });
+        await flushReact();
+        await flushReact();
+        expect(container.textContent).toContain("Alpha");
+        expect(mockInstanceSettingsApi.get).toHaveBeenCalledTimes(1);
+        if (view === "org") expect(mockAgentsApi.org).toHaveBeenCalledTimes(1);
+        else expect(mockAiConnectionsApi.list).toHaveBeenCalledTimes(1);
+        expect(reducedPainted).toBe(false);
+      } finally {
+        observer.disconnect();
+        mockSession.pending = null;
+        cache?.dispose();
+        await unmount(client);
+      }
+    });
   });
 
   describe("disconnect handling", () => {

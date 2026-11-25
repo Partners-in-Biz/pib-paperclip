@@ -159,6 +159,7 @@ describeEmbeddedPostgres("heartbeat archived-company guard", () => {
 
     const heartbeat = heartbeatService(db);
     const run = await heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "automation",
       triggerDetail: "system",
       reason: "issue_commented",
@@ -248,6 +249,7 @@ describeEmbeddedPostgres("heartbeat archived-company guard", () => {
     const heartbeat = heartbeatService(db);
 
     await expect(heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "on_demand",
       triggerDetail: "manual",
       requestedByActorType: "user",
@@ -270,6 +272,7 @@ describeEmbeddedPostgres("heartbeat archived-company guard", () => {
     const heartbeat = heartbeatService(db);
 
     await expect(heartbeat.wakeup(childId, {
+      causingActor: "system",
       source: "on_demand",
       triggerDetail: "manual",
       requestedByActorType: "user",

@@ -514,16 +514,17 @@ export function campaignClientSummary(counts: { total: number; active: number; e
 
 /**
  * The arm a new enrollment gets: the declared winner, else an even split by
- * a stable hash of campaign and contact when any step has a B version, else A.
+ * a stable hash of campaign and recipient id when any step has a B version, else A.
+ * The id is hashed as the enrollment stores it, so a `member:` id splits the same way.
  */
 export function pickVariant(
   campaign: Pick<CampaignDraft, "id" | "winnerVariant">,
   steps: Array<Pick<CampaignStepDraft, "variant">>,
-  contactId: string,
+  recipientId: string,
 ): "a" | "b" {
   if (campaign.winnerVariant) return campaign.winnerVariant;
   if (!steps.some((step) => step.variant === "b")) return "a";
-  const byte = createHash("sha256").update(`${campaign.id}:${contactId}`).digest()[0]!;
+  const byte = createHash("sha256").update(`${campaign.id}:${recipientId}`).digest()[0]!;
   return byte % 2 === 0 ? "a" : "b";
 }
 

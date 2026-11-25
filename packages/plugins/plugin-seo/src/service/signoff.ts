@@ -7,7 +7,7 @@ import { normalisePageUrl, PIB_PLUGINS, pluginEvent, wakeIssue } from "@partners
 import * as db from "../db.js";
 import { t } from "../db.js";
 import { actorId, num, reqStr, SeoError, errorMessage, type Actor, type Env, type Params } from "./common.js";
-import { ARCHIVE_APPLY_GUIDANCE, LIVE_CHECK_GUIDANCE } from "../apply-guidance.js";
+import { AFTER_FIRST_PARAGRAPH_APPLY_GUIDANCE, ARCHIVE_APPLY_GUIDANCE, usesAfterFirstParagraph, LINK_EDITS_APPLY_GUIDANCE, LIVE_CHECK_GUIDANCE } from "../apply-guidance.js";
 import { APPROVAL_VALID_DAYS } from "../constants.js";
 import { assertWritable, loadSprintContext } from "./context.js";
 import { loadSeoConfig } from "../config.js";
@@ -106,6 +106,12 @@ export async function delegateAgentIds(env: Env, companyId: string): Promise<str
   }
 }
 
+/** PAR-13992: true when the actor is an agent named as a sign-off delegate (it may decide safe-autopilot approvals a person otherwise holds). */
+export async function isSignoffDelegate(env: Env, companyId: string, actor: { kind: string; agentId?: string | null }): Promise<boolean> {
+  if (actor.kind !== "agent" || !actor.agentId) return false;
+  return (await delegateAgentIds(env, companyId)).includes(actor.agentId);
+}
+
 /** syncSiteWindow for the sprint's site. A sprint without a site id has no lock to open, so nothing is sent (null). */
 export async function syncApplyWindow(env: Env, sprint: Pick<db.Sprint, "companyId" | "siteId">, by: string) {
   if (!sprint.siteId) return null;
@@ -198,7 +204,7 @@ export async function approveSiteWrites(env: Env, companyId: string, actor: Acto
   if (sprint.siteAccess !== "wordpress" || !sprint.siteId) throw new SeoError("This sprint is not linked to a WordPress site, so there is nothing to unlock.");
   if (sprint.changePolicy !== "pr_only") throw new SeoError("This sprint's change policy is not pr_only, so the agent is not held back.");
   const approved = await env.ctx.db.query(
-    `SELECT id, task_id, issue_id, page_url, title FROM ${t("previews")} WHERE company_id = $1 AND sprint_id = $2 AND status = 'approved' AND decided_at > now() - interval '${APPROVAL_VALID_DAYS} days' ORDER BY decided_at`,
+    `SELECT id, task_id, issue_id, page_url, title, changes FROM ${t("previews")} WHERE company_id = $1 AND sprint_id = $2 AND status = 'approved' AND decided_at > now() - interval '${APPROVAL_VALID_DAYS} days' ORDER BY decided_at`,
     [companyId, sprintId],
   );
   if (approved.length === 0) throw new SeoError("No client has approved a preview on this sprint yet. Send the preview link to the client first; their Approve click is what unlocks this.");
@@ -207,7 +213,7 @@ export async function approveSiteWrites(env: Env, companyId: string, actor: Acto
   const shown = approved.slice(0, 15).map((r) => `- ${String(r.page_url)}`);
   const more = approved.length > shown.length ? `\n- …and ${approved.length - shown.length} more: partnersinbiz.seo:list-previews with status approved (limit 100) shows all of them.` : "";
   const list = `${shown.join("\n")}${more}`;
-  const body = `The owner approved applying the client-approved changes for the next ${hours} hours. Apply only these (the previews with status approved, see list-previews), then verify each on the live site and complete the task with the evidence:\n${list}\n\nAnything that is not an approved preview still needs the client's sign-off.\n\n${ARCHIVE_APPLY_GUIDANCE}\n\n${LIVE_CHECK_GUIDANCE}`;
+  const body = `The owner approved applying the client-approved changes for the next ${hours} hours. Apply only these (the previews with status approved, see list-previews), then verify each on the live site and complete the task with the evidence:\n${list}\n\nAnything that is not an approved preview still needs the client's sign-off.\n\n${ARCHIVE_APPLY_GUIDANCE}\n\n${LIVE_CHECK_GUIDANCE}\n\n${LINK_EDITS_APPLY_GUIDANCE}${approved.some((r) => usesAfterFirstParagraph(r.changes)) ? `\n\n${AFTER_FIRST_PARAGRAPH_APPLY_GUIDANCE}` : ""}`;
   const woken: string[] = [];
   const seen = new Set<string>();
   for (const row of approved) {

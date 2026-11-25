@@ -53,7 +53,7 @@ it.skipIf(process.env.PAPERCLIP_LIVE_SESSION_EPOCH !== "true")("publishes a fres
         index === 0 ? `Write exactly ${marker} followed by a newline to epoch.txt. Read it and finish this step.`
           : `Append exactly ${marker} followed by a newline once to epoch.txt. Preserve all existing lines. Read the result and finish this step.`,
         { userId: fixture.userId! });
-      const run = await heartbeat.wakeup(fixture.agentId, { source: "automation", triggerDetail: "system", reason: "issue_reopened_via_comment",
+      const run = await heartbeat.wakeup(fixture.agentId, { causingActor: "system", source: "automation", triggerDetail: "system", reason: "issue_reopened_via_comment",
         requestedByActorType: "user", requestedByActorId: fixture.userId,
         payload: { issueId: fixture.issueId, commentId: comment.id, mutation: "comment", reopenedFrom: "done" },
         contextSnapshot: { issueId: fixture.issueId, taskId: fixture.issueId, wakeCommentId: comment.id, skipIssueComment: true,

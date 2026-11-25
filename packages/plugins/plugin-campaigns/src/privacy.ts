@@ -22,7 +22,6 @@
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import {
-  getCrmContact,
   senderKeyOf,
   suppressionEmail,
   textArrayParam,
@@ -34,14 +33,13 @@ import {
 import {
   addChannelSuppression,
   addressHash,
-  crmContactsByEmail,
-  crmContactsByPhone,
   listSteps,
   stopEnrollmentsForSender,
   table,
   upsertConsent,
 } from "./db.js";
 import { normalizePhone, type Channel } from "./channels.js";
+import { recipientsByEmail, recipientsByPhone, resolveRecipient } from "./recipient.js";
 import { campaignMailKey } from "./domain.js";
 import { addSuppression } from "./db.js";
 import { optOutChannel } from "./sms.js";
@@ -149,20 +147,15 @@ export async function eraseSubject(ctx: PluginContext, request: ContactEraseRequ
   }
   const contactIds = new Set<string>(subject.contactId ? [subject.contactId] : []);
   if (subject.contactId) {
-    const contact = await getCrmContact(ctx, ctx.db.namespace, companyId, subject.contactId).catch(() => null);
+    const contact = await resolveRecipient(ctx, companyId, subject.contactId).catch(() => null);
     for (const email of contact?.emails ?? []) emails.add(suppressionEmail(email));
     for (const raw of contact?.phones ?? []) {
       const phone = normalizePhone(raw, "+27");
       if (phone) phones.add(phone);
     }
   }
-  for (const email of [...emails]) for (const contact of await crmContactsByEmail(ctx, companyId, email)) contactIds.add(contact.id);
-  for (const phone of [...phones]) {
-    for (const contact of await crmContactsByPhone(ctx, companyId, phone.replace(/\D/g, "").slice(-9))) {
-      const full = await getCrmContact(ctx, ctx.db.namespace, companyId, contact.id).catch(() => null);
-      if ((full?.phones ?? []).some((raw) => normalizePhone(raw, "+27") === phone)) contactIds.add(contact.id);
-    }
-  }
+  for (const email of [...emails]) for (const person of await recipientsByEmail(ctx, companyId, email)) contactIds.add(person.id);
+  for (const phone of [...phones]) for (const person of await recipientsByPhone(ctx, companyId, phone, "+27")) contactIds.add(person.id);
   const counts: Record<string, number> = {};
   const retained: Array<{ what: string; why: string }> = [];
   const errors: string[] = [];

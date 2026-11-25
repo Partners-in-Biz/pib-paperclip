@@ -190,7 +190,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     const { service, dependencies } = await queue();
     dependencies.getSchedulingSuppression.mockResolvedValue({ suppressed: true, reason: "task_drain" });
     await start(); await flush(); await quiet();
-    const admitted = await service.enqueueWakeup(f.agentId, { source: "on_demand", reason: "issue_commented",
+    const admitted = await service.enqueueWakeup(f.agentId, { causingActor: "system", source: "on_demand", reason: "issue_commented",
       contextSnapshot: chatContextSnapshot(), requestedByActorType: "user", requestedByActorId: f.userId,
     });
     expect(admitted).toMatchObject({ status: "queued", companyId: f.companyId });
@@ -272,7 +272,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     dependencies.getAgent.mockResolvedValue(replacement);
     dependencies.getSchedulingSuppression.mockResolvedValue({ suppressed: true, reason: "task_drain" });
     await start(); await flush(); await quiet();
-    const admitted = await service.enqueueWakeup(replacement.id, { source: "on_demand", reason: "issue_commented",
+    const admitted = await service.enqueueWakeup(replacement.id, { causingActor: "system", source: "on_demand", reason: "issue_commented",
       contextSnapshot: chatContextSnapshot(), requestedByActorType: "user", requestedByActorId: f.userId,
     });
     expect(admitted).toMatchObject({ agentId: replacement.id, status: "queued" });
@@ -370,7 +370,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await quiet();
     const { service, dependencies } = await queue();
     dependencies.getSchedulingSuppression.mockResolvedValue({ suppressed: true, reason: "task_drain" });
-    const admitted = await service.enqueueWakeup(f.agentId, { source: "automation", reason: "issue_monitor_due",
+    const admitted = await service.enqueueWakeup(f.agentId, { causingActor: "system", source: "automation", reason: "issue_monitor_due",
       idempotencyKey: `issue-monitor:${f.issueId}:${nextCheckAt}`,
       payload: { issueId: f.issueId, nextCheckAt },
       contextSnapshot: { issueId: f.issueId, source: "issue.monitor" },

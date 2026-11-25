@@ -4,6 +4,8 @@
  */
 import type { ToolResult, ToolRunContext } from "@paperclipai/plugin-sdk";
 import { toolFail, toolOk } from "@partnersinbiz/pib-plugin-kit";
+import { getRun } from "./acceptance.js";
+import { rehearsalEvidenceClient } from "./acceptance-model.js";
 import { clientEffortReport } from "./client-cost.js";
 import { effortBrief } from "./client-cost-model.js";
 import { openCloseoutNow } from "./closeout.js";
@@ -123,8 +125,12 @@ export async function runOpsTool(env: Env, name: string, raw: unknown, run: Tool
       if (!pngBase64) return fail("pngBase64 is required");
       const parsedClient = parseEvidenceClient(p.client);
       if ("error" in parsedClient) return fail(parsedClient.error);
+      const acceptanceRunId = typeof p.acceptanceRunId === "string" && p.acceptanceRunId.trim() ? p.acceptanceRunId.trim().slice(0, 60) : null;
+      // A journey step's file goes to the run's canary client, whatever project the acceptance issue has (PAR-10122): the run names the client, never the agent.
+      const rehearsal = acceptanceRunId ? rehearsalEvidenceClient(await getRun(env.ctx, companyId, acceptanceRunId), acceptanceRunId, step) : null;
+      if (rehearsal && "error" in rehearsal) return fail(rehearsal.error);
 
-      // The folder comes from the issue's project (the CRM's client-project link), not from the agent (PAR-8128).
+      // Otherwise the folder comes from the issue's project (the CRM's client-project link), not from the agent (PAR-8128).
       const issue = await env.ctx.issues.get(issueId, companyId).catch(() => null);
       if (!issue) return ok("Evidence was not saved to Drive: the issue was not found, so its client is unknown. The step is not blocked.", { saved: false, reason: "issue_not_found" });
       const result = await saveEvidenceToDrive(env.ctx, {
@@ -132,8 +138,8 @@ export async function runOpsTool(env: Env, name: string, raw: unknown, run: Tool
         issueId: issue.identifier || issueId,
         step,
         pngBase64,
-        projectId: issue.projectId ?? null,
-        client: parsedClient.client,
+        projectId: rehearsal ? null : (issue.projectId ?? null),
+        client: rehearsal ? rehearsal.client : parsedClient.client,
       });
       if (result === null || result.status === "failed" || result.status === "no_ack") {
         const reason = result?.status === "failed" ? result.reason : result?.status === "no_ack" ? "no ack from Drive" : "invalid input";

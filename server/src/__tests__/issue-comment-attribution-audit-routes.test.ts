@@ -157,7 +157,7 @@ describeEmbeddedPostgres("issue comment attribution and patch audit routes", () 
       onBehalfOfMemberships: [{
         companyId: input.company.id,
         membershipRole: "member",
-        status: "active",
+        status: "active", restricted: false, restrictionMode: "off",
       }],
       source: "agent_jwt",
     };

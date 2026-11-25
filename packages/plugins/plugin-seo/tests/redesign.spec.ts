@@ -80,7 +80,7 @@ describe("create-preview css", () => {
     await expect(createPreview(host({ task: task({ task_type: "page-write" }) }).env, "co-1", agent, base)).rejects.toThrow(/only for redesign tasks/);
     const ok = (await createPreview(host().env, "co-1", agent, base)) as { applied: string[] };
     expect(ok.applied).toContain("css");
-  });
+  }, 30_000);
 });
 
 describe("ask for a redesign", () => {

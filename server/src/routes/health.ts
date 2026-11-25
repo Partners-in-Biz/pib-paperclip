@@ -35,6 +35,7 @@ import {
   WORKSPACE_READINESS_USER_ID_HEADER,
 } from "../auth/workspace-login-handoff.js";
 import { serverVersion } from "../version.js";
+import { memberRestrictionKillSwitchOn } from "../services/member-restriction/index.js";
 import { getStartupRecoveryState } from "../startup-recovery-state.js";
 import { nativeRestartRecoverySummary } from "../services/native-runtime/native-restart-recovery.js";
 import {
@@ -232,10 +233,12 @@ export function healthRoutes(
 
   router.get("/", async (req, res) => {
     const actorType = "actor" in req ? req.actor?.type : null;
+    // PAR-13261: a caller the route guard marked restricted at `enforce` gets
+    // the anonymous body; the token-gated fields below keep their token rule.
     const exposeFullDetails = shouldExposeFullHealthDetails(
       actorType,
       opts.deploymentMode,
-    );
+    ) && !req.actor?.memberRestrictedCompanyIds?.length;
     const runtimeEnv = opts.runtimeEnv ?? process.env;
     const startupRecovery = getStartupRecoveryState();
     const healthStatus =
@@ -444,6 +447,7 @@ export function healthRoutes(
       serverInfo,
       startupRecovery,
       nativeRecovery,
+      ...(memberRestrictionKillSwitchOn() ? { memberRestriction: "forced_off" as const } : {}),
       ...(databaseBackup ? { databaseBackup } : {}),
       ...(warnings ? { warnings } : {}),
       ...(devServer ? { devServer } : {}),

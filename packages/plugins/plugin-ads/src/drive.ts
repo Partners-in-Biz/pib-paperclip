@@ -3,7 +3,7 @@
  * Best effort: the creative already exists on the platform, so a Drive failure is logged and never fails the run.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { driveSave, type DriveSaveOptions, type DriveSaveResult } from "@partnersinbiz/pib-plugin-kit";
+import { DRIVE_ACK_TIMEOUT_MS, driveSave, type DriveSaveOptions, type DriveSaveResult } from "@partnersinbiz/pib-plugin-kit";
 
 export type DriveSaveFn = (ctx: Pick<PluginContext, "events">, opts: DriveSaveOptions & { subfolder?: string }) => Promise<DriveSaveResult>;
 
@@ -40,7 +40,7 @@ export async function saveCreativeToDrive(ctx: PluginContext, c: CreativeDriveCo
       mimeType: "application/json",
       bytes: Buffer.from(JSON.stringify({ name: c.name, platform: c.platform, ...c.fields }, null, 2), "utf-8"),
       subfolder: "02 Assets",
-      timeoutMs: 10_000,
+      timeoutMs: DRIVE_ACK_TIMEOUT_MS,
       // The company's own scope (no client) asks for the own folder explicitly (PAR-8128).
       ...(c.client?.kind && c.client.ref ? { client: { kind: c.client.kind, ref: c.client.ref } } : { ownWork: true as const }),
     });

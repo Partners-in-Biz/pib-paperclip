@@ -27,6 +27,7 @@ import { repairApprovalIssues } from "./outbound.js";
 import { openReportCards, settleReportCards } from "./report-batch.js";
 import { privacyHealth, reannounceAll } from "./privacy.js";
 import { seedRegister } from "./register.js";
+import { replaySiteChanges } from "./site-signoff.js";
 import { reportsHealth, runMonthlyReports } from "./report.js";
 import { supportHealth, onSupportMail, runSupportSla } from "./support.js";
 import { crmCompanyIds } from "./sync.js";
@@ -63,6 +64,9 @@ async function eachCompany(ctx: PluginContext, job: string, run: (companyId: str
 export async function runSiteMonitorJob(ctx: PluginContext): Promise<{ companies: number; checked: number; down: number }> {
   const total = { companies: 0, checked: 0, down: 0 };
   total.companies = await eachCompany(ctx, "site monitor", async (companyId) => {
+    // First, so a failing monitor never skips it: re-send site.changed for page-grant writes, so a lost event still
+    // marks the preview applied (PAR-9131 Q16).
+    await replaySiteChanges(ctx, companyId).catch((error) => ctx.logger.info("CRM site.changed replay failed", { companyId, error: error instanceof Error ? error.message : String(error) }));
     const run = await runSiteMonitor(ctx, companyId);
     total.checked += run.checked;
     total.down += run.down;

@@ -58,7 +58,7 @@ describe.skipIf(!available)("client summaries against real Postgres", () => {
     await setCap(ctx(), CO, "company:acme", 20, "owner-1");
     await setCap(ctx(), CO, "company", 100, "owner-1");
 
-    const out = await clientSummaries(ctx(), CO);
+    const out = await clientSummaries(ctx(), CO, "unrestricted");
     const acme = out.clients.find((c) => c.scopeKey === "company:acme")!;
     const globex = out.clients.find((c) => c.scopeKey === "company:globex")!;
     expect(acme.counts).toEqual({ draft: 1, approved: 4, rejected: 1 });

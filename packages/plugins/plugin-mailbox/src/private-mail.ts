@@ -21,6 +21,8 @@ export const PRIVATE_MAIL_KIND = "client_message";
 
 /** A send nobody settled is scrubbed this long after it was asked for (the senders' outbox retries for about three days). */
 export const PRIVATE_STALE_DAYS = 4;
+/** A newsletter send record (key `crm:nl:`) keeps its recipients, subject and request this long. */
+export const NEWSLETTER_RECORD_DAYS = 30;
 
 /** The request fields that can hold the link, or a link that is a credential of its own (a presigned attachment address). */
 export const PRIVATE_REQUEST_FIELDS = ["text", "html", "attachments"] as const;

@@ -102,6 +102,34 @@ const SANDBOX_CALLBACK_BRIDGE_FILE_MODE = "queue_v1";
 /** The active non-file transport mode. */
 export const SANDBOX_CALLBACK_BRIDGE_HTTP2_MODE = "http2_v1";
 
+type BridgeStep = "list" | "size" | "read" | "handler" | "write" | "remove";
+const SLOW_BRIDGE_REQUEST_LOG_MS = 2000;
+
+/** Per-request step durations (ms). Tracks the step in flight, so a timeout
+ * warning can name it. Log-only: it adds no span attributes. */
+class BridgeStepTimings {
+  readonly durations: Partial<Record<BridgeStep, number>> = {};
+  current: BridgeStep | null = null;
+  private currentStartedAt = 0;
+  readonly startedAt = Date.now();
+  async time<T>(step: BridgeStep, fn: () => Promise<T>): Promise<T> {
+    this.current = step;
+    this.currentStartedAt = Date.now();
+    try {
+      return await fn();
+    } finally {
+      this.durations[step] = (this.durations[step] ?? 0) + Date.now() - this.currentStartedAt;
+      this.current = null;
+    }
+  }
+  describe(): string {
+    const done = (Object.entries(this.durations) as Array<[BridgeStep, number]>)
+      .map(([step, ms]) => `${step}=${ms}ms`).join(" ");
+    const inStep = this.current ? `${this.current} (${Date.now() - this.currentStartedAt}ms so far)` : "none";
+    return `finished steps: ${done || "none"}; timed out in step: ${inStep}`;
+  }
+}
+
 /** Span name that wraps one Paperclip-API callback request — read the request,
  * write the response, and remove the request file. */
 const CALLBACK_BRIDGE_RELAY_REQUEST_SPAN = "sandbox.callbackBridge.relayRequest";
@@ -897,6 +925,7 @@ export async function startSandboxCallbackBridgeWorker(input: {
   });
   const authorizeRequest = input.authorizeRequest ??
     ((request: SandboxCallbackBridgeRequest) => authorizeSandboxCallbackBridgeRequestWithRoutes(request));
+  const bridgeMode = SANDBOX_CALLBACK_BRIDGE_FILE_MODE;
   const buildWorkerFailureMessage = (error: unknown) =>
     `Sandbox callback bridge worker failed: ${error instanceof Error ? error.message : String(error)}`;
 
@@ -956,7 +985,7 @@ export async function startSandboxCallbackBridgeWorker(input: {
   };
   const inFlightRequestGuards = new Map<string, RequestFinalizeGuard>();
 
-  const processRequestFile = async (fileName: string) => {
+  const processRequestFile = async (fileName: string, timings: BridgeStepTimings = new BridgeStepTimings()) => {
     // Skip a request that already has an active attempt. The guard map holds only
     // in-flight attempts; the attempt's finally removes its guard when it ends. A
     // file that still has a guard is in flight, or it waits for its aborted-handler
@@ -1016,12 +1045,12 @@ export async function startSandboxCallbackBridgeWorker(input: {
       let lastWriteError = "Sandbox callback bridge could not write the handler response.";
       for (let attempt = 1; attempt <= MAX_BACKSTOP_WRITE_ATTEMPTS; attempt += 1) {
         try {
-          await withTimeout(
+          await timings.time("write", () => withTimeout(
             writeBridgeResponse(input.client, requestPath, responsePath, response),
             iterationTimeoutMs,
             `Sandbox callback bridge write response for ${response.id}`,
-          );
-          await input.client.remove(requestPath).catch(() => undefined);
+          ));
+          await timings.time("remove", () => input.client.remove(requestPath).catch(() => undefined));
           return;
         } catch (error) {
           lastWriteError = error instanceof Error ? error.message : String(error);
@@ -1048,7 +1077,7 @@ export async function startSandboxCallbackBridgeWorker(input: {
       // clients stat first so a high configured file limit does not reserve that
       // whole limit for a tiny request. Older clients use the conservative cap.
       const envelopeBytes = input.client.fileSize
-        ? await input.client.fileSize(requestPath).catch(() => maxEnvelopeBytes)
+        ? await timings.time("size", () => input.client.fileSize!(requestPath).catch(() => maxEnvelopeBytes))
         : maxEnvelopeBytes;
       if (envelopeBytes > maxEnvelopeBytes) {
         await finalize({
@@ -1070,7 +1099,7 @@ export async function startSandboxCallbackBridgeWorker(input: {
       }
       let raw: string;
       try {
-        raw = await input.client.readTextFile(requestPath, readLimit);
+        raw = await timings.time("read", () => input.client.readTextFile(requestPath, readLimit));
       } catch (error) {
         // The gateway deletes a request file when its caller stops waiting
         // (client-side timeout cleanup). A read that fails because the file is
@@ -1138,9 +1167,9 @@ export async function startSandboxCallbackBridgeWorker(input: {
       let handlerReturned = false;
       try {
         const { bodyEncoding, ...forwardRequest } = request;
-        const result = await input.handleRequest({ ...forwardRequest,
+        const result = await timings.time("handler", () => input.handleRequest({ ...forwardRequest,
           body: bodyEncoding === "base64" ? decodeSandboxBridgeBody(request, maxBodyBytes) : request.body,
-        }, { signal: guard.controller.signal, reservation });
+        }, { signal: guard.controller.signal, reservation }));
         handlerReturned = true;
         const responseBytes = Buffer.byteLength(result.body ?? "");
         if (responseBytes > maxBodyBytes) throw new Error("Bridge response body exceeded the configured size limit.");
@@ -1520,6 +1549,7 @@ export async function startSandboxCallbackBridgeWorker(input: {
       let consecutivePollFailures = 0;
       while (true) {
         let fileNames: string[];
+        const listStartedAt = Date.now();
         try {
           fileNames = await withTimeout(
             input.client.listJsonFiles(directories.requestsDir),
@@ -1563,8 +1593,11 @@ export async function startSandboxCallbackBridgeWorker(input: {
           await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
           continue;
         }
+        const listMs = Date.now() - listStartedAt;
         for (const fileName of actionableFileNames) {
           if (stopping && Date.now() >= stopDeadline) break;
+          const timings = new BridgeStepTimings();
+          timings.durations.list = listMs;
           inFlight += 1;
           try {
             // A request is run-time work, not startup work. Wrap it in a
@@ -1579,15 +1612,21 @@ export async function startSandboxCallbackBridgeWorker(input: {
             await withTimeout(
               input.runtimeSpan
                 ? input.runtimeSpan(CALLBACK_BRIDGE_RELAY_REQUEST_SPAN, () =>
-                    processRequestFile(fileName),
+                    processRequestFile(fileName, timings),
                   )
                 : runWithRuntimeParent(input.getRuntimeParentContext?.(), () =>
-                    processRequestFile(fileName),
+                    processRequestFile(fileName, timings),
                   ),
               iterationTimeoutMs,
               `Sandbox callback bridge process request ${fileName}`,
             );
             lastSuccessfulIterationAt = Date.now();
+            const totalMs = Date.now() - timings.startedAt + listMs;
+            if (totalMs > SLOW_BRIDGE_REQUEST_LOG_MS) {
+              console.info(
+                `[paperclip] sandbox callback bridge slow request ${fileName} (mode ${bridgeMode}, total ${totalMs}ms): ${timings.describe()}`,
+              );
+            }
           } catch (error) {
             // A single request attempt failed or hung. Run the same recovery
             // pass the loop previously died on — abort the in-flight handler
@@ -1597,7 +1636,7 @@ export async function startSandboxCallbackBridgeWorker(input: {
             // loop serves the retry; the old terminal catch left every later
             // request to strand instead.
             const message = buildWorkerFailureMessage(error);
-            await surfaceRunError(new Error(message));
+            await surfaceRunError(new Error(`${message} (${timings.describe()}; mode ${bridgeMode})`));
             try {
               await failPendingRequests(message, { abandonInFlight: true });
             } catch (failPendingError) {

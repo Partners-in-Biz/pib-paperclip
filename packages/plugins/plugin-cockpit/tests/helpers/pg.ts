@@ -114,13 +114,25 @@ export async function startPg(): Promise<PgHarness> {
   await client.query(`CREATE SCHEMA ${NAMESPACE}`);
   // Stand-in for the host's core table the Cockpit may read.
   await client.query(
-    `CREATE TABLE public.heartbeat_runs (id uuid PRIMARY KEY, company_id uuid NOT NULL, agent_id uuid NOT NULL, status text NOT NULL, started_at timestamptz, finished_at timestamptz, created_at timestamptz NOT NULL DEFAULT now(), error text, error_code text, context_snapshot jsonb, retry_of_run_id uuid, usage_json jsonb, continuation_attempt integer)`,
+    `CREATE TABLE public.heartbeat_runs (id uuid PRIMARY KEY, company_id uuid NOT NULL, agent_id uuid NOT NULL, status text NOT NULL, started_at timestamptz, finished_at timestamptz, created_at timestamptz NOT NULL DEFAULT now(), error text, error_code text, context_snapshot jsonb, retry_of_run_id uuid, usage_json jsonb, continuation_attempt integer, issue_id uuid)`,
   );
+  // The host's trigger set_heartbeat_run_scope_kind (core migration 0313) fills issue_id on insert from the
+  // context's issueId, else taskId, when it names an issue of the run's company. The Cockpit joins runs to
+  // issues on issue_id (PAR-13397), so a run seeded with only a context_snapshot gets its issue_id here too.
+  await client.query(`CREATE FUNCTION public.fill_run_issue_id() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN
+      IF NEW.issue_id IS NULL THEN
+        SELECT i.id INTO NEW.issue_id FROM public.issues i
+         WHERE i.company_id = NEW.company_id AND i.id::text = coalesce(NEW.context_snapshot ->> 'issueId', NEW.context_snapshot ->> 'taskId');
+      END IF;
+      RETURN NEW;
+    END $$`);
   // The core issue columns the operations watch reads (watch.ts), and the blocker relations.
   await client.query(
     `CREATE TABLE public.issues (id uuid PRIMARY KEY, company_id uuid NOT NULL, identifier text, title text NOT NULL DEFAULT '', description text, status text NOT NULL, hidden_at timestamptz, assignee_agent_id uuid, assignee_user_id text, blocked_transition_at timestamptz, unblock_descriptor jsonb, priority text, origin_kind text, origin_id text, project_id uuid, parent_id uuid, completed_at timestamptz, started_at timestamptz, execution_policy jsonb, execution_state jsonb, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now())`,
   );
   await client.query(`CREATE TABLE public.projects (id uuid PRIMARY KEY, company_id uuid NOT NULL, name text NOT NULL, status text NOT NULL DEFAULT 'backlog', archived_at timestamptz, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now())`);
+  await client.query(`CREATE TRIGGER heartbeat_runs_fill_issue_id BEFORE INSERT ON public.heartbeat_runs FOR EACH ROW EXECUTE FUNCTION public.fill_run_issue_id()`);
   await client.query(`CREATE TABLE public.issue_relations (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), company_id uuid NOT NULL, issue_id uuid NOT NULL, related_issue_id uuid NOT NULL, type text NOT NULL DEFAULT 'blocks', created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now())`);
   for (const file of readdirSync(join(PLUGIN_ROOT, "migrations")).sort()) {
     const sql = readFileSync(join(PLUGIN_ROOT, "migrations", file), "utf8");
@@ -200,7 +212,7 @@ export async function startPg(): Promise<PgHarness> {
 
   const env: Env = {
     ctx,
-    skills: { ensure: async () => [], force: async () => [] },
+    skills: { ensure: async () => [], soon: async () => undefined, force: async () => [] },
     now: () => clock.now,
     fetchImpl,
   };

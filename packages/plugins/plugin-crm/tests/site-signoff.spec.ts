@@ -34,7 +34,9 @@ describe("site sign-off lock", () => {
   it("blocks agent writes on a pr_only site until a person approves, then again after the window", async () => {
     const ctx = fakeCtx();
     await onSignoffEvent(ctx, { companyId: "c", payload: { siteId: "s1", required: true } });
-    expect(await signoffBlock(ctx, SITE, "seo/set", {})).toMatch(/sign-off/);
+    const refused = await signoffBlock(ctx, SITE, "seo/set", {});
+    expect(refused).toMatch(/sign-off/);
+    for (const w of ["approve-page-apply", "create-preview", "approve-site-writes"]) expect(refused).toContain(w);
     await onApprovalEvent(ctx, { companyId: "c", payload: { siteId: "s1", until: new Date(Date.now() + 3600_000).toISOString(), by: "user-1" } });
     expect(await signoffBlock(ctx, SITE, "seo/set", {})).toBeNull();
     await onApprovalEvent(ctx, { companyId: "c", payload: { siteId: "s1", until: new Date(Date.now() - 1000).toISOString() } });

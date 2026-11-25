@@ -33,6 +33,9 @@ import { accountManagerAssignee, adsAssignee, closeIssue, closeRunIssue, note, o
 import { scopePace } from "./pacing.js";
 import { ADS_ORIGINS, OPEN_PROPOSAL_STATUSES, PROPOSAL_KIND_LABELS, SPEND_KINDS, type ProposalKind } from "./platforms.js";
 import { normalizeProposal, type Normalized } from "./proposal-input.js";
+import { appInput } from "./providers/google-app.js";
+import { videoInput } from "./providers/google-video.js";
+import { videoAdInput } from "./providers/google-video-ad.js";
 import { assertPlatformCapsFor } from "./platformCaps.js";
 import { assertCampaignCap } from "./campaignCap.js";
 import { approvalIssueText, clientMessage, reviewerChecks } from "./proposal-text.js";
@@ -462,7 +465,7 @@ async function handTo(rt: AdsRuntime, p: ProposalRow, to: "approver" | "agent"):
 export function inputFromPayload(p: ProposalRow): Record<string, unknown> {
   const x = p.payload;
   if (p.kind === "create_campaign") {
-    return { kind: p.kind, accountId: x.accountId, name: x.name, objective: x.objective, dailyBudgetMinor: x.dailyBudgetMinor, startDate: x.startDate, endDate: x.endDate, specialAdCategories: x.specialAdCategories, audience: x.audience, creative: x.creative, notes: x.notes, reason: x.reason };
+    return { kind: p.kind, accountId: x.accountId, name: x.name, objective: x.objective, dailyBudgetMinor: x.dailyBudgetMinor, startDate: x.startDate, endDate: x.endDate, specialAdCategories: x.specialAdCategories, audience: x.audience, creative: x.creative, ...appInput(x.app), ...videoInput(x.video), notes: x.notes, reason: x.reason };
   }
   if (p.kind === "change_budget") return { kind: p.kind, accountId: x.accountId, campaignExternalId: x.campaignExternalId, newDailyBudgetMinor: x.newDailyBudgetMinor, reason: x.reason };
   if (p.kind === "create_ad_group") return { kind: p.kind, accountId: x.accountId, campaignExternalId: x.campaignExternalId, name: x.name, cpcBidMinor: x.cpcBidMinor, reason: x.reason };
@@ -470,7 +473,7 @@ export function inputFromPayload(p: ProposalRow): Record<string, unknown> {
   if (p.kind === "add_keywords") return { kind: p.kind, accountId: x.accountId, adGroupExternalId: x.adGroupExternalId, keywords: x.keywords, reason: x.reason };
   if (p.kind === "creative_check") return { kind: p.kind, platform: x.platform, name: x.name, creative: x.creative, specialAdCategories: x.specialAdCategories, notes: x.notes, reason: x.reason };
   if (p.kind === "create_ad_creative") return { kind: p.kind, accountId: x.accountId, name: x.name, pageId: x.pageId, imageHash: x.imageHash, videoId: x.videoId, link: x.link, headline: x.headline, body: x.body, cta: x.cta, notes: x.notes, reason: x.reason };
-  if (p.kind === "create_ad") return { kind: p.kind, accountId: x.accountId, name: x.name, adSetExternalId: x.adSetExternalId, creativeExternalId: x.creativeExternalId, notes: x.notes, reason: x.reason };
+  if (p.kind === "create_ad") return { kind: p.kind, accountId: x.accountId, name: x.name, adSetExternalId: x.adSetExternalId, creativeExternalId: x.creativeExternalId, ...videoAdInput(x.videoAd), notes: x.notes, reason: x.reason };
   return { kind: p.kind, targets: ((x.targets as Array<{ accountId: string; campaignExternalId: string }>) ?? []).map((t) => ({ accountId: t.accountId, campaignExternalId: t.campaignExternalId })), reason: x.reason, trigger: x.trigger };
 }
 

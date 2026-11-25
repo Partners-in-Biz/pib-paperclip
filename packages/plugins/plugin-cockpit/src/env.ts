@@ -3,6 +3,8 @@ import type { SkillSyncResult } from "@partnersinbiz/pib-plugin-kit";
 
 export interface SkillSyncer {
   ensure(companyId: string): Promise<SkillSyncResult[]>;
+  /** What a tool call or a page load uses: waits at most 2 s for the sync, never throws (kit `createSkillSyncer().soon`). */
+  soon(companyId: string, waitMs?: number): Promise<void>;
   force(companyId: string): Promise<SkillSyncResult[]>;
   /** Syncs only what changed, every call (the kit's sweep uses it). Present on the real syncer. */
   check?(companyId: string): Promise<SkillSyncResult[]>;

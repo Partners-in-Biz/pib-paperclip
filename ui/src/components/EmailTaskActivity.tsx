@@ -3,6 +3,7 @@ import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { emailApi } from "@/api/email";
 import { useEmailThread } from "@/hooks/useEmailThread";
+import { useMemberRestrictionGate } from "@/hooks/useMemberRestrictionGate";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { describeError } from "@/api/errors";
@@ -23,7 +24,8 @@ export function EmailTaskActivity({
   const queryEnabled = Boolean(companyId && issueId) && !issueId.startsWith("chat:");
   const thread = useEmailThread(companyId, issueId);
   const threadView = useQueryView(thread);
-  if (!queryEnabled) return null;
+  const memberGate = useMemberRestrictionGate(companyId);
+  if (!queryEnabled || memberGate.closed) return null;
   if (threadView.kind === "stale" || threadView.kind === "ready") {
     const data = threadView.data;
     const messages = data?.messages.filter((m) => !m.commentId) ?? [];

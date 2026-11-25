@@ -42,6 +42,8 @@ async function makeDerivedAttributionMigrationPending(
 }
 
 async function dropDerivedAttributionSchema(sql: ReturnType<typeof postgres>): Promise<void> {
+  // The plugin_core_read views (migration 0450) read these columns and block DROP COLUMN.
+  await sql`DROP SCHEMA IF EXISTS plugin_core_read CASCADE`;
   await sql`ALTER TABLE "issue_comments" DROP CONSTRAINT IF EXISTS "issue_comments_derived_author_agent_id_agents_id_fk"`;
   await sql`ALTER TABLE "issue_comments" DROP CONSTRAINT IF EXISTS "issue_comments_derived_created_by_run_id_heartbeat_runs_id_fk"`;
   await sql`ALTER TABLE "issue_comments" DROP COLUMN IF EXISTS "derived_author_agent_id"`;

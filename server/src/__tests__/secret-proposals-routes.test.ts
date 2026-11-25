@@ -218,7 +218,7 @@ describeEmbeddedPostgres("secret proposal routes", () => {
         companyIds: [fixture.companyId],
         source: options?.admin === false ? "session" : "local_implicit",
         memberships: options?.admin === false
-          ? [{ companyId: fixture.companyId, status: "active", membershipRole: "member" }]
+          ? [{ companyId: fixture.companyId, status: "active", membershipRole: "member", restricted: false, restrictionMode: "off" }]
           : undefined,
       };
       next();

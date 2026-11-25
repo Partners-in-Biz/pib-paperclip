@@ -2509,6 +2509,35 @@ describe("IssuesList", () => {
     });
   });
 
+  // AC-G10 (PAR-13476): execution workspaces are a closed list for a restricted member under `enforce`.
+  it.each([
+    ["current", "R under enforce", "enforce"], ["legacy", "R under enforce", "enforce"],
+    ["current", "the owner", null], ["legacy", "the owner", null],
+    ["current", "R under report", "report"], ["legacy", "R under report", "report"],
+  ] as const)("%s list requests workspace summaries only when it may (%s)", async (shell, _who, mode) => {
+    const Component = shell === "legacy"
+      ? (await import("./LegacyIssuesList")).IssuesList
+      : (await import("./IssuesList")).IssuesList;
+    mockAuthApi.getSession.mockResolvedValue({
+      user: null, session: null,
+      memberRestrictions: mode ? [{ companyId: "company-1", restricted: true, mode }] : [],
+    });
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    mockExecutionWorkspacesApi.listSummaries.mockResolvedValue([]);
+    const { root } = renderWithQueryClient(
+      <Component issues={[createIssue()]} agents={[]} projects={[]} viewStateKey="paperclip:test-issues" onUpdateIssue={() => undefined} />,
+      container,
+    );
+    await waitForAssertion(() => expect(mockAuthApi.getSession).toHaveBeenCalled());
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    if (mode === "enforce") {
+      expect(mockExecutionWorkspacesApi.listSummaries).not.toHaveBeenCalled();
+    } else {
+      await waitForAssertion(() => expect(mockExecutionWorkspacesApi.listSummaries).toHaveBeenCalledWith("company-1"));
+    }
+    act(() => { root.unmount(); });
+  });
+
   // Run 3 review (Jul 8) reversed PAP-243's lg enlargement: task rows in the
   // list and inbox standardize on md (16px). The live list always supplies its
   // own `statusSlot` (the PAP-246 slot-override gotcha), so assert the real

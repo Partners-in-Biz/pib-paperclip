@@ -6,8 +6,14 @@
  * show as a sentence in the inspector, not as a code.
  */
 import { useEffect, useState, useSyncExternalStore, type KeyboardEvent } from "react";
-import type { Clip, Ease, KeyframeProp, TrackKind } from "../../video-edit/timeline.js";
+import type { Clip, Ease, MediaClip, KeyframeProp, TrackKind } from "../../video-edit/timeline.js";
 import type { EditorStore } from "./editor-store.js";
+import { KeyFramePanel } from "./KeyFramePanel.js";
+import { LayerPanel } from "./LayerPanel.js";
+import { EffectsPanel } from "./EffectsPanel.js";
+import { hasEffectsPanel } from "./effects-panel.js";
+import { LookPanel } from "./LookPanel.js";
+import { hasLookPanel } from "./look-panel.js";
 import { clipLabel, EASE_LABELS, formatTime, KEY_EASES, KEY_LABELS, KEY_RANGES, keyframeErrorText, keyIndexAt, keyProps, keysOf, localTime, propValueAt, removeKeyOps, setKeyOps, type KeyEdit, type KeyHistory } from "./timeline-view.js";
 
 interface Draft { value: string; ease: Ease }
@@ -109,6 +115,10 @@ export function ClipInspector({ store, history }: { store: EditorStore; history:
           </div>
         );
       }) : null}
+      {found && found.kind === "overlay" ? <LayerPanel store={store} clip={found.clip as MediaClip} /> : null}
+      {found && found.kind === "overlay" ? <KeyFramePanel store={store} clip={found.clip as MediaClip} /> : null}
+      {found && hasLookPanel(found.kind) ? <LookPanel store={store} clip={found.clip as MediaClip} /> : null}
+      {found && hasEffectsPanel(found.kind) ? <EffectsPanel store={store} clip={found.clip as MediaClip} /> : null}
     </section>
   );
 }

@@ -130,7 +130,7 @@ describePostgres("tasks created from an issue", () => {
   });
 
   it("does not include manual children in creation provenance", async () => {
-    const children = await issueService(db).list(companyId, { parentId: sourceId });
+    const children = await issueService(db).list(companyId, { readCondition: "system", parentId: sourceId });
     expect(children.map((row) => row.title)).toContain("Manual child");
     expect(children.map((row) => row.title)).toContain("Native child");
   });
@@ -150,7 +150,7 @@ describePostgres("tasks created from an issue", () => {
       createdByAgentId: agentId,
     });
     expect(created.issue.originRunId).toBe(legacyRunId);
-    const matches = await issueService(db).list(companyId, { createdFromIssueId: sourceId });
+    const matches = await issueService(db).list(companyId, { readCondition: "system", createdFromIssueId: sourceId });
     expect(matches.map((row) => row.id)).toContain(created.issue.id);
   });
 });

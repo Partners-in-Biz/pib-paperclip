@@ -24,11 +24,12 @@ import {
 } from "../services/issue-prefix.js";
 import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 import { agentRunWritesRevoked } from "../agent-run-cancellation.js";
-import { loadAgentRunAuthentication } from "./agent-run-authentication.js";
-import { isUuidLike, normalizeAgentApiKeyScope, type DeploymentMode } from "@paperclipai/shared";
+import { loadAgentRunAuthentication, refreshRunIdentityPerson } from "./agent-run-authentication.js";
+import { isUuidLike, normalizeAgentApiKeyScope, type ActorCompanyMembership, type DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
-import { captureRunIdentity } from "../services/run-identity.js";
+import { loadActorMemberships } from "../services/member-restriction/actor-memberships.js";
+import { agentKeyRunNamingError } from "../services/member-restriction/rule-group-h.js";
 import { boardAuthService } from "../services/board-auth.js";
 import { retryIdempotentDatabaseOperation } from "../database-retry.js";
 import { beginIdleTrackedWork } from "../services/task-admission.js";
@@ -99,21 +100,7 @@ async function loadResponsibleUserMemberships(
       .from(authUsers)
       .where(eq(authUsers.id, input.userId))
       .then((rows) => rows[0] ?? null),
-    db
-      .select({
-        companyId: companyMemberships.companyId,
-        membershipRole: companyMemberships.membershipRole,
-        status: companyMemberships.status,
-      })
-      .from(companyMemberships)
-      .where(
-        and(
-          eq(companyMemberships.companyId, input.companyId),
-          eq(companyMemberships.principalType, "user"),
-          eq(companyMemberships.principalId, input.userId),
-          eq(companyMemberships.status, "active"),
-        ),
-      ),
+    loadActorMemberships(db, { userId: input.userId, companyId: input.companyId, activeOnly: true }),
   ]);
   return user ? memberships : [];
 }
@@ -124,20 +111,7 @@ async function loadResponsibleUserMemberships(
  * and the Cloud trusted-header path so both resolve the same access set.
  */
 async function loadActiveUserCompanyMemberships(db: Db, userId: string) {
-  return db
-    .select({
-      companyId: companyMemberships.companyId,
-      membershipRole: companyMemberships.membershipRole,
-      status: companyMemberships.status,
-    })
-    .from(companyMemberships)
-    .where(
-      and(
-        eq(companyMemberships.principalType, "user"),
-        eq(companyMemberships.principalId, userId),
-        eq(companyMemberships.status, "active"),
-      ),
-    );
+  return loadActorMemberships(db, { userId, activeOnly: true });
 }
 
 async function auditAgentJwtRunHeaderMismatch(
@@ -409,12 +383,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           code: conversation ? "conversation_turn_cancelled" : "agent_run_cancelled" });
         return;
       }
-      if (identityRun?.activeIdentityContextId && identityRun.status === "running") {
-        const captured = await captureRunIdentity(db, { companyId: claims.company_id, agentId: claims.sub, runId: claims.run_id },
-          { readScope: "request_authentication" });
-        identityRun.activeIdentityContextId = captured.context?.id ?? null;
-        identityRun.responsibleUserId = captured.context?.responsibleUserId ?? null;
-      }
+      await refreshRunIdentityPerson(db, { companyId: claims.company_id, agentId: claims.sub, runId: claims.run_id }, identityRun);
       if (claims.authorizing_user_id) {
         // This signed projection exists only for internal native tools. Recheck
         // the admitted run and current immutable binding on every API call.
@@ -512,6 +481,33 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       return;
     }
 
+    const keyPersonMemberships = await loadResponsibleUserMemberships(db, {
+      companyId: key.companyId,
+      userId: responsibleUserId,
+    });
+    // H5 (PAR-12608 4.10): a long-lived key names only a run of its own agent
+    // that works for its own person. Without a header it acts as that person.
+    const namedRunId = normalizeOptionalString(runIdHeader);
+    if (namedRunId) {
+      try {
+        const runError = await agentKeyRunNamingError(db, {
+          companyId: key.companyId,
+          agentId: key.agentId,
+          personId: responsibleUserId,
+          runId: namedRunId,
+          membership: keyPersonMemberships.find((membership) => membership.companyId === key.companyId) ?? null,
+          target: `${req.method} ${req.path}`,
+        });
+        if (runError) {
+          next(runError);
+          return;
+        }
+      } catch (error) {
+        next(error);
+        return;
+      }
+    }
+
     req.actor = {
       type: "agent",
       agentId: key.agentId,
@@ -519,10 +515,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       keyId: key.id,
       keyScope: normalizeAgentApiKeyScope(key.scopeConfig),
       onBehalfOfUserId: responsibleUserId,
-      onBehalfOfMemberships: await loadResponsibleUserMemberships(db, {
-        companyId: key.companyId,
-        userId: responsibleUserId,
-      }),
+      onBehalfOfMemberships: keyPersonMemberships,
       runId: runIdHeader || undefined,
       source: "agent_key",
     };
@@ -709,18 +702,17 @@ async function resolveCloudTenantActorOnce(
   // needs seeding per request here. A read failure degrades to the pinned
   // primary instead of blocking authentication, mirroring the fail-closed
   // owner-elevation resolution below.
-  let additionalMemberships: { companyId: string; membershipRole: string | null; status: string }[] =
-    [];
+  let loadedMemberships: ActorCompanyMembership[] = [];
   try {
-    additionalMemberships = (await loadActiveUserCompanyMemberships(db, userId)).filter(
-      (row) => row.companyId !== companyId,
-    );
+    loadedMemberships = await loadActiveUserCompanyMemberships(db, userId);
   } catch (err) {
     logger.warn(
       { err, userId, stackId },
       "Failed to load cloud tenant user's company memberships; scoping actor to the stack's primary company",
     );
   }
+  const additionalMemberships = loadedMemberships.filter((row) => row.companyId !== companyId);
+  const primaryRestriction = loadedMemberships.find((row) => row.companyId === companyId);
 
   return {
     type: "board",
@@ -733,7 +725,12 @@ async function resolveCloudTenantActorOnce(
         companyId,
         membershipRole: effectiveMembership.membershipRole ?? membershipRole,
         status: effectiveMembership.status,
-      },
+        // Restriction fields of the pinned primary come from the same read.
+        // When that read failed they stay out: the membership is "unknown" and
+        // the member-restriction resolver reads the database (PAR-12608 4.2).
+        restricted: primaryRestriction?.restricted,
+        restrictionMode: primaryRestriction?.restrictionMode,
+      } as ActorCompanyMembership,
       ...additionalMemberships,
     ],
     // Computed per request, never persisted: the stack owner is elevated to

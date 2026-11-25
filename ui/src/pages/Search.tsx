@@ -47,6 +47,7 @@ import { SearchFilterSheet, SearchFilterSheetTrigger } from "../components/searc
 import { SearchSortMenu } from "../components/search/SearchSortMenu";
 import { ZeroResultsRecovery } from "../components/search/ZeroResultsRecovery";
 import { useSidebar } from "../context/SidebarContext";
+import { useMemberRestrictionGate } from "../hooks/useMemberRestrictionGate";
 import {
   SORT_LABELS,
   countActiveFilters,
@@ -192,11 +193,14 @@ export function Search() {
     enabled: !!selectedCompanyId,
   });
 
-  const { data: labels = [] } = useQuery({
+  // Company labels are a closed list for a restricted member under `enforce` (AC-G10): no Label filter.
+  const memberGate = useMemberRestrictionGate(selectedCompanyId);
+  const { data: labelData = [] } = useQuery({
     queryKey: queryKeys.issues.labels(selectedCompanyId!),
-    queryFn: () => issuesApi.listLabels(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
+    queryFn: memberGate.guard(() => issuesApi.listLabels(selectedCompanyId!), []),
+    enabled: !!selectedCompanyId && !memberGate.closed,
   });
+  const labels = memberGate.closed ? [] : labelData;
 
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
@@ -357,9 +361,10 @@ export function Search() {
       agents: agents as Agent[],
       projects: projects as Project[],
       labels: labels as IssueLabel[],
+      labelsClosed: memberGate.closed,
       currentUserId,
     }),
-    [data?.filterOptionCounts, agents, projects, labels, currentUserId],
+    [data?.filterOptionCounts, agents, projects, labels, memberGate.closed, currentUserId],
   );
 
   const filtersActive = hasSearchFilters(activeFilters);

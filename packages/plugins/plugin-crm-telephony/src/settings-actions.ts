@@ -1,4 +1,5 @@
 import type { PluginContext, PluginPerformActionContext } from "@paperclipai/plugin-sdk";
+import type { AccessGuard } from "@partnersinbiz/pib-plugin-kit";
 import { readSettings, saveSettings, settingsView, requestTemplateSync } from "./settings.js";
 
 function requiredCompany(context: PluginPerformActionContext): string {
@@ -13,19 +14,19 @@ function requiredUser(context: PluginPerformActionContext): string {
   return context.actor.userId;
 }
 
-export function registerSettingsActions(ctx: PluginContext): void {
-  ctx.actions.register("telephony.settings.get", async (_params, context) => {
+export function registerSettingsActions(ctx: PluginContext, guard: AccessGuard): void {
+  guard.action("telephony.settings.get", async (_params, context) => {
     const companyId = requiredCompany(context);
     return settingsView(ctx, companyId);
   });
 
-  ctx.actions.register("telephony.settings.save", async (params, context) => {
+  guard.action("telephony.settings.save", async (params, context) => {
     const companyId = requiredCompany(context);
     requiredUser(context);
     return saveSettings(ctx, companyId, params);
   });
 
-  ctx.actions.register("telephony.settings.sync-templates", async (_params, context) => {
+  guard.action("telephony.settings.sync-templates", async (_params, context) => {
     const companyId = requiredCompany(context);
     const userId = requiredUser(context);
     return requestTemplateSync(ctx, companyId, userId);

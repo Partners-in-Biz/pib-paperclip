@@ -21,11 +21,23 @@ export function isTemporaryApiError(error: unknown): boolean {
   return isTransientError(error);
 }
 
+function isJsonParseError(error: unknown): boolean {
+  if (error instanceof SyntaxError) return true;
+  // Safari/WebKit rejects `response.json()` on empty or non-JSON bodies with a
+  // `DOMException` named `"SyntaxError"` ("The string did not match the expected
+  // pattern."), which does not inherit from JS `SyntaxError`.
+  if (error instanceof Error && error.name === "SyntaxError") return true;
+  if (typeof DOMException !== "undefined" && error instanceof DOMException && error.name === "SyntaxError") {
+    return true;
+  }
+  return false;
+}
+
 export async function readApiJson<T = unknown>(response: Response): Promise<T> {
   try {
     return await response.json() as T;
   } catch (error) {
-    if (!(error instanceof SyntaxError)) throw error;
+    if (!isJsonParseError(error)) throw error;
     // An HTML fallback can have status 200 during a deployment. Never expose
     // its parser error or treat it as a successful, empty API response.
     if (response.ok || response.status >= 500) {

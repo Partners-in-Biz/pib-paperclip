@@ -380,6 +380,16 @@ describe("persisted read cache", () => {
     for (const key of keys) expect(older.client.getQueryData(key)).toHaveLength(100);
   });
 
+  it("keeps the person's own member restrictions on the restored session (AC-G10)", () => {
+    const first = setup();
+    seed(first.client);
+    const restrictions = [{ companyId: "company-one", restricted: true, mode: "enforce" }];
+    first.client.setQueryData(queryKeys.auth.session, { ...session(), memberRestrictions: restrictions });
+    first.handle.flush();
+    const restored = setup(first.storage);
+    expect(restored.client.getQueryData<{ memberRestrictions?: unknown }>(queryKeys.auth.session)?.memberRestrictions).toEqual(restrictions);
+  });
+
   it("restores the approved shell and company reads without persisting authentication material", () => {
     const first = setup();
     seed(first.client);

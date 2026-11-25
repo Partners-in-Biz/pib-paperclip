@@ -61,7 +61,7 @@ export async function mediaCompliance(ctx: PluginContext, companyId: string, sco
   const unverified = await ctx.db.query<Pick<PostRow, "id" | "status">>(
     `SELECT id, status FROM ${posts}
       WHERE company_id = $1 AND status IN ('approved', 'scheduled', 'published') AND updated_at >= now() - make_interval(days => $2) AND ${w.sql}
-        AND NOT EXISTS (SELECT 1 FROM ${table(ctx, "review_outcomes")} o WHERE o.post_id = ${posts}.id AND o.company_id = $1 AND o.stage = 'reviewer')
+        AND NOT EXISTS (SELECT 1 FROM ${table(ctx, "review_outcomes")} o WHERE o.post_id = ${posts}.id AND o.company_id = $1 AND o.stage = 'reviewer' AND o.via <> 'unscored')
       ORDER BY updated_at DESC LIMIT 2000`,
     params,
   );

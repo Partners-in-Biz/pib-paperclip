@@ -125,7 +125,7 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
     const entered = vi.fn(() => { throw new Error("synthetic_native_boundary_reached"); });
     const heartbeat = heartbeatService(db, { pluginWorkerManager: workerManager, nativeSessionBackendFactory: entered });
     heartbeats.push(heartbeat);
-    const run = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId, projectId } });
+    const run = await heartbeat.wakeup(agentId, { causingActor: "system", source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId, projectId } });
     expect(run).not.toBeNull();
     await vi.waitFor(async () => { expect((await heartbeat.getRun(run!.id))?.status).toBe("failed"); }, { timeout: 10_000 });
     await heartbeat.drainActiveRunExecutions();
@@ -257,6 +257,7 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
     const heartbeat = heartbeatService(db, { pluginWorkerManager: workerManager });
     heartbeats.push(heartbeat);
     const run = await heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "on_demand",
       triggerDetail: "manual",
       contextSnapshot: { projectId },
@@ -498,11 +499,13 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
     const heartbeat = heartbeatService(db, { pluginWorkerManager: workerManager });
     heartbeats.push(heartbeat);
     const sharedRun = await heartbeat.wakeup(agentAId, {
+      causingActor: "system",
       source: "on_demand",
       triggerDetail: "manual",
       contextSnapshot: { projectId: projectAId },
     });
     const overrideRun = await heartbeat.wakeup(agentBId, {
+      causingActor: "system",
       source: "on_demand",
       triggerDetail: "manual",
       contextSnapshot: { projectId: projectBId },
@@ -723,6 +726,7 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
     const heartbeat = heartbeatService(db, { pluginWorkerManager: workerManager });
     heartbeats.push(heartbeat);
     const run = await heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "assignment",
       triggerDetail: "manual",
       contextSnapshot: { issueId },

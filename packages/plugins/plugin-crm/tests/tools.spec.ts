@@ -66,7 +66,7 @@ describe("the CRM tool surface", () => {
 
   it("has the read and search tools, and no complete-step", () => {
     const names = CRM_TOOLS.map((tool) => tool.name);
-    for (const name of ["find-records", "get-company", "get-contact", "list-deals", "list-stages", "list-sequences", "get-client-profile", "update-client-profile", "set-email-status"]) expect(names).toContain(name);
+    for (const name of ["find-records", "get-company", "get-contact", "list-deals", "list-stages", "create-pipeline", "list-sequences", "get-client-profile", "update-client-profile", "set-email-status"]) expect(names).toContain(name);
     expect(names).not.toContain("complete-step");
     expect(new Set(names).size).toBe(names.length);
     expect(manifest.tools?.map((tool) => tool.name)).toEqual(names);

@@ -13,7 +13,6 @@ import {
   authAccounts,
   authUsers,
   companies,
-  companyMemberships,
   createDb,
   closeRegisteredClients,
   ensurePostgresDatabase,
@@ -163,12 +162,10 @@ async function seedValidWorktreeSource(
     insert into companies (id, name, issue_prefix, require_board_approval_for_new_agents)
     values (${companyId}, 'Seed Source', 'SEED', false)
   `;
-  await db.insert(companyMemberships).values({
-    companyId,
-    principalType: "user",
-    principalId: userId,
-    status: "active",
-  });
+  await db.$client`
+    insert into company_memberships (company_id, principal_type, principal_id, status)
+    values (${companyId}, 'user', ${userId}, 'active')
+  `;
   // This helper also seeds an intentionally older schema. Current Drizzle
   // insert builders include defaults for newly added columns absent there.
   await db.$client`

@@ -59,6 +59,7 @@ export {
   getRequiredCapability,
   CapabilityDeniedError,
   InvocationScopeDeniedError,
+  unconfiguredCompanyMessage,
 } from "./host-client-factory.js";
 
 // JSON-RPC protocol helpers and constants
@@ -109,6 +110,7 @@ export type {
 export type {
   TestHarness,
   TestHarnessOptions,
+  TestHarnessGetDataOptions,
   TestHarnessLogEntry,
   EnvironmentTestHarness,
   EnvironmentTestHarnessOptions,
@@ -131,6 +133,7 @@ export type {
   HostServices,
   HostClientFactoryOptions,
   HostClientHandlers,
+  InvocationScopeDenialReason,
 } from "./host-client-factory.js";
 
 // JSON-RPC protocol types
@@ -157,6 +160,7 @@ export type {
   OnEventParams,
   RunJobParams,
   GetDataParams,
+  PluginDataContext,
   PerformActionParams,
   PluginPerformActionActorType,
   PluginPerformActionActorContext,
@@ -314,6 +318,7 @@ export type {
   PluginEvent,
   PluginJobContext,
   PluginLauncherRegistration,
+  PluginActingPersonContext,
   ToolRunContext,
   ToolResult,
   PluginEntityUpsert,

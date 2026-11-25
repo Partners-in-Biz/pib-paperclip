@@ -548,7 +548,7 @@ describeEmbeddedPostgres("cases routes", () => {
       source: "session",
       isInstanceAdmin: false,
       companyIds: [ownCompany.id],
-      memberships: [{ companyId: ownCompany.id, membershipRole: "operator", status: "active" }],
+      memberships: [{ companyId: ownCompany.id, membershipRole: "operator", status: "active", restricted: false, restrictionMode: "off" }],
     };
     await db.insert(companyMemberships).values({ companyId: ownCompany.id, principalType: "user", principalId: "limited-board-user", status: "active", membershipRole: "operator" });
     const limitedBoardHttp = request(app(limitedBoardActor));
@@ -585,7 +585,7 @@ describeEmbeddedPostgres("cases routes", () => {
     await db.insert(companyMemberships).values({ companyId: own.id, principalType: "user", principalId: "handoff-operator", status: "active", membershipRole: "operator" });
     const scopedBoard: Express.Request["actor"] = { type: "board", source: "session", userId: "handoff-operator",
       companyIds: [own.id], isInstanceAdmin: false,
-      memberships: [{ companyId: own.id, membershipRole: "operator", status: "active" }] };
+      memberships: [{ companyId: own.id, membershipRole: "operator", status: "active", restricted: false, restrictionMode: "off" }] };
     const actors: Express.Request["actor"][] = [
       { type: "agent", companyId: own.id, agentId: agent.id, source: "agent_key" },
       scopedBoard, { ...scopedBoard, isInstanceAdmin: true },

@@ -6,7 +6,7 @@
  *
  * Paths have no company prefix (the Setup page adds it).
  */
-import { configSaved, isModuleEnabled, pluginUiBase, publishSetupStatus, settingsItem, type SetupItem, type SetupItemStatus, type SetupStatus } from "@partnersinbiz/pib-plugin-kit";
+import { actionableCompanyIds, configSaved, isModuleEnabled, pluginUiBase, publishSetupStatus, settingsItem, type SetupItem, type SetupItemStatus, type SetupStatus } from "@partnersinbiz/pib-plugin-kit";
 import * as db from "../db.js";
 import { sprintScope, sprintPagePath } from "../engine/scope.js";
 import { plural } from "../engine/plain.js";
@@ -247,12 +247,17 @@ export async function seoCompanies(env: Env): Promise<string[]> {
   } catch (error) {
     env.ctx.logger.info("SEO companies: sprint companies unavailable", { error: errorMessage(error) });
   }
-  try {
-    for (const company of await env.ctx.companies.list({ limit: 100 })) {
-      if (!companies.has(company.id) && (await configSaved(env.ctx, company.id))) companies.add(company.id);
+  const actionable = await actionableCompanyIds(env.ctx);
+  if (actionable) {
+    for (const id of actionable) companies.add(id);
+  } else {
+    try {
+      for (const company of await env.ctx.companies.list({ limit: 100 })) {
+        if (!companies.has(company.id) && (await configSaved(env.ctx, company.id))) companies.add(company.id);
+      }
+    } catch (error) {
+      env.ctx.logger.info("SEO companies: company list unavailable", { error: errorMessage(error) });
     }
-  } catch (error) {
-    env.ctx.logger.info("SEO companies: company list unavailable", { error: errorMessage(error) });
   }
   return [...companies];
 }

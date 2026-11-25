@@ -26,6 +26,8 @@ import {
   type WaitingItem,
 } from "@partnersinbiz/pib-plugin-kit";
 import { teamReport } from "./agent.js";
+import { NOT_NEWSLETTER_ORIGIN_SQL } from "./domain.js";
+import { defaultPipelineSql, listPipelines, type PipelineRow } from "./db.js";
 import { CARE_EVENT_KIND } from "./care-clients.js";
 import { PLUGIN_ID } from "./namespace.js";
 import { isLeadFollowUp, isReplyWork } from "./origins.js";
@@ -216,7 +218,7 @@ export async function dealOpenReport(
               OR (x.record_type = 'contact' AND x.record_id = d.contact_id)
               OR (x.record_type = 'company' AND x.record_id = d.account_id))
        ) a ON true
-      WHERE d.company_id = $1 AND s.kind = 'open'`,
+      WHERE d.company_id = $1 AND s.kind = 'open' AND s.pipeline_id = ${defaultPipelineSql(ctx)}`,
     [companyId, DEAL_IDLE_DAYS, CARE_EVENT_KIND],
   );
   const row = rows[0];
@@ -246,8 +248,8 @@ export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Pr
 
   const money = await part(ctx, "money", () => ctx.db.query<MoneyRow>(
     `SELECT d.currency,
-            COALESCE(sum(d.amount_minor) FILTER (WHERE s.kind = 'open'), 0)::text AS open_minor,
-            count(*) FILTER (WHERE s.kind = 'open')::text AS open_deals,
+            COALESCE(sum(d.amount_minor) FILTER (WHERE s.kind = 'open' AND s.pipeline_id = ${defaultPipelineSql(ctx)}), 0)::text AS open_minor,
+            count(*) FILTER (WHERE s.kind = 'open' AND s.pipeline_id = ${defaultPipelineSql(ctx)})::text AS open_deals,
             COALESCE(sum(d.amount_minor) FILTER (WHERE s.kind = 'won' AND d.updated_at >= date_trunc('month', now())), 0)::text AS won_minor
        FROM ${t(ctx, "deals")} d JOIN ${t(ctx, "pipeline_stages")} s ON s.id = d.stage_id
       WHERE d.company_id = $1
@@ -260,11 +262,11 @@ export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Pr
       `SELECT
          (SELECT count(*) FROM ${t(ctx, "deals")} d JOIN ${t(ctx, "pipeline_stages")} s ON s.id = d.stage_id
            WHERE d.company_id = $1 AND s.kind = 'won' AND d.updated_at >= date_trunc('month', now()))::text AS won_month,
-         (SELECT count(*) FROM ${t(ctx, "contacts")} WHERE company_id = $1 AND lifecycle = 'lead' AND created_at >= now() - interval '7 days')::text AS new_leads_week,
+         (SELECT count(*) FROM ${t(ctx, "contacts")} WHERE company_id = $1 AND lifecycle = 'lead' AND ${NOT_NEWSLETTER_ORIGIN_SQL} AND created_at >= now() - interval '7 days')::text AS new_leads_week,
          (SELECT count(*) FROM ${t(ctx, "contacts")} WHERE company_id = $1 AND next_action_due_at IS NOT NULL AND next_action_due_at <= now())::text AS follow_up,
          (SELECT count(DISTINCT sequence_id) FROM ${t(ctx, "enrollments")} WHERE company_id = $1 AND status = 'running')::text AS active_sequences,
-         (SELECT count(*) FROM ${t(ctx, "contacts")} WHERE company_id = $1 AND lifecycle IN ('lead', 'prospect'))::text AS open_leads,
-         (SELECT count(*) FROM ${t(ctx, "contacts")} WHERE company_id = $1 AND lifecycle IN ('lead', 'prospect') AND lead_scored_at IS NOT NULL)::text AS scored_leads`,
+         (SELECT count(*) FROM ${t(ctx, "contacts")} WHERE company_id = $1 AND lifecycle IN ('lead', 'prospect') AND ${NOT_NEWSLETTER_ORIGIN_SQL})::text AS open_leads,
+         (SELECT count(*) FROM ${t(ctx, "contacts")} WHERE company_id = $1 AND lifecycle IN ('lead', 'prospect') AND ${NOT_NEWSLETTER_ORIGIN_SQL} AND lead_scored_at IS NOT NULL)::text AS scored_leads`,
       [companyId],
     );
     return rows[0] ?? null;
@@ -272,7 +274,9 @@ export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Pr
 
   const pipeline = money ? pipelineValue(money, defaultCurrency) : null;
   if (pipeline) {
-    snap.kpis.push({ key: "pipeline", label: "Open pipeline", value: pipeline.value, raw: pipeline.raw, tone: "neutral", delta: pipeline.delta, href: HREF, group: "pipeline" });
+    const pipelines = await part(ctx, "pipelines", () => listPipelines(ctx, companyId), [] as PipelineRow[]);
+    const label = pipelines.length > 1 ? `Open pipeline · ${pipelines[0]!.name}` : "Open pipeline";
+    snap.kpis.push({ key: "pipeline", label, value: pipeline.value, raw: pipeline.raw, tone: "neutral", delta: pipeline.delta, href: HREF, group: "pipeline" });
   }
   if (counts) {
     const won = n(counts.won_month);

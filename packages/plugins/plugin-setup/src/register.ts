@@ -1,6 +1,10 @@
 import type { PluginApiRequestInput, PluginApiResponse, PluginContext, PluginPerformActionContext } from "@paperclipai/plugin-sdk";
-import { PIB_PLUGINS, pluginEvent, registerCompanyBootstrap, registerRoleWatch } from "@partnersinbiz/pib-plugin-kit";
+import { PIB_PLUGINS, pluginEvent, registerCompanyBootstrap, registerRoleWatch, type ActorInput } from "@partnersinbiz/pib-plugin-kit";
+import { clearAccessGrant, saveAccessGrant } from "./access-grants.js";
+import { accessPeople, saveGrantParams } from "./access-people.js";
 import { DRIVE_BINDING_EVENT } from "./drive-checklist.js";
+import { accessStatus, noteRedPlugins, registerAccessSync, resendAccessHourly, resendRecentAccess, sendAccessAgain } from "./access-sync.js";
+import { setAccessSwitch } from "./access-switch.js";
 import { isCompanyAdmin, isOperatorAdmin } from "./access.js";
 import { operatorDowngrade } from "./entitlements.js";
 import { SETUP_EVENTS } from "./kit-setup.js";
@@ -34,6 +38,29 @@ export function registerSetup(ctx: PluginContext): void {
     }
   });
   registerTemplateTools(ctx);
+  registerAccessSync(ctx);
+  // "Send again" on the People screen: an owner or admin sends the company's access state now.
+  ctx.actions.register("setup.access.send-again", (_params, context) =>
+    refusable(async () => sendAccessAgain(ctx, requiredCompany(context), context.actor.type === "user" ? { type: "user", userId: context.actor.userId } : undefined)),
+  );
+  // The access switch (off, report, enforce): an owner or admin, with its preconditions and an audit entry.
+  ctx.actions.register("setup.access.set-mode", (params, context) =>
+    refusable(async () => setAccessSwitch(ctx, { companyId: requiredCompany(context), actor: context.actor.type === "user" ? { type: "user", userId: context.actor.userId } : undefined }, params.mode, params.confirmNoAccess)),
+  );
+  // The switch state for the People screen: mode, rev and the 15 plugins, red when one is behind on enforce.
+  ctx.actions.register("setup.access.status", (_params, context) =>
+    refusable(async () => accessStatus(ctx, requiredCompany(context), context.actor.type === "user" ? { type: "user", userId: context.actor.userId } : undefined)),
+  );
+  // The People tab: the switch, the 15 plugins, each member's grant and the report list. Owner or admin only.
+  ctx.actions.register("setup.access.people", (_params, context) => refusable(async () => accessPeople(ctx, requiredCompany(context), userActor(context))));
+  ctx.actions.register("setup.access.save-grant", (params, context) =>
+    refusable(async () =>
+      saveAccessGrant(ctx, { companyId: requiredCompany(context), actor: userActor(context) }, saveGrantParams(params)),
+    ),
+  );
+  ctx.actions.register("setup.access.clear-grant", (params, context) =>
+    refusable(async () => clearAccessGrant(ctx, { companyId: requiredCompany(context), actor: userActor(context) }, typeof params.userId === "string" ? params.userId : "")),
+  );
   ctx.actions.register("setup.load", (params, context) => loadSetup(ctx, requiredCompany(context), params));
   ctx.actions.register("setup.save-modules", (params, context) =>
     refusable(async () => {
@@ -95,6 +122,16 @@ export function registerSetup(ctx: PluginContext): void {
     if (result.emitted || result.failed) ctx.logger.info("Module switches re-sent", result);
     // Host rule: a job acts only for a company whose Setup settings are saved. Say so instead of skipping silently (Q7-7).
     if (result.skipped) ctx.logger.info("Companies skipped because Setup's settings are not saved (New company saves them)", { skipped: result.skipped });
+    // Access too: every company not on off, and one back on off until every plugin confirmed it.
+    const access = await resendAccessHourly(ctx);
+    if (access.sent || access.skipped || access.failed) ctx.logger.info("Access re-sent (hourly)", access);
+    // On enforce: one activity entry per day per plugin and company for a plugin behind for more than 15 minutes.
+    const red = await noteRedPlugins(ctx);
+    if (red.noted || red.failed) ctx.logger.info("Access plugins behind on enforce noted", red);
+  });
+  ctx.jobs.register(JOBS.accessResend, async () => {
+    const access = await resendRecentAccess(ctx);
+    if (access.sent || access.skipped || access.failed) ctx.logger.info("Access re-sent", access);
   });
   ctx.jobs.register(JOBS.weeklyFinishSetup, async () => {
     ctx.logger.info("Weekly Finish setup", await weeklyFinishSetup(ctx));
@@ -208,6 +245,10 @@ async function refusable<T extends object>(run: () => Promise<T>): Promise<T | {
     if (error instanceof SetupError) return { ok: false, error: error.message };
     throw error;
   }
+}
+
+function userActor(context: PluginPerformActionContext): ActorInput {
+  return context.actor.type === "user" ? { type: "user", userId: context.actor.userId } : undefined;
 }
 
 function requiredCompany(context: PluginPerformActionContext): string {

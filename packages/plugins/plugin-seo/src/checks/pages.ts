@@ -4,7 +4,7 @@
  * `SiteFetcher` within a deadline; a site without a sitemap falls back to the known pages.
  */
 import { comparableUrl, parseSitemap } from "./parse.js";
-import { absoluteUrl, mapLimit, originOf, resolveSitemapUrl, type SiteFetcher } from "./site.js";
+import { absoluteUrl, mapLimit, memoFetcher, originOf, resolveSitemapUrl, type SiteFetcher } from "./site.js";
 import { MAX_SPLIT_PAGES } from "../engine/chunks.js";
 
 export interface SitePages {
@@ -22,7 +22,9 @@ const NOT_A_PAGE = /\.(jpe?g|png|gif|webp|svg|avif|pdf|zip|xml|txt|css|js|json|m
 const MAX_CHILD_SITEMAPS = 8;
 
 /** Pages of `siteUrl` from its sitemap, `known` pages (keyword and content targets) first after the home page. */
-export async function collectSitePages(fetcher: SiteFetcher, siteUrl: string, opts: { known?: string[]; maxUrls?: number; deadlineMs?: number } = {}): Promise<SitePages> {
+export async function collectSitePages(siteFetcher: SiteFetcher, siteUrl: string, opts: { known?: string[]; maxUrls?: number; deadlineMs?: number } = {}): Promise<SitePages> {
+  // The discovery probe and the real read share one GET of the chosen sitemap.
+  const fetcher = memoFetcher(siteFetcher);
   const deadlineAt = Date.now() + (opts.deadlineMs ?? 15_000);
   const max = opts.maxUrls ?? MAX_SPLIT_PAGES;
   const origin = originOf(siteUrl);

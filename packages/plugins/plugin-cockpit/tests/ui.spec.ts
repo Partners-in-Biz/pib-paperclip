@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { CockpitSnapshot } from "@partnersinbiz/pib-plugin-kit/cockpit";
 import { PLUGIN_KEY } from "../src/constants.js";
 import { buildView, Overview } from "../src/ui/index.js";
-import { TodayCard, fixLabel, isTeamSetupHref } from "../src/ui/components.js";
+import { TodayCard, TodayCardStatus, fixLabel, isTeamSetupHref } from "../src/ui/components.js";
 import type { LoadResult } from "../src/view.js";
 
 const NOW = new Date("2026-09-26T10:00:00.000Z");
@@ -61,7 +61,8 @@ describe("Cockpit page", () => {
     expect(html.match(/Fix in Setup/g)).toHaveLength(2);
     expect(html).not.toContain("Set up the team");
     // Phone-friendly: wrapping grids and a scrollable table, no fixed page widths.
-    expect(html).toContain("minmax(min(420px, 100%), 1fr)");
+    expect(html).toContain("display:flex;flex-wrap:wrap;gap:16px");
+    expect(html).toContain("flex:1 1 420px");
     expect(html).toContain("overflow-x:auto");
     // Only the agents table has a minimum width, and it sits in the scroll wrapper.
     expect(html.match(/(?<![-\w])width:\s?(1[0-9]{3}|[4-9][0-9]{2})px/g)).toBeNull();
@@ -92,11 +93,10 @@ describe("Cockpit page", () => {
     const withAsks: LoadResult = { ...load, asks, unassigned: { count: 3, items: [{ id: "u1", identifier: "PIB-20", title: "Bank statement received", createdAt: "2026-09-24T10:00:00.000Z" }] } };
     const v = buildView({ load: withAsks, installed: null, modules: null, live: { "partnersinbiz.billing": snap("partnersinbiz.billing", { waiting: [{ key: "approval:1", title: "Send INV-000012", why: "Money goes out.", kind: "money", issueId: "i3", href: "/issues/PIB-3" }] }) }, now: NOW, windowMs: 86_400_000 });
     // Asks first (oldest first within the kind order: money, then grant), then the plugin's money item, then unassigned work.
-    expect(v.waiting.map((w) => w.key)).toEqual(["ask:q1", "ask:q2", "approval:1", "unassigned-issues"]);
+    expect(v.waiting.map((w) => w.key)).toEqual(["ask:q1", "ask:q2", "approval:1"]);
     const html = renderToStaticMarkup(createElement(Overview, { view: v, load: withAsks, linkFor, windowHours: 24, onWindow: () => undefined, now: NOW }));
-    for (const text of ["2 questions from agents", "Refund Northwind&#x27;s R 5,000 deposit?", "Refund in full", "(recommended)", "They cancelled within 7 days.", "Ama asked 3 hours ago · needed by 30 Sep · for Northwind", "Sam asked 24 hours ago", "Answer →", "2 questions", "3 open issues have nobody assigned", "PIB-20 Bank statement received", "Questions from agents first"]) expect(html, text).toContain(text);
+    for (const text of ["2 questions from agents", "Refund Northwind&#x27;s R 5,000 deposit?", "Refund in full", "(recommended)", "They cancelled within 7 days.", "Ama asked 3 hours ago · needed by 30 Sep · for Northwind", "Sam asked 24 hours ago", "Answer →", "2 questions", "Questions from agents first"]) expect(html, text).toContain(text);
     expect(html).toContain('href="/PIB/issues/PIB-7"');
-    expect(html).toContain('href="/PIB/issues/PIB-20"');
     // Money is red, a grant amber.
     expect(html).toMatch(/data-ask="money" style="[^"]*var\(--pib-bad-border/);
     expect(html).toMatch(/data-ask="grant" style="[^"]*var\(--pib-warn-border/);
@@ -121,5 +121,17 @@ describe("Cockpit page", () => {
     expect(html).toContain("Problems");
     expect(html).toContain("R 12,400");
     expect(html).toContain('href="/PIB/cockpit"');
+  });
+
+  it("renders a loading or retry state in the Company today widget instead of a blank card", () => {
+    const loadingHtml = renderToStaticMarkup(createElement(TodayCardStatus, { loading: true, error: null, onRetry: () => {}, linkFor }));
+    expect(loadingHtml).toContain("Company today");
+    expect(loadingHtml).toContain("Loading…");
+    expect(loadingHtml).toContain('href="/PIB/cockpit"');
+
+    const errorHtml = renderToStaticMarkup(createElement(TodayCardStatus, { loading: false, error: "Request failed (503)", onRetry: () => {}, linkFor }));
+    expect(errorHtml).toContain("Company today");
+    expect(errorHtml).toContain("Request failed (503)");
+    expect(errorHtml).toContain("Retry");
   });
 });

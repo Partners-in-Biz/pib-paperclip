@@ -1,3 +1,4 @@
+import { writeChildStdin } from "@paperclipai/adapter-utils";
 import { FAST_RESPONSE_AGENT_GUIDANCE, fastResponseHistoryBody } from "@paperclipai/shared";
 import { enqueueFastResponse, supersedeFastResponse } from "../services/fast-responses.js";
 import { Router } from "express";
@@ -8,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import type { Db } from "@paperclipai/db";
 import type { DeploymentMode } from "@paperclipai/shared";
 import { instanceSettingsService, issueService } from "../services/index.js";
+import { issueReadSqlCondition } from "../services/authorization.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 
 /**
@@ -154,7 +156,10 @@ export function boardChatRoutes(
     // Find or create the standing "Board Operations" issue that anchors the
     // board conversation + decision log.
     if (!issueId) {
-      const companyIssues = await issueSvc.list(companyId, { q: "Board Operations" });
+      const companyIssues = await issueSvc.list(companyId, {
+        q: "Board Operations",
+        readCondition: await issueReadSqlCondition(db, req.actor),
+      });
       const boardIssue = companyIssues.find(
         (i) =>
           i.title === "Board Operations" &&
@@ -403,8 +408,16 @@ export function boardChatRoutes(
     });
 
     // Feed the prompt to the CLI via stdin.
-    proc.stdin.write(prompt);
-    proc.stdin.end();
+    writeChildStdin(proc, prompt, "board-chat:prompt", (error) => {
+      clearTimeout(timeout);
+      proc.kill("SIGTERM");
+      releaseSlot();
+      console.error("[board/chat/stream stdin error]", error);
+      if (res.writable) {
+        res.write(`data: ${JSON.stringify({ type: "error", message: "Could not send the prompt to the board assistant." })}\n\n`);
+        res.end();
+      }
+    });
   });
 
   return router;

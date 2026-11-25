@@ -23,6 +23,7 @@ import {
   type QualityMetric,
   type Tone,
   type WaitingItem,
+  type WaitsOn,
 } from "@partnersinbiz/pib-plugin-kit";
 import { teamSetupPath } from "@partnersinbiz/pib-plugin-kit/team";
 import { parseSeoConfig } from "./config.js";
@@ -35,15 +36,21 @@ import { plainError } from "./engine/plain.js";
 import { sprintClock } from "./engine/sprint.js";
 import { localDate } from "./engine/time.js";
 import type { NeedsYouItem } from "./engine/needs-you.js";
+import { isRehearsalSprint } from "./engine/rehearsal.js";
 import { sprintPagePath } from "./engine/scope.js";
 import { PLUGIN_ID } from "./namespace.js";
-import type { Env } from "./service/common.js";
+import { createEnv, type Env } from "./service/common.js";
 import { announcementLine, processAnnouncements } from "./service/handoff.js";
 import { SEO_ROLE } from "./service/hire.js";
+import { hasPageLock, MAX_GRANT_PAGES, pageApplyRefusal, signoffRefusal, taskPageSet } from "./service/page-apply.js";
 import { activeTotals, isActiveSprint, sprintOverviews, type ActiveTotals, type SprintOverview } from "./service/overview.js";
 import { seoOn } from "./service/setup-status.js";
+import { delegateAgentIds } from "./service/signoff.js";
 
 type Scoped = { sprint_id: string; site_name: string; client_kind: string | null; client_ref: string | null; client_name: string | null };
+
+/** A rehearsal sprint (a `.invalid` fixture site or the canary client) never asks the owner for anything (PAR-13579). */
+const notRehearsal = (row: { site_url?: string | null; client_ref: string | null }): boolean => !isRehearsalSprint({ siteUrl: row.site_url, clientRef: row.client_ref });
 
 const RUNNING = "('pre_launch', 'active', 'compounding')";
 
@@ -445,8 +452,8 @@ const KIND: Record<NeedsYouItem["kind"], WaitingItem["kind"]> = {
   indexing: "other",
 };
 
-type DigestRow = Scoped & { items: unknown; issue_id: string | null };
-type ProposalRow = Scoped & { id: string; subject: string; proposed_action: string; approval_issue_id: string | null; created_at: string | null };
+type DigestRow = Scoped & { site_url?: string | null; items: unknown; issue_id: string | null };
+type ProposalRow = Scoped & { site_url?: string | null; id: string; subject: string; proposed_action: string; approval_issue_id: string | null; created_at: string | null };
 
 /** What waits on a person: open, required Needs you items (deduped per sprint) and optimization proposals to approve. */
 export interface WaitingData {
@@ -477,14 +484,14 @@ export function dedupeByTask<T extends { item: NeedsYouItem; digest: { sprint_id
 
 async function loadWaiting(ctx: PluginContext, companyId: string): Promise<WaitingData> {
   const digests = await ctx.db.query<DigestRow>(
-    `SELECT n.items, n.issue_id, s.id AS sprint_id, s.site_name, s.client_kind, s.client_ref, s.client_name
+    `SELECT n.items, n.issue_id, s.id AS sprint_id, s.site_name, s.site_url, s.client_kind, s.client_ref, s.client_name
        FROM ${t("needs_you")} n JOIN ${t("sprints")} s ON s.id = n.sprint_id
       WHERE n.company_id = $1 AND n.status = 'open' AND s.status <> 'archived' ORDER BY n.week_start DESC LIMIT 30`,
     [companyId],
   );
   const seen = new Set<string>();
   const candidates: WaitingData["pending"] = [];
-  for (const digest of digests) {
+  for (const digest of digests.filter(notRehearsal)) {
     for (const item of json<NeedsYouItem[]>(digest.items, [])) {
       const key = `seo:needs-you:${digest.sprint_id}:${item.key}`;
       if (item.status !== "open" || item.optional || seen.has(key)) continue;
@@ -496,13 +503,65 @@ async function loadWaiting(ctx: PluginContext, companyId: string): Promise<Waiti
   // In safe (and off) autopilot the owner approves each optimization.
   const proposals = await ctx.db.query<ProposalRow>(
     `SELECT o.id, o.subject, o.proposed_action, o.approval_issue_id, o.created_at::text AS created_at,
-            s.id AS sprint_id, s.site_name, s.client_kind, s.client_ref, s.client_name
+            s.id AS sprint_id, s.site_name, s.site_url, s.client_kind, s.client_ref, s.client_name
        FROM ${t("optimizations")} o JOIN ${t("sprints")} s ON s.id = o.sprint_id
       WHERE o.company_id = $1 AND o.status = 'proposed' AND s.autopilot_mode <> 'full' AND s.status IN ${RUNNING}
       ORDER BY o.created_at LIMIT 20`,
     [companyId],
   );
-  return { pending, proposals };
+  return { pending, proposals: proposals.filter(notRehearsal) };
+}
+
+/** The Previews tab, filtered to the previews that wait for a decision. */
+export function previewsHref(row: Pick<Scoped, "sprint_id" | "client_kind" | "client_ref">): string {
+  return `${sprintHref(row, "previews")}&filter=awaiting`;
+}
+
+type AwaitingRow = Scoped & { n: number; since: string | null };
+
+/** Same rule as the tab badge: pending, passed by the Reviewer, not expired, newest preview of its page. */
+async function awaitingPreviews(ctx: PluginContext, companyId: string): Promise<{ sprints: AwaitingRow[]; tasks: Set<string> }> {
+  const rows = await ctx.db.query<Scoped & { site_url?: string | null; n: string; since: string | null; task_ids: string[] | null }>(
+    `SELECT s.id AS sprint_id, s.site_name, s.site_url, s.client_kind, s.client_ref, s.client_name, count(*) AS n, min(l.created_at)::text AS since,
+            array_remove(array_agg(DISTINCT l.task_id), NULL) AS task_ids
+       FROM (SELECT DISTINCT ON (sprint_id, page_url) sprint_id, status, review_status, expires_at, created_at, task_id
+               FROM ${t("previews")} WHERE company_id = $1 AND status <> 'cancelled' ORDER BY sprint_id, page_url, created_at DESC) l
+       JOIN ${t("sprints")} s ON s.id = l.sprint_id
+      WHERE l.status = 'pending' AND l.review_status = 'passed' AND l.expires_at > now() AND s.status <> 'archived'
+      GROUP BY s.id ORDER BY min(l.created_at) LIMIT 30`,
+    [companyId],
+  );
+  const real = rows.filter(notRehearsal);
+  const tasks = new Set<string>();
+  for (const r of real) for (const id of r.task_ids ?? []) tasks.add(`${r.sprint_id}:${id}`);
+  return { sprints: real.map((r) => ({ ...r, n: Number(r.n) })), tasks };
+}
+
+/**
+ * PAR-10548 T5: who a one-task sign-off (review or pr) waits on. The first sign-off delegate when the delegate's own gate
+ * would let it decide it; otherwise null, so it stays the owner's. A page change set on a page-locked site (WordPress,
+ * pr_only) uses the page grant gate (`pageApplyRefusal`, the same check approve-page-apply runs: every page of the task, no
+ * review comment). PAR-13579: every other sign-off of kind `review` (a repo or merge_seo_scope sprint, or a task that names
+ * no page) has no page lock to open, so `signoffRefusal` decides it; a `pr` merge on those sprints stays with the owner.
+ * A failed read is null, never a guess.
+ */
+export async function delegateWaitsOn(env: Env, companyId: string, sprintId: string, taskId: string, delegate: string | null, kind: NeedsYouItem["kind"] = "review"): Promise<WaitsOn | null> {
+  if (!delegate) return null;
+  try {
+    const sprint = await db.getSprint(env.ctx.db, companyId, sprintId);
+    const task = sprint ? await db.getTask(env.ctx.db, companyId, taskId) : null;
+    if (!sprint || !task || task.sprintId !== sprint.id) return null;
+    const actor = { kind: "agent" as const, agentId: delegate, runId: null, responsibleUserId: null };
+    const pageUrls = hasPageLock(sprint) ? await taskPageSet(env, companyId, task, sprint.siteUrl) : [];
+    if (pageUrls.length > MAX_GRANT_PAGES) return null;
+    const refusal = pageUrls.length > 0
+      ? await pageApplyRefusal(env, companyId, actor, { sprintId, taskId, pageUrls, reviewCommentId: null })
+      : kind === "review" ? await signoffRefusal(env, companyId, actor, { sprintId, taskId }) : "A merge stays with the owner.";
+    return refusal === null ? { kind: "agent", agentId: delegate } : null;
+  } catch (error) {
+    env.ctx.logger.info("SEO cockpit waitsOn check failed", { sprintId, taskId, error: error instanceof Error ? error.message : String(error) });
+    return null;
+  }
 }
 
 async function waitingItems(ctx: PluginContext, companyId: string, data: WaitingData): Promise<WaitingItem[]> {
@@ -518,16 +577,41 @@ async function waitingItems(ctx: PluginContext, companyId: string, data: Waiting
     );
     for (const row of rows) if (row.issue_id) taskIssues.set(row.id, row.issue_id);
   }
+  // PAR-9131 T6: one line per sprint for the previews that await a decision; Needs you lines about a preview decision open the same list.
+  const awaiting = await awaitingPreviews(ctx, companyId);
+  for (const a of awaiting.sprints) {
+    items.push({
+      key: `seo:previews:${a.sprint_id}`,
+      title: `${prefix(a)}${plural(a.n, "preview")} ${a.n === 1 ? "awaits" : "await"} your decision`,
+      why: "The Reviewer passed them. Approve or decline each one in the Previews tab; nothing changes on the site until a person has decided.",
+      href: previewsHref(a),
+      issueId: null,
+      kind: "review",
+      since: a.since,
+    });
+  }
+  // The delegate is read once, only when a one-task sign-off is open; an empty list or a failed read means none.
+  const env = createEnv(ctx);
+  const oneTaskSignoff = (item: NeedsYouItem) => SIGNOFF_KINDS.has(item.kind) && item.taskIds?.length === 1;
+  // PAR-13992: the playbook batch and the safe-autopilot optimization proposals also wait on the delegate (it may decide them).
+  const playbookItem = (item: NeedsYouItem) => item.key === PLAYBOOK_ITEM_KEY;
+  const delegate = pending.some((p) => oneTaskSignoff(p.item) || playbookItem(p.item)) || proposals.length > 0 ? (await delegateAgentIds(env, companyId))[0] ?? null : null;
   for (const { item, digest } of pending) {
     const taskIssue = item.kind === "review" && item.taskIds?.length === 1 ? taskIssues.get(item.taskIds[0]!) ?? null : null;
+    const waitsOn: WaitsOn | null = oneTaskSignoff(item)
+      ? await delegateWaitsOn(env, companyId, digest.sprint_id, item.taskIds![0]!, delegate, item.kind)
+      : playbookItem(item) && delegate ? { kind: "agent", agentId: delegate } : null;
     items.push({
       key: `seo:needs-you:${digest.sprint_id}:${item.key}`,
       title: `${prefix(digest)}${item.title}`,
       why: clip(item.why || "Only a person can do this for the SEO sprint.", 300),
-      href: sprintHref(digest, item.key === PLAYBOOK_ITEM_KEY ? "playbook" : "integrations"),
+      href: item.key.startsWith("approval-email:") || (item.taskIds?.length === 1 && awaiting.tasks.has(`${digest.sprint_id}:${item.taskIds[0]}`))
+        ? previewsHref(digest)
+        : sprintHref(digest, item.key === PLAYBOOK_ITEM_KEY ? "playbook" : "integrations"),
       issueId: taskIssue ?? digest.issue_id,
       kind: KIND[item.kind] ?? "other",
       since: item.addedAt ?? null,
+      ...(waitsOn ? { waitsOn } : {}),
     });
   }
   for (const p of proposals) {
@@ -539,6 +623,7 @@ async function waitingItems(ctx: PluginContext, companyId: string, data: Waiting
       issueId: p.approval_issue_id,
       kind: "judgement",
       since: p.created_at,
+      ...(delegate ? { waitsOn: { kind: "agent" as const, agentId: delegate } } : {}),
     });
   }
   return items;

@@ -1,4 +1,5 @@
 import { notifyDeliveryWork, DELIVERY_QUEUES } from "./delivery-work-notifications.js";
+import { SYSTEM_CAUSING_ACTOR } from "./heartbeat/causing-actor.js";
 import { notifyNativeResponsePresentation } from "./native-response-presentation-notifications.js";
 import { nativeResponsePresentationCandidates } from "./native-runtime/native-response-presentation-query.js";
 import { and, asc, desc, eq, inArray, isNull, lte, sql } from "drizzle-orm";
@@ -213,6 +214,7 @@ export async function acknowledgeChatCompletionReply(tx: Connection, runId: stri
 
 export function chatCompletionDeliveryService(db: Db, heartbeat: { wakeup(agentId: string, options: {
   source: "automation"; triggerDetail: "system"; reason: string; idempotencyKey: string; allowRunCoalescing: boolean;
+  causingActor: typeof SYSTEM_CAUSING_ACTOR;
   requestedByActorType: "system"; requestedByActorId: string; payload: Record<string, unknown>; contextSnapshot: Record<string, unknown>;
 }): Promise<{ id: string } | null> }) {
   async function deliver(id: string): Promise<void> {
@@ -307,7 +309,7 @@ export function chatCompletionDeliveryService(db: Db, heartbeat: { wakeup(agentI
       if (siblings.find(s => !s.delivery.targetRunId)?.delivery.id !== id) return;
       const run = await heartbeat.wakeup(row.handoff.agentId, {
         source: "automation", triggerDetail: "system", reason: CHAT_COMPLETION_WAKE_REASON, idempotencyKey: key, allowRunCoalescing: false,
-        requestedByActorType: "system", requestedByActorId: "chat_completion_delivery",
+        causingActor: SYSTEM_CAUSING_ACTOR, requestedByActorType: "system", requestedByActorId: "chat_completion_delivery",
         payload: { issueId: row.handoff.conversationId, chatCompletionDeliveryIds: [id] },
         contextSnapshot: { issueId: row.handoff.conversationId, taskId: row.handoff.conversationId,
           wakeReason: CHAT_COMPLETION_WAKE_REASON, chatCompletionDeliveryIds: [id], conversationSessionGeneration: row.handoff.sessionGeneration },

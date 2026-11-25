@@ -4,7 +4,7 @@
  * "More". Runs need employees, and the tax rules for the pay date.
  */
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { DataTable, usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import { DataTable } from "@paperclipai/plugin-sdk/ui";
 import {
   Button,
   ChartPie,
@@ -45,6 +45,7 @@ import {
 } from "./series.js";
 import { Details, download, minorText, Money, MoreMenu, Muted, Notice, rand, Row, RunStatus, small, StatusPill, toMinor, type MenuItem } from "./shared.js";
 import type { ItemView, RunDetail, RunFn, RunSummary, Snapshot } from "./types.js";
+import { usePayrollAction } from "./actions.js";
 
 const EMPTY_ADJUST = { overtimeHours: "", doubleTimeHours: "", ordinaryHours: "", unpaidHours: "", bonus: "", commission: "", other: "", otherCode: "OTHER_ALLOWANCE", excluded: false };
 
@@ -67,7 +68,7 @@ export function RunsTab({ s, run, openRunId, setOpenRunId, setMessage, people, p
   onApproverSaved: (message: string) => Promise<void>;
   goEmployees: () => void;
 }) {
-  const createRun = usePluginAction("payroll.create-run");
+  const createRun = usePayrollAction("payroll.create-run");
   const narrow = useIsNarrow();
   const [creating, setCreating] = useState(false);
   const [newRun, setNewRun] = useState({ frequency: "monthly", periodStart: "", periodEnd: "", payDate: "" });
@@ -159,21 +160,21 @@ export function RunsTab({ s, run, openRunId, setOpenRunId, setMessage, people, p
 }
 
 function RunDetailView({ s, runId, back, run, setMessage, people }: { s: Snapshot; runId: string; back: () => void; run: RunFn; setMessage: (m: string) => void; people: DirectoryPerson[] | null }) {
-  const load = usePluginAction("payroll.run");
-  const calculate = usePluginAction("payroll.calculate-run");
-  const adjust = usePluginAction("payroll.adjust-item");
-  const requestApproval = usePluginAction("payroll.request-approval");
-  const approve = usePluginAction("payroll.approve-run");
-  const reject = usePluginAction("payroll.reject-run");
-  const lock = usePluginAction("payroll.lock-run");
-  const bankFile = usePluginAction("payroll.net-pay-file");
-  const email = usePluginAction("payroll.email-payslips");
-  const generate = usePluginAction("payroll.generate-payslips");
-  const reverse = usePluginAction("payroll.reverse-run");
-  const correct = usePluginAction("payroll.correct-run");
-  const cancel = usePluginAction("payroll.cancel-run");
-  const repost = usePluginAction("payroll.repost-ledger");
-  const variances = usePluginAction("payroll.variances");
+  const load = usePayrollAction("payroll.run");
+  const calculate = usePayrollAction("payroll.calculate-run");
+  const adjust = usePayrollAction("payroll.adjust-item");
+  const requestApproval = usePayrollAction("payroll.request-approval");
+  const approve = usePayrollAction("payroll.approve-run");
+  const reject = usePayrollAction("payroll.reject-run");
+  const lock = usePayrollAction("payroll.lock-run");
+  const bankFile = usePayrollAction("payroll.net-pay-file");
+  const email = usePayrollAction("payroll.email-payslips");
+  const generate = usePayrollAction("payroll.generate-payslips");
+  const reverse = usePayrollAction("payroll.reverse-run");
+  const correct = usePayrollAction("payroll.correct-run");
+  const cancel = usePayrollAction("payroll.cancel-run");
+  const repost = usePayrollAction("payroll.repost-ledger");
+  const variances = usePayrollAction("payroll.variances");
   const narrow = useIsNarrow();
   const [detail, setDetail] = useState<RunDetail | null>(null);
   const [loadError, setLoadError] = useState("");

@@ -45,14 +45,14 @@ async function boot(rootStatus = "in_progress") {
 describe("sprint digest", () => {
   it("refuses a digest longer than the limit and points to the task issue", async () => {
     const { harness } = await boot();
-    await expect(harness.performAction("seo.call", { tool: "post-digest", params: { sprintId: "sp", summary: "x".repeat(DIGEST_MAX + 1) } }, user)).rejects.toThrow(/task's own issue/);
+    await expect(harness.performAction("seo.call-edit", { tool: "post-digest", params: { sprintId: "sp", summary: "x".repeat(DIGEST_MAX + 1) } }, user)).rejects.toThrow(/task's own issue/);
   });
 
   it("posts one short digest a day; the second is skipped", async () => {
     const { harness } = await boot();
-    const first = await harness.performAction<Row>("seo.call", { tool: "post-digest", params: { sprintId: "sp", summary: "3 tasks done; sitemap submitted." } }, user);
+    const first = await harness.performAction<Row>("seo.call-edit", { tool: "post-digest", params: { sprintId: "sp", summary: "3 tasks done; sitemap submitted." } }, user);
     expect(first).toMatchObject({ posted: true });
-    const second = await harness.performAction<Row>("seo.call", { tool: "post-digest", params: { sprintId: "sp", summary: "More." } }, user);
+    const second = await harness.performAction<Row>("seo.call-edit", { tool: "post-digest", params: { sprintId: "sp", summary: "More." } }, user);
     expect(second).toMatchObject({ posted: false });
   });
 });

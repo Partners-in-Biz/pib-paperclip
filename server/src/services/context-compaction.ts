@@ -3,6 +3,7 @@ import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, heartbeatRuns } from "@paperclipai/db";
 import type { IssueContextCompaction } from "@paperclipai/shared";
+import type { WakeCausingActor } from "./heartbeat/causing-actor.js";
 
 /**
  * On-demand context compaction ("Compact now").
@@ -80,6 +81,7 @@ type WakeupFn = (
     reason: string;
     payload: Record<string, unknown>;
     idempotencyKey: string;
+    causingActor: WakeCausingActor;
     requestedByActorType: "user";
     requestedByActorId: string;
     contextSnapshot: Record<string, unknown>;
@@ -171,6 +173,7 @@ export function contextCompactionService(db: Db, deps: { wakeup?: WakeupFn } = {
       reason: CONTEXT_COMPACTION_WAKE_REASON,
       payload: { issueId: input.issue.id, requestId, intent: CONTEXT_COMPACTION_WAKE_REASON },
       idempotencyKey: `${CONTEXT_COMPACTION_WAKE_REASON}:${requestId}`,
+      causingActor: { type: "user", userId: input.userId },
       requestedByActorType: "user",
       requestedByActorId: input.userId,
       // A compaction never joins, or absorbs, another run's work.

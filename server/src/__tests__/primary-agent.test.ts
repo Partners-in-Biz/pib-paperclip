@@ -28,7 +28,7 @@ if (!support.supported) console.warn(`Primary agent database tests unavailable: 
 
   const actor = (companyId: string, userId = "user-a"): Express.Request["actor"] => ({
     type: "board", source: "session", userId, companyIds: [companyId],
-    memberships: [{ companyId, membershipRole: "admin", status: "active" }],
+    memberships: [{ companyId, membershipRole: "admin", status: "active", restricted: false, restrictionMode: "off" as const }],
   });
   const app = (identity: Express.Request["actor"]) => {
     const result = express(); result.use(express.json());
@@ -144,7 +144,7 @@ if (!support.supported) console.warn(`Primary agent database tests unavailable: 
   it("allows viewers to choose their own primary without granting company write permissions", async () => {
     const c = await company(); const a = await create(c, "Maia");
     await db.update(companyMemberships).set({ membershipRole: "viewer" }).where(and(eq(companyMemberships.companyId, c), eq(companyMemberships.principalId, "user-a")));
-    const viewer = { ...actor(c), memberships: [{ companyId: c, membershipRole: "viewer" as const, status: "active" as const }] };
+    const viewer = { ...actor(c), memberships: [{ companyId: c, membershipRole: "viewer" as const, status: "active" as const, restricted: false, restrictionMode: "off" as const }] };
     await request(app(viewer)).put(url(c)).send({ primaryAgentId: a.id }).expect(200);
     expect((await get(c)).primaryAgentId).toBe(a.id);
     const [membership] = await db.select().from(companyMemberships).where(and(eq(companyMemberships.companyId, c), eq(companyMemberships.principalId, "user-a")));

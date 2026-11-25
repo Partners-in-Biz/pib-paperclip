@@ -3,6 +3,7 @@
  * the files here already include it), and the reference material that does not fit moves into each skill's references.
  */
 import { describe, expect, it } from "vitest";
+import { SOCIAL_HIRE_INSTRUCTIONS } from "../src/hire.js";
 import { SKILLS } from "../src/skills.js";
 import { SOCIAL_TOOLS } from "../src/tools.js";
 
@@ -21,7 +22,7 @@ describe("skill budget", () => {
   it("references carry what does not fit, and each stays a readable size", () => {
     for (const s of SKILLS) for (const file of s.files ?? []) expect(file.content.length, `${s.skillKey}/${file.path}`).toBeLessThan(16_000);
     expect(skill("social-publish").files!.map((f) => f.path)).toEqual(["references/approvals.md"]);
-    expect(skill("social-content").files!.map((f) => f.path)).toEqual(["references/platforms.md", "references/media-studio.md"]);
+    expect(skill("social-content").files!.map((f) => f.path)).toEqual(["references/platforms.md", "references/media-studio.md", "references/social-craft.md"]);
   });
 
   it("every skill points at the references it needs", () => {
@@ -29,13 +30,26 @@ describe("skill budget", () => {
     expect(skill("social-publish").markdown).toContain("references/media-studio.md");
     expect(skill("social-content").markdown).toContain("references/media-studio.md");
     expect(skill("social-content").markdown).toContain("pib-media-studio");
+    expect(skill("social-content").markdown).toContain("references/social-craft.md");
   });
 });
 
 describe("what the skills tell agents", () => {
+  it("the social craft reference names the brand kit tools and no company", () => {
+    const craft = skill("social-content").files!.find((f) => f.path === "references/social-craft.md")!.content;
+    for (const text of ["partnersinbiz.crm:get-client-profile", "partnersinbiz.cockpit:company-profile", "partnersinbiz.crm:extract-brand-from-site", "One real thing per post", "Format first, then words"]) expect(craft, text).toContain(text);
+    expect(craft).not.toMatch(/Peet|Partners in Biz|Velox/);
+  });
+
   it("names every tool, so a tool is never missing from the guidance", () => {
     const publish = skill("social-publish").markdown;
     for (const tool of SOCIAL_TOOLS) expect(publish, tool.name).toContain(tool.name);
+  });
+
+  // T4b left 16,400; from T5 on the delegate tools may use the room up to 17,000 (PAR-9566 breakdown).
+  it("social-publish keeps room for the delegated-approver text (17,000 characters at most)", () => {
+    const n = skill("social-publish").markdown.length;
+    expect(n, `social-publish is ${n}`).toBeLessThanOrEqual(17_000);
   });
 
   it("agents never approve, never change a policy, and never send the client's email", () => {
@@ -46,6 +60,10 @@ describe("what the skills tell agents", () => {
     const approvals = reference("social-publish", "references/approvals.md");
     expect(approvals).toContain("**Never send it**");
     expect(approvals).toContain("You may not approve, record a client approval or change a policy");
+    expect(approvals).toContain("never edits the post it approves");
+    expect(approvals).toContain("stale");
+    expect(approvals).toContain("The Social agent is never the delegate");
+    expect(SOCIAL_HIRE_INSTRUCTIONS).toContain("delegated approver");
     expect(approvals).toContain("auto-approval is off");
     expect(approvals).toContain("A link made for an older version of the post does not count");
   });

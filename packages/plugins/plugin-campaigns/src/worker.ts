@@ -1,4 +1,4 @@
-import { normalizeToolResult, type PreferenceValue } from "@partnersinbiz/pib-plugin-kit";
+import { createAccessGuard, normalizeToolResult, registerCanvasCards, type AccessGuard, type PreferenceValue } from "@partnersinbiz/pib-plugin-kit";
 import {
   definePlugin,
   runWorker,
@@ -34,6 +34,7 @@ import {
   insertReplyLog,
   insertStep,
   insertStepEvent,
+  insertStepEventOnce,
   isSuppressed,
   listCampaigns,
   listCampaignTemplates,
@@ -45,6 +46,7 @@ import {
   saveEnrollment,
   setLaunchError,
   setStepHtml,
+  updateStepText,
   stepEventStats,
   stopEnrollment,
   stopEnrollmentsForContact,
@@ -88,6 +90,7 @@ import {
   type EnrollmentDraft,
 } from "./domain.js";
 import { CAMPAIGN_TOOLS } from "./tools.js";
+import { CAMPAIGNS_ACCESS_TABLE } from "./access-table.js";
 import { SKILLS } from "./skills.js";
 import { firstName, nextSend } from "./detail.js";
 import { channelsUsed, firstChannel, launchAudience } from "./audience.js";
@@ -97,7 +100,9 @@ import { CHANNEL_LABELS, describeWindows, isMessagingChannel, smsLength } from "
 import { pollMessaging } from "./inbound.js";
 import { forgetMessagingSetup, messagingSetup } from "./messaging.js";
 import { objectParams, optionalString, requiredString, stringList, integer } from "./params.js";
-import { DOMAIN_HEALTH_EVENT, gatherPreflight, preflightLines, rememberDomainHealth, rememberSenderHealth, SENDER_HEALTH_EVENT } from "./preflight.js";
+import { DOMAIN_HEALTH_EVENT, gatherPreflight, preflightLines, rememberDomainHealth, rememberSenderHealth, SENDER_HEALTH_EVENT, unfilledPlaceholders } from "./preflight.js";
+import { campaignState, failedByCampaign, openReviseCampaigns, type CampaignFacts } from "./attention.js";
+import { enrollmentPeople, peopleView, resultRows, resultsView, stepNumbers, stepTaskCounts, type TaskCounts } from "./people.js";
 import { eraseSubject, onConsentRecorded } from "./privacy.js";
 import { CAMPAIGNS_PROJECT_KEY } from "./namespace.js";
 import { projectForCampaign } from "./projects.js";
@@ -148,14 +153,15 @@ import { abSuggestionFor, campaignAssignee, handSentEmail, onMailReceived, onSen
 import { PLUGIN_ID } from "./namespace.js";
 import { campaignsGrowthStore, campaignsGrowthToolsHost } from "./growth-host.js";
 import { linkCampaignToExperiment, measureExperimentsJob } from "./growth-measure.js";
-import { eventCounts, eventDays } from "./db.js";
+import { enrollmentsWithFailedSend, eventCounts, eventDays } from "./db.js";
 import { ownClientCounts } from "./client-summary.js";
 import { eventTotals, weeklySends } from "./series.js";
 import { knownCompanies, publishAllSetupStatus, rememberCompany, setupStatus } from "./setup-status.js";
 import { cockpitSnapshot, publishAllCockpit } from "./cockpit.js";
+import { campaignCardKind } from "./canvas-cards.js";
 import { CAMPAIGN_DONE_CHECKS } from "./donechecks.js";
 import { approverUserId, assigneeFields, workOwner } from "./owner.js";
-import { approvalOrigin, reviseOrigin, stepOrigin } from "./origins.js";
+import { approvalOrigin, handSentKey, reviseOrigin, stepOrigin } from "./origins.js";
 import { announceSuppression, onContactSuppressed, reannounceSuppressions, suppressAddress, suppressionEvents, suppressionPayload } from "./suppress.js";
 
 type Owner = { userId?: string | null; agentId?: string | null };
@@ -164,11 +170,15 @@ const ORIGIN = `plugin:${PLUGIN_ID}` as const;
 
 let pluginCtx: PluginContext | null = null;
 let skillSync: ReturnType<typeof createSkillSyncer> | null = null;
+let guard: AccessGuard | null = null;
 
 const plugin = definePlugin({
   async setup(ctx) {
     pluginCtx = ctx;
     skillSync = createSkillSyncer(ctx, SKILLS);
+    // Every action, tool and API route goes through the access guard (PAR-12578 plan 4.4; rows in access-table.ts).
+    const g = createAccessGuard(ctx, { pluginKey: PLUGIN_ID, table: CAMPAIGNS_ACCESS_TABLE });
+    guard = g;
     registerCrmProjection(ctx, ctx.db.namespace, { companies: true, contacts: true });
     registerModuleWatch(ctx);
     registerRoleWatch(ctx);
@@ -188,45 +198,49 @@ const plugin = definePlugin({
     });
     for (const tool of CAMPAIGN_TOOLS) {
       if ((GROWTH_TOOL_NAMES as readonly string[]).includes(tool.name)) continue;
-      ctx.tools.register(tool.name, tool, async (params, run) => {
-        await skillSync?.ensure(run.companyId).catch(() => undefined);
+      g.tool(tool.name, tool, async (params, run) => {
+        // A tool call never waits long for the skill sync (kit `soon`).
+        await skillSync?.soon(run.companyId);
         return runTool(ctx, tool.name, params, run).then(normalizeToolResult);
       });
     }
-    registerGrowthTools(ctx, campaignsGrowthToolsHost(ctx));
-    ctx.actions.register("campaigns.load", async (params, context) => {
-      if (context.companyId) await skillSync?.ensure(context.companyId).catch(() => undefined);
+    registerGrowthTools(ctx, campaignsGrowthToolsHost(ctx), g);
+    g.action("campaigns.load", async (params, context) => {
+      // The page never waits long for the skill sync (kit `soon`).
+      if (context.companyId) await skillSync?.soon(context.companyId);
       // The page reports /_plugins/<installation uuid>/ui/ so Setup can link the settings page.
       await rememberPluginUiBase(ctx, params.uiBase);
       if (context.companyId) await rememberCompany(ctx, context.companyId);
       return load(ctx, context, params);
     });
-    ctx.actions.register("campaigns.client-summary", async (_params, context) => ({ clients: await ownClientCounts(ctx, requiredCompany(context)) }));
-    ctx.actions.register("campaigns.preferences-load", (_params, context) => preferencesLoad(ctx, requiredCompany(context)));
-    ctx.actions.register("campaigns.preferences-save", async (params, context) => {
+    g.action("campaigns.client-summary", async (_params, context) => ({ clients: await ownClientCounts(ctx, requiredCompany(context)) }));
+    g.action("campaigns.preferences-load", (_params, context) => preferencesLoad(ctx, requiredCompany(context)));
+    g.action("campaigns.preferences-save", async (params, context) => {
       const result = await preferencesSave(ctx, context, (params.patch ?? {}) as Record<string, PreferenceValue | null>);
       if (result.ok && context.companyId) forgetMessagingSetup(context.companyId);
       return result;
     });
-    ctx.actions.register("campaigns.growth-load", (params, context) => growthReviewLoad(ctx, context, params));
-    ctx.actions.register("campaigns.growth-approve-experiment", (params, context) => growthApproveExperiment(ctx, context, params));
-    ctx.actions.register("campaigns.growth-reject-experiment", (params, context) => growthRejectExperiment(ctx, context, params));
-    ctx.actions.register("campaigns.growth-decide-change", (params, context) => growthDecideChange(ctx, context, params));
-    ctx.actions.register("campaigns.approve", (params, context) => approveAction(ctx, context, params, APPROVAL_PATHS));
-    ctx.actions.register("campaigns.send-back", (params, context) => sendBackAction(ctx, context, params, APPROVAL_PATHS));
-    ctx.actions.register("campaigns.request-approval", (params, context) => requestApproval(ctx, requiredCompany(context), params));
-    ctx.actions.register("campaigns.sync-skills", async (_params, context) => ({ results: await skillSync?.force(requiredCompany(context)) }));
-    ctx.actions.register("campaigns.create-campaign", (params, context) => createCampaignAction(ctx, context, params));
-    ctx.actions.register("campaigns.add-step", (params, context) => addStepAction(ctx, context, params));
-    ctx.actions.register("campaigns.launch", (params, context) => launchAction(ctx, context, params));
-    ctx.actions.register("campaigns.pause", (params, context) => pauseAction(ctx, context, params));
-    ctx.actions.register("campaigns.resume", (params, context) => resumeAction(ctx, context, params));
-    ctx.actions.register("campaigns.complete", (params, context) => completeAction(ctx, context, params));
-    ctx.actions.register("campaigns.stats", (params, context) => statsAction(ctx, context, params));
-    ctx.actions.register("campaigns.enroll", (params, context) => enrollAction(ctx, context, params));
-    ctx.actions.register("campaigns.detail", (params, context) => campaignDetail(ctx, requiredCompany(context), params));
-    ctx.actions.register("campaigns.ab-suggestion", (params, context) => suggestWinner(ctx, requiredCompany(context), params));
-    ctx.actions.register("campaigns.declare-winner", (params, context) => declareWinner(ctx, requiredCompany(context), params));
+    g.action("campaigns.growth-load", (params, context) => growthReviewLoad(ctx, context, params));
+    g.action("campaigns.growth-approve-experiment", (params, context) => growthApproveExperiment(ctx, context, params));
+    g.action("campaigns.growth-reject-experiment", (params, context) => growthRejectExperiment(ctx, context, params));
+    g.action("campaigns.growth-decide-change", (params, context) => growthDecideChange(ctx, context, params));
+    g.action("campaigns.approve", (params, context) => approveAction(ctx, context, params, APPROVAL_PATHS));
+    g.action("campaigns.send-back", (params, context) => sendBackAction(ctx, context, params, APPROVAL_PATHS));
+    g.action("campaigns.request-approval", (params, context) => requestApproval(ctx, requiredCompany(context), params));
+    g.action("campaigns.sync-skills", async (_params, context) => ({ results: await skillSync?.force(requiredCompany(context)) }));
+    g.action("campaigns.create-campaign", (params, context) => createCampaignAction(ctx, context, params));
+    g.action("campaigns.add-step", (params, context) => addStepAction(ctx, context, params));
+    g.action("campaigns.launch", (params, context) => launchAction(ctx, context, params));
+    g.action("campaigns.pause", (params, context) => pauseAction(ctx, context, params));
+    g.action("campaigns.resume", (params, context) => resumeAction(ctx, context, params));
+    g.action("campaigns.complete", (params, context) => completeAction(ctx, context, params));
+    g.action("campaigns.stats", (params, context) => statsAction(ctx, context, params));
+    g.action("campaigns.enroll", (params, context) => enrollAction(ctx, context, params));
+    g.action("campaigns.detail", (params, context) => campaignDetail(ctx, requiredCompany(context), params));
+    // Planning Canvas entity cards (PAR-14423): registered through the kit helper with the guard's `action`.
+    registerCanvasCards({ register: g.action, kinds: [campaignCardKind(ctx)] });
+    g.action("campaigns.ab-suggestion", (params, context) => suggestWinner(ctx, requiredCompany(context), params));
+    g.action("campaigns.declare-winner", (params, context) => declareWinner(ctx, requiredCompany(context), params));
     ctx.jobs.register("open-due-steps", () => trackJob(ctx, "open-due-steps", async () => {
       // Catch up on approvals and step issues whose events were missed (delivery is at-most-once).
       await catchUpApprovals(ctx);
@@ -294,6 +308,9 @@ const plugin = definePlugin({
       ...(skillSync ? { syncer: skillSync } : {}),
       ensureResources: (companyId) => ctx.projects.managed.reconcile(CAMPAIGNS_PROJECT_KEY, companyId),
     });
+    g.apiRoute(SETUP_STATUS_ROUTE.routeKey, async (input) => ({ status: 200, body: await setupStatus(ctx, input.companyId) }));
+    g.apiRoute(COCKPIT_ROUTE.routeKey, async (input) => ({ status: 200, body: await cockpitSnapshot(ctx, input.companyId) }));
+    g.apiRoute("client-summary", (input) => handleApiRoute(ctx, input));
     ctx.logger.info("Campaigns plugin ready");
   },
   async onHealth() {
@@ -304,14 +321,10 @@ const plugin = definePlugin({
     await handleWebhook(pluginCtx, input);
   },
   async onApiRequest(input) {
-    if (!pluginCtx) return { status: 503, body: { error: "Campaigns plugin is not ready" } };
-    if (input.routeKey === SETUP_STATUS_ROUTE.routeKey) {
-      return { status: 200, body: await setupStatus(pluginCtx, input.companyId) };
-    }
-    if (input.routeKey === COCKPIT_ROUTE.routeKey) {
-      return { status: 200, body: await cockpitSnapshot(pluginCtx, input.companyId) };
-    }
-    return handleApiRoute(pluginCtx, input);
+    const ctx = pluginCtx;
+    if (!ctx || !guard) return { status: 503, body: { error: "Campaigns plugin is not ready" } };
+    // An unknown key answers today's 404 with the switch off; under report and enforce the guard refuses it.
+    return guard.handleApiRequest(input, (unknown) => handleApiRoute(ctx, unknown));
   },
 });
 
@@ -391,6 +404,7 @@ async function dispatch(ctx: PluginContext, name: string, body: Record<string, u
   if (name === "record-step-event") return recordStepEvent(ctx, companyId, body);
   if (name === "campaign-step-analytics") return stepAnalytics(ctx, companyId, body);
   if (name === "set-step-html") return setStepHtmlAction(ctx, companyId, body);
+  if (name === "edit-campaign-step") return editCampaignStepAction(ctx, companyId, body);
   if (name === "create-campaign-template") return createTemplateAction(ctx, companyId, body);
   if (name === "list-campaign-templates") return listTemplatesAction(ctx, companyId);
   if (name === "create-campaign-from-template") return createFromTemplate(ctx, companyId, body, { agentId: run.agentId });
@@ -408,29 +422,79 @@ async function load(ctx: PluginContext, context: PluginPerformActionContext, par
   const companyId = requiredCompany(context);
   const scope = readClientScope(params) ?? null;
   const campaigns = await listCampaigns(ctx, companyId, scope);
+  const config = await readConfig(ctx, companyId).catch(() => ({}));
+  const now = new Date();
+  const ids = new Set(campaigns.map((campaign) => campaign.id));
+  const [counts, days, suppressed, attention] = await Promise.all([
+    // null = the counts could not be read: the page then claims no number, never 0.
+    eventCounts(ctx, companyId).catch(() => null),
+    eventDays(ctx, companyId, new Date(now.getTime() - 84 * 86_400_000).toISOString()).catch(() => []),
+    suppressionCount(ctx, companyId).catch(() => 0),
+    attentionFacts(ctx, companyId),
+  ]);
+  const byCampaign = eventTotals(counts ?? [], ids);
   const result = [];
   for (const campaign of campaigns) {
     const steps = await listSteps(ctx, campaign.id);
     const stats = await campaignStats(ctx, campaign.id);
     const approval = campaign.approvalIssueId ? await ctx.issues.get(campaign.approvalIssueId, companyId).catch(() => null) : null;
-    result.push({ ...publicCampaign(campaign), steps, stats, approvalStatus: approval?.status ?? null });
+    const state = campaignState(stateFacts(campaign, steps, stats, approval, counts ? byCampaign[campaign.id]?.sent ?? 0 : null, attention), now);
+    result.push({ ...publicCampaign(campaign), steps, stats, approvalStatus: approval?.status ?? null, state });
   }
-  const config = await readConfig(ctx, companyId).catch(() => ({}));
-  const now = new Date();
-  const ids = new Set(campaigns.map((campaign) => campaign.id));
-  const [counts, days, suppressed] = await Promise.all([
-    eventCounts(ctx, companyId).catch(() => []),
-    eventDays(ctx, companyId, new Date(now.getTime() - 84 * 86_400_000).toISOString()).catch(() => []),
-    suppressionCount(ctx, companyId).catch(() => 0),
-  ]);
   const setup = await messagingSetup(ctx, companyId).catch(() => null);
   return {
     campaigns: result,
     suppressed,
-    series: { weeks: weeklySends(days, now, 12, ids), byCampaign: eventTotals(counts, ids) },
+    series: { weeks: weeklySends(days, now, 12, ids), byCampaign },
     settingsSaved: Object.keys(config).length > 0,
     client: scope ? await clientDetails(ctx, companyId, scope, campaigns) : null,
     messaging: setup ? { sms: setup.sms, whatsapp: setup.whatsapp, windows: describeWindows(setup.config.windows) } : null,
+  };
+}
+
+/**
+ * What the list and the "Needs attention" strip need beyond the campaign rows: open step tasks, failed sends and
+ * drafts a person sent back. A part that cannot be read is null, and the state then says it could not be checked:
+ * a failed read is never shown as "nothing wrong".
+ */
+interface AttentionFacts { tasks: Map<string, TaskCounts> | null; failed: Map<string, number> | null; revise: Set<string> | null }
+
+async function attentionFacts(ctx: PluginContext, companyId: string): Promise<AttentionFacts> {
+  const [tasks, failed, revise] = await Promise.all([
+    stepTaskCounts(ctx, companyId).catch(() => null),
+    enrollmentsWithFailedSend(ctx).then((rows) => failedByCampaign(rows.filter((row) => row.companyId === companyId))).catch(() => null),
+    openReviseCampaigns(ctx, companyId).catch(() => null),
+  ]);
+  return { tasks, failed, revise };
+}
+
+function stateFacts(
+  campaign: CampaignDraft,
+  steps: CampaignStepDraft[],
+  stats: { enrolled: number; running: number; done: number },
+  approval: { status: string; assigneeAgentId?: string | null } | null,
+  /** Emails sent so far, or null when they could not be counted. */
+  sent: number | null,
+  attention: AttentionFacts,
+): CampaignFacts {
+  const numbers = stepNumbers(steps);
+  return {
+    status: campaign.status,
+    stepCount: numbers.size,
+    approvalIssueId: campaign.approvalIssueId ?? null,
+    approvalStatus: approval?.status ?? null,
+    approvalWithAgent: Boolean(approval?.assigneeAgentId),
+    launchError: campaign.launchError ?? null,
+    stats,
+    sent,
+    tasks: attention.tasks?.get(campaign.id) ?? null,
+    failedSends: attention.failed?.get(campaign.id) ?? 0,
+    sendsChecked: Boolean(attention.tasks && attention.failed),
+    // Only a running campaign is judged on leftover placeholders here: a draft's are caught by the check before approval.
+    placeholders: campaign.status === "active"
+      ? steps.map((step) => ({ number: numbers.get(step.position) ?? step.position, items: unfilledPlaceholders(step) })).filter((entry) => entry.items.length > 0)
+      : [],
+    reviseOpen: attention.revise?.has(campaign.id) ?? false,
   };
 }
 
@@ -458,11 +522,16 @@ async function clientDetails(ctx: PluginContext, companyId: string, scope: NonNu
  */
 async function campaignDetail(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
   const campaign = await requireCampaign(ctx, companyId, requiredString(params, "campaignId"));
-  const [steps, stats, enrollments, approval] = await Promise.all([
+  const now = new Date();
+  const [steps, stats, enrollments, approval, peopleRows, results, attention] = await Promise.all([
     listSteps(ctx, campaign.id),
     campaignStats(ctx, campaign.id),
     enrollmentViews(ctx, campaign.id),
     campaign.approvalIssueId ? ctx.issues.get(campaign.approvalIssueId, companyId).catch(() => null) : Promise.resolve(null),
+    // The People and Results tabs. A read that fails shows as "could not be read", never as nobody or nothing.
+    enrollmentPeople(ctx, companyId, campaign.id).catch(() => null),
+    resultRows(ctx, companyId, campaign.id).catch(() => null),
+    attentionFacts(ctx, companyId),
   ]);
   // The same resolution (and country) as the approve action, so the hash the bar sends matches when nothing changed.
   const setup = await messagingSetup(ctx, companyId).catch(() => null);
@@ -508,6 +577,14 @@ async function campaignDetail(ctx: PluginContext, companyId: string, params: Rec
       sample: enrollments.slice(0, 5).map((row) => ({ name: row.name, status: row.status, stepPosition: row.stepPosition, nextDueAt: row.nextDueAt, waiting: row.waiting })),
     },
     next: nextSend(running),
+    state: campaignState(stateFacts(campaign, steps, stats, approval, results ? results.filter((row) => row.eventType === "sent").reduce((total, row) => total + row.count, 0) : null, attention), now),
+    people: peopleRows ? peopleView(peopleRows, steps, now) : null,
+    peopleCapped: (peopleRows?.length ?? 0) < stats.enrolled,
+    // Before launch nobody is enrolled: the People tab lists who would get it (the same audience the approver sees).
+    audiencePeople: campaign.status === "draft" && audience
+      ? audience.eligible.slice(0, 500).map((contact) => ({ contactId: contact.id, name: contact.name, email: campaignAddress(contact.emails) ?? null }))
+      : null,
+    results: results ? resultsView(steps, results) : null,
   };
 }
 
@@ -1020,6 +1097,18 @@ async function closeStep(ctx: PluginContext, enrollment: EnrollmentDraft, status
     return;
   }
   const steps = await listSteps(ctx, enrollment.campaignId);
+  // The agent sent this step by hand: count it, once, so Results and the A/B numbers include emails sent from a task.
+  // The version is the one the task carried: a step with no B text sends A, whatever arm the person is on (as an automatic send records it).
+  await insertStepEventOnce(ctx, {
+    companyId: enrollment.companyId,
+    campaignId: enrollment.campaignId,
+    enrollmentId: enrollment.id,
+    stepPosition: enrollment.stepPosition,
+    eventType: "sent",
+    variant: stepFor(steps, enrollment.stepPosition, enrollment.variant)?.variant ?? "a",
+    sourceKey: handSentKey(enrollment.id, enrollment.stepPosition),
+    meta: { by: "task" },
+  }).catch((error) => ctx.logger.warn("A hand-sent campaign step could not be counted", { enrollmentId: enrollment.id, error: error instanceof Error ? error.message : String(error) }));
   await saveEnrollment(ctx, advanceEnrollment(enrollment, steps, new Date()));
 }
 
@@ -1291,6 +1380,28 @@ async function setStepHtmlAction(ctx: PluginContext, companyId: string, params: 
   await markEdited(ctx, campaign.id);
   const approvalReset = await invalidateApproval(ctx, companyId, campaign, `the HTML of step ${position}${variant === "b" ? "B" : ""} changed`);
   return { campaignId: campaign.id, position, variant, htmlSet: true, approvalReset };
+}
+
+async function editCampaignStepAction(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
+  const campaign = await requireCampaign(ctx, companyId, requiredString(params, "campaignId"));
+  if (campaign.status !== "draft") throw new CampaignError("Only a draft campaign's steps can change. Pause it and create a new draft instead.");
+  const position = integer(params.position, "position");
+  const variant = params.variant == null ? "a" : assertVariant(requiredString(params, "variant"));
+  const subject = params.subject == null ? undefined : requiredString(params, "subject");
+  const text = params.body == null ? undefined : requiredString(params, "body");
+  if (subject === undefined && text === undefined) throw new CampaignError("Give a subject, a body, or both.");
+  const steps = await listSteps(ctx, campaign.id);
+  const target = steps.find((step) => step.position === position && step.variant === variant);
+  if (!target) throw new CampaignError("No step found at that position and variant");
+  await updateStepText(ctx, { companyId, campaignId: campaign.id, position, variant, subject, body: text });
+  await markEdited(ctx, campaign.id);
+  const approvalReset = await invalidateApproval(ctx, companyId, campaign, `the text of step ${position}${variant === "b" ? "B" : ""} changed`);
+  // Preflight on the edited steps (no link check over the network), so the writer sees at once whether the fix holds.
+  const result = await gatherPreflight(ctx, companyId, campaign, await listSteps(ctx, campaign.id), { network: false });
+  return {
+    campaignId: campaign.id, position, variant, subjectSet: subject !== undefined, bodySet: text !== undefined, approvalReset,
+    preflight: { ok: result.ok, errors: result.errors, warnings: result.warnings, sentAs: result.sentAs, channels: result.channels },
+  };
 }
 
 async function createTemplateAction(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
