@@ -3076,7 +3076,13 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
     agentDecision: AuthorizationDecision,
   ): Promise<AuthorizationDecision> {
     const responsibleUserId = input.actor.onBehalfOfUserId?.trim();
-    if (input.actor.type === "agent" && isConnectionManagementAction(input.action) && !responsibleUserId) {
+    // An assistant connection (mcp_oauth) carries its person only to narrow
+    // it (rule group H); it never manages connections as him (PAR-14559).
+    if (
+      input.actor.type === "agent" &&
+      isConnectionManagementAction(input.action) &&
+      (!responsibleUserId || input.actor.source === "mcp_oauth")
+    ) {
       return deny({ action: input.action, reason: "deny_missing_membership", code: "RESPONSIBLE_USER_UNAVAILABLE",
         explanation: "Connection management requires an authenticated responsible user." });
     }

@@ -7,6 +7,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import {
   activityLog,
   agents,
+  assets,
   authUsers,
   companies,
   companyMemberships,
@@ -25,6 +26,7 @@ import { museOAuth } from "../services/muse-oauth.js";
 import { errorHandler } from "../middleware/error-handler.js";
 import { publicMcpIngressRoutes, publicMcpManagementRoutes } from "../routes/public-mcp.js";
 import { logActivity } from "../services/activity-log.js";
+import { canActorReadAssetContent } from "../services/asset-content-access.js";
 import { authorizationService } from "../services/authorization.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { pluginActingPersonForActor } from "../services/member-restriction/plugin-acting-person.js";
@@ -490,6 +492,65 @@ describe("assistant connection database support", () => {
       const runActor: Request["actor"] = { type: "agent", source: "agent_jwt", agentId: memberAgentId, companyId, onBehalfOfUserId: O };
       expect(await decide(runActor, "inbox:manage", company())).toMatchObject({ allowed: true, reason: "allow_self" });
       expect(await decide(runActor, "agent_instructions:update", ownAgent())).toMatchObject({ allowed: true, reason: "allow_self" });
+    });
+  });
+
+  // PAR-14559: the same rule for connection management and asset ownership.
+  // On development an assistant connection carried no person, so both stayed
+  // denied; the person it now carries must not turn either into an allow.
+  describe("PAR-14559: the person on an assistant connection does not widen connection management or asset ownership", () => {
+    let toolAgentId = "";
+    beforeAll(async () => {
+      const [agent] = await db.insert(agents).values({ companyId, name: "Tool agent", role: "engineer", status: "active", adapterType: "process" }).returning();
+      toolAgentId = agent!.id;
+      await db.insert(companyMemberships).values({ companyId, principalType: "agent", principalId: toolAgentId, membershipRole: "member", status: "active" });
+      // The agent and U both hold the permission, so only the actor source decides.
+      await db.insert(principalPermissionGrants).values([
+        { companyId, principalType: "agent", principalId: toolAgentId, permissionKey: "tools:manage_connections" },
+        { companyId, principalType: "user", principalId: U, permissionKey: "tools:manage_connections" },
+      ]);
+    });
+    const connectionActor = async () => {
+      const { actor } = await agentOAuth.authorizeGrant(await agentGrant(U, companyId, toolAgentId));
+      expect(actor).toMatchObject({ source: "mcp_oauth", agentId: toolAgentId, onBehalfOfUserId: U });
+      return actor;
+    };
+    const runActor = (): Request["actor"] => ({ type: "agent", source: "agent_jwt", agentId: toolAgentId, companyId, onBehalfOfUserId: U });
+    const configure = (actor: Request["actor"]) => authorizationService(db).decide({
+      actor: actor as never, action: "connections:configure",
+      resource: { type: "connection_management", companyId, purpose: "tool", operation: "create" },
+    });
+    const draft = async () => {
+      const [asset] = await db.insert(assets).values({
+        companyId, provider: "local_disk", objectKey: `${companyId}/assets/issues/drafts/${randomUUID()}.png`,
+        contentType: "image/png", byteSize: 1, sha256: "0".repeat(64), createdByAgentId: toolAgentId, createdByUserId: U,
+      }).returning();
+      return asset!;
+    };
+
+    for (const mode of ["report", "enforce"] as const) {
+      it(`under ${mode}: connections:configure is denied RESPONSIBLE_USER_UNAVAILABLE`, async () => {
+        await setMode(mode);
+        try {
+          expect(await configure(await connectionActor())).toMatchObject({ allowed: false, code: "RESPONSIBLE_USER_UNAVAILABLE" });
+        } finally {
+          await setMode("enforce");
+        }
+      });
+
+      it(`under ${mode}: it does not read its agent's draft made for its person`, async () => {
+        await setMode(mode);
+        try {
+          expect(await canActorReadAssetContent(db, await connectionActor(), await draft())).toBe(false);
+        } finally {
+          await setMode("enforce");
+        }
+      });
+    }
+
+    it("positive control: a run actor (agent_jwt) for the same agent and person is allowed both", async () => {
+      expect(await configure(runActor())).toMatchObject({ allowed: true });
+      expect(await canActorReadAssetContent(db, runActor() as never, await draft())).toBe(true);
     });
   });
 
