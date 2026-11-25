@@ -1,4 +1,4 @@
-import { createAccessGuard, normalizeToolResult, type AccessGuard, type PreferenceValue } from "@partnersinbiz/pib-plugin-kit";
+import { createAccessGuard, normalizeToolResult, registerCanvasCards, type AccessGuard, type PreferenceValue } from "@partnersinbiz/pib-plugin-kit";
 import {
   definePlugin,
   runWorker,
@@ -158,6 +158,7 @@ import { enrollmentsWithFailedSend, eventCounts, eventDays } from "./db.js";
 import { eventTotals, weeklySends } from "./series.js";
 import { knownCompanies, publishAllSetupStatus, rememberCompany, setupStatus } from "./setup-status.js";
 import { cockpitSnapshot, publishAllCockpit } from "./cockpit.js";
+import { campaignCardKind } from "./canvas-cards.js";
 import { CAMPAIGN_DONE_CHECKS } from "./donechecks.js";
 import { approverUserId, assigneeFields, workOwner } from "./owner.js";
 import { approvalOrigin, handSentKey, reviseOrigin, stepOrigin } from "./origins.js";
@@ -235,6 +236,8 @@ const plugin = definePlugin({
     g.action("campaigns.stats", (params, context) => statsAction(ctx, context, params));
     g.action("campaigns.enroll", (params, context) => enrollAction(ctx, context, params));
     g.action("campaigns.detail", (params, context) => campaignDetail(ctx, requiredCompany(context), params));
+    // Planning Canvas entity cards (PAR-14423): registered through the kit helper with the guard's `action`.
+    registerCanvasCards({ register: g.action, kinds: [campaignCardKind(ctx)] });
     g.action("campaigns.ab-suggestion", (params, context) => suggestWinner(ctx, requiredCompany(context), params));
     g.action("campaigns.declare-winner", (params, context) => declareWinner(ctx, requiredCompany(context), params));
     ctx.jobs.register("open-due-steps", () => trackJob(ctx, "open-due-steps", async () => {

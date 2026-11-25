@@ -3312,6 +3312,24 @@ export function createHeartbeatRunPreparation(db: Db) {
     return present;
   }
 
+  /**
+   * H1 under `enforce` (PAR-14378): the stamped causing person the run must
+   * work for, so run start can put him over an inherited identity context.
+   * Null on a chat (F12), without a stamp, or when H does not bind him under
+   * `enforce`. A failed read throws 503 `MEMBER_RESTRICTION_UNAVAILABLE`.
+   */
+  async function resolveEnforcedCausingPersonId(
+    companyId: string,
+    contextSnapshot: Record<string, unknown>,
+    issueContext: RunSeedInput["issueContext"],
+  ) {
+    if (chatRunPerson(issueContext)) return null;
+    const stamped = readStampedWakeCausingActor(contextSnapshot);
+    if (!stamped) return null;
+    const causing = await causingPersonFor(db, companyId, stamped);
+    return causing?.mode === "enforce" ? causing.personId : null;
+  }
+
   async function resolvePresentResponsibleUserIdForRunSeed(input: RunSeedInput) {
     const contextResponsibleUserId = readNonEmptyString(
       input.contextSnapshot.responsibleUserId,
@@ -3455,5 +3473,6 @@ export function createHeartbeatRunPreparation(db: Db) {
     resolveResponsibleUserIdForRunSeed,
     resolveResponsibleUserIdForRun,
     resolveResponsibleUserIdForRunContext,
+    resolveEnforcedCausingPersonId,
   };
 }

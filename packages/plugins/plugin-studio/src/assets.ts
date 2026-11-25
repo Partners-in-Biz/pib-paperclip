@@ -9,6 +9,7 @@ import { assertOwnKey, assetKey, extFor, getObject, kindFor, localCopy, MAX_ASSE
 import { cutPoster, ensurePoster, POSTER_MIME } from "./video-edit/poster.js";
 import { downloadObjectToWorkdir, withRenderWorkdir } from "./video-edit/workdir.js";
 import { assertOpenToPerson, assertReachable, loadIssue, scopeForWork, scopeInput } from "./scope.js";
+import { onBoard, REMOVED_STATUSES, WRONG_BOARD, type BoardTarget } from "./board-scope.js";
 
 export const LINK_TARGETS = ["issue", "goal", "project", "campaign", "social_post", "ad", "seo_page", "video", "book"] as const;
 
@@ -195,6 +196,13 @@ export async function countAssetsByStatus(ctx: PluginContext, companyId: string,
   return out;
 }
 
+/** Whether any asset under these filters is filed under a client, for a person's list when core's answer is missing. */
+export async function hasClientAssets(ctx: PluginContext, companyId: string, filter: ListFilter): Promise<boolean> {
+  const { where, params } = listWhere(ctx, companyId, filter);
+  const rows = await ctx.db.query<{ one: unknown }>(`SELECT 1 AS one FROM ${table(ctx, "assets")} a ${where} AND a.client_ref IS NOT NULL LIMIT 1`, params);
+  return rows.length > 0;
+}
+
 /** Agents get a path on this machine, because the host redacts signed URLs in what they read. */
 export async function assetFileForAgent(ctx: PluginContext, companyId: string, assetId: string, projectId: string | null) {
   const row = await getAssetRow(ctx, companyId, assetId);
@@ -205,11 +213,18 @@ export async function assetFileForAgent(ctx: PluginContext, companyId: string, a
   return { ...assetOut(row), path };
 }
 
-/** For a person's browser, after the action's member check. Five minutes. A restricted member gets own work only. */
-export async function assetUrlForPerson(ctx: PluginContext, companyId: string, assetId: string, restriction: ActingRestriction): Promise<string> {
+/**
+ * For a person's browser, after the action's member check. Five minutes. A restricted member gets own work only. On a
+ * board (PAR-14280) the file must also be the board's client's, or own work on a board without one, and not archived.
+ */
+export async function assetUrlForPerson(ctx: PluginContext, companyId: string, assetId: string, restriction: ActingRestriction, board?: BoardTarget): Promise<string> {
   const row = await getAssetRow(ctx, companyId, assetId);
   assertOpenToPerson(scopeOfRow(row), restriction);
-  return objectUrl(await new StudioConfig(ctx, companyId).bucket(), companyId, "GET", row.r2_key, 300);
+  if (board) {
+    if (REMOVED_STATUSES.has(row.status)) throw new StudioError(`Asset ${assetId} was removed.`, "unknown_asset");
+    if (!onBoard(scopeOfRow(row), board)) throw new StudioError("This Studio file belongs to other work than this board, so it isn't shown here.", WRONG_BOARD);
+  }
+  return objectUrl(await (board?.config ?? new StudioConfig(ctx, companyId)).bucket(), companyId, "GET", row.r2_key, 300);
 }
 
 /**
@@ -257,6 +272,12 @@ export interface PreviewBatch {
   error: string | null;
   /** Client assets a restricted member gets no link for (PAR-14274); the page shows a placeholder, never retries. */
   withheld?: string[];
+  /** Board calls only (PAR-14280): files of other work than the board's. A placeholder, never retried. */
+  refused?: string[];
+  /** Board calls only: no such file, or archived. The card says "removed". */
+  removed?: string[];
+  /** Board calls only: what a card draws for each signed file. */
+  assets?: Record<string, { name: string; kind: string; mime: string; altText: string | null }>;
 }
 
 /**
@@ -265,12 +286,12 @@ export interface PreviewBatch {
  * restricted member's client assets are `withheld`; when core's answer is missing and the page holds a client asset,
  * the whole call is refused and nothing is signed (PAR-14274).
  */
-export async function assetUrlsForPerson(ctx: PluginContext, companyId: string, assetIds: string[], restriction: ActingRestriction, expiresSec = 300, config?: StudioConfig): Promise<PreviewBatch> {
+export async function assetUrlsForPerson(ctx: PluginContext, companyId: string, assetIds: string[], restriction: ActingRestriction, expiresSec = 300, config?: StudioConfig, board?: BoardTarget): Promise<PreviewBatch> {
   const urls: Record<string, string> = {};
   if (!assetIds.length) return { urls, failed: [], error: null };
   let bucket: PrivateBucket;
   try {
-    bucket = await (config ?? new StudioConfig(ctx, companyId)).bucket();
+    bucket = await (config ?? board?.config ?? new StudioConfig(ctx, companyId)).bucket();
   } catch (error) {
     ctx.logger.warn("Studio previews not signed", { assets: assetIds.length, error: errorText(error) });
     const why = error instanceof StudioError ? error.message : "Studio couldn't read its storage settings just now.";
@@ -278,12 +299,16 @@ export async function assetUrlsForPerson(ctx: PluginContext, companyId: string, 
   }
   const failed: string[] = [];
   const withheld: string[] = [];
+  const refused: string[] = [];
+  const removed: string[] = [];
+  const assets: NonNullable<PreviewBatch["assets"]> = {};
   for (const id of assetIds) {
     let row: AssetRow;
     try {
       row = await getAssetRow(ctx, companyId, id);
     } catch (error) {
       if (!(error instanceof StudioError && error.code === "unknown_asset")) failed.push(id);
+      else if (board) removed.push(id);
       continue;
     }
     try {
@@ -295,13 +320,30 @@ export async function assetUrlsForPerson(ctx: PluginContext, companyId: string, 
       }
       throw error; // core's answer is missing: refuse the whole page, nothing signed
     }
+    if (board) {
+      if (REMOVED_STATUSES.has(row.status)) {
+        removed.push(id);
+        continue;
+      }
+      if (!onBoard(scopeOfRow(row), board)) {
+        refused.push(id);
+        continue;
+      }
+    }
     try {
       urls[id] = objectUrl(bucket, companyId, "GET", row.r2_key, expiresSec);
+      if (board) assets[id] = { name: row.name, kind: row.kind, mime: row.mime, altText: row.alt_text };
     } catch {
       failed.push(id);
     }
   }
-  return { urls, failed, error: failed.length ? `${failed.length} preview${failed.length === 1 ? "" : "s"} couldn't load.` : null, ...(withheld.length ? { withheld } : {}) };
+  return {
+    urls,
+    failed,
+    error: failed.length ? `${failed.length} preview${failed.length === 1 ? "" : "s"} couldn't load.` : null,
+    ...(withheld.length ? { withheld } : {}),
+    ...(board ? { refused, removed, assets } : {}),
+  };
 }
 
 export async function linkAsset(ctx: PluginContext, companyId: string, params: Record<string, unknown>, runProjectId: string | null) {

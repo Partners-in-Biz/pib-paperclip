@@ -165,6 +165,31 @@ function isValidShellEnvKey(value: string) {
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
 }
 
+/**
+ * True when `value` is safe as the user or host half of an ssh `user@host`
+ * destination: non-empty, no leading `-` (ssh would read it as an option, e.g.
+ * `-oProxyCommand=...`), no whitespace, control characters or `@`.
+ */
+export function isSafeSshDestinationPart(value: string): boolean {
+  // eslint-disable-next-line no-control-regex
+  return value.length > 0 && !value.startsWith("-") && !/[\s\u0000-\u001f\u007f@]/.test(value);
+}
+
+/**
+ * Builds the `user@host` ssh destination argument. Throws when either half
+ * could be read by ssh as an option or split into another argument, so a
+ * config that skipped `parseSshRemoteExecutionSpec` still cannot inject one.
+ */
+export function sshDestination(username: string, host: string): string {
+  if (!isSafeSshDestinationPart(username)) {
+    throw new Error("Invalid SSH username: it must not be empty, start with '-' or contain whitespace, control characters or '@'.");
+  }
+  if (!isSafeSshDestinationPart(host)) {
+    throw new Error("Invalid SSH host: it must not be empty, start with '-' or contain whitespace, control characters or '@'.");
+  }
+  return `${username}@${host}`;
+}
+
 export function parseSshRemoteExecutionSpec(value: unknown): SshRemoteExecutionSpec | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return null;
@@ -176,6 +201,9 @@ export function parseSshRemoteExecutionSpec(value: unknown): SshRemoteExecutionS
   const remoteCwd = typeof parsed.remoteCwd === "string" ? parsed.remoteCwd.trim() : "";
   const portValue = typeof parsed.port === "number" ? parsed.port : Number(parsed.port);
   if (!host || !username || !remoteCwd || !Number.isInteger(portValue) || portValue < 1 || portValue > 65535) {
+    return null;
+  }
+  if (!isSafeSshDestinationPart(host) || !isSafeSshDestinationPart(username)) {
     return null;
   }
 
@@ -795,12 +823,13 @@ export async function streamLocalFileToSsh(input: {
   remoteScript: string;
   progress?: TransferProgress;
 }): Promise<void> {
+  const destination = sshDestination(input.spec.username, input.spec.host);
   const auth = await createSshAuthArgs(input.spec);
   const sshArgs = [
     ...auth.args,
     "-p",
     String(input.spec.port),
-    `${input.spec.username}@${input.spec.host}`,
+    destination,
     `sh -c ${shellQuote(input.remoteScript)}`,
   ];
 
@@ -852,12 +881,13 @@ async function streamSshToLocalFile(input: {
   localFile: string;
   progress?: TransferProgress;
 }): Promise<void> {
+  const destination = sshDestination(input.spec.username, input.spec.host);
   const auth = await createSshAuthArgs(input.spec);
   const sshArgs = [
     ...auth.args,
     "-p",
     String(input.spec.port),
-    `${input.spec.username}@${input.spec.host}`,
+    destination,
     `sh -c ${shellQuote(input.remoteScript)}`,
   ];
 
@@ -1473,7 +1503,7 @@ export async function runSshCommand(
     sshArgs.push(
       "-p",
       String(config.port),
-      `${config.username}@${config.host}`,
+      sshDestination(config.username, config.host),
       `sh -c ${shellQuote(remoteScript)}`,
     );
 
@@ -1704,6 +1734,7 @@ export async function buildSshSpawnTarget(input: {
       throw new Error(`Invalid SSH environment variable key: ${key}`);
     }
   }
+  const userAtHost = sshDestination(input.spec.username, input.spec.host);
   const auth = await createSshAuthArgs(input.spec);
   const sshArgs = [...auth.args];
   const envArgs = Object.entries(input.env)
@@ -1735,7 +1766,7 @@ export async function buildSshSpawnTarget(input: {
       : `exec ${remoteCommandParts}`,
   ].join(" && ");
 
-  const destination = ["-p", String(input.spec.port), `${input.spec.username}@${input.spec.host}`];
+  const destination = ["-p", String(input.spec.port), userAtHost];
   sshArgs.push(...destination, `sh -c ${shellQuote(remoteScript)}`);
 
   const remoteRunDir = input.remoteRunDir;
@@ -1878,12 +1909,13 @@ export async function syncDirectoryToSsh(input: {
   onProgress?: RuntimeProgressSink;
   progressLabel?: string;
 }): Promise<void> {
+  const destination = sshDestination(input.spec.username, input.spec.host);
   const auth = await createSshAuthArgs(input.spec);
   const sshArgs = [
     ...auth.args,
     "-p",
     String(input.spec.port),
-    `${input.spec.username}@${input.spec.host}`,
+    destination,
     `sh -c ${shellQuote(`mkdir -p ${shellQuote(input.remoteDir)} && tar -xf - -C ${shellQuote(input.remoteDir)}`)}`,
   ];
 
@@ -2012,6 +2044,7 @@ export async function syncDirectoryFromSsh(input: {
   onProgress?: RuntimeProgressSink;
   progressLabel?: string;
 }): Promise<void> {
+  const destination = sshDestination(input.spec.username, input.spec.host);
   const auth = await createSshAuthArgs(input.spec);
   const stagingDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-sync-back-"));
   const remoteTarScript = [
@@ -2022,7 +2055,7 @@ export async function syncDirectoryFromSsh(input: {
     ...auth.args,
     "-p",
     String(input.spec.port),
-    `${input.spec.username}@${input.spec.host}`,
+    destination,
     `sh -c ${shellQuote(remoteTarScript)}`,
   ];
 

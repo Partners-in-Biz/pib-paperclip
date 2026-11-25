@@ -42,6 +42,7 @@ export interface MemberRestrictionRouteEntry {
   shadows?: string;
 }
 
+const QUESTIONS_TEST = "server/src/__tests__/member-restriction-route-table-questions.test.ts";
 const TASKS_TEST = "server/src/__tests__/member-restriction-route-table-tasks.test.ts";
 const TREE_TEST = "server/src/__tests__/member-restriction-route-table-comments-projects.test.ts";
 const PROJECT_BODY_TEST = "server/src/__tests__/member-restriction-project-body-allowlist.test.ts";
@@ -55,6 +56,7 @@ const TASK_LIST_TEST = "server/src/__tests__/member-restriction-task-list-caller
 const INSTANCE_TEST = "server/src/__tests__/member-restriction-route-table-instance.test.ts";
 const AGENT_PAGES_TEST = "server/src/__tests__/member-restriction-route-table-agent-pages.test.ts";
 const PLANNING_CANVAS_TEST = "server/src/__tests__/planning-canvas-access-routes.test.ts";
+const TASK_HISTORY_TEST = "server/src/__tests__/member-restriction-route-table-task-history.test.ts";
 
 export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntry[] = [
   // C4b-1a (PAR-12730): the task routes of `routes/issues.ts`. Comments,
@@ -78,6 +80,18 @@ export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntr
   { method: "GET", path: "/api/issues/:id/runner-goal", class: "run", test: TASKS_TEST },
   { method: "POST", path: "/api/issues/:id/checkout", class: "run", test: TASKS_TEST },
   { method: "POST", path: "/api/issues/:id/release", class: "run", test: TASKS_TEST },
+  // PAR-14342: the history of a task he can read (4.6 "task activity"). The
+  // two run lists hold only the runs that work for him (4.6 "One run's
+  // detail", AC-G5); company-wide run lists stay closed.
+  { method: "GET", path: "/api/issues/:id/activity", class: "open", test: TASK_HISTORY_TEST },
+  { method: "GET", path: "/api/issues/:id/runs", class: "open", test: TASK_HISTORY_TEST },
+  { method: "GET", path: "/api/issues/:issueId/live-runs", class: "open", test: TASK_HISTORY_TEST },
+  // Closed on purpose (PAR-14342): the session context reading and compaction
+  // (agent runtime state), task browsers (browser tools) and the email thread
+  // (email) are out of scope for him (section 2); the task page skips them.
+  { method: "GET", path: "/api/issues/:id/context-usage", class: "closed" },
+  { method: "GET", path: "/api/issues/:issueId/browsers", class: "closed" },
+  { method: "GET", path: "/api/companies/:companyId/email/tasks/:issueId", class: "closed" },
   // Closed on purpose: company set-up (labels), operator tools (recovery,
   // diagnostics, watchdog, monitors, retries, review decisions, low-trust
   // promotions, plan decompositions), sharing (grants, privacy constraints),
@@ -222,6 +236,31 @@ export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntr
   { method: "POST", path: "/api/issues/:id/documents/:key/unlock", class: "open", test: DOCS_TEST },
   { method: "DELETE", path: "/api/issues/:id/documents/:key", class: "open", test: DOCS_TEST },
   { method: "POST", path: "/api/companies/:companyId/issues/:issueId/attachments", class: "open", test: DOCS_TEST },
+
+  // C4d-2 (PAR-13025): questions and confirmations on a task (4.6, S11): he
+  // reads, answers, skips and dismisses those on a task he can read. Every
+  // handler reads the task through `issue:read` first ("Issue not found"),
+  // agents included; the answer routes do it in
+  // `getIssueThreadInteractionResolutionAuthorization`. The run an answer
+  // starts is held to invariant A by the wake queue (4.7). Pending questions
+  // is board-only and the conversation owner's. `resolve-from-comment` records
+  // a person's reply for the agent run that read it: a run only. Excluded:
+  // a tool review or a secret proposal (payload `toolAction` or
+  // `secretProposal`). Under `enforce` no resolving route decides one for
+  // him (403 `MEMBER_RESTRICTED_GOVERNED_ACTION`, nothing runs), checked in
+  // `assertIssueThreadInteractionResolutionAllowed`; tool access stays closed.
+  { method: "GET", path: "/api/issues/:id/pending-questions", class: "open", test: QUESTIONS_TEST },
+  { method: "GET", path: "/api/issues/:id/interactions", class: "open", test: QUESTIONS_TEST },
+  { method: "POST", path: "/api/issues/:id/interactions", class: "open", test: QUESTIONS_TEST },
+  { method: "POST", path: "/api/issues/:id/interactions/:interactionId/accept", class: "open", test: QUESTIONS_TEST },
+  { method: "POST", path: "/api/issues/:id/interactions/:interactionId/reject", class: "open", test: QUESTIONS_TEST },
+  { method: "POST", path: "/api/issues/:id/interactions/:interactionId/respond", class: "open", test: QUESTIONS_TEST },
+  { method: "POST", path: "/api/issues/:id/interactions/:interactionId/verdicts", class: "open", test: QUESTIONS_TEST },
+  { method: "POST", path: "/api/issues/:id/interactions/:interactionId/withdraw", class: "open", test: QUESTIONS_TEST },
+  { method: "POST", path: "/api/issues/:id/interactions/:interactionId/dismiss", class: "open", test: QUESTIONS_TEST },
+  { method: "POST", path: "/api/issues/:id/interactions/:interactionId/skip", class: "open", test: QUESTIONS_TEST },
+  { method: "POST", path: "/api/issues/:id/interactions/:interactionId/cancel", class: "open", test: QUESTIONS_TEST },
+  { method: "POST", path: "/api/issues/:id/interactions/:interactionId/resolve-from-comment", class: "run", test: QUESTIONS_TEST },
 
   // C4e-1 (PAR-12733): account, session and company record. His own account
   // (4.6 and 4.6a row 8): every handler reads only `req.actor.userId`'s rows
@@ -458,6 +497,8 @@ export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntr
     ["PATCH", "/api/companies/:companyId/planning-canvases/:boardId/comments/:commentId"],
     ["DELETE", "/api/companies/:companyId/planning-canvases/:boardId/comments/:commentId"],
     ["POST", "/api/companies/:companyId/planning-canvases/:boardId/comments/:commentId/resolve"],
+    // PAR-14276 (board chat): edit access; the thread issue runs `restrictedTaskBody(..., "createIssue")` on every message.
+    ["POST", "/api/companies/:companyId/planning-canvases/:boardId/chat"],
     // PAR-13937 (C8): refs and query read only what the caller may read; a handoff runs `restrictedTaskBody(..., "createIssue")` per issue.
     ["GET", "/api/companies/:companyId/planning-canvases/:boardId/refs"],
     ["POST", "/api/companies/:companyId/planning-canvases/:boardId/query"],

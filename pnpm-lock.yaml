@@ -766,6 +766,9 @@ importers:
 
   packages/plugins/pib-plugin-kit:
     dependencies:
+      '@paperclipai/shared':
+        specifier: workspace:*
+        version: link:../../shared
       pdf-lib:
         specifier: ^1.17.1
         version: 1.17.1

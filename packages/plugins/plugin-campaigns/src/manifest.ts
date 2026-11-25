@@ -173,6 +173,14 @@ const manifest: PaperclipPluginManifestV1 = {
         exportName: "CampaignsSidebar",
         order: 50,
       },
+      // Planning Canvas (PAR-14423): the card of an embed node { plugin, type: "card-campaign", assetId: <campaign id> }.
+      {
+        type: "canvasNode",
+        id: "card-campaign",
+        displayName: "Campaign",
+        exportName: "CampaignCanvasCard",
+        entityCard: { kind: "campaign", search: true, related: true },
+      },
     ],
   },
 };

@@ -1149,7 +1149,12 @@ export async function assertGitSensitiveAdapterWorkspaceValid(input: {
     input.persistedExecutionWorkspace?.mode === "adapter_managed" &&
     input.persistedExecutionWorkspace.strategyType !== "git_worktree" &&
     input.executionWorkspace.strategy !== "git_worktree" &&
-    !input.resolvedWorkspace.workspaceId;
+    // A resolved project workspace id alone does not bind a checkout; only a
+    // branch or repo on the persisted/realized workspace does (PAR-13540).
+    !readNonEmptyString(input.persistedExecutionWorkspace.branchName) &&
+    !readNonEmptyString(input.persistedExecutionWorkspace.repoUrl) &&
+    !readNonEmptyString(input.executionWorkspace.branchName) &&
+    !readNonEmptyString(input.executionWorkspace.repoUrl);
   const gitMetadataExpectation =
     workspaceExpectation && !agentDefaultTaskDirectory;
 

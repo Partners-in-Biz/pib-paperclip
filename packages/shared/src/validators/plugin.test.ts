@@ -541,3 +541,31 @@ describe("plugin task side-panel declarations", () => {
     expect(pluginManifestV1Schema.safeParse({ ...manifest, apiRoutes }).success).toBe(false);
   });
 });
+
+describe("plugin entity card slot declarations (PAR-14389 C.1)", () => {
+  const entityCard = { kind: "company", search: true, related: true };
+  const card = { type: "canvasNode", id: "card-company", displayName: "Company", exportName: "CompanyCard", entityCard };
+  it("keeps entityCard on a canvasNode slot, in a slot and in a whole manifest", () => {
+    expect(pluginUiSlotDeclarationSchema.parse(card).entityCard).toEqual(entityCard);
+    const manifest = { id: "example.cards", apiVersion: 1, version: "1.0.0", displayName: "Cards", description: "Cards", author: "Tests",
+      categories: ["ui"], capabilities: ["ui.action.register"], entrypoints: { worker: "worker.js", ui: "ui.js" }, ui: { slots: [card] } };
+    expect(pluginManifestV1Schema.parse(manifest).ui?.slots?.[0]?.entityCard).toEqual(entityCard);
+  });
+  it.each([
+    { type: "page", id: "p", displayName: "P", exportName: "P", routePath: "cards" },
+    { type: "sidebar", id: "s", displayName: "S", exportName: "S" },
+    { type: "detailTab", id: "d", displayName: "D", exportName: "D", entityTypes: ["issue"] },
+    { type: "dashboardWidget", id: "w", displayName: "W", exportName: "W" },
+  ])("refuses entityCard on a $type slot", (slot) => {
+    expect(pluginUiSlotDeclarationSchema.safeParse(slot).success).toBe(true);
+    const result = pluginUiSlotDeclarationSchema.safeParse({ ...slot, entityCard });
+    expect(result.success).toBe(false);
+    expect(result.error?.issues.map((issue) => issue.path.join("."))).toContain("entityCard");
+  });
+  it("refuses a malformed entityCard", () => {
+    for (const bad of [{ kind: "", search: true, related: true }, { kind: "company", search: "yes", related: true },
+      { kind: "company", search: true }, { ...entityCard, title: "Acme" }]) {
+      expect(pluginUiSlotDeclarationSchema.safeParse({ ...card, entityCard: bad }).success).toBe(false);
+    }
+  });
+});

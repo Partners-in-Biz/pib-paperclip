@@ -678,6 +678,16 @@ Examples:
 - "create branch from issue"
 - "restart process"
 
+The `canvas.cards.` key prefix is reserved for board entity cards (PAR-14389).
+Only `canvas.cards.resolve`, `canvas.cards.search` and `canvas.cards.related`
+exist, and only for a plugin that declares an `entityCard` on a `canvasNode`
+slot; any other key under the prefix answers 404. The host answers people only
+(an agent key, a run token or a system caller gets 403
+`CANVAS_CARDS_PERSON_ONLY`), checks the params against the shared schemas in
+`@paperclipai/shared` (`canvas-cards.ts`, 400 on failure), and answers a member
+restricted under `enforce` itself (hidden cards, empty lists) without calling
+the worker.
+
 ### 13.10 `executeTool`
 
 Runs a plugin-contributed agent tool during a run.

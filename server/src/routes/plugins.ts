@@ -49,6 +49,7 @@ import {
   PLUGIN_STATUSES,
 } from "@paperclipai/shared";
 import { pluginRegistryService } from "../services/plugin-registry.js";
+import { canvasCardsGuard } from "../services/plugin-canvas-cards-guard.js";
 import { agentKeyRunNamingError, toolRouteCallerError } from "../services/member-restriction/rule-group-h.js";
 import { pluginLifecycleManager } from "../services/plugin-lifecycle.js";
 import {
@@ -870,6 +871,24 @@ export function pluginRoutes(
     };
   }
 
+  /**
+   * The core guard on `canvas.cards.*` (PAR-14389 C.1), called by both action
+   * routes after the core plugin gate and `performActionActorContext`. Throws
+   * 404/403/400, or answers a restricted person itself; true when it answered.
+   */
+  function answeredByCanvasCardsGuard(
+    res: Response,
+    key: string,
+    plugin: { manifestJson: PaperclipPluginManifestV1 | null },
+    actorContext: PluginPerformActionActorContext,
+    params: unknown,
+  ): boolean {
+    const outcome = canvasCardsGuard({ key, manifest: plugin.manifestJson, actorContext, params });
+    if (outcome.kind === "worker") return false;
+    res.json({ data: outcome.data });
+    return true;
+  }
+
   function actionParamsWithAuthorizedCompanyScope(
     params: Record<string, unknown> | undefined,
     companyId: string | undefined,
@@ -1647,6 +1666,7 @@ export function pluginRoutes(
     const companyId = assertPluginBridgeScope(req, body.companyId);
     await assertPluginOpenForPerson(req, companyId, plugin, "bridge/action");
     const actorContext = await performActionActorContext(req, companyId);
+    if (answeredByCanvasCardsGuard(res, body.key, plugin, actorContext, body.params)) return;
 
     try {
       const result = await bridgeDeps.workerManager.call(
@@ -1837,6 +1857,7 @@ export function pluginRoutes(
     const companyId = assertPluginBridgeScope(req, body?.companyId);
     await assertPluginOpenForPerson(req, companyId, plugin, "actions");
     const actorContext = await performActionActorContext(req, companyId);
+    if (answeredByCanvasCardsGuard(res, key, plugin, actorContext, body?.params)) return;
 
     try {
       const result = await bridgeDeps.workerManager.call(

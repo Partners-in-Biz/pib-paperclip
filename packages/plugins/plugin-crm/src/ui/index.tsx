@@ -200,6 +200,9 @@ const NEXT_ACTION_LABEL: Record<string, string> = { call: "Call", email: "Email"
 /** `/crm` is the CRM list; `/crm?client=company:<id>` (or `contact:<id>`) is that client's workspace. */
 export const CrmPage = withHelp(CrmPageMain);
 
+// Planning canvas cards (PAR-14416).
+export { CrmCompanyCard, CrmContactCard } from "./canvas-card.js";
+
 /** The page asks `access.me` first; closed shows the "no access" page (the guard still refuses every call). */
 function CrmPageMain(props: PluginPageProps) {
   const access = useAccess(useAccessMe(), props.context.companyId);

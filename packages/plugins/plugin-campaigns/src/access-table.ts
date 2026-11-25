@@ -26,6 +26,8 @@ const rows = (entry: AccessTableEntry, keys: string[]) => Object.fromEntries(key
 export const CAMPAIGNS_ACCESS_TABLE: AccessTable = Object.freeze({
   // Page actions.
   ...rows(VIEW, ["campaigns.load", "campaigns.detail", "campaigns.stats", "campaigns.ab-suggestion", "campaigns.growth-load"]),
+  // Planning Canvas entity cards (PAR-14423): reading, so `view`, as the page's detail and list.
+  ...rows(VIEW, ["canvas.cards.resolve", "canvas.cards.search", "canvas.cards.related"]),
   "campaigns.create-campaign": CREATE,
   ...rows(EDIT, ["campaigns.add-step", "campaigns.request-approval", "campaigns.pause", "campaigns.complete", "campaigns.enroll", "campaigns.declare-winner"]),
   // Launching or resuming sends to people; approving, sending back and the Growth Lab decisions are decisions.

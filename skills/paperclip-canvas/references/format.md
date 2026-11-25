@@ -76,3 +76,7 @@ Same `clientBatchId` from the same caller returns the first answer, so a retry a
 
 - `GET|POST .../{boardId}/comments` (`itemKey` for a node thread, `parentId` to reply), `POST .../comments/{commentId}/resolve`.
 - `PATCH .../{boardId}/sharing`, `GET|DELETE .../{boardId}/agent-grants[/{grantId}]`: owner and admin matters. Agents do not change sharing or grants.
+
+## Live sources and who may write them
+
+`kanban` and `timeline` nodes carry a live `data.source`. The ops route refuses a `source` field from any run that is not the board chat thread's run (PAR-14282). Outside a board chat, write a static `table` or `markdown` node instead.

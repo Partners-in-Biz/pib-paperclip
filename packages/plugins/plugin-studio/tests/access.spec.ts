@@ -61,6 +61,11 @@ describe("Studio access guard (PAR-12687)", () => {
     const slots = manifest.ui?.slots ?? [];
     expect(slots.length).toBeGreaterThan(0);
     for (const slot of slots) {
+      // Planning Canvas slots (PAR-14280) draw a placeholder when the guard refuses, so they are not page-gated.
+      if (slot.type === "canvasNode" || slot.type === "canvasPanel") {
+        expect(index, slot.exportName).toMatch(new RegExp(`export \\{ ${slot.exportName} \\} from "\\./Board\\w+\\.js";`));
+        continue;
+      }
       const kind = slot.type === "sidebar" ? "sidebar" : "page";
       expect(index, slot.exportName).toMatch(new RegExp(`export const ${slot.exportName} = withStudioAccess\\(\\w+, "${kind}"\\)`));
     }

@@ -915,6 +915,7 @@ export function heartbeatService(
     resolveResponsibleUserIdForRunSeed,
     resolveResponsibleUserIdForRun,
     resolveResponsibleUserIdForRunContext,
+    resolveEnforcedCausingPersonId,
   } = createHeartbeatRunPreparation(db);
   let shutdownInProgress = false;
   const instanceSettings = instanceSettingsService(db);
@@ -2450,10 +2451,14 @@ export function heartbeatService(
           issueContext,
           routineEnvContext,
         });
+      // H1 (PAR-14378): under `enforce` the causing person outranks the
+      // identity this run would inherit from the task's earlier run.
+      const causingPersonId = await resolveEnforcedCausingPersonId(agent.companyId, context, issueContext);
       const identityContext = await timePreparation("run_identity", () => initializeRunIdentity(db, {
         companyId: agent.companyId,
         runId: run.id,
         responsibleUserId,
+        causingPersonId,
         interactionId: readNonEmptyString(context.interactionId),
         issueId,
         messageIds:
@@ -2670,6 +2675,8 @@ export function heartbeatService(
         issueSettings: issueExecutionWorkspaceSettings,
         legacyUseProjectWorkspace:
           issueAssigneeOverrides?.useProjectWorkspace ?? null,
+        agentRole: agent.role,
+        issueWorkMode: issueContext?.workMode ?? null,
       });
       const requestedExecutionWorkspaceMode = freshWorkspace?.mode === "fresh_isolated_workspace"
         ? "isolated_workspace" : trustPreset.kind === "low_trust_review" &&

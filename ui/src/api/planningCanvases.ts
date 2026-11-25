@@ -15,6 +15,8 @@ import type {
   UpdatePlanningCanvasSharing,
   UpdatePlanningCanvas,
   CreatePlanningCanvasComment,
+  PlanningCanvasChatMessage,
+  PlanningCanvasChatMessageResult,
 } from "@paperclipai/shared";
 import { api, requestResponse } from "./client";
 import type { QueriedIssue } from "@/components/planning-canvas/nodes/issue-board";
@@ -155,6 +157,10 @@ export const planningCanvasesApi = {
 
   createComment: (companyId: string, boardId: string, data: CreatePlanningCanvasComment) =>
     api.post<PlanningCanvasComment>(`${boardPath(companyId, boardId)}/comments`, data),
+
+  /** Board chat (PAR-14277): one message to one agent. A repeated `clientRequestId` writes nothing. */
+  sendChat: (companyId: string, boardId: string, data: PlanningCanvasChatMessage) =>
+    api.post<PlanningCanvasChatMessageResult>(`${boardPath(companyId, boardId)}/chat`, data),
 
   resolveComment: (companyId: string, boardId: string, commentId: string, resolved: boolean) =>
     api.post<PlanningCanvasComment>(`${boardPath(companyId, boardId)}/comments/${commentId}/resolve`, { resolved }),

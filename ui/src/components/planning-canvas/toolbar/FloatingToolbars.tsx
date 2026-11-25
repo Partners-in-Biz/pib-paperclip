@@ -1,6 +1,7 @@
 import { CANVAS_NODE_COLORS, type CanvasShapeVariant } from "@paperclipai/shared";
-import { AlignHorizontalJustifyStart, AlignVerticalJustifyStart, CalendarClock, Copy, Eraser, Highlighter, LayoutGrid, ListTree, Send, Sparkles, Trash2 } from "lucide-react";
+import { AlignHorizontalJustifyStart, AlignVerticalJustifyStart, CalendarClock, Copy, Eraser, Highlighter, LayoutGrid, ListTree, MessageSquareText, Send, Sparkles, Trash2 } from "lucide-react";
 import { type CanvasController } from "@/components/planning-canvas/state/useCanvasController";
+import { RelatedButton } from "@/components/planning-canvas/panels/related/RelatedPanel";
 import { Button } from "@/components/ui/button";
 import { CANVAS_COLOR_THEMES } from "@/lib/planning-canvas-helpers";
 import { cn } from "@/lib/utils";
@@ -129,6 +130,15 @@ export function MultiSelectToolbar({ c }: { c: CanvasController }) {
         <Button type="button" size="xs" variant="outline" onClick={() => setHandoffOpen(true)}>
           <ListTree className="size-3" />
           Hand off…
+        </Button>
+        <Button
+          type="button"
+          size="xs"
+          variant="outline"
+          onClick={() => c.setChatAsk((p) => ({ itemKeys: [...selectedNodeIds], seq: (p?.seq ?? 0) + 1 }))}
+        >
+          <MessageSquareText className="size-3" />
+          Ask about selection
         </Button>
         <Button
           type="button"
@@ -261,6 +271,24 @@ export function ContextToolbar({ c }: { c: CanvasController }) {
           <ListTree className="size-3" />
           Hand off…
         </Button>
+
+        <Button
+          type="button"
+          size="xs"
+          variant="outline"
+          onClick={() =>
+            c.setChatAsk((p) =>
+              primarySelectedNode.kind === "frame"
+                ? { itemKeys: [], frameKey: primarySelectedNode.id, seq: (p?.seq ?? 0) + 1 }
+                : { itemKeys: [primarySelectedNode.id], seq: (p?.seq ?? 0) + 1 },
+            )
+          }
+        >
+          <MessageSquareText className="size-3" />
+          {primarySelectedNode.kind === "frame" ? "Ask about this frame" : "Ask about this"}
+        </Button>
+
+        <RelatedButton c={c} nodeId={primarySelectedNode.id} />
 
         {primarySelectedNode.kind === "note" && primarySelectedNode.noteId && notesById.get(primarySelectedNode.noteId) ? (
           <Button

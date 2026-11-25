@@ -2588,9 +2588,30 @@ function blockerWorkspaceFacts(companyId: string, workspaceScope: SQL) {
 
 /** An issue's own operation takes precedence over the legacy NULL fallback.
  * A later successful finalize clears either barrier. A successful operation
- * enclosed by its owning finalize is also saved, although it started later. */
+ * enclosed by its owning finalize is also saved, although it started later.
+ * A cleaned-up workspace has nothing left to finalize: once it is archived, or
+ * closed with a successful `worktree_cleanup` after its last prepare, a late
+ * failed finalize (cleanup won the race) never keeps the blocker pending. */
 function pendingFinalizeBlockerCondition(companyId: string, issueId: SQL, workspaceId: SQL) {
-  return sql`${workspaceId} is not null and exists (
+  return sql`${workspaceId} is not null and not exists (
+    select 1 from execution_workspaces settled_workspace
+    where settled_workspace.company_id = ${companyId}::uuid
+      and settled_workspace.id = ${workspaceId}
+      and (settled_workspace.status = 'archived'
+        or (settled_workspace.closed_at is not null and exists (
+          select 1 from workspace_operations cleanup_operation
+          where cleanup_operation.company_id = ${companyId}::uuid
+            and cleanup_operation.execution_workspace_id = ${workspaceId}
+            and cleanup_operation.phase = 'worktree_cleanup' and cleanup_operation.status = 'succeeded'
+            and not exists (
+              select 1 from workspace_operations reprepare_operation
+              where reprepare_operation.company_id = ${companyId}::uuid
+                and reprepare_operation.execution_workspace_id = ${workspaceId}
+                and reprepare_operation.phase in ('worktree_prepare', 'workspace_provision')
+                and reprepare_operation.started_at > cleanup_operation.started_at
+            )
+        )))
+  ) and exists (
     select 1 from (values (1)) seed(value)
     left join lateral (
       select phase, status, started_at, finished_at, heartbeat_run_id from workspace_operations blocker_operation
@@ -10640,7 +10661,7 @@ export function issueService(db: Db) {
         if (projectWorkspaceId) {
           await assertValidProjectWorkspace(
             companyId,
-            null,
+            issueData.projectId ?? null,
             projectWorkspaceId,
             tx,
           );
@@ -11547,14 +11568,52 @@ export function issueService(db: Db) {
         issueData.projectId !== undefined
           ? issueData.projectId
           : existing.projectId;
-      const nextProjectWorkspaceId =
+      const projectChanged =
+        issueData.projectId !== undefined &&
+        issueData.projectId !== existing.projectId;
+      let nextProjectWorkspaceId =
         issueData.projectWorkspaceId !== undefined
           ? issueData.projectWorkspaceId
           : existing.projectWorkspaceId;
-      const nextExecutionWorkspaceId =
+      let nextExecutionWorkspaceId =
         issueData.executionWorkspaceId !== undefined
           ? issueData.executionWorkspaceId
           : existing.executionWorkspaceId;
+      if (projectChanged) {
+        if (issueData.projectWorkspaceId === undefined && nextProjectWorkspaceId) {
+          const [existingPw] = await dbOrTx
+            .select({ projectId: projectWorkspaces.projectId })
+            .from(projectWorkspaces)
+            .where(eq(projectWorkspaces.id, nextProjectWorkspaceId));
+          if (!existingPw || existingPw.projectId !== nextProjectId) {
+            if (nextProjectId) {
+              const [targetProject] = await dbOrTx
+                .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
+                .from(projects)
+                .where(and(eq(projects.id, nextProjectId), eq(projects.companyId, existing.companyId)));
+              const targetPolicy = parseProjectExecutionWorkspacePolicy(targetProject?.executionWorkspacePolicy);
+              nextProjectWorkspaceId = await resolveProjectDefaultWorkspaceId(dbOrTx, {
+                companyId: existing.companyId,
+                projectId: nextProjectId,
+                policy: targetPolicy,
+              });
+            } else {
+              nextProjectWorkspaceId = null;
+            }
+            patch.projectWorkspaceId = nextProjectWorkspaceId;
+          }
+        }
+        if (issueData.executionWorkspaceId === undefined && nextExecutionWorkspaceId) {
+          const [existingEw] = await dbOrTx
+            .select({ projectId: executionWorkspaces.projectId })
+            .from(executionWorkspaces)
+            .where(eq(executionWorkspaces.id, nextExecutionWorkspaceId));
+          if (!existingEw || (nextProjectId && existingEw.projectId !== nextProjectId)) {
+            nextExecutionWorkspaceId = null;
+            patch.executionWorkspaceId = null;
+          }
+        }
+      }
       const nextExecutionWorkspacePreference =
         issueData.executionWorkspacePreference !== undefined
           ? issueData.executionWorkspacePreference
@@ -11572,8 +11631,15 @@ export function issueService(db: Db) {
           ? { ...nextExecutionWorkspaceSettings }
           : null;
       }
-      if (nextProjectWorkspaceId) await assertValidProjectWorkspace(existing.companyId, null, nextProjectWorkspaceId);
-      if (nextExecutionWorkspaceId) await assertValidExecutionWorkspace(existing.companyId, null, nextExecutionWorkspaceId);
+      if (nextProjectWorkspaceId) {
+        await assertValidProjectWorkspace(
+          existing.companyId,
+          nextProjectId ?? null,
+          nextProjectWorkspaceId,
+          dbOrTx,
+        );
+      }
+      if (nextExecutionWorkspaceId) await assertValidExecutionWorkspace(existing.companyId, null, nextExecutionWorkspaceId, dbOrTx);
       if (
         isolatedWorkspacesEnabled &&
         issueData.executionWorkspaceSettings !== undefined

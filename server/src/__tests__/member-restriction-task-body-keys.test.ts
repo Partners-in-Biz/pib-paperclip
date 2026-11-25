@@ -11,7 +11,6 @@ import { parseIssueExecutionWorkspaceSettings } from "../services/execution-work
  * member-restriction-task-body-allowlist.test.ts (2/2).
  */
 
-const R = "restricted-person";
 const ENV = "11111111-1111-4111-8111-111111111111";
 const STORED = {
   assigneeUserId: null, executionWorkspaceId: "ws-stored",
@@ -21,7 +20,7 @@ const STORED = {
   executionPolicy: { mode: "normal", commentRequired: true, stages: [], authorizationPolicy: { trustPreset: "standard" } },
 };
 const patch = (body: Record<string, unknown>, stored: typeof STORED | null = STORED) =>
-  restrictedTaskBodyKeys("updateIssue", body, stored, R);
+  restrictedTaskBodyKeys("updateIssue", body, stored);
 
 it("tripwire: every key of the three schemas, and one level into the kept objects, is classified", () => {
   const unwrap = (field: z.ZodType): z.ZodType => field instanceof z.ZodOptional || field instanceof z.ZodNullable
@@ -87,7 +86,7 @@ describe("keep-stored merge", () => {
   });
 
   it("on create nothing is stored: a host key is refused, the allowed ones pass unchanged", () => {
-    const create = (body: Record<string, unknown>) => restrictedTaskBodyKeys("createIssue", body, null, R);
+    const create = (body: Record<string, unknown>) => restrictedTaskBodyKeys("createIssue", body, null);
     const body = { executionWorkspaceSettings: { mode: "isolated_workspace", workspaceStrategy: { type: "git_worktree", baseRef: "main" } },
       assigneeAdapterOverrides: { adapterConfig: { model: "m", effort: "high" } } };
     expect(create(body)).toEqual({ refused: [], merged: body });
@@ -98,12 +97,22 @@ describe("keep-stored merge", () => {
 describe("other classes", () => {
   it.each([
     [{ resume: true }, []], [{ interrupt: true }, ["interrupt"]], [{ interrupt: false }, []], [{ reviewRequest: {} }, ["reviewRequest"]],
-    [{ assigneeUserId: "someone-else" }, ["assigneeUserId"]], [{ assigneeUserId: R }, []], [{ assigneeUserId: null }, []],
     // A reference is read-checked against the database (C4i-b2), never refused by key.
-    [{ executionWorkspaceId: "ws-other" }, []], [{ executionWorkspaceId: "ws-stored" }, []],
-    [{ projectWorkspaceId: "pw" }, []], [{ blockedByIssueIds: ["t"] }, ["blockedByIssueIds"]],
-    [{ blockedByIssueIds: [] }, []], [{ projectId: "p", parentId: "t", assigneeAgentId: "a", title: "x" }, []],
-    [{ executionPolicy: { ...STORED.executionPolicy, stages: [{ participants: [{ userId: "someone-else" }] }] } },
-      ["executionPolicy.stages"]],
+    [{ executionWorkspaceId: "ws-other" }, []], [{ executionWorkspaceId: "ws-stored" }, []], [{ projectWorkspaceId: "pw" }, []],
+    // `checked` (C4i-e): the database checks answer for these, never the key.
+    [{ assigneeUserId: "someone-else" }, []], [{ blockedByIssueIds: ["t"] }, []],
+    [{ projectId: "p", parentId: "t", assigneeAgentId: "a", title: "x" }, []],
+    [{ executionPolicy: { ...STORED.executionPolicy, stages: [{ participants: [{ userId: "someone-else" }] }] } }, []],
   ])("patch %j refuses %j", (body, refused) => expect(patch(body).refused).toEqual(refused));
+
+  it("C4i-e: the four keys are `checked`, none `empty-only` or `self-only`", () => {
+    for (const [schemaKey, { fields }] of Object.entries(MEMBER_RESTRICTION_TASK_BODY_ALLOWLISTS)) {
+      const own: Record<string, string> = fields;
+      for (const key of ["blockedByIssueIds", "assigneeUserId", "watchdog"].filter((name) => name in own)) {
+        expect(own[key], `${schemaKey}.${key}`).toBe("checked");
+      }
+      expect(Object.values(own), schemaKey).not.toContain("self-only");
+    }
+    expect(TASK_KEPT_OBJECTS.executionPolicy.stages).toBe("allowed");
+  });
 });

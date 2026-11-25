@@ -291,7 +291,10 @@ describe("planning canvas comments database support", () => {
         status: "todo",
       });
       expect(issue!.executionWorkspaceSettings).toMatchObject({ mode: "agent_default" });
-      expect(issue!.description).toContain("Content n1");
+      // X3: the key and a board link, never node text.
+      expect(issue!.description).toContain("node `n1`");
+      expect(issue!.description).toContain(`/planning-canvas?board=${board.id}`);
+      expect(`${issue!.title}\n${issue!.description}`).not.toMatch(/Content n1|Title n1/);
       expect(res.body.linkedIssueId).toBe(issue!.id);
       expect(wakes).toEqual([{ agentId: A(0), reason: "issue_assigned", payload: expect.objectContaining({ issueId: issue!.id, mutation: "create" }), requestedByActorId: MEMBER }]);
       // The Q11 guard saw exactly the built body.
@@ -386,7 +389,7 @@ describe("planning canvas comments database support", () => {
       const res = await post(session(MEMBER), board.id, { itemKey: "n1", body: `Hello ${mention(A(5))}` });
       expect(res.status).toBe(201);
       expect(res.body.mentionState).toEqual({ [A(5)]: "not_sent:member_restricted" });
-      expect(guardRefuses.bodies).toEqual([expect.objectContaining({ assigneeAgentId: A(5), title: "Canvas: Title n1" })]);
+      expect(guardRefuses.bodies).toEqual([expect.objectContaining({ assigneeAgentId: A(5), title: expect.stringMatching(/^Canvas: /) })]);
       expect(await canvasIssues(board.id)).toEqual([]);
       expect(wakes).toEqual([]);
       expect((await db.select().from(planningCanvasComments).where(eq(planningCanvasComments.id, res.body.id)))).toHaveLength(1);
@@ -454,11 +457,13 @@ describe("planning canvas comments database support", () => {
       expect(await db.select().from(planningCanvasAgentGrants).where(eq(planningCanvasAgentGrants.boardId, company.id))).toEqual([]);
     });
 
-    it("switch off: the issue is created with the node text, no grant", async () => {
+    it("switch off: the issue is created (private, without node text), no grant", async () => {
       const personal = await makeBoard();
       await post(session(OWNER), personal.id, { itemKey: "n2", body: mention(A(2)) });
       const [issue] = await canvasIssues(personal.id);
-      expect(issue!.description).toContain("Content n2");
+      expect(issue!.visibility).toBe("private");
+      expect(issue!.description).toContain("node `n2`");
+      expect(issue!.description).not.toContain("Content n2");
       expect(await db.select().from(planningCanvasAgentGrants).where(eq(planningCanvasAgentGrants.boardId, personal.id))).toEqual([]);
     });
 

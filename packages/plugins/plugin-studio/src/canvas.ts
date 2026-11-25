@@ -6,11 +6,11 @@
  */
 import { randomUUID } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { sameClient, scopeOfRow, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
+import { sameClient, scopeOfRow, type ActingRestriction, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
 import { iso, num, table } from "./db.js";
 import { StudioError } from "./errors.js";
 import { clientFilter } from "./page.js";
-import { scopeForWork, scopeInput } from "./scope.js";
+import { assertListOpen, assertOpenToPerson, personFilter, scopeForWork, scopeInput } from "./scope.js";
 import { canConnect, emptyDoc, hasCycle, MAX_EDGES, MAX_LABEL, MAX_NODES, MAX_TEXT, MAX_TITLE, NODE_TYPES, type CanvasDoc, type CanvasEdge, type CanvasNode, type NodeType } from "./canvas-rules.js";
 
 // The rules live in canvas-rules.ts so the page bundle shares them; existing imports from this file keep working.
@@ -175,7 +175,8 @@ async function assertAssets(ctx: PluginContext, companyId: string, scope: Client
   }
 }
 
-export async function createCanvas(ctx: PluginContext, companyId: string, params: Record<string, unknown>, actor: { userId?: string | null; agentId?: string | null }) {
+/** `actor.restriction` is the person path's member check (PAR-14298): a restricted member makes no client board. */
+export async function createCanvas(ctx: PluginContext, companyId: string, params: Record<string, unknown>, actor: { userId?: string | null; agentId?: string | null; restriction?: ActingRestriction }) {
   const name = title(params.title);
   const projectId = typeof params.projectId === "string" && params.projectId.trim() ? params.projectId.trim() : null;
   if (projectId) {
@@ -183,6 +184,7 @@ export async function createCanvas(ctx: PluginContext, companyId: string, params
     if (!project) throw new StudioError(`Project ${projectId} was not found in this company.`, "unknown_project");
   }
   const where = await scopeForWork(ctx, companyId, scopeInput(params), projectId);
+  if (actor.restriction) assertOpenToPerson(where.scope, actor.restriction);
   const doc = params.doc === undefined ? emptyDoc() : normalizeDoc(params.doc);
   await assertAssets(ctx, companyId, where.scope, doc);
   const id = randomUUID();
@@ -194,10 +196,11 @@ export async function createCanvas(ctx: PluginContext, companyId: string, params
   return getCanvas(ctx, companyId, id);
 }
 
-export async function listCanvases(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
+/** A person's boards: a restricted member's list holds own work only (PAR-14298). */
+export async function listCanvases(ctx: PluginContext, companyId: string, params: Record<string, unknown>, restriction: ActingRestriction) {
   const values: unknown[] = [companyId];
   let where = "WHERE company_id = $1 AND archived_at IS NULL";
-  const scope = clientFilter(params.client);
+  const scope = personFilter(clientFilter(params.client), restriction);
   if (scope) {
     values.push(scope.kind, scope.id);
     where += ` AND client_kind = $${values.length - 1} AND client_ref = $${values.length}`;
@@ -208,7 +211,13 @@ export async function listCanvases(ctx: PluginContext, companyId: string, params
   }
   values.push(Math.min(Math.max(typeof params.limit === "number" ? params.limit : 50, 1), 200));
   const rows = await ctx.db.query<CanvasRow>(`SELECT * FROM ${table(ctx, "canvases")} ${where} ORDER BY updated_at DESC LIMIT $${values.length}`, values);
+  assertListOpen(rows.some((r) => r.client_ref), restriction);
   return rows.map(summary);
+}
+
+/** The client a canvas is filed under (null for own work), for the person path's member check (PAR-14290). */
+export async function canvasScope(ctx: PluginContext, companyId: string, id: string): Promise<ClientScope> {
+  return scopeOfRow(await getRow(ctx, companyId, String(id ?? "").trim()));
 }
 
 export async function getCanvas(ctx: PluginContext, companyId: string, id: string) {
