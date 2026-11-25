@@ -22,7 +22,7 @@ export type PrState =
   | { state: "merged"; sha: string | null; mergedAt: string | null; mergedBy: string | null }
   | { state: "open" }
   | { state: "closed" }
-  | { state: "unknown"; detail: string };
+  | { state: "unknown"; detail: string; /** GitHub did not answer at all (timeout, network): stop reading for this run. */ unreachable?: boolean };
 
 /** At most this many PRs are read for one ask: a longer list is not a plain merge ask. */
 export const MAX_PRS_PER_ASK = 5;
@@ -44,8 +44,26 @@ const PR_URL = /https?:\/\/(?:www\.)?github\.com\/([A-Za-z0-9-]+)\/([A-Za-z0-9_.
  */
 const ASKS_FOR_MERGE = /^\s*(?:(?:ok(?:ay)?|yes)[,:]?\s+)?(?:(?:may|can|shall|should|could|will) (?:we|i|you|someone)\s+|please\s+|ok(?:ay)? to\s+)?merge\s+(?!(?:is|was|has|had|done|already)\b)/i;
 
-/** A second thing asked next to the merge ("... and set the env vars", ", then deploy"): a merge alone does not answer it. */
-const ALSO_ASKS = /(?:\band\b|\bthen\b|\balso\b|\bplus\b|\+|&|;|,)\s*(?:then\s+|also\s+)?(?:set|add|store|save|deploy|copy|run|create|give|grant|send|pay|approve|enable|configure|update|rotate|share|publish|release|upload|delete|remove|install|sign|buy|renew)\b/i;
+/**
+ * The merge must be the only request, checked by shape, not by a list of verbs (any verb can start a second ask):
+ * one sentence; after "merge" no joining word or mark (and, or, then, also, plus, but, if, until, once, before,
+ * after, unless, while, except, without, ; & + , :); a bracket only around a branch move or a PR number
+ * ("(development to main)", "(#126)"). A closing "into <branch>" or "so <result>" is allowed.
+ */
+const JOINS = /\b(?:and|or|nor|then|also|plus|but|if|until|once|before|after|unless|while|except|without|as well)\b|[;&+,:]/i;
+const PLAIN_BRACKET = /^\s*(?:[\w./-]+\s+(?:to|into|->|→)\s+[\w./-]+|#?\d+|[\w./-]+)\s*$/i;
+
+/** True when the question asks for the merge and nothing else (see JOINS). */
+export function onlyAsksForMerge(question: string): boolean {
+  const body = question.trim().replace(/[.?!\s]+$/, "");
+  if (/[.?!]\s/.test(body)) return false; // a second sentence
+  const at = body.search(/\bmerge\b/i);
+  if (at < 0) return false;
+  const rest = body.slice(at + "merge".length);
+  for (const m of rest.matchAll(/\(([^)]*)\)/g)) if (!PLAIN_BRACKET.test(m[1] ?? "")) return false;
+  if (/[()]/.test(rest.replace(/\([^)]*\)/g, ""))) return false; // an unclosed bracket
+  return !JOINS.test(rest.replace(/\([^)]*\)/g, " "));
+}
 
 /** GitHub PR links in the texts, in order, each once. */
 export function prRefsIn(texts: ReadonlyArray<string | null | undefined>): PrRef[] {
@@ -85,8 +103,9 @@ export function mergeAskPrs(ask: MergeAskFacts): { prs: PrRef[] } | { skip: Merg
   if (ask.kind !== "decision") return { skip: "not_decision" };
   if (ask.hardStop && NEVER_SETTLED_BY_MERGE.has(ask.hardStop)) return { skip: "hard_stop" };
   if (!ASKS_FOR_MERGE.test(ask.question)) return { skip: "not_merge_ask" };
-  if (ALSO_ASKS.test(ask.question)) return { skip: "mixed_ask" };
-  const prs = prRefsIn([ask.question, ask.why, ...ask.steps, ...ask.links.map((l) => l.href)]);
+  if (!onlyAsksForMerge(ask.question)) return { skip: "mixed_ask" };
+  // Only the PRs the question asks about: links in its words or its links, never in why or steps (a merged PR named as context).
+  const prs = prRefsIn([ask.question, ...ask.links.map((l) => l.href)]);
   if (prs.length === 0) return { skip: "no_pr" };
   if (prs.length > MAX_PRS_PER_ASK) return { skip: "too_many_prs" };
   return { prs };

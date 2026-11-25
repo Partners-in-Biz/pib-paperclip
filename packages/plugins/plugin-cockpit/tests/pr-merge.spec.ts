@@ -77,6 +77,8 @@ describe("merged-PR rules", () => {
     expect(mergeAskPrs({ ...base, hasEffect: true })).toEqual({ skip: "effect" });
     expect(mergeAskPrs({ ...base, question: "May we put the PWA change (PR #14) live on the site?" })).toEqual({ skip: "not_merge_ask" });
     expect(mergeAskPrs({ ...base, links: [] })).toEqual({ skip: "no_pr" });
+    // A PR named only as context (why, steps) is not the one asked about.
+    expect(mergeAskPrs({ ...base, links: [], why: `Follows ${PR}, already merged.`, steps: [`See ${PR}`] })).toEqual({ skip: "no_pr" });
   });
 
   // Hostile phrasings: only a question that opens by asking for the merge, and asks nothing else, counts.
@@ -101,6 +103,22 @@ describe("merged-PR rules", () => {
     ["Merge PR #5 & add the DNS records?", "mixed_ask"],
     ["Merge PR #5; also rotate the API key?", "mixed_ask"],
     ["May we merge PR #5 plus send the client the release note?", "mixed_ask"],
+    // Second asks with verbs no list would hold (review of PAR-14492): the shape alone refuses them.
+    ["Merge PR #126? Also, can you confirm the R5,000 price?", "mixed_ask"],
+    ["Merge PR #126 and confirm the client's budget?", "mixed_ask"],
+    ["Merge PR #126 into main, and tell the client", "mixed_ask"],
+    ["Merge PR #126 and reply to the lead?", "mixed_ask"],
+    ["Merge PR #126? Should we also raise the retainer to R9000?", "mixed_ask"],
+    ["Merge PR #126. Then the client site goes live and I send them the email.", "mixed_ask"],
+    ["Merge PR #126 or close it?", "mixed_ask"],
+    ["Merge PR #126. Send the client the release note.", "mixed_ask"],
+    ["Merge PR #126? Tell the client it is live.", "mixed_ask"],
+    ["Merge PR #126 (needs the client to approve the copy first)?", "mixed_ask"],
+    ["Merge PR #126 if the client agrees?", "mixed_ask"],
+    ["Merge PR #126 once you have paid the invoice?", "mixed_ask"],
+    ["Merge PR #126: the client wants it today?", "mixed_ask"],
+    ["Merge PR #126 (development to main", "mixed_ask"],
+    ["Merge PR #126 (#126) into main?", true],
   ])("%s", (question, expected) => {
     const got = mergeAskPrs({ kind: "decision", question, why: null, steps: [], links: MERGE_ASK.links, hasEffect: false, hardStop: null });
     if (expected === true) expect("prs" in got).toBe(true);
@@ -117,7 +135,7 @@ describe("merged-PR rules", () => {
       await vi.advanceTimersByTimeAsync(9_999);
       expect(settled).toBeNull();
       await vi.advanceTimersByTimeAsync(1);
-      expect(settled).toEqual({ state: "unknown", detail: "GitHub did not answer in 10 s" });
+      expect(settled).toEqual({ state: "unknown", detail: "GitHub did not answer in 10 s", unreachable: true });
     } finally {
       vi.useRealTimers();
     }
@@ -148,6 +166,19 @@ describe("the hourly merged-PR check", () => {
     expect(s.issues.get(issue.id)).toMatchObject({ assigneeUserId: "user-1", status: "in_review" });
     expect(s.comments.length).toBe(commentsBefore);
     expect(s.wakeups).toEqual([]);
+  });
+
+  it("a GitHub that never answers costs one wait per run, not one per PR", async () => {
+    const s = setup({});
+    let calls = 0;
+    s.env.fetchImpl = (() => {
+      calls += 1;
+      return new Promise(() => undefined);
+    }) as unknown as typeof fetch;
+    for (const n of [126, 127, 128]) await asked(s, { ...MERGE_ASK, links: [{ label: `PR #${n}`, href: `https://github.com/Partners-in-Biz/lumen/pull/${n}` }] });
+    expect(await reconcileMergedPrAsks(s.env, A, { timeoutMs: 5 })).toMatchObject({ handedBack: 0, closed: 0 });
+    expect(calls).toBe(1);
+    expect(s.store.asks!.every((a) => a.status === "open")).toBe(true);
   });
 
   it("an unreadable PR (private repo, no access) changes nothing", async () => {

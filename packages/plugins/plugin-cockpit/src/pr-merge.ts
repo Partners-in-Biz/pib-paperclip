@@ -33,14 +33,14 @@ type FetchLike = (url: string, init?: Record<string, unknown>) => Promise<{ stat
  * One PR's state from GitHub. Never throws and never waits past `TIMEOUT_MS`,
  * even when the call ignores its abort signal; the token is used for this call and dropped.
  */
-export async function readPrState(fetchImpl: FetchLike, pr: PrRef, token: string | undefined): Promise<PrState> {
+export async function readPrState(fetchImpl: FetchLike, pr: PrRef, token: string | undefined, timeoutMs = TIMEOUT_MS): Promise<PrState> {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timedOut = new Promise<PrState>((resolve) => {
     timer = setTimeout(() => {
       controller.abort();
-      resolve({ state: "unknown", detail: `GitHub did not answer in ${TIMEOUT_MS / 1000} s` });
-    }, TIMEOUT_MS);
+      resolve({ state: "unknown", detail: `GitHub did not answer in ${timeoutMs / 1000} s`, unreachable: true });
+    }, timeoutMs);
   });
   const read = (async (): Promise<PrState> => {
     try {
@@ -50,7 +50,7 @@ export async function readPrState(fetchImpl: FetchLike, pr: PrRef, token: string
       if (res.status !== 200) return { state: "unknown", detail: `GitHub answered ${res.status}` };
       return prStateFrom(await res.json().catch(() => null));
     } catch (error) {
-      return { state: "unknown", detail: message(error).slice(0, 80) };
+      return { state: "unknown", detail: message(error).slice(0, 80), unreachable: true };
     }
   })();
   try {
@@ -88,7 +88,7 @@ function asksForPrs(ask: AskRow): PrRef[] | null {
 }
 
 /** Hourly, for one company. Safe to run twice: an ask is closed before anything else changes. */
-export async function reconcileMergedPrAsks(env: Env, companyId: string, options: { maxLookups?: number } = {}): Promise<PrMergeCounts> {
+export async function reconcileMergedPrAsks(env: Env, companyId: string, options: { maxLookups?: number; timeoutMs?: number } = {}): Promise<PrMergeCounts> {
   const out: PrMergeCounts = { checked: 0, handedBack: 0, closed: 0, woken: 0, waiting: 0, unknown: 0 };
   const candidates = (await listOpenAsks(env, companyId, 200)).map((ask) => ({ ask, prs: asksForPrs(ask) })).filter((c): c is { ask: AskRow; prs: PrRef[] } => !!c.prs);
   if (candidates.length === 0) return out;
@@ -111,7 +111,10 @@ export async function reconcileMergedPrAsks(env: Env, companyId: string, options
         if (!states.has(pr.key)) {
           if (budget <= 0) break;
           budget -= 1;
-          states.set(pr.key, await readPrState(fetchImpl, pr, token));
+          const state = await readPrState(fetchImpl, pr, token, options.timeoutMs ?? TIMEOUT_MS);
+          states.set(pr.key, state);
+          // GitHub did not answer at all: one wait is enough, read nothing more for this company this run.
+          if (state.state === "unknown" && state.unreachable) budget = 0;
         }
         if (states.get(pr.key)!.state !== "merged") break;
       }
