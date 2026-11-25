@@ -243,6 +243,19 @@ export const CAMPAIGN_TOOLS: PluginToolDeclaration[] = [
     }),
   },
   {
+    name: "create-feed-digest",
+    displayName: "Create feed digest",
+    description:
+      "Draft one email campaign from an allow-listed RSS feed (up to 10 items not yet in a launched digest) and open the normal launch approval. A second call while that digest is still a draft creates nothing and returns it. Nothing is sent until a person approves.",
+    parametersSchema: schema(["feedUrl", "audienceTags", "name", "subject"], {
+      feedUrl: str("The feed address. It must be in the Campaigns settings list of digest feeds (digestFeedUrls)."),
+      audienceTags: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 5, description: "1 to 5 CRM tags: who gets it. Required: a digest never goes to all contacts." },
+      name: str("Short internal name, e.g. 'Toolchanges weekly digest'."),
+      subject: str("The email subject."),
+      category: str("Optional: only items with exactly this feed category. Digests of other categories track their own items."),
+    }),
+  },
+  {
     name: "request-campaign-approval",
     displayName: "Request campaign approval",
     description:

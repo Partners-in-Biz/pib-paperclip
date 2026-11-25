@@ -1,6 +1,7 @@
 'use strict';
 const path = require('path');
 const fs = require('fs');
+const { createNetLog } = require('./netlog.cjs');
 
 // How long goto lets the network settle after the document has loaded (PIB_BROWSER_SETTLE_MS).
 // Playwright reads `timeout: 0` as "no timeout", so 0 here means "do not wait at all", never "wait for ever".
@@ -42,7 +43,8 @@ function createPlaywrightBrowser({ playwright, env = {}, profileRoot } = {}) {
   }
 
   return {
-    newContext({ origins = [], guard, identity }) {
+    newContext({ origins = [], guard, identity, viewport }) {
+      const netLog = createNetLog();
       let context = null;
       let page = null;
       const violations = [];
@@ -82,7 +84,8 @@ function createPlaywrightBrowser({ playwright, env = {}, profileRoot } = {}) {
             ...(env.PIB_BROWSER_MOBILE === '1'
               ? { viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true,
                   userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1' }
-              : {})
+              : {}),
+            ...(viewport ? { viewport } : {})
           });
         } catch (e) {
           const err = new Error(e.message);
@@ -128,6 +131,14 @@ function createPlaywrightBrowser({ playwright, env = {}, profileRoot } = {}) {
           }
         });
 
+        // Network log: method, URL, status only. Redaction happens in createNetLog.
+        context.on('response', (res) => {
+          try { netLog.add({ url: res.url(), method: res.request().method(), status: res.status() }); } catch (e) {}
+        });
+        context.on('requestfailed', (req) => {
+          try { netLog.add({ url: req.url(), method: req.method(), status: 0 }); } catch (e) {}
+        });
+
         page.on('framenavigated', (frame) => {
           if (frame === page.mainFrame()) {
             const url = page.url();
@@ -155,6 +166,18 @@ function createPlaywrightBrowser({ playwright, env = {}, profileRoot } = {}) {
               if (isClosedTargetError(e)) throw e;
             });
           }
+        },
+
+        setViewport: async (vp) => {
+          await ensureInitialized();
+          await page.setViewportSize(vp);
+        },
+
+        net: () => netLog.entries(),
+
+        drag: async (from, to) => {
+          await ensureInitialized();
+          await page.locator(from).dragTo(page.locator(to));
         },
 
         click: async (selector, text) => {

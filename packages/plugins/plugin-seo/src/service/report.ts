@@ -1,6 +1,6 @@
 /**
  * The progress email: for the sprints asked for, the plugin reads each sprint's own records (what is done, what is open, the pages asked about,
- * the plan's next weeks), writes the email (engine/progress-email.ts) and asks the Mailbox for a Gmail DRAFT. Nothing is sent: a person
+ * the plan's next weeks), writes the email (engine/progress-email.ts) and asks the Mailbox for a DRAFT in the Paperclip Mailbox drafts (never Gmail Drafts). Nothing is sent: a person
  * reads it, changes it and sends it. Nothing in it is free text from an agent.
  */
 import { MAIL_EVENTS, PIB_PLUGINS, type MailAddress, type MailDraftRequested } from "@partnersinbiz/pib-plugin-kit";
@@ -62,7 +62,7 @@ export async function siteProgress(env: Env, sprint: db.Sprint, today: string): 
   };
 }
 
-/** Drafts the progress email in Gmail (the Mailbox's default account). Returns what was asked for; the draft itself appears in Gmail Drafts. */
+/** Drafts the progress email in the Paperclip Mailbox drafts (the Mailbox's default account; never Gmail Drafts). Returns what was asked for. */
 export async function draftProgressReport(env: Env, companyId: string, _actor: Actor, params: Params) {
   const sprintIds = strList(params, "sprintIds", { max: 10, itemMax: 80 });
   if (sprintIds.length === 0) throw new SeoError("Send sprintIds: the sprints the email is about (list-sprints gives the ids).");
@@ -92,5 +92,5 @@ export async function draftProgressReport(env: Env, companyId: string, _actor: A
     context: { plugin: PIB_PLUGINS.seo, kind: "seo-report", id: sprintIds[0]!, clientKind, clientRef },
   };
   await env.ctx.events.emit(MAIL_EVENTS.draftRequested, companyId, request as unknown as Record<string, unknown>);
-  return { requested: true, key, to: to.map((a) => a.email), subject: mail.subject, sites: sites.map((s) => s.siteName), note: "A Gmail draft is being created in the Mailbox's default account. Nothing is sent: a person reads it and sends it.", preview: mail.text };
+  return { requested: true, key, to: to.map((a) => a.email), subject: mail.subject, sites: sites.map((s) => s.siteName), note: "A draft is being saved in the Paperclip Mailbox drafts. Nothing is sent: a person reads it and sends it.", preview: mail.text };
 }

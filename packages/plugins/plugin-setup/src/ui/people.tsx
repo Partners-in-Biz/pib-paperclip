@@ -5,13 +5,13 @@
  * `PeopleSection` draws from props only; `PeopleTab` loads and acts.
  */
 import { useCallback, useEffect, useState } from "react";
-import { usePluginAction } from "@paperclipai/plugin-sdk/ui";
-import { Button, EmptyState, Modal, Pill, SectionCard, Select, ShieldCheck, Users, breakAnywhere, errorText, formatDateTime, tokens, withRefusal } from "@partnersinbiz/pib-plugin-ui";
+import { Button, EmptyState, Modal, Pill, SectionCard, Select, ShieldCheck, Users, breakAnywhere, errorText, formatDateTime, tokens } from "@partnersinbiz/pib-plugin-ui";
 import type { AccessPeopleView } from "../access-people.js";
+import { useSetupAction } from "./actions.js";
 import type { NoAccessPerson } from "../access-switch.js";
 import type { LinkPropsFor } from "./components.js";
 
-const useAction = withRefusal(usePluginAction);
+const useAction = useSetupAction;
 type Mode = AccessPeopleView["mode"];
 type Grant = NonNullable<AccessPeopleView["people"][number]["grant"]>;
 export type AreaState = "preset" | "allow" | "deny" | "mixed";

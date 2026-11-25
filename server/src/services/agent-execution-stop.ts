@@ -1,10 +1,32 @@
 import { readProcessStartedAt } from "./hot-restart.js";
 import { runUsedConversationAdapter } from "./conversation-continuation.js";
 import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
-import { environmentLeases, heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { hasNativeLocalProcessStop } from "./native-local-process-stop.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { isCancelledNativeStartup } from "./cancelled-native-startup.js";
+import { executionStartedEventPredicate } from "./pre-dispatch-execution-evidence.js";
+
+type Run = typeof heartbeatRuns.$inferSelect;
+type Lease = typeof environmentLeases.$inferSelect;
+
+/** A legacy adapter reaches an SSH host only through a local ssh child that it
+ * spawns after announcing the invocation. A cancelled run with no recorded
+ * process and no execution evidence never started anything on that host, so a
+ * missing termination receipt (runs cancelled before execution-start, leases
+ * that simply expired) cannot mean remote work is still running. */
+async function cancelledBeforeRemoteExecution(db: Db, run: Run, runLeases: Lease[]) {
+  if (run.status !== "cancelled" || run.runtimeMode !== "legacy" || run.processPid || run.processGroupId ||
+      run.processStartedAt || run.sessionIdAfter || run.nativeIssueId || run.nativeSessionId) return false;
+  if (runLeases.some(lease => lease.provider !== "local" && (lease.provider !== "ssh" || !lease.releasedAt ||
+      lease.status === "pending_cleanup" || lease.cleanupStatus === "failed" ||
+      lease.metadata?.pendingCleanupInFlight === true))) return false;
+  const [execution] = await db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
+    eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
+    executionStartedEventPredicate(),
+  )).limit(1);
+  return !execution;
+}
 
 /** Cancellation changes admission. Process and lease evidence controls cleanup. */
 export async function agentExecutionsHaveStopped(db: Db, agentIds: string[]) {
@@ -37,7 +59,8 @@ export async function agentExecutionsHaveStopped(db: Db, agentIds: string[]) {
     if (run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > new Date()) return false;
     const runLeases = leases.filter(lease => lease.heartbeatRunId === run.id);
     if (runLeases.some(lease => lease.provider && lease.provider !== "local")) {
-      if (run.status === "cancelled" && !runLeases.every(hasRemoteTerminationReceipt)) return false;
+      if (run.status === "cancelled" && !runLeases.every(hasRemoteTerminationReceipt) &&
+          !await cancelledBeforeRemoteExecution(db, run, runLeases)) return false;
       continue;
     }
     let processAlive = Boolean(run.processPid && !absent(run.processPid));

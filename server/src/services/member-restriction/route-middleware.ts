@@ -162,7 +162,10 @@ export function memberRestrictionRouteGuard(
     if (decision.pass) {
       if (decision.markByCompany) actor.memberRestrictionByCompany = true;
       // PAR-12951: no host or secret key at any depth of a JSON response to him.
-      if (deciding.mode === "enforce") stripHostKeysFromResponses(res);
+      // PAR-13327: the matched row names the shape of the top-level body.
+      if (deciding.mode === "enforce") {
+        stripHostKeysFromResponses(res, match.kind === "matched" ? `${match.entry.method} ${match.entry.path}` : undefined);
+      }
       return next();
     }
     await recordMemberRestrictionDenial(db, {

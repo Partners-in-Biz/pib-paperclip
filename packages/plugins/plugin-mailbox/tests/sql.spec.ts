@@ -11,8 +11,8 @@ const migrationsDir = new URL("../migrations/", import.meta.url);
 const files = readdirSync(migrationsDir).filter((f) => f.endsWith(".sql")).sort();
 
 describe("migrations", () => {
-  it("keeps 001–010 untouched and adds 011 and 012", () => {
-    expect(files).toEqual(["001_mailbox.sql", "002_mailbox.sql", "003_gmail.sql", "004_crm_projection.sql", "005_decisions_inbox.sql", "006_bounces.sql", "007_suppressions_outbox.sql", "008_wave3_delegations_senders_domains.sql", "009_esp_send_only_accounts.sql", "010_client_messages_holds_tracking.sql", "011_ses.sql", "012_client_mail_count_only.sql"]);
+  it("keeps 001–010 untouched and adds 011, 012 and 013", () => {
+    expect(files).toEqual(["001_mailbox.sql", "002_mailbox.sql", "003_gmail.sql", "004_crm_projection.sql", "005_decisions_inbox.sql", "006_bounces.sql", "007_suppressions_outbox.sql", "008_wave3_delegations_senders_domains.sql", "009_esp_send_only_accounts.sql", "010_client_messages_holds_tracking.sql", "011_ses.sql", "012_client_mail_count_only.sql", "013_crm_company_billing.sql"]);
   });
 
   it("011 adds one partial unique index for SES accounts and nothing else", () => {

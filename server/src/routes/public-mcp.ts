@@ -12,10 +12,12 @@ import { McpEventError } from "../services/public-mcp/event-webhooks.js";
 import { DOT_RUNNER_MCP_PATH, mcpConsentSchema, mcpInvitation, mcpSetupUrl } from "@paperclipai/shared";
 import { renderMcpSetup, mcpSetupMarkdown } from "../services/public-mcp/setup.js";
 import { McpOAuthError, type PublicMcpOAuth } from "../services/public-mcp/oauth.js";
+import { isMemberRestrictionUnavailable } from "../services/member-restriction/plugin-acting-person.js";
 import { McpApiError, McpCapabilityError, publicMcpCapabilities, type createPublicMcpExecutor } from "../services/public-mcp/capabilities.js";
 
 const oauthErrors: ErrorRequestHandler = (error, _req, res, next) => {
-  if (res.headersSent) { next(error); return; }
+  // A failed member-restriction read answers 503 MEMBER_RESTRICTION_UNAVAILABLE.
+  if (res.headersSent || isMemberRestrictionUnavailable(error)) { next(error); return; }
   const known = error instanceof McpOAuthError;
   res.status(known ? error.status : 500).json({
     error: known ? error.code : "server_error",
@@ -86,7 +88,8 @@ export function publicMcpIngressRoutes(oauth: PublicMcpOAuth, execute: ReturnTyp
     const token = /^Bearer (\S+)$/i.exec(req.headers.authorization ?? "")?.[1];
     let principal;
     try { if (!token) throw new Error(); principal = await oauth.authenticate(token); }
-    catch {
+    catch (error) {
+      if (isMemberRestrictionUnavailable(error)) throw error;
       res.setHeader("WWW-Authenticate", `Bearer resource_metadata="${resourceMetadata}", scope="${agentConnection ? "paperclip:agent" : "paperclip:read paperclip:write paperclip:configure"}", error="invalid_token"`);
       res.status(401).json({ error: "invalid_token" }); return;
     }

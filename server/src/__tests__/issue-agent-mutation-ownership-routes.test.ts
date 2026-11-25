@@ -1282,6 +1282,7 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockWorkProductService.resolveCommitDiffSummary).toHaveBeenCalledWith(
       companyId,
       expect.objectContaining({ type: "commit", provider: "github" }),
+      { personIds: [undefined] },
     );
     expect(mockWorkProductService.createForIssue).toHaveBeenCalledWith(
       issueId,

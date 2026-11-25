@@ -42,12 +42,19 @@ export const MAIL_EVENTS = {
   /** Mailbox → the requesting plugin (filter on `context.plugin`). */
   sendResult: "mail.send.result",
   /**
-   * Any plugin in MAIL_SENDERS → Mailbox: put a message in the company's Gmail DRAFTS folder instead of sending it. A person
-   * reads it, changes it and sends it from Gmail (or deletes it). The Mailbox never sends a draft by itself.
+   * Any plugin in MAIL_SENDERS → Mailbox: put a message in the Paperclip Mailbox drafts (never Gmail Drafts, PAR-12249) instead of sending it. A person
+   * reads it, changes it and sends it from the Mailbox page (or deletes it). The Mailbox never sends a draft by itself.
    */
   draftRequested: "mail.draft.requested",
   /** Mailbox → the requesting plugin (filter on `context.plugin`): the answer to `mail.draft.requested`. */
   draftResult: "mail.draft.result",
+  /** Mailbox → the requesting plugin (filter on `context.plugin`): a draft it asked for was sent, deleted or replaced (PAR-14329). */
+  draftClosed: "mail.draft.closed",
+  /**
+   * Mailbox → the requesting plugin (filter on `context.plugin`): a person edited a draft it asked for, or asked for a new
+   * version. The draft is theirs now: a newer request for the same purpose does not replace it (PAR-14558).
+   */
+  draftKept: "mail.draft.kept",
   /** Mailbox → everyone: a new inbound message, already triaged. */
   received: "mail.received",
   /**
@@ -120,9 +127,12 @@ export interface MailSendRequested {
 }
 
 /**
- * `mail.draft.requested`: the same message fields as a send, but the Mailbox only creates a Gmail draft (users.drafts.create) on
+ * `mail.draft.requested`: the same message fields as a send, but the Mailbox only saves a draft in the Paperclip Mailbox drafts on
  * the account `from` names, else the company's default Gmail account. `key` is the idempotency key: a repeat delivery
  * re-emits the stored result and never creates a second draft. No suppression or marketing rules apply (nothing is sent).
+ * A newer request from the same plugin with the same `context.kind`, `context.id` and client replaces the older open draft
+ * (`mail.draft.closed` status `replaced`), unless a person edited it (`mail.draft.kept`). `context.id` names what the mail is
+ * about (a sprint, an approval), so two sprints of one client never replace each other's draft (PAR-14558).
  */
 export interface MailDraftRequested {
   key: string;
@@ -149,9 +159,35 @@ export interface MailDraftResult {
   account?: string | null;
   /** Opens the draft in Gmail (https://mail.google.com/mail/?authuser=<account>#drafts?compose=<message id>). */
   draftUrl?: string | null;
+  /** The draft's id in the Paperclip Mailbox Drafts (PAR-12249: drafts are no longer written to Gmail). */
+  mailboxDraftId?: string | null;
+  /** Older open drafts for the same client and purpose that this one replaced. */
+  replacedDraftIds?: string[];
   error?: string | null;
   /** True when the failure will not go away on retry (bad address, no Gmail account). */
   permanent?: boolean;
+  context: MailSendRequested["context"];
+}
+
+/**
+ * `mail.draft.closed`: the draft made for request `key` left the Mailbox drafts: a person (or an agent) sent it, a person
+ * deleted it, or a newer request for the same purpose replaced it (`replacedBy`, its key; the client never got this one).
+ */
+export interface MailDraftClosed {
+  /** The `mail.draft.requested` key. */
+  key: string;
+  status: "sent" | "deleted" | "replaced";
+  mailboxDraftId: string;
+  /** With status `replaced`: the request key of the newer draft. */
+  replacedBy?: string | null;
+  context: MailSendRequested["context"];
+}
+
+/** `mail.draft.kept`: a person edited the draft made for request `key` (or asked for a new version); it stays open and is theirs. */
+export interface MailDraftKept {
+  /** The `mail.draft.requested` key. */
+  key: string;
+  mailboxDraftId: string;
   context: MailSendRequested["context"];
 }
 

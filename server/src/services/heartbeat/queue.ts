@@ -3712,6 +3712,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               conversationUserId: issues.conversationUserId,
               conversationState: issues.conversationState,
               status: issues.status,
+              workMode: issues.workMode,
               statusVersion: issues.statusVersion,
               projectId: issues.projectId,
               projectWorkspaceId: issues.projectWorkspaceId,
@@ -4596,6 +4597,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               projectPolicy: null,
               issueSettings,
               legacyUseProjectWorkspace: null,
+              agentRole: agent.role,
+              issueWorkMode: issue.workMode,
             });
             const workspaceManagedConfig = buildExecutionWorkspaceAdapterConfig(
               {

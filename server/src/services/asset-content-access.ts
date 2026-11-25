@@ -21,6 +21,9 @@ export async function isRunnerApiResponseAsset(db: Pick<Db, "select">, asset: As
 
 export async function canActorReadAssetContent(db: Db, actor: AuthorizationActor, asset: Asset): Promise<boolean> {
   const access = authorizationService(db);
+  // An assistant connection (mcp_oauth) carries its person only to narrow it
+  // (rule group H); it never owns that person's runs or drafts (PAR-14559).
+  const actingPersonId = actor.type === "agent" && actor.source !== "mcp_oauth" ? actor.onBehalfOfUserId : undefined;
   // A restricted member is refused `company_scope:read` by the action list; he
   // still reads an asset tied to a task, a run or a draft of his (PAR-12608 4.6).
   let restrictedMember = false;
@@ -52,7 +55,7 @@ export async function canActorReadAssetContent(db: Db, actor: AuthorizationActor
   if (namespace(asset) === "runner-api" && !captures.length) return false;
   for (const { run } of captures) {
     const owns = run && (actor.type === "agent"
-      ? actor.agentId === run.agentId && (!run.responsibleUserId || actor.onBehalfOfUserId === run.responsibleUserId)
+      ? actor.agentId === run.agentId && (!run.responsibleUserId || actingPersonId === run.responsibleUserId)
       : actor.type === "board" && (actor.source === "local_implicit" || actor.isInstanceAdmin
         || (Boolean(actor.userId) && actor.userId === run.responsibleUserId)));
     if (!owns || !run || !(await canActorReadHeartbeatRun(db, access, actor, run))) return false;
@@ -62,7 +65,7 @@ export async function canActorReadAssetContent(db: Db, actor: AuthorizationActor
   if (isDraft && !attachments.length && !(actor.type === "board"
     ? actor.source === "local_implicit" || actor.isInstanceAdmin || actor.userId === asset.createdByUserId
     : actor.type === "agent" && actor.agentId === asset.createdByAgentId
-      && (!asset.createdByUserId || actor.onBehalfOfUserId === asset.createdByUserId))) return false;
+      && (!asset.createdByUserId || actingPersonId === asset.createdByUserId))) return false;
   if (restrictedMember && !(namespace(asset) === "issues" && !isDraft) && !captures.length && !attachments.length
     && !(isDraft && actor.type === "board" && actor.userId === asset.createdByUserId)) return false;
   for (const attachment of attachments) {

@@ -10,7 +10,7 @@ Themed email, SMS and WhatsApp programs for your company's own marketing or a cl
 The Growth Lab tools (\`performance-review\`, \`get-playbook\`, \`propose-playbook-change\`, \`decide-playbook-change\`, \`list-experiments\`, \`propose-experiment\`, \`approve-experiment\`, \`reject-experiment\`) keep a playbook per scope and test one change at a time on A/B steps. Read \`get-playbook\` before you write a campaign. Details: references/growth-lab.md.
 
 ## Scope
-- Own work: omit \`client\`. Client work: \`client\` is \`company:<CRM id>\` or \`contact:<CRM id>\`, never a name. \`list-campaigns\` takes the same \`client\`. Client issue titles start with \`[Client name]\`, and a client's issues open in the client's own project.
+- Own work: omit \`client\`. Client work: \`client\` is \`company:<CRM id>\` or \`contact:<CRM id>\`, never a name. \`list-campaigns\` takes the same \`client\`. Client issue titles start with \`[Client name]\`, and a client's issues open in the client's own project. One of our own brands that is a CRM company (a product or site we run under its own name) is a \`client\` too: create its campaigns with \`client: company:<CRM id>\` and give it its own sender, so they show under the brand and go out as the brand. A person marks which companies are our own brands; those need no client's yes.
 - Find contacts, tags and clients with \`partnersinbiz.crm:find-records\`. New CRM contacts and clients reach Campaigns within 15 minutes. If one is "not found", wait 15 minutes and try again.
 
 ## Build
@@ -55,6 +55,9 @@ Merge tokens: \`{{first_name}}\`, \`{{last_name}}\`, \`{{name}}\`, \`{{company}}
 - A person **cancels** it: you get a "Revise campaign" issue. Read their comments, fix the draft and request approval again. Cancel the revise issue instead when they said to drop the campaign.
 - Changing a draft after asking (steps, HTML, audience, sender, delivery, dates) cancels that approval (\`approvalReset: true\`). Request again.
 - \`launch-campaign\` is only for a paused campaign (it enrolls audience contacts not in it yet) or an approved draft that has not launched.
+
+## Feed digest
+- \`create-feed-digest\` drafts one email from an allow-listed RSS feed (\`digestFeedUrls\` in the settings): up to 10 new items, newest first, to 1 to 5 \`audienceTags\`, then opens the normal launch approval. A weekly routine calls it. The approver checks the items and links; an item is used only once a digest holding it launches, so a cancelled or refused draft keeps its items. While a digest is still a draft a new call returns that draft. If \`approvalOpened\` is false, fix the \`errors\` and call \`request-campaign-approval\`.
 
 ## Running
 - \`issue\` delivery: each due step opens an issue for you with the email filled in for that contact, ending with who we are and their own unsubscribe link (the footer): send it whole. Send it (\`partnersinbiz.mailbox:create-draft\`, then \`send-draft\` when your delegation allows), then mark the issue **done**: that moves them to the next step. **Cancel** the issue to stop the campaign for that contact.

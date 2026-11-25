@@ -11,13 +11,14 @@ import {
   MEMBER_AGENT_NOT_LISTED_ROUTE_MESSAGE,
   restrictedAgentIdsForActor,
 } from "../services/member-restriction/agent-read.js";
-import { memberRestrictionForActor } from "../services/member-restriction/actor-memberships.js";
+import { actorPersonMembership, memberRestrictionForActor } from "../services/member-restriction/actor-memberships.js";
 import {
   memberRestrictionOrUnavailable,
   memberRestrictionResolver,
   memberRestrictionUnavailable,
 } from "../services/member-restriction/resolver.js";
 import { memberRestrictionEnforcedCompanyIdsForActor } from "../services/member-restriction/strict-read.js";
+import { githubExternalObjectReadGate } from "../services/member-restriction/github-external-objects.js";
 import { notifyDeferredExecutionWork } from "../services/deferred-execution-notifications.js";
 import { notifyNativeRecoveryNotices } from "../services/native-recovery-notice-notifications.js";
 import { notifyNativeStatusReassessment } from "../services/native-status-reassessment-notifications.js";
@@ -11114,6 +11115,7 @@ export function issueRoutes(
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const workProducts = await workProductsSvc.listForIssue(issue.id, {
       refreshPullRequests: req.query.refreshPullRequests === "true",
+      personIds: [actorPersonMembership(req.actor, issue.companyId)?.personId],
     });
     res.json(workProducts);
   });
@@ -11128,7 +11130,9 @@ export function issueRoutes(
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
-    const objects = await externalObjectsSvc.listForIssue(issue.id);
+    const gate = await githubExternalObjectReadGate(db, req.actor, issue.companyId, "GET /api/issues/:id/external-objects");
+    const objects = await externalObjectsSvc.listForIssue(issue.id, gate.readOptions);
+    await gate.record();
     res.json(objects);
   });
 
@@ -11142,7 +11146,9 @@ export function issueRoutes(
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
-    const summary = await externalObjectsSvc.getIssueSummary(issue.id);
+    const gate = await githubExternalObjectReadGate(db, req.actor, issue.companyId, "GET /api/issues/:id/external-object-summary");
+    const summary = await externalObjectsSvc.getIssueSummary(issue.id, gate.readOptions);
+    await gate.record();
     res.json(summary);
   });
 
@@ -12219,6 +12225,7 @@ export function issueRoutes(
               ? await workProductsSvc.resolveCommitDiffSummary(
                   issue.companyId,
                   createInput,
+                  { personIds: [actorPersonMembership(req.actor, issue.companyId)?.personId] },
                 )
               : null),
         );
@@ -17680,6 +17687,7 @@ export function issueRoutes(
         "Issue not found",
       );
       if (!issue) return;
+      if (!(await assertIssueReadAllowed(req, res, issue))) return;
       const actor = getActorInfo(req);
       const { queue, activityPublication } = await runQueuedCommentMutation(() =>
         queuedCommentQueue.editQueuedComment({
@@ -17711,6 +17719,7 @@ export function issueRoutes(
         "Issue not found",
       );
       if (!issue) return;
+      if (!(await assertIssueReadAllowed(req, res, issue))) return;
       const actor = getActorInfo(req);
       const { queue, activityPublication } = await runQueuedCommentMutation(() =>
         queuedCommentQueue.reorderQueuedComments({
@@ -17735,6 +17744,7 @@ export function issueRoutes(
       if (!req.actor.userId) throw forbidden("Board user context required");
       const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
       if (!issue) return;
+      if (!(await assertIssueReadAllowed(req, res, issue))) return;
       const decision = await decideIssueAccess(req, issue, "issue:comment");
       if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
       if (issue.conversationAgentId) {
@@ -17813,6 +17823,7 @@ export function issueRoutes(
         "Issue not found",
       );
       if (!issue) return;
+      if (!(await assertIssueReadAllowed(req, res, issue))) return;
       if (issue.conversationAgentId) throw conflict("Conversation messages are processed in order at turn boundaries");
       const decision = await decideIssueAccess(req, issue, "issue:comment");
       if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
@@ -18114,6 +18125,7 @@ export function issueRoutes(
         "Issue not found",
       );
       if (!issue) return;
+      if (!(await assertIssueReadAllowed(req, res, issue))) return;
       const actor = getActorInfo(req);
       const result = await runQueuedCommentMutation(() =>
         queuedCommentQueue.discardQueuedComment({

@@ -1,16 +1,18 @@
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import express from "express";
 import request from "supertest";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { beforeAll, afterAll, describe, expect, it, vi } from "vitest";
-import { createDb, authUsers, companyMemberships, connectionGrants, executionWorkspaces, heartbeatRuns, instanceUserRoles, issues, projectAccessMembers, projects, projectWorkspaces, resourceLifecycleEvents, toolConnectionInstalls, toolConnections } from "@paperclipai/db";
+import { createDb, activityLog, authUsers, companies, companyMemberships, connectionGrants, executionWorkspaces, heartbeatRuns, instanceUserRoles, issues, projectAccessMembers, projects, projectWorkspaces, resourceLifecycleEvents, toolConnectionInstalls, toolConnections } from "@paperclipai/db";
 import { LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
 import { ghFetch } from "../services/github-fetch.js";
 import { projectRoutes } from "../routes/projects.js";
 import { createGitHubWorkspaceDeliveryResolver } from "../services/github-workspace-delivery.js";
 import { projectGitAuthorizationService } from "../services/project-git-authorization.js";
 import { errorHandler } from "../middleware/index.js";
+import { MEMBER_RESTRICTION_DENIED_ACTION } from "../services/member-restriction/admin.js";
+import { GITHUB_CREDENTIALS_RULE_ID } from "../services/member-restriction/github-credentials.js";
 import { githubCredentialsFixture } from "./helpers/github-credentials-fixture.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 const vault = vi.hoisted(() => ({
@@ -118,6 +120,27 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       expect((await db.select().from(resourceLifecycleEvents).where(eq(resourceLifecycleEvents.resourceId, f.project.id))).length).toBeGreaterThan(0);
       await f.service.set(f.input.companyId, f.project.id, "A", null);
       await expect(f.service.resolve(f.request, f.scope)).rejects.toThrow("Authorize this project");
+    });
+    it("4.6a row 5: no background credential from an authorizer restricted under enforce; report keeps it", async () => {
+      const f = await projectAuthorizationFixture();
+      await f.service.set(f.input.companyId, f.project.id, "A", f.selected.id);
+      // A may read the project (a restricted member's own), so only row 5 can refuse.
+      await db.insert(projectAccessMembers).values({ companyId: f.input.companyId, projectId: f.project.id, subjectType: "user", subjectId: "A" });
+      await db.update(companyMemberships).set({ restricted: true })
+        .where(and(eq(companyMemberships.companyId, f.input.companyId), eq(companyMemberships.principalId, "A")));
+      const denials = () => db.select().from(activityLog).where(and(eq(activityLog.companyId, f.input.companyId),
+        eq(activityLog.action, MEMBER_RESTRICTION_DENIED_ACTION))).then(rows => rows.map(row => row.details));
+      await db.update(companies).set({ memberRestrictionMode: "enforce" }).where(eq(companies.id, f.input.companyId));
+      vault.resolveUserSecretValue.mockClear();
+      await expect(f.service.resolve(f.request, f.scope)).rejects.toMatchObject({
+        status: 403, message: expect.stringContaining("GitHub access is limited for the person who authorized this project"),
+      });
+      expect(vault.resolveUserSecretValue).not.toHaveBeenCalled();
+      expect(await denials()).toEqual([expect.objectContaining({
+        personId: "A", ruleId: GITHUB_CREDENTIALS_RULE_ID, target: "project_git_authorization", objectId: f.project.id, mode: "enforce",
+      })]);
+      await db.update(companies).set({ memberRestrictionMode: "report" }).where(eq(companies.id, f.input.companyId));
+      expect(await f.service.resolve(f.request, f.scope)).toBe("test-token-A");
     });
     it("rechecks the consenting user's project access before background credential export", async () => {
       const f = await projectAuthorizationFixture();

@@ -213,7 +213,8 @@ describe("external object routes", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.total).toBe(1);
-    expect(mockExternalObjectsService.getIssueSummary).toHaveBeenCalledWith(issueId);
+    // The local board carries no restricted person, so no 4.6a row 5 read options.
+    expect(mockExternalObjectsService.getIssueSummary).toHaveBeenCalledWith(issueId, undefined);
   });
 
   it("requires issue read access before reading issue external objects", async () => {

@@ -1,5 +1,6 @@
 import type { PluginApiRequestInput, PluginApiResponse, PluginContext, PluginPerformActionContext } from "@paperclipai/plugin-sdk";
-import { PIB_PLUGINS, pluginEvent, registerCompanyBootstrap, registerRoleWatch, type ActorInput } from "@partnersinbiz/pib-plugin-kit";
+import { PIB_PLUGINS, pluginEvent, registerCompanyBootstrap, registerRoleWatch, type AccessGuard, type ActorInput } from "@partnersinbiz/pib-plugin-kit";
+import { createSetupGuard } from "./access-guard.js";
 import { clearAccessGrant, saveAccessGrant } from "./access-grants.js";
 import { accessPeople, saveGrantParams } from "./access-people.js";
 import { DRIVE_BINDING_EVENT } from "./drive-checklist.js";
@@ -16,8 +17,15 @@ import { approveStarterPack, bootstrapCompany, isOwnerCompany, loadNewCompany, r
 import { registerTemplateTools } from "./template-tools.js";
 import { backfillEntitlements, loadSetup, message, moduleView, setEntitlements, onDriveBind, onDriveBindingEvent, onStatusEvent, reemitModules, refreshFinishIssue, rememberInstalled, reportMemory, reportStatuses, saveModules, weeklyFinishSetup } from "./service.js";
 
-/** Registers everything; exported for tests. */
-export function registerSetup(ctx: PluginContext): void {
+/**
+ * Registers everything; exported for tests. Actions, tools and API routes go through the access guard
+ * (`./access-table.ts`); the worker's `onApiRequest` hands every route to the returned guard.
+ */
+export function registerSetup(ctx: PluginContext): AccessGuard {
+  const { guard: g, changed } = createSetupGuard(ctx);
+  /** A grant or switch change: the guard reads the company's people again on its next call. */
+  const changing = <T>(context: PluginPerformActionContext, run: () => Promise<T>): Promise<T> =>
+    run().finally(() => context.companyId && changed(context.companyId));
   // The template-drift job assigns its issue to the Operator, so Setup keeps the Cockpit's roles copy.
   registerRoleWatch(ctx);
   for (const pluginKey of Object.values(PIB_PLUGINS)) {
@@ -37,32 +45,34 @@ export function registerSetup(ctx: PluginContext): void {
       ctx.logger.info("Setup drive binding event failed", { error: message(error) });
     }
   });
-  registerTemplateTools(ctx);
+  registerTemplateTools(ctx, g);
   registerAccessSync(ctx);
   // "Send again" on the People screen: an owner or admin sends the company's access state now.
-  ctx.actions.register("setup.access.send-again", (_params, context) =>
+  g.action("setup.access.send-again", (_params, context) =>
     refusable(async () => sendAccessAgain(ctx, requiredCompany(context), context.actor.type === "user" ? { type: "user", userId: context.actor.userId } : undefined)),
   );
   // The access switch (off, report, enforce): an owner or admin, with its preconditions and an audit entry.
-  ctx.actions.register("setup.access.set-mode", (params, context) =>
-    refusable(async () => setAccessSwitch(ctx, { companyId: requiredCompany(context), actor: context.actor.type === "user" ? { type: "user", userId: context.actor.userId } : undefined }, params.mode, params.confirmNoAccess)),
+  g.action("setup.access.set-mode", (params, context) =>
+    changing(context, () => refusable(async () => setAccessSwitch(ctx, { companyId: requiredCompany(context), actor: context.actor.type === "user" ? { type: "user", userId: context.actor.userId } : undefined }, params.mode, params.confirmNoAccess))),
   );
   // The switch state for the People screen: mode, rev and the 15 plugins, red when one is behind on enforce.
-  ctx.actions.register("setup.access.status", (_params, context) =>
+  g.action("setup.access.status", (_params, context) =>
     refusable(async () => accessStatus(ctx, requiredCompany(context), context.actor.type === "user" ? { type: "user", userId: context.actor.userId } : undefined)),
   );
   // The People tab: the switch, the 15 plugins, each member's grant and the report list. Owner or admin only.
-  ctx.actions.register("setup.access.people", (_params, context) => refusable(async () => accessPeople(ctx, requiredCompany(context), userActor(context))));
-  ctx.actions.register("setup.access.save-grant", (params, context) =>
-    refusable(async () =>
-      saveAccessGrant(ctx, { companyId: requiredCompany(context), actor: userActor(context) }, saveGrantParams(params)),
+  g.action("setup.access.people", (_params, context) => refusable(async () => accessPeople(ctx, requiredCompany(context), userActor(context))));
+  g.action("setup.access.save-grant", (params, context) =>
+    changing(context, () =>
+      refusable(async () => saveAccessGrant(ctx, { companyId: requiredCompany(context), actor: userActor(context) }, saveGrantParams(params))),
     ),
   );
-  ctx.actions.register("setup.access.clear-grant", (params, context) =>
-    refusable(async () => clearAccessGrant(ctx, { companyId: requiredCompany(context), actor: userActor(context) }, typeof params.userId === "string" ? params.userId : "")),
+  g.action("setup.access.clear-grant", (params, context) =>
+    changing(context, () =>
+      refusable(async () => clearAccessGrant(ctx, { companyId: requiredCompany(context), actor: userActor(context) }, typeof params.userId === "string" ? params.userId : "")),
+    ),
   );
-  ctx.actions.register("setup.load", (params, context) => loadSetup(ctx, requiredCompany(context), params));
-  ctx.actions.register("setup.save-modules", (params, context) =>
+  g.action("setup.load", (params, context) => loadSetup(ctx, requiredCompany(context), params));
+  g.action("setup.save-modules", (params, context) =>
     refusable(async () => {
       const companyId = requiredCompany(context);
       if (context.actor.type !== "user" || !context.actor.userId) throw new SetupError("Only a board user can change the modules");
@@ -77,7 +87,7 @@ export function registerSetup(ctx: PluginContext): void {
   // What a company bought. Only an owner or admin of the operator company (ours) may write it, from that company's
   // own page: the host does not pass an instance-admin flag to plugin actions, so a client's own owner is refused.
   // The host overwrites `params.companyId` with the page's company, so the company to change is `params.targetCompanyId`.
-  ctx.actions.register("setup.set-entitlements", (params, context) =>
+  g.action("setup.set-entitlements", (params, context) =>
     refusable(async () => {
       if (context.actor.type !== "user" || !context.actor.userId) throw new ForbiddenError("Only a board user can set entitlements");
       if (!(await isOperatorAdmin(ctx, context.actor.userId))) throw new ForbiddenError("Only an owner or admin of the operator company can set entitlements, and only from that company's own page (the host scopes member lookups to the company the action runs for)");
@@ -93,24 +103,24 @@ export function registerSetup(ctx: PluginContext): void {
       return { ok: true, ...(await setEntitlements(ctx, { companyId, plan: params.plan, modules: params.modules, until: params.until, userId: context.actor.userId })) };
     }),
   );
-  ctx.actions.register("setup.refresh-issue", async (params, context) => {
+  g.action("setup.refresh-issue", async (params, context) => {
     const companyId = requiredCompany(context);
     if (params.installed) await rememberInstalled(ctx, params.installed);
     return refreshFinishIssue(ctx, companyId, { allowCreate: true });
   });
   // The Setup page reports what it read from LLM Wiki (Company wiki).
-  ctx.actions.register("setup.report-memory", async (params, context) => {
+  g.action("setup.report-memory", async (params, context) => {
     const companyId = requiredCompany(context);
     if (context.actor.type !== "user") throw new SetupError("Only the Setup page can report Company wiki");
     return { status: await reportMemory(ctx, companyId, params.snapshot) };
   });
   // The Setup page reports the statuses it just checked live, so every count agrees with the page.
-  ctx.actions.register("setup.report-statuses", async (params, context) => {
+  g.action("setup.report-statuses", async (params, context) => {
     const companyId = requiredCompany(context);
     if (context.actor.type !== "user") throw new SetupError("Only the Setup page can report setup statuses");
     return reportStatuses(ctx, companyId, params.statuses);
   });
-  registerNewCompany(ctx);
+  registerNewCompany(ctx, g);
   ctx.jobs.register(JOBS.reemitModules, async () => {
     // Retry the one-time entitlement backfill if the first start could not finish it.
     try {
@@ -139,6 +149,9 @@ export function registerSetup(ctx: PluginContext): void {
   ctx.jobs.register(JOBS.templateDrift, async () => {
     ctx.logger.info("Template drift", await templateDrift(ctx));
   });
+  g.apiRoute("modules", (input) => handleApiRoute(ctx, input));
+  g.apiRoute("templates", (input) => handleApiRoute(ctx, input));
+  return g;
 }
 
 /**
@@ -147,7 +160,7 @@ export function registerSetup(ctx: PluginContext): void {
  * <company>" issue once, catches up lazily), and the actions behind the page's
  * New company section. All of them need a board user except reading the state.
  */
-function registerNewCompany(ctx: PluginContext): void {
+function registerNewCompany(ctx: PluginContext, g: AccessGuard): void {
   registerCompanyBootstrap(ctx, {
     ownerIssue: { originKind: `plugin:${PLUGIN_ID}` },
     onBootstrap: (companyId, source) => rememberNewCompany(ctx, companyId, source),
@@ -158,23 +171,23 @@ function registerNewCompany(ctx: PluginContext): void {
   };
   const optionsOf = (params: Record<string, unknown>) => (params.options && typeof params.options === "object" ? params.options : {});
   // The starter pack's facts go to people only (they read them to approve); an agent gets the run state and the counts.
-  ctx.actions.register("setup.new-company", async (_params, context) => loadNewCompany(ctx, requiredCompany(context), { includeFacts: context.actor.type === "user" }));
-  ctx.actions.register("setup.bootstrap-company", async (params, context) => {
+  g.action("setup.new-company", async (_params, context) => loadNewCompany(ctx, requiredCompany(context), { includeFacts: context.actor.type === "user" }));
+  g.action("setup.bootstrap-company", async (params, context) => {
     const companyId = requiredCompany(context);
     const userId = user(context);
     if (params.installed) await rememberInstalled(ctx, params.installed);
     return bootstrapCompany(ctx, { companyId, userId, options: optionsOf(params) });
   });
-  ctx.actions.register("setup.bootstrap-record", async (params, context) => {
+  g.action("setup.bootstrap-record", async (params, context) => {
     const companyId = requiredCompany(context);
     return recordStep(ctx, { companyId, userId: user(context), stepId: params.stepId, status: params.status, detail: params.detail, items: params.items, grants: params.grants, starterImport: params.starterImport });
   });
-  ctx.actions.register("setup.template-draft", async (params, context) => {
+  g.action("setup.template-draft", async (params, context) => {
     const companyId = requiredCompany(context);
     user(context);
     return templateDraft(ctx, { companyId, key: params.key, agents: params.agents, ceo: params.ceo, ownerName: params.ownerName, wikiRoot: params.wikiRoot });
   });
-  ctx.actions.register("setup.start-template-hire", async (params, context) => {
+  g.action("setup.start-template-hire", async (params, context) => {
     const companyId = requiredCompany(context);
     return startTemplateHire(ctx, {
       companyId,
@@ -188,13 +201,13 @@ function registerNewCompany(ctx: PluginContext): void {
       assigneeUserId: params.assigneeUserId,
     });
   });
-  ctx.actions.register("setup.approve-starter-pack", async (params, context) => approveStarterPack(ctx, { userId: user(context), hash: params.hash }));
-  ctx.actions.register("setup.starter-pack-import", async (_params, context) => {
+  g.action("setup.approve-starter-pack", async (params, context) => approveStarterPack(ctx, { userId: user(context), hash: params.hash }));
+  g.action("setup.starter-pack-import", async (_params, context) => {
     requiredCompany(context);
     user(context);
     return starterPackForImport(ctx);
   });
-  ctx.actions.register("setup.drive-bind", async (params, context) => {
+  g.action("setup.drive-bind", async (params, context) => {
     const companyId = requiredCompany(context);
     return onDriveBind(ctx, {
       companyId,

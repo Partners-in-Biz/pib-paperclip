@@ -70,6 +70,21 @@ live(`ssh connection reuse against a real sshd${support.supported ? "" : ` (skip
     expect(await readdir(baseDir)).toEqual([]);
   }, 20_000);
 
+  it("cold start: two concurrent first ops race to create the master and both succeed", async () => {
+    const [a, b] = await Promise.all([
+      runSshCommand(config, "echo a", { connectionReuseRunId: RUN_ID, timeoutMs: 10_000 }),
+      runSshCommand(config, "echo b", { connectionReuseRunId: RUN_ID, timeoutMs: 10_000 }),
+    ]);
+    expect([a.stdout.trim(), b.stdout.trim()]).toEqual(["a", "b"]);
+    // One master won; the loser ran on its own connection or joined the winner.
+    const dir = sshControlDirFor(RUN_ID, baseDir)!;
+    const sockets = await readdir(dir);
+    expect(sockets).toHaveLength(1);
+    expect(await controlCheck(path.join(dir, sockets[0]!))).toBe(true);
+    const next = await runSshCommand(config, "echo next", { connectionReuseRunId: RUN_ID });
+    expect(next.stdout.trim()).toBe("next");
+  }, 20_000);
+
   it("gate 2: operations over MaxSessions (default 10) still complete", async () => {
     await runSshCommand(config, "true", { connectionReuseRunId: RUN_ID });
     const count = 13;

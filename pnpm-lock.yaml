@@ -763,6 +763,9 @@ importers:
       playwright-core:
         specifier: 1.62.1
         version: 1.62.1
+      ws:
+        specifier: 8.22.0
+        version: 8.22.0
 
   packages/plugins/pib-plugin-kit:
     dependencies:

@@ -3193,6 +3193,13 @@
       "when": 1795275000000,
       "tag": "0457_agent_chats_private",
       "breakpoints": true
+    },
+    {
+      "idx": 458,
+      "version": "7",
+      "when": 1795280000000,
+      "tag": "0458_summary_slot_terminal_run_trigger",
+      "breakpoints": true
     }
   ]
 }

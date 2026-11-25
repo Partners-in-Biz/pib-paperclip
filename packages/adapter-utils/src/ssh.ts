@@ -457,6 +457,9 @@ export const SSH_CONTROL_BASE_DIR_ENV = "PAPERCLIP_SSH_CONTROL_DIR";
 export const SSH_CONTROL_DIR_MAX_BYTES = 46;
 const RUN_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const CONTROL_DIR_NAME_RE = /^[A-Za-z0-9_-]{22}$/;
+// ssh splits `-o` values on whitespace and quotes, and expands `%` and `${}`
+// in ControlPath: such a base path makes every op exit 255. No reuse instead.
+const CONTROL_BASE_DIR_UNSAFE_RE = /[\s%$"'\\#]/;
 
 // A run uuid as 22 base64url chars, reversible so the startup sweep knows the run.
 function controlDirName(runId: string): string | null {
@@ -489,10 +492,10 @@ export function sshControlBaseDir(env: NodeJS.ProcessEnv = process.env): string 
   return `/tmp/pcs-${key}`;
 }
 
-/** `null` when the run id is not a uuid or the path would be too long. */
+/** `null` when the run id is not a uuid, the base has characters ssh parses, or the path is too long. */
 export function sshControlDirFor(runId: string, baseDir: string = sshControlBaseDir()): string | null {
   const name = controlDirName(runId);
-  if (!name) return null;
+  if (!name || CONTROL_BASE_DIR_UNSAFE_RE.test(baseDir)) return null;
   const dir = path.join(baseDir, name);
   return Buffer.byteLength(`${dir}/`, "utf8") <= SSH_CONTROL_DIR_MAX_BYTES ? dir : null;
 }

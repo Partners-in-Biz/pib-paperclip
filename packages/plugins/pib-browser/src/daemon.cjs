@@ -200,7 +200,7 @@ function buildDaemon(env = process.env, deps = {}) {
   });
 
   const { createDispatcher } = require('./dispatch.cjs');
-  const { dispatch } = createDispatcher({
+  const { dispatch, sessions } = createDispatcher({
     authenticate: (req) => authFn(req, { fetch: deps.fetch || globalThis.fetch, apiBase: config.apiBase }),
     apiBase: config.apiBase,
     browser,
@@ -214,12 +214,41 @@ function buildDaemon(env = process.env, deps = {}) {
     errorLogPath: config.errorLogPath
   });
 
-  return { config, dispatch, browser, policyResult };
+  // Identities with an agent session open, for the live service's /status. Keys are `agentId|identity`.
+  const agentIdentities = () => [...new Set([...sessions.keys()].map((k) => k.slice(k.indexOf('|') + 1)))].sort();
+
+  return { config, dispatch, browser, policyResult, agentIdentities };
+}
+
+// The live service (PAR-14514 S2) on its own socket. It never takes the agent
+// socket down with it: a failure here (even a missing `ws` package) leaves it off.
+async function startLive({ env, apiBase, agentIdentities, fetch }) {
+  try {
+    const { loadLiveConfig, createLiveService } = require('./live.cjs');
+    const config = loadLiveConfig(env);
+    const live = createLiveService({ config, apiBase, agentIdentities, fetch });
+    await listen(live.server, config.socketPath, config.socketMode);
+    console.log(`Live service listening on ${config.socketPath}`);
+    return live;
+  } catch (err) {
+    console.error(`pib-browser: live service off: ${err?.code || err?.name || 'Error'}`);
+    return null;
+  }
+}
+
+// Ends every live stream and its x11vnc before the process goes, then dies of the signal as before.
+function closeLiveOnSignal(live) {
+  for (const signal of ['SIGTERM', 'SIGINT']) {
+    process.once(signal, () => {
+      const bound = new Promise((resolve) => setTimeout(resolve, 3000).unref());
+      Promise.race([live.close(), bound]).catch(() => {}).finally(() => process.kill(process.pid, signal));
+    });
+  }
 }
 
 async function main() {
   try {
-    const { config, dispatch } = buildDaemon(process.env);
+    const { config, dispatch, agentIdentities } = buildDaemon(process.env);
     // A stray rejection from the browser driver must not take every open session
     // down with the process (PAR-9187). Record it where agents can read it.
     const { createErrorLog } = require('./errlog.cjs');
@@ -237,6 +266,8 @@ async function main() {
       console.error('Failed to start daemon:', err.message);
       process.exit(1);
     }
+    const live = await startLive({ env: process.env, apiBase: config.apiBase, agentIdentities });
+    if (live) closeLiveOnSignal(live);
   } catch (err) {
     console.error('Daemon error:', err.message);
     process.exit(1);
@@ -250,4 +281,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { loadConfig, createServer, listen, buildVerifyApproval, buildDaemon };
+module.exports = { loadConfig, createServer, listen, buildVerifyApproval, buildDaemon, startLive };

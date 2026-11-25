@@ -41,6 +41,10 @@ export interface CampaignDraft {
   /** Who created it: its agent owns the step, reply and failed-send issues (else the Account Manager). */
   ownerUserId: string | null;
   ownerAgentId: string | null;
+  /** Set only on a digest made by create-feed-digest: the feed, its category and the item keys the campaign holds. */
+  feedUrl?: string | null;
+  feedCategory?: string | null;
+  feedItemKeys?: string[] | null;
   /** The person who approved the launch (from the approval issue). */
   approvedByUserId?: string | null;
   launchedAt?: string | null;

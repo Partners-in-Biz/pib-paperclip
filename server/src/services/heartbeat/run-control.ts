@@ -12,6 +12,7 @@ import { readTaskRetryIntent, reconcileTaskChatRetryReceipts } from "../task-ret
 import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED, readNativeLocalProcessStop, recordedLocalExecutionStopped } from "../native-local-process-stop.js";
 import { isHeartbeatRunTerminalStatus } from "./run-lifecycle.js";
 import type { SshRunGoneChecks } from "./remote-run-recovery.js";
+import { closeRunSshConnectionWhenReleased } from "./ssh-connection-sweep.js";
 import { pendingCaseHandoffForRun, cancelCaseHandoffsForIssue, isCaseHandoffSourceReleased } from "./case-handoff-lifecycle.js";
 import { publishActivity, type ActivityPublication } from "../activity-log.js";
 import { buildHeartbeatRunStatusLiveEventPayload } from "../heartbeat-run-status-payload.js";
@@ -513,6 +514,9 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
         "failed to release environment lease for heartbeat run",
       );
     }
+    // Native ownership was checked above, so this is the close point for a
+    // master the executor kept open while ownership was held (PAR-14564).
+    await closeRunSshConnectionWhenReleased({ runId: input.runId, status, ownershipHeld: false });
     await acknowledgeRemoteStop(input.runId, input.companyId);
   }
 
