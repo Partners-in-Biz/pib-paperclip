@@ -29,15 +29,11 @@ TMP_DIR="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
 
 # Fail on development itself, not caused by a PR. Remove a path once its test is fixed on development.
 #   PAR-14632: hermes execute.instructions (3 tests), plugin-scoped-api-routes ('dispatches a board GET route ...')
-#   PAR-14647: acpx-engine execute.test.ts ('keeps large continuation history in ACP turns ...'),
-#              NewIssueDialog.test.tsx ('carries the source checkout when reusing another worktree ...')
 # CLI --exclude is ignored when the root config uses `projects`, and a vitest config edit would rerun every test of
 # that project, so the list is filtered here.
 SKIP_FILES=(
   'packages/adapters/hermes/src/server/execute.instructions.test.ts'
   'server/src/__tests__/plugin-scoped-api-routes.test.ts'
-  'packages/adapter-utils/src/acpx-engine/execute.test.ts'
-  'ui/src/components/NewIssueDialog.test.tsx'
 )
 
 # One 3.6 MB file (70,000+ lines) that alone outlasts a 30 minute shard (PAR-14647, run 45649825029, shard 6). The
