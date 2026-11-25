@@ -813,7 +813,10 @@ export const pluginManifestV1Schema = z.object({
     /^\d+\.\d+\.\d+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$/,
     "minimumPaperclipVersion must follow semver (e.g. 1.0.0)",
   ).optional(),
-  capabilities: z.array(z.enum(PLUGIN_CAPABILITIES)).min(1),
+  // An older core does not know a newer capability and refuses the whole manifest (PAR-14514 F29): name it.
+  capabilities: z.array(z.enum(PLUGIN_CAPABILITIES, {
+    error: (issue) => `Unknown capability '${String(issue.input)}'; this Paperclip does not support it`,
+  })).min(1),
   agentLifecycle: z.literal(true).optional(),
   workspaceProvider: z.object({
     finalizationVersion: z.literal(1).optional(),
@@ -1014,8 +1017,9 @@ export const pluginManifestV1Schema = z.object({
     }
   }
 
-  if (manifest.apiRoutes?.some(route => route.transport === "websocket") && !manifest.capabilities.includes("http.outbound")) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "WebSocket routes require http.outbound", path: ["capabilities"] });
+  if (manifest.apiRoutes?.some(route => route.transport === "websocket")
+    && !manifest.capabilities.includes("http.outbound") && !manifest.capabilities.includes("websocket.local")) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "WebSocket routes require http.outbound or websocket.local", path: ["capabilities"] });
   }
 
   if (manifest.apiRoutes && manifest.apiRoutes.length > 0) {
