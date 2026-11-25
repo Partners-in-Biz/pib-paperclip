@@ -65,4 +65,13 @@ describe("placeRelated", () => {
     const r = placeRelated({ source, nodes: [source], records: [{ ...inv("i1"), relation: "x".repeat(300) }], newKey: counter() });
     expect((r.items.find((i) => i.itemType === "connector") as { label: string }).label).toHaveLength(120);
   });
+
+  it("counts only new nodes against the cap: 50 existing plus 5 new adds 5, skips 0", () => {
+    const existing: PlaceRelatedNode[] = Array.from({ length: 50 }, (_, i) => ({ key: `e${i}`, kind: "embed", x: 2000, y: i * 200, width: 280, height: 160, data: { plugin: "billing", type: "invoice", assetId: `old${i}`, props: {} } }));
+    const records = [...existing.map((_, i) => inv(`old${i}`)), ...Array.from({ length: 5 }, (_, i) => inv(`new${i}`))];
+    const r = placeRelated({ source, nodes: [source, ...existing], records, newKey: counter() });
+    expect(r.addedNodes).toBe(5);
+    expect(r.connectedExisting).toBe(50);
+    expect(r.skipped).toEqual([]);
+  });
 });

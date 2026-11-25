@@ -86,10 +86,11 @@ function nodeId(node: PlaceRelatedNode): string | null {
   return node.ref?.id ? `ref:${node.kind}:${node.ref.id}` : null;
 }
 
+type Rect = { x: number; y: number; width: number; height: number };
+
 function overlaps(a: Rect, b: Rect): boolean {
   return a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
 }
-type Rect = { x: number; y: number; width: number; height: number };
 
 export function placeRelated(input: PlaceRelatedInput): PlaceRelatedResult {
   const { source, nodes, records } = input;
@@ -117,7 +118,6 @@ export function placeRelated(input: PlaceRelatedInput): PlaceRelatedResult {
   const seen = new Set<string>();
   let connectedExisting = 0;
   let alreadyConnected = 0;
-  let handled = 0;
 
   const connect = (toKey: string, relation: string) => {
     const fields: PlanningCanvasConnectorFields = { fromKey: source.key, toKey, label: clipLabel(relation) };
@@ -129,12 +129,6 @@ export function placeRelated(input: PlaceRelatedInput): PlaceRelatedResult {
     const id = recordId(record);
     if (seen.has(id)) continue; // the same record ticked twice
     seen.add(id);
-    if (handled >= max) {
-      skipped.push(record);
-      continue;
-    }
-    handled += 1;
-
     const existingKey = onBoard.get(id);
     if (existingKey !== undefined) {
       if (existingKey === source.key || joined.has(existingKey)) alreadyConnected += 1;
@@ -142,6 +136,11 @@ export function placeRelated(input: PlaceRelatedInput): PlaceRelatedResult {
         connect(existingKey, record.relation);
         connectedExisting += 1;
       }
+      continue;
+    }
+
+    if (newNodes.length >= max) {
+      skipped.push(record);
       continue;
     }
 
@@ -159,15 +158,15 @@ export function placeRelated(input: PlaceRelatedInput): PlaceRelatedResult {
 
     const key = newKey();
     const base = { itemType: "node" as const, key, ...rect, zIndex: NODE_Z, color: NODE_COLOR, title: "", content: "" };
-    newNodes.push(
+    const node: PlanningCanvasItemInput =
       "refId" in record
         ? { ...base, kind: record.refKind, ref: { id: record.refId } }
         : {
             ...base,
-            kind: "embed",
+            kind: "embed" as const,
             data: { plugin: record.plugin, type: record.type, assetId: record.assetId, props: {} },
-          },
-    );
+          };
+    newNodes.push(node);
     onBoard.set(id, key);
     connect(key, record.relation);
   }
