@@ -40,6 +40,12 @@ function createDispatcher(deps = {}) {
   const sessions = new Map();
   const shotCounters = new Map();
   const { verifyApproval, handoff } = deps;
+  // Take-over (PAR-14514 S4): the person's lease and the list of tasks waiting for a login. Both optional.
+  const lease = deps.lease || null;
+  const waiting = deps.waiting || null;
+  const noteWaiting = (identity, issue, reason) => {
+    try { if (waiting) waiting.record(identity, issue, reason); } catch (e) {}
+  };
   const errorLog = deps.errorLog || createErrorLog({ path: deps.errorLogPath });
   const logError = (request, phase, error) => {
     try {
@@ -77,8 +83,12 @@ function createDispatcher(deps = {}) {
     pollMs: deps.handoffPollMs,
     now: deps.handoffNow,
     sleep: deps.handoffSleep,
-    logError: (req, phase, e) => logError(req, phase, e)
+    logError: (req, phase, e) => logError(req, phase, e),
+    // The window closed for its own reasons (logged in, timeout, closed by the person): the lease ends with it.
+    onClose: (identity, reason) => { if (lease) lease.end(reason, { identity }); }
   });
+  // The lease ended (time limit, no control stream, release): its window closes with it.
+  if (lease) lease.onEnd((l, reason) => { handoffs.close(l.identity, reason).catch(() => {}); });
 
   const afterOp = async (ctx, key) => {
     const v = ctx.violations();
@@ -118,6 +128,13 @@ function createDispatcher(deps = {}) {
         return { exit: EXIT.USAGE, ok: false, reason: 'identity_invalid' };
       }
 
+      // A person holds the screen (a take-over, or its release check): every agent command waits, on every
+      // identity, because :99 has no window manager and the person could click into any window (Q4).
+      if (lease && lease.busy()) {
+        noteWaiting(identityStr, issue, 'handoff_open');
+        return { exit: EXIT.NO_BROWSER, ok: false, reason: 'handoff_open' };
+      }
+
       const sessionKey = `${agentId}|${identityStr}`;
 
       let viewport;
@@ -154,6 +171,7 @@ function createDispatcher(deps = {}) {
 
         // A person is logging in on this profile: Chromium allows one window per profile directory.
         if (handoffs.isOpen(identityStr)) {
+          noteWaiting(identityStr, issue, 'handoff_open');
           return { exit: EXIT.NO_BROWSER, ok: false, reason: 'handoff_open' };
         }
 
@@ -194,6 +212,7 @@ function createDispatcher(deps = {}) {
           if (lateViolation) return lateViolation;
           if (!loggedIn) {
             await ctx.close();
+            noteWaiting(identityStr, issue, 'session_expired');
             return { exit: EXIT.SESSION_EXPIRED, ok: false, reason: 'session_expired' };
           }
 
@@ -456,7 +475,65 @@ function createDispatcher(deps = {}) {
     }
   }
 
-  return { dispatch, sessions, handoffs, COMMANDS };
+  // The session check after a take-over (F18): the same test as `open`, run by the daemon itself.
+  async function checkSession(identityStr) {
+    const identity = parseIdentity(identityStr);
+    const site = identity && deps.sites?.sites?.[identity.svc];
+    if (!site?.loggedIn?.url || !site.loggedIn.expect) return { ok: false, reason: 'site_not_found' };
+    if (!deps.browser) return { ok: false, reason: 'no_browser' };
+    const origins = originsFor({ policy: deps.policy, sites: deps.sites, identity: identityStr });
+    let url;
+    try { url = new URL(site.loggedIn.url, origins[0]); } catch (e) { return { ok: false, reason: 'origin not allowed' }; }
+    if (!origins.includes(url.origin)) return { ok: false, reason: 'origin not allowed' };
+    // One Chromium per profile directory.
+    for (const [key, s] of [...sessions]) {
+      if (key.endsWith(`|${identityStr}`)) await dropSession(s.ctx, key);
+    }
+    let ctx;
+    try {
+      ctx = deps.browser.newContext({ origins, guard: makeGuard(origins), identity: identityStr });
+      await ctx.goto(url.href);
+      const wall = () => {
+        const v = ctx.violations();
+        if (!v.length) return null;
+        let host = 'unparseable';
+        try { host = new URL(v[0].url).host; } catch (e) {}
+        return { ok: false, reason: `origin_wall: ${host}` };
+      };
+      const early = wall();
+      if (early) return early;
+      const loggedIn = await ctx.hasText(site.loggedIn.expect, { timeoutMs: OPEN_EXPECT_WAIT_MS });
+      return wall() || (loggedIn ? { ok: true, reason: 'logged_in' } : { ok: false, reason: 'session_expired' });
+    } catch (e) {
+      logError({ cmd: 'release', identity: identityStr }, 'session-check', e);
+      return { ok: false, reason: classifyDriverError(e).reason };
+    } finally {
+      try { await ctx?.close(); } catch (e) {}
+    }
+  }
+
+  // POST /release (PAR-14514 S4): end the lease, close the window (its profile is written), check the
+  // session. Agents stay refused until the check is over. Releases run one at a time; a second release
+  // for an ended lease answers the same way (a fresh check), so it is safe twice.
+  let releaseChain = Promise.resolve();
+  function release(identityStr) {
+    const run = async () => {
+      if (!parseIdentity(identityStr)) return { ok: false, reason: 'identity_invalid' };
+      const work = async () => {
+        if (lease) lease.end('released', { identity: identityStr });
+        await handoffs.close(identityStr, 'released');
+        const r = await checkSession(identityStr);
+        if (lease) lease.confirm(identityStr);
+        return r;
+      };
+      return lease ? lease.runCheck(work) : work();
+    };
+    const p = releaseChain.then(run, run);
+    releaseChain = p.catch(() => {});
+    return p;
+  }
+
+  return { dispatch, sessions, handoffs, release, checkSession, COMMANDS };
 }
 
 module.exports = { createDispatcher, classifyDriverError, COMMANDS, HANDOFF_COMMANDS };

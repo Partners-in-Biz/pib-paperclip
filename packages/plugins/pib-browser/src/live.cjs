@@ -1,6 +1,7 @@
 'use strict';
-// Live service (PAR-14514 S2): a second listener that streams display :99 to a
-// person in Cockpit, view only. Every stream must carry the core server's signed
+// Live service (PAR-14514 S2, S4): a second listener that streams display :99 to a
+// person in Cockpit: view only, or with keyboard and mouse under a take-over lease
+// (one control stream at a time). Every stream must carry the core server's signed
 // header (doc/plugins/PLUGIN_SPEC.md, "x-paperclip-local-ws-signature"): any
 // local process can open this socket, only the server process can sign.
 // Never logged: stream bytes, the request path, the signed header.
@@ -12,6 +13,8 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const childProcess = require('node:child_process');
 const { WebSocketServer, createWebSocketStream } = require('ws');
+const { parseIdentity } = require('./policy.cjs');
+const { ISSUE_RE } = require('./auth.cjs');
 
 const SIGNATURE_HEADER = 'x-paperclip-local-ws-signature';
 const MAX_AGE_MS = 30_000;
@@ -20,6 +23,8 @@ const MAX_VIEWS = 2;
 const VIEW_TTL_MS = 20 * 60_000;
 const PING_MS = 20_000;
 const KILL_GRACE_MS = 2_000;
+const MAX_BODY = 16 * 1024;
+const MAX_CLEAR = 500;
 
 function parseMode(value, name) {
   if (!/^(0o)?[0-7]{3,4}$/i.test(value)) throw new Error(`${name} must be a valid octal string (e.g., 660)`);
@@ -41,6 +46,11 @@ function loadLiveConfig(env = process.env) {
 // The view command line. `-viewonly` is part of the constant: no caller can drop it.
 function viewArgs(display) {
   return ['-display', display, '-inetd', '-viewonly', '-nopw', '-norc', '-q', '-noclipboard', '-noprimary'];
+}
+
+// The take-over command line: the same without `-viewonly`. Paste goes in, nothing is copied out (F30).
+function controlArgs(display) {
+  return ['-display', display, '-inetd', '-nopw', '-norc', '-q', '-noclipboard', '-noprimary'];
 }
 
 // The server's public key, from the address already trusted for agent checks.
@@ -152,9 +162,31 @@ function reject(socket, status) {
   }
 }
 
+function readJson(req) {
+  return new Promise((resolve) => {
+    let size = 0;
+    const chunks = [];
+    req.on('data', (c) => {
+      size += c.length;
+      if (size > MAX_BODY) { resolve(null); req.destroy(); return; }
+      chunks.push(c);
+    });
+    req.on('end', () => {
+      try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8') || 'null')); } catch (e) { resolve(null); }
+    });
+    req.on('error', () => resolve(null));
+  });
+}
+
+function sendJson(res, status, body) {
+  res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+  res.end(JSON.stringify(body));
+}
+
 /**
- * opts: { config, apiBase, fetch, logger, agentIdentities, spawn, now,
+ * opts: { config, apiBase, fetch, logger, agentIdentities, takeover, spawn, now,
  *         viewTtlMs, pingMs, killGraceMs } (the last four for tests).
+ * takeover (S4): { lease, waiting, open(identity), release(identity) }. Without it `mode=control` gets 403.
  */
 function createLiveService(opts) {
   const { config } = opts;
@@ -166,24 +198,74 @@ function createLiveService(opts) {
   const keys = createKeyStore({ apiBase: opts.apiBase, fetch: opts.fetch || globalThis.fetch });
   const verify = createVerifier({ config, keys, now: opts.now });
   const wss = new WebSocketServer({ noServer: true, clientTracking: false, perMessageDeflate: false, maxPayload: 1 << 20 });
+  const takeover = opts.takeover || null;
+  const lease = takeover?.lease || null;
   const views = new Set();
+  const controls = new Set();
   let starting = 0;
   let closing = false;
+
+  // A lease ended (any reason): its control streams close with it.
+  if (lease) {
+    lease.onEnd((l) => { for (const c of [...controls]) if (c.lease === l) end(c, 'lease_ended'); });
+  }
+
+  function waitingList(identity) {
+    try { return takeover?.waiting ? takeover.waiting.list(identity) : []; } catch (e) { return []; }
+  }
 
   function status() {
     return {
       viewers: views.size,
       agentSessions: opts.agentIdentities ? opts.agentIdentities() : [],
-      lease: null,
-      waiting: []
+      lease: lease ? lease.status() : null,
+      waiting: waitingList()
     };
+  }
+
+  // POST /release {identity} | {all:true[, identity]} (unsigned): see the README, "Take-over".
+  async function onRelease(body) {
+    if (!takeover) return [404, { ok: false, reason: 'not_available' }];
+    const all = body?.all === true;
+    let identity = body?.identity;
+    if (identity !== undefined && !parseIdentity(identity)) return [400, { ok: false, reason: 'identity_invalid' }];
+    const live = lease.current();
+    if (all) {
+      if (live) lease.end('released');
+      for (const v of [...views, ...controls]) end(v, 'released');
+      identity = identity ?? live?.identity ?? lease.status()?.identity;
+      if (!identity) return [200, { ok: false, reason: 'no_take_over', waiting: [] }];
+    } else if (!identity) {
+      return [400, { ok: false, reason: 'identity_required' }];
+    } else if (live && live.identity !== identity) {
+      // Another identity's take-over is live: leave it, and do not open a check window over it.
+      return [200, { ok: false, reason: 'take_over_other_identity', waiting: waitingList(identity) }];
+    }
+    const r = await takeover.release(identity);
+    logger(`pib-browser live: released (${r.reason})`);
+    return [200, { ok: r.ok === true, reason: r.reason, waiting: waitingList(identity) }];
+  }
+
+  // POST /waiting/clear {identity, issues} (unsigned).
+  function onWaitingClear(body) {
+    if (!takeover?.waiting) return [404, { ok: false, reason: 'not_available' }];
+    const issues = body?.issues;
+    if (!parseIdentity(body?.identity)) return [400, { ok: false, reason: 'identity_invalid' }];
+    if (!Array.isArray(issues) || issues.length > MAX_CLEAR || !issues.every((i) => typeof i === 'string' && ISSUE_RE.test(i))) {
+      return [400, { ok: false, reason: 'issues_invalid' }];
+    }
+    return [200, { ok: true, removed: takeover.waiting.clear(body.identity, issues) }];
   }
 
   const server = http.createServer((req, res) => {
     const pathname = (req.url || '').split('?')[0];
-    if (req.method === 'GET' && pathname === '/status') {
-      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-      res.end(JSON.stringify(status()));
+    if (req.method === 'GET' && pathname === '/status') return sendJson(res, 200, status());
+    if (req.method === 'POST' && (pathname === '/release' || pathname === '/waiting/clear')) {
+      readJson(req).then(async (body) => {
+        if (!body || typeof body !== 'object') return sendJson(res, 400, { ok: false, reason: 'bad_request' });
+        const [code, out] = pathname === '/release' ? await onRelease(body) : onWaitingClear(body);
+        sendJson(res, code, out);
+      }).catch(() => { try { sendJson(res, 500, { ok: false, reason: 'internal' }); } catch (e) {} });
       return;
     }
     res.writeHead(pathname === '/stream' ? 426 : 404, { 'Content-Length': 0, Connection: 'close' });
@@ -203,28 +285,64 @@ function createLiveService(opts) {
     const v = await verify(req);
     if (!v.ok) { logger(`pib-browser live: stream refused (${v.reason})`); return reject(socket, 401); }
     const mode = url.searchParams.get('mode');
-    if (mode === 'control') { logger('pib-browser live: stream refused (control_not_available)'); return reject(socket, 403); }
+    if (mode === 'control') return onControl(req, socket, head, url, v.userId);
     if (mode !== 'view' || [...url.searchParams.keys()].length !== 1) return reject(socket, 400);
     if (closing || views.size + starting >= MAX_VIEWS) { logger('pib-browser live: stream refused (viewer_limit)'); return reject(socket, 429); }
     starting++;
+    return openStream(req, socket, head, { kind: 'view', args: viewArgs(config.display), set: views, onStarted: () => { starting--; } });
+  }
+
+  // GET /stream?mode=control&identity=<id>: starts a lease for the signed person when none exists (and opens
+  // the hand-off window), re-attaches the lease's own person on the same identity, refuses anyone else (409).
+  async function onControl(req, socket, head, url, userId) {
+    if (!takeover) { logger('pib-browser live: stream refused (control_not_available)'); return reject(socket, 403); }
+    const identity = url.searchParams.get('identity');
+    if (!parseIdentity(identity) || [...url.searchParams.keys()].length !== 2) return reject(socket, 400);
+    let l = lease.current();
+    if (l && (l.userId !== userId || l.identity !== identity)) { logger('pib-browser live: stream refused (lease_held)'); return reject(socket, 409); }
+    // A release's session check is running on the profile: no new take-over until it is done.
+    if (!l && lease.busy()) { logger('pib-browser live: stream refused (release_running)'); return reject(socket, 409); }
+    const fresh = !l;
+    if (fresh) l = lease.start(identity, userId);
+    const detach = lease.attach(l);
+    if (fresh) {
+      let r;
+      try { r = await takeover.open(identity); } catch (e) { r = { ok: false }; }
+      if (!r?.ok && r?.reason !== 'handoff_already_open') {
+        detach();
+        lease.end('window_failed', { identity });
+        logger('pib-browser live: stream refused (window_failed)');
+        return reject(socket, 502);
+      }
+    }
+    if (lease.current() !== l || closing) { detach(); return reject(socket, 409); }
+    return openStream(req, socket, head, { kind: 'control', args: controlArgs(config.display), set: controls, lease: l, detach });
+  }
+
+  async function openStream(req, socket, head, { kind, args, set, lease: l = null, detach = () => {}, onStarted = () => {} }) {
     let ends;
-    try { ends = await handover(config.tmpDir); } catch (e) { starting--; return reject(socket, 502); }
+    try { ends = await handover(config.tmpDir); } catch (e) { onStarted(); detach(); return reject(socket, 502); }
     let child;
     try {
       // Only DISPLAY and XAUTHORITY reach the child, nothing else from the daemon's env.
-      child = spawn(config.x11vnc, viewArgs(config.display), {
+      child = spawn(config.x11vnc, args, {
         stdio: [ends.childEnd, 'ignore', 'ignore'],
         env: { PATH: '/usr/bin:/bin', ...config.childEnv }
       });
     } catch (e) {
       ends.parentEnd.destroy();
+      detach();
       return reject(socket, 502);
     } finally {
       ends.childEnd.destroy();
-      starting--;
+      onStarted();
     }
-    const view = { child, conn: ends.parentEnd, socket, ws: null, timers: [], closed: false };
-    views.add(view);
+    const view = { kind, child, conn: ends.parentEnd, socket, ws: null, timers: [], closed: false, lease: l, detach };
+    set.add(view);
+    // One control stream at a time: the newest (a reconnect) replaces any other.
+    if (kind === 'control') for (const c of [...controls]) if (c !== view) end(c, 'replaced');
+    // The lease ended while x11vnc was starting.
+    if (l && lease.current() !== l) return end(view, 'lease_ended');
     child.once('error', () => end(view, 'spawn_failed'));
     child.once('exit', () => end(view, 'vnc_exit'));
     view.conn.on('error', () => end(view, 'vnc_error'));
@@ -241,7 +359,7 @@ function createLiveService(opts) {
       view.conn.pipe(duplex).pipe(view.conn);
       view.timers.push(setInterval(() => { try { ws.ping(); } catch (e) {} }, pingMs));
       view.timers.push(setTimeout(() => end(view, 'time_limit', 1000), viewTtlMs));
-      logger(`pib-browser live: view opened (viewers ${views.size})`);
+      logger(kind === 'control' ? 'pib-browser live: control opened' : `pib-browser live: view opened (viewers ${views.size})`);
     });
   }
 
@@ -249,6 +367,8 @@ function createLiveService(opts) {
     if (view.closed) return;
     view.closed = true;
     views.delete(view);
+    controls.delete(view);
+    view.detach?.();
     for (const t of view.timers) { clearInterval(t); clearTimeout(t); }
     view.killed = killChild(view.child, killGraceMs);
     view.conn.destroy();
@@ -258,23 +378,24 @@ function createLiveService(opts) {
     } else {
       view.socket.destroy();
     }
-    logger(`pib-browser live: view closed (${reason}, viewers ${views.size})`);
+    logger(view.kind === 'control' ? `pib-browser live: control closed (${reason})` : `pib-browser live: view closed (${reason}, viewers ${views.size})`);
   }
 
   // Daemon shutdown: refuse new streams, close every view, wait for the children.
   async function close() {
     closing = true;
-    const open = [...views];
+    const open = [...views, ...controls];
     for (const view of open) end(view, 'shutdown');
+    if (lease) lease.end('shutdown');
     const closed = new Promise((resolve) => server.close(() => resolve()));
     server.closeAllConnections();
     await closed;
     await Promise.all(open.map((view) => view.killed));
   }
 
-  return { server, close, status, views };
+  return { server, close, status, views, controls };
 }
 
 module.exports = {
-  SIGNATURE_HEADER, MAX_VIEWS, loadLiveConfig, viewArgs, createKeyStore, createVerifier, handover, createLiveService
+  SIGNATURE_HEADER, MAX_VIEWS, loadLiveConfig, viewArgs, controlArgs, createKeyStore, createVerifier, handover, createLiveService
 };
