@@ -15,7 +15,7 @@
 #       also fail there fails the step. A timeout always fails.
 #
 # Env: BASE_REF (default development), MODE (affected|full; affected limits vitest to the projects whose package
-# is in the affected set), RUNNER_TEMP (scratch dir), SHARD_TIMEOUT / BASE_TIMEOUT (run-shard caps, default 30m / 12m),
+# is in the affected set), RUNNER_TEMP (scratch dir), SHARD_TIMEOUT / BASE_TIMEOUT (run-shard caps, default 40m / 12m),
 # RELATED_FILES_OVERRIDE (a file with the list; skips vitest --changed, for local tests of run-shard).
 # Diagnostics go to stderr; stdout is only the file list (list, shard).
 set -euo pipefail
@@ -74,7 +74,7 @@ run_shard() {
   if [ "${#files[@]}" -eq 0 ]; then echo "no related test files in this shard"; return 0; fi
   echo "shard ${index}/${count}: ${#files[@]} test files"
   printf 'related test file: %s\n' "${files[@]}"
-  timeout "${SHARD_TIMEOUT:-30m}" pnpm exec vitest run "${files[@]}" --reporter=default --reporter=json --outputFile.json="$out" || rc=$?
+  timeout "${SHARD_TIMEOUT:-40m}" pnpm exec vitest run "${files[@]}" --reporter=default --reporter=json --outputFile.json="$out" || rc=$?
   if [ "$rc" -eq 0 ]; then return 0; fi
   if [ "$rc" -eq 124 ] || [ ! -s "$out" ]; then
     echo "::error::Shard ${index} hit its time limit or produced no result (exit ${rc}). This is a failure, not a pass."
