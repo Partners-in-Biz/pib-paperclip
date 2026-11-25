@@ -1,8 +1,9 @@
+import { existsSync } from "node:fs";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { prepareSshControlDir, sshControlDirFor } from "@paperclipai/adapter-utils/ssh";
-import { sweepStaleSshConnectionDirsAtStartup } from "./ssh-connection-sweep.js";
+import { closeRunSshConnectionWhenReleased, sweepStaleSshConnectionDirsAtStartup } from "./ssh-connection-sweep.js";
 
 const RUNNING = "11111111-2222-4333-8444-555555555555";
 const FINISHED = "66666666-7777-4888-9999-000000000000";
@@ -36,5 +37,27 @@ describe("startup ssh control directory sweep (PAR-9403 AC 3)", () => {
     expect(result.kept).toEqual([RUNNING]);
     expect([...result.removed].sort()).toEqual([FINISHED, UNKNOWN].sort());
     expect(await readdir(baseDir)).toEqual([path.basename(sshControlDirFor(RUNNING, baseDir)!)]);
+  });
+});
+
+describe("run end ssh master close (PAR-14564)", () => {
+  it("keeps the master while ownership is held or the run is live, closes it once released", async () => {
+    const root = await mkdtemp("/tmp/pcs-s");
+    roots.push(root);
+    const baseDir = path.join(root, "b");
+    const dir = await prepareSshControlDir(FINISHED, baseDir);
+    expect(dir).not.toBeNull();
+
+    expect(await closeRunSshConnectionWhenReleased({ runId: FINISHED, status: "succeeded", ownershipHeld: true, baseDir }))
+      .toBe(false);
+    expect(await closeRunSshConnectionWhenReleased({ runId: FINISHED, status: "running", ownershipHeld: false, baseDir }))
+      .toBe(false);
+    expect(await closeRunSshConnectionWhenReleased({ runId: FINISHED, status: undefined, ownershipHeld: false, baseDir }))
+      .toBe(false);
+    expect(existsSync(dir!)).toBe(true);
+
+    expect(await closeRunSshConnectionWhenReleased({ runId: FINISHED, status: "succeeded", ownershipHeld: false, baseDir }))
+      .toBe(true);
+    expect(existsSync(dir!)).toBe(false);
   });
 });

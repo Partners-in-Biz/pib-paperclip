@@ -1,18 +1,22 @@
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { prepareSshControlDir, sshControlDirFor } from "@paperclipai/adapter-utils/ssh";
 import { agents, authUsers, companies, companyMemberships, createDb, issues } from "@paperclipai/db";
 import { heartbeatService } from "../services/heartbeat.js";
 import { recoveryPostgresSupport, startRecoveryPostgres } from "./helpers/recovery-postgres.js";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 
 // PAR-14337: the run's shared ssh connection closes at every terminal end,
-// outside the native-ownership gates and after any earlier teardown failure.
+// including after an earlier teardown failure. PAR-14564: never while native
+// ownership is held (a held owner may still multiplex over the master); the
+// lease release that follows the ownership clearing closes it then.
 const mocks = vi.hoisted(() => ({
   execute: vi.fn(),
-  cleanupSshConnectionReuse: vi.fn(async (_input: { runId: string }) => undefined),
+  cleanupSshConnectionReuse: vi.fn(async (_input: { runId: string; baseDir?: string }): Promise<void> => undefined),
   holdNativeOwnership: false,
   failFinalizationWrite: false,
 }));
@@ -23,10 +27,12 @@ vi.mock("../adapters/index.js", () => ({
   runningProcesses: new Map(),
 }));
 
-vi.mock("@paperclipai/adapter-utils/ssh", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@paperclipai/adapter-utils/ssh")>()),
-  cleanupSshConnectionReuse: mocks.cleanupSshConnectionReuse,
-}));
+// Calls through, so the run's real control directory is the observed outcome.
+vi.mock("@paperclipai/adapter-utils/ssh", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@paperclipai/adapter-utils/ssh")>();
+  mocks.cleanupSshConnectionReuse.mockImplementation(actual.cleanupSshConnectionReuse);
+  return { ...actual, cleanupSshConnectionReuse: mocks.cleanupSshConnectionReuse };
+});
 
 // Stands in for ownership latched during execution (e.g. an unverified runner):
 // the teardown then skips every native-gated release.
@@ -59,9 +65,13 @@ describe.skipIf(!recoveryPostgresSupport.supported)("heartbeat closes the run's 
   let db: ReturnType<typeof createDb>;
   let heartbeat: ReturnType<typeof heartbeatService>;
   let root: string;
+  let controlRoot: string;
 
   beforeAll(async () => {
     root = await realpath(await mkdtemp(path.join(tmpdir(), "heartbeat-ssh-cleanup-")));
+    // ssh caps the control path length, so the base stays short.
+    controlRoot = await mkdtemp("/tmp/pcs-h");
+    vi.stubEnv("PAPERCLIP_SSH_CONTROL_DIR", path.join(controlRoot, "b"));
     vi.stubEnv("PAPERCLIP_HOME", path.join(root, "home"));
     vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "01234567890123456789012345678901");
     temporary = await startRecoveryPostgres("heartbeat-ssh-cleanup-");
@@ -82,6 +92,7 @@ describe.skipIf(!recoveryPostgresSupport.supported)("heartbeat closes the run's 
     await temporary?.cleanup();
     vi.unstubAllEnvs();
     if (root) await rm(root, { recursive: true, force: true });
+    if (controlRoot) await rm(controlRoot, { recursive: true, force: true });
   });
 
   async function startRun() {
@@ -100,30 +111,45 @@ describe.skipIf(!recoveryPostgresSupport.supported)("heartbeat closes the run's 
     return run!.id;
   }
 
+  // Stands in for the run's first ssh op, which creates its control directory.
+  async function openControlDir(runId: string) {
+    expect(await prepareSshControlDir(runId)).toBe(sshControlDirFor(runId));
+  }
+
+  function controlDirExists(runId: string) {
+    return existsSync(sshControlDirFor(runId)!);
+  }
+
   async function expectCleanedAfterTerminal(runId: string, status: string | RegExp) {
     await vi.waitFor(async () => {
       expect((await heartbeat.getRun(runId))?.status).toMatch(TERMINAL);
       expect(mocks.cleanupSshConnectionReuse).toHaveBeenCalledWith({ runId });
+      expect(controlDirExists(runId)).toBe(false);
     }, { timeout: 30_000 });
     expect((await heartbeat.getRun(runId))?.status).toMatch(status);
-    expect(mocks.cleanupSshConnectionReuse.mock.calls.filter(([input]) => input.runId === runId)).toHaveLength(1);
   }
 
   it("on success", async () => {
-    mocks.execute.mockResolvedValue({ exitCode: 0, signal: null, timedOut: false });
+    mocks.execute.mockImplementation(async (ctx: { runId: string }) => {
+      await openControlDir(ctx.runId);
+      return { exitCode: 0, signal: null, timedOut: false };
+    });
     await expectCleanedAfterTerminal(await startRun(), "succeeded");
   }, 60_000);
 
   it("on adapter error", async () => {
-    mocks.execute.mockRejectedValue(new Error("adapter crashed"));
+    mocks.execute.mockImplementation(async (ctx: { runId: string }) => {
+      await openControlDir(ctx.runId);
+      throw new Error("adapter crashed");
+    });
     await expectCleanedAfterTerminal(await startRun(), "failed");
   }, 60_000);
 
   it("on cancel", async () => {
     let started!: () => void;
     const executing = new Promise<void>((resolve) => { started = resolve; });
-    mocks.execute.mockImplementation((input: { signal?: AbortSignal }) => new Promise((resolve) => {
-      started();
+    mocks.execute.mockImplementation((input: { runId: string; signal?: AbortSignal }) => new Promise((resolve) => {
+      void openControlDir(input.runId).then(started);
       const settle = () => resolve({ exitCode: null, signal: "SIGTERM", timedOut: false });
       if (input.signal?.aborted) settle();
       input.signal?.addEventListener("abort", settle, { once: true });
@@ -134,16 +160,35 @@ describe.skipIf(!recoveryPostgresSupport.supported)("heartbeat closes the run's 
     await expectCleanedAfterTerminal(runId, "cancelled");
   }, 60_000);
 
-  it("while native ownership is held", async () => {
-    mocks.execute.mockImplementation(async () => {
+  it("not while native ownership is held, then once it clears", async () => {
+    mocks.execute.mockImplementation(async (ctx: { runId: string }) => {
+      await openControlDir(ctx.runId);
       mocks.holdNativeOwnership = true;
       return { exitCode: 0, signal: null, timedOut: false };
     });
-    await expectCleanedAfterTerminal(await startRun(), "succeeded");
+    const runId = await startRun();
+    await vi.waitFor(async () => {
+      expect((await heartbeat.getRun(runId))?.status).toBe("succeeded");
+    }, { timeout: 30_000 });
+    // The executor's teardown, including its finally, has fully settled.
+    await heartbeat.drainActiveRunExecutions();
+    expect(mocks.cleanupSshConnectionReuse).not.toHaveBeenCalledWith({ runId });
+    expect(controlDirExists(runId)).toBe(true);
+    // A held release (e.g. recovery retrying cleanup) still leaves it open.
+    const run = (await heartbeat.getRun(runId))!;
+    const release = { runId, companyId: run.companyId, agentId: run.agentId, status: run.status };
+    await heartbeat.releaseEnvironmentLeasesForRun(release);
+    expect(controlDirExists(runId)).toBe(true);
+    // Ownership clears: the lease release that follows closes the master.
+    mocks.holdNativeOwnership = false;
+    await heartbeat.releaseEnvironmentLeasesForRun(release);
+    expect(mocks.cleanupSshConnectionReuse).toHaveBeenCalledWith({ runId });
+    expect(controlDirExists(runId)).toBe(false);
   }, 60_000);
 
   it("when an earlier teardown step throws", async () => {
-    mocks.execute.mockImplementation(async () => {
+    mocks.execute.mockImplementation(async (ctx: { runId: string }) => {
+      await openControlDir(ctx.runId);
       mocks.failFinalizationWrite = true;
       return { exitCode: 0, signal: null, timedOut: false };
     });

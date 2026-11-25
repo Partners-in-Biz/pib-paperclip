@@ -344,7 +344,7 @@ import {
   prepareGitHubExecutionEnvironment,
   startAdapterExecutionTargetPaperclipBridge,
 } from "@paperclipai/adapter-utils/execution-target";
-import { cleanupSshConnectionReuse } from "@paperclipai/adapter-utils/ssh";
+import { closeRunSshConnectionWhenReleased } from "./heartbeat/ssh-connection-sweep.js";
 import { agentInstructionWorkingCopyService } from "./agent-instruction-working-copies.js";
 
 import fs from "node:fs/promises";
@@ -4122,16 +4122,15 @@ export function heartbeatService(
         if (adapterExecutionControls.get(run.id) === executionControl) {
           adapterExecutionControls.delete(run.id);
         }
-        // Keyed on terminal status only: native ownership or an earlier
-        // teardown error must not leave the run's ssh master open (PAR-14337).
+        // In the finally so an earlier teardown error cannot leave the run's ssh
+        // master open (PAR-14337), but under the same native gate as the lease:
+        // a held owner may still multiplex over it (PAR-14564).
         const sshRun = latestRun && isHeartbeatRunTerminalStatus(latestRun.status)
-          ? latestRun
-          : await getRun(run.id).catch(() => null);
-        if (sshRun && isHeartbeatRunTerminalStatus(sshRun.status)) {
-          await cleanupSshConnectionReuse({ runId: run.id }).catch((err) => {
-            logger.warn({ err, runId: run.id }, "failed to close the run's shared ssh connection");
-          });
-        }
+          ? latestRun : await getRun(run.id).catch(() => null);
+        await closeRunSshConnectionWhenReleased({ runId: run.id, status: sshRun?.status,
+          ownershipHeld: nativeSessionResumeScheduled || nativeWorkspaceFinalizeScheduled || nativeOwnershipHeld ||
+            nativeStartupCleanupScheduled || Boolean(nativeStartupCleanupError) ||
+            Boolean(sshRun && isNativeRunnerOwnershipHeld(sshRun)) });
       }
       if (latestRun) await reconcileMuseNativeTerminalRun(db, latestRun);
       // Scratch preparation is optional. Its removal cannot be the only proof
