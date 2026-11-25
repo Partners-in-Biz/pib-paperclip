@@ -130,7 +130,7 @@ import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
 import { agentService } from "./agents.js";
 import { issueDocumentSelect, mapIssueDocumentRow } from "./documents.js";
 import { toIssueWorkProduct } from "./work-products.js";
-import { projectService } from "./projects.js";
+import { projectService, type ProjectListReadScope } from "./projects.js";
 import { normalizePortablePath } from "./portable-path.js";
 import { folderService } from "./folders.js";
 import {
@@ -680,6 +680,7 @@ function readCanonicalSkillKey(frontmatter: Record<string, unknown>, metadata: R
 export const PAPERCLIP_CORE_SKILL_KEYS = [
   "paperclipai/paperclip/paperclip",
   "paperclipai/paperclip/paperclip-board",
+  "paperclipai/paperclip/paperclip-canvas",
   "paperclipai/paperclip/paperclip-converting-plans-to-tasks",
   "paperclipai/paperclip/paperclip-create-agent",
   "paperclipai/paperclip/para-memory-files",
@@ -3014,7 +3015,8 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
       });
     }
     await assertLocalImportOutsideSkillPackageCache(sourceRealPath, resolveManagedSkillsRoot(companyId));
-    const projectRows = await projects.list(companyId);
+    // "system": an allowlist of import roots that gates server behaviour; the rows are never shown.
+    const projectRows = await projects.list(companyId, { readCondition: "system" });
     const configuredRoots = [
       resolveManagedSkillsRoot(companyId),
       ...projectRows.flatMap((project) => project.workspaces.map((workspace) => workspace.cwd)),
@@ -5184,8 +5186,9 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
   async function browseProjectWorkspace(
     companyId: string,
     input: CompanySkillProjectBrowseRequest,
+    readCondition: ProjectListReadScope,
   ): Promise<CompanySkillProjectBrowseResult> {
-    const project = (await projects.listByIds(companyId, [input.projectId]))[0];
+    const project = (await projects.listByIds(companyId, [input.projectId], { readCondition }))[0];
     if (!project) throw notFound("Project not found");
     const workspace = project.workspaces.find((entry) => entry.id === input.workspaceId);
     if (!workspace) throw notFound("Project workspace not found");
@@ -5243,14 +5246,15 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
 
   async function scanProjectWorkspaces(
     companyId: string,
-    input: CompanySkillProjectScanRequest = {},
+    input: CompanySkillProjectScanRequest,
+    readCondition: ProjectListReadScope,
   ): Promise<CompanySkillProjectScanResult> {
     await ensureSkillInventoryCurrent(companyId);
     const mode = input.mode ?? "import";
     const selectiveImport = mode === "import" && input.selection !== undefined;
     const projectRows = input.projectIds?.length
-      ? await projects.listByIds(companyId, input.projectIds)
-      : await projects.list(companyId);
+      ? await projects.listByIds(companyId, input.projectIds, { readCondition })
+      : await projects.list(companyId, { readCondition });
     const workspaceFilter = new Set(input.workspaceIds ?? []);
     const skipped: CompanySkillProjectScanSkipped[] = [];
     const conflicts: CompanySkillProjectScanConflict[] = [];

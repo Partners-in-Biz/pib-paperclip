@@ -22,7 +22,7 @@ import {
 } from "@partnersinbiz/pib-plugin-kit";
 import { formatClientParam, sameClient, scopeFromParams, scopeOfRow, type ResolvedScope } from "../clients.js";
 import { loadSocialConfig, type SocialConfig } from "../config.js";
-import { ORIGIN_KIND, personAssignee, projectIdFor, SOCIAL_ORIGINS } from "../issues.js";
+import { ORIGIN_KIND, personAssignee, projectIdFor, SOCIAL_ORIGINS, socialAssignee } from "../issues.js";
 import { socialOn } from "../modules.js";
 import { socialPath } from "../oauth/flow.js";
 import { jevConfigFor, jevKeySet } from "../triage.js";
@@ -36,6 +36,7 @@ import {
 import { ownSocialName } from "../preferences.js";
 import { focusOut, monthIn, setFocusRecord } from "../focus.js";
 import { hookBoard, partOf } from "../hook-board.js";
+import { hookGiveText, scopeParamOf, type GivePart } from "../hook-give.js";
 // Import engine functions and types used locally (E.* references in old code)
 import {
   activeQuestions, SCORE_WINDOW, postLift, GrowthError,
@@ -416,6 +417,31 @@ export async function hookBoardRecord(env: GrowthEnv, actor: GrowthActor, params
   const scope: ClientScope = program.clientRef ? { kind: program.clientKind ?? "company", id: program.clientRef } : null;
   const board = await hookBoard(env.ctx, actor.companyId, scope, params.periodDays == null ? 28 : Number(params.periodDays));
   return { ...board, focus: focusOut(program, monthIn(config.timezone)) };
+}
+
+/**
+ * Give to agent from the hook board: the New Task prefill (title, text, the scope's Social project and the Social agent)
+ * for one part (`part` hook/body/cta + `name`) or the whole board (`part: "board"`). People only: the popup is theirs.
+ */
+export async function hookGivePrepareRecord(env: GrowthEnv, actor: GrowthActor, params: Params) {
+  if (actor.isAgent || !actor.userId) throw new GrowthError("Give to agent is for people on the Social page.");
+  const part = params.part;
+  if (part !== "hook" && part !== "body" && part !== "cta" && part !== "board") throw new GrowthError("part must be hook, body, cta or board");
+  const name = typeof params.name === "string" && params.name.trim() ? params.name.trim() : null;
+  if (part !== "board" && !name) throw new GrowthError("name is required for a hook, body or ask");
+  const program = await programForParams(env, actor, params);
+  const scope: ClientScope = program.clientRef ? { kind: program.clientKind ?? "company", id: program.clientRef } : null;
+  const board = await hookBoard(env.ctx, actor.companyId, scope, params.periodDays == null ? 28 : Number(params.periodDays));
+  const row = { client_kind: program.clientKind, client_ref: program.clientRef, client_name: program.clientName };
+  const pagePath = await socialPath(env.ctx, actor.companyId, { tab: "growth" }, scope).catch(() => null);
+  let text: { title: string; description: string };
+  try {
+    text = hookGiveText(board, part as GivePart, name, row, scopeParamOf(row), pagePath);
+  } catch (error) {
+    throw new GrowthError(error instanceof Error ? error.message : String(error));
+  }
+  const [projectId, assignee] = await Promise.all([projectIdFor(env.ctx, actor.companyId, scope).catch(() => undefined), socialAssignee(env.ctx, actor.companyId).catch(() => null)]);
+  return { ...text, ...(projectId ? { projectId } : {}), ...(assignee?.assigneeAgentId ? { assigneeAgentId: assignee.assigneeAgentId } : {}) };
 }
 
 /**

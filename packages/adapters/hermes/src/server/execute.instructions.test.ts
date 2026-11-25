@@ -105,7 +105,7 @@ console.log("Fixture completed\\nsession_id: ${SESSION_ID}");
 
     const [initial, resumed] = await invocations();
     expect(initial.args).not.toContain("--resume");
-    // PiB adds --no-restore-cwd and --format stream-json after the session id.
+    // PiB adds --format stream-json after the session id.
     expect(resumed.args.slice(resumed.args.indexOf("--resume"), resumed.args.indexOf("--resume") + 2)).toEqual(["--resume", SESSION_ID]);
     for (const invocation of [initial, resumed]) {
       expect(invocation.systemPrompt).toContain(INSTRUCTIONS);

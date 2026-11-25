@@ -10,14 +10,14 @@
  */
 import { randomUUID } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { sameClient, scopeOfRow } from "@partnersinbiz/pib-plugin-kit";
+import { sameClient, scopeOfRow, type ActingRestriction } from "@partnersinbiz/pib-plugin-kit";
 import { buildHandoffDescription, handoffTitle } from "@partnersinbiz/pib-plugin-kit/handoff";
 import { addLink, getAssetRow } from "./assets.js";
 import { StudioConfig } from "./config.js";
 import { num, table } from "./db.js";
 import { StudioError } from "./errors.js";
 import { PROMPT_TEMPLATES } from "./prompt-templates.js";
-import { clientOfProject, projectsOfClient } from "./scope.js";
+import { assertOpenToPerson, clientOfProject, projectsOfClient } from "./scope.js";
 import { canGenerate } from "./service.js";
 import { assertOwnKey, extFor, getObject, GIVEN_KEEP_DAYS, givenCopy, removeGivenCopy } from "./storage.js";
 
@@ -148,7 +148,8 @@ function giveId(params: Record<string, unknown>): string {
   return id;
 }
 
-type Giver = { userId: string; role: string | null };
+/** `restriction`: core's member-restriction answer for the page's caller (PAR-14290); every step checks it again. */
+type Giver = { userId: string; role: string | null; restriction?: ActingRestriction };
 type Row = Awaited<ReturnType<typeof getAssetRow>>;
 
 /** A client's file only goes on that client's work: the project must be theirs; own work never goes in a client's. */
@@ -165,7 +166,9 @@ async function checkedRow(ctx: PluginContext, companyId: string, params: Record<
   if (!canGenerate(giver.role)) throw new StudioError("Viewers can look at Studio but can't give files to agents.", "forbidden");
   const assetId = text(params.assetId);
   if (!assetId) throw new StudioError("assetId is required.", "bad_give");
-  return getAssetRow(ctx, companyId, assetId);
+  const row = await getAssetRow(ctx, companyId, assetId);
+  if (giver.restriction) assertOpenToPerson(scopeOfRow(row), giver.restriction);
+  return row;
 }
 
 /** Step 1, on click: every check, a copy of the file, and the popup prefill. */

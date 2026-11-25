@@ -38,6 +38,13 @@ import { externalObjectService } from "../services/external-objects.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 import { ensureProjectAccessMember } from "../services/projects.js";
+import { assertRestrictedBodyAllowed } from "../services/member-restriction/body-allowlist.js";
+import { projectReadSqlCondition } from "../services/authorization.js";
+import {
+  memberRestrictionForActor,
+  memberRestrictionOrUnavailable,
+  memberRestrictionResolver,
+} from "../services/member-restriction/index.js";
 import {
   buildWorkspaceRuntimeDesiredStatePatch,
   listConfiguredRuntimeServiceEntries,
@@ -152,7 +159,7 @@ export function projectRoutes(db: Db) {
     if (!urlKey) return rawId;
     const visibleProjects = await filterProjectsForActor(
       req,
-      await svc.list(companyId, { includeArchived: true }),
+      await svc.list(companyId, { includeArchived: true, readCondition: await projectReadSqlCondition(db, req.actor) }),
     );
     const matches = visibleProjects.filter((project) => deriveProjectUrlKey(project.name, project.id) === urlKey);
     if (matches.length > 1) {
@@ -231,6 +238,20 @@ export function projectRoutes(db: Db) {
         subjectId: req.actor.agentId,
       });
     }
+  }
+
+  /**
+   * PAR-12608 4.5, "taking it away": on an open project, somebody else may
+   * remove the privacy owner's row when that owner is restricted here (report
+   * or enforce). Private and personal projects, and unrestricted owners, keep
+   * today's refusal. A failed read is 503.
+   */
+  async function restrictedCreatorRowRemovable(req: Request, project: {
+    companyId: string; visibility?: string | null; privacyOwnerUserId?: string | null; personalOwnerUserId?: string | null;
+  }, subjectId: string) {
+    if (project.visibility !== "open" || project.personalOwnerUserId || project.privacyOwnerUserId !== subjectId) return false;
+    if (req.actor.userId === subjectId) return false;
+    return (await memberRestrictionOrUnavailable(memberRestrictionResolver(db), subjectId, project.companyId)).restricted;
   }
 
   async function enrichProjectAccessMembers(rows: Array<typeof projectAccessMembers.$inferSelect>) {
@@ -339,12 +360,14 @@ export function projectRoutes(db: Db) {
         limit: req.query.limit, cursor: req.query.cursor,
       });
       const candidateIds = await access.projectDiscoveryCandidateIds(req.actor, companyId);
+      // The read scope is read where it is passed: dropping it from the call drops the read (AC-X1).
+      const scope = { includeArchived, candidateIds, readCondition: await projectReadSqlCondition(db, req.actor) };
       const visible: ProjectDiscoveryPage["projects"] = [];
       let cursor = page.cursor;
       // Scan bounded projections; authorization runs before selecting the public
       // page/cursor so denied projects neither fill pages nor leak their IDs.
       while (visible.length <= page.limit) {
-        const batch = await svc.listSummaries(companyId, { limit: 51, cursor, includeArchived, candidateIds });
+        const batch = await svc.listSummaries(companyId, { ...scope, limit: 51, cursor });
         const allowed = await filterProjectsForActor(req, batch.map(project => ({ ...project, companyId })));
         visible.push(...allowed.map(({ companyId: _companyId, ...project }) => project));
         if (batch.length < 51) break;
@@ -354,7 +377,7 @@ export function projectRoutes(db: Db) {
       res.json({ projects: selected, nextCursor: visible.length > page.limit ? selected.at(-1)!.id : null } satisfies ProjectDiscoveryPage);
       return;
     }
-    const result = await svc.list(companyId, { includeArchived });
+    const result = await svc.list(companyId, { includeArchived, readCondition: await projectReadSqlCondition(db, req.actor) });
     res.json(await filterProjectsForActor(req, result));
   });
 
@@ -378,6 +401,9 @@ export function projectRoutes(db: Db) {
   router.post("/companies/:companyId/projects", validate(createProjectSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    // PAR-12934 (4.6): a caller bound by a restricted person sends no host
+    // configuration, secret or repository. Refused before anything is written.
+    await assertRestrictedBodyAllowed(db, req, companyId, "createProject", req.body);
     type CreateProjectPayload = Parameters<typeof svc.create>[1] & {
       workspace?: Parameters<typeof svc.createWorkspace>[1];
       repositoryIds?: string[];
@@ -387,6 +413,12 @@ export function projectRoutes(db: Db) {
     const receiptOnly = req.get("X-Paperclip-Receipt-Only") === "true";
     if (receiptOnly && !idempotencyKey) throw unprocessable("Project receipt recovery requires an idempotency key");
     projectData.privacyOwnerUserId = req.actor.type === "board" ? req.actor.userId ?? null : req.actor.type === "agent" ? req.actor.onBehalfOfUserId ?? null : null;
+    // PAR-12608 4.5: a project a restricted member creates (or an agent run
+    // working for him) is his through `project_access_members`, open or
+    // private. Read before anything is written: a failed read is 503. The
+    // local board is never restricted.
+    const creatorRestricted = req.actor.source !== "local_implicit"
+      && (await memberRestrictionForActor(memberRestrictionResolver(db), req.actor, companyId))?.restricted === true;
     const runContext = req.actor.type === "agent" && req.actor.source === "agent_jwt" && req.actor.runId
       ? await projectToolContext(db, req.actor, true) : null;
     await assertProjectEnvironmentSelection(
@@ -458,7 +490,7 @@ export function projectRoutes(db: Db) {
       if (runContext && !museActor) await projectToolContext(tx as unknown as Db, req.actor, true);
       const service = projectService(tx as unknown as Db);
       const project = repositories ? await service.createWithRepositories(companyId, projectData, repositories) : await service.create(companyId, projectData);
-      if (project.visibility === "private") await addActorAsPrivateProjectPrincipal(req, project, tx as unknown as Db);
+      if (project.visibility === "private" || creatorRestricted) await addActorAsPrivateProjectPrincipal(req, project, tx as unknown as Db);
       const attachedUrls = new Set((repositories ?? []).map(repo => repo.url.toLowerCase()));
       const registeredUrls: typeof urlRepositories = [];
       for (const repo of urlRepositories) {
@@ -503,6 +535,7 @@ export function projectRoutes(db: Db) {
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
     if (!existing) return;
     if (!(await assertProjectReadAllowed(req, res, existing))) return;
+    await assertRestrictedBodyAllowed(db, req, existing.companyId, "updateProject", req.body, existing.id);
     const body = { ...req.body };
     if (body.visibility !== undefined) {
       if (!(await assertCanManageProjectPrivacy(req, res, existing))) return;
@@ -630,7 +663,8 @@ export function projectRoutes(db: Db) {
       res.status(404).json({ error: "Project access member not found" });
       return;
     }
-    if (member.subjectType === "user" && [project.personalOwnerUserId, project.privacyOwnerUserId].includes(member.subjectId)) {
+    if (member.subjectType === "user" && [project.personalOwnerUserId, project.privacyOwnerUserId].includes(member.subjectId)
+      && !(await restrictedCreatorRowRemovable(req, project, member.subjectId))) {
       res.status(422).json({ error: "The project privacy owner cannot be removed" });
       return;
     }

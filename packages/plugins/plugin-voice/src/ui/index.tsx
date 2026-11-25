@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
-import { useHostContext, usePluginAction, usePluginData } from "@paperclipai/plugin-sdk/ui";
+import { useHostContext, usePluginData } from "@paperclipai/plugin-sdk/ui";
+import { AccessGate, useAccess } from "@partnersinbiz/pib-plugin-ui";
+import { useAccessMe, useVoiceAction } from "./actions.js";
 import {
   describeComposer,
   ensureMount,
@@ -232,7 +234,7 @@ function ComposerButtons({
   onLive: (root: HTMLElement) => void;
   onToast: (message: string) => void;
 }) {
-  const transcribe = usePluginAction("transcribe");
+  const transcribe = useVoiceAction("transcribe");
   const [state, setState] = useState<NoteState>("idle");
   const [elapsed, setElapsed] = useState(0);
   const recording = useRef<ActiveRecording | null>(null);
@@ -379,7 +381,7 @@ function createAudioContext(): AudioContext {
 /** Picks the Grok voice one agent speaks with. It applies to the next call; "Company default" clears it. */
 function AgentVoicePicker({ companyId, agent }: { companyId: string; agent: { id: string; name: string } }) {
   const { data, refresh } = usePluginData<AgentVoiceData>("agent-voice", { companyId, agentId: agent.id });
-  const save = usePluginAction("set-agent-voice");
+  const save = useVoiceAction("set-agent-voice");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   if (!data) return null;
@@ -429,7 +431,7 @@ function LivePanel({
   wakeNotice: string | null;
   onClose: () => void;
 }) {
-  const startLive = usePluginAction("live-session");
+  const startLive = useVoiceAction("live-session");
   const [callAgent, setCallAgent] = useState<{ id: string; name: string } | null>(null);
   const [state, setState] = useState<LiveState>("connecting");
   const [entries, setEntries] = useState<TranscriptEntry[]>([]);
@@ -687,7 +689,23 @@ function Toast({ message }: { message: string }) {
   );
 }
 
+/**
+ * The app-shell mount. It asks `access.me` first (access stage A, spec 4.6): closed or still loading, there is no mic
+ * and no waveform in any chat box (the guard still refuses every call behind it).
+ */
 export function VoiceOverlay() {
+  const host = useHostContext();
+  const access = useAccess(useAccessMe(), host.companyId);
+  // Phone keyboard: scroll the focused field above it (works on every page, configured or not, open or closed).
+  useEffect(() => keepFieldVisible(document), []);
+  return (
+    <AccessGate state={access} kind="widget">
+      <VoiceButtons />
+    </AccessGate>
+  );
+}
+
+function VoiceButtons() {
   useKeyframes();
   const host = useHostContext();
   const companyId = host.companyId;
@@ -730,9 +748,6 @@ export function VoiceOverlay() {
       if (frame) window.cancelAnimationFrame(frame);
     };
   }, [enabled]);
-
-  // Phone keyboard: scroll the focused field above it (works on every page, configured or not).
-  useEffect(() => keepFieldVisible(document), []);
 
   useEffect(() => {
     if (!toast) return;

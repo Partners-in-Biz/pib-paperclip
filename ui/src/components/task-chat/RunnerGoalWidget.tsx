@@ -8,6 +8,7 @@ import type {
 } from "@paperclipai/shared";
 import { issuesApi } from "@/api/issues";
 import { useCompanyLiveEvent } from "@/context/LiveUpdatesProvider";
+import { useMemberRestrictionGate } from "@/hooks/useMemberRestrictionGate";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -43,8 +44,10 @@ function formatTokens(tokens: number) {
   return tokens >= 1_000 ? `${(tokens / 1_000).toFixed(tokens >= 10_000 ? 0 : 1)}k` : String(tokens);
 }
 
-export function useRunnerGoalControl(issueId: string | null, agentId: string | null) {
+export function useRunnerGoalControl(issueId: string | null, agentId: string | null, companyId?: string | null) {
   const queryClient = useQueryClient();
+  // PAR-14342: the runner goal is a `run` route; a restricted person's own session does not read it (PAR-12608 4.6).
+  const memberGate = useMemberRestrictionGate(companyId);
   const [expanded, setExpanded] = useState(false);
   const [dialog, setDialog] = useState<{
     action: "edit" | "replace";
@@ -61,7 +64,7 @@ export function useRunnerGoalControl(issueId: string | null, agentId: string | n
   const query = useQuery({
     queryKey: key,
     queryFn: () => issuesApi.getRunnerGoal(issueId!, agentId),
-    enabled: Boolean(issueId),
+    enabled: Boolean(issueId) && !memberGate.closed,
     refetchOnReconnect: true,
     refetchOnWindowFocus: true,
     refetchInterval: (state) => state.state.data?.goal?.status === "active" ? 30_000 : false,

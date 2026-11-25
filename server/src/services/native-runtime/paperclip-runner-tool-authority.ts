@@ -75,6 +75,7 @@ import { executeRunnerApi, validateRunnerApiCall, RUNNER_API_MAX_BYTES, type Run
 import { createRunResponseCapture } from "../run-response-capture.js";
 import { and, desc, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import type { WakeCausingActor } from "../heartbeat/causing-actor.js";
 import {
   authUsers,
   companyMemberships,
@@ -230,6 +231,7 @@ type Binding = {
     reason: "issue_assigned" | "issue_commented";
     payload: Record<string, unknown>;
     idempotencyKey: string;
+    causingActor: WakeCausingActor;
     requestedByActorType: "agent";
     requestedByActorId: string;
     contextSnapshot: Record<string, unknown>;
@@ -322,6 +324,11 @@ export class PaperclipRunnerToolAuthority {
   #skillLibraryCache = new SkillLibraryReadCache();
   close() { this.#taskAttachmentCache.close(); this.#skillLibraryCache.close(); }
   constructor(readonly db: Db, readonly binding: Binding) {}
+
+  /** The run that called the tool causes the wakes it starts (PAR-12608 4.7). */
+  private causingActor(): WakeCausingActor {
+    return { type: "agent", agentId: this.binding.agentId, runId: this.binding.runId };
+  }
 
   definitions(): Array<Record<string, unknown>> {
     if (this.binding.nativeReview) {
@@ -704,7 +711,7 @@ export class PaperclipRunnerToolAuthority {
             payload: { issueId: this.binding.issueId, mutation: "connection_tools_refreshed" },
             idempotencyKey,
             issueStateGuard: { statuses: ["in_progress", "in_review"], assigneeAgentId: this.binding.agentId },
-            requestedByActorType: "agent", requestedByActorId: this.binding.agentId,
+            causingActor: this.causingActor(), requestedByActorType: "agent", requestedByActorId: this.binding.agentId,
             contextSnapshot: { issueId: this.binding.issueId, taskId: this.binding.issueId, refreshTools: true, wakeReason: "issue_commented", source: "connection_tools.refreshed" },
           }); } catch (error) { if (!(await delivered()).length) throw error; }
           return { ...result, instruction: "Access is already authorized. A continuation with updated tools is queued. Finish independent work, then yield. Do not request authorization again." };
@@ -2038,6 +2045,7 @@ export class PaperclipRunnerToolAuthority {
           parentIssueId: task.parentId ?? null,
         },
         idempotencyKey: scheduledWakeIds[0]!,
+        causingActor: this.causingActor(),
         requestedByActorType: "agent",
         requestedByActorId: this.binding.agentId,
         contextSnapshot: {
@@ -2150,7 +2158,7 @@ export class PaperclipRunnerToolAuthority {
           source: "assignment", triggerDetail: "system", reason: "issue_assigned",
           payload: { issueId: taskId, mutation: "reassign_task_rollback", interruptedRunId: prepared.executionRunId },
           idempotencyKey: `${durableKey}:restore:${prepared.executionRunId}:${current.statusVersion}`,
-          requestedByActorType: "agent", requestedByActorId: this.binding.agentId,
+          causingActor: this.causingActor(), requestedByActorType: "agent", requestedByActorId: this.binding.agentId,
           contextSnapshot: { issueId: taskId, source: "paperclip_runner.reassign_task_rollback", forceFreshSession: true },
           issueStateGuard: { statuses: ["todo", "in_progress"], assigneeAgentId: current.assigneeAgentId, statusVersion: current.statusVersion },
         });
@@ -2221,7 +2229,7 @@ export class PaperclipRunnerToolAuthority {
       await this.binding.enqueueWakeup(assigneeAgentId, {
         source: "assignment", triggerDetail: "system", reason: "issue_assigned",
         payload: { issueId: taskId, mutation: "reassign_task", reason },
-        idempotencyKey: result.scheduledWakeIds[0]!, requestedByActorType: "agent", requestedByActorId: this.binding.agentId,
+        idempotencyKey: result.scheduledWakeIds[0]!, causingActor: this.causingActor(), requestedByActorType: "agent", requestedByActorId: this.binding.agentId,
         contextSnapshot: { issueId: taskId, source: "paperclip_runner.reassign_task", reassignmentReason: reason },
         issueStateGuard: { statuses: ["todo"], assigneeAgentId, statusVersion: result.stateRevision },
       });

@@ -193,7 +193,7 @@ function collapseVolatileStrips(html) {
 export function wordsOf(html) {
   const text = collapseVolatileStrips(stripGoogleTranslateWidget(html))
     .replace(/<(script|style|noscript|template|svg)\b[\s\S]*?<\/\1\s*>/gi, " ")
-    .replace(/<div id="pib-preview-bar"[\s\S]*?<\/form><\/div><div style="height:64px"><\/div>/i, " ")
+    .replace(/<div id="pib-preview-bar"[\s\S]*?<\/form><\/div><div (?:style="height:64px"|id="pib-preview-spacer")><\/div>/i, " ")
     .replace(/<!--[\s\S]*?-->/g, " ")
     .replace(/<[^>]+>/g, " ")
     .replace(/&nbsp;|&#160;/g, " ")

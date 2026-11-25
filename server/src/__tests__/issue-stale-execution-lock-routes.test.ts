@@ -132,7 +132,7 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       type: "board",
       userId: "board-user",
       companyIds: [companyId],
-      memberships: [{ companyId, membershipRole: "admin", status: "active" }],
+      memberships: [{ companyId, membershipRole: "admin", status: "active", restricted: false, restrictionMode: "off" }],
       isInstanceAdmin: false,
       source: "session",
     };

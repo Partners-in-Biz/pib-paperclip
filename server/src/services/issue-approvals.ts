@@ -1,5 +1,5 @@
 import { writeApprovalChange } from "./approval-work-notifications.js";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { approvals, issueApprovals, issues } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
@@ -42,7 +42,8 @@ export function issueApprovalService(db: Db) {
   }
 
   return {
-    listApprovalsForIssue: async (issueId: string) => {
+    /** `readCondition`: only approvals the caller may read (`approvalReadSqlCondition`). */
+    listApprovalsForIssue: async (issueId: string, readCondition?: SQL<boolean>) => {
       const issue = await getIssue(issueId);
       if (!issue) throw notFound("Issue not found");
 
@@ -63,7 +64,7 @@ export function issueApprovalService(db: Db) {
         })
         .from(issueApprovals)
         .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id))
-        .where(eq(issueApprovals.issueId, issueId))
+        .where(readCondition ? and(eq(issueApprovals.issueId, issueId), readCondition) : eq(issueApprovals.issueId, issueId))
         .orderBy(desc(issueApprovals.createdAt));
       return result.map((approval) => ({
         ...approval,

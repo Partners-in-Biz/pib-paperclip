@@ -81,7 +81,7 @@ describeEmbeddedPostgres("issue creation visibility", () => {
     expect(mine.body.map((issue: { id: string }) => issue.id).sort()).toEqual(expected);
     const discovery = await request(app).get(`${path}?q=Participation&includeAgentCreatedTasks=false&includeParticipatedTasks=true`).expect(200);
     expect(discovery.body.map((issue: { id: string }) => issue.id).sort()).toEqual(expected);
-    const strict = await issueService(ctx.db).list(companyId, { includeAgentCreatedTasks: false });
+    const strict = await issueService(ctx.db).list(companyId, { readCondition: "system", includeAgentCreatedTasks: false });
     expect(strict).toEqual([]);
   });
 

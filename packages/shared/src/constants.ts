@@ -682,8 +682,9 @@ export type RoutineRunSource = (typeof ROUTINE_RUN_SOURCES)[number];
 
 // "import" marks agents parked by a company import (safety default) so the UI
 // can explain the pause and offer a scoped bulk-resume; "system" remains the
-// reason for platform-managed pauses (plugins, built-ins).
-export const PAUSE_REASONS = ["manual", "budget", "system", "company_archived", "import", "setup"] as const;
+// reason for platform-managed pauses (plugins, built-ins); "maintenance" marks
+// a planned deploy/maintenance pause that recovery must not escalate (PAR-13561).
+export const PAUSE_REASONS = ["manual", "budget", "system", "company_archived", "import", "setup", "maintenance"] as const;
 export type PauseReason = (typeof PAUSE_REASONS)[number];
 
 export const PROJECT_COLORS = [
@@ -975,6 +976,18 @@ export type PrincipalType = (typeof PRINCIPAL_TYPES)[number];
 
 export const MEMBERSHIP_STATUSES = ["pending", "active", "suspended", "archived"] as const;
 export type MembershipStatus = (typeof MEMBERSHIP_STATUSES)[number];
+
+/** Per-company switch for restricted members (`companies.member_restriction_mode`). */
+export const MEMBER_RESTRICTION_MODES = ["off", "report", "enforce"] as const;
+export type MemberRestrictionMode = (typeof MEMBER_RESTRICTION_MODES)[number];
+/** Error code a caller answers (HTTP 503) when the member-restriction read fails. */
+export const MEMBER_RESTRICTION_UNAVAILABLE_CODE = "MEMBER_RESTRICTION_UNAVAILABLE";
+/** Error code (HTTP 403) of a route the route table closes for a restricted member. */
+export const MEMBER_RESTRICTED_CODE = "MEMBER_RESTRICTED";
+/** Server-wide kill switch: only the exact value `off` forces every company to mode `off`. */
+export const MEMBER_RESTRICTION_KILL_SWITCH_ENV = "PAPERCLIP_MEMBER_RESTRICTION";
+/** Error code (HTTP 422) for a human invite without a restriction choice while the company's mode is not `off`. */
+export const MEMBER_RESTRICTION_REQUIRED_CODE = "MEMBER_RESTRICTION_REQUIRED";
 
 export const COMPANY_MEMBERSHIP_ROLES = [
   "owner",
@@ -1511,6 +1524,8 @@ export const PLUGIN_UI_SLOT_TYPES = [
   "commentContextMenuItem",
   "settingsPage",
   "companySettingsPage",
+  "canvasNode",
+  "canvasPanel",
 ] as const;
 export type PluginUiSlotType = (typeof PLUGIN_UI_SLOT_TYPES)[number];
 

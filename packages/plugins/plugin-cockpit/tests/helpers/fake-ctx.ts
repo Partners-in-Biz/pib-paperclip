@@ -114,7 +114,7 @@ export function fakeCtx(options: {
       // The operations watch (watch.ts): rows a test seeds in `store.watch_<rule>` (an Error there makes that read fail); none by default.
       // They come before the generic routes below.
       [/row_number\(\) OVER/i, (_params, s) => seeded(s.watch_streak)],
-      [/GROUP BY context_snapshot/i, (_params, s) => seeded(s.watch_storm)],
+      [/GROUP BY coalesce\(issue_id::text, context_snapshot ->> 'issueId'\)/i, (_params, s) => seeded(s.watch_storm)],
       [/GROUP BY agent_id, status, error_code/i, (_params, s) => seeded(s.watch_rate)],
       // Blocked issues that name an agent owner (the owner check), before the generic blocked read, which shares the same function name.
       [/unblock_descriptor -> 'owner' ->> 'agentId' IS NOT NULL/i, (_params, s) => seeded(s.watch_blocked_owned)],

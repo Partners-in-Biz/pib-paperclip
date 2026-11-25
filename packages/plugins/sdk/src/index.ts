@@ -110,6 +110,7 @@ export type {
 export type {
   TestHarness,
   TestHarnessOptions,
+  TestHarnessGetDataOptions,
   TestHarnessLogEntry,
   EnvironmentTestHarness,
   EnvironmentTestHarnessOptions,
@@ -159,6 +160,7 @@ export type {
   OnEventParams,
   RunJobParams,
   GetDataParams,
+  PluginDataContext,
   PerformActionParams,
   PluginPerformActionActorType,
   PluginPerformActionActorContext,
@@ -316,6 +318,7 @@ export type {
   PluginEvent,
   PluginJobContext,
   PluginLauncherRegistration,
+  PluginActingPersonContext,
   ToolRunContext,
   ToolResult,
   PluginEntityUpsert,

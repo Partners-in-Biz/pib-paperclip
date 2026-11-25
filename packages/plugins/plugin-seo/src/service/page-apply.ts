@@ -40,6 +40,8 @@ export async function taskPageSet(env: Env, companyId: string, task: db.SprintTa
   const previews = await env.ctx.db.query(`SELECT page_url FROM ${t("previews")} WHERE company_id = $1 AND task_id = $2`, [companyId, task.id]);
   raw.push(...previews.map((r: Record<string, unknown>) => String(r.page_url ?? "")));
   for (const chunk of await db.listChunks(env.ctx.db, companyId, task.id)) raw.push(...chunk.urls);
+  const named = ((task.evidence ?? {}) as { pageUrls?: unknown }).pageUrls;
+  if (Array.isArray(named)) for (const u of named) if (typeof u === "string") raw.push(u);
   const dropped = ((task.evidence ?? {}) as { droppedPages?: Array<{ pageUrl?: unknown }> }).droppedPages;
   if (Array.isArray(dropped)) for (const d of dropped) if (typeof d?.pageUrl === "string") raw.push(d.pageUrl);
   return [...new Set(raw.map((u) => normalisePageUrl(u, siteUrl)).filter((u): u is string => u !== null))].sort();
@@ -139,6 +141,40 @@ export async function pageApplyRefusal(env: Env, companyId: string, actor: Actor
   try {
     await assertGrantActor(env, companyId, actor);
     await checkGrant(env, companyId, actor, input);
+    return null;
+  } catch (error) {
+    if (error instanceof SeoError) return error.message;
+    throw error;
+  }
+}
+
+/** A sprint whose site has the page lock (WordPress, pr_only): only there does a page change need approve-page-apply. */
+export function hasPageLock(sprint: Pick<db.Sprint, "siteAccess" | "siteId" | "changePolicy">): boolean {
+  return sprint.siteAccess === "wordpress" && Boolean(sprint.siteId) && sprint.changePolicy === "pr_only";
+}
+
+/**
+ * PAR-13579: whether a sign-off delegate may decide a sign-off that is not a page change set on a locked site (a repo or
+ * merge_seo_scope sprint, or a task that names no page: outreach drafts, reports). No window is opened for it: the delegate
+ * resolves the Needs you item (needs-you-resolve). Same guards as the page gate where they apply: the actor is a delegate,
+ * the sprint is writable, the task is on the sprint and open, and its issue is readable, open and not the delegate's own
+ * (no self-approval). Returns the first refusal, or null. A failure that is not a refusal is thrown.
+ */
+export async function signoffRefusal(env: Env, companyId: string, actor: Actor, input: { sprintId: string; taskId: string }): Promise<string | null> {
+  try {
+    await assertGrantActor(env, companyId, actor);
+    const sprint = await requireSprint(env, companyId, input.sprintId);
+    assertWritable(sprint);
+    const task = await db.getTask(env.ctx.db, companyId, input.taskId);
+    if (!task || task.sprintId !== sprint.id) throw new SeoError(`Task ${input.taskId} is not on this sprint.`);
+    if ((TERMINAL_TASK_STATUSES as string[]).includes(task.status)) throw new SeoError(`The task is ${task.status}; there is nothing left to sign off.`);
+    if (!task.issueId) throw new SeoError("The task has no issue to tell, so an agent cannot sign it off. Ask a person.");
+    const issue = await getIssue(env, companyId, task.issueId);
+    if (!issue) throw new SeoError("The task's issue could not be read, so self-approval cannot be ruled out. Try again later.");
+    if (issue.status === "done" || issue.status === "cancelled") throw new SeoError(`The task's issue is ${issue.status}; there is nothing left to sign off.`);
+    if (actor.kind === "agent" && issue.assigneeAgentId && issue.assigneeAgentId.toLowerCase() === actor.agentId.toLowerCase()) {
+      throw new SeoError("You are the assignee of the task's issue: no self-approval.");
+    }
     return null;
   } catch (error) {
     if (error instanceof SeoError) return error.message;

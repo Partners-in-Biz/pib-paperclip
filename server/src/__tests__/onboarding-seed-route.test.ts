@@ -97,6 +97,7 @@ describeEmbeddedPostgres("POST /api/companies/:companyId/onboarding-seed", () =>
       paperclipSkillSync: {
         desiredSkills: expect.arrayContaining([
           "paperclipai/paperclip/paperclip-board",
+          "paperclipai/paperclip/paperclip-canvas",
           "paperclipai/paperclip/paperclip-converting-plans-to-tasks",
           "paperclipai/paperclip/paperclip-create-agent",
           "paperclipai/paperclip/para-memory-files",

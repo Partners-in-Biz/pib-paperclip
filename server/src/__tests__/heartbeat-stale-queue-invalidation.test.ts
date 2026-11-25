@@ -285,7 +285,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     const { companyId, agentId } = await seedCompanyAndAgent({ heartbeatConfig: { enabled: false } });
     await db.update(agents).set({ status: "paused", lifecycleState }).where(eq(agents.id, agentId));
     const [issue] = await db.insert(issues).values({ companyId, title: "Work accepted during setup", status: "todo", assigneeAgentId: agentId }).returning();
-    const run = await heartbeat.wakeup(agentId, { source: "assignment", triggerDetail: "system", reason: "issue_assigned",
+    const run = await heartbeat.wakeup(agentId, { causingActor: "system", source: "assignment", triggerDetail: "system", reason: "issue_assigned",
       requestedByActorType: "system", payload: { issueId: issue.id } });
     expect(run?.status).toBe("queued");
     await heartbeat.resumeQueuedRuns();
@@ -534,6 +534,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     });
 
     const run = await heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "timer",
       triggerDetail: "system",
     });
@@ -588,6 +589,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
 
     for (const issueId of [parkedIssueId, reassignedIssueId]) {
       const run = await heartbeat.wakeup(agentId, {
+        causingActor: "system",
         source: "automation",
         triggerDetail: "system",
         reason: "issue_commented",
@@ -1067,6 +1069,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     });
 
     const run = await heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "timer",
       triggerDetail: "system",
     });
@@ -1085,6 +1088,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     });
 
     const run = await heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "timer",
       triggerDetail: "system",
     });
@@ -1103,6 +1107,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     });
 
     const run = await heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "timer",
       triggerDetail: "system",
     });
@@ -1132,6 +1137,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     });
 
     const run = await heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "on_demand",
       triggerDetail: "manual",
     });
@@ -1168,6 +1174,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     });
 
     const run = await heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "on_demand",
       triggerDetail: "manual",
     });
@@ -1216,6 +1223,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     });
 
     const run = await heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "on_demand",
       triggerDetail: "manual",
     });
@@ -1300,6 +1308,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       .where(eq(agentWakeupRequests.id, wakeupRequestId));
 
     const run = await heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "on_demand",
       triggerDetail: "manual",
       payload: { issueId },
@@ -1349,7 +1358,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       provider: "test", model: "test-model", costUsd: 0, usageComplete: true, usageBasis: "per_run",
       usage: { inputTokens: 1, cachedInputTokens: 2, outputTokens: 3 },
     });
-    const run = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual" });
+    const run = await heartbeat.wakeup(agentId, { causingActor: "system", source: "on_demand", triggerDetail: "manual" });
     expect(run).not.toBeNull();
     await heartbeat.drainActiveRunExecutions();
     expect(countExecuteCallsForRun(run!.id)).toBe(1);
@@ -1383,6 +1392,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     });
 
     const run = await heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "on_demand",
       triggerDetail: "manual",
     });
@@ -1419,6 +1429,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     });
 
     const run = await heartbeat.wakeup(agentId, {
+      causingActor: "system",
       source: "on_demand",
       triggerDetail: "manual",
     });

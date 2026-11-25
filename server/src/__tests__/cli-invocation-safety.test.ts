@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { generateReadme } from "../services/company-export-readme.js";
+import { readPaperclipSkillWithReferences } from "./paperclip-skill-text.js";
 
 // The Paperclip CLI is unsafe when an operator or an agent runs it through
 // `pnpm paperclipai <sub> <arg>` with a content-bearing argument. `pnpm` treats
@@ -931,7 +932,7 @@ describe("paperclipai CLI invocation safety", () => {
   });
 
   it("documents the safe form in the agent-facing skill", () => {
-    const skill = read("skills/paperclip/SKILL.md");
+    const skill = readPaperclipSkillWithReferences();
     expect(skill).toContain("CLI safety");
     expect(skill).toContain("npx paperclipai");
     expect(skill).toContain("Do not use `pnpm paperclipai`");

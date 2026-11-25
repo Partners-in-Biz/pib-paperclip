@@ -73,6 +73,8 @@ function assertBoundedManagementSelectors(body: Record<string, unknown>) {
   }
 }
 
+export const CONNECTION_MANAGEMENT_NOT_FOUND_MESSAGE = "Connection management resource not found";
+
 /** Each REST registration declares its operation; this adapter only resolves resources. */
 export function connectionManagementGuard(db: Db, purpose: "tool" | "chat" | "ai") {
   const management = connectionManagementService(db);
@@ -83,7 +85,7 @@ export function connectionManagementGuard(db: Db, purpose: "tool" | "chat" | "ai
         management.authorize(actor, requestedAction, resolved, { ...checkOptions, afterHumanAction });
       assertAuthenticated(req);
       if (req.actor.type === "agent" && !connectionRequestUserId(req)) throw forbidden("Connection management requires a responsible user");
-      const inaccessibleMessage = operation.includes("setup-token-login-sessions") ? "Setup-token login session not found." : "Connection management resource not found";
+      const inaccessibleMessage = operation.includes("setup-token-login-sessions") ? "Setup-token login session not found." : CONNECTION_MANAGEMENT_NOT_FOUND_MESSAGE;
       if (req.actor.type === "board" && req.params.companyId && !hasCompanyAccess(req, String(req.params.companyId))) {
         if (purpose === "chat" || operation.includes("setup-token-login-sessions")) throw notFound(inaccessibleMessage);
         assertCompanyAccess(req, String(req.params.companyId));

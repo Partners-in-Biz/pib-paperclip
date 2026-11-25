@@ -254,3 +254,49 @@ export const MembershipUpdatesTaskAudience: Story = {
     await waitFor(() => expect(within(dialog).queryByText("Morgan Reed")).not.toBeInTheDocument());
   },
 };
+
+// PAR-12608 4.4: once the company's restriction switch is not off, an open
+// project shows its access list, for restricted members only.
+const openRestrictedMembers = async (canvasElement: HTMLElement) => {
+  const page = within(canvasElement.ownerDocument.body);
+  await userEvent.click(await page.findByRole("button", { name: /^(Manage|View) restricted access$/ }));
+  await page.findByRole("dialog", { name: "Access for restricted members" });
+  return page;
+};
+export const OpenProjectRestrictedAccess: Story = {
+  render: (args) => <ProjectStory {...args} settings open />,
+  parameters: {
+    privacy: { restrictionMode: "enforce" },
+    docs: { description: { story: "With the restriction switch on, an open project shows its access list. It only changes what restricted members read, so the picker offers people only." } },
+  },
+  play: async ({ canvasElement }) => {
+    const page = within(canvasElement.ownerDocument.body);
+    await expect(await page.findByRole("button", { name: "Manage restricted access" })).toBeVisible();
+  },
+};
+export const OpenProjectRestrictedMembers: Story = {
+  ...OpenProjectRestrictedAccess,
+  play: async ({ canvasElement }) => {
+    const page = await openRestrictedMembers(canvasElement);
+    await expect(await page.findByText(/This list matters for restricted members only/)).toBeVisible();
+    await expect(await page.findByText("Morgan Reed")).toBeVisible();
+  },
+};
+export const MobileOpenProjectRestrictedMembers: Story = { ...OpenProjectRestrictedMembers, globals: mobile };
+export const ReaderOpenProjectRestrictedMembers: Story = {
+  ...OpenProjectRestrictedMembers,
+  parameters: { ...OpenProjectRestrictedAccess.parameters, privacy: { restrictionMode: "enforce", role: "reader" } },
+  play: async ({ canvasElement }) => {
+    const page = await openRestrictedMembers(canvasElement);
+    await expect(page.getByRole("button", { name: "Add" })).toBeDisabled();
+  },
+};
+export const OpenProjectSwitchOff: Story = {
+  render: (args) => <ProjectStory {...args} settings open />,
+  parameters: { privacy: { restrictionMode: "off" } },
+  play: async ({ canvasElement }) => {
+    const page = within(canvasElement.ownerDocument.body);
+    await expect(await page.findByText(/Everyone in the company can discover this project/)).toBeVisible();
+    await expect(page.queryByRole("button", { name: /restricted access/ })).not.toBeInTheDocument();
+  },
+};

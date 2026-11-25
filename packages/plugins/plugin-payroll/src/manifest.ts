@@ -8,7 +8,7 @@ import { PAYROLL_TOOLS } from "./tools.js";
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.3.11",
+  version: "0.4.0",
   displayName: "Payroll",
   description:
     "South African payroll: employees with sealed ID, tax and bank details, PAYE/UIF/SDL/ETI pay runs with separate approval, payslips by email, leave, EMP201/IRP5/EMP501 packs and net-pay bank files. Posts every locked run to Accounting.",
@@ -51,6 +51,8 @@ const manifest: PaperclipPluginManifestV1 = {
   database: {
     namespaceSlug: "payroll",
     migrationsDir: "migrations",
+    // A3 (PAR-12643): read-only; the access guard finds the acting person of a tool call. Stop-first.
+    coreReadTables: ["heartbeat_runs"],
   },
   tools: PAYROLL_TOOLS,
   apiRoutes: [{ ...SETUP_STATUS_ROUTE }, { ...COCKPIT_ROUTE }],

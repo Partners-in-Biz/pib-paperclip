@@ -1,11 +1,13 @@
 import { execFile, execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   buildSshRemoteStopScript,
+  buildSshRunDirCleanupScript,
   buildSshRunDirRemoveScript,
+  buildSshStaleRunDirSweepScript,
   buildSshSpawnTarget,
   parseSshRunRecord,
   SSH_REMOTE_STOP_TIMEOUT_MS,
@@ -32,6 +34,18 @@ const spec = (ws = WS): SshRemoteExecutionSpec => ({
 });
 
 describe("run dir and stop scripts", () => {
+  it("sweeps only old run-id-named dirs directly under the confined .paperclip-runs (PAR-9962)", () => {
+    const sweep = buildSshStaleRunDirSweepScript(`${WS}/`);
+    expect(sweep).toContain(`ws='${WS}'`);
+    expect(sweep).toContain('base=$(cd -P "$ws/.paperclip-runs" 2>/dev/null && pwd -P)');
+    expect(sweep).toContain('case "$base" in "$wsp"/?*) ;; *) echo sweep-refused; exit 0;; esac');
+    expect(sweep).toContain(`find "$base" -mindepth 1 -maxdepth 1 -type d ! -name '*[!A-Za-z0-9_-]*' -mtime +7 -exec rm -rf -- {} +`);
+    expect(sweep).not.toMatch(/find -L|-follow/);
+    const cleanup = buildSshRunDirCleanupScript(WS, RUN_DIR);
+    expect(cleanup.indexOf("(\n")).toBe(0);
+    expect(cleanup.indexOf("\n)\n")).toBeLessThan(cleanup.indexOf("find "));
+  });
+
   it("names the run dir <ws>/.paperclip-runs/<runId> and rejects odd run ids", () => {
     expect(sshRemoteRunDirFor(`${WS}/`, RUN_ID)).toBe(RUN_DIR);
     expect(sshRemoteRunDirFor(WS, "../x")).toBeNull();
@@ -81,7 +95,7 @@ describe("stopRemote and cleanup with a fake remote runner", () => {
     await target.cleanup();
   });
 
-  it("returns the remote outcome, never throws, and removes the run dir once", async () => {
+  it("returns the remote outcome, never throws, and leaves the run dir to the lease release", async () => {
     const calls: Array<{ script: string; timeoutMs: number }> = [];
     let reply: () => Promise<{ stdout: string; stderr: string }> = async () => ({ stdout: "signalled\n", stderr: "" });
     const target = await buildSshSpawnTarget({
@@ -108,17 +122,15 @@ describe("stopRemote and cleanup with a fake remote runner", () => {
     await expect(target.stopRemote!("TERM")).resolves.toBe("error");
 
     calls.length = 0;
-    reply = async () => ({ stdout: "removed\n", stderr: "" });
     await Promise.all([target.cleanup(), target.cleanup()]);
-    expect(calls).toEqual([
-      { script: buildSshRunDirRemoveScript(WS, RUN_DIR), timeoutMs: SSH_REMOTE_STOP_TIMEOUT_MS },
-    ]);
+    // PAR-9961: the run dir is removed only after a gone check, not at run end.
+    expect(calls).toEqual([]);
     // After cleanup the auth files are gone, so no further remote call is made.
     await expect(target.stopRemote!("KILL")).resolves.toBe("error");
-    expect(calls).toHaveLength(1);
+    expect(calls).toHaveLength(0);
   });
 
-  it("still releases local auth when the remote removal fails", async () => {
+  it("releases local auth at cleanup without any remote call", async () => {
     const target = await buildSshSpawnTarget({
       spec: { ...spec(), privateKey: "-----BEGIN KEY-----\nfake\n-----END KEY-----" },
       command: "node",
@@ -277,6 +289,30 @@ describe.skipIf(process.platform === "win32").each(shells)("remote scripts under
     await exited(child);
     await expect(stop("TERM")).resolves.toBe("leader-gone");
     expect(() => process.kill(-pgid, 0)).not.toThrow();
+  });
+
+  it("removes the run dir, then sweeps old siblings and nothing else (PAR-9962)", async () => {
+    await setup();
+    const runs = path.join(ws, ".paperclip-runs");
+    const outside = path.join(root, "outside");
+    const old = new Date(Date.now() - 9 * 24 * 3600_000);
+    for (const name of [RUN_ID, "old-run", "new-run", "odd.name"]) await mkdir(path.join(runs, name, "sub"), { recursive: true });
+    await mkdir(path.join(outside, "kept"), { recursive: true });
+    await symlink(outside, path.join(runs, "old-link"));
+    for (const name of ["old-run", "odd.name"]) await utimes(path.join(runs, name), old, old);
+    await utimes(path.join(outside, "kept"), old, old);
+    await expect(runScript(buildSshRunDirCleanupScript(ws, runDir))).resolves.toBe("removed\nswept");
+    await expect(stat(runDir)).rejects.toThrow();
+    await expect(stat(path.join(runs, "old-run"))).rejects.toThrow();
+    for (const kept of [path.join(runs, "new-run"), path.join(runs, "odd.name"), path.join(outside, "kept")]) {
+      await expect(stat(kept), kept).resolves.toBeDefined();
+    }
+    // A refused removal still sweeps; a linked .paperclip-runs is not swept.
+    await expect(runScript(buildSshRunDirCleanupScript(ws, ws))).resolves.toBe("refused\nswept");
+    await rm(runs, { recursive: true });
+    await symlink(outside, runs);
+    await expect(runScript(buildSshStaleRunDirSweepScript(ws))).resolves.toBe("sweep-refused");
+    await expect(stat(path.join(outside, "kept"))).resolves.toBeDefined();
   });
 
   it("removes nothing outside <ws>/.paperclip-runs/<name>", async () => {

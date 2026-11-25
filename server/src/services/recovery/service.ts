@@ -1,4 +1,5 @@
 import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
+import { SYSTEM_CAUSING_ACTOR, type WakeCausingActor } from "../heartbeat/causing-actor.js";
 import { promoteDeferredWorkIntents } from "../work-intent-outbox.js";
 import { isContextCompactionRun } from "../context-compaction.js";
 import { notifyNativeEnvironmentSettlement } from "../native-environment-settlement-notifications.js";
@@ -236,12 +237,18 @@ export const STRANDED_RECENT_PROGRESS_EXEMPTION_MS = Math.max(
 // nothing moves an escalated task back on resume.
 export const PAUSED_AGENT_RECOVERY_GRACE_MS = 24 * 60 * 60 * 1000;
 type PausedAgentFields = Pick<typeof agents.$inferSelect, "status" | "companyId" | "pauseReason" | "pausedAt" | "updatedAt">;
-function pausedAgentGraceEndsAt(agent: PausedAgentFields | null | undefined, companyId: string) {
+// A company-wide pause stores "company_paused" as the agent's pause reason (agent
+// lifecycle holds), so a fleet pause for a deploy looks like this, not "manual".
+const DELIBERATE_SHORT_PAUSE_REASONS = new Set<string | null>(["manual", "system", "company_paused"]);
+// PAR-13561: "maintenance" marks a planned deploy window. It defers recovery for
+// as long as the pause lasts (no 24h cutoff); resume ends it.
+function pausedAgentGraceEndsAt(agent: PausedAgentFields | null | undefined, companyId: string): number | null {
   if (agent?.status !== "paused" || agent.companyId !== companyId) return null;
-  if (agent.pauseReason !== "manual" && agent.pauseReason !== "system") return null;
+  if (!DELIBERATE_SHORT_PAUSE_REASONS.has(agent.pauseReason)) return null;
   return (agent.pausedAt ?? agent.updatedAt).getTime() + PAUSED_AGENT_RECOVERY_GRACE_MS;
 }
 export function isDeliberateShortPause(agent: PausedAgentFields | null | undefined, companyId: string, now = new Date()) {
+  if (agent?.status === "paused" && agent.companyId === companyId && agent.pauseReason === "maintenance") return true;
   const endsAt = pausedAgentGraceEndsAt(agent, companyId);
   return endsAt !== null && now.getTime() < endsAt;
 }
@@ -270,6 +277,7 @@ type RecoveryWakeupOptions = {
   reason?: string | null;
   payload?: Record<string, unknown> | null;
   idempotencyKey?: string | null;
+  causingActor: WakeCausingActor;
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
   contextSnapshot?: Record<string, unknown>;
@@ -281,7 +289,7 @@ type RecoveryWakeupOptions = {
 
 type RecoveryWakeup = (
   agentId: string,
-  opts?: RecoveryWakeupOptions,
+  opts: RecoveryWakeupOptions,
 ) => Promise<typeof heartbeatRuns.$inferSelect | null>;
 
 type ResolvedDependencyWakeBackstopSource =
@@ -2212,6 +2220,7 @@ export function recoveryService(
         return null;
     }
     const queued = await deps.enqueueWakeup(input.agentId, {
+      causingActor: SYSTEM_CAUSING_ACTOR,
       source: "automation",
       triggerDetail: "system",
       reason: input.reason,
@@ -2270,6 +2279,7 @@ export function recoveryService(
     agentId: string,
   ) {
     return deps.enqueueWakeup(agentId, {
+      causingActor: SYSTEM_CAUSING_ACTOR,
       source: "assignment",
       triggerDetail: "system",
       reason: "issue_assigned",
@@ -2423,6 +2433,7 @@ export function recoveryService(
       });
 
       const queued = await deps.enqueueWakeup(creatorAgent.id, {
+        causingActor: SYSTEM_CAUSING_ACTOR,
         source: "automation",
         triggerDetail: "system",
         reason: "issue_assigned",
@@ -3443,6 +3454,7 @@ export function recoveryService(
       try {
         if (timing.delayMs === 0) {
           const enqueuedRun = await deps.enqueueWakeup(agentId, {
+            causingActor: SYSTEM_CAUSING_ACTOR,
             source: "automation",
             triggerDetail: "system",
             reason: ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
@@ -4928,7 +4940,8 @@ export function recoveryService(
       // assignee otherwise; every paused-agent escalation below is deferred.
       // Resume notifies this queue; the deadline covers a pause that lasts.
       if (isDeliberateShortPause(agent, issue.companyId)) {
-        opts?.onDeferredDeadline?.(pausedAgentGraceEndsAt(agent, issue.companyId)!);
+        const graceEndsAt = pausedAgentGraceEndsAt(agent, issue.companyId);
+        if (graceEndsAt !== null) opts?.onDeferredDeadline?.(graceEndsAt);
         result.skipped += 1;
         continue;
       }
@@ -6276,6 +6289,7 @@ export function recoveryService(
 
         try {
           const wake = await deps.enqueueWakeup(agentId, {
+            causingActor: SYSTEM_CAUSING_ACTOR,
             source: "automation",
             triggerDetail: "system",
             reason: ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,

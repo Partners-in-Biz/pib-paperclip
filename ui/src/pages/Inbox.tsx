@@ -35,6 +35,7 @@ import { useSidebar } from "../context/SidebarContext";
 import { queryKeys } from "../lib/queryKeys";
 import { useDialogActions } from "../context/DialogContext";
 import { useIssueExternalObjectSummaries } from "../hooks/useIssueExternalObjects";
+import { useMemberRestrictionGate } from "../hooks/useMemberRestrictionGate";
 import {
   applyIssueFilters,
   countActiveIssueFilters,
@@ -131,7 +132,7 @@ import {
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { PageTabBar } from "../components/PageTabBar";
-import type { Approval, HeartbeatRun, InboxMineSnapshot, Issue, JoinRequest } from "@paperclipai/shared";
+import type { Approval, DashboardSummary, HeartbeatRun, InboxMineSnapshot, Issue, JoinRequest } from "@paperclipai/shared";
 import {
   ACTIONABLE_APPROVAL_STATUSES,
   DEFAULT_INBOX_ISSUE_COLUMNS,
@@ -849,6 +850,8 @@ function StreamlinedInbox({
 }: InboxSurfaceProps) {
   const streamlinedUiEnabled = true;
   const { selectedCompanyId } = useCompany();
+  // Labels and external-object summaries are closed lists for a restricted member under `enforce` (AC-G10).
+  const memberGate = useMemberRestrictionGate(selectedCompanyId);
   const { setBreadcrumbs } = useBreadcrumbs();
   const { openNewIssue } = useDialogActions();
   const { isMobile } = useSidebar();
@@ -921,16 +924,18 @@ function StreamlinedInbox({
   });
   const { data: labels } = useQuery({
     queryKey: queryKeys.issues.labels(selectedCompanyId!),
-    queryFn: () => issuesApi.listLabels(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
+    queryFn: memberGate.guard(() => issuesApi.listLabels(selectedCompanyId!), []),
+    enabled: !!selectedCompanyId && !memberGate.closed,
   });
-  const isolatedWorkspacesEnabled = experimentalSettings?.enableIsolatedWorkspaces === true;
-  const externalObjectsEnabled = experimentalSettings?.enableExternalObjects === true;
+  // Execution workspaces are a closed list for a restricted member under `enforce` (AC-G10):
+  // no request, and no workspace grouping, column or filter.
+  const isolatedWorkspacesEnabled = experimentalSettings?.enableIsolatedWorkspaces === true && !memberGate.closed;
+  const externalObjectsEnabled = experimentalSettings?.enableExternalObjects === true && !memberGate.closed;
   const { data: executionWorkspaces = [], isLoading: isWorkspacesLoading } = useQuery({
     queryKey: selectedCompanyId
       ? queryKeys.executionWorkspaces.summaryList(selectedCompanyId)
       : ["execution-workspaces", "__disabled__"],
-    queryFn: () => executionWorkspacesApi.listSummaries(selectedCompanyId!),
+    queryFn: memberGate.guard(() => executionWorkspacesApi.listSummaries(selectedCompanyId!), []),
     enabled: !!selectedCompanyId && isolatedWorkspacesEnabled,
   });
 
@@ -974,7 +979,7 @@ function StreamlinedInbox({
     queryKey: queryKeys.access.joinRequests(selectedCompanyId!),
     queryFn: async () => {
       try {
-        return await accessApi.listJoinRequests(selectedCompanyId!, "pending_approval");
+        return await memberGate.guard(() => accessApi.listJoinRequests(selectedCompanyId!, "pending_approval"), [])();
       } catch (err) {
         if (err instanceof ApiError && (err.status === 403 || err.status === 401)) {
           return [];
@@ -982,7 +987,7 @@ function StreamlinedInbox({
         throw err;
       }
     },
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && !memberGate.closed,
     });
 
   const dashboardQueryKey = queryKeys.dashboard(selectedCompanyId!);
@@ -990,12 +995,12 @@ function StreamlinedInbox({
     companyId: selectedCompanyId,
     resourceKey: "dashboard",
     queryKey: dashboardQueryKey,
-    enabled: !!selectedCompanyId && tab === "all",
+    enabled: !!selectedCompanyId && !memberGate.closed && tab === "all",
   });
   const { data: dashboard, isLoading: isDashboardLoading, dataUpdatedAt: dashboardUpdatedAt } = useQuery({
     queryKey: dashboardQueryKey,
-    queryFn: () => dashboardApi.summary(selectedCompanyId!),
-    enabled: !!selectedCompanyId && tab === "all",
+    queryFn: memberGate.guard<DashboardSummary | null>(() => dashboardApi.summary(selectedCompanyId!), null),
+    enabled: !!selectedCompanyId && !memberGate.closed && tab === "all",
   });
   usePublishSharedQueryData(sharedDashboard, dashboard, dashboardUpdatedAt);
 
@@ -1059,8 +1064,8 @@ function StreamlinedInbox({
 
   const { data: otherHeartbeatRuns, isLoading: isOtherRunsLoading, error: otherRunsError } = useQuery({
     queryKey: [...queryKeys.heartbeats(selectedCompanyId!), "inbox-failures", INBOX_HEARTBEAT_RUN_LIMIT],
-    queryFn: () => heartbeatsApi.list(selectedCompanyId!, undefined, INBOX_HEARTBEAT_RUN_LIMIT, { summary: true, latestFailuresOnly: true }),
-    enabled: !!selectedCompanyId && tab !== "mine",
+    queryFn: memberGate.guard(() => heartbeatsApi.list(selectedCompanyId!, undefined, INBOX_HEARTBEAT_RUN_LIMIT, { summary: true, latestFailuresOnly: true }), []),
+    enabled: !!selectedCompanyId && tab !== "mine" && !memberGate.closed,
     refetchOnWindowFocus: false,
     staleTime: INBOX_HOT_PATH_STALE_MS,
   });
@@ -1148,15 +1153,15 @@ function StreamlinedInbox({
     companyId: selectedCompanyId,
     resourceKey: "live-runs",
     queryKey: liveRunsQueryKey,
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && !memberGate.closed,
     // Event-sourced via LiveUpdatesProvider (GitHub issue 9627); no interval poll needed.
     refetchInterval: false,
     leaderOnly: true,
   });
   const { data: liveRuns, isLoading: isLiveRunsLoading, dataUpdatedAt: liveRunsUpdatedAt } = useQuery({
     queryKey: liveRunsQueryKey,
-    queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
-    enabled: sharedLiveRuns.enabled,
+    queryFn: memberGate.guard(() => heartbeatsApi.liveRunsForCompany(selectedCompanyId!), []),
+    enabled: sharedLiveRuns.enabled && !memberGate.closed,
     refetchInterval: sharedLiveRuns.refetchInterval,
   });
   usePublishSharedQueryData(sharedLiveRuns, liveRuns, liveRunsUpdatedAt);
@@ -2661,10 +2666,11 @@ function StreamlinedInbox({
                 agents={agents}
                 creators={creatorOptions}
                 projects={projects?.map((project) => ({ id: project.id, name: project.name }))}
-                labels={labels?.map((label) => ({ id: label.id, name: label.name, color: label.color }))}
+                labels={memberGate.closed ? undefined : labels?.map((label) => ({ id: label.id, name: label.name, color: label.color }))}
                 currentUserId={currentUserId}
                 enableExternalObjectFilters={externalObjectsEnabled}
                 enableAgentCreatedVisibilityFilter
+                enableLiveRunsFilter={!memberGate.closed}
                 buttonVariant="outline"
                 iconOnly
                 presentation={streamlinedUiEnabled ? "streamlined" : "legacy"}
@@ -2766,10 +2772,11 @@ function StreamlinedInbox({
                 agents={agents}
                 creators={creatorOptions}
                 projects={projects?.map((project) => ({ id: project.id, name: project.name }))}
-                labels={labels?.map((label) => ({ id: label.id, name: label.name, color: label.color }))}
+                labels={memberGate.closed ? undefined : labels?.map((label) => ({ id: label.id, name: label.name, color: label.color }))}
                 currentUserId={currentUserId}
                 enableExternalObjectFilters={externalObjectsEnabled}
                 enableAgentCreatedVisibilityFilter
+                enableLiveRunsFilter={!memberGate.closed}
                 buttonVariant="outline"
                 iconOnly
                 presentation={streamlinedUiEnabled ? "streamlined" : "legacy"}

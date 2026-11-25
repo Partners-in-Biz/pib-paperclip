@@ -157,6 +157,7 @@ describeEmbeddedPostgres("subtree pause and release of an in-flight child run", 
 
   function wakeChild(fixture: Awaited<ReturnType<typeof seedTree>>) {
     return heartbeat.wakeup(fixture.agentId, {
+      causingActor: "system",
       source: "assignment", triggerDetail: "system", reason: "issue_assigned",
       payload: { issueId: fixture.childId }, requestedByActorType: "system", requestedByActorId: "system",
       contextSnapshot: { issueId: fixture.childId, taskId: fixture.childId, wakeReason: "issue_assigned" },
@@ -462,6 +463,7 @@ describeEmbeddedPostgres("subtree pause and release of an in-flight child run", 
     const prepared = new Promise<void>((resolve) => { preparationGate.reached = resolve; });
     preparationGate.blockNext = true;
     await heartbeat.wakeup(fixture.agentId, {
+      causingActor: "system",
       source: "assignment", triggerDetail: "system", reason: "issue_assigned", payload: { issueId: otherIssueId },
       requestedByActorType: "system", requestedByActorId: "system",
       contextSnapshot: { issueId: otherIssueId, taskId: otherIssueId, wakeReason: "issue_assigned" },

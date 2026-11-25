@@ -18,7 +18,7 @@
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { reviewerAgentId } from "@partnersinbiz/pib-plugin-kit";
-import { delegateBlockers, delegateFacts, delegateView, getDelegate, ladderDelegation } from "./approval-delegate.js";
+import { approverOf, delegateBlockers, delegateFacts, delegateView, getDelegate, ladderDelegation } from "./approval-delegate.js";
 import { getPolicy, getPolicyStrict, missingStages, policyOut, policySummary, stageList, type ApprovalPolicy } from "./approval-policy.js";
 import { scopeOfRow } from "./clients.js";
 import { postFingerprint } from "./content-hash.js";
@@ -294,7 +294,15 @@ async function delegateGate(ctx: PluginContext, caller: DelegateCaller, post: Po
   const scope = scopeOfRow(post);
   const entry = await getDelegate(ctx, companyId, scope);
   if (!entry) throw new SocialError("No delegated approver is set for this post's scope, so a person approves it.");
-  if (entry.agentId !== agentId) throw new SocialError("You are not the delegated approver for this post's scope. A person approves it.");
+  // The backup approver acts only on the posts the delegate created; the delegate on every other post.
+  const backupTurn = entry.agentId !== agentId && entry.backupAgentId === agentId && approverOf(entry, post.created_by_agent_id) === agentId;
+  if (entry.agentId !== agentId && !backupTurn) {
+    throw new SocialError(
+      entry.backupAgentId === agentId
+        ? "You are the backup approver: you approve only the posts the delegated approver created. The delegated approver approves this one."
+        : "You are not the delegated approver for this post's scope. A person approves it.",
+    );
+  }
   const facts = await delegateFacts(ctx, companyId, scope, agentId);
   // 4. Not the Reviewer (the configured one, paused or not).
   if (facts.configuredReviewerId === undefined) throw new SocialError("The company's roles could not be read, so it is not known who the Reviewer is. Nothing was approved; try again.");
@@ -311,7 +319,9 @@ async function delegateGate(ctx: PluginContext, caller: DelegateCaller, post: Po
   const blockers = delegateBlockers({ ...facts, policy });
   if (blockers.length > 0) throw new SocialError(`The delegated approver cannot act in this scope now: ${blockers[0]} A person approves it.`);
   // 6. Not its own post.
-  if (post.created_by_agent_id === agentId) throw new SocialError("You created this post, so you cannot approve it. A person approves it.");
+  if (post.created_by_agent_id === agentId) {
+    throw new SocialError(`You created this post, so you cannot approve it. ${entry.backupAgentId && entry.agentId === agentId ? "The backup approver approves it." : "A person approves it."}`);
+  }
   return { agentId, scope, entry, policy };
 }
 
@@ -794,6 +804,14 @@ export async function routeWaitingPost(ctx: PluginContext, actor: ReviewActor, p
   if (issueId && (await issueOpen(ctx, companyId, issueId))) return false;
   const state = await signoffState(ctx, companyId, post);
   if (state.missing.includes("reviewer")) return Boolean(await routePostReview(ctx, actor, post));
+  // Passed, waiting only on the team member's yes, with no open issue: the scope's delegate (or its backup) takes it.
+  if (state.missing.length === 1 && state.missing[0] === "owner") {
+    const delegate = await delegateToHandTo(ctx, companyId, post, state);
+    if (delegate) {
+      const note = "Next: the scope's delegated approver. Check the post and approve it with `approve-post-as-delegate`, or send it back with notes with `return-post-as-delegate`. A person may still approve it on the Social page.";
+      return Boolean(await handToDelegate(ctx, companyId, post, delegate, note));
+    }
+  }
   if (state.missing.includes("client") && !(await openLinkFor(ctx, companyId, post.id, state.hash))) {
     return Boolean(await handToSocialAgent(ctx, companyId, post, { task: "client-approval", note: `The approval policy for this post now asks for the client's approval (Who approves: ${policySummary(state.policy)}). Get it with \`request-client-approval\` and a Mailbox draft (never send it yourself). Nothing is posted until then.`, wakeReason: "Social post needs the client's approval" }));
   }

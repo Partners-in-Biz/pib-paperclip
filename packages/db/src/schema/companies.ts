@@ -1,5 +1,6 @@
-import type { InteractionResolverGovernance } from "@paperclipai/shared";
-import { numeric, pgTable, uuid, text, integer, timestamp, boolean, jsonb, uniqueIndex } from "drizzle-orm/pg-core";
+import type { InteractionResolverGovernance, MemberRestrictionMode } from "@paperclipai/shared";
+import { sql } from "drizzle-orm";
+import { check, numeric, pgTable, uuid, text, integer, timestamp, boolean, jsonb, uniqueIndex } from "drizzle-orm/pg-core";
 
 export const companies = pgTable(
   "companies",
@@ -29,10 +30,16 @@ export const companies = pgTable(
     feedbackDataSharingConsentAt: timestamp("feedback_data_sharing_consent_at", { withTimezone: true }),
     feedbackDataSharingConsentByUserId: text("feedback_data_sharing_consent_by_user_id"),
     feedbackDataSharingTermsVersion: text("feedback_data_sharing_terms_version"),
+    // Per-person access switch (PAR-12608 4.2). Read only through the member-restriction resolver.
+    memberRestrictionMode: text("member_restriction_mode").$type<MemberRestrictionMode>().notNull().default("off"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
     issuePrefixUniqueIdx: uniqueIndex("companies_issue_prefix_idx").on(table.issuePrefix),
+    memberRestrictionModeCheck: check(
+      "companies_member_restriction_mode_check",
+      sql`${table.memberRestrictionMode} IN ('off', 'report', 'enforce')`,
+    ),
   }),
 );

@@ -49,6 +49,8 @@ export type HealthStatus = {
    * settings-visibility registry). Absent when nothing is hidden.
    */
   hiddenSettings?: string[];
+  /** Present when `PAPERCLIP_MEMBER_RESTRICTION=off`: no company enforces member restriction. */
+  memberRestriction?: "forced_off";
 };
 
 export const healthApi = {

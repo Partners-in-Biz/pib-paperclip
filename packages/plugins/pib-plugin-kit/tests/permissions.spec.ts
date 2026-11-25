@@ -236,7 +236,7 @@ describe("managing grants", () => {
     expect(g).toMatchObject({ preset: null, allow: ["crm.contacts:view"], deny: [], scopeOverrides: { billing: "linked" } });
   });
   it("describePermissions is serializable", () => {
-    expect(JSON.parse(JSON.stringify(describePermissions())).presets).toHaveLength(5);
+    expect(JSON.parse(JSON.stringify(describePermissions())).presets).toHaveLength(7);
   });
 });
 

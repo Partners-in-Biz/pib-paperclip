@@ -9,6 +9,7 @@ import {
   readWorktreeInstancePointer,
   stopEmbeddedPostgresIfRunning,
 } from "../services/workspace-instance-cleanup.js";
+import { removeStaleManagedWorktreeDirectory } from "../services/workspace-runtime.js";
 import type { WorkspaceOperation } from "@paperclipai/shared";
 import type { WorkspaceOperationRecorder } from "../services/workspace-operations.js";
 
@@ -89,6 +90,25 @@ describe("worktree instance cleanup", () => {
     expect(deriveWorktreeInstanceId(plusPath)).not.toBe(deriveWorktreeInstanceId(dashPath));
     expect(deriveWorktreeInstanceId(plusPath)).toMatch(/^feature-cleanup-[a-f0-9]{12}$/);
     expect(deriveWorktreeInstanceId(dashPath)).toMatch(/^feature-cleanup-[a-f0-9]{12}$/);
+  });
+  it("never emits a double dash when the truncated name ends in a dash", () => {
+    const name = `${"a".repeat(47)}-bcdef`;
+    const id = deriveWorktreeInstanceId(path.join(os.tmpdir(), name));
+    expect(id).toMatch(/^a{47}-[a-f0-9]{12}$/);
+    expect(id).not.toContain("--");
+  });
+  it("removes a stale folder only inside the project's .paperclip/worktrees", async () => {
+    const repo = await makeTempRoot("paperclip-stale-repo-");
+    const inside = path.join(repo, ".paperclip", "worktrees", "stale-one");
+    const outside = await makeTempRoot("paperclip-stale-outside-");
+    await fs.mkdir(inside, { recursive: true });
+    await fs.writeFile(path.join(inside, "leftover"), "x", "utf8");
+    await fs.writeFile(path.join(outside, "keep"), "x", "utf8");
+
+    await expect(removeStaleManagedWorktreeDirectory(repo, outside)).resolves.toBe(false);
+    await expect(fs.stat(path.join(outside, "keep"))).resolves.toBeTruthy();
+    await expect(removeStaleManagedWorktreeDirectory(repo, inside)).resolves.toBe(true);
+    await expect(fs.stat(inside)).rejects.toThrow();
   });
   it("removes an instance directory inside the managed worktree instances root", async () => {
     const worktreesDir = await makeTempRoot("paperclip-managed-worktrees-");

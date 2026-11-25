@@ -3,9 +3,10 @@
  * cap, and the newest approved assets (ids only; the page asks the person-only "asset-urls" action for links).
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { formatClientParam, listCrmClients } from "@partnersinbiz/pib-plugin-kit";
+import { formatClientParam, listCrmClients, type ActingRestriction } from "@partnersinbiz/pib-plugin-kit";
 import { table } from "./db.js";
 import { currentPeriod, effectiveCap, listCaps, usageByClient } from "./ledger.js";
+import { assertListOpen } from "./scope.js";
 
 export interface ClientSummary {
   scopeKey: string;
@@ -17,8 +18,10 @@ export interface ClientSummary {
   recentApproved: Array<{ id: string; name: string; kind: string }>;
 }
 
-export async function clientSummaries(ctx: PluginContext, companyId: string) {
+/** Every row names a client: a restricted member gets none, and none is read for him (PAR-14298). */
+export async function clientSummaries(ctx: PluginContext, companyId: string, restriction: ActingRestriction) {
   const period = currentPeriod();
+  if (restriction === "restricted") return { period, clients: [] as ClientSummary[] };
   // A fixed number of queries, however many CRM clients there are (it was one usage query per client: slow first load).
   const [clients, caps, used, countRows, recentRows] = await Promise.all([
     listCrmClients(ctx, ctx.db.namespace, companyId).catch(() => []),
@@ -53,5 +56,6 @@ export async function clientSummaries(ctx: PluginContext, companyId: string) {
         recentApproved: recentRows.filter((r) => r.client_kind === c.kind && r.client_ref === c.id).map((r) => ({ id: r.id, name: r.name, kind: r.kind })),
       };
     });
+  assertListOpen(summaries.length > 0, restriction);
   return { period, clients: summaries };
 }

@@ -1,8 +1,8 @@
 import { connectionManagementService } from "../services/connection-management.js";
 import { chatCredentialRotationId, connectionIntentService, savedChatSetupPath } from "../services/connection-intents.js";
-import { companies } from "@paperclipai/db";
-import { eq } from "drizzle-orm";
-import { requiredConnectionUserAction, filterConnectionManagementRows, connectionManagementGuard, connectionRequestContext, connectionRequestUserId } from "./connection-management-authz.js";
+import { companies, issues } from "@paperclipai/db";
+import { eq, inArray } from "drizzle-orm";
+import { CONNECTION_MANAGEMENT_NOT_FOUND_MESSAGE, requiredConnectionUserAction, filterConnectionManagementRows, connectionManagementGuard, connectionRequestContext, connectionRequestUserId } from "./connection-management-authz.js";
 import { slackTestMessageSchema, slackRegistrationSchema, slackSetupActionSchema, slackManagedProvisionSchema } from "@paperclipai/shared";
 import { isCrossSiteOAuthCallbackNavigation, oauthCallbackInterstitialHtml } from "../lib/oauth-browser-return.js";
 import {
@@ -49,6 +49,7 @@ import {
   assertBoard,
   assertBoardOrAgent,
   assertCompanyAccess,
+  decideIssueAccessForActor,
   getAccessibleResource,
   getActorInfo,
 } from "./authz.js";
@@ -63,6 +64,17 @@ import {
 
 type ChatChannelRouteOptions = ChatChannelServiceOptions & {
   service?: ChatChannelService;
+  access?: ReturnType<typeof accessService>;
+};
+
+const issueDecisionFields = {
+  id: issues.id,
+  companyId: issues.companyId,
+  projectId: issues.projectId,
+  parentId: issues.parentId,
+  assigneeAgentId: issues.assigneeAgentId,
+  assigneeUserId: issues.assigneeUserId,
+  status: issues.status,
 };
 
 type ChatWebhookRouteOptions = {
@@ -102,7 +114,7 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
   const router = Router();
   const managementGuard = connectionManagementGuard(db, "chat");
   const service = options.service ?? chatChannelService(db, options);
-  const access = accessService(db);
+  const access = options.access ?? accessService(db);
   const github = githubChatManagementService(db, options.fetch);
 
   async function setupHandoff(req: ExpressRequest, reason: string, kind: ConnectionRequiredUserAction["kind"] = "authenticate", options: { requireCredentialRotation?: boolean; credentialFields?: string[] } = {}) {
@@ -576,7 +588,17 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
 
   router.get("/chat-endpoints/:endpointId/conversations", managementGuard("connections:read", "GET /chat-endpoints/:endpointId/conversations"), async (req, res) => {
     if (!(await assertEndpointAccess(req, res, service))) return;
-    res.json(await filterConnectionManagementRows(db, req, "connections:read", await service.listConversations(endpointId(req)), row => ({ issueId: row.issueId })));
+    const rows = await filterConnectionManagementRows(db, req, "connections:read", await service.listConversations(endpointId(req)), row => ({ issueId: row.issueId }));
+    // A conversation row carries its task's title, identifier and external link: keep it only when the caller can read the task.
+    const issueIds = [...new Set(rows.map((row) => row.issueId))];
+    const tasks = issueIds.length ? await db.select(issueDecisionFields).from(issues).where(inArray(issues.id, issueIds)) : [];
+    const endpointCompanyId = connectionRequestContext(req)?.resource.companyId;
+    const readable = new Set<string>();
+    await Promise.all(tasks.map(async (task) => {
+      if (endpointCompanyId && task.companyId !== endpointCompanyId) return;
+      if ((await decideIssueAccessForActor(access, req.actor, task, "issue:read")).allowed) readable.add(task.id);
+    }));
+    res.json(rows.filter((row) => readable.has(row.issueId)));
   });
 
   router.get("/chat-endpoints/:endpointId/activity", managementGuard("connections:audit", "GET /chat-endpoints/:endpointId/activity"), async (req, res) => {
@@ -713,6 +735,13 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
     const issueId = req.params.issueId as string;
     if (issueId !== issueId.trim() || !isUuidLike(issueId)) {
       throw badRequest("Task ID must be a UUID");
+    }
+    // Read the task first: the binding names the task's external channel. No break-glass on this route.
+    const [task] = await db.select(issueDecisionFields).from(issues).where(eq(issues.id, issueId));
+    const taskCompanyId = connectionRequestContext(req)?.resource.companyId;
+    if (!task || (taskCompanyId && task.companyId !== taskCompanyId)) throw notFound(CONNECTION_MANAGEMENT_NOT_FOUND_MESSAGE);
+    if (!(await decideIssueAccessForActor(access, req.actor, task, "issue:read")).allowed) {
+      throw notFound(CONNECTION_MANAGEMENT_NOT_FOUND_MESSAGE);
     }
     const binding = await service.getIssueBinding(issueId);
     if (binding) {

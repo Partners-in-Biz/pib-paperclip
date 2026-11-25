@@ -424,7 +424,6 @@ describe("the client opens the page and signs", () => {
     expect(row).toMatchObject({ status: "signed", signer_name: "Ada Lovelace", name_matches: true });
     expect(row.signed_at).toBeTruthy();
     expect(row.signer_ip_hash).toMatch(/^[0-9a-f]{32}$/);
-    expect(row.signer_ip_hash).not.toContain("203");
     expect(JSON.stringify(row)).not.toContain(VISITOR_IP);
     expect(row.signer_user_agent).toContain("Mozilla/5.0");
     const kinds = booted.store.sign_events!.map((e) => e.kind);

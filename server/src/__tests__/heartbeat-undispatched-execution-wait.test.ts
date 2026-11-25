@@ -12,6 +12,12 @@ import { heartbeatService } from "../services/heartbeat.js";
 import { legacyExecutionNeedsReconciliationWithEvidence, terminalizeLegacyExecution } from "../services/legacy-execution-recovery.js";
 
 const support = await getEmbeddedPostgresTestSupport();
+describe("undispatched execution waits database", () => {
+  it.runIf(Boolean(process.env.CI))("runs its database tests under CI", () => {
+    expect(support.supported).toBe(true);
+  });
+});
+
 (support.supported ? describe : describe.skip)("undispatched execution waits", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
@@ -44,7 +50,9 @@ const support = await getEmbeddedPostgresTestSupport();
     return { companyId, agentId, issueId, runId, actionId, originalActionId, run };
   }
 
-  async function saveMessages(f: Awaited<ReturnType<typeof seed>>) {
+  // `previousVersion`: no causing actor and no requester, as a wake stored
+  // before the causing actor existed (PAR-12608 AC-A10).
+  async function saveMessages(f: Awaited<ReturnType<typeof seed>>, previousVersion = false) {
     // Occupy the agent so admission cannot launch a provider in this test.
     const [busy] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" }).returning();
     const commentIds = [randomUUID(), randomUUID()];
@@ -55,7 +63,7 @@ const support = await getEmbeddedPostgresTestSupport();
     const queueId = randomUUID();
     await db.insert(agentWakeupRequests).values({ id: queueId, companyId: f.companyId, agentId: f.agentId,
       source: "automation", reason: "issue_commented", status: "deferred_issue_execution",
-      requestedByActorType: "user", requestedByActorId: "board", payload: { issueId: f.issueId,
+      ...(previousVersion ? {} : { requestedByActorType: "user", requestedByActorId: "board" }), payload: { issueId: f.issueId,
         commentId: commentIds[1], _paperclipWakeContext: { issueId: f.issueId, wakeReason: "issue_commented",
           wakeCommentId: commentIds[1], wakeCommentIds: commentIds } } });
     return { commentIds, queueId, busy };
@@ -86,6 +94,19 @@ const support = await getEmbeddedPostgresTestSupport();
     expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, queueId)))[0])
       .toMatchObject({ status: "queued", runId: successors[0].id });
     expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
+  });
+
+  it("still runs a stored wake of the previous version without a causing actor (AC-A10)", async () => {
+    const f = await seed(true);
+    const { queueId } = await saveMessages(f, true);
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, queueId)))[0])
+      .toMatchObject({ requestedByActorType: null, requestedByActorId: null });
+    await heartbeatService(db).resumeQueuedRuns();
+    const successors = await db.select().from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.status, "queued")));
+    expect(successors).toHaveLength(1);
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, queueId)))[0])
+      .toMatchObject({ status: "queued", runId: successors[0].id });
   });
 
   it.each(["pause", "daily_limit", "reassigned", "agent_paused", "company_inactive"])(

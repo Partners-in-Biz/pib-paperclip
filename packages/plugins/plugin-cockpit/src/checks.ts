@@ -13,6 +13,10 @@
  * just ran is `lost` (not stored), the parts still due are `notRun`, and the
  * snapshot shows one row naming them (`OWN_CHECKS_INCOMPLETE_KEY`).
  *
+ * A call never lets the parts outlive it (PAR-14009): for a company with saved
+ * settings they run outside the call's invocation and the call waits for them
+ * only so long (`runDueParts`); the rest land in the cache for the next load.
+ *
  * Findings: Q9-8 / Q9-13 (role drift, run profile), RC5 (unrouted approvals,
  * blocked, grants), Q8-3 / Q8-8 / Q9-12 (measurement), Q1b-14 (client effort),
  * Q2-3 (improvements), Q10-3 (goals), and the critic's registers, custody and
@@ -24,6 +28,7 @@ import {
   backlogWaitingItems,
   dbBlockedByLookup,
   blockersUnreadableCheck,
+  configSaved,
   isModuleEnabled,
   MEMORY_GRANT_EFFECT_KEY,
   MODULES,
@@ -62,7 +67,9 @@ import { feedbackSignal } from "./memory/signal.js";
 import { NAMESPACE } from "./namespace.js";
 import { proofGapCheck, unreviewedApprovalCheck } from "./quality.js";
 import { currentRoles } from "./roles.js";
-import { timed, type PartRecord } from "./run-record.js";
+import { runDetached } from "./detach.js";
+import { clockMs, recordString, timed, type PartRecord } from "./run-record.js";
+import { currentTrigger } from "./run-trigger.js";
 import { attestationChecks, attestationState, membersCheck, readAttestations } from "./security.js";
 
 export interface ExtraChecks {
@@ -151,32 +158,46 @@ function merge(out: ExtraChecks, got: Partial<ExtraChecks>): void {
 }
 
 /**
- * Runs the parts in order (each may fail alone) and merges what they return
- * with what the cache holds. The map is read first: a part stored inside ten
- * minutes is `cached`, a held one `held`, and neither reads the host. Before
- * the first part that must run, and after each part that ran, the company is
- * read; a refusal stops the run (see the file comment). `start` reads what the
- * parts share, once, after the first probe.
+ * How long a call (a page load, the brief, an action) waits for the parts that must run (PAR-14009). The host ends a
+ * plugin call after 30 s and then refuses every read the call still makes (`unknown_invocation`); `cockpit.load` also
+ * reads other things around the checks. A test may lower it.
  */
-async function gather(env: Env, companyId: string, now: number, parts: Array<[string, Part]>, start: (company: { issuePrefix?: string | null } | null) => Promise<void>): Promise<ExtraChecks> {
-  const store = companyChecks(env, companyId);
-  const out: ExtraChecks = { health: [], kpis: [], quality: [], waiting: [] };
-  const record: PartRecord[] = [];
+export const CALL_LIMITS = { waitMs: 12_000 };
+
+type Start = (company: { issuePrefix?: string | null } | null) => Promise<void>;
+
+/** One run of the due parts: what each did, what each returned, and why it stopped. Filled in as the parts finish. */
+interface Progress {
+  record: PartRecord[];
+  values: Map<string, Partial<ExtraChecks>>;
+  stop?: { lostPart: string; code: number };
+  done: boolean;
+  /** The call stopped waiting before the run ended (the run went on outside the call). */
+  outlived: boolean;
+}
+
+const newProgress = (): Progress => ({ record: [], values: new Map(), done: false, outlived: false });
+
+/** The run of the due parts in flight for each company, outside any call; a second load waits on it instead of starting another. */
+const inFlight = new WeakMap<object, Map<string, { progress: Progress; finished: Promise<void> }>>();
+
+function inFlightFor(env: Env): Map<string, { progress: Progress; finished: Promise<void> }> {
+  let byCompany = inFlight.get(env);
+  if (!byCompany) inFlight.set(env, (byCompany = new Map()));
+  return byCompany;
+}
+
+/**
+ * Runs the due parts in order (each may fail alone) and stores each result. Before the first part, and after each
+ * part that ran, the company is read; a refusal stops the run (see the file comment). `start` reads what the parts
+ * share, once, after the first probe. Past `deadline` (a `clockMs` value) no part starts: the rest are `notRun`.
+ */
+async function runDue(env: Env, companyId: string, now: number, store: CompanyChecks, due: Array<[string, Part]>, start: Start, progress: Progress, deadline: number | null): Promise<void> {
+  const record = progress.record;
   const probe = () => env.ctx.companies.get(companyId);
   let started = false;
-  let stop: { lostPart: string; code: number } | undefined;
-  for (const [name, run] of parts) {
-    const stored = store.parts.get(name);
-    if (stored && now - stored.at < TTL_MS) {
-      merge(out, stored.value);
-      record.push({ name, state: "cached", ms: 0 });
-      continue;
-    }
-    if ((store.heldUntil.get(name) ?? 0) > now) {
-      record.push({ name, state: "held", ms: 0 });
-      continue;
-    }
-    if (stop) {
+  for (const [name, run] of due) {
+    if (progress.stop || (deadline !== null && clockMs() > deadline)) {
       record.push({ name, state: "notRun", ms: 0 });
       continue;
     }
@@ -186,7 +207,7 @@ async function gather(env: Env, companyId: string, now: number, parts: Array<[st
       try {
         company = await probe();
       } catch (error) {
-        stop = { lostPart: "", code: errorCode(error) };
+        progress.stop = { lostPart: "", code: errorCode(error) };
         record.push({ name, state: "notRun", ms: 0 });
         continue;
       }
@@ -204,7 +225,7 @@ async function gather(env: Env, companyId: string, now: number, parts: Array<[st
     } catch (error) {
       // Whatever the part returned or threw, it may have read nothing: not stored, not merged.
       record[record.length - 1]!.state = "lost";
-      stop = { lostPart: name, code: errorCode(error) };
+      progress.stop = { lostPart: name, code: errorCode(error) };
       const losses = (store.losses.get(name) ?? 0) + 1;
       store.losses.set(name, losses);
       if (losses >= 2) store.heldUntil.set(name, now + TTL_MS);
@@ -218,11 +239,95 @@ async function gather(env: Env, companyId: string, now: number, parts: Array<[st
       continue;
     }
     store.parts.set(name, { at: now, value: got, failed: false });
-    merge(out, got);
+    progress.values.set(name, got);
+  }
+}
+
+/**
+ * Where the due parts run (PAR-14009). A job runs them in place and waits for all of them. A call must end inside
+ * the host's 30 s, and every read made after that is refused (the bursts of `state.get` refusals were `client-effort`
+ * reading each CRM client's project links after `cockpit.load` had timed out). So for a company with saved settings
+ * a call runs them outside its invocation (`runDetached`, the scope the hourly job uses), waits `CALL_LIMITS.waitMs`
+ * at most, and the parts still running finish into the cache for the next load. A company without saved settings
+ * is refused that scope: its call runs them in place and starts no part after the wait.
+ */
+async function runDueParts(env: Env, companyId: string, now: number, store: CompanyChecks, due: Array<[string, Part]>, start: Start): Promise<Progress> {
+  if (currentTrigger() === "job") {
+    const progress = newProgress();
+    await runDue(env, companyId, now, store, due, start, progress, null);
+    return progress;
+  }
+  const begun = clockMs();
+  if (!(await configSaved(env.ctx, companyId))) {
+    const progress = newProgress();
+    await runDue(env, companyId, now, store, due, start, progress, begun + CALL_LIMITS.waitMs);
+    return progress;
+  }
+  const flights = inFlightFor(env);
+  let flight = flights.get(companyId);
+  if (!flight) {
+    const progress = newProgress();
+    const finished = runDetached(() => runDue(env, companyId, now, store, due, start, progress, null))
+      .catch((error) => env.ctx.logger.info("Cockpit checks failed", { companyId, error: message(error) }))
+      .finally(() => {
+        progress.done = true;
+        if (flights.get(companyId)?.progress === progress) flights.delete(companyId);
+        if (progress.outlived) env.ctx.logger.info("Cockpit checks finished after the call", { companyId, totalMs: Math.round(clockMs() - begun), parts: recordString(progress.record) });
+      });
+    flight = { progress, finished };
+    flights.set(companyId, flight);
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const waited = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, Math.max(0, begun + CALL_LIMITS.waitMs - clockMs()));
+    timer.unref?.();
+  });
+  try {
+    await Promise.race([flight.finished, waited]);
+  } finally {
+    clearTimeout(timer);
+  }
+  if (!flight.progress.done) flight.progress.outlived = true;
+  return flight.progress;
+}
+
+/**
+ * Runs the due parts and merges what they return with what the cache holds, in part order. The map is read first: a
+ * part stored inside ten minutes is `cached`, a held one `held`, and neither reads the host. A due part that has not
+ * finished when the call stops waiting is `notRun` (it is still running; the next load reads it from the cache).
+ */
+async function gather(env: Env, companyId: string, now: number, parts: Array<[string, Part]>, start: Start): Promise<ExtraChecks> {
+  const store = companyChecks(env, companyId);
+  const out: ExtraChecks = { health: [], kpis: [], quality: [], waiting: [] };
+  const due: Array<[string, Part]> = [];
+  const plan: Array<{ name: string; state: "cached" | "held" | "due"; value?: Partial<ExtraChecks> }> = [];
+  for (const [name, run] of parts) {
+    const stored = store.parts.get(name);
+    if (stored && now - stored.at < TTL_MS) plan.push({ name, state: "cached", value: stored.value });
+    else if ((store.heldUntil.get(name) ?? 0) > now) plan.push({ name, state: "held" });
+    else {
+      plan.push({ name, state: "due" });
+      due.push([name, run]);
+    }
+  }
+  const progress = due.length ? await runDueParts(env, companyId, now, store, due, start) : newProgress();
+  // A snapshot of the run so far: a run still going on outside the call keeps adding to it.
+  const ran = new Map(progress.record.map((r) => [r.name, { ...r }]));
+  const record: PartRecord[] = [];
+  for (const step of plan) {
+    if (step.state !== "due") {
+      if (step.value) merge(out, step.value);
+      record.push({ name: step.name, state: step.state, ms: 0 });
+      continue;
+    }
+    const value = progress.values.get(step.name);
+    const done = ran.get(step.name);
+    if (value && done) merge(out, value);
+    record.push(done ?? { name: step.name, state: "notRun", ms: 0 });
   }
   // Every part from the cache: not a run, no record.
   if (record.some((r) => r.state !== "cached")) out.run = record;
-  if (stop) out.stop = stop;
+  if (progress.stop) out.stop = { ...progress.stop };
   return out;
 }
 
@@ -376,5 +481,7 @@ export async function extraChecks(env: Env, companyId: string, options: { fresh?
 /** Forget a company's cached parts, losses and holds (after a change that should show at once). */
 export function forgetChecks(env: Env, companyId: string): void {
   caches.get(env)?.delete(companyId);
+  // A run still going on writes to the forgotten cache; the next call starts its own.
+  inFlight.get(env)?.delete(companyId);
 }
 

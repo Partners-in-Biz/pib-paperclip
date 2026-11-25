@@ -1101,7 +1101,7 @@ function boardActor(companyId: string, userId = "owner-user") {
     userId,
     isInstanceAdmin: false,
     companyIds: [companyId],
-    memberships: [{ companyId, status: "active", membershipRole: "operator" }],
+    memberships: [{ companyId, status: "active", membershipRole: "operator", restricted: false, restrictionMode: "off" as const }],
   };
 }
 
@@ -4537,7 +4537,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           executionWorkspaceSettings: { mode: "isolated_workspace", workspaceStrategy: { type: "git_worktree" } },
         }).where(eq(issues.id, issueId));
         await db.update(agents).set({ runtimeConfig: { heartbeat: { wakeOnDemand: true } } }).where(eq(agents.id, f.assignedAgentId));
-        mutate = () => heartbeat.wakeup(f.assignedAgentId, { source: "assignment", triggerDetail: "system",
+        mutate = () => heartbeat.wakeup(f.assignedAgentId, { causingActor: "system", source: "assignment", triggerDetail: "system",
           reason: "issue_assigned", payload: { issueId }, contextSnapshot: { issueId, wakeReason: "issue_assigned" } });
       } else {
         await db.update(issues).set({ status: "in_progress", executionRunId: null, checkoutRunId: null }).where(eq(issues.id, issueId));
@@ -7417,7 +7417,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect(comments[0].body).toContain("untrusted provider data");
       expect(comments[0].authorUserId).toBe("owner-user");
       expect(comments[0].metadata?.sourceChannel).toBe("github");
-      const inbox = await issueService(db).list(f.companyId, { touchedByUserId: "owner-user" });
+      const inbox = await issueService(db).list(f.companyId, { readCondition: "system", touchedByUserId: "owner-user" });
       expect(inbox.map((issue) => issue.id)).not.toContain(task.id);
       const [run] = await db.insert(heartbeatRuns).values({
         companyId: f.companyId,
@@ -29142,6 +29142,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     // Generic stranded-task recovery cannot bypass the not-yet-accepted input.
     await expect(
       heartbeatService(db).wakeup(fixture.assignedAgentId, {
+        causingActor: "system",
         source: "assignment",
         triggerDetail: "system",
         reason: "issue_assigned",
@@ -66264,7 +66265,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         .where(eq(agents.id, agentId));
       const [capacity] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "running" }).returning();
       const heartbeat = heartbeatService(db);
-      const current = await heartbeat.wakeup(agentId, { source: "automation", triggerDetail: "system",
+      const current = await heartbeat.wakeup(agentId, { causingActor: "system", source: "automation", triggerDetail: "system",
         reason: "issue_reopened_via_comment", requestedByActorType: "user", requestedByActorId: "owner-user",
         payload: { issueId, commentId: comment.id }, contextSnapshot: { issueId, taskKey: issueId,
           source: "issue.comment.reopen", wakeCommentId: comment.id, wakeCommentIds: [comment.id] } });
@@ -66475,7 +66476,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         .where(eq(agents.id, agentId));
       const [capacity] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "running" }).returning();
       const heartbeat = heartbeatService(db);
-      const resumed = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual",
+      const resumed = await heartbeat.wakeup(agentId, { causingActor: "system", source: "on_demand", triggerDetail: "manual",
         reason: "issue_tree_resumed", requestedByActorType: "user", requestedByActorId: "owner-user",
         payload: { issueId }, contextSnapshot: { issueId, taskKey: f.issue.identifier, source: "issue.tree_resume" } });
       expect(resumed).toMatchObject({ status: "queued" });

@@ -1289,7 +1289,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
       createdAt: new Date(Date.now() - 2 * 60 * 60_000), updatedAt: new Date(Date.now() - 2 * 60 * 60_000), finishedAt: new Date(Date.now() - 2 * 60 * 60_000) });
     const heartbeat = heartbeatService(db);
     try {
-      const next = await heartbeat.wakeup(input.agent.id, { source: "on_demand", triggerDetail: "manual", reason: "manual",
+      const next = await heartbeat.wakeup(input.agent.id, { causingActor: "system", source: "on_demand", triggerDetail: "manual", reason: "manual",
         requestedByActorType: "user", requestedByActorId: userId, payload: { issueId: issue.id }, contextSnapshot: { issueId: issue.id } });
       await heartbeat.drainActiveRunExecutions();
       let finalRunId = next?.id;

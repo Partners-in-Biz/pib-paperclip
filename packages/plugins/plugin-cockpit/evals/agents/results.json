@@ -643,6 +643,13 @@
           "by": "Delivery Lead",
           "at": "2026-11-04",
           "expires": "2026-12-04"
+        },
+        {
+          "hash": "33afbd2c42d9ae9d",
+          "reason": "Text-only change: Elon (removed agent) replaced by PiB in the delivery-lead template (PAR-12209). No behaviour change; baseline still to be recorded via skill-eval (PAR-7275).",
+          "by": "Marcus",
+          "at": "2026-11-16",
+          "expires": "2026-12-16"
         }
       ]
     }

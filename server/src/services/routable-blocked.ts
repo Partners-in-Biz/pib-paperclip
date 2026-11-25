@@ -1,4 +1,5 @@
 import type { IssueUnblockDescriptor } from "@paperclipai/shared";
+import { SYSTEM_CAUSING_ACTOR } from "./heartbeat/causing-actor.js";
 
 export const ROUTABLE_BLOCKED_ROLLOUT_AT = new Date("2026-07-23T18:13:03.000Z");
 /** Fixed system actor id; isSystemUnblockOwnerWake (issue-wake-guards.ts) admits it. */
@@ -22,6 +23,7 @@ export type UnblockOwnerWakeOptions = {
   triggerDetail: "system";
   reason: "issue_unblock_requested";
   idempotencyKey: string;
+  causingActor: typeof SYSTEM_CAUSING_ACTOR;
   requestedByActorType: "system";
   requestedByActorId: typeof ROUTABLE_BLOCKED_WAKE_ACTOR_ID;
   payload: { issueId: string; action: string };
@@ -64,6 +66,7 @@ export async function deliverAgentUnblockNotification(input: {
     triggerDetail: "system",
     reason: "issue_unblock_requested",
     idempotencyKey: `issue-unblock:${issue.id}:${issue.blockedTransitionAt.toISOString()}`,
+    causingActor: SYSTEM_CAUSING_ACTOR,
     requestedByActorType: "system",
     requestedByActorId: ROUTABLE_BLOCKED_WAKE_ACTOR_ID,
     payload: { issueId: issue.id, action: issue.unblockDescriptor.action },

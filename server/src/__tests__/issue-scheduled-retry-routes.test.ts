@@ -102,10 +102,17 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
       type: "board",
       userId: "board-user",
       companyIds: [companyId],
-      memberships: [{ companyId, membershipRole: "admin", status: "active" }],
+      memberships: [{ companyId, membershipRole: "admin", status: "active", restricted: false, restrictionMode: "off" }],
       isInstanceAdmin: false,
       source,
     };
+  }
+
+  // retry-now reads the task first (PAR-12967): the session board user needs a real membership row.
+  async function addBoardMembership(companyId: string) {
+    await db.insert(companyMemberships).values({
+      companyId, principalType: "user", principalId: "board-user", membershipRole: "admin", status: "active",
+    });
   }
 
   function agentActor(companyId: string, agentId: string): Express.Request["actor"] {
@@ -783,6 +790,7 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
 
   it("promotes the existing scheduled retry and treats duplicate clicks as idempotent", async () => {
     const { companyId, issueId, retryRunId } = await seedIssueWithRetry();
+    await addBoardMembership(companyId);
     const app = createApp(boardActor(companyId));
 
     const first = await request(app).post(`/api/issues/${issueId}/scheduled-retry/retry-now`).send({});
@@ -824,6 +832,7 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
       companyId: f.companyId, issueId: f.issueId, heartbeatRunId: f.sourceRunId,
       status: "pending_cleanup", cleanupStatus: "failed",
     }).returning();
+    await addBoardMembership(f.companyId);
     const app = createApp(boardActor(f.companyId));
     for (let click = 0; click < 2; click++) {
       const before = Date.now();
@@ -855,6 +864,7 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
       issuePrefix: "NONE",
       requireBoardApprovalForNewAgents: false,
     });
+    await addBoardMembership(companyId);
     await db.insert(issues).values({
       id: issueId,
       companyId,
@@ -878,6 +888,7 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
 
   it("reports already-promoted retries without creating another run", async () => {
     const { companyId, issueId, retryRunId } = await seedIssueWithRetry({ retryStatus: "queued" });
+    await addBoardMembership(companyId);
 
     const res = await request(createApp(boardActor(companyId)))
       .post(`/api/issues/${issueId}/scheduled-retry/retry-now`)
@@ -895,6 +906,7 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
 
   it("uses normal promotion gates and records gate-suppressed retries", async () => {
     const { companyId, issueId, retryRunId } = await seedIssueWithRetry({ agentStatus: "paused" });
+    await addBoardMembership(companyId);
 
     const res = await request(createApp(boardActor(companyId)))
       .post(`/api/issues/${issueId}/scheduled-retry/retry-now`)

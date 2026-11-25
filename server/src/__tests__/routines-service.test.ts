@@ -1679,6 +1679,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
           payload: { issueId: run.linkedIssueId, mutation: "create" },
           requestedByActorType: undefined,
           requestedByActorId: null,
+          causingActor: "system",
           contextSnapshot: { issueId: run.linkedIssueId, source: "routine.dispatch" },
         },
       },
@@ -1734,6 +1735,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     });
 
     const inboxIssues = await issueSvc.list(companyId, {
+      readCondition: "system",
       touchedByUserId: userId,
       inboxArchivedByUserId: userId,
       includeRoutineExecutions: true,
@@ -1931,6 +1933,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     ).resolves.toEqual([]);
 
     const inboxIssues = await issueSvc.list(companyId, {
+      readCondition: "system",
       touchedByUserId: userId,
       inboxArchivedByUserId: userId,
       includeRoutineExecutions: true,
@@ -2008,6 +2011,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     ).resolves.toEqual([]);
 
     const inboxIssues = await issueSvc.list(companyId, {
+      readCondition: "system",
       touchedByUserId: userId,
       inboxArchivedByUserId: userId,
       includeRoutineExecutions: true,

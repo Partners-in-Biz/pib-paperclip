@@ -1,4 +1,5 @@
 import { Router, type Request } from "express";
+import { z } from "zod";
 import type { Db } from "@paperclipai/db";
 import {
   createRoutineSchema,
@@ -18,6 +19,14 @@ import { assertCompanyAccess, getAccessibleResource, getActorInfo, hasCompanyAcc
 import { badRequest, forbidden, unauthorized, unsupportedMediaType } from "../errors.js";
 import { getTelemetryClient } from "../telemetry.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import { assertNamesOnlyHimself, assertRoutineWorksForCaller } from "../services/member-restriction/acting-person.js";
+
+// The create contract has no responsible person; the field is read only so H6
+// can refuse a member bound by rule group H who names somebody else.
+const createRoutineRequestSchema = createRoutineSchema.extend({
+  responsibleUserId: z.string().trim().min(1).optional(),
+});
+type CreateRoutineRequest = z.infer<typeof createRoutineRequestSchema>;
 
 export function routineRoutes(
   db: Db,
@@ -128,6 +137,16 @@ export function routineRoutes(
     return routine;
   }
 
+  /** H6 (PAR-12608 4.10): change or run a routine only when it works for the caller's person. */
+  async function assertRoutineStaysCallers(
+    req: Request,
+    routine: { id: string; companyId: string; responsibleUserId: string | null },
+    target: string,
+    nextResponsibleUserId?: string,
+  ) {
+    await assertRoutineWorksForCaller(db, req.actor, routine, { target, nextResponsibleUserId });
+  }
+
   async function logRoutineRevisionCreated(req: Request, input: {
     companyId: string;
     routineId: string;
@@ -165,11 +184,17 @@ export function routineRoutes(
     res.json(result);
   });
 
-  router.post("/companies/:companyId/routines", validate(createRoutineSchema), async (req, res) => {
+  router.post("/companies/:companyId/routines", validate(createRoutineRequestSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertBoardCanAssignTasks(req, companyId);
     assertCanManageCompanyRoutine(req, companyId, req.body.assigneeAgentId);
-    const created = await svc.create(companyId, req.body, {
+    // H6: a member bound by rule group H names only himself. Create always takes
+    // the caller's own person, so the value is checked and then dropped.
+    const { responsibleUserId: requestedResponsibleUserId, ...createBody } = req.body as CreateRoutineRequest;
+    await assertNamesOnlyHimself(db, req.actor, {
+      companyId, ruleId: "H6", target: "routines.create", requestedPersonId: requestedResponsibleUserId,
+    });
+    const created = await svc.create(companyId, createBody, {
       agentId: req.actor.type === "agent" ? req.actor.agentId : null,
       userId: req.actor.type === "board" ? req.actor.userId ?? "board" : null,
       ...(req.actor.type === "agent" ? { actorResponsibleUserId: req.actor.onBehalfOfUserId ?? null } : {}),
@@ -404,6 +429,7 @@ export function routineRoutes(
     ) {
       throw forbidden("Agents can only assign routines to themselves");
     }
+    await assertRoutineStaysCallers(req, routine, "routines.update", req.body.responsibleUserId);
     const updated = await svc.update(routine.id, req.body, {
       agentId: req.actor.type === "agent" ? req.actor.agentId : null,
       userId: req.actor.type === "board" ? req.actor.userId ?? "board" : null,
@@ -454,6 +480,7 @@ export function routineRoutes(
       return;
     }
     await assertBoardCanAssignTasks(req, routine.companyId);
+    await assertRoutineStaysCallers(req, routine, "routines.revision_restore");
     const result = await svc.restoreRevision(routine.id, req.params.revisionId as string, {
       agentId: req.actor.type === "agent" ? req.actor.agentId : null,
       userId: req.actor.type === "board" ? req.actor.userId ?? "board" : null,
@@ -497,6 +524,7 @@ export function routineRoutes(
       return;
     }
     await assertBoardCanAssignTasks(req, routine.companyId);
+    await assertRoutineStaysCallers(req, routine, "routines.trigger_create");
     const created = await svc.createTrigger(routine.id, req.body, {
       agentId: req.actor.type === "agent" ? req.actor.agentId : null,
       userId: req.actor.type === "board" ? req.actor.userId ?? "board" : null,
@@ -538,6 +566,7 @@ export function routineRoutes(
       return;
     }
     await assertBoardCanAssignTasks(req, routine.companyId);
+    await assertRoutineStaysCallers(req, routine, "routines.trigger_update");
     const updated = await svc.updateTrigger(trigger.id, req.body, {
       agentId: req.actor.type === "agent" ? req.actor.agentId : null,
       userId: req.actor.type === "board" ? req.actor.userId ?? "board" : null,
@@ -580,6 +609,7 @@ export function routineRoutes(
       res.status(404).json({ error: "Routine trigger not found" });
       return;
     }
+    await assertRoutineStaysCallers(req, routine, "routines.trigger_delete");
     const deleted = await svc.deleteTrigger(trigger.id, {
       agentId: req.actor.type === "agent" ? req.actor.agentId : null,
       userId: req.actor.type === "board" ? req.actor.userId ?? "board" : null,
@@ -625,6 +655,7 @@ export function routineRoutes(
         res.status(404).json({ error: "Routine trigger not found" });
         return;
       }
+      await assertRoutineStaysCallers(req, routine, "routines.trigger_rotate_secret");
       const rotated = await svc.rotateTriggerSecret(trigger.id, {
         agentId: req.actor.type === "agent" ? req.actor.agentId : null,
         userId: req.actor.type === "board" ? req.actor.userId ?? "board" : null,
@@ -662,6 +693,7 @@ export function routineRoutes(
       return;
     }
     await assertBoardCanAssignTasks(req, routine.companyId);
+    await assertRoutineStaysCallers(req, routine, "routines.run");
     const run = await svc.runRoutine(routine.id, req.body, {
       agentId: req.actor.type === "agent" ? req.actor.agentId : null,
       userId: req.actor.type === "board" ? req.actor.userId ?? null : null,

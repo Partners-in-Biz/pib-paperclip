@@ -50,6 +50,7 @@ import {
 import { collectLiveIssueIds } from "@/lib/liveIssueIds";
 import { useProjectOrder } from "@/hooks/useProjectOrder";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "@/hooks/useSharedPolling";
+import { useMemberRestrictionGate } from "@/hooks/useMemberRestrictionGate";
 import {
   assigneeValueFromSelection,
   currentUserAssigneeOption,
@@ -285,20 +286,22 @@ function PluginSdkIssuesList({
     queryFn: () => projectsApi.list(companyId!, { includeArchived: true }),
     enabled: !!companyId,
   });
+  // `live-runs` is closed for a restricted member under `enforce` (AC-G10): no request, no live mark.
+  const memberGate = useMemberRestrictionGate(companyId);
   const liveRunsQueryKey = queryKeys.liveRuns(companyId ?? "__no-company__");
   const sharedLiveRuns = useSharedPollingQuery({
     companyId,
     resourceKey: "live-runs",
     queryKey: liveRunsQueryKey,
-    enabled: !!companyId,
+    enabled: !!companyId && !memberGate.closed,
     // Event-sourced via LiveUpdatesProvider (#9627); no interval poll needed.
     refetchInterval: false,
     leaderOnly: true,
   });
   const { data: liveRuns, dataUpdatedAt: liveRunsUpdatedAt } = useQuery({
     queryKey: liveRunsQueryKey,
-    queryFn: () => heartbeatsApi.liveRunsForCompany(companyId!),
-    enabled: sharedLiveRuns.enabled,
+    queryFn: memberGate.guard(() => heartbeatsApi.liveRunsForCompany(companyId!), []),
+    enabled: sharedLiveRuns.enabled && !memberGate.closed,
     refetchInterval: sharedLiveRuns.refetchInterval,
   });
   usePublishSharedQueryData(sharedLiveRuns, liveRuns, liveRunsUpdatedAt);
@@ -307,7 +310,10 @@ function PluginSdkIssuesList({
     queryFn: () => issuesApi.list(companyId!, issueFilters),
     enabled: !!companyId,
   });
-  const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns, issues), [issues, liveRuns]);
+  const liveIssueIds = useMemo(
+    () => collectLiveIssueIds(memberGate.closed ? [] : liveRuns, issues),
+    [issues, liveRuns, memberGate.closed],
+  );
 
   const updateIssue = useMutation({
     mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>

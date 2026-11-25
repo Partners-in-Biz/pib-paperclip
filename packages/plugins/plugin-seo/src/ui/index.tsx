@@ -5,7 +5,6 @@ import {
   useHostContext,
   useHostLocation,
   useHostNavigation,
-  usePluginAction,
   type PluginPageProps,
   type PluginSidebarProps,
 } from "@paperclipai/plugin-sdk/ui";
@@ -14,7 +13,7 @@ import { clientScopeFromSearch, parseClientParam, type ClientRef, type ClientSco
 import { ROLE_SKILL_PURPOSE, ROLE_SKILLS, TEAM_SETUP_HREF, agentProblem, stillMissing } from "./role-skills.js";
 import { useRoleSkills } from "./use-role-skills.js";
 import { loadStatusText } from "./load-status.js";
-import { Button, ClientWorkspaceBar, GetStarted, Page, PageFrame, PageMessage, errorText, tokens, useIsNarrow, usePluginSetupStatus } from "@partnersinbiz/pib-plugin-ui";
+import { AccessGate, Button, ClientWorkspaceBar, GetStarted, Page, PageFrame, PageMessage, errorText, tokens, useAccess, useIsNarrow, usePluginSetupStatus } from "@partnersinbiz/pib-plugin-ui";
 import { useGroupedNav } from "@partnersinbiz/pib-plugin-ui";
 import { plural } from "../engine/plain.js";
 import { agentTrouble } from "../engine/due.js";
@@ -27,6 +26,7 @@ import { SeoPreferences } from "./preferences.js";
 import { SPRINT_TAB_IDS, SprintCockpit } from "./sprint.js";
 import type { HireView, LoadResult, PreviewFilter, SprintSummary, TabId } from "./types.js";
 import { isPreviewFilter } from "./words.js";
+import { useSeoAction, useAccessMe } from "./actions.js";
 
 function useSearch(): URLSearchParams {
   const location = useHostLocation();
@@ -54,7 +54,7 @@ function SeoAgentBox({ hire, stuck, refresh, onMessage }: { hire: HireView | nul
   const host = useHostContext();
   const nav = useHostNavigation();
   const narrow = useIsNarrow();
-  const resync = usePluginAction("seo.activate-agent");
+  const resync = useSeoAction("seo.activate-agent");
   const [resyncing, setResyncing] = useState(false);
   const agent = hire?.agent ?? null;
   const skills = useRoleSkills({ companyId: host.companyId, agent, skills: ROLE_SKILLS, purpose: ROLE_SKILL_PURPOSE, onAttached: () => void refresh().catch(() => undefined) });
@@ -123,9 +123,19 @@ const RUNNING = ["pre_launch", "active", "compounding"];
 
 export const SeoPage = withHelp(SeoPageMain);
 
-function SeoPageMain({ context }: PluginPageProps) {
-  const load = usePluginAction("seo.load");
-  const reportRoutine = usePluginAction("seo.routine-report");
+/** The page asks `access.me` first; closed shows the "no access" page (the guard still refuses every call). */
+function SeoPageMain(props: PluginPageProps) {
+  const access = useAccess(useAccessMe(), props.context.companyId);
+  return (
+    <AccessGate state={access} kind="page" moduleName="SEO">
+      <SeoPageBody {...props} />
+    </AccessGate>
+  );
+}
+
+function SeoPageBody({ context }: PluginPageProps) {
+  const load = useSeoAction("seo.load");
+  const reportRoutine = useSeoAction("seo.routine-report");
   const nav = useHostNavigation();
   const search = useSearch();
   const scope = useScope();
@@ -331,7 +341,17 @@ function SeoPageMain({ context }: PluginPageProps) {
   );
 }
 
-export function SeoSidebar({ context }: PluginSidebarProps) {
+export function SeoSidebar(props: PluginSidebarProps) {
+  // Nothing while the access check loads, so the entry does not flash for a person without access.
+  const access = useAccess(useAccessMe(), props.context.companyId);
+  return (
+    <AccessGate state={access} kind="sidebar">
+      <SeoSidebarEntry {...props} />
+    </AccessGate>
+  );
+}
+
+function SeoSidebarEntry({ context }: PluginSidebarProps) {
   // Nothing when the company switched SEO off; shown while the check runs.
   const enabled = useModuleEnabled(context.companyId);
   // The Cockpit's Clients / Marketing / Finance group shows this page instead (pib-plugin-ui NAV_GROUPS).

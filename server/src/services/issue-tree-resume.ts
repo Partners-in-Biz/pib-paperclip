@@ -1,6 +1,7 @@
 import { and, asc, eq, gt, ne, sql } from "drizzle-orm";
 import { agentWakeupRequests, heartbeatRuns, issueTreeHolds, issues, type Db } from "@paperclipai/db";
 import { isUniqueViolation } from "../db-errors.js";
+import { wakeCausingActorFromActorRef, type WakeCausingActor } from "./heartbeat/causing-actor.js";
 import { logActivity } from "./activity-log.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { getExecutionBlocker } from "./execution-blocker.js";
@@ -19,6 +20,7 @@ type Wakeup = (agentId: string, opts: {
   triggerDetail: "system";
   reason: string;
   payload: Record<string, unknown>;
+  causingActor: WakeCausingActor;
   requestedByActorType: ResumeActor["actorType"];
   requestedByActorId: string;
   idempotencyKey: string;
@@ -85,6 +87,7 @@ async function dispatch(db: Db, input: {
     triggerDetail: "system",
     reason: "issue_tree_resumed",
     payload: { issueId: input.issueId, rootIssueId: input.rootIssueId, holdId: input.holdId, interruptedRunId: input.runId },
+    causingActor: wakeCausingActorFromActorRef(input.actor),
     requestedByActorType: input.actor.actorType,
     requestedByActorId: input.actor.actorId,
     // The saved wake request is the durable receipt the recovery sweep checks.

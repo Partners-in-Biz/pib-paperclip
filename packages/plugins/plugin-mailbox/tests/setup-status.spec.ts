@@ -129,6 +129,7 @@ describe("Mailbox setup status", () => {
 
   it("serves GET /setup-status and publishes it from the hourly job", async () => {
     const harness = createTestHarness({ manifest, config: FULL });
+    harness.seed({ companies: [{ id: CO, name: "Co", issuePrefix: "CO" } as never] });
     const db = {
       namespace: NAMESPACE,
       async query(sql: string, params: unknown[] = []) {

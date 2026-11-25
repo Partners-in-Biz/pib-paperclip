@@ -337,6 +337,18 @@ d("ladder reads (Postgres)", () => {
       expect(ladder[0]!.stuck.reblockedAfterSweep).toBe(true);
     });
 
+    it("PAR-13397: a sweep run is matched by issue_id, also when its context names the task as taskId", async () => {
+      const stuck = uuid();
+      await issue(stuck, "PAR-307", "blocked", { agent: agentId, blockedMinutesAgo: 5, descriptor: owned(agentId) });
+      await h.client.query(
+        `INSERT INTO public.heartbeat_runs (id, company_id, agent_id, status, started_at, context_snapshot) VALUES ($1, $2, $3, 'succeeded', $4, $5::jsonb)`,
+        [uuid(), COMPANY, agentId, ago(10), JSON.stringify({ taskId: stuck, source: "blocked_issue_sweeper" })],
+      );
+      const ladder = await readLadderIssues(h.ctx, COMPANY, h.clock.now);
+      expect(ladder.map((l) => l.stuck.identifier)).toEqual(["PAR-307"]);
+      expect(ladder[0]!.stuck.reblockedAfterSweep).toBe(true);
+    });
+
     it("a sweep older than the lookback, or one after the block, does not count", async () => {
       const old = uuid();
       const later = uuid();
