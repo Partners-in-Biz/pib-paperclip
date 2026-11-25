@@ -90,6 +90,7 @@ describe("browser.live.ticket", () => {
     ["another company's owner, in that company", { companyId: OTHER_CO, actor: { type: "user", userId: OTHER_OWNER, companyId: OTHER_CO } }, /owner company/],
     ["an agent run acting for the owner", { companyId: OWNER_CO, actor: { type: "agent", agentId: AGENT, runId: "run-1", companyId: OWNER_CO, onBehalfOfUserId: OWNER } }, /signed-in person/],
     ["an agent key acting for the owner", { companyId: OWNER_CO, actor: { type: "agent", agentId: AGENT, companyId: OWNER_CO, onBehalfOfUserId: OWNER } }, /signed-in person/],
+    ["an agent context that also carries the owner's user id", { companyId: OWNER_CO, actor: { type: "agent", agentId: AGENT, userId: OWNER, companyId: OWNER_CO } }, /signed-in person/],
     ["the local board user (board with no person)", { companyId: OWNER_CO, actor: { type: "user", userId: "local-board", companyId: OWNER_CO } }, /signed-in person/],
     ["a system caller", { companyId: OWNER_CO, actor: { type: "system", companyId: OWNER_CO } }, /signed-in person/],
   ])("refuses %s", async (_label, as, reason) => {
@@ -158,6 +159,26 @@ describe("GET /browser/live (websocket route, worker half)", () => {
     answers.push(["another company's owner in that company", await route({ ticket: await fresh() }, { actorType: "user", actorId: OTHER_OWNER, userId: OTHER_OWNER }, OTHER_CO)]);
     for (const [label, answer] of answers) expect(answer, label).toEqual(refusal);
     expect(harness.dbExecutes.filter((q) => q.sql.includes(".activity"))).toHaveLength(0);
+  });
+
+  it("re-checks the role at redemption: an owner demoted after the ticket is refused", async () => {
+    const { ticket, person, route, harness } = await cockpit();
+    const { ticket: t } = await ticket(person(OWNER));
+    const at = new Date().toISOString();
+    harness.seed({ accessMembers: [{ id: `m-${OWNER_CO}-${OWNER}`, companyId: OWNER_CO, principalType: "user", principalId: OWNER, status: "active", membershipRole: "member", grants: [], createdAt: at, updatedAt: at }] });
+    expect(await route({ ticket: t })).toEqual(refusal);
+  });
+
+  it("a ticket only opens the company it was issued in, even where a second company also passes the owner check", async () => {
+    const { ticket, person, route, harness } = await cockpit();
+    const SECOND = "b1700000-0000-4000-8000-000000000003";
+    const at = new Date().toISOString();
+    harness.seed({
+      companies: [{ id: SECOND, name: "Second", issuePrefix: "PAR" } as never],
+      accessMembers: [{ id: `m-${SECOND}-${OWNER}`, companyId: SECOND, principalType: "user", principalId: OWNER, status: "active", membershipRole: "owner", grants: [], createdAt: at, updatedAt: at }],
+    });
+    const { ticket: t } = await ticket(person(OWNER));
+    expect(await route({ ticket: t }, undefined, SECOND)).toEqual(refusal);
   });
 
   it("refuses an expired ticket", async () => {
