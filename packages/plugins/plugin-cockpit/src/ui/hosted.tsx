@@ -4,7 +4,7 @@
  * company gets `allowed: false` and sees no tab, no sidebar row and a "not available" page.
  */
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
-import { usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import { useCockpitAction } from "./actions.js";
 import { Button, EmptyState, Field, Select, TriangleAlert, errorText, tokens } from "@partnersinbiz/pib-plugin-ui";
 import type { HostedUsageList, HostedUsageListed } from "../hosted-usage.js";
 import { Card, Muted } from "./components.js";
@@ -105,7 +105,7 @@ export function hostedStateFor(held: HostedHeld | null, companyId: string | null
  * still the current one, and a state held for another company is never shown.
  */
 export function useHostedUsage(companyId: string | null | undefined, refreshKey = 0): { state: HostedState; reload: () => Promise<void> } {
-  const load = usePluginAction("hosted-usage.load");
+  const load = useCockpitAction("hosted-usage.load");
   const [held, setHeld] = useState<HostedHeld | null>(null);
   const current = useRef(companyId);
   current.current = companyId;

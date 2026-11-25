@@ -6,7 +6,7 @@
  * take plain props, so they render in tests without the host.
  */
 import { useCallback, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
-import { usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import { useCockpitAction } from "./actions.js";
 import { Button, EmptyState, Input, Newspaper, PageMessage, Pill, Select, TextArea, errorText, tokens } from "@partnersinbiz/pib-plugin-ui";
 import {
   EDITION_LABEL,
@@ -365,12 +365,12 @@ function Chrome({ children }: { children: ReactNode }) {
 
 export function PaperPanel({ search, linkFor, navigate, refreshKey = 0 }: { search: string; linkFor: LinkPropsFor; navigate: (href: string) => void; refreshKey?: number }) {
   const sel = useMemo(() => paperSelection(search), [search]);
-  const load = usePluginAction("paper.load");
-  const loadMonth = usePluginAction("paper.month");
-  const save = usePluginAction("paper.save");
-  const reset = usePluginAction("paper.reset");
-  const writeNow = usePluginAction("paper.write-now");
-  const compileNow = usePluginAction("paper.compile-now");
+  const load = useCockpitAction("paper.load");
+  const loadMonth = useCockpitAction("paper.month");
+  const save = useCockpitAction("paper.save");
+  const reset = useCockpitAction("paper.reset");
+  const writeNow = useCockpitAction("paper.write-now");
+  const compileNow = useCockpitAction("paper.compile-now");
   const [view, setView] = useState<PaperView | null>(null);
   const [draft, setDraft] = useState<PaperSettings | null>(null);
   const [loading, setLoading] = useState(true);
