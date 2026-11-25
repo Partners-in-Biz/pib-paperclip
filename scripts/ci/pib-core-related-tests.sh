@@ -6,9 +6,16 @@
 #   pib-core-related-tests.sh shard <index> <count>
 #       Print shard <index> (1-based) of <count>: the sorted list, every <count>-th file starting at <index>.
 #       Round-robin over the sorted paths mixes server, ui and package tests so no shard gets only the heavy ones.
+#   pib-core-related-tests.sh run-shard <index> <count>
+#       Run that shard and gate on regressions only (PAR-14647). A hub PR selects the whole suite, and the light job
+#       does not start every service the suite expects, so some tests are red on the base branch itself. When a
+#       test fails here, the same files are re-run on a checkout of origin/<BASE_REF>; only a failure that does NOT
+#       also fail there fails the step. A timeout always fails.
 #
 # Env: BASE_REF (default development), MODE (affected|full; affected limits vitest to the projects whose package
-# is in the affected set), RUNNER_TEMP (scratch dir). Diagnostics go to stderr; stdout is only the file list.
+# is in the affected set), RUNNER_TEMP (scratch dir), SHARD_TIMEOUT / BASE_TIMEOUT (run-shard caps, default 30m / 12m),
+# RELATED_FILES_OVERRIDE (a file with the list; skips vitest --changed, for local tests of run-shard).
+# Diagnostics go to stderr; stdout is only the file list (list, shard).
 set -euo pipefail
 
 BASE_REF="${BASE_REF:-development}"
@@ -29,6 +36,7 @@ SKIP_FILES=(
 )
 
 related_files() {
+  if [ -n "${RELATED_FILES_OVERRIDE:-}" ]; then sort -u "$RELATED_FILES_OVERRIDE"; return; fi
   local projects=() name list_json
   if [ "$MODE" = "affected" ]; then
     while IFS= read -r name; do
@@ -43,6 +51,63 @@ related_files() {
   jq -r --arg root "$PWD/" '.[].file | ltrimstr($root)' "$list_json" | sort -u | grep -vxF "${skip_args[@]}" || true
 }
 
+# Failed tests of a vitest --reporter=json file as "file::full test name" lines (a file that failed to load: "file::").
+failed_keys() {
+  jq -r --arg root "$PWD/" '.testResults[]
+    | (.name | ltrimstr($root)) as $f
+    | select(.status == "failed")
+    | ([.assertionResults[]? | select(.status == "failed") | $f + "::" + .fullName]
+       | if length == 0 then [$f + "::"] else . end)[]' "$1" | sort -u
+}
+
+run_shard() {
+  local index="$1" count="$2" files=() rc=0 out
+  out="${TMP_DIR}/shard-${index}.json"
+  mapfile -t files < <("$0" shard "$index" "$count")
+  if [ "${#files[@]}" -eq 0 ]; then echo "no related test files in this shard"; return 0; fi
+  echo "shard ${index}/${count}: ${#files[@]} test files"
+  printf 'related test file: %s\n' "${files[@]}"
+  timeout "${SHARD_TIMEOUT:-30m}" pnpm exec vitest run "${files[@]}" --reporter=default --reporter=json --outputFile.json="$out" || rc=$?
+  if [ "$rc" -eq 0 ]; then return 0; fi
+  if [ "$rc" -eq 124 ] || [ ! -s "$out" ]; then
+    echo "::error::Shard ${index} hit its time limit or produced no result (exit ${rc}). This is a failure, not a pass."
+    return "$rc"
+  fi
+  failed_keys "$out" > "${TMP_DIR}/pr-failed.txt"
+  echo "::group::${index}: $(wc -l < "${TMP_DIR}/pr-failed.txt") failing tests in this shard; re-running their files on origin/${BASE_REF}"
+  # Re-run only the failing files that exist on the base (a file the PR adds cannot have failed there).
+  local base_dir="${TMP_DIR}/base-checkout" base_files=()
+  git worktree add --detach "$base_dir" "origin/${BASE_REF}" >/dev/null
+  while IFS= read -r f; do
+    if [ -f "${base_dir}/${f}" ]; then base_files+=("$f"); fi
+  done < <(cut -d: -f1 "${TMP_DIR}/pr-failed.txt" | sort -u)
+  : > "${TMP_DIR}/base-failed.txt"
+  if [ "${#base_files[@]}" -gt 0 ]; then
+    (
+      cd "$base_dir"
+      pnpm install --frozen-lockfile --prefer-offline >/dev/null
+      pnpm --filter '@paperclipai/paperclip-runner' build:typescript >/dev/null
+      pnpm --filter @paperclipai/plugin-sdk ensure-build-deps >/dev/null
+      timeout "${BASE_TIMEOUT:-12m}" pnpm exec vitest run "${base_files[@]}" --reporter=json --outputFile.json="${TMP_DIR}/base.json" >/dev/null 2>&1 || true
+      if [ -s "${TMP_DIR}/base.json" ]; then failed_keys "${TMP_DIR}/base.json" > "${TMP_DIR}/base-failed.txt"; fi
+    )
+  fi
+  echo "::endgroup::"
+  # Keep only failures the base does not have: same test (or same file, when it failed to load).
+  comm -23 "${TMP_DIR}/pr-failed.txt" "${TMP_DIR}/base-failed.txt" > "${TMP_DIR}/new-failed.txt"
+  local same new
+  same="$(comm -12 "${TMP_DIR}/pr-failed.txt" "${TMP_DIR}/base-failed.txt" | wc -l)"
+  new="$(wc -l < "${TMP_DIR}/new-failed.txt")"
+  echo "failing here and on origin/${BASE_REF} too (not caused by this PR): ${same}"
+  if [ "$same" -gt 0 ]; then comm -12 "${TMP_DIR}/pr-failed.txt" "${TMP_DIR}/base-failed.txt" | sed 's/^/  pre-existing: /'; fi
+  if [ "$new" -gt 0 ]; then
+    echo "::error::${new} test(s) fail with this PR and pass on origin/${BASE_REF}:"
+    sed 's/^/  NEW FAILURE: /' "${TMP_DIR}/new-failed.txt"
+    return 1
+  fi
+  echo "no failure is new in this PR"
+}
+
 case "${1:-}" in
   list)
     related_files
@@ -52,8 +117,11 @@ case "${1:-}" in
     count="${3:?shard count}"
     related_files | awk -v i="$index" -v n="$count" '(NR - 1) % n == i - 1'
     ;;
+  run-shard)
+    run_shard "${2:?shard index (1-based)}" "${3:?shard count}"
+    ;;
   *)
-    echo "usage: $0 list | shard <index> <count>" >&2
+    echo "usage: $0 list | shard <index> <count> | run-shard <index> <count>" >&2
     exit 2
     ;;
 esac

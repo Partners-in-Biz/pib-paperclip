@@ -31,7 +31,7 @@ env:
   # PAR-14647: related-test sets over this many files run sharded in the related-sharded job.
   RELATED_SHARD_THRESHOLD: 0
   # Keep in step with the matrix.shard list in the related-sharded job.
-  RELATED_SHARD_COUNT: 8
+  RELATED_SHARD_COUNT: 16
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -199,18 +199,19 @@ jobs:
           fi
           exit "$rc"
 
-  # PAR-14647: runs only when the related set is over the threshold. A skipped job counts as passed; a red or
-  # timed-out shard fails the workflow run.
+  # PAR-14647: runs only when the related set is over the threshold. A skipped job counts as passed; a shard with a
+  # new failure or a timeout fails the workflow run. 16 shards because server tests are slow (8 shards of ~320 files
+  # did not finish in 28 minutes).
   related-sharded:
     name: Related tests (shard ${{ matrix.shard }})
     needs: core
     if: needs.core.outputs.large == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 55
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7 (same pin as upstream's workflows)
@@ -236,6 +237,8 @@ jobs:
           pnpm --filter '@paperclipai/paperclip-runner' build:typescript
           pnpm --filter @paperclipai/plugin-sdk ensure-build-deps
 
+      # Gates on regressions only: a test that also fails on origin/<base> is reported, not blocking (see the script).
+      # A timeout or a missing result always fails.
       - name: Related tests, shard ${{ matrix.shard }} of ${{ env.RELATED_SHARD_COUNT }}
         env:
           MODE: ${{ needs.core.outputs.mode }}
@@ -243,17 +246,4 @@ jobs:
           SHARD: ${{ matrix.shard }}
           CI: 'true'
           VITE_CONFIG_NATIVE_IGNORE_WARNING: 'true'
-        run: |
-          mapfile -t files < <(bash scripts/ci/pib-core-related-tests.sh shard "$SHARD" "$RELATED_SHARD_COUNT")
-          if [ "${#files[@]}" -eq 0 ]; then
-            echo "no related test files in this shard"
-            exit 0
-          fi
-          echo "shard ${SHARD}/${RELATED_SHARD_COUNT}: ${#files[@]} test files"
-          printf 'related test file: %s\n' "${files[@]}"
-          rc=0
-          timeout 28m pnpm exec vitest run "${files[@]}" || rc=$?
-          if [ "$rc" -eq 124 ]; then
-            echo "::error::Shard ${SHARD} hit the 28 minute limit and was stopped. This is a failure, not a pass."
-          fi
-          exit "$rc"
+        run: bash scripts/ci/pib-core-related-tests.sh run-shard "$SHARD" "$RELATED_SHARD_COUNT"
