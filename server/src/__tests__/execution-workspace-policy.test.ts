@@ -792,7 +792,7 @@ describe("non-code execution workspace mode (PAR-13540)", () => {
   const isolatedPolicy = { enabled: true, defaultMode: "isolated_workspace" as const };
   const base = { projectPolicy: isolatedPolicy, issueSettings: null, legacyUseProjectWorkspace: null };
 
-  it.each(["ceo", "pm", "cmo", "researcher"])("%s skips git worktree isolation", (agentRole) => {
+  it.each(["ceo", "pm", "cmo", "cfo", "researcher"])("%s skips git worktree isolation", (agentRole) => {
     expect(resolveExecutionWorkspaceMode({ ...base, agentRole })).toBe("agent_default");
   });
 
