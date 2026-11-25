@@ -18,6 +18,7 @@ import {
   memberRestrictionUnavailable,
 } from "../services/member-restriction/resolver.js";
 import { memberRestrictionEnforcedCompanyIdsForActor } from "../services/member-restriction/strict-read.js";
+import { githubExternalObjectReadGate } from "../services/member-restriction/github-external-objects.js";
 import { notifyDeferredExecutionWork } from "../services/deferred-execution-notifications.js";
 import { notifyNativeRecoveryNotices } from "../services/native-recovery-notice-notifications.js";
 import { notifyNativeStatusReassessment } from "../services/native-status-reassessment-notifications.js";
@@ -11129,7 +11130,9 @@ export function issueRoutes(
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
-    const objects = await externalObjectsSvc.listForIssue(issue.id);
+    const gate = await githubExternalObjectReadGate(db, req.actor, issue.companyId, "GET /api/issues/:id/external-objects");
+    const objects = await externalObjectsSvc.listForIssue(issue.id, gate.readOptions);
+    await gate.record();
     res.json(objects);
   });
 
@@ -11143,7 +11146,9 @@ export function issueRoutes(
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
-    const summary = await externalObjectsSvc.getIssueSummary(issue.id);
+    const gate = await githubExternalObjectReadGate(db, req.actor, issue.companyId, "GET /api/issues/:id/external-object-summary");
+    const summary = await externalObjectsSvc.getIssueSummary(issue.id, gate.readOptions);
+    await gate.record();
     res.json(summary);
   });
 
