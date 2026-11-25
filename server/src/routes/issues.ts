@@ -11,7 +11,7 @@ import {
   MEMBER_AGENT_NOT_LISTED_ROUTE_MESSAGE,
   restrictedAgentIdsForActor,
 } from "../services/member-restriction/agent-read.js";
-import { memberRestrictionForActor } from "../services/member-restriction/actor-memberships.js";
+import { actorPersonMembership, memberRestrictionForActor } from "../services/member-restriction/actor-memberships.js";
 import {
   memberRestrictionOrUnavailable,
   memberRestrictionResolver,
@@ -11114,6 +11114,7 @@ export function issueRoutes(
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const workProducts = await workProductsSvc.listForIssue(issue.id, {
       refreshPullRequests: req.query.refreshPullRequests === "true",
+      personIds: [actorPersonMembership(req.actor, issue.companyId)?.personId],
     });
     res.json(workProducts);
   });
@@ -12219,6 +12220,7 @@ export function issueRoutes(
               ? await workProductsSvc.resolveCommitDiffSummary(
                   issue.companyId,
                   createInput,
+                  { personIds: [actorPersonMembership(req.actor, issue.companyId)?.personId] },
                 )
               : null),
         );
