@@ -8,6 +8,8 @@ const { createHandoff } = require('./handoff.cjs');
 const { checkFill } = require('./fill-rules.cjs');
 const { authenticate: authFn } = require('./auth.cjs');
 const { handoffTimeoutMs } = require('./handoff-session.cjs');
+const { createLease } = require('./lease.cjs');
+const { createWaitingList } = require('./waiting.cjs');
 
 const MAX_LINE_SIZE = 64 * 1024; // 64 KiB
 
@@ -177,7 +179,11 @@ function buildDaemon(env = process.env, deps = {}) {
   }
 
   const store = createApprovalStore({ stateDir: config.stateDir, fs, path });
-  const handoff = createHandoff({ dir: config.handoffDir, fs });
+  // Take-over (PAR-14514 S4): the lease lives in memory only, so a daemon restart ends it.
+  const logLine = deps.logger || ((line) => console.log(line));
+  const lease = createLease({ logger: logLine });
+  const waiting = createWaitingList({ file: path.join(config.stateDir, 'waiting.json'), fs, logger: logLine });
+  const handoff = createHandoff({ dir: config.handoffDir, fs, lease });
 
   const dispatchClock = { now: () => Date.now() };
   const verifyApprovalFn = buildVerifyApproval({
@@ -200,7 +206,7 @@ function buildDaemon(env = process.env, deps = {}) {
   });
 
   const { createDispatcher } = require('./dispatch.cjs');
-  const { dispatch, sessions } = createDispatcher({
+  const { dispatch, sessions, handoffs, release } = createDispatcher({
     authenticate: (req) => authFn(req, { fetch: deps.fetch || globalThis.fetch, apiBase: config.apiBase }),
     apiBase: config.apiBase,
     browser,
@@ -211,22 +217,26 @@ function buildDaemon(env = process.env, deps = {}) {
     handoff,
     handoffTimeoutMs: config.handoffTimeoutMs,
     checkFill,
-    errorLogPath: config.errorLogPath
+    errorLogPath: config.errorLogPath,
+    lease,
+    waiting
   });
 
   // Identities with an agent session open, for the live service's /status. Keys are `agentId|identity`.
   const agentIdentities = () => [...new Set([...sessions.keys()].map((k) => k.slice(k.indexOf('|') + 1)))].sort();
 
-  return { config, dispatch, browser, policyResult, agentIdentities };
+  const takeover = { lease, waiting, open: (identity) => handoffs.start(identity), release };
+
+  return { config, dispatch, browser, policyResult, agentIdentities, takeover };
 }
 
 // The live service (PAR-14514 S2) on its own socket. It never takes the agent
 // socket down with it: a failure here (even a missing `ws` package) leaves it off.
-async function startLive({ env, apiBase, agentIdentities, fetch }) {
+async function startLive({ env, apiBase, agentIdentities, fetch, takeover }) {
   try {
     const { loadLiveConfig, createLiveService } = require('./live.cjs');
     const config = loadLiveConfig(env);
-    const live = createLiveService({ config, apiBase, agentIdentities, fetch });
+    const live = createLiveService({ config, apiBase, agentIdentities, fetch, takeover });
     await listen(live.server, config.socketPath, config.socketMode);
     console.log(`Live service listening on ${config.socketPath}`);
     return live;
@@ -248,7 +258,7 @@ function closeLiveOnSignal(live) {
 
 async function main() {
   try {
-    const { config, dispatch, agentIdentities } = buildDaemon(process.env);
+    const { config, dispatch, agentIdentities, takeover } = buildDaemon(process.env);
     // A stray rejection from the browser driver must not take every open session
     // down with the process (PAR-9187). Record it where agents can read it.
     const { createErrorLog } = require('./errlog.cjs');
@@ -266,7 +276,7 @@ async function main() {
       console.error('Failed to start daemon:', err.message);
       process.exit(1);
     }
-    const live = await startLive({ env: process.env, apiBase: config.apiBase, agentIdentities });
+    const live = await startLive({ env: process.env, apiBase: config.apiBase, agentIdentities, takeover });
     if (live) closeLiveOnSignal(live);
   } catch (err) {
     console.error('Daemon error:', err.message);

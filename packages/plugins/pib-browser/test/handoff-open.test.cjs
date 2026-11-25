@@ -7,6 +7,8 @@ const { createDispatcher, COMMANDS, HANDOFF_COMMANDS } = require('../src/dispatc
 const { handoffTimeoutMs, DEFAULT_TIMEOUT_MS } = require('../src/handoff-session.cjs');
 const { loadConfig } = require('../src/daemon.cjs');
 const { run } = require('../src/cli.cjs');
+const { createHandoff } = require('../src/handoff.cjs');
+const { createLease } = require('../src/lease.cjs');
 
 const ID = 'pib:paperclip';
 const DASH = 'https://paperclip.partnersinbiz.online/PAR/dashboard';
@@ -253,4 +255,80 @@ test('CLI handoff-open: identity required; daemon refusals keep their exit code'
   assert.match(io.err.join(''), /handoff_not_active/);
   io = cliIo();
   assert.equal(await run(['handoff-open', '--identity', ID], {}, { ...io, send: async () => { throw new Error('ENOENT'); } }), 3);
+});
+
+// ---- Take-over lease (PAR-14514 S4) ----
+
+test('handoff.isActive: a live lease for the identity counts like root\'s flag; other identities do not', () => {
+  const lease = createLease();
+  const h = createHandoff({ dir: '/nonexistent-pib-flags', lease });
+  assert.equal(h.isActive(ID), false);
+  lease.start(ID, 'user-1');
+  assert.equal(h.isActive(ID), true);
+  assert.equal(h.isActive('client:ca:meta'), false);
+  assert.equal(h.isActive('../x'), false, 'identity grammar still checked first');
+  lease.end('released');
+  assert.equal(h.isActive(ID), false);
+});
+
+test('the watch loop keeps a lease window open past many polls, and closes it when the lease ends', async () => {
+  const lease = createLease();
+  const h = harness();
+  h.flags[ID] = false; // no root flag: only the lease
+  const handoff = createHandoff({ dir: '/nonexistent-pib-flags', lease });
+  const { dispatch, handoffs } = createDispatcher({
+    authenticate: async () => ({ ok: true, agentId: 'a1' }), browser: h.browser, policy: POLICY, sites: SITES,
+    handoff, lease, handoffPollMs: 2000, errorLog: { record: () => {} }
+  });
+  lease.start(ID, 'user-1');
+  assert.equal((await dispatch({ cmd: 'handoff-open', identity: ID })).ok, true);
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(handoffs.isOpen(ID), true);
+  lease.end('time_limit');
+  // The stop wakes the loop at once, not after the 2 s poll.
+  assert.equal(await Promise.race([handoffs.done(ID), new Promise((r) => setTimeout(() => r('late'), 500))]), 'time_limit');
+  assert.equal(h.browser.state.contexts[0].closed, true);
+  assert.equal(handoffs.isOpen(ID), false);
+});
+
+test('the window closing for its own reasons ends the lease (login seen)', async () => {
+  const lease = createLease();
+  const h = harness({ flag: false });
+  const { dispatch, handoffs } = createDispatcher({
+    authenticate: async () => ({ ok: true, agentId: 'a1' }), browser: h.browser, policy: POLICY, sites: SITES,
+    handoff: createHandoff({ dir: '/nonexistent-pib-flags', lease }), lease, handoffPollMs: 5, errorLog: { record: () => {} }
+  });
+  lease.start(ID, 'user-1');
+  await dispatch({ cmd: 'handoff-open', identity: ID });
+  h.browser.state.text = 'New task';
+  assert.equal(await handoffs.done(ID), 'logged_in');
+  assert.equal(lease.status().state, 'ended');
+  assert.equal(lease.status().reason, 'logged_in');
+});
+
+test('close() during the Chromium launch: the window is closed as soon as it exists', async () => {
+  const h = harness();
+  let go;
+  h.browser.state.gotoGate = new Promise((r) => { go = r; });
+  const opening = handoffOpen(h);
+  await new Promise((r) => setImmediate(r));
+  const closed = h.handoffs.close(ID, 'released');
+  go();
+  const r = await opening;
+  await closed;
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'handoff_stopped');
+  assert.equal(h.browser.state.contexts[0].closed, true);
+  assert.equal(h.handoffs.isOpen(ID), false);
+});
+
+test('root-flag hand-off has no lease: release of the dispatcher still works without one', async () => {
+  const h = harness();
+  await handoffOpen(h);
+  const { release } = createDispatcher({
+    authenticate: async () => ({ ok: true }), browser: h.browser, policy: POLICY, sites: SITES,
+    handoff: { isActive: () => true }, errorLog: { record: () => {} }
+  });
+  const r = await release(ID);
+  assert.deepEqual(r, { ok: false, reason: 'session_expired' });
 });
