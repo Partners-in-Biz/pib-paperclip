@@ -1,6 +1,6 @@
 /**
  * Automatic client sign-off (0.26.0): a passed preview parks the task on the client without holding the rest of the week; one
- * approval email is drafted in Gmail per batch; the client's answers lift the lock and wake the agent once every preview of a
+ * approval email is drafted in the Mailbox drafts per batch; the client's answers lift the lock and wake the agent once every preview of a
  * task is answered. Each "does X" test has the manual-sign-off sprint as its control.
  */
 import { describe, expect, it } from "vitest";
@@ -31,7 +31,7 @@ function claimsAll(w: ReturnType<typeof world>) {
   const execute = w.ctx.db.execute.bind(w.ctx.db);
   w.ctx.db.execute = (async (sql: string, params: unknown[] = []) => {
     const result = await execute(sql, params);
-    if (!/SET draft_key = \$3, draft_status = 'requested'/.test(sql)) return result;
+    if (!/SET draft_key = coalesce\(draft_key, \$3\)/.test(sql)) return result;
     return { rowCount: (JSON.parse(String(params[3])) as string[]).length + Object.keys(JSON.parse(String(params[4])) as object).length };
   }) as typeof w.ctx.db.execute;
   return w;
@@ -126,10 +126,10 @@ describe("the approval email draft", () => {
     expect(event!.payload.text).toContain("/p/");
     expect(event!.payload.context).toMatchObject({ plugin: "partnersinbiz.seo", kind: "seo-approval", id: "sp-real" });
     // The previews are claimed before the event goes out, so the next run does not ask again.
-    expect(executed(w, /SET draft_key = \$3, draft_status = 'requested'/)).toHaveLength(1);
+    expect(executed(w, /SET draft_key = coalesce\(draft_key, \$3\)/)).toHaveLength(1);
   });
 
-  describe("one open draft per client: the newer draft carries the older unanswered pages (PAR-12249)", () => {
+  describe("one open draft per sprint: the newer draft lists the older unanswered pages (PAR-12249, PAR-14558)", () => {
     /** A small previews table behind both queries: the earlier-open one (draft_key IS NOT NULL) and the to-draft one. */
     const table = (rows: Row[]) => {
       const seen: string[] = [];
@@ -148,7 +148,7 @@ describe("the approval email draft", () => {
     const earlier = (id: string, page: string, extra: Row = {}) => preview(id, page, { draft_key: "seo-approval:sp-real:old", draft_status: "drafted", expires_at: "later", ...extra });
     const fresh = (id: string, page: string) => preview(id, page, { expires_at: "later" });
 
-    it("one earlier drafted-and-unanswered page and one new page: the email lists both and the old page is re-keyed", async () => {
+    it("one earlier drafted-and-unanswered page and one new page: the email lists both; the old page stays in its draft and only notes the newer one", async () => {
       const { routes } = table([earlier("e1", "old-page"), fresh("p2", "new-page")]);
       const w = claimsAll(world({ sprints: [wp({ client_kind: "company", client_ref: "47a39f83" })], routes }));
       expect(await draftApprovalRequests(w.env)).toBe(1);
@@ -158,12 +158,14 @@ describe("the approval email draft", () => {
       expect(event!.payload.text).toContain("/p/");
       expect(event!.payload.text).toContain("https://agristudies.co.za/old-page");
       expect(event!.payload.text).toContain("https://agristudies.co.za/new-page");
-      const [claim] = executed(w, /SET draft_key = \$3, draft_status = 'requested'/);
+      const [claim] = executed(w, /SET draft_key = coalesce\(draft_key, \$3\)/);
       expect(claim!.params[2]).toBe(event!.payload.key);
       expect(JSON.parse(String(claim!.params[3]))).toEqual(["p2"]);
-      // The older page is re-keyed only from the open draft it was read from (compare and set); a page of another batch never.
-      expect(JSON.parse(String(claim!.params[4]))).toEqual({ e1: "seo-approval:sp-real:old" });
-      expect(claim!.sql).toMatch(/draft_status = 'drafted' AND draft_key = \(\$5::jsonb ->> id\)/);
+      // The older page is claimed only from the open draft and carry it was read with (compare and set); it keeps its draft_key
+      // and gets carry_key (PAR-14558): it moves only when the Mailbox says the older draft was replaced or deleted.
+      expect(JSON.parse(String(claim!.params[4]))).toEqual({ e1: { draftKey: "seo-approval:sp-real:old", carryKey: null } });
+      expect(claim!.sql).toMatch(/draft_status = 'drafted' AND draft_key = \(\$5::jsonb -> id ->> 'draftKey'\) AND carry_key IS NOT DISTINCT FROM/);
+      expect(claim!.sql).toMatch(/carry_key = CASE WHEN draft_key IS NULL THEN NULL ELSE \$3 END/);
     });
 
     it("an expired, answered or cancelled earlier page is not carried", async () => {
@@ -179,7 +181,7 @@ describe("the approval email draft", () => {
       expect(event!.payload.key).toBe(draftKeyFor("sp-real", ["p2"]));
       expect(event!.payload.text).toContain("new-page");
       expect(event!.payload.text).not.toMatch(/expired|approved|cancelled/);
-      const [claim] = executed(w, /SET draft_key = \$3, draft_status = 'requested'/);
+      const [claim] = executed(w, /SET draft_key = coalesce\(draft_key, \$3\)/);
       expect(JSON.parse(String(claim!.params[4]))).toEqual({});
       // The real query keeps those pages out too: only the newest non-cancelled, still-pending, passed, unexpired, drafted page of each URL.
       const sql = seen.find((q) => q.includes("draft_key IS NOT NULL"))!;
@@ -194,7 +196,7 @@ describe("the approval email draft", () => {
     const w = world({ sprints: [wp()], routes: draftRoutes([preview("p1", "a")]) });
     (w.ctx.events.emit as unknown as { mockRejectedValueOnce: (e: Error) => void }).mockRejectedValueOnce(new Error("host down"));
     expect(await draftApprovalRequests(w.env)).toBe(0);
-    expect(executed(w, /SET draft_key = \(\$3::jsonb ->> id\)/)).toHaveLength(1);
+    expect(executed(w, /SET draft_key = CASE WHEN draft_key = \$2 THEN NULL ELSE draft_key END/)).toHaveLength(1);
   });
 
   it("a claim that gets fewer pages than its batch (another job got there first) gives them back and asks nothing", async () => {
@@ -202,7 +204,7 @@ describe("the approval email draft", () => {
     const w = world({ sprints: [wp({ client_kind: "company", client_ref: "47a39f83" })], routes: draftRoutes(rows) });
     expect(await draftApprovalRequests(w.env)).toBe(0);
     expect(emitted(w)).toEqual([]);
-    expect(executed(w, /SET draft_key = \(\$3::jsonb ->> id\)/)).toHaveLength(1);
+    expect(executed(w, /SET draft_key = CASE WHEN draft_key = \$2 THEN NULL ELSE draft_key END/)).toHaveLength(1);
   });
 
   it("does not draft for a sprint on manual sign-off", async () => {
@@ -211,14 +213,14 @@ describe("the approval email draft", () => {
   });
 
   it("records the Mailbox draft and puts one line on Needs you; a failed draft puts the links there instead", async () => {
-    const rows: Route[] = [[/FROM plugin_seo_8099f8879a\.previews WHERE company_id = \$1 AND draft_key = \$2/, () => [{ id: "p1", page_url: "https://agristudies.co.za/a", title: "Page a" }]]];
+    const rows: Route[] = [[/FROM plugin_seo_8099f8879a\.previews WHERE company_id = \$1 AND \(draft_key = \$2 OR carry_key = \$2\)/, () => [{ id: "p1", page_url: "https://agristudies.co.za/a", title: "Page a" }]]];
     const w = world({ sprints: [wp()], routes: rows });
     const key = "seo-approval:sp-real:abc";
     const context = { plugin: "partnersinbiz.seo", kind: "seo-approval", id: "sp-real" };
     await onDraftResult(w.env, { companyId: "co-1", payload: { key, status: "drafted", mailboxDraftId: "md-1", draftUrl: null, context } });
     expect(executed(w, /SET draft_status = \$3, draft_url = \$4/)[0]!.params).toContain("drafted");
-    // A draft the Mailbox already closed (sent or deleted) is not made open again by a late result.
-    expect(executed(w, /SET draft_status = \$3, draft_url = \$4/)[0]!.sql).toContain("NOT IN ('sent', 'deleted')");
+    // A draft the Mailbox already closed (sent, deleted, replaced) or a person took over is not made open again by a late result.
+    expect(executed(w, /SET draft_status = \$3, draft_url = \$4/)[0]!.sql).toContain("NOT IN ('sent', 'deleted', 'replaced', 'kept')");
     const line = JSON.stringify(w.needsYou.at(-1)!.items);
     expect(line).toContain("Send the approval email to the client");
     expect(line).toContain("/mailbox");

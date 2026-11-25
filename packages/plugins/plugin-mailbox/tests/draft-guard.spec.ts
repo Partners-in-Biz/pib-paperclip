@@ -3,7 +3,7 @@ import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 import manifest from "../src/manifest.js";
 import plugin from "../src/worker.js";
 import { NAMESPACE } from "../src/namespace.js";
-import { cleanPurpose, HOLD_REASON_PLUGIN, holdFor, purposeKeyFor, replaceOlderDrafts, replaceOlderDraftsSafely } from "../src/draft-purpose.js";
+import { announceDraftKept, cleanPurpose, draftClosedEvent, HOLD_REASON_PLUGIN, holdFor, purposeKeyFor, replaceOlderDrafts, replaceOlderDraftsSafely } from "../src/draft-purpose.js";
 import { validateParams, validateRuntimeExecute, validateRuntimeQuery } from "./helpers/sql-guard.js";
 
 const CO = "co-1";
@@ -92,9 +92,10 @@ describe("mail the client did not ask for is held for a person (PAR-12249)", () 
     expect((await harness.executeTool<Result>("send-draft", { messageId: made.data!.id }, agent)).error).toMatch(/Not sent/);
   });
 
-  it("a plain draft (no unasked purpose) is not held by the guard", async () => {
-    const { harness } = await boot();
-    const made = await harness.executeTool<Result>("create-draft", { accountId: "acc-1", subject: "Re: your question", to: "ann@client.co.za", purpose: "reply" }, agent);
+  it("a reply to a stored message is not held by the guard", async () => {
+    const { harness, rows } = await boot();
+    rows.set("in-1", { id: "in-1", company_id: CO, account_id: "acc-1", subject: "Question", body: "?", direction: "inbound", status: "synced", to_addrs: [], cc_addrs: [], bcc_addrs: [], draft: {} });
+    const made = await harness.executeTool<Result>("create-draft", { accountId: "acc-1", subject: "Re: your question", to: "ann@client.co.za", purpose: "reply", replyToMessageId: "in-1" }, agent);
     expect(made.data?.heldForPerson).toBeUndefined();
     // Past the guard it meets the next rule (no Gmail connected in this fake): queued, not refused for being unasked.
     const sent = await harness.executeTool<Result>("send-draft", { messageId: made.data!.id }, agent);
@@ -129,13 +130,14 @@ describe("untagged agent mail to an existing client waits for a person (PAR-1558
     expect(rows.get(made.data!.id)!.status).toBe("draft");
   });
 
-  it("purpose other is held; followup and invoice are not", async () => {
-    const { harness, crm } = await boot();
+  it("purpose other is held; a followup to a stored message and an invoice are not", async () => {
+    const { harness, crm, rows } = await boot();
     crm.clients.add("ann@client.co.za");
+    rows.set("in-1", { id: "in-1", company_id: CO, account_id: "acc-1", subject: "Question", body: "?", direction: "inbound", status: "synced", to_addrs: [], cc_addrs: [], bcc_addrs: [], draft: {} });
     const other = await harness.executeTool<Result>("create-draft", { accountId: "acc-1", subject: "FYI", to: "ann@client.co.za", purpose: "other" }, agent);
     expect((await harness.executeTool<Result>("send-draft", { messageId: other.data!.id }, agent)).error).toMatch(/existing client/);
-    for (const purpose of ["followup", "invoice"]) {
-      const made = await harness.executeTool<Result>("create-draft", { accountId: "acc-1", subject: purpose, to: "ann@client.co.za", purpose }, agent);
+    for (const [purpose, replyToMessageId] of [["followup", "in-1"], ["Follow-up", "in-1"], ["invoice", undefined]] as const) {
+      const made = await harness.executeTool<Result>("create-draft", { accountId: "acc-1", subject: purpose, to: "ann@client.co.za", purpose, replyToMessageId }, agent);
       expect(made.data?.heldForPerson).toBeUndefined();
       expect((await harness.executeTool<Result>("send-draft", { messageId: made.data!.id }, agent)).error ?? "").not.toMatch(/existing client/);
     }
@@ -189,7 +191,15 @@ describe("draft-purpose helpers", () => {
     expect(cleanPurpose(" Review Ask ")).toBe("review-ask");
     expect(cleanPurpose(5)).toBeNull();
     expect(holdFor("upsell", false)).not.toBeNull();
-    expect(holdFor("reply", false)).toBeNull();
+    // reply and followup count only with the message they answer (PAR-14558): the label alone is held.
+    expect(holdFor("reply", false)).not.toBeNull();
+    expect(holdFor("followup", false)).not.toBeNull();
+    expect(holdFor("reply", false, "m-1")).toBeNull();
+    expect(holdFor("followup", false, "m-1")).toBeNull();
+    expect(holdFor("reply", true, "m-1")).not.toBeNull();
+    expect(holdFor("upsell", false, "m-1")).not.toBeNull();
+    expect(cleanPurpose("Follow-up")).toBe("followup");
+    expect(cleanPurpose("follow_up")).toBe("followup");
     expect(holdFor("invoice", false)).toBeNull();
     expect(holdFor("invoice", true)).not.toBeNull();
     expect(holdFor(null, false)).not.toBeNull();
@@ -209,6 +219,30 @@ describe("draft-purpose helpers", () => {
     };
     expect(await replaceOlderDrafts(store, CO, "a", "k", "new")).toEqual(["old"]);
     expect(deleted).toEqual(["old"]);
+  });
+  it("replaceOlderDrafts announces each draft it removed, after the delete, and never a kept or failed one (PAR-14558)", async () => {
+    const order: string[] = [];
+    const store = {
+      draftsByPurpose: async () => [{ id: "new" }, { id: "edited", draft: { editedByPerson: true } }, { id: "gone" }, { id: "old" }] as never,
+      deleteDraft: async (_c: string, id: string) => (order.push(`delete:${id}`), id !== "gone"),
+    };
+    expect(await replaceOlderDrafts(store, CO, "a", "k", "new", async (row) => void order.push(`announce:${row.id}`))).toEqual(["old"]);
+    expect(order).toEqual(["delete:gone", "delete:old", "announce:old"]);
+  });
+  it("draftClosedEvent carries replacedBy only on a replacement", () => {
+    const row = { id: "m1", draft: { requestKey: "k1", requestContext: { plugin: "p", kind: "k", id: "1" } } } as never;
+    expect(draftClosedEvent(row, "replaced", "k2")).toEqual({ key: "k1", status: "replaced", replacedBy: "k2", mailboxDraftId: "m1", context: { plugin: "p", kind: "k", id: "1" } });
+    expect(draftClosedEvent(row, "sent")).toEqual({ key: "k1", status: "sent", mailboxDraftId: "m1", context: { plugin: "p", kind: "k", id: "1" } });
+    expect(draftClosedEvent({ id: "m2", draft: {} } as never, "replaced", "k2")).toBeNull();
+  });
+  it("announceDraftKept tells the plugin the first time only, and never for a draft no plugin asked for", async () => {
+    const emitted: Array<[string, Record<string, unknown>]> = [];
+    const ctx = { events: { emit: async (name: string, _c: string, payload: Record<string, unknown>) => void emitted.push([name, payload]) }, logger: { info: () => undefined } };
+    const context = { plugin: "p", kind: "k", id: "1" };
+    await announceDraftKept(ctx, CO, { id: "m1", draft: { requestKey: "k1", requestContext: context } } as never);
+    await announceDraftKept(ctx, CO, { id: "m1", draft: { requestKey: "k1", requestContext: context, editedByPerson: true } } as never);
+    await announceDraftKept(ctx, CO, { id: "m2", draft: {} } as never);
+    expect(emitted).toEqual([["mail.draft.kept", { key: "k1", mailboxDraftId: "m1", context }]]);
   });
   it("replaceOlderDraftsSafely logs a failure and reports nothing replaced", async () => {
     const logged: string[] = [];

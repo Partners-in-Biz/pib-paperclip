@@ -1,5 +1,5 @@
 /**
- * The SEO progress email a client's owner gets (as a Gmail draft a person reads and sends): per site, what was done in the first four weeks,
+ * The SEO progress email a client's owner gets (as a draft in the Paperclip Mailbox drafts that a person reads and sends): per site, what was done in the first four weeks,
  * what waits on them, and what happens in the next four. Built only from the sprint's own records, in plain words. Pure.
  */
 export interface ProgressSite {

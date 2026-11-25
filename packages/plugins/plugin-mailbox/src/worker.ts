@@ -317,7 +317,7 @@ const plugin = definePlugin({
       ctx.events.on(pluginEvent(sender, MAIL_EVENTS.sendRequested), async (event) => {
         await handleSendRequested(requireEnv(), event);
       });
-      // A Gmail draft instead of a send: the message waits in Drafts for a person (nothing is sent).
+      // A draft instead of a send: the message waits in the Paperclip Mailbox drafts for a person (nothing is sent, never Gmail Drafts).
       ctx.events.on(pluginEvent(sender, MAIL_EVENTS.draftRequested), async (event) => {
         await handleDraftRequested(requireEnv(), event);
       });
@@ -1109,9 +1109,12 @@ async function createDraft(companyId: string, agentId: string | null, params: Re
   const replyTo = parseReplyTo(params.replyTo);
   if (replyTo.invalid) throw new MailboxError("Invalid replyTo address");
   let threadId: string | null = null;
+  // The message this draft answers, when it is one this company holds: what lets `reply`/`followup` go without a hold.
+  let answers: string | null = null;
   if (replyToMessageId) {
     const original = await findMessage(companyId, replyToMessageId);
     threadId = original?.gmail_thread_id ?? null;
+    answers = original ? original.id : null;
     // A repeat create-draft for the same message (a retry seconds later) gets the first draft back, not a second copy (PAR-8030).
     const open = reusableReplyDraft(await requireStore().replyDrafts(companyId, accountId, replyToMessageId));
     if (open) return { id: open.id, status: "draft", to: (open.to_addrs ?? []).map((a) => a.email), reused: true };
@@ -1120,7 +1123,8 @@ async function createDraft(companyId: string, agentId: string | null, params: Re
   const purpose = cleanPurpose(params.purpose);
   // An agent's key lives in its own namespace: it can never replace another agent's or a plugin's draft (PAR-14329).
   const purposeKey = purposeKeyFor(params.purposeKey, purpose, to, agentId);
-  const hold = agentId ? holdFor(purpose, params.unasked === true) : null;
+  // `reply`/`followup` without a stored message to answer is held: the label alone is the agent's word (PAR-14558).
+  const hold = agentId ? holdFor(purpose, params.unasked === true, answers) : null;
   await requireStore().insertDraft({
     id,
     companyId,
@@ -1148,7 +1152,7 @@ async function createDraft(companyId: string, agentId: string | null, params: Re
   // One draft per client and purpose: the newer version replaces the older open one (PAR-12249). The draft is saved: a failed
   // clean-up is logged, never reported as a failed create-draft (a retry would save a second copy).
   const replaced = purposeKey ? await replaceOlderDraftsSafely(requireStore(), companyId, accountId, purposeKey, id, (message, meta) => requireEnv().ctx.logger.warn(`mailbox: ${message}`, meta)) : [];
-  return { id, status: "draft", to: to.map((a) => a.email), ...(replaced.length ? { replaced } : {}), ...(hold ? { heldForPerson: true, note: "Held for a person: send-draft is refused when a recipient is an existing client (CRM customer, by contact, domain or billing email), and when that cannot be checked. Only purpose reply, followup or invoice is not held. Mail to a prospect with no customer record is not held." } : {}) };
+  return { id, status: "draft", to: to.map((a) => a.email), ...(replaced.length ? { replaced } : {}), ...(hold ? { heldForPerson: true, note: "Held for a person: send-draft is refused when a recipient is an existing client (CRM customer, by contact, domain or billing email), and when that cannot be checked. Only purpose reply or followup answering a stored message (replyToMessageId), or invoice, is not held. Mail to a prospect with no customer record is not held." } : {}) };
 }
 
 async function sendDraft(companyId: string, agentId: string | null, messageId: string) {

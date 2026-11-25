@@ -4,8 +4,9 @@
  *
  * PAR-12249: the draft is saved in the Mailbox (table `messages`, status `draft`), never in Gmail Drafts, so a person reads,
  * edits, sends or deletes it on the Mailbox page. NOTHING IS EVER SENT here. The draft is held for a person (an agent's
- * `send-draft` is refused when a recipient is an existing client), and a newer draft for the same plugin, kind and client
- * replaces the older open one. When the draft is sent or deleted the plugin hears `mail.draft.closed`.
+ * `send-draft` is refused when a recipient is an existing client), and a newer draft for the same plugin, kind, subject
+ * (`context.id`) and client replaces the older open one, unless a person edited it. When the draft is sent, deleted or
+ * replaced the plugin hears `mail.draft.closed`; when a person edits it, `mail.draft.kept` (PAR-14558).
  *
  * - `receiveOnce` keyed `draft:<request key>`: a repeat delivery re-emits the stored result and never creates a second draft.
  * - A redelivery whose first answer was lost finds the draft by its request key (`draft.requestKey`) and does not save it twice.
@@ -16,7 +17,7 @@ import { randomUUID } from "node:crypto";
 import type { PluginEvent } from "@paperclipai/plugin-sdk";
 import { isModuleEnabled, MAIL_EVENTS, receiveOnce, type MailDraftRequested, type MailDraftResult } from "@partnersinbiz/pib-plugin-kit";
 import { loadMailboxConfig } from "../config.js";
-import { HOLD_REASON_PLUGIN, replaceOlderDraftsSafely } from "../draft-purpose.js";
+import { announceDraftClosed, HOLD_REASON_PLUGIN, replaceOlderDraftsSafely } from "../draft-purpose.js";
 import { PLUGIN_ID } from "../namespace.js";
 import { pickSender } from "../pick-sender.js";
 import { accountScopeProblem, cleanDisplayName, parseReplyTo } from "../sender.js";
@@ -94,13 +95,16 @@ export async function performDraft(env: Env, companyId: string, request: MailDra
   if (scopeProblem) return failedDraft(request, scopeProblem);
   const mailbox = account;
 
-  // One draft per client and purpose: a newer version replaces the older open one (PAR-12249).
+  // One draft per client, purpose and subject: a newer version replaces the older open one (PAR-12249). The subject is
+  // `context.id` (an SEO sprint, a CRM approval): the requester carries only its own rows from the older draft into the newer
+  // one, so a draft about another sprint of the same client must not be replaced by it (PAR-14558).
   const { context } = request;
-  // One client = its CRM ref; with none (a sprint not linked to a client) the first recipient's address, so two sprints for one client still share one open draft.
-  const who = context.clientRef ?? request.to[0]?.email?.trim().toLowerCase() ?? context.id;
-  const purposeKey = `${context.plugin}:${context.kind}:${who}`.slice(0, 300);
-  // An earlier attempt saved it and its answer was lost: answer with that draft, never save a second one.
-  const earlier = await env.store.draftByRequestKey(companyId, request.key);
+  // One client = its CRM ref; with none the first recipient's address.
+  const who = context.clientRef ?? request.to[0]?.email?.trim().toLowerCase() ?? "-";
+  const purposeKey = `${context.plugin}:${context.kind}:${who}:${context.id}`.slice(0, 300);
+  // An earlier attempt saved it and its answer was lost: answer with that draft, never save a second one. Scoped to the
+  // plugin: another plugin's key is never this one's draft.
+  const earlier = await env.store.draftByRequestKey(companyId, context.plugin, request.key);
   const id = earlier?.id ?? randomUUID();
   if (!earlier) await env.store.insertDraft({
     id,
@@ -123,7 +127,16 @@ export async function performDraft(env: Env, companyId: string, request: MailDra
       holdForPerson: { reason: HOLD_REASON_PLUGIN },
     },
   });
-  const replaced = await replaceOlderDraftsSafely(env.store, companyId, earlier?.account_id ?? mailbox.id, purposeKey, id, (message, meta) => env.ctx.logger.info(message, { key: request.key, ...meta }));
+  const replaced = await replaceOlderDraftsSafely(
+    env.store,
+    companyId,
+    earlier?.account_id ?? mailbox.id,
+    purposeKey,
+    id,
+    (message, meta) => env.ctx.logger.info(message, { key: request.key, ...meta }),
+    // The requester hears that its older draft is gone and which draft took its place (PAR-14558).
+    (row) => announceDraftClosed(env.ctx, companyId, row, "replaced", request.key),
+  );
   if (replaced.length) env.ctx.logger.info("Mail draft replaced older open drafts", { key: request.key, purposeKey, replaced: replaced.length });
   return {
     key: request.key,

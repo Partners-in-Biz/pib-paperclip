@@ -197,8 +197,8 @@ export interface GmailStore {
   deleteDraft(companyId: string, id: string): Promise<boolean>;
   /** Open drafts of one mailbox that carry this purpose key (one draft per client and purpose), newest first. */
   draftsByPurpose(companyId: string, accountId: string, purposeKey: string): Promise<MessageRow[]>;
-  /** The Mailbox message (draft, queued or sent) saved for a plugin's draft request key, or null. */
-  draftByRequestKey(companyId: string, requestKey: string): Promise<MessageRow | null>;
+  /** The Mailbox message (draft, queued or sent) saved for this plugin's draft request key, or null. */
+  draftByRequestKey(companyId: string, plugin: string, requestKey: string): Promise<MessageRow | null>;
   // send requests
   recentClaims(accountId: string): Promise<number>;
   claimSend(input: SendRecordInput, force: boolean): Promise<boolean>;
@@ -1862,12 +1862,13 @@ export class SqlStore implements GmailStore {
     return rows.map(normaliseMessage);
   }
 
-  async draftByRequestKey(companyId: string, requestKey: string): Promise<MessageRow | null> {
+  async draftByRequestKey(companyId: string, plugin: string, requestKey: string): Promise<MessageRow | null> {
+    // Scoped to the requesting plugin (PAR-14558): two plugins may use the same request key.
     const rows = await this.db.query<MessageRow>(
       `SELECT ${MESSAGE_COLUMNS} FROM ${this.t("messages")}
-        WHERE company_id = $1 AND direction = 'outbound' AND draft ->> 'requestKey' = $2
+        WHERE company_id = $1 AND direction = 'outbound' AND draft ->> 'requestKey' = $2 AND draft -> 'requestContext' ->> 'plugin' = $3
         ORDER BY created_at LIMIT 1`,
-      [companyId, requestKey],
+      [companyId, requestKey, plugin],
     );
     return rows[0] ? normaliseMessage(rows[0]) : null;
   }

@@ -17,7 +17,7 @@ import { withGmail } from "./gmail/tokens.js";
 import { loadMailboxConfig } from "./config.js";
 import type { AccountRow, DraftExtras, DraftFile, MessageRow } from "./gmail/types.js";
 import { PLUGIN_ID } from "./namespace.js";
-import { announceDraftClosed } from "./draft-purpose.js";
+import { announceDraftClosed, announceDraftKept } from "./draft-purpose.js";
 
 export const MAX_DRAFT_FILES = 10;
 /** One file travels in one page request, and the server takes 10 MB of JSON: 7 MB is 9.4 MB once encoded. */
@@ -114,6 +114,8 @@ export async function editDraft(
 
   const saved = await store.updateDraft(companyId, row.id, { subject: subject ?? row.subject, body: body ?? row.body ?? "", to, cc, bcc, draft: extras });
   if (!saved) throw new MailboxError("Only a draft that has not been sent can be changed");
+  // A plugin's draft a person took over: tell the plugin, so it no longer moves this draft's content into a newer one (PAR-14558).
+  if (actor?.kind === "user") await announceDraftKept(env.ctx, companyId, row);
   return { id: row.id, status: "draft", to: to.map((a) => a.email) };
 }
 

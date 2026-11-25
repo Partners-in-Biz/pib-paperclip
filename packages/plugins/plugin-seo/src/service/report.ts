@@ -1,6 +1,6 @@
 /**
  * The progress email: for the sprints asked for, the plugin reads each sprint's own records (what is done, what is open, the pages asked about,
- * the plan's next weeks), writes the email (engine/progress-email.ts) and asks the Mailbox for a Gmail DRAFT. Nothing is sent: a person
+ * the plan's next weeks), writes the email (engine/progress-email.ts) and asks the Mailbox for a DRAFT in the Paperclip Mailbox drafts (never Gmail Drafts). Nothing is sent: a person
  * reads it, changes it and sends it. Nothing in it is free text from an agent.
  */
 import { MAIL_EVENTS, PIB_PLUGINS, type MailAddress, type MailDraftRequested } from "@partnersinbiz/pib-plugin-kit";

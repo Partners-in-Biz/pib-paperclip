@@ -48,8 +48,13 @@ export const MAIL_EVENTS = {
   draftRequested: "mail.draft.requested",
   /** Mailbox → the requesting plugin (filter on `context.plugin`): the answer to `mail.draft.requested`. */
   draftResult: "mail.draft.result",
-  /** Mailbox → the requesting plugin (filter on `context.plugin`): a draft it asked for was sent or deleted (PAR-14329). */
+  /** Mailbox → the requesting plugin (filter on `context.plugin`): a draft it asked for was sent, deleted or replaced (PAR-14329). */
   draftClosed: "mail.draft.closed",
+  /**
+   * Mailbox → the requesting plugin (filter on `context.plugin`): a person edited a draft it asked for, or asked for a new
+   * version. The draft is theirs now: a newer request for the same purpose does not replace it (PAR-14558).
+   */
+  draftKept: "mail.draft.kept",
   /** Mailbox → everyone: a new inbound message, already triaged. */
   received: "mail.received",
   /**
@@ -125,6 +130,9 @@ export interface MailSendRequested {
  * `mail.draft.requested`: the same message fields as a send, but the Mailbox only saves a draft in the Paperclip Mailbox drafts on
  * the account `from` names, else the company's default Gmail account. `key` is the idempotency key: a repeat delivery
  * re-emits the stored result and never creates a second draft. No suppression or marketing rules apply (nothing is sent).
+ * A newer request from the same plugin with the same `context.kind`, `context.id` and client replaces the older open draft
+ * (`mail.draft.closed` status `replaced`), unless a person edited it (`mail.draft.kept`). `context.id` names what the mail is
+ * about (a sprint, an approval), so two sprints of one client never replace each other's draft (PAR-14558).
  */
 export interface MailDraftRequested {
   key: string;
@@ -161,11 +169,24 @@ export interface MailDraftResult {
   context: MailSendRequested["context"];
 }
 
-/** `mail.draft.closed`: the draft made for request `key` left the Mailbox drafts: a person (or an agent) sent it, or a person deleted it. */
+/**
+ * `mail.draft.closed`: the draft made for request `key` left the Mailbox drafts: a person (or an agent) sent it, a person
+ * deleted it, or a newer request for the same purpose replaced it (`replacedBy`, its key; the client never got this one).
+ */
 export interface MailDraftClosed {
   /** The `mail.draft.requested` key. */
   key: string;
-  status: "sent" | "deleted";
+  status: "sent" | "deleted" | "replaced";
+  mailboxDraftId: string;
+  /** With status `replaced`: the request key of the newer draft. */
+  replacedBy?: string | null;
+  context: MailSendRequested["context"];
+}
+
+/** `mail.draft.kept`: a person edited the draft made for request `key` (or asked for a new version); it stays open and is theirs. */
+export interface MailDraftKept {
+  /** The `mail.draft.requested` key. */
+  key: string;
   mailboxDraftId: string;
   context: MailSendRequested["context"];
 }

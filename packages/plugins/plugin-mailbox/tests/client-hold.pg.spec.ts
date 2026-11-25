@@ -3,6 +3,8 @@
  * existing client (`SqlStore.clientRecipients`) is executed here for every rule, and the worker is driven end to end:
  * an agent's untagged draft to an existing client is refused, a plugin's draft too, and a person's send or delete tells the
  * plugin (`mail.draft.closed`). The in-memory store cannot prove any of this: it ignores lifecycle, deleted flags, billing and domains.
+ * PAR-14558: every way a plugin's draft can end is driven here (sent, deleted, replaced, edited and kept, another sprint of the same
+ * client), and a `reply` label without the message it answers does not lift the hold.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
@@ -57,6 +59,15 @@ describe.skipIf(!available)("held drafts and existing clients (real Postgres)", 
       fields.lifecycle ?? null,
       fields.accountIds ?? [],
       fields.deleted ?? false,
+    ]);
+  /** A received mail the agent can answer. */
+  const inbound = (id: string) =>
+    sql(`INSERT INTO ${NAMESPACE}.messages (id, company_id, account_id, subject, body, direction, status, from_addr, gmail_message_id, gmail_thread_id) VALUES ($1, $2, 'acc-1', 'Your invoice?', 'Can you send it?', 'inbound', 'synced', $3, $4, $5)`, [
+      id,
+      CO,
+      JSON.stringify({ email: "ann@acme.co.za" }),
+      `g-${id}`,
+      `t-${id}`,
     ]);
   /** What the guard asks: the recipients that are existing clients (free-mail domains never count by domain). */
   const clients = (emails: string[]) => {
@@ -137,12 +148,14 @@ describe.skipIf(!available)("held drafts and existing clients (real Postgres)", 
       expect((await sql(`SELECT id FROM ${NAMESPACE}.messages ORDER BY id`)).map((r) => r.id)).toEqual(["mine-new", "theirs"]);
     });
 
-    it("finds a plugin's draft by its request key, in its own company only", async () => {
+    it("finds a plugin's draft by its request key, in its own company and for its own plugin only", async () => {
       const store = await accounts();
-      await draftRow(store, "d1", CO, { requestKey: "seo:1" });
-      expect((await store.draftByRequestKey(CO, "seo:1"))?.id).toBe("d1");
-      expect(await store.draftByRequestKey(OTHER_CO, "seo:1")).toBeNull();
-      expect(await store.draftByRequestKey(CO, "seo:2")).toBeNull();
+      await draftRow(store, "d1", CO, { requestKey: "seo:1", requestContext: { plugin: PIB_PLUGINS.seo, kind: "k", id: "1" } });
+      expect((await store.draftByRequestKey(CO, PIB_PLUGINS.seo, "seo:1"))?.id).toBe("d1");
+      expect(await store.draftByRequestKey(OTHER_CO, PIB_PLUGINS.seo, "seo:1")).toBeNull();
+      expect(await store.draftByRequestKey(CO, PIB_PLUGINS.seo, "seo:2")).toBeNull();
+      // Another plugin with the same key never gets this draft back as its own (PAR-14558).
+      expect(await store.draftByRequestKey(CO, PIB_PLUGINS.crm, "seo:1")).toBeNull();
     });
   });
 
@@ -162,9 +175,18 @@ describe.skipIf(!available)("held drafts and existing clients (real Postgres)", 
       // This agent may draft AND send: only the hold stands between it and the client.
       await store.grantDelegation({ id: "d1", companyId: CO, accountId: "acc-1", agentId: am.agentId, canRead: true, canDraft: true, canSend: true, source: "manual", grantedBy: null });
       const closed = () => emit.mock.calls.filter(([name]) => name === MAIL_EVENTS.draftClosed).map(([, , payload]) => payload as Record<string, unknown>);
+      const kept = () => emit.mock.calls.filter(([name]) => name === MAIL_EVENTS.draftKept).map(([, , payload]) => payload as Record<string, unknown>);
       const status = async (id: string) => (await sql(`SELECT status FROM ${NAMESPACE}.messages WHERE id = $1`, [id]))[0]?.status;
-      return { harness, gmail, store, closed, status };
+      /** A plugin's draft request, as the SEO plugin sends it; returns the Mailbox draft id. */
+      const request = async (key: string, sprintId: string, clientRef: string | null = "acme") => {
+        const context = { plugin: PIB_PLUGINS.seo, kind: "seo-approval", id: sprintId, clientKind: "company", clientRef };
+        await harness.emit(pluginEvent(PIB_PLUGINS.seo, MAIL_EVENTS.draftRequested), { key, to: [{ email: "ann@acme.co.za" }], subject: "Please review", text: "Links", context }, { companyId: CO });
+        const [row] = await sql(`SELECT id FROM ${NAMESPACE}.messages WHERE draft ->> 'requestKey' = $1`, [key]);
+        return String(row!.id);
+      };
+      return { harness, gmail, store, closed, kept, status, request };
     }
+    const person = { companyId: CO, actor: { type: "user", userId: "user-peet" } } as never;
 
     it("an agent's draft with NO purpose to an existing client is held, and its send-draft is refused", async () => {
       const b = await boot();
@@ -183,12 +205,28 @@ describe.skipIf(!available)("held drafts and existing clients (real Postgres)", 
       await company("acme", { domain: "acme.co.za", lifecycle: "customer" });
       const other = await b.harness.executeTool<Result>("create-draft", { accountId: "acc-1", subject: "FYI", body: "Hi", to: "ann@acme.co.za", purpose: "other" }, am);
       expect((await b.harness.executeTool<Result>("send-draft", { messageId: other.data!.id }, am)).error).toMatch(/existing client/);
-      const reply = await b.harness.executeTool<Result>("create-draft", { accountId: "acc-1", subject: "Re: your invoice", body: "Here it is", to: "ann@acme.co.za", purpose: "reply" }, am);
+      await inbound("in-1");
+      const reply = await b.harness.executeTool<Result>("create-draft", { accountId: "acc-1", subject: "Re: your invoice", body: "Here it is", to: "ann@acme.co.za", purpose: "reply", replyToMessageId: "in-1" }, am);
       expect(reply.data?.heldForPerson).toBeUndefined();
       const sent = await b.harness.executeTool<Result>("send-draft", { messageId: reply.data!.id }, am);
       expect(sent.error).toBeUndefined();
       expect(sent.data).toMatchObject({ status: "sent" });
       expect(b.gmail.sent).toHaveLength(1);
+    });
+
+    it("an upsell labelled `reply` or `follow-up` without the message it answers is held and refused (PAR-14558)", async () => {
+      const b = await boot();
+      await company("acme", { domain: "acme.co.za", lifecycle: "customer" });
+      for (const purpose of ["reply", "follow-up", "followup"]) {
+        const made = await b.harness.executeTool<Result>("create-draft", { accountId: "acc-1", subject: "Our new premium plan", body: "Upgrade?", to: "ann@acme.co.za", purpose }, am);
+        expect(made.data).toMatchObject({ heldForPerson: true });
+        const sent = await b.harness.executeTool<Result>("send-draft", { messageId: made.data!.id }, am);
+        expect(sent.error).toMatch(/answers no stored message.*ann@acme\.co\.za is an existing client/);
+      }
+      // A made-up message id is no better than none.
+      const fake = await b.harness.executeTool<Result>("create-draft", { accountId: "acc-1", subject: "Re: hi", body: "Upgrade?", to: "ann@acme.co.za", purpose: "reply", replyToMessageId: "no-such-message" }, am);
+      expect((await b.harness.executeTool<Result>("send-draft", { messageId: fake.data!.id }, am)).error).toMatch(/existing client/);
+      expect(b.gmail.sent).toHaveLength(0);
     });
 
     it("an untagged draft to a prospect with no customer record goes out", async () => {
@@ -225,6 +263,71 @@ describe.skipIf(!available)("held drafts and existing clients (real Postgres)", 
       const own = await b.harness.executeTool<Result>("create-draft", { accountId: "acc-1", subject: "Re: hi", body: "Hi", to: "x@prospect.co.za", purpose: "reply" }, am);
       await b.harness.executeTool<Result>("send-draft", { messageId: own.data!.id }, am);
       expect(b.closed()).toHaveLength(1);
+    });
+
+    describe("every way a plugin's older draft ends when a newer request comes (PAR-14558)", () => {
+      it("replaced: a newer request for the same sprint removes the older draft and tells the plugin which draft took its place", async () => {
+        const b = await boot();
+        const older = await b.request("seo-approval:sp-1:a", "sp-1");
+        const newer = await b.request("seo-approval:sp-1:b", "sp-1");
+        expect(await b.status(older)).toBeUndefined();
+        expect(await b.status(newer)).toBe("draft");
+        expect(b.closed()).toEqual([{ key: "seo-approval:sp-1:a", status: "replaced", replacedBy: "seo-approval:sp-1:b", mailboxDraftId: older, context: expect.objectContaining({ plugin: PIB_PLUGINS.seo, id: "sp-1" }) }]);
+      });
+
+      it("another sprint of the same client: both drafts stay open and nothing is closed", async () => {
+        const b = await boot();
+        const a = await b.request("seo-approval:sp-A:1", "sp-A");
+        const c = await b.request("seo-approval:sp-B:1", "sp-B");
+        expect([await b.status(a), await b.status(c)]).toEqual(["draft", "draft"]);
+        expect(b.closed()).toEqual([]);
+      });
+
+      it("another sprint with no client ref and the same recipient: both stay open", async () => {
+        const b = await boot();
+        const a = await b.request("seo-approval:sp-A:1", "sp-A", null);
+        const c = await b.request("seo-approval:sp-B:1", "sp-B", null);
+        expect([await b.status(a), await b.status(c)]).toEqual(["draft", "draft"]);
+        expect(b.closed()).toEqual([]);
+      });
+
+      it("edited by a person: the plugin hears mail.draft.kept once, and a newer request does not replace it", async () => {
+        const b = await boot();
+        const older = await b.request("seo-approval:sp-1:a", "sp-1");
+        await b.harness.performAction("mailbox.update-draft", { messageId: older, body: "Hi Ann, as promised:" }, person);
+        await b.harness.performAction("mailbox.update-draft", { messageId: older, body: "Hi Ann, as promised, the links:" }, person);
+        expect(b.kept()).toEqual([{ key: "seo-approval:sp-1:a", mailboxDraftId: older, context: expect.objectContaining({ plugin: PIB_PLUGINS.seo, id: "sp-1" }) }]);
+        const newer = await b.request("seo-approval:sp-1:b", "sp-1");
+        expect([await b.status(older), await b.status(newer)]).toEqual(["draft", "draft"]);
+        expect(b.closed()).toEqual([]);
+        // Sent later by the person: the plugin hears it under the older key, so it marks the older draft's pages sent.
+        await b.harness.performAction("mailbox.send-draft", { messageId: older }, person);
+        expect(b.closed()).toEqual([expect.objectContaining({ key: "seo-approval:sp-1:a", status: "sent" })]);
+      });
+
+      it("deleted by a person, then a newer request: one deleted event, nothing replaced", async () => {
+        const b = await boot();
+        const older = await b.request("seo-approval:sp-1:a", "sp-1");
+        await b.harness.performAction("mailbox.delete-draft", { messageId: older }, person);
+        await b.request("seo-approval:sp-1:b", "sp-1");
+        expect(b.closed().map((e) => [e.key, e.status])).toEqual([["seo-approval:sp-1:a", "deleted"]]);
+      });
+
+      it("sent, then a newer request: one sent event, nothing replaced", async () => {
+        const b = await boot();
+        const older = await b.request("seo-approval:sp-1:a", "sp-1");
+        await b.harness.performAction("mailbox.send-draft", { messageId: older }, person);
+        await b.request("seo-approval:sp-1:b", "sp-1");
+        expect(b.closed().map((e) => [e.key, e.status])).toEqual([["seo-approval:sp-1:a", "sent"]]);
+      });
+
+      it("an agent's own draft replaced by its newer one tells no plugin", async () => {
+        const b = await boot();
+        const first = await b.harness.executeTool<Result>("create-draft", { accountId: "acc-1", subject: "Idea", body: "1", to: "x@prospect.co.za", purpose: "idea" }, am);
+        const second = await b.harness.executeTool<Result>("create-draft", { accountId: "acc-1", subject: "Idea", body: "2", to: "x@prospect.co.za", purpose: "idea" }, am);
+        expect(second.data?.replaced).toEqual([first.data!.id]);
+        expect(b.closed()).toEqual([]);
+      });
     });
   });
 });
