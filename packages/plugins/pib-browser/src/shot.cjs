@@ -4,7 +4,7 @@ const path = require('node:path');
 
 const ISSUE_RE = /^[A-Z]+-\d+$/;
 
-function evidencePath({ root, issue, step = 'shot', now = new Date() }) {
+function evidencePath({ root, issue, step = 'shot', now = new Date(), ext = 'png' }) {
   // Validate issue format
   if (!ISSUE_RE.test(issue)) {
     throw new Error('Invalid issue format');
@@ -21,7 +21,7 @@ function evidencePath({ root, issue, step = 'shot', now = new Date() }) {
   const timestamp = iso.replace(/[-:]/g, '').replace('Z', 'Z');
 
   // Construct path: <root>/<PAR-n>/<PAR-n>-<step>-<YYYYMMDDTHHMMSSZ>.png
-  const filePath = path.join(root, issue, `${issue}-${sanitizedStep}-${timestamp}.png`);
+  const filePath = path.join(root, issue, `${issue}-${sanitizedStep}-${timestamp}.${ext}`);
 
   // Check for path traversal
   const resolvedPath = path.resolve(filePath);
@@ -77,4 +77,21 @@ function writeShot({ fs, root, issue, step = 'shot', now = new Date(), b64, sha2
   }
 }
 
-module.exports = { evidencePath, writeShot };
+// Network log file (PAR-14608): JSON of redacted entries, beside the screenshots.
+function writeNet({ fs, root, issue, step = 'net', now = new Date(), entries }) {
+  let filePath;
+  try {
+    filePath = evidencePath({ root, issue, step, now, ext: 'json' });
+  } catch (e) {
+    return { exit: 2, reason: 'invalid_path' };
+  }
+  try {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o750 });
+    fs.writeFileSync(filePath, JSON.stringify({ issue, entries }, null, 2) + '\n', { mode: 0o640 });
+  } catch (e) {
+    return { exit: 5, reason: 'write_failed' };
+  }
+  return { path: filePath, count: entries.length };
+}
+
+module.exports = { evidencePath, writeShot, writeNet };
