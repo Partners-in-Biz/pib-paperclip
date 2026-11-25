@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { BrowserView } from "../src/browser-status.js";
 import { tabFromSearch } from "../src/ui/index.js";
 import { BrowserBody } from "../src/ui/browser-page.js";
-import { MAX_FAILED_CONNECTS, liveSocketUrl } from "../src/ui/browser-live-drawer.js";
+import { MAX_FAILED_CONNECTS, STABLE_CONNECT_MS, liveSocketUrl } from "../src/ui/browser-live-drawer.js";
 
 const view = (over: Partial<BrowserView> = {}): BrowserView => ({
   state: "read",
@@ -85,4 +85,5 @@ describe("Watch live socket address", () => {
     expect(liveSocketUrl({ protocol: "http:", host: "localhost:3100" }, "c", "t")).toMatch(/^ws:\/\/localhost:3100\//);
   });
   it("stops after a few failed connects", () => expect(MAX_FAILED_CONNECTS).toBeGreaterThan(1));
+  it("counts a connect that drops within a few seconds as failed", () => expect(STABLE_CONNECT_MS).toBeGreaterThanOrEqual(3000));
 });

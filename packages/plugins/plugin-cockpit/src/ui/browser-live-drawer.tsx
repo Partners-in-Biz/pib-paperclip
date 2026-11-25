@@ -17,6 +17,8 @@ export type LiveState = "connecting" | "live" | "reconnecting" | "error";
 /** Fails in a row, with no screen shown in between, before the drawer stops and says so. */
 export const MAX_FAILED_CONNECTS = 3;
 const RECONNECT_DELAY_MS = 1000;
+/** A connection that lasts at least this long counts as good; a quicker drop counts as a failed attempt. */
+export const STABLE_CONNECT_MS = 5000;
 
 /** The route's address, relative to this page (`wss:` on https). The ticket is single use and lasts 30 seconds. */
 export function liveSocketUrl(origin: { protocol: string; host: string }, companyId: string, ticket: string): string {
@@ -65,9 +67,10 @@ function useWatchLive(companyId: string, open: boolean) {
         connection.background = "transparent";
         rfb = connection;
         let shown = false;
+        let connectedAt = 0;
         connection.addEventListener("connect", () => {
           shown = true;
-          failed = 0;
+          connectedAt = Date.now();
           setError(null);
           setState("live");
         });
@@ -75,7 +78,9 @@ function useWatchLive(companyId: string, open: boolean) {
           rfb = null;
           if (stopped) return;
           // After a screen was shown, the 5-minute end or a drop is expected: connect again with a fresh ticket.
-          if (shown) {
+          // A connect that drops again within STABLE_CONNECT_MS counts as a failed attempt, so a server that accepts and drops at once cannot loop forever.
+          if (shown && Date.now() - connectedAt >= STABLE_CONNECT_MS) {
+            failed = 0;
             setState("reconnecting");
             timer = setTimeout(() => void connect(), RECONNECT_DELAY_MS);
           } else retry("The live screen could not be reached.");

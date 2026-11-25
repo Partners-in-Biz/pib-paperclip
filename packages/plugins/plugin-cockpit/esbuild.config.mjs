@@ -19,8 +19,8 @@ const presets = createPluginBundlerPresets({ uiEntry: "src/ui/index.tsx" });
 
 const workerCtx = await esbuild.context(presets.esbuild.worker);
 const manifestCtx = await esbuild.context(presets.esbuild.manifest);
-// splitting: noVNC (Watch live) loads as its own chunk, not into every Cockpit page (PAR-14514 F31). Target stays es2022.
-const uiCtx = await esbuild.context({ ...presets.esbuild.ui, splitting: true });
+// splitting must stay false: the host loads plugin UI from blob: URLs, so relative chunk imports ("./chunk-*.js") cannot resolve and the UI never loads (PAR-14660). noVNC is inlined into the single bundle, as plugin-studio does. Target stays es2022.
+const uiCtx = await esbuild.context({ ...presets.esbuild.ui, splitting: false });
 
 if (watch) {
   await Promise.all([workerCtx.watch(), manifestCtx.watch(), uiCtx.watch()]);
