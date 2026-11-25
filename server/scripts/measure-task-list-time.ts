@@ -21,6 +21,9 @@
 // 4. Both servers must answer 200 with the same rows in the same order (the body hash
 //    is reported too). The result is the ratio of medians, after over before, per kind.
 //    `--assert` exits 1 when any ratio is above 1 + `--max-slowdown` (default 0.10).
+//    The seeded owner is not restricted, so the `report` and `enforce` rows measure the
+//    resolver's overhead for an unrestricted member only, not a restricted operator's list.
+//    --before and --after receive the owner's bearer token: https, or http to loopback only.
 // 5. Run it once per mode of the seeded company on the after server
 //    (`seed-task-list-company.ts --set-mode=off|report|enforce`); `off` is how stage C ships.
 //
@@ -31,6 +34,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { assertSafeServerUrl, sameRowsInOrder } from "./lib/measure-guards.mjs";
 
 const arg = (name: string) => process.argv.find((value) => value.startsWith(`--${name}=`))?.slice(name.length + 3);
 const SEEDED_COMPANY_ID = "56468fd1-0ae7-5dc3-84de-c20fdc86f896"; // seededId("company", 1) in seed-task-list-company.ts
@@ -56,7 +60,7 @@ export function summarize(values: number[]) {
 
 async function timedGet(base: string, companyId: string, query: string, token: string): Promise<Sample> {
   const start = performance.now();
-  const response = await fetch(`${base}/api/companies/${companyId}/issues?${query}`, {
+  const response = await fetch(`${base}/api/companies/${encodeURIComponent(companyId)}/issues?${query}`, {
     headers: { authorization: `Bearer ${token}`, accept: "application/json" },
   });
   const body = Buffer.from(await response.arrayBuffer());
@@ -78,7 +82,7 @@ async function health(base: string) {
 }
 
 async function main() {
-  const bases: Record<Arm, string | undefined> = { before: arg("before"), after: arg("after") };
+  const bases: Record<Arm, string | undefined> = { before: assertSafeServerUrl(arg("before"), "--before"), after: assertSafeServerUrl(arg("after"), "--after") };
   assert.ok(bases.before && bases.after, "Pass --before=<server before stage C> and --after=<server under test>");
   const token = process.env.MEASURE_OWNER_TOKEN;
   assert.ok(token, "Set MEASURE_OWNER_TOKEN to the owner's board key used by the seed");
@@ -131,7 +135,7 @@ async function main() {
       kind: request.kind,
       query: request.query,
       rows: samples.get(request.kind)!.before[0]!.rowIds.length,
-      sameRowsAndOrder: true,
+      sameRowsAndOrder: samples.get(request.kind)!.before.every((sample, index) => sameRowsInOrder(sample.rowIds, samples.get(request.kind)!.after[index]!.rowIds)),
       identicalBody: hashes.before.size === 1 && hashes.after.size === 1 && [...hashes.before][0] === [...hashes.after][0],
       before,
       after,

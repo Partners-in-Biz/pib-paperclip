@@ -16,6 +16,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { createDb } from "../../packages/db/src/index.js";
+import { assertDisposableLoopbackDatabase } from "./lib/measure-guards.mjs";
 
 const arg = (name: string) => process.argv.find((value) => value.startsWith(`--${name}=`))?.slice(name.length + 3);
 const count = (name: string, fallback: number) => {
@@ -38,15 +39,8 @@ export const SEEDED_OWNER_ID = "par12747-owner";
 const OPERATOR_ID = "par12747-operator";
 const RESTRICTED_ID = "par12747-restricted";
 
-function loopbackUrl(raw: string | undefined) {
-  assert.ok(raw, "Pass --database-url=<disposable local Paperclip database>");
-  const url = new URL(raw);
-  assert.ok(["127.0.0.1", "localhost", "::1", "[::1]"].includes(url.hostname), "Only a disposable loopback database may be seeded");
-  return url.href;
-}
-
 async function main() {
-  const db = createDb(loopbackUrl(arg("database-url")), { maxConnections: 1 });
+  const db = createDb(assertDisposableLoopbackDatabase(arg("database-url"), { confirmDatabase: arg("confirm-database") }), { maxConnections: 1 });
   const sql = db.$client;
   try {
     const hasRestriction = (await sql.unsafe(
