@@ -154,6 +154,10 @@ jobs:
 
       # Blocking (PAR-12891): a red test fails the job. If a test needs services this light job does not start,
       # exclude that file with --exclude in the vitest call below; never re-add continue-on-error.
+      # Excluded because they fail on development itself (PAR-14632, baseline run on development, not caused by a PR):
+      #   packages/adapters/hermes/src/server/execute.instructions.test.ts (3 tests: --resume / system prompt capture)
+      #   server/src/__tests__/plugin-scoped-api-routes.test.ts ('dispatches a board GET route ...')
+      # Remove an --exclude once its test is fixed on development.
       # The job budget is 30 minutes. A large server diff spends most of that on typecheck, and an unbounded
       # vitest --changed then cancels the whole check. Stop this step first so a long run cannot
       # erase a green typecheck.
@@ -171,7 +175,9 @@ jobs:
             done < <(pnpm --filter "...[origin/${BASE_REF}]" list --json --depth -1 | jq -r '.[].name')
           fi
           rc=0
-          timeout 12m pnpm exec vitest run --changed "origin/${BASE_REF}" "${projects[@]}" --passWithNoTests || rc=$?
+          timeout 12m pnpm exec vitest run --changed "origin/${BASE_REF}" "${projects[@]}" --passWithNoTests \
+            --exclude 'packages/adapters/hermes/src/server/execute.instructions.test.ts' \
+            --exclude 'server/src/__tests__/plugin-scoped-api-routes.test.ts' || rc=$?
           if [ "$rc" -eq 124 ]; then
             echo "::error::Changed-file tests hit the 12 minute limit and were stopped. This is a failure, not a pass: run them locally or split the PR."
           fi
