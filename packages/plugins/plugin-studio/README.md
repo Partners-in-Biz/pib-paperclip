@@ -16,6 +16,15 @@ Not here yet: review, export to Social, the generate form and Photo Studio (Phas
 - **Share link:** an editor makes a view-only link from the canvas toolbar (Share). It is a static page `dist/ui/s/<24 random characters>.html` served by the host to anyone with the link: the board drawn as HTML, no script, no controls. Preview links on it last 10 minutes; the one-minute job rewrites the page every 4 minutes and the page reloads. Links expire after 7 days (1 to 30) and Revoke deletes the page at once. Agents never get a share or a signed link.
 - **Agent tool `canvas-create-from-brief`:** a title, prompts (image or video) and optional library asset ids become a new board: prompt cards wired to image/video cards, references as source cards feeding them. It never generates or spends; a person opens the board and presses Generate. Installing grants nobody: grant it to the agents that plan creative work.
 
+## Generate on a Planning Canvas board (0.1.71)
+
+A `studio-generate` card on a board: pick image or video and a model, write the prompt, tick up to 8 Studio media cards as inputs (arrows are never read), press Generate. Studio prices it; the person confirms that amount (a different price at the click is refused `estimate_changed`). The output is its own Studio media card that shows the queue state until the file is there. Viewers can't generate.
+
+- **Who pays:** a project board charges that project's client; a company or personal board (or a project without a client) charges own work. A client is never picked by hand.
+- **Switch:** `boards.generate`, off by default. Off, or a settings read that fails: refused `board_generation_off`.
+- **Daily limit:** `boards.boardGenerationDailyLimit`, 20 per person per UTC day. Counts card clicks and `studio-generate` calls from a run on a board chat thread (against the run's person); not Studio's own page. Queued, running and done rows count, failed ones don't. Refused `board_daily_limit` before any provider call; the count runs again in the same lock as the cap check and the reserve. It is an abuse guard: the monthly credit cap stays the spend control.
+- **Rows:** migration 007 adds `origin` (`board`), `acting_user_id` and `input_keys` (copied at the click, so rewiring later changes nothing). Rollback: switch `boards.generate` off, deploy the previous Studio build; the columns are additive and unused by it.
+
 ## Restricted members (page data and boards from 0.1.70)
 
 A member core marks restricted (`onBehalfOfRestricted`) gets nothing filed under a client on the Studio page: no client file, generation, board, video edit, Drive or brand kit, and no client in the page data (lists hold own work only; one client row or a client filter is refused `MEMBER_RESTRICTED`). Own work stays open to him. When core's answer is missing, client work is refused `MEMBER_RESTRICTION_UNAVAILABLE`, and a list only when a client row would be in it. Deploy core (acting person on page data and actions) before Studio, or the page refuses client rows to everyone. Agents' tools keep their own client rule.
