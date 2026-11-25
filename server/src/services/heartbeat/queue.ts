@@ -94,10 +94,14 @@ import {
   isNull,
   lte,
   ne,
+  not,
   notInArray,
   or,
   sql,
 } from "drizzle-orm";
+import {
+  escalateStuckOwnerExitWait, isEscalatedOwnerExitWait, ownerExitEscalatedSql, ownerExitRetryExhausted,
+} from "./owner-exit-retry.js";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -2131,6 +2135,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         eq(agentWakeupRequests.reason, "execution_reconciliation_required"),
         sql`${agentWakeupRequests.payload} #> '{executionWait,ownerExit}' is not null`,
         sql`${agentWakeupRequests.payload} #> '{executionWait,redeliveredAt}' is null`,
+        // An escalated receipt replays only on its own release hint.
+        scope.requestId ? undefined : not(ownerExitEscalatedSql),
         gte(agentWakeupRequests.createdAt, since),
         inArray(issues.status, ["todo", "in_progress", "in_review"]),
         isNull(issues.assigneeUserId),
@@ -2158,8 +2164,18 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${issueId}`,
         gt(heartbeatRuns.createdAt, wake.createdAt))).limit(1);
       if (later) { seen.add(key); await markRedelivered(wake.id, "already_ran"); continue; }
-      // Still exiting: leave the receipt for the next pass.
-      if (await getExecutionBlocker(db, wake.companyId, issueId)) continue;
+      // Still exiting: leave the receipt for the next timed re-check. A lease
+      // still held past the cap is escalated once and leaves timed retries
+      // (PAR-14473); its release hint can still replay it.
+      const blocker = await getExecutionBlocker(db, wake.companyId, issueId);
+      if (blocker) {
+        if (blocker.cause === OWNER_EXIT_BLOCKER_CAUSE && !isEscalatedOwnerExitWait(wake.payload)
+            && ownerExitRetryExhausted(wake.createdAt)) {
+          await escalateStuckOwnerExitWait(db, { wakeId: wake.id, companyId: wake.companyId, issueId,
+            agentId: wake.agentId, blockingRunId: blocker.runId ?? null, nextAction: blocker.nextAction });
+        }
+        continue;
+      }
       seen.add(key);
       const payload = { ...parseObject(wake.payload) };
       const wait = parseObject(payload.executionWait);
@@ -4115,6 +4131,9 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               const ownerExit = executionBlocker.cause === OWNER_EXIT_BLOCKER_CAUSE && !executionBlocker.recoveryActionId
                 ? { runId: executionBlocker.runId ?? null, reason: reason ?? null }
                 : null;
+              // PAR-14473: start the receipt's bounded re-check now, not at the
+              // next reconstruction pass.
+              if (ownerExit) await notifyDeferredExecutionWork(tx, { companyId: agent.companyId });
               await recordExecutionWait(tx as unknown as Db, {
                 issueId: issue.id,
                 condition: ownerExit ? { ...condition, ownerExit } : condition,
