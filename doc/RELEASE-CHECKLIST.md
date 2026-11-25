@@ -75,6 +75,16 @@ soaked — write one that stands on its own. A candidate branch carries its
 own `releases/vYYYY.MDD.P.md` (preflight prefers source-tree notes), so
 author the notes as a commit on the candidate.
 
+## PiB fork core release (`pib-fork-core`)
+
+- [ ] backup taken and the record folder written before the core swap
+- [ ] health 200, plugins all `ready`, smoke suite green
+- [ ] first hour after the swap: no new plugin SQL errors **and** `cockpit.load`
+      answers in under 10 s on the largest company (a slow view or query shows
+      as a timeout, not as an SQL error: PAR-13397)
+- [ ] a migration that recreates a `plugin_core_read` view keeps the AC-P16
+      timing test green (`server/src/__tests__/plugin-core-read-views.test.ts`)
+
 ## After any incomplete run
 
 The failure playbooks in [`RELEASING.md`](RELEASING.md) cover: red canary,

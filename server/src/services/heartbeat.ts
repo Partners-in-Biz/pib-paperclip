@@ -1,3 +1,4 @@
+import { wakeCausingActorFromActorRef } from "./heartbeat/causing-actor.js";
 import { resolveProviderApiPlacement } from "./native-runtime/provider-api-placement.js";
 import type { StopInvocationOptions } from "./heartbeat/run-control.js";
 import { isContextCompactionRun } from "./context-compaction.js";
@@ -343,6 +344,7 @@ import {
   prepareGitHubExecutionEnvironment,
   startAdapterExecutionTargetPaperclipBridge,
 } from "@paperclipai/adapter-utils/execution-target";
+import { cleanupSshConnectionReuse } from "@paperclipai/adapter-utils/ssh";
 import { agentInstructionWorkingCopyService } from "./agent-instruction-working-copies.js";
 
 import fs from "node:fs/promises";
@@ -913,6 +915,7 @@ export function heartbeatService(
     resolveResponsibleUserIdForRunSeed,
     resolveResponsibleUserIdForRun,
     resolveResponsibleUserIdForRunContext,
+    resolveEnforcedCausingPersonId,
   } = createHeartbeatRunPreparation(db);
   let shutdownInProgress = false;
   const instanceSettings = instanceSettingsService(db);
@@ -2448,10 +2451,14 @@ export function heartbeatService(
           issueContext,
           routineEnvContext,
         });
+      // H1 (PAR-14378): under `enforce` the causing person outranks the
+      // identity this run would inherit from the task's earlier run.
+      const causingPersonId = await resolveEnforcedCausingPersonId(agent.companyId, context, issueContext);
       const identityContext = await timePreparation("run_identity", () => initializeRunIdentity(db, {
         companyId: agent.companyId,
         runId: run.id,
         responsibleUserId,
+        causingPersonId,
         interactionId: readNonEmptyString(context.interactionId),
         issueId,
         messageIds:
@@ -3949,6 +3956,12 @@ export function heartbeatService(
               },
             );
           }
+          if (latestRun && isHeartbeatRunTerminalStatus(latestRun.status)) {
+            // Last ssh op of the run has settled: close its shared connection.
+            await cleanupSshConnectionReuse({ runId: run.id }).catch((err) => {
+              logger.warn({ err, runId: run.id }, "failed to close the run's shared ssh connection");
+            });
+          }
           // A retained or unverified process stays above this release boundary.
           // If no stopped-copy capture occurred, preserve an explicit loss report.
           await instructionWorkingCopy?.releaseWarmInstructionPreparation?.();
@@ -4304,6 +4317,7 @@ export function heartbeatService(
         source,
         triggerDetail,
         contextSnapshot,
+        causingActor: wakeCausingActorFromActorRef(actor),
         requestedByActorType: actor?.actorType,
         requestedByActorId: actor?.actorId ?? null,
       }),

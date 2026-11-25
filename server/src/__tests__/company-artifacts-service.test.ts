@@ -379,7 +379,7 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
         userId: "user-1",
         source: "session",
         companyIds: [companyId],
-        memberships: [{ companyId, membershipRole: "viewer", status: "active" }],
+        memberships: [{ companyId, membershipRole: "viewer", status: "active", restricted: false, restrictionMode: "off" }],
       };
       next();
     });

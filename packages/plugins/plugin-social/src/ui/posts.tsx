@@ -6,7 +6,7 @@ import { Thumb } from "./composer.js";
 import { MediaViewer } from "./media-viewer.js";
 import { canPostByHand, HandPost } from "./hand-post.js";
 import { Banner, Card, chipStyle, destinationLabel, DestinationStatus, ExternalLink, fmtDate, ignore, Muted, PlatformBadge, platformLabel, PostStatus, Row, SmallButton, timeLabel, toLocalInput } from "./parts.js";
-import { DEST_TONE, POST_TONE, toneOf } from "./series.js";
+import { calendarState, DEST_TONE, POST_TONE, toneOf } from "./series.js";
 import { AccountPicker, AskForChanges, Switch, useStoredChoice } from "./post-tools.js";
 import { PostPreview, previewAccounts } from "./preview.js";
 import { PostTarget } from "./target.js";
@@ -300,6 +300,7 @@ export function CalendarView({ posts, snapshot, onOpen }: { posts: Post[]; snaps
   start.setDate(start.getDate() - start.getDay() + 1 + offset * 14);
   const days = Array.from({ length: 14 }, (_, i) => new Date(start.getTime() + i * 86_400_000));
   const todayKey = dayKey(new Date().toISOString());
+  const now = Date.now();
   const byDay = new Map<string, Post[]>();
   for (const post of posts) {
     const when = post.status === "published" || post.status === "partially_published" ? post.publishedAt ?? post.scheduledAt : post.scheduledAt;
@@ -314,7 +315,7 @@ export function CalendarView({ posts, snapshot, onOpen }: { posts: Post[]; snaps
         <Muted>{fmtDate(days[0]!.toISOString(), tz, false)} – {fmtDate(days[13]!.toISOString(), tz, false)} ({tz})</Muted>
         <SmallButton onClick={() => setOffset((o) => o + 1)}>Later →</SmallButton>
       </Row>
-      <ChartLegend items={[{ label: "Scheduled", tone: "info" }, { label: "Published", tone: "ok" }, { label: "Failed", tone: "bad" }]} />
+      <ChartLegend items={[{ label: "Scheduled", tone: "info" }, { label: "Published", tone: "ok" }, { label: "Failed or missed", tone: "bad" }, { label: "Not scheduled (proposed time only)", tone: "neutral" }]} />
       <div style={{ display: "grid", gap: 8, gridTemplateColumns: fluidColumns(150, "auto-fill") }}>
         {days.map((day) => {
           const key = dayKey(day.toISOString());
@@ -325,13 +326,16 @@ export function CalendarView({ posts, snapshot, onOpen }: { posts: Post[]; snaps
                 <Muted style={{ fontWeight: 600, color: key === todayKey ? tone("accent").fg : undefined }}>{day.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" })}</Muted>
                 {list.length ? <Pill size="sm" tone="accent">{list.length}</Pill> : null}
               </Row>
-              {list.map((post) => (
-                <button key={post.id} type="button" onClick={() => onOpen(post)} style={{ appearance: "none", textAlign: "left", fontSize: 11, lineHeight: 1.35, padding: "5px 7px", borderRadius: 8, border: "none", borderLeft: `3px solid ${tone(toneOf(POST_TONE, post.status)).solid}`, background: tone(toneOf(POST_TONE, post.status)).soft, color: tokens.fg, cursor: "pointer", fontFamily: "inherit", overflowWrap: "anywhere", minWidth: 0 }}>
-                  <strong>{post.scheduledAt ? new Date(post.scheduledAt).toLocaleTimeString(undefined, { timeZone: tz, hour: "2-digit", minute: "2-digit" }) : ""}</strong>{" "}
-                  {post.body.slice(0, 60)}
-                  <div style={{ color: tokens.muted }}>{post.status.replace("_", " ")} · {post.destinations.map((d) => platformLabel(d.platform)).join(", ")}</div>
-                </button>
-              ))}
+              {list.map((post) => {
+                const state = calendarState(post, now);
+                return (
+                  <button key={post.id} type="button" onClick={() => onOpen(post)} title={state.proposal ? "Not scheduled: only a proposed time. Nothing is posted until it is approved and scheduled." : undefined} style={{ appearance: "none", textAlign: "left", fontSize: 11, lineHeight: 1.35, padding: "5px 7px", borderRadius: 8, border: "none", borderLeft: `3px ${state.proposal ? "dashed" : "solid"} ${tone(state.tone).solid}`, background: tone(state.tone).soft, color: tokens.fg, opacity: state.proposal ? 0.85 : 1, cursor: "pointer", fontFamily: "inherit", overflowWrap: "anywhere", minWidth: 0 }}>
+                    <strong>{post.scheduledAt ? new Date(post.scheduledAt).toLocaleTimeString(undefined, { timeZone: tz, hour: "2-digit", minute: "2-digit" }) : ""}</strong>{" "}
+                    {post.body.slice(0, 60)}
+                    <div style={{ color: state.tone === "bad" && state.proposal ? tone("bad").fg : tokens.muted }}>{state.label} · {post.destinations.map((d) => platformLabel(d.platform)).join(", ")}</div>
+                  </button>
+                );
+              })}
             </div>
           );
         })}

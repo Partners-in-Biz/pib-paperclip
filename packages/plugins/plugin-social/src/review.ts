@@ -16,7 +16,7 @@
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { reviewerAgentId, wakeIssue } from "@partnersinbiz/pib-plugin-kit";
-import { activeDelegateEntry, type DelegateEntry } from "./approval-delegate.js";
+import { activeDelegateEntry, approverOf, delegateBlockers, delegateFacts, getDelegate, type DelegateEntry } from "./approval-delegate.js";
 import { defaultPolicy, getPolicy, policySummary, type ApprovalPolicy } from "./approval-policy.js";
 import { clientPrefix, scopeOfRow } from "./clients.js";
 import { destinationsForPost, getAccountsByIds, postMedia, table, type PostRow } from "./db.js";
@@ -150,9 +150,20 @@ export interface HandTo {
  */
 export async function delegateForPost(ctx: PluginContext, companyId: string, post: PostRow, policy: Pick<ApprovalPolicy, "requireOwner" | "requireClient">): Promise<DelegateEntry | null> {
   if (post.scope === "personal" || !policy.requireOwner || policy.requireClient) return null;
-  const entry = await activeDelegateEntry(ctx, companyId, scopeOfRow(post));
-  if (!entry || entry.agentId === post.created_by_agent_id) return null;
-  return createdAfter(post, entry) ? entry : null;
+  const scope = scopeOfRow(post);
+  const entry = await activeDelegateEntry(ctx, companyId, scope);
+  if (entry && entry.agentId !== post.created_by_agent_id) return createdAfter(post, entry) ? entry : null;
+  // The delegate created this post (or may not act now): the backup approver takes the delegate's own posts.
+  const stored = entry ?? (await getDelegate(ctx, companyId, scope));
+  if (!stored || stored.agentId !== post.created_by_agent_id) return null;
+  const backup = approverOf(stored, post.created_by_agent_id);
+  if (!backup || backup === stored.agentId) return null;
+  try {
+    if (delegateBlockers(await delegateFacts(ctx, companyId, scope, backup)).length > 0) return null;
+  } catch {
+    return null;
+  }
+  return createdAfter(post, stored) ? { ...stored, agentId: backup } : null;
 }
 
 /** The post was created at or after the delegate was named (D3). Unparseable times are "no". Pure. */

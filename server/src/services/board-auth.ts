@@ -7,10 +7,10 @@ import {
   boardApiKeys,
   cliAuthChallenges,
   companies,
-  companyMemberships,
   instanceUserRoles,
 } from "@paperclipai/db";
 import { conflict, forbidden, notFound } from "../errors.js";
+import { loadActorMemberships } from "./member-restriction/actor-memberships.js";
 import { logActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
 import { logger } from "../middleware/logger.js";
 
@@ -80,21 +80,7 @@ export function boardAuthService(db: Db) {
         .from(authUsers)
         .where(eq(authUsers.id, userId))
         .then((rows) => rows[0] ?? null),
-      authorityDb
-        .select({
-          companyId: companyMemberships.companyId,
-          membershipRole: companyMemberships.membershipRole,
-          status: companyMemberships.status,
-        })
-        .from(companyMemberships)
-        .where(
-          and(
-            eq(companyMemberships.principalType, "user"),
-            eq(companyMemberships.principalId, userId),
-            eq(companyMemberships.status, "active"),
-          ),
-        )
-        .then((rows) => rows),
+      loadActorMemberships(authorityDb, { userId, activeOnly: true }),
       authorityDb
         .select({ id: instanceUserRoles.id })
         .from(instanceUserRoles)

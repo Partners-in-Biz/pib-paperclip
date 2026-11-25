@@ -51,13 +51,13 @@ describe("durable case handoff queue admission", () => {
       instructions: "Build the requested change", actorType: "user", actorId: userId, actorContext, responsibleUserId: userId,
       expectedIssueStatusVersion: 0, appliedIssueStatusVersion: 0, wakeupRequestId, idempotencyKey: "start", inputFingerprint: "fixture", state: "pending_dispatch" });
     const options = { source: "assignment" as const, triggerDetail: "system" as const, reason: "case_handoff", requestedByActorType: "user" as const,
-      requestedByActorId: userId, payload: { issueId, handoffId }, contextSnapshot: { issueId, taskKey: issueId, responsibleUserId: userId },
+      requestedByActorId: userId, causingActor: { type: "user" as const, userId }, payload: { issueId, handoffId }, contextSnapshot: { issueId, taskKey: issueId, responsibleUserId: userId },
       durableCaseHandoffRequest: { handoffId, wakeupRequestId, issueId, expectedIssueStatusVersion: 0 } };
     return { companyId, agentId, issueId, caseId, handoffId, userId, sessionId, wakeupRequestId, occupyingRunId, options };
   }
   it("blocks generic wakes and admits one exact receipt across separate scheduler instances", async () => {
     const f = await fixture();
-    expect(await heartbeatService(db).wakeup(f.agentId, { source: "assignment", reason: "issue_assigned", payload: { issueId: f.issueId } })).toBeNull();
+    expect(await heartbeatService(db).wakeup(f.agentId, { causingActor: "system", source: "assignment", reason: "issue_assigned", payload: { issueId: f.issueId } })).toBeNull();
     const first = await heartbeatService(db).wakeup(f.agentId, f.options);
     expect(first).toMatchObject({ status: "queued", wakeupRequestId: f.wakeupRequestId });
     const second = await heartbeatService(db).wakeup(f.agentId, f.options);
@@ -301,7 +301,7 @@ describe("durable case handoff queue admission", () => {
       authorAgentId: f.agentId, body: "Proceed to the next explicitly requested case phase" }).returning();
     await db.update(caseHandoffs).set({ actorType: "agent", actorId: f.agentId, fromAgentId: f.agentId, commentId: comment.id })
       .where(eq(caseHandoffs.id, f.handoffId));
-    const run = await heartbeatService(db).wakeup(f.agentId, { ...f.options, requestedByActorType: "agent", requestedByActorId: f.agentId,
+    const run = await heartbeatService(db).wakeup(f.agentId, { ...f.options, causingActor: { type: "agent", agentId: f.agentId, runId: null }, requestedByActorType: "agent", requestedByActorId: f.agentId,
       payload: { ...f.options.payload, commentId: comment.id }, contextSnapshot: { ...f.options.contextSnapshot, wakeCommentId: comment.id } });
     expect(run).toMatchObject({ status: "queued", wakeupRequestId: f.wakeupRequestId });
     expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.wakeupRequestId)))[0])

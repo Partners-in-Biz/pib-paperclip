@@ -95,6 +95,9 @@ const ACTION_KEYS = [
   "social.correct-triage",
   "social.growth-load",
   "social.growth-update-program",
+  "social.hook-give-prepare",
+  "social.get-cadence",
+  "social.set-cadence",
   "social.growth-save-playbook",
   "social.growth-set-focus",
   "social.growth-approve-experiment",
@@ -430,3 +433,4 @@ function SidebarNavLink({ to, label, icon }: { to: string; label: string; icon: 
 }
 
 /** Personal social accounts page (own work only). */
+export { SocialPostCard } from "./PostCard.js";

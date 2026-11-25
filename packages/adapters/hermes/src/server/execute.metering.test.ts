@@ -87,7 +87,7 @@ describe("hermes-local adapter metering", () => {
     expect(result.billingType).toBeUndefined();
   });
 
-  it("resumes with --no-restore-cwd and books only this run's tokens", async () => {
+  it("resumes without --no-restore-cwd/--in and books only this run's tokens", async () => {
     // The session held 100 in / 10 out before the run (the baseline); Hermes
     // raises it to 150 / 30 while the run executes.
     const before = new DatabaseSync(path.join(home, "state.db"));
@@ -107,9 +107,35 @@ describe("hermes-local adapter metering", () => {
 
     const args = runs[0].args;
     expect(args[args.indexOf("--resume") + 1]).toBe("sess_live01");
-    expect(args).toContain("--no-restore-cwd");
+    expect(args).not.toContain("--no-restore-cwd");
+    expect(args).not.toContain("--in");
     expect(result.usage).toEqual({ inputTokens: 50, outputTokens: 20, cachedInputTokens: 0 });
     expect(result.costUsd).toBeCloseTo(0.2, 6);
+  });
+
+  it("stores a gateway local- session and books its usage when a Stop kills the run (issue_reassigned, PAR-13537)", async () => {
+    const id = `local-${"a83174a7".repeat(8)}`;
+    const db = new DatabaseSync(path.join(home, "state.db"));
+    db.prepare(
+      "INSERT INTO sessions (id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, estimated_cost_usd) VALUES (?, ?, ?, ?, ?, ?)",
+    ).run(id, 349, 5235, 571267, 49644, 0.6175);
+    db.close();
+    const { runChildProcess } = await import("@paperclipai/adapter-utils/server-utils");
+    vi.mocked(runChildProcess).mockImplementationOnce(async (_id, _cmd, args, opts) => {
+      runs.push({ args });
+      // The gateway banner arrives at start; SIGTERM lands before the exit `session_id:` line.
+      await opts.onLog("stderr", `Session: ${id}\n`);
+      return { exitCode: 143, signal: "SIGTERM", timedOut: false, stdout: "", stderr: `Session: ${id}\n`, pid: 1, startedAt: "" } as never;
+    });
+    const onSessionCheckpoint = vi.fn(async (_checkpoint: { sessionId: string }) => undefined);
+
+    const result = await execute({ ...makeCtx(), onSessionCheckpoint } as never);
+
+    expect(onSessionCheckpoint).toHaveBeenCalledWith({ sessionId: id });
+    expect(result.sessionParams).toEqual({ sessionId: id });
+    expect(result.usage).toEqual({ inputTokens: 349 + 49644, outputTokens: 5235, cachedInputTokens: 571267 });
+    expect(result.costUsd).toBeCloseTo(0.6175, 6);
+    expect(result.usageBasis).toBe("per_run");
   });
 
   it("starts a new session when the stored one was pruned from Hermes' store", async () => {

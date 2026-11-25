@@ -10,7 +10,7 @@
  * track), optionally run through `loudnorm`, and padded/cut to the edit's length. Encoded as AAC 48 kHz stereo 160k.
  * An edit with no sound has no segments: the output then has no audio stream at all (`-an`).
  */
-import { CompileError, GRAPH_FILE, filePath, inputKey, num, type CompileInputs } from "./compile-video.js";
+import { CompileError, GRAPH_FILE, filePath, inputKey, num, sourceKey, type CompileInputs } from "./compile-video.js";
 import type { CompiledVideo } from "./compile-video.js";
 import { toFfmpegExpr } from "./keyframes.js";
 import { clipDuration, editDuration, type AudioClip, type EditDoc, type MediaClip, type TrackKind } from "./timeline.js";
@@ -52,10 +52,10 @@ type SoundClip = (MediaClip | AudioClip) & { fromTrack: "picture" | "audio" };
  * Whether a clip on a track of `kind` adds a sound input (its own `-i`): every audio-track clip, and a video/overlay
  * clip whose source the probe found sound in. The render planner weighs and labels passes with this same rule.
  */
-export function clipHasSound(kind: TrackKind, clip: { assetId: string; version: number }, sources: CompileInputs): boolean {
+export function clipHasSound(kind: TrackKind, clip: Parameters<typeof sourceKey>[0], sources: CompileInputs): boolean {
   if (kind === "audio") return true;
   if (kind !== "video" && kind !== "overlay") return false;
-  const source = sources[inputKey(clip.assetId, clip.version)];
+  const source = sources[sourceKey(clip)];
   return source?.kind === "video" && source.hasAudio === true;
 }
 
@@ -66,7 +66,7 @@ function soundClips(doc: EditDoc, sources: CompileInputs): SoundClip[] {
     if (track.kind === "audio") {
       for (const clip of track.clips) out.push({ ...clip, fromTrack: "audio" });
     } else if (track.kind === "video" || track.kind === "overlay") {
-      for (const clip of track.clips) if (clipHasSound(track.kind, clip, sources)) out.push({ ...clip, fromTrack: "picture" });
+      for (const clip of track.clips) if ("assetId" in clip && clipHasSound(track.kind, clip, sources)) out.push({ ...clip, fromTrack: "picture" }); // a sticker has no sound
     }
   }
   return out.map((c, i) => ({ c, i })).sort((a, b) => a.c.start - b.c.start || a.i - b.i).map(({ c }) => c);
@@ -121,10 +121,16 @@ export function buildAudioGraph(doc: EditDoc, sources: CompileInputs, firstInput
   if (labels.length === 0) return { inputArgs, filters, outLabel: null };
 
   const duration = num(editDuration(doc));
-  const mix = labels.length > 1 ? [`amix=inputs=${labels.length}:duration=longest:normalize=0`] : [];
+  // With more than one clip, a silent bed as long as the edit joins the mix. Without it, ffmpeg 8.x (8.0.1, 8.1.3) intermittently
+  // ended `amix duration=longest` at the last clip's end and `apad` did not extend it, so about 1 render in 7 came out
+  // short (7.5 s of 8 s, PAR-12746). The bed is zeros, so the sum is bit-identical, and the output is the edit's length.
+  const bed = labels.length > 1 ? "abed" : null;
+  if (bed) filters.push(`anullsrc=r=${SAMPLE_RATE}:cl=stereo:d=${duration},aformat=sample_fmts=fltp[${bed}]`);
+  const inputs = bed ? [...labels, bed] : labels;
+  const mix = bed ? [`amix=inputs=${inputs.length}:duration=longest:normalize=0`] : [];
   const tail = [...mix, ...(options.loudnorm ? [LOUDNORM] : []), `apad=whole_dur=${duration}`, `atrim=duration=${duration}`];
   const outLabel = "aout";
-  filters.push(`${labels.map((l) => `[${l}]`).join("")}${tail.join(",")}[${outLabel}]`);
+  filters.push(`${inputs.map((l) => `[${l}]`).join("")}${tail.join(",")}[${outLabel}]`);
   return { inputArgs, filters, outLabel };
 }
 

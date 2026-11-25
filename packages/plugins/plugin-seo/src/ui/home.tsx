@@ -5,7 +5,7 @@
  * tiles agree with the sprint page, the CRM card and the Cockpit.
  */
 import { useEffect, useMemo, useState } from "react";
-import { DataTable, useHostNavigation, usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import { DataTable, useHostNavigation } from "@paperclipai/plugin-sdk/ui";
 import { parseClientParam, type ClientRef } from "@partnersinbiz/pib-plugin-kit/client-ref";
 import {
   Building2,
@@ -43,6 +43,7 @@ import { StatePill, quietLink, shortUrl, small, type LinkProps } from "./parts.j
 import { TEAM_SETUP_HREF } from "./role-skills.js";
 import type { LoadResult, ScopeClient, SprintSummary, SwitchState } from "./types.js";
 import { nextLine, sprintBadge, sprintStatusText, tasksLine } from "./words.js";
+import { useSeoAction, useSeoCall } from "./actions.js";
 
 const RUNNING = ["pre_launch", "active", "compounding"];
 const grid = (min: number, gap = 16) => ({ display: "grid", gap, gridTemplateColumns: fluidColumns(min), minWidth: 0 }) as const;
@@ -106,7 +107,7 @@ function sumNumbers(sprints: SprintSummary[]) {
  * never changes a sprint that is running: those are switched one by one on their own Integrations tab.
  */
 function NewSprintExtras({ data, onChanged, onMessage }: { data: LoadResult; onChanged: () => Promise<void>; onMessage: (m: string) => void }) {
-  const callAction = usePluginAction("seo.call");
+  const callAction = useSeoCall();
   const [busy, setBusy] = useState<string | null>(null);
   async function set(feature: SwitchState["key"], enabled: boolean) {
     setBusy(feature);
@@ -368,8 +369,8 @@ export function CreateSprintModal({ open, data, client, companyId, onClose, onCr
   onCreated: (sprintId: string, scope: ClientRef | null, note: string) => Promise<void>;
   onError: (m: string) => void;
 }) {
-  const create = usePluginAction("seo.create-sprint");
-  const listClients = usePluginAction("seo.clients");
+  const create = useSeoAction("seo.create-sprint");
+  const listClients = useSeoAction("seo.clients");
   const fixedClient: ClientRef | null = client ? { kind: client.kind, id: client.id } : null;
   const [forClient, setForClient] = useState<string>("own");
   const [clients, setClients] = useState<CrmClientOption[] | null>(null);
@@ -545,7 +546,7 @@ export function StartPlanModal({ sprint, onClose, onStarted, onError }: {
   onStarted: (sprint: SprintSummary, note: string) => Promise<void>;
   onError: (m: string) => void;
 }) {
-  const upgrade = usePluginAction("seo.upgrade-legacy");
+  const upgrade = useSeoAction("seo.upgrade-legacy");
   const [type, setType] = useState<BusinessType | "">("");
   const [saving, setSaving] = useState(false);
   useEffect(() => {

@@ -31,6 +31,7 @@ import {
 import { clockFor, requireSprint } from "./context.js";
 import { commentOn, getIssue, OPEN_ISSUE_STATUSES, patchIssue } from "./issues.js";
 import { refreshNeedsYouIssue } from "./needs-you.js";
+import { isSignoffDelegate } from "./signoff.js";
 import { draftFromMeasurement, type DraftResult } from "./playbook.js";
 import { ga4Line } from "./analytics.js";
 import { geoSummary } from "./geo.js";
@@ -220,8 +221,8 @@ export async function approveOptimization(env: Env, companyId: string, actor: Ac
   if (!o) throw new SeoError(`Optimization ${id} was not found`);
   if (o.status !== "proposed") throw new SeoError(`This optimization is already ${o.status}`);
   const sprint = await requireSprint(env, companyId, o.sprintId);
-  if (actor.kind === "agent" && sprint.autopilotMode !== "full") {
-    throw new SeoError("Only a person can approve optimizations unless the sprint's autopilot is full. Leave it for the owner (it is on the approval issue).");
+  if (actor.kind === "agent" && sprint.autopilotMode !== "full" && !(await isSignoffDelegate(env, companyId, actor))) {
+    throw new SeoError("Only a person or the sign-off delegate can approve optimizations unless the sprint's autopilot is full. Leave it for the owner (it is on the approval issue).");
   }
   const info = await companyInfo(env, companyId);
   const clock = clockFor(sprint, info.today);

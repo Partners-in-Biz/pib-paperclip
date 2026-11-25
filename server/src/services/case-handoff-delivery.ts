@@ -1,5 +1,6 @@
 import { and, asc, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import { agentWakeupRequests, caseHandoffs, cases, heartbeatRuns, issues, type Db } from "@paperclipai/db";
+import { wakeCausingActorFromActorRef } from "./heartbeat/causing-actor.js";
 import { caseHandoffService, recordCaseHandoffEvent, type CaseHandoffRow } from "./case-handoffs.js";
 import { publishActivity, type ActivityPublication } from "./activity-log.js";
 import { instanceSettingsService } from "./instance-settings.js";
@@ -108,6 +109,7 @@ export function caseHandoffDeliveryService(db: Db, options: { heartbeat: Heartbe
     await options.heartbeat.wakeup(row.toAgentId, {
       source: "assignment", triggerDetail: "system", reason: "case_handoff",
       idempotencyKey: `case-handoff:${row.id}`,
+      causingActor: wakeCausingActorFromActorRef({ actorType: row.actorType, actorId: row.actorId, runId: row.sourceRunId }),
       requestedByActorType: row.actorType, requestedByActorId: row.actorId,
       payload: { issueId: row.issueId, mutation: "case_handoff", caseId: row.caseId, handoffId: row.id, commentId: row.commentId },
       contextSnapshot: { issueId: row.issueId, taskKey: row.issueId, caseId: row.caseId, caseHandoffId: row.id,

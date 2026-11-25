@@ -6,7 +6,8 @@
  * `../desk.ts`; this file only draws them.
  */
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
-import { useHostNavigation, useHostNewIssue, usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import { useHostNavigation, useHostNewIssue } from "@paperclipai/plugin-sdk/ui";
+import { useCrmAction } from "./actions.js";
 import {
   BarList,
   Bot,
@@ -122,8 +123,8 @@ export function CrmGiveButton({ recordType, recordId, onDone, onError, label = "
   small?: boolean;
 }) {
   const host = useHostNewIssue();
-  const prepare = usePluginAction("crm.give-prepare");
-  const record = usePluginAction("crm.give-record");
+  const prepare = useCrmAction("crm.give-prepare");
+  const record = useCrmAction("crm.give-record");
   const newIssue = useMemo(() => ({ open: (defaults?: Parameters<typeof host.open>[0]) => host.open(defaults) }), [host]);
   const button = (
     <GiveToAgentButton

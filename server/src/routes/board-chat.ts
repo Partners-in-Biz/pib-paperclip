@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import type { Db } from "@paperclipai/db";
 import type { DeploymentMode } from "@paperclipai/shared";
 import { instanceSettingsService, issueService } from "../services/index.js";
+import { issueReadSqlCondition } from "../services/authorization.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 
 /**
@@ -155,7 +156,10 @@ export function boardChatRoutes(
     // Find or create the standing "Board Operations" issue that anchors the
     // board conversation + decision log.
     if (!issueId) {
-      const companyIssues = await issueSvc.list(companyId, { q: "Board Operations" });
+      const companyIssues = await issueSvc.list(companyId, {
+        q: "Board Operations",
+        readCondition: await issueReadSqlCondition(db, req.actor),
+      });
       const boardIssue = companyIssues.find(
         (i) =>
           i.title === "Board Operations" &&

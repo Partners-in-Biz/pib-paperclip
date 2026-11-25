@@ -7,10 +7,11 @@
  * pib-payroll skill for the person viewing it, since the worker cannot.
  */
 import type { CSSProperties } from "react";
-import { useHostContext, useHostNavigation, usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import { useHostContext, useHostNavigation } from "@paperclipai/plugin-sdk/ui";
 import { Button, tokens, tone } from "@partnersinbiz/pib-plugin-ui";
 import { ROLE_SKILL_PURPOSE, ROLE_SKILLS, TEAM_SETUP_HREF, agentProblem, stillMissing } from "./role-skills.js";
 import { useRoleSkills } from "./use-role-skills.js";
+import { usePayrollAction } from "./actions.js";
 
 export interface ClerkAgent {
   id: string;
@@ -38,7 +39,7 @@ const fixLink: CSSProperties = { display: "inline-flex", alignItems: "center", h
 export function ClerkBox({ hire, run }: { hire: ClerkHire | null; run: RunFn }) {
   const host = useHostContext();
   const navigation = useHostNavigation();
-  const syncSkills = usePluginAction("payroll.sync-skills");
+  const syncSkills = usePayrollAction("payroll.sync-skills");
   const agent = hire?.agent ?? null;
   const skills = useRoleSkills({ companyId: host.companyId, agent, skills: ROLE_SKILLS, purpose: ROLE_SKILL_PURPOSE });
   if (!hire) return null;

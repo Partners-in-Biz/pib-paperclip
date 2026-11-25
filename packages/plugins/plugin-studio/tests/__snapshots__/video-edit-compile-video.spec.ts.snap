@@ -45,7 +45,7 @@ exports[`compileVideo intermediate option > swaps only the video and audio encod
     "-c:v",
     "libx264",
     "-preset",
-    "veryfast",
+    "ultrafast",
     "-qp",
     "0",
     "-pix_fmt",

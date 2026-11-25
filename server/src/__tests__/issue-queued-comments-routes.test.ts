@@ -908,6 +908,7 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     }).where(eq(agents.id, seeded.agentId));
     await db.update(heartbeatRuns).set({ runtimeMode: "legacy" }).where(eq(heartbeatRuns.id, seeded.runId));
     await heartbeatService(db).wakeup(seeded.agentId, {
+      causingActor: "system",
       source: "on_demand", reason: "issue_commented",
       requestedByActorType: "agent", requestedByActorId: seeded.agentId,
       payload: { issueId: seeded.issueId, commentId: seeded.commentIds[1],

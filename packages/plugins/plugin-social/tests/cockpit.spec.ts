@@ -288,7 +288,7 @@ describe("waitsOn only where the delegate's own gate says yes (PAR-10701)", () =
     const db = w.ctx.db as unknown as { query: (sql: string, params: unknown[]) => Promise<unknown[]> };
     const base = db.query;
     db.query = async (sql, params) => {
-      if (sql.includes(`FROM ${T("posts")} WHERE company_id = $1 AND status = 'review' ORDER BY updated_at`)) {
+      if (sql.includes(`FROM ${T("posts")} WHERE company_id = $1 AND status = 'review' AND archived_at IS NULL ORDER BY updated_at`)) {
         return w.post.status === "review" ? [{ ...postRow(w), review_issue_id: "iss-9", review_since: SINCE }] : [];
       }
       if (sql.includes(`FROM ${T("posts")} WHERE company_id = $1 AND status = 'approved'`)) return approved;
@@ -370,7 +370,7 @@ describe("waitsOn only where the delegate's own gate says yes (PAR-10701)", () =
     expect(await reviewItem(w)).toMatchObject({ title: "[PiB Brand] Waiting for the client: Spring sale starts Friday. Come and see.", waitsOn: { kind: "client" } });
   });
 
-  it("12. approved with no time: waits on the agent of an open schedule issue, else on nobody", async () => {
+  it("12. approved with no time: waits on the agent of an open schedule issue, else (no task or a closed one, own brand) on the active Social agent (PAR-13579)", async () => {
     const row = (id: string, schedule: string | null) => ({ id, body: `Post ${id}`, client_kind: null, client_ref: null, client_name: null, schedule_issue_id: schedule, updated_at: "2026-11-11T00:00:00Z" });
     const w = world({}, [row("s1", "iss-open"), row("s2", null), row("s3", "iss-done"), row("s4", "iss-person"), row("s5", "iss-broken")]);
     const issues = { "iss-open": { status: "todo", assigneeAgentId: "ag-social" }, "iss-done": { status: "done", assigneeAgentId: "ag-social" }, "iss-person": { status: "todo", assigneeAgentId: null, assigneeUserId: "u1" } } as Record<string, unknown>;
@@ -381,10 +381,26 @@ describe("waitsOn only where the delegate's own gate says yes (PAR-10701)", () =
     const waiting = (await cockpitSnapshot(w.ctx, "co")).waiting;
     const waitsOn = (id: string) => waiting.find((i) => i.key === `social:schedule:${id}`)?.waitsOn;
     expect(waitsOn("s1")).toEqual({ kind: "agent", agentId: "ag-social" });
-    expect(waitsOn("s2")).toBeUndefined();
-    expect(waitsOn("s3")).toBeUndefined();
+    expect(waitsOn("s2")).toEqual({ kind: "agent", agentId: "ag-social" });
+    expect(waitsOn("s3")).toEqual({ kind: "agent", agentId: "ag-social" });
+    // An open task held by a person, or a task that cannot be read, stays with the owner (PAR-10701).
     expect(waitsOn("s4")).toBeUndefined();
     expect(waitsOn("s5")).toBeUndefined();
+  });
+
+  it("12b. approved with no usable schedule task: an own-brand post waits on the active Social agent, a client's post does not (PAR-13579)", async () => {
+    const row = (id: string, schedule: string | null, client: string | null) => ({ id, body: `Post ${id}`, client_kind: client ? "company" : null, client_ref: client, client_name: client ? "Acme" : null, schedule_issue_id: schedule, updated_at: "2026-11-11T00:00:00Z" });
+    const w = world({}, [row("o1", null, null), row("o2", "iss-done", null), row("c1", null, "c-1")]);
+    const agents = w.ctx.agents as unknown as { get: unknown; managed: { get: unknown } };
+    agents.managed.get = vi.fn(async () => ({ agentId: "ag-social" }));
+    const base = agents.get as (id: string, co: string) => Promise<unknown>;
+    agents.get = vi.fn(async (id: string, co: string) => (id === "ag-social" ? { id, companyId: co, name: "Social", status: "idle" } : base(id, co)));
+    (w.ctx.issues as unknown as { get: unknown }).get = vi.fn(async (id: string) => (id === "iss-done" ? { id, status: "done", assigneeAgentId: "ag-social" } : null));
+    const waiting = (await cockpitSnapshot(w.ctx, "co")).waiting;
+    const waitsOn = (id: string) => waiting.find((i) => i.key === `social:schedule:${id}`)?.waitsOn;
+    expect(waitsOn("o1")).toEqual({ kind: "agent", agentId: "ag-social" });
+    expect(waitsOn("o2")).toEqual({ kind: "agent", agentId: "ag-social" });
+    expect(waitsOn("c1")).toBeUndefined();
   });
 
   it("13. delegateApprovalRefusal returns the sentence the approve tool throws, and null when it would approve", async () => {

@@ -6,7 +6,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { NAMESPACE } from "../src/namespace.js";
 import { deleteJunkAccounts } from "../src/db.js";
-import { deleteAccountRecord, markPostPostedRecord, postAnalyticsRecord, type Viewer } from "../src/service.js";
+import { deleteAccountRecord, markPostPostedRecord, postAnalyticsRecord, type PostAnalyticsDestination, type Viewer } from "../src/service.js";
 
 const MIGRATIONS = fileURLToPath(new URL("../migrations/", import.meta.url));
 const EMBEDDED = fileURLToPath(new URL("../../../db/node_modules/embedded-postgres/dist/index.js", import.meta.url));
@@ -137,6 +137,33 @@ describe.skipIf(!available)("mark-posted X link and post-analytics measurable (p
     expect(by.dm).toMatchObject({ measurable: false, unmeasuredReason: "no external id (marked posted by hand without a link)" });
     expect(by.ddis).toMatchObject({ measurable: false, unmeasuredReason: "account disabled or disconnected" });
     expect(by.dok).toMatchObject({ measurable: true, unmeasuredReason: null });
+  });
+
+  describe("published post without a destination record (PAR-11950)", () => {
+    type Out = { destinations: PostAnalyticsDestination[] };
+
+    it("returns one unmeasurable entry with the reason and the replied-to link, never an empty list", async () => {
+      await seed("published", []);
+      await client.query(`UPDATE ${T("posts")} SET reply_to_url = 'https://x.com/vinayp10/status/2113263397491855821' WHERE id = 'p1'`);
+      const out = (await postAnalyticsRecord(ctx, viewer, { postId: "p1" })) as Out;
+      expect(out.destinations).toEqual([{
+        destinationId: null, accountId: null, status: "published", metricWindows: [], metricsError: null, measurable: false,
+        unmeasuredReason: "no destination record (no link stored; marked posted by hand or its account was deleted before 0.11.3; it replied to https://x.com/vinayp10/status/2113263397491855821)",
+        replyToUrl: "https://x.com/vinayp10/status/2113263397491855821", quoteUrl: null,
+      }]);
+    });
+
+    it("an unpublished post with no destinations still returns an empty list", async () => {
+      await seed("draft", []);
+      const out = (await postAnalyticsRecord(ctx, viewer, { postId: "p1" })) as Out;
+      expect(out.destinations).toEqual([]);
+    });
+
+    it("a published destination without external_id is unchanged (no synthetic entry)", async () => {
+      await seed("published", [{ id: "dm", account: "ax2", status: "published", result: { manual: true } }]);
+      const out = (await postAnalyticsRecord(ctx, viewer, { postId: "p1" })) as Out;
+      expect(out.destinations).toEqual([expect.objectContaining({ destinationId: "dm", measurable: false, unmeasuredReason: "no external id (marked posted by hand without a link)" })]);
+    });
   });
 
   describe("deleting an account keeps the record of what a post published (PAR-10115)", () => {

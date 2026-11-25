@@ -11,6 +11,7 @@ import {
 import {
   COCKPIT_ROUTE,
   configSaved,
+  createAccessGuard,
   hireTaskDraft,
   linkAgent,
   listCompanyAgents,
@@ -20,7 +21,6 @@ import {
   registerCrmProjection,
   registerCrmSiteProjection,
   registerDriveReplies,
-  registerGrowthTools,
   registerHireWatch,
   registerModuleWatch,
   registerRoleWatch,
@@ -31,15 +31,16 @@ import {
   toolOk,
   trackJob,
   unlinkAgent,
-  GROWTH_TOOL_NAMES,
+  type AccessGuard,
 } from "@partnersinbiz/pib-plugin-kit";
+import { ACCESS_TABLE, SEO_CALL_ACTIONS, seoCallAction } from "./access-table.js";
 import { cockpitSnapshot } from "./cockpit.js";
 import { gscRedirectUri, validateSeoConfig } from "./config.js";
 import { DAILY_JOB_KEY, PREVIEW_JOB_KEY, SKILL_CANONICAL_KEY, WEEKLY_JOB_KEY } from "./constants.js";
 import * as db from "./db.js";
 import { dispatch, HANDLERS, toolSummary, UI_ONLY_HANDLERS } from "./dispatch.js";
 import { scopeParamValue, scopeRedirect, sprintScope } from "./engine/scope.js";
-import { NAMESPACE } from "./namespace.js";
+import { NAMESPACE, PLUGIN_ID } from "./namespace.js";
 import { loadPreferencesView, savePreferencesFor } from "./preferences.js";
 import {
   defaultHireAssignee,
@@ -86,9 +87,14 @@ import { siteLinkView, siteProjectOptions, wordPressSiteOptions } from "./servic
 import { sprintWordPressSite } from "./service/wordpress.js";
 import { loadServiceAccount } from "./service/google-access.js";
 import { SEO_TOOLS, GROWTH_TOOLS } from "./tools.js";
-import { seoGrowthToolsHost } from "./growth-host.js";
+import { registerSeoTools } from "./growth-host.js";
 
 let env: Env | null = null;
+let guard: AccessGuard | null = null;
+
+/** The manifest's routes, each registered through the guard. */
+const API_ROUTE_KEYS = ["oauth-start", "oauth-complete", "client-summary", SETUP_STATUS_ROUTE.routeKey, COCKPIT_ROUTE.routeKey] as const;
+const UNKNOWN_ROUTE = { status: 404, body: { error: "Unknown route" } };
 
 const plugin = definePlugin({
   multiCompanyConfig: true,
@@ -97,12 +103,12 @@ const plugin = definePlugin({
     const e = createEnv(ctx);
     env = e;
     registerDriveReplies(ctx);
-    for (const tool of SEO_TOOLS) {
-      if ((GROWTH_TOOL_NAMES as readonly string[]).includes(tool.name)) continue;
-      ctx.tools.register(tool.name, tool, (params, run) => runTool(e, tool.name, params, run));
-    }
-    registerGrowthTools(ctx, seoGrowthToolsHost(ctx));
-    registerActions(e);
+    // Every action, tool and API route goes through the access guard (PAR-12676). With the switch off it is a pass-through.
+    const g = createAccessGuard(ctx, { pluginKey: PLUGIN_ID, table: ACCESS_TABLE });
+    guard = g;
+    registerSeoTools(ctx, g, SEO_TOOLS, (name, params, run) => runTool(e, name, params, run));
+    registerActions(e, g);
+    for (const routeKey of API_ROUTE_KEYS) g.apiRoute(routeKey, (input) => handleApiRoute(e, input));
     ctx.jobs.register(DAILY_JOB_KEY, async (job) => {
       // Recorded for the Cockpit's job health (kit jobHealth).
       const result = await trackJob(ctx, DAILY_JOB_KEY, () => runDailyJob(e, { force: job.trigger === "manual" }));
@@ -232,34 +238,39 @@ const plugin = definePlugin({
   },
 
   async onApiRequest(input: PluginApiRequestInput): Promise<PluginApiResponse> {
-    if (!env) return { status: 503, body: { error: "SEO plugin is not ready" } };
-    try {
-      if (input.routeKey === "oauth-complete") return await gscOauthComplete(env, input);
-      if (input.routeKey === "client-summary") return await clientSummaryRoute(env, input);
-      if (input.routeKey === SETUP_STATUS_ROUTE.routeKey) {
-        if (!input.companyId) return { status: 400, body: { error: "companyId is required" } };
-        return { status: 200, body: await seoSetupStatus(env, input.companyId) };
-      }
-      if (input.routeKey === COCKPIT_ROUTE.routeKey) {
-        if (!input.companyId) return { status: 400, body: { error: "companyId is required" } };
-        return { status: 200, body: await cockpitSnapshot(env.ctx, input.companyId) };
-      }
-      if (input.routeKey === "oauth-start") {
-        const actor: Actor = input.actor.actorType === "user" ? { kind: "user", userId: input.actor.userId ?? input.actor.actorId } : { kind: "system" };
-        const sprintId = Array.isArray(input.query.sprintId) ? input.query.sprintId[0] : input.query.sprintId;
-        const returnTo = Array.isArray(input.query.returnTo) ? input.query.returnTo[0] : input.query.returnTo;
-        const body = await gscConnectStart(env, input.companyId, actor, { sprintId, returnTo });
-        return { status: 200, body };
-      }
-      return { status: 404, body: { error: "Unknown route" } };
-    } catch (error) {
-      return { status: error instanceof SeoError ? 400 : 500, body: { error: errorMessage(error) } };
-    }
+    if (!env || !guard) return { status: 503, body: { error: "SEO plugin is not ready" } };
+    // An unknown key under the switch `off` answers as before; under report and enforce the guard refuses it.
+    return guard.handleApiRequest(input, async () => UNKNOWN_ROUTE);
   },
 });
 
 export default plugin;
 runWorker(plugin, import.meta.url);
+
+async function handleApiRoute(env: Env, input: PluginApiRequestInput): Promise<PluginApiResponse> {
+  try {
+    if (input.routeKey === "oauth-complete") return await gscOauthComplete(env, input);
+    if (input.routeKey === "client-summary") return await clientSummaryRoute(env, input);
+    if (input.routeKey === SETUP_STATUS_ROUTE.routeKey) {
+      if (!input.companyId) return { status: 400, body: { error: "companyId is required" } };
+      return { status: 200, body: await seoSetupStatus(env, input.companyId) };
+    }
+    if (input.routeKey === COCKPIT_ROUTE.routeKey) {
+      if (!input.companyId) return { status: 400, body: { error: "companyId is required" } };
+      return { status: 200, body: await cockpitSnapshot(env.ctx, input.companyId) };
+    }
+    if (input.routeKey === "oauth-start") {
+      const actor: Actor = input.actor.actorType === "user" ? { kind: "user", userId: input.actor.userId ?? input.actor.actorId } : { kind: "system" };
+      const sprintId = Array.isArray(input.query.sprintId) ? input.query.sprintId[0] : input.query.sprintId;
+      const returnTo = Array.isArray(input.query.returnTo) ? input.query.returnTo[0] : input.query.returnTo;
+      const body = await gscConnectStart(env, input.companyId, actor, { sprintId, returnTo });
+      return { status: 200, body };
+    }
+    return UNKNOWN_ROUTE;
+  } catch (error) {
+    return { status: error instanceof SeoError ? 400 : 500, body: { error: errorMessage(error) } };
+  }
+}
 
 async function toolActor(ctx: PluginContext, run: ToolRunContext): Promise<Actor> {
   let responsibleUserId: string | null = null;
@@ -311,10 +322,10 @@ function requireUser(actor: Actor): Extract<Actor, { kind: "user" }> {
   return actor;
 }
 
-function registerActions(e: Env) {
+function registerActions(e: Env, guard: AccessGuard) {
   const { ctx } = e;
   const action = (key: string, fn: (companyId: string, actor: Actor, params: Record<string, unknown>) => Promise<unknown>) =>
-    ctx.actions.register(key, async (params, context) => {
+    guard.action(key, async (params, context) => {
       const companyId = actionCompany(context);
       // Not awaited (PAR-11023); `soon` adds the 5-minute pause after a failed sync.
       void e.skills.soon(companyId);
@@ -322,8 +333,8 @@ function registerActions(e: Env) {
     });
 
   // Company preferences: the kit checks that the caller is an owner or admin of this company (fails closed).
-  ctx.actions.register("seo.preferences-load", async (_params, context) => loadPreferencesView(ctx, actionCompany(context)));
-  ctx.actions.register("seo.preferences-save", async (params, context) => {
+  guard.action("seo.preferences-load", async (_params, context) => loadPreferencesView(ctx, actionCompany(context)));
+  guard.action("seo.preferences-save", async (params, context) => {
     actionCompany(context);
     return savePreferencesFor(ctx, context, asParams(params).patch);
   });
@@ -495,11 +506,16 @@ function registerActions(e: Env) {
     };
   });
 
-  action("seo.call", async (companyId, actor, params) => {
-    const tool = reqStr(params, "tool");
-    if (!HANDLERS[tool] && !UI_ONLY_HANDLERS[tool]) throw new SeoError(`Unknown tool ${tool}`);
-    return dispatch(e, companyId, requireUser(actor), tool, params.params ?? {});
-  });
+  // One call action per permission (access-table.ts): the guard decides the handler's own permission.
+  for (const key of Object.keys(SEO_CALL_ACTIONS)) {
+    action(key, async (companyId, actor, params) => {
+      const tool = reqStr(params, "tool");
+      if (!HANDLERS[tool] && !UI_ONLY_HANDLERS[tool]) throw new SeoError(`Unknown tool ${tool}`);
+      const via = seoCallAction(tool);
+      if (via !== key) throw new SeoError(`${tool} is called through ${via ?? "no page action"}, not ${key}. Do not retry.`);
+      return dispatch(e, companyId, requireUser(actor), tool, params.params ?? {});
+    });
+  }
 
   action("seo.create-sprint", async (companyId, actor, params) => {
     const user = requireUser(actor);

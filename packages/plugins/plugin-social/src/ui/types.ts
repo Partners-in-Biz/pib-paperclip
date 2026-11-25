@@ -241,7 +241,14 @@ export interface ApprovalPolicyView {
   custom: boolean;
   summary: string;
   /** The scope's delegated approver (an agent a person named); null when none is set. */
-  delegate?: { agentId: string; name: string | null; active: boolean; inactiveReason: string | null } | null;
+  delegate?: {
+    agentId: string;
+    name: string | null;
+    active: boolean;
+    inactiveReason: string | null;
+    /** Approves the posts the delegate created itself. */
+    backup?: { agentId: string; name: string | null; active: boolean; inactiveReason: string | null } | null;
+  } | null;
   updatedBy: string | null;
   updatedAt: string | null;
 }

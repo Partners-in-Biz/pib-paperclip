@@ -8,6 +8,8 @@ const VALID_CAPS = new Set([
   "events.emit", "events.subscribe", "http.outbound", "issues.create", "secrets.read-ref", "jobs.schedule", "webhooks.receive",
   "agent.tools.register", "companies.read", "ui.page.register",
   "plugin.state.read", "plugin.state.write",
+  // A3 (PAR-12643): the access guard reads the caller's role.
+  "access.members.read",
 ]);
 
 describe("CRM Telephony manifest", () => {
@@ -35,6 +37,11 @@ describe("CRM Telephony manifest", () => {
   it("has ui.page.register capability", () => {
     const caps = manifest.capabilities ?? [];
     expect(caps).toContain("ui.page.register");
+  });
+
+  it("A3 (PAR-12643): reads heartbeat_runs and nothing else of the core", () => {
+    expect(manifest.database?.coreReadTables).toEqual(["heartbeat_runs"]);
+    expect(manifest.capabilities).not.toContain("access.members.write");
   });
 
   it("does not have appShellOverlay capability", () => {

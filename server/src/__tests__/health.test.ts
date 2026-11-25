@@ -192,6 +192,22 @@ describe("GET /health", () => {
     });
   });
 
+  it("shows memberRestriction forced_off only when PAPERCLIP_MEMBER_RESTRICTION is exactly off (AC-F9)", async () => {
+    const db = createHealthyDb();
+    const app = createApp(db);
+
+    vi.stubEnv("PAPERCLIP_MEMBER_RESTRICTION", "off");
+    const forced = await request(app).get("/health");
+    expect(forced.status).toBe(200);
+    expect(forced.body.memberRestriction).toBe("forced_off");
+
+    for (const value of ["OFF ", "false", "0", ""]) {
+      vi.stubEnv("PAPERCLIP_MEMBER_RESTRICTION", value);
+      const res = await request(app).get("/health");
+      expect(res.body).not.toHaveProperty("memberRestriction");
+    }
+  });
+
   it("returns 503 when the database probe fails", async () => {
     const db = {
       execute: vi.fn().mockRejectedValue(new Error("connect ECONNREFUSED")),

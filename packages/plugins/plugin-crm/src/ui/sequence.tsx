@@ -4,7 +4,8 @@
  * (Gmail connected), and the drawer with the steps and who is enrolled.
  */
 import { useEffect, useState } from "react";
-import { useHostNavigation, usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import { useHostNavigation } from "@paperclipai/plugin-sdk/ui";
+import { useCrmAction } from "./actions.js";
 import {
   Button,
   MailCheck,
@@ -86,8 +87,8 @@ export function SequenceSheet({ sequence, gmail, onClose, onChanged }: {
 }) {
   const navigation = useHostNavigation();
   const narrow = useIsNarrow();
-  const loadDetail = usePluginAction("crm.sequence-detail");
-  const setDelivery = usePluginAction("crm.set-sequence-delivery");
+  const loadDetail = useCrmAction("crm.sequence-detail");
+  const setDelivery = useCrmAction("crm.set-sequence-delivery");
   const [detail, setDetail] = useState<SequenceDetail | null>(null);
   const [failed, setFailed] = useState(false);
   const [busy, setBusy] = useState(false);

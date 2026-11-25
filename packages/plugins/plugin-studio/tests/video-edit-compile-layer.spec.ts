@@ -35,7 +35,16 @@ describe("blend + frame: compiled graph", () => {
     expect(g).toMatch(/color=c=black@0:s=1080x1920:r=30:d=1,format=yuva420p,setpts=PTS-STARTPTS\+0\.5\/TB\[bcv\d+\]/);
     expect(g).toMatch(/trim=start=0\.5:end=1\.5,scale=in_color_matrix=bt709,format=gbrp\[bbt\d+\]/);
     expect(g).toContain("lut2=c0='clip(round(255*((x/255)*(y/255))),0,255)'");
-    expect(g).toMatch(/alphamerge\[bbl\d+\];\n\[bb\d+\]\[bbl\d+\]overlay=x=0:y=0:eof_action=pass\[base\d+\]/);
+    // 0.5 s at 30 fps: 15 transparent frames before the layer, so the base never queues (PAR-11088); padding unblended.
+    expect(g).toMatch(/alphamerge,setpts=PTS-STARTPTS,tpad=start=15:color=black@0\[bbl\d+\];\n\[bb\d+\]\[bbl\d+\]overlay=x=0:y=0:eof_action=pass:enable='gte\(t,0\.483\)'\[base\d+\]/);
+  });
+
+  it("a blend at 0 needs no padding; off-grid starts pad to the frame trim=start keeps", () => {
+    const at0 = graphOf(doc([video(clip("b", "base", 0, 2)), overlay(clip("o", "top", 0, 1, { blendMode: "screen" }))]));
+    expect(at0).toMatch(/alphamerge\[bbl\d+\];\n\[bb\d+\]\[bbl\d+\]overlay=x=0:y=0:eof_action=pass\[base\d+\]/);
+    expect(at0).not.toContain("tpad");
+    // 0.15 s is 4.5 frames: av_rescale_q rounds to nearest, so trim=start keeps base frames from 5.
+    expect(graphOf(doc([video(clip("b", "base", 0, 2)), overlay(clip("o", "top", 0.15, 1, { blendMode: "screen" }))]))).toContain("tpad=start=5:");
   });
 
   it("a frame builds its mask and border once from the first frame, before fades", () => {
@@ -155,7 +164,31 @@ describe.skipIf(!hasFfmpeg)("blend + frame with real ffmpeg", () => {
     expectNear(rgbAt(pip, 806, 1436), base.map((b, i) => Math.abs(b - top[i]!)), 4, "inside the box");
     const later = await render(doc([video(clip("b", "base", 0, 0.5)), overlay(clip("o", "top", 0.3, 0.2, { blendMode: "difference" }))]));
     expectNear(rgbAt(later, W / 2 - 4, H / 2 - 4), base, 3, "frame 5 is before the clip");
+    // 0.15 s pads 5 frames: frame 5 is the clip's first frame, blended.
+    const first = await render(doc([video(clip("b", "base", 0, 0.5)), overlay(clip("o", "top", 0.15, 0.3, { blendMode: "difference" }))]));
+    expectNear(rgbAt(first, W / 2 - 4, H / 2 - 4), base.map((b, i) => Math.abs(b - top[i]!)), 4, "frame 5 is the clip's first frame");
   }, 120_000);
+
+  // PAR-11088: a blend clip late in a long base queued every base frame before it (~90 MiB per second at 1080x1920;
+  // at 150 s it ran the 6 GiB --as cap out). Peak RSS must not grow with the clip's start.
+  it("a blend clip 10 s in peaks at about the memory of one at 0", async () => {
+    await ffmpeg(["-f", "lavfi", "-i", "color=c=0x3090C0:s=108x192:r=30:d=11", "-c:v", "libx264", "-qp", "0", "-pix_fmt", "yuv420p", "-y", "long.mp4"]);
+    const long = { ...inputs, [inputKey("long", 1)]: { path: "long.mp4", kind: "video" as const } };
+    const maxRss = (start: number) => {
+      const d = doc([video(clip("b", "long", 0, 10.5)), overlay(clip("o", "top", start, 0.5, { blendMode: "multiply" }))]);
+      const compiled = compileVideo(d, long, "rss.mp4");
+      for (const f of compiled.files) writeFileSync(join(dir, f.name), f.content);
+      const r = spawnSync("ffmpeg", ["-benchmark", "-threads", "4", ...compiled.args], { cwd: dir, encoding: "utf8" });
+      expect(r.status, r.stderr.slice(-500)).toBe(0);
+      // ffmpeg 6 prints `maxrss=NkB`, ffmpeg 8 `maxrss=NKiB`.
+      const kib = Number(/maxrss=(\d+)\s*(?:kB|KiB)/.exec(r.stderr)?.[1]);
+      expect(kib, r.stderr.slice(-300)).toBeGreaterThan(0);
+      return kib / 1024;
+    };
+    const atStart = maxRss(0);
+    const late = maxRss(10);
+    expect(late - atStart, `start 0: ${Math.round(atStart)} MiB, start 10: ${Math.round(late)} MiB`).toBeLessThan(300);
+  }, 180_000);
 
   it("a PiP with radius 20% and a 6 px border: corner = base, border = border colour, centre = picture", async () => {
     const p = await render(doc([video(clip("b", "base", 0, 0.5)), overlay(clip("o", "top", 0, 0.5, { transform: PIP, frame: { borderWidth: 6, borderColor: "#FF0000", cornerRadius: 20 } }))]));

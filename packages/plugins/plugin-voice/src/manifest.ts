@@ -13,7 +13,12 @@ const manifest: PaperclipPluginManifestV1 = {
   categories: ["ui", "connector"],
   instanceConfigSchema,
   capabilities: [
+    // A3 (PAR-12643): the access guard reads the caller's role, and its receiver takes grants from Setup by event
+    // and confirms them. New capabilities: a stop-first deploy.
+    "access.members.read",
     "agents.read",
+    "events.subscribe",
+    "events.emit",
     "http.outbound",
     "plugin.state.read",
     "plugin.state.write",

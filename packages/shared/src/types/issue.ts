@@ -1111,6 +1111,12 @@ export interface IssueComment {
   deletedByRunId?: string | null;
   sourceTrust?: SourceTrustMetadata | null;
   followUpRequested?: boolean;
+  /**
+   * Only on the answer to a new comment: the assignee is not on the list of
+   * agents the restricted author may instruct, so the comment starts no run
+   * of it (PAR-12608 4.7).
+   */
+  wakeSkipped?: "agent_not_listed";
   createdAt: Date;
   updatedAt: Date;
 }

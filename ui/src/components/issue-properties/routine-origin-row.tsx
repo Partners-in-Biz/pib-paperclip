@@ -3,18 +3,22 @@ import { Repeat } from "lucide-react";
 import { Link } from "@/lib/router";
 import { badgeVariants } from "@/components/ui/badge";
 import { routinesApi } from "../../api/routines";
+import { useMemberRestrictionGate } from "../../hooks/useMemberRestrictionGate";
 import { queryKeys } from "../../lib/queryKeys";
 import { cn } from "../../lib/utils";
 import { PropertyRow } from "./primitives";
 
-export function RoutineOriginRow({ routineId }: { routineId: string }) {
+export function RoutineOriginRow({ routineId, companyId }: { routineId: string; companyId: string }) {
+  // Routines are closed to a restricted member under `enforce` (AC-G10): the row is left out.
+  const memberGate = useMemberRestrictionGate(companyId);
   const { data: routine } = useQuery({
     queryKey: queryKeys.routines.detail(routineId),
-    queryFn: () => routinesApi.get(routineId),
+    queryFn: memberGate.guard(() => routinesApi.get(routineId), null),
+    enabled: !memberGate.closed,
   });
 
   const title = routine?.title?.trim();
-  if (!title) return null;
+  if (memberGate.closed || !title) return null;
 
   return (
     <PropertyRow label="Routine">

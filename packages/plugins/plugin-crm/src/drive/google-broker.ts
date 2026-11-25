@@ -372,14 +372,16 @@ export function createGoogleDriveBroker(
     return { serviceAccountEmail: key.clientEmail, isMember };
   }
 
-  async function uploadFile(input: { name: string; bytes: Uint8Array; mimeType: string; parentFolderId?: string }): Promise<UploadResult> {
+  async function uploadFile(input: { name: string; bytes: Uint8Array; mimeType: string; parentFolderId?: string; timing?: { listMs?: number; postMs?: number } }): Promise<UploadResult> {
     if (input.bytes.byteLength > MAX_UPLOAD_BYTES) {
       throw new BrokerError(`File too large (${input.bytes.byteLength} bytes exceeds 5 MiB limit)`, 413, false, undefined, undefined, "too_large");
     }
     const parentId = input.parentFolderId || sharedDriveId;
     const sha256 = createHash("sha256").update(input.bytes).digest("hex");
 
+    const listStart = Date.now();
     const same = await list(`${q(parentId)} in parents and name = ${q(input.name)} and trashed = false`, "id,name,mimeType,size,webViewLink,parents,appProperties");
+    if (input.timing) input.timing.listMs = Date.now() - listStart;
     const dup = same.find((f) => f.appProperties?.pibSha256 === sha256);
     if (dup) {
       return { fileId: dup.id, name: dup.name, mimeType: dup.mimeType ?? input.mimeType, size: Number(dup.size ?? input.bytes.byteLength), sha256, webViewLink: dup.webViewLink ?? `https://drive.google.com/file/d/${dup.id}/view`, parentFolderId: parentId, deduplicated: true };
@@ -392,10 +394,12 @@ export function createGoogleDriveBroker(
       Buffer.from(input.bytes),
       Buffer.from(`\r\n--${boundary}--`),
     ]);
+    const postStart = Date.now();
     const res = await request("POST", `${DRIVE_UPLOAD}/files?uploadType=multipart&${shared}&fields=${encodeURIComponent("id,name,mimeType,size,webViewLink,parents")}`, {
       body,
       headers: { "Content-Type": `multipart/related; boundary=${boundary}` },
     });
+    if (input.timing) input.timing.postMs = Date.now() - postStart;
     if (res.status < 200 || res.status >= 300) throw toBrokerError(res.status, res.text);
     const file = JSON.parse(res.text) as DriveFile;
     if (typeof file.id !== "string") throw new BrokerError("Unexpected upload response", 200, false);

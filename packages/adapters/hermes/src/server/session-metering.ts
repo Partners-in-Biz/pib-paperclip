@@ -20,8 +20,13 @@ import path from "node:path";
 
 import type { UsageSummary } from "@paperclipai/adapter-utils";
 
-const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{5,63}$/;
+// Gateway-backed Hermes ids are `local-<sha256 hex>` (70 chars); the old cap of
+// 64 rejected every one of them, so no session id or usage was ever recorded.
+const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{5,127}$/;
 const SESSION_LINE = /^session_id:\s*(\S+)\s*$/;
+// The gateway's start banner on stderr. The only id a run killed before exit
+// (a Stop on reassignment, a timeout) ever printed.
+const SESSION_BANNER = /^Session:\s+(\S+)\s*$/;
 const RESUME_LINE = /^\s*hermes\s+(?:-p\s+\S+\s+)?(?:--resume|-r)\s+(\S+)\s*$/;
 const RESUME_HEAD = /^Resume this session with:\s*$/;
 const SESSION_FOOTER = /^Session:\s{2,}(\S+)\s*$/;
@@ -74,6 +79,7 @@ export function parseSessionId(stdout: string, stderr: string): string | null {
     lastMatch(out, RESUME_LINE, RESUME_HEAD) ??
     lastMatch(out, SESSION_FOOTER) ??
     lastMatch(out, SESSION_LINE) ??
+    lastMatch(lines(stderr), SESSION_BANNER) ??
     null
   );
 }

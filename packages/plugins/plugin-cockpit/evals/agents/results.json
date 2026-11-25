@@ -254,7 +254,7 @@
         "scenarios": {
           "revenue-lead-incomplete-lead-no-phone": true,
           "revenue-lead-complete-lead-call-ready": false,
-          "revenue-lead-budget-elon-signoff-r500": true
+          "revenue-lead-budget-pib-signoff-r500": true
         },
         "measuredAt": "2026-10-22T21:09:17.439Z"
       },
@@ -295,7 +295,7 @@
         "passRate": 0.25,
         "scenarios": {
           "metrics-pull-delegate-to-haiku": false,
-          "escalate-new-feature-to-elon": false,
+          "escalate-new-feature-to-pib": false,
           "approval-gate-client-email-proposal": true,
           "autonomy-internal-roadmap-decision": false
         },
@@ -643,6 +643,13 @@
           "by": "Delivery Lead",
           "at": "2026-11-04",
           "expires": "2026-12-04"
+        },
+        {
+          "hash": "33afbd2c42d9ae9d",
+          "reason": "Text-only change: Elon (removed agent) replaced by PiB in the delivery-lead template (PAR-12209). No behaviour change; baseline still to be recorded via skill-eval (PAR-7275).",
+          "by": "Marcus",
+          "at": "2026-11-16",
+          "expires": "2026-12-16"
         }
       ]
     }

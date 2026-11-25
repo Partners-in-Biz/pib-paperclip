@@ -4,13 +4,13 @@
  * applied to the site here; a person approves, then the agent applies the change through the Connector.
  */
 import { randomBytes } from "node:crypto";
-import { reviewerAgentId, wakeIssue } from "@partnersinbiz/pib-plugin-kit";
+import { reviewerAgentId, wakeIssue, type SafeFetchResult } from "@partnersinbiz/pib-plugin-kit";
 import * as db from "../db.js";
 import { t } from "../db.js";
 import { checkClaims } from "../engine/claims.js";
 import { checkWhy } from "../engine/why.js";
 import { rubricLines, scorePreviewCopy, type PreviewRubric } from "../engine/rubric.js";
-import { isRehearsalSprint } from "../engine/rehearsal.js";
+import { isRehearsalSprint, isRehearsalUrl, REHEARSAL_PAGE_NOTE, rehearsalPageHtml } from "../engine/rehearsal.js";
 import { loadFacts } from "./facts.js";
 import { buildPreviewHtml, checkLinkText, countBySelector, MIN_KEPT_PCT, parseContentSelector, fingerprintChanges, liveFingerprint, previewStats, visibleWords, type LiveFingerprint, withDoctype, type BodyMode, type LinkEdit, type PreviewChanges } from "../engine/preview.js";
 import { ORIGIN } from "../constants.js";
@@ -286,11 +286,20 @@ export async function findReusablePreview(env: Env, companyId: string, requestKe
   return rows[0] ?? null;
 }
 
+/**
+ * The live page source. A fixture address (host `.invalid`, PAR-13387) never resolves, so it gets the canned fixture page and the
+ * network is not asked; every other address goes through the guarded site fetcher.
+ */
+async function livePage(env: Env, url: string): Promise<SafeFetchResult> {
+  if (isRehearsalUrl(url)) return { status: 200, url, redirects: [], headers: { "content-type": "text/html; charset=utf-8" }, text: rehearsalPageHtml(url), ms: 0 };
+  return env.site(url, { maxChars: MAX_HTML });
+}
+
 /** The page source, or null when it cannot be read within `ms` (no render: this only checks whether the page changed). */
 async function sourceWithin(env: Env, url: string, ms: number): Promise<string | null> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const res = await Promise.race([env.site(url, { maxChars: MAX_HTML }), new Promise<null>((done) => { timer = setTimeout(() => done(null), ms); })]);
+    const res = await Promise.race([livePage(env, url), new Promise<null>((done) => { timer = setTimeout(() => done(null), ms); })]);
     return res && res.status < 400 && res.text ? res.text : null;
   } catch {
     return null;
@@ -367,28 +376,31 @@ const nextAfterPreview = (sprint: db.Sprint): string =>
 
 async function freshPreview(env: Env, actor: Actor, req: PreviewRequestContext): Promise<CreatePreviewResult> {
   const { companyId, sprintId, sprint, pageUrl, changes, allowReplace, task, redesign, label, client, rubric, requestKey, startedAt } = req;
-  const res = await env.site(pageUrl, { maxChars: MAX_HTML });
+  const res = await livePage(env, pageUrl);
   if (res.status >= 400 || !res.text) throw new SeoError(`The live page answered ${res.status}; check the URL (a new page that is not live yet cannot be previewed on top of a live page).`);
   const token = randomBytes(24).toString("base64url");
   const sourceUrl = res.url || pageUrl;
   // Build from the page as a visitor sees it (scripts ran) when the preview service can render it; else from the source.
   // The WordPress body check (PAR-10302) runs beside the render; wpPostContent never throws.
-  const wpBody = needsWpBodyCheck(changes) ? wpPostContent(env, res.text, sourceUrl) : null;
-  const render = await renderedLive(env, sourceUrl, res.text, changes.contentSelector, startedAt);
+  // A fixture page has no scripts and no WordPress behind it: its source is the rendered page, and neither service is asked.
+  const fixture = isRehearsalUrl(sourceUrl);
+  const wpBody = !fixture && needsWpBodyCheck(changes) ? wpPostContent(env, res.text, sourceUrl) : null;
+  const render = fixture ? null : await renderedLive(env, sourceUrl, res.text, changes.contentSelector, startedAt);
+  const renderedHtml: string | null = render === null ? res.text : "html" in render ? (render as { html: string }).html : null;
   const wp = wpBody ? await wpBody : ({ kind: "none" } as const);
   assertWpBodyApplicable(wp, changes);
-  const liveHtml = withoutNul("html" in render ? render.html : res.text);
+  const liveHtml = withoutNul(renderedHtml ?? res.text);
   const areaNote = assertInsertArea(wp, liveHtml, changes);
   const built = buildPreviewHtml(liveHtml, sourceUrl, withoutNul(changes), { token, clientName: sprint.clientName });
   if (built.applied.length === 0) throw new SeoError(`None of the changes could be placed on the page. ${built.notes.join(" ")}`.trim());
-  built.notes.unshift(render.note);
+  built.notes.unshift(render?.note ?? REHEARSAL_PAGE_NOTE);
   if (wp.kind === "skip") built.notes.push(wp.note);
   if (areaNote) built.notes.push(areaNote);
   const figure = previewStats(liveHtml, built.html);
   // One stored figure: on the rendered basis it is `stats.rendered` (the review page never recomputes it); on the
   // source basis the review page measures `stats.rendered` on first open.
   const stats: StoredPreviewStats = {
-    ...("html" in render ? { basis: "rendered" as const, rendered: { ...figure, at: env.now().toISOString() } } : { ...figure, basis: "source" as const }),
+    ...(renderedHtml !== null ? { basis: "rendered" as const, rendered: { ...figure, at: env.now().toISOString() } } : { ...figure, basis: "source" as const }),
     // The live page as it was when the preview was made (the page source, the same thing checkLive fetches); list-previews checkLive compares it later.
     liveFingerprint: liveFingerprint(res.text),
   };
@@ -1275,7 +1287,7 @@ async function liveCheckOf(env: Env, pageUrl: string, stored: LiveFingerprint | 
   if (!stored || typeof stored.title !== "string") return { result: "unknown", reason: "This preview has no stored copy of the live page (made before the check existed)." };
   let res: Awaited<ReturnType<Env["site"]>>;
   try {
-    res = await env.site(pageUrl, { maxChars: MAX_HTML });
+    res = await livePage(env, pageUrl);
   } catch (error) {
     return { result: "unknown", reason: `The live page could not be read: ${errorMessage(error)}` };
   }

@@ -293,6 +293,7 @@ describe("durable inbound chat scheduler receipts", () => {
     const clearHold = await executionHold(f);
     const request = f.request();
     const wake = () => f.heartbeat.wakeup(f.agentId, {
+      causingActor: "system",
       source: "on_demand", triggerDetail: "manual", reason: "issue_commented",
       payload: { issueId: f.issueId, commentId: request.commentId },
       contextSnapshot: { issueId: f.issueId, source: "chat:slack", wakeCommentId: request.commentId },
@@ -311,6 +312,7 @@ describe("durable inbound chat scheduler receipts", () => {
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.wakeupRequestId, request.id))).toHaveLength(0);
     await clearHold();
     const generic = await f.heartbeat.wakeup(f.agentId, {
+      causingActor: "system",
       source: "on_demand", triggerDetail: "manual", reason: "issue_resumed",
       payload: { issueId: f.issueId }, requestedByActorType: "user", requestedByActorId: "board-user",
     });
@@ -435,6 +437,7 @@ describe("durable inbound chat scheduler receipts", () => {
     };
     const wake = (options: Record<string, unknown> = {}) =>
       f.heartbeat.wakeup(f.agentId, {
+        causingActor: "system",
         source: "assignment",
         triggerDetail: "system",
         reason: "retry_failed_chat_run",
@@ -476,6 +479,7 @@ describe("durable inbound chat scheduler receipts", () => {
     const f = await fixture();
     await expect(
       f.heartbeat.wakeup(f.agentId, {
+        causingActor: "system",
         payload: { issueId: f.issueId },
         contextSnapshot: {
           chatFailedRunRetry: {
@@ -815,6 +819,7 @@ describe("durable inbound chat scheduler receipts", () => {
       const { failedRunRetry: _retry, ...ordinaryRequest } = f.request;
       const wakeOriginal = (id: string, commentId: string) =>
         f.heartbeat.wakeup(f.agentId, {
+          causingActor: "system",
           source: "assignment",
           triggerDetail: "system",
           reason: "chat_message_received",
@@ -1372,6 +1377,7 @@ describe("durable inbound chat scheduler receipts", () => {
       // session after losing B's exact chat comment and admission authority.
       const rejection = await f.heartbeat
         .wakeup(f.agentId, {
+          causingActor: "system",
           source: "on_demand",
           triggerDetail: "manual",
           reason: "retry_failed_run",
@@ -1419,6 +1425,7 @@ describe("durable inbound chat scheduler receipts", () => {
   it("preserves ordinary non-chat manual retry admission", async () => {
     const f = await fixture();
     const retry = await f.heartbeat.wakeup(f.agentId, {
+      causingActor: "system",
       source: "on_demand",
       triggerDetail: "manual",
       reason: "retry_failed_run",

@@ -65,6 +65,27 @@ describe("parseSessionId", () => {
   it("the last stderr line wins", () => {
     expect(parseSessionId("", "session_id: first_id_1\nsession_id: second_id_2\n")).toBe("second_id_2");
   });
+
+  // PAR-13537: the gateway prints `local-<sha256 hex>` (70 chars). The old
+  // 64-char cap rejected every one, so no run stored a session or usage.
+  const gatewayId = `local-${"8f41a419".repeat(8)}`;
+
+  it("reads a 70-char gateway local- id from the stderr exit line", () => {
+    expect(gatewayId).toHaveLength(70);
+    expect(parseSessionId("", `Session: ${gatewayId}\n\nsession_id: ${gatewayId}\n`)).toBe(gatewayId);
+  });
+
+  it("falls back to the stderr start banner when the run was killed before its exit line", () => {
+    expect(parseSessionId('{"type":"tool_use","name":"terminal"}\n', `Session: ${gatewayId}\n`)).toBe(gatewayId);
+  });
+
+  it("prefers the exit line over the start banner", () => {
+    expect(parseSessionId("", `Session: ${gatewayId}\nsession_id: after_compact_01\n`)).toBe("after_compact_01");
+  });
+
+  it("never reads the banner from stdout (the prompt echo)", () => {
+    expect(parseSessionId(`Session: ${gatewayId}\n`, "")).toBeNull();
+  });
 });
 
 describe("usageFromLineage", () => {
@@ -149,6 +170,18 @@ describe("resolveRun", () => {
     expect(run.sessionId).toBe("sess_0001");
     expect(run.usage).toEqual({ inputTokens: 50, outputTokens: 20, cachedInputTokens: 0 });
     expect(run.costUsd).toBeCloseTo(0.2, 6);
+  });
+
+  it("books a killed gateway run's usage from the start banner id (issue_reassigned Stop, PAR-13537)", async () => {
+    const id = `local-${"a83174a7".repeat(8)}`;
+    makeStore([
+      { id, input_tokens: 349, output_tokens: 5235, cache_read_tokens: 571267, cache_write_tokens: 49644, estimated_cost_usd: 0.6175 },
+    ]);
+    // SIGTERM before Hermes printed its exit `session_id:` line: only the banner exists.
+    const run = await resolveRun("", `Session: ${id}\n\n\n`, { HERMES_HOME: home }, null);
+    expect(run.sessionId).toBe(id);
+    expect(run.usage).toEqual({ inputTokens: 349 + 49644, outputTokens: 5235, cachedInputTokens: 571267 });
+    expect(run.costUsd).toBeCloseTo(0.6175, 6);
   });
 
   it("returns the session but no usage when the store cannot be read", async () => {

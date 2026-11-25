@@ -3,7 +3,6 @@
  * pay run and (once a run is locked) the EMP201 and the cost charts.
  */
 import { useEffect, useState } from "react";
-import { usePluginAction } from "@paperclipai/plugin-sdk/ui";
 import {
   Banknote,
   Button,
@@ -32,6 +31,7 @@ import {
 import { costPerRun, costSplit, daysUntil, emp201Month, periodText, plural, todoSteps } from "./series.js";
 import { Muted, rand, RunStatus, small } from "./shared.js";
 import type { Emp201FilingView, Emp201View, Snapshot, TabId } from "./types.js";
+import { usePayrollAction } from "./actions.js";
 
 export function OverviewTab({ s, openRun, go }: { s: Snapshot; openRun: (id: string) => void; go: (tab: TabId) => void }) {
   const last = s.lastLocked;
@@ -156,7 +156,7 @@ export function OverviewTab({ s, openRun, go }: { s: Snapshot; openRun: (id: str
 
 /** The EMP201 for the month due next: the monthly PAYE, UIF and SDL declaration to SARS. */
 function Emp201Card({ s, go }: { s: Snapshot; go: (tab: TabId) => void }) {
-  const loadEmp201 = usePluginAction("payroll.emp201");
+  const loadEmp201 = usePayrollAction("payroll.emp201");
   const [e201, setE201] = useState<Emp201View | null>(null);
   const [filing, setFiling] = useState<Emp201FilingView | null>(null);
   const [failed, setFailed] = useState(false);

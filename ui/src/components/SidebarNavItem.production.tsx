@@ -3,6 +3,7 @@ import { NavLink } from "@/lib/router";
 import { SIDEBAR_SCROLL_RESET_STATE } from "../lib/navigation-scroll";
 import { cn, SIDEBAR_RAIL_HIDDEN_LABEL } from "../lib/utils";
 import { useSidebar } from "../context/SidebarContext";
+import { useMemberRestriction } from "../context/MemberRestrictionContext";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { LucideIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -93,10 +94,13 @@ export function SidebarNavItem({
   // A fixed-width contextual pane (SecondarySidebar) forces full labels even
   // when the global app sidebar is collapsed to its rail (PAP-10700).
   const forceExpanded = useSidebarNavExpanded();
+  // PAR-12608 4.6: no menu entry for a page closed to a restricted member.
+  const { isPageHidden } = useMemberRestriction();
   // The icon-only rail presentation only applies when pinned collapsed and not
   // peeking; a peek/expanded panel — or an expanded contextual pane — restores
   // the full label + badge.
   const rail = collapsed && !peeking && !forceExpanded;
+  if (isPageHidden(to)) return null;
 
   const hasBadge = badge != null && badge > 0;
   const hasLive = liveCount != null && liveCount > 0;

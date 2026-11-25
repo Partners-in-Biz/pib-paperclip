@@ -22,19 +22,27 @@ describe("browser task route scope", () => {
     "00000000-0000-0000-0000-000000000000",
   ])("keeps canonical PostgreSQL task UUIDs queryable: %s", async (id) => {
     const companyId = randomUUID();
-    const limit = vi.fn().mockResolvedValue([{ companyId }]);
+    const task = {
+      id, companyId, projectId: null, parentId: null, assigneeAgentId: null, assigneeUserId: null, status: "todo",
+    };
+    const limit = vi.fn().mockResolvedValue([task]);
     const db = { select: () => ({ from: () => ({ where: () => ({ limit }) }) }) } as unknown as Db;
     const list = vi.fn().mockResolvedValue([]);
     const service = { list } as unknown as NonNullable<Parameters<typeof browserUseRoutes>[1]>;
+    const decide = vi.fn().mockResolvedValue({ allowed: true });
+    const access = { decide } as unknown as NonNullable<Parameters<typeof browserUseRoutes>[2]>;
     const app = express();
     app.use((req, _res, next) => {
       req.actor = { type: "board", userId: "browser-reviewer", source: "session", companyIds: [companyId] };
       next();
     });
-    app.use(browserUseRoutes(db, service));
+    app.use(browserUseRoutes(db, service, access));
     app.use(errorHandler);
     expect((await http(app).get(`/issues/${id}/browsers`)).status).toBe(200);
     expect(limit).toHaveBeenCalledExactlyOnceWith(1);
+    expect(decide).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      action: "issue:read", resource: expect.objectContaining({ type: "issue", issueId: id, companyId }),
+    }));
     expect(list).toHaveBeenCalledExactlyOnceWith(companyId, id, "browser-reviewer");
   });
 

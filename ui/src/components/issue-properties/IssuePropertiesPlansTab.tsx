@@ -7,6 +7,7 @@ import { IssuePlanDecompositionsSection } from "@/components/IssuePlanDecomposit
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { DocumentAnnotationsCountChip, IssueDocumentAnnotations } from "@/components/IssueDocumentAnnotations";
 import { useIssuePlanDocument } from "@/hooks/useIssuePlanDocument";
+import { useMemberRestrictionGate } from "@/hooks/useMemberRestrictionGate";
 import { useLocation } from "@/lib/router";
 
 interface IssuePropertiesPlansTabProps {
@@ -39,9 +40,12 @@ export function IssuePropertiesPlansTab({ issue }: IssuePropertiesPlansTabProps)
   const { data: planDocument, isLoading: planDocumentLoading } = useIssuePlanDocument(issue.id);
   const location = useLocation();
   const [annotationPanelOpen, setAnnotationPanelOpen] = useState(false);
+  // Accepted plans are closed to a restricted member under `enforce` (AC-G10); the plan document stays.
+  const memberGate = useMemberRestrictionGate(issue.companyId);
   const { data } = useQuery({
     queryKey: queryKeys.issues.acceptedPlanDecompositions(issue.id),
-    queryFn: () => issuesApi.listAcceptedPlanDecompositions(issue.id),
+    queryFn: memberGate.guard(() => issuesApi.listAcceptedPlanDecompositions(issue.id), []),
+    enabled: !memberGate.closed,
   });
   const { data: interactions } = useQuery({
     queryKey: queryKeys.issues.interactions(issue.id),
@@ -114,7 +118,7 @@ export function IssuePropertiesPlansTab({ issue }: IssuePropertiesPlansTabProps)
         </section>
       ) : null}
       {hasPlans ? (
-        <IssuePlanDecompositionsSection issueId={issue.id} issueIdentifier={issue.identifier} />
+        <IssuePlanDecompositionsSection issueId={issue.id} issueIdentifier={issue.identifier} companyId={issue.companyId} />
       ) : null}
     </div>
   );

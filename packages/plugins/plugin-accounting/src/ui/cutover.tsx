@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import { useAccountingAction } from "./actions.js";
 import { Button, CalendarCheck, Field, Input, Modal, SectionCard, TextArea, formatDate, formatMoney, tokens, useIsNarrow } from "@partnersinbiz/pib-plugin-ui";
 import type { LoadResult } from "./overview.js";
 import { Banner, Details, Muted, Row, small, Table, Td, useRunner } from "./shared.js";
@@ -27,8 +27,8 @@ const linkButton = { border: "none", background: "transparent", padding: 0, colo
  * bring over). Posting opening balances later undoes that.
  */
 export function CutoverTab({ data, onMessage, onChanged, onOpen }: { data: LoadResult; onMessage: (m: string) => void; onChanged: () => Promise<void>; onOpen: (view: string) => void }) {
-  const skip = usePluginAction("accounting.skip-cutover");
-  const undoSkip = usePluginAction("accounting.undo-skip-cutover");
+  const skip = useAccountingAction("accounting.skip-cutover");
+  const undoSkip = useAccountingAction("accounting.undo-skip-cutover");
   const { busy, run } = useRunner(onMessage);
   const [confirming, setConfirming] = useState(false);
   const book = data.book;
@@ -112,8 +112,8 @@ export function CutoverTab({ data, onMessage, onChanged, onOpen }: { data: LoadR
 /** Import the trial balance from the previous books: check it, then post it as one opening journal. */
 function OpeningBalancesForm({ data, onMessage, onChanged, onOpen }: { data: LoadResult; onMessage: (m: string) => void; onChanged: () => Promise<void>; onOpen: (view: string) => void }) {
   const narrow = useIsNarrow();
-  const preview = usePluginAction("accounting.cutover-preview");
-  const post = usePluginAction("accounting.cutover-post");
+  const preview = useAccountingAction("accounting.cutover-preview");
+  const post = useAccountingAction("accounting.cutover-post");
   const { busy, run } = useRunner(onMessage);
   const [csv, setCsv] = useState("");
   const [fileName, setFileName] = useState("");

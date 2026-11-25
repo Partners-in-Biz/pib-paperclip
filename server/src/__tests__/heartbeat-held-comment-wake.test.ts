@@ -151,7 +151,7 @@ describePostgres("saved intents while another run's accounting is pending", () =
     await db.update(agentWakeupRequests).set({ status: "cancelled", finishedAt: new Date() }).where(eq(agentWakeupRequests.id, f.wakeId));
     const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
       authorUserId: f.userId, body: "Posted while accounting is pending." }).returning();
-    await heartbeat.wakeup(f.agentId, { source: "automation", triggerDetail: "system", reason: "issue_commented",
+    await heartbeat.wakeup(f.agentId, { causingActor: "system", source: "automation", triggerDetail: "system", reason: "issue_commented",
       payload: { issueId: f.issueId, commentId: comment.id, mutation: "comment" },
       contextSnapshot: { issueId: f.issueId, taskId: f.issueId, commentId: comment.id, wakeCommentId: comment.id,
         source: "issue.comment", wakeReason: "issue_commented" },
@@ -221,7 +221,7 @@ describePostgres("saved intents while another run's accounting is pending", () =
     await apply(f as never);
     const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
       authorUserId: f.userId, body: "Posted during the pause." }).returning();
-    await expect(heartbeat.wakeup(f.agentId, { source: "automation", triggerDetail: "system", reason: "issue_commented",
+    await expect(heartbeat.wakeup(f.agentId, { causingActor: "system", source: "automation", triggerDetail: "system", reason: "issue_commented",
       payload: { issueId: f.issueId, commentId: comment.id, mutation: "comment" },
       contextSnapshot: { issueId: f.issueId, taskId: f.issueId, commentId: comment.id, wakeCommentId: comment.id,
         source: "issue.comment", wakeReason: "issue_commented" },
@@ -262,7 +262,7 @@ describePostgres("saved intents while another run's accounting is pending", () =
     await db.update(companies).set({ status: "paused", pauseReason: "manual", pausedAt: new Date() }).where(eq(companies.id, f.companyId));
     const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
       authorUserId: f.userId, body: "Posted while the run was stopping." }).returning();
-    await expect(heartbeat.wakeup(f.agentId, { source: "automation", triggerDetail: "system", reason: "issue_commented",
+    await expect(heartbeat.wakeup(f.agentId, { causingActor: "system", source: "automation", triggerDetail: "system", reason: "issue_commented",
       payload: { issueId: f.issueId, commentId: comment.id, mutation: "comment" },
       contextSnapshot: { issueId: f.issueId, taskId: f.issueId, commentId: comment.id, wakeCommentId: comment.id,
         source: "issue.comment", wakeReason: "issue_commented" },
@@ -294,7 +294,7 @@ describePostgres("saved intents while another run's accounting is pending", () =
     await db.update(companies).set({ status: "paused", pauseReason: "manual", pausedAt: new Date() }).where(eq(companies.id, f.companyId));
     const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
       authorUserId: f.userId, body: "Posted while the pause stopped the run." }).returning();
-    await expect(heartbeat.wakeup(f.agentId, { source: "automation", triggerDetail: "system", reason: "issue_commented",
+    await expect(heartbeat.wakeup(f.agentId, { causingActor: "system", source: "automation", triggerDetail: "system", reason: "issue_commented",
       payload: { issueId: f.issueId, commentId: comment.id, mutation: "comment" },
       contextSnapshot: { issueId: f.issueId, taskId: f.issueId, commentId: comment.id, wakeCommentId: comment.id,
         source: "issue.comment", wakeReason: "issue_commented" },
@@ -326,7 +326,7 @@ describePostgres("saved intents while another run's accounting is pending", () =
     const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
       authorUserId: f.userId, body: "Posted during the pause.", createdAt: new Date(Date.now() - 5_000),
       updatedAt: new Date(Date.now() - 5_000) }).returning();
-    await expect(heartbeat.wakeup(f.agentId, { source: "automation", triggerDetail: "system", reason: "issue_commented",
+    await expect(heartbeat.wakeup(f.agentId, { causingActor: "system", source: "automation", triggerDetail: "system", reason: "issue_commented",
       payload: { issueId: f.issueId, commentId: comment.id, mutation: "comment" },
       contextSnapshot: { issueId: f.issueId, taskId: f.issueId, commentId: comment.id, wakeCommentId: comment.id,
         source: "issue.comment", wakeReason: "issue_commented" },
@@ -334,7 +334,7 @@ describePostgres("saved intents while another run's accounting is pending", () =
     // A second message, posted later in the pause, that no run has read.
     const [later] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
       authorUserId: f.userId, body: "Also posted during the pause." }).returning();
-    await expect(heartbeat.wakeup(f.agentId, { source: "automation", triggerDetail: "system", reason: "issue_commented",
+    await expect(heartbeat.wakeup(f.agentId, { causingActor: "system", source: "automation", triggerDetail: "system", reason: "issue_commented",
       payload: { issueId: f.issueId, commentId: later.id, mutation: "comment" },
       contextSnapshot: { issueId: f.issueId, taskId: f.issueId, commentId: later.id, wakeCommentId: later.id,
         source: "issue.comment", wakeReason: "issue_commented" },
@@ -388,7 +388,7 @@ describePostgres("saved intents while another run's accounting is pending", () =
     await db.update(agents).set({ status: "paused" }).where(eq(agents.id, f.agentId));
     const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: task.id,
       authorUserId: f.userId, body: "Please start with the FOLLOWUP line." }).returning();
-    await expect(heartbeat.wakeup(f.agentId, { source: "automation", triggerDetail: "system", reason: "issue_commented",
+    await expect(heartbeat.wakeup(f.agentId, { causingActor: "system", source: "automation", triggerDetail: "system", reason: "issue_commented",
       payload: { issueId: task.id, commentId: comment.id, mutation: "comment" },
       contextSnapshot: { issueId: task.id, taskId: task.id, commentId: comment.id, wakeCommentId: comment.id,
         source: "issue.comment", wakeReason: "issue_commented" },

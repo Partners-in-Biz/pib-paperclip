@@ -4,13 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { chromaKeyFilter, despillFilter, despillRgb, keyCoverage, keyDistance, keyMatrix, keyYuv, spillScreen } from "../src/video-edit/chroma.js";
-import { compileVideo, inputKey, type CompileInputs } from "../src/video-edit/compile-video.js";
+import { compileVideo, GRAPH_FILE, inputKey, type CompileInputs } from "../src/video-edit/compile-video.js";
 import { runContained } from "../src/video-edit/ffmpeg.js";
 import { normalizeEdit, type ChromaKey, type EditDoc } from "../src/video-edit/timeline.js";
 
 const inputs: CompileInputs = {
   [inputKey("base", 1)]: { path: "base.mp4", kind: "video" },
   [inputKey("green", 1)]: { path: "green.mp4", kind: "video" },
+  [inputKey("big", 1)]: { path: "big.mp4", kind: "video" },
   [inputKey("png", 1)]: { path: "green.png", kind: "image" },
   [inputKey("flat", 1)]: { path: "flat.mp4", kind: "video" },
   [inputKey("flatpng", 1)]: { path: "flat.png", kind: "image" },
@@ -55,8 +56,26 @@ describe("chroma key: formulas (shared with the preview)", () => {
 describe("chroma key: compiled graph", () => {
   it("keys the source before grade and shape; despill only with spill", () => {
     const g = graphOf(keyed("green", { spill: 0.6 }, { transform: { scale: 0.5 } }));
-    expect(g).toMatch(/fps=30,format=yuva420p,chromakey=color=0x[0-9A-F]{6}:similarity=0\.1:blend=0:yuv=1,scale=in_color_matrix=bt709,format=rgba,despill=type=green:mix=0\.5:expand=0:red=0:green=-0\.6:blue=0,scale=out_color_matrix=bt709:out_range=tv,format=yuva420p,format=yuva420p,scale=w=540/);
+    expect(g).toMatch(/fps=30,scale=w='min\(iw,540\)':h='min\(ih,960\)':force_original_aspect_ratio=decrease:force_divisible_by=2,format=yuva420p,chromakey=color=0x[0-9A-F]{6}:similarity=0\.1:blend=0:yuv=1,scale=in_color_matrix=bt709,format=rgba,despill=type=green:mix=0\.5:expand=0:red=0:green=-0\.6:blue=0,scale=out_color_matrix=bt709:out_range=tv,format=yuva420p,format=yuva420p,scale=w=540/);
     expect(graphOf(keyed("green", {}))).not.toContain("despill");
+  });
+
+  it("pre-fits a keyed or graded overlay to its shown size before key and grade (PAR-11217)", () => {
+    const prefit = (w: number, h: number) => `scale=w='min(iw,${w})':h='min(ih,${h})':force_original_aspect_ratio=decrease:force_divisible_by=2`;
+    expect(graphOf(keyed("green", {}, { transform: { scale: 0.33 } }))).toContain(`fps=30,${prefit(356.4, 633.6)},format=yuva420p,chromakey=`);
+    const graded = graphOf(doc([video(clip("b", "base", 0, 0.5)), overlay(clip("o", "flat", 0, 0.5, { transform: { scale: 0.5 }, look: { pack: "pib-basic", id: "mono" } }))]));
+    expect(graded).toContain(`fps=30,${prefit(540, 960)},scale=in_color_matrix=bt709,format=gbrp,colorchannelmixer=`);
+    // Nothing to save on a plain overlay; a crop, rotation, scale/rotate keys or blur change the box or the sigma.
+    expect(graphOf(doc([video(clip("b", "base", 0, 0.5)), overlay(clip("o", "flat", 0, 0.5, { transform: { scale: 0.5 } }))]))).not.toContain("min(iw");
+    const k = (t: number, value: number) => ({ t, value, ease: "linear" });
+    for (const extra of [
+      { transform: { scale: 0.5, crop: { left: 0.1 } } },
+      { transform: { scale: 0.5, rotate: 10 } },
+      { keyframes: { scale: [k(0, 0.3), k(0.5, 0.5)] } },
+      { transform: { scale: 0.5 }, adjust: { blur: 4 } },
+    ]) {
+      expect(graphOf(keyed("green", {}, extra)), JSON.stringify(extra)).not.toContain("min(iw");
+    }
   });
 
   it("a keyed graded video keeps its alpha through the grade", () => {
@@ -66,7 +85,7 @@ describe("chroma key: compiled graph", () => {
 
   it("an image's own alpha is multiplied back after the key; an ungraded image keys in its implicit BT.601", () => {
     const g = graphOf(keyed("png", { spill: 1 }));
-    expect(g).toMatch(/fps=30,format=yuva420p,split\[ckp\d+\]\[cko\d+\]/);
+    expect(g).toMatch(/fps=30,scale=w='min\(iw,1080\)':h='min\(ih,1920\)':[^,]+,format=yuva420p,split\[ckp\d+\]\[cko\d+\]/);
     expect(g).toContain(`${chromaKeyFilter({ ...KEY, spill: 1 }, "bt601")},scale=in_color_matrix=bt601,format=rgba,despill=`);
     expect(g).toMatch(/\[cka\d+\]\[cko\d+\]blend=all_mode=multiply\[cka\d+\];\[ckp\d+\]\[cka\d+\]alphamerge/);
     const graded = graphOf(keyed("png", {}, { adjust: { contrast: 1.1 } }));
@@ -98,10 +117,10 @@ const raw = (args: string[], bytes: number) => {
   return r.stdout;
 };
 
-/** Frame 5 of the render as packed RGB (BT.709 TV range). */
-async function render(d: EditDoc): Promise<Buffer> {
+/** Frame 5 of the render as packed RGB (BT.709 TV range). `edit` rewrites the filter graph first. */
+async function render(d: EditDoc, edit: (graph: string) => string = (g) => g): Promise<Buffer> {
   const compiled = compileVideo(d, inputs, "out.mp4");
-  for (const f of compiled.files) writeFileSync(join(dir, f.name), f.content);
+  for (const f of compiled.files) writeFileSync(join(dir, f.name), f.name === GRAPH_FILE ? edit(f.content) : f.content);
   await ffmpeg(compiled.args.filter((a) => a !== "-hide_banner" && a !== "-nostdin"));
   return raw(["-i", "out.mp4", "-vf", "select='eq(n,5)',scale=in_color_matrix=bt709:in_range=tv,format=rgb24"], W * H * 3);
 }
@@ -120,6 +139,7 @@ describe.skipIf(!hasFfmpeg)("chroma key with real ffmpeg", () => {
     const to709 = "format=rgb24,scale=out_color_matrix=bt709:out_range=tv,format=yuv420p";
     await ffmpeg(["-f", "lavfi", "-i", "color=c=0x3040C0:s=108x192:r=30:d=1", "-vf", to709, ...yuv, "base.mp4"]);
     await ffmpeg(["-f", "lavfi", "-i", `${SCENE},${to709}`, ...yuv, "green.mp4"]);
+    await ffmpeg(["-f", "lavfi", "-i", `${SCENE},format=rgb24,scale=${W}:${H}:flags=neighbor,${to709}`, ...yuv, "big.mp4"]);
     // Left half fully transparent (black under alpha 0), right half the green scene.
     await ffmpeg(["-f", "lavfi", "-i", `color=c=0xD06040:s=108x192:r=30:d=1,${to709}`, ...yuv, "flat.mp4"]);
     await ffmpeg(["-f", "lavfi", "-i", "color=c=0xD06040:s=108x192,format=rgba", "-frames:v", "1", "-y", "flat.png"]);
@@ -159,6 +179,19 @@ describe.skipIf(!hasFfmpeg)("chroma key with real ffmpeg", () => {
     expect(edge[1]!).toBeLessThan(rgbAt(plain, 236, H / 2 - 4)[1]! - 30);
     expectNear(edge, despillRgb({ ...KEY, spill: 1 }, SPILL.map((c) => c / 255) as [number, number, number]).map((c) => c * 255), 4, "despilled edge");
     expectNear(rgbAt(clean, W / 2 - 4, H / 2 - 4), SUBJECT, 4, "subject");
+  }, 120_000);
+
+  // PAR-11217: a full-size source shown at half size is keyed after the pre-fit; the same graph without it (the key at
+  // full size, then the fit) is the reference. Scene x10 at 0.5 lands at (270, 480): band x 375..405, subject x 405..675.
+  it("a pre-fitted (downscaled) key matches the key at full size: screen, despilled edge, subject", async () => {
+    const d = keyed("big", { spill: 1 }, { transform: { scale: 0.5 } });
+    const fitted = await render(d);
+    const full = await render(d, (g) => g.replace(/scale=w='min\(iw,540\)':h='min\(ih,960\)':force_original_aspect_ratio=decrease:force_divisible_by=2,/, ""));
+    const spot = { screen: [300, 520], edge: [386, 956], subject: [536, 956] } as const;
+    for (const [what, [x, y]] of Object.entries(spot)) expectNear(rgbAt(fitted, x, y), rgbAt(full, x, y), 2, `${what} as at full size`);
+    expectNear(rgbAt(fitted, ...spot.screen), BASE, 4, "screen keyed out");
+    expectNear(rgbAt(fitted, ...spot.edge), despillRgb({ ...KEY, spill: 1 }, SPILL.map((c) => c / 255) as [number, number, number]).map((c) => c * 255), 4, "despilled edge");
+    expectNear(rgbAt(fitted, ...spot.subject), SUBJECT, 4, "subject");
   }, 120_000);
 
   it("a keyed clip with a look, vignette and blur keeps the screen keyed out", async () => {

@@ -153,6 +153,13 @@ export interface StageLike {
   position: number;
 }
 
+/** The stages a deal may move to: its own pipeline's (all stages when the pipeline is unknown). */
+export function stagesForDeal<S extends { pipelineId?: string | null }>(stages: S[], pipelineId: string | null | undefined): S[] {
+  if (!pipelineId) return stages;
+  const own = stages.filter((stage) => stage.pipelineId === pipelineId);
+  return own.length > 0 ? own : stages;
+}
+
 /** Stages in order with their deals: open stages first, then won and lost. */
 export function dealsByStage<T extends { stageId: string }>(stages: StageLike[], deals: T[]): Array<{ stage: StageLike; deals: T[] }> {
   const rank = (kind: string) => (kind === "open" ? 0 : kind === "won" ? 1 : 2);

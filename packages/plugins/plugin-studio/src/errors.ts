@@ -6,6 +6,9 @@ export class StudioError extends Error {
   }
 }
 
+/** For the kit's `guardAction`: a StudioError becomes the page's refusal answer; anything else still throws. */
+export const isStudioError = (error: unknown): error is StudioError => error instanceof StudioError;
+
 export function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }

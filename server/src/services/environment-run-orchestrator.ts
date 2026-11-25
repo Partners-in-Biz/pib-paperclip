@@ -59,6 +59,7 @@ import {
   type AdapterWorkspaceRealization,
 } from "@paperclipai/adapter-utils/execution-target";
 import type { DuplexObservabilityRecorder } from "@paperclipai/adapter-utils/duplex-observability";
+import type { SshRunCheck } from "@paperclipai/adapter-utils/ssh";
 import { buildWorkspaceRealizationRequest } from "./workspace-realization.js";
 import { executionWorkspaceService } from "./execution-workspaces.js";
 import { logActivity } from "./activity-log.js";
@@ -795,6 +796,8 @@ export function environmentRunOrchestrator(
     cancelActiveWork?: boolean;
 
     respectCleanupDeadlines?: boolean;
+    /** ssh gone checks by lease id (PAR-9919), passed to the ssh driver's release. */
+    remoteChecks?: ReadonlyMap<string, SshRunCheck>;
     /** Explicit paperclip_runner resource lifecycle. Omitted for legacy adapters. */
     providerResourceDisposition?: ProviderResourceDisposition;
     nativeLifecycleTelemetry?: {
@@ -819,7 +822,12 @@ export function environmentRunOrchestrator(
         input.providerResourceDisposition,
       ];
       if (input.cancelActiveWork) releaseArgs[4] = true;
-      if (input.respectCleanupDeadlines) releaseArgs[5] = { respectCleanupDeadlines: true };
+      if (input.respectCleanupDeadlines || input.remoteChecks) {
+        releaseArgs[5] = {
+          ...(input.respectCleanupDeadlines ? { respectCleanupDeadlines: true } : {}),
+          ...(input.remoteChecks ? { remoteChecks: input.remoteChecks } : {}),
+        };
+      }
       releasedLeases = await environmentRuntime.releaseRunLeases(...releaseArgs);
     } catch (err) {
       result.errors.push({ leaseId: "*", error: err });

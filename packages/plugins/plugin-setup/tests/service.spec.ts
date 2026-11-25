@@ -9,6 +9,7 @@ import { allModulesOn } from "../src/modules.js";
 import { NAMESPACE, PLUGIN_ID } from "../src/namespace.js";
 import { handleApiRoute, registerSetup } from "../src/register.js";
 import { onStatusEvent, reemitModules, refreshFinishIssue, rememberInstalled, reportStatuses, saveModules, SUMMARY_EVENT, weeklyFinishSetup } from "../src/service.js";
+import { ACCESS_PEERS } from "../src/access-sync.js";
 import { fakeCtx, fixedClock } from "./helpers/fake-ctx.js";
 import { splitSqlStatements, validateMigrationStatement } from "./helpers/sql-guard.js";
 
@@ -29,7 +30,7 @@ describe("manifest and migration", () => {
     expect(PLUGIN_ID).toBe(SETUP_PLUGIN);
     expect(NAMESPACE).toBe("plugin_setup_48494712db");
     expect(manifest.database?.namespaceSlug).toBe("setup");
-    expect(manifest.version).toBe("0.7.14");
+    expect(manifest.version).toBe("0.7.17");
     expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe(manifest.version);
     for (const capability of ["ui.page.register", "ui.sidebar.register", "ui.dashboardWidget.register", "api.routes.register", "events.emit", "events.subscribe", "jobs.schedule", "issues.read", "issues.create", "issues.update", "issues.wakeup", "plugin.state.read", "plugin.state.write", "companies.read", "database.namespace.migrate", "database.namespace.read", "database.namespace.write"]) {
       expect(manifest.capabilities).toContain(capability);
@@ -117,6 +118,16 @@ describe("module choice", () => {
     ]);
   });
 
+  it("makes no config call for a company outside the host's actionable list (PAR-14008)", async () => {
+    const { ctx, emitted, configCalls } = fakeCtx({ savedConfigs: { [A]: { weeklyIssue: true } } });
+    await saveModules(ctx, { companyId: A, modules: { seo: false }, userId: "u" }, fixedClock("2026-09-26T08:00:00.000Z"));
+    await saveModules(ctx, { companyId: B, modules: {}, userId: "u" }, fixedClock("2026-09-26T08:05:00.000Z"));
+    emitted.length = 0;
+    configCalls.length = 0;
+    expect(await reemitModules(ctx)).toEqual({ emitted: 1, skipped: 1, failed: 0 });
+    expect(configCalls).not.toContain(B);
+  });
+
   it("wires the action to board users only, with the hourly job", async () => {
     const { ctx, actions, jobs, handlers, emitted } = fakeCtx({ savedConfigs: { [A]: {} }, members: { [A]: [{ principalId: "user-9", membershipRole: "admin" }] } });
     registerSetup(ctx);
@@ -124,9 +135,9 @@ describe("module choice", () => {
     await expect(save({ modules: {} }, { companyId: A, actor: { type: "agent", userId: null, agentId: "ag" } })).resolves.toMatchObject({ ok: false, error: expect.stringMatching(/board user/) });
     await save({ modules: { payroll: false }, installed: INSTALLED }, { companyId: A, actor: { type: "user", userId: "user-9", agentId: null } });
     expect(emitted.map((e) => e.name)).toEqual([SETUP_EVENTS.modulesUpdated, SUMMARY_EVENT]);
-    expect([...jobs.keys()].sort()).toEqual([JOBS.reemitModules, JOBS.weeklyFinishSetup, JOBS.templateDrift].sort());
+    expect([...jobs.keys()].sort()).toEqual([JOBS.reemitModules, JOBS.weeklyFinishSetup, JOBS.templateDrift, JOBS.accessResend].sort());
     // The status feeds, the drive.binding feed, plus the one company.created wiring (and its lazy catch-up events) of the kit's registerCompanyBootstrap.
-    expect([...handlers.keys()].sort()).toEqual([...Object.values(PIB_PLUGINS).map((key) => `plugin.${key}.setup.status`), `plugin.${PIB_PLUGINS.crm}.drive.binding`, "company.created", "company.updated", "project.created", `plugin.${PIB_PLUGINS.cockpit}.roles.updated`].sort());
+    expect([...handlers.keys()].sort()).toEqual([...Object.values(PIB_PLUGINS).map((key) => `plugin.${key}.setup.status`), `plugin.${PIB_PLUGINS.crm}.drive.binding`, "company.created", "company.updated", "project.created", `plugin.${PIB_PLUGINS.cockpit}.roles.updated`, ...ACCESS_PEERS.flatMap((key) => ["synced", "request", "refusal"].map((name) => `plugin.${key}.access.${name}`))].sort());
     const load = (await actions.get("setup.load")!({}, { companyId: A, actor: { type: "user", userId: "user-9" } })) as Record<string, unknown>;
     expect(load).toMatchObject({ modules: expect.objectContaining({ payroll: false }), updatedBy: "user-9", installed: { [PIB_PLUGINS.crm]: { id: "crm-uuid", status: "ready" } } });
   });

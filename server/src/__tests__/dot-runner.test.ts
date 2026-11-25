@@ -472,7 +472,7 @@ describe("durable Dot Runner integration", () => {
     const [comment] = await db.insert(issueComments).values({ companyId: f.company.id, issueId: task!.id,
       authorUserId: f.userId, body: "Continue the same assignment" }).returning();
     try {
-      const admitted = await heartbeatService(db).wakeup(f.agent.id, { source: "assignment", triggerDetail: "system",
+      const admitted = await heartbeatService(db).wakeup(f.agent.id, { causingActor: "system", source: "assignment", triggerDetail: "system",
         reason: "issue_commented", payload: { issueId: task!.id, commentId: comment!.id },
         requestedByActorType: "user", requestedByActorId: f.userId,
         contextSnapshot: { issueId: task!.id, wakeCommentId: comment!.id, wakeReason: "issue_commented" } });
@@ -523,6 +523,7 @@ describe("durable Dot Runner integration", () => {
       try {
         if (scenario === "read before wake admission") await consumeDotHistoryReceipt(db, history!);
         for (const comment of comments) await heartbeatService(db).wakeup(f.agent.id, {
+          causingActor: "system",
           source: "assignment", triggerDetail: "system", reason: "issue_commented",
           payload: { issueId: task!.id, commentId: comment.id }, requestedByActorType: "user", requestedByActorId: f.userId,
           contextSnapshot: { issueId: task!.id, wakeCommentId: comment.id, wakeReason: "issue_commented" },

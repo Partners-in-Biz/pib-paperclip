@@ -52,7 +52,7 @@ beforeEach(() => clearServiceAccountTokenCache());
 afterEach(() => vi.unstubAllGlobals());
 
 describe("PAR-10249: save stage timing", () => {
-  const FIELDS = ["resolveMs", "siblingsMs", "ensureMs", "ensureLockWaitMs", "driveLookups", "adoptedUntagged", "dedupeMs", "uploadMs", "totalMs"];
+  const FIELDS = ["resolveMs", "siblingsMs", "ensureMs", "ensureLockWaitMs", "driveLookups", "adoptedUntagged", "dedupeMs", "uploadMs", "totalMs", "sourceMs", "brokerMs", "factsMs", "findSubfolderMs", "upsertMs", "uploadListMs", "uploadPostMs"];
   const timingLines = (harness: Awaited<ReturnType<typeof setup>>["harness"]) =>
     (harness.logs ?? []).filter((l: { message: string }) => l.message === "drive save timing");
 

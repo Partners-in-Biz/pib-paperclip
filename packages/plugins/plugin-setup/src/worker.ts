@@ -1,6 +1,7 @@
 import { definePlugin, runWorker, type PluginContext } from "@paperclipai/plugin-sdk";
 import { handleApiRoute, registerSetup } from "./register.js";
 import { backfillEntitlements } from "./service.js";
+import { resendAllAccess } from "./access-sync.js";
 
 let pluginCtx: PluginContext | null = null;
 
@@ -15,6 +16,11 @@ const plugin = definePlugin({
     } catch (error) {
       ctx.logger.warn("Entitlement backfill failed; companies stay unlocked until it succeeds", { error: error instanceof Error ? error.message : String(error) });
     }
+    // Send every company's access state once (a plugin may have missed a change while Setup was down). Not awaited.
+    void resendAllAccess(ctx).then(
+      (result) => (result.sent || result.skipped || result.failed) && ctx.logger.info("Access sent at start", result),
+      (error: unknown) => ctx.logger.info("Access send at start failed", { error: error instanceof Error ? error.message : String(error) }),
+    );
     ctx.logger.info("Setup plugin ready");
   },
   async onHealth() {

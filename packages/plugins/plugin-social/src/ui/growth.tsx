@@ -3,8 +3,8 @@
  * account's usual), the playbook the agent follows (with versions and
  * pending changes), experiments, and the program settings.
  */
-import { useCallback, useEffect, useRef, useState } from "react";
-import { DataTable, MarkdownBlock } from "@paperclipai/plugin-sdk/ui";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { DataTable, MarkdownBlock, useHostNewIssue } from "@paperclipai/plugin-sdk/ui";
 import {
   Button,
   ChartPie,
@@ -13,6 +13,7 @@ import {
   EmptyState,
   Field,
   Gavel,
+  GiveToAgentButton,
   Input,
   KpiCard,
   Lightbulb,
@@ -32,7 +33,7 @@ import {
   tone,
   type ToneInput,
 } from "@partnersinbiz/pib-plugin-ui";
-import { Banner, Card, chipStyle, fmtDate, Muted, PlatformBadge, Row, scopeName, scopeParams, SmallButton } from "./parts.js";
+import { Banner, Card, chipStyle, fmtDate, Muted, PlatformBadge, platformLabel, Row, scopeName, scopeParams, SmallButton } from "./parts.js";
 import { EXPERIMENT_TONE, VERDICT_TONE, toneOf, verdictSegments } from "./series.js";
 import type { GrowthChange, GrowthExperiment, GrowthFocusView, GrowthHookBoard, GrowthPartRow, GrowthPost, GrowthSnapshot, RunAction, Snapshot } from "./types.js";
 
@@ -174,6 +175,125 @@ function ChangeCard({ change, canDecide, act }: { change: GrowthChange; canDecid
   );
 }
 
+interface CadenceDay {
+  day: string;
+  label: string;
+  accounts: Array<{ id: string; name: string; target: number; have: number }>;
+  free: Array<{ time: string; accounts: string[] }>;
+}
+interface CadenceData {
+  cadence: { postsPerDay: number; perPlatform: Record<string, number>; days: number[]; windowStart: string; windowEnd: string; lookaheadDays: number } | null;
+  summary: string;
+  days: CadenceDay[];
+}
+const WEEK = [1, 2, 3, 4, 5, 6, 0];
+const WEEK_NAME = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+/**
+ * The scope's posting cadence: posts a day per account (a number per platform where it differs), the days and the hours.
+ * The daily calendar check counts each account's posts against it and gives the Social agent the free slots.
+ */
+function CadenceCard({ snapshot, run }: { snapshot: Snapshot; run: RunAction }) {
+  const [data, setData] = useState<CadenceData | null>(null);
+  const [error, setError] = useState("");
+  const [saved, setSaved] = useState("");
+  const [perDay, setPerDay] = useState("3");
+  const [perPlatform, setPerPlatform] = useState<Record<string, string>>({});
+  const [days, setDays] = useState<number[]>(WEEK);
+  const [start, setStart] = useState("07:00");
+  const [end, setEnd] = useState("19:00");
+  const [ahead, setAhead] = useState("2");
+  const [busy, setBusy] = useState(false);
+  const fill = (next: CadenceData) => {
+    setData(next);
+    const c = next.cadence;
+    if (!c) return;
+    setPerDay(String(c.postsPerDay));
+    setPerPlatform(Object.fromEntries(Object.entries(c.perPlatform).map(([k, v]) => [k, String(v)])));
+    setDays(c.days);
+    setStart(c.windowStart);
+    setEnd(c.windowEnd);
+    setAhead(String(c.lookaheadDays));
+  };
+  const scopeKey = snapshot.space === "me" ? "me" : snapshot.scope ?? "own";
+  useEffect(() => {
+    if (snapshot.space === "me") return;
+    run("social.get-cadence", scopeParams(snapshot)).then((r) => fill(r as CadenceData)).catch((e: unknown) => setError(errorText(e)));
+  }, [scopeKey]);
+  if (snapshot.space === "me") return null;
+  const platforms = Array.from(new Set(snapshot.accounts.filter((a) => a.status !== "disabled").map((a) => a.platform)));
+  const isPerson = Boolean(snapshot.viewer.userId);
+  const save = async (clear: boolean) => {
+    setBusy(true);
+    setError("");
+    setSaved("");
+    try {
+      const params = clear
+        ? { ...scopeParams(snapshot), clear: true }
+        : { ...scopeParams(snapshot), postsPerDay: Number(perDay), perPlatform: Object.fromEntries(Object.entries(perPlatform).filter(([, v]) => v.trim() !== "").map(([k, v]) => [k, Number(v)])), days, windowStart: start, windowEnd: end, lookaheadDays: Number(ahead) };
+      fill((await run("social.set-cadence", params)) as CadenceData);
+      setSaved(clear ? "Cadence cleared." : "Cadence saved. The daily calendar check fills the gaps from tomorrow morning.");
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const perDayTotal = platforms.length ? snapshot.accounts.filter((a) => a.status !== "disabled").reduce((n, a) => n + Number(perPlatform[a.platform]?.trim() ? perPlatform[a.platform] : perDay || 0), 0) : 0;
+  return (
+    <Card>
+      <strong style={{ fontSize: 13 }}>Posting cadence for {scopeName(snapshot)}</strong>
+      <Muted>{data ? data.summary : "Loading…"} Every morning the calendar check counts each account's posts against it and gives the Social agent the free slots to fill. Nothing goes out without approval.</Muted>
+      {error ? <Banner tone="error" title="Cadence">{error}</Banner> : null}
+      {saved ? <Banner tone="info" title="Cadence">{saved}</Banner> : null}
+      <div style={{ display: "grid", gap: 10, gridTemplateColumns: fluidColumns(160, "auto-fit") }}>
+        <Field label="Posts a day, each account"><Input type="number" min={0} max={50} value={perDay} disabled={!isPerson} onChange={(e) => setPerDay(e.target.value)} /></Field>
+        {platforms.map((p) => (
+          <Field key={p} label={`${platformLabel(p)} (blank = same)`}>
+            <Input type="number" min={0} max={50} value={perPlatform[p] ?? ""} disabled={!isPerson} placeholder={perDay} onChange={(e) => setPerPlatform({ ...perPlatform, [p]: e.target.value })} />
+          </Field>
+        ))}
+        <Field label="First post"><Input type="time" value={start} disabled={!isPerson} onChange={(e) => setStart(e.target.value)} /></Field>
+        <Field label="Last post"><Input type="time" value={end} disabled={!isPerson} onChange={(e) => setEnd(e.target.value)} /></Field>
+        <Field label="Plan ahead">
+          <Select value={ahead} disabled={!isPerson} onChange={(e) => setAhead(e.target.value)}>
+            {[1, 2, 3, 4, 5, 6, 7].map((n) => <option key={n} value={String(n)}>{n === 1 ? "1 day" : `${n} days`}</option>)}
+          </Select>
+        </Field>
+      </div>
+      <Row style={{ flexWrap: "wrap", gap: 6 }}>
+        <Muted>Days:</Muted>
+        {WEEK.map((d) => {
+          const on = days.includes(d);
+          return (
+            <button key={d} type="button" disabled={!isPerson} aria-pressed={on} onClick={() => setDays(on ? days.filter((x) => x !== d) : [...days, d])} style={{ ...chipStyle(on), cursor: isPerson ? "pointer" : "default", fontFamily: "inherit" }}>
+              {WEEK_NAME[d]}
+            </button>
+          );
+        })}
+        {platforms.length ? <Muted>About {perDayTotal} account-posts a day ({platforms.length} platform{platforms.length === 1 ? "" : "s"}).</Muted> : <Muted>No connected accounts in this scope yet.</Muted>}
+      </Row>
+      {isPerson ? (
+        <Row>
+          <Button type="button" disabled={busy} onClick={() => void save(false)}>Save cadence</Button>
+          {data?.cadence ? <SmallButton disabled={busy} onClick={() => void save(true)}>Clear</SmallButton> : null}
+        </Row>
+      ) : null}
+      {data?.days.length ? (
+        <div style={{ display: "grid", gap: 4 }}>
+          <Muted style={{ fontWeight: 600 }}>Days ahead</Muted>
+          {data.days.map((d) => (
+            <Muted key={d.day}>
+              <strong>{d.label}</strong>: {d.accounts.map((a) => `${a.name} ${a.have}/${a.target}`).join(" · ")}
+              {d.free.length ? ` — ${d.free.length} free slot${d.free.length === 1 ? "" : "s"} (${d.free.slice(0, 6).map((f) => f.time).join(", ")}${d.free.length > 6 ? ", …" : ""})` : " — full"}
+            </Muted>
+          ))}
+        </div>
+      ) : null}
+    </Card>
+  );
+}
+
 function ProgramSettings({ data, snapshot, act }: { data: GrowthSnapshot; snapshot: Snapshot; act: (key: string, params: Record<string, unknown>, success: string) => Promise<void> }) {
   const p = data.program;
   const [objective, setObjective] = useState(p.objective);
@@ -198,7 +318,7 @@ function ProgramSettings({ data, snapshot, act }: { data: GrowthSnapshot; snapsh
       <Field label="Topics (comma separated; Jev tags each post with one)"><Input value={topics} onChange={(e) => setTopics(e.target.value)} placeholder="pricing, case studies, team, tips" /></Field>
       <Field label="Brand voice"><Input value={brandVoice} onChange={(e) => setBrandVoice(e.target.value)} placeholder="Plain, warm, South African English" /></Field>
       <Field label="Platforms"><Input value={platforms} onChange={(e) => setPlatforms(e.target.value)} placeholder="LinkedIn and Instagram first" /></Field>
-      <Field label="Cadence"><Input value={cadence} onChange={(e) => setCadence(e.target.value)} placeholder="3 posts a week per platform" /></Field>
+      <Field label="Cadence notes (free text for the agent; the numbers are in Posting cadence above)"><Input value={cadence} onChange={(e) => setCadence(e.target.value)} placeholder="Video on weekdays, carousels on weekends" /></Field>
       <Row>
         <Button type="button" onClick={() => void act("social.growth-update-program", { ...scopeParams(snapshot), objective, autopilot, topics, brandVoice, platforms, cadence }, "Program saved")}>Save program</Button>
       </Row>
@@ -276,7 +396,28 @@ function FocusCard({ view, snapshot, canEdit, save }: { view: GrowthFocusView; s
   );
 }
 
-function PartTable({ title, one, rows }: { title: string; one: string; rows: GrowthPartRow[] }) {
+type GivePart = "hook" | "body" | "cta" | "board";
+type Give = (part: GivePart, name: string | null) => ReactNode;
+
+/** Give to agent from the hook board: the worker writes the prefill; the person edits it in the host's New Task popup. */
+function useHookGive(snapshot: Snapshot, run: RunAction, periodDays: number, onDone: (message: string, tone: "ok" | "error") => void): Give {
+  const host = useHostNewIssue();
+  const newIssue = useMemo(() => ({ open: (defaults?: Parameters<typeof host.open>[0]) => host.open(defaults) }), [host]);
+  if (!snapshot.viewer.userId) return () => null;
+  return (part, name) => (
+    <GiveToAgentButton
+      newIssue={newIssue}
+      label={part === "board" ? "Give the board to an agent" : "Give to agent"}
+      style={part === "board" ? undefined : { height: 26, fontSize: 11, padding: "0 8px" }}
+      prepare={async () => (await run("social.hook-give-prepare", { ...scopeParams(snapshot), part, name, periodDays })) as { title: string; description: string; projectId?: string; assigneeAgentId?: string }}
+      record={async () => undefined}
+      onDone={(out) => onDone(`${out.message} The Social agent picks it up.`, "ok")}
+      onError={(message) => onDone(message, "error")}
+    />
+  );
+}
+
+function PartTable({ title, one, part, rows, give }: { title: string; one: string; part: Exclude<GivePart, "board">; rows: GrowthPartRow[]; give: Give }) {
   if (rows.length === 0) return null;
   return (
     <div style={{ display: "grid", gap: 6, minWidth: 0 }}>
@@ -287,7 +428,9 @@ function PartTable({ title, one, rows }: { title: string; one: string; rows: Gro
           { key: "posts", header: "Posts" },
           { key: "reach", header: "Reached" },
           { key: "rate", header: "Acted per 100" },
-          { key: "verdict", header: "Verdict" },
+          // The host table prints cell values as text: an element must come from `render`.
+          { key: "verdict", header: "Verdict", render: (value) => <Chip tone={VERDICT_PILL[value as GrowthPartRow["verdict"]]}>{String(value)}</Chip> },
+          { key: "give", header: "", render: (_value, row) => give(part, String((row as { name: string }).name)) },
         ]}
         rows={rows.map((r) => ({
           id: r.name,
@@ -295,7 +438,8 @@ function PartTable({ title, one, rows }: { title: string; one: string; rows: Gro
           posts: r.posts,
           reach: r.reach,
           rate: r.rate === null ? "—" : String(r.rate),
-          verdict: <Chip tone={VERDICT_PILL[r.verdict]}>{r.verdict}</Chip>,
+          verdict: r.verdict,
+          give: "",
         }))}
       />
     </div>
@@ -303,21 +447,22 @@ function PartTable({ title, one, rows }: { title: string; one: string; rows: Gro
 }
 
 /** Which hooks, bodies and asks worked, from the tags on published posts. */
-function HookBoardCard({ board }: { board: GrowthHookBoard }) {
+function HookBoardCard({ board, give, notice }: { board: GrowthHookBoard; give: Give; notice: { message: string; tone: "ok" | "error" } | null }) {
   const control = [board.control.hook ? `hook "${board.control.hook}"` : null, board.control.body ? `body "${board.control.body}"` : null, board.control.cta ? `ask "${board.control.cta}"` : null].filter(Boolean);
   const empty = board.hooks.length + board.bodies.length + board.ctas.length === 0;
   return (
-    <SectionCard title="Hook board" subtitle={`${board.tagged} of ${board.published} published posts tagged · ${board.reach} people reached · last ${board.periodDays} days`} icon={Target}>
+    <SectionCard title="Hook board" subtitle={`${board.tagged} of ${board.published} published posts tagged · ${board.reach} people reached · last ${board.periodDays} days`} icon={Target} actions={give("board", null)}>
       <div style={{ display: "grid", gap: 12, minWidth: 0 }}>
+        {notice ? <Banner tone={notice.tone === "ok" ? "info" : "error"} title={notice.tone === "ok" ? "Task created" : "Not created"}>{notice.message}</Banner> : null}
         {control.length ? <Muted>The control to beat: {control.join(", ")}.</Muted> : null}
         {board.notes.map((note) => <Muted key={note}>{note}</Muted>)}
         {empty ? (
           <EmptyState compact icon={Lightbulb} title="No tagged posts yet" description="Posts tagged hook:, body: and cta: show up here once they are published, ranked by how many of the people they reached acted." />
         ) : (
           <>
-            <PartTable title="Hooks" one="Hook" rows={board.hooks} />
-            <PartTable title="Bodies" one="Body" rows={board.bodies} />
-            <PartTable title="Asks" one="Ask" rows={board.ctas} />
+            <PartTable title="Hooks" one="Hook" part="hook" rows={board.hooks} give={give} />
+            <PartTable title="Bodies" one="Body" part="body" rows={board.bodies} give={give} />
+            <PartTable title="Asks" one="Ask" part="cta" rows={board.ctas} give={give} />
           </>
         )}
       </div>
@@ -334,6 +479,8 @@ export function GrowthTab({ snapshot, run }: { snapshot: Snapshot; run: RunActio
   const [viewVersion, setViewVersion] = useState<number | null>(null);
   const seq = useRef(0);
   const tz = snapshot.config.timezone;
+  const [giveNotice, setGiveNotice] = useState<{ message: string; tone: "ok" | "error" } | null>(null);
+  const give = useHookGive(snapshot, run, period, (message, t) => setGiveNotice({ message, tone: t }));
 
   const load = useCallback(async () => {
     const mine = ++seq.current;
@@ -414,7 +561,7 @@ export function GrowthTab({ snapshot, run }: { snapshot: Snapshot; run: RunActio
         </SectionCard>
       </div>
 
-      {data.hookBoard ? <HookBoardCard board={data.hookBoard} /> : null}
+      {data.hookBoard ? <HookBoardCard board={data.hookBoard} give={give} notice={giveNotice} /> : null}
 
       {waiting ? (
         <div style={{ display: "grid", gap: 8 }}>
@@ -493,6 +640,7 @@ export function GrowthTab({ snapshot, run }: { snapshot: Snapshot; run: RunActio
         ))}
       </Card>
 
+      <CadenceCard snapshot={snapshot} run={run} />
       <ProgramSettings key={data.program.programId + data.program.autopilot} data={data} snapshot={snapshot} act={act} />
 
       <Modal open={editing !== null} title={`Edit playbook (v${data.program.playbookVersion} → v${data.program.playbookVersion + 1})`} onClose={() => setEditing(null)} footer={(

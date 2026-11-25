@@ -6,7 +6,8 @@
  * separate `-i` of a picture clip with sound, compile-audio.ts) weighs `audioWeight`. An edit whose total weight is
  * within `passBudget` renders in one pass, as today.
  *
- * Otherwise the main track is cut, in time order, into chunks of weight <= `passBudget - 1`. Each chunk is a pass:
+ * Otherwise the main track is cut, in time order, into chunks of weight <= `passBudget - 1` (at least two when there
+ * is a cut and that still lightens the main track, `halve`: the pipeline runs a level's chunks side by side). Each chunk is a pass:
  * a sub-doc that holds only its main clips, shifted to the chunk's start, rendered by the unchanged `compileVideo`. The
  * final doc swaps the main track for one plain clip per chunk output and keeps every other track. If that main track is
  * still heavier than its share of the budget, it is chunked again (recursion); passes are listed leaves first.
@@ -35,7 +36,7 @@
  */
 import { join } from "node:path";
 import { clipHasSound, hasClipAudio } from "./compile-audio.js";
-import { CompileError, frameAt, inputKey, type CompileInput, type CompileInputs } from "./compile-video.js";
+import { CompileError, frameAt, inputKey, sourceKey, type CompileInput, type CompileInputs } from "./compile-video.js";
 import { clipDuration, editDuration, type AudioClip, type EditDoc, type MediaClip, type Track } from "./timeline.js";
 
 /**
@@ -75,9 +76,9 @@ export function inputWeight(source: CompileInput, projectFps: number, audioWeigh
   return Math.max(1, (source.width * source.height * fps) / BASE_RATE);
 }
 
-function sourceOf(sources: CompileInputs, clip: { assetId: string; version: number }): CompileInput {
-  const source = sources[inputKey(clip.assetId, clip.version)];
-  if (!source) throw new CompileError("missing_input", inputKey(clip.assetId, clip.version));
+function sourceOf(sources: CompileInputs, clip: Parameters<typeof sourceKey>[0]): CompileInput {
+  const source = sources[sourceKey(clip)];
+  if (!source) throw new CompileError("missing_input", sourceKey(clip));
   return source;
 }
 
@@ -86,7 +87,7 @@ function trackInputs(track: Track, sources: CompileInputs, fps: number, audioWei
   const out: { key: string; weight: number }[] = [];
   if (track.kind === "text" || track.kind === "caption") return out;
   for (const clip of track.clips) {
-    const key = inputKey(clip.assetId, clip.version);
+    const key = sourceKey(clip);
     const source = sourceOf(sources, clip);
     if (track.kind === "audio") out.push({ key, weight: audioWeight });
     else {
@@ -116,18 +117,38 @@ function sourcesFor(doc: EditDoc, all: CompileInputs): CompileInputs {
   const out: CompileInputs = {};
   for (const track of doc.tracks) {
     if (track.kind === "text" || track.kind === "caption") continue;
-    for (const clip of track.clips) out[inputKey(clip.assetId, clip.version)] = sourceOf(all, clip);
+    for (const clip of track.clips) out[sourceKey(clip)] = sourceOf(all, clip);
   }
   return out;
 }
 
 interface Level { passes: RenderPass[]; doc: EditDoc; sources: CompileInputs }
 
+/**
+ * Two chunks instead of one (PAR-11217): ffmpeg 6.1 runs a whole filter graph on one thread, so a chunk pass is bound
+ * by that thread (about 0.9 s of it per second of graded 1080x1920), and two chunk passes run side by side
+ * (render-pipeline.ts) take about 0.6 of the wall. Cut where the two halves' durations are closest, only at a cut
+ * `chunkMain` allows (no overlap, or an overlap with a transition); `[clips]` when there is none.
+ */
+function halve(clips: MediaClip[], end: (c: MediaClip) => number): MediaClip[][] {
+  const from = clips[0]?.start ?? 0;
+  const to = Math.max(...clips.map(end));
+  let best = -1;
+  let gap = Infinity;
+  for (let i = 1; i < clips.length; i++) {
+    const before = Math.max(...clips.slice(0, i).map(end));
+    if (before - clips[i].start > EPS && clips[i].transitionIn === null) continue;
+    const d = Math.abs(clips[i].start - from - (to - clips[i].start));
+    if (d < gap) [best, gap] = [i, d];
+  }
+  return best < 0 ? [clips] : [clips.slice(0, best), clips.slice(best)];
+}
+
 /** One level of main-track chunking: the chunk passes and the doc that joins their outputs. */
-function chunkMain(doc: EditDoc, sources: CompileInputs, level: number, opts: Required<PlanOptions>): Level {
+function chunkMain(doc: EditDoc, sources: CompileInputs, level: number, opts: Required<PlanOptions>, split = true): Level {
   const { fps, width, height } = doc.project;
   const index = mainIndex(doc);
-  const track = doc.tracks[index] as Extract<Track, { kind: "video" | "overlay" }>;
+  const track = doc.tracks[index] as Extract<Track, { kind: "video" }>; // the main track (mainIndex)
   const clips = [...track.clips].sort((a, b) => a.start - b.start);
   const clipWeight = (c: MediaClip) => sum(trackInputs({ ...track, clips: [c] }, sources, fps, opts.audioWeight));
 
@@ -142,8 +163,8 @@ function chunkMain(doc: EditDoc, sources: CompileInputs, level: number, opts: Re
     groups[groups.length - 1].push(clip);
     load += w;
   }
-
   const end = (c: MediaClip) => ms(c.start + clipDuration(c));
+  if (split && groups.length === 1) groups.splice(0, 1, ...halve(clips, end));
   const passes: RenderPass[] = [];
   const finals: MediaClip[] = [];
   const outputs: CompileInputs = {};
@@ -309,9 +330,20 @@ export function planRender(doc: EditDoc, sources: CompileInputs, options: PlanOp
     const inputs = current.doc.tracks.map((t) => sum(trackInputs(t, current.sources, doc.project.fps, opts.audioWeight)));
     const main = inputs[index];
     const others = sum(inputs.map((w) => ({ weight: w }))) - main;
-    if (main <= Math.max(2, opts.passBudget - others) + W_EPS) break;
-    const next = chunkMain(current.doc, current.sources, levels, opts);
-    const nextMain = sum(trackInputs(next.doc.tracks[index], next.sources, doc.project.fps, opts.audioWeight));
+    // The floor is two inputs: merging two chunk outputs into one costs a whole re-encode of the edit to save one input.
+    // After a level the main track holds only chunk outputs, so the floor is two plain inputs plus the `audioWeight` of
+    // those that carry sound: outputs with sound (1 + `audioWeight` each) stop the loop where silent ones (1 each) do,
+    // and a silent plan is unchanged (PAR-11417: the halved main track of the worst-case edit with sound weighs 2.2 and
+    // took a 180 s `chunk-1-0` pass to save 1.1). Counting the sound that is there, not a flat 2 x (1 + `audioWeight`),
+    // keeps level 0 as it was: source clips with sound still chunk when they are over the floor of 2.
+    const track = current.doc.tracks[index] as Extract<Track, { kind: "video" | "overlay" }>;
+    const sound = levels > 0 ? track.clips.filter((c) => clipHasSound(track.kind, c, current.sources)).length * opts.audioWeight : 0;
+    if (main <= Math.max(2 + sound, opts.passBudget - others) + W_EPS) break;
+    const mainOf = (l: Level) => sum(trackInputs(l.doc.tracks[index], l.sources, doc.project.fps, opts.audioWeight));
+    let next = chunkMain(current.doc, current.sources, levels, opts);
+    // Two outputs can weigh what their clips did (one light clip each): then one chunk, as before the split.
+    if (mainOf(next) >= main - W_EPS) next = chunkMain(current.doc, current.sources, levels, opts, false);
+    const nextMain = mainOf(next);
     if (nextMain >= main - W_EPS) break; // no progress (a budget too small to merge chunk outputs): stop here
     passes.push(...next.passes);
     current = next;

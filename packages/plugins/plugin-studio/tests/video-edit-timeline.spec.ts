@@ -44,14 +44,14 @@ describe("video edit timeline", () => {
 
   it("drops unknown fields everywhere", () => {
     const doc = normalizeEdit({
-      ...edit([{ id: "v", kind: "video", muted: true, clips: [media("c", { effects: ["blur"], keyframes: [], transform: { x: 1, skew: 3, crop: { left: 0.1, feather: 2 } }, transitionIn: { type: "fade", duration: 1, easing: "in" } })] }], { size: "1:1", width: 9, bitrate: 5 }),
+      ...edit([{ id: "v", kind: "video", muted: true, clips: [media("c", { filters: ["blur"], keyframes: [], transform: { x: 1, skew: 3, crop: { left: 0.1, feather: 2 } }, transitionIn: { type: "fade", duration: 1, easing: "in" } })] }], { size: "1:1", width: 9, bitrate: 5 }),
       title: "x",
     });
     expect(Object.keys(doc)).toEqual(["schemaVersion", "project", "tracks"]);
     expect(doc.project).toEqual({ size: "1:1", width: 1080, height: 1080, fps: 30 });
     expect(Object.keys(doc.tracks[0])).toEqual(["id", "kind", "clips"]);
     const clip = doc.tracks[0].clips[0] as unknown as Record<string, unknown>;
-    expect(clip.effects).toBeUndefined();
+    expect(clip.filters).toBeUndefined();
     expect(clip.keyframes).toBeUndefined();
     expect(clip.transform).toEqual({ x: 1, y: 0, scale: 1, rotate: 0, crop: { left: 0.1, top: 0, right: 0, bottom: 0 } });
     expect(clip.transitionIn).toEqual({ type: "fade", duration: 1 });
@@ -171,7 +171,7 @@ describe("video edit timeline", () => {
   });
 
   it("refuses other schema versions with a typed error", () => {
-    expect(refused({ schemaVersion: 5 })).toMatchObject({ reason: "unsupported_version", path: "schemaVersion", code: "bad_edit" });
+    expect(refused({ schemaVersion: 6 })).toMatchObject({ reason: "unsupported_version", path: "schemaVersion", code: "bad_edit" });
     expect(normalizeEdit({ project: {} }).schemaVersion).toBe(1);
   });
 });

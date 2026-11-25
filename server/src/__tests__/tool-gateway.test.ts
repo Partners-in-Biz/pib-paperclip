@@ -5026,7 +5026,7 @@ rl.on("line", (line) => {
       userId: "board-user",
       source: "session",
       companyIds: [company.id],
-      memberships: [{ companyId: company.id, membershipRole: "operator", status: "active" }],
+      memberships: [{ companyId: company.id, membershipRole: "operator", status: "active", restricted: false, restrictionMode: "off" }],
       isInstanceAdmin: false,
     });
 
@@ -5100,7 +5100,7 @@ rl.on("line", (line) => {
       userId: "other-board-user",
       source: "session",
       companyIds: [otherCompany.id],
-      memberships: [{ companyId: otherCompany.id, membershipRole: "operator", status: "active" }],
+      memberships: [{ companyId: otherCompany.id, membershipRole: "operator", status: "active", restricted: false, restrictionMode: "off" }],
       isInstanceAdmin: false,
     });
 
@@ -5177,7 +5177,7 @@ rl.on("line", (line) => {
       userId: "viewer-user",
       source: "session",
       companyIds: [company.id],
-      memberships: [{ companyId: company.id, membershipRole: "viewer", status: "active" }],
+      memberships: [{ companyId: company.id, membershipRole: "viewer", status: "active", restricted: false, restrictionMode: "off" }],
       isInstanceAdmin: false,
     });
 
@@ -5283,7 +5283,7 @@ rl.on("line", (line) => {
       userId,
       source: "session",
       companyIds: [company.id],
-      memberships: [{ companyId: company.id, membershipRole: "operator", status: "active" }],
+      memberships: [{ companyId: company.id, membershipRole: "operator", status: "active", restricted: false, restrictionMode: "off" }],
       isInstanceAdmin: false,
     });
 
@@ -5470,7 +5470,7 @@ rl.on("line", (line) => {
       userId: "instance-admin",
       source: "session",
       companyIds: [company.id],
-      memberships: [{ companyId: company.id, membershipRole: "owner", status: "active" }],
+      memberships: [{ companyId: company.id, membershipRole: "owner", status: "active", restricted: false, restrictionMode: "off" }],
       isInstanceAdmin: true,
     });
 

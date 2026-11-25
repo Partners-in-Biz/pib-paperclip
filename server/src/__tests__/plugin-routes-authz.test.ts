@@ -120,9 +120,15 @@ function boardActor(overrides: Record<string, unknown> = {}) {
     source: "session",
     isInstanceAdmin: false,
     companyIds: [companyA],
+    // An owner: the tool execute route admits only owners and admins (PAR-12714).
+    memberships: [{ companyId: companyA, membershipRole: "owner", status: "active", restricted: false, restrictionMode: "off" }],
     ...overrides,
   };
 }
+
+/** The acting person core adds to every plugin caller (PAR-12715, H3). */
+const noPerson = { onBehalfOfUserId: null, onBehalfOfRestricted: false };
+const boardPerson = (userId = "user-1") => ({ onBehalfOfUserId: userId, onBehalfOfRestricted: false });
 
 function agentActor(overrides: Record<string, unknown> = {}) {
   return {
@@ -452,6 +458,7 @@ describe("scoped plugin API routes", () => {
         source: "session",
         isInstanceAdmin: false,
         companyIds: ["company-1"],
+        memberships: [{ companyId: "company-1", status: "active", restricted: false, restrictionMode: "off" }],
       },
       {},
       { bridgeDeps: { workerManager } },
@@ -669,6 +676,7 @@ describe("plugin tool and bridge authz", () => {
         runId: runA,
         companyId: companyA,
         projectId: projectA,
+        ...boardPerson(),
       },
     );
   });
@@ -702,7 +710,7 @@ describe("plugin tool and bridge authz", () => {
     expect(executeTool).toHaveBeenCalledWith(
       "paperclip.example:search",
       {},
-      { agentId: agentA, runId: runA, companyId: companyA, projectId: "" },
+      { agentId: agentA, runId: runA, companyId: companyA, projectId: "", ...boardPerson() },
     );
   });
 
@@ -737,7 +745,7 @@ describe("plugin tool and bridge authz", () => {
     expect(executeTool).toHaveBeenCalledWith(
       "paperclip.example:search",
       {},
-      { agentId: agentA, runId: runA, companyId: companyA, projectId: "" },
+      { agentId: agentA, runId: runA, companyId: companyA, projectId: "", ...boardPerson() },
     );
   });
 
@@ -801,6 +809,7 @@ describe("plugin tool and bridge authz", () => {
       key: "health",
       companyId: companyA,
       params: { view: "compact" },
+      actorContext: boardPerson(),
       renderEnvironment: null,
     });
   });
@@ -832,6 +841,7 @@ describe("plugin tool and bridge authz", () => {
         agentId: null,
         runId: null,
         companyId: null,
+        ...boardPerson("admin-1"),
       },
       renderEnvironment: null,
     });
@@ -869,6 +879,7 @@ describe("plugin tool and bridge authz", () => {
         agentId: null,
         runId: runA,
         companyId: companyA,
+        ...boardPerson(),
       },
       renderEnvironment: null,
     });
@@ -929,6 +940,7 @@ describe("plugin tool and bridge authz", () => {
         agentId: agentA,
         runId: runA,
         companyId: companyA,
+        ...noPerson,
       },
       renderEnvironment: null,
     });
@@ -958,6 +970,7 @@ describe("plugin tool and bridge authz", () => {
         agentId: agentA,
         runId: runA,
         companyId: companyA,
+        ...noPerson,
       },
       renderEnvironment: null,
     });
@@ -1126,7 +1139,7 @@ describe("plugin tool and bridge authz", () => {
     expect(executeTool).toHaveBeenCalledWith(
       "paperclip.example:search",
       { q: "test" },
-      { agentId: agentA, runId: runA, companyId: companyA, projectId: projectA },
+      { agentId: agentA, runId: runA, companyId: companyA, projectId: projectA, ...noPerson },
     );
   });
 

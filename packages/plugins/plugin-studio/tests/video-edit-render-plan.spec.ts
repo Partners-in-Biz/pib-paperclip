@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { hasClipAudio } from "../src/video-edit/compile-audio.js";
 import { compileVideo, frameAt, inputKey, type CompileInputs } from "../src/video-edit/compile-video.js";
-import { editWeight, inputWeight, planRender, type RenderPass, type RenderPlan } from "../src/video-edit/render-plan.js";
+import { editWeight, inputWeight, PASS_BUDGET, planRender, type RenderPass, type RenderPlan } from "../src/video-edit/render-plan.js";
 import { clipDuration, editDuration, normalizeEdit, type EditDoc, type MediaClip } from "../src/video-edit/timeline.js";
 
 const ms = (n: number) => Math.round(n * 1000) / 1000;
@@ -76,6 +76,46 @@ describe("main-track chunks", () => {
     ]);
     for (const x of p.passes) expect(x.weight).toBeLessThanOrEqual(7);
     expect(mainOf(p.final.doc).map((c) => [c.assetId, c.start, c.out])).toEqual([["chunk-0-0", 0, 7], ["chunk-0-1", 7, 7], ["chunk-0-2", 14, 3]]);
+  });
+
+  it("PAR-11217: a main track that fits one chunk is cut in two at the cut nearest its middle", () => {
+    // 6 x 30 s graded clips (the worst-case edit's base): one chunk of weight 6 would fit; the pipeline runs two at once.
+    const ov = (n: number, len: number) => Array.from({ length: n }, (_, i) => ({ id: `o${i}`, kind: "overlay", clips: [clip(`o${i}c`, "g", 0, len, GRADE)] }));
+    const doc = edit(run(6, 30), ov(3, 180));
+    const p = multi(plan(doc));
+    const chunks = p.passes.filter((x) => x.kind === "chunk");
+    expect(chunks.map((x) => [x.id, x.origin, x.duration, mainOf(x.doc).map((c) => c.id)])).toEqual([
+      ["chunk-0-0", 0, 90, ["c0", "c1", "c2"]],
+      ["chunk-0-1", 90, 90, ["c3", "c4", "c5"]],
+    ]);
+    // 7 clips: the middle (70 s) is not a cut; 60 / 80 s and 80 / 60 s are equally near: the first wins.
+    expect(multi(plan(edit(run(7, 20), ov(3, 140)))).passes
+      .filter((x) => x.kind === "chunk").map((x) => mainOf(x.doc).length)).toEqual([3, 4]);
+    // A cut inside a dissolve is allowed (the xfade moves to the final doc): here it is the one nearest the middle.
+    const dissolve = { type: "dissolve", duration: 0.5 };
+    const xf = multi(plan(edit([clip("a", "g", 0, 15, GRADE), clip("b", "g", 14.5, 10, { ...GRADE, transitionIn: dissolve }), clip("c", "g", 24.5, 5, GRADE)], ov(6, 29.5))));
+    expect(xf.passes.filter((x) => x.kind === "chunk").map((x) => mainOf(x.doc).map((c) => c.id))).toEqual([["a"], ["b", "c"]]);
+  });
+
+  it("PAR-11217: when two chunk outputs would weigh what their clips did, one chunk as before", () => {
+    // Two plain clips with sound (1.25 each): two outputs weigh 2.5 again, so halving makes no progress and is skipped.
+    const doc = edit([clip("a", "s", 0, 5), clip("b", "s", 5, 5)], Array.from({ length: 3 }, (_, i) => ({ id: `o${i}`, kind: "overlay", clips: [clip(`o${i}c`, "g", 0, 10, GRADE)] })));
+    const p = multi(plan(doc, 4));
+    expect(p.passes.filter((x) => x.kind === "chunk").map((x) => x.id)).toEqual(["chunk-0-0"]);
+  });
+
+  it("PAR-11417: two chunk outputs with sound are not merged again (the worst-case 'both' edit with sound)", () => {
+    // The probe's doc (video-edit-worst-case-probe.spec.ts): 6 x 30 s graded main clips and two overlay tracks of 6
+    // clips, every source with sound, at the tuned defaults. The halved main track weighs 2 x (1 + 0.1) = 2.2.
+    const ov = (track: string) => ({ id: track, kind: "overlay", clips: run(6, 30, () => ({ assetId: "s" })).map((c) => ({ ...c, id: `${track}${c.id}` })) });
+    const doc = edit(run(6, 30, () => ({ assetId: "s" })), [ov("om"), ov("ok")]);
+    const p = multi(planRender(doc, inputs, { workdir: WD }));
+    expect(p.levels).toBe(1);
+    expect(p.passes.map((x) => x.id)).toEqual(["chunk-0-0", "chunk-0-1", "layer-0"]);
+    for (const x of [...p.passes, p.final]) expect(x.weight).toBeLessThanOrEqual(PASS_BUDGET + 1e-9);
+    // The same edit without sound plans the same passes (its chunk outputs weigh 2, the floor).
+    const silent = multi(planRender(edit(run(6, 30), [ov("om"), ov("ok")].map((t) => ({ ...t, clips: t.clips.map((c) => ({ ...c, assetId: "g" })) }))), inputs, { workdir: WD }));
+    expect(silent.passes.map((x) => x.id)).toEqual(p.passes.map((x) => x.id));
   });
 
   it("AC4: boundaries on the frame grid, chunks tile the main track, durations add up in frames", () => {

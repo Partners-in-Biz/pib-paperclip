@@ -11,6 +11,8 @@ const overlay = (extra: Record<string, unknown>, v?: number) => doc("overlay", m
 const clipOf = (d: EditDoc, i = 0) => d.tracks[0].clips[i] as unknown as Record<string, any>;
 const KEY = { color: "#00FF00", similarity: 0.3, blend: 0.1, spill: 0.5 };
 const FRAME = { borderWidth: 6, borderColor: "#112233", cornerRadius: 20 };
+/** The highest version a FEATURE_VERSION row can stamp; v5+ rows are covered by their own spec. */
+const top = (v: (typeof FEATURE_VERSION)[string]) => (typeof v === "number" ? v : Math.max(...Object.values(v)));
 
 function refused(input: unknown): EditError {
   try {
@@ -39,18 +41,18 @@ const MAX_DOC = {
 };
 
 describe("schema v4: FEATURE_VERSION rows for overlay layering", () => {
-  it("reads 1 to 4 and refuses 5 with unsupported_version", () => {
-    expect(SCHEMA_VERSION).toBe(4);
+  it("reads 1 to 4 (and 5) and refuses 6 with unsupported_version", () => {
+    expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(4);
     for (const v of [1, 2, 3, 4]) expect(normalizeEdit(overlay({}, v)).schemaVersion).toBe(1);
-    expect(refused(overlay({}, 5))).toMatchObject({ reason: "unsupported_version", path: "schemaVersion", code: "bad_edit" });
+    expect(refused(overlay({}, 6))).toMatchObject({ reason: "unsupported_version", path: "schemaVersion", code: "bad_edit" });
   });
 
-  it("every leaf a max-feature doc emits has a row, and every row is emitted (no stale rows)", () => {
+  it("every leaf a max-feature doc emits has a row, and every v1-v4 row is emitted (no stale rows)", () => {
     const full = normalizeEdit(MAX_DOC);
     expect(full.schemaVersion).toBe(4);
     const emitted = new Set(featurePaths(full).map(([p]) => p));
     expect([...emitted].filter((p) => !Object.hasOwn(FEATURE_VERSION, p))).toEqual([]);
-    expect(Object.keys(FEATURE_VERSION).filter((p) => !emitted.has(p))).toEqual([]);
+    expect(Object.keys(FEATURE_VERSION).filter((p) => top(FEATURE_VERSION[p]) <= 4).filter((p) => !emitted.has(p))).toEqual([]);
     expect(JSON.stringify(normalizeEdit(JSON.parse(JSON.stringify(full))))).toBe(JSON.stringify(full));
   });
 
@@ -150,7 +152,7 @@ describe("schema v4: blendMode, chromaKey, frame", () => {
     expect(classifyRenderError(new EditError("schemaVersion: version 4 is not supported", "unsupported_version", "schemaVersion")).kind).toBe("deterministic");
     let caught: unknown;
     try {
-      normalizeEdit(overlay({}, 5));
+      normalizeEdit(overlay({}, 6));
     } catch (error) {
       caught = error;
     }

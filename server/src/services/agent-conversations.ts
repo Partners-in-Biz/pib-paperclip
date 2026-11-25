@@ -1,4 +1,5 @@
 import { isContextCompactionRun } from "./context-compaction.js";
+import { wakeCausingActorFromActorRef, type WakeCausingActor } from "./heartbeat/causing-actor.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
@@ -607,6 +608,7 @@ export async function deliverConversationComments(
       triggerDetail: "manual";
       reason: string;
       idempotencyKey: string;
+      causingActor: WakeCausingActor;
       requestedByActorType: "user";
       requestedByActorId: string | null;
       payload: Record<string, unknown>;
@@ -645,6 +647,7 @@ export async function deliverConversationComments(
             triggerDetail: "manual",
             reason: "issue_commented",
             idempotencyKey: `conversation-comment:${comment.id}`,
+            causingActor: wakeCausingActorFromActorRef({ actorType: "user", actorId: comment.authorUserId }),
             requestedByActorType: "user",
             requestedByActorId: comment.authorUserId,
             payload: { issueId: issue.id, commentId: comment.id },

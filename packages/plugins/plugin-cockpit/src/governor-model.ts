@@ -41,7 +41,6 @@ export const DEFAULT_PAUSE_ORDER = [
 
 // Agents that must never pause. Summarizer is the governor canary.
 export const NEVER_PAUSE = [
-  "Elon",
   "PiB",
   "Delivery Lead",
   "Operator",

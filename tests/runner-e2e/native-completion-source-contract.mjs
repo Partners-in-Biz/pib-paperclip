@@ -42,7 +42,7 @@ export const NATIVE_COMPLETION_SOURCE_CONTRACT = {
   "fixedContext": {
     "server/src/onboarding-assets/default/AGENTS.md": "e4d2375d722602cd744403292d99f6e6c9b7e8014d9cdfa6f9811ace03428e5f",
     "packages/adapter-utils/src/server-utils.ts": "916e879f70a90d31c89bc1486d5f84807c4ecafeab62961f67d84d1ebec7a173",
-    "skills/paperclip/SKILL.md": "19b4e17bc6588b087efce63673c3f2839ac09dba9c072f56b8e90924a66856de",
+    "skills/paperclip/SKILL.md": "b7143b08751b209eae5a1303f53d3a27f0774f2c45634d268baf238b09f0f0a3",
     "server/src/services/onboarding-first-task-assets.ts": "c7fd1db7ed97850bd67e48a4d8c1470c8ff801f895f4f665b84690978f19b47e",
     "server/src/services/default-agent-instructions.ts": "8bd3b59f900c132db5ed89b96524f35ba7c8dafb9d58db1dac888430f08c4d63",
     "packages/paperclip-runner/src/contracts/runtime-context.ts": "a17e30a69f3cb38fba00c37e1a06753d723651a004e6050c9e77ae202a61264b",
