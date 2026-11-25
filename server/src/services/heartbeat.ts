@@ -344,7 +344,7 @@ import {
   prepareGitHubExecutionEnvironment,
   startAdapterExecutionTargetPaperclipBridge,
 } from "@paperclipai/adapter-utils/execution-target";
-import { cleanupSshConnectionReuse } from "@paperclipai/adapter-utils/ssh";
+import { closeRunSshConnectionWhenReleased } from "./heartbeat/ssh-connection-sweep.js";
 import { agentInstructionWorkingCopyService } from "./agent-instruction-working-copies.js";
 
 import fs from "node:fs/promises";
@@ -2675,6 +2675,8 @@ export function heartbeatService(
         issueSettings: issueExecutionWorkspaceSettings,
         legacyUseProjectWorkspace:
           issueAssigneeOverrides?.useProjectWorkspace ?? null,
+        agentRole: agent.role,
+        issueWorkMode: issueContext?.workMode ?? null,
       });
       const requestedExecutionWorkspaceMode = freshWorkspace?.mode === "fresh_isolated_workspace"
         ? "isolated_workspace" : trustPreset.kind === "low_trust_review" &&
@@ -3956,12 +3958,6 @@ export function heartbeatService(
               },
             );
           }
-          if (latestRun && isHeartbeatRunTerminalStatus(latestRun.status)) {
-            // Last ssh op of the run has settled: close its shared connection.
-            await cleanupSshConnectionReuse({ runId: run.id }).catch((err) => {
-              logger.warn({ err, runId: run.id }, "failed to close the run's shared ssh connection");
-            });
-          }
           // A retained or unverified process stays above this release boundary.
           // If no stopped-copy capture occurred, preserve an explicit loss report.
           await instructionWorkingCopy?.releaseWarmInstructionPreparation?.();
@@ -4126,6 +4122,15 @@ export function heartbeatService(
         if (adapterExecutionControls.get(run.id) === executionControl) {
           adapterExecutionControls.delete(run.id);
         }
+        // In the finally so an earlier teardown error cannot leave the run's ssh
+        // master open (PAR-14337), but under the same native gate as the lease:
+        // a held owner may still multiplex over it (PAR-14564).
+        const sshRun = latestRun && isHeartbeatRunTerminalStatus(latestRun.status)
+          ? latestRun : await getRun(run.id).catch(() => null);
+        await closeRunSshConnectionWhenReleased({ runId: run.id, status: sshRun?.status,
+          ownershipHeld: nativeSessionResumeScheduled || nativeWorkspaceFinalizeScheduled || nativeOwnershipHeld ||
+            nativeStartupCleanupScheduled || Boolean(nativeStartupCleanupError) ||
+            Boolean(sshRun && isNativeRunnerOwnershipHeld(sshRun)) });
       }
       if (latestRun) await reconcileMuseNativeTerminalRun(db, latestRun);
       // Scratch preparation is optional. Its removal cannot be the only proof

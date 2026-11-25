@@ -4,6 +4,7 @@ import { useIssueWorkProducts } from "../../hooks/useIssueWorkProducts";
 import { getIssuePullRequests, pullRequestHref, pullRequestIdentity } from "../../lib/issue-pull-requests";
 import { useWorkspaceIsolationControls } from "@/hooks/useWorkspaceIsolationControls";
 import { AgentIdentity } from "@/components/AgentIdentity";
+import { AutomationCreatorLabel } from "@/components/IssueColumns";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { normalizeLegacyRunnerProvider } from "@paperclipai/adapter-utils";
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from "react";
@@ -13,6 +14,7 @@ import { issueStatusText } from "@/lib/status-colors";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { Link } from "@/lib/router";
 import {
+  deriveIssueCreator,
   deriveOriginatingActor,
   readProviderRateLimits,
   summarizeProviderRateLimits,
@@ -987,6 +989,7 @@ export function IssueProperties({
   const assigneeUserLabel = userLabel(issue.assigneeUserId);
   const creatorUserLabel = actualUserLabel(issue.createdByUserId);
   const originatingActor = deriveOriginatingActor(issue);
+  const issueCreator = deriveIssueCreator(issue);
   const originatingUserProfile =
     originatingActor?.kind === "user" ? userProfileMap.get(originatingActor.id) : null;
   const originatingViaAgentName =
@@ -2958,6 +2961,21 @@ export function IssueProperties({
       ) : null}
 
       <PropertySection title="About" streamlined={streamlinedPropertiesEnabled}>
+        <PropertyRow label="Created by">
+          {issueCreator.kind === "agent" ? (
+            <Link to={`/agents/${issueCreator.id}`} className="hover:underline">
+              <AgentIdentity agent={agents?.find((agent) => agent.id === issueCreator.id) ?? { id: issueCreator.id, name: agentName(issueCreator.id) ?? "Agent" }} size="sm" />
+            </Link>
+          ) : issueCreator.kind === "person" ? (
+            <Identity
+              name={actualUserLabel(issueCreator.id) ?? userProfileMap.get(issueCreator.id)?.label ?? "User"}
+              avatarUrl={userProfileMap.get(issueCreator.id)?.image ?? null}
+              size="sm"
+            />
+          ) : (
+            <span className="block min-w-0 max-w-full text-sm"><AutomationCreatorLabel issue={issue} /></span>
+          )}
+        </PropertyRow>
         {originatingActor ? (
           <PropertyRow label="Originating">
             {originatingActor.kind === "agent" ? (

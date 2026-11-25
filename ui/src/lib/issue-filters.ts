@@ -1,4 +1,4 @@
-import { isAgentCreatedIssue, type ExternalObjectSummary, type Issue } from "@paperclipai/shared";
+import { deriveIssueCreator, isAgentCreatedIssue, type ExternalObjectSummary, type Issue } from "@paperclipai/shared";
 
 export type IssueFilterWorkspaceLookup = {
   mode?: string | null;
@@ -39,6 +39,14 @@ export type IssueFilterState = {
   showAgentCreatedTasks: boolean;
   routineTasksOnly?: boolean;
 };
+
+/** Creator filter values `kind:person|agent|automation` match by who created the task, not by one creator. */
+export const CREATOR_KIND_FILTER_PREFIX = "kind:";
+export const creatorKindFilterOptions = [
+  { id: "kind:person", label: "Any person", kind: "user" },
+  { id: "kind:agent", label: "Any agent", kind: "agent" },
+  { id: "kind:automation", label: "Any automation", kind: "automation" },
+] as const;
 
 export const defaultIssueFilterState: IssueFilterState = {
   statuses: [],
@@ -258,7 +266,9 @@ export function applyIssueFilters(
   }
   if (state.creators.length > 0) {
     result = result.filter((issue) => {
+      const creatorKind = deriveIssueCreator(issue).kind;
       for (const creator of state.creators) {
+        if (creator.startsWith(CREATOR_KIND_FILTER_PREFIX) && creator.slice(CREATOR_KIND_FILTER_PREFIX.length) === creatorKind) return true;
         if (creator.startsWith("agent:") && issue.createdByAgentId === creator.slice("agent:".length)) return true;
         if (creator.startsWith("user:") && issue.createdByUserId === creator.slice("user:".length)) return true;
       }

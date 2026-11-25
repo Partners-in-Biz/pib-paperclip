@@ -45,7 +45,9 @@ vi.mock("../adapters/index.ts", async () => {
 const support = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = support.supported ? describe : describe.skip;
 
-const eventBusStub = { forPlugin: () => ({ emit: async () => {}, subscribe: () => {} }) } as any;
+const eventBusStub = {
+  forPlugin: () => ({ emit: async () => {}, subscribe: () => {} }),
+} as unknown as Parameters<typeof buildHostServices>[3];
 
 describeEmbeddedPostgres("plugin wakeups and server-reserved wake sources (PAR-9770)", () => {
   let db!: ReturnType<typeof createDb>;

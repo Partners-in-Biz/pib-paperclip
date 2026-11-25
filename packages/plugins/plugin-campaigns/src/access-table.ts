@@ -29,7 +29,7 @@ export const CAMPAIGNS_ACCESS_TABLE: AccessTable = Object.freeze({
   // Planning Canvas entity cards (PAR-14423): reading, so `view`, as the page's detail and list.
   ...rows(VIEW, ["canvas.cards.resolve", "canvas.cards.search", "canvas.cards.related"]),
   "campaigns.create-campaign": CREATE,
-  ...rows(EDIT, ["campaigns.add-step", "campaigns.request-approval", "campaigns.pause", "campaigns.complete", "campaigns.enroll", "campaigns.declare-winner"]),
+  ...rows(EDIT, ["campaigns.add-step", "campaigns.request-approval", "campaigns.pause", "campaigns.complete", "campaigns.enroll", "campaigns.declare-winner", "campaigns.move"]),
   // Launching or resuming sends to people; approving, sending back and the Growth Lab decisions are decisions.
   ...rows(APPROVE, [
     "campaigns.launch", "campaigns.resume", "campaigns.approve", "campaigns.send-back",
@@ -38,13 +38,15 @@ export const CAMPAIGNS_ACCESS_TABLE: AccessTable = Object.freeze({
   "campaigns.preferences-load": settings("view"),
   "campaigns.preferences-save": settings("edit"),
   "campaigns.sync-skills": settings("edit"),
+  // Marking a brand writes the page preference and changes whether a client's yes is needed: a settings change.
+  "campaigns.set-own-brand": settings("edit"),
 
   // Agent tools.
   ...rows(VIEW, [
     "tool:list-campaigns", "tool:campaign-stats", "tool:preflight-campaign", "tool:campaign-funnel", "tool:campaign-step-analytics",
     "tool:list-campaign-templates", "tool:suggest-ab-winner", "tool:performance-review", "tool:get-playbook", "tool:list-experiments",
   ]),
-  ...rows(CREATE, ["tool:create-campaign", "tool:create-campaign-template", "tool:create-campaign-from-template", "tool:propose-experiment"]),
+  ...rows(CREATE, ["tool:create-campaign", "tool:create-campaign-template", "tool:create-campaign-from-template", "tool:create-feed-digest", "tool:propose-experiment"]),
   ...rows(EDIT, [
     "tool:update-campaign", "tool:add-campaign-step", "tool:pause-campaign", "tool:complete-campaign", "tool:enroll-contact",
     "tool:stop-enrollment", "tool:suppress-address", "tool:suppress-phone", "tool:record-channel-consent", "tool:log-reply",

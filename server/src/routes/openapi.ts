@@ -3407,6 +3407,25 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/summary-slots/{scopeKind}/{slotKey}/cancel",
+  tags: ["summaries"],
+  summary: "Cancel an in-flight or stuck summary slot generation",
+  request: {
+    params: summarySlotParams,
+    body: jsonBody(generateSummarySlotSchema),
+  },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
   method: "put",
   path: "/api/companies/{companyId}/summary-slots/{scopeKind}/{slotKey}",
   tags: ["summaries"],

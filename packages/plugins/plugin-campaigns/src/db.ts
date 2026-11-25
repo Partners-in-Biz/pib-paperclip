@@ -197,8 +197,8 @@ export async function insertCampaign(ctx: PluginContext, campaign: CampaignDraft
   await ctx.db.execute(
     `INSERT INTO ${table(ctx, "campaigns")}
       (id, company_id, name, description, status, from_name, from_local, reply_to, audience_tags, start_at, end_at, approval_issue_id, winner_variant,
-       client_kind, client_ref, client_name, audience_mode, delivery, owner_user_id, owner_agent_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`,
+       client_kind, client_ref, client_name, audience_mode, delivery, owner_user_id, owner_agent_id, feed_url, feed_category, feed_item_keys)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23::jsonb)`,
     [
       campaign.id,
       campaign.companyId,
@@ -220,6 +220,9 @@ export async function insertCampaign(ctx: PluginContext, campaign: CampaignDraft
       assertDelivery(campaign.delivery),
       campaign.ownerUserId ?? null,
       campaign.ownerAgentId ?? null,
+      campaign.feedUrl ?? null,
+      campaign.feedCategory ?? null,
+      campaign.feedItemKeys ? JSON.stringify(campaign.feedItemKeys) : null,
     ],
   );
 }
@@ -251,6 +254,20 @@ export async function saveCampaign(ctx: PluginContext, campaign: CampaignDraft):
       assertDelivery(campaign.delivery),
     ],
   );
+}
+
+/**
+ * Moves a draft to another client scope (our own work or one of our own brands). Only while it is still a draft: a
+ * launch that landed meanwhile keeps its sender. Returns false when nothing changed.
+ */
+export async function moveDraft(ctx: PluginContext, campaign: Pick<CampaignDraft, "id" | "companyId" | "clientKind" | "clientRef" | "clientName" | "audienceMode">): Promise<boolean> {
+  const result = await ctx.db.execute(
+    `UPDATE ${table(ctx, "campaigns")}
+        SET client_kind = $3, client_ref = $4, client_name = $5, audience_mode = $6, updated_at = now()
+      WHERE id = $1 AND company_id = $2 AND status = 'draft'`,
+    [campaign.id, campaign.companyId, campaign.clientRef ? campaign.clientKind : null, campaign.clientRef, campaign.clientRef ? campaign.clientName : null, campaign.audienceMode],
+  );
+  return (result.rowCount ?? 0) > 0;
 }
 
 /** The draft (or launched) campaign an approval issue belongs to. */
@@ -363,6 +380,11 @@ export async function listSteps(ctx: PluginContext, campaignId: string): Promise
     templateRef: row.template_ref ?? null,
     templateVars: asStringList(row.template_vars),
   }));
+}
+
+/** Removes a campaign row by id; used only to undo an insert whose steps could not be written (the host has no multi-statement transaction). */
+export async function deleteCampaignRow(ctx: PluginContext, companyId: string, campaignId: string): Promise<void> {
+  await ctx.db.execute(`DELETE FROM ${table(ctx, "campaigns")} WHERE company_id = $1 AND id = $2`, [companyId, campaignId]);
 }
 
 export async function insertStep(

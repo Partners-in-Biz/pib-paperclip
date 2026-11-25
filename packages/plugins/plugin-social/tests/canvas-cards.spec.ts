@@ -8,8 +8,8 @@ describe("canvas post card wiring", () => {
     expect(slot).toMatchObject({ type: "canvasNode", exportName: "SocialPostCard", entityCard: { kind: "card-post", search: true, related: true } });
   });
 
-  it("registers the actions through registerCanvasCards with ctx.actions.register itself", () => {
+  it("registers the actions through registerCanvasCards through the access guard's action", () => {
     const worker = readFileSync(new URL("../src/worker.ts", import.meta.url), "utf8");
-    expect(worker).toMatch(/registerCanvasCards\(\{ register: \(key, handler\) => ctx\.actions\.register\(key, handler\), kinds: \[createPostCardKind\(ctx\)\] \}\)/);
+    expect(worker).toMatch(/registerCanvasCards\(\{ register: g\.action, kinds: \[createPostCardKind\(ctx\)\] \}\)/);
   });
 });

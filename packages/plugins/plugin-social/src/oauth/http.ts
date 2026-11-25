@@ -10,6 +10,9 @@
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 
+/** Meta throttle and temporary-failure codes: 1, 2 (temporary), 4, 17, 32, 341 (app, user, page, daily limits), 613 (custom rate limit), 80000-80009 (Instagram, Pages, Ads, Messenger and other per-product limits). They arrive as HTTP 400. */
+const META_THROTTLE_CODES = new Set([1, 2, 4, 17, 32, 341, 613, 80000, 80001, 80002, 80003, 80004, 80005, 80006, 80008, 80009]);
+
 export class ProviderHttpError extends Error {
   readonly status: number;
   readonly body: string;
@@ -26,7 +29,7 @@ export class ProviderHttpError extends Error {
     this.tokenInvalid = status === 401 || meta?.code === 190 || /invalid[_ ]token|token (has )?expired|expired[_ ]token/i.test(detail);
     this.retryable =
       !this.tokenInvalid &&
-      (status === 408 || status === 425 || status === 429 || status >= 500 || meta?.is_transient === true || [1, 2, 4, 17, 32, 341].includes(meta?.code ?? -1));
+      (status === 408 || status === 425 || status === 429 || status >= 500 || meta?.is_transient === true || META_THROTTLE_CODES.has(meta?.code ?? -1));
   }
 }
 

@@ -1,7 +1,8 @@
 'use strict';
 function createFakeBrowser(graph = {}) {
   let lastCtx = null;
-  function newContext({ origins = [], guard }) {
+  function newContext({ origins = [], guard, viewport }) {
+    let openViewport = viewport;
     let currentUrl = null;
     const violations = [];
     const performed = [];
@@ -34,6 +35,9 @@ function createFakeBrowser(graph = {}) {
         if (checkGuard(tgt, 'popup')) performed.push({ cmd: 'click', type: 'popup', url: tgt });
       }
     };
+    const drag = async (from, to) => { if (!currentUrl) throw new Error('No page loaded'); performed.push({ cmd: 'drag', from, to }); };
+    const setViewport = async (vp) => { performed.push({ cmd: 'viewport', vp }); };
+    const net = () => [{ time: '2026-01-01T10:00:00.000Z', method: 'GET', url: 'https://x.test/a?sig=SECRETSIG', status: 200 }];
     const text = async (sel) => (graph[currentUrl]?.text || '');
     const hasText = async (s) => { const p = graph[currentUrl]; return p ? (p.text || '').includes(s) : false; };
     const describe = async (sel) => graph[currentUrl]?.fields?.[sel] || { type: 'text', autocomplete: '' };
@@ -49,13 +53,13 @@ function createFakeBrowser(graph = {}) {
       return p;
     };
     const ctx = {
-      goto, click,
+      goto, click, drag, setViewport, net,
       fill: async () => { if (!currentUrl) throw new Error('No page loaded'); },
       text, shot, hasText,
       describe, url,
       violations: () => violations, performed: () => performed,
       close: async () => { currentUrl = null; closeCount++; },
-      _closeCount: () => closeCount
+      _closeCount: () => closeCount, openViewport: () => openViewport
     };
     lastCtx = ctx;
     return ctx;

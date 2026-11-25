@@ -86,6 +86,38 @@ describe("ssh connection reuse argument lists (AC 1, AC 4)", () => {
     await runSshCommand(SPEC, "true", { connectionReuseRunId: "../escape" });
     expect(reuseOptions(sshCalls[0]!)).toEqual([]);
   });
+
+  // PAR-14337: whenever the control dir is refused, the op still runs, without mux options.
+  it("falls back to a fresh connection when the base dir is open to others", async () => {
+    await mkdir(baseDir);
+    await chmod(baseDir, 0o755);
+    const result = await runSshCommand(SPEC, "true", { connectionReuseRunId: RUN_ID });
+    expect(result).toMatchObject({ stdout: "", stderr: "" });
+    expect(sshCalls).toHaveLength(1);
+    expect(sshCalls[0]!.some((arg) => /^Control(Master|Path|Persist)=/.test(arg))).toBe(false);
+  });
+
+  // ssh exits 255 on these: "extra arguments at end of line" / "unknown key %x".
+  it.each([["a space", "a b"], ["a percent", "a%h"], ["a dollar", "${HOME}"]])(
+    "falls back to a fresh connection when the base path has %s", async (_label, unsafeName) => {
+      const unsafeBase = path.join(path.dirname(baseDir), unsafeName);
+      vi.stubEnv("PAPERCLIP_SSH_CONTROL_DIR", unsafeBase);
+      expect(sshControlDirFor(RUN_ID, unsafeBase)).toBeNull();
+      expect(await prepareSshControlDir(RUN_ID)).toBeNull();
+      await runSshCommand(SPEC, "true", { connectionReuseRunId: RUN_ID });
+      expect(sshCalls[0]!.some((arg) => /^Control(Master|Path|Persist)=/.test(arg))).toBe(false);
+      // Nothing was created at the unsafe path.
+      await expect(stat(unsafeBase)).rejects.toThrow();
+    });
+
+  it("cold start: concurrent first ops of a run all get the same private dir", async () => {
+    await Promise.all(Array.from({ length: 8 }, () =>
+      runSshCommand(SPEC, "true", { connectionReuseRunId: RUN_ID })));
+    const controlPath = `ControlPath=${sshControlDirFor(RUN_ID, baseDir)}/%C`;
+    expect(sshCalls).toHaveLength(8);
+    for (const args of sshCalls) expect(reuseOptions(args)).toContain(controlPath);
+    expect((await stat(sshControlDirFor(RUN_ID, baseDir)!)).mode & 0o777).toBe(0o700);
+  });
 });
 
 describe("ssh control directory (AC 2)", () => {

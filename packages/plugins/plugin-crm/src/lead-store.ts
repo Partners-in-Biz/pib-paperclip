@@ -72,6 +72,8 @@ export interface LeadSource {
   confirmSecret: string | null;
   /** Newsletter only: the most confirmation mails the source sends in 24 hours. */
   confirmDailyCap: number;
+  /** Newsletter only: about the most confirmation mails the source sends in one hour (soft); null: no hourly cap. */
+  confirmHourlyCap: number | null;
 }
 
 interface SourceRow {
@@ -106,12 +108,13 @@ interface SourceRow {
   confirm_from?: string | null;
   confirm_secret?: string | null;
   confirm_daily_cap?: unknown;
+  confirm_hourly_cap?: unknown;
 }
 
 const SOURCE_COLUMNS = `id, company_id, client_kind, client_ref, label, site_id, site_url, public_key, previous_key, previous_key_until, signing_secret,
   status, canary, consent_text, privacy_url, success_message, turnstile_site_key, rate_limit_per_hour, accepted_count, rejected_count,
   last_submission_at, created_by, created_at, intake, target_project_id, target_agent_id,
-  apply_tags, confirm_url, confirm_from, confirm_secret, confirm_daily_cap`;
+  apply_tags, confirm_url, confirm_from, confirm_secret, confirm_daily_cap, confirm_hourly_cap`;
 
 function tagList(value: unknown): string[] {
   const list = typeof value === "string" ? (() => { try { return JSON.parse(value) as unknown; } catch { return []; } })() : value;
@@ -151,6 +154,7 @@ function mapSource(row: SourceRow): LeadSource {
     confirmFrom: row.confirm_from ?? null,
     confirmSecret: row.confirm_secret ?? null,
     confirmDailyCap: int(row.confirm_daily_cap) || DEFAULT_CONFIRM_DAILY_CAP,
+    confirmHourlyCap: int(row.confirm_hourly_cap) || null,
   };
 }
 
@@ -159,8 +163,8 @@ export async function insertLeadSource(ctx: PluginContext, source: LeadSource): 
     `INSERT INTO ${table(ctx, "lead_sources")}
       (id, company_id, client_kind, client_ref, label, site_id, site_url, public_key, signing_secret, status, canary,
        consent_text, privacy_url, success_message, turnstile_site_key, rate_limit_per_hour, created_by, intake, target_project_id, target_agent_id,
-       apply_tags, confirm_url, confirm_from, confirm_secret, confirm_daily_cap)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21::jsonb, $22, $23, $24, $25)`,
+       apply_tags, confirm_url, confirm_from, confirm_secret, confirm_daily_cap, confirm_hourly_cap)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21::jsonb, $22, $23, $24, $25, $26)`,
     [
       source.id,
       source.companyId,
@@ -187,6 +191,7 @@ export async function insertLeadSource(ctx: PluginContext, source: LeadSource): 
       source.confirmFrom,
       source.confirmSecret,
       source.confirmDailyCap,
+      source.confirmHourlyCap,
     ],
   );
 }
@@ -197,11 +202,11 @@ export async function saveLeadSourceSettings(ctx: PluginContext, source: LeadSou
     `UPDATE ${table(ctx, "lead_sources")}
         SET label = $3, site_id = $4, site_url = $5, status = $6, consent_text = $7, privacy_url = $8, success_message = $9,
             turnstile_site_key = $10, rate_limit_per_hour = $11, apply_tags = $12::jsonb, confirm_url = $13, confirm_from = $14,
-            confirm_daily_cap = $15, updated_at = now()
+            confirm_daily_cap = $15, confirm_hourly_cap = $16, updated_at = now()
       WHERE company_id = $1 AND id = $2`,
     [
       source.companyId, source.id, source.label, source.siteId, source.siteUrl, source.status, source.consentText, source.privacyUrl, source.successMessage, source.turnstileSiteKey, source.rateLimitPerHour,
-      JSON.stringify(source.applyTags), source.confirmUrl, source.confirmFrom, source.confirmDailyCap,
+      JSON.stringify(source.applyTags), source.confirmUrl, source.confirmFrom, source.confirmDailyCap, source.confirmHourlyCap,
     ],
   );
 }

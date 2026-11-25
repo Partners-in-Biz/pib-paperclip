@@ -110,6 +110,8 @@ export interface ApprovalIssueInput {
   outward?: boolean;
   /** The person who triggered it from a page, when there is one (a last-resort approver). */
   actorUserId?: string | null;
+  /** The person whose click opened this: recorded as the task's creator ("Created by"). Leave out for automation. */
+  createdByUserId?: string | null;
   /** Text appended for the Reviewer when it gets the issue first (kit `reviewerBrief`). Receives the resolved route. */
   reviewerBrief?: (route: ApproverRoute) => string;
   wakeReason?: string;
@@ -156,7 +158,7 @@ export async function openApprovalIssue(ctx: PluginContext, input: ApprovalIssue
   let lastError: unknown = null;
   for (const attempt of attempts) {
     try {
-      const created = await createWorkIssue(ctx, { ...base, ...extras, description: attempt.description, ...attempt.assignee, wake: attempt.wake, ...(input.wakeReason ? { wakeReason: input.wakeReason } : {}) } as CreateInput & { wake?: boolean; wakeReason?: string });
+      const created = await createWorkIssue(ctx, { ...base, ...extras, description: attempt.description, ...attempt.assignee, wake: attempt.wake, actingUserId: input.createdByUserId ?? null, ...(input.wakeReason ? { wakeReason: input.wakeReason } : {}) } as CreateInput & { wake?: boolean; wakeReason?: string });
       if (attempt.to === "operator" || attempt.to === "nobody") {
         ctx.logger.warn("Approval opened without a person to decide it", { companyId: input.companyId, issueId: created.id, title: input.title, assignedTo: attempt.to, notes: route.notes });
       }

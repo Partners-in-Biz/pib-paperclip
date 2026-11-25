@@ -9,7 +9,7 @@
  * remount) reuses the page load instead of sending every request again.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import { useCockpitAction } from "./actions.js";
 import { pluginUiBaseFromModule } from "@partnersinbiz/pib-plugin-kit/oauth-client";
 import { fetchModules } from "@partnersinbiz/pib-plugin-kit/setup-client";
 import type { ModuleKey, SetupStatus } from "@partnersinbiz/pib-plugin-kit/setup";
@@ -194,7 +194,7 @@ export async function loadRawData(companyId: string, loadAction: LoadAction, lig
 }
 
 export function useCockpitData(companyId: string | null | undefined, options: { light?: boolean; windowHours?: number } = {}): CockpitData {
-  const loadAction = usePluginAction("cockpit.load");
+  const loadAction = useCockpitAction("cockpit.load");
   const [raw, setRaw] = useState<RawData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -269,7 +269,7 @@ export function isTabHidden(): boolean {
 
 /** Refreshes when you move between pages and every two minutes while the tab is visible (within the 30-second sharing window). */
 export function useSidebarView(companyId: string | null | undefined, pathname: string): CockpitView | null {
-  const loadAction = usePluginAction("cockpit.load") as LoadAction;
+  const loadAction = useCockpitAction("cockpit.load") as LoadAction;
   const [view, setView] = useState<CockpitView | null>(null);
   const [tick, setTick] = useState(0);
   useEffect(() => {

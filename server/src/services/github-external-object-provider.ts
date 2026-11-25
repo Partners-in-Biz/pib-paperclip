@@ -36,6 +36,30 @@ interface GitHubObjectIdentity {
 
 const GITHUB_OBJECT_TTL_SECONDS = 300;
 
+/**
+ * Whether the repository was public when the shown fields were read. Stored as
+ * `data.repoVisibility` on every resolved snapshot; absent means not known.
+ * PAR-12608 4.6a row 5: only a known-public object shows its resolved fields to
+ * a restricted person (see `withholdGitHubExternalObject`).
+ */
+export type GitHubRepoVisibility = "public" | "private";
+
+function repoVisibilityFrom(isPrivate: boolean | null): GitHubRepoVisibility | null {
+  return isPrivate === true ? "private" : isPrivate === false ? "public" : null;
+}
+
+/**
+ * The repository visibility a pull request or issue response carries: the pull
+ * request's `base.repo.private`, or an issue's `repository.private` when GitHub
+ * includes it. A verdict proven earlier in the same refresh wins.
+ */
+function repoVisibilityOf(body: Record<string, unknown>, proven: GitHubRepoVisibility | null): GitHubRepoVisibility | null {
+  if (proven) return proven;
+  const baseRepo = asRecord(asRecord(body.base)?.repo);
+  const repository = asRecord(body.repository);
+  return repoVisibilityFrom(asBoolean(baseRepo?.private) ?? asBoolean(repository?.private));
+}
+
 function isGitHubHost(host: string) {
   const h = host.toLowerCase();
   return h === "github.com" || h === "www.github.com";
@@ -110,6 +134,49 @@ function parseGitHubObject(object: { externalId: string; sanitizedCanonicalUrl: 
     pathKind: match[3] as "pull" | "issues",
     number: Number(match[4]),
     objectType: match[3] === "pull" ? "pull_request" : "issue",
+  };
+}
+
+/**
+ * PAR-12608 4.6a row 5: a GitHub object is resolved with the company's GitHub
+ * credential, so its resolved fields are withheld from a restricted person
+ * unless the repository is known public (`data.repoVisibility`).
+ */
+export function githubObjectWithheldFromRestrictedReader(object: {
+  providerKey: string;
+  data: Record<string, unknown> | null | undefined;
+}): boolean {
+  return object.providerKey === "github" && object.data?.repoVisibility !== "public";
+}
+
+/**
+ * The fields a restricted person sees of a withheld GitHub object: only what
+ * the URL itself says (owner, repo, number). Title, state, liveness, details,
+ * error text and timestamps are cleared.
+ */
+export function withheldGitHubObjectFields(object: { externalId: string; sanitizedCanonicalUrl: string | null }) {
+  const identity = parseGitHubObject(object);
+  return {
+    displayTitle: identity ? displayTitleFor(identity) : object.sanitizedCanonicalUrl,
+    statusKey: null,
+    statusLabel: null,
+    statusIconKey: null,
+    statusCategory: "unknown" as const,
+    statusTone: "neutral" as const,
+    liveness: "unknown" as const,
+    isTerminal: false,
+    data: identity
+      ? { provider: "github", owner: identity.owner, repo: identity.repo, number: identity.number, withheld: true }
+      : { provider: "github", withheld: true },
+    remoteVersion: null,
+    etag: null,
+    lastResolvedAt: null,
+    lastChangedAt: null,
+    lastErrorAt: null,
+    nextRefreshAt: null,
+    refreshStartedAt: null,
+    lastErrorCode: null,
+    lastErrorMessage: null,
   };
 }
 
@@ -191,7 +258,11 @@ function failureFromGitHubResponse(response: Response, authenticated: boolean): 
   return null;
 }
 
-function notFoundSnapshot(identity: GitHubObjectIdentity, etag: string | null): ExternalObjectResolverSnapshot {
+function notFoundSnapshot(
+  identity: GitHubObjectIdentity,
+  etag: string | null,
+  repoVisibility: GitHubRepoVisibility | null,
+): ExternalObjectResolverSnapshot {
   return {
     displayKey: displayKeyFor(identity),
     iconKey: "github",
@@ -210,6 +281,7 @@ function notFoundSnapshot(identity: GitHubObjectIdentity, etag: string | null): 
       repo: identity.repo,
       number: identity.number,
       notFound: true,
+      ...(repoVisibility ? { repoVisibility } : {}),
       // The repository was probed with the configured credentials and found
       // to be visible, so this not-found verdict is definitive, not a stale
       // guess from a time when credentials could not see the repo. The due
@@ -271,7 +343,13 @@ async function probeRepoVisibility(
   }
 }
 
-function pullRequestSnapshot(identity: GitHubObjectIdentity, body: Record<string, unknown>, etag: string | null): ExternalObjectResolverSnapshot {
+function pullRequestSnapshot(
+  identity: GitHubObjectIdentity,
+  body: Record<string, unknown>,
+  etag: string | null,
+  provenVisibility: GitHubRepoVisibility | null,
+): ExternalObjectResolverSnapshot {
+  const repoVisibility = repoVisibilityOf(body, provenVisibility);
   const title = asString(body.title);
   const state = asString(body.state) ?? "unknown";
   const draft = asBoolean(body.draft) ?? false;
@@ -345,11 +423,18 @@ function pullRequestSnapshot(identity: GitHubObjectIdentity, body: Record<string
       ...(additions !== null ? { additions } : {}),
       ...(deletions !== null ? { deletions } : {}),
       ...(changedFiles !== null ? { changedFiles } : {}),
+      ...(repoVisibility ? { repoVisibility } : {}),
     },
   };
 }
 
-function issueSnapshot(identity: GitHubObjectIdentity, body: Record<string, unknown>, etag: string | null): ExternalObjectResolverSnapshot {
+function issueSnapshot(
+  identity: GitHubObjectIdentity,
+  body: Record<string, unknown>,
+  etag: string | null,
+  provenVisibility: GitHubRepoVisibility | null,
+): ExternalObjectResolverSnapshot {
+  const repoVisibility = repoVisibilityOf(body, provenVisibility);
   const title = asString(body.title);
   const state = asString(body.state) ?? "unknown";
   const stateReason = asString(body.state_reason);
@@ -384,6 +469,7 @@ function issueSnapshot(identity: GitHubObjectIdentity, body: Record<string, unkn
       state,
       ...(stateReason ? { stateReason } : {}),
       ...(authorLogin ? { authorLogin } : {}),
+      ...(repoVisibility ? { repoVisibility } : {}),
     },
   };
 }
@@ -505,6 +591,8 @@ export function createGitHubExternalObjectProvider(
         };
         if (token) headers.authorization = `Bearer ${token}`;
 
+        // Set only by a probe made in this refresh, never by the probe cache.
+        let provenVisibility: GitHubRepoVisibility | null = null;
         if (!companyScoped) {
           // A server-environment token is instance-wide, so it can read repositories
           // this company cannot. Before reading with it, verify that the repository is
@@ -551,6 +639,7 @@ export function createGitHubExternalObjectProvider(
               retryAfterSeconds: GITHUB_OBJECT_TTL_SECONDS,
             };
           }
+          provenVisibility = "public";
         }
 
         const apiKind = objectType === "pull_request" ? "pulls" : "issues";
@@ -579,7 +668,7 @@ export function createGitHubExternalObjectProvider(
           // instead of permanently freezing a reference as "Not found".
           const probe = await cachedProbeRepoVisibility(companyId, identity, headers, signal);
           if (probe.visibility === "visible") {
-            return { ok: true, snapshot: notFoundSnapshot(identity, etag) };
+            return { ok: true, snapshot: notFoundSnapshot(identity, etag, provenVisibility) };
           }
           if (probe.visibility === "hidden") {
             return {
@@ -628,8 +717,8 @@ export function createGitHubExternalObjectProvider(
         return {
           ok: true,
           snapshot: objectType === "pull_request"
-            ? pullRequestSnapshot(identity, body, etag)
-            : issueSnapshot(identity, body, etag),
+            ? pullRequestSnapshot(identity, body, etag, provenVisibility)
+            : issueSnapshot(identity, body, etag, provenVisibility),
         };
       },
     };

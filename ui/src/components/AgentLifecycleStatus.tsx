@@ -43,7 +43,7 @@ export function useAgentLifecycleStatus(agent?: Agent) {
 }
 
 export function AgentLifecycleStatus({ agent, onRetry, retryPending, refreshError = false }: {
-  agent: Pick<Agent, "lifecycleState" | "lifecycleError"> & Partial<Pick<Agent, "lifecycleStatusDetail">>;
+  agent: Pick<Agent, "lifecycleState" | "lifecycleError"> & Partial<Pick<Agent, "lifecycleStatusDetail">> & { pauseReason?: Agent["pauseReason"] };
   onRetry: () => void;
   retryPending: boolean;
   refreshError?: boolean;
@@ -58,6 +58,8 @@ export function AgentLifecycleStatus({ agent, onRetry, retryPending, refreshErro
         {agent.lifecycleError ? failedPhases[agent.lifecycleState as keyof typeof failedPhases] : phase[0]}
       </Badge>
       {!agent.lifecycleError && <span className="text-muted-foreground">{agent.lifecycleStatusDetail || phase[1]}</span>}
+      {agent.lifecycleState === "pausing" && agent.pauseReason === null &&
+        <span className="text-muted-foreground">Resume queued: the agent resumes once its runs have stopped.</span>}
     </div>}
     {phase && agent.lifecycleError && <div className="flex flex-wrap items-center gap-2 text-destructive">
       <span>{agent.lifecycleError}</span>

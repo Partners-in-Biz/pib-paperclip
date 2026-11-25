@@ -26,6 +26,11 @@ it.each([undefined, "ready", "paused", "pending_approval", "terminated", "reject
   expect(agentLifecycleRefetchInterval(lifecycleState)).toBe(30_000);
 });
 
+it("says a resume is queued while the pause finishes", () => {
+  expect(renderToStaticMarkup(<AgentLifecycleStatus agent={{ lifecycleState: "pausing", lifecycleError: null, pauseReason: null }} onRetry={() => {}} retryPending={false} />)).toContain("Resume queued");
+  expect(renderToStaticMarkup(<AgentLifecycleStatus agent={{ lifecycleState: "pausing", lifecycleError: null, pauseReason: "manual" }} onRetry={() => {}} retryPending={false} />)).not.toContain("Resume queued");
+});
+
 it("shows what a pause waits on instead of the generic line (PAR-9962)", () => {
   const detail = "Waiting for proof that run r1 on mac.test has stopped (last check: unknown/check_failed, next 14:32 UTC).";
   const html = renderToStaticMarkup(<AgentLifecycleStatus agent={{ lifecycleState: "pausing", lifecycleError: null, lifecycleStatusDetail: detail }} onRetry={() => {}} retryPending={false} />);

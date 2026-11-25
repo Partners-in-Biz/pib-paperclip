@@ -1,5 +1,5 @@
 import { useId, useState, type ComponentProps, type CSSProperties, type ReactNode } from "react";
-import { Bot, Search, User } from "lucide-react";
+import { Bot, Search, User, Zap } from "lucide-react";
 import type { IssueFiltersPopover } from "./IssueFiltersPopover";
 import { Button } from "./ui/button";
 import { Checkbox } from "./ui/checkbox";
@@ -55,7 +55,7 @@ export function IssueFilterPanel({ state, onChange, activeFilterCount, agents = 
         {!visibleProjects.length ? <p className="task-filter-empty">{queries.projects ? "No projects match." : "No projects available."}</p> : null}
       </FilterGroup>
       <FilterGroup title="Creator" optionsKey="creators" searchLabel="creators" query={queries.creators} onQueryChange={search("creators")}>
-        {visibleCreators.map(creator => <FilterRow key={creator.id} label={creator.label} checked={state.creators.includes(creator.id)} onToggle={() => onChange({ creators: toggleIssueFilterValue(state.creators, creator.id) })} icon={creator.kind === "agent" ? <Bot /> : <User />} />)}
+        {visibleCreators.map(creator => <FilterRow key={creator.id} label={creator.label} checked={state.creators.includes(creator.id)} onToggle={() => onChange({ creators: toggleIssueFilterValue(state.creators, creator.id) })} icon={creator.kind === "agent" ? <Bot /> : creator.kind === "automation" ? <Zap /> : <User />} />)}
         {!visibleCreators.length ? <p className="task-filter-empty">{queries.creators ? "No creators match." : "No creators available."}</p> : null}
       </FilterGroup>
       <FilterGroup title="Assignee" optionsKey="responsible" searchLabel="assignees" query={queries.assignees} onQueryChange={search("assignees")}>

@@ -8,7 +8,7 @@
  * count exactly what the page shows.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import { useSetupAction } from "./actions.js";
 import { errorText } from "@partnersinbiz/pib-plugin-ui";
 import type { DriveBinding } from "../drive-checklist.js";
 import { MODULES, setupSummary, type ModuleKey, type SetupStatus, type SetupSummary } from "../kit-setup.js";
@@ -164,9 +164,9 @@ export interface SetupData {
 }
 
 export function useSetupData(companyId: string | null | undefined, options: { live?: boolean } = {}): SetupData {
-  const loadAction = usePluginAction("setup.load");
-  const reportMemory = usePluginAction("setup.report-memory");
-  const reportAction = usePluginAction("setup.report-statuses");
+  const loadAction = useSetupAction("setup.load");
+  const reportMemory = useSetupAction("setup.report-memory");
+  const reportAction = useSetupAction("setup.report-statuses");
   const [load, setLoad] = useState<LoadResult | null>(null);
   const [installed, setInstalled] = useState<Record<string, PluginRecordLite> | null>(null);
   const [live, setLive] = useState<Record<string, LiveResult | undefined>>({});

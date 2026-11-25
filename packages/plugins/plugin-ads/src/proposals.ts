@@ -132,6 +132,7 @@ async function openApproval(rt: AdsRuntime, p: ProposalRow, scope: ScopeRow, act
     priority: SPEND_KINDS.includes(p.kind) ? "high" : "medium",
     outward: true,
     actorUserId: actor.userId ?? null,
+    createdByUserId: actor.userId ?? null,
     wakeReason: "An ad change needs checking",
     reviewerBrief: (route) =>
       approvalReviewerBrief(route, `an ad change for ${label} (${PROPOSAL_KIND_LABELS[p.kind]})`, [

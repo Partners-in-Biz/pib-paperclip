@@ -111,6 +111,7 @@ export async function openLedgerApproval(ctx: PluginContext, input: LedgerApprov
     // Nothing leaves the company here, but nothing posts or locks unreviewed either, so the ledger asks for it unless its own setting is off.
     outward: settings.reviewLedger,
     actorUserId: input.actor.kind === "user" ? input.actor.userId : null,
+    createdByUserId: input.actor.kind === "user" ? input.actor.userId : null,
     reviewerBrief: (route) => ledgerReviewerBrief(route, { kind: input.kind, subjectId: input.subjectId, what: `the ${REVIEW_KINDS[input.kind].label} on this issue` }),
   });
   const review: db.ReviewState = approval.assignedTo === "reviewer" ? "pending" : "not_required";

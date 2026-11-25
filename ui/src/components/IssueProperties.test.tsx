@@ -806,6 +806,25 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
+  it("shows who created the task under Created by: person, agent and automation", async () => {
+    const cases: Array<[Partial<Issue>, RegExp]> = [
+      [{ createdByUserId: "user-1" }, /Created by\s*Riley Board/],
+      [{ createdByAgentId: "agent-1" }, /Created by\s*agent-1/],
+      [{ originKind: "plugin:partnersinbiz.seo", originId: "x:1" }, /Created by\s*SEO/],
+      [{ originKind: "plugin:partnersinbiz.mailbox", originId: "x:2" }, /Created by\s*Mailbox/],
+    ];
+    for (const [overrides, pattern] of cases) {
+      const host = document.createElement("div");
+      document.body.appendChild(host);
+      const root = renderProperties(host, { issue: createIssue({ createdByUserId: null, createdByAgentId: null, ...overrides }), childIssues: [], onUpdate: vi.fn(), sidePanelContentOnly: true });
+      await flush();
+      expect(host.textContent).toMatch(pattern);
+      expect(host.textContent).not.toMatch(/Created by\s*Unknown/);
+      act(() => root.unmount());
+      host.remove();
+    }
+  });
+
   it("stacks property chips vertically and aligns each label with the first chip", async () => {
     const blockedBy = Array.from({ length: 3 }, (_, index) => (createRelation(`blocker-${index + 1}`, `BLOCK-${index + 1}`, `Blocker ${index + 1}`))) as NonNullable<Issue["blockedBy"]>;
     const blocks = Array.from({ length: 3 }, (_, index) => (createRelation(`blocked-${index + 1}`, `BLOCKED-${index + 1}`, `Blocked task ${index + 1}`))) as NonNullable<Issue["blocks"]>;
@@ -1140,7 +1159,7 @@ describe("IssueProperties", () => {
       expect(container.textContent).not.toContain("Morgan Product");
       expect(container.textContent).not.toContain("Responsible");
       expect(container.textContent).not.toContain("Kicked off by");
-      expect(container.textContent).not.toContain("Created by");
+      expect(container.textContent).toContain("Created by");
       expect(container.querySelector('[title="CodexCoder"] [data-slot="agent-avatar"] img')?.getAttribute("src")).toContain("/api/agent-avatars/cap-v1/");
     });
 
@@ -1165,7 +1184,7 @@ describe("IssueProperties", () => {
       expect(container.textContent).not.toContain("Kicked off by");
       expect(container.textContent).not.toContain("Kicked off by · responsible");
       expect(container.textContent).not.toContain("(auto)");
-      expect(container.textContent).not.toContain("Created by");
+      expect(container.textContent).toContain("Created by");
     });
 
     act(() => root.unmount());

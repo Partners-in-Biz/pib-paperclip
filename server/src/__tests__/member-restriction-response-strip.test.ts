@@ -8,8 +8,8 @@ import request from "supertest";
 import { WebSocket } from "ws";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
-  agents, authUsers, companies, companyMemberships, createDb, environments, executionWorkspaces, issues,
-  projectAccessMembers, projects, projectWorkspaces,
+  agents, authUsers, companies, companyMemberships, createDb, environments, executionWorkspaces, issueComments, issues,
+  projectAccessMembers, projects, projectWorkspaces, workspaceRuntimeServices,
 } from "@paperclipai/db";
 import { errorHandler } from "../middleware/error-handler.js";
 import { logger } from "../middleware/logger.js";
@@ -37,7 +37,7 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
  * route-table middleware and the real resolver.
  */
 
-const resolverFails = vi.hoisted(() => ({ on: false }));
+const resolverFails = vi.hoisted(() => ({ on: false, reads: 0 }));
 vi.mock("../services/member-restriction/resolver.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../services/member-restriction/resolver.js")>();
   const fail = () => Promise.reject(new actual.MemberRestrictionReadError("fixture: restriction unreadable"));
@@ -45,8 +45,10 @@ vi.mock("../services/member-restriction/resolver.js", async (importOriginal) => 
     ...actual,
     memberRestrictionFor: (...args: Parameters<typeof actual.memberRestrictionFor>) =>
       resolverFails.on ? fail() : actual.memberRestrictionFor(...args),
-    memberRestrictionEnforcedCompanyIds: (...args: Parameters<typeof actual.memberRestrictionEnforcedCompanyIds>) =>
-      resolverFails.on ? fail() : actual.memberRestrictionEnforcedCompanyIds(...args),
+    memberRestrictionEnforcedCompanyIds: (...args: Parameters<typeof actual.memberRestrictionEnforcedCompanyIds>) => {
+      resolverFails.reads += 1;
+      return resolverFails.on ? fail() : actual.memberRestrictionEnforcedCompanyIds(...args);
+    },
     memberRestrictionResolver: (db: Parameters<typeof actual.memberRestrictionResolver>[0]) => {
       const resolve = actual.memberRestrictionResolver(db);
       return (personId: string, companyId: string) => (resolverFails.on ? fail() : resolve(personId, companyId));
@@ -123,7 +125,9 @@ const isProjected = (value: unknown) => value === null || (Boolean(value) && typ
 
 /**
  * Every strip-set key found at any depth (a projected key only when it carries more than
- * the projection), and `adapterConfig.<key>` for a key outside the four allows.
+ * the projection), `adapterConfig.<key>` for a key outside the four allows, and the
+ * parent-bound keys of PAR-13327: `command`/`stopPolicy` of a `runtimeServices` entry, an execution workspace's
+ * `metadata`, and a project workspace `metadata` key other than `githubRepositoryId`.
  */
 function hostKeys(value: unknown, found = new Set<string>()): string[] {
   if (Array.isArray(value)) value.forEach((item) => hostKeys(item, found));
@@ -133,11 +137,22 @@ function hostKeys(value: unknown, found = new Set<string>()): string[] {
       if (key === "adapterConfig" && inner && typeof inner === "object") {
         for (const name of Object.keys(inner)) if (!ALLOWED_ADAPTER_KEYS.includes(name)) found.add(`adapterConfig.${name}`);
       }
+      for (const entry of (Array.isArray(inner) ? inner : [inner]) as Record<string, unknown>[]) {
+        if (!entry || typeof entry !== "object") continue;
+        if (key === "runtimeServices") for (const name of ["command", "stopPolicy"]) if (name in entry) found.add(`${key}[].${name}`);
+        if (["executionWorkspace", "currentExecutionWorkspace"].includes(key) && "metadata" in entry) found.add(`${key}.metadata`);
+        if (["workspaces", "primaryWorkspace"].includes(key) && entry.metadata && typeof entry.metadata === "object") {
+          for (const name of Object.keys(entry.metadata)) if (name !== "githubRepositoryId") found.add(`${key}.metadata.${name}`);
+        }
+      }
       hostKeys(inner, found);
     }
   }
   return [...found].sort();
 }
+/** Routes whose whole body is one workspace object or a list of them: walked as if under that parent key. */
+const BODY_PARENT: Record<string, string> = { "execution workspace": "executionWorkspace", "project workspaces": "workspaces" };
+const bodyKeys = (route: string, body: unknown) => hostKeys(BODY_PARENT[route] ? { [BODY_PARENT[route]!]: body } : body);
 
 (support.supported ? describe : describe.skip)("host and secret keys left out for a restricted member (PAR-12951)", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
@@ -188,6 +203,7 @@ function hostKeys(value: unknown, found = new Set<string>()): string[] {
   };
 
   let envId = "";
+  const COMMENT_METADATA = { version: 1, sections: [{ title: "Run", rows: [{ type: "code", code: "ls -la" }] }] };
   const STORED_ENV = { TOKEN: { type: "secret_ref", secretId: randomUUID() }, PLAIN: { type: "plain", value: "o" } };
   const storedPolicy = () => ({ enabled: true, allowIssueOverride: true, defaultMode: "isolated_workspace", environmentId: envId,
     branchPolicy: { prefix: "o/" }, cleanupPolicy: { removeAfterDays: 3 },
@@ -236,12 +252,25 @@ function hostKeys(value: unknown, found = new Set<string>()): string[] {
     await db.insert(projectAccessMembers).values([R, U].map((subjectId) => ({ companyId: Y, projectId, subjectType: "user", subjectId })));
     const projectWorkspaceId = (await db.insert(projectWorkspaces).values({ companyId: Y, projectId, name: "main", isPrimary: true,
       cwd: "/srv/o/repo", repoUrl: "https://example.test/o.git", setupCommand: "make setup", cleanupCommand: "make clean",
-      runtimeConfig: { workspaceRuntime: { services: [] } } } as typeof projectWorkspaces.$inferInsert).returning())[0]!.id;
+      runtimeConfig: { workspaceRuntime: { services: [] } }, metadata: { githubRepositoryId: "gh-1", hostNote: "/srv/o/notes" },
+    } as typeof projectWorkspaces.$inferInsert).returning())[0]!.id;
     const firstTask = await task(R);
     workspaceId = (await db.insert(executionWorkspaces).values({ companyId: Y, projectId, projectWorkspaceId, sourceIssueId: firstTask,
       mode: "isolated_workspace", strategyType: "git_worktree", name: "R's work", cwd: "/srv/o/wt/r", repoUrl: "https://example.test/o.git",
+      providerRef: "/srv/o/wt/r", metadata: { remoteWorkspace: { locations: ["s3://o/r"], snapshotId: "snap-1" } },
       config: { provisionCommand: "make o", teardownCommand: "make clean", cleanupCommand: null, workspaceRuntime: null, desiredState: null },
     } as typeof executionWorkspaces.$inferInsert).returning())[0]!.id;
+    const service = { companyId: Y, projectId, status: "running", lifecycle: "shared", command: "pnpm dev --host 0.0.0.0",
+      cwd: "/srv/o/repo", provider: "local_process", providerRef: "pid:4242", stopPolicy: { type: "idle", idleSeconds: 60 },
+      healthStatus: "healthy" };
+    await db.insert(workspaceRuntimeServices).values([
+      { ...service, id: randomUUID(), projectWorkspaceId, scopeType: "project_workspace", scopeId: projectWorkspaceId,
+        serviceName: "web", port: 3100, url: "http://127.0.0.1:3100" },
+      { ...service, id: randomUUID(), projectWorkspaceId, executionWorkspaceId: workspaceId, issueId: firstTask,
+        scopeType: "execution_workspace", scopeId: workspaceId, serviceName: "api", port: 3200, url: "http://127.0.0.1:3200" },
+    ]);
+    await db.insert(issueComments).values({ companyId: Y, issueId: firstTask, authorUserId: O, body: "note",
+      metadata: COMMENT_METADATA } as typeof issueComments.$inferInsert);
     await db.update(issues).set({ executionWorkspaceId: workspaceId }).where(eq(issues.id, firstTask));
     taskId = firstTask;
   }, 120_000);
@@ -264,10 +293,10 @@ function hostKeys(value: unknown, found = new Set<string>()): string[] {
           const cell = `${name} ${mode} ${route}`;
           expect(res.status, `${cell}: ${JSON.stringify(res.body).slice(0, 300)}`).toBeLessThan(300);
           if (mode === "off" && name === "O") {
-            base[route] = hostKeys(res.body);
+            base[route] = bodyKeys(route, res.body);
             if (CARRY_KEYS.includes(route)) expect(base[route]!.length, cell).toBeGreaterThan(0);
           }
-          expect(hostKeys(res.body), cell).toEqual(mode === "enforce" && name === "R" ? [] : base[route]);
+          expect(bodyKeys(route, res.body), cell).toEqual(mode === "enforce" && name === "R" ? [] : base[route]);
         }
       }
     }
@@ -286,6 +315,27 @@ function hostKeys(value: unknown, found = new Set<string>()): string[] {
     expect(list.body.find((row: { id: string }) => row.id === projectId).executionWorkspacePolicy).toEqual(safePolicy);
   }, 300_000);
 
+  it("PAR-13327: R under `enforce` keeps the runtime service and workspace fields he needs, and comment `metadata`", async () => {
+    await setMode("enforce");
+    const SERVICE_FIELDS = ["serviceName", "status", "port", "url", "healthStatus"];
+    const execution = (await (await as(R)).get(`/api/execution-workspaces/${workspaceId}`)).body;
+    expect(execution).toMatchObject({ id: workspaceId, name: "R's work" });
+    expect(Object.keys(execution)).not.toContain("metadata");
+    expect(JSON.stringify(execution)).not.toMatch(/providerRef|pnpm dev|snap-1/);
+    expect(execution.runtimeServices).toEqual([expect.objectContaining({ serviceName: "api", status: "running", port: 3200,
+      url: "http://127.0.0.1:3200", healthStatus: expect.any(String) })]);
+    const listed = (await (await as(R)).get(`/api/projects/${projectId}/workspaces`)).body;
+    const project = (await (await as(R)).get(`/api/projects/${projectId}`)).body;
+    for (const [where, workspace] of [["list", listed[0]], ["project", project.workspaces[0]], ["primary", project.primaryWorkspace]]) {
+      expect(workspace.metadata, where).toEqual({ githubRepositoryId: "gh-1" });
+      expect(JSON.stringify(workspace), where).not.toMatch(/providerRef|pnpm dev|"idle"/);
+      for (const name of SERVICE_FIELDS) expect(workspace.runtimeServices[0], `${where} ${name}`).toHaveProperty(name);
+    }
+    // A `metadata` key outside the bound parents still reaches him.
+    const comments = (await (await as(R)).get(`/api/issues/${taskId}/comments`)).body;
+    expect(comments).toEqual([expect.objectContaining({ body: "note", metadata: COMMENT_METADATA })]);
+  }, 120_000);
+
   it("AC-X1: when the resolver throws, R gets 503 MEMBER_RESTRICTION_UNAVAILABLE and no data", async () => {
     await setMode("enforce");
     resolverFails.on = true;
@@ -301,7 +351,17 @@ function hostKeys(value: unknown, found = new Set<string>()): string[] {
 
   describe("live socket", () => {
     type Message = { type: string; payload: Record<string, unknown> };
-    async function received(user: string): Promise<Message[]> {
+    const workspaceFrame = () => ({ id: workspaceId, metadata: { remoteWorkspace: { snapshotId: "snap-1" } },
+      runtimeServices: [{ serviceName: "api", status: "running", port: 3200, command: "pnpm dev", stopPolicy: { type: "idle" } }] });
+    // A tool call of his own run: `command` and `metadata` outside the bound parents.
+    const toolCall = { name: "shell", command: "ls -la", metadata: { step: 1 } };
+    const goalFrame = (issue: Record<string, unknown>) => ({ issueId: taskId, issue: { id: taskId, toolCall, ...issue } });
+    async function received(user: string, payload: Record<string, unknown> = goalFrame({
+      executionWorkspaceSettings: { mode: "isolated_workspace", environmentId: envId },
+      assigneeAdapterOverrides: { adapterConfig: { model: "m", env: { KEY: "v" } } },
+      project: { id: projectId, env: STORED_ENV, codebase: { localFolder: "/srv/o" } },
+      currentExecutionWorkspace: workspaceFrame(),
+    })): Promise<Message[]> {
       const server = createServer();
       const wss = setupLiveEventsWebSocketServer(server, db, {
         deploymentMode: "authenticated",
@@ -315,10 +375,7 @@ function hostKeys(value: unknown, found = new Set<string>()): string[] {
       const warn = vi.spyOn(logger, "warn");
       try {
         await once(socket, "open");
-        publishLiveEvent({ companyId: Y, type: "agent.session.goal.changed", payload: { issueId: taskId,
-          issue: { id: taskId, executionWorkspaceSettings: { mode: "isolated_workspace", environmentId: envId },
-            assigneeAdapterOverrides: { adapterConfig: { model: "m", env: { KEY: "v" } } },
-            project: { id: projectId, env: STORED_ENV, codebase: { localFolder: "/srv/o" } } } } });
+        publishLiveEvent({ companyId: Y, type: "agent.session.goal.changed", payload });
         if (resolverFails.on) {
           await expect.poll(() => warn.mock.calls.filter((call) => call[1] === "live event authorization failed").length).toBe(1);
         } else {
@@ -332,14 +389,33 @@ function hostKeys(value: unknown, found = new Set<string>()): string[] {
         server.close();
       }
     }
-    const SOCKET_KEYS = ["adapterConfig.env", "env", "environmentId", "localFolder"];
+    const SOCKET_KEYS = ["adapterConfig.env", "currentExecutionWorkspace.metadata", "env", "environmentId", "localFolder",
+      "runtimeServices[].command", "runtimeServices[].stopPolicy"];
 
     it("R under `enforce` gets the task event without a strip-set key; O gets them", async () => {
       await setMode("enforce");
       const [toR] = await received(R);
       expect(toR!.payload).toMatchObject({ issueId: taskId, issue: { id: taskId, project: { id: projectId } } });
       expect(hostKeys(toR)).toEqual([]);
+      expect(toR!.payload.issue).toMatchObject({ toolCall,
+        currentExecutionWorkspace: { id: workspaceId, runtimeServices: [{ serviceName: "api", status: "running", port: 3200 }] } });
       expect(hostKeys(await received(O))).toEqual(SOCKET_KEYS);
+    });
+
+    it("PAR-13327: a bound frame without a strip key adds no restriction read; one with a runtime command adds one", async () => {
+      await setMode("enforce");
+      const reads = async (payload: Record<string, unknown>) => {
+        resolverFails.reads = 0;
+        const [toR] = await received(R, payload);
+        return { reads: resolverFails.reads, keys: hostKeys(toR) };
+      };
+      const plain = await reads(goalFrame({}));
+      const clean = await reads(goalFrame({ currentExecutionWorkspace: { id: workspaceId, runtimeServices: [{ serviceName: "api" }] },
+        workspaces: [{ id: "w", metadata: { githubRepositoryId: "gh-1" } }] }));
+      const command = await reads(goalFrame({ currentExecutionWorkspace: { id: workspaceId,
+        runtimeServices: [{ serviceName: "api", command: "pnpm dev" }] } }));
+      expect(clean).toEqual(plain);
+      expect(command).toEqual({ reads: plain.reads + 1, keys: [] });
     });
 
     it("AC-F8: with the kill switch `off`, and under `report`, R gets the frame unchanged", async () => {

@@ -92,6 +92,7 @@ import { correctTriage, markReadInGmail, readMessageBody, searchMail, type Triag
 import { handleDraftRequested } from "./gmail/draft.js";
 import { deleteMail, replyMode, startReply } from "./mail-actions.js";
 import { deleteDraftWithReason, draftAttachments, editDraft, mailboxSignature, requestRewrite, withSignature } from "./draft-edit.js";
+import { announceDraftClosed, assertHeldDraftMaySend, cleanPurpose, holdFor, purposeKeyFor, replaceOlderDraftsSafely } from "./draft-purpose.js";
 import { newerSentReply, removeSupersededDrafts, reusableReplyDraft } from "./reply-dedupe.js";
 import { handleSendRequested, performSend, retrySend } from "./gmail/send.js";
 import { runSyncJob, syncOne, triageRunFor } from "./gmail/sync.js";
@@ -115,7 +116,8 @@ const plugin = definePlugin({
     store = new SqlStore(ctx.db);
     env = createEnv(ctx, store);
     skillSync = createSkillSyncer(ctx, SKILLS);
-    registerCrmProjection(ctx, ctx.db.namespace);
+    // companyBilling: a client's billing email is one way to tell that a recipient belongs to a customer (PAR-12249).
+    registerCrmProjection(ctx, ctx.db.namespace, { companies: true, contacts: true, companyBilling: true });
     registerModuleWatch(ctx);
     registerRoleWatch(ctx);
     // The CRM's client-to-project links: a reply issue opens in the client's own project.
@@ -315,7 +317,7 @@ const plugin = definePlugin({
       ctx.events.on(pluginEvent(sender, MAIL_EVENTS.sendRequested), async (event) => {
         await handleSendRequested(requireEnv(), event);
       });
-      // A Gmail draft instead of a send: the message waits in Drafts for a person (nothing is sent).
+      // A draft instead of a send: the message waits in the Paperclip Mailbox drafts for a person (nothing is sent, never Gmail Drafts).
       ctx.events.on(pluginEvent(sender, MAIL_EVENTS.draftRequested), async (event) => {
         await handleDraftRequested(requireEnv(), event);
       });
@@ -1107,14 +1109,22 @@ async function createDraft(companyId: string, agentId: string | null, params: Re
   const replyTo = parseReplyTo(params.replyTo);
   if (replyTo.invalid) throw new MailboxError("Invalid replyTo address");
   let threadId: string | null = null;
+  // The message this draft answers, when it is one this company holds: what lets `reply`/`followup` go without a hold.
+  let answers: string | null = null;
   if (replyToMessageId) {
     const original = await findMessage(companyId, replyToMessageId);
     threadId = original?.gmail_thread_id ?? null;
+    answers = original ? original.id : null;
     // A repeat create-draft for the same message (a retry seconds later) gets the first draft back, not a second copy (PAR-8030).
     const open = reusableReplyDraft(await requireStore().replyDrafts(companyId, accountId, replyToMessageId));
     if (open) return { id: open.id, status: "draft", to: (open.to_addrs ?? []).map((a) => a.email), reused: true };
   }
   const id = randomUUID();
+  const purpose = cleanPurpose(params.purpose);
+  // An agent's key lives in its own namespace: it can never replace another agent's or a plugin's draft (PAR-14329).
+  const purposeKey = purposeKeyFor(params.purposeKey, purpose, to, agentId);
+  // `reply`/`followup` without a stored message to answer is held: the label alone is the agent's word (PAR-14558).
+  const hold = agentId ? holdFor(purpose, params.unasked === true, answers) : null;
   await requireStore().insertDraft({
     id,
     companyId,
@@ -1124,9 +1134,25 @@ async function createDraft(companyId: string, agentId: string | null, params: Re
     to,
     cc,
     bcc,
-    draft: { html: optionalString(params, "html") ?? null, replyToMessageId, threadId, by, sourceIssueId, replyTo: replyTo.address, fromName: cleanDisplayName(params.fromName) },
+    draft: {
+      html: optionalString(params, "html") ?? null,
+      replyToMessageId,
+      threadId,
+      by,
+      sourceIssueId,
+      replyTo: replyTo.address,
+      fromName: cleanDisplayName(params.fromName),
+      purpose,
+      purposeKey,
+      // Only an agent's draft is held: a person's own draft on the page is theirs to send. An agent's draft is held unless its
+      // purpose is a reply the client asked for (reply, followup, invoice): no purpose means held (PAR-1558, PAR-14329).
+      holdForPerson: hold,
+    },
   });
-  return { id, status: "draft", to: to.map((a) => a.email) };
+  // One draft per client and purpose: the newer version replaces the older open one (PAR-12249). The draft is saved: a failed
+  // clean-up is logged, never reported as a failed create-draft (a retry would save a second copy).
+  const replaced = purposeKey ? await replaceOlderDraftsSafely(requireStore(), companyId, accountId, purposeKey, id, (message, meta) => requireEnv().ctx.logger.warn(`mailbox: ${message}`, meta)) : [];
+  return { id, status: "draft", to: to.map((a) => a.email), ...(replaced.length ? { replaced } : {}), ...(hold ? { heldForPerson: true, note: "Held for a person: send-draft is refused when a recipient is an existing client (CRM customer, by contact, domain or billing email), and when that cannot be checked. Only purpose reply or followup answering a stored message (replyToMessageId), or invoice, is not held. Mail to a prospect with no customer record is not held." } : {}) };
 }
 
 async function sendDraft(companyId: string, agentId: string | null, messageId: string) {
@@ -1134,7 +1160,12 @@ async function sendDraft(companyId: string, agentId: string | null, messageId: s
   const row = await s.getMessage(companyId, messageId);
   if (!row) throw new MailboxError("Draft was not found");
   if (row.status !== "draft") throw new MailboxError("Only a draft can be sent");
-  if (agentId) assertMaySend(await delegationFor(row.account_id, agentId));
+  if (agentId) {
+    // Mail the client did not ask for, untagged mail, and drafts a plugin made for a person: an agent never sends them to an
+    // existing client (PAR-12249, PAR-14329).
+    await assertHeldDraftMaySend(s, companyId, row);
+    assertMaySend(await delegationFor(row.account_id, agentId));
+  }
   await assertNotCountOnlyEnquirer(s, companyId, [...(row.to_addrs ?? []), ...(row.cc_addrs ?? []), ...(row.bcc_addrs ?? [])]);
   const replyToMessageId = row.draft?.replyToMessageId ?? null;
   if (replyToMessageId) {
@@ -1196,6 +1227,8 @@ async function sendDraft(companyId: string, agentId: string | null, messageId: s
     await s.setDraftStatus(companyId, row.id, "draft", result.error ?? "Send failed");
     throw new MailboxError(`Not sent: ${result.error ?? "Send failed"}`);
   }
+  // A plugin's draft went out: tell that plugin, so it does not ask about the same pages again (PAR-14329).
+  await announceDraftClosed(requireEnv().ctx, companyId, row, "sent");
   // The other open drafts answering the same message are now leftovers: remove them so no one sends them (PAR-8030).
   let removedDrafts: string[] = [];
   if (replyToMessageId) {

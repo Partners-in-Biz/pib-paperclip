@@ -1,15 +1,17 @@
-import { and, desc, eq, gte, inArray, isNull } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   documentRevisions,
   documents,
   executionWorkspaces,
+  heartbeatRuns,
   issues,
   projectWorkspaces,
   projects,
   summarySlots,
 } from "@paperclipai/db";
 import {
+  type CancelSummarySlotResponse,
   type GenerateSummarySlotResponse,
   type GetSummarySlotResponse,
   type IssueStatus,
@@ -28,12 +30,13 @@ import { readBuiltInAgentMarker } from "../lib/built-in-agent-metadata.js";
 import { builtInAgentService } from "./built-in-agents.js";
 import { agentService } from "./agents.js";
 import { issueService } from "./issues.js";
+import { ACTIVE_SUMMARY_RUN_STATUSES, logSummarySlotFailures } from "./summary-slot-finalization.js";
 
 /** Built-in agent key for the Summarizer bundle (see PAP-13920). */
 export const SUMMARIZER_BUILT_IN_KEY = "summarizer";
 
 /** Generation issues in these statuses are no longer active and can be superseded. */
-const TERMINAL_ISSUE_STATUSES = new Set<IssueStatus>(["done", "cancelled"]);
+const TERMINAL_ISSUE_STATUSES = new Set<IssueStatus>(["done", "cancelled", "blocked"]);
 
 const DEFAULT_SUMMARY_FORMAT = "markdown";
 const SUMMARY_SLOT_REVISION_LIMIT = 20;
@@ -754,10 +757,126 @@ export function summarySlotService(db: Db) {
     };
   }
 
+  async function markGenerationFailed(
+    input: SummarySlotSelectorInput,
+    generatingIssueId: string,
+    failureReason: string,
+  ): Promise<SummarySlot | null> {
+    const sel = resolveSelector(input);
+    const [updated] = await db
+      .update(summarySlots)
+      .set({
+        status: "failed",
+        failureReason,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(summarySlots.companyId, sel.companyId),
+          eq(summarySlots.scopeKind, sel.scopeKind),
+          eq(summarySlots.slotKey, sel.slotKey),
+          sel.scopeId === null ? isNull(summarySlots.scopeId) : eq(summarySlots.scopeId, sel.scopeId),
+          eq(summarySlots.generatingIssueId, generatingIssueId),
+          eq(summarySlots.status, "generating"),
+        ),
+      )
+      .returning();
+    if (updated) {
+      await logSummarySlotFailures(db, [updated], "mark_generation_failed", failureReason, {
+        issueId: generatingIssueId,
+      });
+    }
+    return updated ? mapSlot(updated) : null;
+  }
+
+  async function cancel(
+    input: SummarySlotSelectorInput,
+  ): Promise<Omit<CancelSummarySlotResponse, "failedRunIds"> & { activeRunIds: string[] }> {
+    const sel = resolveSelector(input);
+    await assertTargetVisible(sel);
+
+    const slotRow = await findSlotRow(sel);
+    if (!slotRow || slotRow.status !== "generating") {
+      return {
+        slot: slotRow ? mapSlot(slotRow) : null,
+        cancelledIssueId: null,
+        activeRunIds: [],
+      };
+    }
+
+    const cancelledIssueId = slotRow.generatingIssueId ?? null;
+    let activeRunIds: string[] = [];
+
+    if (cancelledIssueId) {
+      const issueRef = await loadIssueRef(sel.companyId, cancelledIssueId);
+      if (issueRef.row && issueRef.row.status !== "done" && issueRef.row.status !== "cancelled") {
+        // This update runs the terminal-issue hook, which writes the
+        // `summary_slot.generate_failed` activity row for the slot.
+        await issuesSvc.update(cancelledIssueId, { status: "cancelled" });
+      }
+      const activeRuns = await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, sel.companyId),
+            inArray(heartbeatRuns.status, [...ACTIVE_SUMMARY_RUN_STATUSES]),
+            or(
+              eq(heartbeatRuns.issueId, cancelledIssueId),
+              eq(heartbeatRuns.nativeIssueId, cancelledIssueId),
+              sql`(${heartbeatRuns.contextSnapshot} ->> 'issueId') = ${cancelledIssueId}`,
+            ),
+          ),
+        );
+      activeRunIds = activeRuns.map((run) => run.id);
+    }
+
+    const [updated] = await db
+      .update(summarySlots)
+      .set({
+        status: "idle",
+        failureReason: null,
+        generatingIssueId: null,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(summarySlots.id, slotRow.id),
+          // Cancelling the issue above already runs the terminal-issue hook, which
+          // flips the slot to "failed" while keeping generatingIssueId, so accept
+          // both. A newer generation has a different generatingIssueId and is skipped.
+          inArray(summarySlots.status, ["generating", "failed"]),
+          cancelledIssueId === null
+            ? isNull(summarySlots.generatingIssueId)
+            : eq(summarySlots.generatingIssueId, cancelledIssueId),
+        ),
+      )
+      .returning();
+
+    // A newer generation started (or the slot settled) between the read and this
+    // update: leave it alone and report its current state.
+    if (!updated) {
+      const current = await findSlotRow(sel);
+      return {
+        slot: current ? mapSlot(current) : mapSlot(slotRow),
+        cancelledIssueId,
+        activeRunIds,
+      };
+    }
+
+    return {
+      slot: mapSlot(updated),
+      cancelledIssueId,
+      activeRunIds,
+    };
+  }
+
   return {
     getSlot,
     listRevisions,
     generate,
+    cancel,
+    markGenerationFailed,
     write,
   };
 }

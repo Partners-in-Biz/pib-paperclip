@@ -9,20 +9,22 @@ import { DEFAULT_CONFIRM_DAILY_CAP } from "./lead-store.js";
 import { MAX_CONFIRM_URL_LENGTH } from "./newsletter-token.js";
 
 /** `confirmUrl` is short enough that `confirmUrl#t=<token>` stays under the link limit of the token module. */
-export const NEWSLETTER_LIMITS = { tags: 5, tagLength: 60, confirmUrl: MAX_CONFIRM_URL_LENGTH, dailyCap: 300 } as const;
+export const NEWSLETTER_LIMITS = { tags: 5, tagLength: 60, confirmUrl: MAX_CONFIRM_URL_LENGTH, dailyCap: 300, hourlyCap: 300 } as const;
 
 /** The tool parameters only a newsletter source has. */
-export const NEWSLETTER_PARAMS = ["applyTags", "confirmUrl", "confirmFrom", "confirmDailyCap"] as const;
+export const NEWSLETTER_PARAMS = ["applyTags", "confirmUrl", "confirmFrom", "confirmDailyCap", "confirmHourlyCap"] as const;
 
 export interface NewsletterSettings {
   applyTags: string[];
   confirmUrl: string | null;
   confirmFrom: string | null;
   confirmDailyCap: number;
+  /** At most this many confirmation mails in one hour (a soft cap, PAR-11288); null: no hourly cap. */
+  confirmHourlyCap: number | null;
 }
 
 /** The settings of every source that is not a newsletter (the CHECK `lead_sources_newsletter` wants them empty). */
-export const NO_NEWSLETTER: NewsletterSettings = { applyTags: [], confirmUrl: null, confirmFrom: null, confirmDailyCap: DEFAULT_CONFIRM_DAILY_CAP };
+export const NO_NEWSLETTER: NewsletterSettings = { applyTags: [], confirmUrl: null, confirmFrom: null, confirmDailyCap: DEFAULT_CONFIRM_DAILY_CAP, confirmHourlyCap: null };
 
 const given = (params: Record<string, unknown>, key: string) => key in params && params[key] != null && params[key] !== "";
 
@@ -97,6 +99,14 @@ export function parseDailyCap(value: unknown): number {
   return cap;
 }
 
+/** 1 to 300 confirmation mails in one hour; null (or an empty value) clears the hourly cap. */
+export function parseHourlyCap(value: unknown): number | null {
+  if (value == null || value === "") return null;
+  const cap = typeof value === "number" ? value : typeof value === "string" && value.trim() ? Number(value) : NaN;
+  if (!Number.isInteger(cap) || cap < 1 || cap > NEWSLETTER_LIMITS.hourlyCap) throw new CrmError(`confirmHourlyCap is a whole number from 1 to ${NEWSLETTER_LIMITS.hourlyCap}, or null for no hourly cap`);
+  return cap;
+}
+
 /** Whether a call names any newsletter setting (an update that names none leaves them as they are, unchecked). */
 export function touchesNewsletter(params: Record<string, unknown>): boolean {
   return NEWSLETTER_PARAMS.some((key) => key in params);
@@ -111,5 +121,7 @@ export function newsletterSettings(params: Record<string, unknown>, siteUrl: str
   const confirmUrl = parseConfirmUrl(given(params, "confirmUrl") ? params.confirmUrl : current?.confirmUrl, siteUrl);
   const confirmFrom = parseConfirmFrom(given(params, "confirmFrom") ? params.confirmFrom : current?.confirmFrom);
   const confirmDailyCap = given(params, "confirmDailyCap") ? parseDailyCap(params.confirmDailyCap) : current?.confirmDailyCap ?? DEFAULT_CONFIRM_DAILY_CAP;
-  return { applyTags, confirmUrl, confirmFrom, confirmDailyCap };
+  // Named with null: the hourly cap is cleared; not named: it stays.
+  const confirmHourlyCap = "confirmHourlyCap" in params ? parseHourlyCap(params.confirmHourlyCap) : current?.confirmHourlyCap ?? null;
+  return { applyTags, confirmUrl, confirmFrom, confirmDailyCap, confirmHourlyCap };
 }
