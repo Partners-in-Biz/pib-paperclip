@@ -37,6 +37,8 @@ describeEmbeddedPostgres("issue comment on-behalf attribution migration", () => 
     try {
       await sql`DELETE FROM "drizzle"."__drizzle_migrations" WHERE "hash" = ${await migrationHash()}`;
       await sql`ALTER TABLE "issue_comments" DROP CONSTRAINT IF EXISTS "issue_comments_on_behalf_of_user_id_user_id_fk"`;
+      // The plugin_core_read views (migration 0450) read these columns and block DROP COLUMN.
+      await sql`DROP SCHEMA IF EXISTS plugin_core_read CASCADE`;
       await sql`ALTER TABLE "issue_comments" DROP COLUMN IF EXISTS "on_behalf_of_user_id"`;
       await sql`
         INSERT INTO "companies" ("id", "name", "issue_prefix")

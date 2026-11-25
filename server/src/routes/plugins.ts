@@ -49,6 +49,7 @@ import {
   PLUGIN_STATUSES,
 } from "@paperclipai/shared";
 import { pluginRegistryService } from "../services/plugin-registry.js";
+import { canvasCardsGuard } from "../services/plugin-canvas-cards-guard.js";
 import { agentKeyRunNamingError, toolRouteCallerError } from "../services/member-restriction/rule-group-h.js";
 import { pluginLifecycleManager } from "../services/plugin-lifecycle.js";
 import {
@@ -96,13 +97,18 @@ import {
 import { isCloudManagedInstance } from "../services/cloud-instance.js";
 import { getHiddenSettings } from "../services/settings-visibility.js";
 import { secretService } from "../services/secrets.js";
-import { badRequest, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
+import { badRequest, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
 import {
   isMemberRestrictionUnavailable,
   memberRestrictionResolver,
   pluginActingPersonForActor,
   type PluginActingPerson,
 } from "../services/member-restriction/index.js";
+import {
+  assertPluginOpenForActor,
+  filterPluginsOpenForPerson,
+  isMemberRestricted,
+} from "../services/member-restriction/plugin-gate.js";
 
 /**
  * Floor: when the hosting operator hides the Plugins settings surface
@@ -810,6 +816,23 @@ export function pluginRoutes(
     }
   }
 
+  /**
+   * The core plugin gate (PAR-12608 4.8): a restricted person's call, or a call
+   * for him, reaches only a plugin on his list (403 `MEMBER_RESTRICTED`); a
+   * failed restriction read throws 503. Every route under `/plugins/:pluginId/`
+   * calls it or is on the scan's not-gated list (AC-K7).
+   */
+  function assertPluginOpenForPerson(
+    req: Request,
+    companyId: string | null | undefined,
+    plugin: { pluginKey: string },
+    target: string,
+    recheck = false,
+  ): Promise<void> {
+    return assertPluginOpenForActor({ db, resolve: resolveMemberRestriction }, req.actor, companyId, plugin.pluginKey, target,
+      recheck ? { fresh: true, record: false } : {});
+  }
+
   /** The acting person a plugin receives (PAR-12608 4.10, H3); a failed restriction read throws 503. */
   function actingPerson(req: Request, companyId: string | null | undefined): Promise<PluginActingPerson> {
     return pluginActingPersonForActor(resolveMemberRestriction, req.actor, companyId);
@@ -846,6 +869,24 @@ export function pluginRoutes(
       companyId: scopedCompanyId,
       ...person,
     };
+  }
+
+  /**
+   * The core guard on `canvas.cards.*` (PAR-14389 C.1), called by both action
+   * routes after the core plugin gate and `performActionActorContext`. Throws
+   * 404/403/400, or answers a restricted person itself; true when it answered.
+   */
+  function answeredByCanvasCardsGuard(
+    res: Response,
+    key: string,
+    plugin: { manifestJson: PaperclipPluginManifestV1 | null },
+    actorContext: PluginPerformActionActorContext,
+    params: unknown,
+  ): boolean {
+    const outcome = canvasCardsGuard({ key, manifest: plugin.manifestJson, actorContext, params });
+    if (outcome.kind === "worker") return false;
+    res.json({ data: outcome.data });
+    return true;
   }
 
   function actionParamsWithAuthorizedCompanyScope(
@@ -972,11 +1013,18 @@ export function pluginRoutes(
    * ]
    * ```
    *
+   * A user restricted under `enforce` gets only the plugins open to him
+   * (PAR-12608 4.8, AC-K4); a failed restriction read is 503.
+   *
    * Response: PluginUiContribution[]
    */
   router.get("/plugins/ui-contributions", async (req, res) => {
     assertBoardOrgAccess(req);
-    const plugins = await registry.listByStatus("ready");
+    const plugins = await filterPluginsOpenForPerson(
+      { db, resolve: resolveMemberRestriction },
+      req.actor,
+      await registry.listByStatus("ready"),
+    );
 
     const contributions: PluginUiContribution[] = plugins
       .map((plugin) => {
@@ -1176,6 +1224,8 @@ export function pluginRoutes(
       );
       res.json(result);
     } catch (err) {
+      // The dispatcher's plugin gate (4.8) answers through the error handler with its status and code.
+      if (err instanceof HttpError) throw err;
       const message = err instanceof Error ? err.message : String(err);
 
       // Distinguish between "worker not running" (502) and other errors (500)
@@ -1517,6 +1567,9 @@ export function pluginRoutes(
     }
 
     const companyId = assertPluginBridgeScope(req, body.companyId);
+    await assertPluginOpenForPerson(req, companyId, plugin, "bridge/data");
+    // PAR-14297: a failed restriction read throws 503 here, so the worker is never called.
+    const actorContext = await actingPerson(req, companyId);
 
     try {
       const result = await bridgeDeps.workerManager.call(
@@ -1526,6 +1579,7 @@ export function pluginRoutes(
           key: body.key,
           ...(companyId ? { companyId } : {}),
           params: body.params ?? {},
+          actorContext,
           renderEnvironment: body.renderEnvironment ?? null,
         },
       );
@@ -1610,7 +1664,9 @@ export function pluginRoutes(
     }
 
     const companyId = assertPluginBridgeScope(req, body.companyId);
+    await assertPluginOpenForPerson(req, companyId, plugin, "bridge/action");
     const actorContext = await performActionActorContext(req, companyId);
+    if (answeredByCanvasCardsGuard(res, body.key, plugin, actorContext, body.params)) return;
 
     try {
       const result = await bridgeDeps.workerManager.call(
@@ -1705,6 +1761,9 @@ export function pluginRoutes(
     } | undefined;
 
     const companyId = assertPluginBridgeScope(req, body?.companyId);
+    await assertPluginOpenForPerson(req, companyId, plugin, "data");
+    // PAR-14297: a failed restriction read throws 503 here, so the worker is never called.
+    const actorContext = await actingPerson(req, companyId);
 
     try {
       const result = await bridgeDeps.workerManager.call(
@@ -1714,6 +1773,7 @@ export function pluginRoutes(
           key,
           ...(companyId ? { companyId } : {}),
           params: body?.params ?? {},
+          actorContext,
           renderEnvironment: body?.renderEnvironment ?? null,
         },
       );
@@ -1795,7 +1855,9 @@ export function pluginRoutes(
     } | undefined;
 
     const companyId = assertPluginBridgeScope(req, body?.companyId);
+    await assertPluginOpenForPerson(req, companyId, plugin, "actions");
     const actorContext = await performActionActorContext(req, companyId);
+    if (answeredByCanvasCardsGuard(res, key, plugin, actorContext, body?.params)) return;
 
     try {
       const result = await bridgeDeps.workerManager.call(
@@ -1871,6 +1933,7 @@ export function pluginRoutes(
     }
 
     assertCompanyAccess(req, companyId);
+    await assertPluginOpenForPerson(req, companyId, plugin, "stream");
 
     // Set SSE headers
     res.writeHead(200, {
@@ -1892,21 +1955,47 @@ export function pluginRoutes(
       }
     };
 
+    // Each batch of events is re-checked by the gate before delivery (4.6a), so
+    // a plugin removed from his list, a flag set or a mode change ends the stream.
+    let queued: Array<[unknown, string]> = [];
+    let draining = false;
+    const drain = async () => {
+      draining = true;
+      while (queued.length > 0 && !unsubscribed) {
+        const batch = queued;
+        queued = [];
+        try {
+          await assertPluginOpenForPerson(req, companyId, plugin, "stream", true);
+        } catch {
+          queued = [];
+          safeUnsubscribe();
+          res.end("event: close\ndata: {}\n\n");
+          break;
+        }
+        for (const [event, eventType] of batch) {
+          if (unsubscribed || !res.writable) break;
+          try {
+            if (eventType !== "message") {
+              res.write(`event: ${eventType}\n`);
+            }
+            res.write(`data: ${JSON.stringify(event)}\n\n`);
+          } catch {
+            // Connection closed or write error — stop delivering
+            safeUnsubscribe();
+          }
+        }
+      }
+      draining = false;
+    };
+
     const unsubscribe = bridgeDeps.streamBus.subscribe(
       plugin.id,
       channel,
       companyId,
       (event, eventType) => {
         if (unsubscribed || !res.writable) return;
-        try {
-          if (eventType !== "message") {
-            res.write(`event: ${eventType}\n`);
-          }
-          res.write(`data: ${JSON.stringify(event)}\n\n`);
-        } catch {
-          // Connection closed or write error — stop delivering
-          safeUnsubscribe();
-        }
+        queued.push([event, eventType]);
+        if (!draining) void drain();
       },
     );
 
@@ -1974,6 +2063,8 @@ export function pluginRoutes(
         return;
       }
       assertCompanyAccess(req, companyId);
+      // Also the plugin socket's gate: its upgrade is replayed through this handler (4.6a row 16).
+      await assertPluginOpenForPerson(req, companyId, plugin, "api");
       await enforceScopedApiCheckout(req, match.route, match.params, companyId);
       if (req.method !== "GET" && req.headers["content-type"] && !req.is("application/json")) {
         res.status(415).json({ error: "Plugin API routes accept JSON requests only" });
@@ -2031,7 +2122,7 @@ export function pluginRoutes(
       }
     } catch (err) {
       // A failed restriction read answers through the error handler: 503 with its code, no data.
-      if (isMemberRestrictionUnavailable(err)) throw err;
+      if (isMemberRestrictionUnavailable(err) || isMemberRestricted(err)) throw err;
       const status = typeof (err as { status?: unknown }).status === "number"
         ? (err as { status: number }).status
         : err instanceof JsonRpcCallError && (

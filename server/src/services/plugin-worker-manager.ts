@@ -2890,6 +2890,11 @@ export function createPluginWorkerHandle(
           Array.from(pendingRequests.values()).some((pending) => pending.invocationId);
         return hasActiveInvocation ? { invalidInvocationScope: true } : {};
       }
+      // `companies.list({ actionableOnly: true })` answers from the configured
+      // set, the same set the gate admits a no-id call for.
+      if (message.method === "companies.list") {
+        return { actionableCompanyIds: [...proactiveCompanyScopes] };
+      }
       return proactiveCompanyId ? { unconfiguredCompanyId: proactiveCompanyId } : {};
     }
     const entry = activeInvocations.get(invocationId);

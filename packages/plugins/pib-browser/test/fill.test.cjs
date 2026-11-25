@@ -34,8 +34,9 @@ const testCases = [
   { field: { type: 'text' }, pageUrl: 'https://ex.com/page', site: {}, ok: false, reason: 'fill_on_logged_in_page', desc: 'missing loggedIn' },
   { field: { type: 'text' }, pageUrl: 'https://ex.com/page', site: null, ok: false, reason: 'fill_on_logged_in_page', desc: 'missing site' },
 
-  // Hand-off mode: lifts all restrictions
-  { field: { type: 'password' }, pageUrl: 'https://ex.com/admin', site: { loggedIn: { url: 'https://ex.com/admin' } }, handoffActive: true, ok: true, desc: 'handoff allows password on login page' },
+  // Hand-off mode lifts nothing for an agent (PAR-14022): the person types the password in their own window.
+  { field: { type: 'password' }, pageUrl: 'https://ex.com/login', site: { loggedIn: { url: 'https://ex.com/admin' } }, handoffActive: true, ok: false, reason: 'password_field_refused', desc: 'handoff does not let an agent fill a password' },
+  { field: { type: 'text' }, pageUrl: 'https://ex.com/admin', site: { loggedIn: { url: 'https://ex.com/admin' } }, handoffActive: true, ok: false, reason: 'fill_on_logged_in_page', desc: 'handoff does not lift the logged-in page rule' },
 ];
 
 testCases.forEach(({ field, pageUrl, site, handoffActive, ok, reason, desc }) => {

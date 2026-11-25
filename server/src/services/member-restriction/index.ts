@@ -22,8 +22,12 @@ export {
   INVITE_MEMBER_RESTRICTION_KEY,
   assertInviterNotRestricted,
   inviteMemberRestrictionFromDefaults,
+  inviteRestrictionChoice,
+  markForJoin,
   markForNewInvite,
   withoutInviteMemberRestriction,
+  type InviteRestrictionChoice,
+  type JoinMark,
 } from "./invite.js";
 export {
   MEMBER_RESTRICTED_ROLE_CODE,
@@ -61,6 +65,12 @@ export {
   pluginActingPersonBoundByH,
   type ActingPerson,
 } from "./acting-person.js";
+export {
+  MEMBER_RESTRICTED_MESSAGE,
+  MEMBER_RESTRICTION_ROUTE_RULE_ID,
+  companyIdInPath,
+  memberRestrictionRouteGuard,
+} from "./route-middleware.js";
 export {
   memberRestrictionReadCondition,
   restrictionPersonIds,

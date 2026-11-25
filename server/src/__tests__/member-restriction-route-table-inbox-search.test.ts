@@ -82,6 +82,7 @@ type Case = {
 
 let lastKey = "";
 const has = (res: Res, id: string) => JSON.stringify(res.body).includes(id);
+// The route-table scan reads the row paths from this file: /api/issues/:id/read, /api/issues/:id/inbox-archive.
 const issueCase = (method: "post" | "delete", suffix: string): Case => ({
   row: `${method.toUpperCase()} /api/issues/:id/${suffix}`,
   send: ({ client, target }) => client[method](`/api/issues/${target.task}/${suffix}`).send({}),

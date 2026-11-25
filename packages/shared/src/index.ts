@@ -484,8 +484,8 @@ export {
   MEMBERSHIP_STATUSES,
   MEMBER_RESTRICTION_MODES,
   MEMBER_RESTRICTION_UNAVAILABLE_CODE,
-  MEMBER_RESTRICTION_KILL_SWITCH_ENV,
   MEMBER_RESTRICTED_CODE,
+  MEMBER_RESTRICTION_KILL_SWITCH_ENV,
   MEMBER_RESTRICTION_REQUIRED_CODE,
   COMPANY_MEMBERSHIP_ROLES,
   HUMAN_COMPANY_MEMBERSHIP_ROLES,
@@ -2915,3 +2915,11 @@ export {
   TASK_IDENTITY_CHANGED_FIELD,
   issueActivityChangesTaskIdentity,
 } from "./issue-activity-identity.js";
+export * from "./types/personal-note.js";
+export * from "./validators/personal-note.js";
+export * from "./types/planning-canvas.js";
+export * from "./validators/planning-canvas.js";
+export * from "./planning-canvas-format.js";
+export * from "./planning-canvas-blueprints.js";
+export * from "./planning-canvas-import.js";
+export * from "./canvas-cards.js";

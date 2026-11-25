@@ -235,9 +235,12 @@ describe.skipIf(!hasFfmpeg)("every xfade type renders (1 s, midpoint pixel probe
       });
       const r = compileVideo(doc, { [inputKey("a", 1)]: { path: "a.mp4", kind: "video" }, [inputKey("b", 1)]: { path: "b.mp4", kind: "video" } }, "out.mp4");
       for (const f of r.files) writeFileSync(join(dir, f.name), f.content);
-      // ffmpeg 6.1.1 xfade=slideup segfaults intermittently (~1 in 40 runs, reproduced with a bare xfade command); retry on SIGSEGV only.
-      let render = spawnSync("ffmpeg", [...r.args.slice(0, 3), "-loglevel", "error", ...r.args.slice(3)], { cwd: dir, encoding: "utf8" });
-      for (let retry = 0; retry < 3 && render.signal === "SIGSEGV"; retry++) render = spawnSync("ffmpeg", [...r.args.slice(0, 3), "-loglevel", "error", ...r.args.slice(3)], { cwd: dir, encoding: "utf8" });
+      // xfade=slideup segfaults intermittently: ~1 in 40 runs on ffmpeg 6.1.1 (reproduced with a bare xfade command), and
+      // on ffmpeg 8.0.1 (CI) it killed all 4 plain attempts of one run (PAR-12746). Retry on SIGSEGV only; from the
+      // 3rd attempt on the filter runs single-threaded (no slice threads), the one thing the crash can depend on.
+      const attempt = (n: number) => spawnSync("ffmpeg", [...r.args.slice(0, 3), "-loglevel", "error", ...(n >= 2 ? ["-filter_threads", "1"] : []), ...r.args.slice(3)], { cwd: dir, encoding: "utf8" });
+      let render = attempt(0);
+      for (let retry = 1; retry <= 5 && render.signal === "SIGSEGV"; retry++) render = attempt(retry);
       expect({ status: render.status, signal: render.signal, stderr: render.stderr }).toEqual({ status: 0, signal: null, stderr: "" });
       const probe = spawnSync("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "json", "out.mp4"], { cwd: dir, encoding: "utf8" });
       expect(Math.abs(Number((JSON.parse(probe.stdout) as { format: { duration: string } }).format.duration) - 1)).toBeLessThan(0.1);

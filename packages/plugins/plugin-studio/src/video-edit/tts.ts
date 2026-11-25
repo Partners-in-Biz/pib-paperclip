@@ -62,6 +62,44 @@ export function xaiTextToSpeech(apiKey: string, fetchImpl: FetchLike = fetch): T
   };
 }
 
+export const ELEVENLABS_TTS_BASE = "https://api.elevenlabs.io/v1/text-to-speech";
+export const ELEVENLABS_TTS_MODEL = "eleven_multilingual_v2";
+/** ElevenLabs premade voices (elevenlabs.io/docs voice library, read 2026-11-09): Rachel first, then Adam, Bella, Josh, Sam. */
+export const ELEVENLABS_VOICES = ["21m00Tcm4TlvDq8ikWAM", "pNInz6obpgDQGcFmaJgB", "EXAVITQu4vr4xnSDxMaL", "TxGEqnHWrfWFTfGW9XjX", "yoZ06aMxZJJ28mfd3POQ"] as const;
+
+/**
+ * ElevenLabs: `POST /v1/text-to-speech/{voice_id}?output_format=mp3_44100_128` with the key in `xi-api-key` and JSON
+ * `{text, model_id}`; the answer is raw MP3 bytes. No `language_code`: the multilingual model detects the language
+ * (only the v2.5 Flash/Turbo models accept one). The key never reaches an error message.
+ */
+export function elevenLabsTextToSpeech(apiKey: string, fetchImpl: FetchLike = fetch): TextToSpeech {
+  return {
+    key: "elevenlabs",
+    model: ELEVENLABS_TTS_MODEL,
+    voices: ELEVENLABS_VOICES,
+    async synthesize(input) {
+      let res: Response;
+      try {
+        res = await fetchImpl(`${ELEVENLABS_TTS_BASE}/${encodeURIComponent(input.voice)}?output_format=mp3_44100_128`, {
+          method: "POST",
+          headers: { "xi-api-key": apiKey, "Content-Type": "application/json", Accept: "audio/mpeg" },
+          body: JSON.stringify({ text: input.text, model_id: ELEVENLABS_TTS_MODEL }),
+          signal: AbortSignal.timeout(TTS_TIMEOUT_MS),
+        });
+      } catch (e) {
+        throw new StudioError(`Text to speech did not answer: ${e instanceof Error ? e.message : String(e)}`.replaceAll(apiKey, "[key]"), "provider_unavailable");
+      }
+      if (!res.ok) {
+        const hint = res.status === 401 || res.status === 403 ? " Check the ElevenLabs key in Studio's plugin settings." : res.status === 429 ? " ElevenLabs is rate limiting or out of credit." : "";
+        throw new StudioError(`Text to speech failed (${res.status}).${hint}`, "provider_error");
+      }
+      const audio = new Uint8Array(await res.arrayBuffer());
+      if (sniffMime(audio) !== "audio/mpeg") throw new StudioError("Text to speech did not send back an MP3 file.", "provider_error");
+      return { audio, mime: "audio/mpeg" };
+    },
+  };
+}
+
 /** An ID3v2 header and one MPEG-1 layer III frame header: sniffs as MP3. Tests inject their own probe. */
 export const FAKE_MP3 = new Uint8Array([0x49, 0x44, 0x33, 3, 0, 0, 0, 0, 0, 0, 0xff, 0xfb, 0x90, 0x64, 0, 0, 0, 0]);
 

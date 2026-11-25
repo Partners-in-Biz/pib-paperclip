@@ -397,3 +397,46 @@ describe("ProjectWorkspaceDetail local path under the managed-sandbox-only polic
     expect(container.textContent).toContain("Repo URL");
   });
 });
+
+describe("ProjectWorkspaceDetail for a restricted member (PAR-12952, AC-G10)", () => {
+  let root: Root | null = null;
+  let container: HTMLDivElement;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    mockProjectsApi.get.mockResolvedValue(project({ workspaces: [projectWorkspace({ isPrimary: false })] }));
+    mockPluginSlotState.slots = [];
+  });
+  afterEach(() => {
+    act(() => root?.unmount());
+    root = null;
+    container.remove();
+    vi.clearAllMocks();
+  });
+
+  async function render(mode: "report" | "enforce") {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    queryClient.setQueryData(queryKeys.instance.experimentalSettings, {});
+    queryClient.setQueryData(queryKeys.auth.session, { memberRestrictions: [{ companyId: "company-1", restricted: true, mode }] });
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<QueryClientProvider client={queryClient}><ProjectWorkspaceDetail /></QueryClientProvider>);
+    });
+    await act(async () => {
+      await flush();
+    });
+  }
+
+  it.each([["enforce", false], ["report", true]] as const)("is editable only when open, R at %s", async (mode, open) => {
+    await render(mode);
+    expect(container.querySelector("h1")?.textContent).toBe("Primary checkout");
+    expect(container.textContent).toContain("Workspace name");
+    const buttons = [...container.querySelectorAll("button")].map((button) => button.textContent?.trim());
+    expect(buttons.includes("Save changes")).toBe(open);
+    expect(buttons.includes("Make primary")).toBe(open);
+    expect(Boolean(container.querySelector('[data-testid="runtime-controls"]'))).toBe(open);
+    expect(container.querySelector<HTMLInputElement>('input[placeholder="Workspace name"]')?.closest("fieldset")?.disabled)
+      .toBe(!open);
+  });
+});

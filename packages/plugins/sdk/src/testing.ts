@@ -34,6 +34,7 @@ import type {
   ScopeKey,
   ToolResult,
   ToolRunContext,
+  PluginActingPersonContext,
   PluginWorkspace,
   PluginExecutionWorkspaceMetadata,
   AgentSession,
@@ -72,6 +73,7 @@ import type {
   PluginEnvironmentCancelInteractiveSetupResult,
   PluginEnvironmentDeleteTemplateParams,
   PluginEnvironmentDeleteTemplateResult,
+  PluginDataContext,
   PluginPerformActionActorContext,
   PluginPerformActionContext,
 } from "./protocol.js";
@@ -83,6 +85,12 @@ export interface TestHarnessOptions {
   capabilities?: PluginCapability[];
   /** Initial config returned by `ctx.config.get(companyId)`. */
   config?: Record<string, unknown>;
+  /**
+   * Companies returned by `ctx.companies.list({ actionableOnly: true })` (the
+   * companies with saved settings, as a job sees them). Defaults to every
+   * seeded company. See `TestHarness.setActionableCompanyIds`.
+   */
+  actionableCompanyIds?: string[];
 }
 
 export interface TestHarnessLogEntry {
@@ -103,6 +111,14 @@ export interface TestHarnessPerformActionOptions {
    * behavior.
    */
   companyId?: string | null;
+}
+
+export interface TestHarnessGetDataOptions {
+  /**
+   * Acting person to expose to the data handler as `context.actor`, like the
+   * production host's mark. Omit it to simulate an older host (`actor` is `{}`).
+   */
+  actor?: PluginActingPersonContext | null;
 }
 
 export interface TestHarness {
@@ -127,12 +143,17 @@ export interface TestHarness {
     principalGrants?: PrincipalPermissionGrant[];
   }): void;
   setConfig(config: Record<string, unknown>): void;
+  /**
+   * Set the companies `ctx.companies.list({ actionableOnly: true })` returns;
+   * `null` means every seeded company. Applied before `limit`/`offset`.
+   */
+  setActionableCompanyIds(companyIds: string[] | null): void;
   /** Dispatch a host or plugin event to registered handlers. */
   emit(eventType: PluginEventType | `plugin.${string}`, payload: unknown, base?: Partial<PluginEvent>): Promise<void>;
   /** Execute a previously-registered scheduled job handler. */
   runJob(jobKey: string, partial?: Partial<PluginJobContext>): Promise<void>;
   /** Invoke a `ctx.data.register(...)` handler by key. */
-  getData<T = unknown>(key: string, params?: Record<string, unknown>): Promise<T>;
+  getData<T = unknown>(key: string, params?: Record<string, unknown>, options?: TestHarnessGetDataOptions): Promise<T>;
   /** Invoke a `ctx.actions.register(...)` handler by key. */
   performAction<T = unknown>(
     key: string,
@@ -504,6 +525,9 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
   const entities = new Map<string, PluginEntityRecord>();
   const entityExternalIndex = new Map<string, string>();
   const companies = new Map<string, Company>();
+  let actionableCompanyIds: Set<string> | null = options.actionableCompanyIds
+    ? new Set(options.actionableCompanyIds)
+    : null;
   const lifecycleEvents = new Map<string, ResourceLifecycleEvent>();
   const lifecycleAcknowledgments = new Set<string>();
   const projects = new Map<string, Project>();
@@ -589,7 +613,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
   const events: EventRegistration[] = [];
   const jobs = new Map<string, (job: PluginJobContext) => Promise<void>>();
   const launchers = new Map<string, PluginLauncherRegistration>();
-  const dataHandlers = new Map<string, (params: Record<string, unknown>) => Promise<unknown>>();
+  const dataHandlers = new Map<string, (params: Record<string, unknown>, context: PluginDataContext) => Promise<unknown>>();
   const actionHandlers = new Map<
     string,
     (params: Record<string, unknown>, context: PluginPerformActionContext) => Promise<unknown>
@@ -1604,6 +1628,10 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       async list(input) {
         requireCapability(manifest, capabilitySet, "companies.read");
         let out = [...companies.values()];
+        if (input?.actionableOnly === true && actionableCompanyIds) {
+          const allowed = actionableCompanyIds;
+          out = out.filter((company) => allowed.has(company.id));
+        }
         if (input?.offset) out = out.slice(input.offset);
         if (input?.limit) out = out.slice(0, input.limit);
         return out;
@@ -2650,6 +2678,9 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
     setConfig(config) {
       currentConfig = { ...config };
     },
+    setActionableCompanyIds(companyIds) {
+      actionableCompanyIds = companyIds ? new Set(companyIds) : null;
+    },
     async emit(eventType, payload, base) {
       const event: PluginEvent = {
         eventId: base?.eventId ?? randomUUID(),
@@ -2683,10 +2714,14 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         scheduledAt: partial.scheduledAt ?? new Date().toISOString(),
       });
     },
-    async getData<T = unknown>(key: string, params: Record<string, unknown> = {}) {
+    async getData<T = unknown>(key: string, params: Record<string, unknown> = {}, options?: TestHarnessGetDataOptions) {
       const handler = dataHandlers.get(key);
       if (!handler) throw new Error(`No data handler registered for '${key}'`);
-      return await handler(params) as T;
+      const actorInput = options?.actor ?? null;
+      const actor = Object.freeze(actorInput && "onBehalfOfUserId" in actorInput
+        ? { onBehalfOfUserId: stringOrNull(actorInput.onBehalfOfUserId), onBehalfOfRestricted: actorInput.onBehalfOfRestricted === true }
+        : {});
+      return await handler(params, Object.freeze({ actor })) as T;
     },
     async performAction<T = unknown>(
       key: string,

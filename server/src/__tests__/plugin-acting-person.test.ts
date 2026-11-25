@@ -10,8 +10,10 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 // hand the plugin `onBehalfOfUserId` (the run's, the key's or the connection's
 // person; null for the local board) and `onBehalfOfRestricted` (true only for a
 // flagged person in an `enforce` company). A failed read answers 503, no call.
+// PAR-14297: the two getData routes (board-only) carry the same mark.
 
-const failReads = vi.hoisted(() => ({ on: false }));
+// `after`: how many reads succeed before they fail (0: all fail).
+const failReads = vi.hoisted(() => ({ on: false, after: 0, calls: 0 }));
 const mockRegistry = vi.hoisted(() => ({ getById: vi.fn(), getByKey: vi.fn() }));
 
 vi.mock("../services/member-restriction/resolver.js", async (importOriginal) => {
@@ -21,7 +23,9 @@ vi.mock("../services/member-restriction/resolver.js", async (importOriginal) => 
     memberRestrictionResolver: (db: Parameters<typeof real.memberRestrictionResolver>[0]) => {
       const resolve = real.memberRestrictionResolver(db);
       return (personId: string, companyId: string) =>
-        failReads.on ? Promise.reject(new Error("restriction read failed")) : resolve(personId, companyId);
+        failReads.on && ++failReads.calls > failReads.after
+          ? Promise.reject(new Error("restriction read failed"))
+          : resolve(personId, companyId);
     },
   };
 });
@@ -49,6 +53,8 @@ describe("plugin acting person database support", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-plugin-acting-person-");
     db = createDb(tempDb.connectionString);
+    // Warm the route modules here: their cold import takes most of a test's 15 s budget.
+    await Promise.all([import("../routes/plugins.js"), import("../middleware/auth.js"), import("../middleware/error-handler.js")]);
   }, 60_000);
   afterAll(async () => { await tempDb?.cleanup(); });
 
@@ -69,7 +75,7 @@ describe("plugin acting person database support", () => {
   });
 
   afterEach(() => {
-    failReads.on = false;
+    Object.assign(failReads, { on: false, after: 0, calls: 0 });
     sessionUserId = null;
     vi.unstubAllEnvs();
   });
@@ -82,7 +88,9 @@ describe("plugin acting person database support", () => {
     const [restricted, unflagged, owner] = ["r", "u", "o"].map((p) => `${p}-${randomUUID()}`) as [string, string, string];
     for (const [id, membershipRole, flag] of [[restricted, "operator", true], [unflagged, "operator", false], [owner, "owner", false]] as const) {
       await db.insert(authUsers).values({ id, name: id, email: `${id}@fixture.invalid`, emailVerified: true, createdAt: new Date(), updatedAt: new Date() });
-      await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: id, status: "active", membershipRole, restricted: flag });
+      // R has this plugin on his list, so the core plugin gate (C5-1, PAR-12740) lets his call reach it.
+      await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: id, status: "active", membershipRole,
+        restricted: flag, restrictedPluginKeys: flag ? ["paperclip.acting"] : [] });
     }
     const [agent] = await db.insert(agents).values({ companyId, name: "Worker", adapterType: "process" }).returning();
     return { companyId, agentId: agent!.id, restricted, unflagged, owner };
@@ -132,8 +140,10 @@ describe("plugin acting person database support", () => {
     return server;
   }
 
-  type Entry = "action" | "api" | "tool";
+  type Entry = "action" | "api" | "tool" | "bridgeData" | "data";
   const ENTRIES: Entry[] = ["action", "api", "tool"];
+  /** The getData routes (PAR-14297): board-only, so only a signed-in user or the local board reaches them. */
+  const DATA_ENTRIES = ["bridgeData", "data"] as const;
 
   /** Calls one entry point; returns the response and what the plugin received as its caller. */
   async function callEntry(entry: Entry, f: Fixture, headers: Record<string, string>, options: Parameters<typeof app>[0] = {}, runId?: string) {
@@ -147,6 +157,16 @@ describe("plugin acting person database support", () => {
     if (entry === "api") {
       const res = await request(server).get("/api/plugins/paperclip.acting/api/whoami").query({ companyId: f.companyId }).set(headers);
       return { res, caller: call.mock.calls.find(([, method]) => method === "handleApiRequest")?.[2]?.actor };
+    }
+    if (entry === "bridgeData" || entry === "data") {
+      // A person sent in the params or body is not the mark; core computes it.
+      const spoof = { onBehalfOfUserId: "spoofed", onBehalfOfRestricted: false };
+      const res = entry === "bridgeData"
+        ? await request(server).post(`/api/plugins/${PLUGIN_ID}/bridge/data`).set(headers)
+          .send({ key: "library", companyId: f.companyId, params: spoof, actorContext: spoof })
+        : await request(server).post(`/api/plugins/${PLUGIN_ID}/data/library`).set(headers)
+          .send({ companyId: f.companyId, params: spoof, actorContext: spoof });
+      return { res, caller: call.mock.calls.find(([, method]) => method === "getData")?.[2]?.actorContext };
     }
     // A person sent in the body is dropped; core computes it.
     const res = await request(server).post("/api/plugins/tools/execute").set(headers).send({
@@ -174,9 +194,25 @@ describe("plugin acting person database support", () => {
   });
 
   it.each(ENTRIES)("%s with a long-lived agent key carries the key's person", async (entry) => {
+    // H5 (PAR-12714): a long-lived key may name only a run of its own agent for its own person.
     const f = await fixture("enforce");
-    await expectPerson(entry, f, await keyFor(f, f.restricted), f.restricted, true);
-    await expectPerson(entry, f, await keyFor(f, f.unflagged), f.unflagged, false);
+    for (const [person, restricted] of [[f.restricted, true], [f.unflagged, false]] as const) {
+      await expectPerson(entry, f, await keyFor(f, person), person, restricted, {}, await runFor(f, person));
+    }
+  });
+
+  it("tool with a long-lived agent key naming another person's or agent's run is refused (H5)", async () => {
+    const f = await fixture("enforce");
+    const [other] = await db.insert(agents).values({ companyId: f.companyId, name: "Other", adapterType: "process" }).returning();
+    const [otherAgentRun] = await db.insert(heartbeatRuns).values({
+      companyId: f.companyId, agentId: other!.id, invocationSource: "assignment", status: "running", responsibleUserId: f.restricted,
+    }).returning();
+    for (const runId of [await runFor(f, f.owner), otherAgentRun!.id]) {
+      const { res } = await callEntry("tool", f, await keyFor(f, f.restricted), {}, runId);
+      expect(res.status).toBe(422);
+      expect(res.body.code ?? res.body.details?.code).toBe("agent_key_run_not_owned");
+      expect(executeTool).not.toHaveBeenCalled();
+    }
   });
 
   it.each(ENTRIES)("%s through an agent-purpose connection carries its approver", async (entry) => {
@@ -190,7 +226,7 @@ describe("plugin acting person database support", () => {
     }
   });
 
-  it.each(["action", "api"] as const)("%s from a signed-in user carries that user", async (entry) => {
+  it.each(["action", "api", ...DATA_ENTRIES] as const)("%s from a signed-in user carries that user", async (entry) => {
     const f = await fixture("enforce");
     sessionUserId = f.restricted;
     await expectPerson(entry, f, {}, f.restricted, true);
@@ -198,7 +234,7 @@ describe("plugin acting person database support", () => {
     await expectPerson(entry, f, {}, f.owner, false);
   });
 
-  it.each(ENTRIES)("%s from the local board carries no person", async (entry) => {
+  it.each([...ENTRIES, ...DATA_ENTRIES])("%s from the local board carries no person", async (entry) => {
     await expectPerson(entry, await fixture("enforce"), {}, null, false, { local: true });
   });
 
@@ -210,6 +246,8 @@ describe("plugin acting person database support", () => {
         const { runId, headers } = await runToken(f, f.restricted);
         await expectPerson(entry, f, headers, f.restricted, false, {}, runId);
       }
+      sessionUserId = f.restricted;
+      for (const entry of DATA_ENTRIES) await expectPerson(entry, f, {}, f.restricted, false);
     });
 
   it.each(ENTRIES)("%s answers 503 MEMBER_RESTRICTION_UNAVAILABLE and never reaches the plugin when the read fails", async (entry) => {
@@ -221,5 +259,26 @@ describe("plugin acting person database support", () => {
     expect(res.body.code ?? res.body.details?.code).toBe("MEMBER_RESTRICTION_UNAVAILABLE");
     expect(call).not.toHaveBeenCalled();
     expect(executeTool).not.toHaveBeenCalled();
+  });
+
+  it.each(DATA_ENTRIES)("%s answers 503 MEMBER_RESTRICTION_UNAVAILABLE and never reaches the worker when the read fails", async (entry) => {
+    const f = await fixture("enforce");
+    sessionUserId = f.restricted;
+    failReads.on = true;
+    const { res } = await callEntry(entry, f, {});
+    expect(res.status).toBe(503);
+    expect(res.body.code ?? res.body.details?.code).toBe("MEMBER_RESTRICTION_UNAVAILABLE");
+    expect(call).not.toHaveBeenCalled();
+  });
+
+  it.each(DATA_ENTRIES)("%s answers 503 when only the acting-person read fails (the plugin gate's read passed)", async (entry) => {
+    const f = await fixture("enforce");
+    sessionUserId = f.restricted;
+    Object.assign(failReads, { on: true, after: 1, calls: 0 });
+    const { res } = await callEntry(entry, f, {});
+    expect(failReads.calls, "the gate read and the acting-person read").toBe(2);
+    expect(res.status).toBe(503);
+    expect(res.body.code ?? res.body.details?.code).toBe("MEMBER_RESTRICTION_UNAVAILABLE");
+    expect(call).not.toHaveBeenCalled();
   });
 });

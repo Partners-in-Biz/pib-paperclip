@@ -1,7 +1,23 @@
 import { confirmMcpAttachmentCleanup, recordMcpAttachmentCleanup, type McpAttachmentCleanup } from "../services/public-mcp/upload-cleanup.js";
 import { SYSTEM_CAUSING_ACTOR, wakeCausingActorFromActor, wakeCausingActorFromActorRef } from "../services/heartbeat/causing-actor.js";
-import { assertNamesOnlyHimself } from "../services/member-restriction/acting-person.js";
+import { actingPersonBoundByH, assertNamesOnlyHimself } from "../services/member-restriction/acting-person.js";
 import { refusedOnlyByMemberRestriction } from "../services/member-restriction/action-list.js";
+import { restrictedTaskBody } from "../services/member-restriction/body-allowlist.js";
+import { assertCanAssignTasks as assertCanAssignTasksFor, type TaskAssignmentAuthorizationScope } from "./task-assignment-guard.js";
+import {
+  actorMayInstructAgent,
+  hideUnreadableIssueIds,
+  MEMBER_AGENT_NOT_LISTED_DETAILS,
+  MEMBER_AGENT_NOT_LISTED_ROUTE_MESSAGE,
+  restrictedAgentIdsForActor,
+} from "../services/member-restriction/agent-read.js";
+import { memberRestrictionForActor } from "../services/member-restriction/actor-memberships.js";
+import {
+  memberRestrictionOrUnavailable,
+  memberRestrictionResolver,
+  memberRestrictionUnavailable,
+} from "../services/member-restriction/resolver.js";
+import { memberRestrictionEnforcedCompanyIdsForActor } from "../services/member-restriction/strict-read.js";
 import { notifyDeferredExecutionWork } from "../services/deferred-execution-notifications.js";
 import { notifyNativeRecoveryNotices } from "../services/native-recovery-notice-notifications.js";
 import { notifyNativeStatusReassessment } from "../services/native-status-reassessment-notifications.js";
@@ -371,6 +387,7 @@ import {
 } from "../services/company-search-rate-limit.js";
 import {
   applyIssueExecutionPolicyTransition,
+  executionPolicyAddedAgentIds,
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
   redactIssueMonitorExternalRef,
@@ -3503,6 +3520,11 @@ function logIssueListRequest(input: {
   });
 }
 
+/** Update fields that can wake an agent (assignee, status, parent, person, comment, blockers). */
+const ISSUE_UPDATE_WAKE_FIELDS = [
+  "assigneeAgentId", "assigneeUserId", "status", "parentId", "responsibleUserId", "comment", "blockedByIssueIds",
+] as const;
+
 export function issueRoutes(
   db: Db,
   storage: StorageService,
@@ -3523,6 +3545,8 @@ export function issueRoutes(
       agentId: string,
       options: Parameters<ReturnType<typeof heartbeatService>["wakeup"]>[1],
     ) => ReturnType<ReturnType<typeof heartbeatService>["wakeup"]>;
+    /** Test seam: the wake a context compaction request queues (default heartbeat.wakeup). */
+    contextCompactionWakeup?: NonNullable<Parameters<typeof contextCompactionService>[1]>["wakeup"];
     issueListDiagnostics?: IssueListDiagnostics;
     declineToolActionRequest?: (input: {
       companyId: string;
@@ -3627,7 +3651,7 @@ export function issueRoutes(
       deliverNativeQuestionResponse(db, interaction),
   });
   const contextCompaction = contextCompactionService(db, {
-    wakeup: (agentId, options) => heartbeat.wakeup(agentId, options),
+    wakeup: opts.contextCompactionWakeup ?? ((agentId, options) => heartbeat.wakeup(agentId, options)),
   });
   const runnerGoals = runnerGoalService(db, {
     enqueueOfflineControl: async ({ issueId, agentId, requestId, control, causingActor }) => {
@@ -4181,6 +4205,7 @@ export function issueRoutes(
     requestedPolicy: unknown,
   ) {
     const policy = normalizeIssueExecutionPolicy(requestedPolicy);
+    await assertExecutionPolicyAgentsListed(req, companyId, policy);
     if (req.actor.type !== "agent") return policy;
     const trust = await resolveAgentTrustForIssue(
       { agentId: req.actor.agentId, runId: req.actor.runId },
@@ -5074,14 +5099,6 @@ export function issueRoutes(
     return (req.actor.companyIds ?? []).includes(companyId);
   }
 
-  type TaskAssignmentAuthorizationScope = {
-    issueId?: string | null;
-    projectId?: string | null;
-    parentIssueId?: string | null;
-    assigneeAgentId?: string | null;
-    assigneeUserId?: string | null;
-  };
-
   async function resolveAssignmentProjectId(input: {
     companyId: string;
     projectId: string | null | undefined;
@@ -5116,23 +5133,25 @@ export function issueRoutes(
     companyId: string,
     assignmentScope?: TaskAssignmentAuthorizationScope,
   ) {
-    assertCompanyAccess(req, companyId);
-    const decision = await access.decide({
-      actor: req.actor,
-      action: "tasks:assign",
-      resource: {
-        type: "issue",
-        companyId,
-        issueId: assignmentScope?.issueId ?? null,
-        projectId: assignmentScope?.projectId ?? null,
-        parentIssueId: assignmentScope?.parentIssueId ?? null,
-        assigneeAgentId: assignmentScope?.assigneeAgentId ?? null,
-        assigneeUserId: assignmentScope?.assigneeUserId ?? null,
-      },
-      scope: assignmentScope ?? null,
-    });
-    if (decision.allowed) return;
-    throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+    // Shared with the canvas mention guard (PAR-13935), so both run the same checks.
+    await assertCanAssignTasksFor(db, req, companyId, assignmentScope, access);
+  }
+
+  /**
+   * PAR-12608 4.7 (AC-A8): an agent newly named as a stage participant
+   * (reviewer or approver) must be on the list of a restricted caller, else 422.
+   * Agents the stored policy already names stay as they are.
+   */
+  async function assertExecutionPolicyAgentsListed(
+    req: Request,
+    companyId: string,
+    policy: ReturnType<typeof normalizeIssueExecutionPolicy>,
+    previousPolicy: ReturnType<typeof normalizeIssueExecutionPolicy> = null,
+  ) {
+    for (const agentId of executionPolicyAddedAgentIds(policy, previousPolicy)) {
+      if (await actorMayInstructAgent(db, req.actor, { companyId, agentId, target: "issue:execution_policy" })) continue;
+      throw unprocessable(MEMBER_AGENT_NOT_LISTED_ROUTE_MESSAGE, { ...MEMBER_AGENT_NOT_LISTED_DETAILS, agentId });
+    }
   }
 
   async function assertCanReuseCreatedIssue(req: Request, issue: typeof issueRows.$inferSelect) {
@@ -6263,6 +6282,32 @@ export function issueRoutes(
     // and re-runs this audience under its locks before any mutation.
     relayedHumanUserId?: string | null,
   ) {
+    const payload =
+      interaction.payload && typeof interaction.payload === "object"
+        ? (interaction.payload as {
+            toolAction?: unknown;
+            secretProposal?: unknown;
+          })
+        : null;
+    const governedAction =
+      interaction.kind === "request_confirmation" &&
+      (payload?.toolAction !== undefined ||
+        payload?.secretProposal !== undefined);
+    // S11 (PAR-12608 4.6): a caller who works for a person restricted under
+    // `enforce` in this company decides no tool review and no secret
+    // proposal. Approving one runs the parked call with its run's tools and
+    // can write a standing trust rule; tool access stays `closed` for him.
+    // Plain questions and confirmations stay open.
+    if (
+      governedAction &&
+      (await memberRestrictionEnforcedCompanyIdsForActor(db, req.actor)).includes(issue.companyId)
+    ) {
+      return denyIssueThreadInteractionResolution(res, {
+        status: 403,
+        code: "MEMBER_RESTRICTED_GOVERNED_ACTION",
+        message: "A restricted member cannot decide a tool review or a secret proposal",
+      });
+    }
     const reviewRestriction = await resolvePendingReviewInteractionRestriction(
       issue,
       interaction,
@@ -6275,13 +6320,6 @@ export function issueRoutes(
         interaction,
       );
     }
-    const payload =
-      interaction.payload && typeof interaction.payload === "object"
-        ? (interaction.payload as {
-            toolAction?: unknown;
-            secretProposal?: unknown;
-          })
-        : null;
     const actor = getActorInfo(req);
     const decision: IssueThreadInteractionResolverAudienceDecision =
       evaluateIssueThreadInteractionResolverAudience({
@@ -6296,10 +6334,7 @@ export function issueRoutes(
             : { type: "user", userId: actor.actorId },
         interaction,
         additionalRestriction: resolverPolicyRestriction,
-        governedAction:
-          interaction.kind === "request_confirmation" &&
-          (payload?.toolAction !== undefined ||
-            payload?.secretProposal !== undefined),
+        governedAction,
       });
     if (!decision.allowed) {
       return denyIssueThreadInteractionResolution(res, {
@@ -6339,9 +6374,10 @@ export function issueRoutes(
     interactionId: string,
     relayedHumanUserId?: string | null,
   ) {
-    // AC-G3: a board caller who cannot read the task gets "not found" before
-    // any check that would tell them the task, the chat or the interaction exists.
-    if (req.actor.type !== "agent" && !(await assertIssueReadAllowed(req, res, issue))) return false;
+    // AC-G3: a caller who cannot read the task gets "not found" before any
+    // check that would tell them the task, the chat or the interaction exists.
+    // Agents too (PAR-13025): a run working for a restricted person.
+    if (!(await assertIssueReadAllowed(req, res, issue))) return false;
     if (issue.conversationAgentId && req.actor.type === "board" && req.actor.userId !== issue.conversationUserId) {
       throw forbidden("Only the conversation owner can respond to chat interactions");
     }
@@ -7350,7 +7386,9 @@ export function issueRoutes(
           error: "Issue follow-up blocked by unresolved blockers",
           details: {
             issueId: issue.id,
-            unresolvedBlockerIssueIds: readiness.unresolvedBlockerIssueIds,
+            // PAR-12608 4.3: a blocker the caller cannot read is never named.
+            unresolvedBlockerIssueIds: await hideUnreadableIssueIds(db, req.actor, issue.companyId,
+              readiness.unresolvedBlockerIssueIds),
           },
         });
         return false;
@@ -9618,6 +9656,8 @@ export function issueRoutes(
       "Issue not found",
     );
     if (!issue) return;
+    // AC-G3: a caller who cannot read the task gets 404 and nothing starts.
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const decision = await decideIssueAccess(req, issue, "issue:mutate");
     if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
     // An Agent Chat run starts only for the conversation's owner.
@@ -11719,6 +11759,10 @@ export function issueRoutes(
       "Issue not found",
     );
     if (!issue) return;
+    // A caller who cannot read the task gets "not found" before the board-only
+    // answer, so the 403 does not tell him it exists (PAR-12942, AC-G3). A read
+    // check only: no break-glass, and none of the agent write checks.
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Board authentication required" });
       return;
@@ -11776,6 +11820,10 @@ export function issueRoutes(
       "Issue not found",
     );
     if (!issue) return;
+    // A caller who cannot read the task gets "not found" before the board-only
+    // answer, so the 403 does not tell him it exists (PAR-12942, AC-G3). A read
+    // check only: no break-glass, and none of the agent write checks.
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Board authentication required" });
       return;
@@ -12024,6 +12072,10 @@ export function issueRoutes(
       "Issue not found",
     );
     if (!issue) return;
+    // A caller who cannot read the task gets "not found" before the board-only
+    // answer, so the 403 does not tell him it exists (PAR-12942, AC-G3). A read
+    // check only: no break-glass, and none of the agent write checks.
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Board authentication required" });
       return;
@@ -13051,10 +13103,13 @@ export function issueRoutes(
         });
         return;
       }
+      // PAR-12950: a restricted member's body, before the first write; host keys are put back after the agent command check.
+      const restrictedBody = await restrictedTaskBody(db, req, companyId, "createIssue", req.body, null);
       assertNoAgentHostWorkspaceCommandMutation(
         req,
         collectIssueWorkspaceCommandPaths(req.body),
       );
+      req.body = restrictedBody;
       const sanitizedBody = await sanitizeIssueCreateAttribution(
         db,
         req,
@@ -13070,8 +13125,11 @@ export function issueRoutes(
       const {
         watchdogDiscovery: rawWatchdogDiscovery,
         onboardingFirstTask: rawOnboardingFirstTask,
+        deferInitialWakeup: rawDeferInitialWakeup,
         ...rawCreateBody
       } = sanitizedBody;
+      const deferInitialWakeup =
+        rawDeferInitialWakeup === true && req.actor.type === "board";
       // The onboarding first-task marker grants privileged, server-owned behavior:
       // it stamps the onboarding origin (which suppresses the seeded description in
       // the UI) and seeds a comment authored *as the assigned agent*. Honor it only
@@ -13373,12 +13431,12 @@ export function issueRoutes(
         },
       };
       const createAcceptedIssue = (data: typeof createInput) => {
-        if (actor.actorType !== "user" || isOnboardingFirstTask || !data.assigneeAgentId || ["backlog", "done", "cancelled"].includes(data.status ?? "")) {
+        if (deferInitialWakeup || actor.actorType !== "user" || isOnboardingFirstTask || !data.assigneeAgentId || ["backlog", "done", "cancelled"].includes(data.status ?? "")) {
           return svc.create(companyId, data);
         }
         return db.transaction(async tx => {
         const created = await svc.create(companyId, data, tx);
-        if (!deduplicationReason && !isOnboardingFirstTask && actor.actorType === "user" && created.assigneeAgentId && !["backlog", "done", "cancelled"].includes(created.status)) {
+        if (!deduplicationReason && !deferInitialWakeup && !isOnboardingFirstTask && actor.actorType === "user" && created.assigneeAgentId && !["backlog", "done", "cancelled"].includes(created.status)) {
           await enqueueFastResponse(tx as unknown as Db, { companyId, issueId: created.id, agentId: created.assigneeAgentId,
             responsibleUserId: actor.actorId, sourceKey: `issue:${created.id}`, acceptedAt: new Date(created.createdAt) });
         }
@@ -13587,7 +13645,7 @@ export function issueRoutes(
       // cancelled is a record, not work: like restoring an assignee on closed
       // work, it must not wake the assignee. Every other create keeps its wake.
 
-      if (!isOnboardingFirstTask && !isClosedIssueStatus(issue.status)) {
+      if (!deferInitialWakeup && !isOnboardingFirstTask && !isClosedIssueStatus(issue.status)) {
         void queueIssueAssignmentWakeup({
           heartbeat,
           issue,
@@ -13598,7 +13656,9 @@ export function issueRoutes(
           requestedByActorId: actor.actorId,
         });
       }
-      await queueTaskWatchdogEvaluation(issue, actor.runId);
+      if (!deferInitialWakeup) {
+        await queueTaskWatchdogEvaluation(issue, actor.runId);
+      }
 
     const visibleReferenceSummary = await redactIssueReferenceEdges(req, companyId, referenceSummary);
       res.status(201).json({
@@ -13608,6 +13668,95 @@ export function issueRoutes(
       });
     },
   );
+
+  router.post("/issues/:id/finalize-creation", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await getAccessibleResource(
+      req,
+      res,
+      svc.getById(id),
+      "Issue not found",
+    );
+    if (!issue) return;
+    if (
+      req.actor.type !== "board" ||
+      !(await decideIssueAccess(req, issue, "issue:mutate")).allowed
+    ) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    const existingAttachments = await svc.listAttachments(issue.id);
+    const initialAttachments = existingAttachments
+      .filter((attachment) => attachment.issueCommentId === null && !attachment.originatingRunId)
+      .sort((a, b) => {
+        const diff = new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+        return diff !== 0 ? diff : a.id.localeCompare(b.id);
+      });
+    const currentDescription = issue.description ?? "";
+    const missingRefLines = initialAttachments
+      .filter((attachment) => !currentDescription.includes(buildAttachmentContentPath(attachment.id)))
+      .map((attachment) => {
+        const name = (attachment.originalFilename?.trim() || "attachment").replace(/[\\[\]]/g, "\\$&");
+        const isImage = (attachment.contentType ?? "").toLowerCase().split(";")[0]?.trim().startsWith("image/");
+        return `${isImage ? "!" : ""}[${name}](${buildAttachmentContentPath(attachment.id)})`;
+      });
+
+    let updatedIssue = issue;
+    if (missingRefLines.length > 0) {
+      const nextDescription = [currentDescription.trim(), missingRefLines.join("\n")]
+        .filter(Boolean)
+        .join("\n\n");
+      const saved = await svc.update(issue.id, { description: nextDescription });
+      if (saved) updatedIssue = saved;
+    }
+
+    const finalizeKey = `issue-create-finalize:${updatedIssue.id}`;
+    const [existingWake] = await db
+      .select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, updatedIssue.companyId),
+          eq(agentWakeupRequests.idempotencyKey, finalizeKey),
+        ),
+      )
+      .limit(1);
+
+    const isOnboardingFirstTask = updatedIssue.originKind === ONBOARDING_FIRST_TASK_ORIGIN_KIND;
+    if (!existingWake && !updatedIssue.executionRunId) {
+      if (!isOnboardingFirstTask && !isClosedIssueStatus(updatedIssue.status)) {
+        if (
+          actor.actorType === "user" &&
+          updatedIssue.assigneeAgentId &&
+          !["backlog", "done", "cancelled"].includes(updatedIssue.status)
+        ) {
+          await enqueueFastResponse(db, {
+            companyId: updatedIssue.companyId,
+            issueId: updatedIssue.id,
+            agentId: updatedIssue.assigneeAgentId,
+            responsibleUserId: actor.actorId,
+            sourceKey: `issue:${updatedIssue.id}`,
+            acceptedAt: new Date(),
+          });
+        }
+        void queueIssueAssignmentWakeup({
+          heartbeat,
+          issue: updatedIssue,
+          reason: "issue_assigned",
+          mutation: "create",
+          contextSource: "issue.create",
+          requestedByActorType: actor.actorType,
+          requestedByActorId: actor.actorId,
+          idempotencyKey: finalizeKey,
+        });
+      }
+      await queueTaskWatchdogEvaluation(updatedIssue, actor.runId);
+    }
+
+    res.status(200).json({ ok: true, issue: updatedIssue });
+  });
 
   router.post(
     "/issues/:id/children",
@@ -13629,6 +13778,7 @@ export function issueRoutes(
         res.status(404).json({ error: "Parent issue not found" });
         return;
       }
+      const restrictedBody = await restrictedTaskBody(db, req, parent.companyId, "createChildIssue", req.body, null, parent.id);
       if (
         !isTaskBridgeKeyActor(req) &&
         !(await assertIssueWriteInfluenceAllowed(req, res, parent))
@@ -13647,6 +13797,7 @@ export function issueRoutes(
         req,
         collectIssueWorkspaceCommandPaths(req.body),
       );
+      req.body = restrictedBody;
       const sanitizedBody = await sanitizeIssueCreateAttribution(
         db,
         req,
@@ -13981,6 +14132,7 @@ export function issueRoutes(
           normalizeIssueExecutionPolicy(child.executionPolicy),
           actor.actorType,
         );
+        await assertExecutionPolicyAgentsListed(req, sourceIssue.companyId, executionPolicy);
         await assertCanManageIssueMonitor(
           access,
           req,
@@ -14530,15 +14682,65 @@ export function issueRoutes(
     },
   );
 
+  /**
+   * PAR-12929: the mode of the member restriction that binds this caller in
+   * one company (a restricted person, a run or key working for him, or the
+   * person who authorized the run), or null when nothing binds him: the kill
+   * switch, mode `off`, the local board, an instance admin who is no member.
+   * A failed read throws 503 `MEMBER_RESTRICTION_UNAVAILABLE`.
+   */
+  async function memberRestrictionModeBinding(req: Request, companyId: string): Promise<"report" | "enforce" | null> {
+    if (req.actor.source === "local_implicit") return null;
+    const resolve = memberRestrictionResolver(db);
+    const carried = await memberRestrictionForActor(resolve, req.actor, companyId);
+    const authorizer = req.actor.authorizingUserId && req.actor.authorizingUserId !== carried?.personId
+      ? await memberRestrictionOrUnavailable(resolve, req.actor.authorizingUserId, companyId)
+      : null;
+    const bound = [carried, authorizer].find((restriction) => restriction?.restricted && restriction.mode !== "off");
+    return bound ? (bound.mode as "report" | "enforce") : null;
+  }
+
+  /** A restricted read that cannot be answered refuses with 503; it never continues as allowed. */
+  async function restrictedRead<T>(read: () => Promise<T>): Promise<T> {
+    try {
+      return await read();
+    } catch (error) {
+      throw error instanceof HttpError ? error : memberRestrictionUnavailable(error);
+    }
+  }
+
   router.put("/issues/:id/title", validateIssueMutationBody(setIssueTitleSchema), async (req, res) => {
     const existing = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
     if (!existing) return;
-    if (req.actor.type === "agent") {
+    // Each caller class takes exactly one read check and one write check
+    // (PAR-14340: #1151 and #1190 both rewrote this handler).
+    const restrictionMode = await memberRestrictionModeBinding(req, existing.companyId);
+    if (req.actor.type === "agent" && restrictionMode !== "enforce") {
+      // The agent title path, unchanged by PAR-13016. Under `report` the
+      // restricted read records the would-refuse and goes on (PAR-12929).
+      if (restrictionMode === "report") await restrictedRead(() => decideIssueAccess(req, existing, "issue:read"));
       const decision = await decideIssueAccess(req, existing, "issue:mutate");
       if (!decision.allowed) {
         await denyIssueWrite(req, res, existing, issueWriteDenialCodeForDecision(decision));
         return;
       }
+    } else if (restrictionMode) {
+      // PAR-12929 (AC-G3): a caller bound by the member restriction reads the
+      // task through `issue:read`, as `GET /api/issues/:id` does: "not found"
+      // for a task he cannot read (`enforce`, or a private task), one
+      // would-refuse record under `report`, 503 for a read that cannot be
+      // answered. Then the write check `PATCH /api/issues/:id` applies: for a
+      // board caller that is assertCompanyAccess above, no `issue:mutate`
+      // decision (it would record the would-refuse a second time).
+      if (!(await restrictedRead(() => assertIssueReadAllowed(req, res, existing)))) return;
+      if (req.actor.type === "agent"
+        && !(await assertAgentIssueMutationAllowed(req, res, existing, { allowVisibleIssueWrite: true }))) return;
+    } else {
+      // PAR-13016 (AC-G3): a board caller who cannot read the task gets 404,
+      // then the write decision.
+      if (!(await assertIssueReadAllowed(req, res, existing))) return;
+      const decision = await decideIssueAccess(req, existing, "issue:mutate");
+      if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
     }
     const actor = getActorInfo(req);
     const { result, publication } = await db.transaction(tx => setIssueTitle(
@@ -14636,6 +14838,7 @@ export function issueRoutes(
       );
       if (!existing) return;
       if (!(await assertIssueReadAllowed(req, res, existing))) return;
+      const restrictedBody = await restrictedTaskBody(db, req, existing.companyId, "updateIssue", req.body, existing, existing.id);
       await assertNativeRunKeepsOwnExecutionLock(req, existing);
       if (req.body.expectedStatusVersion !== undefined && (
         existing.statusVersion !== req.body.expectedStatusVersion || existing.status !== "backlog"
@@ -14669,6 +14872,7 @@ export function issueRoutes(
         req,
         collectIssueWorkspaceCommandPaths(req.body),
       );
+      req.body = restrictedBody;
 
       if (req.actor.type === "agent" && req.body.onBehalfOfUserId != null) {
         await auditAgentIssueCommentAttributionSpoof({
@@ -15036,6 +15240,16 @@ export function issueRoutes(
       )
         return;
 
+      // Before any write of this request, the interrupt included (AC-A8).
+      if (req.body.executionPolicy !== undefined) {
+        await assertExecutionPolicyAgentsListed(
+          req,
+          existing.companyId,
+          normalizeIssueExecutionPolicy(req.body.executionPolicy),
+          normalizeIssueExecutionPolicy(existing.executionPolicy ?? null),
+        );
+      }
+
       if (interruptRequested) {
         if (!commentBody) {
           res.status(400).json({
@@ -15396,6 +15610,15 @@ export function issueRoutes(
             assigneeUserId: nextAssigneeUserId,
           });
         }
+      }
+
+      // H1 (PAR-14378): the wakes of this update run for the person who caused
+      // them. Read rule H before anything is written, so a failed read answers
+      // 503 `MEMBER_RESTRICTION_UNAVAILABLE` with the task unchanged instead of
+      // a saved update whose wake then fails. Reads nothing for the local
+      // board, instance admins, owners, admins or under the kill switch.
+      if (ISSUE_UPDATE_WAKE_FIELDS.some((field) => req.body[field] !== undefined)) {
+        await actingPersonBoundByH(db, req.actor, existing.companyId);
       }
 
       // Only this request may finish a mutation that intentionally stops its
@@ -18339,6 +18562,8 @@ export function issueRoutes(
             }
             await secretProposals.approve(issue.companyId, proposal.id, {
               resolvedByUserId,
+              // Accepting the binding card also approves its pending secret proposal.
+              cascade: true,
               assertCanResolve: (lockedProposal, txDb) =>
                 assertCanResolveProposal({
                   db: txDb,
@@ -18808,7 +19033,8 @@ export function issueRoutes(
         "Issue not found",
       );
       if (!issue) return;
-      if (req.actor.type !== "agent" && !(await assertIssueReadAllowed(req, res, issue))) return;
+      // Every caller reads the task first (AC-G3; agents too, PAR-13025).
+      if (!(await assertIssueReadAllowed(req, res, issue))) return;
 
       const interactionSvc = issueThreadInteractionService(db);
       const current = await interactionSvc.getForIssue(issue, interactionId);
@@ -18937,7 +19163,8 @@ export function issueRoutes(
         "Issue not found",
       );
       if (!issue) return;
-      if (req.actor.type !== "agent" && !(await assertIssueReadAllowed(req, res, issue))) return;
+      // Read first for every caller, so an agent learns nothing of a task it cannot read (AC-G3, PAR-13025).
+      if (!(await assertIssueReadAllowed(req, res, issue))) return;
       if (req.actor.type === "agent") {
         res.status(403).json({
           error:
@@ -18996,7 +19223,8 @@ export function issueRoutes(
         "Issue not found",
       );
       if (!issue) return;
-      if (req.actor.type !== "agent" && !(await assertIssueReadAllowed(req, res, issue))) return;
+      // Read first for every caller, so an agent learns nothing of a task it cannot read (AC-G3, PAR-13025).
+      if (!(await assertIssueReadAllowed(req, res, issue))) return;
       if (req.actor.type === "agent") {
         res.status(403).json({
           error:
@@ -19456,33 +19684,37 @@ export function issueRoutes(
   });
 
   // GET stays read-only. POST resolves the single chat on explicit add or first send/upload.
-  for (const method of ["get", "post"] as const) {
-    router[method]("/companies/:companyId/chats/:agentRef", async (req, res) => {
-      const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
-      if (req.actor.type !== "board" || !req.actor.userId) throw forbidden("Board user access required");
-      if (!(await instanceSettings.getExperimental()).enableAgentChat) throw notFound("Agent Chat is disabled");
-      const resolved = await agentsSvc.resolveByReference(companyId, req.params.agentRef as string);
-      if (resolved.ambiguous) throw conflict("Agent reference is ambiguous");
-      if (!resolved.agent) throw notFound("Agent not found");
-      const agent = resolved.agent;
-      const existing = await svc.getConversation(companyId, agent.id, req.actor.userId);
-      if (existing && !(await assertIssueReadAllowed(req, res, existing))) return;
-      if (existing || method === "get") {
-        res.json(existing ? (await withConversationReadState(db, companyId, req.actor.userId, [existing]))[0] : null);
-        return;
-      }
-      const issue = await svc.create(companyId, {
-        title: `Chat with ${agent.name}`, assigneeAgentId: agent.id,
-        conversationAgentId: agent.id, conversationUserId: req.actor.userId,
-        conversationState: "waiting", status: "in_review", createdByUserId: req.actor.userId,
-      });
-      await logActivity(db, { companyId, actorType: "user", actorId: req.actor.userId,
-        action: "issue.conversation_opened", entityType: "issue", entityId: issue.id,
-        details: { agentId: agent.id } });
-      res.json((await withConversationReadState(db, companyId, req.actor.userId, [issue]))[0]);
+  // Registered one by one so the route-table scan sees both routes (PAR-12608 4.6).
+  const chatWithAgent = (method: "get" | "post") => async (req: Request, res: Response) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (req.actor.type !== "board" || !req.actor.userId) throw forbidden("Board user access required");
+    if (!(await instanceSettings.getExperimental()).enableAgentChat) throw notFound("Agent Chat is disabled");
+    const resolved = await agentsSvc.resolveByReference(companyId, req.params.agentRef as string);
+    if (resolved.ambiguous) throw conflict("Agent reference is ambiguous");
+    if (!resolved.agent) throw notFound("Agent not found");
+    const agent = resolved.agent;
+    // PAR-12608 4.6 and 4.7: under `enforce` he chats only with an agent on his list.
+    const listed = await restrictedAgentIdsForActor(db, req.actor, companyId);
+    if (listed && !listed.has(agent.id)) throw notFound("Agent not found");
+    const existing = await svc.getConversation(companyId, agent.id, req.actor.userId);
+    if (existing && !(await assertIssueReadAllowed(req, res, existing))) return;
+    if (existing || method === "get") {
+      res.json(existing ? (await withConversationReadState(db, companyId, req.actor.userId, [existing]))[0] : null);
+      return;
+    }
+    const issue = await svc.create(companyId, {
+      title: `Chat with ${agent.name}`, assigneeAgentId: agent.id,
+      conversationAgentId: agent.id, conversationUserId: req.actor.userId,
+      conversationState: "waiting", status: "in_review", createdByUserId: req.actor.userId,
     });
-  }
+    await logActivity(db, { companyId, actorType: "user", actorId: req.actor.userId,
+      action: "issue.conversation_opened", entityType: "issue", entityId: issue.id,
+      details: { agentId: agent.id } });
+    res.json((await withConversationReadState(db, companyId, req.actor.userId, [issue]))[0]);
+  };
+  router.get("/companies/:companyId/chats/:agentRef", chatWithAgent("get"));
+  router.post("/companies/:companyId/chats/:agentRef", chatWithAgent("post"));
 
   router.post(
     "/issues/:id/comments",
@@ -19497,6 +19729,8 @@ export function issueRoutes(
       );
       if (!issue) return;
       if (issue.conversationAgentId && req.actor.type === "board") {
+        // A person who cannot read the chat gets "not found" (PAR-12942, AC-G3).
+        if (!(await assertIssueReadAllowed(req, res, issue))) return;
         if (!(await instanceSettings.getExperimental()).enableAgentChat) throw notFound("Agent Chat is disabled");
         if (!req.actor.userId) throw forbidden("Board user access required");
         if (req.actor.userId !== issue.conversationUserId) throw forbidden("Only the conversation owner can send messages or start a new session");
@@ -19601,6 +19835,9 @@ export function issueRoutes(
         }
       }
       if (!(await assertBoardCommentNotPaused(req, res, issue))) return;
+      // PAR-12608 4.7 (AC-A5): read before the comment is saved, so a failed
+      // read is a 503 with nothing written. Not bound: null.
+      const commenterAgentList = await restrictedAgentIdsForActor(db, req.actor, issue.companyId);
       const closedExecutionWorkspace =
         await getClosedIssueExecutionWorkspace(issue);
 
@@ -20591,7 +20828,11 @@ export function issueRoutes(
 
 
       await queueTaskWatchdogEvaluation(currentIssue, actor.runId);
-      res.status(201).json(comment);
+      // The wake queue starts no run of an assignee off his list for his
+      // comment; the answer says so, so the screen can tell him (AC-A5).
+      const assigneeNotListed = Boolean(commenterAgentList && currentIssue.assigneeAgentId
+        && !commenterAgentList.has(currentIssue.assigneeAgentId));
+      res.status(201).json(assigneeNotListed ? { ...comment, wakeSkipped: "agent_not_listed" } : comment);
     },
   );
 
@@ -20720,17 +20961,19 @@ export function issueRoutes(
         res.status(404).json({ error: "Issue not found" });
         return;
       }
+      // A task of another company, or one the caller cannot read, answers
+      // the same as a missing task (PAR-12942, AC-G3).
       if (issue.companyId !== companyId) {
-        res.status(422).json({ error: "Issue does not belong to company" });
+        res.status(404).json({ error: "Issue not found" });
         return;
       }
+      if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
       if (issue.conversationAgentId && req.actor.type === "board" && !(await instanceSettings.getExperimental()).enableAgentChat) {
         throw notFound("Agent Chat is disabled");
       }
       if (issue.conversationAgentId && req.actor.type === "board" && req.actor.userId !== issue.conversationUserId) {
         throw forbidden("Only the conversation owner can upload attachments");
       }
-      if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
       if (
         !(await assertDeliverableMutationAllowedByRunContext(req, res, issue))
       )

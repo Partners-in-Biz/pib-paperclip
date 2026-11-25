@@ -1,4 +1,5 @@
 import { useWorkspaceIsolationControls } from "@/hooks/useWorkspaceIsolationControls";
+import { useMemberRestrictionGate } from "@/hooks/useMemberRestrictionGate";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "@/lib/router";
 import type { Issue, ExecutionWorkspace } from "@paperclipai/shared";
@@ -198,6 +199,9 @@ export function IssueWorkspaceCard({
   const { selectedCompanyId } = useCompany();
   const companyId = issue.companyId ?? selectedCompanyId;
   const [editing, setEditing] = useState(initialEditing);
+  // AC-G10: the environment and execution-workspace lists are closed for a
+  // restricted member at `enforce`; he picks a mode, not a workspace to reuse.
+  const memberGate = useMemberRestrictionGate(companyId);
 
   const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
@@ -218,8 +222,8 @@ export function IssueWorkspaceCard({
   const workspace = issue.currentExecutionWorkspace as ExecutionWorkspace | null | undefined;
   const { data: environments } = useQuery({
     queryKey: queryKeys.environments.list(companyId!),
-    queryFn: () => environmentsApi.list(companyId!),
-    enabled: Boolean(companyId) && environmentsEnabled,
+    queryFn: memberGate.guard(() => environmentsApi.list(companyId!), []),
+    enabled: Boolean(companyId) && environmentsEnabled && !memberGate.closed,
   });
 
   const {
@@ -232,13 +236,14 @@ export function IssueWorkspaceCard({
       projectWorkspaceId: issue.projectWorkspaceId ?? undefined,
       reuseEligible: true,
     }),
-    queryFn: () =>
+    queryFn: memberGate.guard(() =>
       executionWorkspacesApi.list(companyId!, {
         projectId: issue.projectId ?? undefined,
         projectWorkspaceId: issue.projectWorkspaceId ?? undefined,
         reuseEligible: true,
-      }),
-    enabled: Boolean(companyId) && Boolean(issue.projectId) && editing && workspaceIsolationControlsVisible,
+      }), []),
+    enabled: Boolean(companyId) && Boolean(issue.projectId) && editing && workspaceIsolationControlsVisible
+      && !memberGate.closed,
   });
 
   const selectableReusableWorkspaces = reusableExecutionWorkspaces ?? [];
@@ -468,7 +473,8 @@ export function IssueWorkspaceCard({
               }
             }}
           >
-            {EXECUTION_WORKSPACE_OPTIONS.map((option) => (
+            {EXECUTION_WORKSPACE_OPTIONS.filter((option) => !memberGate.closed || option.value !== "reuse_existing"
+              || currentSelection === "reuse_existing").map((option) => (
               <option key={option.value} value={option.value}>
                 {option.value === "reuse_existing" && configuredReusableWorkspace?.mode === "isolated_workspace"
                   ? "Existing isolated workspace"
@@ -477,7 +483,7 @@ export function IssueWorkspaceCard({
             ))}
           </select>
 
-          {draftSelection === "reuse_existing" && (
+          {draftSelection === "reuse_existing" && !memberGate.closed && (
             <ReusableExecutionWorkspaceSelect
               value={draftExecutionWorkspaceId}
               workspaces={selectableReusableWorkspaces}

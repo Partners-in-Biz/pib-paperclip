@@ -5,7 +5,6 @@ import {
   DataTable,
   useHostLocation,
   useHostNavigation,
-  usePluginAction,
   type PluginPageProps,
   type PluginSidebarProps,
 } from "@paperclipai/plugin-sdk/ui";
@@ -41,7 +40,8 @@ import {
   tone,
   useIsNarrow,
 } from "@partnersinbiz/pib-plugin-ui";
-import { GetStarted, useGroupedNav, usePluginSetupStatus, useUrlTab } from "@partnersinbiz/pib-plugin-ui";
+import { AccessGate, GetStarted, useAccess, useGroupedNav, usePluginSetupStatus, useUrlTab } from "@partnersinbiz/pib-plugin-ui";
+import { useAccessMe, useCampaignsAction } from "./actions.js";
 import { clientScopeFromSearch, formatClientParam, type ClientKind, type ClientScope } from "@partnersinbiz/pib-plugin-kit/client-ref";
 import { resolvePluginUiBase } from "@partnersinbiz/pib-plugin-kit/oauth-client";
 import { ModuleOffBanner, useModuleEnabled } from "./module-switch.js";
@@ -165,28 +165,39 @@ function NeedsAttention({ campaigns, onOpen }: { campaigns: Campaign[]; onOpen: 
 }
 
 export const CampaignsPage = withHelp(CampaignsPageMain);
+export { CampaignCanvasCard } from "./canvas-card.js";
 
-function CampaignsPageMain({ context }: PluginPageProps) {
+/** The page asks `access.me` first; closed shows the "no access" page (the guard still refuses every call). */
+function CampaignsPageMain(props: PluginPageProps) {
+  const access = useAccess(useAccessMe(), props.context.companyId);
+  return (
+    <AccessGate state={access} kind="page" moduleName="Campaigns">
+      <CampaignsPageBody {...props} />
+    </AccessGate>
+  );
+}
+
+function CampaignsPageBody({ context }: PluginPageProps) {
   const location = useHostLocation();
   const navigation = useHostNavigation();
   const narrow = useIsNarrow();
   const scope = useMemo(() => clientScopeFromSearch(location.search), [location.search]);
   const scopeKey = scope ? formatClientParam(scope) : "own";
-  const load = usePluginAction("campaigns.load");
-  const loadDetail = usePluginAction("campaigns.detail");
-  const createCampaign = usePluginAction("campaigns.create-campaign");
-  const loadPreferences = usePluginAction("campaigns.preferences-load");
-  const savePreferences = usePluginAction("campaigns.preferences-save");
-  const addStep = usePluginAction("campaigns.add-step");
-  const launch = usePluginAction("campaigns.launch");
-  const requestApproval = usePluginAction("campaigns.request-approval");
-  const approveCampaign = usePluginAction("campaigns.approve");
-  const sendBackCampaign = usePluginAction("campaigns.send-back");
-  const pause = usePluginAction("campaigns.pause");
-  const resume = usePluginAction("campaigns.resume");
-  const complete = usePluginAction("campaigns.complete");
-  const abSuggestion = usePluginAction("campaigns.ab-suggestion");
-  const declareWinner = usePluginAction("campaigns.declare-winner");
+  const load = useCampaignsAction("campaigns.load");
+  const loadDetail = useCampaignsAction("campaigns.detail");
+  const createCampaign = useCampaignsAction("campaigns.create-campaign");
+  const loadPreferences = useCampaignsAction("campaigns.preferences-load");
+  const savePreferences = useCampaignsAction("campaigns.preferences-save");
+  const addStep = useCampaignsAction("campaigns.add-step");
+  const launch = useCampaignsAction("campaigns.launch");
+  const requestApproval = useCampaignsAction("campaigns.request-approval");
+  const approveCampaign = useCampaignsAction("campaigns.approve");
+  const sendBackCampaign = useCampaignsAction("campaigns.send-back");
+  const pause = useCampaignsAction("campaigns.pause");
+  const resume = useCampaignsAction("campaigns.resume");
+  const complete = useCampaignsAction("campaigns.complete");
+  const abSuggestion = useCampaignsAction("campaigns.ab-suggestion");
+  const declareWinner = useCampaignsAction("campaigns.declare-winner");
   const [ab, setAb] = useState<AbSuggestion | null>(null);
   const [delivery, setDelivery] = useState<"issue" | "email" | "auto">("issue");
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
@@ -671,7 +682,17 @@ function CampaignsPageMain({ context }: PluginPageProps) {
   );
 }
 
-export function CampaignsSidebar({ context }: PluginSidebarProps) {
+export function CampaignsSidebar(props: PluginSidebarProps) {
+  // Nothing while the access check loads, so the entry does not flash for a person without access.
+  const access = useAccess(useAccessMe(), props.context.companyId);
+  return (
+    <AccessGate state={access} kind="sidebar">
+      <CampaignsSidebarEntry {...props} />
+    </AccessGate>
+  );
+}
+
+function CampaignsSidebarEntry({ context }: PluginSidebarProps) {
   // Hidden when the company switched Campaigns off in Setup; shown while loading.
   const enabled = useModuleEnabled(context.companyId, PLUGIN_ID);
   // The Cockpit's Clients / Marketing / Finance group shows this page instead (pib-plugin-ui NAV_GROUPS).

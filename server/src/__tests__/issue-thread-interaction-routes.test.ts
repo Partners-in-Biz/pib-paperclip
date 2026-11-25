@@ -30,6 +30,7 @@ const mockIssueService = vi.hoisted(() => ({
 const mockDecisionReceipts = vi.hoisted(() => ({ list: vi.fn(), listCreatedTasks: vi.fn() }));
 const mockDocumentService = vi.hoisted(() => ({ getIssueDocumentRevision: vi.fn() }));
 const mockProjectService = vi.hoisted(() => ({ getById: vi.fn() }));
+const mockSecretProposals = vi.hoisted(() => ({ getById: vi.fn(), approve: vi.fn() }));
 
 const mockInteractionService = vi.hoisted(() => ({
   listForIssue: vi.fn(),
@@ -143,6 +144,12 @@ const mockDb = vi.hoisted(() => ({
   transaction: mockDbTransaction,
 }));
 
+// The stub database has no membership tables; the agent-list route check of
+// PAR-12608 4.7 has its own database test (member-restriction-agent-route-checks).
+vi.mock("../services/member-restriction/agent-read.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../services/member-restriction/agent-read.js")>()),
+  actorMayInstructAgent: async () => true,
+}));
 vi.mock("@paperclipai/shared/telemetry", () => ({
   trackAgentTaskCompleted: vi.fn(),
   trackErrorHandlerCrash: vi.fn(),
@@ -164,6 +171,15 @@ vi.mock("../services/trust-preset-resolver.js", () => ({
 }));
 
 function registerModuleMocks() {
+  vi.doMock("../services/secret-proposals.js", () => ({
+    createSecretProposalsService: () => mockSecretProposals,
+  }));
+  vi.doMock("../services/secret-proposal-authorization.js", () => ({
+    assertCanResolveProposal: vi.fn(async () => undefined),
+  }));
+  vi.doMock("../services/secret-proposal-notifications.js", () => ({
+    notifySecretProposalResolution: vi.fn(async () => undefined),
+  }));
   vi.doMock("../services/conversation-decision-receipts.js", () => ({
     conversationDecisionReceiptsService: () => mockDecisionReceipts,
   }));
@@ -1707,6 +1723,52 @@ describe("issue thread interaction routes", () => {
           }),
         }),
       }),
+    );
+  });
+
+  it("approves the binding with cascade when its secret proposal is still pending", async () => {
+    const proposalId = "66666666-6666-4666-8666-666666666666";
+    mockSecretProposals.getById.mockResolvedValue({
+      id: proposalId,
+      kind: "binding",
+      originIssueId: ISSUE_ID,
+      interactionId: "interaction-binding-cascade",
+    });
+    mockSecretProposals.approve.mockResolvedValue({ status: "approved" });
+    mockInteractionService.acceptInteraction.mockResolvedValueOnce({
+      interaction: {
+        id: "interaction-binding-cascade",
+        companyId: "company-1",
+        issueId: ISSUE_ID,
+        kind: "request_confirmation",
+        status: "accepted",
+        continuationPolicy: "wake_assignee",
+        payload: {
+          version: 1,
+          prompt: "Create the binding?",
+          secretProposal: { version: 1, proposalId, configPath: "access.NEW_ALIAS" },
+        },
+        result: { version: 1, outcome: "accepted" },
+      },
+      createdIssues: [],
+    });
+    const app = await createApp();
+
+    const res = await request(app)
+      .post(`/api/issues/${ISSUE_ID}/interactions/interaction-binding-cascade/accept`)
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(mockSecretProposals.approve).toHaveBeenCalledWith(
+      "company-1",
+      proposalId,
+      expect.objectContaining({ cascade: true }),
+    );
+    expect(mockInteractionService.recordSecretProposalExecutionResult).toHaveBeenCalledWith(
+      expect.anything(),
+      "interaction-binding-cascade",
+      proposalId,
+      { status: "executed" },
     );
   });
 
@@ -3265,12 +3327,16 @@ describe("issue thread interaction routes", () => {
   });
 
   it("contains task-bridge resolvers at the ordinary issue mutation boundary", async () => {
-    mockAccessDecide.mockResolvedValue({
-      allowed: false,
-      action: "issue:mutate",
-      reason: "deny_task_bridge_scope",
-      explanation: "Denied by task bridge scope.",
-    });
+    // A bridge key reads the task (every caller reads it first, PAR-13025);
+    // it is held at the mutation boundary.
+    mockAccessDecide.mockImplementation(async (input: { action?: string }) => input.action === "issue:read"
+      ? { allowed: true, action: "issue:read", reason: "allow_explicit_grant", explanation: "Allowed." }
+      : {
+        allowed: false,
+        action: "issue:mutate",
+        reason: "deny_task_bridge_scope",
+        explanation: "Denied by task bridge scope.",
+      });
     const app = await createApp({
       type: "agent",
       agentId: ASSIGNEE_AGENT_ID,

@@ -148,6 +148,45 @@ export function isPrivateOrReservedIp(address: string): boolean {
   return true;
 }
 
+/**
+ * IPv6 forms `isPrivateOrReservedIp` does not refuse yet (PAR-14396): IPv4-compatible
+ * `::/96` (e.g. `::7f00:1`), IPv4-translated `::ffff:0:0/96` (e.g. `::ffff:0:7f00:1`),
+ * deprecated site-local `fec0::/10` and the returned 6bone block `3ffe::/16`.
+ * Parsed by value, so `::127.0.0.1` (glibc's spelling of `::7f00:1`) matches too.
+ * Report-only for now; the enforcing change folds this into `isPrivateOrReservedIpv6`.
+ */
+export function isLegacyIpv6EmbeddedOrReserved(address: string): boolean {
+  const hextets = parseIpv6Hextets(address);
+  if (!hextets) return false;
+  const [h0, h1, h2, h3, h4, h5] = hextets as [number, number, number, number, number, number];
+  const firstFourZero = h0 === 0 && h1 === 0 && h2 === 0 && h3 === 0;
+  if (firstFourZero && h4 === 0 && h5 === 0) return true;
+  if (firstFourZero && h4 === 0xffff && h5 === 0) return true;
+  if ((h0 & 0xffc0) === 0xfec0) return true;
+  return h0 === 0x3ffe;
+}
+
+function parseIpv6Hextets(address: string): number[] | null {
+  let text = address.trim().toLowerCase().replace(/^\[|\]$/g, "").split("%")[0] ?? "";
+  if (isIP(text) !== 6) return null;
+  const dotted = text.match(/(\d{1,3}(?:\.\d{1,3}){3})$/);
+  if (dotted?.[1]) {
+    const octets = parseIpv4Address(dotted[1]);
+    if (!octets) return null;
+    const hi = ((octets[0] << 8) | octets[1]).toString(16);
+    const lo = ((octets[2] << 8) | octets[3]).toString(16);
+    text = `${text.slice(0, -dotted[1].length)}${hi}:${lo}`;
+  }
+  const halves = text.split("::");
+  if (halves.length > 2) return null;
+  const groups = (part: string | undefined) => (part ? part.split(":").map((group) => Number.parseInt(group, 16)) : []);
+  const front = groups(halves[0]);
+  const back = groups(halves[1]);
+  const missing = 8 - front.length - back.length;
+  if (missing < 0 || (halves.length === 1 && missing !== 0)) return null;
+  return [...front, ...Array<number>(missing).fill(0), ...back];
+}
+
 /** Link-local egress is denied in every deployment mode. */
 export function isAlwaysDeniedLinkLocalIp(address: string): boolean {
   const normalized = normalizeIpAddress(address);

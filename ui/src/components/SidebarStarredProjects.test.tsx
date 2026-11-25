@@ -6,11 +6,13 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Project, ResourceMemberships } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { SidebarStarredProjects } from "./SidebarStarredProjects";
+import { SidebarStarredProjects as ClassicStarredProjects } from "./SidebarStarredProjects";
+import { SidebarStarredProjects as ProductionStarredProjects } from "./SidebarStarredProjects.production";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
 const mockProjectsApi = vi.hoisted(() => ({ list: vi.fn() }));
 const mockResourceMembershipsApi = vi.hoisted(() => ({ listMine: vi.fn(), updateProject: vi.fn() }));
+const mockSession = vi.hoisted(() => ({ restrictions: [] as unknown[] }));
 const mockPushToast = vi.hoisted(() => vi.fn());
 const mockSetSidebarOpen = vi.hoisted(() => vi.fn());
 const mockSidebarState = vi.hoisted(() => ({ isMobile: false, collapsed: false, peeking: false }));
@@ -45,6 +47,7 @@ vi.mock("../context/ToastContext", () => ({
   useToastActions: () => ({ pushToast: mockPushToast }),
 }));
 
+vi.mock("../api/auth", () => ({ authApi: { getSession: async () => ({ session: { id: "s", userId: "u" }, user: null, memberRestrictions: mockSession.restrictions }) } }));
 vi.mock("../api/projects", () => ({ projectsApi: mockProjectsApi }));
 vi.mock("../api/resourceMemberships", () => ({ resourceMembershipsApi: mockResourceMembershipsApi }));
 
@@ -100,10 +103,13 @@ function makeProject(overrides: Partial<Project>): Project {
 }
 
 async function flushReact() {
-  await act(async () => {
-    await Promise.resolve();
-    await new Promise((resolve) => window.setTimeout(resolve, 0));
-  });
+  // The session read (restriction gate) and the memberships read run one after the other.
+  for (let i = 0; i < 4; i += 1) {
+    await act(async () => {
+      await Promise.resolve();
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+  }
 }
 
 function projectLinkLabels(container: HTMLElement) {
@@ -121,8 +127,11 @@ describe("SidebarStarredProjects", () => {
   let root: ReturnType<typeof createRoot> | null;
   let queryClient: QueryClient;
   let memberships: ResourceMemberships;
+  let StarredProjects = ClassicStarredProjects;
 
   beforeEach(() => {
+    mockSession.restrictions = [];
+    StarredProjects = ClassicStarredProjects;
     mockSidebarState.isMobile = false;
     mockSidebarState.collapsed = false;
     mockSidebarState.peeking = false;
@@ -159,7 +168,7 @@ describe("SidebarStarredProjects", () => {
       root?.render(
         <QueryClientProvider client={queryClient}>
           <TooltipProvider>
-            <SidebarStarredProjects />
+            <StarredProjects />
           </TooltipProvider>
         </QueryClientProvider>,
       );
@@ -213,4 +222,29 @@ describe("SidebarStarredProjects", () => {
     expect(container.textContent).not.toContain("No starred projects yet");
     expect(projectLinkLabels(container)).toEqual([]);
   });
+
+  it.each([["classic", ClassicStarredProjects], ["production", ProductionStarredProjects]])(
+    "%s shell, R under enforce: no memberships request and the section is hidden (AC-G10, PAR-13477)",
+    async (_name, Section) => {
+      StarredProjects = Section;
+      mockSession.restrictions = [{ companyId: "company-1", restricted: true, mode: "enforce" }];
+      mockProjectsApi.list.mockResolvedValue([makeProject({ id: "project-a", name: "Alpha", urlKey: "alpha" })]);
+      memberships = { ...memberships, starredProjectIds: ["project-a"] };
+      await render();
+      expect(mockResourceMembershipsApi.listMine).not.toHaveBeenCalled();
+      expect(projectLinkLabels(container)).toEqual([]);
+    },
+  );
+
+  it.each([["classic", ClassicStarredProjects], ["production", ProductionStarredProjects]])(
+    "%s shell, the owner: the starred project and its unstar control show",
+    async (_name, Section) => {
+      StarredProjects = Section;
+      mockProjectsApi.list.mockResolvedValue([makeProject({ id: "project-a", name: "Alpha", urlKey: "alpha" })]);
+      memberships = { ...memberships, starredProjectIds: ["project-a"] };
+      await render();
+      expect(projectLinkLabels(container)).toEqual(["Alpha"]);
+      expect(document.body.querySelector('button[aria-label="Unstar Alpha"]')).not.toBeNull();
+    },
+  );
 });

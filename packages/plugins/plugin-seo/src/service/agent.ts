@@ -12,6 +12,7 @@
  * agent and `grants.set` replaces the whole set, so the existing tools grant
  * is widened (never a second one added) and every other grant is kept.
  */
+import { isFrozenSprint } from "./tasks.js";
 import {
   COMPANY_OS_HIRE_SKILL,
   hireStatus,
@@ -375,7 +376,7 @@ export async function adoptUnassignedAgentTasks(env: Env, companyId: string, age
   let adopted = 0;
   for (const sprint of sprints) {
     // A rehearsal sprint is never handed to the agent, not even an issue it was left with before issues were refused for it.
-    if (sprint.autopilotMode === "off" || sprint.status === "archived" || isRehearsalSprint(sprint)) continue;
+    if (sprint.autopilotMode === "off" || isFrozenSprint(sprint) || isRehearsalSprint(sprint)) continue;
     const tasks = await db.listTasks(env.ctx.db, companyId, sprint.id, { status: ["not_started", "in_progress"], owner: "agent" });
     for (const task of tasks) {
       if (!task.issueId || task.assigneeKind !== "unassigned") continue;

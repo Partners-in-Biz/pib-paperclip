@@ -83,6 +83,19 @@ export async function actionableCompanyIds(ctx: PluginContext): Promise<string[]
 }
 
 /**
+ * The ids in `known` a job or webhook may act for: `known` filtered to the
+ * host's actionable list, or `known` unchanged when that list is unknown
+ * (`null`: old host, call refused). Jobs and webhooks only: inside an action,
+ * tool or event the host's list is only that call's company.
+ */
+export async function jobCompanyIds(ctx: PluginContext, known: string[]): Promise<string[]> {
+  const actionable = await actionableCompanyIds(ctx);
+  if (!actionable) return known;
+  const allowed = new Set(actionable);
+  return known.filter((id) => allowed.has(id));
+}
+
+/**
  * The company ids a plugin should act for: the ones given, the ones the plugin
  * remembered, and (best effort) the host's list. A refused `companies.list`
  * does not fail the call. `actionable` is the host's actionable list (see

@@ -191,13 +191,14 @@ import {
 import { recordToolRuntimeAuditWriteFailure } from "./tool-runtime-metrics.js";
 import { unresolvedRecoveryToolInvocation } from "./recovery-effect-receipts.js";
 import { isRetiredComposioConnection, RETIRED_COMPOSIO_MESSAGE } from "@paperclipai/shared";
-import { MEMBER_RESTRICTION_UNAVAILABLE_CODE } from "@paperclipai/shared";
+import { MEMBER_RESTRICTED_CODE, MEMBER_RESTRICTION_UNAVAILABLE_CODE } from "@paperclipai/shared";
 import {
   isMemberRestrictionUnavailable,
   memberRestrictionResolver,
   pluginActingPersonForUser,
   type PluginActingPerson,
 } from "./member-restriction/index.js";
+import { TOOL_RUN_NOT_FOUND_CODE, assertConnectorToolOpen, connectorToolsClosedFor } from "./member-restriction/tool-gate.js";
 import {
   createPaperclipCloudConnector,
   isPaperclipCloudConnectorStrategy,
@@ -404,6 +405,23 @@ export class ToolGatewayHttpError extends Error {
   ) {
     super(message);
   }
+}
+
+/**
+ * A member-restriction refusal from core (403 `MEMBER_RESTRICTED`, 503
+ * `MEMBER_RESTRICTION_UNAVAILABLE`, a run that cannot be found) keeps its
+ * status and code through the gateway instead of turning into a 502.
+ */
+const MEMBER_RESTRICTION_REFUSAL_CODES = new Set([
+  MEMBER_RESTRICTED_CODE, MEMBER_RESTRICTION_UNAVAILABLE_CODE, TOOL_RUN_NOT_FOUND_CODE,
+]);
+function gatewayRefusal(error: unknown): unknown {
+  if (!(error instanceof HttpError)) return error;
+  const details = error.details && typeof error.details === "object" && !Array.isArray(error.details)
+    ? error.details as Record<string, unknown>
+    : {};
+  if (typeof details.code !== "string" || !MEMBER_RESTRICTION_REFUSAL_CODES.has(details.code)) return error;
+  return new ToolGatewayHttpError(error.status, error.message, details.code, details);
 }
 
 /** Repeated discovery rows are one tool; conflicting bindings stay ambiguous. */
@@ -3103,7 +3121,8 @@ export function createToolGatewayService(
     const hasOnDemandTargets = connectedTools.some(isOnDemandRemoteTool);
     const virtualTools = hasOnDemandTargets ? VIRTUAL_TOOLS : [];
     const githubBotTools = await githubBotToolsForSession(db, session);
-    const tool = [...allTools(), ...connectedTools, ...virtualTools, ...githubBotTools, ...await slackToolsForSession(db, session), ...await spekoToolsForSession(db, session)]
+    const coreTools = allTools();
+    const tool = [...coreTools, ...connectedTools, ...virtualTools, ...githubBotTools, ...await slackToolsForSession(db, session), ...await spekoToolsForSession(db, session)]
       .filter(
         (candidate) =>
           session.agentId ||
@@ -3118,6 +3137,11 @@ export function createToolGatewayService(
         "tool_not_found",
         { tool: toolName },
       );
+    }
+    // Every tool that is not core's own (built-in, plugin, the on-demand search) is a connector tool:
+    // closed for a restricted person's run, checked on every call (4.9 decision 4, AC-M6).
+    if (!coreTools.includes(tool) && !virtualTools.includes(tool)) {
+      await assertConnectorToolOpen({ db }, session, tool.name).catch((error) => { throw gatewayRefusal(error); });
     }
     const guestBotConnection = await githubGuestBotConnectionForSession(db, session);
     if (guestBotConnection && tool.connectionId && (tool.connectionId !== guestBotConnection || tool.providerType !== "paperclip_github_chat"))
@@ -3320,6 +3344,8 @@ export function createToolGatewayService(
 
   /** Shared connection descriptors and task restrictions; no provider calls. */
   async function connectionToolsForContext(session: ToolGatewaySession): Promise<ToolGatewayDescriptor[]> {
+    // None for a run working for a restricted person (PAR-12608 4.9 decision 4); every list reads this.
+    if (await connectorToolsClosedFor({ db }, session).catch((error) => { throw gatewayRefusal(error); })) return [];
     const guestBotConnection = await measureRunPhase("connectors.discovery.github", () => githubGuestBotConnectionForSession(db, session));
     let connectedTools = (await measureRunPhase("connectors.discovery.connections", () => connectedMcpToolsForCompany(session.companyId)))
       .filter(tool => !guestBotConnection || !tool.connectionId || (tool.connectionId === guestBotConnection && tool.providerType === "paperclip_github_chat"));
@@ -11490,7 +11516,7 @@ export function createToolGatewayService(
                 err.reasonCode,
                 err.details,
               )
-            : err;
+            : gatewayRefusal(err);
         const status =
           normalizedError instanceof ToolGatewayHttpError
             ? normalizedError.status
@@ -11834,7 +11860,8 @@ export function createToolGatewayService(
         // execution report both outcomes.
         void emitConnectionInvoked(db, invocationId);
         return resultValidation.value as typeof result;
-      } catch (err) {
+      } catch (caught) {
+        const err = gatewayRefusal(caught);
         const status = err instanceof ToolGatewayHttpError ? err.status : 502;
         const reasonCode =
           err instanceof ToolContentValidationError

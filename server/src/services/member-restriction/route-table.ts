@@ -34,15 +34,29 @@ export interface MemberRestrictionRouteEntry {
   class: MemberRestrictionRouteClass;
   /** Repo-relative test file proving the per-object rule (AC-G3, AC-G9); it must name `path`. */
   test?: string;
+  /**
+   * Path of another row with the same method that also catches this row's
+   * requests (`/api/agents/me` shadows `/api/agents/:id`). The scan proves the
+   * router registers this row's route first, in the same file.
+   */
+  shadows?: string;
 }
 
+const QUESTIONS_TEST = "server/src/__tests__/member-restriction-route-table-questions.test.ts";
 const TASKS_TEST = "server/src/__tests__/member-restriction-route-table-tasks.test.ts";
 const TREE_TEST = "server/src/__tests__/member-restriction-route-table-comments-projects.test.ts";
+const PROJECT_BODY_TEST = "server/src/__tests__/member-restriction-project-body-allowlist.test.ts";
 const INBOX_TEST = "server/src/__tests__/member-restriction-route-table-inbox-search.test.ts";
 const DOCS_TEST = "server/src/__tests__/member-restriction-route-table-documents.test.ts";
 const ACCOUNT_TEST = "server/src/__tests__/member-restriction-route-table-account.test.ts";
 const WORKSPACES_TEST = "server/src/__tests__/member-restriction-route-table-workspaces-assets.test.ts";
 const APPROVALS_TEST = "server/src/__tests__/member-restriction-route-table-approvals.test.ts";
+const AGENTS_TEST = "server/src/__tests__/member-restriction-route-table-agents.test.ts";
+const TASK_LIST_TEST = "server/src/__tests__/member-restriction-task-list-callers.test.ts";
+const INSTANCE_TEST = "server/src/__tests__/member-restriction-route-table-instance.test.ts";
+const AGENT_PAGES_TEST = "server/src/__tests__/member-restriction-route-table-agent-pages.test.ts";
+const PLANNING_CANVAS_TEST = "server/src/__tests__/planning-canvas-access-routes.test.ts";
+const TASK_HISTORY_TEST = "server/src/__tests__/member-restriction-route-table-task-history.test.ts";
 
 export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntry[] = [
   // C4b-1a (PAR-12730): the task routes of `routes/issues.ts`. Comments,
@@ -56,6 +70,9 @@ export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntr
   { method: "GET", path: "/api/issues/:id", class: "open", test: TASKS_TEST },
   { method: "PATCH", path: "/api/issues/:id", class: "open", test: TASKS_TEST },
   { method: "POST", path: "/api/issues/:id/children", class: "open", test: TASKS_TEST },
+  // PAR-12929: a caller the restriction binds reads the task through
+  // `issue:read` first; under `enforce` then the check of `PATCH .../:id`.
+  { method: "PUT", path: "/api/issues/:id/title", class: "open", test: TASKS_TEST },
   { method: "GET", path: "/api/issues/:id/external-objects", class: "open", test: TASKS_TEST },
   { method: "GET", path: "/api/issues/:id/external-object-summary", class: "open", test: TASKS_TEST },
   // An agent's own work on a task.
@@ -63,15 +80,24 @@ export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntr
   { method: "GET", path: "/api/issues/:id/runner-goal", class: "run", test: TASKS_TEST },
   { method: "POST", path: "/api/issues/:id/checkout", class: "run", test: TASKS_TEST },
   { method: "POST", path: "/api/issues/:id/release", class: "run", test: TASKS_TEST },
+  // PAR-14342: the history of a task he can read (4.6 "task activity"). The
+  // two run lists hold only the runs that work for him (4.6 "One run's
+  // detail", AC-G5); company-wide run lists stay closed.
+  { method: "GET", path: "/api/issues/:id/activity", class: "open", test: TASK_HISTORY_TEST },
+  { method: "GET", path: "/api/issues/:id/runs", class: "open", test: TASK_HISTORY_TEST },
+  { method: "GET", path: "/api/issues/:issueId/live-runs", class: "open", test: TASK_HISTORY_TEST },
+  // Closed on purpose (PAR-14342): the session context reading and compaction
+  // (agent runtime state), task browsers (browser tools) and the email thread
+  // (email) are out of scope for him (section 2); the task page skips them.
+  { method: "GET", path: "/api/issues/:id/context-usage", class: "closed" },
+  { method: "GET", path: "/api/issues/:issueId/browsers", class: "closed" },
+  { method: "GET", path: "/api/companies/:companyId/email/tasks/:issueId", class: "closed" },
   // Closed on purpose: company set-up (labels), operator tools (recovery,
   // diagnostics, watchdog, monitors, retries, review decisions, low-trust
   // promotions, plan decompositions), sharing (grants, privacy constraints),
   // deleting a task, and feedback traces. Several of these handlers check
-  // only the company, not the task. `PUT .../title` checks the task only for
-  // agents and answers an agent 403, not "not found" (AC-G3); renaming stays
-  // open through `PATCH /api/issues/:id`.
+  // only the company, not the task.
   { method: "GET", path: "/api/issues", class: "closed" },
-  { method: "PUT", path: "/api/issues/:id/title", class: "closed" },
   { method: "GET", path: "/api/companies/:companyId/labels", class: "closed" },
   { method: "POST", path: "/api/companies/:companyId/labels", class: "closed" },
   { method: "DELETE", path: "/api/labels/:labelId", class: "closed" },
@@ -132,8 +158,7 @@ export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntr
 
   // C4b-1b: `routes/projects.ts`. Every `open` handler reads the project
   // through `project:read` (lists through `projectReadSqlCondition`) first;
-  // workspace delete then asks `project:write_workspace`, access members the
-  // privacy-owner rule (4.4, AC-P3).
+  // access members then ask the privacy-owner rule (4.4, AC-P3).
   { method: "GET", path: "/api/companies/:companyId/projects", class: "open", test: TREE_TEST },
   { method: "GET", path: "/api/projects/:id", class: "open", test: TREE_TEST },
   { method: "GET", path: "/api/projects/:id/external-object-summary", class: "open", test: TREE_TEST },
@@ -141,17 +166,19 @@ export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntr
   { method: "POST", path: "/api/projects/:id/access-members", class: "open", test: TREE_TEST },
   { method: "DELETE", path: "/api/projects/:id/access-members/:memberId", class: "open", test: TREE_TEST },
   { method: "GET", path: "/api/projects/:id/workspaces", class: "open", test: TREE_TEST },
-  { method: "DELETE", path: "/api/projects/:id/workspaces/:workspaceId", class: "open", test: TREE_TEST },
-  // Closed until PAR-12933: project create and patch take a workspace
-  // `provisionCommand`, `env` with any company `secret_ref` and an
-  // `environmentId`; workspace create and patch take a host `cwd`, a
-  // `cleanupCommand` and runtime commands. 4.6 denies secrets, `runtime:*`
-  // and `environments:manage`; PAR-12933 adds the handler guard and reopens
-  // them (creating a project is allowed, 4.5).
-  { method: "POST", path: "/api/companies/:companyId/projects", class: "closed" },
-  { method: "PATCH", path: "/api/projects/:id", class: "closed" },
+  // PAR-12934 (C4i-a): create and patch run the body allowlist of
+  // `body-allowlist.ts` first (4.5, 4.6): a bound caller sends no `env`,
+  // execution workspace policy, workspace, lead agent or repository; patch
+  // reads the project through `project:read` before it.
+  { method: "POST", path: "/api/companies/:companyId/projects", class: "open", test: PROJECT_BODY_TEST },
+  { method: "PATCH", path: "/api/projects/:id", class: "open", test: PROJECT_BODY_TEST },
+  // Closed: a project workspace is a host `cwd`, a repository, commands and a
+  // plugin; every field but `name`, `visibility` and `isPrimary` is host
+  // configuration, so an allowlist would leave nothing to create (4.6), and
+  // deleting one removes O's configuration.
   { method: "POST", path: "/api/projects/:id/workspaces", class: "closed" },
   { method: "PATCH", path: "/api/projects/:id/workspaces/:workspaceId", class: "closed" },
+  { method: "DELETE", path: "/api/projects/:id/workspaces/:workspaceId", class: "closed" },
   // Closed: repositories and git authorization are the company's tool access
   // (4.6 "tool access"); runtime services need `runtime:*`, which the action
   // list denies; deleting a project, as deleting a task, is the owner's.
@@ -164,13 +191,15 @@ export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntr
   { method: "DELETE", path: "/api/projects/:id", class: "closed" },
 
   // C4b-1b: `routes/issue-tree-control.ts` (board only). Reading a task's
-  // pause state and holds, and previewing a hold, read the root task first.
-  // Placing and releasing a hold pause, cancel or wake a whole subtree's runs:
-  // an operator tool, closed like the recovery and retry rows above.
+  // pause state reads the root task first. Placing and releasing a hold
+  // pause, cancel or wake a whole subtree's runs: an operator tool, closed
+  // like the recovery and retry rows above. The preview and the hold reads
+  // return the active runs and affected agents under the root without the
+  // run rule of AC-G5 or the agent list of 4.7: closed (PAR-12938).
   { method: "GET", path: "/api/issues/:id/tree-control/state", class: "open", test: TREE_TEST },
-  { method: "POST", path: "/api/issues/:id/tree-control/preview", class: "open", test: TREE_TEST },
-  { method: "GET", path: "/api/issues/:id/tree-holds", class: "open", test: TREE_TEST },
-  { method: "GET", path: "/api/issues/:id/tree-holds/:holdId", class: "open", test: TREE_TEST },
+  { method: "POST", path: "/api/issues/:id/tree-control/preview", class: "closed" },
+  { method: "GET", path: "/api/issues/:id/tree-holds", class: "closed" },
+  { method: "GET", path: "/api/issues/:id/tree-holds/:holdId", class: "closed" },
   { method: "POST", path: "/api/issues/:id/tree-holds", class: "closed" },
   { method: "POST", path: "/api/issues/:id/tree-holds/:holdId/release", class: "closed" },
 
@@ -198,16 +227,40 @@ export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntr
   { method: "GET", path: "/api/issues/:id/attachments", class: "open", test: DOCS_TEST },
   { method: "GET", path: "/api/attachments/:attachmentId/content", class: "open", test: DOCS_TEST },
   { method: "DELETE", path: "/api/attachments/:attachmentId", class: "open", test: DOCS_TEST },
-  // Closed: lock, unlock and delete of a document check only the company and
-  // that the caller is a board user; they never read the task, so R could
-  // lock or delete a document on O's task. Attachment upload answers 403
-  // ("Only the conversation owner") on O's chat and 422 for a task of another
-  // company before it reads the task (AC-G3). PAR-12940 adds the task read to
-  // these four handlers and reopens them.
-  { method: "POST", path: "/api/issues/:id/documents/:key/lock", class: "closed" },
-  { method: "POST", path: "/api/issues/:id/documents/:key/unlock", class: "closed" },
-  { method: "DELETE", path: "/api/issues/:id/documents/:key", class: "closed" },
-  { method: "POST", path: "/api/companies/:companyId/issues/:issueId/attachments", class: "closed" },
+  // C4j-2 (PAR-12943): lock, unlock and delete of a document read the task
+  // through `issue:read` before the board-only 403 (PAR-12942). Upload checks
+  // the path company first (403), then answers "Issue not found" for a task of
+  // another company or one he cannot read, before the chat checks. Upload is
+  // his only way to attach a file to his own task (spec section 9).
+  { method: "POST", path: "/api/issues/:id/documents/:key/lock", class: "open", test: DOCS_TEST },
+  { method: "POST", path: "/api/issues/:id/documents/:key/unlock", class: "open", test: DOCS_TEST },
+  { method: "DELETE", path: "/api/issues/:id/documents/:key", class: "open", test: DOCS_TEST },
+  { method: "POST", path: "/api/companies/:companyId/issues/:issueId/attachments", class: "open", test: DOCS_TEST },
+
+  // C4d-2 (PAR-13025): questions and confirmations on a task (4.6, S11): he
+  // reads, answers, skips and dismisses those on a task he can read. Every
+  // handler reads the task through `issue:read` first ("Issue not found"),
+  // agents included; the answer routes do it in
+  // `getIssueThreadInteractionResolutionAuthorization`. The run an answer
+  // starts is held to invariant A by the wake queue (4.7). Pending questions
+  // is board-only and the conversation owner's. `resolve-from-comment` records
+  // a person's reply for the agent run that read it: a run only. Excluded:
+  // a tool review or a secret proposal (payload `toolAction` or
+  // `secretProposal`). Under `enforce` no resolving route decides one for
+  // him (403 `MEMBER_RESTRICTED_GOVERNED_ACTION`, nothing runs), checked in
+  // `assertIssueThreadInteractionResolutionAllowed`; tool access stays closed.
+  { method: "GET", path: "/api/issues/:id/pending-questions", class: "open", test: QUESTIONS_TEST },
+  { method: "GET", path: "/api/issues/:id/interactions", class: "open", test: QUESTIONS_TEST },
+  { method: "POST", path: "/api/issues/:id/interactions", class: "open", test: QUESTIONS_TEST },
+  { method: "POST", path: "/api/issues/:id/interactions/:interactionId/accept", class: "open", test: QUESTIONS_TEST },
+  { method: "POST", path: "/api/issues/:id/interactions/:interactionId/reject", class: "open", test: QUESTIONS_TEST },
+  { method: "POST", path: "/api/issues/:id/interactions/:interactionId/respond", class: "open", test: QUESTIONS_TEST },
+  { method: "POST", path: "/api/issues/:id/interactions/:interactionId/verdicts", class: "open", test: QUESTIONS_TEST },
+  { method: "POST", path: "/api/issues/:id/interactions/:interactionId/withdraw", class: "open", test: QUESTIONS_TEST },
+  { method: "POST", path: "/api/issues/:id/interactions/:interactionId/dismiss", class: "open", test: QUESTIONS_TEST },
+  { method: "POST", path: "/api/issues/:id/interactions/:interactionId/skip", class: "open", test: QUESTIONS_TEST },
+  { method: "POST", path: "/api/issues/:id/interactions/:interactionId/cancel", class: "open", test: QUESTIONS_TEST },
+  { method: "POST", path: "/api/issues/:id/interactions/:interactionId/resolve-from-comment", class: "run", test: QUESTIONS_TEST },
 
   // C4e-1 (PAR-12733): account, session and company record. His own account
   // (4.6 and 4.6a row 8): every handler reads only `req.actor.userId`'s rows
@@ -334,6 +387,143 @@ export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntr
   { method: "POST", path: "/api/approvals/:id/comments", class: "closed" },
   { method: "POST", path: "/api/issues/:id/approvals", class: "closed" },
   { method: "DELETE", path: "/api/issues/:id/approvals/:approvalId", class: "closed" },
+  // C4c-1 (PAR-12736): agents, runs, chat and agent keys. The agent list
+  // holds only the agents on his list, each with id, name, title, icon and
+  // status; any other agent by id is "not found" (AC-G4). One run's detail,
+  // log and events open only when the run works for him and its task passes
+  // his strict `issue:read` (AC-G5). A chat opens only with an agent on his
+  // list; the chat list is his own conversations through 4.3.
+  { method: "GET", path: "/api/companies/:companyId/agents", class: "open", test: AGENTS_TEST },
+  { method: "GET", path: "/api/agents/:id", class: "open", test: AGENTS_TEST },
+  { method: "GET", path: "/api/heartbeat-runs/:runId", class: "open", test: AGENTS_TEST },
+  { method: "GET", path: "/api/heartbeat-runs/:runId/events", class: "open", test: AGENTS_TEST },
+  { method: "GET", path: "/api/heartbeat-runs/:runId/log", class: "open", test: AGENTS_TEST },
+  { method: "GET", path: "/api/companies/:companyId/chats", class: "open", test: AGENTS_TEST },
+  { method: "GET", path: "/api/companies/:companyId/chats/:agentRef", class: "open", test: AGENTS_TEST },
+  { method: "POST", path: "/api/companies/:companyId/chats/:agentRef", class: "open", test: AGENTS_TEST },
+  // C4c-3b (PAR-13135): a run's own identity (six fields for a run working for
+  // him, AC-A2), its inbox (blockers he cannot read are counted, not named;
+  // another person's inbox is empty) and its chat post (only an agent on his
+  // list opens a chat).
+  { method: "GET", path: "/api/agents/me", class: "run", test: AGENTS_TEST, shadows: "/api/agents/:id" },
+  { method: "GET", path: "/api/agents/me/inbox-lite", class: "run", test: TASK_LIST_TEST },
+  { method: "GET", path: "/api/agents/me/inbox/mine", class: "run", test: TASK_LIST_TEST },
+  { method: "POST", path: "/api/agents/me/chat/messages", class: "run", test: AGENTS_TEST },
+  // Closed (4.6): an agent's secrets and connector credentials; connector tools go through the plugin gate (C5-2).
+  { method: "POST", path: "/api/agents/me/secret-proposals", class: "closed" },
+  { method: "GET", path: "/api/agents/me/secret-proposals", class: "closed" },
+  { method: "DELETE", path: "/api/agents/me/secret-proposals/:id", class: "closed" },
+  { method: "GET", path: "/api/agents/me/secrets", class: "closed" },
+  { method: "POST", path: "/api/agents/me/secrets/:key/value", class: "closed" },
+  { method: "POST", path: "/api/agents/me/connections/:connectionId/start-authorization", class: "closed" },
+  { method: "POST", path: "/api/agents/me/connections/:connectionId/token", class: "closed" },
+  // Closed: the key routes never call `decide()`, so these rows alone close
+  // them (H4); configuration, instructions, pausing, the org chart and the run
+  // lists are company set-up or company-wide. Every other agent route has no row.
+  { method: "GET", path: "/api/agents/:id/keys", class: "closed" },
+  { method: "POST", path: "/api/agents/:id/keys", class: "closed" },
+  { method: "DELETE", path: "/api/agents/:id/keys/:keyId", class: "closed" },
+  { method: "GET", path: "/api/agents/:id/configuration", class: "closed" },
+  { method: "GET", path: "/api/agents/:id/instructions-bundle", class: "closed" },
+  { method: "POST", path: "/api/agents/:id/pause", class: "closed" },
+  { method: "GET", path: "/api/companies/:companyId/org", class: "closed" },
+  { method: "GET", path: "/api/companies/:companyId/heartbeat-runs", class: "closed" },
+  { method: "GET", path: "/api/companies/:companyId/live-runs", class: "closed" },
+  // C4g-4 (PAR-13473, decision PAR-13469 section 3): the agent pages. The avatar
+  // artwork is preset art; the handler looks up no agent and no company. Closed
+  // on purpose: built-in agents, budgets and AI connections are company set-up;
+  // the resource-membership writes save a star or join on an id with no read
+  // check (the answer would tell him whether a project exists), and a read-only
+  // star list has no use.
+  { method: "GET", path: "/api/agent-avatars/:version/:palette/:file", class: "open", test: AGENT_PAGES_TEST },
+  { method: "GET", path: "/api/companies/:companyId/built-in-agents", class: "closed" },
+  { method: "GET", path: "/api/companies/:companyId/budgets/overview", class: "closed" },
+  { method: "GET", path: "/api/companies/:companyId/ai-connections", class: "closed" },
+  { method: "GET", path: "/api/companies/:companyId/resource-memberships/me", class: "closed" },
+  { method: "PUT", path: "/api/companies/:companyId/resource-memberships/me/projects/:projectId", class: "closed" },
+  { method: "PUT", path: "/api/companies/:companyId/resource-memberships/me/agents/:agentId", class: "closed" },
+  { method: "PUT", path: "/api/companies/:companyId/resource-memberships/me/documents/:documentId", class: "closed" },
+
+  // C4g-3 (PAR-13263, decision PAR-13261 sections 1 to 3): what the app shell
+  // reads on every page. For R at `enforce` health answers the anonymous body
+  // and the general settings only `{ censorUsernameInLogs }`; a primary agent
+  // off his list is null on read and "Agent not found" on write. The dev-server
+  // restart, the full settings, every settings write, the lifecycle and task
+  // drain routes have no row.
+  { method: "GET", path: "/api/health", class: "open", test: INSTANCE_TEST },
+  { method: "GET", path: "/api/instance/settings/experimental", class: "open", test: INSTANCE_TEST },
+  { method: "GET", path: "/api/instance/settings/general", class: "open", test: INSTANCE_TEST },
+  { method: "GET", path: "/api/announcements/current", class: "open", test: INSTANCE_TEST },
+  { method: "GET", path: "/api/announcements/:id/image", class: "open", test: INSTANCE_TEST },
+  { method: "GET", path: "/api/announcements/:id/animation", class: "open", test: INSTANCE_TEST },
+  { method: "POST", path: "/api/announcements/:id/dismiss", class: "open", test: INSTANCE_TEST },
+  { method: "GET", path: "/api/companies/:companyId/primary-agent/me", class: "open", test: INSTANCE_TEST },
+  { method: "PUT", path: "/api/companies/:companyId/primary-agent/me", class: "open", test: INSTANCE_TEST },
+
+  // C5-1 (PAR-12740): the plugin call points of `routes/plugins.ts` (C13). Each
+  // handler calls `assertPluginOpenForPerson` before the worker is called: a
+  // plugin not on his list is 403 `MEMBER_RESTRICTED` (4.8). The API mount also
+  // carries the plugin socket, whose upgrade is replayed through it (4.6a row 16).
+  { method: "POST", path: "/api/plugins/:pluginId/bridge/data", class: "plugin" },
+  { method: "POST", path: "/api/plugins/:pluginId/bridge/action", class: "plugin" },
+  { method: "POST", path: "/api/plugins/:pluginId/data/:key", class: "plugin" },
+  { method: "POST", path: "/api/plugins/:pluginId/actions/:key", class: "plugin" },
+  { method: "GET", path: "/api/plugins/:pluginId/bridge/stream/:channel", class: "plugin" },
+  { method: "USE", path: "/api/plugins/:pluginId/api", class: "plugin" },
+  // C5-3 (PAR-12742): the Apps menu. The handler keeps only his open plugins
+  // (`filterPluginsOpenForPerson`); without that filter this row would hand him
+  // every plugin (PAR-13261).
+  { method: "GET", path: "/api/plugins/ui-contributions", class: "plugin", test: "server/src/__tests__/member-restriction-ui-contributions.test.ts" },
+  // PAR-13932 (Planning Canvas C3): every board route asks the canvas access
+  // resolver (`services/planning-canvas-access.ts`), which gives a restricted
+  // person his own personal boards and a project board he passes
+  // `project:read` on, and nothing else (plan PAR-13925 section D).
+  ...([
+    ["GET", "/api/companies/:companyId/planning-canvases"],
+    ["POST", "/api/companies/:companyId/planning-canvases"],
+    ["GET", "/api/companies/:companyId/planning-canvases/:boardId"],
+    ["PATCH", "/api/companies/:companyId/planning-canvases/:boardId"],
+    ["DELETE", "/api/companies/:companyId/planning-canvases/:boardId"],
+    ["POST", "/api/companies/:companyId/planning-canvases/:boardId/ops"],
+    ["POST", "/api/companies/:companyId/planning-canvases/:boardId/import"],
+    ["POST", "/api/companies/:companyId/planning-canvases/:boardId/archive"],
+    ["POST", "/api/companies/:companyId/planning-canvases/:boardId/restore"],
+    ["PATCH", "/api/companies/:companyId/planning-canvases/:boardId/sharing"],
+    ["GET", "/api/companies/:companyId/planning-canvases/:boardId/agent-grants"],
+    ["DELETE", "/api/companies/:companyId/planning-canvases/:boardId/agent-grants/:grantId"],
+    // PAR-13935 (C6): comments. A mention also runs `restrictedTaskBody(..., "createIssue")` on the issue it would create.
+    ["GET", "/api/companies/:companyId/planning-canvases/:boardId/comments"],
+    ["POST", "/api/companies/:companyId/planning-canvases/:boardId/comments"],
+    ["PATCH", "/api/companies/:companyId/planning-canvases/:boardId/comments/:commentId"],
+    ["DELETE", "/api/companies/:companyId/planning-canvases/:boardId/comments/:commentId"],
+    ["POST", "/api/companies/:companyId/planning-canvases/:boardId/comments/:commentId/resolve"],
+    // PAR-14276 (board chat): edit access; the thread issue runs `restrictedTaskBody(..., "createIssue")` on every message.
+    ["POST", "/api/companies/:companyId/planning-canvases/:boardId/chat"],
+    // PAR-13937 (C8): refs and query read only what the caller may read; a handoff runs `restrictedTaskBody(..., "createIssue")` per issue.
+    ["GET", "/api/companies/:companyId/planning-canvases/:boardId/refs"],
+    ["POST", "/api/companies/:companyId/planning-canvases/:boardId/query"],
+    ["POST", "/api/companies/:companyId/planning-canvases/:boardId/handoff"],
+    // PAR-13941 (C14): blueprint apply creates a personal board; each issue it makes runs `restrictedTaskBody(..., "createIssue")`.
+    ["POST", "/api/companies/:companyId/planning-canvases/from-blueprint"],
+  ] as const).map(([method, path]) => ({ method, path, class: "open" as const, test: PLANNING_CANVAS_TEST })),
+];
+
+/**
+ * Routes under `/api/plugins/:pluginId/` that do not call the plugin gate, by
+ * design (4.8). The scan fails the build when any other route there lacks the
+ * call (AC-K7). Webhooks and jobs run with no person (P11); the set-up pages
+ * (detail, lifecycle, health, logs, config, jobs, local folders, dashboard)
+ * have no route-table row, so they are closed for him (4.6, correction 4).
+ */
+export const PLUGIN_GATE_NOT_GATED: ReadonlyArray<{ method: MemberRestrictionRouteMethod; path: string; reason: string }> = [
+  { method: "POST", path: "/api/plugins/:pluginId/webhooks/:endpointKey", reason: "webhook: no person calls it" },
+  ...([
+    ["GET", ""], ["DELETE", ""], ["POST", "/enable"], ["POST", "/disable"], ["GET", "/health"], ["GET", "/logs"],
+    ["POST", "/upgrade"], ["GET", "/config"], ["POST", "/config"], ["POST", "/config/test"], ["GET", "/jobs"],
+    ["GET", "/jobs/:jobId/runs"], ["POST", "/jobs/:jobId/trigger"], ["GET", "/dashboard"],
+    ["GET", "/companies/:companyId/local-folders"], ["GET", "/companies/:companyId/local-folders/:folderKey/status"],
+    ["POST", "/companies/:companyId/local-folders/:folderKey/validate"], ["PUT", "/companies/:companyId/local-folders/:folderKey"],
+  ] as const).map(([method, suffix]) => ({ method, path: `/api/plugins/:pluginId${suffix}`, reason: "set-up page: closed (4.6)" })),
 ];
 
 export type MemberRestrictionRouteMatch =
@@ -369,6 +559,13 @@ type ClassifierRequest = Request & { [HITS]?: Array<{ entry: MemberRestrictionRo
  * does not know. So a `closed` row wins, rows of different classes refuse, and
  * rows of one class agree. The scan fails the build when a row's pattern
  * catches a registered route other than its own.
+ *
+ * `shadows` tells the table that order: after the `closed` check, a hit whose
+ * path another hit of the same method names in `shadows` is dropped, so
+ * `/api/agents/me` (shadowing `/api/agents/:id`) answers with its own class.
+ * A `closed` shadowed row still wins. The scan proves each `shadows` against
+ * the routers (same method, the shadowed row catches the path, same file and
+ * registered earlier).
  */
 export function createRouteClassifier(entries: readonly MemberRestrictionRouteEntry[] = MEMBER_RESTRICTION_ROUTE_TABLE) {
   const router = Router();
@@ -396,9 +593,102 @@ export function createRouteClassifier(entries: readonly MemberRestrictionRouteEn
           if (err) resolve({ kind: "refused", reason: "unroutable" });
           else if (hits.length === 0) resolve({ kind: "unlisted" });
           else if (closed) resolve({ kind: "matched", ...closed });
-          else if (hits.some((hit) => hit.entry.class !== hits[0]!.entry.class)) resolve({ kind: "refused", reason: "ambiguous" });
-          else resolve({ kind: "matched", ...hits[0]! });
+          else {
+            const kept = hits.filter((hit) => !hits.some((other) => other !== hit
+              && other.entry.method === hit.entry.method && other.entry.shadows === hit.entry.path));
+            // Two rows naming each other leave nothing: refuse (the scan fails on it).
+            if (kept.length === 0 || kept.some((hit) => hit.entry.class !== kept[0]!.entry.class)) resolve({ kind: "refused", reason: "ambiguous" });
+            else resolve({ kind: "matched", ...kept[0]! });
+          }
         });
     });
   };
 }
+
+/**
+ * The mount table of PAR-12608 section 4.6a: every registration on the Express
+ * app in `app.ts` and every socket upgrade handler (an `upgrade` listener),
+ * none of which the `/api` middleware of 4.6 sees. Default for a caller bound
+ * by R: refused. The scan in `__tests__/member-restriction-mount-table.test.ts`
+ * fails the build when a registration or upgrade handler has no row, a row
+ * names one that no longer exists, or a "to prove" row names neither a test
+ * nor the ticket that proves it.
+ */
+export interface MemberRestrictionMountEntry {
+  /** Row of 4.6a; `null` for middleware that answers no request with data of its own, and for the `/api` router (4.6). */
+  row: number | null;
+  /**
+   * The registrations as the scan reads them: for `app.ts` the method and the
+   * leading name of each argument (`USE "/api/ready" readinessRoutes`,
+   * `GET "/api/x" <inline>`); for a socket, `UPGRADE <file under server/src>`,
+   * once per upgrade listener in that file.
+   */
+  mounts: readonly string[];
+  /** The rule for R (the restricted person), in short. */
+  rule: string;
+  /** A "to prove" row: the test that proves it (it names `4.6a row <n>`), or the ticket that will. */
+  toProve?: string;
+  /**
+   * Row 5: every route of the mounted routers, classified (4.6a: `run` or `closed`).
+   * A `closed` route names the ticket or test that closes it for a run of a restricted person.
+   */
+  routes?: ReadonlyArray<{ method: string; path: string; class: "run" | "closed"; toProve?: string }>;
+}
+
+const MOUNT_TEST = "server/src/__tests__/member-restriction-mount-rows.test.ts";
+
+export const MEMBER_RESTRICTION_MOUNT_TABLE: readonly MemberRestrictionMountEntry[] = [
+  { row: null, rule: "middleware: request accounting, body parsing, logging, host and Cloud guards; the actor is resolved here",
+    mounts: ["USE databaseOperationMiddleware", "USE idleAdmissionMiddleware", "USE COMPANY_IMPORT_API_PATH express.json",
+      "USE \"/api/chat-webhooks\" createChatWebhookDiagnostics chatWebhookBodyParser",
+      "USE \"/api/plugins/:pluginId/webhooks/:endpointKey\" pluginWebhookBodyParser", "USE dotPrincipalHttp.bodyParser",
+      "USE <inline>", "USE \"/api\" apiCompression", "USE httpLogger", "USE privateHostnameGuard",
+      "USE cloudRuntimeIdentityMiddleware", "USE cloudWarmStandbyMiddleware", "USE actorMiddleware",
+      "USE cloudControlMiddleware", "USE skillAccessRequestContext", "USE errorHandler"] },
+  { row: null, rule: "the `/api` router and its 404: the route table of 4.6", mounts: ["USE \"/api\" api", "USE \"/api\" <inline>"] },
+  { row: 1, rule: "not bound: no company data", mounts: ["USE \"/api/liveness\" livenessRoutes", "USE \"/api/ready\" readinessRoutes"] },
+  { row: 2, rule: "refused: only a managed-run bearer or a Cloud inspection permit, never a member's session or key",
+    mounts: ["USE \"/api/customer-success/v1\" customerSuccessRoutes"], toProve: MOUNT_TEST },
+  { row: 3, rule: "as row 4: an agent-purpose assistant connection", mounts: ["USE museTransportRoutes"] },
+  { row: 4, rule: "every call resolves its actor in `actorForGrant` (C4f)",
+    mounts: ["USE publicMcpIngress", "publicMcpIngress.USE dotPrincipalHttp.router", "publicMcpIngress.USE transfers.router",
+      "publicMcpIngress.USE grokTransfers.router", "publicMcpIngress.USE publicMcpIngressRoutes",
+      "publicMcpIngress.USE publicMcpIngressRoutes"] },
+  { row: 5, rule: "a run's own run-bound token only; connection search and request and the MCP tools end in the dispatcher (4.8) " +
+      "and the connector builder (4.9); the GitHub credentials route hands the run a company credential, so it is closed for a run " +
+      "whose person is restricted (4.9, decision 4; PAR-13220)",
+    mounts: ["USE runtimeConnectionIntentRoutes", "USE nativeRunMcpRoutes"], toProve: MOUNT_TEST,
+    routes: [
+      { method: "POST", path: "/runtime-tools/github/credentials", class: "closed", toProve: "PAR-13220" },
+      { method: "GET", path: "/mcp/runtime-tools", class: "run" },
+      { method: "POST", path: "/mcp/runtime-tools", class: "run" },
+      { method: "POST", path: "/runtime-tools/connections/search", class: "run" },
+      { method: "POST", path: "/runtime-tools/connections/request", class: "run" },
+      { method: "ALL", path: "/mcp/native-runs/:runId", class: "run" },
+    ] },
+  { row: 6, rule: "an inbound call mapped to him is refused", mounts: ["USE voiceWebhookRoutes"], toProve: "PAR-13206" },
+  { row: 7, rule: "no person; the run it starts is held to invariant A (4.7)", mounts: ["USE connectionEventWakeRoutes"] },
+  { row: 8, rule: "open: sign-in, sign-out, own profile", mounts: ["USE \"/api/auth\" authRoutes", "ALL \"/api/auth/{*authPath}\" opts.betterAuthHandler"] },
+  { row: 9, rule: "open: agent documentation with no company data", mounts: ["USE llmRoutes"], toProve: MOUNT_TEST },
+  { row: 10, rule: "a mail mapped to him becomes no comment, task or wake", mounts: ["USE emailWebhookRoutes"], toProve: "PAR-13206" },
+  { row: 11, rule: "a message from his linked identity is refused", mounts: ["USE chatWebhookRoutes"], toProve: "PAR-13206" },
+  { row: 12, rule: "refused: finishing a GitHub set-up is `connections:configure`, which the action list denies",
+    mounts: ["GET \"/api/chat-github/manifest/callback\" <inline>", "GET \"/api/chat-github/cloud/callback\" <inline>",
+      "GET \"/api/chat-github/identity/callback\" <inline>"], toProve: MOUNT_TEST },
+  { row: 13, rule: "connector tools refused (4.9), plugin tools through the dispatcher (4.8)", mounts: ["USE mcpGatewayProtocolRoutes"] },
+  { row: 14, rule: "not gated: plugin code, no data (4.8)", mounts: ["USE pluginUiStaticRoutes"] },
+  { row: 15, rule: "not bound: the screen's static files",
+    mounts: ["USE staticUi", "staticUi.USE staticUiCompression", "staticUi.USE \"/assets\" staticUiFiles",
+      "staticUi.USE \"/assets\" retained.serve", "staticUi.GET <expression> <inline>", "staticUi.USE staticUiFiles",
+      "staticUi.USE staticUiFiles", "staticUi.GET /.*/ <inline>", "staticUi.GET /.*/ <inline>", "staticUi.USE vite.middlewares"] },
+  // The second listener is the proxied connection's own upgrade to the plugin worker, inside the gated handler.
+  { row: 16, rule: "the plugin gate at upgrade (4.8, C5-1)",
+    mounts: ["UPGRADE realtime/plugin-api-ws.ts", "UPGRADE realtime/plugin-api-ws.ts"],
+    toProve: "server/src/__tests__/member-restriction-plugin-gate.test.ts" },
+  { row: 17, rule: "per event at delivery: task and project events through `decide()`, run events through the run rule",
+    mounts: ["UPGRADE realtime/live-events-ws.ts"] },
+  { row: 18, rule: "refused: the socket takes no session, only a token minted by " +
+      "`POST /api/environment-custom-image-setup-sessions/:sessionId/terminal-session-token`, which needs an instance admin " +
+      "(`assertCanAccessInstanceEnvironments`); R never binds one", mounts: ["UPGRADE realtime/environment-custom-image-terminal-ws.ts"] },
+  { row: 19, rule: "not a person's entry: a registered run's own authority", mounts: ["UPGRADE realtime/runner-prp-ws.ts"], toProve: MOUNT_TEST },
+];

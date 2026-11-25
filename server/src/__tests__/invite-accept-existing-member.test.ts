@@ -219,6 +219,8 @@ function createDirectHumanInviteDbStub(defaultsPayload: Record<string, unknown> 
   const selectResponses = [
     [invite],
     [{ email: "invitee@example.com" }],
+    // The company's restriction mode, read by `markForJoin` before the invite is consumed.
+    [{ mode: "off" }],
     [],
   ];
   const updateResponses = [[], [approvedJoinRequest]];
@@ -302,6 +304,7 @@ function createAcceptedHumanInviteReplayDbStub() {
     [invite],
     [pendingJoinRequest],
     [{ email: "invitee@example.com" }],
+    [{ mode: "off" }],
     [pendingJoinRequest],
   ];
   const updateResponses = [[replayedJoinRequest], [approvedJoinRequest]];

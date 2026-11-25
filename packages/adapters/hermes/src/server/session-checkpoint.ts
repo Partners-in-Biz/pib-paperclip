@@ -29,6 +29,9 @@ export function isPlausibleHermesSessionId(value: string | null | undefined): va
   if (!value) return false;
   return (
     /^\d{8}_\d{6}_[A-Za-z0-9_-]{4,}$/.test(value) ||
+    // Gateway-backed sessions: `local-<sha256 hex>`. Keep in sync with
+    // HERMES_SESSION_ID_REGEX in server/src/services/heartbeat/run-state.ts.
+    /^local-[0-9a-fA-F]{16,128}$/.test(value) ||
     /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(value)
   );
 }

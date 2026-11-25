@@ -12,6 +12,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import {
   builtInManagedResources,
   issueRelations,
+  issues as issuesTable,
   principalPermissionGrants,
   type Db,
 } from "@paperclipai/db";
@@ -92,7 +93,7 @@ import { validateCron } from "./cron.js";
 import { documentService } from "./documents.js";
 import { issueService, type IssueListReadScope } from "./issues.js";
 import { instanceSettingsService } from "./instance-settings.js";
-import { projectService } from "./projects.js";
+import { projectService, type ProjectListReadScope } from "./projects.js";
 import { workProductService } from "./work-products.js";
 import { nightlyDreamingEnabled, portableRoutineIsNightlyDreaming } from "./nightly-dreaming.js";
 import { routineService } from "./routines.js";
@@ -123,12 +124,20 @@ import { remoteAgentProfileService } from "./remote-agent-profiles.js";
 
 const EXPORT_READ_CONCURRENCY = 8;
 const EXPORT_ISSUE_READ_CONCURRENCY = 2;
+
 /**
- * A company export copies every task of the company (PAR-12718). Only the board
- * or the company's CEO agent reaches it, and spec C 4.6 ("company set-up") closes
- * it to a restricted person, so the list is not narrowed to one reader.
+ * Which tasks and projects a company export may copy (PAR-14320). A request
+ * route passes the caller's `issueReadSqlCondition` and
+ * `projectReadSqlCondition`, so a member's export holds only what he can read:
+ * another person's private tasks and chats stay out, with their comments,
+ * documents, work products and attachments. `"system"` is for callers no
+ * person's request reaches. There is no default, so a call that forgets it
+ * does not compile.
  */
-const EXPORT_ISSUE_READ_SCOPE: IssueListReadScope = "system";
+export interface CompanyExportReadScope {
+  issues: IssueListReadScope;
+  projects: ProjectListReadScope;
+}
 
 async function mapWithConcurrency<T, R>(
   items: readonly T[],
@@ -3886,8 +3895,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
   async function exportBundle(
     companyId: string,
     input: CompanyPortabilityExport,
-    options: { preview?: boolean; allowExternalInstructions?: boolean } = {},
+    options: { readScope: CompanyExportReadScope; preview?: boolean; allowExternalInstructions?: boolean },
   ): Promise<CompanyPortabilityExportResult> {
+    const issueReadScope = options.readScope.issues;
+    const projectReadScope = options.readScope.projects;
     const include = normalizeInclude({
       ...input.include,
       agents: input.agents && input.agents.length > 0 ? true : input.include?.agents,
@@ -3982,10 +3993,16 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const projectsSvc = projectService(db);
     const issuesSvc = issueService(db);
     const routinesSvc = routineService(db);
-    // "system": company export is company set-up, closed to a restricted person (spec 4.6).
-    const allProjectsRaw = include.projects || include.issues ? await projectsSvc.list(companyId, { readCondition: "system" }) : [];
+    // The caller's read scope (PAR-14320): a project he cannot read is not exported.
+    const allProjectsRaw = include.projects || include.issues
+      ? await projectsSvc.list(companyId, { readCondition: projectReadScope })
+      : [];
     const allProjects = allProjectsRaw.filter((project) => !project.archivedAt);
-    const allRoutinesRaw = include.issues ? await routinesSvc.list(companyId) : [];
+    const readableProjectIds = new Set(allProjectsRaw.map((project) => project.id));
+    // A routine of a project the caller cannot read goes with that project.
+    const allRoutinesRaw = include.issues
+      ? (await routinesSvc.list(companyId)).filter((routine) => !routine.projectId || readableProjectIds.has(routine.projectId))
+      : [];
     const builtInRoutineRows = allRoutinesRaw.filter((routine) =>
       managedRoutineIds.has(routine.id) || routine.originKind === "built_in_agent_bundle"
     );
@@ -4020,9 +4037,19 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const resolveIssueBySelector = async (selector: string) => {
       const trimmed = selector.trim();
       if (!trimmed) return null;
-      return trimmed.includes("-")
-        ? issuesSvc.getByIdentifier(trimmed)
-        : issuesSvc.getById(trimmed);
+      const issue = trimmed.includes("-")
+        ? await issuesSvc.getByIdentifier(trimmed)
+        : await issuesSvc.getById(trimmed);
+      if (!issue || issue.companyId !== companyId) return null;
+      // A task named by id or identifier passes the caller's read scope too
+      // (PAR-14320); one he cannot read reads as "not found".
+      if (issueReadScope === "system") return issue;
+      const readable = await db
+        .select({ id: issuesTable.id })
+        .from(issuesTable)
+        .where(and(eq(issuesTable.id, issue.id), eq(issuesTable.companyId, companyId), issueReadScope))
+        .limit(1);
+      return readable.length > 0 ? issue : null;
     };
     for (const selector of input.issues ?? []) {
       const issue = await resolveIssueBySelector(selector);
@@ -4057,7 +4084,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         continue;
       }
       selectedProjects.set(match.id, match);
-      const projectIssues = await issuesSvc.list(companyId, { projectId: match.id, readCondition: EXPORT_ISSUE_READ_SCOPE });
+      const projectIssues = await issuesSvc.list(companyId, { projectId: match.id, readCondition: issueReadScope });
       for (const issue of projectIssues) {
         selectedIssues.set(issue.id, issue);
       }
@@ -4073,7 +4100,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     }
 
     if (include.issues && selectedIssues.size === 0) {
-      const allIssues = await issuesSvc.list(companyId, { readCondition: EXPORT_ISSUE_READ_SCOPE });
+      const allIssues = await issuesSvc.list(companyId, { readCondition: issueReadScope });
       for (const issue of allIssues) {
         selectedIssues.set(issue.id, issue);
         if (issue.projectId) {
@@ -4833,7 +4860,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
   async function previewExport(
     companyId: string,
     input: CompanyPortabilityExport,
-    options: { allowExternalInstructions?: boolean } = {},
+    options: { readScope: CompanyExportReadScope; allowExternalInstructions?: boolean },
   ): Promise<CompanyPortabilityExportPreviewResult> {
     const previewInput: CompanyPortabilityExport = {
       ...input,
@@ -4849,6 +4876,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       previewInput.include.issues = false;
     }
     const exported = await exportBundle(companyId, previewInput, {
+      readScope: options.readScope,
       preview: true,
       allowExternalInstructions: options.allowExternalInstructions,
     });

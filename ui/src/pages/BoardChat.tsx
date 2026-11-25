@@ -11,6 +11,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useDialogState } from "../context/DialogContext";
+import { useMemberRestrictionGate } from "../hooks/useMemberRestrictionGate";
 import { agentsApi } from "../api/agents";
 import { issuesApi } from "../api/issues";
 import { goalsApi } from "../api/goals";
@@ -31,7 +32,7 @@ import {
   agentBubbleDateLabel,
 } from "../components/AgentBubbleActionRow";
 import { cn, formatDateTime } from "../lib/utils";
-import type { FeedbackVoteValue } from "@paperclipai/shared";
+import type { FeedbackVote, FeedbackVoteValue } from "@paperclipai/shared";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 
 /**
@@ -322,10 +323,12 @@ export function BoardChat() {
 
   // Feedback votes for the board issue power the 👍/👎 affordance — the same
   // store the task thread reads (PAP-105 shares the action row).
+  // Closed to a restricted member under `enforce` (AC-G10): no votes read, no vote buttons.
+  const memberGate = useMemberRestrictionGate(selectedCompanyId);
   const { data: feedbackVotes } = useQuery({
     queryKey: queryKeys.issues.feedbackVotes(boardIssueId ?? ""),
-    queryFn: () => issuesApi.listFeedbackVotes(boardIssueId!),
-    enabled: !!boardIssueId,
+    queryFn: memberGate.guard(() => issuesApi.listFeedbackVotes(boardIssueId!), [] as FeedbackVote[]),
+    enabled: !!boardIssueId && !memberGate.closed,
   });
 
   const voteByComment = useMemo(() => {
@@ -837,7 +840,7 @@ export function BoardChat() {
                       dateTitle={formatDateTime(comment.createdAt)}
                       anchorHref={`#comment-${comment.id}`}
                       feedback={
-                        boardIssueId
+                        boardIssueId && !memberGate.closed
                           ? {
                               activeVote: voteByComment.get(comment.id) ?? null,
                               sharingPreference: "prompt",

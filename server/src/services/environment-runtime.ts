@@ -54,8 +54,9 @@ import type {
   PluginEnvironmentSyncResult,
   PluginSyncOperation,
 } from "@paperclipai/plugin-sdk";
-import { checkRemoteRun, ensureSshWorkspaceReady, type SshRunCheck } from "@paperclipai/adapter-utils/ssh";
+import { ensureSshWorkspaceReady, type SshRunCheck } from "@paperclipai/adapter-utils/ssh";
 import { sshRemoteRunDir } from "./ssh-run-lease.js";
+import { checkSshLease, releaseSshRunLease } from "./ssh-run-lease-release.js";
 import {
   getActiveStepContext,
   runWithRuntimeParent,
@@ -531,6 +532,8 @@ export interface EnvironmentDriverReleaseInput {
   environment: Environment;
   lease: EnvironmentLease;
   status: Extract<EnvironmentLeaseStatus, "released" | "expired" | "failed">;
+  /** ssh only: a remote check the caller already made (PAR-9919); skips the driver's own. */
+  remoteCheck?: SshRunCheck;
 }
 
 function resolvePluginSandboxRpcTimeoutMs(
@@ -1218,7 +1221,9 @@ function createSshEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
     },
 
     async releaseRunLease(input) {
-      return await environmentsSvc.releaseLease(input.lease.id, input.status);
+      // PAR-9961: a gone check writes the stop receipt; an unconfirmed
+      // cancelled run keeps its lease active (null: not released).
+      return await releaseSshRunLease(db, input);
     },
 
     async realizeWorkspace(input) {
@@ -3921,7 +3926,7 @@ export function environmentRuntimeService(
       onLeaseReleaseError?: (leaseId: string, error: unknown) => void,
       providerResourceDisposition?: ProviderResourceDisposition,
       cancelActiveWork?: boolean,
-      releaseOptions?: { respectCleanupDeadlines?: boolean },
+      releaseOptions?: { respectCleanupDeadlines?: boolean; remoteChecks?: ReadonlyMap<string, SshRunCheck> },
     ): Promise<EnvironmentRuntimeLeaseRecord[]> {
       const leaseRows = await db
         .select()
@@ -4044,6 +4049,7 @@ export function environmentRuntimeService(
             continue;
           }
           const driver = getDriver(getLeaseDriverKey(leaseSnapshot, environment));
+          const remoteCheck = releaseOptions?.remoteChecks?.get(leaseRow.id);
           if (
             providerResourceDisposition === "keep_running" &&
             leaseSnapshot.leasePolicy !== "reuse_by_environment"
@@ -4077,6 +4083,7 @@ export function environmentRuntimeService(
               ? await driver.releaseRunLease({
                   ...(cancelActiveWork ? { cancelActiveWork: true } : {}),
                   ...(providerResourceDisposition === "stop_and_retain" ? { resourceDisposition: "stop_and_retain" as const } : {}),
+                  ...(remoteCheck ? { remoteCheck } : {}),
                   environment,
                   lease: leaseSnapshot,
                   // A stopped reusable provider resource must remain eligible
@@ -4124,13 +4131,8 @@ export function environmentRuntimeService(
         const lease = await environmentsSvc.getLeaseById(leaseId);
         const environment = lease?.provider === "ssh" && lease.environmentId
           ? await environmentsSvc.getById(lease.environmentId) : null;
-        const parsed = environment?.driver === "ssh"
-          ? await resolveEnvironmentDriverConfigForRuntime(db, lease!.companyId, environment) : null;
-        if (parsed?.driver !== "ssh") return { result: "unknown", basis: "check_failed", checkedAt: new Date().toISOString() };
-        // The run dir was derived from the workspace path recorded at acquire.
-        const recordedWorkspace = lease!.metadata?.remoteWorkspacePath;
-        return await checkRemoteRun({ ...parsed.config, remoteWorkspacePath: typeof recordedWorkspace === "string"
-          ? recordedWorkspace : parsed.config.remoteWorkspacePath }, lease!.metadata ?? null);
+        if (!lease || !environment) return { result: "unknown", basis: "check_failed", checkedAt: new Date().toISOString() };
+        return await checkSshLease(db, lease, environment);
       } catch {
         return { result: "unknown", basis: "check_failed", checkedAt: new Date().toISOString() };
       }

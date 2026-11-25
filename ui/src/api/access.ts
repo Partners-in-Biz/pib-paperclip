@@ -192,6 +192,7 @@ export type CompanyInviteRecord = {
   inviteMessage: string | null;
   /** The restriction mark (PAR-12608 4.2a); null or absent for an unmarked invite. */
   memberRestriction?: InviteMemberRestriction | null;
+  memberRestrictionIsDefault?: boolean;
   state: "active" | "revoked" | "accepted" | "expired";
   invitedByUser: { id: string; email: string | null; name: string | null; image: string | null } | null;
   relatedJoinRequestId: string | null;

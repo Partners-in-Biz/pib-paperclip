@@ -1,3 +1,4 @@
+import { requestedPauseReason } from "../services/requested-pause-reason.js";
 import { assertProviderApiPlacementPolicy, managedCursorApiDefaultEnabled, resolveProviderApiPlacement } from "../services/native-runtime/provider-api-placement.js";
 import { wakeCausingActorFromActor } from "../services/heartbeat/causing-actor.js";
 import { isObjectJournalBusyError } from "../services/object-byte-journal.js";
@@ -306,6 +307,17 @@ import {
   canActorReadWorkspaceOperation,
   redactHeartbeatRunListRow,
 } from "../services/heartbeat-run-privacy.js";
+import { refusedOnlyByMemberRestriction } from "../services/member-restriction/action-list.js";
+import {
+  actorMayInstructAgent,
+  hideUnreadableIssueIds,
+  MEMBER_AGENT_NOT_LISTED_DETAILS,
+  MEMBER_AGENT_NOT_LISTED_ROUTE_MESSAGE,
+  restrictedAgentIdsForActor,
+  restrictedAgentView,
+  restrictedRunPersonForActor,
+  runWorksForRestrictedCaller,
+} from "../services/member-restriction/agent-read.js";
 import {
   PaperclipRunnerProviderProfileError,
   resolvePaperclipRunnerProviderProfile,
@@ -1234,13 +1246,26 @@ export function agentRoutes(
     return false;
   }
 
-  async function assertRunTelemetryReadAllowed(req: Request, res: Response, companyId: string) {
+  async function assertRunTelemetryReadAllowed(
+    req: Request,
+    res: Response,
+    companyId: string,
+    run?: { id: string; scopeKind?: string | null; issueId?: string | null },
+  ) {
     const decision = await access.decide({
       actor: req.actor,
       action: "company_scope:read",
       resource: { type: "company", companyId },
     });
     if (decision.allowed) return true;
+    // PAR-12608 4.6, AC-G5: one run's detail, log and events stay open to a
+    // caller refused only by the member restriction when the run works for
+    // him (its task is checked next); any other run is "not found" for him.
+    if (run && refusedOnlyByMemberRestriction(decision)) {
+      if (await runWorksForRestrictedCaller(db, req.actor, { ...run, companyId })) return true;
+      res.status(404).json({ error: "Heartbeat run not found" });
+      return false;
+    }
     res.status(403).json({ error: "Run telemetry is outside this actor's authorization boundary" });
     return false;
   }
@@ -1465,6 +1490,13 @@ export function agentRoutes(
       resource: { type: "agent", companyId: agent.companyId, agentId: agent.id },
     });
     if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+    await assertActorMayInstructAgent(req, agent);
+  }
+
+  /** PAR-12608 4.7: a caller working for a restricted person wakes only an agent on his list (AC-A1, AC-A4). */
+  async function assertActorMayInstructAgent(req: Request, agent: { id: string; companyId: string }) {
+    if (await actorMayInstructAgent(db, req.actor, { companyId: agent.companyId, agentId: agent.id, target: "agent:wake" })) return;
+    throw forbidden(MEMBER_AGENT_NOT_LISTED_ROUTE_MESSAGE, MEMBER_AGENT_NOT_LISTED_DETAILS);
   }
 
   async function assertCanManageAdapterLogin(
@@ -2624,7 +2656,11 @@ export function agentRoutes(
         scope: { requiresChangeGrant: true },
       })).allowed,
     });
-    return decision.allowed;
+    if (!decision.allowed) return false;
+    // C23: an agent caller's wake skips `decide()`; a run working for a
+    // restricted person still wakes only an agent on his list.
+    await assertActorMayInstructAgent(req, targetAgent);
+    return true;
   }
 
   async function assertCanResumeAgent(
@@ -4028,7 +4064,14 @@ export function agentRoutes(
       });
       return;
     }
+    const listed = await restrictedAgentIdsForActor(db, req.actor, companyId);
     const result = await filterAgentsForActor(req, await svc.list(companyId));
+    // PAR-12608 4.6, AC-G4: a caller bound by R under `enforce` gets only the
+    // agents on his list, each reduced to six fields.
+    if (listed) {
+      res.json(result.filter((agent) => listed.has(agent.id)).map(restrictedAgentView));
+      return;
+    }
     const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
     if (canReadConfigs) {
       res.json(result.map((agent) => redactAgentRowForResponse(agent)));
@@ -4170,6 +4213,13 @@ export function agentRoutes(
       res.status(403).json({ error: trustPreset.detail });
       return;
     }
+    // PAR-12608 4.6, AC-A2: a run working for a restricted person reads its own
+    // identity only, never its configuration.
+    if (await restrictedAgentIdsForActor(db, req.actor, agent.companyId)) {
+      const { id, companyId, name, role, title, status } = agent;
+      res.json({ id, companyId, name, role, title, status });
+      return;
+    }
     if (trustPreset.kind === "low_trust_review") {
       res.json(buildLowTrustSelfView(agent));
       return;
@@ -4206,6 +4256,9 @@ export function agentRoutes(
       issuesSvc.listDependencyReadiness(req.actor.companyId, issueIds),
       recoveryActionsSvc.listActiveForIssues(req.actor.companyId, issueIds),
     ]);
+    // PAR-12608 4.3: a blocker the caller cannot read is counted, never named.
+    const readableBlockers = new Set(await hideUnreadableIssueIds(db, req.actor, req.actor.companyId,
+      [...new Set([...dependencyReadiness.values()].flatMap((entry) => entry.unresolvedBlockerIssueIds))]));
 
     res.json(
       eligibleRows.map((issue) => ({
@@ -4222,7 +4275,8 @@ export function agentRoutes(
         activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
         dependencyReady: dependencyReadiness.get(issue.id)?.isDependencyReady ?? true,
         unresolvedBlockerCount: dependencyReadiness.get(issue.id)?.unresolvedBlockerCount ?? 0,
-        unresolvedBlockerIssueIds: dependencyReadiness.get(issue.id)?.unresolvedBlockerIssueIds ?? [],
+        unresolvedBlockerIssueIds: (dependencyReadiness.get(issue.id)?.unresolvedBlockerIssueIds ?? [])
+          .filter((id) => readableBlockers.has(id)),
       })),
     );
   });
@@ -4234,6 +4288,12 @@ export function agentRoutes(
     }
 
     const query = agentMineInboxQuerySchema.parse(req.query);
+    // PAR-12608 4.6: a run working for a restricted person reads his inbox only.
+    if (query.userId !== req.actor.onBehalfOfUserId
+      && await restrictedAgentIdsForActor(db, req.actor, req.actor.companyId)) {
+      res.json([]);
+      return;
+    }
     const issuesSvc = issueService(db);
     const rows = await issuesSvc.list(req.actor.companyId, {
       touchedByUserId: query.userId,
@@ -4257,6 +4317,13 @@ export function agentRoutes(
     const agent = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
     if (!agent) return;
     if (!(await assertAgentReadAllowed(req, res, agent))) return;
+    // PAR-12608 4.6, AC-G4: under `enforce` an agent off his list is "not found".
+    const listed = await restrictedAgentIdsForActor(db, req.actor, agent.companyId);
+    if (listed) {
+      if (listed.has(agent.id)) res.json(restrictedAgentView(agent));
+      else res.status(404).json({ error: "Agent not found" });
+      return;
+    }
     const isSelf = req.actor.type === "agent" && req.actor.agentId === id;
     if (isSelf) {
       const trustPreset = await resolveAgentSelfTrustPreset(req, agent);
@@ -5898,7 +5965,9 @@ export function agentRoutes(
     if (!(await getAccessibleAgent(req, res, id))) {
       return;
     }
-    const agent = await svcLifecycle.pauseAgent(id);
+    // PAR-13561: a planned deploy pause may declare itself so recovery defers.
+    const requestedReason = requestedPauseReason(req.body);
+    const agent = await svcLifecycle.pauseAgent(id, requestedReason);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
@@ -6184,6 +6253,95 @@ export function agentRoutes(
   //  - skipped-response shape — the modern endpoint surfaces the rich
   //    SkippedWakeupResponse; the legacy endpoint stays on the simpler
   //    { status: "skipped" } shape for backward compat.
+  type WakeTaskRefusal = "not_uuid" | "not_found" | "other_company" | "read_denied" | "resolver_error";
+  const wakeTaskColumns = {
+    id: issuesTable.id, companyId: issuesTable.companyId, projectId: issuesTable.projectId,
+    parentId: issuesTable.parentId, assigneeAgentId: issuesTable.assigneeAgentId,
+    assigneeUserId: issuesTable.assigneeUserId, status: issuesTable.status,
+  };
+  /**
+   * A manual wake may name only tasks the caller can read (PAR-13041, PAR-12608
+   * 4.6, AC-G3). Collects every task id the heartbeat turns into the run's task
+   * or session key: `issueId`, `taskId`, `taskKey`, and the same three of the
+   * `resumeFromRunId` run (company and agent filter of
+   * `resolveExplicitResumeSessionOverride`). `issueId`/`taskId` must be task
+   * UUIDs. A `taskKey` is a session key: a UUID must be a task, an identifier
+   * naming a task in the company is that task, any other key names no task.
+   * Each task must be in the agent's company and pass `issue:read` for
+   * `req.actor` as it arrives (board and agent callers alike). Any failure
+   * answers 404 "Issue not found" before anything is written.
+   */
+  async function assertWakePayloadTasksReadable(
+    req: Request,
+    agent: { id: string; companyId: string },
+    payload: unknown,
+    route: "wakeup" | "heartbeat/invoke",
+  ): Promise<void> {
+    const body = asRecord(payload);
+    if (!body) return;
+    const taskIds = new Set<string>();
+    const sessionKeys = new Set<string>();
+    const collect = (source: Record<string, unknown>) => {
+      for (const value of [source.issueId, source.taskId]) {
+        const id = readNonEmptyString(value);
+        if (id) taskIds.add(id);
+      }
+      const key = readNonEmptyString(source.taskKey);
+      if (key) sessionKeys.add(key);
+    };
+    let refusal: WakeTaskRefusal | null = null;
+    try {
+      collect(body);
+      const resumeFromRunId = readNonEmptyString(body.resumeFromRunId);
+      if (resumeFromRunId && isUuidLike(resumeFromRunId)) {
+        const resumeRun = await db.select({ contextSnapshot: heartbeatRuns.contextSnapshot }).from(heartbeatRuns)
+          .where(and(eq(heartbeatRuns.id, resumeFromRunId), eq(heartbeatRuns.companyId, agent.companyId),
+            eq(heartbeatRuns.agentId, agent.id)))
+          .then((rows) => rows[0] ?? null);
+        const context = asRecord(resumeRun?.contextSnapshot);
+        if (context) collect(context);
+      }
+      const tasks: Parameters<typeof decideIssueAccessForActor>[2][] = [];
+      for (const key of sessionKeys) {
+        if (isUuidLike(key)) { taskIds.add(key); continue; }
+        const identifier = normalizeIssueIdentifier(key);
+        if (!identifier) continue;
+        const task = await db.select(wakeTaskColumns).from(issuesTable)
+          .where(and(eq(issuesTable.companyId, agent.companyId), eq(issuesTable.identifier, identifier)))
+          .then((rows) => rows[0] ?? null);
+        if (task) tasks.push(task);
+      }
+      for (const id of taskIds) {
+        if (!isUuidLike(id)) { refusal = "not_uuid"; break; }
+        const task = await db.select(wakeTaskColumns).from(issuesTable).where(eq(issuesTable.id, id))
+          .then((rows) => rows[0] ?? null);
+        if (!task) { refusal = "not_found"; break; }
+        if (task.companyId !== agent.companyId) { refusal = "other_company"; break; }
+        tasks.push(task);
+      }
+      for (const task of refusal ? [] : tasks) {
+        if (!(await decideIssueAccessForActor(access, req.actor, task, "issue:read")).allowed) {
+          refusal = "read_denied";
+          break;
+        }
+      }
+    } catch {
+      refusal = "resolver_error";
+    }
+    if (!refusal) return;
+    logger.warn({
+      callerActorType: req.actor.type,
+      callerAgentId: req.actor.type === "agent" ? req.actor.agentId ?? null : null,
+      callerUserId: req.actor.type === "board" ? req.actor.userId ?? null : null,
+      onBehalfOfUserId: req.actor.type === "agent" ? req.actor.onBehalfOfUserId ?? null : null,
+      targetAgentId: agent.id,
+      companyId: agent.companyId,
+      route,
+      reason: refusal,
+    }, "manual wake refused: payload task not readable");
+    throw notFound("Issue not found");
+  }
+
   type HeartbeatSource = "timer" | "assignment" | "on_demand" | "automation";
   type WakeupRouteOpts = {
     source: HeartbeatSource | undefined;
@@ -6377,6 +6535,8 @@ export function agentRoutes(
             : [],
         ),
       );
+    } else {
+      await assertWakePayloadTasksReadable(req, agent, wakePayload, "wakeup");
     }
     const run = await heartbeat.wakeup(id, {
       failedRunId: req.body.failedRunId ?? null,
@@ -6501,6 +6661,7 @@ export function agentRoutes(
       triggerDetail: unknown;
       debug: unknown;
     }>;
+    await assertWakePayloadTasksReadable(req, agent, body.payload, "heartbeat/invoke");
     const contextSnapshot: Record<string, unknown> = {
       triggeredBy: req.actor.type,
       originIdentityContextId: req.actor.identityContextId ?? null,
@@ -7280,7 +7441,7 @@ export function agentRoutes(
     const runId = readHeartbeatRunId(req);
     const run = await getAccessibleResource(req, res, heartbeat.getRun(runId), "Heartbeat run not found");
     if (!run) return;
-    if (!(await assertRunTelemetryReadAllowed(req, res, run.companyId))) return;
+    if (!(await assertRunTelemetryReadAllowed(req, res, run.companyId, run))) return;
     if (!(await assertRunReadAllowed(req, res, run))) return;
     const retryExhaustedReason = await heartbeat.getRetryExhaustedReason(runId);
     const decoratedRun = heartbeat.decorateActiveRunStatus(run);
@@ -7767,7 +7928,7 @@ export function agentRoutes(
     const runId = readHeartbeatRunId(req);
     const run = await getAccessibleResource(req, res, heartbeat.getRunReadAccess(runId), "Heartbeat run not found");
     if (!run) return;
-    if (!(await assertRunTelemetryReadAllowed(req, res, run.companyId))) return;
+    if (!(await assertRunTelemetryReadAllowed(req, res, run.companyId, run))) return;
     if (!(await assertRunReadAllowed(req, res, run))) return;
 
     if (req.query.view === "plugin-panels") {
@@ -7798,7 +7959,7 @@ export function agentRoutes(
     const runId = readHeartbeatRunId(req);
     const run = await getAccessibleResource(req, res, heartbeat.getRunLogAccess(runId), "Heartbeat run not found");
     if (!run) return;
-    if (!(await assertRunTelemetryReadAllowed(req, res, run.companyId))) return;
+    if (!(await assertRunTelemetryReadAllowed(req, res, run.companyId, run))) return;
     if (!(await assertRunReadAllowed(req, res, run))) return;
 
     const offset = Number(req.query.offset ?? 0);
@@ -7869,6 +8030,19 @@ export function agentRoutes(
       "Issue not found",
     );
     if (!issue) return;
+    // Read the task first (PAR-12608 4.6, AC-G3): a caller who cannot read it
+    // gets the unknown-task answer and no run data.
+    if (!(await decideIssueAccessForActor(access, req.actor, issue, "issue:read")).allowed) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    // PAR-12608 4.6, AC-G5 (PAR-14342): a caller bound by a restricted person
+    // sees only the live runs on this task that work for him.
+    const workingFor = await restrictedRunPersonForActor(db, req.actor, issue.companyId);
+    if (workingFor === false) {
+      res.json([]);
+      return;
+    }
 
     const liveRuns = await db
       .select({
@@ -7907,6 +8081,7 @@ export function agentRoutes(
           eq(heartbeatRuns.companyId, issue.companyId),
           inArray(heartbeatRuns.status, ["queued", "running"]),
           eq(heartbeatRuns.issueId, issue.id),
+          ...(workingFor ? [eq(heartbeatRuns.responsibleUserId, workingFor)] : []),
         ),
       )
       .orderBy(desc(heartbeatRuns.createdAt));
@@ -7924,6 +8099,12 @@ export function agentRoutes(
   router.get("/issues/:issueId/execution", async (req, res) => {
     const issue = await getAccessibleResource(req, res, issueService(db).getById(req.params.issueId as string), "Issue not found");
     if (!issue) return;
+    // Read the task first (PAR-12608 4.6, AC-G3): a caller who cannot read it
+    // gets the unknown-task answer and no run data.
+    if (!(await decideIssueAccessForActor(access, req.actor, issue, "issue:read")).allowed) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
     const [run] = await db.select({ id: heartbeatRuns.id, agentId: heartbeatRuns.agentId }).from(heartbeatRuns).where(and(
       eq(heartbeatRuns.companyId, issue.companyId),
       sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
@@ -7942,6 +8123,12 @@ export function agentRoutes(
       "Issue not found",
     );
     if (!issue) return;
+    // Read the task first (PAR-12608 4.6, AC-G3): a caller who cannot read it
+    // gets the unknown-task answer and no run data.
+    if (!(await decideIssueAccessForActor(access, req.actor, issue, "issue:read")).allowed) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
 
     let run = issue.executionRunId ? await heartbeat.getRunIssueSummary(issue.executionRunId) : null;
     if (

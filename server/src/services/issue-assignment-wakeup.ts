@@ -44,6 +44,7 @@ export function queueIssueAssignmentWakeup(input: {
   /** External chat conversation the wake answers. The wake queue keeps each
    * conversation in its own batch, because a reviewed chat run attests one. */
   chatConversationId?: string | null;
+  idempotencyKey?: string | null;
   rethrowOnError?: boolean;
   durableChatRequest?: DurableChatWakeupRequest;
 }) {
@@ -54,6 +55,7 @@ export function queueIssueAssignmentWakeup(input: {
       source: "assignment",
       triggerDetail: "system",
       reason: input.reason,
+      ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
       payload: {
         issueId: input.issue.id,
         mutation: input.mutation,

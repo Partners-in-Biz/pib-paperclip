@@ -3,21 +3,22 @@
  * balances. Setting an opening balance sits with the balances.
  */
 import { useEffect, useState } from "react";
-import { DataTable, usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import { DataTable } from "@paperclipai/plugin-sdk/ui";
 import { Button, CompactRows, Field, Input, Modal, ProgressBar, Section, Select, Toolbar, fluidColumns, formatDate, tokens, useIsNarrow } from "@partnersinbiz/pib-plugin-ui";
 import { leaveStatusLabel, leaveUsed, periodText } from "./series.js";
 import { Muted, Row, small, StatusPill } from "./shared.js";
 import type { LeaveData, LeaveRequestRow, RunFn, Snapshot } from "./types.js";
+import { usePayrollAction } from "./actions.js";
 
 const days = (centi: number) => (centi / 100).toFixed(2).replace(/\.00$/, "");
 const dayCount = (n: number) => `${String(n).replace(/\.0+$/, "")} ${n === 1 ? "day" : "days"}`;
 
 export function LeaveTab({ s, run }: { s: Snapshot; run: RunFn }) {
-  const load = usePluginAction("payroll.leave");
-  const request = usePluginAction("payroll.request-leave");
-  const decide = usePluginAction("payroll.decide-leave");
-  const cancel = usePluginAction("payroll.cancel-leave");
-  const opening = usePluginAction("payroll.leave-opening");
+  const load = usePayrollAction("payroll.leave");
+  const request = usePayrollAction("payroll.request-leave");
+  const decide = usePayrollAction("payroll.decide-leave");
+  const cancel = usePayrollAction("payroll.cancel-leave");
+  const opening = usePayrollAction("payroll.leave-opening");
   const narrow = useIsNarrow();
   const [data, setData] = useState<LeaveData | null>(null);
   const [form, setForm] = useState<{ employeeId: string; type: string; startDate: string; endDate: string; days: string; reason: string } | null>(null);

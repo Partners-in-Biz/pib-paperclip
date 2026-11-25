@@ -207,6 +207,14 @@ export async function initializeRunIdentity(
     parentRunId?: string | null;
     parentContextId?: string | null;
     cause: string;
+    /**
+     * H1 (PAR-12608 4.10, PAR-14378): the person rule H binds under `enforce`
+     * who caused this wake. An inherited context (the task's earlier run, a
+     * parent run, an answered question) does not outrank him: the run works
+     * for him, recorded as a context on top of the inherited one. Never set
+     * on a chat run (F12) or a board-message retry.
+     */
+    causingPersonId?: string | null;
   },
 ) {
   return db.transaction(async (tx) => {
@@ -313,6 +321,17 @@ export async function initializeRunIdentity(
         operatorIdentity ? operatorIdentity.cause : origin?.cause === "company_default" ? "company_default" : input.cause,
       correlationId: "dispatch",
     });
+    if (input.causingPersonId && !operatorIdentity && !retryOrigin &&
+        current.responsibleUserId !== input.causingPersonId) {
+      current = await append(tx, {
+        companyId: input.companyId,
+        runId: input.runId,
+        responsibleUserId: input.causingPersonId,
+        parentContextId: current.id,
+        cause: "causing_actor",
+        correlationId: "causing_actor",
+      });
+    }
     const ids = [...new Set(input.messageIds ?? [])];
     const comments =
       ids.length && input.issueId

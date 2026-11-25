@@ -334,6 +334,47 @@ export interface PluginSidebarProps {
 }
 
 /**
+ * One Planning Canvas edit, as the board accepts it (`add`, `update`, `delete`, `restore`, ...).
+ * Kept loose here: the host validates every op and refuses what the viewer may not do.
+ */
+export type PluginCanvasOp = { op: string; [field: string]: unknown };
+
+/** Props the host hands to both canvas slots. */
+export interface PluginCanvasBoardProps {
+  /** Send edits to the board as the viewer. Resolves with the server's per-op results. */
+  applyOps: (ops: PluginCanvasOp[]) => Promise<unknown>;
+  /** Id of the board the plugin is drawn on. */
+  boardId: string;
+  /** Project the board is shared with, or null. */
+  boardProjectId: string | null;
+  /** The viewer's access to the board. Edits above it are refused by the server. */
+  accessLevel: "view" | "comment" | "edit";
+  /** Keys of the selected nodes. A `canvasNode` card sees only its own key, when selected. */
+  selection: string[];
+}
+
+/**
+ * Props passed to a plugin `canvasNode` component: the card drawn inside an `embed` node whose
+ * `data.plugin` is this plugin's key and whose `data.type` is this slot's id.
+ *
+ * Draw `props` as text only. The host mounts no iframe and renders no raw HTML for you.
+ */
+export interface PluginCanvasNodeProps extends PluginCanvasBoardProps {
+  context: PluginHostContext;
+  /** Key of the embed node on the board. */
+  nodeKey: string;
+  /** Optional id of a plugin-owned asset the node points at. */
+  assetId: string | null;
+  /** Flat props saved on the node (strings, numbers, booleans; at most 2 KB). */
+  props: Record<string, string | number | boolean>;
+}
+
+/** Props passed to a plugin `canvasPanel` component, mounted in the board's side area. */
+export interface PluginCanvasPanelProps extends PluginCanvasBoardProps {
+  context: PluginHostContext;
+}
+
+/**
  * Props passed to a plugin route sidebar component.
  *
  * A route sidebar replaces the normal company sidebar while the user is on a

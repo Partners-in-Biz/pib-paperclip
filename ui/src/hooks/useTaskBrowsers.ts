@@ -3,11 +3,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { TaskBrowser } from "@paperclipai/shared";
 import { browserUseApi } from "@/api/browser-use";
 import { retryTransientOnly } from "@/lib/query-client";
-export function useTaskBrowsers(issueId?: string) {
+import { useMemberRestrictionGate } from "@/hooks/useMemberRestrictionGate";
+export function useTaskBrowsers(issueId?: string, companyId?: string | null) {
+  // PAR-14342: browser tools are closed for a person restricted here under `enforce` (PAR-12608 4.6).
+  const memberGate = useMemberRestrictionGate(companyId);
   return useQuery({
     queryKey: ["task-browsers", issueId],
     queryFn: () => browserUseApi.list(issueId!),
-    enabled: Boolean(issueId) && !issueId?.startsWith("chat:"),
+    enabled: Boolean(issueId) && !issueId?.startsWith("chat:") && !memberGate.closed,
     refetchInterval: 3000,
     // The 3s poll cadence already retries reads; stacking the shared backoff
     // inside a tick only adds duplicate requests. The next tick refetches anyway.
