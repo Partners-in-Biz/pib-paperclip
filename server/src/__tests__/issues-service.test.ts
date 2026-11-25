@@ -4732,6 +4732,41 @@ const dependencyTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_ISSU
     });
   });
 
+  // PAR-14472: worktree_cleanup archived the workspace, then a late
+  // workspace_finalize failed against the deleted worktree.
+  it.each(["archived", "closed-after-cleanup", "reprepared-after-cleanup"])(
+    "settles a done blocker whose worktree cleanup won the race against a failed finalize: %s", async kind => {
+      const f = await seedSharedWorkspaceDependency();
+      const at = (seconds: number) => new Date(Date.UTC(2026, 10, 25, 4, 1, seconds));
+      await db.insert(workspaceOperations).values([
+        { companyId: f.companyId, executionWorkspaceId: f.executionWorkspaceId, issueId: f.blockerId,
+          phase: "worktree_prepare", status: "succeeded", startedAt: at(0) },
+        { companyId: f.companyId, executionWorkspaceId: f.executionWorkspaceId, issueId: null,
+          phase: "worktree_cleanup", status: "succeeded", startedAt: at(4) },
+        ...(kind === "reprepared-after-cleanup" ? [{ companyId: f.companyId,
+          executionWorkspaceId: f.executionWorkspaceId, issueId: null,
+          phase: "worktree_prepare", status: "succeeded", startedAt: at(6) }] : []),
+        { companyId: f.companyId, executionWorkspaceId: f.executionWorkspaceId, issueId: f.blockerId,
+          phase: "workspace_finalize", status: "failed", startedAt: at(8) },
+      ]);
+      await db.update(executionWorkspaces).set({
+        status: kind === "archived" ? "archived" : "cleanup_failed",
+        closedAt: at(4),
+      }).where(eq(executionWorkspaces.id, f.executionWorkspaceId));
+
+      const ready = kind !== "reprepared-after-cleanup";
+      expect((await svc.listWakeableBlockedDependents(f.blockerId)).map(issue => issue.id))
+        .toEqual(ready ? [f.dependentId] : []);
+      await expect(svc.getDependencyReadiness(f.dependentId)).resolves.toMatchObject({
+        isDependencyReady: ready,
+        pendingFinalizeBlockerIssueIds: ready ? [] : [f.blockerId],
+      });
+      const listed = (await svc.list(f.companyId, { readCondition: "system", status: "blocked" }) as IssueListRow[])
+        .find(issue => issue.id === f.dependentId);
+      expect(listed?.blockerAttention?.pendingFinalizeBlockerIssueIds ?? []).toEqual(ready ? [] : [f.blockerId]);
+    },
+  );
+
   it.each(["covered", "foreign-run", "unfinished", "failed-finalize", "late-finish", "later-operation"])(
     "requires a successful owning finalize to cover a nested snapshot: %s", async kind => {
       const f = await seedSharedWorkspaceDependency();
