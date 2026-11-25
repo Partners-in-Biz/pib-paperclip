@@ -19,6 +19,9 @@
 # RELATED_FILES_OVERRIDE (a file with the list; skips vitest --changed, for local tests of run-shard).
 # Diagnostics go to stderr; stdout is only the file list (list, shard).
 set -euo pipefail
+# Without this a failing command inside $(...) (for example `vitest list`) does not stop the function, and an empty
+# list would read as "no related tests" (PAR-12762 regression found in review of #1301).
+shopt -s inherit_errexit
 
 BASE_REF="${BASE_REF:-development}"
 MODE="${MODE:-full}"
@@ -50,12 +53,15 @@ related_files() {
     # packages such as the workspace root or a plugin; passing those to `--project` makes vitest abort with "No
     # projects were found". Plugin tests run in PiB plugins CI. A genuine vitest config error still fails vitest below.
     mapfile -t root_dirs < <(awk '/projects: \[/{f=1;next} f&&/\]/{exit} f{gsub(/[ ",]/,""); if($0!="") print}' vitest.config.ts)
+    # Through files, not process substitution: the exit status of `pnpm list` or `jq` there is lost.
+    pnpm --filter "...[origin/${BASE_REF}]" list --json --depth -1 > "${TMP_DIR}/affected-packages.json"
+    jq -r '.[] | [.name, .path] | @tsv' "${TMP_DIR}/affected-packages.json" > "${TMP_DIR}/affected-packages.tsv"
     while IFS=$'\t' read -r name dir; do
       rel="${dir#"$PWD"/}"
       for d in "${root_dirs[@]}"; do
         if [ "$rel" = "$d" ]; then projects+=(--project "$name"); break; fi
       done
-    done < <(pnpm --filter "...[origin/${BASE_REF}]" list --json --depth -1 | jq -r '.[] | [.name, .path] | @tsv')
+    done < "${TMP_DIR}/affected-packages.tsv"
     if [ "${#projects[@]}" -eq 0 ]; then
       echo "no affected package is a root vitest project; plugin tests run in PiB plugins CI" >&2
       return 0
@@ -66,7 +72,10 @@ related_files() {
   pnpm exec vitest list --filesOnly --json="$list_json" --changed "origin/${BASE_REF}" "${projects[@]}" >/dev/null
   local skip_args=()
   for f in "${SKIP_FILES[@]}"; do skip_args+=(-e "$f"); done
-  jq -r --arg root "$PWD/" '.[].file | ltrimstr($root)' "$list_json" | sort -u | grep -vxF "${skip_args[@]}" || true
+  # jq and sort run alone so their failure counts; only grep's "everything was filtered out" (exit 1) is allowed.
+  local all
+  all="$(jq -r --arg root "$PWD/" '.[].file | ltrimstr($root)' "$list_json" | sort -u)"
+  if [ -n "$all" ]; then printf '%s\n' "$all" | grep -vxF "${skip_args[@]}" || true; fi
 }
 
 # Failed tests of a vitest --reporter=json file as "file::full test name" lines (a file that failed to load: "file::").
@@ -81,7 +90,9 @@ failed_keys() {
 run_shard() {
   local index="$1" count="$2" files=() rc=0 out
   out="${TMP_DIR}/shard-${index}.json"
-  mapfile -t files < <("$0" shard "$index" "$count")
+  # Through a file: a failing `shard` call inside process substitution would read as an empty shard and pass.
+  "$0" shard "$index" "$count" > "${TMP_DIR}/shard-${index}-files.txt"
+  mapfile -t files < "${TMP_DIR}/shard-${index}-files.txt"
   if [ "${#files[@]}" -eq 0 ]; then echo "no related test files in this shard"; return 0; fi
   echo "shard ${index}/${count}: ${#files[@]} test files"
   printf 'related test file: %s\n' "${files[@]}"
@@ -92,6 +103,11 @@ run_shard() {
     return "$rc"
   fi
   failed_keys "$out" > "${TMP_DIR}/pr-failed.txt"
+  # vitest failed but its JSON names no failed test: an unhandled error or a crash. Never read that as "nothing new".
+  if [ ! -s "${TMP_DIR}/pr-failed.txt" ]; then
+    echo "::error::vitest exited ${rc} with no failed test in its JSON (unhandled error or crash). This is a failure, not a pass."
+    return "$rc"
+  fi
   echo "::group::${index}: $(wc -l < "${TMP_DIR}/pr-failed.txt") failing tests in this shard; re-running their files on origin/${BASE_REF}"
   # Re-run only the failing files that exist on the base (a file the PR adds cannot have failed there).
   local base_dir="${TMP_DIR}/base-checkout" base_files=()
@@ -133,11 +149,12 @@ case "${1:-}" in
   shard)
     index="${2:?shard index (1-based)}"
     count="${3:?shard count}"
-    related_files | grep -vxF -e "$CHAT_SUITE" | awk -v i="$index" -v n="$count" '(NR - 1) % n == i - 1' || true
+    all="$(related_files)"
+    if [ -n "$all" ]; then printf '%s\n' "$all" | grep -vxF -e "$CHAT_SUITE" | awk -v i="$index" -v n="$count" '(NR - 1) % n == i - 1' || true; fi
     ;;
   has-chat)
-    # grep -c, not -q: -q exits early and pipefail would then fail the pipeline on the writer's SIGPIPE.
-    if [ "$(related_files | grep -cxF -e "$CHAT_SUITE" || true)" -gt 0 ]; then echo true; else echo false; fi
+    all="$(related_files)"
+    if printf '%s\n' "$all" | grep -cxF -e "$CHAT_SUITE" > /dev/null; then echo true; else echo false; fi
     ;;
   run-shard)
     run_shard "${2:?shard index (1-based)}" "${3:?shard count}"

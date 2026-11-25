@@ -190,14 +190,19 @@ jobs:
           MODE: ${{ steps.scope.outputs.mode }}
           BASE_REF: ${{ github.base_ref || 'development' }}
         run: |
-          mapfile -t files < <(bash scripts/ci/pib-core-related-tests.sh list)
+          set -euo pipefail
+          # Through a file: the exit status of a process substitution is lost, so a failed `vitest list` would read as
+          # "no related test files" and pass (PAR-12762).
+          bash scripts/ci/pib-core-related-tests.sh list > "${RUNNER_TEMP}/related-list.txt"
+          mapfile -t files < "${RUNNER_TEMP}/related-list.txt"
           if [ "${#files[@]}" -eq 0 ]; then
             echo "no related test files"
             exit 0
           fi
           if [ "${#files[@]}" -gt "$RELATED_SHARD_THRESHOLD" ]; then
             echo "large=true" >> "$GITHUB_OUTPUT"
-            echo "chat=$(bash scripts/ci/pib-core-related-tests.sh has-chat)" >> "$GITHUB_OUTPUT"
+            chat="$(bash scripts/ci/pib-core-related-tests.sh has-chat)"
+            echo "chat=${chat}" >> "$GITHUB_OUTPUT"
             echo "::notice::${#files[@]} related test files (over ${RELATED_SHARD_THRESHOLD}): running them in ${RELATED_SHARD_COUNT} parallel shards in the related-sharded job."
             exit 0
           fi
@@ -217,7 +222,8 @@ jobs:
     needs: core
     if: needs.core.outputs.large == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 55
+    # 40 min shard cap + install and builds + 12 min base re-run (PAR-14647 review): 55 would cancel a slow shard.
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:
