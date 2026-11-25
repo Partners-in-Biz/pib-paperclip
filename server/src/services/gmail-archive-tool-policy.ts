@@ -108,3 +108,15 @@ export function gmailArchiveToolDescription(
     ? "Archive a Gmail thread by removing only its Inbox label. Requires human approval."
     : description;
 }
+
+/**
+ * Agents draft email in the Paperclip Mailbox (`create-draft`), where a person edits and sends it from the inbox. The Gmail
+ * connector's `create_draft` would put the draft straight into Gmail, out of sight of the Mailbox, so it is refused.
+ */
+export function assertGmailDraftGoesThroughMailbox(connection: Connection, toolName: string): void {
+  if (!isOfficialGmailConnection(connection) || leafName(toolName) !== "create-draft") return;
+  throw badRequest(
+    "Do not create Gmail drafts directly. Use the Mailbox `create-draft` tool so the draft lands in the Paperclip Mailbox inbox for a person to edit and send.",
+    { code: "gmail_draft_use_mailbox" },
+  );
+}
