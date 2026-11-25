@@ -623,6 +623,7 @@ export async function listPostsRecord(ctx: PluginContext, viewer: Viewer, params
   const { scope } = await readScope(ctx, viewer, params);
   const rows = await listPosts(ctx, viewer.companyId, {
     status: optionalString(params, "status"),
+    q: optionalString(params, "q"),
     scope,
     limit: positiveInt(params.limit, "limit", 50),
   });

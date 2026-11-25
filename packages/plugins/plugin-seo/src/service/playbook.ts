@@ -34,6 +34,7 @@ import {
 } from "../engine/playbook.js";
 import { scopeParamValue, sprintPagePath, sprintScope } from "../engine/scope.js";
 import { companyDisplayName } from "../preferences.js";
+import { isSignoffDelegate } from "./signoff.js";
 import { actorId, actorLabel, bool, companyInfo, reqStr, SeoError, str, type Actor, type CompanyInfo, type Env, type Params } from "./common.js";
 import { requireSprint } from "./context.js";
 import { addNeedsYou, resolveNeedsYou } from "./needs-you.js";
@@ -340,8 +341,8 @@ export async function decidePlaybookChangeTool(env: Env, companyId: string, acto
   if (!change) throw new SeoError("That playbook change was not found");
   if (change.status !== "pending") throw new SeoError(`This change was already ${change.status}`);
   const sprint = change.sprintId ? await db.getSprint(env.ctx.db, companyId, change.sprintId) : null;
-  if (actor.kind !== "user" && !(sprint && agentMayDecide(sprint.autopilotMode))) {
-    throw new SeoError("Only a person keeps or discards playbook changes unless the sprint's autopilot is full. It is on the sprint's Needs you issue and SEO → Playbook; follow the current version meanwhile.");
+  if (actor.kind !== "user" && !(sprint && agentMayDecide(sprint.autopilotMode)) && !(await isSignoffDelegate(env, companyId, actor))) {
+    throw new SeoError("Only a person or the sign-off delegate keeps or discards playbook changes unless the sprint's autopilot is full. It is on the sprint's Needs you issue and SEO → Playbook; follow the current version meanwhile.");
   }
   const decision = params.decision;
   if (decision !== "keep" && decision !== "discard") throw new SeoError("decision must be keep or discard");

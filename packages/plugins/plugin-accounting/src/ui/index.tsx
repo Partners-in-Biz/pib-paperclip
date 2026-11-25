@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
-import { useHostLocation, useHostNavigation, usePluginAction, type PluginPageProps, type PluginSidebarProps } from "@paperclipai/plugin-sdk/ui";
+import { useHostLocation, useHostNavigation, type PluginPageProps, type PluginSidebarProps } from "@paperclipai/plugin-sdk/ui";
+import { useAccessMe, useAccountingAction } from "./actions.js";
 import { resolvePluginUiBase } from "@partnersinbiz/pib-plugin-kit/oauth-client";
 import { moduleEnabled, moduleState } from "@partnersinbiz/pib-plugin-kit/setup-client";
 import { BookOpen, ChartColumn, Landmark, LayoutDashboard, ModuleStateBanner, Page, Settings, Tabs, errorText, useIsNarrow, useUrlTab, type TabItem, type ToneInput } from "@partnersinbiz/pib-plugin-ui";
-import { GetStarted, useGroupedNav, usePluginSetupStatus } from "@partnersinbiz/pib-plugin-ui";
+import { AccessGate, GetStarted, useAccess, useGroupedNav, usePluginSetupStatus } from "@partnersinbiz/pib-plugin-ui";
 import { AssetsTab } from "./assets.js";
 import { BankTab } from "./bank.js";
 import { BudgetsTab } from "./budgets.js";
@@ -55,7 +56,17 @@ export function booksHaveData(data: LoadResult | null): boolean {
 }
 
 export function AccountingPage({ context }: PluginPageProps) {
-  const load = usePluginAction("accounting.load");
+  // The page gate only shapes the screen; the worker's access guard is the gate (spec PAR-12578 4.6).
+  const access = useAccess(useAccessMe(), context.companyId);
+  return (
+    <AccessGate state={access} kind="page" moduleName="Accounting">
+      <AccountingWorkspace context={context} />
+    </AccessGate>
+  );
+}
+
+function AccountingWorkspace({ context }: PluginPageProps) {
+  const load = useAccountingAction("accounting.load");
   const location = useHostLocation();
   const navigation = useHostNavigation();
   const narrow = useIsNarrow();
@@ -164,6 +175,7 @@ export function AccountingPage({ context }: PluginPageProps) {
 
 export function AccountingSidebar({ context }: PluginSidebarProps) {
   const hostNavigation = useHostNavigation();
+  const access = useAccess(useAccessMe(), context.companyId);
   const [enabled, setEnabled] = useState(true);
   useEffect(() => {
     let live = true;
@@ -180,22 +192,24 @@ export function AccountingSidebar({ context }: PluginSidebarProps) {
   const isActive = typeof window !== "undefined" && window.location.pathname === href;
   if (!enabled || grouped !== false) return null;
   return (
-    <a
-      {...hostNavigation.linkProps("/accounting")}
-      aria-current={isActive ? "page" : undefined}
-      className={[
-        "flex items-center gap-2.5 mx-2 rounded-lg px-2 py-1.5 text-(length:--text-compact) font-medium transition-colors",
-        isActive ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
-      ].join(" ")}
-      style={{ textDecoration: "none" }}
-    >
-      <span aria-hidden="true" className="relative shrink-0">
-        <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <rect x="4" y="2" width="16" height="20" rx="2" />
-          <path d="M8 6h8M8 10h2M12 10h2M16 10h0M8 14h2M12 14h2M8 18h2M12 18h4M16 14v4" />
-        </svg>
-      </span>
-      <span className="flex-1 truncate">Accounting</span>
-    </a>
+    <AccessGate state={access} kind="sidebar">
+      <a
+        {...hostNavigation.linkProps("/accounting")}
+        aria-current={isActive ? "page" : undefined}
+        className={[
+          "flex items-center gap-2.5 mx-2 rounded-lg px-2 py-1.5 text-(length:--text-compact) font-medium transition-colors",
+          isActive ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+        ].join(" ")}
+        style={{ textDecoration: "none" }}
+      >
+        <span aria-hidden="true" className="relative shrink-0">
+          <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <rect x="4" y="2" width="16" height="20" rx="2" />
+            <path d="M8 6h8M8 10h2M12 10h2M16 10h0M8 14h2M12 14h2M8 18h2M12 18h4M16 14v4" />
+          </svg>
+        </span>
+        <span className="flex-1 truncate">Accounting</span>
+      </a>
+    </AccessGate>
   );
 }

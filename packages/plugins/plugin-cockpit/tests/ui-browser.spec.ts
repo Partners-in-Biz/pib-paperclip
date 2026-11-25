@@ -31,16 +31,30 @@ describe("Browser tab", () => {
     expect(out).not.toContain("Log in again:");
   });
 
-  it("shows the hand-off command and the tunnel line for the selected login", () => {
+  it("shows the real hand-off steps for the selected login: start, tunnel, VNC, log in, stop, check", () => {
     const out = html(view(), "client:ca:google-ads");
-    expect(out).toContain("sudo touch /run/pib-browser/handoff/client:ca:google-ads");
-    expect(out).toContain("ssh -L");
+    const steps = [
+      "sudo pib-root browser-handoff-start client:ca:google-ads",
+      "ssh -N -L 5900:localhost:5900 &lt;you&gt;@&lt;server&gt;",
+      "Connect a VNC client",
+      "log in in the window",
+      ">localhost:5900<",
+      "sudo pib-root browser-handoff-stop client:ca:google-ads",
+      "Run the browser status check again",
+    ];
+    let at = -1;
+    for (const step of steps) {
+      const i = out.indexOf(step, at + 1);
+      expect(i, step).toBeGreaterThan(at);
+      at = i;
+    }
+    expect(out).not.toContain("sudo touch");
   });
 
   it("says an unknown identity is unknown and shows no command", () => {
     const out = html(view(), "nobody:x");
     expect(out).toContain("Unknown login");
-    expect(out).not.toContain("sudo touch");
+    expect(out).not.toContain("pib-root");
   });
 
   it("wraps a very long identity name", () => {

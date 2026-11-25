@@ -6,11 +6,11 @@
  * A render snapshots the saved document into `video_renders`; later saves do not change a queued render.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { formatClientParam, sameClient, scopeOfRow, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
+import { formatClientParam, sameClient, scopeOfRow, type ActingRestriction, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
 import { StudioConfig } from "../config.js";
 import { num, table } from "../db.js";
 import { StudioError } from "../errors.js";
-import { scopeForWork, scopeInput } from "../scope.js";
+import { assertOpenToPerson, scopeForWork, scopeInput } from "../scope.js";
 import { objectUrl } from "../storage.js";
 import { applyOps } from "./ops.js";
 import { probeMedia, type ProbeResult } from "./probe.js";
@@ -138,6 +138,8 @@ export async function createEditAction(ctx: PluginContext, companyId: string, pa
   const given = scopeInput(params);
   const requested = given !== undefined || projectId ? given : firstScope;
   const where = await scopeForWork(ctx, companyId, requested, projectId);
+  // Before any file is probed: a restricted member's edit of a client's videos is refused here (PAR-14298).
+  if (actor.restriction) assertOpenToPerson(where.scope, actor.restriction);
   for (const a of assets) {
     if (!sameClient(scopeOfRow({ client_kind: a.clientKind, client_ref: a.clientRef }), where.scope)) bad(`Asset ${a.id} belongs to another client than this video edit.`);
   }
@@ -151,7 +153,8 @@ export async function createEditAction(ctx: PluginContext, companyId: string, pa
 
 export const getEditAction = (ctx: PluginContext, companyId: string, params: Record<string, unknown>) => getVideoEdit(ctx, companyId, id(params.editId));
 
-export const listEditsAction = (ctx: PluginContext, companyId: string, params: Record<string, unknown>) => listVideoEdits(ctx, companyId, params).then((edits) => ({ edits }));
+export const listEditsAction = (ctx: PluginContext, companyId: string, params: Record<string, unknown>, restriction?: ActingRestriction) =>
+  listVideoEdits(ctx, companyId, params, restriction).then((edits) => ({ edits }));
 
 function conflict(revision: number): never {
   throw new StudioError(`Someone saved this video edit since you opened it (now revision ${revision}). Reload to see their changes.`, "edit_conflict");

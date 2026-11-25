@@ -7,6 +7,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { ACCOUNT_BOUND_MODEL_DISCOVERY_QUERY_OPTIONS, nativeTaskModelCatalogOptions } from "@/lib/native-model-catalog";
 import { cn } from "@/lib/utils";
 import { useMobileEntityPickerViewportStyle } from "@/hooks/useMobileEntityPickerViewportStyle";
+import { useMemberRestrictionGate } from "@/hooks/useMemberRestrictionGate";
 import { getLastComposerEffort, rememberComposerEffort } from "@/lib/recent-composer-effort";
 import type { InlineEntityOption } from "@/components/InlineEntitySelector";
 import { Dialog, DialogClose, DialogContent, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
@@ -150,7 +151,10 @@ export function ComposerRunSettingsPicker({
   const effort = selected.effort && choices.includes(selected.effort) ? selected.effort : null;
   const effortIndex = effort ? choices.indexOf(effort) + 1 : 0;
   const effortLabel = effort ? EFFORT_LABELS[effort] ?? effort : "Default";
-  const fastAvailable = composerFastAvailable(agent, model);
+  // Fast mode is an adapter override outside model and effort: the server keeps
+  // the stored value for a restricted member at `enforce`, so it is not offered.
+  const fastClosed = useMemberRestrictionGate(companyId).closed;
+  const fastAvailable = composerFastAvailable(agent, model) && !fastClosed;
   const effortChoicesKey = choices.join(",");
   useEffect(() => {
     // Explicit drafts and task overrides take precedence over remembered effort.

@@ -15,7 +15,7 @@ import { siteProgress } from "../src/service/report.js";
 import { progressEmail } from "../src/engine/progress-email.js";
 import { continuationSummary } from "../src/engine/thread.js";
 import { previewsForTask } from "../src/db.js";
-import { ALREADY_ANSWERED, DECISION_SQL, DECISION_STATE_SQL, DECLINED_PAGE, NOT_READY, refusedAnswer, SCHEMA as SERVER_SCHEMA } from "../ops/preview-server/decision.mjs";
+import { ALREADY_ANSWERED, DECISION_COLUMNS, DECISION_SQL, DECISION_STATE_SQL, DECLINED_PAGE, grantFix, MISSING_GRANTS_SQL, NOT_READY, refusedAnswer, SCHEMA as SERVER_SCHEMA } from "../ops/preview-server/decision.mjs";
 import { seoHost, SPRINT, type Row, type Route } from "./helpers/seo-host.js";
 
 const requireFromDb = createRequire(new URL("../../../db/package.json", import.meta.url));
@@ -51,6 +51,18 @@ describe("decision.mjs (no database)", () => {
     expect(SERVER_SCHEMA).toBe(SCHEMA);
     expect(DECISION_SQL).toMatch(/WHERE id = \$1 AND status = 'pending' AND expires_at > now\(\) AND review_status = 'passed'/);
     expect(DECISION_SQL).toContain("decision_source = 'email', decided_by = 'client:email-link'");
+  });
+
+  it("DECISION_COLUMNS lists exactly the columns DECISION_SQL sets (PAR-13038)", () => {
+    const set = /SET (.*)\n\s*WHERE/s.exec(DECISION_SQL)![1];
+    const cols = set.split(",").map((part) => part.split("=")[0].trim());
+    expect([...cols].sort()).toEqual([...DECISION_COLUMNS].sort());
+    expect(grantFix(["decision_source", "decided_by"])).toBe(`GRANT UPDATE (decision_source, decided_by) ON ${SCHEMA}.previews TO pib_preview;`);
+  });
+
+  it("server.mjs checks the grants at startup and on /health (PAR-13038)", () => {
+    expect(server).toContain("pool.query(MISSING_GRANTS_SQL, [DECISION_COLUMNS])");
+    expect(server).toContain("send(res, 503, problem");
   });
 
   it("says 'already answered' for a decided row and 'not ready' otherwise", () => {
@@ -205,6 +217,31 @@ describePg("declined previews and recorded decisions (migration 026)", () => {
       await put("r", { review_status: "pending" });
       for (const id of ["d", "c", "x", "r"]) expect((await sql.unsafe(DECISION_SQL, [id, "approved", null])).count).toBe(0);
       expect((await one("d")).status).toBe("declined");
+    });
+
+    it("a role without UPDATE on every decision column is refused and named by MISSING_GRANTS_SQL (PAR-13038)", async () => {
+      await reset();
+      await put("g1");
+      await sql.unsafe(`DROP ROLE IF EXISTS pib_preview_t`);
+      await sql.unsafe(`CREATE ROLE pib_preview_t`);
+      await sql.unsafe(`GRANT USAGE ON SCHEMA ${SCHEMA} TO pib_preview_t`);
+      await sql.unsafe(`GRANT SELECT ON ${SCHEMA}.previews TO pib_preview_t`);
+      // The grants production had before 0.37.0: the answer columns without decision_source and decided_by.
+      await sql.unsafe(`GRANT UPDATE (status, decision_note, decided_at, notified_at, stats) ON ${SCHEMA}.previews TO pib_preview_t`);
+      const asRole = async (text: string, params: unknown[]): Promise<Row[] & { count: number }> =>
+        sql.begin(async (tx: { unsafe(text: string, params?: never): Promise<Row[] & { count: number }> }) => {
+          await tx.unsafe(`SET LOCAL ROLE pib_preview_t`);
+          return tx.unsafe(text, params as never);
+        });
+      expect((await asRole(MISSING_GRANTS_SQL, [DECISION_COLUMNS])).map((r) => r.column)).toEqual(["decided_by", "decision_source"]);
+      await expect(asRole(DECISION_SQL, ["g1", "approved", null])).rejects.toThrow(/permission denied/);
+      expect((await one("g1")).status).toBe("pending");
+      await sql.unsafe(grantFix(["decision_source", "decided_by"]).replace(/pib_preview;$/, "pib_preview_t;"));
+      expect(await asRole(MISSING_GRANTS_SQL, [DECISION_COLUMNS])).toHaveLength(0);
+      expect((await asRole(DECISION_SQL, ["g1", "approved", null])).count).toBe(1);
+      expect(await one("g1")).toMatchObject({ status: "approved", decision_source: "email", decided_by: "client:email-link" });
+      await sql.unsafe(`DROP OWNED BY pib_preview_t`);
+      await sql.unsafe(`DROP ROLE pib_preview_t`);
     });
 
     it("takes an answer again after staff Undo puts the row back to pending", async () => {

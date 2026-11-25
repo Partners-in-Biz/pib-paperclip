@@ -1,6 +1,6 @@
 {
   "name": "@partnersinbiz/plugin-ads",
-  "version": "0.3.36",
+  "version": "0.3.38",
   "private": true,
   "type": "module",
   "description": "Paid ads (Meta, Google Ads): read-only reporting into daily rollups and a spend ledger, monthly budget caps with pacing, anomaly alerts, and governed change proposals. Nothing that spends money runs without a recorded human approval.",
@@ -25,7 +25,11 @@
     "@paperclipai/plugin-sdk": "workspace:*",
     "@types/node": "^24.0.0",
     "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.5",
     "esbuild": "^0.28.2",
+    "jsdom": "^30.0.1",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
     "typescript": "^7.0.2",
     "vitest": "^4.1.11"
   },

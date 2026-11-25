@@ -4,6 +4,7 @@ export {
   memberRestrictionFor,
   memberRestrictionKillSwitchIgnoredValue,
   memberRestrictionKillSwitchOn,
+  memberRestrictionModeFor,
   memberRestrictionOrUnavailable,
   memberRestrictionResolver,
   memberRestrictionUnavailable,
@@ -17,6 +18,17 @@ export {
   memberRestrictionForMembership,
 } from "./actor-memberships.js";
 export { MEMBER_RESTRICTION_FORCED_OFF_ACTION, reportMemberRestrictionKillSwitchAtBoot } from "./boot.js";
+export {
+  INVITE_MEMBER_RESTRICTION_KEY,
+  assertInviterNotRestricted,
+  inviteMemberRestrictionFromDefaults,
+  inviteRestrictionChoice,
+  markForJoin,
+  markForNewInvite,
+  withoutInviteMemberRestriction,
+  type InviteRestrictionChoice,
+  type JoinMark,
+} from "./invite.js";
 export {
   MEMBER_RESTRICTED_ROLE_CODE,
   MEMBER_RESTRICTION_CHANGED_ACTION,
@@ -50,8 +62,15 @@ export {
   actingPersonBoundByH,
   assertNamesOnlyHimself,
   assertRoutineWorksForCaller,
+  pluginActingPersonBoundByH,
   type ActingPerson,
 } from "./acting-person.js";
+export {
+  MEMBER_RESTRICTED_MESSAGE,
+  MEMBER_RESTRICTION_ROUTE_RULE_ID,
+  companyIdInPath,
+  memberRestrictionRouteGuard,
+} from "./route-middleware.js";
 export {
   memberRestrictionReadCondition,
   restrictionPersonIds,

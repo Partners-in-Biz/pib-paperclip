@@ -37,7 +37,9 @@ issue list/count APIs themselves are viewer-filtered.
 Company owners and admins do not silently inherit private-task access. A normal
 task detail request still returns `404`. When an owner or admin has a legitimate
 emergency need, they must deliberately request the task with
-`?breakGlass=true`.
+`?breakGlass=true`. The same flag works on the task's message list
+(`GET /issues/:id/comments?breakGlass=true`), with the same check and records.
+Each successful read writes its own notice and audit row; the notice starts no run.
 
 Every successful break-glass read writes both:
 

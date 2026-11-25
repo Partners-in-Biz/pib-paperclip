@@ -4,7 +4,7 @@
  * opens a panel with their details and every action for them.
  */
 import { useMemo, useState } from "react";
-import { DataTable, usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import { DataTable } from "@paperclipai/plugin-sdk/ui";
 import {
   Button,
   CompactRows,
@@ -23,6 +23,7 @@ import {
 import { revealedLines } from "./series.js";
 import { Money, Muted, rand, minorText, Row, small, StatusPill, toMinor } from "./shared.js";
 import type { EmployeeView, RunFn, Snapshot, TermsView } from "./types.js";
+import { usePayrollAction } from "./actions.js";
 
 const EMPTY_EMPLOYEE = {
   employeeId: "", firstName: "", lastName: "", email: "", phone: "", jobTitle: "", employeeNumber: "", dateOfBirth: "", startDate: "", taxResidency: "resident",
@@ -56,11 +57,11 @@ function detailText(value: string) {
 }
 
 export function EmployeesTab({ s, run, settingsLink }: { s: Snapshot; run: RunFn; settingsLink: Record<string, unknown> }) {
-  const save = usePluginAction("payroll.save-employee");
-  const saveTerms = usePluginAction("payroll.save-terms");
-  const reveal = usePluginAction("payroll.reveal");
-  const terminate = usePluginAction("payroll.terminate-employee");
-  const setRecurring = usePluginAction("payroll.set-recurring");
+  const save = usePayrollAction("payroll.save-employee");
+  const saveTerms = usePayrollAction("payroll.save-terms");
+  const reveal = usePayrollAction("payroll.reveal");
+  const terminate = usePayrollAction("payroll.terminate-employee");
+  const setRecurring = usePayrollAction("payroll.set-recurring");
   const narrow = useIsNarrow();
   const [search, setSearch] = useState("");
   const [form, setForm] = useState<typeof EMPTY_EMPLOYEE | null>(null);

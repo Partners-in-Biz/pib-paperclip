@@ -25,6 +25,17 @@ describe("isDeliberateShortPause", () => {
   it("is true for a recent manual or system pause in the same company", () => {
     expect(isDeliberateShortPause(base, "c1", now)).toBe(true);
     expect(isDeliberateShortPause({ ...base, pauseReason: "system" }, "c1", now)).toBe(true);
+    expect(isDeliberateShortPause({ ...base, pauseReason: "maintenance" }, "c1", now)).toBe(true);
+  });
+  it("treats a company-wide pause (pauseReason company_paused) as deliberate", () => {
+    expect(isDeliberateShortPause({ ...base, pauseReason: "company_paused" }, "c1", now)).toBe(true);
+  });
+  it("keeps a maintenance pause deferred past 24h, unlike manual", () => {
+    const old = { pausedAt: new Date(now.getTime() - 3 * PAUSED_AGENT_RECOVERY_GRACE_MS) };
+    expect(isDeliberateShortPause({ ...base, ...old, pauseReason: "maintenance" }, "c1", now)).toBe(true);
+    expect(isDeliberateShortPause({ ...base, ...old, pauseReason: "manual" }, "c1", now)).toBe(false);
+    expect(isDeliberateShortPause({ ...base, ...old, pauseReason: "maintenance", status: "idle" }, "c1", now)).toBe(false);
+    expect(isDeliberateShortPause({ ...base, ...old, pauseReason: "maintenance" }, "c2", now)).toBe(false);
   });
   it("is false for other reasons, statuses, companies or an old pause", () => {
     expect(isDeliberateShortPause({ ...base, pauseReason: "budget" }, "c1", now)).toBe(false);
@@ -189,6 +200,45 @@ describePostgres("stranded-work recovery for a recently paused agent", () => {
     const f = await seed({ status: "todo" });
     await pause(f.agentId);
     await db.update(agents).set({ pausedAt: new Date(Date.now() - 25 * HOUR) }).where(eq(agents.id, f.agentId));
+    await expectEscalated(f);
+  }, 60_000);
+
+  it("company-wide pause (pauseReason company_paused, the fleet-pause state): skips a todo task", async () => {
+    const f = await seed({ status: "todo" });
+    await db.update(companies).set({ status: "paused", pausedAt: new Date() }).where(eq(companies.id, f.companyId));
+    await db.update(agents).set({ status: "paused", pauseReason: "company_paused", lifecycleHolds: ["company_paused"], pausedAt: new Date() })
+      .where(eq(agents.id, f.agentId));
+    await expectSkipped(f, "todo");
+  }, 60_000);
+
+  it("maintenance pause older than 24h still skips the task (manual would escalate)", async () => {
+    const f = await seed({ status: "todo" });
+    await createAgentLifecycle(db).pauseAgent(f.agentId, "maintenance");
+    await db.update(agents).set({ pausedAt: new Date(Date.now() - 3 * 24 * HOUR) }).where(eq(agents.id, f.agentId));
+    const deadlines: number[] = [];
+    const result = await heartbeat.reconcileStrandedAssignedIssues({ companyId: f.companyId, issueId: f.issueId,
+      onDeferredDeadline: at => deadlines.push(at) });
+    expect(result.escalated).toBe(0);
+    expect(deadlines).toEqual([]);
+    expect((await issueRow(f.issueId)).status).toBe("todo");
+  }, 60_000);
+
+  it("a legitimately blocked issue stays blocked and gets no wake across maintenance pause and resume", async () => {
+    const f = await seed({ status: "todo" });
+    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, f.issueId));
+    await createAgentLifecycle(db).pauseAgent(f.agentId, "maintenance");
+    await heartbeat.reconcileStrandedAssignedIssues({ companyId: f.companyId, issueId: f.issueId });
+    await createAgentLifecycle(db).resumeAgent(f.agentId);
+    await heartbeat.reconcileStrandedAssignedIssues({ companyId: f.companyId, issueId: f.issueId });
+    expect((await issueRow(f.issueId)).status).toBe("blocked");
+    expect(await recoveryActions(f.issueId)).toHaveLength(0);
+    const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, f.agentId));
+    expect(wakes.filter(w => JSON.stringify(w.payload ?? {}).includes(f.issueId))).toHaveLength(0);
+  }, 60_000);
+
+  it("terminated assignee still escalates", async () => {
+    const f = await seed({ status: "todo" });
+    await db.update(agents).set({ status: "terminated" }).where(eq(agents.id, f.agentId));
     await expectEscalated(f);
   }, 60_000);
 

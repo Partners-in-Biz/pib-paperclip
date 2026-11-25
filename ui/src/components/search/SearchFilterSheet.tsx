@@ -176,12 +176,14 @@ export function SearchFilterSheet({
             selected={draft.projectId ? [draft.projectId] : []}
             onToggle={(value) => toggleSingle("projectId", value)}
           />
-          <ChipToggleGroup
-            title="Label"
-            options={options.label}
-            selected={draft.labelId ? [draft.labelId] : []}
-            onToggle={(value) => toggleSingle("labelId", value)}
-          />
+          {data.labelsClosed ? null : (
+            <ChipToggleGroup
+              title="Label"
+              options={options.label}
+              selected={draft.labelId ? [draft.labelId] : []}
+              onToggle={(value) => toggleSingle("labelId", value)}
+            />
+          )}
           <ChipToggleGroup
             title="Updated"
             options={options.updated}

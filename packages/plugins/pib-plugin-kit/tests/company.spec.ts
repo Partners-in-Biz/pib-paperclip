@@ -7,6 +7,7 @@ import {
   companySetupIssueText,
   createPeriodicSkillSync,
   createSkillSyncer,
+  jobCompanyIds,
   knownCompanyIds,
   listCompanyIds,
   registerCompanyBootstrap,
@@ -313,5 +314,17 @@ describe("registerCompanyBootstrap", () => {
     const text = companySetupIssueText({ name: "Northwind", prefix: null });
     expect(text.title).toBe("Set up Northwind");
     expect(text.description).toContain("(/setup?section=team)");
+  });
+});
+
+describe("jobCompanyIds (PAR-14008)", () => {
+  it("returns only the configured known ids when the host's actionable list answers", async () => {
+    const fake = fakeCtx({ companies: { par: {}, para: {} }, deniedCompanies: ["para"], actionableHost: "new" });
+    expect(await jobCompanyIds(fake.ctx, ["par", "para", "gone"])).toEqual(["par"]);
+  });
+
+  it("returns every known id unchanged when the list throws", async () => {
+    const fake = fakeCtx({ companyListThrows: true });
+    expect(await jobCompanyIds(fake.ctx, ["par", "para"])).toEqual(["par", "para"]);
   });
 });

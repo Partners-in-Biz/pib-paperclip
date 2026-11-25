@@ -106,6 +106,12 @@ export async function delegateAgentIds(env: Env, companyId: string): Promise<str
   }
 }
 
+/** PAR-13992: true when the actor is an agent named as a sign-off delegate (it may decide safe-autopilot approvals a person otherwise holds). */
+export async function isSignoffDelegate(env: Env, companyId: string, actor: { kind: string; agentId?: string | null }): Promise<boolean> {
+  if (actor.kind !== "agent" || !actor.agentId) return false;
+  return (await delegateAgentIds(env, companyId)).includes(actor.agentId);
+}
+
 /** syncSiteWindow for the sprint's site. A sprint without a site id has no lock to open, so nothing is sent (null). */
 export async function syncApplyWindow(env: Env, sprint: Pick<db.Sprint, "companyId" | "siteId">, by: string) {
   if (!sprint.siteId) return null;

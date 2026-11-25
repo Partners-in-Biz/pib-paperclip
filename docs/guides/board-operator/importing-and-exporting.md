@@ -83,6 +83,8 @@ paperclipai company export abc123 --out ./skills-only --include skills --skills 
 
 Secret values, machine-local paths, and database IDs are **never** exported.
 
+An export holds only the tasks and projects the person (or agent) running it can read. Another member's private tasks, private projects you are not in, and their comments, documents and attachments stay out, also when you name them with `--issues`. A task you cannot read reads as "not found" in the warnings.
+
 ## Importing a Company
 
 Import from a local directory, GitHub URL, or GitHub shorthand:

@@ -1,5 +1,5 @@
 import { agentWakeupRequests, type Db } from "@paperclipai/db";
-import { and, eq, sql } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 
 export type DeferredExecutionScope = { companyId: string; requestId?: string };
@@ -26,7 +26,17 @@ export async function notifyDeferredWakesForIssue(tx: object, scope: { companyId
     eq(agentWakeupRequests.companyId, scope.companyId), eq(agentWakeupRequests.status, "deferred_issue_execution"),
     sql`${agentWakeupRequests.payload}->>'issueId' = ${scope.issueId}`,
   )).limit(25);
-  for (const wake of wakes) await notifyDeferredExecutionWork(tx, { companyId: scope.companyId, requestId: wake.id });
+  // PAR-14473: a wake skipped while the previous owner was still exiting
+  // replays as soon as that owner's lease or process is gone.
+  const ownerExitWaits = await (tx as Pick<Db, "select">).select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
+    eq(agentWakeupRequests.companyId, scope.companyId), eq(agentWakeupRequests.status, "skipped"),
+    eq(agentWakeupRequests.reason, "execution_reconciliation_required"),
+    sql`${agentWakeupRequests.payload}->>'issueId' = ${scope.issueId}`,
+    sql`${agentWakeupRequests.payload} #> '{executionWait,ownerExit}' is not null`,
+    sql`${agentWakeupRequests.payload} #> '{executionWait,redeliveredAt}' is null`,
+    sql`${agentWakeupRequests.createdAt} >= now() - interval '6 hours'`,
+  )).orderBy(desc(agentWakeupRequests.createdAt)).limit(5);
+  for (const wake of [...wakes, ...ownerExitWaits]) await notifyDeferredExecutionWork(tx, { companyId: scope.companyId, requestId: wake.id });
 }
 
 export async function notifyNativeStatusWakeWork(tx: object, scope: DeferredExecutionScope) {

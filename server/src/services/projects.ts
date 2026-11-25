@@ -4,7 +4,7 @@ import { listProjectWorkspaceProviders, resolveProjectWorkspaceProvider, withDef
 import { retireRemovedPluginWorkspaceDependents } from "./plugin-workspaces.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { enqueueProjectSkillSource, detachProjectSkillSource } from "./project-skill-source-bindings.js";
-import { and, asc, desc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   projects,
@@ -650,6 +650,20 @@ async function ensureSinglePrimaryWorkspace(
     );
 }
 
+/**
+ * Which rows a project list may return (PAR-12719, spec C 4.3, C28). Every caller
+ * of the project list functions passes one: the caller's read condition from
+ * `projectReadSqlCondition`, or the literal `"system"` when no person's request
+ * reaches the code (the queue, set-up checks whose rows are never shown). There
+ * is no default, so a call that forgets it does not compile.
+ */
+export type ProjectListReadScope = SQL<boolean> | "system";
+
+/** The SQL a read scope adds to a list query; `"system"` adds none. */
+export function projectListReadCondition(scope: ProjectListReadScope): SQL<boolean> | undefined {
+  return scope === "system" ? undefined : scope;
+}
+
 export function projectService(db: Db, options: { captureWorkspaceUpdates?: boolean } = {}) {
   const createProject = async (
     companyId: string,
@@ -708,7 +722,7 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
 
   return {
     // Project discovery never reads workspace JSON, goals, metrics, or full descriptions.
-    listSummaries: async (companyId: string, opts: { limit: number; cursor?: string; includeArchived: boolean; candidateIds: string[] | null }): Promise<ProjectDiscoverySummary[]> => {
+    listSummaries: async (companyId: string, opts: { limit: number; cursor?: string; includeArchived: boolean; candidateIds: string[] | null; readCondition: ProjectListReadScope }): Promise<ProjectDiscoverySummary[]> => {
       return db.select({
         id: projects.id,
         name: sql<string>`left(${projects.name}, 500)`,
@@ -717,6 +731,7 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
         descriptionTruncated: sql<boolean>`coalesce(length(${projects.description}) > 1000, false)`,
       }).from(projects).where(and(
         eq(projects.companyId, companyId),
+        projectListReadCondition(opts.readCondition),
         opts.includeArchived ? undefined : isNull(projects.archivedAt),
         opts.cursor ? gt(projects.id, opts.cursor) : undefined,
         opts.candidateIds === null ? undefined : or(
@@ -728,29 +743,31 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
       )).orderBy(asc(projects.id)).limit(opts.limit);
     },
 
-    list: async (companyId: string, opts: { includeArchived?: boolean } = {}): Promise<ProjectWithGoals[]> => {
+    list: async (companyId: string, opts: { includeArchived?: boolean; readCondition: ProjectListReadScope }): Promise<ProjectWithGoals[]> => {
       // NOTE: this service default is intentionally the inverse of the HTTP route default.
       // The route (`GET /companies/:companyId/projects`) defaults `includeArchived` to `false`
       // (active-only) for its callers, but the service defaults to `true` so that existing
-      // server-internal callers that pass no opts keep their pre-existing "return everything,
+      // server-internal callers that omit it keep their pre-existing "return everything,
       // including archived" behaviour. Pass `{ includeArchived: false }` explicitly for active-only.
       const includeArchived = opts.includeArchived ?? true;
-      const where = includeArchived
-        ? eq(projects.companyId, companyId)
-        : and(eq(projects.companyId, companyId), isNull(projects.archivedAt));
+      const where = and(
+        eq(projects.companyId, companyId),
+        projectListReadCondition(opts.readCondition),
+        includeArchived ? undefined : isNull(projects.archivedAt),
+      );
       const rows = await db.select().from(projects).where(where);
       const withGoals = await attachGoals(db, rows);
       const withWorkspaces = await attachWorkspaces(db, withGoals);
       return attachListMetrics(db, companyId, withWorkspaces);
     },
 
-    listByIds: async (companyId: string, ids: string[]): Promise<ProjectWithGoals[]> => {
+    listByIds: async (companyId: string, ids: string[], opts: { readCondition: ProjectListReadScope }): Promise<ProjectWithGoals[]> => {
       const dedupedIds = [...new Set(ids)];
       if (dedupedIds.length === 0) return [];
       const rows = await db
         .select()
         .from(projects)
-        .where(and(eq(projects.companyId, companyId), inArray(projects.id, dedupedIds)));
+        .where(and(eq(projects.companyId, companyId), inArray(projects.id, dedupedIds), projectListReadCondition(opts.readCondition)));
       const withGoals = await attachGoals(db, rows);
       const withWorkspaces = await attachWorkspaces(db, withGoals);
       const byId = new Map(withWorkspaces.map((project) => [project.id, project]));

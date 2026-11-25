@@ -48,10 +48,12 @@ import {
 } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  activityLog,
   agents,
   agentWakeupRequests,
   executionWorkspaces,
   heartbeatRuns,
+  issueComments,
   issues,
 } from "@paperclipai/db";
 import {
@@ -153,6 +155,40 @@ export function isTransientWorkspacePreparationCode(code: string | null | undefi
 
 export const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS =
   BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length;
+
+// A run that hit its wall-clock timeout without a comment or a non-bookkeeping
+// action held the agent's slot for the whole timeout and will likely stall the
+// same way again. Retrying it 30-60 s later re-takes a one-slot agent ahead of
+// its queued work (PAR-13974), so these retries wait much longer and start a
+// fresh session instead of resuming the stalled one.
+export const NO_PROGRESS_TIMEOUT_RETRY_DELAYS_MS = [
+  30 * 60_000, 60 * 60_000,
+] as const;
+
+const NO_PROGRESS_BOOKKEEPING_ACTIVITY_ACTIONS = [
+  "environment.lease_acquired",
+  "environment.lease_released",
+  "cost.reported",
+];
+
+function isTimedOutRun(run: Pick<HeartbeatRun, "status" | "errorCode">) {
+  return run.status === "timed_out" || run.errorCode === "timeout";
+}
+
+async function runLeftProgressEvidence(db: Db, run: Pick<HeartbeatRun, "id" | "companyId">) {
+  const [comment] = await db.select({ id: issueComments.id }).from(issueComments)
+    .where(and(eq(issueComments.companyId, run.companyId), eq(issueComments.createdByRunId, run.id)))
+    .limit(1);
+  if (comment) return true;
+  const [activity] = await db.select({ id: activityLog.id }).from(activityLog)
+    .where(and(
+      eq(activityLog.companyId, run.companyId),
+      eq(activityLog.runId, run.id),
+      notInArray(activityLog.action, NO_PROGRESS_BOOKKEEPING_ACTIVITY_ACTIONS),
+    ))
+    .limit(1);
+  return Boolean(activity);
+}
 
 export function failedRunRetryBudgetSpent(run: Parameters<typeof executionFailureRetryCount>[0] & { errorCode?: string | null }): boolean {
   return run.errorCode === RUNNER_REVISION_MISMATCH_CODE
@@ -527,8 +563,24 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
               opts?.random,
             )
           : null;
+    const noProgressTimeoutDelayMs = computedBaseSchedule && opts?.delayMs == null
+      && retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON && isTimedOutRun(run)
+      && !(await runLeftProgressEvidence(db, run))
+      ? NO_PROGRESS_TIMEOUT_RETRY_DELAYS_MS[
+        Math.min(computedBaseSchedule.attempt, NO_PROGRESS_TIMEOUT_RETRY_DELAYS_MS.length) - 1]
+      : null;
     const baseSchedule = computedBaseSchedule
-      ? { ...computedBaseSchedule, maxAttempts }
+      ? {
+          ...computedBaseSchedule,
+          maxAttempts,
+          ...(noProgressTimeoutDelayMs != null
+            ? {
+                baseDelayMs: noProgressTimeoutDelayMs,
+                delayMs: noProgressTimeoutDelayMs,
+                dueAt: new Date(now.getTime() + noProgressTimeoutDelayMs),
+              }
+            : {}),
+        }
       : null;
     const transientRecovery =
       (retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON
@@ -748,6 +800,10 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
             }
           : {}),
         ...(codexTransientFallbackMode ? { codexTransientFallbackMode } : {}),
+        // Do not resume the session that stalled until the timeout.
+        ...(noProgressTimeoutDelayMs != null
+          ? { forceFreshSession: true, noProgressTimeoutRetry: { sourceRunId: run.id } }
+          : {}),
       },
       "normal_model",
     );
@@ -1369,6 +1425,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
             }
           : {}),
         ...(codexTransientFallbackMode ? { codexTransientFallbackMode } : {}),
+        ...(noProgressTimeoutDelayMs != null ? { noProgressTimeout: true, forceFreshSession: true } : {}),
       },
     });
 

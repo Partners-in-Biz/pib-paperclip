@@ -5294,7 +5294,7 @@ describe("native external-chat response wait", () => {
         await db.insert(issueApprovals).values({ companyId: fixture.companyId, issueId: fixture.issueId, approvalId: approval!.id });
         await finalizeNativeRun({ db, runId: fixture.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
         expect(await pending()).toBe("pending");
-        expect((await issueService(db).list(fixture.companyId, { touchedByUserId: fixture.userId })).map(issue => issue.id)).toContain(fixture.issueId);
+        expect((await issueService(db).list(fixture.companyId, { readCondition: "system", touchedByUserId: fixture.userId })).map(issue => issue.id)).toContain(fixture.issueId);
         return;
       }
       expect(await finalizeNativeRun({ db, runId: fixture.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true,
@@ -5302,11 +5302,11 @@ describe("native external-chat response wait", () => {
       expect(await pending()).toBe("pending");
     }
     await finalizeNativeRun({ db, runId: fixture.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
-    const all = await issueService(db).list(fixture.companyId);
+    const all = await issueService(db).list(fixture.companyId, { readCondition: "system" });
     expect(all.find(issue => issue.id === fixture.issueId)).toMatchObject({ status,
       ...(status === "in_review" ? { reviewAttention: { state: "covered", paths: [expect.objectContaining({ kind: continuationKind === "monitor" ? "monitor" : "external_response" })] } } : {}),
     });
-    expect(await issueService(db).list(fixture.companyId, { touchedByUserId: fixture.userId })).toEqual([]);
+    expect(await issueService(db).list(fixture.companyId, { readCondition: "system", touchedByUserId: fixture.userId })).toEqual([]);
     expect(await db.select().from(issueThreadInteractions).where(and(
       eq(issueThreadInteractions.issueId, fixture.issueId), eq(issueThreadInteractions.status, "pending"),
     ))).toEqual([]);
@@ -5734,14 +5734,14 @@ describe("native external-chat response wait", () => {
     });
     await db.update(issues).set({ responsibleUserId: fixture.userId }).where(eq(issues.id, fixture.issueId));
     await finalizeNativeRun({ db, runId: fixture.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
-    expect((await issueService(db).list(fixture.companyId, { touchedByUserId: fixture.userId })).map(issue => issue.id)).toContain(fixture.issueId);
+    expect((await issueService(db).list(fixture.companyId, { readCondition: "system", touchedByUserId: fixture.userId })).map(issue => issue.id)).toContain(fixture.issueId);
     const [request] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, fixture.issueId));
     expect(request).toMatchObject({ status: "pending", addresseeUserId: fixture.userId });
     await issueThreadInteractionService(db).withdrawInteraction(
       { id: fixture.issueId, companyId: fixture.companyId }, request!.id,
       { reason: "Repository access restored." }, { userId: fixture.userId },
     );
-    expect(await issueService(db).list(fixture.companyId, { touchedByUserId: fixture.userId })).toEqual([]);
+    expect(await issueService(db).list(fixture.companyId, { readCondition: "system", touchedByUserId: fixture.userId })).toEqual([]);
   });
 
   it("does not schedule a fallback run when current chat permission is revoked", async () => {

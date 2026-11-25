@@ -1,11 +1,14 @@
 /** PAR-10548 T6: the sign-off delegate is told by one issue per sprint (create + wake, comment + wake on growth, cancel when empty). */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const gate = vi.hoisted(() => ({ delegate: "agent-del" as string | null, grantable: new Set<string>() }));
+const gate = vi.hoisted(() => ({ delegate: "agent-del" as string | null, grantable: new Set<string>(), kinds: [] as Array<[string, string | undefined]> }));
 vi.mock("../src/cockpit.js", async (orig) => ({
   ...(await orig<typeof import("../src/cockpit.js")>()),
-  delegateWaitsOn: vi.fn(async (_e: unknown, _c: string, _s: string, taskId: string, delegate: string | null) =>
-    delegate && gate.grantable.has(taskId) ? { kind: "agent", agentId: delegate } : null),
+  // A merge ("pr") is never the delegate's on a repo sprint; a review is (PAR-13579). The mock honours the kind it is given.
+  delegateWaitsOn: vi.fn(async (_e: unknown, _c: string, _s: string, taskId: string, delegate: string | null, kind?: string) => {
+    gate.kinds.push([taskId, kind]);
+    return delegate && gate.grantable.has(taskId) && !(kind === "pr" && taskId === "t-repo") ? { kind: "agent", agentId: delegate } : null;
+  }),
 }));
 vi.mock("../src/service/signoff.js", async (orig) => ({
   ...(await orig<typeof import("../src/service/signoff.js")>()),
@@ -36,9 +39,21 @@ const sync = (h: ReturnType<typeof seoHost>) => syncSignoffDelegateIssue(h.env, 
 beforeEach(() => {
   gate.delegate = "agent-del";
   gate.grantable = new Set(["t1", "t2"]);
+  gate.kinds = [];
 });
 
 describe("syncSignoffDelegateIssue", () => {
+  it("passes each item's kind to the grant gate: a review on a repo sprint is handed over, a pr merge on it is not (PAR-13579)", async () => {
+    gate.grantable = new Set(["t-repo"]);
+    const { h } = setup([item(9, { key: "pr:t-repo", kind: "pr", taskIds: ["t-repo"] }), item(10, { key: "review:t-repo", kind: "review", taskIds: ["t-repo"] })]);
+    await sync(h);
+    expect(gate.kinds).toEqual([["t-repo", "pr"], ["t-repo", "review"]]);
+    const body = String(h.created[0]!.input.description);
+    expect(body).toContain("review:t-repo");
+    expect(body).not.toContain("pr:t-repo");
+    expect(body).toContain("partnersinbiz.seo:needs-you-resolve");
+  });
+
   it("1. first grantable item: one issue for the delegate, woken, with the call and the key", async () => {
     const { h } = setup([item(1)]);
     await sync(h);

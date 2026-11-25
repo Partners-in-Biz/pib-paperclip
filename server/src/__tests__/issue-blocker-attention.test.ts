@@ -182,7 +182,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     await block({ companyId, blockerIssueId: childId, blockedIssueId: parentId });
     await activeRun({ companyId, agentId, issueId: childId });
 
-    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+    const parent = (await svc.list(companyId, { readCondition: "system", status: "blocked" })).find((issue) => issue.id === parentId);
 
     expect(parent?.blockerAttention).toMatchObject({
       state: "covered",
@@ -206,7 +206,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
     await block({ companyId, blockerIssueId: blockerId, blockedIssueId: parentId });
 
-    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+    const parent = (await svc.list(companyId, { readCondition: "system", status: "blocked" })).find((issue) => issue.id === parentId);
 
     expect(parent?.blockerAttention).toMatchObject({
       state: "needs_attention",
@@ -231,7 +231,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
     await block({ companyId, blockerIssueId: blockerId, blockedIssueId: parentId });
 
-    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+    const parent = (await svc.list(companyId, { readCondition: "system", status: "blocked" })).find((issue) => issue.id === parentId);
 
     expect(parent?.blockerAttention).toMatchObject({
       state: "covered",
@@ -265,7 +265,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     await block({ companyId, blockerIssueId: idleBlockerId, blockedIssueId: parentId });
     await activeRun({ companyId, agentId, issueId: activeChildId });
 
-    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+    const parent = (await svc.list(companyId, { readCondition: "system", status: "blocked" })).find((issue) => issue.id === parentId);
 
     expect(parent?.blockerAttention).toMatchObject({
       state: "needs_attention",
@@ -307,7 +307,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     await activeRun({ companyId, agentId, issueId: activeBlockerOneId });
     await activeRun({ companyId, agentId, issueId: activeBlockerTwoId });
 
-    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+    const parent = (await svc.list(companyId, { readCondition: "system", status: "blocked" })).find((issue) => issue.id === parentId);
 
     expect(parent?.blockerAttention).toMatchObject({
       state: "covered",
@@ -335,7 +335,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     await block({ companyId, blockerIssueId: leafId, blockedIssueId: blockerId });
     await activeRun({ companyId, agentId, issueId: leafId });
 
-    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+    const parent = (await svc.list(companyId, { readCondition: "system", status: "blocked" })).find((issue) => issue.id === parentId);
 
     expect(parent?.blockerAttention).toMatchObject({
       state: "covered",
@@ -361,7 +361,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     await block({ companyId, blockerIssueId: blockerId, blockedIssueId: parentId });
     await activeRun({ companyId: other.companyId, agentId: other.agentId, issueId: blockerId });
 
-    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+    const parent = (await svc.list(companyId, { readCondition: "system", status: "blocked" })).find((issue) => issue.id === parentId);
 
     expect(parent?.blockerAttention).toMatchObject({
       state: "needs_attention",
@@ -386,7 +386,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     await block({ companyId, blockerIssueId: blockerId, blockedIssueId: parentId });
     await activeRun({ companyId, agentId, issueId: blockerId, current: false });
 
-    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+    const parent = (await svc.list(companyId, { readCondition: "system", status: "blocked" })).find((issue) => issue.id === parentId);
 
     expect(parent?.blockerAttention).toMatchObject({
       state: "needs_attention",
@@ -410,7 +410,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
     await block({ companyId, blockerIssueId: reviewLeafId, blockedIssueId: parentId });
 
-    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+    const parent = (await svc.list(companyId, { readCondition: "system", status: "blocked" })).find((issue) => issue.id === parentId);
 
     expect(parent?.blockerAttention).toMatchObject({
       state: "stalled",
@@ -437,7 +437,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     await block({ companyId, blockerIssueId: reviewLeafId, blockedIssueId: parentId });
     await activeRun({ companyId, agentId, issueId: reviewLeafId });
 
-    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+    const parent = (await svc.list(companyId, { readCondition: "system", status: "blocked" })).find((issue) => issue.id === parentId);
 
     expect(parent?.blockerAttention).toMatchObject({
       state: "covered",
@@ -459,7 +459,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     await block({ companyId, blockerIssueId: midId, blockedIssueId: rootId });
     await block({ companyId, blockerIssueId: leafId, blockedIssueId: midId });
 
-    const root = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === rootId);
+    const root = (await svc.list(companyId, { readCondition: "system", status: "blocked" })).find((issue) => issue.id === rootId);
 
     expect(root?.blockerAttention).toMatchObject({
       state: "stalled",
@@ -496,7 +496,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     await block({ companyId, blockerIssueId: intermediateId, blockedIssueId: directId });
     await block({ companyId, blockerIssueId: leafId, blockedIssueId: intermediateId });
 
-    const root = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === rootId);
+    const root = (await svc.list(companyId, { readCondition: "system", status: "blocked" })).find((issue) => issue.id === rootId);
 
     expect(root?.blockerAttention).toMatchObject({
       state: "stalled",
@@ -530,7 +530,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     await block({ companyId, blockerIssueId: reviewLeafId, blockedIssueId: parentId });
     await block({ companyId, blockerIssueId: cancelledLeafId, blockedIssueId: parentId });
 
-    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+    const parent = (await svc.list(companyId, { readCondition: "system", status: "blocked" })).find((issue) => issue.id === parentId);
 
     expect(parent?.blockerAttention).toMatchObject({
       state: "needs_attention",
@@ -577,7 +577,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     await block({ companyId, blockerIssueId: cancelledLeafId, blockedIssueId: parentId });
     await block({ companyId, blockerIssueId: escalationId, blockedIssueId: parentId });
 
-    const parent = (await svc.list(companyId, { status: "blocked,todo" })).find((issue) => issue.id === parentId);
+    const parent = (await svc.list(companyId, { readCondition: "system", status: "blocked,todo" })).find((issue) => issue.id === parentId);
 
     expect(parent?.blockerAttention).toMatchObject({
       state: "covered",
@@ -615,7 +615,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
     await block({ companyId, blockerIssueId: cancelledLeafId, blockedIssueId: parentId });
 
-    const parent = (await svc.list(companyId, { attention: "blocked" })).find((issue) => issue.id === parentId);
+    const parent = (await svc.list(companyId, { readCondition: "system", attention: "blocked" })).find((issue) => issue.id === parentId);
 
     expect(parent?.blockedInboxAttention).toMatchObject({
       state: "needs_attention",
@@ -645,7 +645,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       scheduledRetryAt: expiredRetryAt,
     });
 
-    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+    const parent = (await svc.list(companyId, { readCondition: "system", status: "blocked" })).find((issue) => issue.id === parentId);
 
     expect(parent?.blockerAttention).toMatchObject({
       state: "needs_attention",
@@ -668,7 +668,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
     await block({ companyId, blockerIssueId: blockerId, blockedIssueId: parentId });
 
-    const rows = await svc.list(companyId, { attention: "blocked", q: "BIA-2" });
+    const rows = await svc.list(companyId, { readCondition: "system", attention: "blocked", q: "BIA-2" });
 
     expect(rows).toHaveLength(1);
     expect(rows[0]?.id).toBe(parentId);
@@ -685,7 +685,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       leafIssue: { id: blockerId, identifier: "BIA-2" },
       redaction: { secretFieldsOmitted: true },
     });
-    await expect(svc.count(companyId, { attention: "blocked" })).resolves.toBe(1);
+    await expect(svc.count(companyId, { readCondition: "system", attention: "blocked" })).resolves.toBe(1);
   });
 
   it("surfaces cancelled-blocker attention on an assigned todo source", async () => {
@@ -706,7 +706,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
     await block({ companyId, blockerIssueId: blockerId, blockedIssueId: sourceId });
 
-    const rows = await svc.list(companyId, { attention: "blocked" });
+    const rows = await svc.list(companyId, { readCondition: "system", attention: "blocked" });
     const source = rows.find((issue) => issue.id === sourceId);
 
     expect(source?.blockedInboxAttention).toMatchObject({
@@ -736,7 +736,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       ].join("\n"),
     });
 
-    const rows = await svc.list(companyId, { attention: "blocked" });
+    const rows = await svc.list(companyId, { readCondition: "system", attention: "blocked" });
     const issue = rows.find((row) => row.id === issueId);
 
     expect(issue?.description).toContain("Public context stays visible.");
@@ -753,9 +753,9 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     expect(JSON.stringify(issue?.blockedInboxAttention)).not.toContain(owner);
     expect(JSON.stringify(issue?.blockedInboxAttention)).not.toContain(action);
 
-    await expect(svc.list(companyId, { attention: "blocked", q: owner })).resolves.toEqual([]);
-    await expect(svc.count(companyId, { attention: "blocked", q: action })).resolves.toBe(0);
-    await expect(svc.count(companyId, { attention: "blocked", q: "Public context" })).resolves.toBe(1);
+    await expect(svc.list(companyId, { readCondition: "system", attention: "blocked", q: owner })).resolves.toEqual([]);
+    await expect(svc.count(companyId, { readCondition: "system", attention: "blocked", q: action })).resolves.toBe(0);
+    await expect(svc.count(companyId, { readCondition: "system", attention: "blocked", q: "Public context" })).resolves.toBe(1);
   });
 
   it("excludes healthy active blockers from blocked inbox attention", async () => {
@@ -771,7 +771,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     await block({ companyId, blockerIssueId: blockerId, blockedIssueId: parentId });
     await activeRun({ companyId, agentId, issueId: blockerId });
 
-    expect(await svc.list(companyId, { attention: "blocked" })).toEqual([]);
+    expect(await svc.list(companyId, { readCondition: "system", attention: "blocked" })).toEqual([]);
   });
 
   it("classifies assigned backlog and invalid review leaves for blocked inbox attention", async () => {
@@ -806,7 +806,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       },
     });
 
-    const rows = await svc.list(companyId, { attention: "blocked" });
+    const rows = await svc.list(companyId, { readCondition: "system", attention: "blocked" });
     const byId = new Map(rows.map((row) => [row.id, row]));
 
     expect(byId.get(backlogParentId)?.blockedInboxAttention).toMatchObject({
@@ -858,7 +858,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       details: { sourceRunId: randomUUID(), detectedProgressSummary: "Progress was made" },
     });
 
-    const rows = await svc.list(companyId, { attention: "blocked" });
+    const rows = await svc.list(companyId, { readCondition: "system", attention: "blocked" });
     const byId = new Map(rows.map((row) => [row.id, row]));
 
     expect(byId.get(recoveryId)?.blockedInboxAttention).toMatchObject({
@@ -876,11 +876,11 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
 
     const handoffRunId = await activeRun({ companyId, agentId, issueId: handoffId, current: false });
-    const liveRows = await svc.list(companyId, { attention: "blocked" });
+    const liveRows = await svc.list(companyId, { readCondition: "system", attention: "blocked" });
     expect(liveRows.some((row) => row.id === handoffId)).toBe(false);
 
     await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, handoffRunId));
-    const stoppedRows = await svc.list(companyId, { attention: "blocked" });
+    const stoppedRows = await svc.list(companyId, { readCondition: "system", attention: "blocked" });
     expect(stoppedRows.find((row) => row.id === handoffId)?.blockedInboxAttention).toMatchObject({
       state: "missing_disposition",
       reason: "missing_successful_run_disposition",
@@ -896,11 +896,11 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       scheduledRetryAt: new Date(Date.now() + 60_000),
       scheduledRetryAttempt: 1,
     });
-    const scheduledRows = await svc.list(companyId, { attention: "blocked" });
+    const scheduledRows = await svc.list(companyId, { readCondition: "system", attention: "blocked" });
     expect(scheduledRows.some((row) => row.id === handoffId)).toBe(false);
 
     await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, scheduledRetryRunId));
-    const exhaustedRows = await svc.list(companyId, { attention: "blocked" });
+    const exhaustedRows = await svc.list(companyId, { readCondition: "system", attention: "blocked" });
     expect(exhaustedRows.find((row) => row.id === handoffId)?.blockedInboxAttention).toMatchObject({
       state: "missing_disposition",
       reason: "missing_successful_run_disposition",
@@ -916,18 +916,18 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       agentId,
       details: { sourceRunId: randomUUID() },
     });
-    const escalatedRows = await svc.list(companyId, { attention: "blocked" });
+    const escalatedRows = await svc.list(companyId, { readCondition: "system", attention: "blocked" });
     expect(escalatedRows.find((row) => row.id === handoffId)?.blockedInboxAttention).toMatchObject({
       state: "missing_disposition",
       reason: "missing_successful_run_disposition",
     });
 
     const escalatedLiveRunId = await activeRun({ companyId, agentId, issueId: handoffId, current: false });
-    const escalatedLiveRows = await svc.list(companyId, { attention: "blocked" });
+    const escalatedLiveRows = await svc.list(companyId, { readCondition: "system", attention: "blocked" });
     expect(escalatedLiveRows.some((row) => row.id === handoffId)).toBe(false);
 
     await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, escalatedLiveRunId));
-    const escalatedStoppedRows = await svc.list(companyId, { attention: "blocked" });
+    const escalatedStoppedRows = await svc.list(companyId, { readCondition: "system", attention: "blocked" });
     expect(escalatedStoppedRows.find((row) => row.id === handoffId)?.blockedInboxAttention).toMatchObject({
       state: "missing_disposition",
       reason: "missing_successful_run_disposition",
@@ -965,10 +965,10 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
     await block({ companyId, blockerIssueId: assignedLeafId, blockedIssueId: assignedParentId });
 
-    const rows = await svc.list(companyId, { attention: "blocked", assigneeAgentId: "null" });
+    const rows = await svc.list(companyId, { readCondition: "system", attention: "blocked", assigneeAgentId: "null" });
     expect(rows.map((row) => row.id)).toEqual([unassignedParentId]);
 
-    await expect(svc.count(companyId, { attention: "blocked", assigneeAgentId: "null" })).resolves.toBe(1);
+    await expect(svc.count(companyId, { readCondition: "system", attention: "blocked", assigneeAgentId: "null" })).resolves.toBe(1);
   });
 
   it("applies a UUID assigneeAgentId filter on the blocked-inbox path", async () => {
@@ -1002,19 +1002,19 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
     await block({ companyId, blockerIssueId: assignedLeafId, blockedIssueId: assignedParentId });
 
-    const rows = await svc.list(companyId, { attention: "blocked", assigneeAgentId: agentId });
+    const rows = await svc.list(companyId, { readCondition: "system", attention: "blocked", assigneeAgentId: agentId });
     expect(rows.map((row) => row.id)).toEqual([assignedParentId]);
 
-    await expect(svc.count(companyId, { attention: "blocked", assigneeAgentId: agentId })).resolves.toBe(1);
+    await expect(svc.count(companyId, { readCondition: "system", attention: "blocked", assigneeAgentId: agentId })).resolves.toBe(1);
   });
 
   it("rejects malformed assigneeAgentId filter values on the blocked-inbox path", async () => {
     const { companyId } = await createCompany("BAM");
     await expect(
-      svc.list(companyId, { attention: "blocked", assigneeAgentId: "not-a-uuid" }),
+      svc.list(companyId, { readCondition: "system", attention: "blocked", assigneeAgentId: "not-a-uuid" }),
     ).rejects.toThrow(/assigneeAgentId/i);
     await expect(
-      svc.count(companyId, { attention: "blocked", assigneeAgentId: "not-a-uuid" }),
+      svc.count(companyId, { readCondition: "system", attention: "blocked", assigneeAgentId: "not-a-uuid" }),
     ).rejects.toThrow(/assigneeAgentId/i);
   });
 });
