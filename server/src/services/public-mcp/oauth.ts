@@ -733,14 +733,19 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
       }
       throw new McpOAuthError("unsupported_grant_type", "Unsupported authorization grant.");
     },
-    async authorizeGrant(grantId: string, queryDb: Db = db): Promise<McpPrincipal> {
+    /** Inside a caller's transaction, pass `{ tx, defer }` with `defer` from
+     * `withDeferredDenials` wrapping that transaction: a restriction refusal is
+     * then written only after it commits or rolls back (PAR-14565). */
+    async authorizeGrant(grantId: string, inTx?: { tx: Db; defer: AssistantConnectionDenialSink }): Promise<McpPrincipal> {
+      const queryDb = inTx?.tx ?? db;
       await assertEnabled(queryDb);
       const [row] = await queryDb.select({ grant: mcpOauthGrants, company: { id: companies.id, name: companies.name, issuePrefix: companies.issuePrefix, status: companies.status } })
         .from(mcpOauthGrants).innerJoin(companies, eq(mcpOauthGrants.companyId, companies.id))
         .where(eq(mcpOauthGrants.id, grantId));
       if (!row || !row.grant.scopes.includes(requiredScope)) throw invalidGrant();
-      return { ...row, actor: await actorForGrant(row.grant, queryDb) };
+      return { ...row, actor: await actorForGrant(row.grant, queryDb, inTx?.defer ?? recordNow) };
     },
+    withDeferredDenials,
     authenticateAccess,
     /** This authenticates only a Muse token; the Muse boundary must independently
      * admit its bounded stop control. Personal MCP and Dot keep their normal gate. */
