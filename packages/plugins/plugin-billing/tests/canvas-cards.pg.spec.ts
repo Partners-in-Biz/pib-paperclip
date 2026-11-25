@@ -30,11 +30,10 @@ describe("the manifest and the worker (no database)", () => {
     expect(slot).toMatchObject({ type: "canvasNode", exportName: "BillingInvoiceCard", entityCard: { kind: "invoice", search: true, related: true } });
   });
 
-  it("registers the three actions through registerCanvasCards, on ctx.actions.register", async () => {
+  it("registers the three actions through registerCanvasCards, on the register it is given", async () => {
     const keys: string[] = [];
-    const ctx = { actions: { register: (key: string) => void keys.push(key) } } as never;
     const { registerBillingCanvasCards } = await import("../src/canvas-cards.js");
-    registerBillingCanvasCards(ctx);
+    registerBillingCanvasCards({} as never, (key: string) => void keys.push(key));
     expect(keys.sort()).toEqual([RELATED, RESOLVE, SEARCH]);
   });
 });

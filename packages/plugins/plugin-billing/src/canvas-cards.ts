@@ -1,7 +1,7 @@
 /**
  * The Billing invoice card on a Planning Canvas board (PAR-14420; plan PAR-14389 C.2).
  *
- * Billing has no kit guard, so `registerCanvasCards` registers through `ctx.actions.register` itself. Each answer is
+ * Billing has a kit access guard, so `registerCanvasCards` registers through the guard's `action` and each card is checked like any other action. Each answer is
  * built on what the page uses: `requireInvoice` (company and shares), `listInvoices` for a client, `balanceOut`'s status.
  * Nothing on the board vouches for an id: every `resolve` checks every id again.
  */
@@ -71,6 +71,10 @@ export function invoiceCardKind(ctx: PluginContext): CanvasCardKind {
   };
 }
 
-export function registerBillingCanvasCards(ctx: PluginContext): void {
-  registerCanvasCards({ register: (key, handler) => ctx.actions.register(key, handler), kinds: [invoiceCardKind(ctx)] });
+/** `register` is the access guard's `action`: a card action is never registered on the context directly. */
+export function registerBillingCanvasCards(
+  ctx: PluginContext,
+  register: Parameters<typeof registerCanvasCards>[0]["register"],
+): void {
+  registerCanvasCards({ register, kinds: [invoiceCardKind(ctx)] });
 }
