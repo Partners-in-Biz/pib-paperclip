@@ -27,7 +27,11 @@ import {
 import { canonicalizeExternalObjectUrl } from "@paperclipai/shared/external-objects-server";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
-import { createGitHubExternalObjectProvider } from "../services/github-external-object-provider.js";
+import {
+  createGitHubExternalObjectProvider,
+  githubObjectWithheldFromRestrictedReader,
+  withheldGitHubObjectFields,
+} from "../services/github-external-object-provider.js";
 
 const externalDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_EXTERNAL_OBJECTS_TEST_DATABASE_URL");
 const embeddedPostgresSupport = externalDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
@@ -705,6 +709,58 @@ describe("GitHub external object provider", () => {
 
     expect(result.ok).toBe(true);
     expect(fetch).toHaveBeenCalledWith("https://api.github.com/repos/acme/app/pulls/42", expect.anything());
+  });
+
+  // PAR-14590 (4.6a row 5): the read routes show a restricted person only
+  // objects whose repository is known public, so the snapshot records it.
+  it("records repoVisibility from a fresh probe, from the pull request's base repo, and leaves it out when unknown", async () => {
+    const resolveWith = async (
+      source: "server_env" | "company_secret",
+      objectType: "pull_request" | "issue",
+      body: Record<string, unknown>,
+    ) => {
+      const fetch = vi.fn(async (url: string) => {
+        if (url.endsWith("/repos/acme/app")) return response({ private: false });
+        return response(body);
+      });
+      const provider = createGitHubExternalObjectProvider({} as any, {
+        fetch,
+        credentialProvider: async () => ({ token: "t", source, secretName: null }),
+      });
+      const resolver = provider.resolvers.find((entry) => entry.objectType === objectType)!;
+      const result = await resolver.resolve({
+        companyId: "company-1",
+        object: githubObject(objectType === "pull_request" ? "pull/42" : "issues/7", objectType),
+      });
+      if (!result.ok) throw new Error(`expected a snapshot, got ${JSON.stringify(result)}`);
+      return result.snapshot.data?.repoVisibility;
+    };
+    const pr = { state: "open", draft: false, merged: false, title: "PR" };
+
+    expect(await resolveWith("server_env", "pull_request", pr)).toBe("public");
+    expect(await resolveWith("server_env", "issue", { state: "open", title: "Issue" })).toBe("public");
+    expect(await resolveWith("company_secret", "pull_request", { ...pr, base: { ref: "main", repo: { private: true } } }))
+      .toBe("private");
+    expect(await resolveWith("company_secret", "pull_request", { ...pr, base: { ref: "main", repo: { private: false } } }))
+      .toBe("public");
+    expect(await resolveWith("company_secret", "pull_request", pr)).toBeUndefined();
+    expect(await resolveWith("company_secret", "issue", { state: "open", title: "Issue" })).toBeUndefined();
+  });
+
+  it("withholds every GitHub object that is not known public, and only GitHub objects", () => {
+    expect(githubObjectWithheldFromRestrictedReader({ providerKey: "github", data: { repoVisibility: "public" } })).toBe(false);
+    expect(githubObjectWithheldFromRestrictedReader({ providerKey: "github", data: { repoVisibility: "private" } })).toBe(true);
+    expect(githubObjectWithheldFromRestrictedReader({ providerKey: "github", data: {} })).toBe(true);
+    expect(githubObjectWithheldFromRestrictedReader({ providerKey: "url", data: {} })).toBe(false);
+    expect(withheldGitHubObjectFields({ externalId: "acme/app#pull/42", sanitizedCanonicalUrl: "https://github.com/acme/app/pull/42" }))
+      .toMatchObject({
+        displayTitle: "acme/app#42",
+        statusLabel: null,
+        statusCategory: "unknown",
+        liveness: "unknown",
+        data: { provider: "github", owner: "acme", repo: "app", number: 42, withheld: true },
+        lastErrorMessage: null,
+      });
   });
 });
 

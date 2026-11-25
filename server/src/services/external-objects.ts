@@ -20,7 +20,12 @@ import type { PluginExternalObjectRecordSnapshot, PluginExternalObjectResolveRes
 import { notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { logActivity, type LogActivityInput } from "./activity-log.js";
-import { createGitHubExternalObjectProvider, type GitHubExternalObjectProviderOptions } from "./github-external-object-provider.js";
+import {
+  createGitHubExternalObjectProvider,
+  githubObjectWithheldFromRestrictedReader,
+  withheldGitHubObjectFields,
+  type GitHubExternalObjectProviderOptions,
+} from "./github-external-object-provider.js";
 import { notifyExternalObjectRefresh, type ExternalObjectRefreshIdentity } from "./external-object-refresh-notifications.js";
 import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
@@ -384,6 +389,16 @@ async function resolveViaPluginProvider(
   return null;
 }
 
+/**
+ * PAR-12608 4.6a row 5, read side: the reader is a restricted person. Every
+ * GitHub object that is not known public is reported through `onWithheld`;
+ * with `withhold` its resolved fields are cleared before they are listed or
+ * summarized.
+ */
+export interface ExternalObjectReadOptions {
+  restrictedReader?: { withhold: boolean; onWithheld: (objectId: string) => void };
+}
+
 export function externalObjectService(
   db: Db,
   opts: {
@@ -688,7 +703,15 @@ export function externalObjectService(
     };
   }
 
-  async function listForIssue(issueId: string) {
+  function toReaderPayload(object: ExternalObjectRecord, now: Date, readOptions?: ExternalObjectReadOptions) {
+    const payload = toObjectPayload(object, now);
+    const reader = readOptions?.restrictedReader;
+    if (!reader || !githubObjectWithheldFromRestrictedReader(payload)) return payload;
+    reader.onWithheld(payload.id);
+    return reader.withhold ? { ...payload, ...withheldGitHubObjectFields(payload) } : payload;
+  }
+
+  async function listForIssue(issueId: string, readOptions?: ExternalObjectReadOptions) {
     if (!(await isEnabled())) return [];
     const issue = await issueById(issueId);
     if (!issue) throw notFound("Issue not found");
@@ -714,7 +737,7 @@ export function externalObjectService(
     for (const row of rows) {
       const key = row.object?.id ?? `mention:${row.mention.id}`;
       const existing = grouped.get(key) ?? {
-        object: row.object ? toObjectPayload(row.object, now) : null,
+        object: row.object ? toReaderPayload(row.object, now, readOptions) : null,
         mentions: [],
         mentionCount: 0,
         sourceLabels: [],
@@ -784,9 +807,9 @@ export function externalObjectService(
     };
   }
 
-  async function getIssueSummary(issueId: string) {
+  async function getIssueSummary(issueId: string, readOptions?: ExternalObjectReadOptions) {
     if (!(await isEnabled())) return emptySummary();
-    const groups = await listForIssue(issueId);
+    const groups = await listForIssue(issueId, readOptions);
     const objects = groups.flatMap((group) => (group.object ? [group.object] : []));
     return summarizeObjectPayloads(objects);
   }
@@ -824,7 +847,7 @@ export function externalObjectService(
     return summaries;
   }
 
-  async function getProjectSummary(projectId: string) {
+  async function getProjectSummary(projectId: string, readOptions?: ExternalObjectReadOptions) {
     if (!(await isEnabled())) return emptySummary();
     const projectIssues = await db
       .select({ id: issues.id, companyId: issues.companyId })
@@ -844,7 +867,9 @@ export function externalObjectService(
       ));
     const now = new Date();
     const objectsById = new Map<string, ReturnType<typeof toObjectPayload>>();
-    for (const row of rows) objectsById.set(row.object.id, toObjectPayload(row.object, now));
+    for (const row of rows) {
+      if (!objectsById.has(row.object.id)) objectsById.set(row.object.id, toReaderPayload(row.object, now, readOptions));
+    }
     const objects = [...objectsById.values()];
     return summarizeObjectPayloads(objects, 25);
   }
