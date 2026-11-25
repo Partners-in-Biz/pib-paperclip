@@ -39,10 +39,10 @@ describe("Cockpit access guard (PAR-12700, PAR-12701)", () => {
     await assertPluginAccess({ harness, setup: plugin.definition.setup, onApiRequest: plugin.definition.onApiRequest, manifest, table: COCKPIT_ACCESS_TABLE, srcDir: SRC });
   }, 60_000);
 
-  it("has no data handlers and an api: row for each of its 8 manifest routes", () => {
+  it("has no data handlers and an api: row for each of its 9 manifest routes", () => {
     expect(NAMED_DATA_HANDLERS[manifest.id]).toBeUndefined();
     const routes = (manifest.apiRoutes ?? []).map((r) => `api:${r.routeKey}`).sort();
-    expect(routes).toHaveLength(8);
+    expect(routes).toHaveLength(9);
     expect(Object.keys(COCKPIT_ACCESS_TABLE).filter((key) => key.startsWith("api:")).sort()).toEqual(routes);
   });
 

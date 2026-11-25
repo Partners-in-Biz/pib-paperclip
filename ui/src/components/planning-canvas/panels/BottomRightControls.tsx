@@ -17,7 +17,7 @@ export function Minimap({ c }: { c: CanvasController }) {
       <div
         onClick={fitToScreen}
         title="Click to fit all items in view"
-        className="relative h-24 w-36 cursor-pointer overflow-hidden rounded-lg border border-border bg-popover/90 p-1.5 shadow-md backdrop-blur-xs"
+        className="relative h-24 w-36 cursor-pointer max-md:hidden overflow-hidden rounded-lg border border-border bg-popover/90 p-1.5 shadow-md backdrop-blur-xs"
       >
         <MinimapDots nodes={nodes} />
       </div>
@@ -129,8 +129,8 @@ export function ZoomControls({ c }: { c: CanvasController }) {
 
 export function BottomRightControls({ c }: { c: CanvasController }) {
   return (
-    <div className="pointer-events-auto absolute bottom-3 right-3 z-20 flex flex-col items-end gap-2 max-md:bottom-16">
-      {/* Compact Minimap */}
+    <div className="pointer-events-auto absolute bottom-3 right-3 z-20 flex flex-col items-end gap-2 max-md:bottom-16 max-md:left-3 max-md:right-auto max-md:items-start">
+      {/* Compact Minimap (hidden on a phone: it covered the board and the Chat button) */}
       <Minimap c={c} />
       <ZoomControls c={c} />
     </div>

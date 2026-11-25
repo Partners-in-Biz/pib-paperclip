@@ -10,7 +10,7 @@ import { NAMESPACE } from "./namespace.js";
 
 const TABLE = `${NAMESPACE}.activity`;
 
-export type ActivityKind = "acceptance" | "deal_won" | "invoice_paid" | "onboarding" | "ask_answered" | "ask_refused" | "ask_effect" | "improvement" | "closeout" | "business_review" | "credential" | "goal";
+export type ActivityKind = "acceptance" | "deal_won" | "invoice_paid" | "onboarding" | "ask_answered" | "ask_refused" | "ask_effect" | "improvement" | "closeout" | "business_review" | "credential" | "goal" | "browser_live";
 
 export interface ActivityRow {
   key: string;

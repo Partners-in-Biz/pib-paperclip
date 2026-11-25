@@ -369,6 +369,18 @@ Src-only: no migration, no new capability, `coreReadTables` unchanged.
 
 0.14.2 adds the UI: action `hosted-usage.load` (same result as the tool), a "Hosted clients" tab on the Cockpit page (`?tab=hosted`) and a "Hosted clients" sidebar row (slot `pib-nav-hosted`), both shown only when the read says `allowed`. Any other company sees neither; the tab address shows "Not available". Spend is notional USD and agents is a snapshot from the last recompute. Slots are not capabilities, so the release is src-only.
 
+### Watch live: worker half (0.29.0, PAR-14514 S3)
+
+The owner or an admin watches the agents' browser (display `:99`) read-only. Owner company only; a signed-in person only: never an agent (also not one acting for an owner), never the local board user, never a member who is not owner or admin. Plan: PAR-14514 `plan` document, design 3. The drawer is PAR-14535.
+
+- Setting `browserLive`: `off` (default), `view`, `takeover` (take-over itself comes in S4). Read through `readBrowserLiveSetting`, which answers `off` when the read fails.
+- Action `browser.live.ticket {mode: "view"}`: a random ticket for 30 seconds. The worker keeps only its hash, the user id, the company, the mode and the expiry, in memory. Refused at `off`. Does not contact the daemon.
+- Route `GET /browser/live?companyId=...&ticket=...` (`transport: "websocket"`, board auth): repeats every check, redeems the ticket once (same user as the upgrade), records "Watch live started by user ..." in the Cockpit activity, and returns the daemon's local socket `/run/pib-browser/live.sock` (`PIB_BROWSER_LIVE_SOCKET` overrides it) with path `/stream?mode=view`. Core signs the upgrade for a session person only and needs `partnersinbiz.cockpit=/run/pib-browser/live.sock` in `PAPERCLIP_PLUGIN_LOCAL_WS_TARGETS`. Every refusal is the same answer as an unknown ticket.
+- Action `browser.live.status`: the daemon's `/status` as `{ reachable, status }`, at every setting.
+- The worker reaches the daemon with `node:http` over the unix socket (`src/browser-daemon-client.ts`); no capability covers that and none is claimed.
+
+One new capability, `websocket.local`, so the release is stop-first and needs a core that knows it (PAR-14532). Rollback: setting `off` (instant), then Cockpit before core.
+
 ## Develop
 
 ```bash
