@@ -12,6 +12,7 @@ import {
   createDb,
   EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   heartbeatRuns,
+  issueComments,
   issues,
   planningCanvases,
   planningCanvasItems,
@@ -96,6 +97,18 @@ vi.mock("../adapters/index.ts", async () => {
   const actual = await vi.importActual<typeof import("../adapters/index.ts")>("../adapters/index.ts");
   return { ...actual, getServerAdapter: vi.fn(() => ({ supportsLocalAgentJwt: true, execute: mockAdapterExecute })) };
 });
+// Rule H read, as in planning-canvas-chat-wakes.test.ts: a throwing read must fail the refresh closed.
+const honestRead = vi.hoisted(() => ({ fails: false }));
+vi.mock("../services/member-restriction/honest-person.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/member-restriction/honest-person.js")>();
+  return {
+    ...actual,
+    honestPersonRuleFor: async (...args: Parameters<typeof actual.honestPersonRuleFor>) => {
+      if (honestRead.fails) throw new Error("fixture: rule H read failed");
+      return actual.honestPersonRuleFor(...args);
+    },
+  };
+});
 
 const support = await getEmbeddedPostgresTestSupport();
 
@@ -120,7 +133,11 @@ describe("planning canvas source refresh wake database support", () => {
     vi.stubEnv(PLANNING_CANVAS_CHAT_ENV, "on");
     seen.runs.clear();
     mockAdapterExecute.mockClear();
+    honestRead.fails = false;
   });
+
+  const setMode = (mode: "off" | "report" | "enforce") =>
+    db.update(companies).set({ memberRestrictionMode: mode }).where(eq(companies.id, companyId));
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-planning-canvas-source-refresh-");
@@ -218,20 +235,50 @@ describe("planning canvas source refresh wake database support", () => {
     return (row?.data as { data?: { source?: Record<string, unknown> } } | undefined)?.data?.source;
   }
 
-  it("company board: one run, for the refresher; the personal credential is refused again; the source written carries the refresher", async () => {
-    const board = await boardWithSource("company");
-    const { res, runs } = await refreshRuns(board.id, REFRESHER);
-    expect(runs).toHaveLength(1);
-    expect(runs[0]!.contextSnapshot).toMatchObject({ source: PLANNING_CANVAS_SOURCE_REFRESH_CONTEXT, issueId: res.body.threadIssueId });
-    expect(seen.runs.get(runs[0]!.id)).toEqual({ person: REFRESHER, personalCall: "canvas_personal_source_refused", write: "applied" });
-    expect(await fetchedSource(board.id, runs[0]!.id)).toMatchObject({ fetchedBy: REFRESHER, agentId, issueId: res.body.threadIssueId });
+  // s.1: the refresh wake call site, under rule H `off`, `report` and `enforce`. The three people
+  // are distinct, so a run acting for the first fetcher or the company default fails the equality.
+  describe.each(["off", "report", "enforce"] as const)("rule H %s", (mode) => {
+    it.each(["company", "project"] as const)(
+      "%s board: one run, for the refresher; the personal credential is refused again; the written source carries the refresher",
+      async (scope) => {
+        await setMode(mode);
+        const board = await boardWithSource(scope);
+        const { res, runs } = await refreshRuns(board.id, REFRESHER);
+        expect(runs).toHaveLength(1);
+        expect(runs[0]!.contextSnapshot).toMatchObject({ source: PLANNING_CANVAS_SOURCE_REFRESH_CONTEXT, issueId: res.body.threadIssueId });
+        expect(seen.runs.get(runs[0]!.id)).toEqual({ person: REFRESHER, personalCall: "canvas_personal_source_refused", write: "applied" });
+        expect(await fetchedSource(board.id, runs[0]!.id)).toMatchObject({ fetchedBy: REFRESHER, agentId, issueId: res.body.threadIssueId });
+      },
+    );
   });
 
-  it("project board: the refresh run works for the refresher and the personal credential is refused", async () => {
-    const board = await boardWithSource("project");
-    const { runs } = await refreshRuns(board.id, REFRESHER);
+  it("control: the probe follows the refresher, so the assertion above is not a constant (the first fetcher refreshing gets a run for the fetcher)", async () => {
+    expect(new Set([FETCHER, REFRESHER, DEFAULT]).size).toBe(3);
+    await setMode("enforce");
+    const board = await boardWithSource("company");
+    const { runs } = await refreshRuns(board.id, FETCHER);
     expect(runs).toHaveLength(1);
-    expect(seen.runs.get(runs[0]!.id)).toMatchObject({ person: REFRESHER, personalCall: "canvas_personal_source_refused", write: "applied" });
-    expect(await fetchedSource(board.id, runs[0]!.id)).toMatchObject({ fetchedBy: REFRESHER });
+    expect(seen.runs.get(runs[0]!.id)).toMatchObject({ person: FETCHER, write: "applied" });
+    expect(await fetchedSource(board.id, runs[0]!.id)).toMatchObject({ fetchedBy: FETCHER });
+  });
+
+  it("rule H read throwing: the refresh fails closed (non-2xx), no comment, no thread, no run", async () => {
+    await setMode("enforce");
+    const board = await boardWithSource("company");
+    const started = new Date();
+    honestRead.fails = true;
+    const res = await request(seen.app!).post(`/api/companies/${companyId}/planning-canvases/${board.id}/items/t1/refresh`)
+      .set({ "x-test-session": REFRESHER, origin: "http://localhost" }).send({ clientRequestId: randomUUID() });
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    honestRead.fails = false;
+    const threads = await db.select().from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originId, `${board.id}:chat`), eq(issues.createdByUserId, REFRESHER)));
+    expect(threads).toEqual([]);
+    const comments = await db.select().from(issueComments)
+      .where(and(eq(issueComments.companyId, companyId), eq(issueComments.authorUserId, REFRESHER)));
+    expect(comments.filter((c) => c.createdAt >= started)).toEqual([]);
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
+    expect(runs.filter((run) => run.createdAt >= started)).toEqual([]);
   });
 });

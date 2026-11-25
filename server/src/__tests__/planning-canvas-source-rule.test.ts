@@ -243,7 +243,11 @@ describe("planning canvas source rule database support", () => {
     // Even the asker's own personal board thread: the binding is the run's, not the caller's.
     expect(await call(unbound.id, personalConn, thread.id)).toBe(REFUSED);
     expect(await call(unbound.id, sharedConn, thread.id)).toBe("completed");
-    // No bound issue and no claimed issue: not a board run, personal grants unchanged.
+  });
+
+  it("deviation from s.2, pinned (Ada to confirm): a run with no bound issue and no claimed issue is not a board run; personal grants unchanged", async () => {
+    // Refusing every issue-less run would break timer and automation runs that use
+    // delegated personal grants. A board chat or refresh run always has a bound issue.
     expect(await call((await run(null)).id, personalConn)).toBe("completed");
   });
 
