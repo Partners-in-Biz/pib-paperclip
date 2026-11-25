@@ -17,6 +17,11 @@ export const DISPOSABLE_DATABASE_NAME = /^(?:paperclip_measure|measure_[a-z0-9_]
  */
 export function assertDisposableLoopbackDatabase(raw, options = {}) {
   assert.ok(raw, "Pass --database-url=<disposable local Paperclip database>");
+  // postgres.js splits userinfo at the FIRST "@" and comma-splits the host list (multihost),
+  // while WHATWG URL splits at the LAST "@". Such a string can pass the host check below
+  // yet dial another host first, so refuse it on the raw string.
+  assert.ok(!raw.includes(","), "--database-url must name one host: a comma (multihost) is refused");
+  assert.ok((raw.match(/@/g) ?? []).length <= 1, "--database-url must contain at most one \"@\" (encode it as %40 inside a password)");
   const url = new URL(raw);
   assert.ok(["postgres:", "postgresql:"].includes(url.protocol), "--database-url must be a postgres:// url");
   assert.ok(LOOPBACK_HOSTS.includes(url.hostname), "Only a disposable loopback database may be seeded");

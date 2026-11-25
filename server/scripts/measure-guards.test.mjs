@@ -17,6 +17,14 @@ describe("assertDisposableLoopbackDatabase", () => {
     expect(() => assertDisposableLoopbackDatabase("postgres://u:p@127.0.0.1:54329/paperclip_measure?sslmode=disable")).toThrow(/query string/);
   });
 
+  it("refuses a multihost list and a second @, which postgres.js parses differently from WHATWG URL", () => {
+    // postgres.js resolves host=['remote.example', '127.0.0.1@127.0.0.1'] for this string.
+    const trick = "postgres://u:p@remote.example,127.0.0.1@127.0.0.1:54329/paperclip_measure";
+    expect(() => assertDisposableLoopbackDatabase(trick)).toThrow(/comma|multihost/);
+    expect(() => assertDisposableLoopbackDatabase("postgres://u:p@127.0.0.1,remote.example/paperclip_measure")).toThrow(/multihost/);
+    expect(() => assertDisposableLoopbackDatabase("postgres://u:p@remote.example@127.0.0.1/paperclip_measure")).toThrow(/at most one/);
+  });
+
   it("refuses a non-loopback host", () => {
     expect(() => assertDisposableLoopbackDatabase("postgres://u:p@db.example.com/paperclip_measure")).toThrow(/loopback/);
   });

@@ -26,4 +26,6 @@ Two real servers (`authenticated` mode, own throwaway home and embedded PostgreS
 
 ## Safety of the scripts
 
-The seed writes only to a loopback database with no query string in its url (postgres.js lets `?host=` or `?hostaddr=` override the url host) whose name is `paperclip_measure` or `measure_*`; any other name needs `--confirm-database=<name>`. The measure script sends the owner's token only over https or http to loopback. Guards and tests: `server/scripts/lib/measure-guards.mjs`, `server/scripts/measure-guards.test.mjs`.
+The seed writes only to a loopback database with no query string in its url (postgres.js lets `?host=` or `?hostaddr=` override the url host), no comma (postgres.js multihost) and at most one `@` (postgres.js splits userinfo at the first `@`, WHATWG `URL` at the last) whose name is `paperclip_measure` or `measure_*`; any other name needs `--confirm-database=<name>`. The measure script sends the owner's token only over https or http to loopback. Guards and tests: `server/scripts/lib/measure-guards.mjs`, `server/scripts/measure-guards.test.mjs`.
+
+The seed also inserts a `board_api_keys` row (name `task-list measure`) for the owner token into the confirmed target database. The measure script needs it after the seed, so it is not deleted: drop the disposable database when the measure is done.

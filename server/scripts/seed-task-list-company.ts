@@ -95,6 +95,9 @@ async function main() {
           [SEEDED_COMPANY_ID, id, role],
         );
       }
+      // Left in place on purpose: the measure script needs this token after the seed ends.
+      // It is a durable credential row in the confirmed target database; drop that database
+      // (or delete this row) when the measure is done.
       await run(
         "insert into board_api_keys (user_id, name, key_hash, created_at) values ($1, 'task-list measure', $2, " + base + ")",
         [SEEDED_OWNER_ID, createHash("sha256").update(token).digest("hex")],
