@@ -2702,11 +2702,11 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       isPrimary: true,
     });
 
-    const root = await svc.browseProjectWorkspace(companyId, { projectId, workspaceId });
+    const root = await svc.browseProjectWorkspace(companyId, { projectId, workspaceId }, "system");
     expect(root.entries).toEqual([expect.objectContaining({ name: "content", kind: "directory", isSkill: false })]);
     expect(root.truncated).toBe(false);
 
-    const content = await svc.browseProjectWorkspace(companyId, { projectId, workspaceId, path: "content" });
+    const content = await svc.browseProjectWorkspace(companyId, { projectId, workspaceId, path: "content" }, "system");
     expect(content).toMatchObject({ path: "content", parentPath: "." });
     expect(content.entries).toEqual([
       expect.objectContaining({ name: "teams", kind: "directory", isSkill: false }),
@@ -2714,7 +2714,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       expect.objectContaining({ name: "skill.md", kind: "file", isSkill: false }),
     ]);
 
-    const teams = await svc.browseProjectWorkspace(companyId, { projectId, workspaceId, path: "content/teams" });
+    const teams = await svc.browseProjectWorkspace(companyId, { projectId, workspaceId, path: "content/teams" }, "system");
     expect(teams.entries).toEqual([
       expect.objectContaining({
         name: "editorial",
@@ -2728,7 +2728,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       projectIds: [projectId],
       mode: "import",
       selection: [{ workspaceId, path: "content/teams/editorial" }],
-    });
+    }, "system");
     expect(imported.imported).toEqual([expect.objectContaining({ name: "Editorial" })]);
   });
 
@@ -2760,7 +2760,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       isPrimary: true,
     });
 
-    const result = await svc.scanProjectWorkspaces(companyId, { mode: "preview", workspaceIds: [workspaceId] });
+    const result = await svc.scanProjectWorkspaces(companyId, { mode: "preview", workspaceIds: [workspaceId] }, "system");
 
     expect(result).toMatchObject({
       scannedProjects: 1,
@@ -2820,13 +2820,13 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       mode: "import",
       workspaceIds: [workspaceId],
       selection: [{ workspaceId, path: ".codex/skills/same-path" }],
-    });
+    }, "system");
     expect(imported.imported).toHaveLength(1);
 
     const preview = await svc.scanProjectWorkspaces(companyId, {
       mode: "preview",
       workspaceIds: [workspaceId],
-    });
+    }, "system");
     expect(preview.conflicts).toEqual([]);
     expect(preview.candidates).toEqual([
       expect.objectContaining({
@@ -2884,7 +2884,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     const preview = await svc.scanProjectWorkspaces(companyId, {
       mode: "preview",
       workspaceIds: [workspaceId],
-    });
+    }, "system");
 
     expect(preview.conflicts).toEqual([]);
     expect(preview.candidates).toEqual([
@@ -2943,7 +2943,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     const preview = await svc.scanProjectWorkspaces(companyId, {
       mode: "preview",
       workspaceIds: [workspaceId],
-    });
+    }, "system");
     expect(preview.candidates).toEqual([
       expect.objectContaining({ slug: "shared-skill", status: "conflict", existingSkillId }),
     ]);
@@ -2956,7 +2956,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
         path: ".cursor/skills/shared-skill",
         slug: "shared-skill-project",
       }],
-    });
+    }, "system");
 
     expect(result.conflicts).toEqual([]);
     expect(result.imported).toEqual([
@@ -3012,7 +3012,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
         { workspaceId, path: ".gemini/skills/selected-skill" },
         { workspaceId, path: "../../outside-workspace" },
       ],
-    });
+    }, "system");
 
     expect(result.imported).toHaveLength(1);
     expect(result.imported[0]).toMatchObject({
@@ -3107,7 +3107,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
         { workspaceId, path: ".gemini/skills/selected-skill" },
         { workspaceId: otherWorkspaceId, path: ".codex/skills/foreign-skill" },
       ],
-    });
+    }, "system");
 
     expect(result.scannedProjects).toBe(1);
     expect(result.scannedWorkspaces).toBe(1);
@@ -3177,7 +3177,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
         { workspaceId, path: ".codex/skills/linked-skill" },
         { workspaceId, path: "linked-directory" },
       ],
-    });
+    }, "system");
 
     expect(result.imported).toEqual([]);
     expect(result.candidates).toEqual([
@@ -3235,7 +3235,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       isPrimary: true,
     });
 
-    const firstImport = await svc.scanProjectWorkspaces(companyId, { projectIds: [projectId] });
+    const firstImport = await svc.scanProjectWorkspaces(companyId, { projectIds: [projectId] }, "system");
 
     expect(firstImport.imported).toHaveLength(1);
     const importedSkill = firstImport.imported[0]!;
@@ -3253,7 +3253,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     });
     await fs.writeFile(skillFile, "---\nname: Project Skill\n---\n\nUpdated content.\n", "utf8");
 
-    const reimport = await svc.scanProjectWorkspaces(companyId, { projectIds: [projectId] });
+    const reimport = await svc.scanProjectWorkspaces(companyId, { projectIds: [projectId] }, "system");
 
     expect(reimport.updated).toHaveLength(1);
     expect(reimport.updated[0]).toMatchObject({

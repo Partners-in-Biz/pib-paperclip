@@ -1,0 +1,7 @@
+{
+  "nodes": 500,
+  "measuredOnCommit": "e33502365",
+  "p95StepMs": 80.2,
+  "baselineRunsMs": [85.4, 74.9],
+  "note": "Median of five per-pass p95 pan/zoom step times at 500 nodes, 1440x900, headless Chromium on the shared VPS; p95StepMs is the mean of baselineRunsMs. Re-measure with PLANNING_CANVAS_PERF_WRITE_BASELINE=1."
+}

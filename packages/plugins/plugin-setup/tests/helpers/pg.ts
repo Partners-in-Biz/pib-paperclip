@@ -17,10 +17,15 @@ const EMBEDDED = join(PLUGIN_ROOT, "../../db/node_modules/embedded-postgres/dist
 
 type PgClient = { query: (sql: string, values?: unknown[]) => Promise<{ rows: unknown[]; rowCount: number | null }>; connect: () => Promise<void>; end: () => Promise<void> };
 
-/** True when the specs can start a database. Throws under CI instead of returning false. */
+/**
+ * True when the specs can start a database. Under CI a missing embedded Postgres throws instead of returning
+ * false. Root is the exception: Postgres refuses to start as root, and the VPS deploy gate runs as root with
+ * CI=1 (pnpm-pinned.sh), so the specs skip there; real CI does not run as root and still enforces them
+ * (PAR-9309, PAR-13055; same rule as `databaseRequired` in pib-plugin-kit).
+ */
 export async function embeddedAvailable(): Promise<boolean> {
-  // Postgres refuses to start as root (the VPS deploy gate runs as root, PAR-9309).
-  const reason = process.getuid?.() === 0 ? "running as root" : await import(EMBEDDED).then(() => null, (error: unknown) => String(error));
+  if (process.getuid?.() === 0) return false;
+  const reason = await import(EMBEDDED).then(() => null, (error: unknown) => String(error));
   if (reason && process.env.CI) throw new Error(`Database specs must run under CI, but embedded Postgres is not usable: ${reason}`);
   return reason === null;
 }

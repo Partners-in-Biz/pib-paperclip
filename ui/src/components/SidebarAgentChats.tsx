@@ -6,6 +6,7 @@ import { authApi } from "@/api/auth";
 import { useCompany } from "@/context/CompanyContext";
 import {
   useResourceMemberships,
+  useResourceMembershipControls,
   useResourceMembershipMutation,
 } from "@/hooks/useResourceMemberships";
 import { useRecentAgentChats } from "@/lib/recent-agent-chats";
@@ -48,6 +49,7 @@ function CompanyAgentChats({ companyId, userId }: { companyId: string | null; us
   const recentIds = useRecentAgentChats(companyId ?? "", userId);
   const memberships = useResourceMemberships(companyId);
   const mutation = useResourceMembershipMutation(companyId);
+  const membershipControls = useResourceMembershipControls(companyId);
   const stars = memberships.data?.starredAgentIds ?? [];
   const location = useLocation();
   const activeRef = location.pathname.match(/\/chats\/([^/]+)/)?.[1];
@@ -60,14 +62,14 @@ function CompanyAgentChats({ companyId, userId }: { companyId: string | null; us
         activeId={active?.id ?? ""}
         starredIds={stars}
         recentIds={recentIds}
-        onToggleStar={(id) => {
+        onToggleStar={membershipControls ? (id) => {
           mutation.mutate({
             resourceType: "agent",
             resourceId: id,
             resourceName: agents.find((agent) => agent.id === id)?.name ?? "Agent",
             starred: !stars.includes(id),
           });
-        }}
+        } : undefined}
       />
       <AgentChatPicker
         agents={agents}

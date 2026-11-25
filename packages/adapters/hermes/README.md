@@ -359,6 +359,28 @@ The adapter scans two skill sources and merges them:
 The `listSkills` / `syncSkills` APIs expose a unified snapshot so the
 Paperclip UI can display both managed and native skills in one view.
 
+#### One skills dir per agent on a shared HERMES_HOME
+
+By default the adapter links each agent's Paperclip skills into
+`$HERMES_HOME/skills`. When several agents share one HERMES_HOME, every agent
+then sees the union of all their skills, and one agent's sync can remove links
+another agent needs. To give each agent its own set, add this to the profile's
+`config.yaml`:
+
+```yaml
+skills:
+  external_dirs:
+    - ${PAPERCLIP_HERMES_SKILLS_DIR}
+```
+
+The adapter then links each agent's skills into
+`$HERMES_HOME/paperclip-agents/<agentId>/skills`, sets
+`PAPERCLIP_HERMES_SKILLS_DIR` to that dir for the run only, and removes its
+Paperclip links from the shared `$HERMES_HOME/skills`. Hermes' own and
+agent-created skills in `$HERMES_HOME/skills` still load for every agent.
+`config.yaml`, auth and `state.db` stay shared. Remove the entry to go back to
+the shared dir (the next sync relinks it).
+
 ## Development
 
 ```bash

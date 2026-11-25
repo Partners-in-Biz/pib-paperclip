@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, companies, createDb, documents, heartbeatRunEvents, heartbeatRuns, issueComments, issueDocuments, issues, issueThreadInteractions } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
-import { buildNativeSessionHandoff, createNativeSessionHandoffLoader, NATIVE_HANDOFF_MAX_BYTES, renderNativeSessionHandoff } from "./native-session-handoff.js";
+import { buildNativeSessionHandoff, createNativeSessionHandoffLoader, currentRequestHistoryCommentIds, NATIVE_HANDOFF_MAX_BYTES, renderNativeSessionHandoff } from "./native-session-handoff.js";
+import { selectPaperclipPromptSections } from "@paperclipai/adapter-utils/server-utils";
 import { buildNativeExecutionInput } from "./native-execution-input.js";
 import { buildNativeModelEnvelope } from "@paperclipai/paperclip-runner";
 import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
@@ -34,6 +35,24 @@ describe("bounded fresh-session handoff", () => {
     expect("task" in resumed && resumed.task.prompt).not.toContain("original goal");
     // The runtime uses the same full envelope if actual recovery fails.
     expect(buildNativeModelEnvelope(input).task.prompt).toContain("Lead with the answer");
+  });
+
+  it("reads comment IDs only from a full-history continuation envelope", () => {
+    const messages = [{ id: "a" }, { id: "b" }, { id: 7 }, {}];
+    expect(currentRequestHistoryCommentIds({ executionContinuation: { coverage: { kind: "full_task_history" }, messages } })).toEqual(["a", "b"]);
+    expect(currentRequestHistoryCommentIds({ executionContinuation: { coverage: { kind: "task_history_delta" }, messages } })).toEqual([]);
+    expect(currentRequestHistoryCommentIds({ executionContinuation: { coverage: { kind: "full_task_history" } } })).toEqual([]);
+    expect(currentRequestHistoryCommentIds(null)).toEqual([]);
+    expect(currentRequestHistoryCommentIds({})).toEqual([]);
+  });
+
+  it("names comments left to the current request context", () => {
+    const rendered = renderNativeSessionHandoff({ issueId: "task", generation: null, omittedEntriesAtLeast: 0, commentsInCurrentRequest: 3,
+      entries: [{ kind: "document", id: "d", body: "plan" }] });
+    expect(rendered).toContain("Current request and continuation context");
+    expect(JSON.parse(rendered.split("\n").at(-1)!)).toMatchObject({ commentsInCurrentRequest: 3, truncated: false });
+    const plain = renderNativeSessionHandoff({ issueId: "task", generation: null, omittedEntriesAtLeast: 0, entries: [{ kind: "document", id: "d", body: "plan" }] });
+    expect(plain).not.toContain("commentsInCurrentRequest");
   });
 });
 
@@ -192,5 +211,86 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(result).not.toContain("QUARANTINED RUN SUMMARY");
     expect(result).toContain("Quarantined low-trust output omitted");
     expect(result).toContain(runId);
+  });
+});
+
+(support.supported ? describe : describe.skip)("fresh handoff beside a full-history wake", () => {
+  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let db: ReturnType<typeof createDb>;
+  const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), documentId = randomUUID();
+  const description = "## Objective\n\nShip the ledger export with per-row audit trails.\n\n## Acceptance Criteria\n\n- Export runs nightly";
+  const comments = Array.from({ length: 8 }, (_, i) => ({
+    id: randomUUID(), body: `COMMENT_${i}: ` + "detail ".repeat(300), authorUserId: i % 2 ? null : "user", authorAgentId: i % 2 ? agentId : null,
+    createdAt: new Date(1_000 + i * 1_000),
+  }));
+  const lateComment = { id: randomUUID(), body: "LATE_COMMENT_NOT_IN_WAKE", authorUserId: "user", createdAt: new Date(12_000) };
+  beforeAll(async () => {
+    database = await startEmbeddedPostgresTestDatabase("paperclip-native-handoff-dedupe-");
+    db = createDb(database.connectionString);
+    await db.insert(companies).values({ id: companyId, name: "Dedupe", issuePrefix: "DEDU" });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Leo", role: "general", adapterType: "claude_local" });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Ledger export", description, status: "in_progress", assigneeAgentId: agentId });
+    await db.insert(issueComments).values([...comments, lateComment].map((comment) => ({ companyId, issueId, ...comment })));
+    await db.insert(documents).values({ id: documentId, companyId, latestBody: "PLAN_BODY: nightly job then audit table", updatedAt: new Date(5_000) });
+    await db.insert(issueDocuments).values({ companyId, issueId, documentId, key: "plan", createdAt: new Date(5_000) });
+  });
+  afterAll(async () => database?.cleanup());
+
+  const wakeFor = (messages: typeof comments) => {
+    const executionContinuation = {
+      version: 1, companyId, issueId, trigger: { reason: "issue_assigned", interactionId: null, sourceRunId: null }, originCommentIds: [],
+      objective: description, objectiveSource: { kind: "description", id: issueId, revision: "rev" },
+      messages: messages.map((comment) => ({ id: comment.id, authorType: comment.authorAgentId ? "agent" : "user", authorId: comment.authorAgentId ?? comment.authorUserId,
+        body: comment.body, createdAt: comment.createdAt.toISOString(), updatedAt: comment.createdAt.toISOString(), deleted: false, sourceTrust: null })),
+      humanResponses: [], interactionOutcomes: [], completedWork: null, unresolvedInteractionIds: [],
+      coverage: { kind: "full_task_history", throughCommentId: messages.at(-1)!.id, summaryThroughCommentId: null },
+    };
+    return { reason: "issue_assigned", issue: { id: issueId, identifier: "DEDU-1", title: "Ledger export", description, status: "in_progress" }, executionContinuation };
+  };
+  const renderPrompt = (wake: unknown, handoff: string | null) => {
+    const { taskContextNote, wakePrompt } = selectPaperclipPromptSections({
+      paperclipTaskMarkdownAssignment: `Issue description:\n${description}`,
+      paperclipFreshSessionHandoffMarkdown: handoff ?? undefined,
+      paperclipWake: wake,
+    });
+    return `${taskContextNote}\n\n${wakePrompt}`;
+  };
+  const occurrences = (text: string, needle: string) => text.split(needle).length - 1;
+
+  it("serializes each comment body once and shrinks the fresh prompt", async () => {
+    const wake = wakeFor(comments);
+    const before = new Date(20_000);
+    const full = await buildNativeSessionHandoff({ db, companyId, issueId, agentId, before });
+    const deduped = await createNativeSessionHandoffLoader({ db, companyId, issueId, agentId, before,
+      currentRequestCommentIds: () => currentRequestHistoryCommentIds(wake) })();
+    const fullPrompt = renderPrompt(wake, full);
+    const dedupedPrompt = renderPrompt(wake, deduped);
+    // Baseline: the old handoff repeated every recent comment.
+    expect(occurrences(fullPrompt, "COMMENT_7: ")).toBe(2);
+    for (const comment of comments) expect(occurrences(dedupedPrompt, comment.body)).toBe(1);
+    // Comments the wake does not carry, documents and retrieval pointers stay.
+    expect(deduped).toContain("LATE_COMMENT_NOT_IN_WAKE");
+    expect(deduped).toContain("PLAN_BODY");
+    expect(deduped).toContain("get_task_history");
+    expect(JSON.parse(deduped!.split("\n").at(-1)!)).toMatchObject({ commentsInCurrentRequest: comments.length, truncated: false, omittedEntriesAtLeast: 0 });
+    const saved = Buffer.byteLength(fullPrompt) - Buffer.byteLength(dedupedPrompt);
+    expect(saved).toBeGreaterThan(comments.reduce((total, comment) => total + comment.body.length, 0) / 2);
+  });
+
+  it("keeps the full comment replay when the wake has no full-history envelope", async () => {
+    const wake = { ...wakeFor(comments), executionContinuation: { ...wakeFor(comments).executionContinuation, coverage: { kind: "task_history_delta" } } };
+    const load = createNativeSessionHandoffLoader({ db, companyId, issueId, agentId, before: new Date(20_000),
+      currentRequestCommentIds: () => currentRequestHistoryCommentIds(wake) });
+    const history = await load();
+    expect(history).toContain("COMMENT_7: ");
+    expect(history).not.toContain("commentsInCurrentRequest");
+  });
+
+  it("returns no handoff when the wake already carries every history entry", async () => {
+    const all = [...comments, lateComment as typeof comments[number]];
+    await db.delete(issueDocuments).where((await import("drizzle-orm")).eq(issueDocuments.issueId, issueId));
+    const history = await buildNativeSessionHandoff({ db, companyId, issueId, agentId, before: new Date(20_000),
+      currentRequestCommentIds: [...all.map(({ id }) => id), "not-a-uuid"] });
+    expect(history).toBeNull();
   });
 });

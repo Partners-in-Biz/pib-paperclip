@@ -56,7 +56,7 @@ import type {
   PrincipalType,
   EnvSecretRefBinding,
 } from "@paperclipai/shared";
-import type { PluginPerformActionContext } from "./protocol.js";
+import type { PluginDataContext, PluginPerformActionContext } from "./protocol.js";
 
 // ---------------------------------------------------------------------------
 // Re-exports from @paperclipai/shared (plugin authors import from one place)
@@ -1030,9 +1030,14 @@ export interface PluginDataClient {
    * Register a handler for a plugin-defined data key.
    *
    * @param key - Stable string identifier for this data type (e.g. `"sync-health"`)
-   * @param handler - Async function that receives request params and returns JSON-serializable data
+   * @param handler - Async function that receives request params plus the
+   *   host's immutable acting person (`context.actor`, `{}` from an older host)
+   *   and returns JSON-serializable data. Handlers may ignore the second argument.
    */
-  register(key: string, handler: (params: Record<string, unknown>) => Promise<unknown>): void;
+  register(
+    key: string,
+    handler: (params: Record<string, unknown>, context: PluginDataContext) => Promise<unknown>,
+  ): void;
 }
 
 /**
@@ -1208,8 +1213,18 @@ export interface PluginTelemetryClient {
 export interface PluginCompaniesClient {
   /**
    * List companies visible to this plugin.
+   *
+   * Inside a host invocation (action, data, tool, page route) the answer is the
+   * invocation's company. Outside one (jobs, timers, webhooks, start-up) it is
+   * every company.
+   *
+   * `actionableOnly: true` returns only the companies this call may act for:
+   * inside an invocation, the invocation's company (saved settings or not);
+   * outside one, the companies with saved settings for this plugin. Both
+   * filters run before `limit` and `offset`. A host that predates the
+   * parameter ignores it and returns the plain answer.
    */
-  list(input?: { limit?: number; offset?: number }): Promise<Company[]>;
+  list(input?: { limit?: number; offset?: number; actionableOnly?: boolean }): Promise<Company[]>;
 
   /**
    * Get one company by ID.

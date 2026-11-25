@@ -4,7 +4,7 @@ import { renderAccessIdentity, type AccessSelectOption } from "./AccessSelectIde
 import { agentVisibilityFromPermissions, isSharedAgentVisibility } from "@/lib/issuePrivacy";
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Lock, Trash2, UserPlus } from "lucide-react";
+import { Lock, Trash2, UserPlus, Users } from "lucide-react";
 import type { Project } from "@paperclipai/shared";
 import { accessApi } from "@/api/access";
 import { agentsApi } from "@/api/agents";
@@ -17,7 +17,15 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { SearchableSelect, type SearchableSelectGroup } from "@/components/SearchableSelect";
 
+/**
+ * The sharing panel. On a private project the list decides who can discover it.
+ * On an open project (shown once the company's restriction switch is not off)
+ * it changes nothing for most people: only a restricted member needs a row to
+ * read the project and its tasks (PAR-12608 4.4). Agents never are restricted
+ * members, so an open project's picker offers people only.
+ */
 export function ProjectAccessMembers({ project, canManage }: { project: Project; canManage: boolean }) {
+  const restrictedOnly = project.visibility === "open";
   const [open, setOpen] = useState(false);
   const [selection, setSelection] = useState("");
   const queryClient = useQueryClient();
@@ -36,7 +44,7 @@ export function ProjectAccessMembers({ project, canManage }: { project: Project;
   const agentsQuery = useQuery({
     queryKey: queryKeys.agents.list(project.companyId),
     queryFn: () => agentsApi.list(project.companyId),
-    enabled: open,
+    enabled: open && !restrictedOnly,
   });
   // Read all three through the shared view: cached data stays usable during a
   // transient refetch failure,and a no-data failure drops into readable copy.
@@ -44,6 +52,8 @@ export function ProjectAccessMembers({ project, canManage }: { project: Project;
   const membersView = useQueryView(membersQuery);
   const directoryView = useQueryView(directoryQuery);
   const agentsView = useQueryView(agentsQuery);
+  // The agents query is off on an open project, so only the people directory counts there.
+  const directoryViews = restrictedOnly ? [directoryView.kind] : [directoryView.kind, agentsView.kind];
   const membersWaiting = ["loading", "reconnecting"].includes(membersView.kind);
   const activeKeys = useMemo(
     () => new Set((membersQuery.data ?? []).map((member) => `${member.subjectType}:${member.subjectId}`)),
@@ -59,14 +69,14 @@ export function ProjectAccessMembers({ project, canManage }: { project: Project;
         searchText: entry.user!.email ?? "",
         identity: <Identity name={entry.user!.name ?? entry.user!.email ?? "Unknown user"} avatarUrl={entry.user!.image} size="sm" />,
       }));
-    const agentOptions = (agentsQuery.data ?? [])
+    const agentOptions = restrictedOnly ? [] : (agentsQuery.data ?? [])
       .filter((agent) => !activeKeys.has(`agent:${agent.id}`))
       .map((agent) => ({ key: `agent:${agent.id}`, value: `agent:${agent.id}`, label: agent.name, identity: <><AgentAvatar agent={agent} size={24} /><span className="truncate">{agent.name}</span></> }));
     return [
       ...(people.length ? [{ id: "people", label: "People", options: people }] : []),
       ...(agentOptions.length ? [{ id: "agents", label: "Agents", options: agentOptions }] : []),
     ];
-  }, [activeKeys, agentsQuery.data, directoryQuery.data]);
+  }, [activeKeys, agentsQuery.data, directoryQuery.data, restrictedOnly]);
   const selectedAgent = selection.startsWith("agent:")
     ? agentsQuery.data?.find(agent => agent.id === selection.slice("agent:".length)) : null;
   const sharingWithSharedAgent = selectedAgent
@@ -99,31 +109,36 @@ export function ProjectAccessMembers({ project, canManage }: { project: Project;
   return (
     <>
       <Button variant="outline" size="sm" onClick={() => setOpen(true)}>
-        <Lock className="h-3.5 w-3.5" aria-hidden="true" /> {canManage ? "Manage access" : "View access"}
+        {restrictedOnly ? <Users className="h-3.5 w-3.5" aria-hidden="true" /> : <Lock className="h-3.5 w-3.5" aria-hidden="true" />}
+        {restrictedOnly
+          ? (canManage ? "Manage restricted access" : "View restricted access")
+          : (canManage ? "Manage access" : "View access")}
       </Button>
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Private project access</DialogTitle>
+            <DialogTitle>{restrictedOnly ? "Access for restricted members" : "Private project access"}</DialogTitle>
             <DialogDescription>
-              Members can discover this project and read every task in it. A task can still be shared directly.
+              {restrictedOnly
+                ? "Everyone else in the company already sees this open project. This list matters for restricted members only: they read the project and every task in it while they are on it."
+                : "Members can discover this project and read every task in it. A task can still be shared directly."}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
-            {directoryView.kind === "error" || agentsView.kind === "error" ? (
+            {directoryViews.includes("error") ? (
               <p className="text-sm text-destructive">Couldn&apos;t load the company access directory.</p>
             ) : null}
             <div className="flex items-end gap-2">
               <SearchableSelect
                 value={selection}
                 groups={groups}
-                renderValue={(option) => option ? renderAccessIdentity(option) : "Add a person or agent"}
+                renderValue={(option) => option ? renderAccessIdentity(option) : restrictedOnly ? "Add a person" : "Add a person or agent"}
                 renderOption={renderAccessIdentity}
                 onValueChange={(value) => setSelection(value)}
-                placeholder="Add a person or agent"
-                searchPlaceholder="Search people and agents"
+                placeholder={restrictedOnly ? "Add a person" : "Add a person or agent"}
+                searchPlaceholder={restrictedOnly ? "Search people" : "Search people and agents"}
                 emptyMessage="No more company members to add"
-                loading={[directoryView.kind, agentsView.kind].some(kind => ["loading", "reconnecting"].includes(kind))}
+                loading={directoryViews.some(kind => ["loading", "reconnecting"].includes(kind))}
                 className="min-w-0 flex-1"
               />
               <Button size="sm" disabled={!canManage || !selection || addMember.isPending} onClick={() => addMember.mutate()}>

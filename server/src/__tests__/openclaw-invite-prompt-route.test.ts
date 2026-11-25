@@ -289,6 +289,7 @@ describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
         companyIds: ["company-1"],
         source: "session",
         isInstanceAdmin: false,
+        memberships: [{ companyId: "company-1", status: "active", restricted: false, restrictionMode: "off" }],
       },
       db,
     );

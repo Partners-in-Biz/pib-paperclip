@@ -1736,7 +1736,10 @@ export function environmentService(db: Db) {
       const now = new Date();
       const releaseMetadata = options?.remoteExecutionTermination
         ? sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({ remoteExecutionTermination: options.remoteExecutionTermination })}::jsonb`
-        : sql`${environmentLeases.metadata} - 'remoteExecutionTermination'`;
+        // An ssh receipt proves one run's group gone and stays true; a later
+        // release without the option must not strip it (PAR-9961, 13.9).
+        : sql`case when ${environmentLeases.provider} = 'ssh' then ${environmentLeases.metadata}
+            else ${environmentLeases.metadata} - 'remoteExecutionTermination' end`;
       const cleanupSettled = options?.expectedPendingCleanupAttemptId && options.cleanupStatus === "success"
         && status !== "pending_cleanup";
       const row = await db.transaction(async tx => {

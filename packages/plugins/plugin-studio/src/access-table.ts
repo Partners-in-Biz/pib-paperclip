@@ -31,7 +31,7 @@ export const STUDIO_ACCESS_TABLE: AccessTable = Object.freeze({
 
   // Page actions.
   ...rows(VIEW, [
-    "asset-url", "asset-urls", "asset-data", "brand-kit", "drive-list", "drive-thumbs", "drive-transfer",
+    "asset-url", "asset-urls", "asset-data", "board-library", "brand-kit", "drive-list", "drive-thumbs", "drive-transfer",
     "prompt-templates", "canvas-templates", "canvas-text-drafts",
     "video-edit-list", "video-edit-get", "video-edit-render-status", "video-edit-versions-list", "video-edit-detect-beats",
   ]),

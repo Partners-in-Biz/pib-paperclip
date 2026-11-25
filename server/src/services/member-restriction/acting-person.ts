@@ -2,7 +2,8 @@ import type { Db } from "@paperclipai/db";
 import type { ActorCompanyMembership } from "@paperclipai/shared";
 import { forbidden, unprocessable, type HttpError } from "../../errors.js";
 import { recordMemberRestrictionDenial } from "./admin.js";
-import { actorPersonMembership } from "./actor-memberships.js";
+import { actorPersonMembership, loadActorMemberships } from "./actor-memberships.js";
+import { memberRestrictionUnavailable } from "./resolver.js";
 import { ruleGroupHBinding } from "./rule-group-h.js";
 
 /**
@@ -47,6 +48,27 @@ export async function actingPersonBoundByH(
     isInstanceAdmin: actor.type === "board" ? actor.isInstanceAdmin === true : undefined,
   });
   return binding.bound ? { personId: carried.personId, mode: binding.mode } : null;
+}
+
+/**
+ * H6, plugin-made tasks: whether rule group H binds the acting person core
+ * computed for a plugin call (a person with no membership here, such as the
+ * local board, is not bound). A failed read throws 503.
+ */
+export async function pluginActingPersonBoundByH(
+  db: Db,
+  personId: string,
+  companyId: string,
+): Promise<ActingPerson | null> {
+  let membership: ActorCompanyMembership | undefined;
+  try {
+    [membership] = await loadActorMemberships(db, { userId: personId, companyId, activeOnly: true });
+  } catch (error) {
+    throw memberRestrictionUnavailable(error);
+  }
+  if (!membership) return null;
+  const binding = await ruleGroupHBinding(db, { personId, companyId, membership });
+  return binding.bound ? { personId, mode: binding.mode } : null;
 }
 
 async function refuseOrRecord(

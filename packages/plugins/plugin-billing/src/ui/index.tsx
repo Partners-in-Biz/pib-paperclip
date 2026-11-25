@@ -285,3 +285,6 @@ function SidebarNavLink({ to, label, icon }: { to: string; label: string; icon: 
     </a>
   );
 }
+
+// Planning Canvas card for one invoice (PAR-14420). The worker checks every id again on every draw.
+export { BillingInvoiceCard } from "./invoice-card.js";

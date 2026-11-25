@@ -6,11 +6,11 @@
  */
 import { randomUUID } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { sameClient, scopeOfRow, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
+import { sameClient, scopeOfRow, type ActingRestriction, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
 import { iso, num, table } from "../db.js";
 import { StudioError } from "../errors.js";
 import { clientFilter } from "../page.js";
-import { scopeForWork, scopeInput } from "../scope.js";
+import { assertListOpen, assertOpenToPerson, personFilter, scopeForWork, scopeInput } from "../scope.js";
 import { editDuration, normalizeEdit, type EditDoc, type MediaClip, type StickerClip } from "./timeline.js";
 
 export const MAX_EDIT_TITLE = 200;
@@ -19,6 +19,8 @@ export const MAX_EDIT_VERSIONS = 100;
 export interface EditActor {
   userId?: string | null;
   agentId?: string | null;
+  /** The person path's member check (PAR-14298): a restricted member makes no client edit. Agents' tools pass none. */
+  restriction?: ActingRestriction;
 }
 
 interface EditRow {
@@ -148,6 +150,7 @@ export async function createVideoEdit(ctx: PluginContext, companyId: string, par
     if (!project) throw new StudioError(`Project ${projectId} was not found in this company.`, "unknown_project");
   }
   const where = await scopeForWork(ctx, companyId, scopeInput(params), projectId);
+  if (actor.restriction) assertOpenToPerson(where.scope, actor.restriction);
   const doc = await normalizeForWrite(ctx, companyId, params.doc === undefined ? { tracks: [] } : params.doc);
   const sourceAssetId = typeof params.sourceAssetId === "string" && params.sourceAssetId.trim() ? params.sourceAssetId.trim() : null;
   await assertAssets(ctx, companyId, where.scope, [...new Set([...editAssetIds(doc), ...(sourceAssetId ? [sourceAssetId] : [])])]);
@@ -160,10 +163,12 @@ export async function createVideoEdit(ctx: PluginContext, companyId: string, par
   return getVideoEdit(ctx, companyId, id);
 }
 
-export async function listVideoEdits(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
+/** With a person's `restriction` (PAR-14298) a restricted member's list holds own work only. Agents' tools pass none. */
+export async function listVideoEdits(ctx: PluginContext, companyId: string, params: Record<string, unknown>, restriction?: ActingRestriction) {
   const values: unknown[] = [companyId];
   let where = "WHERE company_id = $1 AND archived_at IS NULL";
-  const scope = clientFilter(params.client);
+  const filter = clientFilter(params.client);
+  const scope = restriction ? personFilter(filter, restriction) : filter;
   if (scope) {
     values.push(scope.kind, scope.id);
     where += ` AND client_kind = $${values.length - 1} AND client_ref = $${values.length}`;
@@ -174,7 +179,13 @@ export async function listVideoEdits(ctx: PluginContext, companyId: string, para
   }
   values.push(Math.min(Math.max(typeof params.limit === "number" ? params.limit : 50, 1), 200));
   const rows = await ctx.db.query<EditRow>(`SELECT * FROM ${table(ctx, "video_edits")} ${where} ORDER BY updated_at DESC LIMIT $${values.length}`, values);
+  if (restriction) assertListOpen(rows.some((r) => r.client_ref), restriction);
   return rows.map(summary);
+}
+
+/** The client a video edit is filed under (null for own work), for the person path's member check (PAR-14298). */
+export async function videoEditScope(ctx: PluginContext, companyId: string, id: string): Promise<ClientScope> {
+  return scopeOfRow(await getRow(ctx, companyId, editId(id)));
 }
 
 export async function getVideoEdit(ctx: PluginContext, companyId: string, id: string) {

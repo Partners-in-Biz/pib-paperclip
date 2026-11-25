@@ -751,6 +751,7 @@ export {
 
 export {
   createCompanyInviteSchema,
+  inviteMemberRestrictionSchema,
   createOpenClawInvitePromptSchema,
   acceptInviteSchema,
   listCompanyInvitesQuerySchema,
@@ -772,6 +773,7 @@ export {
   updateMemberRestrictionSchema,
   updateMemberRestrictionModeSchema,
   type CreateCompanyInvite,
+  type InviteMemberRestrictionInput,
   type CreateOpenClawInvitePrompt,
   type AcceptInvite,
   type ListCompanyInvitesQuery,
@@ -996,3 +998,5 @@ export * from "./skill-source.js";
 export * from "./agent-commentary.js";
 export * from "./task-workspace.js";
 export * from "./workspace-repository.js";
+export * from "./personal-note.js";
+export * from "./planning-canvas.js";

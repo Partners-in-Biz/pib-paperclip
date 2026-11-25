@@ -1916,11 +1916,11 @@ export async function issuesWithFailingRuns(db: SeoDb, companyId: string, issueI
   const ids = [...new Set(issueIds.filter(Boolean))].slice(0, 500);
   if (ids.length === 0) return out;
   const rows = await db.query(
-    `SELECT DISTINCT ON (r.context_snapshot->>'issueId') r.context_snapshot->>'issueId' AS issue_id, r.error_code, r.created_at::text AS at
+    `SELECT DISTINCT ON (r.issue_id::text) r.issue_id::text AS issue_id, r.error_code, r.created_at::text AS at
        FROM public.heartbeat_runs r
       WHERE r.company_id = $1 AND r.created_at >= now() - interval '30 days'
-        AND r.context_snapshot->>'issueId' IN (SELECT jsonb_array_elements_text($2::jsonb))
-      ORDER BY r.context_snapshot->>'issueId', r.created_at DESC`,
+        AND r.issue_id::text IN (SELECT jsonb_array_elements_text($2::jsonb))
+      ORDER BY r.issue_id::text, r.created_at DESC`,
     [companyId, JSON.stringify(ids)],
   );
   for (const row of rows) if (row.error_code === code && row.issue_id) out.set(String(row.issue_id), { at: s(row.at) });
@@ -1945,12 +1945,12 @@ export async function latestRuns(db: SeoDb, companyId: string, issueIds: string[
   const ids = [...new Set(issueIds.filter(Boolean))].slice(0, 500);
   if (ids.length === 0) return out;
   const rows = await db.query(
-    `SELECT DISTINCT ON (r.context_snapshot->>'issueId') r.context_snapshot->>'issueId' AS issue_id, r.error, r.created_at::text AS at,
+    `SELECT DISTINCT ON (r.issue_id::text) r.issue_id::text AS issue_id, r.error, r.created_at::text AS at,
             (r.status IN ('queued', 'running') AND r.created_at >= now() - interval '2 hours') AS active
        FROM public.heartbeat_runs r
       WHERE r.company_id = $1 AND r.created_at >= now() - ($3::int * interval '1 day')
-        AND r.context_snapshot->>'issueId' IN (SELECT jsonb_array_elements_text($2::jsonb))
-      ORDER BY r.context_snapshot->>'issueId', r.created_at DESC`,
+        AND r.issue_id::text IN (SELECT jsonb_array_elements_text($2::jsonb))
+      ORDER BY r.issue_id::text, r.created_at DESC`,
     [companyId, JSON.stringify(ids), days],
   );
   for (const row of rows) if (row.issue_id) out.set(String(row.issue_id), { error: s(row.error), at: s(row.at), active: row.active === true || row.active === "t" || row.active === "true" });
@@ -2092,10 +2092,10 @@ export async function issuesWithActiveRuns(db: SeoDb, companyId: string, issueId
   const ids = [...new Set(issueIds.filter(Boolean))].slice(0, 500);
   if (ids.length === 0) return new Set();
   const rows = await db.query(
-    `SELECT DISTINCT r.context_snapshot->>'issueId' AS issue_id
+    `SELECT DISTINCT r.issue_id::text AS issue_id
        FROM public.heartbeat_runs r
       WHERE r.company_id = $1 AND r.status IN ('queued', 'running') AND r.created_at >= now() - interval '2 days'
-        AND r.context_snapshot->>'issueId' IN (SELECT jsonb_array_elements_text($2::jsonb))`,
+        AND r.issue_id::text IN (SELECT jsonb_array_elements_text($2::jsonb))`,
     [companyId, JSON.stringify(ids)],
   );
   return new Set(rows.map((r) => String(r.issue_id)).filter(Boolean));
@@ -2106,10 +2106,10 @@ export async function issuesWithStartedRuns(db: SeoDb, companyId: string, issueI
   const ids = [...new Set(issueIds.filter(Boolean))].slice(0, 500);
   if (ids.length === 0) return out;
   const rows = await db.query(
-    `SELECT r.context_snapshot->>'issueId' AS issue_id, min(r.started_at)::text AS at
+    `SELECT r.issue_id::text AS issue_id, min(r.started_at)::text AS at
        FROM public.heartbeat_runs r
       WHERE r.company_id = $1 AND r.created_at >= now() - interval '30 days' AND r.started_at IS NOT NULL
-        AND r.context_snapshot->>'issueId' IN (SELECT jsonb_array_elements_text($2::jsonb))
+        AND r.issue_id::text IN (SELECT jsonb_array_elements_text($2::jsonb))
       GROUP BY 1`,
     [companyId, JSON.stringify(ids)],
   );

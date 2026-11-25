@@ -16,7 +16,9 @@ import { forbidden, unprocessable } from "../errors.js";
 import { aiConnectionCredentialNotSharedFailure } from "../services/ai-connection-configuration-failure.js";
 import * as executionContinuation from "../services/execution-continuation.js";
 import * as environmentOrchestrator from "../services/environment-run-orchestrator.js";
-import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
+import { hasRemoteTerminationReceipt, remoteTerminationReceipt } from "../services/remote-execution-termination.js";
+import { startSshRunRecoveryChecks } from "../services/heartbeat/remote-run-recovery.js";
+import { currentProcessSpaceHash } from "../services/controller-process-identity.js";
 import { legacyDispositionFingerprint, LEGACY_DISPOSITION_REPAIR_INSTRUCTION } from "../services/recovery/legacy-continuation.js";
 import * as controllerLeases from "../services/legacy-controller-lease.js";
 import * as instructionWorkingCopies from "../services/agent-instruction-working-copies.js";
@@ -261,6 +263,16 @@ vi.mock("../adapters/index.ts", async () => {
       execute: mockAdapterExecute,
     })),
   };
+});
+
+// PAR-9919: the remote check and the run-dir removal of an ssh lease; every
+// other host goes to the real module.
+const sshMocks = vi.hoisted(() => ({ checkRemoteRun: vi.fn(), runSshCommand: vi.fn() }));
+vi.mock("@paperclipai/adapter-utils/ssh", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@paperclipai/adapter-utils/ssh")>();
+  sshMocks.checkRemoteRun.mockImplementation(actual.checkRemoteRun);
+  sshMocks.runSshCommand.mockImplementation(actual.runSshCommand);
+  return { ...actual, checkRemoteRun: sshMocks.checkRemoteRun, runSshCommand: sshMocks.runSshCommand };
 });
 
 import {
@@ -892,6 +904,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     runErrorCode?: string | null;
     runError?: string | null;
     contextSnapshot?: Record<string, unknown>;
+    processHostHash?: string | null;
   }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -958,6 +971,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       },
       processPid: input?.processPid ?? null,
       processGroupId: input?.processGroupId ?? null,
+      ...(input?.processHostHash !== undefined
+        ? { processHostHash: input.processHostHash, processStartedAt: new Date("2026-03-19T00:00:00.000Z") } : {}),
       processLossRetryCount: input?.processLossRetryCount ?? 0,
       ...(input?.runtimeMode ? { runtimeMode: input.runtimeMode } : {}),
       errorCode: input?.runErrorCode ?? null,
@@ -1018,6 +1033,226 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     return { environmentId, leaseId };
   }
+
+  describe("restart recovery of a legacy ssh run (PAR-9919)", () => {
+    const sshConfig = { host: "mac.test", port: 22, username: "max", remoteWorkspacePath: "/Users/max/ws/",
+      privateKey: null, knownHosts: null, strictHostKeyChecking: true };
+    const goneCheck = { result: "gone", basis: "group_empty", pgid: 4242,
+      leaderStart: "Thu Mar 19 00:00:00 2026", checkedAt: "2026-03-19T00:10:00.000Z" } as const;
+    // Remote state by run dir: a check result, or a function that returns one.
+    const remote = new Map<string, unknown>();
+    let failRemovals = false;
+    const callsFor = (mock: typeof sshMocks.checkRemoteRun, text: string) =>
+      mock.mock.calls.filter(call => JSON.stringify(call).includes(text)).length;
+    const removalsFor = (runDir: string) => sshMocks.runSshCommand.mock.calls
+      .filter(call => String(call[1]).includes("rm -rf") && String(call[1]).includes(runDir)).length;
+    const runRow = async (id: string) => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)))[0]!;
+    const leaseRow = async (id: string) => (await db.select().from(environmentLeases).where(eq(environmentLeases.id, id)))[0]!;
+
+    beforeEach(async () => {
+      const actual = await vi.importActual<typeof import("@paperclipai/adapter-utils/ssh")>("@paperclipai/adapter-utils/ssh");
+      remote.clear();
+      failRemovals = false;
+      sshMocks.checkRemoteRun.mockImplementation(async (config, metadata) => {
+        const entry = remote.get(String((metadata as { remoteRunDir?: unknown } | null)?.remoteRunDir));
+        if (entry === undefined) return actual.checkRemoteRun(config, metadata);
+        return typeof entry === "function" ? (entry as () => unknown)() : entry;
+      });
+      sshMocks.runSshCommand.mockImplementation(async (config, script, options) => {
+        if ((config as { host?: string }).host !== "mac.test") return actual.runSshCommand(config, script, options);
+        if (failRemovals) throw new Error("connection reset by peer");
+        return { stdout: "removed\n", stderr: "" };
+      });
+    });
+
+    /** A legacy run dispatched over ssh by a controller of an earlier boot that is gone. */
+    async function seedSshRun(options: { lease?: "ssh" | "ssh_without_run_dir" | "local" | "sandbox";
+      controller?: "gone" | "current" } = {}) {
+      const shape = options.lease ?? "ssh";
+      const fixture = await seedRunFixture({ adapterType: "codex_local", agentStatus: "idle", runtimeMode: "legacy",
+        processPid: 4242, processGroupId: 4242, processHostHash: "remote" });
+      const controller = { bootId: randomUUID(), pid: 2_000_000_001, hostHash: currentProcessSpaceHash(),
+        processStartedAt: new Date(Date.now() - 60_000).toISOString() };
+      await db.update(heartbeatRuns).set(options.controller === "current"
+        ? { controllerBootId: controllerLeases.legacyControllerBootId, executionStage: "dispatching",
+          controllerLeaseExpiresAt: new Date(Date.now() + 60_000) }
+        : { controllerBootId: controller.bootId, controllerProcess: controller, executionStage: "dispatching",
+          controllerLeaseExpiresAt: new Date(Date.now() - 1_000) })
+        .where(eq(heartbeatRuns.id, fixture.runId));
+      const environmentId = randomUUID();
+      const ssh = shape === "ssh" || shape === "ssh_without_run_dir";
+      await db.insert(environments).values({ id: environmentId, name: `par-9919-${environmentId}`,
+        driver: ssh ? "ssh" : shape, status: "active", config: ssh ? sshConfig : {} });
+      const runDir = `/Users/max/ws/.paperclip-runs/${fixture.runId}`;
+      const [lease] = await db.insert(environmentLeases).values({
+        companyId: fixture.companyId, environmentId, issueId: fixture.issueId, heartbeatRunId: fixture.runId,
+        status: "active", leasePolicy: "ephemeral",
+        provider: ssh ? "ssh" : shape === "sandbox" ? "e2b" : "local",
+        providerLeaseId: ssh ? "ssh://max@mac.test:22/Users/max/ws/" : shape === "sandbox" ? `sbx-${fixture.runId}` : null,
+        metadata: ssh
+          ? { driver: "ssh", remoteWorkspacePath: "/Users/max/ws/", remoteCwd: "/Users/max/ws/",
+            ...(shape === "ssh" ? { remoteRunDir: runDir } : {}) }
+          : { driver: shape },
+      }).returning();
+      return { ...fixture, environmentId, leaseId: lease!.id, runDir };
+    }
+
+    async function expectSettledWithReceipt(f: { runId: string; leaseId: string }) {
+      expect(await runRow(f.runId)).toMatchObject({ status: "failed", errorCode: "process_lost" });
+      const released = await leaseRow(f.leaseId);
+      expect(released).toMatchObject({ status: "failed", cleanupStatus: "success" });
+      expect(hasRemoteTerminationReceipt(released)).toBe(true);
+      expect(released.metadata!.remoteExecutionTermination).toMatchObject({ state: "stopped",
+        evidence: { basis: goneCheck.basis, checkedAt: goneCheck.checkedAt } });
+    }
+
+    async function expectDetached(f: { runId: string; leaseId: string }) {
+      expect(await runRow(f.runId)).toMatchObject({ status: "running", errorCode: "process_detached" });
+      const kept = await leaseRow(f.leaseId);
+      expect(kept).toMatchObject({ status: "active", releasedAt: null });
+      expect(hasRemoteTerminationReceipt(kept)).toBe(false);
+    }
+
+    it.each([["gone", goneCheck], ["never_spawned", { ...goneCheck, basis: "never_spawned", pgid: undefined }]] as const)(
+      "settles the run as lost on a %s check, writes the receipt and removes the run dir, without a signal",
+      async (_label, check) => {
+        const f = await seedSshRun();
+        remote.set(f.runDir, check);
+        const runtime = environmentRuntimeService(db);
+        const release = vi.spyOn(runtime, "releaseRunLeases");
+        const result = await heartbeatService(db, { environmentRuntime: runtime }).reapOrphanedRuns();
+        expect(result.runIds).toContain(f.runId);
+        expect(await runRow(f.runId)).toMatchObject({ status: "failed", errorCode: "process_lost" });
+        const released = await leaseRow(f.leaseId);
+        expect(released).toMatchObject({ status: "failed", cleanupStatus: "success" });
+        expect(released.metadata!.remoteExecutionTermination).toMatchObject({ state: "stopped",
+          evidence: { basis: check.basis, checkedAt: check.checkedAt } });
+        // One check only: the release used it and made no ssh check of its own.
+        expect(callsFor(sshMocks.checkRemoteRun, f.runDir)).toBe(1);
+        expect(release.mock.calls.find(call => call[0] === f.runId)?.[5]?.remoteChecks?.get(f.leaseId))
+          .toMatchObject({ result: "gone", basis: check.basis });
+        expect(removalsFor(f.runDir)).toBe(1);
+        expect(sshMocks.runSshCommand.mock.calls.filter(call => /\bkill\b/.test(String(call[1])))).toEqual([]);
+        expect(mockTerminateLocalService).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([
+      ["alive", { result: "alive", basis: "leader_live", checkedAt: goneCheck.checkedAt }],
+      ["unknown", { result: "unknown", basis: "check_failed", checkedAt: goneCheck.checkedAt }],
+    ] as const)("keeps the run process_detached on an %s check", async (_label, check) => {
+      const f = await seedSshRun();
+      remote.set(f.runDir, check);
+      await heartbeatService(db).reapOrphanedRuns();
+      await expectDetached(f);
+      expect(callsFor(sshMocks.checkRemoteRun, f.runDir)).toBe(1);
+      expect(removalsFor(f.runDir)).toBe(0);
+    });
+
+    it("keeps a lease without remoteRunDir (before PAR-9917) process_detached, with no check", async () => {
+      const f = await seedSshRun({ lease: "ssh_without_run_dir" });
+      await heartbeatService(db).reapOrphanedRuns();
+      await expectDetached(f);
+      expect(callsFor(sshMocks.checkRemoteRun, f.runId)).toBe(0);
+    });
+
+    it("lets a Stop that lands during the ssh round trip win: no settle and no receipt from this pass", async () => {
+      const f = await seedSshRun();
+      let first = true;
+      remote.set(f.runDir, async () => {
+        if (!first) return { result: "alive", basis: "leader_live", checkedAt: goneCheck.checkedAt };
+        first = false;
+        await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() }).where(eq(heartbeatRuns.id, f.runId));
+        return goneCheck;
+      });
+      const runtime = environmentRuntimeService(db);
+      const release = vi.spyOn(runtime, "releaseRunLeases");
+      const result = await heartbeatService(db, { environmentRuntime: runtime }).reapOrphanedRuns();
+      expect(result.runIds).not.toContain(f.runId);
+      expect(await runRow(f.runId)).toMatchObject({ status: "cancelled" });
+      expect((await runRow(f.runId)).errorCode).not.toBe("process_lost");
+      expect(hasRemoteTerminationReceipt(await leaseRow(f.leaseId))).toBe(false);
+      expect(release.mock.calls.some(call => call[5]?.remoteChecks)).toBe(false);
+      expect(removalsFor(f.runDir)).toBe(0);
+    });
+
+    it("ends in the same state when the sequence stops after the check, the settle, or the release", async () => {
+      const runtime = environmentRuntimeService(db);
+      const heartbeat = heartbeatService(db, { environmentRuntime: runtime });
+
+      // Stopped after 1: the check writes nothing; the next pass checks again.
+      const afterCheck = await seedSshRun();
+      remote.set(afterCheck.runDir, goneCheck);
+      const before = await runRow(afterCheck.runId);
+      expect(await startSshRunRecoveryChecks(db, runtime, [before]).remoteGone(afterCheck.runId))
+        .toEqual(new Map([[afterCheck.leaseId, goneCheck]]));
+      expect(await runRow(afterCheck.runId)).toEqual(before);
+      expect((await leaseRow(afterCheck.leaseId)).status).toBe("active");
+      await heartbeat.reapOrphanedRuns();
+      await expectSettledWithReceipt(afterCheck);
+      expect(removalsFor(afterCheck.runDir)).toBe(1);
+
+      // Stopped after 2: the run is settled and its lease still active; the
+      // orphan sweep (PAR-9961) checks again and releases it with the receipt.
+      const afterSettle = await seedSshRun();
+      remote.set(afterSettle.runDir, goneCheck);
+      const crash = vi.spyOn(runtime, "releaseRunLeases").mockRejectedValue(new Error("server exited"));
+      await heartbeat.reapOrphanedRuns();
+      crash.mockRestore();
+      expect(await runRow(afterSettle.runId)).toMatchObject({ status: "failed", errorCode: "process_lost" });
+      expect(await leaseRow(afterSettle.leaseId)).toMatchObject({ status: "active", releasedAt: null });
+      await heartbeat.reapOrphanedRuns();
+      await heartbeat.sweepOrphanedActiveLeases({ backoffMs: 0, leaseId: afterSettle.leaseId });
+      await expectSettledWithReceipt(afterSettle);
+      expect(removalsFor(afterSettle.runDir)).toBe(1);
+
+      // Stopped after 3: receipt written and lease released, run dir left. A
+      // later pass changes nothing; part 3's age sweep owns the dir.
+      const afterRelease = await seedSshRun();
+      remote.set(afterRelease.runDir, goneCheck);
+      failRemovals = true;
+      await heartbeat.reapOrphanedRuns();
+      failRemovals = false;
+      await expectSettledWithReceipt(afterRelease);
+      const settled = await leaseRow(afterRelease.leaseId);
+      await heartbeat.reapOrphanedRuns();
+      expect(await leaseRow(afterRelease.leaseId)).toEqual(settled);
+      expect(callsFor(sshMocks.checkRemoteRun, afterRelease.runDir)).toBe(1);
+      await expectSettledWithReceipt(afterRelease);
+    });
+
+    it("leaves local and sandbox runs and a run of the current controller boot unchanged", async () => {
+      const local = await seedSshRun({ lease: "local" });
+      const sandbox = await seedSshRun({ lease: "sandbox" });
+      const current = await seedSshRun({ controller: "current" });
+      remote.set(current.runDir, goneCheck);
+      const runtime = environmentRuntimeService(db);
+      const check = vi.spyOn(runtime, "checkSshRunLease");
+      await heartbeatService(db, { environmentRuntime: runtime }).reapOrphanedRuns();
+      await expectDetached(local);
+      await expectDetached(sandbox);
+      expect(await runRow(current.runId)).toMatchObject({ status: "running", errorCode: null });
+      expect((await leaseRow(current.leaseId)).status).toBe("active");
+      expect(check.mock.calls.filter(([leaseId]) =>
+        [local.leaseId, sandbox.leaseId, current.leaseId].includes(leaseId))).toEqual([]);
+    });
+
+    it("runs every check at once under one total cap; a check still pending counts as unknown", async () => {
+      const slow = await seedSshRun();
+      const fast = await seedSshRun();
+      const started: string[] = [];
+      const runtime = { checkSshRunLease: async (leaseId: string) => {
+        started.push(leaseId);
+        return leaseId === slow.leaseId ? new Promise<never>(() => undefined) : goneCheck;
+      } };
+      const checks = startSshRunRecoveryChecks(db, runtime, [await runRow(slow.runId), await runRow(fast.runId)], { totalMs: 200 });
+      const at = Date.now();
+      expect(await checks.remoteGone(slow.runId)).toBeNull();
+      expect(Date.now() - at).toBeLessThan(5_000);
+      expect(await checks.remoteGone(fast.runId)).toEqual(new Map([[fast.leaseId, goneCheck]]));
+      expect(started.sort()).toEqual([slow.leaseId, fast.leaseId].sort());
+    });
+  });
 
   it("does not reap active adapter executions started by another heartbeat service instance", async () => {
     let releaseAdapter!: () => void;
@@ -12333,7 +12568,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(sourceRun?.livenessState).toBe("plan_only");
     if (withLegacyReview) {
       expect(await db.select().from(issues).where(eq(issues.id, legacyReviewId))).toEqual(legacyReviewBefore);
-      const source = (await issueService(db).list(companyId)).find((issue) => issue.id === issueId);
+      const source = (await issueService(db).list(companyId, { readCondition: "system" })).find((issue) => issue.id === issueId);
       expect(source).toBeDefined();
       expect(source).not.toHaveProperty("productivityReview");
     }

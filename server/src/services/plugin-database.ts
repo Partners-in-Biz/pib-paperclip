@@ -292,6 +292,50 @@ function extractQualifiedRefs(statement: string): SqlRef[] {
   return refs;
 }
 
+/**
+ * Core tables a plugin reads through the chat-free views of migration 0450
+ * (chat privacy PAR-12776): no chat task, no chat message, and a chat's run
+ * without its error, output, result or context. `issue_documents` has no view.
+ */
+const CHAT_FREE_VIEW_SCHEMA = "plugin_core_read";
+const CHAT_FREE_CORE_TABLES: ReadonlySet<string> = new Set(["issues", "issue_comments", "heartbeat_runs"]);
+
+/**
+ * Rewrites each scanned `public.<table>` of the three chat-bearing core tables
+ * to `"plugin_core_read".<table>`. The table name stays, so `issues.id` and
+ * aliases still resolve. In a migration a `REFERENCES public.issues` stays: a
+ * foreign key needs the real table. A runtime query reads only, so it keeps none.
+ */
+export function pointCoreReadsAtChatFreeViews(
+  statement: string,
+  refs: readonly SqlRef[],
+  options: { keepForeignKeyTargets: boolean },
+): string {
+  let out = "";
+  let cursor = 0;
+  const replaced = refs
+    .filter((ref) => ref.schema === "public" && CHAT_FREE_CORE_TABLES.has(ref.table))
+    .filter((ref) => !(options.keepForeignKeyTargets && ref.keyword === "references"))
+    .sort((a, b) => a.start! - b.start!);
+  for (const ref of replaced) {
+    if (ref.start === undefined || ref.end === undefined || ref.start < cursor) {
+      throw new Error(`Plugin SQL reference to public.${ref.table} could not be rewritten`);
+    }
+    out += `${statement.slice(cursor, ref.start)}${quoteIdentifier(CHAT_FREE_VIEW_SCHEMA)}.${quoteIdentifier(ref.table)}`;
+    cursor = ref.end;
+  }
+  return out + statement.slice(cursor);
+}
+
+/** The accepted public references the token scan found, one per position. */
+function scannedPublicRefs(refs: readonly SqlRef[]): SqlRef[] {
+  const seen = new Map<number, SqlRef>();
+  for (const ref of refs) {
+    if (ref.schema === "public" && ref.start !== undefined && !seen.has(ref.start)) seen.set(ref.start, ref);
+  }
+  return [...seen.values()].sort((a, b) => a.start! - b.start!);
+}
+
 function assertAllowedPublicRead(
   ref: SqlRef,
   allowedCoreReadTables: ReadonlySet<string>,
@@ -325,11 +369,15 @@ function assertNoBannedSql(statement: string): void {
   }
 }
 
+/**
+ * Validates one plugin migration statement. Returns every accepted
+ * public.<table> reference with its offsets in the statement.
+ */
 export function validatePluginMigrationStatement(
   statement: string,
   namespace: string,
   coreReadTables: readonly PluginDatabaseCoreReadTable[] = [],
-): void {
+): SqlRef[] {
   assertIdentifier(namespace, "namespace");
   assertNoBannedSql(statement);
 
@@ -379,6 +427,7 @@ export function validatePluginMigrationStatement(
     }
     throw new Error(`Plugin SQL references schema "${ref.schema}" outside namespace "${namespace}"`);
   }
+  return scannedPublicRefs(refs);
 }
 
 /**
@@ -617,6 +666,22 @@ export function pluginDatabaseService(db: PluginDatabaseRootClient) {
     });
   }
 
+  /**
+   * Runs one plugin migration statement with search_path set to the plugin's
+   * schema, so a plain `issues` in a migration never reaches public. The host's
+   * own queries in the same transaction use unqualified names, so the previous
+   * search_path comes back right after. A failed statement aborts the
+   * transaction, which drops the local setting with it.
+   */
+  async function executeMigrationStatementInNamespace(client: PluginDatabaseClient, namespace: string, statement: SQL) {
+    const [current] = Array.from(
+      (await client.execute(sql`SELECT current_setting('search_path') AS search_path`)) as Iterable<{ search_path: string }>,
+    );
+    await client.execute(sql`SELECT set_config('search_path', ${quoteIdentifier(namespace)}, true)`);
+    await client.execute(statement);
+    await client.execute(sql`SELECT set_config('search_path', ${current?.search_path ?? ""}, true)`);
+  }
+
   return {
     ensureNamespace,
 
@@ -660,8 +725,9 @@ export function pluginDatabaseService(db: PluginDatabaseRootClient) {
               throw new Error(`Plugin migration ${migrationKey} is empty`);
             }
             for (const statement of statements) {
-              validatePluginMigrationStatement(statement, namespace.namespaceName, coreReadTables);
-              await client.execute(sql.raw(statement));
+              const coreRefs = validatePluginMigrationStatement(statement, namespace.namespaceName, coreReadTables);
+              const runnable = pointCoreReadsAtChatFreeViews(statement, coreRefs, { keepForeignKeyTargets: true });
+              await executeMigrationStatementInNamespace(client, namespace.namespaceName, sql.raw(runnable));
             }
             await client
               .insert(pluginMigrations)
@@ -717,8 +783,11 @@ export function pluginDatabaseService(db: PluginDatabaseRootClient) {
     async query<T = Record<string, unknown>>(pluginId: string, statement: string, params?: unknown[]): Promise<T[]> {
       const plugin = await getPluginRecord(pluginId);
       const namespace = await getRuntimeNamespace(pluginId);
-      validatePluginRuntimeQuery(statement, namespace, plugin.manifestJson.database?.coreReadTables ?? []);
-      const result = await executeInNamespace(namespace, bindSql(statement, params));
+      const coreRefs = validatePluginRuntimeQuery(statement, namespace, plugin.manifestJson.database?.coreReadTables ?? []);
+      // The ref offsets are positions in the single statement the validator read.
+      const single = splitSqlStatements(statement)[0]!;
+      const runnable = pointCoreReadsAtChatFreeViews(single, coreRefs, { keepForeignKeyTargets: false });
+      const result = await executeInNamespace(namespace, bindSql(runnable, params));
       return Array.from(result as Iterable<T>);
     },
 

@@ -13,6 +13,7 @@ import { withCompanyMemory } from "./memory.js";
 import { withAskingSection } from "./asking.js";
 import { withWritingSection } from "./writing.js";
 import { rememberCompany } from "./known-companies.js";
+import { runDetached } from "./detached.js";
 import { SKILL_KEPT_TOKENS, renderTokens } from "./tokens.js";
 
 export interface SkillDeclarationLike {
@@ -125,7 +126,7 @@ export function createSkillSyncGuard(
     };
     let sync: Promise<void>;
     try {
-      sync = Promise.resolve(ensure(companyId)).then((results) => {
+      sync = Promise.resolve(runDetached(() => ensure(companyId))).then((results) => {
         if (Array.isArray(results) && results.some((r) => r.action === "failed")) failed();
         else failedAt.delete(companyId);
       }, failed);

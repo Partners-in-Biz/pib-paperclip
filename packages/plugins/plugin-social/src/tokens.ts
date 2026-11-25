@@ -20,6 +20,7 @@ import { providerFor } from "./oauth/registry.js";
 import type { ProviderAccount } from "./oauth/types.js";
 import { socialOn } from "./modules.js";
 import { isSocialPlatform } from "./platforms.js";
+import { jobCompanyIds } from "@partnersinbiz/pib-plugin-kit";
 
 export interface RefreshRunSummary {
   checked: number;
@@ -101,7 +102,7 @@ export async function refreshTokensJob(
   eachCompany?: (companyId: string) => Promise<void>,
 ): Promise<RefreshRunSummary> {
   const total: RefreshRunSummary = { checked: 0, refreshed: 0, warned: 0, needsReconnect: 0, errors: 0 };
-  for (const companyId of await companiesWithAccounts(ctx)) {
+  for (const companyId of await jobCompanyIds(ctx, await companiesWithAccounts(ctx))) {
     if (!(await socialOn(ctx, companyId))) continue;
     await ensureCompany(companyId).catch(() => undefined);
     if (eachCompany) await eachCompany(companyId).catch(() => undefined);

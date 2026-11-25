@@ -346,12 +346,13 @@ describeEmbeddedPostgres("company import batches inserts", () => {
     // Sanity: the imported issues really are "touched by me" (their user comment
     // was re-attributed to the importing user), so without the archive filter
     // they would all flood the inbox.
-    const touched = await issuesSvc.list(companyId, { touchedByUserId: importingUserId });
+    const touched = await issuesSvc.list(companyId, { readCondition: "system", touchedByUserId: importingUserId });
     expect(new Set(touched.map((issue) => issue.id))).toEqual(importedIds);
 
     // The inbox "mine" query (touched AND not inbox-archived) returns none of
     // them — the seeding is load-bearing.
     const mineInbox = await issuesSvc.list(companyId, {
+      readCondition: "system",
       touchedByUserId: importingUserId,
       inboxArchivedByUserId: importingUserId,
     });
@@ -366,6 +367,7 @@ describeEmbeddedPostgres("company import batches inserts", () => {
       createdByUserId: importingUserId,
     });
     const mineAfterCreate = await issuesSvc.list(companyId, {
+      readCondition: "system",
       touchedByUserId: importingUserId,
       inboxArchivedByUserId: importingUserId,
     });

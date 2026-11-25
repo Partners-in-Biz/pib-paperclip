@@ -46,8 +46,8 @@ describeEmbeddedPostgres("Execution-backed task presentation", () => {
     await ctx.db.update(issues).set({ executionRunId: run!.id, checkoutRunId: run!.id }).where(eq(issues.id, f.issueId));
     expect(await displayStatus(f.issueId)).toEqual({ status: "in_progress", displayStatus: "todo" });
     const svc = issueService(ctx.db);
-    expect(await svc.count(f.companyId, { displayStatus: "in_progress" })).toBe(0);
-    expect(await svc.list(f.companyId, { displayStatus: "todo", limit: 1 })).toEqual([expect.objectContaining({ id: f.issueId })]);
+    expect(await svc.count(f.companyId, { readCondition: "system", displayStatus: "in_progress" })).toBe(0);
+    expect(await svc.list(f.companyId, { readCondition: "system", displayStatus: "todo", limit: 1 })).toEqual([expect.objectContaining({ id: f.issueId })]);
     // Presentation must not clear ownership or change recovery/admission inputs.
     expect((await ctx.db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toMatchObject({ status: "in_progress", executionRunId: run!.id, checkoutRunId: run!.id });
   });
@@ -78,7 +78,7 @@ describeEmbeddedPostgres("Execution-backed task presentation", () => {
     if (kind === "historical") await ctx.db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
       authorUserId: f.actor.userId, body: "Continue with the current instructions", createdAt: new Date() });
     expect((await displayStatus(f.issueId)).displayStatus).toBe("monitoring");
-    expect(await issueService(ctx.db).count(f.companyId, { displayStatus: "in_review" })).toBe(0);
+    expect(await issueService(ctx.db).count(f.companyId, { readCondition: "system", displayStatus: "in_review" })).toBe(0);
   });
 
   it("does not treat a retained reviewer as pending after changes are requested", async () => {
@@ -106,8 +106,8 @@ describeEmbeddedPostgres("Execution-backed task presentation", () => {
     const f = await fixture();
     const svc = issueService(ctx.db);
     expect(await svc.getById(f.issueId)).toMatchObject({ status: "in_progress", displayStatus: "monitoring" });
-    expect(await svc.list(f.companyId, { displayStatus: "monitoring", listProjection: "index" })).toEqual([expect.objectContaining({ id: f.issueId, status: "in_progress", displayStatus: "monitoring" })]);
-    expect(await svc.count(f.companyId, { displayStatus: "monitoring" })).toBe(1);
+    expect(await svc.list(f.companyId, { readCondition: "system", displayStatus: "monitoring", listProjection: "index" })).toEqual([expect.objectContaining({ id: f.issueId, status: "in_progress", displayStatus: "monitoring" })]);
+    expect(await svc.count(f.companyId, { readCondition: "system", displayStatus: "monitoring" })).toBe(1);
     const app = routeApp(ctx.db, f.actor, issueRoutes);
     const summary = await request(app).get(`/api/companies/${f.companyId}/issues/summaries?ids=${f.issueId}`).expect(200);
     expect(summary.body[0]).toMatchObject({ status: "in_progress", displayStatus: "monitoring" });
@@ -118,7 +118,7 @@ describeEmbeddedPostgres("Execution-backed task presentation", () => {
     const [card] = await ctx.db.insert(statusCards).values({ companyId: f.companyId, interestPrompt: "Watch deployment", mentionedIssueIds: [f.issueId], refreshPolicy: defaultStatusCardRefreshPolicy }).returning();
     expect(await statusCardService(ctx.db).listMentionedIssues(card!)).toEqual([expect.objectContaining({ id: f.issueId, status: "in_progress", displayStatus: "monitoring" })]);
     // Existing agent/API lifecycle filters keep their original meaning.
-    expect(await svc.count(f.companyId, { status: "in_progress" })).toBe(1);
+    expect(await svc.count(f.companyId, { readCondition: "system", status: "in_progress" })).toBe(1);
     expect(createIssueSchema.safeParse({ title: "Manual monitoring", status: "monitoring" }).success).toBe(false);
   });
 
@@ -127,10 +127,10 @@ describeEmbeddedPostgres("Execution-backed task presentation", () => {
     const [active] = await ctx.db.insert(issues).values({ companyId: f.companyId, title: "Ordinary work", status: "in_progress", assigneeAgentId: f.agentId }).returning();
     await ctx.db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, issueId: active!.id, status: "running" });
     const svc = issueService(ctx.db);
-    expect(await svc.list(f.companyId, { displayStatus: "monitoring", limit: 1, offset: 0 })).toEqual([expect.objectContaining({ id: f.issueId })]);
-    expect(await svc.list(f.companyId, { displayStatus: "monitoring", limit: 1, offset: 1 })).toEqual([]);
-    expect(await svc.count(f.companyId, { displayStatus: "in_progress" })).toBe(1);
-    expect(await svc.count(f.companyId, { status: "in_progress" })).toBe(2);
+    expect(await svc.list(f.companyId, { readCondition: "system", displayStatus: "monitoring", limit: 1, offset: 0 })).toEqual([expect.objectContaining({ id: f.issueId })]);
+    expect(await svc.list(f.companyId, { readCondition: "system", displayStatus: "monitoring", limit: 1, offset: 1 })).toEqual([]);
+    expect(await svc.count(f.companyId, { readCondition: "system", displayStatus: "in_progress" })).toBe(1);
+    expect(await svc.count(f.companyId, { readCondition: "system", status: "in_progress" })).toBe(2);
   });
 
   it("shows the same wait indicator in list blocker summaries and task detail relations", async () => {
@@ -138,7 +138,7 @@ describeEmbeddedPostgres("Execution-backed task presentation", () => {
     const [dependent] = await ctx.db.insert(issues).values({ companyId: f.companyId, title: "Ship after deployment", status: "blocked" }).returning();
     await ctx.db.insert(issueRelations).values({ companyId: f.companyId, issueId: f.issueId, relatedIssueId: dependent!.id, type: "blocks" });
     const svc = issueService(ctx.db);
-    const list = await svc.list(f.companyId, { includeBlockedBy: true }) as Array<Awaited<ReturnType<typeof svc.list>>[number] & Pick<Issue, "blockedBy">>;
+    const list = await svc.list(f.companyId, { readCondition: "system", includeBlockedBy: true }) as Array<Awaited<ReturnType<typeof svc.list>>[number] & Pick<Issue, "blockedBy">>;
     expect(list.find(row => row.id === dependent!.id)?.blockedBy).toEqual([expect.objectContaining({ id: f.issueId, displayStatus: "monitoring" })]);
     const detail = await request(routeApp(ctx.db, f.actor, issueRoutes)).get(`/api/issues/${dependent!.id}`).expect(200);
     expect(detail.body.blockedBy).toEqual([expect.objectContaining({ id: f.issueId, displayStatus: "monitoring" })]);

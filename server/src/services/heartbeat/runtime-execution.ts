@@ -295,13 +295,25 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
   let adapterFinalizeOutcome: "succeeded" | "failed" | null = null;
   let preserveRunGatewayTokens = false;
   let pluginWorkspaceFinalization: Record<string, unknown> | null = null;
+  // Set when worktree cleanup already closed the workspace before finalize ran.
+  let finalizeSkippedClosedWorkspace: Record<string, unknown> | null = null;
+  const readFinalizeWorkspaceRecord = () => persistedExecutionWorkspace?.id
+    ? executionWorkspacesSvc.getStoredById(agent.companyId, persistedExecutionWorkspace.id)
+    : Promise.resolve(persistedExecutionWorkspace);
+  const closedFinalizeWorkspace = (
+    workspaceRecord: Awaited<ReturnType<typeof readFinalizeWorkspaceRecord>>,
+  ) => workspaceRecord && (workspaceRecord.status === "archived"
+    || workspaceRecord.status === "cleanup_failed" || workspaceRecord.closedAt != null)
+    ? { executionWorkspaceId: workspaceRecord.id, status: workspaceRecord.status,
+        reason: "workspace_closed_before_finalize" }
+    : null;
   const inspectFinalizeWorkspaceBranch = async () => {
-    const workspaceRecord = persistedExecutionWorkspace?.id
-      ? await executionWorkspacesSvc.getStoredById(
-          agent.companyId,
-          persistedExecutionWorkspace.id,
-        )
-      : persistedExecutionWorkspace;
+    const workspaceRecord = await readFinalizeWorkspaceRecord();
+    // Cleanup can archive and delete the worktree between the run ending and
+    // finalize (PAR-14472). There is no branch left to verify, so a branch
+    // check would only record a spurious failed finalize.
+    finalizeSkippedClosedWorkspace = closedFinalizeWorkspace(workspaceRecord);
+    if (finalizeSkippedClosedWorkspace) return null;
     pluginWorkspaceFinalization = workspaceRecord
       ? await inspectPluginWorkspaceForFinalization(db, options.pluginWorkerManager, workspaceRecord, agent.id, run.id)
       : null;
@@ -322,6 +334,11 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
       worktreePath,
       expectedBranchName,
     });
+    if (!inspection.valid) {
+      // Cleanup may have closed the workspace while the check ran.
+      finalizeSkippedClosedWorkspace = closedFinalizeWorkspace(await readFinalizeWorkspaceRecord());
+      if (finalizeSkippedClosedWorkspace) return null;
+    }
     return { workspaceRecord, inspection };
   };
   const recordWorkspaceFinalize = async (
@@ -503,6 +520,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
           }
         }
         return { status, metadata: {
+          ...(finalizeSkippedClosedWorkspace ? { closedWorkspaceSkip: finalizeSkippedClosedWorkspace } : {}),
           ...(pluginWorkspaceFinalization ? { pluginWorkspace: pluginWorkspaceFinalization } : {}),
           ...(finalizeBranchMetadata ? { managedGitWorktreeBranch: finalizeBranchMetadata } : {}),
           ...(finalizeBranchRepairMetadata ? { managedGitWorktreeBranchRepair: finalizeBranchRepairMetadata } : {}),

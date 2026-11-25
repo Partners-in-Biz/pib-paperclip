@@ -7,7 +7,7 @@ export type ProjectionQuery = { sql: string; params: unknown[] };
 export type ListFactory = typeof issueService;
 export type ListFilters = Parameters<ReturnType<ListFactory>["list"]>[1];
 
-export async function captureTaskListQuery(db: Db, factory: ListFactory, companyId: string, filters?: ListFilters) {
+export async function captureTaskListQuery(db: Db, factory: ListFactory, companyId: string, filters: ListFilters = { readCondition: "system" }) {
   let captured: ProjectionQuery | undefined;
   const stop = new Error("Task list query captured");
   const wrap = (target: object): typeof db => new Proxy(target, { get(target, key) {

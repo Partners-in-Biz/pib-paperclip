@@ -41,7 +41,7 @@ import {
   type Params,
 } from "./common.js";
 import { assertWritable, loadSprintContext, sprintCopy } from "./context.js";
-import { commentOn, getIssue, OPEN_ISSUE_STATUSES, openIssue, patchIssue } from "./issues.js";
+import { commentOn, getIssue, OPEN_ISSUE_STATUSES, openIssue, patchIssue, readIssueStrict } from "./issues.js";
 import { isAutoSignoff } from "./client-signoff.js";
 import { PLUGIN_VERSION } from "../namespace.js";
 import { resolveAgent } from "./agent.js";
@@ -173,6 +173,58 @@ export async function createTaskIssue(env: Env, mc: MaterialiseContext, task: db
   }
 }
 
+/** A paused or archived sprint is frozen: no new task issue is opened for it. */
+export function isFrozenSprint(sprint: Pick<db.Sprint, "status">): boolean {
+  return sprint.status === "paused" || sprint.status === "archived";
+}
+
+/**
+ * Pausing a sprint parks its untouched agent task issues (status todo) in backlog, so the host stops waking the agent on them.
+ * Each parked task remembers it in its evidence; resuming puts them back to todo and wakes the agent. Issues already in progress,
+ * in review or blocked are left alone. Returns how many were parked.
+ */
+export async function parkSprintTasks(env: Env, sprint: db.Sprint): Promise<number> {
+  const tasks = await db.listTasks(env.ctx.db, sprint.companyId, sprint.id, { status: ["not_started", "in_progress"] });
+  let parked = 0;
+  for (const task of tasks) {
+    if (!task.issueId || task.assigneeKind !== "agent" || task.issueStatus !== "todo") continue;
+    try {
+      const issue = await getIssue(env, sprint.companyId, task.issueId);
+      if (!issue || String(issue.status) !== "todo") continue;
+      if (!(await patchIssue(env, sprint.companyId, task.issueId, { status: "backlog" }))) continue;
+      await db.updateTask(env.ctx.db, sprint.companyId, task.id, { issue_status: "backlog", evidence: { ...(task.evidence ?? {}), parkedByPause: true } });
+      parked += 1;
+    } catch (error) {
+      env.ctx.logger.info("SEO task not parked on pause", { taskId: task.id, error: errorMessage(error) });
+    }
+  }
+  return parked;
+}
+
+/** Undo parkSprintTasks on resume: tasks it parked go back to todo and the agent is woken on each. */
+export async function unparkSprintTasks(env: Env, sprint: db.Sprint): Promise<number> {
+  const tasks = await db.listTasks(env.ctx.db, sprint.companyId, sprint.id, { status: ["not_started", "in_progress"] });
+  let back = 0;
+  for (const task of tasks) {
+    if (!task.issueId || !task.evidence?.parkedByPause) continue;
+    try {
+      const { parkedByPause: _gone, ...rest } = task.evidence as Record<string, unknown>;
+      const issue = await getIssue(env, sprint.companyId, task.issueId);
+      if (issue && String(issue.status) === "backlog") {
+        if (!(await patchIssue(env, sprint.companyId, task.issueId, { status: "todo" }))) continue;
+        await db.updateTask(env.ctx.db, sprint.companyId, task.id, { issue_status: "todo", evidence: rest });
+        await wakeIssue(env.ctx, task.issueId, sprint.companyId, `SEO sprint resumed: ${task.title}`);
+        back += 1;
+      } else {
+        await db.updateTask(env.ctx.db, sprint.companyId, task.id, { evidence: rest });
+      }
+    } catch (error) {
+      env.ctx.logger.info("SEO task not unparked on resume", { taskId: task.id, error: errorMessage(error) });
+    }
+  }
+  return back;
+}
+
 /** Open sub-issues for due tasks that have none yet (idempotent). */
 export async function materialiseDueTasks(
   env: Env,
@@ -181,6 +233,8 @@ export async function materialiseDueTasks(
 ): Promise<{ created: number; remaining: number; errors: string[] }> {
   // Nothing is due as an issue on a rehearsal sprint, and that is not an error (no root issue is expected either).
   if (isRehearsalSprint(mc.sprint)) return { created: 0, remaining: 0, errors: [] };
+  // A paused or archived sprint opens nothing, whoever asks (daily run, run-daily, plan upgrade, proposals, site link): PAR-14132.
+  if (isFrozenSprint(mc.sprint)) return { created: 0, remaining: 0, errors: [] };
   if (!mc.sprint.rootIssueId) return { created: 0, remaining: 0, errors: ["Sprint has no root issue yet"] };
   const tasks = await db.listTasks(env.ctx.db, mc.sprint.companyId, mc.sprint.id, { status: ["not_started"] });
   // An AI-search task is never opened for a sprint with AI search off (the switch retires them; this holds even if one is left over).
@@ -377,16 +431,69 @@ export async function startTask(env: Env, companyId: string, actor: Actor, param
   const patch: Record<string, unknown> = { status: "in_progress", blocker_reason: null };
   if (!task.startedAt) patch.started_at = new Date().toISOString();
   await db.updateTask(env.ctx.db, companyId, task.id, patch);
+  // A task with no issue (add-task could not open one, PAR-13216) gets its issue now, so approve-page-apply has one to tell.
+  const opened = task.issueId ? { issueId: task.issueId, why: null } : await openMissingTaskIssue(env, companyId, task);
+  const issueId = opened.issueId;
   const note = str(params, "note", { max: 2000 });
-  if (note && task.issueId) await commentOn(env, companyId, task.issueId, `Started by ${actorLabel(actor)}: ${note}`);
+  if (note && issueId) await commentOn(env, companyId, issueId, `Started by ${actorLabel(actor)}: ${note}`);
   // A site-wide task started on a site bigger than one run can do well is split into page groups now (existing sprints included).
-  const split = actor.kind === "agent" ? await splitOnStart(env, task) : null;
+  const split = actor.kind === "agent" && issueId ? await splitOnStart(env, { ...task, issueId }) : null;
   return {
-    ...taskView({ ...task, status: "in_progress" }),
+    ...taskView({ ...task, issueId, status: "in_progress" }),
+    ...(!issueId && opened.why ? { issueNote: opened.why } : {}),
     ...(split
       ? { split: { groups: split.groups, pages: split.pages, firstGroupIssueId: split.firstGroupIssueId, next: "This task is now split into page groups (child issues, one open at a time). End your run on this issue: the pages are the group issues' work, and you are woken here when the last one is done." } }
       : {}),
   };
+}
+
+/** Open the issue of a task that has none. Never throws: the task still starts; the reason comes back as a note. */
+async function openMissingTaskIssue(env: Env, companyId: string, task: db.SprintTask): Promise<{ issueId: string | null; why: string | null }> {
+  try {
+    const ctx = await loadSprintContext(env, companyId, task.sprintId);
+    if (isRehearsalSprint(ctx.sprint)) return { issueId: null, why: "This is a rehearsal sprint: no issue is opened." };
+    if (!ctx.sprint.rootIssueId) return { issueId: null, why: "The sprint has no root issue yet, so no task issue could be opened." };
+    if (ctx.sprint.status === "paused") return { issueId: null, why: "The sprint is paused, so no task issue was opened." };
+    const issueId = await createTaskIssue(env, { info: ctx.info, sprint: ctx.sprint, day: ctx.clock.day, agent: await resolveAgent(env, companyId), projectId: ctx.sprint.projectId }, task);
+    if (issueId) return { issueId, why: null };
+    const fresh = await db.getTask(env.ctx.db, companyId, task.id);
+    if (fresh?.issueId) return { issueId: fresh.issueId, why: null };
+    return { issueId: null, why: "No issue was opened (a person's task goes on Needs you; a code task waits for the site repo link). Use attach-task-issue to attach one." };
+  } catch (error) {
+    return { issueId: null, why: `The task issue could not be opened: ${errorMessage(error)}. Use attach-task-issue to attach one.` };
+  }
+}
+
+/**
+ * Attach an existing issue to a task that has none (PAR-13216): the way to repair a task whose issue never opened.
+ * The issue must be in the company and not belong to another task. An agent cannot attach an issue assigned to itself
+ * (approve-page-apply rules out self-approval through the task issue's assignee).
+ */
+export async function attachTaskIssue(env: Env, companyId: string, actor: Actor, params: Params) {
+  const task = await requireTask(env, companyId, params);
+  const issueId = reqStr(params, "issueId", { max: 80 });
+  if (task.issueId === issueId) return { ...taskView(task), attached: false, note: "This issue is already the task's issue." };
+  if (task.issueId) throw new SeoError(`This task already has an issue (${task.issueIdentifier ?? task.issueId}); it is not replaced.`);
+  const sprint = await db.getSprint(env.ctx.db, companyId, task.sprintId);
+  if (sprint) assertWritable(sprint);
+  if (sprint && isRehearsalSprint(sprint)) throw new SeoError(REHEARSAL_REFUSAL);
+  const read = await readIssueStrict(env, companyId, issueId);
+  if (read.kind === "missing") throw new SeoError(`Issue ${issueId} was not found in this company.`);
+  if (read.kind === "error") throw new SeoError("The issue could not be read. Try again later.");
+  const issue = read.issue as { id: string; identifier?: string | null; status: unknown; projectId?: string | null; assigneeAgentId?: string | null };
+  const other = await db.getTaskByIssue(env.ctx.db, companyId, issue.id);
+  if (other && other.id !== task.id) throw new SeoError(`That issue already belongs to task ${other.id}.`);
+  if (actor.kind === "agent" && issue.assigneeAgentId && issue.assigneeAgentId.toLowerCase() === actor.agentId.toLowerCase()) {
+    throw new SeoError("You are the assignee of that issue: attach an issue assigned to someone else, or ask a person.");
+  }
+  await db.updateTask(env.ctx.db, companyId, task.id, {
+    issue_id: issue.id,
+    issue_identifier: issue.identifier ?? null,
+    issue_status: String(issue.status),
+    issue_project_id: issue.projectId ?? null,
+  });
+  await commentOn(env, companyId, issue.id, `Attached to the SEO sprint task "${task.title}" by ${actorLabel(actor)}.`);
+  return { ...taskView({ ...task, issueId: issue.id, issueIdentifier: issue.identifier ?? null }), attached: true };
 }
 
 function parseEvidence(params: Params): { summary: string; links: string[]; artifacts: EvidenceArtifact[] } {
@@ -615,6 +722,9 @@ export async function addTask(env: Env, companyId: string, actor: Actor, params:
     issueId,
     ...(pageUrls.length > 0 ? { pageUrls } : {}),
     due: dueNow,
+    ...(!issueId && owner === "agent"
+      ? { issueNote: !createIssue ? "createIssue was false: no issue yet. start-task opens it." : !dueNow ? "The task is not due yet: the daily run opens its issue (or start-task does)." : !ctx.sprint.rootIssueId ? "The sprint has no root issue yet, so no task issue was opened. start-task retries; attach-task-issue attaches an existing one." : "No issue was opened. start-task retries; attach-task-issue attaches an existing one." }
+      : {}),
     ...(owner !== requestedOwner ? { note: "Code and content changes are agent work: the SEO Specialist makes them through the site repo, so this task is the agent's." } : {}),
     ...(owner === "human" ? { note: "Tasks for a person go on the sprint's weekly Needs you issue instead of an issue of their own." } : {}),
   };
@@ -755,6 +865,7 @@ export function taskProjectId(sprint: db.Sprint, code: boolean, fallback: string
 export async function relocateCodeTasks(env: Env, mc: MaterialiseContext): Promise<{ moved: number; opened: number }> {
   const { sprint } = mc;
   if (sprint.siteAccess === "unlinked" && !sprint.clientProjectId) return { moved: 0, opened: 0 };
+  if (isFrozenSprint(sprint)) return { moved: 0, opened: 0 };
   let moved = 0;
   const tasks = await db.listTasks(env.ctx.db, sprint.companyId, sprint.id, { status: ["not_started", "in_progress", "blocked"] });
   for (const task of tasks) {

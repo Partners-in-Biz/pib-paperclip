@@ -21,7 +21,8 @@ export function AgentChatSidebar({
   activeId: string;
   starredIds: string[];
   recentIds: string[];
-  onToggleStar: (id: string) => void;
+  /** Absent when the star control is closed (restricted member under `enforce`). */
+  onToggleStar?: (id: string) => void;
   onOpenChat: () => void;
 }) {
   const { collapsed, peeking } = useSidebar();
@@ -40,7 +41,7 @@ export function AgentChatSidebar({
           }
           className={rail ? undefined : "pr-9"}
         />
-        {!rail && (
+        {!rail && onToggleStar && (
           <Button
             type="button"
             variant="ghost"

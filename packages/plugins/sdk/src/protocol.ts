@@ -292,6 +292,12 @@ export type PluginRpcErrorCode =
  */
 export interface PluginInvocationScope {
   companyId: string;
+  /**
+   * The person the host computed for the call that opened this invocation (a
+   * signed-in user, or the person an agent works for). Host-owned: the worker
+   * never sets it. Rule H6 uses it for tasks a plugin creates.
+   */
+  actingPersonId?: string | null;
   projectGit?: { projectId: string; workspaceId?: string; runId?: string; agentId?: string; operation?: "prepare" | "inspect" | "remove" };
 }
 
@@ -328,6 +334,13 @@ export interface WorkerHostCallContext {
    * access: `invocationScope` stays unset.
    */
   unconfiguredCompanyId?: string;
+  /**
+   * Set by the host for a `companies.list` call made outside a host invocation:
+   * the companies with saved settings for this plugin, which are the companies
+   * such a call may act for. `companies.list({ actionableOnly: true })` answers
+   * from it. It never grants access by itself.
+   */
+  actionableCompanyIds?: readonly string[];
   /**
    * The W3C `traceparent` the host minted for the echoed invocation. The host
    * recovers it from its own invocation record, not from the worker, so a worker
@@ -427,8 +440,23 @@ export interface GetDataParams {
   companyId?: string | null;
   /** Context and query parameters from the UI. */
   params: Record<string, unknown>;
+  /**
+   * The acting person resolved by the host, never by caller params (PAR-14297).
+   * An older host leaves it out.
+   */
+  actorContext?: PluginActingPersonContext | null;
   /** Optional launcher/container metadata from the host render environment. */
   renderEnvironment?: PluginLauncherRenderContextSnapshot | null;
+}
+
+/**
+ * The second argument of a `getData` handler: the person the read is for, as
+ * the host computed it. `actor` is `{}` when the host is older than this SDK;
+ * treat that as unknown, not as "nobody".
+ */
+export interface PluginDataContext {
+  /** Immutable acting person supplied by the host. */
+  actor: Readonly<PluginActingPersonContext>;
 }
 
 /**
@@ -1810,8 +1838,10 @@ export interface WorkerToHostMethods {
   ];
 
   // Companies (read)
+  // `actionableOnly`: only companies this call may act for (see
+  // `PluginCompaniesClient.list`). Hosts that predate it ignore it.
   "companies.list": [
-    params: { limit?: number; offset?: number },
+    params: { limit?: number; offset?: number; actionableOnly?: boolean },
     result: Company[],
   ];
   "companies.get": [

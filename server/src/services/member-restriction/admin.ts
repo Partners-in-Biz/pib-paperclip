@@ -16,7 +16,7 @@ export const MEMBER_RESTRICTION_MODE_CHANGED_ACTION = "company.member_restrictio
 export const MEMBER_RESTRICTION_DENIED_ACTION = "member_restriction.denied";
 export const MEMBER_RESTRICTED_ROLE_CODE = "MEMBER_RESTRICTED_ROLE";
 
-const PROTECTED_ROLES = new Set(["owner", "admin"]);
+export const PROTECTED_ROLES: ReadonlySet<string> = new Set(["owner", "admin"]);
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
@@ -37,22 +37,16 @@ export function assertRoleAllowedForRestriction(
 
 type StoredRestriction = { restricted: boolean; pluginKeys: string[]; agentIds: string[] };
 
-function uniqueSorted(values: readonly string[]) {
+export function uniqueSorted(values: readonly string[]) {
   return [...new Set(values)].sort();
 }
 
-/** Set the flag and both lists on one person's membership. Returns null when the member does not exist. */
-export async function setMemberRestriction(
+/** 422 unless every plugin key is an installed plugin and every agent id an agent of this company. */
+export async function assertRestrictionListsValid(
   db: Db,
   companyId: string,
-  memberId: string,
-  input: UpdateMemberRestriction,
-): Promise<{ principalId: string; before: StoredRestriction; after: StoredRestriction } | null> {
-  const next: StoredRestriction = {
-    restricted: input.restricted,
-    pluginKeys: uniqueSorted(input.pluginKeys),
-    agentIds: uniqueSorted(input.agentIds),
-  };
+  next: { pluginKeys: string[]; agentIds: string[] },
+) {
   if (next.pluginKeys.length > 0) {
     const found = new Set(await db
       .select({ key: plugins.pluginKey })
@@ -71,6 +65,21 @@ export async function setMemberRestriction(
     const unknown = next.agentIds.filter((id) => !found.has(id));
     if (unknown.length > 0) throw unprocessable(`Agent not in this company: ${unknown.join(", ")}`);
   }
+}
+
+/** Set the flag and both lists on one person's membership. Returns null when the member does not exist. */
+export async function setMemberRestriction(
+  db: Db,
+  companyId: string,
+  memberId: string,
+  input: UpdateMemberRestriction,
+): Promise<{ principalId: string; before: StoredRestriction; after: StoredRestriction } | null> {
+  const next: StoredRestriction = {
+    restricted: input.restricted,
+    pluginKeys: uniqueSorted(input.pluginKeys),
+    agentIds: uniqueSorted(input.agentIds),
+  };
+  await assertRestrictionListsValid(db, companyId, next);
 
   return db.transaction(async (tx) => {
     const existing = await tx

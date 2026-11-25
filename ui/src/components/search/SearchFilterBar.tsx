@@ -39,6 +39,8 @@ export interface SearchFilterDataProps {
   agents: SearchFilterAgent[];
   projects: SearchFilterProject[];
   labels: SearchFilterLabel[];
+  /** Company labels are closed for this person (restricted under `enforce`, AC-G10): no Label filter. */
+  labelsClosed?: boolean;
   currentUserId: string | null;
 }
 
@@ -189,6 +191,7 @@ export function SearchFilterBar({
         searchPlaceholder="Search projects…"
         emptyMessage="No projects"
       />
+      {data.labelsClosed ? null : (
       <SearchFilterMenu
         label="Label"
         options={options.label}
@@ -198,6 +201,7 @@ export function SearchFilterBar({
         searchPlaceholder="Search labels…"
         emptyMessage="No labels"
       />
+      )}
       {/* PAP-411: Priority filter menu hidden behind SHOW_TASK_PRIORITY_UI (search DSL stays intact). */}
       {SHOW_TASK_PRIORITY_UI && (
       <SearchFilterMenu

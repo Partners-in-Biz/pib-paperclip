@@ -90,10 +90,24 @@ export interface Invite {
 
 export type InviteState = "active" | "revoked" | "accepted" | "expired";
 
+/** The mark stored on an invite (PAR-12608 4.2a); null when the invite is unmarked. */
+export interface InviteMemberRestriction {
+  restricted: true;
+  pluginKeys: string[];
+  agentIds: string[];
+}
+
 export interface CompanyInviteRecord extends Invite {
   companyName: string | null;
   humanRole: HumanCompanyMembershipRole | null;
   inviteMessage: string | null;
+  memberRestriction?: InviteMemberRestriction | null;
+  /**
+   * Set while a join can still use the invite (PAR-13096 point 4): true when
+   * `memberRestriction` is the company's restricted default, not a recorded
+   * choice. Both fields are omitted when the company's mode cannot be read.
+   */
+  memberRestrictionIsDefault?: boolean;
   state: InviteState;
   invitedByUser: AccessUserProfile | null;
   relatedJoinRequestId: string | null;
@@ -134,6 +148,13 @@ export interface JoinRequestInviteSummary {
   allowedJoinTypes: InviteJoinType;
   humanRole: HumanCompanyMembershipRole | null;
   inviteMessage: string | null;
+  memberRestriction?: InviteMemberRestriction | null;
+  /**
+   * Set while a join can still use the invite (PAR-13096 point 4): true when
+   * `memberRestriction` is the company's restricted default, not a recorded
+   * choice. Both fields are omitted when the company's mode cannot be read.
+   */
+  memberRestrictionIsDefault?: boolean;
   createdAt: Date;
   expiresAt: Date;
   revokedAt: Date | null;

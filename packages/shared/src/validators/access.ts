@@ -10,11 +10,32 @@ import {
 } from "../constants.js";
 import { optionalAgentAdapterTypeSchema } from "../adapter-type.js";
 
+/**
+ * The mark an invite carries for the person who joins (PAR-12608 4.2a). The
+ * server stores it under the reserved `defaultsPayload.memberRestriction` key
+ * from this field only.
+ */
+export const inviteMemberRestrictionSchema = z.object({
+  restricted: z.boolean(),
+  pluginKeys: z.array(z.string().trim().min(1)).max(200).default([]),
+  agentIds: z.array(z.string().uuid()).max(500).default([]),
+}).strict();
+
+export type InviteMemberRestrictionInput = z.infer<typeof inviteMemberRestrictionSchema>;
+
 export const createCompanyInviteSchema = z.object({
   allowedJoinTypes: z.enum(INVITE_JOIN_TYPES).default("both"),
   humanRole: z.enum(HUMAN_COMPANY_MEMBERSHIP_ROLES).optional().nullable(),
+  /**
+   * Free defaults. Invite answers echo it as stored: `memberRestriction` in it is
+   * server-written (a caller's value is dropped); `{ restricted: false }` means the
+   * creator chose not restricted; absent means no choice was recorded, and in a
+   * company on `report` or `enforce` the person then joins restricted.
+   */
   defaultsPayload: z.record(z.string(), z.unknown()).optional().nullable(),
   agentMessage: z.string().max(4000).optional().nullable(),
+  /** Required for a human invite when the company's restriction mode is not `off`. */
+  restriction: inviteMemberRestrictionSchema.optional(),
 });
 
 export type CreateCompanyInvite = z.infer<typeof createCompanyInviteSchema>;

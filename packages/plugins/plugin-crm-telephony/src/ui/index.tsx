@@ -2,10 +2,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   useHostLocation,
   useHostNavigation,
-  usePluginAction,
   type PluginPageProps,
 } from "@paperclipai/plugin-sdk/ui";
 import {
+  AccessGate,
   Button,
   Input,
   Page,
@@ -14,6 +14,7 @@ import {
   Field,
   Pill,
   errorText,
+  useAccess,
 } from "@partnersinbiz/pib-plugin-ui";
 import { Call, Device } from "@twilio/voice-sdk";
 import {
@@ -28,6 +29,7 @@ import {
   INCOMING_WAIT_MS,
   type DialerPhase,
 } from "./dialer.js";
+import { useAccessMe, useTelephonyAction } from "./actions.js";
 
 interface TokenResult { token: string; identity: string; expiresAt: string }
 interface DialResult { callSid: string; to: string; callerId: string; region: "ZA" | "US"; contactId: string | null; recording: boolean }
@@ -45,12 +47,21 @@ const PHASE_TONE: Record<DialerPhase, "neutral" | "info" | "good" | "warn" | "ba
  * browser (a registered Device) and, once answered, to dial the contact from the
  * company's number; the page accepts that incoming leg and shows the call.
  */
-export function DialerPage(_props: PluginPageProps) {
+export function DialerPage(props: PluginPageProps) {
+  const access = useAccess(useAccessMe(), props.context.companyId);
+  return (
+    <AccessGate state={access} kind="page" moduleName="CRM Telephony">
+      <DialerPageBody />
+    </AccessGate>
+  );
+}
+
+function DialerPageBody() {
   const location = useHostLocation();
   const nav = useHostNavigation();
-  const getToken = usePluginAction("voice-token");
-  const dial = usePluginAction("voice-dial");
-  const lookup = usePluginAction("voice-call");
+  const getToken = useTelephonyAction("voice-token");
+  const dial = useTelephonyAction("voice-dial");
+  const lookup = useTelephonyAction("voice-call");
 
   const [toNumber, setToNumber] = useState("");
   const [contactId, setContactId] = useState<string | undefined>();

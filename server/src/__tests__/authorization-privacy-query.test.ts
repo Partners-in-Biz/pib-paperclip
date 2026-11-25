@@ -125,4 +125,16 @@ describe("privacy ancestry query work", () => {
     expect(await canActorReadIssuePrivacy(db, actor, child!)).toBe(false);
   });
 
+  it("adds the chat rule as a comparison of the row's own columns, no sub-query, and only the local board skips it", async () => {
+    const userId = randomUUID();
+    const render = async (actor: AuthorizationActor) =>
+      db.select({ id: issues.id }).from(issues).where(await issueReadSqlCondition(db, actor)).toSQL().sql;
+    const instanceAdmin = await render({ type: "board", userId, source: "session", isInstanceAdmin: true });
+    expect(instanceAdmin).toMatch(/"issues"\."conversation_agent_id" is null or "issues"\."conversation_user_id" = \$1/);
+    expect(instanceAdmin.match(/select/gi)).toHaveLength(1);
+    expect(await render({ type: "board", userId: "local-board", source: "local_implicit" })).not.toContain("conversation");
+    // The private condition names the chat's person too (PAR-12774 4.2).
+    expect(await render({ type: "board", userId, authorizingUserId: userId })).toContain("n.conversation_user_id = ");
+  });
+
 });

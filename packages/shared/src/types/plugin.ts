@@ -518,6 +518,16 @@ export interface PluginUiSlotDeclaration {
     /** Runtime activity that requests automatic opening; manual selection needs no mapping. */
     activation?: { namespace: string; activityKey: string };
   };
+  /**
+   * A board card for one record kind (PAR-14389 C.1); `canvasNode` slots only.
+   * The plugin answers the fixed `canvas.cards.*` actions for `kind`; `search`
+   * and `related` say which of the optional two it offers.
+   */
+  entityCard?: {
+    kind: string;
+    search: boolean;
+    related: boolean;
+  };
 
   /**
    * Optional company-scoped route segment for page, routeSidebar, and
