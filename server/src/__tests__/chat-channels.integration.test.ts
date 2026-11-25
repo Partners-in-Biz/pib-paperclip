@@ -165,6 +165,7 @@ import {
   closeLivenessDb,
   heartbeatRunEvents,
   heartbeatRuns,
+  instanceUserRoles,
   issueComments,
   issueAttachments,
   issueWorkProducts,
@@ -7234,6 +7235,75 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       }))).status).toBeLessThan(300);
       expect(await readChatConversationsByEndpointId(f.endpoint.id)).toHaveLength(0);
       expect(await readChatGitHubReviewsByEndpointId(f.endpoint.id)).toHaveLength(0);
+    });
+    // PAR-14560 (PAR-12608 4.6a row 11): automatic GitHub work is created for,
+    // and wakes the agent for, the configuration's responsible user, not the
+    // author. The author here is linked to an unrestricted member; the
+    // responsible user (owner-user) is flagged. Under `enforce` the shipped
+    // webhook handler creates no conversation, task or wake; `report` records a
+    // would-refuse and admits; a failed read leaves the ingress to retry; a
+    // flagged instance admin is not bound.
+    it.each(["enforce", "report", "failed read", "instance admin"] as const)("maps automatic GitHub work to its restricted responsible user through the webhook handler (%s)", async (variant) => {
+      const f = await reviewBotFixture();
+      const saved = await f.management.configuration(f.endpoint.id, "owner-user");
+      await f.management.saveConfiguration(f.endpoint.id, {
+        expectedRevision: saved.revision,
+        configuration: { ...saved.configuration, defaults: { ...saved.configuration.defaults, issueOpened: true } },
+      }, "owner-user");
+      const author = `github-author-${randomUUID()}`, now = new Date();
+      await db.insert(authUsers).values({ id: author, name: "Author", email: `${author}@example.com`, emailVerified: true, createdAt: now, updatedAt: now });
+      await db.insert(companyMemberships).values({ companyId: f.companyId, principalType: "user", principalId: author, status: "active", membershipRole: "operator" });
+      await db.update(chatIdentityLinks).set({ paperclipUserId: author }).where(eq(chatIdentityLinks.principalId, f.principal.id));
+      await db.update(companyMemberships).set({ restricted: true }).where(and(eq(companyMemberships.companyId, f.companyId),
+        eq(companyMemberships.principalType, "user"), eq(companyMemberships.principalId, "owner-user")));
+      if (variant === "failed read") {
+        // A real failed read: a flagged row whose plugin list is not a list makes the resolver throw.
+        await db.execute(sql`UPDATE company_memberships SET restricted_plugin_keys = '"broken"'::jsonb WHERE company_id = ${f.companyId} AND principal_id = 'owner-user'`);
+      }
+      if (variant === "instance admin") {
+        const [role] = await db.insert(instanceUserRoles).values({ userId: "owner-user", role: "instance_admin" }).returning();
+        onTestFinished(async () => { await db.delete(instanceUserRoles).where(eq(instanceUserRoles.id, role.id)); });
+      }
+      await db.update(companies).set({ memberRestrictionMode: variant === "report" ? "report" : "enforce" }).where(eq(companies.id, f.companyId));
+      const delivery = randomUUID();
+      const sent = f.service.handleWebhook(f.endpoint.publicId, "github", signedGitHubWebhookRequest({
+        event: "issues", delivery, webhookSecret: f.webhookSecret,
+        payload: {
+          action: "opened", installation: { id: 2468 },
+          repository: { id: 97531, full_name: "paperclipai/paperclip", name: "paperclip", owner: { id: 1357, login: "paperclipai" } },
+          sender: { id: 42, login: "octocat" },
+          issue: { number: 91, title: "Automatic work", body: "", user: { id: 42, login: "octocat", type: "User" }, labels: [] },
+        },
+      }));
+      if (variant === "failed read") await expect(sent).rejects.toMatchObject({ status: 503, details: { code: "MEMBER_RESTRICTION_UNAVAILABLE" } });
+      else expect((await sent).status).toBeLessThan(300);
+      const denied = () => db.select().from(activityLog)
+        .where(and(eq(activityLog.companyId, f.companyId), eq(activityLog.action, "member_restriction.denied")))
+        .then((rows) => rows.map((row) => row.details));
+      if (variant === "report" || variant === "instance admin") {
+        await expect.poll(async () => (await readChatConversationsByEndpointId(f.endpoint.id)).length, { timeout: 10_000 }).toBe(1);
+        const [conversation] = await readChatConversationsByEndpointId(f.endpoint.id);
+        expect((await readIssuesById(conversation.issueId!))[0]).toMatchObject({ responsibleUserId: "owner-user" });
+        expect(await denied()).toEqual(variant === "report"
+          ? [expect.objectContaining({ personId: "owner-user", target: "inbound.chat", mode: "report" })]
+          : []);
+        return;
+      }
+      if (variant === "failed read") {
+        // 503 MEMBER_RESTRICTION_UNAVAILABLE: the durable ingress is kept for a retry, nothing is admitted.
+        await expect.poll(async () => (await db.select().from(chatActions).where(and(eq(chatActions.endpointId, f.endpoint.id),
+          eq(chatActions.providerActionId, `github_webhook_ingress:${delivery}`))))[0], { timeout: 10_000 })
+          .toMatchObject({ status: "failed", result: expect.objectContaining({ retryable: true }) });
+        expect(await readChatDeliveriesByEndpointId(f.endpoint.id)).toEqual([]);
+      } else {
+        await expect.poll(async () => (await readChatDeliveriesByEndpointId(f.endpoint.id)).map((row) => [row.state, row.redactedError]), { timeout: 10_000 })
+          .toEqual([["filtered", "GitHub issue opened ignored. The member responsible for automatic tasks is restricted in this company."]]);
+        expect(await denied()).toEqual([expect.objectContaining({ personId: "owner-user", target: "inbound.chat", mode: "enforce" })]);
+      }
+      expect(await readChatConversationsByEndpointId(f.endpoint.id)).toEqual([]);
+      expect(await db.select().from(issues).where(eq(issues.companyId, f.companyId))).toEqual([]);
+      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toEqual([]);
+      expect(f.wakeup).not.toHaveBeenCalled();
     });
     it("offers Retry for a saved automatic PR event after a successful older review", async () => {
       const f = await reviewBotFixture();
