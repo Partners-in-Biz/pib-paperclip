@@ -2720,7 +2720,11 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
           explanation: "Actor agent is not active in the target company.",
         });
       }
-      const responsibleUserId = input.actor.onBehalfOfUserId?.trim() || null;
+      // An assistant connection (mcp_oauth) carries its person only to narrow
+      // it (rule group H); it never manages that person's inbox (PAR-14330).
+      const responsibleUserId = input.actor.source === "mcp_oauth"
+        ? null
+        : input.actor.onBehalfOfUserId?.trim() || null;
       const explicitTargetUserId = typeof input.scope?.userId === "string"
         ? input.scope.userId.trim() || null
         : null;
@@ -2980,7 +2984,9 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
     }
 
     if (input.action === "agent_instructions:update") {
-      if (!isSimpleAssignableAgentStatus(actorAgent.status) || !input.actor.onBehalfOfUserId) {
+      // An assistant connection (mcp_oauth) carries its person only to narrow
+      // it (rule group H); it never edits instructions as him (PAR-14330).
+      if (!isSimpleAssignableAgentStatus(actorAgent.status) || !input.actor.onBehalfOfUserId || input.actor.source === "mcp_oauth") {
         return deny({ action: input.action, reason: "deny_missing_membership", explanation: "Instruction edits require an active agent and a responsible user." });
       }
       // Explicit configure/suggest restrictions still govern content changes.
@@ -3070,7 +3076,13 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
     agentDecision: AuthorizationDecision,
   ): Promise<AuthorizationDecision> {
     const responsibleUserId = input.actor.onBehalfOfUserId?.trim();
-    if (input.actor.type === "agent" && isConnectionManagementAction(input.action) && !responsibleUserId) {
+    // An assistant connection (mcp_oauth) carries its person only to narrow
+    // it (rule group H); it never manages connections as him (PAR-14559).
+    if (
+      input.actor.type === "agent" &&
+      isConnectionManagementAction(input.action) &&
+      (!responsibleUserId || input.actor.source === "mcp_oauth")
+    ) {
       return deny({ action: input.action, reason: "deny_missing_membership", code: "RESPONSIBLE_USER_UNAVAILABLE",
         explanation: "Connection management requires an authenticated responsible user." });
     }
