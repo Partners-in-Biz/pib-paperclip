@@ -149,11 +149,11 @@ export async function finalizeSummarySlotsForTerminalIssue(
  * statement; that narrow window is accepted because the new run's own terminal
  * transition runs this hook again.
  *
- * Callers: every writer that moves a `heartbeat_runs` row to a terminal status
- * calls this after its transaction commits (run-lifecycle, native run
- * finalizer/projection/reconciler/status-decision committer, active-run
- * watchdog, recovery sweep, execution-control reconciliation, queue cancel and
- * run-dispatch retry suppression), via `settleSummarySlotsForTerminalRun`.
+ * Coverage: the database trigger `summary_slot_terminal_run` (migration 0458)
+ * applies the same rule on every `heartbeat_runs` status change to a terminal
+ * status, so no writer can skip it. This function stays as the in-process path
+ * run-lifecycle calls (and the reference the trigger mirrors); both are
+ * idempotent because only a slot still `generating` matches.
  *
  * Policy: any terminal run status (including `succeeded`) fails a slot that is
  * still `generating`. A run that succeeds without closing its issue or writing
@@ -223,30 +223,5 @@ export async function settleSummarySlotsForTerminalRun(
     await finalizeSummarySlotsForTerminalRun(db, run);
   } catch (err) {
     logger.warn({ err, runId: run.id }, "failed to finalize summary slot for terminal run");
-  }
-}
-
-/** Same as `settleSummarySlotsForTerminalRun` for callers that only hold a run id. */
-export async function settleSummarySlotsForTerminalRunById(
-  db: Db,
-  input: { runId: string; companyId: string },
-): Promise<void> {
-  try {
-    const run = await db
-      .select({
-        id: heartbeatRuns.id,
-        companyId: heartbeatRuns.companyId,
-        status: heartbeatRuns.status,
-        issueId: heartbeatRuns.issueId,
-        nativeIssueId: heartbeatRuns.nativeIssueId,
-        contextSnapshot: heartbeatRuns.contextSnapshot,
-        error: heartbeatRuns.error,
-      })
-      .from(heartbeatRuns)
-      .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId)))
-      .then((rows) => rows[0] ?? null);
-    if (run) await finalizeSummarySlotsForTerminalRun(db, run);
-  } catch (err) {
-    logger.warn({ err, runId: input.runId }, "failed to finalize summary slot for terminal run");
   }
 }

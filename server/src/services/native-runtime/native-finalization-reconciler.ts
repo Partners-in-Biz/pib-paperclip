@@ -51,7 +51,6 @@ import {
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { issueService } from "../issues.js";
 import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
-import { settleSummarySlotsForTerminalRun } from "../summary-slot-finalization.js";
 import { isNewTerminalRunFailure, reportRunFailure } from "../run-failure-report.js";
 import { resumeNativeWorkspaceFinalization, recordNativeWorkspaceFinalizationFailure } from "./native-workspace-finalizer.js";
 import { dismissObsoleteNativePolicyReviews } from "./obsolete-policy-reviews.js";
@@ -346,7 +345,6 @@ export async function claimNativeSessionResumptions(input: {
     // the remaining candidates in this loop, so fire it and do not await it.
     if (terminalRunToEmit) {
       void emitAgentTaskRun(input.db, terminalRunToEmit);
-      void settleSummarySlotsForTerminalRun(input.db, terminalRunToEmit);
       void reportRunFailure(input.db, terminalRunToEmit);
     }
     if (claimed) claims.push({ runId: candidate.runId, leaseOwner, attempt: claimedAttempt });

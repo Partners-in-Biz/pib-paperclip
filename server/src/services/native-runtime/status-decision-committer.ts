@@ -80,7 +80,6 @@ import {
   type ActivityPublication,
 } from "../activity-log.js";
 import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
-import { settleSummarySlotsForTerminalRun } from "../summary-slot-finalization.js";
 import { materializeNativeProviderCapacityRetry } from "./native-provider-capacity-retry.js";
 import { NATIVE_PROVIDER_OVERLOADED_CODE } from "./native-provider-failure.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
@@ -2540,9 +2539,7 @@ export async function commitNativeStatusDecision(input: {
   });
 
   for (const publication of publications) publishActivity(publication);
-  for (const terminalRun of terminalRunsToEmit) {
+  for (const terminalRun of terminalRunsToEmit)
     await emitAgentTaskRun(input.db, terminalRun);
-    void settleSummarySlotsForTerminalRun(input.db, terminalRun);
-  }
   return committed;
 }

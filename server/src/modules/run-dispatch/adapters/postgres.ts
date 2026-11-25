@@ -54,7 +54,6 @@ import { collectDispositionRepairSourceState } from "../../../services/recovery/
 import { legacyDispositionEpisode, legacyDispositionFingerprint } from "../../../services/recovery/legacy-continuation.js";
 import { appendHeartbeatRunEvent } from "../../../services/heartbeat-run-events.js";
 import { emitAgentTaskRun } from "../../../services/agent-task-run-telemetry.js";
-import { settleSummarySlotsForTerminalRun } from "../../../services/summary-slot-finalization.js";
 import { issueService } from "../../../services/issues.js";
 import {
   issueTreeControlService,
@@ -993,7 +992,6 @@ export function createPostgresRunDispatchAdapter(
     // all if the transaction rolled back.
     if (transactionResult.telemetryRun) {
       void emitAgentTaskRun(db, transactionResult.telemetryRun);
-      void settleSummarySlotsForTerminalRun(db, transactionResult.telemetryRun);
     }
 
     return transactionResult.outcome;

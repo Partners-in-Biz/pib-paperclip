@@ -274,6 +274,91 @@ describeEmbeddedPostgres("summary slot finalization and cancel (real database)",
     });
   });
 
+  describe("terminal run trigger (every heartbeat_runs writer)", () => {
+    async function writeStatus(runId: string, status: string, extra: Record<string, unknown> = {}) {
+      // A bare status UPDATE is what native finalizer, watchdog, recovery,
+      // restart recovery, session executor and queue cancels all reduce to.
+      await db.update(heartbeatRuns).set({ status, ...extra }).where(eq(heartbeatRuns.id, runId));
+    }
+
+    it.each(["failed", "cancelled", "timed_out", "interrupted", "succeeded"])(
+      "fails the generating slot when any writer moves the run to %s",
+      async (status) => {
+        const companyId = await seedCompany();
+        const agentId = await seedAgent(companyId);
+        const { issue, slot } = await seedGeneration(companyId);
+        const runId = await seedRun(companyId, agentId, issue.id, "running");
+        await writeStatus(runId, status, { error: "boom" });
+        const after = await loadSlot(slot.id);
+        expect(after.status).toBe("failed");
+        expect(after.failureReason).toMatch(/^Summary generation run /);
+        const rows = await db.select().from(activityLog).where(eq(activityLog.entityId, slot.id));
+        expect(rows.map((r) => r.action)).toEqual(["summary_slot.generate_failed"]);
+        expect(rows[0]!.details).toMatchObject({ source: "terminal_run", runId, runStatus: status });
+      },
+    );
+
+    it("matches the TypeScript failure reason", async () => {
+      const companyId = await seedCompany();
+      const agentId = await seedAgent(companyId);
+      const { issue, slot } = await seedGeneration(companyId);
+      const runId = await seedRun(companyId, agentId, issue.id, "running");
+      await writeStatus(runId, "failed", { error: "Provider rate limited" });
+      expect((await loadSlot(slot.id)).failureReason).toBe(
+        "Summary generation run failed before writing a summary (Provider rate limited).",
+      );
+    });
+
+    it("resolves the issue from native_issue_id and context_snapshot too", async () => {
+      const companyId = await seedCompany();
+      const agentId = await seedAgent(companyId);
+      const a = await seedGeneration(companyId);
+      const b = await seedGeneration(companyId);
+      const nativeRun = await seedRun(companyId, agentId, a.issue.id, "running");
+      await db.update(heartbeatRuns)
+        .set({ contextSnapshot: {}, nativeIssueId: a.issue.id })
+        .where(eq(heartbeatRuns.id, nativeRun));
+      const ctxRun = await seedRun(companyId, agentId, b.issue.id, "running");
+      await writeStatus(nativeRun, "failed");
+      await writeStatus(ctxRun, "cancelled");
+      expect((await loadSlot(a.slot.id)).status).toBe("failed");
+      expect((await loadSlot(b.slot.id)).status).toBe("failed");
+    });
+
+    it("keeps the slot generating while a queued, running or scheduled_retry sibling exists", async () => {
+      const companyId = await seedCompany();
+      const agentId = await seedAgent(companyId);
+      for (const siblingStatus of ["queued", "running", "scheduled_retry"]) {
+        const { issue, slot } = await seedGeneration(companyId);
+        const runId = await seedRun(companyId, agentId, issue.id, "running");
+        const siblingId = await seedRun(companyId, agentId, issue.id, "queued");
+        await writeStatus(siblingId, siblingStatus);
+        await writeStatus(runId, "failed");
+        expect((await loadSlot(slot.id)).status).toBe("generating");
+        await writeStatus(siblingId, "failed");
+        expect((await loadSlot(slot.id)).status).toBe("failed");
+      }
+    });
+
+    it("ignores non-terminal transitions, idle slots and other companies", async () => {
+      const companyId = await seedCompany();
+      const otherCompanyId = await seedCompany();
+      const agentId = await seedAgent(companyId);
+      const gen = await seedGeneration(companyId);
+      const idle = await seedGeneration(companyId, { slotStatus: "idle" });
+      const foreign = await seedGeneration(otherCompanyId);
+      const genRun = await seedRun(companyId, agentId, gen.issue.id, "queued");
+      await writeStatus(genRun, "running");
+      expect((await loadSlot(gen.slot.id)).status).toBe("generating");
+      const idleRun = await seedRun(companyId, agentId, idle.issue.id, "running");
+      await writeStatus(idleRun, "failed");
+      expect((await loadSlot(idle.slot.id)).status).toBe("idle");
+      const crossRun = await seedRun(companyId, agentId, foreign.issue.id, "running");
+      await writeStatus(crossRun, "failed");
+      expect((await loadSlot(foreign.slot.id)).status).toBe("generating");
+    });
+  });
+
   describe("summarySlotService.cancel", () => {
     it("cancels the issue, resets the slot to idle, and returns active run ids", async () => {
       const companyId = await seedCompany();

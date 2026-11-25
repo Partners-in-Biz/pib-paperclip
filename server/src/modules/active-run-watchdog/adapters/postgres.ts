@@ -23,7 +23,6 @@ import { visibleIssueCondition } from "../../../services/issue-visibility.js";
 import { logActivity } from "../../../services/activity-log.js";
 import { appendHeartbeatRunEvent } from "../../../services/heartbeat-run-events.js";
 import { emitAgentTaskRun } from "../../../services/agent-task-run-telemetry.js";
-import { settleSummarySlotsForTerminalRun } from "../../../services/summary-slot-finalization.js";
 import {
   executeIssuePostCommitActions,
   issueService,
@@ -524,7 +523,6 @@ export function createPostgresWatchdogAdapter(db: Db): WatchdogRunReader & Watch
     // Telemetry is best-effort background work; it must not delay the
     // watchdog fold's caller, so fire it and do not await it.
     void emitAgentTaskRun(db, finalizedRun);
-    void settleSummarySlotsForTerminalRun(db, finalizedRun);
 
     return { kind: "folded", evaluationIssueId: input.existingEvaluation?.id ?? null };
   }
