@@ -12068,8 +12068,14 @@ export function issueService(db: Db) {
               });
             }
           }
-          if (updated.status === "done" || updated.status === "cancelled") {
+          if (
+            updated.status === "done" ||
+            updated.status === "cancelled" ||
+            updated.status === "blocked"
+          ) {
             await finalizeSummarySlotsForTerminalIssue(tx, updated);
+          }
+          if (updated.status === "done" || updated.status === "cancelled") {
             // Every terminal transition funnels through here, including direct
             // service callers (tree control, recovery, status cards)
             // that never touch the HTTP routes. Governed cards expire; ordinary
