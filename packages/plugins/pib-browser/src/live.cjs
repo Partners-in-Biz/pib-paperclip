@@ -145,9 +145,11 @@ function killChild(child, graceMs) {
 
 function reject(socket, status) {
   try {
-    socket.end(`HTTP/1.1 ${status} ${http.STATUS_CODES[status]}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
-  } catch (e) {}
-  socket.destroy();
+    socket.end(`HTTP/1.1 ${status} ${http.STATUS_CODES[status]}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`, () => socket.destroy());
+    setTimeout(() => socket.destroy(), 1000).unref();
+  } catch (e) {
+    socket.destroy();
+  }
 }
 
 /**

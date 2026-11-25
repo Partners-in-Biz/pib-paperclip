@@ -51,6 +51,11 @@ async function waitFor(fn, ms = 5000) {
   return false;
 }
 
+function within(promise, ms, what) {
+  let t;
+  return Promise.race([promise, new Promise((_, rej) => { t = setTimeout(() => rej(new Error(`timed out: ${what}`)), ms); })]).finally(() => clearTimeout(t));
+}
+
 async function setup(t, opts = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pib-live-test-'));
   const fake = writeFakeX11vnc(dir, opts);
@@ -169,7 +174,7 @@ test('SIGKILL follows when x11vnc ignores SIGTERM; shutdown kills every child', 
   assert.ok(await waitFor(() => s.fake.records().filter((r) => r.argv).length === 2));
   const pids = s.fake.records().filter((r) => r.argv).map((r) => r.pid);
   const closedA = new Promise((r) => a.ws.on('close', r));
-  await s.live.close();
+  await within(s.live.close(), 2000, 'shutdown waits for SIGKILL');
   assert.ok(pids.every((p) => !alive(p)), 'a child outlived shutdown');
   await closedA;
   assert.equal(fs.existsSync(s.config.socketPath), false, 'socket removed');
@@ -192,8 +197,7 @@ test('third viewer refused; a slot frees when a viewer leaves', async (t) => {
 test('a ping is sent on every stream; the stream closes at its time limit', async (t) => {
   const s = await setup(t, { live: { pingMs: 50, viewTtlMs: 400 } });
   const c = await s.connect();
-  const pinged = new Promise((r) => c.ws.once('ping', r));
-  await pinged;
+  await within(new Promise((r) => c.ws.once('ping', r)), 300, 'ping');
   const closed = await new Promise((r) => c.ws.on('close', (code) => r(code)));
   assert.equal(closed, 1000);
   const { pid } = s.fake.records()[0];
