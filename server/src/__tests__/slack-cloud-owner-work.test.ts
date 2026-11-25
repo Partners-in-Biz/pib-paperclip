@@ -452,7 +452,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       transport.mockImplementation(async config => {
         if (!new URL(config.url, config.baseURL).pathname.endsWith("/chat.postEphemeral")) return base(config);
         replies.push((config as { data?: unknown }).data);
-        return { data: { ok: true, message_ts: "1.1" }, status: 200, statusText: "OK", headers: {}, config, request: {} };
+        return { data: { ok: true, message_ts: "1.1" } as unknown, status: 200, statusText: "OK", headers: {}, config, request: { path: "/chat.postEphemeral" } };
       });
     }
     const endpoint = await row(endpointId), enrolled = (await setup(endpointId)).slackCloudEvents!;
