@@ -233,7 +233,7 @@ function CockpitPageBody({ context }: PluginPageProps) {
       ) : tab === "notifications" ? (
         <NotificationsPage key={companyId} />
       ) : browserTab ? (
-        <BrowserPanel key={companyId} refreshKey={browserTick} identity={new URLSearchParams(location.search).get("identity")} />
+        <BrowserPanel key={companyId} companyId={companyId} refreshKey={browserTick} identity={new URLSearchParams(location.search).get("identity")} />
       ) : policyTab ? (
         <PolicyPanel key={companyId} linkFor={linkFor} refreshKey={policyTick} />
       ) : maintenanceTab ? (

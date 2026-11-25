@@ -237,3 +237,23 @@ describe("browser.live.status", () => {
     await expect(harness.performAction("browser.live.status", {}, as as never)).rejects.toThrow();
   });
 });
+
+describe("browser.status carries the Watch live setting for the Browser tab", () => {
+  const live = async (setting: unknown, as: Parameters<Awaited<ReturnType<typeof cockpit>>["ticket"]>[0]) => {
+    const { harness } = await cockpit(setting);
+    return (await harness.performAction<{ live: string }>("browser.status", {}, as as never)).live;
+  };
+  it("is the setting for an owner or admin of the owner company", async () => {
+    const { person } = await cockpit();
+    expect(await live("view", person(OWNER))).toBe("view");
+    expect(await live("takeover", person(ADMIN))).toBe("takeover");
+  });
+  it("is off at off, with nothing saved, for a member, an agent and the local board", async () => {
+    const { person } = await cockpit();
+    expect(await live("off", person(OWNER))).toBe("off");
+    expect(await live(null, person(OWNER))).toBe("off");
+    expect(await live("view", person(MEMBER))).toBe("off");
+    expect(await live("view", { companyId: OWNER_CO, actor: { type: "agent", agentId: AGENT, userId: OWNER, companyId: OWNER_CO } })).toBe("off");
+    expect(await live("view", person("local-board"))).toBe("off");
+  });
+});

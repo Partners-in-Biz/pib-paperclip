@@ -103,6 +103,16 @@ function takeTicket(env: Env, ticket: string): TicketEntry | null {
   return entry;
 }
 
+/** What the Browser tab may show this caller: the setting when they may watch, else `off`. Never throws. */
+export async function browserLiveFor(env: Env, context: PluginPerformActionContext): Promise<BrowserLiveSetting> {
+  try {
+    const who = await checkPerson(env, context.companyId, context.actor?.type, context.actor?.userId);
+    return who.ok ? await readBrowserLiveSetting(env, context.companyId!) : "off";
+  } catch {
+    return "off";
+  }
+}
+
 export interface BrowserLiveTicket {
   ticket: string;
   mode: BrowserLiveMode;

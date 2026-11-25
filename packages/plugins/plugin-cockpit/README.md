@@ -381,6 +381,10 @@ The owner or an admin watches the agents' browser (display `:99`) read-only. Own
 
 One new capability, `websocket.local`, so the release is stop-first and needs a core that knows it (PAR-14532). Rollback: setting `off` (instant), then Cockpit before core.
 
+### Watch live: drawer (0.30.0, PAR-14535, PAR-14514 S3)
+
+Cockpit -> Browser shows "Watch live" instead of the SSH steps, only when `browserLive` is not `off` and the caller is a signed-in owner or admin (`browser.status` returns `live`, `off` for everyone else). The drawer asks `browser.live.ticket`, opens the route's websocket and draws the screen with `@novnc/novnc` 1.7.x, `viewOnly`. When the socket closes (5-minute limit or a drop) it asks for a new ticket and reconnects; three failed connects in a row show an error with "Try again". The ticket is never logged. `?tab=browser&identity=<id>` opens the tab on that login. noVNC is a separate chunk (esbuild `splitting: true`, target es2022): entry bundle 133,799 -> 133,821 bytes gzipped; `rfb-*.js` is 83,441 bytes gzipped and loads only when the drawer opens. UI only: no new capability.
+
 ## Develop
 
 ```bash
