@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { Copy, MessageSquareText, Pencil, Trash2 } from "lucide-react";
 import { type CanvasController } from "@/components/planning-canvas/state/useCanvasController";
+import { RelatedButton } from "@/components/planning-canvas/panels/related/RelatedPanel";
 import { cn } from "@/lib/utils";
 
 /** Right-click on a node, or long-press on touch (C19). Same actions as the keys. */
@@ -62,6 +63,7 @@ export function CanvasContextMenu({ c }: { c: CanvasController }) {
       >
         <MessageSquareText className="size-4" /> {node.kind === "frame" ? "Ask about this frame" : "Ask about selection"}
       </button>
+      <RelatedButton c={c} nodeId={node.id} variant="menu" onPick={() => setContextMenu(null)} />
       <button type="button" role="menuitem" className={cn(item, "text-destructive")} onClick={run(deleteSelection)}>
         <Trash2 className="size-4" /> Delete
       </button>
