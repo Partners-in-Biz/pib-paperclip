@@ -1257,10 +1257,10 @@ describe("NewIssueDialog", () => {
     act(() => root.unmount());
   });
 
-  function enableWorktrees(mode = "shared_workspace") {
+  function enableWorktrees(mode = "shared_workspace", workspaces: Array<{ id: string; isPrimary: boolean }> = [{ id: "source-1", isPrimary: true }]) {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
     mockProjectsApi.list.mockResolvedValue([
-      { id: "project-1", name: "Alpha", executionWorkspacePolicy: { enabled: true, defaultMode: mode }, workspaces: [{ id: "source-1", isPrimary: true }] },
+      { id: "project-1", name: "Alpha", executionWorkspacePolicy: { enabled: true, defaultMode: mode }, workspaces },
       { id: "project-2", name: "Beta", executionWorkspacePolicy: { enabled: false }, workspaces: [] },
     ]);
     dialogState.newIssueDefaults = { projectId: "project-1", description: "Fix sign-in" };
@@ -1315,7 +1315,8 @@ describe("NewIssueDialog", () => {
   });
 
   it.each([false, true])("carries the source checkout when reusing another worktree in the same project (inherited: %s)", async (inherited) => {
-    enableWorktrees();
+    // source-2 is a second checkout of project-1; a checkout outside the project is replaced by the default (PAR-14327).
+    enableWorktrees("shared_workspace", [{ id: "source-1", isPrimary: true }, { id: "source-2", isPrimary: false }]);
     if (inherited) dialogState.newIssueDefaults.executionWorkspaceId = "worktree-secondary";
     mockExecutionWorkspacesApi.listSummaries.mockResolvedValue([{
       id: "worktree-secondary", name: "Secondary checkout fix", mode: "isolated_workspace", status: "active",
