@@ -1,10 +1,10 @@
-import { usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import { useSocialAction } from "./actions.js";
 import { PreferencesPanel, type PreferenceValues, type PreferencesLoadResult, type PreferencesSaveResult } from "@partnersinbiz/pib-plugin-ui";
 
 /** Company preferences (time zone, agent replies, own-work name). The server refuses anyone who is not an owner or admin. */
 export function PreferencesSection() {
-  const load = usePluginAction("social.preferences-load");
-  const save = usePluginAction("social.preferences-save");
+  const load = useSocialAction("social.preferences-load");
+  const save = useSocialAction("social.preferences-save");
   return (
     <details style={{ marginTop: 16 }}>
       <summary style={{ cursor: "pointer", fontWeight: 600 }}>Preferences</summary>

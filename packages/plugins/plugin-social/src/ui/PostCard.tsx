@@ -2,7 +2,8 @@
  * The Social post card on a Planning Canvas board (PAR-14389 B3a): the `canvasNode` slot `card-post`. The node's
  * `assetId` is the post id. One batcher per open board groups the board's asks into one `canvas.cards.resolve`.
  */
-import { usePluginAction, type PluginCanvasNodeProps } from "@paperclipai/plugin-sdk/ui";
+import type { PluginCanvasNodeProps } from "@paperclipai/plugin-sdk/ui";
+import { useSocialAction } from "./actions.js";
 import { EntityCanvasCard, createCardBatcher, type CardBatcher, type CardsResolve } from "@partnersinbiz/pib-plugin-ui";
 import { POST_CARD_SLOT } from "../slots.js";
 
@@ -21,6 +22,6 @@ function batcherFor(boardId: string, resolve: CardsResolve): CardBatcher {
 }
 
 export function SocialPostCard({ boardId, assetId }: PluginCanvasNodeProps) {
-  const resolve = usePluginAction(RESOLVE_KEY) as unknown as CardsResolve;
+  const resolve = useSocialAction(RESOLVE_KEY) as unknown as CardsResolve;
   return <EntityCanvasCard batcher={batcherFor(boardId, resolve)} type={POST_CARD_SLOT} id={assetId ?? ""} kindLabel="Post" />;
 }
