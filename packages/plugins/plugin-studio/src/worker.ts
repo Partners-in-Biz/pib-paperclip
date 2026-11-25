@@ -3,6 +3,7 @@ import { registerSocialMediaSync } from "./social-media-sync.js";
 import { actingRestriction, createAccessGuard, normalizeToolResult, registerClientProjectWatch, registerCrmProjection, scopeOfRow, toolFail, type ActingRestriction, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
 import { boardLibrary } from "./board-library.js";
 import { boardScopeInput, boardTarget } from "./board-scope.js";
+import { boardGenerationFor, boardGenerationState, boardMarkForRun } from "./board-generation.js";
 import { assetBytesForPerson, assetFileForAgent, assetUrlForPerson, assetUrlsForPerson, getAssetRow, importFromAttachment, linkAsset, listAssets } from "./assets.js";
 import { archiveCanvas, canvasScope, createCanvas, getCanvas, listCanvases, saveCanvas } from "./canvas.js";
 import { getRender } from "./video-edit/render-queue.js";
@@ -105,7 +106,9 @@ async function runTool(ctx: PluginContext, name: string, params: Record<string, 
     case "studio-generate": {
       const work = await workOf(ctx, run, params);
       if (!work.issueId) throw new StudioError("Generation is charged to a task: pass issueId, or run from an issue.", "no_issue");
-      const out = await requestGeneration(ctx, companyId, params, { agentId: run.agentId, runId: run.runId, issueId: work.issueId, projectId: work.projectId });
+      // A run bound to a board chat thread counts against its person's daily board limit (PAR-14281, stage 3d).
+      const board = (await boardMarkForRun(ctx, run, work.issueId)) ?? undefined;
+      const out = await requestGeneration(ctx, companyId, params, { agentId: run.agentId, runId: run.runId, issueId: work.issueId, projectId: work.projectId, board });
       runDetached(() => void processQueue(ctx).catch((error) => ctx.logger.info("Studio queue kick failed", { error: errorText(error) })));
       return out;
     }
@@ -448,6 +451,15 @@ const plugin = definePlugin({
       const me = await person(context);
       if (!canGenerate(me.role)) throw new StudioError("Viewers can look at Studio but can't generate. Ask a company owner for member access.", "forbidden");
       const p = objectParams(params);
+      // From a board card (PAR-14281): the board decides who pays, its daily limit applies, and the inputs are kept.
+      const board = boardScopeInput(p);
+      if (board) {
+        const on = await boardGenerationFor(ctx, me.companyId, board, p, me.userId, me.restriction);
+        const expected = p.expectedCredits === undefined || p.expectedCredits === null ? undefined : Number(p.expectedCredits);
+        if (expected !== undefined && !Number.isFinite(expected)) throw new StudioError("expectedCredits must be a number.", "bad_request");
+        // No client (refused above) and no issue: the board's project decides who pays.
+        return { me, request: pageRequest(p), actor: { userId: me.userId, issueId: null, projectId: on.projectId, restriction: me.restriction, board: on.mark, expectedCredits: expected } };
+      }
       const ref = typeof p.issueId === "string" ? p.issueId.trim() : "";
       const issue = ref ? await loadIssue(ctx, me.companyId, ref) : null;
       return { me, request: pageRequest(p), actor: { userId: me.userId, issueId: issue?.id ?? null, projectId: issue?.projectId ?? null, restriction: me.restriction } };
@@ -464,6 +476,15 @@ const plugin = definePlugin({
       const out = await requestGeneration(ctx, me.companyId, request, actor);
       runDetached(() => void processQueue(ctx).catch((error) => ctx.logger.info("Studio queue kick failed", { error: errorText(error) })));
       return out;
+    });
+
+    // The output card of a board generation: its queue state, checked against the board like a file (PAR-14281).
+    action("board-generation", async (params, context) => {
+      const me = await person(context);
+      const p = objectParams(params);
+      const scope = boardScopeInput(p);
+      if (!scope) throw new StudioError("boardScope is required.", "bad_board_scope");
+      return boardGenerationState(ctx, me.companyId, scope, String(p.generationId ?? "").trim(), me.restriction);
     });
 
     // Lip-sync on the generate page (PAR-8436): a portrait plus an audio asset or a typed line; same generate path.

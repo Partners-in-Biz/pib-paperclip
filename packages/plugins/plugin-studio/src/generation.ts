@@ -22,6 +22,7 @@ import { getAssetRow, storeAsset } from "./assets.js";
 import { StudioConfig } from "./config.js";
 import { credits, iso, num, table } from "./db.js";
 import { errorText, StudioError } from "./errors.js";
+import { assertBoardDailyFits, ESTIMATE_CHANGED, type BoardMark } from "./board-generation.js";
 import { adjust, assertFits, assertRunFits, capCheck, currentPeriod, refund, reserve, withCompanyLock, type LedgerTarget } from "./ledger.js";
 import { DEFAULT_PRESET_MODEL, DEFAULT_PRESET_RATIO, PHOTO_PRESETS, buildPhotoPresetPrompt, getPhotoPreset } from "./presets.js";
 import { assertAudioCount, assertJobCeiling, assertReferenceCount, findModel, referenceIds } from "./models.js";
@@ -271,6 +272,21 @@ export interface Actor {
    * leave it out: their run's project limits them (`scopeForWork`).
    */
   restriction?: ActingRestriction;
+  /**
+   * Set for a board generation (PAR-14281): a card click, or an agent run bound to a board chat thread. The row gets
+   * origin `board`, the person and the card's inputs, and the person's daily limit applies before any provider call.
+   */
+  board?: BoardMark;
+  /** The total the person confirmed. A different price at the click refuses with `estimate_changed`, nothing reserved. */
+  expectedCredits?: number;
+}
+
+/** A board generation is refused on the daily limit, an unset or zero cap, before the provider is asked for a price. */
+async function boardPrecheck(ctx: PluginContext, companyId: string, actor: Actor, scope: ClientScope, batch: number, now: number): Promise<number | null> {
+  if (!actor.board) return null;
+  const used = await assertBoardDailyFits(ctx, companyId, actor.board, batch, now);
+  assertFits(await capCheck(ctx, companyId, scope, currentPeriod(new Date(now))), 0);
+  return used;
 }
 
 /** The one duration check: the model's own field, a listed whole number of seconds, else the model's default. */
@@ -339,12 +355,14 @@ export async function estimateGeneration(ctx: PluginContext, companyId: string, 
   const batch = batchSize(params);
   const where = await scopeForWork(ctx, companyId, scopeInput(params), actor.projectId ?? null);
   if (actor.restriction) assertOpenToPerson(where.scope, actor.restriction);
+  const usedToday = await boardPrecheck(ctx, companyId, actor, where.scope, batch, runtime.now());
   const config = new StudioConfig(ctx, companyId);
   const refs = [...(await referenceRows(ctx, companyId, where.scope, references, "image")), ...(await referenceRows(ctx, companyId, where.scope, audio, "audio"))];
   const each = await estimateEach(await runtime.provider(config), model, await withReferences(config, companyId, model, body, refs));
   assertJobCeiling(model, each, audio.length > 0);
   const check = await capCheck(ctx, companyId, where.scope);
-  return { model, batchSize: batch, creditsEach: each, creditsTotal: credits(each * batch), monthlyCap: check.cap.monthlyCredits, capSource: check.cap.source, usedThisMonth: check.used, remaining: check.remaining };
+  const board = actor.board ? { dailyLimit: actor.board.dailyLimit, usedToday, client: where.scope, clientName: where.client?.name ?? null } : {};
+  return { model, batchSize: batch, creditsEach: each, creditsTotal: credits(each * batch), monthlyCap: check.cap.monthlyCredits, capSource: check.cap.source, usedThisMonth: check.used, remaining: check.remaining, ...board };
 }
 
 function batchSize(params: Record<string, unknown>): number {
@@ -367,6 +385,7 @@ export async function requestGeneration(ctx: PluginContext, companyId: string, p
   const projectId = actor.projectId ?? null;
   const where: ResolvedScope = await scopeForWork(ctx, companyId, scopeInput(params), projectId);
   if (actor.restriction) assertOpenToPerson(where.scope, actor.restriction);
+  await boardPrecheck(ctx, companyId, actor, where.scope, batch, runtime.now());
   const config = new StudioConfig(ctx, companyId);
   const refs = [...(await referenceRows(ctx, companyId, where.scope, references, "image")), ...(await referenceRows(ctx, companyId, where.scope, audio, "audio"))];
   const provider = await runtime.provider(config);
@@ -376,6 +395,9 @@ export async function requestGeneration(ctx: PluginContext, companyId: string, p
   // Image and audio ids share the one stored list (no migration); `submit` splits them by asset kind.
   const stored = [...references, ...audio];
   const total = credits(each * batch);
+  if (actor.expectedCredits !== undefined && credits(actor.expectedCredits) !== total) {
+    throw new StudioError(`The price changed to ${total} credits since the estimate (${credits(actor.expectedCredits)}). Nothing was started; check the new estimate and confirm again.`, ESTIMATE_CHANGED);
+  }
   const name = typeof params.name === "string" && params.name.trim() ? params.name.trim().slice(0, 200) : (presetName(params, prompt));
   const groupId = randomUUID();
   const ids = Array.from({ length: batch }, () => randomUUID());
@@ -386,11 +408,13 @@ export async function requestGeneration(ctx: PluginContext, companyId: string, p
     assertFits(check, total);
     // Agent tool calls carry a run id; people on the page don't, and they already confirm an estimate first.
     if (actor.runId) await assertRunFits(ctx, companyId, actor.runId, total, actor.agentId);
+    // The daily count again, in the same lock as the cap check and the reserve: two clicks at 19 of 20 can't both pass.
+    if (actor.board) await assertBoardDailyFits(ctx, companyId, actor.board, batch, runtime.now());
     for (const id of ids) {
       await ctx.db.execute(
-        `INSERT INTO ${table(ctx, "generations")} (id, group_id, company_id, client_kind, client_ref, client_name, project_id, issue_id, agent_id, run_id, user_id, provider, model, prompt, params, name, status, period, estimated_credits, reference_asset_ids)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb, $16, 'queued', $17, $18, $19::jsonb)`,
-        [id, groupId, companyId, where.scope?.kind ?? null, where.scope?.id ?? null, where.client?.name ?? null, projectId, actor.issueId ?? null, actor.agentId ?? null, actor.runId ?? null, actor.userId ?? null, provider.key, model, prompt, JSON.stringify(body), name, period, each, JSON.stringify(stored)],
+        `INSERT INTO ${table(ctx, "generations")} (id, group_id, company_id, client_kind, client_ref, client_name, project_id, issue_id, agent_id, run_id, user_id, provider, model, prompt, params, name, status, period, estimated_credits, reference_asset_ids, origin, acting_user_id, input_keys)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb, $16, 'queued', $17, $18, $19::jsonb, $20, $21, $22::jsonb)`,
+        [id, groupId, companyId, where.scope?.kind ?? null, where.scope?.id ?? null, where.client?.name ?? null, projectId, actor.issueId ?? null, actor.agentId ?? null, actor.runId ?? null, actor.userId ?? null, provider.key, model, prompt, JSON.stringify(body), name, period, each, JSON.stringify(stored), actor.board ? "board" : null, actor.board?.userId ?? null, JSON.stringify(actor.board?.inputKeys ?? [])],
       );
       await reserve(ctx, { generationId: id, companyId, clientKind: where.scope?.kind ?? null, clientRef: where.scope?.id ?? null, period }, each);
     }
