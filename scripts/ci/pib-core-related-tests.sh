@@ -44,11 +44,22 @@ CHAT_SUITE='server/src/__tests__/chat-channels.integration.test.ts'
 
 related_files() {
   if [ -n "${RELATED_FILES_OVERRIDE:-}" ]; then sort -u "$RELATED_FILES_OVERRIDE"; return; fi
-  local projects=() name list_json
+  local projects=() name dir rel d list_json root_dirs=()
   if [ "$MODE" = "affected" ]; then
-    while IFS= read -r name; do
-      [ -n "$name" ] && projects+=(--project "$name")
-    done < <(pnpm --filter "...[origin/${BASE_REF}]" list --json --depth -1 | jq -r '.[].name')
+    # Keep only affected packages that are root vitest projects (PAR-14651). Plugin-only or lockfile-only PRs affect
+    # packages such as the workspace root or a plugin; passing those to `--project` makes vitest abort with "No
+    # projects were found". Plugin tests run in PiB plugins CI. A genuine vitest config error still fails vitest below.
+    mapfile -t root_dirs < <(awk '/projects: \[/{f=1;next} f&&/\]/{exit} f{gsub(/[ ",]/,""); if($0!="") print}' vitest.config.ts)
+    while IFS=$'\t' read -r name dir; do
+      rel="${dir#"$PWD"/}"
+      for d in "${root_dirs[@]}"; do
+        if [ "$rel" = "$d" ]; then projects+=(--project "$name"); break; fi
+      done
+    done < <(pnpm --filter "...[origin/${BASE_REF}]" list --json --depth -1 | jq -r '.[] | [.name, .path] | @tsv')
+    if [ "${#projects[@]}" -eq 0 ]; then
+      echo "no affected package is a root vitest project; plugin tests run in PiB plugins CI" >&2
+      return 0
+    fi
   fi
   list_json="${TMP_DIR}/related-test-files.json"
   # No `|| true` on vitest: a config error (PAR-12762) must fail the step, not read as "no tests".
