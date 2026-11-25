@@ -4,6 +4,7 @@ import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import type { RequestConfirmationPayload } from "@paperclipai/shared";
 import { agents, companies, createDb, heartbeatRuns, issueThreadInteractions, issues, pluginManagedResources, plugins, routineRuns, type Db } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
@@ -99,11 +100,25 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       await quiet();
     }
   });
+  const confirmationPayload: RequestConfirmationPayload = { version: 1, prompt: "Confirm to continue" };
+  it("reopens an already failed run when its blocked issue gains a pending interaction", async () => {
+    await start(); await quiet();
+    const f = await fixture(), run = await dispatch(f), issueId = run.linkedIssueId!;
+    await issueService(db).update(issueId, { status: "blocked" });
+    await projected(run.id, "failed");
+    expect(await saved(run.id)).toMatchObject({ failureReason: "Execution issue moved to blocked" });
+    await db.insert(issueThreadInteractions).values({ companyId: f.companyId, issueId, kind: "request_confirmation",
+      status: "pending", payload: confirmationPayload });
+    await db.transaction(async tx => { await notifyRoutineExecutionStatus(tx, issueId); });
+    await projected(run.id, "issue_created");
+    expect(await saved(run.id)).toMatchObject({ failureReason: null, completedAt: null });
+    expect(errors).toEqual([]);
+  });
   it("treats a blocked execution issue awaiting a pending interaction as paused, not failed", async () => {
     await start(); await quiet();
     const f = await fixture(), run = await dispatch(f), issueId = run.linkedIssueId!;
     await db.insert(issueThreadInteractions).values({ companyId: f.companyId, issueId, kind: "request_confirmation",
-      status: "pending", payload: {} as never });
+      status: "pending", payload: confirmationPayload });
     await issueService(db).update(issueId, { status: "blocked" });
     await settled(); await quiet();
     expect(await saved(run.id)).toMatchObject({ status: "issue_created", failureReason: null, completedAt: null });
