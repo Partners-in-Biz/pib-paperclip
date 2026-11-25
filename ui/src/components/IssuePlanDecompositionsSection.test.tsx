@@ -56,7 +56,7 @@ async function renderSection(record: AcceptedPlanDecompositionSummary) {
   });
   await act(() => root.render(
     <QueryClientProvider client={client}>
-      <IssuePlanDecompositionsSection issueId="source-1" issueIdentifier="PAR-1" />
+      <IssuePlanDecompositionsSection issueId="source-1" issueIdentifier="PAR-1" companyId="company-1" />
     </QueryClientProvider>,
   ));
   return host;
