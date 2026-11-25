@@ -23,6 +23,8 @@ export interface AgentLifecycleOperation {
   verificationFailures?: number;
   attempts: number;
   responsibleUserId?: string | null;
+  /** What a pending host step waits on, for the visible status (PAR-9962). */
+  statusDetail?: string;
 }
 
 export interface AgentLifecycleRequest {

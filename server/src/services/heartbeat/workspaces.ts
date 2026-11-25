@@ -1743,7 +1743,9 @@ export async function resolveRunReferencedProjects(
       !anchorHydrated && anchorProjectId
         ? [anchorProjectId, ...batchCandidateIds]
         : batchCandidateIds;
-    const hydrated = await projects.listByIds(companyId, hydrateIds);
+    // "system": run preparation in the queue. The anchor keeps its issue/run authorization and every
+    // additional project gets its own `project:read` decision below, so no list condition is needed.
+    const hydrated = await projects.listByIds(companyId, hydrateIds, { readCondition: "system" });
     const byId = new Map(hydrated.map((project) => [project.id, project]));
 
     if (!anchorHydrated && anchorProjectId) {
@@ -1766,7 +1768,7 @@ export async function resolveRunReferencedProjects(
 
   // Hydrate the anchor on its own if the candidate loop never ran (no mentions to co-hydrate it with).
   if (!anchorHydrated && anchorProjectId) {
-    const hydrated = await projects.listByIds(companyId, [anchorProjectId]);
+    const hydrated = await projects.listByIds(companyId, [anchorProjectId], { readCondition: "system" });
     anchorRecord =
       hydrated.find((project) => project.id === anchorProjectId) ?? null;
     anchorHydrated = true;

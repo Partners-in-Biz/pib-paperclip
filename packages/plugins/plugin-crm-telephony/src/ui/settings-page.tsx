@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { usePluginAction, type PluginPageProps } from "@paperclipai/plugin-sdk/ui";
-import { Button, Input, Page, PageFrame, Form, Field, Pill, Section, Select, TextArea, errorText, tokens } from "@partnersinbiz/pib-plugin-ui";
+import type { PluginPageProps } from "@paperclipai/plugin-sdk/ui";
+import { AccessGate, useAccess, Button, Input, Page, PageFrame, Form, Field, Pill, Section, Select, TextArea, errorText, tokens } from "@partnersinbiz/pib-plugin-ui";
 import {
   toFormState, toSavePayload, validateForm, describeSecretStatus, describeVoiceReadiness, publicOrigin, voiceWebhookRows,
   emptyNumberRow, moveRow, setDefaultRow,
   type NumberRow, type SettingsFormState, type VoiceReadinessView,
 } from "./settings-form.js";
+import { useAccessMe, useTelephonyAction } from "./actions.js";
 import type { TelephonySettings } from "../settings.js";
 
 // Server error keys that have an inline slot below; anything else goes in the banner.
@@ -44,10 +45,20 @@ function CopyButton({ text }: { text: string }) {
   return <Button type="button" variant="secondary" onClick={copy} style={{ padding: "0 10px", minHeight: 28 }}>{copied ? "Copied" : "Copy"}</Button>;
 }
 
-export function TelephonySettingsPage(_props: PluginPageProps) {
-  const getSettings = usePluginAction("telephony.settings.get");
-  const saveSettings = usePluginAction("telephony.settings.save");
-  const syncTemplates = usePluginAction("telephony.settings.sync-templates");
+/** The page asks `access.me` first; closed shows the "no access" page (the guard still refuses every call). */
+export function TelephonySettingsPage(props: PluginPageProps) {
+  const access = useAccess(useAccessMe(), props.context.companyId);
+  return (
+    <AccessGate state={access} kind="page" moduleName="CRM Telephony">
+      <TelephonySettingsBody />
+    </AccessGate>
+  );
+}
+
+function TelephonySettingsBody() {
+  const getSettings = useTelephonyAction("telephony.settings.get");
+  const saveSettings = useTelephonyAction("telephony.settings.save");
+  const syncTemplates = useTelephonyAction("telephony.settings.sync-templates");
 
   const [data, setData] = useState<SettingsData | null>(null);
   const [form, setForm] = useState<SettingsFormState | null>(null);

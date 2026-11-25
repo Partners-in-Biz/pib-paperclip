@@ -18,6 +18,7 @@
  * saved config row for the plugin (see `syncAllCompanies`, `actionableCompanyIds`).
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
+import { runDetached } from "./detached.js";
 
 const KNOWN_COMPANIES_STATE = { scopeKind: "instance" as const, namespace: "pib-kit", stateKey: "known-companies" };
 const MAX_KNOWN = 500;
@@ -49,7 +50,8 @@ function idsOf(value: unknown): string[] {
 export function rememberCompany(ctx: PluginContext, companyId: string | null | undefined): Promise<void> {
   const memo = memoOf(ctx);
   if (!companyId || memo.written.has(companyId)) return Promise.resolve();
-  const next = memo.chain.then(async () => {
+  // Detached: the write finishes after the caller's invocation may have ended (PAR-13342).
+  const next = runDetached(() => memo.chain.then(async () => {
     try {
       const ids = idsOf(await ctx.state.get(KNOWN_COMPANIES_STATE));
       if (!ids.includes(companyId)) await ctx.state.set(KNOWN_COMPANIES_STATE, { ids: [...ids, companyId].slice(-MAX_KNOWN) });
@@ -57,7 +59,7 @@ export function rememberCompany(ctx: PluginContext, companyId: string | null | u
     } catch {
       // state unavailable: the next call tries again
     }
-  });
+  }));
   memo.chain = next;
   return next;
 }

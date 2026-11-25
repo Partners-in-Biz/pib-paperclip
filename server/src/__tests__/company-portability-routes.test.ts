@@ -48,6 +48,14 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
   getExperimental: vi.fn(),
 }));
 
+// The caller's read scope the export routes pass on (PAR-14320).
+const mockReadScope = vi.hoisted(() => ({ issues: { scope: "caller issues" }, projects: { scope: "caller projects" } }));
+vi.mock("../services/authorization.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../services/authorization.js")>()),
+  issueReadSqlCondition: vi.fn(async () => mockReadScope.issues),
+  projectReadSqlCondition: vi.fn(async () => mockReadScope.projects),
+}));
+
 vi.mock("../services/access.js", () => ({
   accessService: () => mockAccessService,
 }));
@@ -462,13 +470,13 @@ describe("company portability routes", () => {
       1,
       companyId,
       exportRequest,
-      { allowExternalInstructions: false },
+      { readScope: mockReadScope, allowExternalInstructions: false },
     );
     expect(mockCompanyPortabilityService.exportBundle).toHaveBeenNthCalledWith(
       2,
       companyId,
       exportRequest,
-      { allowExternalInstructions: false },
+      { readScope: mockReadScope, allowExternalInstructions: false },
     );
   });
 
@@ -559,7 +567,7 @@ describe("company portability routes", () => {
     expect(mockCompanyPortabilityService.exportBundle).toHaveBeenCalledWith(
       companyId,
       exportRequest,
-      { allowExternalInstructions: true },
+      { readScope: mockReadScope, allowExternalInstructions: true },
     );
   });
 
@@ -608,7 +616,7 @@ describe("company portability routes", () => {
     expect(mockCompanyPortabilityService.exportBundle).toHaveBeenCalledWith(
       companyId,
       selectedAgentRequest,
-      { allowExternalInstructions: false },
+      { readScope: mockReadScope, allowExternalInstructions: false },
     );
   });
 
@@ -647,7 +655,7 @@ describe("company portability routes", () => {
     expect(mockCompanyPortabilityService.exportBundle).toHaveBeenCalledWith(
       companyId,
       companyOnlyRequest,
-      { allowExternalInstructions: false },
+      { readScope: mockReadScope, allowExternalInstructions: false },
     );
   });
 

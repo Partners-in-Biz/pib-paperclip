@@ -19,7 +19,7 @@ function section(markdown: string, heading: string): string {
 
 describe("agent-written text names tasks by identifier, never by UUID", () => {
   it("the paperclip skill's comment style forbids raw UUIDs in comments and descriptions", async () => {
-    const style = section(await read("../../../skills/paperclip/SKILL.md"), "## Comment Style (Required)");
+    const style = section(await read("../../../skills/paperclip/references/heartbeat-procedure.md"), "## Comment Style (Required)");
     expect(style).toContain("**No raw IDs in prose (required):**");
     expect(style).toMatch(/never paste a raw UUID/i);
     expect(style).toContain("[BRA-2](/BRA/issues/BRA-2#document-plan)");
@@ -53,7 +53,7 @@ describe("chat agents describe outcomes, not internal mechanics", () => {
   });
 
   it("the paperclip skill applies the rule to every user-facing comment", async () => {
-    const style = section(await read("../../../skills/paperclip/SKILL.md"), "## Comment Style (Required)");
+    const style = section(await read("../../../skills/paperclip/references/heartbeat-procedure.md"), "## Comment Style (Required)");
     expect(style).toContain("**Describe outcomes, not mechanics (required):**");
   });
 });

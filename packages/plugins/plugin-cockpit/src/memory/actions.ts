@@ -2,6 +2,7 @@
  * Page actions for the Cockpit's Memory tab (board users).
  */
 import type { PluginPerformActionContext } from "@paperclipai/plugin-sdk";
+import type { AccessGuard } from "@partnersinbiz/pib-plugin-kit";
 import { isMemoryArea, MEMORY_AREAS, MEMORY_KINDS, MEMORY_LIMITS } from "@partnersinbiz/pib-plugin-kit";
 import { parseClientParam } from "@partnersinbiz/pib-plugin-kit/client-ref";
 import { assignableUser } from "../constants.js";
@@ -34,10 +35,10 @@ async function wrap<T>(run: () => Promise<T>): Promise<T> {
   }
 }
 
-export function registerMemoryActions(env: Env): void {
+export function registerMemoryActions(env: Env, guard: AccessGuard): void {
   const { ctx } = env;
 
-  ctx.actions.register("memory.overview", async (_params, context) => {
+  guard.action("memory.overview", async (_params, context) => {
     const companyId = companyOf(context);
     const [stats, briefs, jev, known, coverage] = await Promise.all([
       store.memoryStats(ctx, companyId),
@@ -73,7 +74,7 @@ export function registerMemoryActions(env: Env): void {
     };
   });
 
-  ctx.actions.register("memory.list", async (params, context) => {
+  guard.action("memory.list", async (params, context) => {
     const companyId = companyOf(context);
     const status = ["active", "superseded", "archived", "all"].includes(String(params.status)) ? (String(params.status) as FactStatus | "all") : "active";
     const client = str(params.client, 200);
@@ -95,7 +96,7 @@ export function registerMemoryActions(env: Env): void {
     return result;
   });
 
-  ctx.actions.register("memory.brief", async (params, context) => {
+  guard.action("memory.brief", async (params, context) => {
     const companyId = companyOf(context);
     const id = str(params.id, 40);
     const brief = id ? await store.getBrief(ctx, companyId, id) : null;
@@ -104,41 +105,41 @@ export function registerMemoryActions(env: Env): void {
     return { brief, facts };
   });
 
-  ctx.actions.register("memory.preview", async (params, context) => {
+  guard.action("memory.preview", async (params, context) => {
     const companyId = companyOf(context);
     return wrap(() =>
       recall(env, companyId, { issueId: params.issueId, query: params.query, client: params.client, area: params.area }, { agentId: null, runId: null, userId: null }, { preview: true }),
     );
   });
 
-  ctx.actions.register("memory.add", async (params, context) => {
+  guard.action("memory.add", async (params, context) => {
     const companyId = companyOf(context);
     const actor = userActor(context);
     return wrap(() => addFact(env, companyId, params, actor, { origin: "person" }));
   });
 
-  ctx.actions.register("memory.update", async (params, context) => {
+  guard.action("memory.update", async (params, context) => {
     const companyId = companyOf(context);
     userActor(context);
     return wrap(() => updateFact(env, companyId, params));
   });
 
-  ctx.actions.register("memory.feedback", async (params, context) => {
+  guard.action("memory.feedback", async (params, context) => {
     const companyId = companyOf(context);
     const actor = userActor(context);
     return wrap(() => feedback(env, companyId, params, actor));
   });
 
-  ctx.actions.register("memory.review", async (_params, context) => wrap(() => review(env, companyOf(context))));
+  guard.action("memory.review", async (_params, context) => wrap(() => review(env, companyOf(context))));
 
   // Backup / restore (board users): a JSON file with every fact, and its import.
-  ctx.actions.register("memory.export", async (_params, context) => {
+  guard.action("memory.export", async (_params, context) => {
     const companyId = companyOf(context);
     userActor(context);
     return wrap(() => exportMemory(env, companyId));
   });
 
-  ctx.actions.register("memory.import", async (params, context) => {
+  guard.action("memory.import", async (params, context) => {
     const companyId = companyOf(context);
     const actor = userActor(context);
     return wrap(() => importMemory(env, companyId, params.data, actor));

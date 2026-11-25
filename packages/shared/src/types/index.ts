@@ -1024,6 +1024,7 @@ export type {
   UserCompanyAccessEntry,
   UserCompanyAccessResponse,
   MemberRestriction,
+  InviteMemberRestriction,
   ActorCompanyMembership,
   SessionMemberRestriction,
 } from "./access.js";
@@ -1132,3 +1133,5 @@ export * from "./agent-lifecycle.js";
 
 export * from "./task-workspace.js";
 export type { BoardBootstrap, BoardBootstrapSession } from "./board-bootstrap.js";
+export * from "./personal-note.js";
+export * from "./planning-canvas.js";

@@ -35,7 +35,8 @@ export default defineConfig({
   testMatch: "**/*.spec.ts",
   // These suites target dedicated multi-user configurations/ports and are
   // intentionally not part of the default local_trusted e2e run.
-  testIgnore: ["in-feed-native/**", "multi-user.spec.ts", "multi-user-authenticated.spec.ts"],
+  testIgnore: ["in-feed-native/**", "multi-user.spec.ts", "multi-user-authenticated.spec.ts", "member-restriction-in-page.spec.ts", "member-restriction-shell.spec.ts", "member-restriction-workspace-config.spec.ts",
+    "member-restriction-task-detail.spec.ts"],
   timeout: 60_000,
   retries: 0,
   // All specs share one throwaway server, and several toggle instance-level

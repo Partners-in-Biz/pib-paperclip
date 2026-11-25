@@ -1,10 +1,11 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import { constants as fsConstants, createReadStream, createWriteStream, promises as fs } from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { Transform } from "node:stream";
+import { resolvePaperclipInstanceRoot } from "@paperclipai/shared/home-paths";
 import { pipeIntoChildStdin, writeChildStdin } from "./child-stdin.js";
 import type { CommandManagedRuntimeRunner } from "./command-managed-runtime.js";
 import {
@@ -49,6 +50,7 @@ export function createSshCommandManagedRuntimeRunner(input: {
   spec: SshRemoteExecutionSpec;
   defaultCwd?: string | null;
   maxBufferBytes?: number | null;
+  connectionReuseRunId?: string | null;
 }): CommandManagedRuntimeRunner {
   const defaultCwd = input.defaultCwd?.trim() || input.spec.remoteCwd;
   const maxBufferBytes =
@@ -80,6 +82,7 @@ export function createSshCommandManagedRuntimeRunner(input: {
           stdin: commandInput.stdin,
           timeoutMs: commandInput.timeoutMs,
           maxBuffer: maxBufferBytes,
+          connectionReuseRunId: input.connectionReuseRunId,
         });
         if (result.stdout) await commandInput.onLog?.("stdout", result.stdout);
         if (result.stderr) await commandInput.onLog?.("stderr", result.stderr);
@@ -162,6 +165,31 @@ function isValidShellEnvKey(value: string) {
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
 }
 
+/**
+ * True when `value` is safe as the user or host half of an ssh `user@host`
+ * destination: non-empty, no leading `-` (ssh would read it as an option, e.g.
+ * `-oProxyCommand=...`), no whitespace, control characters or `@`.
+ */
+export function isSafeSshDestinationPart(value: string): boolean {
+  // eslint-disable-next-line no-control-regex
+  return value.length > 0 && !value.startsWith("-") && !/[\s\u0000-\u001f\u007f@]/.test(value);
+}
+
+/**
+ * Builds the `user@host` ssh destination argument. Throws when either half
+ * could be read by ssh as an option or split into another argument, so a
+ * config that skipped `parseSshRemoteExecutionSpec` still cannot inject one.
+ */
+export function sshDestination(username: string, host: string): string {
+  if (!isSafeSshDestinationPart(username)) {
+    throw new Error("Invalid SSH username: it must not be empty, start with '-' or contain whitespace, control characters or '@'.");
+  }
+  if (!isSafeSshDestinationPart(host)) {
+    throw new Error("Invalid SSH host: it must not be empty, start with '-' or contain whitespace, control characters or '@'.");
+  }
+  return `${username}@${host}`;
+}
+
 export function parseSshRemoteExecutionSpec(value: unknown): SshRemoteExecutionSpec | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return null;
@@ -173,6 +201,9 @@ export function parseSshRemoteExecutionSpec(value: unknown): SshRemoteExecutionS
   const remoteCwd = typeof parsed.remoteCwd === "string" ? parsed.remoteCwd.trim() : "";
   const portValue = typeof parsed.port === "number" ? parsed.port : Number(parsed.port);
   if (!host || !username || !remoteCwd || !Number.isInteger(portValue) || portValue < 1 || portValue > 65535) {
+    return null;
+  }
+  if (!isSafeSshDestinationPart(host) || !isSafeSshDestinationPart(username)) {
     return null;
   }
 
@@ -413,6 +444,137 @@ async function createSshAuthArgs(
       await Promise.all(tempFiles.map((cleanup) => cleanup()));
     },
   };
+}
+
+// One ssh connection per run for bridge and control ops (PAR-9403). Only
+// `runSshCommand` multiplexes; the agent's long-lived spawn keeps its own
+// connection. Runners are built per operation, so the control directory is
+// derived from the run id, never held by a runner.
+export const SSH_CONNECTION_REUSE_ENV = "PAPERCLIP_SSH_CONNECTION_REUSE";
+export const SSH_CONTROL_BASE_DIR_ENV = "PAPERCLIP_SSH_CONTROL_DIR";
+// Unix socket paths hold 103 bytes on macOS (107 on Linux). `%C` adds 40, and
+// ssh first binds `<path>.<16 random chars>`, 17 more: 103 - 57 = 46.
+export const SSH_CONTROL_DIR_MAX_BYTES = 46;
+const RUN_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const CONTROL_DIR_NAME_RE = /^[A-Za-z0-9_-]{22}$/;
+
+// A run uuid as 22 base64url chars, reversible so the startup sweep knows the run.
+function controlDirName(runId: string): string | null {
+  return RUN_UUID_RE.test(runId) ? Buffer.from(runId.replace(/-/g, ""), "hex").toString("base64url") : null;
+}
+
+function runIdFromControlDirName(name: string): string | null {
+  if (!CONTROL_DIR_NAME_RE.test(name)) return null;
+  const hex = Buffer.from(name, "base64url").toString("hex");
+  if (hex.length !== 32 || Buffer.from(hex, "hex").toString("base64url") !== name) return null;
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+export function sshConnectionReuseEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env[SSH_CONNECTION_REUSE_ENV]?.trim() !== "0";
+}
+
+/** Short, per OS user and per instance, so two instances never sweep each other. */
+export function sshControlBaseDir(env: NodeJS.ProcessEnv = process.env): string {
+  const override = env[SSH_CONTROL_BASE_DIR_ENV]?.trim();
+  if (override) return path.resolve(override);
+  let instanceRoot = "";
+  try {
+    instanceRoot = resolvePaperclipInstanceRoot();
+  } catch {
+    // An invalid instance id still gets a per-user directory.
+  }
+  const uid = typeof process.getuid === "function" ? process.getuid() : 0;
+  const key = createHash("sha256").update(`${uid}\0${instanceRoot}`).digest("hex").slice(0, 6);
+  return `/tmp/pcs-${key}`;
+}
+
+/** `null` when the run id is not a uuid or the path would be too long. */
+export function sshControlDirFor(runId: string, baseDir: string = sshControlBaseDir()): string | null {
+  const name = controlDirName(runId);
+  if (!name) return null;
+  const dir = path.join(baseDir, name);
+  return Buffer.byteLength(`${dir}/`, "utf8") <= SSH_CONTROL_DIR_MAX_BYTES ? dir : null;
+}
+
+async function isPrivateOwnedDir(dir: string): Promise<boolean> {
+  const stats = await fs.lstat(dir).catch(() => null);
+  if (!stats?.isDirectory()) return false;
+  if (typeof process.getuid === "function" && stats.uid !== process.getuid()) return false;
+  return (stats.mode & 0o077) === 0;
+}
+
+async function ensurePrivateDir(dir: string): Promise<boolean> {
+  try {
+    await fs.mkdir(dir, { mode: 0o700 });
+    await fs.chmod(dir, 0o700);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") return false;
+  }
+  return await isPrivateOwnedDir(dir);
+}
+
+/** Creates `<base>/<runId>` with mode 0700; `null` (no reuse) if it is not private to us. */
+export async function prepareSshControlDir(runId: string, baseDir?: string): Promise<string | null> {
+  const dir = sshControlDirFor(runId, baseDir);
+  if (!dir) return null;
+  if (!(await ensurePrivateDir(path.dirname(dir))) || !(await ensurePrivateDir(dir))) return null;
+  return dir;
+}
+
+export function sshConnectionReuseArgs(controlDir: string): string[] {
+  return [
+    "-o", "ControlMaster=auto",
+    "-o", `ControlPath=${controlDir}/%C`,
+    "-o", "ControlPersist=60",
+    "-o", "ServerAliveInterval=15",
+    "-o", "ServerAliveCountMax=3",
+  ];
+}
+
+async function closeSshControlDir(dir: string): Promise<void> {
+  const entries = await fs.readdir(dir).catch(() => [] as string[]);
+  // An explicit ControlPath has no tokens, so the destination is never used.
+  await Promise.all(entries.map((name) =>
+    execFileText("ssh", ["-o", `ControlPath=${path.join(dir, name)}`, "-O", "exit", "paperclip-control"], {
+      timeout: 5_000,
+    }).catch(() => undefined)));
+  await fs.rm(dir, { recursive: true, force: true });
+}
+
+/** Run end: stop the run's masters, then remove its control directory. */
+export async function cleanupSshConnectionReuse(input: { runId: string; baseDir?: string }): Promise<void> {
+  const dir = sshControlDirFor(input.runId, input.baseDir);
+  if (!dir || !(await isPrivateOwnedDir(dir))) return;
+  await closeSshControlDir(dir);
+}
+
+/** Server start: remove control directories whose run is no longer running. */
+export async function sweepStaleSshControlDirs(input: {
+  activeRunIds: (candidateRunIds: string[]) => Promise<ReadonlySet<string>>;
+  baseDir?: string;
+}): Promise<{ removed: string[]; kept: string[] }> {
+  const baseDir = input.baseDir ?? sshControlBaseDir();
+  if (!(await isPrivateOwnedDir(baseDir))) return { removed: [], kept: [] };
+  const candidates = new Map<string, string>();
+  for (const name of await fs.readdir(baseDir)) {
+    const runId = runIdFromControlDirName(name);
+    if (runId) candidates.set(runId, name);
+  }
+  if (candidates.size === 0) return { removed: [], kept: [] };
+  const active = await input.activeRunIds([...candidates.keys()]);
+  const removed: string[] = [];
+  const kept: string[] = [];
+  for (const [runId, name] of candidates) {
+    const dir = path.join(baseDir, name);
+    if (active.has(runId) || !(await isPrivateOwnedDir(dir))) {
+      kept.push(runId);
+      continue;
+    }
+    await closeSshControlDir(dir);
+    removed.push(runId);
+  }
+  return { removed, kept };
 }
 
 function tarExcludeArgs(exclude: string[] | undefined): string[] {
@@ -661,12 +823,13 @@ export async function streamLocalFileToSsh(input: {
   remoteScript: string;
   progress?: TransferProgress;
 }): Promise<void> {
+  const destination = sshDestination(input.spec.username, input.spec.host);
   const auth = await createSshAuthArgs(input.spec);
   const sshArgs = [
     ...auth.args,
     "-p",
     String(input.spec.port),
-    `${input.spec.username}@${input.spec.host}`,
+    destination,
     `sh -c ${shellQuote(input.remoteScript)}`,
   ];
 
@@ -718,12 +881,13 @@ async function streamSshToLocalFile(input: {
   localFile: string;
   progress?: TransferProgress;
 }): Promise<void> {
+  const destination = sshDestination(input.spec.username, input.spec.host);
   const auth = await createSshAuthArgs(input.spec);
   const sshArgs = [
     ...auth.args,
     "-p",
     String(input.spec.port),
-    `${input.spec.username}@${input.spec.host}`,
+    destination,
     `sh -c ${shellQuote(input.remoteScript)}`,
   ];
 
@@ -1293,6 +1457,8 @@ export async function runSshCommand(
     stdin?: string;
     timeoutMs?: number;
     maxBuffer?: number;
+    /** Run that owns the shared connection; absent, or reuse off: a fresh connection. */
+    connectionReuseRunId?: string | null;
   } = {},
 ): Promise<SshCommandResult> {
   let cleanup: () => Promise<void> = () => Promise.resolve();
@@ -1300,6 +1466,10 @@ export async function runSshCommand(
     const auth = await createSshAuthArgs(config);
     cleanup = auth.cleanup;
     const sshArgs = [...auth.args];
+    const controlDir = options.connectionReuseRunId && sshConnectionReuseEnabled()
+      ? await prepareSshControlDir(options.connectionReuseRunId)
+      : null;
+    if (controlDir) sshArgs.push(...sshConnectionReuseArgs(controlDir));
     const envEntries = Object.entries(options.env ?? {})
       .filter((entry): entry is [string, string] => typeof entry[1] === "string");
     for (const [key] of envEntries) {
@@ -1333,7 +1503,7 @@ export async function runSshCommand(
     sshArgs.push(
       "-p",
       String(config.port),
-      `${config.username}@${config.host}`,
+      sshDestination(config.username, config.host),
       `sh -c ${shellQuote(remoteScript)}`,
     );
 
@@ -1500,8 +1670,8 @@ export function buildSshRemoteStopScript(remoteRunDir: string, signal: SshRemote
   ].join("\n");
 }
 
-// Run-end removal (AC 4, temporary until PAR-9961 moves it into the lease
-// release). Deletes inside the user's workspace, so it removes only
+// Run dir removal, run by the ssh lease release only after a gone check
+// (PAR-9961, 13.9 decision 2). Deletes inside the user's workspace, so it removes only
 // `<ws>/.paperclip-runs/<runId>` after resolving links: a `.paperclip-runs`
 // that resolves outside the workspace, or a run dir that is a link, is left.
 export function buildSshRunDirRemoveScript(remoteWorkspacePath: string, remoteRunDir: string): string {
@@ -1519,6 +1689,29 @@ export function buildSshRunDirRemoveScript(remoteWorkspacePath: string, remoteRu
     'if [ ! -e "$base/$name" ]; then echo absent; exit 0; fi',
     'rm -rf -- "$base/$name" && echo removed',
   ].join("\n");
+}
+
+/** Days after which a leftover run dir (a run whose release never removed it) is swept. */
+export const SSH_STALE_RUN_DIR_DAYS = 7;
+
+// Sweep of leftover sibling run dirs (PAR-9962), confined as the removal above:
+// only real directories directly under `<ws>/.paperclip-runs` (resolved inside
+// the workspace), with a run-id-shaped name, untouched for over 7 days. `find`
+// without -L never follows links, so a linked entry is not a directory here.
+export function buildSshStaleRunDirSweepScript(remoteWorkspacePath: string): string {
+  return [
+    `ws=${shellQuote(trimTrailingSlashes(remoteWorkspacePath))}`,
+    `base=$(cd -P "$ws/${SSH_RUN_DIR_PARENT}" 2>/dev/null && pwd -P) || { echo sweep-absent; exit 0; }`,
+    'wsp=$(cd -P "$ws" 2>/dev/null && pwd -P) || { echo sweep-absent; exit 0; }',
+    'case "$base" in "$wsp"/?*) ;; *) echo sweep-refused; exit 0;; esac',
+    `find "$base" -mindepth 1 -maxdepth 1 -type d ! -name '*[!A-Za-z0-9_-]*' -mtime +${SSH_STALE_RUN_DIR_DAYS} -exec rm -rf -- {} + && echo swept`,
+  ].join("\n");
+}
+
+/** Removal of one run dir, then the stale sweep; the subshell keeps an early exit local. */
+export function buildSshRunDirCleanupScript(remoteWorkspacePath: string, remoteRunDir: string): string {
+  return ["(", buildSshRunDirRemoveScript(remoteWorkspacePath, remoteRunDir), ")",
+    buildSshStaleRunDirSweepScript(remoteWorkspacePath)].join("\n");
 }
 
 export async function buildSshSpawnTarget(input: {
@@ -1541,6 +1734,7 @@ export async function buildSshSpawnTarget(input: {
       throw new Error(`Invalid SSH environment variable key: ${key}`);
     }
   }
+  const userAtHost = sshDestination(input.spec.username, input.spec.host);
   const auth = await createSshAuthArgs(input.spec);
   const sshArgs = [...auth.args];
   const envArgs = Object.entries(input.env)
@@ -1572,7 +1766,7 @@ export async function buildSshSpawnTarget(input: {
       : `exec ${remoteCommandParts}`,
   ].join(" && ");
 
-  const destination = ["-p", String(input.spec.port), `${input.spec.username}@${input.spec.host}`];
+  const destination = ["-p", String(input.spec.port), userAtHost];
   sshArgs.push(...destination, `sh -c ${shellQuote(remoteScript)}`);
 
   const remoteRunDir = input.remoteRunDir;
@@ -1580,8 +1774,9 @@ export async function buildSshSpawnTarget(input: {
     return { command: "ssh", args: sshArgs, cleanup: auth.cleanup };
   }
 
-  // Stop and removal connections reuse the spawn's auth files and skip the
-  // login profiles. After cleanup the auth files are gone: stopRemote is "error".
+  // Stop connections reuse the spawn's auth files and skip the login profiles.
+  // After cleanup the auth files are gone: stopRemote is "error". The run dir
+  // stays: the lease release removes it after a gone check (PAR-9961).
   let authCleaned = false;
   let cleanupPromise: Promise<void> | null = null;
   const runRemote: SshRemoteCommandRunner =
@@ -1608,16 +1803,7 @@ export async function buildSshSpawnTarget(input: {
     cleanup: () =>
       (cleanupPromise ??= (async () => {
         authCleaned = true;
-        try {
-          await runRemote(
-            buildSshRunDirRemoveScript(input.spec.remoteWorkspacePath, remoteRunDir),
-            SSH_REMOTE_STOP_TIMEOUT_MS,
-          );
-        } catch {
-          // Best effort: a leftover dir holds one small 0600 file, git-excluded.
-        } finally {
-          await auth.cleanup();
-        }
+        await auth.cleanup();
       })()),
   };
 }
@@ -1723,12 +1909,13 @@ export async function syncDirectoryToSsh(input: {
   onProgress?: RuntimeProgressSink;
   progressLabel?: string;
 }): Promise<void> {
+  const destination = sshDestination(input.spec.username, input.spec.host);
   const auth = await createSshAuthArgs(input.spec);
   const sshArgs = [
     ...auth.args,
     "-p",
     String(input.spec.port),
-    `${input.spec.username}@${input.spec.host}`,
+    destination,
     `sh -c ${shellQuote(`mkdir -p ${shellQuote(input.remoteDir)} && tar -xf - -C ${shellQuote(input.remoteDir)}`)}`,
   ];
 
@@ -1857,6 +2044,7 @@ export async function syncDirectoryFromSsh(input: {
   onProgress?: RuntimeProgressSink;
   progressLabel?: string;
 }): Promise<void> {
+  const destination = sshDestination(input.spec.username, input.spec.host);
   const auth = await createSshAuthArgs(input.spec);
   const stagingDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-sync-back-"));
   const remoteTarScript = [
@@ -1867,7 +2055,7 @@ export async function syncDirectoryFromSsh(input: {
     ...auth.args,
     "-p",
     String(input.spec.port),
-    `${input.spec.username}@${input.spec.host}`,
+    destination,
     `sh -c ${shellQuote(remoteTarScript)}`,
   ];
 

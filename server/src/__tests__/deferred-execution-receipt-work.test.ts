@@ -1142,4 +1142,84 @@ describe("deferred receipt durable dispatch", () => {
     await quiet();
     expect(await commentRuns()).toHaveLength(1);
   });
+
+  // PAR-14473: a wake that arrives while the previous run still holds its
+  // environment lease is skipped. It must run on its own once the lease goes.
+  type OwnerExitWait = { escalatedAt?: string; redeliveryOutcome?: string };
+  const waitOf = (payload: Record<string, unknown> | null) => (payload?.executionWait ?? {}) as OwnerExitWait;
+  async function exitingOwner() {
+    const f = await fixture();
+    await db.update(heartbeatRuns).set({ status: "cancelled", errorCode: null,
+      resultJson: { conversationContinuation: "continue_conversation_v1" } }).where(eq(heartbeatRuns.id, f.source.id));
+    const [lease] = await db.insert(environmentLeases).values({ companyId: f.companyId, heartbeatRunId: f.source.id,
+      issueId: f.issue.id, provider: "daytona", providerLeaseId: "owner-exiting", status: "active",
+      leasePolicy: "reuse_by_environment" }).returning();
+    const wake = () => heartbeat.wakeup(f.agent.id, { causingActor: "system", source: "assignment", triggerDetail: "system",
+      reason: "issue_assigned", payload: { issueId: f.issue.id, mutation: "update" },
+      requestedByActorType: "system", contextSnapshot: { issueId: f.issue.id, handoffMarker: "owner-exit" } });
+    const receipts = () => db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.agentId, f.agent.id),
+      eq(agentWakeupRequests.status, "skipped"), sql`${agentWakeupRequests.payload} #> '{executionWait,ownerExit}' is not null`));
+    const assignedRuns = async () => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, f.agent.id)))
+      .filter(run => run.contextSnapshot?.handoffMarker === "owner-exit");
+    return { ...f, lease, wake, receipts, assignedRuns };
+  }
+
+  it("runs a wake skipped behind an exiting owner as soon as its lease is released", async () => {
+    const f = await exitingOwner();
+    await heartbeat.registerDeferredReceiptWork(coordinator, () => !drain).ready;
+    expect(await f.wake()).toBeNull();
+    const [receipt] = await f.receipts();
+    expect(receipt?.error).toContain("has not released its environment lease");
+    // The bounded re-check keeps it waiting while the lease is still held.
+    await vi.advanceTimersByTimeAsync(20_000); await Promise.allSettled([...passes]);
+    expect(await f.assignedRuns()).toHaveLength(0);
+
+    await environmentService(db).releaseLease(f.lease.id, "released", { cleanupStatus: "success" });
+    // The release hint replays it at once, well inside one backoff step.
+    await waitForReal(async () => {
+      await Promise.allSettled([...passes]);
+      expect(await f.assignedRuns()).toHaveLength(1);
+    }, { timeout: 5_000 });
+    const [replayed] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt!.id));
+    expect(waitOf(replayed!.payload)).toMatchObject({ redeliveryOutcome: "replayed" });
+    await finish(f.issue.id);
+    await quiet();
+    expect(await f.assignedRuns()).toHaveLength(1);
+  });
+
+  it("escalates a lease that stays held once, stops retrying, and still runs the wake on release", async () => {
+    const f = await exitingOwner();
+    await heartbeat.registerDeferredReceiptWork(coordinator, () => !drain).ready;
+    expect(await f.wake()).toBeNull();
+    const escalations = () => db.select().from(activityLog).where(and(eq(activityLog.entityId, f.issue.id),
+      eq(activityLog.action, "issue.execution_owner_exit_escalated")));
+    const notices = () => db.select().from(issueComments).where(and(eq(issueComments.issueId, f.issue.id),
+      eq(issueComments.authorType, "system")));
+    const passCap = async () => {
+      for (let step = 0; step < 24; step++) { await vi.advanceTimersByTimeAsync(30_000); await Promise.allSettled([...passes]); }
+    };
+    await passCap();
+    expect((await f.receipts()).map(row => waitOf(row.payload).escalatedAt))
+      .toEqual([expect.any(String)]);
+    expect(await escalations()).toHaveLength(1);
+    expect(await notices()).toHaveLength(1);
+
+    // A later wake for the same stuck run is capped too, without a second notice.
+    expect(await f.wake()).toBeNull();
+    await passCap();
+    expect((await f.receipts()).every(row => waitOf(row.payload).escalatedAt)).toBe(true);
+    expect(await escalations()).toHaveLength(1);
+    expect(await notices()).toHaveLength(1);
+    expect(await f.assignedRuns()).toHaveLength(0);
+    await quiet();
+
+    await environmentService(db).releaseLease(f.lease.id, "released", { cleanupStatus: "success" });
+    await waitForReal(async () => {
+      await Promise.allSettled([...passes]);
+      expect(await f.assignedRuns()).toHaveLength(1);
+    }, { timeout: 5_000 });
+    await finish(f.issue.id);
+    await quiet();
+    expect(await f.assignedRuns()).toHaveLength(1);
+  });
 });

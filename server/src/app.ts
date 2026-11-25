@@ -48,6 +48,7 @@ import { createMcpApiDispatch, createPublicMcpExecutor } from "./services/public
 import { createPublicMcpEvents, type PublicMcpEvents } from "./services/public-mcp/events.js";
 import { publicMcpIngressRoutes, publicMcpManagementRoutes } from "./routes/public-mcp.js";
 import { agentAvatarRoutes } from "./routes/agent-avatars.js";
+import { memberRestrictionRouteGuard } from "./services/member-restriction/route-middleware.js";
 import { decisionModelRoutes } from "./routes/decision-models.js";
 import { agentObservabilityRoutes } from "./routes/agent-observability.js";
 import { aiConnectionRoutes } from "./routes/ai-connections.js";
@@ -156,6 +157,13 @@ import { sidebarPreferenceRoutes } from "./routes/sidebar-preferences.js";
 import { announcementRoutes } from "./routes/announcements.js";
 import { serverVersion } from "./version.js";
 import { workspacePreferenceRoutes } from "./routes/workspace-preferences.js";
+import { personalNoteRoutes } from "./routes/personal-notes.js";
+import { planningCanvasRoutes } from "./routes/planning-canvases.js";
+import { planningCanvasSharingRoutes } from "./routes/planning-canvas-sharing.js";
+import { planningCanvasCommentRoutes } from "./routes/planning-canvas-comments.js";
+import { planningCanvasChatRoutes } from "./routes/planning-canvas-chat.js";
+import { planningCanvasLinkRoutes } from "./routes/planning-canvas-links.js";
+import { planningCanvasBlueprintRoutes } from "./routes/planning-canvas-blueprints.js";
 import { primaryAgentRoutes } from "./routes/primary-agent.js";
 import { resourceMembershipRoutes } from "./routes/resource-memberships.js";
 import { inboxDismissalRoutes } from "./routes/inbox-dismissals.js";
@@ -211,6 +219,7 @@ import {
 import { createPluginJobScheduler } from "./services/plugin-job-scheduler.js";
 import { pluginJobStore } from "./services/plugin-job-store.js";
 import { createPluginToolDispatcher } from "./services/plugin-tool-dispatcher.js";
+import { pluginToolGate } from "./services/member-restriction/tool-gate.js";
 import { createToolGatewayService } from "./services/tool-gateway.js";
 import { toolAccessService } from "./services/tool-access.js";
 import { chatChannelService } from "./services/chat-channels.js";
@@ -695,6 +704,8 @@ export async function createApp(
 
   // Mount API routes
   const api = Router();
+  // First line of the api router (PAR-12608 4.6, C10): the member-restriction route table.
+  api.use(memberRestrictionRouteGuard(db));
   const agentAvatars = agentAvatarRoutes();
   api.use(agentAvatars.router);
   api.use(boardMutationGuard());
@@ -858,6 +869,13 @@ export async function createApp(
   api.use(resourceMembershipRoutes(db));
   api.use(primaryAgentRoutes(db));
   api.use(workspacePreferenceRoutes(db));
+  api.use(personalNoteRoutes(db));
+  api.use(planningCanvasRoutes(db));
+  api.use(planningCanvasSharingRoutes(db));
+  api.use(planningCanvasCommentRoutes(db));
+  api.use(planningCanvasChatRoutes(db));
+  api.use(planningCanvasLinkRoutes(db));
+  api.use(planningCanvasBlueprintRoutes(db));
   api.use(inboxDismissalRoutes(db));
   api.use(instanceSettingsRoutes(db, workerManager, opts.prepareIdleDatabaseBackup, opts.idleDeadlineOwners,
     input => resourceLifecycleDelivery.prepareForIdleSleep(input)));
@@ -880,6 +898,7 @@ export async function createApp(
     workerManager,
     lifecycleManager: lifecycle,
     db,
+    toolGate: pluginToolGate(db),
   });
   const gatewayOAuthAccess = toolAccessService(db, {
     deploymentMode: opts.deploymentMode,

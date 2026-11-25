@@ -249,6 +249,11 @@ OAuth credential bodies and redirect locations are redacted from HTTP logs.
 | `paperclip_list_deliverables` | Documents, attachments and work-product references |
 | `paperclip_read_document` | Durable document body and current revision |
 | `paperclip_pending_approvals` | Pending approvals and existing decision links |
+| `paperclip_canvas_list` | Planning Canvas boards the person can open, with access level |
+| `paperclip_canvas_read` | A board as json, markdown or mermaid; `q`, `keys`, `area`, `since` |
+| `paperclip_canvas_apply_ops` | Merge-safe canvas ops; `requestId` is the `clientBatchId` (edit access) |
+| `paperclip_canvas_import` | Markdown outline or Mermaid flowchart onto a board; 422 names the line (edit access) |
+| `paperclip_canvas_comment` | Comment on a board or item thread (comment access) |
 
 Every company-scoped call requires its explicit authorized company ID. The
 server emits bounded projections without upstream credentials. Direct connections

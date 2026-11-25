@@ -3250,7 +3250,13 @@ export function createHeartbeatRunPreparation(db: Db) {
   type RunSeedInput = {
     companyId: string;
     contextSnapshot: Record<string, unknown>;
-    issueContext: { id: string; responsibleUserId: string | null; parentId: string | null } | null;
+    issueContext: {
+      id: string;
+      responsibleUserId: string | null;
+      parentId: string | null;
+      conversationAgentId?: string | null;
+      conversationUserId?: string | null;
+    } | null;
     routineEnvContext: Awaited<
       ReturnType<typeof getRoutineEnvForExecutionIssue>
     >;
@@ -3262,12 +3268,29 @@ export function createHeartbeatRunPreparation(db: Db) {
   };
 
   /**
-   * The person a run works for (C36). H1 (PAR-12608 4.10) comes first: when
-   * the wake's stamped causing person is bound by rule group H, the run works
-   * for him under `enforce`; under `report` the present person is kept and a
-   * "would differ" is recorded. Otherwise, and in mode `off`, the present order.
+   * F12 (rule PAR-12618): a run on a chat works for the chat's person, whatever
+   * woke it (message, re-delivery, recovery, retry, deferred promotion, manual
+   * wake). Chat privacy reads the run's person, so no wake site may give the run
+   * a comment author, the task's responsible person, a parent or the company
+   * default instead.
+   */
+  function chatRunPerson(issueContext: RunSeedInput["issueContext"]) {
+    return issueContext?.conversationAgentId ? issueContext.conversationUserId ?? null : null;
+  }
+
+  /**
+   * The person a run works for (C36). A chat's person comes first (F12). Then
+   * H1 (PAR-12608 4.10): when the wake's stamped causing person is bound by
+   * rule group H, the run works for him under `enforce`; under `report` the
+   * present person is kept and a "would differ" is recorded. Otherwise, and in
+   * mode `off`, the present order.
    */
   async function resolveResponsibleUserIdForRunSeed(input: RunSeedInput) {
+    const chatPerson = chatRunPerson(input.issueContext);
+    if (chatPerson) {
+      delete input.contextSnapshot.executionIdentityCause;
+      return chatPerson;
+    }
     const causing = await causingPersonFor(
       db, input.companyId, readStampedWakeCausingActor(input.contextSnapshot),
     );
@@ -3287,6 +3310,24 @@ export function createHeartbeatRunPreparation(db: Db) {
       });
     }
     return present;
+  }
+
+  /**
+   * H1 under `enforce` (PAR-14378): the stamped causing person the run must
+   * work for, so run start can put him over an inherited identity context.
+   * Null on a chat (F12), without a stamp, or when H does not bind him under
+   * `enforce`. A failed read throws 503 `MEMBER_RESTRICTION_UNAVAILABLE`.
+   */
+  async function resolveEnforcedCausingPersonId(
+    companyId: string,
+    contextSnapshot: Record<string, unknown>,
+    issueContext: RunSeedInput["issueContext"],
+  ) {
+    if (chatRunPerson(issueContext)) return null;
+    const stamped = readStampedWakeCausingActor(contextSnapshot);
+    if (!stamped) return null;
+    const causing = await causingPersonFor(db, companyId, stamped);
+    return causing?.mode === "enforce" ? causing.personId : null;
   }
 
   async function resolvePresentResponsibleUserIdForRunSeed(input: RunSeedInput) {
@@ -3372,7 +3413,8 @@ export function createHeartbeatRunPreparation(db: Db) {
     >;
   }) {
     const operatorIdentity = await explicitOperatorRunIdentity(db, input.run);
-    const responsibleUserId = operatorIdentity?.actorId ?? await resolveResponsibleUserIdForRunSeed({
+    // The operator check above still validates; on a chat its person wins (F12).
+    const responsibleUserId = chatRunPerson(input.issueContext) ?? operatorIdentity?.actorId ?? await resolveResponsibleUserIdForRunSeed({
       companyId: input.run.companyId,
       contextSnapshot: input.contextSnapshot,
       issueContext: input.issueContext,
@@ -3431,5 +3473,6 @@ export function createHeartbeatRunPreparation(db: Db) {
     resolveResponsibleUserIdForRunSeed,
     resolveResponsibleUserIdForRun,
     resolveResponsibleUserIdForRunContext,
+    resolveEnforcedCausingPersonId,
   };
 }

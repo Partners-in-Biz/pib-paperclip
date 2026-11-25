@@ -702,12 +702,17 @@ type AdapterCommandCapableExecutionTarget = AdapterSshExecutionTarget | AdapterS
 // bridge limit change never resizes this buffer as a side effect.
 const SSH_COMMAND_MAX_BUFFER_BYTES = 1024 * 1024;
 
-function adapterExecutionTargetCommandRunner(target: AdapterCommandCapableExecutionTarget): CommandManagedRuntimeRunner {
+function adapterExecutionTargetCommandRunner(
+  target: AdapterCommandCapableExecutionTarget,
+  // Ssh only: ops of one run share one connection, closed at run end (PAR-9403).
+  connectionReuseRunId?: string,
+): CommandManagedRuntimeRunner {
   if (target.transport === "ssh") {
     return createSshCommandManagedRuntimeRunner({
       spec: target.spec,
       defaultCwd: target.remoteCwd,
       maxBufferBytes: SSH_COMMAND_MAX_BUFFER_BYTES,
+      connectionReuseRunId,
     });
   }
   return requireSandboxRunner(target);
@@ -1009,6 +1014,7 @@ export async function runAdapterExecutionTargetShellCommand(
         const result = await runSshCommand(target.spec, command, {
           env,
           timeoutMs: (options.timeoutSec ?? 15) * 1000,
+          connectionReuseRunId: runId,
         });
         if (result.stdout) await onLog("stdout", result.stdout);
         if (result.stderr) await onLog("stderr", result.stderr);
@@ -4462,7 +4468,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
   // input.hostApiUrl stays available as an explicit override seam.
   const hostApiUrl = input.hostApiUrl?.trim() || resolveDefaultPaperclipApiUrl();
   const shellCommand = adapterExecutionTargetShellCommand(target);
-  const runner = adapterExecutionTargetCommandRunner(target);
+  const runner = adapterExecutionTargetCommandRunner(target, input.runId);
   const bridgeTimeoutMs =
     typeof input.timeoutSec === "number" && Number.isFinite(input.timeoutSec) && input.timeoutSec > 0
       ? Math.trunc(input.timeoutSec * 1000)

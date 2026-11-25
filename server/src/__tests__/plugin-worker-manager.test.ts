@@ -387,6 +387,38 @@ describe("plugin-worker-manager stderr failure context", () => {
     }
   });
 
+  it("records the host-computed acting person on the invocation scope (H6)", async () => {
+    const companiesGet = vi.fn(async (params: { companyId: string }) => ({ id: params.companyId }));
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT,
+      manifest: TEST_MANIFEST,
+      config: {},
+      instanceInfo: { instanceId: "instance-1", hostVersion: "1.0.0" },
+      apiVersion: 1,
+      hostHandlers: { "companies.get": companiesGet as never },
+    });
+    const call = (actorContext: Record<string, unknown>) => handle.call("performAction", {
+      key: "probe",
+      params: { mode: "echo", requestedCompanyId: "company-a" },
+      actorContext: { userId: null, agentId: null, runId: null, companyId: "company-a", ...actorContext },
+      renderEnvironment: null,
+    } as never);
+
+    try {
+      await handle.start();
+      await call({ type: "agent", agentId: "agent-1", onBehalfOfUserId: "person-u" });
+      await call({ type: "user", userId: "local-board", onBehalfOfUserId: null });
+      await call({ type: "user", userId: "person-o" });
+      expect(companiesGet.mock.calls.map(([, context]) => (context as { invocationScope?: unknown }).invocationScope)).toEqual([
+        { companyId: "company-a", actingPersonId: "person-u" },
+        { companyId: "company-a" },
+        { companyId: "company-a", actingPersonId: "person-o" },
+      ]);
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
   it("passes echoed invocation scope to worker-to-host handlers", async () => {
     const companiesGet = vi.fn(async () => ({ id: "company-1" }) as Company);
     const handle = createPluginWorkerHandle("test.plugin", {
@@ -1045,6 +1077,54 @@ describe("plugin calls without an invocation id: deterministic scope rule (PAR-1
     expect(logger.error).toHaveBeenCalledWith({ method: "companies.get", err: "db down" }, "host handler error");
     expect(logger.warn).not.toHaveBeenCalledWith(expect.anything(), "plugin scope refusal");
   }));
+});
+
+describe("companies.list from calls without an invocation id (PAR-11072 T2)", () => {
+  // Real worker -> real manager context resolution -> real gate. The service
+  // filters before its window like the host service. "company-live" has a
+  // live invocation and no saved settings; company-1 and company-3 are configured.
+  const ALL = ["company-1", "company-2", "company-3", "company-live"];
+  function makeHandle() {
+    const list = vi.fn(async (params: { limit?: number; offset?: number }, filter?: { companyIds?: readonly string[] }) => {
+      const rows = ALL.filter((id) => !filter?.companyIds || filter.companyIds.includes(id)).map((id) => ({ id }));
+      const offset = params.offset ?? 0;
+      return rows.slice(offset, params.limit == null ? undefined : offset + params.limit);
+    });
+    const hostHandlers = createHostClientHandlers({
+      pluginId: "test.plugin",
+      capabilities: ["companies.read"],
+      services: { companies: { list } } as unknown as HostServices,
+    });
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT, manifest: TEST_MANIFEST, config: {},
+      instanceInfo: { instanceId: "instance-1", hostVersion: "1.0.0" }, apiVersion: 1,
+      hostHandlers, proactiveCompanyScopes: ["company-1", "company-3"],
+    });
+    return { handle, list };
+  }
+  const listIds = async (handle: ReturnType<typeof makeHandle>["handle"], mode: string, nestedParams: Record<string, unknown>) =>
+    ((await handle.call("getData", {
+      key: "probe",
+      companyId: "company-live",
+      params: { mode, hostMethod: "companies.list", nestedParams },
+    } as unknown as HostToWorkerMethods["getData"][0])) as Array<{ id: string }>).map((row) => row.id);
+
+  it.each([
+    { name: "no param: every company while another invocation is live", mode: "omit", nestedParams: {}, expected: ALL },
+    { name: "actionableOnly: only the configured set", mode: "omit", nestedParams: { actionableOnly: true }, expected: ["company-1", "company-3"] },
+    { name: "actionableOnly filters before the window", mode: "omit", nestedParams: { actionableOnly: true, limit: 1, offset: 1 }, expected: ["company-3"] },
+    { name: "inside the invocation: filtered before limit", mode: "echo", nestedParams: { limit: 1 }, expected: ["company-live"] },
+    { name: "inside the invocation: its company", mode: "echo", nestedParams: {}, expected: ["company-live"] },
+    { name: "inside the invocation, actionableOnly: its company though unconfigured", mode: "echo", nestedParams: { actionableOnly: true }, expected: ["company-live"] },
+  ])("$name", async ({ mode, nestedParams, expected }) => {
+    const { handle } = makeHandle();
+    try {
+      await handle.start();
+      expect(await listIds(handle, mode, nestedParams)).toEqual(expected);
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
-import { agents, agentWakeupRequests, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRunEvents, heartbeatRuns, issues, projects, projectWorkspaces } from "@paperclipai/db";
+import { activityLog, agents, agentWakeupRequests, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRunEvents, heartbeatRuns, issueComments, issues, projects, projectWorkspaces } from "@paperclipai/db";
 import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
@@ -473,5 +473,60 @@ describePostgres("heartbeat retry module database wiring", () => {
     } });
     expect(await deps.getRun(foreign.run.id)).toMatchObject({ status: "scheduled_retry", scheduledRetryAt: foreign.dueAt });
     expect(await retries.retryScheduledRetryNow({ issueId: selected.issue.id, now })).toMatchObject({ outcome: "already_promoted" });
+  });
+
+  // PAR-13974: a one-slot agent's 60-minute timeouts with no output were
+  // retried 30-60 s later on the same stalled session, ahead of queued work.
+  // Shape of the production timed-out conversation run (d79a18bc).
+  const TIMED_OUT_RESULT = { conversationContinuation: "continue_conversation_v1", stopReason: "timeout", timeoutFired: true };
+  it.each([1, 2])("keeps a no-progress timeout off a one-slot agent for at least 30 minutes (attempt %i)", async (attempt) => {
+    const { run, agent } = await fixture();
+    const [timedOut] = await db.update(heartbeatRuns).set({
+      status: "timed_out", errorCode: "timeout", resultJson: TIMED_OUT_RESULT,
+      contextSnapshot: { ...run.contextSnapshot, wakeReason: "issue_assigned",
+        executionRetryAccounting: { version: 1, failureRetries: attempt - 1, maxTurnContinuations: 0 } },
+    }).where(eq(heartbeatRuns.id, run.id)).returning();
+    const result = await boundRetries().retries.scheduleBoundedRetryForRun(timedOut!, agent, { now, random: () => 0 });
+    expect(result).toMatchObject({ outcome: "scheduled", attempt });
+    const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run.id));
+    expect(successor!.scheduledRetryAt!.getTime() - now.getTime())
+      .toBe(extracted.NO_PROGRESS_TIMEOUT_RETRY_DELAYS_MS[attempt - 1]);
+    expect(successor!.scheduledRetryAt!.getTime() - now.getTime()).toBeGreaterThanOrEqual(30 * 60_000);
+    expect(successor!.contextSnapshot).toMatchObject({ forceFreshSession: true, noProgressTimeoutRetry: { sourceRunId: run.id } });
+  });
+
+  it("keeps the short transient retry for a timeout that made progress", async () => {
+    const { run, agent, issue, companyId } = await fixture();
+    const [timedOut] = await db.update(heartbeatRuns).set({ status: "timed_out", errorCode: "timeout", resultJson: TIMED_OUT_RESULT })
+      .where(eq(heartbeatRuns.id, run.id)).returning();
+    await db.insert(issueComments).values({ companyId, issueId: issue.id, authorAgentId: agent.id,
+      createdByRunId: run.id, body: "Progress before the timeout" });
+    await db.insert(activityLog).values({ companyId, actorType: "system", actorId: "system",
+      action: "cost.reported", entityType: "heartbeat_run", entityId: run.id, runId: run.id });
+    try {
+      const result = await boundRetries().retries.scheduleBoundedRetryForRun(timedOut!, agent, { now, random: () => 0 });
+      expect(result).toMatchObject({ outcome: "scheduled", attempt: 1 });
+      const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run.id));
+      expect(successor!.scheduledRetryAt!.getTime() - now.getTime()).toBeLessThan(2 * 60_000);
+      expect(successor!.contextSnapshot).not.toHaveProperty("forceFreshSession");
+    } finally {
+      await db.delete(activityLog).where(eq(activityLog.companyId, companyId));
+      await db.delete(issueComments).where(eq(issueComments.companyId, companyId));
+    }
+  });
+
+  it("ignores bookkeeping-only activity when judging timeout progress", async () => {
+    const { run, agent, companyId } = await fixture();
+    const [timedOut] = await db.update(heartbeatRuns).set({ status: "timed_out", errorCode: "timeout", resultJson: TIMED_OUT_RESULT })
+      .where(eq(heartbeatRuns.id, run.id)).returning();
+    await db.insert(activityLog).values(["environment.lease_acquired", "environment.lease_released", "cost.reported"].map((action) => ({
+      companyId, actorType: "system", actorId: "system", action, entityType: "heartbeat_run", entityId: run.id, runId: run.id })));
+    try {
+      await boundRetries().retries.scheduleBoundedRetryForRun(timedOut!, agent, { now, random: () => 0 });
+      const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run.id));
+      expect(successor!.scheduledRetryAt!.getTime() - now.getTime()).toBe(extracted.NO_PROGRESS_TIMEOUT_RETRY_DELAYS_MS[0]);
+    } finally {
+      await db.delete(activityLog).where(eq(activityLog.companyId, companyId));
+    }
   });
 });

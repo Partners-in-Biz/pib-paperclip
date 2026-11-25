@@ -10,7 +10,10 @@
     "skills/paperclip/references/issue-documents.md",
     "skills/paperclip/references/issue-workspaces.md",
     "skills/paperclip/references/routines.md",
-    "skills/paperclip/references/workflows.md"
+    "skills/paperclip/references/workflows.md",
+    "skills/paperclip/references/heartbeat-procedure.md",
+    "skills/paperclip/references/interactions-and-approvals.md",
+    "skills/paperclip/references/workspaces-and-niche-workflows.md"
   ],
   "toolMappings": {
     "paperclipMe": ["control_plane_owned", "injected_actor_context"],

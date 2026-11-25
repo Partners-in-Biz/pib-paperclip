@@ -118,6 +118,16 @@ describe("module choice", () => {
     ]);
   });
 
+  it("makes no config call for a company outside the host's actionable list (PAR-14008)", async () => {
+    const { ctx, emitted, configCalls } = fakeCtx({ savedConfigs: { [A]: { weeklyIssue: true } } });
+    await saveModules(ctx, { companyId: A, modules: { seo: false }, userId: "u" }, fixedClock("2026-09-26T08:00:00.000Z"));
+    await saveModules(ctx, { companyId: B, modules: {}, userId: "u" }, fixedClock("2026-09-26T08:05:00.000Z"));
+    emitted.length = 0;
+    configCalls.length = 0;
+    expect(await reemitModules(ctx)).toEqual({ emitted: 1, skipped: 1, failed: 0 });
+    expect(configCalls).not.toContain(B);
+  });
+
   it("wires the action to board users only, with the hourly job", async () => {
     const { ctx, actions, jobs, handlers, emitted } = fakeCtx({ savedConfigs: { [A]: {} }, members: { [A]: [{ principalId: "user-9", membershipRole: "admin" }] } });
     registerSetup(ctx);

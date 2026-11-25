@@ -5,8 +5,9 @@
  * version history with reasons.
  */
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
-import { MarkdownBlock, usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import { MarkdownBlock } from "@paperclipai/plugin-sdk/ui";
 import { Activity, BookOpen, Button, Gavel, Modal, Pill, SectionCard, breakAnywhere, errorText, formatShortDate, tokens, tone, type ToneName } from "@partnersinbiz/pib-plugin-ui";
+import { useSeoCall } from "./actions.js";
 
 type Change = {
   changeId: string;
@@ -75,7 +76,7 @@ function ChangeCard({ change, busy, onDecide }: { change: Change; busy: boolean;
 }
 
 export function PlaybookTab({ sprintId, onChanged, onMessage }: { sprintId: string; onChanged: () => Promise<void>; onMessage: (m: string) => void }) {
-  const callAction = usePluginAction("seo.call");
+  const callAction = useSeoCall();
   const [data, setData] = useState<PlaybookData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);

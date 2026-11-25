@@ -22,6 +22,7 @@ import {
   type DriveThumbSize,
   type DriveThumbsResult,
   type DriveTransferProgress,
+  type ActingRestriction,
 } from "@partnersinbiz/pib-plugin-kit";
 import { assetOut, getAssetRow, recordStoredAsset, storeAsset } from "./assets.js";
 import { StudioConfig } from "./config.js";
@@ -31,7 +32,7 @@ import { startTransfer, type TransferView } from "./drive-jobs.js";
 import { DRIVE_INLINE_MAX_BYTES, DRIVE_MAX_BYTES } from "./drive-limits.js";
 import { StudioError } from "./errors.js";
 import { assetKey, deleteObject, extFor, getObjectHead, MAX_ASSET_BYTES, objectUrl, sniffMime } from "./storage.js";
-import { resolveScope, scopeInput } from "./scope.js";
+import { assertOpenToPerson, resolveScope, scopeInput } from "./scope.js";
 
 /** Under the host's 30 s action limit, so a silent CRM gives the plain message below rather than a bare 502 (PAR-8114). */
 export const TIMEOUT_MS = 20_000;
@@ -76,10 +77,16 @@ export function readRefusal(result: DriveFailure): string {
   }
 }
 
-/** The person's picked client: "company:<id>", "contact:<id>" or "own"/empty for own work. Checked against the CRM. */
-async function pickedScope(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
+/**
+ * The person's picked client: "company:<id>", "contact:<id>" or "own"/empty for own work. Checked against the CRM, and
+ * against core's member-restriction answer for the page's caller: a restricted member reads no client's Drive
+ * (PAR-14290). Every caller here is the person path.
+ */
+async function pickedScope(ctx: PluginContext, companyId: string, params: Record<string, unknown>, restriction: ActingRestriction) {
   const requested = scopeInput({ client: params.client === undefined ? null : params.client });
-  return resolveScope(ctx, companyId, requested ?? null);
+  const resolved = await resolveScope(ctx, companyId, requested ?? null);
+  assertOpenToPerson(resolved.scope, restriction);
+  return resolved;
 }
 
 function target(companyId: string, scope: ClientScope): DriveReadTarget {
@@ -94,8 +101,8 @@ export function driveSourceRef(scope: ClientScope, fileId: string): string {
  * The Drive files Studio could take for this client: images and videos, newest first, with their folder
  * ("Assets/Images"), flagged when too big, and with the library asset when this client already has it (PAR-8124).
  */
-export async function listDriveFiles(ctx: PluginContext, companyId: string, params: Record<string, unknown>, readers: DriveReaders = KIT) {
-  const { scope } = await pickedScope(ctx, companyId, params);
+export async function listDriveFiles(ctx: PluginContext, companyId: string, params: Record<string, unknown>, restriction: ActingRestriction, readers: DriveReaders = KIT) {
+  const { scope } = await pickedScope(ctx, companyId, params, restriction);
   const result = await readers.list(ctx, target(companyId, scope));
   if (result.status !== "listed") throw new StudioError(readRefusal(result), "drive_refused");
   const prefix = driveSourceRef(scope, "");
@@ -125,12 +132,12 @@ export async function listDriveFiles(ctx: PluginContext, companyId: string, para
  * Previews for the picker (PAR-8124): Drive's own small images, fetched by the CRM inside this client's assets folders
  * and handed back as data: URLs, so no Drive link or token reaches the browser. A file without one gets a reason.
  */
-export async function driveThumbs(ctx: PluginContext, companyId: string, params: Record<string, unknown>, readers: DriveReaders = KIT) {
+export async function driveThumbs(ctx: PluginContext, companyId: string, params: Record<string, unknown>, restriction: ActingRestriction, readers: DriveReaders = KIT) {
   const raw = Array.isArray(params.fileIds) ? params.fileIds : [];
   const fileIds = [...new Set(raw.filter((id): id is string => typeof id === "string" && FILE_ID.test(id)))];
   if (fileIds.length === 0 || fileIds.length > DRIVE_THUMBS_MAX || fileIds.length !== raw.length) throw new StudioError(`Ask for 1 to ${DRIVE_THUMBS_MAX} Drive files.`, "bad_request");
   if (!readers.thumbs) throw new StudioError("Previews from Drive aren't available.", "drive_refused");
-  const { scope } = await pickedScope(ctx, companyId, params);
+  const { scope } = await pickedScope(ctx, companyId, params, restriction);
   const size: DriveThumbSize = params.size === "large" ? "large" : "small";
   const result = await readers.thumbs(ctx, { ...target(companyId, scope), fileIds, size });
   if (result.status !== "thumbs") throw new StudioError(readRefusal(result), "drive_refused");
@@ -143,10 +150,10 @@ export async function driveThumbs(ctx: PluginContext, companyId: string, params:
  * Copy one Drive file into Studio. Importing the same file for the same client twice returns the first copy (the
  * source ref is unique per company), so a double click or two people at once end with one asset.
  */
-export async function importFromDrive(ctx: PluginContext, companyId: string, params: Record<string, unknown>, actor: { userId: string | null }, readers: DriveReaders = KIT) {
+export async function importFromDrive(ctx: PluginContext, companyId: string, params: Record<string, unknown>, actor: { userId: string | null; restriction: ActingRestriction }, readers: DriveReaders = KIT) {
   const fileId = String(params.fileId ?? "").trim();
   if (!FILE_ID.test(fileId)) throw new StudioError("Pick a Drive file first.", "bad_request");
-  const resolved = await pickedScope(ctx, companyId, params);
+  const resolved = await pickedScope(ctx, companyId, params, actor.restriction);
   const sourceRef = driveSourceRef(resolved.scope, fileId);
   const existing = await ctx.db.query<{ id: string }>(`SELECT id FROM ${table(ctx, "assets")} WHERE company_id = $1 AND source_ref = $2`, [companyId, sourceRef]);
   if (existing[0]) return { ...assetOut(await getAssetRow(ctx, companyId, existing[0].id)), reused: true };

@@ -152,6 +152,7 @@ export function createHeartbeatScheduling(
     goalId: issues.goalId,
     identifier: issues.identifier,
     title: issues.title,
+    conversationAgentId: issues.conversationAgentId,
     status: issues.status,
     priority: issues.priority,
     assigneeAgentId: issues.assigneeAgentId,
@@ -174,6 +175,7 @@ export function createHeartbeatScheduling(
     goalId: string | null;
     identifier: string | null;
     title: string;
+    conversationAgentId: string | null;
     status: string;
     priority: string;
     assigneeAgentId: string | null;
@@ -327,8 +329,16 @@ export function createHeartbeatScheduling(
         input.claimed,
       );
       if (!recoveryIssue) {
+        // A chat's title is private chat text: name a chat by its identifier
+        // only (PAR-12774 plan 4.5). A chat takes no subtasks, so its recovery
+        // task has no parent; `originId` still links and dedupes it.
+        const isChat = Boolean(input.claimed.conversationAgentId);
         recoveryIssue = await issuesSvc.create(input.claimed.companyId, {
-          title: `Recover external-service monitor for ${input.claimed.identifier ?? input.claimed.title}`,
+          title: `Recover external-service monitor for ${
+            isChat
+              ? input.claimed.identifier ?? input.claimed.id
+              : input.claimed.identifier ?? input.claimed.title
+          }`,
           description: monitorRecoveryComment({
             issue: input.claimed,
             clearReason: input.clearReason,
@@ -337,7 +347,7 @@ export function createHeartbeatScheduling(
           }),
           status: "todo",
           priority: "high",
-          parentId: input.claimed.id,
+          parentId: isChat ? null : input.claimed.id,
           // Recovery work is structural system machinery tied to the stranded task.
           parentDepthPolicy: "allow_nested",
           projectId: input.claimed.projectId,

@@ -56,10 +56,13 @@ const ago = (now: Date, hours: number) => new Date(now.getTime() - hours * 3_600
 /** A numeric field of a run's `usage_json`, 0 when missing or not a number (never a cast error). */
 export const usage = (field: string) => `CASE WHEN r.usage_json ->> '${field}' ~ '^[0-9]+(\\.[0-9]+)?$' THEN (r.usage_json ->> '${field}')::double precision ELSE 0 END`;
 
-/** Runs since a time with the fields every aggregate needs. `$1` company, `$2` since. */
+/**
+ * Runs since a time with the fields every aggregate needs. `$1` company, `$2` since. The issue comes from
+ * `issue_id` (set by the host on insert), not `context_snapshot`, which is large: PAR-13397.
+ */
 const RUNS = `runs AS (
   SELECT r.agent_id, r.status, r.error_code, r.error, r.retry_of_run_id, r.continuation_attempt, r.started_at,
-         r.context_snapshot ->> 'issueId' AS issue_id, r.context_snapshot ->> 'wakeReason' AS wake_reason,
+         r.issue_id::text AS issue_id, r.context_snapshot ->> 'wakeReason' AS wake_reason,
          ${usage("costUsd")} AS usd, ${usage("inputTokens")} AS input_tokens, ${usage("outputTokens")} AS output_tokens, ${usage("cachedInputTokens")} AS cached_tokens,
          CASE WHEN r.finished_at IS NOT NULL AND r.finished_at >= r.started_at THEN EXTRACT(EPOCH FROM (r.finished_at - r.started_at))::double precision END AS secs
     FROM public.heartbeat_runs r
@@ -395,25 +398,36 @@ export async function readLimitFailures(ctx: PluginContext, companyId: string, s
 /** Done issues of the author agents, each with the review that covers it (policy stage or a linked Reviewer issue). */
 export async function readReviewRows(ctx: PluginContext, companyId: string, since: string, authors: string[], reviewers: string[], limit = 300): Promise<DoneIssueReview[]> {
   if (authors.length === 0) return [];
+  // PAR-13702: the review is matched set-wise. The old LATERAL ran two regexes per done issue over every
+  // reviewer issue's description (22 s for PAR); the mentions are now read once per reviewer issue and joined by identifier.
   const rows = await ctx.db.query<Raw>(
-    `SELECT d.id::text AS id, d.identifier, d.completed_at,
+    `WITH done AS MATERIALIZED (
+       SELECT d.id, d.identifier, d.completed_at, d.execution_policy, d.execution_state FROM public.issues d
+        WHERE d.company_id = $1::uuid AND d.status = 'done' AND d.hidden_at IS NULL AND d.completed_at >= $2::timestamptz
+          AND d.assignee_agent_id = ANY(ARRAY(SELECT jsonb_array_elements_text($3::jsonb))::uuid[])
+        ORDER BY d.completed_at DESC LIMIT $5),
+     rvi AS MATERIALIZED (
+       SELECT r.id, r.parent_id, r.created_at, r.completed_at, r.title, r.description FROM public.issues r
+        WHERE r.company_id = $1::uuid AND r.hidden_at IS NULL
+          AND r.assignee_agent_id = ANY(ARRAY(SELECT jsonb_array_elements_text($4::jsonb))::uuid[])),
+     mentions AS MATERIALIZED (
+       SELECT DISTINCT rvi.id, m[1] AS ident FROM rvi, regexp_matches(coalesce(rvi.title, '') || ' ' || coalesce(rvi.description, ''), '\\m([A-Za-z0-9]+-[0-9]+)\\M', 'g') AS m),
+     cand AS (
+       SELECT d.id AS did, r.id AS rid FROM done d JOIN rvi r ON r.parent_id = d.id AND r.id <> d.id
+       UNION
+       SELECT d.id, r.id FROM done d
+         JOIN public.issue_relations x ON x.company_id = $1::uuid AND x.type = 'blocks' AND (x.related_issue_id = d.id OR x.issue_id = d.id)
+         JOIN rvi r ON r.id <> d.id AND ((x.issue_id = r.id AND x.related_issue_id = d.id) OR (x.issue_id = d.id AND x.related_issue_id = r.id))
+       UNION
+       SELECT d.id, m.id FROM done d JOIN mentions m ON m.ident = d.identifier AND m.id <> d.id)
+     SELECT d.id::text AS id, d.identifier, d.completed_at,
             (jsonb_typeof(d.execution_policy -> 'stages') = 'array'
               AND EXISTS (SELECT 1 FROM jsonb_array_elements(d.execution_policy -> 'stages') s WHERE s ->> 'type' = 'review')
               AND d.execution_state ->> 'lastDecisionOutcome' = 'approved') AS policy_approved,
             rv.id::text AS review_issue_id, rv.created_at AS review_created_at, rv.completed_at AS review_completed_at
-       FROM public.issues d
-       LEFT JOIN LATERAL (
-         SELECT r.id, r.created_at, r.completed_at FROM public.issues r
-          WHERE r.company_id = $1::uuid AND r.id <> d.id AND r.hidden_at IS NULL
-            AND r.assignee_agent_id = ANY(ARRAY(SELECT jsonb_array_elements_text($4::jsonb))::uuid[])
-            AND (r.parent_id = d.id
-                 OR EXISTS (SELECT 1 FROM public.issue_relations x WHERE x.company_id = $1::uuid AND x.type = 'blocks'
-                              AND ((x.issue_id = r.id AND x.related_issue_id = d.id) OR (x.issue_id = d.id AND x.related_issue_id = r.id)))
-                 OR (d.identifier IS NOT NULL AND (r.title ~ ('\\m' || d.identifier || '\\M') OR r.description ~ ('\\m' || d.identifier || '\\M'))))
-          ORDER BY r.created_at LIMIT 1) rv ON true
-      WHERE d.company_id = $1::uuid AND d.status = 'done' AND d.hidden_at IS NULL AND d.completed_at >= $2::timestamptz
-        AND d.assignee_agent_id = ANY(ARRAY(SELECT jsonb_array_elements_text($3::jsonb))::uuid[])
-      ORDER BY d.completed_at DESC LIMIT $5`,
+       FROM done d
+       LEFT JOIN LATERAL (SELECT r.id, r.created_at, r.completed_at FROM rvi r JOIN cand c ON c.rid = r.id AND c.did = d.id ORDER BY r.created_at LIMIT 1) rv ON true
+      ORDER BY d.completed_at DESC`,
     [companyId, since, JSON.stringify(authors), JSON.stringify(reviewers.length ? reviewers : ["00000000-0000-0000-0000-000000000000"]), limit],
   );
   return rows.map((r) => ({
