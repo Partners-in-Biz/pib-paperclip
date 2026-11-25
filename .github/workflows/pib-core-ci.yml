@@ -29,7 +29,7 @@ permissions:
 
 env:
   # PAR-14647: related-test sets over this many files run sharded in the related-sharded job.
-  RELATED_SHARD_THRESHOLD: 0
+  RELATED_SHARD_THRESHOLD: 300
   # Keep in step with the matrix.shard list in the related-sharded job.
   RELATED_SHARD_COUNT: 16
 
