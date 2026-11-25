@@ -10661,7 +10661,7 @@ export function issueService(db: Db) {
         if (projectWorkspaceId) {
           await assertValidProjectWorkspace(
             companyId,
-            null,
+            issueData.projectId ?? null,
             projectWorkspaceId,
             tx,
           );
@@ -11568,14 +11568,52 @@ export function issueService(db: Db) {
         issueData.projectId !== undefined
           ? issueData.projectId
           : existing.projectId;
-      const nextProjectWorkspaceId =
+      const projectChanged =
+        issueData.projectId !== undefined &&
+        issueData.projectId !== existing.projectId;
+      let nextProjectWorkspaceId =
         issueData.projectWorkspaceId !== undefined
           ? issueData.projectWorkspaceId
           : existing.projectWorkspaceId;
-      const nextExecutionWorkspaceId =
+      let nextExecutionWorkspaceId =
         issueData.executionWorkspaceId !== undefined
           ? issueData.executionWorkspaceId
           : existing.executionWorkspaceId;
+      if (projectChanged) {
+        if (issueData.projectWorkspaceId === undefined && nextProjectWorkspaceId) {
+          const [existingPw] = await dbOrTx
+            .select({ projectId: projectWorkspaces.projectId })
+            .from(projectWorkspaces)
+            .where(eq(projectWorkspaces.id, nextProjectWorkspaceId));
+          if (!existingPw || existingPw.projectId !== nextProjectId) {
+            if (nextProjectId) {
+              const [targetProject] = await dbOrTx
+                .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
+                .from(projects)
+                .where(and(eq(projects.id, nextProjectId), eq(projects.companyId, existing.companyId)));
+              const targetPolicy = parseProjectExecutionWorkspacePolicy(targetProject?.executionWorkspacePolicy);
+              nextProjectWorkspaceId = await resolveProjectDefaultWorkspaceId(dbOrTx, {
+                companyId: existing.companyId,
+                projectId: nextProjectId,
+                policy: targetPolicy,
+              });
+            } else {
+              nextProjectWorkspaceId = null;
+            }
+            patch.projectWorkspaceId = nextProjectWorkspaceId;
+          }
+        }
+        if (issueData.executionWorkspaceId === undefined && nextExecutionWorkspaceId) {
+          const [existingEw] = await dbOrTx
+            .select({ projectId: executionWorkspaces.projectId })
+            .from(executionWorkspaces)
+            .where(eq(executionWorkspaces.id, nextExecutionWorkspaceId));
+          if (!existingEw || (nextProjectId && existingEw.projectId !== nextProjectId)) {
+            nextExecutionWorkspaceId = null;
+            patch.executionWorkspaceId = null;
+          }
+        }
+      }
       const nextExecutionWorkspacePreference =
         issueData.executionWorkspacePreference !== undefined
           ? issueData.executionWorkspacePreference
@@ -11593,8 +11631,15 @@ export function issueService(db: Db) {
           ? { ...nextExecutionWorkspaceSettings }
           : null;
       }
-      if (nextProjectWorkspaceId) await assertValidProjectWorkspace(existing.companyId, null, nextProjectWorkspaceId);
-      if (nextExecutionWorkspaceId) await assertValidExecutionWorkspace(existing.companyId, null, nextExecutionWorkspaceId);
+      if (nextProjectWorkspaceId) {
+        await assertValidProjectWorkspace(
+          existing.companyId,
+          nextProjectId ?? null,
+          nextProjectWorkspaceId,
+          dbOrTx,
+        );
+      }
+      if (nextExecutionWorkspaceId) await assertValidExecutionWorkspace(existing.companyId, null, nextExecutionWorkspaceId, dbOrTx);
       if (
         isolatedWorkspacesEnabled &&
         issueData.executionWorkspaceSettings !== undefined
