@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from "react";
-import { usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import { useCockpitAction } from "./actions.js";
 import { Button, PageMessage, tokens } from "@partnersinbiz/pib-plugin-ui";
 import { Card } from "./components.js";
 import { DeviceList } from "./DeviceList.js";
@@ -28,12 +28,12 @@ interface SubscribeResponse {
 interface TestResponse extends TestFeedbackInput {}
 
 export function NotificationsPage() {
-  const devicesAction = usePluginAction("cockpit.push.devices");
-  const publicKeyAction = usePluginAction("cockpit.push.publicKey");
-  const subscribeAction = usePluginAction("cockpit.push.subscribe");
-  const muteAction = usePluginAction("cockpit.push.mute");
-  const unsubscribeAction = usePluginAction("cockpit.push.unsubscribe");
-  const testAction = usePluginAction("cockpit.push.test");
+  const devicesAction = useCockpitAction("cockpit.push.devices");
+  const publicKeyAction = useCockpitAction("cockpit.push.publicKey");
+  const subscribeAction = useCockpitAction("cockpit.push.subscribe");
+  const muteAction = useCockpitAction("cockpit.push.mute");
+  const unsubscribeAction = useCockpitAction("cockpit.push.unsubscribe");
+  const testAction = useCockpitAction("cockpit.push.test");
 
   const [devices, setDevices] = useState<DeviceInfo[]>([]);
   const [busy, setBusy] = useState(false);

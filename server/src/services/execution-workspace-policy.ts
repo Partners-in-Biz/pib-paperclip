@@ -373,15 +373,34 @@ export function issueExecutionWorkspaceModeForPersistedWorkspace(
   return "shared_workspace";
 }
 
+// Roles that do not edit code. Issues they run under a repo-backed project get a
+// scratch task directory (agent_default) instead of a git worktree, so they neither
+// create unused branches nor trip the .git metadata check (PAR-13540).
+const NON_CODE_AGENT_ROLES: ReadonlySet<string> = new Set(["ceo", "pm", "cmo", "cfo", "researcher"]);
+const NON_CODE_ISSUE_WORK_MODES: ReadonlySet<string> = new Set(["ask", "planning"]);
+
+export function isNonCodeWorkspaceContext(input: {
+  agentRole?: string | null;
+  issueWorkMode?: string | null;
+}): boolean {
+  return (
+    (input.agentRole != null && NON_CODE_AGENT_ROLES.has(input.agentRole)) ||
+    (input.issueWorkMode != null && NON_CODE_ISSUE_WORK_MODES.has(input.issueWorkMode))
+  );
+}
+
 export function resolveExecutionWorkspaceMode(input: {
   projectPolicy: ProjectExecutionWorkspacePolicy | null;
   issueSettings: IssueExecutionWorkspaceSettings | null;
   legacyUseProjectWorkspace: boolean | null;
+  agentRole?: string | null;
+  issueWorkMode?: string | null;
 }): ParsedExecutionWorkspaceMode {
   const issueMode = input.issueSettings?.mode;
   if (issueMode && issueMode !== "inherit" && issueMode !== "reuse_existing") {
     return issueMode;
   }
+  if (isNonCodeWorkspaceContext(input)) return "agent_default";
   if (input.projectPolicy?.enabled) {
     if (input.projectPolicy.defaultMode === "isolated_workspace") return "isolated_workspace";
     if (input.projectPolicy.defaultMode === "operator_branch") return "operator_branch";

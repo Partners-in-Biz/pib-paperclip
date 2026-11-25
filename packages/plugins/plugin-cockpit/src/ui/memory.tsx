@@ -7,7 +7,8 @@
  * first field whenever `onClose` changes, which would steal focus while typing.
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent } from "react";
-import { usePluginAction, usePluginToast } from "@paperclipai/plugin-sdk/ui";
+import { usePluginToast } from "@paperclipai/plugin-sdk/ui";
+import { useCockpitAction } from "./actions.js";
 import {
   BookOpen,
   Button,
@@ -89,15 +90,15 @@ const errorLine: CSSProperties = { margin: 0, fontSize: 12.5, color: tone("bad")
 type NoteKind = "success" | "warn" | "error" | "info";
 
 function useMemoryActions() {
-  const overview = usePluginAction("memory.overview");
-  const list = usePluginAction("memory.list");
-  const brief = usePluginAction("memory.brief");
-  const preview = usePluginAction("memory.preview");
-  const add = usePluginAction("memory.add");
-  const update = usePluginAction("memory.update");
-  const review = usePluginAction("memory.review");
-  const exportAll = usePluginAction("memory.export");
-  const importAll = usePluginAction("memory.import");
+  const overview = useCockpitAction("memory.overview");
+  const list = useCockpitAction("memory.list");
+  const brief = useCockpitAction("memory.brief");
+  const preview = useCockpitAction("memory.preview");
+  const add = useCockpitAction("memory.add");
+  const update = useCockpitAction("memory.update");
+  const review = useCockpitAction("memory.review");
+  const exportAll = useCockpitAction("memory.export");
+  const importAll = useCockpitAction("memory.import");
   return useMemo(() => ({ overview, list, brief, preview, add, update, review, exportAll, importAll }), [overview, list, brief, preview, add, update, review, exportAll, importAll]);
 }
 

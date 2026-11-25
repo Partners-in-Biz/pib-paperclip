@@ -5,7 +5,7 @@
  * worker allows for the owner alone.
  */
 import { useCallback, useEffect, useState } from "react";
-import { usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import { useCockpitAction } from "./actions.js";
 import { Button, EmptyState, PageMessage, Pill, ShieldCheck, TriangleAlert, errorText, tokens } from "@partnersinbiz/pib-plugin-ui";
 import type { PolicyView } from "../register-w1c-policy.js";
 import { Card, Muted, type LinkPropsFor } from "./components.js";
@@ -103,8 +103,8 @@ export function PolicyBody({ view, linkFor, busy = false, onToggle }: { view: Po
 
 /** The Policy tab. */
 export function PolicyPanel({ linkFor, refreshKey = 0 }: { linkFor: LinkPropsFor; refreshKey?: number }) {
-  const load = usePluginAction("ownerDefaults.load");
-  const save = usePluginAction("ownerDefaults.save");
+  const load = useCockpitAction("ownerDefaults.load");
+  const save = useCockpitAction("ownerDefaults.save");
   const [view, setView] = useState<PolicyView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);

@@ -27,7 +27,7 @@ import {
   type PublishRequest,
   type SocialProvider,
 } from "../types.js";
-import { bestEffort, count, guard, images, requireCode, videos } from "./common.js";
+import { bestEffort, count, guard, images, perPostInbox, requireCode, videos } from "./common.js";
 
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
 const API = "https://www.googleapis.com/youtube/v3";
@@ -166,13 +166,15 @@ export const youtubeProvider: SocialProvider = {
     if (!s) return null;
     return { views: count(s.viewCount), likes: count(s.likeCount), comments: count(s.commentCount), shares: 0, raw: { statistics: s } };
   },
-  async inbox(_env, account, published): Promise<InboxCandidate[]> {
-    const out: InboxCandidate[] = [];
-    for (const post of published) {
+  async inbox(_env, account, published, onSkip): Promise<InboxCandidate[]> {
+    // Each video is read on its own: a private video (comments not supported), one with comments off, or a
+    // deleted one answers 403/404 and is skipped, so it cannot hide the comments on the other videos.
+    return perPostInbox(published, async (videoId) => {
+      const out: InboxCandidate[] = [];
       const data = await getJson<{
         items?: Array<{ id: string; snippet?: { topLevelComment?: { id?: string; snippet?: { textDisplay?: string; textOriginal?: string; authorDisplayName?: string; authorChannelId?: { value?: string }; publishedAt?: string } } } }>;
       }>(
-        `${API}/commentThreads?part=snippet&videoId=${encodeURIComponent(post.externalId)}&maxResults=20&order=time`,
+        `${API}/commentThreads?part=snippet&videoId=${encodeURIComponent(videoId)}&maxResults=20&order=time`,
         { Authorization: `Bearer ${account.token.accessToken}` },
         "YouTube comments",
       );
@@ -181,17 +183,17 @@ export const youtubeProvider: SocialProvider = {
         if (!c || c.authorChannelId?.value === account.externalId) continue;
         out.push({
           externalId: thread.id,
-          parentExternalId: post.externalId,
+          parentExternalId: videoId,
           kind: "comment",
           author: c.authorDisplayName ?? "YouTube user",
           body: c.textOriginal ?? c.textDisplay ?? "",
-          permalink: `https://www.youtube.com/watch?v=${post.externalId}&lc=${thread.id}`,
+          permalink: `https://www.youtube.com/watch?v=${videoId}&lc=${thread.id}`,
           receivedAt: c.publishedAt ?? null,
-          destinationExternalId: post.externalId,
+          destinationExternalId: videoId,
         });
       }
-    }
-    return out;
+      return out;
+    }, onSkip);
   },
   reply: (_env, account, target, text) =>
     guard(async () => {

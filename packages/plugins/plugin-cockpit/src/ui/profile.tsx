@@ -5,7 +5,7 @@
  * check them.
  */
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
-import { usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import { useCockpitAction } from "./actions.js";
 import { Building2, Button, EmptyState, Field, Input, PageMessage, Pill, Sparkles, TextArea, TriangleAlert, errorText, formatShortDate, formatDate, tokens, tone, useIsNarrow } from "@partnersinbiz/pib-plugin-ui";
 import {
   cleanField,
@@ -203,8 +203,8 @@ export function ProfileForm({ stored, draft, busy, message, onChange, onSave, on
 
 /** The Profile tab: loads, edits and saves the profile. */
 export function ProfilePanel({ refreshKey = 0, ...legal }: { refreshKey?: number } & LegalCopies) {
-  const load = usePluginAction("profile.load");
-  const save = usePluginAction("profile.save");
+  const load = useCockpitAction("profile.load");
+  const save = useCockpitAction("profile.save");
   const [stored, setStored] = useState<StoredProfileView | null>(null);
   const [draft, setDraft] = useState<ProfileDraft | null>(null);
   const [error, setError] = useState<string | null>(null);

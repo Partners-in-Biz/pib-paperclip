@@ -1,7 +1,7 @@
 /**
  * The Cockpit's access table (PAR-12578 plan 4.4, ticket PAR-12700): which permission each page action, agent tool and
  * API route needs when a company's access switch is `report` or `enforce`. With the switch `off` (every company today)
- * the guard passes every call on unchanged. `tests/access.spec.ts` fails on a missing or stale row.
+ * the guard passes every call on unchanged. `tests/access-guard.spec.ts` fails on a missing or stale row.
  *
  * Catalog resources: `cockpit.dashboards` (view, export), `cockpit.settings` (view, edit) and `cockpit.paper` (view,
  * create, edit, approve). None is scopable, so no row is `scoped`. No preset gives a limited person the Cockpit in stage A

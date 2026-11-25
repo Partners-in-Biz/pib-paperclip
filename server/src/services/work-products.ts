@@ -18,6 +18,7 @@ import {
   type GitHubCommitDiffDetailsResolver,
 } from "./github-commit-details.js";
 import type { ImportIssueWorkProductRow } from "./import-write-types.js";
+import { githubCredentialsRefused } from "./member-restriction/github-credentials.js";
 
 type IssueWorkProductRow = typeof issueWorkProducts.$inferSelect;
 type WorkProductTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -206,7 +207,15 @@ export function workProductService(
   const resolvePullRequestDetails = opts.resolvePullRequestDetails ?? createPullRequestMergeDetailsResolver(db);
   const resolveCommitDetails = opts.resolveCommitDetails ?? createGitHubCommitDiffDetailsResolver(db);
   return {
-    listForIssue: async (issueId: string, options: { refreshPullRequests?: boolean } = {}) => {
+    /**
+     * `personIds`: the people the caller works for. A pull request refresh reads
+     * GitHub with the company's credential, so it is skipped (stored metadata is
+     * returned) for a person restricted under `enforce` (4.6a row 5).
+     */
+    listForIssue: async (
+      issueId: string,
+      options: { refreshPullRequests?: boolean; personIds?: readonly (string | null | undefined)[] } = {},
+    ) => {
       const rows = await db
         .select()
         .from(issueWorkProducts)
@@ -227,9 +236,12 @@ export function workProductService(
             })
             .from(workspaceRuntimeServices)
             .where(inArray(workspaceRuntimeServices.id, [...new Set(runtimeServiceIds)])));
-      return options.refreshPullRequests
-        ? refreshPullRequestWorkProductMetadata(reconciled, resolvePullRequestDetails)
-        : reconciled;
+      if (!options.refreshPullRequests || rows.length === 0) return reconciled;
+      if (await githubCredentialsRefused(db, {
+        companyId: rows[0]!.companyId, personIds: options.personIds ?? [],
+        target: "github_api_credentials", objectId: issueId,
+      })) return reconciled;
+      return refreshPullRequestWorkProductMetadata(reconciled, resolvePullRequestDetails);
     },
 
     latestRunDiffSummary: async (runId: string): Promise<WorkProductDiffSummary | null> => {
@@ -249,9 +261,11 @@ export function workProductService(
       return null;
     },
 
+    /** Commit stats read with the company's GitHub credential; none for a person restricted under `enforce` (4.6a row 5). */
     resolveCommitDiffSummary: async (
       companyId: string,
       input: { provider: string; url?: string | null; metadata?: Record<string, unknown> | null },
+      options: { personIds?: readonly (string | null | undefined)[] } = {},
     ): Promise<WorkProductDiffSummary | null> => {
       if (input.provider.toLowerCase() !== "github") return null;
       const metadata = input.metadata ?? {};
@@ -261,7 +275,11 @@ export function workProductService(
         input.url,
         repo && sha ? `${repo}@${sha}` : null,
       ]);
-      return reference ? await resolveCommitDetails(companyId, reference) : null;
+      if (!reference) return null;
+      if (await githubCredentialsRefused(db, {
+        companyId, personIds: options.personIds ?? [], target: "github_api_credentials", objectId: input.url ?? companyId,
+      })) return null;
+      return resolveCommitDetails(companyId, reference);
     },
 
     getById: async (id: string) => {

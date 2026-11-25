@@ -10,9 +10,12 @@ Daemon and CLI for capturing logged-in browser evidence. Not installed by defaul
 - `pib-browser open` - Open a browser context
 - `pib-browser goto` - Navigate to a URL
 - `pib-browser click` - Click an element
+- `pib-browser drag --from SEL --to SEL` - Drag one element onto another. Gated like `click`: the destructive-word check sees both selectors and their labels, and `--approval PAR-N` works the same.
 - `pib-browser fill` - Fill a form field
 - `pib-browser text` - Get text from an element
 - `pib-browser shot` - Take a screenshot
+- `pib-browser net [--step NAME]` - Print the session's network log and write it to `<evidence root>/<PAR-n>/<PAR-n>-<step>-<time>.json`. Each entry has time, method, status (0 = request failed or blocked) and a redacted URL. Query values, fragments, credentials and token-like path segments are replaced with `[redacted]`; headers, cookies and bodies are never recorded. The log keeps the last 1000 requests of the session.
+- `--viewport WxH` on `open` and `goto` - Set the viewport (e.g. `open --identity pib:paperclip --viewport 390x844`). Allowed 320x320 to 3840x2160; anything else is refused (exit 2). It overrides `PIB_BROWSER_MOBILE`'s size.
 - `pib-browser close` - Close the browser context
 
 ### Status and Evidence
@@ -31,6 +34,9 @@ Procedure (root part from PAR-9356):
 3. Point a VNC client at `localhost:5900` and log in in the window. It closes by itself when you are logged in.
 4. On the server: `sudo pib-root browser-handoff-stop <id>` removes the flag (root-owned; only root can) and stops `pib-vnc`.
 5. An agent runs `pib-browser probe --all --identities <id> --issue PAR-N`; the login shows ok.
+
+### Live view (PAR-14514)
+A second socket, `/run/pib-browser/live.sock` (mode 0660, `PIB_BROWSER_LIVE_SOCKET`), streams display `:99` to Cockpit over a WebSocket, view only. `GET /stream?mode=view` is accepted only with the core server's signed header `x-paperclip-local-ws-signature` (`doc/plugins/PLUGIN_SPEC.md`): it must verify against the key from `PIB_BROWSER_API`/`api/plugins/local-ws-key`, name this socket, the plugin `PIB_BROWSER_LIVE_PLUGIN_KEY` (default `partnersinbiz.cockpit`) and the exact path, be under 30 s old and use a fresh nonce. Any other process on the box, an agent included, gets 401. Each stream runs its own `x11vnc -inetd -viewonly` (no TCP port), handed a socket through a one-use 0700 folder in the private temp folder; at most two streams, 20 minutes each, a ping every 20 s, and `x11vnc` is killed when either side closes or the daemon stops. `mode=control` is refused until the take-over ticket (PAR-14536). `GET /status` (unsigned) returns `{viewers, agentSessions, lease, waiting}`. Neither the path, the header nor any stream byte is logged. If the live service cannot start (for example `ws` missing), the agent socket runs as before.
 
 ## Exit Codes
 

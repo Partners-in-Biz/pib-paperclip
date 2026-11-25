@@ -14,6 +14,10 @@ import type { ProjectGitAuthorization } from "@paperclipai/shared";
 import { forbidden, notFound } from "../errors.js";
 import { resolveManagedGitHubCredential } from "./git-credentials.js";
 import { resolveGitHubOperationCredentials } from "./github-operation-credentials.js";
+import {
+  githubCredentialsRefused,
+  PROJECT_GITHUB_CREDENTIALS_RESTRICTED_REASON,
+} from "./member-restriction/github-credentials.js";
 import { normalizeProjectRepositoryUrl, projectRepositoryIsPrivate } from "./project-repositories.js";
 import { recordProjectLifecycleEvent } from "./resource-lifecycle-events.js";
 import { persistActivity, publishActivity } from "./activity-log.js";
@@ -240,6 +244,12 @@ export function projectGitAuthorizationService(db: Db) {
       ) {
         throw forbidden("Project GitHub authorization does not include this repository; refresh Connector access");
       }
+      // 4.6a row 5: background work does not borrow a restricted authorizer's
+      // GitHub credential either. Denied before the credential store is read.
+      if (await githubCredentialsRefused(db, {
+        companyId: input.companyId, personIds: [row.gitAuthorizedByUserId],
+        target: "project_git_authorization", objectId: row.id,
+      })) throw forbidden(PROJECT_GITHUB_CREDENTIALS_RESTRICTED_REASON);
       const resolved = await resolveManagedGitHubCredential(db, secretService(db), input.companyId, {
         responsibleUserId: row.gitAuthorizedByUserId,
         explicitGrantId: row.gitAuthorizationGrantId,

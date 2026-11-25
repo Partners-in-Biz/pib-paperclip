@@ -3,7 +3,7 @@
  * Read from `browser.status` (the status file `pib-browser probe --all` writes). Shows no secret and no host key.
  */
 import { useCallback, useEffect, useState } from "react";
-import { usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import { useCockpitAction } from "./actions.js";
 import { Button, EmptyState, KeyRound, Pill, TriangleAlert, errorText, tokens } from "@partnersinbiz/pib-plugin-ui";
 import type { BrowserView } from "../browser-status.js";
 import { Card, Muted } from "./components.js";
@@ -84,7 +84,7 @@ export function BrowserBody({ view, identity, hrefFor }: { view: BrowserView; id
 
 /** The Browser tab. */
 export function BrowserPanel({ refreshKey = 0, identity = null }: { refreshKey?: number; identity?: string | null }) {
-  const load = usePluginAction("browser.status");
+  const load = useCockpitAction("browser.status");
   const [view, setView] = useState<BrowserView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const reload = useCallback(async () => {
