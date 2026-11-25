@@ -1,5 +1,5 @@
 /**
- * 0.10.23: the per-post inbox reads (YouTube, Facebook, Instagram, Threads) isolate each post. A private video
+ * 0.15.3: the per-post inbox reads (YouTube, Facebook, Instagram, Threads) isolate each post. A private video
  * (comments not supported) used to throw and abort the whole account's poll, so no other video's comments
  * reached the inbox (PiB Demo, 2026-11-08). Now a post that only it can fail is skipped and reported once.
  */
@@ -151,6 +151,11 @@ describe("perPostInbox and skippablePostError", () => {
     expect(skippablePostError(new ProviderHttpError(403, '{"error":{"errors":[{"reason":"quotaExceeded"}]}}'))).toBe(false);
     expect(skippablePostError(new ProviderHttpError(429, "slow down"))).toBe(false);
     expect(skippablePostError(new ProviderHttpError(500, "boom"))).toBe(false);
+    for (const code of [613, 80000, 80001, 4, 17]) {
+      const err = new ProviderHttpError(400, JSON.stringify({ error: { code, message: "rate limit" } }));
+      expect(err.retryable).toBe(true);
+      expect(skippablePostError(err)).toBe(false);
+    }
     expect(skippablePostError(new ProviderHttpError(400, '{"error":{"code":190,"message":"Error validating access token"}}'))).toBe(false);
     expect(skippablePostError(new TypeError("fetch failed"))).toBe(false);
   });
