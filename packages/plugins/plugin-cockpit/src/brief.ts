@@ -48,6 +48,7 @@ import {
 import { ownSnapshot } from "./own.js";
 import { withTriggerIfUnset } from "./run-trigger.js";
 import { ownerFilter, type OwnerFilterResult } from "./owner-filter.js";
+import type { DecisionRights } from "./decision-rights-model.js";
 import { currentRoles } from "./roles.js";
 import { TOOL_NAMES } from "./tools.js";
 import { mondayLabel, weekKey } from "./week.js";
@@ -150,7 +151,7 @@ export async function listUserIssues(ctx: PluginContext, companyId: string, user
   try {
     while (offset < OWNER_ISSUE_CEILING) {
       const rows = await ctx.db.query<Record<string, unknown>>(
-        `SELECT id, identifier, title, status, priority, updated_at, created_at, count(*) OVER () AS total FROM public.issues
+        `SELECT id, identifier, title, status, priority, origin_kind, updated_at, created_at, count(*) OVER () AS total FROM public.issues
           WHERE company_id = $1 AND assignee_user_id = $2 AND hidden_at IS NULL AND status IN ('todo', 'in_progress', 'in_review', 'blocked')
             AND origin_kind IS DISTINCT FROM '${ORIGIN.digest}'
           ORDER BY updated_at DESC, id LIMIT $3 OFFSET $4`,
@@ -169,6 +170,7 @@ export async function listUserIssues(ctx: PluginContext, companyId: string, user
           title: String(row.title ?? ""),
           status: String(row.status ?? ""),
           priority: row.priority == null ? null : String(row.priority),
+          originKind: row.origin_kind == null ? null : String(row.origin_kind),
           updatedAt: iso(row.updated_at),
           createdAt: iso(row.created_at),
         });
@@ -307,6 +309,9 @@ export interface CompanyData {
   unassigned: { count: number; items: UnassignedIssue[] };
   /** Open issues that never belong on the owner's list (containers, standing queue, canary); see owner-filter.ts. */
   hiddenIssueIds?: string[];
+  /** The Finish setup row is tracked in the standing queue (owner-filter.ts). */
+  setupRouted?: boolean;
+  ownerRights?: DecisionRights;
   /** Repair rows for escalation tracking. */
   repairs: RepairRow[];
 }
@@ -315,7 +320,7 @@ export interface CompanyData {
 export async function loadCompanyData(env: Env, companyId: string, days = 7, windowHours = days * 24, budget: BriefBudget = newBudget(env)): Promise<CompanyData> {
   const { guard } = budget;
   // Started first: the unassigned count leaves out the hidden issues, so it waits on this one query only.
-  const hiddenRead = guard("ownerFilter", () => ownerFilter(env, companyId), { hiddenIssueIds: [], degraded: [] } as OwnerFilterResult);
+  const hiddenRead = guard("ownerFilter", () => ownerFilter(env, companyId), { hiddenIssueIds: [], setupRouted: false, degraded: [] } as OwnerFilterResult);
   const [stored, own, agents, runStats, approvals, statuses, asks, unassigned, repairs, setup, roles] = await Promise.all([
     guard("snapshots", () => storedSnapshots(env, companyId), []),
     // The Cockpit's own checks (jobs, routines, watch, memory) read the most: when they hang, the other plugins' snapshots still answer.
@@ -364,6 +369,8 @@ export async function loadCompanyData(env: Env, companyId: string, days = 7, win
     unassigned,
     repairs,
     hiddenIssueIds: hidden.hiddenIssueIds,
+    setupRouted: hidden.setupRouted,
+    ownerRights: hidden.rights,
   };
 }
 
@@ -372,7 +379,7 @@ export function waitingFrom(data: WaitingData, now: Date = new Date()): WaitingE
   return waitingSplit(data, now).owner;
 }
 
-type WaitingData = Pick<CompanyData, "snapshots" | "approvals" | "ownerIssues" | "setupMissing"> & Partial<Pick<CompanyData, "asks" | "unassigned" | "setupIssueId" | "repairs" | "agents" | "hiddenIssueIds">>;
+type WaitingData = Pick<CompanyData, "snapshots" | "approvals" | "ownerIssues" | "setupMissing"> & Partial<Pick<CompanyData, "asks" | "unassigned" | "setupIssueId" | "repairs" | "agents" | "hiddenIssueIds" | "setupRouted" | "ownerRights">>;
 
 /** The one owner-list rule: what waits on the owner, and what waits on others (a seat that can act, or the client). */
 export function waitingSplit(data: WaitingData, now: Date = new Date()): { owner: WaitingEntry[]; others: WaitingEntry[] } {
@@ -390,7 +397,7 @@ export function waitingSplit(data: WaitingData, now: Date = new Date()): { owner
   ];
   const host = { source: "host", sourceTitle: "Paperclip", items: hostWaiting({ approvals: data.approvals, myIssues: data.ownerIssues, setupMissing: data.setupMissing, setupIssueId: data.setupIssueId }) };
   const merged = mergeWaiting([...own, { source: "unassigned", sourceTitle: "Paperclip", items: unassignedWaiting(data.unassigned, shownIssueIds([...own, host])) }, host]);
-  return splitOwnerWaiting(merged, { activeAgentIds: activeAgentIdsOf(data.agents ?? []), hiddenIssueIds: data.hiddenIssueIds ?? [] }, now);
+  return splitOwnerWaiting(merged, { activeAgentIds: activeAgentIdsOf(data.agents ?? []), hiddenIssueIds: data.hiddenIssueIds ?? [], setupRouted: data.setupRouted ?? false, rights: data.ownerRights }, now);
 }
 
 // ---------------------------------------------------------------------------
@@ -765,7 +772,7 @@ export async function runTool(env: Env, name: string, raw: unknown, run: ToolRun
         const degradedText = brief.degraded.length > 0 ? ` Waiting list incomplete: ${brief.degraded.join(", ")} unavailable (timed out).` : "";
         summary = `${brief.waiting.length} ${brief.waiting.length === 1 ? "item waits" : "items wait"} on the owner.${degradedText}`;
       }
-      if (brief.others.count > 0) summary += ` ${brief.others.count} wait on others.`;
+      if (brief.others.count > 0) summary += ` ${brief.others.count} wait on others${brief.others.escalated > 0 ? `, ${brief.others.escalated} escalated to PiB` : ""}.`;
       return toolOk(summary, { items: brief.waiting, count: brief.waiting.length, others: brief.others, degraded: brief.degraded });
     }
     if (name === TOOL_NAMES.scorecards) {

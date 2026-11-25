@@ -1,0 +1,343 @@
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type Dispatch, type SetStateAction } from "react";
+import { useQuery } from "@tanstack/react-query";
+import type { CanvasConnector, CanvasNode, CanvasStroke, PlanningCanvasItem, PlanningCanvasItemInput, PlanningCanvasItemType } from "@paperclipai/shared";
+import { planningCanvasesApi, type PlanningCanvasBoardWithItems } from "@/api/planningCanvases";
+import { queryKeys } from "@/lib/queryKeys";
+import { useDraftOwner } from "@/hooks/useDraftOwner";
+import { CanvasOpStore, type ItemFields, type OpStoreSnapshot, type StoreItem } from "@/components/planning-canvas/store/canvas-op-store";
+import { linkMetaOf, patchLinkMeta, type NodeLinkMeta } from "@/components/planning-canvas/nodes/link-meta";
+import { patchTypedMeta, typedMetaOf, type TypedNodeMeta } from "@/components/planning-canvas/nodes/typed-meta";
+import { diffElements, elementToItem, itemToElement, patchElements, type CanvasElement } from "@/components/planning-canvas/store/legacy-bridge";
+
+type Setter<T> = Dispatch<SetStateAction<T>>;
+interface ElementUpdates {
+  node: Map<string, CanvasNode | null>;
+  connector: Map<string, CanvasConnector | null>;
+  stroke: Map<string, CanvasStroke | null>;
+}
+
+export interface CanvasOpStoreInput {
+  companyId: string | null | undefined;
+  boardId: string | null | undefined;
+  nodes: CanvasNode[];
+  connectors: CanvasConnector[];
+  strokes: CanvasStroke[];
+  setNodes: Setter<CanvasNode[]>;
+  setConnectors: Setter<CanvasConnector[]>;
+  setStrokes: Setter<CanvasStroke[]>;
+  notify: (message: string) => void;
+  /** Called with each full read the page is hydrated from. */
+  onHydrate: (read: PlanningCanvasBoardWithItems) => void;
+}
+
+const IDLE_SNAPSHOT: OpStoreSnapshot = { saveState: "saved", canUndo: false, canRedo: false, drafts: [] };
+const noopSubscribe = () => () => undefined;
+
+function sessionStore() {
+  try {
+    return typeof window === "undefined" ? null : window.sessionStorage;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Connects the page's `nodes`/`connectors`/`strokes` state to a `CanvasOpStore`
+ * for the active board: page edits become store edits (and ops), store changes
+ * (undo, conflicts, others' edits) are patched back into the page state.
+ */
+export function useCanvasOpStore(input: CanvasOpStoreInput) {
+  const { companyId, boardId } = input;
+  const latest = useRef(input);
+  latest.current = input;
+  const synced = useRef<{ nodes: CanvasNode[]; connectors: CanvasConnector[]; strokes: CanvasStroke[] }>({ nodes: [], connectors: [], strokes: [] });
+  const identifiers = useRef(new Map<string, string>());
+  const closeGroupAfterSync = useRef(false);
+  const [loadedStore, setLoadedStore] = useState<CanvasOpStore | null>(null);
+  /** Ref and link ids per node: what the page's legacy node shape cannot carry (C10). */
+  const [linkMeta, setLinkMeta] = useState<ReadonlyMap<string, NodeLinkMeta>>(() => new Map());
+  /** Typed `data` of table and markdown nodes (C16). */
+  const [typedMeta, setTypedMeta] = useState<ReadonlyMap<string, TypedNodeMeta>>(() => new Map());
+  /** The signed-in user (undefined until the session is known): undo stacks are per user and board. */
+  const owner = useRef<string | undefined>(undefined);
+  owner.current = useDraftOwner();
+
+  const read = useQuery({
+    queryKey: queryKeys.planningCanvases.detail(companyId ?? "", boardId ?? ""),
+    queryFn: () => planningCanvasesApi.get(companyId!, boardId!),
+    enabled: !!companyId && !!boardId,
+    staleTime: Infinity,
+    gcTime: 0,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+  });
+  const refetchRef = useRef(read.refetch);
+  refetchRef.current = read.refetch;
+
+  const store = useMemo(() => {
+    if (!companyId || !boardId) return null;
+    return new CanvasOpStore({
+      transport: {
+        send: (batch) => planningCanvasesApi.applyOps(companyId, boardId, batch),
+        readSince: (since) => planningCanvasesApi.readSince(companyId, boardId, since),
+        sendKeepalive: (batch) => planningCanvasesApi.applyOpsKeepalive(companyId, boardId, batch),
+      },
+      storage: sessionStore(),
+      storageKey: () => (owner.current ? `paperclip.planningCanvas.undo:${owner.current}:${boardId}` : undefined),
+      onNotice: (message) => latest.current.notify(message),
+      onFatal: () => {
+        latest.current.notify("Could not save your last change; the board was reloaded.");
+        void refetchRef.current();
+      },
+      onResync: () => void refetchRef.current(),
+    });
+  }, [companyId, boardId]);
+
+  useEffect(() => {
+    store?.reopen();
+    return () => store?.close();
+  }, [store]);
+
+  /** Replace page state with a full read; the store already knows these arrays. */
+  const publish = useCallback((next: { nodes: CanvasNode[]; connectors: CanvasConnector[]; strokes: CanvasStroke[] }) => {
+    const { setNodes, setConnectors, setStrokes } = latest.current;
+    setNodes(next.nodes);
+    setConnectors(next.connectors);
+    setStrokes(next.strokes);
+    synced.current = next;
+  }, []);
+
+  /**
+   * Patch store-side changes into page state. The patch goes on top of any page
+   * change not yet synced, so a remote edit never overwrites a local one; the
+   * sync effect then still sees the local change as a diff.
+   */
+  const patch = useCallback((updates: ElementUpdates) => {
+    const { setNodes, setConnectors, setStrokes } = latest.current;
+    const current = synced.current;
+    synced.current = {
+      nodes: patchElements(current.nodes, updates.node),
+      connectors: patchElements(current.connectors, updates.connector),
+      strokes: patchElements(current.strokes, updates.stroke),
+    };
+    if (updates.node.size > 0) setNodes((prev) => patchElements(prev, updates.node));
+    if (updates.connector.size > 0) setConnectors((prev) => patchElements(prev, updates.connector));
+    if (updates.stroke.size > 0) setStrokes((prev) => patchElements(prev, updates.stroke));
+  }, []);
+
+  // Hydrate from each full read (first load, or a reload after a refusal or a resync).
+  useEffect(() => {
+    const data = read.data;
+    if (!store || !data || data.id !== boardId) return;
+    store.load({ revision: data.revision, items: data.items });
+    identifiers.current = new Map();
+    for (const node of data.data.nodes) {
+      if (node.handedOffIssueId && node.handedOffIssueIdentifier) identifiers.current.set(node.handedOffIssueId, node.handedOffIssueIdentifier);
+    }
+    synced.current = { nodes: latest.current.nodes, connectors: latest.current.connectors, strokes: latest.current.strokes };
+    publish({ nodes: data.data.nodes, connectors: data.data.connectors, strokes: data.data.strokes ?? [] });
+    latest.current.onHydrate(data);
+    const hydrated = new Map<string, NodeLinkMeta>();
+    for (const [key, item] of store.getItems()) {
+      const meta = linkMetaOf(item);
+      if (meta) hydrated.set(key, meta);
+    }
+    setLinkMeta(hydrated);
+    const typed = new Map<string, TypedNodeMeta>();
+    for (const [key, item] of store.getItems()) {
+      const meta = typedMetaOf(item);
+      if (meta) typed.set(key, meta);
+    }
+    setTypedMeta(typed);
+    setLoadedStore(store);
+  }, [store, read.data, read.dataUpdatedAt, boardId, publish]);
+
+  const loaded = loadedStore === store && store !== null;
+
+  // Store-side changes (undo, conflicts, others' edits) go back into page state.
+  useEffect(() => {
+    if (!store || !loaded) return;
+    return store.subscribeView((keys) => {
+      const updates: ElementUpdates = { node: new Map(), connector: new Map(), stroke: new Map() };
+      const current = synced.current;
+      let owners: Map<string, PlanningCanvasItemType> | null = null;
+      const owner = (key: string) => {
+        owners ??= new Map<string, PlanningCanvasItemType>([
+          ...current.nodes.map((n) => [n.id, "node"] as const),
+          ...current.connectors.map((c) => [c.id, "connector"] as const),
+          ...current.strokes.map((s) => [s.id, "stroke"] as const),
+        ]);
+        return owners.get(key) ?? null;
+      };
+      for (const key of keys) {
+        const item = store.getItem(key);
+        const type = item?.itemType ?? owner(key);
+        if (!type) continue;
+        const element = item ? itemToElement(key, item, identifiers.current) : null;
+        if (type === "node") updates.node.set(key, element as CanvasNode | null);
+        else if (type === "connector") updates.connector.set(key, element as CanvasConnector | null);
+        else updates.stroke.set(key, element as CanvasStroke | null);
+      }
+      patch(updates);
+      setLinkMeta((prev) => patchLinkMeta(prev, keys, (key) => store.getItem(key)));
+      setTypedMeta((prev) => patchTypedMeta(prev, keys, (key) => store.getItem(key)));
+    });
+  }, [store, loaded, patch]);
+
+  // Page edits become store edits.
+  const { nodes, connectors, strokes } = input;
+  useEffect(() => {
+    if (!store || !loaded) return;
+    const prev = synced.current;
+    synced.current = { nodes, connectors, strokes };
+    const changes: Array<{ key: string; item: StoreItem | null }> = [];
+    const collect = <T extends CanvasElement>(type: PlanningCanvasItemType, before: T[], after: T[]) => {
+      const { changed, removed } = diffElements(before, after);
+      for (const element of changed) {
+        const node = element as CanvasNode;
+        if (type === "node" && node.handedOffIssueId && node.handedOffIssueIdentifier) {
+          identifiers.current.set(node.handedOffIssueId, node.handedOffIssueIdentifier);
+        }
+        changes.push({ key: element.id, item: elementToItem(type, element, store.getItem(element.id)) });
+      }
+      for (const key of removed) changes.push({ key, item: null });
+    };
+    collect("node", prev.nodes, nodes);
+    collect("connector", prev.connectors, connectors);
+    collect("stroke", prev.strokes, strokes);
+    if (changes.length > 0) store.applyLocal(changes);
+    if (closeGroupAfterSync.current) {
+      closeGroupAfterSync.current = false;
+      store.checkpoint();
+    }
+  }, [store, loaded, nodes, connectors, strokes]);
+
+  // Leaving the page: send what is left; refocus or reconnect: catch up and retry now.
+  useEffect(() => {
+    if (!store) return;
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      const unsaved = store.hasUnsaved();
+      store.flushKeepalive();
+      if (unsaved && store.getSnapshot().saveState === "offline") event.preventDefault();
+    };
+    const onOnline = () => store.retryNow();
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void store.catchUp();
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    window.addEventListener("online", onOnline);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.removeEventListener("beforeunload", onBeforeUnload);
+      window.removeEventListener("online", onOnline);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [store]);
+
+  const snapshot = useSyncExternalStore(store?.subscribe ?? noopSubscribe, store?.getSnapshot ?? (() => IDLE_SNAPSHOT));
+
+  /** Close the undo group once the page change now pending is synced (or after two frames if none is). */
+  const closeAfterSync = useCallback(() => {
+    closeGroupAfterSync.current = true;
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        if (!closeGroupAfterSync.current) return;
+        closeGroupAfterSync.current = false;
+        store?.checkpoint();
+      }),
+    );
+  }, [store]);
+
+  /** Add a linked-entity node (issue, agent, project or goal) as one undo step. */
+  const addItem = useCallback(
+    (key: string, fields: ItemFields) => {
+      if (!store) return;
+      store.checkpoint();
+      store.applyLocal([{ key, item: { itemType: "node", fields } }]);
+      const added = store.getItem(key);
+      if (added) {
+        const element = itemToElement(key, added, identifiers.current) as CanvasNode;
+        latest.current.setNodes((prev) => patchElements(prev, new Map([[key, element]])));
+        synced.current = { ...synced.current, nodes: patchElements(synced.current.nodes, new Map([[key, element]])) };
+      }
+      setLinkMeta((prev) => patchLinkMeta(prev, [key], (k) => store.getItem(k)));
+      setTypedMeta((prev) => patchTypedMeta(prev, [key], (k) => store.getItem(k)));
+      store.checkpoint();
+    },
+    [store],
+  );
+
+  /** Add nodes and connectors together (the Related add) as one undo step. */
+  const addItems = useCallback(
+    (items: PlanningCanvasItemInput[]) => {
+      if (!store || items.length === 0) return;
+      store.checkpoint();
+      store.applyLocal(items.map(({ itemType, key, ...fields }) => ({ key, item: { itemType, fields: fields as ItemFields } })));
+      const updates: ElementUpdates = { node: new Map(), connector: new Map(), stroke: new Map() };
+      for (const { key, itemType } of items) {
+        const added = store.getItem(key);
+        if (!added) continue;
+        const element = itemToElement(key, added, identifiers.current);
+        if (itemType === "node") updates.node.set(key, element as CanvasNode);
+        else if (itemType === "connector") updates.connector.set(key, element as CanvasConnector);
+      }
+      const { setNodes, setConnectors } = latest.current;
+      setNodes((prev) => patchElements(prev, updates.node));
+      setConnectors((prev) => patchElements(prev, updates.connector));
+      synced.current = {
+        ...synced.current,
+        nodes: patchElements(synced.current.nodes, updates.node),
+        connectors: patchElements(synced.current.connectors, updates.connector),
+      };
+      const keys = items.map((item) => item.key);
+      setLinkMeta((prev) => patchLinkMeta(prev, keys, (k) => store.getItem(k)));
+      setTypedMeta((prev) => patchTypedMeta(prev, keys, (k) => store.getItem(k)));
+      store.checkpoint();
+    },
+    [store],
+  );
+
+  /** Replace the typed `data` of a table or markdown node. A table change is sent as cell ops (plan B.3). */
+  const setNodeData = useCallback(
+    (key: string, data: unknown) => {
+      const item = store?.getItem(key);
+      if (!store || !item) return;
+      store.applyLocal([{ key, item: { itemType: item.itemType, fields: { ...item.fields, data } } }]);
+      setTypedMeta((prev) => patchTypedMeta(prev, [key], (k) => store.getItem(k)));
+    },
+    [store],
+  );
+
+  return {
+    loaded,
+    linkMeta,
+    typedMeta,
+    addItem,
+    addItems,
+    setNodeData,
+    /** Pull in what the server changed since the last read (a handoff links nodes server-side). */
+    catchUp: useCallback(() => store?.catchUp(), [store]),
+    /** The board socket announced `revision` (with its items unless truncated or a resync). */
+    applyRemote: useCallback((revision: number, items?: PlanningCanvasItem[]) => store?.applyRemote(revision, items), [store]),
+    /** Send pending edits now (a handoff names nodes by key, so the server must know them). */
+    flush: useCallback(() => store?.flush(), [store]),
+    saveState: snapshot.saveState,
+    canUndo: snapshot.canUndo,
+    canRedo: snapshot.canRedo,
+    drafts: snapshot.drafts,
+    /** Close the open undo group (call when a drag or resize starts). */
+    checkpoint: useCallback(() => store?.checkpoint(), [store]),
+    /** A drag or resize ended: its last frame still belongs to it. */
+    endGesture: closeAfterSync,
+    /** The next page change is one undo step of its own. */
+    markCommit: useCallback(() => {
+      store?.checkpoint();
+      closeAfterSync();
+    }, [store, closeAfterSync]),
+    undo: useCallback(() => store?.undo(), [store]),
+    redo: useCallback(() => store?.redo(), [store]),
+    resolveDraft: useCallback((id: string, choice: "mine" | "theirs" | "copy") => store?.resolveDraft(id, choice) ?? null, [store]),
+  };
+}
+
+export type CanvasOpStoreHandle = ReturnType<typeof useCanvasOpStore>;

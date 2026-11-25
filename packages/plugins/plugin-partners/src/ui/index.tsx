@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent, type 
 import { useHostLocation,
   DataTable,
   useHostNavigation,
-  usePluginAction,
   type PluginPageProps,
   type PluginSidebarProps,
 } from "@paperclipai/plugin-sdk/ui";
@@ -38,9 +37,10 @@ import {
   type TimelineItem,
   type ToneInput,
 } from "@partnersinbiz/pib-plugin-ui";
-import { GetStarted, useGroupedNav, usePluginSetupStatus, useUrlTab } from "@partnersinbiz/pib-plugin-ui";
+import { AccessGate, GetStarted, isRefusal, unwrapRefusal, useAccess, useGroupedNav, usePluginSetupStatus, useUrlTab } from "@partnersinbiz/pib-plugin-ui";
 import { resolvePluginUiBase } from "@partnersinbiz/pib-plugin-kit/oauth-client";
 import { ModuleOffBanner, useModuleEnabled } from "./module-switch.js";
+import { useAccessMe, usePartnersAction } from "./actions.js";
 import { acceptedByMe, linkState, otherCompany, partnerSummary } from "../series.js";
 import { crmDirectory, emptyDirectory, invoiceName, lookupsFor, recordLabel, type RecordDirectory, type RecordLabel } from "../records.js";
 
@@ -103,7 +103,8 @@ async function pluginAction(pluginKey: string, actionKey: string, companyId: str
   });
   const body = await res.json().catch(() => null) as { data?: unknown } | null;
   if (!res.ok) throw new Error(`${pluginKey} ${actionKey} failed (${res.status})`);
-  return body && typeof body === "object" && "data" in body ? body.data : body;
+  // That plugin's access guard refused (its own table decides): thrown, so the record stays unnamed.
+  return unwrapRefusal(body && typeof body === "object" && "data" in body ? body.data : body);
 }
 
 /**
@@ -155,12 +156,22 @@ type TabId = "overview" | "links" | "grants";
 const OTHER_ID = "__other__";
 type Open = { kind: "link"; id: string } | { kind: "grant"; id: string } | null;
 
-export function PartnersPage({ context }: PluginPageProps) {
-  const load = usePluginAction("partners.load");
-  const proposeLink = usePluginAction("partners.propose-link");
-  const acceptLink = usePluginAction("partners.accept-link");
-  const acceptGrant = usePluginAction("partners.accept-grant");
-  const revokeGrant = usePluginAction("partners.revoke-grant");
+/** The page asks `access.me` first; closed shows the "no access" page (the guard still refuses every call). */
+export function PartnersPage(props: PluginPageProps) {
+  const access = useAccess(useAccessMe(), props.context.companyId);
+  return (
+    <AccessGate state={access} kind="page" moduleName="Partners">
+      <PartnersPageBody {...props} />
+    </AccessGate>
+  );
+}
+
+function PartnersPageBody({ context }: PluginPageProps) {
+  const load = usePartnersAction("partners.load");
+  const proposeLink = usePartnersAction("partners.propose-link");
+  const acceptLink = usePartnersAction("partners.accept-link");
+  const acceptGrant = usePartnersAction("partners.accept-grant");
+  const revokeGrant = usePartnersAction("partners.revoke-grant");
   const [links, setLinks] = useState<LinkRow[]>([]);
   const [grants, setGrants] = useState<GrantRow[]>([]);
   const [known, setKnown] = useState<CompanyLite[]>([]);
@@ -605,12 +616,24 @@ async function publishShare(result: ShareResult, companyId: string): Promise<voi
     body: JSON.stringify(body),
   });
   if (!response.ok) {
-    const payload = await response.json().catch(() => ({})) as { error?: string };
-    throw new Error(payload.error ?? "The share was accepted here, but the partner cannot see the record yet. Try Accept again.");
+    const payload = await response.json().catch(() => ({})) as unknown;
+    // A refusal from the CRM's or Billing's access guard (a 403) says why in `message`.
+    const reason = isRefusal(payload) ? payload.message : (payload as { error?: string } | null)?.error;
+    throw new Error(reason ?? "The share was accepted here, but the partner cannot see the record yet. Try Accept again.");
   }
 }
 
-export function PartnersSidebar({ context }: PluginSidebarProps) {
+export function PartnersSidebar(props: PluginSidebarProps) {
+  // Nothing while the access check loads, so the entry does not flash for a person without access.
+  const access = useAccess(useAccessMe(), props.context.companyId);
+  return (
+    <AccessGate state={access} kind="sidebar">
+      <PartnersSidebarEntry {...props} />
+    </AccessGate>
+  );
+}
+
+function PartnersSidebarEntry({ context }: PluginSidebarProps) {
   // Hidden when the company switched Partners off in Setup; shown while loading.
   const enabled = useModuleEnabled(context.companyId, PLUGIN_ID);
   // The Cockpit's Clients / Marketing / Finance group shows this page instead (pib-plugin-ui NAV_GROUPS).

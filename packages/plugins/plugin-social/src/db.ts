@@ -746,12 +746,18 @@ export function postOverrides(row: Pick<PostRow, "overrides">): Partial<Record<S
 }
 
 /** Posts, newest first. `scope` undefined = every scope (jobs); null = own work. Excludes personal posts unless includePersonal (own work is the company's posts, never a person's My Social drafts). */
-export async function listPosts(ctx: PluginContext, companyId: string, filter: { status?: string; scope?: ClientScope; limit?: number; includePersonal?: boolean } = {}): Promise<PostRow[]> {
+export async function listPosts(ctx: PluginContext, companyId: string, filter: { status?: string; scope?: ClientScope; limit?: number; includePersonal?: boolean; q?: string } = {}): Promise<PostRow[]> {
   const params: unknown[] = [companyId];
   let where = "company_id = $1";
   if (filter.status) {
     params.push(filter.status);
     where += ` AND status = $${params.length}`;
+  }
+  // Text search (board cards): the words are matched in the body, case-insensitive; % _ and \ in the text are literal.
+  const q = filter.q?.trim();
+  if (q) {
+    params.push(`%${q.replace(/[\\%_]/g, "\\$&")}%`);
+    where += ` AND body ILIKE $${params.length}`;
   }
   where += scopeClause(filter.scope, params);
   if (!filter.includePersonal) where += orgOnlyClause();

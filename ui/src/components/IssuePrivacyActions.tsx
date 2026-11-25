@@ -16,6 +16,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { issuesApi } from "@/api/issues";
 import { describeError } from "@/api/errors";
 import { useToastActions } from "@/context/ToastContext";
+import { useMemberRestrictionGate } from "@/hooks/useMemberRestrictionGate";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
 import { useQueryView } from "./QueryView";
@@ -59,10 +60,12 @@ export function IssuePrivacyActions({
   const [shareOpen, setShareOpen] = useState(false);
   const [makePublicOpen, setMakePublicOpen] = useState(false);
   const isPrivate = issue.visibility === "private";
+  // Privacy checks and grants are closed to a restricted member under `enforce` (AC-G10): no menu items.
+  const memberGate = useMemberRestrictionGate(companyId);
   const constraintsQuery = useQuery({
     queryKey: [...queryKeys.issues.privacyConstraints(issue.id), issue.privacyParentIssueId ?? null, issue.projectId ?? null],
-    queryFn: () => issuesApi.privacyConstraints(issue.id),
-    enabled: canManage && isPrivate,
+    queryFn: memberGate.guard(() => issuesApi.privacyConstraints(issue.id), { publicBlockedBy: null, leavesPersonalProject: false }),
+    enabled: canManage && isPrivate && !memberGate.closed,
   });
   const constraintsView = useQueryView(constraintsQuery);
   const publicBlockedReason = constraintsView.kind === "error"
@@ -108,6 +111,7 @@ export function IssuePrivacyActions({
     );
   }
 
+  if (memberGate.closed) return <>{children(null)}</>;
   return (
     <TooltipProvider>
       {children(isPrivate ? (

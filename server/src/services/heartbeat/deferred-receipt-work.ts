@@ -1,21 +1,26 @@
 import { PersistedExecutionWaitRefusal } from "../deferred-execution-wait.js";
-import { and, asc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, not, or, sql } from "drizzle-orm";
 import { agentWakeupRequests, type Db } from "@paperclipai/db";
 import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
 import type { DeferredExecutionScope, DeferredReceiptRecoveryOptions } from "../deferred-execution-notifications.js";
 import { registerScopedDeadlineWork } from "../scoped-deadline-work.js";
 import { issueBlockersResolvedWakePayloadSql } from "../issue-dependency-wakeups.js";
+import {
+  isEscalatedOwnerExitWait, isPendingOwnerExitWait, ownerExitEscalatedSql, ownerExitRetryDelayMs, ownerExitRetryExhausted,
+} from "./owner-exit-retry.js";
 
 type Entry = { id: string; companyId: string; dueAt: number; immediate: boolean };
 
 // Matches the receipts redeliverOwnerExitWaits (queue.ts) replays; its 6 h window too.
-const ownerExitRedeliveryPendingSql = and(
+// An escalated receipt left timed retries (PAR-14473); only its own hint loads it.
+const ownerExitRedeliveryPendingSql = (hinted: boolean) => and(
   eq(agentWakeupRequests.status, "skipped"),
   eq(agentWakeupRequests.reason, "execution_reconciliation_required"),
   sql`${agentWakeupRequests.payload} #> '{executionWait,ownerExit}' is not null`,
   sql`${agentWakeupRequests.payload} #> '{executionWait,redeliveredAt}' is null`,
   sql`${agentWakeupRequests.createdAt} >= now() - interval '6 hours'`,
+  hinted ? undefined : not(ownerExitEscalatedSql),
 );
 type NativeIntentOptions = DeferredExecutionScope & {
   onDeferredDeadline(at: number): void;
@@ -61,8 +66,9 @@ export function registerDeferredReceiptWork(
         const rows = await db.select({ id: agentWakeupRequests.id, companyId: agentWakeupRequests.companyId,
           status: agentWakeupRequests.status, updatedAt: agentWakeupRequests.updatedAt,
           claimedAt: agentWakeupRequests.claimedAt, error: agentWakeupRequests.error,
-          delayed: sql<boolean>`${agentWakeupRequests.payload}->'queuedCommentInterrupt' is not null
-            or ${agentWakeupRequests.payload}->'executionWait' is not null`,
+          delayed: sql<boolean>`${agentWakeupRequests.status} <> 'skipped' and (
+            ${agentWakeupRequests.payload}->'queuedCommentInterrupt' is not null
+            or ${agentWakeupRequests.payload}->'executionWait' is not null)`,
           interruptedLegacy: sql<boolean>`exists (select 1 from heartbeat_runs r
             where r.company_id = ${agentWakeupRequests.companyId} and r.agent_id = ${agentWakeupRequests.agentId}
               and r.runtime_mode = 'legacy' and r.status = 'cancelled'
@@ -89,7 +95,7 @@ export function registerDeferredReceiptWork(
             )),
             // PAR-8293: a hand-off wake skipped while the previous owner was still
             // exiting. resume() replays it once that owner is gone (redeliverOwnerExitWaits).
-            ownerExitRedeliveryPendingSql,
+            ownerExitRedeliveryPendingSql(Boolean(scope?.requestId)),
           ) : and(eq(agentWakeupRequests.status, "deferred_issue_execution"),
             eq(agentWakeupRequests.reason, "task_retry"),
             sql`${agentWakeupRequests.payload}#>>'{taskRetry,chatActionId}' is not null`),
@@ -108,9 +114,10 @@ export function registerDeferredReceiptWork(
       },
       check: async entry => {
         if (!enabled) return null;
+        let ownerExitCreatedAt: Date | null = null;
         if (kind !== "task_chat") {
           const [current] = await db.select({ status: agentWakeupRequests.status, payload: agentWakeupRequests.payload,
-            updatedAt: agentWakeupRequests.updatedAt, claimedAt: agentWakeupRequests.claimedAt, error: agentWakeupRequests.error,
+            createdAt: agentWakeupRequests.createdAt, updatedAt: agentWakeupRequests.updatedAt, claimedAt: agentWakeupRequests.claimedAt, error: agentWakeupRequests.error,
             interruptedLegacy: sql<boolean>`exists (select 1 from heartbeat_runs r
               where r.company_id = ${agentWakeupRequests.companyId} and r.agent_id = ${agentWakeupRequests.agentId}
                 and r.runtime_mode = 'legacy' and r.status = 'cancelled'
@@ -125,6 +132,7 @@ export function registerDeferredReceiptWork(
                 && (current.payload?.queuedCommentInterrupt || current.payload?.executionWait)
                 ? current.updatedAt.getTime() + 30_000 : null;
           if (due !== null && due > Date.now()) return { ...entry, dueAt: due, immediate: false };
+          if (kind === "deferred") ownerExitCreatedAt = isPendingOwnerExitWait(current) ? current.createdAt : null;
         }
         const errors: unknown[] = [];
         let next: number | null = null;
@@ -140,6 +148,18 @@ export function registerDeferredReceiptWork(
           catch (error) { failed(error); }
         }
         if (errors.length) throw new AggregateError(errors, `Deferred receipt ${entry.id} could not settle`);
+        if (ownerExitCreatedAt) {
+          // PAR-14473: the previous owner still held its process or lease.
+          // Re-check on a short backoff until replay or escalation ends it. Past
+          // the cap only a release hint or the reconstruction pass checks it, so
+          // a receipt whose task moved on cannot keep a timer.
+          const [after] = await db.select({ status: agentWakeupRequests.status, payload: agentWakeupRequests.payload })
+            .from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, entry.companyId),
+              eq(agentWakeupRequests.id, entry.id)));
+          if (after && isPendingOwnerExitWait(after) && !isEscalatedOwnerExitWait(after.payload)
+              && !ownerExitRetryExhausted(ownerExitCreatedAt))
+            return { ...entry, dueAt: Date.now() + ownerExitRetryDelayMs(ownerExitCreatedAt), immediate: false };
+        }
         return next === null ? null : { ...entry, dueAt: next, immediate: false };
       },
     }, canRun);

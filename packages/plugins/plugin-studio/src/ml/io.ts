@@ -15,9 +15,11 @@ import { FSIZE_BYTES, STDERR_TAIL_BYTES, Tail } from "../video-edit/ffmpeg.js";
 /** RLIMIT_AS for one runner-side ffmpeg. The measured peak was 1.4 GB for the runner and both children together. */
 export const CHILD_AS_LIMIT_BYTES = 2 * 1024 * 1024 * 1024;
 export const CHILD_FSIZE_BYTES = FSIZE_BYTES;
-export const CHILD_BINS = { prlimit: "/usr/bin/prlimit", ffmpeg: "ffmpeg" };
+export const CHILD_BINS = { prlimit: "/usr/bin/prlimit", ffmpeg: "ffmpeg", ffprobe: "ffprobe" };
 
 export interface ChildOptions {
+  /** Default "ffmpeg"; "ffprobe" for the runner's input probe (same prlimit). */
+  tool?: "ffmpeg" | "ffprobe";
   /** Pipe stdin (an encoder reading frames); else ignored. */
   stdin?: boolean;
   /** Pipe stdout (a decoder writing frames); else ignored. */
@@ -45,14 +47,14 @@ export interface FfmpegChild {
 }
 
 /** The full child argv, `prlimit` first. */
-export function childArgv(ffmpegArgs: string[], opts: Pick<ChildOptions, "asLimitBytes" | "fsizeBytes" | "bins"> = {}): string[] {
+export function childArgv(ffmpegArgs: string[], opts: Pick<ChildOptions, "tool" | "asLimitBytes" | "fsizeBytes" | "bins"> = {}): string[] {
   const bins = { ...CHILD_BINS, ...opts.bins };
   const as = opts.asLimitBytes ?? CHILD_AS_LIMIT_BYTES;
   const fsize = opts.fsizeBytes ?? CHILD_FSIZE_BYTES;
   for (const [name, n] of [["asLimitBytes", as], ["fsizeBytes", fsize]] as const) {
     if (!Number.isSafeInteger(n) || n <= 0) throw new Error(`${name} must be a positive integer`);
   }
-  return [bins.prlimit, `--as=${as}`, `--fsize=${fsize}`, "--", bins.ffmpeg, "-hide_banner", ...ffmpegArgs];
+  return [bins.prlimit, `--as=${as}`, `--fsize=${fsize}`, "--", bins[opts.tool ?? "ffmpeg"], "-hide_banner", ...ffmpegArgs];
 }
 
 export function startFfmpeg(ffmpegArgs: string[], opts: ChildOptions = {}): FfmpegChild {

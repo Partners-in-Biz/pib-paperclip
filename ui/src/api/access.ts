@@ -1,5 +1,6 @@
 import type {
   AgentAdapterType,
+  InviteMemberRestriction,
   JoinRequest,
   MemberRestrictionMode,
   PermissionKey,
@@ -188,6 +189,8 @@ export type CompanyInviteRecord = {
   createdAt: string;
   updatedAt: string;
   inviteMessage: string | null;
+  memberRestriction?: InviteMemberRestriction | null;
+  memberRestrictionIsDefault?: boolean;
   state: "active" | "revoked" | "accepted" | "expired";
   invitedByUser: { id: string; email: string | null; name: string | null; image: string | null } | null;
   relatedJoinRequestId: string | null;
@@ -208,6 +211,8 @@ export type CompanyJoinRequest = JoinRequest & {
     allowedJoinTypes: "human" | "agent" | "both";
     humanRole: HumanCompanyRole | null;
     inviteMessage: string | null;
+    memberRestriction?: InviteMemberRestriction | null;
+    memberRestrictionIsDefault?: boolean;
     createdAt: string;
     expiresAt: string;
     revokedAt: string | null;

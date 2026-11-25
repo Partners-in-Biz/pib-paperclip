@@ -97,6 +97,29 @@ export async function listInvoices(ctx: PluginContext, companyId: string, custom
   );
 }
 
+/**
+ * Invoices this company may see (its own, or shared with it) whose number or customer name contains `q`, newest
+ * first, at most `limit` (the Planning Canvas card search, PAR-14420). Same visibility rule as `listInvoices`;
+ * an empty `q` lists the newest.
+ */
+export async function searchInvoices(ctx: PluginContext, companyId: string, q: string, limit: number): Promise<InvoiceRow[]> {
+  const needle = q.trim().replace(/[\\%_]/g, (c) => `\\${c}`);
+  return ctx.db.query<InvoiceRow>(
+    `SELECT ${INVOICE_COLUMNS}
+       FROM ${table(ctx, "invoices")}
+      WHERE (company_id = $1
+         OR id IN (
+              SELECT invoice_id FROM ${table(ctx, "invoice_grants")} WHERE grantee_company_id = $1
+            ))
+        AND ($2 = ''
+         OR COALESCE(number, '') ILIKE '%' || $2 || '%'
+         OR COALESCE(customer_snapshot, customer)->>'name' ILIKE '%' || $2 || '%')
+      ORDER BY created_at DESC
+      LIMIT $3`,
+    [companyId, needle, Math.max(1, Math.min(Math.floor(limit), 50))],
+  );
+}
+
 export async function getInvoice(ctx: PluginContext, id: string): Promise<InvoiceRow | null> {
   const rows = await ctx.db.query<InvoiceRow>(
     `SELECT ${INVOICE_COLUMNS}

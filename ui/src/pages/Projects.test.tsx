@@ -19,6 +19,7 @@ const mockResourceMembershipsApi = vi.hoisted(() => ({
   updateProject: vi.fn(),
 }));
 
+const mockSession = vi.hoisted(() => ({ restrictions: [] as unknown[] }));
 const mockOpenNewProject = vi.hoisted(() => vi.fn());
 const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
 
@@ -38,6 +39,10 @@ vi.mock("../context/DialogContext", () => ({
 
 vi.mock("../context/BreadcrumbContext", () => ({
   useBreadcrumbs: () => ({ setBreadcrumbs: mockSetBreadcrumbs }),
+}));
+
+vi.mock("../api/auth", () => ({
+  authApi: { getSession: async () => ({ session: { id: "s", userId: "u" }, user: null, memberRestrictions: mockSession.restrictions }) },
 }));
 
 vi.mock("../api/projects", () => ({
@@ -116,6 +121,7 @@ describe("Projects", () => {
   let queryClient: QueryClient;
 
   beforeEach(() => {
+    mockSession.restrictions = [];
     container = document.createElement("div");
     document.body.appendChild(container);
     root = null;
@@ -191,6 +197,7 @@ describe("Projects", () => {
     });
     await flushReact();
     await flushReact();
+    await flushReact();
   }
 
   async function openSortMenu() {
@@ -214,6 +221,22 @@ describe("Projects", () => {
     });
     await flushReact();
   }
+
+  it("R under enforce: no memberships request, no join, leave or star control (AC-G10, PAR-13477)", async () => {
+    mockSession.restrictions = [{ companyId: "company-1", restricted: true, mode: "enforce" }];
+    await renderProjects();
+    expect(mockResourceMembershipsApi.listMine).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Alpha");
+    expect(container.querySelector('button[aria-label^="Join "], button[aria-label^="Leave "], button[aria-label^="Star "], button[aria-label^="Unstar "]')).toBeNull();
+  });
+
+  it("the owner: memberships are requested and the join, leave and star controls show", async () => {
+    await renderProjects();
+    expect(mockResourceMembershipsApi.listMine).toHaveBeenCalledWith("company-1");
+    expect(container.querySelector('button[aria-label="Join Bravo"]')).not.toBeNull();
+    expect(container.querySelector('button[aria-label="Leave Alpha"]')).not.toBeNull();
+    expect(container.querySelector('button[aria-label="Star Alpha"]')).not.toBeNull();
+  });
 
   it("groups joined projects above left projects and defaults sorting by name", async () => {
     await renderProjects();

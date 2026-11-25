@@ -7,7 +7,7 @@ import type { Agent } from "@paperclipai/shared";
 import { SidebarAgentChats } from "./SidebarAgentChats";
 import { queryKeys } from "@/lib/queryKeys";
 
-const state = vi.hoisted(() => ({ companyId: "company-a", navigate: vi.fn(), closeSidebar: vi.fn(), list: vi.fn() }));
+const state = vi.hoisted(() => ({ controls: true, companyId: "company-a", navigate: vi.fn(), closeSidebar: vi.fn(), list: vi.fn() }));
 vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: state.companyId }) }));
 vi.mock("@/context/SidebarContext", () => ({ useSidebar: () => ({ isMobile: true, setSidebarOpen: state.closeSidebar }) }));
 vi.mock("@/lib/router", () => ({ useLocation: () => ({ pathname: "/A/dashboard" }), useNavigate: () => state.navigate }));
@@ -16,8 +16,9 @@ vi.mock("@/api/auth", () => ({ authApi: { getSession: () => ({ user: { id: "user
 vi.mock("@/hooks/useResourceMemberships", () => ({
   useResourceMemberships: () => ({ data: { starredAgentIds: [] } }),
   useResourceMembershipMutation: () => ({ mutate: vi.fn() }),
+  useResourceMembershipControls: () => state.controls,
 }));
-vi.mock("./AgentChatSidebar", () => ({ AgentChatSidebar: ({ onOpenChat }: { onOpenChat: () => void }) => <button onClick={onOpenChat}>Chat with an agent</button> }));
+vi.mock("./AgentChatSidebar", () => ({ AgentChatSidebar: ({ onOpenChat, onToggleStar }: { onOpenChat: () => void; onToggleStar?: unknown }) => <button onClick={onOpenChat} data-star={onToggleStar ? "yes" : "no"}>Chat with an agent</button> }));
 
 let root: Root;
 let container: HTMLDivElement;
@@ -34,6 +35,7 @@ beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
   state.companyId = "company-a";
+  state.controls = true;
   state.navigate.mockClear();
   state.closeSidebar.mockClear();
   client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
@@ -81,5 +83,15 @@ describe("SidebarAgentChats", () => {
     state.companyId = "company-a";
     await render();
     expect(document.querySelector("[role=dialog]")).toBeNull();
+  });
+
+  it("hands the star control down for the owner and not for R under enforce (AC-G10, PAR-13477)", async () => {
+    await render();
+    expect(container.querySelector("button")!.getAttribute("data-star")).toBe("yes");
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    state.controls = false; // the gate is covered by useResourceMemberships.test.tsx
+    await render();
+    expect(container.querySelector("button")!.getAttribute("data-star")).toBe("no");
   });
 });

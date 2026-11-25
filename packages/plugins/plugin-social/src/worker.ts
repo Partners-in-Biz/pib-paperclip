@@ -1,6 +1,6 @@
 import { runCalendarCheck } from "./calendar-check.js";
 import { getCadenceRecord, setCadenceRecord } from "./cadence-record.js";
-import { GROWTH_TOOL_NAMES, normalizeToolResult, registerGrowthTools, type GrowthToolsHost } from "@partnersinbiz/pib-plugin-kit";
+import { jobCompanyIds, GROWTH_TOOL_NAMES, registerCanvasCards, normalizeToolResult, registerGrowthTools, type GrowthToolsHost } from "@partnersinbiz/pib-plugin-kit";
 import {
   definePlugin,
   runWorker,
@@ -141,6 +141,7 @@ import {
   type Viewer,
 } from "./service.js";
 import { growthAction } from "./growth/action.js";
+import { createPostCardKind } from "./canvas-cards.js";
 import { REFUSABLE_ACTIONS, refusalAsResult } from "./refusal.js";
 import { createPersonalDraftRecord } from "./personal-draft.js";
 import { loadPreferencesAction, savePreferencesAction } from "./preferences.js";
@@ -644,7 +645,7 @@ export async function companyUsesSocial(ctx: PluginContext, companyId: string): 
 /** Hourly: push each known company's setup checklist to the Setup plugin. */
 export async function publishSetupStatuses(ctx: PluginContext): Promise<{ published: number; skipped: number }> {
   const result = { published: 0, skipped: 0 };
-  for (const companyId of await knownCompanies(ctx)) {
+  for (const companyId of await jobCompanyIds(ctx, await knownCompanies(ctx))) {
     try {
       // Off in Setup, or settings never saved (the host refuses company calls): the status route still answers on demand.
       if (!(await companyUsesSocial(ctx, companyId))) {
@@ -681,6 +682,8 @@ const plugin = definePlugin({
       const handler = REFUSABLE_ACTIONS.has(key) ? refusalAsResult(raw) : raw;
       ctx.actions.register(key, async (params, context) => handler(ctx, await actionViewer(ctx, context), objectParams(params)));
     }
+    // Planning Canvas post cards (PAR-14389 B3a): registered with ctx.actions.register itself; the helper repeats core's person rules.
+    registerCanvasCards({ register: (key, handler) => ctx.actions.register(key, handler), kinds: [createPostCardKind(ctx)] });
     // Company preferences: the kit checks the caller is an owner or admin of the company (agents are refused).
     ctx.actions.register("social.preferences-load", async (_params, context) => loadPreferencesAction(ctx, context));
     ctx.actions.register("social.preferences-save", async (params, context) => savePreferencesAction(ctx, context, objectParams(params)));

@@ -5,6 +5,7 @@ import {
   DEFAULT_TIMEOUT_SEC,
   VALID_PROVIDERS,
 } from "../shared/constants.js";
+import { DEFAULT_POST_TURN_EXIT_GRACE_SEC } from "./post-turn-stop.js";
 
 function providerLabel(provider: string): string {
   if (provider === "auto") return "Auto";
@@ -43,6 +44,13 @@ export function getConfigSchema(): AdapterConfigSchema {
         type: "number",
         default: DEFAULT_GRACE_SEC,
         hint: "Seconds to wait after SIGTERM before killing the Hermes process.",
+      },
+      {
+        key: "postTurnExitGraceSec",
+        label: "Post-turn exit seconds",
+        type: "number",
+        default: DEFAULT_POST_TURN_EXIT_GRACE_SEC,
+        hint: "Seconds Hermes may keep running after its turn ended (background-process notifications) before it is stopped. 0 turns this off.",
       },
       {
         key: "maxTurnsPerRun",

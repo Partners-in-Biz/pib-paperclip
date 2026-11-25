@@ -75,13 +75,14 @@ describe("compile audio snapshots", () => {
     expect(g).toContain("volume=0.3,afade=t=out:st=5:d=1[aud1]");
     expect(g).toContain("volume=1.5,adelay=delays=1500:all=1,asetpts=N/SR/TB[aud2]");
     expect(g).toContain("afade=t=in:st=0:d=0.5[aud0]");
-    expect(g).toContain("[aud0][aud1][aud2]amix=inputs=3:duration=longest:normalize=0,apad=whole_dur=6,atrim=duration=6[aout]");
+    expect(g).toContain("anullsrc=r=48000:cl=stereo:d=6,aformat=sample_fmts=fltp[abed]");
+    expect(g).toContain("[aud0][aud1][aud2][abed]amix=inputs=4:duration=longest:normalize=0,apad=whole_dur=6,atrim=duration=6[aout]");
     expect(g).not.toContain("loudnorm");
   });
 
   it("loudnorm is optional and runs after the mix", () => {
     const r = compile([video(clip("c1", "a", 0, 0, 2)), audio("music", clip("m1", "music", 0, 0, 2))], true);
-    expect(graph(r)).toContain("amix=inputs=2:duration=longest:normalize=0,loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000,apad=whole_dur=2");
+    expect(graph(r)).toContain("amix=inputs=3:duration=longest:normalize=0,loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000,apad=whole_dur=2");
   });
 
   it("silent edit: no audio input, no audio map, -an", () => {

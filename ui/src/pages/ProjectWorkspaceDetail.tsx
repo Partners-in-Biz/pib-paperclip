@@ -21,6 +21,7 @@ import {
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { useManagedSandboxOnly } from "../hooks/useManagedSandboxOnly";
+import { useMemberRestrictionGate } from "../hooks/useMemberRestrictionGate";
 import { queryKeys } from "../lib/queryKeys";
 import { projectRouteRef, projectWorkspaceUrl } from "../lib/utils";
 
@@ -281,6 +282,9 @@ export function ProjectWorkspaceDetail() {
   const projectView = useQueryView(projectQuery);
 
   const project = projectQuery.data ?? null;
+  // PAR-12608 4.6 (AC-G10): every write here is closed for a restricted member
+  // at `enforce`, so he reads the workspace and saves nothing.
+  const readOnly = useMemberRestrictionGate(project?.companyId ?? lookupCompanyId).closed;
   const workspace = useMemo(
     () => project?.workspaces.find((item) => item.id === routeWorkspaceId) ?? null,
     [project, routeWorkspaceId],
@@ -461,7 +465,7 @@ export function ProjectWorkspaceDetail() {
           </div>
           <h1 className="truncate text-xl font-semibold sm:text-2xl">{workspace.name}</h1>
         </div>
-        {!workspace.isPrimary ? (
+        {!workspace.isPrimary && readOnly ? null : !workspace.isPrimary ? (
           <Button
             variant="outline"
             className="w-full sm:w-auto"
@@ -502,6 +506,7 @@ export function ProjectWorkspaceDetail() {
 
             <Separator className="my-5" />
 
+            <fieldset disabled={readOnly} className="min-w-0">
             <div className="grid gap-4 md:grid-cols-2">
               <Field label="Workspace name">
                 <input
@@ -658,7 +663,11 @@ export function ProjectWorkspaceDetail() {
               </details>
             </div>
 
-            <div className="mt-5 flex flex-col items-stretch gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+            </fieldset>
+
+            {readOnly ? (
+              <p className="mt-5 text-sm text-muted-foreground">Read only. The company owner manages this workspace.</p>
+            ) : <div className="mt-5 flex flex-col items-stretch gap-3 sm:flex-row sm:flex-wrap sm:items-center">
               <Button className="w-full sm:w-auto" disabled={!isDirty || updateWorkspace.isPending} onClick={saveChanges}>
                 {updateWorkspace.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                 Save changes
@@ -677,7 +686,7 @@ export function ProjectWorkspaceDetail() {
               {errorMessage ? <p className="text-sm text-destructive">{errorMessage}</p> : null}
               {!errorMessage && runtimeActionMessage ? <p className="text-sm text-muted-foreground">{runtimeActionMessage}</p> : null}
               {!errorMessage && !isDirty ? <p className="text-sm text-muted-foreground">No unsaved changes.</p> : null}
-            </div>
+            </div>}
           </Card>
         </div>
 
@@ -713,7 +722,7 @@ export function ProjectWorkspaceDetail() {
             <DetailRow label="Updated">{new Date(workspace.updatedAt).toLocaleString()}</DetailRow>
           </Card>
 
-          <Card className="block p-5">
+          {readOnly ? null : <Card className="block p-5">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div className="space-y-1">
                 <div className="text-xs font-medium uppercase tracking-(--tracking-eyebrow) text-muted-foreground">Workspace commands</div>
@@ -737,7 +746,7 @@ export function ProjectWorkspaceDetail() {
               disabledHint="Project workspaces need a working directory before local commands can run, and services also need runtime config."
               onAction={(request) => controlRuntimeServices.mutate(request)}
             />
-          </Card>
+          </Card>}
         </div>
       </div>
       ) : null}

@@ -19,7 +19,7 @@
  */
 import { randomBytes } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { getCrmContact, listCrmContactsAtCompany, routeWork, type WorkRoute } from "@partnersinbiz/pib-plugin-kit";
+import { getCrmContact, jobCompanyIds, listCrmContactsAtCompany, routeWork, type WorkRoute } from "@partnersinbiz/pib-plugin-kit";
 import { afterSignoff, recordSignoff, sendBackForChanges, signoffState, withSignoff } from "./approval-flow.js";
 import { scopeOfRow } from "./clients.js";
 import { DEFAULT_APPROVAL_BASE, loadSocialConfig, type SocialConfig } from "./config.js";
@@ -563,7 +563,7 @@ export async function clientApprovalCounts(ctx: PluginContext, companyId: string
  */
 export async function clientAnswersJob(ctx: PluginContext, ensureCompany: (companyId: string) => Promise<void>): Promise<DeliverySummary & { companies: number }> {
   const total: DeliverySummary & { companies: number } = { companies: 0, delivered: 0, approved: 0, changes: 0, stale: 0, failed: 0, expired: 0 };
-  for (const companyId of await companiesWithClientLinks(ctx)) {
+  for (const companyId of await jobCompanyIds(ctx, await companiesWithClientLinks(ctx))) {
     if (!(await socialOn(ctx, companyId))) continue;
     await ensureCompany(companyId).catch(() => undefined);
     const config = await loadSocialConfig(ctx, companyId);

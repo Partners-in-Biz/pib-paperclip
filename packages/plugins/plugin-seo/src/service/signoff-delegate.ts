@@ -43,7 +43,8 @@ function describe(sprint: db.Sprint, items: DelegateSignoff[]): string {
     "",
     ...items.flatMap((i) => [`- ${safe(i.title)}`, `  Task: ${safe(i.taskId)}`, `  Needs you key: ${safe(i.key, 200)}`]),
     "",
-    `Call \`partnersinbiz.seo:approve-page-apply\` with sprintId \`${sprint.id}\`, the task id, the task's pages, a note, and needsYouKey set to the key above. The item then closes.`,
+    `For a page change set on a WordPress site, call \`partnersinbiz.seo:approve-page-apply\` with sprintId \`${sprint.id}\`, the task id, the task's pages, a note, and needsYouKey set to the key above. The item then closes.`,
+    `For any other sign-off (a repo site, outreach drafts, a report), read the task's issue, then call \`partnersinbiz.seo:needs-you-resolve\` with sprintId \`${sprint.id}\`, the key above and a note saying what you checked. Do not use it for a merge or anything that goes to a client.`,
     "",
     "A person can still decide any of these too. If a call is refused, leave the item: it stays with the owner.",
   ].join("\n");
@@ -57,7 +58,7 @@ async function grantable(env: Env, sprint: db.Sprint, delegate: string): Promise
   for (const item of digest ? openItems(digest.items) : []) {
     const taskId = item.taskIds?.length === 1 ? item.taskIds[0]! : null;
     if (!taskId || !SIGNOFF_KINDS.has(item.kind)) continue;
-    if (await delegateWaitsOn(env, sprint.companyId, sprint.id, taskId, delegate)) out.push({ key: item.key, title: item.title, taskId });
+    if (await delegateWaitsOn(env, sprint.companyId, sprint.id, taskId, delegate, item.kind)) out.push({ key: item.key, title: item.title, taskId });
   }
   return out;
 }

@@ -19,6 +19,19 @@ Daemon and CLI for capturing logged-in browser evidence. Not installed by defaul
 - `pib-browser probe --all --identities <list>` - Check browser session status for identities, writes `/home/paperclip/pib-tools/browser-status.json`
 - `pib-evidence <png-file> --issue PAR-N --step <name>` - Upload a PNG screenshot to an issue as an artifact (step: required, string; returns attachmentId, sha256 of local file and url of the stored artifact; finds the upload script via PIB_UPLOAD_ARTIFACT_SCRIPT, the checkout, or the instance skills store, and names the paths it tried if none exists)
 
+### Person hand-off (log in again by hand)
+- `pib-browser handoff-open --identity <id>` - Open a headed Chromium window on display `:99` with the identity's profile, on the site's `loggedIn.url` (a logged-out profile lands on the site's login page). Needs no token or issue: root's flag is the authority. Refused (exit 7 `handoff_not_active`) unless the root-owned flag `/run/pib-browser/handoff/<id>` exists, and refused (exit 2 `handoff_already_open`) while a window for that identity is open.
+
+The window stays open (no `session_expired` close, unlike `open`) and closes by itself when the `loggedIn.expect` text shows (logged in), the flag is removed, the person closes it, or after 30 min (`PIB_BROWSER_HANDOFF_TIMEOUT_MS`). The origin wall still applies, so a site that logs in on another origin needs that origin in `sites.json`. While it is open, an agent `open` on that identity gets exit 3 `handoff_open` (Chromium allows one window per profile); any agent session on the identity is closed when the window opens. No agent verb can reach the window, and the flag no longer lifts the `fill` rules: agents still cannot fill a password field, only the person types it.
+
+Procedure (root part from PAR-9356):
+
+1. On the server: `sudo pib-root browser-handoff-start <id>` makes the flag, starts `pib-vnc` (x11vnc on `:99`, bound to 127.0.0.1:5900, stops after 30 min) and runs `pib-browser handoff-open --identity <id>`.
+2. On your computer: `ssh -N -L 5900:localhost:5900 <user>@<server>` and keep it open.
+3. Point a VNC client at `localhost:5900` and log in in the window. It closes by itself when you are logged in.
+4. On the server: `sudo pib-root browser-handoff-stop <id>` removes the flag (root-owned; only root can) and stops `pib-vnc`.
+5. An agent runs `pib-browser probe --all --identities <id> --issue PAR-N`; the login shows ok.
+
 ## Exit Codes
 
 | Code | Meaning |

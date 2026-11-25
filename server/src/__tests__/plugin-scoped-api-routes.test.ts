@@ -705,3 +705,41 @@ describe("issue-scoped plugin routes read the task first", () => {
     expect(workerManager.call).not.toHaveBeenCalled();
   });
 });
+
+describe("agent-scoped plugin POST routes do not leak agent existence to read-only callers", () => {
+  const agentId = "33333333-3333-4333-8333-333333333333", companyId = "22222222-2222-4222-8222-222222222222", pluginId = "11111111-1111-4111-8111-111111111111";
+  const callers: Array<[string, "board" | "agent", Record<string, unknown>]> = [
+    ["a board viewer", "board", { type: "board", source: "session", userId: "user", companyIds: [companyId], memberships: [{ companyId, status: "active", membershipRole: "viewer" }] }],
+    ["a board inactive member", "board", { type: "board", source: "session", userId: "user", companyIds: [companyId], memberships: [{ companyId, status: "suspended", membershipRole: "operator" }] }],
+    ["an agent working for a viewer", "agent", { type: "agent", agentId: "99999999-9999-4999-8999-999999999999", companyId, onBehalfOfUserId: "user", onBehalfOfMemberships: [{ companyId, status: "active", membershipRole: "viewer" }] }],
+  ];
+
+  async function setup(auth: "board" | "agent", actor: Record<string, unknown>) {
+    const chain = { from: () => chain, where: () => chain, limit: vi.fn(async () => [{ id: agentId, companyId }]) };
+    const apiRoutes = manifest([{ routeKey: "update", method: "POST", path: "/agents/:agentId/update", auth, capability: "api.routes.register", companyResolution: { from: "agent", param: "agentId" } }]);
+    const { app, workerManager } = await createApp({ db: { select: () => chain }, actor, plugin: { id: pluginId, pluginKey: apiRoutes.id, status: "ready", manifestJson: apiRoutes } });
+    return { app, workerManager, chain };
+  }
+
+  for (const [label, auth, actor] of callers) {
+    it(`${label} gets the same 404 for an unreadable agent as for an unknown agent id`, async () => {
+      const { app, workerManager, chain } = await setup(auth, actor);
+      mockAccess.decide.mockResolvedValue({ allowed: false });
+      const denied = await request(app).post(`/api/plugins/${pluginId}/api/agents/${agentId}/update`).send({});
+      chain.limit.mockResolvedValue([]);
+      const missing = await request(app).post(`/api/plugins/${pluginId}/api/agents/${agentId}/update`).send({});
+      expect(denied.status).toBe(404);
+      expect(missing.status).toBe(404);
+      expect(denied.body).toEqual(missing.body);
+      expect(workerManager.call).not.toHaveBeenCalled();
+    });
+
+    it(`${label} POSTing to an agent they can read keeps today's 403 from dispatch`, async () => {
+      const { app, workerManager } = await setup(auth, actor);
+      mockAccess.decide.mockResolvedValue({ allowed: true });
+      const res = await request(app).post(`/api/plugins/${pluginId}/api/agents/${agentId}/update`).send({});
+      expect(res.status).toBe(403);
+      expect(workerManager.call).not.toHaveBeenCalled();
+    });
+  }
+});

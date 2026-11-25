@@ -129,9 +129,10 @@ describe("Waiting on you: once each, the whole row tappable", () => {
       now: NOW,
       windowMs: 86_400_000,
     });
-    expect(view.waiting.map((w) => w.title)).toEqual(expect.arrayContaining(["Finish setup: 29 steps left", "Approve sending invoice INV-9F0D9A85", "1 open issue has nobody assigned"]));
+    expect(view.waiting.map((w) => w.title)).toEqual(expect.arrayContaining(["Finish setup: 29 steps left", "Approve sending invoice INV-9F0D9A85"]));
+    expect(view.waiting.some((w) => w.key === "unassigned-issues")).toBe(false);
     expect(view.waiting.filter((w) => /Finish setup/.test(w.title))).toHaveLength(1);
-    expect(view.waiting.find((w) => w.key === "unassigned-issues")!.examples!.map((e) => e.title)).toEqual(["PIB-2 Fix the title tag"]);
+    expect(view.waitingOthers.find((w) => w.key === "unassigned-issues")!.examples!.map((e) => e.title)).toEqual(["PIB-2 Fix the title tag"]);
   });
 
   it("the whole row is one link with the arrow on the right", () => {

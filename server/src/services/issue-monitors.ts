@@ -4,6 +4,7 @@ import { z } from "zod";
 import { forbidden, unprocessable } from "../errors.js";
 import type { accessService } from "./access.js";
 import { authorizationDeniedDetails, type AuthorizationActor } from "./authorization.js";
+import { refusedOnlyByMemberRestriction } from "./member-restriction/action-list.js";
 import { applyIssueMonitorPolicyTransition, normalizeIssueExecutionPolicy, parseIssueExecutionState, redactIssueMonitorExternalRef, setIssueExecutionPolicyMonitorScheduledBy } from "./issue-execution-policy.js";
 
 type NormalizedExecutionPolicy = ReturnType<typeof normalizeIssueExecutionPolicy>;
@@ -42,7 +43,10 @@ export async function assertCanManageIssueMonitor(
     action: "runtime:manage",
     resource: { type: "company", companyId },
   });
-  if (!runtimeDecision.allowed) {
+  // A run working for a restricted member may still set a monitor on its own
+  // task: when the action list alone refused `runtime:manage`, the assignee
+  // check below decides. Any other refusal stays a refusal.
+  if (!runtimeDecision.allowed && !refusedOnlyByMemberRestriction(runtimeDecision)) {
     throw forbidden(
       runtimeDecision.explanation,
       authorizationDeniedDetails(runtimeDecision),
