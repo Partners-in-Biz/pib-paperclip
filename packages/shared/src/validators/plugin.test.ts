@@ -569,3 +569,28 @@ describe("plugin entity card slot declarations (PAR-14389 C.1)", () => {
     }
   });
 });
+
+describe("plugin WebSocket route capabilities (PAR-14532)", () => {
+  const manifest = (capabilities: string[]) => ({
+    id: "paperclip.ws-capability", apiVersion: 1, version: "1.0.0", displayName: "WS", description: "WS", author: "Tests",
+    categories: ["automation"], capabilities, entrypoints: { worker: "worker.js" },
+    apiRoutes: [{ routeKey: "live", method: "GET", path: "/live", transport: "websocket", auth: "board", capability: "api.routes.register" }],
+  });
+
+  it("needs http.outbound or websocket.local; either one is enough", () => {
+    const neither = pluginManifestV1Schema.safeParse(manifest(["api.routes.register"]));
+    expect(neither.success).toBe(false);
+    expect(neither.error?.issues.map(issue => issue.message)).toContain("WebSocket routes require http.outbound or websocket.local");
+    expect(pluginManifestV1Schema.safeParse(manifest(["api.routes.register", "http.outbound"])).success).toBe(true);
+    expect(pluginManifestV1Schema.safeParse(manifest(["api.routes.register", "websocket.local"])).success).toBe(true);
+  });
+
+  it("refuses a manifest with an unknown capability with an error that names it (F29)", () => {
+    const result = pluginManifestV1Schema.safeParse(manifest(["api.routes.register", "websocket.local", "websocket.remote-desktop"]));
+    expect(result.success).toBe(false);
+    expect(result.error?.issues).toContainEqual(expect.objectContaining({
+      path: ["capabilities", 2],
+      message: "Unknown capability 'websocket.remote-desktop'; this Paperclip does not support it",
+    }));
+  });
+});

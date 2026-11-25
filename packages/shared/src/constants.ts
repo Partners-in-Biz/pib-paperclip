@@ -1439,6 +1439,8 @@ export const PLUGIN_CAPABILITIES = [
   "webhooks.receive",
   "api.routes.register",
   "http.outbound",
+  // A websocket route may target an operator-listed local unix socket (PAR-14514 S1).
+  "websocket.local",
   "secrets.read-ref",
   "environment.drivers.register",
   "local.folders",
