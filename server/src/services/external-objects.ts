@@ -703,7 +703,11 @@ export function externalObjectService(
     };
   }
 
-  function toReaderPayload(object: ExternalObjectRecord, now: Date, readOptions?: ExternalObjectReadOptions) {
+  function toReaderPayload(
+    object: ExternalObjectRecord,
+    now: Date,
+    readOptions?: ExternalObjectReadOptions,
+  ): ReturnType<typeof toObjectPayload> {
     const payload = toObjectPayload(object, now);
     const reader = readOptions?.restrictedReader;
     if (!reader || !githubObjectWithheldFromRestrictedReader(payload)) return payload;
