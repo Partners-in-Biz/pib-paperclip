@@ -2,9 +2,9 @@
  * PAR-14492: a question that only asks the owner to merge a GitHub PR is
  * settled by the hourly check once GitHub says the PR is merged.
  */
-import { describe, expect, it } from "vitest";
-import { allMerged, isUnblockIssue, mergeAskPrs, mergedWakeReason, prRefsIn, prStateFrom } from "../src/pr-merge-model.js";
-import { reconcileMergedPrAsks } from "../src/pr-merge.js";
+import { describe, expect, it, vi } from "vitest";
+import { allMerged, isUnblockIssue, mergeAskPrs, mergedWakeReason, prRefsIn, prStateFrom, type PrState } from "../src/pr-merge-model.js";
+import { readPrState, reconcileMergedPrAsks } from "../src/pr-merge.js";
 import { createEnv, registerCockpit } from "../src/register.js";
 import { saveTeam } from "../src/roles.js";
 import { fakeCtx, fixedClock } from "./helpers/fake-ctx.js";
@@ -77,6 +77,50 @@ describe("merged-PR rules", () => {
     expect(mergeAskPrs({ ...base, hasEffect: true })).toEqual({ skip: "effect" });
     expect(mergeAskPrs({ ...base, question: "May we put the PWA change (PR #14) live on the site?" })).toEqual({ skip: "not_merge_ask" });
     expect(mergeAskPrs({ ...base, links: [] })).toEqual({ skip: "no_pr" });
+  });
+
+  // Hostile phrasings: only a question that opens by asking for the merge, and asks nothing else, counts.
+  it.each([
+    ["Merge Lumen release PR #126 (development to main) so production goes live?", true],
+    ["May we merge PR #14 into main?", true],
+    ["Please merge the release PR.", true],
+    ["Can you merge PR #3 today?", true],
+    ["OK to merge PR #3?", true],
+    ["Yes, merge PR #3?", true],
+    ["PR #14 is merged; may we put it live?", "not_merge_ask"],
+    ["Merged PR #17: may we set the Vercel env vars?", "not_merge_ask"],
+    ["Do not merge PR #14 yet: agree?", "not_merge_ask"],
+    ["Don't merge until the client signs off?", "not_merge_ask"],
+    ["Should we wait instead of merging PR #5?", "not_merge_ask"],
+    ["May we put PR #14 live without merging?", "not_merge_ask"],
+    ["Merge is done; may we deploy to production?", "not_merge_ask"],
+    ["Merge was blocked by CI; retry?", "not_merge_ask"],
+    ["Which branch should we merge into?", "not_merge_ask"],
+    ["Merge PR #5 and set the Vercel env vars?", "mixed_ask"],
+    ["Merge PR #5, then deploy it to the client server?", "mixed_ask"],
+    ["Merge PR #5 & add the DNS records?", "mixed_ask"],
+    ["Merge PR #5; also rotate the API key?", "mixed_ask"],
+    ["May we merge PR #5 plus send the client the release note?", "mixed_ask"],
+  ])("%s", (question, expected) => {
+    const got = mergeAskPrs({ kind: "decision", question, why: null, steps: [], links: MERGE_ASK.links, hasEffect: false, hardStop: null });
+    if (expected === true) expect("prs" in got).toBe(true);
+    else expect(got).toEqual({ skip: expected });
+  });
+
+  it("a GitHub call that never answers ends at 10 s as unknown", async () => {
+    vi.useFakeTimers();
+    try {
+      const [pr] = prRefsIn([PR]);
+      let settled: PrState | null = null;
+      // A fetch that ignores its abort signal and never settles.
+      void readPrState((() => new Promise(() => undefined)) as never, pr!, "t").then((s) => (settled = s));
+      await vi.advanceTimersByTimeAsync(9_999);
+      expect(settled).toBeNull();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(settled).toEqual({ state: "unknown", detail: "GitHub did not answer in 10 s" });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("reads GitHub's PR state and needs every PR merged", () => {

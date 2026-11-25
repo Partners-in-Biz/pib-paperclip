@@ -37,8 +37,15 @@ const NEVER_SETTLED_BY_MERGE: ReadonlySet<HardStopKey> = new Set(["money", "logi
 
 const PR_URL = /https?:\/\/(?:www\.)?github\.com\/([A-Za-z0-9-]+)\/([A-Za-z0-9_.-]+)\/pull\/(\d+)/gi;
 
-/** The question asks for a merge ("Merge PR #126", "may we merge ..."). */
-const ASKS_FOR_MERGE = /\bmerg(?:e|es|ed|ing)\b/i;
+/**
+ * The question opens by asking for a merge: "Merge PR #126 ...", "May we merge ...", "Please merge ...".
+ * Anything else is not a merge ask, even when it names a merge: "PR #14 is merged; may we put it live?",
+ * "Do not merge yet?", "Merge is done; may we deploy?", "Should we wait instead of merging?".
+ */
+const ASKS_FOR_MERGE = /^\s*(?:(?:ok(?:ay)?|yes)[,:]?\s+)?(?:(?:may|can|shall|should|could|will) (?:we|i|you|someone)\s+|please\s+|ok(?:ay)? to\s+)?merge\s+(?!(?:is|was|has|had|done|already)\b)/i;
+
+/** A second thing asked next to the merge ("... and set the env vars", ", then deploy"): a merge alone does not answer it. */
+const ALSO_ASKS = /(?:\band\b|\bthen\b|\balso\b|\bplus\b|\+|&|;|,)\s*(?:then\s+|also\s+)?(?:set|add|store|save|deploy|copy|run|create|give|grant|send|pay|approve|enable|configure|update|rotate|share|publish|release|upload|delete|remove|install|sign|buy|renew)\b/i;
 
 /** GitHub PR links in the texts, in order, each once. */
 export function prRefsIn(texts: ReadonlyArray<string | null | undefined>): PrRef[] {
@@ -69,7 +76,7 @@ export interface MergeAskFacts {
   hardStop: HardStopKey | null;
 }
 
-export type MergeAskSkip = "effect" | "not_decision" | "hard_stop" | "not_merge_ask" | "no_pr" | "too_many_prs";
+export type MergeAskSkip = "effect" | "not_decision" | "hard_stop" | "not_merge_ask" | "mixed_ask" | "no_pr" | "too_many_prs";
 
 /** Which PRs this open ask is waiting on, or why a merge can never settle it. */
 export function mergeAskPrs(ask: MergeAskFacts): { prs: PrRef[] } | { skip: MergeAskSkip } {
@@ -78,6 +85,7 @@ export function mergeAskPrs(ask: MergeAskFacts): { prs: PrRef[] } | { skip: Merg
   if (ask.kind !== "decision") return { skip: "not_decision" };
   if (ask.hardStop && NEVER_SETTLED_BY_MERGE.has(ask.hardStop)) return { skip: "hard_stop" };
   if (!ASKS_FOR_MERGE.test(ask.question)) return { skip: "not_merge_ask" };
+  if (ALSO_ASKS.test(ask.question)) return { skip: "mixed_ask" };
   const prs = prRefsIn([ask.question, ask.why, ...ask.steps, ...ask.links.map((l) => l.href)]);
   if (prs.length === 0) return { skip: "no_pr" };
   if (prs.length > MAX_PRS_PER_ASK) return { skip: "too_many_prs" };

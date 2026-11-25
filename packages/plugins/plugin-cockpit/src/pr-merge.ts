@@ -29,18 +29,32 @@ export interface PrMergeCounts {
 
 type FetchLike = (url: string, init?: Record<string, unknown>) => Promise<{ status: number; json(): Promise<unknown> }>;
 
-/** One PR's state from GitHub. Never throws; the token is used for this call and dropped. */
+/**
+ * One PR's state from GitHub. Never throws and never waits past `TIMEOUT_MS`,
+ * even when the call ignores its abort signal; the token is used for this call and dropped.
+ */
 export async function readPrState(fetchImpl: FetchLike, pr: PrRef, token: string | undefined): Promise<PrState> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<PrState>((resolve) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      resolve({ state: "unknown", detail: `GitHub did not answer in ${TIMEOUT_MS / 1000} s` });
+    }, TIMEOUT_MS);
+  });
+  const read = (async (): Promise<PrState> => {
+    try {
+      const headers: Record<string, string> = { "user-agent": "partnersinbiz-cockpit", accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28" };
+      if (token) headers.authorization = `Bearer ${token}`;
+      const res = await fetchImpl(`https://api.github.com/repos/${encodeURIComponent(pr.owner)}/${encodeURIComponent(pr.repo)}/pulls/${pr.number}`, { method: "GET", headers, signal: controller.signal });
+      if (res.status !== 200) return { state: "unknown", detail: `GitHub answered ${res.status}` };
+      return prStateFrom(await res.json().catch(() => null));
+    } catch (error) {
+      return { state: "unknown", detail: message(error).slice(0, 80) };
+    }
+  })();
   try {
-    const headers: Record<string, string> = { "user-agent": "partnersinbiz-cockpit", accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28" };
-    if (token) headers.authorization = `Bearer ${token}`;
-    const res = await fetchImpl(`https://api.github.com/repos/${encodeURIComponent(pr.owner)}/${encodeURIComponent(pr.repo)}/pulls/${pr.number}`, { method: "GET", headers, signal: controller.signal });
-    if (res.status !== 200) return { state: "unknown", detail: `GitHub answered ${res.status}` };
-    return prStateFrom(await res.json().catch(() => null));
-  } catch (error) {
-    return { state: "unknown", detail: message(error).slice(0, 80) };
+    return await Promise.race([read, timedOut]);
   } finally {
     clearTimeout(timer);
   }
