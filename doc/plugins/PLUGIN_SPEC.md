@@ -1916,7 +1916,8 @@ and company checks and requires a trusted browser Origin. Use
 `agent:read` decision to the agent selected by the path.
 
 The worker's `onApiRequest` returns `{ websocket: { url, headers } }` for an
-available upstream. The URL must use WSS. These connection details remain in
+available upstream. The URL must use WSS, and the plugin must hold
+`http.outbound`. A route needs `http.outbound` or `websocket.local`. These connection details remain in
 trusted server memory and are never returned to the browser as JSON. Browser
 cookies and Origin are not forwarded. Worker response headers cannot override
 WebSocket negotiation or forwarding headers. A failure can return an HTTP error
@@ -1935,6 +1936,43 @@ selects the upstream; Core does not interpret channel contents or require an
 agent resource. WebSocket routes support query or entity-based company
 resolution; body-based resolution is rejected because browser upgrade requests
 cannot send a request body. Ordinary HTTP routes retain body-based resolution.
+
+#### Local unix-socket targets (`websocket.local`)
+
+A worker may instead return `{ websocket: { local: { socket, path } } }`: an
+absolute unix socket path and a request path that starts with `/` (no scheme,
+host or fragment). Core refuses it with the ordinary 502
+`Plugin connection unavailable` unless all three hold:
+
+1. the plugin holds the `websocket.local` capability;
+2. the exact pair `<pluginKey>=<socket>` is listed in the server setting
+   `PAPERCLIP_PLUGIN_LOCAL_WS_TARGETS` (pairs separated by commas or
+   whitespace; empty by default, so nothing is allowed);
+3. the upgrade comes from a person signed in with a browser session. A board
+   API key, the local board user, an agent key and a run token never get a
+   local target. Core checks this, not the plugin.
+
+The proxy connects with `http.request({ socketPath, path })` and relays bytes
+as for `wss:`; the five-minute lifetime and the worker-running watch are the
+same. It sends no plugin-supplied headers, cookie, Origin, authorization or
+forwarding headers upstream, and adds exactly one header,
+`x-paperclip-local-ws-signature`. Neither the path nor that header is logged.
+
+The header is `<statement>.<signature>`, both base64url. The statement is the
+JSON object `{ v: 1, pluginKey, socket, path, userId, ts, nonce }` (`ts` in
+Unix milliseconds, `nonce` 16 random bytes in base64url). The signature is
+Ed25519 over the ASCII bytes of `<statement>` as sent. The server makes the key
+pair at start-up and keeps the private half in memory only, so every server
+restart changes the key. `GET /api/plugins/local-ws-key` (no sign-in) returns
+`{ algorithm: "Ed25519", header, publicKey }` with the public key as SPKI PEM.
+The service behind the socket must check the signature, that `pluginKey`,
+`socket` and `path` match what it serves and was asked for, that `ts` is
+recent, and that `nonce` is unused; when a check fails it should fetch the key
+again once.
+
+Rollback order: empty `PAPERCLIP_PLUGIN_LOCAL_WS_TARGETS` first. A core without
+`websocket.local` refuses a whole manifest that declares it, so downgrade such
+a plugin before downgrading core.
 
 Agent detail-tab contributions are also independent of WebSockets. Any plugin
 can mount a detail component, including a report or notes view backed by its
