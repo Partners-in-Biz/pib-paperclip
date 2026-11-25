@@ -14,10 +14,12 @@ import {
   projects,
   toolApplications,
   toolCatalogEntries,
+  toolConnectionInstalls,
   toolConnections,
   toolPolicies,
   type Db,
 } from "@paperclipai/db";
+import { initializeRunIdentity } from "../services/run-identity.js";
 import { PLANNING_CANVAS_HANDOFF_ORIGIN_KIND } from "../services/planning-canvas-links.js";
 import { PLANNING_CANVAS_BLUEPRINT_ORIGIN_KIND } from "../services/planning-canvas-blueprints.js";
 import { PLANNING_CANVAS_ISSUE_ORIGIN_KIND } from "../services/planning-canvas-comments.js";
@@ -61,6 +63,9 @@ describe("planning canvas source rule database support", () => {
   const gateway = () =>
     createToolGatewayService(db, {
       toolActionSigningSecret: "planning-canvas-source-rule",
+      // OAuth grants (managed GitHub) resolve to the stored row; no provider call.
+      oauthGrantRefresher: async ({ grantId }) =>
+        db.select().from(connectionGrants).where(eq(connectionGrants.id, grantId)).then((rows) => rows[0]!),
       remoteHttpRequest: async (_url, init) =>
         new Response(JSON.stringify({ jsonrpc: "2.0", id: JSON.parse(String(init.body)).id, result: { content: [{ type: "text", text: "rows" }] } }), {
           status: 200,
@@ -163,6 +168,44 @@ describe("planning canvas source rule database support", () => {
       expect(await call(r.id, personalConn)).toBe(personalOutcome);
       expect(await call(r.id, sharedConn)).toBe("completed");
     });
+  });
+
+  describe.each(["off", "report", "enforce"] as const)("member restriction mode %s", (mode) => {
+    it("the rule does not depend on the mode: company board refused, own personal board allowed", async () => {
+      await db.update(companies).set({ memberRestrictionMode: mode }).where(eq(companies.id, companyId));
+      try {
+        const shared = await run((await chatThread(await board("company"))).id);
+        expect(await call(shared.id, personalConn)).toBe(REFUSED);
+        expect(await call(shared.id, sharedConn)).toBe("completed");
+        const own = await run((await chatThread(await board("personal"))).id);
+        expect(await call(own.id, personalConn)).toBe("completed");
+      } finally {
+        await db.update(companies).set({ memberRestrictionMode: "off" }).where(eq(companies.id, companyId));
+      }
+    });
+  });
+
+  it("delegated grant: a run with an identity context for the asker is refused on a company board, allowed on his own board", async () => {
+    for (const [scope, outcome] of [["company", REFUSED], ["personal", "completed"]] as const) {
+      const thread = await chatThread(await board(scope));
+      const r = await run(thread.id);
+      await initializeRunIdentity(db, { companyId, runId: r.id, issueId: thread.id, responsibleUserId: ASKER, cause: "instruction" });
+      expect(await call(r.id, personalConn), scope).toBe(outcome);
+    }
+  });
+
+  it("managed GitHub: the selected personal identity is refused on a company board, allowed on the asker's own board", async () => {
+    const githubConn = await connection("github", "per_user", [ASKER]);
+    const [stored] = await db.select().from(toolConnections).where(eq(toolConnections.id, githubConn));
+    await db.update(toolConnections).set({ authKind: "oauth", credentialSource: "paperclip_vault",
+      config: { ...(stored!.config as Record<string, unknown>), sourceTemplateKey: "github" } }).where(eq(toolConnections.id, githubConn));
+    await db.insert(toolConnectionInstalls).values({ companyId, connectionId: githubConn, targetType: "agent", targetId: agentId });
+    for (const [scope, outcome] of [["company", REFUSED], ["personal", "completed"]] as const) {
+      const thread = await chatThread(await board(scope));
+      const r = await run(thread.id);
+      await initializeRunIdentity(db, { companyId, runId: r.id, issueId: thread.id, responsibleUserId: ASKER, cause: "instruction" });
+      expect(await call(r.id, githubConn), scope).toBe(outcome);
+    }
   });
 
   it("a personal board of another person is not the asker's own: refused", async () => {
