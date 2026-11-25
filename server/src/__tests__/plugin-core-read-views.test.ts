@@ -6,8 +6,13 @@ import { createDb } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 // Chat privacy CP-4b-1 (PAR-12827, plan PAR-12774 4.9 part A): chat-free read views for plugin SQL.
-// CP-4b-3 (PAR-12886): 0451 recreates the run view with hashed chat sets; the owner test re-runs both in order.
-const MIGRATIONS = ["0450_plugin_core_read_views.sql", "0451_plugin_core_read_runs_hashed_chat_sets.sql"];
+// CP-4b-3 (PAR-12886): 0451 recreates the run view with hashed chat sets. PAR-13397: 0452 sets the run view to the
+// live hot fix (issue_id first, context_snapshot only when a run has no issue id). The owner test re-runs all in order.
+const MIGRATIONS = [
+  "0450_plugin_core_read_views.sql",
+  "0451_plugin_core_read_runs_hashed_chat_sets.sql",
+  "0452_plugin_core_read_runs_issue_id_first.sql",
+];
 const migrationStatements = (await Promise.all(MIGRATIONS.map((file) => readFile(new URL(
   `../../../packages/db/src/migrations/${file}`, import.meta.url,
 ), "utf8")))).flatMap((text) => text.split("--> statement-breakpoint").map((s) => s.trim()).filter(Boolean));
@@ -22,7 +27,7 @@ describe("plugin_core_read views database support", () => {
   });
 });
 
-(support.supported ? describe : describe.skip)("plugin_core_read views (migrations 0450, 0451)", () => {
+(support.supported ? describe : describe.skip)("plugin_core_read views (migrations 0450 to 0452)", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
   const companyId = randomUUID(), agentId = randomUUID(), userId = `chat-user-${randomUUID()}`;
@@ -93,6 +98,52 @@ describe("plugin_core_read views database support", () => {
     }
   });
 
+  it("AC-P16 timing: a scan through the run view stays near a scan of the table with large context_snapshot values", async () => {
+    // PAR-13397: 0451 read context_snapshot for every run row; live (2.7 GB for 50,375 runs) a 6.6 s table scan took
+    // 17.7 s through the view and cockpit.load passed its 30 s limit. Seed runs whose context is too big to stay
+    // inline (each read is a detoast) and compare the same scan on the view and on the table.
+    const seedCompanyId = randomUUID(), seedAgentId = randomUUID(), seedTaskId = randomUUID();
+    await db.execute(sql`INSERT INTO companies (id, name, issue_prefix) VALUES (${seedCompanyId}, 'Core read timing', 'PCT')`);
+    await db.execute(sql`INSERT INTO agents (id, company_id, name, role, adapter_type)
+      VALUES (${seedAgentId}, ${seedCompanyId}, 'Timing agent', 'engineer', 'process')`);
+    await db.execute(sql`INSERT INTO issues (id, company_id, title, status) VALUES (${seedTaskId}, ${seedCompanyId}, 'Busy task', 'todo')`);
+    // 2,000 runs with about 64 kB of random context each (random md5 text barely compresses); one in 100 has no
+    // issue id, as on live (267 of 50,375), and takes the context path.
+    await db.execute(sql`INSERT INTO heartbeat_runs (id, company_id, agent_id, status, scope_kind, error, context_snapshot)
+      SELECT gen_random_uuid(), ${seedCompanyId}, ${seedAgentId}, 'succeeded', 'issue', 'error text',
+             jsonb_build_object(CASE WHEN g % 100 = 0 THEN 'wakeReason' ELSE 'issueId' END, ${seedTaskId}::text, 'blob', b.blob)
+        FROM generate_series(1, 2000) g,
+             LATERAL (SELECT string_agg(md5(g::text || ':' || n::text || random()::text), '') AS blob
+                        FROM generate_series(1, 2000) n) b`);
+    await db.execute(sql`ANALYZE heartbeat_runs`);
+    const [seeded] = await rows(sql`SELECT count(*)::int AS toasted, count(issue_id)::int AS with_issue FROM heartbeat_runs
+      WHERE company_id = ${seedCompanyId} AND pg_column_size(context_snapshot) > 8000`);
+    expect(seeded).toEqual({ toasted: 2000, with_issue: 1980 });
+
+    // The columns a Cockpit run query reads, including a blanked one, so the view must decide is_chat per row.
+    const scan = (relation: string) => sql.raw(`SELECT count(*)::int AS n, count("error")::int AS errors,
+      count(DISTINCT "issue_id")::int AS issues FROM ${relation} WHERE "company_id" = '${seedCompanyId}'`);
+    const fastest = async (relation: string) => {
+      let best = Number.POSITIVE_INFINITY;
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const started = performance.now();
+        await db.execute(scan(relation));
+        best = Math.min(best, performance.now() - started);
+      }
+      return best;
+    };
+    const [tableResult] = await rows(scan(`"public"."heartbeat_runs"`));
+    const [viewResult] = await rows(scan(`"plugin_core_read"."heartbeat_runs"`));
+    expect(viewResult).toEqual(tableResult);
+    const tableMs = await fastest(`"public"."heartbeat_runs"`);
+    const viewMs = await fastest(`"plugin_core_read"."heartbeat_runs"`);
+    expect(
+      viewMs,
+      `plugin_core_read.heartbeat_runs scan took ${viewMs.toFixed(1)} ms, the table ${tableMs.toFixed(1)} ms. `
+        + `The view must not read context_snapshot for a run that has an issue_id (0452, PAR-13397).`,
+    ).toBeLessThan(tableMs * 3 + 25);
+  }, 180_000);
+
   it("hides chats and their comments and blanks chat text on a chat's runs, keeping every run row", async () => {
     const issueIds = (await rows(sql`SELECT id FROM plugin_core_read.issues WHERE company_id = ${companyId}`)).map((r) => r.id);
     expect(issueIds).toEqual([taskId]);
@@ -112,20 +163,22 @@ describe("plugin_core_read views database support", () => {
     }
   });
 
-  it("CP-4b-3: a run is a chat run when any key names a chat of its own company; NULL keys keep the text", async () => {
+  it("PAR-13397: issue_id decides when set, else native_issue_id, else a context key; NULL keys keep the text", async () => {
     const otherCompanyId = randomUUID(), otherAgentId = randomUUID();
     await db.execute(sql`INSERT INTO companies (id, name, issue_prefix) VALUES (${otherCompanyId}, 'Core read 2', 'PCS')`);
     await db.execute(sql`INSERT INTO agents (id, company_id, name, role, adapter_type)
       VALUES (${otherAgentId}, ${otherCompanyId}, 'Other agent', 'engineer', 'process')`);
     const cases = {
-      // issue_id names a task, context taskId names the chat: one chat key is enough.
-      taskWithChatTaskKey: { companyId, agentId, issueId: taskId, context: { issueId: taskId, taskId: chatId }, chat: true },
+      // issue_id names a task, context taskId names the chat: issue_id decides (0452, live since 19 Nov), so the
+      // context is not read. The host's trigger sets issue_id from the context, so it does not write this shape.
+      taskWithChatTaskKey: { companyId, agentId, issueId: taskId, context: { issueId: taskId, taskId: chatId }, chat: false },
       // Every key NULL (no issue, no native issue, empty context): NULL OR NULL is NULL, CASE falls to ELSE.
       allKeysNull: { companyId, agentId, issueId: null, context: {}, chat: false },
       // Keys that name no issue at all.
       unknownKeys: { companyId, agentId, issueId: null, context: { issueId: randomUUID(), taskId: "not-a-uuid" }, chat: false },
-      // Another company's run naming this company's chat: the chat test is per company.
-      otherCompany: { companyId: otherCompanyId, agentId: otherAgentId, issueId: null, context: { issueId: chatId, taskId: chatId }, chat: false },
+      // Another company's run naming this company's chat by context: 0452 tests the id alone (uuids are unique), so
+      // the text is blanked. This can only blank more than 0451, never less.
+      otherCompany: { companyId: otherCompanyId, agentId: otherAgentId, issueId: null, context: { issueId: chatId, taskId: chatId }, chat: true },
     };
     const ids = Object.fromEntries(Object.keys(cases).map((name) => [name, randomUUID()])) as Record<keyof typeof cases, string>;
     for (const [name, c] of Object.entries(cases) as Array<[keyof typeof cases, (typeof cases)[keyof typeof cases]]>) {

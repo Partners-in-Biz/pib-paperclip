@@ -9,7 +9,30 @@
  *
  * Needs `heartbeat_runs` in the plugin's `database.coreReadTables`.
  */
-import type { PluginContext } from "@paperclipai/plugin-sdk";
+import type { PluginActingPersonContext, PluginContext } from "@paperclipai/plugin-sdk";
+
+/**
+ * Whether the person a call works for is a restricted member of this company,
+ * as core's member-restriction resolver decided it (PAR-12715 hands it to every
+ * action, API route and tool call as `onBehalfOfRestricted`).
+ *
+ * - `restricted`: flagged, and the company is on `enforce`.
+ * - `unrestricted`: anyone else. `off` and `report`, the server kill switch and
+ *   the local board all arrive here, so they keep today's answer.
+ * - `unavailable`: the host sent no answer (a host older than the mark). A
+ *   caller that needs the answer refuses with `MEMBER_RESTRICTION_UNAVAILABLE`,
+ *   as core does when its own read fails; never read it as "not restricted".
+ */
+export type ActingRestriction = "restricted" | "unrestricted" | "unavailable";
+/** Core's code (HTTP 503 there) for a member-restriction answer that could not be read. */
+export const MEMBER_RESTRICTION_UNAVAILABLE = "MEMBER_RESTRICTION_UNAVAILABLE";
+/** Core's code for a call a restricted member may not make. */
+export const MEMBER_RESTRICTED = "MEMBER_RESTRICTED";
+
+export function actingRestriction(actor: PluginActingPersonContext | null | undefined): ActingRestriction {
+  if (!actor || typeof actor !== "object" || !("onBehalfOfUserId" in actor)) return "unavailable";
+  return actor.onBehalfOfRestricted === true ? "restricted" : "unrestricted";
+}
 
 /** Run statuses that are still going (core `HEARTBEAT_RUN_STATUSES`). Any other status has ended. */
 export const LIVE_RUN_STATUSES: readonly string[] = Object.freeze(["queued", "scheduled_retry", "running"]);

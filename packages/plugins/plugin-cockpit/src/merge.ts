@@ -20,6 +20,8 @@ import { MODULES, moduleOfPlugin, setupLeftLabel, setupSummary, type ModuleKey, 
 import { TEAM_ROLES } from "@partnersinbiz/pib-plugin-kit/team";
 import { BUDGET_ALERT_RATIO, PLUGIN_KEY, STALE_AFTER_MS } from "./constants.js";
 import { parseFlowReports } from "./flows.js";
+import type { DecisionRights } from "./decision-rights-model.js";
+import { routeToSeats } from "./owner-seats.js";
 
 export type { WaitsOn, ActivityItem, CockpitKpi, CockpitSnapshot, HealthCheck, HealthStatus, QualityMetric, TeamMemberReport, Tone, WaitingItem };
 
@@ -240,7 +242,7 @@ export interface WaitingAskInfo {
 }
 
 /** A waiting item as a source gives it: plain, a question for the owner, or a count with a few examples. */
-export type WaitingInput = WaitingItem & { ask?: WaitingAskInfo; examples?: WaitingExample[]; rank?: WaitingRank };
+export type WaitingInput = WaitingItem & { ask?: WaitingAskInfo; examples?: WaitingExample[]; rank?: WaitingRank; /** The issue's origin kind (host issue rows), read by the seat routing. */ originKind?: string | null };
 
 /** What ranks an item the owner must act on: how much it holds up and how long it has waited. */
 export interface WaitingRank {
@@ -260,6 +262,7 @@ export interface WaitingExample {
 }
 
 export interface WaitingEntry extends WaitingItem {
+  originKind?: string | null;
   /** Where it came from: a plugin key, `asks` or `host`. */
   source: string;
   sourceTitle: string;
@@ -353,7 +356,7 @@ export function unassignedWaiting(
   const oldest = items.reduce<string | null>((min, item) => (item.createdAt && (!min || Date.parse(item.createdAt) < Date.parse(min)) ? item.createdAt : min), null);
   const first = items[0];
   return [{
-    key: "unassigned-issues",
+    key: UNASSIGNED_KEY,
     title: `${count} open ${count === 1 ? "issue has" : "issues have"} nobody assigned`,
     why: "Nobody picks these up. The Operator routes them each morning; route any it missed, or assign them yourself.",
     href: count === 1 && first ? issueHref(first) : null,
@@ -385,6 +388,7 @@ export interface IssueLite {
   title: string;
   status: string;
   priority?: string | null;
+  originKind?: string | null;
   updatedAt?: string | null;
   createdAt?: string | null;
   /** Open issues this one blocks, directly or through others. */
@@ -439,7 +443,7 @@ export function hostWaiting(input: { approvals?: ApprovalLite[]; myIssues?: Issu
   const items: WaitingInput[] = [];
   if (input.setupMissing && input.setupMissing > 0) {
     items.push({
-      key: "setup:missing",
+      key: SETUP_KEY,
       // Kit wording, the same number as the Setup page, its sidebar badge and the weekly issue.
       title: `Finish setup: ${setupLeftLabel(input.setupMissing)}`,
       why: "Agents cannot run these parts on their own until they are set up.",
@@ -471,6 +475,7 @@ export function hostWaiting(input: { approvals?: ApprovalLite[]; myIssues?: Issu
       issueId: issue.id,
       kind: issueKind(issue),
       since: issue.updatedAt ?? issue.createdAt ?? null,
+      originKind: issue.originKind ?? null,
       rank: {
         identifier: issue.identifier ?? null,
         link: issueHref(issue),
@@ -951,11 +956,17 @@ export const HEALTH_LABEL: Record<HealthStatus, string> = { ok: "All good", warn
 
 /** How long an item may wait on someone else before it comes back to the owner. Same bound SEO uses for stale Needs you items. */
 export const OTHERS_MAX_HIDE_DAYS = 7;
+const UNASSIGNED_KEY = "unassigned-issues";
+const SETUP_KEY = "setup:missing";
 
 /** What the rule needs to know: the agents that can act, and the issues that never belong on the owner's list. */
 export interface OwnerFilter {
   activeAgentIds: string[];
   hiddenIssueIds: string[];
+  /** The Finish setup row is a board ask tracked in the standing queue (PAR-13579): it waits on others, not on the owner. */
+  setupRouted?: boolean;
+  /** PAR-13992: the company's decision-rights seats; rows of a routed kind wait on the seat, not the owner. */
+  rights?: DecisionRights | null;
 }
 
 /** Ids of the agents that can act (not terminated, archived or deleted). */
@@ -968,23 +979,38 @@ export function activeAgentIdsOf(agents: ReadonlyArray<{ id: string; status: str
  * on someone else. Rules, in order: (a) an issue in `hiddenIssueIds` is dropped;
  * (b) no valid `waitsOn` -> owner; (c) an agent that is not active -> owner;
  * (d) `since` missing, unreadable or older than 7 days -> owner, marked stale;
+ * (d2) except an active agent with a readable `since`: stays in others, marked stale,
+ * for PiB (PAR-13877);
  * (e) otherwise -> others. No filter (an old worker) gives (b) to (e) with no
  * active agent, so agent items stay with the owner.
  */
 export function splitOwnerWaiting(entries: WaitingEntry[], filter: Partial<OwnerFilter> | null | undefined, now: Date): { owner: WaitingEntry[]; others: WaitingEntry[] } {
   const hidden = new Set(filter?.hiddenIssueIds ?? []);
+  entries = routeToSeats(entries, filter?.rights);
   const active = new Set(filter?.activeAgentIds ?? []);
   const owner: WaitingEntry[] = [];
   const others: WaitingEntry[] = [];
   for (const entry of entries) {
     if (entry.issueId && hidden.has(entry.issueId)) continue;
+    // PAR-13579: the Operator routes unassigned work each morning, and a standing-queue company tracks setup there: neither is a decision. Intended: the unassigned row stays
+    // on others with no 7-day return, and is still listed there (the Operator brief keeps its own `unassigned` section).
+    if (entry.key === UNASSIGNED_KEY || (entry.key === SETUP_KEY && filter?.setupRouted)) {
+      others.push(entry);
+      continue;
+    }
     const waitsOn = parseWaitsOn(entry.waitsOn);
     if (!waitsOn || (waitsOn.kind === "agent" && !active.has(waitsOn.agentId))) {
       owner.push(entry);
       continue;
     }
     const since = entry.since ? Date.parse(entry.since) : Number.NaN;
-    if (!Number.isFinite(since) || now.getTime() - since > OTHERS_MAX_HIDE_DAYS * 86_400_000) {
+    const overdue = !Number.isFinite(since) || now.getTime() - since > OTHERS_MAX_HIDE_DAYS * 86_400_000;
+    // PAR-13877: a row routed to an active delegate seat that passes 7 days escalates to that seat's manager (PiB, agent-facing): it never returns to the owner.
+    if (overdue && waitsOn.kind === "agent" && Number.isFinite(since)) {
+      others.push({ ...entry, stale: true, why: `Waiting on another seat for over ${OTHERS_MAX_HIDE_DAYS} days: escalated to PiB, not the owner. ${entry.why}`.trim() });
+      continue;
+    }
+    if (overdue) {
       owner.push({ ...entry, stale: true, why: `Waiting on another seat for over ${OTHERS_MAX_HIDE_DAYS} days. ${entry.why}`.trim() });
       continue;
     }
@@ -997,6 +1023,7 @@ export function splitOwnerWaiting(entries: WaitingEntry[], filter: Partial<Owner
 export function othersData(others: WaitingEntry[], link: (href: string | null | undefined) => string | null = (h) => h ?? null) {
   return {
     count: others.length,
-    items: others.map((w) => ({ title: w.title, href: link(w.href), waitsOn: w.waitsOn ?? null, from: w.sourceTitle, since: w.since ?? null })),
+    escalated: others.filter((w) => w.stale).length,
+    items: others.map((w) => ({ title: w.title, href: link(w.href), waitsOn: w.waitsOn ?? null, from: w.sourceTitle, since: w.since ?? null, ...(w.stale ? { escalatedTo: "pib" } : {}) })),
   };
 }

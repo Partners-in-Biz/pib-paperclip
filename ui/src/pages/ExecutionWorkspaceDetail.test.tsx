@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { ExecutionWorkspace, Project } from "@paperclipai/shared";
+import type { ExecutionWorkspace, Project, SessionMemberRestriction } from "@paperclipai/shared";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { queryKeys } from "../lib/queryKeys";
+import { MemberRestrictionProvider } from "../context/MemberRestrictionContext";
 import { ExecutionWorkspaceDetail } from "./ExecutionWorkspaceDetail";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -37,6 +38,9 @@ const mockRouteLocation = vi.hoisted(() => ({
   search: "",
 }));
 
+const mockSession = vi.hoisted(() => ({ memberRestrictions: [] as SessionMemberRestriction[] }));
+const mockIssuesList = vi.hoisted(() => vi.fn());
+vi.mock("../api/auth", () => ({ authApi: { getSession: async () => ({ memberRestrictions: mockSession.memberRestrictions }) } }));
 vi.mock("../api/execution-workspaces", () => ({ executionWorkspacesApi: mockExecutionWorkspacesApi }));
 vi.mock("../api/projects", () => ({ projectsApi: mockProjectsApi }));
 vi.mock("../api/issues", () => ({ issuesApi: mockIssuesApi }));
@@ -85,7 +89,10 @@ vi.mock("@/plugins/slots", () => ({
 }));
 
 vi.mock("../components/IssuesList", () => ({
-  IssuesList: () => <div data-testid="issues-list" />,
+  IssuesList: (props: unknown) => {
+    mockIssuesList(props);
+    return <div data-testid="issues-list" />;
+  },
 }));
 vi.mock("../components/SummarySlotCard", () => ({
   SummarySlotCard: (props: unknown) => {
@@ -239,6 +246,7 @@ describe("ExecutionWorkspaceDetail plugin slots", () => {
     vi.clearAllMocks();
     mockRouteLocation.pathname = "/execution-workspaces/workspace-1/issues";
     mockRouteLocation.search = "";
+    mockSession.memberRestrictions = [];
   });
 
   async function render(hiddenSettings: string[] = []) {
@@ -248,7 +256,7 @@ describe("ExecutionWorkspaceDetail plugin slots", () => {
       root = createRoot(container);
       root.render(
         <QueryClientProvider client={queryClient}>
-          <ExecutionWorkspaceDetail />
+          <MemberRestrictionProvider><ExecutionWorkspaceDetail /></MemberRestrictionProvider>
         </QueryClientProvider>,
       );
     });
@@ -382,5 +390,43 @@ describe("ExecutionWorkspaceDetail plugin slots", () => {
       "Routines",
       "Default",
     ]);
+  });
+  // AC-G10 (PAR-13266): live runs and routines are closed lists for a restricted member under `enforce`.
+  describe.each([
+    ["R under enforce", "enforce"],
+    ["the owner", null],
+    ["R under report", "report"],
+  ] as const)("as %s", (_who, mode) => {
+    beforeEach(() => {
+      mockSession.memberRestrictions = mode ? [{ companyId: "company-1", restricted: true, mode }] : [];
+    });
+
+    it("requests live runs for the task tab only when it may", async () => {
+      mockIssuesApi.list.mockResolvedValue([{ id: "task-1", companyId: "company-1", status: "in_progress" }]);
+      mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([{ id: "run-1", status: "running", agentId: "agent-1", issueId: "task-1" }]);
+      await render();
+      await act(async () => { await flush(); });
+      const live = [...((mockIssuesList.mock.calls.at(-1)?.[0] as { liveIssueIds?: Set<string> } | undefined)?.liveIssueIds ?? [])];
+      if (mode === "enforce") {
+        expect(mockHeartbeatsApi.liveRunsForCompany).not.toHaveBeenCalled();
+        expect(live).toEqual([]);
+      } else {
+        expect(mockHeartbeatsApi.liveRunsForCompany).toHaveBeenCalledWith("company-1");
+        expect(live).toEqual(["task-1"]);
+      }
+    });
+
+    it("requests routines and shows the Routines tab only when it may", async () => {
+      mockRouteLocation.pathname = "/execution-workspaces/workspace-1/routines";
+      await render();
+      const tabs = Array.from(container.querySelectorAll("[data-tab-value]")).map((tab) => tab.textContent);
+      if (mode === "enforce") {
+        expect(mockRoutinesApi.list).not.toHaveBeenCalled();
+        expect(tabs).toEqual(["Tasks"]);
+      } else {
+        expect(mockRoutinesApi.list).toHaveBeenCalledWith("company-1", { projectId: "project-1" });
+        expect(tabs).toContain("Routines");
+      }
+    });
   });
 });

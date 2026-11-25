@@ -11,6 +11,7 @@ vi.mock("@/api/projects", () => ({ projectsApi: { get: api.getProject, listAcces
   addAccessMember: api.add, removeAccessMember: api.remove } }));
 vi.mock("@/api/access", () => ({ accessApi: { listUserDirectory: api.directory } }));
 vi.mock("@/api/agents", () => ({ agentsApi: { list: () => Promise.resolve([]) } }));
+vi.mock("@/api/auth", () => ({ authApi: { getSession: async () => ({ user: null, memberRestrictions: [] }) } }));
 vi.mock("@/context/ToastContext", () => ({ useToastActions: () => ({ pushToast: vi.fn() }) }));
 import { IssuePrivacyActions } from "./IssuePrivacyActions";
 import { ProjectAccessMembers } from "./ProjectAccessMembers";

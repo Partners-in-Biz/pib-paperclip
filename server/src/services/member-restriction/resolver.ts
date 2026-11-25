@@ -145,6 +145,24 @@ export async function memberRestrictionEnforcedCompanyIds(
   return [...new Set(rows.map((row) => row.companyId as string))].sort();
 }
 
+/**
+ * The company's restriction mode, as the resolver sees it: `off` under the kill
+ * switch or when the company does not exist. Throws when it cannot be read.
+ */
+export async function memberRestrictionModeFor(db: Db, companyId: string): Promise<MemberRestrictionMode> {
+  if (memberRestrictionKillSwitchOn()) return "off";
+  const company = await db
+    .select({ mode: companies.memberRestrictionMode })
+    .from(companies)
+    .where(eq(companies.id, companyId))
+    .then((rows) => rows[0] ?? null);
+  if (!company) return "off";
+  if (!isMode(company.mode)) {
+    throw new MemberRestrictionReadError("companies.member_restriction_mode has an unknown value");
+  }
+  return company.mode;
+}
+
 export function memberRestrictionResolver(db: Db): MemberRestrictionResolver {
   return (personId, companyId) => memberRestrictionFor(db, personId, companyId);
 }

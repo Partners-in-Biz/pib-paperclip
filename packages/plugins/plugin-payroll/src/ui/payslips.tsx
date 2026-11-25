@@ -3,16 +3,17 @@
  * row on a phone opens the same two actions).
  */
 import { useEffect, useState } from "react";
-import { DataTable, usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import { DataTable } from "@paperclipai/plugin-sdk/ui";
 import { Button, CompactRows, EmptyState, Modal, errorText, formatDate, formatDateTime, formatShortDate, tokens, useIsNarrow } from "@partnersinbiz/pib-plugin-ui";
 import { payslipStatusLabel } from "./series.js";
 import { download, Muted, small, StatusPill } from "./shared.js";
 import type { PayslipRow, RunFn, TabId } from "./types.js";
+import { usePayrollAction } from "./actions.js";
 
 export function PayslipsTab({ run, setMessage, go }: { run: RunFn; setMessage: (m: string) => void; go: (tab: TabId) => void }) {
-  const list = usePluginAction("payroll.payslips");
-  const downloadSlip = usePluginAction("payroll.download-payslip");
-  const email = usePluginAction("payroll.email-payslips");
+  const list = usePayrollAction("payroll.payslips");
+  const downloadSlip = usePayrollAction("payroll.download-payslip");
+  const email = usePayrollAction("payroll.email-payslips");
   const narrow = useIsNarrow();
   const [rows, setRows] = useState<PayslipRow[] | null>(null);
   const [open, setOpen] = useState<PayslipRow | null>(null);

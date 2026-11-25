@@ -856,6 +856,12 @@ const createIssueDuplicateGuardSchema = {
     )
     .optional()
     .default(false),
+  deferInitialWakeup: z
+    .boolean()
+    .describe(
+      "Defers initial agent wakeup and fast response until POST /api/issues/:id/finalize-creation is called after uploading staged files",
+    )
+    .optional(),
 };
 
 // Narrow intent flag set by the onboarding wizard on the single first task. The

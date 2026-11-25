@@ -127,6 +127,19 @@ node ./esbuild.config.mjs # dist/ (worker, manifest, ui, ui/oauth-callback.html 
 
 Migrations 001–019 are applied on installed instances; 0.23.0 adds `020_seo.sql` and 0.23.1 adds `021_seo.sql`. Never edit an applied one — add `022_seo.sql` and up. `012_seo.sql`: sprint site link columns (`site_project_id`, `site_access`, `repo_url`, `default_branch`, `framework`, `hosting`, `change_policy`, `verification`), `sprint_tasks.issue_project_id`, and the `needs_you` table.
 
+## 0.52.3: sign-off delegate decides safe-autopilot approvals (PAR-13992)
+
+- **Approve an SEO change** and **Keep or discard learned playbook changes** now wait on the first sign-off delegate on the Cockpit (`waitsOn`), not the owner. In safe autopilot the delegate agent may call `approve-optimization` and `decide-playbook-change` (any other agent still may not; a person still can). With no delegate set, nothing changes.
+
+## 0.52.2: preview banner offset (PAR-12248)
+
+- **Hunt and Gun auction banner.** The preview bar CSS (`engine/preview.ts`) adds `@media (min-width:981px){.auctionUpdatesLiveGroup{margin-top:125px!important}}` so the site's "NEXT AUCTION" banner sits below its fixed desktop header in previews instead of under it.
+
+## 0.52.0: previews on a rehearsal sprint (PAR-13387)
+
+- **Canned fixture page.** A page on a fixture host (`.invalid`, `engine/rehearsal.ts` `isRehearsalUrl`) never resolves, so `create-preview`, its repeat check and `list-previews checkLive` read `rehearsalPageHtml(pageUrl)` instead of the network (no DNS, no render service, no WordPress body check). The page is plain HTML, so the preview is stored with `basis: "rendered"` and a final kept-text figure. Real hosts are fetched as before; a canary client on a real host still fetches its real page.
+- **`set-rehearsal-preview`** (agent tool, `seo.work` edit) `{sprintId, previewId, reviewStatus?: passed | changes_needed | pending, expiresInHours?: -720..720}`: on a rehearsal sprint only (every other sprint is refused), on a pending preview only. It writes `review_status` (with `reviewed_by`/`reviewed_at`/a "Rehearsal" note, cleared again for `pending`) and `expires_at`; nothing is commented, woken or handed over, and it never decides (decide-preview stays board-only). It exists because a rehearsal sprint opens no review issue, and review-preview refuses the creator's own preview.
+
 ## 0.51.0: access guard (switch off)
 
 - **Seven call actions instead of one.** The page's generic `seo.call` is split by the permission a handler needs: `seo.call` (`seo.work` view, reads), `seo.call-create`, `seo.call-edit`, `seo.call-delete`, `seo.call-approve` (`seo.work` create, edit, delete, approve), `seo.call-settings-view` and `seo.call-settings` (`seo.settings` view, edit). Body unchanged: `{"tool": "<handler>", "params": {...}}`. A handler sent through another call action is refused ("<handler> is called through <action>, not <other>. Do not retry."), also with the switch off: use the action named in that message. Examples: `compact-task-thread` goes through `seo.call-edit`; `decide-preview`, `undo-preview-decision`, `confirm-preview-approval` through `seo.call-approve`; `set-switch` through `seo.call-settings`.

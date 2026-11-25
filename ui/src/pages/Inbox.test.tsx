@@ -1309,6 +1309,8 @@ describe("Inbox toolbar", () => {
       ? Promise.resolve(indexed ? [parent, child] : [child])
       : filters.ids.includes(parent.id) ? pendingFailure : Promise.resolve([child]));
     const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    // The app shell has the session before the inbox mounts; the run reads wait for it (AC-G10 gate).
+    client.setQueryData(queryKeys.auth.session, { user: { id: "local-board" }, session: { userId: "local-board" } });
     const root = createRoot(container);
     try {
       await act(() => root.render(<QueryClientProvider client={client}><Inbox /></QueryClientProvider>));
@@ -1391,6 +1393,7 @@ describe("Inbox toolbar", () => {
     apiMocks.issuesList.mockImplementation((_company, filters) => !filters.ids ? Promise.resolve([child])
       : filters.projection === "index" ? Promise.resolve([parent]) : filters.ids.includes(parent.id) ? pendingFailure : Promise.resolve([child]));
     const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    client.setQueryData(queryKeys.auth.session, { user: { id: "local-board" }, session: { userId: "local-board" } });
     const root = createRoot(container);
     try {
       await act(() => root.render(<QueryClientProvider client={client}><Inbox /></QueryClientProvider>));
@@ -2305,5 +2308,96 @@ describe("Coordinator Inbox collection reads", () => {
       expect(apiMocks.heartbeatRunsList).not.toHaveBeenCalled();
       expect(apiMocks.dashboardSummary).not.toHaveBeenCalled();
     } finally { await act(async () => root.unmount()); client.clear(); container.remove(); }
+  });
+});
+
+// AC-G10 (PAR-13264): for a restricted member under `enforce` both inboxes send
+// no `join-requests`, `dashboard`, `heartbeat-runs` or `live-runs` request and show
+// no error; under `report` and for the owner the same four requests go out.
+describe("Inbox closed requests for a restricted member", () => {
+  const ENFORCED = { companyId: "company-1", restricted: true, mode: "enforce" as const };
+  const closedReads = () => [apiMocks.joinRequestsList, apiMocks.dashboardSummary, apiMocks.heartbeatRunsList, apiMocks.liveRunsForCompany];
+
+  async function renderInbox(streamlined: boolean, restriction: typeof ENFORCED | { mode: "report" } & Omit<typeof ENFORCED, "mode"> | null) {
+    resetInboxApiMocks(); localStorage.clear();
+    routerMock.location.pathname = "/inbox/all";
+    apiMocks.experimentalSettings.mockResolvedValue({ enableIsolatedWorkspaces: false, enableStreamlinedUi: streamlined });
+    apiMocks.authSession.mockResolvedValue({ user: { id: "local-board" }, session: { userId: "local-board" }, memberRestrictions: restriction ? [restriction] : [] });
+    apiMocks.joinRequestsList.mockResolvedValue([createJoinRequest()]);
+    setFailureRuns([createFailedRun()]);
+    apiMocks.dashboardSummary.mockResolvedValue({ agents: { error: 0 }, costs: { monthBudgetCents: 1000, monthUtilizationPercent: 90 } });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: 0 } } });
+    const container = document.createElement("div"); document.body.appendChild(container);
+    const root = createRoot(container);
+    await act(async () => root.render(<QueryClientProvider client={client}><Inbox /></QueryClientProvider>));
+    await vi.waitFor(() => expect(apiMocks.authSession).toHaveBeenCalled());
+    await vi.waitFor(() => expect(client.isFetching()).toBe(0));
+    const cleanup = async () => { await act(async () => root.unmount()); client.clear(); container.remove(); };
+    return { client, container, cleanup };
+  }
+
+  it.each([true, false])("R under enforce (streamlined=%s): no closed request, no closed row, no error", async (streamlined) => {
+    const { container, cleanup } = await renderInbox(streamlined, ENFORCED);
+    try {
+      for (const read of closedReads()) expect(read).not.toHaveBeenCalled();
+      expect(container.textContent).not.toContain("Jordan Example");
+      expect(container.textContent).not.toContain("Failed run");
+      expect(container.textContent).not.toContain("utilization this month");
+      expect(container.textContent).not.toMatch(/couldn.t load/i);
+    } finally { await cleanup(); }
+  });
+
+  it.each([
+    ...[true, false].map((streamlined) => ({ who: "the owner", streamlined, restriction: null })),
+    ...[true, false].map((streamlined) => ({ who: "R under report", streamlined, restriction: { ...ENFORCED, mode: "report" as const } })),
+  ])("$who (streamlined=$streamlined): the four reads go out and their rows show", async ({ streamlined, restriction }) => {
+    const { container, cleanup } = await renderInbox(streamlined, restriction);
+    try {
+      await vi.waitFor(() => {
+        closedReads().forEach((read, index) => expect(read, `read ${index}`).toHaveBeenCalled());
+        expect(container.textContent).toContain("Jordan Example");
+        expect(container.textContent).toContain("Failed run");
+        expect(container.textContent).toContain("utilization this month");
+      });
+    } finally { await cleanup(); }
+  });
+
+  it.each([true, false])("workspace summaries are requested only when allowed (streamlined=%s)", async (streamlined) => {
+    for (const [who, restriction] of [["R enforce", ENFORCED], ["owner", null], ["R report", { ...ENFORCED, mode: "report" as const }]] as const) {
+      resetInboxApiMocks(); localStorage.clear();
+      routerMock.location.pathname = "/inbox/all";
+      apiMocks.experimentalSettings.mockResolvedValue({ enableIsolatedWorkspaces: true, enableStreamlinedUi: streamlined });
+      apiMocks.authSession.mockResolvedValue({ user: { id: "local-board" }, session: { userId: "local-board" }, memberRestrictions: restriction ? [restriction] : [] });
+      apiMocks.executionWorkspaceSummaries.mockResolvedValue([]);
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: 0 } } });
+      const container = document.createElement("div"); document.body.appendChild(container);
+      const root = createRoot(container);
+      await act(async () => root.render(<QueryClientProvider client={client}><Inbox /></QueryClientProvider>));
+      await vi.waitFor(() => expect(apiMocks.authSession).toHaveBeenCalled());
+      await vi.waitFor(() => expect(client.isFetching()).toBe(0));
+      if (who === "R enforce") {
+        await vi.waitFor(() => expect(apiMocks.experimentalSettings).toHaveBeenCalled());
+        await act(async () => { await new Promise((r) => setTimeout(r, 30)); });
+        expect(apiMocks.executionWorkspaceSummaries, who).not.toHaveBeenCalled();
+      } else {
+        await vi.waitFor(() => expect(apiMocks.executionWorkspaceSummaries, who).toHaveBeenCalled());
+      }
+      await act(async () => root.unmount()); client.clear(); container.remove();
+    }
+  });
+
+  it.each([true, false])("a stale session switched to enforce stops the next refetch (streamlined=%s)", async (streamlined) => {
+    const { client, container, cleanup } = await renderInbox(streamlined, { ...ENFORCED, mode: "report" });
+    try {
+      for (const read of closedReads()) read.mockClear();
+      await act(async () => {
+        client.setQueryData(queryKeys.auth.session, { user: { id: "local-board" }, session: { userId: "local-board" }, memberRestrictions: [ENFORCED] });
+      });
+      await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+      await act(async () => { await client.invalidateQueries({ predicate: (query) => query.queryKey[0] !== "auth" }); });
+      await vi.waitFor(() => expect(client.isFetching()).toBe(0));
+      for (const read of closedReads()) expect(read).not.toHaveBeenCalled();
+      expect(container.textContent).not.toMatch(/couldn.t load/i);
+    } finally { await cleanup(); }
   });
 });

@@ -35,6 +35,9 @@ vi.mock("./SidebarNavItem", () => ({
 
 vi.mock("@/plugins/slots", () => ({ usePluginSlots: () => ({ slots: [{ pluginKey: "test.plugin", id: "insights", displayName: "Insights" }] }) }));
 
+const restriction = vi.hoisted(() => ({ isPageHidden: (_path: string): boolean => false }));
+vi.mock("@/context/MemberRestrictionContext", () => ({ useMemberRestriction: () => restriction }));
+
 describe("AgentContextualSidebar", () => {
   it.each([false, true])("lists plugin tabs and keeps Channels and Tools out of the nav (%s)", (enabled) => {
     const client = new QueryClient();
@@ -73,5 +76,21 @@ describe("AgentContextualSidebar", () => {
     expect(markup).toContain("Secrets &amp; variables");
     expect(markup).toContain("Harness / Runtime");
     expect(markup).toContain("Permissions / Trust");
+  });
+  it("keeps the plugin tabs when R under enforce loses the Audit section", () => {
+    // Every Audit tab is closed for R at `enforce`; the Apps block must not go with it.
+    restriction.isPageHidden = (path) => !path.endsWith("/overview");
+    try {
+      const markup = renderToStaticMarkup(<QueryClientProvider client={new QueryClient()}><MemoryRouter>
+        <AgentContextualSidebar agentRef="agent" agentId="agent-1" agentName="Agent" />
+      </MemoryRouter></QueryClientProvider>);
+      expect(markup).toContain("Insights");
+      expect(markup).toContain("plugin%3Atest.plugin%3Ainsights");
+      expect(markup).not.toContain(">Audit<");
+      expect(markup).toContain('href="/agents/agent/overview"');
+      expect(markup).not.toContain('href="/agents/agent/runs"');
+    } finally {
+      restriction.isPageHidden = () => false;
+    }
   });
 });

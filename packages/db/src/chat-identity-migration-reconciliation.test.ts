@@ -653,6 +653,8 @@ const support = await getEmbeddedPostgresTestSupport();
           // This disposable database is owned solely by this test; no live fixture
           // is modified. Its already-applied chat SQL retains the original hashes
           // and timestamps, even though the checkout now uses new filenames.
+          // The plugin_core_read views (migration 0450) read this column and block DROP COLUMN.
+          await sql`DROP SCHEMA IF EXISTS plugin_core_read CASCADE`;
           await sql`ALTER TABLE heartbeat_runs DROP COLUMN active_identity_context_id`;
           await sql`ALTER TABLE issues DROP COLUMN origin_identity_context_id, DROP COLUMN continuation_identity_context_id`;
           await sql`ALTER TABLE issue_thread_interactions DROP COLUMN source_identity_context_id`;

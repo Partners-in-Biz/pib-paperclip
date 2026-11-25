@@ -255,20 +255,25 @@ import {
       // 404 and never learns the chat exists.
       expect((await request(appFor(colleague)).post(`/api/issues/${chatId}/queued-comments/interrupt`)
         .send(queuedInterrupt)).status).toBe(404);
+      // A colleague cannot read the private chat, so a send or an upload answers
+      // "not found" before the owner check (PAR-12942, AC-G3).
       for (const body of ["Hello", "/new"]) {
         expect((await request(appFor(colleague)).post(`/api/issues/${chatId}/comments`)
-          .send({ body, clientRequestId: randomUUID() })).status).toBe(403);
+          .send({ body, clientRequestId: randomUUID() })).status).toBe(404);
       }
       expect((await request(appFor(colleague))
         .post(`/api/companies/${companyId}/issues/${chatId}/attachments`)
-        .attach("file", Buffer.from("foreign upload"), "note.txt")).status).toBe(403);
+        .attach("file", Buffer.from("foreign upload"), "note.txt")).status).toBe(404);
 
       const [planReview] = await db.insert(issueThreadInteractions).values({
         companyId, issueId: chatId, kind: "request_confirmation", status: "pending",
         continuationPolicy: "wake_assignee_on_accept", payload: { version: 1, prompt: "Hand off this plan?" },
       }).returning();
-      expect((await request(appFor(colleague))
-        .post(`/api/issues/${chatId}/interactions/${planReview.id}/accept`).send({})).status).toBe(403);
+      // AC-G3 (PAR-12956): the colleague cannot read the chat, so "not found", not the chat-owner 403.
+      const foreignAccept = await request(appFor(colleague))
+        .post(`/api/issues/${chatId}/interactions/${planReview.id}/accept`).send({});
+      expect(foreignAccept.status).toBe(404);
+      expect(foreignAccept.body).toEqual({ error: "Issue not found" });
       expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, planReview.id)))[0].status).toBe("pending");
       const [pause] = await db.insert(issueTreeHolds).values({
         companyId, rootIssueId: chatId, mode: "pause", status: "active",

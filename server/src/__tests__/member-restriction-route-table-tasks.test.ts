@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, authUsers, companies, companyMemberships, createDb, issues } from "@paperclipai/db";
+import { agents, authUsers, companies, companyMemberships, createDb, issueRelations, issues } from "@paperclipai/db";
 import { errorHandler } from "../middleware/error-handler.js";
 import { issueRoutes } from "../routes/issues.js";
 import { loadActorMemberships } from "../services/member-restriction/actor-memberships.js";
@@ -25,8 +25,22 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 const support = await getEmbeddedPostgresTestSupport();
 const THIS_FILE = "server/src/__tests__/member-restriction-route-table-tasks.test.ts";
 
+/** PAR-13135: fails only the agent-list read (`agent-read.ts`), so the follow-up guard's read is failed on its own. */
+const listFails = vi.hoisted(() => ({ on: false }));
+vi.mock("../services/member-restriction/resolver.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/member-restriction/resolver.js")>();
+  return {
+    ...actual,
+    memberRestrictionResolver: (db: Parameters<typeof actual.memberRestrictionResolver>[0]) =>
+      (personId: string, companyId: string) => listFails.on
+        ? Promise.reject(new actual.MemberRestrictionReadError("fixture: agent list unreadable"))
+        : actual.memberRestrictionFor(db, personId, companyId),
+  };
+});
+
 afterEach(() => {
   vi.unstubAllEnvs();
+  listFails.on = false;
 });
 
 describe("task route rows database support", () => {
@@ -69,6 +83,9 @@ const CASES: Case[] = [
     send: (c, { issueId }) => c.patch(`/api/issues/${issueId}`).send({ description: "changed" }), hidden: notFound },
   { row: "POST /api/issues/:id/children", caller: "board",
     send: (c, { issueId }) => c.post(`/api/issues/${issueId}/children`).send({ title: "Child" }), hidden: notFound },
+  // PAR-12929: the full caller table is in member-restriction-title-route.test.ts.
+  { row: "PUT /api/issues/:id/title", caller: "board",
+    send: (c, { issueId }) => c.put(`/api/issues/${issueId}/title`).send({ title: "Renamed" }), hidden: notFound },
   { row: "GET /api/issues/:id/external-objects", caller: "board",
     send: (c, { issueId }) => c.get(`/api/issues/${issueId}/external-objects`), hidden: notFound },
   { row: "GET /api/issues/:id/external-object-summary", caller: "board",
@@ -222,5 +239,23 @@ it("AC-G1: the closed task rows classify as closed for their real paths", async 
       const adminNow = await admin();
       expect(adminNow.status, JSON.stringify(adminNow.body)).toBe((await today(admin)).status);
     });
+  });
+
+  it("PAR-13135: R resuming his task blocked by O's task gets the 409 with no blocker id; with the kill switch `off` the id is listed; a failed list read is 503", async () => {
+    const { issueId: blocker } = await freshTask(Y, O);
+    const [mine] = await db.insert(issues).values({ companyId: Y, title: "R's blocked task", status: "blocked",
+      createdByUserId: R, responsibleUserId: R }).returning();
+    await db.insert(issueRelations).values({ companyId: Y, issueId: blocker, relatedIssueId: mine!.id, type: "blocks" });
+    const resume = async () => as(await boardFor(R)).patch(`/api/issues/${mine!.id}`).send({ resume: true, comment: "Go on" });
+    for (const [res, listed] of [[await resume(), []], [await today(resume), [blocker]]] as const) {
+      expect(res.status, JSON.stringify(res.body)).toBe(409);
+      expect(res.body).toEqual({ error: "Issue follow-up blocked by unresolved blockers",
+        details: { issueId: mine!.id, unresolvedBlockerIssueIds: listed } });
+    }
+    listFails.on = true;
+    const failed = await resume();
+    expect(failed.status, JSON.stringify(failed.body)).toBe(503);
+    expect(failed.body.code ?? failed.body.details?.code).toBe("MEMBER_RESTRICTION_UNAVAILABLE");
+    expect(JSON.stringify(failed.body)).not.toContain(blocker);
   });
 });

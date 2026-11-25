@@ -5,7 +5,7 @@ import http from "node:http";
 import { createRequire } from "node:module";
 import { execFile } from "node:child_process";
 import { mkdir, readFile, stat, unlink } from "node:fs/promises";
-import { DECISION_SQL, DECISION_STATE_SQL, DECLINED_PAGE, refusedAnswer, SCHEMA } from "./decision.mjs";
+import { DECISION_COLUMNS, DECISION_SQL, DECISION_STATE_SQL, DECLINED_PAGE, grantFix, MISSING_GRANTS_SQL, refusedAnswer, SCHEMA } from "./decision.mjs";
 import { guardShot, proposalState, shotUntilPainted } from "./capture.mjs";
 import { startEgressProxy } from "./egress.mjs";
 import { createRenderService, keptTextFigure, RENDER_PORT, wordsOf } from "./render.mjs";
@@ -46,6 +46,22 @@ async function withChromium(run) {
 const pool = new Pool({ connectionString: process.env.PREVIEW_DATABASE_URL, max: 4 });
 
 const PREVIEW_ORIGIN = process.env.PREVIEW_ORIGIN ?? "https://preview.partnersinbiz.online";
+
+// PAR-13038: answers fail with a 500 while pib_preview lacks UPDATE on a column DECISION_SQL writes. Checked at startup and by
+// /health (cached a minute), which answers 503 with the GRANT to run, so a missed deploy step shows before a client presses Approve.
+let grantCheck = { at: 0, problem: null };
+async function decisionGrantProblem() {
+  if (Date.now() - grantCheck.at < 60_000) return grantCheck.problem;
+  let problem = null;
+  try {
+    const { rows } = await pool.query(MISSING_GRANTS_SQL, [DECISION_COLUMNS]);
+    if (rows.length) problem = `client answers will fail: run as the database owner: ${grantFix(rows.map((r) => r.column))}`;
+  } catch (error) {
+    problem = `grant check failed: ${error instanceof Error ? error.message : error}`;
+  }
+  grantCheck = { at: Date.now(), problem };
+  return problem;
+}
 
 const SECURITY = {
   "X-Robots-Tag": "noindex, nofollow, noarchive",
@@ -202,7 +218,10 @@ const server = http.createServer(async (req, res) => {
   try {
     const ip = String(req.headers["x-forwarded-for"] ?? req.socket.remoteAddress ?? "").split(",")[0].trim();
     const url = new URL(req.url ?? "/", "http://x");
-    if (url.pathname === "/health") return send(res, 200, "ok", "text/plain");
+    if (url.pathname === "/health") {
+      const problem = await decisionGrantProblem();
+      return problem ? send(res, 503, problem, "text/plain") : send(res, 200, "ok", "text/plain");
+    }
     if (limited(ip)) return send(res, 429, page("Too many requests. Please try again in a minute."));
     // /p/<site>/<token>[...]: the site name is only there to read; the token is the secret. /p/<token> (older links) works too.
     const m = /^\/p\/(?:[a-z0-9-]{1,30}\/)?([A-Za-z0-9_-]{20,64})(\/decision|\/review|\/shot\/(?:live|proposed)(?:-mobile)?)?$/.exec(url.pathname);
@@ -274,6 +293,7 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, "127.0.0.1", () => {
   console.log(`preview service on 127.0.0.1:${PORT}`);
   void housekeeping();
+  void decisionGrantProblem().then((problem) => problem && console.error(`preview error: ${problem}`));
 });
 
 // /render (PAR-8799): loopback only, fixed port, for the SEO plugin's create-preview. Never on PORT, never behind Caddy.

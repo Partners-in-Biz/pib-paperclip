@@ -84,16 +84,9 @@ const CASES: Case[] = [
   { row: "DELETE /api/projects/:id/access-members/:memberId",
     send: (c, { projectId, memberId }) => c.delete(`/api/projects/${projectId}/access-members/${memberId}`), hidden: notFound },
   { row: "GET /api/projects/:id/workspaces", send: (c, { projectId }) => c.get(`/api/projects/${projectId}/workspaces`), hidden: notFound },
-  { row: "DELETE /api/projects/:id/workspaces/:workspaceId",
-    send: (c, { projectId, workspaceId }) => c.delete(`/api/projects/${projectId}/workspaces/${workspaceId}`), hidden: notFound },
   // Task tree (routes/issue-tree-control.ts).
   { row: "GET /api/issues/:id/tree-control/state",
     send: (c, { issueId }) => c.get(`/api/issues/${issueId}/tree-control/state`), hidden: notFound },
-  { row: "POST /api/issues/:id/tree-control/preview",
-    send: (c, { issueId }) => c.post(`/api/issues/${issueId}/tree-control/preview`).send({ mode: "pause" }), hidden: notFound },
-  { row: "GET /api/issues/:id/tree-holds", send: (c, { issueId }) => c.get(`/api/issues/${issueId}/tree-holds`), hidden: notFound },
-  { row: "GET /api/issues/:id/tree-holds/:holdId",
-    send: (c, { issueId, holdId }) => c.get(`/api/issues/${issueId}/tree-holds/${holdId}`), hidden: notFound },
 ];
 
 /** The closed rows this ticket wrote (AC-G1). */
@@ -103,11 +96,12 @@ const CLOSED_ROWS = [
   "POST /api/issues/:id/queued-comments/interrupt",
   "POST /api/issues/:id/queued-comments/:commentId/steer",
   "DELETE /api/issues/:id/queued-comments/:commentId",
-  // Closed until PAR-12933 guards host commands, `cwd`, `env` and `environmentId`.
-  "POST /api/companies/:companyId/projects",
-  "PATCH /api/projects/:id",
+  // Project create and patch are open since PAR-12934 (their test:
+  // member-restriction-project-body-allowlist.test.ts). Workspaces stay or
+  // become closed there: host `cwd`, commands and repositories.
   "POST /api/projects/:id/workspaces",
   "PATCH /api/projects/:id/workspaces/:workspaceId",
+  "DELETE /api/projects/:id/workspaces/:workspaceId",
   "GET /api/companies/:companyId/project-repositories",
   "GET /api/projects/:id/git-authorization",
   "PUT /api/projects/:id/git-authorization",
@@ -117,6 +111,10 @@ const CLOSED_ROWS = [
   "DELETE /api/projects/:id",
   "POST /api/issues/:id/tree-holds",
   "POST /api/issues/:id/tree-holds/:holdId/release",
+  // PAR-12934: closed (active runs and agents under the root, PAR-12938).
+  "POST /api/issues/:id/tree-control/preview",
+  "GET /api/issues/:id/tree-holds",
+  "GET /api/issues/:id/tree-holds/:holdId",
 ];
 
 it("every open row of this file has exactly one case, and each case is an open row", () => {

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { DataTable, usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import { DataTable } from "@paperclipai/plugin-sdk/ui";
+import { useAccountingAction } from "./actions.js";
 import { Button, CompactRows, Field, Input, Modal, Pill, RefreshCw, Section, Select, Sheet, formatDate, formatMonth, formatMoney, formatShortDate, tokens, useIsNarrow } from "@partnersinbiz/pib-plugin-ui";
 import { readableDates } from "../domain/dates.js";
 import type { LoadResult } from "./overview.js";
@@ -185,9 +186,9 @@ function AfterToday({ date, asOf }: { date: string; asOf: string }) {
 
 function JournalList({ accounts, onMessage, asOf = new Date().toISOString().slice(0, 10) }: { accounts: LoadResult["accounts"]; onMessage: (m: string) => void; asOf?: string }) {
   const narrow = useIsNarrow();
-  const list = usePluginAction("accounting.journals");
-  const reverse = usePluginAction("accounting.reverse-journal");
-  const verify = usePluginAction("accounting.verify-chain");
+  const list = useAccountingAction("accounting.journals");
+  const reverse = useAccountingAction("accounting.reverse-journal");
+  const verify = useAccountingAction("accounting.verify-chain");
   const { busy, run } = useRunner(onMessage);
   const [filters, setFilters] = useState<Filters>(NO_FILTERS);
   const [rows, setRows] = useState<Journal[]>([]);
@@ -359,11 +360,11 @@ function draftTotal(d: Draft): number {
 
 function Drafts({ accounts, onMessage }: { accounts: LoadResult["accounts"]; onMessage: (m: string) => void }) {
   const narrow = useIsNarrow();
-  const list = usePluginAction("accounting.drafts");
-  const save = usePluginAction("accounting.save-draft");
-  const request = usePluginAction("accounting.request-draft-approval");
-  const approve = usePluginAction("accounting.approve-draft");
-  const cancel = usePluginAction("accounting.cancel-draft");
+  const list = useAccountingAction("accounting.drafts");
+  const save = useAccountingAction("accounting.save-draft");
+  const request = useAccountingAction("accounting.request-draft-approval");
+  const approve = useAccountingAction("accounting.approve-draft");
+  const cancel = useAccountingAction("accounting.cancel-draft");
   const { busy, run } = useRunner(onMessage);
   const [drafts, setDrafts] = useState<Draft[] | null>(null);
   const [reviews, setReviews] = useState<Record<string, ReviewInfo>>({});
@@ -539,9 +540,9 @@ function safeCents(v: string): number | null {
 
 function Rejected({ onMessage, onOpen }: { onMessage: (m: string) => void; onOpen: (view: string) => void }) {
   const narrow = useIsNarrow();
-  const list = usePluginAction("accounting.rejections");
-  const retry = usePluginAction("accounting.retry-rejection");
-  const dismiss = usePluginAction("accounting.dismiss-rejection");
+  const list = useAccountingAction("accounting.rejections");
+  const retry = useAccountingAction("accounting.retry-rejection");
+  const dismiss = useAccountingAction("accounting.dismiss-rejection");
   const { busy, run } = useRunner(onMessage);
   const [rows, setRows] = useState<Rejection[] | null>(null);
   async function refresh() {
@@ -612,9 +613,9 @@ function Rejected({ onMessage, onOpen }: { onMessage: (m: string) => void; onOpe
 
 function Periods({ onMessage }: { onMessage: (m: string) => void }) {
   const narrow = useIsNarrow();
-  const list = usePluginAction("accounting.periods");
-  const setPeriod = usePluginAction("accounting.set-period");
-  const checklist = usePluginAction("accounting.close-checklist");
+  const list = useAccountingAction("accounting.periods");
+  const setPeriod = useAccountingAction("accounting.set-period");
+  const checklist = useAccountingAction("accounting.close-checklist");
   const { busy, run } = useRunner(onMessage);
   const [periods, setPeriods] = useState<Array<{ period: string; status: string }> | null>(null);
   const [check, setCheck] = useState<{ month: string; items: ChecklistItem[]; ready: boolean } | null>(null);

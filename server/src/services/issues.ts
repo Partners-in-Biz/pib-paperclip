@@ -210,6 +210,7 @@ import {
 } from "./native-runtime/native-chat-review-presentation.js";
 import {
   applyIssueExecutionPolicyTransition,
+  applyIssueMonitorPolicyTransition,
   buildInitialIssueMonitorFields,
   normalizeIssueExecutionPolicy,
 } from "./issue-execution-policy.js";
@@ -2587,9 +2588,30 @@ function blockerWorkspaceFacts(companyId: string, workspaceScope: SQL) {
 
 /** An issue's own operation takes precedence over the legacy NULL fallback.
  * A later successful finalize clears either barrier. A successful operation
- * enclosed by its owning finalize is also saved, although it started later. */
+ * enclosed by its owning finalize is also saved, although it started later.
+ * A cleaned-up workspace has nothing left to finalize: once it is archived, or
+ * closed with a successful `worktree_cleanup` after its last prepare, a late
+ * failed finalize (cleanup won the race) never keeps the blocker pending. */
 function pendingFinalizeBlockerCondition(companyId: string, issueId: SQL, workspaceId: SQL) {
-  return sql`${workspaceId} is not null and exists (
+  return sql`${workspaceId} is not null and not exists (
+    select 1 from execution_workspaces settled_workspace
+    where settled_workspace.company_id = ${companyId}::uuid
+      and settled_workspace.id = ${workspaceId}
+      and (settled_workspace.status = 'archived'
+        or (settled_workspace.closed_at is not null and exists (
+          select 1 from workspace_operations cleanup_operation
+          where cleanup_operation.company_id = ${companyId}::uuid
+            and cleanup_operation.execution_workspace_id = ${workspaceId}
+            and cleanup_operation.phase = 'worktree_cleanup' and cleanup_operation.status = 'succeeded'
+            and not exists (
+              select 1 from workspace_operations reprepare_operation
+              where reprepare_operation.company_id = ${companyId}::uuid
+                and reprepare_operation.execution_workspace_id = ${workspaceId}
+                and reprepare_operation.phase in ('worktree_prepare', 'workspace_provision')
+                and reprepare_operation.started_at > cleanup_operation.started_at
+            )
+        )))
+  ) and exists (
     select 1 from (values (1)) seed(value)
     left join lateral (
       select phase, status, started_at, finished_at, heartbeat_run_id from workspace_operations blocker_operation
@@ -11767,6 +11789,31 @@ export function issueService(db: Db) {
         if (issueData.status === "done" || issueData.status === "cancelled") {
           await cancelCaseHandoffsForIssue(tx, { companyId: receiptExisting.companyId, issueId: id,
             reason: `Task was marked ${issueData.status}`, agentTransfersOnly: issueData.status === "done", publications: activityPublications });
+          // PAR-8899: a finished task needs no monitor or review-recovery wake. Clear the
+          // monitor columns (also for writes that skip the policy transition) and drop
+          // queued wakes so they do not start a no-op run on a closed issue.
+          if (receiptExisting.status !== issueData.status) {
+            const storedPolicy = (issueData.executionPolicy !== undefined ? issueData.executionPolicy : receiptExisting.executionPolicy) as Record<string, unknown> | null;
+            if (storedPolicy && "monitor" in storedPolicy) {
+              const monitorClear = applyIssueMonitorPolicyTransition({
+                issue: receiptExisting, policy: normalizeIssueExecutionPolicy(storedPolicy),
+                previousPolicy: normalizeIssueExecutionPolicy(receiptExisting.executionPolicy ?? null),
+                requestedStatus: issueData.status, requestedAssigneePatch: {},
+                actor: { agentId: actorAgentId ?? null, userId: actorUserId ?? null },
+              });
+              Object.assign(patch, monitorClear.patch);
+            }
+            patch.monitorNextCheckAt = null;
+            patch.monitorWakeRequestedAt = null;
+            await tx.update(agentWakeupRequests).set({ status: "cancelled", finishedAt: new Date(), updatedAt: new Date() })
+              .where(and(eq(agentWakeupRequests.companyId, receiptExisting.companyId),
+                inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]),
+                isNull(agentWakeupRequests.runId),
+                inArray(agentWakeupRequests.reason, ["issue_monitor_due", "execution_review_participant_recovery"]),
+                sql`coalesce(${agentWakeupRequests.payload}->>'issueId', ${agentWakeupRequests.payload}->>'taskId',
+                  ${agentWakeupRequests.payload}->'_paperclipWakeContext'->>'issueId',
+                  ${agentWakeupRequests.payload}->'_paperclipWakeContext'->>'taskId') = ${id}`));
+          }
         }
         if ((issueData.assigneeAgentId !== undefined && issueData.assigneeAgentId !== receiptExisting.assigneeAgentId)
           || (issueData.assigneeUserId !== undefined && issueData.assigneeUserId !== receiptExisting.assigneeUserId)) {

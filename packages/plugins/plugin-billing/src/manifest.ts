@@ -202,7 +202,7 @@ const instanceConfigSchema: JsonSchema = {
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
-  version: "0.22.3",
+  version: "0.23.0",
   displayName: "Billing",
   description: "Invoices, quotes, credit notes, EFT proof of payment, bills, expenses, time and retainers. Agents draft and ask; a person approves sending and money.",
   author: "Partners in Biz",
@@ -361,6 +361,8 @@ const manifest: PaperclipPluginManifestV1 = {
     slots: [
       { type: "page", id: "billing-page", displayName: "Billing", exportName: "BillingPage", routePath: "billing" },
       { type: "sidebar", id: "billing-sidebar", displayName: "Billing", exportName: "BillingSidebar", order: 42 },
+      // A board card for one invoice (PAR-14420). The worker answers the three `canvas.cards.*` actions.
+      { type: "canvasNode", id: "card-invoice", displayName: "Invoice", exportName: "BillingInvoiceCard", entityCard: { kind: "invoice", search: true, related: true } },
     ],
   },
 };

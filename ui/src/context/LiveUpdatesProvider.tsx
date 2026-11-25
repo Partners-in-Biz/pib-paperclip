@@ -1493,6 +1493,38 @@ function invalidateHeartbeatProgressQueries(
   }
 }
 
+/**
+ * Planning Canvas link cards show live status (C10). An event on a linked kind of entity refetches
+ * the open boards' refs, trailing and at most once per window, so a status change made in another
+ * tab shows within about the window while a chatty issue never floods the refs endpoint.
+ */
+const CANVAS_REFS_REFRESH_MS = 500;
+const CANVAS_REF_ENTITY_TYPES = new Set(["issue", "agent", "project", "goal"]);
+const canvasRefsTimers = new WeakMap<object, Map<string, ReturnType<typeof setTimeout>>>();
+
+export function scheduleCanvasRefsRefresh(
+  queryClient: QueryClient,
+  companyId: string,
+  entityType: string | null,
+  action: string | null,
+) {
+  if (!entityType || !CANVAS_REF_ENTITY_TYPES.has(entityType)) return;
+  if (action && /comment|read_|document|annotation|interaction/.test(action)) return;
+  let timers = canvasRefsTimers.get(queryClient);
+  if (!timers) {
+    timers = new Map();
+    canvasRefsTimers.set(queryClient, timers);
+  }
+  if (timers.has(companyId)) return;
+  timers.set(
+    companyId,
+    setTimeout(() => {
+      timers.delete(companyId);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.planningCanvasRefs.all(companyId) });
+    }, CANVAS_REFS_REFRESH_MS),
+  );
+}
+
 function invalidateActivityQueries(
   queryClient: ReturnType<typeof useQueryClient>,
   companyId: string,
@@ -1507,6 +1539,7 @@ function invalidateActivityQueries(
   const actorId = readString(payload.actorId);
   const details = readRecord(payload.details);
   queryClient.invalidateQueries({ queryKey: queryKeys.activity(companyId) });
+  scheduleCanvasRefsRefresh(queryClient, companyId, entityType, action);
   if (entityType === "issue" && (action === "issue.read_marked" || action === "issue.read_unmarked")) {
     // Audit views show read receipts, while unread state belongs to one person.
     if (entityId) {
