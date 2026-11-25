@@ -19,7 +19,8 @@ const presets = createPluginBundlerPresets({ uiEntry: "src/ui/index.tsx" });
 
 const workerCtx = await esbuild.context(presets.esbuild.worker);
 const manifestCtx = await esbuild.context(presets.esbuild.manifest);
-const uiCtx = await esbuild.context(presets.esbuild.ui);
+// splitting: noVNC (Watch live) loads as its own chunk, not into every Cockpit page (PAR-14514 F31). Target stays es2022.
+const uiCtx = await esbuild.context({ ...presets.esbuild.ui, splitting: true });
 
 if (watch) {
   await Promise.all([workerCtx.watch(), manifestCtx.watch(), uiCtx.watch()]);
