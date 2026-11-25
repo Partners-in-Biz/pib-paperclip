@@ -123,11 +123,16 @@ function useRelated(c: CanvasController, source: RelatedSource | null): { data: 
   return { data: query.data, loading: query.isLoading };
 }
 
+/** One panel per source card: ticks and the "Added" line never carry over to the next card. */
+export function RelatedPanel({ c }: { c: CanvasController }) {
+  return c.relatedFor ? <RelatedPanelBody key={c.relatedFor} c={c} /> : null;
+}
+
 /**
  * Related panel (PAR-14389 C.3): tick groups or single records of the selected card and add them as
  * a column beside it, each joined by a labelled connector. Nodes written hold plugin, type and assetId only.
  */
-export function RelatedPanel({ c }: { c: CanvasController }) {
+function RelatedPanelBody({ c }: { c: CanvasController }) {
   const { relatedFor, setRelatedFor, nodeById, opStore, nodes, connectors } = c;
   const node = relatedFor ? nodeById.get(relatedFor) : null;
   const source = relatedSourceOf(node, opStore);

@@ -134,6 +134,23 @@ describe("RelatedPanel", () => {
     expect(container.textContent).toContain("10 left out");
   });
 
+  it("starts clean when the panel moves to another card (no carried ticks or Added line)", async () => {
+    perform.mockImplementation(async (id: string) => (id === "id-crm" ? answer([card("p1")]) : answer([])));
+    const a = controller();
+    await render(a.c);
+    await click(container.querySelector('input[aria-label^="All"]'));
+    await click(addButton());
+    expect(container.textContent).toContain("Added 1");
+    // Same plugin answer for the next card: the group id is identical, so only a reset keeps it unticked.
+    const next = controller();
+    (next.c.opStore.typedMeta as Map<string, unknown>).set("src2", { kind: "embed", data: { plugin: "crm", type: "company", assetId: "co2", props: {} } });
+    (next.c as unknown as { nodeById: Map<string, unknown> }).nodeById.set("src2", node("src2", "embed"));
+    (next.c as unknown as { relatedFor: string }).relatedFor = "src2";
+    await render(next.c);
+    expect(container.textContent).not.toContain("Added 1");
+    expect((container.querySelector('input[aria-label^="All"]') as HTMLInputElement).checked).toBe(false);
+  });
+
   it("renders nothing and asks nobody without edit access", async () => {
     await render(controller({ access: "view" }).c);
     expect(container.querySelector('[data-testid="canvas-related-panel"]')).toBeNull();
