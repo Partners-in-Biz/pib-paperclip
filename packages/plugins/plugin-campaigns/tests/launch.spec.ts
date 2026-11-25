@@ -329,6 +329,17 @@ describe("cockpit waiting items", () => {
     for (const item of items) expect(item.why).toMatch(/open the campaign to approve or send back/i);
   });
 
+  it("carries client= on waiting items of a client campaign (PAR-9231)", () => {
+    const items = approvalWaiting([
+      row({ client_ref: "co-1", client_kind: "company", client_name: "Acme" }),
+      row({ id: "c2", approval_issue_id: "iss-2", issue_status: "done", client_ref: "ct-9", client_kind: "contact", client_name: "Jo" }),
+      row({ id: "c3", approval_issue_id: "iss-3" }),
+    ]);
+    expect(items[0]!.href).toBe("/campaigns?campaign=c1&client=company%3Aco-1");
+    expect(items[1]!.href).toBe("/campaigns?campaign=c2&client=contact%3Act-9");
+    expect(items[2]!.href).toBe("/campaigns?campaign=c3");
+  });
+
   it("keeps the launch row after the Cockpit prunes closed issues, and still prunes the other approval rows", () => {
     const now = Date.now();
     const old = new Date(now - AGENT_HOLD_MS - 60_000).toISOString();

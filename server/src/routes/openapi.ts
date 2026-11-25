@@ -1412,6 +1412,7 @@ const PUBLIC_OPERATIONS = new Set([
   "GET /api/ready",
   "HEAD /api/ready",
   "GET /api/openapi.json",
+  "GET /api/plugins/local-ws-key",
   "GET /api/board-claim/{token}",
   "POST /api/cli-auth/challenges",
   "GET /api/cli-auth/challenges/{id}",
@@ -9669,6 +9670,14 @@ registry.registerPath({
   tags: ["plugins"],
   summary: "List installed plugins",
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/plugins/local-ws-key",
+  tags: ["plugins"],
+  summary: "Public key that signs local plugin WebSocket upgrades",
+  responses: { 200: r.ok() },
 });
 
 registry.registerPath({

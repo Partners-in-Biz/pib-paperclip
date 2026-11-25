@@ -47,8 +47,8 @@ describe("the email card slot and its registration", () => {
     expect(src("ui/index.tsx")).toMatch(/export \{ MailCanvasCard \} from "\.\/canvas-card\.js";/);
   });
 
-  it("the worker registers through registerCanvasCards with ctx.actions.register itself, not the user wrapper", () => {
-    expect(src("worker.ts")).toMatch(/registerCanvasCards\(\{ register: ctx\.actions\.register, kinds: \[mailCardKind\(/);
+  it("the worker registers through registerCanvasCards with the access guard (g.action), not the user wrapper", () => {
+    expect(src("worker.ts")).toMatch(/registerCanvasCards\(\{ register: g\.action, kinds: \[mailCardKind\(/);
   });
 
   it("resolve and related answer; search is not registered, so the key is refused", async () => {

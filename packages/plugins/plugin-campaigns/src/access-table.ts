@@ -36,6 +36,7 @@ export const CAMPAIGNS_ACCESS_TABLE: AccessTable = Object.freeze({
     "campaigns.growth-approve-experiment", "campaigns.growth-reject-experiment", "campaigns.growth-decide-change",
   ]),
   "campaigns.preferences-load": settings("view"),
+  "campaigns.client-summary": campaigns("view"),
   "campaigns.preferences-save": settings("edit"),
   "campaigns.sync-skills": settings("edit"),
   // Marking a brand writes the page preference and changes whether a client's yes is needed: a settings change.

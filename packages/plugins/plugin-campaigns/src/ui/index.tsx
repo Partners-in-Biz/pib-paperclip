@@ -46,7 +46,8 @@ import { clientScopeFromSearch, formatClientParam, type ClientKind, type ClientS
 import { resolvePluginUiBase } from "@partnersinbiz/pib-plugin-kit/oauth-client";
 import { ModuleOffBanner, useModuleEnabled } from "./module-switch.js";
 import type { CampaignSeries } from "../series.js";
-import { approvalState, DELIVERY_LABEL } from "../detail.js";
+import { clientSummaryModel, type ClientSummaryRow } from "../client-link.js";
+import { approvalState, DELIVERY_LABEL, deliveryLabel } from "../detail.js";
 import { CampaignsOverview, STATUS_LABEL, StatusPill, awaitingApproval, percent } from "./overview.js";
 import { WeeklyReview } from "./weekly-review.js";
 import { CampaignDetail, audienceText, type CampaignDetailData } from "./detail.js";
@@ -143,6 +144,35 @@ function WorkspacePage({ header, message, children }: { header: ReactNode; messa
   );
 }
 
+/** "Client campaigns: N running, M waiting for approval"; several clients are listed, each linking into its workspace. */
+function ClientSummaryLine({ rows, linkProps }: { rows: ClientSummaryRow[]; linkProps: (href: string) => Record<string, unknown> }) {
+  const model = clientSummaryModel(rows);
+  if (!model) return null;
+  const style = { margin: "0 0 12px", fontSize: 13, color: tokens.muted, overflowWrap: "anywhere" as const };
+  const linkStyle = { color: tokens.primary, fontWeight: 600 };
+  if (model.inline) {
+    const only = model.items[0]!;
+    return (
+      <p data-testid="client-summary" style={style}>
+        {model.text}{" ("}
+        <a {...linkProps(only.href)} style={linkStyle}>{only.name}</a>{")"}
+      </p>
+    );
+  }
+  return (
+    <div data-testid="client-summary" style={style}>
+      <p style={{ margin: 0 }}>{model.text}</p>
+      <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
+        {model.items.map((item) => (
+          <li key={item.href}>
+            <a {...linkProps(item.href)} style={linkStyle}>{item.name}</a>: {item.text}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 /** One line above the tabs: what cannot work yet, and the link that fixes it. */
 function Banner({ text, link, linkProps }: { text: string; link: { label: string; href: string }; linkProps: (href: string) => Record<string, unknown> }) {
   const colors = tone("warn");
@@ -211,6 +241,9 @@ function CampaignsPageBody({ context }: PluginPageProps) {
   const scopeKey = scope ? formatClientParam(scope) : "own";
   const load = useCampaignsAction("campaigns.load");
   const loadDetail = useCampaignsAction("campaigns.detail");
+  const loadClientSummary = useCampaignsAction("campaigns.client-summary");
+  const [clientRows, setClientRows] = useState<ClientSummaryRow[]>([]);
+  const [clientError, setClientError] = useState<string | null>(null);
   const createCampaign = useCampaignsAction("campaigns.create-campaign");
   const loadPreferences = useCampaignsAction("campaigns.preferences-load");
   const savePreferences = useCampaignsAction("campaigns.preferences-save");
@@ -271,6 +304,22 @@ function CampaignsPageBody({ context }: PluginPageProps) {
       setLoadError(errorText(error));
       setMessage(errorText(error));
     });
+  }, [context.companyId, scopeKey]);
+
+  // Own page only: how the client campaigns are doing, one line.
+  useEffect(() => {
+    if (!context.companyId || scope) {
+      setClientRows([]);
+      setClientError(null);
+      return;
+    }
+    setClientError(null);
+    loadClientSummary({})
+      .then((result) => setClientRows(((result as { clients?: ClientSummaryRow[] }).clients ?? [])))
+      .catch((err: unknown) => {
+        setClientRows([]);
+        setClientError(err instanceof Error && err.message ? err.message : "Could not load the client campaigns summary.");
+      });
   }, [context.companyId, scopeKey]);
 
   useEffect(() => {
@@ -765,6 +814,8 @@ function CampaignsPageBody({ context }: PluginPageProps) {
       message={pageMessage}
       actions={headerAction}
     >
+      {clientError ? <p role="alert" data-testid="client-summary-error" style={{ margin: "0 0 12px", fontSize: 13, color: tokens.fg, overflowWrap: "anywhere" }}>Client campaigns summary unavailable: {clientError}</p> : null}
+      {clientRows.length > 0 ? <ClientSummaryLine rows={clientRows} linkProps={linkProps} /> : null}
       {body}
     </Page>
   );

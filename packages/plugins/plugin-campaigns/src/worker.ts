@@ -158,6 +158,7 @@ import { PLUGIN_ID } from "./namespace.js";
 import { campaignsGrowthStore, campaignsGrowthToolsHost } from "./growth-host.js";
 import { linkCampaignToExperiment, measureExperimentsJob } from "./growth-measure.js";
 import { enrollmentsWithFailedSend, eventCounts, eventDays } from "./db.js";
+import { ownClientCounts } from "./client-summary.js";
 import { eventTotals, weeklySends } from "./series.js";
 import { knownCompanies, publishAllSetupStatus, rememberCompany, setupStatus } from "./setup-status.js";
 import { cockpitSnapshot, publishAllCockpit } from "./cockpit.js";
@@ -216,6 +217,7 @@ const plugin = definePlugin({
       if (context.companyId) await rememberCompany(ctx, context.companyId);
       return load(ctx, context, params);
     });
+    g.action("campaigns.client-summary", async (_params, context) => ({ clients: await ownClientCounts(ctx, requiredCompany(context)) }));
     g.action("campaigns.preferences-load", (_params, context) => preferencesLoad(ctx, requiredCompany(context)));
     g.action("campaigns.preferences-save", async (params, context) => {
       const result = await preferencesSave(ctx, context, (params.patch ?? {}) as Record<string, PreferenceValue | null>);
@@ -1394,7 +1396,7 @@ async function requestApproval(ctx: PluginContext, companyId: string, params: Re
 }
 
 /** The campaign's detail view on the Campaigns page (`/<prefix>/campaigns?campaign=<id>`, with the client when it has one). */
-async function campaignPageLink(ctx: PluginContext, companyId: string, campaign: CampaignDraft): Promise<string> {
+export async function campaignPageLink(ctx: PluginContext, companyId: string, campaign: CampaignDraft): Promise<string> {
   const prefix = await ctx.companies.get(companyId).then((company) => company?.issuePrefix ?? null).catch(() => null);
   const path = withClientParam(`/campaigns?campaign=${encodeURIComponent(campaign.id)}`, campaignScope(campaign));
   return prefix ? `/${prefix}${path}` : path;
