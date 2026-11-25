@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
 import {
   agentWakeupRequests,
@@ -14,6 +14,7 @@ import {
   heartbeatRuns,
   issueComments,
   issues,
+  planningCanvasAgentGrants,
   planningCanvases,
   principalPermissionGrants,
   projectAccessMembers,
@@ -27,6 +28,7 @@ import { planningCanvasChatRoutes } from "../routes/planning-canvas-chat.js";
 import { planningCanvasRoutes } from "../routes/planning-canvases.js";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { memberRestrictionRouteGuard } from "../services/member-restriction/route-middleware.js";
+import { PLANNING_CANVAS_AGENT_GRANTS_ENV } from "../services/planning-canvas-access.js";
 import { planningCanvasOpsService } from "../services/planning-canvas-ops.js";
 import { PLANNING_CANVAS_CHAT_ENV } from "../services/planning-canvas-switches.js";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
@@ -319,6 +321,70 @@ describe("planning canvas chat wake database support", () => {
     expect(agentComments.length).toBeGreaterThan(0);
     // Only the asker's message woke a run: no run was started by the agent's own comment.
     expect(executed).toHaveLength(1);
+  });
+
+  describe("a personal board under issue privacy enforce (PAR-14639)", () => {
+    let personalBoardId = "";
+
+    beforeAll(async () => {
+      const [board] = await db.insert(planningCanvases)
+        .values({ companyId, userId: ASKER, title: "Asker's own board", scope: "personal", memberAccess: "view" }).returning();
+      personalBoardId = board!.id;
+      await planningCanvasOpsService(db).applyOps({ companyId, boardId: personalBoardId, actor: { type: "user", id: ASKER },
+        batch: { ops: [{ op: "add", item: { itemType: "node", key: "p1", kind: "sticky", x: 0, y: 0, width: 100, height: 80, zIndex: 1, color: "yellow", title: "Mine", content: "" } }] } });
+    });
+
+    beforeEach(() => {
+      vi.stubEnv("PAPERCLIP_ISSUE_PRIVACY_MODE", "enforce");
+      vi.stubEnv(PLANNING_CANVAS_AGENT_GRANTS_ENV, "on");
+      seen.paths = { ...seen.paths, chatBoardId: personalBoardId };
+    });
+
+    afterEach(() => {
+      seen.paths = { ...seen.paths, chatBoardId };
+    });
+
+    async function sendPersonal() {
+      return request(seen.app!).post(`/api/companies/${companyId}/planning-canvases/${personalBoardId}/chat`)
+        .set({ "x-test-session": ASKER, origin: "http://localhost" })
+        .send({ agentId, body: "Sort my notes", clientRequestId: randomUUID(), context: { itemKeys: ["p1"] } });
+    }
+
+    it.each([
+      ["with a live board grant: reads the board", true, 200],
+      ["with no board grant: the run still starts; the board stays closed", false, 404],
+    ] as const)("%s; the run works for the asker; nobody joins the private project", async (_label, granted, boardStatus) => {
+      await db.update(companies).set({ memberRestrictionMode: "enforce" }).where(eq(companies.id, companyId));
+      await db.update(issues).set({ hiddenAt: new Date() })
+        .where(and(eq(issues.companyId, companyId), eq(issues.originId, `${personalBoardId}:chat`)));
+      await db.delete(planningCanvasAgentGrants).where(eq(planningCanvasAgentGrants.boardId, personalBoardId));
+      if (granted) {
+        // The agent's live grant on the asker's board (written by a mention or handoff of the owner; plan: no chat source).
+        const [grantIssue] = await db.insert(issues).values({ companyId, title: "Owner handoff", status: "todo", priority: "medium",
+          assigneeAgentId: otherAgentId, createdByUserId: ASKER }).returning();
+        await db.insert(planningCanvasAgentGrants).values({ companyId, boardId: personalBoardId, agentId, issueId: grantIssue!.id,
+          grantedByUserId: ASKER, source: "handoff" });
+      }
+      const membersBefore = await db.select().from(projectAccessMembers).where(eq(projectAccessMembers.companyId, companyId));
+      const started = new Date();
+      const res = await sendPersonal();
+      expect(res.status, res.text).toBe(201);
+      const [thread] = await db.select().from(issues).where(eq(issues.id, res.body.threadIssueId));
+      expect(thread!.visibility).toBe("private");
+      const runs = await runsFor(res.body.threadIssueId, started);
+      expect(runs.length).toBeGreaterThan(0);
+      expect(runs.map((run) => ({ status: run.status, errorCode: run.errorCode, error: run.error })))
+        .toEqual(runs.map(() => ({ status: "succeeded", errorCode: null, error: null })));
+      expect(messageRuns(runs, res.body.commentId)).toHaveLength(1);
+      expect(actingPersons(runs)).toEqual(runs.map(() => ({ person: ASKER, chatBoard: boardStatus, boardX: 404 })));
+      // Nobody (agent or another person) became an access member of a private project.
+      const membersAfter = await db.select().from(projectAccessMembers).where(eq(projectAccessMembers.companyId, companyId));
+      const added = membersAfter.filter((m) => !membersBefore.some((b) => b.id === m.id));
+      expect(added.filter((m) => m.subjectType !== "user" || m.subjectId !== ASKER)).toEqual([]);
+      // Another member still cannot read the thread.
+      const other = await request(seen.app!).get(`/api/issues/${thread!.id}`).set({ "x-test-session": SECOND, origin: "http://localhost" });
+      expect(other.status).toBe(404);
+    });
   });
 
   it.each(["done", "cancelled"] as const)("a %s thread: the next message reopens it and wakes exactly one run, for the asker", async (status) => {
