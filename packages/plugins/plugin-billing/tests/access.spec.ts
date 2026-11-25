@@ -120,6 +120,18 @@ describe("Billing actions that reach a client with no further approval need bill
     const off = await boot("off");
     expect(await reached(off.performAction("billing.create-subscription", { autoSend: true }, operator))).toMatchObject({ threw: expect.stringMatching(/client is required/) });
   });
+  it("update-recurring: repointing an auto-send schedule needs invoices approve; a manual schedule or approver is fine", async () => {
+    const rowOf = (autoSend: boolean) => ({ id: "r1", company_id: CO, template_invoice_id: "inv-old", auto_send: autoSend });
+    const attempt = async (allows: string[], autoSend: boolean) => {
+      const h = await boot("enforce", allows);
+      Object.assign(h.ctx.db, { namespace: "plugin_billing_test", query: async () => [rowOf(autoSend)] });
+      return h.performAction("billing.update-recurring", { recurringId: "r1", templateInvoiceId: "inv-new" }, operator);
+    };
+    const refused = await attempt(["billing.plans:edit"], true);
+    expect(isRefusal(refused) && refused.message).toMatch(/needs billing\.invoices approve/);
+    expect(isRefusal(await attempt(["billing.plans:edit"], false))).toBe(false);
+    expect(isRefusal(await attempt(["billing.plans:edit", "billing.invoices:approve"], true))).toBe(false);
+  });
 });
 
 describe("Billing API routes by URL", () => {

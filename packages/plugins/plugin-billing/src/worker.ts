@@ -445,7 +445,7 @@ const plugin = definePlugin({
       guard.action(key, async (params, context, check) => {
         // The page never waits long for the skill sync (kit `soon`).
         if (context.companyId && key === "billing.load") await skillSync?.soon(context.companyId);
-        const autoSendRefused = AUTO_SEND_ACTIONS.has(key) ? await autoSendRefusal(ctx, context, params ?? {}, check) : null;
+        const autoSendRefused = AUTO_SEND_ACTIONS.has(key) ? await autoSendRefusal(ctx, context, params ?? {}, check, key) : null;
         if (autoSendRefused) return permissionRefusal(autoSendRefused);
         return handler(ctx, context, params ?? {});
       });
@@ -971,11 +971,19 @@ async function quoteHtml(ctx: PluginContext, context: PluginPerformActionContext
  * needs `billing.invoices:approve` as well as the action's `billing.plans` row (PAR-12675). Agents cannot turn it on
  * at all (`requirePerson`), and with the switch off or in `report` nothing changes.
  */
-async function autoSendRefusal(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>, check: AccessCheck): Promise<string | null> {
+async function autoSendRefusal(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>, check: AccessCheck, key = ""): Promise<string | null> {
   if (check.mode !== "enforce" || check.caller.type !== "user" || !check.caller.userId) return null;
-  if (params.autoSend !== true && params.autoSend !== "true") return null;
+  const turnsOn = params.autoSend === true || params.autoSend === "true";
+  const turnsOff = params.autoSend === false || params.autoSend === "false";
+  // Repointing a schedule that already sends by itself puts another invoice out unapproved (the job copies the template and sends it).
+  let repoints = false;
+  if (!turnsOn && !turnsOff && key === "billing.update-recurring" && optionalString(params, "templateInvoiceId")) {
+    const row = await getRecurring(ctx, requiredString(params, "recurringId"));
+    repoints = Boolean(row && row.company_id === requiredCompany(context) && row.auto_send && row.template_invoice_id !== params.templateInvoiceId);
+  }
+  if (!turnsOn && !repoints) return null;
   const verdict = judgeAccess(await cachedAccessFor(ctx, requiredCompany(context), check.caller.userId), AUTO_SEND_PERMISSION);
-  return verdict.ok ? null : `Turning on automatic sending needs billing.invoices approve: ${verdict.reason}`;
+  return verdict.ok ? null : `${repoints ? "Changing the invoice an automatic schedule sends" : "Turning on automatic sending"} needs billing.invoices approve: ${verdict.reason}`;
 }
 
 async function createRecurringAction(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {
