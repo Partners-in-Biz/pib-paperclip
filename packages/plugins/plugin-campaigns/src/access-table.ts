@@ -29,7 +29,7 @@ export const CAMPAIGNS_ACCESS_TABLE: AccessTable = Object.freeze({
   // Planning Canvas entity cards (PAR-14423): reading, so `view`, as the page's detail and list.
   ...rows(VIEW, ["canvas.cards.resolve", "canvas.cards.search", "canvas.cards.related"]),
   "campaigns.create-campaign": CREATE,
-  ...rows(EDIT, ["campaigns.add-step", "campaigns.request-approval", "campaigns.pause", "campaigns.complete", "campaigns.enroll", "campaigns.declare-winner"]),
+  ...rows(EDIT, ["campaigns.add-step", "campaigns.request-approval", "campaigns.pause", "campaigns.complete", "campaigns.enroll", "campaigns.declare-winner", "campaigns.move"]),
   // Launching or resuming sends to people; approving, sending back and the Growth Lab decisions are decisions.
   ...rows(APPROVE, [
     "campaigns.launch", "campaigns.resume", "campaigns.approve", "campaigns.send-back",
@@ -38,6 +38,8 @@ export const CAMPAIGNS_ACCESS_TABLE: AccessTable = Object.freeze({
   "campaigns.preferences-load": settings("view"),
   "campaigns.preferences-save": settings("edit"),
   "campaigns.sync-skills": settings("edit"),
+  // Marking a brand writes the page preference and changes whether a client's yes is needed: a settings change.
+  "campaigns.set-own-brand": settings("edit"),
 
   // Agent tools.
   ...rows(VIEW, [

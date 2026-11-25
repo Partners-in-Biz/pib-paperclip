@@ -26,22 +26,22 @@ describe("campaigns preferences", () => {
     clearMessagingCache();
     const ctx = boot();
     const values = await readCampaignPreferences(ctx, CLIENT);
-    expect(values).toEqual({ timezone: "Africa/Johannesburg", defaultFromName: "Acme Plumbing" });
+    expect(values).toEqual({ timezone: "Africa/Johannesburg", defaultFromName: "Acme Plumbing", ownBrands: "" });
     expect(JSON.stringify(values)).not.toMatch(/PiB|Partners in Biz/);
     expect((await preferencesLoad(ctx, CLIENT)).fields.map((f) => JSON.stringify(f)).join()).not.toMatch(/PiB|Partners in Biz/);
   });
 
   it("falls back to an explicitly saved host setting, and a saved preference wins over it", async () => {
     const ctx = boot({ timezone: "Africa/Cairo", defaultFromName: "Acme Heating" });
-    expect(await readCampaignPreferences(ctx, CLIENT)).toEqual({ timezone: "Africa/Cairo", defaultFromName: "Acme Heating" });
+    expect(await readCampaignPreferences(ctx, CLIENT)).toEqual({ timezone: "Africa/Cairo", defaultFromName: "Acme Heating", ownBrands: "" });
     const saved = await preferencesSave(ctx, { companyId: CLIENT, actor: { type: "user", userId: "u-owner" } }, { defaultFromName: "Acme Plumbing Co" });
     expect(saved.ok).toBe(true);
-    expect(await readCampaignPreferences(ctx, CLIENT)).toEqual({ timezone: "Africa/Cairo", defaultFromName: "Acme Plumbing Co" });
+    expect(await readCampaignPreferences(ctx, CLIENT)).toEqual({ timezone: "Africa/Cairo", defaultFromName: "Acme Plumbing Co", ownBrands: "" });
   });
 
   it("keeps PAR's old values: the pinned sender name, and its saved timezone", async () => {
-    expect(await readCampaignPreferences(boot(), PAR)).toEqual({ timezone: "Africa/Johannesburg", defaultFromName: "Partners in Biz" });
-    expect(await readCampaignPreferences(boot({ timezone: "Africa/Lagos", defaultFromName: "PiB Growth" }), PAR)).toEqual({ timezone: "Africa/Lagos", defaultFromName: "PiB Growth" });
+    expect(await readCampaignPreferences(boot(), PAR)).toEqual({ timezone: "Africa/Johannesburg", defaultFromName: "Partners in Biz", ownBrands: "" });
+    expect(await readCampaignPreferences(boot({ timezone: "Africa/Lagos", defaultFromName: "PiB Growth" }), PAR)).toEqual({ timezone: "Africa/Lagos", defaultFromName: "PiB Growth", ownBrands: "" });
   });
 
   it("the send window clock follows the preference", async () => {
@@ -70,7 +70,7 @@ describe("campaigns preferences", () => {
     expect(result).toMatchObject({ ok: false });
   });
 
-  it("only exposes the two moved fields", () => {
-    expect(Object.keys(campaignsPreferences.fields)).toEqual(["timezone", "defaultFromName"]);
+  it("only exposes the two moved fields and the list of our own brands", () => {
+    expect(Object.keys(campaignsPreferences.fields)).toEqual(["timezone", "defaultFromName", "ownBrands"]);
   });
 });
