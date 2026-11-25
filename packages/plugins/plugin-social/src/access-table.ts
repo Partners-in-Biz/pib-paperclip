@@ -83,8 +83,8 @@ export const ACCESS_TABLE: AccessTable = Object.freeze({
   "social.delete-account": accounts("delete"),
   // ── page actions: settings ──
   "social.approval-policy": settings("view"),
-  "social.set-approval-policy": settings("edit"),
-  "social.set-approval-delegate": settings("edit"),
+  "social.set-approval-policy": posts("approve"),
+  "social.set-approval-delegate": posts("approve"),
   "social.create-rss-feed": settings("edit"),
   "social.set-rss-active": settings("edit"),
   "social.growth-update-program": settings("edit"),

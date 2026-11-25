@@ -20,13 +20,15 @@ const files = (dir: string): string[] =>
     return statSync(path).isDirectory() ? files(path) : /\.tsx?$/.test(name) ? [path] : [];
   });
 
-/** What goes out to the public or signs a post off: never with edit alone. */
+/** What goes out to the public or signs a post off (changing who must sign off can complete pending approvals): never with edit or settings alone. */
 const OUTGOING = [
   "social.approve",
   "social.schedule",
   "social.retry-post",
   "social.reply-inbox",
   "social.record-client-approval",
+  "social.set-approval-policy",
+  "social.set-approval-delegate",
   "my-social.approve",
   "tool:schedule-post",
   "tool:bulk-schedule",
