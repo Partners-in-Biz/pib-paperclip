@@ -1,4 +1,4 @@
-/** Migration 023 (newsletter intake) on a real Postgres: existing sources keep working, both CHECKs hold, and the store reads and writes the new columns. */
+/** Migrations 023 (newsletter intake) and 024 (hourly cap) on a real Postgres: existing sources keep working, both CHECKs hold, and the store reads and writes the new columns. */
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { NAMESPACE } from "../src/namespace.js";
@@ -28,7 +28,7 @@ function newsletterRow(id: string, values: Record<string, string | null>) {
   return [id, "co-1", `Newsletter ${id}`, `pibl_${id.padEnd(24, "n")}`, "newsletter", values.apply_tags, values.confirm_url, values.confirm_from, values.confirm_secret, values.signing_secret, values.consent_text];
 }
 
-describe.skipIf(!available)("migration 023 on an existing database", () => {
+describe.skipIf(!available)("migrations 023 and 024 on an existing database", () => {
   it("keeps existing sources as they were, allows newsletter, and enforces lead_sources_newsletter both ways", async () => {
     const pg = await startPg({ upTo: 22 });
     const q = (sql: string, values: unknown[] = []) => pg.client.query(sql, values);
@@ -36,11 +36,12 @@ describe.skipIf(!available)("migration 023 on an existing database", () => {
       await q(OLD_INSERT, ["s1", "co-1", null, null, "Contact", null, "https://acme.co.za", "pibl_aaaaaaaaaaaaaaaaaaaaaaaa", null, "active", false, "Yes", null, null, null, 120, "agent:a", "lead", null, null]);
       await q(OLD_INSERT, ["s2", "co-1", null, null, "Report", null, null, "pibl_bbbbbbbbbbbbbbbbbbbbbbbb", "pibs_x", "active", false, null, null, null, null, 120, "agent:a", "issue", "p1", null]);
       await q(readFileSync(new URL("../migrations/023_crm.sql", import.meta.url), "utf8"));
+      await q(readFileSync(new URL("../migrations/024_crm.sql", import.meta.url), "utf8"));
 
       // Existing rows satisfy both CHECKs unchanged and read back with the defaults.
-      expect((await q(`SELECT id, intake, apply_tags, confirm_url, confirm_from, confirm_secret, confirm_daily_cap FROM ${T} ORDER BY id`)).rows).toEqual([
-        { id: "s1", intake: "lead", apply_tags: [], confirm_url: null, confirm_from: null, confirm_secret: null, confirm_daily_cap: 300 },
-        { id: "s2", intake: "issue", apply_tags: [], confirm_url: null, confirm_from: null, confirm_secret: null, confirm_daily_cap: 300 },
+      expect((await q(`SELECT id, intake, apply_tags, confirm_url, confirm_from, confirm_secret, confirm_daily_cap, confirm_hourly_cap FROM ${T} ORDER BY id`)).rows).toEqual([
+        { id: "s1", intake: "lead", apply_tags: [], confirm_url: null, confirm_from: null, confirm_secret: null, confirm_daily_cap: 300, confirm_hourly_cap: null },
+        { id: "s2", intake: "issue", apply_tags: [], confirm_url: null, confirm_from: null, confirm_secret: null, confirm_daily_cap: 300, confirm_hourly_cap: null },
       ]);
       // The old insert, update and select statements run against the new schema.
       await q(OLD_INSERT, ["s3", "co-1", "company", "acc-1", "Quote", null, null, "pibl_cccccccccccccccccccccccc", null, "active", false, null, null, null, null, 120, null, "lead", null, null]);
@@ -73,6 +74,12 @@ describe.skipIf(!available)("migration 023 on an existing database", () => {
       await expect(q(`UPDATE ${T} SET confirm_url = 'https://acme.co.za/c' WHERE id = 's2'`)).rejects.toThrow(/lead_sources_newsletter/);
       await expect(q(`UPDATE ${T} SET confirm_from = 'a@acme.co.za' WHERE id = 's1'`)).rejects.toThrow(/lead_sources_newsletter/);
       await expect(q(`UPDATE ${T} SET confirm_secret = 'pibs_y' WHERE id = 's1'`)).rejects.toThrow(/lead_sources_newsletter/);
+      await expect(q(`UPDATE ${T} SET confirm_hourly_cap = 30 WHERE id = 's2'`)).rejects.toThrow(/lead_sources_newsletter/);
+      // 024: a newsletter source has no hourly cap (the 0.51 insert above leaves it null) or one from 1 to 300.
+      expect((await q(`SELECT confirm_hourly_cap FROM ${T} WHERE id = 'n1'`)).rows).toEqual([{ confirm_hourly_cap: null }]);
+      await q(`UPDATE ${T} SET confirm_hourly_cap = 30 WHERE id = 'n1'`);
+      await q(`UPDATE ${T} SET confirm_hourly_cap = 300 WHERE id = 'n1'`);
+      for (const bad of [0, 301]) await expect(q(`UPDATE ${T} SET confirm_hourly_cap = $1 WHERE id = 'n1'`, [bad]), String(bad)).rejects.toThrow(/lead_sources_newsletter/);
       // A lead source cannot become a newsletter without its settings, nor a newsletter source drop them.
       await expect(q(`UPDATE ${T} SET intake = 'newsletter' WHERE id = 's1'`)).rejects.toThrow(/lead_sources_newsletter/);
       await expect(q(`UPDATE ${T} SET intake = 'lead' WHERE id = 'n1'`)).rejects.toThrow(/lead_sources_newsletter/);
@@ -89,23 +96,23 @@ describe.skipIf(!available)("migration 023 on an existing database", () => {
         publicKey: "pibl_nnnnnnnnnnnnnnnnnnnnnnnn", previousKey: null, previousKeyUntil: null, signingSecret: "pibs_s", status: "active", canary: false,
         consentText: "Yes, send me the Friday list.", privacyUrl: null, successMessage: null, turnstileSiteKey: null, rateLimitPerHour: 20,
         acceptedCount: 0, rejectedCount: 0, lastSubmissionAt: null, createdBy: "user:u1", createdAt: null, intake: "newsletter", targetProjectId: null, targetAgentId: null,
-        applyTags: ["remotesaffa-subscribers"], confirmUrl: "https://remotesaffa.co.za/subscribe/confirm", confirmFrom: "hello@remotesaffa.co.za", confirmSecret: "pibs_c", confirmDailyCap: 250,
+        applyTags: ["remotesaffa-subscribers"], confirmUrl: "https://remotesaffa.co.za/subscribe/confirm", confirmFrom: "hello@remotesaffa.co.za", confirmSecret: "pibs_c", confirmDailyCap: 250, confirmHourlyCap: 30,
       };
       await insertLeadSource(pg.ctx, base);
-      await insertLeadSource(pg.ctx, { ...base, id: "l1", label: "Contact", publicKey: "pibl_llllllllllllllllllllllll", signingSecret: null, intake: "lead", applyTags: [], confirmUrl: null, confirmFrom: null, confirmSecret: null, confirmDailyCap: 300 });
-      expect(await getLeadSource(pg.ctx, "co-1", "n1")).toMatchObject({ intake: "newsletter", applyTags: ["remotesaffa-subscribers"], confirmUrl: base.confirmUrl, confirmFrom: base.confirmFrom, confirmSecret: "pibs_c", confirmDailyCap: 250 });
+      await insertLeadSource(pg.ctx, { ...base, id: "l1", label: "Contact", publicKey: "pibl_llllllllllllllllllllllll", signingSecret: null, intake: "lead", applyTags: [], confirmUrl: null, confirmFrom: null, confirmSecret: null, confirmDailyCap: 300, confirmHourlyCap: null });
+      expect(await getLeadSource(pg.ctx, "co-1", "n1")).toMatchObject({ intake: "newsletter", applyTags: ["remotesaffa-subscribers"], confirmUrl: base.confirmUrl, confirmFrom: base.confirmFrom, confirmSecret: "pibs_c", confirmDailyCap: 250, confirmHourlyCap: 30 });
       await insertLeadSource(pg.ctx, { ...base, id: "n2", publicKey: "pibl_oooooooooooooooooooooooo", signingSecret: null });
       expect(await getLeadSource(pg.ctx, "co-1", "n2")).toMatchObject({ intake: "newsletter", signingSecret: null, confirmSecret: "pibs_c" });
-      expect(await getLeadSource(pg.ctx, "co-1", "l1")).toMatchObject({ intake: "lead", applyTags: [], confirmUrl: null, confirmSecret: null, confirmDailyCap: 300 });
+      expect(await getLeadSource(pg.ctx, "co-1", "l1")).toMatchObject({ intake: "lead", applyTags: [], confirmUrl: null, confirmSecret: null, confirmDailyCap: 300, confirmHourlyCap: null });
 
-      await saveLeadSourceSettings(pg.ctx, { ...base, applyTags: ["a", "b"], confirmDailyCap: 100 });
+      await saveLeadSourceSettings(pg.ctx, { ...base, applyTags: ["a", "b"], confirmDailyCap: 100, confirmHourlyCap: null });
       await saveConfirmSecret(pg.ctx, "co-1", "n1", "pibs_new");
       // The confirm secret is only ever set on a newsletter source.
       await saveConfirmSecret(pg.ctx, "co-1", "l1", "pibs_other");
-      expect((await listLeadSources(pg.ctx, "co-1")).map((row) => [row.id, row.applyTags, row.confirmSecret, row.confirmDailyCap])).toEqual([
-        ["n1", ["a", "b"], "pibs_new", 100],
-        ["l1", [], null, 300],
-        ["n2", ["remotesaffa-subscribers"], "pibs_c", 250],
+      expect((await listLeadSources(pg.ctx, "co-1")).map((row) => [row.id, row.applyTags, row.confirmSecret, row.confirmDailyCap, row.confirmHourlyCap])).toEqual([
+        ["n1", ["a", "b"], "pibs_new", 100, null],
+        ["l1", [], null, 300, null],
+        ["n2", ["remotesaffa-subscribers"], "pibs_c", 250, 30],
       ]);
     } finally {
       await pg.stop();
