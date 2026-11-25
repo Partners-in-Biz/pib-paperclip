@@ -154,11 +154,12 @@ jobs:
 
       # Blocking (PAR-12891): a red test fails the job. If a test needs services this light job does not start,
       # exclude that file in its project's vitest config; never re-add continue-on-error.
-      # Excluded in the project vitest configs (CLI --exclude is ignored when the root config uses `projects`), because
-      # they fail on development itself (PAR-14632, not caused by a PR):
+      # Skipped below because they fail on development itself (PAR-14632, not caused by a PR). CLI --exclude is ignored
+      # when the root config uses `projects`, and a vitest config edit would rerun every test of that project, so the
+      # step lists the affected files, drops these two paths and runs the rest:
       #   packages/adapters/hermes/src/server/execute.instructions.test.ts (3 tests: --resume / system prompt capture)
       #   server/src/__tests__/plugin-scoped-api-routes.test.ts ('dispatches a board GET route ...')
-      # Remove each exclude (packages/adapters/hermes/vitest.config.ts, server/vitest.config.ts) once its test is fixed.
+      # Remove a path from the grep below once its test is fixed on development.
       # The job budget is 30 minutes. A large server diff spends most of that on typecheck, and an unbounded
       # vitest --changed then cancels the whole check. Stop this step first so a long run cannot
       # erase a green typecheck.
@@ -175,8 +176,18 @@ jobs:
               [ -n "$name" ] && projects+=(--project "$name")
             done < <(pnpm --filter "...[origin/${BASE_REF}]" list --json --depth -1 | jq -r '.[].name')
           fi
+          list_json="${RUNNER_TEMP}/related-test-files.json"
+          pnpm exec vitest list --filesOnly --json="$list_json" --changed "origin/${BASE_REF}" "${projects[@]}" >/dev/null
+          mapfile -t files < <(jq -r --arg root "$PWD/" '.[].file | ltrimstr($root)' "$list_json" | sort -u \
+            | grep -vxF -e 'packages/adapters/hermes/src/server/execute.instructions.test.ts' \
+                        -e 'server/src/__tests__/plugin-scoped-api-routes.test.ts' || true)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "no related test files"
+            exit 0
+          fi
+          printf 'related test file: %s\n' "${files[@]}"
           rc=0
-          timeout 12m pnpm exec vitest run --changed "origin/${BASE_REF}" "${projects[@]}" --passWithNoTests || rc=$?
+          timeout 12m pnpm exec vitest run "${files[@]}" || rc=$?
           if [ "$rc" -eq 124 ]; then
             echo "::error::Changed-file tests hit the 12 minute limit and were stopped. This is a failure, not a pass: run them locally or split the PR."
           fi

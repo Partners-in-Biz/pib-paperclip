@@ -6,7 +6,6 @@ export default defineConfig({
     // GitHub-hosted runners keep vitest's default (cores - 1); all root projects must agree (PAR-12762).
     maxWorkers: process.env.RUNNER_ENVIRONMENT === "github-hosted" ? undefined : process.env.CI ? 8 : 4,
     environment: "node",
-    // Temporary (PAR-14632): fails on development itself, so it must not block the changed-file CI step.
-    exclude: ["dist/**", "node_modules/**", "src/server/execute.instructions.test.ts"],
+    exclude: ["dist/**", "node_modules/**"],
   },
 });

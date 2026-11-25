@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 
-import { configDefaults, defineConfig } from "vitest/config";
+import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   resolve: {
@@ -22,8 +22,6 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["src/**/*.test.ts", "scripts/**/*.test.mjs"],
-    // Temporary (PAR-14632): fails on development itself, so it must not block the changed-file CI step.
-    exclude: [...configDefaults.exclude, "src/__tests__/plugin-scoped-api-routes.test.ts"],
     // Each server suite boots + tears down its own embedded Postgres in
     // beforeAll/afterAll. Under the loaded serial shard (maxWorkers=1) the
     // graceful shutdown can occasionally cross vitest's default 10s hookTimeout,
