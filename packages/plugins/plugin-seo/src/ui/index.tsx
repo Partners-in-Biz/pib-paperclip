@@ -187,8 +187,9 @@ function SeoPageBody({ context }: PluginPageProps) {
   // A sprint opened from the wrong workspace reopens in the one it belongs to.
   const reopenIn = (id: string, client: string | null, clientName: string | null) => {
     const tab = search.get("tab");
+    const filter = search.get("filter");
     carry(client ? `This sprint belongs to ${clientName ?? "a client"}, so it opens in that client's workspace.` : "This sprint is one of our own sites, so it opens under our own SEO.");
-    nav.navigate(sprintPagePath("/seo", id, parseClientParam(client), tab ? { tab } : {}), { replace: true });
+    nav.navigate(sprintPagePath("/seo", id, parseClientParam(client), { ...(tab ? { tab } : {}), ...(filter ? { filter } : {}) }), { replace: true });
   };
 
   // The SEO home: "finish setting up" (the same checklist Setup shows) and the routines' real schedules.

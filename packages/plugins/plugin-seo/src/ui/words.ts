@@ -165,7 +165,7 @@ export function previewsFor(previews: PreviewItem[], filter: PreviewFilter): Pre
   });
 }
 
-/** The badge: pending, passed and not expired. */
+/** The badge: the same rows as the Awaiting chip, so the two cannot drift. */
 export function awaitingCount(previews: PreviewItem[] | undefined): number {
-  return (previews ?? []).filter((p) => p.status === "pending" && p.reviewStatus === "passed" && !p.expired && !p.superseded).length;
+  return previewsFor(previews ?? [], "awaiting").length;
 }

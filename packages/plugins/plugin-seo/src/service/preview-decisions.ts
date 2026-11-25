@@ -182,10 +182,12 @@ export async function decidePreview(env: Env, companyId: string, actor: Actor, p
   const decision = oneOf(params, "decision", DECISIONS) as Decision | undefined;
   if (!decision) throw new SeoError(`decision must be one of: ${DECISIONS.join(", ")}`);
   const note = str(params, "note", { max: 2000 }) ?? null;
-  if (decision !== "approved" && (!note || note.length < MIN_REASON)) {
-    throw new SeoError(`${decision === "declined" ? "A decline" : "A request for changes"} needs a reason of at least ${MIN_REASON} characters: the SEO agent reads it.`);
-  }
   const ids = previewIds(params);
+  // A refusal a board user can hit from the tab comes back as skipped rows: a thrown error reaches the browser as Cloudflare's "error code: 502".
+  if (decision !== "approved" && (!note || note.length < MIN_REASON)) {
+    const reason = `${decision === "declined" ? "A decline" : "A request for changes"} needs a reason of at least ${MIN_REASON} characters: the SEO agent reads it.`;
+    return { sprintId: reqStr(params, "sprintId"), decision, decided: [] as string[], skipped: ids.map((id): Skipped => ({ id, reason })) };
+  }
   const { sprint } = await loadSprintContext(env, companyId, reqStr(params, "sprintId"));
   assertWritable(sprint);
   const rows = await readRows(env, companyId, sprint.id, ids);

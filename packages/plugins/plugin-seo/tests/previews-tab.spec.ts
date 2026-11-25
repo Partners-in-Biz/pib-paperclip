@@ -51,8 +51,12 @@ describe("previews tab filters and badge (PAR-9145)", async () => {
     expect(ids("applied")).toEqual(["app", "appsup"]);
     expect(ids("expired")).toEqual(["exp"]);
   });
-  it("badge counts pending, passed, not expired, not superseded", () => {
-    expect(awaitingCount(all)).toBe(1);
+  it("badge equals the Awaiting chip: pending, not expired, not superseded, any review state", () => {
+    expect(awaitingCount(all)).toBe(2);
+    expect(awaitingCount(all)).toBe(previewsFor(all, "awaiting").length);
+    const mix = [p({ id: "n", reviewStatus: "pending" }), p({ id: "p1" }), p({ id: "p2" })];
+    expect(awaitingCount(mix)).toBe(3);
+    expect(previewsFor(mix, "awaiting")).toHaveLength(3);
     expect(awaitingCount(undefined)).toBe(0);
   });
 });
