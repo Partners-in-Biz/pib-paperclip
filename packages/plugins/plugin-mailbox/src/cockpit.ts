@@ -6,6 +6,7 @@
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import {
+  jobCompanyIds,
   decisionStats,
   emptySnapshot,
   isModuleEnabled,
@@ -293,7 +294,7 @@ async function qualityMetrics(ctx: PluginContext, companyId: string, counts: Cou
 /** Hourly: push the snapshot for every company with saved settings and the Mailbox on. */
 export async function publishAllCockpit(ctx: PluginContext): Promise<number> {
   let published = 0;
-  for (const companyId of await knownCompanies(ctx)) {
+  for (const companyId of await jobCompanyIds(ctx, await knownCompanies(ctx))) {
     try {
       if (!(await isModuleEnabled(ctx, companyId, PLUGIN_ID))) continue;
       const loaded = await loadMailboxConfig(ctx, companyId);

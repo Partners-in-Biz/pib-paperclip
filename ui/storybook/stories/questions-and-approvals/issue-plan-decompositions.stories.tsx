@@ -73,6 +73,7 @@ function HydratedSection({
           <IssuePlanDecompositionsSection
             issueId={issueId}
             issueIdentifier={issueIdentifier}
+            companyId="company-storybook"
             agentMap={storybookAgentMap}
           />
         </div>

@@ -1,0 +1,12 @@
+{
+  "name": "@paperclipai/e2e-member-restriction-issues-plugin",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Browser-test fixture (PAR-13267): one plugin page that renders the SDK IssuesList. No build step.",
+  "paperclipPlugin": {
+    "manifest": "./manifest.js",
+    "worker": "./worker.js",
+    "ui": "./ui/"
+  }
+}

@@ -365,6 +365,9 @@ const ACCOUNT_PATCH_CASTS: Record<keyof AccountPatch, string> = {
 
 const textArray = (n: number) => `ARRAY(SELECT jsonb_array_elements_text($${n}::jsonb))`;
 
+/** The most mail `mailForClient` returns (a board's Related group). */
+export const MAIL_FOR_CLIENT_MAX = 50;
+
 function json(value: unknown): string {
   return JSON.stringify(value ?? null);
 }
@@ -732,6 +735,41 @@ export class SqlStore implements GmailStore {
   async getMessage(companyId: string, id: string): Promise<MessageRow | null> {
     const rows = await this.db.query<MessageRow>(`SELECT ${MESSAGE_COLUMNS} FROM ${this.t("messages")} WHERE company_id = $1 AND id = $2 LIMIT 1`, [companyId, id]);
     return rows[0] ? normaliseMessage(rows[0]) : null;
+  }
+
+  /** The messages of this company among `ids` (a board's email cards, at most 100 per call); an id of another company or a deleted one is simply not returned. */
+  async messagesByIds(companyId: string, ids: string[]): Promise<MessageRow[]> {
+    if (ids.length === 0) return [];
+    const rows = await this.db.query<MessageRow>(
+      `SELECT ${MESSAGE_COLUMNS} FROM ${this.t("messages")} WHERE company_id = $1 AND id = ANY(${textArray(2)}) LIMIT 100`,
+      [companyId, json(ids.slice(0, 100))],
+    );
+    return rows.map(normaliseMessage);
+  }
+
+  /**
+   * Mail of one CRM client, for a board card's Related (PAR-14389 C.2): mail tagged with the client, or with one of the client's
+   * addresses (`emails`) or domains (`domains`, matched on the part after `@`) in from, reply-to, to, cc or bcc. Drafts and Trash are
+   * left out; newest first, at most 50. Not `messagesInvolving` (erasure: no order, 5000 rows).
+   */
+  async mailForClient(companyId: string, client: { kind: "company" | "contact"; id: string; emails: string[]; domains: string[] }, limit = MAIL_FOR_CLIENT_MAX): Promise<MessageRow[]> {
+    const rows = await this.db.query<MessageRow>(
+      `SELECT ${MESSAGE_COLUMNS} FROM ${this.t("messages")}
+        WHERE company_id = $1 AND status <> 'draft' AND NOT (labels @> '["TRASH"]'::jsonb)
+          AND ((client_kind = $2 AND client_ref = $3)
+            OR EXISTS (SELECT 1 FROM jsonb_array_elements(jsonb_build_array(coalesce(from_addr, '{}'::jsonb), coalesce(reply_to_addr, '{}'::jsonb)) || to_addrs || cc_addrs || bcc_addrs) AS a
+              WHERE lower(a ->> 'email') = ANY(${textArray(4)}) OR split_part(lower(a ->> 'email'), '@', 2) = ANY(${textArray(5)})))
+        ORDER BY COALESCE(received_at, created_at) DESC LIMIT $6`,
+      [
+        companyId,
+        client.kind,
+        client.id,
+        json(client.emails.map((email) => email.toLowerCase())),
+        json(client.domains.map((domain) => domain.toLowerCase())),
+        Math.max(1, Math.min(limit, MAIL_FOR_CLIENT_MAX)),
+      ],
+    );
+    return rows.map(normaliseMessage);
   }
 
   async getMessageByGmailId(companyId: string, gmailMessageId: string, accountId: string | null = null): Promise<MessageRow | null> {

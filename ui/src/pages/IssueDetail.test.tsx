@@ -120,6 +120,7 @@ const mockActivityApi = vi.hoisted(() => ({
 const mockHeartbeatsApi = vi.hoisted(() => ({
   get: vi.fn(),
   liveRunsForIssue: vi.fn(),
+  liveRunsForCompany: vi.fn(),
   activeRunForIssue: vi.fn(),
   cancel: vi.fn(),
 }));
@@ -1425,6 +1426,7 @@ describe("IssueDetail", () => {
     mockActivityApi.forIssue.mockResolvedValue([]);
     mockActivityApi.runsForIssue.mockResolvedValue([]);
     mockHeartbeatsApi.liveRunsForIssue.mockResolvedValue([]);
+    mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([]);
     mockHeartbeatsApi.activeRunForIssue.mockResolvedValue(null);
     mockAgentsApi.list.mockResolvedValue([]);
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue({
@@ -3677,6 +3679,52 @@ describe("IssueDetail", () => {
     await flushReact();
     expect(mockOpenPanel).toHaveBeenCalledTimes(settledCount);
   });
+
+  it.each([["enforce", false], ["report", true]] as const)(
+    "reads company live runs and feedback votes and offers votes and skills only when open, restricted under %s (AC-G10)",
+    async (mode, open) => {
+      mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-r" },
+        memberRestrictions: [{ companyId: "company-1", restricted: true, mode }] });
+      mockIssuesApi.get.mockResolvedValue(createIssue());
+      await act(async () => {
+        renderIssueView();
+      });
+      await flushReact();
+      await flushReact();
+      expect(container.textContent).toContain("Issue detail smoke");
+      expect(mockHeartbeatsApi.liveRunsForCompany.mock.calls.length > 0).toBe(open);
+      expect(mockIssuesApi.listFeedbackVotes.mock.calls.length > 0).toBe(open);
+      const thread = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as { onVote?: unknown; onOpenSkill?: unknown };
+      expect(Boolean(thread?.onVote)).toBe(open);
+      expect(Boolean(thread?.onOpenSkill)).toBe(open);
+    },
+  );
+
+  it.each([["enforce", false], ["report", true]] as const)(
+    "reads the tree holds and offers pause controls only when open, restricted under %s (PAR-12952, AC-G10)",
+    async (mode, open) => {
+      mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-r" },
+        memberRestrictions: [{ companyId: "company-1", restricted: true, mode }] });
+      mockIssuesApi.get.mockResolvedValue(createIssue());
+      mockIssuesApi.getTreeControlState.mockResolvedValue({
+        activePauseHold: { holdId: "hold-1", rootIssueId: "issue-1", issueId: "issue-1", isRoot: true, mode: "pause",
+          reason: null, releasePolicy: { strategy: "manual", note: null } },
+      });
+      await act(async () => {
+        renderIssueView();
+      });
+      await flushReact();
+      await flushReact();
+      expect(container.textContent).toContain("Issue detail smoke");
+      expect(mockIssuesApi.getTreeControlState).toHaveBeenCalled();
+      expect(mockIssuesApi.listTreeHolds.mock.calls.length > 0).toBe(open);
+      expect(mockIssuesApi.previewTreeControl).not.toHaveBeenCalled();
+      // The paused banner still shows; resuming (which previews the tree) is the owner's.
+      const thread = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as { composerPause?: { onResume?: unknown } | null };
+      expect(thread?.composerPause).toBeTruthy();
+      expect(Boolean(thread?.composerPause?.onResume)).toBe(open);
+    },
+  );
 
   it("does not load or render decision sections in the issue header", async () => {
     mockIssuesApi.get.mockResolvedValue(

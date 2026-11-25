@@ -37,6 +37,68 @@ function resolveHermesHome(config: Record<string, unknown>): string {
   return hermesHome ? path.resolve(hermesHome) : path.join(configuredHome ? path.resolve(configuredHome) : os.homedir(), ".hermes");
 }
 
+// ---------------------------------------------------------------------------
+// Per-agent skills directory (PAR-13538, PAR-9915)
+// ---------------------------------------------------------------------------
+//
+// Hermes reads skills from `$HERMES_HOME/skills` and has no env var or flag to
+// move that directory. Seats that share one HERMES_HOME used to get the union
+// of every seat's Paperclip skills in their prompt, and one seat's reconcile
+// removed links another seat still needed.
+//
+// Hermes does expand `${VAR}` in `skills.external_dirs`. A profile opts in by
+// listing `${PAPERCLIP_HERMES_SKILLS_DIR}` there; the adapter then links each
+// agent's skills into `$HERMES_HOME/paperclip-agents/<agentId>/skills` and
+// points the variable at it for that run only. config.yaml, auth and state.db
+// stay shared. A profile without the entry keeps the shared behaviour.
+// Rollback: remove the entry from config.yaml.
+
+/** Env var a profile's `skills.external_dirs` names to receive the agent's own skills dir. */
+export const HERMES_AGENT_SKILLS_DIR_ENV = "PAPERCLIP_HERMES_SKILLS_DIR";
+const AGENT_SKILLS_ROOT = "paperclip-agents";
+const SAFE_AGENT_ID = /^[A-Za-z0-9_-]{1,128}$/;
+
+/**
+ * True when the top-level `skills:` block of a Hermes config.yaml names
+ * PAPERCLIP_HERMES_SKILLS_DIR (block or flow list under `external_dirs`).
+ * Comment lines do not count.
+ */
+export function hermesProfileUsesAgentSkillsDir(configYaml: string): boolean {
+  let inSkills = false;
+  let inExternalDirs = false;
+  for (const raw of configYaml.split(/\r?\n/)) {
+    const line = raw.replace(/\s+#.*$/, "");
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const indent = line.length - line.trimStart().length;
+    if (indent === 0) {
+      inSkills = /^skills:\s*$/.test(trimmed);
+      inExternalDirs = false;
+      continue;
+    }
+    if (!inSkills) continue;
+    const key = /^([A-Za-z0-9_]+):/.exec(trimmed)?.[1];
+    if (key) inExternalDirs = key === "external_dirs";
+    if (inExternalDirs && trimmed.includes(HERMES_AGENT_SKILLS_DIR_ENV)) return true;
+  }
+  return false;
+}
+
+/**
+ * The agent's own Hermes skills dir, or null when the profile has not opted in
+ * (see above) or the agent id is not a safe path segment.
+ */
+export async function resolveHermesAgentSkillsDir(
+  config: Record<string, unknown>,
+  agentId: string | null | undefined,
+): Promise<string | null> {
+  if (!agentId || !SAFE_AGENT_ID.test(agentId)) return null;
+  const home = resolveHermesHome(config);
+  const configYaml = await fs.readFile(path.join(home, "config.yaml"), "utf8").catch(() => null);
+  if (!configYaml || !hermesProfileUsesAgentSkillsDir(configYaml)) return null;
+  return path.join(home, AGENT_SKILLS_ROOT, agentId, "skills");
+}
+
 interface SkillFrontmatter {
   name?: string;
   description?: string;
@@ -227,6 +289,13 @@ export interface ReconcileHermesSkillsOptions {
   /** Test seams: replace filesystem calls, or act right after the rename. */
   fs?: Partial<SkillLinkFs>;
   afterRename?: (target: string) => Promise<void> | void;
+  /**
+   * The agent's own skills dir (resolveHermesAgentSkillsDir). When set, the
+   * desired skills are linked there, every other link there is removed, and
+   * Paperclip links are cleared out of the shared `$HERMES_HOME/skills`.
+   * Null or absent: link into the shared dir (profiles that have not opted in).
+   */
+  agentSkillsDir?: string | null;
 }
 
 type SkillLinkState =
@@ -326,7 +395,9 @@ export async function reconcileHermesPaperclipSkills(
       ]))
     : resolveLegacyPaperclipDesiredSkillNames(config, availableEntries);
   const desiredSet = new Set(desiredSkills);
-  const skillsHome = path.join(resolveHermesHome(config), "skills");
+  const sharedSkillsHome = path.join(resolveHermesHome(config), "skills");
+  const agentSkillsDir = options.agentSkillsDir ?? null;
+  const skillsHome = agentSkillsDir ?? sharedSkillsHome;
   await fs.mkdir(skillsHome, { recursive: true });
   const installed = await readInstalledSkillTargets(skillsHome);
   const availableByRuntimeName = new Map(availableEntries.map((entry) => [entry.runtimeName, entry]));
@@ -355,6 +426,20 @@ export async function reconcileHermesPaperclipSkills(
     await linkSkillAtomically(entry, target, tmpDir, state.linked, ops, options);
   }
 
+  if (agentSkillsDir) {
+    // The agent's own dir holds only what Paperclip linked for this agent, so
+    // any link not in the desired set goes, whatever it points at.
+    const desiredRuntimeNames = new Set(
+      availableEntries.filter((entry) => desiredSet.has(entry.key)).map((entry) => entry.runtimeName),
+    );
+    for (const [name, installedEntry] of installed.entries()) {
+      if (installedEntry.kind !== "symlink" || desiredRuntimeNames.has(name)) continue;
+      await fs.unlink(path.join(skillsHome, name)).catch(() => {});
+    }
+    await clearSharedPaperclipSkillLinks(sharedSkillsHome, availableEntries, ops, options);
+    return desiredSkills;
+  }
+
   for (const [name, installedEntry] of installed.entries()) {
     const available = availableByRuntimeName.get(name);
     if (!available || desiredSet.has(available.key)) continue;
@@ -365,11 +450,37 @@ export async function reconcileHermesPaperclipSkills(
   return desiredSkills;
 }
 
+/**
+ * Remove Paperclip skill links from the shared `$HERMES_HOME/skills` once a
+ * profile uses per-agent dirs, so no seat sees another seat's skills. Only
+ * links that point at this company's copy of a known Paperclip skill, or at
+ * nothing, are removed; Hermes' own and agent-created skills stay.
+ */
+async function clearSharedPaperclipSkillLinks(
+  sharedSkillsHome: string,
+  availableEntries: PaperclipSkillEntry[],
+  ops: SkillLinkFs,
+  options: ReconcileHermesSkillsOptions,
+) {
+  let removed = 0;
+  for (const entry of availableEntries) {
+    const target = path.join(sharedSkillsHome, entry.runtimeName);
+    const state = await inspectSkillLink(target, entry, ops).catch(() => null);
+    if (!state || state.kind === "missing" || state.kind === "foreign") continue;
+    await fs.unlink(target).then(() => { removed += 1; }, () => {});
+  }
+  if (removed > 0) {
+    await options.onLog?.(`Removed ${removed} Paperclip skill link(s) from the shared Hermes skills dir; this agent now uses its own.`);
+  }
+}
+
 export async function syncHermesSkills(
   ctx: AdapterSkillContext,
   desiredSkills: string[],
 ): Promise<AdapterSkillSnapshot> {
-  await reconcileHermesPaperclipSkills(ctx.config, desiredSkills);
+  await reconcileHermesPaperclipSkills(ctx.config, desiredSkills, {
+    agentSkillsDir: await resolveHermesAgentSkillsDir(ctx.config, ctx.agentId),
+  });
   return buildHermesSkillSnapshot(ctx.config);
 }
 

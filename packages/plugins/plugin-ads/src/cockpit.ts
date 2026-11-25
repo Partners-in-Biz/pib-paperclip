@@ -4,6 +4,7 @@
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import {
+  jobCompanyIds,
   TEAM_ROLES,
   emptySnapshot,
   jobHealth,
@@ -266,7 +267,7 @@ export async function cockpitSnapshot(ctx: PluginContext, companyId: string, rtO
 /** Hourly: push each company's snapshot. Skips companies whose Ads module is off or whose settings were never saved. */
 export async function publishCockpitSnapshots(ctx: PluginContext): Promise<{ published: number; skipped: number }> {
   const result = { published: 0, skipped: 0 };
-  for (const companyId of await knownCompanies(ctx)) {
+  for (const companyId of await jobCompanyIds(ctx, await knownCompanies(ctx))) {
     try {
       if (!(await adsOn(ctx, companyId)) || !(await loadAdsConfig(ctx, companyId)).saved) {
         result.skipped += 1;

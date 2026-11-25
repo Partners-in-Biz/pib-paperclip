@@ -76,6 +76,26 @@ export function strictReadCondition(resource: StrictReadResource, personId: stri
 }
 
 /**
+ * The companies in which any person the actor carries is restricted under
+ * `enforce`. Empty with the kill switch on. A failed read throws 503
+ * `MEMBER_RESTRICTION_UNAVAILABLE`, so the caller returns no data.
+ */
+export async function memberRestrictionEnforcedCompanyIdsForActor(
+  db: Pick<Db, "select">,
+  actor: RestrictionActor,
+): Promise<string[]> {
+  const companyIds = new Set<string>();
+  for (const personId of restrictionPersonIds(actor)) {
+    try {
+      for (const id of await memberRestrictionEnforcedCompanyIds(db, personId)) companyIds.add(id);
+    } catch (error) {
+      throw memberRestrictionUnavailable(error);
+    }
+  }
+  return [...companyIds].sort();
+}
+
+/**
  * The part the list builders add for an actor, or null when no person it
  * carries is restricted under `enforce`. A failed read throws 503
  * `MEMBER_RESTRICTION_UNAVAILABLE`, so the caller returns no data.

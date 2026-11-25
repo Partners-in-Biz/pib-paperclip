@@ -9,6 +9,7 @@ import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import type { LifecycleDriver } from "../modules/agent-lifecycle/index.js";
 import { agentHarnessVerificationService } from "./agent-harness-verification.js";
 import { agentInstanceSecretService } from "./agent-instance-secrets.js";
+import { sshPauseWaitDetail } from "./ssh-run-lease-release.js";
 
 export function createLifecycleDriver(db: Db, manager: PluginWorkerManager): LifecycleDriver {
   const { verify } = agentHarnessVerificationService(db, manager);
@@ -66,6 +67,10 @@ export function createLifecycleDriver(db: Db, manager: PluginWorkerManager): Lif
           { preservePauseDeferred: agent.lifecycleState === "pausing" })) return "pending";
       }
       return "complete";
+    },
+    async pendingDetail(agent) {
+      // A pause held by a cancelled ssh run the remote check cannot yet confirm.
+      return agent.lifecycleState === "pausing" ? await sshPauseWaitDetail(db, agent.id) : null;
     },
   };
 }

@@ -138,7 +138,7 @@ const instanceConfigSchema: JsonSchema = {
     standingQueueIssues: {
       type: "array",
       title: "Standing queue issues (never on the owner's list)",
-      description: "Issue identifiers, e.g. PAR-9356. An open issue listed here is left out of the owner's waiting list and the unassigned count: it is a queue that is worked through, not a decision.",
+      description: "Issue identifiers, e.g. PAR-9356. An open issue listed here is left out of the owner's waiting list and the unassigned count: it is a queue that is worked through, not a decision. With any issue listed, the Finish setup row (a board ask) also waits on the queue, not on the owner.",
       items: { type: "string", pattern: "^[A-Z][A-Z0-9]*-\\d+$" },
       default: [],
     },
@@ -166,7 +166,7 @@ const instanceConfigSchema: JsonSchema = {
       description:
         "Pick a company secret for each provider and the daily check calls it once (one cheap read, never storing or showing the value) to see whether the credential is still accepted and, for GitHub and Cloudflare, when it expires. Without one the register still warns before an expiry date you recorded.",
       properties: {
-        github: secretField("GitHub token", "The company secret holding the GitHub token agents push with (read-only check: GET /user)."),
+        github: secretField("GitHub token", "The company secret holding the GitHub token agents push with (read-only check: GET /user). The hourly merged-PR check also reads pull request state with it, so a question asking the owner to merge a PR is settled once it is merged."),
         cloudflare: secretField("Cloudflare API token", "A Cloudflare API token (checked with the token verify call)."),
         resend: secretField("Resend API key", "The Resend key (checked with a read-only call; a sending-only key counts as live)."),
       },

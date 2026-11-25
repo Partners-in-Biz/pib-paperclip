@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import { useAccountingAction } from "./actions.js";
 import { Button, CompactRows, Field, Input, Pill, SectionCard, Stamp, formatDate, formatMoney, tokens, useIsNarrow } from "@partnersinbiz/pib-plugin-ui";
 import { periodLabel, readableDates } from "../domain/dates.js";
 import type { LoadResult } from "./overview.js";
@@ -47,11 +47,11 @@ const TOTALS = new Set(["f13", "f19", "f20"]);
 
 export function VatTab({ data, onMessage }: { data: LoadResult; onMessage: (m: string) => void }) {
   const narrow = useIsNarrow();
-  const load = usePluginAction("accounting.vat");
-  const prepare = usePluginAction("accounting.prepare-vat");
-  const request = usePluginAction("accounting.request-vat-approval");
-  const approve = usePluginAction("accounting.approve-vat");
-  const csv = usePluginAction("accounting.vat-csv");
+  const load = useAccountingAction("accounting.vat");
+  const prepare = useAccountingAction("accounting.prepare-vat");
+  const request = useAccountingAction("accounting.request-vat-approval");
+  const approve = useAccountingAction("accounting.approve-vat");
+  const csv = useAccountingAction("accounting.vat-csv");
   const { busy, run } = useRunner(onMessage);
   const [vat, setVat] = useState<VatData | null>(null);
   const [period, setPeriod] = useState<{ start: string; end: string } | null>(null);

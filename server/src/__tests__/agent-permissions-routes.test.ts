@@ -439,6 +439,8 @@ describe("agent permission routes", () => {
       source: "session",
       isInstanceAdmin: false,
       companyIds: [companyId],
+      // Not restricted: the agent read path needs no restriction read (PAR-12736).
+      memberships: [{ companyId, membershipRole: "operator", status: "active", restricted: false, restrictionMode: "off" }],
     });
 
     const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/agents/${agentId}`));
@@ -684,6 +686,8 @@ describe("agent permission routes", () => {
       source: "session",
       isInstanceAdmin: false,
       companyIds: [companyId],
+      // Not restricted: the agent read path needs no restriction read (PAR-12736).
+      memberships: [{ companyId, membershipRole: "operator", status: "active", restricted: false, restrictionMode: "off" }],
     });
 
     const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/companies/${companyId}/agents`));

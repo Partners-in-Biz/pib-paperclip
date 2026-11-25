@@ -13,6 +13,7 @@ import { Dialog, DialogContent, DialogTitle } from "./ui/dialog";
 import { Button } from "./ui/button";
 import { ProjectRepositoryInput, repositoryOptionsKey } from "./ProjectRepositoryInput";
 import { ConnectionSetupFlow } from "@/features/connections/ConnectionSetupFlow";
+import { useMemberRestrictionGate } from "@/hooks/useMemberRestrictionGate";
 
 export function NewProjectDialog() {
   const { newProjectOpen, closeNewProject } = useDialog();
@@ -28,8 +29,11 @@ export function NewProjectForm({ companyId, onClose }: { companyId: string; onCl
   const [repos, setRepos] = useState<ProjectRepository[]>([]);
   const [connecting, setConnecting] = useState(false);
   const input = useRef<HTMLInputElement>(null);
+  // Repositories are the company's tool access, closed for a restricted member at
+  // `enforce` (AC-G10): no picker, no repository list, and `repositoryIds: []`.
+  const reposClosed = useMemberRestrictionGate(companyId).closed;
   const create = useMutation({
-    mutationFn: () => projectsApi.create(companyId, { name: name.trim(), color, status: "planned", repositoryIds: repos.map((repo) => repo.id) }),
+    mutationFn: () => projectsApi.create(companyId, { name: name.trim(), color, status: "planned", repositoryIds: reposClosed ? [] : repos.map((repo) => repo.id) }),
     onSuccess: (project) => {
       trackRecentProject(project.id, companyId);
       void client.invalidateQueries({ queryKey: queryKeys.projects.all(companyId) });
@@ -58,9 +62,9 @@ export function NewProjectForm({ companyId, onClose }: { companyId: string; onCl
               className="h-10 w-full min-w-0 border-0 bg-transparent text-base outline-none placeholder:text-muted-foreground md:text-sm" />
           </div>
         </div>
-        <div role="region" aria-label="Source repositories" tabIndex={0} className="min-h-0 overflow-y-auto overscroll-contain px-5 pb-1 outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring">
+        {reposClosed ? null : <div role="region" aria-label="Source repositories" tabIndex={0} className="min-h-0 overflow-y-auto overscroll-contain px-5 pb-1 outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring">
           <ProjectRepositoryInput companyId={companyId} selected={repos} onChange={setRepos} onConnect={() => setConnecting(true)} disabled={create.isPending} />
-        </div>
+        </div>}
         {create.status === "error" && <p role="alert" className="px-5 pt-3 text-sm text-destructive">{describeError(create.error).body}</p>}
         <div className="flex shrink-0 justify-end gap-2 px-5 py-5">
           <Button type="button" variant="ghost" disabled={create.isPending} onClick={onClose}>Cancel</Button>

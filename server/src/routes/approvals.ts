@@ -24,6 +24,7 @@ import { redactEventPayload } from "../redaction.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { issueService } from "../services/issues.js";
 import { approvalReadSqlCondition, canActorReadApproval } from "../services/authorization.js";
+import { refusedOnlyByMemberRestriction } from "../services/member-restriction/action-list.js";
 import { REVIEW_PATH_RECOVERY_INSTRUCTION } from "../services/recovery/review-path-recovery.js";
 
 function redactApprovalPayload<T extends { payload: Record<string, unknown> }>(approval: T): T {
@@ -173,13 +174,19 @@ export function approvalRoutes(
     return approval;
   }
 
-  async function assertApprovalAccessAllowed(req: Request, res: any, companyId: string) {
+  /**
+   * `read`: a restricted member (PAR-12608 4.6) passes the action list's
+   * `company_scope:read` refusal, because the read condition then limits him
+   * to approvals linked to his own tasks (the list is filtered by it, a single
+   * approval is "not found" through `router.param`). Creating never passes.
+   */
+  async function assertApprovalAccessAllowed(req: Request, res: any, companyId: string, read = false) {
     const decision = await access.decide({
       actor: req.actor,
       action: "company_scope:read",
       resource: { type: "company", companyId },
     });
-    if (decision.allowed) return true;
+    if (decision.allowed || (read && refusedOnlyByMemberRestriction(decision))) return true;
     res.status(403).json({ error: "Approvals are outside this actor's authorization boundary" });
     return false;
   }
@@ -217,7 +224,7 @@ export function approvalRoutes(
   router.get("/companies/:companyId/approvals", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    if (!(await assertApprovalAccessAllowed(req, res, companyId))) return;
+    if (!(await assertApprovalAccessAllowed(req, res, companyId, true))) return;
     const status = req.query.status as string | undefined;
     const result = await svc.list(companyId, status, await approvalReadSqlCondition(db, req.actor));
     res.json(result.map((approval) => redactApprovalPayload(approval)));
@@ -227,7 +234,7 @@ export function approvalRoutes(
     const id = req.params.id as string;
     const approval = await getAccessibleResource(req, res, svc.getById(id), "Approval not found");
     if (!approval) return;
-    if (!(await assertApprovalAccessAllowed(req, res, approval.companyId))) return;
+    if (!(await assertApprovalAccessAllowed(req, res, approval.companyId, true))) return;
     res.json(redactApprovalPayload(approval));
   });
 
@@ -290,7 +297,7 @@ export function approvalRoutes(
     const id = req.params.id as string;
     const approval = await getAccessibleResource(req, res, svc.getById(id), "Approval not found");
     if (!approval) return;
-    if (!(await assertApprovalAccessAllowed(req, res, approval.companyId))) return;
+    if (!(await assertApprovalAccessAllowed(req, res, approval.companyId, true))) return;
     const issues = await issueApprovalsSvc.listIssuesForApproval(id);
     res.json(issues);
   });

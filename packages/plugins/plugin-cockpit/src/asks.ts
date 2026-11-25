@@ -540,8 +540,11 @@ export async function askOwner(env: Env, run: Pick<ToolRunContext, "agentId" | "
 // The answer, and closing
 // ---------------------------------------------------------------------------
 
-/** Hand the issue back with the answer and wake the agent. `effect` is what the answer's effect did, told to the agent in the wake reason. */
-async function handBack(env: Env, ask: AskRow, answer: string, effect: string | null = null, byDefault = false): Promise<{ agentId: string | null; woke: boolean }> {
+/**
+ * Hand the issue back with the answer and wake the agent. `effect` is what the answer's effect did, told to the agent in the wake reason.
+ * `fact`: settled by a fact (a merged PR), not by a person; its words replace the wake reason and the activity line.
+ */
+async function handBack(env: Env, ask: AskRow, answer: string, effect: string | null = null, byDefault = false, fact: { wakeReason: string; activity: (agentName: string, ref: string) => string } | null = null): Promise<{ agentId: string | null; woke: boolean }> {
   const companyId = ask.companyId;
   let target = (await usableAgent(env, companyId, ask.returnAgentId)) ?? (await usableAgent(env, companyId, ask.agentId));
   if (!target) {
@@ -562,7 +565,7 @@ async function handBack(env: Env, ask: AskRow, answer: string, effect: string | 
   await env.ctx.issues.createComment(ask.issueId, `Answer recorded. Handed back to **${target.name}**, who carries on.`, companyId).catch(() => undefined);
   let woke = false;
   try {
-    await env.ctx.issues.requestWakeup(ask.issueId, companyId, { reason: wakeReason({ identifier: ask.issueIdentifier, answer, options: ask.options, effect, byDefault }), idempotencyKey: `ask:${ask.id}:answered` });
+    await env.ctx.issues.requestWakeup(ask.issueId, companyId, { reason: fact?.wakeReason ?? wakeReason({ identifier: ask.issueIdentifier, answer, options: ask.options, effect, byDefault }), idempotencyKey: `ask:${ask.id}:answered` });
     woke = true;
   } catch (error) {
     env.ctx.logger.info("ask-owner: wake skipped", { issueId: ask.issueId, error: message(error) });
@@ -571,7 +574,7 @@ async function handBack(env: Env, ask: AskRow, answer: string, effect: string | 
     key: `ask:${ask.id}:answered`,
     kind: "ask_answered",
     at: env.now().toISOString(),
-    text: byDefault ? `${target.name}'s question on ${ref} got no reply, so the recommended answer was applied` : `The owner answered ${target.name}'s question on ${ref}`,
+    text: fact ? fact.activity(target.name, ref) : byDefault ? `${target.name}'s question on ${ref} got no reply, so the recommended answer was applied` : `The owner answered ${target.name}'s question on ${ref}`,
     href: `/issues/${ref}`,
     agentId: target.id,
   }).catch(() => false);
@@ -650,6 +653,41 @@ export async function answerAskByPolicy(env: Env, companyId: string, askId: stri
   const result = await applyAnswer(env, ask, { kind: "policy", policy, answer });
   if (!result) return null; // closeAsk guard prevented the update
   return getAsk(env, companyId, askId); // return the updated ask
+}
+
+/** Where a fact-settled ask leaves its issue. `skipped`: nothing changed (closed, moved on, or another run got there first). */
+export type FactSettleOutcome = "handed_back" | "closed" | "skipped";
+
+/**
+ * Settles an open ask by a checked fact, not a person's reply (PAR-14492: the
+ * PR it asked the owner to merge is merged). Acts only while the issue still
+ * waits on a person (assigned to a user, `in_review` or `blocked`). The ask
+ * is closed first, so a second run or a racing reply cannot act twice.
+ * `closeIssue`: the issue held nothing but this ask (an Unblock issue), so it
+ * closes `done`; otherwise it goes back to the agent, woken with `wakeReason`.
+ */
+export async function settleAskByFact(env: Env, ask: AskRow, fact: { policy: string; answer: string; comment: string; wakeReason: string; closeIssue: boolean }): Promise<FactSettleOutcome> {
+  const companyId = ask.companyId;
+  const issue = await env.ctx.issues.get(ask.issueId, companyId).catch(() => null);
+  if (!issue || CLOSED.has(String(issue.status))) return "skipped";
+  if (!issue.assigneeUserId || issue.assigneeAgentId || !["in_review", "blocked"].includes(String(issue.status))) return "skipped";
+  const now = env.now().toISOString();
+  const closed = await closeAsk(env, ask, { status: fact.closeIssue ? "resolved" : "answered", answer: fact.answer.slice(0, ASK_LIMITS.answerChars), defaultAppliedAt: now, defaultPolicy: fact.policy }, now);
+  if (!closed) return "skipped";
+  await env.ctx.issues.createComment(ask.issueId, fact.comment, companyId).catch((error) => env.ctx.logger.info("ask-owner: the settled-by-fact comment was not posted", { askId: ask.id, error: message(error) }));
+  const ref = ask.issueIdentifier ?? ask.issueId;
+  if (fact.closeIssue) {
+    try {
+      await env.ctx.issues.update(ask.issueId, { status: "done" }, companyId);
+      await recordActivity(env.ctx, companyId, { key: `ask:${ask.id}:answered`, kind: "ask_answered", at: now, text: `A merged PR settled the question on ${ref}; it was closed`, href: `/issues/${ref}`, agentId: ask.agentId }).catch(() => false);
+      return "closed";
+    } catch (error) {
+      // Could not close it: hand it back instead, so it never stays with the owner for nothing.
+      env.ctx.logger.info("ask-owner: the settled Unblock issue was not closed; handing it back", { askId: ask.id, error: message(error) });
+    }
+  }
+  const back = await handBack(env, ask, fact.answer, null, false, { wakeReason: fact.wakeReason, activity: (name, r) => `A merged PR settled ${name}'s question on ${r}` });
+  return back.agentId ? "handed_back" : "skipped";
 }
 
 // ---------------------------------------------------------------------------

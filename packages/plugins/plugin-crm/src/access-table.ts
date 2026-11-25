@@ -90,6 +90,8 @@ export const SHARED_ROWS: Readonly<Record<string, AccessTableEntry>> = Object.fr
 /** Page actions with no tool of the same name. */
 const ACTION_ROWS: Readonly<Record<string, AccessTableEntry>> = Object.freeze({
   ...rows(companies("view"), ["crm.load", "crm.client-workspace", "crm.activities"]),
+  // Company and contact cards on a planning canvas (PAR-14416): the same reads as the page's find and client workspace.
+  ...rows(companies("view"), ["canvas.cards.resolve", "canvas.cards.search", "canvas.cards.related"]),
   ...rows(companies("edit"), ["crm.set-human-owned"]),
   "crm.delete-company": companies("delete"),
   "crm.desk": desk("view"),

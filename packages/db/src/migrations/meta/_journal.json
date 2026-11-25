@@ -3151,6 +3151,48 @@
       "when": 1794952341346,
       "tag": "0451_plugin_core_read_runs_hashed_chat_sets",
       "breakpoints": true
+    },
+    {
+      "idx": 452,
+      "version": "7",
+      "when": 1795066589482,
+      "tag": "0452_plugin_core_read_runs_issue_id_first",
+      "breakpoints": true
+    },
+    {
+      "idx": 453,
+      "version": "7",
+      "when": 1795254000000,
+      "tag": "0453_personal_notes",
+      "breakpoints": true
+    },
+    {
+      "idx": 454,
+      "version": "7",
+      "when": 1795260000000,
+      "tag": "0454_personal_notes_power_features",
+      "breakpoints": true
+    },
+    {
+      "idx": 455,
+      "version": "7",
+      "when": 1795265000000,
+      "tag": "0455_planning_canvases",
+      "breakpoints": true
+    },
+    {
+      "idx": 456,
+      "version": "7",
+      "when": 1795270000000,
+      "tag": "0456_planning_canvas_items",
+      "breakpoints": true
+    },
+    {
+      "idx": 457,
+      "version": "7",
+      "when": 1795275000000,
+      "tag": "0457_agent_chats_private",
+      "breakpoints": true
     }
   ]
 }

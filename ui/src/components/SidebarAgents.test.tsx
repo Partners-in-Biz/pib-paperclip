@@ -237,6 +237,8 @@ describe("SidebarAgents", () => {
       user: { id: "user-1" },
     });
     mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([]);
+    // The shell has the session before the sidebar mounts; live-runs waits for it (AC-G10 gate).
+    queryClient.setQueryData(queryKeys.auth.session, { session: { id: "session-1", userId: "user-1" }, user: { id: "user-1" } });
     memberships = {
       projectMemberships: {},
       agentMemberships: {},

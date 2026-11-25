@@ -24,11 +24,10 @@ import {
 } from "../services/issue-prefix.js";
 import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 import { agentRunWritesRevoked } from "../agent-run-cancellation.js";
-import { loadAgentRunAuthentication } from "./agent-run-authentication.js";
+import { loadAgentRunAuthentication, refreshRunIdentityPerson } from "./agent-run-authentication.js";
 import { isUuidLike, normalizeAgentApiKeyScope, type ActorCompanyMembership, type DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
-import { captureRunIdentity } from "../services/run-identity.js";
 import { loadActorMemberships } from "../services/member-restriction/actor-memberships.js";
 import { agentKeyRunNamingError } from "../services/member-restriction/rule-group-h.js";
 import { boardAuthService } from "../services/board-auth.js";
@@ -384,12 +383,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           code: conversation ? "conversation_turn_cancelled" : "agent_run_cancelled" });
         return;
       }
-      if (identityRun?.activeIdentityContextId && identityRun.status === "running") {
-        const captured = await captureRunIdentity(db, { companyId: claims.company_id, agentId: claims.sub, runId: claims.run_id },
-          { readScope: "request_authentication" });
-        identityRun.activeIdentityContextId = captured.context?.id ?? null;
-        identityRun.responsibleUserId = captured.context?.responsibleUserId ?? null;
-      }
+      await refreshRunIdentityPerson(db, { companyId: claims.company_id, agentId: claims.sub, runId: claims.run_id }, identityRun);
       if (claims.authorizing_user_id) {
         // This signed projection exists only for internal native tools. Recheck
         // the admitted run and current immutable binding on every API call.

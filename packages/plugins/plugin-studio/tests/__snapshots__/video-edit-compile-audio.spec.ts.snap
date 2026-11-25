@@ -89,7 +89,8 @@ exports[`compile audio snapshots > mixed music + voiceover + clip audio: amix no
 [2:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,atrim=duration=4,asetpts=PTS-STARTPTS,atrim=duration=4,afade=t=in:st=0:d=0.5[aud0];
 [3:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,atrim=duration=6,asetpts=PTS-STARTPTS,atrim=duration=6,volume=0.3,afade=t=out:st=5:d=1[aud1];
 [4:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,atrim=duration=3,asetpts=PTS-STARTPTS,atrim=duration=3,volume=1.5,adelay=delays=1500:all=1,asetpts=N/SR/TB[aud2];
-[aud0][aud1][aud2]amix=inputs=3:duration=longest:normalize=0,apad=whole_dur=6,atrim=duration=6[aout]
+anullsrc=r=48000:cl=stereo:d=6,aformat=sample_fmts=fltp[abed];
+[aud0][aud1][aud2][abed]amix=inputs=4:duration=longest:normalize=0,apad=whole_dur=6,atrim=duration=6[aout]
 ",
       "name": "video.graph",
     },
@@ -347,7 +348,8 @@ exports[`compileAudioStem > emits PCM WAV with no loudnorm and the same per-clip
     {
       "content": "[0:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,atrim=duration=2,asetpts=PTS-STARTPTS,atrim=duration=2,volume=0.5,afade=t=in:st=0:d=0.2[aud0];
 [1:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,atrim=duration=3,asetpts=PTS-STARTPTS,atempo=2,atrim=duration=1.5,adelay=delays=500:all=1,asetpts=N/SR/TB[aud1];
-[aud0][aud1]amix=inputs=2:duration=longest:normalize=0,apad=whole_dur=2,atrim=duration=2[aout]
+anullsrc=r=48000:cl=stereo:d=2,aformat=sample_fmts=fltp[abed];
+[aud0][aud1][abed]amix=inputs=3:duration=longest:normalize=0,apad=whole_dur=2,atrim=duration=2[aout]
 ",
       "name": "video.graph",
     },

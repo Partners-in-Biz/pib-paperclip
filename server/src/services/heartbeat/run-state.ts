@@ -891,8 +891,10 @@ export type RunSessionOutcome =
 
 const HERMES_ADAPTER_TYPE = "hermes_local";
 
+// `local-<sha256 hex>` is the gateway-backed Hermes id. Keep in sync with
+// isPlausibleHermesSessionId in packages/adapters/hermes/src/server/session-checkpoint.ts.
 const HERMES_SESSION_ID_REGEX =
-  /^(?:\d{8}_\d{6}_[A-Za-z0-9_-]{4,}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$/;
+  /^(?:\d{8}_\d{6}_[A-Za-z0-9_-]{4,}|local-[0-9a-fA-F]{16,128}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$/;
 
 export function requiresCanonicalSessionIds(adapterType: string | null | undefined) {
   return adapterType === HERMES_ADAPTER_TYPE;

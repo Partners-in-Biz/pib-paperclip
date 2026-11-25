@@ -10,6 +10,7 @@ import type { OwnerProof } from "./owner-proof.js";
 import type { InProgressRecord, SettleOutcome } from "./recovery/ownership-registry.js";
 import { isBuiltinSandboxProvider } from "./sandbox-provider-runtime.js";
 import { prepareSandboxStopAndRetain } from "./sandbox-stop-and-retain.js";
+import { sshLeaseHasRemoteRunDir } from "./ssh-run-lease-release.js";
 
 /** Failure reason written on a run lease the shared ownership path settled. */
 export const ORPHANED_RUN_LEASE_FAILURE_REASON = "orphaned_active_lease_recovered";
@@ -78,6 +79,11 @@ export async function settleEnvironmentRunLease(db: Db, record: InProgressRecord
       // lease is released by the run fact alone, unless the caller named every
       // run this process executes.
       return { settled: false, reason: "current_boot_owns_run" };
+    }
+    // PAR-9961: an ssh lease with a run dir is released only by the driver's
+    // remote check, which the orphan sweep runs outside this transaction.
+    if (run && isSshLease(lease) && sshLeaseHasRemoteRunDir(lease)) {
+      return { settled: false, reason: "ssh_remote_check_owned_by_driver", watch: false };
     }
     const kept = await keptByAnotherObligation(tx, lease);
     if (kept) return { settled: false, reason: kept };

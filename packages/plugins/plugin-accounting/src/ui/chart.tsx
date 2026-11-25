@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import { useAccountingAction } from "./actions.js";
 import { Button, CompactRows, Field, Input, Modal, Section, Select, TextArea, Toolbar, formatDate, tokens, useIsNarrow } from "@partnersinbiz/pib-plugin-ui";
 import { readableDates } from "../domain/dates.js";
 import { AccountSelect, Banner, capitalise, Details, Muted, small, Table, Td, useRunner, words, type Account } from "./shared.js";
@@ -73,9 +73,9 @@ type Form = { id: string | null; code: string; name: string; subtype: string; ca
 
 export function ChartTab({ onMessage, onChanged }: { onMessage: (m: string) => void; onChanged: () => Promise<void> }) {
   const narrow = useIsNarrow();
-  const load = usePluginAction("accounting.chart");
-  const saveAccount = usePluginAction("accounting.save-account");
-  const mapRole = usePluginAction("accounting.map-role");
+  const load = useAccountingAction("accounting.chart");
+  const saveAccount = useAccountingAction("accounting.save-account");
+  const mapRole = useAccountingAction("accounting.map-role");
   const { busy, run } = useRunner(onMessage);
   const [data, setData] = useState<{ accounts: Account[]; roles: RoleRow[]; gaps: string[]; taxRates: TaxRate[] } | null>(null);
   const [search, setSearch] = useState("");

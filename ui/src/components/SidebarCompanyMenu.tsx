@@ -40,6 +40,7 @@ import { useSignOut } from "@/hooks/useSignOut";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn, SIDEBAR_RAIL_HIDDEN_LABEL } from "@/lib/utils";
 import { useSidebar } from "../context/SidebarContext";
+import { useMemberRestriction } from "../context/MemberRestrictionContext";
 import { CompanyPatternIcon } from "./CompanyPatternIcon";
 import { TruncatedText } from "./TruncatedText";
 import { FlyoutHeader, FlyoutOptions } from "./ui/flyout";
@@ -192,7 +193,10 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange, showChevron = 
 
   // Keep invitation links hidden until the operator policy is known.
   const { hidden: hiddenSettings, loaded: hiddenSettingsLoaded } = useHiddenSettings();
+  // PAR-12608 4.6: invites and creating a company are closed to a restricted member.
+  const { enforced: memberRestricted } = useMemberRestriction();
   const showInvitePeople =
+    !memberRestricted &&
     hiddenSettingsLoaded &&
     !hidesCompanyPage(hiddenSettings, "company.members") &&
     !hidesCompanyPage(hiddenSettings, "company.invites");
@@ -362,7 +366,7 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange, showChevron = 
           ) : null}
         </FlyoutOptions>
         <FlyoutOptions className="flex flex-col gap-0.5 border-t border-border px-2.5 pb-2.5 pt-2">
-          {!companyCreationManaged && (
+          {!companyCreationManaged && !memberRestricted && (
             <DropdownMenuItem
               onClick={addCompany}
               className={ORGANIZATION_ACTION_CLASS}

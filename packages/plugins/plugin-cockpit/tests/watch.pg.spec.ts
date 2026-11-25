@@ -188,6 +188,18 @@ d("operations watch (Postgres)", () => {
       expect(await readStorms(h.ctx, COMPANY, h.clock.now)).toEqual([]);
     });
 
+    it("PAR-13397: finds a storm by issue_id when the context names the task as taskId", async () => {
+      await issue(storm, "PAR-528", "in_progress", { title: "SEO W1 pages", agent: AGENT.seo });
+      for (let i = 0; i < 4; i += 1) {
+        await h.client.query(
+          `INSERT INTO public.heartbeat_runs (id, company_id, agent_id, status, started_at, error_code, context_snapshot) VALUES ($1, $2, $3, 'failed', $4, 'adapter_failed', $5::jsonb)`,
+          [uuid(), COMPANY, AGENT.seo, ago(10 + i), JSON.stringify({ taskId: storm })],
+        );
+      }
+      const [row] = await readStorms(h.ctx, COMPANY, h.clock.now);
+      expect(row).toMatchObject({ issueId: storm, identifier: "PAR-528", failed: 4 });
+    });
+
     it("still names an issue the host no longer has (only its id)", async () => {
       const gone = "99999999-0000-4000-8000-000000000533";
       for (let i = 0; i < 4; i += 1) await run(AGENT.seo, "failed", 10 + i, { code: "adapter_failed", issueId: gone });
@@ -429,6 +441,22 @@ d("operations watch (Postgres)", () => {
       const rows = await readReconciliationRuns(h.ctx, COMPANY, h.clock.now);
       expect(rows).toHaveLength(1);
       expect(rows[0]!.identifier).toBe("PAR-300");
+    });
+
+    it("PAR-13397: finds and clears runs by issue_id, without reading the context's issueId", async () => {
+      const found = id(8), cleared = id(9);
+      await issue(found, "PAR-400", "in_progress", { agent: AGENT.dev });
+      await issue(cleared, "PAR-401", "in_progress", { agent: AGENT.dev });
+      const insert = (n: number, issueId: string, status: string, minutesAgo: number, code: string | null) => h.client.query(
+        `INSERT INTO public.heartbeat_runs (id, company_id, agent_id, status, started_at, error_code, issue_id, context_snapshot)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)`,
+        [runId(n), COMPANY, AGENT.dev, status, ago(minutesAgo), code, issueId, JSON.stringify({ wakeReason: "issue_assigned" })],
+      );
+      await insert(10, found, "queued", 20, "execution_reconciliation_required");
+      await insert(11, cleared, "queued", 20, "execution_reconciliation_required");
+      await insert(12, cleared, "succeeded", 10, null);
+      const rows = await readReconciliationRuns(h.ctx, COMPANY, h.clock.now);
+      expect(rows.map((r) => r.identifier)).toEqual(["PAR-400"]);
     });
   });
 

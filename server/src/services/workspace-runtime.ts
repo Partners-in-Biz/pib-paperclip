@@ -3010,6 +3010,29 @@ async function directoryExists(value: string) {
   return fs.stat(value).then((stats) => stats.isDirectory()).catch(() => false);
 }
 
+/**
+ * Removes a leftover folder that git no longer recognises as a worktree.
+ * Only acts inside `<repoRoot>/.paperclip/worktrees`, and never when the folder
+ * is still a live repository with changes.
+ */
+export async function removeStaleManagedWorktreeDirectory(repoRoot: string, workspacePath: string): Promise<boolean> {
+  const managedRoot = await resolvePathForWorktreeComparison(path.join(repoRoot, ".paperclip", "worktrees"));
+  const target = await resolvePathForWorktreeComparison(workspacePath);
+  const relative = path.relative(managedRoot, target);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) return false;
+  const top = await executeGitCommand(["rev-parse", "--show-toplevel"], target).catch(() => null);
+  if (top && top.code === 0) {
+    const toplevel = await resolvePathForWorktreeComparison(top.stdout.trim());
+    if (toplevel === target) {
+      // Still a real checkout: only remove when nothing would be lost.
+      const status = await executeGitCommand(["status", "--porcelain"], target);
+      if (status.code !== 0 || status.stdout.trim()) return false;
+    }
+  }
+  await fs.rm(target, { recursive: true, force: true });
+  return true;
+}
+
 async function resolvePathForWorktreeComparison(value: string): Promise<string> {
   const resolved = path.resolve(value);
   return fs.realpath(resolved).then((realPath) => path.resolve(realPath)).catch(() => resolved);
@@ -4744,7 +4767,22 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
             failureLabel: `git worktree remove ${workspacePath}`,
           });
         } catch (err) {
-          warnings.push(err instanceof Error ? err.message : String(err));
+          const message = err instanceof Error ? err.message : String(err);
+          if (/is not a working tree/i.test(message)) {
+            try {
+              const removed = await removeStaleManagedWorktreeDirectory(repoRoot, workspacePath);
+              if (removed) {
+                await runGit(["worktree", "prune"], repoRoot).catch(() => "");
+                warnings.push(`Removed stale worktree folder ${workspacePath} (git no longer tracked it).`);
+              } else {
+                warnings.push(message);
+              }
+            } catch (staleErr) {
+              warnings.push(staleErr instanceof Error ? staleErr.message : String(staleErr));
+            }
+          } else {
+            warnings.push(message);
+          }
         }
       }
     }

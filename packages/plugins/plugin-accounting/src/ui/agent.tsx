@@ -4,7 +4,8 @@
  * wrong, with one line and "Fix in Setup".
  */
 import { useState, type CSSProperties } from "react";
-import { useHostContext, useHostNavigation, usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import { useHostContext, useHostNavigation } from "@paperclipai/plugin-sdk/ui";
+import { useAccountingAction } from "./actions.js";
 import { Button, errorText, tokens } from "@partnersinbiz/pib-plugin-ui";
 import { Banner, small } from "./shared.js";
 import { ROLE_SKILL_PURPOSE, ROLE_SKILLS, TEAM_SETUP_HREF, agentProblem, stillMissing } from "./role-skills.js";
@@ -46,7 +47,7 @@ const fixLink: CSSProperties = { display: "inline-flex", alignItems: "center", h
 export function BookkeeperBox({ hire, refresh, onMessage }: { hire: HireView | null; refresh: () => Promise<void>; onMessage: (m: string) => void }) {
   const host = useHostContext();
   const nav = useHostNavigation();
-  const resync = usePluginAction("accounting.resync-agent");
+  const resync = useAccountingAction("accounting.resync-agent");
   const [resyncing, setResyncing] = useState(false);
   const agent = hire?.agent ?? null;
   // The page attaches pib-bookkeeping to the linked agent for the person viewing (a plugin worker cannot).

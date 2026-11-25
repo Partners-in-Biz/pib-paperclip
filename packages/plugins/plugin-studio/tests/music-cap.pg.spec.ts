@@ -68,13 +68,13 @@ describe.skipIf(!available)("Stable Audio monthly cap (PAR-10255)", () => {
 
   it("overview reports music usage in dollars, and unknown (with every other field) when the read throws", async () => {
     await row("stability", CO, "reserve", 160);
-    const ok = await overview(ctxOf(), CO);
+    const ok = await overview(ctxOf(), CO, "unrestricted");
     expect(ok.musicUsage).toMatchObject({ status: "ok", provider: "stability", usedUsd: 10, capUsd: 25, remainingUsd: 15 });
     const flaky = {
       ...pg.db,
       query: (sql: string, params?: unknown[]) => (sql.includes("'stability'") ? Promise.reject(new Error("db down")) : pg.db.query(sql, params as never)),
     };
-    const bad = await overview(ctxOf(flaky), CO);
+    const bad = await overview(ctxOf(flaky), CO, "unrestricted");
     expect(bad.musicUsage).toEqual({ status: "unknown" });
     const { musicUsage: _a, ...rest } = bad;
     const { musicUsage: _b, ...restOk } = ok;

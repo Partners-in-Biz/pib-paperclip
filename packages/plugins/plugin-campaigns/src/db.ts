@@ -167,6 +167,23 @@ export async function listCampaigns(ctx: PluginContext, companyId: string, scope
   return rows.map(mapCampaign);
 }
 
+/**
+ * PiB's own campaigns whose name or status contains `q` (the page's search box: case-insensitive, name or status),
+ * newest first. A blank `q` lists them all.
+ */
+export async function searchCampaigns(ctx: PluginContext, companyId: string, q: string, limit: number): Promise<CampaignDraft[]> {
+  const rows = await ctx.db.query<CampaignRow>(
+    `SELECT ${CAMPAIGN_COLUMNS}
+       FROM ${table(ctx, "campaigns")}
+      WHERE company_id = $1 AND client_ref IS NULL
+        AND (strpos(lower(name), $2) > 0 OR strpos(lower(status), $2) > 0)
+      ORDER BY created_at DESC
+      LIMIT $3`,
+    [companyId, q.trim().toLowerCase(), limit],
+  );
+  return rows.map(mapCampaign);
+}
+
 export async function getCampaign(ctx: PluginContext, id: string): Promise<CampaignDraft | null> {
   const rows = await ctx.db.query<CampaignRow>(
     `SELECT ${CAMPAIGN_COLUMNS}

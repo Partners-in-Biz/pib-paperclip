@@ -6,6 +6,7 @@
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import {
+  jobCompanyIds,
   cleanFlowReports,
   decisionStats,
   emptySnapshot,
@@ -38,7 +39,7 @@ import { clip } from "./domain.js";
 import { failedPublishSql, handoffPayload, needsReplySql, repurposeDraftCounts, repurposeRef } from "./done-checks.js";
 import { enqueueRecentLeads } from "./handoff.js";
 import { legacySocialAgent, SOCIAL_HIRE_ROLE } from "./hire.js";
-import { agentStatusActive, socialProjectId } from "./issues.js";
+import { agentStatusActive, socialAgent, socialProjectId } from "./issues.js";
 import { knownCompanies, socialOn } from "./modules.js";
 import { PLAN_HANDOFF_KIND, planScopeOfKey, postsMadeInScope } from "./plan-trigger.js";
 import { delegateForPost } from "./review.js";
@@ -458,6 +459,22 @@ async function openIssueAgent(ctx: PluginContext, companyId: string, issueId: st
   }
 }
 
+/** True only when the issue was read and is closed or gone; an unreadable or open issue is not "closed". */
+async function issueClosed(ctx: PluginContext, companyId: string, issueId: string): Promise<boolean> {
+  try {
+    const issue = (await ctx.issues.get(issueId, companyId)) as { status?: string } | null;
+    return !issue || !OPEN_ISSUE.has(String(issue.status));
+  } catch {
+    return false;
+  }
+}
+
+/** The linked Social agent's id when it can act, else null (never throws). */
+async function activeSocialAgentId(ctx: PluginContext, companyId: string): Promise<string | null> {
+  const agent = await socialAgent(ctx, companyId);
+  return agent.active ? agent.agentId : null;
+}
+
 async function waitingItems(ctx: PluginContext, companyId: string): Promise<WaitingItem[]> {
   const items: WaitingItem[] = [];
   // `review_since`: the last status change or edit, i.e. when the post entered review (an edit in review moves it on).
@@ -505,7 +522,12 @@ async function waitingItems(ctx: PluginContext, companyId: string): Promise<Wait
     [companyId],
   );
   for (const post of unscheduled) {
-    const scheduler = post.schedule_issue_id ? await openIssueAgent(ctx, companyId, post.schedule_issue_id) : null;
+    // PAR-13579: an own-brand post (no client scope) with no schedule task, or one that is closed, is still the Social agent's
+    // to schedule, so it waits on that agent. An open task held by a person, or an unreadable one, stays with the owner (PAR-10701).
+    // A client's post keeps the old rule.
+    const taskAgent = post.schedule_issue_id ? await openIssueAgent(ctx, companyId, post.schedule_issue_id) : null;
+    const noLiveTask = !post.schedule_issue_id || (!taskAgent && (await issueClosed(ctx, companyId, post.schedule_issue_id)));
+    const scheduler = taskAgent ?? (!scopeOfRow(post) && noLiveTask ? await activeSocialAgentId(ctx, companyId) : null);
     items.push({
       key: `social:schedule:${post.id}`,
       title: `${clientPrefix(post)}Schedule approved post: ${snippet(post.body)}`,
@@ -914,7 +936,7 @@ export async function cockpitSnapshot(ctx: PluginContext, companyId: string): Pr
  */
 export async function publishCockpitSnapshots(ctx: PluginContext): Promise<{ published: number; skipped: number; leads: number }> {
   const result = { published: 0, skipped: 0, leads: 0 };
-  for (const companyId of await knownCompanies(ctx)) {
+  for (const companyId of await jobCompanyIds(ctx, await knownCompanies(ctx))) {
     try {
       if (!(await socialOn(ctx, companyId)) || !(await loadSocialConfig(ctx, companyId)).saved) {
         result.skipped += 1;

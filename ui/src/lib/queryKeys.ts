@@ -608,6 +608,32 @@ export const queryKeys = {
   auth: {
     session: ["auth", "session"] as const,
   },
+  personalNotes: {
+    list: (companyId: string) => ["personal-notes", companyId] as const,
+    detail: (companyId: string, noteId: string) => ["personal-notes", companyId, noteId] as const,
+  },
+  planningCanvases: {
+    list: (companyId: string) => ["planning-canvases", companyId] as const,
+    detail: (companyId: string, boardId: string) => ["planning-canvases", companyId, boardId] as const,
+    comments: (companyId: string, boardId: string) => ["planning-canvases", companyId, boardId, "comments"] as const,
+    thread: (companyId: string, boardId: string, itemKey: string | null) =>
+      ["planning-canvases", companyId, boardId, "comments", "thread", itemKey] as const,
+    archived: (companyId: string) => ["planning-canvases", companyId, "archived"] as const,
+    project: (companyId: string, projectId: string) => ["planning-canvases", companyId, "project", projectId] as const,
+    grants: (companyId: string, boardId: string) => ["planning-canvases", companyId, boardId, "agent-grants"] as const,
+  },
+  /** Live link summaries of a board; its own root so a status event never refetches the board itself. */
+  planningCanvasRefs: {
+    all: (companyId: string) => ["planning-canvas-refs", companyId] as const,
+    board: (companyId: string, boardId: string, idsKey: string) =>
+      ["planning-canvas-refs", companyId, boardId, idsKey] as const,
+  },
+  /** Issue queries of kanban and timeline nodes; one root so a live issue event can refetch them all. */
+  planningCanvasQueries: {
+    all: (companyId: string) => ["planning-canvas-queries", companyId] as const,
+    run: (companyId: string, boardId: string, queryJson: string) =>
+      ["planning-canvas-queries", companyId, boardId, queryJson] as const,
+  },
   inboxAgentPolicy: {
     mine: (companyId: string) =>
       ["inbox-agent-policy", companyId, "me"] as const,
