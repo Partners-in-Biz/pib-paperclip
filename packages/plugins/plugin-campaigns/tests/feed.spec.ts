@@ -90,7 +90,8 @@ describe("parseRss on pathological input", () => {
   const fast = (xml: string) => {
     const start = Date.now();
     parseRss(xml);
-    expect(Date.now() - start).toBeLessThan(1000);
+    // Guards against quadratic backtracking (minutes, not seconds). 1 s flaked on a loaded CI runner (1.2-1.5 s).
+    expect(Date.now() - start).toBeLessThan(5000);
   };
   it("unclosed <item> repeated at the size cap", () => fast("<item>".repeat(160_000)));
   it("unclosed <title> inside an item", () => fast(`<item>${"<title>".repeat(140_000)}</item>`));

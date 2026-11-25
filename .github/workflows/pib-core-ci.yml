@@ -69,7 +69,14 @@ jobs:
           mode=full
           if [ "$EVENT" = "pull_request" ]; then
             mode=affected
-            if git diff --name-only "origin/${BASE_REF}...HEAD" | grep -Eq '^(tsconfig[^/]*\.json|pnpm-workspace\.yaml|pnpm-lock\.yaml|\.github/workflows/pib-core-ci\.yml)$'; then
+            changed="$(git diff --name-only "origin/${BASE_REF}...HEAD")"
+            if echo "$changed" | grep -Eq '^(tsconfig[^/]*\.json|pnpm-workspace\.yaml|\.github/workflows/pib-core-ci\.yml)$'; then
+              mode=full
+            elif echo "$changed" | grep -Fxq 'pnpm-lock.yaml' \
+              && { others="$(echo "$changed" | grep -Fxv 'pnpm-lock.yaml' || true)"; [ -z "$others" ] || echo "$others" | grep -Evq '^packages/plugins/'; }; then
+              # A lockfile change with any file outside packages/plugins/ keeps the full run. A lockfile change that
+              # comes only with PiB plugin files (a plugin dependency; plugins have their own CI) stays affected-only,
+              # because vitest treats the lockfile as a rerun trigger for every test (PAR-14649).
               mode=full
             fi
           fi
