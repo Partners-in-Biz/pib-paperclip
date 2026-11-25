@@ -14712,27 +14712,32 @@ export function issueRoutes(
   router.put("/issues/:id/title", validateIssueMutationBody(setIssueTitleSchema), async (req, res) => {
     const existing = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
     if (!existing) return;
-    // PAR-12929 (AC-G3): a caller bound by the member restriction reads the
-    // task through `issue:read`, as `GET /api/issues/:id` does. `enforce`
-    // answers "not found" for a task he cannot read and then applies the
-    // check `PATCH /api/issues/:id` applies; `report` records the would-refuse
-    // and goes on as today. Every other caller keeps today's checks (AC-F2).
+    // Each caller class takes exactly one read check and one write check
+    // (PAR-14340: #1151 and #1190 both rewrote this handler).
     const restrictionMode = await memberRestrictionModeBinding(req, existing.companyId);
-    if (restrictionMode === "enforce") {
-      if (!(await restrictedRead(() => assertIssueReadAllowed(req, res, existing)))) return;
-      if (req.actor.type === "agent"
-        && !(await assertAgentIssueMutationAllowed(req, res, existing, { allowVisibleIssueWrite: true }))) return;
-    } else if (restrictionMode === "report") {
-      await restrictedRead(() => decideIssueAccess(req, existing, "issue:read"));
-    }
-    if (restrictionMode !== "enforce" && req.actor.type === "agent") {
+    if (req.actor.type === "agent" && restrictionMode !== "enforce") {
+      // The agent title path, unchanged by PAR-13016. Under `report` the
+      // restricted read records the would-refuse and goes on (PAR-12929).
+      if (restrictionMode === "report") await restrictedRead(() => decideIssueAccess(req, existing, "issue:read"));
       const decision = await decideIssueAccess(req, existing, "issue:mutate");
       if (!decision.allowed) {
         await denyIssueWrite(req, res, existing, issueWriteDenialCodeForDecision(decision));
         return;
       }
+    } else if (restrictionMode) {
+      // PAR-12929 (AC-G3): a caller bound by the member restriction reads the
+      // task through `issue:read`, as `GET /api/issues/:id` does: "not found"
+      // for a task he cannot read (`enforce`, or a private task), one
+      // would-refuse record under `report`, 503 for a read that cannot be
+      // answered. Then the write check `PATCH /api/issues/:id` applies: for a
+      // board caller that is assertCompanyAccess above, no `issue:mutate`
+      // decision (it would record the would-refuse a second time).
+      if (!(await restrictedRead(() => assertIssueReadAllowed(req, res, existing)))) return;
+      if (req.actor.type === "agent"
+        && !(await assertAgentIssueMutationAllowed(req, res, existing, { allowVisibleIssueWrite: true }))) return;
     } else {
-      // AC-G3: a board caller who cannot read the task gets 404, then the write decision.
+      // PAR-13016 (AC-G3): a board caller who cannot read the task gets 404,
+      // then the write decision.
       if (!(await assertIssueReadAllowed(req, res, existing))) return;
       const decision = await decideIssueAccess(req, existing, "issue:mutate");
       if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
