@@ -2,7 +2,7 @@ import { useShowAgentCreatedTasks } from "../hooks/useShowAgentCreatedTasks";
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { Link, useParams, useNavigate, useLocation, Navigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { PROJECT_COLORS, PROJECT_ICON_NAMES, isUuidLike, type BudgetPolicySummary } from "@paperclipai/shared";
+import { PROJECT_COLORS, PROJECT_ICON_NAMES, isUuidLike, type BudgetOverview, type BudgetPolicySummary } from "@paperclipai/shared";
 import { budgetsApi } from "../api/budgets";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { instanceSettingsApi } from "../api/instanceSettings";
@@ -24,6 +24,7 @@ import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
 import { IssuesList } from "../components/IssuesList";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { QueryErrorState, useQueryView } from "../components/QueryView";
+import { ProjectCanvasTab } from "@/components/planning-canvas/panels/sharing/ProjectCanvasTab";
 import { PageTabBar } from "../components/PageTabBar";
 import { ProjectWorkspacesContent } from "../components/ProjectWorkspacesContent";
 import { SummarySlotCard } from "../components/SummarySlotCard";
@@ -34,6 +35,7 @@ import { collectLiveIssueIds } from "../lib/liveIssueIds";
 import { projectRouteRef } from "../lib/utils";
 import { PROJECT_ICONS } from "../lib/project-icons";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
+import { useMemberRestrictionGate } from "../hooks/useMemberRestrictionGate";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -51,7 +53,7 @@ import { useUpdateIssueMutation } from "../hooks/useUpdateIssueMutation";
 
 /* ── Top-level tab types ── */
 
-type ProjectBaseTab = "list" | "plugin-operations" | "workspaces" | "configuration" | "budget";
+type ProjectBaseTab = "list" | "plugin-operations" | "workspaces" | "configuration" | "budget" | "canvas";
 type ProjectPluginTab = `plugin:${string}`;
 type ProjectTab = ProjectBaseTab | ProjectPluginTab;
 
@@ -70,6 +72,7 @@ function resolveProjectTab(pathname: string, projectId: string): ProjectTab | nu
   if (tab === "issues") return "list";
   if (tab === "plugin-operations") return "plugin-operations";
   if (tab === "workspaces") return "workspaces";
+  if (tab === "canvas") return "canvas";
   return null;
 }
 
@@ -198,19 +201,21 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
     enabled: !!companyId,
   });
 
+  // Live runs are a closed list for a restricted member under `enforce` (AC-G10): no live marks.
+  const memberGate = useMemberRestrictionGate(companyId);
   const liveRunsQueryKey = queryKeys.liveRuns(companyId);
   const sharedLiveRuns = useSharedPollingQuery({
     companyId,
     resourceKey: "live-runs",
     queryKey: liveRunsQueryKey,
-    enabled: !!companyId,
+    enabled: !!companyId && !memberGate.closed,
     // Event-sourced via LiveUpdatesProvider (issue 9627); no interval poll needed.
     refetchInterval: false,
     leaderOnly: true,
   });
   const { data: liveRuns, dataUpdatedAt: liveRunsUpdatedAt } = useQuery({
     queryKey: liveRunsQueryKey,
-    queryFn: () => heartbeatsApi.liveRunsForCompany(companyId),
+    queryFn: memberGate.guard(() => heartbeatsApi.liveRunsForCompany(companyId), []),
     enabled: sharedLiveRuns.enabled,
     refetchInterval: sharedLiveRuns.refetchInterval,
   });
@@ -228,7 +233,7 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
   });
   const { data: issues } = issuesQuery;
   const issuesView = useQueryView(issuesQuery);
-  const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns, issues), [issues, liveRuns]);
+  const liveIssueIds = useMemo(() => collectLiveIssueIds(memberGate.closed ? undefined : liveRuns, issues), [issues, liveRuns, memberGate.closed]);
 
   const updateIssue = useUpdateIssueMutation({
     companyId,
@@ -274,19 +279,21 @@ function ProjectPluginOperationsList({
     queryFn: () => projectsApi.list(companyId),
     enabled: !!companyId,
   });
+  // Live runs are a closed list for a restricted member under `enforce` (AC-G10): no live marks.
+  const memberGate = useMemberRestrictionGate(companyId);
   const liveRunsQueryKey = queryKeys.liveRuns(companyId);
   const sharedLiveRuns = useSharedPollingQuery({
     companyId,
     resourceKey: "live-runs",
     queryKey: liveRunsQueryKey,
-    enabled: !!companyId,
+    enabled: !!companyId && !memberGate.closed,
     // Event-sourced via LiveUpdatesProvider (issue 9627); no interval poll needed.
     refetchInterval: false,
     leaderOnly: true,
   });
   const { data: liveRuns, dataUpdatedAt: liveRunsUpdatedAt } = useQuery({
     queryKey: liveRunsQueryKey,
-    queryFn: () => heartbeatsApi.liveRunsForCompany(companyId),
+    queryFn: memberGate.guard(() => heartbeatsApi.liveRunsForCompany(companyId), []),
     enabled: sharedLiveRuns.enabled,
     refetchInterval: sharedLiveRuns.refetchInterval,
   });
@@ -298,7 +305,7 @@ function ProjectPluginOperationsList({
   });
   const { data: issues } = issuesQuery;
   const issuesView = useQueryView(issuesQuery);
-  const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns, issues), [issues, liveRuns]);
+  const liveIssueIds = useMemo(() => collectLiveIssueIds(memberGate.closed ? undefined : liveRuns, issues), [issues, liveRuns, memberGate.closed]);
 
   const updateIssue = useUpdateIssueMutation({
     companyId,
@@ -376,6 +383,8 @@ export function ProjectDetail() {
   const canonicalProjectRef = project ? projectRouteRef(project) : routeProjectRef;
   const projectLookupRef = project?.id ?? routeProjectRef;
   const resolvedCompanyId = project?.companyId ?? selectedCompanyId;
+  // Execution workspaces, budgets and the membership controls are closed for a restricted member under `enforce` (AC-G10).
+  const memberGate = useMemberRestrictionGate(resolvedCompanyId);
   const membershipsQuery = useResourceMemberships(resolvedCompanyId);
   const membershipMutation = useResourceMembershipMutation(resolvedCompanyId);
   const projectMembershipState = project?.id
@@ -407,7 +416,7 @@ export function ProjectDetail() {
   // disabled query reports isLoading=false — so "not loading" alone cannot
   // distinguish "contribution unavailable" from "not asked yet" on cold loads.
   const pluginTabDecisionLoaded = Boolean(resolvedCompanyId) && !pluginDetailSlotsLoading;
-  const isolatedWorkspacesEnabled = experimentalSettingsQuery.data?.enableIsolatedWorkspaces === true;
+  const isolatedWorkspacesEnabled = experimentalSettingsQuery.data?.enableIsolatedWorkspaces === true && !memberGate.closed;
   const workspaceTabProjectId = project?.id ?? null;
   const workspaceTabIssuesQuery = useQuery({
     queryKey: workspaceTabProjectId && resolvedCompanyId
@@ -422,7 +431,7 @@ export function ProjectDetail() {
     queryKey: workspaceTabProjectId && resolvedCompanyId
       ? queryKeys.executionWorkspaces.list(resolvedCompanyId, { projectId: workspaceTabProjectId })
       : ["execution-workspaces", "__workspace-tab__", "disabled"],
-    queryFn: () => executionWorkspacesApi.list(resolvedCompanyId!, { projectId: workspaceTabProjectId! }),
+    queryFn: memberGate.guard(() => executionWorkspacesApi.list(resolvedCompanyId!, { projectId: workspaceTabProjectId! }), []),
     enabled: Boolean(resolvedCompanyId && workspaceTabProjectId && isolatedWorkspacesEnabled),
   });
   const {
@@ -508,8 +517,8 @@ export function ProjectDetail() {
 
   const { data: budgetOverview } = useQuery({
     queryKey: queryKeys.budgets.overview(resolvedCompanyId ?? "__none__"),
-    queryFn: () => budgetsApi.overview(resolvedCompanyId!),
-    enabled: !!resolvedCompanyId,
+    queryFn: memberGate.guard<BudgetOverview | null>(() => budgetsApi.overview(resolvedCompanyId!), null),
+    enabled: !!resolvedCompanyId && !memberGate.closed,
     refetchInterval: 30_000,
     staleTime: 5_000,
   });
@@ -686,6 +695,9 @@ export function ProjectDetail() {
     if (cachedTab === "configuration") {
       return <Navigate to={`/projects/${canonicalProjectRef}/configuration`} replace />;
     }
+    if (cachedTab === "canvas") {
+      return <Navigate to={`/projects/${canonicalProjectRef}/canvas`} replace />;
+    }
     if (cachedTab === "budget") {
       return <Navigate to={`/projects/${canonicalProjectRef}/budget`} replace />;
     }
@@ -710,7 +722,7 @@ export function ProjectDetail() {
   }
   if (!project) return null;
   const showLeftProjectNotice =
-    projectMembershipState === "left" && !dismissedLeftProjectIds.has(project.id);
+    projectMembershipState === "left" && !memberGate.closed && !dismissedLeftProjectIds.has(project.id);
   const projectMembershipPending =
     membershipMutation.isPending &&
     membershipMutation.variables?.resourceType === "project" &&
@@ -730,6 +742,8 @@ export function ProjectDetail() {
     }
     if (tab === "workspaces") {
       navigate(`/projects/${canonicalProjectRef}/workspaces`);
+    } else if (tab === "canvas") {
+      navigate(`/projects/${canonicalProjectRef}/canvas`);
     } else if (tab === "budget") {
       navigate(`/projects/${canonicalProjectRef}/budget`);
     } else if (tab === "plugin-operations") {
@@ -807,7 +821,7 @@ export function ProjectDetail() {
           ) : null}
         </div>
         <div className="ml-auto flex items-center gap-2">
-          <StarToggle
+          {memberGate.closed ? null : <StarToggle
             size="button"
             starred={projectStarred}
             pending={projectStarPending}
@@ -818,7 +832,7 @@ export function ProjectDetail() {
               resourceName: project.name,
               starred: next,
             })}
-          />
+          />}
         </div>
       </div>
 
@@ -868,8 +882,9 @@ export function ProjectDetail() {
 
             ...(project.managedByPlugin ? [{ value: "plugin-operations", label: "Plugin operations" }] : []),
             ...(showWorkspacesTab ? [{ value: "workspaces", label: "Workspaces" }] : []),
+            { value: "canvas", label: "Canvas" },
             { value: "configuration", label: "Configuration" },
-            { value: "budget", label: "Budget" },
+            ...(memberGate.closed ? [] : [{ value: "budget", label: "Budget" }]),
             ...pluginTabItems.map((item) => ({
               value: item.value,
               label: item.label,
@@ -882,6 +897,10 @@ export function ProjectDetail() {
       </Tabs>
 
 
+
+      {activeTab === "canvas" && project?.id && resolvedCompanyId && (
+        <ProjectCanvasTab companyId={resolvedCompanyId} projectId={project.id} />
+      )}
 
       {activeTab === "list" && project?.id && resolvedCompanyId && (
         <ProjectIssuesList projectId={project.id} companyId={resolvedCompanyId} />
@@ -930,7 +949,7 @@ export function ProjectDetail() {
         </div>
       )}
 
-      {activeTab === "budget" && resolvedCompanyId ? (
+      {activeTab === "budget" && resolvedCompanyId && !memberGate.closed ? (
         <div className="max-w-3xl">
           <BudgetPolicyCard
             summary={projectBudgetSummary}

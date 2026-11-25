@@ -57,6 +57,11 @@ vi.mock("../services/authorization.js", async (importOriginal) => {
   };
 });
 
+// The run lists' member-restriction filter (PAR-14342) has its own database test.
+vi.mock("../services/member-restriction/agent-read.js", () => ({
+  restrictedRunPersonForActor: async () => null,
+}));
+
 vi.mock("../services/agent-action-audit.js", () => ({
   agentActionAuditService: () => mockAgentActionAuditService,
 }));
@@ -329,7 +334,7 @@ describe("activity routes", () => {
     expect(res.status).toBe(200);
     expect(mockIssueService.getByIdentifier).toHaveBeenCalledWith("PC1A2-475");
     expect(mockIssueService.getById).not.toHaveBeenCalled();
-    expect(mockActivityService.runsForIssue).toHaveBeenCalledWith("company-1", "issue-uuid-1", "user-1");
+    expect(mockActivityService.runsForIssue).toHaveBeenCalledWith("company-1", "issue-uuid-1", "user-1", undefined, undefined, undefined);
     expect(res.body).toEqual([{ runId: "run-1", adapterType: "codex_local" }]);
   });
 
@@ -340,7 +345,7 @@ describe("activity routes", () => {
     const app = await createApp();
     const response = await requestApp(app, base => request(base).get(`/api/issues/PAP-1/runs?runIds=${runId}`));
     expect(response.status).toBe(200);
-    expect(mockActivityService.runsForIssue).toHaveBeenCalledWith("company-1", "issue-uuid-1", "user-1", undefined, [runId]);
+    expect(mockActivityService.runsForIssue).toHaveBeenCalledWith("company-1", "issue-uuid-1", "user-1", undefined, [runId], undefined);
     for (const ids of ["", "not-a-uuid", Array.from({ length: 101 }, () => runId).join(",")]) {
       const denied = await requestApp(app, base => request(base).get("/api/issues/PAP-1/runs").query({ runIds: ids }));
       expect(denied.status).toBe(400);

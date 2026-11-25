@@ -7,11 +7,11 @@ import { useEffect, useState } from "react";
 import {
   useHostLocation,
   useHostNavigation,
-  usePluginAction,
   type PluginPageProps,
   type PluginSidebarProps,
 } from "@paperclipai/plugin-sdk/ui";
 import {
+  AccessGate,
   Banknote,
   FileText,
   GetStarted,
@@ -23,11 +23,13 @@ import {
   Tabs,
   Users,
   errorText,
+  useAccess,
   useGroupedNav,
   usePluginSetupStatus,
 } from "@partnersinbiz/pib-plugin-ui";
 import { resolvePluginUiBase } from "@partnersinbiz/pib-plugin-kit/oauth-client";
 import { moduleEnabled, moduleState } from "@partnersinbiz/pib-plugin-kit/setup-client";
+import { useAccessMe, usePayrollAction } from "./actions.js";
 import { pageAlerts } from "./alerts.js";
 import type { DirectoryPerson } from "./approver.js";
 import { ClerkBox } from "./clerk.js";
@@ -102,8 +104,13 @@ function usePeople(companyId: string | null | undefined): { people: DirectoryPer
 
 export function PayrollPage({ context }: PluginPageProps) {
   const enabled = useModuleEnabled(context.companyId);
-  if (enabled === false) return <ModuleOff companyId={context.companyId} />;
-  return <PayrollWorkspace context={context} />;
+  // The page gate only shapes the screen; the worker's access guard is the gate (spec PAR-12578 4.6).
+  const access = useAccess(useAccessMe(), context.companyId);
+  return (
+    <AccessGate state={access} kind="page" moduleName="Payroll">
+      {enabled === false ? <ModuleOff companyId={context.companyId} /> : <PayrollWorkspace context={context} />}
+    </AccessGate>
+  );
 }
 
 function ModuleOff({ companyId }: { companyId: string | null | undefined }) {
@@ -116,7 +123,7 @@ function ModuleOff({ companyId }: { companyId: string | null | undefined }) {
 }
 
 function PayrollWorkspace({ context }: PluginPageProps) {
-  const load = usePluginAction("payroll.load");
+  const load = usePayrollAction("payroll.load");
   const location = useHostLocation();
   const navigation = useHostNavigation();
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
@@ -266,29 +273,32 @@ function PayrollWorkspace({ context }: PluginPageProps) {
 export function PayrollSidebar({ context }: PluginSidebarProps) {
   const hostNavigation = useHostNavigation();
   const enabled = useModuleEnabled(context.companyId);
+  const access = useAccess(useAccessMe(), context.companyId);
   // The Cockpit's Clients / Marketing / Finance group shows this page instead (pib-plugin-ui NAV_GROUPS).
   const grouped = useGroupedNav("partnersinbiz.payroll");
   const href = hostNavigation.resolveHref("/payroll");
   const isActive = typeof window !== "undefined" && window.location.pathname === href;
   if (enabled === false || grouped !== false) return null;
   return (
-    <a
-      {...hostNavigation.linkProps("/payroll")}
-      aria-current={isActive ? "page" : undefined}
-      className={[
-        "flex items-center gap-2.5 mx-2 rounded-lg px-2 py-1.5 text-(length:--text-compact) font-medium transition-colors",
-        isActive ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
-      ].join(" ")}
-      style={{ textDecoration: "none" }}
-    >
-      <span aria-hidden="true" className="relative shrink-0">
-        <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
-          <rect x="2" y="6" width="20" height="12" rx="2" />
-          <circle cx="12" cy="12" r="2.5" />
-          <path d="M6 12h.01M18 12h.01" />
-        </svg>
-      </span>
-      <span className="flex-1 truncate">Payroll</span>
-    </a>
+    <AccessGate state={access} kind="sidebar">
+      <a
+        {...hostNavigation.linkProps("/payroll")}
+        aria-current={isActive ? "page" : undefined}
+        className={[
+          "flex items-center gap-2.5 mx-2 rounded-lg px-2 py-1.5 text-(length:--text-compact) font-medium transition-colors",
+          isActive ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+        ].join(" ")}
+        style={{ textDecoration: "none" }}
+      >
+        <span aria-hidden="true" className="relative shrink-0">
+          <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="2" y="6" width="20" height="12" rx="2" />
+            <circle cx="12" cy="12" r="2.5" />
+            <path d="M6 12h.01M18 12h.01" />
+          </svg>
+        </span>
+        <span className="flex-1 truncate">Payroll</span>
+      </a>
+    </AccessGate>
   );
 }

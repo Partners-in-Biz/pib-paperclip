@@ -14,6 +14,7 @@ import { TruncatedTextMarqueeProvider } from "@/components/TruncatedText";
 import { Button } from "@/components/ui/button";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
+import { useMemberRestrictionGate } from "@/hooks/useMemberRestrictionGate";
 import { useDialogActions } from "@/context/DialogContext";
 import { useTaskListCollection } from "@/hooks/useTaskListCollection";
 import { formatUserLabel } from "@/lib/assignees";
@@ -47,7 +48,9 @@ export function DesignSandboxTasks() {
   const agents = useQuery({ queryKey: queryKeys.agents.list(companyId!), queryFn: () => agentsApi.list(companyId!), enabled: !!companyId });
   const projects = useQuery({ queryKey: queryKeys.projects.list(companyId!, { includeArchived: true }), queryFn: () => projectsApi.list(companyId!, { includeArchived: true }), enabled: !!companyId });
   const directory = useQuery({ queryKey: queryKeys.access.companyUserDirectory(companyId!), queryFn: () => accessApi.listUserDirectory(companyId!), enabled: !!companyId });
-  const labels = useQuery({ queryKey: queryKeys.issues.labels(companyId!), queryFn: () => issuesApi.listLabels(companyId!), enabled: !!companyId });
+  // Company labels are a closed list for a restricted member under `enforce` (AC-G10): no Label filter.
+  const memberGate = useMemberRestrictionGate(companyId);
+  const labels = useQuery({ queryKey: queryKeys.issues.labels(companyId!), queryFn: memberGate.guard(() => issuesApi.listLabels(companyId!), []), enabled: !!companyId && !memberGate.closed });
   // The ordinary organization list does not include viewer read context.
   // Ask the server for the signed-in user's unread set instead of guessing
   // unread state from dates or reusing Storybook fixture flags.
@@ -96,7 +99,7 @@ export function DesignSandboxTasks() {
       layout={collection.layout} onLayoutChange={collection.setLayout} allExpanded={collection.allExpanded} onToggleExpanded={collection.toggleExpanded}
       onNewTask={() => openNewIssue()} filters={{ state: collection.filters, onChange: collection.updateFilters, activeFilterCount: collection.activeFilterCount,
         enableLiveRunsFilter: false,
-        agents: agents.data ?? [], projects: projects.data ?? [], labels: labels.data ?? [], currentUserId: userId, creators: collection.creators }} />
+        agents: agents.data ?? [], projects: projects.data ?? [], labels: memberGate.closed ? undefined : labels.data ?? [], currentUserId: userId, creators: collection.creators }} />
     {error ? <div role="alert" className="flex items-center gap-2 text-sm text-destructive"><span>{error instanceof Error ? error.message : "Could not load tasks"}</span><Button variant="outline" size="sm" onClick={() => { update.reset(); void client.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) }); void agents.refetch(); void projects.refetch(); void directory.refetch(); void labels.refetch(); }}>Retry</Button></div> : null}
     {tasks.isPending ? <p role="status" className="text-sm text-muted-foreground">Loading tasks…</p> : <>
       {collection.narrowed ? <p role="status" className="design-task-results">{collection.matchingItems.length} matching tasks{collection.layout === "list" && collection.visibleItems.length > collection.matchingItems.length ? " · Parent tasks included for context" : ""}</p> : null}

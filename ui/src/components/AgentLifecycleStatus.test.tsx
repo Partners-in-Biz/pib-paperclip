@@ -26,6 +26,14 @@ it.each([undefined, "ready", "paused", "pending_approval", "terminated", "reject
   expect(agentLifecycleRefetchInterval(lifecycleState)).toBe(30_000);
 });
 
+it("shows what a pause waits on instead of the generic line (PAR-9962)", () => {
+  const detail = "Waiting for proof that run r1 on mac.test has stopped (last check: unknown/check_failed, next 14:32 UTC).";
+  const html = renderToStaticMarkup(<AgentLifecycleStatus agent={{ lifecycleState: "pausing", lifecycleError: null, lifecycleStatusDetail: detail }} onRetry={() => {}} retryPending={false} />);
+  expect(html).toContain("Pausing agent");
+  expect(html).toContain(detail);
+  expect(html).not.toContain("Waiting for execution and required resources to stop.");
+});
+
 it("does not promise automatic retry of a failed configuration check", () => {
   const html = renderToStaticMarkup(<AgentLifecycleStatus agent={{ lifecycleState: "verifying", lifecycleError: "Update Configuration or choose Retry now." }} onRetry={() => {}} retryPending={false} />);
   expect(html).toContain("Retry now");

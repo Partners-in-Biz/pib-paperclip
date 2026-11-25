@@ -83,6 +83,33 @@ describe("API responses during a restart", () => {
     await expect(readApiJson(response)).rejects.toBe(error);
   });
 
+  it.each([200, 502, 503, 504])(
+    "handles Safari/WebKit DOMException SyntaxError on status %i",
+    async (status) => {
+      const response = new Response("<!doctype html>", {
+        status,
+        headers: status === 503 ? { "Retry-After": "15" } : undefined,
+      });
+      vi.spyOn(response, "json").mockRejectedValue(
+        new DOMException("The string did not match the expected pattern.", "SyntaxError"),
+      );
+      await expect(readApiJson(response)).rejects.toMatchObject({
+        name: "ApiUnavailableError",
+        message: "Paperclip is temporarily unavailable. Please try again in a moment.",
+        status,
+        retryAfterMs: status === 503 ? 15_000 : null,
+      });
+    },
+  );
+
+  it("returns null on Safari/WebKit DOMException SyntaxError for 4xx responses", async () => {
+    const response = new Response("Forbidden", { status: 403 });
+    vi.spyOn(response, "json").mockRejectedValue(
+      new DOMException("The string did not match the expected pattern.", "SyntaxError"),
+    );
+    await expect(readApiJson(response)).resolves.toBeNull();
+  });
+
   it.each(["Failed to fetch", "NetworkError when attempting to fetch resource.", "Load failed"])(
     "recognizes the browser network failure: %s", (message) => {
       expect(isTemporaryApiError(new TypeError(message))).toBe(true);

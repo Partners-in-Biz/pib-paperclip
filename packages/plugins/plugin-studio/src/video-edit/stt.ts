@@ -83,6 +83,50 @@ export function xaiSpeechToText(apiKey: string, fetchImpl: FetchLike = fetch): S
   };
 }
 
+export const ELEVENLABS_STT_URL = "https://api.elevenlabs.io/v1/speech-to-text";
+/** Scribe v2: $0.22 per hour of audio (elevenlabs.io/pricing/api, read 2026-11-09). */
+export const ELEVENLABS_STT_MODEL = "scribe_v2";
+
+/** Scribe `words[]` mixes `word`, `spacing` and `audio_event` entries; only real words become captions. */
+export function parseScribeWords(raw: unknown): SttWord[] {
+  if (!Array.isArray(raw)) return [];
+  return parseSttWords(raw.filter((w) => {
+    const type = (w as Record<string, unknown> | null)?.type;
+    return type === undefined || type === "word";
+  }));
+}
+
+/**
+ * ElevenLabs Scribe: `POST /v1/speech-to-text`, key in `xi-api-key`, multipart `model_id` + `file` (+ `language_code`);
+ * the JSON answer carries `words: [{text, start, end, type}]` in seconds. The key never reaches an error message.
+ */
+export function elevenLabsSpeechToText(apiKey: string, fetchImpl: FetchLike = fetch): SpeechToText {
+  return {
+    key: "elevenlabs",
+    async transcribe(input) {
+      if (input.audio.byteLength === 0) throw new StudioError("The clip's sound is empty.", "no_speech");
+      if (input.audio.byteLength > MAX_STT_BYTES) throw new StudioError("The clip's sound is too long to transcribe in one go.", "too_large");
+      const form = new FormData();
+      form.append("model_id", ELEVENLABS_STT_MODEL);
+      form.append("timestamps_granularity", "word");
+      if (input.language) form.append("language_code", input.language);
+      form.append("file", new Blob([new Uint8Array(input.audio)], { type: input.mimeType }), "clip.wav");
+      let res: Response;
+      try {
+        res = await fetchImpl(ELEVENLABS_STT_URL, { method: "POST", headers: { "xi-api-key": apiKey }, body: form, signal: AbortSignal.timeout(STT_TIMEOUT_MS) });
+      } catch (e) {
+        throw new StudioError(`Speech to text did not answer: ${e instanceof Error ? e.message : String(e)}`.replaceAll(apiKey, "[key]"), "provider_unavailable");
+      }
+      if (!res.ok) {
+        const hint = res.status === 401 || res.status === 403 ? " Check the ElevenLabs key in Studio's plugin settings." : res.status === 429 ? " ElevenLabs is rate limiting or out of credit." : "";
+        throw new StudioError(`Speech to text failed (${res.status}).${hint}`, "provider_error");
+      }
+      const body = (await res.json().catch(() => ({}))) as { words?: unknown; audio_duration_secs?: unknown };
+      return { words: parseScribeWords(body.words), duration: typeof body.audio_duration_secs === "number" ? body.audio_duration_secs : null };
+    },
+  };
+}
+
 /** Tests and local runs: fixed words, or two words spread over the first second. Never calls out. */
 export function fakeSpeechToText(words: SttWord[] = [{ text: "Hello", start: 0.1, end: 0.4 }, { text: "world", start: 0.5, end: 0.9 }]): SpeechToText & { calls: SttInput[] } {
   const calls: SttInput[] = [];

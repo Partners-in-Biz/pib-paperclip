@@ -49,7 +49,7 @@ import { assertWritable, clockFor, loadSprintContext, requireSprint, sprintCopy 
 import { commentOn, getIssue, openIssue, patchIssue } from "./issues.js";
 import { requireClient, scopeParam } from "./scope.js";
 import { cancelRehearsalIssues } from "./rehearsal.js";
-import { materialiseDueTasks, startTasksNow } from "./tasks.js";
+import { materialiseDueTasks, parkSprintTasks, startTasksNow, unparkSprintTasks } from "./tasks.js";
 import { nextWeekToRelease } from "../engine/pacing.js";
 import { groupViews } from "./chunks.js";
 import { geoSummary } from "./geo.js";
@@ -687,10 +687,14 @@ export async function setSprintStatus(env: Env, companyId: string, actor: Actor,
     const closed = await cancelRehearsalIssues(env, sprint);
     return { sprintId: sprint.id, status, previous: sprint.status, rehearsal: true, issuesCancelled: closed.cancelled };
   }
+  // Pause stops the host waking the agent on the sprint's untouched task issues; resume puts them back (PAR-14132).
+  let parked = 0;
+  if (!rehearsal && target === "paused") parked = await parkSprintTasks(env, sprint);
+  if (!rehearsal && target === "resume") await unparkSprintTasks(env, sprint);
   if (sprint.rootIssueId) {
     await commentOn(env, companyId, sprint.rootIssueId, `Sprint ${target === "resume" ? `resumed (${status})` : status} by ${actorLabel(actor)}${reason ? `: ${reason}` : ""}.`);
   }
-  return { sprintId: sprint.id, status, previous: sprint.status, ...(rehearsal ? { rehearsal: true } : {}) };
+  return { sprintId: sprint.id, status, previous: sprint.status, ...(parked ? { tasksParked: parked } : {}), ...(rehearsal ? { rehearsal: true } : {}) };
 }
 
 export async function updateSprintTool(env: Env, companyId: string, actor: Actor, params: Params) {

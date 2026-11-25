@@ -17,6 +17,7 @@ import { errorHandler } from "../middleware/error-handler.js";
 import { issueRoutes } from "../routes/issues.js";
 import { routineRoutes } from "../routes/routines.js";
 import { loadActorMemberships } from "../services/member-restriction/actor-memberships.js";
+import { buildHostServices } from "../services/plugin-host-services.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 // PAR-12713 (C2-3): H2 (a task names only its creator as responsible person)
@@ -274,6 +275,69 @@ type Actor = Express.Request["actor"];
         .patch(`/api/routines/${routineId}`).send({ description: "new instruction" });
       expect(res.status, JSON.stringify(res.body)).toBe(200);
       expect(await denials(f.companyId, "H6")).toHaveLength(1);
+    });
+  });
+
+  describe("AC-H8: a plugin-made task names the acting person", () => {
+    const eventBus = { forPlugin: () => ({ emit: async () => {}, subscribe: () => {} }) } as never;
+    const pluginCreate = (f: Fixture, actingPersonId: string | null) =>
+      buildHostServices(db, `plugin-${randomUUID()}`, "pib.test", eventBus).issues.create(
+        { companyId: f.companyId, title: "From plugin", responsibleUserId: f.users.O, actorUserId: f.users.O } as never,
+        { invocationScope: { companyId: f.companyId, ...(actingPersonId ? { actingPersonId } : {}) } },
+      );
+    const stored = async (id: string) => (await db.select({
+      createdByUserId: issues.createdByUserId, responsibleUserId: issues.responsibleUserId,
+    }).from(issues).where(eq(issues.id, id)))[0];
+    const ignoredLogged = async (id: string) => (await db.select({ details: activityLog.details }).from(activityLog)
+      .where(and(eq(activityLog.entityId, id), eq(activityLog.action, "issue.created"))))
+      .map((row) => (row.details as { ignoredResponsibleUserId?: string }).ignoredResponsibleUserId ?? null);
+
+    it("an action triggered by U naming O makes U creator and responsible, and records the ignored value", async () => {
+      const f = await fixture();
+      const issue = await pluginCreate(f, f.users.U);
+      expect(await stored(issue.id)).toEqual({ createdByUserId: f.users.U, responsibleUserId: f.users.U });
+      expect(await ignoredLogged(issue.id)).toEqual([f.users.O]);
+    });
+
+    it("a plugin update for U cannot re-point a task to O", async () => {
+      const f = await fixture();
+      const created = await createTask(f, await board(f.users.U), {});
+      await buildHostServices(db, `plugin-${randomUUID()}`, "pib.test", eventBus).issues.update(
+        { companyId: f.companyId, issueId: created.body.id, patch: { title: "Renamed", responsibleUserId: f.users.O } } as never,
+        { invocationScope: { companyId: f.companyId, actingPersonId: f.users.U } },
+      );
+      expect(await stored(created.body.id)).toEqual({ createdByUserId: f.users.U, responsibleUserId: f.users.U });
+    });
+
+    it("a job with no acting person keeps today's result", async () => {
+      const f = await fixture();
+      const issue = await pluginCreate(f, null);
+      expect(await stored(issue.id)).toEqual({ createdByUserId: f.users.O, responsibleUserId: f.users.O });
+    });
+
+    it("O acting keeps today's result; report records U and keeps O", async () => {
+      const f = await fixture();
+      const asOwner = await pluginCreate(f, f.users.O);
+      expect(await stored(asOwner.id)).toEqual({ createdByUserId: f.users.O, responsibleUserId: f.users.O });
+      const r = await fixture("report");
+      const reported = await pluginCreate(r, r.users.U);
+      expect(await stored(reported.id)).toEqual({ createdByUserId: r.users.O, responsibleUserId: r.users.O });
+      expect(await denials(r.companyId, "H6")).toHaveLength(1);
+    });
+
+    it("kill switch: U naming O keeps today's result", async () => {
+      process.env.PAPERCLIP_MEMBER_RESTRICTION = "off";
+      const f = await fixture();
+      const issue = await pluginCreate(f, f.users.U);
+      expect(await stored(issue.id)).toEqual({ createdByUserId: f.users.O, responsibleUserId: f.users.O });
+    });
+
+    it("a failed read refuses with 503 and writes nothing", async () => {
+      const f = await fixture();
+      await db.update(companyMemberships).set({ restrictedPluginKeys: [1] as never })
+        .where(eq(companyMemberships.principalId, f.users.R));
+      await expect(pluginCreate(f, f.users.R)).rejects.toMatchObject({ status: 503 });
+      expect(await issueCount(f.companyId)).toBe(0);
     });
   });
 

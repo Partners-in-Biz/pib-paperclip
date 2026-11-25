@@ -40,12 +40,14 @@ import {
   TAX_CODES,
   toolFail,
   toolOk,
+  jobCompanyIds,
   trackJob,
   type AccessGuard,
   type ClientRef,
   type ModulesPayload,
 } from "@partnersinbiz/pib-plugin-kit";
 import { CRM_DEAL_ACCEPTED_EVENT, CRM_QUOTE_ACCEPTED_EVENT, onSignedDocument } from "./accepted.js";
+import { registerBillingCanvasCards } from "./canvas-cards.js";
 import { backpostTotal, postMissingJournals } from "./backpost.js";
 import { cancelPaymentLinkAction, createPaymentLinkAction, paymentLinksAction, paymentsStatusAction, publicLink, recordRefundAction, simulatePaymentAction } from "./pay/actions.js";
 import { housekeepPaymentLinks } from "./pay/links.js";
@@ -448,6 +450,7 @@ const plugin = definePlugin({
         return handler(ctx, context, params ?? {});
       });
     }
+    registerBillingCanvasCards(ctx, guard.action);
     guard.action("billing.sync-skills", async (_params, context) => ({ results: await skillSync?.force(requiredCompany(context)) }));
     guard.apiRoute("client-summary", (input) => clientSummaryRoute(ctx, input));
     guard.apiRoute(SETUP_STATUS_ROUTE.routeKey, (input) => setupStatusRoute(ctx, input));
@@ -1201,9 +1204,10 @@ function moduleCache(ctx: PluginContext): (companyId: string) => Promise<boolean
 }
 
 /** Hourly: overdue invoices (not for companies with Billing off), the setup status, the Cockpit numbers and recent hand-offs again. */
-async function markOverdueJob(ctx: PluginContext) {
+export async function markOverdueJob(ctx: PluginContext) {
   const off: string[] = [];
-  for (const companyId of await knownCompanyIds(ctx).catch(() => [] as string[])) {
+  // Companies with no saved settings are skipped (the host refuses their calls); their overdue marking still runs below, as before.
+  for (const companyId of await jobCompanyIds(ctx, await knownCompanyIds(ctx).catch(() => [] as string[]))) {
     if (!(await billingOn(ctx, companyId))) {
       off.push(companyId);
       continue;

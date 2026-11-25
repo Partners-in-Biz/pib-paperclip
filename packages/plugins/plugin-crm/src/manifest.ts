@@ -2,6 +2,7 @@ import type { JsonSchema, PaperclipPluginManifestV1 } from "@paperclipai/plugin-
 import { COCKPIT_ROUTE, jevConfigSchema, secretField, SETUP_STATUS_ROUTE } from "@partnersinbiz/pib-plugin-kit";
 import { LEAD_ENDPOINT_KEY } from "./lead-form.js";
 import { EVENTS_ENDPOINT_KEY, SIGN_ENDPOINT_KEY } from "./endpoints.js";
+import { CARD_COMPANY, CARD_CONTACT } from "./card-types.js";
 import { PLUGIN_ID, PLUGIN_VERSION } from "./namespace.js";
 import { SKILLS } from "./skills.js";
 import { CRM_TOOLS } from "./tools.js";
@@ -297,6 +298,9 @@ const manifest: PaperclipPluginManifestV1 = {
         exportName: "CrmSidebar",
         order: 40,
       },
+      // Company and contact cards on a planning canvas (PAR-14416): the worker answers `canvas.cards.*` per person.
+      { type: "canvasNode", id: CARD_COMPANY, displayName: "CRM company", exportName: "CrmCompanyCard", entityCard: { kind: "company", search: true, related: true } },
+      { type: "canvasNode", id: CARD_CONTACT, displayName: "CRM contact", exportName: "CrmContactCard", entityCard: { kind: "contact", search: true, related: true } },
     ],
   },
 };

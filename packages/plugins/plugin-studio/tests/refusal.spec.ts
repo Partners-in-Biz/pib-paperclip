@@ -1,9 +1,12 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { StudioError } from "../src/errors.js";
-import { guardAction, isRefusal, StudioRefusalError, unwrapAction } from "../src/refusal.js";
+import { isStudioError, StudioError } from "../src/errors.js";
+import { guardAction as kitGuardAction, isRefusal, RefusalError, unwrapAction } from "@partnersinbiz/pib-plugin-kit/refusal";
 import { makerLabel, parseDirectory } from "../src/ui/people.js";
+
+// Studio's binding of the kit's helper, as the worker uses it (PAR-12578 plan section 7: the helper moved to the kit).
+const guardAction = <P, C, R>(handler: (params: P, context: C) => Promise<R>) => kitGuardAction(handler, isStudioError);
 
 const DRIVE_REASON = "This client has no Drive project in CRM yet. Set drive.ownProjectId in the CRM settings.";
 
@@ -35,7 +38,7 @@ describe("page action refusals (PAR-8120)", () => {
     const out = await guardAction(async () => {
       throw new StudioError(DRIVE_REASON, "drive_refused");
     })({}, {});
-    expect(() => unwrapAction(out)).toThrow(StudioRefusalError);
+    expect(() => unwrapAction(out)).toThrow(RefusalError);
     expect(() => unwrapAction(out)).toThrow(DRIVE_REASON);
   });
 

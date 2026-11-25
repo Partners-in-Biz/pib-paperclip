@@ -224,7 +224,15 @@ export interface HostServices {
 
   /** Provides `companies.list`, `companies.get`. */
   companies: {
-    list(params: WorkerToHostMethods["companies.list"][0]): Promise<WorkerToHostMethods["companies.list"][1]>;
+    /**
+     * `filter.companyIds`, when set, is applied before `limit`/`offset`: only
+     * those companies are returned. The worker's own `actionableOnly` is
+     * resolved by the gate into this filter, never passed through.
+     */
+    list(
+      params: Pick<WorkerToHostMethods["companies.list"][0], "limit" | "offset">,
+      filter?: { companyIds?: readonly string[] },
+    ): Promise<WorkerToHostMethods["companies.list"][1]>;
     get(params: WorkerToHostMethods["companies.get"][0]): Promise<WorkerToHostMethods["companies.get"][1]>;
   };
 
@@ -267,8 +275,8 @@ export interface HostServices {
   issues: {
     list(params: WorkerToHostMethods["issues.list"][0]): Promise<WorkerToHostMethods["issues.list"][1]>;
     get(params: WorkerToHostMethods["issues.get"][0]): Promise<WorkerToHostMethods["issues.get"][1]>;
-    create(params: WorkerToHostMethods["issues.create"][0]): Promise<WorkerToHostMethods["issues.create"][1]>;
-    update(params: WorkerToHostMethods["issues.update"][0]): Promise<WorkerToHostMethods["issues.update"][1]>;
+    create(params: WorkerToHostMethods["issues.create"][0], context?: WorkerHostCallContext): Promise<WorkerToHostMethods["issues.create"][1]>;
+    update(params: WorkerToHostMethods["issues.update"][0], context?: WorkerHostCallContext): Promise<WorkerToHostMethods["issues.update"][1]>;
     getRelations(params: WorkerToHostMethods["issues.relations.get"][0]): Promise<WorkerToHostMethods["issues.relations.get"][1]>;
     setBlockedBy(params: WorkerToHostMethods["issues.relations.setBlockedBy"][0]): Promise<WorkerToHostMethods["issues.relations.setBlockedBy"][1]>;
     addBlockers(params: WorkerToHostMethods["issues.relations.addBlockers"][0]): Promise<WorkerToHostMethods["issues.relations.addBlockers"][1]>;
@@ -868,12 +876,26 @@ export function createHostClientHandlers(
     }),
 
     // Companies
+    // Inside an invocation: the invocation's company (with or without
+    // `actionableOnly`). Outside one: every company, or with `actionableOnly`
+    // the companies with saved settings (`context.actionableCompanyIds`). The
+    // filter goes to the service so it runs before the window; the rows are
+    // filtered again here so a service that ignores it never widens the answer.
     "companies.list": gated("companies.list", async (params, context) => {
-      const rows = await services.companies.list(params);
       const allowedCompanyId = readNonEmptyString(context?.invocationScope?.companyId);
-      if (!allowedCompanyId) return rows;
+      const companyIds = allowedCompanyId
+        ? [allowedCompanyId]
+        : params?.actionableOnly === true
+          ? [...(context?.actionableCompanyIds ?? [])]
+          : null;
+      const window = { limit: params?.limit, offset: params?.offset };
+      const rows = companyIds
+        ? await services.companies.list(window, { companyIds })
+        : await services.companies.list(window);
+      if (!companyIds) return rows;
+      const allowed = new Set(companyIds);
       return rows.filter((company) =>
-        isRecord(company) && company.id === allowedCompanyId,
+        isRecord(company) && typeof company.id === "string" && allowed.has(company.id),
       ) as WorkerToHostMethods["companies.list"][1];
     }),
     "companies.get": gated("companies.get", async (params) => {
@@ -956,11 +978,11 @@ export function createHostClientHandlers(
     "issues.get": gated("issues.get", async (params) => {
       return services.issues.get(params);
     }),
-    "issues.create": gated("issues.create", async (params) => {
-      return services.issues.create(params);
+    "issues.create": gated("issues.create", async (params, context) => {
+      return services.issues.create(params, context);
     }),
-    "issues.update": gated("issues.update", async (params) => {
-      return services.issues.update(params);
+    "issues.update": gated("issues.update", async (params, context) => {
+      return services.issues.update(params, context);
     }),
     "issues.relations.get": gated("issues.relations.get", async (params) => {
       return services.issues.getRelations(params);

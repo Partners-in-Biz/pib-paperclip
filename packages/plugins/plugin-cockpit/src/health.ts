@@ -7,6 +7,7 @@
 import { createHash } from "node:crypto";
 import { configSaved, createWorkIssue, isModuleEnabled, readConfig, repairUnroutedApprovals, syncAllCompanies, wakeIssue, type SkillSyncer as KitSkillSyncer } from "@partnersinbiz/pib-plugin-kit";
 import { reannounceEffects, reconcileAsks } from "./asks.js";
+import { reconcileMergedPrAsks } from "./pr-merge.js";
 import { ensureAuthCard } from "./auth-card.js";
 import { forgetChecks, OWN_CHECKS_INCOMPLETE_KEY, parseIncompleteParts } from "./checks.js";
 import { ensureCockpitAsks } from "./effects.js";
@@ -393,6 +394,13 @@ export async function healthAlerts(env: Env): Promise<Record<string, number>> {
         if (asks.answered || asks.closed) counts.asksSettled = (counts.asksSettled ?? 0) + asks.answered + asks.closed;
       } catch (error) {
         env.ctx.logger.info("Question check failed", { companyId: row.companyId, error: message(error) });
+      }
+      try {
+        // A question that only asked the owner to merge a PR is settled once GitHub says it is merged (PAR-14492).
+        const merged = await reconcileMergedPrAsks(env, row.companyId);
+        if (merged.handedBack || merged.closed) counts.asksSettledByMerge = (counts.asksSettledByMerge ?? 0) + merged.handedBack + merged.closed;
+      } catch (error) {
+        env.ctx.logger.info("Merged-PR question check failed", { companyId: row.companyId, error: message(error) });
       }
       try {
         const effects = await reannounceEffects(env, row.companyId);

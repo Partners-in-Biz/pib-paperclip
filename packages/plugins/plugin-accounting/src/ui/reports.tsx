@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import { useAccountingAction } from "./actions.js";
 import { Button, Field, Input, Section, Select, formatDate, formatMonth, formatMoney } from "@partnersinbiz/pib-plugin-ui";
 import type { LoadResult } from "./overview.js";
 import { AccountSelect, Banner, base64ToBytes, download, memoText, Muted, signTone, Table, Td, today, useRunner } from "./shared.js";
@@ -160,8 +160,8 @@ function Render({ report }: { report: AnyReport }): ReactNode {
 }
 
 export function ReportsTab({ data, onMessage }: { data: LoadResult; onMessage: (m: string) => void }) {
-  const report = usePluginAction("accounting.report");
-  const pack = usePluginAction("accounting.pack");
+  const report = useAccountingAction("accounting.report");
+  const pack = useAccountingAction("accounting.pack");
   const { busy, run } = useRunner(onMessage);
   const [kind, setKind] = useState<Kind>("profit_and_loss");
   const [from, setFrom] = useState("");

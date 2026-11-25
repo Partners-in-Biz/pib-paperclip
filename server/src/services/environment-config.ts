@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
+import { isSafeSshDestinationPart } from "@paperclipai/adapter-utils/ssh";
 import type { Db } from "@paperclipai/db";
 import type {
   Environment,
@@ -38,9 +39,17 @@ const secretRefSchema = z.object({
 }).strict();
 
 const sshEnvironmentConfigSchema = z.object({
-  host: z.string({ error: "SSH environments require a host." }).trim().min(1, "SSH environments require a host."),
+  host: z
+    .string({ error: "SSH environments require a host." })
+    .trim()
+    .min(1, "SSH environments require a host.")
+    .refine(isSafeSshDestinationPart, "SSH host must not start with '-' or contain whitespace, control characters or '@'."),
   port: z.coerce.number().int().min(1).max(65535).default(22),
-  username: z.string({ error: "SSH environments require a username." }).trim().min(1, "SSH environments require a username."),
+  username: z
+    .string({ error: "SSH environments require a username." })
+    .trim()
+    .min(1, "SSH environments require a username.")
+    .refine(isSafeSshDestinationPart, "SSH username must not start with '-' or contain whitespace, control characters or '@'."),
   remoteWorkspacePath: z
     .string({ error: "SSH environments require a remote workspace path." })
     .trim()

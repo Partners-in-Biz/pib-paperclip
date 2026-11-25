@@ -56,6 +56,8 @@ const ACTION_ROWS: Readonly<Record<string, AccessTableEntry>> = Object.freeze({
     "confirm-pop", "link-pop", "reject-pop", "record-refund", "simulate-payment", "run-dunning", "retry-send",
   ]),
   ...rows(invoices("export"), ["drive-catchup"]),
+  // Planning Canvas invoice cards (PAR-14389): reading invoices, so `view` (not prefixed `billing.`).
+  ...Object.fromEntries(["canvas.cards.resolve", "canvas.cards.search", "canvas.cards.related"].map((key) => [key, invoices("view")])),
 
   ...rows(quotes("view"), ["quote-html", "quote-detail", "list-quotes"]),
   ...rows(quotes("create"), ["create-quote", "add-quote-line"]),

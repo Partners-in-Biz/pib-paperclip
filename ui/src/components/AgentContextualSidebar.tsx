@@ -18,6 +18,7 @@ import {
 import { usePluginSlots } from "@/plugins/slots";
 import { agentsApi } from "@/api/agents";
 import { useCompany } from "@/context/CompanyContext";
+import { useMemberRestriction } from "@/context/MemberRestrictionContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { ContextualSidebarFrame } from "./ContextualSidebarFrame";
 import { SidebarNavItem } from "./SidebarNavItem";
@@ -67,6 +68,21 @@ export function AgentContextualSidebar({
   const resolvedId = agentId ?? resolvedAgent?.id;
   const { slots: pluginTabs } = usePluginSlots({ slotTypes: ["detailTab"], entityType: "agent", companyId: resolvedAgent?.companyId ?? selectedCompanyId, enabled: Boolean(resolvedId) });
   const resolvedName = agentName ?? resolvedAgent?.name ?? "Agent";
+  // A restricted member under `enforce` sees no closed tab (AC-G10); a section left empty is dropped with its label.
+  const { isPageHidden } = useMemberRestriction();
+  const sections = AGENT_DETAIL_NAVIGATION
+    .map((section) => ({ ...section, items: section.items.filter((item) => !isPageHidden(agentDetailHref(agentRef, item.value))) }))
+    .filter((section) => section.items.length > 0);
+  // Plugin tabs sit before Audit; when R's filter drops Audit they stay, at the end (plugin pages are C4g-2c-1's).
+  const hasAuditSection = sections.some((section) => section.label === "Audit");
+  const appsSection = pluginTabs.length > 0 ? (
+    <div data-slot="contextual-sidebar-section" className={contextualSidebarStyles.section}>
+      <p className={contextualSidebarStyles.sectionLabel}>Apps</p>
+      <div className={contextualSidebarStyles.group}>
+        {pluginTabs.map(slot => <SidebarNavItem key={`${slot.pluginKey}:${slot.id}`} to={`/agents/${encodeURIComponent(agentRef)}/${encodeURIComponent(`plugin:${slot.pluginKey}:${slot.id}`)}`} label={slot.displayName} icon={Wrench} />)}
+      </div>
+    </div>
+  ) : null;
 
   return (
     <ContextualSidebarFrame
@@ -81,16 +97,9 @@ export function AgentContextualSidebar({
         data-slot="contextual-sidebar-nav"
         className={contextualSidebarStyles.nav}
       >
-        {AGENT_DETAIL_NAVIGATION.map((section) => (
+        {sections.map((section) => (
           <div key={section.label} className="contents">
-            {section.label === "Audit" && pluginTabs.length > 0 ? (
-              <div data-slot="contextual-sidebar-section" className={contextualSidebarStyles.section}>
-                <p className={contextualSidebarStyles.sectionLabel}>Apps</p>
-                <div className={contextualSidebarStyles.group}>
-                  {pluginTabs.map(slot => <SidebarNavItem key={`${slot.pluginKey}:${slot.id}`} to={`/agents/${encodeURIComponent(agentRef)}/${encodeURIComponent(`plugin:${slot.pluginKey}:${slot.id}`)}`} label={slot.displayName} icon={Wrench} />)}
-                </div>
-              </div>
-            ) : null}
+            {section.label === "Audit" ? appsSection : null}
             <div data-slot="contextual-sidebar-section" className={contextualSidebarStyles.section}>
               <p data-slot="contextual-sidebar-section-label" className={contextualSidebarStyles.sectionLabel}>
                 {section.label}
@@ -108,6 +117,7 @@ export function AgentContextualSidebar({
             </div>
           </div>
         ))}
+        {hasAuditSection ? null : appsSection}
       </nav>
     </ContextualSidebarFrame>
   );

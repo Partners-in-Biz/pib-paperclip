@@ -15,6 +15,7 @@ import { contextCompactionService } from "../services/context-compaction.js";
 import { canActorReadHeartbeatRun } from "../services/heartbeat-run-privacy.js";
 import { issueReadSqlCondition } from "../services/authorization.js";
 import { caseActivityReadSqlCondition } from "../services/case-activity-access.js";
+import { restrictedRunPersonForActor } from "../services/member-restriction/agent-read.js";
 
 /** Max rows a single CSV export will stream (guards against runaway exports). */
 const AUDIT_CSV_EXPORT_MAX_ROWS = 10_000;
@@ -216,6 +217,12 @@ export function activityRoutes(db: Db) {
       },
     });
     if (decision.allowed) return true;
+    // A task the actor may not read is "not found", as on the task routes (PAR-12774 4.2);
+    // so is one the member restriction hides from him (PAR-12608 AC-L2, PAR-14342).
+    if (decision.reason === "deny_issue_private" || decision.reason === "deny_member_restricted") {
+      res.status(404).json({ error: "Issue not found" });
+      return false;
+    }
     res.status(403).json({ error: "Issue activity is outside this actor's authorization boundary" });
     return false;
   }
@@ -375,17 +382,25 @@ export function activityRoutes(db: Db) {
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const viewerUserId = req.actor.type === "board" ? getActorInfo(req).actorId : null;
+    // PAR-12608 4.6, AC-G5 (PAR-14342): a caller bound by a restricted person
+    // sees only the runs on this task that work for him.
+    const workingFor = await restrictedRunPersonForActor(db, req.actor, issue.companyId);
+    if (workingFor === false) {
+      res.json([]);
+      return;
+    }
+    const onlyFor = workingFor ?? undefined;
     if (req.query.runIds !== undefined) {
       const parsed = z.array(z.string().uuid()).min(1).max(100).safeParse(
         typeof req.query.runIds === "string" ? req.query.runIds.split(",") : null,
       );
       if (!parsed.success) throw badRequest("runIds must contain 1 to 100 UUIDs");
-      res.json(await svc.runsForIssue(issue.companyId, issue.id, viewerUserId, undefined, parsed.data));
+      res.json(await svc.runsForIssue(issue.companyId, issue.id, viewerUserId, undefined, parsed.data, onlyFor));
       return;
     }
     const result = await (req.query.view === "recent"
-      ? svc.runsForIssue(issue.companyId, issue.id, viewerUserId, 2)
-      : svc.runsForIssue(issue.companyId, issue.id, viewerUserId));
+      ? svc.runsForIssue(issue.companyId, issue.id, viewerUserId, 2, undefined, onlyFor)
+      : svc.runsForIssue(issue.companyId, issue.id, viewerUserId, undefined, undefined, onlyFor));
     res.json(result);
   });
 

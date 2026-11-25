@@ -11,6 +11,8 @@ import {
   Inbox,
 } from "lucide-react";
 import { useCompany } from "../context/CompanyContext";
+import { useMemberRestriction } from "../context/MemberRestrictionContext";
+import { RESTRICTED_MEMBER_LANDING_PATH } from "../lib/member-restriction";
 import { useDialogActions } from "../context/DialogContext";
 import { SIDEBAR_SCROLL_RESET_STATE } from "../lib/navigation-scroll";
 import { cn } from "../lib/utils";
@@ -55,7 +57,8 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
   // Tasks · Agents). Combined Inbox + Task List drops Inbox as a destination —
   // it is a view inside Tasks, so its unread badge rides on Tasks. The grid
   // tracks the live count, so the bar stays evenly divided in every mix.
-  const items = useMemo<MobileNavItem[]>(
+  const { enforced: memberRestricted, isPageHidden } = useMemberRestriction();
+  const allItems = useMemo<MobileNavItem[]>(
     () => coordinatorWorkspaceEnabled ? [
       { type: "link", to: "/chats", label: "Chat", icon: MessageCircle },
       { type: "link", to: "/issues", label: "Tasks", icon: CircleCheck },
@@ -92,6 +95,16 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
         : []),
     ],
     [openNewIssue, inboxBadge.inbox, agentChatEnabled, combinedInboxTasksEnabled, coordinatorWorkspaceEnabled, attentionCount],
+  );
+  // PAR-12608 4.6: no entry for a page closed to a restricted member. The
+  // coordinator "Inbox" (the decision queue, closed for him) becomes his inbox.
+  const items = useMemo(
+    () => allItems
+      .map((item) => (memberRestricted && item.type === "link" && item.to === "/decisions"
+        ? { ...item, to: RESTRICTED_MEMBER_LANDING_PATH }
+        : item))
+      .filter((item) => item.type !== "link" || !isPageHidden(item.to)),
+    [allItems, isPageHidden, memberRestricted],
   );
 
   return (

@@ -224,7 +224,7 @@ export function createLifecycleStore(db: Db, effects: LifecycleEffects): Lifecyc
     async defer(agent, owner, error, now, options) {
       if (options?.waitForSignal && agent.lifecycleState === "verifying") {
         const rows = await db.update(agents).set({ lifecycleError: null,
-          lifecycleOperation: sql`(${agents.lifecycleOperation} - 'leaseOwner' - 'leaseUntil' - 'retryAt' - 'waitingForSignal' - 'recheckRequested')
+          lifecycleOperation: sql`(${agents.lifecycleOperation} - 'leaseOwner' - 'leaseUntil' - 'retryAt' - 'waitingForSignal' - 'recheckRequested' - 'statusDetail')
             || case when coalesce(${agents.lifecycleOperation}->>'recheckRequested', 'false') = 'true'
               then '{}'::jsonb else '{"waitingForSignal":true}'::jsonb end`,
           updatedAt: now,
@@ -238,9 +238,11 @@ export function createLifecycleStore(db: Db, effects: LifecycleEffects): Lifecyc
       if (options?.verificationFailures !== undefined && agent.lifecycleState === "verifying") {
         retry.verificationFailures = options.verificationFailures;
       }
+      // Each defer states its wait afresh: a step that no longer waits clears it.
+      if (options?.statusDetail) retry.statusDetail = options.statusDetail;
       const rows = await db.update(agents).set({
         lifecycleError: error,
-        lifecycleOperation: sql`(${agents.lifecycleOperation} - 'leaseOwner' - 'leaseUntil' - 'retryAt' - 'retryRequired' - 'waitingForSignal' - 'recheckRequested')
+        lifecycleOperation: sql`(${agents.lifecycleOperation} - 'leaseOwner' - 'leaseUntil' - 'retryAt' - 'retryRequired' - 'waitingForSignal' - 'recheckRequested' - 'statusDetail')
           || ${JSON.stringify(retry)}::jsonb`,
         updatedAt: now,
       }).where(and(eq(agents.id, agent.id), eq(agents.lifecycleVersion, agent.lifecycleVersion),
