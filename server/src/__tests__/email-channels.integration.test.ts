@@ -512,41 +512,6 @@ describe("AgentMail durable email pipeline", () => {
     expect((await issueService(db).getById(job.issueId!))?.status).not.toBe("done");
   });
 
-  // PAR-12608 4.6a row 10, AC-M8: a mail is mapped to the inbox's sponsor. A
-  // sponsor restricted under `enforce` gets no task, comment or wake. The kill
-  // switch makes `enforce` behave as `off`; a failed read (a flagged row whose
-  // plugin list is not a list) processes nothing and leaves the mail to retry.
-  it.each(["enforce", "kill switch", "failed read"] as const)("turns no mail into work for a restricted sponsor (%s)", async (variant) => {
-    try {
-      if (variant === "kill switch") vi.stubEnv("PAPERCLIP_MEMBER_RESTRICTION", "off");
-      const f = await fixture();
-      await db.update(companies).set({ memberRestrictionMode: "enforce" }).where(eq(companies.id, f.companyId));
-      await db.update(companyMemberships).set({ restricted: true })
-        .where(and(eq(companyMemberships.companyId, f.companyId), eq(companyMemberships.principalId, "email-board")));
-      if (variant === "failed read") {
-        await db.execute(sql`UPDATE company_memberships SET restricted_plugin_keys = '"broken"'::jsonb WHERE company_id = ${f.companyId} AND principal_id = 'email-board'`);
-      }
-      await f.receive(f.message("restricted-mail", "restricted-thread"));
-      const [delivery] = await db.select().from(chatDeliveries).where(eq(chatDeliveries.companyId, f.companyId));
-      const tasks = await db.select().from(issues).where(eq(issues.companyId, f.companyId));
-      if (variant === "kill switch") {
-        expect(tasks).toHaveLength(1);
-        expect(f.wakeup).toHaveBeenCalled();
-        return;
-      }
-      expect(tasks).toEqual([]);
-      expect(await db.select().from(issueComments).where(eq(issueComments.companyId, f.companyId))).toEqual([]);
-      expect(f.wakeup).not.toHaveBeenCalled();
-      if (variant === "enforce") {
-        expect(delivery).toMatchObject({ state: "filtered", redactedError: "Inbox sponsor is restricted in this company" });
-      } else {
-        expect(delivery!.state).not.toMatch(/^(processed|filtered)$/);
-      }
-    } finally {
-      vi.unstubAllEnvs();
-    }
-  });
-
   it("admits signed webhooks through the durable queue and rejects a valid signature for another inbox", async () => {
     const f = await fixture();
     const endpoint = await f.service.getEndpoint(f.endpointId);
@@ -1028,40 +993,6 @@ describe("AgentMail durable email pipeline", () => {
     const [finished] = await db.select().from(chatDeliveries).where(eq(chatDeliveries.id, pending.id));
     expect(finished.state).toBe("processed");
     expect(finished.normalizedEvent).toMatchObject({ wakePending: false });
-    expect(await db.select().from(emailMessages).where(eq(emailMessages.endpointId, f.endpointId))).toHaveLength(1);
-    expect(await db.select().from(issueComments).where(eq(issueComments.companyId, f.companyId))).toHaveLength(1);
-  });
-
-  // PAR-14331: the first attempt committed issueId and wakePending, then the
-  // wake failed. The retry resumes past the receipt check, so the sponsor is
-  // asked again right before the wake: restricted under `enforce` since the
-  // first attempt, the agent is not woken; a failed read leaves it to retry.
-  it.each(["enforce", "failed read"] as const)("asks the sponsor again before a retried wake after issueId was committed (%s)", async (variant) => {
-    const f = await fixture();
-    f.wakeup.mockRejectedValueOnce(new Error("Wake service temporarily unavailable"));
-    await f.receive(f.message("retry-restricted", "retry-restricted-thread"));
-    const [pending] = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, f.endpointId));
-    expect(pending.state).toBe("retry");
-    expect(pending.normalizedEvent).toMatchObject({ issueId: expect.any(String), wakePending: true });
-    expect(f.wakeup).toHaveBeenCalledTimes(1);
-    await db.update(companies).set({ memberRestrictionMode: "enforce" }).where(eq(companies.id, f.companyId));
-    await db.update(companyMemberships).set({ restricted: true })
-      .where(and(eq(companyMemberships.companyId, f.companyId), eq(companyMemberships.principalId, "email-board")));
-    if (variant === "failed read") {
-      await db.execute(sql`UPDATE company_memberships SET restricted_plugin_keys = '"broken"'::jsonb WHERE company_id = ${f.companyId} AND principal_id = 'email-board'`);
-    }
-    await db.update(chatDeliveries).set({ nextAttemptAt: null }).where(eq(chatDeliveries.id, pending.id));
-    await f.service.tick();
-    expect(f.wakeup).toHaveBeenCalledTimes(1);
-    const [after] = await db.select().from(chatDeliveries).where(eq(chatDeliveries.id, pending.id));
-    if (variant === "enforce") {
-      expect(after).toMatchObject({ state: "filtered", redactedError: "Inbox sponsor is restricted in this company" });
-      expect(after.normalizedEvent).toMatchObject({ wakePending: false });
-    } else {
-      expect(after.state).not.toMatch(/^(processed|filtered)$/);
-      expect(after.normalizedEvent).toMatchObject({ wakePending: true });
-    }
-    // The mail and its task from the first attempt stay; nothing is duplicated.
     expect(await db.select().from(emailMessages).where(eq(emailMessages.endpointId, f.endpointId))).toHaveLength(1);
     expect(await db.select().from(issueComments).where(eq(issueComments.companyId, f.companyId))).toHaveLength(1);
   });

@@ -19,8 +19,9 @@ import { INBOUND_MEMBER_RESTRICTION_RULE_ID } from "../services/member-restricti
  * kill switch `off` makes `enforce` behave as `off`, and a failed read is 503
  * `MEMBER_RESTRICTION_UNAVAILABLE`. The failed read is a real one: a flagged
  * row whose plugin list is not a list makes the resolver throw. The full
- * webhook paths (reply, no task, no wake) are in the chat and email
- * integration files.
+ * webhook paths (reply, no task, no wake) are in
+ * `github-member-restriction.test.ts`, `email-member-restriction.test.ts` and
+ * `slack-cloud-owner-work.test.ts`.
  */
 
 type Mode = "off" | "report" | "enforce";
