@@ -49,7 +49,7 @@ import { createInboundAdmission } from "./chat-channels/inbound/admission.js";
 import { createInboundEnvelope } from "./chat-channels/inbound/envelope.js";
 import { sameTeamsThreadIdentity, durableExternalThreadIdentity, canonicalProviderResourceId, nonDirectDestinationAllowed, linearControlCommand, actionThreadMatchesConversation } from "./chat-channels/inbound/surfaces.js";
 import { createChatInboundAuthority } from "./chat-channels/inbound/authorization.js";
-import { RESTRICTED_SENDER_REASON, restrictedSenderNotice } from "./chat-channels/inbound/restricted-sender.js";
+import { RESTRICTED_RESPONSIBLE_USER_REASON, RESTRICTED_SENDER_REASON, restrictedSenderNotice } from "./chat-channels/inbound/restricted-sender.js";
 import { createTeamsRoutes } from "./chat-channels/microsoft-teams/routes.js";
 import type { LiveInboundMessage } from "./chat-channels/runtime-types.js";
 import { DELIVERY_PROCESSING_STALE_MS, normalizedDeliveryThreadId, normalizedLifecycleEffect, deliveryReady, pendingInboundWakeupCondition, lifecycleRuntimeFence, normalizedLifecycleWithRuntimeFence } from "./chat-channels/inbound/delivery-ledger.js";
@@ -152,7 +152,7 @@ import { canPublishIssueToChatAudience } from "./authorization.js";
 import { buildChatCommunicationGuidance } from "./chat-communication-guidance.js";
 import { assertChatTaskCreationAccess, resolveChatExecutionDefaults } from "./chat-execution-defaults.js";
 
-import { githubAutomaticAdmission } from "./chat-github-events.js";
+import { githubAutomaticAdmission, GITHUB_RESPONSIBLE_USER_RESTRICTED } from "./chat-github-events.js";
 import type { GitHubReviewEventContext, GitHubIssueEventContext, GitHubReviewPolicy } from "@paperclipai/shared";
 
 import { resumeExternalConversation } from "./slack-conversation-state.js";
@@ -2459,7 +2459,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             principalResolution.principal.id,
           );
         const automaticContext = githubAutomatic?.context ?? githubIssue?.context;
-        const automaticAdmission = automaticContext ? await githubAutomaticAdmission(tx, currentEndpoint, automaticContext) : null;
+        const automaticAdmission = automaticContext ? await githubAutomaticAdmission(tx, currentEndpoint, automaticContext, { recordOn: db }) : null;
         if (automaticContext && !automaticAdmission?.allowed) currentPrincipalAuthorization.allowed = false;
         if (automaticAdmission?.allowed) currentPrincipalAuthorization.userId = automaticAdmission.responsibleUserId ?? null;
         const endpointStillAllowed =
@@ -2491,7 +2491,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                 ? "Message did not @mention the bot"
                 : endpointStillAllowed
                   ? destinationStillAllowed
-                    ? currentPrincipalAuthorization.linkedDenied
+                    ? automaticAdmission?.reason === GITHUB_RESPONSIBLE_USER_RESTRICTED
+                      ? RESTRICTED_RESPONSIBLE_USER_REASON
+                      : currentPrincipalAuthorization.linkedDenied
                       ? "Linked Paperclip account is not currently permitted"
                       : currentEndpoint.allowUnlinkedPeople
                         ? "Endpoint sponsor can no longer authorize external guests"

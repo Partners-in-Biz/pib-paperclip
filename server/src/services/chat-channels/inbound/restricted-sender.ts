@@ -2,6 +2,8 @@ import type { ProviderEffectPayload } from "../provider-effects.js";
 
 /** PAR-12608 4.6a row 11: the delivery's recorded reason and the sender's reply. */
 export const RESTRICTED_SENDER_REASON = "Linked Paperclip account is restricted in this company";
+/** PAR-14560: the delivery's recorded reason when GitHub automatic work's responsible user is restricted. */
+export const RESTRICTED_RESPONSIBLE_USER_REASON = "Responsible Paperclip account is restricted in this company";
 export const RESTRICTED_SENDER_NOTICE =
   "Your Paperclip account is restricted in this company, so this message was not accepted.";
 

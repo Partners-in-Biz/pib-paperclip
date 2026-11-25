@@ -22,6 +22,7 @@ import {
   githubReviewSchedulingDecision,
   type GitHubAutomaticPolicyContext,
 } from "./chat-github-review-policy.js";
+import { inboundRefusedForPerson } from "./member-restriction/inbound.js";
 
 const id = z.union([
   githubIdSchema,
@@ -225,10 +226,19 @@ export function githubAutomaticReviewEvent(
   };
 }
 
+/** The admission reason when the automatic responsible user is restricted. */
+export const GITHUB_RESPONSIBLE_USER_RESTRICTED = "responsible_user_restricted";
+
+/**
+ * `options.recordOn` is the root database a restriction denial is recorded
+ * on when `db` is an open transaction, so a refusal that rolls it back keeps
+ * the record.
+ */
 export async function githubAutomaticAdmission(
   db: Db | Parameters<Parameters<Db["transaction"]>[0]>[0],
   endpoint: Pick<typeof chatEndpoints.$inferSelect, "id" | "companyId">,
   context: GitHubAutomaticPolicyContext,
+  options: { recordOn?: Db } = {},
 ) {
   const [saved] = await db
     .select()
@@ -306,6 +316,32 @@ export async function githubAutomaticAdmission(
       ...decision,
       allowed: false,
       reason: "identity_revoked",
+      revision: saved.revision,
+      policy: effectiveGitHubReviewPolicy(
+        saved.configuration,
+        context.repositoryId,
+      ),
+    };
+  // PAR-12608 4.6a row 11 (PAR-14560): automatic work is created for, and
+  // wakes the agent for, the configuration's responsible user, not the GitHub
+  // author. A responsible user restricted under `enforce` admits no automatic
+  // task or wake; `report` records a would-refuse and admits. A failed read
+  // throws 503 `MEMBER_RESTRICTION_UNAVAILABLE`. Every caller (webhook
+  // admission, the locked task write, the wake, the review tools) asks here.
+  if (
+    decision.allowed &&
+    decision.responsibleUserId &&
+    (await inboundRefusedForPerson(
+      options.recordOn ?? (db as Db),
+      { companyId: endpoint.companyId, personId: decision.responsibleUserId, channel: "chat", objectId: endpoint.id },
+      db,
+    ))
+  )
+    return {
+      ...decision,
+      allowed: false,
+      reason: GITHUB_RESPONSIBLE_USER_RESTRICTED,
+      responsibleUserId: undefined,
       revision: saved.revision,
       policy: effectiveGitHubReviewPolicy(
         saved.configuration,
