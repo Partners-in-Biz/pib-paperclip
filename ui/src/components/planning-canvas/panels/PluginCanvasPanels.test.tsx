@@ -54,3 +54,17 @@ it("renders nothing without a canvasPanel slot", async () => {
   await render();
   expect(container.innerHTML).toBe("");
 });
+
+it("offers a Library sheet toggle for phones", async () => {
+  client.setQueryData(queryKeys.plugins.uiContributions, [contribution]);
+  registerPluginReactComponent("fixture.canvas", "Panel", () => <span data-testid="panel">x</span>);
+  await render();
+  const open = container.querySelector<HTMLButtonElement>('[data-testid="canvas-plugin-panels-open"]');
+  expect(open).not.toBeNull();
+  expect(container.querySelector('[data-testid="canvas-plugin-panels"]')?.className).toContain("max-md:hidden");
+  await act(async () => open!.click());
+  expect(container.querySelector('[data-testid="canvas-plugin-panels-open"]')).toBeNull();
+  expect(container.querySelector('[data-testid="canvas-plugin-panels"]')?.className).not.toContain("max-md:hidden");
+  await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Close plugin panels"]')!.click());
+  expect(container.querySelector('[data-testid="canvas-plugin-panels-open"]')).not.toBeNull();
+});
