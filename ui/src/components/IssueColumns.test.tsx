@@ -11,6 +11,7 @@ import {
   issueColumnDescription,
 } from "./IssueColumns";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -43,7 +44,8 @@ function renderLeading(element: React.ReactElement): string {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
-  act(() => root!.render(<TooltipProvider>{element}</TooltipProvider>));
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  act(() => root!.render(<QueryClientProvider client={queryClient}><TooltipProvider>{element}</TooltipProvider></QueryClientProvider>));
   return container.textContent ?? "";
 }
 
@@ -233,6 +235,27 @@ describe("InboxIssueTrailingColumns attribution", () => {
     );
 
     expect(text).toContain("Morgan Product");
+    expect(text).not.toContain("Unknown");
+  });
+  it("names the source of an automation-made task instead of Unknown", () => {
+    const render = (originKind: string) => renderLeading(
+      <InboxIssueTrailingColumns
+        issue={makeIssue({ createdByAgentId: null, createdByUserId: null, originKind: originKind as Issue["originKind"] })}
+        columns={["kickedOffBy"]}
+        projectName={null}
+        projectColor={null}
+        workspaceName={null}
+        assigneeName={null}
+        currentUserId="user-1"
+        parentIdentifier={null}
+        parentTitle={null}
+      />,
+    );
+    expect(render("plugin:partnersinbiz.seo")).toContain("SEO");
+    if (root) act(() => root!.unmount());
+    container?.remove();
+    const text = render("plugin:partnersinbiz.mailbox");
+    expect(text).toContain("Mailbox");
     expect(text).not.toContain("Unknown");
   });
 });
