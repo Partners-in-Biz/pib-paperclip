@@ -30,12 +30,13 @@ function writeFakeX11vnc(dir, { ignoreTerm = false } = {}) {
   fs.writeFileSync(bin, `#!${process.execPath}
 const fs = require('node:fs'); const net = require('node:net');
 const rec = (o) => fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({ pid: process.pid, ...o }) + '\\n');
+// The handler goes in before the first record, so a test that saw the record can rely on it.
+process.on('SIGTERM', () => { rec({ signal: 'SIGTERM' }); ${ignoreTerm ? '' : 'process.exit(0);'} });
 rec({ argv: process.argv.slice(2), env: process.env });
 const s = new net.Socket({ fd: 0, readable: true, writable: true });
 s.on('error', () => {});
 s.write('RFB 003.008\\n');
 s.on('data', (d) => s.write(d));
-process.on('SIGTERM', () => { rec({ signal: 'SIGTERM' }); ${ignoreTerm ? '' : 'process.exit(0);'} });
 setInterval(() => {}, 1000);
 `, { mode: 0o755 });
   return { bin, records: () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []) };
