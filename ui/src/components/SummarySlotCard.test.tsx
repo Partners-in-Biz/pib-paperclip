@@ -403,6 +403,7 @@ describe("SummarySlotCard", () => {
     mockSummarySlotsApi.cancel.mockResolvedValue({
       slot: slot({ status: "idle", generatingIssueId: null }),
       cancelledIssueId: "issue-1",
+      failedRunIds: [],
     });
     const cancelButton = [...container.querySelectorAll("button")].find(
       (button) => button.textContent?.includes("Cancel"),
@@ -418,6 +419,32 @@ describe("SummarySlotCard", () => {
       scopeId: "project-1",
       slotKey: "header",
     });
+  });
+
+  it("warns when a run could not be cancelled", async () => {
+    mockSummarySlotsApi.get.mockResolvedValue({
+      slot: slot({ status: "generating", generatingIssueId: "issue-1" }),
+      document: null,
+      generatingIssue: issue({ status: "in_progress" }),
+    } satisfies GetSummarySlotResponse);
+
+    root = renderCard(container);
+    await flushQueries();
+
+    mockSummarySlotsApi.cancel.mockResolvedValue({
+      slot: slot({ status: "idle", generatingIssueId: null }),
+      cancelledIssueId: "issue-1",
+      failedRunIds: ["run-9"],
+    });
+    const cancelButton = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent?.includes("Cancel"),
+    );
+    flushSync(() => {
+      cancelButton?.click();
+    });
+    await flushQueries();
+    expect(container.textContent).toContain("could not be stopped");
+    expect(container.textContent).toContain("run-9");
   });
 
   it("does not stay stuck in generating state when the linked issue is blocked", async () => {

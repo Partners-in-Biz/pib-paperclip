@@ -79,6 +79,7 @@ import {
   readNativeBoardResponseWaitSource,
 } from "./native-board-response-wait.js";
 import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
+import { settleSummarySlotsForTerminalRun } from "../summary-slot-finalization.js";
 import { isNewTerminalRunFailure, reportRunFailure } from "../run-failure-report.js";
 import { isPublishedGitHubReviewCompletionContinuation, readPublishedGitHubReviewCompletionContinuation, resolveExternalChatResponseWaitAuthorization } from "./chat-attachment-reuse.js";
 import {
@@ -619,6 +620,7 @@ async function recordRetryableFailure(input: {
   });
   if (terminalRunToEmit) {
     await emitAgentTaskRun(input.db, terminalRunToEmit);
+    void settleSummarySlotsForTerminalRun(input.db, terminalRunToEmit);
     void reportRunFailure(input.db, terminalRunToEmit);
   }
   return {
@@ -1844,6 +1846,7 @@ export async function finalizeNativeRun(input: {
         projection && projection.after.status !== projection.before.status
       ) {
         await emitAgentTaskRun(input.db, projection.after);
+        void settleSummarySlotsForTerminalRun(input.db, projection.after);
         void reportRunFailure(input.db, projection.after);
       } else if (input.projectRunStatus && !alreadyEmittedByCommittedDecision && projection
         && isNewTerminalRunFailure(projection.before, projection.after)) {

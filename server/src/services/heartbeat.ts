@@ -431,6 +431,7 @@ import {
   emitAgentTaskRunById,
 } from "./agent-task-run-telemetry.js";
 import { reportRunFailure } from "./run-failure-report.js";
+import { settleSummarySlotsForTerminalRunById } from "./summary-slot-finalization.js";
 import {
   ReviewedChatBindingDeniedError,
   type ReviewedChatBindingDenialReason,
@@ -1166,6 +1167,10 @@ export function heartbeatService(
         ) {
           clearHeartbeatRunRuntimeStatus(effect.runId);
           void emitAgentTaskRunById(db, {
+            runId: effect.runId,
+            companyId: effect.companyId,
+          });
+          void settleSummarySlotsForTerminalRunById(db, {
             runId: effect.runId,
             companyId: effect.companyId,
           });

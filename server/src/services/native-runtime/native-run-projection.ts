@@ -17,6 +17,7 @@ import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notificati
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
+import { settleSummarySlotsForTerminalRun } from "../summary-slot-finalization.js";
 import { isNewTerminalRunFailure, reportRunFailure } from "../run-failure-report.js";
 import { nativeRunnerOwnershipNotHeldCondition } from "./native-runner-ownership.js";
 import { explainFailedRun, NATIVE_RUN_FAILED_UNEXPLAINED } from "./native-run-failure-explanation.js";
@@ -215,6 +216,7 @@ export async function projectCommittedRun(input: {
 
   if (projected && projected.after.status !== projected.before.status) {
     await emitAgentTaskRun(input.db, projected.after);
+    void settleSummarySlotsForTerminalRun(input.db, projected.after);
     void reportRunFailure(input.db, projected.after);
   } else if (projected && isNewTerminalRunFailure(projected.before, projected.after)) {
     void reportRunFailure(input.db, projected.after);

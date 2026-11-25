@@ -221,7 +221,14 @@ function SummarySlotCardBody({
   const cancelMutation = useMutation({
     mutationFn: () => summarySlotsApi.cancel(selector!),
     onMutate: () => setActionError(null),
-    onSuccess: async () => {
+    onSuccess: async (result) => {
+      // The slot is reset either way, but a run that failed to cancel keeps
+      // running; tell the operator instead of hiding it.
+      if (result.failedRunIds.length > 0) {
+        setActionError(
+          `The summary was cancelled, but ${result.failedRunIds.length} run${result.failedRunIds.length === 1 ? "" : "s"} could not be stopped and may keep running (${result.failedRunIds.join(", ")}).`,
+        );
+      }
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: slotQueryKey }),
         queryClient.invalidateQueries({ queryKey: revisionsQueryKey }),

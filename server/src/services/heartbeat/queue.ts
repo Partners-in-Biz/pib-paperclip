@@ -138,6 +138,7 @@ import {
 import { parseObject } from "../../adapters/utils.js";
 import { isExternalChatWaitAuthorizationContention } from "../native-runtime/chat-attachment-reuse.js";
 import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
+import { settleSummarySlotsForTerminalRun } from "../summary-slot-finalization.js";
 import {
   CHAT_CONTROL_RECOVERY_ADMISSION_KEY,
   CHAT_CONTROL_RECOVERY_STOP_CODE,
@@ -5304,6 +5305,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       // lookup must not delay them.
       for (const cancelledRun of cancelledRunsToEmit) {
         void emitAgentTaskRun(db, cancelledRun);
+        void settleSummarySlotsForTerminalRun(db, cancelledRun);
       }
 
       if (outcome.kind === "durable") {

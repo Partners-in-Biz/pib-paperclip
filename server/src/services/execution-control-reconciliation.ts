@@ -26,6 +26,7 @@ import { EXECUTION_RECONCILIATION_INTERVAL_MS } from "./execution-control-deadli
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { NATIVE_STARTUP_CLEANUP_PENDING, readNativeStartupContext, promoteNativeStartupCleanup } from "./native-runtime/native-startup-cleanup.js";
 import { releaseAbandonedNativeOwners } from "./native-runtime/native-failed-run-owner-release.js";
+import { settleSummarySlotsForTerminalRun } from "./summary-slot-finalization.js";
 
 /** Only newly recorded control deadlines are eligible. Upgrades never replay ambiguous historical runs. */
 export async function reconcileAbandonedExecutionControl(
@@ -338,7 +339,10 @@ export async function reconcileAbandonedExecutionControl(
           return true;
         });
         if (repaired) surfaced += 1;
-        if (terminalRunToReport) void reportRunFailure(db, terminalRunToReport);
+        if (terminalRunToReport) {
+          void reportRunFailure(db, terminalRunToReport);
+          void settleSummarySlotsForTerminalRun(db, terminalRunToReport);
+        }
       } catch {
         logger.warn(
           { runId: candidate.runId },

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, afterEach, describe, expect, it } from "vitest";
-import { eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import {
   activityLog,
   agents,
@@ -19,6 +19,7 @@ import {
 import {
   finalizeSummarySlotsForTerminalIssue,
   finalizeSummarySlotsForTerminalRun,
+  settleSummarySlotsForTerminalRun,
 } from "../services/summary-slot-finalization.js";
 import { summarySlotService } from "../services/summary-slots.js";
 import { issueService } from "../services/issues.js";
@@ -169,6 +170,34 @@ describeEmbeddedPostgres("summary slot finalization and cancel (real database)",
   });
 
   describe("finalizeSummarySlotsForTerminalRun", () => {
+    it("leaves the slot generating while a sibling run waits in scheduled_retry", async () => {
+      const companyId = await seedCompany();
+      const agentId = await seedAgent(companyId);
+      const { issue, slot } = await seedGeneration(companyId);
+      const failedRunId = await seedRun(companyId, agentId, issue.id, "failed");
+      const retryRunId = await seedRun(companyId, agentId, issue.id, "queued");
+      await db.update(heartbeatRuns).set({ status: "scheduled_retry" }).where(eq(heartbeatRuns.id, retryRunId));
+      const updated = await finalizeSummarySlotsForTerminalRun(db, {
+        id: failedRunId, companyId, status: "failed", contextSnapshot: { issueId: issue.id },
+      });
+      expect(updated).toEqual([]);
+      expect((await loadSlot(slot.id)).status).toBe("generating");
+    });
+
+    it("writes a summary_slot.generate_failed activity row for the failed slot", async () => {
+      const companyId = await seedCompany();
+      const agentId = await seedAgent(companyId);
+      const { issue, slot } = await seedGeneration(companyId);
+      const runId = await seedRun(companyId, agentId, issue.id, "failed");
+      await settleSummarySlotsForTerminalRun(db, {
+        id: runId, companyId, status: "failed", contextSnapshot: { issueId: issue.id },
+      });
+      const rows = await db.select().from(activityLog).where(eq(activityLog.entityId, slot.id));
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ action: "summary_slot.generate_failed", entityType: "summary_slot" });
+      expect(rows[0]!.details).toMatchObject({ source: "terminal_run", runId, issueId: issue.id });
+    });
+
     it("fails the generating slot when the run failed and no other run is active", async () => {
       const companyId = await seedCompany();
       const agentId = await seedAgent(companyId);
@@ -263,6 +292,44 @@ describeEmbeddedPostgres("summary slot finalization and cancel (real database)",
       expect((await loadSlot(slot.id)).status).toBe("idle");
     });
 
+    it("leaves a newer generation alone when generatingIssueId changes between the read and the update", async () => {
+      const companyId = await seedCompany();
+      const { issue, slot, selector, projectId } = await seedGeneration(companyId);
+      const [newer] = await db
+        .insert(issues)
+        .values({
+          companyId, projectId, identifier: "GEN-NEWER", issueNumber: 9999,
+          title: "Newer summary", status: "in_progress",
+        })
+        .returning();
+      // Fires inside cancel() once the old issue is cancelled, i.e. after
+      // cancel() read the slot and before its final UPDATE: a newer generation
+      // takes over the slot.
+      await db.execute(sql.raw(`
+        create function public.swap_generation() returns trigger language plpgsql as $$
+        begin
+          update summary_slots set generating_issue_id = '${newer!.id}', status = 'generating'
+            where id = '${slot.id}';
+          return new;
+        end $$;
+      `));
+      await db.execute(sql.raw(`
+        create trigger swap_generation_trg after update of status on issues
+          for each row when (new.id = '${issue.id}' and new.status = 'cancelled')
+          execute function public.swap_generation();
+      `));
+      try {
+        const result = await summarySlotService(db).cancel(selector);
+        expect(result.cancelledIssueId).toBe(issue.id);
+        const after = await loadSlot(slot.id);
+        expect(after).toMatchObject({ status: "generating", generatingIssueId: newer!.id });
+        expect(result.slot).toMatchObject({ status: "generating", generatingIssueId: newer!.id });
+      } finally {
+        await db.execute(sql.raw("drop trigger if exists swap_generation_trg on issues"));
+        await db.execute(sql.raw("drop function if exists public.swap_generation()"));
+      }
+    });
+
     it("is a no-op for a slot that is not generating", async () => {
       const companyId = await seedCompany();
       const { slot, selector } = await seedGeneration(companyId, { slotStatus: "idle" });
@@ -303,6 +370,12 @@ describeEmbeddedPostgres("summary slot finalization and cancel (real database)",
 
       const failed = await svc.markGenerationFailed(selector, issue.id, "Failed to wake Summarizer: boom");
       expect(failed).toMatchObject({ status: "failed", failureReason: "Failed to wake Summarizer: boom" });
+      const rows = await db
+        .select()
+        .from(activityLog)
+        .where(and(eq(activityLog.entityId, slot.id), eq(activityLog.action, "summary_slot.generate_failed")));
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.details).toMatchObject({ source: "mark_generation_failed", issueId: issue.id });
     });
 
     it("does not touch an already idle slot or another company", async () => {

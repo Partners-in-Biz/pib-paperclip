@@ -93,7 +93,7 @@ export interface CancelSummarySlotResponse {
   slot: SummarySlot | null;
   cancelledIssueId: string | null;
   /** Run ids whose cancellation failed; the slot is still reset. */
-  failedRunIds?: string[];
+  failedRunIds: string[];
 }
 
 export interface WriteSummarySlotRequest {

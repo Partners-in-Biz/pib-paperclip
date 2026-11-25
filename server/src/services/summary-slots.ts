@@ -30,6 +30,7 @@ import { readBuiltInAgentMarker } from "../lib/built-in-agent-metadata.js";
 import { builtInAgentService } from "./built-in-agents.js";
 import { agentService } from "./agents.js";
 import { issueService } from "./issues.js";
+import { ACTIVE_SUMMARY_RUN_STATUSES, logSummarySlotFailures } from "./summary-slot-finalization.js";
 
 /** Built-in agent key for the Summarizer bundle (see PAP-13920). */
 export const SUMMARIZER_BUILT_IN_KEY = "summarizer";
@@ -780,12 +781,17 @@ export function summarySlotService(db: Db) {
         ),
       )
       .returning();
+    if (updated) {
+      await logSummarySlotFailures(db, [updated], "mark_generation_failed", failureReason, {
+        issueId: generatingIssueId,
+      });
+    }
     return updated ? mapSlot(updated) : null;
   }
 
   async function cancel(
     input: SummarySlotSelectorInput,
-  ): Promise<CancelSummarySlotResponse & { activeRunIds: string[] }> {
+  ): Promise<Omit<CancelSummarySlotResponse, "failedRunIds"> & { activeRunIds: string[] }> {
     const sel = resolveSelector(input);
     await assertTargetVisible(sel);
 
@@ -804,6 +810,8 @@ export function summarySlotService(db: Db) {
     if (cancelledIssueId) {
       const issueRef = await loadIssueRef(sel.companyId, cancelledIssueId);
       if (issueRef.row && issueRef.row.status !== "done" && issueRef.row.status !== "cancelled") {
+        // This update runs the terminal-issue hook, which writes the
+        // `summary_slot.generate_failed` activity row for the slot.
         await issuesSvc.update(cancelledIssueId, { status: "cancelled" });
       }
       const activeRuns = await db
@@ -812,7 +820,7 @@ export function summarySlotService(db: Db) {
         .where(
           and(
             eq(heartbeatRuns.companyId, sel.companyId),
-            inArray(heartbeatRuns.status, ["queued", "running"]),
+            inArray(heartbeatRuns.status, [...ACTIVE_SUMMARY_RUN_STATUSES]),
             or(
               eq(heartbeatRuns.issueId, cancelledIssueId),
               eq(heartbeatRuns.nativeIssueId, cancelledIssueId),
