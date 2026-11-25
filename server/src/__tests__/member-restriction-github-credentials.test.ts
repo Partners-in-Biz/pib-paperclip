@@ -6,7 +6,8 @@ import express from "express";
 import request from "supertest";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { activityLog, agents, companies, companyMemberships, createDb, heartbeatRuns, runIdentityContexts } from "@paperclipai/db";
+import { activityLog, agents, companies, companyMemberships, connectionGrantDelegations, createDb, heartbeatRuns, issueWorkProducts,
+  runIdentityContexts } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { githubCredentialsFixture } from "./helpers/github-credentials-fixture.js";
 import { errorHandler } from "../middleware/index.js";
@@ -18,10 +19,15 @@ import { createGitRemoteAuthProvider, resolveManagedGitHubCredential } from "../
 import { prepareHeartbeatExecutionConfiguration } from "../services/heartbeat/execution-configuration.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { MEMBER_RESTRICTION_DENIED_ACTION } from "../services/member-restriction/admin.js";
-import { GITHUB_CREDENTIALS_RESTRICTED_REASON, GITHUB_CREDENTIALS_RULE_ID } from "../services/member-restriction/github-credentials.js";
+import {
+  GITHUB_CREDENTIALS_RESTRICTED_REASON,
+  GITHUB_CREDENTIALS_RULE_ID,
+  GRANT_GITHUB_CREDENTIALS_RESTRICTED_REASON,
+} from "../services/member-restriction/github-credentials.js";
 import { resolveGitHubOperationCredentials } from "../services/github-operation-credentials.js";
 import { initializeRunIdentity } from "../services/run-identity.js";
 import { secretService } from "../services/secrets.js";
+import { workProductService } from "../services/work-products.js";
 
 /**
  * PAR-12608 4.6a row 5 and 4.9 decision 4 (PAR-13220): a run working for a
@@ -76,7 +82,7 @@ describe("4.6a row 5 database support", () => {
   }, 60_000);
 
   /** R (`A`) flagged, O (`B`) not, one company; the seeded run works for R. */
-  async function company(mode: "enforce" | "report" = "enforce") {
+  async function company(mode: "enforce" | "report" | "off" = "enforce") {
     const input = await seed();
     await db.update(companies).set({ memberRestrictionMode: mode }).where(eq(companies.id, input.companyId));
     await db.update(companyMemberships).set({ restricted: true })
@@ -285,4 +291,116 @@ describe("4.6a row 5 database support", () => {
       personId: R, ruleId: GITHUB_CREDENTIALS_RULE_ID, target: "github_operation_credentials", mode: "report",
     })]);
   });
+  // Review round 2 (PAR-14561): a stated run that is not in the company fails
+  // closed under `enforce` only (covered above); `off` and `report` keep today's answer.
+  for (const mode of ["off", "report"] as const) {
+    it(`git remote provider, unknown run on ${mode}: today's company secret, no denial`, async () => {
+      const input = await company(mode);
+      const legacy = legacySources();
+      const unknownRun = createGitRemoteAuthProvider(db, input.companyId, { heartbeatRunId: randomUUID() },
+        { secrets: legacy.secrets as never, env: legacy.env });
+      expect((await unknownRun("https://github.com/acme/repo.git"))?.env.GITHUB_TOKEN).toBe("company-secret-token");
+      expect(await denials(input.companyId)).toEqual([]);
+    });
+  }
+
+  /** A company_default (ownerless) run whose only GitHub grant is R's, delegated to the agent. */
+  async function delegatedOwnerlessRun(input: Awaited<ReturnType<typeof seed>>, person: string) {
+    const delegated = await grant(input, person);
+    await db.insert(connectionGrantDelegations).values({
+      companyId: input.companyId, grantId: delegated.id, agentId: input.agentId, createdByUserId: person,
+    });
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId: input.companyId, agentId: input.agentId, status: "running",
+      contextSnapshot: { issueId: input.issueId } });
+    await initializeRunIdentity(db, { companyId: input.companyId, runId, issueId: input.issueId, responsibleUserId: null,
+      cause: "company_default" });
+    const [context] = await db.select().from(runIdentityContexts).where(eq(runIdentityContexts.runId, runId));
+    expect(context).toMatchObject({ cause: "company_default", responsibleUserId: null });
+    return { ...input, runId };
+  }
+
+  it("delegation, enforce: an ownerless run with R's delegated grant gets unavailable and no vault read", async () => {
+    const input = await company();
+    const run = await delegatedOwnerlessRun(input, R);
+    const result = await resolveGitHubOperationCredentials(db, run);
+    expect(result).toMatchObject({ status: "unavailable", reason: GRANT_GITHUB_CREDENTIALS_RESTRICTED_REASON, env: {} });
+    expect(vault.resolveUserSecretValue).not.toHaveBeenCalled();
+    expect(vault.resolveSecretValue).not.toHaveBeenCalled();
+    expect(await denials(input.companyId)).toEqual([expect.objectContaining({
+      personId: R, ruleId: GITHUB_CREDENTIALS_RULE_ID, target: "managed_github_grant", objectId: run.runId, mode: "enforce",
+    })]);
+  });
+
+  it("delegation, enforce: the git remote provider with no person does not fall back to R's grant, a secret or the server token", async () => {
+    const input = await company();
+    await delegatedOwnerlessRun(input, R);
+    const legacy = legacySources();
+    const provider = createGitRemoteAuthProvider(db, input.companyId, { agentId: input.agentId },
+      { secrets: legacy.secrets as never, env: legacy.env });
+    await expect(provider("https://github.com/acme/repo.git")).rejects.toThrow(GRANT_GITHUB_CREDENTIALS_RESTRICTED_REASON);
+    expect(legacy.secrets.getByName).not.toHaveBeenCalled();
+    expect(vault.resolveUserSecretValue).not.toHaveBeenCalled();
+  });
+
+  it("delegation, report: the ownerless run gets R's token and one report denial", async () => {
+    const input = await company("report");
+    const run = await delegatedOwnerlessRun(input, R);
+    const result = await resolveGitHubOperationCredentials(db, run);
+    expect(result).toMatchObject({ status: "available", login: R });
+    expect(vault.resolveUserSecretValue).toHaveBeenCalledTimes(1);
+    expect(await denials(input.companyId)).toEqual([expect.objectContaining({
+      personId: R, target: "managed_github_grant", mode: "report",
+    })]);
+  });
+
+  it("delegation, off: the ownerless run gets R's token and no denial", async () => {
+    const input = await company("off");
+    const run = await delegatedOwnerlessRun(input, R);
+    expect(await resolveGitHubOperationCredentials(db, run)).toMatchObject({ status: "available", login: R });
+    expect(await denials(input.companyId)).toEqual([]);
+  });
+
+  /** Work products read GitHub with the company's credential on a caller's request. */
+  function workProducts() {
+    const resolveCommitDetails = vi.fn(async () => ({ additions: 1, deletions: 1, changedFiles: 1 }));
+    const resolvePullRequestDetails = vi.fn(async () => ({ state: "merged", headRef: null, headSha: null,
+      workProductState: "merged" }) as never);
+    return { resolveCommitDetails, resolvePullRequestDetails,
+      svc: workProductService(db, { resolveCommitDetails, resolvePullRequestDetails }) };
+  }
+  const commit = { provider: "github", url: "https://github.com/acme/private/commit/9c12ae7b41e5" };
+  async function pullRequestProduct(input: Awaited<ReturnType<typeof seed>>) {
+    await db.insert(issueWorkProducts).values({ companyId: input.companyId, issueId: input.issueId, type: "pull_request",
+      provider: "github", title: "PR", url: "https://github.com/acme/private/pull/7", status: "open" });
+  }
+
+  it("work products, enforce: R's request reads no commit stats or pull request state with the company credential; O's does", async () => {
+    const input = await company();
+    await pullRequestProduct(input);
+    const { svc, resolveCommitDetails, resolvePullRequestDetails } = workProducts();
+    expect(await svc.resolveCommitDiffSummary(input.companyId, commit, { personIds: [R] })).toBeNull();
+    await svc.listForIssue(input.issueId, { refreshPullRequests: true, personIds: [R] });
+    expect(resolveCommitDetails).not.toHaveBeenCalled();
+    expect(resolvePullRequestDetails).not.toHaveBeenCalled();
+    expect(await denials(input.companyId)).toEqual([expect.objectContaining({
+      personId: R, target: "github_api_credentials", mode: "enforce",
+    })]);
+    expect(await svc.resolveCommitDiffSummary(input.companyId, commit, { personIds: [O] })).toMatchObject({ changedFiles: 1 });
+    await svc.listForIssue(input.issueId, { refreshPullRequests: true, personIds: [O] });
+    expect(resolvePullRequestDetails).toHaveBeenCalledTimes(1);
+  });
+
+  for (const mode of ["off", "report"] as const) {
+    it(`work products, ${mode}: R's request keeps today's GitHub lookups`, async () => {
+      const input = await company(mode);
+      await pullRequestProduct(input);
+      const { svc, resolveCommitDetails, resolvePullRequestDetails } = workProducts();
+      expect(await svc.resolveCommitDiffSummary(input.companyId, commit, { personIds: [R] })).toMatchObject({ changedFiles: 1 });
+      await svc.listForIssue(input.issueId, { refreshPullRequests: true, personIds: [R] });
+      expect(resolveCommitDetails).toHaveBeenCalledTimes(1);
+      expect(resolvePullRequestDetails).toHaveBeenCalledTimes(1);
+      expect((await denials(input.companyId)).map((d) => (d as { mode: string }).mode)).toEqual(mode === "report" ? ["report"] : []);
+    });
+  }
 });

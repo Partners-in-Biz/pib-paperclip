@@ -12,7 +12,11 @@ import {
 } from "@paperclipai/db";
 import { and, eq, inArray, or, sql } from "drizzle-orm";
 import { isGitHubDotCom } from "./github-fetch.js";
-import { githubCredentialsRefused } from "./member-restriction/github-credentials.js";
+import {
+  githubCredentialsRefused,
+  githubCredentialsRefusedForUnknownRun,
+  GRANT_GITHUB_CREDENTIALS_RESTRICTED_REASON,
+} from "./member-restriction/github-credentials.js";
 import { secretService } from "./secrets.js";
 import { toolAccessService } from "./tool-access.js";
 
@@ -331,7 +335,8 @@ export function createGitRemoteAuthProvider(
   // context (the context path is gated in `resolveGitHubOperationCredentials`).
   // The people checked are the caller's person and the run row's, so the two
   // sources cannot diverge into a credential. A stated run that is not in this
-  // company has no person to check: fail closed. Memoized like the credential.
+  // company has no person to check: it fails closed under `enforce` only.
+  // Memoized like the credential.
   let refusedPromise: Promise<boolean> | null = null;
   const refusedForPerson = () => refusedPromise ??= (async () => {
     if (!db) return false;
@@ -339,7 +344,15 @@ export function createGitRemoteAuthProvider(
     if (context?.heartbeatRunId) {
       const [run] = await db.select({ responsibleUserId: heartbeatRuns.responsibleUserId }).from(heartbeatRuns)
         .where(and(eq(heartbeatRuns.id, context.heartbeatRunId), eq(heartbeatRuns.companyId, companyId)));
-      if (!run) return true;
+      if (!run) {
+        if (await githubCredentialsRefusedForUnknownRun(db, {
+          companyId, runId: context.heartbeatRunId, target: "git_remote_credentials",
+        })) return true;
+        // `off`/`report`: today's answer, but still check the caller's person.
+        return githubCredentialsRefused(db, {
+          companyId, personIds, target: "git_remote_credentials", objectId: context.heartbeatRunId,
+        });
+      }
       personIds.push(run.responsibleUserId);
     }
     return githubCredentialsRefused(db, {
@@ -578,6 +591,14 @@ export async function resolveManagedGitHubCredential(
   const selection = await resolveManagedGitHubIdentitySelection(db, companyId, context);
   if (!selection.configured) return { configured: false };
   if (!selection.grant) return { configured: true, identitySource: selection.identitySource, error: selection.error };
+  // 4.6a row 5: the credential resolves for the grant's person, who is not
+  // always the caller's (an ownerless run's standing delegation, a
+  // company_default run). Check that person before the refresh or the secret
+  // read. The alternate below must have the same subject, so it is covered.
+  if (selection.grant.kind === "user" && await githubCredentialsRefused(db, {
+    companyId, personIds: [selection.grant.subjectUserId],
+    target: "managed_github_grant", objectId: context.heartbeatRunId ?? context.issueId ?? selection.grant.id,
+  })) return { configured: true, identitySource: selection.identitySource, error: GRANT_GITHUB_CREDENTIALS_RESTRICTED_REASON };
   const acquire = async (selection: Awaited<ReturnType<typeof resolveManagedGitHubIdentitySelection>>) => {
     let grant = selection.grant!;
     if (grant.kind === "user" && grant.subjectUserId) {
