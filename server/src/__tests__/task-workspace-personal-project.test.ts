@@ -90,6 +90,21 @@ const support = await getEmbeddedPostgresTestSupport();
     await expect(assertTaskWorkspaceExecutionAccess(db, agentActor(extra), companyId, { issueId: task.id })).rejects.toThrow(message);
   });
 
+  // Another person who can read the task (live explicit grant) passes the task check, so only
+  // the personal-owner and authorizer conditions of the exemption keep the project closed.
+  it.each([
+    ["another person", { onBehalfOfUserId: OTHER }],
+    ["the owner, authorized by that person", { onBehalfOfUserId: OWNER, authorizingUserId: OTHER }],
+  ] as const)("a run for %s who holds a read grant on the task is still refused", async (_label, extra) => {
+    const task = await personalTask();
+    await db.insert(issueAccessGrants).values({ issueId: task.id, subjectType: "user", subjectId: OTHER, source: "explicit", grantedByUserId: OWNER });
+    const access = accessService(db);
+    const resource = { type: "issue" as const, companyId, issueId: task.id };
+    expect((await access.decide({ actor: agentActor(extra), action: "issue:read", resource })).allowed).toBe(true);
+    await expect(assertTaskWorkspaceExecutionAccess(db, agentActor(extra), companyId, { issueId: task.id }))
+      .rejects.toThrow("Project is private and the actor is not an access member.");
+  });
+
   it("the owner no longer a member: refused", async () => {
     const task = await personalTask();
     await db.update(companyMemberships).set({ status: "suspended" }).where(eq(companyMemberships.principalId, OWNER));
