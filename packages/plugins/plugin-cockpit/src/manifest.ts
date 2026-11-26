@@ -315,6 +315,8 @@ const manifest: PaperclipPluginManifestV1 = {
     "ui.page.register",
     "ui.sidebar.register",
     "ui.dashboardWidget.register",
+    // 0.31.3 (PAR-14792): the Watch live toolbarButton slot (PAR-14752) needs this; 0.31.2 was refused by the host without it.
+    "ui.action.register",
     // 0.29.0 (PAR-14514 S3): Watch live. The browser-live websocket route returns the pib-browser daemon's local socket;
     // core signs the upgrade for a signed-in person only. A new capability, so the release is stop-first (DEPLOY.md).
     // The worker's own calls to that socket (/status) are plain node:http and claim no capability (design 3, F22).

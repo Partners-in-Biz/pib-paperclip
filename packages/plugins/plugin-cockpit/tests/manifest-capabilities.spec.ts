@@ -54,4 +54,27 @@ describe("Cockpit manifest capabilities", () => {
 
     expect(missing, `Missing capabilities:\n${missing.join("\n")}`).toEqual([]);
   });
+
+  // Mirrors UI_SLOT_CAPABILITIES in server/src/services/plugin-capability-validator.ts.
+  // The host refuses an upgrade when a declared slot lacks its capability (PAR-14792).
+  const SLOT_CAPABILITY: Record<string, string> = {
+    page: "ui.page.register",
+    sidebar: "ui.sidebar.register",
+    dashboardWidget: "ui.dashboardWidget.register",
+    toolbarButton: "ui.action.register",
+    globalToolbarButton: "ui.action.register",
+    contextMenuItem: "ui.action.register",
+    detailTab: "ui.detailTab.register",
+  };
+
+  it("should declare the capability for every UI slot type", () => {
+    const caps = new Set<string>(manifest.capabilities);
+    const missing: string[] = [];
+    for (const slot of manifest.ui?.slots ?? []) {
+      const need = SLOT_CAPABILITY[slot.type];
+      if (!need) missing.push(`slot ${slot.id}: unmapped type ${slot.type} (extend SLOT_CAPABILITY)`);
+      else if (!caps.has(need)) missing.push(`slot ${slot.id} (${slot.type}) requires ${need}`);
+    }
+    expect(missing).toEqual([]);
+  });
 });
