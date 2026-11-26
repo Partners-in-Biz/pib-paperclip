@@ -3,7 +3,7 @@
  * CRM tool on the SDK harness, with Google's resumable upload faked in memory. Generated files only.
  */
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, truncateSync, writeFileSync } from "node:fs";
+import { linkSync, mkdirSync, symlinkSync, mkdtempSync, realpathSync, rmSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -126,7 +126,7 @@ describe("the path decision table (one test per cell)", () => {
 
   it("row 1, <= 5 MiB, old root only: saved inline, unchanged, no run file opened", async () => {
     expect((await save(file(old, "small"))).r).toMatchObject({ status: "saved", duplicate: false });
-    expect(spy.openRunFile).not.toHaveBeenCalled();
+    expect(spy.openRunFile).toHaveBeenCalledTimes(1); // the old root only, through the fd checks
   });
   it.each(["mid", "big"] as const)("row 1, %s, old root only: too_large (status unchanged) with the over-5-MB hint", async (size) => {
     expect((await save(file(old, size))).r).toEqual({ status: "too_large", hint: OVER_5MB_PATH_HINT });
@@ -134,7 +134,7 @@ describe("the path decision table (one test per cell)", () => {
 
   it("row 2, <= 5 MiB, old root and run root: saved inline through the old root", async () => {
     expect((await save(file(ws, "small"))).r).toMatchObject({ status: "saved" });
-    expect(spy.openRunFile).not.toHaveBeenCalled();
+    expect(spy.openRunFile).toHaveBeenCalledTimes(1); // the old root accepted it; the run roots are not opened
   });
   it.each([["row 2", () => ws], ["row 3", () => scratch]] as const)("%s, 5 to 200 MiB: a job that reaches done", async (_row, dir) => {
     const { r } = await save(file(dir(), "mid"));
@@ -148,7 +148,7 @@ describe("the path decision table (one test per cell)", () => {
   });
   it("row 3, <= 5 MiB, run root only: saved inline through openRunFile (fd), not the old root", async () => {
     expect((await save(file(scratch, "small"))).r).toMatchObject({ status: "saved" });
-    expect(spy.openRunFile).toHaveBeenCalledTimes(1);
+    expect(spy.openRunFile).toHaveBeenCalledTimes(2); // old root refused, then the run roots
   });
 
   it.each(["small", "mid", "big"] as const)("row 4, %s, deny-listed in the run root: path_not_allowed with the secret hint", async (size) => {
@@ -242,5 +242,85 @@ describe("drive_file_save over the tool, 50 MiB from the run's scratch dir", () 
     const r = await call(harness, "drive_file_save", params(path, "2026-11-11 huge v01.mp4"));
     expect(r).toMatchObject({ status: "too_large", hint: expect.stringContaining("200 MB") });
     expect(host.starts).toBe(0);
+  });
+});
+
+/**
+ * PAR-9265 (R5): the old root, caller x root. Today (realpath string, statSync, readFile; default root = the whole
+ * companies dir) vs new (openRunFile fd checks and deny-list; default root = the calling company's own dir):
+ *
+ *  caller / file                              | today                     | new
+ *  own company dir, plain file                | saved                     | saved
+ *  other company dir, plain file              | saved (the leak)          | path_not_allowed
+ *  own company dir, .pem / dotfile / .env     | saved                     | path_not_allowed
+ *  own company dir, symlink to a file inside  | saved (swap window)       | path_not_allowed
+ *  own company dir, hard-linked file          | saved                     | path_not_allowed
+ *  own company dir, missing file / directory  | thrown, mapped            | path_not_allowed
+ *  operator PIB_DRIVE_ALLOWED_ROOTS set       | that list, string-checked | that list, same fd checks
+ *  invalid companyId on the viewer            | whole companies dir       | no old root
+ */
+describe("the old root, caller x root (PAR-9265)", () => {
+  let companies: string;
+  const OTHER = randomUUID();
+  const prevDir = process.env.PIB_COMPANIES_DIR, prevRoots = process.env.PIB_DRIVE_ALLOWED_ROOTS;
+  const mine = () => join(companies, CO, "agents", "a");
+  const theirs = () => join(companies, OTHER, "agents", "a");
+  const save = async (path: string, v = viewer(null)) => {
+    const { harness } = await setup();
+    return saveDriveFile(harness.ctx, v, input(path, `2026-11-11 o${++n} v01.mp4`)); // no allowedRoots: the default
+  };
+  beforeAll(() => {
+    companies = join(base, "companies");
+    for (const d of [mine(), theirs()]) mkdirSync(d, { recursive: true });
+  });
+  beforeEach(() => { process.env.PIB_COMPANIES_DIR = companies; delete process.env.PIB_DRIVE_ALLOWED_ROOTS; });
+  afterEach(() => {
+    if (prevDir === undefined) delete process.env.PIB_COMPANIES_DIR; else process.env.PIB_COMPANIES_DIR = prevDir;
+    if (prevRoots === undefined) delete process.env.PIB_DRIVE_ALLOWED_ROOTS; else process.env.PIB_DRIVE_ALLOWED_ROOTS = prevRoots;
+  });
+
+  it("own company dir, plain file: saved", async () => {
+    expect(await save(file(mine(), "small"))).toMatchObject({ status: "saved" });
+  });
+  it("other company dir, plain file: path_not_allowed, no path in the result", async () => {
+    const r = await save(file(theirs(), "small"));
+    expect(r).toEqual({ status: "path_not_allowed", hint: PATH_HINT });
+    expect(JSON.stringify(r)).not.toContain(base);
+  });
+  it.each(["k.pem", ".env", "service-account.json", "my-secret.txt"])("own company dir, %s: path_not_allowed", async (name) => {
+    expect((await save(file(mine(), "small", name))).status).toBe("path_not_allowed");
+  });
+  it("own company dir, a file in a dot directory: path_not_allowed", async () => {
+    mkdirSync(join(mine(), ".hidden"), { recursive: true });
+    expect((await save(file(join(mine(), ".hidden"), "small"))).status).toBe("path_not_allowed");
+  });
+  it("own company dir, symlink to a file inside it: path_not_allowed", async () => {
+    const target = file(mine(), "small"), link = join(mine(), `l${++n}.mp4`);
+    symlinkSync(target, link);
+    expect((await save(link)).status).toBe("path_not_allowed");
+  });
+  it("own company dir, a path through a symlinked directory to the other company: path_not_allowed", async () => {
+    const target = file(theirs(), "small"), dir = join(mine(), `d${++n}`);
+    symlinkSync(theirs(), dir);
+    expect((await save(join(dir, target.split("/").pop()!))).status).toBe("path_not_allowed");
+  });
+  it("own company dir, hard-linked file: path_not_allowed", async () => {
+    const target = file(mine(), "small"), link = join(mine(), `h${++n}.mp4`);
+    linkSync(target, link);
+    expect((await save(link)).status).toBe("path_not_allowed");
+  });
+  it("own company dir, missing file or a directory: path_not_allowed", async () => {
+    expect((await save(join(mine(), "nope.mp4"))).status).toBe("path_not_allowed");
+    expect((await save(mine())).status).toBe("path_not_allowed");
+  });
+  it("a viewer whose companyId is not a uuid gets no old root", async () => {
+    const f = file(mine(), "small");
+    expect((await save(f, { ...viewer(null), companyId: "../.." as never })).status).toBe("path_not_allowed");
+  });
+  it("operator PIB_DRIVE_ALLOWED_ROOTS set: that list is the root, with the same fd checks", async () => {
+    process.env.PIB_DRIVE_ALLOWED_ROOTS = theirs();
+    expect(await save(file(theirs(), "small"))).toMatchObject({ status: "saved" });
+    expect((await save(file(theirs(), "small", "k.pem"))).status).toBe("path_not_allowed");
+    expect((await save(file(mine(), "small"))).status).toBe("path_not_allowed");
   });
 });
