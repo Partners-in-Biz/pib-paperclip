@@ -1,4 +1,4 @@
-import type { PlanningCanvasEmbedData, PlanningCanvasKanbanData, PlanningCanvasMarkdownData, PlanningCanvasTableData, PlanningCanvasTimelineData } from "@paperclipai/shared";
+import type { PlanningCanvasEmbedData, PlanningCanvasKanbanData, PlanningCanvasMarkdownData, PlanningCanvasTableData, PlanningCanvasTimelineData, PlanningCanvasWebLinkData } from "@paperclipai/shared";
 import type { StoreItem } from "@/components/planning-canvas/store/canvas-op-store";
 import { isKanbanData, isTimelineData } from "@/components/planning-canvas/nodes/issue-board";
 import { isTableData } from "@/components/planning-canvas/store/table-ops";
@@ -13,11 +13,17 @@ export type TypedNodeMeta =
   | { kind: "markdown"; data: PlanningCanvasMarkdownData }
   | { kind: "kanban"; data: PlanningCanvasKanbanData }
   | { kind: "timeline"; data: PlanningCanvasTimelineData }
-  | { kind: "embed"; data: PlanningCanvasEmbedData };
+  | { kind: "embed"; data: PlanningCanvasEmbedData }
+  | { kind: "weblink"; data: PlanningCanvasWebLinkData };
 
 function isEmbedData(data: unknown): data is PlanningCanvasEmbedData {
   const d = data as Partial<PlanningCanvasEmbedData> | null | undefined;
   return !!d && typeof d.plugin === "string" && typeof d.type === "string" && !!d.props && typeof d.props === "object";
+}
+
+/** Shape only: the card checks the url itself on every render (PAR-14389 C.5). */
+function isWebLinkData(data: unknown): data is PlanningCanvasWebLinkData {
+  return typeof (data as Partial<PlanningCanvasWebLinkData> | null | undefined)?.url === "string";
 }
 
 export function typedMetaOf(item: StoreItem | undefined | null): TypedNodeMeta | null {
@@ -30,6 +36,7 @@ export function typedMetaOf(item: StoreItem | undefined | null): TypedNodeMeta |
   if (kind === "kanban" && isKanbanData(data)) return { kind, data };
   if (kind === "timeline" && isTimelineData(data)) return { kind, data };
   if (kind === "embed" && isEmbedData(data)) return { kind, data };
+  if (kind === "weblink" && isWebLinkData(data)) return { kind, data };
   return null;
 }
 

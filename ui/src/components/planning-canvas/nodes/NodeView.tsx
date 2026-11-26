@@ -16,6 +16,7 @@ import { EmbedNode } from "@/components/planning-canvas/nodes/EmbedNode";
 import { MarkdownNode } from "@/components/planning-canvas/nodes/MarkdownNode";
 import { KanbanNode } from "@/components/planning-canvas/nodes/KanbanNode";
 import { TimelineNode } from "@/components/planning-canvas/nodes/TimelineNode";
+import { WebLinkNode } from "@/components/planning-canvas/nodes/WebLinkNode";
 import type { TypedNodeMeta } from "@/components/planning-canvas/nodes/typed-meta";
 import type { NodeLinkMeta } from "@/components/planning-canvas/nodes/link-meta";
 import { nodeAriaLabel } from "@/components/planning-canvas/panels/outline/outline-order";
@@ -162,6 +163,8 @@ const NodeView = memo(function NodeView({
         <EmbedNode nodeKey={node.id} data={typed.data} isSelected={isSelected} />
       ) : typed?.kind === "timeline" ? (
         <TimelineNode nodeKey={node.id} data={typed.data} title={node.title} />
+      ) : typed?.kind === "weblink" ? (
+        <WebLinkNode data={typed.data} />
       ) : (
         <Render node={node} isEditing={isEditing} theme={theme} linkedNote={linkedNote} c={latest.current} />
       )}

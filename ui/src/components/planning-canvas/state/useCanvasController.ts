@@ -3,6 +3,7 @@ import { useCanvasActions } from "@/components/planning-canvas/state/useCanvasAc
 import { useCanvasBoard } from "@/components/planning-canvas/state/useCanvasBoard";
 import { useCanvasData } from "@/components/planning-canvas/state/useCanvasData";
 import { useCanvasKeyboard } from "@/components/planning-canvas/keyboard/useCanvasKeyboard";
+import { useCanvasPaste } from "@/components/planning-canvas/state/useCanvasPaste";
 import { useCanvasPointer } from "@/components/planning-canvas/state/useCanvasPointer";
 import { useCanvasState } from "@/components/planning-canvas/state/useCanvasState";
 
@@ -18,6 +19,7 @@ export function useCanvasController() {
   const actions = useCanvasActions({ ...data, ...state, ...board });
   const pointer = useCanvasPointer({ ...data, ...state, ...board, ...actions });
   useCanvasKeyboard({ ...data, ...state, ...board, ...actions });
+  useCanvasPaste({ ...data, ...state, ...actions });
   return { ...data, ...state, ...board, ...actions, ...pointer, realtime };
 }
 
