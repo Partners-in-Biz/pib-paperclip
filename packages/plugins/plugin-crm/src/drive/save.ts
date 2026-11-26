@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { realpath as realpathAsync } from "node:fs/promises";
-import { statSync } from "node:fs";
-import { relative } from "node:path";
+import { join } from "node:path";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { DRIVE_TRANSFER_MAX_BYTES, isR2ObjectUrl, isSha256Hex, normalizeUrl, safeFetchBytes } from "@partnersinbiz/pib-plugin-kit";
 import type { Viewer } from "../domain.js";
@@ -339,26 +338,32 @@ const savedResult = (f: { id: string; webUrl: string; name: string; sha256: stri
   ({ status: "saved", driveFileId: f.id, url: stripSignedUrl(f.webUrl), name: f.name, sha256: f.sha256, subfolder: f.subfolder, duplicate });
 
 /**
- * Where a `path` file is read from (PAR-9219 A decision table). The old root is checked first, reading nothing. The
- * calling run's roots are read only when that refuses or the file is over 5 MB, and only for a call with a runId:
- * a call without one never reads the database and gets today's result.
+ * Where a `path` file is read from (PAR-9219 A decision table, PAR-9265 R5). The old root is opened first through the
+ * same fd checks as a run root (O_NOFOLLOW, /proc path, fstat, deny-list): no realpath/stat/read window. A file up to
+ * 5 MB is read from that handle. The calling run's roots are tried when the old root refuses or the file is over
+ * 5 MB, and only for a call with a runId: a call without one never reads the database.
  */
 async function pathSource(ctx: PluginContext, viewer: Viewer, filePath: string, allowedRoots?: string[]): Promise<SaveDriveFileResult | { bytes: Uint8Array } | { fh: FileHandle; stat: Stats }> {
   let old: { size: number } | null = null;
-  let oldError: unknown = null;
-  try {
-    old = await oldRootFile(filePath, allowedRoots);
-  } catch (e) {
-    oldError = e;
-  }
-  if (old && old.size <= MAX_FILE_BYTES) {
-    // Rows 1-2, up to 5 MB: unchanged. Errors are the caller's to map, as today.
-    const fileBytes = await loadFileFromPath(filePath, allowedRoots);
-    return fileBytes === null ? { status: "path_not_allowed", hint: PATH_HINT } : { bytes: fileBytes };
+  const oldFile = await openOldRootFile(viewer, filePath, allowedRoots);
+  if (oldFile) {
+    const size = oldFile.stat.size;
+    old = { size };
+    if (size <= MAX_FILE_BYTES) {
+      try {
+        let bytes: Uint8Array = new Uint8Array(0);
+        for await (const chunk of fileChunks(oldFile.fh, size, MAX_FILE_BYTES)) bytes = chunk;
+        return { bytes };
+      } catch {
+        return { status: "invalid_input", hint: "Failed to load file from path" };
+      } finally {
+        await oldFile.fh.close().catch(() => undefined);
+      }
+    }
+    await oldFile.fh.close().catch(() => undefined);
   }
   const refused = (r: RunScopeRefusal): SaveDriveFileResult => (old ? { status: "too_large", hint: OVER_5MB_PATH_HINT } : { status: "path_not_allowed", hint: r.hint });
   if (!viewer.runId) {
-    if (oldError) throw oldError;
     return old ? { status: "too_large", hint: OVER_5MB_PATH_HINT } : { status: "path_not_allowed", hint: PATH_HINT };
   }
   const run = await resolveRunRoots(ctx, viewer);
@@ -428,57 +433,30 @@ function startLocalSave(
   return started.status === "busy" ? started : { ...started, hint: STARTED_HINT };
 }
 
-/** Today's old-root check, reading nothing: the file's real path and size, or null when it is outside every root. */
-async function oldRootFile(filePath: string, allowedRootsInput?: string[]): Promise<{ resolved: string; size: number } | null> {
-  let allowedRoots = allowedRootsInput;
-  if (!allowedRoots) {
-    const envRoots = process.env.PIB_DRIVE_ALLOWED_ROOTS || "/home/paperclip/.paperclip/instances/default/companies";
-    allowedRoots = envRoots.split(",").map((r) => r.trim()).filter(Boolean);
+/** The company dirs of every agent on this host; the old root defaults to the caller's own company dir below it. */
+const DEFAULT_COMPANIES_DIR = "/home/paperclip/.paperclip/instances/default/companies";
+const COMPANY_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The old root, opened read-only through `openRunFile` (PAR-9265). Roots: the `allowedRoots` option, else
+ * PIB_DRIVE_ALLOWED_ROOTS (operator's choice, comma list), else only the calling company's own dir under the companies dir.
+ * Null when the file is refused for any reason (outside the roots, symlink, secret name, not a file, missing).
+ */
+async function openOldRootFile(viewer: Viewer, filePath: string, allowedRootsInput?: string[]): Promise<{ fh: FileHandle; stat: Stats } | null> {
+  let configured = allowedRootsInput;
+  if (!configured) {
+    const env = process.env.PIB_DRIVE_ALLOWED_ROOTS;
+    configured = env
+      ? env.split(",").map((r) => r.trim()).filter(Boolean)
+      : COMPANY_ID.test(viewer.companyId) ? [join(process.env.PIB_COMPANIES_DIR || DEFAULT_COMPANIES_DIR, viewer.companyId)] : [];
   }
-
-  if (!allowedRoots.length) {
-    throw new Error("No allowed roots configured");
+  const roots: string[] = [];
+  for (const r of configured) {
+    const real = await realpathAsync(r).catch(() => null);
+    if (real && !roots.includes(real)) roots.push(real);
   }
-
-  try {
-    const resolved = await realpathAsync(filePath);
-    const resolvedRoots = await Promise.all(allowedRoots.map((r) => realpathAsync(r).catch(() => null)));
-
-    let isAllowed = false;
-    for (const root of resolvedRoots) {
-      if (root) {
-        const rel = relative(root, resolved);
-        if (!rel.startsWith("..") && !rel.startsWith("/")) {
-          isAllowed = true;
-          break;
-        }
-      }
-    }
-
-    if (!isAllowed) return null;
-
-    const stat = statSync(resolved);
-    if (!stat.isFile()) throw new Error("Not a regular file");
-    return { resolved, size: stat.size };
-  } catch (e) {
-    throw e;
-  }
-}
-
-async function loadFileFromPath(filePath: string, allowedRootsInput?: string[]): Promise<Uint8Array | null> {
-  try {
-    const found = await oldRootFile(filePath, allowedRootsInput);
-    if (!found) return null;
-    const { resolved } = found;
-    if (found.size > MAX_FILE_BYTES) throw new Error("too_large");
-
-    const { readFile } = await import("node:fs/promises");
-    const buffer = await readFile(resolved);
-    return new Uint8Array(buffer);
-  } catch (e) {
-    if (e instanceof Error && e.message === "too_large") throw e;
-    throw e;
-  }
+  const file = await openRunFile(roots, filePath);
+  return file.ok ? { fh: file.fh, stat: file.stat } : null;
 }
 
 function stripSignedUrl(url: string): string {
