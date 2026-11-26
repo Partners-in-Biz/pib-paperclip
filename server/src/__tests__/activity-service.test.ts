@@ -108,6 +108,36 @@ describeEmbeddedPostgres("activity service", () => {
     expect((await service.getById(task.id))?.workMode).toBe(nextMode);
   });
 
+  it("lists runs bound to the issue or linked to it only through its activity log", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Run links", issuePrefix: `R${companyId.slice(0, 6)}` });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Worker", role: "engineer", status: "idle", adapterType: "codex_local" });
+    const service = issueService(db);
+    const task = await service.create(companyId, { title: "Linked runs" });
+    const other = await service.create(companyId, { title: "Other task" });
+    const boundRunId = randomUUID();
+    const linkedRunId = randomUUID();
+    const otherIssueRunId = randomUUID();
+    const unrelatedRunId = randomUUID();
+    await db.insert(heartbeatRuns).values([
+      { id: boundRunId, companyId, agentId, status: "succeeded", issueId: task.id, createdAt: new Date("2026-11-01T10:00:00.000Z") },
+      { id: linkedRunId, companyId, agentId, status: "succeeded", createdAt: new Date("2026-11-01T11:00:00.000Z") },
+      { id: otherIssueRunId, companyId, agentId, status: "succeeded", createdAt: new Date("2026-11-01T12:00:00.000Z") },
+      { id: unrelatedRunId, companyId, agentId, status: "succeeded", createdAt: new Date("2026-11-01T13:00:00.000Z") },
+    ]);
+    await db.insert(activityLog).values([
+      { companyId, actorType: "agent", actorId: agentId, action: "issue.comment_added", entityType: "issue", entityId: task.id, agentId, runId: linkedRunId },
+      { companyId, actorType: "agent", actorId: agentId, action: "issue.comment_added", entityType: "issue", entityId: task.id, agentId, runId: linkedRunId },
+      { companyId, actorType: "agent", actorId: agentId, action: "issue.comment_added", entityType: "issue", entityId: other.id, agentId, runId: otherIssueRunId },
+      { companyId, actorType: "agent", actorId: agentId, action: "issue.updated", entityType: "issue", entityId: task.id, agentId },
+    ]);
+
+    const runs = await activityService(db).runsForIssue(companyId, task.id);
+
+    expect(runs.map((run) => run.runId)).toEqual([linkedRunId, boundRunId]);
+  });
+
   it("limits company activity lists", async () => {
     const companyId = randomUUID();
 

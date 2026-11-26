@@ -517,17 +517,22 @@ export function activityService(db: Db) {
                 ${heartbeatRuns.contextSnapshot} ->> 'issueId', ${heartbeatRuns.contextSnapshot} ->> 'taskId') = ${issueId})`,
             ...(selectedRunIds ? [inArray(heartbeatRuns.id, selectedRunIds)] : []),
             ...(workingForUserId ? [eq(heartbeatRuns.responsibleUserId, workingForUserId)] : []),
-            or(
-              eq(heartbeatRuns.issueId, issueId),
-              sql`exists (
-                select 1
-                from ${activityLog}
-                where ${activityLog.companyId} = ${companyId}
-                  and ${activityLog.entityType} = 'issue'
-                  and ${activityLog.entityId} = ${issueId}
-                  and ${activityLog.runId} = ${heartbeatRuns.id}
-              )`,
-            ),
+            // Index-friendly form of "issue_id = X OR an activity row links the run":
+            // an OR with a correlated EXISTS forced a scan of every company run per
+            // task view (about 1 s on 55k runs); the UNION uses both indexes.
+            sql`${heartbeatRuns.id} in (
+              select own_run.id
+              from heartbeat_runs own_run
+              where own_run.company_id = ${companyId}
+                and own_run.issue_id = ${issueId}
+              union
+              select linked_activity.run_id
+              from activity_log linked_activity
+              where linked_activity.company_id = ${companyId}
+                and linked_activity.entity_type = 'issue'
+                and linked_activity.entity_id = ${issueId}
+                and linked_activity.run_id is not null
+            )`,
           ),
         )
         .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id));
