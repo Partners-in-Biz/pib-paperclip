@@ -16,7 +16,7 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
  * PAR-14826 (rule PAR-14395): the real `/api/plugins/:id/actions/:key` route for the plugin-voice `speak`
  * action, as a session user, an agent key and a run token. The stand-in worker records the actor the
  * worker would receive. plugin-voice's own tests prove the worker refuses `agent`; together they prove the
- * refusal end to end. T2 adds `get-my-voice-mode` to the same table.
+ * refusal end to end. `get-my-voice-mode` (PAR-14827) is in the same table.
  */
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -26,7 +26,7 @@ describe("plugin-voice action actors database support", () => {
 });
 
 const JWT_SECRET = "plugin-voice-action-actors";
-const VOICE_KEYS = ["speak"] as const;
+const VOICE_KEYS = ["speak", "get-my-voice-mode"] as const;
 
 function manifest(key: string): PaperclipPluginManifestV1 {
   return {

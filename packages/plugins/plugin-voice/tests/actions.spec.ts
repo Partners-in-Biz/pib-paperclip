@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { PluginContext, PluginPerformActionContext } from "@paperclipai/plugin-sdk";
 import { decodeAudio, keytermsFor, liveSessionAction, requireBoardUser, statusAction, transcribeAction } from "../src/actions.js";
-import { XAI_VOICES, settingsFrom, splitKeyterms } from "../src/config.js";
+import { GEMINI_VOICES, XAI_VOICES, settingsFrom, splitKeyterms } from "../src/config.js";
 import { agentVoiceData, setAgentVoiceAction } from "../src/actions.js";
 import { MAX_AUDIO_BYTES } from "../src/xai.js";
 
@@ -179,6 +179,11 @@ describe("per-agent voice", () => {
 
   it("lists the valid voices with the effective one", async () => {
     const { ctx } = withState({ [A1]: "sal" });
-    expect(await agentVoiceData(ctx, COMPANY, A1)).toEqual({ voices: [...XAI_VOICES], companyVoice: "ara", agentVoice: "sal", effective: "sal" });
+    expect(await agentVoiceData(ctx, COMPANY, A1)).toEqual({
+      profile: { grokVoice: "sal" },
+      company: { grokVoice: "ara", geminiVoice: "Kore" },
+      geminiConfigured: false,
+      voices: { grok: [...XAI_VOICES], gemini: [...GEMINI_VOICES] },
+    });
   });
 });
