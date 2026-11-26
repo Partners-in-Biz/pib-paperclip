@@ -311,6 +311,18 @@ describe("count-only mappings (PAR-11138)", () => {
     await expect(assertNotCountOnlyEnquirer(s.store, CO, [{ email: "other@example.com" }])).resolves.toBeUndefined();
   });
 
+  it("does not block the client's own owner contact whose address sent the form mail (PAR-14867)", async () => {
+    const s = setup();
+    s.store.crm.push(AHS, { kind: "contact" as const, id: "crm-rs", name: "Rikus Stander", domain: null, emails: ["rs@ahslaw.co.za"], accountIds: ["crm-ahs"] });
+    await addClientMap(s.env, CO, { matchType: "sender_address", pattern: "rs@ahslaw.co.za", clientKind: "company", clientRef: "crm-ahs", countOnly: true }, null);
+    await syncForm(s, "c2", { ...FORM, From: "Rikus <rs@ahslaw.co.za>", "Reply-To": "Jane Visitor <jane@gmail.com>" });
+    // The guard's raw lookup does flag the owner (the From of the form mail)...
+    expect(await s.store.countOnlyEnquirers(CO, ["rs@ahslaw.co.za"])).toEqual(["rs@ahslaw.co.za"]);
+    // ...but a CRM contact linked to a client company may be drafted to; the real enquirer may not.
+    await expect(assertNotCountOnlyEnquirer(s.store, CO, [{ email: "RS@ahslaw.co.za" }])).resolves.toBeUndefined();
+    await expect(assertNotCountOnlyEnquirer(s.store, CO, [{ email: "jane@gmail.com" }])).rejects.toThrow(/count-only/);
+  });
+
   it("opensReplyTask is false for count-only even for a reliable lead", () => {
     const t = { category: "lead", needsReply: 1, phishing: 0, bulk: false, clientSource: "mapping" };
     expect(opensReplyTask(t)).toBe(true);

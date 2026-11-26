@@ -227,8 +227,20 @@ async function fileFlaggedMail(env: Pick<Env, "ctx" | "store" | "now">, companyI
  * arrived as an enquirer of a count-only mapping (the From or Reply-To of mail
  * it filed). The lead is still counted; the client answers its own leads.
  */
-export async function assertNotCountOnlyEnquirer(store: Pick<GmailStore, "countOnlyEnquirers">, companyId: string, recipients: Array<{ email: string }>): Promise<void> {
+export async function assertNotCountOnlyEnquirer(store: Pick<GmailStore, "countOnlyEnquirers" | "crmContactsByEmail" | "crmCompany">, companyId: string, recipients: Array<{ email: string }>): Promise<void> {
   const emails = [...new Set(recipients.map((r) => r.email.trim().toLowerCase()).filter(Boolean))];
-  const hit = await store.countOnlyEnquirers(companyId, emails);
+  const flagged = await store.countOnlyEnquirers(companyId, emails);
+  // The client's own owner/billing contact often is the From of its website form
+  // mail (PAR-14867). A CRM contact linked to a client company is not an enquirer.
+  const hit: string[] = [];
+  for (const email of flagged) {
+    let isClientContact = false;
+    for (const contact of await store.crmContactsByEmail(companyId, email)) {
+      for (const accountId of contact.accountIds ?? []) {
+        if (await store.crmCompany(companyId, accountId)) isClientContact = true;
+      }
+    }
+    if (!isClientContact) hit.push(email);
+  }
   if (hit.length) throw new MailboxError(`Not drafted or sent: ${hit.join(", ")} arrived as a count-only website enquiry. We only count those leads; the client answers its own enquirers. Do not contact them.`);
 }
