@@ -3,6 +3,7 @@ import {
   createPlanningCanvasCommentSchema,
   planningCanvasChatMessageSchema,
   planningCanvasItemKeySchema,
+  planningCanvasSourceRefreshSchema,
   planningCanvasUnfurlSchema,
   resolvePlanningCanvasCommentSchema,
 } from "@paperclipai/shared";
@@ -89,6 +90,26 @@ export const PLANNING_CANVAS_COMMENTS_OPENAPI_ROUTES: PlanningCanvasOpenApiRoute
       "keys must be items of this board (`canvas_chat_unknown_context_key`). 30 messages per person per hour " +
       "(`canvas_chat_rate_limited`, 429). A repeat `clientRequestId` answers 200 with `repeat: true` and writes nothing.",
     body: planningCanvasChatMessageSchema,
+  },
+  {
+    method: "get",
+    path: `${BOARD}/agents/{agentId}/read-actions`,
+    tags,
+    summary: "List the read-only connector actions an agent may use for a board source",
+    description:
+      "Needs edit access. Names and descriptions only, for the connector picker (`canvas_source_unknown_agent` when the " +
+      "agent is not an active agent of this company).",
+  },
+  {
+    method: "post",
+    path: `${BOARD}/items/{itemKey}/refresh`,
+    tags,
+    summary: "Ask a source-bound node's agent to fetch its data again",
+    description:
+      "Needs edit access and a signed-in person; agents are refused (`canvas_source_agent_caller`). Off unless " +
+      "`PLANNING_CANVAS_CHAT` is on (`canvas_source_refresh_disabled`). The refresh is a chat message on the person's " +
+      "thread; nothing is written to the tool. A repeat `clientRequestId` answers 200 with `repeat: true`.",
+    body: planningCanvasSourceRefreshSchema,
   },
   {
     method: "post",

@@ -68,6 +68,9 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
  *   /api/companies/:companyId/planning-canvases/:boardId/comments
  *   /api/companies/:companyId/planning-canvases/:boardId/comments/:commentId
  *   /api/companies/:companyId/planning-canvases/:boardId/comments/:commentId/resolve
+ *   /api/companies/:companyId/planning-canvases/:boardId/chat
+ *   /api/companies/:companyId/planning-canvases/:boardId/agents/:agentId/read-actions
+ *   /api/companies/:companyId/planning-canvases/:boardId/items/:itemKey/refresh
  *   /api/companies/:companyId/planning-canvases/:boardId/refs
  *   /api/companies/:companyId/planning-canvases/:boardId/query
  *   /api/companies/:companyId/planning-canvases/:boardId/handoff
