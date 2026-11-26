@@ -44,6 +44,8 @@ describe("agent chat routing", () => {
   it("keeps the spoken words and says where they came from", () => {
     expect(chatBody(" create a task for Kai ", "PAR-9")).toBe("create a task for Kai\n\n_Sent by voice from PAR-9._");
     expect(chatBody("hi", null)).toBe("hi\n\n_Sent by voice._");
+    expect(chatBody("hi", null, true)).toBe("hi\n\n_Sent by voice: reply in short spoken sentences._");
+    expect(chatBody("hi", "PAR-9", true)).toBe("hi\n\n_Sent by voice from PAR-9: reply in short spoken sentences._");
   });
 
   it("posts each turn as a comment on the agent's chat issue, ensuring the chat once", async () => {
@@ -51,7 +53,7 @@ describe("agent chat routing", () => {
     const chat = new AgentChat({ api, companyId: "c1", agentRef: null, pageIssueRef: null });
     const first = await chat.submit("create a task", "11111111-1111-4111-8111-111111111111");
     await chat.submit("and another", "22222222-2222-4222-8222-222222222222");
-    expect(first).toEqual({ issueId: "chat-1", ref: "PAR-1558", agentName: "PiB" });
+    expect(first).toEqual({ issueId: "chat-1", ref: "PAR-1558", agentName: "PiB", agentId: "a-ceo" });
     const chatCalls = post.mock.calls.filter(([p]) => String(p).includes("/chats/"));
     expect(chatCalls).toEqual([["/companies/c1/chats/a-ceo", {}]]);
     const comments = post.mock.calls.filter(([p]) => p === "/issues/chat-1/comments");

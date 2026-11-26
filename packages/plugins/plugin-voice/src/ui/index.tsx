@@ -18,6 +18,7 @@ import { keepFieldVisible } from "./keyboard.js";
 import { buildInstructions } from "./live-instructions.js";
 import { startWakeLock, type WakeGuard } from "./wake-lock.js";
 import { agentForCall, agentRefFromPath, type AgentRow } from "./agent-chat.js";
+import { DirectSession, type DirectState } from "./direct-session.js";
 import { LiveSession, type LiveSessionInfo, type LiveState, type TranscriptEntry } from "./live-session.js";
 import type { ApiClient } from "./agent-chat.js";
 import { failureMessage, showSaveNotice } from "./save-notice.js";
@@ -359,9 +360,16 @@ function ComposerButtons({
 // Live panel
 // ---------------------------------------------------------------------------
 
-const STATE_LABEL: Record<LiveState, string> = {
+type PanelState = LiveState | DirectState;
+type ModeChoice = "direct-gemini" | "direct-grok" | "classic";
+
+const STATE_LABEL: Record<PanelState, string> = {
   connecting: "Connecting…",
+  starting: "Starting…",
   listening: "Listening",
+  hearing: "Hearing you",
+  sending: "Sending…",
+  working: "Working…",
   thinking: "Thinking…",
   speaking: "Speaking",
   reconnecting: "Reconnecting…",
@@ -369,6 +377,30 @@ const STATE_LABEL: Record<LiveState, string> = {
   ended: "Call ended",
   error: "Disconnected",
 };
+
+const PULSING = new Set<PanelState>(["thinking", "connecting", "reconnecting", "starting", "sending", "working"]);
+
+interface VoiceModeAnswer {
+  mode?: unknown;
+  provider?: unknown;
+  geminiConfigured?: unknown;
+}
+
+/** The saved mode as the select shows it; nothing readable means Direct – Grok. */
+function choiceFrom(answer: VoiceModeAnswer | null): ModeChoice {
+  if (answer?.mode === "classic") return "classic";
+  return answer?.mode === "direct" && answer.provider === "gemini" ? "direct-gemini" : "direct-grok";
+}
+
+const INTERRUPT_KEY = "pib-voice:interrupt-by-talking";
+
+function readInterrupt(): boolean {
+  try {
+    return localStorage.getItem(INTERRUPT_KEY) !== "off";
+  } catch {
+    return true;
+  }
+}
 
 /** Must run synchronously inside the tap, or iOS keeps the audio silent. */
 function createAudioContext(): AudioContext {
@@ -404,7 +436,7 @@ function AgentVoicePicker({ companyId, agent }: { companyId: string; agent: { id
             setBusy(false);
           }
         }}
-        style={{ minHeight: 36, minWidth: 0, maxWidth: "100%", padding: "0 8px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--background)", color: "var(--foreground)", fontSize: 13 }}
+        style={{ minHeight: 36, minWidth: 0, maxWidth: "100%", flexShrink: 0, padding: "0 8px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--background)", color: "var(--foreground)", fontSize: 13 }}
       >
         <option value="">Company default ({data.company.grokVoice})</option>
         {data.voices.grok.map((v) => (
@@ -416,13 +448,15 @@ function AgentVoicePicker({ companyId, agent }: { companyId: string; agent: { id
   );
 }
 
-function LivePanel({
+/** Exported for the offline render harness (visual QA); the overlay is the only real mount. */
+export function LivePanel({
   companyId,
   userId,
   audioContext,
   wakeLock,
   wakeNotice,
   onClose,
+  onSwitch,
 }: {
   companyId: string;
   userId: string | null;
@@ -430,34 +464,104 @@ function LivePanel({
   wakeLock: WakeGuard | null;
   wakeNotice: string | null;
   onClose: () => void;
+  /** Runs inside the select's change: a fresh audio context (and screen lock) for the next session. */
+  onSwitch: () => void;
 }) {
   const startLive = useVoiceAction("live-session");
+  const getMode = useVoiceAction("get-my-voice-mode");
+  const saveMode = useVoiceAction("set-my-voice-mode");
+  const speak = useVoiceAction("speak");
+  const transcribe = useVoiceAction("transcribe");
   const [callAgent, setCallAgent] = useState<{ id: string; name: string } | null>(null);
-  const [state, setState] = useState<LiveState>("connecting");
+  const [choice, setChoice] = useState<ModeChoice | null>(null);
+  const [geminiReady, setGeminiReady] = useState(false);
+  const [state, setState] = useState<PanelState>("connecting");
   const [entries, setEntries] = useState<TranscriptEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [muted, setMuted] = useState(false);
   const [levels, setLevels] = useState({ mic: 0, voice: 0 });
-  const session = useRef<LiveSession | null>(null);
+  const [interrupt, setInterrupt] = useState(readInterrupt);
+  const interruptRef = useRef(interrupt);
+  interruptRef.current = interrupt;
+  const agentIdRef = useRef<string | null>(null);
+  const session = useRef<LiveSession | DirectSession | null>(null);
   const scroller = useRef<HTMLDivElement | null>(null);
   const pageIssueRef = issueRefFromPath(window.location.pathname);
 
+  // Who the call is with (it decides the voice) and how this person talks. Either lookup may fail: company voice, Direct – Grok.
   useEffect(() => {
     let cancelled = false;
-    (async () => {
+    void (async () => {
+      const [agent, mode] = await Promise.all([
+        paperclipApi
+          .get<AgentRow[]>(`/companies/${companyId}/agents`)
+          .then((agents) => agentForCall(agents, agentRefFromPath(window.location.pathname)))
+          .catch(() => null),
+        (getMode({}) as Promise<VoiceModeAnswer>).catch(() => null),
+      ]);
+      if (cancelled) return;
+      if (agent) {
+        agentIdRef.current = agent.id;
+        setCallAgent({ id: agent.id, name: agent.name });
+      }
+      setGeminiReady(mode?.geminiConfigured === true);
+      setChoice(choiceFrom(mode));
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // Once per panel.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // One session per mode; a mode change stops this one (its transcript is saved) and starts the next.
+  useEffect(() => {
+    if (!choice) return;
+    let cancelled = false;
+    setEntries([]);
+    setError(null);
+    setNotice(null);
+    setMuted(false);
+    setState(choice === "classic" ? "connecting" : "starting");
+    const agentRef = agentRefFromPath(window.location.pathname);
+    const shared = {
+      api: paperclipApi,
+      companyId,
+      pageIssueRef,
+      agentRef,
+      audioContext,
+      wakeLock: wakeLock ?? undefined,
+      onState: (next: PanelState) => {
+        setState(next);
+        // The banner belongs to the outage; a recovered call clears it.
+        if (next !== "disconnected" && next !== "error") setError(null);
+      },
+      onTranscript: setEntries,
+      onLevel: (mic: number, voice: number) => setLevels({ mic, voice }),
+      onError: setError,
+      onAutosave: (call: CallRecord) => autosaveCall(call, pageIssueRef),
+      onEnd: (call: CallRecord, touched: SaveTarget[]) =>
+        void saveCall(call, touched, pageIssueRef).catch((err) => {
+          showSaveNotice(`The call transcript was not saved (${errorText(err)}).`, null);
+        }),
+    };
+    void (async () => {
       try {
-        // The call's agent decides the voice. A failed lookup just means the company voice.
-        let agentId: string | null = null;
-        try {
-          const agents = await paperclipApi.get<AgentRow[]>(`/companies/${companyId}/agents`);
-          const agent = agentForCall(agents, agentRefFromPath(window.location.pathname));
-          if (agent) {
-            agentId = agent.id;
-            if (!cancelled) setCallAgent({ id: agent.id, name: agent.name });
-          }
-        } catch {
-          // Voice falls back to the company default.
+        if (choice !== "classic") {
+          const direct = new DirectSession({
+            ...shared,
+            provider: choice === "direct-gemini" ? "gemini" : "grok",
+            speak: (params) => speak(params),
+            transcribe: (params) => transcribe(params),
+            interruptByTalking: () => interruptRef.current,
+            onNotice: setNotice,
+          });
+          session.current = direct;
+          await direct.start();
+          return;
         }
+        const agentId = agentIdRef.current;
         const info = (await startLive({ agentId })) as LiveSessionInfo;
         let companyName: string | null = null;
         try {
@@ -467,29 +571,11 @@ function LivePanel({
         }
         if (cancelled) return;
         const live = new LiveSession({
+          ...shared,
           info,
           instructions: buildInstructions({ personName: null, companyName, pageIssueRef, now: new Date() }),
-          api: paperclipApi,
-          companyId,
           userId,
-          pageIssueRef,
-          agentRef: agentRefFromPath(window.location.pathname),
-          audioContext,
-          wakeLock: wakeLock ?? undefined,
           refreshInfo: () => startLive({ agentId }) as Promise<LiveSessionInfo>,
-          onState: (next) => {
-            setState(next);
-            // The banner belongs to the outage; a recovered call clears it.
-            if (next !== "disconnected" && next !== "error") setError(null);
-          },
-          onTranscript: setEntries,
-          onLevel: (mic, voice) => setLevels({ mic, voice }),
-          onError: setError,
-          onAutosave: (call) => autosaveCall(call, pageIssueRef),
-          onEnd: (call, touched) =>
-            void saveCall(call, touched, pageIssueRef).catch((err) => {
-              showSaveNotice(`The call transcript was not saved (${errorText(err)}).`, null);
-            }),
         });
         session.current = live;
         await live.start();
@@ -508,9 +594,9 @@ function LivePanel({
       // stop() closes it once a session exists; close it here too if it never started.
       if (audioContext.state !== "closed") void audioContext.close().catch(() => undefined);
     };
-    // Start once per panel.
+    // A new session only when the mode (and with it the audio context) changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [choice, audioContext]);
 
   useEffect(() => {
     scroller.current?.scrollTo({ top: scroller.current.scrollHeight });
@@ -519,6 +605,23 @@ function LivePanel({
   const hangUp = () => {
     session.current?.stop();
     onClose();
+  };
+
+  const chooseMode = (next: ModeChoice) => {
+    if (next === choice || (next === "direct-gemini" && !geminiReady)) return;
+    onSwitch();
+    setChoice(next);
+    const saved = next === "classic" ? { mode: "classic" } : { mode: "direct", provider: next === "direct-gemini" ? "gemini" : "grok" };
+    void saveMode(saved).catch((err: unknown) => setNotice(`Mode not saved: ${errorText(err)}`));
+  };
+
+  const toggleInterrupt = (on: boolean) => {
+    setInterrupt(on);
+    try {
+      localStorage.setItem(INTERRUPT_KEY, on ? "on" : "off");
+    } catch {
+      // Storage blocked: the choice lasts this call only.
+    }
   };
 
   // Escape hangs up; focus goes back to where it was when the panel closes.
@@ -539,14 +642,25 @@ function LivePanel({
     };
   }, []);
 
+  const direct = choice !== null && choice !== "classic";
   const orbScale = 1 + Math.min(0.35, (state === "speaking" ? levels.voice : levels.mic) * 0.6);
   const live = state !== "ended" && state !== "error";
+  const agentName = callAgent?.name ?? "The agent";
+  const label = muted && live ? "Muted" : state === "working" ? `${agentName} is working…` : STATE_LABEL[state];
+  // Tap barge-in: anywhere on the panel except its controls.
+  const onPanelTap = (event: { target: EventTarget | null }) => {
+    if (!direct || state !== "speaking") return;
+    if (event.target instanceof Element && event.target.closest("button, select, input, label, a")) return;
+    const current = session.current;
+    if (current instanceof DirectSession) current.interrupt();
+  };
 
   return createPortal(
     <div
       role="dialog"
       aria-modal="true"
       aria-label="Live voice"
+      onPointerDown={onPanelTap}
       style={{
         position: "fixed",
         inset: 0,
@@ -560,10 +674,34 @@ function LivePanel({
       }}
     >
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8, padding: "12px 16px" }}>
-        <span style={{ fontSize: 13, color: "var(--muted-foreground)" }}>
-          {pageIssueRef ? `Talking about ${pageIssueRef}` : "Live voice"}
-        </span>
-        {callAgent ? <AgentVoicePicker companyId={companyId} agent={callAgent} /> : <span style={{ fontSize: 12, color: "var(--muted-foreground)" }}>Grok voice</span>}
+        <div style={{ minWidth: 0, flex: "1 1 180px" }}>
+          <div
+            data-pib-voice="talking-with"
+            title={callAgent ? `Talking with ${callAgent.name}` : undefined}
+            style={{ fontSize: 15, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+          >
+            {callAgent ? `Talking with ${callAgent.name}` : "Live voice"}
+          </div>
+          {pageIssueRef ? <div style={{ fontSize: 12, color: "var(--muted-foreground)" }}>About {pageIssueRef}</div> : null}
+        </div>
+        <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8, minWidth: 0, maxWidth: "100%" }}>
+          <select
+            aria-label="Voice mode"
+            data-pib-voice="mode"
+            value={choice ?? ""}
+            disabled={!choice}
+            onChange={(event) => chooseMode(event.target.value as ModeChoice)}
+            style={{ minHeight: 36, minWidth: 0, maxWidth: "100%", padding: "0 8px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--background)", color: "var(--foreground)", fontSize: 13 }}
+          >
+            {choice === null ? <option value="">Loading…</option> : null}
+            <option value="direct-gemini" disabled={!geminiReady}>
+              {geminiReady ? "Direct – Gemini" : "Direct – Gemini (needs a Gemini key)"}
+            </option>
+            <option value="direct-grok">Direct – Grok</option>
+            <option value="classic">Grok live (classic)</option>
+          </select>
+          {callAgent && choice !== "direct-gemini" ? <AgentVoicePicker companyId={companyId} agent={callAgent} /> : null}
+        </div>
       </div>
 
       <div style={{ flex: "0 0 auto", display: "grid", placeItems: "center", padding: "24px 0 8px" }}>
@@ -577,12 +715,20 @@ function LivePanel({
             border: "1px solid var(--border)",
             transform: `scale(${orbScale})`,
             transition: "transform 90ms linear, background 200ms ease",
-            animation: state === "thinking" || state === "connecting" || state === "reconnecting" ? "pib-voice-pulse 1.4s ease-in-out infinite" : undefined,
+            animation: PULSING.has(state) ? "pib-voice-pulse 1.4s ease-in-out infinite" : undefined,
           }}
         />
-        <div style={{ marginTop: 18, fontSize: 15, fontWeight: 500 }} aria-live="polite">
-          {muted && live ? "Muted" : STATE_LABEL[state]}
+        <div style={{ marginTop: 18, fontSize: 15, fontWeight: 500, padding: "0 24px", textAlign: "center", overflowWrap: "anywhere" }} aria-live="polite">
+          {label}
         </div>
+        {direct && state === "speaking" ? (
+          <div style={{ marginTop: 4, fontSize: 12, color: "var(--muted-foreground)" }}>Tap anywhere to stop</div>
+        ) : null}
+        {notice && live ? (
+          <div role="status" style={{ marginTop: 8, fontSize: 12, color: "var(--muted-foreground)", padding: "0 24px", textAlign: "center" }}>
+            {notice}
+          </div>
+        ) : null}
         {wakeNotice && live ? (
           <div role="status" style={{ marginTop: 8, fontSize: 12, color: "var(--muted-foreground)", padding: "0 24px", textAlign: "center" }}>
             {wakeNotice}
@@ -593,10 +739,19 @@ function LivePanel({
             {error}
           </div>
         ) : null}
+        {direct && live ? (
+          <label style={{ marginTop: 10, display: "inline-flex", alignItems: "center", gap: 8, minHeight: 36, fontSize: 13, color: "var(--muted-foreground)" }}>
+            <input type="checkbox" checked={interrupt} onChange={(event) => toggleInterrupt(event.target.checked)} />
+            Interrupt by talking
+          </label>
+        ) : null}
         {state === "disconnected" ? (
           <button
             type="button"
-            onClick={() => session.current?.retry()}
+            onClick={() => {
+              const current = session.current;
+              if (current instanceof LiveSession) current.retry();
+            }}
             style={{ marginTop: 12, padding: "10px 20px", borderRadius: 999, border: "1px solid var(--border)", background: "var(--accent)", color: "var(--foreground)", fontSize: 14, fontWeight: 500 }}
           >
             Retry
@@ -623,6 +778,8 @@ function LivePanel({
                 background: entry.who === "you" ? "var(--accent)" : "transparent",
                 border: entry.who === "you" ? "none" : "1px solid var(--border)",
                 opacity: entry.final ? 1 : 0.7,
+                whiteSpace: "pre-wrap",
+                overflowWrap: "anywhere",
               }}
             >
               {entry.text}
@@ -767,6 +924,13 @@ function VoiceButtons() {
     wakeRef.current = startWakeLock({ audioContext: liveAudioRef.current, onNotice: setWakeNotice });
     setLiveAudio(liveAudioRef.current);
   }, []);
+  // A mode change in the panel: a new context in the same gesture, and a screen lock tied to it.
+  const switchLive = useCallback(() => {
+    wakeRef.current?.release();
+    liveAudioRef.current = createAudioContext();
+    wakeRef.current = startWakeLock({ audioContext: liveAudioRef.current, onNotice: setWakeNotice });
+    setLiveAudio(liveAudioRef.current);
+  }, []);
   const closeLive = useCallback(() => {
     wakeRef.current?.release();
     wakeRef.current = null;
@@ -797,7 +961,7 @@ function VoiceButtons() {
         );
       })}
       {liveAudio ? (
-        <LivePanel companyId={companyId} userId={host.userId ?? null} audioContext={liveAudio} wakeLock={wakeRef.current} wakeNotice={wakeNotice} onClose={closeLive} />
+        <LivePanel companyId={companyId} userId={host.userId ?? null} audioContext={liveAudio} wakeLock={wakeRef.current} wakeNotice={wakeNotice} onClose={closeLive} onSwitch={switchLive} />
       ) : null}
       {toast ? <Toast message={toast} /> : null}
     </>
