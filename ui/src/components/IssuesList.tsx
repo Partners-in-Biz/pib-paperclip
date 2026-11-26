@@ -220,7 +220,6 @@ function normalizeIssueViewState(value: unknown, defaultShowAgentCreatedTasks = 
   const parsed = value && typeof value === "object" ? value as Partial<IssueViewState> : {};
   return {
     ...defaultViewState,
-    showAgentCreatedTasks: defaultShowAgentCreatedTasks,
     ...parsed,
     ...normalizeIssueFilterState(parsed, defaultShowAgentCreatedTasks),
     // A saved workspace selection has no filter control. Drop it on load.

@@ -49,6 +49,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { describeError } from "@/api/errors";
+import { OptionSelect } from "@/components/OptionSelect";
 
 export const githubSelectClass =
   "w-full rounded-md border border-input bg-background px-3 py-2 text-sm";
@@ -304,19 +305,18 @@ export function GitHubPolicyEditor({
             <Label htmlFor={`${id}-github-prompt-event`} className="sr-only">
               Event
             </Label>
-            <select
+            <OptionSelect
               id={`${id}-github-prompt-event`}
-              className={githubSelectClass}
+              ariaLabel="Event"
+              placeholder="Select event"
+              triggerClassName="w-full text-sm font-normal"
               value={prompt}
-              onChange={(e) => setPrompt(e.target.value as typeof prompt)}
-            >
-              {GITHUB_REVIEW_EVENTS.map((event) => (
-                <option key={event} value={event}>
-                  {eventLabels[event]}
-                </option>
-              ))}
-              <option value="issue_opened">New issue</option>
-            </select>
+              items={[
+                ...GITHUB_REVIEW_EVENTS.map((event) => ({ value: event, label: eventLabels[event] })),
+                { value: "issue_opened", label: "New issue" },
+              ]}
+              onChange={(next) => setPrompt(next as typeof prompt)}
+            />
             <MarkdownEditor
               key={prompt}
               readOnly={readOnly}
@@ -526,22 +526,20 @@ export function GitHubPolicyEditor({
               <Label htmlFor={`${id}-github-severity`}>
                 Minimum inline severity
               </Label>
-              <select
-                id={`${id}-github-severity`}
-                className={githubSelectClass}
+              <OptionSelect
+                ariaLabel="Minimum inline severity"
+                placeholder="Select severity"
+                triggerClassName="w-full text-sm font-normal"
                 value={policy.minimumCommentSeverity}
-                onChange={(e) =>
-                  set(
-                    "minimumCommentSeverity",
-                    e.target
-                      .value as GitHubReviewPolicy["minimumCommentSeverity"],
-                  )
+                items={[
+                  { value: "info", label: "Info" },
+                  { value: "warning", label: "Warning" },
+                  { value: "error", label: "Error" },
+                ]}
+                onChange={(next) =>
+                  set("minimumCommentSeverity", next as GitHubReviewPolicy["minimumCommentSeverity"])
                 }
-              >
-                <option value="info">Info</option>
-                <option value="warning">Warning</option>
-                <option value="error">Error</option>
-              </select>
+              />
               <p className="text-xs text-muted-foreground">
                 Hidden findings still count in the assessment.
               </p>
@@ -900,30 +898,22 @@ export function GitHubAccessEditor({
           ) : (
             <>
               <Label htmlFor="github-responsible">Responsible member</Label>
-              <select
-                id="github-responsible"
-                className={githubSelectClass}
+              <OptionSelect
+                ariaLabel="Responsible member"
+                placeholder="Select a member"
+                triggerClassName="w-full text-sm font-normal"
                 value={configuration.responsibleUserId}
-                onChange={(e) =>
-                  onChange({
-                    ...configuration,
-                    responsibleUserId: e.target.value,
-                  })
-                }
-              >
-                {!responsible && (
-                  <option value={configuration.responsibleUserId}>
-                    {configuration.responsibleUserId || "Select a member"}
-                  </option>
-                )}
-                {activeMembers.map((member) => (
-                  <option key={member.principalId} value={member.principalId}>
-                    {member.user?.name ??
-                      member.user?.email ??
-                      member.principalId}
-                  </option>
-                ))}
-              </select>
+                items={[
+                  ...(!responsible
+                    ? [{ value: configuration.responsibleUserId, label: configuration.responsibleUserId || "Select a member" }]
+                    : []),
+                  ...activeMembers.map((member) => ({
+                    value: member.principalId,
+                    label: member.user?.name ?? member.user?.email ?? member.principalId,
+                  })),
+                ]}
+                onChange={(next) => onChange({ ...configuration, responsibleUserId: next })}
+              />
             </>
           )}
           <p className="text-xs text-muted-foreground">
@@ -1042,21 +1032,22 @@ export function GitHubAccessEditor({
               </div>
               <div className="space-y-2">
                 <Label htmlFor="github-guest-sponsor">Sponsor</Label>
-                <select
-                  id="github-guest-sponsor"
-                  className={githubSelectClass}
+                <OptionSelect
+                  ariaLabel="Sponsor"
+                  placeholder="Select a member"
+                  triggerClassName="w-full text-sm font-normal"
                   value={sponsor}
-                  onChange={(e) => setSponsor(e.target.value)}
-                >
-                  {!activeMembers.some(
-                    (member) => member.principalId === sponsor,
-                  ) && <option value={sponsor}>Select a member</option>}
-                  {activeMembers.map((member) => (
-                    <option key={member.principalId} value={member.principalId}>
-                      {member.user?.name ?? member.principalId}
-                    </option>
-                  ))}
-                </select>
+                  items={[
+                    ...(!activeMembers.some((member) => member.principalId === sponsor)
+                      ? [{ value: sponsor, label: "Select a member" }]
+                      : []),
+                    ...activeMembers.map((member) => ({
+                      value: member.principalId,
+                      label: member.user?.name ?? member.principalId,
+                    })),
+                  ]}
+                  onChange={setSponsor}
+                />
               </div>
               {candidate && (
                 <p role="status" className="text-sm">

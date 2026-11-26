@@ -16,6 +16,7 @@ import { useToast } from "@/context/ToastContext";
 import { allowedToolsLabel } from "./gateway-helpers";
 import { gatewaysQueryKey } from "./NewGatewayDialog";
 import { describeError } from "@/api/errors";
+import { OptionSelect } from "@/components/OptionSelect";
 
 export function EditGatewayDialog({
   companyId,
@@ -87,18 +88,18 @@ export function EditGatewayDialog({
           </label>
           <label className="block space-y-1.5">
             <span className="text-xs font-medium text-muted-foreground">Access profile</span>
-            <select
-              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+            <OptionSelect
+              ariaLabel="Access profile"
+              items={activeProfiles.map((profile) => ({
+                value: profile.id,
+                label: `${profile.name} — ${allowedToolsLabel(profile)}`,
+                searchText: profile.name,
+              }))}
               value={profileId}
-              onChange={(event) => setProfileId(event.target.value)}
-              required
-            >
-              {activeProfiles.map((profile) => (
-                <option key={profile.id} value={profile.id}>
-                  {profile.name} — {allowedToolsLabel(profile)}
-                </option>
-              ))}
-            </select>
+              onChange={setProfileId}
+              placeholder="Choose a profile"
+              triggerClassName="h-auto py-2 text-sm font-normal"
+            />
           </label>
           <label className="block space-y-1.5">
             <span className="text-xs font-medium text-muted-foreground">Description (optional)</span>

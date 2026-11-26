@@ -519,6 +519,18 @@ export interface PluginUiSlotDeclaration {
     activation?: { namespace: string; activityKey: string };
   };
   /**
+   * Required on `taskSidePanelTab` slots, and only allowed there. The host
+   * calls the plugin's `getData` handler named `visibilityDataKey` with
+   * `{ issueId, projectId }` and lists the tab only while it returns
+   * `{ visible: true }`. It asks again every 10 seconds; loading, any other
+   * answer or an error keeps the tab hidden.
+   */
+  sidePanelTab?: {
+    visibilityDataKey: string;
+    /** `padded` (default) adds host padding; `full-bleed` gives the plugin the whole area. */
+    contentMode?: "padded" | "full-bleed";
+  };
+  /**
    * A board card for one record kind (PAR-14389 C.1); `canvasNode` slots only.
    * The plugin answers the fixed `canvas.cards.*` actions for `kind`; `search`
    * and `related` say which of the optional two it offers.

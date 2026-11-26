@@ -501,6 +501,8 @@ export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntr
     // PAR-14282 (connector nodes): edit access. The read-action list holds names only; a refresh is a chat message (same guards).
     ["GET", "/api/companies/:companyId/planning-canvases/:boardId/agents/:agentId/read-actions"],
     ["POST", "/api/companies/:companyId/planning-canvases/:boardId/items/:itemKey/refresh"],
+    // PAR-14426 (D3 link preview): edit access and a signed-in person; reads the stored node's URL, writes nothing.
+    ["POST", "/api/companies/:companyId/planning-canvases/:boardId/unfurl"],
     // PAR-13937 (C8): refs and query read only what the caller may read; a handoff runs `restrictedTaskBody(..., "createIssue")` per issue.
     ["GET", "/api/companies/:companyId/planning-canvases/:boardId/refs"],
     ["POST", "/api/companies/:companyId/planning-canvases/:boardId/query"],

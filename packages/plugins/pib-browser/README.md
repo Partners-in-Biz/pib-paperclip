@@ -12,6 +12,7 @@ Daemon and CLI for capturing logged-in browser evidence. Not installed by defaul
 - `pib-browser click` - Click an element
 - `pib-browser drag --from SEL --to SEL` - Drag one element onto another. Gated like `click`: the destructive-word check sees both selectors and their labels, and `--approval PAR-N` works the same.
 - `pib-browser fill` - Fill a form field
+- `pib-browser select --selector SEL --value TEXT` - Pick an option in a native `<select>` (label first, then value). Gated like `click`; the value is never logged.
 - `pib-browser text` - Get text from an element
 - `pib-browser shot` - Take a screenshot
 - `pib-browser net [--step NAME]` - Print the session's network log and write it to `<evidence root>/<PAR-n>/<PAR-n>-<step>-<time>.json`. Each entry has time, method, status (0 = request failed or blocked) and a redacted URL. Query values, fragments, credentials and token-like path segments are replaced with `[redacted]`; headers, cookies and bodies are never recorded. The log keeps the last 1000 requests of the session.
@@ -27,16 +28,15 @@ Daemon and CLI for capturing logged-in browser evidence. Not installed by defaul
 
 The window stays open (no `session_expired` close, unlike `open`) and closes by itself when the `loggedIn.expect` text shows (logged in), the flag is removed, the person closes it, or after 30 min (`PIB_BROWSER_HANDOFF_TIMEOUT_MS`). The origin wall still applies, so a site that logs in on another origin needs that origin in `sites.json`. While it is open, an agent `open` on that identity gets exit 3 `handoff_open` (Chromium allows one window per profile); any agent session on the identity is closed when the window opens. No agent verb can reach the window, and the flag no longer lifts the `fill` rules: agents still cannot fill a password field, only the person types it.
 
-Procedure (root part from PAR-9356):
+Procedure (all inside Cockpit; nobody uses SSH or VNC by hand):
 
-1. On the server: `sudo pib-root browser-handoff-start <id>` makes the flag, starts `pib-vnc` (x11vnc on `:99`, bound to 127.0.0.1:5900, stops after 30 min) and runs `pib-browser handoff-open --identity <id>`.
-2. On your computer: `ssh -N -L 5900:localhost:5900 <user>@<server>` and keep it open.
-3. Point a VNC client at `localhost:5900` and log in in the window. It closes by itself when you are logged in.
-4. On the server: `sudo pib-root browser-handoff-stop <id>` removes the flag (root-owned; only root can) and stops `pib-vnc`.
-5. An agent runs `pib-browser probe --all --identities <id> --issue PAR-N`; the login shows ok.
+1. Open Cockpit -> Browser (the "Log in again" card links to `Cockpit -> Browser?identity=<id>`). Owner company, owner or admin only.
+2. Watch live shows the agents' browser read only. Take over starts a lease for that identity (at most 20 minutes), opens the hand-off window and gives you keyboard and mouse; log in in the window. It closes by itself when you are logged in.
+3. Press Done. The lease ends, the window closes, and the agents waiting on that identity are woken.
+4. An agent runs `pib-browser probe --all --identities <id> --issue PAR-N`; the login shows ok.
 
 ### Live view (PAR-14514)
-A second socket, `/run/pib-browser/live.sock` (mode 0660, `PIB_BROWSER_LIVE_SOCKET`), streams display `:99` to Cockpit over a WebSocket, view only. `GET /stream?mode=view` is accepted only with the core server's signed header `x-paperclip-local-ws-signature` (`doc/plugins/PLUGIN_SPEC.md`): it must verify against the key from `PIB_BROWSER_API`/`api/plugins/local-ws-key`, name this socket, the plugin `PIB_BROWSER_LIVE_PLUGIN_KEY` (default `partnersinbiz.cockpit`) and the exact path, be under 30 s old and use a fresh nonce. Any other process on the box, an agent included, gets 401. Each stream runs its own `x11vnc -inetd -viewonly` (no TCP port), handed a socket through a one-use 0700 folder in the private temp folder; at most two streams, 20 minutes each, a ping every 20 s, and `x11vnc` is killed when either side closes or the daemon stops. `GET /status` (unsigned) returns `{viewers, agentSessions, lease, waiting}`. Neither the path, the header nor any stream byte is logged. If the live service cannot start (for example `ws` missing), the agent socket runs as before.
+A second socket, `/run/pib-browser/live.sock` (mode 0660, `PIB_BROWSER_LIVE_SOCKET`), streams display `:99` to Cockpit over a WebSocket, view only. `GET /stream?mode=view` is accepted only with the core server's signed header `x-paperclip-local-ws-signature` (`doc/plugins/PLUGIN_SPEC.md`): it must verify against the key from `PIB_BROWSER_API`/`api/plugins/local-ws-key`, name this socket, the plugin `PIB_BROWSER_LIVE_PLUGIN_KEY` (default `partnersinbiz.cockpit`) and the exact path, be under 30 s old and use a fresh nonce. Any other process on the box, an agent included, gets 401. Each stream runs its own `x11vnc -inetd -viewonly` (no TCP port), handed a socket through a one-use 0700 folder in the private temp folder; at most two streams, 20 minutes each, a ping every 20 s, and `x11vnc` is killed when either side closes or the daemon stops. `GET /status` (unsigned) returns `{viewers, agentSessions, sessions, lease, waiting}`, where `sessions` is `[{agentId, identity, companyId, issue, lastActiveAt}]` (the Watch live chip reads it). Neither the path, the header nor any stream byte is logged. If the live service cannot start (for example `ws` missing), the agent socket runs as before.
 
 ### Take-over (PAR-14514 S4)
 A person takes the keyboard and mouse for one identity through the same socket. There is no "start" call: the signed stream is the start.

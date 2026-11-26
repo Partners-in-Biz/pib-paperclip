@@ -15,6 +15,7 @@ import { getAdapterLabel } from "../adapters/adapter-display-registry";
 import { clearPendingInviteToken, rememberPendingInviteToken } from "../lib/invite-memory";
 import { queryKeys } from "../lib/queryKeys";
 import { formatDate } from "../lib/utils";
+import { OptionSelect } from "../components/OptionSelect";
 
 type AuthMode = "sign_in" | "sign_up";
 type AuthFeedback = { tone: "error" | "info"; message: string };
@@ -636,17 +637,17 @@ export function InviteLandingPage() {
                 </label>
                 <label className="block text-sm">
                   <span className="mb-1 block text-zinc-400">Adapter type</span>
-                  <select
-                    className={fieldClassName}
+                  <OptionSelect
+                    ariaLabel="Adapter type"
                     value={adapterType}
-                    onChange={(event) => setAdapterType(event.target.value as AgentAdapterType)}
-                  >
-                    {joinAdapterOptions.map((type) => (
-                      <option key={type} value={type} disabled={!ENABLED_INVITE_ADAPTERS.has(type)}>
-                        {getAdapterLabel(type)}{!ENABLED_INVITE_ADAPTERS.has(type) ? " (Coming soon)" : ""}
-                      </option>
-                    ))}
-                  </select>
+                    onChange={(value) => setAdapterType(value as AgentAdapterType)}
+                    placeholder="Adapter type"
+                    items={joinAdapterOptions.map((type) => ({
+                      value: type,
+                      label: `${getAdapterLabel(type)}${!ENABLED_INVITE_ADAPTERS.has(type) ? " (Coming soon)" : ""}`,
+                      disabled: !ENABLED_INVITE_ADAPTERS.has(type),
+                    }))}
+                  />
                 </label>
                 <label className="block text-sm">
                   <span className="mb-1 block text-zinc-400">Capabilities</span>

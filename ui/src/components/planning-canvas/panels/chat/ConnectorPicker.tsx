@@ -4,6 +4,7 @@ import { Plug } from "lucide-react";
 import { planningCanvasesApi } from "@/api/planningCanvases";
 import { Button } from "@/components/ui/button";
 import { sourceErrorMessage } from "@/components/planning-canvas/nodes/source-errors";
+import { OptionSelect } from "@/components/OptionSelect";
 
 /** The ask sent through the person's chat thread. The agent fetches with a read action and writes a node; the tool is never written to. */
 export function pullAsk(tool: string): string {
@@ -50,20 +51,19 @@ export function ConnectorPicker({
         <p data-testid="canvas-connector-empty" className="text-xs text-muted-foreground">This agent has no read actions to pull from.</p>
       ) : (
         <>
-          <select
-            aria-label="Read action"
+          <OptionSelect
+            ariaLabel="Read action"
+            items={list.map((a) => ({ value: a.tool, label: a.application ? `${a.application}: ${a.name}` : a.name, searchText: a.tool }))}
             value={tool}
-            onChange={(e) => {
-              setTool(e.target.value);
+            onChange={(next) => {
+              setTool(next);
               setSent(false);
             }}
-            className="h-8 w-full min-w-0 rounded-md border border-border bg-background px-2 text-sm"
-          >
-            <option value="">Pick a read action…</option>
-            {list.map((a) => (
-              <option key={a.tool} value={a.tool}>{a.application ? `${a.application}: ${a.name}` : a.name}</option>
-            ))}
-          </select>
+            emptyLabel="Pick a read action…"
+            placeholder="Pick a read action…"
+            className="min-w-0"
+            triggerClassName="h-8 px-2 text-sm font-normal"
+          />
           {chosen?.description ? <p className="text-xs text-muted-foreground wrap-break-word">{chosen.description}</p> : null}
           <div className="flex justify-end">
             <Button

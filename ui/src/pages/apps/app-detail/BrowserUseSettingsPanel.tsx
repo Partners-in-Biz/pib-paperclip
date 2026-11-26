@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
+import { OptionSelect } from "@/components/OptionSelect";
 
 function CredentialSettings({
   companyId,
@@ -173,17 +174,17 @@ export function BrowserUseSettingsPanel({
       {eligible.length > 1 && (
         <Label className="flex flex-col gap-2">
           Credential
-          <select
+          <OptionSelect
+            ariaLabel="Credential"
+            items={eligible.map((g, i) => ({
+              value: g.id,
+              label: `${g.kind === "user" ? "Personal" : "Shared"} credential ${i + 1}`,
+            }))}
             value={grantId}
-            onChange={(e) => setSelected(e.target.value)}
-            className="rounded-md border bg-background p-2"
-          >
-            {eligible.map((g, i) => (
-              <option key={g.id} value={g.id}>
-                {g.kind === "user" ? "Personal" : "Shared"} credential {i + 1}
-              </option>
-            ))}
-          </select>
+            onChange={setSelected}
+            placeholder="Choose a credential"
+            triggerClassName="h-auto py-2 text-sm font-normal"
+          />
         </Label>
       )}
       {grantId ? (

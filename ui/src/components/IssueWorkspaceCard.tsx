@@ -20,6 +20,7 @@ import {
 import { orderReusableExecutionWorkspaces } from "../lib/reusable-execution-workspaces";
 import { cn, projectWorkspaceUrl } from "../lib/utils";
 import { Button } from "@/components/ui/button";
+import { OptionSelect } from "./OptionSelect";
 import { Check, Copy, FileSearch, FolderOpen, FolderSearch, GitBranch, Pencil, X } from "lucide-react";
 import { ReusableExecutionWorkspaceSelect } from "./ReusableExecutionWorkspaceSelect";
 import { Badge } from "@/components/ui/badge";
@@ -460,11 +461,12 @@ export function IssueWorkspaceCard({
       {/* Editing controls */}
       {editing && workspaceIsolationControlsVisible && (
         <div className="space-y-2 pt-1">
-          <select
-            className="w-full rounded border border-border bg-transparent px-2 py-1.5 text-xs outline-none"
+          <OptionSelect
+            ariaLabel="Workspace mode"
+            triggerClassName="h-auto py-1.5 text-xs font-normal"
             value={draftSelection}
-            onChange={(e) => {
-              const nextMode = e.target.value as typeof draftSelection;
+            onChange={(value) => {
+              const nextMode = value as typeof draftSelection;
               setDraftSelection(nextMode);
               if (nextMode !== "reuse_existing") {
                 setDraftExecutionWorkspaceId("");
@@ -472,16 +474,15 @@ export function IssueWorkspaceCard({
                 setDraftExecutionWorkspaceId(issue.executionWorkspaceId);
               }
             }}
-          >
-            {EXECUTION_WORKSPACE_OPTIONS.filter((option) => !memberGate.closed || option.value !== "reuse_existing"
-              || currentSelection === "reuse_existing").map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.value === "reuse_existing" && configuredReusableWorkspace?.mode === "isolated_workspace"
-                  ? "Existing isolated workspace"
-                  : option.label}
-              </option>
-            ))}
-          </select>
+            placeholder="Workspace mode"
+            items={EXECUTION_WORKSPACE_OPTIONS.filter((option) => !memberGate.closed || option.value !== "reuse_existing"
+              || currentSelection === "reuse_existing").map((option) => ({
+              value: option.value,
+              label: option.value === "reuse_existing" && configuredReusableWorkspace?.mode === "isolated_workspace"
+                ? "Existing isolated workspace"
+                : option.label,
+            }))}
+          />
 
           {draftSelection === "reuse_existing" && !memberGate.closed && (
             <ReusableExecutionWorkspaceSelect

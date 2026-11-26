@@ -1,3 +1,4 @@
+import { OptionSelect } from "../../components/OptionSelect";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue, SelectPopover } from "../../components/ui/select";
 import { AdapterMark } from "../../components/AdapterMark";
 import { MuseRunnerConnection } from "../../components/MuseRunnerConnection";
@@ -369,25 +370,39 @@ export function CodexLocalConfigFields({
       )}
       {runnerManaged && runnerProvider === "acpx" && runnerSchemaValue("acpxAgent", "claude") === "cursor" && (
         <Field configSection="adapter" label="Cursor mode" hint="Select Cursor's session mode. Permissions and company approval rules still apply.">
-          <select className={inputClass} aria-label="Cursor mode"
+          <OptionSelect
+            ariaLabel="Cursor mode"
+            placeholder="Select mode"
             value={String(runnerSchemaValue("acpxSessionMode", "agent"))}
-            onChange={(event) => updateRunnerSchemaValue("acpxSessionMode", event.target.value)}>
-            {!["agent", "plan", "ask"].includes(String(runnerSchemaValue("acpxSessionMode", "agent"))) && (
-              <option value={String(runnerSchemaValue("acpxSessionMode", "agent"))} disabled>Unsupported saved mode — select Agent, Plan, or Ask</option>
-            )}
-            <option value="agent">Agent</option>
-            <option value="plan">Plan</option>
-            <option value="ask">Ask</option>
-          </select>
+            onChange={(next) => updateRunnerSchemaValue("acpxSessionMode", next)}
+            items={[
+              ...(!["agent", "plan", "ask"].includes(String(runnerSchemaValue("acpxSessionMode", "agent")))
+                ? [{ value: String(runnerSchemaValue("acpxSessionMode", "agent")), label: "Unsupported saved mode — select Agent, Plan, or Ask", disabled: true }]
+                : []),
+              { value: "agent", label: "Agent" },
+              { value: "plan", label: "Plan" },
+              { value: "ask", label: "Ask" },
+            ]}
+          />
         </Field>
       )}
       {runnerManaged && runnerProvider === "acpx" && runnerSchemaValue("acpxAgent", "claude") === "pi" && (
         <Field configSection="adapter" label="Pi thinking level" hint="The runner verifies this exact level before each session can prompt. Changing it starts a new session.">
-          <select className={inputClass} aria-label="Pi thinking level" value={String(runnerSchemaValue("piThinkingLevel", "low"))}
-            onChange={(event) => updateRunnerSchemaValue("piThinkingLevel", event.target.value)}>
-            {!["off", "low", "high", "max"].includes(String(runnerSchemaValue("piThinkingLevel", "low"))) && <option value={String(runnerSchemaValue("piThinkingLevel", "low"))} disabled>Unsupported saved thinking level</option>}
-            <option value="off">Off</option><option value="low">Low</option><option value="high">High</option><option value="max">Max</option>
-          </select>
+          <OptionSelect
+            ariaLabel="Pi thinking level"
+            placeholder="Select thinking level"
+            value={String(runnerSchemaValue("piThinkingLevel", "low"))}
+            onChange={(next) => updateRunnerSchemaValue("piThinkingLevel", next)}
+            items={[
+              ...(!["off", "low", "high", "max"].includes(String(runnerSchemaValue("piThinkingLevel", "low")))
+                ? [{ value: String(runnerSchemaValue("piThinkingLevel", "low")), label: "Unsupported saved thinking level", disabled: true }]
+                : []),
+              { value: "off", label: "Off" },
+              { value: "low", label: "Low" },
+              { value: "high", label: "High" },
+              { value: "max", label: "Max" },
+            ]}
+          />
         </Field>
       )}
       {runnerManaged && runnerProvider === "claude_managed" && (

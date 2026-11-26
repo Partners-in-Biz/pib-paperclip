@@ -1,3 +1,4 @@
+import { OptionSelect } from "@/components/OptionSelect";
 import { useQueryView } from "@/components/QueryView";
 import { useContext, useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -36,7 +37,7 @@ export function TaskVoiceLauncher({ companyId, issueId, agentId, boundEndpointId
   return <section aria-label="Task voice conversation" className="space-y-3 rounded-lg border border-border p-4">
     {connectionError}
     {!open ? <div className="flex flex-wrap items-center gap-3">
-      {candidates.length > 1 && <label className="flex min-w-0 max-w-full flex-col gap-2 text-sm">Voice persona<select aria-label="Voice persona" className="w-full min-w-0 max-w-full rounded-md border border-input bg-background p-2 text-sm" value={endpoint.id} onChange={(event) => setSelected(event.target.value)}>{candidates.map((entry) => <option key={entry.id} value={entry.id}>{entry.botLabel ?? entry.assignedAgentName}</option>)}</select></label>}
+      {candidates.length > 1 && <label className="flex min-w-0 max-w-full flex-col gap-2 text-sm">Voice persona<OptionSelect ariaLabel="Voice persona" className="w-full min-w-0 max-w-full" placeholder="Select persona" items={candidates.map((entry) => ({ value: entry.id, label: entry.botLabel ?? entry.assignedAgentName }))} value={endpoint.id} onChange={setSelected} /></label>}
       <Button ref={launcher} variant="outline" onClick={() => setOpen(true)}>Talk to {endpoint.assignedAgentName}</Button>
     </div> : <NativeVoiceConversation key={`${companyId}:${issueId}:${endpoint.id}`} companyId={companyId} endpointId={endpoint.id} issueId={issueId} agentName={endpoint.assignedAgentName} />}
   </section>;

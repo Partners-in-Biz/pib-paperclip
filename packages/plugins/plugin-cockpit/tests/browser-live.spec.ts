@@ -6,7 +6,7 @@
 import type { PluginApiRequestInput } from "@paperclipai/plugin-sdk";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { BROWSER_LIVE_REFUSAL, loadBrowserLiveStatus, readBrowserLiveSetting, TICKET_TTL_MS } from "../src/browser-live.js";
+import { BROWSER_LIVE_REFUSAL, loadBrowserLiveSessions, loadBrowserLiveStatus, readBrowserLiveSetting, TICKET_TTL_MS } from "../src/browser-live.js";
 import { BrowserDaemonError } from "../src/browser-daemon-client.js";
 import type { Env } from "../src/env.js";
 import manifest from "../src/manifest.js";
@@ -255,5 +255,44 @@ describe("browser.status carries the Watch live setting for the Browser tab", ()
     expect(await live("view", person(MEMBER))).toBe("off");
     expect(await live("view", { companyId: OWNER_CO, actor: { type: "agent", agentId: AGENT, userId: OWNER, companyId: OWNER_CO } })).toBe("off");
     expect(await live("view", person("local-board"))).toBe("off");
+  });
+});
+
+describe("browser.live.sessions (the Watch live chip)", () => {
+  const NOW = new Date("2026-11-26T12:00:00Z");
+  const row = (over: Record<string, unknown> = {}) => ({ agentId: AGENT, identity: "pib:paperclip", companyId: OWNER_CO, issue: "PAR-1", lastActiveAt: NOW.getTime() - 1000, ...over });
+  const run = async (setting: unknown, who: string, rows: unknown[], at = NOW) => {
+    const { harness, person } = await cockpit(setting);
+    const env = { ctx: harness.ctx, now: () => at } as unknown as Env;
+    return loadBrowserLiveSessions(env, person(who) as never, async () => ({ sessions: rows }));
+  };
+
+  it("lists this company's fresh sessions with agent, identity and issue only", async () => {
+    const rows = [row(), row({ agentId: "other", companyId: OTHER_CO }), row({ lastActiveAt: NOW.getTime() - 120_000, agentId: "stale" }), row({ identity: "bad identity", agentId: "bad" })];
+    expect(await run("view", OWNER, rows)).toEqual({ sessions: [{ agentId: AGENT, identity: "pib:paperclip", issue: "PAR-1" }] });
+  });
+  it("answers no sessions (not an error) for a member, when off, and when the daemon fails", async () => {
+    expect(await run("view", MEMBER, [row()])).toEqual({ sessions: [] });
+    expect(await run("off", OWNER, [row()])).toEqual({ sessions: [] });
+    const { harness, person } = await cockpit("view");
+    const env = { ctx: harness.ctx, now: () => NOW } as unknown as Env;
+    expect(await loadBrowserLiveSessions(env, person(OWNER) as never, async () => { throw new BrowserDaemonError("x", "timeout"); })).toEqual({ sessions: [] });
+  });
+  it("asks the daemon once inside the cache window", async () => {
+    const { harness, person } = await cockpit("view");
+    let now = NOW.getTime();
+    const env = { ctx: harness.ctx, now: () => new Date(now) } as unknown as Env;
+    const read = vi.fn(async () => ({ sessions: [] }));
+    await loadBrowserLiveSessions(env, person(OWNER) as never, read);
+    await loadBrowserLiveSessions(env, person(ADMIN) as never, read);
+    expect(read).toHaveBeenCalledTimes(1);
+    now += 4000;
+    await loadBrowserLiveSessions(env, person(OWNER) as never, read);
+    expect(read).toHaveBeenCalledTimes(2);
+  });
+  it("the ticket takes only a valid identity", async () => {
+    const { ticket, person } = await cockpit("view");
+    await expect(ticket(person(OWNER), { mode: "view", identity: "pib:paperclip" })).resolves.toMatchObject({ mode: "view" });
+    await expect(ticket(person(OWNER), { mode: "view", identity: "../etc:passwd" })).rejects.toThrow();
   });
 });

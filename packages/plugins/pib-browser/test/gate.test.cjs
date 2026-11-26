@@ -6,7 +6,7 @@ const { createDispatcher, COMMANDS } = require('../src/dispatch.cjs');
 const { createFakeBrowser } = require('./fake-browser.cjs');
 
 test('COMMANDS contains exactly 9 verbs', () => {
-  assert.deepEqual(COMMANDS, ['open', 'goto', 'click', 'drag', 'fill', 'text', 'shot', 'net', 'close']);
+  assert.deepEqual(COMMANDS, ['open', 'goto', 'click', 'drag', 'fill', 'select', 'text', 'shot', 'net', 'close']);
   assert(!COMMANDS.includes('handoff'), 'no handoff command');
   assert(!COMMANDS.includes('handoff-open'), 'the person hand-off is not an agent verb');
   assert(!COMMANDS.includes('cookies'), 'no cookies command');

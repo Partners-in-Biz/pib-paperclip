@@ -352,14 +352,14 @@ describe("Paperclip Runner Codex configuration", () => {
     await renderRunner({ provider: "acpx", acpxAgent: "cursor", acpxSessionMode }, undefined, container => {
       const modes = container.querySelectorAll('[aria-label="Cursor mode"]');
       expect(modes).toHaveLength(1);
-      expect((modes[0] as HTMLSelectElement).value).toBe(selected);
+      expect(modes[0].textContent).toContain({ agent: "Agent", plan: "Plan", ask: "Ask" }[selected]);
     });
   });
 
   it.each([undefined, "off", "low", "high", "max"])("displays saved Pi thinking level %s", async piThinkingLevel => {
     await renderRunner({ provider: "acpx", acpxAgent: "pi", piThinkingLevel }, undefined, container => {
       const mode = container.querySelector('[aria-label="Pi thinking level"]');
-      expect((mode as HTMLSelectElement).value).toBe(piThinkingLevel ?? "low");
+      expect(mode?.textContent).toContain({ off: "Off", low: "Low", high: "High", max: "Max" }[piThinkingLevel ?? "low"]);
     });
   });
   it("shows unsupported saved Pi level without aliasing it", async () => {

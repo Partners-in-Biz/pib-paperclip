@@ -247,6 +247,7 @@ Slot types describe where a component mounts. Most values also exist as launcher
 | `appShellOverlay` (slot only) | Signed-in application shell | — |
 | `detailTab` | Entity | `project`, `issue`, `agent`, `goal`, `run` |
 | `taskDetailView` | Entity | (task/issue context) |
+| `taskSidePanelTab` | Entity | `issue` (implicit) |
 | `commentAnnotation` | Entity | `comment` |
 | `commentContextMenuItem` | Entity | `comment` |
 | `projectSidebarItem` | Entity | `project` |
@@ -363,6 +364,39 @@ belongs in Core.
 #### `taskDetailView`
 
 A specialized slot rendered in the context of a task or issue detail view. Similar to `detailTab` but designed for inline content within the task detail layout rather than a separate tab. Receives `context.companyId`, `context.entityId`, and `context.entityType` like `detailTab`. Requires the `ui.detailTab.register` capability.
+
+#### `taskSidePanelTab`
+
+A tab in the task side panel, listed after the built-in tabs (Properties,
+Tasks, Artifacts, Files). The tab shows only while the plugin says so, so use
+it for views that exist some of the time (for example a live session). Declare
+a `getData` handler key in `sidePanelTab.visibilityDataKey`:
+
+```ts
+{
+  type: "taskSidePanelTab",
+  id: "live-browser",
+  displayName: "Browser",
+  exportName: "LiveBrowserTab",
+  sidePanelTab: { visibilityDataKey: "live-browser-visible", contentMode: "full-bleed" },
+}
+
+ctx.data.register("live-browser-visible", async ({ issueId }) => ({
+  visible: await hasLiveSession(String(issueId)),
+}));
+```
+
+The host calls the handler with `{ issueId, projectId }` and the company scope,
+and asks again every 10 seconds. The tab is listed only while the answer is
+exactly `{ visible: true }`; while loading, on any other answer, or on an error
+it stays hidden. A new tab is added without taking focus; when it stops being
+visible it is removed and the panel falls back to a neighbouring tab. A tab the
+user closes stays closed until the plugin hides and shows it again, and the
+`+` launcher lists it while it is visible. Plugin tabs are never saved with the
+panel's tab state. The component receives `PluginTaskSidePanelTabProps`
+(`context.entityType` is `"issue"`, `context.entityId` the task ID).
+`contentMode` is `padded` (default) or `full-bleed`. Requires the
+`ui.detailTab.register` capability.
 
 #### `projectSidebarItem`
 

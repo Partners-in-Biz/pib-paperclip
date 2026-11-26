@@ -115,6 +115,7 @@ import {
   type GenericMcpAuthMode,
 } from "@/pages/apps/generic-mcp-connect";
 import { autoExtendNotice, INSTALL_ALL_WARNING, installInfoNotice, installPayload } from "@/lib/tool-installs";
+import { OptionSelect } from "@/components/OptionSelect";
 
 type Step = "gallery" | "key" | "success";
 export type OAuthConnectPhase = "entry" | "starting" | "redirecting" | "error";
@@ -4272,14 +4273,15 @@ function MethodConfigField({
           className="mt-2 min-h-24"
         />
       ) : field.type === "select" ? (
-        <select
+        <OptionSelect
+          ariaLabel={field.label}
+          items={(field.options ?? []).map((option) => ({ value: option.value, label: option.label }))}
           value={typeof value === "string" ? value : ""}
-          onChange={(event) => onChange(event.target.value)}
-          className="mt-2 h-11 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/30"
-        >
-          <option value="" disabled>Select an option</option>
-          {(field.options ?? []).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-        </select>
+          onChange={onChange}
+          placeholder="Select an option"
+          className="mt-2"
+          triggerClassName="h-11 text-sm font-normal"
+        />
       ) : (
         <Input
           value={typeof value === "string" ? value : ""}

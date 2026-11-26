@@ -400,6 +400,10 @@ export const pluginUiSlotDeclarationSchema = z.object({
     availabilityPath: z.string().regex(/^\/(?:[a-zA-Z0-9_-]+\/)*:entityId(?:\/[a-zA-Z0-9_-]+)*$/),
     activation: z.object({ namespace: runtimeActivityIdentifierSchema, activityKey: runtimeActivityIdentifierSchema }).strict().optional(),
   }).strict().optional(),
+  sidePanelTab: z.object({
+    visibilityDataKey: z.string().min(1).max(100),
+    contentMode: z.enum(["padded", "full-bleed"]).optional(),
+  }).strict().optional(),
   entityCard: z.object({
     kind: z.string().min(1).max(100),
     search: z.boolean(),
@@ -412,6 +416,15 @@ export const pluginUiSlotDeclarationSchema = z.object({
 }).superRefine((value, ctx) => {
   if (value.taskSidePanel && (value.type !== "detailTab" || !value.entityTypes?.includes("agent"))) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: "taskSidePanel requires an agent detailTab", path: ["taskSidePanel"] });
+  }
+  if (value.type === "taskSidePanelTab" && !value.sidePanelTab) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "taskSidePanelTab slots require sidePanelTab.visibilityDataKey", path: ["sidePanelTab"] });
+  }
+  if (value.sidePanelTab && value.type !== "taskSidePanelTab") {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "sidePanelTab is only supported on taskSidePanelTab slots", path: ["sidePanelTab"] });
+  }
+  if (value.type === "taskSidePanelTab" && value.entityTypes && (value.entityTypes.length !== 1 || value.entityTypes[0] !== "issue")) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "taskSidePanelTab slots only support entityType \"issue\"", path: ["entityTypes"] });
   }
   if (value.entityCard && value.type !== "canvasNode") {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: "entityCard is only supported on canvasNode slots", path: ["entityCard"] });

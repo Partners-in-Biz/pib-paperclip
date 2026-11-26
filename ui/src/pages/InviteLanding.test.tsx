@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { InviteLandingPage } from "./InviteLanding";
+import { openSearchableSelect, stubSearchableSelectDom } from "../test-utils/searchable-select";
 import { queryKeys } from "../lib/queryKeys";
 
 const getInviteMock = vi.hoisted(() => vi.fn());
@@ -94,6 +95,7 @@ describe("InviteLandingPage", () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {
+    stubSearchableSelectDom();
     localStorage.clear();
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -165,12 +167,10 @@ describe("InviteLandingPage", () => {
     await flushReact();
     await flushReact();
 
-    const adapterSelect = Array.from(container.querySelectorAll("select")).find((select) =>
-      Array.from(select.options).some((option) => option.value === "claude_local"),
-    );
-    expect(adapterSelect).toBeTruthy();
-    expect(Array.from(adapterSelect!.options).map((option) => option.value))
-      .not.toContain("paperclip_runner");
+    await openSearchableSelect(container, "Adapter type");
+    const values = Array.from(document.body.querySelectorAll("[cmdk-item]")).map((item) => item.getAttribute("data-value"));
+    expect(values).toContain("claude_local");
+    expect(values).not.toContain("paperclip_runner");
 
     await act(async () => {
       root.unmount();

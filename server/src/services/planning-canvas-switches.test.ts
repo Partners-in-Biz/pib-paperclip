@@ -3,12 +3,14 @@ import {
   planningCanvasChatOn,
   planningCanvasEngageOn,
   planningCanvasFlowsOn,
+  planningCanvasUnfurlOn,
 } from "./planning-canvas-switches.js";
 
 const SWITCHES = [
   ["PLANNING_CANVAS_CHAT", planningCanvasChatOn],
   ["PLANNING_CANVAS_FLOWS", planningCanvasFlowsOn],
   ["PLANNING_CANVAS_ENGAGE", planningCanvasEngageOn],
+  ["PLANNING_CANVAS_UNFURL", planningCanvasUnfurlOn],
 ] as const;
 
 describe("planning canvas switches", () => {

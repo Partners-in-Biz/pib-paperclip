@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/api/client";
+import { pickSearchableOptionFromTrigger, searchableOptionTexts, openSearchableTrigger, stubSearchableSelectDom } from "@/test-utils/searchable-select";
 import { EmailEndpointSetup } from "./EmailEndpointSetup";
 
 const mocks = vi.hoisted(() => ({ companyId: "company" as string | null, listAgents: vi.fn(), connect: vi.fn(), credentials: vi.fn(), control: vi.fn(), inspectNew: vi.fn(), inspect: vi.fn(), checkAddress: vi.fn(), setup: vi.fn(), listInboxes: vi.fn(), listConnections: vi.fn(), getConnection: vi.fn(), putInstalls: vi.fn() }));
@@ -20,6 +21,7 @@ let root: Root;
 let client: QueryClient;
 beforeEach(() => {
   vi.resetAllMocks();
+  stubSearchableSelectDom();
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
   mocks.companyId = "company";
   sessionStorage.clear();
@@ -51,6 +53,9 @@ async function mount(saved = true, waitForCompany = true, agentId = "ralph", sea
   ]}><EmailEndpointSetup /><Location /></MemoryRouter></QueryClientProvider>));
   if (waitForCompany) await vi.waitFor(() => expect(container.textContent).toContain(agentId === "support" ? "Support" : "Ralph"));
 }
+const combos = () => [...container.querySelectorAll<HTMLElement>('[role="combobox"]')];
+const keyPicker = () => combos().find(el => /saved|Enter a new API key|unavailable/.test(el.textContent ?? ""));
+const domainPicker = () => container.querySelector<HTMLButtonElement>("#email-domain");
 function button(name: string) {
   const value = [...document.querySelectorAll("button")].find(button => button.textContent?.trim() === name);
   expect(value).toBeDefined();
@@ -153,10 +158,10 @@ describe("AgentMail two-step setup", () => {
     mocks.inspect.mockResolvedValue({ scope: { scope_type: "organization" }, inboxes: [],
       domains: [{ domain: "paperclip.example", status: "VERIFIED" }] });
     await mount(false);
-    await vi.waitFor(() => expect(container.querySelector<HTMLSelectElement>("select")?.value).toBe("organization-account"));
+    await vi.waitFor(() => expect(keyPicker()?.textContent).toContain("AgentMail account key"));
     expect(container.querySelector('input[type="password"]')).toBeNull();
     await click("Continue");
-    await vi.waitFor(() => expect(container.querySelector<HTMLSelectElement>("#email-domain")?.value).toBe("paperclip.example"));
+    await vi.waitFor(() => expect(domainPicker()?.textContent).toBe("@paperclip.example"));
     await fill("#email-name", "ralph-mail");
     await click("Create email address");
     expect(mocks.setup).toHaveBeenCalledWith("company", expect.objectContaining({
@@ -172,14 +177,11 @@ describe("AgentMail two-step setup", () => {
       { id: "alternate", label: "Other account", scope: "organization", createdAt: "2026-09-30T14:00:00Z" },
     ]);
     await mount(false);
-    await vi.waitFor(() => expect(container.querySelector<HTMLSelectElement>("select")?.value).toBe("preferred"));
-    await act(async () => {
-      const picker = container.querySelector<HTMLSelectElement>("select")!;
-      picker.value = selection; picker.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    await vi.waitFor(() => expect(keyPicker()?.textContent).toContain("Preferred account"));
+    await pickSearchableOptionFromTrigger(keyPicker()!, selection ? "Other account" : "Enter a new API key");
     await act(async () => root.unmount()); client.clear(); root = createRoot(container);
     await mount(false);
-    await vi.waitFor(() => expect(container.querySelector<HTMLSelectElement>("select")?.value).toBe(selection));
+    await vi.waitFor(() => expect(keyPicker()?.textContent).toContain(selection ? "Other account" : "Enter a new API key"));
     if (!selection) expect(container.querySelector('input[type="password"]')).not.toBeNull();
     else {
       await click("Continue");
@@ -193,8 +195,8 @@ describe("AgentMail two-step setup", () => {
     await mount(false);
     await fill('input[type="password"]', "new-account-key");
     await act(async () => resolve([{ id: "saved", label: "AgentMail account key", scope: "organization", createdAt: "2026-10-01T14:00:00Z" }]));
-    await vi.waitFor(() => expect(container.querySelector("select")).not.toBeNull());
-    expect(container.querySelector<HTMLSelectElement>("select")?.value).toBe("");
+    await vi.waitFor(() => expect(keyPicker()).toBeTruthy());
+    expect(keyPicker()?.textContent).toContain("Enter a new API key");
     expect(container.querySelector<HTMLInputElement>('input[type="password"]')?.value).toBe("new-account-key");
     await click("Continue");
     await vi.waitFor(() => expect(mocks.connect).toHaveBeenCalledWith("company", expect.objectContaining({ apiKey: "new-account-key" })));
@@ -348,20 +350,18 @@ describe("AgentMail two-step setup", () => {
     ] });
     await mount();
     await click("Continue");
-    await vi.waitFor(() => expect(container.querySelector<HTMLSelectElement>("#email-domain")?.value).toBe("paperclip.example"));
+    await vi.waitFor(() => expect(domainPicker()?.textContent).toBe("@paperclip.example"));
     expect(container.querySelector("#email-domain")?.closest("details")).toBeNull();
-    expect(container.querySelector('option[value="pending.example"]')).toBeNull();
-    await act(async () => {
-      const select = container.querySelector<HTMLSelectElement>("#email-domain")!;
-      select.value = "agentmail.to";
-      select.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    await openSearchableTrigger(domainPicker()!);
+    expect(searchableOptionTexts()).not.toContain("@pending.example");
+    await act(async () => { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+    await pickSearchableOptionFromTrigger(domainPicker()!, "@agentmail.to");
     await vi.waitFor(() => expect(mocks.checkAddress).toHaveBeenLastCalledWith("company", "account", { username: "ralph", domain: "agentmail.to" }, expect.any(AbortSignal)));
     await act(async () => root.unmount());
     client.clear();
     root = createRoot(container);
     await mount();
-    await vi.waitFor(() => expect(container.querySelector<HTMLSelectElement>("#email-domain")?.value).toBe("agentmail.to"));
+    await vi.waitFor(() => expect(domainPicker()?.textContent).toBe("@agentmail.to"));
   });
 
   it("shows lookup failures without mislabeling the address taken or blocking creation", async () => {
@@ -541,8 +541,8 @@ describe("AgentMail two-step setup", () => {
     await vi.waitFor(() => expect(button("Finish connecting").disabled).toBe(false));
     await click("Choose a different address");
     expect(container.querySelector<HTMLInputElement>("#email-name")?.readOnly).toBe(false);
-    expect(container.querySelector<HTMLSelectElement>("#email-domain")?.disabled).toBe(false);
-    expect(container.querySelector<HTMLSelectElement>("#email-domain")?.value).toBe("paperclip.example");
+    expect(domainPicker()?.disabled).toBe(false);
+    expect(domainPicker()?.textContent).toBe("@paperclip.example");
     await fill("#email-name", "another-address");
     const nextSearch = container.querySelector('[data-testid="location"]')!.getAttribute("data-search")!;
     const nextRequestId = new URLSearchParams(nextSearch).get("setupId")!;
@@ -576,8 +576,10 @@ describe("AgentMail two-step setup", () => {
     await vi.waitFor(() => expect(container.querySelector("#email-address-error")?.textContent).toContain("already in use"));
     expect(button("Create email address").disabled).toBe(true);
     await click("Use an existing inbox");
-    const option = container.querySelector<HTMLOptionElement>('option[value="ralph@agentmail.to"]');
-    expect(option?.disabled).toBe(true);
+    await openSearchableTrigger(container.querySelector<HTMLElement>("#email-existing")!);
+    const option = [...document.body.querySelectorAll<HTMLElement>("[cmdk-item]")].find(el => el.textContent?.includes("ralph@agentmail.to"));
+    expect(option).toBeTruthy();
+    expect(option?.getAttribute("aria-disabled")).toBe("true");
     expect(mocks.setup).not.toHaveBeenCalled();
   });
 

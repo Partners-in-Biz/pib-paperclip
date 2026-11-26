@@ -1,3 +1,4 @@
+import { OptionSelect } from "@/components/OptionSelect";
 import { useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { voiceSessionsApi } from "@/api/voiceSessions";
@@ -36,7 +37,7 @@ export function NativeVoiceConversation(props: NativeVoiceConversationProps) {
 
 function ConversationChoice({ value, disabled, onChange }: { value: boolean; disabled: boolean; onChange(value: boolean): void }) {
   return <label className="flex flex-col gap-2 text-sm">Conversation
-    <select disabled={disabled} aria-label="Conversation" className="rounded-md border border-input bg-background p-2 text-sm" value={value ? "new" : "continue"} onChange={event => onChange(event.target.value === "new")}><option value="continue">Continue conversation</option><option value="new">New conversation</option></select>
+    <OptionSelect disabled={disabled} ariaLabel="Conversation" placeholder="Select conversation" items={[{ value: "continue", label: "Continue conversation" }, { value: "new", label: "New conversation" }]} value={value ? "new" : "continue"} onChange={next => onChange(next === "new")} />
   </label>;
 }
 

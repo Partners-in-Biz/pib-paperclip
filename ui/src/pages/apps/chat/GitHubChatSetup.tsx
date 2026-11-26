@@ -27,6 +27,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { GITHUB_APP_CREDENTIAL_FIELDS, GitHubAppRecovery } from "./GitHubConnectionRecovery";
 import type { GitHubConnectionCompleteLocationState } from "./GitHubConnectionComplete";
 import { describeError } from "@/api/errors";
+import { OptionSelect } from "@/components/OptionSelect";
 
 /** Restrict native manifest submission to GitHub registration endpoints. */
 export function gitHubAppManifestAction(
@@ -452,31 +453,22 @@ export function GitHubChatSetup() {
                   <Label htmlFor="github-personal-account">
                     Existing GitHub connection
                   </Label>
-                  <select
+                  <OptionSelect
                     id="github-personal-account"
-                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    ariaLabel="Existing GitHub connection"
+                    placeholder="Choose an account"
+                    emptyLabel="Choose an account"
+                    triggerClassName="w-full text-sm font-normal"
                     value={legacyAccount}
-                    onChange={(event) => {
-                      setLegacyAccount(event.target.value);
+                    items={(accounts.data ?? [])
+                      .filter((account) => account.status === "active" && account.enabled)
+                      .map((account) => ({ value: account.connectionId, label: account.login ?? account.name }))}
+                    onChange={(next) => {
+                      setLegacyAccount(next);
                       setLegacyIdentity(null);
                       setIdentityLinked(false);
                     }}
-                  >
-                    <option value="">Choose an account</option>
-                    {accounts.data
-                      ?.filter(
-                        (account) =>
-                          account.status === "active" && account.enabled,
-                      )
-                      .map((account) => (
-                        <option
-                          key={account.connectionId}
-                          value={account.connectionId}
-                        >
-                          {account.login ?? account.name}
-                        </option>
-                      ))}
-                  </select>
+                  />
                   {legacyIdentity && (
                     <p className="text-sm">
                       GitHub account: <strong>{legacyIdentity.login}</strong>
@@ -609,25 +601,25 @@ export function GitHubChatSetup() {
         <>
           <div className="space-y-2">
             <Label htmlFor="github-owner-type">GitHub account</Label>
-            <select
+            <OptionSelect
               id="github-owner-type"
-              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              ariaLabel="GitHub account"
+              placeholder="GitHub account"
+              triggerClassName="w-full text-sm font-normal"
               value={accountChoice}
               disabled={busy || !!state?.registration}
-              onChange={(event) => {
-                const choice = event.target.value;
+              items={[
+                { value: "personal", label: "My account" },
+                ...knownOrganizations.map((login) => ({ value: `organization:${login}`, label: login })),
+                { value: "organization", label: "Another organization" },
+              ]}
+              onChange={(choice) => {
                 setOwnerType(choice === "personal" ? "personal" : "organization");
                 setCustomOrganization(choice === "organization");
                 if (choice.startsWith("organization:")) setOwnerLogin(choice.slice("organization:".length));
                 else if (choice === "organization") setOwnerLogin("");
               }}
-            >
-              <option value="personal">My account</option>
-              {knownOrganizations.map((login) => (
-                <option key={login.toLowerCase()} value={`organization:${login}`}>{login}</option>
-              ))}
-              <option value="organization">Another organization</option>
-            </select>
+            />
             {(repositoriesView.kind === "error" || connectedBotsView.kind === "error") && (
               <p role="alert" className="text-sm text-destructive">
                 Could not load some connected GitHub accounts. Choose Another organization to enter a name.

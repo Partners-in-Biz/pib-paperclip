@@ -2,6 +2,7 @@ import { useId } from "react";
 import { AGENT_ROLES, AGENT_ROLE_LABELS } from "@paperclipai/shared";
 import type { MuseInvitationDraft } from "@/lib/muse-invitation-draft";
 import { Input } from "../ui/input";
+import { OptionSelect } from "../OptionSelect";
 import { Link } from "@/lib/router";
 import { ArrowLeft, Bot, Check, Circle, CircleAlert, Loader2 } from "lucide-react";
 import { AdapterMark } from "../AdapterMark";
@@ -210,10 +211,17 @@ export function ExternalAgentInviteContent({
           </div>
           <div className="space-y-2">
             <label htmlFor={`${detailsId}-role`} className="text-sm font-medium">Role</label>
-            <select id={`${detailsId}-role`} disabled={busy} className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm" value={museDraft.role} onChange={event => {
-              const role = AGENT_ROLES.find(value => value === event.target.value);
-              if (role) onMuseDraftChange?.({ ...museDraft, role });
-            }}>{AGENT_ROLES.map(role => <option key={role} value={role}>{AGENT_ROLE_LABELS[role]}</option>)}</select>
+            <OptionSelect
+              ariaLabel="Role"
+              disabled={busy}
+              value={museDraft.role}
+              onChange={value => {
+                const role = AGENT_ROLES.find(entry => entry === value);
+                if (role) onMuseDraftChange?.({ ...museDraft, role });
+              }}
+              placeholder="Role"
+              items={AGENT_ROLES.map(role => ({ value: role, label: AGENT_ROLE_LABELS[role] }))}
+            />
           </div>
           <p className="text-xs text-muted-foreground">Muse uses its own approved tools. Provider usage and cost are unavailable to Paperclip.</p>
         </form>

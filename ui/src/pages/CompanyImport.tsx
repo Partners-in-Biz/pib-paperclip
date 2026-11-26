@@ -26,6 +26,7 @@ import { getAgentOrderStorageKey, writeAgentOrder } from "../lib/agent-order";
 import { MarkdownBody } from "../components/MarkdownBody";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "../components/EmptyState";
+import { OptionSelect } from "../components/OptionSelect";
 import { AgentConfigForm, overlayValuesEqual } from "../components/AgentConfigForm";
 import { asObject, cn } from "../lib/utils";
 import {
@@ -697,20 +698,23 @@ function AdapterPickerList({
                     {agent.name}
                   </span>
                   <ArrowRight className="h-3 w-3 shrink-0 text-muted-foreground" />
-                  <select
-                    className="min-w-0 flex-1 rounded-md border border-border bg-transparent px-2 py-1 text-xs outline-none focus:border-foreground"
+                  <OptionSelect
+                    className="min-w-0 flex-1"
+                    triggerClassName="h-auto py-1 text-xs font-normal"
+                    ariaLabel={`Adapter for ${agent.name}`}
                     value={selectedType}
-                    onChange={(e) => onChangeAdapter(agent.slug, e.target.value)}
-                  >
-                    {adapterOptions.map((opt) => (
-                      <option key={opt.value} value={opt.value}>
-                        {opt.label}
-                      </option>
-                    ))}
-                    {!adapterOptions.some((option) => option.value === selectedType) && (
-                      <option value={selectedType}>{agent.adapterChoice === "openai_dot" ? "OpenAI Dot (experimental)" : `${getAdapterLabel(selectedType)} (${agentHarnessType(agent.adapterType, agent.adapterConfig)})`}</option>
-                    )}
-                  </select>
+                    onChange={(value) => onChangeAdapter(agent.slug, value)}
+                    placeholder="Adapter"
+                    items={[
+                      ...adapterOptions.map((opt) => ({ value: opt.value, label: opt.label })),
+                      ...(adapterOptions.some((option) => option.value === selectedType)
+                        ? []
+                        : [{
+                            value: selectedType,
+                            label: agent.adapterChoice === "openai_dot" ? "OpenAI Dot (experimental)" : `${getAdapterLabel(selectedType)} (${agentHarnessType(agent.adapterType, agent.adapterConfig)})`,
+                          }]),
+                    ]}
+                  />
                   <button
                     type="button"
                     className={cn(
@@ -2092,20 +2096,20 @@ export function CompanyImport() {
         )}
 
         <Field label="Target" hint="Import into this organization or create a new one.">
-          <select
-            className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+          <OptionSelect
+            ariaLabel="Target"
             value={targetMode}
             disabled={importMutation.isPending}
-            onChange={(e) => {
-              setTargetMode(e.target.value as "existing" | "new");
+            onChange={(value) => {
+              setTargetMode(value as "existing" | "new");
               resetImportFlowState();
             }}
-          >
-            <option value="new">Create new organization</option>
-            <option value="existing">
-              Existing company: {selectedCompany?.name}
-            </option>
-          </select>
+            placeholder="Target"
+            items={[
+              { value: "new", label: "Create new organization" },
+              { value: "existing", label: `Existing company: ${selectedCompany?.name}` },
+            ]}
+          />
         </Field>
 
         {targetMode === "new" && (
@@ -2130,19 +2134,21 @@ export function CompanyImport() {
           label="Collision strategy"
           hint="Board imports can rename, skip, or replace matching organization content."
         >
-          <select
-            className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+          <OptionSelect
+            ariaLabel="Collision strategy"
             value={collisionStrategy}
             disabled={importMutation.isPending}
-            onChange={(e) => {
-              setCollisionStrategy(e.target.value as CompanyPortabilityCollisionStrategy);
+            onChange={(value) => {
+              setCollisionStrategy(value as CompanyPortabilityCollisionStrategy);
               resetImportFlowState();
             }}
-          >
-            <option value="rename">Rename on conflict</option>
-            <option value="skip">Skip on conflict</option>
-            <option value="replace">Replace existing</option>
-          </select>
+            placeholder="Collision strategy"
+            items={[
+              { value: "rename", label: "Rename on conflict" },
+              { value: "skip", label: "Skip on conflict" },
+              { value: "replace", label: "Replace existing" },
+            ]}
+          />
         </Field>
 
         <div className="flex flex-wrap items-center gap-2">

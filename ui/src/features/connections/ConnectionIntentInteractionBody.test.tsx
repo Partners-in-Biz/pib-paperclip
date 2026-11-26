@@ -8,6 +8,7 @@ import type {
   ToolConnection,
 } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { stubSearchableSelectDom } from "@/test-utils/searchable-select";
 import { ApiError } from "@/api/client";
 import {
   connectedConnectionIntentInteraction,
@@ -202,6 +203,7 @@ function button(label: string) {
 }
 
 beforeEach(() => {
+  stubSearchableSelectDom();
   sessionStorage.clear();
   emailCredentialsMock.mockReset().mockResolvedValue([]);
   emailListMock.mockReset().mockResolvedValue([]);
@@ -726,7 +728,7 @@ describe("AgentMail inline setup", () => {
     expect(document.querySelector('[role="dialog"]')).toBeNull();
     await waitForAssertion(() => expect(document.querySelectorAll("input")).toHaveLength(1));
     expect(document.querySelector('a[href="https://console.agentmail.to/dashboard/api-keys"]')).not.toBeNull();
-    expect(document.querySelector('[role="radiogroup"], select')).toBeNull();
+    expect(document.querySelector('[role="radiogroup"], select, [role="combobox"]')).toBeNull();
     expect(button("Connect AgentMail")?.disabled).toBe(true);
     await enterKey();
     await clickReadyButton("Connect AgentMail");
@@ -768,7 +770,7 @@ describe("AgentMail inline setup", () => {
     emailListMock.mockResolvedValue([{ id: interaction.id, address: null, status: "draft" }]);
     renderBody(interaction); await flush();
     await waitForAssertion(() => expect(button("Connect AgentMail")?.disabled).toBe(false));
-    expect((document.querySelector("select") as HTMLSelectElement)?.value).toBe("saved-account");
+    expect(document.querySelector('[role="combobox"]')?.textContent).toContain("Saved key");
     expect(emailConnectMock).not.toHaveBeenCalled();
     await clickReadyButton("Connect AgentMail");
     expect(emailConnectMock).not.toHaveBeenCalled();
@@ -818,7 +820,7 @@ describe("AgentMail inline setup", () => {
     emailCredentialsMock.mockResolvedValue([{ id: "selected-account", label: "My selected key", scope: "organization", createdAt: "2026-10-01T14:00:00Z" }]);
     setupOptionsMock.mockResolvedValue({ existingConnections: [], emailSetup: { credentialConnectionId: "earlier-account", readyConnectionId: null } });
     renderBody(resumedInteraction); await flush();
-    await waitForAssertion(() => expect((document.querySelector('select') as HTMLSelectElement)?.value).toBe("selected-account"));
+    await waitForAssertion(() => expect(document.querySelector('[role="combobox"]')?.textContent).toContain("My selected key"));
     await clickReadyButton("Connect AgentMail");
     expect(emailConnectMock).not.toHaveBeenCalled();
     expect(emailSetupMock).toHaveBeenCalledWith(interaction.companyId, expect.objectContaining({

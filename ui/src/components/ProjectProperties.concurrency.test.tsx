@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ProjectProperties } from "./ProjectProperties";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { queryKeys } from "../lib/queryKeys";
+import { openSearchableSelect, pickSearchableOption, stubSearchableSelectDom } from "../test-utils/searchable-select";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -66,6 +67,7 @@ let container: HTMLDivElement;
 let root: Root;
 
 beforeEach(() => {
+  stubSearchableSelectDom();
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -89,8 +91,8 @@ function render(project: Project, onFieldUpdate: (field: string, data: Record<st
   });
 }
 
-function concurrencySelect(): HTMLSelectElement {
-  const el = container.querySelector<HTMLSelectElement>('select[aria-label="Shared workspace concurrency"]');
+function concurrencySelect(): HTMLButtonElement {
+  const el = container.querySelector<HTMLButtonElement>('[role="combobox"][aria-label="Shared workspace concurrency"]');
   if (!el) throw new Error("Shared workspace concurrency select not found");
   return el;
 }
@@ -98,7 +100,7 @@ function concurrencySelect(): HTMLSelectElement {
 describe("ProjectProperties — shared workspace concurrency select", () => {
   it("defaults to Auto when the policy has no sharedWorkspaceConcurrency", () => {
     render(makeProject(), vi.fn());
-    expect(concurrencySelect().value).toBe("auto");
+    expect(concurrencySelect().textContent).toContain("Auto");
     expect(container.textContent).toContain("Concurrent runs on local/SSH runners");
   });
 
@@ -109,20 +111,15 @@ describe("ProjectProperties — shared workspace concurrency select", () => {
       } as Partial<Project>),
       vi.fn(),
     );
-    expect(concurrencySelect().value).toBe("serialize");
+    expect(concurrencySelect().textContent).toContain("Serialize");
     expect(container.textContent).toContain("Sandbox runs take turns in the shared project workspace");
     expect(container.textContent).toContain("Local/SSH folders allow concurrent runs");
   });
 
-  it("writes the picked value onto executionWorkspacePolicy when changed", () => {
+  it("writes the picked value onto executionWorkspacePolicy when changed", async () => {
     const onFieldUpdate = vi.fn();
     render(makeProject(), onFieldUpdate);
-    const select = concurrencySelect();
-    act(() => {
-      const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value")!.set!;
-      setter.call(select, "allow");
-      select.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    await pickSearchableOption(container, "Shared workspace concurrency", "Allow");
     expect(onFieldUpdate).toHaveBeenCalledWith(
       "execution_workspace_shared_concurrency",
       expect.objectContaining({
@@ -137,7 +134,7 @@ it("hides project isolation controls without rewriting its policy", () => {
   render(makeProject(), onFieldUpdate, ["workspaces.isolation"]);
   expect(container.textContent).not.toContain("Execution Workspaces");
   expect(container.textContent).not.toContain("Enable isolated task checkouts");
-  expect(container.querySelector('select[aria-label="Shared workspace concurrency"]')).toBeNull();
+  expect(container.querySelector('[aria-label="Shared workspace concurrency"]')).toBeNull();
   expect(onFieldUpdate).not.toHaveBeenCalled();
 });
 
@@ -148,30 +145,31 @@ describe("ProjectProperties — workspace storage selection", () => {
     effectivePolicy: { enabled: true, defaultMode: "isolated_workspace" as const, storageProviderPluginId: "provider-one", workspaceStrategy: { type: "git_worktree" as const } },
     providers: [{ id: "provider-one", displayName: "Managed storage", isDefault: true }, { id: "provider-two", displayName: "Alternative", isDefault: false }],
   };
-  function storageSelect() { return container.querySelector<HTMLSelectElement>('select[aria-label="Workspace storage provider"]')!; }
-  it("shows an unattached project on Core storage and offers each plugin", () => {
+  function storageSelect() { return container.querySelector<HTMLButtonElement>('[role="combobox"][aria-label="Workspace storage provider"]')!; }
+  it("shows an unattached project on Core storage and offers each plugin", async () => {
     render(makeProject({ executionWorkspacePolicy: null, workspaceProvider: inherited }), vi.fn());
-    expect(storageSelect().value).toBe("core");
+    expect(storageSelect().textContent).toContain("Core / local");
     expect(storageSelect().disabled).toBe(false);
-    expect(Array.from(storageSelect().options).map(option => option.value)).toEqual(["core", "provider-one", "provider-two"]);
+    await openSearchableSelect(container, "Workspace storage provider");
+    expect(Array.from(document.body.querySelectorAll("[cmdk-item]")).map(item => item.textContent?.trim())).toEqual(["Core / local", "Managed storage", "Alternative"]);
     expect(container.textContent).toContain("A project moved to a storage plugin stays on that plugin.");
   });
-  it("saves a move to a plugin while preserving explicit settings", () => {
+  it("saves a move to a plugin while preserving explicit settings", async () => {
     const onFieldUpdate = vi.fn();
     render(makeProject({ executionWorkspacePolicy: { enabled: true, sharedWorkspaceConcurrency: "serialize" }, workspaceProvider: inherited }), onFieldUpdate);
-    act(() => { storageSelect().value = "provider-two"; storageSelect().dispatchEvent(new Event("change", { bubbles: true })); });
+    await pickSearchableOption(container, "Workspace storage provider", "Alternative");
     expect(onFieldUpdate).toHaveBeenCalledWith("workspace_storage_provider", { executionWorkspacePolicy: { enabled: true, sharedWorkspaceConcurrency: "serialize", storageProviderPluginId: "provider-two" } });
   });
   it("locks the control on a plugin-backed project", () => {
     render(makeProject({ executionWorkspacePolicy: { enabled: true, storageProviderPluginId: "provider-one" }, workspaceProvider: { ...inherited, source: "project" as const, pluginId: "provider-one" } }), vi.fn());
-    expect(storageSelect().value).toBe("provider-one");
+    expect(storageSelect().textContent).toContain("Managed storage");
     expect(storageSelect().disabled).toBe(true);
     expect(container.textContent).toContain("This project stays on Managed storage.");
   });
-  it("does not copy inherited mode, strategy, or provider when another setting changes", () => {
+  it("does not copy inherited mode, strategy, or provider when another setting changes", async () => {
     const onFieldUpdate = vi.fn();
     render(makeProject({ executionWorkspacePolicy: null, workspaceProvider: inherited }), onFieldUpdate);
-    act(() => { concurrencySelect().value = "allow"; concurrencySelect().dispatchEvent(new Event("change", { bubbles: true })); });
+    await pickSearchableOption(container, "Shared workspace concurrency", "Allow");
     expect(onFieldUpdate).toHaveBeenCalledWith("execution_workspace_shared_concurrency", { executionWorkspacePolicy: { enabled: true, sharedWorkspaceConcurrency: "allow" } });
   });
   it("shows a provider configuration error", () => {

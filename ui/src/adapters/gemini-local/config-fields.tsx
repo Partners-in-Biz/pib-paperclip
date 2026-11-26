@@ -5,12 +5,27 @@ import {
   DraftInput,
   Field,
 } from "../../components/agent-config-primitives";
+import { OptionSelect } from "../../components/OptionSelect";
 import { ChoosePathButton } from "../../components/PathInstructionsModal";
 
 const inputClass =
   "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
 const instructionsFileHint =
   "Absolute path to a markdown file (e.g. AGENTS.md) that defines this agent's behavior. Prepended to the Gemini prompt at runtime.";
+
+const ENGINE_ITEMS = [
+  { value: "auto", label: "Default (ACP)" },
+  { value: "cli", label: "Gemini CLI" },
+  { value: "acp", label: "ACP" },
+];
+const MODE_ITEMS = [
+  { value: "persistent", label: "Persistent" },
+  { value: "oneshot", label: "One-shot" },
+];
+const PERMISSION_ITEMS = [
+  { value: "deny", label: "Deny" },
+  { value: "fail", label: "Fail" },
+];
 
 export function GeminiLocalConfigFields({
   section,
@@ -37,20 +52,18 @@ export function GeminiLocalConfigFields({
         environment owns both, so the managed-sandbox-only policy hides them.
       */}
       {!managedSandboxOnly && <Field label="Execution engine" hint="Default uses ACP. If ACP is unavailable, the run fails with a setup error. Choose CLI explicitly to use it.">
-        <select
-          className={inputClass}
+        <OptionSelect
+          ariaLabel="Execution engine"
+          placeholder="Select engine"
+          items={ENGINE_ITEMS}
           value={engine}
-          onChange={(e) => {
-            const value = e.target.value === "acp" ? "acp" : e.target.value === "cli" ? "cli" : "auto";
+          onChange={(next) => {
+            const value = next === "acp" ? "acp" : next === "cli" ? "cli" : "auto";
             isCreate
               ? set!({ geminiEngine: value })
               : mark("adapterConfig", "engine", value === "auto" ? undefined : value);
           }}
-        >
-          <option value="auto">Default (ACP)</option>
-          <option value="cli">Gemini CLI</option>
-          <option value="acp">ACP</option>
-        </select>
+        />
       </Field>}
       {acpSelected && (
         <>
@@ -77,45 +90,43 @@ export function GeminiLocalConfigFields({
             </Field>
           )}
           <Field configSection="runPolicy" label="ACP session mode" hint="Persistent keeps ACP session state between runs. One-shot starts fresh each run.">
-            <select
-              className={inputClass}
+            <OptionSelect
+              ariaLabel="ACP session mode"
+              placeholder="Select mode"
+              items={MODE_ITEMS}
               value={
                 isCreate
                   ? values!.geminiAcpMode ?? "persistent"
                   : eff("adapterConfig", "mode", String(config.mode ?? "persistent"))
               }
-              onChange={(e) => {
-                const value = e.target.value === "oneshot" ? "oneshot" : "persistent";
+              onChange={(next) => {
+                const value = next === "oneshot" ? "oneshot" : "persistent";
                 isCreate
                   ? set!({ geminiAcpMode: value })
                   : mark("adapterConfig", "mode", value);
               }}
-            >
-              <option value="persistent">Persistent</option>
-              <option value="oneshot">One-shot</option>
-            </select>
+            />
           </Field>
           <Field
             label="ACP non-interactive permissions"
             hint="Fallback if the ACP agent asks for input outside an interactive session."
           >
-            <select
-              className={inputClass}
+            <OptionSelect
+              ariaLabel="ACP non-interactive permissions"
+              placeholder="Select behaviour"
+              items={PERMISSION_ITEMS}
               value={
                 isCreate
                   ? values!.geminiAcpNonInteractivePermissions ?? "deny"
                   : eff("adapterConfig", "nonInteractivePermissions", String(config.nonInteractivePermissions ?? "deny"))
               }
-              onChange={(e) => {
-                const value = e.target.value === "fail" ? "fail" : "deny";
+              onChange={(next) => {
+                const value = next === "fail" ? "fail" : "deny";
                 isCreate
                   ? set!({ geminiAcpNonInteractivePermissions: value })
                   : mark("adapterConfig", "nonInteractivePermissions", value);
               }}
-            >
-              <option value="deny">Deny</option>
-              <option value="fail">Fail</option>
-            </select>
+            />
           </Field>
           {!managedSandboxOnly && (
             <Field

@@ -12,6 +12,7 @@ import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { OptionSelect } from "@/components/OptionSelect";
 
 export function AggregatorAppManager({ app, connections, initialConnectionId, onClose }: {
   app: AggregatorAppCatalogEntry; connections: ToolConnection[]; initialConnectionId?: string; onClose: () => void;
@@ -23,10 +24,8 @@ export function AggregatorAppManager({ app, connections, initialConnectionId, on
     <DialogHeader><DialogTitle>Manage {app.name}</DialogTitle>
       <DialogDescription>Accounts and sign-in are managed in {isAppAggregator(provider) ? AGGREGATOR_NAMES[provider] : "the provider"}.</DialogDescription>
     </DialogHeader>
-    {connections.length > 1 ? <div className="space-y-2"><Label htmlFor="manage-aggregator-gateway">Connection</Label>
-      <select id="manage-aggregator-gateway" className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm" value={connectionId} onChange={event => setConnectionId(event.target.value)}>
-        {connections.map(candidate => <option key={candidate.id} value={candidate.id}>{candidate.name}</option>)}
-      </select></div> : null}
+    {connections.length > 1 ? <div className="space-y-2"><Label>Connection</Label>
+      <OptionSelect ariaLabel="Connection" items={connections.map(candidate => ({ value: candidate.id, label: candidate.name }))} value={connectionId} onChange={setConnectionId} placeholder="Choose a connection" /></div> : null}
     {connection ? <AccountObservations key={connection.id} app={app} connection={connection} onClose={onClose} /> : <p role="alert">This connection is no longer available.</p>}
   </DialogContent></Dialog>;
 }

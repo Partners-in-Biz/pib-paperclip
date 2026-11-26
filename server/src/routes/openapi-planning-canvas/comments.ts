@@ -3,6 +3,8 @@ import {
   createPlanningCanvasCommentSchema,
   planningCanvasChatMessageSchema,
   planningCanvasItemKeySchema,
+  planningCanvasSourceRefreshSchema,
+  planningCanvasUnfurlSchema,
   resolvePlanningCanvasCommentSchema,
 } from "@paperclipai/shared";
 import { z } from "zod";
@@ -88,5 +90,38 @@ export const PLANNING_CANVAS_COMMENTS_OPENAPI_ROUTES: PlanningCanvasOpenApiRoute
       "keys must be items of this board (`canvas_chat_unknown_context_key`). 30 messages per person per hour " +
       "(`canvas_chat_rate_limited`, 429). A repeat `clientRequestId` answers 200 with `repeat: true` and writes nothing.",
     body: planningCanvasChatMessageSchema,
+  },
+  {
+    method: "get",
+    path: `${BOARD}/agents/{agentId}/read-actions`,
+    tags,
+    summary: "List the read-only connector actions an agent may use for a board source",
+    description:
+      "Needs edit access. Names and descriptions only, for the connector picker (`canvas_source_unknown_agent` when the " +
+      "agent is not an active agent of this company).",
+  },
+  {
+    method: "post",
+    path: `${BOARD}/items/{itemKey}/refresh`,
+    tags,
+    summary: "Ask a source-bound node's agent to fetch its data again",
+    description:
+      "Needs edit access and a signed-in person; agents are refused (`canvas_source_agent_caller`). Off unless " +
+      "`PLANNING_CANVAS_CHAT` is on (`canvas_source_refresh_disabled`). The refresh is a chat message on the person's " +
+      "thread; nothing is written to the tool. A repeat `clientRequestId` answers 200 with `repeat: true`.",
+    body: planningCanvasSourceRefreshSchema,
+  },
+  {
+    method: "post",
+    path: `${BOARD}/unfurl`,
+    tags,
+    summary: "Fetch preview text for a web link node",
+    description:
+      "Needs edit access and a signed-in person; agents are refused (`canvas_unfurl_agent_caller`). Off unless " +
+      "`PLANNING_CANVAS_UNFURL` is on (`canvas_unfurl_disabled`, 403, nothing fetched). The server reads the URL from the " +
+      "stored `weblink` node (`canvas_unfurl_not_weblink`, 404), never from the body, and writes nothing: the caller " +
+      "saves the answer through the ops route. 30 per person per company per hour (`canvas_unfurl_rate_limited`, 429) " +
+      "and 2 in flight per person (`canvas_unfurl_busy`, 429). Every fetch failure answers 200 `{ preview: null }`.",
+    body: planningCanvasUnfurlSchema,
   },
 ];

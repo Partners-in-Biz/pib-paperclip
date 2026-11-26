@@ -189,3 +189,25 @@ test('driver route handler swallows rejections from continue/abort (no unhandled
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('session records its issue and last activity; a command on another issue updates them; close removes it', async () => {
+  const fake = createFakeBrowser({ [DASH]: { text: 'New task' }, [ISSUE_URL]: { text: 'PAR-3917 Save' } });
+  let now = 1000;
+  const realNow = Date.now;
+  Date.now = () => now;
+  try {
+    const { dispatch, sessions } = createDispatcher({
+      authenticate: async ({ issue }) => ({ ok: true, agentId: 'a1', companyId: 'ca', issue: { identifier: issue, companyId: 'ca' } }),
+      browser: fake, policy: { version: 1, agents: { a1: { identities: [ID] } }, identities: {} }, sites,
+      clock: () => new Date('2026-11-11T10:00:00Z'), errorLog: { record() {} }
+    });
+    const key = `a1|${ID}`;
+    assert.equal((await dispatch(req('open'))).exit, EXIT.DONE);
+    assert.deepEqual([sessions.get(key).issue, sessions.get(key).companyId, sessions.get(key).lastActiveAt], ['PAR-3917', 'ca', 1000]);
+    now = 5000;
+    assert.equal((await dispatch({ ...req('goto', { url: ISSUE_URL }), issue: 'PAR-4000' })).exit, EXIT.DONE);
+    assert.deepEqual([sessions.get(key).issue, sessions.get(key).lastActiveAt], ['PAR-4000', 5000]);
+    assert.equal((await dispatch(req('close'))).exit, EXIT.DONE);
+    assert.equal(sessions.has(key), false);
+  } finally { Date.now = realNow; }
+});

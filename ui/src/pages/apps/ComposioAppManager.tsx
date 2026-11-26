@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { describeError } from "@/api/errors";
+import { OptionSelect } from "@/components/OptionSelect";
 
 export function ComposioAppManager({ app, connections, initialConnectionId, onClose }: {
   app: AggregatorAppCatalogEntry; connections: ToolConnection[]; initialConnectionId?: string; onClose: () => void;
@@ -20,10 +21,8 @@ export function ComposioAppManager({ app, connections, initialConnectionId, onCl
   const connection = connections.find(candidate => candidate.id === connectionId);
   return <Dialog open onOpenChange={open => { if (!open) onClose(); }}><DialogContent>
     <DialogHeader><DialogTitle>Manage {app.name}</DialogTitle><DialogDescription>Accounts and sign-in are managed in Composio.</DialogDescription></DialogHeader>
-    {connections.length > 1 ? <div className="space-y-2"><Label htmlFor="composio-manage-gateway">Composio account</Label>
-      <select id="composio-manage-gateway" value={connectionId} onChange={event => setConnectionId(event.target.value)} className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm">
-        {connections.map(candidate => <option key={candidate.id} value={candidate.id}>{candidate.name}</option>)}
-      </select></div> : null}
+    {connections.length > 1 ? <div className="space-y-2"><Label>Composio account</Label>
+      <OptionSelect ariaLabel="Composio account" items={connections.map(candidate => ({ value: candidate.id, label: candidate.name }))} value={connectionId} onChange={setConnectionId} placeholder="Choose an account" /></div> : null}
     {connection ? <ComposioAccountObservations key={connection.id} app={app} connection={connection} onClose={onClose} /> : <p role="alert">This Composio connection is no longer available.</p>}
   </DialogContent></Dialog>;
 }

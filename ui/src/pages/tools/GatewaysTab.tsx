@@ -18,6 +18,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { LoadingState, RelativeTime, ToolsPageHeader } from "./shared";
 import { describeError } from "@/api/errors";
+import { OptionSelect } from "@/components/OptionSelect";
 
 type CreateGatewayDraft = {
   name: string;
@@ -307,22 +308,19 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
             </label>
             <label className="space-y-1.5 text-sm">
               <span className="text-xs font-medium text-muted-foreground">Access profile</span>
-              <select
-                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              <OptionSelect
+                ariaLabel="Access profile"
+                items={activeProfiles.map((profile) => ({
+                  value: profile.id,
+                  label: `${profile.name} - ${formatAllowedTools(profile)}`,
+                  searchText: profile.name,
+                }))}
                 value={createDraft.profileId}
-                onChange={(event) => setCreateDraft((current) => ({ ...current, profileId: event.target.value }))}
-                required
+                onChange={(profileId) => setCreateDraft((current) => ({ ...current, profileId }))}
+                placeholder={profileLoading ? "Loading profiles..." : "Choose a profile"}
                 disabled={activeProfiles.length === 0}
-              >
-                <option value="" disabled>
-                  {profileLoading ? "Loading profiles..." : "Choose a profile"}
-                </option>
-                {activeProfiles.map((profile) => (
-                  <option key={profile.id} value={profile.id}>
-                    {profile.name} - {formatAllowedTools(profile)}
-                  </option>
-                ))}
-              </select>
+                triggerClassName="h-auto py-2 text-sm font-normal"
+              />
             </label>
           </div>
           <label className="space-y-1.5 text-sm">

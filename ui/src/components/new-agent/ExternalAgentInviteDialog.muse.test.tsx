@@ -6,6 +6,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { ApiError } from "@/api/client";
 import { ExternalAgentInviteDialog } from "./ExternalAgentInviteDialog";
 import { museBinding, museConnection, musePairing } from "../../../storybook/support/external-agent-invite/muse-fixtures";
+import { pickSearchableOption, stubSearchableSelectDom } from "../../test-utils/searchable-select";
 import { readMuseInvitationDraft } from "@/lib/muse-invitation-draft";
 
 const identity = vi.hoisted(() => ({ userId: "operator", settled: true, failed: false }));
@@ -35,6 +36,7 @@ async function click(label: string) {
   expect(b, label).toBeTruthy(); await act(async () => b!.click()); await flush();
 }
 beforeEach(() => {
+  stubSearchableSelectDom();
   vi.clearAllMocks(); Object.values(museApi).forEach(mock => mock.mockReset());
   settings.enableMuse = true; settings.enableNativeRunner = true; identity.userId = "operator";
   localStorage.clear(); copy.mockResolvedValue(undefined);
@@ -62,8 +64,7 @@ it("retains a nonsecret name/role draft and has one aligned footer", async () =>
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(name, "Maia");
     name.dispatchEvent(new Event("input", { bubbles: true }));
   });
-  const select = document.querySelector<HTMLSelectElement>("select")!;
-  await act(async () => { select.value = "researcher"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+  await pickSearchableOption(document.body, "Role", "Researcher");
   expect(readMuseInvitationDraft("company", "operator")).toEqual({ name: "Maia", role: "researcher" });
   const footer = [...document.querySelectorAll("button")].find(b => b.textContent === "Continue")!.parentElement!;
   expect(footer.textContent).toContain("Save & exit");

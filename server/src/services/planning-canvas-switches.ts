@@ -9,6 +9,8 @@ import { logger } from "../middleware/logger.js";
 export const PLANNING_CANVAS_CHAT_ENV = "PLANNING_CANVAS_CHAT";
 export const PLANNING_CANVAS_FLOWS_ENV = "PLANNING_CANVAS_FLOWS";
 export const PLANNING_CANVAS_ENGAGE_ENV = "PLANNING_CANVAS_ENGAGE";
+/** Web link previews fetched by the server (plan PAR-14389 C.5, D3). Off by default; Marcus switches it on. */
+export const PLANNING_CANVAS_UNFURL_ENV = "PLANNING_CANVAS_UNFURL";
 
 const FLAG_ON_VALUES = new Set(["on", "true", "1"]);
 
@@ -25,3 +27,4 @@ function switchOn(name: string): boolean {
 export const planningCanvasChatOn = () => switchOn(PLANNING_CANVAS_CHAT_ENV);
 export const planningCanvasFlowsOn = () => switchOn(PLANNING_CANVAS_FLOWS_ENV);
 export const planningCanvasEngageOn = () => switchOn(PLANNING_CANVAS_ENGAGE_ENV);
+export const planningCanvasUnfurlOn = () => switchOn(PLANNING_CANVAS_UNFURL_ENV);

@@ -8,6 +8,7 @@ import { AGENT_ADAPTER_TYPES, getEnvironmentCapabilities } from "@paperclipai/sh
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanyEnvironments } from "./CompanyEnvironments";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { openSearchableSelect, pickSearchableOption, stubSearchableSelectDom } from "../test-utils/searchable-select";
 
 const mockCompaniesApi = vi.hoisted(() => ({
   update: vi.fn(),
@@ -165,6 +166,7 @@ describe("CompanyEnvironments", () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {
+    stubSearchableSelectDom();
     container = document.createElement("div");
     document.body.appendChild(container);
 
@@ -252,15 +254,11 @@ describe("CompanyEnvironments", () => {
     await waitForAssertion(() => expect(getEnvironmentFormPage()).toBeTruthy());
     const dialog = getEnvironmentFormPage();
 
-    const driverSelect = Array.from(dialog?.querySelectorAll("select") ?? [])
-      .find((select) => Array.from(select.options).some((option) => option.value === "ssh")) as
-      | HTMLSelectElement
-      | undefined;
-    expect(driverSelect).toBeTruthy();
-
-    const driverOptionValues = Array.from(driverSelect!.options).map((option) => option.value);
-    expect(driverOptionValues).not.toContain("local");
-    expect(driverOptionValues).toEqual(["sandbox", "ssh"]);
+    const driverTrigger = await openSearchableSelect(dialog!, "Driver");
+    const driverOptionLabels = Array.from(document.body.querySelectorAll("[cmdk-item]")).map((item) => item.textContent?.trim());
+    expect(driverOptionLabels).not.toContain("Local");
+    expect(driverOptionLabels).toEqual(["Sandbox", "SSH"]);
+    expect(driverTrigger).toBeTruthy();
 
     await act(async () => {
       root.unmount();
@@ -303,15 +301,10 @@ describe("CompanyEnvironments", () => {
     await waitForAssertion(() => expect(getEnvironmentFormPage()).toBeTruthy());
     const dialog = getEnvironmentFormPage();
 
-    const driverSelect = Array.from(dialog?.querySelectorAll("select") ?? [])
-      .find((select) => Array.from(select.options).some((option) => option.value === "ssh")) as
-      | HTMLSelectElement
-      | undefined;
-    expect(driverSelect).toBeTruthy();
-
-    const driverOptionValues = Array.from(driverSelect!.options).map((option) => option.value);
-    expect(driverOptionValues).toContain("local");
-    expect(driverSelect!.value).toBe("local");
+    const driverTrigger = await openSearchableSelect(dialog!, "Driver");
+    const driverOptionLabels = Array.from(document.body.querySelectorAll("[cmdk-item]")).map((item) => item.textContent?.trim());
+    expect(driverOptionLabels).toContain("Local");
+    expect(driverTrigger.textContent).toContain("Local");
 
     await act(async () => {
       root.unmount();
@@ -379,15 +372,7 @@ describe("CompanyEnvironments", () => {
     await waitForAssertion(() => expect(getEnvironmentFormPage()).toBeTruthy());
     const dialog = getEnvironmentFormPage();
 
-    const providerSelect = Array.from(dialog?.querySelectorAll("select") ?? []).find((select) =>
-      Array.from(select.options).some((option) => option.value === "secure-plugin"),
-    ) as HTMLSelectElement | undefined;
-    expect(providerSelect).toBeTruthy();
-
-    await act(async () => {
-      providerSelect!.value = "secure-plugin";
-      providerSelect!.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    await pickSearchableOption(dialog!, "Provider", "Secure Sandbox");
     await flushReact();
 
     const templateInput = Array.from(dialog?.querySelectorAll("input") ?? [])

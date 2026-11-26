@@ -19,6 +19,7 @@ import type {
   PlanningCanvasChatMessageResult,
   PlanningCanvasReadAction,
   PlanningCanvasSourceRefreshResult,
+  PlanningCanvasUnfurlResult,
 } from "@paperclipai/shared";
 import { api, requestResponse } from "./client";
 import type { QueriedIssue } from "@/components/planning-canvas/nodes/issue-board";
@@ -171,6 +172,10 @@ export const planningCanvasesApi = {
   /** Ask the source's agent to fetch a table's rows again. A repeated `clientRequestId` writes nothing. */
   refreshSource: (companyId: string, boardId: string, itemKey: string, clientRequestId: string) =>
     api.post<PlanningCanvasSourceRefreshResult>(`${boardPath(companyId, boardId)}/items/${encodeURIComponent(itemKey)}/refresh`, { clientRequestId }),
+
+  /** Preview text of a web link node (D3). The server reads the URL from the stored node; the caller saves the answer through ops. */
+  unfurl: (companyId: string, boardId: string, nodeId: string) =>
+    api.post<PlanningCanvasUnfurlResult>(`${boardPath(companyId, boardId)}/unfurl`, { nodeId }),
 
   resolveComment: (companyId: string, boardId: string, commentId: string, resolved: boolean) =>
     api.post<PlanningCanvasComment>(`${boardPath(companyId, boardId)}/comments/${commentId}/resolve`, { resolved }),

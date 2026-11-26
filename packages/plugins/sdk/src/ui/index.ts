@@ -156,6 +156,7 @@ export type {
   PluginCompanySettingsPageProps,
   PluginWidgetProps,
   PluginDetailTabProps,
+  PluginTaskSidePanelTabProps,
   PluginSidebarProps,
   PluginOrganizationSwitcherProps,
   PluginRouteSidebarProps,
