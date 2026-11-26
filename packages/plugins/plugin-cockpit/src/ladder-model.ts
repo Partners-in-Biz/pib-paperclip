@@ -6,7 +6,7 @@
 
 import { parseMarker } from "@partnersinbiz/pib-plugin-kit";
 
-export const BLOCKED_ESCALATE_HOURS = 4; // stuck issue blocked this long with no open blocker -> level 1 (24 until 2026-11-11)
+export const BLOCKED_ESCALATE_HOURS = 1; // stuck issue blocked this long with no open blocker -> level 1 (24 until 2026-11-11, 4 until 2026-11-26; agents are told "within the hour")
 export const LEVEL_DEADLINE_HOURS = 8; // an open Unblock level may sit this long (the kit's ESCALATION_DEADLINE_MS; 24 until 2026-11-11)
 export const TRANSIENT_RETRY_WINDOW_HOURS = 6;
 

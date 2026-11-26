@@ -28,7 +28,7 @@ vi.mock("@partnersinbiz/pib-plugin-kit", async () => {
 });
 
 import { ladderTick, reconcileMarkers } from "../src/ladder.js";
-import { listRepairs } from "../src/repairs.js";
+import { listRepairs, recordRepair } from "../src/repairs.js";
 import { createEnv } from "../src/register.js";
 import { fakeCtx, fixedClock } from "./helpers/fake-ctx.js";
 import * as watchModule from "../src/watch.js";
@@ -82,7 +82,7 @@ describe("ladder state transitions", () => {
     expect(mockEscalate).toHaveBeenCalledWith(
       expect.any(Object),
       "stuck-1",
-      expect.stringContaining("4 hours"),
+      expect.stringContaining("1 hour"),
       expect.objectContaining({ startLevel: 1 }),
     );
   });
@@ -367,6 +367,56 @@ describe("ladder state transitions", () => {
 
     const repairs2 = await listRepairs(s.env.ctx, A, { kind: "escalation" });
     expect(repairs2.filter((r) => r.outcome === "skipped_cooldown")).toHaveLength(1);
+  });
+});
+
+describe("dedupe over the whole repairs table (2026-11-26)", () => {
+  // The check used to read only the newest 500 escalation rows, so once a company had more,
+  // every tick wrote the same 'resolved' and marker rows again (~35,000 a day on PAR).
+  it("a 'resolved' row recorded earlier is found behind 600 newer rows: the tick adds none", async () => {
+    const s = setup();
+    await recordRepair(s.ctx, A, { kind: "escalation", targetKind: "issue", targetId: "stuck-1", action: "resolved", outcome: "resolved", actor: "cockpit-ladder" });
+    for (let i = 0; i < 600; i += 1) {
+      await recordRepair(s.ctx, A, { kind: "escalation", targetKind: "issue", targetId: `other-${i}`, action: "create_L1", outcome: "created", actor: "cockpit-ladder" });
+    }
+    const marker: MarkerIssueRow = {
+      id: "marker-1", identifier: "PAR-1001", title: "Unblock L1", stuckIssueId: "stuck-1", level: 1,
+      status: "done", originId: "escalate:stuck-1:L1", description: null, createdAt: NOW,
+    };
+    await recordRepair(s.ctx, A, { kind: "escalation", targetKind: "issue", targetId: "marker-1", action: "create_L1", outcome: "created", actor: "cockpit-ladder" });
+    for (let i = 0; i < 600; i += 1) {
+      await recordRepair(s.ctx, A, { kind: "escalation", targetKind: "issue", targetId: `newer-${i}`, action: "create_L1", outcome: "created", actor: "cockpit-ladder" });
+    }
+    mockReadMarkerIssues.mockResolvedValue([marker]);
+    mockReadLadderIssues.mockResolvedValue([
+      {
+        stuck: { id: "stuck-1", identifier: "PAR-100", status: "todo", blockedSince: NOW, openBlockers: 0, closedBlockers: 0 } as StuckInput,
+        unblocks: [
+          {
+            id: "marker-1", identifier: "PAR-1001", title: "Unblock L1", status: "done",
+            description: `<!-- pib:escalation {"issue":"stuck-1","level":1,"deadline":"2026-09-26T12:00:00.000Z"} -->`,
+            createdAt: NOW, blockedNoPath: false, inStorm: false,
+          } as UnblockInput,
+        ],
+      } as LadderIssue,
+    ]);
+
+    const counts = await ladderTick(s.env, A);
+    expect(counts.reconciled).toBe(0);
+    expect(counts.resolved).toBe(0);
+  });
+
+  it("a fresh self-owned block re-blocked after a sweep escalates at once, whatever its age", async () => {
+    const s = setup();
+    mockReadLadderIssues.mockResolvedValue([
+      {
+        stuck: { id: "stuck-new", identifier: "PAR-14776", status: "blocked", blockedSince: NOW, reblockedAfterSweep: true, openBlockers: 0, closedBlockers: 0 } as StuckInput,
+        unblocks: [],
+      } as LadderIssue,
+    ]);
+    mockEscalate.mockResolvedValue({ id: "unblock-new", level: 1, created: true });
+    const counts = await ladderTick(s.env, A);
+    expect(counts.created).toBe(1);
   });
 });
 
