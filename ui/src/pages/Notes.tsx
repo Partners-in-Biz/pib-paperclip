@@ -729,7 +729,7 @@ export function Notes() {
             </div>
 
             <div className="flex w-full min-w-0 items-center gap-2 md:w-auto">
-              <div className="relative min-w-0 flex-1 md:flex-none">
+              <div className="relative flex-1 max-md:min-w-40 md:flex-none">
                 <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
                 <input
                   type="search"
@@ -742,7 +742,7 @@ export function Notes() {
               <OptionSelect
                 ariaLabel="Sort notes"
                 placeholder="Sort"
-                triggerClassName="h-7 px-2 text-xs font-normal"
+                triggerClassName="h-7 px-2 max-md:w-auto max-md:shrink-0 text-xs font-normal"
                 value={sortMode}
                 items={[
                   { value: "updated", label: "Last updated" },
