@@ -175,7 +175,8 @@ export async function fetchPlanningCanvasWebLinkPreview(storedUrl: string, deps:
   const state: { host: string; reason?: string; reader?: ReadableStreamDefaultReader<Uint8Array>; body?: ReadableStream | null } = { host: hostOf(storedUrl) };
   const baseLookup = deps.lookup ?? defaultLookup;
   const fetchHop = deps.fetch ?? ((url, init, options) => guardedRemoteHttpFetch(url, init, options));
-  const remaining = () => Math.max(1, deadlineMs - (Date.now() - startedAt));
+  // The guard's own timeouts are backstops just past the one deadline, so the race below always decides (step 5).
+  const backstop = () => Math.max(1, deadlineMs - (Date.now() - startedAt)) + 1_000;
 
   // Step 2: the whole answer is refused unless every address passes.
   const lookup: RemoteHttpEndpointLookup = async (hostname) => {
@@ -203,9 +204,9 @@ export async function fetchPlanningCanvasWebLinkPreview(storedUrl: string, deps:
       }, {
         allowPrivateNetwork: false,
         lookup,
-        dnsTimeoutMs: remaining(),
-        connectTimeoutMs: remaining(),
-        responseTimeoutMs: remaining(),
+        dnsTimeoutMs: backstop(),
+        connectTimeoutMs: backstop(),
+        responseTimeoutMs: backstop(),
         error: (_message, code) => new UnfurlRefused(code),
       });
       state.body = response.body;
