@@ -1,7 +1,7 @@
 import type { PluginContext, PluginPerformActionContext } from "@paperclipai/plugin-sdk";
-import { loadVoiceConfig, validVoice, XAI_VOICES, type VoiceProvider, type VoiceSettings } from "./config.js";
+import { DEFAULT_GEMINI_VOICE, GEMINI_VOICES, loadVoiceConfig, validGeminiVoice, validVoice, XAI_VOICES, type VoiceProvider, type VoiceSettings } from "./config.js";
 import { SPEAK_DAILY_CHAR_CAP, SPEAK_DEADLINE_MS, SPEAK_MAX_CHARS, SPEAK_MIN_CHARS, PROVIDER_TIMEOUT_MS, TTS_SAMPLE_RATE } from "./limits.js";
-import { geminiSpeak, xaiSpeak, type TtsOutcome } from "./tts.js";
+import { cleanStyle, geminiSpeak, xaiSpeak, type TtsOutcome } from "./tts.js";
 import { XAI_REALTIME_URL, XAI_VOICE_MODEL } from "./namespace.js";
 import { baseMime, MAX_AUDIO_BYTES, mintLiveToken, transcribe, VoiceError } from "./xai.js";
 type FetchLike = typeof fetch;
@@ -84,7 +84,16 @@ export async function transcribeAction(
 export const LIVE_TOKEN_SECONDS = 300;
 
 const AGENT_VOICE_KEY = "voice";
+const AGENT_PROFILE_KEY = "voice-profile";
 const agentScope = (agentId: string) => ({ scopeKind: "agent" as const, scopeId: agentId, stateKey: AGENT_VOICE_KEY });
+const profileScope = (agentId: string) => ({ scopeKind: "agent" as const, scopeId: agentId, stateKey: AGENT_PROFILE_KEY });
+
+/** One agent's own voices. Every field is optional: a missing one falls back to the company voice. */
+export interface AgentVoiceProfile {
+  grokVoice?: string;
+  geminiVoice?: string;
+  geminiStyle?: string;
+}
 
 /** The agent must belong to the caller's company; a state key per foreign agent id is never read or written. */
 async function requireCompanyAgent(ctx: PluginContext, companyId: string, agentId: unknown): Promise<string> {
@@ -94,38 +103,163 @@ async function requireCompanyAgent(ctx: PluginContext, companyId: string, agentI
   return agentId;
 }
 
-/** The voice a call to this agent uses: the agent's own saved voice if it is still valid, else the company voice. */
-export async function resolveVoice(ctx: PluginContext, companyId: string, agentId: unknown, companyVoice: string): Promise<string> {
-  if (typeof agentId !== "string" || !agentId) return companyVoice;
+/** The saved profile, each field checked again; the legacy `voice` key fills `grokVoice` when the profile has none. */
+async function readProfile(ctx: PluginContext, agentId: string): Promise<AgentVoiceProfile> {
+  const profile: AgentVoiceProfile = {};
+  const saved = await ctx.state.get(profileScope(agentId));
+  if (saved && typeof saved === "object" && !Array.isArray(saved)) {
+    const raw = saved as Record<string, unknown>;
+    const grok = validVoice(raw.grokVoice);
+    const gemini = validGeminiVoice(raw.geminiVoice);
+    const style = cleanStyle(raw.geminiStyle);
+    if (grok) profile.grokVoice = grok;
+    if (gemini) profile.geminiVoice = gemini;
+    if (style) profile.geminiStyle = style;
+  }
+  if (!profile.grokVoice) {
+    const legacy = validVoice(await ctx.state.get(agentScope(agentId)));
+    if (legacy) profile.grokVoice = legacy;
+  }
+  return profile;
+}
+
+/** Writes the profile (an empty one is deleted) and keeps the legacy `voice` key in step, so a rollback keeps the Grok voice. */
+async function writeProfile(ctx: PluginContext, agentId: string, profile: AgentVoiceProfile): Promise<void> {
+  if (Object.keys(profile).length) await ctx.state.set(profileScope(agentId), profile);
+  else await ctx.state.delete(profileScope(agentId));
+  if (profile.grokVoice) await ctx.state.set(agentScope(agentId), profile.grokVoice);
+  else await ctx.state.delete(agentScope(agentId));
+}
+
+/** The agent's profile, or an empty one for an agent outside the company or an unreadable state. */
+async function profileFor(ctx: PluginContext, companyId: string, agentId: unknown): Promise<AgentVoiceProfile> {
+  if (typeof agentId !== "string" || !agentId) return {};
   try {
     const known = await ctx.agents.list({ companyId, limit: 200 });
-    if (!known.some((a) => a.id === agentId)) return companyVoice;
-    return validVoice(await ctx.state.get(agentScope(agentId))) ?? companyVoice;
+    if (!known.some((a) => a.id === agentId)) return {};
+    return await readProfile(ctx, agentId);
   } catch {
-    return companyVoice;
+    return {};
   }
+}
+
+/** The voice a call to this agent uses: the agent's own saved Grok voice if it is still valid, else the company voice. */
+export async function resolveVoice(ctx: PluginContext, companyId: string, agentId: unknown, companyVoice: string): Promise<string> {
+  return (await profileFor(ctx, companyId, agentId)).grokVoice ?? companyVoice;
 }
 
 export async function agentVoiceData(ctx: PluginContext, companyId: string | null, agentId: unknown) {
   const loaded = companyId ? await loadVoiceConfig(ctx, companyId) : null;
-  const companyVoice = loaded?.settings.voice ?? "eve";
-  const voice = companyId ? await resolveVoice(ctx, companyId, agentId, companyVoice) : companyVoice;
-  const own = companyId && typeof agentId === "string" && voice !== companyVoice ? voice : null;
-  return { voices: [...XAI_VOICES], companyVoice, agentVoice: own, effective: voice };
+  const profile = companyId ? await profileFor(ctx, companyId, agentId) : {};
+  const raw = loaded?.config.geminiApiKey;
+  return {
+    profile,
+    company: { grokVoice: loaded?.settings.voice ?? "eve", geminiVoice: loaded?.settings.geminiVoice ?? DEFAULT_GEMINI_VOICE },
+    geminiConfigured: raw != null && raw !== "",
+    voices: { grok: [...XAI_VOICES], gemini: [...GEMINI_VOICES] },
+  };
 }
 
-/** Saves (or, with an empty voice, clears) one agent's voice. Unknown ids are refused. */
+/** Saves (or, with an empty voice, clears) one agent's Grok voice. Unknown ids are refused. */
 export async function setAgentVoiceAction(ctx: PluginContext, params: Record<string, unknown>, context: PluginPerformActionContext) {
   const { companyId } = requireBoardUser(context);
   const agentId = await requireCompanyAgent(ctx, companyId, params.agentId);
+  const profile = await readProfile(ctx, agentId);
   if (params.voice === null || params.voice === "") {
-    await ctx.state.delete(agentScope(agentId));
+    delete profile.grokVoice;
+    await writeProfile(ctx, agentId, profile);
     return { agentVoice: null };
   }
   const voice = validVoice(params.voice);
   if (!voice) throw new VoiceError(`Unknown voice. Pick one of: ${XAI_VOICES.join(", ")}.`);
-  await ctx.state.set(agentScope(agentId), voice);
+  await writeProfile(ctx, agentId, { ...profile, grokVoice: voice });
   return { agentVoice: voice };
+}
+
+/**
+ * Saves one agent's voice profile. A field left out is unchanged; an empty or null one is cleared.
+ * Unknown voices are refused before anything is written; the style is cleaned (never rejected).
+ */
+export async function setAgentVoiceProfileAction(ctx: PluginContext, params: Record<string, unknown>, context: PluginPerformActionContext) {
+  const { companyId } = requireBoardUser(context);
+  const agentId = await requireCompanyAgent(ctx, companyId, params.agentId);
+  const profile = await readProfile(ctx, agentId);
+  const cleared = (value: unknown) => value === null || value === "";
+  if ("grokVoice" in params && params.grokVoice !== undefined) {
+    if (cleared(params.grokVoice)) delete profile.grokVoice;
+    else {
+      const voice = validVoice(params.grokVoice);
+      if (!voice) throw new VoiceError(`Unknown Grok voice. Pick one of: ${XAI_VOICES.join(", ")}.`);
+      profile.grokVoice = voice;
+    }
+  }
+  if ("geminiVoice" in params && params.geminiVoice !== undefined) {
+    if (cleared(params.geminiVoice)) delete profile.geminiVoice;
+    else {
+      const voice = validGeminiVoice(params.geminiVoice);
+      if (!voice) throw new VoiceError(`Unknown Gemini voice. Pick one of: ${GEMINI_VOICES.join(", ")}.`);
+      profile.geminiVoice = voice;
+    }
+  }
+  if ("geminiStyle" in params && params.geminiStyle !== undefined) {
+    if (params.geminiStyle !== null && typeof params.geminiStyle !== "string") throw new VoiceError("The style must be text.");
+    const style = cleanStyle(params.geminiStyle);
+    if (style) profile.geminiStyle = style;
+    else delete profile.geminiStyle;
+  }
+  await writeProfile(ctx, agentId, profile);
+  return { profile };
+}
+
+/** A person's saved way of talking: straight to the agent in `direct` mode (with a voice engine), or the `classic` live call. */
+export type VoiceMode = { mode: "direct"; provider: VoiceProvider } | { mode: "classic" };
+
+const modeScope = (companyId: string, userId: string) => ({
+  scopeKind: "company" as const,
+  scopeId: companyId,
+  namespace: "voice-mode",
+  stateKey: userId,
+});
+
+async function geminiConfigured(ctx: PluginContext, companyId: string) {
+  const loaded = await loadVoiceConfig(ctx, companyId);
+  const raw = loaded.config.geminiApiKey;
+  return { configured: raw != null && raw !== "", defaultProvider: loaded.settings.defaultProvider };
+}
+
+/** The caller's own mode. Nothing saved, or a state that cannot be read, answers the default and writes nothing. */
+export async function getMyVoiceModeAction(ctx: PluginContext, context: PluginPerformActionContext): Promise<VoiceMode & { geminiConfigured: boolean }> {
+  const { companyId, userId } = requireBoardUser(context);
+  const { configured, defaultProvider } = await geminiConfigured(ctx, companyId);
+  const fallback: VoiceMode = { mode: "direct", provider: configured && defaultProvider === "gemini" ? "gemini" : "grok" };
+  let saved: unknown = null;
+  try {
+    saved = await ctx.state.get(modeScope(companyId, userId));
+  } catch {
+    ctx.logger.warn("voice mode unreadable", { companyId });
+  }
+  const value = saved && typeof saved === "object" ? (saved as Record<string, unknown>) : null;
+  let mode: VoiceMode = fallback;
+  if (value?.mode === "classic") mode = { mode: "classic" };
+  else if (value?.mode === "direct" && value.provider === "grok") mode = { mode: "direct", provider: "grok" };
+  else if (value?.mode === "direct" && value.provider === "gemini" && configured) mode = { mode: "direct", provider: "gemini" };
+  return { ...mode, geminiConfigured: configured };
+}
+
+/** Saves the caller's own mode; the person comes from the actor, never from a param. */
+export async function setMyVoiceModeAction(ctx: PluginContext, params: Record<string, unknown>, context: PluginPerformActionContext) {
+  const { companyId, userId } = requireBoardUser(context);
+  let next: VoiceMode;
+  if (params.mode === "classic") next = { mode: "classic" };
+  else if (params.mode === "direct") {
+    if (params.provider !== "grok" && params.provider !== "gemini") throw new VoiceError("Pick a voice engine: grok or gemini.");
+    if (params.provider === "gemini" && !(await geminiConfigured(ctx, companyId)).configured) {
+      throw new VoiceError("Gemini voices are not set up yet. Save a Gemini key in Voice settings.");
+    }
+    next = { mode: "direct", provider: params.provider };
+  } else throw new VoiceError("Unknown mode. Pick direct or classic.");
+  await ctx.state.set(modeScope(companyId, userId), next);
+  return next;
 }
 
 export async function liveSessionAction(
@@ -218,13 +352,11 @@ export async function speakAction(
     const remaining = SPEAK_DEADLINE_MS - (Date.now() - startedAt);
     if (remaining <= 0) return { error: "timeout" };
     const timeoutMs = Math.min(PROVIDER_TIMEOUT_MS, remaining);
-    const voice =
-      provider === "gemini"
-        ? loaded.settings.geminiVoice
-        : await resolveVoice(ctx, companyId, agentId, loaded.settings.voice);
+    const profile = await profileFor(ctx, companyId, agentId);
+    const voice = provider === "gemini" ? (profile.geminiVoice ?? loaded.settings.geminiVoice) : (profile.grokVoice ?? loaded.settings.voice);
     const result =
       provider === "gemini"
-        ? await geminiSpeak({ apiKey, text, voice, timeoutMs }, fetchImpl)
+        ? await geminiSpeak({ apiKey, text, voice, style: cleanStyle(profile.geminiStyle), timeoutMs }, fetchImpl)
         : await xaiSpeak({ apiKey, text, voice, language: loaded.settings.language, timeoutMs }, fetchImpl);
     // Counts and outcomes only: never the key, the text or a provider error body.
     ctx.logger.info("voice speak", { companyId, provider, outcome: result.outcome, chars: text.length });

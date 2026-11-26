@@ -25,9 +25,9 @@ import { hasSpeech, saveLiveTranscript, type CallRecord, type ReportApi, type Sa
 import { blobToBase64, formatElapsed, startRecording, voiceSupported, type ActiveRecording } from "./recorder.js";
 
 interface AgentVoiceData {
-  voices: string[];
-  companyVoice: string;
-  agentVoice: string | null;
+  voices: { grok: string[] };
+  company: { grokVoice: string };
+  profile: { grokVoice?: string };
 }
 
 interface VoiceStatus {
@@ -390,7 +390,7 @@ function AgentVoicePicker({ companyId, agent }: { companyId: string; agent: { id
       <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{agent.name} voice</span>
       <select
         aria-label={`Voice for ${agent.name}, used on the next call`}
-        value={data.agentVoice ?? ""}
+        value={data.profile.grokVoice ?? ""}
         disabled={busy}
         onChange={async (event) => {
           setBusy(true);
@@ -406,8 +406,8 @@ function AgentVoicePicker({ companyId, agent }: { companyId: string; agent: { id
         }}
         style={{ minHeight: 36, minWidth: 0, maxWidth: "100%", padding: "0 8px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--background)", color: "var(--foreground)", fontSize: 13 }}
       >
-        <option value="">Company default ({data.companyVoice})</option>
-        {data.voices.map((v) => (
+        <option value="">Company default ({data.company.grokVoice})</option>
+        {data.voices.grok.map((v) => (
           <option key={v} value={v}>{v}</option>
         ))}
       </select>
