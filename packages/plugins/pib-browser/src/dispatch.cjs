@@ -32,8 +32,28 @@ function classifyDriverError(e) {
   if (name === 'TargetClosedError' || /Target page, context or browser has been closed|Browser has been closed|browser has disconnected/i.test(msg))
     return { exit: EXIT.NO_BROWSER, reason: 'browser_closed', drop: true };
   if (/strict mode violation/i.test(msg)) return { exit: EXIT.EXPECT_MISSING, reason: 'target_ambiguous', drop: false };
-  if (name === 'TimeoutError' || /Timeout \d+ms exceeded/i.test(msg)) return { exit: EXIT.EXPECT_MISSING, reason: 'timeout', drop: false };
+  if (name === 'TimeoutError' || /Timeout \d+ms exceeded/i.test(msg)) {
+    // The session stays open; the reason says why the action could not run (PAR-14819).
+    const why = typeof e?.waitReason === 'string' ? e.waitReason.replace(/[^\x20-\x7e]/g, ' ').slice(0, 200) : '';
+    return { exit: EXIT.EXPECT_MISSING, reason: why ? `timeout: ${why}` : 'timeout', drop: false };
+  }
   return { exit: EXIT.NO_BROWSER, reason: `internal: ${name || 'Error'}`, drop: false };
+}
+
+// --force skips Playwright's actionability checks (stable, not covered). QA seats on approved steps only:
+// it needs --approval, and the approval is checked like a destructive click's.
+async function checkForce({ args, verifyApproval, identityStr, action, auth, token, verified }) {
+  if (!args.force) return null;
+  // A destructive step already claimed this single-use approval; claiming it again would fail (approval_already_used).
+  if (verified && args.approval) return null;
+  if (!args.approval || !verifyApproval) return { exit: EXIT.NEEDS_APPROVAL, ok: false, reason: 'force_needs_approval' };
+  let r;
+  try {
+    r = await verifyApproval({ approval: args.approval, identity: identityStr, action, companyId: auth.companyId }, { token });
+  } catch (e) {
+    r = { exit: EXIT.NEEDS_APPROVAL, ok: false, reason: 'approval_check_failed' };
+  }
+  return r && r.ok ? null : { exit: (r && r.exit) || EXIT.NEEDS_APPROVAL, ok: false, reason: (r && r.reason) || 'approval_check_failed' };
 }
 
 const issueOf = (auth, issue) => String(auth?.issue?.identifier || issue || '');
@@ -295,6 +315,7 @@ function createDispatcher(deps = {}) {
             approved: false
           });
 
+          let approvalVerified = false;
           if (authResult.exit === EXIT.NEEDS_APPROVAL && approval && verifyApproval) {
             let approvalResult;
             try {
@@ -324,6 +345,7 @@ function createDispatcher(deps = {}) {
               await dropSession(ctx, sessionKey);
               return { exit: authResult2.exit, ok: false, reason: authResult2.reason };
             }
+            approvalVerified = true;
           } else if (!authResult.ok) {
             // No approval offered: nothing was attempted, so the session stays open
             // and the agent can still shot/close (PAR-9187). Policy refusals still drop it.
@@ -333,7 +355,11 @@ function createDispatcher(deps = {}) {
 
           if (cmd === 'drag') await ctx.drag(from, to);
           else if (cmd === 'select') await ctx.select(selector, args.value);
-          else await ctx.click(selector, text);
+          else {
+            const refused = await checkForce({ args, verifyApproval, identityStr, action: [selector, text].filter(Boolean), auth, token, verified: approvalVerified });
+            if (refused) return refused;
+            await ctx.click(selector, text, args.force ? { force: true } : {});
+          }
           const violation = await afterOp(ctx, sessionKey);
           return violation || { exit: EXIT.DONE, ok: true };
         }
@@ -370,7 +396,9 @@ function createDispatcher(deps = {}) {
             return { exit: EXIT.REFUSED_BY_POLICY, ok: false, reason: 'fill_check_failed' };
           }
 
-          await ctx.fill(selector, value);
+          const refused = await checkForce({ args, verifyApproval, identityStr, action: [selector], auth, token });
+          if (refused) return refused;
+          await ctx.fill(selector, value, args.force ? { force: true } : {});
           const violation = await afterOp(ctx, sessionKey);
           return violation || { exit: EXIT.DONE, ok: true, data: { filled: true } };
         }
