@@ -7,7 +7,8 @@ import { describe, expect, it, vi } from "vitest";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 import { accessCompanyScope, accessGrantScope, MEMBER_RESTRICTED, permissionKey, PERMISSION_DENIED } from "@partnersinbiz/pib-plugin-kit";
 import manifest from "../src/manifest.js";
-import { BOARD_CARDS_OFF, WRONG_BOARD } from "../src/board-scope.js";
+import { BOARD_CARDS_OFF, boardScopeInput, boardTarget, LINKED_CLIENT_MISSING, WRONG_BOARD } from "../src/board-scope.js";
+import { BOARD_CLIENT_UNAVAILABLE } from "../src/scope.js";
 import plugin from "../src/worker.js";
 
 const CO = "a1600000-0000-4000-8000-000000000001";
@@ -20,13 +21,38 @@ const CLIENT_B = "a1600000-0000-4000-8000-0000000000cb";
 const PROJECT_A = "project-a";
 const PROJECT_B = "project-b";
 const PROJECT_NO_CLIENT = "project-own";
+const PROJECT_DOWN = "project-down";
+// Planning Canvas board ids, and the links stored for them (latest row per board).
+const BOARD_LINKED_B = "b0a7d000-0000-4000-8000-0000000000b1";
+const BOARD_LINKED_GONE = "b0a7d000-0000-4000-8000-0000000000b2";
+const BOARD_CLEARED = "b0a7d000-0000-4000-8000-0000000000b3";
+const BOARD_PLAIN = "b0a7d000-0000-4000-8000-0000000000b4";
+const BOARD_LINK_DOWN = "b0a7d000-0000-4000-8000-0000000000b5";
+const BOARD_CRM_DOWN = "b0a7d000-0000-4000-8000-0000000000b6";
+const CLIENT_GONE = "a1600000-0000-4000-8000-0000000000cf";
+const CLIENT_CRM_DOWN = "a1600000-0000-4000-8000-0000000000ce";
+const LINKS: Record<string, { client_kind: string | null; client_ref: string | null; client_name: string | null }> = {
+  [BOARD_LINKED_B]: { client_kind: "company", client_ref: CLIENT_B, client_name: "Globex" },
+  [BOARD_LINKED_GONE]: { client_kind: "company", client_ref: CLIENT_GONE, client_name: "Gone Ltd" },
+  [BOARD_CLEARED]: { client_kind: null, client_ref: null, client_name: null },
+  [BOARD_CRM_DOWN]: { client_kind: "company", client_ref: CLIENT_CRM_DOWN, client_name: "Flaky" },
+};
+const CRM: Record<string, { id: string; name: string; domain: null; lifecycle: null }> = {
+  [CLIENT_A]: { id: CLIENT_A, name: "Acme", domain: null, lifecycle: null },
+  [CLIENT_B]: { id: CLIENT_B, name: "Globex", domain: null, lifecycle: null },
+};
 
-// The CRM link from a project to its client, as scope.ts reads it.
-vi.mock("../src/scope.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../src/scope.js")>()),
-  clientOfProject: async (_ctx: unknown, _co: string, projectId: string | null) =>
-    projectId === PROJECT_A ? { kind: "company", id: CLIENT_A, name: "Acme" } : projectId === PROJECT_B ? { kind: "company", id: CLIENT_B, name: "Globex" } : null,
-}));
+// The CRM link from a project to its client, as board-scope.ts reads it (fail-closed). PROJECT_DOWN: the CRM read throws.
+vi.mock("../src/scope.js", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../src/scope.js")>();
+  return {
+    ...real,
+    projectClientStrict: async (_ctx: unknown, _co: string, projectId: string | null) => {
+      if (projectId === PROJECT_DOWN) throw real.boardClientUnavailable();
+      return projectId === PROJECT_A ? { kind: "company", id: CLIENT_A, name: "Acme" } : projectId === PROJECT_B ? { kind: "company", id: CLIENT_B, name: "Globex" } : null;
+    },
+  };
+});
 
 const row = (id: string, client: string | null, status = "draft") => ({
   id, company_id: CO, client_kind: client ? "company" : null, client_ref: client, client_name: client === CLIENT_A ? "Acme" : client ? "Globex" : null,
@@ -35,6 +61,8 @@ const row = (id: string, client: string | null, status = "draft") => ({
   gen_prompt: null, gen_model: null, gen_credits: null,
 });
 const ROWS = [row("a-asset", CLIENT_A), row("b-asset", CLIENT_B), row("own-asset", null), row("own-archived", null, "archived"), row("a-archived", CLIENT_A, "archived")];
+const gen = (id: string, client: string | null) => ({ id, status: "submitted", asset_id: null, client_kind: client ? "company" : null, client_ref: client, error_message: null, model: "m" });
+const GENERATIONS = [gen("gen-a", CLIENT_A), gen("gen-b", CLIENT_B)];
 
 async function studio(opts: { cards?: boolean; generate?: boolean; accessMode?: "enforce" } = {}) {
   const at = new Date().toISOString();
@@ -49,7 +77,20 @@ async function studio(opts: { cards?: boolean; generate?: boolean; accessMode?: 
   harness.seed({ accessMembers: [member(MEMBER), member(RESTRICTED), member(OUTSIDER)] });
   const db = harness.ctx.db as { namespace: string; query: (sql: string, params?: unknown[]) => Promise<unknown[]> };
   db.namespace = "plugin_studio_test";
+  const sqlSeen: string[] = [];
   db.query = async (sql, params = []) => {
+    sqlSeen.push(sql);
+    if (/FROM \S+\.board_client_links WHERE company_id = \$1 AND board_id = \$2 ORDER BY at DESC, id DESC LIMIT 1/.test(sql)) {
+      if (params[1] === BOARD_LINK_DOWN) throw new Error("link store down");
+      const link = LINKS[String(params[1])];
+      return link ? [link] : [];
+    }
+    // resolveCrmClient's company read (the kit's projection).
+    if (/FROM \S+\.crm_companies WHERE company_id = \$1 AND id = \$2/.test(sql)) {
+      if (params[1] === CLIENT_CRM_DOWN) throw new Error("crm down");
+      const hit = CRM[String(params[1])];
+      return hit ? [hit] : [];
+    }
     if (/FROM \S+\.assets a JOIN/.test(sql) && /a\.id = \$2/.test(sql)) return ROWS.filter((r) => r.id === params[1]);
     if (/FROM \S+\.assets a JOIN/.test(sql)) {
       // listAssets: the exact-scope filter of listWhere.
@@ -57,7 +98,8 @@ async function studio(opts: { cards?: boolean; generate?: boolean; accessMode?: 
       if (/a\.client_kind = \$2 AND a\.client_ref = \$3/.test(sql)) return ROWS.filter((r) => r.client_kind === params[1] && r.client_ref === params[2]);
       return ROWS;
     }
-    return [];
+    if (/FROM \S+\.generations WHERE company_id = \$1 AND id = \$2/.test(sql)) return GENERATIONS.filter((g) => g.id === params[1]);
+    throw new Error(`unexpected SQL in the fake: ${sql}`);
   };
   await plugin.definition.setup(harness.ctx);
   if (opts.accessMode) {
@@ -66,7 +108,7 @@ async function studio(opts: { cards?: boolean; generate?: boolean; accessMode?: 
     await harness.ctx.state.set(accessGrantScope(CO, MEMBER), { allow: [permissionKey("studio.work", "view")], scopeOverrides: { "studio.work": "all" } });
   }
   const as = (userId: string, restricted = false) => ({ companyId: CO, actor: { type: "user" as const, userId, onBehalfOfUserId: userId, onBehalfOfRestricted: restricted } });
-  return { harness, as };
+  return { harness, as, sqlSeen };
 }
 
 const refused = (code: string) => expect.objectContaining({ ok: false, refused: true, code });
@@ -200,5 +242,115 @@ describe("Studio cards on boards: the board-scope check (PAR-14280)", () => {
       expect(await harness.performAction("asset-url", { assetId: "a-asset", boardScope }, as(MEMBER)), JSON.stringify(boardScope)).toEqual(refused("bad_board_scope"));
     }
     expect(await harness.performAction("board-library", {}, as(MEMBER))).toEqual(refused("bad_board_scope"));
+  });
+});
+
+describe("the board's client link in boardTarget (PAR-14835 Behaviour table, AC2)", () => {
+  const target = async (projectId: string | null, boardId?: string) => {
+    const { harness, sqlSeen } = await studio();
+    return { result: boardTarget(harness.ctx, CO, boardId === undefined ? { projectId } : { projectId, boardId }), sqlSeen };
+  };
+  const linkRead = (sql: string[]) => sql.some((q) => /board_client_links/.test(q));
+
+  it("row 1: a project board with client X and no link is X, from the project", async () => {
+    const { result } = await target(PROJECT_A, BOARD_PLAIN);
+    expect(await result).toMatchObject({ client: { kind: "company", id: CLIENT_A }, clientName: "Acme", source: "project", dormant: null, missing: null });
+  });
+
+  it("row 2: a project board with client X and a link to Y is X; Y is dormant", async () => {
+    const { result } = await target(PROJECT_A, BOARD_LINKED_B);
+    expect(await result).toMatchObject({ client: { kind: "company", id: CLIENT_A }, source: "project", dormant: { ref: `company:${CLIENT_B}`, name: "Globex" } });
+  });
+
+  it("row 3: a project without a client and a link to Y is Y, from the board", async () => {
+    const { result } = await target(PROJECT_NO_CLIENT, BOARD_LINKED_B);
+    expect(await result).toMatchObject({ client: { kind: "company", id: CLIENT_B }, clientName: "Globex", source: "board", dormant: null });
+  });
+
+  it("row 4: a company or personal board with a link to Y is Y, from the board", async () => {
+    const { result } = await target(null, BOARD_LINKED_B);
+    expect(await result).toMatchObject({ client: { kind: "company", id: CLIENT_B }, source: "board" });
+  });
+
+  it("row 5: no link, or a latest row that is a clear, is own work", async () => {
+    for (const boardId of [BOARD_PLAIN, BOARD_CLEARED]) {
+      const { result } = await target(null, boardId);
+      expect(await result, boardId).toMatchObject({ client: null, clientName: null, source: null, dormant: null, missing: null });
+    }
+  });
+
+  it("row 6: a link to a client deleted in the CRM is refused with linked_client_missing", async () => {
+    const { result } = await target(null, BOARD_LINKED_GONE);
+    await expect(result).rejects.toMatchObject({ code: LINKED_CLIENT_MISSING });
+  });
+
+  it("row 7: the project's CRM read throws: board_client_unavailable, never own work", async () => {
+    const { result } = await target(PROJECT_DOWN, BOARD_LINKED_B);
+    await expect(result).rejects.toMatchObject({ code: BOARD_CLIENT_UNAVAILABLE, message: expect.stringContaining("nothing was shown or charged") });
+  });
+
+  it("row 8: the link SELECT throws: board_client_unavailable", async () => {
+    const { result } = await target(null, BOARD_LINK_DOWN);
+    await expect(result).rejects.toMatchObject({ code: BOARD_CLIENT_UNAVAILABLE });
+  });
+
+  it("row 9: the linked client's CRM read throws: board_client_unavailable", async () => {
+    const { result } = await target(null, BOARD_CRM_DOWN);
+    await expect(result).rejects.toMatchObject({ code: BOARD_CLIENT_UNAVAILABLE });
+  });
+
+  it("row 10: a request without boardId doesn't read the link and keeps today's answer", async () => {
+    const own = await target(PROJECT_NO_CLIENT);
+    expect(await own.result).toMatchObject({ client: null, source: null });
+    expect(linkRead(own.sqlSeen)).toBe(false);
+    const project = await target(PROJECT_A);
+    expect(await project.result).toMatchObject({ client: { id: CLIENT_A }, source: "project", dormant: null });
+    expect(linkRead(project.sqlSeen)).toBe(false);
+  });
+
+  it("boardScopeInput takes an optional board id; a malformed one is refused", async () => {
+    expect(boardScopeInput({ boardScope: { projectId: null, boardId: BOARD_PLAIN.toUpperCase() } })).toEqual({ projectId: null, boardId: BOARD_PLAIN });
+    expect(boardScopeInput({ boardScope: { projectId: "p", boardId: null } })).toEqual({ projectId: "p" });
+    const { harness, as } = await studio();
+    for (const boardId of ["board-1", 5, "", `${BOARD_PLAIN}x`]) {
+      expect(await harness.performAction("asset-url", { assetId: "own-asset", boardScope: { projectId: null, boardId } }, as(MEMBER)), String(boardId)).toEqual(refused("bad_board_scope"));
+    }
+  });
+});
+
+describe("files on a linked board: the two-scope check (PAR-14835 AC6)", () => {
+  const linked = { boardScope: { projectId: null, boardId: BOARD_LINKED_B } };
+
+  it("client A's file on a board linked to B is refused by asset-url, asset-urls and board-generation, and left out of board-library", async () => {
+    const { harness, as } = await studio();
+    const act = (key: string, params: Record<string, unknown>) => harness.performAction(key, params, as(MEMBER));
+    expect(await act("asset-url", { assetId: "a-asset", ...linked })).toEqual(refused(WRONG_BOARD));
+    expect(await act("asset-url", { assetId: "b-asset", ...linked })).toEqual({ url: expect.stringContaining("/b-asset/") });
+    const batch = (await act("asset-urls", { assetIds: ["a-asset", "b-asset"], ...linked })) as Batch;
+    expect(Object.keys(batch.urls)).toEqual(["b-asset"]);
+    expect(batch.refused).toEqual(["a-asset"]);
+    expect(await act("board-generation", { generationId: "gen-a", ...linked })).toEqual(refused(WRONG_BOARD));
+    expect(await act("board-generation", { generationId: "gen-b", ...linked })).toMatchObject({ id: "gen-b", status: "submitted" });
+    expect(await act("board-library", linked)).toEqual({ board: { kind: "client", name: "Globex" }, assets: [expect.objectContaining({ id: "b-asset" })], withheld: false, generateOn: false });
+  });
+
+  it("a dormant link: on client A's project board linked to B, B's file is refused the same way", async () => {
+    const { harness, as } = await studio();
+    const dormant = { boardScope: { projectId: PROJECT_A, boardId: BOARD_LINKED_B } };
+    const act = (key: string, params: Record<string, unknown>) => harness.performAction(key, params, as(MEMBER));
+    expect(await act("asset-url", { assetId: "b-asset", ...dormant })).toEqual(refused(WRONG_BOARD));
+    expect(((await act("asset-urls", { assetIds: ["b-asset", "a-asset"], ...dormant })) as Batch).refused).toEqual(["b-asset"]);
+    expect(await act("board-generation", { generationId: "gen-b", ...dormant })).toEqual(refused(WRONG_BOARD));
+    expect(await act("board-library", dormant)).toMatchObject({ board: { kind: "client", name: "Acme" }, assets: [{ id: "a-asset" }] });
+  });
+
+  it("a link to a deleted client, or a read that throws, refuses every board action", async () => {
+    const { harness, as } = await studio();
+    for (const [boardId, code] of [[BOARD_LINKED_GONE, LINKED_CLIENT_MISSING], [BOARD_LINK_DOWN, BOARD_CLIENT_UNAVAILABLE]] as const) {
+      const scope = { boardScope: { projectId: null, boardId } };
+      expect(await harness.performAction("asset-url", { assetId: "own-asset", ...scope }, as(MEMBER)), boardId).toEqual(refused(code));
+      expect(await harness.performAction("asset-urls", { assetIds: ["own-asset"], ...scope }, as(MEMBER)), boardId).toEqual(refused(code));
+      expect(await harness.performAction("board-library", scope, as(MEMBER)), boardId).toEqual(refused(code));
+    }
   });
 });

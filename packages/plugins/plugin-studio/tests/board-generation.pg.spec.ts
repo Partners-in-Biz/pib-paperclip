@@ -104,7 +104,7 @@ describe.skipIf(!available)("generate on a board card (PAR-14281)", () => {
     const params = { model: MODEL, prompt: "a lighthouse at dusk" };
     const board = await boardGenerationFor(ctx, CO, { projectId: "project-acme" }, params, "user-1", "unrestricted");
     const est = await estimateGeneration(ctx, CO, params, { userId: "user-1", projectId: board.projectId, board: board.mark }, runtime);
-    expect(est).toMatchObject({ creditsTotal: 0.5, dailyLimit: 20, usedToday: 0, client: { kind: "company", id: "acme" }, clientName: "Acme Ltd" });
+    expect(est).toMatchObject({ creditsTotal: 0.5, dailyLimit: 20, usedToday: 0, client: "company:acme", clientName: "Acme Ltd" });
     const out = await click("user-1", "project-acme", { expectedCredits: est.creditsTotal });
     expect(out.creditsReserved).toBe(est.creditsTotal);
     expect(await ledger()).toEqual([{ kind: "reserve", client_kind: "company", client_ref: "acme", credits: "0.5" }]);
@@ -193,7 +193,7 @@ describe.skipIf(!available)("generate on a board card (PAR-14281)", () => {
 
   describe("the agent path (stage 3d)", () => {
     function agentCtx(responsible: string | null, originKind: string) {
-      const issues = { "thread-1": { id: "thread-1", projectId: null, originKind }, "task-1": { id: "task-1", projectId: null } };
+      const issues = { "thread-1": { id: "thread-1", projectId: null, originKind, originId: "b0a7d000-0000-4000-8000-000000000001:chat" }, "task-1": { id: "task-1", projectId: null } };
       const base = makeCtx(pg.db, settings, issues);
       const db = {
         namespace: pg.db.namespace,
