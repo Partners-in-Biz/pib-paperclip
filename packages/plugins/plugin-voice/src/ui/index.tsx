@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
-import { useHostContext, usePluginData } from "@paperclipai/plugin-sdk/ui";
+import { useHostContext, usePluginData, type PluginDetailTabProps } from "@paperclipai/plugin-sdk/ui";
 import { AccessGate, useAccess } from "@partnersinbiz/pib-plugin-ui";
-import { useAccessMe, useVoiceAction } from "./actions.js";
+import { useAccessMe, useTabAccessMe, useVoiceAction } from "./actions.js";
+import { AgentVoiceTabBody } from "./agent-voice-tab.js";
 import {
   describeComposer,
   ensureMount,
@@ -686,6 +687,16 @@ function Toast({ message }: { message: string }) {
       {message}
     </div>,
     document.body,
+  );
+}
+
+/** The Voice tab on the agent page, behind the same access gate as the overlay. */
+export function AgentVoiceTab(props: PluginDetailTabProps) {
+  const access = useAccess(useTabAccessMe(), props.context.companyId);
+  return (
+    <AccessGate state={access} kind="widget">
+      <AgentVoiceTabBody {...props} />
+    </AccessGate>
   );
 }
 

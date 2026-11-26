@@ -26,6 +26,23 @@ export function voiceAccess(answer: unknown): unknown {
   return a.permissions.includes(VOICE_USE) ? answer : { ...a, open: false };
 }
 
+/** The permission behind the voices an agent speaks with (the Voice tab on the agent page). */
+export const VOICE_SETTINGS = "voice.settings:edit";
+
+/** Like `voiceAccess`, but the agent's Voice tab is open to a person with either `voice.use` or `voice.settings`. */
+export function voiceTabAccess(answer: unknown): unknown {
+  if (!answer || typeof answer !== "object") return answer;
+  const a = answer as { open?: unknown; permissions?: unknown };
+  if (a.open !== true || !Array.isArray(a.permissions) || a.permissions.length === 0) return answer;
+  return a.permissions.includes(VOICE_USE) || a.permissions.includes(VOICE_SETTINGS) ? answer : { ...a, open: false };
+}
+
+/** The guard's `access.me` action for the Voice tab, read by `voiceTabAccess`. */
+export function useTabAccessMe() {
+  const me = usePluginAction("access.me");
+  return useMemo(() => async (params?: Record<string, unknown>) => voiceTabAccess(await me(params)), [me]);
+}
+
 /** The guard's `access.me` action, read by `voiceAccess`, for `useAccess`. Stable while the inner action is. */
 export function useAccessMe() {
   const me = usePluginAction("access.me");

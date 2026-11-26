@@ -18,11 +18,22 @@ describe("manifest", () => {
       "plugin.state.write",
       "secrets.read-ref",
       "ui.action.register",
+      "ui.detailTab.register",
     ]);
   });
 
   it("mounts once in the app shell", () => {
-    expect(manifest.ui?.slots).toEqual([expect.objectContaining({ type: "appShellOverlay", exportName: "VoiceOverlay" })]);
+    expect(manifest.ui?.slots?.filter((s) => s.type === "appShellOverlay")).toEqual([expect.objectContaining({ exportName: "VoiceOverlay" })]);
+  });
+
+  it("adds the Voice tab to the agent page", () => {
+    expect(manifest.ui?.slots).toContainEqual({
+      type: "detailTab",
+      id: "agent-voice",
+      displayName: "Voice",
+      exportName: "AgentVoiceTab",
+      entityTypes: ["agent"],
+    });
   });
 
   it("keeps the xAI key a secret ref", () => {

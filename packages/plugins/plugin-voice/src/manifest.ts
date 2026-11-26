@@ -24,6 +24,8 @@ const manifest: PaperclipPluginManifestV1 = {
     "plugin.state.write",
     "secrets.read-ref",
     "ui.action.register",
+    // T5 (PAR-14830): the Voice tab on the agent page. A new capability: a stop-first deploy.
+    "ui.detailTab.register",
   ],
   entrypoints: { worker: "./dist/worker.js", ui: "./dist/ui" },
   ui: {
@@ -34,6 +36,13 @@ const manifest: PaperclipPluginManifestV1 = {
         id: "voice-overlay",
         displayName: "Voice",
         exportName: "VoiceOverlay",
+      },
+      {
+        type: "detailTab",
+        id: "agent-voice",
+        displayName: "Voice",
+        exportName: "AgentVoiceTab",
+        entityTypes: ["agent"],
       },
     ],
   },

@@ -37,3 +37,15 @@ In a live call, the header has a voice picker for the agent you are talking to (
 ## Who may use it (access stage A)
 
 Version 0.1.11 (PAR-12678): every action goes through the kit's access guard with the table in `src/access-table.ts`. `transcribe` and `live-session` need `voice.use` create; `set-agent-voice` needs `voice.settings` edit. Owners and admins always pass. No preset but Full access holds a voice permission, so a limited person gets the mic only when an owner turns `voice.use` on for him in Setup, under People. The overlay asks `access.me` first: without `voice.use` there is no mic and no waveform in any chat box. The two data handlers (`status`, `agent-voice`) carry no caller and stay as they are until stage C. With the company's access switch off (every company today) the guard is a pass-through. No migration, no capability change.
+
+## Direct voice (0.2.0)
+
+Direct voice lets you talk straight to the agent: you speak, the words go to the agent as an ordinary chat message, and the agent's own reply is spoken back in its own voice. The older live call (a separate voice model that relays messages) stays as "Classic".
+
+- **Engines.** Grok (xAI text-to-speech, 28 built-in voices) needs only the xAI key. Gemini (30 prebuilt voices, plus a short style line such as "calm and warm") needs the optional Gemini key in Voice settings. Until it is saved, Gemini controls stay hidden. "Default direct voice" in Voice settings sets the engine for a person who has not picked one.
+- **Per-agent voice.** The agent page has a **Voice** tab: pick the Grok voice, and once Gemini is set up the Gemini voice and style. **Play sample** speaks "Hi, I'm <agent name>." with the saved voice, so save first. A voice left on "Company default" uses the Voice settings. The choice is plugin state on the agent (`voice-profile`); the Grok voice is also kept in the old `voice` key, so a rollback keeps it.
+- **Per-person mode.** Each person's mode (direct with Grok or Gemini, or classic) is saved for that person alone, by the actor, never by a param.
+- **`local_trusted` is one shared choice.** In a `local_trusted` instance there is one board user and no sign-in, so every browser shares that one person's mode and the agent voices. Set it once.
+- **Access.** `speak`, `get-my-voice-mode` and `set-my-voice-mode` need `voice.use` create; `set-agent-voice-profile` needs `voice.settings` edit. The Voice tab opens for a person with either.
+- **Limits.** Spoken text is capped per piece and per person per day; provider trouble answers an error the panel shows or falls back from, with no retries.
+- **Rollback to 0.1.x.** New settings keys (`geminiApiKey`, `geminiVoice`, `defaultProvider`) are ignored by older workers; the Grok settings read the same (`tests/rollback-config.spec.ts`). The `ui.detailTab.register` capability is new in 0.2.0, so deploy it stop-first.
