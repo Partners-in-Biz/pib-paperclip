@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { PLANNING_CANVAS_NODE_KINDS } from "@paperclipai/shared";
 import { nodeRenderer, NODE_RENDERERS } from "../nodes/node-renderers";
 import { elementToItem, itemToElement } from "./legacy-bridge";
+import { cardTitle } from "../nodes/typed-meta";
 
 const fields = { kind: "hologram", x: 0, y: 0, width: 200, height: 100, zIndex: 1, color: "slate", title: "", content: "" };
 
@@ -38,5 +39,18 @@ describe("weblink rollback (PAR-14389 D1a)", () => {
     } finally {
       mutable.splice(index, 0, "weblink");
     }
+  });
+});
+
+describe("typed node title (PAR-14836)", () => {
+  const kanban = { itemType: "node", fields: { ...fields, kind: "kanban", title: "", data: { groupBy: "status", collapsed: [], source: { kind: "issues", filter: {}, limit: 200 } } } } as never;
+  it("synthesises '(untitled)' for an empty stored title, and cardTitle hides it", () => {
+    const el = itemToElement("k1", kanban, new Map()) as { title: string };
+    expect(el.title).toBe("(untitled)");
+    expect(cardTitle(el.title)).toBe("");
+  });
+  it("never writes the synthesised title back for a typed kind", () => {
+    const el = { id: "k1", kind: "note", x: 1, y: 2, width: 3, height: 4, zIndex: 1, color: "slate", title: "(untitled)", content: "" };
+    expect(elementToItem("node", el as never, kanban).fields).toMatchObject({ kind: "kanban", title: "" });
   });
 });

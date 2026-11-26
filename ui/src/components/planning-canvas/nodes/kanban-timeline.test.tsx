@@ -16,6 +16,7 @@ import { ApiError } from "@/api/client";
 import { CanvasRefContext } from "@/components/planning-canvas/nodes/canvas-context";
 import { KanbanNode } from "@/components/planning-canvas/nodes/KanbanNode";
 import { TimelineNode } from "@/components/planning-canvas/nodes/TimelineNode";
+import { cardTitle } from "@/components/planning-canvas/nodes/typed-meta";
 import { activeFilterCount, boardProjectDefault, defaultQueryFor, toggleStatus, withFilter, groupIssues, issueBars, newKanban, newTimeline, projectMilestones, timelineLayout, type QueriedIssue } from "@/components/planning-canvas/nodes/issue-board";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -161,5 +162,22 @@ describe("TimelineNode", () => {
     api.projects.mockResolvedValue([]);
     host = await mount(<TimelineNode nodeKey="t2" title="" data={newTimeline()} />, {});
     await vi.waitFor(() => expect(host.textContent).toContain("Nothing to show"));
+  });
+});
+
+describe("card header title (PAR-14836)", () => {
+  it.each(["", "(untitled)", "Untitled", " (Untitled) "])("falls back to the kind label for stored title %j", async (stored) => {
+    api.query.mockResolvedValue({ issues: [], limit: 200 });
+    let host = await mount(<KanbanNode nodeKey="k" title={cardTitle(stored)} data={newKanban()} />, {});
+    expect(host.textContent).toContain("Kanban");
+    expect(host.textContent?.toLowerCase()).not.toContain("untitled");
+    host = await mount(<TimelineNode nodeKey="t" title={cardTitle(stored)} data={newTimeline()} />, {});
+    expect(host.textContent).toContain("Timeline");
+    expect(host.textContent?.toLowerCase()).not.toContain("untitled");
+  });
+  it("keeps a real title", async () => {
+    api.query.mockResolvedValue({ issues: [], limit: 200 });
+    const host = await mount(<KanbanNode nodeKey="k" title={cardTitle("Sprint 4")} data={newKanban()} />, {});
+    expect(host.textContent).toContain("Sprint 4");
   });
 });

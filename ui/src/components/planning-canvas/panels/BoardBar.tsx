@@ -1,3 +1,4 @@
+import { cardTitle } from "@/components/planning-canvas/nodes/typed-meta";
 import { Check, CloudOff, FileDown, Grid2x2, LayoutTemplate, Loader2, NotebookPen, Plus, Redo2, Search, Trash2, TriangleAlert, Undo2 } from "lucide-react";
 import { PresenceAvatars } from "@/components/planning-canvas/realtime/PresenceAvatars";
 import { type CanvasController } from "@/components/planning-canvas/state/useCanvasController";
@@ -148,7 +149,7 @@ export function BoardBar({ c }: { c: CanvasController }) {
                     className="flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-accent"
                   >
                     <span className="truncate font-medium text-foreground">
-                      {hit.title || hit.content || "(Untitled)"}
+                      {cardTitle(hit.title) || hit.content || "(Untitled)"}
                     </span>
                     <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] capitalize text-muted-foreground">
                       {hit.kind}
