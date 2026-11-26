@@ -79,10 +79,10 @@ describe("manifest and migration", () => {
     expect(manifest.ui?.slots?.find((s) => s.type === "page")).toMatchObject({ routePath: "cockpit" });
     expect(manifest.apiRoutes).toHaveLength(9);
     // 0.29.0 (PAR-14514 S3): Watch live. One new capability, websocket.local; no http.outbound (the daemon socket is
-    // reached with node:http) and no ui.action.register (no task-page button, deviation 4).
+    // reached with node:http). 0.31.3 (PAR-14792): ui.action.register is declared because the Watch live toolbarButton slot needs it.
     expect(manifest.capabilities).toContain("websocket.local");
     expect(manifest.capabilities).not.toContain("http.outbound");
-    expect(manifest.capabilities).not.toContain("ui.action.register");
+    expect(manifest.capabilities).toContain("ui.action.register");
     expect(manifest.apiRoutes?.find((r) => r.routeKey === "browser-live")).toEqual({
       routeKey: "browser-live", method: "GET", path: "/browser/live", transport: "websocket", auth: "board", capability: "api.routes.register", companyResolution: { from: "query", key: "companyId" },
     });
