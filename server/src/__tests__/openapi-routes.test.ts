@@ -93,6 +93,7 @@ const apiPrefixes: Record<string, string> = {
   "planning-canvas-comments.ts": "/api",
   "planning-canvas-links.ts": "/api",
   "planning-canvas-blueprints.ts": "/api",
+  "planning-canvas-unfurl.ts": "/api",
   "projects.ts": "/api",
   "primary-agent.ts": "/api",
   "public-mcp.ts": "/api",

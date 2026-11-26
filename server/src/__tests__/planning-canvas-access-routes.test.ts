@@ -29,6 +29,7 @@ import { planningCanvasSharingRoutes } from "../routes/planning-canvas-sharing.j
 import { planningCanvasCommentRoutes } from "../routes/planning-canvas-comments.js";
 import { planningCanvasChatRoutes } from "../routes/planning-canvas-chat.js";
 import { planningCanvasSourceRoutes } from "../routes/planning-canvas-sources.js";
+import { planningCanvasUnfurlRoutes } from "../routes/planning-canvas-unfurl.js";
 import { planningCanvasBlueprintRoutes } from "../routes/planning-canvas-blueprints.js";
 import { planningCanvasLinkRoutes } from "../routes/planning-canvas-links.js";
 import { authorizationService } from "../services/authorization.js";
@@ -70,6 +71,7 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
  *   /api/companies/:companyId/planning-canvases/:boardId/refs
  *   /api/companies/:companyId/planning-canvases/:boardId/query
  *   /api/companies/:companyId/planning-canvases/:boardId/handoff
+ *   /api/companies/:companyId/planning-canvases/:boardId/unfurl
  *   /api/companies/:companyId/planning-canvases/from-blueprint
  */
 
@@ -155,6 +157,8 @@ const DENIAL_ROUTES: DenialRoute[] = [
   // Connector sources (PAR-14282).
   { method: "GET", path: `${P}/:boardId/agents/:agentId/read-actions`, url: (ctx) => `${board(ctx)}/agents/00000000-0000-4000-8000-000000000000/read-actions` },
   { method: "POST", path: `${P}/:boardId/items/:itemKey/refresh`, url: (ctx) => `${board(ctx)}/items/n1/refresh`, body: { clientRequestId: "r1" } },
+  // Link preview (PAR-14426).
+  { method: "POST", path: `${P}/:boardId/unfurl`, url: (ctx) => `${board(ctx)}/unfurl`, body: { nodeId: "n1" } },
   // C8 (PAR-13937).
   { method: "GET", path: `${P}/:boardId/refs`, url: (ctx) => `${board(ctx)}/refs` },
   { method: "POST", path: `${P}/:boardId/query`, url: (ctx) => `${board(ctx)}/query`, body: { kind: "issues", filter: {}, limit: 10 } },
@@ -260,6 +264,7 @@ const DENIAL_ROUTES: DenialRoute[] = [
     api.use(planningCanvasCommentRoutes(db));
     api.use(planningCanvasChatRoutes(db));
     api.use(planningCanvasSourceRoutes(db));
+    api.use(planningCanvasUnfurlRoutes(db));
     api.use(planningCanvasLinkRoutes(db));
     api.use(planningCanvasBlueprintRoutes(db));
     app.use("/api", api);

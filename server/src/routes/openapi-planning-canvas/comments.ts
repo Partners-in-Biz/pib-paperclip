@@ -3,6 +3,7 @@ import {
   createPlanningCanvasCommentSchema,
   planningCanvasChatMessageSchema,
   planningCanvasItemKeySchema,
+  planningCanvasUnfurlSchema,
   resolvePlanningCanvasCommentSchema,
 } from "@paperclipai/shared";
 import { z } from "zod";
@@ -88,5 +89,18 @@ export const PLANNING_CANVAS_COMMENTS_OPENAPI_ROUTES: PlanningCanvasOpenApiRoute
       "keys must be items of this board (`canvas_chat_unknown_context_key`). 30 messages per person per hour " +
       "(`canvas_chat_rate_limited`, 429). A repeat `clientRequestId` answers 200 with `repeat: true` and writes nothing.",
     body: planningCanvasChatMessageSchema,
+  },
+  {
+    method: "post",
+    path: `${BOARD}/unfurl`,
+    tags,
+    summary: "Fetch preview text for a web link node",
+    description:
+      "Needs edit access and a signed-in person; agents are refused (`canvas_unfurl_agent_caller`). Off unless " +
+      "`PLANNING_CANVAS_UNFURL` is on (`canvas_unfurl_disabled`, 403, nothing fetched). The server reads the URL from the " +
+      "stored `weblink` node (`canvas_unfurl_not_weblink`, 404), never from the body, and writes nothing: the caller " +
+      "saves the answer through the ops route. 30 per person per company per hour (`canvas_unfurl_rate_limited`, 429) " +
+      "and 2 in flight per person (`canvas_unfurl_busy`, 429). Every fetch failure answers 200 `{ preview: null }`.",
+    body: planningCanvasUnfurlSchema,
   },
 ];
