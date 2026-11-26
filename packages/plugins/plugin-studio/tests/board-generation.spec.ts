@@ -10,7 +10,7 @@ import { inputKeysOf, utcDayStart } from "../src/board-generation.js";
 import { STUDIO_ACCESS_TABLE } from "../src/access-table.js";
 import { STUDIO_GENERATE_CARD, STUDIO_MEDIA_CARD, STUDIO_PLUGIN_KEY } from "../src/plugin-key.js";
 import {
-  BOARD_MODELS, estimateFromReply, inputCandidates, outputNodeOp, propsFromSettings, queueStateFromReply, resolveInputs, saveSettingsOp, settingsFromProps, type BoardNode,
+  BOARD_MODELS, estimateFromReply, GENERATE_CARD_SIZE, inputCandidates, newGenerateCardOp, outputNodeOp, propsFromSettings, queueStateFromReply, resolveInputs, saveSettingsOp, settingsFromProps, type BoardNode,
 } from "../src/ui/board-generate.js";
 
 const CO = "b2600000-0000-4000-8000-000000000001";
@@ -150,6 +150,24 @@ describe("the generate card's logic", () => {
     expect(op.item.data).toEqual({ plugin: STUDIO_PLUGIN_KEY, type: STUDIO_MEDIA_CARD, props: { generationId: "gen-123" } });
     expect(op.item.data).not.toHaveProperty("assetId");
     expect(saveSettingsOp("gen", settingsFromProps({}))).toMatchObject({ op: "update", key: "gen", set: { data: { plugin: STUDIO_PLUGIN_KEY, type: STUDIO_GENERATE_CARD } } });
+  });
+
+  it("\"Add generate card\" places one empty generate embed node with default props (PAR-14817)", () => {
+    const op = newGenerateCardOp({ x: 80, y: 112 }, "gen-new");
+    const first = BOARD_MODELS.find((m) => m.kind === "image")?.id ?? "";
+    expect(op).toEqual({
+      op: "add",
+      item: {
+        itemType: "node", key: "gen-new", kind: "embed", x: 80, y: 112, width: GENERATE_CARD_SIZE.width, height: GENERATE_CARD_SIZE.height, zIndex: 1, color: "slate",
+        title: "Generate with Studio", content: "",
+        data: { plugin: STUDIO_PLUGIN_KEY, type: STUDIO_GENERATE_CARD, props: { prompt: "", kind: "image", model: first, inputKeys: "[]" } },
+      },
+    });
+    expect(op.item.data).not.toHaveProperty("assetId");
+    // The card reads its props back as the defaults, with no inputs and no last generation.
+    expect(settingsFromProps(op.item.data.props)).toEqual({ prompt: "", kind: "image", model: first, inputKeys: [], lastGenerationId: null });
+    expect(newGenerateCardOp({ x: 0, y: 0 }).item.key).toMatch(/^studio-generate-[a-z0-9]+$/);
+    expect(newGenerateCardOp({ x: 0, y: 0 }).item.key).not.toBe(newGenerateCardOp({ x: 0, y: 0 }).item.key);
   });
 
   it("reads the estimate's payer and the queue states", () => {
