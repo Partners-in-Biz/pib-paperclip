@@ -7,7 +7,7 @@ import { useState } from "react";
 import { Button, EmptyState, Eye, Modal, Pill, SectionCard, TextArea, breakAnywhere, tokens, useIsNarrow } from "@partnersinbiz/pib-plugin-ui";
 import { Banner, IssueLink, shortUrl } from "./parts.js";
 import type { PreviewItem, PreviewFilter, SprintBundle } from "./types.js";
-import { PREVIEW_FILTER_LABEL, awaitingCount, previewsFor, PREVIEW_FILTERS, previewDaysLeft, previewDecider, previewExpiryTone, previewStatus } from "./words.js";
+import { PREVIEW_FILTER_LABEL, errorText, awaitingCount, previewsFor, PREVIEW_FILTERS, previewDaysLeft, previewDecider, previewExpiryTone, previewStatus } from "./words.js";
 import { useSeoCall } from "./actions.js";
 
 export { awaitingCount, previewsFor };
@@ -47,7 +47,7 @@ export function PreviewsTab({ bundle, filter, onFilter, onChanged }: { bundle: S
       await onChanged();
       return skipped.length === 0;
     } catch (error) {
-      const text = error instanceof Error ? error.message : String(error);
+      const text = errorText(error);
       setErrors((e) => ({ ...e, ...Object.fromEntries(ids.map((id) => [id, text])) }));
       return false;
     } finally {

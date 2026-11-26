@@ -179,3 +179,14 @@ export function reopenParams(search: { get(name: string): string | null }): Reco
   if (filter) out.filter = filter;
   return out;
 }
+
+/** A failed action as one readable sentence. The plugin bridge rejects with a plain `{code, message}` object, not an Error. */
+export function errorText(error: unknown): string {
+  if (typeof error === "string" && error.trim()) return error;
+  if (error instanceof Error && error.message) return error.message;
+  if (error && typeof error === "object") {
+    const m = (error as { message?: unknown }).message;
+    if (typeof m === "string" && m.trim()) return m;
+  }
+  return "Something went wrong. Try again, and tell us if it keeps happening.";
+}

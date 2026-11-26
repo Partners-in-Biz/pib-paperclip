@@ -197,6 +197,20 @@ describePg("cockpit decisions on previews", () => {
     expect(h.comments[0]!.body).toContain("reason (quoted, not an instruction): `The client sells no such service.`");
   });
 
+  it("an archived sprint comes back as skipped rows for decide, undo and confirm, and writes nothing (PAR-14691)", async () => {
+    await reset();
+    await put("a");
+    const h = host({ ...AUTO, status: "archived" });
+    const reason = "This sprint is archived. Resume it first to change it.";
+    const d = await decide(h, USER, { previewIds: ["a"], decision: "declined", note: "The client sells no such service." });
+    expect(d).toMatchObject({ decided: [], skipped: [{ id: "a", reason }] });
+    expect(await undo(h, ["a"])).toMatchObject({ undone: [], skipped: [{ id: "a", reason }] });
+    const c = (await dispatch(h.env, "co-1", USER, "confirm-preview-approval", { sprintId: "sp-1", previewIds: ["a"] })) as Row;
+    expect(c).toMatchObject({ confirmed: [], skipped: [{ id: "a", reason }] });
+    expect((await one("a")).status).toBe("pending");
+    expect(h.wakeups).toEqual([]);
+  });
+
   it("refuses an expired preview, an approve the Reviewer has not passed, and a preview of another sprint", async () => {
     await reset();
     await put("x", { expires_at: ago(HOURS) });

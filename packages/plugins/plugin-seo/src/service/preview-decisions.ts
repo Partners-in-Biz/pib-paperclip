@@ -170,6 +170,9 @@ function audit(env: Env, action: string, companyId: string, sprintId: string, us
   env.ctx.logger.info(`SEO preview ${action}`, { action, companyId, sprintId, actor: { kind: "user", userId }, previewIds: done, skipped: skipped.map((s) => s.id), ...extra });
 }
 
+const ARCHIVED = "This sprint is archived. Resume it first to change it.";
+const archivedRows = (ids: string[]): Skipped[] => ids.map((id) => ({ id, reason: ARCHIVED }));
+
 const notOnSprint = (id: string): Skipped => ({ id, reason: "No such preview on this sprint." });
 
 // ---------------------------------------------------------------------------
@@ -189,7 +192,8 @@ export async function decidePreview(env: Env, companyId: string, actor: Actor, p
     return { sprintId: reqStr(params, "sprintId"), decision, decided: [] as string[], skipped: ids.map((id): Skipped => ({ id, reason })) };
   }
   const { sprint } = await loadSprintContext(env, companyId, reqStr(params, "sprintId"));
-  assertWritable(sprint);
+  // An archived sprint refuses as skipped rows, never a throw: a throw reaches the browser as a 502.
+  if (sprint.status === "archived") return { sprintId: sprint.id, decision, decided: [] as string[], skipped: archivedRows(ids) };
   const rows = await readRows(env, companyId, sprint.id, ids);
   const skipped: Skipped[] = [];
   const candidates: string[] = [];
@@ -233,7 +237,8 @@ export async function undoPreviewDecision(env: Env, companyId: string, actor: Ac
   const userId = boardUser(actor);
   const ids = previewIds(params);
   const { sprint } = await loadSprintContext(env, companyId, reqStr(params, "sprintId"));
-  assertWritable(sprint);
+  // An archived sprint refuses as skipped rows, never a throw: a throw reaches the browser as a 502.
+  if (sprint.status === "archived") return { sprintId: sprint.id, undone: [] as string[], skipped: archivedRows(ids), agentTold: [] as string[] };
   const rows = await readRows(env, companyId, sprint.id, ids);
   const skipped: Skipped[] = [];
   const undone: string[] = [];
@@ -299,7 +304,8 @@ export async function confirmPreviewApproval(env: Env, companyId: string, actor:
   const userId = boardUser(actor);
   const ids = previewIds(params);
   const { sprint } = await loadSprintContext(env, companyId, reqStr(params, "sprintId"));
-  assertWritable(sprint);
+  // An archived sprint refuses as skipped rows, never a throw: a throw reaches the browser as a 502.
+  if (sprint.status === "archived") return { sprintId: sprint.id, confirmed: [] as string[], skipped: archivedRows(ids) };
   const rows = await readRows(env, companyId, sprint.id, ids);
   const skipped: Skipped[] = [];
   const candidates: string[] = [];
