@@ -27,3 +27,17 @@ export const MAX_TTS_AUDIO_BYTES = 3 * 1024 * 1024;
 
 /** Longest Gemini style line sent in `speech_metadata.style`. */
 export const GEMINI_STYLE_MAX_CHARS = 120;
+
+/** Spoken-reply text (T3): cap before "The rest is in the chat.", first and later chunk sizes. */
+export const SPEECH_MAX_CHARS = 1_500;
+export const SPEECH_FIRST_CHUNK_CHARS = 160;
+export const SPEECH_CHUNK_CHARS = 300;
+
+/** Direct-mode endpointing (T3): all times in ms, levels are RMS 0..1 from `level()` in `ui/audio.ts`. */
+export const ENDPOINT_SPEECH_LEVEL = 0.02;
+export const ENDPOINT_START_MS = 150;
+export const ENDPOINT_END_QUIET_MS = 1_200;
+export const ENDPOINT_MAX_UTTERANCE_MS = 90_000;
+/** Barge-in: level above this multiple of the speech level for this long. */
+export const BARGE_IN_LEVEL_FACTOR = 2;
+export const BARGE_IN_MS = 300;
