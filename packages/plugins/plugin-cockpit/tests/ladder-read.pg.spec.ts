@@ -292,7 +292,7 @@ d("ladder reads (Postgres)", () => {
       }
 
       const ladder = await readLadderIssues(h.ctx, COMPANY, h.clock.now);
-      // Should return more than 5 candidates (up to 25)
+      // Should return more than 5 candidates (up to LADDER_CANDIDATES)
       expect(ladder.length).toBeGreaterThan(5);
       expect(ladder.length).toBeLessThanOrEqual(8); // We only created 8
     });
@@ -310,7 +310,7 @@ d("ladder reads (Postgres)", () => {
         [uuid(), COMPANY, agentId, ago(minutesAgo), JSON.stringify({ issueId, source: "blocked_issue_sweeper" })],
       );
 
-    it("a block the assignee owns itself is a candidate after 4 hours", async () => {
+    it("a block the assignee owns itself is a candidate after 1 hour", async () => {
       const stuck = uuid();
       await issue(stuck, "PAR-301", "blocked", { agent: agentId, blockedMinutesAgo: 5 * 60, descriptor: owned(agentId) });
       const ladder = await readLadderIssues(h.ctx, COMPANY, h.clock.now);
@@ -323,9 +323,20 @@ d("ladder reads (Postgres)", () => {
       expect(await readLadderIssues(h.ctx, COMPANY, h.clock.now)).toHaveLength(0);
     });
 
-    it("a fresh self-owned block is not a candidate before 4 hours", async () => {
-      await issue(uuid(), "PAR-303", "blocked", { agent: agentId, blockedMinutesAgo: 60, descriptor: owned(agentId) });
+    it("a fresh self-owned block is not a candidate before 1 hour", async () => {
+      await issue(uuid(), "PAR-303", "blocked", { agent: agentId, blockedMinutesAgo: 30, descriptor: owned(agentId) });
       expect(await readLadderIssues(h.ctx, COMPANY, h.clock.now)).toHaveLength(0);
+    });
+
+    it("PAR-14776: a new re-blocked issue is read even behind 30 older candidates (the old cap was 25, oldest first)", async () => {
+      for (let i = 1; i <= 30; i++) {
+        await issue(uuid(), `PAR-OLD-${i}`, "blocked", { blockedMinutesAgo: 3 * 1440 + i });
+      }
+      const stuck = uuid();
+      await issue(stuck, "PAR-14776", "blocked", { agent: agentId, blockedMinutesAgo: 5, descriptor: owned(agentId) });
+      await sweepRun(stuck, 10);
+      const ladder = await readLadderIssues(h.ctx, COMPANY, h.clock.now);
+      expect(ladder.map((l) => l.stuck.identifier)).toContain("PAR-14776");
     });
 
     it("re-blocked after a host sweep: a candidate at once, flagged", async () => {
