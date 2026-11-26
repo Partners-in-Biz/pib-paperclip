@@ -18,6 +18,7 @@ import {
   type PlanningCanvasStrokeFields,
   type PlanningCanvasTableData,
   type PlanningCanvasTimelineData,
+  type PlanningCanvasWebLinkData,
   isKnownPlanningCanvasNodeKind,
 } from "./types/planning-canvas.js";
 
@@ -115,9 +116,29 @@ function embedExportLabel(node: PlanningCanvasNodeFields): string {
   return assetId ? `${plugin}/${type} id=${assetId}` : `${plugin}/${type}`;
 }
 
+/** The stored URL of a web link node, on one line. */
+function webLinkUrl(node: PlanningCanvasNodeFields): string {
+  const url = (node.data as Partial<PlanningCanvasWebLinkData> | undefined)?.url;
+  return typeof url === "string" ? oneLine(url) : "";
+}
+
+/**
+ * The export label of a web link (plan PAR-14389 C.3, E path 12): the URL only.
+ * Never the stored title or preview text: any editor can write those, and text
+ * from an outside page must not enter an agent's context.
+ */
+function webLinkExportLabel(node: PlanningCanvasNodeFields): string {
+  return webLinkUrl(node) || "(no url)";
+}
+
+/** Kinds whose export shows ids or a URL only, never stored text. */
+const ID_ONLY_EXPORT_KINDS = new Set<string>(["embed", "weblink"]);
+
 /** The label an export (outline, Mermaid) shows for a node. */
 function exportNodeLabel(node: PlanningCanvasNodeFields, refs: PlanningCanvasRefMap): string {
-  return node.kind === "embed" ? embedExportLabel(node) : planningCanvasNodeLabel(node, refs);
+  if (node.kind === "embed") return embedExportLabel(node);
+  if (node.kind === "weblink") return webLinkExportLabel(node);
+  return planningCanvasNodeLabel(node, refs);
 }
 
 function linkLabels(links: PlanningCanvasIssueLink[] | undefined, refs: PlanningCanvasRefMap) {
@@ -163,6 +184,10 @@ function nodeBodyLines(node: PlanningCanvasNodeFields, quoteMarkdown = true): st
     case "timeline": {
       const data = node.data as PlanningCanvasTimelineData | undefined;
       return data ? [`Timeline of ${issueQueryText(data.source)}, by ${data.scale}`] : [];
+    }
+    case "weblink": {
+      const url = webLinkUrl(node);
+      return url ? [url] : [];
     }
     default:
       return node.content ? node.content.split(/\r?\n/) : [];
@@ -318,8 +343,8 @@ function outlineEntry(item: PlanningCanvasFormatItem, refs: PlanningCanvasRefMap
   const head = `- [${node.kind}] ${exportNodeLabel(node, refs)} ${codeSpan(item.key)}${
     links.length > 0 ? ` → ${links.join(", ")}` : ""
   }`;
-  // An embed exports its ids only, never its stored content.
-  const body = node.kind === "embed" ? [] : nodeBodyLines(node);
+  // An embed exports its ids only and a web link its URL only, never stored content.
+  const body = ID_ONLY_EXPORT_KINDS.has(node.kind) ? [] : nodeBodyLines(node);
   return [head, ...body.map((line) => (line ? `  ${line}` : ""))];
 }
 
