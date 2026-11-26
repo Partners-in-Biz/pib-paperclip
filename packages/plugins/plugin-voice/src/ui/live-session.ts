@@ -21,6 +21,8 @@ export interface LiveSessionInfo {
   voice: string;
   language: string;
   keyterms: string[];
+  /** The company voice: used once if the realtime socket refuses the agent's own voice id. */
+  companyVoice?: string;
 }
 
 export interface LiveSessionOptions {
@@ -121,6 +123,7 @@ export class LiveSession {
   private droppedHidden = false;
   private replayOnOpen = false;
   private connectedAt = 0;
+  private voiceRetried = false;
 
   constructor(private readonly opts: LiveSessionOptions) {
     this.info = opts.info;
@@ -280,7 +283,8 @@ export class LiveSession {
         if (this.closed) return;
         this.droppedHidden = false;
       }
-      this.info = info;
+      // A voice the socket refused stays replaced after a reconnect.
+      this.info = this.voiceRetried && info.companyVoice ? { ...info, voice: info.companyVoice } : info;
       this.replayOnOpen = true;
       this.openSocket(info);
     } catch (err) {
@@ -502,6 +506,14 @@ export class LiveSession {
       case "error": {
         const err = (msg.error ?? {}) as { message?: unknown; code?: unknown };
         const text = typeof err.message === "string" ? err.message : "The voice service reported an error.";
+        // Some TTS voice ids are not realtime voices: try the company voice once.
+        const fallback = this.info.companyVoice;
+        if (!this.voiceRetried && fallback && fallback !== this.info.voice && /voice/i.test(`${text} ${String(err.code ?? "")}`)) {
+          this.voiceRetried = true;
+          this.info = { ...this.info, voice: fallback };
+          this.configure();
+          break;
+        }
         // Config errors leave the session running on the previous settings; show, do not hang up.
         this.addNote(`Voice service: ${clip(text, 200)}`);
         break;

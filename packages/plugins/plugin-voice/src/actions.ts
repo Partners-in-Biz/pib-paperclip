@@ -280,6 +280,8 @@ export async function liveSessionAction(
     url: `${XAI_REALTIME_URL}?model=${encodeURIComponent(XAI_VOICE_MODEL)}`,
     // Sent to xAI as `voice` in the session.update the call opens with.
     voice: await resolveVoice(ctx, companyId, params.agentId, settings.voice),
+    // Tried once by the panel if the realtime socket refuses the agent's own voice id.
+    companyVoice: settings.voice,
     language: settings.language,
     keyterms,
   };

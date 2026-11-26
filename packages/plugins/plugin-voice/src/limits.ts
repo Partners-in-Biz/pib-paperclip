@@ -41,3 +41,14 @@ export const ENDPOINT_MAX_UTTERANCE_MS = 90_000;
 /** Barge-in: level above this multiple of the speech level for this long. */
 export const BARGE_IN_LEVEL_FACTOR = 2;
 export const BARGE_IN_MS = 300;
+/** Audio kept from before speech was detected, so the first syllable is not cut off. */
+export const ENDPOINT_PREROLL_MS = 300;
+
+/** Direct session (T4): the always-on reply poll, the re-reads after a live event, and retries. */
+export const DIRECT_REPLY_POLL_MS = 10_000;
+/** After a live event finds nothing yet (the row can land after the event): read again at +1 s and +3 s. */
+export const DIRECT_REFETCH_MS = [1_000, 3_000] as const;
+/** One turn is posted at most this many times, with one clientRequestId. */
+export const DIRECT_SEND_ATTEMPTS = 3;
+/** A Grok chunk is tried this many times before the rest of the reply is left in the chat. */
+export const XAI_SPEAK_ATTEMPTS = 2;

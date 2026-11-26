@@ -17,12 +17,23 @@ export interface AgentChatContext {
   agentRef: string | null;
   /** Task on screen when the call started, named in each message so "this task" means something to the agent. */
   pageIssueRef: string | null;
+  /** Direct voice mode: each turn asks the agent to answer in short spoken sentences. */
+  direct?: boolean;
 }
 
 export interface ChatTarget {
   issueId: string;
   ref: string;
   agentName: string;
+  /** The chat's agent: only its own comments count as the reply in direct mode. */
+  agentId: string | null;
+}
+
+/** The comment a turn was posted as, so replies can be read from that point on. */
+export interface PostedTurn {
+  target: ChatTarget;
+  commentId: string | null;
+  createdAt: string | null;
 }
 
 export interface AgentRow {
@@ -70,8 +81,8 @@ export function agentForCall(agents: AgentRow[], ref: string | null): AgentRow |
 }
 
 /** What the agent sees: the words as spoken, plus where they came from. */
-export function chatBody(text: string, pageIssueRef: string | null): string {
-  return `${text.trim()}\n\n_Sent by voice${pageIssueRef ? ` from ${pageIssueRef}` : ""}._`;
+export function chatBody(text: string, pageIssueRef: string | null, direct = false): string {
+  return `${text.trim()}\n\n_Sent by voice${pageIssueRef ? ` from ${pageIssueRef}` : ""}${direct ? ": reply in short spoken sentences" : ""}._`;
 }
 
 export class AgentChat {
@@ -105,7 +116,7 @@ export class AgentChat {
     }
     const issue = await this.ctx.api.post<ChatIssueRow>(`/companies/${this.ctx.companyId}/chats/${encodeURIComponent(ref)}`, {});
     const agent = (await this.agents()).find((a) => a.id === issue.assigneeAgentId);
-    return { issueId: issue.id, ref: issue.identifier ?? issue.id, agentName: agent?.name ?? "The agent" };
+    return { issueId: issue.id, ref: issue.identifier ?? issue.id, agentName: agent?.name ?? "The agent", agentId: issue.assigneeAgentId ?? null };
   }
 
   /**
@@ -113,8 +124,20 @@ export class AgentChat {
    * cannot post it twice.
    */
   async submit(text: string, clientRequestId: string): Promise<ChatTarget> {
+    return (await this.post(text, clientRequestId)).target;
+  }
+
+  /** `submit`, plus the posted comment's id and time as the server answered them. */
+  async post(text: string, clientRequestId: string): Promise<PostedTurn> {
     const target = await this.resolve();
-    await this.ctx.api.post(`/issues/${target.issueId}/comments`, { body: chatBody(text, this.ctx.pageIssueRef), clientRequestId });
-    return target;
+    const row = await this.ctx.api.post<{ id?: unknown; createdAt?: unknown } | null>(`/issues/${target.issueId}/comments`, {
+      body: chatBody(text, this.ctx.pageIssueRef, this.ctx.direct ?? false),
+      clientRequestId,
+    });
+    return {
+      target,
+      commentId: typeof row?.id === "string" ? row.id : null,
+      createdAt: typeof row?.createdAt === "string" ? row.createdAt : null,
+    };
   }
 }
