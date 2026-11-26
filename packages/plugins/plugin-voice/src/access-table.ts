@@ -3,8 +3,8 @@
  * Keys: action key, `tool:<name>`, `api:<routeKey>`. Owners and admins always pass; a limited person
  * needs the permission named here. With the company switch `off` (the default) nothing is checked.
  *
- * - `voice.use`: a voice note (`transcribe`) and a live call (`live-session`). Both spend xAI credit, so
- *   both are `create`. No preset holds `voice.use` (S7): a limited person has it only when an owner
+ * - `voice.use`: a voice note (`transcribe`), a live call (`live-session`) and a spoken reply (`speak`). All
+ *   spend provider credit, so all are `create`. No preset holds `voice.use` (S7): a limited person has it only when an owner
  *   switches it on for him in Setup, under People.
  * - `voice.settings`: the voice an agent speaks with in a live call.
  *
@@ -19,5 +19,6 @@ const settings = (action: PermissionEntry["action"]): PermissionEntry => ({ reso
 export const ACCESS_TABLE: AccessTable = Object.freeze({
   transcribe: use("create"),
   "live-session": use("create"),
+  speak: use("create"),
   "set-agent-voice": settings("edit"),
 });

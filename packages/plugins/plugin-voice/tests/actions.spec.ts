@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { PluginContext, PluginPerformActionContext } from "@paperclipai/plugin-sdk";
 import { decodeAudio, keytermsFor, liveSessionAction, requireBoardUser, statusAction, transcribeAction } from "../src/actions.js";
-import { settingsFrom, splitKeyterms } from "../src/config.js";
+import { XAI_VOICES, settingsFrom, splitKeyterms } from "../src/config.js";
 import { agentVoiceData, setAgentVoiceAction } from "../src/actions.js";
 import { MAX_AUDIO_BYTES } from "../src/xai.js";
 
@@ -53,7 +53,7 @@ describe("who may use voice", () => {
 
 describe("status", () => {
   it("is off until a key is saved", async () => {
-    expect(await statusAction(fakeCtx({}).ctx, COMPANY)).toEqual({ configured: false, liveEnabled: false, voiceNoteAutoSend: false });
+    expect(await statusAction(fakeCtx({}).ctx, COMPANY)).toEqual({ configured: false, geminiConfigured: false, liveEnabled: false, voiceNoteAutoSend: false });
     expect(await statusAction(fakeCtx({ xaiApiKey: { type: "secret_ref", secretId: "s" } }).ctx, COMPANY)).toMatchObject({ configured: true, liveEnabled: true });
     expect(await statusAction(fakeCtx({ xaiApiKey: { type: "secret_ref", secretId: "s" }, liveEnabled: false }).ctx, COMPANY)).toMatchObject({ liveEnabled: false });
     expect(await statusAction(fakeCtx({ xaiApiKey: "k" }).ctx, null)).toMatchObject({ configured: false });
@@ -179,6 +179,6 @@ describe("per-agent voice", () => {
 
   it("lists the valid voices with the effective one", async () => {
     const { ctx } = withState({ [A1]: "sal" });
-    expect(await agentVoiceData(ctx, COMPANY, A1)).toEqual({ voices: ["eve", "ara", "rex", "sal", "leo"], companyVoice: "ara", agentVoice: "sal", effective: "sal" });
+    expect(await agentVoiceData(ctx, COMPANY, A1)).toEqual({ voices: [...XAI_VOICES], companyVoice: "ara", agentVoice: "sal", effective: "sal" });
   });
 });
