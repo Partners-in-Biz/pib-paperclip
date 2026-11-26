@@ -64,6 +64,11 @@ launcher for the running agent, or the assigned agent when idle. The plugin owns
 its label, viewer, and access checks. Missing or disabled plugins add no view.
 A closed panel can be reopened from the launcher.
 
+A `taskSidePanelTab` slot adds an issue-scoped tab after the built-in tabs only
+while the plugin's visibility data handler answers `{ visible: true }`; loading
+or an error keeps it hidden, and it is never restored from saved tab state.
+Implementation: [visibility](../../ui/src/hooks/useTaskSidePanelPluginTabs.ts).
+
 Implementation: [panel discovery](../../ui/src/hooks/useTaskPluginPanels.ts) and
 [task panel](../../ui/src/components/task-side-panel/TaskSidePanel.tsx).
 Automated: [discovery tests](../../ui/src/hooks/useTaskPluginPanels.test.tsx) and

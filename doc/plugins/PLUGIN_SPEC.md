@@ -404,7 +404,8 @@ export interface PaperclipPluginManifestV1 {
         | "settingsPage"
         | "companySettingsPage"
         | "canvasNode"
-        | "canvasPanel";
+        | "canvasPanel"
+        | "taskSidePanelTab";
       id: string;
       displayName: string;
       /** Which export name in the UI bundle provides this component */
@@ -418,6 +419,14 @@ export interface PaperclipPluginManifestV1 {
         availabilityPath: string;
         /** Match runtime.activity.recorded for automatic opening; manual views need no mapping. */
         activation?: { namespace: string; activityKey: string };
+      };
+      /** Required on taskSidePanelTab, only allowed there. The host calls the
+       * getData handler with { issueId, projectId } every 10 seconds and lists
+       * the tab only while it returns { visible: true }; loading or an error hides it.
+       */
+      sidePanelTab?: {
+        visibilityDataKey: string;
+        contentMode?: "padded" | "full-bleed";
       };
       /** For page and companySettingsPage: single route segment */
       routePath?: string;

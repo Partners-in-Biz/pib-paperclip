@@ -534,6 +534,7 @@ Mount surfaces currently wired in the host include:
 - `sidebarPanel`
 - `detailTab`
 - `taskDetailView`
+- `taskSidePanelTab` (task side panel tab, listed only while the plugin's `sidePanelTab.visibilityDataKey` handler returns `{ visible: true }`)
 - `projectSidebarItem`
 - `globalToolbarButton`
 - `appShellOverlay` (persistent, signed-in application shell)

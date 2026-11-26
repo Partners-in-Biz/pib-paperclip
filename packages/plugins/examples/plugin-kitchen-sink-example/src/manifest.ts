@@ -248,6 +248,14 @@ const manifest: PaperclipPluginManifestV1 = {
         entityTypes: ["issue"],
       },
       {
+        // Shown on demand: toggle it from the Task Detail View.
+        type: "taskSidePanelTab",
+        id: SLOT_IDS.taskSidePanelTab,
+        displayName: "Kitchen Sink",
+        exportName: EXPORT_NAMES.taskSidePanelTab,
+        sidePanelTab: { visibilityDataKey: "side-tab-visible" },
+      },
+      {
         type: "toolbarButton",
         id: SLOT_IDS.toolbarButton,
         displayName: "Kitchen Sink Action",
