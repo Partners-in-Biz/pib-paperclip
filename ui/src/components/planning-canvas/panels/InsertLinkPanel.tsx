@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Bot, CircleDot, FolderOpen, Search, Target, X } from "lucide-react";
-import type { PlanningCanvasRefNodeKind } from "@paperclipai/shared";
+import { CANVAS_CARDS_LIMITS, CANVAS_CARDS_SEARCH_ACTION, canvasCardsSearchResultSchema, type PlanningCanvasRefNodeKind } from "@paperclipai/shared";
 import { goalsApi } from "@/api/goals";
 import { issuesApi } from "@/api/issues";
+import { pluginsApi } from "@/api/plugins";
+import { usePluginSlots } from "@/plugins/slots";
 import { type CanvasController } from "@/components/planning-canvas/state/useCanvasController";
 import { Button } from "@/components/ui/button";
 import { queryKeys } from "@/lib/queryKeys";
@@ -16,7 +18,16 @@ const TABS: Array<{ kind: PlanningCanvasRefNodeKind; label: string; icon: typeof
   { kind: "goal", label: "Goals", icon: Target },
 ];
 
-type Row = { id: string; primary: string; secondary?: string | null };
+type Row = { id: string; primary: string; secondary?: string | null; type?: string };
+
+/** One tab per installed entity kind that offers search (PAR-14389 C.3). */
+interface PluginTab {
+  id: string;
+  label: string;
+  pluginId: string;
+  pluginKey: string;
+  kind: string;
+}
 
 const RESULT_LIMIT = 30;
 
@@ -36,7 +47,25 @@ function matches(q: string, ...parts: Array<string | null | undefined>) {
 /** Search the company's issues, agents, projects and goals and drop one onto the board as a live card. */
 export function InsertLinkPanel({ c }: { c: CanvasController }) {
   const { insertPanelOpen, setInsertPanelOpen, selectedCompanyId, agents, projects, insertLinkNode } = c;
-  const [kind, setKind] = useState<PlanningCanvasRefNodeKind>("issue");
+  const { insertEmbedNode } = c;
+  const [tabId, setTabId] = useState<string>("issue");
+  const { slots } = usePluginSlots({ slotTypes: ["canvasNode"], companyId: selectedCompanyId });
+  const pluginTabs = useMemo((): PluginTab[] => {
+    const seen = new Set<string>();
+    const tabs: PluginTab[] = [];
+    for (const slot of slots) {
+      if (!slot.entityCard?.search) continue;
+      const id = `plugin:${slot.pluginKey}:${slot.entityCard.kind}`;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      tabs.push({ id, label: slot.entityCard.kind, pluginId: slot.pluginId, pluginKey: slot.pluginKey, kind: slot.entityCard.kind });
+    }
+    return tabs;
+  }, [slots]);
+  const pluginTab = pluginTabs.find((tab) => tab.id === tabId) ?? null;
+  // A tab whose plugin is no longer in the slot list falls back to Issues, and Issues shows as selected.
+  const activeTabId = pluginTab ? tabId : TABS.some((tab) => tab.kind === tabId) ? tabId : "issue";
+  const kind: PlanningCanvasRefNodeKind = pluginTab ? "issue" : (activeTabId as PlanningCanvasRefNodeKind);
   const [search, setSearch] = useState("");
   const q = useDebounced(search.trim(), 250);
   const needle = q.toLowerCase();
@@ -52,7 +81,30 @@ export function InsertLinkPanel({ c }: { c: CanvasController }) {
     enabled: insertPanelOpen && kind === "goal" && !!selectedCompanyId,
   });
 
+  const cardResults = useQuery({
+    queryKey: ["planning-canvas", "card-search", selectedCompanyId, pluginTab?.id, q],
+    enabled: insertPanelOpen && !!pluginTab && !!selectedCompanyId,
+    retry: false,
+    queryFn: async (): Promise<Row[]> => {
+      try {
+        const res = await pluginsApi.bridgePerformAction(
+          pluginTab!.pluginId,
+          CANVAS_CARDS_SEARCH_ACTION,
+          { type: pluginTab!.kind, q, limit: CANVAS_CARDS_LIMITS.searchLimitMax },
+          selectedCompanyId,
+        );
+        const parsed = canvasCardsSearchResultSchema.safeParse(res.data);
+        if (!parsed.success) return [];
+        return parsed.data.cards.map((card) => ({ id: card.id, primary: card.title, secondary: card.subtitle, type: card.type }));
+      } catch {
+        // A refusal or outage shows "Nothing found", never another person's data or a raw error.
+        return [];
+      }
+    },
+  });
+
   const { rows, loading } = useMemo((): { rows: Row[]; loading: boolean } => {
+    if (pluginTab) return { loading: cardResults.isLoading, rows: cardResults.data ?? [] };
     switch (kind) {
       case "issue":
         return {
@@ -84,7 +136,7 @@ export function InsertLinkPanel({ c }: { c: CanvasController }) {
             .map((goal) => ({ id: goal.id, primary: goal.title, secondary: goal.level })),
         };
     }
-  }, [kind, issueResults.data, issueResults.isLoading, goalResults.data, goalResults.isLoading, agents, projects, needle]);
+  }, [kind, issueResults.data, issueResults.isLoading, goalResults.data, goalResults.isLoading, agents, projects, needle, pluginTab, cardResults.data, cardResults.isLoading]);
 
   if (!insertPanelOpen) return null;
   return (
@@ -95,22 +147,38 @@ export function InsertLinkPanel({ c }: { c: CanvasController }) {
           <X className="size-3.5" />
         </Button>
       </div>
-      <div className="flex gap-1 border-b border-border p-2" role="tablist" aria-label="Card type">
+      <div className="flex flex-wrap gap-1 border-b border-border p-2" role="tablist" aria-label="Card type">
         {TABS.map(({ kind: tabKind, label, icon: Icon }) => (
           <button
             key={tabKind}
             type="button"
             role="tab"
-            aria-selected={kind === tabKind}
+            aria-selected={activeTabId === tabKind}
             title={label}
             aria-label={label}
-            onClick={() => setKind(tabKind)}
+            onClick={() => setTabId(tabKind)}
             className={cn(
               "flex h-7 flex-1 items-center justify-center rounded-md transition-colors",
-              kind === tabKind ? "bg-foreground text-background" : "text-muted-foreground hover:bg-accent hover:text-foreground",
+              activeTabId === tabKind ? "bg-foreground text-background" : "text-muted-foreground hover:bg-accent hover:text-foreground",
             )}
           >
             <Icon className="size-3.5" />
+          </button>
+        ))}
+        {pluginTabs.map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            role="tab"
+            aria-selected={activeTabId === tab.id}
+            title={tab.label}
+            onClick={() => setTabId(tab.id)}
+            className={cn(
+              "flex h-7 min-w-0 max-w-full flex-1 items-center justify-center rounded-md px-2 text-xs capitalize transition-colors",
+              activeTabId === tab.id ? "bg-foreground text-background" : "text-muted-foreground hover:bg-accent hover:text-foreground",
+            )}
+          >
+            <span className="truncate">{tab.label}</span>
           </button>
         ))}
       </div>
@@ -121,7 +189,7 @@ export function InsertLinkPanel({ c }: { c: CanvasController }) {
             type="search"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder={`Search ${TABS.find((tab) => tab.kind === kind)!.label.toLowerCase()}…`}
+            placeholder={`Search ${(pluginTab?.label ?? TABS.find((tab) => tab.kind === kind)!.label).toLowerCase()}…`}
             aria-label="Search"
             className="h-7 w-full rounded-md border border-border bg-background pl-7 pr-2 text-xs outline-none focus:border-ring"
           />
@@ -136,7 +204,7 @@ export function InsertLinkPanel({ c }: { c: CanvasController }) {
               <button
                 key={row.id}
                 type="button"
-                onClick={() => insertLinkNode(kind, row.id)}
+                onClick={() => (pluginTab ? insertEmbedNode(pluginTab.pluginKey, row.type ?? pluginTab.kind, row.id) : insertLinkNode(kind, row.id))}
                 className="flex min-w-0 flex-col gap-0.5 rounded-lg border border-border bg-card p-2.5 text-left transition-colors hover:bg-accent/40"
               >
                 {row.secondary ? <span className="truncate text-xs text-muted-foreground">{row.secondary}</span> : null}
