@@ -192,7 +192,7 @@ function ProjectTilePicker({
 /* ── List (issues) tab content ── */
 
 function ProjectIssuesList({ projectId, companyId }: { projectId: string; companyId: string }) {
-  const showAgentCreatedTasks = useShowAgentCreatedTasks(companyId, "paperclip:project-issues-view");
+  const showAgentCreatedTasks = useShowAgentCreatedTasks(companyId, "paperclip:project-issues-view", true);
   const queryClient = useQueryClient();
 
   const { data: agents } = useQuery({
@@ -251,6 +251,7 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
       liveIssueIds={liveIssueIds}
       projectId={projectId}
       enableAgentCreatedVisibilityFilter
+      defaultShowAgentCreatedTasks
       viewStateKey="paperclip:project-issues-view"
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
     />

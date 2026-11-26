@@ -201,15 +201,16 @@ function normalizeBoardColumnPageSize(value: unknown): BoardColumnPageSize {
     : KANBAN_COLUMN_DEFAULT_PAGE_SIZE;
 }
 
-function getViewState(key: string): IssueViewState {
+function getViewState(key: string, defaultShowAgentCreatedTasks = false): IssueViewState {
   try {
     const raw = localStorage.getItem(key);
     if (raw) {
       const parsed = JSON.parse(raw);
       return {
         ...defaultViewState,
+        showAgentCreatedTasks: defaultShowAgentCreatedTasks,
         ...parsed,
-        ...normalizeIssueFilterState(parsed),
+        ...normalizeIssueFilterState(parsed, defaultShowAgentCreatedTasks),
         workspaces: [],
         sortField: ISSUE_SORT_FIELDS.includes(parsed.sortField) ? parsed.sortField : defaultViewState.sortField,
         sortDir: parsed.sortDir === "asc" ? "asc" : "desc",
@@ -219,16 +220,17 @@ function getViewState(key: string): IssueViewState {
       };
     }
   } catch { /* ignore */ }
-  return { ...defaultViewState };
+  return { ...defaultViewState, showAgentCreatedTasks: defaultShowAgentCreatedTasks };
 }
 
 function getInitialViewState(
   key: string,
   initialAssignees?: string[],
   defaultSortField?: IssueSortField,
+  defaultShowAgentCreatedTasks = false,
 ): IssueViewState {
   const hasStored = hasStoredViewState(key);
-  const stored = getViewState(key);
+  const stored = getViewState(key, defaultShowAgentCreatedTasks);
   const base = !hasStored && defaultSortField
     ? { ...stored, sortField: defaultSortField, sortDir: "asc" as const }
     : stored;
@@ -245,8 +247,9 @@ function getInitialWorkspaceViewState(
   initialAssignees?: string[],
   initialWorkspaces?: string[],
   defaultSortField?: IssueSortField,
+  defaultShowAgentCreatedTasks = false,
 ): IssueViewState {
-  const stored = getInitialViewState(key, initialAssignees, defaultSortField);
+  const stored = getInitialViewState(key, initialAssignees, defaultSortField, defaultShowAgentCreatedTasks);
   if (!initialWorkspaces) return stored;
   return {
     ...stored,
@@ -472,6 +475,7 @@ interface IssuesListProps {
    */
   parentIssueIdForCostSummary?: string;
   enableAgentCreatedVisibilityFilter?: boolean;
+  defaultShowAgentCreatedTasks?: boolean;
   hasMoreIssues?: boolean;
   isLoadingMoreIssues?: boolean;
   mutedIssueIds?: Set<string>;
@@ -690,6 +694,7 @@ export function IssuesList({
   showProgressSummary = false,
   parentIssueIdForCostSummary,
   enableAgentCreatedVisibilityFilter = false,
+  defaultShowAgentCreatedTasks = false,
   hasMoreIssues = false,
   isLoadingMoreIssues = false,
   mutedIssueIds,
@@ -756,7 +761,7 @@ export function IssuesList({
   const initialWorkspacesKey = initialWorkspaces?.join("|") ?? "";
 
   const [savedViewState, setViewState] = useState<IssueViewState>(() =>
-    getInitialWorkspaceViewState(scopedKey, initialAssignees, initialWorkspaces, defaultSortField),
+    getInitialWorkspaceViewState(scopedKey, initialAssignees, initialWorkspaces, defaultSortField, defaultShowAgentCreatedTasks),
   );
   // The Tasks URL owns this filter; other collections keep their saved state.
   const viewState = useMemo(() => ({
@@ -764,7 +769,11 @@ export function IssuesList({
     ...sort,
     ...(routineTasksOnly === undefined ? {} : { routineTasksOnly }),
   }), [savedViewState, sort, routineTasksOnly]);
-  const showAgentCreatedTasks = useShowAgentCreatedTasks(selectedCompanyId, viewStateKey);
+  const showAgentCreatedTasks = useShowAgentCreatedTasks(
+    selectedCompanyId,
+    viewStateKey,
+    defaultShowAgentCreatedTasks,
+  );
   useEffect(() => {
     if (!enableAgentCreatedVisibilityFilter) return;
     setViewState((previous) => previous.showAgentCreatedTasks === showAgentCreatedTasks
@@ -786,14 +795,14 @@ export function IssuesList({
   }, [initialSearch]);
 
   // Reload view state whenever the persisted context changes.
-  const prevViewStateContextKey = useRef(`${scopedKey}::${initialAssigneesKey}::${initialWorkspacesKey}`);
+  const prevViewStateContextKey = useRef(`${scopedKey}::${initialAssigneesKey}::${initialWorkspacesKey}::${defaultShowAgentCreatedTasks}`);
   useEffect(() => {
-    const nextContextKey = `${scopedKey}::${initialAssigneesKey}::${initialWorkspacesKey}`;
+    const nextContextKey = `${scopedKey}::${initialAssigneesKey}::${initialWorkspacesKey}::${defaultShowAgentCreatedTasks}`;
     if (prevViewStateContextKey.current !== nextContextKey) {
       prevViewStateContextKey.current = nextContextKey;
-      setViewState(getInitialWorkspaceViewState(scopedKey, initialAssignees, initialWorkspaces, defaultSortField));
+      setViewState(getInitialWorkspaceViewState(scopedKey, initialAssignees, initialWorkspaces, defaultSortField, defaultShowAgentCreatedTasks));
     }
-  }, [scopedKey, initialAssignees, initialAssigneesKey, initialWorkspaces, initialWorkspacesKey, defaultSortField]);
+  }, [scopedKey, initialAssignees, initialAssigneesKey, initialWorkspaces, initialWorkspacesKey, defaultSortField, defaultShowAgentCreatedTasks]);
 
   const prevColumnsScopedKey = useRef(scopedKey);
   useEffect(() => {
@@ -811,8 +820,11 @@ export function IssuesList({
         sortDir: patch.sortDir ?? viewState.sortDir,
       });
     }
+    const normalizedPatch = patch.showAgentCreatedTasks !== undefined && patch.showAgentCreatedTasksCustomized === undefined
+      ? { ...patch, showAgentCreatedTasksCustomized: true }
+      : patch;
     setViewState((prev) => {
-      const next = { ...prev, ...sort, ...patch };
+      const next = { ...prev, ...sort, ...normalizedPatch };
       saveTaskCollectionPreferences({
         companyId: selectedCompanyId ?? "__unscoped__", collectionKey: viewStateKey,
         legacyViewStorageKey: scopedKey, legacyColumnsStorageKey: getIssueColumnsStorageKey(scopedKey),
@@ -1215,7 +1227,11 @@ export function IssuesList({
     enabled: !!selectedCompanyId && !memberGate.closed,
   });
 
-  const activeFilterCount = countActiveIssueFilters(viewState, enableAgentCreatedVisibilityFilter);
+  const activeFilterCount = countActiveIssueFilters(
+    viewState,
+    enableAgentCreatedVisibilityFilter,
+    defaultShowAgentCreatedTasks,
+  );
   const boardHighVolume = viewState.viewMode === "board" && filtered.length > KANBAN_BOARD_HIGH_VOLUME_THRESHOLD;
   const boardCompactCards =
     viewState.boardCardDensity === "compact"
@@ -1863,6 +1879,7 @@ export function IssuesList({
             currentUserId={currentUserId}
             enableExternalObjectFilters={externalObjectsEnabled}
             enableAgentCreatedVisibilityFilter={enableAgentCreatedVisibilityFilter}
+            defaultShowAgentCreatedTasks={defaultShowAgentCreatedTasks}
             iconOnly
           />
 

@@ -37,6 +37,7 @@ export type IssueFilterState = {
    */
   externalObjectStatuses: string[];
   showAgentCreatedTasks: boolean;
+  showAgentCreatedTasksCustomized?: boolean;
   routineTasksOnly?: boolean;
 };
 
@@ -114,9 +115,20 @@ function normalizeIssueFilterValueArray(value: unknown): string[] {
   return value.filter((entry): entry is string => typeof entry === "string");
 }
 
-export function normalizeIssueFilterState(value: unknown): IssueFilterState {
-  if (!value || typeof value !== "object") return { ...defaultIssueFilterState };
+export function normalizeIssueFilterState(
+  value: unknown,
+  defaultShowAgentCreatedTasks = false,
+): IssueFilterState {
+  if (!value || typeof value !== "object") {
+    return { ...defaultIssueFilterState, showAgentCreatedTasks: defaultShowAgentCreatedTasks };
+  }
   const candidate = value as Partial<Record<keyof IssueFilterState, unknown>>;
+  const showAgentCreatedTasksCustomized = candidate.showAgentCreatedTasksCustomized === true;
+  const showAgentCreatedTasks = defaultShowAgentCreatedTasks && !showAgentCreatedTasksCustomized
+    ? (candidate.showAgentCreatedTasks === true ? true : defaultShowAgentCreatedTasks)
+    : typeof candidate.showAgentCreatedTasks === "boolean"
+      ? candidate.showAgentCreatedTasks
+      : defaultShowAgentCreatedTasks;
   return {
     statuses: normalizeIssueFilterValueArray(candidate.statuses),
     priorities: normalizeIssueFilterValueArray(candidate.priorities),
@@ -127,7 +139,8 @@ export function normalizeIssueFilterState(value: unknown): IssueFilterState {
     workspaces: normalizeIssueFilterValueArray(candidate.workspaces),
     liveOnly: candidate.liveOnly === true,
     externalObjectStatuses: normalizeIssueFilterValueArray(candidate.externalObjectStatuses),
-    showAgentCreatedTasks: candidate.showAgentCreatedTasks === true,
+    showAgentCreatedTasks,
+    ...(showAgentCreatedTasksCustomized ? { showAgentCreatedTasksCustomized: true } : {}),
     routineTasksOnly: candidate.routineTasksOnly === true,
   };
 }
@@ -303,6 +316,7 @@ export function applyIssueFilters(
 export function countActiveIssueFilters(
   state: IssueFilterState,
   enableAgentCreatedVisibilityFilter = false,
+  defaultShowAgentCreatedTasks = false,
 ): number {
   let count = 0;
   if (state.statuses.length > 0) count += 1;
@@ -315,6 +329,6 @@ export function countActiveIssueFilters(
   if (state.liveOnly) count += 1;
   if (state.routineTasksOnly) count += 1;
   if (state.externalObjectStatuses.length > 0) count += 1;
-  if (enableAgentCreatedVisibilityFilter && state.showAgentCreatedTasks) count += 1;
+  if (enableAgentCreatedVisibilityFilter && state.showAgentCreatedTasks !== defaultShowAgentCreatedTasks) count += 1;
   return count;
 }

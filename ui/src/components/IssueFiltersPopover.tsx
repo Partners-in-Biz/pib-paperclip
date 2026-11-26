@@ -112,6 +112,7 @@ export function IssueFiltersPopover({
   enableExternalObjectFilters = true,
   enableLiveRunsFilter = true,
   enableAgentCreatedVisibilityFilter = false,
+  defaultShowAgentCreatedTasks = false,
   enableRoutineTasksFilter = false,
   buttonVariant = "ghost",
   iconOnly = false,
@@ -129,6 +130,7 @@ export function IssueFiltersPopover({
   enableExternalObjectFilters?: boolean;
   enableLiveRunsFilter?: boolean;
   enableAgentCreatedVisibilityFilter?: boolean;
+  defaultShowAgentCreatedTasks?: boolean;
   enableRoutineTasksFilter?: boolean;
   buttonVariant?: "ghost" | "outline";
   iconOnly?: boolean;
@@ -184,7 +186,11 @@ export function IssueFiltersPopover({
     [creatorOptionById, currentUserId, state.creators],
   );
   const clearFilters = () => {
-    onChange(defaultIssueFilterState);
+    onChange({
+      ...defaultIssueFilterState,
+      showAgentCreatedTasks: defaultShowAgentCreatedTasks,
+      showAgentCreatedTasksCustomized: false,
+    });
     inboxScopeFilters?.onClear();
   };
 
