@@ -690,10 +690,6 @@ function Toast({ message }: { message: string }) {
   );
 }
 
-/**
- * The app-shell mount. It asks `access.me` first (access stage A, spec 4.6): closed or still loading, there is no mic
- * and no waveform in any chat box (the guard still refuses every call behind it).
- */
 /** The Voice tab on the agent page, behind the same access gate as the overlay. */
 export function AgentVoiceTab(props: PluginDetailTabProps) {
   const access = useAccess(useTabAccessMe(), props.context.companyId);
@@ -704,6 +700,10 @@ export function AgentVoiceTab(props: PluginDetailTabProps) {
   );
 }
 
+/**
+ * The app-shell mount. It asks `access.me` first (access stage A, spec 4.6): closed or still loading, there is no mic
+ * and no waveform in any chat box (the guard still refuses every call behind it).
+ */
 export function VoiceOverlay() {
   const host = useHostContext();
   const access = useAccess(useAccessMe(), host.companyId);
