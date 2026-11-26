@@ -63,8 +63,9 @@ export function InsertLinkPanel({ c }: { c: CanvasController }) {
     return tabs;
   }, [slots]);
   const pluginTab = pluginTabs.find((tab) => tab.id === tabId) ?? null;
-  // A tab whose plugin is no longer in the slot list falls back to Issues.
-  const kind: PlanningCanvasRefNodeKind = TABS.some((tab) => tab.kind === tabId) ? (tabId as PlanningCanvasRefNodeKind) : "issue";
+  // A tab whose plugin is no longer in the slot list falls back to Issues, and Issues shows as selected.
+  const activeTabId = pluginTab ? tabId : TABS.some((tab) => tab.kind === tabId) ? tabId : "issue";
+  const kind: PlanningCanvasRefNodeKind = pluginTab ? "issue" : (activeTabId as PlanningCanvasRefNodeKind);
   const [search, setSearch] = useState("");
   const q = useDebounced(search.trim(), 250);
   const needle = q.toLowerCase();
@@ -152,13 +153,13 @@ export function InsertLinkPanel({ c }: { c: CanvasController }) {
             key={tabKind}
             type="button"
             role="tab"
-            aria-selected={tabId === tabKind}
+            aria-selected={activeTabId === tabKind}
             title={label}
             aria-label={label}
             onClick={() => setTabId(tabKind)}
             className={cn(
               "flex h-7 flex-1 items-center justify-center rounded-md transition-colors",
-              tabId === tabKind ? "bg-foreground text-background" : "text-muted-foreground hover:bg-accent hover:text-foreground",
+              activeTabId === tabKind ? "bg-foreground text-background" : "text-muted-foreground hover:bg-accent hover:text-foreground",
             )}
           >
             <Icon className="size-3.5" />
@@ -169,12 +170,12 @@ export function InsertLinkPanel({ c }: { c: CanvasController }) {
             key={tab.id}
             type="button"
             role="tab"
-            aria-selected={tabId === tab.id}
+            aria-selected={activeTabId === tab.id}
             title={tab.label}
             onClick={() => setTabId(tab.id)}
             className={cn(
               "flex h-7 min-w-0 max-w-full flex-1 items-center justify-center rounded-md px-2 text-xs capitalize transition-colors",
-              tabId === tab.id ? "bg-foreground text-background" : "text-muted-foreground hover:bg-accent hover:text-foreground",
+              activeTabId === tab.id ? "bg-foreground text-background" : "text-muted-foreground hover:bg-accent hover:text-foreground",
             )}
           >
             <span className="truncate">{tab.label}</span>
