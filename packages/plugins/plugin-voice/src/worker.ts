@@ -1,7 +1,7 @@
 import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
 import { createAccessGuard } from "@partnersinbiz/pib-plugin-kit";
 import { ACCESS_TABLE } from "./access-table.js";
-import { agentVoiceData, liveSessionAction, setAgentVoiceAction, statusAction, transcribeAction } from "./actions.js";
+import { agentVoiceData, liveSessionAction, setAgentVoiceAction, speakAction, statusAction, transcribeAction } from "./actions.js";
 import { PLUGIN_ID } from "./namespace.js";
 import { outboundFetch } from "./outbound.js";
 
@@ -20,6 +20,8 @@ const plugin = definePlugin({
       agentVoiceData(ctx, typeof params.companyId === "string" ? params.companyId : null, params.agentId),
     );
     guard.action("live-session", (params, context) => liveSessionAction(ctx, context, outboundFetch(ctx), params));
+    // Direct fetch (Node), not the host client: the provider answers bytes and the host body is a string.
+    guard.action("speak", (params, context) => speakAction(ctx, params, context));
     guard.action("set-agent-voice", (params, context) => setAgentVoiceAction(ctx, params, context));
   },
 

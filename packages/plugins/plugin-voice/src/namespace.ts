@@ -1,5 +1,5 @@
 export const PLUGIN_ID = "partnersinbiz.voice";
-export const PLUGIN_VERSION = "0.1.11";
+export const PLUGIN_VERSION = "0.1.12";
 
 /** xAI endpoints. Grok voice for both the voice note and the live session. */
 export const XAI_STT_URL = "https://api.x.ai/v1/stt";
@@ -7,3 +7,7 @@ export const XAI_CLIENT_SECRETS_URL = "https://api.x.ai/v1/realtime/client_secre
 export const XAI_REALTIME_URL = "wss://api.x.ai/v1/realtime";
 export const XAI_STT_MODEL = "grok-voice-transcribe-2.0";
 export const XAI_VOICE_MODEL = "grok-voice-latest";
+
+/** Text-to-speech endpoints (direct voice mode, `speak` action). */
+export const GEMINI_INTERACTIONS_URL = "https://generativelanguage.googleapis.com/v1beta/interactions";
+export const XAI_TTS_URL = "https://api.x.ai/v1/tts";

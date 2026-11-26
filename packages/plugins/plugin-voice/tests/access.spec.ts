@@ -42,6 +42,7 @@ describe("Voice access guard", () => {
     }
     expect(ACCESS_TABLE.transcribe).toEqual({ resource: "voice.use", action: "create" });
     expect(ACCESS_TABLE["live-session"]).toEqual({ resource: "voice.use", action: "create" });
+    expect(ACCESS_TABLE.speak).toEqual({ resource: "voice.use", action: "create" });
     for (const preset of Object.values(PRESETS)) {
       if (preset.id === "fullAccess") continue;
       expect(preset.permissions.filter((p) => p.startsWith("voice.")), preset.id).toEqual([]);
@@ -134,7 +135,7 @@ describe("Voice access guard", () => {
 
     it("the two data handlers answer as today under enforce (they carry no caller, spec 4.4)", async () => {
       const { harness } = await voice("enforce");
-      expect(await harness.getData("status", { companyId: COMPANY })).toEqual({ configured: false, liveEnabled: false, voiceNoteAutoSend: false });
+      expect(await harness.getData("status", { companyId: COMPANY })).toEqual({ configured: false, geminiConfigured: false, liveEnabled: false, voiceNoteAutoSend: false });
     });
   });
 });
