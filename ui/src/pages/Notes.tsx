@@ -597,10 +597,13 @@ export function Notes() {
     [notes],
   );
 
+  // On phones an open note takes the whole screen; the page header and filters return with "Back to notes".
+  const mobileEditorFocused = viewMode === "split" && mobileEditorOpen && Boolean(selectedNote);
+
   return (
     <div className="flex h-full min-h-0 flex-col bg-background">
       {/* Page Header */}
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-3.5">
+      <div className={cn("flex flex-wrap items-center justify-between gap-3 border-b border-border px-3 py-3 md:px-5 md:py-3.5", mobileEditorFocused && "max-md:hidden")}>
         <div className="flex items-center gap-3">
           <div className="flex size-9 items-center justify-center rounded-lg border border-border bg-muted/40">
             <NotebookPen className="size-4.5 text-foreground" />
@@ -689,8 +692,8 @@ export function Notes() {
 
       {/* Filter & Search Bar (hidden in timeline view) */}
       {viewMode !== "timeline" ? (
-        <>
-          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/80 bg-muted/15 px-5 py-2">
+        <div className={cn("contents", mobileEditorFocused && "max-md:hidden")}>
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/80 bg-muted/15 px-3 py-2 md:px-5">
             <div className="flex flex-wrap items-center gap-1">
               {(
                 [
@@ -725,21 +728,21 @@ export function Notes() {
               ))}
             </div>
 
-            <div className="flex items-center gap-2">
-              <div className="relative">
+            <div className="flex w-full min-w-0 items-center gap-2 md:w-auto">
+              <div className="relative flex-1 max-md:min-w-40 md:flex-none">
                 <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
                 <input
                   type="search"
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
                   placeholder="Search notes…"
-                  className="h-7 w-48 rounded-md border border-border bg-background pl-8 pr-2.5 text-xs text-foreground placeholder:text-muted-foreground/60 outline-none focus:border-ring sm:w-56"
+                  className="h-7 w-full rounded-md border border-border bg-background pl-8 pr-2.5 text-xs text-foreground placeholder:text-muted-foreground/60 outline-none focus:border-ring md:w-56"
                 />
               </div>
               <OptionSelect
                 ariaLabel="Sort notes"
                 placeholder="Sort"
-                triggerClassName="h-7 px-2 text-xs font-normal"
+                triggerClassName="h-7 px-2 max-md:w-auto max-md:shrink-0 text-xs font-normal"
                 value={sortMode}
                 items={[
                   { value: "updated", label: "Last updated" },
@@ -753,7 +756,7 @@ export function Notes() {
           </div>
 
           {allTags.length > 0 ? (
-            <div className="flex items-center gap-1.5 overflow-x-auto border-b border-border/60 px-5 py-1.5">
+            <div className="flex items-center gap-1.5 overflow-x-auto border-b border-border/60 px-3 py-1.5 md:px-5">
               <Tag className="size-3 shrink-0 text-muted-foreground" />
               {selectedTag ? (
                 <button
@@ -780,7 +783,7 @@ export function Notes() {
                 ))}
             </div>
           ) : null}
-        </>
+        </div>
       ) : null}
 
       {/* Main Content */}
@@ -1263,11 +1266,11 @@ export function Notes() {
             )}
           >
             {mobileEditorOpen && selectedNote ? (
-              <div className="flex items-center border-b border-border bg-muted/20 px-3 py-1.5 md:hidden">
+              <div className="flex items-center border-b border-border bg-muted/20 px-3 py-2 md:hidden">
                 <button
                   type="button"
                   onClick={() => setMobileEditorOpen(false)}
-                  className="inline-flex items-center gap-1 text-xs font-medium text-foreground hover:underline"
+                  className="inline-flex min-h-9 items-center gap-1 text-sm font-medium text-foreground hover:underline"
                 >
                   ← Back to notes
                 </button>
@@ -1610,9 +1613,9 @@ function NoteEditorPane({
   const recurrenceLabel = RECURRENCE_LABELS[note.scheduledRecurrence ?? "none"];
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="flex h-full min-h-0 w-full min-w-0 flex-col">
       {/* Top Action & Handoff Bar */}
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-card/50 px-5 py-2.5">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-card/50 px-3 py-2.5 md:px-5">
         <div className="flex flex-wrap items-center gap-1.5">
           <Button type="button" size="sm" onClick={onGiveToAgent}>
             <Send className="size-3.5" />
@@ -1766,7 +1769,7 @@ function NoteEditorPane({
 
       {/* Scheduled Handoff Banner */}
       {note.scheduledStatus === "pending" && note.scheduledFor ? (
-        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-amber-500/30 bg-amber-500/10 px-5 py-2.5 text-xs">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-amber-500/30 bg-amber-500/10 px-3 py-2.5 md:px-5 text-xs">
           <div className="flex items-center gap-2 text-amber-800 dark:text-amber-200">
             <Clock className="size-4 shrink-0" />
             <div>
@@ -1805,7 +1808,7 @@ function NoteEditorPane({
           </div>
         </div>
       ) : note.scheduledStatus === "failed" ? (
-        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-destructive/30 bg-destructive/10 px-5 py-2.5 text-xs text-destructive">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-destructive/30 bg-destructive/10 px-3 py-2.5 md:px-5 text-xs text-destructive">
           <div className="flex items-center gap-2">
             <AlertTriangle className="size-4 shrink-0" />
             <span>
@@ -1824,7 +1827,7 @@ function NoteEditorPane({
       ) : null}
 
       {/* Editor Body */}
-      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-6 py-5">
+      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-3 py-4 md:px-6 md:py-5">
         <input
           type="text"
           value={title}
@@ -1834,7 +1837,7 @@ function NoteEditorPane({
           }}
           onBlur={flushSave}
           placeholder="Untitled note"
-          className="w-full bg-transparent text-2xl font-bold tracking-tight text-foreground placeholder:text-muted-foreground/50 outline-none"
+          className="w-full bg-transparent text-xl font-bold md:text-2xl tracking-tight text-foreground placeholder:text-muted-foreground/50 outline-none"
         />
 
         {/* Metadata bar */}
@@ -2179,7 +2182,7 @@ function NoteEditorPane({
 
         {/* Markdown Editor / Preview */}
         {previewMode ? (
-          <div className="min-h-56 flex-1 rounded-lg border border-border/70 bg-muted/15 p-4 text-sm">
+          <div className="min-h-56 flex-1 rounded-lg border border-border/70 bg-muted/15 p-3 text-base md:p-4 md:text-sm">
             {body.trim() ? (
               <MarkdownBody>{body}</MarkdownBody>
             ) : (
@@ -2194,7 +2197,7 @@ function NoteEditorPane({
             onKeyDown={handleBodyKeyDown}
             onBlur={flushSave}
             placeholder="Write in Markdown… Type / for commands, - [ ] for delegatable action items, or [[Note Title]] to link notes."
-            className="min-h-56 flex-1 resize-none bg-transparent text-sm leading-relaxed text-foreground placeholder:text-muted-foreground/50 outline-none"
+            className="min-h-56 flex-1 resize-none bg-transparent text-base md:text-sm leading-relaxed text-foreground placeholder:text-muted-foreground/50 outline-none"
           />
         )}
 
