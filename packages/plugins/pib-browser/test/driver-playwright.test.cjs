@@ -525,11 +525,16 @@ test('driver-playwright click/fill timeouts (PAR-14819)', async (t) => {
     return createPlaywrightBrowser({ playwright: fakePw, profileRoot: '/tmp', env })
       .newContext({ origins: ['https://example.com'], guard: () => true });
   };
-  const timeoutErr = () => {
-    const e = new Error('locator.click: Timeout 15000ms exceeded.\nCall log:\n  - waiting for locator(\'#x\')\n  - locator resolved to <button id="x">Send</button>\n  - attempting click action\n  - waiting for element to be visible, enabled and stable\n  - element is not stable\n  - retrying click action');
+  // Real Playwright 1.62 call-log shapes (captured from Chromium 1248).
+  const logErr = (...lines) => {
+    const e = new Error('locator.click: Timeout 15000ms exceeded.\nCall log:\n' + lines.map((l) => '  - ' + l).join('\n'));
     e.name = 'TimeoutError';
     return e;
   };
+  const head = ["waiting for locator('#x')", 'locator resolved to <button id="x">Send</button>', 'attempting click action', 'waiting for element to be visible, enabled and stable'];
+  const unstableErr = () => logErr(...head, 'element is not stable', 'retrying click action', 'waiting 500ms');
+  const coveredErr = () => logErr(...head, 'element is visible, enabled and stable', 'scrolling into view if needed', 'done scrolling', '<div id="c" class="x"></div> intercepts pointer events', 'retrying click action', 'waiting 500ms');
+  const timeoutErr = unstableErr;
 
   await t.test('actionTimeoutMs: default 15 s, bad values default, 0 never means no timeout, most is 60 s', () => {
     for (const [raw, want] of [[undefined, 15000], ['', 15000], ['0', 15000], ['-5', 15000], ['abc', 15000], ['2500', 2500], ['999999', 60000]]) {
@@ -538,7 +543,8 @@ test('driver-playwright click/fill timeouts (PAR-14819)', async (t) => {
   });
 
   await t.test('waitReasonOf returns the last wait line from the call log', () => {
-    assert.equal(waitReasonOf(timeoutErr()), 'retrying click action');
+    assert.equal(waitReasonOf(unstableErr()), 'element is not stable');
+    assert.equal(waitReasonOf(coveredErr()), '<div> intercepts pointer events');
     assert.equal(waitReasonOf(new Error('Timeout 5ms exceeded.')), '');
   });
 
@@ -556,6 +562,54 @@ test('driver-playwright click/fill timeouts (PAR-14819)', async (t) => {
   await t.test('a click timeout keeps the Playwright wait reason on the error', async () => {
     const ctx = make({ url: () => 'https://example.com', on: () => {}, mainFrame: () => ({}),
       locator: () => ({ click: async () => { throw timeoutErr(); } }) });
-    await assert.rejects(() => ctx.click('#x'), (e) => e.waitReason === 'retrying click action');
+    await assert.rejects(() => ctx.click('#x'), (e) => e.waitReason === 'element is not stable');
   });
+});
+
+test('real Chromium through the dispatcher: timeout names the cause, session survives (PAR-14819)', async (t) => {
+  const fs = require('node:fs');
+  const exe = process.env.PIB_BROWSER_CHROMIUM || '/opt/pib-browser/ms-playwright/chromium-1248/chrome-linux64/chrome';
+  if (!fs.existsSync(exe)) return t.skip('no Chromium');
+  const http = require('node:http');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { createDispatcher } = require('../src/dispatch.cjs');
+  const { createApprovalStore, verifyApproval } = require('../src/approval.cjs');
+  const { EXIT } = require('../src/exit-codes.cjs');
+  const html = '<style>#m{position:absolute;left:0;top:50px;animation:mv .3s infinite alternate}@keyframes mv{to{left:300px}}#d{position:absolute;top:120px}</style><h1>Home</h1><button id=m>M</button><button id=d onclick="document.title=\'gone\'">Delete</button>';
+  const srv = http.createServer((q, r) => { r.setHeader('content-type', 'text/html'); r.end(html); });
+  await new Promise((ok) => srv.listen(0, '127.0.0.1', ok));
+  const origin = `http://127.0.0.1:${srv.address().port}`;
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pbr-'));
+  const store = createApprovalStore({ stateDir: tmp });
+  const now = Date.now();
+  const marker = 'approval for client:ca:site:#d';
+  const fetch = async (url) => ({ ok: true, status: 200, json: async () => (url.endsWith('/comments') ? [] : url.endsWith('/activity') ? [{ id: 'a', action: 'issue.updated', createdAt: new Date(now - 1000).toISOString(), actorType: 'user', actorId: 'u', details: { changes: { status: { from: 'open', to: 'done' } } } }] : { id: 'PAR-9', status: 'done', companyId: 'ca', description: marker, completedAt: new Date(now - 1000).toISOString() }) });
+  const browser = createPlaywrightBrowser({ profileRoot: tmp, env: { PIB_BROWSER_CHROMIUM: exe, PIB_BROWSER_HEADLESS: '1', PIB_BROWSER_ACTION_TIMEOUT_MS: '2000' } });
+  const { dispatch } = createDispatcher({
+    authenticate: async () => ({ ok: true, agentId: 'a1', companyId: 'ca', issue: { id: 'i1', identifier: 'PAR-1234', companyId: 'ca' } }),
+    browser,
+    policy: { version: 1, agents: { a1: { identities: ['client:ca:site'] } }, identities: { 'client:ca:site': { origins: [origin] } } },
+    sites: { sites: { site: { label: 'S', origins: [origin], loggedIn: { url: origin + '/', expect: 'Home' }, confirm: [], redact: [], destructive: { selectors: ['#d'], text: [] } } } },
+    clock: () => new Date(),
+    checkFill: () => ({ ok: true }),
+    verifyApproval: (a, o) => verifyApproval(a, { ...o, fetch, apiBase: 'http://api', clock: { now: () => now }, store })
+  });
+  const base = { token: 'valid', issue: 'PAR-1234', identity: 'client:ca:site' };
+  try {
+    const o = await dispatch({ ...base, cmd: 'open' });
+    assert.equal(o.ok, true, JSON.stringify(o));
+    const c = await dispatch({ ...base, cmd: 'click', args: { selector: '#m' } });
+    assert.equal(c.reason, 'timeout: element is not stable');
+    const tx = await dispatch({ ...base, cmd: 'text', args: { selector: 'h1' } });
+    assert.equal(tx.ok, true, JSON.stringify(tx));
+    // Destructive click + --force + ONE approval: one click, approval burnt once, second use refused.
+    const f = await dispatch({ ...base, cmd: 'click', args: { selector: '#d', approval: 'PAR-9', force: true } });
+    assert.equal(f.exit, EXIT.DONE, JSON.stringify(f));
+    const f2 = await dispatch({ ...base, cmd: 'click', args: { selector: '#d', approval: 'PAR-9', force: true } });
+    assert.equal(f2.reason, 'approval_already_used');
+  } finally {
+    await dispatch({ ...base, cmd: 'close' }).catch(() => {});
+    srv.close();
+  }
 });

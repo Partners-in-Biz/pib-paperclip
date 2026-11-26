@@ -37,11 +37,14 @@ function waitReasonOf(e) {
   const i = msg.indexOf('Call log:');
   if (i === -1) return '';
   const lines = msg.slice(i).split('\n').slice(1)
-    .map((l) => l.replace(/^\s*-\s*/, '').trim())
+    .map((l) => l.replace(/^\s*-\s*/, '').replace(/\s+/g, ' ').trim())
     .filter(Boolean);
-  const waiting = lines.filter((l) => /^(waiting for|element |attempting|retrying|.*intercepts pointer events|.*not (stable|visible|enabled|editable))/i.test(l));
-  const last = (waiting.length ? waiting : lines).slice(-1)[0] || '';
-  return last.replace(/\s+/g, ' ').slice(0, 200);
+  // Progress lines of the retry loop say nothing about the cause: skip them and take the last diagnostic.
+  const noise = /^(retrying\b|attempting\b|waiting \d+\s*ms\b|waiting for .* to be |scrolling\b|done scrolling|.* is visible, enabled and stable|locator resolved to\b|waiting for locator\b|performing\b|forcing\b)/i;
+  const diag = lines.filter((l) => !noise.test(l));
+  const last = diag.slice(-1)[0] || '';
+  // "<div id="c" class="x"></div> intercepts pointer events" -> "<div> intercepts pointer events": tag name only.
+  return last.replace(/<([a-zA-Z][\w-]*)\b[^>]*>(?:[^<]*<\/[a-zA-Z][\w-]*>)?/g, '<$1>').slice(0, 200);
 }
 
 // Run one action with the bounded timeout; a timeout carries the reason on the error.

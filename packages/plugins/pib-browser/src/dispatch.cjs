@@ -42,8 +42,10 @@ function classifyDriverError(e) {
 
 // --force skips Playwright's actionability checks (stable, not covered). QA seats on approved steps only:
 // it needs --approval, and the approval is checked like a destructive click's.
-async function checkForce({ args, verifyApproval, identityStr, action, auth, token }) {
+async function checkForce({ args, verifyApproval, identityStr, action, auth, token, verified }) {
   if (!args.force) return null;
+  // A destructive step already claimed this single-use approval; claiming it again would fail (approval_already_used).
+  if (verified && args.approval) return null;
   if (!args.approval || !verifyApproval) return { exit: EXIT.NEEDS_APPROVAL, ok: false, reason: 'force_needs_approval' };
   let r;
   try {
@@ -313,6 +315,7 @@ function createDispatcher(deps = {}) {
             approved: false
           });
 
+          let approvalVerified = false;
           if (authResult.exit === EXIT.NEEDS_APPROVAL && approval && verifyApproval) {
             let approvalResult;
             try {
@@ -342,6 +345,7 @@ function createDispatcher(deps = {}) {
               await dropSession(ctx, sessionKey);
               return { exit: authResult2.exit, ok: false, reason: authResult2.reason };
             }
+            approvalVerified = true;
           } else if (!authResult.ok) {
             // No approval offered: nothing was attempted, so the session stays open
             // and the agent can still shot/close (PAR-9187). Policy refusals still drop it.
@@ -352,7 +356,7 @@ function createDispatcher(deps = {}) {
           if (cmd === 'drag') await ctx.drag(from, to);
           else if (cmd === 'select') await ctx.select(selector, args.value);
           else {
-            const refused = await checkForce({ args, verifyApproval, identityStr, action: [selector, text].filter(Boolean), auth, token });
+            const refused = await checkForce({ args, verifyApproval, identityStr, action: [selector, text].filter(Boolean), auth, token, verified: approvalVerified });
             if (refused) return refused;
             await ctx.click(selector, text, args.force ? { force: true } : {});
           }
