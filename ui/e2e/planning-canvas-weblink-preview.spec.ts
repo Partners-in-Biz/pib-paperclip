@@ -29,8 +29,8 @@ const STORED = [
   node("off", 0, 0, 300, 132, { url: "https://example.com/off" }),
   node("saved", 340, 0, 300, 132, { url: "https://example.com/saved" }),
   node("empty", 680, 0, 300, 132, { url: "https://example.org/no-preview" }),
-  node("busy", 0, 180, 300, 132, { url: `https://${LONG_HOST}/a/very/long/path?with=query` }),
-  node("video", 340, 180, 300, 200, { url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ" }),
+  node("busy", 0, 260, 300, 132, { url: `https://${LONG_HOST}/a/very/long/path?with=query` }),
+  node("video", 340, 260, 300, 200, { url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ" }),
 ];
 
 async function seed(page: Page) {
@@ -100,8 +100,9 @@ test("Get preview: real off answer, mocked preview saved through ops, no preview
   // The browser saved the answer through the ops route: the server has it on the node.
   await expect.poll(async () => {
     const read = await (await page.request.get(`/api/companies/${company.id}/planning-canvases/${boardId}`)).json();
-    return read.items.find((i: { key: string }) => i.key === "saved")?.data?.preview?.title ?? null;
-  }).toBe(LONG_PREVIEW.title);
+    const saved = read.items.find((i: { key: string }) => i.key === "saved") as { data?: { height?: number; data?: { preview?: { title?: string } } } } | undefined;
+    return [saved?.data?.data?.preview?.title ?? null, saved?.data?.height ?? null];
+  }).toEqual([LONG_PREVIEW.title, 220]);
 
   let hits = 0;
   for (const width of WIDTHS) {

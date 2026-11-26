@@ -8,6 +8,8 @@ import { CanvasRefContext } from "@/components/planning-canvas/nodes/canvas-cont
 import { canEditBoard } from "@/components/planning-canvas/panels/related/related-source";
 
 const stop = (e: { stopPropagation: () => void }) => e.stopPropagation();
+/** Card height that holds the host, url, a two-line title and a three-line description. */
+export const PREVIEW_CARD_HEIGHT = 220;
 
 /** The refusal code: the server sends it as `body.code` (`body.error` is the message). */
 function unfurlErrorCode(err: unknown): string | null {
@@ -50,7 +52,13 @@ export function useWebLinkPreview(nodeKey: string | undefined, data: PlanningCan
       if (!preview) setNotice("No preview for this link.");
       // The card's link changed while the server fetched: the answer belongs to the old one.
       else if (current.current.url !== url) setNotice("The link changed. Try again.");
-      else latest.current.opStore.setNodeData(nodeKey, { url, preview });
+      else {
+        latest.current.opStore.setNodeData(nodeKey, { url, preview });
+        // A new card is 132 high: room for the host and url only. Grow it so the text is not cut.
+        latest.current.setNodes((prev) =>
+          prev.map((n) => (n.id === nodeKey && n.height < PREVIEW_CARD_HEIGHT ? { ...n, height: PREVIEW_CARD_HEIGHT } : n)),
+        );
+      }
     } catch (err) {
       const code = unfurlErrorCode(err);
       if (code === CODES.disabled) setOff(true);

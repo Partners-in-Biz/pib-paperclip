@@ -15,11 +15,14 @@ const PREVIEW = { title: "<img src=x onerror=alert(1)> Title", description: "Abo
 let root: Root;
 let container: HTMLDivElement;
 const setNodeData = vi.fn();
+let nodes: Array<{ id: string; height: number }> = [];
+const setNodes = (fn: (prev: typeof nodes) => typeof nodes) => { nodes = fn(nodes); };
 
 beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
   unfurl.mockReset();
   setNodeData.mockReset();
+  nodes = [{ id: "w1", height: 132 }, { id: "other", height: 100 }];
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -30,7 +33,7 @@ afterEach(async () => {
 });
 
 async function mount(data: PlanningCanvasWebLinkData, memberAccess = "edit") {
-  const c = { selectedCompanyId: "c1", activeBoard: { id: "b1", scope: "project", memberAccess }, opStore: { setNodeData } };
+  const c = { selectedCompanyId: "c1", activeBoard: { id: "b1", scope: "project", memberAccess }, opStore: { setNodeData }, setNodes };
   await act(async () => {
     root.render(
       <CanvasRefContext.Provider value={{ current: c } as never}>
@@ -63,6 +66,11 @@ describe("Get preview (D3)", () => {
     expect(unfurl).toHaveBeenCalledWith("c1", "b1", "w1");
     expect(setNodeData).toHaveBeenCalledWith("w1", { url: "https://example.com/a", preview: PREVIEW });
     expect(notice()).toBeNull();
+    // The 132-high card grows so the text is not cut; other nodes and taller cards keep their size.
+    expect(nodes).toEqual([{ id: "w1", height: 220 }, { id: "other", height: 100 }]);
+    nodes = [{ id: "w1", height: 300 }];
+    await click();
+    expect(nodes).toEqual([{ id: "w1", height: 300 }]);
   });
 
   it("says there is no preview when the server answers null, and saves nothing", async () => {
@@ -70,6 +78,7 @@ describe("Get preview (D3)", () => {
     await mount({ url: "https://example.com/a" });
     await click();
     expect(setNodeData).not.toHaveBeenCalled();
+    expect(nodes[0]!.height).toBe(132);
     expect(notice()).toBe("No preview for this link.");
   });
 
