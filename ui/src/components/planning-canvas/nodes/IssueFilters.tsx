@@ -1,5 +1,6 @@
 import { OptionSelect } from "@/components/OptionSelect";
 import { AgentPicker } from "@/components/AgentPicker";
+import { ChevronDown } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ISSUE_STATUSES, type PlanningCanvasIssueQuery } from "@paperclipai/shared";
@@ -104,8 +105,9 @@ export function IssueFilters({ query, onChange }: { query: PlanningCanvasIssueQu
         triggerClassName={TRIGGER}
       />
       <div className="relative" ref={statusRef}>
-        <button type="button" aria-expanded={statusOpen} aria-label="Filter by status" className={cn(SELECT, "text-left")} onClick={() => setStatusOpen((o) => !o)}>
-          {filter.status?.length ? `Status (${filter.status.length})` : "Any status"}
+        <button type="button" aria-expanded={statusOpen} aria-label="Filter by status" className={cn(SELECT, "flex items-center justify-between gap-1 text-left")} onClick={() => setStatusOpen((o) => !o)}>
+          <span className="truncate">{filter.status?.length ? `Status (${filter.status.length})` : "Any status"}</span>
+          <ChevronDown className="size-3.5 shrink-0 opacity-50" aria-hidden />
         </button>
         {statusOpen ? (
           <ul className="absolute z-10 mt-0.5 flex flex-col rounded border border-border bg-popover p-1 text-xs shadow-md">
