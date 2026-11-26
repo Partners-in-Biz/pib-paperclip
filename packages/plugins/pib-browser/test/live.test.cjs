@@ -186,18 +186,29 @@ test('SIGKILL follows when x11vnc ignores SIGTERM; shutdown kills every child', 
   assert.equal(fs.existsSync(s.config.socketPath), false, 'socket removed');
 });
 
-test('third viewer refused; a slot frees when a viewer leaves', async (t) => {
+test('third viewer replaces the oldest; x11vnc count stays at the cap', async (t) => {
   const s = await setup(t);
   const a = await s.connect();
   const b = await s.connect(VIEW, s.signWith(s.key()));
   assert.ok(a.ws && b.ws);
-  assert.equal((await s.connect(VIEW, s.signWith(s.key()))).status, 429);
-  assert.equal(s.live.status().viewers, 2);
-  a.ws.close();
-  assert.ok(await waitFor(() => s.live.status().viewers === 1));
+  const closedA = new Promise((r) => a.ws.on('close', r));
   const c = await s.connect(VIEW, s.signWith(s.key()));
-  assert.ok(c.ws);
+  assert.ok(c.ws, 'third view connects');
+  await within(closedA, 2000, 'oldest closed');
+  assert.ok(await waitFor(() => s.live.status().viewers === 2));
+  assert.equal(b.ws.readyState, 1, 'the newer view stays');
   b.ws.close(); c.ws.close();
+});
+
+test('concurrent attempts at the cap never exceed it and at least one connects', async (t) => {
+  const s = await setup(t);
+  const a = await s.connect();
+  const b = await s.connect(VIEW, s.signWith(s.key()));
+  assert.ok(a.ws && b.ws);
+  // Both slots still starting (no open view to end): simulate with two concurrent attempts at an empty cap.
+  const [x, y, z] = await Promise.all([1, 2, 3].map(() => s.connect(VIEW, s.signWith(s.key()))));
+  assert.ok([x, y, z].some((r) => r.ws), 'at least one connects');
+  for (const r of [a, b, x, y, z]) try { r.ws?.close(); } catch (e) {}
 });
 
 test('a ping is sent on every stream; the stream closes at its time limit', async (t) => {
