@@ -112,6 +112,7 @@ export const PLANNING_CANVAS_NODE_KINDS = [
   "timeline",
   "markdown",
   "embed",
+  "weblink",
 ] as const;
 export type PlanningCanvasNodeKind = (typeof PLANNING_CANVAS_NODE_KINDS)[number];
 
@@ -162,6 +163,11 @@ export const PLANNING_CANVAS_LIMITS = {
   /** Connector `source` of a table node (PAR-14257 C, D 4a): tool name length and params JSON size. */
   sourceToolMaxLength: 300,
   sourceParamsMaxBytes: 4096,
+  /** Web link node (PAR-14389 C.5): stored `url` and the `preview` text caps. */
+  webLinkUrlMaxLength: 2000,
+  webLinkPreviewTitleMaxLength: 200,
+  webLinkPreviewDescriptionMaxLength: 500,
+  webLinkPreviewSiteNameMaxLength: 100,
 } as const;
 
 export const PLANNING_CANVAS_BOARD_CAPS: Record<PlanningCanvasItemType, number> = {
@@ -258,12 +264,31 @@ export interface PlanningCanvasEmbedData {
   props: Record<string, PlanningCanvasEmbedProp>;
 }
 
+/** Preview text of a web link, fetched by the server on a click (D3). Any editor may write it: never trusted. */
+export interface PlanningCanvasWebLinkPreview {
+  title: string;
+  description: string;
+  siteName: string;
+  fetchedAt: string;
+}
+
+/**
+ * A web link card (PAR-14389 C.5). `url` is `https:` only, without userinfo,
+ * at most `webLinkUrlMaxLength` characters. No frame URL is ever stored: a
+ * renderer rebuilds it from `url` (see `parseYouTubeUrl`).
+ */
+export interface PlanningCanvasWebLinkData {
+  url: string;
+  preview?: PlanningCanvasWebLinkPreview;
+}
+
 export type PlanningCanvasTypedData =
   | PlanningCanvasTableData
   | PlanningCanvasKanbanData
   | PlanningCanvasTimelineData
   | PlanningCanvasMarkdownData
-  | PlanningCanvasEmbedData;
+  | PlanningCanvasEmbedData
+  | PlanningCanvasWebLinkData;
 
 /** Fields a node item stores in `planning_canvas_items.data`. */
 export interface PlanningCanvasNodeFields {

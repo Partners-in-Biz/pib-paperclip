@@ -15,6 +15,7 @@ import {
   type PlanningCanvasItemType,
   type PlanningCanvasNodeKind,
 } from "../types/planning-canvas.js";
+import { planningCanvasWebLinkUrlProblem } from "../planning-canvas-weblink.js";
 
 export const canvasNodeSchema = z.object({
   id: z.string().min(1).max(100),
@@ -212,12 +213,33 @@ export const planningCanvasEmbedDataSchema = z.strictObject({
   props: embedPropsSchema,
 });
 
+/**
+ * Web link node (PAR-14389 C.5). Applies to every writer, agents included:
+ * `https:` only, no userinfo, at most 2 000 characters, capped preview text.
+ * Strict: no frame URL or any other field can be stored.
+ */
+export const planningCanvasWebLinkDataSchema = z.strictObject({
+  url: z.string().superRefine((url, ctx) => {
+    const problem = planningCanvasWebLinkUrlProblem(url);
+    if (problem) ctx.addIssue({ code: "custom", message: problem });
+  }),
+  preview: z
+    .strictObject({
+      title: z.string().max(L.webLinkPreviewTitleMaxLength),
+      description: z.string().max(L.webLinkPreviewDescriptionMaxLength),
+      siteName: z.string().max(L.webLinkPreviewSiteNameMaxLength),
+      fetchedAt: z.string().min(1).max(40),
+    })
+    .optional(),
+});
+
 const TYPED_DATA_SCHEMAS: Partial<Record<PlanningCanvasNodeKind, z.ZodType>> = {
   table: planningCanvasTableDataSchema,
   kanban: planningCanvasKanbanDataSchema,
   timeline: planningCanvasTimelineDataSchema,
   markdown: planningCanvasMarkdownDataSchema,
   embed: planningCanvasEmbedDataSchema,
+  weblink: planningCanvasWebLinkDataSchema,
 };
 
 export const planningCanvasTypedDataSchema = z.union([
@@ -226,6 +248,7 @@ export const planningCanvasTypedDataSchema = z.union([
   planningCanvasTimelineDataSchema,
   planningCanvasMarkdownDataSchema,
   planningCanvasEmbedDataSchema,
+  planningCanvasWebLinkDataSchema,
 ]);
 
 const pointSchema = z.strictObject({ x: z.number().finite(), y: z.number().finite() });
