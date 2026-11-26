@@ -495,6 +495,25 @@ export const PLANNING_CANVAS_SOURCE_ERROR_CODES = {
   personRequired: "canvas_source_person_required",
 } as const;
 
+/** Refusal codes of the web link preview route (PAR-14389 C.5 "Preview fetch", D3). */
+export const PLANNING_CANVAS_UNFURL_ERROR_CODES = {
+  /** `PLANNING_CANVAS_UNFURL` is off, or reading it failed. Nothing is fetched. */
+  disabled: "canvas_unfurl_disabled",
+  /** 30 previews per person per company per hour. */
+  rateLimited: "canvas_unfurl_rate_limited",
+  /** 2 previews in flight per person, or 6 per server process. */
+  busy: "canvas_unfurl_busy",
+  /** The node is not a live web link node of this board. */
+  noWebLink: "canvas_unfurl_not_weblink",
+  agentCaller: "canvas_unfurl_agent_caller",
+  personRequired: "canvas_unfurl_person_required",
+} as const;
+
+/** Answer of `POST .../planning-canvases/:boardId/unfurl`: every fetch failure is the same `null`. */
+export interface PlanningCanvasUnfurlResult {
+  preview: PlanningCanvasWebLinkPreview | null;
+}
+
 /** One connector action a board may offer for a source-bound node: read-only, names and descriptions only. */
 export interface PlanningCanvasReadAction {
   tool: string;
