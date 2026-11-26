@@ -1,7 +1,7 @@
 import { createServer, type IncomingHttpHeaders, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { connect as netConnect, isIP, type AddressInfo, type Socket } from "node:net";
 import { gzipSync } from "node:zlib";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { guardedRemoteHttpFetch, type RemoteHttpSocketFactory } from "../services/remote-http-fetch.js";
 import {
   createPlanningCanvasUnfurlGate,
@@ -11,6 +11,7 @@ import {
   UNFURL_USER_AGENT,
   type PlanningCanvasUnfurlFetch,
 } from "../services/planning-canvas-unfurl.js";
+import type { PlanningCanvasWebLinkPreview } from "@paperclipai/shared";
 
 /**
  * PAR-14426 (plan PAR-14389 C.5 steps 1 to 9, E "D3"). The real
@@ -216,6 +217,30 @@ describe("web link preview fetch (C.5)", () => {
       log: () => {},
     });
     expect(result).toBeNull();
+  });
+
+  it("step 5: a fetch that never settles answers null at 5 s, not before, with one fetch", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchHop = vi.fn(() => new Promise<Response>(() => {}));
+      let settled: PlanningCanvasWebLinkPreview | null | undefined;
+      const reasons: string[] = [];
+      void fetchPlanningCanvasWebLinkPreview("https://hang.test/", {
+        lookup,
+        fetch: fetchHop,
+        log: (_host, reason) => reasons.push(reason),
+      }).then((value) => (settled = value));
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(settled).toBeUndefined();
+      expect(fetchHop).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(settled).toBeNull();
+      expect(reasons).toEqual(["deadline"]);
+      expect(fetchHop).toHaveBeenCalledTimes(1);
+      expect((fetchHop.mock.calls[0] as unknown as [URL, RequestInit])[1].signal?.aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   describe("step 6: status and type", () => {
