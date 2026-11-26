@@ -519,15 +519,15 @@ export function previewsHref(row: Pick<Scoped, "sprint_id" | "client_kind" | "cl
 
 type AwaitingRow = Scoped & { n: number; since: string | null };
 
-/** Same rule as the tab badge: pending, passed by the Reviewer, not expired, newest preview of its page. */
+/** Same rule as the tab badge and the Awaiting chip: pending, any review state, not expired, newest preview of each page of a task. */
 async function awaitingPreviews(ctx: PluginContext, companyId: string): Promise<{ sprints: AwaitingRow[]; tasks: Set<string> }> {
   const rows = await ctx.db.query<Scoped & { site_url?: string | null; n: string; since: string | null; task_ids: string[] | null }>(
     `SELECT s.id AS sprint_id, s.site_name, s.site_url, s.client_kind, s.client_ref, s.client_name, count(*) AS n, min(l.created_at)::text AS since,
             array_remove(array_agg(DISTINCT l.task_id), NULL) AS task_ids
-       FROM (SELECT DISTINCT ON (sprint_id, page_url) sprint_id, status, review_status, expires_at, created_at, task_id
-               FROM ${t("previews")} WHERE company_id = $1 AND status <> 'cancelled' ORDER BY sprint_id, page_url, created_at DESC) l
+       FROM (SELECT DISTINCT ON (sprint_id, task_id, page_url) sprint_id, status, review_status, expires_at, created_at, task_id
+               FROM ${t("previews")} WHERE company_id = $1 AND status <> 'cancelled' ORDER BY sprint_id, task_id, page_url, created_at DESC) l
        JOIN ${t("sprints")} s ON s.id = l.sprint_id
-      WHERE l.status = 'pending' AND l.review_status = 'passed' AND l.expires_at > now() AND s.status <> 'archived'
+      WHERE l.status = 'pending' AND l.expires_at > now() AND s.status <> 'archived'
       GROUP BY s.id ORDER BY min(l.created_at) LIMIT 30`,
     [companyId],
   );

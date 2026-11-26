@@ -872,8 +872,10 @@ export async function previewRows(env: Env, companyId: string, sprintId: string)
     const stats = typeof r.stats === "string" ? (JSON.parse(String(r.stats)) as Record<string, number>) : ((r.stats ?? {}) as Record<string, number>);
     const rendered = (stats as unknown as { rendered?: { keptPct?: number; addedWords?: number } }).rendered;
     const page = String(r.page_url);
-    const superseded = seen.has(page);
-    seen.add(page);
+    // Newest preview of each page of a task (as client-signoff does); a row with no task is keyed by its page alone.
+    const key = r.task_id ? `${String(r.task_id)}\u0000${page}` : page;
+    const superseded = seen.has(key);
+    seen.add(key);
     return {
       id: String(r.id),
       pageUrl: page,

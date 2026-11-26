@@ -51,8 +51,21 @@ describe("previews tab filters and badge (PAR-9145)", async () => {
     expect(ids("applied")).toEqual(["app", "appsup"]);
     expect(ids("expired")).toEqual(["exp"]);
   });
-  it("badge counts pending, passed, not expired, not superseded", () => {
-    expect(awaitingCount(all)).toBe(1);
+  it("badge equals the Awaiting chip: pending, not expired, not superseded, any review state", () => {
+    expect(awaitingCount(all)).toBe(2);
+    expect(awaitingCount(all)).toBe(previewsFor(all, "awaiting").length);
+    const mix = [p({ id: "n", reviewStatus: "pending" }), p({ id: "p1" }), p({ id: "p2" })];
+    expect(awaitingCount(mix)).toBe(3);
+    expect(previewsFor(mix, "awaiting")).toHaveLength(3);
     expect(awaitingCount(undefined)).toBe(0);
+  });
+});
+
+describe("client redirect keeps the page's query (PAR-14506)", async () => {
+  const { reopenParams } = await import("../src/ui/words.js");
+  it("carries tab and filter, and omits what is unset", () => {
+    expect(reopenParams(new URLSearchParams("sprint=s1&tab=previews&filter=declined"))).toEqual({ tab: "previews", filter: "declined" });
+    expect(reopenParams(new URLSearchParams("sprint=s1&tab=previews"))).toEqual({ tab: "previews" });
+    expect(reopenParams(new URLSearchParams("sprint=s1"))).toEqual({});
   });
 });
