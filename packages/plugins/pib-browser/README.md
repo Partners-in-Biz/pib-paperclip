@@ -12,6 +12,7 @@ Daemon and CLI for capturing logged-in browser evidence. Not installed by defaul
 - `pib-browser click` - Click an element
 - `pib-browser drag --from SEL --to SEL` - Drag one element onto another. Gated like `click`: the destructive-word check sees both selectors and their labels, and `--approval PAR-N` works the same.
 - `pib-browser fill` - Fill a form field
+- `pib-browser select --selector SEL --value TEXT` - Pick an option in a native `<select>` (label first, then value). Gated like `click`; the value is never logged.
 - `pib-browser text` - Get text from an element
 - `pib-browser shot` - Take a screenshot
 - `pib-browser net [--step NAME]` - Print the session's network log and write it to `<evidence root>/<PAR-n>/<PAR-n>-<step>-<time>.json`. Each entry has time, method, status (0 = request failed or blocked) and a redacted URL. Query values, fragments, credentials and token-like path segments are replaced with `[redacted]`; headers, cookies and bodies are never recorded. The log keeps the last 1000 requests of the session.

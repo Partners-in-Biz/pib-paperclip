@@ -54,6 +54,7 @@ function createFakeBrowser(graph = {}) {
     };
     const ctx = {
       goto, click, drag, setViewport, net,
+      select: async (sel, value) => { if (!currentUrl) throw new Error('No page loaded'); performed.push({ cmd: 'select', selector: sel, value }); },
       fill: async () => { if (!currentUrl) throw new Error('No page loaded'); },
       text, shot, hasText,
       describe, url,

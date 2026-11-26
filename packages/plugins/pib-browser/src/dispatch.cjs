@@ -13,7 +13,7 @@ const { createErrorLog } = require('./errlog.cjs');
 const { createHandoffSessions, DEFAULT_TIMEOUT_MS } = require('./handoff-session.cjs');
 
 // The agent verbs. They all need an agent token and act on that agent's own session.
-const COMMANDS = Object.freeze(['open', 'goto', 'click', 'drag', 'fill', 'text', 'shot', 'net', 'close']);
+const COMMANDS = Object.freeze(['open', 'goto', 'click', 'drag', 'fill', 'select', 'text', 'shot', 'net', 'close']);
 // Person hand-off (PAR-14022): authorised by root's flag, not by an agent token. Opens a window only a person
 // on the VNC screen can use; no agent verb can reach it.
 const HANDOFF_COMMANDS = Object.freeze(['handoff-open']);
@@ -254,11 +254,14 @@ function createDispatcher(deps = {}) {
           return violation || { exit: EXIT.DONE, ok: true };
         }
 
-        if (cmd === 'click' || cmd === 'drag') {
+        if (cmd === 'click' || cmd === 'drag' || cmd === 'select') {
           const { text, approval } = args;
           const { from, to } = args;
           // A drag is gated like a click on both ends: the destructive-word check sees both selectors.
           const selector = cmd === 'drag' ? (from && to ? `${from} => ${to}` : '') : args.selector;
+          if (cmd === 'select' && selector && !args.value) {
+            return { exit: EXIT.USAGE, ok: false, reason: 'selector_and_value_required' };
+          }
           if (!selector) {
             return { exit: EXIT.USAGE, ok: false, reason: cmd === 'drag' ? 'from_and_to_required' : 'selector_required' };
           }
@@ -273,6 +276,8 @@ function createDispatcher(deps = {}) {
                 : await ctx.label(selector, text);
             } catch (e) { label = undefined; }
           }
+          // A select is gated like a click; the chosen option text also counts toward the destructive check.
+          if (cmd === 'select') label = [label, args.value].filter(Boolean).join(' ');
           const click = { selector, text, label };
 
           const authResult = authorise({
@@ -322,6 +327,7 @@ function createDispatcher(deps = {}) {
           }
 
           if (cmd === 'drag') await ctx.drag(from, to);
+          else if (cmd === 'select') await ctx.select(selector, args.value);
           else await ctx.click(selector, text);
           const violation = await afterOp(ctx, sessionKey);
           return violation || { exit: EXIT.DONE, ok: true };

@@ -65,7 +65,7 @@ test('driver-playwright', async (t) => {
 
     const keys = Object.keys(ctx).sort();
     const expected = [
-      'click', 'close', 'describe', 'drag', 'fill', 'goto', 'hasText', 'label', 'net', 'setViewport', 'shot', 'text', 'url', 'violations'
+      'click', 'close', 'describe', 'drag', 'fill', 'goto', 'hasText', 'label', 'net', 'select', 'setViewport', 'shot', 'text', 'url', 'violations'
     ].sort();
 
     assert.deepEqual(keys, expected);
