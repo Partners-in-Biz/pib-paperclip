@@ -370,14 +370,12 @@ describe("Coordinator apps in More", () => {
     await renderSidebar();
     expect(container.querySelector('[data-outlet-app="new"]')).not.toBeNull();
   });
-  it("drops the Apps header when everything is unpinned, but launchers keep it", async () => {
+  it("drops the whole Apps section when everything is unpinned, even with launchers", async () => {
     fixture.pluginSlots = [appSlot("crm")];
+    fixture.pluginLaunchers = [{ id: "launch" }];
     localStorage.setItem(hiddenKey(), JSON.stringify([appKey("crm")]));
     await renderSidebar();
     expect(container.querySelector(".design-sidebar-apps")).toBeNull();
-    fixture.pluginLaunchers = [{ id: "launch" }];
-    await renderSidebar();
-    expect(container.querySelector(".design-sidebar-apps [data-plugin-launcher-zone]")).not.toBeNull();
     await openMore();
     expect(document.querySelector(".design-sidebar-more-apps [data-plugin-launcher-zone]")).toBeNull();
   });

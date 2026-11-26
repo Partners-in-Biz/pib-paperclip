@@ -15,7 +15,7 @@ import { useCompany } from "@/context/CompanyContext";
 import { useMemberRestriction } from "@/context/MemberRestrictionContext";
 import { RESTRICTED_MEMBER_LANDING_PATH } from "@/lib/member-restriction";
 import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
-import { PluginLauncherOutlet, usePluginLaunchers } from "@/plugins/launchers";
+import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { useSidebar } from "@/context/SidebarContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { Link, useLocation } from "@/lib/router";
@@ -91,11 +91,10 @@ function PluginNavigation({ companyId, rail, hidden }: { companyId: string | nul
   const { selectedCompany } = useCompany();
   const context = { companyId, companyPrefix: selectedCompany?.issuePrefix ?? null };
   const { slots } = usePluginSlots({ slotTypes: ["sidebar"], companyId });
-  const { launchers } = usePluginLaunchers({ placementZones: ["sidebar"], companyId });
   const [open, setOpen] = useState(true);
   const visibleSlot = useCallback((slot: { pluginKey: string; id: string }) => !hidden.has(sidebarAppKey(slot)), [hidden]);
   const visibleCount = slots.filter(visibleSlot).length;
-  if (rail || !companyId || (visibleCount === 0 && launchers.length === 0)) return null;
+  if (rail || !companyId || visibleCount === 0) return null;
   return <div className="design-sidebar-apps"><SidebarSection label="Apps" collapsible={{ open, onOpenChange: setOpen }}>
     <PluginSlotOutlet slotTypes={["sidebar"]} context={context} className="flex flex-col gap-0.5" itemClassName="text-(length:--text-compact) font-medium" missingBehavior="placeholder" filter={visibleSlot} />
     <PluginLauncherOutlet placementZones={["sidebar"]} context={context} className="flex flex-col gap-0.5" itemClassName="text-(length:--text-compact) font-medium" />
