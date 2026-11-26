@@ -53,6 +53,31 @@ export async function clientOfProject(ctx: PluginContext, companyId: string, pro
   return null;
 }
 
+/** A board's client could not be read: nothing is shown or charged, never own work instead (PAR-14835 Approach 2). */
+export const BOARD_CLIENT_UNAVAILABLE = "board_client_unavailable";
+
+export function boardClientUnavailable(): StudioError {
+  return new StudioError("Studio couldn't read this board's client just now, so nothing was shown or charged. Try again in a moment.", BOARD_CLIENT_UNAVAILABLE);
+}
+
+/**
+ * `clientOfProject` for boards: the same loop, but a failed CRM read refuses with `board_client_unavailable` instead of
+ * reading as "no client", so a board never falls back to another wallet. Other callers keep `clientOfProject`.
+ */
+export async function projectClientStrict(ctx: PluginContext, companyId: string, projectId: string | null | undefined): Promise<CrmClient | null> {
+  if (!projectId) return null;
+  try {
+    const clients = await listCrmClients(ctx, ctx.db.namespace, companyId);
+    for (const client of clients) {
+      const linked = await clientProjectIds(ctx, companyId, { kind: client.kind, id: client.id });
+      if (linked.includes(projectId)) return client;
+    }
+    return null;
+  } catch {
+    throw boardClientUnavailable();
+  }
+}
+
 /** The projects linked to a client, for prefilling a task. Empty when there are none or the CRM can't say. */
 export async function projectsOfClient(ctx: PluginContext, companyId: string, client: { kind: "company" | "contact"; id: string }): Promise<string[]> {
   return clientProjectIds(ctx, companyId, client).catch(() => [] as string[]);
@@ -90,6 +115,11 @@ export async function scopeForWork(ctx: PluginContext, companyId: string, reques
 export function assertOpenToPerson(target: ClientScope, restriction: ActingRestriction): void {
   if (!target || restriction === "unrestricted") return;
   refusePerson(restriction);
+}
+
+/** Refuses any restricted member (or a missing answer), whatever the target: for actions that change client links. */
+export function assertUnrestricted(restriction: ActingRestriction): void {
+  if (restriction !== "unrestricted") refusePerson(restriction);
 }
 
 function refusePerson(restriction: Exclude<ActingRestriction, "unrestricted">): never {

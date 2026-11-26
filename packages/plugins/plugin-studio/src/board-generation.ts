@@ -12,14 +12,16 @@
  * - Everything sits behind `boards.generate` (default off; a settings read that throws is off).
  */
 import type { PluginContext, ToolRunContext } from "@paperclipai/plugin-sdk";
-import type { ActingRestriction, ClientScope } from "@partnersinbiz/pib-plugin-kit";
-import { boardTarget, onBoard, WRONG_BOARD, type BoardScope } from "./board-scope.js";
+import { formatClientParam, sameClient, type ActingRestriction, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
+import { boardTarget, isBoardId, onBoard, WRONG_BOARD, type BoardScope } from "./board-scope.js";
 import { StudioConfig } from "./config.js";
 import { num, table } from "./db.js";
 import { StudioError } from "./errors.js";
-import { assertOpenToPerson } from "./scope.js";
+import { assertOpenToPerson, scopeInput, type ResolvedScope } from "./scope.js";
 
 export const BOARD_ORIGIN = "board";
+export const BOARD_CLIENT_CHANGED = "board_client_changed";
+export const BOARD_AMBIGUOUS = "board_ambiguous";
 /** Core's issue origin for a board chat thread (server/src/services/planning-canvas-comments.ts). */
 export const PLANNING_CANVAS_ORIGIN = "planning_canvas";
 export const MAX_INPUT_KEYS = 8;
@@ -92,7 +94,34 @@ export async function boardGenerationFor(ctx: PluginContext, companyId: string, 
   const target = await boardTarget(ctx, companyId, board, config);
   assertOpenToPerson(target.client, restriction);
   const mark: BoardMark = { userId, dailyLimit: await config.boardGenerationDailyLimit(), inputKeys: inputKeysOf(params.inputKeys) };
-  return { projectId: board.projectId, mark, client: target.client, clientName: target.clientName };
+  return { projectId: board.projectId, mark, client: target.client, clientName: target.clientName, scope: { scope: target.client, client: target.crm } satisfies ResolvedScope };
+}
+
+/**
+ * A board generate that names its board (PAR-14835 Approach 4) carries the client its estimate showed. A link changed
+ * since then refuses with `board_client_changed` before anything is priced or reserved.
+ */
+export function assertExpectedClient(params: Record<string, unknown>, client: ClientScope): void {
+  if (!("expectedClient" in params) || params.expectedClient === undefined) {
+    throw new StudioError("expectedClient is required with boardScope.boardId: the client the estimate showed (null for own work).", "bad_request");
+  }
+  const expected = scopeInput({ client: params.expectedClient }) ?? null;
+  if (!sameClient(expected, client)) {
+    throw new StudioError("This board's client changed since the estimate, so nothing was started. Check the new estimate and confirm again.", BOARD_CLIENT_CHANGED);
+  }
+}
+
+/** The board a chat thread issue belongs to: `originId` is `<boardId>` or `<boardId>:<itemKey>` (core's planning canvas comments). */
+function threadBoardId(originId: unknown): string | null {
+  if (typeof originId !== "string") return null;
+  const id = originId.split(":")[0] ?? "";
+  return isBoardId(id) ? id.toLowerCase() : null;
+}
+
+/** A run bound to a board chat thread: the mark for the daily count, and the board that decides who pays. */
+export interface BoardRun {
+  mark: BoardMark;
+  board: Required<BoardScope>;
 }
 
 /**
@@ -101,6 +130,14 @@ export async function boardGenerationFor(ctx: PluginContext, companyId: string, 
  * person is refused: the count would have no one to count against.
  */
 export async function boardMarkForRun(ctx: PluginContext, run: ToolRunContext, namedIssueId: string | null): Promise<BoardMark | null> {
+  return (await boardRunFor(ctx, run, namedIssueId))?.mark ?? null;
+}
+
+/**
+ * `boardMarkForRun` plus the thread's board (PAR-14835 Approach 5): the board id comes from core's thread issue, never
+ * from the agent, and its project is the thread issue's. Two threads of different boards refuse with `board_ambiguous`.
+ */
+export async function boardRunFor(ctx: PluginContext, run: ToolRunContext, namedIssueId: string | null): Promise<BoardRun | null> {
   let runIssueId: string | null = null;
   let actingUserId: string | null = null;
   try {
@@ -113,17 +150,39 @@ export async function boardMarkForRun(ctx: PluginContext, run: ToolRunContext, n
   } catch {
     // No run row: decided below from the named issue alone.
   }
+  const boards = new Map<string, Required<BoardScope>>();
   let thread = false;
   for (const id of new Set([runIssueId, namedIssueId].filter((v): v is string => Boolean(v)))) {
     const issue = await ctx.issues.get(id, run.companyId).catch(() => null);
     // Core's shared origin list doesn't name this kind yet; the host sends it as stored.
-    if ((issue?.originKind as string | undefined) === PLANNING_CANVAS_ORIGIN) thread = true;
+    if ((issue?.originKind as string | undefined) !== PLANNING_CANVAS_ORIGIN) continue;
+    thread = true;
+    const boardId = threadBoardId((issue as { originId?: unknown }).originId);
+    if (!boardId) throw new StudioError("This run works from a board's chat, but Studio can't tell which board. Nothing was started.", BOARD_AMBIGUOUS);
+    const projectId = issue?.projectId ? String(issue.projectId) : null;
+    const key = `${boardId}|${projectId ?? ""}`;
+    if (!boards.has(key)) boards.set(key, { boardId, projectId });
   }
   if (!thread) return null;
+  if (boards.size > 1) throw new StudioError("This run works from the chats of two different boards, so Studio can't tell which board pays. Nothing was started.", BOARD_AMBIGUOUS);
   const config = new StudioConfig(ctx, run.companyId);
   await assertBoardGenerationOn(config);
   if (!actingUserId) throw new StudioError("This run works from a board's chat but carries no person, so its board generation can't be counted. Nothing was started.", "board_no_person");
-  return { userId: actingUserId, dailyLimit: await config.boardGenerationDailyLimit(), inputKeys: [] };
+  return { mark: { userId: actingUserId, dailyLimit: await config.boardGenerationDailyLimit(), inputKeys: [] }, board: [...boards.values()][0]! };
+}
+
+/**
+ * Whose work a board-thread run's generation is (PAR-14835 Approach 5): the board's client, as on a card click. No
+ * `client` from the agent means the board's; the same client is fine; any other is refused with `wrong_client`.
+ */
+export async function scopeForBoardRun(ctx: PluginContext, companyId: string, board: BoardScope, requested: ClientScope | undefined): Promise<ResolvedScope> {
+  const target = await boardTarget(ctx, companyId, board);
+  if (requested !== undefined && !sameClient(requested, target.client)) {
+    const whose = target.clientName ?? "own work";
+    const param = target.client ? `client ${formatClientParam(target.client)}` : "no client";
+    throw new StudioError(`This work is on a board for ${whose}, so it can only use ${whose}'s Studio files (${param}).`, "wrong_client");
+  }
+  return { scope: target.client, client: target.crm };
 }
 
 /** One generation's state for its output card, checked against the board like a file. */

@@ -31,7 +31,7 @@ export const STUDIO_ACCESS_TABLE: AccessTable = Object.freeze({
 
   // Page actions.
   ...rows(VIEW, [
-    "asset-url", "asset-urls", "asset-data", "board-library", "board-generation", "brand-kit", "drive-list", "drive-thumbs", "drive-transfer",
+    "asset-url", "asset-urls", "asset-data", "board-library", "board-generation", "board-client", "brand-kit", "drive-list", "drive-thumbs", "drive-transfer",
     "prompt-templates", "canvas-templates", "canvas-text-drafts",
     "video-edit-list", "video-edit-get", "video-edit-render-status", "video-edit-versions-list", "video-edit-detect-beats",
   ]),
@@ -41,7 +41,7 @@ export const STUDIO_ACCESS_TABLE: AccessTable = Object.freeze({
   ]),
   ...rows(EDIT, [
     "review", "save-prompt-template", "save-canvas-template", "canvas-text-draft-taken", "canvas-save",
-    "canvas-version-save", "canvas-version-restore", "canvas-comment-add",
+    "canvas-version-save", "canvas-version-restore", "canvas-comment-add", "board-client-set",
     "video-edit-apply-ops", "video-edit-caption", "video-edit-cut-to-beat", "video-edit-cut-silences", "video-edit-voiceover",
     "video-edit-music", "video-edit-cancel-render", "video-edit-version-save", "video-edit-restore",
   ]),

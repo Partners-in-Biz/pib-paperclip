@@ -3,7 +3,8 @@ import { registerSocialMediaSync } from "./social-media-sync.js";
 import { actingRestriction, createAccessGuard, normalizeToolResult, registerClientProjectWatch, registerCrmProjection, scopeOfRow, toolFail, type ActingRestriction, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
 import { boardLibrary } from "./board-library.js";
 import { boardScopeInput, boardTarget } from "./board-scope.js";
-import { boardGenerationFor, boardGenerationState, boardMarkForRun } from "./board-generation.js";
+import { assertExpectedClient, boardGenerationFor, boardGenerationState, boardRunFor, scopeForBoardRun } from "./board-generation.js";
+import { boardClientView, setBoardClient } from "./board-clients.js";
 import { assetBytesForPerson, assetFileForAgent, assetUrlForPerson, assetUrlsForPerson, getAssetRow, importFromAttachment, linkAsset, listAssets } from "./assets.js";
 import { archiveCanvas, canvasScope, createCanvas, getCanvas, listCanvases, saveCanvas } from "./canvas.js";
 import { getRender } from "./video-edit/render-queue.js";
@@ -101,14 +102,19 @@ async function runTool(ctx: PluginContext, name: string, params: Record<string, 
     }
     case "studio-estimate": {
       const work = await workOf(ctx, run, params);
-      return estimateGeneration(ctx, companyId, params, { projectId: work.projectId });
+      // On a board chat thread the board decides who pays, as for studio-generate (PAR-14835 Approach 5).
+      const thread = await boardRunFor(ctx, run, work.issueId);
+      const scope = thread ? await scopeForBoardRun(ctx, companyId, thread.board, scopeInput(params)) : undefined;
+      return estimateGeneration(ctx, companyId, params, { projectId: work.projectId, board: thread?.mark, scope });
     }
     case "studio-generate": {
       const work = await workOf(ctx, run, params);
       if (!work.issueId) throw new StudioError("Generation is charged to a task: pass issueId, or run from an issue.", "no_issue");
-      // A run bound to a board chat thread counts against its person's daily board limit (PAR-14281, stage 3d).
-      const board = (await boardMarkForRun(ctx, run, work.issueId)) ?? undefined;
-      const out = await requestGeneration(ctx, companyId, params, { agentId: run.agentId, runId: run.runId, issueId: work.issueId, projectId: work.projectId, board });
+      // A run bound to a board chat thread counts against its person's daily board limit (PAR-14281, stage 3d), and
+      // charges the board's client: its project's, else the board's link (PAR-14835 Approach 5).
+      const thread = await boardRunFor(ctx, run, work.issueId);
+      const scope = thread ? await scopeForBoardRun(ctx, companyId, thread.board, scopeInput(params)) : undefined;
+      const out = await requestGeneration(ctx, companyId, params, { agentId: run.agentId, runId: run.runId, issueId: work.issueId, projectId: work.projectId, board: thread?.mark, scope });
       runDetached(() => void processQueue(ctx).catch((error) => ctx.logger.info("Studio queue kick failed", { error: errorText(error) })));
       return out;
     }
@@ -314,6 +320,18 @@ const plugin = definePlugin({
       return boardLibrary(ctx, me.companyId, scope, me.restriction, { kind: p.kind, limit: p.limit });
     });
 
+    // The board's CRM client (PAR-14835): what the panel shows, and setting or clearing it (owner or admin, Q7).
+    action("board-client", async (params, context) => {
+      const me = await person(context);
+      const scope = boardScopeInput(objectParams(params));
+      if (!scope) throw new StudioError("boardScope is required.", "bad_board_scope");
+      return boardClientView(ctx, me.companyId, scope, me);
+    });
+    action("board-client-set", async (params, context) => {
+      const me = await person(context);
+      return setBoardClient(ctx, me.companyId, objectParams(params), me);
+    });
+
     // Approve or reject on the page. Viewers can't; approving sends the file to Social.
     action("review", async (params, context) => {
       const me = await person(context);
@@ -447,7 +465,7 @@ const plugin = definePlugin({
       return assetUrlsForPerson(ctx, me.companyId, ids, me.restriction, 300, undefined, await boardFor(me.companyId, p));
     });
 
-    async function generator(context: Parameters<typeof person>[0], params: unknown) {
+    async function generator(context: Parameters<typeof person>[0], params: unknown, opts: { generate?: boolean } = {}) {
       const me = await person(context);
       if (!canGenerate(me.role)) throw new StudioError("Viewers can look at Studio but can't generate. Ask a company owner for member access.", "forbidden");
       const p = objectParams(params);
@@ -455,10 +473,12 @@ const plugin = definePlugin({
       const board = boardScopeInput(p);
       if (board) {
         const on = await boardGenerationFor(ctx, me.companyId, board, p, me.userId, me.restriction);
+        // A card that names its board confirms the client its estimate showed (PAR-14835 Approach 4); old tabs don't.
+        if (opts.generate && board.boardId) assertExpectedClient(p, on.client);
         const expected = p.expectedCredits === undefined || p.expectedCredits === null ? undefined : Number(p.expectedCredits);
         if (expected !== undefined && !Number.isFinite(expected)) throw new StudioError("expectedCredits must be a number.", "bad_request");
-        // No client (refused above) and no issue: the board's project decides who pays.
-        return { me, request: pageRequest(p), actor: { userId: me.userId, issueId: null, projectId: on.projectId, restriction: me.restriction, board: on.mark, expectedCredits: expected } };
+        // No client from the browser (refused above) and no issue: the board decides who pays, server-side.
+        return { me, request: pageRequest(p), actor: { userId: me.userId, issueId: null, projectId: on.projectId, restriction: me.restriction, board: on.mark, expectedCredits: expected, scope: on.scope } };
       }
       const ref = typeof p.issueId === "string" ? p.issueId.trim() : "";
       const issue = ref ? await loadIssue(ctx, me.companyId, ref) : null;
@@ -472,7 +492,7 @@ const plugin = definePlugin({
     });
 
     action("generate", async (params, context) => {
-      const { me, request, actor } = await generator(context, params);
+      const { me, request, actor } = await generator(context, params, { generate: true });
       const out = await requestGeneration(ctx, me.companyId, request, actor);
       runDetached(() => void processQueue(ctx).catch((error) => ctx.logger.info("Studio queue kick failed", { error: errorText(error) })));
       return out;

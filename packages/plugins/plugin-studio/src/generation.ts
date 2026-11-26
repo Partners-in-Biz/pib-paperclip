@@ -17,7 +17,7 @@ import { lookup } from "node:dns/promises";
 import { request as httpsRequest } from "node:https";
 import { isIP, type LookupFunction } from "node:net";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { scopeOfRow, type ActingRestriction, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
+import { formatClientParam, scopeOfRow, type ActingRestriction, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
 import { getAssetRow, storeAsset } from "./assets.js";
 import { StudioConfig } from "./config.js";
 import { credits, iso, num, table } from "./db.js";
@@ -279,6 +279,11 @@ export interface Actor {
   board?: BoardMark;
   /** The total the person confirmed. A different price at the click refuses with `estimate_changed`, nothing reserved. */
   expectedCredits?: number;
+  /**
+   * Whose work it is, already decided by the board (PAR-14835): a card click, or a run bound to a board chat thread.
+   * Set, it replaces `scopeForWork`; the board's resolve fails closed and the caller has refused any other client.
+   */
+  scope?: ResolvedScope;
 }
 
 /** A board generation is refused on the daily limit, an unset or zero cap, before the provider is asked for a price. */
@@ -353,7 +358,7 @@ export async function estimateEach(provider: GenerationProvider, model: string, 
 export async function estimateGeneration(ctx: PluginContext, companyId: string, params: Record<string, unknown>, actor: Actor, runtime = defaultRuntime) {
   const { model, body, references, audio } = requestBody(params);
   const batch = batchSize(params);
-  const where = await scopeForWork(ctx, companyId, scopeInput(params), actor.projectId ?? null);
+  const where = actor.scope ?? (await scopeForWork(ctx, companyId, scopeInput(params), actor.projectId ?? null));
   if (actor.restriction) assertOpenToPerson(where.scope, actor.restriction);
   const usedToday = await boardPrecheck(ctx, companyId, actor, where.scope, batch, runtime.now());
   const config = new StudioConfig(ctx, companyId);
@@ -361,7 +366,7 @@ export async function estimateGeneration(ctx: PluginContext, companyId: string, 
   const each = await estimateEach(await runtime.provider(config), model, await withReferences(config, companyId, model, body, refs));
   assertJobCeiling(model, each, audio.length > 0);
   const check = await capCheck(ctx, companyId, where.scope);
-  const board = actor.board ? { dailyLimit: actor.board.dailyLimit, usedToday, client: where.scope, clientName: where.client?.name ?? null } : {};
+  const board = actor.board ? { dailyLimit: actor.board.dailyLimit, usedToday, client: where.scope ? formatClientParam(where.scope) : null, clientName: where.client?.name ?? null } : {};
   return { model, batchSize: batch, creditsEach: each, creditsTotal: credits(each * batch), monthlyCap: check.cap.monthlyCredits, capSource: check.cap.source, usedThisMonth: check.used, remaining: check.remaining, ...board };
 }
 
@@ -383,7 +388,7 @@ export async function requestGeneration(ctx: PluginContext, companyId: string, p
   const { model, prompt, body, references, audio } = requestBody(params);
   const batch = batchSize(params);
   const projectId = actor.projectId ?? null;
-  const where: ResolvedScope = await scopeForWork(ctx, companyId, scopeInput(params), projectId);
+  const where: ResolvedScope = actor.scope ?? (await scopeForWork(ctx, companyId, scopeInput(params), projectId));
   if (actor.restriction) assertOpenToPerson(where.scope, actor.restriction);
   await boardPrecheck(ctx, companyId, actor, where.scope, batch, runtime.now());
   const config = new StudioConfig(ctx, companyId);
