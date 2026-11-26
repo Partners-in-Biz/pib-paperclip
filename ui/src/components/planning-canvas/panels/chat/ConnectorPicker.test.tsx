@@ -41,6 +41,9 @@ describe("ConnectorPicker", () => {
     await act(async () => { (Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.includes("Pull"))!).click(); });
     expect(send).toHaveBeenCalledWith(pullAsk("sheets-get-values"));
     expect(pullAsk("sheets-get-values")).toContain("Never write to the outside tool");
+    expect(pullAsk("sheets-get-values")).toContain("table node, with its source set");
+    expect(pullAsk("sheets-get-values")).not.toContain("markdown doc node");
+    expect(pullAsk("sheets-get-values")).toContain("markdown node and say in this chat");
     expect(container.querySelector('[data-testid="canvas-connector-sent"]')).not.toBeNull();
   });
   it("says so when there are no read actions", async () => {

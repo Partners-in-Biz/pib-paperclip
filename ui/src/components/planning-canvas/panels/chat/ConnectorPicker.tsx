@@ -7,7 +7,7 @@ import { sourceErrorMessage } from "@/components/planning-canvas/nodes/source-er
 
 /** The ask sent through the person's chat thread. The agent fetches with a read action and writes a node; the tool is never written to. */
 export function pullAsk(tool: string): string {
-  return `Fetch data with the read action "${tool}" and put the result on this board as a table node (or a markdown doc node), with its source set to that action. Use only this read action. Never write to the outside tool.`;
+  return `Fetch data with the read action "${tool}" and put the result on this board as a table node, with its source set to that action. For prose, write a markdown node and say in this chat which action you used. Use only this read action. Never write to the outside tool.`;
 }
 
 /**
