@@ -36,14 +36,14 @@ const row = (id: string, client: string | null, status = "draft") => ({
 });
 const ROWS = [row("a-asset", CLIENT_A), row("b-asset", CLIENT_B), row("own-asset", null), row("own-archived", null, "archived"), row("a-archived", CLIENT_A, "archived")];
 
-async function studio(opts: { cards?: boolean; accessMode?: "enforce" } = {}) {
+async function studio(opts: { cards?: boolean; generate?: boolean; accessMode?: "enforce" } = {}) {
   const at = new Date().toISOString();
   const member = (userId: string) => ({ id: `m-${userId}`, companyId: CO, principalType: "user" as const, principalId: userId, status: "active" as const, membershipRole: "member", grants: [], createdAt: at, updatedAt: at });
   const harness = createTestHarness({
     manifest,
     config: {
       r2: { accountId: "acct", bucket: "pib-private", accessKeyId: "AK", secretAccessKey: { type: "secret_ref", secretId: "sec-1" } },
-      ...(opts.cards === undefined ? {} : { boards: { cards: opts.cards } }),
+      ...(opts.cards === undefined && opts.generate === undefined ? {} : { boards: { ...(opts.cards === undefined ? {} : { cards: opts.cards }), ...(opts.generate === undefined ? {} : { generate: opts.generate }) } }),
     },
   });
   harness.seed({ accessMembers: [member(MEMBER), member(RESTRICTED), member(OUTSIDER)] });
@@ -132,7 +132,7 @@ describe("Studio cards on boards: the board-scope check (PAR-14280)", () => {
     expect(await act("asset-url", { assetId: "a-asset", ...board(PROJECT_A) })).toEqual(refused(MEMBER_RESTRICTED));
     const own = (await act("asset-urls", { assetIds: ["own-asset"], ...board(null) })) as Batch;
     expect(Object.keys(own.urls)).toEqual(["own-asset"]);
-    expect(await act("board-library", board(PROJECT_A))).toEqual({ board: { kind: "client", name: null }, assets: [], withheld: true });
+    expect(await act("board-library", board(PROJECT_A))).toEqual({ board: { kind: "client", name: null }, assets: [], withheld: true, generateOn: false });
     expect(await act("board-library", board(null))).toMatchObject({ board: { kind: "own" }, assets: [{ id: "own-asset" }], withheld: false });
   });
 
@@ -159,10 +159,19 @@ describe("Studio cards on boards: the board-scope check (PAR-14280)", () => {
   it("the library lists only files that pass the board's scope, without archived ones", async () => {
     const { harness, as } = await studio();
     const act = (projectId: string | null) => harness.performAction("board-library", board(projectId), as(MEMBER));
-    expect(await act(PROJECT_A)).toEqual({ board: { kind: "client", name: "Acme" }, assets: [expect.objectContaining({ id: "a-asset", kind: "image" })], withheld: false });
+    expect(await act(PROJECT_A)).toEqual({ board: { kind: "client", name: "Acme" }, assets: [expect.objectContaining({ id: "a-asset", kind: "image" })], withheld: false, generateOn: false });
     expect(await act(PROJECT_B)).toMatchObject({ board: { kind: "client", name: "Globex" }, assets: [{ id: "b-asset" }] });
     expect(await act(null)).toMatchObject({ board: { kind: "own", name: null }, assets: [{ id: "own-asset" }] });
     expect(await act(PROJECT_NO_CLIENT)).toMatchObject({ board: { kind: "own" }, assets: [{ id: "own-asset" }] });
+  });
+
+  it("the library tells the panel Studio's \"Generate on boards\" switch: off unless set to true (PAR-14817)", async () => {
+    const off = await studio();
+    expect(await off.harness.performAction("board-library", board(null), off.as(MEMBER))).toMatchObject({ generateOn: false });
+    const on = await studio({ generate: true });
+    expect(await on.harness.performAction("board-library", board(null), on.as(MEMBER))).toMatchObject({ generateOn: true, withheld: false });
+    // A restricted member on a client board gets nothing to place, generate card included.
+    expect(await on.harness.performAction("board-library", board(PROJECT_A), on.as(RESTRICTED, true))).toMatchObject({ generateOn: false, withheld: true });
   });
 
   it("Studio's switch off: board calls are refused and cards become placeholders; the Studio page is unchanged", async () => {

@@ -4,7 +4,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import { AccessRefused } from "@partnersinbiz/pib-plugin-ui";
-import { BATCH_MS, BoardSigner, cardStateFromError, cardStatesFromReply, embedNodeOp, libraryLoadFromError, MAX_BATCH, nextCheckIn, placeAt, RESIGN_MARGIN_MS, RETRY_MS, REUSE_MS, SIGNED_FOR_MS } from "../src/ui/board-sign.js";
+import { BATCH_MS, BoardSigner, cardStateFromError, cardStatesFromReply, embedNodeOp, libraryLoadFromError, MAX_BATCH, nextCheckIn, placeAt, RESIGN_MARGIN_MS, showGenerateEntry, RETRY_MS, REUSE_MS, SIGNED_FOR_MS } from "../src/ui/board-sign.js";
 import { PLUGIN_ID } from "../src/namespace.js";
 import { STUDIO_PLUGIN_KEY } from "../src/plugin-key.js";
 import manifest from "../src/manifest.js";
@@ -140,6 +140,18 @@ describe("board signer (PAR-14280)", () => {
     expect(libraryLoadFromError(new AccessRefused("off", "board_cards_off"))).toEqual({ status: "off" });
     expect(libraryLoadFromError(new AccessRefused("no", "PERMISSION_DENIED"))).toEqual({ status: "error", message: "Studio isn't open to you in this company." });
     expect(libraryLoadFromError(new Error("boom"))).toMatchObject({ status: "error", message: expect.stringContaining("boom") });
+  });
+
+  it("\"Add generate card\" shows only when the library is ready and Studio's \"Generate on boards\" is on (PAR-14817)", () => {
+    const ready = (over: Partial<{ generateOn: boolean; withheld: boolean }>) => ({ status: "ready" as const, reply: { board: { kind: "own" as const, name: null }, assets: [], withheld: false, ...over } });
+    expect(showGenerateEntry(ready({ generateOn: true }))).toBe(true);
+    expect(showGenerateEntry(ready({ generateOn: false }))).toBe(false);
+    // An older worker sends no generateOn: hidden.
+    expect(showGenerateEntry(ready({}))).toBe(false);
+    expect(showGenerateEntry(ready({ generateOn: true, withheld: true }))).toBe(false);
+    expect(showGenerateEntry({ status: "loading" })).toBe(false);
+    expect(showGenerateEntry({ status: "off" })).toBe(false);
+    expect(showGenerateEntry({ status: "error", message: "x" })).toBe(false);
   });
 
   it("the browser's plugin key is Studio's plugin id, and the card's slot is in the manifest", () => {

@@ -1,7 +1,8 @@
 /**
  * The library panel on a Planning Canvas board (PAR-14280, plan PAR-14257 B.2 D): Studio files that pass the board's
  * scope (board-scope.ts), to place as embed cards. `listAssets` filters on the exact client, so another client's file
- * and, on a client board, own work never reach the list.
+ * and, on a client board, own work never reach the list. `generateOn` tells the panel whether to offer "Add generate
+ * card" (Studio's `boards.generate` switch, PAR-14817).
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { MEMBER_RESTRICTED, type ActingRestriction } from "@partnersinbiz/pib-plugin-kit";
@@ -22,7 +23,7 @@ export async function boardLibrary(ctx: PluginContext, companyId: string, board:
   try {
     assertOpenToPerson(target.client, restriction);
   } catch (error) {
-    if (error instanceof StudioError && error.code === MEMBER_RESTRICTED) return { board: { kind: "client" as const, name: null }, assets: [], withheld: true };
+    if (error instanceof StudioError && error.code === MEMBER_RESTRICTED) return { board: { kind: "client" as const, name: null }, assets: [], withheld: true, generateOn: false };
     throw error;
   }
   const kind = typeof filter.kind === "string" && LIBRARY_KINDS.has(filter.kind) ? filter.kind : null;
@@ -31,5 +32,5 @@ export async function boardLibrary(ctx: PluginContext, companyId: string, board:
   const assets = rows
     .filter((a) => LIBRARY_KINDS.has(a.kind) && !REMOVED_STATUSES.has(a.status))
     .map((a) => ({ id: a.id, name: a.name, kind: a.kind, mime: a.mime, altText: a.altText, status: a.status, prompt: a.prompt, createdAt: a.createdAt }));
-  return { board: label, assets, withheld: false };
+  return { board: label, assets, withheld: false, generateOn: await target.config.boardGenerationOn() };
 }

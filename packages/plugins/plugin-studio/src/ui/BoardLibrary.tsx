@@ -1,7 +1,8 @@
 /**
  * Studio's library panel on a Planning Canvas board (PAR-14280; plan PAR-14257 B.2 D): the `canvasPanel` slot. It
  * lists only the files that pass the board's scope ("board-library") and places one as an embed node through the
- * host's `applyOps`, which runs as the viewer, so the board's own access check decides the edit.
+ * host's `applyOps`, which runs as the viewer, so the board's own access check decides the edit. When Studio's
+ * "Generate on boards" switch is on, it also offers "Add generate card": one empty generate card (PAR-14817).
  */
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import type { PluginCanvasPanelProps } from "@paperclipai/plugin-sdk/ui";
@@ -9,22 +10,28 @@ import { errorText, tokens } from "@partnersinbiz/pib-plugin-ui";
 import { STUDIO_MEDIA_CARD, STUDIO_PLUGIN_KEY } from "../plugin-key.js";
 import { useStudioAction } from "./action.js";
 import { BoardCardView } from "./BoardCard.js";
-import { boardSigner, embedNodeOp, libraryLoadFromError, placeAt, RESIGN_MARGIN_MS, SIGNED_FOR_MS, type BoardLibraryItem, type BoardLibraryReply, type CardState, type LibraryLoad } from "./board-sign.js";
+import { newGenerateCardOp } from "./board-generate.js";
+import { boardSigner, embedNodeOp, libraryLoadFromError, placeAt, showGenerateEntry, RESIGN_MARGIN_MS, SIGNED_FOR_MS, type BoardLibraryItem, type BoardLibraryReply, type CardState, type LibraryLoad } from "./board-sign.js";
 
 const panel: CSSProperties = { display: "flex", flexDirection: "column", gap: 10, padding: 12, minWidth: 0, color: tokens.fg, fontSize: 13 };
 const muted: CSSProperties = { fontSize: 12, color: tokens.muted, overflowWrap: "anywhere" };
 const grid: CSSProperties = { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 };
 const tile: CSSProperties = { display: "flex", flexDirection: "column", gap: 4, minWidth: 0 };
+/** `placing` while "Add generate card" runs. */
+export const GENERATE_PLACING = "__generate__";
+
 const button: CSSProperties = { width: "100%", minWidth: 0, padding: "4px 6px", fontSize: 12, borderRadius: 8, border: `1px solid ${tokens.border}`, background: tokens.secondary, color: tokens.secondaryFg, cursor: "pointer", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" };
 
 /** The panel for one load state. Exported for the render harness. */
-export function BoardLibraryView({ load, canEdit, thumbs, placing, message, onPlace }: {
+export function BoardLibraryView({ load, canEdit, thumbs, placing, message, onPlace, onAddGenerate }: {
   load: LibraryLoad;
   canEdit: boolean;
   thumbs: Record<string, CardState>;
+  /** The file id being placed, or GENERATE_PLACING while a generate card is. */
   placing: string | null;
   message: string | null;
   onPlace: (item: BoardLibraryItem) => void;
+  onAddGenerate?: () => void;
 }) {
   let body;
   if (load.status === "loading") body = <p style={muted}>Loading Studio files…</p>;
@@ -55,6 +62,11 @@ export function BoardLibraryView({ load, canEdit, thumbs, placing, message, onPl
         <strong style={{ fontSize: 13, fontWeight: 600 }}>Studio library</strong>
         {scopeLine ? <span style={{ ...muted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={scopeLine}>{scopeLine}</span> : null}
       </div>
+      {showGenerateEntry(load) && onAddGenerate ? (
+        <button type="button" data-studio-add-generate style={{ ...button, padding: "6px 8px", opacity: canEdit ? 1 : 0.5 }} disabled={!canEdit || placing !== null} onClick={onAddGenerate} title={canEdit ? "Place an empty generate card on the board" : "You can view this board but not edit it."}>
+          {placing === GENERATE_PLACING ? "Adding…" : "Add generate card"}
+        </button>
+      ) : null}
       {message ? <p role="status" style={muted}>{message}</p> : null}
       {body}
     </section>
@@ -103,11 +115,10 @@ function StudioBoardLibraryBody(props: PluginCanvasPanelProps) {
     };
   }, [list, urls, companyId, projectId, props.boardId]);
 
-  const onPlace = useCallback(
-    (item: BoardLibraryItem) => {
-      setPlacing(item.id);
+  const place = useCallback(
+    (id: string, op: Parameters<PluginCanvasPanelProps["applyOps"]>[0][number], done: string) => {
+      setPlacing(id);
       setMessage(null);
-      const op = embedNodeOp({ pluginKey: STUDIO_PLUGIN_KEY, type: STUDIO_MEDIA_CARD, assetId: item.id, name: item.name, kind: item.kind, at: placeAt(placed.current) });
       props
         .applyOps([op])
         .then((out) => {
@@ -115,7 +126,7 @@ function StudioBoardLibraryBody(props: PluginCanvasPanelProps) {
           if (result && result.status !== "applied") setMessage(`The board refused the card (${result.reason ?? result.status}).`);
           else {
             placed.current += 1;
-            setMessage(`Placed ${item.name} on the board.`);
+            setMessage(done);
           }
         })
         .catch((error: unknown) => setMessage(`The card wasn't placed: ${errorText(error)}`))
@@ -124,7 +135,15 @@ function StudioBoardLibraryBody(props: PluginCanvasPanelProps) {
     [props.applyOps],
   );
 
-  return <BoardLibraryView load={load} canEdit={props.accessLevel === "edit"} thumbs={thumbs} placing={placing} message={message} onPlace={onPlace} />;
+  const onPlace = useCallback(
+    (item: BoardLibraryItem) =>
+      place(item.id, embedNodeOp({ pluginKey: STUDIO_PLUGIN_KEY, type: STUDIO_MEDIA_CARD, assetId: item.id, name: item.name, kind: item.kind, at: placeAt(placed.current) }), `Placed ${item.name} on the board.`),
+    [place],
+  );
+
+  const onAddGenerate = useCallback(() => place(GENERATE_PLACING, newGenerateCardOp(placeAt(placed.current)), "Added a generate card to the board."), [place]);
+
+  return <BoardLibraryView load={load} canEdit={props.accessLevel === "edit"} thumbs={thumbs} placing={placing} message={message} onPlace={onPlace} onAddGenerate={onAddGenerate} />;
 }
 
 export const StudioBoardLibrary = StudioBoardLibraryBody;

@@ -204,6 +204,8 @@ export interface BoardLibraryReply {
   board: { kind: "client" | "own"; name: string | null };
   assets: BoardLibraryItem[];
   withheld: boolean;
+  /** Studio's "Generate on boards" switch (PAR-14817). Missing (an older worker) reads as off. */
+  generateOn?: boolean;
 }
 
 export type LibraryLoad = { status: "loading" } | { status: "off" } | { status: "error"; message: string } | { status: "ready"; reply: BoardLibraryReply };
@@ -215,6 +217,11 @@ export function libraryLoadFromError(error: unknown): LibraryLoad {
   if (code === "board_cards_off") return { status: "off" };
   if (name === "AccessRefused" && code !== "MEMBER_RESTRICTION_UNAVAILABLE") return { status: "error", message: "Studio isn't open to you in this company." };
   return { status: "error", message: `Studio files didn't load: ${error instanceof Error ? error.message : String(error)}` };
+}
+
+/** "Add generate card" shows only when the library loaded and Studio's "Generate on boards" switch is on (PAR-14817). */
+export function showGenerateEntry(load: LibraryLoad): boolean {
+  return load.status === "ready" && !load.reply.withheld && load.reply.generateOn === true;
 }
 
 /** Where the n-th placed card goes: the seam passes no viewport, so cards step down from the board's origin. */

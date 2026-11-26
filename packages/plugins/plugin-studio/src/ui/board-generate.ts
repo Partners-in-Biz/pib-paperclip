@@ -122,6 +122,30 @@ export function outputPlace(items: readonly BoardNode[], selfKey: string, n: num
   return { x, y };
 }
 
+/** An empty generate card's size on the board. */
+export const GENERATE_CARD_SIZE = { width: 360, height: 440 } as const;
+
+/** A new, empty generate card (PAR-14817): default settings, no inputs, no file. Placed from the library panel. */
+export function newGenerateCardOp(at: { x: number; y: number }, key = `studio-generate-${Math.random().toString(36).slice(2, 12)}`) {
+  return {
+    op: "add" as const,
+    item: {
+      itemType: "node" as const,
+      key,
+      kind: "embed" as const,
+      x: at.x,
+      y: at.y,
+      width: GENERATE_CARD_SIZE.width,
+      height: GENERATE_CARD_SIZE.height,
+      zIndex: 1,
+      color: "slate" as const,
+      title: "Generate with Studio",
+      content: "",
+      data: { plugin: STUDIO_PLUGIN_KEY, type: STUDIO_GENERATE_CARD, props: propsFromSettings(settingsFromProps({})) },
+    },
+  };
+}
+
 /** The output: its own Studio media card, pointing at the generation until the file exists. */
 export function outputNodeOp(input: { generationId: string; title: string; kind: "image" | "video"; at: { x: number; y: number } }) {
   return {
