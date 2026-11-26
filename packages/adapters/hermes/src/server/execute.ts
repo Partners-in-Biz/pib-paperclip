@@ -97,6 +97,7 @@ import {
 } from "./remote.js";
 import {
   formatHermesStreamEventForLog,
+  hasHermesStreamJsonEvents,
   isPlausibleHermesSessionId,
   parseHermesStreamJsonLine,
   parseHermesStreamJsonOutput,
@@ -967,10 +968,15 @@ async function executeHermes(
     out.usage = metered.usage;
     out.costUsd = metered.costUsd;
     const streamed = parseHermesStreamJsonOutput(`${attempt.stdout || ""}\n${attempt.stderr || ""}`);
+    const isStreamJson = hasHermesStreamJsonEvents(attempt.stdout || "");
     if (!out.sessionId && (streamed.sessionId || checkpointedSessionId)) {
       out.sessionId = streamed.sessionId || checkpointedSessionId || undefined;
     }
-    if (!out.response && streamed.response) out.response = streamed.response;
+    if (isStreamJson) {
+      out.response = streamed.response;
+    } else if (!out.response && streamed.response) {
+      out.response = streamed.response;
+    }
     if (!out.usage && streamed.usage) out.usage = streamed.usage;
     if (!out.errorMessage && streamed.errorMessage) out.errorMessage = streamed.errorMessage;
     return out;

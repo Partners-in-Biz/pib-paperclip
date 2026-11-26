@@ -78,4 +78,58 @@ describe("parseHermesStdoutLine — ANSI stripping", () => {
     const result = parseHermesStdoutLine("\x1b[0m", TS);
     expect(result).toHaveLength(0);
   });
+
+  it("parses Hermes stream-json NDJSON events instead of rendering raw JSON", () => {
+    const textEntries = parseHermesStdoutLine(
+      '{"type": "text", "text": " Sipho could", "timestamp": 1795669181852}',
+      TS,
+    );
+    expect(textEntries).toEqual([{ kind: "assistant", ts: TS, text: " Sipho could", delta: true }]);
+
+    const resultEntries = parseHermesStdoutLine(
+      '{"type": "result", "session_id": "local-abc", "exit_code": 0, "text": "Done", "timestamp": 1795669182016}',
+      TS,
+    );
+    expect(resultEntries).toEqual([{ kind: "system", ts: TS, text: "[hermes] stream result exit=0" }]);
+
+    const initEntries = parseHermesStdoutLine(
+      '{"type": "system", "subtype": "init", "session_id": "local-abc"}',
+      TS,
+    );
+    expect(initEntries).toEqual([{ kind: "system", ts: TS, text: "[hermes] Session checkpoint: local-abc" }]);
+
+    const emptyInitEntries = parseHermesStdoutLine(
+      '{"type": "system", "subtype": "init", "model": "claude-opus-5-5", "session_id": "", "timestamp": 1795685021003}',
+      TS,
+    );
+    expect(emptyInitEntries).toEqual([]);
+
+    const toolUseEntries = parseHermesStdoutLine(
+      '{"type": "tool_use", "name": "terminal", "tool_call_id": "toolu_012utg93SVJYoc2cXQ4XUM76", "input": {"command": "echo hi"}, "timestamp": 1795685027831}',
+      TS,
+    );
+    expect(toolUseEntries).toEqual([
+      {
+        kind: "tool_call",
+        ts: TS,
+        name: "terminal",
+        input: { command: "echo hi" },
+        toolUseId: "toolu_012utg93SVJYoc2cXQ4XUM76",
+      },
+    ]);
+
+    const toolResultEntries = parseHermesStdoutLine(
+      '{"type": "tool_result", "name": "terminal", "tool_call_id": "toolu_012utg93SVJYoc2cXQ4XUM76", "output": "{\\"output\\":\\"hi\\"}", "exit_code": 0, "error": null, "duration_ms": 1414, "is_error": false, "timestamp": 1795685029245}',
+      TS,
+    );
+    expect(toolResultEntries).toEqual([
+      {
+        kind: "tool_result",
+        ts: TS,
+        toolUseId: "toolu_012utg93SVJYoc2cXQ4XUM76",
+        content: '{"output":"hi"}',
+        isError: false,
+      },
+    ]);
+  });
 });

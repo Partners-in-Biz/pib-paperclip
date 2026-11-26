@@ -97,6 +97,13 @@ export function formatHermesStreamEventForLog(event: HermesStreamEvent): string 
   return null;
 }
 
+export function hasHermesStreamJsonEvents(stdout: string): boolean {
+  for (const line of stdout.split("\n")) {
+    if (parseHermesStreamJsonLine(line)) return true;
+  }
+  return false;
+}
+
 export function parseHermesStreamJsonOutput(stdout: string): {
   sessionId?: string;
   response?: string;
@@ -105,6 +112,7 @@ export function parseHermesStreamJsonOutput(stdout: string): {
 } {
   let sessionId: string | undefined;
   let response: string | undefined;
+  const textParts: string[] = [];
   let usage: HermesStreamEvent["usage"];
   let errorMessage: string | undefined;
   for (const line of stdout.split("\n")) {
@@ -117,10 +125,18 @@ export function parseHermesStreamJsonOutput(stdout: string): {
     if (event.sessionId && isPlausibleHermesSessionId(event.sessionId)) {
       sessionId = event.sessionId;
     }
+    if (event.type === "text" && event.text) {
+      textParts.push(event.text);
+      continue;
+    }
     if (event.type !== "result") continue;
     if (event.text?.trim()) response = event.text.trim();
     if (event.usage) usage = event.usage;
     if (event.error) errorMessage = event.error;
+  }
+  if (!response && textParts.length > 0) {
+    const joined = textParts.join("").trim();
+    if (joined) response = joined;
   }
   return { sessionId, response, usage, errorMessage };
 }

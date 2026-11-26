@@ -127,6 +127,90 @@ function parseStdoutLine(line, ts) {
     return [{ kind: "system", ts, text: trimmed }];
   }
 
+  if (trimmed.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && typeof parsed.type === "string") {
+        const type = parsed.type;
+        if (type === "text") {
+          const text = typeof parsed.text === "string" ? parsed.text : "";
+          return text ? [{ kind: "assistant", ts, text, delta: true }] : [];
+        }
+        if (type === "system") {
+          if (parsed.subtype === "init" && typeof parsed.session_id === "string" && parsed.session_id.trim()) {
+            return [{ kind: "system", ts, text: `[hermes] Session checkpoint: ${parsed.session_id.trim()}` }];
+          }
+          return [];
+        }
+        if (type === "thinking" || type === "reasoning") {
+          const text =
+            typeof parsed.text === "string"
+              ? parsed.text
+              : typeof parsed.thinking === "string"
+                ? parsed.thinking
+                : "";
+          return text ? [{ kind: "thinking", ts, text, delta: true }] : [];
+        }
+        if (type === "tool_use" && typeof parsed.name === "string") {
+          const id =
+            typeof parsed.tool_call_id === "string" && parsed.tool_call_id
+              ? parsed.tool_call_id
+              : typeof parsed.id === "string" && parsed.id
+                ? parsed.id
+                : syntheticToolUseId();
+          return [
+            {
+              kind: "tool_call",
+              ts,
+              name: parsed.name,
+              input: parsed.input ?? {},
+              toolUseId: id,
+            },
+          ];
+        }
+        if (type === "tool_result") {
+          const id =
+            typeof parsed.tool_call_id === "string" && parsed.tool_call_id
+              ? parsed.tool_call_id
+              : typeof parsed.tool_use_id === "string" && parsed.tool_use_id
+                ? parsed.tool_use_id
+                : syntheticToolUseId();
+          const content =
+            typeof parsed.content === "string"
+              ? parsed.content
+              : typeof parsed.output === "string"
+                ? parsed.output
+                : typeof parsed.text === "string"
+                  ? parsed.text
+                  : typeof parsed.error === "string"
+                    ? parsed.error
+                    : "";
+          return [
+            {
+              kind: "tool_result",
+              ts,
+              toolUseId: id,
+              content,
+              isError: parsed.is_error === true,
+            },
+          ];
+        }
+        if (type === "result") {
+          if (typeof parsed.error === "string" && parsed.error.trim()) {
+            return [{ kind: "stderr", ts, text: parsed.error.trim() }];
+          }
+          const exit = typeof parsed.exit_code === "number" ? ` exit=${parsed.exit_code}` : "";
+          return [{ kind: "system", ts, text: `[hermes] stream result${exit}` }];
+        }
+        if (type === "error" && typeof parsed.error === "string") {
+          return [{ kind: "stderr", ts, text: parsed.error }];
+        }
+      }
+    } catch {
+      // Not valid JSON — fall through to normal line handling.
+    }
+  }
+
   if (trimmed.startsWith("[tool]")) {
     return [];
   }
