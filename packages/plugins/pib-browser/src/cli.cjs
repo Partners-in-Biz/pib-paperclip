@@ -7,7 +7,7 @@ const { parseViewport } = require('./netlog.cjs');
 const { writeShot, writeNet } = require('./shot.cjs');
 const { probeAll } = require('./probe.cjs');
 
-const COMMANDS = ['open', 'goto', 'click', 'drag', 'fill', 'text', 'shot', 'net', 'close'];
+const COMMANDS = ['open', 'goto', 'click', 'drag', 'fill', 'select', 'text', 'shot', 'net', 'close'];
 const MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
 // open launches Chromium and waits for networkidle (~7 s on Paperclip), so 5 s was too short.
 const SOCKET_TIMEOUT_MS = Number(process.env.PIB_BROWSER_CLI_TIMEOUT_MS) || 60000;
@@ -131,6 +131,7 @@ Commands:
   click     Click an element
   drag      Drag one element onto another (approval-gated like click)
   fill      Fill a form field
+  select    Pick an option in a <select> by label, else value (approval-gated like click)
   text      Get text from an element
   shot      Take a screenshot
   net       Show the session's network log (method, redacted URL, status, time)
@@ -146,7 +147,7 @@ Options:
   --selector SEL       CSS selector (for click, fill, text)
   --viewport WxH       Viewport for open/goto, 320x320 up to 3840x2160 (e.g. 390x844)
   --from SEL --to SEL  Drag source and target selectors (for drag)
-  --value VAL          Value to fill (for fill)
+  --value VAL          Value to fill (fill) or option label/value (select)
   --expect TEXT        Text to expect before screenshot
   --redact-region X,Y,W,H  Region to redact in screenshot
   --approval PAR-N      Approval identifier
@@ -347,6 +348,14 @@ async function run(argv, env, deps = {}) {
     }
     args.selector = parsed.selector;
     args.value = parsed.value;
+  } else if (cmd === 'select') {
+    if (!parsed.selector || !parsed.value) {
+      stderr.write('Error: --selector and --value are required for select\n');
+      return 2;
+    }
+    args.selector = parsed.selector;
+    args.value = parsed.value;
+    if (parsed.approval) args.approval = parsed.approval;
   } else if (cmd === 'text') {
     if (!parsed.selector) {
       stderr.write('Error: --selector is required for text\n');

@@ -209,6 +209,17 @@ function createPlaywrightBrowser({ playwright, env = {}, profileRoot } = {}) {
           return parts.filter(Boolean).join(' ');
         },
 
+        // Native <select>: match by label first, fall back to value.
+        select: async (selector, value) => {
+          await ensureInitialized();
+          const loc = page.locator(selector);
+          try {
+            await loc.selectOption({ label: value }, { timeout: 3000 });
+          } catch (e) {
+            await loc.selectOption({ value });
+          }
+        },
+
         fill: async (selector, value) => {
           await ensureInitialized();
           await page.locator(selector).fill(value);
