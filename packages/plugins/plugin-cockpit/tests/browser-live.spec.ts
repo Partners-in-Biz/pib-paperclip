@@ -98,10 +98,10 @@ describe("browser.live.ticket", () => {
     await expect(ticket(as)).rejects.toThrow(reason);
   });
 
-  it("refuses any mode but view", async () => {
+  it("refuses any mode but view or control (control: browser-takeover.spec.ts)", async () => {
     const { ticket, person } = await cockpit("takeover");
-    await expect(ticket(person(OWNER), { mode: "control" })).rejects.toThrow("mode must be view");
-    await expect(ticket(person(OWNER), {})).rejects.toThrow("mode must be view");
+    await expect(ticket(person(OWNER), { mode: "edit" })).rejects.toThrow("mode must be view or control");
+    await expect(ticket(person(OWNER), {})).rejects.toThrow("mode must be view or control");
   });
 
   it("refuses at off, with the setting missing, and when the setting read throws", async () => {

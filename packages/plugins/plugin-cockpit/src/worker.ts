@@ -3,6 +3,7 @@ import { registerDriveReplies } from "@partnersinbiz/pib-plugin-kit";
 import type { Env } from "./env.js";
 import { GITHUB_CI_ENDPOINT, handleGithubCi } from "./webhooks/github-ci.js";
 import { handleCockpitApiRequest, registerCockpit } from "./register.js";
+import { browserLiveConfigChanged } from "./browser-takeover.js";
 
 let env: Env | null = null;
 
@@ -15,8 +16,11 @@ const plugin = definePlugin({
   async onHealth() {
     return { status: "ok", message: "Cockpit plugin ready" };
   },
-  // Settings changes need no restart: every read goes to the host.
-  async onConfigChanged() {},
+  // Settings changes need no restart: every read goes to the host. Only the live browser acts on a change: `off`
+  // ends every stream and a take-over, `view` ends a take-over (PAR-14514 S4). Never throws.
+  async onConfigChanged(newConfig, context) {
+    if (env) await browserLiveConfigChanged(env, newConfig, context?.companyId ?? null);
+  },
   async onWebhook(input) {
     if (input.endpointKey !== GITHUB_CI_ENDPOINT) throw new Error(`Unknown webhook endpoint ${input.endpointKey}`);
     if (!env) throw new Error("Cockpit plugin is not ready; GitHub will send this again.");

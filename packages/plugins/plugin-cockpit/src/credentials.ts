@@ -34,7 +34,7 @@ import {
 import { getRoles, listRoles } from "./db.js";
 import type { Env } from "./env.js";
 import { message, throwIfEveryCompanyFailed } from "./env.js";
-import { openCockpitAsk } from "./effects.js";
+import { openCockpitAsk, resolveOpenCockpitAsks } from "./effects.js";
 import { refreshHealthIssue } from "./health.js";
 import { NAMESPACE } from "./namespace.js";
 
@@ -401,7 +401,7 @@ export async function syncBrowserIdentities(env: Env, companyId: string, path = 
     out.expired += 1;
     // A configuration problem (site_not_found) stays on the register row / health line; it is not a "log in again" for Peet.
     if (!status.stale && isBrowserConfigReason(id.reason)) continue;
-    const hash = createHash("sha1").update(id.identity).digest("hex").slice(0, 8);
+    const hash = browserLoginHash(id.identity);
     const card = await openCockpitAsk(env, companyId, {
       originKey: `browser-login-${hash}`,
       title: `Log in again: ${id.identity}`,
@@ -412,12 +412,32 @@ export async function syncBrowserIdentities(env: Env, companyId: string, path = 
         options: ["I will log in again now"],
         links: [{ label: "Credentials", href: "/cockpit" }],
         steps: [`Put the browser in hand-off mode and log in to ${id.identity} (see the pib-browser README).`, "Run the browser status check again.", "Press the button once done; it only records that you have seen this."],
-        effect: { key: `cockpit.browser-login-${hash}`, params: { identity: id.identity } },
+        effect: { key: browserLoginEffectKey(id.identity), params: { identity: id.identity } },
       },
     });
     if (card.action === "opened") out.cards += 1;
   }
   return out;
+}
+
+const browserLoginHash = (identity: string) => createHash("sha1").update(identity).digest("hex").slice(0, 8);
+/** The effect key of an identity's "Log in again" card. */
+export const browserLoginEffectKey = (identity: string) => `cockpit.browser-login-${browserLoginHash(identity)}`;
+
+/**
+ * A take-over's Done passed the daemon's session check (PAR-14514 S4): the identity's register row says verified now,
+ * and its open "Log in again" card is closed. Returns how many cards were closed. Owner company only, as the rows are.
+ */
+export async function markBrowserIdentityVerified(env: Env, companyId: string, identity: string): Promise<number> {
+  const now = env.now().toISOString();
+  const detail = "A person logged in from Cockpit -> Browser (take over) and the browser's session check passed.";
+  await env.ctx.db.execute(
+    `INSERT INTO ${T} (id, company_id, seed_key, name, system, lives_in, owner, rotate_how, verify_with, status, last_verified_at, last_verify_status, last_verify_detail, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'browser', 'active', $9, 'ok', $10, $9, $9)
+     ON CONFLICT (company_id, seed_key) WHERE seed_key IS NOT NULL DO UPDATE SET last_verified_at = $9, last_verify_status = 'ok', last_verify_detail = $10, updated_at = $9`,
+    [newId(), companyId, `${BROWSER_SEED_PREFIX}${identity}`, `Browser login: ${identity}`, "pib-browser", "The pib-browser profile on the server", "Owner", "Log in again from Cockpit -> Browser (take over).", now, detail],
+  );
+  return resolveOpenCockpitAsks(env, companyId, browserLoginEffectKey(identity), `Browser login for ${identity} works again: a person logged in from Cockpit -> Browser and the session check passed.`);
 }
 
 /** Daily job: verify and settle the alerts for every company with saved Cockpit settings, and load the starting list where `credentialSeed` is ticked. */
