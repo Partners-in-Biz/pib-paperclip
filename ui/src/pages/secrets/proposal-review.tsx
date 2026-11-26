@@ -34,6 +34,7 @@ import { cn } from "../../lib/utils";
 import { copyTextToClipboard } from "../../lib/clipboard";
 import { SecretPathName } from "./SecretPathName";
 import { describeError } from "@/api/errors";
+import { OptionSelect } from "@/components/OptionSelect";
 
 /* -------------------------------------------------------------------------- */
 /* Presentation helpers (shared by the tab + agent-settings surfaces)         */
@@ -461,21 +462,15 @@ function ApproveDialog({
                 {localConfigs.length > 0 ? (
                   <div className="space-y-1">
                     <Label htmlFor="approve-provider-config">Provider vault</Label>
-                    <select
-                      id="approve-provider-config"
+                    <OptionSelect
+                      ariaLabel="Provider vault"
+                      placeholder="Deployment default"
+                      emptyLabel="Deployment default"
+                      triggerClassName="h-9 w-full text-sm font-normal"
                       value={draft.providerConfigId}
-                      onChange={(event) =>
-                        onChange({ ...draft, providerConfigId: event.target.value })
-                      }
-                      className="h-9 w-full rounded-md border border-input bg-transparent px-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
-                    >
-                      <option value="">Deployment default</option>
-                      {localConfigs.map((config) => (
-                        <option key={config.id} value={config.id}>
-                          {config.displayName}
-                        </option>
-                      ))}
-                    </select>
+                      items={localConfigs.map((config) => ({ value: config.id, label: config.displayName }))}
+                      onChange={(next) => onChange({ ...draft, providerConfigId: next })}
+                    />
                   </div>
                 ) : null}
 

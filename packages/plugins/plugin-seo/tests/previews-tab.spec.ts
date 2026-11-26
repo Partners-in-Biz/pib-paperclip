@@ -69,3 +69,20 @@ describe("client redirect keeps the page's query (PAR-14506)", async () => {
     expect(reopenParams(new URLSearchParams("sprint=s1"))).toEqual({});
   });
 });
+
+describe("errorText (PAR-14691)", async () => {
+  const { errorText } = await import("@partnersinbiz/pib-plugin-ui");
+  it("reads a message from an Error, a plain bridge object or a string", () => {
+    expect(errorText(new Error("boom"))).toBe("boom");
+    expect(errorText({ code: "x", message: "This sprint is archived." })).toBe("This sprint is archived.");
+    expect(errorText("plain")).toBe("plain");
+  });
+  it("never shows [object Object] for a bare object", () => {
+    for (const bad of [{}, { code: 1 }, { message: "" }, null, undefined, 42]) {
+      const text = errorText(bad);
+      expect(typeof text).toBe("string");
+      expect(text).not.toContain("[object Object]");
+      expect(text.length).toBeGreaterThan(0);
+    }
+  });
+});

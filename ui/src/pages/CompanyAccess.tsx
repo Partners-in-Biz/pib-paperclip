@@ -12,6 +12,7 @@ import { cloudApi } from "@/api/cloud";
 import { issuesApi } from "@/api/issues";
 import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
+import { OptionSelect } from "@/components/OptionSelect";
 import {
   Dialog,
   DialogContent,
@@ -517,34 +518,28 @@ export function CompanyAccess() {
               <div className="grid gap-4 md:grid-cols-2">
                 <label className="space-y-2 text-sm">
                   <span className="font-medium">Organization role</span>
-                  <select
-                    className="w-full rounded-md border border-border bg-background px-3 py-2"
+                  <OptionSelect
+                    ariaLabel="Organization role"
                     value={draftRole ?? ""}
-                    onChange={(event) =>
-                      setDraftRole((event.target.value || null) as CompanyMember["membershipRole"])
-                    }
-                  >
-                    <option value="">Unset</option>
-                    {Object.entries(HUMAN_COMPANY_MEMBERSHIP_ROLE_LABELS).map(([value, label]) => (
-                      <option key={value} value={value}>
-                        {label}
-                      </option>
-                    ))}
-                  </select>
+                    onChange={(value) => setDraftRole((value || null) as CompanyMember["membershipRole"])}
+                    placeholder="Unset"
+                    emptyLabel="Unset"
+                    items={Object.entries(HUMAN_COMPANY_MEMBERSHIP_ROLE_LABELS).map(([value, label]) => ({ value, label }))}
+                  />
                 </label>
                 <label className="space-y-2 text-sm">
                   <span className="font-medium">Membership status</span>
-                  <select
-                    className="w-full rounded-md border border-border bg-background px-3 py-2"
+                  <OptionSelect
+                    ariaLabel="Membership status"
                     value={draftStatus}
-                    onChange={(event) =>
-                      setDraftStatus(event.target.value as EditableMemberStatus)
-                    }
-                  >
-                    <option value="active">Active</option>
-                    <option value="pending">Pending</option>
-                    <option value="suspended">Suspended</option>
-                  </select>
+                    onChange={(value) => setDraftStatus(value as EditableMemberStatus)}
+                    placeholder="Status"
+                    items={[
+                      { value: "active", label: "Active" },
+                      { value: "pending", label: "Pending" },
+                      { value: "suspended", label: "Suspended" },
+                    ]}
+                  />
                 </label>
               </div>
             </div>
@@ -600,31 +595,25 @@ export function CompanyAccess() {
               {assignedIssues.length > 0 ? (
                 <div className="space-y-2">
                   <div className="text-sm font-medium">Task reassignment</div>
-                  <select
-                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+                  <OptionSelect
+                    ariaLabel="Task reassignment"
                     value={reassignmentTarget}
-                    onChange={(event) => setReassignmentTarget(event.target.value)}
-                  >
-                    <option value="__unassigned">Leave unassigned</option>
-                    {activeReassignmentUsers.length > 0 ? (
-                      <optgroup label="Humans">
-                        {activeReassignmentUsers.map((member) => (
-                          <option key={member.id} value={`user:${member.principalId}`}>
-                            {memberDisplayName(member)}
-                          </option>
-                        ))}
-                      </optgroup>
-                    ) : null}
-                    {activeReassignmentAgents.length > 0 ? (
-                      <optgroup label="Agents">
-                        {activeReassignmentAgents.map((agent) => (
-                          <option key={agent.id} value={`agent:${agent.id}`}>
-                            {agent.name} ({agent.role})
-                          </option>
-                        ))}
-                      </optgroup>
-                    ) : null}
-                  </select>
+                    onChange={setReassignmentTarget}
+                    placeholder="Leave unassigned"
+                    items={[
+                      { value: "__unassigned", label: "Leave unassigned" },
+                      ...activeReassignmentUsers.map((member) => ({
+                        value: `user:${member.principalId}`,
+                        label: memberDisplayName(member),
+                        group: "Humans",
+                      })),
+                      ...activeReassignmentAgents.map((agent) => ({
+                        value: `agent:${agent.id}`,
+                        label: `${agent.name} (${agent.role})`,
+                        group: "Agents",
+                      })),
+                    ]}
+                  />
                   <div className="max-h-36 overflow-auto rounded-lg border border-border">
                     {assignedIssues.slice(0, 6).map((issue) => (
                       <div key={issue.id} className="border-b border-border px-3 py-2 text-sm last:border-b-0">

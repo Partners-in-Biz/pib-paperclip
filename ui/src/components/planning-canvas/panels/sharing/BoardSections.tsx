@@ -5,6 +5,7 @@ import { groupBoards } from "@/components/planning-canvas/panels/sharing/sharing
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { queryKeys } from "@/lib/queryKeys";
+import { OptionSelect } from "@/components/OptionSelect";
 
 /** Board picker grouped Mine, Company and Project (plan Q16, C12). Archived boards live in `ArchivedBoards`. */
 export function BoardSelect({
@@ -18,22 +19,17 @@ export function BoardSelect({
 }) {
   const groups = groupBoards(boards);
   return (
-    <select
-      aria-label="Select canvas board"
+    <OptionSelect
+      ariaLabel="Select canvas board"
+      items={groups.flatMap((group) =>
+        group.boards.map((board) => ({ value: board.id, label: board.title, group: group.label })),
+      )}
       value={activeId}
-      onChange={(e) => onSelect(e.target.value)}
-      className="h-7 max-w-48 rounded-md border border-border bg-muted/40 px-2 text-xs font-medium text-foreground outline-none focus:border-ring"
-    >
-      {groups.map((group) => (
-        <optgroup key={group.id} label={group.label}>
-          {group.boards.map((board) => (
-            <option key={board.id} value={board.id}>
-              {board.title}
-            </option>
-          ))}
-        </optgroup>
-      ))}
-    </select>
+      onChange={onSelect}
+      placeholder="Select a board"
+      className="max-w-48"
+      triggerClassName="h-7 px-2 text-xs font-medium"
+    />
   );
 }
 

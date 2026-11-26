@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
-import { act as reactAct, type ComponentProps, type ReactNode } from "react";
+import { pickSearchableOption, stubSearchableSelectDom } from "../test-utils/searchable-select";
+import { act as reactAct, type ComponentProps, type ReactElement, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRoot, type Root } from "react-dom/client";
 import type { CatalogSkill, CompanySkillDetail, CompanySkillListItem, CompanySkillVersion, FolderListResult } from "@paperclipai/shared";
@@ -109,11 +110,26 @@ vi.mock("@/components/ui/dropdown-menu", () => ({
   DropdownMenuTrigger: ({ children }: { children: ReactNode }) => <>{children}</>,
 }));
 
-vi.mock("@/components/ui/popover", () => ({
-  Popover: ({ children }: { children: ReactNode }) => <>{children}</>,
-  PopoverContent: () => null,
-  PopoverTrigger: ({ children }: { children: ReactNode }) => <>{children}</>,
-}));
+vi.mock("@/components/ui/popover", async () => {
+  const { cloneElement, createContext, useContext } = await import("react");
+  // Controlled popovers (the searchable select) render their content while open; others stay empty.
+  const PopoverContext = createContext<{ open: boolean; onOpenChange?: (open: boolean) => void }>({ open: false });
+  return {
+    Popover: ({ open, onOpenChange, children }: { open?: boolean; onOpenChange?: (open: boolean) => void; children: ReactNode }) => (
+      <PopoverContext.Provider value={{ open: open === true, onOpenChange }}>{children}</PopoverContext.Provider>
+    ),
+    PopoverContent: ({ children }: { children: ReactNode }) => (useContext(PopoverContext).open ? <div>{children}</div> : null),
+    PopoverTrigger: ({ children }: { children: ReactElement<{ onClick?: (event: unknown) => void }> }) => {
+      const { open, onOpenChange } = useContext(PopoverContext);
+      return cloneElement(children, {
+        onClick: (event: unknown) => {
+          children.props.onClick?.(event);
+          onOpenChange?.(!open);
+        },
+      });
+    },
+  };
+});
 
 vi.mock("@/components/ui/tooltip", () => ({
   Tooltip: ({ children }: { children: ReactNode }) => <>{children}</>,
@@ -151,6 +167,10 @@ async function act(callback: () => void | Promise<void>) {
     await callback();
   });
 }
+
+beforeEach(() => {
+  stubSearchableSelectDom();
+});
 
 afterEach(() => {
   editorRoute.path = undefined;
@@ -394,14 +414,6 @@ async function inputValue(input: HTMLInputElement, value: string) {
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
     setter?.call(input, value);
     input.dispatchEvent(new Event("input", { bubbles: true }));
-  });
-}
-
-async function selectValue(select: HTMLSelectElement, value: string) {
-  await act(async () => {
-    const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
-    setter?.call(select, value);
-    select.dispatchEvent(new Event("change", { bubbles: true }));
   });
 }
 
@@ -839,20 +851,19 @@ describe("SkillDetailPage versions tab", () => {
 
     await click(viewDiffButtons[0]!);
     let dialog = node.querySelector('[role="dialog"]') as HTMLElement;
-    let selects = Array.from(dialog.querySelectorAll("select"));
+    const trigger = (label: string) => dialog.querySelector<HTMLElement>(`[role="combobox"][aria-label="${label}"]`);
 
     expect(dialog.textContent).toContain("Diff");
-    expect(selects[0]?.value).toBe(v1.id);
-    expect(selects[1]?.value).toBe(v2.id);
+    expect(trigger("Old version")?.textContent).toContain("v1");
+    expect(trigger("New version")?.textContent).toContain("v2");
     await act(() => vi.waitFor(() => expect(dialog.textContent).toContain("Second line")));
     expect(readVersion).toHaveBeenCalledTimes(2);
 
     await click(viewDiffButtons[1]!);
     dialog = node.querySelector('[role="dialog"]') as HTMLElement;
-    selects = Array.from(dialog.querySelectorAll("select"));
 
-    expect(selects[0]?.value).toBe("");
-    expect(selects[1]?.value).toBe(v1.id);
+    expect(trigger("Old version")?.textContent).toContain("Initial");
+    expect(trigger("New version")?.textContent).toContain("v1");
     expect(dialog.textContent).toContain("Initial");
     await act(() => vi.waitFor(() => expect(dialog.textContent).toContain("First line")));
     expect(dialog.textContent).not.toContain("Both sides are the same version");
@@ -959,7 +970,7 @@ describe("SkillDetailPage settings", () => {
     const dialog = node.querySelector('[role="dialog"]') as HTMLElement;
 
     await inputValue(dialog.querySelector("input") as HTMLInputElement, "");
-    await selectValue(dialog.querySelector("select") as HTMLSelectElement, "private");
+    await pickSearchableOption(dialog, "Sharing", "Private");
     await click(buttonsNamed(dialog, "Save settings")[0] as HTMLButtonElement);
 
     expect(onUpdateSettings).toHaveBeenCalledWith({

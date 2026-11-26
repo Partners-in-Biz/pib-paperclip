@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 import { act } from "react";
 import { PAPERCLIP_RUNNER_ACPX_PROFILES } from "@paperclipai/adapter-utils";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { queryKeys } from "@/lib/queryKeys";
 import { ApiError } from "@/api/client";
+import { pickSearchableValue, readSearchableByLabel, stubSearchableSelectDom } from "../test-utils/searchable-select";
 import {
   api, envApi, settings, secrets, state, managedApi, adapterApi,
   root, container, cache, settle, click, fill, render, connect, pass,
@@ -11,6 +12,7 @@ import {
 } from "./NewAgent.test-support";
 
 describe("New agent setup", () => {
+  beforeEach(() => stubSearchableSelectDom());
   it.each([
     ["claude_local", "Claude", "plugin"], ["codex_local", "OpenAI", "plugin"],
     ["claude_local", "Claude", "sandbox"], ["codex_local", "OpenAI", "sandbox"],
@@ -81,8 +83,7 @@ describe("New agent setup", () => {
     let finishDiscovery!: (adapters: typeof state.adapters) => void;
     adapterApi.list.mockImplementationOnce(() => new Promise(resolve => { finishDiscovery = resolve; }));
     api.update.mockRejectedValueOnce(new Error("Environment save unavailable"));
-    const select = container.querySelector<HTMLSelectElement>('[aria-label="Environment"]')!;
-    await act(async () => { select.value = "computer"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    await pickSearchableValue(container, "Environment", "computer");
     await settle();
     expect(container.textContent).toContain("Configure your agent");
     expect(container.textContent).toContain("Environment save unavailable");
@@ -117,8 +118,7 @@ describe("New agent setup", () => {
     api.get.mockImplementationOnce(() => new Promise(resolve => { finishRead = resolve; }));
     await act(async () => { void cache.refetchQueries({ queryKey: key }); });
     expect(finishRead).toBeTypeOf("function");
-    const select = container.querySelector<HTMLSelectElement>('[aria-label="Environment"]')!;
-    await act(async () => { select.value = "computer"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    await pickSearchableValue(container, "Environment", "computer");
     await settle();
     await act(async () => finishRead(oldDraft));
     await settle();
@@ -492,8 +492,7 @@ describe("New agent setup", () => {
     expect(container.querySelector('[aria-label="Runner"]')).toBeNull();
     await connect("OpenAI");
     expect(api.testEnvironment).toHaveBeenLastCalledWith("company-1", "codex_local", expect.objectContaining({ runner: "legacy" }));
-    const environment = container.querySelector<HTMLSelectElement>('select[aria-label="Environment"]')!;
-    await act(async () => { environment.value = "linux-ssh"; environment.dispatchEvent(new Event("change", { bubbles: true })); });
+    await pickSearchableValue(container, "Environment", "linux-ssh");
     await settle();
     expect(container.textContent).toContain("Configure your agent");
     await click("Finish setup");
@@ -529,11 +528,7 @@ describe("New agent setup", () => {
     expect(adapterApi.list).toHaveBeenCalledWith({ companyId: "company-1", environmentId: "linux-ssh" });
     await connect("OpenAI");
     expect(api.testEnvironment.mock.calls[0][2].environmentId).toBe("linux-ssh");
-    const environment = container.querySelector<HTMLSelectElement>('select[aria-label="Environment"]')!;
-    await act(async () => {
-      environment.value = "local-1";
-      environment.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    await pickSearchableValue(container, "Environment", "local-1");
     await settle();
     expect(container.querySelector('[aria-label="Runner"]')).toBeNull();
     expect(container.querySelector("summary")).toBeNull();
@@ -812,7 +807,7 @@ describe("New agent setup", () => {
     api.getAdapterAuthSignal.mockResolvedValue({ status: "missing" });
     await render(adapterType);
     expect(container.textContent).toContain("does not support browser sign-in");
-    expect(container.querySelector('select[aria-label="Environment"]')).toBeNull();
+    expect(container.querySelector('[role="combobox"][aria-label="Environment"]')).toBeNull();
     await click("2Configure");
     expect(container.querySelector('button[type="submit"]')).toBeNull();
     expect([...container.querySelectorAll("button")].find(button => button.textContent?.trim() === "Run test")?.disabled).toBe(true);
@@ -820,13 +815,9 @@ describe("New agent setup", () => {
     expect(api.testEnvironment).not.toHaveBeenCalled();
     expect(api.hire).not.toHaveBeenCalled();
     await click("2Configure");
-    const select = container.querySelector('select[aria-label="Environment"]') as HTMLSelectElement;
-    await act(async () => {
-      select.value = "login-env";
-      select.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    await pickSearchableValue(container, "Environment", "login-env");
     await settle();
-    expect(container.querySelector('select[aria-label="Environment"]')).not.toBeNull();
+    expect(container.querySelector('[role="combobox"][aria-label="Environment"]')).not.toBeNull();
     await click("Connect model");
     await click("Complete subscription login");
     await click("Finish setup");
@@ -856,16 +847,12 @@ describe("New agent setup", () => {
       secret: { companyId: "company-1", status: "active" },
     }]);
     await render("paperclip_runner", "grok");
-    expect(container.querySelector('select[aria-label="Environment"]')).toBeNull();
+    expect(container.querySelector('[role="combobox"][aria-label="Environment"]')).toBeNull();
     await click("GrokAPI key");
     await click("Use saved API key");
-    const select = container.querySelector('select[aria-label="Environment"]') as HTMLSelectElement;
-    expect(select.disabled).toBe(false);
-    expect([...select.options].some((option) => option.value === "local-1")).toBe(!managedOnly);
-    await act(async () => {
-      select.value = "grok-sandbox";
-      select.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    expect(container.querySelector<HTMLButtonElement>('[role="combobox"][aria-label="Environment"]')!.disabled).toBe(false);
+    expect((await readSearchableByLabel(container, "Environment")).items.some((item) => item.value === "local-1")).toBe(!managedOnly);
+    await pickSearchableValue(container, "Environment", "grok-sandbox");
     await settle();
     expect(container.textContent).toContain("Configure your agent");
     await click("Run test");
@@ -1144,11 +1131,7 @@ describe("New agent setup", () => {
     await render("kimi_local");
     await fill("KIMI_MODEL_API_KEY", "kimi-test-key");
     await fill("Kimi API model name", "kimi-for-coding");
-    await act(async () => {
-      const protocol = container.querySelector('[aria-label="Kimi API protocol"]') as HTMLSelectElement;
-      protocol.value = "openai";
-      protocol.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    await pickSearchableValue(container, "Kimi API protocol", "openai");
     await fill("Kimi API base URL", "https://kimi.example.test/v1");
     await click("Save & exit");
     const setupId = api.create.mock.calls[0][1].setupId;
@@ -1166,7 +1149,7 @@ describe("New agent setup", () => {
     await renderCurrentParams();
     await settle();
     expect((container.querySelector('[aria-label="Kimi API model name"]') as HTMLInputElement).value).toBe("kimi-for-coding");
-    expect((container.querySelector('[aria-label="Kimi API protocol"]') as HTMLSelectElement).value).toBe("openai");
+    expect((await readSearchableByLabel(container, "Kimi API protocol")).value).toBe("openai");
     await click("Save & exit");
     expect(api.update.mock.calls.at(-1)![1].adapterConfig.env).toMatchObject({
       KIMI_MODEL_NAME: { type: "plain", value: "kimi-for-coding" },
@@ -1345,7 +1328,7 @@ describe("New agent setup", () => {
     }]);
     await render(adapter, runner);
     await click(provider + "API key");
-    expect((container.querySelector("select[aria-label='Saved API key']") as HTMLSelectElement).value).toBe("user:existing-key");
+    expect((await readSearchableByLabel(container, "Saved API key")).value).toBe("user:existing-key");
     await click("Use saved API key");
     const binding = { type: "user_secret_ref", key, version: "latest" };
     expect(api.testEnvironment.mock.calls[0][2].adapterConfig.env[key]).toEqual(binding);
@@ -1457,9 +1440,9 @@ describe("New agent setup", () => {
     await settle();
     expect(container.querySelector('[role="combobox"][aria-label="Connection"]')).not.toBeNull();
     expect((container.querySelector('[aria-label="Model"]') as HTMLInputElement).value).toBe("");
-    const thinking = container.querySelector('[aria-label="Thinking effort"]') as HTMLSelectElement;
+    const thinking = await readSearchableByLabel(container, "Thinking effort");
     expect(thinking.value).toBe("max");
-    expect([...thinking.options].map(option => option.value)).toEqual(["", "off", "low", "high", "max"]);
+    expect(thinking.items.map(option => option.value)).toEqual(["__none__", "off", "low", "high", "max"]) // pinned empty option is keyed __none__;
     expect(container.querySelector('[aria-label="OPENROUTER_API_KEY"]')).toBeNull();
   });
 

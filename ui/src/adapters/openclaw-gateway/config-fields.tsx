@@ -1,3 +1,4 @@
+import { OptionSelect } from "../../components/OptionSelect";
 import { configFieldsForSection } from "../config-sections";
 import { useEffect, useState } from "react";
 import { Eye, EyeOff } from "lucide-react";
@@ -205,23 +206,25 @@ export function OpenClawGatewayConfigFields({
       </Field>
 
       <Field label="Session strategy">
-        <select
+        <OptionSelect
+          ariaLabel="Session strategy"
+          placeholder="Select strategy"
+          items={[
+            { value: "fixed", label: "Fixed" },
+            { value: "issue", label: "Per issue" },
+            { value: "run", label: "Per run" },
+          ]}
           value={
             isCreate
               ? values!.sessionKeyStrategy ?? "fixed"
               : sessionStrategy
           }
-          onChange={(e) =>
+          onChange={(next) =>
             isCreate
-              ? set!({ sessionKeyStrategy: e.target.value })
-              : mark("adapterConfig", "sessionKeyStrategy", e.target.value)
+              ? set!({ sessionKeyStrategy: next })
+              : mark("adapterConfig", "sessionKeyStrategy", next)
           }
-          className={inputClass}
-        >
-          <option value="fixed">Fixed</option>
-          <option value="issue">Per issue</option>
-          <option value="run">Per run</option>
-        </select>
+        />
       </Field>
 
       {(isCreate ? values!.sessionKeyStrategy ?? "fixed" : sessionStrategy) === "fixed" && (

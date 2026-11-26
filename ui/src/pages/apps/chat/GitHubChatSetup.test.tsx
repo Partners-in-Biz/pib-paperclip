@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { openSearchableTrigger, pickSearchableOptionFromTrigger, searchableOptionTexts, stubSearchableSelectDom } from "@/test-utils/searchable-select";
 import { GitHubChatSetup, gitHubAppManifestAction } from "./GitHubChatSetup";
 import { defaultGitHubReviewPolicy } from "@paperclipai/shared";
 import { ChatEndpointDetail } from "./ChatEndpointDetail";
@@ -111,6 +112,7 @@ describe("GitHub App wizard", () => {
   let container: HTMLDivElement;
   let client: QueryClient;
   beforeEach(() => {
+    stubSearchableSelectDom();
     vi.clearAllMocks();
     fixture.agents = [
       {
@@ -610,7 +612,8 @@ describe("GitHub App wizard", () => {
     await render("resume=draft-1");
     expect(container.querySelector("h1")?.textContent).toBe("Connect GitHub");
     expect(container.textContent).toContain("My account");
-    expect(container.textContent).toContain("Another organization");
+    await openSearchableTrigger(container.querySelector<HTMLElement>("#github-owner-type")!);
+    expect(searchableOptionTexts()).toContain("Another organization");
     expect(container.textContent).not.toContain("GitHub will ask you");
     expect(container.textContent).not.toContain("Creates your own GitHub App");
     expect(container.textContent).not.toContain("Assign setup task");
@@ -635,14 +638,12 @@ describe("GitHub App wizard", () => {
       { ...fixture.endpoint, id: "unconnected", setup: { github: { ownerType: "organization", ownerLogin: "unfinished" } } },
     ]);
     await render("resume=draft-1");
-    const select = container.querySelector("#github-owner-type") as HTMLSelectElement;
-    expect([...select.options].map(option => option.textContent)).toEqual([
+    const select = container.querySelector<HTMLElement>("#github-owner-type")!;
+    await openSearchableTrigger(select);
+    expect(searchableOptionTexts()).toEqual([
       "My account", "ACME", "paperclipai", "Another organization",
     ]);
-    await act(async () => {
-      select.value = "organization:paperclipai";
-      select.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    await pickSearchableOptionFromTrigger(select, "paperclipai");
     expect(container.querySelector("#github-owner-login")).toBeNull();
     await click("Continue to GitHub");
     expect(githubChatApi.registration).toHaveBeenCalledWith("draft-1", {
@@ -654,15 +655,9 @@ describe("GitHub App wizard", () => {
       { ...fixture.endpoint, status: "active", setup: { github: { ownerType: "organization", ownerLogin: "acme" } } },
     ]);
     await render("resume=draft-1");
-    const select = container.querySelector("#github-owner-type") as HTMLSelectElement;
-    await act(async () => {
-      select.value = "organization:acme";
-      select.dispatchEvent(new Event("change", { bubbles: true }));
-    });
-    await act(async () => {
-      select.value = "organization";
-      select.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    const select = container.querySelector<HTMLElement>("#github-owner-type")!;
+    await pickSearchableOptionFromTrigger(select, "acme");
+    await pickSearchableOptionFromTrigger(select, "Another organization");
     const input = container.querySelector("#github-owner-login") as HTMLInputElement;
     expect(input.value).toBe("");
     await act(async () => {
@@ -682,7 +677,7 @@ describe("GitHub App wizard", () => {
       { ...fixture.endpoint, id: "connected", status: "active" },
     ]);
     await render("resume=draft-1");
-    expect((container.querySelector("#github-owner-type") as HTMLSelectElement).value).toBe("organization:saved-org");
+    expect(container.querySelector("#github-owner-type")?.textContent).toBe("saved-org");
     expect(container.textContent).toContain("Could not load some connected GitHub accounts");
     await click("Save & exit");
     expect(githubChatApi.saveDraft).toHaveBeenCalledWith("draft-1", {
@@ -712,13 +707,10 @@ describe("GitHub App wizard", () => {
   });
   it("saves ownership and the suggested name when exiting", async () => {
     await render("resume=draft-1");
-    const owner = container.querySelector(
-      "#github-owner-type",
-    ) as HTMLSelectElement;
-    await act(async () => {
-      owner.value = "organization";
-      owner.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    await pickSearchableOptionFromTrigger(
+      container.querySelector<HTMLElement>("#github-owner-type")!,
+      "Another organization",
+    );
     const input = container.querySelector(
       "#github-owner-login",
     ) as HTMLInputElement;
@@ -756,10 +748,7 @@ describe("GitHub App wizard", () => {
       client.invalidateQueries({ queryKey: ["github-setup", "draft-1"] }),
     );
     await settle();
-    expect(
-      (container.querySelector("#github-owner-type") as HTMLSelectElement)
-        .value,
-    ).toBe("organization");
+    expect(container.querySelector("#github-owner-type")?.textContent).toBe("Another organization");
     expect(
       (container.querySelector("#github-owner-login") as HTMLInputElement)
         .value,
@@ -789,7 +778,7 @@ describe("GitHub App wizard", () => {
     expect(form.querySelector('button[type="submit"]')?.textContent).toBe("Continue to GitHub");
     expect((form.querySelector('button[type="button"]') as HTMLButtonElement).textContent).toBe("Save & exit");
     expect(githubChatApi.registration).not.toHaveBeenCalled();
-    expect((container.querySelector("#github-owner-type") as HTMLSelectElement).disabled).toBe(true);
+    expect((container.querySelector("#github-owner-type") as HTMLButtonElement).disabled).toBe(true);
     expect(() => gitHubAppManifestAction({ ...registration, registrationUrl: "https://evil.example/apps/new" }))
       .toThrow("invalid registration");
   });
@@ -875,13 +864,10 @@ describe("GitHub App wizard", () => {
       avatarUrl: null,
     });
     await render("resume=draft-1&stage=identity");
-    const account = container.querySelector(
-      "#github-personal-account",
-    ) as HTMLSelectElement;
-    await act(async () => {
-      account.value = "personal-1";
-      account.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    await pickSearchableOptionFromTrigger(
+      container.querySelector<HTMLElement>("#github-personal-account")!,
+      "octocat",
+    );
     await click("Check my account");
     expect(githubChatApi.identity).toHaveBeenLastCalledWith(
       "draft-1",

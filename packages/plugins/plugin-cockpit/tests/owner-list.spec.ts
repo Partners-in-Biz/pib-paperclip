@@ -122,7 +122,19 @@ describe("splitOwnerWaiting: standing rows that are not decisions (PAR-13579)", 
   });
   it("the Finish setup row moves to others only when a standing queue is set", () => {
     expect(split([setup]).owner.map((e) => e.key)).toEqual(["setup:missing"]);
-    const r = split([setup], { ...ACTIVE, setupRouted: true } as never);
+    const rights = { enabled: true, seats: { other: "seat-other-001" }, ownProducts: [] };
+    const r = split([setup], { ...ACTIVE, setupRouted: true, rights } as never);
     expect([r.owner.length, r.others.map((e) => e.key)]).toEqual([0, ["setup:missing"]]);
+  });
+});
+
+describe("Finish setup names a seat (PAR-14783)", () => {
+  const setup = entry("setup:missing", { kind: "grant", source: "host", since: null });
+  it("waits on the other seat; with no seat it is left out, never a null-seat row", () => {
+    const rights = { enabled: true, seats: { other: "seat-other-001" }, ownProducts: [] };
+    const r = split([setup], { ...ACTIVE, setupRouted: true, rights } as never);
+    expect(r.others[0]!.waitsOn).toEqual({ kind: "agent", agentId: "seat-other-001" });
+    const none = split([setup], { ...ACTIVE, setupRouted: true } as never);
+    expect([none.owner.length, none.others.length]).toEqual([0, 0]);
   });
 });

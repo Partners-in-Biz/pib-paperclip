@@ -6,6 +6,12 @@ import { secretsApi } from "../api/secrets";
 import { queryKeys } from "../lib/queryKeys";
 import { useCompany } from "../context/CompanyContext";
 import { Button } from "@/components/ui/button";
+import { OptionSelect } from "@/components/OptionSelect";
+import {
+  SearchableSelect,
+  type SearchableSelectGroup,
+  type SearchableSelectOption,
+} from "@/components/SearchableSelect";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -57,6 +63,8 @@ interface SecretBindingPickerProps {
    */
   statusFilter?: Array<CompanySecret["status"]> | null;
 }
+
+type SecretPickerOption = SearchableSelectOption<string>;
 
 const VERSION_LATEST: SecretVersionSelector = "latest";
 
@@ -152,6 +160,32 @@ export function SecretBindingPicker({
     },
   });
 
+  const missingLabel =
+    selectedMissing && value
+      ? missingHint
+        ? `${missingHint.name} — ${missingHint.companyName ?? "another organization"}`
+        : hintsPending
+          ? `Secret (${value.secretId.slice(0, 8)}…)`
+          : `Missing secret (${value.secretId.slice(0, 8)}…)`
+      : null;
+  const secretGroups = useMemo<SearchableSelectGroup<string, SecretPickerOption>[]>(() => {
+    const options: SecretPickerOption[] = [
+      { key: "__none__", value: "", label: secretsQuery.isPending ? "Loading…" : placeholder },
+    ];
+    if (missingLabel && value) {
+      options.push({ key: `missing-${value.secretId}`, value: value.secretId, label: missingLabel });
+    }
+    for (const secret of filteredSecrets) {
+      options.push({
+        key: secret.id,
+        value: secret.id,
+        label: `${secret.name} — ${describeSecret(secret)}`,
+        searchText: `${secret.key} ${secret.name}`,
+      });
+    }
+    return [{ id: "secrets", options }];
+  }, [filteredSecrets, missingLabel, placeholder, secretsQuery.isPending, value]);
+
   const versionDisplay = (selector: SecretVersionSelector | undefined) => {
     if (selector === undefined || selector === VERSION_LATEST) return "latest";
     return `v${selector}`;
@@ -177,65 +211,50 @@ export function SecretBindingPicker({
       <div className="flex items-center gap-1.5">
         <div className="relative flex-1">
           <KeyRound className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-          <select
-            className={cn(
-              "h-9 w-full rounded-md border border-border bg-background pl-7 pr-2 text-sm outline-none disabled:cursor-not-allowed disabled:opacity-60",
-              selectedMissing && !calmMissing && "border-destructive text-destructive",
-            )}
+          <SearchableSelect<string, SecretPickerOption>
             value={value?.secretId ?? ""}
-            onChange={(event) => {
-              const next = event.target.value;
+            groups={secretGroups}
+            onValueChange={(next) => {
               if (!next) {
                 onChange(null);
                 return;
               }
               onChange({ secretId: next, version: value?.version ?? VERSION_LATEST });
             }}
+            placeholder={secretsQuery.isPending ? "Loading…" : placeholder}
+            searchPlaceholder="Search secrets…"
+            emptyMessage="No secrets match."
             disabled={disabled || secretsQuery.isPending}
-          >
-            <option value="">{secretsQuery.isPending ? "Loading…" : placeholder}</option>
-            {selectedMissing && value ? (
-              <option value={value.secretId}>
-                {missingHint
-                  ? `${missingHint.name} — ${missingHint.companyName ?? "another organization"}`
-                  : hintsPending
-                    ? `Secret (${value.secretId.slice(0, 8)}…)`
-                    : `Missing secret (${value.secretId.slice(0, 8)}…)`}
-              </option>
-            ) : null}
-            {filteredSecrets.map((secret) => (
-              <option key={secret.id} value={secret.id}>
-                {secret.name} — {describeSecret(secret)}
-              </option>
-            ))}
-          </select>
+            mobileTitle="Select secret"
+            triggerClassName={cn(
+              "h-9 pl-7 pr-2 text-sm font-normal",
+              selectedMissing && !calmMissing && "border-destructive text-destructive",
+            )}
+          />
         </div>
         {allowVersionSelector ? (
-          <select
-            className="h-9 rounded-md border border-border bg-background px-2 text-xs outline-none disabled:cursor-not-allowed disabled:opacity-60"
-            value={value?.version === undefined ? VERSION_LATEST : String(value.version)}
-            onChange={(event) => {
+          <OptionSelect
+            ariaLabel="Version"
+            className="w-24"
+            triggerClassName="h-9 px-2 text-xs font-normal"
+            value={value?.version === undefined ? "latest" : String(value.version)}
+            disabled={disabled || !value || !selectedSecret}
+            placeholder="latest"
+            searchPlaceholder="Search versions…"
+            items={[
+              { value: "latest", label: "latest" },
+              ...(selectedSecret
+                ? Array.from({ length: Math.max(0, selectedSecret.latestVersion) }, (_, index) => selectedSecret.latestVersion - index)
+                    .filter((version) => version > 0)
+                    .map((version) => ({ value: String(version), label: `v${version}` }))
+                : []),
+            ]}
+            onChange={(raw) => {
               if (!value) return;
-              const raw = event.target.value;
-              const next: SecretVersionSelector = raw === VERSION_LATEST ? VERSION_LATEST : Number.parseInt(raw, 10);
+              const next: SecretVersionSelector = raw === "latest" ? VERSION_LATEST : Number.parseInt(raw, 10);
               onChange({ ...value, version: next });
             }}
-            disabled={disabled || !value || !selectedSecret}
-            aria-label="Version"
-          >
-            <option value={VERSION_LATEST}>latest</option>
-            {selectedSecret
-              ? Array.from({ length: Math.max(0, selectedSecret.latestVersion) }, (_, index) => {
-                  const version = selectedSecret.latestVersion - index;
-                  if (version <= 0) return null;
-                  return (
-                    <option key={version} value={version}>
-                      v{version}
-                    </option>
-                  );
-                })
-              : null}
-          </select>
+          />
         ) : null}
         <Button
           type="button"

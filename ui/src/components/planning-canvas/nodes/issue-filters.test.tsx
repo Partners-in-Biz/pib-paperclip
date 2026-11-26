@@ -13,8 +13,10 @@ import { CanvasRefContext } from "@/components/planning-canvas/nodes/canvas-cont
 import { IssueFilters } from "@/components/planning-canvas/nodes/IssueFilters";
 import { defaultQuery } from "@/components/planning-canvas/nodes/issue-board";
 import type { PlanningCanvasIssueQuery } from "@paperclipai/shared";
+import { openSearchableSelect, pickSearchableOption, stubSearchableSelectDom } from "@/test-utils/searchable-select";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+stubSearchableSelectDom();
 afterEach(() => {
   vi.clearAllMocks();
   document.body.innerHTML = "";
@@ -50,9 +52,9 @@ describe("IssueFilters", () => {
   it("writes the project and assignee choice, and clearing removes the key", async () => {
     const onChange = vi.fn();
     const host = await mount(defaultQuery(), onChange);
-    await change(host.querySelector('[aria-label="Filter by project"]')!, "p1");
+    await pickSearchableOption(host, "Filter by project", "Launch");
     expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ filter: { projectId: "p1" } }));
-    await change(host.querySelector('[aria-label="Filter by assignee"]')!, "a1");
+    await pickSearchableOption(host, "Filter by assignee", "Agent One");
     expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ filter: { assigneeAgentId: "a1" } }));
   });
 
@@ -60,7 +62,7 @@ describe("IssueFilters", () => {
     const onChange = vi.fn();
     const q = { ...defaultQuery(), filter: { projectId: "p1" } };
     const host = await mount(q, onChange);
-    await change(host.querySelector('[aria-label="Filter by project"]')!, "");
+    await pickSearchableOption(host, "Filter by project", "All projects");
     expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ filter: {} }));
     await act(async () => {
       [...host.querySelectorAll("button")].find((b) => b.textContent === "Clear filters")!.click();
@@ -99,7 +101,11 @@ describe("IssueFilters", () => {
 
   it("lists agents that load after mount and closes the status list on Escape", async () => {
     const host = await mount(defaultQuery(), vi.fn());
-    expect(host.querySelector('[aria-label="Filter by assignee"]')!.textContent).toContain("Agent One");
+    await openSearchableSelect(host, "Filter by assignee");
+    expect(document.body.textContent).toContain("Agent One");
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    });
     const status = host.querySelector<HTMLButtonElement>('[aria-label="Filter by status"]')!;
     await act(async () => status.click());
     expect(host.querySelector("ul")).not.toBeNull();

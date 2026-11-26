@@ -3,6 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { stubSearchableSelectDom } from "@/test-utils/searchable-select";
 import { ChatExecutionDefaults } from "./ChatExecutionDefaults";
 import type { ChatExecutionDefaults as Defaults } from "@paperclipai/shared";
 const mocks = vi.hoisted(() => ({ projects: vi.fn(), workspaces: vi.fn(), save: vi.fn() }));
@@ -10,17 +11,25 @@ vi.mock("@/api/projects", () => ({ projectsApi: { list: mocks.projects } }));
 vi.mock("@/api/execution-workspaces", () => ({ executionWorkspacesApi: { listSummaries: mocks.workspaces } }));
 let root: Root, container: HTMLDivElement, client: QueryClient;
 beforeEach(() => {
-  vi.clearAllMocks(); mocks.projects.mockResolvedValue([]); mocks.workspaces.mockResolvedValue([]); mocks.save.mockResolvedValue(undefined);
+  vi.clearAllMocks(); stubSearchableSelectDom(); mocks.projects.mockResolvedValue([]); mocks.workspaces.mockResolvedValue([]); mocks.save.mockResolvedValue(undefined);
   container = document.createElement("div"); document.body.append(container); root = createRoot(container);
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 });
 afterEach(async () => { await act(async () => root.unmount()); client.clear(); container.remove(); });
 async function render(value: Defaults | null = { projectId: null }) {
   await act(async () => root.render(<QueryClientProvider client={client}><ChatExecutionDefaults companyId="company" value={value} resource onSave={mocks.save} /></QueryClientProvider>));
-  await vi.waitFor(() => expect(container.querySelectorAll("select")[1].disabled).toBe(false));
+  await vi.waitFor(() => expect(workspaceTrigger().disabled).toBe(false));
 }
+const workspaceTrigger = () => container.querySelectorAll<HTMLButtonElement>('[role="combobox"]')[1];
+const items = () => [...document.body.querySelectorAll<HTMLElement>("[cmdk-item]")];
+const labels: Record<string, string> = {
+  clear: "Use project or task defaults", task: "Task files — separate folder", "existing:idle-workspace": "Idle files",
+};
 async function choose(value: string) {
-  await act(async () => { const select = container.querySelectorAll("select")[1]; select.value = value; select.dispatchEvent(new Event("change", { bubbles: true })); });
+  await act(async () => { workspaceTrigger().dispatchEvent(new MouseEvent("pointerdown", { bubbles: true })); workspaceTrigger().click(); });
+  const item = items().find((el) => el.textContent?.includes(labels[value]))!;
+  expect(item).toBeTruthy();
+  await act(async () => { item.click(); });
 }
 async function save() {
   await act(async () => container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
@@ -34,7 +43,7 @@ it("keeps edits visible after a save failure and permits retry", async () => {
   mocks.save.mockRejectedValueOnce(new Error("Workspace access was revoked"));
   await render(); await choose("task"); await save();
   expect(container.querySelector('[role="alert"]')?.textContent).toContain("Workspace access was revoked");
-  expect(container.querySelectorAll("select")[1].value).toBe("task");
+  expect(workspaceTrigger().textContent).toContain(labels.task);
   await save();
   expect(mocks.save).toHaveBeenLastCalledWith({ projectId: null, workspace: { kind: "task_directory" } });
   expect(container.textContent).toContain("Saved for new tasks.");
@@ -44,12 +53,12 @@ it("retains accepted selections until the parent refreshes and then follows late
   await render();
   await choose("task");
   await save();
-  expect(container.querySelectorAll("select")[1].value).toBe("task");
+  expect(workspaceTrigger().textContent).toContain(labels.task);
   expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(true);
   expect(container.textContent).toContain("Saved for new tasks.");
   await render({ projectId: null, workspace: { kind: "task_directory" } });
   await render({ projectId: null, workspace: null });
-  expect(container.querySelectorAll("select")[1].value).toBe("clear");
+  expect(workspaceTrigger().textContent).toContain(labels.clear);
   expect(mocks.save).toHaveBeenCalledTimes(1);
 });
 
@@ -60,9 +69,11 @@ it("offers and saves an idle workspace from the shared task selection filter", a
   ]);
   await render();
   expect(mocks.workspaces).toHaveBeenCalledWith("company", { selectableForTask: true });
-  const options = [...container.querySelectorAll("select")[1].options].map((option) => option.value);
-  expect(options).toContain("existing:active-workspace");
-  expect(options).toContain("existing:idle-workspace");
+  await act(async () => { workspaceTrigger().dispatchEvent(new MouseEvent("pointerdown", { bubbles: true })); workspaceTrigger().click(); });
+  const options = items().map((el) => el.textContent);
+  expect(options).toContain("Active files");
+  expect(options).toContain("Idle files");
+  await act(async () => { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
   await choose("existing:idle-workspace");
   await save();
   expect(mocks.save).toHaveBeenCalledWith({

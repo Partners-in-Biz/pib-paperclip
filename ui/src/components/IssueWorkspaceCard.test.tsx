@@ -6,6 +6,7 @@ import { createRoot } from "react-dom/client";
 import type { ExecutionWorkspace, Issue } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IssueWorkspaceCard } from "./IssueWorkspaceCard";
+import { openSearchableSelect, stubSearchableSelectDom } from "../test-utils/searchable-select";
 
 function act(callback: () => void | Promise<void>) {
   let result: void | Promise<void> | undefined;
@@ -139,6 +140,7 @@ describe("IssueWorkspaceCard", () => {
   let originalResizeObserver: typeof ResizeObserver | undefined;
 
   beforeEach(() => {
+    stubSearchableSelectDom();
     originalResizeObserver = globalThis.ResizeObserver;
     globalThis.ResizeObserver = class ResizeObserver {
       observe() {}
@@ -224,9 +226,8 @@ describe("IssueWorkspaceCard", () => {
       editButton!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
     });
 
-    const selects = container.querySelectorAll("select");
-    expect(selects).toHaveLength(1);
-    expect(container.querySelector("button[role='combobox']")?.textContent).toContain("Issue sandbox");
+    expect(container.querySelector("select")).toBeNull();
+    expect(container.querySelector("button[role='combobox']")?.textContent).toContain("Existing isolated workspace");
 
     const saveButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Save"));
     expect(saveButton).not.toBeUndefined();
@@ -288,9 +289,8 @@ describe("IssueWorkspaceCard", () => {
       editButton!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
     });
 
-    const selects = container.querySelectorAll("select");
-    expect(selects).toHaveLength(1);
-    expect(container.querySelector("button[role='combobox']")?.textContent).toContain("Issue sandbox");
+    expect(container.querySelector("select")).toBeNull();
+    expect(container.querySelector("button[role='combobox']")?.textContent).toContain("Existing isolated workspace");
     expect(container.textContent).not.toContain("Project default environment");
 
     act(() => {
@@ -300,7 +300,7 @@ describe("IssueWorkspaceCard", () => {
 
   it.each([[true, false], [false, true]] as const)(
     "reads environments and reusable workspaces and offers reuse only when open (gate closed: %s, PAR-12952)",
-    (closed, open) => {
+    async (closed, open) => {
       memberGate.closed = closed;
       const enabled: Record<string, boolean> = {};
       useQueryMock.mockImplementation((options: { queryKey: unknown[]; enabled?: boolean }) => {
@@ -314,8 +314,10 @@ describe("IssueWorkspaceCard", () => {
         project={{ id: "project-1", executionWorkspacePolicy: { enabled: true, defaultMode: "isolated_workspace" } }} />));
       expect(enabled.environments).toBe(open);
       expect(enabled["execution-workspaces"]).toBe(open);
-      expect(Boolean(container.querySelector('option[value="reuse_existing"]'))).toBe(open);
-      expect(container.querySelector('option[value="isolated_workspace"]')).not.toBeNull();
+      await openSearchableSelect(container, "Workspace mode");
+      const optionTexts = Array.from(document.body.querySelectorAll("[cmdk-item]")).map((el) => el.textContent ?? "");
+      expect(optionTexts.some((text) => text.includes("Reuse existing workspace"))).toBe(open);
+      expect(optionTexts.some((text) => text.includes("New isolated workspace"))).toBe(true);
       act(() => root.unmount());
     },
   );

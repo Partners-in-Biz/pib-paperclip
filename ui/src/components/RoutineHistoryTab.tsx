@@ -36,6 +36,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "./EmptyState";
+import { OptionSelect } from "./OptionSelect";
 import { MarkdownBody } from "./MarkdownBody";
 import { Badge } from "@/components/ui/badge";
 
@@ -915,18 +916,18 @@ function RevisionPicker({
       >
         {label}
       </Badge>
-      <select
+      <OptionSelect
+        ariaLabel={`${label} revision`}
+        className="min-w-(--sz-12rem)"
+        triggerClassName="h-8 text-xs font-normal"
         value={value}
-        onChange={(event) => onChange(event.target.value)}
-        className="h-8 min-w-(--sz-12rem) rounded-md border border-border/60 bg-background px-2 text-xs"
-      >
-        {revisions.map((revision) => (
-          <option key={revision.id} value={revision.id}>
-            rev {revision.revisionNumber} — {relativeTime(revision.createdAt)}
-            {revision.changeSummary ? ` • ${revision.changeSummary}` : ""}
-          </option>
-        ))}
-      </select>
+        onChange={onChange}
+        placeholder="Revision"
+        items={revisions.map((revision) => ({
+          value: revision.id,
+          label: `rev ${revision.revisionNumber} — ${relativeTime(revision.createdAt)}${revision.changeSummary ? ` • ${revision.changeSummary}` : ""}`,
+        }))}
+      />
     </div>
   );
 }

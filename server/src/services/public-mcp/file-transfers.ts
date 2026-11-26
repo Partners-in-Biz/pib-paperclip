@@ -159,7 +159,9 @@ export function createPublicMcpTransfers(db: Db, oauth: PublicMcpOAuth, api: Api
     const bytes = req.body;
     if (!Buffer.isBuffer(bytes)) throw unavailable();
     const digest = createHash("sha256").update(bytes).digest("hex");
-    const published = await db.transaction(async tx => {
+    // A restriction refusal inside this transaction is recorded after it ends,
+    // never while it holds the grant row lock (PAR-14565).
+    const published = await oauth.withDeferredDenials(defer => db.transaction(async tx => {
       const [upload] = await tx.select().from(mcpAttachmentUploads).where(eq(mcpAttachmentUploads.id, row.uploadId!)).for("update");
       if (!upload || upload.companyId !== principal.grant.companyId || upload.userId !== principal.grant.userId || upload.workSessionId !== row.workSessionId || upload.grantId && upload.grantId !== row.grantId || upload.storageProvider !== storage.provider) throw unavailable();
       if (upload.expiresAt <= new Date() || upload.cleanedAt || upload.cleanupVerifiedAt) throw unavailable();
@@ -169,7 +171,7 @@ export function createPublicMcpTransfers(db: Db, oauth: PublicMcpOAuth, api: Api
       await workSession(principal, row.workSessionId ?? undefined, upload.taskId, true, tx as unknown as Db);
       const [grant] = await tx.select().from(mcpOauthGrants).where(eq(mcpOauthGrants.id, row.grantId)).for("update");
       if (!grant || grant.revokedAt || row.expiresAt <= new Date()) throw unavailable();
-      const current = await oauth.authorizeGrant(row.grantId, tx as unknown as Db);
+      const current = await oauth.authorizeGrant(row.grantId, { tx: tx as unknown as Db, defer });
       if (current.grant.purpose !== "agent") requireWrite(current);
       await taskAccess(current, upload.taskId, true, tx as unknown as Db, row.workSessionId ?? undefined);
       const session = await workSession(current, row.workSessionId ?? undefined, upload.taskId, true, tx as unknown as Db);
@@ -193,7 +195,7 @@ export function createPublicMcpTransfers(db: Db, oauth: PublicMcpOAuth, api: Api
       await logActivity(tx as unknown as Db, { companyId: upload.companyId, actorType: session ? "agent" : "user", actorId: session?.agentId ?? current.grant.userId, action: "issue.attachment_added", entityType: "issue", entityId: upload.taskId,
         details: { attachmentId: result.id, originalFilename: result.originalFilename, contentType: result.contentType, byteSize: result.byteSize, mcpConnectionId: row.grantId, ...(session ? { workSessionId: row.workSessionId, authorizingPersonId: current.grant.userId } : {}) } });
       return { attachment: result, publication };
-    });
+    }));
     res.json({ attachment: pick(published.attachment, attachmentFields), ...(published.publication ? { publication: published.publication } : {}) });
   });
   router.get(prefix + "/download", async (req, res) => {

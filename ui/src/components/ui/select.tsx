@@ -3,12 +3,72 @@ import { CheckIcon, ChevronDownIcon, ChevronUpIcon } from "lucide-react"
 import { Select as SelectPrimitive } from "radix-ui"
 
 import { cn } from "@/lib/utils"
+import { OptionSelect, type OptionSelectItem } from "@/components/OptionSelect"
 import { Popover, PopoverContent, PopoverTrigger } from "./popover"
 
 export const nativeSelectClassName = "w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-sm leading-5 outline-none focus-visible:ring-2 focus-visible:ring-ring"
 
-export function NativeSelect({ className, ...props }: React.ComponentProps<"select">) {
-  return <select {...props} className={cn(nativeSelectClassName, className)} />
+function optionText(node: React.ReactNode): string {
+  if (node === null || node === undefined || typeof node === "boolean") return "";
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(optionText).join("");
+  if (React.isValidElement<{ children?: React.ReactNode }>(node)) return optionText(node.props.children);
+  return "";
+}
+
+function collectOptions(children: React.ReactNode, group: string | undefined, out: OptionSelectItem[]) {
+  React.Children.forEach(children, (child) => {
+    if (!React.isValidElement<Record<string, unknown>>(child)) return;
+    const props = child.props as { value?: unknown; disabled?: boolean; label?: string; children?: React.ReactNode };
+    if (child.type === "option") {
+      const label = optionText(props.children);
+      out.push({ value: props.value === undefined ? label : String(props.value), label, disabled: props.disabled, group });
+    } else if (child.type === "optgroup") {
+      collectOptions(props.children, props.label, out);
+    } else {
+      collectOptions(props.children, group, out);
+    }
+  });
+}
+
+/**
+ * Drop-in for a native `<select>` that renders the searchable dropdown.
+ * Keeps the `<option>`/`<optgroup>` children and `onChange(event)` contract
+ * (the event carries `target.value`/`currentTarget.value`); an option with
+ * value "" becomes the pinned empty choice.
+ */
+export function NativeSelect({
+  className,
+  children,
+  value,
+  onChange,
+  disabled,
+  id,
+  "aria-label": ariaLabel,
+}: Omit<React.ComponentProps<"select">, "value" | "onChange"> & {
+  value?: string | number | readonly string[];
+  onChange?: (event: React.ChangeEvent<HTMLSelectElement>) => void;
+}) {
+  const items: OptionSelectItem[] = [];
+  collectOptions(children, undefined, items);
+  const empty = items.find((item) => item.value === "");
+  const rest = items.filter((item) => item !== empty);
+  return (
+    <OptionSelect
+      id={id}
+      ariaLabel={ariaLabel}
+      items={rest}
+      value={value === undefined ? "" : String(value)}
+      emptyLabel={empty?.label || undefined}
+      placeholder={empty?.label || "Select…"}
+      disabled={disabled}
+      className={className}
+      onChange={(next) => {
+        const target = { value: next, id: id ?? "" };
+        onChange?.({ target, currentTarget: target } as unknown as React.ChangeEvent<HTMLSelectElement>);
+      }}
+    />
+  );
 }
 
 // Shared with searchable picker triggers so their size and states match Select.

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import type { AgentPermissions, TrustPreset } from "@paperclipai/shared";
 import { Check, Lock, ShieldAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { OptionSelect } from "@/components/OptionSelect";
 import { Field, CollapsibleSection } from "./agent-config-primitives";
 import {
   buildPermissionsForTrustPreset,
@@ -18,9 +19,6 @@ import {
   type LowTrustBoundaryTarget,
 } from "../lib/trust-policy-ui";
 import { cn } from "../lib/utils";
-
-const inputClass =
-  "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
 
 function formatCount(value: readonly unknown[] | undefined, singular: string, plural: string) {
   const count = value?.length ?? 0;
@@ -142,37 +140,35 @@ export function TrustPresetSection({
                 <div className="rounded-md border border-border/70 bg-background/70 p-3 text-foreground space-y-3">
                   <div className="grid gap-3 sm:grid-cols-(--gtc-12)">
                     <Field label="Boundary type">
-                      <select
-                        className={inputClass}
+                      <OptionSelect
+                        ariaLabel="Boundary type"
                         value={targetType}
-                        onChange={(event) => setTargetType(event.target.value as LowTrustBoundaryTargetType)}
+                        onChange={(value) => setTargetType(value as LowTrustBoundaryTargetType)}
                         disabled={disabled}
-                      >
-                        <option value="project">Project</option>
-                        <option value="root_issue">Root issue</option>
-                        {allowSingleIssue && <option value="issue">Issue</option>}
-                      </select>
+                        placeholder="Boundary type"
+                        items={[
+                          { value: "project", label: "Project" },
+                          { value: "root_issue", label: "Root issue" },
+                          ...(allowSingleIssue ? [{ value: "issue", label: "Issue" }] : []),
+                        ]}
+                      />
                     </Field>
                     <Field label={BOUNDARY_TARGET_LABELS[targetType]}>
-                      <select
-                        className={inputClass}
+                      <OptionSelect
+                        ariaLabel={BOUNDARY_TARGET_LABELS[targetType]}
                         value={boundaryValue}
-                        onChange={(event) => handleBoundaryTargetChange(event.target.value)}
+                        onChange={handleBoundaryTargetChange}
                         disabled={disabled || !companyId || candidatesLoading || targetCandidates.length === 0}
-                      >
-                        <option value="">
-                          {candidatesLoading
+                        placeholder={
+                          candidatesLoading
                             ? "Loading…"
                             : targetCandidates.length === 0
                               ? `No ${targetType === "project" ? "projects" : "issues"} available`
-                              : "Select boundary"}
-                        </option>
-                        {targetCandidates.map((candidate) => (
-                          <option key={candidate.id} value={candidate.id}>
-                            {candidate.label}
-                          </option>
-                        ))}
-                      </select>
+                              : "Select boundary"
+                        }
+                        emptyLabel={targetCandidates.length > 0 ? "Select boundary" : undefined}
+                        items={targetCandidates.map((candidate) => ({ value: candidate.id, label: candidate.label }))}
+                      />
                     </Field>
                   </div>
                   <div className="flex flex-wrap items-center justify-between gap-2">
@@ -287,15 +283,17 @@ export function TrustPresetSection({
       <h3 className="mb-3 text-sm font-medium">Trust</h3>
       <div className="rounded-lg border border-border p-4 space-y-3">
         <Field label="Trust preset" hint="Choose how broadly this agent can read and act on Paperclip work objects.">
-          <select
-            className={inputClass}
+          <OptionSelect
+            ariaLabel="Trust preset"
             value={preset}
-            onChange={(event) => handlePresetChange(event.target.value)}
+            onChange={handlePresetChange}
             disabled={disabled}
-          >
-            <option value="standard">{TRUST_PRESET_LABELS.standard}</option>
-            <option value="low_trust_review">{TRUST_PRESET_LABELS.low_trust_review}</option>
-          </select>
+            placeholder="Trust preset"
+            items={[
+              { value: "standard", label: TRUST_PRESET_LABELS.standard },
+              { value: "low_trust_review", label: TRUST_PRESET_LABELS.low_trust_review },
+            ]}
+          />
         </Field>
         <p className="text-xs text-muted-foreground">{TRUST_PRESET_DESCRIPTIONS[preset]}</p>
 

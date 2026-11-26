@@ -2,7 +2,9 @@
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { act } from "react";
+import { stubSearchableSelectDom } from "../../test-utils/searchable-select";
 import { AgentProviderConnection } from "./AgentProviderConnection";
 import { defaultAiConnectionName } from "../ai-connections/model";
 import { ApiError } from "@/api/client";
@@ -38,6 +40,7 @@ vi.mock("../AgentConfigForm", () => ({
 let root: Root;
 let host: HTMLDivElement;
 let client: QueryClient;
+beforeEach(() => stubSearchableSelectDom());
 afterEach(() => {
   flushSync(() => root?.unmount());
   host?.remove();
@@ -145,6 +148,37 @@ function click(text: string) {
   expect(button).toBeTruthy();
   flushSync(() => button.click());
 }
+function savedPicker() {
+  return host.querySelector<HTMLElement>('[role="combobox"]');
+}
+async function openSavedPicker() {
+  const trigger = savedPicker()!;
+  await act(async () => {
+    trigger.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+    trigger.click();
+  });
+  return trigger;
+}
+function pickerItems() {
+  return [...document.body.querySelectorAll<HTMLElement>("[cmdk-item]")];
+}
+/** Selected value of the saved-credential picker; the pinned empty option reads as "". */
+async function savedPickerValue() {
+  const trigger = await openSavedPicker();
+  const selected = pickerItems().find((el) => el.querySelector("svg.opacity-100"));
+  await act(async () => {
+    trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  });
+  const value = selected?.getAttribute("data-value") ?? "";
+  return value === "__none__" ? "" : value;
+}
+async function pickSaved(value: string) {
+  await openSavedPicker();
+  const wanted = value === "" ? "__none__" : value;
+  const item = pickerItems().find((el) => el.getAttribute("data-value") === wanted);
+  expect(item).toBeTruthy();
+  await act(async () => item!.click());
+}
 function openProvider() {
   flushSync(() =>
     (host.querySelector('[role="radio"]') as HTMLElement).click(),
@@ -168,7 +202,7 @@ describe("AgentProviderConnection reuse", () => {
     click("Advanced");
     expect(host.textContent).toContain("Advanced connection picker");
     expect(host.querySelector('[role="radio"][aria-checked="true"]')?.textContent).toBe("AdvancedCustom Gateway");
-    expect(host.querySelector("select")).toBeNull();
+    expect(savedPicker()).toBeNull();
     expect(modeLabels()).toEqual(["OpenAISubscription", "OpenAIAPI key", "AdvancedCustom Gateway"]);
     const useConnection = Array.from(host.querySelectorAll("button")).find(button => button.textContent?.includes("Use connection"))!;
     expect(useConnection.disabled).toBe(true);
@@ -443,16 +477,12 @@ describe("AgentProviderConnection reuse", () => {
       }),
     );
     expect(test).toHaveBeenCalledWith(connected.mock.calls[0][0]);
-    flushSync(() => {
-      const select = host.querySelector("select")!;
-      select.value = "";
-      select.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    await pickSaved("");
     expect(host.textContent).toContain("New subscription login");
   });
   it("lets a visible saved subscription be used without opening the provider first", async () => {
     const { test, connected } = await mount("codex_local", false, true, true);
-    expect(host.querySelector("select")).not.toBeNull();
+    expect(savedPicker()).not.toBeNull();
     const use = [...host.querySelectorAll("button")].find((b) =>
       b.textContent?.includes("Use saved subscription"),
     )!;
@@ -469,11 +499,7 @@ describe("AgentProviderConnection reuse", () => {
   });
   it("still requires opening the provider before starting a new subscription login", async () => {
     await mount("codex_local", false, true, true);
-    flushSync(() => {
-      const select = host.querySelector("select")!;
-      select.value = "";
-      select.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    await pickSaved("");
     const primary = [...host.querySelectorAll("button")].find((b) =>
       b.textContent?.includes("Connect"),
     )!;
@@ -485,8 +511,7 @@ describe("AgentProviderConnection reuse", () => {
     async (adapter) => {
       const { test, connected, key } = await mount(adapter);
       openProvider();
-      const select = host.querySelector("select")!;
-      expect(select.value).toBe("user:d1");
+      expect(await savedPickerValue()).toBe("user:d1");
       click("Use saved API key");
       await vi.waitFor(() =>
         expect(connected).toHaveBeenCalledWith({
@@ -505,11 +530,7 @@ describe("AgentProviderConnection reuse", () => {
   it("uses an organization reference and requires a new key after switching away", async () => {
     const { connected, key } = await mount();
     openProvider();
-    const select = host.querySelector("select")!;
-    flushSync(() => {
-      select.value = "company:s1";
-      select.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    await pickSaved("company:s1");
     click("Use saved API key");
     await vi.waitFor(() =>
       expect(connected).toHaveBeenCalledWith({
@@ -518,10 +539,7 @@ describe("AgentProviderConnection reuse", () => {
         },
       }),
     );
-    flushSync(() => {
-      select.value = "";
-      select.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    await pickSaved("");
     expect(host.querySelector('input[type="password"]')).not.toBeNull();
     const button = [...host.querySelectorAll("button")].find((b) =>
       b.textContent?.includes("Connect"),
@@ -529,7 +547,7 @@ describe("AgentProviderConnection reuse", () => {
     expect(button.disabled).toBe(true);
     await client.invalidateQueries();
     await vi.waitFor(() => expect(client.isFetching()).toBe(0));
-    expect(host.querySelector("select")!.value).toBe("");
+    expect(await savedPickerValue()).toBe("");
     expect(host.querySelector('input[type="password"]')).not.toBeNull();
   });
   it("reuses saved Claude login even without a login-capable environment", async () => {
@@ -561,26 +579,22 @@ describe("AgentProviderConnection reuse", () => {
     }] } as never);
     const { connected } = await mount(adapterType, false, true, false, false);
     openProvider();
-    expect(host.querySelector('select[aria-label="Saved subscription"]')?.textContent).toContain("My subscription (Your default)");
+    expect(host.querySelector('[role="combobox"][aria-label="Saved subscription"]')?.textContent).toContain("My subscription (Your default)");
     click("Use saved subscription");
     await vi.waitFor(() => expect(connected).toHaveBeenCalledWith({ env: {}, aiConnection: { provider, method: "subscription", mode: "responsible_user" } }));
     expect(managedApi.create).not.toHaveBeenCalled();
-    flushSync(() => {
-      const select = host.querySelector("select")!;
-      select.value = "";
-      select.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    await pickSaved("");
     expect(host.textContent).toContain("New subscription login");
     await client.invalidateQueries();
     await vi.waitFor(() => expect(client.isFetching()).toBe(0));
-    expect(host.querySelector("select")!.value).toBe("");
+    expect(await savedPickerValue()).toBe("");
     expect(host.textContent).toContain("New subscription login");
   });
   it("never offers a saved Codex home in Claude's subscription chooser", async () => {
     await mount("claude_local", false, true, true);
     click("Use subscription instead");
     openProvider();
-    expect(host.querySelector('select[aria-label="Saved subscription"]')).toBeNull();
+    expect(host.querySelector('[role="combobox"][aria-label="Saved subscription"]')).toBeNull();
     expect(host.textContent).not.toContain("ChatGPT account");
   });
 

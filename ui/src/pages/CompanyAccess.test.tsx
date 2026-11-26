@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/api/client";
 import { queryKeys } from "@/lib/queryKeys";
 import { CompanyAccess, CompanyAccessLegacyRoute } from "./CompanyAccess";
+import { pickSearchableOption, stubSearchableSelectDom } from "../test-utils/searchable-select";
 
 const listMembersMock = vi.hoisted(() => vi.fn());
 const listJoinRequestsMock = vi.hoisted(() => vi.fn());
@@ -125,6 +126,7 @@ describe("CompanyAccess", () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {
+    stubSearchableSelectDom();
     container = document.createElement("div");
     document.body.appendChild(container);
     mockSearchParamsState.current = new URLSearchParams();
@@ -531,12 +533,8 @@ describe("CompanyAccess", () => {
     expect(document.body.textContent).toContain("Remove member");
     expect(document.body.textContent).toContain("Assigned to removed user");
 
-    const reassignmentSelect = document.body.querySelector("select");
-    expect(reassignmentSelect).toBeTruthy();
-    await act(async () => {
-      reassignmentSelect!.value = "user:user-2";
-      reassignmentSelect!.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    expect(document.body.querySelector('[role="combobox"][aria-label="Task reassignment"]')).toBeTruthy();
+    await pickSearchableOption(document.body, "Task reassignment", "Board User");
 
     const confirmButton = Array.from(document.body.querySelectorAll("button")).find(
       (button) => button.textContent === "Remove member",
@@ -684,6 +682,7 @@ describe("CompanyAccess invites tab", () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {
+    stubSearchableSelectDom();
     container = document.createElement("div");
     document.body.appendChild(container);
     mockSearchParamsState.current = new URLSearchParams();
@@ -754,6 +753,7 @@ describe("CompanyAccess invites tab", () => {
       container.querySelector(`input[type="radio"][name="invite-restriction"][value="${value}"]`) as HTMLInputElement | null;
 
     beforeEach(() => {
+    stubSearchableSelectDom();
       mockSearchParamsState.current = new URLSearchParams("tab=invites");
       listMembersMock.mockResolvedValue({
         members: [],
@@ -901,6 +901,7 @@ describe("CompanyAccess read resilience", () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {
+    stubSearchableSelectDom();
     container = document.createElement("div");
     document.body.appendChild(container);
     mockSearchParamsState.current = new URLSearchParams();

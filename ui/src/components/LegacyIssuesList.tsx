@@ -208,7 +208,6 @@ function getViewState(key: string, defaultShowAgentCreatedTasks = false): IssueV
       const parsed = JSON.parse(raw);
       return {
         ...defaultViewState,
-        showAgentCreatedTasks: defaultShowAgentCreatedTasks,
         ...parsed,
         ...normalizeIssueFilterState(parsed, defaultShowAgentCreatedTasks),
         workspaces: [],

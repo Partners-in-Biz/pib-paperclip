@@ -2,6 +2,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { pickSearchableOptionFromTrigger, stubSearchableSelectDom } from "@/test-utils/searchable-select";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   defaultGitHubReviewPolicy,
@@ -139,6 +140,7 @@ describe("GitHub bot management", () => {
   let client: QueryClient;
   beforeEach(() => {
     vi.clearAllMocks();
+    stubSearchableSelectDom();
     mocks.tab = "settings";
     mocks.reviewId = undefined;
     mocks.get.mockResolvedValue(endpoint);
@@ -322,13 +324,12 @@ describe("GitHub bot management", () => {
     await vi.waitFor(() => expect(container.querySelector('[role="region"] summary')).not.toBeNull());
     await act(async () => (container.querySelector('[role="region"] summary') as HTMLElement).click());
     const editor = container.querySelector('[role="region"] form')!;
-    const [project, workspace] = [...editor.querySelectorAll("select")];
+    const [project, workspace] = [...editor.querySelectorAll<HTMLButtonElement>('[role="combobox"]')];
     await vi.waitFor(() => expect(workspace.disabled).toBe(false));
     expect(mocks.projects).toHaveBeenCalledWith("company");
     expect(mocks.workspaces).toHaveBeenCalledWith("company", { selectableForTask: true });
-    expect(project.value).toBe("inherit");
-    expect(workspace.value).toBe("inherit");
-    expect(editor.textContent).toContain("Use connection defaults");
+    expect(project.textContent).toBe("Use connection defaults");
+    expect(workspace.textContent).toBe("Use connection defaults");
 
     const save = async (expected: ChatExecutionDefaults | null) => {
       const calls = mocks.updateResources.mock.calls.length;
@@ -340,21 +341,21 @@ describe("GitHub bot management", () => {
       expect(mocks.updateResources).toHaveBeenLastCalledWith("bot", [{ id: "repo", executionDefaults: expected }]);
       expect(container.querySelector('[role="region"] [role="switch"]')?.getAttribute("aria-checked")).toBe("false");
     };
-    await input(project, "project");
-    await input(workspace, "existing:workspace");
+    await pickSearchableOptionFromTrigger(project, "Website");
+    await pickSearchableOptionFromTrigger(workspace, "Shared website");
     await save({ projectId: "project", workspace: { kind: "existing", workspaceId: "workspace" } });
-    expect(project.value).toBe("project");
-    expect(workspace.value).toBe("existing:workspace");
-    await input(project, "none");
-    await input(workspace, "clear");
+    expect(project.textContent).toBe("Website");
+    expect(workspace.textContent).toBe("Shared website");
+    await pickSearchableOptionFromTrigger(project, "No project");
+    await pickSearchableOptionFromTrigger(workspace, "Use project or task defaults");
     await save({ projectId: null, workspace: null });
-    await input(project, "inherit");
+    await pickSearchableOptionFromTrigger(project, "Use connection defaults");
     await save({ workspace: null });
-    await input(workspace, "inherit");
+    await pickSearchableOptionFromTrigger(workspace, "Use connection defaults");
     await save(null);
     await vi.waitFor(() => {
-      expect(project.value).toBe("inherit");
-      expect(workspace.value).toBe("inherit");
+      expect(project.textContent).toBe("Use connection defaults");
+      expect(workspace.textContent).toBe("Use connection defaults");
     });
     expect(mocks.save).not.toHaveBeenCalled();
     expect(mocks.toggleAll).not.toHaveBeenCalled();
@@ -365,15 +366,15 @@ describe("GitHub bot management", () => {
     await vi.waitFor(() => expect(container.querySelector('[role="region"] summary')).not.toBeNull());
     await act(async () => (container.querySelector('[role="region"] summary') as HTMLElement).click());
     const editor = container.querySelector('[role="region"] form')!;
-    const workspace = editor.querySelectorAll("select")[1];
+    const workspace = editor.querySelectorAll<HTMLButtonElement>('[role="combobox"]')[1];
     await vi.waitFor(() => expect(workspace.disabled).toBe(false));
-    await input(workspace, "task");
+    await pickSearchableOptionFromTrigger(workspace, "Task files — separate folder");
     await click("Save defaults");
     await vi.waitFor(() => expect(editor.querySelector('[role="alert"]')?.textContent).toBe("Workspace access denied"));
-    expect(workspace.value).toBe("task");
+    expect(workspace.textContent).toBe("Task files — separate folder");
     expect(container.querySelector('[role="region"] [role="switch"]')?.getAttribute("aria-checked")).toBe("true");
     await click("Cancel");
-    expect(workspace.value).toBe("inherit");
+    expect(workspace.textContent).toBe("Use connection defaults");
     expect(editor.querySelector('[role="alert"]')).toBeNull();
   });
   it("stops automatic paging after a settled 429 while retaining rows and manual retry", async () => {
@@ -738,9 +739,9 @@ describe("GitHub bot management", () => {
     await render();
     const skill = `[/review](${buildSkillMentionHref("11111111-1111-4111-8111-111111111111", "review")})`;
     await input(container.querySelector('textarea[aria-label="Agent instructions"]')!, `Use ${skill}.`);
-    await input(container.querySelector('select[id$="github-prompt-event"]')!, "mention");
+    await pickSearchableOptionFromTrigger(container.querySelector<HTMLElement>('[id$="github-prompt-event"]')!, "Mention");
     await input(container.querySelector('textarea[aria-label="Mention instructions"]')!, `For mentions, use ${skill}.`);
-    await input(container.querySelector('select[id$="github-prompt-event"]')!, "issue_opened");
+    await pickSearchableOptionFromTrigger(container.querySelector<HTMLElement>('[id$="github-prompt-event"]')!, "New issue");
     await input(container.querySelector('textarea[aria-label="New issue instructions"]')!, `For issues, use ${skill}.`);
     await click("Save changes");
     const saved = mocks.save.mock.calls[0][2];

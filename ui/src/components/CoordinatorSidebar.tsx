@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Inbox, Boxes, ChevronRight, CircleCheck, FolderOpen, History, LayoutDashboard, MessageCircle, MoreHorizontal, Network, Pin, PinOff, Plus, Repeat, Search, Settings, SquarePen, Unplug, type LucideIcon } from "lucide-react";
 import type { Agent, Project } from "@paperclipai/shared";
@@ -9,11 +9,12 @@ import { projectsApi } from "@/api/projects";
 import { useAgentChatNavigation } from "@/hooks/useAgentChatNavigation";
 import { useRecentTasks } from "@/hooks/useRecentTasks";
 import { usePinnedNavigation } from "@/hooks/usePinnedNavigation";
+import { sidebarAppKey, useHiddenSidebarApps } from "@/hooks/useHiddenSidebarApps";
 import { useDialogActions } from "@/context/DialogContext";
 import { useCompany } from "@/context/CompanyContext";
 import { useMemberRestriction } from "@/context/MemberRestrictionContext";
 import { RESTRICTED_MEMBER_LANDING_PATH } from "@/lib/member-restriction";
-import { PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
+import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
 import { PluginLauncherOutlet, usePluginLaunchers } from "@/plugins/launchers";
 import { useSidebar } from "@/context/SidebarContext";
 import { queryKeys } from "@/lib/queryKeys";
@@ -86,17 +87,48 @@ function ProjectRecent({ project }: { project: Project }) {
 /** Plugin pages (CRM, Studio, Cockpit…) — the Coordinator layout had no
  * outlet for them, so installed plugins vanished from navigation. Shown only
  * when at least one plugin contributes a sidebar link or launcher. */
-function PluginNavigation({ companyId, rail }: { companyId: string | null; rail: boolean }) {
+function PluginNavigation({ companyId, rail, hidden }: { companyId: string | null; rail: boolean; hidden: ReadonlySet<string> }) {
   const { selectedCompany } = useCompany();
   const context = { companyId, companyPrefix: selectedCompany?.issuePrefix ?? null };
   const { slots } = usePluginSlots({ slotTypes: ["sidebar"], companyId });
   const { launchers } = usePluginLaunchers({ placementZones: ["sidebar"], companyId });
   const [open, setOpen] = useState(true);
-  if (rail || !companyId || (slots.length === 0 && launchers.length === 0)) return null;
+  const visibleSlot = useCallback((slot: { pluginKey: string; id: string }) => !hidden.has(sidebarAppKey(slot)), [hidden]);
+  const visibleCount = slots.filter(visibleSlot).length;
+  if (rail || !companyId || (visibleCount === 0 && launchers.length === 0)) return null;
   return <div className="design-sidebar-apps"><SidebarSection label="Apps" collapsible={{ open, onOpenChange: setOpen }}>
-    <PluginSlotOutlet slotTypes={["sidebar"]} context={context} className="flex flex-col gap-0.5" itemClassName="text-(length:--text-compact) font-medium" missingBehavior="placeholder" />
+    <PluginSlotOutlet slotTypes={["sidebar"]} context={context} className="flex flex-col gap-0.5" itemClassName="text-(length:--text-compact) font-medium" missingBehavior="placeholder" filter={visibleSlot} />
     <PluginLauncherOutlet placementZones={["sidebar"]} context={context} className="flex flex-col gap-0.5" itemClassName="text-(length:--text-compact) font-medium" />
   </SidebarSection></div>;
+}
+
+/** Every installed app in the More pop-out, each with a pin toggle. Rows whose
+ * plugin renders nothing, and the group when none is left, are hidden by CSS
+ * (`:empty`), so PluginSlotMount gets NO className: that keeps the mount div empty. */
+function MoreApps({ companyId, hiddenApps, onNavigate }: { companyId: string | null; hiddenApps: ReturnType<typeof useHiddenSidebarApps>; onNavigate: () => void }) {
+  const { selectedCompany } = useCompany();
+  const context = useMemo(() => ({ companyId, companyPrefix: selectedCompany?.issuePrefix ?? null }), [companyId, selectedCompany?.issuePrefix]);
+  const { slots } = usePluginSlots({ slotTypes: ["sidebar"], companyId });
+  if (!companyId || slots.length === 0) return null;
+  return <div className="design-sidebar-more-apps">
+    <div role="separator" className="my-1 border-t border-border" />
+    <p className="px-2 pt-1 pb-0.5 text-xs text-muted-foreground">Apps</p>
+    {slots.map(slot => {
+      const appKey = sidebarAppKey(slot);
+      const visible = !hiddenApps.hidden.has(appKey);
+      const PinIcon = visible ? PinOff : Pin;
+      const label = `${visible ? "Unpin" : "Pin"} ${slot.displayName}`;
+      return <div key={appKey} className="design-sidebar-more-app flex items-center gap-1">
+        <div className="design-sidebar-more-app-mount min-w-0 flex-1" onClickCapture={event => { if ((event.target as Element).closest("a[href]")) onNavigate(); }}>
+          <PluginSlotMount slot={slot} context={context} missingBehavior="hidden" />
+        </div>
+        <button type="button" aria-label={`${visible ? "Unpin" : "Pin"} ${slot.displayName} ${visible ? "from" : "to"} sidebar`} aria-pressed={visible} title={label} disabled={!hiddenApps.canToggle} onClick={() => hiddenApps.toggle(appKey)}
+          className={cn("flex size-8 shrink-0 items-center justify-center rounded-sm outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50", visible ? "text-foreground" : "text-muted-foreground")}>
+          <PinIcon className="size-3.5" />
+        </button>
+      </div>;
+    })}
+  </div>;
 }
 
 function RecentNavigationList({ children }: { children: ReactNode }) {
@@ -128,6 +160,7 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
   const { companyId, userId, agents, chats, session } = useAgentChatNavigation();
   const unreadChatCount = chats.data?.filter(chat => chat.isUnreadForMe).length ?? 0;
   const pinnedNavigation = usePinnedNavigation(userId);
+  const hiddenApps = useHiddenSidebarApps(userId);
   const { data: experimental } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
@@ -195,7 +228,7 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
         </div>
         <Flyout open={moreOpen} onOpenChange={setMoreOpen}>
           <FlyoutTrigger asChild><button type="button" aria-label="More workspace pages" className="design-sidebar-item flex w-auto items-center gap-2.5 rounded-lg py-1.5 text-left transition-colors focus-visible:ring-2 focus-visible:ring-ring"><MoreHorizontal className="size-4 shrink-0" /><span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : undefined}>More</span></button></FlyoutTrigger>
-          <FlyoutContent ref={moreContentRef} tabIndex={-1} onOpenAutoFocus={(event) => { event.preventDefault(); moreContentRef.current?.focus(); }} side={isMobile ? "bottom" : "right"} align="start" className="w-56 p-1" aria-label="More workspace pages">
+          <FlyoutContent ref={moreContentRef} tabIndex={-1} onOpenAutoFocus={(event) => { event.preventDefault(); moreContentRef.current?.focus(); }} side={isMobile ? "bottom" : "right"} align="start" className="w-64 max-h-(--radix-popover-content-available-height) overflow-y-auto p-1" aria-label="More workspace pages">
             {destinations.map(({ label, to, icon: Icon }, index) => {
               const pinned = pinnedNavigation.pins.includes(to);
               const PinIcon = pinned ? PinOff : Pin;
@@ -211,14 +244,15 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
                 </div>
               </div>;
             })}
+            <MoreApps companyId={companyId ?? null} hiddenApps={hiddenApps} onNavigate={() => { setMoreOpen(false); if (isMobile) setSidebarOpen(false); }} />
           </FlyoutContent>
         </Flyout>
       </div>
       {orderedPins.length > 0 && <div className="design-sidebar-pins"><SidebarSection label="Pinned">
         <PinnedNavigationList key={`${companyId}:${userId}`} items={orderedPins} rail={rail} onReorder={pinnedNavigation.reorder} onUnpin={pinnedNavigation.toggle} />
       </SidebarSection></div>}
-      <PluginNavigation companyId={companyId ?? null} rail={rail} />
-      {pinnedNavigation.error && <p role="alert" className="px-4 py-2 text-xs text-destructive">{pinnedNavigation.error}</p>}
+      <PluginNavigation companyId={companyId ?? null} rail={rail} hidden={hiddenApps.hidden} />
+      {(pinnedNavigation.error ?? hiddenApps.error) && <p role="alert" className="px-4 py-2 text-xs text-destructive">{pinnedNavigation.error ?? hiddenApps.error}</p>}
       {!rail && session.isSuccess && recents.length > 0 && <div className="design-sidebar-recents"><SidebarSection label="Recents">
         <RecentNavigationList>
         {recents.map(item => item.kind === "task"

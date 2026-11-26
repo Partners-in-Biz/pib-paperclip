@@ -180,6 +180,7 @@ import {
 import { GithubIcon } from "../components/icons/github-icon";
 import type { FolderListItem, FolderListResult } from "@paperclipai/shared";
 import { describeError } from "@/api/errors";
+import { OptionSelect } from "@/components/OptionSelect";
 
 type SkillTreeNode = {
   name: string;
@@ -2228,18 +2229,21 @@ function AttachAgentsPopover({
       headerContent={sortedVersions.length > 0 ? (
         <div className="mt-2 flex items-center gap-2 text-xs">
           <span className="shrink-0 text-muted-foreground">Version</span>
-          <select
+          <OptionSelect
+            ariaLabel="Version"
+            placeholder="Version"
+            className="min-w-0 flex-1"
+            triggerClassName="h-8 w-full text-xs font-normal"
             value={draftVersionId ?? "__latest__"}
-            onChange={(event) => setDraftVersionId(event.target.value === "__latest__" ? null : event.target.value)}
-            className="h-8 min-w-0 flex-1 rounded-md border border-border bg-background px-2 text-xs text-foreground"
-          >
-            <option value="__latest__">Latest</option>
-            {sortedVersions.map((version) => (
-              <option key={version.id} value={version.id}>
-                v{version.revisionNumber}{version.label ? ` · ${version.label}` : ""}
-              </option>
-            ))}
-          </select>
+            items={[
+              { value: "__latest__", label: "Latest" },
+              ...sortedVersions.map((version) => ({
+                value: version.id,
+                label: `v${version.revisionNumber}${version.label ? ` · ${version.label}` : ""}`,
+              })),
+            ]}
+            onChange={(next) => setDraftVersionId(next === "__latest__" ? null : next)}
+          />
         </div>
       ) : null}
       emptyMessage={eligible.length === 0 ? "No agents in this organization support skills yet." : "No agents yet."}
@@ -2589,28 +2593,28 @@ function SkillVersionDiffDialog({
           <div className="flex flex-wrap items-center gap-3 text-xs">
             <label className="flex items-center gap-2">
               <Badge variant="outline" className="border-red-500/30 bg-red-500/10 uppercase tracking-wider text-red-400">Old</Badge>
-              <select
+              <OptionSelect
+                ariaLabel="Old version"
+                placeholder="Old version"
+                className="w-44"
+                triggerClassName="h-8 w-full text-xs font-normal"
                 value={leftVersionId ?? ""}
-                onChange={(event) => onLeftVersionChange(event.target.value || null)}
-                className="h-8 w-44 rounded-md border border-border bg-background px-2 text-xs"
-              >
-                <option value="">Initial</option>
-                {sorted.map((version) => (
-                  <option key={version.id} value={version.id}>{versionLabel(version)}</option>
-                ))}
-              </select>
+                emptyLabel="Initial"
+                items={sorted.map((version) => ({ value: version.id, label: versionLabel(version) }))}
+                onChange={(next) => onLeftVersionChange(next || null)}
+              />
             </label>
             <label className="flex items-center gap-2">
               <Badge variant="outline" className="border-green-500/30 bg-green-500/10 uppercase tracking-wider text-green-400">New</Badge>
-              <select
-                value={right?.id ?? ""}
-                onChange={(event) => onRightVersionChange(event.target.value || null)}
-                className="h-8 w-44 rounded-md border border-border bg-background px-2 text-xs"
-              >
-                {sorted.map((version) => (
-                  <option key={version.id} value={version.id}>{versionLabel(version)}</option>
-                ))}
-              </select>
+              <OptionSelect
+                ariaLabel="New version"
+                placeholder="New version"
+                className="w-44"
+                triggerClassName="h-8 w-full text-xs font-normal"
+                value={selectedRight?.id ?? ""}
+                items={sorted.map((version) => ({ value: version.id, label: versionLabel(version) }))}
+                onChange={(next) => onRightVersionChange(next || null)}
+              />
             </label>
           </div>
         </div>
@@ -3566,15 +3570,18 @@ export function SkillDetailPage({
             </div>
             <div className="space-y-1.5">
               <label className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Sharing</label>
-              <select
+              <OptionSelect
+                ariaLabel="Sharing"
+                placeholder="Sharing"
+                triggerClassName="h-9 w-full text-sm font-normal"
                 value={settingsSharingScope}
-                onChange={(event) => setSettingsSharingScope(event.target.value as Exclude<CompanySkillSharingScope, "public_link">)}
                 disabled={updateSettingsPending}
-                className="h-9 w-full rounded-md border border-border bg-background px-2 text-sm text-foreground"
-              >
-                <option value="company">Organization — visible inside this organization</option>
-                <option value="private">Private — only visible in your library</option>
-              </select>
+                items={[
+                  { value: "company", label: "Organization — visible inside this organization" },
+                  { value: "private", label: "Private — only visible in your library" },
+                ]}
+                onChange={(next) => setSettingsSharingScope(next as Exclude<CompanySkillSharingScope, "public_link">)}
+              />
               <p className="text-xs text-muted-foreground">Public link sharing is coming later.</p>
             </div>
             <div className="flex justify-end gap-2 border-t border-border pt-4">

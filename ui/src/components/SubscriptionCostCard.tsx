@@ -9,6 +9,7 @@ import { Card } from "./ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "./ui/dialog";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
+import { OptionSelect } from "./OptionSelect";
 
 export function subscriptionMoney(cents: string, currency: string) {
   return currency === "USD" ? formatCents(Number(cents))
@@ -39,15 +40,14 @@ function SubscriptionEditor({ account, accounts, companyId, onDone }: {
     accounts.find(row => row.id === targetId)!.price.revision), onSuccess: onDone });
   const targets = accounts.filter(row => row.id !== account.id && row.provider === account.provider && row.canEdit);
   const busy = save.isPending || link.isPending;
-  const selectClass = "h-9 rounded-md border border-input bg-background px-3 text-sm";
   return <div className="space-y-5">
     <form className="space-y-4" onSubmit={event => { event.preventDefault(); save.mutate(); }}>
       <div className="space-y-2"><Label htmlFor="subscription-plan">Plan</Label><Input id="subscription-plan" value={plan} onChange={event => setPlan(event.target.value)} required maxLength={100} /></div>
       <div className="grid gap-4 sm:grid-cols-2">
         <div className="space-y-2"><Label htmlFor="subscription-price">Price per billing period</Label><Input id="subscription-price" type="number" min="0" step="any" value={amount} placeholder="Unknown" onChange={event => setAmount(event.target.value)} /></div>
-        <div className="space-y-2"><Label htmlFor="subscription-currency">Currency</Label><select id="subscription-currency" className={selectClass} value={currency} onChange={event => setCurrency(event.target.value)}>{SUBSCRIPTION_CURRENCIES.map(code => <option key={code}>{code}</option>)}</select></div>
-        <div className="space-y-2"><Label htmlFor="subscription-cadence">Billed</Label><select id="subscription-cadence" className={selectClass} value={cadence} onChange={event => setCadence(event.target.value as typeof cadence)}><option value="month">Monthly</option><option value="year">Annually</option></select></div>
-        <div className="space-y-2"><Label htmlFor="subscription-status">Tracking</Label><select id="subscription-status" className={selectClass} value={status} onChange={event => setStatus(event.target.value as typeof status)}><option value="active">Active</option><option value="ended">Subscription ended</option><option value="excluded">Exclude from this organization</option></select></div>
+        <div className="space-y-2"><Label htmlFor="subscription-currency">Currency</Label><OptionSelect ariaLabel="Currency" placeholder="Currency" triggerClassName="h-9 w-full text-sm font-normal" value={currency} onChange={setCurrency} items={SUBSCRIPTION_CURRENCIES.map(code => ({ value: code, label: code }))} /></div>
+        <div className="space-y-2"><Label htmlFor="subscription-cadence">Billed</Label><OptionSelect ariaLabel="Billed" placeholder="Billed" triggerClassName="h-9 w-full text-sm font-normal" value={cadence} onChange={value => setCadence(value as typeof cadence)} items={[{ value: "month", label: "Monthly" }, { value: "year", label: "Annually" }]} /></div>
+        <div className="space-y-2"><Label htmlFor="subscription-status">Tracking</Label><OptionSelect ariaLabel="Tracking" placeholder="Tracking" triggerClassName="h-9 w-full text-sm font-normal" value={status} onChange={value => setStatus(value as typeof status)} items={[{ value: "active", label: "Active" }, { value: "ended", label: "Subscription ended" }, { value: "excluded", label: "Exclude from this organization" }]} /></div>
       </div>
       <p className="text-xs text-muted-foreground">Enter the full amount for one account or seat. Annual prices are divided by 12. Changes apply from now. Ending tracking here does not cancel your provider subscription.</p>
       {save.error && <p role="alert" className="text-sm text-destructive">Could not save this price. Check the amount, or reopen the account if another person updated it.</p>}
@@ -55,7 +55,7 @@ function SubscriptionEditor({ account, accounts, companyId, onDone }: {
     </form>
     {targets.length > 0 && <div className="space-y-2 border-t border-border pt-4">
       <Label htmlFor="subscription-link">Same subscription as another account?</Label>
-      <select id="subscription-link" className={selectClass} value={targetId} onChange={event => setTargetId(event.target.value)}><option value="">Choose an account</option>{targets.map(row => <option key={row.id} value={row.id}>{row.name} · {row.price.plan}</option>)}</select>
+      <OptionSelect ariaLabel="Same subscription as another account" placeholder="Choose an account" emptyLabel="Choose an account" triggerClassName="h-9 w-full text-sm font-normal" value={targetId} onChange={setTargetId} items={targets.map(row => ({ value: row.id, label: `${row.name} · ${row.price.plan}` }))} />
       <p className="text-xs text-muted-foreground">Linking counts these accounts once, combines their Paperclip usage, and keeps the selected account’s price. Only link the same subscription or paid seat.</p>
       {link.error && <p role="alert" className="text-sm text-destructive">Could not link these accounts. Reopen their details and try again.</p>}
       <Button type="button" variant="outline" disabled={!targetId || busy} onClick={() => link.mutate()}>Link accounts</Button>

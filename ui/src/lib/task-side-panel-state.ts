@@ -32,6 +32,8 @@ export function openSkillPanelState(
 export type TaskSidePanelTabPayload =
   | { kind: "browser"; browserId: string }
   | { kind: "plugin-panel"; pluginKey: string; slotId: string; entityId: string }
+  /** A `taskSidePanelTab` plugin slot. Never persisted: it is listed only while its plugin says so. */
+  | { kind: "plugin-tab"; pluginKey: string; slotId: string }
   | { kind: "properties" }
   | { kind: "subtasks" }
   | { kind: "artifacts" }
@@ -301,6 +303,17 @@ export function taskPanelAttachmentTab(attachmentId: string, title: string): Sid
 
 export function taskPanelBrowserTab(browserId: string): SidePanelTabRecord<TaskSidePanelTabPayload> {
   return { id: `browser:${browserId}`, type: "browser", label: "Browser", closable: true, contentMode: "full-bleed", payload: { kind: "browser", browserId } };
+}
+
+export function taskPanelPluginSideTab(slot: { pluginKey: string; id: string; displayName: string; sidePanelTab?: { contentMode?: "padded" | "full-bleed" } }): SidePanelTabRecord<TaskSidePanelTabPayload> {
+  return { id: `plugin-tab:${slot.pluginKey}:${slot.id}`, type: "plugin-tab", label: slot.displayName, closable: true, contentMode: slot.sidePanelTab?.contentMode ?? "padded", payload: { kind: "plugin-tab", pluginKey: slot.pluginKey, slotId: slot.id } };
+}
+
+/** Drops plugin side-panel tabs before saving; a saved active plugin tab falls back to the first kept tab. */
+export function withoutPluginSideTabs(state: SidePanelTabsState<TaskSidePanelTabPayload>): SidePanelTabsState<TaskSidePanelTabPayload> {
+  if (!state.tabs.some((tab) => tab.payload.kind === "plugin-tab")) return state;
+  const tabs = state.tabs.filter((tab) => tab.payload.kind !== "plugin-tab");
+  return { tabs, activeTabId: tabs.some((tab) => tab.id === state.activeTabId) ? state.activeTabId : tabs[0]?.id ?? null };
 }
 
 export function taskPanelPluginTab(panel: { entityId: string; slot: { pluginKey: string; id: string; displayName: string } }): SidePanelTabRecord<TaskSidePanelTabPayload> {

@@ -9,6 +9,7 @@ import { Card } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { Tabs } from "@/components/ui/tabs";
 import { ChoosePathButton } from "../components/PathInstructionsModal";
+import { OptionSelect } from "../components/OptionSelect";
 import { MissingPluginTabPlaceholder } from "../components/MissingPluginTabPlaceholder";
 import { projectsApi } from "../api/projects";
 import { PageTabBar } from "../components/PageTabBar";
@@ -518,33 +519,29 @@ export function ProjectWorkspaceDetail() {
               </Field>
 
               <Field label="Visibility">
-                <select
-                  className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none"
+                <OptionSelect
+                  ariaLabel="Visibility"
                   value={form.visibility}
-                  onChange={(event) =>
-                    setForm((current) => current ? { ...current, visibility: event.target.value as ProjectWorkspaceVisibility } : current)
+                  onChange={(value) =>
+                    setForm((current) => current ? { ...current, visibility: value as ProjectWorkspaceVisibility } : current)
                   }
-                >
-                  {VISIBILITY_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>{option.label}</option>
-                  ))}
-                </select>
+                  placeholder="Visibility"
+                  items={VISIBILITY_OPTIONS.map((option) => ({ value: option.value, label: option.label }))}
+                />
               </Field>
             </div>
 
             <div className="mt-4 grid gap-4">
               <Field label="Source type" hint={sourceTypeDescription ?? undefined}>
-                <select
-                  className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none"
+                <OptionSelect
+                  ariaLabel="Source type"
                   value={form.sourceType}
-                  onChange={(event) =>
-                    setForm((current) => current ? { ...current, sourceType: event.target.value as ProjectWorkspaceSourceType } : current)
+                  onChange={(value) =>
+                    setForm((current) => current ? { ...current, sourceType: value as ProjectWorkspaceSourceType } : current)
                   }
-                >
-                  {SOURCE_TYPE_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>{option.label}</option>
-                  ))}
-                </select>
+                  placeholder="Source type"
+                  items={SOURCE_TYPE_OPTIONS.map((option) => ({ value: option.value, label: option.label }))}
+                />
               </Field>
 
               {/*

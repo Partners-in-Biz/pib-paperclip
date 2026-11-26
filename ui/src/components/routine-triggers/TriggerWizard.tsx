@@ -14,6 +14,7 @@ import {
   SetupWizardFooter,
 } from "@/components/SetupWizard";
 import { Button } from "@/components/ui/button";
+import { OptionSelect } from "@/components/OptionSelect";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
@@ -214,8 +215,6 @@ export function RoutineTriggerWizard({
         : draft.step === 1
           ? "Copy these details into the sending app, then save its webhook settings."
           : "Test that events arrive and authentication works. This won’t start the routine.";
-  const selectClass =
-    "w-full rounded-md border border-input bg-background px-3 py-2 text-sm";
   const goBack = (
     <Button variant="outline" onClick={() => patch({ step: draft.step - 1 })}>
       Back
@@ -298,16 +297,17 @@ export function RoutineTriggerWizard({
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-2">
                 <Label htmlFor="repeat">Repeat</Label>
-                <select
-                  id="repeat"
-                  className={selectClass}
+                <OptionSelect
+                  ariaLabel="Repeat"
                   value={draft.frequency}
-                  onChange={(event) => patch({ frequency: event.target.value })}
-                >
-                  <option value="daily">Every day</option>
-                  <option value="weekdays">Weekdays (Monday–Friday)</option>
-                  <option value="weekly">Every week</option>
-                </select>
+                  onChange={(value) => patch({ frequency: value })}
+                  placeholder="Repeat"
+                  items={[
+                    { value: "daily", label: "Every day" },
+                    { value: "weekdays", label: "Weekdays (Monday–Friday)" },
+                    { value: "weekly", label: "Every week" },
+                  ]}
+                />
               </div>
               <div className="space-y-2">
                 <Label htmlFor="run-time">Time</Label>
@@ -322,13 +322,12 @@ export function RoutineTriggerWizard({
             {draft.frequency === "weekly" && (
               <div className="space-y-2">
                 <Label htmlFor="run-day">Day</Label>
-                <select
-                  id="run-day"
-                  className={selectClass}
+                <OptionSelect
+                  ariaLabel="Day"
                   value={draft.weekday}
-                  onChange={(event) => patch({ weekday: event.target.value })}
-                >
-                  {[
+                  onChange={(value) => patch({ weekday: value })}
+                  placeholder="Day"
+                  items={[
                     "Monday",
                     "Tuesday",
                     "Wednesday",
@@ -336,21 +335,18 @@ export function RoutineTriggerWizard({
                     "Friday",
                     "Saturday",
                     "Sunday",
-                  ].map((day) => (
-                    <option key={day}>{day}</option>
-                  ))}
-                </select>
+                  ].map((day) => ({ value: day, label: day }))}
+                />
               </div>
             )}
             <div className="space-y-2">
               <Label htmlFor="timezone">Time zone</Label>
-              <select
-                id="timezone"
-                className={selectClass}
+              <OptionSelect
+                ariaLabel="Time zone"
                 value={draft.timezone}
-                onChange={(event) => patch({ timezone: event.target.value })}
-              >
-                {Array.from(
+                onChange={(value) => patch({ timezone: value })}
+                placeholder="Time zone"
+                items={Array.from(
                   new Set([
                     draft.timezone,
                     "America/Chicago",
@@ -359,10 +355,8 @@ export function RoutineTriggerWizard({
                     "Europe/London",
                     "UTC",
                   ]),
-                ).map((zone) => (
-                  <option key={zone}>{zone}</option>
-                ))}
-              </select>
+                ).map((zone) => ({ value: zone, label: zone }))}
+              />
               <p className="text-xs text-muted-foreground">
                 The time follows this zone, including daylight saving changes.
               </p>

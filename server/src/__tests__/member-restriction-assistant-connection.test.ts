@@ -1,4 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Request } from "express";
 import express from "express";
 import request from "supertest";
@@ -32,7 +35,10 @@ import { instanceSettingsService } from "../services/instance-settings.js";
 import { pluginActingPersonForActor } from "../services/member-restriction/plugin-acting-person.js";
 import { memberRestrictionResolver } from "../services/member-restriction/resolver.js";
 import { createPublicMcpEvents } from "../services/public-mcp/events.js";
+import { createPublicMcpTransfers } from "../services/public-mcp/file-transfers.js";
 import { createPublicMcpOAuth, hashMcpSecret } from "../services/public-mcp/oauth.js";
+import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
+import { createStorageService } from "../storage/service.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 /**
@@ -573,5 +579,62 @@ describe("assistant connection database support", () => {
     expect(await denials()).toEqual(expect.arrayContaining([expect.objectContaining({
       personId: P, ruleId: "R-assistant-connection", target: "assistant_connection.approve", mode: "enforce",
     })]));
+  });
+  it.each(["off", "report", "enforce"] as const)("PAR-14565: a file-transfer upload's refusal is recorded after its transaction ends, not while it holds the grant lock (%s)", async (mode) => {
+    const P = await member("operator", false);
+    const consent = await oauth.consent(await requestFor(config.resource, ["paperclip:read", "paperclip:write"]), session(P), { decision: "approve", companyId, allowWrites: true });
+    expect(consent.redirectUrl).toContain("code=");
+    const [grant] = await grantsOf(P);
+    const [task] = await db.insert(issues).values({ companyId, title: "Upload target", createdByUserId: P }).returning();
+    const storageDir = await mkdtemp(join(tmpdir(), "restriction-transfer-"));
+    const storage = createStorageService(createLocalDiskStorageProvider(storageDir));
+    // The personal ticket check reads the task through the API dispatch; the in-transaction check reads it directly.
+    const transfers = createPublicMcpTransfers(db, oauth, async () => task!, storage);
+    const bytes = Buffer.from("restriction transfer");
+    const prepared = await transfers.getUploadUrl(await oauth.authorizeGrant(grant!.id), {
+      companyId, taskId: task!.id, requestId: randomUUID(), filename: "note.txt", contentType: "text/plain",
+      byteSize: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex"),
+    });
+    // P is flagged while the upload transaction runs: the ticket checks before
+    // it pass, the check inside it (holding the grant row FOR UPDATE) refuses.
+    const putFile = storage.putFile.bind(storage);
+    const putSpy = vi.spyOn(storage, "putFile").mockImplementationOnce(async (input) => {
+      const stored = await putFile(input);
+      await setFlag(P, true);
+      return stored;
+    });
+    const lockedAtRecord: boolean[] = [];
+    denialRecordHook.before = async (denial) => {
+      if (denial.personId !== P) return;
+      // NOWAIT fails at once if the upload transaction still holds the grant row.
+      const free = await db.transaction(async (tx) => {
+        await tx.execute(sql`select id from mcp_oauth_grants where id = ${grant!.id} for update nowait`);
+        return true;
+      }).catch(() => false);
+      lockedAtRecord.push(!free);
+    };
+    await setMode(mode);
+    try {
+      const app = express(); app.use(transfers.router);
+      const url = new URL(prepared.url);
+      const res = await request(app).put(url.pathname + url.search).set("Content-Type", "text/plain").send(bytes);
+      expect(putSpy).toHaveBeenCalledTimes(1);
+      if (mode === "enforce") expect(res.status).not.toBe(200);
+      else expect(res.body).toMatchObject({ attachment: { originalFilename: "note.txt" } });
+      if (mode === "off") {
+        // Off: nothing is refused and nothing is recorded.
+        expect(lockedAtRecord).toEqual([]);
+        expect((await denials()).filter((row) => row.personId === P)).toEqual([]);
+        return;
+      }
+      expect(lockedAtRecord).toEqual([false]);
+      expect(await denials()).toEqual(expect.arrayContaining([expect.objectContaining({
+        personId: P, ruleId: "R-assistant-connection", target: "assistant_connection.call", mode,
+      })]));
+    } finally {
+      putSpy.mockRestore();
+      await setMode("enforce");
+      await rm(storageDir, { recursive: true, force: true });
+    }
   });
 });

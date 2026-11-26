@@ -13,6 +13,7 @@
  */
 import { attachAgentSkills, missingAgentSkills, pluginSkillKey } from "@partnersinbiz/pib-plugin-kit/agent-client";
 import { COMPANY_OS_SKILL_KEY, teamRole, teamRoleHealth, teamSetupPath, type TeamRoleHealth, type TeamRoleKey } from "@partnersinbiz/pib-plugin-kit/team";
+import { errorText } from "@partnersinbiz/pib-plugin-ui";
 
 /** A role skill: the host's canonical key and the `pib-` slug people see. */
 export interface RoleSkill {
@@ -87,7 +88,7 @@ function pronoun(skills: RoleSkill[]): string {
 }
 
 function message(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  return errorText(error);
 }
 
 export interface SkillNote {

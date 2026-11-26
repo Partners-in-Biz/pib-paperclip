@@ -1,3 +1,4 @@
+import { OptionSelect } from "@/components/OptionSelect";
 import { aiConnectionsApi } from "@/api/ai-connections";
 import type { AiProvider } from "@paperclipai/shared";
 import { useQuery } from "@tanstack/react-query";
@@ -88,24 +89,16 @@ export function SavedProviderKeySelect({
       {options.length > 0 && (
         <label className="block space-y-2 text-sm">
           <span>{kind === "api" ? "API key" : "Subscription"}</span>
-          <select
-            aria-label={kind === "api" ? "Saved API key" : "Saved subscription"}
-            className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+          <OptionSelect
+            ariaLabel={kind === "api" ? "Saved API key" : "Saved subscription"}
+            placeholder={kind === "api" ? "Select a saved API key" : "Select a saved subscription"}
+            className="w-full"
+            emptyLabel={kind === "api" ? "Enter a new API key" : "Sign in to another account"}
+            items={options.map((option) => ({ value: option.id, label: option.label }))}
             value={value}
-            onChange={(event) => onChange(event.target.value)}
+            onChange={onChange}
             disabled={disabled}
-          >
-            {options.map((option) => (
-              <option key={option.id} value={option.id}>
-                {option.label}
-              </option>
-            ))}
-            <option value="">
-              {kind === "api"
-                ? "Enter a new API key"
-                : "Sign in to another account"}
-            </option>
-          </select>
+          />
         </label>
       )}
       {loading && (

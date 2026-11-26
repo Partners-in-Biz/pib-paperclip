@@ -994,8 +994,15 @@ export function splitOwnerWaiting(entries: WaitingEntry[], filter: Partial<Owner
     if (entry.issueId && hidden.has(entry.issueId)) continue;
     // PAR-13579: the Operator routes unassigned work each morning, and a standing-queue company tracks setup there: neither is a decision. Intended: the unassigned row stays
     // on others with no 7-day return, and is still listed there (the Operator brief keeps its own `unassigned` section).
-    if (entry.key === UNASSIGNED_KEY || (entry.key === SETUP_KEY && filter?.setupRouted)) {
+    if (entry.key === UNASSIGNED_KEY) {
       others.push(entry);
+      continue;
+    }
+    if (entry.key === SETUP_KEY && filter?.setupRouted) {
+      // PAR-14783: a row on others must name a seat. The setup seat is the `other` one (PiB); with no seat set the row is left out rather than waiting on nobody.
+      const seat = filter.rights?.seats?.other;
+      if (entry.waitsOn) others.push(entry);
+      else if (seat) others.push({ ...entry, waitsOn: { kind: "agent", agentId: seat } });
       continue;
     }
     const waitsOn = parseWaitsOn(entry.waitsOn);
@@ -1016,7 +1023,28 @@ export function splitOwnerWaiting(entries: WaitingEntry[], filter: Partial<Owner
     }
     others.push(entry);
   }
-  return { owner, others };
+  return { owner: dedupeByTitle(owner), others: dedupeByTitle(others) };
+}
+
+/** PAR-14783: the same ask listed by several sources (same title bar an issue identifier prefix) is one card: the oldest one stays. */
+export function dedupeByTitle(entries: WaitingEntry[]): WaitingEntry[] {
+  const norm = (t: string) => t.replace(/^\s*[A-Z][A-Z0-9]*-\d+\s+/, "").replace(/\s+/g, " ").trim().toLowerCase();
+  const first = new Map<string, number>();
+  const counts = new Map<string, number>();
+  const out: WaitingEntry[] = [];
+  for (const entry of entries) {
+    const k = norm(entry.title);
+    const at = first.get(k);
+    if (at === undefined) {
+      first.set(k, out.length);
+      out.push(entry);
+    } else {
+      counts.set(k, (counts.get(k) ?? 1) + 1);
+      if (sinceMs(entry) < sinceMs(out[at])) out[at] = entry;
+    }
+  }
+  // The merged count is kept visible, so a merge never hides how many asks stood behind the card.
+  return out.map((e) => { const n = counts.get(norm(e.title)) ?? 1; return n > 1 ? { ...e, why: `${e.why} (${n} listings merged into this card.)`.trim() } : e; });
 }
 
 /** The "others" part of a brief or tool answer. */

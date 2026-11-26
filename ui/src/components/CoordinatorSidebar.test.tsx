@@ -12,14 +12,14 @@ import { queryKeys } from "@/lib/queryKeys";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const fixture = vi.hoisted(() => ({ attention: vi.fn(), summary: vi.fn(), openNewIssue: vi.fn(), pathname: "/COO/issues", collapsed: false, userId: "reviewer", chats: [] as Array<{ isUnreadForMe: boolean }>,
   recentTasks: [] as Array<Record<string, unknown>>, projects: [] as Array<Record<string, unknown>>, projectTasks: vi.fn(), enableCases: false, agents: [] as Agent[],
-  pluginSlots: [] as unknown[], pluginLaunchers: [] as unknown[] }));
+  pluginSlots: [] as unknown[], pluginLaunchers: [] as unknown[], mountProps: [] as Array<{ className?: string }>, setSidebarOpen: vi.fn() }));
 vi.mock("@/hooks/useAgentChatNavigation", () => ({ useAgentChatNavigation: () => ({
   companyId: "company", userId: fixture.userId, agents: { data: fixture.agents }, chats: { data: fixture.chats }, session: { isSuccess: true },
 }) }));
 vi.mock("@/hooks/useRecentTasks", () => ({ useRecentTasks: () => ({ entries: fixture.recentTasks }) }));
 vi.mock("@/api/issues", () => ({ issuesApi: { listCompact: fixture.projectTasks } }));
 vi.mock("@/context/DialogContext", () => ({ useDialogActions: () => ({ openNewIssue: fixture.openNewIssue }) }));
-vi.mock("@/context/SidebarContext", () => ({ useSidebar: () => ({ collapsed: fixture.collapsed, peeking: false, isMobile: false, setSidebarOpen: vi.fn() }) }));
+vi.mock("@/context/SidebarContext", () => ({ useSidebar: () => ({ collapsed: fixture.collapsed, peeking: false, isMobile: false, setSidebarOpen: fixture.setSidebarOpen }) }));
 vi.mock("@/api/auth", () => ({ authApi: { getSession: async () => ({ session: { id: "s", userId: "u" }, user: null, memberRestrictions: [] }) } }));
 vi.mock("@/api/attention", () => ({ attentionApi: { list: fixture.attention, summary: fixture.summary } }));
 vi.mock("@/api/instanceSettings", () => ({ instanceSettingsApi: { getExperimental: async () => ({ enableCases: fixture.enableCases }) } }));
@@ -28,8 +28,13 @@ vi.mock("./SidebarCompanyMenu", () => ({ SidebarCompanyMenu: () => null }));
 vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompany: { id: "company", issuePrefix: "COO" } }) }));
 vi.mock("@/plugins/slots", () => ({
   usePluginSlots: () => ({ slots: fixture.pluginSlots }),
-  PluginSlotOutlet: ({ slotTypes, context }: { slotTypes: string[]; context: { companyPrefix: string | null } }) =>
-    <div data-plugin-slot-types={slotTypes.join(",")} data-prefix={context.companyPrefix ?? ""}>Plugin slot outlet</div>,
+  PluginSlotOutlet: ({ slotTypes, context, filter }: { slotTypes: string[]; context: { companyPrefix: string | null }; filter?: (slot: { pluginKey: string; id: string }) => boolean }) =>
+    <div data-plugin-slot-types={slotTypes.join(",")} data-prefix={context.companyPrefix ?? ""}>Plugin slot outlet{(fixture.pluginSlots as Array<{ pluginKey: string; id: string; displayName: string }>).filter(slot => !filter || filter(slot)).map(slot =>
+      <span key={slot.id} data-outlet-app={slot.id}>{slot.displayName}</span>)}</div>,
+  PluginSlotMount: (props: { slot: { id: string; displayName: string }; className?: string }) => {
+    fixture.mountProps.push(props);
+    return <span data-mounted-app={props.slot.id}><a href={`/app/${props.slot.id}`}>{props.slot.displayName}</a><button type="button" aria-label={`Expand ${props.slot.displayName}`}>v</button></span>;
+  },
 }));
 vi.mock("@/plugins/launchers", () => ({
   usePluginLaunchers: () => ({ launchers: fixture.pluginLaunchers }),
@@ -58,7 +63,7 @@ function summary(items: AttentionItem[]) {
 let root: Root, container: HTMLDivElement, client: QueryClient;
 beforeEach(() => {
   vi.clearAllMocks(); localStorage.clear(); fixture.collapsed = false; fixture.userId = "reviewer"; fixture.pathname = "/COO/issues";
-  fixture.chats = []; fixture.recentTasks = []; fixture.projects = []; fixture.enableCases = false; fixture.agents = []; fixture.pluginSlots = []; fixture.pluginLaunchers = [];
+  fixture.chats = []; fixture.recentTasks = []; fixture.projects = []; fixture.enableCases = false; fixture.agents = []; fixture.pluginSlots = []; fixture.pluginLaunchers = []; fixture.mountProps = [];
   fixture.summary.mockResolvedValue(summary([pending("question"), pending("review")]));
   container = document.createElement("div"); document.body.appendChild(container); root = createRoot(container);
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -323,5 +328,79 @@ describe("Coordinator plugin navigation", () => {
     fixture.pluginLaunchers = [{ id: "open" }]; fixture.collapsed = true;
     await renderSidebar();
     expect(container.querySelector(".design-sidebar-apps")).toBeNull();
+  });
+});
+
+const appSlot = (id: string, order = 0) => ({ pluginKey: `pib.${id}`, id, displayName: id.toUpperCase(), type: "sidebar", order });
+const appKey = (id: string) => `slot:pib.${id}:${id}`;
+const hiddenKey = (user = "reviewer") => `paperclip.coordinator.hidden-apps.v1:${user}`;
+const openMore = async () => act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="More workspace pages"]')!.click());
+const appToggle = (name: string) => document.querySelector<HTMLButtonElement>(`button[aria-label^="${name} "][aria-label$="sidebar"]`)!;
+
+describe("Coordinator apps in More", () => {
+  it("lists every app in manifest order with a pin toggle and mounts without a className", async () => {
+    fixture.pluginSlots = [appSlot("crm"), appSlot("wiki")];
+    await renderSidebar(); await openMore();
+    const group = document.querySelector(".design-sidebar-more-apps")!;
+    expect([...group.querySelectorAll("[data-mounted-app]")].map(node => node.getAttribute("data-mounted-app"))).toEqual(["crm", "wiki"]);
+    expect(fixture.mountProps.length).toBeGreaterThan(0);
+    expect(fixture.mountProps.every(props => props.className === undefined)).toBe(true);
+    expect(appToggle("Unpin CRM").getAttribute("aria-pressed")).toBe("true");
+    expect(group.textContent).toContain("Apps");
+  });
+  it("unpinning removes the app from the sidebar section at once and pinning restores it", async () => {
+    fixture.pluginSlots = [appSlot("crm"), appSlot("wiki")];
+    await renderSidebar(); await openMore();
+    const outlet = () => [...container.querySelectorAll("[data-outlet-app]")].map(node => node.getAttribute("data-outlet-app"));
+    expect(outlet()).toEqual(["crm", "wiki"]);
+    await act(async () => appToggle("Unpin CRM").click());
+    expect(outlet()).toEqual(["wiki"]);
+    expect(JSON.parse(localStorage.getItem(hiddenKey())!)).toEqual([appKey("crm")]);
+    expect(appToggle("Pin CRM").getAttribute("aria-pressed")).toBe("false");
+    await act(async () => appToggle("Pin CRM").click());
+    expect(outlet()).toEqual(["crm", "wiki"]);
+  });
+  it("follows another tab and shows a new app by default", async () => {
+    fixture.pluginSlots = [appSlot("crm")];
+    await renderSidebar();
+    localStorage.setItem(hiddenKey(), JSON.stringify([appKey("crm")]));
+    await act(async () => { window.dispatchEvent(new StorageEvent("storage", { key: hiddenKey() })); });
+    expect(container.querySelector(".design-sidebar-apps")).toBeNull();
+    fixture.pluginSlots = [appSlot("crm"), appSlot("new")];
+    await renderSidebar();
+    expect(container.querySelector('[data-outlet-app="new"]')).not.toBeNull();
+  });
+  it("drops the Apps header when everything is unpinned, but launchers keep it", async () => {
+    fixture.pluginSlots = [appSlot("crm")];
+    localStorage.setItem(hiddenKey(), JSON.stringify([appKey("crm")]));
+    await renderSidebar();
+    expect(container.querySelector(".design-sidebar-apps")).toBeNull();
+    fixture.pluginLaunchers = [{ id: "launch" }];
+    await renderSidebar();
+    expect(container.querySelector(".design-sidebar-apps [data-plugin-launcher-zone]")).not.toBeNull();
+    await openMore();
+    expect(document.querySelector(".design-sidebar-more-apps [data-plugin-launcher-zone]")).toBeNull();
+  });
+  it("uses the signed-in user's key only and disables toggles without a user", async () => {
+    fixture.pluginSlots = [appSlot("crm")];
+    localStorage.setItem(hiddenKey("someone-else"), JSON.stringify([appKey("crm")]));
+    await renderSidebar();
+    expect(container.querySelector('[data-outlet-app="crm"]')).not.toBeNull();
+    fixture.userId = null as unknown as string;
+    await renderSidebar(); await openMore();
+    expect(appToggle("Unpin CRM").disabled).toBe(true);
+    expect(container.querySelector('[data-outlet-app="crm"]')).not.toBeNull();
+  });
+  it("closes More on a link click but not on an expander click", async () => {
+    fixture.pluginSlots = [appSlot("crm")];
+    await renderSidebar(); await openMore();
+    await act(async () => document.querySelector<HTMLButtonElement>('button[aria-label="Expand CRM"]')!.click());
+    expect(document.querySelector(".design-sidebar-more-apps")).not.toBeNull();
+    await act(async () => document.querySelector<HTMLAnchorElement>(".design-sidebar-more-apps a")!.click());
+    expect(document.querySelector(".design-sidebar-more-apps")).toBeNull();
+  });
+  it("shows no Apps group without any app", async () => {
+    await renderSidebar(); await openMore();
+    expect(document.querySelector(".design-sidebar-more-apps")).toBeNull();
   });
 });

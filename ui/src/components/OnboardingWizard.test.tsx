@@ -9,6 +9,7 @@ import type { LocalAiLoginStatus } from "@paperclipai/shared";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { pickSearchableValue, readSearchableByLabel, stubSearchableSelectDom } from "../test-utils/searchable-select";
 
 // --- Mocks (hoisted so vi.mock factories can close over them) ----------------
 
@@ -357,6 +358,7 @@ function isArcPrimary(text: string): boolean {
 
 describe("OnboardingWizard restore-gate (stale localStorage across accounts)", () => {
   beforeEach(() => {
+    stubSearchableSelectDom();
     managedApi.list.mockReset().mockResolvedValue({ currentUserId: "user-1", connections: [] });
     managedApi.create.mockReset().mockResolvedValue({ connectionId: "managed-connection", grantId: "managed-grant" });
     mockAdaptersApi.list.mockReset().mockResolvedValue([]);
@@ -1066,8 +1068,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         }]);
       }
       const { root, clickByText } = await openConnectStep();
-      const picker = document.body.querySelector('select[aria-label="Saved API key"]') as HTMLSelectElement;
-      expect(picker.value).toBe(scope === "personal" ? "user:saved-key" : "company:saved-org-key");
+      expect((await readSearchableByLabel(document.body, "Saved API key")).value).toBe(scope === "personal" ? "user:saved-key" : "company:saved-org-key");
       await clickByText((t) => isArcPrimary(t));
       expect((mockAgentsApi.testEnvironment.mock.calls.at(-1) as unknown[])[2]).toMatchObject({ adapterConfig: { env: { [key]: binding } } });
       expect((mockAgentsApi.hire.mock.calls.at(-1) as unknown[])[1]).toMatchObject({ adapterConfig: { env: { [key]: binding } } });
@@ -2323,8 +2324,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         expect(document.body.textContent).toContain("Connect a model");
         expect(document.body.textContent).toContain("Enter a new API key");
         expect(mockAgentsApi.update.mock.calls.filter(([id]) => id === "agent-1")).toHaveLength(0);
-        const select = document.querySelector('select[aria-label="Saved API key"]') as HTMLSelectElement;
-        await act(async () => { select.value = ""; select.dispatchEvent(new Event("change", { bubbles: true })); });
+        await pickSearchableValue(document.body, "Saved API key", "__none__");
         await act(async () => setControlledValue(document.querySelector('input[aria-label="API key"]')!, "example-api-key"));
         await pressArcPrimary();
         expect(document.body.textContent).toContain("Let's get started...");
@@ -2405,7 +2405,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         }));
         if (failRefresh) {
           await vi.waitFor(() => expect(document.body.textContent).toContain("Your saved gateway connection could not be loaded."));
-          expect(document.querySelector('select[aria-label="Model"]')).toBeNull();
+          expect(document.querySelector('[role="combobox"][aria-label="Model"]')).toBeNull();
           expect([...document.body.querySelectorAll("button")].find(entry => entry.textContent?.trim() === "Connect")!.disabled).toBe(true);
           expect(mockEnvironmentsApi.probe).not.toHaveBeenCalled();
           expect(mockAgentsApi.testEnvironment).not.toHaveBeenCalled();
@@ -2413,16 +2413,15 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
           lookupFails = false;
           await click("Retry loading connection");
         }
-        await vi.waitFor(() => expect(document.querySelector('select[aria-label="Model"]'), document.body.textContent ?? "").toBeTruthy());
+        await vi.waitFor(() => expect(document.querySelector('[role="combobox"][aria-label="Model"]'), document.body.textContent ?? "").toBeTruthy());
         expect(mockEnvironmentsApi.probe).not.toHaveBeenCalled();
         expect(mockAgentsApi.testEnvironment).not.toHaveBeenCalled();
         expect(mockAgentsApi.hire).not.toHaveBeenCalled();
         expect(document.body.textContent).toContain("Gateway connection saved.");
         const connect = [...document.body.querySelectorAll("button")].find(entry => entry.textContent?.trim() === "Connect")!;
         expect(connect.disabled).toBe(true);
-        const select = document.querySelector('select[aria-label="Model"]') as HTMLSelectElement;
-        expect([...select.options].map(option => option.value)).toEqual(["", "gpt-5.4-mini"]);
-        await act(async () => { select.value = "gpt-5.4-mini"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+        expect((await readSearchableByLabel(document.body, "Model")).items.map(option => option.value)).toEqual(["__none__", "gpt-5.4-mini"]); // "__none__" is the pinned empty option
+        await pickSearchableValue(document.body, "Model", "gpt-5.4-mini");
         await flushReact();
         expect(mockAgentsApi.testEnvironment).not.toHaveBeenCalled();
         expect(mockAgentsApi.hire).not.toHaveBeenCalled();

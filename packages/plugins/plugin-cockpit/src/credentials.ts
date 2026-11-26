@@ -394,7 +394,7 @@ export async function syncBrowserIdentities(env: Env, companyId: string, path = 
       `INSERT INTO ${T} (id, company_id, seed_key, name, system, lives_in, owner, rotate_how, verify_with, status, last_verified_at, last_verify_status, last_verify_detail, created_at, updated_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'browser', 'active', $9, $10, $11, $12, $12)
        ON CONFLICT (company_id, seed_key) WHERE seed_key IS NOT NULL DO UPDATE SET last_verified_at = $9, last_verify_status = $10, last_verify_detail = $11, updated_at = $12`,
-      [newId(), companyId, `${BROWSER_SEED_PREFIX}${id.identity}`, name, "pib-browser", "The pib-browser profile on the server", "Owner", "Log in again in the pib-browser profile on the server (hand-off mode).", status.checkedAt, verdict.status, verdict.detail, now],
+      [newId(), companyId, `${BROWSER_SEED_PREFIX}${id.identity}`, name, "pib-browser", "The pib-browser profile on the server", "Owner", "Log in again from Cockpit -> Browser (Take over, then Done).", status.checkedAt, verdict.status, verdict.detail, now],
     );
     out.identities += 1;
     if (verdict.status !== "expired") continue;
@@ -410,8 +410,8 @@ export async function syncBrowserIdentities(env: Env, companyId: string, path = 
         question: `The browser's login for ${id.identity} no longer works. Browser steps for it fail until someone logs in again.`,
         why: "The daily browser check could not use this login (expired, signed out or checked too long ago). Without it the agents cannot take confirmation screenshots for this account.",
         options: ["I will log in again now"],
-        links: [{ label: "Credentials", href: "/cockpit" }],
-        steps: [`Put the browser in hand-off mode and log in to ${id.identity} (see the pib-browser README).`, "Run the browser status check again.", "Press the button once done; it only records that you have seen this."],
+        links: [{ label: "Cockpit -> Browser", href: `/cockpit?tab=browser&identity=${encodeURIComponent(id.identity)}` }, { label: "Credentials", href: "/cockpit" }],
+        steps: [`Open Cockpit -> Browser (identity ${id.identity}), press Take over and log in to ${id.identity} in the window, then press Done.`, "Run the browser status check again.", "Press the button once done; it only records that you have seen this."],
         effect: { key: browserLoginEffectKey(id.identity), params: { identity: id.identity } },
       },
     });

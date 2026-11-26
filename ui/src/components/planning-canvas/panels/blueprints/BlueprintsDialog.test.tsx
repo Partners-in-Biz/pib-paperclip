@@ -6,6 +6,7 @@ import { PLANNING_CANVAS_BLUEPRINTS, planningCanvasFromBlueprintSchema } from "@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BlueprintsDialog } from "./BlueprintsDialog";
 import { blueprintLayout } from "./BlueprintPreview";
+import { stubSearchableSelectDom, pickSearchableOption } from "@/test-utils/searchable-select";
 
 const fromBlueprint = vi.hoisted(() => vi.fn());
 vi.mock("@/api/planningCanvases", () => ({ planningCanvasesApi: { fromBlueprint } }));
@@ -21,6 +22,7 @@ beforeEach(() => {
   document.body.append(container);
   root = createRoot(container);
   fromBlueprint.mockReset();
+  stubSearchableSelectDom();
 });
 afterEach(() => {
   act(() => root.unmount());
@@ -57,11 +59,7 @@ describe("blueprints", () => {
     const body = document.body;
     const off = body.querySelector<HTMLButtonElement>('button[aria-label="Create an issue for Story 2"]')!;
     await act(async () => off.click());
-    const select = body.querySelector<HTMLSelectElement>('select[aria-label="Assign Story 1 to"]')!;
-    await act(async () => {
-      select.value = agentId;
-      select.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    await pickSearchableOption(body, "Assign Story 1 to", "Sam");
     const create = [...body.querySelectorAll("button")].find((b) => b.textContent?.startsWith("Create board"))!;
     await act(async () => create.click());
     await flush();

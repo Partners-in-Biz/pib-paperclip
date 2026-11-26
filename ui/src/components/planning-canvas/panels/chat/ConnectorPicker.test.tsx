@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/api/client";
+import { stubSearchableSelectDom, openSearchableSelect, pickSearchableOption } from "@/test-utils/searchable-select";
 
 const readActions = vi.fn();
 vi.mock("@/api/planningCanvases", () => ({ planningCanvasesApi: { readActions: (...a: unknown[]) => readActions(...a) } }));
@@ -14,6 +15,7 @@ import { personalRefusalIn, sourceRefusalMessage } from "@/components/planning-c
 let root: Root; let container: HTMLDivElement;
 beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+  stubSearchableSelectDom();
   readActions.mockReset();
   container = document.createElement("div"); document.body.append(container); root = createRoot(container);
 });
@@ -32,12 +34,9 @@ describe("ConnectorPicker", () => {
   it("lists the agent's read actions and asks the agent through chat", async () => {
     readActions.mockResolvedValue({ actions: [{ tool: "sheets-get-values", name: "Get values", description: "Read a range", application: "Google Sheets" }] });
     const send = await mount();
-    const select = container.querySelector("select")!;
-    expect(select.textContent).toContain("Google Sheets: Get values");
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(select, "sheets-get-values");
-      select.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    await openSearchableSelect(container, "Read action");
+    expect(document.body.textContent).toContain("Google Sheets: Get values");
+    await pickSearchableOption(container, "Read action", "Google Sheets: Get values");
     await act(async () => { (Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.includes("Pull"))!).click(); });
     expect(send).toHaveBeenCalledWith(pullAsk("sheets-get-values"));
     expect(pullAsk("sheets-get-values")).toContain("Never write to the outside tool");

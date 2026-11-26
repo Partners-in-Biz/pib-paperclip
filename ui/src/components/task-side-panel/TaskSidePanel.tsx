@@ -5,6 +5,7 @@ import { TaskAttachmentPanel } from "./TaskAttachmentPanel";
 import { useQueryView } from "@/components/QueryView";
 import { useTaskBrowsers } from "@/hooks/useTaskBrowsers";
 import { taskPluginPanelActivationKey, taskPluginPanelId, type TaskPluginPanel } from "@/hooks/useTaskPluginPanels";
+import { taskSidePanelPluginTabId, useTaskSidePanelPluginTabs } from "@/hooks/useTaskSidePanelPluginTabs";
 import { PluginSlotMount } from "@/plugins/slots";
 import { TaskBrowserPanel } from "./TaskBrowserPanel";
 import {
@@ -82,6 +83,8 @@ import {
   readTaskSidePanelState,
   taskPanelBrowserTab,
   taskPanelPluginTab,
+  taskPanelPluginSideTab,
+  withoutPluginSideTabs,
   taskPanelAgentTasksTab,
   taskPanelArtifactsTab,
   taskPanelAttachmentTab,
@@ -147,6 +150,7 @@ function tabIcon(tab: SidePanelTabRecord<TaskSidePanelTabPayload>): ReactNode {
   switch (tab.payload.kind) {
     case "browser": return <Globe />;
     case "plugin-panel": return <AppWindow />;
+    case "plugin-tab": return <AppWindow />;
     case "properties": return <SlidersHorizontal />;
     case "subtasks": return <ListTree />;
     case "artifacts": return <Box />;
@@ -364,7 +368,7 @@ function TaskSidePanelForScope({
 
   const persist = useCallback((state: { tabs: SidePanelTabRecord<TaskSidePanelTabPayload>[]; activeTabId: string | null }) => {
     writeTaskSidePanelState(accountScope, issue.companyId, issue.id, {
-      state,
+      state: withoutPluginSideTabs(state),
       launcherOpen,
       userInteracted: userInteractedRef.current,
       autoPlanHandled: autoPlanHandledRef.current,
@@ -393,6 +397,25 @@ function TaskSidePanelForScope({
       controller.openTab(taskPanelPluginTab(panel), firstArrival);
     }
   }, [dismissedPluginPanels, openedPluginPanels, pluginPanelKey, pluginPanels, pluginPanelsLoading, controller.tabs, controller.closeTab, controller.openTab]);
+  // Plugin side tabs follow the plugin's visibility answer: added in the
+  // background when it turns visible, removed when it stops. A tab the user
+  // closed stays closed until the plugin hides and shows it again.
+  const pluginSideTabs = useTaskSidePanelPluginTabs(issue);
+  const dismissedPluginSideTabs = useRef(new Set<string>());
+  useEffect(() => {
+    const visibleIds = new Set(pluginSideTabs.map(taskSidePanelPluginTabId));
+    for (const tab of controller.tabs) {
+      if (tab.payload.kind === "plugin-tab" && !visibleIds.has(tab.id)) controller.closeTab(tab.id);
+    }
+    for (const id of dismissedPluginSideTabs.current) if (!visibleIds.has(id)) dismissedPluginSideTabs.current.delete(id);
+    // The coordinator workspace leaves the tab set to the user; the launcher still lists the tab.
+    if (coordinatorWorkspaceEnabled) return;
+    for (const slot of pluginSideTabs) {
+      const id = taskSidePanelPluginTabId(slot);
+      if (dismissedPluginSideTabs.current.has(id) || controller.tabs.some((tab) => tab.id === id)) continue;
+      controller.openTab(taskPanelPluginSideTab(slot), false);
+    }
+  }, [pluginSideTabs, controller.tabs, controller.closeTab, controller.openTab, coordinatorWorkspaceEnabled]);
   const browsersQuery = useTaskBrowsers(issue.id, issue.companyId);
   const newestLiveBrowser = browsersQuery.data?.findLast((browser) => browser.status === "running" || browser.status === "idle");
   useEffect(() => {
@@ -593,6 +616,7 @@ function TaskSidePanelForScope({
     markInteracted();
     if (tabId === "subtasks") subtasksDismissedRef.current = true;
     const tab = controller.tabs.find((candidate) => candidate.id === tabId);
+    if (tab?.payload.kind === "plugin-tab") dismissedPluginSideTabs.current.add(tabId);
     if (tab?.payload.kind === "plugin-panel") {
       const panel = pluginPanels.find(panel => taskPluginPanelId(panel) === tabId);
       if (panel) dismissedPluginPanels.add(pluginPanelKey(panel));
@@ -661,6 +685,10 @@ function TaskSidePanelForScope({
     if (fileTabsEnabled) {
       primary.push({ id: "files", label: "Files", icon: <FolderOpen />, shortcut: "G F", alreadyOpen: controller.tabs.some((tab) => tab.id === "files") });
     }
+    for (const slot of pluginSideTabs) {
+      const id = taskSidePanelPluginTabId(slot);
+      primary.push({ id, label: slot.displayName, icon: <AppWindow />, alreadyOpen: controller.tabs.some((tab) => tab.id === id) });
+    }
     const documentItems: SidePanelLauncherItem[] = [
       ...(planDocument ? [{
         id: "document:plan",
@@ -705,11 +733,18 @@ function TaskSidePanelForScope({
       });
     }
     return sections;
-  }, [pluginPanels, browsersQuery.data, conversationAgentId, taskCount, taskLabel, tasksTab?.hasError, controller.tabs, documents, fileTabsEnabled, planDocument, recentFilesQuery.data, recentFilesView.kind, recentFilesQuery.isLoading, subtasksAvailable]);
+  }, [pluginPanels, pluginSideTabs, browsersQuery.data, conversationAgentId, taskCount, taskLabel, tasksTab?.hasError, controller.tabs, documents, fileTabsEnabled, planDocument, recentFilesQuery.data, recentFilesView.kind, recentFilesQuery.isLoading, subtasksAvailable]);
 
   function selectLauncherItem(item: SidePanelLauncherItem) {
     markInteracted();
     if (item.id.startsWith("browser:")) controller.openTab(taskPanelBrowserTab(item.id.slice(8)));
+    else if (item.id.startsWith("plugin-tab:")) {
+      const slot = pluginSideTabs.find((candidate) => taskSidePanelPluginTabId(candidate) === item.id);
+      if (slot) {
+        dismissedPluginSideTabs.current.delete(item.id);
+        controller.openTab(taskPanelPluginSideTab(slot));
+      }
+    }
     else if (item.id.startsWith("plugin:")) {
       const panel = pluginPanels.find(panel => taskPluginPanelId(panel) === item.id);
       if (panel) {
@@ -803,6 +838,11 @@ function TaskSidePanelForScope({
     content = <SidePanelLauncher sections={launcherSections} onSelect={selectLauncherItem} />;
   } else if (activeTab.payload.kind === "browser") {
     content = null; // Mounted below independently of the selected tab.
+  } else if (activeTab.payload.kind === "plugin-tab") {
+    const slot = pluginSideTabs.find((candidate) => taskSidePanelPluginTabId(candidate) === activeTab.id);
+    content = slot ? (
+      <PluginSlotMount key={activeTab.id} slot={slot} context={{ companyId: issue.companyId, projectId: issue.projectId, entityId: issue.id, entityType: "issue" }} />
+    ) : null;
   } else if (activeTab.payload.kind === "plugin-panel") {
     const panel = pluginPanels.find(panel => taskPluginPanelId(panel) === activeTab.id);
     content = panel ? (

@@ -14,6 +14,7 @@ import { type InstallState } from "@/lib/tool-installs";
 import { QuarantinedActionsReview } from "./SetupPanel";
 import { ActionTestDialog } from "./ActionTestDialog";
 import type { AccessDraft, AppDetailSectionProps } from "./types";
+import { OptionSelect } from "@/components/OptionSelect";
 
 type ActionPermission = "off" | "ask" | "allowed";
 type ActionKindFilter = "all" | "read" | "write";
@@ -404,23 +405,24 @@ function ActionGroup({
           // per-row overrides stay underneath.
           <label className="flex items-center gap-2 text-xs text-muted-foreground">
             <span className="sr-only">{`Set every action in ${title}`}</span>
-            <select
-              aria-label={`Set every action in ${title}`}
+            <OptionSelect
+              ariaLabel={`Set every action in ${title}`}
+              items={[
+                ...(groupValue === "" ? [{ value: "", label: "Mixed" }] : []),
+                ...PERMISSION_OPTIONS.map((option) => ({ value: option.value, label: `Set all: ${option.label}` })),
+              ]}
               value={groupValue}
               disabled={disabled}
-              onChange={(event) => {
+              onChange={(next) => {
                 // One change for the whole group: each row's setter rebuilds the
                 // full permission set from the same render, so looping it lets
                 // the last call overwrite the others.
-                onSetPermission(actions.map((action) => action.id), event.target.value as ActionPermission);
+                if (next === "") return;
+                onSetPermission(actions.map((action) => action.id), next as ActionPermission);
               }}
-              className="h-7 rounded-md border border-input bg-background px-2 text-xs text-foreground outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/30"
-            >
-              {groupValue === "" ? <option value="">Mixed</option> : null}
-              {PERMISSION_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>{`Set all: ${option.label}`}</option>
-              ))}
-            </select>
+              placeholder="Mixed"
+              triggerClassName="h-7 px-2 text-xs font-normal"
+            />
           </label>
         ) : null}
       </div>

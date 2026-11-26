@@ -1,5 +1,5 @@
+import { OptionSelect } from "@/components/OptionSelect";
 import type { ReactNode } from "react";
-import { ChevronDown } from "lucide-react";
 import { TabBar, type TabSize } from "./TabBar";
 import { useSidebar } from "../context/SidebarContext";
 
@@ -21,21 +21,16 @@ export function PageTabBar({ items, value, onValueChange, align = "center", size
 
   if (isMobile && value !== undefined && onValueChange) {
     return (
-      <div className="relative inline-flex">
-        <select
-          value={value}
-          onChange={(e) => onValueChange(e.target.value)}
-          className="h-9 appearance-none rounded-md border border-border bg-background pl-3 pr-9 py-1 text-base focus:outline-none focus:ring-1 focus:ring-ring"
-          aria-label="Page section"
-        >
-          {items.map((item) => (
-            <option key={item.value} value={item.value}>
-              {typeof item.label === "string" ? item.label : item.value}
-            </option>
-          ))}
-        </select>
-        <ChevronDown aria-hidden="true" className="pointer-events-none absolute right-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-      </div>
+      <OptionSelect
+        ariaLabel="Page section"
+        value={value}
+        placeholder="Page section"
+        searchPlaceholder="Search sections…"
+        items={items.map((item) => ({ value: item.value, label: typeof item.label === "string" ? item.label : item.value }))}
+        onChange={onValueChange}
+        className="w-auto min-w-40"
+        triggerClassName="h-9 text-base font-normal"
+      />
     );
   }
 

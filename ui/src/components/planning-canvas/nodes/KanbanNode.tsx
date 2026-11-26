@@ -14,6 +14,7 @@ import { IssueFilters } from "@/components/planning-canvas/nodes/IssueFilters";
 import { RefCard } from "@/components/planning-canvas/nodes/RefCard";
 import { useIssueQuery } from "@/components/planning-canvas/nodes/useIssueQuery";
 import { groupIssues, isCapped, UNASSIGNED, withStatus, type KanbanGroupBy, type QueriedIssue } from "@/components/planning-canvas/nodes/issue-board";
+import { OptionSelect } from "@/components/OptionSelect";
 
 const stop = (e: { stopPropagation: () => void }) => e.stopPropagation();
 const GROUPS: KanbanGroupBy[] = ["status", "assignee", "priority"];
@@ -156,18 +157,14 @@ export const KanbanNode = memo(function KanbanNode({ nodeKey, data, title }: { n
       <div className="flex items-center gap-1" onPointerDown={stop} onDoubleClick={stop}>
         <label className="flex items-center gap-1 text-xs text-muted-foreground">
           Group by
-          <select
-            aria-label="Group by"
-            className="rounded border border-border bg-background px-1 py-0.5 text-xs text-foreground"
+          <OptionSelect
+            ariaLabel="Group by"
+            items={GROUPS.map((g) => ({ value: g, label: titleCase(g) }))}
             value={data.groupBy}
-            onChange={(e) => edit({ groupBy: e.target.value as KanbanGroupBy, collapsed: [] })}
-          >
-            {GROUPS.map((g) => (
-              <option key={g} value={g}>
-                {titleCase(g)}
-              </option>
-            ))}
-          </select>
+            onChange={(next) => edit({ groupBy: next as KanbanGroupBy, collapsed: [] })}
+            placeholder="Group by"
+            triggerClassName="h-auto py-0.5 text-xs font-normal"
+          />
         </label>
         {issues ? <span className="ml-auto text-xs text-muted-foreground">{issues.length} issues</span> : null}
       </div>

@@ -6,6 +6,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ToolMcpGatewayWithTokens, ToolProfileWithDetails } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { stubSearchableSelectDom, pickSearchableOption } from "@/test-utils/searchable-select";
 import { EditGatewayDialog } from "./EditGatewayDialog";
 
 const updateGatewayMock = vi.hoisted(() => vi.fn());
@@ -104,6 +105,7 @@ describe("EditGatewayDialog", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    stubSearchableSelectDom();
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -136,7 +138,7 @@ describe("EditGatewayDialog", () => {
 
     const nameInput = container.querySelector<HTMLInputElement>('input[required]');
     const descriptionInput = container.querySelector<HTMLTextAreaElement>("textarea");
-    const profileSelect = container.querySelector<HTMLSelectElement>("select");
+    const profileSelect = document.body.querySelector<HTMLElement>('[role="combobox"][aria-label="Access profile"]');
     const form = container.querySelector("form");
     if (!nameInput || !descriptionInput || !profileSelect || !form) throw new Error("gateway edit form missing");
 
@@ -150,10 +152,7 @@ describe("EditGatewayDialog", () => {
       textareaSetter?.call(descriptionInput, "For the research team");
       descriptionInput.dispatchEvent(new Event("input", { bubbles: true }));
     });
-    flushSync(() => {
-      profileSelect.value = "profile-2";
-      profileSelect.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    await pickSearchableOption(document.body, "Access profile", "Shared tools");
 
     form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     await flushReact();

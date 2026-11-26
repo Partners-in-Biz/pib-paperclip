@@ -14,6 +14,7 @@ vi.mock("@/components/planning-canvas/panels/sharing/useSessionUserId", () => ({
 vi.mock("@/components/MarkdownBody", () => ({ MarkdownBody: ({ children }: { children: string }) => <div>{children}</div> }));
 
 import { ChatPanel } from "./ChatPanel";
+import { pickSearchableOption, stubSearchableSelectDom } from "@/test-utils/searchable-select";
 
 const agents = [{ id: "a1", name: "Ada", status: "idle" }];
 const nodeById = new Map([
@@ -35,6 +36,7 @@ let root: Root; let container: HTMLDivElement;
 beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
   sendChat.mockReset();
+  stubSearchableSelectDom();
   container = document.createElement("div"); document.body.append(container); root = createRoot(container);
 });
 afterEach(() => { act(() => root.unmount()); container.remove(); });
@@ -48,11 +50,7 @@ async function mount(access: string, chatAsk: unknown = null) {
   if (openBtn) await act(async () => { openBtn.click(); });
 }
 async function pickAndType(text: string) {
-  const select = container.querySelector("select")!;
-  await act(async () => {
-    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(select, "a1");
-    select.dispatchEvent(new Event("change", { bubbles: true }));
-  });
+  await pickSearchableOption(container, "Agent", "Ada");
   const ta = container.querySelector("textarea")!;
   await act(async () => {
     Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(ta, text);

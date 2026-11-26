@@ -1,3 +1,4 @@
+import { OptionSelect } from "@/components/OptionSelect";
 import {
   useCallback,
   useEffect,
@@ -1974,32 +1975,20 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
           <label className="flex flex-wrap items-center gap-3 text-sm font-medium">
             <span>Default</span>
             <span>
-              <select
-                aria-label="Default environment"
-                className="min-w-(--sz-12rem) max-w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm font-normal outline-none"
+              <OptionSelect
+                ariaLabel="Default environment"
+                placeholder="Select environment"
+                emptyLabel={managedSandboxOnly ? undefined : "Local"}
+                className="min-w-(--sz-12rem) max-w-full"
+                triggerClassName="h-auto py-1.5 text-sm font-normal"
                 value={instanceDefaultEnvironmentId}
-                onChange={(event) =>
-                  defaultEnvironmentMutation.mutate(event.target.value || null)}
                 disabled={defaultEnvironmentMutation.isPending}
-              >
-                {managedSandboxOnly ? (
-                  // Managed-sandbox-only instances never execute locally, so
-                  // the implicit local fallback is not a legal default. The
-                  // placeholder only renders while no default is stamped yet.
-                  instanceDefaultEnvironmentId === "" ? (
-                    <option value="" disabled>
-                      Select environment
-                    </option>
-                  ) : null
-                ) : (
-                  <option value="">Local</option>
-                )}
-                {nonLocalEnvironments.map((environment) => (
-                  <option key={environment.id} value={environment.id}>
-                    {environmentDisplayLabel(environment)}
-                  </option>
-                ))}
-              </select>
+                items={nonLocalEnvironments.map((environment) => ({
+                  value: environment.id,
+                  label: environmentDisplayLabel(environment),
+                }))}
+                onChange={(next) => defaultEnvironmentMutation.mutate(next || null)}
+              />
             </span>
           </label>
           <Button size="icon-sm" variant="ghost" asChild>
@@ -2263,18 +2252,27 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
                 />
               </Field>
               <Field label="Driver" hint="Sandbox stores plugin-backed provider config on the shared environment seam. SSH stores a remote machine target.">
-                <select
-                  className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+                <OptionSelect
+                  ariaLabel="Driver"
+                  placeholder="Select driver"
+                  triggerClassName="h-auto py-1.5 text-sm font-normal w-full"
                   value={environmentForm.driver}
-                  onChange={(e) =>
+                  items={[
+                    ...(sandboxCreationEnabled || environmentForm.driver === "sandbox"
+                      ? [{ value: "sandbox", label: "Sandbox" }]
+                      : []),
+                    { value: "ssh", label: "SSH" },
+                    ...(environmentForm.driver === "local" ? [{ value: "local", label: "Local" }] : []),
+                  ]}
+                  onChange={(next) =>
                     setEnvironmentForm((current) => ({
                       ...current,
                       sandboxProvider:
-                        e.target.value === "sandbox"
+                        next === "sandbox"
                           ? current.sandboxProvider.trim() || discoveredPluginSandboxProviders[0]?.provider || ""
                           : current.sandboxProvider,
                       sandboxConfig:
-                        e.target.value === "sandbox"
+                        next === "sandbox"
                           ? (
                               current.sandboxProvider.trim().length > 0 && current.driver === "sandbox"
                                 ? current.sandboxConfig
@@ -2283,17 +2281,9 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
                                   : {}
                             )
                           : current.sandboxConfig,
-                      driver: e.target.value === "sandbox" ? "sandbox" : "ssh",
+                      driver: next === "sandbox" ? "sandbox" : "ssh",
                     }))}
-                >
-                  {sandboxCreationEnabled || environmentForm.driver === "sandbox" ? (
-                    <option value="sandbox">Sandbox</option>
-                  ) : null}
-                  <option value="ssh">SSH</option>
-                  {environmentForm.driver === "local" ? (
-                    <option value="local">Local</option>
-                  ) : null}
-                </select>
+                />
               </Field>
 
               {environmentForm.driver === "ssh" ? (
@@ -2343,21 +2333,20 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
                   </Field>
                   <Field label="Private key" hint="Optional PEM private key. Leave blank to rely on the server's SSH agent or default keychain.">
                     <div className="space-y-2">
-                      <select
-                        className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+                      <OptionSelect
+                        ariaLabel="Private key secret"
                         value={environmentForm.sshPrivateKeySecretId}
-                        onChange={(e) =>
+                        items={(secrets ?? []).map((secret) => ({ value: secret.id, label: secret.name, searchText: secret.key }))}
+                        emptyLabel="No saved secret"
+                        placeholder="No saved secret"
+                        searchPlaceholder="Search secrets…"
+                        onChange={(next) =>
                           setEnvironmentForm((current) => ({
                             ...current,
-                            sshPrivateKeySecretId: e.target.value,
-                            sshPrivateKey: e.target.value ? "" : current.sshPrivateKey,
+                            sshPrivateKeySecretId: next,
+                            sshPrivateKey: next ? "" : current.sshPrivateKey,
                           }))}
-                      >
-                        <option value="">No saved secret</option>
-                        {(secrets ?? []).map((secret) => (
-                          <option key={secret.id} value={secret.id}>{secret.name}</option>
-                        ))}
-                      </select>
+                      />
                       <textarea
                         className="h-32 w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-xs font-mono outline-none"
                         value={environmentForm.sshPrivateKey}
@@ -2388,11 +2377,13 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
               {environmentForm.driver === "sandbox" ? (
                 <div className="space-y-3">
                   <Field label="Provider" hint="Installed run-capable sandbox provider plugins appear here.">
-                    <select
-                      className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+                    <OptionSelect
+                      ariaLabel="Provider"
+                      placeholder="Select provider"
+                      triggerClassName="h-auto py-1.5 text-sm font-normal w-full"
                       value={environmentForm.sandboxProvider}
-                      onChange={(e) => {
-                        const nextProviderKey = e.target.value;
+                      items={pluginSandboxProviders.map((provider) => ({ value: provider.provider, label: provider.displayName }))}
+                      onChange={(nextProviderKey) => {
                         const nextProvider = pluginSandboxProviders.find((provider) => provider.provider === nextProviderKey) ?? null;
                         setEnvironmentForm((current) => ({
                           ...current,
@@ -2405,13 +2396,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
                                 : {},
                         }));
                       }}
-                    >
-                      {pluginSandboxProviders.map((provider) => (
-                        <option key={provider.provider} value={provider.provider}>
-                          {provider.displayName}
-                        </option>
-                      ))}
-                    </select>
+                    />
                   </Field>
                   {selectedSandboxProvider?.description ? (
                     <div className="text-xs text-muted-foreground">
@@ -2590,24 +2575,20 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
                         <span className="font-medium">
                           Reassign {agentsUsingEnvironment.length === 1 ? "agent" : "agents"} to
                         </span>
-                        <select
-                          aria-label="Reassign agents to environment"
-                          data-testid="environment-delete-reassign-select"
-                          className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm font-normal outline-none"
+                        <OptionSelect
+                          ariaLabel="Reassign agents to environment"
+                          placeholder="Select environment"
+                          triggerClassName="h-auto py-1.5 text-sm font-normal w-full"
                           value={reassignEnvironmentTargetId}
-                          onChange={(event) => setReassignEnvironmentTargetId(event.target.value)}
-                        >
-                          <option value="">
-                            Default: {instanceDefaultEnvironment
-                              ? `${instanceDefaultEnvironment.name} · ${instanceDefaultEnvironment.driver}`
-                              : "Local"}
-                          </option>
-                          {reassignTargetEnvironments.map((environment) => (
-                            <option key={environment.id} value={environment.id}>
-                              {environment.name} · {environment.driver}
-                            </option>
-                          ))}
-                        </select>
+                          emptyLabel={`Default: ${instanceDefaultEnvironment
+                            ? `${instanceDefaultEnvironment.name} · ${instanceDefaultEnvironment.driver}`
+                            : "Local"}`}
+                          items={reassignTargetEnvironments.map((environment) => ({
+                            value: environment.id,
+                            label: `${environment.name} · ${environment.driver}`,
+                          }))}
+                          onChange={setReassignEnvironmentTargetId}
+                        />
                         <span className="block text-xs text-muted-foreground">
                           Affected: {agentsUsingEnvironment.map((agent) => agent.name).join(", ")}
                         </span>

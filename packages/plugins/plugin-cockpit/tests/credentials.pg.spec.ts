@@ -526,6 +526,9 @@ d("the credentials register (Postgres)", () => {
       expect((await rows(w)).map((r) => [r.seed_key, r.last_verify_status])).toEqual([["browser:client:ca:google-ads", "expired"], ["browser:pib:meta", "ok"]]);
       expect(await syncBrowserIdentities(w.env, A, "x")).toMatchObject({ cards: 0 });
       expect(await cards(w)).toBe(1);
+      const all = await everything(w as never);
+      expect(all).toContain("tab=browser&identity=client%3Aca%3Agoogle-ads");
+      expect(all).not.toMatch(/README|\bSSH\b|\bVNC\b/i);
       expect(await everything(w as never)).not.toMatch(/cookie|password/i);
     });
 
