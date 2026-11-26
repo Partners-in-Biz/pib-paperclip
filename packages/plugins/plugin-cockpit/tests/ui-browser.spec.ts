@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { BrowserView } from "../src/browser-status.js";
 import { tabFromSearch } from "../src/ui/index.js";
 import { BrowserBody } from "../src/ui/browser-page.js";
-import { MAX_FAILED_CONNECTS, afterDisconnect, STABLE_CONNECT_MS, liveSocketUrl } from "../src/ui/browser-live-drawer.js";
+import { MAX_FAILED_CONNECTS, afterDisconnect, STABLE_CONNECT_MS, liveSocketUrl, TakeoverPanel, countdown, doneLabel, shownPhase, takeoverOver, takeoverPhase } from "../src/ui/browser-live-drawer.js";
 
 const view = (over: Partial<BrowserView> = {}): BrowserView => ({
   state: "read",
@@ -99,5 +99,71 @@ describe("Watch live socket address", () => {
   });
   it("counts a drop that never connected as failed", () => {
     expect(afterDisconnect({ shown: false, connectedAt: 0, now: 99999, failed: 0 })).toEqual({ action: "retry", failed: 1 });
+  });
+});
+
+describe("Take over (PAR-14514 S4)", () => {
+  const live = { state: "live", identity: "client:ca:google-ads", userId: "u1", secondsLeft: 1150, controlConnected: true };
+  const ended = (reason: string) => ({ state: "ended", confirmed: false, identity: "client:ca:google-ads", userId: "u1", reason, endedAt: "2026-11-26T10:00:00.000Z" });
+  const row = (v: BrowserView, lease: unknown) => renderToStaticMarkup(createElement(BrowserBody, { view: v, lease }));
+
+  it("reads the daemon's lease for one identity", () => {
+    expect(takeoverPhase(null, "pib:meta")).toEqual({ kind: "none" });
+    expect(takeoverPhase(live, "client:ca:google-ads")).toEqual({ kind: "live", secondsLeft: 1150 });
+    expect(takeoverPhase(live, "pib:meta")).toEqual({ kind: "other", identity: "client:ca:google-ads" });
+    expect(takeoverPhase(ended("logged_in"), "client:ca:google-ads")).toEqual({ kind: "logged_in" });
+    expect(takeoverPhase(ended("time_limit"), "client:ca:google-ads")).toEqual({ kind: "ended", reason: "time_limit" });
+    expect(takeoverPhase(ended("time_limit"), "pib:meta")).toEqual({ kind: "none" });
+  });
+
+  it("an older take-over's end is not this drawer's; after it was live, any other state ends it", () => {
+    expect(shownPhase({ kind: "logged_in" }, false)).toEqual({ kind: "none" });
+    expect(shownPhase({ kind: "logged_in" }, true)).toEqual({ kind: "logged_in" });
+    expect(takeoverOver({ kind: "ended", reason: "x" }, false, false)).toBe(false);
+    expect(takeoverOver({ kind: "live", secondsLeft: 5 }, false, true)).toBe(false);
+    for (const phase of [{ kind: "none" }, { kind: "logged_in" }, { kind: "ended", reason: "x" }, { kind: "other", identity: "pib:meta" }] as const) expect(takeoverOver(phase, false, true)).toBe(true);
+    expect(takeoverOver({ kind: "live", secondsLeft: 5 }, true, true)).toBe(true);
+  });
+
+  it("names Done by what it does", () => {
+    expect(doneLabel([])).toBe("Done - check login");
+    expect(doneLabel([{ identifier: "PAR-1", title: "x" }])).toBe("Done - resume agent");
+    expect(countdown(1150)).toBe("19:10");
+    expect(countdown(-3)).toBe("0:00");
+  });
+
+  it("the drawer names the tasks Done wakes, the countdown, and says nothing is woken after an unconfirmed end", () => {
+    const panel = (props: Partial<Parameters<typeof TakeoverPanel>[0]>) => renderToStaticMarkup(createElement(TakeoverPanel, { identity: "pib:meta", phase: { kind: "live", secondsLeft: 600 }, secondsLeft: 600, tasks: [], result: null, ...props }));
+    const withTasks = panel({ tasks: [{ identifier: "PAR-12", title: "Post the ad" }, { identifier: "PAR-13", title: "" }] });
+    expect(withTasks).toContain("Done wakes:");
+    expect(withTasks).toContain("PAR-12");
+    expect(withTasks).toContain("PAR-13");
+    expect(withTasks).toContain("10:00 left");
+    expect(withTasks).toContain("Done - resume agent");
+    expect(panel({})).toContain("No task is waiting for this login");
+    expect(panel({ phase: { kind: "logged_in" } })).toContain("Logged in");
+    const end = panel({ phase: { kind: "ended", reason: "time_limit" } });
+    expect(end).toContain("Login finished, not confirmed");
+    expect(end).toContain("the 20 minutes ran out");
+    expect(end).toContain("Nothing is woken until you press it");
+    expect(panel({ result: { ok: false, message: "The login for pib:meta did not hold" } })).toContain("did not hold");
+  });
+
+  it("each login row has Take over browser only at takeover and with no other take-over live", () => {
+    expect(row(view({ live: "takeover" }), null).match(/Take over browser/g)).toHaveLength(2);
+    expect(row(view({ live: "view" }), null)).not.toContain("Take over browser");
+    expect(row(view({ live: "off" }), null)).not.toContain("Take over browser");
+    const busy = row(view({ live: "takeover" }), live);
+    expect(busy).toContain("Taken over now");
+    expect(busy).not.toContain("Take over browser");
+  });
+
+  it("an unconfirmed take-over shows Login finished, not confirmed with a Done button, at every setting", () => {
+    for (const l of ["off", "view", "takeover"] as const) {
+      const out = row(view({ live: l }), ended("logged_in"));
+      expect(out).toContain("Login finished, not confirmed");
+      expect(out).toContain(">Done</button>");
+      expect(out).toContain("Nothing is woken until you press Done.");
+    }
   });
 });
