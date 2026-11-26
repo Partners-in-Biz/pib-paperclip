@@ -20,6 +20,15 @@ const RECONNECT_DELAY_MS = 1000;
 /** A connection that lasts at least this long counts as good; a quicker drop counts as a failed attempt. */
 export const STABLE_CONNECT_MS = 5000;
 
+export type DisconnectDecision = { action: "reconnect" | "retry" | "fail"; failed: number };
+
+/** What to do when the live socket closes. A connect that drops within STABLE_CONNECT_MS, or never connected, counts as failed. */
+export function afterDisconnect(input: { shown: boolean; connectedAt: number; now: number; failed: number }): DisconnectDecision {
+  if (input.shown && input.now - input.connectedAt >= STABLE_CONNECT_MS) return { action: "reconnect", failed: 0 };
+  const failed = input.failed + 1;
+  return { action: failed >= MAX_FAILED_CONNECTS ? "fail" : "retry", failed };
+}
+
 /** The route's address, relative to this page (`wss:` on https). The ticket is single use and lasts 30 seconds. */
 export function liveSocketUrl(origin: { protocol: string; host: string }, companyId: string, ticket: string): string {
   const scheme = origin.protocol === "https:" ? "wss:" : "ws:";
@@ -50,12 +59,6 @@ function useWatchLive(companyId: string, open: boolean) {
       setError(message);
       setState("error");
     };
-    const retry = (reason: string) => {
-      failed += 1;
-      if (failed >= MAX_FAILED_CONNECTS) return fail(reason);
-      setState("reconnecting");
-      timer = setTimeout(() => void connect(), RECONNECT_DELAY_MS);
-    };
     const connect = async () => {
       if (stopped || !screen.current) return;
       try {
@@ -77,13 +80,13 @@ function useWatchLive(companyId: string, open: boolean) {
         connection.addEventListener("disconnect", () => {
           rfb = null;
           if (stopped) return;
-          // After a screen was shown, the 5-minute end or a drop is expected: connect again with a fresh ticket.
-          // A connect that drops again within STABLE_CONNECT_MS counts as a failed attempt, so a server that accepts and drops at once cannot loop forever.
-          if (shown && Date.now() - connectedAt >= STABLE_CONNECT_MS) {
-            failed = 0;
-            setState("reconnecting");
-            timer = setTimeout(() => void connect(), RECONNECT_DELAY_MS);
-          } else retry("The live screen could not be reached.");
+          // After a screen was shown for a while, the 5-minute end or a drop is expected: connect again with a fresh ticket.
+          // A quick drop counts as a failed attempt, so a server that accepts and drops at once cannot loop forever.
+          const decision = afterDisconnect({ shown, connectedAt, now: Date.now(), failed });
+          failed = decision.failed;
+          if (decision.action === "fail") return fail("The live screen could not be reached.");
+          setState("reconnecting");
+          timer = setTimeout(() => void connect(), RECONNECT_DELAY_MS);
         });
         connection.addEventListener("securityfailure", () => fail("The live screen refused the connection."));
         connection.addEventListener("credentialsrequired", () => fail("The live screen asked for a password. It should not."));
