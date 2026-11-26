@@ -1,3 +1,4 @@
+import { OptionSelect } from "@/components/OptionSelect";
 import { useEffect, useRef, useState } from "react";
 import {
   ChevronDown,
@@ -421,31 +422,32 @@ export function EnvironmentVariableRow({
               ) : (
                 <div className="grid min-w-0 flex-1 grid-cols-(--gtc-13)">
                   {userSecretsEnabled ? (
-                    <select
-                      aria-label="User secret"
+                    <OptionSelect
+                      ariaLabel="User secret"
+                      placeholder="Select user secret..."
+                      emptyLabel="Select user secret..."
                       value={row.userSecretKey}
                       disabled={disabled}
-                      onChange={(event) => {
-                        const key = event.target.value;
+                      className="min-w-0"
+                      triggerClassName="h-auto border-0 py-1.5 text-sm font-mono font-normal"
+                      items={[
+                        ...(row.userSecretKey && !userSecretDefinitions?.some((definition) => definition.key === row.userSecretKey)
+                          ? [{ value: row.userSecretKey, label: `Unknown (${row.userSecretKey})` }]
+                          : []),
+                        ...(userSecretDefinitions ?? []).map((definition) => ({
+                          value: definition.key,
+                          label: `${definition.name}${definition.status !== "active" ? ` (${definition.status})` : ""}`,
+                          searchText: definition.key,
+                        })),
+                      ]}
+                      onChange={(key) => {
                         const definition = userSecretDefinitions?.find((candidate) => candidate.key === key);
                         onPatch({
                           userSecretKey: key,
                           ...(definition && !row.name.trim() ? { name: definition.key.toUpperCase() } : {}),
                         });
                       }}
-                      className="min-w-0 bg-transparent px-2 py-1.5 text-sm font-mono outline-none disabled:pointer-events-none"
-                    >
-                      <option value="">Select user secret...</option>
-                      {row.userSecretKey && !userSecretDefinitions?.some((definition) => definition.key === row.userSecretKey) ? (
-                        <option value={row.userSecretKey}>Unknown ({row.userSecretKey})</option>
-                      ) : null}
-                      {(userSecretDefinitions ?? []).map((definition) => (
-                        <option key={definition.id} value={definition.key}>
-                          {definition.name}
-                          {definition.status !== "active" ? ` (${definition.status})` : ""}
-                        </option>
-                      ))}
-                    </select>
+                    />
                   ) : (
                     <input
                       className={valueTextInputClass}
@@ -457,16 +459,16 @@ export function EnvironmentVariableRow({
                       onChange={(event) => onPatch({ userSecretKey: event.target.value })}
                     />
                   )}
-                  <select
-                    aria-label="Requirement"
+                  <OptionSelect
+                    ariaLabel="Requirement"
+                    placeholder="Requirement"
                     value={row.required ? "required" : "optional"}
                     disabled={disabled}
-                    onChange={(event) => onPatch({ required: event.target.value === "required" })}
-                    className="border-l border-border bg-transparent px-2 py-1.5 text-xs font-medium text-muted-foreground outline-none disabled:pointer-events-none"
-                  >
-                    <option value="required">Required</option>
-                    <option value="optional">Optional</option>
-                  </select>
+                    onChange={(next) => onPatch({ required: next === "required" })}
+                    className="border-l border-border"
+                    triggerClassName="h-auto border-0 py-1.5 text-xs font-medium text-muted-foreground"
+                    items={[{ value: "required", label: "Required" }, { value: "optional", label: "Optional" }]}
+                  />
                 </div>
               )}
             </div>

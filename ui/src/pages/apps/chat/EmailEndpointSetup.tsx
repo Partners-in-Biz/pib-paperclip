@@ -47,12 +47,11 @@ import {
   lowTrustBoundaryHasScope,
 } from "@/lib/trust-policy-ui";
 import { queryKeys } from "@/lib/queryKeys";
+import { OptionSelect } from "@/components/OptionSelect";
 import type {
   AgentPermissions,
   EmailEndpointSummary,
 } from "@paperclipai/shared";
-const selectClass =
-  "w-full rounded-md border border-input bg-background px-3 py-2 text-sm";
 
 interface EmailSetupDraft {
   connectionId: string; step: 0 | 1; agentId: string; requestId: string;
@@ -383,21 +382,17 @@ function EmailEndpointSetupForm({ companyId }: { companyId: string }) {
             <Input id="email-name" className="min-w-0" value={username} maxLength={64} autoComplete="off" spellCheck={false} disabled={busy}
               aria-invalid={!!addressError} aria-describedby={addressError ? "email-address-error" : "email-address-status"}
               onChange={event => { setUsername(event.target.value.toLowerCase()); setup.reset(); }} />
-            <select id="email-domain" aria-label="Email domain" className={`${selectClass} max-w-1/2 shrink-0`} value={domain}
-              disabled={busy || !inspected.data} onChange={event => { setDomainSelected(true); setDomain(event.target.value); setup.reset(); }}>
-              {[...new Set([...customDomains, "agentmail.to", domain])]
-                .map(value => <option key={value} value={value}>@{value}</option>)}
-            </select>
+            <OptionSelect id="email-domain" ariaLabel="Email domain" placeholder="Domain" className="max-w-1/2 shrink-0" triggerClassName="w-full font-normal" value={domain}
+              disabled={busy || !inspected.data} onChange={value => { setDomainSelected(true); setDomain(value); setup.reset(); }}
+              items={[...new Set([...customDomains, "agentmail.to", domain])].map(value => ({ value, label: `@${value}` }))} />
           </div>
-        </> : <select id="email-existing" className={selectClass} value={pendingAddress ?? inboxId} disabled={busy || scopedKey || !!pendingAddress}
-          aria-invalid={!!addressError} aria-describedby={addressError ? "email-address-error" : undefined}
-          onChange={event => { setInboxId(event.target.value); setup.reset(); }}>
-          <option value="">Choose an inbox</option>
-          {inspected.data?.inboxes.map(i => {
-            const assigned = inboxes.data?.some(e => e.id !== requestId && e.address === i.inbox_id && e.status !== "archived");
-            return <option key={i.inbox_id} value={i.inbox_id} disabled={assigned}>{i.inbox_id}{assigned ? " — already assigned" : ""}</option>;
-          })}
-        </select>}
+        </> : <OptionSelect id="email-existing" ariaLabel="Inbox" placeholder="Choose an inbox" emptyLabel="Choose an inbox" triggerClassName="w-full font-normal"
+          value={pendingAddress ?? inboxId} disabled={busy || scopedKey || !!pendingAddress}
+          onChange={value => { setInboxId(value); setup.reset(); }}
+          items={(inspected.data?.inboxes ?? []).map(i => {
+            const assigned = !!inboxes.data?.some(e => e.id !== requestId && e.address === i.inbox_id && e.status !== "archived");
+            return { value: i.inbox_id, label: `${i.inbox_id}${assigned ? " — already assigned" : ""}`, disabled: assigned };
+          })} />}
         {scopedKey && !pendingAddress && <Button type="button" variant="link" size="sm" className="h-auto p-0" disabled={busy}
           onClick={() => { setAllowInboxKey(false); setStep(0); }}>Choose a key for a new address</Button>}
         {addressError && <p id="email-address-error" role="alert" className="text-sm text-destructive">{addressError}</p>}
@@ -429,9 +424,9 @@ function EmailEndpointSetupForm({ companyId }: { companyId: string }) {
           </div>}
           <div className="space-y-2">
             <Label htmlFor="email-mode">Receiving</Label>
-            <select id="email-mode" value={mode} disabled={busy} className={selectClass} onChange={event => setMode(event.target.value as typeof mode)}>
-              <option value="websocket">Live connection</option><option value="webhook">Webhook</option>
-            </select>
+            <OptionSelect id="email-mode" ariaLabel="Receiving" placeholder="Receiving" triggerClassName="w-full font-normal" value={mode} disabled={busy}
+              onChange={value => setMode(value as typeof mode)}
+              items={[{ value: "websocket", label: "Live connection" }, { value: "webhook", label: "Webhook" }]} />
           </div>
           <EmailSafetyNotice />
           <div className="space-y-2 text-sm">
@@ -730,12 +725,10 @@ export function EmailEndpointSettings({
           <AgentMailApiKeyField label="New API key" value={replacementKey} onChange={setReplacementKey} disabled={reconnect.isPending} />
           <div className="space-y-2">
             <Label htmlFor="email-reconnect-mode">Receiving mode</Label>
-            <select id="email-reconnect-mode" className={selectClass}
+            <OptionSelect id="email-reconnect-mode" ariaLabel="Receiving mode" placeholder="Receiving mode" triggerClassName="w-full font-normal"
               disabled={reconnect.isPending} value={receiveMode || inbox.receiveMode}
-              onChange={(e) => setReceiveMode(e.target.value as "websocket" | "webhook")}>
-              <option value="websocket">Live connection</option>
-              <option value="webhook">Webhook</option>
-            </select>
+              onChange={value => setReceiveMode(value as "websocket" | "webhook")}
+              items={[{ value: "websocket", label: "Live connection" }, { value: "webhook", label: "Webhook" }]} />
           </div>
           {reconnect.error && <p role="alert" className="text-sm text-destructive">{describeError(reconnect.error).body}</p>}
           {reconnect.isSuccess && <p role="status" className="text-sm">Inbox reconnected.</p>}

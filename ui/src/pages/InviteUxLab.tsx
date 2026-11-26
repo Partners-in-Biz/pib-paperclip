@@ -5,6 +5,7 @@
 import type { ReactNode } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { OptionSelect } from "@/components/OptionSelect";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { CompanyPatternIcon } from "@/components/CompanyPatternIcon";
 import { cn } from "@/lib/utils";
@@ -337,11 +338,18 @@ function AgentRequestPreview() {
       </label>
       <label className="block text-sm">
         <span className="mb-1 block text-zinc-400">Adapter type</span>
-        <select className={fieldClassName} defaultValue="codex_local" disabled>
-          <option value="codex_local">Codex</option>
-          <option value="claude_local">Claude Code</option>
-          <option value="cursor">Cursor</option>
-        </select>
+        <OptionSelect
+          ariaLabel="Adapter type"
+          value="codex_local"
+          onChange={() => {}}
+          disabled
+          placeholder="Adapter type"
+          items={[
+            { value: "codex_local", label: "Codex" },
+            { value: "claude_local", label: "Claude Code" },
+            { value: "cursor", label: "Cursor" },
+          ]}
+        />
       </label>
       <label className="block text-sm">
         <span className="mb-1 block text-zinc-400">Capabilities</span>

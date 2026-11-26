@@ -4,7 +4,8 @@ import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { stubSearchableSelectDom, pickSearchableOption } from "@/test-utils/searchable-select";
 import type { ToolCatalogEntry } from "@paperclipai/shared";
 import { ActionsSection } from "./PermissionsPanel";
 
@@ -17,6 +18,8 @@ vi.mock("@/context/CompanyContext", () => ({
 
 let container: HTMLDivElement | null = null;
 
+beforeEach(() => stubSearchableSelectDom());
+
 afterEach(() => {
   container?.remove();
   container = null;
@@ -26,7 +29,7 @@ const entry = (id: string, riskLevel: string) =>
   ({ id, toolName: id, title: id, riskLevel, status: "active" }) as unknown as ToolCatalogEntry;
 
 describe("Permissions group control", () => {
-  it("sets every action in the group in one change", () => {
+  it("sets every action in the group in one change", async () => {
     const onSetPermission = vi.fn();
     const writes = [entry("send", "write"), entry("delete", "destructive"), entry("label", "write")];
     container = document.createElement("div");
@@ -56,13 +59,10 @@ describe("Permissions group control", () => {
       ),
     );
 
-    const select = container.querySelector<HTMLSelectElement>('select[aria-label="Set every action in Write (3)"]');
-    expect(select).toBeTruthy();
-    expect(select!.value).toBe("");
-    flushSync(() => {
-      select!.value = "ask";
-      select!.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    const trigger = container.querySelector<HTMLElement>('[role="combobox"][aria-label="Set every action in Write (3)"]');
+    expect(trigger).toBeTruthy();
+    expect(trigger!.textContent).toContain("Mixed");
+    await pickSearchableOption(container, "Set every action in Write (3)", "Ask first");
 
     expect(onSetPermission).toHaveBeenCalledTimes(1);
     const [ids, next] = onSetPermission.mock.calls[0]!;

@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SubscriptionCostReport } from "@paperclipai/shared";
 import { SubscriptionCostCard } from "./SubscriptionCostCard";
+import { pickSearchableOption, stubSearchableSelectDom } from "../test-utils/searchable-select";
 
 const mocks = vi.hoisted(() => ({ update: vi.fn(), link: vi.fn() }));
 vi.mock("../api/subscriptions", () => ({ subscriptionsApi: mocks }));
@@ -28,6 +29,7 @@ describe("subscription costs", () => {
   let client: QueryClient;
   const changed = vi.fn();
   beforeEach(() => {
+    stubSearchableSelectDom();
     container = document.createElement("div"); document.body.appendChild(container); root = createRoot(container);
     client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
     mocks.update.mockResolvedValue({}); mocks.link.mockResolvedValue({}); changed.mockClear();
@@ -83,11 +85,10 @@ describe("subscription costs", () => {
       const amount = document.querySelector<HTMLInputElement>("#subscription-price")!;
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(amount, "1200");
       amount.dispatchEvent(new Event("input", { bubbles: true }));
-      const cadence = document.querySelector<HTMLSelectElement>("#subscription-cadence")!;
-      cadence.value = "year"; cadence.dispatchEvent(new Event("change", { bubbles: true }));
-      const currency = document.querySelector<HTMLSelectElement>("#subscription-currency")!;
-      currency.value = "EUR"; currency.dispatchEvent(new Event("change", { bubbles: true }));
     });
+    await pickSearchableOption(document.body, "Billed", "Annually");
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)); });
+    await pickSearchableOption(document.body, "Currency", "EUR");
     await act(async () => document.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
     await vi.waitFor(() => expect(mocks.update).toHaveBeenCalledWith("company", "account-1", expect.objectContaining({ amountCents: "120000.0000000", currency: "EUR", cadence: "year", expectedRevision: 0 })));
     expect(changed).toHaveBeenCalled();
@@ -103,10 +104,7 @@ describe("subscription costs", () => {
     const amount = document.querySelector<HTMLInputElement>("#subscription-price")!;
     expect(amount.value).toBe("15.755");
     expect(amount.checkValidity()).toBe(true);
-    await act(async () => {
-      const tracking = document.querySelector<HTMLSelectElement>("#subscription-status")!;
-      tracking.value = status; tracking.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    await pickSearchableOption(document.body, "Tracking", status === "ended" ? "Subscription ended" : "Exclude from this organization");
     await click("Save price");
     await vi.waitFor(() => expect(mocks.update).toHaveBeenCalledWith("company", "account-1", expect.objectContaining({
       amountCents: "1575.5000000", status,
@@ -128,7 +126,7 @@ describe("subscription costs", () => {
     report.accounts.push({ ...report.accounts[0], id: "account-2", name: "Other connection", price: { ...report.accounts[0].price, revision: 3 } });
     await render(report); await click("View details"); await click("Edit price");
     expect(document.body.textContent).toContain("keeps the selected account’s price");
-    await act(async () => { const select = document.querySelector<HTMLSelectElement>("#subscription-link")!; select.value = "account-2"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    await pickSearchableOption(document.body, "Same subscription as another account", "Other connection");
     await click("Link accounts");
     await vi.waitFor(() => expect(mocks.link).toHaveBeenCalledWith("company", "account-1", "account-2", 0, 3));
   });

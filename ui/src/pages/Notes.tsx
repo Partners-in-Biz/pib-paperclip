@@ -1,3 +1,5 @@
+import { OptionSelect } from "@/components/OptionSelect";
+import { AgentPicker } from "@/components/AgentPicker";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -734,17 +736,19 @@ export function Notes() {
                   className="h-7 w-48 rounded-md border border-border bg-background pl-8 pr-2.5 text-xs text-foreground placeholder:text-muted-foreground/60 outline-none focus:border-ring sm:w-56"
                 />
               </div>
-              <select
-                aria-label="Sort notes"
+              <OptionSelect
+                ariaLabel="Sort notes"
+                placeholder="Sort"
+                triggerClassName="h-7 px-2 text-xs font-normal"
                 value={sortMode}
-                onChange={(e) => setSortMode(e.target.value as SortMode)}
-                className="h-7 rounded-md border border-border bg-background px-2 text-xs text-foreground outline-none focus:border-ring"
-              >
-                <option value="updated">Last updated</option>
-                <option value="created">Newest</option>
-                <option value="title">Title (A–Z)</option>
-                <option value="scheduled">Scheduled time</option>
-              </select>
+                items={[
+                  { value: "updated", label: "Last updated" },
+                  { value: "created", label: "Newest" },
+                  { value: "title", label: "Title (A–Z)" },
+                  { value: "scheduled", label: "Scheduled time" },
+                ]}
+                onChange={(next) => setSortMode(next as SortMode)}
+              />
             </div>
           </div>
 
@@ -1862,19 +1866,16 @@ function NoteEditorPane({
 
           <div className="inline-flex items-center gap-1.5">
             <FolderOpen className="size-3.5 text-muted-foreground" />
-            <select
-              aria-label="Linked project"
+            <OptionSelect
+              ariaLabel="Linked project"
               value={note.projectId ?? ""}
-              onChange={(e) => onSave({ projectId: e.target.value || null })}
-              className="rounded bg-transparent text-xs text-foreground outline-none hover:text-foreground/80"
-            >
-              <option value="">No project</option>
-              {projects.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
+              items={projects.map((p) => ({ value: p.id, label: p.name }))}
+              emptyLabel="No project"
+              placeholder="No project"
+              searchPlaceholder="Search projects…"
+              onChange={(next) => onSave({ projectId: next || null })}
+              triggerClassName="h-auto border-0 bg-transparent px-1 py-0 text-xs font-normal shadow-none"
+            />
           </div>
 
           <span className="text-border">|</span>
@@ -2041,30 +2042,29 @@ function NoteEditorPane({
                 <span className="font-medium text-foreground">
                   Create {uncheckedItems.length} {uncheckedItems.length === 1 ? "task" : "tasks"}:
                 </span>
-                <select
-                  aria-label="Agent for delegated tasks"
+                <AgentPicker
+                  ariaLabel="Agent for delegated tasks"
+                  agents={selectableAgents}
                   value={splitAgentId}
-                  onChange={(e) => setSplitAgentId(e.target.value)}
-                  className="rounded border border-border bg-background px-2 py-1 text-xs outline-none"
-                >
-                  <option value="">Unassigned</option>
-                  {selectableAgents.map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {a.name}
-                    </option>
-                  ))}
-                </select>
-                <select
-                  aria-label="Priority for delegated tasks"
+                  onChange={setSplitAgentId}
+                  emptyLabel="Unassigned"
+                  placeholder="Unassigned"
+                  className="w-56"
+                  compact
+                />
+                <OptionSelect
+                  ariaLabel="Priority for delegated tasks"
+                  placeholder="Priority"
+                  triggerClassName="h-auto py-1 text-xs font-normal"
                   value={splitPriority}
-                  onChange={(e) => setSplitPriority(e.target.value as "low" | "medium" | "high" | "critical")}
-                  className="rounded border border-border bg-background px-2 py-1 text-xs outline-none"
-                >
-                  <option value="low">Low</option>
-                  <option value="medium">Medium</option>
-                  <option value="high">High</option>
-                  <option value="critical">Critical</option>
-                </select>
+                  items={[
+                    { value: "low", label: "Low" },
+                    { value: "medium", label: "Medium" },
+                    { value: "high", label: "High" },
+                    { value: "critical", label: "Critical" },
+                  ]}
+                  onChange={(next) => setSplitPriority(next as "low" | "medium" | "high" | "critical")}
+                />
                 <Button
                   type="button"
                   size="xs"

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Loader2, MessageSquareText, X } from "lucide-react";
 import { MarkdownBody } from "@/components/MarkdownBody";
+import { AgentPicker } from "@/components/AgentPicker";
 import { Button } from "@/components/ui/button";
 import { canEditBoard } from "@/components/planning-canvas/panels/related/related-source";
 import { ConnectorPicker } from "@/components/planning-canvas/panels/chat/ConnectorPicker";
@@ -91,17 +92,13 @@ export function ChatPanel({ c }: { c: CanvasController }) {
       </div>
 
       <div className="border-b border-border px-3 py-2">
-        <select
-          aria-label="Agent"
-          value={agentId ?? ""}
-          onChange={(e) => setAgentId(e.target.value || null)}
-          className="h-8 w-full min-w-0 rounded-md border border-border bg-background px-2 text-sm"
-        >
-          <option value="">Pick an agent…</option>
-          {choices.map((a) => (
-            <option key={a.id} value={a.id}>{a.name}</option>
-          ))}
-        </select>
+        <AgentPicker
+          ariaLabel="Agent"
+          agents={choices}
+          value={agentId}
+          onChange={(id) => setAgentId(id || null)}
+          placeholder="Pick an agent…"
+        />
       </div>
 
       {writable && agentId && !chat.off && selectedCompanyId ? (

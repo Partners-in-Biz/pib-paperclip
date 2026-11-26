@@ -64,7 +64,7 @@ import { Field, ToggleField } from "../agent-config-primitives";
 import { SecretPicker } from "../environment-variables-editor/SecretPicker";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
-import { NativeSelect, nativeSelectClassName } from "../ui/select";
+import { OptionSelect } from "../OptionSelect";
 import {
   OnboardingCard,
   OnboardingHeading,
@@ -78,7 +78,6 @@ import {
 } from "./AgentProviderConnection";
 import { adapterCuratesModelOrder } from "../../lib/model-utils";
 
-const controlClass = nativeSelectClassName;
 const nativeSetupHarnesses: Record<string, string> = {
   codex: "codex_local", claude: "claude_local", opencode: "opencode_local", pi: "pi_local", cursor_cloud: "cursor_cloud",
 };
@@ -1241,21 +1240,17 @@ function Setup({
                               <Field label="Thinking effort">
                                 {brandType === "codex_local" ? <SelectPopover aria-label="Thinking effort" value={effort}
                                   onValueChange={value => { setEffort(value); resetTest(); }}
-                                  options={[{ value: "", label: "Auto" }, ...efforts.map(value => ({ value, label: value }))]} /> : <NativeSelect
-                                  aria-label="Thinking effort"
+                                  options={[{ value: "", label: "Auto" }, ...efforts.map(value => ({ value, label: value }))]} /> : <OptionSelect
+                                  ariaLabel="Thinking effort"
                                   value={effort}
-                                  onChange={(event) => {
-                                    setEffort(event.target.value);
+                                  onChange={(value) => {
+                                    setEffort(value);
                                     resetTest();
                                   }}
-                                >
-                                  <option value="">Auto</option>
-                                  {efforts.map((value) => (
-                                    <option key={value} value={value}>
-                                      {value}
-                                    </option>
-                                  ))}
-                                </NativeSelect>}
+                                  placeholder="Auto"
+                                  emptyLabel="Auto"
+                                  items={efforts.map((value) => ({ value, label: value }))}
+                                />}
                               </Field>
                             )}
                           </div>
@@ -1269,21 +1264,21 @@ function Setup({
                           <div className="grid gap-5 sm:grid-cols-2">
                             {chooseProvider && (
                               <Field label="API key provider">
-                                <select
-                                  aria-label="API key provider"
-                                  className={controlClass}
+                                <OptionSelect
+                                  ariaLabel="API key provider"
                                   value={provider}
-                                  onChange={(event) => {
-                                    setProvider(event.target.value);
+                                  onChange={(value) => {
+                                    setProvider(value);
                                     setModel("");
                                     setApiKey("");
                                     setProviderBinding(null);
                                     resetTest();
                                   }}
-                                >
-                                  {Object.keys(providerKeys).map((key) => (
-                                    <option key={key} value={key}>
-                                      {key === "openrouter"
+                                  placeholder="API key provider"
+                                  items={Object.keys(providerKeys).map((key) => ({
+                                    value: key,
+                                    label:
+                                      key === "openrouter"
                                         ? "OpenRouter"
                                         : key === "openai"
                                           ? "OpenAI"
@@ -1294,10 +1289,9 @@ function Setup({
                                                 xai: "xAI",
                                                 groq: "Groq",
                                                 opencode: "OpenCode",
-                                              }[key] ?? key)}
-                                    </option>
-                                  ))}
-                                </select>
+                                              }[key] ?? key),
+                                  }))}
+                                />
                               </Field>
                             )}
                             <div
@@ -1408,21 +1402,16 @@ function Setup({
                               />
                             </Field>
                             <Field label="Kimi API protocol">
-                              <select
-                                aria-label="Kimi API protocol"
-                                className={controlClass}
+                              <OptionSelect
+                                ariaLabel="Kimi API protocol"
                                 value={kimiProtocol}
-                                onChange={(event) => {
-                                  setKimiProtocol(event.target.value);
+                                onChange={(value) => {
+                                  setKimiProtocol(value);
                                   resetTest();
                                 }}
-                              >
-                                {["kimi", "anthropic", "openai"].map(
-                                  (value) => (
-                                    <option key={value}>{value}</option>
-                                  ),
-                                )}
-                              </select>
+                                placeholder="Kimi API protocol"
+                                items={["kimi", "anthropic", "openai"].map((value) => ({ value, label: value }))}
+                              />
                             </Field>
                             <Field
                               label="Kimi API base URL"
@@ -1473,26 +1462,19 @@ function Setup({
                       {adapterType !== "hermes_gateway" && adapterType !== "cursor_cloud" && (
                         <section className="space-y-5">
                           <h3 className="text-sm font-semibold">Environment</h3>
-                          <select
-                            aria-label="Environment"
-                            className={controlClass}
+                          <OptionSelect
+                            ariaLabel="Environment"
                             value={environmentOverride}
                             disabled={forced.forced}
-                            onChange={(event) => {
-                              void changeEnvironment(event.target.value);
+                            onChange={(value) => {
+                              void changeEnvironment(value);
                             }}
-                          >
-                            <option value="">
-                              Default: {environmentLabel}
-                            </option>
-                            {(envs.data ?? [])
+                            placeholder={`Default: ${environmentLabel}`}
+                            emptyLabel={`Default: ${environmentLabel}`}
+                            items={(envs.data ?? [])
                               .filter((env) => env.status === "active" && (!managedOnly || env.driver !== "local"))
-                              .map((env) => (
-                                <option key={env.id} value={env.id}>
-                                  {environmentDisplayLabel(env)}
-                                </option>
-                              ))}
-                          </select>
+                              .map((env) => ({ value: env.id, label: environmentDisplayLabel(env) }))}
+                          />
                         </section>
                       )}
                     </fieldset>

@@ -124,6 +124,7 @@ import {
   validateSecretFolderSegment,
   type SecretPathFolder,
 } from "./secrets/secret-path";
+import { OptionSelect } from "@/components/OptionSelect";
 import { SetMyUserSecretDialog } from "./secrets/SetMyUserSecretDialog";
 import {
   coverageSummaryLabel,
@@ -2811,13 +2812,34 @@ export function Secrets() {
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <div>
                   <label className="text-xs font-medium" htmlFor="new-secret-provider">Provider</label>
-                  <select
+                  <OptionSelect
                     id="new-secret-provider"
-                    className="h-9 w-full rounded-md border border-border bg-background px-2 text-sm outline-none"
+                    ariaLabel="Provider"
+                    placeholder="Select provider"
+                    triggerClassName="h-9 w-full text-sm font-normal"
                     value={createForm.provider}
-                    onChange={(event) =>
+                    items={providers.map((provider) => ({
+                      value: provider.id,
+                      label: `${provider.label}${
+                        provider.configured === false &&
+                        !getSelectableProviderConfig(providerConfigs, provider.id)
+                          ? " (deployment default missing)"
+                          : provider.requiresExternalRef
+                            ? " (external only)"
+                            : ""
+                      }`,
+                      disabled: Boolean(
+                        getCreateProviderBlockReason(
+                          provider,
+                          createMode,
+                          providerHealthQuery.data ?? null,
+                          getSelectableProviderConfig(providerConfigs, provider.id),
+                        ),
+                      ),
+                    }))}
+                    onChange={(next) =>
                       setCreateForm((current) => {
-                        const provider = event.target.value as SecretProvider;
+                        const provider = next as SecretProvider;
                         return {
                           ...current,
                           provider,
@@ -2825,30 +2847,7 @@ export function Secrets() {
                         };
                       })
                     }
-                  >
-                    {providers.map((provider) => (
-                      <option
-                        key={provider.id}
-                        value={provider.id}
-                        disabled={Boolean(
-                          getCreateProviderBlockReason(
-                            provider,
-                            createMode,
-                            providerHealthQuery.data ?? null,
-                            getSelectableProviderConfig(providerConfigs, provider.id),
-                          ),
-                        )}
-                      >
-                        {provider.label}
-                        {provider.configured === false &&
-                        !getSelectableProviderConfig(providerConfigs, provider.id)
-                          ? " (deployment default missing)"
-                          : provider.requiresExternalRef
-                            ? " (external only)"
-                            : ""}
-                      </option>
-                    ))}
-                  </select>
+                  />
                   {createProviderBlockReason ? (
                     <p className="mt-1 flex items-center gap-1 text-(length:--text-micro) text-destructive">
                       <AlertCircle className="h-3 w-3" />
@@ -2860,26 +2859,22 @@ export function Secrets() {
                 </div>
                 <div>
                   <label className="text-xs font-medium" htmlFor="new-secret-vault">Provider vault</label>
-                  <select
-                    id="new-secret-vault"
-                    className="h-9 w-full rounded-md border border-border bg-background px-2 text-sm outline-none"
+                  <OptionSelect
+                    ariaLabel="Provider vault"
+                    placeholder="Deployment default"
+                    emptyLabel="Deployment default"
+                    triggerClassName="h-9 w-full text-sm font-normal"
                     value={createForm.providerConfigId}
-                    onChange={(event) =>
-                      setCreateForm((current) => ({ ...current, providerConfigId: event.target.value }))
-                    }
-                  >
-                    <option value="">Deployment default</option>
-                    {createProviderConfigs.map((config) => {
+                    items={createProviderConfigs.map((config) => {
                       const blockReason = getProviderConfigBlockReason(config);
-                      return (
-                        <option key={config.id} value={config.id} disabled={Boolean(blockReason)}>
-                          {config.displayName}
-                          {config.isDefault ? " (default)" : ""}
-                          {blockReason ? ` (${blockReason})` : ""}
-                        </option>
-                      );
+                      return {
+                        value: config.id,
+                        label: `${config.displayName}${config.isDefault ? " (default)" : ""}${blockReason ? ` (${blockReason})` : ""}`,
+                        disabled: Boolean(blockReason),
+                      };
                     })}
-                  </select>
+                    onChange={(next) => setCreateForm((current) => ({ ...current, providerConfigId: next }))}
+                  />
                   {selectedCreateProviderConfig ? (
                     <ProviderVaultInlineWarning config={selectedCreateProviderConfig} />
                   ) : null}
@@ -2952,24 +2947,23 @@ export function Secrets() {
             <div className="grid gap-3 sm:grid-cols-2">
               <div>
                 <label className="text-xs font-medium" htmlFor="vault-provider">Provider</label>
-                <select
-                  id="vault-provider"
-                  className="h-9 w-full rounded-md border border-border bg-background px-2 text-sm outline-none disabled:opacity-60"
+                <OptionSelect
+                  ariaLabel="Provider"
+                  placeholder="Select provider"
+                  triggerClassName="h-9 w-full text-sm font-normal"
                   value={vaultForm.provider}
                   disabled={Boolean(editingVault)}
-                  onChange={(event) => {
-                    const provider = event.target.value as SecretProvider;
+                  items={PROVIDER_ORDER.map((provider) => ({
+                    value: provider,
+                    label: providerLabel(providers, provider),
+                  }))}
+                  onChange={(next) => {
+                    const provider = next as SecretProvider;
                     setVaultForm(emptyProviderVaultForm(provider));
                     setVaultDiscovery(null);
                     setVaultDiscoveryError(null);
                   }}
-                >
-                  {PROVIDER_ORDER.map((provider) => (
-                    <option key={provider} value={provider}>
-                      {providerLabel(providers, provider)}
-                    </option>
-                  ))}
-                </select>
+                />
               </div>
               <div>
                 <label className="text-xs font-medium" htmlFor="vault-name">Display name</label>
@@ -2984,12 +2978,19 @@ export function Secrets() {
               </div>
               <div>
                 <label className="text-xs font-medium" htmlFor="vault-status">Status</label>
-                <select
-                  id="vault-status"
-                  className="h-9 w-full rounded-md border border-border bg-background px-2 text-sm outline-none"
+                <OptionSelect
+                  ariaLabel="Status"
+                  placeholder="Select status"
+                  triggerClassName="h-9 w-full text-sm font-normal"
                   value={vaultForm.status}
-                  onChange={(event) => {
-                    const status = event.target.value as SecretProviderConfigStatus;
+                  items={[
+                    { value: "ready", label: "Ready", disabled: vaultForm.provider === "gcp_secret_manager" || vaultForm.provider === "vault" },
+                    { value: "warning", label: "Warning", disabled: vaultForm.provider === "gcp_secret_manager" || vaultForm.provider === "vault" },
+                    { value: "coming_soon", label: "Coming soon" },
+                    { value: "disabled", label: "Disabled" },
+                  ]}
+                  onChange={(next) => {
+                    const status = next as SecretProviderConfigStatus;
                     setVaultForm((current) => ({
                       ...current,
                       status,
@@ -2997,16 +2998,7 @@ export function Secrets() {
                         status === "coming_soon" || status === "disabled" ? false : current.isDefault,
                     }));
                   }}
-                >
-                  <option value="ready" disabled={vaultForm.provider === "gcp_secret_manager" || vaultForm.provider === "vault"}>
-                    Ready
-                  </option>
-                  <option value="warning" disabled={vaultForm.provider === "gcp_secret_manager" || vaultForm.provider === "vault"}>
-                    Warning
-                  </option>
-                  <option value="coming_soon">Coming soon</option>
-                  <option value="disabled">Disabled</option>
-                </select>
+                />
               </div>
               <label className="flex items-center gap-2 pt-6 text-sm">
                 <input
@@ -3095,24 +3087,22 @@ export function Secrets() {
           ) : null}
           <div>
             <label className="text-xs font-medium" htmlFor="rotate-secret-vault">Provider vault</label>
-            <select
-              id="rotate-secret-vault"
-              className="h-9 w-full rounded-md border border-border bg-background px-2 text-sm outline-none"
+            <OptionSelect
+              ariaLabel="Provider vault"
+              placeholder="Deployment default"
+              emptyLabel="Deployment default"
+              triggerClassName="h-9 w-full text-sm font-normal"
               value={rotateProviderConfigId}
-              onChange={(event) => setRotateProviderConfigId(event.target.value)}
-            >
-              <option value="">Deployment default</option>
-              {selectedRotateProviderConfigs.map((config) => {
+              items={selectedRotateProviderConfigs.map((config) => {
                 const blockReason = getProviderConfigBlockReason(config);
-                return (
-                  <option key={config.id} value={config.id} disabled={Boolean(blockReason)}>
-                    {config.displayName}
-                    {config.isDefault ? " (default)" : ""}
-                    {blockReason ? ` (${blockReason})` : ""}
-                  </option>
-                );
+                return {
+                  value: config.id,
+                  label: `${config.displayName}${config.isDefault ? " (default)" : ""}${blockReason ? ` (${blockReason})` : ""}`,
+                  disabled: Boolean(blockReason),
+                };
               })}
-            </select>
+              onChange={setRotateProviderConfigId}
+            />
             {selectedRotateProviderConfig ? (
               <ProviderVaultInlineWarning config={selectedRotateProviderConfig} />
             ) : (

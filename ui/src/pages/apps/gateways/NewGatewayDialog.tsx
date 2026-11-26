@@ -16,6 +16,7 @@ import { useToast } from "@/context/ToastContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { allowedToolsLabel } from "./gateway-helpers";
 import { describeError } from "@/api/errors";
+import { OptionSelect } from "@/components/OptionSelect";
 
 export const gatewaysQueryKey = (companyId: string) => ["tools", "gateways", companyId] as const;
 
@@ -112,22 +113,19 @@ export function NewGatewayDialog({
           </label>
           <label className="block space-y-1.5">
             <span className="text-xs font-medium text-muted-foreground">Access profile</span>
-            <select
-              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+            <OptionSelect
+              ariaLabel="Access profile"
+              items={activeProfiles.map((profile) => ({
+                value: profile.id,
+                label: `${profile.name} — ${allowedToolsLabel(profile)}`,
+                searchText: profile.name,
+              }))}
               value={profileId}
-              onChange={(event) => setProfileId(event.target.value)}
-              required
+              onChange={setProfileId}
+              placeholder={profilesLoading ? "Loading profiles…" : "Choose a profile"}
               disabled={noProfiles}
-            >
-              <option value="" disabled>
-                {profilesLoading ? "Loading profiles…" : "Choose a profile"}
-              </option>
-              {activeProfiles.map((profile) => (
-                <option key={profile.id} value={profile.id}>
-                  {profile.name} — {allowedToolsLabel(profile)}
-                </option>
-              ))}
-            </select>
+              triggerClassName="h-auto py-2 text-sm font-normal"
+            />
             <span className="text-xs text-muted-foreground">
               The profile decides which tools this gateway allows. You can change it later.
             </span>

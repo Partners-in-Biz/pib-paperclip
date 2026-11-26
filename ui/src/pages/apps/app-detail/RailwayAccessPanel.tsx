@@ -7,6 +7,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { OptionSelect } from "@/components/OptionSelect";
 
 export function RailwayAccessPanel({ connection, grants }: { connection: ToolConnection; grants?: ConnectionGrantsResponse }) {
   const queryClient = useQueryClient();
@@ -41,10 +42,15 @@ export function RailwayAccessPanel({ connection, grants }: { connection: ToolCon
     {!canConfigure && <p className="text-sm text-muted-foreground">The connection manager and authorization owner can configure container access.</p>}
     {(canConfigure || canRemove) && grantId && <>
       {!setup && eligible.length > 1 && <div className="space-y-2">
-        <Label htmlFor={`${id}-grant`}>Authorization</Label>
-        <select id={`${id}-grant`} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm" value={grantId} onChange={(event) => setSelectedGrant(event.target.value)}>
-          {eligible.map((grant) => <option key={grant.id} value={grant.id}>{grant.kind === "organization" ? "Shared account" : grant.kind === "user" ? "My account" : "Agent account"}</option>)}
-        </select>
+        <Label>Authorization</Label>
+        <OptionSelect
+          ariaLabel="Authorization"
+          items={eligible.map((grant) => ({ value: grant.id, label: grant.kind === "organization" ? "Shared account" : grant.kind === "user" ? "My account" : "Agent account" }))}
+          value={grantId}
+          onChange={setSelectedGrant}
+          placeholder="Choose an authorization"
+          triggerClassName="h-auto py-2 text-sm font-normal"
+        />
       </div>}
       {!setup && <Button variant="outline" disabled={mutation.isPending} onClick={() => mutation.mutate({ action: "prepare", grantId })}>Generate SSH key pair</Button>}
       {setup && <>

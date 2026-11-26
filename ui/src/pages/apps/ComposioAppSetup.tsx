@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/context/ToastContext";
 import { describeError } from "@/api/errors";
+import { OptionSelect } from "@/components/OptionSelect";
 
 /** Provider authorization is performed by the backend; no task or agent run. */
 export function ComposioAppSetup({ name, toolkit, connections, onClose, onBack, onConnectNew }: {
@@ -47,12 +48,18 @@ export function ComposioAppSetup({ name, toolkit, connections, onClose, onBack, 
   return <div className="space-y-4">
     <div className="space-y-2">
       <Label htmlFor="composio-app-account">Composio account</Label>
-      <select id="composio-app-account" value={connectionId} disabled={busy} onChange={event => {
-        setConnectionId(event.target.value); setResult(null); setError(null);
-      }} className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-        {connections.map(candidate => <option key={candidate.id} value={candidate.id}>{candidate.name}</option>)}
-        <option value="__new__">Connect a new account…</option>
-      </select>
+      <OptionSelect
+        id="composio-app-account"
+        ariaLabel="Composio account"
+        items={[
+          ...connections.map(candidate => ({ value: candidate.id, label: candidate.name })),
+          { value: "__new__", label: "Connect a new account…" },
+        ]}
+        value={connectionId}
+        disabled={busy}
+        onChange={next => { setConnectionId(next); setResult(null); setError(null); }}
+        placeholder="Choose an account"
+      />
     </div>
     {error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
     {result ? <p role="status" className="text-sm text-muted-foreground">Finish connecting {name} in Composio, then return here.</p> : null}

@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { VoiceCallContext } from "./VoiceCallContext";
 import { queryKeys } from "@/lib/queryKeys";
+import { pickSearchableOption, stubSearchableSelectDom } from "@/test-utils/searchable-select";
 import { TaskVoiceLauncher } from "./TaskVoiceLauncher";
 import { spekoEndpoint } from "../../../storybook/support/speko/spekoNative";
 const mocks = vi.hoisted(() => ({ list: vi.fn() }));
@@ -15,7 +16,7 @@ vi.mock("./NativeVoiceConversation", () => ({ NativeVoiceConversation: () => <p>
 describe("task voice connection failures", () => {
   let container: HTMLDivElement, root: Root, client: QueryClient;
   beforeEach(() => {
-    vi.resetAllMocks(); container = document.createElement("div"); document.body.append(container);
+    vi.resetAllMocks(); stubSearchableSelectDom(); container = document.createElement("div"); document.body.append(container);
     root = createRoot(container); client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 30_000 } } });
   });
   afterEach(async () => { await act(async () => root.unmount()); client.clear(); container.remove(); });
@@ -35,18 +36,16 @@ describe("task voice connection failures", () => {
   it("restores persona selection and keyboard focus after the hosted panel closes", async () => {
     mocks.list.mockResolvedValue([spekoEndpoint, {...spekoEndpoint, id: "second", botLabel: "Second persona"}]);
     await render(false, false);
-    await vi.waitFor(() => expect(container.querySelector('select')).not.toBeNull());
-    await act(async () => container.querySelector('button')!.click());
-    expect(container.querySelector('select')).toBeNull();
+    const persona = () => container.querySelector('[role="combobox"][aria-label="Voice persona"]');
+    await vi.waitFor(() => expect(persona()).not.toBeNull());
+    await act(async () => [...container.querySelectorAll('button')].find(b => b.textContent?.startsWith("Talk to"))!.click());
+    expect(persona()).toBeNull();
     await render(false, true);
     await render(false, false);
-    await vi.waitFor(() => expect(container.querySelector('select')).not.toBeNull());
-    expect(document.activeElement).toBe(container.querySelector('button'));
-    await act(async () => {
-      const select = container.querySelector('select')!; select.value = "second";
-      select.dispatchEvent(new Event("change", {bubbles: true}));
-    });
-    expect(container.querySelector('select')?.value).toBe("second");
+    await vi.waitFor(() => expect(persona()).not.toBeNull());
+    expect(document.activeElement?.textContent).toContain("Talk to");
+    await pickSearchableOption(container, "Voice persona", "Second persona");
+    expect(persona()?.textContent).toContain("Second persona");
   });
   it("updates the mounted launcher after shared connection pause and resume invalidation", async () => {
     mocks.list.mockResolvedValue([spekoEndpoint]); await render(true);

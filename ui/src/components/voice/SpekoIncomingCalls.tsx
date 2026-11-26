@@ -1,3 +1,4 @@
+import { OptionSelect } from "@/components/OptionSelect";
 import { useQueryView } from "@/components/QueryView";
 import { describeError } from "@/api/errors";
 import { Link } from "react-router-dom";
@@ -27,7 +28,7 @@ export function SpekoIncomingCallCard({call, tasks = [], busy, error, onDecide}:
     {pending ? <form className="space-y-3" onSubmit={event => {event.preventDefault(); if (code !== call.approvalCode) {setInvalid(true); return;} setInvalid(false); onDecide({approve: true, approvalCode: code, ...(issueId ? {issueId} : {})});}}>
       <p className="text-sm text-muted-foreground">Approve only the call you are currently on. Enter the six-digit code spoken on the phone. Approval gives this call your access to the selected task.</p>
       <label className="grid gap-2 text-sm font-medium">Code spoken on your call<Input inputMode="numeric" autoComplete="off" maxLength={6} value={code} disabled={busy} aria-invalid={invalid} onChange={event => {setCode(event.target.value); setInvalid(false);}} /></label>
-      <label className="grid min-w-0 gap-2 text-sm font-medium">Conversation task<select aria-label="Conversation task" className="w-full min-w-0 rounded-md border border-input bg-background p-2 text-sm" disabled={busy} value={issueId} onChange={event => setIssueId(event.target.value)}><option value="">Continue your conversation, or create one</option>{tasks.map(task => <option key={task.id} value={task.id}>{task.label}</option>)}</select></label>
+      <label className="grid min-w-0 gap-2 text-sm font-medium">Conversation task<OptionSelect ariaLabel="Conversation task" className="w-full min-w-0" disabled={busy} placeholder="Continue your conversation, or create one" emptyLabel="Continue your conversation, or create one" items={tasks.map(task => ({ value: task.id, label: task.label }))} value={issueId} onChange={setIssueId} /></label>
       {invalid && <p role="alert" className="text-sm text-destructive">That code does not match this live call. Ask the phone agent to repeat it.</p>}
       {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
       <div className="flex items-center justify-between gap-3"><Button type="button" variant="ghost" disabled={busy} onClick={() => onDecide({approve: false, approvalCode: call.approvalCode})}>Deny call</Button><Button type="submit" disabled={busy}>{busy ? "Confirming…" : "Approve live call"}</Button></div>
@@ -53,7 +54,7 @@ export function SpekoIncomingCalls({companyId, endpointId, agentId}: {companyId:
   useEffect(() => {
     if (restoreTaskFocus.current && !tasks.isFetching && !(tasksView.kind === "error")) {
       restoreTaskFocus.current = false;
-      host.current?.querySelector<HTMLSelectElement>('select[aria-label="Conversation task"]')?.focus();
+      host.current?.querySelector<HTMLElement>('[role="combobox"][aria-label="Conversation task"]')?.focus();
     }
   }, [tasks.data, tasks.isFetching, (tasksView.kind === "error")]);
   const mutation = useMutation({mutationFn: ({id, ...input}: {id: string; approve: boolean; approvalCode: string; issueId?: string}) => voicePhoneApi.decide(companyId, endpointId, id, input), onSuccess: result => { setDecision(result); return query.refetch(); }});

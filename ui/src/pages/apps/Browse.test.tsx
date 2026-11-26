@@ -4,6 +4,7 @@ import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { focusManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { stubSearchableSelectDom, pickSearchableOptionBySelector, listSearchableOptionsBySelector } from "@/test-utils/searchable-select";
 import { Browse } from "./Browse";
 import { ApiError } from "@/api/client";
 import { aiConnectionRouterAppDefinition, CONNECTABLE_APP_DEFINITIONS, getAppStoreDefinition } from "@paperclipai/shared";
@@ -199,6 +200,7 @@ describe("Connectors landing page", () => {
   let root: ReturnType<typeof createRoot>;
 
   beforeEach(() => {
+    stubSearchableSelectDom();
     accountIdentity.userId = "board-user"; accountIdentity.settled = true;
     assistantConnectionsMock.mockReset().mockResolvedValue([]);
     syncComposioAppsMock.mockReset().mockImplementation((...args) => listComposioAppsMock(...args));
@@ -859,7 +861,7 @@ describe("Connectors landing page", () => {
     expect(dialog.textContent).not.toContain("Connection settings");
     expect(dialog.textContent).not.toContain("An agent can check Circleback in Composio");
     expect(dialog.querySelector('[data-slot="badge"]')).toBeNull();
-    expect(dialog.querySelector<HTMLSelectElement>('#composio-app-account')?.value).toBe("conn-notion");
+    expect(dialog.querySelector('#composio-app-account')?.textContent).toContain("Composio");
     expect(dialog.querySelector('#composio-app-agent')).toBeNull();
     expect(dialog.textContent).not.toContain("Which agent");
     expect(dialog.textContent).not.toContain("Using");
@@ -882,7 +884,7 @@ describe("Connectors landing page", () => {
     expect(container.querySelector('[data-app-slug="hubspot"]')?.getAttribute("data-connected")).toBe("false");
     await act(() => container.querySelector<HTMLButtonElement>('button[aria-label="Connect HubSpot"]')!.click());
     await act(() => Array.from(document.querySelector('[role="dialog"]')!.querySelectorAll("button")).find((button) => button.textContent?.includes("Composio"))!.click());
-    expect(document.querySelector<HTMLSelectElement>('#composio-app-account')?.value).toBe("conn-notion");
+    expect(document.querySelector('#composio-app-account')?.textContent).toContain("Composio");
     expect(navigateMock).not.toHaveBeenCalled();
     await act(() => Array.from(document.querySelector('[role="dialog"]')!.querySelectorAll("button")).find((button) => button.textContent === "Continue")!.click());
     await vi.waitFor(() => expect(setupComposioAppMock).toHaveBeenCalledWith("conn-notion", "hubspot", { action: "start" }));
@@ -912,14 +914,13 @@ describe("Connectors landing page", () => {
     setupComposioAppMock.mockReset().mockResolvedValueOnce({ status: "authorization_required", authorizationUrl: "https://connect.composio.dev/link/personal" }).mockResolvedValueOnce({ status: "connected" });
     await renderBrowse();
     await act(() => container.querySelector<HTMLButtonElement>('button[aria-label="Connect Circleback"]')!.click());
-    const select = document.querySelector<HTMLSelectElement>('#composio-app-account')!;
-    expect(Array.from(select.options).map(option => option.textContent)).toEqual(["Work Composio", "Personal Composio", "Connect a new account…"]);
-    await act(() => { select.value = "conn-personal"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    expect(await listSearchableOptionsBySelector(document, '#composio-app-account')).toEqual(["Work Composio", "Personal Composio", "Connect a new account…"]);
+    await pickSearchableOptionBySelector(document, '#composio-app-account', "Personal Composio");
     await flushReact();
     await clickButton("Continue", document.querySelector('[role="dialog"]')!);
     expect(setupComposioAppMock).toHaveBeenCalledWith("conn-personal", "circleback", { action: "start" });
     expect(document.querySelector('a[href="https://connect.composio.dev/link/personal"]')).toBeTruthy();
-    await act(() => { select.value = "conn-notion"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    await pickSearchableOptionBySelector(document, '#composio-app-account', "Work Composio");
     await flushReact();
     expect(document.querySelector('a[href="https://connect.composio.dev/link/personal"]')).toBeNull();
     await clickButton("Continue", document.querySelector('[role="dialog"]')!);
@@ -937,8 +938,7 @@ describe("Connectors landing page", () => {
     setupComposioAppMock.mockReset();
     await renderBrowse();
     await act(() => container.querySelector<HTMLButtonElement>('button[aria-label="Connect Circleback"]')!.click());
-    const select = document.querySelector<HTMLSelectElement>('#composio-app-account')!;
-    await act(() => { select.value = "__new__"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    await pickSearchableOptionBySelector(document, '#composio-app-account', "Connect a new account");
     await flushReact();
     expect(navigateMock).not.toHaveBeenCalled();
     await clickButton("Connect new account", document.querySelector('[role="dialog"]')!);
@@ -957,7 +957,7 @@ describe("Connectors landing page", () => {
     await renderBrowse();
     await vi.waitFor(() => expect(document.querySelector('[role="dialog"]')?.textContent).toContain("through Composio"));
     expect(document.querySelector('[role="dialog"]')?.textContent).not.toContain("Which service would you like to use?");
-    expect(document.querySelector<HTMLSelectElement>('#composio-app-account')?.value).toBe("conn-notion");
+    expect(document.querySelector('#composio-app-account')?.textContent).toContain("Composio");
     expect(document.querySelector('#composio-app-agent')).toBeNull();
     expect(openNewIssueMock).not.toHaveBeenCalled();
   });

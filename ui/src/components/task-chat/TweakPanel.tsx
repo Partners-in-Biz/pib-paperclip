@@ -1,3 +1,4 @@
+import { OptionSelect } from "@/components/OptionSelect";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { useCopyAction } from "@/lib/use-copy-action";
@@ -181,21 +182,20 @@ export function TweakPanel() {
                         className="h-1.5 w-full"
                       />
                     ) : (
-                      <select
-                        aria-label={t.name}
+                      <OptionSelect
+                        ariaLabel={t.name}
+                        placeholder="Select easing"
+                        className="w-full"
+                        triggerClassName="h-auto py-0.5 text-(length:--text-micro) font-normal"
+                        items={[
+                          ...(EASING_PRESETS.every((p) => p.value !== (values[t.name] ?? "")) && values[t.name]
+                            ? [{ value: values[t.name], label: values[t.name] }]
+                            : []),
+                          ...EASING_PRESETS.map((p) => ({ value: p.value, label: p.label })),
+                        ]}
                         value={values[t.name] ?? ""}
-                        onChange={(e) => setToken(t.name, e.target.value)}
-                        className="w-full rounded border border-border bg-background px-1 py-0.5 text-(length:--text-micro)"
-                      >
-                        {EASING_PRESETS.every((p) => p.value !== (values[t.name] ?? "")) && values[t.name] ? (
-                          <option value={values[t.name]}>{values[t.name]}</option>
-                        ) : null}
-                        {EASING_PRESETS.map((p) => (
-                          <option key={p.value} value={p.value}>
-                            {p.label}
-                          </option>
-                        ))}
-                      </select>
+                        onChange={(next) => setToken(t.name, next)}
+                      />
                     )}
                   </div>
                 ))}

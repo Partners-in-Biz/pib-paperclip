@@ -1,3 +1,5 @@
+import { AgentPicker } from "@/components/AgentPicker";
+import { OptionSelect } from "@/components/OptionSelect";
 import { useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { Agent, PersonalNote, PersonalNoteRecurrence, Project } from "@paperclipai/shared";
@@ -206,18 +208,21 @@ export function ScheduleNoteHandoffDialog({
               />
               <label className="flex items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1.5 text-sm">
                 <Repeat className="size-3.5 shrink-0 text-muted-foreground" />
-                <select
-                  aria-label="Recurrence"
+                <OptionSelect
+                  ariaLabel="Recurrence"
+                  placeholder="Recurrence"
+                  className="w-full"
+                  triggerClassName="h-auto border-0 bg-transparent p-0 text-sm font-normal shadow-none"
                   value={recurrence}
-                  onChange={(e) => setRecurrence(e.target.value as PersonalNoteRecurrence)}
-                  className="w-full bg-transparent text-sm text-foreground outline-none"
-                >
-                  <option value="none">One-time</option>
-                  <option value="daily">Repeat daily</option>
-                  <option value="weekdays">Repeat weekdays (Mon–Fri)</option>
-                  <option value="weekly">Repeat weekly</option>
-                  <option value="monthly">Repeat monthly</option>
-                </select>
+                  items={[
+                    { value: "none", label: "One-time" },
+                    { value: "daily", label: "Repeat daily" },
+                    { value: "weekdays", label: "Repeat weekdays (Mon–Fri)" },
+                    { value: "weekly", label: "Repeat weekly" },
+                    { value: "monthly", label: "Repeat monthly" },
+                  ]}
+                  onChange={(next) => setRecurrence(next as PersonalNoteRecurrence)}
+                />
               </label>
             </div>
           </div>
@@ -229,18 +234,13 @@ export function ScheduleNoteHandoffDialog({
                 <UserCheck className="size-3.5" />
                 Agent
               </span>
-              <select
+              <AgentPicker
+                agents={selectableAgents}
                 value={agentId}
-                onChange={(e) => setAgentId(e.target.value)}
-                className="rounded-md border border-border bg-background px-2.5 py-1.5 text-sm text-foreground outline-none focus:border-ring"
-              >
-                <option value="">Unassigned (triage)</option>
-                {selectableAgents.map((agent) => (
-                  <option key={agent.id} value={agent.id}>
-                    {agent.name}
-                  </option>
-                ))}
-              </select>
+                onChange={setAgentId}
+                emptyLabel="Unassigned (triage)"
+                placeholder="Unassigned (triage)"
+              />
             </label>
 
             <label className="flex flex-col gap-1">
@@ -248,18 +248,15 @@ export function ScheduleNoteHandoffDialog({
                 <FolderOpen className="size-3.5" />
                 Project
               </span>
-              <select
+              <OptionSelect
+                ariaLabel="Project"
+                placeholder="No project"
+                emptyLabel="No project"
+                triggerClassName="h-auto py-1.5 text-sm font-normal"
                 value={projectId}
-                onChange={(e) => setProjectId(e.target.value)}
-                className="rounded-md border border-border bg-background px-2.5 py-1.5 text-sm text-foreground outline-none focus:border-ring"
-              >
-                <option value="">No project</option>
-                {projects.map((project) => (
-                  <option key={project.id} value={project.id}>
-                    {project.name}
-                  </option>
-                ))}
-              </select>
+                items={projects.map((project) => ({ value: project.id, label: project.name }))}
+                onChange={setProjectId}
+              />
             </label>
           </div>
 
@@ -267,28 +264,34 @@ export function ScheduleNoteHandoffDialog({
           <div className="grid grid-cols-2 gap-3">
             <label className="flex flex-col gap-1">
               <span className="text-xs font-medium text-muted-foreground">Priority</span>
-              <select
+              <OptionSelect
+                ariaLabel="Priority"
+                placeholder="Priority"
+                triggerClassName="h-auto py-1.5 text-sm font-normal"
                 value={priority}
-                onChange={(e) => setPriority(e.target.value as "low" | "medium" | "high" | "critical")}
-                className="rounded-md border border-border bg-background px-2.5 py-1.5 text-sm text-foreground outline-none focus:border-ring"
-              >
-                <option value="low">Low</option>
-                <option value="medium">Medium</option>
-                <option value="high">High</option>
-                <option value="critical">Critical</option>
-              </select>
+                items={[
+                  { value: "low", label: "Low" },
+                  { value: "medium", label: "Medium" },
+                  { value: "high", label: "High" },
+                  { value: "critical", label: "Critical" },
+                ]}
+                onChange={(next) => setPriority(next as "low" | "medium" | "high" | "critical")}
+              />
             </label>
 
             <label className="flex flex-col gap-1">
               <span className="text-xs font-medium text-muted-foreground">Initial task status</span>
-              <select
+              <OptionSelect
+                ariaLabel="Initial task status"
+                placeholder="Initial task status"
+                triggerClassName="h-auto py-1.5 text-sm font-normal"
                 value={issueStatus}
-                onChange={(e) => setIssueStatus(e.target.value as "todo" | "backlog")}
-                className="rounded-md border border-border bg-background px-2.5 py-1.5 text-sm text-foreground outline-none focus:border-ring"
-              >
-                <option value="todo">Todo (wake agent)</option>
-                <option value="backlog">Backlog</option>
-              </select>
+                items={[
+                  { value: "todo", label: "Todo (wake agent)" },
+                  { value: "backlog", label: "Backlog" },
+                ]}
+                onChange={(next) => setIssueStatus(next as "todo" | "backlog")}
+              />
             </label>
           </div>
 

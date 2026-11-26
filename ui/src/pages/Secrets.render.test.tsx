@@ -2,6 +2,7 @@
 
 import { createRoot as createReactRoot, type Root } from "react-dom/client";
 import { flushSync } from "react-dom";
+import { pickSearchableOption, stubSearchableSelectDom } from "../test-utils/searchable-select";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type {
@@ -335,11 +336,6 @@ function setTextareaValue(textarea: HTMLTextAreaElement, value: string) {
   textarea.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
-function setSelectValue(select: HTMLSelectElement, value: string) {
-  const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value")?.set;
-  setter?.call(select, value);
-  select.dispatchEvent(new Event("change", { bubbles: true }));
-}
 
 async function openAwsVaultDialog() {
   const vaultTabButton = [...document.querySelectorAll("button")].find(
@@ -387,6 +383,7 @@ describe("Secrets page layout", () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {
+    stubSearchableSelectDom();
     container = document.createElement("div");
     document.body.appendChild(container);
 
@@ -999,7 +996,9 @@ describe("Secrets page layout", () => {
 
     await act(async () => {
       setInputValue(document.getElementById("new-secret-name") as HTMLInputElement, "AWS test token");
-      setSelectValue(document.getElementById("new-secret-provider") as HTMLSelectElement, "aws_secrets_manager");
+    });
+    await pickSearchableOption(document.body, "Provider", "AWS Secrets Manager");
+    await act(async () => {
       setTextareaValue(document.getElementById("new-secret-value") as HTMLTextAreaElement, "secret-value");
     });
     await flushReact();
@@ -1433,6 +1432,7 @@ describe("Secrets folder view (PAP-14698)", () => {
   }
 
   beforeEach(() => {
+    stubSearchableSelectDom();
     container = document.createElement("div");
     document.body.appendChild(container);
     try {
@@ -1697,6 +1697,7 @@ describe("Secrets operator-hidden tabs", () => {
   }
 
   beforeEach(() => {
+    stubSearchableSelectDom();
     container = document.createElement("div");
     document.body.appendChild(container);
     seedSecrets();

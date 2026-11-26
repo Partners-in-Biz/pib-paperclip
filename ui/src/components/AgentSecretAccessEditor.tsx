@@ -9,6 +9,7 @@ import type {
 import { cn } from "../lib/utils";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { OptionSelect } from "./OptionSelect";
 import { SecretPicker } from "./environment-variables-editor/SecretPicker";
 import { CreateSecretPopover } from "./environment-variables-editor/CreateSecretPopover";
 import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover";
@@ -440,31 +441,27 @@ export function AgentSecretAccessEditor({
                           ) : null}
                         </PopoverContent>
                       </Popover>
-                      <select
-                        className="h-9 shrink-0 rounded-md border border-border bg-background px-2 text-xs outline-none disabled:cursor-not-allowed disabled:opacity-60"
+                      <OptionSelect
+                        ariaLabel="Version"
+                        className="shrink-0"
+                        triggerClassName="h-9 text-xs font-normal"
                         value={row.version === undefined ? "latest" : String(row.version)}
-                        onChange={(event) => {
-                          const raw = event.target.value;
+                        onChange={(raw) => {
                           patchRow(row.id, {
                             version: raw === "latest" ? "latest" : Number.parseInt(raw, 10),
                           });
                         }}
                         disabled={disabled || !selectedSecret}
-                        aria-label="Version"
-                      >
-                        <option value="latest">latest</option>
-                        {selectedSecret
-                          ? Array.from({ length: Math.max(0, selectedSecret.latestVersion) }, (_, index) => {
-                              const version = selectedSecret.latestVersion - index;
-                              if (version <= 0) return null;
-                              return (
-                                <option key={version} value={version}>
-                                  v{version}
-                                </option>
-                              );
-                            })
-                          : null}
-                      </select>
+                        placeholder="latest"
+                        items={[
+                          { value: "latest", label: "latest" },
+                          ...(selectedSecret
+                            ? Array.from({ length: Math.max(0, selectedSecret.latestVersion) }, (_, index) => selectedSecret.latestVersion - index)
+                                .filter((version) => version > 0)
+                                .map((version) => ({ value: String(version), label: `v${version}` }))
+                            : []),
+                        ]}
+                      />
                     </div>
                     <button
                       type="button"

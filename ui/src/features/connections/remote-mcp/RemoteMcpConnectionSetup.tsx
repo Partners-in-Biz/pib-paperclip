@@ -17,6 +17,7 @@ import {
 } from "../ConnectionSetupFlow";
 import type { RemoteMcpProvider } from "./providers";
 import type { RemoteMcpSetupActions, RemoteMcpSetupState } from "./types";
+import { OptionSelect } from "@/components/OptionSelect";
 
 /**
  * PAP-659 C0: the connect path is one screen. `access` is still a real screen,
@@ -25,7 +26,6 @@ import type { RemoteMcpSetupActions, RemoteMcpSetupState } from "./types";
  * as every catalog connector.
  */
 const steps = ["connect"] as const;
-const selectClass = "h-9 w-full rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50";
 
 function FieldHelp({ label, children }: { label: string; children: ReactNode }) {
   const [open, setOpen] = useState(false);
@@ -174,9 +174,18 @@ export function RemoteMcpConnectionSetup({ provider, state: s, actions: a, agent
               {defaults(<div className="space-y-4">
                   <p className="text-sm font-medium text-foreground">Authentication</p>
                   <p className="text-sm text-muted-foreground">{provider.authHelp}</p>
-                  <div className="space-y-2"><Label htmlFor={`${uid}-auth`}>Sign-in method</Label><select id={`${uid}-auth`} className={selectClass} value={s.auth} onChange={(event) => change({ auth: event.target.value as RemoteMcpSetupState["auth"] })}>
-                    {provider.supportsBrowserAuth && <option value="auto">Automatic (sign in if required)</option>}<option value="bearer">Bearer token</option><option value="headers">Custom headers</option><option value="none">No additional authentication</option>
-                  </select></div>
+                  <div className="space-y-2"><Label>Sign-in method</Label><OptionSelect
+                    ariaLabel="Sign-in method"
+                    items={[
+                      ...(provider.supportsBrowserAuth ? [{ value: "auto", label: "Automatic (sign in if required)" }] : []),
+                      { value: "bearer", label: "Bearer token" },
+                      { value: "headers", label: "Custom headers" },
+                      { value: "none", label: "No additional authentication" },
+                    ]}
+                    value={s.auth}
+                    onChange={(next) => change({ auth: next as RemoteMcpSetupState["auth"] })}
+                    placeholder="Choose a sign-in method"
+                  /></div>
                   {s.auth === "bearer" && <div className="space-y-2"><div className="flex items-center gap-2"><Label htmlFor={`${uid}-token`}>Bearer token</Label><FieldHelp label="bearer token">Paste the token only, without the word Bearer. It is kept in the connection’s credentials.</FieldHelp></div><Input id={`${uid}-token`} type="password" autoComplete="off" value={s.token} onChange={(event) => change({ token: event.target.value })} /></div>}
                   {(s.auth === "bearer" || s.auth === "headers") && <div className="space-y-3">
                     <p className="text-sm font-medium">{s.auth === "bearer" ? "Additional headers" : "Headers"}</p>

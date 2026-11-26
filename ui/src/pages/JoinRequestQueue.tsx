@@ -6,6 +6,7 @@ import { agentsApi } from "@/api/agents";
 import { InviteRestrictionMark } from "@/components/access/InviteRestriction";
 import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
+import { OptionSelect } from "@/components/OptionSelect";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
@@ -107,31 +108,31 @@ export function JoinRequestQueue() {
       <Card className="flex-row flex-wrap gap-3 p-4">
         <label className="space-y-2 text-sm">
           <span className="font-medium">Status</span>
-          <select
-            className="rounded-md border border-border bg-background px-3 py-2"
+          <OptionSelect
+            ariaLabel="Status"
             value={status}
-            onChange={(event) =>
-              setStatus(event.target.value as "pending_approval" | "approved" | "rejected")
-            }
-          >
-            <option value="pending_approval">Pending approval</option>
-            <option value="approved">Approved</option>
-            <option value="rejected">Rejected</option>
-          </select>
+            onChange={(value) => setStatus(value as "pending_approval" | "approved" | "rejected")}
+            placeholder="Status"
+            items={[
+              { value: "pending_approval", label: "Pending approval" },
+              { value: "approved", label: "Approved" },
+              { value: "rejected", label: "Rejected" },
+            ]}
+          />
         </label>
         <label className="space-y-2 text-sm">
           <span className="font-medium">Request type</span>
-          <select
-            className="rounded-md border border-border bg-background px-3 py-2"
+          <OptionSelect
+            ariaLabel="Request type"
             value={requestType}
-            onChange={(event) =>
-              setRequestType(event.target.value as "all" | "human" | "agent")
-            }
-          >
-            <option value="all">All</option>
-            <option value="human">Human</option>
-            <option value="agent">Agent</option>
-          </select>
+            onChange={(value) => setRequestType(value as "all" | "human" | "agent")}
+            placeholder="Request type"
+            items={[
+              { value: "all", label: "All" },
+              { value: "human", label: "Human" },
+              { value: "agent", label: "Agent" },
+            ]}
+          />
         </label>
       </Card>
 

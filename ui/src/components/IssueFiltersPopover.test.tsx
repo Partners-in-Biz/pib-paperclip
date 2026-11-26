@@ -67,7 +67,7 @@ describe("IssueFiltersPopover", () => {
     act(() => row?.querySelector("input")?.click());
     expect(onChange).toHaveBeenCalledWith({ routineTasksOnly: false });
     act(() => Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Clear")?.click());
-    expect(onChange).toHaveBeenCalledWith(defaultIssueFilterState);
+    expect(onChange).toHaveBeenCalledWith({ ...defaultIssueFilterState, showAgentCreatedTasksCustomized: false });
     act(() => root.unmount());
   });
 
@@ -236,7 +236,7 @@ describe("IssueFiltersPopover", () => {
     const clearButton = Array.from(container.querySelectorAll("button"))
       .find((button) => button.textContent?.trim() === "Clear");
     act(() => clearButton?.click());
-    expect(onChange).toHaveBeenCalledWith(defaultIssueFilterState);
+    expect(onChange).toHaveBeenCalledWith({ ...defaultIssueFilterState, showAgentCreatedTasksCustomized: false });
     expect(onClear).toHaveBeenCalledTimes(1);
 
     act(() => root.unmount());

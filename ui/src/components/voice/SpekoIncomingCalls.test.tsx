@@ -5,6 +5,8 @@ import {MemoryRouter} from "react-router-dom";
 import {QueryClient, QueryClientProvider} from "@tanstack/react-query";
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import {SpekoIncomingCalls} from "./SpekoIncomingCalls";
+import {openSearchableSelect, stubSearchableSelectDom} from "@/test-utils/searchable-select";
+const taskOption = () => [...document.body.querySelectorAll("[cmdk-item]")].find(el => el.textContent?.includes("Ready task"));
 const mocks = vi.hoisted(() => ({incoming: vi.fn(), list: vi.fn(), decide: vi.fn()}));
 vi.mock("@/api/voicePhone", () => ({voicePhoneApi: {incoming: mocks.incoming, decide: mocks.decide}}));
 vi.mock("@/api/issues", () => ({issuesApi: {list: mocks.list}}));
@@ -12,7 +14,7 @@ describe("incoming call task selection", () => {
   let container: HTMLDivElement, root: Root, client: QueryClient;
   const tasks = [{id: "task", status: "todo", identifier: "PAP-42", title: "Ready task"}];
   beforeEach(() => {
-    vi.resetAllMocks(); container = document.createElement("div"); document.body.append(container);
+    vi.resetAllMocks(); stubSearchableSelectDom(); container = document.createElement("div"); document.body.append(container);
     root = createRoot(container); client = new QueryClient({defaultOptions: {queries: {retry: false}}});
     mocks.incoming.mockResolvedValue([{id: "call", state: "awaiting_approval", approvalCode: "123456"}]);
   });
@@ -24,17 +26,18 @@ describe("incoming call task selection", () => {
     const retry = [...container.querySelectorAll("button")].find(button => button.textContent === "Retry tasks")!;
     retry.focus();
     await act(async () => retry.click());
-    await vi.waitFor(() => expect(container.querySelector('option[value="task"]')).not.toBeNull());
-    expect(container.querySelector('[role="alert"]')).toBeNull();
-    expect(document.activeElement).toBe(container.querySelector("select"));
+    await vi.waitFor(() => expect(container.querySelector('[role="alert"]')).toBeNull());
+    // Focus restore lands on the combobox; SearchableSelect opens on focus, so the task list is visible.
+    await vi.waitFor(() => expect(container.querySelector('[role="combobox"][aria-label="Conversation task"]')?.getAttribute("aria-expanded")).toBe("true"));
+    expect(taskOption()).toBeTruthy();
   });
   it("preserves previously loaded tasks when a background task request fails", async () => {
     mocks.list.mockResolvedValue(tasks); await render();
-    await vi.waitFor(() => expect(container.querySelector('option[value="task"]')).not.toBeNull());
+    await vi.waitFor(async () => {await openSearchableSelect(container, "Conversation task"); expect(taskOption()).toBeTruthy();});
     mocks.list.mockRejectedValue(new Error("Offline"));
     await act(async () => {await client.refetchQueries({queryKey: ["speko-approval-tasks", "company", "agent"]});});
     await vi.waitFor(() => expect(container.textContent).toContain("Task list could not be loaded"));
-    expect(container.querySelector('option[value="task"]')).not.toBeNull();
+    expect(taskOption()).toBeTruthy();
   });
   it("expires a saved approval confirmation when the pending-call list omits it", async () => {
     mocks.list.mockResolvedValue(tasks);

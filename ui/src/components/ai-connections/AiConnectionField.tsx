@@ -1,3 +1,4 @@
+import { OptionSelect } from "@/components/OptionSelect";
 import { useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -143,14 +144,15 @@ export function AiConnectionField({
       )}
       {(compatiblePools.length > 0 || value?.mode === "router") && <label className="block space-y-1 text-sm">
         AI connection
-        <select className="block w-full rounded-md border bg-background px-3 py-2" disabled={readOnly} value={value?.mode === "router" ? value.connectionId : ""} onChange={event => {
-          if (event.target.value) changeBinding({ mode: "router", connectionId: event.target.value });
+        <OptionSelect ariaLabel="AI connection" placeholder="Individual account" emptyLabel="Individual account" className="block w-full" disabled={readOnly}
+          items={[
+            ...compatiblePools.map(pool => ({ value: pool.id, label: `${pool.name} · Experimental pool` })),
+            ...(value?.mode === "router" && !compatiblePools.some(pool => pool.id === value.connectionId) ? [{ value: value.connectionId, label: "Pool unavailable — enable routing and the pool" }] : []),
+          ]}
+          value={value?.mode === "router" ? value.connectionId : ""} onChange={next => {
+          if (next) changeBinding({ mode: "router", connectionId: next });
           else changeBinding({ mode: "responsible_user", provider, method });
-        }}>
-          <option value="">Individual account</option>
-          {compatiblePools.map(pool => <option key={pool.id} value={pool.id}>{pool.name} · Experimental pool</option>)}
-          {value?.mode === "router" && !compatiblePools.some(pool => pool.id === value.connectionId) && <option value={value.connectionId}>Pool unavailable — enable routing and the pool</option>}
-        </select>
+        }} />
         {value?.mode === "router" && <span className="text-muted-foreground">New tasks rotate. Existing tasks keep their account.</span>}
       </label>}
       {value?.mode !== "router" && <AiConnectionSelect

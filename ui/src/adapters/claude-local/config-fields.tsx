@@ -7,6 +7,7 @@ import {
   DraftNumberInput,
   help,
 } from "../../components/agent-config-primitives";
+import { OptionSelect } from "../../components/OptionSelect";
 import { ChoosePathButton } from "../../components/PathInstructionsModal";
 import { LocalWorkspaceRuntimeFields } from "../local-workspace-runtime-fields";
 
@@ -15,6 +16,20 @@ const inputClass =
 
 const instructionsFileHint =
   "Absolute path to a markdown file (e.g. AGENTS.md) that defines this agent's behavior. Injected into the system prompt at runtime.";
+
+const ENGINE_ITEMS = [
+  { value: "auto", label: "Default (ACP)" },
+  { value: "cli", label: "Claude CLI" },
+  { value: "acp", label: "ACP" },
+];
+const MODE_ITEMS = [
+  { value: "persistent", label: "Persistent" },
+  { value: "oneshot", label: "One-shot" },
+];
+const PERMISSION_ITEMS = [
+  { value: "deny", label: "Deny" },
+  { value: "fail", label: "Fail" },
+];
 
 export function ClaudeLocalConfigFields({
   section,
@@ -97,20 +112,18 @@ export function ClaudeLocalAdvancedFields({
         the same way `runnerManaged` hides them for the Paperclip Runner.
       */}
       {!managedSandboxOnly && <Field label="Execution engine" hint="Default uses ACP. If ACP is unavailable, the run fails with a setup error. Choose CLI explicitly to use it.">
-        <select
-          className={inputClass}
+        <OptionSelect
+          ariaLabel="Execution engine"
+          placeholder="Select engine"
+          items={ENGINE_ITEMS}
           value={engine}
-          onChange={(e) => {
-            const value = e.target.value === "acp" ? "acp" : e.target.value === "cli" ? "cli" : "auto";
+          onChange={(next) => {
+            const value = next === "acp" ? "acp" : next === "cli" ? "cli" : "auto";
             isCreate
               ? set!({ claudeEngine: value })
               : mark("adapterConfig", "engine", value === "auto" ? undefined : value);
           }}
-        >
-          <option value="auto">Default (ACP)</option>
-          <option value="cli">Claude CLI</option>
-          <option value="acp">ACP</option>
-        </select>
+        />
       </Field>}
       {acpSelected && (
         <>
@@ -137,45 +150,43 @@ export function ClaudeLocalAdvancedFields({
             </Field>
           )}
           <Field configSection="runPolicy" label="ACP session mode" hint="Persistent keeps ACP session state between runs. One-shot starts fresh each run.">
-            <select
-              className={inputClass}
+            <OptionSelect
+              ariaLabel="ACP session mode"
+              placeholder="Select mode"
+              items={MODE_ITEMS}
               value={
                 isCreate
                   ? values!.claudeAcpMode ?? "persistent"
                   : eff("adapterConfig", "mode", String(config.mode ?? "persistent"))
               }
-              onChange={(e) => {
-                const value = e.target.value === "oneshot" ? "oneshot" : "persistent";
+              onChange={(next) => {
+                const value = next === "oneshot" ? "oneshot" : "persistent";
                 isCreate
                   ? set!({ claudeAcpMode: value })
                   : mark("adapterConfig", "mode", value);
               }}
-            >
-              <option value="persistent">Persistent</option>
-              <option value="oneshot">One-shot</option>
-            </select>
+            />
           </Field>
           <Field
             label="ACP non-interactive permissions"
             hint="Fallback if the ACP agent asks for input outside an interactive session."
           >
-            <select
-              className={inputClass}
+            <OptionSelect
+              ariaLabel="ACP non-interactive permissions"
+              placeholder="Select behaviour"
+              items={PERMISSION_ITEMS}
               value={
                 isCreate
                   ? values!.claudeAcpNonInteractivePermissions ?? "deny"
                   : eff("adapterConfig", "nonInteractivePermissions", String(config.nonInteractivePermissions ?? "deny"))
               }
-              onChange={(e) => {
-                const value = e.target.value === "fail" ? "fail" : "deny";
+              onChange={(next) => {
+                const value = next === "fail" ? "fail" : "deny";
                 isCreate
                   ? set!({ claudeAcpNonInteractivePermissions: value })
                   : mark("adapterConfig", "nonInteractivePermissions", value);
               }}
-            >
-              <option value="deny">Deny</option>
-              <option value="fail">Fail</option>
-            </select>
+            />
           </Field>
           {!managedSandboxOnly && (
             <Field

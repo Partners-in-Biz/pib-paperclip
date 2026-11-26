@@ -9,6 +9,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { AppLogo } from "./AppLogo";
 import { remoteMcpProviders } from "@/features/connections/remote-mcp/providers";
 import { ComposioAppSetup } from "./ComposioAppSetup";
+import { OptionSelect } from "@/components/OptionSelect";
 
 export function aggregatorAppConnectHref(route: AggregatorAppRoute, connection?: ToolConnection) {
   const params = new URLSearchParams({ source: route.provider, targetToolkit: route.toolkit });
@@ -58,10 +59,8 @@ export function AggregatorConnectDialog({ app, connections, initialProvider, onC
           <span className="text-xs text-muted-foreground">Continue →</span>
         </button>;
       })}</div> : <div className="space-y-4">
-        {selected.provider !== "composio" ? <div className="space-y-2"><Label htmlFor="aggregator-account">{provider!.name} account</Label>
-          <select id="aggregator-account" value={account?.id ?? ""} onChange={event => setSelectedAccountId(event.target.value)} className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm">
-            {existing.map(connection => <option key={connection.id} value={connection.id}>{connection.name}</option>)}
-          </select>
+        {selected.provider !== "composio" ? <div className="space-y-2"><Label>{provider!.name} account</Label>
+          <OptionSelect ariaLabel={`${provider!.name} account`} items={existing.map(connection => ({ value: connection.id, label: connection.name }))} value={account?.id ?? ""} onChange={setSelectedAccountId} placeholder="Choose an account" />
         </div> : null}
         {selected.provider === "composio" ? <ComposioAppSetup name={app.name} toolkit={selected.toolkit} connections={existing.filter(connection => connection.status === "active" && connection.enabled && !isToolConnectionAttentionHealth(connection.healthStatus))} onClose={onClose}
           onBack={canChooseProvider ? () => setSelected(null) : undefined} onConnectNew={() => { onNavigate(`${aggregatorAppConnectHref(selected)}&new=1`); onClose(); }} /> : null}

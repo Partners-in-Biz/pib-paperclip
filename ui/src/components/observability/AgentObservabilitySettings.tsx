@@ -1,3 +1,4 @@
+import { OptionSelect } from "@/components/OptionSelect";
 import { useQueryView } from "@/components/QueryView";
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -100,11 +101,9 @@ export function AgentObservabilitySettingsView(props: AgentObservabilitySettings
     {!canManage ? <p className="text-sm text-muted-foreground">Manage connections permission is required to configure agent observability.</p> : <>
       <fieldset disabled={busy} className="space-y-4">
         <div className="space-y-2">
-          <Label htmlFor="agent-observability-provider">Destination</Label>
-          <select id="agent-observability-provider" className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm" value={provider}
-            onChange={event => { setProvider(event.target.value as "braintrust" | "otlp"); setApiKey(""); setReplaceKey(false); setValidation(null); }}>
-            <option value="braintrust">Braintrust</option><option value="otlp">Custom OTLP</option>
-          </select>
+          <Label>Destination</Label>
+          <OptionSelect ariaLabel="Destination" placeholder="Select destination" className="w-full" items={[{ value: "braintrust", label: "Braintrust" }, { value: "otlp", label: "Custom OTLP" }]} value={provider}
+            onChange={next => { setProvider(next as "braintrust" | "otlp"); setApiKey(""); setReplaceKey(false); setValidation(null); }} />
         </div>
         {provider === "braintrust" ? <>
           <div className="space-y-2"><Label htmlFor="agent-observability-project">Project ID</Label>

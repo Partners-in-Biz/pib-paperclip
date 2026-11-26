@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { CompanyEnvironments } from "./CompanyEnvironments";
 import { ApiError } from "@/api/client";
+import { openSearchableSelect, stubSearchableSelectDom } from "../test-utils/searchable-select";
 
 const xtermMocks = vi.hoisted(() => {
   class MockTerminal {
@@ -293,12 +294,6 @@ function setInputValue(input: HTMLInputElement, value: string) {
   input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
-function setSelectValue(select: HTMLSelectElement, value: string) {
-  const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
-  setter?.call(select, value);
-  select.dispatchEvent(new Event("change", { bubbles: true }));
-}
-
 const ENVIRONMENTS_PATH = "/company/settings/instance/environments";
 
 function getEnvironmentFormPage(): HTMLElement | null {
@@ -451,6 +446,7 @@ describe("CompanyEnvironments — test provider button", () => {
   let originalWebSocket: typeof WebSocket | undefined;
 
   beforeEach(() => {
+    stubSearchableSelectDom();
     container = document.createElement("div");
     document.body.appendChild(container);
     root = null;
@@ -705,8 +701,12 @@ describe("CompanyEnvironments — test provider button", () => {
     });
     await flushReact();
 
-    const options = Array.from(container.querySelectorAll("option"));
+    await openSearchableSelect(container, "Default environment");
+    const options = Array.from(document.body.querySelectorAll("[cmdk-item]"));
     expect(options.some((option) => option.textContent?.trim() === "Local")).toBe(true);
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
 
     await act(async () => {
       click(container.querySelector('[aria-label="Add environment"]'));
@@ -1585,7 +1585,8 @@ describe("CompanyEnvironments — test provider button", () => {
     });
     await flushReact();
 
-    const options = Array.from(container.querySelectorAll("option"));
+    await openSearchableSelect(container, "Default environment");
+    const options = Array.from(document.body.querySelectorAll("[cmdk-item]"));
     expect(options.some((option) => option.textContent?.trim() === "Local")).toBe(false);
     // Saved non-local environments remain selectable defaults.
     expect(options.some((option) => option.textContent?.includes("Alpha"))).toBe(true);
@@ -1626,14 +1627,15 @@ describe("CompanyEnvironments — test provider button", () => {
     expect(dialog.textContent).not.toContain("Retired");
     expect(dialog.textContent).toContain("Other references to this environment");
 
-    const reassignSelect = dialog.querySelector<HTMLSelectElement>(
-      "[data-testid='environment-delete-reassign-select']",
-    )!;
-    const optionLabels = Array.from(reassignSelect.querySelectorAll("option")).map((option) =>
+    await openSearchableSelect(dialog, "Reassign agents to environment");
+    const optionLabels = Array.from(document.body.querySelectorAll("[cmdk-item]")).map((option) =>
       option.textContent?.trim(),
     );
     expect(optionLabels).toEqual(["Default: Local", "Beta · sandbox"]);
-    await act(async () => setSelectValue(reassignSelect, "env-2"));
+    const betaOption = Array.from(document.body.querySelectorAll<HTMLElement>("[cmdk-item]")).find((option) =>
+      option.textContent?.includes("Beta · sandbox"),
+    )!;
+    await act(async () => betaOption.click());
 
     await act(async () =>
       click(document.body.querySelector("[data-testid='environment-delete-confirm']")),

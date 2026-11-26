@@ -1,3 +1,5 @@
+import { OptionSelect } from "@/components/OptionSelect";
+import { AgentPicker } from "@/components/AgentPicker";
 import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ISSUE_STATUSES, type PlanningCanvasIssueQuery } from "@paperclipai/shared";
@@ -64,32 +66,42 @@ export function IssueFilters({ query, onChange }: { query: PlanningCanvasIssueQu
 
   return (
     <div className="flex flex-wrap items-center gap-1" onPointerDown={stop} onDoubleClick={stop} role="group" aria-label="Filters">
-      <select aria-label="Filter by project" className={SELECT} value={filter.projectId ?? ""} onChange={(e) => set({ projectId: e.target.value })}>
-        <option value="">All projects</option>
-        {filter.projectId && !projects.data?.some((p) => p.id === filter.projectId) ? <option value={filter.projectId}>Project</option> : null}
-        {(projects.data ?? []).map((p) => (
-          <option key={p.id} value={p.id}>
-            {p.name}
-          </option>
-        ))}
-      </select>
-      <select aria-label="Filter by assignee" className={SELECT} value={filter.assigneeAgentId ?? ""} onChange={(e) => set({ assigneeAgentId: e.target.value })}>
-        <option value="">Any assignee</option>
-        {agents.map((a) => (
-          <option key={a.id} value={a.id}>
-            {a.name}
-          </option>
-        ))}
-      </select>
-      <select aria-label="Filter by goal" className={SELECT} value={filter.goalId ?? ""} onChange={(e) => set({ goalId: e.target.value })}>
-        <option value="">Any goal</option>
-        {filter.goalId && !goals.data?.some((g) => g.id === filter.goalId) ? <option value={filter.goalId}>Goal</option> : null}
-        {(goals.data ?? []).map((g) => (
-          <option key={g.id} value={g.id}>
-            {g.title}
-          </option>
-        ))}
-      </select>
+      <OptionSelect
+        ariaLabel="Filter by project"
+        value={filter.projectId ?? ""}
+        items={[
+          ...(filter.projectId && !projects.data?.some((p) => p.id === filter.projectId) ? [{ value: filter.projectId, label: "Project" }] : []),
+          ...(projects.data ?? []).map((p) => ({ value: p.id, label: p.name })),
+        ]}
+        emptyLabel="All projects"
+        placeholder="All projects"
+        searchPlaceholder="Search projects…"
+        className="w-40"
+        onChange={(id) => set({ projectId: id })}
+      />
+      <AgentPicker
+        ariaLabel="Filter by assignee"
+        agents={agents}
+        value={filter.assigneeAgentId ?? ""}
+        onChange={(id) => set({ assigneeAgentId: id })}
+        emptyLabel="Any assignee"
+        placeholder="Any assignee"
+        className="w-40"
+        compact
+      />
+      <OptionSelect
+        ariaLabel="Filter by goal"
+        items={[
+          ...(filter.goalId && !goals.data?.some((g) => g.id === filter.goalId) ? [{ value: filter.goalId, label: "Goal" }] : []),
+          ...(goals.data ?? []).map((g) => ({ value: g.id, label: g.title })),
+        ]}
+        value={filter.goalId ?? ""}
+        onChange={(id) => set({ goalId: id })}
+        emptyLabel="Any goal"
+        placeholder="Any goal"
+        className="w-40"
+        triggerClassName="h-auto py-0.5 text-xs font-normal"
+      />
       <div className="relative" ref={statusRef}>
         <button type="button" aria-expanded={statusOpen} aria-label="Filter by status" className={cn(SELECT, "text-left")} onClick={() => setStatusOpen((o) => !o)}>
           {filter.status?.length ? `Status (${filter.status.length})` : "Any status"}

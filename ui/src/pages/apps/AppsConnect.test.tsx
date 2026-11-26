@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { CONNECTABLE_APP_DEFINITIONS, GOOGLE_WORKSPACE_CONNECTOR_PROFILES, getAppStoreDefinition } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { stubSearchableSelectDom, pickSearchableOption } from "@/test-utils/searchable-select";
 import { ApiError, type RequestOptions } from "@/api/client";
 import { aiConnectionsApi } from "@/api/ai-connections";
 import { queryKeys } from "@/lib/queryKeys";
@@ -356,6 +357,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
   let mountedRoot: Root | null;
 
   beforeEach(() => {
+    stubSearchableSelectDom();
     vi.resetAllMocks();
     popupAssignMock.mockReset();
     vi.spyOn(window, "open").mockReturnValue({ closed: false, location: { assign: popupAssignMock, href: "about:blank" }, focus: vi.fn(), close: vi.fn(), sessionStorage: window.sessionStorage } as unknown as Window);
@@ -554,15 +556,11 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await act(async () => setInputValue(url, "https://provider.example/mcp"));
     // The sign-in method shares the one Advanced disclosure with the access
     // controls, and Radix unmounts collapsed content — so it has to be opened.
-    expect(container.querySelector("select")).toBeNull();
+    expect(container.querySelector('[role="combobox"][aria-label="Sign-in method"]')).toBeNull();
     await act(async () => buttonByText("Change")!.click());
     expect(buttonByText("Advanced")).toBeUndefined();
     expect(buttonByText("Change")?.getAttribute("aria-expanded")).toBe("true");
-    await act(async () => {
-      const auth = container.querySelector<HTMLSelectElement>("select")!;
-      auth.value = "bearer";
-      auth.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    await pickSearchableOption(container, "Sign-in method", "Bearer token");
     const token = container.querySelector<HTMLInputElement>('input[id$="-token"]')!;
     await act(async () => setInputValue(token, "fixture-token"));
     await act(async () => buttonByText("Try again")!.click());
@@ -2137,11 +2135,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(dialog.querySelectorAll('[role="switch"]')).toHaveLength(3);
     expect(dialog.textContent).not.toContain("Contacts");
     expect(dialog.textContent).not.toContain("compose permission");
-    const gmail = dialog.querySelector('select[aria-label="Gmail access"]') as HTMLSelectElement;
-    await act(async () => {
-      gmail.value = "read";
-      gmail.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    await pickSearchableOption(dialog, "Gmail access", "Read only");
     await act(async () => {
       Array.from(dialog.querySelectorAll("button")).find(button => button.textContent === "Continue")!.click();
     });
@@ -3140,10 +3134,10 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await vi.waitFor(() => expect(container.textContent).toContain("Try again"));
     await act(async () => buttonByText("Try again")!.click());
     await flushReact();
-    await vi.waitFor(() => expect(document.querySelector('[role="dialog"] select')).not.toBeNull());
+    await vi.waitFor(() => expect(document.querySelector('[role="dialog"] [role="combobox"]')).not.toBeNull());
     const dialog = document.querySelector('[role="dialog"]')!;
     expect([...dialog.querySelectorAll('[role="switch"]')].map(item => item.getAttribute("aria-checked"))).toEqual(["true", "false", "false"]);
-    expect(dialog.querySelector("select")?.value).toBe("read");
+    expect(dialog.querySelector('[role="combobox"]')?.textContent).toContain("Read only");
     await act(async () => buttonByText("Continue")!.click());
     await flushReact();
     expect(connectAppMock).not.toHaveBeenCalled();
@@ -4448,6 +4442,7 @@ describe("AppsConnect — guided generic MCP flow (PAP-17087)", () => {
   let mountedRoot: Root | null;
 
   beforeEach(() => {
+    stubSearchableSelectDom();
     popupAssignMock.mockReset();
     vi.spyOn(window, "open").mockReturnValue({ closed: false, location: { assign: popupAssignMock, href: "about:blank" }, focus: vi.fn(), close: vi.fn(), sessionStorage: window.sessionStorage } as unknown as Window);
     mockSearch.value = "";

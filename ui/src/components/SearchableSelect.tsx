@@ -63,6 +63,7 @@ export interface SearchableSelectProps<
   /** Heading for the large mobile selector modal. Defaults to the placeholder. */
   mobileTitle?: string;
   triggerAriaLabel?: string;
+  triggerId?: string;
   modal?: boolean;
   contentStyle?: CSSProperties;
   listFooter?: ReactNode;
@@ -116,6 +117,7 @@ export function SearchableSelect<
   disablePortal,
   mobileTitle,
   triggerAriaLabel,
+  triggerId,
   modal,
   contentStyle,
   listFooter,
@@ -229,6 +231,7 @@ export function SearchableSelect<
             }
           }}
           aria-expanded={open}
+          id={triggerId}
           aria-label={triggerAriaLabel}
           role="combobox"
           className={cn("w-full justify-between overflow-hidden", className, triggerClassName)}

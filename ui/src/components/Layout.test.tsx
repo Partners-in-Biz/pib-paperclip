@@ -5,6 +5,7 @@ import { flushSync } from "react-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Layout } from "./Layout";
+import { openSearchableSelect, stubSearchableSelectDom } from "../test-utils/searchable-select";
 
 const classicWorkspace = vi.hoisted(() => ({ enabled: true }));
 vi.mock("@/hooks/useCoordinatorWorkspaceEnabled", () => ({
@@ -318,6 +319,7 @@ describe("Layout", () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {
+    stubSearchableSelectDom();
     classicWorkspace.enabled = true;
     mockDesignSandbox.enabled = false;
     container = document.createElement("div");
@@ -647,10 +649,14 @@ describe("Layout", () => {
     await flushReact();
     await flushReact();
 
-    const selector = container.querySelector("select");
+    const selector = container.querySelector('[role="combobox"][aria-label="Page section"]');
     expect(selector).not.toBeNull();
-    expect(selector?.value).toBe("secrets");
-    const selectorText = selector?.textContent?.toLowerCase() ?? "";
+    expect(selector?.textContent?.toLowerCase()).toContain("secrets");
+    await openSearchableSelect(container, "Page section");
+    const selectorText = Array.from(document.body.querySelectorAll("[cmdk-item]"))
+      .map((item) => item.textContent ?? "")
+      .join(" ")
+      .toLowerCase();
     expect(selectorText).toContain("general");
     expect(selectorText).toContain("export");
     expect(selectorText).toContain("import");

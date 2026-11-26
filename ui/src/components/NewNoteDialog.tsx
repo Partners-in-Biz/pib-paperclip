@@ -1,3 +1,4 @@
+import { OptionSelect } from "@/components/OptionSelect";
 import { useEffect, useState, type KeyboardEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { PERSONAL_NOTE_COLORS, type PersonalNoteColor } from "@paperclipai/shared";
@@ -325,19 +326,16 @@ export function NewNoteDialog() {
 
             <div className="flex items-center gap-1.5 rounded-md border border-border bg-background px-2 py-1 text-xs">
               <FolderOpen className="size-3.5 shrink-0 text-muted-foreground" />
-              <select
-                aria-label="Project"
+              <OptionSelect
+                ariaLabel="Project"
                 value={projectId}
-                onChange={(e) => setProjectId(e.target.value)}
-                className="bg-transparent text-xs text-foreground outline-none"
-              >
-                <option value="">No project</option>
-                {(projects ?? []).map((project) => (
-                  <option key={project.id} value={project.id}>
-                    {project.name}
-                  </option>
-                ))}
-              </select>
+                items={(projects ?? []).map((project) => ({ value: project.id, label: project.name }))}
+                emptyLabel="No project"
+                placeholder="No project"
+                searchPlaceholder="Search projects…"
+                onChange={setProjectId}
+                triggerClassName="h-auto border-0 bg-transparent px-1 py-0 text-xs font-normal shadow-none"
+              />
             </div>
           </div>
         </div>

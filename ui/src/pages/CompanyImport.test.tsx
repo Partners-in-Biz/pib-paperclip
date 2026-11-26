@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { AgentRunnerChoice, CompanyPortabilityImportResult, CompanyPortabilityPreviewResult } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../api/client";
+import { stubSearchableSelectDom } from "../test-utils/searchable-select";
 import type { CompanyImportJobAccepted } from "../api/companies";
 import { CompanyImport } from "./CompanyImport";
 
@@ -275,6 +276,7 @@ describe("CompanyImport", () => {
   let root: Root | null = null;
 
   beforeEach(() => {
+    stubSearchableSelectDom();
     sessionStorage.clear();
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -728,8 +730,8 @@ describe("CompanyImport", () => {
       'input[placeholder="https://github.com/owner/repo/tree/main/company"]',
     );
     expect(lockedUrlInput?.disabled).toBe(true);
-    const lockedSelects = Array.from(container.querySelectorAll("select")).filter(
-      (select) => select.value === "new" || select.value === "rename",
+    const lockedSelects = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="combobox"]')).filter(
+      (select) => ["Target", "Collision strategy"].includes(select.getAttribute("aria-label") ?? ""),
     );
     expect(lockedSelects).toHaveLength(2);
     expect(lockedSelects.every((select) => select.disabled)).toBe(true);
@@ -1054,10 +1056,53 @@ describe("CompanyImport", () => {
     expect(sessionStorage.getItem("paperclip:company-import-job:company-1:acme/starter")).toBeNull();
   });
 
-  /** Adapter selects in the picker list, in manifest order (excludes the target/collision selects). */
-  function findAdapterSelects() {
-    return Array.from(container.querySelectorAll("select"))
-      .filter((select) => select.value !== "new" && select.value !== "existing" && select.value !== "rename");
+  /** Adapter pickers in the list, in manifest order (the target/collision pickers are labelled Target / Collision strategy). */
+  function findAdapterTriggers() {
+    return Array.from(container.querySelectorAll<HTMLElement>('[role="combobox"][aria-label^="Adapter for "]'));
+  }
+
+  /** Opens a picker, reads its items ({ value, selected }), then closes it again. */
+  async function readPicker(trigger: HTMLElement) {
+    await act(async () => {
+      trigger.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+      trigger.click();
+    });
+    const items = Array.from(document.body.querySelectorAll<HTMLElement>("[cmdk-item]")).map((el) => ({
+      value: el.getAttribute("data-value") ?? "",
+      selected: Boolean(el.querySelector("svg.opacity-100")),
+    }));
+    await act(async () => {
+      trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    await flushReact();
+    return items;
+  }
+
+  async function adapterValues() {
+    const values: string[] = [];
+    for (const trigger of findAdapterTriggers()) {
+      values.push((await readPicker(trigger)).find((item) => item.selected)?.value ?? "");
+    }
+    return values;
+  }
+
+  async function adapterChoices() {
+    const all: string[][] = [];
+    for (const trigger of findAdapterTriggers()) all.push((await readPicker(trigger)).map((item) => item.value));
+    return all;
+  }
+
+  async function chooseAdapter(index: number, value: string) {
+    const trigger = findAdapterTriggers()[index]!;
+    await act(async () => {
+      trigger.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+      trigger.click();
+    });
+    const item = Array.from(document.body.querySelectorAll<HTMLElement>("[cmdk-item]"))
+      .find((el) => el.getAttribute("data-value") === value);
+    expect(item).toBeTruthy();
+    await act(async () => item!.click());
+    await flushReact();
   }
 
   async function previewMixedAdapterPackage() {
@@ -1077,7 +1122,7 @@ describe("CompanyImport", () => {
     await previewMixedAdapterPackage();
 
     // The picker shows each agent's source adapter, not a coerced CEO default.
-    expect(findAdapterSelects().map((select) => select.value)).toEqual(["claude_local", "codex_local"]);
+    expect(await adapterValues()).toEqual(["claude_local", "codex_local"]);
 
     await clickButton((text) => text.startsWith("Import 3 file"));
     await settle();
@@ -1090,14 +1135,8 @@ describe("CompanyImport", () => {
   it("sends an override only for the agent whose adapter the user changed", async () => {
     await previewMixedAdapterPackage();
 
-    const coderSelect = findAdapterSelects()[0];
-    expect(coderSelect?.value).toBe("claude_local");
-    await act(async () => {
-      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!;
-      setter.call(coderSelect!, "codex_local");
-      coderSelect!.dispatchEvent(new Event("change", { bubbles: true }));
-    });
-    await flushReact();
+    expect((await adapterValues())[0]).toBe("claude_local");
+    await chooseAdapter(0, "codex_local");
 
     await clickButton((text) => text.startsWith("Import 3 file"));
     await settle();
@@ -1115,8 +1154,8 @@ describe("CompanyImport", () => {
     ]);
     await previewMixedAdapterPackage();
 
-    for (const select of findAdapterSelects()) {
-      expect(Array.from(select.options).map((option) => option.value))
+    for (const choices of await adapterChoices()) {
+      expect(choices)
         .not.toContain("paperclip_runner");
     }
   });
@@ -1130,8 +1169,8 @@ describe("CompanyImport", () => {
     ]);
     await previewMixedAdapterPackage();
 
-    for (const select of findAdapterSelects()) {
-      expect(Array.from(select.options).map((option) => option.value))
+    for (const choices of await adapterChoices()) {
+      expect(choices)
         .toContain("paperclip_runner");
     }
   });
@@ -1152,9 +1191,8 @@ describe("CompanyImport", () => {
     await enterGithubUrl();
     await clickButton((text) => text === "Preview import");
 
-    expect(findAdapterSelects().map((select) => select.value)).toEqual(["openai_dot", "codex_local"]);
-    for (const select of findAdapterSelects()) {
-      const choices = Array.from(select.options).map((option) => option.value);
+    expect(await adapterValues()).toEqual(["openai_dot", "codex_local"]);
+    for (const choices of await adapterChoices()) {
       expect(choices).toContain("openai_dot");
       expect(choices).not.toContain("paperclip_runner");
     }
@@ -1177,7 +1215,7 @@ describe("CompanyImport", () => {
     await renderPage();
     await enterGithubUrl();
     await clickButton(text => text === "Preview import");
-    expect(findAdapterSelects().map(select => select.value)).toEqual(["claude_local", "codex_local"]);
+    expect(await adapterValues()).toEqual(["claude_local", "codex_local"]);
     expect(container.textContent).not.toContain("will use Claude Code");
     await clickButton(text => text.startsWith("Import 3 file"));
     await settle();
@@ -1199,7 +1237,7 @@ describe("CompanyImport", () => {
     await renderPage();
     await enterGithubUrl();
     await clickButton(text => text === "Preview import");
-    expect(findAdapterSelects()[0]!.value).toBe("paperclip_runner");
+    expect((await adapterValues())[0]).toBe("paperclip_runner");
     expect(container.textContent).toContain("requires its experimental feature to be enabled");
     expect(container.textContent).not.toContain("source adapter paperclip_runner is not installed here");
     await clickButton(text => text.startsWith("Import 3 file"));
@@ -1220,7 +1258,7 @@ describe("CompanyImport", () => {
     await renderPage();
     await enterGithubUrl();
     await clickButton(text => text === "Preview import");
-    expect(findAdapterSelects()[0]!.value).toBe("opencode_local");
+    expect((await adapterValues())[0]).toBe("opencode_local");
     expect(container.textContent).not.toContain("requires its experimental feature to be enabled");
     await clickButton(text => text.startsWith("Import 3 file"));
     await settle();
@@ -1240,7 +1278,7 @@ describe("CompanyImport", () => {
     await renderPage();
     await enterGithubUrl();
     await clickButton(text => text === "Preview import");
-    expect(findAdapterSelects()[0]!.value).toBe("pi_local");
+    expect((await adapterValues())[0]).toBe("pi_local");
     expect(container.textContent).not.toContain("requires its experimental feature to be enabled");
     await clickButton(text => text.startsWith("Import 3 file"));
     await settle();
@@ -1411,11 +1449,7 @@ describe("CompanyImport", () => {
     await enterGithubUrl();
     await clickButton(text => text === "Preview import");
     if (edit === "changed-harness") {
-      const harness = findAdapterSelects()[0]!;
-      await act(async () => {
-        Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(harness, sourceConfig.provider === "codex" ? "claude_local" : "codex_local");
-        harness.dispatchEvent(new Event("change", { bubbles: true }));
-      });
+      await chooseAdapter(0, sourceConfig.provider === "codex" ? "claude_local" : "codex_local");
     }
     await clickButton(text => text.includes("configure adapter"));
     expect(container.querySelector('[aria-label="Runner"]')).toBeNull();
@@ -1487,12 +1521,7 @@ describe("CompanyImport", () => {
       { type: "paperclip_runner", disabled: false },
     ]);
     await previewMixedAdapterPackage();
-    const select = findAdapterSelects()[0]!;
-    await act(async () => {
-      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!;
-      setter.call(select, "openai_dot");
-      select.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    await chooseAdapter(0, "openai_dot");
     await settle();
     expect(container.textContent).toContain("Allow externally billed provider");
     expect(container.textContent).not.toContain("Harness");
@@ -1522,8 +1551,7 @@ describe("CompanyImport", () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableNativeRunner: true, enableOpenAiDot: false });
     mockAdaptersApi.list.mockResolvedValue([{ type: "paperclip_runner", disabled: false }]);
     await previewMixedAdapterPackage();
-    for (const select of findAdapterSelects()) {
-      const choices = Array.from(select.options).map((option) => option.value);
+    for (const choices of await adapterChoices()) {
       expect(choices).toContain("paperclip_runner");
       expect(choices).not.toContain("openai_dot");
     }
@@ -1537,7 +1565,7 @@ describe("CompanyImport", () => {
 
     expect(container.textContent).toContain("source adapter codex_local is not installed here");
     expect(container.textContent).toContain("will use Claude Code");
-    expect(findAdapterSelects().map((select) => select.value)).toEqual(["claude_local", "claude_local"]);
+    expect(await adapterValues()).toEqual(["claude_local", "claude_local"]);
 
     await clickButton((text) => text.startsWith("Import 3 file"));
     await settle();
@@ -1557,7 +1585,7 @@ describe("CompanyImport", () => {
     await previewMixedAdapterPackage();
 
     expect(container.textContent).toContain("source adapter codex_local is not installed here");
-    expect(findAdapterSelects().map((select) => select.value)).toEqual(["gemini_local", "gemini_local"]);
+    expect(await adapterValues()).toEqual(["gemini_local", "gemini_local"]);
 
     await clickButton((text) => text.startsWith("Import 3 file"));
     await settle();
@@ -1575,7 +1603,7 @@ describe("CompanyImport", () => {
     await previewMixedAdapterPackage();
 
     expect(container.textContent).not.toContain("is not installed here");
-    expect(findAdapterSelects().map((select) => select.value)).toEqual(["claude_local", "codex_local"]);
+    expect(await adapterValues()).toEqual(["claude_local", "codex_local"]);
 
     await clickButton((text) => text.startsWith("Import 3 file"));
     await settle();

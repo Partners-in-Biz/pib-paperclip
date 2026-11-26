@@ -19,6 +19,7 @@ import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
 import { Separator } from "@/components/ui/separator";
 import { Button } from "@/components/ui/button";
+import { OptionSelect } from "./OptionSelect";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { AlertCircle, Archive, ArchiveRestore, Check, ExternalLink, Loader2, Trash2 } from "lucide-react";
 import { ChoosePathButton } from "./PathInstructionsModal";
@@ -749,26 +750,24 @@ export function ProjectProperties({ project, repositories, onUpdate, onFieldUpda
               Workspace storage
               <SaveIndicator state={fieldState("workspace_storage_provider")} />
             </label>
-            <select
-              id="workspace-storage-provider"
-              aria-label="Workspace storage provider"
-              className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+            <OptionSelect
+              ariaLabel="Workspace storage provider"
               disabled={Boolean(storedExecutionWorkspacePolicy?.storageProviderPluginId) || (!onUpdate && !onFieldUpdate)}
               value={storedExecutionWorkspacePolicy?.storageProviderPluginId ?? "core"}
-              onChange={(event) => {
+              onChange={(value) => {
                 const policy = { enabled: true, ...storedExecutionWorkspacePolicy };
-                policy.storageProviderPluginId = event.target.value === "core" ? null : event.target.value;
+                policy.storageProviderPluginId = value === "core" ? null : value;
                 commitField("workspace_storage_provider", { executionWorkspacePolicy: policy });
               }}
-            >
-              <option value="core">Core / local</option>
-              {providerConfiguration.providers.map(provider => (
-                <option key={provider.id} value={provider.id}>{provider.displayName}</option>
-              ))}
-              {storedExecutionWorkspacePolicy?.storageProviderPluginId && !providerConfiguration.providers.some(provider => provider.id === storedExecutionWorkspacePolicy.storageProviderPluginId) ? (
-                <option value={storedExecutionWorkspacePolicy.storageProviderPluginId}>Unavailable provider</option>
-              ) : null}
-            </select>
+              placeholder="Workspace storage provider"
+              items={[
+                { value: "core", label: "Core / local" },
+                ...providerConfiguration.providers.map(provider => ({ value: provider.id, label: provider.displayName })),
+                ...(storedExecutionWorkspacePolicy?.storageProviderPluginId && !providerConfiguration.providers.some(provider => provider.id === storedExecutionWorkspacePolicy.storageProviderPluginId)
+                  ? [{ value: storedExecutionWorkspacePolicy.storageProviderPluginId, label: "Unavailable provider" }]
+                  : []),
+              ]}
+            />
             <p className="text-xs text-muted-foreground">
               {storedExecutionWorkspacePolicy?.storageProviderPluginId
                 ? `This project stays on ${providerConfiguration.displayName}.`
@@ -862,24 +861,20 @@ export function ProjectProperties({ project, repositories, onUpdate, onFieldUpda
                         </label>
                       </div>
                       {onUpdate || onFieldUpdate ? (
-                        <select
-                          className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs outline-none"
-                          aria-label="Shared workspace concurrency"
+                        <OptionSelect
+                          ariaLabel="Shared workspace concurrency"
+                          triggerClassName="h-auto py-1 text-xs font-normal"
                           value={executionWorkspaceSharedConcurrency}
-                          onChange={(e) =>
+                          onChange={(value) =>
                             commitField(
                               "execution_workspace_shared_concurrency",
                               updateExecutionWorkspacePolicy({
-                                sharedWorkspaceConcurrency: e.target.value as SharedWorkspaceConcurrency,
+                                sharedWorkspaceConcurrency: value as SharedWorkspaceConcurrency,
                               })!,
                             )}
-                        >
-                          {SHARED_WORKSPACE_CONCURRENCY_OPTIONS.map((option) => (
-                            <option key={option.value} value={option.value}>
-                              {option.label}
-                            </option>
-                          ))}
-                        </select>
+                          placeholder="Shared workspace concurrency"
+                          items={SHARED_WORKSPACE_CONCURRENCY_OPTIONS.map((option) => ({ value: option.value, label: option.label }))}
+                        />
                       ) : (
                         <div className="text-xs">
                           {SHARED_WORKSPACE_CONCURRENCY_OPTIONS.find(
@@ -919,24 +914,24 @@ export function ProjectProperties({ project, repositories, onUpdate, onFieldUpda
                                 <SaveIndicator state={fieldState("execution_workspace_environment")} />
                               </label>
                             </div>
-                            <select
-                              className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs outline-none"
+                            <OptionSelect
+                              ariaLabel="Environment"
+                              triggerClassName="h-auto py-1 text-xs font-normal"
                               value={executionWorkspaceEnvironmentId}
-                              onChange={(e) =>
+                              onChange={(value) =>
                                 commitField(
                                   "execution_workspace_environment",
                                   updateExecutionWorkspacePolicy({
-                                    environmentId: e.target.value || null,
+                                    environmentId: value || null,
                                   })!,
                                 )}
-                            >
-                              <option value="">No environment</option>
-                              {runSelectableEnvironments.map((environment) => (
-                                <option key={environment.id} value={environment.id}>
-                                  {environmentDisplayLabel(environment)}
-                                </option>
-                              ))}
-                            </select>
+                              placeholder="No environment"
+                              emptyLabel="No environment"
+                              items={runSelectableEnvironments.map((environment) => ({
+                                value: environment.id,
+                                label: environmentDisplayLabel(environment),
+                              }))}
+                            />
                           </div>
                         ) : null}
                         <div>

@@ -4,6 +4,7 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { stubSearchableSelectDom, pickSearchableOption } from "@/test-utils/searchable-select";
 import type { AttentionItem, DecisionHistoryItem } from "@paperclipai/shared";
 import { CoordinatorNeedsYou } from "./CoordinatorNeedsYou";
 
@@ -46,6 +47,7 @@ let root: Root;
 let container: HTMLDivElement;
 beforeEach(() => {
   fixture.pending = ["1", "2", "3"].map((id) => ({ id, sourceKind: "issue_thread_interaction", inlineResolvable: true, subject: { id, kind: "interaction", title: `Review ${id}`, metadata: { issueId: `task-${id}` } }, relatedIssue: { id: `task-${id}`, identifier: `PAP-${id}`, title: `Task ${id}`, href: `/PAP/issues/PAP-${id}` }, activityAt: new Date().toISOString() } as unknown as AttentionItem));
+  stubSearchableSelectDom();
   fixture.history = []; fixture.url = "/decisions"; vi.clearAllMocks();
   fixture.historyFail = false; fixture.feedFail = false; fixture.partial = false; fixture.mobile = false;
   container = document.createElement("div"); document.body.appendChild(container); root = createRoot(container);
@@ -141,17 +143,16 @@ describe("Coordinator Needs You", () => {
     await flush();
     const visibleIds = () => [...container.querySelectorAll('[aria-label="Recent Decisions"] .coordinator-decision-receipt')]
       .map((item) => item.textContent?.match(/PAP-\d+/)?.[0]);
-    const changeSelect = async (label: string, value: string) => {
-      const select = container.querySelector<HTMLSelectElement>(`select[aria-label="${label}"]`);
-      expect(select).not.toBeNull();
-      await act(async () => { select!.value = value; select!.dispatchEvent(new Event("change", { bubbles: true })); });
+    const changeSelect = async (label: string, optionText: string) => {
+      await pickSearchableOption(container, label, optionText);
+      await flush();
     };
     expect(visibleIds()).toEqual(["PAP-3", "PAP-2", "PAP-1"]);
-    await changeSelect("Sort decisions", "oldest");
+    await changeSelect("Sort decisions", "Oldest first");
     expect(visibleIds()).toEqual(["PAP-1", "PAP-2", "PAP-3"]);
-    await changeSelect("Group decisions", "task");
+    await changeSelect("Group decisions", "By task");
     expect([...container.querySelectorAll('[aria-label="Recent Decisions"] h3')].map((item) => item.textContent)).toEqual(["PAP-1", "PAP-2", "PAP-3"]);
-    await changeSelect("Filter decisions by project", "launch");
+    await changeSelect("Filter decisions by project", "Launch");
     expect(visibleIds()).toEqual(["PAP-1", "PAP-3"]);
     client.clear();
   });

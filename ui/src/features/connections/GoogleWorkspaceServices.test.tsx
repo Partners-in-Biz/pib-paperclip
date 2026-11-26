@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { googleWorkspaceSelectedScopes, type ToolConnection } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { stubSearchableSelectDom } from "@/test-utils/searchable-select";
 import { GoogleWorkspaceServicesDialog } from "./GoogleWorkspaceServices";
 
 const listGrants = vi.hoisted(() => vi.fn());
@@ -30,7 +31,9 @@ describe("Workspace service consent", () => {
     await flush();
     await flush();
   }
+  const accessLabels = () => [...document.querySelectorAll('[role="combobox"][aria-label$=" access"]')].map(item => item.textContent?.trim());
   beforeEach(() => {
+    stubSearchableSelectDom();
     vi.clearAllMocks();
     listGrants.mockResolvedValue({ currentUserId: "me", grants: [] });
     container = document.createElement("div");
@@ -47,7 +50,7 @@ describe("Workspace service consent", () => {
   it("defaults all three groups to write and submits only their selections", async () => {
     await render();
     expect([...document.querySelectorAll('[role="switch"]')].map(item => item.getAttribute("aria-checked"))).toEqual(["true", "true", "true"]);
-    expect([...document.querySelectorAll("select")].map(item => item.value)).toEqual(["write", "write", "write"]);
+    expect(accessLabels()).toEqual(["Read & write", "Read & write", "Read & write"]);
     expect(listGrants).not.toHaveBeenCalled();
     await click("Continue");
     expect(onContinue).toHaveBeenCalledWith({ gmail: "write", drive: "write", calendar: "write" });
@@ -64,7 +67,7 @@ describe("Workspace service consent", () => {
     ] });
     await render(existing);
     expect([...document.querySelectorAll('[role="switch"]')].map(item => item.getAttribute("aria-checked"))).toEqual(["true", "false", "false"]);
-    expect(document.querySelector("select")?.value).toBe("read");
+    expect(accessLabels()[0]).toBe("Read only");
     await click("Continue");
     expect(onContinue).toHaveBeenCalledWith({ gmail: "read" });
   });
@@ -79,7 +82,7 @@ describe("Workspace service consent", () => {
       oauth: { scopes: ["https://www.googleapis.com/auth/documents"] },
     } });
     expect([...document.querySelectorAll('[role="switch"]')].map(item => item.getAttribute("aria-checked"))).toEqual(["true", "false", "false"]);
-    expect(document.querySelector("select")?.value).toBe("read");
+    expect(accessLabels()[0]).toBe("Read only");
     await click("Continue");
     expect(onContinue).toHaveBeenCalledWith({ gmail: "read" });
   });
