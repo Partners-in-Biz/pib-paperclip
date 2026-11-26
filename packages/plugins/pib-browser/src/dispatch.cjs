@@ -36,6 +36,8 @@ function classifyDriverError(e) {
   return { exit: EXIT.NO_BROWSER, reason: `internal: ${name || 'Error'}`, drop: false };
 }
 
+const issueOf = (auth, issue) => String(auth?.issue?.identifier || issue || '');
+
 function createDispatcher(deps = {}) {
   const sessions = new Map();
   const shotCounters = new Map();
@@ -216,7 +218,7 @@ function createDispatcher(deps = {}) {
             return { exit: EXIT.SESSION_EXPIRED, ok: false, reason: 'session_expired' };
           }
 
-          sessions.set(sessionKey, { ctx, site, auth });
+          sessions.set(sessionKey, { ctx, site, auth, issue: issueOf(auth, issue), companyId: auth.companyId || null, lastActiveAt: Date.now() });
           return { exit: EXIT.DONE, ok: true };
         } catch (e) {
           logError(request, 'open', e);
@@ -227,6 +229,9 @@ function createDispatcher(deps = {}) {
 
       const session = sessions.get(sessionKey);
       if (!session) return { exit: EXIT.USAGE, ok: false, reason: 'no_session' };
+      // Which task the session works on now, and when it last did something (the live chip reads both).
+      session.issue = issueOf(auth, issue);
+      session.lastActiveAt = Date.now();
       const { ctx, site } = session;
 
       try {

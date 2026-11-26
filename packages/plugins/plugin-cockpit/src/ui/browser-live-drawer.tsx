@@ -37,7 +37,7 @@ export function liveSocketUrl(origin: { protocol: string; host: string }, compan
 
 const LABELS: Record<LiveState, string> = { connecting: "Connecting…", live: "Live, view only", reconnecting: "Reconnecting…", error: "Not connected" };
 
-function useWatchLive(companyId: string, open: boolean, expanded: boolean) {
+function useWatchLive(companyId: string, open: boolean, expanded: boolean, identity?: string | null) {
   const getTicket = useCockpitAction("browser.live.ticket");
   const screen = useRef<HTMLDivElement | null>(null);
   const [state, setState] = useState<LiveState>("connecting");
@@ -62,7 +62,7 @@ function useWatchLive(companyId: string, open: boolean, expanded: boolean) {
     const connect = async () => {
       if (stopped || !screen.current) return;
       try {
-        const [{ default: RFB }, ticket] = await Promise.all([import("@novnc/novnc"), ticketAction.current({ mode: "view" }) as Promise<{ ticket: string }>]);
+        const [{ default: RFB }, ticket] = await Promise.all([import("@novnc/novnc"), ticketAction.current({ mode: "view", ...(identity ? { identity } : {}) }) as Promise<{ ticket: string }>]);
         if (stopped || !screen.current) return;
         const connection = new RFB(screen.current, liveSocketUrl(window.location, companyId, ticket.ticket), {});
         connection.viewOnly = true;
@@ -105,7 +105,7 @@ function useWatchLive(companyId: string, open: boolean, expanded: boolean) {
       rfb?.disconnect();
     };
   // `expanded` swaps the container (sheet or modal), so the screen box is a new element and must connect again.
-  }, [open, companyId, attempt, expanded]);
+  }, [open, companyId, attempt, expanded, identity]);
 
   return { screen, state, error, retry: useCallback(() => setAttempt((n) => n + 1), []) };
 }
@@ -113,12 +113,12 @@ function useWatchLive(companyId: string, open: boolean, expanded: boolean) {
 /** The screen box keeps 16:10 and never grows past the viewport: wide as the panel allows, at most as tall as 90vh less the chrome. */
 const SCREEN_STYLE = { aspectRatio: "16 / 10", minWidth: 0, overflow: "hidden", borderRadius: 8, border: `1px solid ${tokens.border}`, background: tokens.secondary } as const;
 
-export function BrowserLiveDrawer({ open, companyId, onClose, defaultExpanded = false }: { open: boolean; companyId: string; onClose: () => void; /** Large from the start (take over). */ defaultExpanded?: boolean }) {
+export function BrowserLiveDrawer({ open, companyId, onClose, defaultExpanded = false, identity = null }: { open: boolean; companyId: string; onClose: () => void; /** The login identity to watch (from the chip); the ticket carries it. */ identity?: string | null; /** Large from the start (take over). */ defaultExpanded?: boolean }) {
   const [expanded, setExpanded] = useState(defaultExpanded);
   useEffect(() => {
     if (open) setExpanded(defaultExpanded);
   }, [open, defaultExpanded]);
-  const { screen, state, error, retry } = useWatchLive(companyId, open, expanded);
+  const { screen, state, error, retry } = useWatchLive(companyId, open, expanded, identity);
   const body = (
     <div style={{ display: "grid", gap: 12, minWidth: 0 }}>
       <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", minWidth: 0 }}>

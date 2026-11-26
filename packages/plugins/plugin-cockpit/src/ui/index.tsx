@@ -23,6 +23,7 @@ import { installationIdFromUiBase, settingsPath } from "./memory-model.js";
 import { MaintenancePanel } from "./maintenance.js";
 import { PolicyPanel } from "./policy.js";
 import { BrowserPanel } from "./browser-page.js";
+import { BrowserLiveChipBody } from "./browser-live-chip.js";
 import { ProfilePanel } from "./profile.js";
 import { NotificationsPage } from "./NotificationsPage.js";
 import { HostedView, hostedAllowed, useHostedUsage } from "./hosted.js";
@@ -398,6 +399,16 @@ export function Overview({ view, load, runs, linkFor, windowHours, onWindow, onD
 // ---------------------------------------------------------------------------
 
 /** Nothing on the dashboard for a person without the Cockpit. */
+/** The Watch live chip: behind the same gate as the widgets, so a person without the Cockpit sees and polls nothing. */
+export function BrowserLiveChip(props: PluginWidgetProps) {
+  const access = useAccess(useAccessMe(), props.context.companyId);
+  return (
+    <AccessGate state={access} kind="widget">
+      <BrowserLiveChipBody {...props} />
+    </AccessGate>
+  );
+}
+
 export function CompanyTodayWidget(props: PluginWidgetProps) {
   const access = useAccess(useAccessMe(), props.context.companyId);
   return (
