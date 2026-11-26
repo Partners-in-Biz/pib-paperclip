@@ -60,8 +60,8 @@ a task or Chat after switching, cancellation, and first choice without confirmat
 
 The streamlined Sidebar now includes the reviewed Agents section by default.
 Stories can still supply it through Layout's existing sidebar slot for review.
-The icon rail is retired in SidebarContext; collapsed coverage uses the supported
-collapsible Agents section plus the mobile drawer. No rail is reintroduced.
+The icon rail returned as a user choice in PAR-14771 (coordinator sidebar, desktop
+only, remembered per user and browser); there is no hover-to-expand.
 
 Reloading resets the fixture preference. Task fallback is simulated through the
 existing composer's defaults/recent-assignee input. Chat entry routing and the

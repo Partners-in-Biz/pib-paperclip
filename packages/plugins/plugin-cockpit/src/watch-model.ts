@@ -31,7 +31,7 @@ export const WATCH = {
   /** Blocked with no way out for this long. */
   blockedHours: 24,
   /** Ladder: blocked this long with nobody else named to act goes to the manager (keep equal to BLOCKED_ESCALATE_HOURS). */
-  ladderBlockedHours: 4,
+  ladderBlockedHours: 1,
   /** Ladder: a host sweep inside this window followed by a re-block means the assignee tried again and is still stuck. */
   reblockLookbackHours: 48,
   /** In progress, assignee idle and without a run for this long. */
@@ -41,8 +41,13 @@ export const WATCH = {
   named: 5,
 } as const;
 
-/** Ladder escalation: maximum candidates to process per tick (bounded; real creation still bounded by ESCALATION_DAILY_CAP). */
-export const LADDER_CANDIDATES = 25;
+/**
+ * Ladder escalation: maximum candidates read per tick (real creation is still bounded by ESCALATION_DAILY_CAP).
+ * Was 25 until 2026-11-26: the read is oldest first, and the oldest blocks are the ones the ladder can't move
+ * (no target, level already open), so they filled every tick and newer stuck issues were never looked at
+ * (PAR-14776 sat 39th of 44).
+ */
+export const LADDER_CANDIDATES = 500;
 
 /** Run statuses that carry a verdict: the run ran to a result. Cancelled, interrupted, queued and running runs are not counted. */
 export const FINISHED_RUN = ["succeeded", ...FAILED_RUN] as const;

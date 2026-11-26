@@ -10,16 +10,16 @@ import { coordinatorAttentionQueryKey, coordinatorAttentionSummaryQueryKey } fro
 import { queryKeys } from "@/lib/queryKeys";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-const fixture = vi.hoisted(() => ({ attention: vi.fn(), summary: vi.fn(), openNewIssue: vi.fn(), pathname: "/COO/issues", collapsed: false, userId: "reviewer", chats: [] as Array<{ isUnreadForMe: boolean }>,
+const fixture = vi.hoisted(() => ({ attention: vi.fn(), summary: vi.fn(), openNewIssue: vi.fn(), pathname: "/COO/issues", collapsed: false, isMobile: false, sessionLoaded: true, setCollapseScope: vi.fn(), toggleCollapsed: vi.fn(), userId: "reviewer", chats: [] as Array<{ isUnreadForMe: boolean }>,
   recentTasks: [] as Array<Record<string, unknown>>, projects: [] as Array<Record<string, unknown>>, projectTasks: vi.fn(), enableCases: false, agents: [] as Agent[],
   pluginSlots: [] as unknown[], pluginLaunchers: [] as unknown[], mountProps: [] as Array<{ className?: string }>, setSidebarOpen: vi.fn() }));
 vi.mock("@/hooks/useAgentChatNavigation", () => ({ useAgentChatNavigation: () => ({
-  companyId: "company", userId: fixture.userId, agents: { data: fixture.agents }, chats: { data: fixture.chats }, session: { isSuccess: true },
+  companyId: "company", userId: fixture.userId, agents: { data: fixture.agents }, chats: { data: fixture.chats }, session: { isSuccess: fixture.sessionLoaded },
 }) }));
 vi.mock("@/hooks/useRecentTasks", () => ({ useRecentTasks: () => ({ entries: fixture.recentTasks }) }));
 vi.mock("@/api/issues", () => ({ issuesApi: { listCompact: fixture.projectTasks } }));
 vi.mock("@/context/DialogContext", () => ({ useDialogActions: () => ({ openNewIssue: fixture.openNewIssue }) }));
-vi.mock("@/context/SidebarContext", () => ({ useSidebar: () => ({ collapsed: fixture.collapsed, peeking: false, isMobile: false, setSidebarOpen: fixture.setSidebarOpen }) }));
+vi.mock("@/context/SidebarContext", () => ({ useSidebar: () => ({ collapsed: fixture.collapsed, peeking: false, isMobile: fixture.isMobile, setSidebarOpen: fixture.setSidebarOpen, setCollapseScope: fixture.setCollapseScope, toggleCollapsed: fixture.toggleCollapsed }) }));
 vi.mock("@/api/auth", () => ({ authApi: { getSession: async () => ({ session: { id: "s", userId: "u" }, user: null, memberRestrictions: [] }) } }));
 vi.mock("@/api/attention", () => ({ attentionApi: { list: fixture.attention, summary: fixture.summary } }));
 vi.mock("@/api/instanceSettings", () => ({ instanceSettingsApi: { getExperimental: async () => ({ enableCases: fixture.enableCases }) } }));
@@ -62,7 +62,7 @@ function summary(items: AttentionItem[]) {
 
 let root: Root, container: HTMLDivElement, client: QueryClient;
 beforeEach(() => {
-  vi.clearAllMocks(); localStorage.clear(); fixture.collapsed = false; fixture.userId = "reviewer"; fixture.pathname = "/COO/issues";
+  vi.clearAllMocks(); localStorage.clear(); fixture.collapsed = false; fixture.isMobile = false; fixture.sessionLoaded = true; fixture.userId = "reviewer"; fixture.pathname = "/COO/issues";
   fixture.chats = []; fixture.recentTasks = []; fixture.projects = []; fixture.enableCases = false; fixture.agents = []; fixture.pluginSlots = []; fixture.pluginLaunchers = []; fixture.mountProps = [];
   fixture.summary.mockResolvedValue(summary([pending("question"), pending("review")]));
   container = document.createElement("div"); document.body.appendChild(container); root = createRoot(container);
@@ -402,5 +402,48 @@ describe("Coordinator apps in More", () => {
   it("shows no Apps group without any app", async () => {
     await renderSidebar(); await openMore();
     expect(document.querySelector(".design-sidebar-more-apps")).toBeNull();
+  });
+});
+
+describe("Coordinator collapse toggle", () => {
+  const toggle = (label: string) => container.querySelector<HTMLButtonElement>(`.design-sidebar-brand button[aria-label="${label}"]`);
+  it.each([[false, "Collapse sidebar"], [true, "Expand sidebar"]])("labels the brand-row toggle for collapsed=%s and toggles on click", async (collapsed, label) => {
+    fixture.collapsed = collapsed;
+    await renderSidebar();
+    const button = toggle(label);
+    expect(button).not.toBeNull();
+    expect(button!.getAttribute("aria-expanded")).toBe(String(!collapsed));
+    await act(async () => button!.click());
+    expect(fixture.toggleCollapsed).toHaveBeenCalledOnce();
+  });
+  it("renders no toggle on mobile", async () => {
+    fixture.isMobile = true;
+    await renderSidebar();
+    expect(toggle("Collapse sidebar")).toBeNull();
+    expect(toggle("Expand sidebar")).toBeNull();
+  });
+  it("sets the per-user scope on mount and clears it on unmount", async () => {
+    await renderSidebar();
+    expect(fixture.setCollapseScope).toHaveBeenCalledWith("paperclip.coordinator.sidebar-collapsed.v1:reviewer");
+    fixture.setCollapseScope.mockClear();
+    act(() => root.unmount());
+    expect(fixture.setCollapseScope).toHaveBeenCalledWith(null);
+  });
+  it("leaves the hinted scope alone while the session loads", async () => {
+    fixture.sessionLoaded = false; fixture.userId = null as unknown as string;
+    await renderSidebar();
+    expect(fixture.setCollapseScope).not.toHaveBeenCalled();
+  });
+  it("clears the scope when the session resolved with no user", async () => {
+    fixture.userId = null as unknown as string;
+    await renderSidebar();
+    expect(fixture.setCollapseScope).toHaveBeenCalledWith(null);
+  });
+  it("keeps apps reachable through More while collapsed", async () => {
+    fixture.collapsed = true;
+    fixture.pluginSlots = [{ id: "crm", pluginKey: "crm", displayName: "CRM" }];
+    await renderSidebar();
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="More workspace pages"]')!.click());
+    expect(document.body.querySelector('[data-mounted-app="crm"]')).not.toBeNull();
   });
 });

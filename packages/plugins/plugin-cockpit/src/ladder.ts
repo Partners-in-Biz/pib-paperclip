@@ -6,7 +6,7 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { escalate, cancelUnblocksOnResolve } from "@partnersinbiz/pib-plugin-kit";
 import { nextAction, BLOCKED_ESCALATE_HOURS, classifyUnblock, type Level, type UnblockInput } from "./ladder-model.js";
-import { recordRepair, listRepairs } from "./repairs.js";
+import { recordRepair, latestRepairTimes, repairKey } from "./repairs.js";
 import { ownerPushedWithin, recordOwnerPush } from "./register-w1c-deadlines.js";
 import { readMarkerIssues, readLadderIssues, readStorms, type MarkerIssueRow, type LadderIssue } from "./watch.js";
 import { message, type Env } from "./env.js";
@@ -37,25 +37,15 @@ export async function reconcileMarkers(
 ): Promise<number> {
   if (markers.length === 0) return 0;
 
-  // Fetch existing repairs for this company with kind='escalation'
-  const existing = await listRepairs(ctx, companyId, {
-    kind: "escalation",
-    limit: 500,
-  });
-
-  // Build a set of existing (targetId, action) pairs
-  const existingSet = new Set(
-    existing
-      .filter((r) => r.targetKind === "issue")
-      .map((r) => `${r.targetId}:${r.action}`),
-  );
+  // Existing escalation rows for exactly these markers (all of them, not the newest 500)
+  const existing = await latestRepairTimes(ctx, companyId, "escalation", markers.map((m) => m.id));
 
   let inserted = 0;
   for (const marker of markers) {
     const action = `create_L${marker.level}`;
-    const key = `${marker.id}:${action}`;
+    const key = repairKey(marker.id, action);
 
-    if (!existingSet.has(key)) {
+    if (!existing.has(key)) {
       await recordRepair(ctx, companyId, {
         kind: "escalation",
         targetKind: "issue",
@@ -65,6 +55,7 @@ export async function reconcileMarkers(
         detail: `Escalated issue ${marker.stuckIssueId} to level ${marker.level}`,
         actor: "cockpit-ladder",
       });
+      existing.set(key, now.toISOString());
       inserted += 1;
     }
   }
@@ -72,20 +63,29 @@ export async function reconcileMarkers(
   return inserted;
 }
 
-/** Check if a repair row exists (fetched once per tick, checked many times). */
+type RepairTimes = Map<string, string>;
+
+/** Check if a repair row exists (read once per tick for every target in it, checked many times). */
 async function hasRepair(
-  ctx: PluginContext,
-  companyId: string,
-  existingList: Awaited<ReturnType<typeof listRepairs>>,
+  _ctx: PluginContext,
+  _companyId: string,
+  existing: RepairTimes,
   opts: { targetId: string; action: string; since?: string },
 ): Promise<boolean> {
-  return existingList.some(
-    (r) =>
-      r.targetKind === "issue" &&
-      r.targetId === opts.targetId &&
-      r.action === opts.action &&
-      (!opts.since || r.createdAt >= opts.since),
-  );
+  const at = existing.get(repairKey(opts.targetId, opts.action));
+  return at !== undefined && (!opts.since || at >= opts.since);
+}
+
+/** Record a repair row and remember it, so the same tick never writes it twice. */
+async function recordOnce(
+  ctx: PluginContext,
+  companyId: string,
+  existing: RepairTimes,
+  now: Date,
+  input: Parameters<typeof recordRepair>[2],
+): Promise<void> {
+  await recordRepair(ctx, companyId, input);
+  existing.set(repairKey(input.targetId, input.action), now.toISOString());
 }
 
 /** Internal state key for the hourly guard. */
@@ -104,13 +104,13 @@ async function recordSkip(
   companyId: string,
   stuckIssueId: string,
   skipReason: SkipReason,
-  existingList: Awaited<ReturnType<typeof listRepairs>>,
+  existingList: RepairTimes,
   now: Date,
 ): Promise<void> {
   const today = now.toISOString().split("T")[0];
   const action = `skip_${skipReason}`;
   if (!(await hasRepair(ctx, companyId, existingList, { targetId: stuckIssueId, action, since: today }))) {
-    await recordRepair(ctx, companyId, {
+    await recordOnce(ctx, companyId, existingList, now, {
       kind: "escalation",
       targetKind: "issue",
       targetId: stuckIssueId,
@@ -176,16 +176,13 @@ export async function ladderTick(env: Env, companyId: string): Promise<LadderTic
   // Guard passed; record the run time and proceed with actions
   await env.ctx.state.set(stateKey, now.toISOString());
 
-  // Fetch repairs once for the entire tick (used by hasRepair)
-  const existingRepairs = await listRepairs(env.ctx, companyId, {
-    kind: "escalation",
-    limit: 500,
-  });
-
   // Step (c): Process each ladder issue
   const markerIds = new Set(markers.map((m) => m.id));
   const ladderIssues = await readLadderIssues(env.ctx, companyId, now);
   const blockedTotal = ladderIssues.length;
+
+  // Existing escalation rows for every issue in this tick, read once (used by hasRepair)
+  const existingRepairs = await latestRepairTimes(env.ctx, companyId, "escalation", ladderIssues.map((l) => l.stuck.id));
 
   for (const issue of ladderIssues) {
     let stage = "none";
@@ -211,7 +208,7 @@ export async function ladderTick(env: Env, companyId: string): Promise<LadderTic
         if (hasMarkers) {
           const today = now.toISOString().split("T")[0];
           if (!(await hasRepair(env.ctx, companyId, existingRepairs, { targetId: issue.stuck.id, action: "resolved", since: today }))) {
-            await recordRepair(env.ctx, companyId, {
+            await recordOnce(env.ctx, companyId, existingRepairs, now, {
               kind: "escalation",
               targetKind: "issue",
               targetId: issue.stuck.id,
@@ -226,7 +223,7 @@ export async function ladderTick(env: Env, companyId: string): Promise<LadderTic
         stage = "create";
         const reason = issue.stuck.reblockedAfterSweep
           ? "Blocked with nobody else named to act: the assignee was handed it back, tried again and blocked it again."
-          : `Blocked over ${BLOCKED_ESCALATE_HOURS} hours with no open blocker and nobody else named to act.`;
+          : `Blocked over ${BLOCKED_ESCALATE_HOURS === 1 ? "1 hour" : `${BLOCKED_ESCALATE_HOURS} hours`} with no open blocker and nobody else named to act.`;
         const startLevel = action.level === 4 ? "coo" : action.level;
 
         // Level 4: skip if owner already pushed in last 24h
@@ -244,7 +241,7 @@ export async function ladderTick(env: Env, companyId: string): Promise<LadderTic
         if ("id" in result && result.created) {
           // Record using the new Unblock issue id as target (for dedup with reconciler)
           if (!(await hasRepair(env.ctx, companyId, existingRepairs, { targetId: result.id, action: `create_L${action.level}` }))) {
-            await recordRepair(env.ctx, companyId, {
+            await recordOnce(env.ctx, companyId, existingRepairs, now, {
               kind: "escalation",
               targetKind: "issue",
               targetId: result.id,

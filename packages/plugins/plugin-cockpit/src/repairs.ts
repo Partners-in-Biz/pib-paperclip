@@ -53,6 +53,39 @@ function rowFrom(r: Raw): RepairRow {
 
 const newId = (): string => `rep${randomBytes(6).toString("hex")}`;
 
+/** Key of a (target, action) pair in the map from latestRepairTimes. */
+export const repairKey = (targetId: string, action: string): string => `${targetId}:${action}`;
+
+/**
+ * Latest created_at (ISO) per (target_id, action) among issue-target repairs of one kind, for the given
+ * targets. "Already recorded?" checks use this, not listRepairs: that returns at most 500 rows, newest
+ * first, so a check over it missed older rows and the ladder wrote the same rows again every tick
+ * (about 35,000 a day by 2026-11-26).
+ */
+export async function latestRepairTimes(
+  ctx: PluginContext,
+  companyId: string,
+  kind: string,
+  targetIds: string[],
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const ids = Array.from(new Set(targetIds.filter(Boolean)));
+  for (let i = 0; i < ids.length; i += 500) {
+    const chunk = ids.slice(i, i + 500);
+    const rows = await ctx.db.query<Raw>(
+      `SELECT target_id, action, created_at FROM ${TABLE} WHERE company_id = $1 AND kind = $2 AND target_kind = 'issue' AND target_id = ANY(ARRAY(SELECT jsonb_array_elements_text($3::jsonb)))`,
+      [companyId, kind, JSON.stringify(chunk)],
+    );
+    for (const r of rows) {
+      const key = repairKey(String(r.target_id), String(r.action));
+      const at = iso(r.created_at) ?? "";
+      const prev = out.get(key);
+      if (prev === undefined || at > prev) out.set(key, at);
+    }
+  }
+  return out;
+}
+
 /**
  * Records a repair action. The detail is passed through redactSecrets to remove
  * credentials, then truncated to REPAIR_DETAIL_MAX characters.

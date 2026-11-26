@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Inbox, Boxes, ChevronRight, CircleCheck, FolderOpen, History, LayoutDashboard, MessageCircle, MoreHorizontal, Network, Pin, PinOff, Plus, Repeat, Search, Settings, SquarePen, Unplug, type LucideIcon } from "lucide-react";
+import { Inbox, Boxes, ChevronRight, CircleCheck, FolderOpen, History, LayoutDashboard, MessageCircle, MoreHorizontal, Network, PanelLeftClose, PanelLeftOpen, Pin, PinOff, Plus, Repeat, Search, Settings, SquarePen, Unplug, type LucideIcon } from "lucide-react";
 import type { Agent, Project } from "@paperclipai/shared";
 import { useCoordinatorAttentionCount } from "@/hooks/useCoordinatorAttentionCount";
 import { issuesApi } from "@/api/issues";
@@ -174,7 +174,14 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
   const moreContentRef = useRef<HTMLDivElement>(null);
   const orderedPins = useMemo(() => buildPinnedNavigationItems(pinnedNavigation.pins, agents.data ?? [], destinations), [pinnedNavigation.pins, agents.data, destinations]);
   const { entries: recentTasks } = useRecentTasks({ companyId, userId });
-  const { collapsed, peeking, isMobile, setSidebarOpen } = useSidebar();
+  const { collapsed, peeking, isMobile, setSidebarOpen, setCollapseScope, toggleCollapsed } = useSidebar();
+  // Before paint: the hinted scope covers the loading session; a resolved
+  // session with no user, or unmount (classic layout takes over), clears it.
+  useLayoutEffect(() => {
+    if (userId) setCollapseScope(`paperclip.coordinator.sidebar-collapsed.v1:${encodeURIComponent(userId)}`);
+    else if (session.isSuccess) setCollapseScope(null);
+  }, [userId, session.isSuccess, setCollapseScope]);
+  useLayoutEffect(() => () => setCollapseScope(null), [setCollapseScope]);
   const rail = collapsed && !peeking;
   const { openNewIssue } = useDialogActions();
   const location = useLocation();
@@ -209,6 +216,7 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
     <div className="design-sidebar-brand" data-collapsed={rail || undefined}>
       <SidebarCompanyMenu showChevron={false} />
       <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon-sm" className="design-sidebar-search" aria-label="Global search" onClick={() => document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true, cancelable: true }))}><Search aria-hidden /></Button></TooltipTrigger><TooltipContent side="right">Search tasks, agents, projects</TooltipContent></Tooltip>
+      {!isMobile && <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon-sm" className="design-sidebar-collapse-toggle" aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"} aria-expanded={!collapsed} onClick={toggleCollapsed}>{collapsed ? <PanelLeftOpen aria-hidden /> : <PanelLeftClose aria-hidden />}</Button></TooltipTrigger><TooltipContent side="right">{collapsed ? "Expand sidebar" : "Collapse sidebar"}</TooltipContent></Tooltip>}
     </div>
     <nav className="design-sidebar-navigation" aria-label="Workspace navigation">
       <div className="design-sidebar-primary">
