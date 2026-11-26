@@ -92,6 +92,7 @@ describe("SEO cockpit snapshot (unconfigured)", () => {
   });
 });
 
+let awaitingSql = "";
 describe("SEO cockpit snapshot (configured)", () => {
   const now = Date.now();
   const iso = (msAgo: number) => new Date(now - msAgo).toISOString();
@@ -124,7 +125,9 @@ describe("SEO cockpit snapshot (configured)", () => {
         ],
       }];
     }
-    if (sql.includes(`FROM ${T("previews")}`) && sql.includes("DISTINCT ON (sprint_id, page_url)")) {
+    if (sql.includes(`FROM ${T("previews")}`) && sql.includes("DISTINCT ON (sprint_id, task_id, page_url)")) {
+      // PAR-14506: the Needs-you count uses the tab's rule: per task and page, any review state.
+      awaitingSql = sql;
       return [{ ...SPRINT_ROW, n: "3", since: "2026-09-25T05:00:00Z", task_ids: ["t-9"] }];
     }
     if (sql.includes(`FROM ${T("sprint_tasks")} WHERE company_id = $1 AND id IN`)) return [{ id: "t-9", issue_id: "iss-t9" }];
@@ -175,6 +178,7 @@ describe("SEO cockpit snapshot (configured)", () => {
       ["seo:needs-you:sp-1:approval-email:k1", "judgement", "iss-ny"],
       ["seo:optimization:o-1", "judgement", "iss-opt"],
     ]);
+    expect(awaitingSql).not.toContain("l.review_status");
     expect(snap.waiting[0]).toMatchObject({ title: "3 previews await your decision", href: "/seo?sprint=sp-1&tab=previews&filter=awaiting" });
     // A grant keeps its own page; a sign-off for a task with an awaiting preview and the approval email open the Previews tab.
     expect(snap.waiting[1]!.href).toBe("/seo?sprint=sp-1&tab=integrations");

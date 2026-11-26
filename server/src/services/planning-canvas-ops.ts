@@ -20,6 +20,7 @@ import {
   type PlanningCanvasOpBatchResponse,
   type PlanningCanvasOpRejectReason,
   type PlanningCanvasOpResult,
+  type PlanningCanvasConnectorSource,
   type PlanningCanvasTableData,
 } from "@paperclipai/shared";
 import { badRequest, conflict, notFound } from "../errors.js";
@@ -51,11 +52,23 @@ type Counts = Record<PlanningCanvasItemType, number>;
 
 export type PlanningCanvasOpsActor = PlanningCanvasEventActor;
 
+/**
+ * Who may write a table's connector `source` in this batch (PAR-14282 s.3):
+ * set only by the ops route for an agent run bound to a board chat thread of
+ * this board that works for a person. Null for everyone else.
+ */
+export interface PlanningCanvasSourceWriter {
+  personId: string;
+  agentId: string;
+  issueId: string;
+}
+
 export interface ApplyPlanningCanvasOpsInput {
   companyId: string;
   boardId: string;
   actor: PlanningCanvasOpsActor;
   batch: unknown;
+  sourceWriter?: PlanningCanvasSourceWriter | null;
   /** Clock override for tests (tombstone and batch retention). */
   now?: Date;
 }
@@ -123,6 +136,53 @@ function emptyTable(): PlanningCanvasTableData {
   return { columns: [], rows: [] };
 }
 
+/** JSON with sorted keys: stored `jsonb` does not keep key order. */
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record).sort().filter((key) => record[key] !== undefined).map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
+/**
+ * A table node's connector `source` (PAR-14282 s.3, s.4). `opSource` is what
+ * the op sends, `stored` what the row holds. A writer that is not a board chat
+ * run of this board may keep the stored source exactly (a round trip of the
+ * whole node) or drop it, never add or change one. An allowed writer's source
+ * is stamped by the server: the run's person, agent, thread and the time.
+ */
+function stampTableSource(
+  state: BatchState,
+  fields: Record<string, unknown>,
+  stored: PlanningCanvasConnectorSource | undefined,
+): PlanningCanvasOpRejectReason | null {
+  if (fields.kind !== "table") return null;
+  const table = fields.data as PlanningCanvasTableData | undefined;
+  const opSource = table?.source;
+  if (!table || opSource === undefined) return null;
+  const writer = state.sourceWriter;
+  if (!writer) return stored && canonicalJson(opSource) === canonicalJson(stored) ? null : "source_not_allowed";
+  fields.data = {
+    ...table,
+    source: {
+      tool: opSource.tool,
+      params: opSource.params,
+      fetchedAt: state.now.toISOString(),
+      fetchedBy: writer.personId,
+      agentId: writer.agentId,
+      issueId: writer.issueId,
+    },
+  };
+  return null;
+}
+
+function storedTableSource(row: ItemRow): PlanningCanvasConnectorSource | undefined {
+  const node = row.data as Partial<PlanningCanvasNodeFields>;
+  return node.kind === "table" ? (node.data as PlanningCanvasTableData | undefined)?.source : undefined;
+}
+
 function clampIndex(index: number | undefined, length: number) {
   if (index === undefined) return length;
   return Math.max(0, Math.min(index, length));
@@ -144,6 +204,7 @@ class BatchState {
     readonly revision: number,
     readonly actor: PlanningCanvasOpsActor,
     readonly now: Date,
+    readonly sourceWriter: PlanningCanvasSourceWriter | null = null,
   ) {}
 
   async loadCounts() {
@@ -271,6 +332,10 @@ async function applyAdd(state: BatchState, op: Extract<PlanningCanvasOp, { op: "
       return { result: rejected(key, "missing_endpoint") };
     }
   }
+  if (itemType === "node") {
+    const sourceRefusal = stampTableSource(state, fields as Record<string, unknown>, undefined);
+    if (sourceRefusal) return { result: rejected(key, sourceRefusal) };
+  }
   const node = itemType === "node" ? (fields as PlanningCanvasNodeFields) : null;
   const row: ItemRow = state.stamp(
     {
@@ -320,6 +385,10 @@ async function applyUpdate(state: BatchState, op: Extract<PlanningCanvasOp, { op
     if (conflicting.length > 0) return conflictResult(row, conflicting);
   }
   const merged = { ...(row.data as unknown as Record<string, unknown>), ...op.set };
+  if (row.itemType === "node" && "data" in op.set) {
+    const sourceRefusal = stampTableSource(state, merged, storedTableSource(row));
+    if (sourceRefusal) return { result: rejected(op.key, sourceRefusal) };
+  }
   const invalid = checkFields(row.itemType, merged);
   if (invalid) return { result: rejected(op.key, invalid) };
   if (row.itemType === "connector") {
@@ -578,7 +647,7 @@ export function planningCanvasOpsService(db: Db) {
         }
 
         const purgedThroughRevision = await purgeTombstones(tx, board, now);
-        const state = new BatchState(tx, board, board.revision + 1, input.actor, now);
+        const state = new BatchState(tx, board, board.revision + 1, input.actor, now, input.sourceWriter ?? null);
         await state.loadCounts();
         await state.ensureLoaded(batch.ops.flatMap((op) => referencedKeys(op as PlanningCanvasOp)));
 

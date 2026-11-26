@@ -25,7 +25,7 @@ import { Banner, StuckBanner, compactLink, linkButton, small } from "./parts.js"
 import { SeoPreferences } from "./preferences.js";
 import { SPRINT_TAB_IDS, SprintCockpit } from "./sprint.js";
 import type { HireView, LoadResult, PreviewFilter, SprintSummary, TabId } from "./types.js";
-import { isPreviewFilter } from "./words.js";
+import { isPreviewFilter, reopenParams } from "./words.js";
 import { useSeoAction, useAccessMe } from "./actions.js";
 
 function useSearch(): URLSearchParams {
@@ -186,9 +186,8 @@ function SeoPageBody({ context }: PluginPageProps) {
 
   // A sprint opened from the wrong workspace reopens in the one it belongs to.
   const reopenIn = (id: string, client: string | null, clientName: string | null) => {
-    const tab = search.get("tab");
     carry(client ? `This sprint belongs to ${clientName ?? "a client"}, so it opens in that client's workspace.` : "This sprint is one of our own sites, so it opens under our own SEO.");
-    nav.navigate(sprintPagePath("/seo", id, parseClientParam(client), tab ? { tab } : {}), { replace: true });
+    nav.navigate(sprintPagePath("/seo", id, parseClientParam(client), reopenParams(search)), { replace: true });
   };
 
   // The SEO home: "finish setting up" (the same checklist Setup shows) and the routines' real schedules.

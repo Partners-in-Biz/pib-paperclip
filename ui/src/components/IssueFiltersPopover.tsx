@@ -4,7 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Bot, Check, Filter, Search, User, X } from "lucide-react";
+import { Bot, Check, Filter, Search, User, X, Zap } from "lucide-react";
 import { PriorityIcon } from "./PriorityIcon";
 import { SHOW_TASK_PRIORITY_UI } from "../lib/ui-flags";
 import { StatusIcon } from "./StatusIcon";
@@ -48,7 +48,7 @@ type LabelOption = {
 type CreatorOption = {
   id: string;
   label: string;
-  kind: "agent" | "user";
+  kind: "agent" | "user" | "automation";
   searchText?: string;
 };
 
@@ -112,6 +112,7 @@ export function IssueFiltersPopover({
   enableExternalObjectFilters = true,
   enableLiveRunsFilter = true,
   enableAgentCreatedVisibilityFilter = false,
+  defaultShowAgentCreatedTasks = false,
   enableRoutineTasksFilter = false,
   buttonVariant = "ghost",
   iconOnly = false,
@@ -129,6 +130,7 @@ export function IssueFiltersPopover({
   enableExternalObjectFilters?: boolean;
   enableLiveRunsFilter?: boolean;
   enableAgentCreatedVisibilityFilter?: boolean;
+  defaultShowAgentCreatedTasks?: boolean;
   enableRoutineTasksFilter?: boolean;
   buttonVariant?: "ghost" | "outline";
   iconOnly?: boolean;
@@ -184,7 +186,11 @@ export function IssueFiltersPopover({
     [creatorOptionById, currentUserId, state.creators],
   );
   const clearFilters = () => {
-    onChange(defaultIssueFilterState);
+    onChange({
+      ...defaultIssueFilterState,
+      showAgentCreatedTasks: defaultShowAgentCreatedTasks,
+      showAgentCreatedTasksCustomized: false,
+    });
     inboxScopeFilters?.onClear();
   };
 
@@ -396,7 +402,7 @@ export function IssueFiltersPopover({
                     <div className="flex flex-wrap gap-1">
                       {selectedCreatorOptions.map((creator) => (
                         <Badge key={creator.id} variant="secondary" className="gap-1 pr-1">
-                          {creator.kind === "agent" ? <Bot className="h-3 w-3" /> : <User className="h-3 w-3" />}
+                          {creator.kind === "agent" ? <Bot className="h-3 w-3" /> : creator.kind === "automation" ? <Zap className="h-3 w-3" /> : <User className="h-3 w-3" />}
                           <span>{creator.label}</span>
                           <button
                             type="button"
@@ -431,7 +437,7 @@ export function IssueFiltersPopover({
                           }`}
                           onClick={() => onChange({ creators: toggleIssueFilterValue(state.creators, creator.id) })}
                         >
-                          {creator.kind === "agent" ? <Bot className="h-3.5 w-3.5" /> : <User className="h-3.5 w-3.5" />}
+                          {creator.kind === "agent" ? <Bot className="h-3.5 w-3.5" /> : creator.kind === "automation" ? <Zap className="h-3.5 w-3.5" /> : <User className="h-3.5 w-3.5" />}
                           <span className="min-w-0 flex-1 truncate">{creator.label}</span>
                           {selected ? <X className="h-3 w-3" /> : null}
                         </button>

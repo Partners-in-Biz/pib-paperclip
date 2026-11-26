@@ -10,9 +10,12 @@ Daemon and CLI for capturing logged-in browser evidence. Not installed by defaul
 - `pib-browser open` - Open a browser context
 - `pib-browser goto` - Navigate to a URL
 - `pib-browser click` - Click an element
+- `pib-browser drag --from SEL --to SEL` - Drag one element onto another. Gated like `click`: the destructive-word check sees both selectors and their labels, and `--approval PAR-N` works the same.
 - `pib-browser fill` - Fill a form field
 - `pib-browser text` - Get text from an element
 - `pib-browser shot` - Take a screenshot
+- `pib-browser net [--step NAME]` - Print the session's network log and write it to `<evidence root>/<PAR-n>/<PAR-n>-<step>-<time>.json`. Each entry has time, method, status (0 = request failed or blocked) and a redacted URL. Query values, fragments, credentials and token-like path segments are replaced with `[redacted]`; headers, cookies and bodies are never recorded. The log keeps the last 1000 requests of the session.
+- `--viewport WxH` on `open` and `goto` - Set the viewport (e.g. `open --identity pib:paperclip --viewport 390x844`). Allowed 320x320 to 3840x2160; anything else is refused (exit 2). It overrides `PIB_BROWSER_MOBILE`'s size.
 - `pib-browser close` - Close the browser context
 
 ### Status and Evidence
@@ -31,6 +34,20 @@ Procedure (root part from PAR-9356):
 3. Point a VNC client at `localhost:5900` and log in in the window. It closes by itself when you are logged in.
 4. On the server: `sudo pib-root browser-handoff-stop <id>` removes the flag (root-owned; only root can) and stops `pib-vnc`.
 5. An agent runs `pib-browser probe --all --identities <id> --issue PAR-N`; the login shows ok.
+
+### Live view (PAR-14514)
+A second socket, `/run/pib-browser/live.sock` (mode 0660, `PIB_BROWSER_LIVE_SOCKET`), streams display `:99` to Cockpit over a WebSocket, view only. `GET /stream?mode=view` is accepted only with the core server's signed header `x-paperclip-local-ws-signature` (`doc/plugins/PLUGIN_SPEC.md`): it must verify against the key from `PIB_BROWSER_API`/`api/plugins/local-ws-key`, name this socket, the plugin `PIB_BROWSER_LIVE_PLUGIN_KEY` (default `partnersinbiz.cockpit`) and the exact path, be under 30 s old and use a fresh nonce. Any other process on the box, an agent included, gets 401. Each stream runs its own `x11vnc -inetd -viewonly` (no TCP port), handed a socket through a one-use 0700 folder in the private temp folder; at most two streams, 20 minutes each, a ping every 20 s, and `x11vnc` is killed when either side closes or the daemon stops. `GET /status` (unsigned) returns `{viewers, agentSessions, lease, waiting}`. Neither the path, the header nor any stream byte is logged. If the live service cannot start (for example `ws` missing), the agent socket runs as before.
+
+### Take-over (PAR-14514 S4)
+A person takes the keyboard and mouse for one identity through the same socket. There is no "start" call: the signed stream is the start.
+
+- `GET /stream?mode=control&identity=<id>` (signed, same check as `mode=view`). With no lease, it starts one for that identity, owned by the signed user id, and opens the hand-off window (as `handoff-open` does; any agent session on the identity is closed first). The same person on the same identity re-attaches (the 5-minute proxy reconnect); the newest stream replaces the old one, so there is one control stream at a time. Anyone else, or another identity, gets `409`. `x11vnc` runs without `-viewonly`, still with `-noclipboard -noprimary`: paste goes in, nothing comes out.
+- **Lease**: in memory only, so a daemon restart ends it. At most 20 minutes; ends after 60 s with no control stream, on release, or when the window closes for its own reasons (logged-in text seen, person closed it). Its end closes the window (`ctx.close()` writes the profile) and every control stream. The lease counts inside `handoff.isActive`, next to root's flag, which still works as the break-glass route.
+- While a lease is live, and while a release check runs, **every** agent command on every identity gets exit 3 `handoff_open` (`:99` has no window manager, so the person could click into any window).
+- `POST /release {"identity":"<id>"}` (unsigned): ends the lease if live, closes the window, then runs the session check (the `open` test: logged-in URL, expected text) and returns `{ok, reason, waiting}` (`reason`: `logged_in`, `session_expired`, ...). It answers the same for a lease that already ended, so it is safe twice. A live lease on another identity is left alone (`take_over_other_identity`). `{"all":true}` also ends any lease and closes every view stream (used when Cockpit's setting goes to `off`).
+- `GET /status` `lease`: `null`, `{state:"live", identity, userId, secondsLeft, controlConnected}`, or `{state:"ended", confirmed:false, identity, userId, reason, endedAt}` until a release answers for it.
+- **Waiting list**: every `session_expired` or `handoff_open` answer to an agent (after its token and issue are checked) records identity, issue and time in `$PIB_BROWSER_STATE_DIR/waiting.json` (mode 0600, one entry per identity and issue, kept 7 days). `POST /waiting/clear {"identity":"<id>","issues":["PAR-1"]}` removes entries. Cockpit's "Done" wakes these tasks.
+- Logged: take-over started/ended with the reason, control opened/closed, release result. Never the identity's user, the path, the header or any typed byte.
 
 ## Exit Codes
 
@@ -69,7 +86,7 @@ The daemon reads the following environment variables at startup:
 | `PIB_BROWSER_POLICY` | (required) | Path to policy JSON file |
 | `PIB_BROWSER_SITES` | (optional) | Path to sites JSON file |
 | `PIB_BROWSER_PROFILES` | `/var/lib/pib-browser/profiles` | Directory for browser profiles |
-| `PIB_BROWSER_STATE_DIR` | `/var/lib/pib-browser` | Directory for approval store state |
+| `PIB_BROWSER_STATE_DIR` | `/var/lib/pib-browser` | Directory for approval store state and the take-over waiting list (`waiting.json`) |
 | `PIB_BROWSER_HANDOFF_DIR` | `/run/pib-browser/handoff` | Directory for handoff state |
 | `PIB_BROWSER_SOCKET` | (required) | Unix socket path for daemon |
 | `PIB_BROWSER_SOCKET_MODE` | `0o660` | Socket file permissions (octal) |

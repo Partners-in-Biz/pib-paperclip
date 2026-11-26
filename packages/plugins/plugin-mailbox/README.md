@@ -64,6 +64,21 @@ Listens to `plugin.<sender>.mail.send.requested` for every kit `MAIL_SENDERS` pl
 - A retry first looks the message up by its Message-ID, so an attempt Gmail accepted is not sent twice.
 - Over the rate, Gmail down or the account needs reconnecting: nothing is stored and the sender's outbox retries. No connected account, a bad address, an expired attachment link or a message Gmail refuses: `failed` with `permanent: true`. The Sent tab retries by hand.
 
+## 0.10.0: the access guard (PAR-12682, spec PAR-12578 stage A)
+
+- Every page action, agent tool and API route is registered through the kit access guard, with one row each in `src/access-table.ts`: `mailbox.mail` (view, create, edit, delete), `mailbox.accounts` (connect, disconnect, delete, default, client, delegations) and `mailbox.settings` (sending domains, holds, client mail maps, the unsubscribe check). Preferences and the skill sync are owner or admin only. A tool needs the same permission as its page action.
+- The page and the sidebar entry ask `access.me` first; every page action goes through `withRefusal` (`src/ui/actions.ts`), so a refusal shows as an error, never as success.
+- With the company's access switch `off` (every company today) the guard passes every call on unchanged.
+
+## 0.9.20: plugin drafts in the Mailbox drafts; agents cannot send unasked mail to clients (PAR-12249, PAR-14558)
+
+- **Plugin drafts** (`mail.draft.requested`) are saved in the Paperclip Mailbox drafts (table `messages`, status `draft`), never in Gmail Drafts. The result carries `mailboxDraftId`; `gmailDraftId`, `gmailMessageId` and `draftUrl` are null. A plugin's draft is held for a person: an agent's `send-draft` of it is refused when a recipient is an existing client.
+- **One open draft per plugin, kind, subject and client**: key `<plugin>:<kind>:<clientRef or first recipient>:<context.id>`. `context.id` is the subject (an SEO sprint, a CRM approval), so two sprints of one client never replace each other's draft. A newer request replaces the older open draft unless a person edited it.
+- **Events back to the plugin**: `mail.draft.closed` with status `sent`, `deleted` or `replaced` (with `replacedBy`, the newer request key), and `mail.draft.kept` when a person edits the draft (it is theirs; nothing replaces it). The SEO plugin uses them to keep each preview in the one draft that really holds it.
+- **Agent drafts**: `create-draft` takes `purpose` (and `unasked`, `purposeKey`). Held unless the purpose is `reply` or `followup` on a draft that answers a stored message (`replyToMessageId`), or `invoice`. A held draft is refused to an agent's `send-draft` when a recipient is an existing client (CRM customer by contact, domain or billing email; fail closed when the CRM check fails). Mail to a prospect with no customer record is not held. Residual limit: `invoice` has no message to point at, so the label is trusted; it is on the draft for a person to check.
+- `draftByRequestKey` is scoped to the requesting plugin.
+- **Migration 013** adds `crm_companies.billing` and two partial indexes on `messages` (plugin migrations run in one transaction, so not `CONCURRENTLY`; the indexes cover outbound drafts only). **Deploy note:** existing CRM companies have no billing email in the Mailbox until the CRM sends them again: the nightly full share does it within a day, or run the CRM action **Send clients to the other plugins** (`crm.resync`) right after the deploy. Until then the billing-email rule matches nothing; the contact and domain rules still hold.
+
 ## 0.9.19: email cards on a planning canvas
 
 An email can sit on a planning canvas as a card (`canvasNode` slot `card-mail`, `entityCard` `{ kind: "mail", search: false, related: true }`; PAR-14389 C.2, PAR-14421). The card shows the subject, the other party's address (subtitle), the date and sent or received, never the body or the snippet; a client message (`private-mail.ts`) shows its subject only. "Open" goes to `/mailbox?tab=inbox&mail=<id>`.
@@ -117,6 +132,8 @@ A new reply issue opens in the client's `website` project (kit `resolveClientPro
 Opening a mail shows its whole text. **Reply**, **Reply all** and **Forward** save a draft (`mailbox.start-reply`: quoted text, right thread, a forward carries the original's files up to the draft limits) and open the draft editor, where To, Cc, Bcc, text and files can be changed; nothing goes out until someone clicks Send. **Delete** (one mail, or several ticked in the list; `mailbox.delete-mail`) moves the mail to the Bin in Gmail (`users.messages.trash`, recoverable for 30 days) and removes the row from the hub. Mail trashed in Gmail itself also leaves the inbox list. People only: no agent tool deletes mail. Sent records stay: they are the send log.
 
 ### Gmail drafts for other plugins (0.6.4)
+
+Since 0.9.20 (PAR-12249) the draft is saved in the Paperclip Mailbox drafts, not in Gmail: see 0.9.20 above. What follows is the 0.6.4 behaviour.
 
 Listens to `plugin.<sender>.mail.draft.requested` for every kit `MAIL_SENDERS` plugin (event-only: no agent tool) and answers with `mail.draft.result` (kit `MailDraftRequested` / `MailDraftResult`). The message lands in the **Drafts folder** of the Gmail account `from` names, else the company's default Gmail account (`users.drafts.create`). A person reads it, edits it and sends it from Gmail, or deletes it. The Mailbox never sends a draft: no send claim, no `messages.send`, no email-provider path, and no suppression or marketing rule (those guard a send). An empty recipient list, a missing subject or a bad address is still refused.
 

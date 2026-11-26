@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type Dispatch, type SetStateAction } from "react";
 import { useQuery } from "@tanstack/react-query";
-import type { CanvasConnector, CanvasNode, CanvasStroke, PlanningCanvasItem, PlanningCanvasItemType } from "@paperclipai/shared";
+import type { CanvasConnector, CanvasNode, CanvasStroke, PlanningCanvasItem, PlanningCanvasItemInput, PlanningCanvasItemType } from "@paperclipai/shared";
 import { planningCanvasesApi, type PlanningCanvasBoardWithItems } from "@/api/planningCanvases";
 import { queryKeys } from "@/lib/queryKeys";
 import { useDraftOwner } from "@/hooks/useDraftOwner";
@@ -267,6 +267,36 @@ export function useCanvasOpStore(input: CanvasOpStoreInput) {
     [store],
   );
 
+  /** Add nodes and connectors together (the Related add) as one undo step. */
+  const addItems = useCallback(
+    (items: PlanningCanvasItemInput[]) => {
+      if (!store || items.length === 0) return;
+      store.checkpoint();
+      store.applyLocal(items.map(({ itemType, key, ...fields }) => ({ key, item: { itemType, fields: fields as ItemFields } })));
+      const updates: ElementUpdates = { node: new Map(), connector: new Map(), stroke: new Map() };
+      for (const { key, itemType } of items) {
+        const added = store.getItem(key);
+        if (!added) continue;
+        const element = itemToElement(key, added, identifiers.current);
+        if (itemType === "node") updates.node.set(key, element as CanvasNode);
+        else if (itemType === "connector") updates.connector.set(key, element as CanvasConnector);
+      }
+      const { setNodes, setConnectors } = latest.current;
+      setNodes((prev) => patchElements(prev, updates.node));
+      setConnectors((prev) => patchElements(prev, updates.connector));
+      synced.current = {
+        ...synced.current,
+        nodes: patchElements(synced.current.nodes, updates.node),
+        connectors: patchElements(synced.current.connectors, updates.connector),
+      };
+      const keys = items.map((item) => item.key);
+      setLinkMeta((prev) => patchLinkMeta(prev, keys, (k) => store.getItem(k)));
+      setTypedMeta((prev) => patchTypedMeta(prev, keys, (k) => store.getItem(k)));
+      store.checkpoint();
+    },
+    [store],
+  );
+
   /** Replace the typed `data` of a table or markdown node. A table change is sent as cell ops (plan B.3). */
   const setNodeData = useCallback(
     (key: string, data: unknown) => {
@@ -283,6 +313,7 @@ export function useCanvasOpStore(input: CanvasOpStoreInput) {
     linkMeta,
     typedMeta,
     addItem,
+    addItems,
     setNodeData,
     /** Pull in what the server changed since the last read (a handoff links nodes server-side). */
     catchUp: useCallback(() => store?.catchUp(), [store]),

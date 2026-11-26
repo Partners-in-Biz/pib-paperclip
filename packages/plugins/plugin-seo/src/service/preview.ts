@@ -371,7 +371,7 @@ async function reuseStoredPreview(env: Env, req: PreviewRequestContext): Promise
 
 const nextAfterPreview = (sprint: db.Sprint): string =>
   sprint.clientSignoff === "auto"
-    ? "The link is HELD: the client sees a 'being checked' page until the Reviewer has compared it with the live page and passed it. Make a preview for every page of this task, then END your turn. The plugin does the rest: it parks this task on the client, drafts one approval email in Gmail for a person to send, and wakes you when the client has answered every preview of the task (with what to apply and what to revise). Do not put the links on Needs you and do not use block-task for this. Apply nothing before then."
+    ? "The link is HELD: the client sees a 'being checked' page until the Reviewer has compared it with the live page and passed it. Make a preview for every page of this task, then END your turn. The plugin does the rest: it parks this task on the client, drafts one approval email in the Mailbox drafts for a person to send, and wakes you when the client has answered every preview of the task (with what to apply and what to revise). Do not put the links on Needs you and do not use block-task for this. Apply nothing before then."
     : "The link is HELD: the client sees a 'being checked' page until the Reviewer has compared it with the live page and passed it. End your turn after making your previews; you are woken on this task's issue with the result. Only then put the link on Needs you for the owner. If the Reviewer asks for changes, fix and make a new preview. Apply anything through the Connector only after the client approved and the owner confirmed.";
 
 async function freshPreview(env: Env, actor: Actor, req: PreviewRequestContext): Promise<CreatePreviewResult> {
@@ -872,8 +872,10 @@ export async function previewRows(env: Env, companyId: string, sprintId: string)
     const stats = typeof r.stats === "string" ? (JSON.parse(String(r.stats)) as Record<string, number>) : ((r.stats ?? {}) as Record<string, number>);
     const rendered = (stats as unknown as { rendered?: { keptPct?: number; addedWords?: number } }).rendered;
     const page = String(r.page_url);
-    const superseded = seen.has(page);
-    seen.add(page);
+    // Newest preview of each page of a task (as client-signoff does); a row with no task is keyed by its page alone.
+    const key = r.task_id ? `${String(r.task_id)}\u0000${page}` : page;
+    const superseded = seen.has(key);
+    seen.add(key);
     return {
       id: String(r.id),
       pageUrl: page,

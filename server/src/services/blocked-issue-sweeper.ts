@@ -96,22 +96,56 @@ export function blockedIssueSweeper(db: Db, heartbeat: IssueAssignmentWakeupDeps
 
     if (candidates.length === 0) return { checked: 0, moved: 0, renotified: 0, skipped: 0 };
 
-    const recentlySwept = new Set(
-      (
-        await db
-          .select({ entityId: activityLog.entityId })
-          .from(activityLog)
-          .where(
-            and(
-              inArray(activityLog.companyId, [...new Set(candidates.map((c) => c.companyId))]),
-              eq(activityLog.entityType, "issue"),
-              eq(activityLog.action, BLOCKED_ISSUE_SWEPT_ACTION),
-              inArray(activityLog.entityId, candidates.map((c) => c.id)),
-              gte(activityLog.createdAt, new Date(now.getTime() - BLOCKED_ISSUE_SWEEP_REPEAT_WINDOW_MS)),
-            ),
-          )
-      ).map((row) => row.entityId),
-    );
+    const sweepRows = await db
+      .select({ entityId: activityLog.entityId, createdAt: activityLog.createdAt })
+      .from(activityLog)
+      .where(
+        and(
+          inArray(activityLog.companyId, [...new Set(candidates.map((c) => c.companyId))]),
+          eq(activityLog.entityType, "issue"),
+          eq(activityLog.action, BLOCKED_ISSUE_SWEPT_ACTION),
+          inArray(activityLog.entityId, candidates.map((c) => c.id)),
+          gte(activityLog.createdAt, new Date(now.getTime() - BLOCKED_ISSUE_SWEEP_REPEAT_WINDOW_MS)),
+        ),
+      );
+    const lastSweepAtByIssue = new Map<string, number>();
+    for (const row of sweepRows) {
+      const t = row.createdAt.getTime();
+      const prev = lastSweepAtByIssue.get(row.entityId) ?? 0;
+      if (t > prev) lastSweepAtByIssue.set(row.entityId, t);
+    }
+    // Reset the 24 h repeat lockout if the issue made genuine forward progress
+    // (reached in_review or produced a work product) after its previous sweep.
+    const sweptIds = [...lastSweepAtByIssue.keys()];
+    if (sweptIds.length > 0) {
+      const earliestSweep = new Date(Math.min(...lastSweepAtByIssue.values()));
+      const progressRows = await db
+        .select({
+          entityId: activityLog.entityId,
+          action: activityLog.action,
+          details: activityLog.details,
+          createdAt: activityLog.createdAt,
+        })
+        .from(activityLog)
+        .where(
+          and(
+            inArray(activityLog.companyId, [...new Set(candidates.map((c) => c.companyId))]),
+            eq(activityLog.entityType, "issue"),
+            inArray(activityLog.action, ["issue.updated", "issue.work_product_created"]),
+            inArray(activityLog.entityId, sweptIds),
+            gte(activityLog.createdAt, earliestSweep),
+          ),
+        );
+      for (const row of progressRows) {
+        const sweptAt = lastSweepAtByIssue.get(row.entityId);
+        if (sweptAt === undefined || row.createdAt.getTime() <= sweptAt) continue;
+        const status = (row.details as { status?: unknown } | null)?.status;
+        if (row.action === "issue.work_product_created" || status === "in_review") {
+          lastSweepAtByIssue.delete(row.entityId);
+        }
+      }
+    }
+    const recentlySwept = new Set(lastSweepAtByIssue.keys());
 
     const companyIds = [...new Set(candidates.map((c) => c.companyId))];
     // Re-notices per issue, counted only for the issue's current block.

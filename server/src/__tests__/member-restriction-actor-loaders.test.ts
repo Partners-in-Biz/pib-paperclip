@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -205,15 +206,21 @@ describe("member-restriction actor loader database support", () => {
     const [grant] = await db.insert(mcpOauthGrants).values({
       companyId: f.companyId, userId: f.person, clientId, resource: config.resource, purpose: "personal", scopes: ["paperclip:read"],
     }).returning();
+    // Under `enforce` the flagged member's connection is refused (C4f, 4.6a
+    // row 4); under `report` the actor carries both fields.
+    await expect(createPublicMcpOAuth(db, config).authorizeGrant(grant!.id)).rejects.toMatchObject({ code: "invalid_grant" });
+    await db.update(companies).set({ memberRestrictionMode: "report" }).where(eq(companies.id, f.companyId));
     const { actor } = await createPublicMcpOAuth(db, config).authorizeGrant(grant!.id);
     expect(actor).toMatchObject({ type: "board", source: "mcp_oauth", userId: f.person });
-    expect(actor.memberships).toEqual([enforced(f.companyId)]);
-    await expectRestricted(actor, f.companyId);
+    expect(actor.memberships).toEqual([expect.objectContaining({ companyId: f.companyId, restricted: true, restrictionMode: "report" })]);
+    await expect(memberRestrictionForActor(memberRestrictionResolver(db), actor, f.companyId))
+      .resolves.toMatchObject({ restricted: true, mode: "report" });
   });
 
   it("agent-purpose assistant connection: resolveBoardAccess, which approves it, carries both fields", async () => {
-    // The agent-purpose actor gains its approving person in C4f (spec 4.6a row 4,
-    // X7); until then the membership it is checked against carries the fields.
+    // The agent-purpose actor carries this membership as `onBehalfOfMemberships`
+    // when rule group H binds its approver (spec 4.6a row 4, X7; tested in
+    // member-restriction-assistant-connection.test.ts).
     const f = await fixture();
     const access = await boardAuthService(db).resolveBoardAccess(f.person);
     expect(access.memberships).toEqual([enforced(f.companyId)]);

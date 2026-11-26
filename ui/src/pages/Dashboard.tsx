@@ -500,7 +500,7 @@ export function Dashboard() {
             context={{ companyId: selectedCompanyId }}
             className="grid gap-4 md:grid-cols-2"
             // design-allow(card-pattern): class-string prop consumed by the plugin outlet; a component can't be passed here (C5a Run 3)
-            itemClassName="rounded-lg border bg-card p-4 shadow-sm"
+            itemClassName="rounded-lg border bg-card p-4 shadow-sm empty:hidden"
           />
 
           <div className="grid md:grid-cols-2 gap-4">

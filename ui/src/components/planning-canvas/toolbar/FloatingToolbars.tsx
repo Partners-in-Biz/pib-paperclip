@@ -1,6 +1,7 @@
 import { CANVAS_NODE_COLORS, type CanvasShapeVariant } from "@paperclipai/shared";
 import { AlignHorizontalJustifyStart, AlignVerticalJustifyStart, CalendarClock, Copy, Eraser, Highlighter, LayoutGrid, ListTree, MessageSquareText, Send, Sparkles, Trash2 } from "lucide-react";
 import { type CanvasController } from "@/components/planning-canvas/state/useCanvasController";
+import { RelatedButton } from "@/components/planning-canvas/panels/related/RelatedPanel";
 import { Button } from "@/components/ui/button";
 import { CANVAS_COLOR_THEMES } from "@/lib/planning-canvas-helpers";
 import { cn } from "@/lib/utils";
@@ -286,6 +287,8 @@ export function ContextToolbar({ c }: { c: CanvasController }) {
           <MessageSquareText className="size-3" />
           {primarySelectedNode.kind === "frame" ? "Ask about this frame" : "Ask about this"}
         </Button>
+
+        <RelatedButton c={c} nodeId={primarySelectedNode.id} />
 
         {primarySelectedNode.kind === "note" && primarySelectedNode.noteId && notesById.get(primarySelectedNode.noteId) ? (
           <Button

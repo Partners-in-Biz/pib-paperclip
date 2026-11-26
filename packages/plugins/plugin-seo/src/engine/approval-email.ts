@@ -1,5 +1,5 @@
 /**
- * The approval email a sprint's client gets (as a Gmail draft a person reads and sends): the pages we propose to change, one
+ * The approval email a sprint's client gets (as a draft in the Paperclip Mailbox drafts that a person reads and sends): the pages we propose to change, one
  * link each, and how the answer works. Pure. Nothing here promises more than the preview does: a link shows the page with the
  * proposed changes, an Approve and a Request-changes button, and nothing on the client's site changes until the client approves.
  */

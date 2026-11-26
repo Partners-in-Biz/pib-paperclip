@@ -1,6 +1,7 @@
 import { inArray } from "drizzle-orm";
 import { heartbeatRuns, type Db } from "@paperclipai/db";
-import { sweepStaleSshControlDirs } from "@paperclipai/adapter-utils/ssh";
+import { cleanupSshConnectionReuse, sweepStaleSshControlDirs } from "@paperclipai/adapter-utils/ssh";
+import { logger } from "../../middleware/logger.js";
 
 // Mirrors HEARTBEAT_RUN_TERMINAL_STATUSES (recovery.ts) without its import graph.
 // A status missing here only keeps a directory until the next start.
@@ -28,4 +29,24 @@ export async function sweepStaleSshConnectionDirsAtStartup(
       return new Set(rows.filter((row) => !TERMINAL_STATUSES.has(row.status)).map((row) => row.id));
     },
   });
+}
+
+/**
+ * Closes the run's shared ssh master (`ssh -O exit`) once no holder may still
+ * multiplex over it, such as a native owner's Paperclip bridge (PAR-14564).
+ * Never on a terminal status alone: while `ownershipHeld` the master survives,
+ * and the lease release that follows the ownership clearing closes it.
+ * Idempotent; returns whether the close ran.
+ */
+export async function closeRunSshConnectionWhenReleased(input: {
+  runId: string;
+  status: string | null | undefined;
+  ownershipHeld: boolean;
+  baseDir?: string;
+}): Promise<boolean> {
+  if (input.ownershipHeld || !input.status || !TERMINAL_STATUSES.has(input.status)) return false;
+  await cleanupSshConnectionReuse({ runId: input.runId, baseDir: input.baseDir }).catch((err) => {
+    logger.warn({ err, runId: input.runId }, "failed to close the run's shared ssh connection");
+  });
+  return true;
 }

@@ -1,34 +1,29 @@
 /**
- * Gmail drafts for other plugins: `plugin.<sender>.mail.draft.requested` → Gmail `users.drafts.create` →
+ * Drafts for other plugins: `plugin.<sender>.mail.draft.requested` → a draft in the Paperclip Mailbox's Drafts →
  * `mail.draft.result` (kit `MailDraftRequested` / `MailDraftResult`).
  *
- * The message lands in the Drafts folder of the account the request names (`from`), else the company's default Gmail
- * account. A person reads it, changes it and sends it from Gmail, or deletes it. NOTHING IS EVER SENT here: no send claim,
- * no `messages.send`, no email-provider path, and no suppression or marketing rule (those guard a send).
+ * PAR-12249: the draft is saved in the Mailbox (table `messages`, status `draft`), never in Gmail Drafts, so a person reads,
+ * edits, sends or deletes it on the Mailbox page. NOTHING IS EVER SENT here. The draft is held for a person (an agent's
+ * `send-draft` is refused when a recipient is an existing client), and a newer draft for the same plugin, kind, subject
+ * (`context.id`) and client replaces the older open one, unless a person edited it. When the draft is sent, deleted or
+ * replaced the plugin hears `mail.draft.closed`; when a person edits it, `mail.draft.kept` (PAR-14558).
  *
- * - `receiveOnce` keyed `draft:<request key>` (the prefix keeps it apart from a send request that happens to use the same
- *   key): a repeat delivery re-emits the stored result and never creates a second draft. It uses the Mailbox's existing
- *   `inbox` table, so there is no migration.
- * - If an attempt created the draft but its answer was lost (timeout, crash before the result was stored), the next
- *   delivery looks the draft up by the Message-ID this request always carries before creating another one.
- * - Transient trouble (rate limit, Gmail down, a token that needs reconnecting) throws from `performDraft`; the handler
- *   stores and emits nothing, so the sender's outbox asks again later. Exactly the send handler's split.
- * - No Gmail account, a bad address, an account of the email provider (send-only: it has no Drafts folder), a client's
- *   mailbox asked to hold another party's mail, or a message Gmail refuses → `failed` with `permanent: true`.
+ * - `receiveOnce` keyed `draft:<request key>`: a repeat delivery re-emits the stored result and never creates a second draft.
+ * - A redelivery whose first answer was lost finds the draft by its request key (`draft.requestKey`) and does not save it twice.
+ * - No Gmail account, a bad address, an account of the email provider, or a client's mailbox asked to hold another party's
+ *   mail → `failed` with `permanent: true`.
  */
+import { randomUUID } from "node:crypto";
 import type { PluginEvent } from "@paperclipai/plugin-sdk";
 import { isModuleEnabled, MAIL_EVENTS, receiveOnce, type MailDraftRequested, type MailDraftResult } from "@partnersinbiz/pib-plugin-kit";
 import { loadMailboxConfig } from "../config.js";
-import { GmailUnavailable } from "../domain.js";
+import { announceDraftClosed, HOLD_REASON_PLUGIN, replaceOlderDraftsSafely } from "../draft-purpose.js";
 import { PLUGIN_ID } from "../namespace.js";
 import { pickSender } from "../pick-sender.js";
-import { accountScopeProblem, cleanDisplayName, effectiveReplyTo, parseReplyTo } from "../sender.js";
-import { createGmailDraft, findGmailDraft, GmailApiError, type GmailDraft } from "./api.js";
+import { accountScopeProblem, cleanDisplayName, parseReplyTo } from "../sender.js";
 import { errorMessage, type Env } from "./env.js";
 import { toMailAddress } from "./headers.js";
-import { buildMime, messageIdFor } from "./mime.js";
 import { MAILBOX_OFF, addressList, str } from "./send.js";
-import { withGmail } from "./tokens.js";
 import type { AccountRow, SendContext } from "./types.js";
 
 const SUFFIX = `.${MAIL_EVENTS.draftRequested}`;
@@ -82,15 +77,7 @@ function failedDraft(request: MailDraftRequested, error: string): MailDraftResul
   return { key: request.key, status: "failed", gmailDraftId: null, gmailMessageId: null, threadId: null, account: null, draftUrl: null, error, permanent: true, context: request.context };
 }
 
-export function draftUrlFor(account: string, gmailMessageId: string): string {
-  return `https://mail.google.com/mail/?authuser=${encodeURIComponent(account)}#drafts?compose=${gmailMessageId}`;
-}
-
-function isPermanentGmail(error: unknown): boolean {
-  return error instanceof GmailApiError && !error.retryable && !error.reconnect && (error.status === 400 || error.status === 413 || error.status === 404);
-}
-
-/** Create one draft. Throws on transient trouble; returns `failed` only when retrying will not help. Never sends. */
+/** Create one draft in the Mailbox's Drafts (never in Gmail Drafts). Returns `failed` only when retrying will not help. Never sends. */
 export async function performDraft(env: Env, companyId: string, request: MailDraftRequested, problem: string | null = null): Promise<MailDraftResult> {
   if (problem) return failedDraft(request, problem);
   const loaded = await loadMailboxConfig(env.ctx, companyId);
@@ -98,53 +85,69 @@ export async function performDraft(env: Env, companyId: string, request: MailDra
   let account: AccountRow | null = picked.account;
   if (picked.kind === "failed") return failedDraft(request, picked.problem!);
   if (picked.kind === "esp") {
-    // A send-only account of the email provider has no Drafts folder. Named on purpose: refuse. Not named (the company's
-    // provider preference picked it): the draft belongs in the default Gmail account.
-    if (request.from) return failedDraft(request, `${request.from} is a send-only email provider account and has no Gmail Drafts folder, so a draft cannot be created there`);
+    // A send-only account of the email provider is not a mailbox a person works in. Named on purpose: refuse. Not named
+    // (the company's provider preference picked it): the draft belongs in the default Gmail account.
+    if (request.from) return failedDraft(request, `${request.from} is a send-only email provider account and cannot hold a draft`);
     account = await env.store.defaultAccount(companyId);
   }
   if (!account) return failedDraft(request, request.from ? `No connected Gmail account for ${request.from} in Mailbox` : "No Gmail account is connected in Mailbox");
   const scopeProblem = accountScopeProblem(account, request);
   if (scopeProblem) return failedDraft(request, scopeProblem);
   const mailbox = account;
-  if (mailbox.status === "needs_reconnect") throw new GmailUnavailable(`Gmail for ${mailbox.address} must be reconnected before a draft can be created`);
 
-  const rfcMessageId = messageIdFor(`draft:${request.key}`, mailbox.address);
-  let draft: GmailDraft | null = null;
-  try {
-    // An earlier attempt may have created the draft and lost the answer: find it by its Message-ID before creating another.
-    try {
-      draft = await withGmail(env, loaded, mailbox, (token) => findGmailDraft(env.fetch, token, rfcMessageId));
-    } catch (error) {
-      if (!isPermanentGmail(error)) throw error;
-    }
-    if (!draft) {
-      const mime = buildMime({
-        from: { email: mailbox.address, name: request.fromName ?? mailbox.from_name ?? loaded.config.fromName },
-        to: request.to,
-        cc: request.cc ?? [],
-        bcc: request.bcc ?? [],
-        replyTo: effectiveReplyTo(request.replyTo, mailbox.address),
-        subject: request.subject,
-        text: request.text,
-        html: request.html,
-        messageId: rfcMessageId,
-        date: new Date(env.now()),
-      });
-      draft = await withGmail(env, loaded, mailbox, (token) => createGmailDraft(env.fetch, token, mime));
-    }
-  } catch (error) {
-    if (isPermanentGmail(error)) return failedDraft(request, errorMessage(error));
-    throw error;
-  }
+  // One draft per client, purpose and subject: a newer version replaces the older open one (PAR-12249). The subject is
+  // `context.id` (an SEO sprint, a CRM approval): the requester carries only its own rows from the older draft into the newer
+  // one, so a draft about another sprint of the same client must not be replaced by it (PAR-14558).
+  const { context } = request;
+  // One client = its CRM ref; with none the first recipient's address.
+  const who = context.clientRef ?? request.to[0]?.email?.trim().toLowerCase() ?? "-";
+  const purposeKey = `${context.plugin}:${context.kind}:${who}:${context.id}`.slice(0, 300);
+  // An earlier attempt saved it and its answer was lost: answer with that draft, never save a second one. Scoped to the
+  // plugin: another plugin's key is never this one's draft.
+  const earlier = await env.store.draftByRequestKey(companyId, context.plugin, request.key);
+  const id = earlier?.id ?? randomUUID();
+  if (!earlier) await env.store.insertDraft({
+    id,
+    companyId,
+    accountId: mailbox.id,
+    subject: request.subject,
+    body: request.text ?? "",
+    to: request.to,
+    cc: request.cc ?? [],
+    bcc: request.bcc ?? [],
+    draft: {
+      html: request.html ?? null,
+      replyTo: request.replyTo ?? null,
+      fromName: request.fromName ?? null,
+      by: { kind: "agent", id: context.plugin },
+      purpose: context.kind,
+      purposeKey,
+      requestKey: request.key,
+      requestContext: context,
+      holdForPerson: { reason: HOLD_REASON_PLUGIN },
+    },
+  });
+  const replaced = await replaceOlderDraftsSafely(
+    env.store,
+    companyId,
+    earlier?.account_id ?? mailbox.id,
+    purposeKey,
+    id,
+    (message, meta) => env.ctx.logger.info(message, { key: request.key, ...meta }),
+    // The requester hears that its older draft is gone and which draft took its place (PAR-14558).
+    (row) => announceDraftClosed(env.ctx, companyId, row, "replaced", request.key),
+  );
+  if (replaced.length) env.ctx.logger.info("Mail draft replaced older open drafts", { key: request.key, purposeKey, replaced: replaced.length });
   return {
     key: request.key,
     status: "drafted",
-    gmailDraftId: draft.id,
-    gmailMessageId: draft.messageId,
-    threadId: draft.threadId,
+    gmailDraftId: null,
+    gmailMessageId: null,
+    threadId: null,
     account: mailbox.address,
-    draftUrl: draftUrlFor(mailbox.address, draft.messageId),
+    draftUrl: null,
+    mailboxDraftId: id,
+    replacedDraftIds: replaced,
     error: null,
     permanent: false,
     context: request.context,

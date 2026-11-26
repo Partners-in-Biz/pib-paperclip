@@ -30,7 +30,11 @@ export type CardState =
   | { state: "refused" }
   /** Studio's switch for board cards is off. */
   | { state: "off" }
-  | { state: "error"; retryAt: number };
+  | { state: "error"; retryAt: number }
+  /** An output card whose generation is still queued or running (PAR-14281). */
+  | { state: "pending"; label: string }
+  /** An output card whose generation failed. */
+  | { state: "failed"; message: string };
 
 export type StudioCall = (params: Record<string, unknown>) => Promise<unknown>;
 

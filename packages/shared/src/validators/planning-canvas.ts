@@ -15,6 +15,7 @@ import {
   type PlanningCanvasItemType,
   type PlanningCanvasNodeKind,
 } from "../types/planning-canvas.js";
+import { planningCanvasWebLinkUrlProblem } from "../planning-canvas-weblink.js";
 
 export const canvasNodeSchema = z.object({
   id: z.string().min(1).max(100),
@@ -138,10 +139,34 @@ export const planningCanvasTableRowSchema = z.strictObject({
   cells: z.record(tableIdSchema, planningCanvasTableCellValueSchema),
 });
 
+/**
+ * Connector `source` of a table node (PAR-14257 C, D 4a). The ops engine
+ * overwrites `fetchedAt`, `fetchedBy`, `agentId` and `issueId` from the writing
+ * run; this schema only checks the stored shape and sizes.
+ */
+export const planningCanvasConnectorSourceSchema = z.strictObject({
+  tool: z.string().trim().min(1).max(L.sourceToolMaxLength),
+  params: z.record(z.string().max(200), z.unknown()).superRefine((params, ctx) => {
+    let size = Infinity;
+    try {
+      size = new TextEncoder().encode(JSON.stringify(params)).length;
+    } catch {
+      // Not serializable: refused below.
+    }
+    if (!(size <= L.sourceParamsMaxBytes)) ctx.addIssue({ code: "custom", message: "source params over limit" });
+  }),
+  // Optional in an op (the server sets them); every stored source has them.
+  fetchedAt: z.string().min(1).max(40).optional(),
+  fetchedBy: z.string().trim().min(1).max(200).optional(),
+  agentId: z.string().uuid().optional(),
+  issueId: z.string().uuid().optional(),
+});
+
 export const planningCanvasTableDataSchema = z
   .strictObject({
     columns: z.array(planningCanvasTableColumnSchema).max(L.tableColumnsMax),
     rows: z.array(planningCanvasTableRowSchema).max(L.tableRowsMax),
+    source: planningCanvasConnectorSourceSchema.optional(),
   })
   .superRefine((table, ctx) => {
     const columnIds = new Set(table.columns.map((column) => column.id));
@@ -188,12 +213,33 @@ export const planningCanvasEmbedDataSchema = z.strictObject({
   props: embedPropsSchema,
 });
 
+/**
+ * Web link node (PAR-14389 C.5). Applies to every writer, agents included:
+ * `https:` only, no userinfo, at most 2 000 characters, capped preview text.
+ * Strict: no frame URL or any other field can be stored.
+ */
+export const planningCanvasWebLinkDataSchema = z.strictObject({
+  url: z.string().superRefine((url, ctx) => {
+    const problem = planningCanvasWebLinkUrlProblem(url);
+    if (problem) ctx.addIssue({ code: "custom", message: problem });
+  }),
+  preview: z
+    .strictObject({
+      title: z.string().max(L.webLinkPreviewTitleMaxLength),
+      description: z.string().max(L.webLinkPreviewDescriptionMaxLength),
+      siteName: z.string().max(L.webLinkPreviewSiteNameMaxLength),
+      fetchedAt: z.string().min(1).max(40),
+    })
+    .optional(),
+});
+
 const TYPED_DATA_SCHEMAS: Partial<Record<PlanningCanvasNodeKind, z.ZodType>> = {
   table: planningCanvasTableDataSchema,
   kanban: planningCanvasKanbanDataSchema,
   timeline: planningCanvasTimelineDataSchema,
   markdown: planningCanvasMarkdownDataSchema,
   embed: planningCanvasEmbedDataSchema,
+  weblink: planningCanvasWebLinkDataSchema,
 };
 
 export const planningCanvasTypedDataSchema = z.union([
@@ -202,6 +248,7 @@ export const planningCanvasTypedDataSchema = z.union([
   planningCanvasTimelineDataSchema,
   planningCanvasMarkdownDataSchema,
   planningCanvasEmbedDataSchema,
+  planningCanvasWebLinkDataSchema,
 ]);
 
 const pointSchema = z.strictObject({ x: z.number().finite(), y: z.number().finite() });
@@ -413,6 +460,12 @@ export const planningCanvasChatMessageSchema = z.strictObject({
   clientRequestId: z.string().trim().min(1).max(L.chatClientRequestIdMaxLength),
 });
 export type PlanningCanvasChatMessage = z.infer<typeof planningCanvasChatMessageSchema>;
+
+/** `POST .../planning-canvases/:boardId/items/:itemKey/refresh`: the refresher is the signed-in person; the agent comes from the stored source. */
+export const planningCanvasSourceRefreshSchema = z.strictObject({
+  clientRequestId: z.string().trim().min(1).max(L.chatClientRequestIdMaxLength),
+});
+export type PlanningCanvasSourceRefresh = z.infer<typeof planningCanvasSourceRefreshSchema>;
 
 export const planningCanvasHandoffSchema = z.strictObject({
   keys: z.array(planningCanvasItemKeySchema).min(1).max(L.handoffKeysMax),

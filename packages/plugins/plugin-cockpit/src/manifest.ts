@@ -78,6 +78,14 @@ const instanceConfigSchema: JsonSchema = {
       description: "A health alert when the last 7 days of notional spend reach this number. Leave blank for no weekly limit.",
       minimum: 0,
     },
+    browserLive: {
+      type: "string",
+      title: "Live browser (owner company only)",
+      description:
+        "Off: nobody can watch the agents' browser. View: the owner or an admin can watch it live, read only, from Cockpit -> Browser. Take over adds keyboard and mouse for one login (coming next). Agents can never use it.",
+      enum: ["off", "view", "takeover"],
+      default: "off",
+    },
     usdRate: {
       type: "number",
       title: "Rand per US dollar",
@@ -166,7 +174,7 @@ const instanceConfigSchema: JsonSchema = {
       description:
         "Pick a company secret for each provider and the daily check calls it once (one cheap read, never storing or showing the value) to see whether the credential is still accepted and, for GitHub and Cloudflare, when it expires. Without one the register still warns before an expiry date you recorded.",
       properties: {
-        github: secretField("GitHub token", "The company secret holding the GitHub token agents push with (read-only check: GET /user)."),
+        github: secretField("GitHub token", "The company secret holding the GitHub token agents push with (read-only check: GET /user). The hourly merged-PR check also reads pull request state with it, so a question asking the owner to merge a PR is settled once it is merged."),
         cloudflare: secretField("Cloudflare API token", "A Cloudflare API token (checked with the token verify call)."),
         resend: secretField("Resend API key", "The Resend key (checked with a read-only call; a sending-only key counts as live)."),
       },
@@ -307,6 +315,10 @@ const manifest: PaperclipPluginManifestV1 = {
     "ui.page.register",
     "ui.sidebar.register",
     "ui.dashboardWidget.register",
+    // 0.29.0 (PAR-14514 S3): Watch live. The browser-live websocket route returns the pib-browser daemon's local socket;
+    // core signs the upgrade for a signed-in person only. A new capability, so the release is stop-first (DEPLOY.md).
+    // The worker's own calls to that socket (/status) are plain node:http and claim no capability (design 3, F22).
+    "websocket.local",
   ],
   entrypoints: { worker: "./dist/worker.js", ui: "./dist/ui" },
   database: { namespaceSlug: "cockpit", migrationsDir: "migrations", coreReadTables: ["issues", "issue_comments", "heartbeat_runs", "issue_relations", "projects"] },
@@ -419,6 +431,8 @@ const manifest: PaperclipPluginManifestV1 = {
     // Access look-up: the names-only lists (stored secret names, tool profiles, tool names) a script on the server pushes in. Never a secret value.
     { routeKey: "access-inventory", method: "POST", path: "/access-inventory", auth: "board", capability: "api.routes.register", companyResolution: { from: "body", key: "companyId" } },
     { routeKey: "owner-push", method: "POST", path: "/owner-push", auth: "board", capability: "api.routes.register", companyResolution: { from: "body", key: "companyId" } },
+    // Watch live (PAR-14514 S3): ?companyId=...&ticket=... from browser.live.ticket. Owner company, owner or admin, signed-in person only.
+    { routeKey: "browser-live", method: "GET", path: "/browser/live", transport: "websocket", auth: "board", capability: "api.routes.register", companyResolution: { from: "query", key: "companyId" } },
   ],
   routines: [
     {

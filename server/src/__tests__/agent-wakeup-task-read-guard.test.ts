@@ -14,6 +14,7 @@ import {
   createDb,
   heartbeatRuns,
   issueAccessGrants,
+  issues,
 } from "@paperclipai/db";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { errorHandler } from "../middleware/index.js";
@@ -142,6 +143,7 @@ if (process.env.CI && !support.supported) throw new Error("embedded Postgres req
   const expectRunOn = async (send: () => Promise<request.Response>, taskId: string) => {
     const res = await send();
     expect(res.status, JSON.stringify(res.body)).toBe(202);
+    expect(res.body.status, JSON.stringify(res.body)).not.toBe("skipped");
     expect(res.body.issueId ?? res.body.contextSnapshot?.taskKey, JSON.stringify(res.body)).toBe(taskId);
   };
 
@@ -202,10 +204,16 @@ if (process.env.CI && !support.supported) throw new Error("embedded Postgres req
   }, 120_000);
 
   // Each case starts with X idle, so a reader's wake is not coalesced into the previous case's run.
+  // X's runs on P (O's personal project, PAR-14639) can finish and leave P in_progress, which queues an
+  // issue_disposition_repair retry that holds P's execution lock; clear it so the next wake on P is not deferred.
   afterEach(async () => {
     await Promise.race([heartbeatService(db).drainActiveRunExecutions(), new Promise(resolve => setTimeout(resolve, 2_000))]);
     await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() })
-      .where(and(eq(heartbeatRuns.agentId, X), inArray(heartbeatRuns.status, ["queued", "running"])));
+      .where(and(eq(heartbeatRuns.agentId, X), inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"])));
+    await db.update(agentWakeupRequests).set({ status: "cancelled", finishedAt: new Date() })
+      .where(and(eq(agentWakeupRequests.agentId, X), inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"])));
+    await db.update(issues).set({ executionRunId: null, executionAgentNameKey: null, executionLockedAt: null })
+      .where(eq(issues.companyId, companyId));
     await db.update(agents).set({ status: "idle" }).where(eq(agents.id, X));
     failRead.userId = null;
     vi.unstubAllEnvs();

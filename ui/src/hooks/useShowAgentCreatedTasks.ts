@@ -2,7 +2,11 @@ import { useCallback, useSyncExternalStore } from "react";
 import { taskCollectionPreferencesStorageKey, TASK_COLLECTION_PREFERENCES_CHANGED, TASK_COLLECTION_PREFERENCES_VERSION } from "../lib/task-collection-preferences";
 
 /** Subscribe the collection's fetching owner to its persisted filter control. */
-export function useShowAgentCreatedTasks(companyId: string | null, collectionKey: string): boolean {
+export function useShowAgentCreatedTasks(
+  companyId: string | null,
+  collectionKey: string,
+  defaultValue = false,
+): boolean {
   const getSnapshot = useCallback(() => {
     try {
       const key = taskCollectionPreferencesStorageKey({ companyId: companyId ?? "__unscoped__", collectionKey });
@@ -12,12 +16,16 @@ export function useShowAgentCreatedTasks(companyId: string | null, collectionKey
       const valid = envelope?.version === TASK_COLLECTION_PREFERENCES_VERSION
         && envelope.companyId === (companyId ?? "__unscoped__") && envelope.collectionKey === collectionKey;
       const view = valid ? envelope.viewState : legacy ? JSON.parse(legacy) : null;
-      return view?.showAgentCreatedTasks === true;
+      if (!view || typeof view !== "object") return defaultValue;
+      if (defaultValue && view.showAgentCreatedTasksCustomized !== true) {
+        return view.showAgentCreatedTasks === true ? true : defaultValue;
+      }
+      return typeof view.showAgentCreatedTasks === "boolean" ? view.showAgentCreatedTasks : defaultValue;
     } catch {
-      return false;
+      return defaultValue;
     }
-  }, [companyId, collectionKey]);
-  return useSyncExternalStore(subscribe, getSnapshot, () => false);
+  }, [companyId, collectionKey, defaultValue]);
+  return useSyncExternalStore(subscribe, getSnapshot, () => defaultValue);
 }
 
 function subscribe(onChange: () => void) {

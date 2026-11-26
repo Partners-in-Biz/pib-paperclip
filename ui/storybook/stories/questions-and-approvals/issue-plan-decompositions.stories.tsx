@@ -137,3 +137,20 @@ export const Completed: Story = {
     ],
   },
 };
+
+/** A child the viewer cannot read arrives as `{ id, identifier, locked: true }` (PAR-12965). */
+export const WithLockedChild: Story = {
+  args: {
+    decompositions: [
+      buildDecomposition({
+        requestedChildCount: 3,
+        childIssueIds: ["issue-child-1", "issue-child-private", "issue-child-2"],
+        childIssues: [
+          buildDecomposition({}).childIssues[0]!,
+          { id: "issue-child-private", identifier: "PAP-6842", locked: true },
+          buildDecomposition({}).childIssues[1]!,
+        ],
+      }),
+    ],
+  },
+};

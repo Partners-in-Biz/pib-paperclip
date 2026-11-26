@@ -77,7 +77,15 @@ describe("manifest and migration", () => {
     ]);
     expect(manifest.ui?.slots?.find((s) => s.type === "sidebar")).toMatchObject({ order: 5, id: "cockpit-sidebar" });
     expect(manifest.ui?.slots?.find((s) => s.type === "page")).toMatchObject({ routePath: "cockpit" });
-    expect(manifest.apiRoutes).toHaveLength(8);
+    expect(manifest.apiRoutes).toHaveLength(9);
+    // 0.29.0 (PAR-14514 S3): Watch live. One new capability, websocket.local; no http.outbound (the daemon socket is
+    // reached with node:http) and no ui.action.register (no task-page button, deviation 4).
+    expect(manifest.capabilities).toContain("websocket.local");
+    expect(manifest.capabilities).not.toContain("http.outbound");
+    expect(manifest.capabilities).not.toContain("ui.action.register");
+    expect(manifest.apiRoutes?.find((r) => r.routeKey === "browser-live")).toEqual({
+      routeKey: "browser-live", method: "GET", path: "/browser/live", transport: "websocket", auth: "board", capability: "api.routes.register", companyResolution: { from: "query", key: "companyId" },
+    });
     expect(manifest.apiRoutes?.find((r) => r.routeKey === "cockpit")).toBeTruthy();
     expect(manifest.apiRoutes?.find((r) => r.routeKey === "setup-status")).toBeTruthy();
     expect(manifest.apiRoutes?.find((r) => r.routeKey === "repairs-create")).toMatchObject({ method: "POST", path: "/repairs", auth: "board", companyResolution: { from: "body", key: "companyId" } });

@@ -1,6 +1,69 @@
-import { ArrowRight, Frame, Hand, Keyboard, Link2, ListTree, MessageSquare, MousePointer2, FileText, Table2, Columns3, CalendarRange, NotebookPen, Pen, Shapes, StickyNote, Type } from "lucide-react";
+import { useState } from "react";
+import { ArrowRight, Frame, Globe, Hand, Keyboard, Link2, ListTree, MessageSquare, MousePointer2, FileText, Table2, Columns3, CalendarRange, NotebookPen, Pen, Shapes, StickyNote, Type, X } from "lucide-react";
 import { type CanvasController } from "@/components/planning-canvas/state/useCanvasController";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+
+/** The tool-rail URL field: an `https://` link becomes a web link card (PAR-14389 C.5). */
+function WebLinkField({ insertWebLinkNode, onClose }: { insertWebLinkNode: CanvasController["insertWebLinkNode"]; onClose: () => void }) {
+  const [url, setUrl] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <form
+      role="dialog"
+      aria-label="Add web link"
+      data-testid="planning-canvas-weblink-field"
+      noValidate
+      onSubmit={(e) => {
+        e.preventDefault();
+        const problem = insertWebLinkNode(url);
+        setError(problem);
+        if (!problem) onClose();
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") onClose();
+      }}
+      className={cn(
+        "pointer-events-auto absolute left-16 top-1/2 z-30 flex w-80 -translate-y-1/2 flex-col gap-2 rounded-xl border border-border bg-popover p-3 shadow-lg",
+        "max-md:inset-x-2 max-md:bottom-20 max-md:left-2 max-md:top-auto max-md:w-auto max-md:translate-y-0",
+      )}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <label htmlFor="planning-canvas-weblink-url" className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          Web link or YouTube video
+        </label>
+        <button type="button" aria-label="Close" onClick={onClose} className="rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground">
+          <X className="size-3.5" />
+        </button>
+      </div>
+      <div className="flex gap-2">
+        <input
+          id="planning-canvas-weblink-url"
+          autoFocus
+          type="url"
+          inputMode="url"
+          placeholder="https://"
+          value={url}
+          onChange={(e) => {
+            setUrl(e.target.value);
+            setError(null);
+          }}
+          aria-invalid={error ? true : undefined}
+          aria-describedby={error ? "planning-canvas-weblink-error" : undefined}
+          className="min-w-0 flex-1 rounded-md border border-border bg-background px-2 py-1 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        />
+        <Button type="submit" size="sm" disabled={!url.trim()}>
+          Add
+        </Button>
+      </div>
+      {error ? (
+        <p id="planning-canvas-weblink-error" role="alert" className="text-xs text-destructive">
+          {error}
+        </p>
+      ) : null}
+    </form>
+  );
+}
 
 export function ToolRail({ c }: { c: CanvasController }) {
   const {
@@ -15,9 +78,14 @@ export function ToolRail({ c }: { c: CanvasController }) {
     outlineOpen,
     setOutlineOpen,
     setCheatSheetOpen,
+    insertWebLinkNode,
   } = c;
+  const [webLinkOpen, setWebLinkOpen] = useState(false);
   // Under 768 px the rail is a bottom sheet (C19): a horizontal strip pinned to the bottom edge.
+  // The URL field sits outside the rail: the strip scrolls sideways there and would clip it.
   return (
+    <>
+    {webLinkOpen ? <WebLinkField insertWebLinkNode={insertWebLinkNode} onClose={() => setWebLinkOpen(false)} /> : null}
     <div
       role="toolbar"
       aria-label="Canvas tools"
@@ -86,6 +154,19 @@ export function ToolRail({ c }: { c: CanvasController }) {
       ))}
       <button
         type="button"
+        title="Add web link or YouTube video"
+        aria-label="Add web link"
+        aria-pressed={webLinkOpen}
+        onClick={() => setWebLinkOpen((o) => !o)}
+        className={cn(
+          "flex size-9 shrink-0 items-center justify-center rounded-lg transition-colors",
+          webLinkOpen ? "bg-foreground text-background shadow-xs" : "text-muted-foreground hover:bg-accent hover:text-foreground",
+        )}
+      >
+        <Globe className="size-4" />
+      </button>
+      <button
+        type="button"
         title="Add live issue, agent, project or goal card"
         aria-label="Add live card"
         aria-pressed={insertPanelOpen}
@@ -143,5 +224,6 @@ export function ToolRail({ c }: { c: CanvasController }) {
         <Keyboard className="size-4" />
       </button>
     </div>
+    </>
   );
 }

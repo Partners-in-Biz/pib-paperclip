@@ -11,6 +11,7 @@ import { DECISION_SQL } from "../ops/preview-server/decision.mjs";
 import { dispatch, HANDLERS, UI_ONLY_HANDLERS } from "../src/dispatch.js";
 import { NAMESPACE } from "../src/namespace.js";
 import type { Actor } from "../src/service/common.js";
+import { previewRows } from "../src/service/preview.js";
 import { BOARD_ONLY } from "../src/service/preview-decisions.js";
 import { SEO_TOOLS } from "../src/tools.js";
 import { seoHost, SPRINT, taskRow, type Row, type Route } from "./helpers/seo-host.js";
@@ -183,8 +184,12 @@ describePg("cockpit decisions on previews", () => {
     await reset();
     await put("a");
     const h = host(AUTO);
-    await expect(decide(h, USER, { previewIds: ["a"], decision: "declined" })).rejects.toThrow(/at least 10 characters/);
-    await expect(decide(h, USER, { previewIds: ["a"], decision: "changes_requested", note: "too short" })).rejects.toThrow(/at least 10 characters/);
+    // A refusal comes back as a skipped row, never a throw: Cloudflare would turn a thrown 502 into "error code: 502" (PAR-14506).
+    const none = await decide(h, USER, { previewIds: ["a"], decision: "declined" });
+    expect(none.decided).toEqual([]);
+    expect(none.skipped).toEqual([{ id: "a", reason: expect.stringMatching(/at least 10 characters/) }]);
+    const short = await decide(h, USER, { previewIds: ["a"], decision: "changes_requested", note: "too short" });
+    expect(short.skipped).toEqual([{ id: "a", reason: expect.stringMatching(/at least 10 characters/) }]);
     expect((await one("a")).status).toBe("pending");
     await decide(h, USER, { previewIds: ["a"], decision: "declined", note: "The client sells no such service." });
     expect(h.wakeups).toEqual(["iss-1"]);
@@ -255,6 +260,28 @@ describePg("cockpit decisions on previews", () => {
     // Decided again after the undo: a second hand-over of just this row.
     expect((await decide(h, USER, { previewIds: ["a"], decision: "approved" })).decided).toEqual(["a"]);
     expect((await one("a")).handover_done_at).not.toBeNull();
+  });
+
+  it("confirm on a row that is not an email approval is skipped, not thrown (PAR-14506)", async () => {
+    await reset();
+    await put("c", { status: "approved", decision_source: "cockpit", decided_by: "u1", decided_at: ago(HOURS) });
+    const out = (await dispatch(host(AUTO).env, "co-1", USER, "confirm-preview-approval", { sprintId: "sp-1", previewIds: ["c"] })) as { confirmed: string[]; skipped: Array<{ id: string; reason: string }> };
+    expect(out.confirmed).toEqual([]);
+    expect(out.skipped).toEqual([{ id: "c", reason: "Only a client's email approval needs a confirmation." }]);
+  });
+
+  it("previewRows hides only the older preview of a page within one task (PAR-14506)", async () => {
+    await reset();
+    await put("a1", { task_id: "t-1", page_url: "https://acme.co.za/overlap/", created_at: ago(5 * HOURS) });
+    await put("b1", { task_id: "t-2", page_url: "https://acme.co.za/overlap/", created_at: ago(4 * HOURS) });
+    await put("a2", { task_id: "t-1", page_url: "https://acme.co.za/overlap/", created_at: ago(3 * HOURS) });
+    const rows = await previewRows(host(AUTO).env, "co-1", "sp-1");
+    const by = Object.fromEntries(rows.map((r) => [r.id, r]));
+    expect(by.a1!.superseded).toBe(true);
+    expect(by.a2!.superseded).toBe(false);
+    expect(by.b1!.superseded).toBe(false);
+    expect(by.a2!.overlapIds).toContain("b1");
+    expect(by.b1!.overlapIds).toContain("a2");
   });
 
   it("Undo after applied_at is refused and changes nothing", async () => {

@@ -78,6 +78,29 @@ export async function assertTaskWorkspaceSourceProjectAccess(
   }
 }
 
+/**
+ * A personal private project only parks its owner's private tasks: an agent
+ * gets a grant on each task it is given, never membership of the project. So
+ * a run on such a task may use the task's own project when the run works for
+ * the owner (and no other person authorizes it), the agent may read the task
+ * (checked by the caller) and the owner may still read the project. Nothing
+ * changes for anyone else, and no other project is affected (PAR-14639).
+ */
+async function ownerRunMayUsePersonalTaskProject(
+  db: Db | DbTransaction, actor: AuthorizationActor, companyId: string, projectId: string,
+) {
+  const ownerId = actor.type === "agent" ? actor.onBehalfOfUserId?.trim() : null;
+  if (!ownerId || (actor.authorizingUserId && actor.authorizingUserId !== ownerId)) return false;
+  const [project] = await db.select({ personalOwnerUserId: projects.personalOwnerUserId, visibility: projects.visibility })
+    .from(projects).where(and(eq(projects.id, projectId), eq(projects.companyId, companyId)));
+  if (project?.visibility !== "private" || project.personalOwnerUserId !== ownerId) return false;
+  const ownerDecision = await measureRunPhase("workspace.access.authorization", () => accessService(db as Db).decide({
+    actor: { type: "board", userId: ownerId, ignoreInstanceAdmin: true, source: "session" },
+    action: "project:read", resource: { type: "project", companyId, projectId },
+  }));
+  return ownerDecision.allowed;
+}
+
 export async function assertExecutionWorkspaceRecordAccess(
   db: Db | DbTransaction, actor: AuthorizationActor, companyId: string, workspaceId: string,
 ) {
@@ -176,7 +199,12 @@ export async function assertTaskWorkspaceExecutionAccess(
     const selectedProjects = projectIds.length ? await measureRunPhase("workspace.access.projects_read", async () => db.select({ id: projects.id, companyId: projects.companyId, executionWorkspacePolicy: projects.executionWorkspacePolicy })
       .from(projects).where(and(eq(projects.companyId, companyId), inArray(projects.id, projectIds)))) : [];
     if (selectedProjects.length !== projectIds.length) throw forbidden("Task workspace project is unavailable");
-    for (const projectId of projectIds) await assertTaskWorkspaceSourceProjectAccess(db, actor, companyId, projectId);
+    for (const projectId of projectIds) {
+      // Only the task's own project, and only when no selected workspace or source comes from it.
+      if (projectId === task.projectId && projectId !== workspace?.projectId && projectId !== source?.projectId
+        && await ownerRunMayUsePersonalTaskProject(db, actor, companyId, projectId)) continue;
+      await assertTaskWorkspaceSourceProjectAccess(db, actor, companyId, projectId);
+    }
     const sourceProjectId = source?.projectId ?? workspace?.projectId;
     const trust = resolveCoreTrustPreset({ companyId, agent, issue: task,
       project: selectedProjects.find(project => project.id === task.projectId),

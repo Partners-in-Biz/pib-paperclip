@@ -1,4 +1,4 @@
-import { isAgentCreatedIssue, type ExternalObjectSummary, type Issue } from "@paperclipai/shared";
+import { deriveIssueCreator, isAgentCreatedIssue, type ExternalObjectSummary, type Issue } from "@paperclipai/shared";
 
 export type IssueFilterWorkspaceLookup = {
   mode?: string | null;
@@ -37,8 +37,17 @@ export type IssueFilterState = {
    */
   externalObjectStatuses: string[];
   showAgentCreatedTasks: boolean;
+  showAgentCreatedTasksCustomized?: boolean;
   routineTasksOnly?: boolean;
 };
+
+/** Creator filter values `kind:person|agent|automation` match by who created the task, not by one creator. */
+export const CREATOR_KIND_FILTER_PREFIX = "kind:";
+export const creatorKindFilterOptions = [
+  { id: "kind:person", label: "Any person", kind: "user" },
+  { id: "kind:agent", label: "Any agent", kind: "agent" },
+  { id: "kind:automation", label: "Any automation", kind: "automation" },
+] as const;
 
 export const defaultIssueFilterState: IssueFilterState = {
   statuses: [],
@@ -106,9 +115,20 @@ function normalizeIssueFilterValueArray(value: unknown): string[] {
   return value.filter((entry): entry is string => typeof entry === "string");
 }
 
-export function normalizeIssueFilterState(value: unknown): IssueFilterState {
-  if (!value || typeof value !== "object") return { ...defaultIssueFilterState };
+export function normalizeIssueFilterState(
+  value: unknown,
+  defaultShowAgentCreatedTasks = false,
+): IssueFilterState {
+  if (!value || typeof value !== "object") {
+    return { ...defaultIssueFilterState, showAgentCreatedTasks: defaultShowAgentCreatedTasks };
+  }
   const candidate = value as Partial<Record<keyof IssueFilterState, unknown>>;
+  const showAgentCreatedTasksCustomized = candidate.showAgentCreatedTasksCustomized === true;
+  const showAgentCreatedTasks = defaultShowAgentCreatedTasks && !showAgentCreatedTasksCustomized
+    ? (candidate.showAgentCreatedTasks === true ? true : defaultShowAgentCreatedTasks)
+    : typeof candidate.showAgentCreatedTasks === "boolean"
+      ? candidate.showAgentCreatedTasks
+      : defaultShowAgentCreatedTasks;
   return {
     statuses: normalizeIssueFilterValueArray(candidate.statuses),
     priorities: normalizeIssueFilterValueArray(candidate.priorities),
@@ -119,7 +139,8 @@ export function normalizeIssueFilterState(value: unknown): IssueFilterState {
     workspaces: normalizeIssueFilterValueArray(candidate.workspaces),
     liveOnly: candidate.liveOnly === true,
     externalObjectStatuses: normalizeIssueFilterValueArray(candidate.externalObjectStatuses),
-    showAgentCreatedTasks: candidate.showAgentCreatedTasks === true,
+    showAgentCreatedTasks,
+    ...(showAgentCreatedTasksCustomized ? { showAgentCreatedTasksCustomized: true } : {}),
     routineTasksOnly: candidate.routineTasksOnly === true,
   };
 }
@@ -258,7 +279,9 @@ export function applyIssueFilters(
   }
   if (state.creators.length > 0) {
     result = result.filter((issue) => {
+      const creatorKind = deriveIssueCreator(issue).kind;
       for (const creator of state.creators) {
+        if (creator.startsWith(CREATOR_KIND_FILTER_PREFIX) && creator.slice(CREATOR_KIND_FILTER_PREFIX.length) === creatorKind) return true;
         if (creator.startsWith("agent:") && issue.createdByAgentId === creator.slice("agent:".length)) return true;
         if (creator.startsWith("user:") && issue.createdByUserId === creator.slice("user:".length)) return true;
       }
@@ -293,6 +316,7 @@ export function applyIssueFilters(
 export function countActiveIssueFilters(
   state: IssueFilterState,
   enableAgentCreatedVisibilityFilter = false,
+  defaultShowAgentCreatedTasks = false,
 ): number {
   let count = 0;
   if (state.statuses.length > 0) count += 1;
@@ -305,6 +329,6 @@ export function countActiveIssueFilters(
   if (state.liveOnly) count += 1;
   if (state.routineTasksOnly) count += 1;
   if (state.externalObjectStatuses.length > 0) count += 1;
-  if (enableAgentCreatedVisibilityFilter && state.showAgentCreatedTasks) count += 1;
+  if (enableAgentCreatedVisibilityFilter && state.showAgentCreatedTasks !== defaultShowAgentCreatedTasks) count += 1;
   return count;
 }

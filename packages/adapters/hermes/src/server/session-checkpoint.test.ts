@@ -51,4 +51,18 @@ describe("hermes session checkpoint", () => {
       errorMessage: undefined,
     });
   });
+
+  it("falls back to joined text deltas when no result event was emitted", () => {
+    const stdout = [
+      '{"type":"system","subtype":"init","session_id":"local-6cc3df5141efe83b3aa6667ebd23463c"}',
+      '{"type":"text","text":"Hello ","timestamp":1795669181852}',
+      '{"type":"text","text":"world.","timestamp":1795669181853}',
+    ].join("\n");
+    expect(parseHermesStreamJsonOutput(stdout)).toEqual({
+      sessionId: "local-6cc3df5141efe83b3aa6667ebd23463c",
+      response: "Hello world.",
+      usage: undefined,
+      errorMessage: undefined,
+    });
+  });
 });

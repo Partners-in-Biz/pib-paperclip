@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const { EXIT } = require('../src/exit-codes.cjs');
 const { createDispatcher, COMMANDS } = require('../src/dispatch.cjs');
 const { createFakeBrowser } = require('./fake-browser.cjs');
+const { createLease } = require('../src/lease.cjs');
 
 const h = (o = {}) => {
   const { dispatch } = createDispatcher({
@@ -21,13 +22,14 @@ const h = (o = {}) => {
       confirm: [], redact: [], destructive: { selectors: ['[data-action=delete]'], text: ['delete'] }
     }}},
     clock: o.clock || (() => new Date('2026-01-01T10:00:00Z')),
-    checkFill: o.checkFill !== undefined ? o.checkFill : () => ({ ok: true })
+    checkFill: o.checkFill !== undefined ? o.checkFill : () => ({ ok: true }),
+    lease: o.lease, waiting: o.waiting
   });
   return { dispatch };
 };
 
 test('COMMANDS and invalid commands', async () => {
-  assert.deepEqual(COMMANDS, ['open', 'goto', 'click', 'fill', 'text', 'shot', 'close']);
+  assert.deepEqual(COMMANDS, ['open', 'goto', 'click', 'drag', 'fill', 'text', 'shot', 'net', 'close']);
   assert(Object.isFrozen(COMMANDS), 'frozen');
 
   for (const [cmd] of [['cookies'], ['storage'], ['evaluate'], [''], ['unknown'], [null]]) {
@@ -298,3 +300,50 @@ test('open: a browser that dies while waiting is browser_closed, not session_exp
   assert.equal(r.reason, 'browser_closed');
 });
 
+
+// ---- Take-over (PAR-14514 S4) ----
+function memWaiting() {
+  const rows = [];
+  return { rows, record: (identity, issue, reason) => rows.push([identity, issue, reason]), list: () => [], clear: () => 0 };
+}
+
+test('session_expired puts identity and issue on the waiting list', async () => {
+  const waiting = memWaiting();
+  const { dispatch } = h({ waiting, browser: createFakeBrowser({ 'https://business.facebook.com/latest/home': { text: 'No' } }) });
+  const r = await dispatch({ cmd: 'open', token: 'valid', issue: 'PAR-1234', identity: 'client:ca:meta' });
+  assert.equal(r.reason, 'session_expired');
+  assert.deepEqual(waiting.rows, [['client:ca:meta', 'PAR-1234', 'session_expired']]);
+});
+
+test('lease live: every agent command is refused handoff_open (any identity), after auth, and recorded', async () => {
+  const lease = createLease();
+  const waiting = memWaiting();
+  let auths = 0;
+  const { dispatch } = h({ lease, waiting, authenticate: async () => { auths++; return { ok: true, agentId: 'a1', companyId: 'ca' }; } });
+  assert.equal((await dispatch({ cmd: 'open', token: 'valid', issue: 'PAR-1', identity: 'client:ca:meta' })).exit, EXIT.DONE);
+  lease.start('pib:paperclip', 'user-1');
+  for (const cmd of COMMANDS) {
+    const r = await dispatch({ cmd, token: 'valid', issue: 'PAR-2', identity: 'client:ca:meta', args: { url: 'https://business.facebook.com/x', selector: 'a' } });
+    assert.equal(r.exit, EXIT.NO_BROWSER, cmd);
+    assert.equal(r.reason, 'handoff_open', cmd);
+  }
+  assert.equal(waiting.rows.length, COMMANDS.length);
+  assert.ok(waiting.rows.every((w) => w[0] === 'client:ca:meta' && w[1] === 'PAR-2' && w[2] === 'handoff_open'));
+  // A failed auth is never recorded: only a checked agent and issue reach the list.
+  const bad = h({ lease, waiting, authenticate: async () => ({ exit: EXIT.REFUSED_BY_POLICY, reason: 'agent_auth_failed' }) });
+  assert.equal((await bad.dispatch({ cmd: 'open', token: 'x', issue: 'PAR-3', identity: 'client:ca:meta' })).reason, 'agent_auth_failed');
+  assert.equal(waiting.rows.length, COMMANDS.length);
+  lease.end('released');
+  assert.equal((await dispatch({ cmd: 'open', token: 'valid', issue: 'PAR-1', identity: 'client:ca:meta' })).exit, EXIT.DONE);
+});
+
+test('while a release check runs, agents are still refused', async () => {
+  const lease = createLease();
+  const { dispatch } = h({ lease });
+  let finish;
+  const check = lease.runCheck(() => new Promise((r) => { finish = r; }));
+  assert.equal((await dispatch({ cmd: 'open', token: 'valid', issue: 'PAR-1', identity: 'client:ca:meta' })).reason, 'handoff_open');
+  finish();
+  await check;
+  assert.equal((await dispatch({ cmd: 'open', token: 'valid', issue: 'PAR-1', identity: 'client:ca:meta' })).exit, EXIT.DONE);
+});

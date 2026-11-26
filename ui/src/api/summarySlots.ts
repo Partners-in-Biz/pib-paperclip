@@ -1,4 +1,5 @@
 import type {
+  CancelSummarySlotResponse,
   GenerateSummarySlotResponse,
   GetSummarySlotResponse,
   ListSummarySlotRevisionsResponse,
@@ -33,6 +34,11 @@ export const summarySlotsApi = {
   generate: (selector: SummarySlotSelector) =>
     api.post<GenerateSummarySlotResponse>(
       summarySlotPath(selector, "/generate"),
+      { scopeId: selector.scopeId ?? null },
+    ),
+  cancel: (selector: SummarySlotSelector) =>
+    api.post<CancelSummarySlotResponse>(
+      summarySlotPath(selector, "/cancel"),
       { scopeId: selector.scopeId ?? null },
     ),
 };

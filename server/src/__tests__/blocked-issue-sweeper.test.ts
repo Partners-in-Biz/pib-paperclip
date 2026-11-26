@@ -215,6 +215,37 @@ describeEmbeddedPostgres("blocked issue sweeper", () => {
     expect(wakeup).toHaveBeenCalledTimes(2);
   });
 
+  it("resets the 24-hour sweep lockout when the issue reaches in_review or creates a work product after the sweep", async () => {
+    const ctx = await seedCompany();
+    const issueId = await seedIssue(ctx);
+    const { sweeper, wakeup } = makeSweeper();
+
+    expect((await sweeper.sweep(now)).moved).toBe(1);
+    expect(await statusOf(issueId)).toBe("todo");
+
+    // Genuine forward progress occurred after the first sweep (e.g. submitted for review).
+    const later = new Date(now.getTime() + 60 * 60 * 1000);
+    await db.insert(activityLog).values({
+      companyId: ctx.companyId,
+      actorType: "agent",
+      actorId: ctx.agentId,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: issueId,
+      details: { status: "in_review" },
+      createdAt: new Date(now.getTime() + 5 * 60 * 1000),
+    });
+    await db
+      .update(issues)
+      .set({ status: "blocked", blockedTransitionAt: new Date(later.getTime() - 45 * 60 * 1000) })
+      .where(eq(issues.id, issueId));
+
+    const second = await sweeper.sweep(later);
+    expect(second.moved).toBe(1);
+    expect(await statusOf(issueId)).toBe("todo");
+    expect(wakeup).toHaveBeenCalledTimes(2);
+  });
+
   it("moves an issue with no blockers to todo when its assignee is idle", async () => {
     const ctx = await seedCompany("idle");
     const issueId = await seedIssue(ctx);
@@ -457,6 +488,7 @@ describeEmbeddedPostgres("blocked issue sweeper", () => {
       expect(wakeup).toHaveBeenCalledWith(ownerId, {
         source: "automation",
         triggerDetail: "system",
+        causingActor: "system",
         reason: "issue_unblock_requested",
         idempotencyKey: `issue-unblock:${issueId}:${blockedAt.toISOString()}:n1`,
         requestedByActorType: "system",

@@ -4,7 +4,7 @@ import { loadPack, templateVars, type AgentTemplate } from "../src/templates.js"
 import * as templatesModule from "../src/templates.js";
 import { renderHash } from "../src/render-hash.js";
 import { renderInstructions } from "../src/templates-render.js";
-import { fakeCtx } from "./helpers/fake-ctx.js";
+import { directTools, fakeCtx } from "./helpers/fake-ctx.js";
 import manifest from "../src/manifest.js";
 
 function getHandler(ctx: any, toolName: string) {
@@ -12,7 +12,7 @@ function getHandler(ctx: any, toolName: string) {
   (ctx as any).tools.register = (_name: string, _decl: unknown, fn: unknown) => {
     if (_name === toolName) handler = fn;
   };
-  registerTemplateTools(ctx);
+  registerTemplateTools(ctx, directTools(ctx));
   return handler as any;
 }
 
@@ -220,7 +220,7 @@ describe("template-tools", () => {
       const { ctx } = fakeCtx();
       const registered = new Set<string>();
       (ctx as any).tools.register = (name: string) => registered.add(name);
-      registerTemplateTools(ctx);
+      registerTemplateTools(ctx, directTools(ctx));
       expect(registered).toEqual(new Set(["template-list", "template-get", "template-preview"]));
     });
 

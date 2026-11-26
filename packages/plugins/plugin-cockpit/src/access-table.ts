@@ -1,7 +1,7 @@
 /**
  * The Cockpit's access table (PAR-12578 plan 4.4, ticket PAR-12700): which permission each page action, agent tool and
  * API route needs when a company's access switch is `report` or `enforce`. With the switch `off` (every company today)
- * the guard passes every call on unchanged. `tests/access.spec.ts` fails on a missing or stale row.
+ * the guard passes every call on unchanged. `tests/access-guard.spec.ts` fails on a missing or stale row.
  *
  * Catalog resources: `cockpit.dashboards` (view, export), `cockpit.settings` (view, edit) and `cockpit.paper` (view,
  * create, edit, approve). None is scopable, so no row is `scoped`. No preset gives a limited person the Cockpit in stage A
@@ -43,6 +43,8 @@ export const COCKPIT_ACCESS_TABLE: AccessTable = Object.freeze({
   ]),
   // Only the owner confirms, sets the standing policy and posts the owner's digest (the handlers check it too).
   ...rows(ADMIN_ONLY, ["cockpit.attest", "goals.confirm", "ownerDefaults.save", "ownerDigest.post"]),
+  // Watch live (PAR-14514 S3): owner or admin of the owner company, a signed-in person only (the handlers refuse agents too).
+  ...rows(ADMIN_ONLY, ["browser.live.ticket", "browser.live.status"]),
   ...rows(OWN_DEVICES, ["cockpit.push.publicKey", "cockpit.push.subscribe", "cockpit.push.devices", "cockpit.push.mute", "cockpit.push.unsubscribe", "cockpit.push.test"]),
   ...rows(paper("view"), ["paper.load", "paper.month"]),
   ...rows(paper("edit"), ["paper.save", "paper.reset"]),
@@ -78,5 +80,5 @@ export const COCKPIT_ACCESS_TABLE: AccessTable = Object.freeze({
   "api:hosted-usage": VIEW,
   "api:repairs-create": SETTINGS_EDIT,
   "api:governor-rehearse": SETTINGS_EDIT,
-  ...rows(ADMIN_ONLY, ["api:access-inventory", "api:owner-push"]),
+  ...rows(ADMIN_ONLY, ["api:access-inventory", "api:owner-push", "api:browser-live"]),
 });

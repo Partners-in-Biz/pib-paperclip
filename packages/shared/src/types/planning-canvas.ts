@@ -112,6 +112,7 @@ export const PLANNING_CANVAS_NODE_KINDS = [
   "timeline",
   "markdown",
   "embed",
+  "weblink",
 ] as const;
 export type PlanningCanvasNodeKind = (typeof PLANNING_CANVAS_NODE_KINDS)[number];
 
@@ -159,6 +160,14 @@ export const PLANNING_CANVAS_LIMITS = {
   /** Board chat: item keys one message may name as its context. */
   chatContextKeysMax: 50,
   chatClientRequestIdMaxLength: 100,
+  /** Connector `source` of a table node (PAR-14257 C, D 4a): tool name length and params JSON size. */
+  sourceToolMaxLength: 300,
+  sourceParamsMaxBytes: 4096,
+  /** Web link node (PAR-14389 C.5): stored `url` and the `preview` text caps. */
+  webLinkUrlMaxLength: 2000,
+  webLinkPreviewTitleMaxLength: 200,
+  webLinkPreviewDescriptionMaxLength: 500,
+  webLinkPreviewSiteNameMaxLength: 100,
 } as const;
 
 export const PLANNING_CANVAS_BOARD_CAPS: Record<PlanningCanvasItemType, number> = {
@@ -203,9 +212,26 @@ export interface PlanningCanvasTableRow {
   cells: Record<string, PlanningCanvasTableCellValue>;
 }
 
+/**
+ * Where a table's rows came from: one read action of a connector, fetched by an
+ * agent in a board chat run (PAR-14257 C "Data model", D 4a). `tool` and
+ * `params` come from the op. The server sets `fetchedAt`, `fetchedBy` (the
+ * writing run's person), `agentId` (the writing agent) and `issueId` (the run's
+ * chat thread); an op never chooses them.
+ */
+export interface PlanningCanvasConnectorSource {
+  tool: string;
+  params: Record<string, unknown>;
+  fetchedAt: string;
+  fetchedBy: string;
+  agentId: string;
+  issueId: string;
+}
+
 export interface PlanningCanvasTableData {
   columns: PlanningCanvasTableColumn[];
   rows: PlanningCanvasTableRow[];
+  source?: PlanningCanvasConnectorSource;
 }
 
 export interface PlanningCanvasKanbanData {
@@ -238,12 +264,31 @@ export interface PlanningCanvasEmbedData {
   props: Record<string, PlanningCanvasEmbedProp>;
 }
 
+/** Preview text of a web link, fetched by the server on a click (D3). Any editor may write it: never trusted. */
+export interface PlanningCanvasWebLinkPreview {
+  title: string;
+  description: string;
+  siteName: string;
+  fetchedAt: string;
+}
+
+/**
+ * A web link card (PAR-14389 C.5). `url` is `https:` only, without userinfo,
+ * at most `webLinkUrlMaxLength` characters. No frame URL is ever stored: a
+ * renderer rebuilds it from `url` (see `parseYouTubeUrl`).
+ */
+export interface PlanningCanvasWebLinkData {
+  url: string;
+  preview?: PlanningCanvasWebLinkPreview;
+}
+
 export type PlanningCanvasTypedData =
   | PlanningCanvasTableData
   | PlanningCanvasKanbanData
   | PlanningCanvasTimelineData
   | PlanningCanvasMarkdownData
-  | PlanningCanvasEmbedData;
+  | PlanningCanvasEmbedData
+  | PlanningCanvasWebLinkData;
 
 /** Fields a node item stores in `planning_canvas_items.data`. */
 export interface PlanningCanvasNodeFields {
@@ -379,6 +424,8 @@ export const PLANNING_CANVAS_OP_REJECT_REASONS = [
   "table_column_exists",
   "table_cap_exceeded",
   "atomic_aborted",
+  /** A table `source` from a writer that is not a board chat run of this board with a person (PAR-14282 s.3). */
+  "source_not_allowed",
 ] as const;
 export type PlanningCanvasOpRejectReason = (typeof PLANNING_CANVAS_OP_REJECT_REASONS)[number];
 
@@ -431,6 +478,35 @@ export const PLANNING_CANVAS_CHAT_ERROR_CODES = {
   unknownContextKey: "canvas_chat_unknown_context_key",
   unknownAgent: "canvas_chat_unknown_agent",
 } as const;
+
+/** Refusal codes of connector sources on a board (PAR-14257 C "Interfaces", D 4a). */
+export const PLANNING_CANVAS_SOURCE_ERROR_CODES = {
+  /** Tool gateway: a personal credential for a run started from a board that is not the person's own personal board. */
+  personalSourceRefused: "canvas_personal_source_refused",
+  /** Refresh: `PLANNING_CANVAS_CHAT` is off, or reading it failed. */
+  refreshDisabled: "canvas_source_refresh_disabled",
+  /** Refresh: the item is not a live table node with a connector source. */
+  noSource: "canvas_source_missing",
+  /** Refresh: `source.tool` is not a read action the source's agent may use. */
+  toolNotAllowed: "canvas_source_tool_not_allowed",
+  /** Read actions or refresh: the agent is not an active agent of this company. */
+  unknownAgent: "canvas_source_unknown_agent",
+  agentCaller: "canvas_source_agent_caller",
+  personRequired: "canvas_source_person_required",
+} as const;
+
+/** One connector action a board may offer for a source-bound node: read-only, names and descriptions only. */
+export interface PlanningCanvasReadAction {
+  tool: string;
+  name: string;
+  description: string | null;
+  application: string | null;
+}
+
+export interface PlanningCanvasSourceRefreshResult extends PlanningCanvasChatMessageResult {
+  itemKey: string;
+  agentId: string;
+}
 
 /** One board chat message as the route answers it. The thread is an ordinary issue. */
 export interface PlanningCanvasChatMessageResult {

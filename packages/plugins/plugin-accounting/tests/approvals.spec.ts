@@ -64,10 +64,18 @@ describe.skipIf(!pgAvailable)("ledger approvals on real Postgres", () => {
     await h?.stop();
   });
 
-  async function pendingDraft(memo: string, actor = bookkeeper) {
+  async function pendingDraft(memo: string, actor: typeof bookkeeper | typeof user = bookkeeper) {
     const draft = await saveDraft(h.ctx, CO, { date: "2026-09-21", memo, lines: LINES }, actor);
     return requestDraftApproval(h.ctx, CO, draft.id, actor);
   }
+
+  it("records the person whose click opened the approval as its creator, and nobody for an agent", async () => {
+    h.setRoles(CO, ROLES);
+    const byPerson = await pendingDraft("Click: accrue fee", user);
+    expect(h.issues.get(byPerson.approvalIssueId!)!.actor).toEqual({ actorUserId: "user-owner" });
+    const byAgent = await pendingDraft("Agent: accrue fee");
+    expect(h.issues.get(byAgent.approvalIssueId!)!.actor).toBeNull();
+  });
 
   it("opens a manual journal with the Reviewer, records the review and waits for the owner", async () => {
     h.setRoles(CO, ROLES);

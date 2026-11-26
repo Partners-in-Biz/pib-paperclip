@@ -35,6 +35,7 @@ const typedPayload: Partial<Record<PlanningCanvasNodeKind, Record<string, unknow
   kanban: { data: { source: issueQuery, groupBy: "status", collapsed: ["done"] } },
   timeline: { data: { source: { kind: "projects" }, scale: "week", range: { from: "2026-11-01", to: "2026-12-01" } } },
   embed: { data: { plugin: "pib.studio", type: "card", props: { label: "x" } } },
+  weblink: { data: { url: "https://example.com/page" } },
   markdown: { data: { markdown: "# Plan\n\n```mermaid\nflowchart TD\nA-->B\n```" } },
 };
 
@@ -91,6 +92,47 @@ describe("planning canvas item contract", () => {
     expect(planningCanvasItemInputSchema.safeParse(nodeItem("markdown", {
       data: { markdown: "x".repeat(PLANNING_CANVAS_LIMITS.markdownMaxLength + 1) },
     })).success).toBe(false);
+  });
+
+  it("web link (PAR-14389 C.5): https only, no userinfo, 2 000 characters, capped preview, no extra fields", () => {
+    const ok = (data: unknown) => planningCanvasItemInputSchema.safeParse(nodeItem("weblink", { data })).success;
+    const max = PLANNING_CANVAS_LIMITS.webLinkUrlMaxLength;
+    const base = "https://example.com/";
+    expect(ok({ url: "https://example.com/watch?v=1#t" })).toBe(true);
+    expect(ok({ url: base + "a".repeat(max - base.length) })).toBe(true);
+    expect(ok({ url: base + "a".repeat(max - base.length + 1) })).toBe(false); // 2 001 characters
+    for (const url of [
+      "http://example.com/",
+      "javascript:alert(1)",
+      "JAVASCRIPT:alert(1)",
+      "data:text/html,<script>alert(1)</script>",
+      "https://user:pass@example.com/",
+      "https://user@example.com/",
+      "https://@example.com/",
+      "https:example.com",
+      "https:/example.com",
+      " https://example.com/",
+      "https://example.com/\nx",
+      "https://exa mple.com/",
+      "https://",
+      "",
+    ]) {
+      expect(ok({ url }), url).toBe(false);
+    }
+    expect(ok({})).toBe(false);
+    expect(planningCanvasItemInputSchema.safeParse(nodeItem("weblink", { data: undefined })).success).toBe(false);
+    expect(ok({ url: base, frameUrl: "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ" })).toBe(false);
+
+    const preview = { title: "t".repeat(200), description: "d".repeat(500), siteName: "s".repeat(100), fetchedAt: "2026-11-26T00:00:00Z" };
+    expect(ok({ url: base, preview })).toBe(true);
+    expect(ok({ url: base, preview: { ...preview, title: "t".repeat(201) } })).toBe(false);
+    expect(ok({ url: base, preview: { ...preview, description: "d".repeat(501) } })).toBe(false);
+    expect(ok({ url: base, preview: { ...preview, siteName: "s".repeat(101) } })).toBe(false);
+    expect(ok({ url: base, preview: { ...preview, image: "https://example.com/x.png" } })).toBe(false);
+
+    // The same rule holds on an update that sets data (the merged item is re-checked with the node schema).
+    const { itemType: _t, key: _k, ...fields } = nodeItem("weblink", { data: { url: "http://example.com/" } });
+    expect(planningCanvasNodeFieldsSchema.safeParse(fields).success).toBe(false);
   });
 
   it("enforces table caps", () => {

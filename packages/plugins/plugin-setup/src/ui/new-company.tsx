@@ -7,7 +7,8 @@
  * page's steps (`bootstrap-runner.ts` through `bootstrap-client.ts`).
  */
 import { useEffect, useMemo, useState } from "react";
-import { useHostContext, usePluginAction } from "@paperclipai/plugin-sdk/ui";
+import { useHostContext } from "@paperclipai/plugin-sdk/ui";
+import { useSetupAction } from "./actions.js";
 import { Button, CircleAlert, CircleCheck, CircleDot, Field, Hourglass, KeyRound, LoaderCircle, Modal, Package, Pill, Rocket, SectionCard, Select, Sparkles, breakAnywhere, errorText, tokens, tone, type LucideIcon, type ToneInput } from "@partnersinbiz/pib-plugin-ui";
 import { BOOTSTRAP_STEPS, matureCompanyWarning, stepLabel, type BootstrapOptions, type OwnerGrant, type PlannedStep, type RunStatus, type StepStatus } from "../bootstrap.js";
 import { driveChecklist, type DriveBinding } from "../drive-checklist.js";
@@ -442,14 +443,14 @@ export function NewCompanySection({ data, team, companyId, linkFor, onChanged }:
   onChanged: () => Promise<void> | void;
 }) {
   const host = useHostContext();
-  const loadState = usePluginAction("setup.new-company");
-  const bootstrap = usePluginAction("setup.bootstrap-company");
-  const record = usePluginAction("setup.bootstrap-record");
-  const startTemplateHire = usePluginAction("setup.start-template-hire");
-  const templateDraft = usePluginAction("setup.template-draft");
-  const starterImport = usePluginAction("setup.starter-pack-import");
-  const approve = usePluginAction("setup.approve-starter-pack");
-  const driveBind = usePluginAction("setup.drive-bind");
+  const loadState = useSetupAction("setup.new-company");
+  const bootstrap = useSetupAction("setup.bootstrap-company");
+  const record = useSetupAction("setup.bootstrap-record");
+  const startTemplateHire = useSetupAction("setup.start-template-hire");
+  const templateDraft = useSetupAction("setup.template-draft");
+  const starterImport = useSetupAction("setup.starter-pack-import");
+  const approve = useSetupAction("setup.approve-starter-pack");
+  const driveBind = useSetupAction("setup.drive-bind");
   const [state, setState] = useState<NewCompanyState | null>(null);
   const [driveBinding, setDriveBinding] = useState(false);
   const [options, setOptions] = useState<BootstrapOptions>({});

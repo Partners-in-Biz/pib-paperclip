@@ -589,6 +589,123 @@ it("agent-scoped plugin routes reuse agent:read and refuse denied access before 
   expect(workerManager.call).not.toHaveBeenCalled();
 });
 
+// PAR-13056 (access C4k-11, PAR-12608 4.6, AC-G3): a `from: "issue"` route reads
+// the task first. A caller who cannot read it gets the unknown-id 404 and the
+// worker is never called. Readers keep today's answers.
+describe("issue-scoped plugin routes read the task first", () => {
+  const pluginId = "11111111-1111-4111-8111-111111111111", companyId = "22222222-2222-4222-8222-222222222222";
+  const otherCompanyId = "22222222-2222-4222-8222-222222222299", issueId = "55555555-5555-4555-8555-555555555555";
+  const agentY = "33333333-3333-4333-8333-333333333335", runId = "44444444-4444-4444-8444-444444444444";
+  // Distinct non-null values, so a field the helper drops fails the decide assert.
+  const task = { id: issueId, companyId, projectId: "66666666-6666-4666-8666-666666666666",
+    parentId: "77777777-7777-4777-8777-777777777777", assigneeAgentId: "88888888-8888-4888-8888-888888888888",
+    assigneeUserId: "user-o", status: "in_review" };
+  const apiRoutes = manifest(["GET", "POST"].map(method => ({ routeKey: `smoke.${method}`, method: method as "GET" | "POST",
+    path: "/issues/:issueId/smoke", auth: "board-or-agent" as const, capability: "api.routes.register" as const,
+    companyResolution: { from: "issue" as const, param: "issueId" } })));
+  const plugin = { id: pluginId, pluginKey: apiRoutes.id, status: "ready", manifestJson: apiRoutes };
+  const board = (userId: string, membershipRole = "operator", status = "active"): Record<string, unknown> => ({
+    type: "board", userId, source: "session", companyIds: [companyId], isInstanceAdmin: false,
+    memberships: [{ companyId, membershipRole, status, restricted: false, restrictionMode: "off" }],
+  });
+  const agentFor = (personId: string, membershipRole = "operator"): Record<string, unknown> => ({
+    type: "agent", agentId: agentY, companyId, runId, source: "agent_jwt", onBehalfOfUserId: personId,
+    onBehalfOfMemberships: [{ companyId, membershipRole, status: "active", restricted: false, restrictionMode: "off" }],
+  });
+  const call = async (actor: Record<string, unknown>, method: "get" | "post" = "get", id = issueId) => {
+    const { app, workerManager } = await createApp({ actor, plugin });
+    const res = await request(app)[method](`/api/plugins/${pluginId}/api/issues/${id}/smoke`).send(method === "post" ? {} : undefined);
+    return { res, workerManager };
+  };
+  const denyRead = () => mockAccess.decide.mockImplementation(async (input: { action: string }) =>
+    ({ allowed: input.action !== "issue:read" }));
+  let unknownBody: unknown;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mockAccess.decide.mockReset().mockResolvedValue({ allowed: true });
+    mockIssueService.getById.mockReset().mockResolvedValue(null);
+    unknownBody = (await call(board("user-u"), "get", "99999999-9999-4999-8999-999999999999")).res.body;
+    mockIssueService.getById.mockImplementation(async (id: string) => (id === issueId ? task : null));
+  });
+
+  it("an unknown task id answers 404 Issue not found", () => {
+    expect(unknownBody).toEqual({ error: "Issue not found" });
+  });
+
+  it("a task in another company answers the unknown-id 404", async () => {
+    mockIssueService.getById.mockResolvedValue({ ...task, companyId: otherCompanyId });
+    const { res, workerManager } = await call(board("user-u"));
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual(unknownBody);
+    expect(workerManager.call).not.toHaveBeenCalled();
+  });
+
+  it("board U who cannot read P gets the unknown-id 404 and the worker is not called", async () => {
+    denyRead();
+    const { res, workerManager } = await call(board("user-u"));
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual(unknownBody);
+    expect(workerManager.call).not.toHaveBeenCalled();
+  });
+
+  it("a reader gets today's 200 and decide receives the whole issue:read call", async () => {
+    const actor = board("user-u");
+    const { res, workerManager } = await call(actor);
+    expect(res.status).toBe(200);
+    expect(workerManager.call).toHaveBeenCalledWith(pluginId, "handleApiRequest", expect.objectContaining({ companyId, params: { issueId } }));
+    expect(mockAccess.decide).toHaveBeenCalledWith({
+      actor,
+      action: "issue:read",
+      resource: { type: "issue", companyId, issueId, projectId: task.projectId, parentIssueId: task.parentId,
+        assigneeAgentId: task.assigneeAgentId, assigneeUserId: task.assigneeUserId, status: task.status },
+      scope: { issueId, projectId: task.projectId, parentIssueId: task.parentId,
+        assigneeAgentId: task.assigneeAgentId, assigneeUserId: task.assigneeUserId },
+    });
+  });
+
+  it("agent Y working for U who cannot read P gets the 404; decide received Y's onBehalfOfUserId", async () => {
+    denyRead();
+    const { res, workerManager } = await call(agentFor("user-u"));
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual(unknownBody);
+    expect(workerManager.call).not.toHaveBeenCalled();
+    expect(mockAccess.decide).toHaveBeenCalledWith(expect.objectContaining({
+      action: "issue:read", actor: expect.objectContaining({ type: "agent", agentId: agentY, onBehalfOfUserId: "user-u" }),
+    }));
+  });
+
+  it.each([
+    ["a board viewer", board("user-v", "viewer")],
+    ["an inactive member", board("user-s", "operator", "suspended")],
+    ["an agent working for a viewer", agentFor("user-v", "viewer")],
+  ])("%s POSTing to an unreadable task gets the unknown-id 404, not a 403", async (_label, actor) => {
+    denyRead();
+    const { res, workerManager } = await call(actor, "post");
+    expect(res.status, JSON.stringify(res.body)).toBe(404);
+    expect(res.body).toEqual(unknownBody);
+    expect(workerManager.call).not.toHaveBeenCalled();
+  });
+
+  it("a board viewer POSTing to a task he can read keeps today's 403 from dispatch", async () => {
+    const { res, workerManager } = await call(board("user-v", "viewer"), "post");
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({ error: "Viewer access is read-only" });
+    expect(workerManager.call).not.toHaveBeenCalled();
+  });
+
+  it("a throwing read decision answers 500 with its message and the worker is not called", async () => {
+    mockAccess.decide.mockImplementation(async (input: { action: string }) => {
+      if (input.action === "issue:read") throw new Error("access decision store unavailable");
+      return { allowed: true };
+    });
+    const { res, workerManager } = await call(board("user-u"));
+    expect(res.status).toBe(500);
+    expect(res.body).toEqual({ error: "access decision store unavailable" });
+    expect(workerManager.call).not.toHaveBeenCalled();
+  });
+});
+
 describe("agent-scoped plugin POST routes do not leak agent existence to read-only callers", () => {
   const agentId = "33333333-3333-4333-8333-333333333333", companyId = "22222222-2222-4222-8222-222222222222", pluginId = "11111111-1111-4111-8111-111111111111";
   const callers: Array<[string, "board" | "agent", Record<string, unknown>]> = [

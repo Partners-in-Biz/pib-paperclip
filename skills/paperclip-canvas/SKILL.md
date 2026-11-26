@@ -11,6 +11,9 @@ description: >
 A Planning Canvas board is a shared whiteboard of nodes (sticky, note, frame, shape, text, issue, agent, project, goal, table, kanban, timeline, markdown), connectors and strokes. You work on it through REST. Base path: `/api/companies/{companyId}/planning-canvases`. Auth and headers are the same as the `paperclip` skill (`Authorization: Bearer $PAPERCLIP_API_KEY`, `X-Paperclip-Run-Id` on writes).
 
 Full format, op shapes and examples: `references/format.md`.
+Cards for CRM, billing, mail, social and campaign records (`embed` nodes, ids only): `references/entity-cards.md`.
+Generate Studio images or video and place them on a board as a card: `references/studio.md`.
+Pull connector data (a Sheet, a CRM list) onto a board as a table with `source`, and refresh it: `references/connectors.md`.
 
 ## Rules (read these first)
 

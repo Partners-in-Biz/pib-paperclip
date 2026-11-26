@@ -521,5 +521,51 @@ databaseSuite("planning canvas ops engine (real PostgreSQL)", () => {
         mutable.splice(index, 0, "timeline");
       }
     });
+
+    it("rollback (PAR-14389 D1a): weblink rows with weblink removed from the kinds list move, resize, delete and restore", async () => {
+      const b = await board();
+      await db.insert(planningCanvasItems).values({
+        companyId: b.companyId,
+        boardId: b.boardId,
+        itemKey: "w1",
+        itemType: "node",
+        kind: "weblink",
+        data: {
+          kind: "weblink", x: 0, y: 0, width: 200, height: 120, zIndex: 1, color: "yellow", title: "w1", content: "",
+          data: { url: "https://youtu.be/dQw4w9WgXcQ" },
+        } as never,
+        zIndex: 1,
+        version: 1,
+        fieldVersions: {},
+        revision: 1,
+      });
+      const mutable = PLANNING_CANVAS_NODE_KINDS as unknown as string[];
+      const index = mutable.indexOf("weblink");
+      mutable.splice(index, 1);
+      try {
+        await exercise(b, "w1");
+        const [row] = await db.select().from(planningCanvasItems).where(and(eq(planningCanvasItems.boardId, b.boardId), eq(planningCanvasItems.itemKey, "w1")));
+        expect(row!.data).toMatchObject({ kind: "weblink", data: { url: "https://youtu.be/dQw4w9WgXcQ" } });
+      } finally {
+        mutable.splice(index, 0, "weblink");
+      }
+    });
+  });
+
+  describe("weblink nodes (PAR-14389 D1a)", () => {
+    it("an agent writes an https link; http, javascript and userinfo are refused for every writer", async () => {
+      const b = await board();
+      const added = await apply(b, [node("w_ok", { kind: "weblink", data: { url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ" } })], { actor: agent });
+      expect(added.results[0]).toMatchObject({ status: "applied" });
+      for (const url of ["http://example.com/", "javascript:alert(1)", "https://user:pass@example.com/"]) {
+        await expect(apply(b, [node("w_bad", { kind: "weblink", data: { url } })], { actor: agent })).rejects.toMatchObject({ status: 400 });
+      }
+      // An update to an http URL is refused when the batch is parsed, before any row is touched.
+      await expect(
+        apply(b, [{ op: "update", key: "w_ok", set: { data: { url: "http://example.com/" } } as never }], { actor: agent }),
+      ).rejects.toMatchObject({ status: 400 });
+      const stored = await item(b.boardId, "w_ok");
+      expect(stored!.data).toMatchObject({ data: { url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ" } });
+    });
   });
 });

@@ -1,6 +1,6 @@
 // PAR-13933: moved verbatim from pages/PlanningCanvas.tsx; no behaviour change.
 import { useCallback, useMemo } from "react";
-import { type CanvasNode, type CanvasNodeColor, type PersonalNote, type PlanningCanvasRefNodeKind } from "@paperclipai/shared";
+import { type CanvasNode, type CanvasNodeColor, type PersonalNote, type PlanningCanvasRefNodeKind, parseYouTubeUrl, planningCanvasWebLinkUrlProblem } from "@paperclipai/shared";
 import { personalNotesApi } from "@/api/personalNotes";
 import { clampZoom } from "@/components/planning-canvas/canvas-constants";
 import { newTable } from "@/components/planning-canvas/nodes/table-edit";
@@ -10,6 +10,9 @@ import { queryKeys } from "@/lib/queryKeys";
 import type { CanvasData } from "@/components/planning-canvas/state/useCanvasData";
 import type { CanvasState } from "@/components/planning-canvas/state/useCanvasState";
 import type { CanvasBoard } from "@/components/planning-canvas/state/useCanvasBoard";
+
+export const WEBLINK_HTTP_MESSAGE = "Only https links can be cards";
+export const WEBLINK_INVALID_MESSAGE = "This link can't be a card";
 
 export function useCanvasActions(ctx: CanvasData & CanvasState & CanvasBoard) {
   const {
@@ -185,6 +188,64 @@ export function useCanvasActions(ctx: CanvasData & CanvasState & CanvasBoard) {
       });
       setSelectedNodeIds([key]);
       setTool("select");
+    },
+    [getViewportCenterWorld, nextZIndex, opStore.addItem, setSelectedNodeIds, setTool],
+  );
+
+  /** Place an entity card (`embed` node) at the centre of the view. It stores plugin, type and assetId only (PAR-14389 C.3). */
+  const insertEmbedNode = useCallback(
+    (plugin: string, type: string, assetId: string) => {
+      const center = getViewportCenterWorld();
+      const width = 280;
+      const height = 160;
+      const key = createCanvasId("embed");
+      opStore.addItem(key, {
+        kind: "embed",
+        data: { plugin, type, assetId, props: {} },
+        x: snapToGrid(center.x - width / 2),
+        y: snapToGrid(center.y - height / 2),
+        width,
+        height,
+        zIndex: nextZIndex,
+        color: "slate",
+        title: "",
+        content: "",
+      });
+      setSelectedNodeIds([key]);
+      setTool("select");
+    },
+    [getViewportCenterWorld, nextZIndex, opStore.addItem, setSelectedNodeIds, setTool],
+  );
+
+  /**
+   * Place a web link card at the centre of the view (PAR-14389 C.5). Returns the message to show
+   * when `url` cannot be a card, else null. Only `url` is stored; the card rebuilds any frame URL.
+   */
+  const insertWebLinkNode = useCallback(
+    (rawUrl: string): string | null => {
+      const url = rawUrl.trim();
+      if (/^http:\/\//i.test(url)) return WEBLINK_HTTP_MESSAGE;
+      if (planningCanvasWebLinkUrlProblem(url)) return WEBLINK_INVALID_MESSAGE;
+      const center = getViewportCenterWorld();
+      const video = parseYouTubeUrl(url) !== null;
+      const width = video ? 400 : 300;
+      const height = video ? 300 : 132;
+      const key = createCanvasId("weblink");
+      opStore.addItem(key, {
+        kind: "weblink",
+        data: { url },
+        x: snapToGrid(center.x - width / 2),
+        y: snapToGrid(center.y - height / 2),
+        width,
+        height,
+        zIndex: nextZIndex,
+        color: "slate",
+        title: "",
+        content: "",
+      });
+      setSelectedNodeIds([key]);
+      setTool("select");
+      return null;
     },
     [getViewportCenterWorld, nextZIndex, opStore.addItem, setSelectedNodeIds, setTool],
   );
@@ -370,7 +431,9 @@ export function useCanvasActions(ctx: CanvasData & CanvasState & CanvasBoard) {
     deleteSelection,
     duplicateSelection,
     insertLinkNode,
+    insertEmbedNode,
     insertTypedNode,
+    insertWebLinkNode,
     fitToScreen,
     handleGiveNodeToAgent,
     handleAlignSelection,

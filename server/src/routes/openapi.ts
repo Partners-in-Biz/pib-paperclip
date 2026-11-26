@@ -1412,6 +1412,7 @@ const PUBLIC_OPERATIONS = new Set([
   "GET /api/ready",
   "HEAD /api/ready",
   "GET /api/openapi.json",
+  "GET /api/plugins/local-ws-key",
   "GET /api/board-claim/{token}",
   "POST /api/cli-auth/challenges",
   "GET /api/cli-auth/challenges/{id}",
@@ -3402,6 +3403,25 @@ registry.registerPath({
     403: r.forbidden,
     404: r.notFound,
     409: r.conflict,
+    422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/summary-slots/{scopeKind}/{slotKey}/cancel",
+  tags: ["summaries"],
+  summary: "Cancel an in-flight or stuck summary slot generation",
+  request: {
+    params: summarySlotParams,
+    body: jsonBody(generateSummarySlotSchema),
+  },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
     422: r.unprocessable,
   },
 });
@@ -9650,6 +9670,14 @@ registry.registerPath({
   tags: ["plugins"],
   summary: "List installed plugins",
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/plugins/local-ws-key",
+  tags: ["plugins"],
+  summary: "Public key that signs local plugin WebSocket upgrades",
+  responses: { 200: r.ok() },
 });
 
 registry.registerPath({

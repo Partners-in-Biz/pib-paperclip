@@ -128,6 +128,11 @@ export {
 export {
   deriveResponsibleUser,
   deriveOriginatingActor,
+  deriveIssueCreator,
+  pluginSourceName,
+  ISSUE_CREATOR_KINDS,
+  type IssueCreator,
+  type IssueCreatorKind,
   type ResponsibleUserAttribution,
   type ResponsibleUserSource,
   type OriginatingActor,
@@ -750,6 +755,7 @@ export type {
   InteractionResolverGovernance,
   InteractionResolverKindGovernance,
   GenerateSummarySlotRequest,
+  CancelSummarySlotResponse,
   GenerateSummarySlotResponse,
   GetSummarySlotResponse,
   ListSummarySlotRevisionsResponse,
@@ -2923,3 +2929,4 @@ export * from "./planning-canvas-format.js";
 export * from "./planning-canvas-blueprints.js";
 export * from "./planning-canvas-import.js";
 export * from "./canvas-cards.js";
+export * from "./planning-canvas-weblink.js";

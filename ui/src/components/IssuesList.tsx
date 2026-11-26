@@ -49,6 +49,8 @@ import {
   shouldIncludeIssueFilterWorkspaceOption,
   issueStatusOrder,
   type IssueFilterState,
+  CREATOR_KIND_FILTER_PREFIX,
+  creatorKindFilterOptions,
 } from "../lib/issue-filters";
 import {
   DEFAULT_INBOX_ISSUE_COLUMNS,
@@ -214,12 +216,13 @@ function normalizeBoardColumnPageSize(value: unknown): BoardColumnPageSize {
     : KANBAN_COLUMN_DEFAULT_PAGE_SIZE;
 }
 
-function normalizeIssueViewState(value: unknown): IssueViewState {
+function normalizeIssueViewState(value: unknown, defaultShowAgentCreatedTasks = false): IssueViewState {
   const parsed = value && typeof value === "object" ? value as Partial<IssueViewState> : {};
   return {
     ...defaultViewState,
+    showAgentCreatedTasks: defaultShowAgentCreatedTasks,
     ...parsed,
-    ...normalizeIssueFilterState(parsed),
+    ...normalizeIssueFilterState(parsed, defaultShowAgentCreatedTasks),
     // A saved workspace selection has no filter control. Drop it on load.
     // `initialWorkspaces` from the page address is applied after this.
     workspaces: [],
@@ -284,12 +287,13 @@ function getIssueColumnsStorageKey(key: string): string {
 
 function loadIssueCollectionPreferences(
   location: TaskCollectionPreferenceLocation,
+  defaultShowAgentCreatedTasks = false,
 ) {
   return loadTaskCollectionPreferences<IssueViewState, InboxIssueColumn>({
     ...location,
-    defaultViewState: defaultViewState,
+    defaultViewState: { ...defaultViewState, showAgentCreatedTasks: defaultShowAgentCreatedTasks },
     defaultColumns: DEFAULT_INBOX_ISSUE_COLUMNS,
-    normalizeViewState: normalizeIssueViewState,
+    normalizeViewState: (value) => normalizeIssueViewState(value, defaultShowAgentCreatedTasks),
     normalizeColumns: (value) => normalizeInboxIssueColumns(Array.isArray(value) ? value : []),
   });
 }
@@ -445,7 +449,7 @@ interface Agent {
 type CreatorOption = {
   id: string;
   label: string;
-  kind: "agent" | "user";
+  kind: "agent" | "user" | "automation";
   searchText?: string;
 };
 
@@ -492,6 +496,7 @@ interface IssuesListProps {
    */
   parentIssueIdForCostSummary?: string;
   enableAgentCreatedVisibilityFilter?: boolean;
+  defaultShowAgentCreatedTasks?: boolean;
   hasMoreIssues?: boolean;
   isLoadingMoreIssues?: boolean;
   mutedIssueIds?: Set<string>;
@@ -739,6 +744,7 @@ function StreamlinedIssuesList({
   showProgressSummary = false,
   parentIssueIdForCostSummary,
   enableAgentCreatedVisibilityFilter = false,
+  defaultShowAgentCreatedTasks = false,
   hasMoreIssues = false,
   isLoadingMoreIssues = false,
   mutedIssueIds,
@@ -815,7 +821,7 @@ function StreamlinedIssuesList({
   const initialStatusesKey = initialStatuses ? `set:${initialStatuses.join("|")}` : "";
   const initialPreferencesRef = useRef<ReturnType<typeof loadIssueCollectionPreferences> | null>(null);
   if (initialPreferencesRef.current === null) {
-    initialPreferencesRef.current = loadIssueCollectionPreferences(preferenceLocation);
+    initialPreferencesRef.current = loadIssueCollectionPreferences(preferenceLocation, defaultShowAgentCreatedTasks);
   }
   const initialPreferences = initialPreferencesRef.current;
 
@@ -834,7 +840,11 @@ function StreamlinedIssuesList({
     ...sort,
     ...(routineTasksOnly === undefined ? {} : { routineTasksOnly }),
   }), [savedViewState, sort, routineTasksOnly]);
-  const showAgentCreatedTasks = useShowAgentCreatedTasks(selectedCompanyId, viewStateKey);
+  const showAgentCreatedTasks = useShowAgentCreatedTasks(
+    selectedCompanyId,
+    viewStateKey,
+    defaultShowAgentCreatedTasks,
+  );
   useEffect(() => {
     if (!enableAgentCreatedVisibilityFilter) return;
     setViewState((previous) => previous.showAgentCreatedTasks === showAgentCreatedTasks
@@ -857,13 +867,13 @@ function StreamlinedIssuesList({
 
   // Reload view state whenever the persisted context changes.
   const prevViewStateContextKey = useRef(
-    `${scopedKey}::${initialAssigneesKey}::${initialWorkspacesKey}::${initialStatusesKey}`,
+    `${scopedKey}::${initialAssigneesKey}::${initialWorkspacesKey}::${initialStatusesKey}::${defaultShowAgentCreatedTasks}`,
   );
   useEffect(() => {
-    const nextContextKey = `${scopedKey}::${initialAssigneesKey}::${initialWorkspacesKey}::${initialStatusesKey}`;
+    const nextContextKey = `${scopedKey}::${initialAssigneesKey}::${initialWorkspacesKey}::${initialStatusesKey}::${defaultShowAgentCreatedTasks}`;
     if (prevViewStateContextKey.current !== nextContextKey) {
       prevViewStateContextKey.current = nextContextKey;
-      const preferences = loadIssueCollectionPreferences(preferenceLocation);
+      const preferences = loadIssueCollectionPreferences(preferenceLocation, defaultShowAgentCreatedTasks);
       setViewState(getInitialWorkspaceViewState(
         preferences,
         initialAssignees,
@@ -882,6 +892,7 @@ function StreamlinedIssuesList({
     initialStatuses,
     initialStatusesKey,
     defaultSortField,
+    defaultShowAgentCreatedTasks,
     preferenceLocation.companyId,
     preferenceLocation.collectionKey,
     preferenceLocation.legacyViewStorageKey,
@@ -896,8 +907,11 @@ function StreamlinedIssuesList({
         sortDir: patch.sortDir ?? viewState.sortDir,
       });
     }
+    const normalizedPatch = patch.showAgentCreatedTasks !== undefined && patch.showAgentCreatedTasksCustomized === undefined
+      ? { ...patch, showAgentCreatedTasksCustomized: true }
+      : patch;
     setViewState((prev) => {
-      const next = { ...prev, ...sort, ...patch };
+      const next = { ...prev, ...sort, ...normalizedPatch };
       saveTaskCollectionPreferences(preferenceLocation, {
         viewState: next,
         columns: visibleIssueColumns,
@@ -1085,6 +1099,10 @@ function StreamlinedIssuesList({
     const options = new Map<string, CreatorOption>();
     const knownAgentIds = new Set<string>();
 
+    for (const kindOption of creatorKindFilterOptions) {
+      options.set(kindOption.id, { ...kindOption, searchText: `${kindOption.label} kind type created by` });
+    }
+
     if (currentUserId) {
       options.set(`user:${currentUserId}`, {
         id: `user:${currentUserId}`,
@@ -1136,6 +1154,9 @@ function StreamlinedIssuesList({
     }
 
     return [...options.values()].sort((a, b) => {
+      const aKind = a.id.startsWith(CREATOR_KIND_FILTER_PREFIX);
+      const bKind = b.id.startsWith(CREATOR_KIND_FILTER_PREFIX);
+      if (aKind !== bKind) return aKind ? -1 : 1;
       if (a.kind !== b.kind) return a.kind === "user" ? -1 : 1;
       return a.label.localeCompare(b.label);
     });
@@ -1319,7 +1340,11 @@ function StreamlinedIssuesList({
     enabled: !!selectedCompanyId && !memberGate.closed,
   });
 
-  const activeFilterCount = countActiveIssueFilters(viewState, enableAgentCreatedVisibilityFilter);
+  const activeFilterCount = countActiveIssueFilters(
+    viewState,
+    enableAgentCreatedVisibilityFilter,
+    defaultShowAgentCreatedTasks,
+  );
   const boardHighVolume = viewState.viewMode === "board" && filtered.length > KANBAN_BOARD_HIGH_VOLUME_THRESHOLD;
   const boardCompactCards =
     viewState.boardCardDensity === "compact"
@@ -1999,6 +2024,7 @@ function StreamlinedIssuesList({
             currentUserId={currentUserId}
             enableExternalObjectFilters={externalObjectsEnabled}
             enableAgentCreatedVisibilityFilter={enableAgentCreatedVisibilityFilter}
+            defaultShowAgentCreatedTasks={defaultShowAgentCreatedTasks}
             iconOnly
             presentation={rowPresentation === "task" ? "streamlined" : "legacy"}
           />

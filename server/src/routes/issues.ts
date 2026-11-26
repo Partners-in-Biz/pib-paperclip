@@ -11,13 +11,14 @@ import {
   MEMBER_AGENT_NOT_LISTED_ROUTE_MESSAGE,
   restrictedAgentIdsForActor,
 } from "../services/member-restriction/agent-read.js";
-import { memberRestrictionForActor } from "../services/member-restriction/actor-memberships.js";
+import { actorPersonMembership, memberRestrictionForActor } from "../services/member-restriction/actor-memberships.js";
 import {
   memberRestrictionOrUnavailable,
   memberRestrictionResolver,
   memberRestrictionUnavailable,
 } from "../services/member-restriction/resolver.js";
 import { memberRestrictionEnforcedCompanyIdsForActor } from "../services/member-restriction/strict-read.js";
+import { githubExternalObjectReadGate } from "../services/member-restriction/github-external-objects.js";
 import { notifyDeferredExecutionWork } from "../services/deferred-execution-notifications.js";
 import { notifyNativeRecoveryNotices } from "../services/native-recovery-notice-notifications.js";
 import { notifyNativeStatusReassessment } from "../services/native-status-reassessment-notifications.js";
@@ -11114,6 +11115,7 @@ export function issueRoutes(
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const workProducts = await workProductsSvc.listForIssue(issue.id, {
       refreshPullRequests: req.query.refreshPullRequests === "true",
+      personIds: [actorPersonMembership(req.actor, issue.companyId)?.personId],
     });
     res.json(workProducts);
   });
@@ -11128,7 +11130,9 @@ export function issueRoutes(
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
-    const objects = await externalObjectsSvc.listForIssue(issue.id);
+    const gate = await githubExternalObjectReadGate(db, req.actor, issue.companyId, "GET /api/issues/:id/external-objects");
+    const objects = await externalObjectsSvc.listForIssue(issue.id, gate.readOptions);
+    await gate.record();
     res.json(objects);
   });
 
@@ -11142,7 +11146,9 @@ export function issueRoutes(
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
-    const summary = await externalObjectsSvc.getIssueSummary(issue.id);
+    const gate = await githubExternalObjectReadGate(db, req.actor, issue.companyId, "GET /api/issues/:id/external-object-summary");
+    const summary = await externalObjectsSvc.getIssueSummary(issue.id, gate.readOptions);
+    await gate.record();
     res.json(summary);
   });
 
@@ -12219,6 +12225,7 @@ export function issueRoutes(
               ? await workProductsSvc.resolveCommitDiffSummary(
                   issue.companyId,
                   createInput,
+                  { personIds: [actorPersonMembership(req.actor, issue.companyId)?.personId] },
                 )
               : null),
         );
@@ -14055,10 +14062,22 @@ export function issueRoutes(
       "Issue not found",
     );
     if (!sourceIssue) return;
+    if (!(await assertIssueReadAllowed(req, res, sourceIssue))) return;
     const decompositions = await svc.listAcceptedPlanDecompositions(
       sourceIssue.id,
     );
-    res.json(decompositions);
+    // A child can be private under a readable source (PAR-12608 4.3): show it
+    // in full only when `issue:read` allows it, else the identifier-only stub.
+    const readableIds = await readableIssueEdgeIds(
+      req,
+      sourceIssue.companyId,
+      decompositions.flatMap((decomposition) => decomposition.childIssues.map((child) => child.id)),
+    );
+    res.json(decompositions.map((decomposition) => ({
+      ...decomposition,
+      childIssues: decomposition.childIssues.map((child) =>
+        readableIds.has(child.id) ? child : lockedIssueStub(child)),
+    })));
   });
 
   router.post(
@@ -14327,6 +14346,7 @@ export function issueRoutes(
       "Issue not found",
     );
     if (!issue) return;
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
     await assertCanManageIssueMonitor(
       access,
       req,
@@ -14712,27 +14732,32 @@ export function issueRoutes(
   router.put("/issues/:id/title", validateIssueMutationBody(setIssueTitleSchema), async (req, res) => {
     const existing = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
     if (!existing) return;
-    // PAR-12929 (AC-G3): a caller bound by the member restriction reads the
-    // task through `issue:read`, as `GET /api/issues/:id` does. `enforce`
-    // answers "not found" for a task he cannot read and then applies the
-    // check `PATCH /api/issues/:id` applies; `report` records the would-refuse
-    // and goes on as today. Every other caller keeps today's checks (AC-F2).
+    // Each caller class takes exactly one read check and one write check
+    // (PAR-14340: #1151 and #1190 both rewrote this handler).
     const restrictionMode = await memberRestrictionModeBinding(req, existing.companyId);
-    if (restrictionMode === "enforce") {
-      if (!(await restrictedRead(() => assertIssueReadAllowed(req, res, existing)))) return;
-      if (req.actor.type === "agent"
-        && !(await assertAgentIssueMutationAllowed(req, res, existing, { allowVisibleIssueWrite: true }))) return;
-    } else if (restrictionMode === "report") {
-      await restrictedRead(() => decideIssueAccess(req, existing, "issue:read"));
-    }
-    if (restrictionMode !== "enforce" && req.actor.type === "agent") {
+    if (req.actor.type === "agent" && restrictionMode !== "enforce") {
+      // The agent title path, unchanged by PAR-13016. Under `report` the
+      // restricted read records the would-refuse and goes on (PAR-12929).
+      if (restrictionMode === "report") await restrictedRead(() => decideIssueAccess(req, existing, "issue:read"));
       const decision = await decideIssueAccess(req, existing, "issue:mutate");
       if (!decision.allowed) {
         await denyIssueWrite(req, res, existing, issueWriteDenialCodeForDecision(decision));
         return;
       }
+    } else if (restrictionMode) {
+      // PAR-12929 (AC-G3): a caller bound by the member restriction reads the
+      // task through `issue:read`, as `GET /api/issues/:id` does: "not found"
+      // for a task he cannot read (`enforce`, or a private task), one
+      // would-refuse record under `report`, 503 for a read that cannot be
+      // answered. Then the write check `PATCH /api/issues/:id` applies: for a
+      // board caller that is assertCompanyAccess above, no `issue:mutate`
+      // decision (it would record the would-refuse a second time).
+      if (!(await restrictedRead(() => assertIssueReadAllowed(req, res, existing)))) return;
+      if (req.actor.type === "agent"
+        && !(await assertAgentIssueMutationAllowed(req, res, existing, { allowVisibleIssueWrite: true }))) return;
     } else {
-      // AC-G3: a board caller who cannot read the task gets 404, then the write decision.
+      // PAR-13016 (AC-G3): a board caller who cannot read the task gets 404,
+      // then the write decision.
       if (!(await assertIssueReadAllowed(req, res, existing))) return;
       const decision = await decideIssueAccess(req, existing, "issue:mutate");
       if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
@@ -17675,6 +17700,7 @@ export function issueRoutes(
         "Issue not found",
       );
       if (!issue) return;
+      if (!(await assertIssueReadAllowed(req, res, issue))) return;
       const actor = getActorInfo(req);
       const { queue, activityPublication } = await runQueuedCommentMutation(() =>
         queuedCommentQueue.editQueuedComment({
@@ -17706,6 +17732,7 @@ export function issueRoutes(
         "Issue not found",
       );
       if (!issue) return;
+      if (!(await assertIssueReadAllowed(req, res, issue))) return;
       const actor = getActorInfo(req);
       const { queue, activityPublication } = await runQueuedCommentMutation(() =>
         queuedCommentQueue.reorderQueuedComments({
@@ -17730,6 +17757,7 @@ export function issueRoutes(
       if (!req.actor.userId) throw forbidden("Board user context required");
       const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
       if (!issue) return;
+      if (!(await assertIssueReadAllowed(req, res, issue))) return;
       const decision = await decideIssueAccess(req, issue, "issue:comment");
       if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
       if (issue.conversationAgentId) {
@@ -17808,6 +17836,7 @@ export function issueRoutes(
         "Issue not found",
       );
       if (!issue) return;
+      if (!(await assertIssueReadAllowed(req, res, issue))) return;
       if (issue.conversationAgentId) throw conflict("Conversation messages are processed in order at turn boundaries");
       const decision = await decideIssueAccess(req, issue, "issue:comment");
       if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
@@ -18109,6 +18138,7 @@ export function issueRoutes(
         "Issue not found",
       );
       if (!issue) return;
+      if (!(await assertIssueReadAllowed(req, res, issue))) return;
       const actor = getActorInfo(req);
       const result = await runQueuedCommentMutation(() =>
         queuedCommentQueue.discardQueuedComment({
@@ -18557,6 +18587,8 @@ export function issueRoutes(
             }
             await secretProposals.approve(issue.companyId, proposal.id, {
               resolvedByUserId,
+              // Accepting the binding card also approves its pending secret proposal.
+              cascade: true,
               assertCanResolve: (lockedProposal, txDb) =>
                 assertCanResolveProposal({
                   db: txDb,

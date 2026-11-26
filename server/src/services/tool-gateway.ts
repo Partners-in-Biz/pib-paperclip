@@ -35,6 +35,8 @@ import { resolveSlackTaskAuthority } from "./connectors/slack-authority.js";
 import { SLACK_TOOLS } from "@paperclipai/shared";
 import { slackToolsForSession } from "./connectors/slack-catalog.js";
 import { boundRunIssueIdSql } from "./run-task-binding.js";
+import { canvasPersonalSourceVerdict } from "./planning-canvas-source-rule.js";
+import { PLANNING_CANVAS_SOURCE_ERROR_CODES, type PlanningCanvasReadAction } from "@paperclipai/shared";
 import { executeSlackTool } from "./connectors/slack.js";
 import { githubGuestBotConnectionForSession, githubBotToolsForSession } from "./chat-github-tools.js";
 import { githubChatReviewService } from "./chat-github-reviews.js";
@@ -159,7 +161,7 @@ import {
   projectedConnectionToolInputSchema,
 } from "./tool-access.js";
 import { assertGoogleChatToolArgumentsSupported, googleChatToolDescription } from "./google-chat-tool-policy.js";
-import { assertGmailArchiveToolArgumentsSupported, gmailArchiveToolDescription } from "./gmail-archive-tool-policy.js";
+import { assertGmailArchiveToolArgumentsSupported, assertGmailDraftGoesThroughMailbox, gmailArchiveToolDescription } from "./gmail-archive-tool-policy.js";
 import { parseRemoteHttpEndpoint } from "./remote-http-endpoint-guard.js";
 import {
   guardedRemoteHttpFetch,
@@ -4850,6 +4852,24 @@ export function createToolGatewayService(
     const actingUserId = session.identityContextId
       ? (session.responsibleUserId ?? null)
       : (run?.responsibleUserId ?? session.responsibleUserId ?? null);
+    // PAR-14282: a run started from a board that is not the acting person's own
+    // personal board may not use a personal credential. Read only on the
+    // personal path, from the run's bound issue; any failure refuses.
+    const assertCanvasAllowsPersonalGrant = async () => {
+      const verdict = await canvasPersonalSourceVerdict(db, {
+        companyId: session.companyId,
+        runId: session.runId,
+        sessionIssueId: session.issueId,
+        actingUserId,
+      });
+      if (!verdict.refused) return;
+      throw new ToolGatewayHttpError(
+        403,
+        "A run started from a shared board cannot use a personal credential; use a shared credential",
+        PLANNING_CANVAS_SOURCE_ERROR_CODES.personalSourceRefused,
+        { connectionId: connection.id, reason: verdict.reason },
+      );
+    };
     if (
       session.identityContextId &&
       session.agentId &&
@@ -4893,6 +4913,7 @@ export function createToolGatewayService(
           );
         }
       }
+      if (selected.grant.kind === "user") await assertCanvasAllowsPersonalGrant();
       // Managed GitHub selection is final: a legacy shared policy cannot replace
       // the captured person's grant with an organization or teammate's account.
       return selected.grant;
@@ -5132,8 +5153,13 @@ export function createToolGatewayService(
           actingUserId,
           false,
         );
-    if (resolution === "user" && userGrant) return userGrant;
+    if (resolution === "user" && userGrant) {
+      await assertCanvasAllowsPersonalGrant();
+      return userGrant;
+    }
     if (resolution === "user_authorization_required") {
+      // Asking the person to connect a personal account is pointless where it would be refused.
+      await assertCanvasAllowsPersonalGrant();
       if (actingUserId && allowInteraction)
         await createUserAuthorizationInteraction(
           session,
@@ -6401,6 +6427,7 @@ export function createToolGatewayService(
     // and connections whose stored grant/catalog predates scope reduction.
     assertGoogleChatToolArgumentsSupported(connection, entry.toolName, parameters);
     assertGmailArchiveToolArgumentsSupported(connection, entry.toolName, parameters);
+    assertGmailDraftGoesThroughMailbox(connection, entry.toolName);
     if (useDefaultTimeout && isRailwayConnection(connection) && entry.toolName === `${RAILWAY_TOOL_PREFIX}run-command`) {
       ms = railwayCommandBudgetMs(parameters);
     }
@@ -9750,6 +9777,33 @@ export function createToolGatewayService(
         try { await measureRunPhase("connectors.browser_use.grant", () => resolveConnectionGrant(session, connection, false)); resources.push({ id: connection.id, connectionId: connection.id, label: "Browser Use Cloud" }); } catch { /* Unavailable grants do not contribute a runtime skill. */ }
       }
       return resources;
+    },
+
+    /**
+     * Read actions a board may offer for a source-bound node (PAR-14257 B.3 A,
+     * D 4a): connector tools whose catalog entry is read-only (and not write or
+     * destructive) and that the agent's profiles and policies allow outright
+     * (an ask-first tool is not listed). Names and descriptions only. The
+     * refresh route asks the same function, so a tool that stops being read-only
+     * or allowed stops refreshing.
+     */
+    async listCanvasReadActionsForAgent(input: { companyId: string; agentId: string }): Promise<PlanningCanvasReadAction[]> {
+      await assertAgentInCompany(input.companyId, input.agentId);
+      const tools = (await connectedMcpToolsForCompany(input.companyId)).filter((tool) => {
+        const risk = (tool.providerMetadata as ConnectedMcpGatewayMetadata | undefined)?.risk;
+        return tool.risk === "read" && risk?.isReadOnly === true && !risk.isWrite && !risk.isDestructive;
+      });
+      const decisions = await decideToolsForListing(tools, (tool) =>
+        policyInputForAgentTool({ companyId: input.companyId, agentId: input.agentId, tool }),
+      );
+      return decisions
+        .filter(({ decision }) => decision.allowed && decision.decision !== "require_approval")
+        .map(({ tool }) => ({
+          tool: tool.name,
+          name: tool.displayName,
+          description: tool.description ?? null,
+          application: tool.applicationDisplayName ?? null,
+        }));
     },
 
     async summarizeConnectionAccessForAgent(input: {

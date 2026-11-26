@@ -35,6 +35,7 @@ import { validate } from "../middleware/validate.js";
 import { accessService, projectService, logActivity, workspaceOperationService } from "../services/index.js";
 import { conflict, forbidden, unprocessable } from "../errors.js";
 import { externalObjectService } from "../services/external-objects.js";
+import { githubExternalObjectReadGate } from "../services/member-restriction/github-external-objects.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 import { ensureProjectAccessMember } from "../services/projects.js";
@@ -394,7 +395,9 @@ export function projectRoutes(db: Db) {
     const project = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
     if (!project) return;
     if (!(await assertProjectReadAllowed(req, res, project))) return;
-    const summary = await externalObjectsSvc.getProjectSummary(project.id);
+    const gate = await githubExternalObjectReadGate(db, req.actor, project.companyId, "GET /api/projects/:id/external-object-summary");
+    const summary = await externalObjectsSvc.getProjectSummary(project.id, gate.readOptions);
+    await gate.record();
     res.json(summary);
   });
 

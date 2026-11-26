@@ -114,6 +114,31 @@ describe("hermes early session checkpoint", () => {
     expect(ctx.onSessionCheckpoint).toHaveBeenCalledWith({ sessionId: "20261028_145531_817f3d" });
   });
 
+  it("extracts clean prose from stream-json stdout instead of storing raw NDJSON", async () => {
+    const sid = "local-6cc3df5141efe83b3aa6667ebd23463c4f12df93d8683ff60106c4147285d41c";
+    const ndjson = [
+      `{"type":"system","subtype":"init","session_id":"${sid}"}`,
+      '{"type":"text","text":"I can\'t run it now.","timestamp":1795669181852}',
+      '{"type":"text","text":" Neither can Sipho.","timestamp":1795669181853}',
+      `{"type":"result","session_id":"${sid}","exit_code":0,"text":"I can't run it now. Neither can Sipho.","tokens":{"input":100,"output":20,"total":120,"cache_read":80,"cache_write":10},"duration_ms":500,"timestamp":1795669182016}`,
+    ].join("\n");
+    vi.mocked(serverUtils.runChildProcess).mockImplementationOnce(async () => ({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: ndjson,
+      stderr: "",
+      pid: 42,
+      startedAt: "2026-11-26T07:00:00.000Z",
+    }));
+
+    const ctx = makeCtx();
+    const result = await execute(ctx as never);
+    expect(result.summary).toBe("I can't run it now. Neither can Sipho.");
+    expect(result.resultJson?.result).toBe("I can't run it now. Neither can Sipho.");
+    expect(result.sessionParams).toEqual({ sessionId: sid });
+  });
+
   describe("PAPERCLIP_SESSION_CHECKPOINT=0", () => {
     beforeEach(() => {
       vi.stubEnv("PAPERCLIP_SESSION_CHECKPOINT", "0");

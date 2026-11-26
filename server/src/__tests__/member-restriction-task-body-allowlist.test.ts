@@ -6,7 +6,7 @@ import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog, agents, authUsers, companies, companyMemberships, companySecretBindings, createDb, environments, heartbeatRuns,
-  issues, projectAccessMembers, projects,
+  issueRelations, issues, projectAccessMembers, projects,
 } from "@paperclipai/db";
 import { errorHandler } from "../middleware/error-handler.js";
 import { issueRoutes } from "../routes/issues.js";
@@ -23,7 +23,8 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
  * Real routes, the real route-table middleware and the real resolver. BASE
  * holds `development`'s answers before this change (`PAR12950_RECORD=1` with
  * the three route calls removed); every cell keeps them except a caller bound
- * by R under `enforce`.
+ * by R under `enforce`. C4i-e (PAR-13315): blocker ids, the watchdog agent, a
+ * user assignee and stage users get real checks; see the last describe.
  */
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -43,6 +44,7 @@ const MODES: Mode[] = ["off", "report", "enforce", "kill"];
 const CALLERS: Caller[] = ["R", "R-run", "R-key", "O", "U", "agent", "admin", "R-in-X"];
 const BOUND: readonly Caller[] = ["R", "R-run", "R-key"];
 const REFUSED = "403 MEMBER_RESTRICTED";
+const BLOCKED = "422 Blocked-by issues must belong to the same company";
 const ROUTE_SCHEMA = { create: "createIssue", children: "createChildIssue", patch: "updateIssue" } as const;
 
 const STORED_SETTINGS = { mode: "shared_workspace", environmentId: "@ENV", networkEgress: { allowFqdns: ["o.example"] },
@@ -51,8 +53,9 @@ const STORED_OVERRIDES = { adapterConfig: { model: "o-model", chrome: true } };
 const STORED_POLICY = { mode: "normal", commentRequired: true, stages: [], authorizationPolicy: { trustPreset: "standard" } };
 const settings = (extra: Record<string, unknown>) => ({ executionWorkspaceSettings: { mode: "shared_workspace", ...extra } });
 const adapter = (adapterConfig: Record<string, unknown>) => ({ assigneeAdapterOverrides: { adapterConfig } });
-/** label -> [body, refused for a bound caller]. Create bodies add a fresh title. */
-const CREATE_BODIES: Record<string, [Record<string, unknown>, boolean]> = {
+/** label -> [body, refused for a bound caller (the answer when not 403)]. Create bodies add a fresh title. */
+type Cell = [Record<string, unknown>, boolean | string];
+const CREATE_BODIES: Record<string, Cell> = {
   "title": [{}, false], "plain": [{ description: "d", priority: "high", status: "todo" }, false],
   "model override": [adapter({ model: "m", effort: "high" }), false], "mode": [settings({}), false],
   "assignee self": [{ assigneeUserId: "@R" }, false],
@@ -62,10 +65,10 @@ const CREATE_BODIES: Record<string, [Record<string, unknown>, boolean]> = {
   "worktreeParentDir": [settings({ workspaceStrategy: { type: "git_worktree", worktreeParentDir: "/tmp/r" } }), true],
   "authorizationPolicy": [{ executionPolicy: { authorizationPolicy: { trustPreset: "low_trust_review" } } }, true],
   "harnessKind": [{ harnessKind: "skill_test" }, true], "onboardingFirstTask": [{ onboardingFirstTask: true }, true],
-  "executionWorkspaceId": [{ executionWorkspaceId: "@WS" }, false], "blockedByIssueIds": [{ blockedByIssueIds: ["@TASK"] }, true],
-  "assignee O": [{ assigneeUserId: "@O" }, true],
+  "executionWorkspaceId": [{ executionWorkspaceId: "@WS" }, false], "blockedByIssueIds": [{ blockedByIssueIds: ["@TASK"] }, BLOCKED],
+  "assignee O": [{ assigneeUserId: "@O" }, false],
 };
-const BODIES: Record<Route, Record<string, [Record<string, unknown>, boolean]>> = {
+const BODIES: Record<Route, Record<string, Cell>> = {
   create: CREATE_BODIES,
   children: CREATE_BODIES,
   patch: {
@@ -76,8 +79,8 @@ const BODIES: Record<Route, Record<string, [Record<string, unknown>, boolean]>> 
     "policy null": [{ executionPolicy: null }, true], "chrome": [adapter({ chrome: false }), true],
     "env": [adapter({ env: { A: "b" } }), true], "egress": [settings({ networkEgress: { allowFqdns: ["r.example"] } }), true],
     "authorizationPolicy": [{ executionPolicy: { ...STORED_POLICY, authorizationPolicy: { trustPreset: "low_trust_review" } } }, true],
-    "resume": [{ resume: true, comment: "go" }, false], "blockedByIssueIds": [{ blockedByIssueIds: ["@TASK"] }, true],
-    "assignee O": [{ assigneeAgentId: null, assigneeUserId: "@O" }, true],
+    "resume": [{ resume: true, comment: "go" }, false], "blockedByIssueIds": [{ blockedByIssueIds: ["@TASK"] }, BLOCKED],
+    "assignee O": [{ assigneeAgentId: null, assigneeUserId: "@O" }, false],
   },
 };
 
@@ -145,6 +148,7 @@ const answerOf = (res: request.Response) => res.status < 300 ? String(res.status
     (await db.select({ id: activityLog.id }).from(activityLog).where(and(eq(activityLog.companyId, companyId),
       sql`${activityLog.action} in ('issue.created', 'issue.updated')`))).length,
     (await db.select({ id: companySecretBindings.id }).from(companySecretBindings).where(eq(companySecretBindings.companyId, companyId))).length,
+    (await db.select({ id: issueRelations.id }).from(issueRelations).where(eq(issueRelations.companyId, companyId))).length,
   ]);
 
   /** One call: the answer, whether anything was written, and the task after a patch. */
@@ -214,7 +218,8 @@ const answerOf = (res: request.Response) => res.status < 300 ? String(res.status
       const fields = MEMBER_RESTRICTION_TASK_BODY_ALLOWLISTS[ROUTE_SCHEMA[route]].fields;
       for (const [label, [body, refusedKey]] of Object.entries(BODIES[route])) {
         // A key the route's schema strips (a create-only key on `/children`) never reaches the guard.
-        const refused = refusedKey && Object.keys(body).every((key) => key in fields);
+        const refused = refusedKey !== false && Object.keys(body).every((key) => key in fields);
+        const refusal = typeof refusedKey === "string" ? refusedKey : REFUSED;
         const answers: string[] = [];
         for (const mode of MODES) {
           await setMode(mode);
@@ -226,8 +231,8 @@ const answerOf = (res: request.Response) => res.status < 300 ? String(res.status
             if (refused) {
               // An earlier check that already refuses today keeps its answer; nothing is written either way.
               const today = base[`${caller} ${route} ${label}`]?.[0] ?? "";
-              if (/^2/.test(today)) expect(answer, cell).toBe(REFUSED);
-              else expect([REFUSED, today], cell).toContain(answer);
+              if (/^2/.test(today)) expect(answer, cell).toBe(refusal);
+              else expect([refusal, today], cell).toContain(answer);
               expect(unchanged, cell).toBe(true);
             } else expect(answer, cell).toBe(answers[1]);
             if (answer === "200") expectStoredKept(after, cell);
@@ -291,8 +296,9 @@ const answerOf = (res: request.Response) => res.status < 300 ? String(res.status
       ["children", { blockParentUntilDone: true }, "201"],
       ["patch", { onBehalfOfUserId: O, comment: "c" }, "200"],
       ["patch", { attachmentIds: [randomUUID()], comment: "c" }, "422 Comment attachments must belong to the same task and company"],
+      // C4i-e: a colleague as stage reviewer is today's answer.
       ["patch", { executionPolicy: { ...STORED_POLICY, stages: [{ type: "review", participants: [{ type: "user", userId: O }] }] } },
-        REFUSED],
+        "200"],
     ];
     for (const [route, body, expected] of cases) {
       const { answer, res } = await send("R", route, body, await board(R));
@@ -325,5 +331,124 @@ const answerOf = (res: request.Response) => res.status < 300 ? String(res.status
     const { answer, unchanged } = await send("R", route, BODIES[route].env![0]);
     expect(answer).toBe(route === "patch" ? "200" : "201");
     expect(unchanged).toBe(false);
+  });
+
+  describe("C4i-e (PAR-13315): blocker ids, watchdog agent, user assignee and stage users", () => {
+    const ALL: Route[] = ["create", "children", "patch"];
+    let ownTask = "", Z = "";
+    // No `authorizationPolicy`: on create R may not set it; on patch the stored one is kept.
+    const stage = (userId: string) => ({ executionPolicy: { mode: "normal", commentRequired: true,
+      stages: [{ type: "review", participants: [{ type: "user", userId }] }] } });
+    /** label, routes, body, R's answer under `enforce` (null: today's answer; TODAY_REFUSES: today's 4xx, as for everyone). */
+    const TODAY_REFUSES = "today's refusal";
+    const cases = (): [string, Route[], Record<string, unknown>, string | null][] => [
+      ["O's task as blocker", ALL, { blockedByIssueIds: [oTask] }, BLOCKED],
+      ["own task as blocker", ALL, { blockedByIssueIds: [ownTask] }, null],
+      ["unlisted watchdog", ["create", "children"], { watchdog: { agentId: agentPlain } }, "422 agent_not_listed"],
+      ["listed watchdog", ["create", "children"], { watchdog: { agentId: agentR } }, null],
+      // `assertAssignableUser` (404), or on create the assignment check before it (403 deny_company_boundary).
+      ["non-member assignee", ALL, { assigneeAgentId: null, assigneeUserId: ADMIN }, TODAY_REFUSES],
+      ["assignee of company X", ALL, { assigneeAgentId: null, assigneeUserId: Z }, TODAY_REFUSES],
+      ["colleague assignee", ALL, { assigneeAgentId: null, assigneeUserId: O }, null],
+      ["non-member stage user", ALL, stage(ADMIN), "422 Stage participant user not found"],
+      ["colleague stage reviewer", ALL, stage(O), null],
+    ];
+    const denials = () => db.select({ details: activityLog.details }).from(activityLog).where(and(eq(activityLog.companyId, Y),
+      eq(activityLog.action, "member_restriction.denied"), eq(activityLog.responsibleUserId, R),
+      sql`${activityLog.details} ->> 'ruleId' = 'R-body'`));
+
+    beforeAll(async () => {
+      ownTask = (await rTask(Y)).id;
+      await db.update(companyMemberships).set({ restrictedAgentIds: [agentR] })
+        .where(and(eq(companyMemberships.companyId, Y), eq(companyMemberships.principalId, R)));
+      Z = `other-${randomUUID()}`;
+      const now = new Date();
+      await db.insert(authUsers).values({ id: Z, name: Z, email: `${Z}@example.test`, emailVerified: true, createdAt: now, updatedAt: now });
+      await db.insert(companyMemberships).values({ companyId: X, principalType: "user", principalId: Z, status: "active",
+        membershipRole: "operator" });
+    });
+
+    it.each(["R", "R-run"] as Caller[])("%s: enforce refuses with today's missing-value answer, report records, kill and O keep today's", async (caller) => {
+      for (const [label, routes, body, refusal] of cases()) {
+        for (const route of routes) {
+          const cell = `${caller} ${route} ${label}`;
+          await setMode("off");
+          const today = (await send(caller, route, body)).answer;
+          const unbound = (await send("O", route, body)).answer;
+          await setMode("enforce");
+          const enforced = await send(caller, route, body);
+          if (refusal) {
+            if (refusal === TODAY_REFUSES) expect(today, cell).toMatch(/^4/);
+            expect(enforced.answer, `${cell} ${JSON.stringify(enforced.res.body)}`).toBe(refusal === TODAY_REFUSES ? today : refusal);
+            expect(enforced.unchanged, cell).toBe(true);
+          } else expect(enforced.answer, `${cell} ${JSON.stringify(enforced.res.body)}`).toBe(today);
+          expect((await send("O", route, body)).answer, `O ${cell}`).toBe(unbound);
+          await setMode("kill");
+          expect((await send(caller, route, body)).answer, `kill ${cell}`).toBe(today);
+          await setMode("report");
+          // Denials are recorded once a day per person and rule: clear them to see this one.
+          await db.delete(activityLog).where(and(eq(activityLog.companyId, Y), eq(activityLog.action, "member_restriction.denied")));
+          expect((await send(caller, route, body)).answer, `report ${cell}`).toBe(today);
+          // The assignee is today's own check: nothing to record.
+          if (refusal && refusal !== TODAY_REFUSES) {
+            expect((await denials()).map(({ details }) => details?.mode), cell).toEqual(["report"]);
+          }
+        }
+      }
+    }, 600_000);
+
+    it("AC-X1: a failed read answers each refused body 503 and writes nothing", async () => {
+      await setMode("enforce");
+      const broken = (value: string) => db.execute(sql`update ${companyMemberships} set restricted_plugin_keys = ${value}::jsonb
+        where company_id = ${Y} and principal_id = ${R}`);
+      await broken("\"broken\"");
+      try {
+        for (const [label, routes, body, refusal] of cases()) {
+          if (!refusal) continue;
+          const { res, unchanged } = await send("R", routes[0]!, body);
+          expect(res.status, label).toBe(503);
+          expect(unchanged, label).toBe(true);
+        }
+      } finally {
+        await broken("[]");
+      }
+    });
+
+    it("AC-X1: a failed read inside the value checks answers 503, never \"not restricted\"", async () => {
+      // Only the stored-blocker read fails, so the binding resolves and the value checks' own catch answers.
+      const failing = new Proxy(db, { get(target, key) {
+        const value = Reflect.get(target, key, target);
+        if (key !== "select") return typeof value === "function" ? value.bind(target) : value;
+        return (...args: Parameters<typeof db.select>) => {
+          const query = target.select(...args);
+          return { from: (table: Parameters<typeof query.from>[0]) => {
+            if (table === issueRelations) throw new Error("read failed");
+            return query.from(table);
+          } };
+        };
+      } }) as typeof db;
+      const req = { actor: await board(R), method: "PATCH", originalUrl: "/api/issues/x" } as unknown as express.Request;
+      const task = await rTask(Y);
+      for (const mode of ["report", "enforce"] as const) {
+        await setMode(mode);
+        await expect(restrictedTaskBody(failing, req, Y, "updateIssue", { blockedByIssueIds: [ownTask] }, task, task.id), mode)
+          .rejects.toMatchObject({ status: 503 });
+      }
+    });
+
+    it("the IssueProperties pickers: add his task next to a stored blocker; a stored stage user is kept", async () => {
+      await setMode("enforce");
+      const r = await board(R);
+      const target = await rTask(Y);
+      await db.insert(issueRelations).values({ companyId: Y, issueId: oTask, relatedIssueId: target.id, type: "blocks" });
+      const blockers = await as(r).patch(`/api/issues/${target.id}`).send({ blockedByIssueIds: [oTask, ownTask] });
+      expect(answerOf(blockers), JSON.stringify(blockers.body)).toBe("200");
+      expect((await db.select().from(issueRelations).where(eq(issueRelations.relatedIssueId, target.id))).length).toBe(2);
+      const assignee = await as(r).patch(`/api/issues/${target.id}`).send({ assigneeAgentId: null, assigneeUserId: O });
+      expect(answerOf(assignee), JSON.stringify(assignee.body)).toBe("200");
+      await db.update(issues).set({ executionPolicy: stage(ADMIN).executionPolicy }).where(eq(issues.id, target.id));
+      const kept = await as(r).patch(`/api/issues/${target.id}`).send({ ...stage(ADMIN), title: "Kept" });
+      expect(kept.status, JSON.stringify(kept.body)).toBeLessThan(300);
+    });
   });
 });
