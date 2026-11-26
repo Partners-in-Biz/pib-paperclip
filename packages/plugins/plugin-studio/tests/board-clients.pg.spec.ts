@@ -6,6 +6,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { setBoardClient } from "../src/board-clients.js";
+import { projectClientStrict } from "../src/scope.js";
 import { boardTarget, latestBoardLink } from "../src/board-scope.js";
 import { embeddedAvailable, startPg, type Pg } from "./helpers/pg.js";
 
@@ -25,6 +26,17 @@ afterAll(async () => {
 
 describe("board client links database support", () => {
   it.runIf(Boolean(process.env.CI))("runs its database tests under CI", () => expect(available).toBe(true));
+});
+
+describe("projectClientStrict: the board's project read fails closed", () => {
+  it("a CRM read that throws refuses with board_client_unavailable; no project is no client, without a read", async () => {
+    let reads = 0;
+    const ctx = { db: { namespace: "plugin_studio_test", query: async () => { reads += 1; throw new Error("crm down"); } }, state: { get: async () => null } } as unknown as PluginContext;
+    await expect(projectClientStrict(ctx, CO, "project-1")).rejects.toMatchObject({ code: "board_client_unavailable" });
+    expect(await projectClientStrict(ctx, CO, null)).toBeNull();
+    // The companies and contacts reads of the first call only.
+    expect(reads).toBe(2);
+  });
 });
 
 function makeCtx(db: Pg["db"]): PluginContext {

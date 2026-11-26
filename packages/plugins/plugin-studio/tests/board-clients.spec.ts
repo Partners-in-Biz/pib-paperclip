@@ -53,7 +53,7 @@ const CRM = [
   { id: CLIENT_B, name: "Globex", domain: null, lifecycle: null },
 ];
 
-async function studio(opts: { links?: Link[]; generate?: boolean; run?: { issueId: string; person: string | null }; issues?: Array<{ id: string; projectId: string | null; originKind?: string; originId?: string }> } = {}) {
+async function studio(opts: { linkDown?: boolean; links?: Link[]; generate?: boolean; run?: { issueId: string; person: string | null }; issues?: Array<{ id: string; projectId: string | null; originKind?: string; originId?: string }> } = {}) {
   const at = new Date().toISOString();
   const member = (userId: string, role: string) => ({ id: `m-${userId}`, companyId: CO, principalType: "user" as const, principalId: userId, status: "active" as const, membershipRole: role, grants: [], createdAt: at, updatedAt: at });
   const harness = createTestHarness({
@@ -70,6 +70,7 @@ async function studio(opts: { links?: Link[]; generate?: boolean; run?: { issueI
   db.namespace = "plugin_studio_test";
   db.query = async (sql, params = []) => {
     if (/FROM \S+\.board_client_links WHERE company_id = \$1 AND board_id = \$2 ORDER BY at DESC, id DESC LIMIT 1/.test(sql)) {
+      if (opts.linkDown) throw new Error("link store down");
       const latest = links.filter((l) => params[0] === CO && l.board_id === params[1]).at(-1);
       return latest ? [latest] : [];
     }
@@ -267,6 +268,25 @@ describe("board generation charges the board's link (AC5)", () => {
     const { harness } = await studio({ generate: true, links: [linkTo(CLIENT_B, "Globex")], run: { issueId: "thread-1", person: OWNER }, issues: [thread("thread-1", BOARD)] });
     const out = await harness.executeTool<Tool>("studio-estimate", { model: MODEL, prompt: "x" }, run);
     expect(out.data).toMatchObject({ client: `company:${CLIENT_B}`, clientName: "Globex", dailyLimit: 20 });
+  });
+
+  it("both paths fail closed: a link read that throws refuses estimate, generate, studio-estimate and studio-generate", async () => {
+    const { harness, as, genWrites } = await studio({ generate: true, linkDown: true, run: { issueId: "thread-1", person: OWNER }, issues: [thread("thread-1", BOARD)] });
+    expect(await harness.performAction("estimate", card(), as(MEMBER))).toEqual(refused("board_client_unavailable"));
+    expect(await harness.performAction("generate", card({ expectedClient: null }), as(MEMBER))).toEqual(refused("board_client_unavailable"));
+    for (const tool of ["studio-estimate", "studio-generate"]) {
+      const out = await harness.executeTool<Tool>(tool, { model: MODEL, prompt: "x" }, run);
+      expect(out.error, tool).toMatch(/couldn't read this board's client/);
+    }
+    expect(genWrites()).toEqual([]);
+  });
+
+  it("both paths: a link to a client deleted in the CRM refuses with linked_client_missing, nothing reserved", async () => {
+    const { harness, as, genWrites } = await studio({ generate: true, links: [linkTo(CLIENT_GONE, "Gone Ltd")], run: { issueId: "thread-1", person: OWNER }, issues: [thread("thread-1", BOARD)] });
+    expect(await harness.performAction("estimate", card(), as(MEMBER))).toEqual(refused("linked_client_missing"));
+    expect(await harness.performAction("generate", card({ expectedClient: null }), as(MEMBER))).toEqual(refused("linked_client_missing"));
+    expect((await harness.executeTool<Tool>("studio-generate", { model: MODEL, prompt: "x" }, run)).error).toMatch(/no longer in the CRM/);
+    expect(genWrites()).toEqual([]);
   });
 
   it("agent path: threads of two different boards -> board_ambiguous, nothing started", async () => {
