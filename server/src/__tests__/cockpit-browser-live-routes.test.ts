@@ -28,6 +28,12 @@ import cockpit from "../../../packages/plugins/plugin-cockpit/src/worker.js";
  * worker bridge. Three actors (signed-in person, agent key, run token) plus a board key and the local board, for
  * `browser.live.ticket`, `browser.live.status` and `GET /browser/live`. A fake pib-browser daemon listens on a temp
  * unix socket for `/status` and the signed stream.
+ *
+ * PAR-14537 (S4, Verification S4 Cockpit): the control ticket and stream, and `browser.takeover.done` / `.stop`
+ * through the same route with the same actors: Done with the check ok wakes exactly the waiting tasks that pass the
+ * checks, a failed check wakes nothing, another company's issue, one with open blockers, or `done` is untouched, a
+ * double submit gives one comment and one wake, and `done` / `stop` work at `off`. The fake daemon also answers
+ * `/release` and `/waiting/clear`.
  */
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -57,6 +63,11 @@ const PLUGIN_KEY = cockpitManifest.id;
   const DAEMON_STATUS = { viewers: 0, agentSessions: ["pib:meta"], lease: null, waiting: [] };
   let streams: IncomingHttpHeaders[] = [];
   let statusCalls = 0;
+  const takeover = {
+    release: { ok: true, reason: "logged_in" },
+    waiting: [] as Array<{ identity: string; issue: string; reason: string; at: string }>,
+    calls: [] as string[],
+  };
   const servers: Record<"authenticated" | "local_trusted", { server: Server; base: string }> = {} as never;
 
   /** The worker bridge: each RPC goes to the real Cockpit worker, set up on the sdk harness. */
@@ -178,6 +189,24 @@ const PLUGIN_KEY = cockpitManifest.id;
 
     // The fake pib-browser daemon: /status over HTTP, /stream over WebSocket.
     daemon.on("request", (req, res) => {
+      if (req.method === "POST" && (req.url === "/release" || req.url === "/waiting/clear")) {
+        let raw = "";
+        req.on("data", (chunk) => { raw += chunk; });
+        req.on("end", () => {
+          const body = JSON.parse(raw) as { identity: string; issues?: string[] };
+          takeover.calls.push(req.url!);
+          res.writeHead(200, { "Content-Type": "application/json" });
+          if (req.url === "/release") {
+            // The check takes a moment, as the real one does: a double submit overlaps.
+            setTimeout(() => res.end(JSON.stringify({ ...takeover.release, waiting: takeover.waiting.filter((w) => w.identity === body.identity) })), 30);
+            return;
+          }
+          const before = takeover.waiting.length;
+          takeover.waiting = takeover.waiting.filter((w) => !(w.identity === body.identity && body.issues!.includes(w.issue)));
+          res.end(JSON.stringify({ ok: true, removed: before - takeover.waiting.length }));
+        });
+        return;
+      }
       if (req.method === "GET" && req.url === "/status") {
         statusCalls += 1;
         res.writeHead(200, { "Content-Type": "application/json" });
@@ -218,6 +247,9 @@ const PLUGIN_KEY = cockpitManifest.id;
   beforeEach(() => {
     streams = [];
     statusCalls = 0;
+    takeover.release = { ok: true, reason: "logged_in" };
+    takeover.waiting = [];
+    takeover.calls = [];
     harness.setConfig({ browserLive: "view" });
     vi.stubEnv("PAPERCLIP_PLUGIN_LOCAL_WS_TARGETS", `${PLUGIN_KEY}=${socketPath}`);
     vi.stubEnv("PIB_BROWSER_LIVE_SOCKET", socketPath);
@@ -375,6 +407,113 @@ const PLUGIN_KEY = cockpitManifest.id;
       const ticket = await ticketFor(auth);
       expect(await upgrade({ ...auth, ticket })).toEqual({ status: 502, type: expect.stringContaining("application/json"), text: JSON.stringify({ error: "Plugin connection unavailable" }) });
       expect(streams).toHaveLength(0);
+    });
+  });
+  describe("take over (S4): control stream, Done and Stop", () => {
+    const IDENTITY = "pib:meta";
+    const at = new Date().toISOString();
+    let n = 0;
+    /** A task in the worker's view of the host, with a fresh identifier. */
+    function task(over: Record<string, unknown> = {}) {
+      n += 1;
+      const row = { id: randomUUID(), identifier: `PAR-${9000 + n}`, companyId: id.owner!, title: `Task ${n}`, status: "blocked", assigneeAgentId: id.agent!, createdAt: at, updatedAt: at, ...over };
+      harness.seed({ issues: [row as never] });
+      return row as typeof row & { identifier: string };
+    }
+    const wait = (...identifiers: string[]) => identifiers.map((issue, i) => ({ identity: IDENTITY, issue, reason: "session_expired", at: `2026-11-26T10:0${i}:00.000Z` }));
+    const spies = () => ({ comments: vi.spyOn(harness.ctx.issues, "createComment"), wakes: vi.spyOn(harness.ctx.issues, "requestWakeup") });
+
+    it("a signed-in owner's control ticket at takeover opens one signed control stream for that identity", async () => {
+      harness.setConfig({ browserLive: "takeover" });
+      const res = await action("browser.live.ticket", session(owner), { mode: "control", identity: IDENTITY });
+      expect(res.status).toBe(200);
+      expect(await upgrade({ ...session(owner), ticket: String(res.body.data!.ticket) })).toEqual({ status: 101 });
+      const [body] = String(streams[0]![PLUGIN_LOCAL_WS_SIGNATURE_HEADER]).split(".");
+      expect(JSON.parse(Buffer.from(body!, "base64url").toString())).toMatchObject({ path: `/stream?mode=control&identity=${IDENTITY}`, userId: owner });
+      // No lease call: the stream is the start.
+      expect(takeover.calls).toEqual([]);
+    });
+
+    it("refuses a control ticket at view and at off", async () => {
+      for (const setting of ["view", "off"]) {
+        harness.setConfig({ browserLive: setting });
+        expect((await action("browser.live.ticket", session(owner), { mode: "control", identity: IDENTITY })).status, setting).toBe(502);
+      }
+    });
+
+    it("Done with the check ok wakes exactly the waiting tasks that pass; another company's, a blocked-by-open, a done task are untouched", async () => {
+      const woken = [task(), task({ status: "in_progress" })];
+      const blocker = task({ status: "todo", assigneeAgentId: null });
+      const untouched = [task({ status: "done" }), task({ blockedBy: [{ id: blocker.id }] }), task({ companyId: id.other!, identifier: `CLI-${n}` })];
+      takeover.waiting = wait(...[...woken, ...untouched].map((t) => t.identifier));
+      const { comments, wakes } = spies();
+      const res = await action("browser.takeover.done", session(admin), { identity: IDENTITY });
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body.data).toMatchObject({ ok: true, woken: woken.map((t) => t.identifier) });
+      expect(wakes.mock.calls.map((c) => c[0])).toEqual(woken.map((t) => t.id));
+      expect(wakes.mock.calls.every((c) => c[2]?.reason === "browser_session_restored")).toBe(true);
+      expect(comments.mock.calls.map((c) => [c[0], c[1]])).toEqual(woken.map((t) => [t.id, `Browser login for ${IDENTITY} works again.`]));
+      expect(takeover.calls).toEqual(["/release", "/waiting/clear"]);
+      expect(takeover.waiting).toEqual([]);
+    });
+
+    it("Done with the check failed wakes nothing", async () => {
+      const t = task();
+      takeover.waiting = wait(t.identifier);
+      takeover.release = { ok: false, reason: "session_expired" };
+      const { comments, wakes } = spies();
+      const res = await action("browser.takeover.done", session(owner), { identity: IDENTITY });
+      expect(res.status).toBe(200);
+      expect(res.body.data).toMatchObject({ ok: false, woken: [] });
+      expect(comments).not.toHaveBeenCalled();
+      expect(wakes).not.toHaveBeenCalled();
+      expect(takeover.waiting).toHaveLength(1);
+    });
+
+    it("a double submit (owner and admin at once) gives one comment and one wake per task", async () => {
+      const tasks = [task(), task()];
+      takeover.waiting = wait(...tasks.map((t) => t.identifier));
+      const { comments, wakes } = spies();
+      const [a, b] = await Promise.all([
+        action("browser.takeover.done", session(owner), { identity: IDENTITY }),
+        action("browser.takeover.done", session(admin), { identity: IDENTITY }),
+      ]);
+      expect([a.status, b.status]).toEqual([200, 200]);
+      expect(comments).toHaveBeenCalledTimes(2);
+      expect(wakes.mock.calls.map((c) => c[0]).sort()).toEqual(tasks.map((t) => t.id).sort());
+    });
+
+    it("done and stop work at off; stop wakes nothing", async () => {
+      harness.setConfig({ browserLive: "off" });
+      const t = task();
+      takeover.waiting = wait(t.identifier);
+      const { wakes } = spies();
+      const stop = await action("browser.takeover.stop", session(owner), { identity: IDENTITY });
+      expect(stop.status).toBe(200);
+      expect(wakes).not.toHaveBeenCalled();
+      const done = await action("browser.takeover.done", session(owner), { identity: IDENTITY });
+      expect(done.status).toBe(200);
+      expect(done.body.data).toMatchObject({ ok: true, woken: [t.identifier] });
+    });
+
+    it("refuses a member, another company's owner, an agent key and a run token acting for the owner, and the local board; the daemon is never called", async () => {
+      const t = task();
+      takeover.waiting = wait(t.identifier);
+      const { wakes } = spies();
+      const cases: Array<[string, Auth, string?]> = [
+        ["a member who is not admin", session(member)],
+        ["another company's owner, in that company", session(otherOwner), id.other],
+        ["an agent key acting for the owner", { headers: { Authorization: await bearer("agent", owner) } }],
+        ["a run token acting for the owner", { headers: { Authorization: runToken() } }],
+        ["the local board (no person)", { mode: "local_trusted" }],
+      ];
+      for (const key of ["browser.takeover.done", "browser.takeover.stop", "browser.takeover.waiting"]) {
+        for (const [label, auth, companyId] of cases) {
+          expect((await action(key, auth, { identity: IDENTITY }, companyId)).status, `${key}: ${label}`).toBe(502);
+        }
+      }
+      expect(takeover.calls).toEqual([]);
+      expect(wakes).not.toHaveBeenCalled();
     });
   });
 });

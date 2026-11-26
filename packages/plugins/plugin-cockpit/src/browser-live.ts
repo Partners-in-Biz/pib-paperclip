@@ -3,11 +3,12 @@
  *
  * - Setting `browserLive: off | view | takeover`, default `off`, read through `readBrowserLiveSetting`, which answers
  *   `off` when the read fails (fail closed).
- * - `browser.live.ticket {mode: "view"}` hands a signed-in owner or admin of the owner company a random ticket. Memory
- *   keeps only its hash, the user id, the company, the mode, the identity and a 30-second expiry. The daemon is not
- *   contacted.
+ * - `browser.live.ticket {mode: "view" | "control", identity?}` hands a signed-in owner or admin of the owner company a
+ *   random ticket. `view` needs the setting `view` or `takeover`; `control` (take over, S4) needs `takeover` and an
+ *   identity. Memory keeps only its hash, the user id, the company, the mode, the identity and a 30-second expiry. The
+ *   daemon is not contacted: the signed control stream itself starts the take-over lease.
  * - `GET /browser/live` (websocket, board) repeats every check, redeems the ticket (single use, same user as the
- *   upgrade) and returns the daemon's local socket. Core then signs the upgrade for a session person only (design 1).
+ *   upgrade) and returns the daemon's local socket: `/stream?mode=view` or `/stream?mode=control&identity=<id>`. Core then signs the upgrade for a session person only (design 1).
  *   Every refusal is the same answer as an unknown ticket.
  * - `browser.live.status` passes the daemon's `/status` through.
  *
@@ -24,7 +25,7 @@ import { CockpitError, message, type Env } from "./env.js";
 export const BROWSER_LIVE_ROUTE_KEY = "browser-live";
 export const BROWSER_LIVE_SETTINGS = ["off", "view", "takeover"] as const;
 export type BrowserLiveSetting = (typeof BROWSER_LIVE_SETTINGS)[number];
-export type BrowserLiveMode = "view";
+export type BrowserLiveMode = "view" | "control";
 
 export const TICKET_TTL_MS = 30_000;
 /** More open tickets than this is not a person clicking; the oldest go first. */
@@ -50,12 +51,13 @@ export async function readBrowserLiveSetting(env: Env, companyId: string): Promi
   }
 }
 
-const modeAllowed = (setting: BrowserLiveSetting, mode: BrowserLiveMode) => setting !== "off" && mode === "view";
+/** `view` at `view` or `takeover`; `control` only at `takeover`. */
+export const modeAllowed = (setting: BrowserLiveSetting, mode: BrowserLiveMode) => (mode === "control" ? setting === "takeover" : setting !== "off");
 
-type PersonCheck = { ok: true; userId: string } | { ok: false; reason: string };
+export type PersonCheck = { ok: true; userId: string } | { ok: false; reason: string };
 
 /** A signed-in person, not the local board, owner or admin of the owner company. */
-async function checkPerson(env: Env, companyId: string | null, actorType: string | null | undefined, userId: string | null | undefined): Promise<PersonCheck> {
+export async function checkPerson(env: Env, companyId: string | null, actorType: string | null | undefined, userId: string | null | undefined): Promise<PersonCheck> {
   if (actorType !== "user") return { ok: false, reason: "Only a signed-in person can watch the live browser" };
   const id = typeof userId === "string" ? userId.trim() : "";
   // The local board user is a board without a person (kit permissions.ts:331 lets it bypass roles); refused by name.
@@ -138,17 +140,22 @@ export async function issueBrowserLiveTicket(env: Env, params: Record<string, un
   const companyId = context.companyId;
   const who = await checkPerson(env, companyId, context.actor.type, context.actor.userId);
   if (!who.ok) throw new CockpitError(who.reason);
-  if (params.mode !== "view") throw new CockpitError("mode must be view");
+  if (params.mode !== "view" && params.mode !== "control") throw new CockpitError("mode must be view or control");
+  const mode: BrowserLiveMode = params.mode;
   const identity = parseTicketIdentity(params.identity);
+  if (mode === "control" && !identity) throw new CockpitError("Take over needs the login identity");
   // After the person check, so only an owner or admin learns how the setting stands.
-  if (!modeAllowed(await readBrowserLiveSetting(env, companyId!), "view")) throw new CockpitError("Watch live is turned off in the Cockpit settings");
+  const setting = await readBrowserLiveSetting(env, companyId!);
+  if (!modeAllowed(setting, mode)) {
+    throw new CockpitError(mode === "control" && setting === "view" ? "Take over is not turned on in the Cockpit settings (only Watch live is)" : "Watch live is turned off in the Cockpit settings");
+  }
   const now = env.now().getTime();
   const store = ticketStore(env);
   prune(store, now);
   const ticket = randomBytes(32).toString("base64url");
   const expiresAt = now + TICKET_TTL_MS;
-  store.set(hashTicket(ticket), { userId: who.userId, companyId: companyId!, mode: "view", identity, expiresAt });
-  return { ticket, mode: "view", expiresAt: new Date(expiresAt).toISOString() };
+  store.set(hashTicket(ticket), { userId: who.userId, companyId: companyId!, mode, identity, expiresAt });
+  return { ticket, mode, expiresAt: new Date(expiresAt).toISOString() };
 }
 
 function queryValue(query: PluginApiRequestInput["query"], key: string): string | null {
@@ -167,12 +174,18 @@ export async function handleBrowserLiveRoute(env: Env, input: PluginApiRequestIn
     const who = await checkPerson(env, input.companyId, input.actor.actorType, userId);
     if (!who.ok) return refused();
     if (!modeAllowed(await readBrowserLiveSetting(env, input.companyId), entry.mode)) return refused();
+    const control = entry.mode === "control" && entry.identity !== null;
+    if (entry.mode === "control" && !control) return refused();
     // The record is part of the watch: no record, no stream. Identity and person only, never screen content.
+    // A take-over stream comes back every 5 minutes (the proxy's socket lifetime): only the first is "started".
+    const text = control
+      ? `${takeoverReconnect(env, entry.identity!, who.userId) ? "Take-over stream reconnected" : "Take-over started"} by user ${who.userId} (identity ${entry.identity})`
+      : `Watch live started by user ${who.userId}${entry.identity ? ` (identity ${entry.identity})` : ""}`;
     const recorded = await recordActivity(env.ctx, input.companyId, {
-      key: `browser-live:watch:${hashTicket(ticket!).slice(0, 32)}`,
+      key: `browser-live:${control ? "takeover" : "watch"}:${hashTicket(ticket!).slice(0, 32)}`,
       kind: "browser_live",
       at: env.now().toISOString(),
-      text: `Watch live started by user ${who.userId}${entry.identity ? ` (identity ${entry.identity})` : ""}`,
+      text,
       href: "/cockpit",
       agentId: null,
     }).then(() => true, (error: unknown) => {
@@ -180,12 +193,36 @@ export async function handleBrowserLiveRoute(env: Env, input: PluginApiRequestIn
       return false;
     });
     if (!recorded) return refused();
-    env.ctx.logger.info("Browser live watch started", { companyId: input.companyId, userId: who.userId, mode: entry.mode });
-    return { websocket: { local: { socket: browserLiveSocket(), path: `/stream?mode=${entry.mode}` } } };
+    env.ctx.logger.info(control ? "Browser take-over stream started" : "Browser live watch started", { companyId: input.companyId, userId: who.userId, mode: entry.mode });
+    if (control) noteTakeoverStream(env, entry.identity!, who.userId);
+    // The identity matches the daemon's own rule (isBrowserIdentity), so it needs no escaping; core signs this exact path.
+    return { websocket: { local: { socket: browserLiveSocket(), path: control ? `/stream?mode=control&identity=${entry.identity}` : `/stream?mode=view` } } };
   } catch (error) {
     env.ctx.logger.warn("Browser live route refused after an error", { error: message(error) });
     return refused();
   }
+}
+
+/** Per worker: identity -> the person whose take-over stream opened last, and when. Only for the activity text. */
+const TAKEOVER_STREAMS = new WeakMap<object, Map<string, { userId: string; at: number }>>();
+/** The daemon's longest lease (20 minutes) and a little. */
+const TAKEOVER_MEMORY_MS = 21 * 60_000;
+function takeoverStreams(env: Env) {
+  let map = TAKEOVER_STREAMS.get(env.ctx);
+  if (!map) TAKEOVER_STREAMS.set(env.ctx, (map = new Map()));
+  return map;
+}
+function takeoverReconnect(env: Env, identity: string, userId: string): boolean {
+  const last = takeoverStreams(env).get(identity);
+  return !!last && last.userId === userId && env.now().getTime() - last.at < TAKEOVER_MEMORY_MS;
+}
+function noteTakeoverStream(env: Env, identity: string, userId: string): void {
+  takeoverStreams(env).set(identity, { userId, at: env.now().getTime() });
+}
+/** Done, Stop or the setting ended the take-over: the next control stream for the identity is a new one. */
+export function forgetTakeoverStream(env: Env, identity?: string): void {
+  if (identity === undefined) takeoverStreams(env).clear();
+  else takeoverStreams(env).delete(identity);
 }
 
 export interface BrowserLiveStatus {

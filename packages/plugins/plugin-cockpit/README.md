@@ -373,7 +373,7 @@ Src-only: no migration, no new capability, `coreReadTables` unchanged.
 
 The owner or an admin watches the agents' browser (display `:99`) read-only. Owner company only; a signed-in person only: never an agent (also not one acting for an owner), never the local board user, never a member who is not owner or admin. Plan: PAR-14514 `plan` document, design 3. The drawer is PAR-14535.
 
-- Setting `browserLive`: `off` (default), `view`, `takeover` (take-over itself comes in S4). Read through `readBrowserLiveSetting`, which answers `off` when the read fails.
+- Setting `browserLive`: `off` (default), `view`, `takeover` (take-over: see 0.32.0 below). Read through `readBrowserLiveSetting`, which answers `off` when the read fails.
 - Action `browser.live.ticket {mode: "view"}`: a random ticket for 30 seconds. The worker keeps only its hash, the user id, the company, the mode and the expiry, in memory. Refused at `off`. Does not contact the daemon.
 - Route `GET /browser/live?companyId=...&ticket=...` (`transport: "websocket"`, board auth): repeats every check, redeems the ticket once (same user as the upgrade), records "Watch live started by user ..." in the Cockpit activity, and returns the daemon's local socket `/run/pib-browser/live.sock` (`PIB_BROWSER_LIVE_SOCKET` overrides it) with path `/stream?mode=view`. Core signs the upgrade for a session person only and needs `partnersinbiz.cockpit=/run/pib-browser/live.sock` in `PAPERCLIP_PLUGIN_LOCAL_WS_TARGETS`. Every refusal is the same answer as an unknown ticket.
 - Action `browser.live.status`: the daemon's `/status` as `{ reachable, status }`, at every setting.
@@ -384,6 +384,15 @@ One new capability, `websocket.local`, so the release is stop-first and needs a 
 ### Watch live: drawer (0.30.0, PAR-14535, PAR-14514 S3)
 
 Cockpit -> Browser shows "Watch live" instead of the SSH steps, only when `browserLive` is not `off` and the caller is a signed-in owner or admin (`browser.status` returns `live`, `off` for everyone else). The drawer asks `browser.live.ticket`, opens the route's websocket and draws the screen with `@novnc/novnc` 1.7.x, `viewOnly`. When the socket closes (5-minute limit or a drop) it asks for a new ticket and reconnects; three failed connects in a row show an error with "Try again". The ticket is never logged. `?tab=browser&identity=<id>` opens the tab on that login. noVNC is a separate chunk (esbuild `splitting: true`, target es2022): entry bundle 133,799 -> 133,821 bytes gzipped; `rfb-*.js` is 83,441 bytes gzipped and loads only when the drawer opens. UI only: no new capability.
+
+### Take over, Done - resume agent, Stop (0.32.0, PAR-14537, PAR-14514 S4)
+
+- `browser.live.ticket {mode: "control", identity}` (setting `takeover` only; same caller checks as view). The route returns `/stream?mode=control&identity=<id>`; core signs it and the daemon starts the take-over lease from that signed stream. The worker never asks the daemon for a lease.
+- `browser.takeover.done {identity}`, `browser.takeover.stop {identity}`, `browser.takeover.waiting {identity}` (`src/browser-takeover.ts`), owner or admin of the owner company, signed-in person only, at every setting so a take-over can always be ended.
+- Done calls `/release`. On `ok`: the identity's register row is marked verified, its "Log in again" card is closed (`resolveOpenCockpitAsks`), and each task on the daemon's waiting list for the identity (read from the release answer, never from the browser) that is in this company, has an agent assignee, is `blocked` or `in_progress` and has no unresolved blocker gets one comment "Browser login for <identity> works again." and one wake (reason `browser_session_restored`). No status change. Then `/waiting/clear`. Not ok: nothing is woken. A per-identity lock and a handled-entry memory give one comment and one wake per task on a double submit.
+- Stop calls `/release` and wakes nothing. Setting to `off` calls `/release {all:true}` when anything is live; to `view` ends a live take-over (`onConfigChanged`).
+- Activity: take-over started (or stream reconnected), ended (Done / Stop / setting), session check result, each task woken. Identity, person and issue only.
+- UI: "Take over browser" per login row at `takeover`; the drawer has the countdown, names the tasks Done wakes, "Done - resume agent" ("Done - check login" when none) and "Stop". When the daemon reports the lease ended with `logged_in` the drawer shows "Logged in" and sends Done itself. Any other end shows "Login finished, not confirmed" with a Done button on the row; nothing is woken until it is pressed.
 
 ## Develop
 

@@ -1667,7 +1667,8 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
       async get(issueId, companyId) {
         requireCapability(manifest, capabilitySet, "issues.read");
-        const issue = issues.get(issueId);
+        // As the host does (issues service getById): a UUID or an identifier such as "PAR-12".
+        const issue = issues.get(issueId) ?? [...issues.values()].find((row) => row.identifier === issueId);
         return isInCompany(issue, companyId) ? issue : null;
       },
       async create(input) {

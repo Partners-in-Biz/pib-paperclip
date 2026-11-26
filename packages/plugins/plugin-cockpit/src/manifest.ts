@@ -82,7 +82,7 @@ const instanceConfigSchema: JsonSchema = {
       type: "string",
       title: "Live browser (owner company only)",
       description:
-        "Off: nobody can watch the agents' browser. View: the owner or an admin can watch it live, read only, from Cockpit -> Browser. Take over adds keyboard and mouse for one login (coming next). Agents can never use it.",
+        "Off: nobody can watch the agents' browser. View: the owner or an admin can watch it live, read only, from Cockpit -> Browser. Take over: also keyboard and mouse for one login at a time, for at most 20 minutes, then \"Done - resume agent\" wakes the tasks that waited for that login. Agents can never use it.",
       enum: ["off", "view", "takeover"],
       default: "off",
     },
