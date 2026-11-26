@@ -4750,6 +4750,9 @@ html:has(.design-proposal-theme) .design-navigation-group-label {
 .design-sidebar-new-task { display: flex; justify-content: flex-start; width: calc(100% - var(--design-sidebar-item-inset) * 2); height: var(--design-sidebar-item-height); margin-inline: var(--design-sidebar-item-inset); padding-inline: var(--design-sidebar-item-inset); gap: calc(var(--spacing) * 2.5); font-size: var(--design-sidebar-label-size); line-height: var(--design-sidebar-label-leading); font-weight: var(--font-weight-medium); color: var(--design-sidebar-item-foreground); }
 .design-sidebar-new-task svg { width: var(--design-page-icon-size); height: var(--design-page-icon-size); }
 .design-sidebar-new-task:hover { background: var(--design-sidebar-item-highlight); color: var(--design-sidebar-item-active-foreground); }
+/* More pop-out apps: hide rows whose plugin rendered nothing, and the whole group when none is left. */
+.design-sidebar-more-app:has(> .design-sidebar-more-app-mount:empty) { display: none; }
+.design-sidebar-more-apps:not(:has(.design-sidebar-more-app-mount:not(:empty))) { display: none; }
 .design-sidebar-recents .design-sidebar-item { font-weight: var(--font-weight-normal); }
 .design-sidebar-navigation > :not(.design-sidebar-recents) { flex-shrink: 0; }
 .design-sidebar-recents { display: flex; flex: 1; min-height: 0; }

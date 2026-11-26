@@ -930,6 +930,8 @@ type PluginSlotOutletProps = {
   className?: string;
   itemClassName?: string;
   missingBehavior?: "hidden" | "placeholder";
+  /** Optional: keep only the slots this returns true for. */
+  filter?: (slot: ResolvedPluginSlot) => boolean;
 };
 
 /**
@@ -945,12 +947,14 @@ export function PluginSlotOutlet({
   className,
   itemClassName,
   missingBehavior = "hidden",
+  filter,
 }: PluginSlotOutletProps) {
-  const { slots } = usePluginSlots({
+  const { slots: allSlots } = usePluginSlots({
     slotTypes,
     entityType,
     companyId: context.companyId,
   });
+  const slots = filter ? allSlots.filter(filter) : allSlots;
 
   if (slots.length === 0) return null;
 
