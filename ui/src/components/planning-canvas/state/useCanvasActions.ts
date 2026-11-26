@@ -189,6 +189,31 @@ export function useCanvasActions(ctx: CanvasData & CanvasState & CanvasBoard) {
     [getViewportCenterWorld, nextZIndex, opStore.addItem, setSelectedNodeIds, setTool],
   );
 
+  /** Place an entity card (`embed` node) at the centre of the view. It stores plugin, type and assetId only (PAR-14389 C.3). */
+  const insertEmbedNode = useCallback(
+    (plugin: string, type: string, assetId: string) => {
+      const center = getViewportCenterWorld();
+      const width = 280;
+      const height = 160;
+      const key = createCanvasId("embed");
+      opStore.addItem(key, {
+        kind: "embed",
+        data: { plugin, type, assetId, props: {} },
+        x: snapToGrid(center.x - width / 2),
+        y: snapToGrid(center.y - height / 2),
+        width,
+        height,
+        zIndex: nextZIndex,
+        color: "slate",
+        title: "",
+        content: "",
+      });
+      setSelectedNodeIds([key]);
+      setTool("select");
+    },
+    [getViewportCenterWorld, nextZIndex, opStore.addItem, setSelectedNodeIds, setTool],
+  );
+
   /** Add an empty table or markdown node at the viewport centre. */
   const insertTypedNode = useCallback(
     (kind: "table" | "markdown" | "kanban" | "timeline") => {
@@ -370,6 +395,7 @@ export function useCanvasActions(ctx: CanvasData & CanvasState & CanvasBoard) {
     deleteSelection,
     duplicateSelection,
     insertLinkNode,
+    insertEmbedNode,
     insertTypedNode,
     fitToScreen,
     handleGiveNodeToAgent,
