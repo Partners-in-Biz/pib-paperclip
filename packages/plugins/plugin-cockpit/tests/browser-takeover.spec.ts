@@ -155,6 +155,14 @@ describe("browser.live.ticket and the route, mode control", () => {
     ]) await expect(act("browser.live.ticket", { mode: "control", identity: IDENTITY }, as)).rejects.toThrow();
   });
 
+  it("fails closed when the setting read throws: no control ticket, and a control ticket already issued is refused at the route", async () => {
+    const { act, route, harness } = await cockpit("takeover");
+    const { ticket } = await act<{ ticket: string }>("browser.live.ticket", { mode: "control", identity: IDENTITY });
+    vi.spyOn(harness.ctx.config, "get").mockRejectedValue(new Error("host down"));
+    await expect(act("browser.live.ticket", { mode: "control", identity: IDENTITY })).rejects.toThrow(/turned off/);
+    expect(await route({ ticket })).toEqual({ status: BROWSER_LIVE_REFUSAL.status, body: BROWSER_LIVE_REFUSAL.body });
+  });
+
   it("a control ticket issued at takeover is refused at the route once the setting is view", async () => {
     const { act, route, harness } = await cockpit("takeover");
     const { ticket } = await act<{ ticket: string }>("browser.live.ticket", { mode: "control", identity: IDENTITY });
@@ -321,6 +329,13 @@ describe("setting change", () => {
     daemon.calls = [];
     expect(await run("takeover")).toEqual([]);
     expect(await run("off", OTHER_CO)).toEqual([]);
+  });
+  it("a setting change whose value cannot be read is treated as off (fail closed)", async () => {
+    const { harness } = await cockpit("takeover");
+    vi.spyOn(harness.ctx.config, "get").mockRejectedValue(new Error("host down"));
+    daemon.lease = { state: "live", identity: IDENTITY, userId: OWNER, secondsLeft: 600, controlConnected: true };
+    await browserLiveConfigChanged({ ctx: harness.ctx, now: () => new Date() } as unknown as Env, {}, OWNER_CO);
+    expect(daemon.calls.filter((c) => c.path === "POST /release").map((c) => c.body)).toEqual([{ all: true }]);
   });
   it("never throws when the daemon is down", async () => {
     vi.stubEnv("PIB_BROWSER_LIVE_SOCKET", path.join(dir, "nobody.sock"));
