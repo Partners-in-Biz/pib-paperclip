@@ -57,3 +57,9 @@ export function patchTypedMeta(
   }
   return next ?? prev;
 }
+
+/** A stored title that only says "untitled" is a placeholder: the card shows its kind instead. */
+export function cardTitle(title: string | null | undefined): string {
+  const t = (title ?? "").trim();
+  return /^\(?untitled\)?$/i.test(t) ? "" : t;
+}

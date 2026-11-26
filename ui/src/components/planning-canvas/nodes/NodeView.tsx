@@ -17,7 +17,7 @@ import { MarkdownNode } from "@/components/planning-canvas/nodes/MarkdownNode";
 import { KanbanNode } from "@/components/planning-canvas/nodes/KanbanNode";
 import { TimelineNode } from "@/components/planning-canvas/nodes/TimelineNode";
 import { WebLinkNode } from "@/components/planning-canvas/nodes/WebLinkNode";
-import type { TypedNodeMeta } from "@/components/planning-canvas/nodes/typed-meta";
+import { cardTitle, type TypedNodeMeta } from "@/components/planning-canvas/nodes/typed-meta";
 import type { NodeLinkMeta } from "@/components/planning-canvas/nodes/link-meta";
 import { nodeAriaLabel } from "@/components/planning-canvas/panels/outline/outline-order";
 import type { CanvasController } from "@/components/planning-canvas/state/useCanvasController";
@@ -154,15 +154,15 @@ const NodeView = memo(function NodeView({
       {RefRender ? (
         <RefRender refId={link!.refId} />
       ) : typed?.kind === "table" ? (
-        <TableNode nodeKey={node.id} data={typed.data} title={node.title} />
+        <TableNode nodeKey={node.id} data={typed.data} title={cardTitle(node.title)} />
       ) : typed?.kind === "markdown" ? (
-        <MarkdownNode nodeKey={node.id} data={typed.data} title={node.title} />
+        <MarkdownNode nodeKey={node.id} data={typed.data} title={cardTitle(node.title)} />
       ) : typed?.kind === "kanban" ? (
-        <KanbanNode nodeKey={node.id} data={typed.data} title={node.title} />
+        <KanbanNode nodeKey={node.id} data={typed.data} title={cardTitle(node.title)} />
       ) : typed?.kind === "embed" ? (
         <EmbedNode nodeKey={node.id} data={typed.data} isSelected={isSelected} />
       ) : typed?.kind === "timeline" ? (
-        <TimelineNode nodeKey={node.id} data={typed.data} title={node.title} />
+        <TimelineNode nodeKey={node.id} data={typed.data} title={cardTitle(node.title)} />
       ) : typed?.kind === "weblink" ? (
         <WebLinkNode nodeKey={node.id} data={typed.data} />
       ) : (
