@@ -570,6 +570,30 @@ describe("plugin entity card slot declarations (PAR-14389 C.1)", () => {
   });
 });
 
+describe("plugin task side-panel tab slots (PAR-14753)", () => {
+  const sidePanelTab = { visibilityDataKey: "browser-tab-visible" };
+  const tab = { type: "taskSidePanelTab", id: "browser", displayName: "Browser", exportName: "BrowserTab", sidePanelTab };
+  const failedPaths = (input: unknown) => pluginUiSlotDeclarationSchema.safeParse(input).error?.issues.map((issue) => issue.path.join(".")) ?? [];
+  it("keeps a taskSidePanelTab slot in a slot and in a whole manifest", () => {
+    expect(pluginUiSlotDeclarationSchema.parse(tab).sidePanelTab).toEqual(sidePanelTab);
+    expect(pluginUiSlotDeclarationSchema.parse({ ...tab, entityTypes: ["issue"], sidePanelTab: { ...sidePanelTab, contentMode: "full-bleed" } }).sidePanelTab?.contentMode).toBe("full-bleed");
+    const manifest = { id: "example.side-tab", apiVersion: 1, version: "1.0.0", displayName: "Side tab", description: "Side tab", author: "Tests",
+      categories: ["ui"], capabilities: ["ui.detailTab.register"], entrypoints: { worker: "worker.js", ui: "ui.js" }, ui: { slots: [tab] } };
+    expect(pluginManifestV1Schema.parse(manifest).ui?.slots?.[0]?.sidePanelTab).toEqual(sidePanelTab);
+  });
+  it("requires the visibility data key", () => {
+    expect(failedPaths({ ...tab, sidePanelTab: undefined })).toContain("sidePanelTab");
+    expect(failedPaths({ ...tab, sidePanelTab: { visibilityDataKey: "" } })).toContain("sidePanelTab.visibilityDataKey");
+    expect(failedPaths({ ...tab, sidePanelTab: { ...sidePanelTab, contentMode: "prose" } })).toContain("sidePanelTab.contentMode");
+    expect(failedPaths({ ...tab, sidePanelTab: { ...sidePanelTab, poll: 1 } })).toContain("sidePanelTab");
+  });
+  it("only targets issues and refuses sidePanelTab on other slots", () => {
+    expect(failedPaths({ ...tab, entityTypes: ["agent"] })).toContain("entityTypes");
+    expect(failedPaths({ ...tab, entityTypes: ["issue", "project"] })).toContain("entityTypes");
+    expect(failedPaths({ type: "detailTab", id: "d", displayName: "D", exportName: "D", entityTypes: ["issue"], sidePanelTab })).toContain("sidePanelTab");
+  });
+});
+
 describe("plugin WebSocket route capabilities (PAR-14532)", () => {
   const manifest = (capabilities: string[]) => ({
     id: "paperclip.ws-capability", apiVersion: 1, version: "1.0.0", displayName: "WS", description: "WS", author: "Tests",

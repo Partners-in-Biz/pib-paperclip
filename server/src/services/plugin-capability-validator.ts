@@ -177,6 +177,7 @@ const UI_SLOT_CAPABILITIES: Record<PluginUiSlotType, PluginCapability> = {
   routeSidebar: "ui.sidebar.register",
   canvasNode: "ui.sidebar.register",
   canvasPanel: "ui.sidebar.register",
+  taskSidePanelTab: "ui.detailTab.register",
 };
 
 /**
