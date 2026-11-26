@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { BrowserView } from "../src/browser-status.js";
 import { tabFromSearch } from "../src/ui/index.js";
 import { BrowserBody } from "../src/ui/browser-page.js";
-import { MAX_FAILED_CONNECTS, liveSocketUrl } from "../src/ui/browser-live-drawer.js";
+import { MAX_FAILED_CONNECTS, afterDisconnect, STABLE_CONNECT_MS, liveSocketUrl } from "../src/ui/browser-live-drawer.js";
 
 const view = (over: Partial<BrowserView> = {}): BrowserView => ({
   state: "read",
@@ -85,4 +85,19 @@ describe("Watch live socket address", () => {
     expect(liveSocketUrl({ protocol: "http:", host: "localhost:3100" }, "c", "t")).toMatch(/^ws:\/\/localhost:3100\//);
   });
   it("stops after a few failed connects", () => expect(MAX_FAILED_CONNECTS).toBeGreaterThan(1));
+  it("fails after repeated connect-then-drop under the stable time", () => {
+    let failed = 0;
+    let action = "";
+    for (let n = 0; n < MAX_FAILED_CONNECTS; n++) {
+      ({ action, failed } = afterDisconnect({ shown: true, connectedAt: 0, now: 1000, failed }));
+      if (n < MAX_FAILED_CONNECTS - 1) expect(action).toBe("retry");
+    }
+    expect(action).toBe("fail");
+  });
+  it("resets the count and reconnects after a stable connection", () => {
+    expect(afterDisconnect({ shown: true, connectedAt: 0, now: STABLE_CONNECT_MS, failed: MAX_FAILED_CONNECTS - 1 })).toEqual({ action: "reconnect", failed: 0 });
+  });
+  it("counts a drop that never connected as failed", () => {
+    expect(afterDisconnect({ shown: false, connectedAt: 0, now: 99999, failed: 0 })).toEqual({ action: "retry", failed: 1 });
+  });
 });
