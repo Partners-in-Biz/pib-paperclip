@@ -3406,6 +3406,7 @@ export function recoveryService(
     const now = new Date();
     const retryAt = new Date(now.getTime() + timing.delayMs);
     const idempotencyKey = `issue_disposition_repair:${input.issue.id}:${input.fingerprint}:${input.attempt}`;
+    const forceFreshSession = input.attempt >= 2;
     const context = withRecoveryContext(
       {
         issueId: input.issue.id,
@@ -3419,6 +3420,7 @@ export function recoveryService(
         dispositionRepairFingerprint: input.fingerprint,
         dispositionRepairAttempt: input.attempt,
         dispositionRepairMaxAttempts: input.legacyEpisode?.maxAttempts ?? DISPOSITION_REPAIR_MAX_ATTEMPTS,
+        ...(forceFreshSession ? { forceFreshSession: true } : {}),
         ...(input.legacyEpisode ? {
           legacyDispositionEpisode: { ...input.legacyEpisode, attempt: input.attempt },
           dispositionRepairSourceRunId: input.latestRun?.id ?? null,
@@ -3467,6 +3469,7 @@ export function recoveryService(
                 dispositionRepairFingerprint: input.fingerprint,
                 dispositionRepairAttempt: input.attempt,
                 bypassContinuationSummaryPark: true,
+                ...(forceFreshSession ? { forceFreshSession: true } : {}),
               },
               "normal_model",
             ),
@@ -3496,6 +3499,7 @@ export function recoveryService(
                     dispositionRepairFingerprint: input.fingerprint,
                     dispositionRepairAttempt: input.attempt,
                     bypassContinuationSummaryPark: true,
+                    ...(forceFreshSession ? { forceFreshSession: true } : {}),
                   },
                   "normal_model",
                 ),
