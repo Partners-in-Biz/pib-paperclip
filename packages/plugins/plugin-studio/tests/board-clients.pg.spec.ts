@@ -25,7 +25,8 @@ afterAll(async () => {
 });
 
 describe("board client links database support", () => {
-  it.runIf(Boolean(process.env.CI))("runs its database tests under CI", () => expect(available).toBe(true));
+  // Opt-in (STUDIO_REQUIRE_PG=1), not CI: the deploy runner sets CI but has no embedded Postgres, so every pg suite skips there.
+  it.runIf(Boolean(process.env.STUDIO_REQUIRE_PG))("runs its database tests when Postgres is required", () => expect(available).toBe(true));
 });
 
 describe("projectClientStrict: the board's project read fails closed", () => {
