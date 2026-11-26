@@ -171,7 +171,7 @@ describe("the generate card's logic", () => {
   });
 
   it("reads the estimate's payer and the queue states", () => {
-    expect(estimateFromReply({ creditsTotal: 2, dailyLimit: 20, usedToday: 3, client: { kind: "company", id: "acme" }, clientName: "Acme" })).toEqual({ creditsTotal: 2, dailyLimit: 20, usedToday: 3, payer: "Acme" });
+    expect(estimateFromReply({ creditsTotal: 2, dailyLimit: 20, usedToday: 3, client: { kind: "company", id: "acme" }, clientName: "Acme" })).toEqual({ creditsTotal: 2, dailyLimit: 20, usedToday: 3, payer: "Acme", client: "company:acme" });
     expect(estimateFromReply({ creditsTotal: 1, client: null }).payer).toBe("Own work");
     expect(queueStateFromReply({ status: "storing" }).status).toBe("running");
     expect(queueStateFromReply({ status: "succeeded", assetId: "a" })).toEqual({ status: "succeeded", assetId: "a", error: null });

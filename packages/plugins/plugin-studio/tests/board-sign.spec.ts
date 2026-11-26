@@ -4,6 +4,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import { AccessRefused } from "@partnersinbiz/pib-plugin-ui";
+import { boardScopeOf } from "../src/ui/board-client.js";
 import { BATCH_MS, BoardSigner, cardStateFromError, cardStatesFromReply, embedNodeOp, libraryLoadFromError, MAX_BATCH, nextCheckIn, placeAt, RESIGN_MARGIN_MS, showGenerateEntry, RETRY_MS, REUSE_MS, SIGNED_FOR_MS } from "../src/ui/board-sign.js";
 import { PLUGIN_ID } from "../src/namespace.js";
 import { STUDIO_PLUGIN_KEY } from "../src/plugin-key.js";
@@ -42,10 +43,10 @@ describe("board signer (PAR-14280)", () => {
     const signer = new BoardSigner(clock);
     const call = vi.fn(async (p: Record<string, unknown>) => ok(p.assetIds as string[]));
     const states = Promise.all([
-      signer.request(call, "co", "project-a", "x"),
-      signer.request(call, "co", "project-a", "y"),
-      signer.request(call, "co", "project-a", "x"),
-      signer.request(call, "co", null, "z"),
+      signer.request(call, "co", "project-a", null, "x"),
+      signer.request(call, "co", "project-a", null, "y"),
+      signer.request(call, "co", "project-a", null, "x"),
+      signer.request(call, "co", null, null, "z"),
     ]);
     await clock.advance(BATCH_MS);
     const [x, y, x2, z] = await states;
@@ -62,7 +63,7 @@ describe("board signer (PAR-14280)", () => {
     const clock = fakeClock();
     const signer = new BoardSigner(clock);
     const call = vi.fn(async (p: Record<string, unknown>) => ok(p.assetIds as string[]));
-    const all = Promise.all(Array.from({ length: 250 }, (_, i) => signer.request(call, "co", null, `a${i}`)));
+    const all = Promise.all(Array.from({ length: 250 }, (_, i) => signer.request(call, "co", null, null, `a${i}`)));
     await clock.advance(BATCH_MS);
     expect((await all).every((s) => s.state === "ready")).toBe(true);
     expect(call.mock.calls.map(([p]) => (p.assetIds as string[]).length)).toEqual([MAX_BATCH, MAX_BATCH, 50]);
@@ -72,7 +73,7 @@ describe("board signer (PAR-14280)", () => {
     const clock = fakeClock();
     const signer = new BoardSigner(clock);
     const call = vi.fn(async (p: Record<string, unknown>) => ok(p.assetIds as string[]));
-    const first = signer.request(call, "co", null, "x");
+    const first = signer.request(call, "co", null, null, "x");
     await clock.advance(BATCH_MS);
     const state = await first;
     expect(state.state).toBe("ready");
@@ -81,12 +82,12 @@ describe("board signer (PAR-14280)", () => {
 
     // Panning away and back: same link, no call.
     await clock.advance(REUSE_MS - BATCH_MS - 1);
-    expect(await signer.request(call, "co", null, "x")).toBe(state);
+    expect(await signer.request(call, "co", null, null, "x")).toBe(state);
     expect(call).toHaveBeenCalledTimes(1);
 
     // The card's timer fires at expiry minus the margin and asks fresh.
     await clock.advance(nextCheckIn(state, clock.now())!);
-    const renewed = signer.request(call, "co", null, "x", { fresh: true });
+    const renewed = signer.request(call, "co", null, null, "x", { fresh: true });
     await clock.advance(BATCH_MS);
     expect((await renewed).state).toBe("ready");
     expect(call).toHaveBeenCalledTimes(2);
@@ -96,11 +97,11 @@ describe("board signer (PAR-14280)", () => {
     const clock = fakeClock();
     const signer = new BoardSigner(clock);
     const call = vi.fn(async (p: Record<string, unknown>) => ok(p.assetIds as string[]));
-    const first = signer.request(call, "co", null, "x");
+    const first = signer.request(call, "co", null, null, "x");
     await clock.advance(BATCH_MS);
     await first;
-    signer.forget("co", null, "x");
-    const again = signer.request(call, "co", null, "x");
+    signer.forget("co", null, null, "x");
+    const again = signer.request(call, "co", null, null, "x");
     await clock.advance(BATCH_MS);
     await again;
     expect(call).toHaveBeenCalledTimes(2);
@@ -131,7 +132,7 @@ describe("board signer (PAR-14280)", () => {
     const call = vi.fn(async () => {
       throw new AccessRefused("Studio is not open to you", "PERMISSION_DENIED");
     });
-    const pending = Promise.all([signer.request(call, "co", null, "x"), signer.request(call, "co", null, "y")]);
+    const pending = Promise.all([signer.request(call, "co", null, null, "x"), signer.request(call, "co", null, null, "y")]);
     await clock.advance(BATCH_MS);
     expect(await pending).toEqual([{ state: "refused" }, { state: "refused" }]);
   });
@@ -172,5 +173,30 @@ describe("board signer (PAR-14280)", () => {
       },
     });
     expect(embedNodeOp({ pluginKey: "p", type: "t", assetId: "a", name: "n", kind: "image", at: { x: 0, y: 0 } }).item.key).toMatch(/^studio-a-[a-z0-9]+$/);
+  });
+});
+
+describe("board id on every board request (PAR-14848)", () => {
+  it("boardScopeOf adds boardId only when there is one", () => {
+    expect(boardScopeOf("p", "b1")).toEqual({ projectId: "p", boardId: "b1" });
+    expect(boardScopeOf(null, null)).toEqual({ projectId: null });
+    expect(boardScopeOf("p", undefined)).toEqual({ projectId: "p" });
+  });
+
+  it("the signer sends boardId, and two boards share no call or cached link", async () => {
+    const clock = fakeClock();
+    const signer = new BoardSigner(clock);
+    const call = vi.fn(async (p: Record<string, unknown>) => ok(p.assetIds as string[]));
+    const both = Promise.all([signer.request(call, "co", null, "b1", "x"), signer.request(call, "co", null, "b2", "x")]);
+    await clock.advance(BATCH_MS);
+    await both;
+    expect(call).toHaveBeenCalledTimes(2);
+    expect(call.mock.calls.map((c) => c[0].boardScope)).toEqual([{ projectId: null, boardId: "b1" }, { projectId: null, boardId: "b2" }]);
+    // Same file, same board: reused. Forgetting b1's link leaves b2's.
+    signer.forget("co", null, "b1", "x");
+    const again = Promise.all([signer.request(call, "co", null, "b1", "x"), signer.request(call, "co", null, "b2", "x")]);
+    await clock.advance(BATCH_MS);
+    await again;
+    expect(call).toHaveBeenCalledTimes(3);
   });
 });

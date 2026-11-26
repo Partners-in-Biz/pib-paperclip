@@ -8,6 +8,8 @@
  * its link expires (300 s) and after an image error.
  */
 
+import { boardScopeOf } from "./board-client.js";
+
 /** Studio signs links for 300 s. */
 export const SIGNED_FOR_MS = 300_000;
 /** Ask again this long before a link expires. */
@@ -86,6 +88,7 @@ interface Group {
   call: StudioCall;
   companyId: string;
   projectId: string | null;
+  boardId: string | null;
   waiters: Map<string, Array<(state: CardState) => void>>;
 }
 
@@ -105,14 +108,14 @@ export class BoardSigner {
   constructor(private clock: Clock = realClock) {}
 
   /** The card's state. `fresh` skips a reused link (expiry and image errors). */
-  request(call: StudioCall, companyId: string, projectId: string | null, assetId: string, opts: { fresh?: boolean } = {}): Promise<CardState> {
-    const boardKey = `${companyId}|${projectId ?? ""}`;
+  request(call: StudioCall, companyId: string, projectId: string | null, boardId: string | null, assetId: string, opts: { fresh?: boolean } = {}): Promise<CardState> {
+    const boardKey = `${companyId}|${projectId ?? ""}|${boardId ?? ""}`;
     const hit = this.cache.get(`${boardKey}|${assetId}`);
     if (!opts.fresh && hit && hit.state.state === "ready" && this.clock.now() - hit.at < REUSE_MS) return Promise.resolve(hit.state);
     return new Promise((resolve) => {
       let group = this.groups.get(boardKey);
       if (!group) {
-        group = { call, companyId, projectId, waiters: new Map() };
+        group = { call, companyId, projectId, boardId, waiters: new Map() };
         this.groups.set(boardKey, group);
       }
       const list = group.waiters.get(assetId) ?? [];
@@ -126,8 +129,8 @@ export class BoardSigner {
   }
 
   /** Forget a link that failed to load, so the next request signs again. */
-  forget(companyId: string, projectId: string | null, assetId: string): void {
-    this.cache.delete(`${companyId}|${projectId ?? ""}|${assetId}`);
+  forget(companyId: string, projectId: string | null, boardId: string | null, assetId: string): void {
+    this.cache.delete(`${companyId}|${projectId ?? ""}|${boardId ?? ""}|${assetId}`);
   }
 
   private async flush(): Promise<void> {
@@ -143,7 +146,7 @@ export class BoardSigner {
           const at = this.clock.now();
           let states: Record<string, CardState>;
           try {
-            const out = await group.call({ companyId: group.companyId, assetIds: chunk, boardScope: { projectId: group.projectId } });
+            const out = await group.call({ companyId: group.companyId, assetIds: chunk, boardScope: boardScopeOf(group.projectId, group.boardId) });
             states = cardStatesFromReply(out, chunk, at);
           } catch (error) {
             const state = cardStateFromError(error, at);

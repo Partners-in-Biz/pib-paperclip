@@ -8,8 +8,9 @@ import { useCallback, useEffect, useState, type CSSProperties, type PointerEvent
 import type { PluginCanvasNodeProps } from "@paperclipai/plugin-sdk/ui";
 import { tokens } from "@partnersinbiz/pib-plugin-ui";
 import { useStudioAction } from "./action.js";
+import { boardScopeOf } from "./board-client.js";
 import {
-  BOARD_MODELS, estimateFromReply, inputCandidates, isOpen, MAX_INPUTS, outputNodeOp, outputPlace, POLL_MS, queueLabel, queueStateFromReply,
+  BOARD_MODELS, estimateFromReply, inputCandidates, isClientChanged, isOpen, MAX_INPUTS, outputNodeOp, outputPlace, POLL_MS, queueLabel, queueStateFromReply,
   refusalText, resolveInputs, saveSettingsOp, settingsFromProps, type BoardNode, type CardSettings, type GenerateStep, type InputCandidate, type QueueState,
 } from "./board-generate.js";
 
@@ -94,6 +95,7 @@ export function GenerateCardView(v: GenerateCardViewProps) {
       </div>
       {step.step === "confirm" || step.step === "sending" ? (
         <div role="group" aria-label="Confirm" style={{ display: "grid", gap: 6, padding: 8, borderRadius: 8, border: `1px solid ${tokens.border}` }}>
+          {step.step === "confirm" && step.notice ? <p role="status" style={{ ...line, color: tokens.destructive }}>{step.notice}</p> : null}
           <p style={{ ...line, color: tokens.fg }}>{step.estimate.creditsTotal} credits, charged to {step.estimate.payer}.</p>
           <p style={line}>{step.estimate.usedToday} of {step.estimate.dailyLimit} board generations used today.</p>
           <div style={{ display: "flex", gap: 6 }}>
@@ -113,7 +115,7 @@ export function GenerateCardView(v: GenerateCardViewProps) {
   );
 }
 
-async function readBoard(companyId: string, boardId: string): Promise<BoardNode[]> {
+export async function readBoard(companyId: string, boardId: string): Promise<BoardNode[]> {
   const res = await fetch(`/api/companies/${encodeURIComponent(companyId)}/planning-canvases/${encodeURIComponent(boardId)}`, { credentials: "include", cache: "no-store" });
   if (!res.ok) throw new Error(`The board couldn't be read (HTTP ${res.status}).`);
   const body = (await res.json()) as { items?: BoardNode[] };
@@ -122,7 +124,7 @@ async function readBoard(companyId: string, boardId: string): Promise<BoardNode[
 
 export function StudioGenerateCard(props: PluginCanvasNodeProps) {
   const companyId = props.context?.companyId ?? null;
-  const boardScope = { projectId: props.boardProjectId ?? null };
+  const boardScope = boardScopeOf(props.boardProjectId ?? null, props.boardId);
   const canEdit = props.accessLevel === "edit";
   const estimate = useStudioAction("estimate");
   const generate = useStudioAction("generate");
@@ -171,7 +173,7 @@ export function StudioGenerateCard(props: PluginCanvasNodeProps) {
       const items = await readBoard(companyId, props.boardId);
       const { assetIds, missing } = resolveInputs(items, props.nodeKey, settings.inputKeys);
       if (missing.length) return setStep({ step: "message", text: "An input card changed since the estimate. Press Generate again.", tone: "error" });
-      const out = (await generate({ ...request(assetIds), expectedCredits: step.estimate.creditsTotal })) as { generationIds?: string[] };
+      const out = (await generate({ ...request(assetIds), expectedCredits: step.estimate.creditsTotal, expectedClient: step.estimate.client })) as { generationIds?: string[] };
       const id = out.generationIds?.[0];
       if (!id) throw new Error("Studio started nothing.");
       setQueue({ status: "queued", assetId: null, error: null });
@@ -181,7 +183,21 @@ export function StudioGenerateCard(props: PluginCanvasNodeProps) {
       setOutputs((n) => n + 1);
       setStep({ step: "message", text: "Queued. The result appears in its own card next to this one.", tone: "info" });
     } catch (error) {
+      // The board's client changed since the estimate: say so, then price it again for the new client.
+      if (isClientChanged(error)) return void reprice(refusalText(error));
       setStep({ step: "message", text: refusalText(error), tone: "error" });
+    }
+  };
+
+  const reprice = async (notice: string) => {
+    if (!companyId) return;
+    setStep({ step: "estimating" });
+    try {
+      const items = await readBoard(companyId, props.boardId);
+      const { assetIds } = resolveInputs(items, props.nodeKey, settings.inputKeys);
+      setStep({ step: "confirm", estimate: estimateFromReply(await estimate(request(assetIds))), notice });
+    } catch (error) {
+      setStep({ step: "message", text: `${notice} ${refusalText(error)}`, tone: "error" });
     }
   };
 
@@ -192,7 +208,7 @@ export function StudioGenerateCard(props: PluginCanvasNodeProps) {
     let live = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const tick = () => {
-      status({ companyId, boardScope: { projectId: props.boardProjectId ?? null }, generationId: last })
+      status({ companyId, boardScope, generationId: last })
         .then((out) => {
           if (!live) return;
           const q = queueStateFromReply(out);
@@ -208,7 +224,7 @@ export function StudioGenerateCard(props: PluginCanvasNodeProps) {
       live = false;
       if (timer) clearTimeout(timer);
     };
-  }, [last, companyId, props.boardProjectId, status]);
+  }, [last, companyId, props.boardProjectId, props.boardId, status]);
 
   return (
     <GenerateCardView settings={settings} canEdit={canEdit} step={step} queue={queue} inputs={inputs} pickingInputs={picking} onChange={onChange} onPickInputs={onPickInputs} onGenerate={() => void onGenerate()} onConfirm={() => void onConfirm()} onCancel={() => setStep({ step: "idle" })} />

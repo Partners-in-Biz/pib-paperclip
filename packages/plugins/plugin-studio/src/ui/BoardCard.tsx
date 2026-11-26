@@ -9,6 +9,7 @@ import type { PluginCanvasNodeProps } from "@paperclipai/plugin-sdk/ui";
 import { tokens } from "@partnersinbiz/pib-plugin-ui";
 import { useStudioAction } from "./action.js";
 import { isOpen, POLL_MS, queueLabel, queueStateFromReply } from "./board-generate.js";
+import { boardScopeOf } from "./board-client.js";
 import { boardSigner, cardStateFromError, nextCheckIn, RETRY_MS, type CardState } from "./board-sign.js";
 import { posterFrameUrl } from "./library.js";
 
@@ -88,7 +89,7 @@ export function StudioCanvasCard(props: PluginCanvasNodeProps) {
     let live = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const tick = () => {
-      status({ companyId, boardScope: { projectId }, generationId })
+      status({ companyId, boardScope: boardScopeOf(projectId, props.boardId), generationId })
         .then((out) => {
           if (!live) return;
           const q = queueStateFromReply(out);
@@ -109,7 +110,7 @@ export function StudioCanvasCard(props: PluginCanvasNodeProps) {
       live = false;
       if (timer) clearTimeout(timer);
     };
-  }, [status, companyId, projectId, generationId, props.assetId]);
+  }, [status, companyId, projectId, props.boardId, generationId, props.assetId]);
 
   // Ask on every draw, and again on each new round (expiry, retry, image error).
   useEffect(() => {
@@ -119,13 +120,13 @@ export function StudioCanvasCard(props: PluginCanvasNodeProps) {
       return;
     }
     let live = true;
-    void boardSigner.request(call, companyId, projectId, assetId, { fresh: round > 0 }).then((next) => {
+    void boardSigner.request(call, companyId, projectId, props.boardId ?? null, assetId, { fresh: round > 0 }).then((next) => {
       if (live) setState(next);
     });
     return () => {
       live = false;
     };
-  }, [call, companyId, projectId, assetId, generationId, round]);
+  }, [call, companyId, projectId, props.boardId, assetId, generationId, round]);
 
   // Re-sign before the link expires (300 s), or retry after a failure.
   useEffect(() => {
@@ -138,7 +139,7 @@ export function StudioCanvasCard(props: PluginCanvasNodeProps) {
   // An image error re-signs once; a second error within RETRY_MS waits for the retry.
   const onMediaError = () => {
     if (!assetId || !companyId) return;
-    boardSigner.forget(companyId, projectId, assetId);
+    boardSigner.forget(companyId, projectId, props.boardId ?? null, assetId);
     const now = Date.now();
     if (now - lastErrorResign.current >= RETRY_MS) {
       lastErrorResign.current = now;
