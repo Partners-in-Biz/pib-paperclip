@@ -172,6 +172,8 @@ export interface Estimate {
   dailyLimit: number;
   usedToday: number;
   payer: string;
+  /** The client the estimate priced for (`company:<id>`), null for own work. Sent back as `expectedClient`. */
+  client: string | null;
 }
 
 export function estimateFromReply(out: unknown): Estimate {
@@ -180,6 +182,7 @@ export function estimateFromReply(out: unknown): Estimate {
     creditsTotal: Number(r.creditsTotal ?? 0),
     dailyLimit: Number(r.dailyLimit ?? 0),
     usedToday: Number(r.usedToday ?? 0),
+    client: typeof r.client === "string" && r.client ? r.client : r.client && typeof r.client === "object" ? `${(r.client as { kind?: unknown }).kind}:${(r.client as { id?: unknown }).id}` : null,
     payer: r.client ? (typeof r.clientName === "string" && r.clientName ? r.clientName : "This board's client") : "Own work",
   };
 }
@@ -188,9 +191,14 @@ export function estimateFromReply(out: unknown): Estimate {
 export type GenerateStep =
   | { step: "idle" }
   | { step: "estimating" }
-  | { step: "confirm"; estimate: Estimate }
+  | { step: "confirm"; estimate: Estimate; notice?: string }
   | { step: "sending"; estimate: Estimate }
   | { step: "message"; text: string; tone: "info" | "error" };
+
+/** The worker refused because the board's client changed after the estimate (PAR-14835 Approach 4). */
+export function isClientChanged(error: unknown): boolean {
+  return !!error && typeof error === "object" && (error as { code?: unknown }).code === "board_client_changed";
+}
 
 /** Plain words for a refusal; the worker's own message otherwise. */
 export function refusalText(error: unknown): string {
