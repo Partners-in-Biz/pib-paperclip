@@ -11,9 +11,6 @@ import type { WaitingEntry } from "./merge.js";
 const REVIEW_WEEK = /^(?:[A-Z][A-Z0-9]*-\d+ )?Review social posts: week of /;
 const BRAND_PREFIX = /^\s*\[([^\]]{1,60})\]\s*/;
 
-/** Studio dogfood approvals on test data (a person closes them by design, but they decide nothing of the company's). */
-const DOGFOOD = /^(?:[A-Z][A-Z0-9]*-\d+ )?Approval: .*\bStudio dogfood\b/i;
-
 function ownBrand(title: string, ownProducts: readonly string[]): boolean {
   const brand = BRAND_PREFIX.exec(title)?.[1];
   return !brand || ownProducts.some((p) => p.toLowerCase() === brand.toLowerCase());
@@ -33,7 +30,7 @@ export function seatClassOf(entry: Pick<WaitingEntry, "key" | "title" | "originK
   if (origin === "plugin:partnersinbiz.cockpit:closeout" || origin === "plugin:partnersinbiz.cockpit:brief" || origin === "plugin:partnersinbiz.cockpit:digest") return "other";
   // Only the own-brand weekly review issue, never every issue of the plugin (a client's post approval or a campaign send stays with the owner).
   if (origin === "plugin:partnersinbiz.social" && REVIEW_WEEK.test(title)) return BRAND_PREFIX.test(title) && !ownBrand(title, ownProducts) ? null : "social";
-  if ((origin === "" || origin === "manual") && DOGFOOD.test(title)) return "other";
+  // PAR-14783: dogfood approvals are not routed: only a person closing them grants the pib-browser approval, so a seat cannot act on them.
   return null;
 }
 

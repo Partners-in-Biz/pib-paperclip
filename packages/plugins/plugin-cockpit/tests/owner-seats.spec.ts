@@ -41,9 +41,16 @@ describe("PAR-13992 seat routing off the owner list", () => {
     expect(waits(row("social:review:p2", "[Velox] Approve post: 60 seconds on the clock")).others).toHaveLength(1);
     expect(waits(row("social:review:p3", "[AHS Law] Approve post: we did the filing")).owner).toHaveLength(1);
   });
-  it("5. Studio dogfood approvals on test data route to the other seat", () => {
+  it("5. Studio dogfood approvals stay with the owner (only a person closing them grants the pib-browser approval, PAR-14783)", () => {
     const e = row("issue:d", 'PAR-11907 Approval: Toby clicks "Remove silences" (open dialog) on Studio dogfood edit (PAR-10184)', { originKind: "manual" });
-    expect(waits(e).others[0]!.waitsOn).toEqual({ kind: "agent", agentId: SEATS.other });
+    const r = waits(e);
+    expect([r.owner.length, r.others.length]).toEqual([1, 0]);
+  });
+  it("5b. the same ask listed twice is one card (PAR-14783)", () => {
+    const a = row("social:connect:1", "Connect Velox social accounts", { since: "2026-11-20T09:00:00.000Z" });
+    const b = row("issue:x", "PAR-1 Connect Velox  social accounts");
+    const r = splitOwnerWaiting([b, a, row("issue:y", "Save Velox test login")], filter, NOW);
+    expect(r.owner.map((e) => e.key)).toEqual(["social:connect:1", "issue:y"]);
   });
   it("6. hard stops stay: a login, money or client-send title is never routed", () => {
     expect(routeToSeats([row("seo:optimization:o2", "Approve an SEO change: renew the SSL certificate and paste the API key")], rights)[0]!.waitsOn).toBeUndefined();
