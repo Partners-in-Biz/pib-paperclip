@@ -319,6 +319,8 @@ const manifest: PaperclipPluginManifestV1 = {
     // core signs the upgrade for a signed-in person only. A new capability, so the release is stop-first (DEPLOY.md).
     // The worker's own calls to that socket (/status) are plain node:http and claim no capability (design 3, F22).
     "websocket.local",
+    // 0.31.3: the Watch live toolbarButton slot (PAR-14752) needs it; the host refused 0.31.x without it (PAR-14783). A new capability, so the release is stop-first (DEPLOY.md).
+    "ui.action.register",
   ],
   entrypoints: { worker: "./dist/worker.js", ui: "./dist/ui" },
   database: { namespaceSlug: "cockpit", migrationsDir: "migrations", coreReadTables: ["issues", "issue_comments", "heartbeat_runs", "issue_relations", "projects"] },
