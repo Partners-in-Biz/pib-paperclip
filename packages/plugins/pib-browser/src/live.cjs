@@ -288,7 +288,16 @@ function createLiveService(opts) {
     const mode = url.searchParams.get('mode');
     if (mode === 'control') return onControl(req, socket, head, url, v.userId);
     if (mode !== 'view' || [...url.searchParams.keys()].length !== 1) return reject(socket, 400);
-    if (closing || views.size + starting >= MAX_VIEWS) { logger('pib-browser live: stream refused (viewer_limit)'); return reject(socket, 429); }
+    if (closing) { logger('pib-browser live: stream refused (viewer_limit)'); return reject(socket, 503); }
+    // At the cap: end the oldest open view (a Set keeps insertion order) and wait for its x11vnc to exit, so the
+    // cap on concurrent x11vnc processes holds. Refuse only when no open view can be ended (all slots still starting).
+    while (views.size + starting >= MAX_VIEWS) {
+      const oldest = views.values().next().value;
+      if (!oldest) { logger('pib-browser live: stream refused (viewer_limit)'); return reject(socket, 429); }
+      end(oldest, 'replaced');
+      await oldest.killed;
+      if (closing) return reject(socket, 503);
+    }
     starting++;
     return openStream(req, socket, head, { kind: 'view', args: viewArgs(config.display), set: views, onStarted: () => { starting--; } });
   }
