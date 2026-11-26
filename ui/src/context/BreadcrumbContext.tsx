@@ -26,6 +26,8 @@ export interface Breadcrumb {
   control?: ReactNode;
   /** Stable identity for the control, following leadingKey semantics. */
   controlKey?: string;
+  /** When set on the last crumb, the bar shows a Back button. Used as the target when there is no history to go back to. */
+  backHref?: string;
 }
 
 interface BreadcrumbContextValue {

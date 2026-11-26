@@ -352,4 +352,46 @@ describe("BreadcrumbBar", () => {
     expect(rightControl?.className).not.toContain("rounded-none");
     expect(rightControl?.className).not.toContain("h-full");
   });
+
+  describe("back button", () => {
+    function BackCrumbs({ backHref }: { backHref?: string }) {
+      const { setBreadcrumbs } = useBreadcrumbs();
+      useEffect(() => {
+        setBreadcrumbs([
+          { label: "Tasks", href: "/issues" },
+          { label: "Subtask", backHref },
+        ]);
+      }, [setBreadcrumbs, backHref]);
+      return <BreadcrumbBar taskDetailLayout />;
+    }
+
+    async function renderBack(backHref?: string) {
+      await act(async () => {
+        root.render(
+          <BreadcrumbProvider>
+            <BackCrumbs backHref={backHref} />
+          </BreadcrumbProvider>,
+        );
+      });
+      return container.querySelector<HTMLButtonElement>('[aria-label="Back"]');
+    }
+
+    it("goes back in history when an earlier in-app entry exists", async () => {
+      window.history.replaceState({ idx: 2 }, "");
+      const button = await renderBack("/issues/PAR-1");
+      await act(async () => button!.click());
+      expect(navigate).toHaveBeenCalledWith(-1);
+    });
+
+    it("falls back to the parent target on a direct-link open", async () => {
+      window.history.replaceState({ idx: 0 }, "");
+      const button = await renderBack("/issues/PAR-1");
+      await act(async () => button!.click());
+      expect(navigate).toHaveBeenCalledWith("/issues/PAR-1");
+    });
+
+    it("renders no back button when no backHref is set", async () => {
+      expect(await renderBack()).toBeNull();
+    });
+  });
 });

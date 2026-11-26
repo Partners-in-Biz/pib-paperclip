@@ -132,6 +132,7 @@ import {
   createIssueDetailPath,
   readIssueDetailLocationState,
   readIssueDetailBreadcrumb,
+  resolveIssueBackHref,
   readIssueDetailHeaderSeed,
   withIssueDetailHeaderSeed,
   rememberIssueDetailLocationState,
@@ -4235,6 +4236,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     [comments, optimisticComments],
   );
   const breadcrumbTitle = issue?.title ?? issueHeaderSeed?.title ?? "";
+  const breadcrumbBackHref = resolveIssueBackHref(issue, sourceBreadcrumb.href);
   const breadcrumbIdentifier =
     issue?.identifier ?? issueHeaderSeed?.identifier ?? (issueId && /^[a-z0-9]+-\d+$/i.test(issueId) ? issueId : undefined);
   const breadcrumbStatus = issue?.status ?? issueHeaderSeed?.status;
@@ -5992,9 +5994,11 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         identifier: breadcrumbIdentifier,
         leading: breadcrumbStatusLeading,
         leadingKey: breadcrumbStatusKey,
+        backHref: breadcrumbBackHref,
       },
     ]);
   }, [
+    breadcrumbBackHref,
     conversationAgent,
     coordinatorWorkspaceEnabled,
     breadcrumbTitle,

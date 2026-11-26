@@ -1,5 +1,5 @@
-import { Link } from "@/lib/router";
-import { Menu, PanelRightClose, PanelRightOpen } from "lucide-react";
+import { Link, useNavigate } from "@/lib/router";
+import { ArrowLeft, Menu, PanelRightClose, PanelRightOpen } from "lucide-react";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useCompany } from "../context/CompanyContext";
@@ -53,6 +53,12 @@ function GlobalToolbar({
   );
 }
 
+/** True when react-router has an earlier in-app entry to return to (false for direct-link opens). */
+function hasInAppHistory() {
+  const idx = (window.history.state as { idx?: number } | null)?.idx;
+  return typeof idx === "number" && idx > 0;
+}
+
 export function BreadcrumbBar({ taskDetailLayout = false, showPropertiesToggle = taskDetailLayout }: { taskDetailLayout?: boolean; showPropertiesToggle?: boolean }) {
   const coordinatorEnabled = useCoordinatorPresentation();
   const {
@@ -62,6 +68,7 @@ export function BreadcrumbBar({ taskDetailLayout = false, showPropertiesToggle =
     mobileToolbar,
   } = useBreadcrumbs();
   const { toggleSidebar, isMobile } = useSidebar();
+  const navigate = useNavigate();
   const { panelVisible, togglePanelVisible } = usePanel();
   const { selectedCompanyId, selectedCompany } = useCompany();
   const taskPanelOpen = breadcrumbPanelControl?.open ?? panelVisible;
@@ -76,6 +83,24 @@ export function BreadcrumbBar({ taskDetailLayout = false, showPropertiesToggle =
       title={taskPanelOpen ? "Hide properties" : "Show properties"}
     >
       {taskPanelOpen ? <PanelRightClose className="h-4 w-4" /> : <PanelRightOpen className="h-4 w-4" />}
+    </Button>
+  ) : null;
+
+  const backHref = breadcrumbs[breadcrumbs.length - 1]?.backHref;
+  const backButton = backHref ? (
+    <Button
+      variant="ghost"
+      size="icon-sm"
+      className="mr-2 shrink-0 text-muted-foreground"
+      onClick={() => {
+        if (hasInAppHistory()) navigate(-1);
+        else navigate(backHref);
+      }}
+      aria-label="Back"
+      title="Back"
+      data-slot="breadcrumb-back"
+    >
+      <ArrowLeft className="h-4 w-4" />
     </Button>
   ) : null;
 
@@ -127,6 +152,7 @@ export function BreadcrumbBar({ taskDetailLayout = false, showPropertiesToggle =
     return (
       <div className="h-(--sz-60px) shrink-0 flex items-center border-b border-border px-4">
         {menuButton}
+        {backButton}
         <h1 className="flex min-w-0 flex-1 items-baseline gap-1.5 text-sm">
           {currentCrumb.leading ? (
             <span className="flex shrink-0 items-center self-center">{currentCrumb.leading}</span>
@@ -209,6 +235,7 @@ export function BreadcrumbBar({ taskDetailLayout = false, showPropertiesToggle =
     return (
       <div className="h-(--sz-60px) shrink-0 flex items-center border-b border-border px-4 md:px-6">
         {menuButton}
+        {backButton}
         <div className="min-w-0 overflow-hidden flex-1">
           {breadcrumbs[0].control ? (
             <h1 className="min-w-0 text-sm font-semibold uppercase tracking-wider">{breadcrumbs[0].control}</h1>
@@ -244,6 +271,7 @@ export function BreadcrumbBar({ taskDetailLayout = false, showPropertiesToggle =
       )}
     >
       {menuButton}
+      {backButton}
       {breadcrumbTrail}
       {globalToolbarSlots}
       {propertiesToggle}
