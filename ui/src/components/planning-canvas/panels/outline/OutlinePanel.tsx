@@ -1,3 +1,4 @@
+import { cardTitle } from "@/components/planning-canvas/nodes/typed-meta";
 import { useMemo, useState } from "react";
 import { ListTree, Search, X } from "lucide-react";
 import { focusNodeElement } from "@/components/planning-canvas/keyboard/useCanvasKeyboard";
@@ -73,7 +74,7 @@ export function OutlinePanel({ c }: { c: CanvasController }) {
                     selected && "bg-accent",
                   )}
                 >
-                  <span className="truncate font-medium text-foreground">{node.title || node.content || "(Untitled)"}</span>
+                  <span className="truncate font-medium text-foreground">{cardTitle(node.title) || node.content || "(Untitled)"}</span>
                   <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs capitalize text-muted-foreground">{node.kind}</span>
                 </button>
               </li>

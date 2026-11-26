@@ -1,5 +1,6 @@
 import { OptionSelect } from "@/components/OptionSelect";
 import { AgentPicker } from "@/components/AgentPicker";
+import { ChevronDown } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ISSUE_STATUSES, type PlanningCanvasIssueQuery } from "@paperclipai/shared";
@@ -13,7 +14,9 @@ import { useLatestCanvas } from "@/components/planning-canvas/nodes/canvas-conte
 import { activeFilterCount, toggleStatus, withFilter, type IssueFilterPatch } from "@/components/planning-canvas/nodes/issue-board";
 
 const stop = (e: { stopPropagation: () => void }) => e.stopPropagation();
-const SELECT = "max-w-28 rounded border border-border bg-background px-1 py-0.5 text-xs text-foreground";
+// One size for every control in the row so the selectors line up.
+const SELECT = "h-7 w-36 rounded-md border border-border bg-background px-2 text-xs font-normal text-foreground";
+const TRIGGER = "h-7 min-h-7 w-36 px-2 py-0 text-xs font-normal";
 const titleCase = (key: string) => key.replace(/_/g, " ").replace(/^\w/, (ch) => ch.toUpperCase());
 
 /**
@@ -76,7 +79,7 @@ export function IssueFilters({ query, onChange }: { query: PlanningCanvasIssueQu
         emptyLabel="All projects"
         placeholder="All projects"
         searchPlaceholder="Search projects…"
-        className="w-40"
+        triggerClassName={TRIGGER}
         onChange={(id) => set({ projectId: id })}
       />
       <AgentPicker
@@ -86,7 +89,7 @@ export function IssueFilters({ query, onChange }: { query: PlanningCanvasIssueQu
         onChange={(id) => set({ assigneeAgentId: id })}
         emptyLabel="Any assignee"
         placeholder="Any assignee"
-        className="w-40"
+        triggerClassName={TRIGGER}
         compact
       />
       <OptionSelect
@@ -99,12 +102,12 @@ export function IssueFilters({ query, onChange }: { query: PlanningCanvasIssueQu
         onChange={(id) => set({ goalId: id })}
         emptyLabel="Any goal"
         placeholder="Any goal"
-        className="w-40"
-        triggerClassName="h-auto py-0.5 text-xs font-normal"
+        triggerClassName={TRIGGER}
       />
       <div className="relative" ref={statusRef}>
-        <button type="button" aria-expanded={statusOpen} aria-label="Filter by status" className={cn(SELECT, "text-left")} onClick={() => setStatusOpen((o) => !o)}>
-          {filter.status?.length ? `Status (${filter.status.length})` : "Any status"}
+        <button type="button" aria-expanded={statusOpen} aria-label="Filter by status" className={cn(SELECT, "flex items-center justify-between gap-1 text-left")} onClick={() => setStatusOpen((o) => !o)}>
+          <span className="truncate">{filter.status?.length ? `Status (${filter.status.length})` : "Any status"}</span>
+          <ChevronDown className="size-3.5 shrink-0 opacity-50" aria-hidden />
         </button>
         {statusOpen ? (
           <ul className="absolute z-10 mt-0.5 flex flex-col rounded border border-border bg-popover p-1 text-xs shadow-md">
@@ -120,7 +123,7 @@ export function IssueFilters({ query, onChange }: { query: PlanningCanvasIssueQu
         ) : null}
       </div>
       {parentId ? (
-        <button type="button" aria-label="Clear parent filter" className={SELECT} onClick={() => set({ parentId: null })}>
+        <button type="button" aria-label="Clear parent filter" className={cn(SELECT, "truncate text-left")} onClick={() => set({ parentId: null })}>
           Parent: {parent.data?.identifier ?? "…"} ×
         </button>
       ) : (
@@ -128,7 +131,7 @@ export function IssueFilters({ query, onChange }: { query: PlanningCanvasIssueQu
           aria-label="Filter by parent issue"
           aria-invalid={parentError}
           placeholder="Parent (PAR-1)"
-          className={cn(SELECT, "w-24", parentError && "border-destructive")}
+          className={cn(SELECT, parentError && "border-destructive")}
           value={parentText}
           onChange={(e) => setParentText(e.target.value)}
           onKeyDown={(e) => {

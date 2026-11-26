@@ -155,7 +155,7 @@ export const KanbanNode = memo(function KanbanNode({ nodeKey, data, title }: { n
   return (
     <RefCard label={title || "Kanban"} icon={<Columns3 className="size-3.5" />}>
       <div className="flex items-center gap-1" onPointerDown={stop} onDoubleClick={stop}>
-        <label className="flex items-center gap-1 text-xs text-muted-foreground">
+        <label className="flex shrink-0 items-center gap-1 whitespace-nowrap text-xs text-muted-foreground">
           Group by
           <OptionSelect
             ariaLabel="Group by"
@@ -163,7 +163,7 @@ export const KanbanNode = memo(function KanbanNode({ nodeKey, data, title }: { n
             value={data.groupBy}
             onChange={(next) => edit({ groupBy: next as KanbanGroupBy, collapsed: [] })}
             placeholder="Group by"
-            triggerClassName="h-auto py-0.5 text-xs font-normal"
+            triggerClassName="h-7 min-h-7 w-36 px-2 py-0 text-xs font-normal"
           />
         </label>
         {issues ? <span className="ml-auto text-xs text-muted-foreground">{issues.length} issues</span> : null}
