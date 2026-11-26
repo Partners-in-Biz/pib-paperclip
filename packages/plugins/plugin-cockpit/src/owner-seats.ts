@@ -11,7 +11,6 @@ import type { WaitingEntry } from "./merge.js";
 const REVIEW_WEEK = /^(?:[A-Z][A-Z0-9]*-\d+ )?Review social posts: week of /;
 const BRAND_PREFIX = /^\s*\[([^\]]{1,60})\]\s*/;
 
-
 function ownBrand(title: string, ownProducts: readonly string[]): boolean {
   const brand = BRAND_PREFIX.exec(title)?.[1];
   return !brand || ownProducts.some((p) => p.toLowerCase() === brand.toLowerCase());

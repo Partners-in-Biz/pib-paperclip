@@ -1030,6 +1030,7 @@ export function splitOwnerWaiting(entries: WaitingEntry[], filter: Partial<Owner
 export function dedupeByTitle(entries: WaitingEntry[]): WaitingEntry[] {
   const norm = (t: string) => t.replace(/^\s*[A-Z][A-Z0-9]*-\d+\s+/, "").replace(/\s+/g, " ").trim().toLowerCase();
   const first = new Map<string, number>();
+  const counts = new Map<string, number>();
   const out: WaitingEntry[] = [];
   for (const entry of entries) {
     const k = norm(entry.title);
@@ -1037,11 +1038,13 @@ export function dedupeByTitle(entries: WaitingEntry[]): WaitingEntry[] {
     if (at === undefined) {
       first.set(k, out.length);
       out.push(entry);
-    } else if (sinceMs(entry) < sinceMs(out[at])) {
-      out[at] = entry;
+    } else {
+      counts.set(k, (counts.get(k) ?? 1) + 1);
+      if (sinceMs(entry) < sinceMs(out[at])) out[at] = entry;
     }
   }
-  return out;
+  // The merged count is kept visible, so a merge never hides how many asks stood behind the card.
+  return out.map((e) => { const n = counts.get(norm(e.title)) ?? 1; return n > 1 ? { ...e, why: `${e.why} (${n} listings merged into this card.)`.trim() } : e; });
 }
 
 /** The "others" part of a brief or tool answer. */
