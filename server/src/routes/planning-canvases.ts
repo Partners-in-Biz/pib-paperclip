@@ -23,6 +23,7 @@ import {
 import { publishPlanningCanvasEvent } from "../services/planning-canvas-events.js";
 import { planningCanvasOpsService, type PlanningCanvasOpsActor } from "../services/planning-canvas-ops.js";
 import { planningCanvasService } from "../services/planning-canvases.js";
+import { planningCanvasSourceWriterFor } from "../services/planning-canvas-sources.js";
 import { getActorInfo, hasCompanyAccess } from "./authz.js";
 
 /**
@@ -192,7 +193,9 @@ export function planningCanvasRoutes(db: Db) {
   router.post("/companies/:companyId/planning-canvases/:boardId/ops", async (req, res) => {
     const { board } = await planningCanvasForRequest(db, req, "edit");
     const actor = opsActor(req);
-    res.json(await ops.applyOps({ companyId: board.companyId, boardId: board.id, actor, batch: req.body }));
+    // A table `source` only from a board chat run of this board with a person (PAR-14282 s.3).
+    const sourceWriter = await planningCanvasSourceWriterFor(db, req.actor, board);
+    res.json(await ops.applyOps({ companyId: board.companyId, boardId: board.id, actor, batch: req.body, sourceWriter }));
   });
 
   /** Markdown outline or Mermaid flowchart to frames, stickies and connectors (C9). One atomic batch. */

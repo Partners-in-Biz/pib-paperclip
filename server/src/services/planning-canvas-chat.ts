@@ -181,14 +181,20 @@ export function planningCanvasChatService(db: Db, deps: PlanningCanvasCommentsDe
     return row ?? null;
   }
 
-  async function wake(issue: Pick<IssueRow, "id" | "assigneeAgentId">, commentId: string, askerUserId: string, created: boolean) {
+  async function wake(
+    issue: Pick<IssueRow, "id" | "assigneeAgentId">,
+    commentId: string,
+    askerUserId: string,
+    created: boolean,
+    contextSource: string,
+  ) {
     await queueIssueAssignmentWakeup({
       heartbeat: wakeups(),
       // The thread is open at this point (created or reopened as `todo`).
       issue: { id: issue.id, assigneeAgentId: issue.assigneeAgentId, status: "todo" },
       reason: "issue_commented",
       mutation: created ? "create" : "comment",
-      contextSource: "planning_canvas.chat",
+      contextSource,
       wakeCommentId: commentId,
       requestedByActorType: "user",
       requestedByActorId: askerUserId,
@@ -213,7 +219,15 @@ export function planningCanvasChatService(db: Db, deps: PlanningCanvasCommentsDe
   }
 
   return {
-    async send(ctx: PlanningCanvasChatContext, input: PlanningCanvasChatMessage): Promise<PlanningCanvasChatMessageResult> {
+    /**
+     * `contextSource` names the wake's call site: `planning_canvas.chat` for a
+     * message, `planning_canvas.source_refresh` for a refresh (PAR-14282).
+     */
+    async send(
+      ctx: PlanningCanvasChatContext,
+      input: PlanningCanvasChatMessage,
+      options: { contextSource?: string } = {},
+    ): Promise<PlanningCanvasChatMessageResult> {
       const { board, askerUserId } = ctx;
       const now = ctx.now ?? new Date();
       const [agent] = await db
@@ -289,7 +303,7 @@ export function planningCanvasChatService(db: Db, deps: PlanningCanvasCommentsDe
       const { thread } = outcome;
       if (!outcome.repeat || !(await wakeQueued(board.companyId, agent.id, outcome.commentId))) {
         try {
-          await wake(thread, outcome.commentId, askerUserId, outcome.state === "created");
+          await wake(thread, outcome.commentId, askerUserId, outcome.state === "created", options.contextSource ?? "planning_canvas.chat");
         } catch (err) {
           // The message is saved; sending it again with the same clientRequestId wakes the agent once.
           throw codeError(503, "The message was saved but the agent could not be woken; send it again", "canvas_chat_wake_failed", {
