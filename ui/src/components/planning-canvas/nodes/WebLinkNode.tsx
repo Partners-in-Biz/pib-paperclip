@@ -2,6 +2,7 @@ import { memo, useEffect, useRef, useState } from "react";
 import { ExternalLink, Globe, Play } from "lucide-react";
 import { isPlanningCanvasWebLinkUrl, parseYouTubeUrl, type PlanningCanvasWebLinkData } from "@paperclipai/shared";
 import { RefCard } from "@/components/planning-canvas/nodes/RefCard";
+import { useWebLinkPreview, WebLinkPreviewButton } from "@/components/planning-canvas/nodes/WebLinkPreviewButton";
 
 const stop = (e: { stopPropagation: () => void }) => e.stopPropagation();
 
@@ -59,13 +60,15 @@ function OpenLink({ url }: { url: string }) {
  * A web link card. Any editor or agent can write `url` and `preview` through the ops route, so
  * the card trusts neither: the host shown is always the host of `url`, preview text is drawn as
  * text below it, and a YouTube frame loads only after a click, from the rebuilt nocookie URL.
+ * With `nodeKey` (on a board) a non-YouTube card offers "Get preview" to editors (D3).
  */
-export const WebLinkNode = memo(function WebLinkNode({ data }: { data: PlanningCanvasWebLinkData }) {
+export const WebLinkNode = memo(function WebLinkNode({ data, nodeKey }: { data: PlanningCanvasWebLinkData; nodeKey?: string }) {
   const host = webLinkHost(data.url);
   const embedSrc = host ? youTubeEmbedSrc(data.url) : null;
   const [playing, setPlaying] = useState(false);
   const boxRef = useRef<HTMLDivElement | null>(null);
   useInView(boxRef, playing && !!embedSrc, () => setPlaying(false));
+  const preview = useWebLinkPreview(nodeKey, data);
 
   if (!host) {
     return (
@@ -110,10 +113,18 @@ export const WebLinkNode = memo(function WebLinkNode({ data }: { data: PlanningC
           )}
         </div>
       ) : (
-        <p className="truncate text-xs text-muted-foreground" title={data.url}>
-          {data.url}
-        </p>
+        <div className="flex min-w-0 items-center gap-2">
+          <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground" title={data.url}>
+            {data.url}
+          </p>
+          {preview.canFetch ? <WebLinkPreviewButton pending={preview.pending} onClick={() => void preview.getPreview()} /> : null}
+        </div>
       )}
+      {preview.notice && !embedSrc ? (
+        <p role="status" data-testid="weblink-preview-notice" className="truncate text-xs text-muted-foreground" title={preview.notice}>
+          {preview.notice}
+        </p>
+      ) : null}
       {title ? <p className="line-clamp-2 text-sm font-medium text-foreground">{title}</p> : null}
       {description && !embedSrc ? <p className="line-clamp-3 text-xs text-muted-foreground">{description}</p> : null}
     </RefCard>

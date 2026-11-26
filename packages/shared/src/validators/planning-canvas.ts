@@ -467,6 +467,10 @@ export const planningCanvasSourceRefreshSchema = z.strictObject({
 });
 export type PlanningCanvasSourceRefresh = z.infer<typeof planningCanvasSourceRefreshSchema>;
 
+/** Body of the web link preview route: only the node. The URL is read from the stored node, never from here. */
+export const planningCanvasUnfurlSchema = z.strictObject({ nodeId: planningCanvasItemKeySchema });
+export type PlanningCanvasUnfurl = z.infer<typeof planningCanvasUnfurlSchema>;
+
 export const planningCanvasHandoffSchema = z.strictObject({
   keys: z.array(planningCanvasItemKeySchema).min(1).max(L.handoffKeysMax),
   mode: z.enum(["single", "one_per_node"]),

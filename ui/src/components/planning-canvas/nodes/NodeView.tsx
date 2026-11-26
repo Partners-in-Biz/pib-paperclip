@@ -164,7 +164,7 @@ const NodeView = memo(function NodeView({
       ) : typed?.kind === "timeline" ? (
         <TimelineNode nodeKey={node.id} data={typed.data} title={node.title} />
       ) : typed?.kind === "weblink" ? (
-        <WebLinkNode data={typed.data} />
+        <WebLinkNode nodeKey={node.id} data={typed.data} />
       ) : (
         <Render node={node} isEditing={isEditing} theme={theme} linkedNote={linkedNote} c={latest.current} />
       )}
