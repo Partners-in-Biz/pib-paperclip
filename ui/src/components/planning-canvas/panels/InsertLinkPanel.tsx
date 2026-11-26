@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Bot, CircleDot, FolderOpen, Search, Target, X } from "lucide-react";
+import { Bot, Building2, CircleDot, FolderOpen, Layers, Mail, Megaphone, MessageSquare, Receipt, Search, Target, User, X } from "lucide-react";
 import { CANVAS_CARDS_LIMITS, CANVAS_CARDS_SEARCH_ACTION, canvasCardsSearchResultSchema, type PlanningCanvasRefNodeKind } from "@paperclipai/shared";
 import { goalsApi } from "@/api/goals";
 import { issuesApi } from "@/api/issues";
@@ -17,6 +17,21 @@ const TABS: Array<{ kind: PlanningCanvasRefNodeKind; label: string; icon: typeof
   { kind: "project", label: "Projects", icon: FolderOpen },
   { kind: "goal", label: "Goals", icon: Target },
 ];
+
+/** Icon per plugin card kind; unknown kinds fall back to a generic card icon. The tooltip carries the name. */
+const PLUGIN_KIND_ICONS: Record<string, typeof Bot> = {
+  company: Building2,
+  contact: User,
+  campaign: Megaphone,
+  invoice: Receipt,
+  mail: Mail,
+  "card-post": MessageSquare,
+};
+
+function PluginTabIcon({ kind }: { kind: string }) {
+  const Icon = PLUGIN_KIND_ICONS[kind] ?? Layers;
+  return <Icon className="size-3.5" />;
+}
 
 type Row = { id: string; primary: string; secondary?: string | null; type?: string };
 
@@ -172,13 +187,14 @@ export function InsertLinkPanel({ c }: { c: CanvasController }) {
             role="tab"
             aria-selected={activeTabId === tab.id}
             title={tab.label}
+            aria-label={tab.label}
             onClick={() => setTabId(tab.id)}
             className={cn(
-              "flex h-7 min-w-0 max-w-full flex-1 items-center justify-center rounded-md px-2 text-xs capitalize transition-colors",
+              "flex h-7 flex-1 items-center justify-center rounded-md transition-colors",
               activeTabId === tab.id ? "bg-foreground text-background" : "text-muted-foreground hover:bg-accent hover:text-foreground",
             )}
           >
-            <span className="truncate">{tab.label}</span>
+            <PluginTabIcon kind={tab.kind} />
           </button>
         ))}
       </div>
