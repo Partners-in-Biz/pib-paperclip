@@ -68,16 +68,16 @@ describe("nextAction", () => {
     expect(nextAction(stuck({ openBlockers: 0 }), [], now)).toEqual({ type: "create", level: 1 });
   });
 
-  it("state 1: returns none when stuck under the 4 hour limit", () => {
+  it("state 1: returns none when stuck under the 1 hour limit", () => {
     const s = stuck({
-      blockedSince: new Date(now.getTime() - 2 * 60 * 60 * 1000).toISOString(),
+      blockedSince: new Date(now.getTime() - 30 * 60 * 1000).toISOString(),
       openBlockers: 0,
     });
     expect(nextAction(s, [], now)).toEqual({ type: "none", reason: "not_stuck_yet" });
   });
 
-  it("state 1: creates level 1 at the 4 hour limit", () => {
-    const s = stuck({ blockedSince: new Date(now.getTime() - 4 * 60 * 60 * 1000).toISOString() });
+  it("state 1: creates level 1 at the 1 hour limit", () => {
+    const s = stuck({ blockedSince: new Date(now.getTime() - 1 * 60 * 60 * 1000).toISOString() });
     expect(nextAction(s, [], now)).toEqual({ type: "create", level: 1 });
   });
 
