@@ -31,6 +31,13 @@ class ResizeObserverStub {
 vi.mock("@/plugins/slots", () => ({
   PluginSlotMount: ({ context }: { context: { entityId: string } }) => <div data-plugin-viewer>Plugin viewer {context.entityId}</div>,
 }));
+const sideTabFixture = vi.hoisted(() => ({ none: [] as unknown[], tabs: [] as unknown[] }));
+vi.mock("@/hooks/useTaskSidePanelPluginTabs", () => ({
+  taskSidePanelPluginTabId: (slot: { pluginKey: string; id: string }) => `plugin-tab:${slot.pluginKey}:${slot.id}`,
+  useTaskSidePanelPluginTabs: () => sideTabFixture.tabs,
+}));
+const sideTabSlot = { pluginId: "plugin-1", pluginKey: "example.cockpit", id: "browser", displayName: "Browser view", type: "taskSidePanelTab", exportName: "BrowserTab", sidePanelTab: { visibilityDataKey: "browser-visible" } };
+const sideTabId = "plugin-tab:example.cockpit:browser";
 const pluginPanel = { entityId: "33333333-3333-4333-8333-333333333333", runId: "run-1", autoOpen: true, slot: { pluginKey: "example.live-view", id: "screen", displayName: "Live view" } } as TaskPluginPanel;
 const browserFixture = vi.hoisted(() => ({ data: [] as import("@paperclipai/shared").TaskBrowser[], viewer: vi.fn(async () => ({ url: "https://live.browser-use.com/test-viewer" })), control: vi.fn(async () => ({})) }));
 vi.mock("@/hooks/useTaskBrowsers", () => ({ useTaskBrowsers: () => ({ data: browserFixture.data, isError: false }) }));
@@ -152,6 +159,7 @@ describe("TaskSidePanel", () => {
     artifactsTabRender.mockClear();
     generalDocumentsRender.mockClear();
     coordinator.enabled = false;
+    sideTabFixture.tabs = sideTabFixture.none;
     window.localStorage.clear();
     browserFixture.data = [];
     browserFixture.control.mockClear();
@@ -213,6 +221,87 @@ describe("TaskSidePanel", () => {
     expect(artifacts).toBeTruthy();
     await act(async () => artifacts!.click());
     expect(artifactsTabRender).toHaveBeenCalledWith(expect.objectContaining({ documentEditor }));
+  });
+
+  describe("plugin side-panel tabs (taskSidePanelTab)", () => {
+    const tabIds = () => Array.from(container.querySelectorAll<HTMLElement>('[role="tab"]')).map(tab => tab.id.replace(/^side-panel-tab-/, ""));
+    const sideTab = () => container.querySelector(`[data-side-panel-tab-target="${sideTabId}"]`);
+    const launcherItem = async (label: string) => {
+      await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Open a new tab"]')?.click());
+      return Array.from(document.body.querySelectorAll<HTMLElement>('[role="option"]')).find(item => item.textContent?.includes(label));
+    };
+
+    it("stays hidden until the plugin reports the tab visible", async () => {
+      await render(panel());
+      expect(tabIds()).toEqual(["properties"]);
+      expect(sideTab()).toBeNull();
+      expect(await launcherItem("Browser view")).toBeUndefined();
+    });
+
+    it("adds the tab after the built-in tabs without taking focus, with issue context", async () => {
+      await render(panel());
+      sideTabFixture.tabs = [sideTabSlot];
+      await render(panel());
+      expect(tabIds()).toEqual(["properties", sideTabId]);
+      expect(container.querySelector('[role="tab"][aria-selected="true"]')?.id).toBe("side-panel-tab-properties");
+      await act(async () => container.querySelector<HTMLButtonElement>(`#side-panel-tab-${CSS.escape(sideTabId)}`)?.click());
+      expect(container.textContent).toContain("Plugin viewer task-1");
+    });
+
+    it("removes the tab when the plugin stops reporting it and falls back to a kept tab", async () => {
+      sideTabFixture.tabs = [sideTabSlot];
+      await render(panel());
+      await act(async () => container.querySelector<HTMLButtonElement>(`#side-panel-tab-${CSS.escape(sideTabId)}`)?.click());
+      expect(readTaskSidePanelState("user-1", "company-1", "task-1", false)?.state).toEqual({ tabs: [taskPanelPropertiesTab()], activeTabId: "properties" });
+      sideTabFixture.tabs = sideTabFixture.none;
+      await render(panel());
+      expect(sideTab()).toBeNull();
+      expect(tabIds()).toEqual(["properties"]);
+      expect(container.querySelector('[role="tab"][aria-selected="true"]')?.id).toBe("side-panel-tab-properties");
+      expect(container.textContent).toContain("Properties content");
+    });
+
+    it("keeps a closed tab closed until the plugin hides and shows it again; the launcher reopens it", async () => {
+      sideTabFixture.tabs = [sideTabSlot];
+      await render(panel());
+      await act(async () => container.querySelector<HTMLButtonElement>(`#side-panel-tab-${CSS.escape(sideTabId)}`)?.click());
+      const close = container.querySelector<HTMLButtonElement>('button[aria-label="Close Browser view"]');
+      expect(close).not.toBeNull();
+      await act(async () => close!.click());
+      await render(panel());
+      expect(sideTab()).toBeNull();
+      const item = await launcherItem("Browser view");
+      expect(item).not.toBeUndefined();
+      await act(async () => item!.click());
+      expect(container.textContent).toContain("Plugin viewer task-1");
+      await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Close Browser view"]')?.click());
+      sideTabFixture.tabs = sideTabFixture.none;
+      await render(panel());
+      sideTabFixture.tabs = [sideTabSlot];
+      await render(panel());
+      expect(sideTab()).not.toBeNull();
+    });
+
+    it("never restores a saved plugin tab; a saved active plugin tab falls back cleanly", async () => {
+      const properties = taskPanelPropertiesTab();
+      const saved = { id: sideTabId, type: "plugin-tab", label: "Browser view", closable: true, contentMode: "padded" as const, payload: { kind: "plugin-tab" as const, pluginKey: "example.cockpit", slotId: "browser" } };
+      writeTaskSidePanelState("user-1", "company-1", "task-1", {
+        state: { tabs: [properties, saved], activeTabId: sideTabId },
+        launcherOpen: false, userInteracted: true, autoPlanHandled: false, updatedAt: 1,
+      });
+      expect(readTaskSidePanelState("user-1", "company-1", "task-1", false)?.state).toEqual({ tabs: [properties], activeTabId: "properties" });
+      await render(panel());
+      expect(tabIds()).toEqual(["properties"]);
+      expect(container.textContent).toContain("Properties content");
+    });
+
+    it("lists the tab only in the launcher in the coordinator workspace", async () => {
+      coordinator.enabled = true;
+      sideTabFixture.tabs = [sideTabSlot];
+      await render(panel());
+      expect(sideTab()).toBeNull();
+      expect(await launcherItem("Browser view")).not.toBeUndefined();
+    });
   });
 
   it("offers idle plugin views in the launcher without opening them automatically", async () => {

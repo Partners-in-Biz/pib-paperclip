@@ -260,6 +260,13 @@ async function registerDataHandlers(ctx: PluginContext): Promise<void> {
     return await getConfig(ctx, companyId);
   });
 
+  // Visibility for the taskSidePanelTab slot; toggled by the "toggle-side-tab" action.
+  ctx.data.register("side-tab-visible", async (params) => {
+    const issueId = typeof params.issueId === "string" ? params.issueId : "";
+    if (!issueId) return { visible: false };
+    return { visible: await ctx.state.get({ scopeKind: "issue", scopeId: issueId, stateKey: "side-tab-visible" }) === true };
+  });
+
   ctx.data.register("overview", async (params) => {
     const companyId = typeof params.companyId === "string" ? params.companyId : "";
     const config = companyId ? await getConfig(ctx, companyId) : DEFAULT_CONFIG;
@@ -396,6 +403,15 @@ async function registerDataHandlers(ctx: PluginContext): Promise<void> {
 }
 
 async function registerActionHandlers(ctx: PluginContext): Promise<void> {
+  ctx.actions.register("toggle-side-tab", async (params) => {
+    const issueId = typeof params.issueId === "string" ? params.issueId : "";
+    if (!issueId) throw new Error("issueId is required");
+    const scope = { scopeKind: "issue" as const, scopeId: issueId, stateKey: "side-tab-visible" };
+    const visible = await ctx.state.get(scope) !== true;
+    await ctx.state.set(scope, visible);
+    return { visible };
+  });
+
   ctx.actions.register("emit-demo-event", async (params) => {
     const companyId = getCurrentCompanyId(params);
     const message = typeof params.message === "string" && params.message.trim().length > 0

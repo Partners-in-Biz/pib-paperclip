@@ -2379,7 +2379,28 @@ export function KitchenSinkIssueTab({ context }: PluginDetailTabProps) {
 }
 
 export function KitchenSinkTaskDetailView() {
-  return <CompactSurfaceSummary label="Task Detail View" entityType="issue" />;
+  const context = useHostContext();
+  const toggleSideTab = usePluginAction("toggle-side-tab");
+  return (
+    <div style={layoutStack}>
+      <CompactSurfaceSummary label="Task Detail View" entityType="issue" />
+      <button
+        type="button"
+        style={buttonStyle}
+        onClick={() => {
+          if (!context.entityId) return;
+          void toggleSideTab({ issueId: context.entityId }).catch(console.error);
+        }}
+      >
+        Show or hide the side-panel tab
+      </button>
+    </div>
+  );
+}
+
+/** Listed in the task side panel only while "side-tab-visible" answers true (up to 10 seconds after a toggle). */
+export function KitchenSinkTaskSidePanelTab() {
+  return <CompactSurfaceSummary label="Task Side Panel Tab" entityType="issue" />;
 }
 
 export function KitchenSinkToolbarButton() {

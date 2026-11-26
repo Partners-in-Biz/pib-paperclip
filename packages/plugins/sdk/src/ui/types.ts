@@ -300,6 +300,17 @@ export interface PluginDetailTabProps {
   };
 }
 
+/**
+ * Props passed to a plugin `taskSidePanelTab` component, a tab in the task
+ * side panel. `entityType` is always `"issue"` and `entityId` the task ID.
+ */
+export interface PluginTaskSidePanelTabProps {
+  context: PluginHostContext & {
+    entityId: string;
+    entityType: "issue";
+  };
+}
+
 /** A single installed contribution replaces the organization menu. The host
  * reserves the trigger while loading and uses its built-in menu when absent,
  * ambiguous, or on render failure.
