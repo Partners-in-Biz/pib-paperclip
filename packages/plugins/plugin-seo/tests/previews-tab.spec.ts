@@ -71,7 +71,7 @@ describe("client redirect keeps the page's query (PAR-14506)", async () => {
 });
 
 describe("errorText (PAR-14691)", async () => {
-  const { errorText } = await import("../src/ui/words.js");
+  const { errorText } = await import("@partnersinbiz/pib-plugin-ui");
   it("reads a message from an Error, a plain bridge object or a string", () => {
     expect(errorText(new Error("boom"))).toBe("boom");
     expect(errorText({ code: "x", message: "This sprint is archived." })).toBe("This sprint is archived.");

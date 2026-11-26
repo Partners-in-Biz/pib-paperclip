@@ -12,7 +12,7 @@ import { PREVIEW_LIVE_SQL } from "../constants.js";
 import * as db from "../db.js";
 import { t } from "../db.js";
 import { companyInfo, errorMessage, oneOf, reqStr, SeoError, str, type Actor, type Env, type Params } from "./common.js";
-import { assertWritable, loadSprintContext } from "./context.js";
+import { loadSprintContext } from "./context.js";
 import { commentOn } from "./issues.js";
 import { quoted, recheckTaskAnswers } from "./client-signoff.js";
 import { syncApplyWindow } from "./signoff.js";

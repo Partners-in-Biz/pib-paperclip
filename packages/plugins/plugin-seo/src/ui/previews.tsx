@@ -4,10 +4,10 @@
  * confirm-preview-approval; those handlers read who you are from the signed-in session and refuse anyone else.
  */
 import { useState } from "react";
-import { Button, EmptyState, Eye, Modal, Pill, SectionCard, TextArea, breakAnywhere, tokens, useIsNarrow } from "@partnersinbiz/pib-plugin-ui";
+import { Button, EmptyState, Eye, Modal, Pill, SectionCard, TextArea, breakAnywhere, errorText, tokens, useIsNarrow } from "@partnersinbiz/pib-plugin-ui";
 import { Banner, IssueLink, shortUrl } from "./parts.js";
 import type { PreviewItem, PreviewFilter, SprintBundle } from "./types.js";
-import { PREVIEW_FILTER_LABEL, errorText, awaitingCount, previewsFor, PREVIEW_FILTERS, previewDaysLeft, previewDecider, previewExpiryTone, previewStatus } from "./words.js";
+import { PREVIEW_FILTER_LABEL, awaitingCount, previewsFor, PREVIEW_FILTERS, previewDaysLeft, previewDecider, previewExpiryTone, previewStatus } from "./words.js";
 import { useSeoCall } from "./actions.js";
 
 export { awaitingCount, previewsFor };
