@@ -516,3 +516,46 @@ test('driver-playwright on a live page (2026-11-12)', async (t) => {
     assert.ok(timeouts.every((x) => x >= 1 && x <= 600), JSON.stringify(timeouts));
   });
 });
+
+test('driver-playwright click/fill timeouts (PAR-14819)', async (t) => {
+  const { actionTimeoutMs, waitReasonOf } = require('../src/driver-playwright.cjs');
+  const make = (page, env = {}) => {
+    const fakeContext = { pages: () => [page], route: async () => {}, on: () => {}, close: async () => {} };
+    const fakePw = { chromium: { launchPersistentContext: async () => fakeContext } };
+    return createPlaywrightBrowser({ playwright: fakePw, profileRoot: '/tmp', env })
+      .newContext({ origins: ['https://example.com'], guard: () => true });
+  };
+  const timeoutErr = () => {
+    const e = new Error('locator.click: Timeout 15000ms exceeded.\nCall log:\n  - waiting for locator(\'#x\')\n  - locator resolved to <button id="x">Send</button>\n  - attempting click action\n  - waiting for element to be visible, enabled and stable\n  - element is not stable\n  - retrying click action');
+    e.name = 'TimeoutError';
+    return e;
+  };
+
+  await t.test('actionTimeoutMs: default 15 s, bad values default, 0 never means no timeout, most is 60 s', () => {
+    for (const [raw, want] of [[undefined, 15000], ['', 15000], ['0', 15000], ['-5', 15000], ['abc', 15000], ['2500', 2500], ['999999', 60000]]) {
+      assert.equal(actionTimeoutMs({ PIB_BROWSER_ACTION_TIMEOUT_MS: raw }), want, JSON.stringify(raw));
+    }
+  });
+
+  await t.test('waitReasonOf returns the last wait line from the call log', () => {
+    assert.equal(waitReasonOf(timeoutErr()), 'retrying click action');
+    assert.equal(waitReasonOf(new Error('Timeout 5ms exceeded.')), '');
+  });
+
+  await t.test('click passes the bounded timeout and no force by default; force only when asked', async () => {
+    const seen = [];
+    const ctx = make({ url: () => 'https://example.com', on: () => {}, mainFrame: () => ({}),
+      locator: () => ({ click: async (o) => { seen.push(o); }, fill: async (v, o) => { seen.push(o); } }) },
+      { PIB_BROWSER_ACTION_TIMEOUT_MS: '4000' });
+    await ctx.click('#x');
+    await ctx.click('#x', undefined, { force: true });
+    await ctx.fill('#x', 'v', { force: true });
+    assert.deepEqual(seen, [{ timeout: 4000 }, { timeout: 4000, force: true }, { timeout: 4000, force: true }]);
+  });
+
+  await t.test('a click timeout keeps the Playwright wait reason on the error', async () => {
+    const ctx = make({ url: () => 'https://example.com', on: () => {}, mainFrame: () => ({}),
+      locator: () => ({ click: async () => { throw timeoutErr(); } }) });
+    await assert.rejects(() => ctx.click('#x'), (e) => e.waitReason === 'retrying click action');
+  });
+});

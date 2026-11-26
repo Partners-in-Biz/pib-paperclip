@@ -82,6 +82,8 @@ function parseArgs(argv) {
     }
     if (arg === '--json') {
       args.json = true;
+    } else if (arg === '--force') {
+      args.force = true;
     } else if (arg === '--all') {
       args.all = true;
     } else if (arg === '--identities') {
@@ -150,6 +152,8 @@ Options:
   --value VAL          Value to fill (fill) or option label/value (select)
   --expect TEXT        Text to expect before screenshot
   --redact-region X,Y,W,H  Region to redact in screenshot
+  --force               click/fill: skip Playwright's stable/not-covered checks. Approved steps only:
+                        needs --approval PAR-N
   --approval PAR-N      Approval identifier
   --step NAME          Step name for screenshot
   --all                Check all identities (for probe)
@@ -333,6 +337,7 @@ async function run(argv, env, deps = {}) {
     args.selector = parsed.selector;
     if (parsed.text) args.text = parsed.text;
     if (parsed.approval) args.approval = parsed.approval;
+    if (parsed.force) args.force = true;
   } else if (cmd === 'drag') {
     if (!parsed.from || !parsed.to) {
       stderr.write('Error: --from and --to are required for drag\n');
@@ -348,6 +353,8 @@ async function run(argv, env, deps = {}) {
     }
     args.selector = parsed.selector;
     args.value = parsed.value;
+    if (parsed.approval) args.approval = parsed.approval;
+    if (parsed.force) args.force = true;
   } else if (cmd === 'select') {
     if (!parsed.selector || !parsed.value) {
       stderr.write('Error: --selector and --value are required for select\n');

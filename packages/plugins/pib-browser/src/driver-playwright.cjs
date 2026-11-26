@@ -16,6 +16,47 @@ function settleMs(env = {}) {
   return Math.min(Math.floor(n), MAX_SETTLE_MS);
 }
 
+// Bound for one click or fill (PIB_BROWSER_ACTION_TIMEOUT_MS). Playwright's own default is 30 s and the old
+// daemon waited 60 s. Playwright reads `timeout: 0` as "no timeout", so 0, empty, negative and non-numeric
+// values give the default; the most is 60 s.
+const DEFAULT_ACTION_MS = 15000;
+const MAX_ACTION_MS = 60000;
+function actionTimeoutMs(env = {}) {
+  const raw = env.PIB_BROWSER_ACTION_TIMEOUT_MS;
+  if (raw === undefined || raw === null || String(raw).trim() === '') return DEFAULT_ACTION_MS;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 1) return DEFAULT_ACTION_MS;
+  return Math.min(Math.floor(n), MAX_ACTION_MS);
+}
+
+// The last "waiting for..." / status line of Playwright's call log: it says why an action could not run
+// (element is not stable, <div> intercepts pointer events, element is not visible...). Selector text and
+// page markup are dropped; the dispatcher also scrubs it.
+function waitReasonOf(e) {
+  const msg = String(e?.message || '');
+  const i = msg.indexOf('Call log:');
+  if (i === -1) return '';
+  const lines = msg.slice(i).split('\n').slice(1)
+    .map((l) => l.replace(/^\s*-\s*/, '').trim())
+    .filter(Boolean);
+  const waiting = lines.filter((l) => /^(waiting for|element |attempting|retrying|.*intercepts pointer events|.*not (stable|visible|enabled|editable))/i.test(l));
+  const last = (waiting.length ? waiting : lines).slice(-1)[0] || '';
+  return last.replace(/\s+/g, ' ').slice(0, 200);
+}
+
+// Run one action with the bounded timeout; a timeout carries the reason on the error.
+async function bounded(fn) {
+  try {
+    return await fn();
+  } catch (e) {
+    if (e && !isClosedTargetError(e) && (e.name === 'TimeoutError' || /Timeout \d+ms exceeded/i.test(String(e.message || '')))) {
+      const reason = waitReasonOf(e);
+      if (reason) e.waitReason = reason;
+    }
+    throw e;
+  }
+}
+
 // A dead page, context or browser. Never swallow it: the dispatcher sorts it into `browser_closed` and drops the session.
 function isClosedTargetError(e) {
   return e?.name === 'TargetClosedError'
@@ -180,13 +221,13 @@ function createPlaywrightBrowser({ playwright, env = {}, profileRoot } = {}) {
           await page.locator(from).dragTo(page.locator(to));
         },
 
-        click: async (selector, text) => {
+        click: async (selector, text, opts = {}) => {
           await ensureInitialized();
           let locator = page.locator(selector);
           if (text) {
             locator = locator.filter({ hasText: text });
           }
-          await locator.click();
+          await bounded(() => locator.click({ timeout: actionTimeoutMs(env), ...(opts.force ? { force: true } : {}) }));
         },
 
         // Short read of the click target's label for the destructive-word check.
@@ -220,9 +261,9 @@ function createPlaywrightBrowser({ playwright, env = {}, profileRoot } = {}) {
           }
         },
 
-        fill: async (selector, value) => {
+        fill: async (selector, value, opts = {}) => {
           await ensureInitialized();
-          await page.locator(selector).fill(value);
+          await bounded(() => page.locator(selector).fill(value, { timeout: actionTimeoutMs(env), ...(opts.force ? { force: true } : {}) }));
         },
 
         text: async (selector) => {
@@ -311,4 +352,4 @@ function createPlaywrightBrowser({ playwright, env = {}, profileRoot } = {}) {
   };
 }
 
-module.exports = { createPlaywrightBrowser, settleMs, isClosedTargetError };
+module.exports = { createPlaywrightBrowser, settleMs, actionTimeoutMs, waitReasonOf, isClosedTargetError };

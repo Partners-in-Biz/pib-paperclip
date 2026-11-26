@@ -64,6 +64,7 @@ A person takes the keyboard and mouse for one identity through the same socket. 
 
 ## Sessions, write clicks and errors
 
+- `click` and `fill` accept `--force` (skips Playwright's stable / not-covered checks, for a live board that keeps re-rendering). **Approved steps only:** it needs `--approval PAR-N`, which is verified; without it the result is exit 8 `force_needs_approval` and nothing is done. Use it only after a `timeout: ...` reason shows instability, never as a default.
 - A session opened with `open` stays open until `close`, an origin-wall or policy refusal (exit 7), or a dead browser (`browser_closed`). A missing or ambiguous click target, a slow page or a write click without approval leaves it open.
 - `click` needs `--approval` when the selector, the `--text` filter or the target element's own label (aria-label, title, value or visible text) contains a word from the site's `destructive.text` list (for Paperclip: save, create, assign, close and so on). `button:has-text(Save)` without `--approval` returns exit 8 `needs_approval` and nothing is clicked.
 - Error reasons name the cause: `browser_launch_failed`, `browser_closed` (exit 3); `timeout`, `target_ambiguous` (exit 4); anything else is `internal: <ErrorName>`.
@@ -93,6 +94,7 @@ The daemon reads the following environment variables at startup:
 | `PIB_BROWSER_ERROR_LOG` | `/run/pib-browser/errors.log` | Agent-readable error log (JSON lines, no secrets or page content) |
 | `PIB_BROWSER_CHROMIUM` | (unset) | Explicit path to Chromium executable |
 | `PIB_BROWSER_HEADLESS` | `0` | `0` for headed (default), `1` for headless |
+| `PIB_BROWSER_ACTION_TIMEOUT_MS` | `15000` | Bound for one `click` or `fill` (1 to 60000). A timeout returns `timeout: <Playwright's last wait line>` (for example `element is not stable`) and leaves the session open. |
 | `PIB_BROWSER_FAKE_MIC` | unset | `1` launches Chromium with a fake microphone (beep tone, not speech) and grants mic permission. For voice/Talk checks. |
 | `PIB_BROWSER_MOBILE` | unset | `1` uses a 390x844 touch viewport with an iPhone user agent. |
 | `DISPLAY` | `:99` | X server display for headed mode (typically set by systemd service to `:99` via Xvfb) |

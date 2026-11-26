@@ -347,3 +347,30 @@ test('while a release check runs, agents are still refused', async () => {
   await check;
   assert.equal((await dispatch({ cmd: 'open', token: 'valid', issue: 'PAR-1', identity: 'client:ca:meta' })).exit, EXIT.DONE);
 });
+
+test('click timeout names the wait reason and keeps the session (PAR-14819)', async () => {
+  const browser = createFakeBrowser({ 'https://business.facebook.com/latest/home': { text: 'Home Dashboard' } });
+  const orig = browser.newContext;
+  browser.newContext = (o) => {
+    const ctx = orig(o);
+    ctx.click = async () => { const e = new Error('Timeout 15000ms exceeded.'); e.name = 'TimeoutError'; e.waitReason = 'element is not stable'; throw e; };
+    return ctx;
+  };
+  const { dispatch } = h({ browser });
+  await dispatch({ cmd: 'open', token: 'valid', issue: 'PAR-1234', identity: 'client:ca:meta' });
+  const r = await dispatch({ cmd: 'click', token: 'valid', issue: 'PAR-1234', identity: 'client:ca:meta', args: { selector: '#send' } });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'timeout: element is not stable');
+  const again = await dispatch({ cmd: 'text', token: 'valid', issue: 'PAR-1234', identity: 'client:ca:meta', args: { selector: 'body' } });
+  assert.notEqual(again.reason, 'no_session');
+});
+
+test('--force without an approval is refused and nothing is done (PAR-14819)', async () => {
+  const { dispatch } = h();
+  await dispatch({ cmd: 'open', token: 'valid', issue: 'PAR-1234', identity: 'client:ca:meta' });
+  for (const [cmd, args] of [['click', { selector: '#send', force: true }], ['fill', { selector: '#f', value: 'v', force: true }]]) {
+    const r = await dispatch({ cmd, token: 'valid', issue: 'PAR-1234', identity: 'client:ca:meta', args });
+    assert.equal(r.exit, EXIT.NEEDS_APPROVAL, cmd);
+    assert.equal(r.reason, 'force_needs_approval', cmd);
+  }
+});
