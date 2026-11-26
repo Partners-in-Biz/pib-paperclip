@@ -132,6 +132,7 @@ import {
   createIssueDetailPath,
   readIssueDetailLocationState,
   readIssueDetailBreadcrumb,
+  resolveIssueBackHref,
   readIssueDetailHeaderSeed,
   withIssueDetailHeaderSeed,
   rememberIssueDetailLocationState,
@@ -202,7 +203,6 @@ import {
   formatTokens,
   visibleRunCostUsd,
   visibleRunTokenTotal,
-  projectUrl,
 } from "../lib/utils";
 import { liveBlueBadge } from "../lib/status-colors";
 import { ApprovalCard } from "../components/ApprovalCard";
@@ -4236,14 +4236,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     [comments, optimisticComments],
   );
   const breadcrumbTitle = issue?.title ?? issueHeaderSeed?.title ?? "";
-  // Back fallback when there is no history: parent issue, then project, then the source list.
-  const breadcrumbParent = issue?.ancestors?.[0];
-  const breadcrumbBackHref =
-    breadcrumbParent && !isLockedIssueStub(breadcrumbParent)
-      ? createIssueDetailPath(breadcrumbParent.identifier ?? breadcrumbParent.id)
-      : issue?.project
-        ? projectUrl(issue.project)
-        : sourceBreadcrumb.href;
+  const breadcrumbBackHref = resolveIssueBackHref(issue, sourceBreadcrumb.href);
   const breadcrumbIdentifier =
     issue?.identifier ?? issueHeaderSeed?.identifier ?? (issueId && /^[a-z0-9]+-\d+$/i.test(issueId) ? issueId : undefined);
   const breadcrumbStatus = issue?.status ?? issueHeaderSeed?.status;

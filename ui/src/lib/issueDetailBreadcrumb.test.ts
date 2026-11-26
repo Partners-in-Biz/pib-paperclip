@@ -7,6 +7,7 @@ import {
   readIssueDetailHeaderSeed,
   readIssueDetailLocationState,
   readIssueDetailBreadcrumb,
+  resolveIssueBackHref,
   rememberIssueDetailLocationState,
   shouldArmIssueDetailInboxQuickArchive,
   withIssueDetailHeaderSeed,
@@ -216,5 +217,23 @@ describe("issueDetailBreadcrumb", () => {
 
     expect(shouldArmIssueDetailInboxQuickArchive(state)).toBe(false);
     expect(shouldArmIssueDetailInboxQuickArchive(armIssueDetailInboxQuickArchive(state))).toBe(true);
+  });
+});
+
+describe("resolveIssueBackHref", () => {
+  const project = { id: "p1", urlKey: "alpha", name: "Alpha" };
+  it("prefers the immediate parent issue", () => {
+    expect(resolveIssueBackHref({ ancestors: [{ id: "i1", identifier: "PAR-1" }, { id: "i0", identifier: "PAR-0" }], project }, "/issues"))
+      .toBe(createIssueDetailPath("PAR-1"));
+  });
+  it("falls back to the project without a parent", () => {
+    expect(resolveIssueBackHref({ ancestors: [], project }, "/issues")).toBe("/projects/alpha");
+  });
+  it("falls back to the source list with neither", () => {
+    expect(resolveIssueBackHref({ ancestors: [], project: null }, "/issues")).toBe("/issues");
+    expect(resolveIssueBackHref(null, "/issues")).toBe("/issues");
+  });
+  it("skips a locked parent stub", () => {
+    expect(resolveIssueBackHref({ ancestors: [{ id: "i1", locked: true }], project }, "/issues")).toBe("/projects/alpha");
   });
 });

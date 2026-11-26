@@ -1,4 +1,5 @@
 import type { Issue } from "@paperclipai/shared";
+import { projectUrl } from "./utils";
 import { TASK_VIEW_PARAM, normalizeTaskViewKey, taskView } from "./task-views";
 
 type IssueDetailSource = "issues" | "inbox";
@@ -285,4 +286,21 @@ export function readIssueDetailBreadcrumb(
 export function shouldArmIssueDetailInboxQuickArchive(state: unknown): boolean {
   if (typeof state !== "object" || state === null) return false;
   return (state as IssueDetailLocationState).issueDetailInboxQuickArchiveArmed === true;
+}
+
+/**
+ * Back target when there is no in-app history: immediate parent issue, then the
+ * project, then the source list. Locked parent stubs are skipped.
+ */
+export function resolveIssueBackHref(
+  issue: {
+    ancestors?: Array<{ identifier?: string | null; id: string; locked?: boolean }> | null;
+    project?: { id: string; urlKey?: string | null; name?: string | null } | null;
+  } | null | undefined,
+  sourceHref: string,
+): string {
+  const parent = issue?.ancestors?.[0];
+  if (parent && parent.locked !== true) return createIssueDetailPath(parent.identifier ?? parent.id);
+  if (issue?.project) return projectUrl(issue.project);
+  return sourceHref;
 }
