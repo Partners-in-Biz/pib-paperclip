@@ -7,7 +7,7 @@ import { ApiError } from "@/api/client";
 import type { CanvasController } from "@/components/planning-canvas/state/useCanvasController";
 
 const sendChat = vi.fn();
-vi.mock("@/api/planningCanvases", () => ({ planningCanvasesApi: { sendChat: (...a: unknown[]) => sendChat(...a) } }));
+vi.mock("@/api/planningCanvases", () => ({ planningCanvasesApi: { sendChat: (...a: unknown[]) => sendChat(...a), readActions: async () => ({ actions: [{ tool: "t", name: "T", description: null, application: null }] }) } }));
 vi.mock("@/api/issues", () => ({ issuesApi: { list: vi.fn(async () => []), listComments: vi.fn(async () => []) } }));
 vi.mock("@/api/heartbeats", () => ({ heartbeatsApi: { liveRunsForIssue: vi.fn(async () => []) } }));
 vi.mock("@/components/planning-canvas/panels/sharing/useSessionUserId", () => ({ useSessionUserId: () => "u1" }));
@@ -70,6 +70,27 @@ describe("ChatPanel", () => {
     await mount("view");
     expect(container.querySelector("textarea")).toBeNull();
     expect(container.querySelector('[data-testid="canvas-chat-readonly"]')).not.toBeNull();
+  });
+
+  it("shows the connector picker to editors with an agent picked, not to viewers", async () => {
+    await mount("edit");
+    expect(container.querySelector('[data-testid="canvas-connector-picker"]')).toBeNull();
+    await pickAndType("");
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    expect(container.querySelector('[data-testid="canvas-connector-picker"]')).not.toBeNull();
+    act(() => root.unmount());
+    root = createRoot(container);
+    await mount("view");
+    expect(container.querySelector('[data-testid="canvas-connector-picker"]')).toBeNull();
+  });
+
+  it("hides the connector picker once chat is switched off", async () => {
+    sendChat.mockRejectedValue(new ApiError("off", 403, {}, { code: "canvas_chat_disabled" }));
+    await mount("edit");
+    await pickAndType("hello");
+    expect(container.querySelector('[data-testid="canvas-connector-picker"]')).not.toBeNull();
+    await act(async () => { sendButton().click(); });
+    expect(container.querySelector('[data-testid="canvas-connector-picker"]')).toBeNull();
   });
 
   it("comment access is read-only too", async () => {

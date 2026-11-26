@@ -16,6 +16,7 @@ import {
   setCell,
 } from "@/components/planning-canvas/nodes/table-edit";
 import { RefCard } from "@/components/planning-canvas/nodes/RefCard";
+import { SourceBadge } from "@/components/planning-canvas/nodes/SourceBadge";
 
 const stop = (e: { stopPropagation: () => void }) => e.stopPropagation();
 const INPUT = "w-full min-w-0 bg-transparent px-1.5 py-1 text-xs text-foreground outline-none focus:bg-accent/40";
@@ -93,6 +94,7 @@ export const TableNode = memo(function TableNode({ nodeKey, data, title }: { nod
           </tbody>
         </table>
       </div>
+      {data.source ? <SourceBadge nodeKey={nodeKey} source={data.source} /> : null}
       <div className="flex items-center gap-1 pt-1" onPointerDown={stop}>
         <Button type="button" size="xs" variant="ghost" disabled={!canAddRow(data)} onClick={() => edit(addRow(data))}>
           <Plus className="size-3" /> Row
