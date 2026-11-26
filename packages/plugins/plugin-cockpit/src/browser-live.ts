@@ -113,6 +113,21 @@ export async function browserLiveFor(env: Env, context: PluginPerformActionConte
   }
 }
 
+/** The daemon's identity rule (pib-browser policy.cjs parseIdentity); anything else is refused, never stored. */
+const IDENTITY_PART = /^[a-z0-9][a-z0-9-]{0,40}$/i;
+export function isBrowserIdentity(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  const p = value.split(":");
+  if (p[0] === "pib") return p.length === 2 && IDENTITY_PART.test(p[1]!);
+  if (p[0] === "client") return p.length === 3 && IDENTITY_PART.test(p[1]!) && IDENTITY_PART.test(p[2]!);
+  return p[0] === "canary" && p.length === 2 && p[1] === "wp";
+}
+function parseTicketIdentity(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  if (!isBrowserIdentity(value)) throw new CockpitError("identity is not valid");
+  return value;
+}
+
 export interface BrowserLiveTicket {
   ticket: string;
   mode: BrowserLiveMode;
@@ -124,6 +139,7 @@ export async function issueBrowserLiveTicket(env: Env, params: Record<string, un
   const who = await checkPerson(env, companyId, context.actor.type, context.actor.userId);
   if (!who.ok) throw new CockpitError(who.reason);
   if (params.mode !== "view") throw new CockpitError("mode must be view");
+  const identity = parseTicketIdentity(params.identity);
   // After the person check, so only an owner or admin learns how the setting stands.
   if (!modeAllowed(await readBrowserLiveSetting(env, companyId!), "view")) throw new CockpitError("Watch live is turned off in the Cockpit settings");
   const now = env.now().getTime();
@@ -131,7 +147,7 @@ export async function issueBrowserLiveTicket(env: Env, params: Record<string, un
   prune(store, now);
   const ticket = randomBytes(32).toString("base64url");
   const expiresAt = now + TICKET_TTL_MS;
-  store.set(hashTicket(ticket), { userId: who.userId, companyId: companyId!, mode: "view", identity: null, expiresAt });
+  store.set(hashTicket(ticket), { userId: who.userId, companyId: companyId!, mode: "view", identity, expiresAt });
   return { ticket, mode: "view", expiresAt: new Date(expiresAt).toISOString() };
 }
 
@@ -191,7 +207,52 @@ export async function loadBrowserLiveStatus(env: Env, context: PluginPerformActi
   }
 }
 
+export interface LiveSession {
+  agentId: string;
+  identity: string;
+  issue: string | null;
+}
+
+/** An agent session with no command for this long is treated as ended (the daemon has no idle timer of its own). */
+export const LIVE_SESSION_STALE_MS = 90_000;
+/** Many tabs poll this; the daemon is asked at most once per window. */
+export const LIVE_SESSIONS_CACHE_MS = 3_000;
+const SESSIONS_CACHE = new WeakMap<object, { at: number; read: Promise<unknown[]> }>();
+
+/**
+ * Who has a live browser session in this company right now. A person who may not watch, a setting of `off`, a daemon
+ * that is down or sends something unreadable all answer `{ sessions: [] }`: the chip simply hides. The answer holds
+ * agent, identity and issue only; no ticket, path or screen content, and nothing is logged.
+ */
+export async function loadBrowserLiveSessions(env: Env, context: PluginPerformActionContext, readStatus = readBrowserDaemonStatus): Promise<{ sessions: LiveSession[] }> {
+  const none = { sessions: [] as LiveSession[] };
+  try {
+    if ((await browserLiveFor(env, context)) === "off") return none;
+    const now = env.now().getTime();
+    let cached = SESSIONS_CACHE.get(env.ctx);
+    if (!cached || now - cached.at >= LIVE_SESSIONS_CACHE_MS) {
+      const read = readStatus().then((status) => (Array.isArray(status.sessions) ? (status.sessions as unknown[]) : []));
+      cached = { at: now, read };
+      SESSIONS_CACHE.set(env.ctx, cached);
+      read.catch(() => { if (SESSIONS_CACHE.get(env.ctx) === cached) SESSIONS_CACHE.delete(env.ctx); });
+    }
+    const rows = await cached.read;
+    const sessions: LiveSession[] = [];
+    for (const row of rows) {
+      if (!row || typeof row !== "object") continue;
+      const r = row as Record<string, unknown>;
+      if (r.companyId !== context.companyId || typeof r.agentId !== "string" || !isBrowserIdentity(r.identity)) continue;
+      if (typeof r.lastActiveAt !== "number" || now - r.lastActiveAt > LIVE_SESSION_STALE_MS) continue;
+      sessions.push({ agentId: r.agentId, identity: r.identity, issue: typeof r.issue === "string" && r.issue.length <= 40 ? r.issue : null });
+    }
+    return { sessions };
+  } catch {
+    return none;
+  }
+}
+
 export function registerBrowserLive(env: Env, guard: AccessGuard): void {
   guard.action("browser.live.ticket", async (params, context) => issueBrowserLiveTicket(env, params, context));
+  guard.action("browser.live.sessions", async (_params, context) => loadBrowserLiveSessions(env, context));
   guard.action("browser.live.status", async (_params, context) => loadBrowserLiveStatus(env, context));
 }

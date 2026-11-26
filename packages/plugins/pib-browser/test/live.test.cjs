@@ -219,7 +219,7 @@ test('GET /status: viewers and agent sessions, lease and waiting list empty', as
     }).on('error', reject);
   });
   assert.equal(body.status, 200);
-  assert.deepEqual(body.json, { viewers: 1, agentSessions: ['client:ca:example'], lease: null, waiting: [] });
+  assert.deepEqual(body.json, { viewers: 1, agentSessions: ['client:ca:example'], sessions: [], lease: null, waiting: [] });
   c.ws.close();
 });
 

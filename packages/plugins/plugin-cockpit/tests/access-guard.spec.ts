@@ -78,7 +78,7 @@ describe("Cockpit access guard (PAR-12700, PAR-12701)", () => {
         expect(nav, slot.exportName).toMatch(new RegExp(`export function ${slot.exportName}\\b`));
         continue;
       }
-      const kind = slot.type === "sidebar" ? "sidebar" : slot.type === "dashboardWidget" ? "widget" : "page";
+      const kind = slot.type === "sidebar" ? "sidebar" : slot.type === "dashboardWidget" || slot.type === "toolbarButton" ? "widget" : "page";
       // `export const X = withHelp(Y)` gates in Y; otherwise X itself is the gate.
       const inner = new RegExp(`export const ${slot.exportName} = withHelp\\((\\w+)\\)`).exec(index)?.[1] ?? slot.exportName;
       const gate = new RegExp(`function ${inner}\\(props: \\w+\\) \\{\\n  const access = useAccess\\(useAccessMe\\(\\), props\\.context\\.companyId\\);\\n  return \\(\\n    <AccessGate state=\\{access\\} kind="${kind}"`);

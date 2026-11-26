@@ -44,7 +44,7 @@ export const COCKPIT_ACCESS_TABLE: AccessTable = Object.freeze({
   // Only the owner confirms, sets the standing policy and posts the owner's digest (the handlers check it too).
   ...rows(ADMIN_ONLY, ["cockpit.attest", "goals.confirm", "ownerDefaults.save", "ownerDigest.post"]),
   // Watch live (PAR-14514 S3): owner or admin of the owner company, a signed-in person only (the handlers refuse agents too).
-  ...rows(ADMIN_ONLY, ["browser.live.ticket", "browser.live.status"]),
+  ...rows(ADMIN_ONLY, ["browser.live.ticket", "browser.live.status", "browser.live.sessions"]),
   ...rows(OWN_DEVICES, ["cockpit.push.publicKey", "cockpit.push.subscribe", "cockpit.push.devices", "cockpit.push.mute", "cockpit.push.unsubscribe", "cockpit.push.test"]),
   ...rows(paper("view"), ["paper.load", "paper.month"]),
   ...rows(paper("edit"), ["paper.save", "paper.reset"]),

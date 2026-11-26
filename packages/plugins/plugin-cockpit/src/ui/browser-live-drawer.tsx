@@ -8,7 +8,7 @@
  * Errors are shown. The ticket is never logged and is dropped from state as soon as the socket is opened.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Button, Pill, Sheet, errorText, tokens } from "@partnersinbiz/pib-plugin-ui";
+import { Button, Modal, Pill, Sheet, errorText, tokens } from "@partnersinbiz/pib-plugin-ui";
 import { PLUGIN_KEY } from "../constants.js";
 import { useCockpitAction } from "./actions.js";
 
@@ -37,7 +37,7 @@ export function liveSocketUrl(origin: { protocol: string; host: string }, compan
 
 const LABELS: Record<LiveState, string> = { connecting: "Connecting…", live: "Live, view only", reconnecting: "Reconnecting…", error: "Not connected" };
 
-function useWatchLive(companyId: string, open: boolean) {
+function useWatchLive(companyId: string, open: boolean, expanded: boolean, identity?: string | null) {
   const getTicket = useCockpitAction("browser.live.ticket");
   const screen = useRef<HTMLDivElement | null>(null);
   const [state, setState] = useState<LiveState>("connecting");
@@ -62,7 +62,7 @@ function useWatchLive(companyId: string, open: boolean) {
     const connect = async () => {
       if (stopped || !screen.current) return;
       try {
-        const [{ default: RFB }, ticket] = await Promise.all([import("@novnc/novnc"), ticketAction.current({ mode: "view" }) as Promise<{ ticket: string }>]);
+        const [{ default: RFB }, ticket] = await Promise.all([import("@novnc/novnc"), ticketAction.current({ mode: "view", ...(identity ? { identity } : {}) }) as Promise<{ ticket: string }>]);
         if (stopped || !screen.current) return;
         const connection = new RFB(screen.current, liveSocketUrl(window.location, companyId, ticket.ticket), {});
         connection.viewOnly = true;
@@ -104,30 +104,40 @@ function useWatchLive(companyId: string, open: boolean) {
       if (timer) clearTimeout(timer);
       rfb?.disconnect();
     };
-  }, [open, companyId, attempt]);
+  // `expanded` swaps the container (sheet or modal), so the screen box is a new element and must connect again.
+  }, [open, companyId, attempt, expanded, identity]);
 
   return { screen, state, error, retry: useCallback(() => setAttempt((n) => n + 1), []) };
 }
 
-export function BrowserLiveDrawer({ open, companyId, onClose }: { open: boolean; companyId: string; onClose: () => void }) {
-  const { screen, state, error, retry } = useWatchLive(companyId, open);
-  return (
-    <Sheet open={open} title="Watch live" onClose={onClose}>
-      <div style={{ display: "grid", gap: 12, minWidth: 0 }}>
-        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", minWidth: 0 }}>
-          <Pill tone={state === "live" ? "ok" : state === "error" ? "bad" : "warn"} dot>{LABELS[state]}</Pill>
-          <span style={{ fontSize: 12.5, color: tokens.muted, overflowWrap: "anywhere", minWidth: 0 }}>You can see the server browser. Typing and clicking do nothing.</span>
-        </div>
-        {error ? (
-          <div role="alert" style={{ padding: "8px 10px", borderRadius: 8, border: `1px solid ${tokens.tones.bad.border}`, background: tokens.tones.bad.soft, color: tokens.tones.bad.fg, fontSize: 13, overflowWrap: "anywhere", minWidth: 0 }}>{error}</div>
-        ) : null}
-        {/* noVNC fills this box; its canvas is scaled to fit and takes no keyboard or mouse input (viewOnly). */}
-        <div ref={screen} aria-label="Server browser screen" style={{ width: "100%", aspectRatio: "16 / 10", minWidth: 0, overflow: "hidden", borderRadius: 8, border: `1px solid ${tokens.border}`, background: tokens.secondary }} />
-        <div style={{ display: "flex", gap: 8, justifyContent: "space-between", flexWrap: "wrap" }}>
-          <Button type="button" variant="secondary" onClick={onClose}>Close</Button>
-          {state === "error" ? <Button type="button" onClick={retry}>Try again</Button> : null}
-        </div>
+/** The screen box keeps 16:10 and never grows past the viewport: wide as the panel allows, at most as tall as 90vh less the chrome. */
+const SCREEN_STYLE = { aspectRatio: "16 / 10", minWidth: 0, overflow: "hidden", borderRadius: 8, border: `1px solid ${tokens.border}`, background: tokens.secondary } as const;
+
+export function BrowserLiveDrawer({ open, companyId, onClose, defaultExpanded = false, identity = null }: { open: boolean; companyId: string; onClose: () => void; /** The login identity to watch (from the chip); the ticket carries it. */ identity?: string | null; /** Large from the start (take over). */ defaultExpanded?: boolean }) {
+  const [expanded, setExpanded] = useState(defaultExpanded);
+  useEffect(() => {
+    if (open) setExpanded(defaultExpanded);
+  }, [open, defaultExpanded]);
+  const { screen, state, error, retry } = useWatchLive(companyId, open, expanded, identity);
+  const body = (
+    <div style={{ display: "grid", gap: 12, minWidth: 0 }}>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", minWidth: 0 }}>
+        <Pill tone={state === "live" ? "ok" : state === "error" ? "bad" : "warn"} dot>{LABELS[state]}</Pill>
+        <span style={{ fontSize: 12.5, color: tokens.muted, overflowWrap: "anywhere", minWidth: 0, flex: "1 1 160px" }}>You can see the server browser. Typing and clicking do nothing.</span>
+        <Button type="button" variant="secondary" aria-pressed={expanded} onClick={() => setExpanded((v) => !v)}>{expanded ? "Shrink" : "Enlarge"}</Button>
       </div>
-    </Sheet>
+      {error ? (
+        <div role="alert" style={{ padding: "8px 10px", borderRadius: 8, border: `1px solid ${tokens.tones.bad.border}`, background: tokens.tones.bad.soft, color: tokens.tones.bad.fg, fontSize: 13, overflowWrap: "anywhere", minWidth: 0 }}>{error}</div>
+      ) : null}
+      {/* noVNC fills this box; its canvas is scaled to fit and takes no keyboard or mouse input (viewOnly). */}
+      <div ref={screen} aria-label="Server browser screen" style={expanded ? { ...SCREEN_STYLE, width: "min(100%, calc((90vh - 270px) * 1.6))", justifySelf: "center" } : { ...SCREEN_STYLE, width: "100%" }} />
+      <div style={{ display: "flex", gap: 8, justifyContent: "space-between", flexWrap: "wrap" }}>
+        <Button type="button" variant="secondary" onClick={onClose}>Close</Button>
+        {state === "error" ? <Button type="button" onClick={retry}>Try again</Button> : null}
+      </div>
+    </div>
   );
+  // Escape and a click outside shrink the large view first; a second Escape closes the drawer.
+  if (expanded) return <Modal open={open} title="Watch live" width={1400} onClose={() => setExpanded(false)}>{body}</Modal>;
+  return <Sheet open={open} title="Watch live" onClose={onClose}>{body}</Sheet>;
 }

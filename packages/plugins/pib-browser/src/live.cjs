@@ -218,6 +218,7 @@ function createLiveService(opts) {
     return {
       viewers: views.size,
       agentSessions: opts.agentIdentities ? opts.agentIdentities() : [],
+      sessions: opts.agentSessionsDetail ? opts.agentSessionsDetail() : [],
       lease: lease ? lease.status() : null,
       waiting: waitingList()
     };

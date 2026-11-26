@@ -225,18 +225,21 @@ function buildDaemon(env = process.env, deps = {}) {
   // Identities with an agent session open, for the live service's /status. Keys are `agentId|identity`.
   const agentIdentities = () => [...new Set([...sessions.keys()].map((k) => k.slice(k.indexOf('|') + 1)))].sort();
 
+  // Same sessions with who and what: `[{ agentId, identity, companyId, issue, lastActiveAt }]`, for /status `sessions`.
+  const agentSessionsDetail = () => [...sessions].map(([k, s]) => ({ agentId: k.slice(0, k.indexOf('|')), identity: k.slice(k.indexOf('|') + 1), companyId: s.companyId || null, issue: s.issue || null, lastActiveAt: s.lastActiveAt || null }));
+
   const takeover = { lease, waiting, open: (identity) => handoffs.start(identity), release };
 
-  return { config, dispatch, browser, policyResult, agentIdentities, takeover };
+  return { config, dispatch, browser, policyResult, agentIdentities, agentSessionsDetail, takeover };
 }
 
 // The live service (PAR-14514 S2) on its own socket. It never takes the agent
 // socket down with it: a failure here (even a missing `ws` package) leaves it off.
-async function startLive({ env, apiBase, agentIdentities, fetch, takeover }) {
+async function startLive({ env, apiBase, agentIdentities, agentSessionsDetail, fetch, takeover }) {
   try {
     const { loadLiveConfig, createLiveService } = require('./live.cjs');
     const config = loadLiveConfig(env);
-    const live = createLiveService({ config, apiBase, agentIdentities, fetch, takeover });
+    const live = createLiveService({ config, apiBase, agentIdentities, agentSessionsDetail, fetch, takeover });
     await listen(live.server, config.socketPath, config.socketMode);
     console.log(`Live service listening on ${config.socketPath}`);
     return live;
@@ -258,7 +261,7 @@ function closeLiveOnSignal(live) {
 
 async function main() {
   try {
-    const { config, dispatch, agentIdentities, takeover } = buildDaemon(process.env);
+    const { config, dispatch, agentIdentities, agentSessionsDetail, takeover } = buildDaemon(process.env);
     // A stray rejection from the browser driver must not take every open session
     // down with the process (PAR-9187). Record it where agents can read it.
     const { createErrorLog } = require('./errlog.cjs');
@@ -276,7 +279,7 @@ async function main() {
       console.error('Failed to start daemon:', err.message);
       process.exit(1);
     }
-    const live = await startLive({ env: process.env, apiBase: config.apiBase, agentIdentities, takeover });
+    const live = await startLive({ env: process.env, apiBase: config.apiBase, agentIdentities, agentSessionsDetail, takeover });
     if (live) closeLiveOnSignal(live);
   } catch (err) {
     console.error('Daemon error:', err.message);

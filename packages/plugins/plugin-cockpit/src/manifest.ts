@@ -470,6 +470,8 @@ const manifest: PaperclipPluginManifestV1 = {
       { type: "sidebar", id: "pib-nav-marketing", displayName: "Marketing", exportName: "MarketingNav", order: 7 },
       { type: "sidebar", id: "pib-nav-finance", displayName: "Finance", exportName: "FinanceNav", order: 8 },
       { type: "sidebar", id: "pib-nav-hosted", displayName: "Hosted clients", exportName: "HostedClientsNav", order: 9 },
+      // PAR-14752: Watch live chip on an issue (and an agent chat) while its agent has a live browser session; renders nothing otherwise.
+      { type: "toolbarButton", id: "cockpit-browser-live-chip", displayName: "Watch live", exportName: "BrowserLiveChip", entityTypes: ["issue"] },
       { type: "dashboardWidget", id: "cockpit-today", displayName: "Company today", exportName: "CompanyTodayWidget" },
     ],
   },
