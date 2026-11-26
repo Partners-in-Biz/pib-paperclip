@@ -28,6 +28,11 @@ const PLUGIN_KIND_ICONS: Record<string, typeof Bot> = {
   "card-post": MessageSquare,
 };
 
+function PluginTabIcon({ kind }: { kind: string }) {
+  const Icon = PLUGIN_KIND_ICONS[kind] ?? Layers;
+  return <Icon className="size-3.5" />;
+}
+
 type Row = { id: string; primary: string; secondary?: string | null; type?: string };
 
 /** One tab per installed entity kind that offers search (PAR-14389 C.3). */
@@ -189,10 +194,7 @@ export function InsertLinkPanel({ c }: { c: CanvasController }) {
               activeTabId === tab.id ? "bg-foreground text-background" : "text-muted-foreground hover:bg-accent hover:text-foreground",
             )}
           >
-            {(() => {
-              const PluginIcon = PLUGIN_KIND_ICONS[tab.kind] ?? Layers;
-              return <PluginIcon className="size-3.5" />;
-            })()}
+            <PluginTabIcon kind={tab.kind} />
           </button>
         ))}
       </div>

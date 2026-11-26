@@ -98,4 +98,21 @@ describe("InsertLinkPanel entity tabs", () => {
     expect(container.textContent).toContain("Nothing found.");
     expect(container.textContent).not.toContain("403");
   });
+
+  it("shows a plugin tab as an icon with the name on hover, not text", async () => {
+    await render();
+    const tab = container.querySelector('[role="tab"][aria-label="company"]');
+    expect(tab?.getAttribute("title")).toBe("company");
+    expect(tab?.querySelector("svg")).not.toBeNull();
+    expect(tab?.textContent).toBe("");
+  });
+
+  it("falls back to a generic icon for an unknown plugin kind", async () => {
+    slots = [slot("x", "some-new-kind", true)];
+    await render();
+    const tab = container.querySelector('[role="tab"][aria-label="some-new-kind"]');
+    expect(tab?.getAttribute("title")).toBe("some-new-kind");
+    expect(tab?.querySelector("svg")).not.toBeNull();
+    expect(tab?.textContent).toBe("");
+  });
 });
