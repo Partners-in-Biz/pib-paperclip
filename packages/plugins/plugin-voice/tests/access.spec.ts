@@ -62,8 +62,8 @@ describe("Voice access guard", () => {
     const slots = manifest.ui?.slots ?? [];
     expect(slots.length).toBeGreaterThan(0);
     for (const slot of slots) {
-      const body = index.match(new RegExp(`export function ${slot.exportName}\\(\\)[^]*?\\n}\\n`))?.[0] ?? "";
-      expect(body, slot.exportName).toMatch(/useAccess\(useAccessMe\(\), /);
+      const body = index.match(new RegExp(`export function ${slot.exportName}\\([^)]*\\)[^]*?\\n}\\n`))?.[0] ?? "";
+      expect(body, slot.exportName).toMatch(/useAccess\(use(Tab)?AccessMe\(\), /);
       expect(body, slot.exportName).toMatch(/<AccessGate state=\{access\} kind="widget">/);
     }
   });
