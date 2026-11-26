@@ -130,7 +130,7 @@ export function BrowserLiveDrawer({ open, companyId, onClose, defaultExpanded = 
         <div role="alert" style={{ padding: "8px 10px", borderRadius: 8, border: `1px solid ${tokens.tones.bad.border}`, background: tokens.tones.bad.soft, color: tokens.tones.bad.fg, fontSize: 13, overflowWrap: "anywhere", minWidth: 0 }}>{error}</div>
       ) : null}
       {/* noVNC fills this box; its canvas is scaled to fit and takes no keyboard or mouse input (viewOnly). */}
-      <div ref={screen} aria-label="Server browser screen" style={expanded ? { ...SCREEN_STYLE, width: "min(100%, calc((90vh - 150px) * 1.6))", justifySelf: "center" } : { ...SCREEN_STYLE, width: "100%" }} />
+      <div ref={screen} aria-label="Server browser screen" style={expanded ? { ...SCREEN_STYLE, width: "min(100%, calc((90vh - 270px) * 1.6))", justifySelf: "center" } : { ...SCREEN_STYLE, width: "100%" }} />
       <div style={{ display: "flex", gap: 8, justifyContent: "space-between", flexWrap: "wrap" }}>
         <Button type="button" variant="secondary" onClick={onClose}>Close</Button>
         {state === "error" ? <Button type="button" onClick={retry}>Try again</Button> : null}
