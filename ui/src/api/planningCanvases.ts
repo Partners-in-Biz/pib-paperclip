@@ -17,6 +17,8 @@ import type {
   CreatePlanningCanvasComment,
   PlanningCanvasChatMessage,
   PlanningCanvasChatMessageResult,
+  PlanningCanvasReadAction,
+  PlanningCanvasSourceRefreshResult,
 } from "@paperclipai/shared";
 import { api, requestResponse } from "./client";
 import type { QueriedIssue } from "@/components/planning-canvas/nodes/issue-board";
@@ -161,6 +163,14 @@ export const planningCanvasesApi = {
   /** Board chat (PAR-14277): one message to one agent. A repeated `clientRequestId` writes nothing. */
   sendChat: (companyId: string, boardId: string, data: PlanningCanvasChatMessage) =>
     api.post<PlanningCanvasChatMessageResult>(`${boardPath(companyId, boardId)}/chat`, data),
+
+  /** Connector picker (PAR-14283): the read-only actions the agent may use. Needs `edit`. */
+  readActions: (companyId: string, boardId: string, agentId: string) =>
+    api.get<{ actions: PlanningCanvasReadAction[] }>(`${boardPath(companyId, boardId)}/agents/${agentId}/read-actions`, { cache: "no-store" }),
+
+  /** Ask the source's agent to fetch a table's rows again. A repeated `clientRequestId` writes nothing. */
+  refreshSource: (companyId: string, boardId: string, itemKey: string, clientRequestId: string) =>
+    api.post<PlanningCanvasSourceRefreshResult>(`${boardPath(companyId, boardId)}/items/${encodeURIComponent(itemKey)}/refresh`, { clientRequestId }),
 
   resolveComment: (companyId: string, boardId: string, commentId: string, resolved: boolean) =>
     api.post<PlanningCanvasComment>(`${boardPath(companyId, boardId)}/comments/${commentId}/resolve`, { resolved }),
