@@ -437,7 +437,7 @@ function AgentVoicePicker({ companyId, agent }: { companyId: string; agent: { id
             setBusy(false);
           }
         }}
-        style={{ minHeight: 36, minWidth: 0, maxWidth: "100%", padding: "0 8px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--background)", color: "var(--foreground)", fontSize: 13 }}
+        style={{ minHeight: 36, minWidth: 0, maxWidth: "100%", flexShrink: 0, padding: "0 8px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--background)", color: "var(--foreground)", fontSize: 13 }}
       >
         <option value="">Company default ({data.company.grokVoice})</option>
         {data.voices.grok.map((v) => (
