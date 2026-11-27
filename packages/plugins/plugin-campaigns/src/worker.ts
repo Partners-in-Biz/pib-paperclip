@@ -108,7 +108,7 @@ import { DOMAIN_HEALTH_EVENT, gatherPreflight, preflightLines, rememberDomainHea
 import { campaignState, failedByCampaign, openReviseCampaigns, type CampaignFacts } from "./attention.js";
 import { isClientCampaign, isOwnBrandCampaign, ownBrands, withBrand, type OwnBrand } from "./brands.js";
 import { enrollmentPeople, peopleView, replyList, resultRows, resultsView, stepNumbers, stepTaskCounts, type TaskCounts } from "./people.js";
-import { eraseSubject, onConsentRecorded } from "./privacy.js";
+import { eraseSubject, exportPersonDataTool, onConsentRecorded } from "./privacy.js";
 import { CAMPAIGNS_PROJECT_KEY } from "./namespace.js";
 import { projectForCampaign } from "./projects.js";
 import { campaignsPreferences, preferencesLoad, preferencesSave, readCampaignPreferences } from "./preferences.js";
@@ -400,6 +400,7 @@ async function dispatch(ctx: PluginContext, name: string, body: Record<string, u
   if (name === "remove-sender-identity") return removeSenderIdentity(ctx, companyId, body);
   if (name === "list-sender-identities") return listSenderIdentities(ctx, companyId);
   if (name === "preflight-campaign") return preflightCampaign(ctx, companyId, body);
+  if (name === "export-person-data") return exportPersonDataTool(ctx, companyId, body);
   if (name === "log-reply") return logReplyTool(ctx, companyId, body, run.agentId ?? null);
   if (name === "pause-campaign") return setStatus(ctx, companyId, body, "paused");
   if (name === "resume-campaign") return setStatus(ctx, companyId, body, "active");
@@ -1431,6 +1432,8 @@ export function launchReviewBrief(campaign: Pick<CampaignDraft, "name" | "delive
     ? `contacts tagged ${campaign.audienceTags.length ? campaign.audienceTags.map((tag) => `\`${tag}\``).join(", ") : "(no tags: all contacts)"}`
     : campaign.audienceMode === "client_contact"
       ? `the client contact ${campaign.clientName ?? campaign.clientRef ?? ""}`.trim()
+      : campaign.audienceMode === "client_list"
+        ? `the people on ${campaign.clientName ?? campaign.clientRef ?? "the client"}'s list`
       : `the contacts at ${campaign.clientName ?? campaign.clientRef ?? "the client"}`;
   return reviewerBrief({
     what: `the launch of campaign ${campaign.name} (${campaign.delivery === "email" ? "sent by email through the Mailbox" : "each step opens an issue"})`,

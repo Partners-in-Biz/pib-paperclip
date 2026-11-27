@@ -21,9 +21,9 @@ const clientParams: Record<string, JsonSchema> = {
 
 const audienceMode = {
   type: "string",
-  enum: ["tags", "client_contacts", "client_contact"],
+  enum: ["tags", "client_contacts", "client_contact", "client_list"],
   description:
-    "Who launch enrolls. tags: CRM contacts with any of audienceTags; no tags means ALL contacts, allowed only when the approval says 'All contacts (N)'. client_contacts: the contacts at the client company, narrowed by audienceTags (default for a company client). client_contact: the client contact alone (default for a contact client).",
+    "Who launch enrolls. tags: CRM contacts with any of audienceTags; no tags means ALL contacts, allowed only when the approval says 'All contacts (N)'. client_contacts: the contacts at the client company, narrowed by audienceTags (default for a company client). client_contact: the client contact alone (default for a contact client). client_list: the people on the client's own list, never our contacts; such a draft cannot be approved or launched yet.",
 } satisfies JsonSchema;
 
 const audienceTags = { type: "array", items: { type: "string" }, description: "CRM tags; a contact with any of them is in the audience. Case does not matter." } satisfies JsonSchema;
@@ -228,6 +228,16 @@ export const CAMPAIGN_TOOLS: PluginToolDeclaration[] = [
     parametersSchema: schema(["campaignId"], {
       campaignId,
       links: { type: "boolean", description: "Check that each link answers (up to 12). Default true; false skips the web check." },
+    }),
+  },
+  {
+    name: "export-person-data",
+    displayName: "Export what Campaigns holds about a person",
+    description:
+      "For a data subject access request: every client list the person is on (with its source and lawful basis) and their SMS, WhatsApp and email opt-ins, found by email or phone. Their campaign sends are in campaign-stats. Check the requester is the person before you share it.",
+    parametersSchema: schema([], {
+      email: str("The person's email address."),
+      phone: str("The person's mobile number, like 082 123 4567 or +27821234567."),
     }),
   },
   {

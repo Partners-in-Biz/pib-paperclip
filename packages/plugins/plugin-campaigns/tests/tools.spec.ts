@@ -26,7 +26,7 @@ describe("Campaigns tool surface", () => {
 
   it("uses enums where the values are fixed", () => {
     const enumOf = (tool: string, param: string) => ((CAMPAIGN_TOOLS.find((t) => t.name === tool)!.parametersSchema as Schema).properties![param]!).enum;
-    expect(enumOf("create-campaign", "audienceMode")).toEqual(["tags", "client_contacts", "client_contact"]);
+    expect(enumOf("create-campaign", "audienceMode")).toEqual(["tags", "client_contacts", "client_contact", "client_list"]);
     expect(enumOf("create-campaign", "delivery")).toEqual(["issue", "email", "auto"]);
     expect(enumOf("add-campaign-step", "channel")).toEqual(["email", "sms", "whatsapp"]);
     expect(enumOf("record-channel-consent", "channel")).toEqual(["sms", "whatsapp"]);
