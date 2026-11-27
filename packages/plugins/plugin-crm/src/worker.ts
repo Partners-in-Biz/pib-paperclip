@@ -360,6 +360,9 @@ const plugin = definePlugin({
     registerAction("crm.delete-company", (params, context) => deleteCompanyAction(ctx, context, params));
     registerAction("crm.create-contact", (params, context) => createContactAction(ctx, context, params));
     registerAction("crm.update-contact", (params, context) => updateContactAction(ctx, context, params));
+    // The same import and bulk tag as the tools, for a page (Campaigns' Add people on our own campaigns, PAR-9242).
+    registerAction("crm.import-contacts", async (params, context) => importContacts(ctx, await actionViewer(ctx, context), params));
+    registerAction("crm.bulk-tag-contacts", async (params, context) => bulkTagContacts(ctx, await actionViewer(ctx, context), params));
     registerAction("crm.set-email-status", (params, context) => emailStatusAction(ctx, context, params));
     registerAction("crm.update-client-profile", async (params, context) => updateClientProfile(ctx, await actionViewer(ctx, context), params, actionSource(context)));
     // The page only reads the site and puts what it finds in the form: the person saves (apply is always off here).
@@ -1428,6 +1431,9 @@ async function importContacts(ctx: PluginContext, viewer: Viewer, params: Record
   const phoneIdx = headers.indexOf("phones");
   const lifecycleIdx = headers.indexOf("lifecycle");
   const tagsIdx = headers.indexOf("tags");
+  // Where the list came from and the lawful basis (Campaigns' import states both): kept on the contact, never overwritten.
+  const sourceIdx = headers.indexOf("source");
+  const basisIdx = headers.indexOf("lawful_basis");
   if (nameIdx < 0) throw new CrmError("CSV needs a name column");
   let created = 0;
   let updated = 0;
@@ -1438,10 +1444,11 @@ async function importContacts(ctx: PluginContext, viewer: Viewer, params: Record
     const emails = normalizeEmails(splitList(row[emailIdx]));
     const phones = splitList(row[phoneIdx]);
     const tags = splitList(row[tagsIdx]);
+    const custom = importProvenance(row[sourceIdx], row[basisIdx]);
     // Earlier rows are already saved, so a person listed twice in the file is matched too.
     const existing = await findExistingContact(ctx, viewer.companyId, emails, phones);
     if (existing) {
-      await foldIntoExisting(ctx, existing, { name, emails, phones, tags }, `Import row ${i + 1}`);
+      await foldIntoExisting(ctx, existing, { name, emails, phones, tags, custom }, `Import row ${i + 1}`);
       updated += 1;
       continue;
     }
@@ -1452,6 +1459,7 @@ async function importContacts(ctx: PluginContext, viewer: Viewer, params: Record
       phones,
       lifecycle: lifecycleIdx >= 0 ? row[lifecycleIdx] : undefined,
       tags,
+      custom,
       ownerUserId: viewer.userId,
       assigneeAgentId: viewer.agentId,
     });
@@ -1459,6 +1467,15 @@ async function importContacts(ctx: PluginContext, viewer: Viewer, params: Record
     created += 1;
   }
   return { created, updated };
+}
+
+const LAWFUL_BASES = new Set(["consent", "contract", "legitimate_interest", "legal_obligation"]);
+
+function importProvenance(source: string | undefined, basis: string | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (source?.trim()) out.import_source = source.trim().slice(0, 200);
+  if (basis && LAWFUL_BASES.has(basis.trim())) out.lawful_basis = basis.trim();
+  return out;
 }
 
 function splitList(value: string | undefined): string[] {

@@ -64,6 +64,7 @@ Agents put people on the desk instead of listing them in an issue: `set-next-act
 - **Routing:** new leads and leads' replies go to the Inbound Qualifier; won-deal and accepted-quote hand-offs to the Sales Lead; duplicates to the Data Steward. Billing sends quote replies to the Deal Desk.
 - **Jobs:** `sales-daily` (07:30 SAST) opens a pipeline check for deals quiet 14 days and a duplicates issue. `sales-weekly` (Mondays 08:00 SAST) opens the pipeline summary and the CRM hygiene report. The pipeline check and duplicates issues have done-checks.
 - **No duplicates:** `create-contact` and `import-contacts` match on email, then on phone (last 9 digits); `create-company` matches on the website domain, then the name. A match fills only empty fields, adds missing emails, phones and tags, logs a note, and returns `matched: true`.
+- **Import from a page:** `crm.import-contacts` and `crm.bulk-tag-contacts` are page actions too (Campaigns' Add people). An import's optional `source` and `lawful_basis` columns are kept on the contact as `custom.import_source` and `custom.lawful_basis`, never overwriting a value already there.
 - **Skills:** `pib-sales-lead`, `pib-inbound-qualify`, `pib-data-steward`, `pib-deal-desk`.
 
 ## Report forms: lead sources with intake issue (0.46.0)

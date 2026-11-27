@@ -43,6 +43,9 @@ export const SHARED_ROWS: Readonly<Record<string, AccessTableEntry>> = Object.fr
   // companies, contacts and their records
   ...rows(companies("view"), ["find-records"]),
   "create-company": companies("create"),
+  // Also page actions for Campaigns' Add people (PAR-9242).
+  "import-contacts": contacts("create"),
+  "bulk-tag-contacts": contacts("edit"),
   ...rows(companies("edit"), [
     "update-company", "update-client-profile", "extract-brand-from-site", "start-new-client", "log-activity", "share-record",
     "set-client-sensitivity", "record-channel-cost",
@@ -114,8 +117,6 @@ const ACTION_ROWS: Readonly<Record<string, AccessTableEntry>> = Object.freeze({
 const TOOL_ROWS: Readonly<Record<string, AccessTableEntry>> = Object.freeze({
   ...rows(companies("view"), ["get-company", "get-client-profile", "field-history"]),
   ...rows(contacts("view"), ["get-contact", "contact-graph", "find-duplicates"]),
-  ...rows(contacts("create"), ["import-contacts"]),
-  ...rows(contacts("edit"), ["bulk-tag-contacts"]),
   "merge-contacts": contacts("delete"),
   "export-contacts": contacts("export"),
   ...rows(deals("view"), ["list-deals", "list-stages", "list-deal-products"]),
