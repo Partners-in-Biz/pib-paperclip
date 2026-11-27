@@ -104,7 +104,7 @@ async function processInbound(ctx: PluginContext, companyId: string, msg: Inboun
 
   const stepPosition = last.step_position;
   if (plan.event) {
-    await insertStepEventOnce(ctx, { companyId, campaignId: campaign.id, enrollmentId: enrollment.id, stepPosition, eventType: plan.event, variant: enrollment.variant, sourceKey: `${plan.event}:${msg.providerId}`, meta: { channel: msg.channel, providerId: msg.providerId, kind, confidence } });
+    await insertStepEventOnce(ctx, { companyId, campaignId: campaign.id, enrollmentId: enrollment.id, stepPosition, eventType: plan.event, variant: enrollment.variant, sourceKey: `${plan.event}:${msg.providerId}`, meta: { channel: msg.channel, providerId: msg.providerId, kind, confidence, ...(plan.event === "reply" && msg.body ? { snippet: msg.body.replace(/\s+/g, " ").trim().slice(0, 500) } : {}) } });
   }
   if (plan.suppress === "unsubscribe") {
     await optOutChannel(ctx, { companyId, channel: msg.channel, address: msg.from, senderKey: last.sender_key, reason: "stop_keyword", source: PLUGIN_ID, contactIds: [...new Set([enrollment.contactId, ...contactIds])], campaignId: campaign.id, wording: "asked to stop in their own words" });

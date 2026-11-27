@@ -4,6 +4,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { emptyCounts, peopleSummary, peopleView, personState, rate, resultsView, stepNumbers, type PersonRow } from "../src/people.js";
+import { rangeParams } from "../src/range.js";
 import { unfilledPlaceholders } from "../src/preflight.js";
 
 const NOW = new Date("2026-11-12T12:00:00Z");
@@ -143,5 +144,13 @@ describe("unfilledPlaceholders", () => {
   it("finds leftover markers and unknown merge fields in subject, text and html, and leaves known fields alone", () => {
     expect(unfilledPlaceholders({ subject: "Hi {{first_name|there}}", body: "CODE: NOT-ISSUED-YET", htmlBody: "<p>{{code}}</p>" })).toEqual(["{{code}}", "NOT-ISSUED-YET"]);
     expect(unfilledPlaceholders({ subject: "Hi {{first_name}}", body: "See {{unsubscribe_url}}. Todo list, STUDIO-TBC-1." })).toEqual([]);
+  });
+});
+
+describe("rangeParams", () => {
+  it("counts the last day picked and ignores anything that is not a date", () => {
+    expect(rangeParams("2026-11-02", "2026-11-30")).toEqual({ from: "2026-11-02", to: "2026-12-01" });
+    expect(rangeParams("", "")).toEqual({});
+    expect(rangeParams("nope", "2026-12-31")).toEqual({ to: "2027-01-01" });
   });
 });

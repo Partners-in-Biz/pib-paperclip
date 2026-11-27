@@ -726,7 +726,7 @@ function addEventCount(step: StepStats, eventType: string, count: number): void 
   if (eventType === "unsubscribe") step.unsubscribes += count;
 }
 
-function rangeSql(range: StepStatsRange | undefined, first: number): { sql: string; params: string[] } {
+export function rangeSql(range: StepStatsRange | undefined, first: number): { sql: string; params: string[] } {
   const params: string[] = [];
   let sql = "";
   for (const [key, op] of [["from", ">="], ["to", "<"]] as const) {

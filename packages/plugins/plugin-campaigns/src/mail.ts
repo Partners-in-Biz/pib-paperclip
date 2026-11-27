@@ -624,7 +624,7 @@ export async function handleReply(ctx: PluginContext, companyId: string, mail: M
       eventType: plan.event,
       variant,
       sourceKey: `${plan.event}:${mail.messageId}`,
-      meta: { messageId: mail.messageId, threadId: mail.threadId || null, kind, confidence, ...(via ? { matchedBy: via } : {}), ...(via === "reply-to" && typeof sent?.meta.key === "string" ? { sendKey: sent.meta.key } : {}) },
+      meta: { messageId: mail.messageId, threadId: mail.threadId || null, kind, confidence, ...(plan.event === "reply" && mail.snippet ? { snippet: mail.snippet.replace(/\s+/g, " ").trim().slice(0, 500) } : {}), ...(via ? { matchedBy: via } : {}), ...(via === "reply-to" && typeof sent?.meta.key === "string" ? { sendKey: sent.meta.key } : {}) },
     });
   }
 

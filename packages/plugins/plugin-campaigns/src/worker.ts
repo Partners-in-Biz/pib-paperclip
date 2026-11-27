@@ -107,7 +107,7 @@ import { objectParams, optionalString, requiredString, stringList, integer } fro
 import { DOMAIN_HEALTH_EVENT, gatherPreflight, preflightLines, rememberDomainHealth, rememberSenderHealth, SENDER_HEALTH_EVENT, unfilledPlaceholders } from "./preflight.js";
 import { campaignState, failedByCampaign, openReviseCampaigns, type CampaignFacts } from "./attention.js";
 import { isClientCampaign, isOwnBrandCampaign, ownBrands, withBrand, type OwnBrand } from "./brands.js";
-import { enrollmentPeople, peopleView, resultRows, resultsView, stepNumbers, stepTaskCounts, type TaskCounts } from "./people.js";
+import { enrollmentPeople, peopleView, replyList, resultRows, resultsView, stepNumbers, stepTaskCounts, type TaskCounts } from "./people.js";
 import { eraseSubject, onConsentRecorded } from "./privacy.js";
 import { CAMPAIGNS_PROJECT_KEY } from "./namespace.js";
 import { projectForCampaign } from "./projects.js";
@@ -245,6 +245,7 @@ const plugin = definePlugin({
     g.action("campaigns.move", (params, context) => moveCampaignAction(ctx, context, params));
     g.action("campaigns.set-own-brand", (params, context) => setOwnBrandAction(ctx, context, params));
     g.action("campaigns.detail", (params, context) => campaignDetail(ctx, requiredCompany(context), params));
+    g.action("campaigns.results", (params, context) => campaignResultsView(ctx, requiredCompany(context), params));
     // Planning Canvas entity cards (PAR-14423): registered through the kit helper with the guard's `action`.
     registerCanvasCards({ register: g.action, kinds: [campaignCardKind(ctx)] });
     g.action("campaigns.ab-suggestion", (params, context) => suggestWinner(ctx, requiredCompany(context), params));
@@ -559,7 +560,7 @@ async function clientDetails(ctx: PluginContext, companyId: string, scope: NonNu
 async function campaignDetail(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
   const campaign = await requireCampaign(ctx, companyId, requiredString(params, "campaignId"));
   const now = new Date();
-  const [steps, stats, enrollments, approval, peopleRows, results, attention] = await Promise.all([
+  const [steps, stats, enrollments, approval, peopleRows, results, attention, replies] = await Promise.all([
     listSteps(ctx, campaign.id),
     campaignStats(ctx, campaign.id),
     enrollmentViews(ctx, campaign.id),
@@ -568,6 +569,7 @@ async function campaignDetail(ctx: PluginContext, companyId: string, params: Rec
     enrollmentPeople(ctx, companyId, campaign.id).catch(() => null),
     resultRows(ctx, companyId, campaign.id).catch(() => null),
     attentionFacts(ctx, companyId),
+    listSteps(ctx, campaign.id).then((all) => replyList(ctx, companyId, campaign.id, all)).catch(() => null),
   ]);
   // The same resolution (and country) as the approve action, so the hash the bar sends matches when nothing changed.
   const setup = await messagingSetup(ctx, companyId).catch(() => null);
@@ -626,7 +628,22 @@ async function campaignDetail(ctx: PluginContext, companyId: string, params: Rec
       ? audience.eligible.slice(0, 500).map((contact) => ({ contactId: contact.id, name: contact.name, email: campaignAddress(contact.emails) ?? null }))
       : null,
     results: results ? resultsView(steps, results) : null,
+    replies,
   };
+}
+
+/** The Results section for a date range: the same view as the detail's, plus the replies in that range. `from` is inclusive and `to` is EXCLUSIVE: to include 30 Nov, pass 1 Dec. */
+async function campaignResultsView(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
+  const campaign = await requireCampaign(ctx, companyId, requiredString(params, "campaignId"));
+  const from = optionalString(params, "from");
+  const to = optionalString(params, "to");
+  for (const [key, value] of [["from", from], ["to", to]] as const) {
+    if (value && Number.isNaN(Date.parse(value))) throw new CampaignError(`${key} must be a date like 2026-11-01`);
+  }
+  const range = { from, to };
+  const steps = await listSteps(ctx, campaign.id);
+  const [rows, replies] = await Promise.all([resultRows(ctx, companyId, campaign.id, range), replyList(ctx, companyId, campaign.id, steps, range)]);
+  return { results: resultsView(steps, rows), replies };
 }
 
 /** Why this campaign cannot move between our own work and our own brands, or null when it can. */

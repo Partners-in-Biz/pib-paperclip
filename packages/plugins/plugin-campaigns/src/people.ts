@@ -6,7 +6,7 @@
  * so the screen says the same thing the tests check.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { isoTime, table } from "./db.js";
+import { isoTime, rangeSql, table, type StepStatsRange } from "./db.js";
 
 // ---------------------------------------------------------------------------
 // People
@@ -299,15 +299,45 @@ export function resultsView(
   return { totals, steps: result, providerReports: totals.delivered + totals.softBounces + totals.complaints > 0, tracked: totals.opens + totals.clicks > 0 };
 }
 
-export async function resultRows(ctx: PluginContext, companyId: string, campaignId: string): Promise<ResultRow[]> {
+export async function resultRows(ctx: PluginContext, companyId: string, campaignId: string, range?: StepStatsRange): Promise<ResultRow[]> {
+  const when = rangeSql(range, 3);
   const rows = await ctx.db.query<{ step_position: number; variant: string | null; event_type: string; count: string | number }>(
     `SELECT step_position, variant, event_type, count(*) AS count
        FROM ${table(ctx, "campaign_step_events")}
-      WHERE company_id = $1 AND campaign_id = $2
+      WHERE company_id = $1 AND campaign_id = $2${when.sql}
       GROUP BY step_position, variant, event_type`,
-    [companyId, campaignId],
+    [companyId, campaignId, ...when.params],
   );
   return rows.map((row) => ({ stepPosition: Number(row.step_position), variant: row.variant ?? null, eventType: row.event_type, count: Number(row.count ?? 0) }));
+}
+
+export interface ReplyView {
+  at: string | null;
+  /** The step's number on the screen. */
+  step: number;
+  variant: string;
+  /** What they wrote (first 500 characters). Null for a reply that came before the text was kept. */
+  text: string | null;
+}
+
+/** The most recent replies of a campaign (newest first), inside the date range. Rows only ever hold the campaign's own events. */
+export async function replyList(ctx: PluginContext, companyId: string, campaignId: string, steps: Array<{ position: number; subject: string; variant?: string | null }>, range?: StepStatsRange, limit = 50): Promise<ReplyView[]> {
+  const when = rangeSql(range, 3);
+  const rows = await ctx.db.query<{ step_position: number; variant: string | null; occurred_at: unknown; snippet: string | null }>(
+    `SELECT step_position, variant, occurred_at, meta ->> 'snippet' AS snippet
+       FROM ${table(ctx, "campaign_step_events")}
+      WHERE company_id = $1 AND campaign_id = $2 AND event_type = 'reply'${when.sql}
+      ORDER BY occurred_at DESC
+      LIMIT ${Math.max(1, Math.floor(limit))}`,
+    [companyId, campaignId, ...when.params],
+  );
+  const numbers = stepNumbers(steps);
+  return rows.map((row) => ({
+    at: isoTime(row.occurred_at),
+    step: numbers.get(Number(row.step_position)) ?? Number(row.step_position),
+    variant: row.variant === "b" ? "b" : "a",
+    text: row.snippet ? String(row.snippet) : null,
+  }));
 }
 
 // ---------------------------------------------------------------------------
