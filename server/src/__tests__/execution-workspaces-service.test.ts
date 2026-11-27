@@ -636,6 +636,26 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     } finally { scan.mockRestore(); }
   });
 
+  it("backs off every candidate when a rotation holds more than a few hundred terminal workspaces", async () => {
+    const seed = await seedTerminalWorkspace();
+    const [original] = await db.select().from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seed.executionWorkspaceId));
+    const copies = Array.from({ length: 300 }, (_, index) => ({
+      ...original!, id: randomUUID(), name: `Shared directory ${index}`,
+    }));
+    await db.insert(executionWorkspaces).values(copies);
+    const service = executionWorkspaceService(db, {
+      workspaceReaperCooldownDays: 0, terminalWorkspaceInspectionBackoffMs: 300_000,
+    });
+    const scan = vi.spyOn(workspaceGitOperationScheduler, "run");
+    try {
+      expect(await service.sweepTerminalWorkspaces(500)).toMatchObject({ checked: 301, archived: 0, skippedUndelivered: 301 });
+      const initial = scan.mock.calls.length;
+      expect(await service.sweepTerminalWorkspaces(500)).toMatchObject({ checked: 301, skippedBackoff: 301 });
+      expect(scan).toHaveBeenCalledTimes(initial);
+    } finally { scan.mockRestore(); }
+  });
+
   it("invalidates a candidate backoff after its real PR producer commits", async () => {
     const seed = await seedTerminalWorkspace();
     const service = executionWorkspaceService(db, {

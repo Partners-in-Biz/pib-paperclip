@@ -24,6 +24,16 @@ export interface DashboardRunActivityDay {
   failedByErrorCode: Record<string, number>;
 }
 
+/**
+ * Tasks created on one UTC day, counted by their current status and priority.
+ * Feeds the dashboard's 14-day task charts without loading task rows.
+ */
+export interface DashboardTaskActivityDay {
+  date: string;
+  byStatus: Record<string, number>;
+  byPriority: Record<string, number>;
+}
+
 export interface DashboardSummary {
   companyId: string;
   agents: {
@@ -51,4 +61,5 @@ export interface DashboardSummary {
     pausedProjects: number;
   };
   runActivity: DashboardRunActivityDay[];
+  taskActivity: DashboardTaskActivityDay[];
 }

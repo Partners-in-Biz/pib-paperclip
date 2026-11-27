@@ -340,6 +340,8 @@ export function workspaceReopenDiagnostic(step: WorkspaceReopenFailureStep, erro
   return { step, kind: error === undefined ? "unknown" : classifyWorkspaceRestorationError(error) };
 }
 
+const TERMINAL_INSPECTION_TRACKED_LIMIT = 50_000;
+
 export type ExecutionWorkspaceServiceOptions = {
   pluginWorkerManager?: WorkspaceWorkers;
   destroyRemoteWorkspaceLease?: DestroyRemoteWorkspaceLease;
@@ -1900,6 +1902,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   // sweep and starves eligible rows behind them. The cursor resets to the start
   // when a sweep reaches the end of the candidate set.
   let terminalSweepCursor: { updatedAt: string; id: string } | null = null;
+  // Sized to cover every candidate in a rotation. With a small cap (it was 256)
+  // an instance with thousands of terminal workspaces evicted each entry before
+  // the next rotation reached it, so the backoff never applied and the reaper
+  // ran git for every candidate about once a second.
   const terminalInspections = new Map<string, { revision: string; issueIds: Set<string>; nextAt: number; parked?: boolean }>();
   const terminalWorkspaceDeadlines = new Map<string, number>();
   const isolatedRehomeDeadlines = new Map<string, number>();
@@ -2105,6 +2111,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     git: ExecutionWorkspaceCloseGitReadiness | null,
     precomputedIssueTree?: Awaited<ReturnType<typeof listWorkspaceIssueTree>>,
     deliveryProof?: Extract<GitHubWorkspaceDeliveryResult, { status: "delivered" }>,
+    headShaByWorkingTree?: Map<string, Promise<string | null>>,
   ) {
     const issueTree = precomputedIssueTree ?? await listWorkspaceIssueTree(workspace);
     const sourceIssue = issueTree.find((issue) => issue.id === workspace.sourceIssueId) ?? null;
@@ -2123,10 +2130,20 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     }
     let mergedPullRequest = false;
     let pullRequestStateUnknown = false;
-    const workspaceHeadSha = workspace.providerType === "plugin" ? git?.headSha ?? null : sourceIssueTerminal && git?.repoRoot && git.workspacePath
-      ? await runGit(["rev-parse", "HEAD"], git.workspacePath)
+    const readHeadSha = (workspacePath: string) => {
+      // A sweep reads each working tree's HEAD once. Many terminal workspaces
+      // can share one directory (a project's shared checkout), and starting a
+      // git process blocks the server's main thread.
+      const cached = headShaByWorkingTree?.get(workspacePath);
+      if (cached) return cached;
+      const read = runGit(["rev-parse", "HEAD"], workspacePath)
         .then((result) => result.stdout.trim() || null)
-        .catch(() => null)
+        .catch(() => null);
+      headShaByWorkingTree?.set(workspacePath, read);
+      return read;
+    };
+    const workspaceHeadSha = workspace.providerType === "plugin" ? git?.headSha ?? null : sourceIssueTerminal && git?.repoRoot && git.workspacePath
+      ? await readHeadSha(git.workspacePath)
       : null;
 
     if (deliveryProof) {
@@ -3615,6 +3632,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         compactionFailed: 0,
       };
       const readinessByWorkingTree = new Map<string, ReturnType<typeof inspectGitCloseReadiness>>();
+      const headShaByWorkingTree = new Map<string, Promise<string | null>>();
       let taskDirectoryBudget = opts.taskDirectoryRetention?.perSweep ?? 8;
       const expireTaskDirectory = async (workspace: ExecutionWorkspaceRow, notBefore: Date) => {
         const settings = opts.taskDirectoryRetention!;
@@ -3904,7 +3922,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
             result.skippedBackoff += 1;
             continue;
           }
-          if (terminalInspections.size >= 256) terminalInspections.delete(terminalInspections.keys().next().value!);
+          if (terminalInspections.size >= TERMINAL_INSPECTION_TRACKED_LIMIT) terminalInspections.delete(terminalInspections.keys().next().value!);
           terminalInspections.set(workspace.id, {
             revision, issueIds: new Set(issueTree.map(issue => issue.id)),
             nextAt: now().getTime() + opts.terminalWorkspaceInspectionBackoffMs,
@@ -3977,7 +3995,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           result.skippedUndelivered += 1;
           continue;
         }
-        const assessment = await assessDelivery(workspace, git, issueTree, deliveryProof);
+        const assessment = await assessDelivery(workspace, git, issueTree, deliveryProof, headShaByWorkingTree);
         if (!assessment.sourceIssueTerminal || !assessment.subtreeTerminal) {
           if (reopenPending) {
             // The source issue left the terminal state, so the reopen transition

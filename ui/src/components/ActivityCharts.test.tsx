@@ -5,7 +5,7 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import type { HeartbeatRun } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { RunActivityChart, SuccessRateChart } from "./ActivityCharts";
+import { IssueStatusChart, PriorityChart, RunActivityChart, SuccessRateChart } from "./ActivityCharts";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -133,5 +133,25 @@ describe("ActivityCharts", () => {
     expect(container.textContent).toContain("Recovered");
     const dayCell = container.querySelector("[title*='recovered: 4']");
     expect(dayCell).not.toBeNull();
+  });
+});
+
+describe("task charts from per-day counts", () => {
+  it("draws the dashboard's server-side day counts like the same tasks as rows", () => {
+    const rows = [
+      { status: "done", priority: "high", createdAt: new Date("2026-04-20T09:00:00.000Z") },
+      { status: "done", priority: "medium", createdAt: new Date("2026-04-20T10:00:00.000Z") },
+      { status: "todo", priority: "high", createdAt: new Date("2026-04-14T10:00:00.000Z") },
+    ];
+    const activity = [
+      { date: "2026-04-20", byStatus: { done: 2 }, byPriority: { high: 1, medium: 1 } },
+      { date: "2026-04-14", byStatus: { todo: 1 }, byPriority: { high: 1 } },
+      { date: "2026-03-01", byStatus: { todo: 9 }, byPriority: { high: 9 } },
+    ];
+    render(<><IssueStatusChart issues={rows} /><PriorityChart issues={rows} /></>);
+    const fromRows = container.innerHTML;
+    render(<><IssueStatusChart activity={activity} /><PriorityChart activity={activity} /></>);
+    expect(container.innerHTML).toBe(fromRows);
+    expect(container.textContent).not.toContain("No tasks");
   });
 });

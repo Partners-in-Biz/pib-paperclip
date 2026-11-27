@@ -1305,6 +1305,7 @@ export type {
   LiveDeliveryClientMessage,
   LiveDeliveryServerMessage,
   DashboardRunActivityDay,
+  DashboardTaskActivityDay,
   DashboardSummary,
   TimelineActorType,
   TimelineEventKind,

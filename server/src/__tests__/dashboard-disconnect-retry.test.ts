@@ -87,7 +87,7 @@ describe("dashboard read connection recovery", () => {
         pendingApprovals: 3,
       });
       expect(test.companyParameters).toEqual([[companyId], [companyId]]);
-      expect(test.reads).toEqual(["companies", "companies", "agents", "issues", "approvals", "cost_events"]);
+      expect(test.reads).toEqual(["companies", "companies", "agents", "issues", "approvals", "cost_events", "issues"]);
       expect(test.execute).toHaveBeenCalledTimes(1);
       expect(overview).toHaveBeenCalledExactlyOnceWith(companyId);
     },
@@ -135,7 +135,8 @@ describe("dashboard read connection recovery", () => {
     expect(overview).toHaveBeenCalledTimes(1);
   });
 
-  const tables = ["companies", "agents", "issues", "approvals", "cost_events"];
+  // The second issues read is the per-day task activity for the charts.
+  const tables = ["companies", "agents", "issues", "approvals", "cost_events", "issues"];
   it.each(["agents", "issues", "approvals", "cost_events"])("retries only the failed %s read", async (table) => {
     const test = fixture([], { readFailures: { [table]: [disconnected()] } });
     await expect(test.service.summary(companyId)).resolves.toMatchObject({ companyId });
@@ -144,7 +145,8 @@ describe("dashboard read connection recovery", () => {
     expect(test.reads).toEqual([...prefix, table, ...suffix]);
     expect(test.select).toHaveBeenCalledTimes(tables.length + 1);
     const attempts = test.parameters.get(table)!;
-    expect(attempts).toHaveLength(2);
+    // issues is read twice per summary (counts, then per-day task activity).
+    expect(attempts).toHaveLength(table === "issues" ? 3 : 2);
     expect(attempts[0]).toContain(companyId);
     expect(attempts[1]).toEqual(attempts[0]);
     expect(test.execute).toHaveBeenCalledTimes(1);
