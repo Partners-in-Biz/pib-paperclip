@@ -30,13 +30,15 @@ export const GEMINI_STYLE_MAX_CHARS = 120;
 
 /** Spoken-reply text (T3): cap before "The rest is in the chat.", first and later chunk sizes. */
 export const SPEECH_MAX_CHARS = 1_500;
-export const SPEECH_FIRST_CHUNK_CHARS = 160;
+/** PAR-14996 T3: was 160; the first chunk is shorter so speech starts sooner. Revert alone by setting 160. */
+export const SPEECH_FIRST_CHUNK_CHARS = 90;
 export const SPEECH_CHUNK_CHARS = 300;
 
 /** Direct-mode endpointing (T3): all times in ms, levels are RMS 0..1 from `level()` in `ui/audio.ts`. */
 export const ENDPOINT_SPEECH_LEVEL = 0.02;
 export const ENDPOINT_START_MS = 150;
-export const ENDPOINT_END_QUIET_MS = 1_200;
+/** PAR-14996 T3: was 1_200. Revert alone by setting 1_200. */
+export const ENDPOINT_END_QUIET_MS = 900;
 export const ENDPOINT_MAX_UTTERANCE_MS = 90_000;
 /** Barge-in: level above this multiple of the speech level for this long. */
 export const BARGE_IN_LEVEL_FACTOR = 2;
@@ -52,3 +54,13 @@ export const DIRECT_REFETCH_MS = [1_000, 3_000] as const;
 export const DIRECT_SEND_ATTEMPTS = 3;
 /** A Grok chunk is tried this many times before the rest of the reply is left in the chat. */
 export const XAI_SPEAK_ATTEMPTS = 2;
+
+/** PAR-14996 T3: was off (Grok only). Prefetch one chunk ahead for Gemini too; a non-ok falls back to Grok as before. Revert alone with false. */
+export const GEMINI_PREFETCH = true;
+/**
+ * PAR-14996 T3: was a flat 10 s (DIRECT_REPLY_POLL_MS). For DIRECT_AWAIT_FAST_MS after the latest turn post
+ * (`lastTurnPostedAt`) the reply is read every DIRECT_AWAIT_POLL_MS; outside it, every 10 s. Revert alone by
+ * setting DIRECT_AWAIT_POLL_MS to 10_000 (or DIRECT_AWAIT_FAST_MS to 0).
+ */
+export const DIRECT_AWAIT_POLL_MS = 2_000;
+export const DIRECT_AWAIT_FAST_MS = 90_000;

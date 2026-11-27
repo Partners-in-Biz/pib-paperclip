@@ -84,9 +84,9 @@ describe("cap", () => {
 
 describe("chunk", () => {
   const long = Array.from({ length: 40 }, (_, i) => `This is sentence ${i}, with a comma.`).join(" ");
-  it("first chunk at most 160, later at most 300, nothing lost", () => {
+  it("first chunk at most 90, later at most 300, nothing lost", () => {
     const parts = chunk(long);
-    expect(parts[0]!.length).toBeLessThanOrEqual(160);
+    expect(parts[0]!.length).toBeLessThanOrEqual(90);
     for (const part of parts.slice(1)) expect(part.length).toBeLessThanOrEqual(300);
     expect(parts.join(" ")).toBe(long);
   });
@@ -97,11 +97,11 @@ describe("chunk", () => {
     const sentence = `${"alpha beta, ".repeat(40)}end.`;
     const parts = chunk(sentence);
     expect(parts.length).toBeGreaterThan(1);
-    expect(parts[0]!.length).toBeLessThanOrEqual(160);
+    expect(parts[0]!.length).toBeLessThanOrEqual(90);
     parts.slice(1).forEach(part => expect(part.length).toBeLessThanOrEqual(300));
     expect(parts.slice(0, -1).every(part => part.endsWith(","))).toBe(true);
     const noCommas = chunk("word ".repeat(200).trim());
-    noCommas.forEach((part, i) => expect(part.length).toBeLessThanOrEqual(i === 0 ? 160 : 300));
+    noCommas.forEach((part, i) => expect(part.length).toBeLessThanOrEqual(i === 0 ? 90 : 300));
     expect(noCommas.join(" ")).toBe("word ".repeat(200).trim());
   });
   it("short text is one chunk", () => expect(chunk("Hello.")).toEqual(["Hello."]));

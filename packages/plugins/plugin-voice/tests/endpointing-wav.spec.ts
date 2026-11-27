@@ -15,12 +15,12 @@ function run(trace: Array<[level: number, ms: number]>, ep = new Endpointer()): 
 }
 
 describe("Endpointer", () => {
-  it("speech then silence: start, then end after 1.2 s quiet", () => {
-    expect(run([[0, 500], [0.3, 1000], [0, 1150]])).toEqual(["start"]);
-    expect(run([[0, 500], [0.3, 1000], [0, 1200]])).toEqual(["start", "end"]);
+  it("speech then silence: start, then end after 0.9 s quiet (850 ms no, 950 ms yes)", () => {
+    expect(run([[0, 500], [0.3, 1000], [0, 850]])).toEqual(["start"]);
+    expect(run([[0, 500], [0.3, 1000], [0, 950]])).toEqual(["start", "end"]);
   });
   it("a short pause inside speech does not end it", () => {
-    expect(run([[0.3, 500], [0, 800], [0.3, 500], [0, 1200]])).toEqual(["start", "end"]);
+    expect(run([[0.3, 500], [0, 800], [0.3, 500], [0, 1000]])).toEqual(["start", "end"]);
   });
   it("a cough under 150 ms is ignored", () => {
     expect(run([[0, 300], [0.5, 100], [0, 2000]])).toEqual([]);
