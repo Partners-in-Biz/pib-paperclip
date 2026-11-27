@@ -160,6 +160,8 @@ export const CRM_MUTATIONS = new Set([
   "merge-contacts",
   "import-contacts",
   "bulk-tag-contacts",
+  "crm.import-contacts",
+  "crm.bulk-tag-contacts",
   "crm.create-company",
   "crm.update-company",
   "crm.create-contact",

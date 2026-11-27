@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { fillContact, normalizeDomain, phoneMatchKey, type ContactDraft } from "../src/domain.js";
-import { boot, CO, contact, seed, setRoles, tool } from "./helpers/crm.js";
+import { boot, BOARD, CO, contact, seed, setRoles, tool } from "./helpers/crm.js";
 
 describe("matching keys", () => {
   it("phones match on their last 9 digits, however they are written", () => {
@@ -81,6 +81,20 @@ describe("one record per person and company", () => {
     const nia = store.contacts!.filter((row) => (row.emails as string[]).includes("nia@new.test"));
     expect(nia).toHaveLength(1);
     expect(nia[0]!.tags).toEqual(["imported"]);
+  });
+
+  it("a page runs the same import and bulk tag (Campaigns' Add people): source and lawful basis kept, never overwritten", async () => {
+    const { harness, store } = await boot();
+    const csv = ["name,emails,phones,tags,source,lawful_basis", "Ada,ada@acme.co.za,,spring,expo sheet,consent", "Nia New,nia@new.test,,spring,expo sheet,whim"].join("\n");
+    expect(await harness.performAction("crm.import-contacts", { csv }, { companyId: CO, actor: BOARD })).toEqual({ created: 1, updated: 1 });
+    const nia = store.contacts!.find((row) => (row.emails as string[]).includes("nia@new.test"))!;
+    expect(nia.tags).toEqual(["spring"]);
+    expect(nia.custom).toEqual({ import_source: "expo sheet" });
+    const ada = store.contacts!.find((row) => row.id === "ada")!;
+    expect(ada.tags).toContain("spring");
+    const out = await harness.performAction("crm.bulk-tag-contacts", { contactIds: [String(nia.id)], tags: ["autumn"], action: "add" }, { companyId: CO, actor: BOARD });
+    expect(out).toMatchObject({ updated: 1 });
+    expect(store.contacts!.find((row) => row.id === nia.id)!.tags).toEqual(["spring", "autumn"]);
   });
 
   it("create-company with a website we have returns that company", async () => {
