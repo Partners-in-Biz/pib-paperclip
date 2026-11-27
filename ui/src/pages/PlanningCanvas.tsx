@@ -115,8 +115,12 @@ export function PlanningCanvas() {
             </div>
           </div>
 
-          <PanelSlot id="right" c={c} />
-          <PanelSlot id="bottomRight" c={c} />
+          {/* Side columns. From md up this box is the anchor for the Chat button and zoom controls
+              (`md:right-full`), so they sit left of any open column instead of under it (PAR-14906). */}
+          <div data-testid="planning-canvas-side" className="flex min-h-0 md:relative">
+            <PanelSlot id="right" c={c} />
+            <PanelSlot id="bottomRight" c={c} />
+          </div>
         </div>
 
         {/* Schedule Handoff Dialog for linked Personal Notes on Canvas */}

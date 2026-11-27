@@ -129,7 +129,7 @@ export function ZoomControls({ c }: { c: CanvasController }) {
 
 export function BottomRightControls({ c }: { c: CanvasController }) {
   return (
-    <div className="pointer-events-auto absolute bottom-3 right-3 z-20 flex flex-col items-end gap-2 max-md:bottom-16 max-md:left-3 max-md:right-auto max-md:items-start">
+    <div className="pointer-events-auto absolute bottom-3 right-3 z-20 flex flex-col items-end gap-2 md:right-full md:mr-3 max-md:bottom-16 max-md:left-3 max-md:right-auto max-md:items-start">
       {/* Compact Minimap (hidden on a phone: it covered the board and the Chat button) */}
       <Minimap c={c} />
       <ZoomControls c={c} />

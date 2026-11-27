@@ -55,7 +55,7 @@ export function ChatPanel({ c }: { c: CanvasController }) {
         variant="outline"
         aria-label="Open board chat"
         data-testid="canvas-chat-open"
-        className="pointer-events-auto absolute right-3 bottom-16 z-40 bg-background shadow-md"
+        className="pointer-events-auto absolute right-3 bottom-16 z-30 bg-background shadow-md md:right-full md:bottom-44 md:mr-3"
         onClick={() => setOpen(true)}
       >
         <MessageSquareText className="size-3.5" />
