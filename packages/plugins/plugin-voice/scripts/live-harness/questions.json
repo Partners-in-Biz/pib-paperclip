@@ -1,0 +1,18 @@
+[
+  "What is the code word in this task's description?",
+  "What is this task's status?",
+  "Who is this task assigned to?",
+  "What is the title of this task?",
+  "In one sentence, what does this task ask you to do?",
+  "Does this task have a parent task?",
+  "What priority does this task have?",
+  "When was this task created?",
+  "How many comments does this task have so far?",
+  "Which company is this task in?",
+  "Is this task blocked by anything?",
+  "What is your role in this company?",
+  "Who do you report to?",
+  "Name one other agent in this company.",
+  "What day of the week is it today?",
+  "Say the code word from this task's description once more."
+]
