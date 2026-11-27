@@ -48,6 +48,8 @@ interface ChatIssueRow {
   id: string;
   identifier?: string | null;
   assigneeAgentId?: string | null;
+  /** Set on a chat issue; the agent the chat is with, even if the assignee field is empty. */
+  conversationAgentId?: string | null;
 }
 
 const MAX_BODY = 700;
@@ -115,8 +117,13 @@ export class AgentChat {
       ref = agent.id;
     }
     const issue = await this.ctx.api.post<ChatIssueRow>(`/companies/${this.ctx.companyId}/chats/${encodeURIComponent(ref)}`, {});
-    const agent = (await this.agents()).find((a) => a.id === issue.assigneeAgentId);
-    return { issueId: issue.id, ref: issue.identifier ?? issue.id, agentName: agent?.name ?? "The agent", agentId: issue.assigneeAgentId ?? null };
+    const agents = await this.agents();
+    // The chat's own agent decides whose voice speaks and whose comments count as the reply. An older chat can
+    // have an empty assignee, so fall back to the conversation agent, then to the agent the call asked for.
+    const asked = agents.find((a) => a.id === ref || String(a.urlKey ?? "").toLowerCase() === ref.toLowerCase() || a.name.toLowerCase() === ref.toLowerCase());
+    const agentId = issue.conversationAgentId ?? issue.assigneeAgentId ?? asked?.id ?? null;
+    const agent = agents.find((a) => a.id === agentId);
+    return { issueId: issue.id, ref: issue.identifier ?? issue.id, agentName: agent?.name ?? "The agent", agentId };
   }
 
   /**

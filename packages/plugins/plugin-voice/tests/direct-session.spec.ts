@@ -45,7 +45,7 @@ vi.mock("../src/ui/audio.js", () => ({
   },
 }));
 
-import { DirectSession, GEMINI_FALLBACK_NOTICE, type SpeakProvider } from "../src/ui/direct-session.js";
+import { DirectSession, GEMINI_FALLBACK_NOTICE, READ_FAILED_NOTICE, SOUND_BLOCKED_NOTICE, type SpeakProvider } from "../src/ui/direct-session.js";
 import { chunk, REST_IN_CHAT, toSpeech } from "../src/ui/speech-text.js";
 
 interface Row {
@@ -59,7 +59,7 @@ interface Row {
   hidden?: boolean;
 }
 
-function fakeApi() {
+function fakeApi(chatIssue: Record<string, unknown> = { assigneeAgentId: "a-ren" }) {
   const rows: Row[] = [];
   let n = 0;
   const get = vi.fn(async (path: string) => {
@@ -76,7 +76,7 @@ function fakeApi() {
     return [...visible].reverse().slice(0, Number(q.get("limit") ?? 100)).map((r) => ({ ...r }));
   });
   const post = vi.fn(async (path: string, body: { body: string; clientRequestId: string }) => {
-    if (path === "/companies/c1/chats/a-ren") return { id: "chat-1", identifier: "PAR-1", assigneeAgentId: "a-ren" };
+    if (path === "/companies/c1/chats/a-ren") return { id: "chat-1", identifier: "PAR-1", ...chatIssue };
     if (path === "/issues/chat-1/comments") {
       const row: Row = { id: `u${++n}`, body: body.body, authorAgentId: null, authorUserId: "u1", origin: "comment", deletedAt: null, createdAt: new Date().toISOString() };
       rows.push(row);
@@ -113,8 +113,10 @@ function fakeFeed() {
 type SpeakImpl = (p: { agentId: string; text: string; provider: SpeakProvider }) => Promise<unknown>;
 const okSpeak: SpeakImpl = async ({ text, provider }) => ({ audio: `${provider}:${text}`, sampleRate: 24000, provider, voice: "eve" });
 
-async function make(opts: { provider?: SpeakProvider; speak?: SpeakImpl; interrupt?: () => boolean; onEnd?: () => void } = {}) {
-  const fake = fakeApi();
+async function make(
+  opts: { provider?: SpeakProvider; speak?: SpeakImpl; interrupt?: () => boolean; onEnd?: () => void; chatIssue?: Record<string, unknown>; audioContext?: unknown } = {},
+) {
+  const fake = fakeApi(opts.chatIssue);
   const feed = fakeFeed();
   const speak = vi.fn(opts.speak ?? okSpeak);
   const transcribe = vi.fn(async (_p: { audio: string; mimeType: string }) => ({ text: "What is the status?" }));
@@ -126,7 +128,7 @@ async function make(opts: { provider?: SpeakProvider; speak?: SpeakImpl; interru
     pageIssueRef: null,
     agentRef: "a-ren",
     provider: opts.provider ?? "grok",
-    audioContext: { close: vi.fn(async () => undefined), resume: vi.fn(async () => undefined) } as never,
+    audioContext: (opts.audioContext ?? { close: vi.fn(async () => undefined), resume: vi.fn(async () => undefined) }) as never,
     speak,
     transcribe,
     interruptByTalking: opts.interrupt,
@@ -378,6 +380,81 @@ describe("DirectSession", () => {
     ctx.feed.emit("chat-1");
     await vi.advanceTimersByTimeAsync(5_000);
     expect(played(ctx.player)).toEqual(["grok:One. Two."]);
+  });
+
+  it("an empty assignee on the chat issue does not silence it: the conversation agent is the reply's author and voice", async () => {
+    const ctx = await make({ chatIssue: { assigneeAgentId: null, conversationAgentId: "a-ren" } });
+    await turn(ctx);
+    ctx.fake.add("Hello Peet.");
+    ctx.feed.emit("chat-1");
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(spokenTexts(ctx.speak)).toEqual(["grok:Hello Peet."]);
+    expect(ctx.speak.mock.calls[0]![0].agentId).toBe("a-ren");
+  });
+
+  it("with no agent on the chat issue at all, the agent the call asked for speaks", async () => {
+    const ctx = await make({ chatIssue: { assigneeAgentId: null } });
+    await turn(ctx);
+    ctx.fake.add("Still here.");
+    ctx.feed.emit("chat-1");
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(spokenTexts(ctx.speak)).toEqual(["grok:Still here."]);
+  });
+
+  it("says why the voice failed in the transcript, not only that it did", async () => {
+    const ctx = await make({ provider: "gemini", speak: async (p) => (p.provider === "gemini" ? { error: "auth_failed" } : { error: "not_configured" }) });
+    await turn(ctx);
+    ctx.fake.add("Anyone there?");
+    ctx.feed.emit("chat-1");
+    await vi.advanceTimersByTimeAsync(5_000);
+    const notes = (ctx.onTranscript.mock.calls.at(-1)![0] as Array<{ who: string; text: string }>).filter((e) => e.who === "note").map((e) => e.text);
+    expect(notes).toContain(`${GEMINI_FALLBACK_NOTICE} (gemini auth_failed)`);
+    expect(notes).toContain(`${REST_IN_CHAT} (voice failed: grok not_configured)`);
+  });
+
+  it("a suspended audio context that will not wake is said out loud, and nothing is queued", async () => {
+    const audioContext = { state: "suspended", close: vi.fn(async () => undefined), resume: vi.fn(async () => undefined) };
+    const ctx = await make({ audioContext });
+    await turn(ctx);
+    ctx.fake.add("Can you hear me?");
+    ctx.feed.emit("chat-1");
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(audioContext.resume).toHaveBeenCalled();
+    expect(ctx.player.enqueue).not.toHaveBeenCalled();
+    expect(ctx.onNotice).toHaveBeenCalledWith(SOUND_BLOCKED_NOTICE);
+  });
+
+  it("a suspended audio context that resumes plays the reply", async () => {
+    const audioContext = {
+      state: "suspended",
+      close: vi.fn(async () => undefined),
+      resume: vi.fn(async () => {
+        audioContext.state = "running";
+      }),
+    };
+    const ctx = await make({ audioContext });
+    await turn(ctx);
+    ctx.fake.add("Can you hear me?");
+    ctx.feed.emit("chat-1");
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(played(ctx.player)).toEqual(["grok:Can you hear me?"]);
+  });
+
+  it("a read of the chat that keeps failing is shown once, then reading goes on", async () => {
+    const ctx = await make();
+    await turn(ctx);
+    const get = ctx.fake.api.get;
+    const original = get.getMockImplementation()!;
+    get.mockImplementation(async (path: string) => {
+      if (path.startsWith("/issues/chat-1/comments")) throw new Error("Paperclip answered 500 for /issues/chat-1/comments");
+      return original(path);
+    });
+    await vi.advanceTimersByTimeAsync(35_000);
+    expect(ctx.onNotice.mock.calls.filter(([m]) => m === READ_FAILED_NOTICE)).toHaveLength(1);
+    get.mockImplementation(original);
+    ctx.fake.add("Back again.");
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(spokenTexts(ctx.speak)).toEqual(["grok:Back again."]);
   });
 
   it("stop closes the feed and the mic and hands the call over once", async () => {

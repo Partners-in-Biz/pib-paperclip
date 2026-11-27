@@ -33,6 +33,11 @@ export type SpeakFn = (params: { agentId: string; text: string; provider: SpeakP
 export type TranscribeFn = (params: { audio: string; mimeType: string }) => Promise<unknown>;
 
 export const GEMINI_FALLBACK_NOTICE = "Gemini voice unavailable, using Grok.";
+export const SOUND_BLOCKED_NOTICE = "Your browser is blocking sound. Tap the screen once, then ask again.";
+export const READ_FAILED_NOTICE = "Cannot read the agent's reply right now. It will show in the chat.";
+/** Reads of the chat that fail this many times in a row are shown to the person, not just retried. */
+const READ_FAILS_BEFORE_NOTICE = 3;
+const RESUME_WAIT_MS = 1_500;
 
 /** The live-event side of the reply path; `ReplyFeed` in the browser, a fake in tests. */
 export interface FeedLike {
@@ -121,6 +126,9 @@ export class DirectSession {
   private awaitingSince: number | null = null;
   private fetching: Promise<number> | null = null;
   private fetchAgain = false;
+  private readFails = 0;
+  /** Why the last chunk could not be voiced: the provider's outcome or the call's error. Shown in the transcript. */
+  private speakFailure = "";
 
   private replyQueue: string[] = [];
   private speakingLoop = false;
@@ -317,8 +325,14 @@ export class DirectSession {
         this.fetchAgain = false;
         try {
           found += await this.readReplies();
-        } catch {
-          // A missed read is retried by the next poll.
+          this.readFails = 0;
+        } catch (err) {
+          // A missed read is retried by the next poll; a read that keeps failing is said out loud.
+          this.readFails += 1;
+          if (this.readFails === READ_FAILS_BEFORE_NOTICE && !this.closed) {
+            this.addNote(`Could not read the reply: ${errorText(err)}`);
+            this.opts.onNotice?.(READ_FAILED_NOTICE);
+          }
         }
       } while (this.fetchAgain && !this.closed);
       return found;
@@ -399,8 +413,13 @@ export class DirectSession {
       next = null;
       if (gen !== this.speakGen || this.closed) return;
       if (!audio) {
-        this.addNote(REST_IN_CHAT);
+        this.addNote(this.speakFailure ? `${REST_IN_CHAT} (voice failed: ${this.speakFailure})` : REST_IN_CHAT);
         this.opts.onNotice?.(REST_IN_CHAT);
+        return;
+      }
+      if (!(await this.soundReady())) {
+        this.addNote(SOUND_BLOCKED_NOTICE);
+        this.opts.onNotice?.(SOUND_BLOCKED_NOTICE);
         return;
       }
       this.player.enqueue(audio.pcm, audio.rate);
@@ -420,7 +439,7 @@ export class DirectSession {
       this.provider = "grok";
       if (!this.fallbackNoticed) {
         this.fallbackNoticed = true;
-        this.addNote(GEMINI_FALLBACK_NOTICE);
+        this.addNote(this.speakFailure ? `${GEMINI_FALLBACK_NOTICE} (${this.speakFailure})` : GEMINI_FALLBACK_NOTICE);
         this.opts.onNotice?.(GEMINI_FALLBACK_NOTICE);
       }
     }
@@ -434,14 +453,34 @@ export class DirectSession {
 
   private async callSpeak(text: string, provider: SpeakProvider): Promise<{ pcm: ArrayBuffer; rate: number } | null> {
     const agentId = this.target?.agentId;
-    if (!agentId) return null;
-    try {
-      const out = (await this.opts.speak({ agentId, text, provider })) as { audio?: unknown; sampleRate?: unknown } | null;
-      if (typeof out?.audio !== "string" || !out.audio) return null;
-      return { pcm: base64ToArrayBuffer(out.audio), rate: typeof out.sampleRate === "number" ? out.sampleRate : TTS_SAMPLE_RATE };
-    } catch {
+    if (!agentId) {
+      this.speakFailure = "no agent on this chat";
       return null;
     }
+    try {
+      const out = (await this.opts.speak({ agentId, text, provider })) as { audio?: unknown; sampleRate?: unknown; error?: unknown } | null;
+      if (typeof out?.audio !== "string" || !out.audio) {
+        this.speakFailure = `${provider} ${typeof out?.error === "string" ? out.error : "returned no audio"}`;
+        return null;
+      }
+      return { pcm: base64ToArrayBuffer(out.audio), rate: typeof out.sampleRate === "number" ? out.sampleRate : TTS_SAMPLE_RATE };
+    } catch (err) {
+      this.speakFailure = `${provider} ${errorText(err)}`;
+      return null;
+    }
+  }
+
+  /** A context the browser holds suspended plays nothing and never ends a buffer: try to wake it, else say so. */
+  private async soundReady(): Promise<boolean> {
+    const context = this.opts.audioContext;
+    if (!context.state || context.state === "running") return true;
+    try {
+      // iOS can leave resume() pending outside a tap, so it gets a short time, not the whole call.
+      await Promise.race([context.resume?.(), this.sleep(RESUME_WAIT_MS)]);
+    } catch {
+      // Judged by the state below.
+    }
+    return (context.state as string) === "running";
   }
 
   // -------------------------------------------------------------------------
