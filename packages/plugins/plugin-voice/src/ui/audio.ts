@@ -120,10 +120,10 @@ export class Player {
     return this.sources.size > 0;
   }
 
-  enqueue(pcm16: ArrayBuffer): void {
+  enqueue(pcm16: ArrayBuffer, sampleRate = LIVE_SAMPLE_RATE): void {
     const samples = pcm16ToFloat(pcm16);
     if (samples.length === 0) return;
-    const buffer = this.context.createBuffer(1, samples.length, LIVE_SAMPLE_RATE);
+    const buffer = this.context.createBuffer(1, samples.length, sampleRate);
     buffer.copyToChannel(samples, 0);
     const source = this.context.createBufferSource();
     source.buffer = buffer;
