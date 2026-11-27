@@ -47,10 +47,10 @@ import { resolvePluginUiBase } from "@partnersinbiz/pib-plugin-kit/oauth-client"
 import { ModuleOffBanner, useModuleEnabled } from "./module-switch.js";
 import type { CampaignSeries } from "../series.js";
 import { clientSummaryModel, type ClientSummaryRow } from "../client-link.js";
-import { approvalState, DELIVERY_LABEL, deliveryLabel } from "../detail.js";
+import { approvalState, DELIVERY_LABEL, deliveryLabel, modeChoices, modeOf } from "../detail.js";
 import { CampaignsOverview, STATUS_LABEL, StatusPill, awaitingApproval, percent } from "./overview.js";
 import { WeeklyReview } from "./weekly-review.js";
-import { CampaignDetail, audienceText, type CampaignDetailData } from "./detail.js";
+import { CampaignDetail, ModePill, audienceText, type CampaignDetailData } from "./detail.js";
 import type { ResultsPayload } from "./results.js";
 import type { CampaignState } from "../attention.js";
 
@@ -64,6 +64,7 @@ interface Campaign {
   name: string;
   description: string;
   status: string;
+  autopilotMode?: "off" | "safe" | "full";
   fromName: string;
   fromLocal: string;
   audienceTags: string[];
@@ -256,6 +257,7 @@ function CampaignsPageBody({ context }: PluginPageProps) {
   const approveCampaign = useCampaignsAction("campaigns.approve");
   const sendBackCampaign = useCampaignsAction("campaigns.send-back");
   const pause = useCampaignsAction("campaigns.pause");
+  const setMode = useCampaignsAction("campaigns.set-mode");
   const resume = useCampaignsAction("campaigns.resume");
   const complete = useCampaignsAction("campaigns.complete");
   const moveCampaign = useCampaignsAction("campaigns.move");
@@ -445,6 +447,8 @@ function CampaignsPageBody({ context }: PluginPageProps) {
     return <Button type="button" style={small} onClick={() => openCampaign(campaign.id)}>Review and approve</Button>;
   }
 
+  const modeLabel = (c: Campaign) => modeChoices().find((m) => m.mode === modeOf(c))!.label;
+
   /** A needs-you marker for a phone row. */
   function rowFlag(campaign: Campaign): ReactNode {
     if (campaign.state) return <Pill tone={campaign.state.tone} dot>{campaign.state.label}</Pill>;
@@ -464,7 +468,7 @@ function CampaignsPageBody({ context }: PluginPageProps) {
               label="Campaigns"
               rows={rows}
               title={(c) => c.name}
-              meta={(c) => c.state?.detail ?? `${STATUS_LABEL[c.status] ?? c.status} · ${c.stats.enrolled} enrolled`}
+              meta={(c) => `${c.state?.detail ?? `${STATUS_LABEL[c.status] ?? c.status} · ${c.stats.enrolled} enrolled`} · Mode: ${modeLabel(c)}`}
               trailing={rowFlag}
               onOpen={(c) => openCampaign(c.id)}
               empty="No campaigns match."
@@ -485,6 +489,7 @@ function CampaignsPageBody({ context }: PluginPageProps) {
                         {String(value)}
                       </button>
                       <span style={{ fontSize: 12.5, color: tokens.muted, overflowWrap: "anywhere" }}>{audienceText(campaign)}</span>
+                      <span><ModePill campaign={campaign} /></span>
                     </div>
                   );
                 } },
@@ -540,6 +545,7 @@ function CampaignsPageBody({ context }: PluginPageProps) {
               onLaunch: () => void run(() => launch({ campaignId: detail.campaign.id }), "Campaign launched"),
               onAddStep: () => openAddStep(detail.campaign.id),
               onPause: () => void run(() => pause({ campaignId: detail.campaign.id }), "Campaign paused"),
+              onSetMode: (mode) => void run(() => setMode({ campaignId: detail.campaign.id, mode }), `Agent mode set to ${mode === "off" ? "Off" : "Safe"}`),
               onResume: () => void run(() => resume({ campaignId: detail.campaign.id }), "Campaign resumed"),
               onEnrollNew: () => void run(() => launch({ campaignId: detail.campaign.id }), "New audience contacts enrolled and the campaign is running"),
               onComplete: () => {

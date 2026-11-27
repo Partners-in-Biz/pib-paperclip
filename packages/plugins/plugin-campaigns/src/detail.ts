@@ -162,3 +162,29 @@ export function nextSend(rows: RunningEnrollment[]): NextSend {
     sending: rows.filter((row) => row.sending).length,
   };
 }
+
+/** One choice of the campaign mode chip: Auto shows but cannot be chosen yet (plan 5.2). */
+export interface ModeChoice { mode: "off" | "safe" | "full"; label: string; selectable: boolean; title: string }
+
+const MODE_TITLES = {
+  off: "Off: an agent may only pause, stop an enrollment or suppress.",
+  safe: "Safe: an agent may draft, edit and ask for approval. A person launches, resumes, completes and picks the winner.",
+  full: "Auto arrives later.",
+} as const;
+
+/** The mode shown on the list and the campaign screen. An older worker sends none: that is Safe. */
+export function modeOf(campaign: { autopilotMode?: "off" | "safe" | "full" | null }): "off" | "safe" | "full" {
+  return campaign.autopilotMode === "off" || campaign.autopilotMode === "full" ? campaign.autopilotMode : "safe";
+}
+
+export function modeChoices(): ModeChoice[] {
+  return [
+    { mode: "off", label: "Off", selectable: true, title: MODE_TITLES.off },
+    { mode: "safe", label: "Safe", selectable: true, title: MODE_TITLES.safe },
+    { mode: "full", label: "Auto", selectable: false, title: MODE_TITLES.full },
+  ];
+}
+
+export function modeTitle(mode: "off" | "safe" | "full"): string {
+  return MODE_TITLES[mode];
+}

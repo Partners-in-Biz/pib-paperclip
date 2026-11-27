@@ -5,7 +5,7 @@
  */
 import { useState, type ReactNode } from "react";
 import { Button, ChartColumn, CircleAlert, Clock, LayoutDashboard, Mail, Pill, Send, Tabs, Users, formatDate, formatShortDate, tokens, tone } from "@partnersinbiz/pib-plugin-ui";
-import { approvalState, bodyPreview, DELIVERY_DETAIL, deliveryKey, deliveryLabel, orderedSteps, showApprovalBar, type NextSend } from "../detail.js";
+import { approvalState, bodyPreview, modeChoices, modeOf, modeTitle, DELIVERY_DETAIL, deliveryKey, deliveryLabel, orderedSteps, showApprovalBar, type NextSend } from "../detail.js";
 import { ApprovalBar, type ApproveInput } from "./approval-bar.js";
 import { StatusPill } from "./overview.js";
 import { PeopleTab, type AudiencePerson } from "./people.js";
@@ -25,6 +25,8 @@ export interface CampaignDetailData {
     name: string;
     description: string;
     status: string;
+    /** Off, Safe or Auto (`full`): what an agent may do here. Absent from an older worker (Safe). */
+    autopilotMode?: "off" | "safe" | "full";
     delivery?: "issue" | "email" | "auto";
     audienceTags: string[];
     audienceMode?: "tags" | "client_contacts" | "client_contact" | "client_list";
@@ -86,6 +88,8 @@ export interface DetailActions {
   onLaunch: () => void;
   onAddStep: () => void;
   onPause: () => void;
+  /** A person changes the mode (Off or Safe; Auto is not chosen yet). */
+  onSetMode?: (mode: "off" | "safe") => void;
   onResume: () => void;
   onEnrollNew: () => void;
   onComplete: () => void;
@@ -138,6 +142,37 @@ function nextSendText(data: CampaignDetailData, numbers: Map<number, number>, no
   return `${text.charAt(0).toUpperCase()}${text.slice(1)}.`;
 }
 
+/** The list's read-only mode chip. */
+export function ModePill({ campaign }: { campaign: { autopilotMode?: "off" | "safe" | "full" | null } }) {
+  const mode = modeOf(campaign);
+  const label = modeChoices().find((c) => c.mode === mode)!.label;
+  return <Pill tone={mode === "off" ? "neutral" : mode === "full" ? "warn" : "info"} title={modeTitle(mode)}>{`Mode: ${label}`}</Pill>;
+}
+
+/** The campaign screen's mode chip: Off, Safe, and Auto shown but not selectable. */
+export function ModeChip({ campaign, busy, onSetMode }: { campaign: { autopilotMode?: "off" | "safe" | "full" | null }; busy: boolean; onSetMode?: (mode: "off" | "safe") => void }) {
+  const current = modeOf(campaign);
+  return (
+    <div role="group" aria-label="What agents may do on this campaign" style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", minWidth: 0 }}>
+      <span style={{ fontSize: 12.5, color: tokens.muted }}>Agent mode</span>
+      {modeChoices().map((choice) => (
+        <Button
+          key={choice.mode}
+          type="button"
+          variant={choice.mode === current ? "primary" : "secondary"}
+          style={{ height: 28, fontSize: 12.5 }}
+          title={choice.title}
+          aria-pressed={choice.mode === current}
+          disabled={busy || !choice.selectable || !onSetMode}
+          onClick={() => { if (choice.selectable && choice.mode !== current) onSetMode?.(choice.mode as "off" | "safe"); }}
+        >
+          {choice.label}{choice.selectable ? "" : " (arrives later)"}
+        </Button>
+      ))}
+    </div>
+  );
+}
+
 export function CampaignDetail({ data, actions, linkFor, now = new Date(), initialTab = "summary" }: {
   data: CampaignDetailData;
   actions: DetailActions;
@@ -187,6 +222,7 @@ export function CampaignDetail({ data, actions, linkFor, now = new Date(), initi
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
           {data.state ? <Pill tone={data.state.tone} dot>{data.state.label}</Pill> : <StatusPill status={campaign.status} />}
         </div>
+        <ModeChip campaign={campaign} busy={actions.busy} onSetMode={actions.onSetMode} />
         {data.state?.key === "stuck" ? (
           <Callout tone="bad">
             {data.state.detail} <button type="button" onClick={() => setTab("people")} style={linkButton}>See who is held</button>
