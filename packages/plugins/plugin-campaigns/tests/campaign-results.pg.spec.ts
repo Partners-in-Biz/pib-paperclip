@@ -2,6 +2,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { stepEventStats, stepEventStatsByVersion } from "../src/db.js";
+import { replyList, resultRows } from "../src/people.js";
 import { NAMESPACE } from "../src/namespace.js";
 import { boot, CO as TOOL_CO } from "./helpers/harness.js";
 import { embeddedAvailable, startPg, type PgHarness } from "./helpers/pg.js";
@@ -73,6 +74,17 @@ describe.skipIf(!available)("campaign results (postgres)", () => {
     );
     expect(plain.find((s) => s.stepPosition === 1)).toMatchObject({ sent: 6, replies: 3 });
     expect(await stepEventStats(ctx, "c1", { from: "2026-11-11" })).toEqual([expect.objectContaining({ stepPosition: 1, sent: 0, replies: 2 })]);
+  });
+
+  it("lists replies newest first with their kept text, inside the range, for this campaign only", async () => {
+    await h.client.query(`UPDATE ${NAMESPACE}.campaign_step_events SET meta = '{"snippet":"Yes please"}'::jsonb WHERE event_type = 'reply' AND variant = 'b' AND occurred_at >= '2026-11-12'`);
+    const all = await replyList(ctx, CO, "c1", [{ position: 1, subject: "One" }, { position: 2, subject: "Two" }]);
+    expect(all.map((r) => [r.step, r.variant, r.text])).toEqual([[1, "b", "Yes please"], [1, "b", null], [1, "a", null]]);
+    const ranged = await replyList(ctx, CO, "c1", [{ position: 1, subject: "One" }], { from: "2026-11-02", to: "2026-11-12" });
+    expect(ranged).toHaveLength(2);
+    expect(await replyList(ctx, CO, "c2", [{ position: 1, subject: "One" }])).toEqual([]);
+    const rows = await resultRows(ctx, CO, "c1", { from: "2026-11-02", to: "2026-11-11" });
+    expect(rows.filter((r) => r.eventType === "sent").reduce((n, r) => n + r.count, 0)).toBe(5);
   });
 
   describe("through the tool entry", () => {

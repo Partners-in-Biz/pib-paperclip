@@ -9,9 +9,9 @@ import { approvalState, bodyPreview, DELIVERY_DETAIL, deliveryKey, deliveryLabel
 import { ApprovalBar, type ApproveInput } from "./approval-bar.js";
 import { StatusPill } from "./overview.js";
 import { PeopleTab, type AudiencePerson } from "./people.js";
-import { ResultsTab } from "./results.js";
+import { ResultsTab, type ResultsPayload, type ResultsRange } from "./results.js";
 import type { CampaignState } from "../attention.js";
-import type { CampaignResults, PersonView } from "../people.js";
+import type { CampaignResults, PersonView, ReplyView } from "../people.js";
 
 export type DetailTab = "summary" | "people" | "emails" | "results";
 
@@ -74,6 +74,8 @@ export interface CampaignDetailData {
   /** Before launch: who would get it. */
   audiencePeople?: AudiencePerson[] | null;
   results?: CampaignResults | null;
+  /** The latest replies with their text. Null when they could not be read. */
+  replies?: ReplyView[] | null;
   /** Where a person may move this draft: our own work or one of our own brands (`client` null is our own). Empty when it cannot move. */
   moveTargets?: Array<{ client: string | null; name: string }>;
 }
@@ -92,6 +94,8 @@ export interface DetailActions {
   onSendBack: (note: string) => void;
   /** Move a draft to our own work (null) or to one of our own brands (`company:<id>`). */
   onMove?: (client: string | null) => void;
+  /** Reads the Results numbers for a date range. */
+  onResults?: (range: ResultsRange) => Promise<ResultsPayload>;
 }
 
 /** "All contacts", "Contacts tagged vip, hot", "Contacts at Northwind", "Northwind only". */
@@ -332,7 +336,7 @@ export function CampaignDetail({ data, actions, linkFor, now = new Date(), initi
         </>
       ) : null}
 
-      {tab === "results" ? <ResultsTab results={data.results ?? null} draft={draft} delivery={deliveryKey(campaign.delivery)} /> : null}
+      {tab === "results" ? <ResultsTab results={data.results ?? null} replies={data.replies} load={actions.onResults} draft={draft} delivery={deliveryKey(campaign.delivery)} /> : null}
     </div>
   );
 }

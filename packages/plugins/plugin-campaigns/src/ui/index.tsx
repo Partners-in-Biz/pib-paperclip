@@ -51,6 +51,7 @@ import { approvalState, DELIVERY_LABEL, deliveryLabel } from "../detail.js";
 import { CampaignsOverview, STATUS_LABEL, StatusPill, awaitingApproval, percent } from "./overview.js";
 import { WeeklyReview } from "./weekly-review.js";
 import { CampaignDetail, audienceText, type CampaignDetailData } from "./detail.js";
+import type { ResultsPayload } from "./results.js";
 import type { CampaignState } from "../attention.js";
 
 const PLUGIN_ID = "partnersinbiz.campaigns";
@@ -242,6 +243,7 @@ function CampaignsPageBody({ context }: PluginPageProps) {
   const scopeKey = scope ? formatClientParam(scope) : "own";
   const load = useCampaignsAction("campaigns.load");
   const loadDetail = useCampaignsAction("campaigns.detail");
+  const loadResults = useCampaignsAction("campaigns.results");
   const loadClientSummary = useCampaignsAction("campaigns.client-summary");
   const [clientRows, setClientRows] = useState<ClientSummaryRow[]>([]);
   const [clientError, setClientError] = useState<string | null>(null);
@@ -544,6 +546,7 @@ function CampaignsPageBody({ context }: PluginPageProps) {
                 if (window.confirm(`Complete ${detail.campaign.name}? Nobody gets its later emails after this.`)) void run(() => complete({ campaignId: detail.campaign.id }), "Campaign completed");
               },
               onAb: () => openAb(detail.campaign.id),
+              onResults: (range) => loadResults({ campaignId: detail.campaign.id, ...range }) as Promise<ResultsPayload>,
               onApprove: (input) => void run(() => approveCampaign({ campaignId: detail.campaign.id, ...input }), approvedMessage),
               onSendBack: (note) => void run(() => sendBackCampaign({ campaignId: detail.campaign.id, note }), "Sent back. The campaign's agent has a task to fix it."),
               onMove: (client) => {
