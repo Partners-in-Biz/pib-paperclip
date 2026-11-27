@@ -29,6 +29,9 @@ export const CAMPAIGNS_ACCESS_TABLE: AccessTable = Object.freeze({
   // Planning Canvas entity cards (PAR-14423): reading, so `view`, as the page's detail and list.
   ...rows(VIEW, ["canvas.cards.resolve", "canvas.cards.search", "canvas.cards.related"]),
   "campaigns.create-campaign": CREATE,
+  // Adding people (Stage 4c): the preview and a list's reach are reading; adding or tagging people changes the audience.
+  ...rows(VIEW, ["campaigns.audience-preview", "campaigns.audience-members"]),
+  ...rows(EDIT, ["campaigns.audience-import", "campaigns.audience-add", "campaigns.audience-tick"]),
   ...rows(EDIT, ["campaigns.add-step", "campaigns.request-approval", "campaigns.pause", "campaigns.complete", "campaigns.enroll", "campaigns.declare-winner", "campaigns.move"]),
   // Launching or resuming sends to people; approving, sending back, a campaign's mode and the Growth Lab decisions are decisions.
   ...rows(APPROVE, [

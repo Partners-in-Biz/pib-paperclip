@@ -82,4 +82,19 @@ describe("privacy covers list members", () => {
     expect(store.audience_members!.map((m) => m.id)).toEqual(["m-bob"]);
     expect(store.channel_consents).toEqual([]);
   });
+
+  it("the page's Add people actions: a preview counts, Add one refuses a repeat and a missing lawful basis; nothing is a send", async () => {
+    const { harness, store } = await boot({ store: listStore() });
+    const made = await harness.executeTool<Result>("create-campaign", { name: "Expo", client: "company:acme", audienceMode: "client_list" }, AGENT);
+    const campaignId = String(made.data!.id);
+    const page = { companyId: CO, actor: { type: "user" as const, userId: "user-peet" } };
+    const csv = "Name,Email,Mobile\nAda,ada@expo.test,\nCleo,,082 111 0002\nGus,nope,";
+    const preview = await harness.performAction<{ counts: Record<string, number> }>("campaigns.audience-preview", { campaignId, csv }, page);
+    expect(preview.counts).toEqual({ total: 3, new: 1, duplicate: 1, suppressed: 0, invalid: 1, noOptIn: 1 });
+    await expect(harness.performAction("campaigns.audience-add", { campaignId, name: "Ada", email: "ADA@expo.test", source: "x", lawfulBasis: "consent" }, page)).rejects.toThrow(/Not added: already on this list/);
+    await expect(harness.performAction("campaigns.audience-add", { campaignId, name: "Bo", email: "bo@expo.test", source: "x" }, page)).rejects.toThrow(/lawfulBasis/);
+    await expect(harness.performAction("campaigns.audience-tick", { campaignId, contactIds: ["ada"] }, page)).rejects.toThrow(/own campaigns/);
+    expect(store.audience_members).toHaveLength(3);
+    expect(store.campaign_enrollments ?? []).toEqual([]);
+  });
 });

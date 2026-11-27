@@ -123,6 +123,7 @@ import { campaignState, failedByCampaign, openReviseCampaigns, type CampaignFact
 import { isClientCampaign, isOwnBrandCampaign, ownBrands, withBrand, type OwnBrand } from "./brands.js";
 import { enrollmentPeople, peopleView, replyList, resultRows, resultsView, stepNumbers, stepTaskCounts, type TaskCounts } from "./people.js";
 import { eraseSubject, exportPersonDataTool, onConsentRecorded } from "./privacy.js";
+import { applyImport, listMembersWithReach, person, previewImport, readCsvPeople, readProvenance, tickContacts, type ColumnMap } from "./audience-import.js";
 import { CAMPAIGNS_PROJECT_KEY } from "./namespace.js";
 import { projectForCampaign } from "./projects.js";
 import { campaignsPreferences, preferencesLoad, preferencesSave, readCampaignPreferences } from "./preferences.js";
@@ -265,6 +266,12 @@ const plugin = definePlugin({
     registerCanvasCards({ register: g.action, kinds: [campaignCardKind(ctx)] });
     g.action("campaigns.ab-suggestion", (params, context) => suggestWinner(ctx, requiredCompany(context), params));
     g.action("campaigns.declare-winner", (params, context) => declareWinner(ctx, requiredCompany(context), params));
+    // Adding people (Stage 4c): preview, import, add one, tick own contacts, a client list with its reach. Never a send.
+    g.action("campaigns.audience-preview", (params, context) => audienceAction(ctx, context, params, "preview"));
+    g.action("campaigns.audience-import", (params, context) => audienceAction(ctx, context, params, "import"));
+    g.action("campaigns.audience-add", (params, context) => audienceAction(ctx, context, params, "add"));
+    g.action("campaigns.audience-tick", (params, context) => audienceAction(ctx, context, params, "tick"));
+    g.action("campaigns.audience-members", (params, context) => audienceAction(ctx, context, params, "members"));
     ctx.jobs.register("open-due-steps", () => trackJob(ctx, "open-due-steps", async () => {
       // Catch up on approvals and step issues whose events were missed (delivery is at-most-once).
       await catchUpApprovals(ctx);
@@ -788,6 +795,26 @@ function creationMode(params: Record<string, unknown>, owner: Owner): CampaignMo
   }
   if (mode === "full") throw new CampaignError(AUTO_LATER);
   return mode;
+}
+
+/** The page's Add people (audience-import.ts). An own campaign's result carries the CRM call the page makes next. */
+async function audienceAction(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>, step: "preview" | "import" | "add" | "tick" | "members") {
+  const companyId = requiredCompany(context);
+  const campaign = await requireCampaign(ctx, companyId, requiredString(params, "campaignId"));
+  if (step === "members") return listMembersWithReach(ctx, companyId, campaign, params.listName);
+  if (step === "tick") return tickContacts(ctx, companyId, campaign, stringList(params, "contactIds") ?? []);
+  const people = step === "add" ? [person(1, params.name, params.email, params.phone)] : readCsvPeople(requiredString(params, "csv"), columnMapOf(params.columns)).people;
+  if (step === "preview") return previewImport(ctx, companyId, campaign, people, params.listName);
+  const result = await applyImport(ctx, companyId, campaign, people, readProvenance(params, actorLabel({ agentId: context.actor.agentId ?? "", userId: context.actor.userId })), params.listName);
+  const one = result.rows[0];
+  if (step === "add" && one && one.status !== "new" && !(one.status === "duplicate" && result.crm)) throw new CampaignError(`Not added: ${one.reason ?? one.status}`);
+  return result;
+}
+
+function columnMapOf(value: unknown): ColumnMap {
+  const map = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  const pick = (key: string) => (typeof map[key] === "string" ? (map[key] as string) : null);
+  return { name: pick("name"), email: pick("email"), phone: pick("phone") };
 }
 
 async function createCampaignRecord(ctx: PluginContext, companyId: string, params: Record<string, unknown>, owner: Owner = {}) {
