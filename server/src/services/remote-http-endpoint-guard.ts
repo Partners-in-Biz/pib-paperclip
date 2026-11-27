@@ -149,11 +149,11 @@ export function isPrivateOrReservedIp(address: string): boolean {
 }
 
 /**
- * IPv6 forms `isPrivateOrReservedIp` does not refuse yet (PAR-14396): IPv4-compatible
- * `::/96` (e.g. `::7f00:1`), IPv4-translated `::ffff:0:0/96` (e.g. `::ffff:0:7f00:1`),
- * deprecated site-local `fec0::/10` and the returned 6bone block `3ffe::/16`.
- * Parsed by value, so `::127.0.0.1` (glibc's spelling of `::7f00:1`) matches too.
- * Report-only for now; the enforcing change folds this into `isPrivateOrReservedIpv6`.
+ * Legacy IPv6 forms the prefix checks in `isPrivateOrReservedIpv6` miss (PAR-14396):
+ * IPv4-compatible `::/96` (e.g. `::7f00:1`), IPv4-translated `::ffff:0:0/96`
+ * (e.g. `::ffff:0:7f00:1`), deprecated site-local `fec0::/10` and the returned 6bone
+ * block `3ffe::/16`. Parsed by value, so `::127.0.0.1` (glibc's spelling of `::7f00:1`)
+ * matches too. `isPrivateOrReservedIp` refuses all of them.
  */
 export function isLegacyIpv6EmbeddedOrReserved(address: string): boolean {
   const hextets = parseIpv6Hextets(address);
@@ -240,6 +240,7 @@ function parseMappedIpv4Hex(address: string): string | null {
 
 function isPrivateOrReservedIpv6(address: string): boolean {
   if (address === "::" || address === "::1") return true;
+  if (isLegacyIpv6EmbeddedOrReserved(address)) return true;
   if (address.startsWith("fc") || address.startsWith("fd")) return true;
   if (/^fe[89ab]/.test(address)) return true;
   if (address.startsWith("ff")) return true;

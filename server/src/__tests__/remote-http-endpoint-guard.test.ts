@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assertPublicRemoteHttpEndpoint } from "../services/remote-http-endpoint-guard.js";
+import { assertPublicRemoteHttpEndpoint, isPrivateOrReservedIp } from "../services/remote-http-endpoint-guard.js";
 import { readRemoteConnectionFailure } from "../services/remote-connection-failure.js";
 
 function guardError(message: string, code: string) {
@@ -32,6 +32,29 @@ describe("remote HTTP endpoint guard", () => {
     await expect(assertPublicRemoteHttpEndpoint(
       new URL("https://metadata.example/mcp"),
       { lookup: async () => [{ address: "10.0.0.12", family: 4 }] },
+      guardError,
+    )).rejects.toMatchObject({ code: "remote_http_private_endpoint" });
+  });
+
+  // PAR-14396: the four legacy IPv6 forms are refused by value, for every caller of the guard.
+  it.each(["::7f00:1", "::127.0.0.1", "::ffff:0:7f00:1", "fec0::1", "feff::1", "3ffe::1", "3ffe:ffff::1"])(
+    "isPrivateOrReservedIp refuses legacy IPv6 form %s",
+    (address) => {
+      expect(isPrivateOrReservedIp(address)).toBe(true);
+    },
+  );
+
+  it.each(["2606:4700:4700::1111", "3fff::1", "3ffd::1", "fbff::1", "::ffff:8.8.8.8", "::ffff:808:808"])(
+    "isPrivateOrReservedIp still allows public address %s",
+    (address) => {
+      expect(isPrivateOrReservedIp(address)).toBe(false);
+    },
+  );
+
+  it("blocks hostnames that resolve to an IPv4-compatible loopback address", async () => {
+    await expect(assertPublicRemoteHttpEndpoint(
+      new URL("https://legacy.example/mcp"),
+      { lookup: async () => [{ address: "::7f00:1", family: 6 }] },
       guardError,
     )).rejects.toMatchObject({ code: "remote_http_private_endpoint" });
   });
