@@ -7,7 +7,7 @@ import {
   useState,
 } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Check, Link2, Lock, Play, Plus, RefreshCw, RotateCcw, Terminal, Trash2, X } from "lucide-react";
+import { Check, Link2, Lock, Play, Plus, RefreshCw, RotateCcw, Terminal, Trash2, X } from "lucide-react";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal as XTermTerminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
@@ -55,7 +55,7 @@ import {
   type SecretRefHint,
   type SecretRefHintsContextValue,
 } from "@/components/SecretBindingPicker";
-import { useBreadcrumbs } from "@/context/BreadcrumbContext";
+import { useBreadcrumbs, type Breadcrumb } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
 import { useToast } from "@/context/ToastContext";
 import { environmentDisplayLabel, isPlatformManagedEnvironment } from "@/lib/managed-sandbox-environment";
@@ -1327,14 +1327,14 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
       (environmentFormBaselineKey !== null && environmentFormKey(environmentForm) !== environmentFormBaselineKey));
 
   useEffect(() => {
-    const crumbs = [
+    const crumbs: Breadcrumb[] = [
       { label: "Settings", href: "/company/settings" },
       isEnvironmentFormPage
         ? { label: "Environments", href: ENVIRONMENTS_PATH }
         : { label: "Environments" },
     ];
-    if (mode === "create") crumbs.push({ label: "Add environment" });
-    if (mode === "edit") crumbs.push({ label: "Edit environment" });
+    if (mode === "create") crumbs.push({ label: "Add environment", backHref: ENVIRONMENTS_PATH });
+    if (mode === "edit") crumbs.push({ label: "Edit environment", backHref: ENVIRONMENTS_PATH });
     setBreadcrumbs(crumbs);
   }, [isEnvironmentFormPage, mode, setBreadcrumbs]);
 
@@ -2135,14 +2135,6 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
         <SecretRefHintsContext.Provider value={environmentSecretRefHints}>
         <div data-testid="managed-environment-form-page">
           <div className="pb-4">
-            <div className="mb-4">
-              <Button size="sm" variant="ghost" asChild>
-                <Link to={ENVIRONMENTS_PATH}>
-                  <ArrowLeft className="mr-1.5 h-3.5 w-3.5" />
-                  Environments
-                </Link>
-              </Button>
-            </div>
             <div className="flex flex-wrap items-center gap-2">
               <h1 className="text-lg font-semibold">{editingEnvironment.name}</h1>
               <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
@@ -2203,13 +2195,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
         <SecretRefHintsContext.Provider value={environmentSecretRefHints}>
         <div data-testid="environment-form-page">
           <div className="pb-4">
-            <div className="mb-4 flex items-center justify-between gap-2">
-              <Button size="sm" variant="ghost" asChild>
-                <Link to={ENVIRONMENTS_PATH}>
-                  <ArrowLeft className="mr-1.5 h-3.5 w-3.5" />
-                  Environments
-                </Link>
-              </Button>
+            <div className="mb-4 flex items-center justify-end gap-2">
               {editingEnvironment ? (
                 <Button
                   size="icon-sm"
