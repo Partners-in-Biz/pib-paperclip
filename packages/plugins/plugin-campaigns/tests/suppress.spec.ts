@@ -153,14 +153,17 @@ describe("agent tools", () => {
     expect(s.campaign_enrollments!.map((row) => row.status)).toEqual(["stopped", "stopped"]);
   });
 
-  it("enroll-contact refuses a suppressed address", async () => {
+  it("enroll-contact refuses a suppressed address (into a running campaign in Safe, a person enrolls; plan Q4)", async () => {
     const s = store();
+    s.campaigns!.find((row) => row.id === "camp-mail")!.autopilot_mode = "safe";
     s.suppressions!.push({ company_id: CO, email: "uma@x.test", reason: "bounce", scope: "all", source: "partnersinbiz.mailbox", contact_id: null, campaign_id: null });
     const { harness } = await boot({ store: s });
-    const refused = await harness.executeTool<{ error?: string }>("enroll-contact", { campaignId: "camp-mail", contactId: "uma" }, { companyId: CO, agentId: "agent-camp" });
-    expect(refused.error).toMatch(/unsubscribed or bounced/);
-    const ok = await harness.executeTool<{ data?: Record<string, unknown> }>("enroll-contact", { campaignId: "camp-mail", contactId: "bob" }, { companyId: CO, agentId: "agent-camp" });
-    expect(ok.data).toMatchObject({ contactId: "bob", status: "running" });
+    const person = { companyId: CO, actor: { type: "user" as const, userId: "user-peet", companyId: CO } };
+    await expect(harness.performAction("campaigns.enroll", { campaignId: "camp-mail", contactId: "uma" }, person)).rejects.toThrow(/unsubscribed or bounced/);
+    await expect(harness.performAction("campaigns.enroll", { campaignId: "camp-mail", contactId: "bob" }, person)).resolves.toMatchObject({ contactId: "bob", status: "running" });
+    // The agent's tool is refused by the mode before it gets that far.
+    const agent = await harness.executeTool<{ error?: string }>("enroll-contact", { campaignId: "camp-mail", contactId: "ada" }, { companyId: CO, agentId: "agent-camp" });
+    expect(agent.error).toMatch(/An agent may not enroll people into a launched campaign in Safe mode/);
   });
 });
 

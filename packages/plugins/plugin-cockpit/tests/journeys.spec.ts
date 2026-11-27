@@ -47,7 +47,7 @@ describe("the shipped journeys", () => {
   });
 
   it("only the nightly ones are safe to run every night: no send, approval, payment or launch", () => {
-    const outward = /^(request-|send-|launch-|record-payment|create-payment-link|set-sequence-delivery|enroll-contact|schedule-post|connect-)/;
+    const outward = /^(request-|send-|launch-|record-payment|create-payment-link|set-sequence-delivery|enroll-contact|resume-campaign|declare-ab-winner|schedule-post|connect-)/;
     for (const j of JOURNEYS.filter((x) => x.schedule.includes("nightly"))) {
       for (const { name, step } of toolSteps(j)) expect(outward.test(name), `${j.key}: ${name}`).toBe(false);
       expect(j.steps.some((s) => s.probe?.kind === "approval-route"), j.key).toBe(false);

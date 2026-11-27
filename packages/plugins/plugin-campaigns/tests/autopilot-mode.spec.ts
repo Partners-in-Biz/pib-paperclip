@@ -30,19 +30,22 @@ describe("campaign mode (autopilot_mode)", () => {
     expect(listed.data.campaigns.find((c) => c.id === "camp-1")).toMatchObject({ autopilotMode: "safe", pausedBy: null });
   });
 
-  it("a new campaign starts in Safe; an agent may create it in Off but never in Auto, and nobody creates in Auto yet", async () => {
+  it("a new campaign starts in Safe; in Off a person creates it, an agent never (0.22.0); nobody creates in Auto yet", async () => {
     const { harness, store } = await boot();
     const made = await harness.executeTool<{ data: { id: string; autopilotMode: string } }>("create-campaign", { name: "Spring" }, AGENT);
     expect(made.data.autopilotMode).toBe("safe");
     expect(row(store, made.data.id).autopilot_mode).toBe("safe");
-    const off = await harness.executeTool<{ data: { id: string } }>("create-campaign", { name: "Quiet", autopilotMode: "off" }, AGENT);
-    expect(row(store, off.data.id).autopilot_mode).toBe("off");
+    const agentOff = await harness.executeTool<{ error?: string }>("create-campaign", { name: "Hush", autopilotMode: "off" }, AGENT);
+    expect(agentOff.error).toMatch(/An agent may not edit this draft in Off mode/);
+    const off = await harness.performAction<{ id: string }>("campaigns.create-campaign", { name: "Quiet", autopilotMode: "off" }, asPerson);
+    expect(row(store, off.id).autopilot_mode).toBe("off");
     const auto = await harness.executeTool<{ error?: string }>("create-campaign", { name: "Loud", autopilotMode: "full" }, AGENT);
     expect(auto.error).toMatch(/agent cannot create a campaign in Auto/);
     await expect(harness.performAction("campaigns.create-campaign", { name: "Loud", autopilotMode: "full" }, asAgentOnPage)).rejects.toThrow(/agent cannot create a campaign in Auto/);
     await expect(harness.performAction("campaigns.create-campaign", { name: "Loud", autopilotMode: "full" }, asPerson)).rejects.toThrow(/Auto mode arrives in a later release/);
     expect(store.campaigns!.map((c) => c.name)).toEqual(["Spring", "Quiet"]);
-    expect(harness.activity).toHaveLength(0);
+    // One entry per campaign made, none for a refusal.
+    expect(harness.activity.map((a) => [a.metadata?.actor, a.metadata?.action, a.metadata?.mode])).toEqual([["agent:agent-camp", "create", "safe"], ["user:user-peet", "create", "off"]]);
   });
 
   it("an agent lowers Safe to Off through the tool, with one activity entry, and cannot raise it again", async () => {

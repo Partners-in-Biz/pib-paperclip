@@ -52,6 +52,9 @@ describe("Campaigns tool surface", () => {
     expect(text("resume-campaign")).toMatch(/resumed by a person, in every mode; .* by the agent only in Auto \(full\)/);
     expect(text("complete-campaign")).toMatch(/In Off and Safe a person completes it; in Auto \(full\) an agent may once every enrollment is finished/);
     expect(text("pause-campaign")).not.toMatch(/person/);
+    expect(text("enroll-contact")).toMatch(/Into a draft an agent may in Safe and Auto, not in Off; into a launched campaign a person enrolls, in every mode/);
+    expect(text("declare-ab-winner")).toMatch(/In Off and Safe a person picks it on the campaign screen; in Auto \(full\) an agent may when suggest-ab-winner names that version/);
+    for (const name of ["stop-enrollment", "suppress-address", "suppress-phone"]) expect(text(name), name).not.toMatch(/mode/);
   });
 
   it("declares what launch on approval and the shared list need", () => {
