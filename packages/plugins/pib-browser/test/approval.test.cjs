@@ -319,3 +319,66 @@ test('description marker + human close + agent issue.updated with unparseable cr
   assert.equal(r.reason, 'approval_marker_missing');
   fs.rmSync(tmp, { recursive: true });
 });
+
+
+// --- [dogfood] approvals closed by an approver seat (PAR-11907 follow-up, Peet 26 Nov) ---
+function dogfoodCase({ id, title = '[dogfood] Approval: click X', closer = 'agent', closerId = 'marcus', extraActivity = [] }) {
+  const now = Date.now();
+  return {
+    now,
+    responses: {
+      [`http://api/api/issues/${id}`]: { ok: true, data: { id, title, status: 'done', companyId: 'c1', description: 'approval for pib:paperclip:[data-silence-open]', completedAt: new Date(now - 1000).toISOString() } },
+      [`http://api/api/issues/${id}/activity`]: { ok: true, data: [{ id: 'd1', action: 'issue.updated', createdAt: new Date(now - 1000).toISOString(), actorType: closer, actorId: closerId, details: { changes: { status: { from: 'todo', to: 'done' } } } }, ...extraActivity] },
+      [`http://api/api/issues/${id}/comments`]: { ok: true, data: [] }
+    }
+  };
+}
+async function runDogfood(c, id, { agentId = 'toby', approvers = ['marcus'] } = {}) {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'apt-'));
+  const store = createApprovalStore({ stateDir: tmp, fs, path });
+  const r = await verifyApproval({ approval: id, identity: 'pib:paperclip', action: '[data-silence-open]', companyId: 'c1', agentId },
+    { fetch: makeFakeFetch(c.responses), apiBase: 'http://api', token: 'tk', clock: { now: () => c.now }, store, dogfoodApprovers: approvers });
+  fs.rmSync(tmp, { recursive: true });
+  return r;
+}
+
+test('dogfood approval closed by an approver seat passes', async () => {
+  const r = await runDogfood(dogfoodCase({ id: 'PAR-901' }), 'PAR-901');
+  assert.equal(r.ok, true);
+});
+
+test('dogfood approval closed by the clicking agent itself fails', async () => {
+  const r = await runDogfood(dogfoodCase({ id: 'PAR-902', closerId: 'toby' }), 'PAR-902', { approvers: ['marcus', 'toby'] });
+  assert.equal(r.reason, 'approval_not_closed_by_human');
+});
+
+test('agent close of a non-dogfood approval still fails', async () => {
+  const r = await runDogfood(dogfoodCase({ id: 'PAR-903', title: 'Approval: publish the client post' }), 'PAR-903');
+  assert.equal(r.reason, 'approval_not_closed_by_human');
+});
+
+test('dogfood approval closed by an agent that is not an approver fails', async () => {
+  const r = await runDogfood(dogfoodCase({ id: 'PAR-904', closerId: 'leo' }), 'PAR-904');
+  assert.equal(r.reason, 'approval_not_closed_by_human');
+});
+
+test('dogfood approval with no approvers configured fails', async () => {
+  const r = await runDogfood(dogfoodCase({ id: 'PAR-905' }), 'PAR-905', { approvers: [] });
+  assert.equal(r.reason, 'approval_not_closed_by_human');
+});
+
+test('dogfood approval fails when the request carries no agent id', async () => {
+  const r = await runDogfood(dogfoodCase({ id: 'PAR-906' }), 'PAR-906', { agentId: null });
+  assert.equal(r.reason, 'approval_not_closed_by_human');
+});
+
+test('dogfood approval edited by an agent after the approver closed it fails', async () => {
+  const c = dogfoodCase({ id: 'PAR-907', extraActivity: [{ id: 'e1', action: 'issue.updated', createdAt: new Date(Date.now()).toISOString(), actorType: 'agent', actorId: 'toby', details: { changes: { description: {} } } }] });
+  const r = await runDogfood(c, 'PAR-907');
+  assert.equal(r.reason, 'approval_changed_after_close');
+});
+
+test('person-closed dogfood approval still passes without approvers', async () => {
+  const r = await runDogfood(dogfoodCase({ id: 'PAR-908', closer: 'user', closerId: 'u1' }), 'PAR-908', { approvers: [] });
+  assert.equal(r.ok, true);
+});

@@ -49,7 +49,7 @@ async function checkForce({ args, verifyApproval, identityStr, action, auth, tok
   if (!args.approval || !verifyApproval) return { exit: EXIT.NEEDS_APPROVAL, ok: false, reason: 'force_needs_approval' };
   let r;
   try {
-    r = await verifyApproval({ approval: args.approval, identity: identityStr, action, companyId: auth.companyId }, { token });
+    r = await verifyApproval({ approval: args.approval, identity: identityStr, action, companyId: auth.companyId, agentId: auth.agentId }, { token });
   } catch (e) {
     r = { exit: EXIT.NEEDS_APPROVAL, ok: false, reason: 'approval_check_failed' };
   }
@@ -323,7 +323,8 @@ function createDispatcher(deps = {}) {
                 approval,
                 identity: identityStr,
                 action: cmd === 'drag' ? [from, to] : [selector, text].filter(Boolean),
-                companyId: auth.companyId
+                companyId: auth.companyId,
+                agentId: auth.agentId
               }, { token });
             } catch (e) {
               approvalResult = { exit: EXIT.NEEDS_APPROVAL, ok: false, reason: 'approval_check_failed' };

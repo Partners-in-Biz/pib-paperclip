@@ -22,6 +22,9 @@ function validatePolicy(obj) {
       if (typeof id !== 'string' || !parseIdentity(id))
         return { ok: false, reason: 'agent identity invalid' };
   }
+  if (obj.dogfoodApprovers !== undefined && (!Array.isArray(obj.dogfoodApprovers) ||
+      !obj.dogfoodApprovers.every((x) => typeof x === 'string' && /^[0-9a-f-]{36}$/i.test(x))))
+    return { ok: false, reason: 'dogfoodApprovers must be a list of agent ids' };
   for (const ikey in obj.identities) {
     const i = obj.identities[ikey];
     if (!isPlain(i) || !Array.isArray(i.origins))
