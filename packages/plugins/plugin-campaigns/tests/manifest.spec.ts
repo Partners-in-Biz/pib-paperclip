@@ -26,9 +26,9 @@ describe("manifest 0.6", () => {
   });
 
   it("is version 0.8.8 everywhere", () => {
-    expect(manifest.version).toBe("0.18.0");
-    expect(PLUGIN_VERSION).toBe("0.18.0");
-    expect(pkg.version).toBe("0.18.0");
+    expect(manifest.version).toBe("0.19.0");
+    expect(PLUGIN_VERSION).toBe("0.19.0");
+    expect(pkg.version).toBe("0.19.0");
   });
 
   it("declares the activity.log.write capability", () => {
@@ -127,7 +127,7 @@ describe("migrations", () => {
   it("014 is a migration, passes the host guard, widens the step event kinds and indexes the sent events by address", () => {
     const sql = read("014_campaigns.sql");
     expect(files[13]).toBe("014_campaigns.sql");
-    expect(files).toHaveLength(20);
+    expect(files).toHaveLength(21);
     for (const statement of splitSqlStatements(sql)) expect(() => validateMigrationStatement(statement, NAMESPACE), statement.slice(0, 80)).not.toThrow();
     for (const line of sql.split("\n").filter((l) => l.trim().startsWith("--"))) expect(line).not.toMatch(/['"]/);
     // Every kind of 013 stays allowed, and the two new ones are added.
@@ -165,6 +165,15 @@ describe("migrations", () => {
     expect(code).toContain("CREATE TABLE plugin_campaigns_d355219713.audience_members (");
     expect(code).toContain("audience_members (company_id, client_kind, client_ref, list_name, (coalesce(email, phone)))");
     expect(code).not.toMatch(/\b(delete|update|drop|alter)\b/i);
+  });
+
+  it("021 only adds autopilot_mode (default safe, checked) and paused_by to campaigns", () => {
+    const sql = read("021_campaigns.sql");
+    expect(files[20]).toBe("021_campaigns.sql");
+    for (const statement of splitSqlStatements(sql)) expect(() => validateMigrationStatement(statement, NAMESPACE), statement.slice(0, 80)).not.toThrow();
+    const code = sql.split("\n").filter((l) => !l.trim().startsWith("--")).join("\n");
+    expect(code).toContain("ADD COLUMN autopilot_mode text NOT NULL DEFAULT 'safe'");
+    expect(code).not.toMatch(/\b(delete|update|drop)\b/i);
   });
 
   it("never edits an applied migration: 001 to 013 are live and each file still has the hash it was applied with", () => {
