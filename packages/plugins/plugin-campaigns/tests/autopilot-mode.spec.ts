@@ -3,6 +3,7 @@
  * mutation. Every path runs as an agent through the tool and through the page action, and as a person.
  */
 import { describe, expect, it } from "vitest";
+import { CAMPAIGNS_ACCESS_TABLE } from "../src/access-table.js";
 import { boot, campaign, CO } from "./helpers/harness.js";
 
 const AGENT = { companyId: CO, agentId: "agent-camp" };
@@ -19,6 +20,10 @@ async function bootWith(extra: Record<string, unknown> = {}) {
 const row = (store: Awaited<ReturnType<typeof boot>>["store"], id = "camp-1") => store.campaigns!.find((c) => c.id === id)!;
 
 describe("campaign mode (autopilot_mode)", () => {
+  it("changing the mode is a decision: the tool and the page action need approve", () => {
+    for (const key of ["tool:set-campaign-mode", "campaigns.set-mode"]) expect(CAMPAIGNS_ACCESS_TABLE[key], key).toEqual({ resource: "campaigns.campaigns", action: "approve" });
+  });
+
   it("an existing campaign reads Safe", async () => {
     const { harness } = await bootWith();
     const listed = await harness.executeTool<{ data: { campaigns: Array<Record<string, unknown>> } }>("list-campaigns", {}, AGENT);
