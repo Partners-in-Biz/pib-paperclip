@@ -3,7 +3,7 @@
 import type { ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
-import type { HeartbeatRun } from "@paperclipai/shared";
+import type { DashboardTaskActivityDay, HeartbeatRun } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IssueStatusChart, PriorityChart, RunActivityChart, SuccessRateChart } from "./ActivityCharts";
 
@@ -143,7 +143,7 @@ describe("task charts from per-day counts", () => {
       { status: "done", priority: "medium", createdAt: new Date("2026-04-20T10:00:00.000Z") },
       { status: "todo", priority: "high", createdAt: new Date("2026-04-14T10:00:00.000Z") },
     ];
-    const activity = [
+    const activity: DashboardTaskActivityDay[] = [
       { date: "2026-04-20", byStatus: { done: 2 }, byPriority: { high: 1, medium: 1 } },
       { date: "2026-04-14", byStatus: { todo: 1 }, byPriority: { high: 1 } },
       { date: "2026-03-01", byStatus: { todo: 9 }, byPriority: { high: 9 } },
