@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { approvalState, bodyPreview, deliveryLabel, nextSend, orderedSteps, stepTiming } from "../src/detail.js";
+import { approvalState, bodyPreview, deliveryLabel, modeChoices, modeOf, nextSend, orderedSteps, stepTiming } from "../src/detail.js";
 import { boot, campaign, CO, contact, enrollment, FUTURE, PAST, seed, seedIssue, step } from "./helpers/harness.js";
 
 const BOARD = { type: "user" as const, userId: "user-peet" };
@@ -116,5 +116,18 @@ describe("add-campaign-step numbering", () => {
     const { harness } = await boot({ store });
     const added = await harness.executeTool<{ data: { step: { position: number } } }>("add-campaign-step", { campaignId: "camp-ab", subject: "Follow up", body: "More" }, { companyId: CO, agentId: "agent-camp" });
     expect(added.data.step.position).toBe(2);
+  });
+});
+
+describe("mode chip", () => {
+  it("shows Off, Safe and Auto; Auto cannot be chosen yet", () => {
+    expect(modeChoices().map((c) => [c.label, c.selectable])).toEqual([["Off", true], ["Safe", true], ["Auto", false]]);
+    expect(modeChoices().find((c) => c.mode === "full")!.title).toMatch(/arrives later/);
+  });
+
+  it("reads a campaign with no mode as Safe", () => {
+    expect(modeOf({})).toBe("safe");
+    expect(modeOf({ autopilotMode: "off" })).toBe("off");
+    expect(modeOf({ autopilotMode: "full" })).toBe("full");
   });
 });
