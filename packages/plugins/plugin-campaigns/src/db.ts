@@ -733,7 +733,8 @@ function rangeSql(range: StepStatsRange | undefined, first: number): { sql: stri
     const value = range?.[key];
     if (value == null || value === "") continue;
     if (Number.isNaN(Date.parse(value))) throw new Error(`${key} is not a valid date`);
-    params.push(value);
+    // A bare date is midnight UTC, whatever the database session timezone is.
+    params.push(/^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T00:00:00Z` : value);
     sql += ` AND occurred_at ${op} $${first + params.length - 1}::timestamptz`;
   }
   return { sql, params };

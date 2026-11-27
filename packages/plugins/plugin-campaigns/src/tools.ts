@@ -312,8 +312,8 @@ export const CAMPAIGN_TOOLS: PluginToolDeclaration[] = [
     description: "A campaign's step counts (sent, delivered, replies, bounces, softBounces, complaints, unsubscribes, opens, clicks) per step and split by step version (A and B), for all time or a date range. Reads events already recorded; collects nothing new.",
     parametersSchema: schema(["campaignId"], {
       campaignId,
-      from: str("Only events on or after this date, like 2026-11-01. Leave out for no start."),
-      to: str("Only events before this date, like 2026-12-01 (so the last day counted is the day before). Leave out for no end."),
+      from: str("Only events on or after this date (midnight UTC), like 2026-11-01. Leave out for no start."),
+      to: str("Only events before this date (midnight UTC), like 2026-12-01 (so the last day counted is the day before). Leave out for no end."),
     }),
   },
   {

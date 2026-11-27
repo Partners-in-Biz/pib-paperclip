@@ -3,10 +3,11 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { stepEventStats, stepEventStatsByVersion } from "../src/db.js";
 import { NAMESPACE } from "../src/namespace.js";
+import { boot, CO as TOOL_CO } from "./helpers/harness.js";
 import { embeddedAvailable, startPg, type PgHarness } from "./helpers/pg.js";
 
 const available = await embeddedAvailable();
-const CO = "11111111-1111-4111-8111-111111111111";
+const CO = TOOL_CO;
 
 describe.skipIf(!available)("campaign results (postgres)", () => {
   let h: PgHarness;
@@ -69,5 +70,41 @@ describe.skipIf(!available)("campaign results (postgres)", () => {
     );
     expect(plain.find((s) => s.stepPosition === 1)).toMatchObject({ sent: 6, replies: 3 });
     expect(await stepEventStats(ctx, "c1", { from: "2026-11-11" })).toEqual([expect.objectContaining({ stepPosition: 1, sent: 0, replies: 2 })]);
+  });
+
+  describe("through the tool entry", () => {
+    const call = async (name: string, params: Record<string, unknown>, companyId = CO) => {
+      const { harness } = await boot();
+      (harness.ctx as unknown as { db: unknown }).db = ctx.db;
+      return harness.executeTool<{ data?: any; error?: string }>(name, params, { companyId, agentId: "agent-camp" });
+    };
+
+    it("campaign-results forwards the range and returns both splits", async () => {
+      const all = await call("campaign-results", { campaignId: "c1" });
+      expect(all.data).toMatchObject({ campaignId: "c1", from: null, to: null });
+      expect(all.data.byVersion).toHaveLength(3);
+      expect(all.data.byStep.find((s: any) => s.stepPosition === 1)).toMatchObject({ sent: 6, replies: 3 });
+      const ranged = await call("campaign-results", { campaignId: "c1", from: "2026-11-02", to: "2026-11-11" });
+      expect(ranged.data).toMatchObject({ from: "2026-11-02", to: "2026-11-11" });
+      const a = ranged.data.byVersion.find((r: any) => r.stepPosition === 1 && r.variant === "a");
+      expect(a).toMatchObject({ sent: 2, replies: 1 });
+      expect(ranged.data.byStep.find((s: any) => s.stepPosition === 1)).toMatchObject({ sent: 4, replies: 1 });
+    });
+
+    it("refuses another company's campaign and a bad date", async () => {
+      const other = await call("campaign-results", { campaignId: "c1" }, "someone-else");
+      expect(other.data?.byStep).toBeUndefined();
+      expect(other.error ?? JSON.stringify(other)).toMatch(/not found|No campaign|unknown/i);
+      const bad = await call("campaign-results", { campaignId: "c1", from: "nonsense" });
+      expect(JSON.stringify(bad)).toMatch(/must be a date/);
+    });
+
+    it("campaign-step-analytics keeps {campaignId, byStep} with the same step keys", async () => {
+      const r = await call("campaign-step-analytics", { campaignId: "c1" });
+      expect(Object.keys(r.data).sort()).toEqual(["byStep", "campaignId"]);
+      expect(Object.keys(r.data.byStep[0]).sort()).toEqual(
+        ["bounces", "clicks", "complaints", "delivered", "opens", "replies", "sent", "softBounces", "stepPosition", "unsubscribes"],
+      );
+    });
   });
 });
