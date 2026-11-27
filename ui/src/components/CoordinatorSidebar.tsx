@@ -94,10 +94,24 @@ function PluginNavigation({ companyId, rail, hidden }: { companyId: string | nul
   const [open, setOpen] = useState(true);
   const visibleSlot = useCallback((slot: { pluginKey: string; id: string }) => !hidden.has(sidebarAppKey(slot)), [hidden]);
   const visibleCount = slots.filter(visibleSlot).length;
-  if (rail || !companyId || visibleCount === 0) return null;
-  return <div className="design-sidebar-apps"><SidebarSection label="Apps" collapsible={{ open, onOpenChange: setOpen }}>
-    <PluginSlotOutlet slotTypes={["sidebar"]} context={context} className="flex flex-col gap-0.5" itemClassName="text-(length:--text-compact) font-medium" missingBehavior="placeholder" filter={visibleSlot} />
-    <PluginLauncherOutlet placementZones={["sidebar"]} context={context} className="flex flex-col gap-0.5" itemClassName="text-(length:--text-compact) font-medium" />
+  const mounted = !rail && !!companyId && visibleCount > 0;
+  const rootRef = useRef<HTMLDivElement>(null);
+  // Counting slots is not counting rows: a plugin can render nothing. Hide the
+  // section while no outlet item has content (kept mounted so late renders show).
+  const [hasRows, setHasRows] = useState(true);
+  useEffect(() => {
+    const el = rootRef.current;
+    if (!mounted || !open || !el) return;
+    const sync = () => setHasRows(el.querySelector(".design-sidebar-apps-list > :not(:empty)") !== null);
+    sync();
+    const observer = new MutationObserver(sync);
+    observer.observe(el, { childList: true, subtree: true, characterData: true });
+    return () => observer.disconnect();
+  }, [mounted, open, slots]);
+  if (!mounted) return null;
+  return <div ref={rootRef} className="design-sidebar-apps" style={hasRows ? undefined : { display: "none" }}><SidebarSection label="Apps" collapsible={{ open, onOpenChange: setOpen }}>
+    <PluginSlotOutlet slotTypes={["sidebar"]} context={context} className="design-sidebar-apps-list flex flex-col gap-0.5" itemClassName="text-(length:--text-compact) font-medium" missingBehavior="placeholder" filter={visibleSlot} />
+    <PluginLauncherOutlet placementZones={["sidebar"]} context={context} className="design-sidebar-apps-list flex flex-col gap-0.5" itemClassName="text-(length:--text-compact) font-medium" />
   </SidebarSection></div>;
 }
 
