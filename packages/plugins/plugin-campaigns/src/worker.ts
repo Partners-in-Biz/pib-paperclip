@@ -632,7 +632,7 @@ async function campaignDetail(ctx: PluginContext, companyId: string, params: Rec
   };
 }
 
-/** The Results section for a date range: the same view as the detail's, plus the replies in that range. */
+/** The Results section for a date range: the same view as the detail's, plus the replies in that range. `from` is inclusive and `to` is EXCLUSIVE: to include 30 Nov, pass 1 Dec. */
 async function campaignResultsView(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
   const campaign = await requireCampaign(ctx, companyId, requiredString(params, "campaignId"));
   const from = optionalString(params, "from");

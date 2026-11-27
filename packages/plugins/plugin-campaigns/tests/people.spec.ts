@@ -3,7 +3,8 @@
  * order people are listed in, and the numbers per step and version.
  */
 import { describe, expect, it } from "vitest";
-import { emptyCounts, rangeParams, peopleSummary, peopleView, personState, rate, resultsView, stepNumbers, type PersonRow } from "../src/people.js";
+import { emptyCounts, peopleSummary, peopleView, personState, rate, resultsView, stepNumbers, type PersonRow } from "../src/people.js";
+import { rangeParams } from "../src/range.js";
 import { unfilledPlaceholders } from "../src/preflight.js";
 
 const NOW = new Date("2026-11-12T12:00:00Z");

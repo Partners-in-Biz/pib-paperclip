@@ -5,10 +5,10 @@
  */
 import { useEffect, useRef, useState } from "react";
 import { Button, Field, Input, KpiCard, Pill, fluidColumns, formatDate, tokens } from "@partnersinbiz/pib-plugin-ui";
-import type { StepStatsRange } from "../db.js";
-import { rangeParams, type CampaignResults, type ReplyView, type ResultCounts } from "../people.js";
+import { rangeParams, type ResultsRange } from "../range.js";
+import type { CampaignResults, ReplyView, ResultCounts } from "../people.js";
 
-export type ResultsRange = StepStatsRange;
+export type { ResultsRange };
 export interface ResultsPayload { results: CampaignResults | null; replies: ReplyView[] | null }
 
 function percent(part: number, sent: number): string {
@@ -112,7 +112,7 @@ export function ResultsTab({ results: first, replies: firstReplies, draft, deliv
                 {tracked ? <th scope="col" style={header}>Opened</th> : null}
                 {tracked ? <th scope="col" style={header}>Clicked</th> : null}
                 <th scope="col" style={header}>Replied</th>
-                <th scope="col" style={header}>Opted out</th>
+                <th scope="col" style={header}>Opted out or complained</th>
                 <th scope="col" style={header}>Bounced</th>
               </tr>
             </thead>
