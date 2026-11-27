@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { ClientKind, ClientScope } from "@partnersinbiz/pib-plugin-kit/client-ref";
-import { experimentVerdict, senderKeyOf, type SuppressionReason, type Verdict } from "@partnersinbiz/pib-plugin-kit";
+import { DEFAULT_CAMPAIGN_MODE, experimentVerdict, senderKeyOf, type CampaignMode, type SuppressionReason, type Verdict } from "@partnersinbiz/pib-plugin-kit";
 import { parseChannel, type Channel } from "./channels.js";
 
 export const CAMPAIGN_STATUSES = ["draft", "scheduled", "active", "paused", "completed"] as const;
@@ -57,6 +57,10 @@ export interface CampaignDraft {
   /** Who a launch would have enrolled when approval was requested: the count and a hash of the sorted contact ids. */
   approvalAudienceCount?: number | null;
   approvalAudienceHash?: string | null;
+  /** What an agent may do on it without a person (kit `agentMay`). Read as `safe` when a row predates the column (021). */
+  autopilotMode?: CampaignMode;
+  /** Who paused it last: `agent:<id>`, `user:<id>` or `auto`. */
+  pausedBy?: string | null;
 }
 
 export const CAMPAIGN_DELIVERIES = ["issue", "email", "auto"] as const;
@@ -188,6 +192,7 @@ export function createCampaign(input: {
   delivery?: string | null;
   ownerUserId?: string | null;
   ownerAgentId?: string | null;
+  autopilotMode?: CampaignMode;
   id?: string;
 }): CampaignDraft {
   const name = input.name.trim();
@@ -216,6 +221,7 @@ export function createCampaign(input: {
     delivery: assertDelivery(input.delivery),
     ownerUserId: input.ownerUserId ?? null,
     ownerAgentId: input.ownerAgentId ?? null,
+    autopilotMode: input.autopilotMode ?? DEFAULT_CAMPAIGN_MODE,
   };
 }
 
