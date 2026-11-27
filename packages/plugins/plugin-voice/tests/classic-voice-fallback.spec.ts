@@ -19,6 +19,7 @@ vi.mock("../src/ui/audio.js", () => ({
 }));
 
 import { LiveSession } from "../src/ui/live-session.js";
+import { plainChatContext } from "../src/ui/call-context.js";
 
 class FakeSocket {
   static all: FakeSocket[] = [];
@@ -52,7 +53,7 @@ async function make(voice: string, companyVoice?: string) {
     api: { get: vi.fn(async () => []), post: vi.fn() } as never,
     companyId: "c1",
     userId: "u1",
-    pageIssueRef: null,
+    context: plainChatContext(),
     audioContext: { close: vi.fn(async () => undefined) } as never,
     onState: vi.fn(),
     onTranscript: vi.fn(),

@@ -111,13 +111,16 @@ export function buildTranscriptDocument(call: CallRecord): string {
   ].join("\n");
 }
 
+/** The first line of the recap comment; the call context skips comments that carry it. */
+export const RECAP_MARKER = "**Live chat recap**";
+
 export function buildRecap(call: CallRecord, key: string): string {
   const spoken = call.entries.filter((e) => e.who !== "note" && e.text.trim());
   const youTurns = spoken.filter((e) => e.who === "you");
   const voiceTurns = spoken.filter((e) => e.who === "voice");
   const actions = call.entries.filter((e) => e.who === "note" && /^(Posted to|Created) /.test(e.text));
   const out = [
-    "**Live chat recap**",
+    RECAP_MARKER,
     "",
     `${duration(call.endedAt - call.startedAt)} call, ${youTurns.length} turns from you and ${voiceTurns.length} from the voice.`,
   ];

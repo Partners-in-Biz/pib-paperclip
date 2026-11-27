@@ -8,6 +8,7 @@
  */
 import { base64ToArrayBuffer, MicCapture, Player } from "./audio.js";
 import { AgentChat, clip, type ApiClient, type ChatTarget } from "./agent-chat.js";
+import type { CallContext } from "./call-context.js";
 import { BargeInDetector, Endpointer } from "./endpointing.js";
 import { ReplyFeed } from "./reply-feed.js";
 import { chunk, REST_IN_CHAT, toSpeech } from "./speech-text.js";
@@ -83,7 +84,8 @@ interface AudioClock {
 export interface DirectSessionOptions {
   api: ApiClient;
   companyId: string;
-  pageIssueRef: string | null;
+  /** Where the call was opened, resolved once by the panel and frozen. */
+  context: CallContext;
   /** Agent whose chat gets every turn (id, url key or name). Null: the company's CEO. */
   agentRef: string | null;
   /** Voice engine the call starts on; any Gemini failure moves the rest of the call to Grok. */
@@ -100,6 +102,8 @@ export interface DirectSessionOptions {
   onError: (message: string) => void;
   /** One line under the status ("The rest is in the chat"), or null to clear it. */
   onNotice?: (message: string | null) => void;
+  /** The chat's agent is not the one the call asked for (404 on its chat): the header should switch. */
+  onAgentChange?: (agent: { id: string | null; name: string }) => void;
   onEnd?: (call: CallRecord, targets: SaveTarget[]) => void;
   onAutosave?: (call: CallRecord) => void | Promise<void>;
   autosaveMs?: number;
@@ -133,6 +137,7 @@ export class DirectSession {
   private readonly barge = new BargeInDetector();
   private state: DirectState = "starting";
   private closed = false;
+  private fellBackSaid = false;
   private ended = false;
   private provider: SpeakProvider;
   private fallbackNoticed = false;
@@ -181,7 +186,7 @@ export class DirectSession {
     this.player.onLevel = (lvl) => {
       this.voiceLevel = lvl;
     };
-    this.chat = new AgentChat({ api: opts.api, companyId: opts.companyId, agentRef: opts.agentRef, pageIssueRef: opts.pageIssueRef, direct: true });
+    this.chat = new AgentChat({ api: opts.api, companyId: opts.companyId, agentRef: opts.agentRef, context: opts.context, direct: true });
     this.feed = opts.feed ?? new ReplyFeed({ companyId: opts.companyId });
     pruneBuffers();
   }
@@ -202,7 +207,8 @@ export class DirectSession {
   async start(): Promise<void> {
     this.mic = new MicCapture(this.opts.audioContext, (pcm, lvl) => this.onFrame(pcm, lvl));
     this.unsubscribeFeed = this.feed.onComment((issueId) => this.onEvent(issueId));
-    void this.chat.resolve().catch(() => undefined);
+    for (const note of this.opts.context.notes) this.addNote(note);
+    void this.chat.resolve().then((target) => this.announceTarget(target), () => undefined);
     document.addEventListener("visibilitychange", this.onVisibility);
     try {
       await this.mic.start();
@@ -302,6 +308,7 @@ export class DirectSession {
         if (posted.commentId) turn.commentId = posted.commentId;
         this.unsaved = true;
         this.target = posted.target;
+        this.announceTarget(posted.target);
         if (posted.commentId) this.seen.add(posted.commentId);
         if (!this.anchorId && posted.commentId) this.anchorId = posted.commentId;
         if (this.anchorAt === null) {
@@ -659,6 +666,16 @@ export class DirectSession {
     writeBuffer(this.startedAt, [...this.fullLog.values()], timing.turns ? { turns: timing.turns, timingStamp: timing.timingStamp! } : undefined);
     if (this.transcript.length > 60) this.transcript.splice(0, this.transcript.length - 60);
     this.opts.onTranscript([...this.transcript]);
+  }
+
+  /** Says once that the call is with the default agent because the asked-for one could not be reached. */
+  private announceTarget(target: ChatTarget): void {
+    if (!target.fellBack || this.fellBackSaid || this.closed) return;
+    this.fellBackSaid = true;
+    const message = `Could not reach ${target.fellBack.from}; talking with ${target.agentName} instead.`;
+    this.addNote(message);
+    this.opts.onNotice?.(message);
+    this.opts.onAgentChange?.({ id: target.agentId, name: target.agentName });
   }
 
   private addNote(text: string): void {

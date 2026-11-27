@@ -5,6 +5,8 @@
  * the record even if the call drops. The realtime model has no tools and does not decide what is sent.
  */
 
+import type { CallContext } from "./call-context.js";
+
 export interface ApiClient {
   get<T>(path: string): Promise<T>;
   post<T>(path: string, body: unknown): Promise<T>;
@@ -15,8 +17,8 @@ export interface AgentChatContext {
   companyId: string;
   /** Agent to talk to (id, url key or name), e.g. from a `/PAR/chats/pib` page. Null: the company's CEO. */
   agentRef: string | null;
-  /** Task on screen when the call started, named in each message so "this task" means something to the agent. */
-  pageIssueRef: string | null;
+  /** Where the call was opened (frozen at mount): names the task in each message and carries the first-turn block. */
+  context: CallContext;
   /** Direct voice mode: each turn asks the agent to answer in short spoken sentences. */
   direct?: boolean;
 }
@@ -27,6 +29,8 @@ export interface ChatTarget {
   agentName: string;
   /** The chat's agent: only its own comments count as the reply in direct mode. */
   agentId: string | null;
+  /** The agent the call asked for could not be reached (404 on its chat); this chat is the default agent's. */
+  fellBack?: { from: string };
 }
 
 /** The comment a turn was posted as, so replies can be read from that point on. */
@@ -55,6 +59,11 @@ interface ChatIssueRow {
 const MAX_BODY = 700;
 const INACTIVE = new Set(["terminated", "archived", "deleted"]);
 
+/** A failed API call that kept its HTTP status. */
+export function isNotFound(err: unknown): boolean {
+  return typeof err === "object" && err !== null && (err as { status?: unknown }).status === 404;
+}
+
 export function clip(text: string | null | undefined, max = MAX_BODY): string {
   const clean = (text ?? "").replace(/\s+/g, " ").trim();
   return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
@@ -82,9 +91,13 @@ export function agentForCall(agents: AgentRow[], ref: string | null): AgentRow |
   return defaultAgent(agents);
 }
 
-/** What the agent sees: the words as spoken, plus where they came from. */
-export function chatBody(text: string, pageIssueRef: string | null, direct = false): string {
-  return `${text.trim()}\n\n_Sent by voice${pageIssueRef ? ` from ${pageIssueRef}` : ""}${direct ? ": reply in short spoken sentences" : ""}._`;
+/**
+ * What the agent sees: the words as spoken, then (first sent turn on a task only) the fenced task block, then
+ * where the words came from. `about` is `from PAR-x` or `about PAR-x: "<title>"`; null on a chat.
+ */
+export function chatBody(text: string, opts: { about: string | null; direct: boolean; block: string | null }): string {
+  const footer = `_Sent by voice${opts.about ? ` ${opts.about}` : ""}${opts.direct ? ": reply in short spoken sentences" : ""}._`;
+  return [text.trim(), opts.block, footer].filter((part) => part).join("\n\n");
 }
 
 export class AgentChat {
@@ -116,14 +129,41 @@ export class AgentChat {
       if (!agent) throw new Error("There is no agent to talk to in this company.");
       ref = agent.id;
     }
-    const issue = await this.ctx.api.post<ChatIssueRow>(`/companies/${this.ctx.companyId}/chats/${encodeURIComponent(ref)}`, {});
+    let issue: ChatIssueRow;
+    let fellBack: { from: string } | undefined;
+    try {
+      issue = await this.ctx.api.post<ChatIssueRow>(`/companies/${this.ctx.companyId}/chats/${encodeURIComponent(ref)}`, {});
+    } catch (err) {
+      // The agent is off this person's list (or gone): talk with the default agent once, said out loud by the session.
+      const fallback = isNotFound(err) ? await this.fallbackAgent(ref) : null;
+      if (!fallback) throw err;
+      issue = await this.ctx.api.post<ChatIssueRow>(`/companies/${this.ctx.companyId}/chats/${encodeURIComponent(fallback.agent.id)}`, {});
+      ref = fallback.agent.id;
+      fellBack = { from: fallback.from };
+    }
     const agents = await this.agents();
     // The chat's own agent decides whose voice speaks and whose comments count as the reply. An older chat can
     // have an empty assignee, so fall back to the conversation agent, then to the agent the call asked for.
     const asked = agents.find((a) => a.id === ref || String(a.urlKey ?? "").toLowerCase() === ref.toLowerCase() || a.name.toLowerCase() === ref.toLowerCase());
     const agentId = issue.conversationAgentId ?? issue.assigneeAgentId ?? asked?.id ?? null;
     const agent = agents.find((a) => a.id === agentId);
-    return { issueId: issue.id, ref: issue.identifier ?? issue.id, agentName: agent?.name ?? "The agent", agentId };
+    return { issueId: issue.id, ref: issue.identifier ?? issue.id, agentName: agent?.name ?? "The agent", agentId, ...(fellBack ? { fellBack } : {}) };
+  }
+
+  /** The default agent, and the name of the one that 404ed; null when `ref` already is the default (today's retry path). */
+  private async fallbackAgent(ref: string): Promise<{ agent: AgentRow; from: string } | null> {
+    let agents: AgentRow[];
+    try {
+      agents = await this.agents();
+    } catch {
+      return null;
+    }
+    const agent = defaultAgent(agents);
+    if (!agent) return null;
+    const r = ref.toLowerCase();
+    const matches = (a: AgentRow) => a.id === ref || String(a.urlKey ?? "").toLowerCase() === r || a.name.toLowerCase() === r;
+    if (matches(agent)) return null;
+    return { agent, from: agents.find(matches)?.name ?? ref };
   }
 
   /**
@@ -137,10 +177,18 @@ export class AgentChat {
   /** `submit`, plus the posted comment's id and time as the server answered them. */
   async post(text: string, clientRequestId: string): Promise<PostedTurn> {
     const target = await this.resolve();
+    const { context } = this.ctx;
+    const task = context.kind === "task" ? context : null;
     const row = await this.ctx.api.post<{ id?: unknown; createdAt?: unknown } | null>(`/issues/${target.issueId}/comments`, {
-      body: chatBody(text, this.ctx.pageIssueRef, this.ctx.direct ?? false),
+      body: chatBody(text, {
+        about: task?.aboutLine ?? null,
+        direct: this.ctx.direct ?? false,
+        // A retry of this turn carries it again (same clientRequestId); a turn that never landed leaves the flag unset.
+        block: context.blockSent ? null : (task?.block ?? null),
+      }),
       clientRequestId,
     });
+    if (row && typeof row === "object") context.blockSent = true;
     return {
       target,
       commentId: typeof row?.id === "string" ? row.id : null,

@@ -1,5 +1,6 @@
 import { base64ToArrayBuffer, LIVE_SAMPLE_RATE, MicCapture, Player } from "./audio.js";
-import { AgentChat, clip, type ApiClient } from "./agent-chat.js";
+import { AgentChat, clip, type ApiClient, type ChatTarget } from "./agent-chat.js";
+import type { CallContext } from "./call-context.js";
 import { pruneBuffers, readBuffer, writeBuffer } from "./transcript-buffer.js";
 import type { CallRecord, LogEntry, SaveTarget } from "./transcript-report.js";
 import { newUuid } from "./uuid.js";
@@ -31,13 +32,16 @@ export interface LiveSessionOptions {
   api: ApiClient;
   companyId: string;
   userId: string | null;
-  pageIssueRef: string | null;
+  /** Where the call was opened, resolved once by the panel and frozen. */
+  context: CallContext;
   /** Agent whose Agent Chat gets every turn (id, url key or name). Null: the company's CEO. */
   agentRef?: string | null;
   /** Created inside the tap handler so iOS lets it play. */
   audioContext: AudioContext;
   onState: (state: LiveState) => void;
   onTranscript: (entries: TranscriptEntry[]) => void;
+  /** The chat's agent is not the one the call asked for (404 on its chat): the header should switch. */
+  onAgentChange?: (agent: { id: string | null; name: string }) => void;
   onLevel: (mic: number, voice: number) => void;
   onError: (message: string) => void;
   /** Once, when the call ends for any reason, with the whole call (the panel keeps only the last 60 lines). */
@@ -91,6 +95,7 @@ export class LiveSession {
   private mic: MicCapture | null = null;
   private player: Player;
   private chat: AgentChat;
+  private fellBackSaid = false;
   private transcript: TranscriptEntry[] = [];
   private state: LiveState = "connecting";
   /** Finished utterances not yet sent to the agent. */
@@ -133,7 +138,7 @@ export class LiveSession {
       this.voiceLevel = lvl;
       if (lvl === 0 && this.state === "speaking" && !this.responseActive) this.setState("listening");
     };
-    this.chat = new AgentChat({ api: opts.api, companyId: opts.companyId, agentRef: opts.agentRef ?? null, pageIssueRef: opts.pageIssueRef });
+    this.chat = new AgentChat({ api: opts.api, companyId: opts.companyId, agentRef: opts.agentRef ?? null, context: opts.context });
   }
 
   get muted(): boolean {
@@ -151,7 +156,8 @@ export class LiveSession {
     const micReady = this.mic.start();
     this.openSocket(this.info);
     // Warm the chat issue so the first turn goes out at once; a failure is retried on that send.
-    void this.chat.resolve().catch(() => undefined);
+    for (const note of this.opts.context.notes) this.addNote(note);
+    void this.chat.resolve().then((target) => this.announceTarget(target), () => undefined);
     if (this.opts.refreshInfo) document.addEventListener("visibilitychange", this.onVisibility);
 
     try {
@@ -558,6 +564,7 @@ export class LiveSession {
     for (let attempt = 0; attempt < SEND_ATTEMPTS; attempt++) {
       try {
         const target = await this.chat.submit(text, requestId);
+        this.announceTarget(target);
         this.chatIssues.add(target.issueId);
         this.watch(target.issueId, target.ref);
         if (this.awaitingSince === null) {
@@ -671,6 +678,14 @@ export class LiveSession {
     // Keep the panel light on a long call.
     if (this.transcript.length > 60) this.transcript.splice(0, this.transcript.length - 60);
     this.opts.onTranscript([...this.transcript]);
+  }
+
+  /** Says once that the call is with the default agent because the asked-for one could not be reached. */
+  private announceTarget(target: ChatTarget): void {
+    if (!target.fellBack || this.fellBackSaid || this.closed) return;
+    this.fellBackSaid = true;
+    this.addNote(`Could not reach ${target.fellBack.from}; talking with ${target.agentName} instead.`);
+    this.opts.onAgentChange?.({ id: target.agentId, name: target.agentName });
   }
 
   private addNote(text: string): void {

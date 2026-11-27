@@ -50,6 +50,7 @@ import type { CallRecord } from "../src/ui/transcript-report.js";
 import { rowSteps } from "../src/ui/turn-timing.js";
 import { readBuffer } from "../src/ui/transcript-buffer.js";
 import { chunk, REST_IN_CHAT, toSpeech } from "../src/ui/speech-text.js";
+import { plainChatContext } from "../src/ui/call-context.js";
 
 interface Row {
   id: string;
@@ -128,7 +129,7 @@ async function make(
   const session = new DirectSession({
     api: fake.api as never,
     companyId: "c1",
-    pageIssueRef: null,
+    context: plainChatContext(),
     agentRef: "a-ren",
     provider: opts.provider ?? "grok",
     audioContext: (opts.audioContext ?? { close: vi.fn(async () => undefined), resume: vi.fn(async () => undefined) }) as never,
