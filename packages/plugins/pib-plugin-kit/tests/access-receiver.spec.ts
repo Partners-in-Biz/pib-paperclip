@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
-import type { PluginEvent } from "@paperclipai/plugin-sdk";
-import { ACCESS_ASK_INTERVAL_MS, onAccessReceived, readAccessSwitch, registerAccessReceiver, type AccessUpdatedPayload } from "../src/access/index.js";
+import type { PluginContext, PluginEvent } from "@paperclipai/plugin-sdk";
+import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
+import { ACCESS_ASK_INTERVAL_MS, ACCESS_UPDATED_EVENT, accessCompanyScope, createAccessGuard, onAccessReceived, readAccessSwitch, registerAccessReceiver, type AccessUpdatedPayload } from "../src/access/index.js";
+import { SETUP_PLUGIN } from "../src/setup.js";
+import { fixtureManifest } from "./fixtures/access/base.js";
 import { loadGrant } from "../src/permissions.js";
 import { CO, PLUGIN, ROW, accessFake as fake, grantKey } from "./helpers/access-fake.js";
 
@@ -153,5 +156,37 @@ describe("access receiver", () => {
     registerAccessReceiver(f.ctx, PLUGIN);
     expect(f.emitted).toEqual([]);
     expect(f.reads()).toBe(0);
+  });
+});
+
+/** PAR-15008: no plugin called `registerAccessReceiver`, so nothing confirmed. The guard now does. */
+describe("access receiver through the guard", () => {
+  const harnessFor = (id: string) => {
+    const harness = createTestHarness({ manifest: fixtureManifest(id) });
+    const subscribed: string[] = [];
+    const on = harness.ctx.events.on;
+    harness.ctx.events.on = ((name: string, ...rest: unknown[]) => {
+      subscribed.push(name);
+      return (on as (...a: unknown[]) => () => void).call(harness.ctx.events, name, ...rest);
+    }) as PluginContext["events"]["on"];
+    return { harness, subscribed };
+  };
+
+  it("createAccessGuard subscribes the receiver once per ctx, and a send is stored and confirmed", async () => {
+    const { harness, subscribed } = harnessFor(PLUGIN);
+    createAccessGuard(harness.ctx, { pluginKey: PLUGIN, table: {} });
+    expect(registerAccessReceiver(harness.ctx, PLUGIN)).toBeTypeOf("function");
+    expect(subscribed).toEqual([ACCESS_UPDATED_EVENT]);
+    const confirmed: unknown[] = [];
+    harness.ctx.events.on(`plugin.${PLUGIN}.access.synced`, async (e) => void confirmed.push(e.payload));
+    await harness.emit(ACCESS_UPDATED_EVENT, { companyId: CO, rev: 2, mode: "off", userIds: [], part: 1, parts: 1, grants: {} }, { companyId: CO });
+    expect(await harness.ctx.state.get(accessCompanyScope(CO))).toMatchObject({ mode: "off", rev: 2 });
+    expect(confirmed).toEqual([{ companyId: CO, rev: 2, pluginKey: PLUGIN }]);
+  });
+
+  it("Setup's own guard runs no receiver: it is the source and counts itself confirmed", () => {
+    const { harness, subscribed } = harnessFor(SETUP_PLUGIN);
+    createAccessGuard(harness.ctx, { pluginKey: SETUP_PLUGIN, table: {} });
+    expect(subscribed).toEqual([]);
   });
 });

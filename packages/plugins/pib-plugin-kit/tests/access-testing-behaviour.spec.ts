@@ -67,6 +67,29 @@ describe("access test helper: behaviour, agent and API route checks", () => {
     ]);
   });
 
+  it("item 1.5: a plugin whose setup does not subscribe to Setup's access.updated fails", async () => {
+    expect((await check("no-receiver")).problems).toEqual([
+      'setup does not subscribe to "plugin.partnersinbiz.setup.access.updated", so Setup\'s access is never received or confirmed (createAccessGuard registers the receiver; is it given the plugin\'s ctx?)',
+    ]);
+  });
+
+  it("item 1.5: a receiver that cannot store the row, or cannot confirm, fails", async () => {
+    const send = "Setup's \"plugin.partnersinbiz.setup.access.updated\" (rev 2)";
+    expect((await check("no-state-write")).problems).toEqual([
+      `${send}: expected the company row at rev 2 in the plugin's state, got null`,
+      `${send}: expected "access.synced" {"companyId":"a1500000-0000-4000-8000-000000000004","rev":2,"pluginKey":"fixture.no-state-write"}, got no confirmation`,
+    ]);
+    expect((await check("no-emit")).problems).toEqual([
+      `${send}: expected "access.synced" {"companyId":"a1500000-0000-4000-8000-000000000004","rev":2,"pluginKey":"fixture.no-emit"}, got no confirmation`,
+    ]);
+  });
+
+  it("item 1.5: a correct plugin stores Setup's send and confirms it", async () => {
+    const { harness, problems } = await check("good");
+    expect(problems).toEqual([]);
+    expect(await harness.ctx.state.get({ scopeKind: "company", scopeId: "a1500000-0000-4000-8000-000000000004", namespace: "access", stateKey: "company" })).toMatchObject({ mode: "off", rev: 2 });
+  });
+
   it("a plugin with API routes and no onApiRequest given is told so", async () => {
     expect((await check("good", false)).problems).toEqual([
       "the manifest has API routes but no onApiRequest was given to the access check (pass plugin.definition.onApiRequest)",

@@ -76,11 +76,20 @@ export function parseAccessUpdate(raw: unknown, eventCompanyId: string | undefin
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
+/** The event Setup sends; every guarded plugin but Setup subscribes to it. */
+export const ACCESS_UPDATED_EVENT = `plugin.${SETUP_PLUGIN}.${ACCESS_EVENTS.updated}` as const;
+
+const receivers = new WeakMap<PluginContext, (event: PluginEvent) => Promise<void>>();
+
 /**
- * Subscribes to Setup's `access.updated`. Call once in the plugin's `setup()`.
+ * Subscribes to Setup's `access.updated`. `createAccessGuard` calls it, so a
+ * plugin with a guard needs no call of its own (PAR-15008). Once per ctx: a
+ * second call returns the first handler and does not subscribe again.
  * Returns the event handler, for tests.
  */
 export function registerAccessReceiver(ctx: PluginContext, pluginKey: string): (event: PluginEvent) => Promise<void> {
+  const existing = receivers.get(ctx);
+  if (existing) return existing;
   const pending = new Map<string, Pending>();
   // Receives of one company run one after another, so two sends never interleave writes.
   const queues = new Map<string, Promise<void>>();
@@ -174,6 +183,7 @@ export function registerAccessReceiver(ctx: PluginContext, pluginKey: string): (
     }
   };
 
-  ctx.events.on(`plugin.${SETUP_PLUGIN}.${ACCESS_EVENTS.updated}`, handle);
+  ctx.events.on(ACCESS_UPDATED_EVENT, handle);
+  receivers.set(ctx, handle);
   return handle;
 }
