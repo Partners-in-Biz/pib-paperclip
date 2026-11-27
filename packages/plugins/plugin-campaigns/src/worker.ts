@@ -11,6 +11,7 @@ import {
   type PreferenceValue,
 } from "@partnersinbiz/pib-plugin-kit";
 import { actionActor, actorRef, logCampaignActivity, toolActor, type CampaignActor } from "./activity.js";
+import { assertAgentMay, resumeRule } from "./mode-gates.js";
 import {
   definePlugin,
   runWorker,
@@ -414,7 +415,7 @@ async function dispatch(ctx: PluginContext, name: string, body: Record<string, u
   if (name === "update-campaign") return withExperiment(ctx, companyId, body, await updateCampaignRecord(ctx, companyId, body));
   if (name === "list-campaigns") return listCampaignsRecord(ctx, companyId, body);
   if (name === "add-campaign-step") return addStep(ctx, companyId, body);
-  if (name === "launch-campaign") return launch(ctx, companyId, body);
+  if (name === "launch-campaign") return launch(ctx, companyId, body, toolActor(run));
   if (name === "stop-enrollment") return stopEnrollmentTool(ctx, companyId, body);
   if (name === "suppress-address") return suppressAddressTool(ctx, companyId, body);
   if (name === "suppress-phone") return suppressPhone(ctx, companyId, body);
@@ -760,7 +761,7 @@ async function addStepAction(ctx: PluginContext, context: PluginPerformActionCon
 }
 
 async function launchAction(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {
-  return launch(ctx, requiredCompany(context), params);
+  return launch(ctx, requiredCompany(context), params, actionActor(context));
 }
 
 async function pauseAction(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {
@@ -929,10 +930,12 @@ async function addStep(ctx: PluginContext, companyId: string, params: Record<str
  * `launch-campaign` (tool and page): a paused campaign enrolls its audience
  * again and runs; a draft launches only when a person approved it (normally
  * that already happened by itself when the approval was marked done).
+ * Both are a person's click in every mode (plan 5.2): an agent is refused first.
  */
-async function launch(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
+async function launch(ctx: PluginContext, companyId: string, params: Record<string, unknown>, actor: CampaignActor | null) {
   const campaign = await requireCampaign(ctx, companyId, requiredString(params, "campaignId"));
   assertCanLaunch(campaign.status);
+  await assertAgentMay(ctx, companyId, campaign, actor, campaign.status === "paused" ? "launch-paused" : "first-launch");
   if (campaign.status === "draft") {
     if (!campaign.approvalIssueId) {
       throw new CampaignError("Request approval first (request-campaign-approval). It launches by itself once a person marks that issue done.");
@@ -944,7 +947,7 @@ async function launch(ctx: PluginContext, companyId: string, params: Record<stri
       throw new CampaignError("The approval issue was closed while assigned to an agent. A person must approve it: reopen it, assign it to the approver and have them mark it done.");
     }
   }
-  return launchCampaign(ctx, companyId, campaign, { contactIds: stringList(params, "contactIds"), approvedByUserId: null });
+  return launchCampaign(ctx, companyId, campaign, { contactIds: stringList(params, "contactIds"), approvedByUserId: null, actor });
 }
 
 export interface LaunchResult {
@@ -964,7 +967,9 @@ export interface LaunchResult {
 }
 
 /**
- * The one launch path (approval, sweep, tool). Checks: at least one step, a
+ * The one launch path (approval, sweep, tool). The caller passes the mode gate
+ * (an agent never launches; plan 5.2) and the launch writes one activity entry.
+ * Checks: at least one step, a
  * known audience, and an audience of every CRM contact only when the
  * approval said "All contacts (N)". Suppressed addresses are never enrolled.
  * Throws `CampaignError` with what to fix; changes nothing then.
@@ -973,9 +978,11 @@ async function launchCampaign(
   ctx: PluginContext,
   companyId: string,
   campaign: CampaignDraft,
-  options: { contactIds?: string[]; approvedByUserId: string | null },
+  options: { contactIds?: string[]; approvedByUserId: string | null; actor: CampaignActor | null },
 ): Promise<LaunchResult> {
   assertCanLaunch(campaign.status);
+  const from = campaign.status;
+  await assertAgentMay(ctx, companyId, campaign, options.actor, from === "paused" ? "launch-paused" : "first-launch");
   // A client's campaign launches the first time only with the client's written yes on record (plan 5.1): a hand-marked issue is not enough.
   // One of our own brands is not a client: it launches like an own campaign.
   const forClient = await isClientCampaign(ctx, companyId, campaign);
@@ -1049,6 +1056,15 @@ async function launchCampaign(
       skippedRunning += 1;
     }
   }
+  const again = from === "paused";
+  await logCampaignActivity(ctx, {
+    companyId,
+    actor: options.actor,
+    action: again ? "launch-paused" : "launch",
+    summary: again ? `launched again (resumed, ${enrolled} enrolled)` : `launched (${enrolled} enrolled)`,
+    campaign,
+    details: { from, enrolled, ...(again ? { pausedBy: campaign.pausedBy ?? null } : {}) },
+  });
   return { campaignId: campaign.id, status: "active", enrolled, skippedSuppressed: suppressedCount, skippedNotReachable: notReachable, skippedRunning, audience, firstStepAt: start.toISOString() };
 }
 
@@ -1065,7 +1081,9 @@ function launchSummary(result: LaunchResult): string {
 /** A person marked the approval done: launch now, or hand the approval back with the reason. */
 async function launchOnApproval(ctx: PluginContext, companyId: string, campaign: CampaignDraft, issueId: string, approvedByUserId: string | null): Promise<LaunchResult | null> {
   try {
-    const result = await launchCampaign(ctx, companyId, campaign, { approvedByUserId });
+    // A person approved it (the issue event, the sweep or Approve and launch); an unnamed one is the plugin acting on it.
+    const actor: CampaignActor = approvedByUserId ? { kind: "user", id: approvedByUserId } : { kind: "auto" };
+    const result = await launchCampaign(ctx, companyId, campaign, { approvedByUserId, actor });
     if (!result.alreadyLaunched) await commentOn(ctx, companyId, issueId, launchSummary(result));
     return result;
   } catch (error) {
@@ -1183,8 +1201,9 @@ async function logReplyTool(ctx: PluginContext, companyId: string, params: Recor
 }
 
 /**
- * Pause, resume or complete (tool and page action). A pause records who paused it (`paused_by`) and writes an activity
- * entry; a resume clears `paused_by`. A complete keeps it, for the record of the last pause.
+ * Pause, resume or complete (tool and page action). A pause records who paused it (`paused_by`); a resume clears
+ * `paused_by`. A complete keeps it, for the record of the last pause. Each writes one activity entry.
+ * Mode gates (plan 5.2): an agent may always pause; it resumes only its own pause and completes only in Auto.
  */
 async function setStatus(ctx: PluginContext, companyId: string, params: Record<string, unknown>, to: "paused" | "active" | "completed", actor: CampaignActor | null) {
   const campaign = await requireCampaign(ctx, companyId, requiredString(params, "campaignId"));
@@ -1193,9 +1212,12 @@ async function setStatus(ctx: PluginContext, companyId: string, params: Record<s
     if (campaign.status !== "paused") throw new CampaignError("Only a paused campaign can be resumed");
   }
   if (to === "completed") assertCanComplete(campaign.status);
+  if (to === "active") await assertAgentMay(ctx, companyId, campaign, actor, resumeRule(campaign, actor));
+  if (to === "completed") await assertAgentMay(ctx, companyId, campaign, actor, "complete");
   const pausedBy = to === "paused" ? (actor ? actorRef(actor) : null) : to === "active" ? null : campaign.pausedBy ?? null;
   await setCampaignStatus(ctx, campaign, to, pausedBy);
-  if (to === "paused") await logCampaignActivity(ctx, { companyId, actor, action: "pause", summary: "paused", campaign, details: { from: campaign.status } });
+  const verb = { paused: ["pause", "paused"], active: ["resume", "resumed"], completed: ["complete", "completed"] }[to];
+  await logCampaignActivity(ctx, { companyId, actor, action: verb[0]!, summary: verb[1]!, campaign, details: { from: campaign.status, ...(to === "active" ? { pausedBy: campaign.pausedBy ?? null } : {}) } });
   return { campaignId: campaign.id, status: to, ...(to === "paused" ? { pausedBy } : {}) };
 }
 

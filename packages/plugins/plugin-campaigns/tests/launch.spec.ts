@@ -240,11 +240,13 @@ describe("launch on approval", () => {
     expect(await harness.ctx.issues.get("appr-agent", CO)).toMatchObject({ status: "todo", assigneeAgentId: null, assigneeUserId: "user-peet" });
   });
 
-  it("launch-campaign still refuses a draft without a person's approval", async () => {
-    const store = draftStore();
+  it("in Safe, an agent's launch-campaign is refused by the mode; a person's launch still needs an approval", async () => {
+    const store = draftStore({ autopilot_mode: "safe" });
     const { harness } = await boot({ store });
     const tool = await harness.executeTool<{ error?: string }>("launch-campaign", { campaignId: "camp-1" }, { companyId: CO, agentId: "agent-camp" });
-    expect(tool.error).toMatch(/Request approval first/);
+    expect(tool.error).toMatch(/An agent may not launch this campaign in Safe mode\. Say so on the campaign's task/);
+    await expect(harness.performAction("campaigns.launch", { campaignId: "camp-1" }, { companyId: CO, actor: { type: "user", userId: "user-peet" } })).rejects.toThrow(/Request approval first/);
+    expect(store.campaigns![0]!.status).toBe("draft");
   });
 });
 

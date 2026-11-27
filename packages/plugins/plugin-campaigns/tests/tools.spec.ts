@@ -46,6 +46,14 @@ describe("Campaigns tool surface", () => {
     expect(manifest.tools).toBe(CAMPAIGN_TOOLS);
   });
 
+  it("says in each gated tool which mode lets an agent do it, and that a person does it otherwise", () => {
+    const text = (name: string) => CAMPAIGN_TOOLS.find((tool) => tool.name === name)!.description;
+    expect(text("launch-campaign")).toMatch(/In every mode a launch is a person's click/);
+    expect(text("resume-campaign")).toMatch(/resumed by a person, in every mode; .* by the agent only in Auto \(full\)/);
+    expect(text("complete-campaign")).toMatch(/In Off and Safe a person completes it; in Auto \(full\) an agent may once every enrollment is finished/);
+    expect(text("pause-campaign")).not.toMatch(/person/);
+  });
+
   it("declares what launch on approval and the shared list need", () => {
     expect(manifest.capabilities).toEqual(expect.arrayContaining(["issues.update", "issue.comments.create", "agents.read", "events.emit", "events.subscribe"]));
     // 0.6: the public unsubscribe endpoint, link checks, the managed Campaigns project and client project links.

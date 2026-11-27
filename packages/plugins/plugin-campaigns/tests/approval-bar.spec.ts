@@ -98,9 +98,11 @@ describe("approval bar: who can move it, in every state", () => {
     expect(data.campaign.launchError).toBe(CLIENT_YES_MISSING);
     expect(data.campaign.clientYes).toBeNull();
     expect(showApprovalBar(data.campaign, data.approval)).toBe(true);
-    // The tool path refuses it too: the one launch path checks the columns.
+    // In Safe (the default) the agent's launch tool is refused by the mode, naming the owner and the client's yes; a
+    // person's Launch is refused too: the one launch path checks the columns.
     const tool = await harness.executeTool<{ error?: string }>("launch-campaign", { campaignId: "camp-1" }, { companyId: CO, agentId: "agent-camp" });
-    expect(tool.error).toMatch(/approved|Record the client's yes/);
+    expect(tool.error).toMatch(/in Safe mode\. .*the company owner does it on the campaign screen, after the client's written yes is recorded/);
+    await expect(harness.performAction("campaigns.launch", { campaignId: "camp-1" }, { companyId: CO, actor: OWNER })).rejects.toThrow(/approved|Record the client's yes/);
     // Recording the yes on the screen launches it.
     await expect(approve(harness, { audienceHash: data.audience.hash, clientYesRef: "https://mail.example/t/1", clientYesSeen: true })).resolves.toMatchObject({ launched: true });
     expect(store.campaigns![0]).toMatchObject({ status: "active", launch_error: null });

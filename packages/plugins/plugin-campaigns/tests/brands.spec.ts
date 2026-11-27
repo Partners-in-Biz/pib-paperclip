@@ -240,10 +240,12 @@ describe("every way a brand campaign can launch", () => {
     expect(store.campaign_enrollments ?? []).toHaveLength(0);
   });
 
-  it("the launch tool follows the same rule", async () => {
+  it("in Safe the launch tool is refused by the mode, and a member's Launch follows the same owner rule", async () => {
     const { harness, store } = await approvedUnheard();
+    expect(store.campaigns![0]!.autopilot_mode ?? "safe").toBe("safe");
     const tool = await harness.executeTool<{ data?: unknown; error?: string }>("launch-campaign", { campaignId: "camp-1" }, { companyId: CO, agentId: "agent-camp" });
-    expect(tool.error ?? "").toMatch(/only the company owner approves it/);
+    expect(tool.error ?? "").toMatch(/An agent may not launch this campaign in Safe mode/);
+    await expect(harness.performAction("campaigns.launch", { campaignId: "camp-1" }, { companyId: CO, actor: MEMBER })).rejects.toThrow(/only the company owner approves it/);
     expect(store.campaigns![0]).toMatchObject({ status: "draft" });
     expect(store.campaign_enrollments ?? []).toHaveLength(0);
   });
