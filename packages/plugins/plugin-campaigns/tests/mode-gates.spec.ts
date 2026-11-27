@@ -4,7 +4,7 @@
  * a person. A refusal changes nothing and writes no entry; each change writes one activity entry.
  */
 import { describe, expect, it } from "vitest";
-import { boot, campaign, CO, enrollment, seed, seedIssue, step } from "./helpers/harness.js";
+import { boot, campaign, CO, enrollment, issueUpdated, seed, seedIssue, step } from "./helpers/harness.js";
 
 const MODES = ["off", "safe", "full"] as const;
 type Mode = (typeof MODES)[number];
@@ -103,6 +103,14 @@ describe("first launch of a draft: a person in every mode", () => {
     const result = await harness.performAction<{ status: string }>("campaigns.launch", { campaignId: "camp-1" }, asPerson);
     expect(result.status).toBe("active");
     expect(harness.activity.map((a) => a.metadata)).toEqual([expect.objectContaining({ actor: "user:user-peet", action: "launch", from: "draft", mode: "safe" })]);
+  });
+
+  it("in Off a person's approval still launches it through the approval path, with one entry for that person", async () => {
+    const { harness, store } = await approvedDraft("off");
+    seedIssue(harness, store, { id: "appr-1", status: "done", assigneeUserId: "user-peet" });
+    await issueUpdated(harness, "appr-1", { type: "user", id: "user-peet" });
+    expect(row(store).status).toBe("active");
+    expect(harness.activity.map((a) => a.metadata)).toEqual([expect.objectContaining({ actor: "user:user-peet", action: "launch", mode: "off", enrolled: 3 })]);
   });
 
   it("a call nobody can name (a page action without a person) counts as an agent", async () => {
