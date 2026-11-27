@@ -1,4 +1,5 @@
 /** 0.46.0 (PAR-9131 T4, PAR-9145): the Previews tab words, filters and badge. */
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parseDirectory } from "../src/ui/people.js";
 import { isPreviewFilter, previewDaysLeft, previewDecider, previewExpiryTone, previewStatus } from "../src/ui/words.js";
@@ -96,5 +97,19 @@ describe("errorText (PAR-14691)", async () => {
       expect(text).not.toContain("[object Object]");
       expect(text.length).toBeGreaterThan(0);
     }
+  });
+});
+
+describe("previews tab wiring (react-dom is not installed in plugin-seo, so this reads the source)", () => {
+  const src = readFileSync(new URL("../src/ui/previews.tsx", import.meta.url), "utf8");
+  it("passes the directory names to the row chip and the drawer decision note", () => {
+    expect(src).toContain("{previewDecider(p, names)}{p.decisionNote");
+    expect(src).toContain("`${previewDecider(p, names)} · \"${p.decisionNote}\"`");
+    expect(src).not.toMatch(/previewDecider\(p\)/);
+  });
+  it("hands names to both components, loaded for the host company and skipped for email rows", () => {
+    expect(src).toContain("<PreviewRow key={p.id} p={p} names={names}");
+    expect(src).toContain("<PreviewDrawer p={drawerItem} names={names}");
+    expect(src).toContain("useDeciderNames(host.companyId ?? undefined, all.some((p) => p.decidedBy && p.decisionSource !== \"email\"))");
   });
 });
