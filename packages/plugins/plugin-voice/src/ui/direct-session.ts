@@ -6,7 +6,8 @@
  * Reply delivery: the person's live-events socket (`ReplyFeed`) and an always-on poll both read new comments
  * into one `seen` set, so a comment is spoken at most once however it arrived.
  */
-import { base64ToArrayBuffer, MicCapture, Player } from "./audio.js";
+import { base64ToArrayBuffer, floatToPcm16, MicCapture, Player } from "./audio.js";
+import { ONE_MOMENT_MP3_BASE64 } from "./assets/one-moment.js";
 import { AgentChat, clip, type ApiClient, type ChatTarget } from "./agent-chat.js";
 import type { CallContext } from "./call-context.js";
 import { BargeInDetector, Endpointer } from "./endpointing.js";
@@ -15,7 +16,7 @@ import { chunk, REST_IN_CHAT, toSpeech } from "./speech-text.js";
 import { pruneBuffers, writeBuffer } from "./transcript-buffer.js";
 import type { TranscriptEntry } from "./live-session.js";
 import type { CallRecord, LogEntry, SaveTarget } from "./transcript-report.js";
-import { parseServerTime, TurnClock, timingStamp, type ReplyVia, type TurnRow } from "./turn-timing.js";
+import { parseServerTime, TurnClock, timingStamp, type ReplyVia, type TurnOutcome, type TurnRow } from "./turn-timing.js";
 import { newUuid } from "./uuid.js";
 import type { WakeGuard } from "./wake-lock.js";
 import { concatPcm16, encodeWav } from "./wav.js";
@@ -29,6 +30,7 @@ import {
   DIRECT_SEND_ATTEMPTS,
   ENDPOINT_END_QUIET_MS,
   ENDPOINT_PREROLL_MS,
+  FILLER_AFTER_MS,
   SPEECH_FIRST_CHUNK_CHARS,
   TTS_SAMPLE_RATE,
   XAI_SPEAK_ATTEMPTS,
@@ -43,6 +45,7 @@ export type TranscribeFn = (params: { audio: string; mimeType: string }) => Prom
 export const GEMINI_FALLBACK_NOTICE = "Gemini voice unavailable, using Grok.";
 export const SOUND_BLOCKED_NOTICE = "Your browser is blocking sound. Tap the screen once, then ask again.";
 export const READ_FAILED_NOTICE = "Cannot read the agent's reply right now. It will show in the chat.";
+export const FILLER_UNAVAILABLE_NOTICE = "One moment line unavailable";
 /** Reads of the chat that fail this many times in a row are shown to the person, not just retried. */
 const READ_FAILS_BEFORE_NOTICE = 3;
 const RESUME_WAIT_MS = 1_500;
@@ -74,9 +77,18 @@ const TIMING_CONSTANTS = {
 };
 
 interface ReplyItem {
+  kind?: "reply";
   text: string;
   commentId: string;
 }
+
+/** The local "One moment" line for one turn: played through the same player, never posted, never a reply. */
+interface FillerJob {
+  kind: "filler";
+  turn: TurnRow;
+}
+
+type Clip = { pcm: ArrayBuffer; rate: number; providerMs?: number };
 
 interface AudioClock {
   currentTime?: number;
@@ -107,6 +119,10 @@ export interface DirectSessionOptions {
   onNotice?: (message: string | null) => void;
   /** The chat's agent is not the one the call asked for (404 on its chat): the header should switch. */
   onAgentChange?: (agent: { id: string | null; name: string }) => void;
+  /** The chat issue the turns go to, once resolved (a chat-page call saves its transcript there). */
+  onTarget?: (target: ChatTarget) => void;
+  /** When the speaker began waiting for a reply's first chunk, or null once it has it (or gave up). */
+  onVoicing?: (since: number | null) => void;
   onEnd?: (call: CallRecord, targets: SaveTarget[]) => void;
   onAutosave?: (call: CallRecord) => void | Promise<void>;
   autosaveMs?: number;
@@ -166,7 +182,11 @@ export class DirectSession {
   /** Why the last chunk could not be voiced: the provider's outcome or the call's error. Shown in the transcript. */
   private speakFailure = "";
 
-  private replyQueue: ReplyItem[] = [];
+  private replyQueue: Array<ReplyItem | FillerJob> = [];
+  /** The reply the speaker is on now (null between replies and during the filler). */
+  private voicing: ReplyItem | null = null;
+  /** The decoded "One moment" line; null until decoded, or when it could not be. */
+  private fillerClip: Clip | null = null;
   private readonly clock = new TurnClock();
   private utteranceStartAt: number | undefined;
   private speakingLoop = false;
@@ -214,6 +234,7 @@ export class DirectSession {
     this.unsubscribeFeed = this.feed.onComment((issueId) => this.onEvent(issueId));
     for (const note of this.opts.context.notes) this.addNote(note);
     void this.chat.resolve().then((target) => this.announceTarget(target), () => undefined);
+    void this.decodeFiller();
     document.addEventListener("visibilitychange", this.onVisibility);
     try {
       await this.mic.start();
@@ -241,6 +262,16 @@ export class DirectSession {
     }, fast ? Math.min(DIRECT_AWAIT_POLL_MS, slow) : slow);
   }
 
+  /** Decoded once per call; a clip that cannot be decoded means no filler and one note. */
+  private async decodeFiller(): Promise<void> {
+    try {
+      const buffer = await this.opts.audioContext.decodeAudioData(base64ToArrayBuffer(ONE_MOMENT_MP3_BASE64));
+      this.fillerClip = { pcm: floatToPcm16(buffer.getChannelData(0)), rate: buffer.sampleRate };
+    } catch {
+      if (!this.closed) this.addNote(FILLER_UNAVAILABLE_NOTICE);
+    }
+  }
+
   stop(): void {
     if (this.closed) return;
     this.teardown();
@@ -251,6 +282,8 @@ export class DirectSession {
   /** Tap (or voice) barge-in: stop playback, drop what is queued, ignore any audio still being fetched. */
   interrupt(): void {
     if (this.closed || !this.speakingLoop) return;
+    const dropped = [this.voicing, ...this.replyQueue].filter((job): job is ReplyItem => !!job && job.kind !== "filler");
+    for (const job of dropped) this.miss(this.clock.turnForReply(job.commentId), "talked_over", "reply stopped, you spoke over it.");
     this.speakGen += 1;
     this.replyQueue = [];
     this.player.flush();
@@ -287,24 +320,34 @@ export class DirectSession {
     if ((event === "end" || event === "cap") && this.utterance) {
       const frames = this.utterance;
       this.utterance = null;
-      void this.sendUtterance(frames, { startAt: this.utteranceStartAt, endAt: Date.now(), endKind: event });
+      // The row exists from the end of speech, so the filler timer and a not-heard outcome have a turn to belong to.
+      const turn = this.clock.addTurn({ startAt: this.utteranceStartAt, endAt: Date.now(), endKind: event });
+      this.changed();
+      this.scheduleFiller(turn);
+      void this.sendUtterance(frames, turn);
     }
   }
 
-  private async sendUtterance(frames: ArrayBuffer[], ends: { startAt?: number; endAt: number; endKind: "end" | "cap" }): Promise<void> {
+  private async sendUtterance(frames: ArrayBuffer[], turn: TurnRow): Promise<void> {
     this.pendingSends += 1;
     this.refresh();
     try {
       let text = "";
+      let failure: string | null = null;
       try {
-        const out = (await this.opts.transcribe({ audio: bytesToBase64(encodeWav(concatPcm16(frames))), mimeType: "audio/wav" })) as { text?: unknown };
+        const out = (await this.opts.transcribe({ audio: bytesToBase64(encodeWav(concatPcm16(frames))), mimeType: "audio/wav" })) as { text?: unknown; providerMs?: unknown };
         text = typeof out?.text === "string" ? out.text.trim() : "";
+        if (typeof out?.providerMs === "number") turn.sttProviderMs = out.providerMs;
       } catch (err) {
-        this.addNote(`Not heard: ${errorText(err)}`);
+        failure = errorText(err);
+      }
+      if (this.closed) return;
+      if (!text) {
+        this.miss(turn, "not_heard", failure ? `not heard (${failure}).` : "not heard, nothing was transcribed.");
         return;
       }
-      if (!text || this.closed) return;
-      const turn = this.clock.addTurn({ ...ends, textAt: Date.now() });
+      turn.textAt = Date.now();
+      this.changed();
       this.upsert(`you-${newUuid()}`, "you", text, true);
       await this.postTurn(text, turn);
     } finally {
@@ -324,7 +367,7 @@ export class DirectSession {
         turn.postedAt = Date.now();
         turn.serverPostedAt = parseServerTime(posted.createdAt);
         if (posted.commentId) turn.commentId = posted.commentId;
-        this.unsaved = true;
+        this.changed();
         this.target = posted.target;
         this.announceTarget(posted.target);
         if (posted.commentId) this.seen.add(posted.commentId);
@@ -343,7 +386,7 @@ export class DirectSession {
       }
     }
     const reason = errorText(lastError);
-    this.addNote(`Not sent: ${reason}`);
+    this.miss(turn, "not_sent", `not sent (${reason}).`);
     this.opts.onNotice?.(`That did not reach the agent (${reason}). Say it again.`);
   }
 
@@ -425,7 +468,7 @@ export class DirectSession {
         if (!this.isReply(row, target)) continue;
         found += 1;
         this.clock.noteReply({ id: row.id, runId: row.createdByRunId, createdAt: row.createdAt }, Date.now(), via);
-        this.unsaved = true;
+        this.changed();
         this.awaitingSince = null;
         const body = String(row.body ?? "");
         this.upsert(`agent-${row.id}`, "voice", body.trim(), true);
@@ -462,7 +505,16 @@ export class DirectSession {
     try {
       while (!this.closed && this.replyQueue.length > 0) {
         const item = this.replyQueue.shift()!;
-        await this.speakReply(item, this.speakGen);
+        if (item.kind === "filler") await this.playFiller(item, this.speakGen);
+        else {
+          this.voicing = item;
+          try {
+            await this.speakReply(item, this.speakGen);
+          } finally {
+            this.voicing = null;
+            this.opts.onVoicing?.(null);
+          }
+        }
       }
     } finally {
       this.speakingLoop = false;
@@ -476,26 +528,33 @@ export class DirectSession {
   private async speakReply(item: ReplyItem, gen: number): Promise<void> {
     const marks = this.clock.speakMarks(item.commentId);
     marks.speakStartAt = Date.now();
-    this.unsaved = true;
+    this.changed();
+    this.opts.onVoicing?.(marks.speakStartAt);
     const chunks = chunk(item.text);
     let prevEnd: number | null = null;
     let gap = 0;
-    let next: Promise<{ pcm: ArrayBuffer; rate: number } | null> | null = null;
+    let next: Promise<Clip | null> | null = null;
     for (let i = 0; i < chunks.length; i += 1) {
       const audio = await (next ?? this.chunkAudio(chunks[i]!, gen));
       next = null;
       if (gen !== this.speakGen || this.closed) return;
+      // Only chunk 0 decides the turn: once it played, a later failure leaves the turn voiced.
+      const turn = i === 0 ? this.clock.turnForReply(item.commentId) : undefined;
       if (!audio) {
-        this.addNote(this.speakFailure ? `${REST_IN_CHAT} (voice failed: ${this.speakFailure})` : REST_IN_CHAT);
+        const failed = this.speakFailure ? `${REST_IN_CHAT} (voice failed: ${this.speakFailure})` : REST_IN_CHAT;
+        this.miss(turn, "voice_failed", `the reply could not be voiced (${this.speakFailure || "no audio"}). ${REST_IN_CHAT}`, failed);
         this.opts.onNotice?.(REST_IN_CHAT);
         return;
       }
       if (i === 0) {
         marks.audioAt = Date.now();
         marks.provider = this.provider;
+        if (audio.providerMs !== undefined) marks.ttsProviderMs = audio.providerMs;
+        this.opts.onVoicing?.(null);
+        this.changed();
       }
       if (!(await this.soundReady())) {
-        this.addNote(SOUND_BLOCKED_NOTICE);
+        this.miss(turn, "sound_blocked", SOUND_BLOCKED_NOTICE, SOUND_BLOCKED_NOTICE);
         this.opts.onNotice?.(SOUND_BLOCKED_NOTICE);
         return;
       }
@@ -506,6 +565,8 @@ export class DirectSession {
           const latency = ctx.outputLatency || ctx.baseLatency || 0;
           marks.playAt = Math.round(Date.now() + (slot.startAt - (ctx.currentTime ?? 0) + latency) * 1000);
           marks.latencyKnown = typeof ctx.outputLatency === "number";
+          if (turn) this.setOutcome(turn, "voiced");
+          this.changed();
         } else if (prevEnd !== null) {
           gap += Math.max(0, slot.startAt - prevEnd);
           marks.gap = Math.round(gap * 1000);
@@ -521,7 +582,7 @@ export class DirectSession {
   }
 
   /** Gemini first when chosen; any non-ok moves this chunk and the rest of the call to Grok, tried twice. */
-  private async chunkAudio(text: string, gen: number): Promise<{ pcm: ArrayBuffer; rate: number } | null> {
+  private async chunkAudio(text: string, gen: number): Promise<Clip | null> {
     if (this.provider === "gemini") {
       const out = await this.callSpeak(text, "gemini");
       if (out) return out;
@@ -540,23 +601,58 @@ export class DirectSession {
     return null;
   }
 
-  private async callSpeak(text: string, provider: SpeakProvider): Promise<{ pcm: ArrayBuffer; rate: number } | null> {
+  private async callSpeak(text: string, provider: SpeakProvider): Promise<Clip | null> {
     const agentId = this.target?.agentId;
     if (!agentId) {
       this.speakFailure = "no agent on this chat";
       return null;
     }
     try {
-      const out = (await this.opts.speak({ agentId, text, provider })) as { audio?: unknown; sampleRate?: unknown; error?: unknown } | null;
+      const out = (await this.opts.speak({ agentId, text, provider })) as { audio?: unknown; sampleRate?: unknown; error?: unknown; providerMs?: unknown } | null;
       if (typeof out?.audio !== "string" || !out.audio) {
         this.speakFailure = `${provider} ${typeof out?.error === "string" ? out.error : "returned no audio"}`;
         return null;
       }
-      return { pcm: base64ToArrayBuffer(out.audio), rate: typeof out.sampleRate === "number" ? out.sampleRate : TTS_SAMPLE_RATE };
+      return {
+        pcm: base64ToArrayBuffer(out.audio),
+        rate: typeof out.sampleRate === "number" ? out.sampleRate : TTS_SAMPLE_RATE,
+        ...(typeof out.providerMs === "number" ? { providerMs: out.providerMs } : {}),
+      };
     } catch (err) {
       this.speakFailure = `${provider} ${errorText(err)}`;
       return null;
     }
+  }
+
+  /** Turn `n`'s filler timer, from its end of speech; it covers the transcribe, the agent and a slow chunk 0. */
+  private scheduleFiller(turn: TurnRow): void {
+    const id = window.setTimeout(() => {
+      this.timers.delete(id);
+      this.maybeFiller(turn);
+    }, Math.max(0, turn.endAt + FILLER_AFTER_MS - Date.now()));
+    this.timers.add(id);
+  }
+
+  /**
+   * Plays "One moment" once for the latest turn when it has no reply audio, the person is not speaking and nothing is
+   * playing or queued. A send still in flight does not block it: that wait is what it is for.
+   */
+  private maybeFiller(turn: TurnRow): void {
+    if (this.closed || !this.fillerClip || turn.fillerAt !== undefined || turn.outcome) return;
+    if (this.clock.size !== turn.n || this.utterance !== null || this.speakingLoop || this.replyQueue.length > 0) return;
+    if (this.clock.rows()[turn.n - 1]?.playAt !== undefined) return;
+    this.replyQueue.push({ kind: "filler", turn });
+    void this.runSpeaker();
+  }
+
+  /** Inside the speaker loop, so a barge-in stops it and the mic never hears it as a turn. */
+  private async playFiller(job: FillerJob, gen: number): Promise<void> {
+    const clip = this.fillerClip;
+    if (!clip || !(await this.soundReady()) || gen !== this.speakGen || this.closed) return;
+    this.player.enqueue(clip.pcm, clip.rate);
+    job.turn.fillerAt = Date.now();
+    this.changed();
+    await this.player.idle();
   }
 
   /** A context the browser holds suspended plays nothing and never ends a buffer: try to wake it, else say so. */
@@ -645,12 +741,53 @@ export class DirectSession {
   private finish(): void {
     if (this.ended) return;
     this.ended = true;
+    this.closeOutcomes();
     if (this.autosaveTimer !== null) window.clearInterval(this.autosaveTimer);
     try {
       this.opts.onEnd?.({ entries: [...this.fullLog.values()], startedAt: this.startedAt, endedAt: Date.now(), ...this.timing() }, []);
     } catch {
       // Saving the transcript must never break hanging up.
     }
+  }
+
+  /** At hang-up, every posted turn still without an outcome: its reply was on its way to the speaker, or never came. */
+  private closeOutcomes(): void {
+    const rows = this.clock.rows();
+    for (const row of rows) {
+      const live = this.clock.turn(row.n);
+      if (!live || live.outcome || live.postedAt === undefined) continue;
+      if (row.replyServerAt === undefined) this.miss(live, "no_reply", "no reply before the call ended.");
+      else if (row.speakStartAt === undefined) this.miss(live, "hung_up_voicing", "hung up before the reply was voiced.");
+      else {
+        const secs = ((Date.now() - row.speakStartAt) / 1000).toFixed(1);
+        this.miss(live, "hung_up_voicing", `hung up while the reply was being voiced (${this.provider}, ${secs} s).`);
+      }
+    }
+  }
+
+  /** Sets the turn's outcome unless it has one; true when this call set it. */
+  private setOutcome(turn: TurnRow, outcome: TurnOutcome): boolean {
+    if (turn.outcome) return false;
+    turn.outcome = outcome;
+    this.changed();
+    return true;
+  }
+
+  /** A miss: the outcome and one `Turn <n>:` note. A turn that already has an outcome gets `plain`, if any. */
+  private miss(turn: TurnRow | undefined, outcome: TurnOutcome, text: string, plain?: string): void {
+    if (turn && this.setOutcome(turn, outcome)) this.addNote(`Turn ${turn.n}: ${text}`, turn.n);
+    else if (plain) this.addNote(plain);
+  }
+
+  /** A turn row changed: save it with the next autosave and write the live buffer now. */
+  private changed(): void {
+    this.unsaved = true;
+    this.writeLive();
+  }
+
+  private writeLive(): void {
+    const timing = this.timing();
+    writeBuffer(this.startedAt, [...this.fullLog.values()], timing.turns ? { turns: timing.turns, timingStamp: timing.timingStamp! } : undefined);
   }
 
   /** The turn rows and their stamp for a saved record; nothing when the call had no turn. */
@@ -682,14 +819,14 @@ export class DirectSession {
     if (logged) logged.text = text;
     else this.fullLog.set(id, { who, text, at: Date.now() });
     this.unsaved = true;
-    const timing = this.timing();
-    writeBuffer(this.startedAt, [...this.fullLog.values()], timing.turns ? { turns: timing.turns, timingStamp: timing.timingStamp! } : undefined);
+    this.writeLive();
     if (this.transcript.length > 60) this.transcript.splice(0, this.transcript.length - 60);
     this.opts.onTranscript([...this.transcript]);
   }
 
   /** Says once that the call is with the default agent because the asked-for one could not be reached. */
   private announceTarget(target: ChatTarget): void {
+    if (!this.closed) this.opts.onTarget?.(target);
     if (!target.fellBack || this.fellBackSaid || this.closed) return;
     this.fellBackSaid = true;
     const message = `Could not reach ${target.fellBack.from}; talking with ${target.agentName} instead.`;
@@ -698,7 +835,8 @@ export class DirectSession {
     this.opts.onAgentChange?.({ id: target.agentId, name: target.agentName });
   }
 
-  private addNote(text: string): void {
-    this.upsert(`note-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, "note", text, true);
+  /** A note about turn `n` carries it in its id (`note-t<n>-…`). */
+  private addNote(text: string, turnN?: number): void {
+    this.upsert(`note-${turnN ? `t${turnN}-` : ""}${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, "note", text, true);
   }
 }

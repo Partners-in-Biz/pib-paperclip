@@ -9,6 +9,8 @@ const h = vi.hoisted(() => ({
 
 vi.mock("../src/ui/audio.js", () => ({
   LIVE_SAMPLE_RATE: 24000,
+  // The decoded "One moment" clip plays as this tag.
+  floatToPcm16: () => ({ tag: "filler" }) as unknown as ArrayBuffer,
   // The fake speak answers a readable tag instead of base64, so the test sees which chunk was played.
   base64ToArrayBuffer: (tag: string) => ({ tag }) as unknown as ArrayBuffer,
   MicCapture: class {
@@ -45,12 +47,13 @@ vi.mock("../src/ui/audio.js", () => ({
   },
 }));
 
-import { DirectSession, GEMINI_FALLBACK_NOTICE, READ_FAILED_NOTICE, SOUND_BLOCKED_NOTICE, type SpeakProvider } from "../src/ui/direct-session.js";
+import { DirectSession, FILLER_UNAVAILABLE_NOTICE, GEMINI_FALLBACK_NOTICE, READ_FAILED_NOTICE, SOUND_BLOCKED_NOTICE, type SpeakProvider } from "../src/ui/direct-session.js";
 import type { CallRecord } from "../src/ui/transcript-report.js";
 import { rowSteps } from "../src/ui/turn-timing.js";
 import { readBuffer } from "../src/ui/transcript-buffer.js";
 import { chunk, REST_IN_CHAT, toSpeech } from "../src/ui/speech-text.js";
 import { plainChatContext } from "../src/ui/call-context.js";
+import { ONE_MOMENT_MP3_BASE64 } from "../src/ui/assets/one-moment.js";
 
 interface Row {
   id: string;
@@ -117,13 +120,26 @@ function fakeFeed() {
 type SpeakImpl = (p: { agentId: string; text: string; provider: SpeakProvider }) => Promise<unknown>;
 const okSpeak: SpeakImpl = async ({ text, provider }) => ({ audio: `${provider}:${text}`, sampleRate: 24000, provider, voice: "eve" });
 
+const decodeOk = () => vi.fn(async () => ({ sampleRate: 24000, getChannelData: () => new Float32Array(8) }));
+
 async function make(
-  opts: { provider?: SpeakProvider; speak?: SpeakImpl; interrupt?: () => boolean; onEnd?: (call: CallRecord, targets: unknown[]) => void; onAutosave?: (call: CallRecord) => void; chatIssue?: Record<string, unknown>; audioContext?: unknown } = {},
+  opts: {
+    provider?: SpeakProvider;
+    speak?: SpeakImpl;
+    interrupt?: () => boolean;
+    onEnd?: (call: CallRecord, targets: unknown[]) => void;
+    onAutosave?: (call: CallRecord) => void;
+    chatIssue?: Record<string, unknown>;
+    audioContext?: unknown;
+    transcribe?: (p: { audio: string; mimeType: string }) => Promise<unknown>;
+    onTarget?: (t: unknown) => void;
+    onVoicing?: (since: number | null) => void;
+  } = {},
 ) {
   const fake = fakeApi(opts.chatIssue);
   const feed = fakeFeed();
   const speak = vi.fn(opts.speak ?? okSpeak);
-  const transcribe = vi.fn(async (_p: { audio: string; mimeType: string }) => ({ text: "What is the status?" }));
+  const transcribe = vi.fn(opts.transcribe ?? (async (_p: { audio: string; mimeType: string }) => ({ text: "What is the status?" })));
   const onNotice = vi.fn();
   const onTranscript = vi.fn();
   const session = new DirectSession({
@@ -132,7 +148,7 @@ async function make(
     context: plainChatContext(),
     agentRef: "a-ren",
     provider: opts.provider ?? "grok",
-    audioContext: (opts.audioContext ?? { close: vi.fn(async () => undefined), resume: vi.fn(async () => undefined) }) as never,
+    audioContext: (opts.audioContext ?? { close: vi.fn(async () => undefined), resume: vi.fn(async () => undefined), decodeAudioData: decodeOk() }) as never,
     speak,
     transcribe,
     interruptByTalking: opts.interrupt,
@@ -143,6 +159,8 @@ async function make(
     onNotice,
     onEnd: opts.onEnd,
     onAutosave: opts.onAutosave,
+    onTarget: opts.onTarget,
+    onVoicing: opts.onVoicing,
     autosaveMs: 1_000,
     feed,
   });
@@ -176,7 +194,11 @@ const LONG_REPLY = [
 ].join("\n");
 
 const spokenTexts = (speak: ReturnType<typeof vi.fn>) => speak.mock.calls.map(([p]) => `${p.provider}:${p.text}`);
-const played = (player: { enqueue: ReturnType<typeof vi.fn> }) => player.enqueue.mock.calls.map(([buf]) => (buf as { tag: string }).tag);
+/** Reply chunks played; the "One moment" filler is counted apart by `fillers`. */
+const played = (player: { enqueue: ReturnType<typeof vi.fn> }) => player.enqueue.mock.calls.map(([buf]) => (buf as { tag: string }).tag).filter((t) => t !== "filler");
+const fillers = (player: { enqueue: ReturnType<typeof vi.fn> }) => player.enqueue.mock.calls.filter(([buf]) => (buf as { tag: string }).tag === "filler").length;
+const notes = (ctx: { onTranscript: ReturnType<typeof vi.fn> }) =>
+  (ctx.onTranscript.mock.calls.at(-1)![0] as Array<{ id: string; who: string; text: string }>).filter((e) => e.who === "note");
 
 async function turn(ctx: Awaited<ReturnType<typeof make>>) {
   talk(ctx.mic);
@@ -459,9 +481,9 @@ describe("DirectSession", () => {
     ctx.fake.add("Anyone there?");
     ctx.feed.emit("chat-1");
     await vi.advanceTimersByTimeAsync(5_000);
-    const notes = (ctx.onTranscript.mock.calls.at(-1)![0] as Array<{ who: string; text: string }>).filter((e) => e.who === "note").map((e) => e.text);
-    expect(notes).toContain(`${GEMINI_FALLBACK_NOTICE} (gemini auth_failed)`);
-    expect(notes).toContain(`${REST_IN_CHAT} (voice failed: grok not_configured)`);
+    const texts = notes(ctx).map((e) => e.text);
+    expect(texts).toContain(`${GEMINI_FALLBACK_NOTICE} (gemini auth_failed)`);
+    expect(texts).toContain(`Turn 1: the reply could not be voiced (grok not_configured). ${REST_IN_CHAT}`);
   });
 
   it("a suspended audio context that will not wake is said out loud, and nothing is queued", async () => {
@@ -661,6 +683,244 @@ describe("DirectSession", () => {
       const call = onEnd.mock.calls[0]![0] as CallRecord;
       expect(call.turns).toBeUndefined();
       expect(call.timingStamp).toBeUndefined();
+    });
+  });
+
+  describe("turn outcome (PAR-15051 T1a)", () => {
+    const ac = () => ({ close: vi.fn(async () => undefined), resume: vi.fn(async () => undefined), currentTime: 0, outputLatency: 0, decodeAudioData: decodeOk() });
+    const endRows = (onEnd: ReturnType<typeof vi.fn>, session: { stop(): void }) => {
+      session.stop();
+      return (onEnd.mock.calls[0]![0] as CallRecord).turns!;
+    };
+    const turnNotes = (ctx: { onTranscript: ReturnType<typeof vi.fn> }) => notes(ctx).filter((e) => e.text.startsWith("Turn "));
+    const slow = (ms: number): SpeakImpl => async (p) => {
+      await new Promise((r) => setTimeout(r, ms));
+      return okSpeak(p);
+    };
+
+    it("voiced needs playAt: a played reply is voiced once and a later hang-up adds nothing", async () => {
+      const onEnd = vi.fn();
+      const ctx = await make({ onEnd, audioContext: ac() });
+      ctx.player.enqueue.mockImplementation(() => ({ startAt: 0.1, endAt: 1 }));
+      await turn(ctx);
+      ctx.fake.add("Done.");
+      ctx.feed.emit("chat-1");
+      await vi.advanceTimersByTimeAsync(2_000);
+      const row = endRows(onEnd, ctx.session)[0]!;
+      expect(row.outcome).toBe("voiced");
+      expect(row.playAt).toBeTypeOf("number");
+      expect(turnNotes(ctx)).toEqual([]);
+    });
+
+    it("a sound-blocked turn has audioAt but is not voiced", async () => {
+      const onEnd = vi.fn();
+      const ctx = await make({ onEnd, audioContext: { ...ac(), state: "suspended" } });
+      await turn(ctx);
+      ctx.fake.add("Hello?");
+      ctx.feed.emit("chat-1");
+      await vi.advanceTimersByTimeAsync(3_000);
+      const row = endRows(onEnd, ctx.session)[0]!;
+      expect(row.outcome).toBe("sound_blocked");
+      expect(row.playAt).toBeUndefined();
+      expect(row.audioAt).toBeTypeOf("number");
+      expect(turnNotes(ctx).map((e) => e.text)).toEqual([`Turn 1: ${SOUND_BLOCKED_NOTICE}`]);
+    });
+
+    it("voice_failed when both engines fail; the Gemini-to-Grok note alone sets no outcome", async () => {
+      const failedEnd = vi.fn();
+      const a = await make({ onEnd: failedEnd, provider: "gemini", speak: async () => ({ error: "provider_error" }) });
+      await turn(a);
+      a.fake.add("Hi.");
+      a.feed.emit("chat-1");
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(endRows(failedEnd, a.session)[0]!.outcome).toBe("voice_failed");
+      const okEnd = vi.fn();
+      const b = await make({ onEnd: okEnd, provider: "gemini", audioContext: ac(), speak: async (p) => (p.provider === "gemini" ? { error: "timeout" } : okSpeak(p)) });
+      b.player.enqueue.mockImplementation(() => ({ startAt: 0.1, endAt: 1 }));
+      await turn(b);
+      b.fake.add("Hi.");
+      b.feed.emit("chat-1");
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(notes(b).map((e) => e.text)).toContain(`${GEMINI_FALLBACK_NOTICE} (gemini timeout)`);
+      expect(endRows(okEnd, b.session)[0]!.outcome).toBe("voiced");
+      expect(turnNotes(b)).toEqual([]);
+    });
+
+    it("at hang-up: hung_up_voicing and no_reply, each with one Turn note that carries the turn in its id", async () => {
+      const onEnd = vi.fn();
+      const ctx = await make({ onEnd, speak: slow(5_000) });
+      await turn(ctx);
+      await turn(ctx);
+      ctx.fake.add("Slow answer.");
+      ctx.feed.emit("chat-1");
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(endRows(onEnd, ctx.session).map((r) => r.outcome)).toEqual(["hung_up_voicing", "no_reply"]);
+      const t = turnNotes(ctx);
+      expect(t.map((e) => e.text)).toEqual(["Turn 1: hung up while the reply was being voiced (grok, 2.0 s).", "Turn 2: no reply before the call ended."]);
+      expect(t[0]!.id).toMatch(/^note-t1-/);
+      expect(t[1]!.id).toMatch(/^note-t2-/);
+    });
+
+    it("talked_over when a barge-in drops the reply before it played", async () => {
+      const onEnd = vi.fn();
+      const ctx = await make({ onEnd, speak: slow(1_000) });
+      await turn(ctx);
+      ctx.fake.add("Answer.");
+      ctx.feed.emit("chat-1");
+      await vi.advanceTimersByTimeAsync(100);
+      ctx.session.interrupt();
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(endRows(onEnd, ctx.session)[0]!.outcome).toBe("talked_over");
+      expect(turnNotes(ctx).map((e) => e.text)).toEqual(["Turn 1: reply stopped, you spoke over it."]);
+    });
+
+    it("not_sent when every post fails", async () => {
+      const onEnd = vi.fn();
+      const ctx = await make({ onEnd });
+      const original = ctx.fake.api.post.getMockImplementation()!;
+      ctx.fake.api.post.mockImplementation(async (path: string, body: { body: string; clientRequestId: string }) => {
+        if (path === "/issues/chat-1/comments") throw new Error("Paperclip answered 500");
+        return original(path, body);
+      });
+      await turn(ctx);
+      expect(endRows(onEnd, ctx.session)[0]!.outcome).toBe("not_sent");
+      expect(turnNotes(ctx).map((e) => e.text)).toEqual(["Turn 1: not sent (Paperclip answered 500)."]);
+    });
+
+    it("not_heard keeps a row for a transcribe error and for empty text, and posts nothing", async () => {
+      const onEnd = vi.fn();
+      let calls = 0;
+      const ctx = await make({
+        onEnd,
+        transcribe: async () => {
+          calls += 1;
+          if (calls === 1) throw new Error("xAI 503");
+          return { text: "  " };
+        },
+      });
+      await turn(ctx);
+      await vi.advanceTimersByTimeAsync(2_000);
+      await turn(ctx);
+      const rows = endRows(onEnd, ctx.session);
+      expect(rows.map((r) => r.outcome)).toEqual(["not_heard", "not_heard"]);
+      expect(rows[0]!.textAt).toBeUndefined();
+      expect(ctx.fake.comments()).toHaveLength(0);
+      expect(turnNotes(ctx).map((e) => e.text)).toEqual(["Turn 1: not heard (xAI 503).", "Turn 2: not heard, nothing was transcribed."]);
+    });
+
+    it("records the worker's provider times for stt and tts", async () => {
+      const onEnd = vi.fn();
+      const ctx = await make({
+        onEnd,
+        audioContext: ac(),
+        transcribe: async () => {
+          await new Promise((r) => setTimeout(r, 1_000));
+          return { text: "Hi", providerMs: 700 };
+        },
+        speak: async (p) => ({ ...((await okSpeak(p)) as object), providerMs: 300 }),
+      });
+      ctx.player.enqueue.mockImplementation(() => ({ startAt: 0.1, endAt: 1 }));
+      await turn(ctx);
+      await vi.advanceTimersByTimeAsync(1_000);
+      ctx.fake.add("Done.");
+      ctx.feed.emit("chat-1");
+      await vi.advanceTimersByTimeAsync(1_000);
+      const row = endRows(onEnd, ctx.session)[0]!;
+      expect(row).toMatchObject({ sttProviderMs: 700, ttsProviderMs: 300, outcome: "voiced" });
+      expect(rowSteps(row, 0)).toMatchObject({ stt: 1_000, sttProvider: 700, sttRest: 300, ttsProvider: 300 });
+    });
+
+    it("reports the chat target, and the wait for chunk 0 until its audio arrives", async () => {
+      const onTarget = vi.fn();
+      const onVoicing = vi.fn();
+      const ctx = await make({ onTarget, onVoicing, speak: slow(1_000) });
+      await turn(ctx);
+      expect(onTarget).toHaveBeenCalledWith(expect.objectContaining({ issueId: "chat-1" }));
+      ctx.fake.add("Answer.");
+      ctx.feed.emit("chat-1");
+      await vi.advanceTimersByTimeAsync(100);
+      expect(onVoicing.mock.calls.at(-1)![0]).toBeTypeOf("number");
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(onVoicing.mock.calls.at(-1)![0]).toBeNull();
+    });
+  });
+
+  describe("One moment filler (PAR-15051 T1a)", () => {
+    it("is a bundled MP3 under 1 s and 20 KB", () => {
+      const bytes = Buffer.from(ONE_MOMENT_MP3_BASE64, "base64");
+      expect(bytes.length).toBeLessThan(20_000);
+      // MPEG-2 layer III frame header; the bitrate index gives the (constant) bitrate.
+      expect([bytes[0], bytes[1]! & 0xfe]).toEqual([0xff, 0xf2]);
+      const kbps = [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160][bytes[2]! >> 4]!;
+      expect((bytes.length * 8) / (kbps * 1000)).toBeLessThan(1);
+    });
+
+    it("plays once at end of speech + 4 s with no reply audio; not posted, not a provider call, not a reply", async () => {
+      const onEnd = vi.fn();
+      const ctx = await make({ onEnd });
+      talk(ctx.mic);
+      const endAt = Date.now();
+      await vi.advanceTimersByTimeAsync(3_990);
+      expect(fillers(ctx.player)).toBe(0);
+      await vi.advanceTimersByTimeAsync(10);
+      expect(fillers(ctx.player)).toBe(1);
+      // The live buffer has it without any transcript line being added.
+      const buffered = JSON.parse(localStorage.getItem(localStorage.key(0)!)!) as { turns: Array<{ fillerAt?: number }> };
+      expect(buffered.turns[0]!.fillerAt).toBe(endAt + 4_000);
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(fillers(ctx.player)).toBe(1);
+      expect(ctx.speak).not.toHaveBeenCalled();
+      expect(ctx.fake.comments()).toHaveLength(1);
+      ctx.session.stop();
+      const call = onEnd.mock.calls[0]![0] as CallRecord;
+      expect(call.turns![0]).toMatchObject({ fillerAt: endAt + 4_000, outcome: "no_reply" });
+      expect(call.turns![0]!.playAt ?? call.turns![0]!.replyServerAt).toBeUndefined();
+      expect(call.entries.some((e) => /one moment/i.test(e.text))).toBe(false);
+    });
+
+    it("does not fire while a reply is being voiced, or while the person is speaking", async () => {
+      const a = await make({
+        speak: async (p) => {
+          await new Promise((r) => setTimeout(r, 3_000));
+          return okSpeak(p);
+        },
+      });
+      await turn(a);
+      a.fake.add("Answer.");
+      await vi.advanceTimersByTimeAsync(4_500);
+      expect(fillers(a.player)).toBe(0);
+      const b = await make();
+      talk(b.mic);
+      await vi.advanceTimersByTimeAsync(3_500);
+      for (let t = 0; t < 1_000; t += 100) {
+        b.mic.onFrame(new ArrayBuffer(4_800), 0.5);
+        await vi.advanceTimersByTimeAsync(100);
+      }
+      expect(fillers(b.player)).toBe(0);
+    });
+
+    it("plays in the speaker loop: talking over it makes no turn, and interrupt() stops it", async () => {
+      const ctx = await make({ interrupt: () => false });
+      await turn(ctx);
+      await vi.advanceTimersByTimeAsync(4_000);
+      expect(fillers(ctx.player)).toBe(1);
+      for (let t = 0; t < 400; t += 100) ctx.mic.onFrame(new ArrayBuffer(4_800), 0.9);
+      ctx.session.interrupt();
+      expect(ctx.player.flush).toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(ctx.transcribe).toHaveBeenCalledTimes(1);
+      expect(fillers(ctx.player)).toBe(1);
+    });
+
+    it("a clip that cannot be decoded means no filler and one note", async () => {
+      const decodeAudioData = vi.fn(async () => {
+        throw new Error("bad mp3");
+      });
+      const ctx = await make({ audioContext: { close: vi.fn(async () => undefined), resume: vi.fn(async () => undefined), decodeAudioData } });
+      await turn(ctx);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(fillers(ctx.player)).toBe(0);
+      expect(notes(ctx).filter((e) => e.text === FILLER_UNAVAILABLE_NOTICE)).toHaveLength(1);
     });
   });
 });

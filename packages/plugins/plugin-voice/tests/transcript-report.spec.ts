@@ -51,6 +51,21 @@ describe("transcript report", () => {
     expect(JSON.parse(block![1]!)).toEqual(turns);
   });
 
+  it("adds the provider rows and an outcome count (0.2.5); older rows leave them empty", () => {
+    const turns = [
+      { n: 1, endAt: 0, endKind: "end" as const, textAt: 1_000, sttProviderMs: 600, speakStartAt: 2_000, audioAt: 2_500, ttsProviderMs: 400, outcome: "voiced" as const },
+      { n: 2, endAt: 5_000, endKind: "end" as const, outcome: "not_heard" as const },
+    ];
+    const doc = buildTranscriptDocument({ ...CALL, turns });
+    expect(doc).toContain("Outcomes: voiced 1, not_heard 1.");
+    expect(doc).toContain("| stt.provider (xAI speech-to-text call) | 1 | 0.6 | 0.6 |");
+    expect(doc).toContain("| stt.rest (stt minus stt.provider: encode, upload, bridge) | 1 | 0.4 | 0.4 |");
+    expect(doc).toContain("| tts.provider (speak call for the first chunk) | 1 | 0.4 | 0.4 |");
+    const old = buildTranscriptDocument({ ...CALL, turns: [{ n: 1, endAt: 0, endKind: "end" as const, textAt: 900 }] });
+    expect(old).not.toContain("Outcomes:");
+    expect(old).toContain("| stt.provider (xAI speech-to-text call) | 0 | - | - |");
+  });
+
   it("recaps topics and actions and names the document", () => {
     const recap = buildRecap(CALL, documentKey(START));
     expect(recap).toContain("1 turns from you and 2 from the voice");

@@ -17,7 +17,26 @@ export interface SpeakMarks {
   provider?: TurnProvider;
   /** Silent ms between the chunks of this reply. */
   gap?: number;
+  /** Provider time of the speak call that voiced chunk 0, as the worker measured it (0.2.5+). */
+  ttsProviderMs?: number;
 }
+
+/**
+ * What became of one turn, set exactly once (plan PAR-15051, T1a). `voiced` needs `playAt`; every other value but
+ * `answered_together` is a miss and has a note that starts with `Turn <n>:`.
+ */
+export const TURN_OUTCOMES = [
+  "voiced",
+  "answered_together",
+  "no_reply",
+  "voice_failed",
+  "sound_blocked",
+  "hung_up_voicing",
+  "talked_over",
+  "not_sent",
+  "not_heard",
+] as const;
+export type TurnOutcome = (typeof TURN_OUTCOMES)[number];
 
 /** One turn: what the browser saw and, once a reply is assigned, what the agent side did. */
 export interface TurnRow extends SpeakMarks {
@@ -27,6 +46,8 @@ export interface TurnRow extends SpeakMarks {
   endAt: number;
   endKind: "end" | "cap";
   textAt?: number;
+  /** Provider time of the transcribe call, as the worker measured it (0.2.5+). */
+  sttProviderMs?: number;
   postStartAt?: number;
   postedAt?: number;
   /** The posted comment's own `createdAt` (server clock). */
@@ -39,6 +60,9 @@ export interface TurnRow extends SpeakMarks {
   via?: ReplyVia;
   /** Set when the reply arrived while this many turns were still unanswered. */
   queuedTurns?: number;
+  outcome?: TurnOutcome;
+  /** When the local "One moment" line was played for this turn. */
+  fillerAt?: number;
 }
 
 /** Agent comments of one run (or one lone comment), read from the chat. */
@@ -53,13 +77,13 @@ export interface ReplyGroup {
   speak?: SpeakMarks;
 }
 
-export const STEP_NAMES = ["stt", "post", "agent", "agentFinal", "detect", "queue", "tts", "start", "silence", "gap"] as const;
+export const STEP_NAMES = ["stt", "sttProvider", "sttRest", "post", "agent", "agentFinal", "detect", "queue", "tts", "ttsProvider", "start", "silence", "gap"] as const;
 export type StepName = (typeof STEP_NAMES)[number];
 export type StepValues = Partial<Record<StepName, number>>;
 
 const SPLIT_UNDER_MS = 1_500;
 
-const MARK_FIELDS = ["speakStartAt", "audioAt", "playAt", "latencyKnown", "provider", "gap"] as const;
+const MARK_FIELDS = ["speakStartAt", "audioAt", "playAt", "latencyKnown", "provider", "gap", "ttsProviderMs"] as const;
 
 /** Browser time of a server time is `server - skew`; the skew is one median per call. */
 export function clockSkew(rows: TurnRow[]): number {
@@ -86,22 +110,31 @@ export function assignReplies(turns: TurnRow[], groups: ReplyGroup[]): TurnRow[]
     for (const f of ["replyServerAt", "finalServerAt", "replyComments", "seenAt", "via", "queuedTurns", ...MARK_FIELDS] as const) delete copy[f];
     return copy;
   });
-  const open = rows.filter((r) => r.serverPostedAt !== undefined).sort((a, b) => a.serverPostedAt! - b.serverPostedAt! || a.n - b.n);
-  const taken = new Set<TurnRow>();
-  for (const g of [...groups].sort((a, b) => a.firstServerAt - b.firstServerAt)) {
-    const waiting = open.filter((r) => !taken.has(r) && r.serverPostedAt! <= g.firstServerAt);
-    const row = waiting[0];
-    if (!row) continue;
-    taken.add(row);
+  for (const { group: g, row, waiting } of pairReplies(rows, groups)) {
     row.replyServerAt = g.firstServerAt;
     row.finalServerAt = g.finalServerAt;
     row.replyComments = g.count;
     row.seenAt = g.seenAt;
     row.via = g.via;
-    if (waiting.length > 1) row.queuedTurns = waiting.length;
+    if (waiting > 1) row.queuedTurns = waiting;
     if (g.speak) for (const f of MARK_FIELDS) if (g.speak[f] !== undefined) (row as unknown as Record<string, unknown>)[f] = g.speak[f];
   }
   return rows;
+}
+
+/** The pairing `assignReplies` uses, on the rows given (not copies): which group answers which turn. */
+export function pairReplies(rows: TurnRow[], groups: ReplyGroup[]): Array<{ group: ReplyGroup; row: TurnRow; waiting: number }> {
+  const open = rows.filter((r) => r.serverPostedAt !== undefined).sort((a, b) => a.serverPostedAt! - b.serverPostedAt! || a.n - b.n);
+  const taken = new Set<TurnRow>();
+  const pairs: Array<{ group: ReplyGroup; row: TurnRow; waiting: number }> = [];
+  for (const group of [...groups].sort((a, b) => a.firstServerAt - b.firstServerAt)) {
+    const waiting = open.filter((r) => !taken.has(r) && r.serverPostedAt! <= group.firstServerAt);
+    const row = waiting[0];
+    if (!row) continue;
+    taken.add(row);
+    pairs.push({ group, row, waiting: waiting.length });
+  }
+  return pairs;
 }
 
 /** The steps one turn went through; the ones missing a mark are absent. */
@@ -111,13 +144,17 @@ export function rowSteps(row: TurnRow, skew: number, quietMs = ENDPOINT_END_QUIE
   const set = (k: StepName, v: number | undefined) => {
     if (v !== undefined && Number.isFinite(v)) out[k] = v;
   };
-  set("stt", diff(row.textAt, row.endAt));
+  const stt = diff(row.textAt, row.endAt);
+  set("stt", stt);
+  set("sttProvider", row.sttProviderMs);
+  if (stt !== undefined && row.sttProviderMs !== undefined) set("sttRest", stt - row.sttProviderMs);
   set("post", diff(row.postedAt, row.textAt));
   set("agent", diff(row.replyServerAt, row.serverPostedAt));
   set("agentFinal", diff(row.finalServerAt, row.serverPostedAt));
   if (row.seenAt !== undefined && row.replyServerAt !== undefined) set("detect", Math.max(0, row.seenAt - (row.replyServerAt - skew)));
   set("queue", diff(row.speakStartAt, row.seenAt));
   set("tts", diff(row.audioAt, row.speakStartAt));
+  set("ttsProvider", row.ttsProviderMs);
   set("start", diff(row.playAt, row.audioAt));
   if (row.playAt !== undefined) set("silence", row.playAt - (row.endKind === "end" ? row.endAt - quietMs : row.endAt));
   set("gap", row.gap);
@@ -214,9 +251,11 @@ export class TurnClock {
   private readonly turns: TurnRow[] = [];
   private readonly groups = new Map<string, ReplyGroup>();
   private readonly speaks = new Map<string, SpeakMarks>();
+  /** Reply comment id to the key of its group. */
+  private readonly groupOf = new Map<string, string>();
 
-  /** A turn whose speech ended at `endAt` and was transcribed to non-empty text. */
-  addTurn(init: { startAt?: number; endAt: number; endKind: "end" | "cap"; textAt: number }): TurnRow {
+  /** A turn whose speech ended at `endAt`; `textAt` is set once it is transcribed. */
+  addTurn(init: { startAt?: number; endAt: number; endKind: "end" | "cap"; textAt?: number }): TurnRow {
     const row: TurnRow = { n: this.turns.length + 1, ...init };
     this.turns.push(row);
     return row;
@@ -227,6 +266,7 @@ export class TurnClock {
     const at = tsOf(row.createdAt);
     if (at === undefined) return;
     const key = row.runId ? `run:${row.runId}` : `row:${row.id}`;
+    this.groupOf.set(row.id, key);
     const group = this.groups.get(key);
     if (!group) {
       this.groups.set(key, { key, firstId: row.id, firstServerAt: at, finalServerAt: at, count: 1, seenAt, via });
@@ -254,8 +294,23 @@ export class TurnClock {
     return this.turns.length;
   }
 
+  /** The live row of turn `n` (1-based). */
+  turn(n: number): TurnRow | undefined {
+    return this.turns[n - 1];
+  }
+
+  /** The live turn a reply comment answers, by the same pairing as `rows()`; undefined while it answers none. */
+  turnForReply(commentId: string): TurnRow | undefined {
+    const key = this.groupOf.get(commentId);
+    if (!key) return undefined;
+    return pairReplies(this.turns, [...this.groups.values()]).find((p) => p.group.key === key)?.row;
+  }
+
   rows(): TurnRow[] {
-    const groups = [...this.groups.values()].map((g) => ({ ...g, speak: this.speaks.get(g.firstId) }));
-    return assignReplies(this.turns, groups);
+    return assignReplies(this.turns, this.groupsWithMarks());
+  }
+
+  private groupsWithMarks(): ReplyGroup[] {
+    return [...this.groups.values()].map((g) => ({ ...g, speak: this.speaks.get(g.firstId) }));
   }
 }

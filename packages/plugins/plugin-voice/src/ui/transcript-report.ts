@@ -1,5 +1,5 @@
 import { clip, type ApiClient } from "./agent-chat.js";
-import { STEP_NAMES, turnStats, type StepName, type TurnRow } from "./turn-timing.js";
+import { STEP_NAMES, TURN_OUTCOMES, turnStats, type StepName, type TurnRow } from "./turn-timing.js";
 import { newUuid } from "./uuid.js";
 
 /** One line of the call, with the time it first appeared. */
@@ -62,18 +62,31 @@ export function hasSpeech(entries: LogEntry[]): boolean {
 const MAX_TIMING_ROWS = 200;
 const STEP_LABELS: Record<StepName, string> = {
   stt: "stt (end of speech to text)",
+  sttProvider: "stt.provider (xAI speech-to-text call)",
+  sttRest: "stt.rest (stt minus stt.provider: encode, upload, bridge)",
   post: "post (text to comment posted)",
   agent: "agent (first reply, server clock)",
   agentFinal: "agentFinal (last reply, server clock)",
   detect: "detect (reply posted to reply seen)",
   queue: "queue (seen to speaker starts)",
   tts: "tts (speaker starts to first audio)",
+  ttsProvider: "tts.provider (speak call for the first chunk)",
   start: "start (first audio to sound out)",
   silence: "silence (end of speech to sound out)",
   gap: "gap (silence between chunks)",
 };
 
 const seconds = (ms: number | null) => (ms === null ? "-" : (ms / 1000).toFixed(1));
+
+/** "Outcomes: voiced 3, no_reply 1." plus a blank line; nothing for rows written before 0.2.5. */
+function outcomeLine(turns: TurnRow[]): string[] {
+  const counts = TURN_OUTCOMES.map((o) => [o, turns.filter((t) => t.outcome === o).length] as const).filter(([, n]) => n > 0);
+  const none = turns.filter((t) => !t.outcome).length;
+  if (counts.length === 0) return [];
+  const parts = counts.map(([o, n]) => `${o} ${n}`);
+  if (none > 0) parts.push(`none ${none}`);
+  return [`Outcomes: ${parts.join(", ")}.`, ""];
+}
 
 /** The "## Turn timing" lines: the stamp, a p50/p95 table and the raw rows. */
 function timingSection(turns: TurnRow[], stamp: string | undefined): string[] {
@@ -83,6 +96,7 @@ function timingSection(turns: TurnRow[], stamp: string | undefined): string[] {
   out.push(
     `${stats.turns} turns, ${stats.answered} answered. Voiced by Gemini: ${stats.gemini}, by Grok: ${stats.grok}. Split turns: ${stats.splits}. Clock skew: ${stats.skewMs} ms.`,
     "",
+    ...outcomeLine(turns),
     "| Step | n | p50 (s) | p95 (s) |",
     "|---|---|---|---|",
   );
