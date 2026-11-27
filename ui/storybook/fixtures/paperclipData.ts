@@ -1345,6 +1345,11 @@ export const storybookDashboardSummary: DashboardSummary = {
     { date: "2026-04-19", succeeded: 5, failed: 2, recovered: 6, other: 1, total: 14, failedByErrorCode: { process_lost: 2 } },
     { date: "2026-04-20", succeeded: 4, failed: 1, recovered: 3, other: 2, total: 10, failedByErrorCode: { process_lost: 1 } },
   ],
+  taskActivity: [
+    { date: "2026-04-07", byStatus: { done: 3, in_progress: 1 }, byPriority: { high: 1, medium: 3 } },
+    { date: "2026-04-08", byStatus: { done: 2, todo: 2 }, byPriority: { critical: 1, medium: 3 } },
+    { date: "2026-04-09", byStatus: { in_review: 1, todo: 1 }, byPriority: { low: 2 } },
+  ],
 };
 
 export const storybookLiveRuns: LiveRunForIssue[] = [

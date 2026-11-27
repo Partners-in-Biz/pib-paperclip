@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, createDb, heartbeatRuns } from "@paperclipai/db";
+import { agents, companies, createDb, heartbeatRuns, issues } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -48,6 +48,7 @@ describeEmbeddedPostgres("dashboard service", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(issues);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(companies);
@@ -323,5 +324,42 @@ describeEmbeddedPostgres("dashboard service", () => {
       total: 3,
       failedByErrorCode: {},
     });
+  });
+  it("counts tasks created per day by status and priority for the 14-day charts", async () => {
+    const companyId = randomUUID();
+    const otherCompanyId = randomUUID();
+    const prefix = (id: string) => `T${id.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    await db.insert(companies).values([
+      { id: companyId, name: "Paperclip", issuePrefix: prefix(companyId), requireBoardApprovalForNewAgents: false },
+      { id: otherCompanyId, name: "Other", issuePrefix: prefix(otherCompanyId), requireBoardApprovalForNewAgents: false },
+    ]);
+    const today = utcDay(0);
+    const weekAgo = utcDay(-7);
+    let number = 0;
+    const task = (overrides: Partial<typeof issues.$inferInsert>) => {
+      number += 1;
+      return { companyId, title: `Task ${number}`, status: "todo", priority: "medium", issueNumber: number,
+        identifier: `${prefix(companyId)}-${number}`, createdAt: today, ...overrides };
+    };
+    await db.insert(issues).values([
+      task({ status: "done", priority: "high" }),
+      task({ status: "done", priority: "medium" }),
+      task({ status: "todo", priority: "high" }),
+      task({ status: "in_progress", priority: "low", createdAt: weekAgo }),
+      task({ status: "todo", createdAt: utcDay(-20) }),
+      task({ status: "todo", hiddenAt: today }),
+      task({ companyId: otherCompanyId, identifier: `${prefix(otherCompanyId)}-1`, issueNumber: 1 }),
+    ]);
+
+    const summary = await dashboardService(db).summary(companyId);
+    expect(summary.taskActivity).toHaveLength(14);
+    expect(summary.taskActivity.find((day) => day.date === utcDateKey(today))).toEqual({
+      date: utcDateKey(today), byStatus: { done: 2, todo: 1 }, byPriority: { high: 2, medium: 1 },
+    });
+    expect(summary.taskActivity.find((day) => day.date === utcDateKey(weekAgo))).toEqual({
+      date: utcDateKey(weekAgo), byStatus: { in_progress: 1 }, byPriority: { low: 1 },
+    });
+    const total = summary.taskActivity.reduce((sum, day) => sum + Object.values(day.byStatus).reduce((a, b) => a + b, 0), 0);
+    expect(total).toBe(4);
   });
 });

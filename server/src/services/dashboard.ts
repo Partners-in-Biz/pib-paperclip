@@ -101,6 +101,34 @@ export function dashboardService(db: Db) {
         ));
 
       const monthSpendCents = Number(monthSpend);
+      // Tasks created per day in the chart window, by current status and
+      // priority, with the same visibility rule as the task counts above.
+      const taskActivityRows = await retryIdempotentDatabaseOperation(() => db
+        .select({
+          date: sql<string>`to_char(${issues.createdAt} AT TIME ZONE 'UTC', 'YYYY-MM-DD')`,
+          status: issues.status,
+          priority: issues.priority,
+          count: sql<number>`count(*)::double precision`,
+        })
+        .from(issues)
+        .where(and(
+          eq(issues.companyId, companyId),
+          executionIssueCondition(),
+          gte(issues.createdAt, runActivityStart),
+        ))
+        .groupBy(sql`1`, issues.status, issues.priority));
+      const taskActivity = new Map(runActivityDays.map((date) => [
+        date,
+        { date, byStatus: {} as Record<string, number>, byPriority: {} as Record<string, number> },
+      ]));
+      for (const row of taskActivityRows) {
+        const bucket = taskActivity.get(String(row.date));
+        if (!bucket) continue;
+        const count = Number(row.count);
+        bucket.byStatus[row.status] = (bucket.byStatus[row.status] ?? 0) + count;
+        bucket.byPriority[row.priority] = (bucket.byPriority[row.priority] ?? 0) + count;
+      }
+
       // Per-day run breakdown. A run is "recovered" when its retry chain later
       // succeeded (recovered_runs = all ancestors of a succeeded retry), so a
       // restart-killed or shutdown-interrupted run whose retry succeeded is
@@ -216,6 +244,7 @@ export function dashboardService(db: Db) {
           pausedProjects: budgetOverview.pausedProjectCount,
         },
         runActivity: Array.from(runActivity.values()),
+        taskActivity: Array.from(taskActivity.values()),
       };
     },
   };

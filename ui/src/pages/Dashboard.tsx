@@ -43,6 +43,7 @@ import { SmokeLabDashboardCard } from "../components/SmokeLabDashboardCard";
 import { taskStatusIconProps } from "@/lib/task-status-presentation";
 
 const DASHBOARD_ACTIVITY_LIMIT = 10;
+const DASHBOARD_RECENT_TASK_LIMIT = 10;
 
 function getRecentIssues(issues: Issue[]): Issue[] {
   return [...issues]
@@ -195,10 +196,23 @@ export function Dashboard() {
   });
   usePublishSharedQueryData(sharedActivity, activity, activityUpdatedAt);
 
-  const { data: issues } = useQuery({
-    queryKey: queryKeys.issues.list(selectedCompanyId!),
-    queryFn: () => issuesApi.list(selectedCompanyId!),
+  // The dashboard used to load the whole default task list (500 full rows, about
+  // 2 MB) and reload it on every live update. It needs only the 10 most recently
+  // updated tasks; the 14-day charts come from the summary's per-day counts.
+  const { data: recentIssueRows } = useQuery({
+    queryKey: [...queryKeys.issues.list(selectedCompanyId!), "dashboard-recent", DASHBOARD_RECENT_TASK_LIMIT] as const,
+    queryFn: () => issuesApi.list(selectedCompanyId!, {
+      sortField: "updated", sortDir: "desc", limit: DASHBOARD_RECENT_TASK_LIMIT,
+    }),
     enabled: !!selectedCompanyId,
+  });
+  // Names for the tasks the recent activity mentions, read as light index rows.
+  const activityIssueIds = useMemo(() => [...new Set((activity ?? []).slice(0, 10)
+    .filter((event) => event.entityType === "issue").map((event) => event.entityId))].sort(), [activity]);
+  const { data: activityIssues } = useQuery({
+    queryKey: [...queryKeys.issues.list(selectedCompanyId!), "dashboard-activity-names", activityIssueIds] as const,
+    queryFn: () => issuesApi.listCompact(selectedCompanyId!, { ids: activityIssueIds, projection: "index", limit: activityIssueIds.length }),
+    enabled: !!selectedCompanyId && activityIssueIds.length > 0,
   });
 
   const { data: projects } = useQuery({
@@ -218,7 +232,7 @@ export function Dashboard() {
     [companyMembers?.users],
   );
 
-  const recentIssues = issues ? getRecentIssues(issues) : [];
+  const recentIssues = recentIssueRows ? getRecentIssues(recentIssueRows) : [];
   const recentActivity = useMemo(() => (activity ?? []).slice(0, 10), [activity]);
 
   useEffect(() => {
@@ -284,17 +298,17 @@ export function Dashboard() {
 
   const entityNameMap = useMemo(() => {
     const map = new Map<string, string>();
-    for (const i of issues ?? []) map.set(`issue:${i.id}`, i.identifier ?? i.id.slice(0, 8));
+    for (const i of [...(activityIssues ?? []), ...(recentIssueRows ?? [])]) map.set(`issue:${i.id}`, i.identifier ?? i.id.slice(0, 8));
     for (const a of agents ?? []) map.set(`agent:${a.id}`, a.name);
     for (const p of projects ?? []) map.set(`project:${p.id}`, p.name);
     return map;
-  }, [issues, agents, projects]);
+  }, [activityIssues, recentIssueRows, agents, projects]);
 
   const entityTitleMap = useMemo(() => {
     const map = new Map<string, string>();
-    for (const i of issues ?? []) map.set(`issue:${i.id}`, i.title);
+    for (const i of [...(activityIssues ?? []), ...(recentIssueRows ?? [])]) map.set(`issue:${i.id}`, i.title);
     return map;
-  }, [issues]);
+  }, [activityIssues, recentIssueRows]);
 
   const agentName = (id: string | null) => {
     if (!id || !agents) return null;
@@ -484,11 +498,11 @@ export function Dashboard() {
             {/* PAP-411: "Tasks by Priority" chart hidden behind SHOW_TASK_PRIORITY_UI. */}
             {SHOW_TASK_PRIORITY_UI && (
               <ChartCard title="Tasks by Priority" subtitle="Last 14 days">
-                <PriorityChart issues={issues ?? []} />
+                <PriorityChart activity={data.taskActivity ?? []} />
               </ChartCard>
             )}
             <ChartCard title="Tasks by Status" subtitle="Last 14 days">
-              <IssueStatusChart issues={issues ?? []} />
+              <IssueStatusChart activity={data.taskActivity ?? []} />
             </ChartCard>
             <ChartCard title="Success Rate" subtitle="Last 14 days">
               <SuccessRateChart activity={data.runActivity} />

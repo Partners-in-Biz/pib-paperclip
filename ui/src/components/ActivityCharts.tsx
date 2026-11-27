@@ -1,4 +1,4 @@
-import type { DashboardRunActivityDay, HeartbeatRun } from "@paperclipai/shared";
+import type { DashboardRunActivityDay, DashboardTaskActivityDay, HeartbeatRun } from "@paperclipai/shared";
 
 /* ---- Utilities ---- */
 
@@ -174,11 +174,33 @@ const priorityColors: Record<string, string> = {
 
 const priorityOrder = ["critical", "high", "medium", "low"] as const;
 
-export function PriorityChart({ issues }: { issues: { priority: string; createdAt: Date }[] }) {
+type TaskChartInput =
+  | { issues: { priority: string; status: string; createdAt: Date }[]; activity?: never }
+  | { activity: readonly DashboardTaskActivityDay[]; issues?: never };
+
+/** Adds the server's per-day task counts for one dimension into the chart's day buckets. */
+function addTaskActivityCounts(
+  grouped: Map<string, Record<string, number>>,
+  activity: readonly DashboardTaskActivityDay[],
+  dimension: "byStatus" | "byPriority",
+  onlyKnownKeys: boolean,
+) {
+  for (const day of activity) {
+    const entry = grouped.get(day.date);
+    if (!entry) continue;
+    for (const [key, count] of Object.entries(day[dimension])) {
+      if (onlyKnownKeys && !(key in entry)) continue;
+      entry[key] = (entry[key] ?? 0) + count;
+    }
+  }
+}
+
+export function PriorityChart(input: TaskChartInput) {
   const days = getLast14Days();
   const grouped = new Map<string, Record<string, number>>();
   for (const day of days) grouped.set(day, { critical: 0, high: 0, medium: 0, low: 0 });
-  for (const issue of issues) {
+  if (input.activity) addTaskActivityCounts(grouped, input.activity, "byPriority", true);
+  for (const issue of input.issues ?? []) {
     const day = new Date(issue.createdAt).toISOString().slice(0, 10);
     const entry = grouped.get(day);
     if (!entry) continue;
@@ -246,12 +268,16 @@ const statusLabels: Record<string, string> = {
   backlog: "Backlog",
 };
 
-export function IssueStatusChart({ issues }: { issues: { status: string; createdAt: Date }[] }) {
+export function IssueStatusChart(input: TaskChartInput) {
   const days = getLast14Days();
   const allStatuses = new Set<string>();
   const grouped = new Map<string, Record<string, number>>();
   for (const day of days) grouped.set(day, {});
-  for (const issue of issues) {
+  if (input.activity) {
+    addTaskActivityCounts(grouped, input.activity, "byStatus", false);
+    for (const entry of grouped.values()) for (const status of Object.keys(entry)) allStatuses.add(status);
+  }
+  for (const issue of input.issues ?? []) {
     const day = new Date(issue.createdAt).toISOString().slice(0, 10);
     const entry = grouped.get(day);
     if (!entry) continue;
