@@ -280,6 +280,54 @@ describe("DirectSession", () => {
     expect(spokenTexts(ctx.speak)).toEqual(["grok:Polled reply."]);
   });
 
+  it("reads the reply within 2 s of the post (fast window), also after an interim reply", async () => {
+    const ctx = await make();
+    await turn(ctx);
+    ctx.fake.add("On it, checking.");
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(spokenTexts(ctx.speak)).toEqual(["grok:On it, checking."]);
+    await vi.advanceTimersByTimeAsync(5_000);
+    ctx.fake.add("Found it.");
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(spokenTexts(ctx.speak)).toEqual(["grok:On it, checking.", "grok:Found it."]);
+  });
+
+  it("outside the 90 s fast window the reply is read every 10 s, not 2 s", async () => {
+    const ctx = await make();
+    await turn(ctx);
+    await vi.advanceTimersByTimeAsync(101_000);
+    ctx.fake.add("Late reply.");
+    await vi.advanceTimersByTimeAsync(8_000);
+    expect(ctx.speak).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(spokenTexts(ctx.speak)).toEqual(["grok:Late reply."]);
+  });
+
+  it("Gemini barge-in drops the prefetched chunk: two calls, no third", async () => {
+    const ctx = await make({ provider: "gemini" });
+    await turn(ctx);
+    ctx.fake.add(LONG_REPLY);
+    ctx.feed.emit("chat-1");
+    await vi.advanceTimersByTimeAsync(100);
+    expect(played(ctx.player)).toHaveLength(1);
+    expect(ctx.speak).toHaveBeenCalledTimes(2);
+    for (let t = 0; t < 300; t += 100) ctx.mic.onFrame(new ArrayBuffer(4_800), 0.5);
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(played(ctx.player)).toHaveLength(1);
+    expect(ctx.speak).toHaveBeenCalledTimes(2);
+  });
+
+  it("Gemini prefetch non-ok: Grok takes that chunk, one notice, no chunk lost or repeated", async () => {
+    const ctx = await make({ provider: "gemini", speak: async (p) => (p.provider === "gemini" ? { error: "provider_error" } : okSpeak(p)) });
+    await turn(ctx);
+    ctx.fake.add(LONG_REPLY);
+    ctx.feed.emit("chat-1");
+    await vi.advanceTimersByTimeAsync(10_000);
+    const expected = chunk(toSpeech(LONG_REPLY));
+    expect(played(ctx.player)).toEqual(expected.map((t) => `grok:${t}`));
+    expect(ctx.onNotice.mock.calls.filter(([m]) => m === GEMINI_FALLBACK_NOTICE)).toHaveLength(1);
+  });
+
   it("barge-in by voice stops playback, drops the queue and the prefetched chunk", async () => {
     const ctx = await make();
     await turn(ctx);
@@ -342,14 +390,12 @@ describe("DirectSession", () => {
     },
   );
 
-  it("Gemini: no prefetch, the next chunk is asked for only after the last one played", async () => {
+  it("Gemini prefetches: the next chunk is asked for while the first one plays", async () => {
     const ctx = await make({ provider: "gemini" });
     await turn(ctx);
     ctx.fake.add(LONG_REPLY);
     ctx.feed.emit("chat-1");
     await vi.advanceTimersByTimeAsync(100);
-    expect(ctx.speak).toHaveBeenCalledTimes(1);
-    await vi.advanceTimersByTimeAsync(h.playMs);
     expect(ctx.speak).toHaveBeenCalledTimes(2);
     await vi.advanceTimersByTimeAsync(10_000);
     const expected = chunk(toSpeech(LONG_REPLY));
@@ -506,7 +552,7 @@ describe("DirectSession", () => {
       expect(row.speakStartAt!).toBeGreaterThanOrEqual(row.seenAt!);
       // playAt = now + (startAt - currentTime + outputLatency) = audioAt + 450 ms.
       expect(row.playAt! - row.audioAt!).toBe(450);
-      expect(call.timingStamp).toMatch(/^plugin-voice \d+\.\d+\.\d+, quiet 1200 ms, first chunk 160 chars, await poll 10000 ms, fast window 0 ms, Gemini prefetch off$/);
+      expect(call.timingStamp).toMatch(/^plugin-voice \d+\.\d+\.\d+, quiet 900 ms, first chunk 90 chars, await poll 2000 ms, fast window 90000 ms, Gemini prefetch on$/);
       const buffered = readBuffer(call.startedAt)!;
       expect(buffered.turns).toHaveLength(1);
       expect(buffered.timingStamp).toBe(call.timingStamp);

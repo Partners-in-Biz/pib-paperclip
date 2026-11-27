@@ -22,7 +22,10 @@ import { concatPcm16, encodeWav } from "./wav.js";
 import { PLUGIN_VERSION } from "../namespace.js";
 import {
   DIRECT_REFETCH_MS,
+  DIRECT_AWAIT_FAST_MS,
+  DIRECT_AWAIT_POLL_MS,
   DIRECT_REPLY_POLL_MS,
+  GEMINI_PREFETCH,
   DIRECT_SEND_ATTEMPTS,
   ENDPOINT_END_QUIET_MS,
   ENDPOINT_PREROLL_MS,
@@ -61,13 +64,13 @@ export interface CommentRow {
   createdByRunId?: string | null;
 }
 
-/** The constants a call ran under, stamped on its timing rows (T3 of PAR-14996 moves the last two into limits). */
+/** The constants a call ran under, stamped on its timing rows. */
 const TIMING_CONSTANTS = {
   quietMs: ENDPOINT_END_QUIET_MS,
   firstChunkChars: SPEECH_FIRST_CHUNK_CHARS,
-  awaitPollMs: DIRECT_REPLY_POLL_MS,
-  fastWindowMs: 0,
-  geminiPrefetch: false,
+  awaitPollMs: DIRECT_AWAIT_POLL_MS,
+  fastWindowMs: DIRECT_AWAIT_FAST_MS,
+  geminiPrefetch: GEMINI_PREFETCH,
 };
 
 interface ReplyItem {
@@ -154,6 +157,8 @@ export class DirectSession {
   private anchorAt: number | null = null;
   private readonly seen = new Set<string>();
   private awaitingSince: number | null = null;
+  /** When the latest turn was posted; the fast reply poll runs for DIRECT_AWAIT_FAST_MS after it. */
+  private lastTurnPostedAt: number | null = null;
   private fetching: Promise<number> | null = null;
   private fetchAgain = false;
   private readVia: ReplyVia = "poll";
@@ -217,10 +222,23 @@ export class DirectSession {
       return;
     }
     if (this.closed) return;
-    this.pollTimer = window.setInterval(() => void this.fetchNew("poll"), this.opts.replyPollMs ?? DIRECT_REPLY_POLL_MS);
+    this.schedulePoll();
     if (this.opts.onAutosave) this.autosaveTimer = window.setInterval(() => this.autosave(), this.opts.autosaveMs ?? AUTOSAVE_MS);
     this.bumpIdle();
     this.refresh();
+  }
+
+  /** Next reply read: fast while inside the window after the latest turn post, slow otherwise. */
+  private schedulePoll(): void {
+    if (this.closed) return;
+    if (this.pollTimer !== null) window.clearTimeout(this.pollTimer);
+    const slow = this.opts.replyPollMs ?? DIRECT_REPLY_POLL_MS;
+    const fast = this.lastTurnPostedAt !== null && Date.now() - this.lastTurnPostedAt < DIRECT_AWAIT_FAST_MS;
+    this.pollTimer = window.setTimeout(() => {
+      this.pollTimer = null;
+      void this.fetchNew("poll");
+      this.schedulePoll();
+    }, fast ? Math.min(DIRECT_AWAIT_POLL_MS, slow) : slow);
   }
 
   stop(): void {
@@ -316,6 +334,8 @@ export class DirectSession {
           this.anchorAt = Number.isFinite(at) ? at : Date.now();
         }
         this.awaitingSince = Date.now();
+        this.lastTurnPostedAt = this.awaitingSince;
+        this.schedulePoll();
         this.feed.watch(posted.target.issueId);
         return;
       } catch (err) {
@@ -493,8 +513,8 @@ export class DirectSession {
         prevEnd = slot.endAt;
       }
       this.bumpIdle();
-      // Prefetch the next chunk while this one plays: Grok only (Gemini quota is tight).
-      if (i + 1 < chunks.length && this.provider === "grok") next = this.chunkAudio(chunks[i + 1]!, gen);
+      // Prefetch the next chunk while this one plays (Gemini too when GEMINI_PREFETCH; a non-ok falls back to Grok).
+      if (i + 1 < chunks.length && (this.provider === "grok" || GEMINI_PREFETCH)) next = this.chunkAudio(chunks[i + 1]!, gen);
       await this.player.idle();
       if (gen !== this.speakGen || this.closed) return;
     }
@@ -599,7 +619,7 @@ export class DirectSession {
     this.closed = true;
     document.removeEventListener("visibilitychange", this.onVisibility);
     this.opts.wakeLock?.release();
-    if (this.pollTimer !== null) window.clearInterval(this.pollTimer);
+    if (this.pollTimer !== null) window.clearTimeout(this.pollTimer);
     if (this.idleTimer !== null) window.clearTimeout(this.idleTimer);
     for (const id of this.timers) window.clearTimeout(id);
     this.timers.clear();
