@@ -84,11 +84,13 @@ export function bounceTone(rate: number | null): ToneInput {
 // Overview
 // ---------------------------------------------------------------------------
 
-export function CampaignsOverview({ campaigns, series, suppressed = 0, onNew, onList, onAb, onOpen }: {
+export function CampaignsOverview({ campaigns, series, suppressed = 0, doNotContact, onNew, onList, onAb, onOpen }: {
   campaigns: OverviewCampaign[];
   series: CampaignSeries | undefined;
   /** Addresses on the do-not-email list (shared with the CRM and the Mailbox). */
   suppressed?: number;
+  /** SMS and WhatsApp numbers this page's sender may not message. */
+  doNotContact?: { sms: number; whatsapp: number };
   onNew?: ReactNode;
   onList?: () => void;
   onAb?: (campaignId: string) => void;
@@ -170,7 +172,10 @@ export function CampaignsOverview({ campaigns, series, suppressed = 0, onNew, on
           invert
         />
         <KpiCard label="In a campaign now" value={running} hint={`${enrolled} enrolled in total`} icon={Users} />
-        <KpiCard label="Do not email" value={suppressed} hint="Unsubscribed or bounced; never enrolled or emailed" icon={CircleAlert} />
+        <KpiCard label="Do not email" value={suppressed} hint="Unsubscribed or bounced for this sender; never enrolled or emailed" icon={CircleAlert} />
+        {doNotContact ? (
+          <KpiCard label="Do not contact" value={doNotContact.sms + doNotContact.whatsapp} hint={`${doNotContact.sms} SMS, ${doNotContact.whatsapp} WhatsApp numbers opted out or blocked for this sender`} icon={CircleAlert} />
+        ) : null}
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: fluidColumns(320), gap: 16, alignItems: "start" }}>

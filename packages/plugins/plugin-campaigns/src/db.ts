@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { assertDelivery, audienceSource, campaignSenderKey, matchesAudience, type AudienceMode, type CampaignDraft, type CampaignStepDraft, type CampaignSuppressionReason, type EnrollmentDraft } from "./domain.js";
-import { clientWhere, listCrmContacts, listCrmContactsAtCompany, suppressionBlocks, textArrayParam, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
+import { clientWhere, listCrmContacts, listCrmContactsAtCompany, suppressionBlocks, textArrayParam, OWN_SENDER, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
 import type { Channel, MessagingChannel } from "./channels.js";
 
 export function table(ctx: PluginContext, name: string): string {
@@ -1016,13 +1016,30 @@ export async function ownSuppressionsSince(ctx: PluginContext, source: string, s
   );
 }
 
-/** How many addresses may not get campaigns, for the page. */
-export async function suppressionCount(ctx: PluginContext, companyId: string): Promise<number> {
+/**
+ * How many addresses may not get this page's campaigns: that sender's rows, rows with no
+ * sender (legacy, block every sender) and hard bounces (`scope = 'all'`), as the kit's
+ * `suppressionBlocks` decides. Another sender's unsubscribe is not counted.
+ */
+export async function suppressionCount(ctx: PluginContext, companyId: string, senderKey: string = OWN_SENDER): Promise<number> {
   const rows = await ctx.db.query<{ n: string | number }>(
-    `SELECT count(*)::text AS n FROM ${table(ctx, "suppressions")} WHERE company_id = $1`,
-    [companyId],
+    `SELECT count(DISTINCT email)::text AS n FROM ${table(ctx, "suppressions")}
+      WHERE company_id = $1 AND (scope = 'all' OR sender_key IS NULL OR sender_key = '' OR sender_key = $2)`,
+    [companyId, senderKey],
   );
   return Number(rows[0]?.n ?? 0);
+}
+
+/** The same count for SMS and WhatsApp numbers ("Do not contact"), per channel, for this sender. */
+export async function channelSuppressionCount(ctx: PluginContext, companyId: string, senderKey: string = OWN_SENDER): Promise<{ sms: number; whatsapp: number }> {
+  const rows = await ctx.db.query<{ channel: string; n: string | number }>(
+    `SELECT channel, count(DISTINCT address)::text AS n FROM ${table(ctx, "channel_suppressions")}
+      WHERE company_id = $1 AND (scope = 'all' OR sender_key IS NULL OR sender_key = '' OR sender_key = $2)
+      GROUP BY channel`,
+    [companyId, senderKey],
+  );
+  const by = (channel: string) => Number(rows.find((row) => row.channel === channel)?.n ?? 0);
+  return { sms: by("sms"), whatsapp: by("whatsapp") };
 }
 
 /** Running enrollments of a contact that still wait on a step issue. */

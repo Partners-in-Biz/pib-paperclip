@@ -109,6 +109,7 @@ interface Snapshot {
   client?: WorkspaceClient | null;
   series?: CampaignSeries;
   suppressed?: number;
+  doNotContact?: { sms: number; whatsapp: number };
   /** On the own page: each of our own brands with its campaigns. */
   brands?: BrandGroup[];
   /** The list of our own brands could not be read: brand groups may be missing. */
@@ -603,6 +604,7 @@ function CampaignsPageBody({ context }: PluginPageProps) {
             campaigns={snapshot.campaigns}
             series={snapshot.series}
             suppressed={snapshot.suppressed ?? 0}
+            doNotContact={snapshot.doNotContact}
             onNew={newCampaignButton}
             onList={() => { setTab("campaigns"); setSearch(""); }}
             onAb={openAb}

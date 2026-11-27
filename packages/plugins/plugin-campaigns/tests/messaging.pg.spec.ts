@@ -25,6 +25,8 @@ import {
   messagesAwaitingStatus,
   stopEnrollmentsForSender,
   suppressedEmails,
+  suppressionCount,
+  channelSuppressionCount,
   updateMessage,
   upsertConsent,
   upsertSenderIdentity,
@@ -83,6 +85,23 @@ describe.skipIf(!available)("campaigns 0.6 SQL (postgres)", () => {
     await suppress("ada@acme.test", "company:beta", "all");
     expect((await rows("suppressions")).every((r) => r.email !== "ada@acme.test" || r.scope === "all")).toBe(true);
     expect(await isSuppressed(ctx, CO, "ada@acme.test", "own")).toBe(true);
+  });
+
+  it("counts only this page's sender, hard bounces and legacy rows (own excludes a client's rows, and the reverse)", async () => {
+    await suppress("ada@acme.test", "company:acme");
+    await suppress("bob@beta.test", "company:beta", "all");
+    await suppress("uma@x.test", "own");
+    await suppress("lee@x.test", "own");
+    await suppress("zed@other.test", "own", "marketing", OTHER);
+    expect(await suppressionCount(ctx, CO, "own")).toBe(3); // uma, lee + bob's bounce
+    expect(await suppressionCount(ctx, CO, "company:acme")).toBe(2); // ada + bob's bounce
+    expect(await suppressionCount(ctx, CO, "company:none")).toBe(1); // bounce only
+    const add = (address: string, senderKey: string, channel: "sms" | "whatsapp") =>
+      addChannelSuppression(ctx, { companyId: CO, channel, address, senderKey, reason: "manual", scope: "marketing", source: "partnersinbiz.campaigns" });
+    await add(ADA, "company:acme", "sms");
+    await add("+278****0002", "own", "whatsapp");
+    expect(await channelSuppressionCount(ctx, CO, "own")).toEqual({ sms: 0, whatsapp: 1 });
+    expect(await channelSuppressionCount(ctx, CO, "company:acme")).toEqual({ sms: 1, whatsapp: 0 });
   });
 
   it("a text number is blocked per sender and channel, and START lifts only the person's own opt-out", async () => {

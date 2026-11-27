@@ -52,6 +52,7 @@ import {
   stopEnrollment,
   stopEnrollmentsForContact,
   suppressionCount,
+  channelSuppressionCount,
 } from "./db.js";
 import {
   advanceEnrollment,
@@ -428,15 +429,17 @@ async function dispatch(ctx: PluginContext, name: string, body: Record<string, u
 async function load(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown> = {}) {
   const companyId = requiredCompany(context);
   const scope = readClientScope(params) ?? null;
+  const senderKey = senderKeyOf(scope ? { clientKind: scope.kind, clientRef: scope.id } : null);
   const campaigns = await listCampaigns(ctx, companyId, scope);
   const config = await readConfig(ctx, companyId).catch(() => ({}));
   const now = new Date();
   const ids = new Set(campaigns.map((campaign) => campaign.id));
-  const [counts, days, suppressed, attention] = await Promise.all([
+  const [counts, days, suppressed, doNotContact, attention] = await Promise.all([
     // null = the counts could not be read: the page then claims no number, never 0.
     eventCounts(ctx, companyId).catch(() => null),
     eventDays(ctx, companyId, new Date(now.getTime() - 84 * 86_400_000).toISOString()).catch(() => []),
-    suppressionCount(ctx, companyId).catch(() => 0),
+    suppressionCount(ctx, companyId, senderKey).catch(() => 0),
+    channelSuppressionCount(ctx, companyId, senderKey).catch(() => ({ sms: 0, whatsapp: 0 })),
     attentionFacts(ctx, companyId),
   ]);
   const byCampaign = eventTotals(counts ?? [], ids);
@@ -475,6 +478,7 @@ async function load(ctx: PluginContext, context: PluginPerformActionContext, par
     // Whether this page's client is one of our own brands (the workspace says so, and the client's-yes rule does not apply).
     ownBrand: scope ? isOwnBrandCampaign(brands, { clientKind: scope.kind, clientRef: scope.id }) : false,
     suppressed,
+    doNotContact,
     series: { weeks: weeklySends(days, now, 12, ids), byCampaign },
     settingsSaved: Object.keys(config).length > 0,
     client: scope ? await clientDetails(ctx, companyId, scope, campaigns) : null,
