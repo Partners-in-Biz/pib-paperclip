@@ -50,7 +50,7 @@ export const CAMPAIGNS_ACCESS_TABLE: AccessTable = Object.freeze({
     "tool:list-campaigns", "tool:campaign-stats", "tool:preflight-campaign", "tool:export-person-data", "tool:campaign-funnel", "tool:campaign-step-analytics", "tool:campaign-results",
     "tool:list-campaign-templates", "tool:suggest-ab-winner", "tool:performance-review", "tool:get-playbook", "tool:list-experiments",
   ]),
-  ...rows(CREATE, ["tool:create-campaign", "tool:create-campaign-template", "tool:create-campaign-from-template", "tool:create-feed-digest", "tool:propose-experiment"]),
+  ...rows(CREATE, ["tool:create-campaign", "tool:seed-canary-results-fixture", "tool:create-campaign-template", "tool:create-campaign-from-template", "tool:create-feed-digest", "tool:propose-experiment"]),
   ...rows(EDIT, [
     "tool:update-campaign", "tool:add-campaign-step", "tool:pause-campaign", "tool:complete-campaign", "tool:enroll-contact",
     "tool:stop-enrollment", "tool:suppress-address", "tool:suppress-phone", "tool:record-channel-consent", "tool:log-reply",

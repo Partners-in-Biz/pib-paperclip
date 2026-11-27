@@ -331,6 +331,12 @@ export const CAMPAIGN_TOOLS: PluginToolDeclaration[] = [
     parametersSchema: schema(["campaignId"], { campaignId }),
   },
   {
+    name: "seed-canary-results-fixture",
+    displayName: "Seed canary results fixture",
+    description: "CANARY client only (client = company:canary-<id>, as create-canary-client returned it; anything else is refused). Makes, once, a sent-looking campaign for checking the Results section: step 1 has versions A and B, with a reply (with text), a hard bounce, a complaint, delivered, opens and a click; step 2 has an opt-out. Nothing is sent and every address is at canary.invalid. Asking again changes nothing. Returns the campaign id and the per-step and per-version numbers (the same as campaign-step-analytics and campaign-results) with the hand count.",
+    parametersSchema: schema(["client"], { client: str("The canary client, company:canary-<id>.") }),
+  },
+  {
     name: "campaign-results",
     displayName: "Campaign results",
     description: "A campaign's step counts (sent, delivered, replies, bounces, softBounces, complaints, unsubscribes, opens, clicks) per step and split by step version (A and B), for all time or a date range. Reads events already recorded; collects nothing new.",

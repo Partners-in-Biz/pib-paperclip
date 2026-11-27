@@ -107,6 +107,7 @@ import {
   type EnrollmentDraft,
 } from "./domain.js";
 import { CAMPAIGN_TOOLS } from "./tools.js";
+import { seedCanaryResultsFixture } from "./canary-fixture.js";
 import { createFeedDigest } from "./feed-digest.js";
 import { CAMPAIGNS_ACCESS_TABLE } from "./access-table.js";
 import { SKILLS } from "./skills.js";
@@ -438,6 +439,7 @@ async function dispatch(ctx: PluginContext, name: string, body: Record<string, u
   if (name === "record-step-event") return recordStepEvent(ctx, companyId, body);
   if (name === "campaign-step-analytics") return stepAnalytics(ctx, companyId, body);
   if (name === "campaign-results") return campaignResults(ctx, companyId, body);
+  if (name === "seed-canary-results-fixture") return seedCanaryResultsFixture(ctx, companyId, { client: requiredString(body, "client") });
   if (name === "set-step-html") return setStepHtmlAction(ctx, companyId, body);
   if (name === "edit-campaign-step") return editCampaignStepAction(ctx, companyId, body);
   if (name === "create-campaign-template") return createTemplateAction(ctx, companyId, body);
