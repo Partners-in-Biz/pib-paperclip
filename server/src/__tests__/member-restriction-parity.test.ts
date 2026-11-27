@@ -66,13 +66,66 @@ const [O, R] = ["parity-owner", "parity-restricted"];
 const NAMES = new Map(Object.entries(ID).map(([name, id]) => [id, `<${name}>`]));
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
 const DATE = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})/g;
+/**
+ * A whole value that is a plain day. The dashboard counts the last 14 days from
+ * the real clock, so these differ from BASE on every later day (PAR-15001).
+ * Masked in BASE as it is read too; the file itself stays as recorded.
+ */
+const DAY = /"\d{4}-\d{2}-\d{2}"/g;
+const maskDays = (json: string) => json.replace(DAY, "\"<day>\"");
 /** The per-run test home in managed folders. */
 const HOME = /[^"]*\/instances\/[^/"]+\//g;
-/** Status and body, with generated ids, times and the test home masked. */
+/** Status and body, with generated ids, times, days and the test home masked. */
 const answer = (res: request.Response) => ({
   status: res.status,
-  body: JSON.parse(JSON.stringify(res.body ?? null).replace(UUID, (id) => NAMES.get(id.toLowerCase()) ?? "<uuid>")
-    .replace(DATE, "<time>").replace(HOME, "<instance>/")),
+  body: JSON.parse(maskDays(JSON.stringify(res.body ?? null).replace(UUID, (id) => NAMES.get(id.toLowerCase()) ?? "<uuid>")
+    .replace(DATE, "<time>").replace(HOME, "<instance>/"))),
+});
+type Answers = Record<string, ReturnType<typeof answer>>;
+
+/**
+ * Fields added to these answers after BASE was recorded, by work that is not
+ * access related (PAR-15001). The compare drops exactly these paths from today's
+ * answers and nothing else, so any other difference, a new field not listed here
+ * included, still fails. BASE is not re-recorded: it is the picture before C.
+ * Add a row only with the commit that added the field. `*` is every array item.
+ */
+const LATER_ADDITIONS: Array<{ call: string; path: string[]; commit: string }> = [
+  { call: "agent list", path: ["*", "lifecycleStatusDetail"], commit: "d93a195e6 (PAR-9962, #1184)" },
+  { call: "agent (strip)", path: ["lifecycleStatusDetail"], commit: "d93a195e6 (PAR-9962, #1184)" },
+  { call: "dashboard", path: ["taskActivity"], commit: "cc4f8d2b2 (#1353)" },
+];
+const dropPath = (node: unknown, [key, ...rest]: string[]): void => {
+  if (!node || typeof node !== "object") return;
+  if (rest.length === 0) {
+    delete (node as Record<string, unknown>)[key];
+    return;
+  }
+  const children = key === "*" ? (Array.isArray(node) ? node : []) : [(node as Record<string, unknown>)[key]];
+  for (const child of children) dropPath(child, rest);
+};
+/** Today's answers without the listed later additions. */
+const withoutLaterAdditions = (answers: Answers): Answers => {
+  const copy = structuredClone(answers);
+  for (const { call, path } of LATER_ADDITIONS) if (copy[call]) dropPath(copy[call].body, path);
+  return copy;
+};
+
+describe("parity compare drops only the listed later additions (PAR-15001)", () => {
+  const base: Answers = { "agent (strip)": { status: 200, body: { id: "<agent>" } } };
+  const today = (extra: Record<string, unknown>): Answers => ({ "agent (strip)": { status: 200, body: { id: "<agent>", ...extra } } });
+
+  it("drops a listed field and still fails on one that is not listed", () => {
+    expect(withoutLaterAdditions(today({ lifecycleStatusDetail: null }))).toEqual(base);
+    expect(withoutLaterAdditions(today({ lifecycleStatusDetail: null, unlistedField: null }))).not.toEqual(base);
+    expect(withoutLaterAdditions({ "agent list": { status: 200, body: [{ id: "<agent>", lifecycleStatusDetail: null }] } }))
+      .toEqual({ "agent list": { status: 200, body: [{ id: "<agent>" }] } });
+  });
+
+  it("masks plain days only as whole values", () => {
+    expect(maskDays(JSON.stringify({ date: "2026-11-19", note: "on 2026-11-19" })))
+      .toBe(JSON.stringify({ date: "<day>", note: "on 2026-11-19" }));
+  });
 });
 
 (support.supported ? describe : describe.skip)("AC-F2: a flagged member under `off` gets development's answers (PAR-12744)", () => {
@@ -198,13 +251,13 @@ const answer = (res: request.Response) => ({
   ];
 
   it("each call as the flagged member returns development's status and body", async () => {
-    const base = RECORD ? {} : JSON.parse(readFileSync(BASE_FILE, "utf8")) as Record<string, ReturnType<typeof answer>>;
-    const recorded: Record<string, ReturnType<typeof answer>> = {};
+    const base = RECORD ? {} : JSON.parse(maskDays(readFileSync(BASE_FILE, "utf8"))) as Answers;
+    const recorded: Answers = {};
     user = R;
     for (const [name, call] of CALLS) recorded[name] = answer(await call(request(app)));
     // Let the woken run settle before the database closes; the answers are already taken.
     await drainHeartbeatRunsToQuiescence(db, heartbeatService(db));
     if (RECORD) writeFileSync(BASE_FILE, `${JSON.stringify(recorded, null, 1)}\n`);
-    else expect(recorded).toEqual(base);
+    else expect(withoutLaterAdditions(recorded)).toEqual(base);
   }, 120_000);
 });
