@@ -61,6 +61,7 @@ function breadcrumbsEqual(left: Breadcrumb[], right: Breadcrumb[]) {
       left[index]?.label !== right[index]?.label
       || left[index]?.onClick !== right[index]?.onClick
       || left[index]?.href !== right[index]?.href
+      || left[index]?.backHref !== right[index]?.backHref
       || left[index]?.identifier !== right[index]?.identifier
       || left[index]?.leadingKey !== right[index]?.leadingKey
       || left[index]?.trailingKey !== right[index]?.trailingKey

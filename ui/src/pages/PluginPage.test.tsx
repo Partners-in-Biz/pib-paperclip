@@ -123,7 +123,7 @@ describe("PluginPage", () => {
     vi.clearAllMocks();
   });
 
-  it("renders the breadcrumb and Back button on a legacy plugin route (no routeSidebar)", async () => {
+  it("puts the Back target in the top-bar breadcrumb, not in the page body, on a legacy plugin route (no routeSidebar)", async () => {
     mockParams.pluginRoutePath = "wiki";
     mockPluginsApi.listUiContributions.mockResolvedValue([pageContribution()]);
 
@@ -131,10 +131,9 @@ describe("PluginPage", () => {
 
     expect(mockSetBreadcrumbs).toHaveBeenCalledWith([
       { label: "Plugins", href: "/company/settings/instance/plugins" },
-      { label: "LLM Wiki" },
+      { label: "LLM Wiki", backHref: "/PAP/dashboard" },
     ]);
-    expect(container.textContent).toContain("Back");
-    expect(container.querySelector('a[href="/PAP/dashboard"]')).not.toBeNull();
+    expect(container.textContent).not.toContain("Back");
 
     await act(async () => {
       root.unmount();

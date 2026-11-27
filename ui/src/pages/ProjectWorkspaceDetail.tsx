@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { isUuidLike, type ProjectWorkspace } from "@paperclipai/shared";
-import { ArrowLeft, Check, ExternalLink, Loader2, Sparkles } from "lucide-react";
+import { Check, ExternalLink, Loader2, Sparkles } from "lucide-react";
 import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -334,7 +334,7 @@ export function ProjectWorkspaceDetail() {
       { label: "Projects", href: "/projects" },
       { label: project.name, href: `/projects/${canonicalProjectRef}` },
       { label: "Workspaces", href: `/projects/${canonicalProjectRef}/workspaces` },
-      { label: workspace?.name ?? routeWorkspaceId },
+      { label: workspace?.name ?? routeWorkspaceId, backHref: `/projects/${canonicalProjectRef}/workspaces` },
     ]);
   }, [setBreadcrumbs, project, canonicalProjectRef, workspace?.name, routeWorkspaceId]);
 
@@ -450,15 +450,6 @@ export function ProjectWorkspaceDetail() {
 
   return (
     <div className="mx-auto max-w-5xl space-y-6">
-      <div className="flex flex-wrap items-center gap-3">
-        <Button variant="ghost" size="sm" asChild>
-          <Link to={`/projects/${canonicalProjectRef}/workspaces`}>
-            <ArrowLeft className="mr-1 h-4 w-4" />
-            Back to workspaces
-          </Link>
-        </Button>
-      </div>
-
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0 space-y-2">
           <div className="text-xs font-medium uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
