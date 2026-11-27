@@ -81,7 +81,7 @@ export const CAMPAIGN_TOOLS: PluginToolDeclaration[] = [
     displayName: "Create campaign",
     description:
       "Create a draft email program. Pass client for a client's campaign (it must exist in the CRM); omit it for PiB's own work. Returns the campaign id; next add steps, then request-campaign-approval.",
-    parametersSchema: schema(["name"], { ...campaignFields, autopilotMode: { ...autopilotMode, description: "The mode it starts in: safe (default) or off. An agent cannot create a campaign in full (Auto)." } }),
+    parametersSchema: schema(["name"], { ...campaignFields, autopilotMode: { ...autopilotMode, description: "The mode it starts in: safe (default) or off. In Off an agent may not create, edit, enroll into a draft, ask for approval or read results; a person creates it in Off. An agent cannot create a campaign in full (Auto)." } }),
   },
   {
     name: "update-campaign",
@@ -156,7 +156,7 @@ export const CAMPAIGN_TOOLS: PluginToolDeclaration[] = [
     name: "enroll-contact",
     displayName: "Enroll contact in campaign",
     description:
-      "Add one CRM contact to a draft or active campaign. Only someone who fits the approved audience and agreed to hear from us. Refused for an unsubscribed or bounced address, or a second running enrollment.",
+      "Add one CRM contact to a draft or active campaign. Only someone who fits the approved audience and agreed to hear from us. Refused for an unsubscribed or bounced address, or a second running enrollment. Into a draft an agent may in Safe and Auto, not in Off; into a launched campaign a person enrolls, in every mode: say so on the campaign's task.",
     parametersSchema: schema(["campaignId", "contactId"], {
       campaignId,
       contactId: str("CRM contact id (the id part of contact:<id>)."),
@@ -414,7 +414,7 @@ export const CAMPAIGN_TOOLS: PluginToolDeclaration[] = [
   {
     name: "declare-ab-winner",
     displayName: "Declare A/B winner",
-    description: "Record the winning variant a person chose; new enrollments then get only it. The result includes the reply-rate suggestion.",
+    description: "Record the winning variant a person chose; new enrollments then get only it. The result includes the reply-rate suggestion. In Off and Safe a person picks it on the campaign screen; in Auto (full) an agent may when suggest-ab-winner names that version.",
     parametersSchema: schema(["campaignId", "winner"], {
       campaignId,
       winner: { type: "string", enum: ["a", "b"], description: "The variant a person chose." },

@@ -465,6 +465,13 @@ export function matchesAudience(contactTags: string[], audienceTags: string[]): 
   return audienceTags.some((tag) => contact.has(tag.toLowerCase()));
 }
 
+/** Enroll goes only into a draft or an active campaign; which row of the mode table applies (plan 5.2, Q4). */
+export function assertCanEnroll(status: CampaignStatus): "enroll-draft" | "enroll-launched" {
+  if (status === "draft") return "enroll-draft";
+  if (status === "active") return "enroll-launched";
+  throw new CampaignError("Enroll only in an active or draft campaign");
+}
+
 export function assertCanDeclareWinner(status: CampaignStatus): void {
   if (status !== "active" && status !== "paused") throw new CampaignError("Only an active or paused campaign can declare a winner");
 }

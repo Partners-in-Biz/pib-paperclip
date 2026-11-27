@@ -87,6 +87,7 @@ import {
   stepFor,
   assertCanComplete,
   assertCanDeclareWinner,
+  assertCanEnroll,
   assertCanLaunch,
   assertCanPause,
   assertCanRequestApproval,
@@ -249,7 +250,7 @@ const plugin = definePlugin({
     g.action("campaigns.growth-decide-change", (params, context) => growthDecideChange(ctx, context, params));
     g.action("campaigns.approve", (params, context) => approveAction(ctx, context, params, APPROVAL_PATHS));
     g.action("campaigns.send-back", (params, context) => sendBackAction(ctx, context, params, APPROVAL_PATHS));
-    g.action("campaigns.request-approval", (params, context) => requestApproval(ctx, requiredCompany(context), params));
+    g.action("campaigns.request-approval", (params, context) => requestApproval(ctx, requiredCompany(context), params, actionActor(context)));
     g.action("campaigns.sync-skills", async (_params, context) => ({ results: await skillSync?.force(requiredCompany(context)) }));
     g.action("campaigns.create-campaign", (params, context) => createCampaignAction(ctx, context, params));
     g.action("campaigns.add-step", (params, context) => addStepAction(ctx, context, params));
@@ -263,11 +264,11 @@ const plugin = definePlugin({
     g.action("campaigns.move", (params, context) => moveCampaignAction(ctx, context, params));
     g.action("campaigns.set-own-brand", (params, context) => setOwnBrandAction(ctx, context, params));
     g.action("campaigns.detail", (params, context) => campaignDetail(ctx, requiredCompany(context), params));
-    g.action("campaigns.results", (params, context) => campaignResultsView(ctx, requiredCompany(context), params));
+    g.action("campaigns.results", (params, context) => campaignResultsView(ctx, requiredCompany(context), params, actionActor(context)));
     // Planning Canvas entity cards (PAR-14423): registered through the kit helper with the guard's `action`.
     registerCanvasCards({ register: g.action, kinds: [campaignCardKind(ctx)] });
-    g.action("campaigns.ab-suggestion", (params, context) => suggestWinner(ctx, requiredCompany(context), params));
-    g.action("campaigns.declare-winner", (params, context) => declareWinner(ctx, requiredCompany(context), params));
+    g.action("campaigns.ab-suggestion", (params, context) => suggestWinner(ctx, requiredCompany(context), params, actionActor(context)));
+    g.action("campaigns.declare-winner", (params, context) => declareWinner(ctx, requiredCompany(context), params, actionActor(context)));
     // Adding people (Stage 4c): preview, import, add one, tick own contacts, a client list with its reach. Never a send.
     g.action("campaigns.audience-preview", (params, context) => audienceAction(ctx, context, params, "preview"));
     g.action("campaigns.audience-import", (params, context) => audienceAction(ctx, context, params, "import"));
@@ -411,10 +412,10 @@ async function withExperiment<T extends { id?: unknown }>(ctx: PluginContext, co
 
 async function dispatch(ctx: PluginContext, name: string, body: Record<string, unknown>, run: ToolRunContext): Promise<unknown> {
   const companyId = run.companyId;
-  if (name === "create-campaign") return withExperiment(ctx, companyId, body, await createCampaignRecord(ctx, companyId, body, { agentId: run.agentId }));
-  if (name === "update-campaign") return withExperiment(ctx, companyId, body, await updateCampaignRecord(ctx, companyId, body));
+  if (name === "create-campaign") return withExperiment(ctx, companyId, body, await createCampaignRecord(ctx, companyId, body, { agentId: run.agentId }, toolActor(run)));
+  if (name === "update-campaign") return withExperiment(ctx, companyId, body, await updateCampaignRecord(ctx, companyId, body, toolActor(run)));
   if (name === "list-campaigns") return listCampaignsRecord(ctx, companyId, body);
-  if (name === "add-campaign-step") return addStep(ctx, companyId, body);
+  if (name === "add-campaign-step") return addStep(ctx, companyId, body, toolActor(run));
   if (name === "launch-campaign") return launch(ctx, companyId, body, toolActor(run));
   if (name === "stop-enrollment") return stopEnrollmentTool(ctx, companyId, body);
   if (name === "suppress-address") return suppressAddressTool(ctx, companyId, body);
@@ -430,24 +431,24 @@ async function dispatch(ctx: PluginContext, name: string, body: Record<string, u
   if (name === "resume-campaign") return setStatus(ctx, companyId, body, "active", toolActor(run));
   if (name === "complete-campaign") return setStatus(ctx, companyId, body, "completed", toolActor(run));
   if (name === "set-campaign-mode") return setMode(ctx, companyId, body, toolActor(run));
-  if (name === "campaign-stats") return stats(ctx, companyId, body);
-  if (name === "enroll-contact") return enroll(ctx, companyId, body);
-  if (name === "request-campaign-approval") return requestApproval(ctx, companyId, body);
-  if (name === "create-feed-digest") return createFeedDigest(ctx, companyId, body, { agentId: run.agentId }, requestApproval);
+  if (name === "campaign-stats") return stats(ctx, companyId, body, toolActor(run));
+  if (name === "enroll-contact") return enroll(ctx, companyId, body, toolActor(run));
+  if (name === "request-campaign-approval") return requestApproval(ctx, companyId, body, toolActor(run));
+  if (name === "create-feed-digest") return createFeedDigest(ctx, companyId, body, { agentId: run.agentId }, (c, co, p) => requestApproval(c, co, p, toolActor(run)));
   if (name === "review-campaign-approval") return reviewApprovalTool(ctx, companyId, run.agentId, body, APPROVAL_PATHS);
-  if (name === "create-ab-variant") return createAbVariant(ctx, companyId, body);
-  if (name === "campaign-funnel") return funnel(ctx, companyId, body);
+  if (name === "create-ab-variant") return createAbVariant(ctx, companyId, body, toolActor(run));
+  if (name === "campaign-funnel") return funnel(ctx, companyId, body, toolActor(run));
   if (name === "record-step-event") return recordStepEvent(ctx, companyId, body);
-  if (name === "campaign-step-analytics") return stepAnalytics(ctx, companyId, body);
-  if (name === "campaign-results") return campaignResults(ctx, companyId, body);
+  if (name === "campaign-step-analytics") return stepAnalytics(ctx, companyId, body, toolActor(run));
+  if (name === "campaign-results") return campaignResults(ctx, companyId, body, toolActor(run));
   if (name === "seed-canary-results-fixture") return seedCanaryResultsFixture(ctx, companyId, { client: requiredString(body, "client") });
-  if (name === "set-step-html") return setStepHtmlAction(ctx, companyId, body);
-  if (name === "edit-campaign-step") return editCampaignStepAction(ctx, companyId, body);
+  if (name === "set-step-html") return setStepHtmlAction(ctx, companyId, body, toolActor(run));
+  if (name === "edit-campaign-step") return editCampaignStepAction(ctx, companyId, body, toolActor(run));
   if (name === "create-campaign-template") return createTemplateAction(ctx, companyId, body);
   if (name === "list-campaign-templates") return listTemplatesAction(ctx, companyId);
-  if (name === "create-campaign-from-template") return createFromTemplate(ctx, companyId, body, { agentId: run.agentId });
-  if (name === "declare-ab-winner") return declareWinner(ctx, companyId, body);
-  if (name === "suggest-ab-winner") return suggestWinner(ctx, companyId, body);
+  if (name === "create-campaign-from-template") return createFromTemplate(ctx, companyId, body, { agentId: run.agentId }, toolActor(run));
+  if (name === "declare-ab-winner") return declareWinner(ctx, companyId, body, toolActor(run));
+  if (name === "suggest-ab-winner") return suggestWinner(ctx, companyId, body, toolActor(run));
   throw new CampaignError(`Unknown campaign tool ${name}`);
 }
 
@@ -660,8 +661,9 @@ async function campaignDetail(ctx: PluginContext, companyId: string, params: Rec
 }
 
 /** The Results section for a date range: the same view as the detail's, plus the replies in that range. `from` is inclusive and `to` is EXCLUSIVE: to include 30 Nov, pass 1 Dec. */
-async function campaignResultsView(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
+async function campaignResultsView(ctx: PluginContext, companyId: string, params: Record<string, unknown>, actor: CampaignActor | null) {
   const campaign = await requireCampaign(ctx, companyId, requiredString(params, "campaignId"));
+  await assertAgentMay(ctx, companyId, campaign, actor, "read-results");
   const from = optionalString(params, "from");
   const to = optionalString(params, "to");
   for (const [key, value] of [["from", from], ["to", to]] as const) {
@@ -753,11 +755,11 @@ async function listCampaignsRecord(ctx: PluginContext, companyId: string, params
 }
 
 async function createCampaignAction(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {
-  return createCampaignRecord(ctx, requiredCompany(context), params, { userId: context.actor.userId, agentId: context.actor.agentId });
+  return createCampaignRecord(ctx, requiredCompany(context), params, { userId: context.actor.userId, agentId: context.actor.agentId }, actionActor(context));
 }
 
 async function addStepAction(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {
-  return addStep(ctx, requiredCompany(context), params);
+  return addStep(ctx, requiredCompany(context), params, actionActor(context));
 }
 
 async function launchAction(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {
@@ -777,11 +779,11 @@ async function completeAction(ctx: PluginContext, context: PluginPerformActionCo
 }
 
 async function statsAction(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {
-  return stats(ctx, requiredCompany(context), params);
+  return stats(ctx, requiredCompany(context), params, actionActor(context));
 }
 
 async function enrollAction(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {
-  return enroll(ctx, requiredCompany(context), params);
+  return enroll(ctx, requiredCompany(context), params, actionActor(context));
 }
 
 /** Auto (`full`) cannot be chosen until it ships (plan Stage 5a). */
@@ -820,7 +822,8 @@ function columnMapOf(value: unknown): ColumnMap {
   return { name: pick("name"), email: pick("email"), phone: pick("phone") };
 }
 
-async function createCampaignRecord(ctx: PluginContext, companyId: string, params: Record<string, unknown>, owner: Owner = {}) {
+/** Create (tool and page). A new draft is an edit of a draft (plan 5.2): an agent may not create one in Off. One entry. */
+async function createCampaignRecord(ctx: PluginContext, companyId: string, params: Record<string, unknown>, owner: Owner, actor: CampaignActor | null) {
   const autopilotMode = creationMode(params, owner);
   const client = await requireClient(ctx, companyId, readClientScope(params) ?? null);
   const campaign = createCampaign({
@@ -840,15 +843,18 @@ async function createCampaignRecord(ctx: PluginContext, companyId: string, param
     ownerAgentId: owner.agentId ?? null,
     autopilotMode,
   });
+  await assertAgentMay(ctx, companyId, campaign, actor, "edit-draft");
   await insertCampaign(ctx, campaign);
+  await logCampaignActivity(ctx, { companyId, actor, action: "create", summary: "created", campaign });
   return publicCampaign(campaign);
 }
 
-/** Edits a draft. `client` moves it to a client (or `null` to own work); omitted fields stay. */
-async function updateCampaignRecord(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
+/** Edits a draft. `client` moves it to a client (or `null` to own work); omitted fields stay. Gated (edit-draft); one entry. */
+async function updateCampaignRecord(ctx: PluginContext, companyId: string, params: Record<string, unknown>, actor: CampaignActor | null) {
   const original = await requireCampaign(ctx, companyId, requiredString(params, "campaignId"));
   let campaign = original;
   if (campaign.status !== "draft") throw new CampaignError("Only a draft campaign can be edited");
+  await assertAgentMay(ctx, companyId, campaign, actor, "edit-draft");
   const scope = readClientScope(params);
   const audienceMode = optionalString(params, "audienceMode");
   if (scope !== undefined) {
@@ -887,6 +893,7 @@ async function updateCampaignRecord(ctx: PluginContext, companyId: string, param
     : false;
   await saveCampaign(ctx, next);
   if (approvalFields(next) !== approvalFields(original) || next.description !== original.description) await markEdited(ctx, next.id);
+  await logCampaignActivity(ctx, { companyId, actor, action: "edit", summary: "edited", campaign: next, details: { approvalReset } });
   return { ...publicCampaign(next), approvalReset };
 }
 
@@ -898,9 +905,10 @@ function approvalFields(campaign: CampaignDraft): string {
   ]);
 }
 
-async function addStep(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
+async function addStep(ctx: PluginContext, companyId: string, params: Record<string, unknown>, actor: CampaignActor | null) {
   const campaign = await requireCampaign(ctx, companyId, requiredString(params, "campaignId"));
   if (campaign.status !== "draft") throw new CampaignError("Steps can only be added to a draft campaign");
+  await assertAgentMay(ctx, companyId, campaign, actor, "edit-draft");
   const steps = await listSteps(ctx, campaign.id);
   const channel = assertChannel(params.channel);
   assertStepFitsDelivery(campaign.delivery, channel);
@@ -923,6 +931,7 @@ async function addStep(ctx: PluginContext, companyId: string, params: Record<str
   await insertStep(ctx, { companyId, campaignId: campaign.id, step });
   await markEdited(ctx, campaign.id);
   const approvalReset = await invalidateApproval(ctx, companyId, campaign, `step ${step.position} was added`);
+  await logCampaignActivity(ctx, { companyId, actor, action: "add-step", summary: `added step ${step.position} to`, campaign, details: { position: step.position, channel, approvalReset } });
   return { campaignId: campaign.id, step, approvalReset };
 }
 
@@ -1242,17 +1251,20 @@ async function setMode(ctx: PluginContext, companyId: string, params: Record<str
   return { campaignId: campaign.id, mode, previousMode: from, changed: true };
 }
 
-async function stats(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
+async function stats(ctx: PluginContext, companyId: string, params: Record<string, unknown>, actor: CampaignActor | null) {
   const campaign = await requireCampaign(ctx, companyId, requiredString(params, "campaignId"));
+  await assertAgentMay(ctx, companyId, campaign, actor, "read-results");
   const counts = await campaignStats(ctx, campaign.id);
   return { campaignId: campaign.id, ...counts };
 }
 
-async function enroll(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
+/**
+ * Enroll one contact (tool and page). Into a draft an agent may in Safe and Auto, not in Off; into a launched campaign
+ * a person enrolls, in every mode (plan 5.2, Q4). One entry.
+ */
+async function enroll(ctx: PluginContext, companyId: string, params: Record<string, unknown>, actor: CampaignActor | null) {
   const campaign = await requireCampaign(ctx, companyId, requiredString(params, "campaignId"));
-  if (campaign.status !== "active" && campaign.status !== "draft") {
-    throw new CampaignError("Enroll only in an active or draft campaign");
-  }
+  await assertAgentMay(ctx, companyId, campaign, actor, assertCanEnroll(campaign.status));
   const steps = await listSteps(ctx, campaign.id);
   const contactId = requiredString(params, "contactId");
   const [contact] = await crmContactsByIds(ctx, companyId, [contactId]);
@@ -1277,6 +1289,7 @@ async function enroll(ctx: PluginContext, companyId: string, params: Record<stri
     variant: pickVariant(campaign, steps, contactId),
   });
   await insertEnrollment(ctx, enrollment);
+  await logCampaignActivity(ctx, { companyId, actor, action: "enroll", summary: `enrolled contact ${contactId} in`, campaign, details: { contactId, enrollmentId: enrollment.id, status: campaign.status } });
   return enrollment;
 }
 
@@ -1442,9 +1455,10 @@ async function onIssueUpdated(ctx: PluginContext, event: PluginEvent) {
   await launchOnApproval(ctx, companyId, campaign, issue.id, personId);
 }
 
-async function requestApproval(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
+async function requestApproval(ctx: PluginContext, companyId: string, params: Record<string, unknown>, actor: CampaignActor | null) {
   const campaign = await requireCampaign(ctx, companyId, requiredString(params, "campaignId"));
   assertCanRequestApproval(campaign.status);
+  await assertAgentMay(ctx, companyId, campaign, actor, "edit-draft");
   if (campaign.approvalIssueId) {
     const current = await ctx.issues.get(campaign.approvalIssueId, companyId).catch(() => null);
     if (current && current.status !== "cancelled") throw new CampaignError(`Approval was already requested for this campaign (issue ${campaign.approvalIssueId}). It launches by itself once a person marks that issue done.`);
@@ -1519,6 +1533,7 @@ async function requestApproval(ctx: PluginContext, companyId: string, params: Re
   await setLaunchError(ctx, campaign.id, null);
   // Who this approval is for: a launch compares against it, so someone added to the audience meanwhile is noticed.
   await setApprovalAudience(ctx, campaign.id, audienceFingerprint(eligible.map((contact) => contact.id)));
+  await logCampaignActivity(ctx, { companyId, actor, action: "request-approval", summary: "asked for approval of", campaign, details: { approvalIssueId: approval.id, willGet: eligible.length } });
   return {
     campaignId: campaign.id,
     approvalIssueId: approval.id,
@@ -1562,9 +1577,10 @@ export function launchReviewBrief(campaign: Pick<CampaignDraft, "name" | "delive
   });
 }
 
-async function createAbVariant(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
+async function createAbVariant(ctx: PluginContext, companyId: string, params: Record<string, unknown>, actor: CampaignActor | null) {
   const campaign = await requireCampaign(ctx, companyId, requiredString(params, "campaignId"));
   if (campaign.status !== "draft") throw new CampaignError("A/B variants can only be added to a draft campaign");
+  await assertAgentMay(ctx, companyId, campaign, actor, "edit-draft");
   const position = integer(params.position, "position");
   const existing = await listSteps(ctx, campaign.id);
   const original = existing.find((step) => step.position === position && step.variant === "a");
@@ -1592,11 +1608,13 @@ async function createAbVariant(ctx: PluginContext, companyId: string, params: Re
   await insertStep(ctx, { companyId, campaignId: campaign.id, step });
   await markEdited(ctx, campaign.id);
   const approvalReset = await invalidateApproval(ctx, companyId, campaign, `a B version of step ${position} was added`);
+  await logCampaignActivity(ctx, { companyId, actor, action: "add-variant", summary: `added a B version of step ${position} to`, campaign, details: { position, approvalReset } });
   return { campaignId: campaign.id, step, approvalReset };
 }
 
-async function funnel(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
+async function funnel(ctx: PluginContext, companyId: string, params: Record<string, unknown>, actor: CampaignActor | null) {
   const campaign = await requireCampaign(ctx, companyId, requiredString(params, "campaignId"));
+  await assertAgentMay(ctx, companyId, campaign, actor, "read-results");
   const funnel = await campaignFunnel(ctx, campaign.id);
   return { campaignId: campaign.id, ...funnel };
 }
@@ -1616,15 +1634,17 @@ async function recordStepEvent(ctx: PluginContext, companyId: string, params: Re
   return { enrollmentId: enrollment.id, stepPosition, eventType };
 }
 
-async function stepAnalytics(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
+async function stepAnalytics(ctx: PluginContext, companyId: string, params: Record<string, unknown>, actor: CampaignActor | null) {
   const campaign = await requireCampaign(ctx, companyId, requiredString(params, "campaignId"));
+  await assertAgentMay(ctx, companyId, campaign, actor, "read-results");
   const byStep = await stepEventStats(ctx, campaign.id);
   return { campaignId: campaign.id, byStep };
 }
 
-/** Results read: per step and version counts for a date range. Reads existing events only. */
-async function campaignResults(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
+/** Results read: per step and version counts for a date range. Reads existing events only. Not for an agent in Off. */
+async function campaignResults(ctx: PluginContext, companyId: string, params: Record<string, unknown>, actor: CampaignActor | null) {
   const campaign = await requireCampaign(ctx, companyId, requiredString(params, "campaignId"));
+  await assertAgentMay(ctx, companyId, campaign, actor, "read-results");
   const from = optionalString(params, "from");
   const to = optionalString(params, "to");
   for (const [key, value] of [["from", from], ["to", to]] as const) {
@@ -1636,10 +1656,11 @@ async function campaignResults(ctx: PluginContext, companyId: string, params: Re
   return { campaignId: campaign.id, from: from ?? null, to: to ?? null, byStep, byVersion };
 }
 
-async function setStepHtmlAction(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
+async function setStepHtmlAction(ctx: PluginContext, companyId: string, params: Record<string, unknown>, actor: CampaignActor | null) {
   const campaign = await requireCampaign(ctx, companyId, requiredString(params, "campaignId"));
   // The approver saw the copy: what goes out may only change on a draft.
   if (campaign.status !== "draft") throw new CampaignError("Only a draft campaign's steps can change. Pause it and create a new draft instead.");
+  await assertAgentMay(ctx, companyId, campaign, actor, "edit-draft");
   const position = integer(params.position, "position");
   const variant = params.variant == null ? "a" : assertVariant(requiredString(params, "variant"));
   const html = requiredString(params, "html");
@@ -1650,12 +1671,14 @@ async function setStepHtmlAction(ctx: PluginContext, companyId: string, params: 
   await setStepHtml(ctx, { companyId, campaignId: campaign.id, position, variant, html });
   await markEdited(ctx, campaign.id);
   const approvalReset = await invalidateApproval(ctx, companyId, campaign, `the HTML of step ${position}${variant === "b" ? "B" : ""} changed`);
+  await logCampaignActivity(ctx, { companyId, actor, action: "set-step-html", summary: `set the HTML of step ${position}${variant === "b" ? "B" : ""} on`, campaign, details: { position, variant, approvalReset } });
   return { campaignId: campaign.id, position, variant, htmlSet: true, approvalReset };
 }
 
-async function editCampaignStepAction(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
+async function editCampaignStepAction(ctx: PluginContext, companyId: string, params: Record<string, unknown>, actor: CampaignActor | null) {
   const campaign = await requireCampaign(ctx, companyId, requiredString(params, "campaignId"));
   if (campaign.status !== "draft") throw new CampaignError("Only a draft campaign's steps can change. Pause it and create a new draft instead.");
+  await assertAgentMay(ctx, companyId, campaign, actor, "edit-draft");
   const position = integer(params.position, "position");
   const variant = params.variant == null ? "a" : assertVariant(requiredString(params, "variant"));
   const subject = params.subject == null ? undefined : requiredString(params, "subject");
@@ -1667,6 +1690,7 @@ async function editCampaignStepAction(ctx: PluginContext, companyId: string, par
   await updateStepText(ctx, { companyId, campaignId: campaign.id, position, variant, subject, body: text });
   await markEdited(ctx, campaign.id);
   const approvalReset = await invalidateApproval(ctx, companyId, campaign, `the text of step ${position}${variant === "b" ? "B" : ""} changed`);
+  await logCampaignActivity(ctx, { companyId, actor, action: "edit-step", summary: `edited the text of step ${position}${variant === "b" ? "B" : ""} on`, campaign, details: { position, variant, approvalReset } });
   // Preflight on the edited steps (no link check over the network), so the writer sees at once whether the fix holds.
   const result = await gatherPreflight(ctx, companyId, campaign, await listSteps(ctx, campaign.id), { network: false });
   return {
@@ -1697,7 +1721,7 @@ async function listTemplatesAction(ctx: PluginContext, companyId: string) {
   return rows.map((row) => ({ id: row.id, name: row.name, description: row.description }));
 }
 
-async function createFromTemplate(ctx: PluginContext, companyId: string, params: Record<string, unknown>, owner: Owner = {}) {
+async function createFromTemplate(ctx: PluginContext, companyId: string, params: Record<string, unknown>, owner: Owner, actor: CampaignActor | null) {
   const template = await getCampaignTemplate(ctx, requiredString(params, "templateId"));
   if (!template || template.company_id !== companyId) throw new CampaignError("Template was not found");
   const steps = parseSteps(template.steps);
@@ -1712,10 +1736,12 @@ async function createFromTemplate(ctx: PluginContext, companyId: string, params:
     ownerAgentId: owner.agentId ?? null,
   });
   for (const step of steps) assertStepFitsDelivery(campaign.delivery, stepChannel(step));
+  await assertAgentMay(ctx, companyId, campaign, actor, "edit-draft");
   await insertCampaign(ctx, campaign);
   for (const step of steps) {
     await insertStep(ctx, { companyId, campaignId: campaign.id, step });
   }
+  await logCampaignActivity(ctx, { companyId, actor, action: "create", summary: "created", campaign, details: { templateId: template.id, stepCount: steps.length } });
   return { campaignId: campaign.id, stepCount: steps.length, client: publicCampaign(campaign).client };
 }
 
@@ -1760,19 +1786,24 @@ function templateSteps(params: Record<string, unknown>): Array<{ subject: string
   return result;
 }
 
-async function declareWinner(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
+/** A person picks the A/B winner in Off and Safe; in Auto an agent may when the significance rule names it (plan 5.2). One entry. */
+async function declareWinner(ctx: PluginContext, companyId: string, params: Record<string, unknown>, actor: CampaignActor | null) {
   const campaign = await requireCampaign(ctx, companyId, requiredString(params, "campaignId"));
   assertCanDeclareWinner(campaign.status);
   const winner = assertVariant(requiredString(params, "winner"));
+  await assertAgentMay(ctx, companyId, campaign, actor, "declare-winner", { winner });
   const suggestion = await abSuggestionFor(ctx, campaign.id);
+  const before = campaign.winnerVariant ?? null;
   campaign.winnerVariant = winner;
   await saveCampaign(ctx, campaign);
+  await logCampaignActivity(ctx, { companyId, actor, action: "declare-winner", summary: `declared version ${winner.toUpperCase()} the winner of`, campaign, details: { winner, before, suggestion: suggestion.suggestion } });
   return { campaignId: campaign.id, winner, suggestion };
 }
 
 /** Reply-rate verdict per variant (kit `experimentVerdict`); a person still declares with declare-ab-winner. */
-async function suggestWinner(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
+async function suggestWinner(ctx: PluginContext, companyId: string, params: Record<string, unknown>, actor: CampaignActor | null) {
   const campaign = await requireCampaign(ctx, companyId, requiredString(params, "campaignId"));
+  await assertAgentMay(ctx, companyId, campaign, actor, "read-results");
   const suggestion = await abSuggestionFor(ctx, campaign.id);
   return { campaignId: campaign.id, winnerVariant: campaign.winnerVariant, ...suggestion };
 }
