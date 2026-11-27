@@ -18,6 +18,7 @@ Run `pnpm test && pnpm typecheck` here after any change. `pnpm test` also runs t
 | `waiting.ts` | The waiting list nobody sees: unrouted approvals, blocked issues with no way out |
 | `privacy.ts` | Consent and erasure contract (Q10-13) |
 | `sender-scope.ts` | Per-sender suppression, sender identities, unsubscribe tokens (Q1a-3) |
+| `campaign-mode.ts` | Campaign modes `off \| safe \| full` (Off, Safe, Auto): **`agentMay(mode, action, { isClient, reachesClients })`** holds the rule table of the Campaigns plan (PAR-9192 rev. 2, 5.2); `agentMaySetMode` (an agent may lower, never raise) and `agentMayCreateIn` (never in `full`). SEO keeps its own mode code |
 | `canvas-cards.ts` | **`registerCanvasCards({ register, kinds })`**: the three `canvas.cards.*` actions for entity cards on a planning canvas. `register` is `guard.action` (guarded plugins) or `ctx.actions.register` itself. Repeats core's person rules (people only; restricted: hidden/empty; no restriction answer: `MEMBER_RESTRICTION_UNAVAILABLE` refusal), caps text, refuses an `href` that is not one-slash relative. Keys and schemas come from `@paperclipai/shared/canvas-cards`; a plugin that uses it bundles zod (PAR-14389 C.1) |
 | `skills.ts`, `memory.ts`, `agent-hire.ts`, `done-checks.ts`, `outbox.ts`, `flows.ts`, … | Unchanged helpers (see their headers) |
 
