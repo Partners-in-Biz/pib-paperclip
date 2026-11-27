@@ -85,7 +85,7 @@ import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { isIP } from "node:net";
 import { logger } from "../middleware/logger.js";
-import { isLegacyIpv6EmbeddedOrReserved, isPrivateOrReservedIp } from "./remote-http-endpoint-guard.js";
+import { isPrivateOrReservedIp } from "./remote-http-endpoint-guard.js";
 import { pluginActingPersonBoundByH } from "./member-restriction/acting-person.js";
 import { recordMemberRestrictionDenial } from "./member-restriction/admin.js";
 import { restrictedPluginTaskBody } from "./member-restriction/body-allowlist.js";
@@ -125,40 +125,6 @@ const ALLOWED_PROTOCOLS = new Set(["http:", "https:"]);
 const TELEMETRY_EVENT_NAME_REGEX = /^[a-z0-9][a-z0-9_-]*$/;
 
 /**
- * Check if an IP address is in a private/reserved range (RFC 1918, loopback,
- * link-local, etc.) that plugins should never be able to reach.
- *
- * Handles IPv4-mapped IPv6 addresses (e.g. ::ffff:127.0.0.1) which Node's
- * dns.lookup may return depending on OS configuration.
- */
-function isPrivateIP(ip: string): boolean {
-  const lower = ip.toLowerCase();
-
-  // Unwrap IPv4-mapped IPv6 addresses (::ffff:x.x.x.x) and re-check as IPv4
-  const v4MappedMatch = lower.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
-  if (v4MappedMatch && v4MappedMatch[1]) return isPrivateIP(v4MappedMatch[1]);
-
-  // IPv4 patterns
-  if (ip.startsWith("10.")) return true;
-  if (ip.startsWith("172.")) {
-    const second = parseInt(ip.split(".")[1]!, 10);
-    if (second >= 16 && second <= 31) return true;
-  }
-  if (ip.startsWith("192.168.")) return true;
-  if (ip.startsWith("127.")) return true;                   // loopback
-  if (ip.startsWith("169.254.")) return true;               // link-local
-  if (ip === "0.0.0.0") return true;
-
-  // IPv6 patterns
-  if (lower === "::1") return true;                          // loopback
-  if (lower.startsWith("fc") || lower.startsWith("fd")) return true; // ULA
-  if (lower.startsWith("fe80")) return true;                 // link-local
-  if (lower === "::") return true;
-
-  return false;
-}
-
-/**
  * Validate a URL for plugin fetch: protocol whitelist + private IP blocking.
  *
  * SSRF Prevention Strategy:
@@ -177,8 +143,6 @@ function isPrivateIP(ip: string): boolean {
 interface ValidatedFetchTarget {
   parsedUrl: URL;
   resolvedAddress: string;
-  /** Every resolved address `isPrivateIP` let through, in lookup order (the first is pinned). */
-  allowedAddresses: string[];
   hostHeader: string;
   tlsServername?: string;
   useTls: boolean;
@@ -223,7 +187,9 @@ async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedF
     // Filter to only non-private IPs instead of rejecting the entire request
     // when some IPs are private. This handles multi-homed hosts that resolve
     // to both private and public addresses.
-    const safeResults = results.filter((entry) => !isPrivateIP(entry.address));
+    // `isPrivateOrReservedIp` is the server-wide guard: RFC 1918, loopback, CGNAT/Tailscale,
+    // benchmark, multicast, NAT64, hex IPv4-mapped and legacy IPv6 forms (PAR-14396).
+    const safeResults = results.filter((entry) => !isPrivateOrReservedIp(entry.address));
     if (safeResults.length === 0) {
       throw new Error(
         `All resolved IPs for ${originalHostname} are in private/reserved ranges`,
@@ -234,7 +200,6 @@ async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedF
     return {
       parsedUrl: parsed,
       resolvedAddress: resolved.address,
-      allowedAddresses: safeResults.map((entry) => entry.address),
       hostHeader,
       tlsServername: parsed.protocol === "https:" && isIP(originalHostname) === 0
         ? originalHostname
@@ -250,49 +215,6 @@ async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedF
     )) throw err;
     throw new Error(`DNS resolution failed for ${originalHostname}: ${(err as Error).message}`);
   }
-}
-
-// ---------------------------------------------------------------------------
-// Report-only stricter address check (PAR-14396)
-// ---------------------------------------------------------------------------
-
-/** The check PAR-14396 will enforce: the server-wide guard plus the IPv6 forms it misses. */
-function isRefusedByStrictFetchCheck(address: string): boolean {
-  return isPrivateOrReservedIp(address) || isLegacyIpv6EmbeddedOrReserved(address);
-}
-
-const FETCH_ADDRESS_REPORT_INTERVAL_MS = 10 * 60_000;
-const FETCH_ADDRESS_REPORT_MAX_KEYS = 1_000;
-const fetchAddressReportState = new Map<string, { loggedAt: number; repeats: number }>();
-
-/**
- * Log, never refuse, a plugin fetch whose pinned address the stricter check would
- * refuse. Host and address only (no path, no query string, no credentials); one line
- * per plugin+host+address every 10 minutes, carrying the repeats in between.
- */
-function reportStrictFetchAddress(pluginKey: string, target: ValidatedFetchTarget, now = Date.now()): void {
-  if (!isRefusedByStrictFetchCheck(target.resolvedAddress)) return;
-  const key = `${pluginKey}\n${target.hostHeader}\n${target.resolvedAddress}`;
-  const previous = fetchAddressReportState.get(key);
-  if (previous && now - previous.loggedAt < FETCH_ADDRESS_REPORT_INTERVAL_MS) {
-    previous.repeats += 1;
-    return;
-  }
-  if (!previous && fetchAddressReportState.size >= FETCH_ADDRESS_REPORT_MAX_KEYS) {
-    const oldest = fetchAddressReportState.keys().next().value;
-    if (oldest !== undefined) fetchAddressReportState.delete(oldest);
-  }
-  fetchAddressReportState.set(key, { loggedAt: now, repeats: 0 });
-  const fallbackAddress = target.allowedAddresses.find((address) => !isRefusedByStrictFetchCheck(address)) ?? null;
-  logger.warn({
-    event: "plugin_fetch_strict_address_report",
-    pluginKey,
-    host: target.hostHeader,
-    resolvedAddress: target.resolvedAddress,
-    wouldFail: fallbackAddress === null,
-    fallbackAddress,
-    repeatsSinceLastReport: previous?.repeats ?? 0,
-  }, "Plugin fetch address would be refused by the stricter check (report only, not refused)");
 }
 
 function buildPinnedRequestOptions(
@@ -1859,7 +1781,6 @@ export function buildHostServices(
         // SSRF protection: validate protocol whitelist + block private IPs.
         // Resolve once, then connect directly to that IP to prevent DNS rebinding.
         const target = await validateAndResolveFetchUrl(params.url);
-        reportStrictFetchAddress(pluginKey, target);
 
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), PLUGIN_FETCH_TIMEOUT_MS);
