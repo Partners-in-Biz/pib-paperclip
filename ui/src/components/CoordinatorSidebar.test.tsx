@@ -28,8 +28,8 @@ vi.mock("./SidebarCompanyMenu", () => ({ SidebarCompanyMenu: () => null }));
 vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompany: { id: "company", issuePrefix: "COO" } }) }));
 vi.mock("@/plugins/slots", () => ({
   usePluginSlots: () => ({ slots: fixture.pluginSlots }),
-  PluginSlotOutlet: ({ slotTypes, context, filter }: { slotTypes: string[]; context: { companyPrefix: string | null }; filter?: (slot: { pluginKey: string; id: string }) => boolean }) =>
-    <div data-plugin-slot-types={slotTypes.join(",")} data-prefix={context.companyPrefix ?? ""}>Plugin slot outlet{(fixture.pluginSlots as Array<{ pluginKey: string; id: string; displayName: string }>).filter(slot => !filter || filter(slot)).map(slot =>
+  PluginSlotOutlet: ({ slotTypes, context, filter, className }: { className?: string; slotTypes: string[]; context: { companyPrefix: string | null }; filter?: (slot: { pluginKey: string; id: string }) => boolean }) =>
+    <div className={className} data-plugin-slot-types={slotTypes.join(",")} data-prefix={context.companyPrefix ?? ""}>Plugin slot outlet{(fixture.pluginSlots as Array<{ pluginKey: string; id: string; displayName: string; rendersNothing?: boolean }>).filter(slot => !filter || filter(slot)).map(slot => slot.rendersNothing ? <div key={slot.id} data-outlet-empty={slot.id} /> :
       <span key={slot.id} data-outlet-app={slot.id}>{slot.displayName}</span>)}</div>,
   PluginSlotMount: (props: { slot: { id: string; displayName: string }; className?: string }) => {
     fixture.mountProps.push(props);
@@ -38,7 +38,7 @@ vi.mock("@/plugins/slots", () => ({
 }));
 vi.mock("@/plugins/launchers", () => ({
   usePluginLaunchers: () => ({ launchers: fixture.pluginLaunchers }),
-  PluginLauncherOutlet: ({ placementZones }: { placementZones: string[] }) => <div data-plugin-launcher-zone={placementZones.join(",")}>Plugin launcher outlet</div>,
+  PluginLauncherOutlet: ({ placementZones, className }: { placementZones: string[]; className?: string }) => <div className={className} data-plugin-launcher-zone={placementZones.join(",")}>Plugin launcher outlet</div>,
 }));
 vi.mock("@/lib/router", () => ({
   useLocation: () => ({ pathname: fixture.pathname, search: "" }),
@@ -378,6 +378,16 @@ describe("Coordinator apps in More", () => {
     expect(container.querySelector(".design-sidebar-apps")).toBeNull();
     await openMore();
     expect(document.querySelector(".design-sidebar-more-apps [data-plugin-launcher-zone]")).toBeNull();
+  });
+  it("hides the Apps header when the remaining slot renders nothing, and shows it again when a row returns", async () => {
+    fixture.pluginSlots = [appSlot("crm"), { ...appSlot("ghost"), rendersNothing: true }];
+    localStorage.setItem(hiddenKey(), JSON.stringify([appKey("crm")]));
+    await renderSidebar();
+    expect(container.querySelector(".design-sidebar-apps")).not.toBeNull();
+    expect((container.querySelector(".design-sidebar-apps") as HTMLElement).style.display).toBe("none");
+    localStorage.setItem(hiddenKey(), JSON.stringify([]));
+    await act(async () => { window.dispatchEvent(new StorageEvent("storage", { key: hiddenKey() })); });
+    expect((container.querySelector(".design-sidebar-apps") as HTMLElement).style.display).toBe("");
   });
   it("uses the signed-in user's key only and disables toggles without a user", async () => {
     fixture.pluginSlots = [appSlot("crm")];
