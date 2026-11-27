@@ -151,6 +151,7 @@ export class DirectSession {
   private awaitingSince: number | null = null;
   private fetching: Promise<number> | null = null;
   private fetchAgain = false;
+  private readVia: ReplyVia = "poll";
   private readFails = 0;
   /** Why the last chunk could not be voiced: the provider's outcome or the call's error. Shown in the transcript. */
   private speakFailure = "";
@@ -350,6 +351,8 @@ export class DirectSession {
   /** One read at a time; a read asked for while one runs runs once more after it. Resolves to new replies found. */
   private fetchNew(via: ReplyVia = "poll"): Promise<number> {
     if (this.closed || !this.target) return Promise.resolve(0);
+    // A read already running re-runs for this caller, so the latest caller's route is the one recorded.
+    this.readVia = via;
     if (this.fetching) {
       this.fetchAgain = true;
       return this.fetching;
@@ -359,7 +362,7 @@ export class DirectSession {
       do {
         this.fetchAgain = false;
         try {
-          found += await this.readReplies(via);
+          found += await this.readReplies(this.readVia);
           this.readFails = 0;
         } catch (err) {
           // A missed read is retried by the next poll; a read that keeps failing is said out loud.

@@ -47,6 +47,7 @@ vi.mock("../src/ui/audio.js", () => ({
 
 import { DirectSession, GEMINI_FALLBACK_NOTICE, READ_FAILED_NOTICE, SOUND_BLOCKED_NOTICE, type SpeakProvider } from "../src/ui/direct-session.js";
 import type { CallRecord } from "../src/ui/transcript-report.js";
+import { rowSteps } from "../src/ui/turn-timing.js";
 import { readBuffer } from "../src/ui/transcript-buffer.js";
 import { chunk, REST_IN_CHAT, toSpeech } from "../src/ui/speech-text.js";
 
@@ -508,6 +509,102 @@ describe("DirectSession", () => {
       const buffered = readBuffer(call.startedAt)!;
       expect(buffered.turns).toHaveLength(1);
       expect(buffered.timingStamp).toBe(call.timingStamp);
+    });
+
+    const slots = (...pairs: Array<[number, number]>) => {
+      let i = 0;
+      return () => {
+        const [startAt, endAt] = pairs[Math.min(i, pairs.length - 1)]!;
+        i += 1;
+        return { startAt, endAt };
+      };
+    };
+    const endRows = (onEnd: ReturnType<typeof vi.fn>, session: { stop(): void }) => {
+      session.stop();
+      return (onEnd.mock.calls[0]![0] as CallRecord).turns!;
+    };
+
+    it("a reply found by the poll records via poll", async () => {
+      const onEnd = vi.fn();
+      const ctx = await make({ onEnd });
+      await turn(ctx);
+      ctx.fake.add("Done.");
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(endRows(onEnd, ctx.session)[0]!.via).toBe("poll");
+    });
+
+    it("two replies queued: the second's queue is the first's playback, its tts excludes it", async () => {
+      const onEnd = vi.fn();
+      const speak: SpeakImpl = async (p) => {
+        await new Promise((r) => setTimeout(r, 200));
+        return okSpeak(p);
+      };
+      const ctx = await make({ onEnd, speak, audioContext: audioContext() });
+      ctx.player.enqueue.mockImplementation(slots([0.4, 1.4]));
+      await turn(ctx);
+      await turn(ctx);
+      ctx.fake.add("First.", { createdByRunId: "run-1" } as never);
+      ctx.fake.add("Second.", { createdByRunId: "run-2" } as never);
+      ctx.feed.emit("chat-1");
+      await vi.advanceTimersByTimeAsync(3_000);
+      const rows = endRows(onEnd, ctx.session);
+      expect(rows).toHaveLength(2);
+      const a = rowSteps(rows[0]!, 0);
+      const b = rowSteps(rows[1]!, 0);
+      expect(a.queue).toBeLessThan(50);
+      // Waits behind the whole first reply: its 200 ms of speech fetch plus 500 ms of playback.
+      expect(b.queue).toBe(700 + a.queue!);
+      expect(a.tts).toBe(200);
+      expect(b.tts).toBe(200);
+    });
+
+    it("a barge-in before the audio arrives leaves tts, start and silence empty", async () => {
+      const onEnd = vi.fn();
+      const speak: SpeakImpl = async (p) => {
+        await new Promise((r) => setTimeout(r, 2_000));
+        return okSpeak(p);
+      };
+      const ctx = await make({ onEnd, speak, audioContext: audioContext() });
+      ctx.player.enqueue.mockImplementation(slots([0.4, 1.4]));
+      await turn(ctx);
+      ctx.fake.add("Long answer.");
+      ctx.feed.emit("chat-1");
+      await vi.advanceTimersByTimeAsync(100);
+      ctx.session.interrupt();
+      await vi.advanceTimersByTimeAsync(3_000);
+      const row = endRows(onEnd, ctx.session)[0]!;
+      const steps = rowSteps(row, 0);
+      expect(row.speakStartAt).toBeTypeOf("number");
+      expect(steps.tts).toBeUndefined();
+      expect(steps.start).toBeUndefined();
+      expect(steps.silence).toBeUndefined();
+      expect(ctx.player.enqueue).not.toHaveBeenCalled();
+    });
+
+    it("a three-chunk reply records the silence between chunks as gap", async () => {
+      const onEnd = vi.fn();
+      const ctx = await make({ onEnd, audioContext: audioContext() });
+      expect(chunk(toSpeech(LONG_REPLY)).length).toBeGreaterThanOrEqual(3);
+      ctx.player.enqueue.mockImplementation(slots([0.4, 1.4], [1.9, 2.9], [3.0, 4.0]));
+      await turn(ctx);
+      ctx.fake.add(LONG_REPLY);
+      ctx.feed.emit("chat-1");
+      await vi.advanceTimersByTimeAsync(10_000);
+      const row = endRows(onEnd, ctx.session)[0]!;
+      expect(row.gap).toBe(600);
+    });
+
+    it("with only baseLatency the play time adds it and latencyKnown is false", async () => {
+      const onEnd = vi.fn();
+      const ctx = await make({ onEnd, audioContext: { close: vi.fn(async () => undefined), resume: vi.fn(async () => undefined), currentTime: 0, baseLatency: 0.02 } });
+      ctx.player.enqueue.mockImplementation(slots([0.4, 1.4]));
+      await turn(ctx);
+      ctx.fake.add("Done.");
+      ctx.feed.emit("chat-1");
+      await vi.advanceTimersByTimeAsync(2_000);
+      const row = endRows(onEnd, ctx.session)[0]!;
+      expect(row.latencyKnown).toBe(false);
+      expect(row.playAt! - row.audioAt!).toBe(420);
     });
 
     it("a call with no turn carries no timing", async () => {

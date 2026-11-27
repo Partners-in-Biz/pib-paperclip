@@ -47,7 +47,8 @@ describe("transcript report", () => {
     expect(doc).toContain("## Turn timing");
     expect(doc).toContain("Stamp: plugin-voice 0.2.3, quiet 1200 ms");
     expect(doc).toContain("| stt (end of speech to text) | 1 | 0.8 | 0.8 |");
-    expect(doc).toContain('"endKind":"end"');
+    const block = /```json\n([\s\S]*?)\n```/.exec(doc);
+    expect(JSON.parse(block![1]!)).toEqual(turns);
   });
 
   it("recaps topics and actions and names the document", () => {

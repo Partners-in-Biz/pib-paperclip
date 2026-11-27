@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assignReplies, clockSkew, nearestRank, TurnClock, timingStamp, turnStats, type ReplyGroup, type TurnRow } from "../src/ui/turn-timing.js";
+import { assignReplies, clockSkew, nearestRank, rowSteps, TurnClock, timingStamp, turnStats, type ReplyGroup, type TurnRow } from "../src/ui/turn-timing.js";
 
 const turn = (n: number, serverPostedAt: number, over: Partial<TurnRow> = {}): TurnRow => ({ n, endAt: serverPostedAt - 1000, endKind: "end", serverPostedAt, ...over });
 const group = (key: string, first: number, over: Partial<ReplyGroup> = {}): ReplyGroup => ({
@@ -117,5 +117,98 @@ describe("timingStamp", () => {
   it("names the version and the constants", () => {
     const s = timingStamp("0.2.3", { quietMs: 1200, firstChunkChars: 160, awaitPollMs: 10_000, fastWindowMs: 0, geminiPrefetch: false });
     expect(s).toBe("plugin-voice 0.2.3, quiet 1200 ms, first chunk 160 chars, await poll 10000 ms, fast window 0 ms, Gemini prefetch off");
+  });
+});
+
+describe("assignReplies, the plan's cases", () => {
+  it("(a) turn 1 at 0 s, turn 2 at 10 s, run A at 20 s, run B at 35 s: agent 20 s and 25 s", () => {
+    const rows = assignReplies([turn(1, 0), turn(2, 10_000)], [group("A", 20_000), group("B", 35_000)]);
+    expect(rowSteps(rows[0]!, 0).agent).toBe(20_000);
+    expect(rowSteps(rows[1]!, 0).agent).toBe(25_000);
+    expect(rows[0]!.queuedTurns).toBe(2);
+    expect(rows[1]!.queuedTurns).toBeUndefined();
+  });
+
+  it("(b) run A posts at 5 s and 20 s: first reply 5 s, agentFinal 20 s, two comments", () => {
+    const c = new TurnClock();
+    c.addTurn({ endAt: 0, endKind: "end", textAt: 0 }).serverPostedAt = 0;
+    c.noteReply({ id: "a1", runId: "A", createdAt: new Date(5_000).toISOString() }, 5_100, "event");
+    c.noteReply({ id: "a2", runId: "A", createdAt: new Date(20_000).toISOString() }, 20_100, "event");
+    const row = c.rows()[0]!;
+    expect(row.replyServerAt).toBe(5_000);
+    expect(row.replyComments).toBe(2);
+    const steps = rowSteps(row, 0);
+    expect(steps.agent).toBe(5_000);
+    expect(steps.agentFinal).toBe(20_000);
+    expect(turnStats(c.rows()).steps.agentFinal.p50).toBe(20_000);
+  });
+
+  it("(c) one group while two turns are unanswered: the oldest gets it with queuedTurns 2, the other has no reply", () => {
+    const rows = assignReplies([turn(2, 10_000), turn(1, 0)], [group("A", 20_000)]);
+    const one = rows.find((r) => r.n === 1)!;
+    const two = rows.find((r) => r.n === 2)!;
+    expect(one).toMatchObject({ replyServerAt: 20_000, queuedTurns: 2 });
+    expect(two.replyServerAt).toBeUndefined();
+    expect(rowSteps(two, 0).agent).toBeUndefined();
+  });
+
+  it("(d) comments with no run id are one group each", () => {
+    const c = new TurnClock();
+    c.addTurn({ endAt: 0, endKind: "end", textAt: 0 }).serverPostedAt = 0;
+    c.addTurn({ endAt: 0, endKind: "end", textAt: 0 }).serverPostedAt = 1;
+    c.noteReply({ id: "x", runId: null, createdAt: new Date(2_000).toISOString() }, 2_100, "poll");
+    c.noteReply({ id: "y", runId: null, createdAt: new Date(3_000).toISOString() }, 3_100, "poll");
+    const rows = c.rows();
+    expect(rows.map((r) => [r.replyServerAt, r.replyComments])).toEqual([[2_000, 1], [3_000, 1]]);
+  });
+});
+
+describe("turnStats, the plan's fixtures", () => {
+  const sttRow = (n: number, seconds: number, over: Partial<TurnRow> = {}): TurnRow => ({ n, endAt: 0, endKind: "end", textAt: seconds * 1000, ...over });
+
+  it("nearest-rank p50/p95 on n = 1, 2 and 10", () => {
+    expect(turnStats([sttRow(1, 7)]).steps.stt).toEqual({ n: 1, p50: 7_000, p95: 7_000 });
+    expect(turnStats([sttRow(1, 2), sttRow(2, 4)]).steps.stt).toEqual({ n: 2, p50: 2_000, p95: 4_000 });
+    const ten = Array.from({ length: 10 }, (_, i) => sttRow(i + 1, i + 1));
+    expect(turnStats(ten).steps.stt).toEqual({ n: 10, p50: 5_000, p95: 10_000 });
+  });
+
+  it("leaves an empty step out of n while other steps have data", () => {
+    const stats = turnStats([sttRow(1, 1), sttRow(2, 2, { postedAt: 2_500 })]);
+    expect(stats.steps.stt.n).toBe(2);
+    expect(stats.steps.post).toEqual({ n: 1, p50: 500, p95: 500 });
+    expect(stats.steps.tts).toEqual({ n: 0, p50: null, p95: null });
+  });
+
+  it("counts Gemini and Grok turns from each turn's provider", () => {
+    const stats = turnStats([sttRow(1, 1, { provider: "gemini" }), sttRow(2, 1, { provider: "grok" }), sttRow(3, 1, { provider: "grok" }), sttRow(4, 1)]);
+    expect([stats.gemini, stats.grok]).toEqual([1, 2]);
+  });
+
+  it("counts a split at a 1.0 s gap and not at 2.0 s", () => {
+    const a: TurnRow = { n: 1, startAt: 0, endAt: 3_000, endKind: "end" };
+    expect(turnStats([a, { n: 2, startAt: 4_000, endAt: 6_000, endKind: "end" }]).splits).toBe(1);
+    expect(turnStats([a, { n: 2, startAt: 5_000, endAt: 6_000, endKind: "end" }]).splits).toBe(0);
+  });
+
+  it("skew: server times 5 s ahead give the same detect as no skew (+-50 ms)", () => {
+    const fixture = (skew: number): TurnRow[] =>
+      [0, 10_000, 20_000].map((base, i) => ({
+        n: i + 1,
+        endAt: base,
+        endKind: "end" as const,
+        textAt: base + 800,
+        postStartAt: base + 1_000,
+        postedAt: base + 1_100,
+        serverPostedAt: base + 1_050 + skew,
+        replyServerAt: base + 3_000 + skew,
+        finalServerAt: base + 3_000 + skew,
+        seenAt: base + 3_400,
+      }));
+    const plain = turnStats(fixture(0));
+    const ahead = turnStats(fixture(5_000));
+    expect(ahead.skewMs).toBe(5_000);
+    expect(Math.abs(ahead.steps.detect.p50! - plain.steps.detect.p50!)).toBeLessThanOrEqual(50);
+    expect(ahead.steps.detect.p50).toBe(400);
   });
 });
