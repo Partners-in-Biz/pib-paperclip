@@ -1,3 +1,4 @@
+import type { TurnRow } from "./turn-timing.js";
 import { documentKey, type LogEntry } from "./transcript-report.js";
 
 /**
@@ -7,21 +8,29 @@ import { documentKey, type LogEntry } from "./transcript-report.js";
  */
 const PREFIX = "pib-voice:transcript:";
 const MAX_ENTRIES = 100;
+const MAX_TURNS = 200;
 const KEEP_MS = 7 * 24 * 60 * 60 * 1000;
 
 export interface BufferedCall {
   startedAt: number;
   updatedAt: number;
   entries: LogEntry[];
+  /** Per-turn timing rows and the stamp they were taken under (absent in buffers written before T1 of PAR-14996). */
+  turns?: TurnRow[];
+  timingStamp?: string;
 }
 
 export function bufferKey(startedAt: number): string {
   return `${PREFIX}${documentKey(startedAt)}`;
 }
 
-export function writeBuffer(startedAt: number, entries: LogEntry[]): boolean {
+export function writeBuffer(startedAt: number, entries: LogEntry[], timing?: { turns: TurnRow[]; timingStamp: string }): boolean {
   try {
     const payload: BufferedCall = { startedAt, updatedAt: Date.now(), entries: entries.slice(-MAX_ENTRIES) };
+    if (timing && timing.turns.length > 0) {
+      payload.turns = timing.turns.slice(-MAX_TURNS);
+      payload.timingStamp = timing.timingStamp;
+    }
     window.localStorage.setItem(bufferKey(startedAt), JSON.stringify(payload));
     return true;
   } catch {

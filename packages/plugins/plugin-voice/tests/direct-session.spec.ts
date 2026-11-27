@@ -46,6 +46,9 @@ vi.mock("../src/ui/audio.js", () => ({
 }));
 
 import { DirectSession, GEMINI_FALLBACK_NOTICE, READ_FAILED_NOTICE, SOUND_BLOCKED_NOTICE, type SpeakProvider } from "../src/ui/direct-session.js";
+import type { CallRecord } from "../src/ui/transcript-report.js";
+import { rowSteps } from "../src/ui/turn-timing.js";
+import { readBuffer } from "../src/ui/transcript-buffer.js";
 import { chunk, REST_IN_CHAT, toSpeech } from "../src/ui/speech-text.js";
 
 interface Row {
@@ -114,7 +117,7 @@ type SpeakImpl = (p: { agentId: string; text: string; provider: SpeakProvider })
 const okSpeak: SpeakImpl = async ({ text, provider }) => ({ audio: `${provider}:${text}`, sampleRate: 24000, provider, voice: "eve" });
 
 async function make(
-  opts: { provider?: SpeakProvider; speak?: SpeakImpl; interrupt?: () => boolean; onEnd?: () => void; chatIssue?: Record<string, unknown>; audioContext?: unknown } = {},
+  opts: { provider?: SpeakProvider; speak?: SpeakImpl; interrupt?: () => boolean; onEnd?: (call: CallRecord, targets: unknown[]) => void; onAutosave?: (call: CallRecord) => void; chatIssue?: Record<string, unknown>; audioContext?: unknown } = {},
 ) {
   const fake = fakeApi(opts.chatIssue);
   const feed = fakeFeed();
@@ -138,6 +141,8 @@ async function make(
     onError: vi.fn(),
     onNotice,
     onEnd: opts.onEnd,
+    onAutosave: opts.onAutosave,
+    autosaveMs: 1_000,
     feed,
   });
   await session.start();
@@ -469,5 +474,146 @@ describe("DirectSession", () => {
     ctx.fake.add("Too late.");
     await vi.advanceTimersByTimeAsync(20_000);
     expect(ctx.speak).not.toHaveBeenCalled();
+  });
+  describe("turn timing", () => {
+    const audioContext = () => ({ close: vi.fn(async () => undefined), resume: vi.fn(async () => undefined), currentTime: 0, outputLatency: 0.05 });
+
+    it("marks every step of a turn with a fake clock and saves the rows with a stamp", async () => {
+      vi.setSystemTime(new Date(2026, 10, 27, 10, 0, 0));
+      const onEnd = vi.fn();
+      const onAutosave = vi.fn();
+      const ctx = await make({ onEnd, onAutosave, audioContext: audioContext() });
+      ctx.player.enqueue.mockImplementation(() => ({ startAt: 0.4, endAt: 1.4 }));
+      talk(ctx.mic);
+      await vi.advanceTimersByTimeAsync(0);
+      ctx.fake.add("Done.", { createdByRunId: "run-1" } as never);
+      ctx.feed.emit("chat-1");
+      await vi.advanceTimersByTimeAsync(2_000);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(onAutosave).toHaveBeenCalled();
+      expect((onAutosave.mock.calls.at(-1)![0] as CallRecord).turns).toHaveLength(1);
+      ctx.session.stop();
+      const call = onEnd.mock.calls[0]![0] as CallRecord;
+      expect(call.turns).toHaveLength(1);
+      const row = call.turns![0]!;
+      expect(row).toMatchObject({ n: 1, endKind: "end", provider: "grok", latencyKnown: true, via: "event", replyComments: 1 });
+      for (const k of ["startAt", "endAt", "textAt", "postStartAt", "postedAt", "serverPostedAt", "replyServerAt", "seenAt", "speakStartAt", "audioAt", "playAt"] as const) {
+        expect(typeof row[k], k).toBe("number");
+      }
+      expect(row.startAt!).toBeLessThanOrEqual(row.endAt);
+      expect(row.endAt).toBeLessThanOrEqual(row.textAt!);
+      expect(row.speakStartAt!).toBeGreaterThanOrEqual(row.seenAt!);
+      // playAt = now + (startAt - currentTime + outputLatency) = audioAt + 450 ms.
+      expect(row.playAt! - row.audioAt!).toBe(450);
+      expect(call.timingStamp).toMatch(/^plugin-voice \d+\.\d+\.\d+, quiet 1200 ms, first chunk 160 chars, await poll 10000 ms, fast window 0 ms, Gemini prefetch off$/);
+      const buffered = readBuffer(call.startedAt)!;
+      expect(buffered.turns).toHaveLength(1);
+      expect(buffered.timingStamp).toBe(call.timingStamp);
+    });
+
+    const slots = (...pairs: Array<[number, number]>) => {
+      let i = 0;
+      return () => {
+        const [startAt, endAt] = pairs[Math.min(i, pairs.length - 1)]!;
+        i += 1;
+        return { startAt, endAt };
+      };
+    };
+    const endRows = (onEnd: ReturnType<typeof vi.fn>, session: { stop(): void }) => {
+      session.stop();
+      return (onEnd.mock.calls[0]![0] as CallRecord).turns!;
+    };
+
+    it("a reply found by the poll records via poll", async () => {
+      const onEnd = vi.fn();
+      const ctx = await make({ onEnd });
+      await turn(ctx);
+      ctx.fake.add("Done.");
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(endRows(onEnd, ctx.session)[0]!.via).toBe("poll");
+    });
+
+    it("two replies queued: the second's queue is the first's playback, its tts excludes it", async () => {
+      const onEnd = vi.fn();
+      const speak: SpeakImpl = async (p) => {
+        await new Promise((r) => setTimeout(r, 200));
+        return okSpeak(p);
+      };
+      const ctx = await make({ onEnd, speak, audioContext: audioContext() });
+      ctx.player.enqueue.mockImplementation(slots([0.4, 1.4]));
+      await turn(ctx);
+      await turn(ctx);
+      ctx.fake.add("First.", { createdByRunId: "run-1" } as never);
+      ctx.fake.add("Second.", { createdByRunId: "run-2" } as never);
+      ctx.feed.emit("chat-1");
+      await vi.advanceTimersByTimeAsync(3_000);
+      const rows = endRows(onEnd, ctx.session);
+      expect(rows).toHaveLength(2);
+      const a = rowSteps(rows[0]!, 0);
+      const b = rowSteps(rows[1]!, 0);
+      expect(a.queue).toBeLessThan(50);
+      // Waits behind the whole first reply: its 200 ms of speech fetch plus 500 ms of playback.
+      expect(b.queue).toBe(700 + a.queue!);
+      expect(a.tts).toBe(200);
+      expect(b.tts).toBe(200);
+    });
+
+    it("a barge-in before the audio arrives leaves tts, start and silence empty", async () => {
+      const onEnd = vi.fn();
+      const speak: SpeakImpl = async (p) => {
+        await new Promise((r) => setTimeout(r, 2_000));
+        return okSpeak(p);
+      };
+      const ctx = await make({ onEnd, speak, audioContext: audioContext() });
+      ctx.player.enqueue.mockImplementation(slots([0.4, 1.4]));
+      await turn(ctx);
+      ctx.fake.add("Long answer.");
+      ctx.feed.emit("chat-1");
+      await vi.advanceTimersByTimeAsync(100);
+      ctx.session.interrupt();
+      await vi.advanceTimersByTimeAsync(3_000);
+      const row = endRows(onEnd, ctx.session)[0]!;
+      const steps = rowSteps(row, 0);
+      expect(row.speakStartAt).toBeTypeOf("number");
+      expect(steps.tts).toBeUndefined();
+      expect(steps.start).toBeUndefined();
+      expect(steps.silence).toBeUndefined();
+      expect(ctx.player.enqueue).not.toHaveBeenCalled();
+    });
+
+    it("a three-chunk reply records the silence between chunks as gap", async () => {
+      const onEnd = vi.fn();
+      const ctx = await make({ onEnd, audioContext: audioContext() });
+      expect(chunk(toSpeech(LONG_REPLY)).length).toBeGreaterThanOrEqual(3);
+      ctx.player.enqueue.mockImplementation(slots([0.4, 1.4], [1.9, 2.9], [3.0, 4.0]));
+      await turn(ctx);
+      ctx.fake.add(LONG_REPLY);
+      ctx.feed.emit("chat-1");
+      await vi.advanceTimersByTimeAsync(10_000);
+      const row = endRows(onEnd, ctx.session)[0]!;
+      expect(row.gap).toBe(600);
+    });
+
+    it("with only baseLatency the play time adds it and latencyKnown is false", async () => {
+      const onEnd = vi.fn();
+      const ctx = await make({ onEnd, audioContext: { close: vi.fn(async () => undefined), resume: vi.fn(async () => undefined), currentTime: 0, baseLatency: 0.02 } });
+      ctx.player.enqueue.mockImplementation(slots([0.4, 1.4]));
+      await turn(ctx);
+      ctx.fake.add("Done.");
+      ctx.feed.emit("chat-1");
+      await vi.advanceTimersByTimeAsync(2_000);
+      const row = endRows(onEnd, ctx.session)[0]!;
+      expect(row.latencyKnown).toBe(false);
+      expect(row.playAt! - row.audioAt!).toBe(420);
+    });
+
+    it("a call with no turn carries no timing", async () => {
+      const onEnd = vi.fn();
+      const ctx = await make({ onEnd });
+      ctx.session.stop();
+      const call = onEnd.mock.calls[0]![0] as CallRecord;
+      expect(call.turns).toBeUndefined();
+      expect(call.timingStamp).toBeUndefined();
+    });
   });
 });

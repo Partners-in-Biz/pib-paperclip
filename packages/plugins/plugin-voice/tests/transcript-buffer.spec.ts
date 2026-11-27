@@ -12,6 +12,15 @@ describe("transcript buffer", () => {
     expect(readBuffer(startedAt)?.entries[0]?.text).toBe("hi");
   });
 
+  it("carries turns and the stamp, and omits them when there are none", () => {
+    const row = { n: 1, endAt: 5, endKind: "end" as const };
+    writeBuffer(1, [{ who: "you", text: "hi", at: 1 }], { turns: [row], timingStamp: "stamp" });
+    expect(readBuffer(1)).toMatchObject({ turns: [row], timingStamp: "stamp" });
+    writeBuffer(2, [{ who: "you", text: "hi", at: 1 }]);
+    expect(readBuffer(2)!.turns).toBeUndefined();
+    expect(readBuffer(2)!.timingStamp).toBeUndefined();
+  });
+
   it("keeps only the latest 100 entries", () => {
     const entries = Array.from({ length: 130 }, (_, i) => ({ who: "you" as const, text: `m${i}`, at: i }));
     writeBuffer(1, entries);

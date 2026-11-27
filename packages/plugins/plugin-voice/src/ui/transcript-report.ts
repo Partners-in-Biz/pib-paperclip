@@ -1,4 +1,5 @@
 import { clip, type ApiClient } from "./agent-chat.js";
+import { STEP_NAMES, turnStats, type StepName, type TurnRow } from "./turn-timing.js";
 import { newUuid } from "./uuid.js";
 
 /** One line of the call, with the time it first appeared. */
@@ -18,6 +19,9 @@ export interface CallRecord {
   endedAt: number;
   /** Recap request id per task, kept so a retry reuses it and the host drops a duplicate. */
   recapIds?: Record<string, string>;
+  /** Direct mode only: per-turn timing rows and the stamp (plugin version and constants) they were taken under. */
+  turns?: TurnRow[];
+  timingStamp?: string;
 }
 
 export interface SaveTarget {
@@ -55,6 +59,38 @@ export function hasSpeech(entries: LogEntry[]): boolean {
   return entries.some((e) => e.who !== "note" && e.text.trim().length > 0);
 }
 
+const MAX_TIMING_ROWS = 200;
+const STEP_LABELS: Record<StepName, string> = {
+  stt: "stt (end of speech to text)",
+  post: "post (text to comment posted)",
+  agent: "agent (first reply, server clock)",
+  agentFinal: "agentFinal (last reply, server clock)",
+  detect: "detect (reply posted to reply seen)",
+  queue: "queue (seen to speaker starts)",
+  tts: "tts (speaker starts to first audio)",
+  start: "start (first audio to sound out)",
+  silence: "silence (end of speech to sound out)",
+  gap: "gap (silence between chunks)",
+};
+
+const seconds = (ms: number | null) => (ms === null ? "-" : (ms / 1000).toFixed(1));
+
+/** The "## Turn timing" lines: the stamp, a p50/p95 table and the raw rows. */
+function timingSection(turns: TurnRow[], stamp: string | undefined): string[] {
+  const stats = turnStats(turns);
+  const out = ["", "## Turn timing", ""];
+  if (stamp) out.push(`Stamp: ${stamp}`, "");
+  out.push(
+    `${stats.turns} turns, ${stats.answered} answered. Voiced by Gemini: ${stats.gemini}, by Grok: ${stats.grok}. Split turns: ${stats.splits}. Clock skew: ${stats.skewMs} ms.`,
+    "",
+    "| Step | n | p50 (s) | p95 (s) |",
+    "|---|---|---|---|",
+  );
+  for (const s of STEP_NAMES) out.push(`| ${STEP_LABELS[s]} | ${stats.steps[s].n} | ${seconds(stats.steps[s].p50)} | ${seconds(stats.steps[s].p95)} |`);
+  out.push("", "```json", JSON.stringify(turns.slice(-MAX_TIMING_ROWS)), "```");
+  return out;
+}
+
 export function buildTranscriptDocument(call: CallRecord): string {
   const lines = call.entries
     .filter((e) => e.text.trim())
@@ -70,6 +106,7 @@ export function buildTranscriptDocument(call: CallRecord): string {
     "Spoken text is machine-transcribed and may contain mistakes.",
     "",
     ...lines,
+    ...(call.turns && call.turns.length > 0 ? timingSection(call.turns, call.timingStamp) : []),
     "",
   ].join("\n");
 }
