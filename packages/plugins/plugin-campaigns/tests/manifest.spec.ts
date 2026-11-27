@@ -26,9 +26,9 @@ describe("manifest 0.6", () => {
   });
 
   it("is version 0.8.8 everywhere", () => {
-    expect(manifest.version).toBe("0.17.3");
-    expect(PLUGIN_VERSION).toBe("0.17.3");
-    expect(pkg.version).toBe("0.17.3");
+    expect(manifest.version).toBe("0.18.0");
+    expect(PLUGIN_VERSION).toBe("0.18.0");
+    expect(pkg.version).toBe("0.18.0");
   });
 
   it("declares the activity.log.write capability", () => {
@@ -127,7 +127,7 @@ describe("migrations", () => {
   it("014 is a migration, passes the host guard, widens the step event kinds and indexes the sent events by address", () => {
     const sql = read("014_campaigns.sql");
     expect(files[13]).toBe("014_campaigns.sql");
-    expect(files).toHaveLength(19);
+    expect(files).toHaveLength(20);
     for (const statement of splitSqlStatements(sql)) expect(() => validateMigrationStatement(statement, NAMESPACE), statement.slice(0, 80)).not.toThrow();
     for (const line of sql.split("\n").filter((l) => l.trim().startsWith("--"))) expect(line).not.toMatch(/['"]/);
     // Every kind of 013 stays allowed, and the two new ones are added.
@@ -154,6 +154,17 @@ describe("migrations", () => {
     for (const line of sql.split("\n").filter((l) => l.trim().startsWith("--"))) expect(line).not.toMatch(/['"]/);
     expect(sql).toContain("CHECK (audience_mode IN ('tags', 'client_contacts', 'client_contact', 'client_list'))");
     expect(sql).not.toMatch(/\b(delete|update)\b|drop\s+table/i);
+  });
+
+  it("020 only creates audience_members and its indexes, keyed on company, client, list and email or phone", () => {
+    const sql = read("020_campaigns.sql");
+    expect(files[19]).toBe("020_campaigns.sql");
+    for (const statement of splitSqlStatements(sql)) expect(() => validateMigrationStatement(statement, NAMESPACE), statement.slice(0, 80)).not.toThrow();
+    for (const line of sql.split("\n").filter((l) => l.trim().startsWith("--"))) expect(line).not.toMatch(/['"]/);
+    const code = sql.split("\n").filter((l) => !l.trim().startsWith("--")).join("\n");
+    expect(code).toContain("CREATE TABLE plugin_campaigns_d355219713.audience_members (");
+    expect(code).toContain("audience_members (company_id, client_kind, client_ref, list_name, (coalesce(email, phone)))");
+    expect(code).not.toMatch(/\b(delete|update|drop|alter)\b/i);
   });
 
   it("never edits an applied migration: 001 to 013 are live and each file still has the hash it was applied with", () => {

@@ -19,6 +19,10 @@
  * address itself is gone but they are never contacted again, and the comments agents
  * wrote on issues, which a plugin cannot edit. A request for `marketing_only` only
  * adds the opt-outs and stops the running campaigns.
+ *
+ * Client lists (Stage 4c). A person on a client's list (`audience_members`) is matched
+ * by email and phone in every list of this company: an erasure deletes those rows (and
+ * the consents of every address they carry), and `export-person-data` returns them.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import {
@@ -33,14 +37,18 @@ import {
 import {
   addChannelSuppression,
   addressHash,
+  audienceMembersOf,
+  deleteAudienceMember,
+  type AudienceMember,
   listSteps,
   stopEnrollmentsForSender,
   table,
   upsertConsent,
 } from "./db.js";
 import { normalizePhone, type Channel } from "./channels.js";
+import { optionalString } from "./params.js";
 import { recipientsByEmail, recipientsByPhone, resolveRecipient } from "./recipient.js";
-import { campaignMailKey } from "./domain.js";
+import { campaignMailKey, CampaignError } from "./domain.js";
 import { addSuppression } from "./db.js";
 import { optOutChannel } from "./sms.js";
 import { cancelStepIssue, suppressAddress } from "./suppress.js";
@@ -89,6 +97,24 @@ export async function onConsentRecorded(ctx: PluginContext, companyId: string, c
 // ---------------------------------------------------------------------------
 // Erasure
 // ---------------------------------------------------------------------------
+
+/**
+ * A person's rows on every client list of this company. An address a row carries (the phone on a row found by
+ * email) is the same person's, so it is added to `emails` / `phones` and looked up once more.
+ */
+async function membersOfPerson(ctx: PluginContext, companyId: string, emails: Set<string>, phones: Set<string>): Promise<AudienceMember[]> {
+  const found = new Map<string, AudienceMember>();
+  for (let pass = 0; pass < 2; pass += 1) {
+    const before = emails.size + phones.size;
+    for (const member of await audienceMembersOf(ctx, companyId, { emails: [...emails], phones: [...phones] })) {
+      found.set(member.id, member);
+      if (member.email) emails.add(suppressionEmail(member.email));
+      if (member.phone) phones.add(member.phone);
+    }
+    if (emails.size + phones.size === before) break;
+  }
+  return [...found.values()];
+}
 
 /** Replaces the personal text of an issue the plugin opened and closes it. True when it changed. */
 async function scrubIssue(ctx: PluginContext, companyId: string, issueId: string): Promise<boolean> {
@@ -154,6 +180,7 @@ export async function eraseSubject(ctx: PluginContext, request: ContactEraseRequ
       if (phone) phones.add(phone);
     }
   }
+  const members = await membersOfPerson(ctx, companyId, emails, phones);
   for (const email of [...emails]) for (const person of await recipientsByEmail(ctx, companyId, email)) contactIds.add(person.id);
   for (const phone of [...phones]) for (const person of await recipientsByPhone(ctx, companyId, phone, "+27")) contactIds.add(person.id);
   const counts: Record<string, number> = {};
@@ -227,6 +254,15 @@ export async function eraseSubject(ctx: PluginContext, request: ContactEraseRequ
   }
   count("issues_scrubbed", scrubbed);
 
+  // The client lists they are on: the rows go, whichever client's list it is.
+  for (const member of members) {
+    try {
+      if (await deleteAudienceMember(ctx, companyId, member.id)) count("list_members", 1);
+    } catch (error) {
+      errors.push(`list member ${member.id}: ${error instanceof Error ? error.message : String(error)}`.slice(0, 200));
+    }
+  }
+
   // Consents: the records of what the person agreed to go with them.
   for (const address of [...emails, ...phones]) {
     const res = await ctx.db.execute(`DELETE FROM ${table(ctx, "channel_consents")} WHERE company_id = $1 AND address = $2`, [companyId, address]);
@@ -253,4 +289,51 @@ export async function eraseSubject(ctx: PluginContext, request: ContactEraseRequ
   }
   if (scrubbed > 0) retained.push({ what: "comments agents wrote on campaign issues", why: "Paperclip stores issue comments, and a plugin cannot edit or delete them. The issue titles and descriptions were cleared." });
   return { counts, retained, ...(errors.length ? { errors } : {}) };
+}
+
+// ---------------------------------------------------------------------------
+// Export
+// ---------------------------------------------------------------------------
+
+export interface SubjectExport {
+  person: { emails: string[]; phones: string[] };
+  /** Every client list they are on, with where it came from and why we may hold it. */
+  listMemberships: Array<Pick<AudienceMember, "id" | "client" | "listName" | "name" | "email" | "phone" | "source" | "lawfulBasis" | "addedBy" | "addedAt" | "crmLeadId">>;
+  /** Their SMS, WhatsApp and email opt-ins and withdrawals, per sender. */
+  consents: Array<{ channel: string; address: string; senderKey: string; granted: boolean; basis: string; source: string; recordedAt: unknown }>;
+  counts: Record<string, number>;
+}
+
+/** What Campaigns holds about one person on client lists and their opt-ins, for a data subject access request. */
+export async function exportSubject(ctx: PluginContext, companyId: string, person: { email?: string | null; phone?: string | null }, country = "+27"): Promise<SubjectExport> {
+  const emails = new Set<string>(person.email ? [suppressionEmail(person.email)] : []);
+  const phone = normalizePhone(person.phone, country);
+  const phones = new Set<string>(phone ? [phone] : []);
+  const members = await membersOfPerson(ctx, companyId, emails, phones);
+  const addresses = new Set<string>([...emails, ...phones]);
+  const consents: SubjectExport["consents"] = [];
+  for (const address of addresses) {
+    const rows = await ctx.db.query<{ channel: string; address: string; sender_key: string; granted: boolean; basis: string; source: string; recorded_at: unknown }>(
+      `SELECT channel, address, sender_key, granted, basis, source, recorded_at FROM ${table(ctx, "channel_consents")} WHERE company_id = $1 AND address = $2`,
+      [companyId, address],
+    );
+    for (const row of rows) consents.push({ channel: row.channel, address: row.address, senderKey: row.sender_key, granted: row.granted, basis: row.basis, source: row.source, recordedAt: row.recorded_at });
+  }
+  const listMemberships = members.map(({ companyId: _companyId, ...rest }) => rest);
+  return { person: { emails: [...emails], phones: [...phones] }, listMemberships, consents, counts: { list_members: listMemberships.length, consents: consents.length } };
+}
+
+/** `export-person-data`: the tool answer. The person's campaign sends are in `campaign-stats`. */
+export async function exportPersonDataTool(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
+  const email = optionalString(params, "email");
+  const phone = optionalString(params, "phone");
+  if (!email && !phone) throw new CampaignError("Give the person's email or phone number.");
+  const out = await exportSubject(ctx, companyId, { email, phone });
+  return {
+    ...out,
+    next: [
+      "Check the requester is the person before you share anything.",
+      "To give them a copy, draft a Mailbox email to the address on file for a person to approve. Never send it to a different address.",
+    ],
+  };
 }

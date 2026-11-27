@@ -90,8 +90,13 @@ export function campaignSenderKey(campaign: Pick<CampaignDraft, "clientKind" | "
  * - `tags`: CRM contacts matching `audienceTags` (empty = every contact).
  * - `client_contacts`: contacts at the client company, narrowed by `audienceTags` when set.
  * - `client_contact`: the client contact (a sole trader) alone.
+ * - `client_list`: the people on the client's own list (`audience_members`), never our CRM contacts. A draft may
+ *   have it; it cannot be approved or launched until the stop paths for list members ship (Stage 4d).
  */
-export const AUDIENCE_MODES = ["tags", "client_contacts", "client_contact"] as const;
+export const AUDIENCE_MODES = ["tags", "client_contacts", "client_contact", "client_list"] as const;
+
+/** The refusal a `client_list` campaign gets at approval and launch until members can be sent to. */
+export const CLIENT_LIST_NOT_SENDABLE = "client lists cannot be sent to yet";
 export type AudienceMode = (typeof AUDIENCE_MODES)[number];
 
 /** The client a campaign is for, as resolved from the CRM. */
@@ -230,7 +235,10 @@ export function defaultAudienceMode(client: ClientScope): AudienceMode {
 export function assertAudienceMode(value: string | null | undefined, client: ClientScope): AudienceMode {
   if (value == null || value === "") return defaultAudienceMode(client);
   if (!AUDIENCE_MODES.includes(value as AudienceMode)) {
-    throw new CampaignError("audienceMode must be tags, client_contacts, or client_contact");
+    throw new CampaignError("audienceMode must be tags, client_contacts, client_contact, or client_list");
+  }
+  if (value === "client_list" && !client) {
+    throw new CampaignError("The client_list audience (the client's own list) needs a client; our own campaigns use tags");
   }
   if (value === "client_contacts" && client?.kind !== "company") {
     throw new CampaignError("The client_contacts audience (contacts at this company) needs a company client");
@@ -265,9 +273,13 @@ export function withClient(campaign: CampaignDraft, client: CampaignClient | nul
 export type AudienceSource =
   | { kind: "tags"; tags: string[] }
   | { kind: "company-contacts"; crmCompanyId: string; tags: string[] }
-  | { kind: "contact"; contactId: string };
+  | { kind: "contact"; contactId: string }
+  | { kind: "list"; client: ClientScope };
 
-/** Where launch finds the contacts to enroll. A mode that no longer fits the client falls back to tags. */
+/**
+ * Where launch finds the contacts to enroll. A mode that no longer fits the client falls back to tags, except a
+ * client list: that never falls back to our own contacts (F16), with or without its client.
+ */
 export function audienceSource(campaign: Pick<CampaignDraft, "audienceMode" | "audienceTags" | "clientKind" | "clientRef">): AudienceSource {
   const scope = campaignScope(campaign);
   if (campaign.audienceMode === "client_contacts" && scope?.kind === "company") {
@@ -276,6 +288,7 @@ export function audienceSource(campaign: Pick<CampaignDraft, "audienceMode" | "a
   if (campaign.audienceMode === "client_contact" && scope?.kind === "contact") {
     return { kind: "contact", contactId: scope.id };
   }
+  if (campaign.audienceMode === "client_list") return { kind: "list", client: scope };
   return { kind: "tags", tags: campaign.audienceTags };
 }
 
@@ -300,6 +313,7 @@ export function audienceLine(
   const source = audienceSource(campaign);
   const tags = (list: string[]) => list.map((tag) => `\`${tag}\``).join(", ");
   if (source.kind === "contact") return `${campaign.clientName ?? "The client contact"} only (${count})`;
+  if (source.kind === "list") return `People on ${campaign.clientName ?? "the client"}'s list (${count})`;
   if (source.kind === "company-contacts") {
     const at = campaign.clientName ?? "the client company";
     return source.tags.length ? `Contacts at ${at} tagged ${tags(source.tags)} (${count})` : `Contacts at ${at} (${count})`;

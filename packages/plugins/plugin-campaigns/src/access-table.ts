@@ -44,7 +44,7 @@ export const CAMPAIGNS_ACCESS_TABLE: AccessTable = Object.freeze({
 
   // Agent tools.
   ...rows(VIEW, [
-    "tool:list-campaigns", "tool:campaign-stats", "tool:preflight-campaign", "tool:campaign-funnel", "tool:campaign-step-analytics", "tool:campaign-results",
+    "tool:list-campaigns", "tool:campaign-stats", "tool:preflight-campaign", "tool:export-person-data", "tool:campaign-funnel", "tool:campaign-step-analytics", "tool:campaign-results",
     "tool:list-campaign-templates", "tool:suggest-ab-winner", "tool:performance-review", "tool:get-playbook", "tool:list-experiments",
   ]),
   ...rows(CREATE, ["tool:create-campaign", "tool:create-campaign-template", "tool:create-campaign-from-template", "tool:create-feed-digest", "tool:propose-experiment"]),

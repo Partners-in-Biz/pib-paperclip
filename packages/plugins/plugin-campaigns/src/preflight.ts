@@ -26,7 +26,7 @@ import { CLAIM_TERMS, isModuleEnabled, PIB_PLUGINS, safeFetch, scoreCreative, CR
 import { CHANNEL_LABELS, isMessagingChannel, smsLength, SMS_MAX_CHARS, SMS_SEGMENT_WARN, hasOptOutInstruction, withOptOutLine, WHATSAPP_SESSION_MAX, WHATSAPP_TEMPLATE_MAX, type Channel, type MessagingChannel } from "./channels.js";
 import { launchAudience, channelsUsed, type LaunchAudience } from "./audience.js";
 import { listSenderIdentityRows } from "./db.js";
-import { stepChannel, type CampaignDraft, type CampaignStepDraft } from "./domain.js";
+import { CLIENT_LIST_NOT_SENDABLE, stepChannel, type CampaignDraft, type CampaignStepDraft } from "./domain.js";
 import { extractLinks, linkConfig, unsubscribeLinkProblem } from "./links.js";
 import { messagingSetup, readinessOf } from "./messaging.js";
 import { resolveEmailSender, resolveMessageSender, type EmailSender } from "./sender.js";
@@ -64,7 +64,7 @@ export interface LinkCheck {
 }
 
 export interface PreflightFacts {
-  campaign: Pick<CampaignDraft, "name" | "delivery" | "clientKind" | "clientRef" | "clientName">;
+  campaign: Pick<CampaignDraft, "name" | "delivery" | "clientKind" | "clientRef" | "clientName"> & Partial<Pick<CampaignDraft, "audienceMode">>;
   steps: CampaignStepDraft[];
   email: EmailSender | null;
   emailHealth: SenderHealth | null;
@@ -143,6 +143,10 @@ export function evaluatePreflight(facts: PreflightFacts): PreflightResult {
   const automatic = campaign.delivery !== "issue";
 
   if (steps.length === 0) add("error", "no-steps", "The campaign has no steps.", "add-campaign-step");
+  // Stage 4c: a client list can be built, not sent to, until its members have the stop paths contacts have (4d).
+  if (campaign.audienceMode === "client_list") {
+    add("error", "client-list", `The audience is ${campaign.clientName ?? "the client"}'s own list, and ${CLIENT_LIST_NOT_SENDABLE}.`, "Keep it as a draft, or change audienceMode with update-campaign");
+  }
 
   for (const step of steps) {
     const channel = stepChannel(step);

@@ -604,6 +604,8 @@ export interface AudienceContact {
  */
 export async function audienceContacts(ctx: PluginContext, companyId: string, campaign: CampaignDraft): Promise<AudienceContact[]> {
   const source = audienceSource(campaign);
+  // A client list is never our CRM contacts. Members cannot be enrolled before Stage 4d.
+  if (source.kind === "list") return [];
   if (source.kind === "contact") return crmContactsByIds(ctx, companyId, [source.contactId]);
   if (source.kind === "company-contacts") {
     const rows = await listCrmContactsAtCompany(ctx, ctx.db.namespace, companyId, source.crmCompanyId);
@@ -1565,4 +1567,146 @@ export async function latestMessageFor(ctx: PluginContext, companyId: string, to
     senderKey ? [companyId, channel, toAddress, senderKey] : [companyId, channel, toAddress],
   );
   return rows[0] ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Client lists (audience_members, Stage 4c)
+// ---------------------------------------------------------------------------
+
+/** How a list member may be contacted at all (the kit's lawful bases). */
+export const LAWFUL_BASES = ["consent", "contract", "legitimate_interest", "legal_obligation"] as const;
+export type LawfulBasisValue = (typeof LAWFUL_BASES)[number];
+
+/** One person on a client's list. Never one of our CRM contacts. */
+export interface AudienceMember {
+  id: string;
+  companyId: string;
+  client: { kind: "company" | "contact"; id: string };
+  listName: string;
+  name: string | null;
+  email: string | null;
+  phone: string | null;
+  source: string;
+  lawfulBasis: LawfulBasisValue;
+  addedBy: string | null;
+  addedAt: string | null;
+  crmLeadId: string | null;
+}
+
+interface AudienceMemberRow {
+  id: string;
+  company_id: string;
+  client_kind: "company" | "contact";
+  client_ref: string;
+  list_name: string;
+  name: string | null;
+  email: string | null;
+  phone: string | null;
+  source: string;
+  lawful_basis: LawfulBasisValue;
+  added_by: string | null;
+  added_at: unknown;
+  crm_lead_id: string | null;
+}
+
+const MEMBER_COLUMNS = "id, company_id, client_kind, client_ref, list_name, name, email, phone, source, lawful_basis, added_by, added_at, crm_lead_id";
+
+function toMember(row: AudienceMemberRow): AudienceMember {
+  return {
+    id: row.id,
+    companyId: row.company_id,
+    client: { kind: row.client_kind, id: row.client_ref },
+    listName: row.list_name,
+    name: row.name,
+    email: row.email,
+    phone: row.phone,
+    source: row.source,
+    lawfulBasis: row.lawful_basis,
+    addedBy: row.added_by,
+    addedAt: isoTime(row.added_at),
+    crmLeadId: row.crm_lead_id,
+  };
+}
+
+export interface AudienceMemberInput {
+  companyId: string;
+  client: { kind: "company" | "contact"; id: string };
+  listName: string;
+  name?: string | null;
+  /** Lower-cased here. */
+  email?: string | null;
+  /** Already in international form (`normalizePhone`). */
+  phone?: string | null;
+  source: string;
+  lawfulBasis: LawfulBasisValue;
+  addedBy?: string | null;
+  crmLeadId?: string | null;
+}
+
+/**
+ * Adds one person to a client's list. A person already on that list (same email, or same phone when there is
+ * no email) is left as it is: returns null.
+ */
+export async function addAudienceMember(ctx: PluginContext, input: AudienceMemberInput): Promise<AudienceMember | null> {
+  const email = input.email?.trim().toLowerCase() || null;
+  const phone = input.phone?.trim() || null;
+  if (!email && !phone) throw new Error("A list member needs an email or a phone number");
+  if (!input.client?.id || (input.client.kind !== "company" && input.client.kind !== "contact")) throw new Error("A list belongs to one client");
+  if (!input.listName?.trim() || !input.source?.trim()) throw new Error("A list member needs a list name and a source");
+  if (!LAWFUL_BASES.includes(input.lawfulBasis)) throw new Error(`lawfulBasis must be one of ${LAWFUL_BASES.join(", ")}`);
+  const id = randomUUID();
+  const res = await ctx.db.execute(
+    `INSERT INTO ${table(ctx, "audience_members")} (id, company_id, client_kind, client_ref, list_name, name, email, phone, source, lawful_basis, added_by, crm_lead_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+     ON CONFLICT (company_id, client_kind, client_ref, list_name, (coalesce(email, phone))) DO NOTHING`,
+    [id, input.companyId, input.client.kind, input.client.id, input.listName.trim(), input.name?.trim() || null, email, phone, input.source.trim(), input.lawfulBasis, input.addedBy ?? null, input.crmLeadId ?? null],
+  );
+  if (res.rowCount === 0) return null;
+  const rows = await ctx.db.query<AudienceMemberRow>(`SELECT ${MEMBER_COLUMNS} FROM ${table(ctx, "audience_members")} WHERE company_id = $1 AND id = $2`, [input.companyId, id]);
+  return rows[0] ? toMember(rows[0]) : null;
+}
+
+/** The people on one client's lists (one list when `listName` is given), oldest first. */
+export async function listAudienceMembers(ctx: PluginContext, companyId: string, client: { kind: "company" | "contact"; id: string }, listName?: string | null, limit = 500): Promise<AudienceMember[]> {
+  const rows = await ctx.db.query<AudienceMemberRow>(
+    `SELECT ${MEMBER_COLUMNS} FROM ${table(ctx, "audience_members")}
+      WHERE company_id = $1 AND client_kind = $2 AND client_ref = $3${listName ? " AND list_name = $5" : ""}
+      ORDER BY added_at, id
+      LIMIT $4`,
+    listName ? [companyId, client.kind, client.id, Math.min(Math.max(limit, 1), 5000), listName] : [companyId, client.kind, client.id, Math.min(Math.max(limit, 1), 5000)],
+  );
+  return rows.map(toMember);
+}
+
+/**
+ * The list rows of one person, for a privacy export or erasure: matched by email and by phone. With `client` only
+ * that client's lists; without it every client list in this company (a data subject request is about the person).
+ */
+export async function audienceMembersOf(
+  ctx: PluginContext,
+  companyId: string,
+  person: { emails: string[]; phones: string[] },
+  client?: { kind: "company" | "contact"; id: string } | null,
+): Promise<AudienceMember[]> {
+  const found = new Map<string, AudienceMember>();
+  const scoped = client ? " AND client_kind = $3 AND client_ref = $4" : "";
+  const lookups: Array<["email" | "phone", string]> = [
+    ...person.emails.map((email) => ["email", email.trim().toLowerCase()] as ["email", string]),
+    ...person.phones.map((phone) => ["phone", phone.trim()] as ["phone", string]),
+  ];
+  for (const [column, value] of lookups) {
+    if (!value) continue;
+    const rows = await ctx.db.query<AudienceMemberRow>(
+      `SELECT ${MEMBER_COLUMNS} FROM ${table(ctx, "audience_members")} WHERE company_id = $1 AND ${column} = $2${scoped} ORDER BY added_at, id LIMIT 500`,
+      client ? [companyId, value, client.kind, client.id] : [companyId, value],
+    );
+    for (const row of rows) found.set(row.id, toMember(row));
+  }
+  return [...found.values()];
+}
+
+/** Deletes one list row of this company. True when it was there. */
+export async function deleteAudienceMember(ctx: PluginContext, companyId: string, id: string): Promise<boolean> {
+  const res = await ctx.db.execute(`DELETE FROM ${table(ctx, "audience_members")} WHERE company_id = $1 AND id = $2`, [companyId, id]);
+  return res.rowCount > 0;
 }

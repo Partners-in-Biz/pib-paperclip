@@ -27,10 +27,11 @@ The Growth Lab tools (\`performance-review\`, \`get-playbook\`, \`propose-playbo
 - The approver sees the real sender on the approval ("Sent as"). Details: references/senders-and-unsubscribe.md.
 
 ## Audience
-- \`audienceMode\`: \`tags\` (contacts with any of \`audienceTags\`), \`client_contacts\` (the people at the client company, narrowed by tags), \`client_contact\` (the client contact alone).
+- \`audienceMode\`: \`tags\` (contacts with any of \`audienceTags\`), \`client_contacts\` (the people at the client company, narrowed by tags), \`client_contact\` (the client contact alone), \`client_list\` (the people on the client's own list, never our contacts; such a draft cannot be approved or launched yet: "client lists cannot be sent to yet").
 - Tags mode with no tags means **all CRM contacts**. It launches only when the approval says "All contacts (N)" and a person approves. Prefer tags.
 - Unsubscribed and bounced addresses are never enrolled, emailed or given a step issue. The do-not-email list is **per sender**: someone who unsubscribed from a client's list can still get the company's own or another client's mail; a hard bounce stops every sender.
 - \`enroll-contact\` adds one contact: only someone who fits the approved audience and agreed to hear from us.
+- A person asks what we hold about them: \`export-person-data\` with their email or phone gives the client lists they are on and their opt-ins. Check it is them before you share it. An erasure comes from the CRM and also removes their list rows.
 
 ## Writing the emails (POPIA)
 For a client's campaign, read \`partnersinbiz.crm:get-client-profile\` first (brand voice, audience, banned words). Every email must:

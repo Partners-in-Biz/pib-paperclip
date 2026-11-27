@@ -27,7 +27,7 @@ export interface CampaignDetailData {
     status: string;
     delivery?: "issue" | "email" | "auto";
     audienceTags: string[];
-    audienceMode?: "tags" | "client_contacts" | "client_contact";
+    audienceMode?: "tags" | "client_contacts" | "client_contact" | "client_list";
     client?: { kind: "company" | "contact"; id: string; name: string | null } | null;
     startAt?: string | null;
     launchedAt?: string | null;
@@ -104,6 +104,7 @@ export function audienceText(campaign: Pick<CampaignDetailData["campaign"], "aud
   const client = campaign.client?.name ?? null;
   if (campaign.audienceMode === "client_contacts") return tags ? `Contacts at ${client ?? "the client"} tagged ${tags}` : `Contacts at ${client ?? "the client"}`;
   if (campaign.audienceMode === "client_contact") return `${client ?? "The client contact"} only`;
+  if (campaign.audienceMode === "client_list") return `People on ${client ?? "the client"}'s list`;
   return tags ? `Contacts tagged ${tags}` : "All contacts";
 }
 
