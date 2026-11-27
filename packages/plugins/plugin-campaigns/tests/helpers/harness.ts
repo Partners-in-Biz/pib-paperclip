@@ -78,6 +78,8 @@ export const FLOW_ROUTES: Route[] = [
   }],
 ];
 
+const blocksSender = (row: Row, senderKey: string) => row.scope === "all" || !row.sender_key || row.sender_key === senderKey;
+
 export const ROUTES: Route[] = [
   ...FLOW_ROUTES,
   [/unnest\(emails\)/, (p, s) =>
@@ -102,7 +104,13 @@ export const ROUTES: Route[] = [
     (s.campaign_enrollments ?? [])
       .filter((e) => e.status === "running" && (s.outbox ?? []).some((o) => o.key === e.sending_key && o.status === "failed"))
       .map((e) => ({ ...e, last_error: (s.outbox ?? []).find((o) => o.key === e.sending_key)?.last_error ?? null }))],
-  [/SELECT count\(\*\)::text AS n FROM \S+\.suppressions/, (p, s) => [{ n: String((s.suppressions ?? []).filter((row) => row.company_id === p[0]).length) }]],
+  // suppressionCount / channelSuppressionCount: the rows that block this sender (its own, no sender, scope all), distinct per address.
+  [/SELECT count\(DISTINCT email\)::text AS n FROM \S+\.suppressions/, (p, s) => [{ n: String(new Set((s.suppressions ?? []).filter((row) => row.company_id === p[0] && blocksSender(row, String(p[1]))).map((row) => row.email)).size) }]],
+  [/SELECT channel, count\(DISTINCT address\)::text AS n FROM \S+\.channel_suppressions/, (p, s) => {
+    const by = new Map<string, Set<unknown>>();
+    for (const row of (s.channel_suppressions ?? []).filter((r) => r.company_id === p[0] && blocksSender(r, String(p[1])))) by.set(String(row.channel), (by.get(String(row.channel)) ?? new Set()).add(row.address));
+    return [...by].map(([channel, set]) => ({ channel, n: String(set.size) }));
+  }],
   // campaignStats: enrollments of one campaign per status.
   [/SELECT status, count\(\*\) AS count\s+FROM \S+\.campaign_enrollments\s+WHERE campaign_id = \$1\s+GROUP BY status/, (p, s) => {
     const counts = new Map<string, number>();
