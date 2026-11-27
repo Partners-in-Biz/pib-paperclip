@@ -18,7 +18,8 @@ import {
 import { keepFieldVisible } from "./keyboard.js";
 import { buildInstructions } from "./live-instructions.js";
 import { startWakeLock, type WakeGuard } from "./wake-lock.js";
-import { agentForCall, agentRefFromPath, type AgentRow } from "./agent-chat.js";
+import { agentForCall, type AgentRow } from "./agent-chat.js";
+import { CALL_CONTEXT_TIMEOUT_MS, plainChatContext, resolveCallContext, type CallContext } from "./call-context.js";
 import { DirectSession, type DirectState } from "./direct-session.js";
 import { LiveSession, type LiveSessionInfo, type LiveState, type TranscriptEntry } from "./live-session.js";
 import type { ApiClient } from "./agent-chat.js";
@@ -42,7 +43,7 @@ interface VoiceStatus {
 export const paperclipApi: ReportApi = {
   async get<T>(path: string): Promise<T> {
     const res = await fetch(`/api${path}`, { credentials: "include", headers: { Accept: "application/json" } });
-    if (!res.ok) throw new Error(`Paperclip answered ${res.status} for ${path.split("?")[0]}`);
+    if (!res.ok) throw Object.assign(new Error(`Paperclip answered ${res.status} for ${path.split("?")[0]}`), { status: res.status });
     return (await res.json()) as T;
   },
   async post<T>(path: string, body: unknown): Promise<T> {
@@ -54,7 +55,7 @@ export const paperclipApi: ReportApi = {
     });
     if (!res.ok) {
       const detail = await res.json().catch(() => null) as { error?: unknown } | null;
-      throw new Error(typeof detail?.error === "string" ? detail.error : `Paperclip answered ${res.status}`);
+      throw Object.assign(new Error(typeof detail?.error === "string" ? detail.error : `Paperclip answered ${res.status}`), { status: res.status });
     }
     return (await res.json()) as T;
   },
@@ -488,24 +489,39 @@ export function LivePanel({
   const agentIdRef = useRef<string | null>(null);
   const session = useRef<LiveSession | DirectSession | null>(null);
   const scroller = useRef<HTMLDivElement | null>(null);
-  const pageIssueRef = issueRefFromPath(window.location.pathname);
+  // Resolved once at mount and held for the panel's life: the agent, the header line, the transcript target
+  // and the first-turn block do not follow the route if the person navigates during the call.
+  const [callCtx, setCallCtx] = useState<CallContext | null>(null);
+  const pageIssueRef = callCtx?.kind === "task" ? callCtx.issueRef : null;
+  const saveRef = callCtx?.kind === "task" ? callCtx.saveRef : null;
 
   // Who the call is with (it decides the voice) and how this person talks. Either lookup may fail: company voice, Direct – Grok.
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const [agent, mode] = await Promise.all([
-        paperclipApi
-          .get<AgentRow[]>(`/companies/${companyId}/agents`)
-          .then((agents) => agentForCall(agents, agentRefFromPath(window.location.pathname)))
-          .catch(() => null),
+      const pathname = window.location.pathname;
+      const [resolved, mode] = await Promise.all([
+        (async (): Promise<{ ctx: CallContext; agents: AgentRow[] }> => {
+          // Start waits for this at most 3 s; the agents list shares that bound, the context read has its own.
+          const startedAt = Date.now();
+          const agents = await Promise.race([
+            paperclipApi.get<AgentRow[]>(`/companies/${companyId}/agents`).catch(() => [] as AgentRow[]),
+            new Promise<AgentRow[]>((resolve) => window.setTimeout(() => resolve([]), CALL_CONTEXT_TIMEOUT_MS)),
+          ]);
+          const ctx = await resolveCallContext(paperclipApi, companyId, pathname, agents, {
+            timeoutMs: Math.max(0, CALL_CONTEXT_TIMEOUT_MS - (Date.now() - startedAt)),
+          }).catch(() => plainChatContext());
+          return { ctx, agents };
+        })(),
         (getMode({}) as Promise<VoiceModeAnswer>).catch(() => null),
       ]);
       if (cancelled) return;
+      const agent = resolved.agents.find((a) => a.id === resolved.ctx.agentId) ?? agentForCall(resolved.agents, resolved.ctx.agentRef);
       if (agent) {
         agentIdRef.current = agent.id;
         setCallAgent({ id: agent.id, name: agent.name });
       }
+      setCallCtx(resolved.ctx);
       setGeminiReady(mode?.geminiConfigured === true);
       setChoice(choiceFrom(mode));
     })();
@@ -518,19 +534,22 @@ export function LivePanel({
 
   // One session per mode; a mode change stops this one (its transcript is saved) and starts the next.
   useEffect(() => {
-    if (!choice) return;
+    if (!choice || !callCtx) return;
     let cancelled = false;
     setEntries([]);
     setError(null);
     setNotice(null);
     setMuted(false);
     setState(choice === "classic" ? "connecting" : "starting");
-    const agentRef = agentRefFromPath(window.location.pathname);
     const shared = {
       api: paperclipApi,
       companyId,
-      pageIssueRef,
-      agentRef,
+      context: callCtx,
+      agentRef: callCtx.agentRef,
+      onAgentChange: (agent: { id: string | null; name: string }) => {
+        agentIdRef.current = agent.id;
+        if (agent.id) setCallAgent({ id: agent.id, name: agent.name });
+      },
       audioContext,
       wakeLock: wakeLock ?? undefined,
       onState: (next: PanelState) => {
@@ -541,9 +560,9 @@ export function LivePanel({
       onTranscript: setEntries,
       onLevel: (mic: number, voice: number) => setLevels({ mic, voice }),
       onError: setError,
-      onAutosave: (call: CallRecord) => autosaveCall(call, pageIssueRef),
+      onAutosave: (call: CallRecord) => autosaveCall(call, saveRef),
       onEnd: (call: CallRecord, touched: SaveTarget[]) =>
-        void saveCall(call, touched, pageIssueRef).catch((err) => {
+        void saveCall(call, touched, saveRef).catch((err) => {
           showSaveNotice(`The call transcript was not saved (${errorText(err)}).`, null);
         }),
     };
@@ -597,7 +616,7 @@ export function LivePanel({
     };
     // A new session only when the mode (and with it the audio context) changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [choice, audioContext]);
+  }, [choice, callCtx, audioContext]);
 
   useEffect(() => {
     scroller.current?.scrollTo({ top: scroller.current.scrollHeight });
@@ -683,7 +702,7 @@ export function LivePanel({
           >
             {callAgent ? `Talking with ${callAgent.name}` : "Live voice"}
           </div>
-          {pageIssueRef ? <div style={{ fontSize: 12, color: "var(--muted-foreground)" }}>About {pageIssueRef}</div> : null}
+          {callCtx?.kind === "task" ? <div style={{ fontSize: 12, color: "var(--muted-foreground)" }}>About {callCtx.issueRef}</div> : null}
         </div>
         <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8, minWidth: 0, maxWidth: "100%" }}>
           <select

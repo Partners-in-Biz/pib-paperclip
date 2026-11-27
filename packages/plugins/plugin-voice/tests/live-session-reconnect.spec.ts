@@ -24,6 +24,7 @@ vi.mock("../src/ui/audio.js", () => ({
 
 import { MicCapture } from "../src/ui/audio.js";
 import { LiveSession, type LiveSessionInfo, type LiveState } from "../src/ui/live-session.js";
+import { plainChatContext } from "../src/ui/call-context.js";
 
 class FakeSocket {
   static all: FakeSocket[] = [];
@@ -78,7 +79,7 @@ async function make(overrides: { refreshInfo?: (() => Promise<LiveSessionInfo>) 
     api: { get: vi.fn(), post: vi.fn(), put: vi.fn() } as never,
     companyId: "c1",
     userId: null,
-    pageIssueRef: null,
+    context: plainChatContext(),
     audioContext: { close: vi.fn(async () => undefined), resume: vi.fn(async () => undefined) } as never,
     refreshInfo,
     onState: (s) => states.push(s),

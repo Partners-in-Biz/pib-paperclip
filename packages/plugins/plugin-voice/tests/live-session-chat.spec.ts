@@ -19,6 +19,7 @@ vi.mock("../src/ui/audio.js", () => ({
 }));
 
 import { LiveSession } from "../src/ui/live-session.js";
+import { plainChatContext } from "../src/ui/call-context.js";
 
 class FakeSocket {
   static all: FakeSocket[] = [];
@@ -87,7 +88,7 @@ async function make(api: ReturnType<typeof fakeApi>["api"], extra: Record<string
     api: api as never,
     companyId: "c1",
     userId: "u1",
-    pageIssueRef: null,
+    context: plainChatContext(),
     audioContext: { close: vi.fn(async () => undefined), resume: vi.fn(async () => undefined) } as never,
     onState: vi.fn(),
     onTranscript: vi.fn(),
@@ -169,7 +170,7 @@ describe("LiveSession routes every turn to Agent Chat", () => {
 
   it("sends a held turn on hang-up and keeps the chat issue out of the recap targets", async () => {
     const fake = fakeApi();
-    const { session, socket, onEnd } = await make(fake.api, { pageIssueRef: null });
+    const { session, socket, onEnd } = await make(fake.api, { context: plainChatContext() });
     heard(socket, "i1", "First thing");
     await vi.advanceTimersByTimeAsync(2_000);
     heard(socket, "i2", "and one last thing");

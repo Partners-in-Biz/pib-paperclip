@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { AgentChat, agentRefFromPath, chatBody, defaultAgent, type ApiClient } from "../src/ui/agent-chat.js";
+import { plainChatContext, type TaskCallContext } from "../src/ui/call-context.js";
 import { buildInstructions } from "../src/ui/live-instructions.js";
 
 const AGENTS = [
@@ -42,15 +43,20 @@ describe("agent chat routing", () => {
   });
 
   it("keeps the spoken words and says where they came from", () => {
-    expect(chatBody(" create a task for Kai ", "PAR-9")).toBe("create a task for Kai\n\n_Sent by voice from PAR-9._");
-    expect(chatBody("hi", null)).toBe("hi\n\n_Sent by voice._");
-    expect(chatBody("hi", null, true)).toBe("hi\n\n_Sent by voice: reply in short spoken sentences._");
-    expect(chatBody("hi", "PAR-9", true)).toBe("hi\n\n_Sent by voice from PAR-9: reply in short spoken sentences._");
+    const none = { about: null, direct: false, block: null };
+    expect(chatBody(" create a task for Kai ", { ...none, about: "from PAR-9" })).toBe("create a task for Kai\n\n_Sent by voice from PAR-9._");
+    expect(chatBody("hi", none)).toBe("hi\n\n_Sent by voice._");
+    expect(chatBody("hi", { ...none, direct: true })).toBe("hi\n\n_Sent by voice: reply in short spoken sentences._");
+    expect(chatBody("hi", { about: "from PAR-9", direct: true, block: null })).toBe("hi\n\n_Sent by voice from PAR-9: reply in short spoken sentences._");
+  });
+
+  it("puts the block between the words and the footer", () => {
+    expect(chatBody("hi", { about: "about PAR-9", direct: false, block: "BLOCK" })).toBe("hi\n\nBLOCK\n\n_Sent by voice about PAR-9._");
   });
 
   it("posts each turn as a comment on the agent's chat issue, ensuring the chat once", async () => {
     const { api, post } = fakeApi();
-    const chat = new AgentChat({ api, companyId: "c1", agentRef: null, pageIssueRef: null });
+    const chat = new AgentChat({ api, companyId: "c1", agentRef: null, context: plainChatContext() });
     const first = await chat.submit("create a task", "11111111-1111-4111-8111-111111111111");
     await chat.submit("and another", "22222222-2222-4222-8222-222222222222");
     expect(first).toEqual({ issueId: "chat-1", ref: "PAR-1558", agentName: "PiB", agentId: "a-ceo" });
@@ -65,7 +71,7 @@ describe("agent chat routing", () => {
 
   it("uses a named agent from the page as given", async () => {
     const { api, post } = fakeApi();
-    const chat = new AgentChat({ api, companyId: "c1", agentRef: "pib", pageIssueRef: null });
+    const chat = new AgentChat({ api, companyId: "c1", agentRef: "pib", context: plainChatContext() });
     await chat.submit("ping", "33333333-3333-4333-8333-333333333333");
     expect(post.mock.calls[0]).toEqual(["/companies/c1/chats/pib", {}]);
   });
@@ -73,9 +79,72 @@ describe("agent chat routing", () => {
   it("retries a failed chat lookup on the next send", async () => {
     const { api, post } = fakeApi();
     post.mockRejectedValueOnce(new Error("503"));
-    const chat = new AgentChat({ api, companyId: "c1", agentRef: "pib", pageIssueRef: null });
+    const chat = new AgentChat({ api, companyId: "c1", agentRef: "pib", context: plainChatContext() });
     await expect(chat.submit("one", "44444444-4444-4444-8444-444444444444")).rejects.toThrow("503");
     await expect(chat.submit("one", "44444444-4444-4444-8444-444444444444")).resolves.toMatchObject({ issueId: "chat-1" });
+  });
+});
+
+function taskCtx(over: Partial<TaskCallContext> = {}): TaskCallContext {
+  return { kind: "task", agentId: "a-ceo", agentRef: "a-ceo", blockSent: false, notes: [], issueRef: "PAR-9", issueId: "i9", aboutLine: 'about PAR-9: "T"', block: "BLOCK", saveRef: "PAR-9", ...over };
+}
+
+describe("task context on the first sent turn", () => {
+  const bodies = (post: ReturnType<typeof fakeApi>["post"]) => post.mock.calls.filter(([p]) => p === "/issues/chat-1/comments").map(([, b]) => (b as { body: string }).body);
+
+  it("carries the block once, then only the about line", async () => {
+    const { api, post } = fakeApi();
+    const context = taskCtx();
+    const chat = new AgentChat({ api, companyId: "c1", agentRef: "a-ceo", context });
+    await chat.submit("one", "11111111-1111-4111-8111-111111111111");
+    await chat.submit("two", "22222222-2222-4222-8222-222222222222");
+    const [first, second] = bodies(post);
+    expect(first).toBe('one\n\nBLOCK\n\n_Sent by voice about PAR-9: "T"._');
+    expect(second).toBe('two\n\n_Sent by voice about PAR-9: "T"._');
+    expect(context.blockSent).toBe(true);
+  });
+
+  it("sets blockSent only when a POST returns a row, and a new AgentChat on the same context does not resend", async () => {
+    const { api, post } = fakeApi({ failComments: 1 });
+    const context = taskCtx();
+    const chat = new AgentChat({ api, companyId: "c1", agentRef: "a-ceo", context });
+    await expect(chat.submit("one", "11111111-1111-4111-8111-111111111111")).rejects.toThrow("network");
+    expect(context.blockSent).toBe(false);
+    await chat.submit("one", "11111111-1111-4111-8111-111111111111");
+    expect(context.blockSent).toBe(true);
+    const switched = new AgentChat({ api, companyId: "c1", agentRef: "a-ceo", context });
+    await switched.submit("again", "33333333-3333-4333-8333-333333333333");
+    const sent = bodies(post);
+    expect(sent[1]).toContain("BLOCK");
+    expect(sent[2]).not.toContain("BLOCK");
+  });
+
+  it("never carries a block on a chat", async () => {
+    const { api, post } = fakeApi();
+    await new AgentChat({ api, companyId: "c1", agentRef: "pib", context: plainChatContext("pib") }).submit("hi", "44444444-4444-4444-8444-444444444444");
+    expect(bodies(post)[0]).toBe("hi\n\n_Sent by voice._");
+  });
+});
+
+describe("chat route 404 fallback", () => {
+  it("falls back to the default agent once and says who was unreachable", async () => {
+    const { api, post } = fakeApi();
+    post.mockImplementationOnce(async () => {
+      throw Object.assign(new Error("Agent not found"), { status: 404 });
+    });
+    const chat = new AgentChat({ api, companyId: "c1", agentRef: "a-dev", context: plainChatContext("a-dev") });
+    const target = await chat.resolve();
+    expect(post.mock.calls.filter(([p]) => String(p).includes("/chats/")).map(([p]) => p)).toEqual(["/companies/c1/chats/a-dev", "/companies/c1/chats/a-ceo"]);
+    expect(target.agentName).toBe("PiB");
+    expect(target.fellBack).toEqual({ from: "Developer" });
+  });
+
+  it("does not fall back on other errors, or when the default agent itself is missing", async () => {
+    const { api, post } = fakeApi();
+    post.mockRejectedValueOnce(Object.assign(new Error("boom"), { status: 500 }));
+    await expect(new AgentChat({ api, companyId: "c1", agentRef: "a-dev", context: plainChatContext("a-dev") }).resolve()).rejects.toThrow("boom");
+    post.mockRejectedValueOnce(Object.assign(new Error("Agent not found"), { status: 404 }));
+    await expect(new AgentChat({ api, companyId: "c1", agentRef: "a-ceo", context: plainChatContext("a-ceo") }).resolve()).rejects.toThrow("Agent not found");
   });
 });
 

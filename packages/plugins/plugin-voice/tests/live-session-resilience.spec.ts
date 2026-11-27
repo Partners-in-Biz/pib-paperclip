@@ -19,6 +19,7 @@ vi.mock("../src/ui/audio.js", () => ({
 
 import { LiveSession } from "../src/ui/live-session.js";
 import { bufferKey, readBuffer } from "../src/ui/transcript-buffer.js";
+import { plainChatContext } from "../src/ui/call-context.js";
 
 class FakeSocket {
   static last: FakeSocket;
@@ -48,7 +49,7 @@ function make(wakeLock = { release: vi.fn() }, extra: Record<string, unknown> = 
     api: { get: vi.fn(), post: vi.fn(), put: vi.fn() } as never,
     companyId: "c1",
     userId: null,
-    pageIssueRef: null,
+    context: plainChatContext(),
     audioContext: { close: vi.fn(async () => undefined) } as never,
     wakeLock,
     onState: vi.fn(),
