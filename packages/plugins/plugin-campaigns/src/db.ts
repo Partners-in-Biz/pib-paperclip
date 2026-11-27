@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { assertDelivery, audienceSource, campaignSenderKey, matchesAudience, type AudienceMode, type CampaignDraft, type CampaignStepDraft, type CampaignSuppressionReason, type EnrollmentDraft } from "./domain.js";
-import { clientWhere, listCrmContacts, listCrmContactsAtCompany, suppressionBlocks, textArrayParam, OWN_SENDER, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
+import { clientWhere, DEFAULT_CAMPAIGN_MODE, listCrmContacts, listCrmContactsAtCompany, parseCampaignMode, suppressionBlocks, textArrayParam, OWN_SENDER, type CampaignMode, type ClientScope } from "@partnersinbiz/pib-plugin-kit";
 import type { Channel, MessagingChannel } from "./channels.js";
 
 export function table(ctx: PluginContext, name: string): string {
@@ -39,10 +39,12 @@ export interface CampaignRow {
   client_yes_at?: unknown;
   approval_audience_count?: number | string | null;
   approval_audience_hash?: string | null;
+  autopilot_mode?: string | null;
+  paused_by?: string | null;
 }
 
 const CAMPAIGN_COLUMNS =
-  "id, company_id, name, description, status, from_name, from_local, reply_to, audience_tags, start_at, end_at, approval_issue_id, winner_variant, client_kind, client_ref, client_name, audience_mode, delivery, owner_user_id, owner_agent_id, approved_by_user_id, launched_at, launch_error, client_yes_ref, client_yes_by, client_yes_at, approval_audience_count, approval_audience_hash";
+  "id, company_id, name, description, status, from_name, from_local, reply_to, audience_tags, start_at, end_at, approval_issue_id, winner_variant, client_kind, client_ref, client_name, audience_mode, delivery, owner_user_id, owner_agent_id, approved_by_user_id, launched_at, launch_error, client_yes_ref, client_yes_by, client_yes_at, approval_audience_count, approval_audience_hash, autopilot_mode, paused_by";
 
 export interface StepRow {
   id: string;
@@ -134,6 +136,8 @@ function mapCampaign(row: CampaignRow): CampaignDraft {
     clientYesAt: asIso(row.client_yes_at),
     approvalAudienceCount: row.approval_audience_count == null ? null : Number(row.approval_audience_count),
     approvalAudienceHash: row.approval_audience_hash ?? null,
+    autopilotMode: parseCampaignMode(row.autopilot_mode) ?? DEFAULT_CAMPAIGN_MODE,
+    pausedBy: row.paused_by ?? null,
   };
 }
 
@@ -197,8 +201,8 @@ export async function insertCampaign(ctx: PluginContext, campaign: CampaignDraft
   await ctx.db.execute(
     `INSERT INTO ${table(ctx, "campaigns")}
       (id, company_id, name, description, status, from_name, from_local, reply_to, audience_tags, start_at, end_at, approval_issue_id, winner_variant,
-       client_kind, client_ref, client_name, audience_mode, delivery, owner_user_id, owner_agent_id, feed_url, feed_category, feed_item_keys)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23::jsonb)`,
+       client_kind, client_ref, client_name, audience_mode, delivery, owner_user_id, owner_agent_id, feed_url, feed_category, feed_item_keys, autopilot_mode)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23::jsonb, $24)`,
     [
       campaign.id,
       campaign.companyId,
@@ -223,8 +227,29 @@ export async function insertCampaign(ctx: PluginContext, campaign: CampaignDraft
       campaign.feedUrl ?? null,
       campaign.feedCategory ?? null,
       campaign.feedItemKeys ? JSON.stringify(campaign.feedItemKeys) : null,
+      campaign.autopilotMode ?? DEFAULT_CAMPAIGN_MODE,
     ],
   );
+}
+
+/**
+ * Status and who paused it, in one statement. A pause names the caller (`agent:<id>`, `user:<id>`, `auto`); a resume
+ * clears it, so `paused_by` always belongs to the current pause. saveCampaign leaves both mode and pauser alone.
+ */
+export async function setCampaignStatus(ctx: PluginContext, campaign: Pick<CampaignDraft, "id" | "companyId">, status: CampaignDraft["status"], pausedBy: string | null): Promise<void> {
+  await ctx.db.execute(
+    `UPDATE ${table(ctx, "campaigns")} SET status = $3, paused_by = $4, updated_at = now() WHERE id = $1 AND company_id = $2`,
+    [campaign.id, campaign.companyId, status, pausedBy],
+  );
+}
+
+/** Sets the mode. Only the caller's rule check (kit `agentMaySetMode`, `full` refused until it ships) stands in front of it. */
+export async function setCampaignMode(ctx: PluginContext, campaign: Pick<CampaignDraft, "id" | "companyId">, mode: CampaignMode): Promise<boolean> {
+  const result = await ctx.db.execute(
+    `UPDATE ${table(ctx, "campaigns")} SET autopilot_mode = $3, updated_at = now() WHERE id = $1 AND company_id = $2`,
+    [campaign.id, campaign.companyId, mode],
+  );
+  return (result.rowCount ?? 0) > 0;
 }
 
 export async function saveCampaign(ctx: PluginContext, campaign: CampaignDraft): Promise<void> {

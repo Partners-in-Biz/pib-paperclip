@@ -26,6 +26,13 @@ const audienceMode = {
     "Who launch enrolls. tags: CRM contacts with any of audienceTags; no tags means ALL contacts, allowed only when the approval says 'All contacts (N)'. client_contacts: the contacts at the client company, narrowed by audienceTags (default for a company client). client_contact: the client contact alone (default for a contact client). client_list: the people on the client's own list, never our contacts; such a draft cannot be approved or launched yet.",
 } satisfies JsonSchema;
 
+/** A campaign's mode: what an agent may do on it without a person. `full` is Auto, not selectable until it ships. */
+const autopilotMode = {
+  type: "string",
+  enum: ["off", "safe", "full"],
+  description: "off: agents only stop sends. safe (default): agents draft, read and stop; launching, resuming, enrolling into a running campaign and picking a winner are a person's click. full (Auto) is not available yet.",
+} satisfies JsonSchema;
+
 const audienceTags = { type: "array", items: { type: "string" }, description: "CRM tags; a contact with any of them is in the audience. Case does not matter." } satisfies JsonSchema;
 
 const delivery = {
@@ -74,7 +81,7 @@ export const CAMPAIGN_TOOLS: PluginToolDeclaration[] = [
     displayName: "Create campaign",
     description:
       "Create a draft email program. Pass client for a client's campaign (it must exist in the CRM); omit it for PiB's own work. Returns the campaign id; next add steps, then request-campaign-approval.",
-    parametersSchema: schema(["name"], campaignFields),
+    parametersSchema: schema(["name"], { ...campaignFields, autopilotMode: { ...autopilotMode, description: "The mode it starts in: safe (default) or off. An agent cannot create a campaign in full (Auto)." } }),
   },
   {
     name: "update-campaign",
@@ -118,6 +125,13 @@ export const CAMPAIGN_TOOLS: PluginToolDeclaration[] = [
     displayName: "Pause campaign",
     description: "Pause an active campaign. Nothing is sent and no step issues open until resume-campaign.",
     parametersSchema: schema(["campaignId"], { campaignId }),
+  },
+  {
+    name: "set-campaign-mode",
+    displayName: "Set campaign mode",
+    description:
+      "Set what agents may do on a campaign without a person: off or safe. An agent may lower the mode (safe to off), never raise it: a person raises it on the campaign screen. full (Auto) is refused until it ships. The change applies from now on: what was sent or enrolled stays.",
+    parametersSchema: schema(["campaignId", "mode"], { campaignId, mode: autopilotMode }),
   },
   {
     name: "resume-campaign",

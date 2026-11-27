@@ -63,7 +63,8 @@ Merge tokens: \`{{first_name}}\`, \`{{last_name}}\`, \`{{name}}\`, \`{{company}}
 ## Running
 - \`issue\` delivery: each due step opens an issue for you with the email filled in for that contact, ending with who we are and their own unsubscribe link (the footer): send it whole. Send it (\`partnersinbiz.mailbox:create-draft\`, then \`send-draft\` when your delegation allows), then mark the issue **done**: that moves them to the next step. **Cancel** the issue to stop the campaign for that contact.
 - \`email\` and \`auto\` delivery: the plugin sends each due step. A failed send opens "Email not sent" (or "SMS not sent") for you: fix the cause, then mark it done (or cancel to stop). An SMS or WhatsApp result that is unknown is never repeated by itself: check the Twilio log first.
-- \`pause-campaign\`, \`resume-campaign\`, \`complete-campaign\` control the whole campaign.
+- \`pause-campaign\`, \`resume-campaign\`, \`complete-campaign\` control the whole campaign. A pause records that you paused it.
+- Each campaign has a mode (Off, Safe; Auto comes later). New campaigns start in Safe. \`set-campaign-mode\` may lower it (Safe to Off), never raise it: ask a person to raise it on the campaign screen.
 
 ## Replies
 - With Jev: interested or a question stops this campaign for them and opens "Reply from" for you: answer, then log it in the CRM. Not now stops it. Unsubscribe stops that sender's campaigns and adds the address to the do-not-email list. A bounce stops and suppresses. Out of office moves the next step 5 days.

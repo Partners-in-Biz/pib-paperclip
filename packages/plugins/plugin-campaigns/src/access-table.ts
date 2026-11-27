@@ -30,9 +30,9 @@ export const CAMPAIGNS_ACCESS_TABLE: AccessTable = Object.freeze({
   ...rows(VIEW, ["canvas.cards.resolve", "canvas.cards.search", "canvas.cards.related"]),
   "campaigns.create-campaign": CREATE,
   ...rows(EDIT, ["campaigns.add-step", "campaigns.request-approval", "campaigns.pause", "campaigns.complete", "campaigns.enroll", "campaigns.declare-winner", "campaigns.move"]),
-  // Launching or resuming sends to people; approving, sending back and the Growth Lab decisions are decisions.
+  // Launching or resuming sends to people; approving, sending back, a campaign's mode and the Growth Lab decisions are decisions.
   ...rows(APPROVE, [
-    "campaigns.launch", "campaigns.resume", "campaigns.approve", "campaigns.send-back",
+    "campaigns.launch", "campaigns.resume", "campaigns.approve", "campaigns.send-back", "campaigns.set-mode",
     "campaigns.growth-approve-experiment", "campaigns.growth-reject-experiment", "campaigns.growth-decide-change",
   ]),
   "campaigns.preferences-load": settings("view"),
@@ -55,7 +55,7 @@ export const CAMPAIGNS_ACCESS_TABLE: AccessTable = Object.freeze({
     "tool:edit-campaign-step", "tool:declare-ab-winner", "tool:propose-playbook-change",
   ]),
   ...rows(APPROVE, [
-    "tool:launch-campaign", "tool:resume-campaign", "tool:review-campaign-approval",
+    "tool:launch-campaign", "tool:resume-campaign", "tool:review-campaign-approval", "tool:set-campaign-mode",
     "tool:decide-playbook-change", "tool:approve-experiment", "tool:reject-experiment",
   ]),
   "tool:list-sender-identities": settings("view"),
