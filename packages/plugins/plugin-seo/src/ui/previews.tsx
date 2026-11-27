@@ -3,12 +3,14 @@
  * (approve, decline, undo, confirm and apply). The buttons call decide-preview, undo-preview-decision and
  * confirm-preview-approval; those handlers read who you are from the signed-in session and refuse anyone else.
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useHostContext } from "@paperclipai/plugin-sdk/ui";
 import { Button, EmptyState, Eye, Modal, Pill, SectionCard, TextArea, breakAnywhere, errorText, tokens, useIsNarrow } from "@partnersinbiz/pib-plugin-ui";
 import { Banner, IssueLink, shortUrl } from "./parts.js";
 import type { PreviewItem, PreviewFilter, SprintBundle } from "./types.js";
 import { PREVIEW_FILTER_LABEL, awaitingCount, previewsFor, PREVIEW_FILTERS, previewDaysLeft, previewDecider, previewExpiryTone, previewStatus } from "./words.js";
 import { useSeoCall } from "./actions.js";
+import { loadDirectory } from "./people.js";
 
 export { awaitingCount, previewsFor };
 
@@ -18,6 +20,18 @@ const REVIEW_LABEL: Record<string, string> = { pending: "Reviewer: being checked
 type Skipped = { id: string; reason: string };
 type Reply = { skipped?: Skipped[] } | null;
 
+/** Names of the people who decided, for the row chip and the drawer. Empty until the directory loads or if it fails. */
+function useDeciderNames(companyId: string | undefined, wanted: boolean): ReadonlyMap<string, string> {
+  const [names, setNames] = useState<ReadonlyMap<string, string>>(() => new Map());
+  useEffect(() => {
+    if (!companyId || !wanted) return;
+    let live = true;
+    void loadDirectory(companyId).then((found) => { if (live) setNames(found); });
+    return () => { live = false; };
+  }, [companyId, wanted]);
+  return names;
+}
+
 export function PreviewsTab({ bundle, filter, onFilter, onChanged }: { bundle: SprintBundle; filter: PreviewFilter; onFilter: (f: PreviewFilter) => void; onChanged: () => Promise<void> }) {
   const narrow = useIsNarrow();
   const callAction = useSeoCall();
@@ -25,6 +39,8 @@ export function PreviewsTab({ bundle, filter, onFilter, onChanged }: { bundle: S
   const manual = bundle.sprint.clientSignoff !== "auto";
   const all = bundle.previews ?? [];
   const rows = previewsFor(all, filter);
+  const host = useHostContext();
+  const names = useDeciderNames(host.companyId ?? undefined, all.some((p) => p.decidedBy && p.decisionSource !== "email"));
   const [busy, setBusy] = useState<string | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [declining, setDeclining] = useState<PreviewItem[] | null>(null);
@@ -92,20 +108,20 @@ export function PreviewsTab({ bundle, filter, onFilter, onChanged }: { bundle: S
             </div>
             <div style={{ display: "grid", gap: 0, minWidth: 0 }}>
               {g.items.map((p) => (
-                <PreviewRow key={p.id} p={p} manual={manual} narrow={narrow} busy={busy} error={errors[p.id]} onOpen={() => setOpenId(p.id)} {...actionsFor(p)} />
+                <PreviewRow key={p.id} p={p} names={names} manual={manual} narrow={narrow} busy={busy} error={errors[p.id]} onOpen={() => setOpenId(p.id)} {...actionsFor(p)} />
               ))}
             </div>
           </SectionCard>
         );
       })}
-      {drawerItem ? <PreviewDrawer p={drawerItem} manual={manual} narrow={narrow} busy={busy} error={errors[drawerItem.id]} onClose={() => setOpenId(null)} {...actionsFor(drawerItem)} /> : null}
+      {drawerItem ? <PreviewDrawer p={drawerItem} names={names} manual={manual} narrow={narrow} busy={busy} error={errors[drawerItem.id]} onClose={() => setOpenId(null)} {...actionsFor(drawerItem)} /> : null}
       {declining ? <DeclineModal items={declining} onClose={() => setDeclining(null)} onSubmit={async (note) => { const ok = await run("decline", declining.map((p) => p.id), "decide-preview", { decision: "declined", note }); if (ok) setDeclining(null); return ok; }} errors={errors} /> : null}
     </div>
   );
 }
 
-function PreviewRow({ p, manual, narrow, busy, error, now = Date.now(), onOpen, onApprove, onDecline, onUndo, onConfirm }: {
-  p: PreviewItem; manual: boolean; narrow: boolean; busy: string | null; error?: string; now?: number;
+function PreviewRow({ p, names, manual, narrow, busy, error, now = Date.now(), onOpen, onApprove, onDecline, onUndo, onConfirm }: {
+  p: PreviewItem; names: ReadonlyMap<string, string>; manual: boolean; narrow: boolean; busy: string | null; error?: string; now?: number;
   onOpen: () => void; onApprove: () => void; onDecline: () => void; onUndo: () => void; onConfirm: () => void;
 }) {
   const status = previewStatus(p);
@@ -123,7 +139,7 @@ function PreviewRow({ p, manual, narrow, busy, error, now = Date.now(), onOpen, 
         {p.reviewNote ? ` (${p.reviewNote})` : ""}
       </span>
       {open ? <span style={{ fontSize: 12, color: tokens.tones[previewExpiryTone(left)].fg }}>{left <= 0 ? "Expires today" : `${left} day${left === 1 ? "" : "s"} to expiry`}</span> : null}
-      {decided ? <span style={{ fontSize: 12, color: tokens.muted, ...breakAnywhere }}>{previewDecider(p)}{p.decisionNote ? ` · "${p.decisionNote}"` : ""}</span> : null}
+      {decided ? <span style={{ fontSize: 12, color: tokens.muted, ...breakAnywhere }}>{previewDecider(p, names)}{p.decisionNote ? ` · "${p.decisionNote}"` : ""}</span> : null}
       {p.overlapIds.length > 0 ? <span style={{ fontSize: 12, color: tokens.muted }}>{p.overlapIds.length} other pending preview{p.overlapIds.length === 1 ? "" : "s"} for this page.</span> : null}
       {p.expired ? <span style={{ fontSize: 12 }}>Expired before a decision. {p.issueId ? <IssueLink id={p.issueId} identifier={p.issueIdentifier} /> : null}</span> : null}
       {error ? <Banner tone="bad">{error}</Banner> : null}
@@ -169,7 +185,7 @@ function Field({ label, value, empty = "Not changed" }: { label: string; value: 
 const BODY_MODE_LABEL: Record<string, string> = { before: "Added above the existing content", after: "Added below the existing content", replace: "Replaces the whole content area", afterFirstParagraph: "Added after the first paragraph" };
 
 /** One preview in full: the links (built by the server), the proposed copy, the evidence and the same decision buttons. No live fetch. */
-function PreviewDrawer({ p, onClose, error, ...actions }: ActionProps & { error?: string; onClose: () => void }) {
+function PreviewDrawer({ p, names, onClose, error, ...actions }: ActionProps & { names: ReadonlyMap<string, string>; error?: string; onClose: () => void }) {
   const status = previewStatus(p);
   const linkStyle = { fontSize: 13, color: tokens.fg, fontWeight: 600 } as const;
   return (
@@ -191,7 +207,7 @@ function PreviewDrawer({ p, onClose, error, ...actions }: ActionProps & { error?
         <Field label="Reviewer" value={`${REVIEW_LABEL[p.reviewStatus]?.replace("Reviewer: ", "") ?? p.reviewStatus}${p.reviewNote ? `: ${p.reviewNote}` : ""}`} />
         <Field empty="Not measured yet" label="Against the live page" value={p.keptPct != null ? `Keeps ${p.keptPct}% of the live text, adds ${p.addedWords ?? 0} words (${p.renderedChecked ? "as a visitor sees it" : "page source"})` : null} />
         <Field empty="No reason recorded" label="Why" value={p.why} />
-        {p.decisionNote ? <Field label="Decision note" value={`${previewDecider(p)} · "${p.decisionNote}"`} /> : null}
+        {p.decisionNote ? <Field label="Decision note" value={`${previewDecider(p, names)} · "${p.decisionNote}"`} /> : null}
       </div>
       {p.overlapIds.length > 0 ? <span style={{ fontSize: 12, color: tokens.muted }}>{p.overlapIds.length} other pending preview{p.overlapIds.length === 1 ? "" : "s"} for this page.</span> : null}
       {error ? <Banner tone="bad">{error}</Banner> : null}
