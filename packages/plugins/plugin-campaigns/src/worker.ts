@@ -49,6 +49,7 @@ import {
   setStepHtml,
   updateStepText,
   stepEventStats,
+  stepEventStatsByVersion,
   stopEnrollment,
   stopEnrollmentsForContact,
   suppressionCount,
@@ -410,6 +411,7 @@ async function dispatch(ctx: PluginContext, name: string, body: Record<string, u
   if (name === "campaign-funnel") return funnel(ctx, companyId, body);
   if (name === "record-step-event") return recordStepEvent(ctx, companyId, body);
   if (name === "campaign-step-analytics") return stepAnalytics(ctx, companyId, body);
+  if (name === "campaign-results") return campaignResults(ctx, companyId, body);
   if (name === "set-step-html") return setStepHtmlAction(ctx, companyId, body);
   if (name === "edit-campaign-step") return editCampaignStepAction(ctx, companyId, body);
   if (name === "create-campaign-template") return createTemplateAction(ctx, companyId, body);
@@ -1482,6 +1484,20 @@ async function stepAnalytics(ctx: PluginContext, companyId: string, params: Reco
   const campaign = await requireCampaign(ctx, companyId, requiredString(params, "campaignId"));
   const byStep = await stepEventStats(ctx, campaign.id);
   return { campaignId: campaign.id, byStep };
+}
+
+/** Results read: per step and version counts for a date range. Reads existing events only. */
+async function campaignResults(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
+  const campaign = await requireCampaign(ctx, companyId, requiredString(params, "campaignId"));
+  const from = optionalString(params, "from");
+  const to = optionalString(params, "to");
+  for (const [key, value] of [["from", from], ["to", to]] as const) {
+    if (value && Number.isNaN(Date.parse(value))) throw new CampaignError(`${key} must be a date like 2026-11-01`);
+  }
+  const range = { from, to };
+  const byVersion = await stepEventStatsByVersion(ctx, campaign.id, range);
+  const byStep = await stepEventStats(ctx, campaign.id, range);
+  return { campaignId: campaign.id, from: from ?? null, to: to ?? null, byStep, byVersion };
 }
 
 async function setStepHtmlAction(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {

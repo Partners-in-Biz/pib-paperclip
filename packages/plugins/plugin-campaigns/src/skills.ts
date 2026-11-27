@@ -83,7 +83,7 @@ When you close an issue this module opened, it checks the work; if it reopens, i
 - Opt-outs and hard bounces from the CRM and the Mailbox apply here too. A person's erasure request removes their campaign data (references/privacy.md).
 
 ## Results
-- \`campaign-stats\`, \`campaign-funnel\`, \`campaign-step-analytics\` (per step: sent, delivered, replies, hard and soft bounces, complaints, unsubscribes, opens, clicks). \`record-step-event\` only for an open or click from a real report; never estimate. Replies, bounces, unsubscribes and SMS delivery are captured; for email through the email provider so are delivered, soft bounces, complaints and, only when tracking is on for the sending domain at the provider, opens and clicks (nothing here switches tracking on).
+- \`campaign-stats\`, \`campaign-funnel\`, \`campaign-step-analytics\`, \`campaign-results\` (per step; campaign-results also splits A and B and takes a from and to date; per step: sent, delivered, replies, hard and soft bounces, complaints, unsubscribes, opens, clicks). \`record-step-event\` only for an open or click from a real report; never estimate. Replies, bounces, unsubscribes and SMS delivery are captured; for email through the email provider so are delivered, soft bounces, complaints and, only when tracking is on for the sending domain at the provider, opens and clicks (nothing here switches tracking on).
 - A/B: \`suggest-ab-winner\` (20 sends per variant, else inconclusive). A person picks the winner: ask with the suggestion, then \`declare-ab-winner\`.
 
 ## Never

@@ -698,34 +698,86 @@ export interface StepStats {
   unsubscribes: number;
 }
 
-export async function stepEventStats(
-  ctx: PluginContext,
-  campaignId: string,
-): Promise<Array<StepStats>> {
+/** One step version's counts. `variant` is the step version: "a" (the original; events with no version recorded count here) or "b". */
+export interface StepVersionStats extends StepStats {
+  variant: string;
+}
+
+export interface StepStatsRange {
+  /** Only events at or after this time (ISO date or timestamp). */
+  from?: string;
+  /** Only events before this time (ISO date or timestamp). */
+  to?: string;
+}
+
+function emptyStats(stepPosition: number): StepStats {
+  return { stepPosition, opens: 0, clicks: 0, sent: 0, delivered: 0, replies: 0, bounces: 0, softBounces: 0, complaints: 0, unsubscribes: 0 };
+}
+
+function addEventCount(step: StepStats, eventType: string, count: number): void {
+  if (eventType === "open") step.opens += count;
+  if (eventType === "click") step.clicks += count;
+  if (eventType === "sent") step.sent += count;
+  if (eventType === "delivered") step.delivered += count;
+  if (eventType === "reply") step.replies += count;
+  if (eventType === "bounce") step.bounces += count;
+  if (eventType === "soft_bounce") step.softBounces += count;
+  if (eventType === "complaint") step.complaints += count;
+  if (eventType === "unsubscribe") step.unsubscribes += count;
+}
+
+function rangeSql(range: StepStatsRange | undefined, first: number): { sql: string; params: string[] } {
+  const params: string[] = [];
+  let sql = "";
+  for (const [key, op] of [["from", ">="], ["to", "<"]] as const) {
+    const value = range?.[key];
+    if (value == null || value === "") continue;
+    if (Number.isNaN(Date.parse(value))) throw new Error(`${key} is not a valid date`);
+    // A bare date is midnight UTC, whatever the database session timezone is.
+    params.push(/^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T00:00:00Z` : value);
+    sql += ` AND occurred_at ${op} $${first + params.length - 1}::timestamptz`;
+  }
+  return { sql, params };
+}
+
+export async function stepEventStats(ctx: PluginContext, campaignId: string, range?: StepStatsRange): Promise<Array<StepStats>> {
+  const when = rangeSql(range, 2);
   const rows = await ctx.db.query<{ step_position: number; event_type: string; count: string | number }>(
     `SELECT step_position, event_type, count(*) AS count
        FROM ${table(ctx, "campaign_step_events")}
-      WHERE campaign_id = $1
+      WHERE campaign_id = $1${when.sql}
       GROUP BY step_position, event_type
       ORDER BY step_position`,
-    [campaignId],
+    [campaignId, ...when.params],
   );
   const byStep = new Map<number, StepStats>();
   for (const row of rows) {
-    const step = byStep.get(row.step_position) ?? { stepPosition: row.step_position, opens: 0, clicks: 0, sent: 0, delivered: 0, replies: 0, bounces: 0, softBounces: 0, complaints: 0, unsubscribes: 0 };
-    const count = Number(row.count ?? 0);
-    if (row.event_type === "open") step.opens = count;
-    if (row.event_type === "click") step.clicks = count;
-    if (row.event_type === "sent") step.sent = count;
-    if (row.event_type === "delivered") step.delivered = count;
-    if (row.event_type === "reply") step.replies = count;
-    if (row.event_type === "bounce") step.bounces = count;
-    if (row.event_type === "soft_bounce") step.softBounces = count;
-    if (row.event_type === "complaint") step.complaints = count;
-    if (row.event_type === "unsubscribe") step.unsubscribes = count;
+    const step = byStep.get(row.step_position) ?? emptyStats(row.step_position);
+    addEventCount(step, row.event_type, Number(row.count ?? 0));
     byStep.set(row.step_position, step);
   }
   return [...byStep.values()];
+}
+
+/** The same counts split by step version (A and B), optionally inside a date range. Summing both versions of a step gives `stepEventStats`. */
+export async function stepEventStatsByVersion(ctx: PluginContext, campaignId: string, range?: StepStatsRange): Promise<Array<StepVersionStats>> {
+  const when = rangeSql(range, 2);
+  const rows = await ctx.db.query<{ step_position: number; variant: string; event_type: string; count: string | number }>(
+    `SELECT step_position, coalesce(variant, 'a') AS variant, event_type, count(*) AS count
+       FROM ${table(ctx, "campaign_step_events")}
+      WHERE campaign_id = $1${when.sql}
+      GROUP BY step_position, coalesce(variant, 'a'), event_type
+      ORDER BY step_position, 2`,
+    [campaignId, ...when.params],
+  );
+  const byKey = new Map<string, StepVersionStats>();
+  for (const row of rows) {
+    const key = `${row.step_position}:${row.variant}`;
+    const step = byKey.get(key) ?? { ...emptyStats(row.step_position), variant: row.variant };
+    addEventCount(step, row.event_type, Number(row.count ?? 0));
+    byKey.set(key, step);
+  }
+  return [...byKey.values()];
 }
 
 export async function setStepHtml(
