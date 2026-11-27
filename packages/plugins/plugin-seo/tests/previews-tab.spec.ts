@@ -1,5 +1,6 @@
 /** 0.46.0 (PAR-9131 T4, PAR-9145): the Previews tab words, filters and badge. */
 import { describe, expect, it } from "vitest";
+import { parseDirectory } from "../src/ui/people.js";
 import { isPreviewFilter, previewDaysLeft, previewDecider, previewExpiryTone, previewStatus } from "../src/ui/words.js";
 
 describe("previews tab words", () => {
@@ -23,6 +24,17 @@ describe("previews tab words", () => {
   it("says who decided and where", () => {
     expect(previewDecider({ status: "approved", decisionSource: "email", decidedBy: "client:email-link" })).toBe("Approved: decided by the client · email");
     expect(previewDecider({ status: "declined", decisionSource: "cockpit", decidedBy: "u1" })).toBe("Declined: decided by a team member · cockpit");
+  });
+  it("shows the decider's name, and falls back to a team member", () => {
+    const names = new Map([["u1", "Thandi Dlamini"]]);
+    expect(previewDecider({ status: "declined", decisionSource: "cockpit", decidedBy: "u1" }, names)).toBe("Declined: decided by Thandi Dlamini · cockpit");
+    expect(previewDecider({ status: "declined", decisionSource: "cockpit", decidedBy: "u9" }, names)).toBe("Declined: decided by a team member · cockpit");
+    expect(previewDecider({ status: "approved", decisionSource: "email", decidedBy: "u1" }, names)).toBe("Approved: decided by the client · email");
+  });
+  it("reads names from the user directory", () => {
+    const m = parseDirectory({ users: [{ principalId: "u1", user: { id: "u1", name: " Thandi ", email: "t@x.co" } }, { principalId: "u2", user: { id: "u2", name: "", email: "b@x.co" } }, { principalId: "u3" }] });
+    expect([...m]).toEqual([["u1", "Thandi"], ["u2", "b@x.co"]]);
+    expect(parseDirectory(null).size).toBe(0);
   });
   it("labels the status chip", () => {
     const base = { status: "pending", expired: false, appliedAt: null, confirmedAt: null, reviewStatus: "passed", decisionSource: null };

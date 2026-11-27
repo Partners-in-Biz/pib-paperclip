@@ -135,9 +135,9 @@ export function previewExpiryTone(days: number): "neutral" | "warn" | "bad" {
 }
 
 /** Where a decision came from, in words. */
-export function previewDecider(p: { status: string; decisionSource: string | null; decidedBy: string | null }): string {
+export function previewDecider(p: { status: string; decisionSource: string | null; decidedBy: string | null }, names?: ReadonlyMap<string, string>): string {
   const what = p.status === "approved" ? "Approved" : p.status === "declined" ? "Declined" : "Changes requested";
-  const who = p.decisionSource === "email" ? "the client" : p.decidedBy ? "a team member" : "unknown";
+  const who = p.decisionSource === "email" ? "the client" : p.decidedBy ? names?.get(p.decidedBy) ?? "a team member" : "unknown";
   return `${what}: decided by ${who} · ${p.decisionSource === "email" ? "email" : "cockpit"}`;
 }
 
