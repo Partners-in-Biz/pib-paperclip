@@ -65,6 +65,7 @@ Merge tokens: \`{{first_name}}\`, \`{{last_name}}\`, \`{{name}}\`, \`{{company}}
 - \`email\` and \`auto\` delivery: the plugin sends each due step. A failed send opens "Email not sent" (or "SMS not sent") for you: fix the cause, then mark it done (or cancel to stop). An SMS or WhatsApp result that is unknown is never repeated by itself: check the Twilio log first.
 - \`pause-campaign\`, \`resume-campaign\`, \`complete-campaign\` control the whole campaign. A pause records that you paused it.
 - Each campaign has a mode (Off, Safe; Auto comes later). New campaigns start in Safe. \`set-campaign-mode\` may lower it (Safe to Off), never raise it: ask a person to raise it on the campaign screen.
+- What the mode lets you do: in Off only pause, \`stop-enrollment\` and suppress; in Safe also create and edit drafts, enroll into a draft, ask for approval and read results. A person always launches, resumes after a pause that is not yours, completes, picks the A/B winner and enrolls into a running campaign. When a call is refused, say so on the campaign's task and stop: a person does it on the campaign screen.
 
 ## Replies
 - With Jev: interested or a question stops this campaign for them and opens "Reply from" for you: answer, then log it in the CRM. Not now stops it. Unsubscribe stops that sender's campaigns and adds the address to the do-not-email list. A bounce stops and suppresses. Out of office moves the next step 5 days.

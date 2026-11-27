@@ -473,11 +473,16 @@ describe("A/B suggestion tools", () => {
     return store;
   }
 
-  it("suggests B when it gets more replies, and declare-ab-winner still needs a person's pick", async () => {
+  it("suggests B when it gets more replies, and in Safe declare-ab-winner still needs a person's pick", async () => {
     stubJev();
-    const { harness, store } = await boot({ store: abStore(5, 13) });
+    const ab = abStore(5, 13);
+    ab.campaigns!.find((row) => row.id === "camp-mail")!.autopilot_mode = "safe";
+    const { harness, store } = await boot({ store: ab });
     const suggestion = await harness.executeTool<{ data: Record<string, any> }>("suggest-ab-winner", { campaignId: "camp-mail" }, { companyId: CO, agentId: "agent-camp" });
     expect(suggestion.data).toMatchObject({ verdict: "win", suggestion: "b", sends: { a: 25, b: 25 } });
+    expect(store.campaigns!.find((row) => row.id === "camp-mail")!.winner_variant).toBeNull();
+    const agent = await harness.executeTool<{ error?: string }>("declare-ab-winner", { campaignId: "camp-mail", winner: "b" }, { companyId: CO, agentId: "agent-camp" });
+    expect(agent.error).toMatch(/An agent may not pick the A\/B winner in Safe mode/);
     expect(store.campaigns!.find((row) => row.id === "camp-mail")!.winner_variant).toBeNull();
     const declared = await harness.performAction<Record<string, any>>("campaigns.declare-winner", { campaignId: "camp-mail", winner: "a" }, { companyId: CO, actor: BOARD });
     expect(declared).toMatchObject({ winner: "a", suggestion: { suggestion: "b" } });
