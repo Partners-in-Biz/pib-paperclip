@@ -114,7 +114,7 @@ export const CAMPAIGN_TOOLS: PluginToolDeclaration[] = [
     name: "launch-campaign",
     displayName: "Launch campaign",
     description:
-      "Only for a paused campaign (enrolls audience contacts not in it yet, then runs) or a draft whose approval a person already marked done. An approved campaign normally launches by itself. Suppressed addresses are left out.",
+      "Only for a paused campaign (enrolls audience contacts not in it yet, then runs) or a draft whose approval a person already marked done. An approved campaign normally launches by itself. Suppressed addresses are left out. In every mode a launch is a person's click: an agent is refused and says so on the campaign's task.",
     parametersSchema: schema(["campaignId"], {
       campaignId,
       contactIds: { type: "array", items: { type: "string" }, description: "CRM contact ids to enroll instead of the audience. Omit to use the audience." },
@@ -136,13 +136,14 @@ export const CAMPAIGN_TOOLS: PluginToolDeclaration[] = [
   {
     name: "resume-campaign",
     displayName: "Resume campaign",
-    description: "Resume a paused campaign so due steps go out again.",
+    description:
+      "Resume a paused campaign so due steps go out again. A campaign a person or the automatic pause stopped is resumed by a person, in every mode; one this agent paused itself, by the agent only in Auto (full). When refused, say so on the campaign's task.",
     parametersSchema: schema(["campaignId"], { campaignId }),
   },
   {
     name: "complete-campaign",
     displayName: "Complete campaign",
-    description: "End an active or paused campaign. Nothing more is sent.",
+    description: "End an active or paused campaign. Nothing more is sent. In Off and Safe a person completes it; in Auto (full) an agent may once every enrollment is finished.",
     parametersSchema: schema(["campaignId"], { campaignId }),
   },
   {

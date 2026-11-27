@@ -312,7 +312,7 @@ export async function campaignByApprovalIssue(ctx: PluginContext, issueId: strin
 export async function claimLaunch(ctx: PluginContext, campaign: Pick<CampaignDraft, "id" | "approvedByUserId">, fromStatus: string, approvedByUserId: string | null): Promise<boolean> {
   const res = await ctx.db.execute(
     `UPDATE ${table(ctx, "campaigns")}
-        SET status = 'active', launched_at = now(), launch_error = NULL, approved_by_user_id = $3, updated_at = now()
+        SET status = 'active', launched_at = now(), launch_error = NULL, paused_by = NULL, approved_by_user_id = $3, updated_at = now()
       WHERE id = $1 AND status = $2`,
     [campaign.id, fromStatus, approvedByUserId ?? campaign.approvedByUserId ?? null],
   );
