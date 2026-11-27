@@ -105,7 +105,15 @@ describe("speak outcomes", () => {
   it("200: audio, 24 kHz, provider and voice", async () => {
     const b64 = pcm(4800).toString("base64");
     stubFetch(() => geminiOk(b64));
-    expect(await speak(await setup())).toEqual({ audio: b64, sampleRate: 24000, provider: "gemini", voice: "Kore" });
+    expect(await speak(await setup())).toEqual({ audio: b64, sampleRate: 24000, provider: "gemini", voice: "Kore", providerMs: expect.any(Number) });
+  });
+  it("times the provider call alone and returns it as providerMs (PAR-15051)", async () => {
+    vi.useFakeTimers();
+    stubFetch(() => new Promise<Response>((resolve) => setTimeout(() => resolve(geminiOk(pcm(48).toString("base64"))), 750)));
+    const pending = speak(await setup());
+    await vi.advanceTimersByTimeAsync(750);
+    expect(await pending).toMatchObject({ providerMs: 750 });
+    vi.useRealTimers();
   });
   it("401 → auth_failed, 403 too", async () => {
     stubFetch(() => new Response("nope", { status: 401 }));

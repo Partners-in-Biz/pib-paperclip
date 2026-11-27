@@ -72,12 +72,15 @@ export async function transcribeAction(
   const audio = decodeAudio(params.audio);
   const mimeType = baseMime(params.mimeType);
   const keyterms = await keytermsFor(ctx, companyId, settings);
+  const providerStartedAt = Date.now();
   const result = await transcribe(
     { apiKey, audio, mimeType, language: settings.language || undefined, keyterms },
     fetchImpl,
   );
-  ctx.logger.info("voice note transcribed", { companyId, bytes: audio.byteLength, seconds: result.duration });
-  return { text: result.text, duration: result.duration, autoSend: settings.voiceNoteAutoSend };
+  // The xAI call alone, so the panel can tell it apart from encode, upload and the bridge (PAR-15051).
+  const providerMs = Date.now() - providerStartedAt;
+  ctx.logger.info("voice note transcribed", { companyId, bytes: audio.byteLength, seconds: result.duration, ms: providerMs });
+  return { text: result.text, duration: result.duration, autoSend: settings.voiceNoteAutoSend, providerMs };
 }
 
 /** A pass is good for five minutes to open the socket; the session itself can run longer. */
@@ -289,7 +292,7 @@ export async function liveSessionAction(
 
 /** One `speak` call and the outcome it came to. The audio is base64 PCM16 mono at `sampleRate`. */
 export type SpeakResult =
-  | { audio: string; sampleRate: number; provider: VoiceProvider; voice: string }
+  | { audio: string; sampleRate: number; provider: VoiceProvider; voice: string; providerMs: number }
   | { error: Exclude<TtsOutcome, "ok"> };
 
 const usageScope = (companyId: string, userId: string, now: Date) => ({
@@ -356,19 +359,21 @@ export async function speakAction(
     const timeoutMs = Math.min(PROVIDER_TIMEOUT_MS, remaining);
     const profile = await profileFor(ctx, companyId, agentId);
     const voice = provider === "gemini" ? (profile.geminiVoice ?? loaded.settings.geminiVoice) : (profile.grokVoice ?? loaded.settings.voice);
+    const providerStartedAt = Date.now();
     const result =
       provider === "gemini"
         ? await geminiSpeak({ apiKey, text, voice, style: cleanStyle(profile.geminiStyle), timeoutMs }, fetchImpl)
         : await xaiSpeak({ apiKey, text, voice, language: loaded.settings.language, timeoutMs }, fetchImpl);
+    const providerMs = Date.now() - providerStartedAt;
     // Counts and outcomes only: never the key, the text or a provider error body.
-    ctx.logger.info("voice speak", { companyId, provider, outcome: result.outcome, chars: text.length });
+    ctx.logger.info("voice speak", { companyId, provider, outcome: result.outcome, chars: text.length, ms: providerMs });
     if (result.outcome !== "ok") return { error: result.outcome };
     try {
       await ctx.state.set(scope, used + text.length);
     } catch {
       ctx.logger.warn("voice speak usage not saved", { companyId });
     }
-    return { audio: result.audio, sampleRate: TTS_SAMPLE_RATE, provider, voice };
+    return { audio: result.audio, sampleRate: TTS_SAMPLE_RATE, provider, voice, providerMs };
   };
 
   return withDeadline(run(), SPEAK_DEADLINE_MS);

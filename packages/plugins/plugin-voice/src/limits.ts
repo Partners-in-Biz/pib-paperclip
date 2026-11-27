@@ -64,3 +64,6 @@ export const GEMINI_PREFETCH = true;
  */
 export const DIRECT_AWAIT_POLL_MS = 2_000;
 export const DIRECT_AWAIT_FAST_MS = 90_000;
+
+/** PAR-15051 T1a: the local "One moment" line plays for a turn with no reply audio this long after its end of speech. */
+export const FILLER_AFTER_MS = 4_000;

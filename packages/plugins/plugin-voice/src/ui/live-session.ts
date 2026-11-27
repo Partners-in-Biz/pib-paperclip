@@ -42,6 +42,8 @@ export interface LiveSessionOptions {
   onTranscript: (entries: TranscriptEntry[]) => void;
   /** The chat's agent is not the one the call asked for (404 on its chat): the header should switch. */
   onAgentChange?: (agent: { id: string | null; name: string }) => void;
+  /** The chat issue the turns go to, once resolved (a chat-page call saves its transcript there). */
+  onTarget?: (target: ChatTarget) => void;
   onLevel: (mic: number, voice: number) => void;
   onError: (message: string) => void;
   /** Once, when the call ends for any reason, with the whole call (the panel keeps only the last 60 lines). */
@@ -682,6 +684,7 @@ export class LiveSession {
 
   /** Says once that the call is with the default agent because the asked-for one could not be reached. */
   private announceTarget(target: ChatTarget): void {
+    if (!this.closed) this.opts.onTarget?.(target);
     if (!target.fellBack || this.fellBackSaid || this.closed) return;
     this.fellBackSaid = true;
     this.addNote(`Could not reach ${target.fellBack.from}; talking with ${target.agentName} instead.`);

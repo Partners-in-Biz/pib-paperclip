@@ -18,7 +18,7 @@ import {
 import { keepFieldVisible } from "./keyboard.js";
 import { buildInstructions } from "./live-instructions.js";
 import { startWakeLock, type WakeGuard } from "./wake-lock.js";
-import { agentForCall, type AgentRow } from "./agent-chat.js";
+import { agentForCall, type AgentRow, type ChatTarget } from "./agent-chat.js";
 import { CALL_CONTEXT_TIMEOUT_MS, plainChatContext, resolveCallContext, type CallContext } from "./call-context.js";
 import { DirectSession, type DirectState } from "./direct-session.js";
 import { LiveSession, type LiveSessionInfo, type LiveState, type TranscriptEntry } from "./live-session.js";
@@ -481,6 +481,9 @@ export function LivePanel({
   const [entries, setEntries] = useState<TranscriptEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // While a reply's first chunk is being voiced: when that began; a 1 s tick keeps the seconds on screen current.
+  const [voicingSince, setVoicingSince] = useState<number | null>(null);
+  const [, setVoicingTick] = useState(0);
   const [muted, setMuted] = useState(false);
   const [levels, setLevels] = useState({ mic: 0, voice: 0 });
   const [interrupt, setInterrupt] = useState(readInterrupt);
@@ -494,6 +497,15 @@ export function LivePanel({
   const [callCtx, setCallCtx] = useState<CallContext | null>(null);
   const pageIssueRef = callCtx?.kind === "task" ? callCtx.issueRef : null;
   const saveRef = callCtx?.kind === "task" ? callCtx.saveRef : null;
+  // A chat-page call has no task: its transcript goes to the chat issue the session resolves (PAR-15051, T1a).
+  const chatSaveRef = useRef<string | null>(null);
+  const saveTarget = () => saveRef ?? chatSaveRef.current;
+
+  useEffect(() => {
+    if (voicingSince === null) return;
+    const id = window.setInterval(() => setVoicingTick((t) => t + 1), 1_000);
+    return () => window.clearInterval(id);
+  }, [voicingSince]);
 
   // Who the call is with (it decides the voice) and how this person talks. Either lookup may fail: company voice, Direct – Grok.
   useEffect(() => {
@@ -539,6 +551,7 @@ export function LivePanel({
     setEntries([]);
     setError(null);
     setNotice(null);
+    setVoicingSince(null);
     setMuted(false);
     setState(choice === "classic" ? "connecting" : "starting");
     const shared = {
@@ -560,9 +573,12 @@ export function LivePanel({
       onTranscript: setEntries,
       onLevel: (mic: number, voice: number) => setLevels({ mic, voice }),
       onError: setError,
-      onAutosave: (call: CallRecord) => autosaveCall(call, saveRef),
+      onTarget: (target: ChatTarget) => {
+        if (callCtx.kind === "chat") chatSaveRef.current = target.issueId;
+      },
+      onAutosave: (call: CallRecord) => autosaveCall(call, saveTarget()),
       onEnd: (call: CallRecord, touched: SaveTarget[]) =>
-        void saveCall(call, touched, saveRef).catch((err) => {
+        void saveCall(call, touched, saveTarget()).catch((err) => {
           showSaveNotice(`The call transcript was not saved (${errorText(err)}).`, null);
         }),
     };
@@ -576,6 +592,7 @@ export function LivePanel({
             transcribe: (params) => transcribe(params),
             interruptByTalking: () => interruptRef.current,
             onNotice: setNotice,
+            onVoicing: setVoicingSince,
           });
           session.current = direct;
           await direct.start();
@@ -666,7 +683,8 @@ export function LivePanel({
   const orbScale = 1 + Math.min(0.35, (state === "speaking" ? levels.voice : levels.mic) * 0.6);
   const live = state !== "ended" && state !== "error";
   const agentName = callAgent?.name ?? "The agent";
-  const label = muted && live ? "Muted" : state === "working" ? `${agentName} is working…` : STATE_LABEL[state];
+  const voicingLabel = state === "speaking" && voicingSince !== null ? `Voicing the reply… ${Math.max(0, Math.floor((Date.now() - voicingSince) / 1000))} s` : null;
+  const label = muted && live ? "Muted" : state === "working" ? `${agentName} is working…` : (voicingLabel ?? STATE_LABEL[state]);
   // Tap barge-in: anywhere on the panel except its controls.
   const onPanelTap = (event: { target: EventTarget | null }) => {
     if (!direct || state !== "speaking") return;

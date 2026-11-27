@@ -96,7 +96,8 @@ describe("transcribeAction", () => {
     const { ctx, resolve } = fakeCtx({ xaiApiKey: { type: "secret_ref", secretId: "s" }, keyterms: "PiB" }, [{ name: "Kai" }]);
     const fetchImpl = vi.fn(async () => jsonResponse({ text: "Hello Kai", duration: 1.2 }));
     const out = await transcribeAction(ctx, { audio: "AQID", mimeType: "audio/webm;codecs=opus" }, userAction(), fetchImpl as unknown as typeof fetch);
-    expect(out).toEqual({ text: "Hello Kai", duration: 1.2, autoSend: false });
+    expect(out).toEqual({ text: "Hello Kai", duration: 1.2, autoSend: false, providerMs: expect.any(Number) });
+    expect(out.providerMs).toBeGreaterThanOrEqual(0);
     expect(resolve).toHaveBeenCalledWith({ type: "secret_ref", secretId: "s" }, { companyId: COMPANY, configPath: "xaiApiKey" });
     const init = (fetchImpl.mock.calls[0] as unknown as [string, RequestInit])[1];
     expect((init.headers as Record<string, string>).Authorization).toBe("Bearer resolved-secret");

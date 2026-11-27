@@ -77,6 +77,7 @@ beforeEach(() => {
       fetched.push(path);
       if (path === `/companies/${COMPANY}/agents`) return Promise.resolve(json(AGENTS));
       if (path.startsWith("/issues/i9/comments")) return Promise.resolve(json([]));
+      if (path === "/issues/chat-7") return Promise.resolve(json({ id: "c7", identifier: "PAR-7" }));
       if (path === "/issues/PAR-9") return issueAnswer === "never" ? new Promise(() => {}) : Promise.resolve(json(ISSUE));
       return Promise.resolve(json({}));
     }),
@@ -103,6 +104,37 @@ const mount = () =>
   act(() => root.render(<LivePanel companyId={COMPANY} userId="u1" audioContext={audioContext} wakeLock={null} wakeNotice={null} onClose={() => {}} onSwitch={() => {}} />));
 
 describe("LivePanel call context", () => {
+  it("a chat-page call saves to the chat issue the session resolved, and shows the wait for chunk 0 (PAR-15051)", async () => {
+    window.history.pushState({}, "", "/PAR/chats/pib");
+    await mount();
+    await flush();
+    expect(ctxOf(0).kind).toBe("chat");
+    const opts = h.started[0]! as Record<string, (...args: unknown[]) => unknown>;
+    const call = { entries: [{ who: "you", text: "Hi", at: Date.now() }], startedAt: Date.now(), endedAt: Date.now() };
+    await act(async () => {
+      opts.onTarget!({ issueId: "chat-7", ref: "PAR-7", agentName: "PiB", agentId: "a-ceo" });
+      await opts.onAutosave!(call);
+    });
+    expect(fetched).toContain("/issues/chat-7");
+    expect(fetched.some((p) => p.startsWith("/issues/c7/documents/live-chat-transcript-"))).toBe(true);
+    expect(fetched).not.toContain("/issues/c7/comments");
+    await act(async () => {
+      opts.onEnd!(call, []);
+    });
+    await flush();
+    expect(fetched).toContain("/issues/c7/comments");
+
+    await act(async () => {
+      opts.onState!("speaking");
+      opts.onVoicing!(Date.now() - 3_200);
+    });
+    expect(document.body.textContent).toContain("Voicing the reply… 3 s");
+    await act(async () => {
+      opts.onVoicing!(null);
+    });
+    expect(document.body.textContent).not.toContain("Voicing the reply");
+  });
+
   it("reads the task once, talks to its assignee, and keeps the header and save target when the route changes", async () => {
     await mount();
     await flush();
