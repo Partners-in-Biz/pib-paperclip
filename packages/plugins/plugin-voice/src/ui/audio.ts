@@ -120,9 +120,10 @@ export class Player {
     return this.sources.size > 0;
   }
 
-  enqueue(pcm16: ArrayBuffer, sampleRate = LIVE_SAMPLE_RATE): void {
+  /** Schedules the chunk; answers where it will play (AudioContext seconds), or null for an empty chunk. */
+  enqueue(pcm16: ArrayBuffer, sampleRate = LIVE_SAMPLE_RATE): { startAt: number; endAt: number } | null {
     const samples = pcm16ToFloat(pcm16);
-    if (samples.length === 0) return;
+    if (samples.length === 0) return null;
     const buffer = this.context.createBuffer(1, samples.length, sampleRate);
     buffer.copyToChannel(samples, 0);
     const source = this.context.createBufferSource();
@@ -142,6 +143,7 @@ export class Player {
       }
     };
     this.onLevel?.(chunkLevel);
+    return { startAt, endAt: this.playhead };
   }
 
   flush(): void {

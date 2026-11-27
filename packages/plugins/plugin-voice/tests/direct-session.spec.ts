@@ -46,6 +46,8 @@ vi.mock("../src/ui/audio.js", () => ({
 }));
 
 import { DirectSession, GEMINI_FALLBACK_NOTICE, READ_FAILED_NOTICE, SOUND_BLOCKED_NOTICE, type SpeakProvider } from "../src/ui/direct-session.js";
+import type { CallRecord } from "../src/ui/transcript-report.js";
+import { readBuffer } from "../src/ui/transcript-buffer.js";
 import { chunk, REST_IN_CHAT, toSpeech } from "../src/ui/speech-text.js";
 
 interface Row {
@@ -114,7 +116,7 @@ type SpeakImpl = (p: { agentId: string; text: string; provider: SpeakProvider })
 const okSpeak: SpeakImpl = async ({ text, provider }) => ({ audio: `${provider}:${text}`, sampleRate: 24000, provider, voice: "eve" });
 
 async function make(
-  opts: { provider?: SpeakProvider; speak?: SpeakImpl; interrupt?: () => boolean; onEnd?: () => void; chatIssue?: Record<string, unknown>; audioContext?: unknown } = {},
+  opts: { provider?: SpeakProvider; speak?: SpeakImpl; interrupt?: () => boolean; onEnd?: (call: CallRecord, targets: unknown[]) => void; onAutosave?: (call: CallRecord) => void; chatIssue?: Record<string, unknown>; audioContext?: unknown } = {},
 ) {
   const fake = fakeApi(opts.chatIssue);
   const feed = fakeFeed();
@@ -138,6 +140,8 @@ async function make(
     onError: vi.fn(),
     onNotice,
     onEnd: opts.onEnd,
+    onAutosave: opts.onAutosave,
+    autosaveMs: 1_000,
     feed,
   });
   await session.start();
@@ -469,5 +473,50 @@ describe("DirectSession", () => {
     ctx.fake.add("Too late.");
     await vi.advanceTimersByTimeAsync(20_000);
     expect(ctx.speak).not.toHaveBeenCalled();
+  });
+  describe("turn timing", () => {
+    const audioContext = () => ({ close: vi.fn(async () => undefined), resume: vi.fn(async () => undefined), currentTime: 0, outputLatency: 0.05 });
+
+    it("marks every step of a turn with a fake clock and saves the rows with a stamp", async () => {
+      vi.setSystemTime(new Date(2026, 10, 27, 10, 0, 0));
+      const onEnd = vi.fn();
+      const onAutosave = vi.fn();
+      const ctx = await make({ onEnd, onAutosave, audioContext: audioContext() });
+      ctx.player.enqueue.mockImplementation(() => ({ startAt: 0.4, endAt: 1.4 }));
+      talk(ctx.mic);
+      await vi.advanceTimersByTimeAsync(0);
+      ctx.fake.add("Done.", { createdByRunId: "run-1" } as never);
+      ctx.feed.emit("chat-1");
+      await vi.advanceTimersByTimeAsync(2_000);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(onAutosave).toHaveBeenCalled();
+      expect((onAutosave.mock.calls.at(-1)![0] as CallRecord).turns).toHaveLength(1);
+      ctx.session.stop();
+      const call = onEnd.mock.calls[0]![0] as CallRecord;
+      expect(call.turns).toHaveLength(1);
+      const row = call.turns![0]!;
+      expect(row).toMatchObject({ n: 1, endKind: "end", provider: "grok", latencyKnown: true, via: "event", replyComments: 1 });
+      for (const k of ["startAt", "endAt", "textAt", "postStartAt", "postedAt", "serverPostedAt", "replyServerAt", "seenAt", "speakStartAt", "audioAt", "playAt"] as const) {
+        expect(typeof row[k], k).toBe("number");
+      }
+      expect(row.startAt!).toBeLessThanOrEqual(row.endAt);
+      expect(row.endAt).toBeLessThanOrEqual(row.textAt!);
+      expect(row.speakStartAt!).toBeGreaterThanOrEqual(row.seenAt!);
+      // playAt = now + (startAt - currentTime + outputLatency) = audioAt + 450 ms.
+      expect(row.playAt! - row.audioAt!).toBe(450);
+      expect(call.timingStamp).toMatch(/^plugin-voice \d+\.\d+\.\d+, quiet 1200 ms, first chunk 160 chars, await poll 10000 ms, fast window 0 ms, Gemini prefetch off$/);
+      const buffered = readBuffer(call.startedAt)!;
+      expect(buffered.turns).toHaveLength(1);
+      expect(buffered.timingStamp).toBe(call.timingStamp);
+    });
+
+    it("a call with no turn carries no timing", async () => {
+      const onEnd = vi.fn();
+      const ctx = await make({ onEnd });
+      ctx.session.stop();
+      const call = onEnd.mock.calls[0]![0] as CallRecord;
+      expect(call.turns).toBeUndefined();
+      expect(call.timingStamp).toBeUndefined();
+    });
   });
 });

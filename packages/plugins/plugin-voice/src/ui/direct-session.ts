@@ -14,14 +14,18 @@ import { chunk, REST_IN_CHAT, toSpeech } from "./speech-text.js";
 import { pruneBuffers, writeBuffer } from "./transcript-buffer.js";
 import type { TranscriptEntry } from "./live-session.js";
 import type { CallRecord, LogEntry, SaveTarget } from "./transcript-report.js";
+import { parseServerTime, TurnClock, timingStamp, type ReplyVia, type TurnRow } from "./turn-timing.js";
 import { newUuid } from "./uuid.js";
 import type { WakeGuard } from "./wake-lock.js";
 import { concatPcm16, encodeWav } from "./wav.js";
+import { PLUGIN_VERSION } from "../namespace.js";
 import {
   DIRECT_REFETCH_MS,
   DIRECT_REPLY_POLL_MS,
   DIRECT_SEND_ATTEMPTS,
+  ENDPOINT_END_QUIET_MS,
   ENDPOINT_PREROLL_MS,
+  SPEECH_FIRST_CHUNK_CHARS,
   TTS_SAMPLE_RATE,
   XAI_SPEAK_ATTEMPTS,
 } from "../limits.js";
@@ -53,6 +57,27 @@ export interface CommentRow {
   origin?: string | null;
   deletedAt?: string | null;
   createdAt?: string | null;
+  createdByRunId?: string | null;
+}
+
+/** The constants a call ran under, stamped on its timing rows (T3 of PAR-14996 moves the last two into limits). */
+const TIMING_CONSTANTS = {
+  quietMs: ENDPOINT_END_QUIET_MS,
+  firstChunkChars: SPEECH_FIRST_CHUNK_CHARS,
+  awaitPollMs: DIRECT_REPLY_POLL_MS,
+  fastWindowMs: 0,
+  geminiPrefetch: false,
+};
+
+interface ReplyItem {
+  text: string;
+  commentId: string;
+}
+
+interface AudioClock {
+  currentTime?: number;
+  outputLatency?: number;
+  baseLatency?: number;
 }
 
 export interface DirectSessionOptions {
@@ -130,7 +155,9 @@ export class DirectSession {
   /** Why the last chunk could not be voiced: the provider's outcome or the call's error. Shown in the transcript. */
   private speakFailure = "";
 
-  private replyQueue: string[] = [];
+  private replyQueue: ReplyItem[] = [];
+  private readonly clock = new TurnClock();
+  private utteranceStartAt: number | undefined;
   private speakingLoop = false;
   /** Bumped by barge-in: audio fetched or queued for an older value is dropped. */
   private speakGen = 0;
@@ -183,7 +210,7 @@ export class DirectSession {
       return;
     }
     if (this.closed) return;
-    this.pollTimer = window.setInterval(() => void this.fetchNew(), this.opts.replyPollMs ?? DIRECT_REPLY_POLL_MS);
+    this.pollTimer = window.setInterval(() => void this.fetchNew("poll"), this.opts.replyPollMs ?? DIRECT_REPLY_POLL_MS);
     if (this.opts.onAutosave) this.autosaveTimer = window.setInterval(() => this.autosave(), this.opts.autosaveMs ?? AUTOSAVE_MS);
     this.bumpIdle();
     this.refresh();
@@ -228,17 +255,18 @@ export class DirectSession {
     }
     const event = this.endpointer.push(lvl, frameMs);
     if (event === "start") {
+      this.utteranceStartAt = Date.now();
       this.utterance = [...this.preroll];
       this.refresh();
     } else if (this.utterance) this.utterance.push(pcm);
     if ((event === "end" || event === "cap") && this.utterance) {
       const frames = this.utterance;
       this.utterance = null;
-      void this.sendUtterance(frames);
+      void this.sendUtterance(frames, { startAt: this.utteranceStartAt, endAt: Date.now(), endKind: event });
     }
   }
 
-  private async sendUtterance(frames: ArrayBuffer[]): Promise<void> {
+  private async sendUtterance(frames: ArrayBuffer[], ends: { startAt?: number; endAt: number; endKind: "end" | "cap" }): Promise<void> {
     this.pendingSends += 1;
     this.refresh();
     try {
@@ -251,20 +279,27 @@ export class DirectSession {
         return;
       }
       if (!text || this.closed) return;
+      const turn = this.clock.addTurn({ ...ends, textAt: Date.now() });
       this.upsert(`you-${newUuid()}`, "you", text, true);
-      await this.postTurn(text);
+      await this.postTurn(text, turn);
     } finally {
       this.pendingSends -= 1;
       this.refresh();
     }
   }
 
-  private async postTurn(text: string): Promise<void> {
+  private async postTurn(text: string, turn: TurnRow): Promise<void> {
     const requestId = newUuid();
     let lastError: unknown = null;
     for (let attempt = 0; attempt < DIRECT_SEND_ATTEMPTS; attempt += 1) {
       try {
+        const postStartAt = Date.now();
         const posted = await this.chat.post(text, requestId);
+        turn.postStartAt = postStartAt;
+        turn.postedAt = Date.now();
+        turn.serverPostedAt = parseServerTime(posted.createdAt);
+        if (posted.commentId) turn.commentId = posted.commentId;
+        this.unsaved = true;
         this.target = posted.target;
         if (posted.commentId) this.seen.add(posted.commentId);
         if (!this.anchorId && posted.commentId) this.anchorId = posted.commentId;
@@ -291,13 +326,13 @@ export class DirectSession {
   private onEvent(issueId: string): void {
     if (this.closed || issueId !== this.target?.issueId) return;
     void (async () => {
-      if ((await this.fetchNew()) > 0) return;
+      if ((await this.fetchNew("event")) > 0) return;
       // The event can land before the comment row is readable: look again shortly.
       let waited = 0;
       for (const at of DIRECT_REFETCH_MS) {
         await this.sleep(at - waited);
         waited = at;
-        if (this.closed || (await this.fetchNew()) > 0) return;
+        if (this.closed || (await this.fetchNew("event")) > 0) return;
       }
     })();
   }
@@ -313,7 +348,7 @@ export class DirectSession {
   }
 
   /** One read at a time; a read asked for while one runs runs once more after it. Resolves to new replies found. */
-  private fetchNew(): Promise<number> {
+  private fetchNew(via: ReplyVia = "poll"): Promise<number> {
     if (this.closed || !this.target) return Promise.resolve(0);
     if (this.fetching) {
       this.fetchAgain = true;
@@ -324,7 +359,7 @@ export class DirectSession {
       do {
         this.fetchAgain = false;
         try {
-          found += await this.readReplies();
+          found += await this.readReplies(via);
           this.readFails = 0;
         } catch (err) {
           // A missed read is retried by the next poll; a read that keeps failing is said out loud.
@@ -344,7 +379,7 @@ export class DirectSession {
   }
 
   /** Everything after this call's first turn, so a row that commits late is still found; `seen` drops repeats. */
-  private async readReplies(): Promise<number> {
+  private async readReplies(via: ReplyVia): Promise<number> {
     const target = this.target;
     if (!target) return 0;
     let after = this.anchorId;
@@ -359,12 +394,14 @@ export class DirectSession {
         this.seen.add(row.id);
         if (!this.isReply(row, target)) continue;
         found += 1;
+        this.clock.noteReply({ id: row.id, runId: row.createdByRunId, createdAt: row.createdAt }, Date.now(), via);
+        this.unsaved = true;
         this.awaitingSince = null;
         const body = String(row.body ?? "");
         this.upsert(`agent-${row.id}`, "voice", body.trim(), true);
         const speech = toSpeech(body);
         if (speech) {
-          this.replyQueue.push(speech);
+          this.replyQueue.push({ text: speech, commentId: row.id });
           if (!this.speakingLoop) void this.runSpeaker();
         }
       }
@@ -394,7 +431,8 @@ export class DirectSession {
     this.refresh();
     try {
       while (!this.closed && this.replyQueue.length > 0) {
-        await this.speakReply(this.replyQueue.shift()!, this.speakGen);
+        const item = this.replyQueue.shift()!;
+        await this.speakReply(item, this.speakGen);
       }
     } finally {
       this.speakingLoop = false;
@@ -405,8 +443,13 @@ export class DirectSession {
   }
 
   /** Chunks in order; a chunk that cannot be voiced ends the reply there, never a gap in the middle. */
-  private async speakReply(text: string, gen: number): Promise<void> {
-    const chunks = chunk(text);
+  private async speakReply(item: ReplyItem, gen: number): Promise<void> {
+    const marks = this.clock.speakMarks(item.commentId);
+    marks.speakStartAt = Date.now();
+    this.unsaved = true;
+    const chunks = chunk(item.text);
+    let prevEnd: number | null = null;
+    let gap = 0;
     let next: Promise<{ pcm: ArrayBuffer; rate: number } | null> | null = null;
     for (let i = 0; i < chunks.length; i += 1) {
       const audio = await (next ?? this.chunkAudio(chunks[i]!, gen));
@@ -417,12 +460,28 @@ export class DirectSession {
         this.opts.onNotice?.(REST_IN_CHAT);
         return;
       }
+      if (i === 0) {
+        marks.audioAt = Date.now();
+        marks.provider = this.provider;
+      }
       if (!(await this.soundReady())) {
         this.addNote(SOUND_BLOCKED_NOTICE);
         this.opts.onNotice?.(SOUND_BLOCKED_NOTICE);
         return;
       }
-      this.player.enqueue(audio.pcm, audio.rate);
+      const slot = this.player.enqueue(audio.pcm, audio.rate);
+      if (slot) {
+        const ctx = this.opts.audioContext as unknown as AudioClock;
+        if (i === 0) {
+          const latency = ctx.outputLatency || ctx.baseLatency || 0;
+          marks.playAt = Math.round(Date.now() + (slot.startAt - (ctx.currentTime ?? 0) + latency) * 1000);
+          marks.latencyKnown = typeof ctx.outputLatency === "number";
+        } else if (prevEnd !== null) {
+          gap += Math.max(0, slot.startAt - prevEnd);
+          marks.gap = Math.round(gap * 1000);
+        }
+        prevEnd = slot.endAt;
+      }
       this.bumpIdle();
       // Prefetch the next chunk while this one plays: Grok only (Gemini quota is tight).
       if (i + 1 < chunks.length && this.provider === "grok") next = this.chunkAudio(chunks[i + 1]!, gen);
@@ -558,16 +617,22 @@ export class DirectSession {
     this.ended = true;
     if (this.autosaveTimer !== null) window.clearInterval(this.autosaveTimer);
     try {
-      this.opts.onEnd?.({ entries: [...this.fullLog.values()], startedAt: this.startedAt, endedAt: Date.now() }, []);
+      this.opts.onEnd?.({ entries: [...this.fullLog.values()], startedAt: this.startedAt, endedAt: Date.now(), ...this.timing() }, []);
     } catch {
       // Saving the transcript must never break hanging up.
     }
   }
 
+  /** The turn rows and their stamp for a saved record; nothing when the call had no turn. */
+  private timing(): { turns?: TurnRow[]; timingStamp?: string } {
+    if (this.clock.size === 0) return {};
+    return { turns: this.clock.rows(), timingStamp: timingStamp(PLUGIN_VERSION, TIMING_CONSTANTS) };
+  }
+
   private autosave(): void {
     if (this.closed || !this.unsaved) return;
     this.unsaved = false;
-    const call: CallRecord = { entries: [...this.fullLog.values()].map((e) => ({ ...e })), startedAt: this.startedAt, endedAt: Date.now() };
+    const call: CallRecord = { entries: [...this.fullLog.values()].map((e) => ({ ...e })), startedAt: this.startedAt, endedAt: Date.now(), ...this.timing() };
     try {
       void Promise.resolve(this.opts.onAutosave?.(call)).catch(() => {
         this.unsaved = true;
@@ -587,7 +652,8 @@ export class DirectSession {
     if (logged) logged.text = text;
     else this.fullLog.set(id, { who, text, at: Date.now() });
     this.unsaved = true;
-    writeBuffer(this.startedAt, [...this.fullLog.values()]);
+    const timing = this.timing();
+    writeBuffer(this.startedAt, [...this.fullLog.values()], timing.turns ? { turns: timing.turns, timingStamp: timing.timingStamp! } : undefined);
     if (this.transcript.length > 60) this.transcript.splice(0, this.transcript.length - 60);
     this.opts.onTranscript([...this.transcript]);
   }

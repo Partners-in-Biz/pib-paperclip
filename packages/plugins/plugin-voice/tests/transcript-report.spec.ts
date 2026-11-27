@@ -37,6 +37,19 @@ describe("transcript report", () => {
     expect(doc).toContain("2 min 5 s");
   });
 
+  it("adds a Turn timing section only when the call has turns, and leaves the rest byte-equal", () => {
+    const plain = buildTranscriptDocument(CALL);
+    expect(plain).not.toContain("Turn timing");
+    expect(buildTranscriptDocument({ ...CALL, turns: [] })).toBe(plain);
+    const turns = [{ n: 1, startAt: 0, endAt: 2_000, endKind: "end" as const, textAt: 2_800, postStartAt: 2_800, postedAt: 2_900, provider: "gemini" as const }];
+    const doc = buildTranscriptDocument({ ...CALL, turns, timingStamp: "plugin-voice 0.2.3, quiet 1200 ms" });
+    expect(doc.startsWith(plain.trimEnd())).toBe(true);
+    expect(doc).toContain("## Turn timing");
+    expect(doc).toContain("Stamp: plugin-voice 0.2.3, quiet 1200 ms");
+    expect(doc).toContain("| stt (end of speech to text) | 1 | 0.8 | 0.8 |");
+    expect(doc).toContain('"endKind":"end"');
+  });
+
   it("recaps topics and actions and names the document", () => {
     const recap = buildRecap(CALL, documentKey(START));
     expect(recap).toContain("1 turns from you and 2 from the voice");
