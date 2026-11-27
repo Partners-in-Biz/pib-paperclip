@@ -154,9 +154,9 @@ function listen(server, socketPath, socketMode) {
     tryListen();
   });
 }
-function buildVerifyApproval({ apiBase, store, clock, fetch }) {
+function buildVerifyApproval({ apiBase, store, clock, fetch, dogfoodApprovers = [] }) {
   return (params, { token }) => verifyApproval(params, {
-    fetch, apiBase, token, clock, store
+    fetch, apiBase, token, clock, store, dogfoodApprovers
   });
 }
 
@@ -190,7 +190,8 @@ function buildDaemon(env = process.env, deps = {}) {
     apiBase: config.apiBase,
     store,
     clock: dispatchClock,
-    fetch: deps.fetch || globalThis.fetch
+    fetch: deps.fetch || globalThis.fetch,
+    dogfoodApprovers: policyResult.policy.dogfoodApprovers || []
   });
 
   // Set up browser env: use provided env or default headless to '0' (headed)

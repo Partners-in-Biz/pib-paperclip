@@ -154,3 +154,13 @@ test('CI workflow includes pib-browser', () => {
   const content = fs.readFileSync(path.resolve(__dirname, '../../../../.github/workflows/pib-plugins-ci.yml'), 'utf8');
   assert(content.includes('pib-browser'), 'CI workflow must include pib-browser');
 });
+
+
+test('dogfoodApprovers must be a list of agent ids', () => {
+  const { validatePolicy } = require('../src/policy.cjs');
+  const base = { version: 1, agents: {}, identities: {} };
+  assert.equal(validatePolicy({ ...base, dogfoodApprovers: ['64b3cdda-afe4-499e-97d4-97f5dd492754'] }).ok, true);
+  assert.equal(validatePolicy({ ...base, dogfoodApprovers: 'marcus' }).ok, false);
+  assert.equal(validatePolicy({ ...base, dogfoodApprovers: ['marcus'] }).ok, false);
+  assert.equal(validatePolicy(base).ok, true);
+});

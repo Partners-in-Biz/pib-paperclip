@@ -25,9 +25,11 @@ function createApprovalStore({ stateDir, fs = require('node:fs'), path = require
   };
 }
 
+const isDogfoodApproval = (issue) => /\[dogfood\]/i.test(String(issue?.title || ''));
+
 async function verifyApproval(
-  { approval, identity, action, companyId },
-  { fetch, apiBase, token, clock, store, maxAgeMs = 24 * 3600 * 1000 }
+  { approval, identity, action, companyId, agentId },
+  { fetch, apiBase, token, clock, store, maxAgeMs = 24 * 3600 * 1000, dogfoodApprovers = [] }
 ) {
   try {
     // Fail closed: validate clock is correctly formed
@@ -100,7 +102,13 @@ async function verifyApproval(
         }
       }
     }
-    if (!latestDone || latestDone.actorType !== 'user') return { exit: EXIT.NEEDS_APPROVAL, ok: false, reason: 'approval_not_closed_by_human' };
+    // A person's close always counts. A [dogfood] approval (test data on our own board) may instead be closed by one
+    // of the policy's dogfoodApprovers seats, never by the agent that asks for the click.
+    const humanClose = !!latestDone && latestDone.actorType === 'user';
+    const dogfoodClose = !!latestDone && latestDone.actorType === 'agent' && isDogfoodApproval(issue) &&
+      Array.isArray(dogfoodApprovers) && typeof latestDone.actorId === 'string' && dogfoodApprovers.includes(latestDone.actorId) &&
+      typeof agentId === 'string' && agentId !== '' && latestDone.actorId !== agentId;
+    if (!humanClose && !dogfoodClose) return { exit: EXIT.NEEDS_APPROVAL, ok: false, reason: 'approval_not_closed_by_human' };
 
     // Check if description has been modified by agent after human close
     const latestDoneTime = new Date(latestDone.createdAt).getTime();
@@ -114,6 +122,9 @@ async function verifyApproval(
       // Fail closed: treat unparseable timestamps as after the close
       return !(entryTime < latestDoneTime);
     });
+
+    // An approver-closed approval must stay exactly as the approver saw it.
+    if (dogfoodClose && hasAgentUpdateAfterClose) return { exit: EXIT.NEEDS_APPROVAL, ok: false, reason: 'approval_changed_after_close' };
 
     let markerText = '';
     // Only use description if latestDoneTime is valid and no agent has updated the issue after the human close
