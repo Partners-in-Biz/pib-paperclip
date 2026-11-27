@@ -9,8 +9,8 @@ export interface Fixture {
   onApiRequest?: (input: PluginApiRequestInput) => Promise<PluginApiResponse>;
 }
 
-/** What the guard needs: the switch and grants (state), members, the run's person (db). */
-export const FIXTURE_CAPABILITIES = ["agent.tools.register", "api.routes.register", "plugin.state.read", "access.members.read", "database.namespace.read"];
+/** What the guard needs: the switch and grants (state), members, the run's person (db), and the receiver (events, state writes). */
+export const FIXTURE_CAPABILITIES = ["agent.tools.register", "api.routes.register", "plugin.state.read", "plugin.state.write", "events.subscribe", "events.emit", "access.members.read", "database.namespace.read"];
 
 export const fixtureManifest = (id: string, routeKeys: string[] = [], capabilities = FIXTURE_CAPABILITIES) =>
   ({

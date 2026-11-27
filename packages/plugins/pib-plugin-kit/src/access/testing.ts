@@ -14,6 +14,9 @@
  * 2. Each manifest `apiRoutes` key has an `api:` row, and each `api:` row a route.
  * 3. Source check: no `.actions.register`, `.tools.register` or (outside the
  *    plugins with named data handlers) `.data.register` in `src/`.
+ * 1.5. Receiver (PAR-15008): every plugin but Setup subscribes to Setup's
+ *    `access.updated` in `setup()` (the guard does it), and with the harness a
+ *    send is stored and confirmed with `access.synced`.
  *
  * Given the `harness` (and `onApiRequest` for a plugin with API routes), it then
  * calls every guarded action, tool and route with seeded people and runs.
@@ -38,8 +41,10 @@ import { accessGrantScope, permissionKey } from "../permissions.js";
 import { ACTING_PERSON_SQL } from "./acting-person.js";
 import { ADMIN_ONLY, GUARDED_HANDLER, guardProbes, type AccessTable, type GuardProbe } from "./guard.js";
 import { ACCESS_ME_ACTION } from "./me.js";
+import { ACCESS_UPDATED_EVENT } from "./receiver.js";
+import { SETUP_PLUGIN } from "../setup.js";
 import { isRefusal, PERMISSION_DENIED } from "./refusal.js";
-import { accessCompanyScope } from "./switch.js";
+import { ACCESS_EVENTS, accessCompanyScope, parseAccessRow } from "./switch.js";
 
 /** The only data handlers a PiB plugin may register (4.4: they carry no caller). Studio 9, Voice 2, CRM 2. */
 export const NAMED_DATA_HANDLERS: Readonly<Record<string, readonly string[]>> = Object.freeze({
@@ -71,16 +76,19 @@ export interface RecordedRegistrations {
   actions: Map<string, { guarded: boolean }>;
   tools: Map<string, { guarded: boolean }>;
   data: string[];
+  /** Event names `setup()` subscribed to with `ctx.events.on`. */
+  events: string[];
 }
 
 const isGuarded = (handler: unknown) => typeof handler === "function" && (handler as unknown as Record<symbol, unknown>)[GUARDED_HANDLER] === true;
 
 /** Runs `setup` with the three register calls wrapped; the handlers still reach the host as before. */
 export async function recordRegistrations(ctx: PluginContext, setup: PluginAccessCheckInput["setup"]): Promise<RecordedRegistrations> {
-  const out: RecordedRegistrations = { actions: new Map(), tools: new Map(), data: [] };
+  const out: RecordedRegistrations = { actions: new Map(), tools: new Map(), data: [], events: [] };
   const actions = ctx.actions.register;
   const tools = ctx.tools.register;
   const data = ctx.data.register;
+  const on = ctx.events.on;
   ctx.actions.register = (key, handler) => {
     out.actions.set(key, { guarded: isGuarded(handler) });
     return actions.call(ctx.actions, key, handler);
@@ -93,12 +101,18 @@ export async function recordRegistrations(ctx: PluginContext, setup: PluginAcces
     out.data.push(key);
     return data.call(ctx.data, key, handler);
   };
+  ctx.events.on = ((name: string, ...rest: unknown[]) => {
+    const off = (on as (...args: unknown[]) => () => void).call(ctx.events, name, ...rest);
+    out.events.push(name);
+    return off;
+  }) as typeof ctx.events.on;
   try {
     await setup(ctx);
   } finally {
     ctx.actions.register = actions;
     ctx.tools.register = tools;
     ctx.data.register = data;
+    ctx.events.on = on;
   }
   return out;
 }
@@ -109,6 +123,9 @@ export function registrationProblems(input: Pick<PluginAccessCheckInput, "manife
   const problems: string[] = [];
   const has = (key: string) => Object.hasOwn(table, key);
   if (!rec.actions.get(ACCESS_ME_ACTION)?.guarded) problems.push(`no access guard was created in setup (createAccessGuard registers "${ACCESS_ME_ACTION}")`);
+  if (manifest.id !== SETUP_PLUGIN && !rec.events.includes(ACCESS_UPDATED_EVENT)) {
+    problems.push(`setup does not subscribe to "${ACCESS_UPDATED_EVENT}", so Setup's access is never received or confirmed (createAccessGuard registers the receiver; is it given the plugin's ctx?)`);
+  }
   for (const [key, r] of rec.actions) {
     if (key === ACCESS_ME_ACTION && r.guarded) continue;
     if (!r.guarded) problems.push(`action "${key}" is registered directly, not through the access guard (use guard.action)`);
@@ -182,7 +199,7 @@ export async function checkPluginAccess(input: PluginAccessCheckInput): Promise<
 const id = (n: number) => `a1500000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 /** The companies, people, agent and runs the behaviour checks seed. */
 export const ACCESS_TEST_IDS = Object.freeze({
-  absent: id(1), off: id(2), enforce: id(3),
+  absent: id(1), off: id(2), enforce: id(3), received: id(4),
   owner: id(11), operator: id(12), granted: id(13),
   agent: id(21), runOwner: id(31), runOperator: id(32), runNobody: id(33), runMissing: id(34),
 });
@@ -315,10 +332,39 @@ export async function behaviourProblems(input: PluginAccessCheckInput & { harnes
       await expectCall(`API route "${r}", enforce, agent on a run working for an operator with no grant`, noGrant(`api:${r}`), "route", r, E, run(T.runOperator));
     }
     if (onApiRequest) await expectCall("unknown API route key, enforce, owner", "refuse", "route", "access-check-unknown-route", E, user(T.owner));
+    if (manifest.id !== SETUP_PLUGIN && rec.events.includes(ACCESS_UPDATED_EVENT)) problems.push(...(await receiveProblems(harness, manifest.id)));
   } finally {
     guardProbes().delete(manifest.id);
     ctx.state.get = get;
     ctx.db.query = query;
+  }
+  return problems;
+}
+
+/** Item 1.5 with the harness: one send from Setup is stored and confirmed (PAR-15008). */
+async function receiveProblems(harness: TestHarness, pluginKey: string): Promise<string[]> {
+  const ctx = harness.ctx;
+  const companyId = T.received;
+  const rev = 2;
+  const confirmed: unknown[] = [];
+  const emit = ctx.events.emit;
+  ctx.events.emit = async (name, co, payload) => {
+    // The plugin's own call goes first, so the harness keeps its capability check.
+    await emit.call(ctx.events, name, co, payload);
+    if (name === ACCESS_EVENTS.synced) confirmed.push(payload);
+  };
+  const problems: string[] = [];
+  const label = `Setup's "${ACCESS_UPDATED_EVENT}" (rev ${rev})`;
+  try {
+    await harness.emit(ACCESS_UPDATED_EVENT, { companyId, rev, mode: "off", userIds: [], part: 1, parts: 1, grants: {} }, { companyId });
+    const row = parseAccessRow(await ctx.state.get(accessCompanyScope(companyId)));
+    if (row === null || row === "invalid" || row.rev !== rev) problems.push(`${label}: expected the company row at rev ${rev} in the plugin's state, got ${short(row)}`);
+    const want = { companyId, rev, pluginKey };
+    if (!confirmed.some((p) => JSON.stringify(p) === JSON.stringify(want))) problems.push(`${label}: expected "access.synced" ${short(want)}, got ${confirmed.length ? short(confirmed) : "no confirmation"}`);
+  } catch (error) {
+    problems.push(`${label}: the receive threw: ${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    ctx.events.emit = emit;
   }
   return problems;
 }

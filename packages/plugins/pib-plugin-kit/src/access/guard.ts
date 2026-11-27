@@ -27,14 +27,16 @@
  * `onApiRequest`. The route caller is mapped to the form above (`routeCaller`).
  * Under `report` and `enforce` a route key with no `api:` table entry is refused
  * for every caller; under `off` it goes where it went before (the fallback, else
- * a 404). The guard also registers `access.me` (4.6, `./me.ts`).
+ * a 404). The guard also registers `access.me` (4.6, `./me.ts`) and, in every
+ * plugin but Setup, the receiver of Setup's `access.updated` (4.2, `./receiver.ts`).
  */
 import type { PluginApiRequestInput, PluginApiResponse, PluginContext, PluginPerformActionContext, PluginToolDeclaration, ToolResult, ToolRunContext } from "@paperclipai/plugin-sdk";
 import { BYPASS, decideAccess, permissionKey, type Access, type Decision, type PermissionAction } from "../permissions.js";
 import { normalizeToolResult } from "../tool-result.js";
 import { CANNOT_VERIFY_ACCESS, cachedAccessFor, cachedActingPerson, noteAccessReceived } from "./cache.js";
 import { ACCESS_ME_ACTION, allowedKeys, areaKeys, areasOf, type AccessMe } from "./me.js";
-import { onAccessReceived } from "./receiver.js";
+import { SETUP_PLUGIN } from "../setup.js";
+import { onAccessReceived, registerAccessReceiver } from "./receiver.js";
 import { permissionRefusal, type ActionRefusal } from "./refusal.js";
 import { reportAccessRefusal } from "./report.js";
 import { readAccessSwitch, type AccessMode } from "./switch.js";
@@ -199,6 +201,10 @@ export function createAccessGuard(ctx: PluginContext, options: AccessGuardOption
   const areas = areasOf(pluginKey);
   const probe = () => guardProbes().get(pluginKey);
   onAccessReceived(ctx, (companyId) => noteAccessReceived(ctx, companyId));
+  // Every guarded plugin keeps its copy of Setup's row (4.2; PAR-15008: no plugin called
+  // this itself, so nothing ever confirmed). Setup is the source: it reads `access_settings`
+  // and counts itself confirmed, so it runs no receiver.
+  if (pluginKey !== SETUP_PLUGIN) registerAccessReceiver(ctx, pluginKey);
 
   /** The caller's access, or why it has none (`unverified`: a read failed). */
   async function accessOf(companyId: string, caller: AccessCaller): Promise<{ access: Access } | { reason: string; userId: string | null; unverified: boolean }> {
