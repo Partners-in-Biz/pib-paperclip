@@ -13,7 +13,10 @@ export interface ResultsPayload { results: CampaignResults | null; replies: Repl
 
 function percent(part: number, sent: number): string {
   if (sent <= 0) return "—";
-  return `${((part / sent) * 100).toFixed(1).replace(/\.0$/, "")}%`;
+  const rate = (part / sent) * 100;
+  // Under 1% show two decimals, and never print 0% for a non-zero count.
+  if (part > 0 && rate < 0.005) return "<0.01%";
+  return `${(rate < 1 ? rate.toFixed(2) : rate.toFixed(1)).replace(/\.0+$/, "")}%`;
 }
 
 function Cell({ value, sent, strong }: { value: number; sent: number; strong?: boolean }) {

@@ -378,6 +378,19 @@ describe("campaign replies", () => {
     expect(store.decisions![0]).toMatchObject({ purpose: "campaigns.reply", value_text: "interested", acted: true });
   });
 
+  it("keeps the reply text on the event: whitespace collapsed, clipped to 500 characters; a stop request keeps none", async () => {
+    stubJev({ choice: "interested", confidence: 0.9 });
+    const first = await boot({ store: replyStore() });
+    await receive(first.harness, mail({ snippet: `  Yes\n\n please   call  ${"x".repeat(600)}` }));
+    const kept = (first.store.campaign_step_events!.find((row) => row.event_type === "reply")!.meta as { snippet: string }).snippet;
+    expect(kept.startsWith("Yes please call xxx")).toBe(true);
+    expect(kept).toHaveLength(500);
+    stubJev({ choice: "unsubscribe", confidence: 0.96 });
+    const second = await boot({ store: replyStore() });
+    await receive(second.harness, mail({ snippet: "Stop emailing me" }));
+    expect(second.store.campaign_step_events!.find((row) => row.event_type === "unsubscribe")!.meta).not.toHaveProperty("snippet");
+  });
+
   it("unsubscribe stops every campaign for the contact and suppresses the address", async () => {
     stubJev({ choice: "unsubscribe", confidence: 0.96 });
     const { harness, store } = await boot({ store: replyStore() });

@@ -184,7 +184,7 @@ describe("other replies", () => {
     expect(issues[0]!.description).toContain("> Sounds good, call me tomorrow");
     expect(issues[0]!.description).toContain("cannot answer a text");
     expect(issues[0]!.description).toContain("messageId `SMr1`");
-    expect(s.campaign_step_events).toEqual([expect.objectContaining({ event_type: "reply", source_key: "reply:SMr1", meta: expect.objectContaining({ channel: "sms" }) })]);
+    expect(s.campaign_step_events).toEqual([expect.objectContaining({ event_type: "reply", source_key: "reply:SMr1", meta: expect.objectContaining({ channel: "sms", snippet: "Sounds good, call me tomorrow" }) })]);
     // The agent logs what it did, using the provider's message id, and the done check accepts it.
     const logged = await harness.executeTool<{ data?: { logged: boolean }; error?: string }>("log-reply", { messageId: "SMr1", outcome: "answered", note: "Called Ada and booked Tuesday" }, { companyId: CO, agentId: "agent-camp" });
     expect(logged.data).toMatchObject({ logged: true });
