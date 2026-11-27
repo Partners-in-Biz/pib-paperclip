@@ -1,4 +1,16 @@
-import { createAccessGuard, normalizeToolResult, registerCanvasCards, type AccessGuard, type PreferenceValue } from "@partnersinbiz/pib-plugin-kit";
+import {
+  agentMayCreateIn,
+  agentMaySetMode,
+  CAMPAIGN_MODE_LABELS,
+  createAccessGuard,
+  normalizeToolResult,
+  parseCampaignMode,
+  registerCanvasCards,
+  type AccessGuard,
+  type CampaignMode,
+  type PreferenceValue,
+} from "@partnersinbiz/pib-plugin-kit";
+import { actionActor, actorRef, logCampaignActivity, toolActor, type CampaignActor } from "./activity.js";
 import {
   definePlugin,
   runWorker,
@@ -44,6 +56,8 @@ import {
   REPLY_OUTCOMES,
   replyEvent,
   saveCampaign,
+  setCampaignMode,
+  setCampaignStatus,
   saveEnrollment,
   setLaunchError,
   setStepHtml,
@@ -240,6 +254,7 @@ const plugin = definePlugin({
     g.action("campaigns.pause", (params, context) => pauseAction(ctx, context, params));
     g.action("campaigns.resume", (params, context) => resumeAction(ctx, context, params));
     g.action("campaigns.complete", (params, context) => completeAction(ctx, context, params));
+    g.action("campaigns.set-mode", (params, context) => setMode(ctx, requiredCompany(context), params, actionActor(context)));
     g.action("campaigns.stats", (params, context) => statsAction(ctx, context, params));
     g.action("campaigns.enroll", (params, context) => enrollAction(ctx, context, params));
     g.action("campaigns.move", (params, context) => moveCampaignAction(ctx, context, params));
@@ -402,9 +417,10 @@ async function dispatch(ctx: PluginContext, name: string, body: Record<string, u
   if (name === "preflight-campaign") return preflightCampaign(ctx, companyId, body);
   if (name === "export-person-data") return exportPersonDataTool(ctx, companyId, body);
   if (name === "log-reply") return logReplyTool(ctx, companyId, body, run.agentId ?? null);
-  if (name === "pause-campaign") return setStatus(ctx, companyId, body, "paused");
-  if (name === "resume-campaign") return setStatus(ctx, companyId, body, "active");
-  if (name === "complete-campaign") return setStatus(ctx, companyId, body, "completed");
+  if (name === "pause-campaign") return setStatus(ctx, companyId, body, "paused", toolActor(run));
+  if (name === "resume-campaign") return setStatus(ctx, companyId, body, "active", toolActor(run));
+  if (name === "complete-campaign") return setStatus(ctx, companyId, body, "completed", toolActor(run));
+  if (name === "set-campaign-mode") return setMode(ctx, companyId, body, toolActor(run));
   if (name === "campaign-stats") return stats(ctx, companyId, body);
   if (name === "enroll-contact") return enroll(ctx, companyId, body);
   if (name === "request-campaign-approval") return requestApproval(ctx, companyId, body);
@@ -739,15 +755,15 @@ async function launchAction(ctx: PluginContext, context: PluginPerformActionCont
 }
 
 async function pauseAction(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {
-  return setStatus(ctx, requiredCompany(context), params, "paused");
+  return setStatus(ctx, requiredCompany(context), params, "paused", actionActor(context));
 }
 
 async function resumeAction(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {
-  return setStatus(ctx, requiredCompany(context), params, "active");
+  return setStatus(ctx, requiredCompany(context), params, "active", actionActor(context));
 }
 
 async function completeAction(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {
-  return setStatus(ctx, requiredCompany(context), params, "completed");
+  return setStatus(ctx, requiredCompany(context), params, "completed", actionActor(context));
 }
 
 async function statsAction(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {
@@ -758,7 +774,24 @@ async function enrollAction(ctx: PluginContext, context: PluginPerformActionCont
   return enroll(ctx, requiredCompany(context), params);
 }
 
+/** Auto (`full`) cannot be chosen until it ships (plan Stage 5a). */
+const AUTO_LATER = "Auto mode arrives in a later release. For now a campaign runs in Off or Safe.";
+
+/** The mode a new campaign starts in: Safe unless the call names Off or Safe. Nobody creates in Auto (an agent never may). */
+function creationMode(params: Record<string, unknown>, owner: Owner): CampaignMode | undefined {
+  if (params.autopilotMode === undefined || params.autopilotMode === null) return undefined;
+  const mode = parseCampaignMode(params.autopilotMode);
+  if (!mode) throw new CampaignError("autopilotMode must be off, safe or full.");
+  if (owner.agentId) {
+    const rule = agentMayCreateIn(mode);
+    if (!rule.allowed) throw new CampaignError(rule.reason);
+  }
+  if (mode === "full") throw new CampaignError(AUTO_LATER);
+  return mode;
+}
+
 async function createCampaignRecord(ctx: PluginContext, companyId: string, params: Record<string, unknown>, owner: Owner = {}) {
+  const autopilotMode = creationMode(params, owner);
   const client = await requireClient(ctx, companyId, readClientScope(params) ?? null);
   const campaign = createCampaign({
     companyId,
@@ -775,6 +808,7 @@ async function createCampaignRecord(ctx: PluginContext, companyId: string, param
     delivery: optionalString(params, "delivery"),
     ownerUserId: owner.userId ?? null,
     ownerAgentId: owner.agentId ?? null,
+    autopilotMode,
   });
   await insertCampaign(ctx, campaign);
   return publicCampaign(campaign);
@@ -809,13 +843,14 @@ async function updateCampaignRecord(ctx: PluginContext, companyId: string, param
     delivery: params.delivery === undefined ? campaign.delivery : optionalString(params, "delivery"),
     ownerUserId: campaign.ownerUserId,
     ownerAgentId: campaign.ownerAgentId,
+    autopilotMode: campaign.autopilotMode,
   });
   if (edited.delivery !== "auto") {
     // SMS and WhatsApp are sent by the plugin itself, so a campaign that has such a step cannot go back to a delivery that cannot send them.
     const texted = (await listSteps(ctx, campaign.id)).find((row) => stepChannel(row) !== "email");
     if (texted) throw new CampaignError(`This campaign has a ${stepChannel(texted) === "sms" ? "SMS" : "WhatsApp"} step, so its delivery must be auto.`);
   }
-  const next: CampaignDraft = { ...edited, approvalIssueId: campaign.approvalIssueId, winnerVariant: campaign.winnerVariant };
+  const next: CampaignDraft = { ...edited, approvalIssueId: campaign.approvalIssueId, winnerVariant: campaign.winnerVariant, pausedBy: campaign.pausedBy ?? null };
   // What goes out, to whom and when changed after approval was asked for: that approval no longer counts.
   const approvalReset = approvalFields(next) !== approvalFields(original)
     ? await invalidateApproval(ctx, companyId, next, "the campaign's audience, sender, delivery or dates changed")
@@ -1118,16 +1153,42 @@ async function logReplyTool(ctx: PluginContext, companyId: string, params: Recor
   return { logged: true, id, messageId, outcome, campaignId: reply.campaignId, enrollmentId: reply.enrollmentId, next: "Mark the reply issue done." };
 }
 
-async function setStatus(ctx: PluginContext, companyId: string, params: Record<string, unknown>, to: "paused" | "active" | "completed") {
+/**
+ * Pause, resume or complete (tool and page action). A pause records who paused it (`paused_by`) and writes an activity
+ * entry; a resume clears `paused_by`. A complete keeps it, for the record of the last pause.
+ */
+async function setStatus(ctx: PluginContext, companyId: string, params: Record<string, unknown>, to: "paused" | "active" | "completed", actor: CampaignActor | null) {
   const campaign = await requireCampaign(ctx, companyId, requiredString(params, "campaignId"));
   if (to === "paused") assertCanPause(campaign.status);
   if (to === "active") {
     if (campaign.status !== "paused") throw new CampaignError("Only a paused campaign can be resumed");
   }
   if (to === "completed") assertCanComplete(campaign.status);
-  campaign.status = to;
-  await saveCampaign(ctx, campaign);
-  return { campaignId: campaign.id, status: to };
+  const pausedBy = to === "paused" ? (actor ? actorRef(actor) : null) : to === "active" ? null : campaign.pausedBy ?? null;
+  await setCampaignStatus(ctx, campaign, to, pausedBy);
+  if (to === "paused") await logCampaignActivity(ctx, { companyId, actor, action: "pause", summary: "paused", campaign, details: { from: campaign.status } });
+  return { campaignId: campaign.id, status: to, ...(to === "paused" ? { pausedBy } : {}) };
+}
+
+/**
+ * `set-campaign-mode` (tool) and `campaigns.set-mode` (page). An agent may keep or lower the mode, never raise it; a
+ * person may choose Off or Safe. Auto (`full`) is refused for everyone until it ships. A change applies from now on.
+ */
+async function setMode(ctx: PluginContext, companyId: string, params: Record<string, unknown>, actor: CampaignActor | null) {
+  const campaign = await requireCampaign(ctx, companyId, requiredString(params, "campaignId"));
+  const mode = parseCampaignMode(params.mode);
+  if (!mode) throw new CampaignError("mode must be off, safe or full.");
+  if (!actor || actor.kind === "auto") throw new CampaignError("Only a signed-in person or an agent changes a campaign's mode.");
+  const from = campaign.autopilotMode ?? "safe";
+  if (actor.kind === "agent") {
+    const rule = agentMaySetMode(from, mode);
+    if (!rule.allowed) throw new CampaignError(rule.reason);
+  }
+  if (mode === "full") throw new CampaignError(AUTO_LATER);
+  if (mode === from) return { campaignId: campaign.id, mode, previousMode: from, changed: false };
+  if (!(await setCampaignMode(ctx, campaign, mode))) throw new CampaignError(`Campaign ${campaign.id} was not found.`);
+  await logCampaignActivity(ctx, { companyId, actor, action: "set-mode", summary: `set the mode to ${CAMPAIGN_MODE_LABELS[mode]} (was ${CAMPAIGN_MODE_LABELS[from]}) on`, campaign, mode, details: { from } });
+  return { campaignId: campaign.id, mode, previousMode: from, changed: true };
 }
 
 async function stats(ctx: PluginContext, companyId: string, params: Record<string, unknown>) {
@@ -1693,6 +1754,8 @@ function publicCampaign(campaign: CampaignDraft) {
     approvedByUserId: campaign.approvedByUserId ?? null,
     launchedAt: isoTime(campaign.launchedAt),
     launchError: campaign.launchError ?? null,
+    autopilotMode: campaign.autopilotMode ?? "safe",
+    pausedBy: campaign.pausedBy ?? null,
   };
 }
 
