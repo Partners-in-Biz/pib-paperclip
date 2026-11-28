@@ -160,3 +160,42 @@ describe("live instructions", () => {
     expect(text).not.toMatch(/call (them|the tools)/i);
   });
 });
+
+describe("voice comment field", () => {
+  const VOICE = { version: 1, voice: { mode: "direct" }, sections: [] };
+  function api(health: () => Promise<unknown>) {
+    const post = vi.fn(async (path: string, _body: unknown) => (path.startsWith("/companies/") ? { id: "chat-1", assigneeAgentId: "a-ceo" } : { id: "c1" }));
+    const get = vi.fn(async (path: string) => (path === "/health" ? health() : AGENTS));
+    return { api: { get, post } as unknown as ApiClient, post, get };
+  }
+  const commentBody = (post: ReturnType<typeof api>["post"]) => post.mock.calls.find((c) => c[0] === "/issues/chat-1/comments")![1] as Record<string, unknown>;
+  const ok = async () => ({ status: "ok", capabilities: { voiceCommentMetadata: 1 } });
+
+  it("marks a Direct spoken turn when the server reports the capability, and keeps the footer", async () => {
+    const a = api(ok);
+    await new AgentChat({ api: a.api, companyId: "c1", agentRef: null, context: plainChatContext(), direct: true }).post("hi", "id-1");
+    expect(commentBody(a.post).metadata).toEqual(VOICE);
+    expect(String(commentBody(a.post).body)).toContain("_Sent by voice");
+  });
+
+  it("posts as before when the capability is absent or the health read fails", async () => {
+    for (const health of [async () => ({ status: "ok" }), async () => { throw new Error("down"); }, async () => null]) {
+      const a = api(health);
+      await new AgentChat({ api: a.api, companyId: "c1", agentRef: null, context: plainChatContext(), direct: true }).post("hi", "id-1");
+      expect("metadata" in commentBody(a.post)).toBe(false);
+    }
+  });
+
+  it("never marks a typed or classic turn, and reads health once per call", async () => {
+    const a = api(ok);
+    const classic = new AgentChat({ api: a.api, companyId: "c1", agentRef: null, context: plainChatContext() });
+    await classic.post("hi", "id-1");
+    expect("metadata" in commentBody(a.post)).toBe(false);
+    expect(a.get.mock.calls.some((c) => c[0] === "/health")).toBe(false);
+    const b = api(ok);
+    const direct = new AgentChat({ api: b.api, companyId: "c1", agentRef: null, context: plainChatContext(), direct: true });
+    await direct.post("one", "id-2");
+    await direct.post("two", "id-3");
+    expect(b.get.mock.calls.filter((c) => c[0] === "/health")).toHaveLength(1);
+  });
+});
