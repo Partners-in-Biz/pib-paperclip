@@ -15,12 +15,15 @@
  * decides the handler's own permission and not one wide row. `seoCallAction` names the action for a handler; the
  * worker refuses a handler sent through the wrong one. A tool has the permission of its page handler.
  *
- * No entry is `scoped` yet: handlers do not filter by the person's companies until stage B2, so an own-companies
- * grant opens nothing here in stage A.
+ * Stage B2-4 (PAR-15211): a `scoped` row is open to a person limited to his own companies, and the worker keeps him
+ * to their sprints (`own-scope.ts`; the keys and their rules are in `own-rules.ts`). Every other row stays closed to
+ * him: settings, the company-wide reports (Cockpit, setup status, routines), the CRM client list, the legacy upgrade,
+ * task threads by issue id, and the agent.
  *
  * This file is imported by the page (`ui/actions.ts`), so it takes nothing but types from the kit.
  */
 import type { AccessTable, AccessTableEntry, ADMIN_ONLY as KIT_ADMIN_ONLY, PermissionAction } from "@partnersinbiz/pib-plugin-kit";
+import { HANDLER_RULES, PAGE_RULES } from "./own-rules.js";
 
 const ADMIN_ONLY: typeof KIT_ADMIN_ONLY = "ADMIN_ONLY";
 const work = (action: PermissionAction): AccessTableEntry => ({ resource: "seo.work", action });
@@ -104,7 +107,18 @@ const TOOL_ROWS = Object.fromEntries(
     .map(([name, entry]) => [`tool:${name}`, entry]),
 );
 
-export const ACCESS_TABLE: AccessTable = Object.freeze({
+/** Marks the rows open to a limited person (the keys `own-rules.ts` names) `scoped`. */
+const ownRows = (table: Record<string, AccessTableEntry>): AccessTable =>
+  Object.freeze(
+    Object.fromEntries(
+      Object.entries(table).map(([key, entry]) => {
+        const own = Object.hasOwn(PAGE_RULES, key) || (key.startsWith("tool:") && Object.hasOwn(HANDLER_RULES, key.slice(5)));
+        return [key, own && typeof entry === "object" && "resource" in entry ? { ...entry, scoped: true as const } : entry];
+      }),
+    ),
+  );
+
+export const ACCESS_TABLE: AccessTable = ownRows({
   // ── page actions ──
   ...rows(work("view"), ["seo.load", "seo.clients", "seo.sprint", "seo.routine-report", "seo.growth-experiments"]),
   ...SEO_CALL_ACTIONS,

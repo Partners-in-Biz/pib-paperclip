@@ -26,6 +26,8 @@ import {
   clientScopeFromInput,
   formatClientParam,
   OPEN_EXPERIMENTS,
+  normalizeToolResult,
+  type AccessCheck,
   type AccessGuard,
   type ApprovalIssuePort,
   type Autopilot,
@@ -354,9 +356,24 @@ export function seoGrowthToolsHost(ctx: PluginContext): GrowthToolsHost<GrowthAc
 const NATIVE_PLAYBOOK_TOOLS = new Set(["get-playbook", "propose-playbook-change", "decide-playbook-change"]);
 export const KIT_GROWTH_TOOL_NAMES = new Set((GROWTH_TOOL_NAMES as readonly string[]).filter((n) => !NATIVE_PLAYBOOK_TOOLS.has(n)));
 
+/**
+ * Checks a limited person's tool call against his companies (stage B2-4, `own-scope.ts`) before the handler: the
+ * params to run with, or the refusal. Absent in tests that only register.
+ */
+export type ToolLimit = (name: string, params: unknown, runCtx: ToolRunContext, check: AccessCheck) => Promise<{ refused: string } | { params: unknown }>;
+
 /** Registers the kit Growth tools except the native playbook ones (registration order must not let the kit shadow them), each through the access guard. */
-export function registerKitGrowthTools(ctx: PluginContext, guard: Pick<AccessGuard, "tool">): void {
-  const kitOnly: Pick<AccessGuard, "tool"> = { tool: (name, declaration, handler) => (NATIVE_PLAYBOOK_TOOLS.has(name) ? undefined : guard.tool(name, declaration, handler)) };
+export function registerKitGrowthTools(ctx: PluginContext, guard: Pick<AccessGuard, "tool">, limit?: ToolLimit): void {
+  const kitOnly: Pick<AccessGuard, "tool"> = {
+    tool: (name, declaration, handler) =>
+      NATIVE_PLAYBOOK_TOOLS.has(name)
+        ? undefined
+        : guard.tool(name, declaration, async (params, runCtx, check) => {
+            const limited = limit ? await limit(name, params, runCtx, check) : { params };
+            if ("refused" in limited) return normalizeToolResult({ error: `Access refused: ${limited.refused}.` });
+            return handler(limited.params, runCtx, check);
+          }),
+  };
   registerGrowthTools(ctx, seoGrowthToolsHost(ctx), kitOnly);
 }
 
@@ -365,11 +382,12 @@ export function registerSeoTools(
   ctx: PluginContext,
   guard: Pick<AccessGuard, "tool">,
   tools: ReadonlyArray<PluginToolDeclaration>,
-  run: (name: string, params: unknown, runCtx: ToolRunContext) => Promise<ToolResult>,
+  run: (name: string, params: unknown, runCtx: ToolRunContext, check?: AccessCheck) => Promise<ToolResult>,
+  limit?: ToolLimit,
 ): void {
   for (const tool of tools) {
     if (KIT_GROWTH_TOOL_NAMES.has(tool.name)) continue;
-    guard.tool(tool.name, tool, (params: unknown, runCtx: ToolRunContext) => run(tool.name, params, runCtx));
+    guard.tool(tool.name, tool, (params: unknown, runCtx: ToolRunContext, check: AccessCheck) => run(tool.name, params, runCtx, check));
   }
-  registerKitGrowthTools(ctx, guard);
+  registerKitGrowthTools(ctx, guard, limit);
 }

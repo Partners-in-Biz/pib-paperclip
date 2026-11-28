@@ -16,6 +16,9 @@ import {
   linkAgent,
   listCompanyAgents,
   listCrmClients,
+  listManagedCrmCompanyIds,
+  ownCompaniesOf,
+  permissionRefusal,
   pluginUiBase,
   registerClientProjectWatch,
   registerCrmProjection,
@@ -30,6 +33,7 @@ import {
   toolFail,
   toolOk,
   trackJob,
+  type AccessCheck,
   unlinkAgent,
   type AccessGuard,
 } from "@partnersinbiz/pib-plugin-kit";
@@ -41,6 +45,7 @@ import * as db from "./db.js";
 import { dispatch, HANDLERS, toolSummary, UI_ONLY_HANDLERS } from "./dispatch.js";
 import { scopeParamValue, scopeRedirect, sprintScope } from "./engine/scope.js";
 import { NAMESPACE, PLUGIN_ID } from "./namespace.js";
+import { limitToOwnClients } from "./own-scope.js";
 import { loadPreferencesView, savePreferencesFor } from "./preferences.js";
 import {
   defaultHireAssignee,
@@ -104,11 +109,20 @@ const plugin = definePlugin({
     env = e;
     registerDriveReplies(ctx);
     // Every action, tool and API route goes through the access guard (PAR-12676). With the switch off it is a pass-through.
-    const g = createAccessGuard(ctx, { pluginKey: PLUGIN_ID, table: ACCESS_TABLE });
+    // A limited person's own companies come from the CRM copy (stage B2-4): the ones he owns or manages.
+    const g = createAccessGuard(ctx, {
+      pluginKey: PLUGIN_ID,
+      table: ACCESS_TABLE,
+      linkedCompanies: (companyId, userId) => listManagedCrmCompanyIds(ctx, NAMESPACE, companyId, userId),
+    });
     guard = g;
-    registerSeoTools(ctx, g, SEO_TOOLS, (name, params, run) => runTool(e, name, params, run));
+    const limitTool = async (name: string, params: unknown, run: ToolRunContext, check: AccessCheck) => {
+      const own = ownCompaniesOf(check);
+      return own ? limitToOwnClients(e, run.companyId, own, `tool:${name}`, asParams(params)) : { params };
+    };
+    registerSeoTools(ctx, g, SEO_TOOLS, (name, params, run, check) => runTool(e, name, params, run, ownCompaniesOf(check)), limitTool);
     registerActions(e, g);
-    for (const routeKey of API_ROUTE_KEYS) g.apiRoute(routeKey, (input) => handleApiRoute(e, input));
+    for (const routeKey of API_ROUTE_KEYS) g.apiRoute(routeKey, (input, check) => handleApiRoute(e, input, ownCompaniesOf(check)));
     ctx.jobs.register(DAILY_JOB_KEY, async (job) => {
       // Recorded for the Cockpit's job health (kit jobHealth).
       const result = await trackJob(ctx, DAILY_JOB_KEY, () => runDailyJob(e, { force: job.trigger === "manual" }));
@@ -209,7 +223,8 @@ const plugin = definePlugin({
     // Cockpit roles: sign-offs and out-of-scope PRs go to the Reviewer first when one is set.
     registerRoleWatch(ctx);
     // Clients are CRM companies or CRM contacts (sole traders).
-    registerCrmProjection(ctx, NAMESPACE, { companies: true, contacts: true });
+    // `managers` (stage B2-4): who manages each company, so a limited person's own companies can be read here.
+    registerCrmProjection(ctx, NAMESPACE, { companies: true, contacts: true, companyManagers: true });
     // Client websites (platform, SEO plugin, Connector status) for the wordpress site mode; never the Connector key.
     registerCrmSiteProjection(ctx, NAMESPACE);
     // A client's issues open in the client's own project (the CRM's link), else the managed SEO project.
@@ -254,10 +269,19 @@ const plugin = definePlugin({
 export default plugin;
 runWorker(plugin, import.meta.url);
 
-async function handleApiRoute(env: Env, input: PluginApiRequestInput): Promise<PluginApiResponse> {
+/** `own`: the companies a limited person's call is limited to (stage B2-4), null for no limit. */
+async function handleApiRoute(env: Env, input: PluginApiRequestInput, own: ReadonlySet<string> | null = null): Promise<PluginApiResponse> {
   try {
     if (input.routeKey === "oauth-complete") return await gscOauthComplete(env, input);
-    if (input.routeKey === "client-summary") return await clientSummaryRoute(env, input);
+    if (input.routeKey === "client-summary") {
+      if (own) {
+        const first = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v);
+        const params = { clientKind: first(input.query.kind), clientRef: first(input.query.id) };
+        const limited = await limitToOwnClients(env, input.companyId, own, "api:client-summary", params);
+        if ("refused" in limited) return { status: 403, body: { error: limited.refused } };
+      }
+      return await clientSummaryRoute(env, input);
+    }
     if (input.routeKey === SETUP_STATUS_ROUTE.routeKey) {
       if (!input.companyId) return { status: 400, body: { error: "companyId is required" } };
       return { status: 200, body: await seoSetupStatus(env, input.companyId) };
@@ -295,13 +319,19 @@ async function toolActor(ctx: PluginContext, run: ToolRunContext): Promise<Actor
   return { kind: "agent", agentId: run.agentId, runId: run.runId ?? null, responsibleUserId };
 }
 
-async function runTool(e: Env, name: string, params: unknown, run: ToolRunContext): Promise<ToolResult> {
+/** `own`: the companies a limited person's call is limited to (stage B2-4), null for no limit. */
+async function runTool(e: Env, name: string, params: unknown, run: ToolRunContext, own: ReadonlySet<string> | null = null): Promise<ToolResult> {
   try {
     // Switched off in Setup: agents (and the SEO routines) get a clear refusal.
     if (!(await seoOn(e, run.companyId))) return toolFail(MODULE_OFF_MESSAGE);
     // Never wait on the managed-skill sync: the host call can take 30 s+ and the tool result does not depend on the copy (PAR-11023).
     // `soon` never throws and leaves a failed sync alone for 5 minutes, so a slow host is not asked again on every call.
     void e.skills.soon(run.companyId);
+    if (own) {
+      const limited = await limitToOwnClients(e, run.companyId, own, `tool:${name}`, asParams(params));
+      if ("refused" in limited) return toolFail(`Access refused: ${limited.refused}.`);
+      params = limited.params;
+    }
     const data = await dispatch(e, run.companyId, await toolActor(e.ctx, run), name, params);
     // MCP clients need structuredContent to be an object: never return null, arrays or bare values.
     return toolOk(toolSummary(name, data), data);
@@ -332,11 +362,17 @@ function requireUser(actor: Actor): Extract<Actor, { kind: "user" }> {
 function registerActions(e: Env, guard: AccessGuard) {
   const { ctx } = e;
   const action = (key: string, fn: (companyId: string, actor: Actor, params: Record<string, unknown>) => Promise<unknown>) =>
-    guard.action(key, async (params, context) => {
+    guard.action(key, async (params, context, check) => {
       const companyId = actionCompany(context);
       // Not awaited (PAR-11023); `soon` adds the 5-minute pause after a failed sync.
       void e.skills.soon(companyId);
-      return fn(companyId, actionActor(context), asParams(params));
+      const own = ownCompaniesOf(check);
+      if (!own) return fn(companyId, actionActor(context), asParams(params));
+      // A limited person (stage B2-4): his own companies' sprints only (`own-scope.ts`).
+      const limited = await limitToOwnClients(e, companyId, own, key, asParams(params));
+      if ("refused" in limited) return permissionRefusal(limited.refused);
+      const result = await fn(companyId, actionActor(context), limited.params);
+      return limited.after ? limited.after(result) : result;
     });
 
   // Company preferences: the kit checks that the caller is an owner or admin of this company (fails closed).

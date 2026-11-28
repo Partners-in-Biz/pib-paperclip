@@ -46,11 +46,11 @@ describe("SEO access guard", () => {
     expect(direct).toEqual([]);
   });
 
-  it("no entry is scoped yet, no row names another plugin's resource, and the table's ADMIN_ONLY is the kit's", () => {
+  it("only seo.work rows are scoped (stage B2-4), no row names another plugin's resource, and the table's ADMIN_ONLY is the kit's", () => {
     for (const [key, entry] of Object.entries(ACCESS_TABLE)) {
       if (typeof entry !== "object" || !("resource" in entry)) continue;
       expect(entry.resource, key).toMatch(/^seo\.(work|settings)$/);
-      expect(entry.scoped, key).toBeUndefined();
+      if (entry.scoped) expect(entry.resource, key).toBe("seo.work");
     }
     expect(ACCESS_TABLE["seo.start-hire"]).toBe(ADMIN_ONLY);
   });
@@ -64,7 +64,8 @@ describe("SEO access guard", () => {
       expect(key, name).not.toBeNull();
       used.add(key!);
       // An agent tool and its page handler need the same permission.
-      if (ACCESS_TABLE[`tool:${name}`]) expect(ACCESS_TABLE[`tool:${name}`], name).toEqual(SEO_CALL_ACTIONS[key!]);
+      const tool = ACCESS_TABLE[`tool:${name}`];
+      if (tool && typeof tool === "object" && "resource" in tool) expect({ resource: tool.resource, action: tool.action }, name).toEqual(SEO_CALL_ACTIONS[key!]);
     }
     expect([...used].sort()).toEqual(Object.keys(SEO_CALL_ACTIONS).sort());
   });
