@@ -21,6 +21,7 @@ import {
   runAdapterExecutionTargetProcess,
 } from "@paperclipai/adapter-utils/execution-target";
 import {
+  agentInheritedEnv,
   asBoolean,
   asNumber,
   asString,
@@ -374,7 +375,7 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
     // Explicit empty overrides clear inherited API keys in the child process.
     // Use the same precedence here when selecting its credential home.
     const isGrokSubscriptionMode = !hasNonEmptyEnvValue(
-      config.managedAiConnection ? env : { ...process.env, ...env },
+      config.managedAiConnection ? env : { ...agentInheritedEnv(), ...env },
       "XAI_API_KEY",
     );
     if (isGrokSubscriptionMode) {
@@ -480,7 +481,7 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
 
     const runtimeExecutionTarget = overrideAdapterExecutionTargetRemoteCwd(executionTarget, effectiveExecutionCwd);
     const effectiveEnv = Object.fromEntries(
-      Object.entries({ ...process.env, ...env }).filter(
+      Object.entries({ ...agentInheritedEnv(), ...env }).filter(
         (entry): entry is [string, string] => typeof entry[1] === "string",
       ),
     );

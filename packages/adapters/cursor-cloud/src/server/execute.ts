@@ -17,7 +17,9 @@ import {
   asString,
   buildPaperclipEnv,
   buildRuntimeToolsEnv,
+  isAgentEnvAllowlistOn,
   isForbiddenConfigEnvKey,
+  isServerSecretEnvKey,
   joinPromptSections,
   parseObject,
   readPaperclipIssueWorkModeFromContext,
@@ -61,6 +63,8 @@ function asStringEnvMap(value: unknown): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, entry] of Object.entries(parsed)) {
     if (isForbiddenConfigEnvKey(key)) continue;
+    // PAR-15260: a server secret never leaves for the cloud agent either.
+    if (isAgentEnvAllowlistOn() && isServerSecretEnvKey(key)) continue;
     if (typeof entry === "string") {
       env[key] = entry;
     } else if (typeof entry === "object" && entry !== null && !Array.isArray(entry)) {

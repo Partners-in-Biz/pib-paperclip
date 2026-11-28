@@ -10,6 +10,7 @@ import {
   ensureCommandResolvable,
   ensurePathInEnv,
 } from "../utils.js";
+import { agentInheritedEnv } from "@paperclipai/adapter-utils/server-utils";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -62,7 +63,7 @@ export async function testEnvironment(
     for (const [key, value] of Object.entries(envConfig)) {
       if (typeof value === "string") env[key] = value;
     }
-    const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
+    const runtimeEnv = ensurePathInEnv({ ...agentInheritedEnv(), ...env });
     try {
       await ensureCommandResolvable(command, cwd, runtimeEnv);
       checks.push({

@@ -21,6 +21,8 @@ import {
 import { redactCommandText } from "./command-redaction.js";
 import { boundWakePayloadJson } from "./wake-payload-bound.js";
 import { paperclipChatFilePreparationDelivery } from "./chat-file-delivery.js";
+import { agentInheritedEnv, withoutServerSecretEnv } from "./agent-child-env.js";
+export * from "./agent-child-env.js";
 import {
   PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
   resolvePaperclipRunnerModel,
@@ -4925,9 +4927,12 @@ export async function runChildProcess(
     opts.onLogError ??
     ((err, id, msg) => console.warn({ err, runId: id }, msg));
   return new Promise<RunProcessResult>((resolve, reject) => {
+    // PAR-15260: the inherited layer is the agent allowlist, and no layer
+    // carries a server secret (kill switch `off`: today's env).
+    const explicitEnv = withoutServerSecretEnv(opts.env);
     const rawMerged: NodeJS.ProcessEnv = {
-      ...sanitizeInheritedPaperclipEnv(process.env),
-      ...opts.env,
+      ...sanitizeInheritedPaperclipEnv(agentInheritedEnv(process.env)),
+      ...explicitEnv,
     };
 
     // Strip Claude Code nesting-guard env vars so spawned `claude` processes
@@ -4951,7 +4956,7 @@ export async function runChildProcess(
     }
     void resolveSpawnTarget(command, args, opts.cwd, mergedEnv, {
       remoteExecution: opts.remoteExecution ?? null,
-      remoteEnv: opts.remoteExecution ? opts.env : null,
+      remoteEnv: opts.remoteExecution ? explicitEnv : null,
       localProcessSandbox: opts.localProcessSandbox ?? null,
       runId,
     })

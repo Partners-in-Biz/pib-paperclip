@@ -4,6 +4,7 @@ import type {
   AdapterEnvironmentTestResult,
 } from "@paperclipai/adapter-utils";
 import {
+  agentInheritedEnv,
   asNumber,
   asString,
   asStringArray,
@@ -164,7 +165,7 @@ export async function testEnvironment(
   });
   command = finalSandboxCommand.command;
   env = finalSandboxCommand.env;
-  const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
+  const runtimeEnv = ensurePathInEnv({ ...agentInheritedEnv(), ...env });
   try {
     await ensureAdapterExecutionTargetCommandResolvable(command, target, cwd, runtimeEnv);
     checks.push({

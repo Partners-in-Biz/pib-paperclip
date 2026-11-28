@@ -74,6 +74,7 @@ import {
   ensurePathInEnv,
   ensurePaperclipSkillSymlink,
   isForbiddenConfigEnvKey,
+  withoutServerSecretEnv,
   isPaperclipExternalChatTurn,
   isPaperclipRuntimeEnvKey,
   joinPromptSections,
@@ -2814,11 +2815,13 @@ function resolveRuntimeEnv(
     env,
     (options.platform ?? process.platform) === "win32",
   );
-  const finalEnv = Object.fromEntries(
+  // PAR-15260: a server secret never reaches the provider, even when a stored
+  // config env names it (kill switch `off`: unchanged).
+  const finalEnv = withoutServerSecretEnv(Object.fromEntries(
     Object.entries(mergedEnv).filter(
       (entry): entry is [string, string] => typeof entry[1] === "string",
     ),
-  );
+  ));
   // codex-acp supports both key names, but ACP clients must select its
   // api-key authentication method during session creation. Without this
   // request, the server advertises authentication and rejects session/new even
