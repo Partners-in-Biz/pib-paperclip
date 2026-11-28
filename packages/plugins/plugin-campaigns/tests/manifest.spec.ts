@@ -26,9 +26,9 @@ describe("manifest 0.6", () => {
   });
 
   it("is version 0.8.8 everywhere", () => {
-    expect(manifest.version).toBe("0.23.1");
-    expect(PLUGIN_VERSION).toBe("0.23.1");
-    expect(pkg.version).toBe("0.23.1");
+    expect(manifest.version).toBe("0.24.0");
+    expect(PLUGIN_VERSION).toBe("0.24.0");
+    expect(pkg.version).toBe("0.24.0");
   });
 
   it("declares the activity.log.write capability", () => {
@@ -127,7 +127,7 @@ describe("migrations", () => {
   it("014 is a migration, passes the host guard, widens the step event kinds and indexes the sent events by address", () => {
     const sql = read("014_campaigns.sql");
     expect(files[13]).toBe("014_campaigns.sql");
-    expect(files).toHaveLength(21);
+    expect(files).toHaveLength(22);
     for (const statement of splitSqlStatements(sql)) expect(() => validateMigrationStatement(statement, NAMESPACE), statement.slice(0, 80)).not.toThrow();
     for (const line of sql.split("\n").filter((l) => l.trim().startsWith("--"))) expect(line).not.toMatch(/['"]/);
     // Every kind of 013 stays allowed, and the two new ones are added.
@@ -174,6 +174,15 @@ describe("migrations", () => {
     const code = sql.split("\n").filter((l) => !l.trim().startsWith("--")).join("\n");
     expect(code).toContain("ADD COLUMN autopilot_mode text NOT NULL DEFAULT 'safe'");
     expect(code).not.toMatch(/\b(delete|update|drop)\b/i);
+  });
+
+  it("022 only adds the CRM copy's managers to crm_companies (stage B2, a nullable column)", () => {
+    const sql = read("022_campaigns.sql");
+    expect(files[21]).toBe("022_campaigns.sql");
+    for (const statement of splitSqlStatements(sql)) expect(() => validateMigrationStatement(statement, NAMESPACE), statement.slice(0, 80)).not.toThrow();
+    for (const line of sql.split("\n").filter((l) => l.trim().startsWith("--"))) expect(line).not.toMatch(/['"]/);
+    const code = sql.split("\n").filter((l) => !l.trim().startsWith("--")).join("\n").trim();
+    expect(code).toBe(`ALTER TABLE ${NAMESPACE}.crm_companies ADD COLUMN IF NOT EXISTS managers jsonb;`);
   });
 
   it("never edits an applied migration: 001 to 013 are live and each file still has the hash it was applied with", () => {

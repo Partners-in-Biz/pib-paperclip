@@ -37,12 +37,12 @@ describe("Campaigns access guard (PAR-12684)", () => {
     );
   });
 
-  it("uses only the Campaigns resources, never access.members.write, and no row is scoped yet", () => {
+  it("uses only the Campaigns resources, never access.members.write, and only campaigns.campaigns rows are scoped (stage B2)", () => {
     for (const [key, entry] of Object.entries(CAMPAIGNS_ACCESS_TABLE)) {
       expect(typeof entry === "object" && "resource" in entry, key).toBe(true);
       if (typeof entry === "object" && "resource" in entry) {
         expect(entry.resource, key).toMatch(/^campaigns\.(campaigns|settings)$/);
-        expect(entry.scoped, key).toBeUndefined();
+        if (entry.scoped !== undefined) expect([entry.resource, entry.scoped], key).toEqual(["campaigns.campaigns", true]);
       }
     }
   });

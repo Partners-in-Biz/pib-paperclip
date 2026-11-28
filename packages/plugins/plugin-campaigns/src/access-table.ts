@@ -4,9 +4,12 @@
  * today) the guard passes every call on unchanged. `tests/access.spec.ts` fails on a missing or stale row.
  *
  * Catalog resources: `campaigns.campaigns` (view, create, edit, delete, approve; scopable) and `campaigns.settings`
- * (view, edit). No row is `scoped` yet: the handlers do not filter by the acting person's companies until stage B, so
- * an own-companies person stays closed here. The rows only add a gate in front of the handlers; the handlers keep their
- * own checks (only a person approves a launch, only the owner decides a client's campaign).
+ * (view, edit). The rows only add a gate in front of the handlers; the handlers keep their own checks (only a person
+ * approves a launch, only the owner decides a client's campaign).
+ *
+ * Stage B2 (PAR-15209): a `scoped` row is open to a person limited to his own companies, and its handler keeps him to
+ * their campaigns (`own-scope.ts`, one rule per scoped key). Every other row stays closed to him: templates, sender
+ * identities, the page preferences, own brands, moving a draft, the Growth Lab, canvas cards, Cockpit and Setup.
  *
  * Rule of thumb: reading is `view`; a new campaign or template is `create`; changing a draft, an enrollment or a
  * suppression is `edit`; anything that starts or restarts sending, or decides an approval, is `approve`. A tool has the
@@ -23,7 +26,30 @@ const APPROVE = campaigns("approve");
 
 const rows = (entry: AccessTableEntry, keys: string[]) => Object.fromEntries(keys.map((key) => [key, entry]));
 
-export const CAMPAIGNS_ACCESS_TABLE: AccessTable = Object.freeze({
+/** Open to a limited person, within his own companies' campaigns (stage B2). */
+const SCOPED = new Set([
+  "campaigns.load", "campaigns.detail", "campaigns.results", "campaigns.stats", "campaigns.ab-suggestion", "campaigns.create-campaign",
+  "campaigns.audience-preview", "campaigns.audience-members", "campaigns.audience-import", "campaigns.audience-add",
+  "campaigns.add-step", "campaigns.request-approval", "campaigns.pause", "campaigns.complete", "campaigns.enroll", "campaigns.declare-winner",
+  "campaigns.launch", "campaigns.resume", "campaigns.approve", "campaigns.send-back", "campaigns.set-mode", "campaigns.client-summary",
+  "tool:list-campaigns", "tool:campaign-stats", "tool:preflight-campaign", "tool:export-person-data", "tool:campaign-funnel",
+  "tool:campaign-step-analytics", "tool:campaign-results", "tool:suggest-ab-winner", "tool:create-campaign",
+  "tool:update-campaign", "tool:add-campaign-step", "tool:pause-campaign", "tool:complete-campaign", "tool:enroll-contact",
+  "tool:stop-enrollment", "tool:suppress-address", "tool:suppress-phone", "tool:record-channel-consent", "tool:log-reply",
+  "tool:request-campaign-approval", "tool:create-ab-variant", "tool:record-step-event", "tool:set-step-html",
+  "tool:edit-campaign-step", "tool:declare-ab-winner", "tool:launch-campaign", "tool:resume-campaign",
+  "tool:review-campaign-approval", "tool:set-campaign-mode",
+  "api:client-summary",
+]);
+
+/** Marks the stage B2 rows `scoped`; every other row stays as written. */
+function withScoped(table: Record<string, AccessTableEntry>): AccessTable {
+  const mark = (key: string, entry: AccessTableEntry): AccessTableEntry =>
+    SCOPED.has(key) && typeof entry === "object" && "resource" in entry ? { ...entry, scoped: true as const } : entry;
+  return Object.freeze(Object.fromEntries(Object.entries(table).map(([key, entry]) => [key, mark(key, entry)])));
+}
+
+export const CAMPAIGNS_ACCESS_TABLE: AccessTable = withScoped({
   // Page actions.
   ...rows(VIEW, ["campaigns.load", "campaigns.detail", "campaigns.results", "campaigns.stats", "campaigns.ab-suggestion", "campaigns.growth-load"]),
   // Planning Canvas entity cards (PAR-14423): reading, so `view`, as the page's detail and list.
