@@ -303,3 +303,15 @@ LinkedIn Page (organization) posts read `organizationalEntityShareStatistics` (i
 ## Inbox: one post cannot block the others (0.15.3)
 
 `poll-inbox` reads YouTube, Facebook, Instagram and Threads comments one published post at a time. A post that only it can fail (a private video, comments switched off, a deleted or hidden post: HTTP 400, 403 or 404) is skipped, and the other posts' comments still reach the inbox. Each skipped post is logged once per worker (`Social inbox skipped a post`, with the account, platform, post id and the provider's message), not on every poll. An invalid token, a rate limit or quota answer, a server error or a network error still fails the account's poll as before, and so does a run where every post failed (an account-wide refusal looks like a 403 on every post). Before 0.15.3 one private YouTube video stopped the whole account's poll while the job still reported success (PiB Demo, 2026-11-08).
+
+## A person limited to his own companies (0.17.0, access stage B2, PAR-15210)
+
+Under the access switch `enforce`, a person on the Client manager preset (own companies) works only on the clients of his companies: the CRM companies he owns or is on "Managed by" for (the CRM copy's new `crm_companies.managers`, migration 022; the guard's `linkedCompanies` resolver), and the CRM contacts that belong to one of them. The `scoped` rows in `src/access-table.ts` each have a rule in `src/own-scope.ts`:
+
+- a tool or page call names one of his clients (none, `all` or own work is refused); a create needs one of his;
+- a post, account or inbox item named by id must belong to one of his clients (destinations, approvals and metrics through the post);
+- the page opens his first client (by name) and leaves out the templates and the approver candidates; `limitedTo` lists his clients; `list-clients` and canvas search show his only; the CRM tile (`client-summary`) answers for his only.
+
+A guessed id and another company's record get the same refusal ("That was not found among your companies"). The viewer carries his clients too, so `postVisible`, `accountVisible`, the inbox check and `readScope` refuse anything else behind those rules. Closed to him (rows stay unscoped): own-brand work, templates, settings (RSS feeds, approvers, cadence, the Growth Lab), connecting accounts and uploads, My Social, the agent, Cockpit and setup. With the switch off (every company today) nothing changes.
+
+**Rollback:** revert the code; migration 022 adds one nullable column the older code ignores (leave it in place). No capability change.

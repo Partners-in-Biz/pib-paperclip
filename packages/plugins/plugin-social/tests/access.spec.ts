@@ -62,16 +62,16 @@ describe("Social access guard", () => {
     expect(direct).toEqual([]);
   });
 
-  it("no entry is scoped yet, and no table row names another plugin's resource", () => {
+  it("no table row names another plugin's resource; no settings row is scoped (stage B2, own-scope.pg.spec.ts)", () => {
     for (const [key, entry] of Object.entries(ACCESS_TABLE)) {
       if (typeof entry !== "object" || !("resource" in entry)) continue;
       expect(entry.resource, key).toMatch(/^social\.(posts|accounts|settings)$/);
-      expect(entry.scoped, key).toBeUndefined();
+      if (entry.resource === "social.settings") expect(entry.scoped, key).toBeUndefined();
     }
   });
 
   it("publishing, replying and signing off need social.posts approve; hiring and preferences are owner or admin only", () => {
-    for (const key of OUTGOING) expect(ACCESS_TABLE[key], key).toEqual({ resource: "social.posts", action: "approve" });
+    for (const key of OUTGOING) expect(ACCESS_TABLE[key], key).toMatchObject({ resource: "social.posts", action: "approve" });
     for (const key of ADMIN_KEYS) expect(ACCESS_TABLE[key], key).toBe("ADMIN_ONLY");
   });
 

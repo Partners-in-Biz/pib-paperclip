@@ -23,7 +23,7 @@ import { rollupPostStatus, SocialError } from "./domain.js";
 import { closeManualPostIssue } from "./issues.js";
 import { startPlan } from "./plan-trigger.js";
 import { isSocialPlatform, manualExternalId, PLATFORM_LABELS } from "./platforms.js";
-import { getPostDetail, optionalString, requiredString, requirePost, requireUser, xStatusIdFor, type Viewer } from "./service.js";
+import { assertOwnTarget, getPostDetail, optionalString, requiredString, requirePost, requireUser, xStatusIdFor, type Viewer } from "./service.js";
 import { spaceOf } from "./space.js";
 
 const HANDLE = /^[A-Za-z0-9._-]{1,60}$/;
@@ -46,6 +46,7 @@ export async function addManualAccountRecord(ctx: PluginContext, viewer: Viewer,
   const handle = cleanHandle(requiredString(params, "handle"));
   const personal = spaceOf(params) === "me";
   const target: ResolvedScope = await scopeFromParams(ctx, viewer.companyId, personal ? { ...params, client: null } : params);
+  assertOwnTarget(viewer, target.scope);
   const profileUrl = optionalString(params, "profileUrl") ?? null;
   if (profileUrl && !/^https:\/\//i.test(profileUrl)) throw new SocialError("The profile link must start with https://");
   const externalId = manualExternalId(handle);
