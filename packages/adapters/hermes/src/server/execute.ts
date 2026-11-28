@@ -595,8 +595,14 @@ async function executeHermes(
       }
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
+      // SPIKE PAR-15293: the dev instance cannot own skills a production
+      // instance installed into the shared profile; use the installed ones.
+      if (config.spikeVoiceWarm === true && process.env.PAPERCLIP_SPIKE_VOICE_WARM === "1") {
+        await ctx.onLog("stdout", `[hermes] SPIKE: using the profile's installed skills (${reason})\n`);
+      } else {
       await ctx.onLog("stderr", `[hermes] Cannot start without the required Paperclip-managed skills: ${reason}\n`);
       throw err;
+      }
     }
   }
 
@@ -840,6 +846,26 @@ async function executeHermes(
     } catch {
       // Non-fatal
     }
+  }
+
+  // SPIKE PAR-15293 (throwaway): warm voice host behind a per-turn bridge.
+  if (!remote && config.spikeVoiceWarm === true && process.env.PAPERCLIP_SPIKE_VOICE_WARM === "1") {
+    const { runWarmVoiceTurnSpike } = await import("./voice-spike/warm-host.js");
+    const { createHash } = await import("node:crypto");
+    await query.cleanup?.().catch(() => {});
+    const fingerprint = createHash("sha256").update(JSON.stringify([
+      resolveHermesCommand(config), agentInstructions, agentSkillsDir ?? null, model, resolvedProvider,
+      env.HERMES_HOME ?? null,
+    ])).digest("hex").slice(0, 16);
+    return runWarmVoiceTurnSpike(ctx, {
+      command: resolveHermesCommand(config), coldEnv: env, cwd, prompt, sessionId,
+      model, provider: resolvedProvider,
+      upstreamUrl: env.PAPERCLIP_RUNTIME_API_URL || env.PAPERCLIP_API_URL,
+      // Spike: issues titled "chat-<X> ..." stand in for one chat <X>.
+      chatKey: /^chat-(\w+)/.exec(String((ctxContext as any)?.paperclipWake?.issue?.title ?? ""))?.[1] ?? (envTaskId || "default"),
+      fingerprint,
+      systemPrompt: env.HERMES_EPHEMERAL_SYSTEM_PROMPT ?? "",
+    });
   }
 
   // ── Log start ──────────────────────────────────────────────────────────
