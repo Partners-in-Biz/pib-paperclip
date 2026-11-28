@@ -64,6 +64,10 @@ Listens to `plugin.<sender>.mail.send.requested` for every kit `MAIL_SENDERS` pl
 - A retry first looks the message up by its Message-ID, so an attempt Gmail accepted is not sent twice.
 - Over the rate, Gmail down or the account needs reconnecting: nothing is stored and the sender's outbox retries. No connected account, a bad address, an expired attachment link or a message Gmail refuses: `failed` with `permanent: true`. The Sent tab retries by hand.
 
+## 0.10.1: rebuilt on kit 0.24.2 (PAR-15197)
+
+Src-only (kit 0.24.2, PAR-15008 / PAR-15197): a rebuild on the current kit, whose access guard subscribes to Setup's `access.updated`, so this plugin stores its copy of the access switch and grants and confirms with `access.synced`. With the switch off nothing changes for a call. No migration, no capability change.
+
 ## 0.10.0: the access guard (PAR-12682, spec PAR-12578 stage A)
 
 - Every page action, agent tool and API route is registered through the kit access guard, with one row each in `src/access-table.ts`: `mailbox.mail` (view, create, edit, delete), `mailbox.accounts` (connect, disconnect, delete, default, client, delegations) and `mailbox.settings` (sending domains, holds, client mail maps, the unsubscribe check). Preferences and the skill sync are owner or admin only. A tool needs the same permission as its page action.

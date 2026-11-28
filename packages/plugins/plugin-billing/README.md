@@ -2,6 +2,8 @@
 
 Paperclip plugin `partnersinbiz.billing` (0.7). Customer-facing money for PiB: invoices, quotes, credit notes, EFT proof of payment, suppliers' bills, expenses with receipts, time, retainers and operational reports. Every financial event posts to the Accounting plugin as a journal. Money is integer minor units (cents) everywhere.
 
+**0.24.1**: src-only (kit 0.24.2, PAR-15008 / PAR-15197): a rebuild on the current kit, whose access guard subscribes to Setup's `access.updated`, so this plugin stores its copy of the access switch and grants and confirms with `access.synced`. With the switch off nothing changes for a call. No migration, no capability change.
+
 **0.24.0** (PAR-12675, spec PAR-12578 stage A): every page action, agent tool and API route, and the invoice card actions, goes through the kit access guard, with its permission in `src/access-table.ts`. With the company's access switch `off` the guard passes every call on unchanged. No migration, no capability change.
 
 **0.23.0** (PAR-14420): the invoice card for Planning Canvas boards: slot `card-invoice` with `entityCard` (search and related), and the `canvas.cards.*` actions through the kit's `registerCanvasCards`. Needs the core release with the card contract; deployed first, core drops `entityCard` and no tab shows. No migration, no capability change.
