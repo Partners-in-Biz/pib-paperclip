@@ -1566,7 +1566,15 @@ async function listDealProductsRecord(ctx: PluginContext, viewer: Viewer, params
 async function createCompany(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
   const name = requiredString(params, "name");
   const domain = normalizeDomain(optionalString(params, "domain"));
+  // A limited person (linked decision, enforce): the company is his alone, and a match on another's company is refused
+  // before anything is read back, saved or logged.
+  if (viewer.linkedCompanyIds && !viewer.userId) {
+    throw new CrmError("Could not verify who is creating this company, so nothing was created. Sign in and try again.");
+  }
   const [existing] = await companiesByDomainOrName(ctx, viewer.companyId, domain, name);
+  if (existing && viewer.linkedCompanyIds && !viewer.linkedCompanyIds.includes(existing.id) && existing.ownerUserId !== viewer.userId) {
+    throw new CrmError("A company with this name or website is already in the CRM. Ask an owner or admin to add you to its Managed by.");
+  }
   if (existing) {
     const filled: string[] = [];
     if (domain && !existing.domain && !existing.humanOwned.includes("domain")) {

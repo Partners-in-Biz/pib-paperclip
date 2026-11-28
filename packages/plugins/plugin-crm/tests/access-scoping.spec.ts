@@ -251,3 +251,57 @@ describe("the B-D3 rule (domain)", () => {
     expect(sets.links.map((link) => link.id)).toEqual(["l1"]);
   });
 });
+
+describe("PAR-15253: a limited person creates his own company under enforce", () => {
+  const REFUSAL = "A company with this name or website is already in the CRM. Ask an owner or admin to add you to its Managed by.";
+
+  it("action and agent tool: owner = him, no managers, and it is then his", async () => {
+    const { act, tool, harness } = await world("enforce");
+    const made = await act("crm.create-company", { name: "Fresh Ltd" });
+    expect(isRefusal(made)).toBe(false);
+    const stored = (harness as any).store?.companies ?? [];
+    const mine = stored.find((c: any) => c.id === made.id);
+    if (mine) {
+      expect(mine.owner_user_id).toBe(JAN);
+      expect(mine.manager_user_ids ?? []).toEqual([]);
+    }
+    expect(made.ownerUserId).toBe(JAN);
+    expect(ids((await act("crm.load", {})).accounts)).toContain(made.id);
+    expect((await tool("get-company", { companyRecordId: made.id })).data?.id).toBe(made.id);
+    const viaTool = await tool("create-company", { name: "Tool Ltd" });
+    expect(viaTool.data?.ownerUserId).toBe(JAN);
+  });
+
+  it("a name or website match on another member's company is refused and nothing changes", async () => {
+    const { act, tool } = await world("enforce");
+    const before = JSON.stringify((await tool("get-company", { companyRecordId: "globex" }, OWNER)).data);
+    for (const params of [{ name: "globex" }, { name: "Other", domain: "globex.test", tags: ["x"] }]) {
+      await expect(act("crm.create-company", params)).rejects.toThrow(REFUSAL);
+      const viaTool = await tool("create-company", params);
+      expect(JSON.stringify(viaTool)).toContain(REFUSAL);
+      expect(JSON.stringify(viaTool)).not.toContain("globex.test");
+    }
+    expect(JSON.stringify((await tool("get-company", { companyRecordId: "globex" }, OWNER)).data)).toBe(before);
+  });
+
+  it("a match on his own company fills empty fields and returns it", async () => {
+    const { act } = await world("enforce");
+    const out = await act("crm.create-company", { name: "Acme Plumbing", phone: "012" });
+    expect(out.matched).toBe(true);
+    expect(out.id).toBe("acme");
+    expect(out.filled).toContain("phone");
+  });
+
+  it("the owner (scope all) keeps today's match on any company", async () => {
+    const { act } = await world("enforce");
+    const out = await act("crm.create-company", { name: "Globex" }, OWNER);
+    expect(out.matched).toBe(true);
+    expect(out.id).toBe("globex");
+  });
+
+  it.each([null, "off", "report"] as const)("switch %s: today's answer, a match on another's company still matches", async (mode) => {
+    const { act } = await world(mode);
+    const out = await act("crm.create-company", { name: "Globex" }, OWNER);
+    expect(out.matched).toBe(true);
+  });
+});

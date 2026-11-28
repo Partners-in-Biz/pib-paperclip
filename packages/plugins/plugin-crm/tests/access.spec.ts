@@ -67,7 +67,7 @@ describe("CRM access guard", () => {
         "set-next-action",
       ]),
       "crm.load", "crm.client-workspace", "crm.activities", "canvas.cards.resolve", "canvas.cards.search", "canvas.cards.related",
-      "crm.set-human-owned", "crm.desk",
+      "crm.set-human-owned", "crm.desk", "crm.create-company", "tool:create-company",
       ...["get-company", "get-client-profile", "field-history", "get-contact", "contact-graph", "find-duplicates", "export-contacts", "list-deals", "list-stages", "list-deal-products", "add-deal-product"].map((name) => `tool:${name}`),
     ];
     // Stage B-3 (PAR-15205; tests/access-scoping-clients.spec.ts): every row of the client areas (sites incl. wp-* and
@@ -84,7 +84,7 @@ describe("CRM access guard", () => {
     expect(b3).toEqual(expect.arrayContaining(["crm.drive-folder", "crm.drive-files", "tool:wp-seo", "crm.wp-content", "tool:drive_file_save", "tool:list-client-sites", "tool:list-sign-documents", "tool:list-support-cases"]));
     // Reports (attribution and site events too), settings, sequences, creates, deletes, shares, consent and Drive trash stay closed.
     for (const key of [
-      "crm.reports-drive-catchup", "tool:pipeline-forecast", "crm.settings-status", "tool:create-pipeline", "crm.create-company", "crm.share-record", "crm.delete-company",
+      "crm.reports-drive-catchup", "tool:pipeline-forecast", "crm.settings-status", "tool:create-pipeline", "crm.share-record", "crm.delete-company",
       "tool:merge-contacts", "crm.sequence-detail", "tool:attribution-report", "crm.site-events-report", "tool:record-consent", "tool:start-new-client", "tool:drive_file_trash",
       "tool:drive_binding_set",
     ]) {
