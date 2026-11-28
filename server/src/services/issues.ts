@@ -1658,7 +1658,7 @@ async function resolveCommentResponsibleUserId(
     );
 }
 
-function withAgentCommentAuthorizationMetadata(
+export function withAgentCommentAuthorizationMetadata(
   metadata: IssueCommentMetadata | null,
   authorizationReason: string | null | undefined,
 ): IssueCommentMetadata {

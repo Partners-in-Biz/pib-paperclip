@@ -764,6 +764,7 @@ describe("issue comment voice metadata", () => {
   });
 
   it("reads a voice row as no metadata under the pre-voice schema (rollback)", () => {
+    // Mirrors the `development` definition of the metadata schema at the base commit (before voice).
     const legacy = z
       .object({ version: z.literal(1), sections: z.array(issueCommentMetadataSectionSchema).min(1).max(20) })
       .strict();
