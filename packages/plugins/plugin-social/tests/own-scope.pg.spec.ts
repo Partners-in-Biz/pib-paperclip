@@ -25,7 +25,7 @@ const EMBEDDED = fileURLToPath(new URL("../../../db/node_modules/embedded-postgr
 const available = await import(EMBEDDED).then(() => true, () => false);
 
 type PgClient = { query: (sql: string, values?: unknown[]) => Promise<{ rows: Array<Record<string, unknown>>; rowCount: number | null }>; connect: () => Promise<void>; end: () => Promise<void> };
-type Db = { namespace: string; query: (sql: string, params?: unknown[]) => Promise<any[]>; execute: (sql: string, params?: unknown[]) => Promise<{ rowCount: number }> };
+type Db = { namespace: string; query: <T = Record<string, unknown>>(sql: string, params?: unknown[]) => Promise<T[]>; execute: (sql: string, params?: unknown[]) => Promise<{ rowCount: number }> };
 
 const COMPANY = "11111111-1111-1111-1111-111111111111";
 const OWNER = "user-owner";
@@ -60,7 +60,7 @@ beforeAll(async () => {
   const values = (params: unknown[]) => params.map((v) => (v !== null && typeof v === "object" && !(v instanceof Date) ? JSON.stringify(v) : v));
   db = {
     namespace: NAMESPACE,
-    query: async (sql, params = []) => JSON.parse(JSON.stringify((await client.query(sql, values(params))).rows)),
+    query: async <T,>(sql: string, params: unknown[] = []) => JSON.parse(JSON.stringify((await client.query(sql, values(params))).rows)) as T[],
     execute: async (sql, params = []) => ({ rowCount: (await client.query(sql, values(params))).rowCount ?? 0 }),
   };
   stop = async () => {
