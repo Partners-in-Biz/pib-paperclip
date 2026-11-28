@@ -20,7 +20,7 @@ const ALLOW_VIEW = { allow: ["crm.contacts:view"], scopeOverrides: { crm: "all" 
 const LINKED_VIEW = { allow: ["crm.contacts:view"], linkedCompanyIds: ["crm-co-1"] };
 
 /** A plugin context with the switch row, members, grants and runs; every core read is counted. */
-function fake(mode: "off" | "report" | "enforce" | null) {
+function fake(mode: "off" | "report" | "enforce" | null, linkedCompanies?: (companyId: string, userId: string) => Promise<string[]>) {
   const state = new Map<string, unknown>();
   if (mode) state.set("company", { mode, rev: 1, userIds: [], receivedAt: new Date().toISOString() });
   const members: Array<{ principalType: string; principalId: string; status: string; membershipRole: string }> = [];
@@ -45,7 +45,7 @@ function fake(mode: "off" | "report" | "enforce" | null) {
     logger: { info: () => undefined },
   } as unknown as PluginContext;
   const seen: AccessCheck[] = [];
-  const guard = createAccessGuard(ctx, { pluginKey: PLUGIN, table: TABLE });
+  const guard = createAccessGuard(ctx, { pluginKey: PLUGIN, table: TABLE, linkedCompanies });
   for (const key of Object.keys(TABLE).filter((k) => !k.startsWith("tool:")).concat("missing")) {
     guard.action(key, async (_p, _c, check) => (seen.push(check), { done: key }));
   }
@@ -146,6 +146,51 @@ describe("scope rule", () => {
     expect(refused(await f.act("view", user("cm")))).toBe(true);
     expect(await f.act("scopedView", user("cm"))).toEqual({ done: "scopedView" });
     expect(f.seen.at(-1)?.decision).toEqual({ allowed: true, scope: "linked", companyIds: ["crm-co-1"] });
+  });
+
+  it("stage B: the plugin's resolver, not the grant, names his companies; asked per person, under enforce only", async () => {
+    const asked: Array<[string, string]> = [];
+    const f = fake("enforce", async (companyId, userId) => (asked.push([companyId, userId]), ["crm-co-7", "crm-co-8", "crm-co-7", ""]));
+    f.member("cm", "operator", LINKED_VIEW);
+    f.member("op", "operator", ALLOW_VIEW);
+    f.member("own", "owner");
+    expect(await f.act("scopedView", user("cm"))).toEqual({ done: "scopedView" });
+    expect(f.seen.at(-1)?.decision).toEqual({ allowed: true, scope: "linked", companyIds: ["crm-co-7", "crm-co-8"] });
+    expect(asked).toEqual([[CO, "cm"]]);
+    // Scope `all` and owners never ask; an unscoped entry is still refused first.
+    expect(await f.act("view", user("op"))).toEqual({ done: "view" });
+    expect(await f.act("scopedView", user("own"))).toEqual({ done: "scopedView" });
+    expect(refused(await f.act("view", user("cm")))).toBe(true);
+    expect(asked).toHaveLength(1);
+    // An agent working for him gets the same list.
+    f.setRun({ responsible_user_id: "cm", status: "running" });
+    expect(await f.act("scopedView", agent())).toEqual({ done: "scopedView" });
+    expect(asked.at(-1)).toEqual([CO, "cm"]);
+  });
+
+  it("stage B: an empty list opens nothing, a failed read refuses (and is reported)", async () => {
+    const empty = fake("enforce", async () => []);
+    empty.member("cm", "operator", LINKED_VIEW);
+    expect(await empty.act("scopedView", user("cm"))).toEqual({ done: "scopedView" });
+    expect(empty.seen.at(-1)?.decision).toEqual({ allowed: true, scope: "linked", companyIds: [] });
+    const broken = fake("enforce", async () => {
+      throw new Error("db down");
+    });
+    broken.member("cm", "operator", LINKED_VIEW);
+    expect(refused(await broken.act("scopedView", user("cm")))).toBe(true);
+    expect(broken.seen).toHaveLength(0);
+    expect(broken.emitted.map((e) => e.name)).toContain("access.refusal");
+  });
+
+  it("stage B: under report and off the resolver is not read and the handler gets scope all", async () => {
+    for (const mode of ["report", "off"] as const) {
+      let reads = 0;
+      const f = fake(mode, async () => (reads++, ["crm-co-7"]));
+      f.member("cm", "operator", LINKED_VIEW);
+      expect(await f.act("scopedView", user("cm"))).toEqual({ done: "scopedView" });
+      expect(f.seen.at(-1)?.decision).toEqual({ allowed: true, scope: "all" });
+      expect(reads).toBe(0);
+    }
   });
 });
 

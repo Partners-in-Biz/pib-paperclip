@@ -110,6 +110,8 @@ const ACTION_ROWS: Readonly<Record<string, AccessTableEntry>> = Object.freeze({
   ...rows(ADMIN_ONLY, [
     "crm.reports-drive-catchup", "crm.resync", "crm.sync-skills", "crm.run-services-check", "crm.normalize-services",
     "crm.hire-options", "crm.start-hire", "crm.link-agent", "crm.unlink-agent", "crm.resync-agent",
+    // "Managed by" decides a limited person's own companies (stage B, PAR-12581); the handler checks the role too.
+    "crm.set-managers",
   ]),
 });
 

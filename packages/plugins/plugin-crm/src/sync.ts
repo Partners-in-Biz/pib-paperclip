@@ -13,6 +13,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import type { CrmCompanyEvent, CrmContactEvent } from "@partnersinbiz/pib-plugin-kit";
 import { asStringList, table } from "./db.js";
 import { sendHandoff } from "./handoffs.js";
+import { managersEvent } from "./managers.js";
 
 interface CompanyEventRow {
   id: string;
@@ -26,6 +27,9 @@ interface CompanyEventRow {
   registration_number: string | null;
   hosted_company_id?: string | null;
   hosted_plan?: string | null;
+  /** Both selected, or neither: an event without them leaves the other plugins' copy as it is. */
+  owner_user_id?: string | null;
+  manager_user_ids?: unknown;
   updated_at: unknown;
 }
 
@@ -64,6 +68,7 @@ export function companyEvent(row: CompanyEventRow): CrmCompanyEvent {
       companyId: row.hosted_company_id ?? null,
       plan: row.hosted_plan ?? null,
     },
+    ...("manager_user_ids" in row ? { managers: managersEvent(row) } : {}),
   };
 }
 
@@ -91,7 +96,8 @@ export async function emitChanges(
 ): Promise<{ companies: number; contacts: number }> {
   const since = sinceSeconds == null ? null : Math.max(1, Math.floor(sinceSeconds));
   const companies = await ctx.db.query<CompanyEventRow>(
-    `SELECT id, name, domain, lifecycle, billing_email, phone, address, vat_number, registration_number, hosted_company_id, hosted_plan, updated_at
+    `SELECT id, name, domain, lifecycle, billing_email, phone, address, vat_number, registration_number, hosted_company_id, hosted_plan,
+            owner_user_id, manager_user_ids, updated_at
        FROM ${table(ctx, "companies")}
       WHERE company_id = $1 AND ($2::int IS NULL OR updated_at > now() - make_interval(secs => $2::int))
       ORDER BY updated_at`,
@@ -169,6 +175,8 @@ export const CRM_MUTATIONS = new Set([
   "crm.link-contact",
   "crm.set-human-owned",
   "crm.delete-company",
+  // Who manages a company travels in `company.upserted` (stage B).
+  "crm.set-managers",
   // The canary client is a real record while it exists: share it, and its removal, with the other modules.
   "create-canary-client",
   "crm.create-canary-client",

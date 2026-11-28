@@ -91,7 +91,7 @@ export interface AccessCheck {
   decision: AccessAllowed;
 }
 
-type Verdict = { ok: true; decision: AccessAllowed } | { ok: false; reason: string; userId: string | null };
+type Verdict = { ok: true; decision: AccessAllowed; userId?: string | null } | { ok: false; reason: string; userId: string | null };
 
 export type GuardedAction = (params: Record<string, unknown>, context: PluginPerformActionContext, check: AccessCheck) => Promise<unknown>;
 export type GuardedTool = (params: unknown, run: ToolRunContext, check: AccessCheck) => Promise<ToolResult>;
@@ -121,6 +121,14 @@ export interface AccessGuardOptions {
   table: AccessTable;
   /** Clock for the switch and the report, for tests. */
   now?: () => number;
+  /**
+   * The CRM companies this person manages (stage B, PAR-12581). When set, a `linked`
+   * decision under `enforce` carries this list instead of the grant's `linkedCompanyIds`:
+   * the CRM is the source of a person's own companies. A read that throws refuses the
+   * call. The CRM answers from its own tables, the other plugins from their CRM copy
+   * (`listManagedCrmCompanyIds`).
+   */
+  linkedCompanies?: (companyId: string, userId: string) => Promise<string[]>;
 }
 
 const RUN_REASONS = {
@@ -248,7 +256,22 @@ export function createAccessGuard(ctx: PluginContext, options: AccessGuardOption
 
   async function verdictFor(companyId: string, entry: AccessTableEntry | undefined, caller: AccessCaller): Promise<Verdict> {
     const a = await accessOf(companyId, caller);
-    return "access" in a ? judgeAccess(a.access, entry) : { ok: false, reason: a.reason, userId: a.userId };
+    if (!("access" in a)) return { ok: false, reason: a.reason, userId: a.userId };
+    const verdict = judgeAccess(a.access, entry);
+    return verdict.ok ? { ...verdict, userId: a.access.userId } : verdict;
+  }
+
+  /** Under `enforce`, a `linked` decision gets the person's companies from the plugin's resolver (stage B). */
+  async function withLinkedCompanies(companyId: string, verdict: Extract<Verdict, { ok: true }>): Promise<Verdict> {
+    const resolve = options.linkedCompanies;
+    if (!resolve || verdict.decision.scope !== "linked") return verdict;
+    if (!verdict.userId) return { ok: false, reason: CANNOT_VERIFY_ACCESS, userId: null };
+    try {
+      const ids = [...new Set(await resolve(companyId, verdict.userId))].filter((id) => typeof id === "string" && id !== "");
+      return { ...verdict, decision: Object.freeze({ allowed: true, scope: "linked", companyIds: ids }) as AccessAllowed };
+    } catch {
+      return { ok: false, reason: CANNOT_VERIFY_ACCESS, userId: verdict.userId };
+    }
   }
 
   /**
@@ -281,6 +304,8 @@ export function createAccessGuard(ctx: PluginContext, options: AccessGuardOption
     } catch {
       verdict = { ok: false, reason: CANNOT_VERIFY_ACCESS, userId: caller.userId };
     }
+    // Only `enforce` hands a limit to the handler, so only then is the list read.
+    if (verdict.ok && mode === "enforce") verdict = await withLinkedCompanies(companyId, verdict);
     if (verdict.ok) return { check: { mode, caller, decision: mode === "enforce" ? verdict.decision : ALL } };
     await reportAccessRefusal(ctx, mode, { companyId, pluginKey, userId: verdict.userId, key, permission: permissionOf(entry), viaAgentId }, { now: options.now });
     return mode === "enforce" ? { refused: verdict.reason } : { check: { mode, caller, decision: ALL } };

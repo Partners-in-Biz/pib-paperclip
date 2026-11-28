@@ -53,6 +53,16 @@ export type CrmCompanyHosted = {
   plan: string | null;
 };
 
+/**
+ * Who manages a company in the CRM (stage B, PAR-12581): its owner and the extra
+ * managers on its "Managed by" list. A limited person's own companies are the
+ * ones he manages. Opt-in through `companyManagers`.
+ */
+export type CrmCompanyManagers = {
+  ownerUserId: string | null;
+  managerUserIds: string[];
+};
+
 export interface CrmCompanyEvent {
   id: string;
   name: string;
@@ -61,6 +71,7 @@ export interface CrmCompanyEvent {
   updatedAt: string;
   billing?: CrmCompanyBilling | null;
   hosted?: CrmCompanyHosted | null;
+  managers?: CrmCompanyManagers | null;
 }
 
 export interface CrmContactEvent {
@@ -103,6 +114,11 @@ export function registerCrmProjection(
     companyBilling?: boolean;
     /** Also keep `hosted` on crm_companies; the consumer adds a `hosted jsonb` column itself. */
     companyHosted?: boolean;
+    /**
+     * Also keep `managers` on crm_companies; the consumer adds a `managers jsonb` column itself.
+     * Needed by a plugin that scopes records to a limited person's own companies (`listManagedCrmCompanyIds`).
+     */
+    companyManagers?: boolean;
   } ={ companies: true, contacts: true },
 ): void {
   const guard = (label: string, fn: (event: PluginEvent) => Promise<void>) => async (event: PluginEvent) => {
@@ -124,6 +140,9 @@ export function registerCrmProjection(
       const optional: Array<[string, unknown]> = [];
       if (options.companyBilling === true) optional.push(["billing", p.billing ?? null]);
       if (options.companyHosted === true) optional.push(["hosted", p.hosted ?? null]);
+      // An event without `managers` (a CRM older than stage B) leaves the stored value as it is; a new row
+      // starts null, which manages nothing (fail closed).
+      if (options.companyManagers === true && p.managers !== undefined) optional.push(["managers", cleanManagers(p.managers)]);
       for (const [column, value] of optional) {
         params.push(JSON.stringify(value));
         columns.push(column);
@@ -164,6 +183,32 @@ export function registerCrmProjection(
       await ctx.db.execute(`UPDATE ${namespace}.crm_contacts SET deleted = true, updated_at = now() WHERE id = $1`, [p.id]);
     }));
   }
+}
+
+/** The managers of an event, or null when the CRM sent none or something unreadable. */
+export function cleanManagers(value: unknown): CrmCompanyManagers | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const v = value as Partial<CrmCompanyManagers>;
+  const str = (x: unknown) => (typeof x === "string" && x.trim() ? x.trim() : null);
+  const ids = Array.isArray(v.managerUserIds) ? v.managerUserIds.map(str).filter((x): x is string => x !== null) : [];
+  return { ownerUserId: str(v.ownerUserId), managerUserIds: [...new Set(ids)] };
+}
+
+/**
+ * The CRM companies one person manages (owner or on "Managed by"), from the local
+ * copy. The copy must keep `managers` (`companyManagers: true`). Deleted companies
+ * are left out. This is a limited person's "own companies" (stage B).
+ */
+export async function listManagedCrmCompanyIds(ctx: PluginContext, namespace: string, companyId: string, userId: string): Promise<string[]> {
+  if (!userId) return [];
+  const rows = await ctx.db.query<{ id: string }>(
+    `SELECT id FROM ${namespace}.crm_companies
+      WHERE company_id = $1 AND deleted = false
+        AND (managers->>'ownerUserId' = $2 OR COALESCE(managers->'managerUserIds', '[]'::jsonb) @> jsonb_build_array($2::text))
+      ORDER BY id`,
+    [companyId, userId],
+  );
+  return rows.map((row) => row.id);
 }
 
 export async function listCrmCompanies(ctx: PluginContext, namespace: string, companyId: string): Promise<CrmCompanyRow[]> {
