@@ -11,6 +11,8 @@ export {
   syncHermesSkills as syncSkills,
   resolveHermesDesiredSkillNames as resolveDesiredSkillNames,
 } from "./skills.js";
+export { startVoiceTurnBridge, isForwardableVoiceBridgePath } from "./voice/turn-bridge.js";
+export type { VoiceTurnBridge, VoiceTurnBinding, VoiceTurnBridgeEvent } from "./voice/turn-bridge.js";
 
 import type { AdapterSessionCodec } from "@paperclipai/adapter-utils";
 
