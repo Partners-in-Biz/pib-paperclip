@@ -127,6 +127,13 @@ node ./esbuild.config.mjs # dist/ (worker, manifest, ui, ui/oauth-callback.html 
 
 Migrations 001–019 are applied on installed instances; 0.23.0 adds `020_seo.sql` and 0.23.1 adds `021_seo.sql`. Never edit an applied one — add `022_seo.sql` and up. `012_seo.sql`: sprint site link columns (`site_project_id`, `site_access`, `repo_url`, `default_branch`, `framework`, `hosting`, `change_policy`, `verification`), `sprint_tasks.issue_project_id`, and the `needs_you` table.
 
+## 0.53.0: a limited person works only on his own companies' sprints (stage B2-4, PAR-15211)
+
+- With the company's access switch on `enforce`, a person limited to his own companies (the CRM companies he owns or is on "Managed by" for; the CRM copy keeps `managers`, migration 031) reaches SEO only for their sprints. The switch stays `off` everywhere, and with it nothing changes.
+- One check before every handler (`src/own-scope.ts`, rules in `src/own-rules.ts`): each record id a call sends (sprint, task, preview or preview prefix, keyword, backlink, content, finding, optimization, playbook change, experiment) is looked up to its client, and every one must be his; a client the call names must be his too. A guessed id and another company's id get the same answer: "That was not found among your companies".
+- A call with no record or client (it would read every sprint), `own` or `all` is refused: he names one of his clients. The page opens his first company by name and returns `limitedTo` for a picker; the company's settings details, hire, setup and project list are left out. The sprint page never redirects him to another client's sprint. The client summary answers only for his clients.
+- Closed to him (not `scoped`): settings, the Cockpit, setup status, routine reports, the CRM client list, the legacy upgrade, task threads by issue id, and the agent.
+
 ## 0.52.5: approval emails in the Mailbox drafts; one open draft per sprint (PAR-12249, PAR-14558)
 
 - The approval email and the progress email are drafts in the Paperclip Mailbox drafts (Mailbox 0.9.20), never Gmail Drafts.
