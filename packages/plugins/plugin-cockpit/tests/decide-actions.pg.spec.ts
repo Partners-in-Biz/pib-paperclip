@@ -54,6 +54,14 @@ d("the Decide actions (Postgres)", () => {
     await worlds?.stop();
   });
 
+  /** The fake host's issue calls these tests wrap. */
+  interface HostIssues {
+    createComment(issueId: string, body: string, companyId: string, opts?: { authorAgentId?: string; actorUserId?: string }): Promise<{ id: string }>;
+    get(issueId: string, companyId: string): Promise<unknown>;
+    listInteractions(issueId: string): Promise<Array<Record<string, unknown>>>;
+    respondInteraction(issueId: string, interactionId: string, input: Record<string, unknown>): Promise<{ interaction: Record<string, unknown>; applied: boolean }>;
+  }
+
   interface Calls {
     personComments: Array<{ issueId: string; body: string; actorUserId: string }>;
     approvalsGet: string[];
@@ -79,8 +87,8 @@ d("the Decide actions (Postgres)", () => {
     );
     await saveTeam(w.env, A, { operatorAgentId: OP }, OWNER);
     const calls: Calls = { personComments: [], approvalsGet: [], decide: [], listInteractions: [], respond: [], issueGets: 0 };
-    const issues = w.ctx.issues as unknown as Record<string, (...args: any[]) => Promise<any>>;
-    const createComment = issues.createComment!;
+    const issues = w.ctx.issues as unknown as HostIssues;
+    const createComment = issues.createComment;
     issues.createComment = async (issueId: string, body: string, companyId: string, opts?: { authorAgentId?: string; actorUserId?: string }) => {
       if (opts?.actorUserId) {
         calls.personComments.push({ issueId, body, actorUserId: opts.actorUserId });
@@ -91,11 +99,11 @@ d("the Decide actions (Postgres)", () => {
       }
       return createComment(issueId, body, companyId, opts);
     };
-    const get = issues.get!;
-    issues.get = async (...args: unknown[]) => {
+    const get = issues.get;
+    issues.get = async (issueId: string, companyId: string) => {
       calls.issueGets += 1;
       if (beforeIssueRead) await beforeIssueRead();
-      return get(...args);
+      return get(issueId, companyId);
     };
     let personCommentFails = false;
     let beforeIssueRead: (() => Promise<void>) | null = null;
@@ -159,7 +167,7 @@ d("the Decide actions (Postgres)", () => {
   }
 
   const act = (w: World, key: string, params: Record<string, unknown>, context: Ctx = SHAPES.owner) => w.actions.get(key)!(params, context) as Promise<{ result: string }>;
-  const row = async (w: World, askId: string) => (await w.client.query(`SELECT * FROM ${NAMESPACE}.asks WHERE id = $1`, [askId])).rows[0] as Record<string, any>;
+  const row = async (w: World, askId: string) => (await w.client.query(`SELECT * FROM ${NAMESPACE}.asks WHERE id = $1`, [askId])).rows[0] as Record<string, unknown>;
   const handBacks = (w: World, issueId: string) => w.comments.filter((c) => c.issueId === issueId && c.body.startsWith("Answer recorded.")).length;
 
   // -------------------------------------------------------------------------
@@ -462,6 +470,15 @@ d("the Decide actions (Postgres)", () => {
       expect(w.issues.get(a.issueId)).toMatchObject({ assigneeAgentId: DEV, status: "todo" });
       expect((await row(w, a.askId)).handed_back_at).not.toBeNull();
       expect(await reconcileAsks(w.env, A)).toEqual({ answered: 0, closed: 0, open: 0 });
+      expect(handBacks(w, a.issueId)).toBe(1);
+      expect(w.wakeups).toEqual([a.issueId]);
+    });
+
+    it("two checks at once hand it back once (the claim on handed_back_at IS NULL)", async () => {
+      const w = await make();
+      const a = await stranded(w, 30);
+      const [x, y] = await Promise.all([reconcileAsks(w.env, A), reconcileAsks(w.env, A)]);
+      expect((x.handedBack ?? 0) + (y.handedBack ?? 0)).toBe(1);
       expect(handBacks(w, a.issueId)).toBe(1);
       expect(w.wakeups).toEqual([a.issueId]);
     });

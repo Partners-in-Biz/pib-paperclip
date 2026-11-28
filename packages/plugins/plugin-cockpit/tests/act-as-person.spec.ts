@@ -35,6 +35,19 @@ function createCommentCalls(source: string): string[] {
   return out;
 }
 
+/**
+ * True when the source reaches the approvals client's `decide`, however it is written: `approvals.decide`,
+ * `approvals?.decide`, `approvals["decide"]`, `const { decide } = ….approvals`, or an alias (`const a = ctx.approvals;
+ * a.decide(…)`).
+ */
+function decidesApprovals(source: string): boolean {
+  if (/\bapprovals\s*(?:\?\.|\.)\s*decide\b/.test(source)) return true;
+  if (/\bapprovals\s*(?:\?\.)?\[\s*["'`]decide["'`]\s*\]/.test(source)) return true;
+  if (/\{[^}]*\bdecide\b[^}]*\}\s*=\s*[^;\n]*\bapprovals\b/.test(source)) return true;
+  const aliases = [...source.matchAll(/\b(\w+)\s*=\s*[\w.?]*\bapprovals\b\s*[;\n]/g)].map((m) => m[1]!);
+  return aliases.some((alias) => new RegExp(`\\b${alias}\\s*(?:\\?\\.|\\.)\\s*decide\\b|\\b${alias}\\s*\\[\\s*["'\`]decide`).test(source));
+}
+
 /** Every `actorUserId` use outside decide-actions.ts, by file and line text. Each one must be named here with why. */
 const ALLOWED_ACTOR_USER_ID: Record<string, string> = {
   "register.ts": "cockpit.start-hire: the hire issue is created as the signed-in person (startHire, an issue create)",
@@ -44,7 +57,7 @@ describe("acting as a person (PAR-15315 T2)", () => {
   const all = files(SRC).map((path) => ({ file: relative(SRC, path), text: readFileSync(path, "utf8") }));
 
   it("approvals.decide and respondInteraction are called only in decide-actions.ts", () => {
-    const hits = all.filter((f) => f.file !== HOME && /approvals\s*\.\s*decide\s*\(|respondInteraction\s*\(/.test(f.text)).map((f) => f.file);
+    const hits = all.filter((f) => f.file !== HOME && (/\brespondInteraction\b/.test(f.text) || decidesApprovals(f.text))).map((f) => f.file);
     expect(hits).toEqual([]);
     const home = all.find((f) => f.file === HOME)!.text;
     expect(home).toMatch(/approvals\.decide\(/);
