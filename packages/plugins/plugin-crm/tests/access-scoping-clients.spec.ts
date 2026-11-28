@@ -94,6 +94,11 @@ describe("stage B-3: a limited person on enforce works only on his companies' cl
     }
     expect((await asJan("save-client-site", { client: "company:globex", url: "https://globex2.test" })).error).toMatch(NOT_HIS);
     expect((await asJan("site-monitoring", { client: "company:globex" })).error).toMatch(NOT_HIS);
+    // A site's project must be its own client's: Globex's project or an unlinked one is refused, Acme's opens.
+    for (const projectId of ["p-globex", "p-free"]) {
+      expect((await asJan("save-client-site", { siteId: sites.acme, projectId })).error, projectId).toMatch(NOT_HIS);
+    }
+    expect((await asJan("save-client-site", { siteId: sites.acme, projectId: "p-acme" })).error).toBeUndefined();
   });
 
   it("lead forms and event keys: Acme's only; Globex's and our own (no client) are refused and not listed", async () => {
@@ -160,8 +165,8 @@ describe("stage B-3: a limited person on enforce works only on his companies' cl
     expect(await act("crm.drive-folder", { crmCompanyId: "acme" })).toEqual({ folder: null });
     for (const projectId of ["p-globex", "p-free", "guess-1"]) {
       expect(await refused("crm.drive-files", { projectId }), projectId).toBe(true);
-      for (const name of ["drive_files_list", "drive_file_save", "drive_project_kind_set"]) {
-        expect((await asJan(name, { projectId, fileKind: "client", name: "x.pdf", mimeType: "application/pdf", contentBase64: "eA==", kind: "client" })).error, `${name} ${projectId}`).toMatch(NOT_HIS);
+      for (const name of ["drive_files_list", "drive_file_save", "drive_project_kind_set", "drive_file_fetch"]) {
+        expect((await asJan(name, { projectId, fileId: "gdFileId12345", fileKind: "client", name: "x.pdf", mimeType: "application/pdf", contentBase64: "eA==", kind: "client" })).error, `${name} ${projectId}`).toMatch(NOT_HIS);
       }
       expect((await asJan("drive_folder_resolve", { entity_type: "project", entity_id: projectId })).error, projectId).toMatch(NOT_HIS);
     }

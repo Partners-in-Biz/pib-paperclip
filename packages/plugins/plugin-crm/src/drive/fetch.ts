@@ -55,9 +55,9 @@ export async function driveFileFetch(ctx: PluginContext, viewer: Viewer, params:
   const projectId = params.projectId, fileId = params.fileId;
   if (typeof projectId !== "string" || !projectId) return { status: "invalid_input", hint: "projectId is required." };
   if (typeof fileId !== "string" || !FILE_ID.test(fileId)) return { status: "invalid_input", hint: "fileId is a Google Drive file id (letters, digits, - and _)." };
+  await requireDriveEntity(ctx, viewer, "project", projectId);
   const run = await resolveRunScratch(ctx, viewer);
   if (!run.ok) return { status: run.code, hint: run.hint };
-  await requireDriveEntity(ctx, viewer, "project", projectId);
   if (!(await ctx.projects.get(projectId, viewer.companyId))) return { status: "project_not_found" };
 
   let broker: Broker | null;
