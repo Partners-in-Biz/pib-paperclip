@@ -7,6 +7,7 @@ import { and, eq } from "drizzle-orm";
 
 import type { AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
+import { buildAgentChildEnv } from "@paperclipai/adapter-utils/server-utils";
 import type { Db } from "@paperclipai/db";
 import { agentSessionGoalActions, agentTaskSessions } from "@paperclipai/db";
 
@@ -330,6 +331,29 @@ async function stopChild(
   }
 }
 
+/**
+ * The runner's child env (PAR-15276, G1 follow-up): allowlisted server env
+ * (PATH, HOME, CODEX_HOME, locale, proxy and cert names), plus RUST_BACKTRACE,
+ * the one other host name runnerd reads (the same set the packaged launcher in
+ * `durable-prp-control-plane.ts` passes); then the run's resolved environment
+ * without server-secret names; then the bootstrap ticket.
+ * `PAPERCLIP_AGENT_ENV_ALLOWLIST=off` restores
+ * `{ ...process.env, ...environment, ticket }`.
+ */
+export function buildNativeRunnerChildEnv(input: {
+  environment: Record<string, string>;
+  bootstrapTicket: string;
+  inherited?: NodeJS.ProcessEnv;
+}): Record<string, string> {
+  const inherited = input.inherited ?? process.env;
+  const rustBacktrace = inherited.RUST_BACKTRACE;
+  return buildAgentChildEnv({
+    inherited,
+    configEnv: { ...(rustBacktrace ? { RUST_BACKTRACE: rustBacktrace } : {}), ...input.environment },
+    runEnv: { PAPERCLIP_RUNNER_BOOTSTRAP_TICKET: input.bootstrapTicket },
+  });
+}
+
 export async function executeNativeCodexRunner(input: {
   db: Db;
   companyId: string;
@@ -445,11 +469,10 @@ export async function executeNativeCodexRunner(input: {
   }), {
     cwd: input.cwd,
     detached: process.platform !== "win32",
-    env: {
-      ...process.env,
-      ...input.environment,
-      PAPERCLIP_RUNNER_BOOTSTRAP_TICKET: prepared.bootstrapTicket,
-    },
+    env: buildNativeRunnerChildEnv({
+      environment: input.environment,
+      bootstrapTicket: prepared.bootstrapTicket,
+    }),
     stdio: ["ignore", "pipe", "pipe"],
   });
   const exit = waitForExit(child);

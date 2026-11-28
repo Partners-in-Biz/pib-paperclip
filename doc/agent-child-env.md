@@ -33,6 +33,16 @@ Every other server variable stays on the server. Server settings such as
 `PAPERCLIP_ADAPTER_MODELS`, `PAPERCLIP_ATTACHMENT_MAX_BYTES`, wake caps and
 spend alarms are read by the server, not by a run.
 
+## Other children
+
+The same rule covers children that are not an adapter turn:
+
+- **Native runner** (`paperclip_runner`, `executeNativeCodexRunner`): layer 1,
+  plus `RUST_BACKTRACE`; then the run's resolved environment; then
+  `PAPERCLIP_RUNNER_BOOTSTRAP_TICKET`. runnerd reads no other host name.
+- **Quota probes** (`claude auth status`, the codex app-server account read):
+  layer 1 only.
+
 ## A provider needs another key
 
 Add the name or a prefix to the adapter's entry in `AGENT_ADAPTER_INHERITED_ENV`.

@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { ProviderQuotaResult, QuotaWindow } from "@paperclipai/adapter-utils";
+import { agentInheritedEnv } from "@paperclipai/adapter-utils/server-utils";
 import {
   classifyCodexAuthRefreshFailure,
   type CodexAuthRefreshFailureClass,
@@ -476,8 +477,9 @@ class CodexRpcClient {
     "codex",
     // Only account-read RPCs are sent; no agent turn is started. Keep the
     // read-only sandbox and use the approval policy supported by current CLIs.
+    // Allowlisted server env only; no server secret reaches it (PAR-15276).
     ["-s", "read-only", "-a", "on-request", "app-server"],
-    { stdio: ["pipe", "pipe", "pipe"], env: process.env },
+    { stdio: ["pipe", "pipe", "pipe"], env: agentInheritedEnv(process.env) },
   );
 
   private nextId = 1;
