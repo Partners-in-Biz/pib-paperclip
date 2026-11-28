@@ -19,6 +19,7 @@ import {
   Input,
   KpiCard,
   LayoutDashboard,
+  LimitedClientPicker,
   Modal,
   Page,
   Pill,
@@ -34,6 +35,7 @@ import {
   fluidColumns,
   formatDateTime,
   formatShortDate,
+  readLimitedTo,
   tokens,
   useGroupedNav,
   useAccess,
@@ -135,10 +137,17 @@ function AdsPageBody({ context }: PluginPageProps) {
   const enabled = useModuleEnabled(context.companyId, PLUGIN_ID);
   const off = enabled === false;
   const loadSeq = useRef(0);
+  // A limited person works on one of his companies at a time (access stage B2): the one he picked, else the
+  // worker opens his first. Null for everyone else: the load is company-wide as before.
+  const [picked, setPicked] = useState<string | null>(null);
+  const pickedRef = useRef(picked);
+  pickedRef.current = picked;
+  const limitedTo = useMemo(() => readLimitedTo(data?.limitedTo, data?.clients), [data]);
 
   const refresh = useCallback(async () => {
     const seq = ++loadSeq.current;
-    const next = (await fnsRef.current["ads.load"]({ uiBase: await resolvePluginUiBase(PLUGIN_ID, import.meta.url) })) as Overview;
+    const client = pickedRef.current;
+    const next = (await fnsRef.current["ads.load"]({ uiBase: await resolvePluginUiBase(PLUGIN_ID, import.meta.url), ...(client ? { client } : {}) })) as Overview;
     if (seq !== loadSeq.current) return;
     setData(next);
     setLoadError("");
@@ -166,7 +175,7 @@ function AdsPageBody({ context }: PluginPageProps) {
   useEffect(() => {
     if (!context.companyId || off) return;
     refresh().catch((error: unknown) => setLoadError(errorText(error)));
-  }, [context.companyId, refresh, off]);
+  }, [context.companyId, refresh, off, picked]);
 
   // Coming back from the OAuth bridge.
   useEffect(() => {
@@ -188,6 +197,7 @@ function AdsPageBody({ context }: PluginPageProps) {
       messageTone="bad"
     >
       <ModuleOffBanner companyId={context.companyId} pluginKey={PLUGIN_ID} />
+      {limitedTo && !off ? <LimitedClientPicker limitedTo={limitedTo} disabled={busy} onPick={(client) => { setData(null); setOpenProposal(null); setPicked(client); }} /> : null}
       <Tabs
         tabs={[
           { id: "overview", label: "Overview", icon: LayoutDashboard, count: openAlerts || null, countTone: "warn" },
@@ -202,7 +212,7 @@ function AdsPageBody({ context }: PluginPageProps) {
       {tab === "overview" ? <GetStarted status={setupStatus} hasData={Boolean(data?.accounts.length)} moduleName="Paid ads" linkFor={linkFor} /> : null}
       {!data && !loadError && !off ? <Muted>Loading paid ads…</Muted> : null}
       {data && tab === "overview" ? <OverviewTab data={data} narrow={narrow} run={run} busy={busy} goTab={(id) => setTab(id)} openProposal={setOpenProposal} /> : null}
-      {data && tab === "performance" ? <PerformanceTab data={data} run={run} /> : null}
+      {data && tab === "performance" ? <PerformanceTab key={limitedTo?.client ?? "all"} data={data} run={run} limitedClient={limitedTo?.client ?? null} /> : null}
       {data && tab === "changes" ? <ChangesTab data={data} run={run} narrow={narrow} openProposal={setOpenProposal} /> : null}
       {data && tab === "budgets" ? <BudgetsTab data={data} run={run} busy={busy} /> : null}
       {data && tab === "accounts" ? <AccountsTab data={data} run={run} busy={busy} companyId={context.companyId ?? ""} /> : null}
@@ -311,10 +321,11 @@ function auditItems(entries: AuditEntry[], data: Overview): TimelineItem[] {
 
 // ── Performance ─────────────────────────────────────────────────────────────
 
-function PerformanceTab({ data, run }: { data: Overview; run: Run }) {
+/** `limitedClient`: a limited person's company; his numbers are that company's only, so the client choice is the picker's. */
+function PerformanceTab({ data, run, limitedClient }: { data: Overview; run: Run; limitedClient: string | null }) {
   const [period, setPeriod] = useState("last_30d");
   const [groupBy, setGroupBy] = useState("platform");
-  const [client, setClient] = useState("all");
+  const [client, setClient] = useState(limitedClient ?? "all");
   const [state, setState] = useState<{ summary: Summary; campaigns: { campaigns: CampaignRow[] }; ledger: { entries: any[] } } | null>(null);
   const [error, setError] = useState("");
   const [reload, setReload] = useState(0);
@@ -337,10 +348,12 @@ function PerformanceTab({ data, run }: { data: Overview; run: Run }) {
         <Select aria-label="Group by" value={groupBy} onChange={(e) => setGroupBy(e.target.value)}>
           {[["platform", "By platform"], ["campaign", "By campaign"], ["day", "By day"], ["account", "By ad account"], ["scope", "By client"]].map(([v, l]) => <option key={v} value={v}>{l}</option>)}
         </Select>
-        <Select aria-label="Whose ads" value={client} onChange={(e) => setClient(e.target.value)}>
-          <option value="all">Everyone's ads</option>
-          {scopes.map((s) => <option key={s} value={s}>{s === OWN_SCOPE ? "PiB's own ads" : data.clients[s] ?? s}</option>)}
-        </Select>
+        {limitedClient ? null : (
+          <Select aria-label="Whose ads" value={client} onChange={(e) => setClient(e.target.value)}>
+            <option value="all">Everyone's ads</option>
+            {scopes.map((s) => <option key={s} value={s}>{s === OWN_SCOPE ? "PiB's own ads" : data.clients[s] ?? s}</option>)}
+          </Select>
+        )}
       </div>
       {error ? <Muted>{error}</Muted> : null}
       {state ? <CampaignCapsCard campaigns={state.campaigns.campaigns} run={run} onSet={() => setReload((n) => n + 1)} /> : null}

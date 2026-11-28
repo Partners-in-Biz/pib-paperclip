@@ -127,6 +127,10 @@ node ./esbuild.config.mjs # dist/ (worker, manifest, ui, ui/oauth-callback.html 
 
 Migrations 001–019 are applied on installed instances; 0.23.0 adds `020_seo.sql` and 0.23.1 adds `021_seo.sql`. Never edit an applied one — add `022_seo.sql` and up. `012_seo.sql`: sprint site link columns (`site_project_id`, `site_access`, `repo_url`, `default_branch`, `framework`, `hosting`, `change_policy`, `verification`), `sprint_tasks.issue_project_id`, and the `needs_you` table.
 
+## 0.54.0: the client picker for a limited person (stage B2-5, PAR-15212)
+
+- src-only (UI kit 0.6.0). A limited person's page follows the client the load opened (`?client=` is set to his first company when the address names none), and a picker under the client header lists his companies (`limitedTo`); a pick opens that company's workspace. Without `limitedTo` (switch off, or a person who is not limited) the page is as before. No migration, no capability change.
+
 ## 0.53.0: a limited person works only on his own companies' sprints (stage B2-4, PAR-15211)
 
 - With the company's access switch on `enforce`, a person limited to his own companies (the CRM companies he owns or is on "Managed by" for; the CRM copy keeps `managers`, migration 031) reaches SEO only for their sprints. The switch stays `off` everywhere, and with it nothing changes.

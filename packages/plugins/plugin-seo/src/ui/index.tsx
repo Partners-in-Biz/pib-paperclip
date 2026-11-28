@@ -13,7 +13,7 @@ import { clientScopeFromSearch, parseClientParam, type ClientRef, type ClientSco
 import { ROLE_SKILL_PURPOSE, ROLE_SKILLS, TEAM_SETUP_HREF, agentProblem, stillMissing } from "./role-skills.js";
 import { useRoleSkills } from "./use-role-skills.js";
 import { loadStatusText } from "./load-status.js";
-import { AccessGate, Button, ClientWorkspaceBar, GetStarted, Page, PageFrame, PageMessage, errorText, tokens, useAccess, useIsNarrow, usePluginSetupStatus } from "@partnersinbiz/pib-plugin-ui";
+import { AccessGate, Button, ClientWorkspaceBar, GetStarted, LimitedClientPicker, Page, PageFrame, PageMessage, errorText, readLimitedTo, tokens, useAccess, useIsNarrow, usePluginSetupStatus } from "@partnersinbiz/pib-plugin-ui";
 import { useGroupedNav } from "@partnersinbiz/pib-plugin-ui";
 import { plural } from "../engine/plain.js";
 import { agentTrouble } from "../engine/due.js";
@@ -176,6 +176,15 @@ function SeoPageBody({ context }: PluginPageProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [context.companyId, scopeKey, off]);
 
+  // A limited person (access stage B2) works in one of his companies' workspaces at a time: the load opens his first
+  // when the page names none, and the address follows it, so the client header, links and sprints are that client's.
+  const limitedTo = useMemo(() => readLimitedTo(data?.limitedTo), [data]);
+  const openClient = (client: string) => nav.navigate(sprintPagePath("/seo", null, parseClientParam(client)), { replace: !scope });
+  useEffect(() => {
+    if (limitedTo && !scope && !sprintId) openClient(limitedTo.client);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [limitedTo, scopeKey, sprintId]);
+
   useEffect(() => {
     if (search.get("connected") === "gsc") setMessage(search.get("pick") ? "Google Search Console connected. Pick the site for this sprint below." : "Google Search Console connected.");
   }, [search]);
@@ -311,6 +320,7 @@ function SeoPageBody({ context }: PluginPageProps) {
     return (
       <PageFrame accent="seo">
         {header}
+        {limitedTo && !off ? <LimitedClientPicker limitedTo={limitedTo} onPick={openClient} /> : null}
         <PageMessage message={message} />
         {body}
       </PageFrame>
