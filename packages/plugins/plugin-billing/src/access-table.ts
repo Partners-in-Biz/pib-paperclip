@@ -18,9 +18,9 @@
  *   to owners and admins (a save) or shows masked to anyone else (a read).
  * - `ADMIN_ONLY`: the company preferences save and the skill sync (the kit checks owner or admin there already).
  *
- * A tool has the permission of the action it runs (`TOOL_ACTIONS`). No entry is `scoped` yet: handlers do not filter
- * by the person's companies until stage B, so an own-companies grant opens nothing here in stage A (`client-summary`
- * included).
+ * A tool has the permission of the action it runs (`TOOL_ACTIONS`). Rows in `SCOPED_ACTION_KEYS` and
+ * `api:client-summary` are `scoped` (stage B-4): an own-companies grant opens them for his companies' customers only;
+ * every other row stays closed to that grant.
  *
  * `api:invoice-grant` is named on purpose: it is Billing's old fall-through route (the Partners page shares an
  * invoice through it) and is now registered by name, so an unknown route key is refused under `report` and `enforce`.
@@ -39,8 +39,38 @@ const reports = on("billing.reports");
 const settings = on("billing.settings");
 const rows = (entry: AccessTableEntry, keys: readonly string[]) => Object.fromEntries(keys.map((key) => [`billing.${key}`, entry]));
 
+/**
+ * Stage B-4 (plan B-D6, PAR-12581): rows a `linked` grant may use, because the worker checks each call's customer
+ * against his companies and lists filter their rows (`customer-scope.ts` `CUSTOMER_RULES`, the same keys). Everything
+ * else stays closed to him: reports, cockpit, the company-wide payments status, dunning, bills, expenses, settings,
+ * numbering, the Drive catch-up, journal retries, test payments and the Planning Canvas cards.
+ */
+export const SCOPED_ACTION_KEYS: readonly string[] = Object.freeze([
+  "load", "open-invoices", "list-quotes", "list-credit-notes", "pops", "list-time", "list-recurring", "retainers",
+  "invoice-html", "invoice-detail", "invoice-pdf", "invoice-payments", "add-line", "update-line", "remove-line", "update-invoice",
+  "set-invoice-tax", "request-send", "request-pay", "request-payment-check", "request-reminder-send", "mark-sent", "cancel-invoice",
+  "delete-draft-invoice", "record-payment", "create-credit-note", "apply-credit", "write-off", "record-refund", "create-payment-link",
+  "payment-links", "register-pop", "document-pdf", "retry-send", "log-follow-up", "bill-time", "create-recurring", "create-invoice",
+  "upload-url", "quote-html", "quote-detail", "add-quote-line", "update-quote-line", "remove-quote-line", "update-quote",
+  "set-quote-status", "request-quote-send", "delete-draft-quote", "convert-quote", "create-quote", "credit-note-pdf", "send-credit-note",
+  "statement-pdf", "send-statement", "customer-credit", "pop-file", "reject-pop", "confirm-pop", "link-pop", "cancel-payment-link",
+  "start-timer", "log-time", "stop-timer", "delete-time-entry", "pause-recurring", "resume-recurring", "update-recurring",
+  "create-subscription", "set-subscription-status",
+].map((key) => `billing.${key}`));
+
+const SCOPED = new Set(SCOPED_ACTION_KEYS);
+/** The row of a scoped key gets `scoped: true`; a scoped key must be a permission row. */
+const scope = (table: Record<string, AccessTableEntry>): Readonly<Record<string, AccessTableEntry>> => {
+  for (const key of SCOPED) {
+    const entry = table[key];
+    if (!entry || typeof entry !== "object" || !("resource" in entry)) throw new Error(`Billing access table: ${key} cannot be scoped`);
+    table[key] = Object.freeze({ ...entry, scoped: true as const });
+  }
+  return Object.freeze(table);
+};
+
 /** Page and tool actions, keyed by action key. */
-const ACTION_ROWS: Readonly<Record<string, AccessTableEntry>> = Object.freeze({
+const ACTION_ROWS: Readonly<Record<string, AccessTableEntry>> = scope({
   ...rows(invoices("view"), [
     "load", "invoice-html", "invoice-detail", "document-pdf", "invoice-pdf", "open-invoices", "invoice-payments",
     "payment-links", "list-credit-notes", "credit-note-pdf", "statement-pdf", "customer-credit", "pops", "pop-file", "dunning",
@@ -128,7 +158,7 @@ export const ACCESS_TABLE: AccessTable = Object.freeze({
 
   // ── API routes ──
   "api:invoice-grant": invoices("approve"),
-  "api:client-summary": invoices("view"),
+  "api:client-summary": { resource: "billing.invoices", action: "view", scoped: true } satisfies AccessTableEntry,
   "api:setup-status": settings("view"),
   "api:cockpit": reports("view"),
 });

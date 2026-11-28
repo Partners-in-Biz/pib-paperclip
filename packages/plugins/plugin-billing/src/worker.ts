@@ -18,8 +18,10 @@ import {
   correctDecision,
   createAccessGuard,
   createSkillSyncer,
+  isRefusal,
   judgeAccess,
   listCrmClients,
+  listManagedCrmCompanyIds,
   parseClientParam,
   permissionRefusal,
   redeliver,
@@ -193,6 +195,7 @@ import { assertOwnKey } from "./storage.js";
 import { billTime, deleteTimeEntry, listTime, logTime, startTimer, stopTimer } from "./time.js";
 import { BILLING_TOOLS } from "./tools.js";
 import { ACCESS_TABLE, AUTO_SEND_ACTIONS, AUTO_SEND_PERMISSION } from "./access-table.js";
+import { customerRefusal, customerScopeOf, OUTSIDE_SCOPE, SCOPE_UNVERIFIED, seesCustomer, visibleInvoiceIds, type CustomerScope } from "./customer-scope.js";
 import { openWorkIssues, refreshWorkIssueOrigins } from "./workissues.js";
 import { invoiceNumberLabel } from "./invoice-number.js";
 import {
@@ -216,12 +219,16 @@ let pluginCtx: PluginContext | null = null;
 let access: AccessGuard | null = null;
 let skillSync: ReturnType<typeof createSkillSyncer> | null = null;
 
-type Handler = (ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) => Promise<unknown>;
+/**
+ * `limit`: a limited person's own companies under `enforce` (stage B-4, `customer-scope.ts`), else null. A scoped
+ * call's records were checked before the handler runs; a list handler filters its rows with it.
+ */
+type Handler = (ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>, limit: CustomerScope | null) => Promise<unknown>;
 
 /** Action key (UI) → handler. Tools reuse the same handlers. */
 const ACTIONS: Record<string, Handler> = {
   ...PREFERENCES_ACTIONS,
-  "billing.load": (ctx, context, params) => load(ctx, context, params),
+  "billing.load": (ctx, context, params, limit) => load(ctx, context, params, limit),
   "billing.invoice-html": (ctx, context, params) => invoiceHtml(ctx, context, params),
   "billing.quote-html": (ctx, context, params) => quoteHtml(ctx, context, params),
   "billing.create-invoice": createInvoice,
@@ -246,7 +253,7 @@ const ACTIONS: Record<string, Handler> = {
   "billing.quote-detail": (ctx, context, params) => quoteDetail(ctx, context, params),
   "billing.set-quote-status": setQuoteStatus,
   "billing.request-quote-send": requestQuoteSend,
-  "billing.list-quotes": (ctx, context, params) => listQuotesAction(ctx, context, params),
+  "billing.list-quotes": (ctx, context, params, limit) => listQuotesAction(ctx, context, params, limit),
   "billing.delete-draft-quote": deleteDraftQuote,
   "billing.request-payment-check": requestPaymentCheck,
   "billing.request-reminder-send": (ctx, context, params) => requestReminderSend(ctx, context, params),
@@ -271,7 +278,7 @@ const ACTIONS: Record<string, Handler> = {
   },
   "billing.upload-url": uploadUrl,
   "billing.create-recurring": (ctx, context, params) => createRecurringAction(ctx, context, params),
-  "billing.list-recurring": (ctx, context) => listRecurringAction(ctx, context),
+  "billing.list-recurring": (ctx, context, _params, limit) => listRecurringAction(ctx, context, limit),
   "billing.pause-recurring": (ctx, context, params) => setRecurringActive(ctx, context, params, false),
   "billing.resume-recurring": (ctx, context, params) => setRecurringActive(ctx, context, params, true),
   "billing.update-recurring": (ctx, context, params) => updateRecurring(ctx, context, params),
@@ -280,7 +287,7 @@ const ACTIONS: Record<string, Handler> = {
   "billing.invoice-payments": (ctx, context, params) => invoicePayments(ctx, context, params),
   "billing.set-invoice-tax": (ctx, context, params) => setInvoiceTax(ctx, context, params, assertTaxRate(params.taxRate)),
   "billing.create-credit-note": (ctx, context, params) => (context.actor.type === "agent" ? requestCreditDecision(ctx, context, params) : createCreditNoteAction(ctx, context, params)),
-  "billing.list-credit-notes": (ctx, context) => listCreditNotesAction(ctx, context),
+  "billing.list-credit-notes": (ctx, context, _params, limit) => listCreditNotesAction(ctx, context, limit),
   "billing.credit-note-pdf": creditNotePdf,
   "billing.send-credit-note": sendCreditNote,
   "billing.statement-pdf": statementPdf,
@@ -297,9 +304,11 @@ const ACTIONS: Record<string, Handler> = {
     await requireOwnInvoice(ctx, companyId, requiredString(params, "invoiceId"));
     return writeOff(ctx, { companyId, invoiceId: requiredString(params, "invoiceId"), reason: optionalString(params, "reason") ?? null, createdBy }, await billingSettings(ctx, companyId));
   },
-  "billing.pops": async (ctx, context, params) => {
+  "billing.pops": async (ctx, context, params, limit) => {
     const companyId = requiredCompany(context);
-    return (await listPops(ctx, companyId, { status: optionalString(params, "status") })).map((pop) => publicPop(pop));
+    const pops = await listPops(ctx, companyId, { status: optionalString(params, "status") });
+    const his = limit ? await visibleInvoiceIds(ctx, companyId, limit) : null;
+    return pops.filter((pop) => !his || (pop.invoice_id != null && his.has(pop.invoice_id))).map((pop) => publicPop(pop));
   },
   "billing.register-pop": (ctx, context, params) => registerPop(ctx, context, params),
   "billing.confirm-pop": async (ctx, context, params) => {
@@ -357,9 +366,10 @@ const ACTIONS: Record<string, Handler> = {
   "billing.start-timer": startTimer,
   "billing.stop-timer": stopTimer,
   "billing.log-time": logTime,
-  "billing.list-time": async (ctx, context, params) => {
+  "billing.list-time": async (ctx, context, params, limit) => {
     const scope = readClientScope(params) ?? null;
-    return listTime(ctx, requiredCompany(context), { customerKind: scope?.kind, customerRef: scope?.id, unbilled: optionalBoolean(params, "unbilled") });
+    const entries = await listTime(ctx, requiredCompany(context), { customerKind: scope?.kind, customerRef: scope?.id, unbilled: optionalBoolean(params, "unbilled") });
+    return entries.filter((entry) => seesCustomer(limit, entry.customerKind, entry.customerRef));
   },
   "billing.delete-time-entry": deleteTimeEntry,
   "billing.bill-time": billTime,
@@ -367,7 +377,10 @@ const ACTIONS: Record<string, Handler> = {
   "billing.update-plan": updatePlan,
   "billing.create-subscription": createSubscription,
   "billing.set-subscription-status": setSubscriptionStatus,
-  "billing.retainers": async (ctx, context, params) => listRetainers(ctx, requiredCompany(context), readClientScope(params) ?? null),
+  "billing.retainers": async (ctx, context, params, limit) => {
+    const retainers = await listRetainers(ctx, requiredCompany(context), readClientScope(params) ?? null);
+    return { ...retainers, subscriptions: retainers.subscriptions.filter((sub) => seesCustomer(limit, sub.customerKind, sub.customerRef)) };
+  },
   "billing.reports": (ctx, context, params) => reportsAction(ctx, context, params),
   "billing.dunning": (ctx, context, params) => dunningStatus(ctx, context, params),
   "billing.set-dunning-optout": (ctx, context, params) => setDunningOptOut(ctx, context, params),
@@ -426,19 +439,25 @@ const plugin = definePlugin({
   async setup(ctx) {
     pluginCtx = ctx;
     skillSync = createSkillSyncer(ctx, SKILLS);
-    registerCrmProjection(ctx, ctx.db.namespace, { companies: true, contacts: true, companyBilling: true, companyHosted: true });
+    // `managers`: a limited person's own companies are read from this copy (stage B-4).
+    registerCrmProjection(ctx, ctx.db.namespace, { companies: true, contacts: true, companyBilling: true, companyHosted: true, companyManagers: true });
     registerDriveReplies(ctx);
     registerModuleWatch(ctx);
     registerClientProjectWatch(ctx);
     registerRoleWatch(ctx);
     // Every action, tool and API route goes through the access guard (PAR-12675). With the switch off it is a pass-through.
-    const guard = createAccessGuard(ctx, { pluginKey: PLUGIN_ID, table: ACCESS_TABLE });
+    // Stage B-4: a limited person's own companies are the CRM companies he manages, from the CRM copy.
+    const guard = createAccessGuard(ctx, {
+      pluginKey: PLUGIN_ID,
+      table: ACCESS_TABLE,
+      linkedCompanies: (companyId, userId) => listManagedCrmCompanyIds(ctx, ctx.db.namespace, companyId, userId),
+    });
     access = guard;
     for (const tool of BILLING_TOOLS) {
-      guard.tool(tool.name, tool, async (params, run) => {
+      guard.tool(tool.name, tool, async (params, run, check) => {
         // A tool call never waits long for the skill sync (kit `soon`).
         await skillSync?.soon(run.companyId);
-        return runTool(ctx, tool.name, params, run);
+        return runTool(ctx, tool.name, params, run, check);
       });
     }
     for (const [key, handler] of Object.entries(ACTIONS)) {
@@ -447,12 +466,12 @@ const plugin = definePlugin({
         if (context.companyId && key === "billing.load") await skillSync?.soon(context.companyId);
         const autoSendRefused = AUTO_SEND_ACTIONS.has(key) ? await autoSendRefusal(ctx, context, params ?? {}, check, key) : null;
         if (autoSendRefused) return permissionRefusal(autoSendRefused);
-        return handler(ctx, context, params ?? {});
+        return runAction(ctx, key, handler, context, params ?? {}, check);
       });
     }
     registerBillingCanvasCards(ctx, guard.action);
     guard.action("billing.sync-skills", async (_params, context) => ({ results: await skillSync?.force(requiredCompany(context)) }));
-    guard.apiRoute("client-summary", (input) => clientSummaryRoute(ctx, input));
+    guard.apiRoute("client-summary", (input, check) => clientSummaryRoute(ctx, input, check));
     guard.apiRoute(SETUP_STATUS_ROUTE.routeKey, (input) => setupStatusRoute(ctx, input));
     guard.apiRoute(COCKPIT_ROUTE.routeKey, (input) => cockpitRoute(ctx, input));
     // Billing's old fall-through, now by name: the Partners page shares an invoice through it.
@@ -582,26 +601,45 @@ export const TOOL_ACTIONS: Record<string, { action: string; message: ToolMessage
   "billing-settings": { action: "billing.numbering-settings", message: (d) => `Billing ${String(d.version)} settings read` },
 };
 
-ACTIONS["billing.open-invoices"] = async (ctx, context, params) => {
+ACTIONS["billing.open-invoices"] = async (ctx, context, params, limit) => {
   const companyId = requiredCompany(context);
   const scope = readClientScope(params) ?? null;
   const open = await invoiceBalances(ctx, companyId, { openOnly: true, customerKind: scope?.kind, customerRef: scope?.id });
-  return open.map(balanceOut);
+  return open.filter((b) => seesCustomer(limit, b.invoice.customer_kind, b.invoice.customer_ref)).map(balanceOut);
 };
 ACTIONS["billing.list-bills"] = async (ctx, context) => listBills(ctx, requiredCompany(context));
 
 /** Tool results are always objects (MCP structuredContent): lists as `{ items }`, errors as `{ ok: false, error }`. */
-async function runTool(ctx: PluginContext, name: string, params: unknown, run: ToolRunContext): Promise<ToolResult> {
+async function runTool(ctx: PluginContext, name: string, params: unknown, run: ToolRunContext, check: AccessCheck): Promise<ToolResult> {
   try {
     const body = objectParams(params);
     const entry = TOOL_ACTIONS[name];
     const handler = entry ? ACTIONS[entry.action] : undefined;
     if (!entry || !handler) return toolFail("Unknown billing tool");
-    const result = toolOk("", shapeToolResult(name, await handler(ctx, toolContext(run), body), body));
+    const answer = await runAction(ctx, entry.action, handler, toolContext(run), body, check);
+    if (isRefusal(answer)) return toolFail(`Access refused: ${answer.message}`);
+    const result = toolOk("", shapeToolResult(name, answer, body));
     return { ...result, content: typeof entry.message === "function" ? entry.message(result.data) : entry.message };
   } catch (error) {
     return toolFail(error instanceof Error ? error.message : "Billing tool failed");
   }
+}
+
+/**
+ * One action or tool call. Under a limit (stage B-4) the records and client the call names must be his, or it is
+ * refused before the handler runs; the handler gets the limit to filter its lists. Without one it runs as before.
+ */
+async function runAction(ctx: PluginContext, key: string, handler: Handler, context: PluginPerformActionContext, params: Record<string, unknown>, check: AccessCheck): Promise<unknown> {
+  let limit: CustomerScope | null;
+  let refused: string | null = null;
+  try {
+    limit = await customerScopeOf(ctx, context.companyId, check);
+    if (limit) refused = context.companyId ? await customerRefusal(ctx, context.companyId, key, params, context, limit) : OUTSIDE_SCOPE;
+  } catch {
+    return permissionRefusal(SCOPE_UNVERIFIED);
+  }
+  if (refused) return permissionRefusal(refused);
+  return handler(ctx, context, params, limit);
 }
 
 // ── Page snapshot ──────────────────────────────────────────────────────────
@@ -650,8 +688,10 @@ function publicPop(pop: Awaited<ReturnType<typeof listPops>>[number], numbers?: 
  * recurring schedules, credit notes, proofs of payment, time and retainers —
  * no bills or expenses (they are PiB's own costs).
  */
-async function load(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown> = {}) {
+async function load(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown> = {}, limit: CustomerScope | null = null) {
   const companyId = requiredCompany(context);
+  // A limited person (stage B-4) sees his companies' customers only, and none of PiB's own costs or standing issues.
+  const his = (doc: { customer_kind?: string | null; customer_ref?: string | null }) => seesCustomer(limit, doc.customer_kind, doc.customer_ref);
   // The page reports /_plugins/<installation uuid>/ui/ so Setup can link to the settings page.
   await rememberPluginUiBase(ctx, params.uiBase);
   const scope = readClientScope(params) ?? null;
@@ -659,8 +699,9 @@ async function load(ctx: PluginContext, context: PluginPerformActionContext, par
   await refreshAsAtStatuses(ctx, companyId).catch((error) => ctx.logger.info("As-at refresh skipped", { companyId, error: errorMessage(error) }));
   // An approval cancelled without Billing hearing of it must not keep showing as "waiting on you".
   await clearStaleApprovals(ctx, companyId).catch((error) => ctx.logger.info("Stale approvals not cleared", { companyId, error: errorMessage(error) }));
-  const invoices = await listInvoices(ctx, companyId, scope);
-  const own = await invoiceBalances(ctx, companyId, scope ? { customerKind: scope.kind, customerRef: scope.id } : {});
+  // A partner's shared invoice is never his: its customer is in another company's CRM.
+  const invoices = (await listInvoices(ctx, companyId, scope)).filter((invoice) => !limit || (invoice.company_id === companyId && his(invoice)));
+  const own = (await invoiceBalances(ctx, companyId, scope ? { customerKind: scope.kind, customerRef: scope.id } : {})).filter((b) => his(b.invoice));
   const byId = new Map(own.map((b) => [b.invoice.id, b]));
   const visible = [];
   for (const invoice of invoices) {
@@ -676,15 +717,17 @@ async function load(ctx: PluginContext, context: PluginPerformActionContext, par
     }
   }
   const numbers = new Map(own.map((b) => [b.invoice.id, invoiceNumberLabel(b.invoice.number)]));
-  const quotes = await listQuotes(ctx, companyId, scope);
-  const expenses = scope ? [] : await listExpenses(ctx, companyId);
-  const recurring = await listRecurring(ctx, companyId, scope);
-  const creditNotes = await listCreditNotes(ctx, companyId, scope);
+  const quotes = (await listQuotes(ctx, companyId, scope)).filter(his);
+  const expenses = scope || limit ? [] : await listExpenses(ctx, companyId);
+  const ownIds = new Set(own.map((b) => b.invoice.id));
+  const recurring = (await listRecurring(ctx, companyId, scope)).filter((row) => !limit || ownIds.has(row.template_invoice_id));
+  const creditNotes = (await listCreditNotes(ctx, companyId, scope)).filter(his);
   const { settings } = await loadBilling(ctx, companyId);
-  const clients = scope ? [] : await listCrmClients(ctx, ctx.db.namespace, companyId).catch(() => []);
-  const pops = (await listPops(ctx, companyId, scope ? { invoiceIds: own.map((b) => b.invoice.id) } : {})).map((pop) => publicPop(pop, numbers));
-  const time = await listTime(ctx, companyId, scope ? { customerKind: scope.kind, customerRef: scope.id } : {});
-  const retainers = await listRetainers(ctx, companyId, scope);
+  const clients = scope ? [] : (await listCrmClients(ctx, ctx.db.namespace, companyId).catch(() => [])).filter((client) => seesCustomer(limit, client.kind, client.id));
+  const pops = (await listPops(ctx, companyId, scope || limit ? { invoiceIds: [...ownIds] } : {})).map((pop) => publicPop(pop, numbers));
+  const time = (await listTime(ctx, companyId, scope ? { customerKind: scope.kind, customerRef: scope.id } : {})).filter((entry) => seesCustomer(limit, entry.customerKind, entry.customerRef));
+  const listed = await listRetainers(ctx, companyId, scope);
+  const retainers = { ...listed, subscriptions: listed.subscriptions.filter((sub) => seesCustomer(limit, sub.customerKind, sub.customerRef)) };
   const optedOut = scope
     ? (await ctx.db.query(`SELECT 1 AS x FROM ${table(ctx, "dunning_optouts")} WHERE company_id = $1 AND customer_kind = $2 AND customer_ref = $3`, [companyId, scope.kind, scope.id])).length > 0
     : false;
@@ -692,8 +735,9 @@ async function load(ctx: PluginContext, context: PluginPerformActionContext, par
   const invoiceClient = new Map(own.map((b) => [b.invoice.id, `${b.invoice.customer_kind}:${b.invoice.customer_ref}`]));
   const scopeKey = scope ? `${scope.kind}:${scope.id}` : null;
   const decisions = (await openDecisionList(ctx, companyId).catch(() => []))
-    .filter((d) => !scopeKey || (d.invoiceId != null && invoiceClient.get(d.invoiceId) === scopeKey));
-  const workIssues = scope ? [] : (await openWorkIssues(ctx, companyId).catch(() => [])).map((w) => ({ kind: w.kind, issueId: w.issue_id, subjectId: w.subject_id }));
+    .filter((d) => !scopeKey || (d.invoiceId != null && invoiceClient.get(d.invoiceId) === scopeKey))
+    .filter((d) => !limit || (d.invoiceId != null && ownIds.has(d.invoiceId)));
+  const workIssues = scope || limit ? [] : (await openWorkIssues(ctx, companyId).catch(() => [])).map((w) => ({ kind: w.kind, issueId: w.issue_id, subjectId: w.subject_id }));
   // Payments dated after today: in no total until their day; a person checks the date.
   const futurePayments = own
     .filter((b) => b.futurePayments > 0)
@@ -731,7 +775,7 @@ async function load(ctx: PluginContext, context: PluginPerformActionContext, par
     invoices: visible,
     quotes: quotes.map(publicQuote),
     expenses: expenses.map(publicExpense),
-    bills: scope ? [] : await listBills(ctx, companyId),
+    bills: scope || limit ? [] : await listBills(ctx, companyId),
     recurring: recurring.map(publicRecurring),
     creditNotes: creditNotes.map((note) => publicCreditNote(note, numbers.get(note.invoice_id))),
     pops,
@@ -848,13 +892,15 @@ async function quoteDetail(ctx: PluginContext, context: PluginPerformActionConte
 }
 
 /** Quotes for an agent: optionally one client, status or deal. */
-async function listQuotesAction(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>) {
+async function listQuotesAction(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>, limit: CustomerScope | null) {
   const companyId = requiredCompany(context);
   const scope = readClientScope(params) ?? null;
   const status = optionalString(params, "status");
   if (status && !(QUOTE_STATUSES as readonly string[]).includes(status)) throw new BillingError(`status is one of ${QUOTE_STATUSES.join(", ")}`);
   const dealId = optionalString(params, "dealId");
-  const rows = (await listQuotes(ctx, companyId, scope)).filter((quote) => (!status || quote.status === status) && (!dealId || quote.deal_id === dealId));
+  const rows = (await listQuotes(ctx, companyId, scope)).filter(
+    (quote) => (!status || quote.status === status) && (!dealId || quote.deal_id === dealId) && seesCustomer(limit, quote.customer_kind, quote.customer_ref),
+  );
   return rows.slice(0, 100).map(publicQuote);
 }
 
@@ -1008,9 +1054,10 @@ async function createRecurringAction(ctx: PluginContext, context: PluginPerformA
   return publicRecurring(row);
 }
 
-async function listRecurringAction(ctx: PluginContext, context: PluginPerformActionContext) {
+async function listRecurringAction(ctx: PluginContext, context: PluginPerformActionContext, limit: CustomerScope | null) {
   const companyId = requiredCompany(context);
-  return (await listRecurring(ctx, companyId)).map(publicRecurring);
+  const his = limit ? await visibleInvoiceIds(ctx, companyId, limit) : null;
+  return (await listRecurring(ctx, companyId)).filter((row) => !his || his.has(row.template_invoice_id)).map(publicRecurring);
 }
 
 async function setRecurringActive(ctx: PluginContext, context: PluginPerformActionContext, params: Record<string, unknown>, active: boolean) {
@@ -1124,9 +1171,10 @@ async function hostedRetainersJob(ctx: PluginContext) {
   }
 }
 
-async function listCreditNotesAction(ctx: PluginContext, context: PluginPerformActionContext) {
+/** Credit notes; a limited person gets his companies' only. */
+async function listCreditNotesAction(ctx: PluginContext, context: PluginPerformActionContext, limit: CustomerScope | null) {
   const companyId = requiredCompany(context);
-  const rows = await listCreditNotes(ctx, companyId);
+  const rows = (await listCreditNotes(ctx, companyId)).filter((note) => seesCustomer(limit, note.customer_kind, note.customer_ref));
   return rows.map((note) => ({ ...publicCreditNote(note), createdAt: note.created_at == null ? null : String(iso(note.created_at)) }));
 }
 
@@ -1347,10 +1395,18 @@ async function cockpitRoute(ctx: PluginContext, input: PluginApiRequestInput): P
   }
 }
 
-async function clientSummaryRoute(ctx: PluginContext, input: PluginApiRequestInput): Promise<PluginApiResponse> {
+async function clientSummaryRoute(ctx: PluginContext, input: PluginApiRequestInput, check: AccessCheck): Promise<PluginApiResponse> {
   try {
     const scope = parseClientParam(`${firstQuery(input.query.kind)}:${firstQuery(input.query.id)}`);
     if (!scope) return { status: 400, body: { error: "kind (company or contact) and a valid id are required" } };
+    // Stage B-4: a limited person reads the card of his companies' customers only (403, the refusal form).
+    let limit: CustomerScope | null;
+    try {
+      limit = await customerScopeOf(ctx, input.companyId, check);
+    } catch {
+      return { status: 403, body: permissionRefusal(SCOPE_UNVERIFIED) };
+    }
+    if (!seesCustomer(limit, scope.kind, scope.id)) return { status: 403, body: permissionRefusal(OUTSIDE_SCOPE) };
     return { status: 200, body: await clientSummary(ctx, input.companyId, scope) };
   } catch (error) {
     ctx.logger.info("Billing client summary failed", { error: errorMessage(error) });
