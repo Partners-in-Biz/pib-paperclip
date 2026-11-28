@@ -37,11 +37,14 @@ function limit(w: World, mode: "enforce" | "off" = "enforce") {
   w.ctx.state.get = async (scope: Parameters<typeof get>[0]) => (rows.has(stateKey(scope)) ? rows.get(stateKey(scope)) : get.call(w.ctx.state, scope));
 }
 
-type ToolOut = { data?: Record<string, any>; error?: string };
+/** The parts of the answers these tests read. */
+type Row = { scopeKey?: string; id?: string; proposalId?: string };
+type Load = { limitedTo?: { scopeKey: string; scopeKeys: string[] }; accounts: Row[]; proposals: Row[]; connections: unknown[]; clients: Record<string, string> };
+type ToolOut = { data?: { accounts?: Row[]; proposalId?: string }; error?: string };
 /** An agent's run for MEMBER, as core sends it (H3: the host names the person the run works for). */
 const tool = (w: World, name: string, params: Record<string, unknown> = {}, forMember = true) =>
   w.harness.executeTool<ToolOut>(name, params, { companyId: COMPANY, agentId: ADS_AGENT, runId: RUN, projectId: "proj-1", ...(forMember ? { onBehalfOfUserId: MEMBER, onBehalfOfRestricted: true } : {}) } as never);
-const act = <T = any>(w: World, key: string, params: Record<string, unknown> = {}, userId = MEMBER) =>
+const act = <T = Load>(w: World, key: string, params: Record<string, unknown> = {}, userId = MEMBER) =>
   w.harness.performAction<T>(key, params, { companyId: COMPANY, actor: { type: "user", userId, agentId: null, runId: null, companyId: COMPANY } } as never);
 const refusedWith = (result: unknown) => (isRefusal(result) && result.code === PERMISSION_DENIED ? result.message : `not refused: ${JSON.stringify(result)?.slice(0, 200)}`);
 
@@ -77,7 +80,7 @@ describe.skipIf(!available)("a person limited to his own companies (enforce)", (
     const propose = async (accountId: string, scopeKey: string) => {
       const out = await tool(w, "propose-ad-change", CREATE(accountId, { scopeKey }), false);
       if (!out.data?.proposalId) throw new Error(`no proposal: ${out.error}`);
-      return out.data.proposalId as string;
+      return out.data.proposalId;
     };
     otherProposal = await propose(other.accountId, "company:other");
     acmeProposal = await propose(acme.accountId, "company:acme");
@@ -87,18 +90,18 @@ describe.skipIf(!available)("a person limited to his own companies (enforce)", (
   it("the page opens his first company, lists only his, and leaves out the company-wide parts", async () => {
     const load = await act(w, "ads.load", {});
     expect(load.limitedTo).toEqual({ scopeKey: "company:acme", scopeKeys: ["company:acme", "company:beta", "contact:jo"] });
-    expect(load.accounts.map((a: any) => a.scopeKey)).toEqual(["company:acme"]);
+    expect(load.accounts.map((a) => a.scopeKey)).toEqual(["company:acme"]);
     expect(load.connections).toEqual([]);
     expect(Object.keys(load.clients).sort()).toEqual(["company:acme", "company:beta", "contact:jo"]);
-    expect(load.proposals.map((p: any) => p.id ?? p.proposalId)).toEqual([acmeProposal]);
-    expect((await act(w, "ads.load", { client: "contact:jo" })).limitedTo.scopeKey).toBe("contact:jo");
+    expect(load.proposals.map((p) => p.id ?? p.proposalId)).toEqual([acmeProposal]);
+    expect((await act(w, "ads.load", { client: "contact:jo" })).limitedTo?.scopeKey).toBe("contact:jo");
     for (const client of ["company:other", "contact:zed", "own", "company:guessed"]) {
       expect(refusedWith(await act(w, "ads.load", { client })), client).toBe(NOT_AMONG_YOUR_COMPANIES);
     }
   });
 
   it("an agent tool for him names one of his companies; none, all, own and another company's are refused", async () => {
-    expect((await tool(w, "list-ad-accounts", { client: "company:acme" })).data!.accounts.map((a: any) => a.scopeKey)).toEqual(["company:acme"]);
+    expect((await tool(w, "list-ad-accounts", { client: "company:acme" })).data?.accounts?.map((a) => a.scopeKey)).toEqual(["company:acme"]);
     expect((await tool(w, "list-ad-accounts", { client: "contact:jo" })).error).toBeUndefined();
     expect((await tool(w, "list-ad-accounts", { client: "company:beta" })).error).toBeUndefined();
     expect((await tool(w, "list-ad-accounts")).error).toBe(`Access refused: ${NAME_YOUR_COMPANY}.`);
@@ -109,8 +112,10 @@ describe.skipIf(!available)("a person limited to his own companies (enforce)", (
     expect((await tool(w, "propose-ad-change", CREATE(other.accountId, { scopeKey: "company:other" }))).error).toBe(`Access refused: ${NOT_AMONG_YOUR_COMPANIES}.`);
     // His company as `client` does not carry another company's `scopeKey` through.
     expect((await tool(w, "propose-ad-change", CREATE(other.accountId, { client: "company:acme", scopeKey: "company:other" }))).error).toBe(`Access refused: ${NOT_AMONG_YOUR_COMPANIES}.`);
-    // His own scope with another scope's account: the handler's own check refuses it.
-    expect((await tool(w, "propose-ad-change", CREATE(other.accountId, { scopeKey: "company:acme" }))).error).toMatch(/belongs to another scope/);
+    // His own scope with another scope's account, named either way: the proposal's own check refuses it (proposal-input.ts).
+    for (const named of [{ scopeKey: "company:acme" }, { client: "company:acme", scopeKey: undefined }]) {
+      expect((await tool(w, "propose-ad-change", CREATE(other.accountId, named))).error, JSON.stringify(named)).toMatch(/belongs to another scope/);
+    }
   });
 
   it("a record by id must sit in one of his scopes; a guessed id gets the same answer as another company's", async () => {
@@ -167,6 +172,6 @@ describe.skipIf(!available)("the same person with the switch off", () => {
     limit(w, "off");
     const load = await act(w, "ads.load", {});
     expect(load.limitedTo).toBeUndefined();
-    expect(load.accounts.map((a: any) => a.scopeKey).sort()).toEqual(["company:other", "own"]);
+    expect(load.accounts.map((a) => a.scopeKey).sort()).toEqual(["company:other", "own"]);
   });
 });
