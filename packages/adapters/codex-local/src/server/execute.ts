@@ -38,6 +38,7 @@ import {
   startAdapterExecutionTargetPaperclipBridge,
 } from "@paperclipai/adapter-utils/execution-target";
 import {
+  agentInheritedEnv,
   asString,
   asNumber,
   parseObject,
@@ -1034,7 +1035,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
     }
     const effectiveEnv = Object.fromEntries(
-      Object.entries({ ...process.env, ...env }).filter(
+      Object.entries({ ...agentInheritedEnv(), ...env }).filter(
         (entry): entry is [string, string] => typeof entry[1] === "string",
       ),
     );

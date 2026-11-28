@@ -16,6 +16,7 @@ import {
   resolveCommandForLogs,
   runChildProcess,
 } from "../utils.js";
+import { agentInheritedEnv } from "@paperclipai/adapter-utils/server-utils";
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   let spawned = false;
@@ -59,10 +60,10 @@ async function executeProcess(ctx: AdapterExecutionContext): Promise<AdapterExec
   env.PAPERCLIP_RUN_ID = runId;
   if (authToken) env.PAPERCLIP_API_KEY = authToken;
   // runtimeEnv is only used to resolve the command path and log HOME below;
-  // the child env is built inside runChildProcess from
-  // sanitizeInheritedPaperclipEnv(process.env) + env, so a PAPERCLIP_API_KEY
-  // on the server process never reaches the child.
-  const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
+  // the child env is built inside runChildProcess from the agent allowlist of
+  // the server env + env without server secrets (PAR-15260), so neither a
+  // PAPERCLIP_API_KEY nor a server secret on the server process reaches it.
+  const runtimeEnv = ensurePathInEnv({ ...agentInheritedEnv(), ...env });
   const resolvedCommand = await resolveCommandForLogs(command, cwd, runtimeEnv);
   const loggedEnv = buildInvocationEnvForLogs(env, {
     runtimeEnv,

@@ -47,6 +47,8 @@ import {
 
 import {
   runChildProcess,
+  agentInheritedEnv,
+  buildAgentChildEnv,
   buildPaperclipEnv,
   buildRuntimeToolsEnv,
   renderTemplate,
@@ -669,8 +671,8 @@ async function executeHermes(
   const userConfigEnv = config.env as Record<string, string> | undefined;
   const hermesStoreEnv: Record<string, string | undefined> = {
     // A remote store is found through the configured HERMES_HOME only, never
-    // through the server's own environment.
-    ...(remote ? {} : process.env),
+    // through the server's own environment. Locally, only the agent allowlist.
+    ...(remote ? {} : agentInheritedEnv()),
     ...(userConfigEnv && typeof userConfigEnv === "object" ? userConfigEnv : {}),
   };
   const remoteSessions = remote ? createRemoteSessionReader(remote.run) : undefined;
@@ -778,13 +780,16 @@ async function executeHermes(
 
   // ── Build environment ──────────────────────────────────────────────────
   const userEnv = config.env as Record<string, string> | undefined;
-  const env: Record<string, string> = {
-    // Remote: never hand the server's environment (PATH, HOME, keys) to another host.
-    ...(remote ? {} : (process.env as Record<string, string>)),
-    ...(userEnv && typeof userEnv === "object" ? userEnv : {}),
-    ...buildPaperclipEnv(ctx.agent, ctx.agentIdentity),
-    ...buildRuntimeToolsEnv(ctx.runtimeTools),
-  };
+  // Remote: never hand the server's environment (PATH, HOME, keys) to another
+  // host. Local: only the agent allowlist, and never a server secret (G1).
+  const env: Record<string, string> = buildAgentChildEnv({
+    remote: Boolean(remote),
+    configEnv: userEnv && typeof userEnv === "object" ? userEnv : {},
+    runEnv: {
+      ...buildPaperclipEnv(ctx.agent, ctx.agentIdentity),
+      ...buildRuntimeToolsEnv(ctx.runtimeTools),
+    },
+  });
 
   // Scope the overlay to this child process. Read the current bundle on every
   // invocation; never infer its availability from a persisted session ID.

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import os from "node:os";
 import type { AdapterModel } from "@paperclipai/adapter-utils";
 import {
+  agentInheritedEnv,
   asString,
   ensurePathInEnv,
   runChildProcess,
@@ -161,7 +162,8 @@ export async function discoverOpenCodeModels(
   // Prevent OpenCode from writing an opencode.json into the working directory.
   const runtimeEnv = normalizeEnv(
     ensurePathInEnv({
-      ...process.env,
+      // PAR-15260: only the agent allowlist of the server env (G1).
+      ...agentInheritedEnv(),
       ...env,
       ...(resolvedHome ? { HOME: resolvedHome } : {}),
       OPENCODE_DISABLE_PROJECT_CONFIG: "true",
