@@ -532,7 +532,7 @@ export function pluginRegistryService(db: Db) {
      * Set (`value` defined) or remove (`value` undefined) one top-level key of the company's settings JSON,
      * keeping every other key, inside one transaction that locks the row. `enabled` and `lastError` stay
      * as they are; a missing row is created enabled, the same default a missing row reads as. Removing a
-     * key from a missing row writes nothing. `afterWrite` runs in the same transaction (the audit entry),
+     * key from a missing row writes no row, but `afterWrite` still runs (the route logs the clear request). `afterWrite` runs in the same transaction (the audit entry),
      * so a failure there rolls the write back. `upsertCompanySettings` still replaces the whole JSON: a
      * concurrent write through it can drop this key (plan PAR-15073, 8 "Shared settings JSON").
      */

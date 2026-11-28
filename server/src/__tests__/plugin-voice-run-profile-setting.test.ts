@@ -229,6 +229,24 @@ function manifest(): PaperclipPluginManifestV1 {
     expect(await readVoiceRunProfileSetting(db, id.A!)).toBe("profile_and_warm");
   });
 
+  it("with the company's restriction mode off, the flagged member gets the local-folders answer: 200", async () => {
+    await db.update(companies).set({ memberRestrictionMode: "off" }).where(eq(companies.id, id.A!));
+    try {
+      sessionUser = RESTRICTED;
+      const voice = await request(app).put(route()).send({ value: "profile" });
+      const folders = await request(app).put(`/api/plugins/${id.plugin}/companies/${id.A}/local-folders/${FOLDER_KEY}`)
+        .send({ path: folderRoot });
+      expect({ voice: voice.status, folders: folders.status }).toEqual({ voice: 200, folders: 200 });
+      expect(await readVoiceRunProfileSetting(db, id.A!)).toBe("profile");
+    } finally {
+      await db.update(companies).set({ memberRestrictionMode: "enforce" }).where(eq(companies.id, id.A!));
+    }
+  });
+
+  // The stub makes every `select` inside the transaction throw. The first one is `getById` in
+  // `mergeCompanySettingsKey`, before the insert, so the route answers 500 through the error handler and no
+  // statement has written yet. The rollback of a write that already ran is proved by "a failed audit rolls
+  // the write back" below.
   it("a failing settings read gives a non-2xx answer and writes nothing", async () => {
     sessionUser = OWNER;
     await request(app).put(route()).send({ value: "profile" }).expect(200);
@@ -246,7 +264,7 @@ function manifest(): PaperclipPluginManifestV1 {
     }) as Db;
     const failing = mount(failingDb, "authenticated");
     const res = await request(failing).put(route()).send({ value: "profile_and_warm" });
-    expect(res.status).toBeGreaterThanOrEqual(500);
+    expect(res.status).toBe(500);
     await expectNothingWritten(before, 1);
   });
 

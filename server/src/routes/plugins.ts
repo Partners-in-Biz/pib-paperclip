@@ -3238,6 +3238,8 @@ export function pluginRoutes(
    * membership, operator floor), on the voice plugin only. The value is merged into the plugin's company
    * settings JSON in one transaction together with its activity entry. The instance flag
    * `enableVoiceRunProfile` is not checked here: a write with the flag off is stored and reads as off.
+   * A DELETE on a company with no row writes no row but still logs `plugin.voice_run_profile.cleared`:
+   * the audit records each accepted request, by design.
    */
   async function resolveVoicePlugin(pluginId: string) {
     const plugin = await resolvePlugin(registry, pluginId);
