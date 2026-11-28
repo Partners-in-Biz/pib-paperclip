@@ -54,6 +54,23 @@ const OPEN_SQL = "'todo', 'in_progress', 'in_review', 'blocked'";
 const CARD_READ_BUDGET_MS = 90_000;
 const CARD_READ_PARALLEL = 6;
 
+/** How `readOwnerCards` picks the issues and how long it may take. */
+export interface OwnerCardsOptions {
+  /** `all`: every open issue (the digest). `waiting`: in review, blocked, or assigned to `ownerUserId` (the Decide index). */
+  scope: "all" | "waiting";
+  /** `desc`: newest first (the digest). `asc`: oldest first, so a cut drops the newest. */
+  order: "desc" | "asc";
+  /** Total time for the read, checked before each issue. */
+  budgetMs: number;
+  /** Longest one `listInteractions` call may take before the worker moves on and counts it as unread. */
+  callMs: number;
+  /** The owner, for the `waiting` scope. */
+  ownerUserId?: string | null;
+}
+
+/** What the 16:00 digest has always done: every open issue, newest first, 90 s, no per-call limit beyond that. */
+export const DIGEST_CARD_OPTIONS: OwnerCardsOptions = { scope: "all", order: "desc", budgetMs: CARD_READ_BUDGET_MS, callMs: CARD_READ_BUDGET_MS };
+
 const STATE = (companyId: string) => ({ scopeKind: "company" as const, scopeId: companyId, namespace: "cockpit", stateKey: "ownerDigest" });
 
 interface DigestState {
@@ -100,6 +117,8 @@ interface CardLite {
   title: string | null;
   text: string;
   createdAt: string | null;
+  /** Set when the card is addressed to one person (agent-addressed cards are never listed). */
+  addresseeUserId?: string | null;
 }
 
 function cardText(payload: unknown): string {
@@ -110,13 +129,26 @@ function cardText(payload: unknown): string {
   return out.join("\n");
 }
 
+/** The call's answer, or a rejection after `ms` (the hung call is left behind). */
+function raceCall<T>(call: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`no answer in ${ms} ms`)), ms);
+  });
+  return Promise.race([call, late]).finally(() => clearTimeout(timer));
+}
+
 /** Every card on the company's open issues that waits on a person, and how many were raised today. `unread` says what could not be read. */
-export async function readOwnerCards(env: Env, companyId: string, dayStart: Date): Promise<{ pending: CardLite[]; raisedToday: number; unread: string | null }> {
+export async function readOwnerCards(env: Env, companyId: string, dayStart: Date, options: OwnerCardsOptions = DIGEST_CARD_OPTIONS): Promise<{ pending: CardLite[]; raisedToday: number; unread: string | null }> {
   const list = (env.ctx.issues as { listInteractions?: (issueId: string, companyId: string) => Promise<unknown[]> }).listInteractions;
   if (typeof list !== "function") return { pending: [], raisedToday: 0, unread: "approval cards (this Paperclip has no way to list them)" };
   let issueIds: string[];
   try {
-    const rows = await env.ctx.db.query<{ id: string }>(`SELECT id::text AS id FROM public.issues WHERE company_id = $1 AND hidden_at IS NULL AND status IN (${OPEN_SQL}) ORDER BY updated_at DESC LIMIT 1500`, [companyId]);
+    const waiting = options.scope === "waiting";
+    const rows = await env.ctx.db.query<{ id: string }>(
+      `SELECT id::text AS id FROM public.issues WHERE company_id = $1 AND hidden_at IS NULL AND status IN (${OPEN_SQL})${waiting ? " AND (status IN ('in_review', 'blocked') OR assignee_user_id = $2)" : ""} ORDER BY updated_at ${options.order === "asc" ? "ASC" : "DESC"} LIMIT 1500`,
+      waiting ? [companyId, options.ownerUserId ?? ""] : [companyId],
+    );
     issueIds = rows.map((r) => String(r.id));
   } catch (error) {
     env.ctx.logger.info("Owner digest: open issues could not be listed for the card read", { companyId, error: message(error) });
@@ -131,20 +163,20 @@ export async function readOwnerCards(env: Env, companyId: string, dayStart: Date
   let cut = false;
   const worker = async () => {
     while (next < issueIds.length && !refused) {
-      if (Date.now() - startedAt > CARD_READ_BUDGET_MS) {
+      if (Date.now() - startedAt > options.budgetMs) {
         cut = true;
         return;
       }
       const issueId = issueIds[next++]!;
       try {
-        for (const raw of await list.call(env.ctx.issues, issueId, companyId)) {
+        for (const raw of await raceCall(list.call(env.ctx.issues, issueId, companyId), options.callMs)) {
           const card = raw as Record<string, unknown>;
           if (!CARD_KINDS.has(String(card.kind)) || card.addresseeAgentId) continue;
           const createdAt = card.createdAt instanceof Date ? card.createdAt.toISOString() : typeof card.createdAt === "string" ? card.createdAt : null;
           if (createdAt && Date.parse(createdAt) >= dayStart.getTime()) raisedToday += 1;
           if (card.status !== "pending" || card.dismissedAt) continue;
           const text = cardText(card.payload);
-          pending.push({ id: String(card.id), issueId, kind: String(card.kind), status: "pending", title: typeof card.title === "string" && card.title.trim() ? card.title.trim() : null, text: [card.summary, text].filter((t) => typeof t === "string" && t).join("\n"), createdAt });
+          pending.push({ id: String(card.id), issueId, kind: String(card.kind), status: "pending", title: typeof card.title === "string" && card.title.trim() ? card.title.trim() : null, text: [card.summary, text].filter((t) => typeof t === "string" && t).join("\n"), createdAt, addresseeUserId: typeof card.addresseeUserId === "string" ? card.addresseeUserId : null });
         }
       } catch (error) {
         const text = message(error);
@@ -216,7 +248,7 @@ export async function buildOwnerDigest(env: Env, companyId: string): Promise<Own
   const [openAsks, state, cards] = await Promise.all([
     listOpenAsks(env, companyId, 200).catch(() => [] as AskRow[]),
     readState(env, companyId),
-    readOwnerCards(env, companyId, dayStart),
+    readOwnerCards(env, companyId, dayStart, DIGEST_CARD_OPTIONS),
   ]);
   if (cards.unread) unread.push(cards.unread);
   const askById = new Map(openAsks.map((a) => [a.id, a]));

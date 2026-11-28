@@ -92,6 +92,7 @@ import { jobHandler } from "./run-trigger.js";
 import { registerW1cPolicy } from "./register-w1c-policy.js";
 import { riskTierCloseCheck } from "./register-w1c-done.js";
 import { sweepAskDeadlines } from "./register-w1c-deadlines.js";
+import { registerDecide } from "./register-decide.js";
 import { ownerDigestTick, registerOwnerDigest } from "./digest.js";
 import { editionFromBrief, paperTick, registerPaper, runPaperTool } from "./paper.js";
 import { PAPER_TOOL_NAME_SET } from "./paper-tool-declarations.js";
@@ -238,6 +239,8 @@ export function registerCockpit(ctx: PluginContext, env: Env = createEnv(ctx)): 
   // The owner's standing-approval policy: written only by the owner, through these two actions.
   registerW1cPolicy(env, guard);
   registerOwnerDigest(env, guard);
+  // The Decide tab: the owner's queue, one decision at a time (PAR-15315).
+  registerDecide(env, guard);
   registerPaper(env, guard);
   // The Browser tab: the pib-browser logins, read from the status file (owner company only).
   registerBrowserStatus(env, guard);
