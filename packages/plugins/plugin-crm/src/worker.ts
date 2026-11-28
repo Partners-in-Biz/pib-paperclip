@@ -249,7 +249,9 @@ import {
   parseClientRef,
   pickProfile,
   updateClientProfile,
+  visibleCrmRecords,
 } from "./lookup.js";
+import { actingUserIdNow, linkedCompanyIdsNow, withAccessCheck } from "./access-scope.js";
 import { companyPrefix, crmLink, refOf } from "./refs.js";
 import { contactAssignee } from "./mail.js";
 import { onNewsletterSendResult, purgeSettledSignupMails } from "./newsletter-send-result.js";
@@ -317,21 +319,22 @@ const plugin = definePlugin({
       key: string,
       handler: (params: Record<string, unknown>, context: PluginPerformActionContext) => Promise<unknown>,
     ) => {
-      guard.action(key, async (params, context) => {
+      // Stage B: the handler runs with the guard's decision, so every viewer it builds carries his companies.
+      guard.action(key, (params, context, check) => withAccessCheck(check, async () => {
         // A page action never waits long for the skill sync (kit `soon`).
         if (context.companyId) await skillSync?.soon(context.companyId);
         const result = await handler(params, context);
         if (context.companyId && CRM_MUTATIONS.has(key)) await afterMutation(ctx, context.companyId, key, params);
         return result;
-      });
+      }));
     };
     for (const tool of CRM_TOOLS) {
-      guard.tool(tool.name, tool, async (params, run) => normalizeToolResult(await runTool(ctx, tool.name, params, run)));
+      guard.tool(tool.name, tool, (params, run, check) => withAccessCheck(check, async () => normalizeToolResult(await runTool(ctx, tool.name, params, run))));
     }
     // The manifest's API routes, each through the guard (`api:<routeKey>` rows).
-    guard.apiRoute(SETUP_STATUS_ROUTE.routeKey, async (input) => ({ status: 200, body: await setupStatus(ctx, input.companyId) }));
-    guard.apiRoute(COCKPIT_ROUTE.routeKey, async (input) => ({ status: 200, body: await cockpitSnapshot(ctx, input.companyId) }));
-    guard.apiRoute("record-grant", (input) => acceptPartnerGrant(ctx, input));
+    guard.apiRoute(SETUP_STATUS_ROUTE.routeKey, (input, check) => withAccessCheck(check, async () => ({ status: 200, body: await setupStatus(ctx, input.companyId) })));
+    guard.apiRoute(COCKPIT_ROUTE.routeKey, (input, check) => withAccessCheck(check, async () => ({ status: 200, body: await cockpitSnapshot(ctx, input.companyId) })));
+    guard.apiRoute("record-grant", (input, check) => withAccessCheck(check, () => acceptPartnerGrant(ctx, input)));
     registerAction("crm.load", async (params, context) => {
       // The page reports /_plugins/<installation uuid>/ui/ so Setup can link the settings page.
       await rememberPluginUiBase(ctx, params.uiBase);
@@ -415,9 +418,10 @@ const plugin = definePlugin({
     // Company and contact cards on a planning canvas (PAR-14416): the kit helper, straight on the guard (no skill sync wait).
     registerCanvasCards({
       register: guard.action,
-      kinds: crmCardKinds(ctx, (call) => viewerFor(ctx, {
+      // The kit hands each kind the guard's check (stage B: a limited person's own companies).
+      kinds: crmCardKinds(ctx, (call) => withAccessCheck(call.check, () => viewerFor(ctx, {
         companyId: call.companyId, userId: call.context.actor.userId, agentId: call.context.actor.agentId, runId: call.context.actor.runId,
-      })),
+      }))),
     });
     registerAction("crm.create-canary-client", async (params, context) => ensureCanaryClient(ctx, await actionViewer(ctx, context), params));
     registerAction("crm.cleanup-canary", async (params, context) => cleanupCanary(ctx, await actionViewer(ctx, context), params));
@@ -952,26 +956,16 @@ const DESK_DEPS: DeskDeps = {
 
 async function visibleRecords(ctx: PluginContext, viewer: Viewer) {
   const pipeline = await ensurePipeline(ctx, viewer.companyId);
-  const [accounts, contacts, deals, links, sequences, stages, pipelines] = await Promise.all([
-    listAccounts(ctx, viewer.companyId),
-    listContacts(ctx, viewer.companyId),
-    listDeals(ctx, viewer.companyId),
-    listLinks(ctx, viewer.companyId),
+  const [visible, sequences, stages, pipelines] = await Promise.all([
+    visibleCrmRecords(ctx, viewer),
     listSequences(ctx, viewer.companyId),
     listCompanyStages(ctx, viewer.companyId),
     listPipelines(ctx, viewer.companyId),
   ]);
-  const [accountGrants, contactGrants, dealGrants] = await Promise.all([
-    grantsFor(ctx, "company", viewer.companyId),
-    grantsFor(ctx, "contact", viewer.companyId),
-    grantsFor(ctx, "deal", viewer.companyId),
-  ]);
-  const visibleAccounts = accounts.filter((row) => canSeeRecord(viewer, row, accountGrants.get(row.id) ?? []));
-  const visibleContacts = contacts.filter((row) => canSeeRecord(viewer, row, contactGrants.get(row.id) ?? []));
-  const visibleDeals = deals.filter((row) => canSeeRecord(viewer, row, dealGrants.get(row.id) ?? []));
-  const contactIds = new Set(visibleContacts.map((row) => row.id));
-  const visibleLinks = links.filter((link) => contactIds.has(link.contactId));
-  return { pipeline, defaultPipelineId: pipeline.pipelineId, pipelines, visibleAccounts, visibleContacts, visibleDeals, visibleLinks, sequences, stages };
+  return {
+    pipeline, defaultPipelineId: pipeline.pipelineId, pipelines, sequences, stages,
+    visibleAccounts: visible.accounts, visibleContacts: visible.contacts, visibleDeals: visible.deals, visibleLinks: visible.links,
+  };
 }
 
 async function load(ctx: PluginContext, context: PluginPerformActionContext) {
@@ -1013,9 +1007,11 @@ async function load(ctx: PluginContext, context: PluginPerformActionContext) {
   }
 
   const settingsSaved = Object.keys(await readConfig(ctx, viewer.companyId).catch(() => ({}))).length > 0;
+  // Hiring and the held-lead queue are company-wide (admin and inbound work): not shown to an own-companies person.
+  const own = Boolean(viewer.linkedCompanyIds);
   const [hire, held] = await Promise.all([
-    context.actor.type === "user" ? hireView(ctx, viewer.companyId, context.actor.userId ?? null).catch(() => null) : Promise.resolve(null),
-    heldLeadStats(ctx, viewer.companyId).catch(() => ({ count: 0, oldest: null })),
+    context.actor.type === "user" && !own ? hireView(ctx, viewer.companyId, context.actor.userId ?? null).catch(() => null) : Promise.resolve(null),
+    own ? Promise.resolve({ count: 0, oldest: null }) : heldLeadStats(ctx, viewer.companyId).catch(() => ({ count: 0, oldest: null })),
   ]);
   const [dealDates, contactDates] = await Promise.all([
     recordDates(ctx, "deals", visibleDeals.map((deal) => deal.id)).catch(() => []),
@@ -1362,7 +1358,11 @@ async function requireProduct(ctx: PluginContext, viewer: Viewer, id: string): P
 }
 
 async function findDuplicates(ctx: PluginContext, viewer: Viewer) {
-  return duplicateGroups(await findDuplicateContacts(ctx, viewer.companyId));
+  const contacts = await findDuplicateContacts(ctx, viewer.companyId);
+  if (!viewer.linkedCompanyIds) return duplicateGroups(contacts);
+  // Stage B: only his contacts, so a group never names a contact he may not open.
+  const mine = new Set((await visibleCrmRecords(ctx, viewer)).contacts.map((row) => row.id));
+  return duplicateGroups(contacts.filter((row) => mine.has(row.id)));
 }
 
 async function mergeContactsRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
@@ -1417,8 +1417,8 @@ async function deleteSavedViewRecord(ctx: PluginContext, viewer: Viewer, params:
 const EXPORT_COLUMNS = ["id", "ref", "name", "emails", "phones", "lifecycle", "email_status", "tags", "companies"];
 
 async function exportContacts(ctx: PluginContext, viewer: Viewer) {
-  const [contacts, links, grants] = await Promise.all([listContacts(ctx, viewer.companyId), listLinks(ctx, viewer.companyId), grantsFor(ctx, "contact", viewer.companyId)]);
-  const visible = contacts.filter((contact) => canSeeRecord(viewer, contact, grants.get(contact.id) ?? []));
+  // The visible contacts and their links (under a `linked` decision only links to his companies, B-D4).
+  const { contacts: visible, links } = await visibleCrmRecords(ctx, viewer);
   const rows = visible.map((contact) => ({
     id: contact.id,
     ref: refOf("contact", contact.id),
@@ -1528,13 +1528,15 @@ async function bulkTagContacts(ctx: PluginContext, viewer: Viewer, params: Recor
 
 async function contactGraph(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
   const contact = await requireContact(ctx, viewer, contactIdOf(params));
-  const links = (await listLinks(ctx, viewer.companyId)).filter((link) => link.contactId === contact.id);
+  // Stage B (B-D4): under a `linked` decision only his companies and deals are named.
+  const scoped = viewer.linkedCompanyIds ? await visibleCrmRecords(ctx, viewer) : null;
+  const links = (scoped?.links ?? await listLinks(ctx, viewer.companyId)).filter((link) => link.contactId === contact.id);
   const accounts = [];
   for (const link of links) {
     const account = await getAccount(ctx, link.accountId);
     if (account) accounts.push({ id: account.id, name: account.name, role: link.roleLabel });
   }
-  const deals = (await listDeals(ctx, viewer.companyId)).filter((deal) => deal.contactId === contact.id);
+  const deals = (scoped?.deals ?? await listDeals(ctx, viewer.companyId)).filter((deal) => deal.contactId === contact.id);
   const activities = await listActivities(ctx, "contact", contact.id, 20);
   return {
     contact: { ref: refOf("contact", contact.id), id: contact.id, name: contact.name, lifecycle: contact.lifecycle, tags: contact.tags },
@@ -2427,7 +2429,10 @@ async function viewerFor(
   ctx: PluginContext,
   input: { companyId: string; userId: string | null; agentId: string | null; runId?: string | null },
 ): Promise<Viewer> {
-  let userId = input.userId;
+  // Stage B (B-D3): inside a guarded call under `enforce`, a limited person's own companies, judged for the person the
+  // guard decided for (an agent's call: the person it works for).
+  const linkedCompanyIds = linkedCompanyIdsNow();
+  let userId = input.userId ?? (linkedCompanyIds ? actingUserIdNow() : null);
   if (!userId && input.runId && input.agentId) {
     const rows = await ctx.db.query<{ responsible_user_id: string | null }>(
       `SELECT responsible_user_id
@@ -2445,7 +2450,7 @@ async function viewerFor(
     const member = members.find((item) => item.principalType === "user" && item.principalId === userId && item.status === "active");
     role = member?.membershipRole ?? null;
   }
-  return { companyId: input.companyId, userId, agentId: input.agentId, role, runId: input.runId ?? null };
+  return { companyId: input.companyId, userId, agentId: input.agentId, role, runId: input.runId ?? null, ...(linkedCompanyIds ? { linkedCompanyIds } : {}) };
 }
 
 async function actionViewer(ctx: PluginContext, context: PluginPerformActionContext): Promise<Viewer> {
@@ -2458,9 +2463,17 @@ async function actionViewer(ctx: PluginContext, context: PluginPerformActionCont
   });
 }
 
+/** Under a `linked` decision a record check reads the same lists as every page (B-D3: a contact's companies, a deal's contact). */
+async function requireLinked(ctx: PluginContext, viewer: Viewer, recordType: RecordType, id: string): Promise<void> {
+  const sets = await visibleCrmRecords(ctx, viewer);
+  const rows: Array<{ id: string }> = recordType === "company" ? sets.accounts : recordType === "contact" ? sets.contacts : sets.deals;
+  if (!rows.some((row) => row.id === id)) throw new CrmError("Record is not visible");
+}
+
 async function requireAccount(ctx: PluginContext, viewer: Viewer, id: string): Promise<AccountDraft> {
   const account = await getAccount(ctx, id);
   if (!account) throw new CrmError("Company was not found");
+  if (viewer.linkedCompanyIds) return requireLinked(ctx, viewer, "company", id).then(() => account);
   const grants = await grantsFor(ctx, "company", viewer.companyId);
   return requireVisible(viewer, account, grants.get(id) ?? []);
 }
@@ -2468,6 +2481,7 @@ async function requireAccount(ctx: PluginContext, viewer: Viewer, id: string): P
 async function requireContact(ctx: PluginContext, viewer: Viewer, id: string): Promise<ContactDraft> {
   const contact = await getContact(ctx, id);
   if (!contact) throw new CrmError("Contact was not found");
+  if (viewer.linkedCompanyIds) return requireLinked(ctx, viewer, "contact", id).then(() => contact);
   const grants = await grantsFor(ctx, "contact", viewer.companyId);
   return requireVisible(viewer, contact, grants.get(id) ?? []);
 }
@@ -2475,6 +2489,7 @@ async function requireContact(ctx: PluginContext, viewer: Viewer, id: string): P
 async function requireDeal(ctx: PluginContext, viewer: Viewer, id: string): Promise<DealDraft> {
   const deal = await getDeal(ctx, id);
   if (!deal) throw new CrmError("Deal was not found");
+  if (viewer.linkedCompanyIds) return requireLinked(ctx, viewer, "deal", id).then(() => deal);
   const grants = await grantsFor(ctx, "deal", viewer.companyId);
   return requireVisible(viewer, deal, grants.get(id) ?? []);
 }

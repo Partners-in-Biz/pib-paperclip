@@ -25,7 +25,7 @@ import {
   stageKind,
   table,
 } from "./db.js";
-import { BILLING_KEYS, canSeeRecord, CrmError, DEAL_STATUSES, FIND_KINDS, FIND_MAX, LIFECYCLES, type AccountDraft, type ContactDraft, type DealDraft, type Lifecycle, type Viewer } from "./domain.js";
+import { BILLING_KEYS, CrmError, visibleSets, DEAL_STATUSES, FIND_KINDS, FIND_MAX, LIFECYCLES, type AccountDraft, type ContactDraft, type DealDraft, type Lifecycle, type Viewer } from "./domain.js";
 import { companyPrefix, crmLink, refOf, workspaceLinks, type ClientKind } from "./refs.js";
 import { CANARY_RULES, isCanaryAccount, isCanaryContact, isCanaryId } from "./canary-flag.js";
 import { consentSummary } from "./consent.js";
@@ -71,11 +71,8 @@ async function visible(ctx: PluginContext, viewer: Viewer) {
     grantsFor(ctx, "contact", viewer.companyId),
     grantsFor(ctx, "deal", viewer.companyId),
   ]);
-  const visibleAccounts = accounts.filter((row) => canSeeRecord(viewer, row, accountGrants.get(row.id) ?? []));
-  const visibleContacts = contacts.filter((row) => canSeeRecord(viewer, row, contactGrants.get(row.id) ?? []));
-  const visibleDeals = deals.filter((row) => canSeeRecord(viewer, row, dealGrants.get(row.id) ?? []));
-  const contactIds = new Set(visibleContacts.map((row) => row.id));
-  return { accounts: visibleAccounts, contacts: visibleContacts, deals: visibleDeals, links: links.filter((link) => contactIds.has(link.contactId)) };
+  // One rule for every list and, under a `linked` decision, every record check (B-D3, `visibleSets`).
+  return visibleSets(viewer, { accounts, contacts, deals, links }, { company: accountGrants, contact: contactGrants, deal: dealGrants });
 }
 
 /** Every record this viewer may see, as `find-records` and `get-company` read them (the canvas cards use it). */

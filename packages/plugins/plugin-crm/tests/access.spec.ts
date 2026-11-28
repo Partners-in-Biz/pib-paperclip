@@ -47,18 +47,35 @@ describe("CRM access guard", () => {
     expect(NAMED_DATA_HANDLERS[manifest.id]).toEqual(["drive-folder", "drive-files"]);
   });
 
-  it("every row names a CRM catalog resource and one of its actions; none is scoped yet", () => {
+  it("every row names a CRM catalog resource and one of its actions; only the stage B-2 record rows are scoped", () => {
     const catalog = new Map(PERMISSION_CATALOG.map((r) => [r.id, r]));
+    const scoped: string[] = [];
     for (const [key, entry] of Object.entries(ACCESS_TABLE)) {
       if (typeof entry !== "object" || !("resource" in entry)) continue;
       expect(entry.resource, key).toMatch(/^crm\./);
       expect(catalog.get(entry.resource)?.actions, key).toContain(entry.action);
-      expect(entry.scoped, key).toBeUndefined();
+      if (entry.scoped) scoped.push(key);
+    }
+    // Stage B-2 (PAR-15204): companies, contacts, deals, the desk and their lists (tests/access-scoping.spec.ts).
+    // Reports, settings, sequences, creates, deletes, shares and the client rows of stage B-3 stay closed.
+    const both = (names: string[]) => names.flatMap((name) => [`crm.${name}`, `tool:${name}`]);
+    expect(scoped.sort()).toEqual([
+      ...both([
+        "find-records", "bulk-tag-contacts", "update-company", "update-client-profile", "log-activity", "update-contact", "link-contact",
+        "set-email-status", "score-contact", "export-person-data", "request-erasure", "move-deal", "update-deal", "call-list", "log-outcome",
+        "set-next-action",
+      ]),
+      "crm.load", "crm.client-workspace", "crm.activities", "canvas.cards.resolve", "canvas.cards.search", "canvas.cards.related",
+      "crm.set-human-owned", "crm.desk",
+      ...["get-company", "get-client-profile", "field-history", "get-contact", "contact-graph", "find-duplicates", "export-contacts", "list-deals", "list-stages", "list-deal-products", "add-deal-product"].map((name) => `tool:${name}`),
+    ].sort());
+    for (const key of ["crm.reports-drive-catchup", "tool:pipeline-forecast", "crm.settings-status", "tool:create-pipeline", "crm.create-company", "crm.share-record", "crm.delete-company", "tool:merge-contacts", "crm.sequence-detail", "tool:list-client-sites", "tool:list-sign-documents", "tool:list-support-cases"]) {
+      expect((ACCESS_TABLE[key] as { scoped?: true }).scoped, key).toBeUndefined();
     }
   });
 
   it("names the rows the spec fixes: client-workspace is companies view; hiring, maintenance and the partner share are ADMIN_ONLY", () => {
-    expect(ACCESS_TABLE["crm.client-workspace"]).toEqual({ resource: "crm.companies", action: "view" });
+    expect(ACCESS_TABLE["crm.client-workspace"]).toEqual({ resource: "crm.companies", action: "view", scoped: true });
     for (const key of ["crm.hire-options", "crm.start-hire", "crm.link-agent", "crm.unlink-agent", "crm.resync-agent", "crm.sync-skills", "crm.resync", "api:record-grant", "tool:cleanup-canary"]) {
       expect(ACCESS_TABLE[key], key).toBe(ADMIN_ONLY);
     }
