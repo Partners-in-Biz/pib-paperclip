@@ -1145,9 +1145,24 @@ export const issueCommentMetadataSchema = z
       reason: z.string().trim().min(1).max(160),
       assigneeAgentId: z.string().guid().nullable(),
     }).strict().optional(),
-    sections: z.array(issueCommentMetadataSectionSchema).min(1).max(20),
+    // A voice comment carries no presentation rows; it is the one case where
+    // `sections` may be empty.
+    voice: z.object({ mode: z.literal("direct") }).strict().optional(),
+    sections: z.array(issueCommentMetadataSectionSchema).max(20),
   })
-  .strict();
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.sections.length === 0 && !value.voice) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.too_small,
+        origin: "array",
+        minimum: 1,
+        inclusive: true,
+        message: "Metadata requires at least one section unless it is a voice comment",
+        path: ["sections"],
+      });
+    }
+  });
 
 export type IssueCommentMetadata = z.infer<typeof issueCommentMetadataSchema>;
 

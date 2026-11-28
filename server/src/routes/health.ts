@@ -118,6 +118,11 @@ function getCloudHealthStatus(env: CloudInstanceEnv) {
   };
 }
 
+// Server capabilities a plugin may check before it sends a newer request shape.
+// Reported on every healthy response, independent of the instance flag and the
+// company setting: it says the server can store the field, not that voice is on.
+export const HEALTH_CAPABILITIES = { voiceCommentMetadata: 1 } as const;
+
 export function healthRoutes(
   db?: Db,
   opts: {
@@ -282,6 +287,7 @@ export function healthRoutes(
               version: serverVersion,
               serverVersion: serverVersion,
               commit,
+              capabilities: HEALTH_CAPABILITIES,
               serverInfo,
               ...(cloud ? { cloud } : {}),
               ...(hiddenSettings.length ? { hiddenSettings } : {}),
@@ -290,6 +296,7 @@ export function healthRoutes(
               status: healthStatus,
               deploymentMode: opts.deploymentMode,
               commit,
+              capabilities: HEALTH_CAPABILITIES,
               ...(cloud ? { cloud } : {}),
               ...(hiddenSettings.length ? { hiddenSettings } : {}),
             },
@@ -308,6 +315,7 @@ export function healthRoutes(
         deploymentExposure: opts.deploymentExposure,
         commit,
         warmStandby: true,
+        capabilities: HEALTH_CAPABILITIES,
         ...(cloud ? { cloud } : {}),
         ...(hiddenSettings.length ? { hiddenSettings } : {}),
       });
@@ -415,6 +423,7 @@ export function healthRoutes(
         deploymentExposure: opts.deploymentExposure,
         localAiLoginSupported: supportsLocalAiLogin(opts),
         commit,
+        capabilities: HEALTH_CAPABILITIES,
         bootstrapStatus,
         bootstrapInviteActive,
         ...(redactedDatabaseBackup ? { databaseBackup: redactedDatabaseBackup } : {}),
@@ -435,6 +444,7 @@ export function healthRoutes(
       version: serverVersion,
       serverVersion,
       commit,
+      capabilities: HEALTH_CAPABILITIES,
       deploymentMode: opts.deploymentMode,
       deploymentExposure: opts.deploymentExposure,
         localAiLoginSupported: supportsLocalAiLogin(opts),

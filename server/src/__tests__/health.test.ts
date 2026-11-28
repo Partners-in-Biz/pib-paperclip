@@ -76,7 +76,7 @@ describe("GET /health", () => {
     const app = createApp();
     const res = await request(app).get("/health");
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ status: "ok", version: serverVersion, serverVersion: serverVersion, commit: testServerInfo.git.fullSha, serverInfo: testServerInfo });
+    expect(res.body).toEqual({ status: "ok", version: serverVersion, serverVersion: serverVersion, commit: testServerInfo.git.fullSha, capabilities: { voiceCommentMetadata: 1 }, serverInfo: testServerInfo });
   }, 15_000);
 
   it("keeps the self-hosted health response byte-identical and omits cloud", async () => {
@@ -89,6 +89,7 @@ describe("GET /health", () => {
       version: serverVersion,
       serverVersion,
       commit: testServerInfo.git.fullSha,
+      capabilities: { voiceCommentMetadata: 1 },
       serverInfo: testServerInfo,
     };
     expect(res.text).toBe(JSON.stringify(baseline));
@@ -173,6 +174,26 @@ describe("GET /health", () => {
     const second = await request(app).get("/health");
     expect(second.body.hiddenSettings).toContain("instance.experimental.enableEnvironments");
     expect(second.body.hiddenSettings).not.toContain("instance.experimental.enableMemoryConnectors");
+  });
+
+  it("reports the voice comment capability on every healthy branch", async () => {
+    const full = await request(createApp(createHealthyDb())).get("/health");
+    expect(full.body.capabilities).toEqual({ voiceCommentMetadata: 1 });
+
+    const standby = express();
+    standby.use(
+      "/health",
+      healthRoutes({} as Db, {
+        deploymentMode: "local_trusted",
+        deploymentExposure: "private",
+        authReady: true,
+        companyDeletionEnabled: true,
+        serverInfo: testServerInfo,
+        isWarmStandby: () => true,
+      }),
+    );
+    const warm = await request(standby).get("/health");
+    expect(warm.body.capabilities).toEqual({ voiceCommentMetadata: 1 });
   });
 
   it("returns 200 when the database probe succeeds", async () => {
@@ -400,6 +421,7 @@ describe("GET /health", () => {
       deploymentExposure: "public",
       localAiLoginSupported: false,
       commit: testServerInfo.git.fullSha,
+      capabilities: { voiceCommentMetadata: 1 },
       bootstrapStatus: "ready",
       bootstrapInviteActive: false,
       databaseBackup: {
@@ -458,6 +480,7 @@ describe("GET /health", () => {
       deploymentExposure: "public",
       localAiLoginSupported: false,
       commit: testServerInfo.git.fullSha,
+      capabilities: { voiceCommentMetadata: 1 },
       bootstrapStatus: "ready",
       bootstrapInviteActive: false,
     });
@@ -497,6 +520,7 @@ describe("GET /health", () => {
       deploymentExposure: "public",
       localAiLoginSupported: false,
       commit: testServerInfo.git.fullSha,
+      capabilities: { voiceCommentMetadata: 1 },
       bootstrapStatus: "ready",
       bootstrapInviteActive: false,
     });

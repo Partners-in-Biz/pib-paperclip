@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 import { MAX_ISSUE_REQUEST_DEPTH } from "../index.js";
 import {
   addIssueCommentSchema,
   paperclipQuestionSetPayloadSchema,
   issueCommentMetadataSchema,
+  issueCommentMetadataSectionSchema,
   createIssueSchema,
   issueBlockedInboxAttentionSchema,
   resolveIssueRecoveryActionSchema,
@@ -14,6 +16,7 @@ import {
   upsertIssueDocumentSchema,
 } from "./issue.js";
 import { createAgentSchema } from "./agent.js";
+import { portabilityIssueCommentManifestEntrySchema } from "./company-portability.js";
 
 describe("issue validators", () => {
   it.each(["BASH_ENV", "ZDOTDIR", "GH_CONFIG_DIR", "PAPERCLIP_GITHUB_LAUNCHER_DIR"])("rejects task-owned managed shell selector %s", key => {
@@ -741,5 +744,43 @@ describe("persisted canonical question initial text", () => {
       expect(paperclipQuestionSetPayloadSchema.safeParse(input({ initialText })).success).toBe(false);
     }
     expect(paperclipQuestionSetPayloadSchema.safeParse(input({ answerMode: "single_select", options: [{ id: "a", label: "A" }], initialText: "a" })).success).toBe(false);
+  });
+});
+
+describe("issue comment voice metadata", () => {
+  const sections = [{ rows: [{ type: "text", text: "Details" }] }];
+
+  it("accepts the strict voice field with empty sections", () => {
+    const parsed = issueCommentMetadataSchema.parse({ version: 1, voice: { mode: "direct" }, sections: [] });
+    expect(parsed.voice).toEqual({ mode: "direct" });
+    expect(issueCommentMetadataSchema.safeParse({ version: 1, voice: { mode: "direct" }, sections }).success).toBe(true);
+  });
+
+  it("refuses empty sections without voice, and malformed voice fields", () => {
+    expect(issueCommentMetadataSchema.safeParse({ version: 1, sections: [] }).success).toBe(false);
+    for (const voice of [{ mode: "other" }, { mode: "direct", extra: 1 }, {}, "direct"]) {
+      expect(issueCommentMetadataSchema.safeParse({ version: 1, voice, sections: [] }).success).toBe(false);
+    }
+  });
+
+  it("reads a voice row as no metadata under the pre-voice schema (rollback)", () => {
+    const legacy = z
+      .object({ version: z.literal(1), sections: z.array(issueCommentMetadataSectionSchema).min(1).max(20) })
+      .strict();
+    expect(legacy.nullable().catch(null).parse({ version: 1, voice: { mode: "direct" }, sections: [] })).toBeNull();
+  });
+
+  it("keeps a voice comment through the portability manifest schema (export and import)", () => {
+    const metadata = { version: 1 as const, voice: { mode: "direct" as const }, sections: [] };
+    const entry = portabilityIssueCommentManifestEntrySchema.parse({
+      body: "hello",
+      authorType: "user",
+      authorAgentSlug: null,
+      authorUserId: "u1",
+      presentation: null,
+      metadata,
+      createdAt: null,
+    });
+    expect(entry.metadata).toEqual(metadata);
   });
 });
