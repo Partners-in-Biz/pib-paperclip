@@ -117,6 +117,8 @@ import {
 import { redactSensitiveText } from "../../redaction.js";
 import { createRunSecretRedactionRegistry } from "../run-secret-redaction.js";
 import {
+  isAgentEnvAllowlistOn,
+  isServerSecretEnvKey,
   readPaperclipSkillSyncPreference,
   writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -272,10 +274,14 @@ function stripForbiddenEnvBindings(
   managedGitHubCredentials = false,
 ): Record<string, unknown> | null {
   const record = parseObject(envValue);
+  const serverSecretsForbidden = isAgentEnvAllowlistOn();
   const filtered = Object.fromEntries(
     Object.entries(record).filter(
       ([key]) =>
         !FORBIDDEN_ENV_BINDING_KEYS.has(key.toUpperCase()) &&
+        // PAR-15260 (G1b): a stored binding never carries a server secret
+        // (SERVER_SECRET_ENV_KEYS) into a run, whatever its source.
+        !(serverSecretsForbidden && isServerSecretEnvKey(key)) &&
         !(managedGitHubCredentials && MANAGED_GITHUB_TOKEN_KEYS.has(key)),
     ),
   );

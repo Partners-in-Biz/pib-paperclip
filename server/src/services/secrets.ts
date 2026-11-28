@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, inArray, like, ne, notInArray, notLike, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import { listServerSecretEnvKeys } from "@paperclipai/adapter-utils/agent-child-env";
 import {
   agents,
   companies,
@@ -970,6 +971,23 @@ function assertSelectableProviderConfig(config: {
   }
 }
 
+
+/**
+ * PAR-15260 (G1b): a stored env (agent config, project, routine,
+ * environment) may not name a server secret (`SERVER_SECRET_ENV_KEYS`).
+ * Refused with 422; the names are listed, never the values. Kill switch
+ * `PAPERCLIP_AGENT_ENV_ALLOWLIST=off`: accepted as before.
+ */
+export function assertNoServerSecretEnvBindings(envValue: unknown, fieldPath = "env"): void {
+  const record = asRecord(envValue);
+  const keys = listServerSecretEnvKeys(record);
+  if (keys.length === 0) return;
+  throw unprocessable(
+    `${fieldPath} may not set server secret environment variables: ${keys.join(", ")}`,
+    { code: "server_secret_env_key", keys },
+  );
+}
+
 export function secretService(db: Db | DbTransaction) {
   const authorization = authorizationService(db);
 
@@ -1913,6 +1931,7 @@ export function secretService(db: Db | DbTransaction) {
   ): Promise<AgentEnvConfig> {
     const record = asRecord(envValue);
     if (!record) throw unprocessable(`${opts?.fieldPath ?? "env"} must be an object`);
+    assertNoServerSecretEnvBindings(record, opts?.fieldPath ?? "env");
 
     const normalized: AgentEnvConfig = {};
     for (const [key, rawBinding] of Object.entries(record)) {
