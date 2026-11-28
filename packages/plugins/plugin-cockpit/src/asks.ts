@@ -23,7 +23,7 @@ import { askText, classify, DECISION_CLASS_LABEL, DEFAULT_APPLY_HOURS, defaultAn
 import { crmClient } from "./clients.js";
 import { assignableUser } from "./constants.js";
 import { getRoles } from "./db.js";
-import { message, type Env } from "./env.js";
+import { CockpitError, message, type Env } from "./env.js";
 import { NAMESPACE } from "./namespace.js";
 import { currentRoles, routeFromRoles } from "./roles.js";
 
@@ -583,15 +583,25 @@ async function handBack(env: Env, ask: AskRow, answer: string, effect: string | 
 }
 
 /**
+ * Posts `text` on an issue as the person who answered, and returns the comment id. Passed in by
+ * `decide-actions.ts`: every host call that acts as a person lives in that one file (PAR-15315 T2).
+ */
+export type PostAsUser = (issueId: string, text: string) => Promise<string | null>;
+
+/**
  * Shared internal logic for applying an answer to an ask. Discriminated by source type.
  * source.kind === "owner": records a person's reply (the original behavior)
  * source.kind === "policy": closes via policy auto-answer
+ * source.kind === "inline": the owner clicked an option in Cockpit → Decide (PAR-15315 T2); the comment as the
+ *   person is posted only after this call won the claim with status `answered`
  */
 type ApplyAnswerSource =
   | { kind: "owner"; comment: { id: string; body: string; userId: string | null } }
-  | { kind: "policy"; policy: string; answer: string };
+  | { kind: "policy"; policy: string; answer: string }
+  | { kind: "inline"; option: string; userId: string; postAsUser: PostAsUser };
 
-async function applyAnswer(env: Env, ask: AskRow, source: ApplyAnswerSource): Promise<boolean> {
+/** The status the ask was closed with, or null when nothing was closed (an empty reply, or another path got there first). */
+async function applyAnswer(env: Env, ask: AskRow, source: ApplyAnswerSource): Promise<Exclude<AskStatus, "open"> | null> {
   let answer: string;
   let answerCommentId: string | null;
   let answeredByUserId: string | null;
@@ -599,9 +609,13 @@ async function applyAnswer(env: Env, ask: AskRow, source: ApplyAnswerSource): Pr
 
   if (source.kind === "owner") {
     answer = source.comment.body.trim().slice(0, ASK_LIMITS.answerChars);
-    if (!answer) return false;
+    if (!answer) return null;
     answerCommentId = source.comment.id;
     answeredByUserId = source.comment.userId;
+  } else if (source.kind === "inline") {
+    answer = source.option.slice(0, ASK_LIMITS.answerChars);
+    answerCommentId = null;
+    answeredByUserId = source.userId;
   } else {
     answer = source.answer;
     answerCommentId = null;
@@ -624,16 +638,27 @@ async function applyAnswer(env: Env, ask: AskRow, source: ApplyAnswerSource): Pr
   }
 
   const closed = await closeAsk(env, ask, patch, answeredAt);
-  if (!closed) return false;
+  if (!closed) return null;
+
+  // Inline only, and only after this call won the claim with `answered`: the answer goes on the issue as the person's
+  // comment. A failure is logged and changes nothing else; the hand-back below still runs. The host logs that comment
+  // with actor `plugin`, so `onAskComment` never sees it, and it would find the ask closed anyway.
+  if (source.kind === "inline" && status === "answered") {
+    const commentId = await source.postAsUser(ask.issueId, answer).catch((error) => {
+      env.ctx.logger.info("ask-owner: the inline answer was not posted as a comment", { askId: ask.id, error: message(error) });
+      return null;
+    });
+    if (commentId) await env.ctx.db.execute(`UPDATE ${TABLE} SET answer_comment_id = $3 WHERE company_id = $1 AND id = $2`, [ask.companyId, ask.id, commentId]).catch(() => undefined);
+  }
 
   // An ask with an effect runs it for a person's yes (never for an agent's own comment: only a reply by a person gets here), and the agent is
   // woken when the result is in, not before: otherwise it finds the grant still missing and asks again.
   if (ask.effect && answeredByUserId && status !== "cancelled") {
     await startEffect(env, { ...ask, status, answer, answeredByUserId, closedAt: answeredAt }, answeredAt);
-    return true;
+    return status;
   }
   if (!closedIssue) await handBack(env, ask, answer, null, source.kind === "policy");
-  return true;
+  return status;
 }
 
 /**
@@ -642,7 +667,57 @@ async function applyAnswer(env: Env, ask: AskRow, source: ApplyAnswerSource): Pr
  * is kept and the issue stays closed.
  */
 async function answerAsk(env: Env, ask: AskRow, comment: { id: string; body: string; userId: string | null }): Promise<boolean> {
-  return applyAnswer(env, ask, { kind: "owner", comment });
+  return (await applyAnswer(env, ask, { kind: "owner", comment })) !== null;
+}
+
+/** What an inline answer did: `issue_closed` means the issue was done (`resolved`) or cancelled when the click arrived. */
+export type InlineAnswerOutcome = "ok" | "already_decided" | "issue_closed";
+
+/**
+ * The owner clicked `option` on an ask in Cockpit → Decide (PAR-15315 T2). A third source of `applyAnswer`, so the
+ * issue read, the status rule, the claim, the effect and the hand-back are the same code as a reply's. The caller
+ * (`decide-actions.ts`) has checked that `userId` is the owner and passes `postAsUser`. Throws when `option` is not one
+ * of the ask's options (exact text).
+ */
+export async function answerAskInline(env: Env, companyId: string, askId: string, option: string, userId: string, postAsUser: PostAsUser): Promise<InlineAnswerOutcome> {
+  const ask = await getAsk(env, companyId, askId);
+  if (!ask || ask.status !== "open") return "already_decided";
+  if (!ask.options.includes(option)) throw new CockpitError("That answer is not one of the question's options");
+  const status = await applyAnswer(env, ask, { kind: "inline", option, userId, postAsUser });
+  if (status === null) return "already_decided";
+  return status === "answered" ? "ok" : "issue_closed";
+}
+
+/** An answered ask whose hand-back is missing (a crash between the claim and the hand-back) is picked up in this window. */
+export const STRANDED_MIN_MS = 10 * 60_000;
+export const STRANDED_MAX_MS = 24 * 3_600_000;
+
+/**
+ * Hands back an `answered` ask with no effect that was never handed back, closed 10 minutes to 24 hours ago, whose issue
+ * is still open and with a person (not an agent). The 10 minutes leave a running answer alone; the 24 hours keep old rows
+ * out on the first run after the release. Each one is claimed first (`handed_back_at IS NULL`), so two runs hand it back once.
+ */
+async function handBackStranded(env: Env, companyId: string): Promise<number> {
+  const nowMs = env.now().getTime();
+  const rows = await env.ctx.db.query<Record<string, unknown>>(
+    `SELECT ${COLUMNS} FROM ${TABLE} WHERE company_id = $1 AND status = 'answered' AND effect IS NULL AND handed_back_at IS NULL AND closed_at <= $2 AND closed_at >= $3 ORDER BY closed_at LIMIT 50`,
+    [companyId, new Date(nowMs - STRANDED_MIN_MS).toISOString(), new Date(nowMs - STRANDED_MAX_MS).toISOString()],
+  );
+  let handed = 0;
+  for (const raw of rows) {
+    const ask = rowFrom(raw);
+    try {
+      const issue = await env.ctx.issues.get(ask.issueId, companyId).catch(() => null);
+      if (!issue || CLOSED.has(String(issue.status)) || !issue.assigneeUserId || issue.assigneeAgentId) continue;
+      const claim = await env.ctx.db.execute(`UPDATE ${TABLE} SET handed_back_at = $3 WHERE company_id = $1 AND id = $2 AND handed_back_at IS NULL`, [companyId, ask.id, env.now().toISOString()]);
+      if ((claim.rowCount ?? 0) === 0) continue;
+      await handBack(env, ask, ask.answer ?? "", null, !!ask.defaultAppliedAt);
+      handed += 1;
+    } catch (error) {
+      env.ctx.logger.info("ask-owner: a missed hand-back failed", { askId: ask.id, error: message(error) });
+    }
+  }
+  return handed;
 }
 
 /** Closes an open ask by applying a policy-driven auto-answer. Idempotent: second call on already-closed ask is a no-op returning the same shape as owner path. */
@@ -900,10 +975,12 @@ export async function onAskIssueUpdated(env: Env, event: Pick<PluginEvent, "comp
 
 /**
  * Hourly (events are at-most-once): closes asks whose issue closed or moved
- * on, and takes a person's reply that was missed as the answer.
+ * on, takes a person's reply that was missed as the answer, and hands back an
+ * answered ask whose hand-back was lost (`handBackStranded`). `handedBack` is
+ * there only when one was.
  */
-export async function reconcileAsks(env: Env, companyId: string): Promise<{ answered: number; closed: number; open: number }> {
-  const out = { answered: 0, closed: 0, open: 0 };
+export async function reconcileAsks(env: Env, companyId: string): Promise<{ answered: number; closed: number; open: number; handedBack?: number }> {
+  const out: { answered: number; closed: number; open: number; handedBack?: number } = { answered: 0, closed: 0, open: 0 };
   for (const ask of await listOpenAsks(env, companyId, 200)) {
     try {
       const state = await settleByIssue(env, ask);
@@ -927,6 +1004,12 @@ export async function reconcileAsks(env: Env, companyId: string): Promise<{ answ
       env.ctx.logger.info("Ask check failed", { askId: ask.id, error: message(error) });
       out.open += 1;
     }
+  }
+  try {
+    const handed = await handBackStranded(env, companyId);
+    if (handed) out.handedBack = handed;
+  } catch (error) {
+    env.ctx.logger.info("ask-owner: the missed hand-back check failed", { companyId, error: message(error) });
   }
   return out;
 }
