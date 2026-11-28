@@ -52,7 +52,7 @@ import { CrmError, type ContactDraft, type Viewer } from "./domain.js";
 import { deleteGrowthDataOfClient, eraseSignDocsOfPerson, signDocsOfEmails } from "./growth-erase.js";
 import { emitSuppressed, setEmailStatus } from "./handoffs.js";
 import { consentsOfSubject, deleteLeadDataOfClient, eraseFormData, getConsent, putConsent } from "./lead-store.js";
-import { requireClient } from "./lookup.js";
+import { requireClient, visibleClients } from "./lookup.js";
 import { PLUGIN_ID } from "./namespace.js";
 import { requestApproval } from "./outbound.js";
 import { deleteSitesOfClient } from "./sites.js";
@@ -113,13 +113,28 @@ export async function findPerson(ctx: PluginContext, companyId: string, params: 
   return { contacts, emails: [...emails], phones: [...new Set(contacts.flatMap((contact) => contact.phones).filter(Boolean))] };
 }
 
+/**
+ * `findPerson` for a tool call. Under a `linked` decision (stage B, B-D4) the person must be wholly his: at least one
+ * CRM contact, and every contact with the same address visible to him. Else the same answer as an unknown contact, so
+ * a guessed id or another company's person is not confirmed.
+ */
+async function findPersonFor(ctx: PluginContext, viewer: Viewer, params: { contactId?: unknown; email?: unknown }): Promise<Person> {
+  const person = await findPerson(ctx, viewer.companyId, params);
+  if (!viewer.linkedCompanyIds) return person;
+  const clients = await visibleClients(ctx, viewer);
+  if (person.contacts.length === 0 || person.contacts.some((contact) => !clients.has("contact", contact.id))) {
+    throw new CrmError("That contact was not found (find it with find-records)");
+  }
+  return person;
+}
+
 // ---------------------------------------------------------------------------
 // Consent and lawful basis
 // ---------------------------------------------------------------------------
 
 /** `record-consent`: why this person may (or may no longer) be contacted, with the wording and where it came from. */
 export async function recordConsentTool(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
-  const person = await findPerson(ctx, viewer.companyId, params);
+  const person = await findPersonFor(ctx, viewer, params);
   const email = person.emails[0];
   if (!email) throw new CrmError("The person has no email address on file: send email as well as contactId");
   const purpose = pick(PURPOSES, params.purpose, "marketing_email", "purpose");
@@ -353,7 +368,7 @@ const OTHER_MODULES: Array<{ plugin: string; what: string; how: string }> = [
 
 /** `export-person-data`: everything the CRM holds about one person, for a data subject access request. */
 export async function exportPersonDataTool(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
-  const person = await findPerson(ctx, viewer.companyId, params);
+  const person = await findPersonFor(ctx, viewer, params);
   if (person.contacts.length === 0 && person.emails.length === 0) throw new CrmError("Nothing found for that person");
   const data = await collectPersonData(ctx, viewer.companyId, person);
   const out = {
@@ -526,7 +541,7 @@ interface ErasurePayload {
 
 /** `request-erasure`: opens the approval a person decides. Nothing is erased until they do. */
 export async function requestErasureTool(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
-  const person = await findPerson(ctx, viewer.companyId, params);
+  const person = await findPersonFor(ctx, viewer, params);
   if (person.emails.length === 0 && person.contacts.length === 0) throw new CrmError("Nothing found for that person");
   const scope: ErasureScope = params.scope === "marketing_only" ? "marketing_only" : "all";
   const reason = pick(REASONS, params.reason, "data_subject_request", "reason");

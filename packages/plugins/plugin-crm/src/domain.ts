@@ -93,6 +93,11 @@ export interface Viewer {
   agentId: string | null;
   role: string | null;
   runId?: string | null;
+  /**
+   * Access stage B (PAR-12581, B-D3): the CRM companies a limited person may see, from the guard's `linked`
+   * decision (only under `enforce`). Absent or null: scope `all`, today's rule.
+   */
+  linkedCompanyIds?: readonly string[] | null;
 }
 
 export interface Grant {
@@ -297,8 +302,21 @@ export function assertPrincipalType(value: string): PrincipalType {
   return value as PrincipalType;
 }
 
-export function canSeeRecord(viewer: Viewer, record: RecordAccess, grants: Grant[]): boolean {
+/**
+ * `belongsTo`: the CRM companies the record is part of (a company: itself; a contact: its linked companies; a deal:
+ * its company). Read only under a `linked` decision (B-D3): then a record is visible when it belongs to one of his
+ * companies, he owns it, or a user grant shared it with him. Role, agent assignment, agent grants and grants to the
+ * whole workspace do not open it (his agent would read records outside his companies).
+ */
+export function canSeeRecord(viewer: Viewer, record: RecordAccess, grants: Grant[], belongsTo: readonly string[] = []): boolean {
   const inWorkspace = record.companyId === viewer.companyId;
+  const linked = viewer.linkedCompanyIds;
+  if (linked) {
+    if (!inWorkspace) return false;
+    if (belongsTo.some((id) => linked.includes(id))) return true;
+    if (!viewer.userId) return false;
+    return record.ownerUserId === viewer.userId || grants.some((grant) => grant.principalType === "user" && grant.principalId === viewer.userId);
+  }
   if (inWorkspace && (viewer.role === "owner" || viewer.role === "admin")) return true;
   if (inWorkspace && viewer.userId && record.ownerUserId === viewer.userId) return true;
   if (viewer.agentId && record.assigneeAgentId === viewer.agentId) return true;
@@ -312,6 +330,50 @@ export function canSeeRecord(viewer: Viewer, record: RecordAccess, grants: Grant
     return true;
   }
   return false;
+}
+
+export interface RecordSets {
+  accounts: AccountDraft[];
+  contacts: ContactDraft[];
+  deals: DealDraft[];
+  links: LinkDraft[];
+}
+export type GrantsById = ReadonlyMap<string, Grant[]>;
+
+/**
+ * The records of `all` this viewer may see: every list (load, find, desk, export, ...) and every `require*` under a
+ * `linked` decision reads this one rule. Scope `all`: each record by `canSeeRecord`, links of visible contacts
+ * (today's rule). `linked` (B-D3): a contact belongs to its linked companies, a deal to its company, or (no company)
+ * to its contact when that contact is visible; a link is kept only when both ends are visible, so a contact's other
+ * company is not named to him.
+ */
+export function visibleSets(
+  viewer: Viewer,
+  all: RecordSets,
+  grants: { company: GrantsById; contact: GrantsById; deal: GrantsById },
+): RecordSets {
+  const g = (map: GrantsById, id: string) => map.get(id) ?? [];
+  if (!viewer.linkedCompanyIds) {
+    const contacts = all.contacts.filter((row) => canSeeRecord(viewer, row, g(grants.contact, row.id)));
+    const contactIds = new Set(contacts.map((row) => row.id));
+    return {
+      accounts: all.accounts.filter((row) => canSeeRecord(viewer, row, g(grants.company, row.id))),
+      contacts,
+      deals: all.deals.filter((row) => canSeeRecord(viewer, row, g(grants.deal, row.id))),
+      links: all.links.filter((link) => contactIds.has(link.contactId)),
+    };
+  }
+  const companiesOf = new Map<string, string[]>();
+  for (const link of all.links) companiesOf.set(link.contactId, [...(companiesOf.get(link.contactId) ?? []), link.accountId]);
+  const accounts = all.accounts.filter((row) => canSeeRecord(viewer, row, g(grants.company, row.id), [row.id]));
+  const contacts = all.contacts.filter((row) => canSeeRecord(viewer, row, g(grants.contact, row.id), companiesOf.get(row.id) ?? []));
+  const accountIds = new Set(accounts.map((row) => row.id));
+  const contactIds = new Set(contacts.map((row) => row.id));
+  const deals = all.deals.filter((row) =>
+    canSeeRecord(viewer, row, g(grants.deal, row.id), row.accountId ? [row.accountId] : [])
+    || (row.accountId == null && row.contactId != null && contactIds.has(row.contactId) && row.companyId === viewer.companyId));
+  const links = all.links.filter((link) => contactIds.has(link.contactId) && accountIds.has(link.accountId));
+  return { accounts, contacts, deals, links };
 }
 
 /** Throws instead of returning a redacted record. */

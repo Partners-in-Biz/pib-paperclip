@@ -79,7 +79,8 @@ describe("CRM canvas cards: manifest and registration", () => {
   it("the worker registers the three actions through registerCanvasCards on guard.action; each is companies view in the table", async () => {
     const worker = readFileSync(new URL("../src/worker.ts", import.meta.url), "utf8");
     expect(worker).toMatch(/registerCanvasCards\(\{\s*register: guard\.action,/);
-    for (const key of [RESOLVE, SEARCH, RELATED]) expect(ACCESS_TABLE[key], key).toEqual({ resource: "crm.companies", action: "view" });
+    // Scoped (stage B-2): a limited person gets cards of his own companies only (tests/access-scoping.spec.ts).
+    for (const key of [RESOLVE, SEARCH, RELATED]) expect(ACCESS_TABLE[key], key).toEqual({ resource: "crm.companies", action: "view", scoped: true });
     const { act } = await crm();
     await expect(act(RESOLVE, { items: [] }, ADMIN)).resolves.toEqual({ cards: [] });
     await expect(act(SEARCH, { type: "card-company", q: "" }, ADMIN)).resolves.toEqual({ cards: [] });

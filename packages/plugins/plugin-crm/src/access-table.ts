@@ -13,10 +13,14 @@
  * - `ADMIN_ONLY`: hiring and linking the CRM agents, skill sync and resync, maintenance runs, the canary journeys and
  *   the Partners share route (a record shared with another company).
  *
- * A tool that is also a page action (`crm.<name>`) has one row for both, so they cannot differ. No entry is `scoped`
- * yet: handlers do not filter by the person's companies until stage B, so an own-companies grant opens nothing here
- * in stage A. The CRM keeps its own `viewerFor` (owner and share rules) inside the handlers. The two Drive data
- * handlers (`drive-folder`, `drive-files`) carry no caller and stay as they are until stage B.
+ * A tool that is also a page action (`crm.<name>`) has one row for both, so they cannot differ.
+ *
+ * `scoped` (stage B-2, PAR-15204; plan PAR-12581 B-D3, B-D4): the handler filters by the person's own companies (the
+ * guard's `linked` decision reaches `viewerFor`, see `access-scope.ts`, and every list and record check reads
+ * `visibleSets`). Only companies, contacts, deals, the desk and their lists are scoped here. Unscoped, so closed to an
+ * own-companies person: creates, deletes, merges, shares and hand-offs to an agent, reports, settings, sequences, and
+ * the client rows of sites, e-sign, care, Drive and projects (stage B-3). The two Drive data handlers (`drive-folder`,
+ * `drive-files`) carry no caller and stay as they are until stage B-3.
  *
  * This file takes nothing but types from the kit.
  */
@@ -37,32 +41,33 @@ const esign = p("crm.esign");
 const care = p("crm.care");
 const drive = p("crm.drive");
 const rows = (entry: AccessTableEntry, keys: readonly string[]) => Object.fromEntries(keys.map((key) => [key, entry]));
+/** The handler filters by the person's own companies (stage B). */
+const scoped = (entry: AccessTableEntry): AccessTableEntry => (typeof entry === "object" && "resource" in entry ? { ...entry, scoped: true } : entry);
 
 /** Names that are both an agent tool and a page action `crm.<name>`: one row each, used for both keys. */
 export const SHARED_ROWS: Readonly<Record<string, AccessTableEntry>> = Object.freeze({
   // companies, contacts and their records
-  ...rows(companies("view"), ["find-records"]),
+  ...rows(scoped(companies("view")), ["find-records"]),
   "create-company": companies("create"),
   // Also page actions for Campaigns' Add people (PAR-9242).
   "import-contacts": contacts("create"),
-  "bulk-tag-contacts": contacts("edit"),
-  ...rows(companies("edit"), [
-    "update-company", "update-client-profile", "extract-brand-from-site", "start-new-client", "log-activity", "share-record",
-    "set-client-sensitivity", "record-channel-cost",
-  ]),
+  "bulk-tag-contacts": scoped(contacts("edit")),
+  ...rows(scoped(companies("edit")), ["update-company", "update-client-profile", "log-activity"]),
+  ...rows(companies("edit"), ["extract-brand-from-site", "start-new-client", "share-record", "set-client-sensitivity", "record-channel-cost"]),
   "create-contact": contacts("create"),
-  ...rows(contacts("edit"), ["update-contact", "link-contact", "set-email-status", "score-contact", "record-consent", "record-lead-outcome"]),
+  ...rows(scoped(contacts("edit")), ["update-contact", "link-contact", "set-email-status", "score-contact"]),
+  ...rows(contacts("edit"), ["record-consent", "record-lead-outcome"]),
   "list-client-leads": contacts("view"),
-  "export-person-data": contacts("export"),
-  "request-erasure": contacts("delete"),
+  "export-person-data": scoped(contacts("export")),
+  "request-erasure": scoped(contacts("delete")),
   // deals and the product catalog
   "create-deal": deals("create"),
-  ...rows(deals("edit"), ["move-deal", "update-deal"]),
+  ...rows(scoped(deals("edit")), ["move-deal", "update-deal"]),
   ...rows(settings("edit"), ["create-product", "update-product"]),
   "list-data-processing": settings("view"),
   // the sales desk and sequences
-  "call-list": desk("view"),
-  ...rows(desk("edit"), ["log-outcome", "set-next-action"]),
+  "call-list": scoped(desk("view")),
+  ...rows(scoped(desk("edit")), ["log-outcome", "set-next-action"]),
   "create-sequence": sequences("create"),
   "set-sequence-delivery": sequences("edit"),
   // client projects
@@ -92,12 +97,12 @@ export const SHARED_ROWS: Readonly<Record<string, AccessTableEntry>> = Object.fr
 
 /** Page actions with no tool of the same name. */
 const ACTION_ROWS: Readonly<Record<string, AccessTableEntry>> = Object.freeze({
-  ...rows(companies("view"), ["crm.load", "crm.client-workspace", "crm.activities"]),
+  ...rows(scoped(companies("view")), ["crm.load", "crm.client-workspace", "crm.activities"]),
   // Company and contact cards on a planning canvas (PAR-14416): the same reads as the page's find and client workspace.
-  ...rows(companies("view"), ["canvas.cards.resolve", "canvas.cards.search", "canvas.cards.related"]),
-  ...rows(companies("edit"), ["crm.set-human-owned"]),
+  ...rows(scoped(companies("view")), ["canvas.cards.resolve", "canvas.cards.search", "canvas.cards.related"]),
+  ...rows(scoped(companies("edit")), ["crm.set-human-owned"]),
   "crm.delete-company": companies("delete"),
-  "crm.desk": desk("view"),
+  "crm.desk": scoped(desk("view")),
   "crm.give-prepare": desk("view"),
   "crm.give-record": desk("edit"),
   "crm.sequence-detail": sequences("view"),
@@ -117,12 +122,12 @@ const ACTION_ROWS: Readonly<Record<string, AccessTableEntry>> = Object.freeze({
 
 /** Agent tools with no page action of the same name. */
 const TOOL_ROWS: Readonly<Record<string, AccessTableEntry>> = Object.freeze({
-  ...rows(companies("view"), ["get-company", "get-client-profile", "field-history"]),
-  ...rows(contacts("view"), ["get-contact", "contact-graph", "find-duplicates"]),
+  ...rows(scoped(companies("view")), ["get-company", "get-client-profile", "field-history"]),
+  ...rows(scoped(contacts("view")), ["get-contact", "contact-graph", "find-duplicates"]),
   "merge-contacts": contacts("delete"),
-  "export-contacts": contacts("export"),
-  ...rows(deals("view"), ["list-deals", "list-stages", "list-deal-products"]),
-  "add-deal-product": deals("edit"),
+  "export-contacts": scoped(contacts("export")),
+  ...rows(scoped(deals("view")), ["list-deals", "list-stages", "list-deal-products"]),
+  "add-deal-product": scoped(deals("edit")),
   "pipeline-forecast": reports("view"),
   ...rows(settings("view"), ["list-saved-views", "drive_binding_status"]),
   ...rows(settings("edit"), ["create-pipeline", "define-field", "create-saved-view", "delete-saved-view", "drive_binding_discover", "drive_binding_set"]),

@@ -261,7 +261,9 @@ export async function logOutcome(ctx: PluginContext, viewer: Viewer, deps: DeskD
     const deal = record as DealDraft;
     if (deal.contactId) {
       const contact = await getContact(ctx, deal.contactId);
-      if (contact && contact.companyId === viewer.companyId) await writeNext(ctx, "contact", contact, kind, dueAt);
+      // Stage B: under a `linked` decision only when he may see that contact too.
+      const mayWrite = !viewer.linkedCompanyIds || (contact != null && await deps.requireRecord(ctx, viewer, "contact", contact.id).then(() => true, () => false));
+      if (contact && contact.companyId === viewer.companyId && mayWrite) await writeNext(ctx, "contact", contact, kind, dueAt);
     }
   }
   return { activityId, recordType, recordId, outcome, channel, nextActionKind: kind, nextActionDueAt: dueAt, lifecycle };
