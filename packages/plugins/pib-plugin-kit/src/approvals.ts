@@ -115,6 +115,12 @@ export interface ApprovalIssueInput {
   /** Text appended for the Reviewer when it gets the issue first (kit `reviewerBrief`). Receives the resolved route. */
   reviewerBrief?: (route: ApproverRoute) => string;
   wakeReason?: string;
+  /**
+   * The person who decides this one approval instead of the company owner (access stage B, plan B-D7: an
+   * ask about one client goes to that client's manager). The Reviewer still checks first and hands to him;
+   * when the host refuses him, the company's own approver chain follows. Leave out for today's route.
+   */
+  approverUserId?: string | null;
 }
 
 export type ApprovalAssignedTo = "reviewer" | "person" | "operator" | "nobody";
@@ -144,7 +150,11 @@ export function unroutedNote(route: ApproverRoute, to: "operator" | "nobody"): s
  * this instead of reading the roles themselves.
  */
 export async function openApprovalIssue(ctx: PluginContext, input: ApprovalIssueInput): Promise<ApprovalIssueResult> {
-  const route = await resolveApprover(ctx, input.companyId, { outward: input.outward, actorUserId: input.actorUserId });
+  const resolved = await resolveApprover(ctx, input.companyId, { outward: input.outward, actorUserId: input.actorUserId });
+  const named = assignableUserId(input.approverUserId ?? null);
+  // A named approver replaces the owner in the route (so the Reviewer hands to him); the owner stays the next try.
+  const route: ApproverRoute = named && named !== resolved.approverUserId ? { ...resolved, approverUserId: named, via: resolved.reviewerAgentId ? "reviewer" : "owner" } : resolved;
+  const fallbackUserId = route.approverUserId !== resolved.approverUserId ? resolved.approverUserId : null;
   const base = { companyId: input.companyId, title: input.title, originKind: input.originKind, originId: input.originId } as unknown as CreateInput;
   const extras: Partial<CreateInput> = { ...(input.projectId ? { projectId: input.projectId } : {}), ...(input.priority ? { priority: input.priority } : {}) };
   const attempts: Array<{ to: ApprovalAssignedTo; description: string; assignee: Partial<CreateInput>; wake: boolean }> = [];
@@ -152,6 +162,7 @@ export async function openApprovalIssue(ctx: PluginContext, input: ApprovalIssue
     attempts.push({ to: "reviewer", description: input.reviewerBrief ? `${input.description}\n${input.reviewerBrief(route)}` : input.description, assignee: { assigneeAgentId: route.reviewerAgentId }, wake: true });
   }
   if (route.approverUserId) attempts.push({ to: "person", description: input.description, assignee: { assigneeUserId: route.approverUserId }, wake: false });
+  if (fallbackUserId) attempts.push({ to: "person", description: input.description, assignee: { assigneeUserId: fallbackUserId }, wake: false });
   if (route.escalationAgentId) attempts.push({ to: "operator", description: `${input.description}${unroutedNote(route, "operator")}`, assignee: { assigneeAgentId: route.escalationAgentId }, wake: true });
   attempts.push({ to: "nobody", description: `${input.description}${unroutedNote(route, "nobody")}`, assignee: {}, wake: false });
 

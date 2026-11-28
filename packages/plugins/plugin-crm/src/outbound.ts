@@ -33,6 +33,7 @@ import { textToHtml } from "./domain.js";
 import { displayDraftText } from "./esign-render.js";
 import { PLUGIN_ID } from "./namespace.js";
 import { companyPrefix, issueLink } from "./refs.js";
+import { clientManagerApprover } from "./routing.js";
 
 const ORIGIN = `plugin:${PLUGIN_ID}` as const;
 
@@ -114,20 +115,23 @@ const MAIL_DONE_NOTE = "**Approve** by marking this issue **done**: the email is
 export async function requestApproval(ctx: PluginContext, request: ApprovalRequest): Promise<ApprovalOpened> {
   const seq = request.seq ?? 1;
   const id = randomUUID();
-  const payload = { ...(request.payload ?? {}), ...(request.deferIssue ? { batch: true } : {}), title: request.title, ...(request.draft ? { draft: request.draft } : {}), intro: request.intro, checks: request.checks, outward: request.outward };
+  // An ask about one client goes to his manager when he is a limited member (stage B-D7): on its own issue, not a shared card.
+  const managerUserId = await clientManagerApprover(ctx, request.companyId, request.kind, request.client);
+  const deferIssue = request.deferIssue === true && !managerUserId;
+  const payload = { ...(request.payload ?? {}), ...(deferIssue ? { batch: true } : {}), title: request.title, ...(request.draft ? { draft: request.draft } : {}), intro: request.intro, checks: request.checks, outward: request.outward };
   const inserted = await insertApproval(ctx, { id, companyId: request.companyId, kind: request.kind, client: request.client, subjectId: request.subjectId, seq, payload });
   if (!inserted) {
     const existing = await approvalForSubject(ctx, request.companyId, request.kind, request.subjectId, seq);
     return { approvalId: existing?.id ?? id, issueId: existing?.issueId ?? null, created: false, status: existing?.status ?? "open", assignedTo: null };
   }
-  if (request.deferIssue) return { approvalId: id, issueId: null, created: true, status: "open", assignedTo: null };
-  const issue = await openApprovalIssueFor(ctx, { id, companyId: request.companyId, title: request.title, payload, outward: request.outward, actorUserId: request.actorUserId ?? null, projectId: request.projectId ?? null, wakeReason: request.wakeReason });
+  if (deferIssue) return { approvalId: id, issueId: null, created: true, status: "open", assignedTo: null };
+  const issue = await openApprovalIssueFor(ctx, { id, companyId: request.companyId, title: request.title, payload, outward: request.outward, actorUserId: request.actorUserId ?? null, approverUserId: managerUserId, projectId: request.projectId ?? null, wakeReason: request.wakeReason });
   return { approvalId: id, issueId: issue?.id ?? null, created: true, status: "open", assignedTo: issue?.assignedTo ?? null };
 }
 
 async function openApprovalIssueFor(
   ctx: PluginContext,
-  input: { id: string; companyId: string; title: string; payload: Record<string, unknown>; outward: boolean; actorUserId: string | null; projectId: string | null; wakeReason?: string },
+  input: { id: string; companyId: string; title: string; payload: Record<string, unknown>; outward: boolean; actorUserId: string | null; approverUserId: string | null; projectId: string | null; wakeReason?: string },
 ): Promise<{ id: string; assignedTo: ApprovalOpened["assignedTo"] } | null> {
   const draft = input.payload.draft as MailDraft | undefined;
   const intro = Array.isArray(input.payload.intro) ? (input.payload.intro as string[]) : [];
@@ -141,6 +145,7 @@ async function openApprovalIssueFor(
       originId: `${APPROVAL_ORIGIN}${input.id}`,
       outward: input.outward,
       actorUserId: input.actorUserId,
+      approverUserId: input.approverUserId,
       ...(input.projectId ? { projectId: input.projectId } : {}),
       reviewerBrief: (route) => approvalReviewerBrief(route, draft ? "an email to a client before it is sent" : "an approval before it is carried out", checks),
       wakeReason: input.wakeReason ?? "An approval needs checking",
@@ -165,6 +170,7 @@ export async function repairApprovalIssues(ctx: PluginContext, companyId: string
       payload: approval.payload,
       outward: approval.payload.outward !== false,
       actorUserId: null,
+      approverUserId: await clientManagerApprover(ctx, companyId, approval.kind, approval.client),
       projectId: null,
     });
     if (opened) repaired += 1;

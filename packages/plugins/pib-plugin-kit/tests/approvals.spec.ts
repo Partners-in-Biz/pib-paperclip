@@ -224,6 +224,44 @@ describe("openApprovalIssue (the agent tool-call failure, reproduced)", () => {
   });
 });
 
+describe("openApprovalIssue with a named approver (a client's manager, stage B-D7)", () => {
+  const input = { companyId: "co-1", title: "Approve client action", description: "Check it.", originKind: "plugin:partnersinbiz.test", originId: "crm:approval:a1", outward: true };
+
+  it("gives it to the named person instead of the owner", async () => {
+    const fake = fakeCtx();
+    setRoles(fake, "co-1", rolesCopy({ reviewOutward: false }));
+    const result = await openApprovalIssue(fake.ctx, { ...input, approverUserId: "manager-1" });
+    expect(result.assignedTo).toBe("person");
+    expect(result.route.approverUserId).toBe("manager-1");
+    expect(fake.issues[0]).toMatchObject({ assigneeUserId: "manager-1" });
+  });
+
+  it("keeps the Reviewer first, and its brief hands on to the named person", async () => {
+    const fake = fakeCtx();
+    setRoles(fake, "co-1", rolesCopy());
+    const result = await openApprovalIssue(fake.ctx, { ...input, approverUserId: "manager-1", reviewerBrief: (route) => `BRIEF for ${route.approverUserId}` });
+    expect(result.assignedTo).toBe("reviewer");
+    expect(fake.issues[0]!.description).toContain("BRIEF for manager-1");
+  });
+
+  it("falls back to the owner when the host refuses the named person", async () => {
+    const fake = fakeCtx({ refusedUsers: ["manager-1"] });
+    setRoles(fake, "co-1", rolesCopy({ reviewOutward: false }));
+    const result = await openApprovalIssue(fake.ctx, { ...input, approverUserId: "manager-1" });
+    expect(result.assignedTo).toBe("person");
+    expect(fake.issues[0]).toMatchObject({ assigneeUserId: "owner" });
+  });
+
+  it("is today's route when left out, blank or the board sentinel", async () => {
+    for (const approverUserId of [undefined, null, " ", "local-board"]) {
+      const fake = fakeCtx();
+      setRoles(fake, "co-1", rolesCopy({ reviewOutward: false }));
+      await openApprovalIssue(fake.ctx, { ...input, approverUserId });
+      expect(fake.issues[0]).toMatchObject({ assigneeUserId: "owner" });
+    }
+  });
+});
+
 describe("unroutedApprovalsCheck", () => {
   const now = Date.parse("2026-10-03T12:00:00.000Z");
   const issue = (patch: Record<string, unknown>) => ({ companyId: "co-1", status: "todo", originKind: "plugin:partnersinbiz.test", createdAt: "2026-10-03T09:00:00.000Z", ...patch });

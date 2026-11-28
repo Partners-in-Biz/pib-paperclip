@@ -30,7 +30,7 @@ describe("manifest and migration", () => {
     expect(PLUGIN_ID).toBe(SETUP_PLUGIN);
     expect(NAMESPACE).toBe("plugin_setup_48494712db");
     expect(manifest.database?.namespaceSlug).toBe("setup");
-    expect(manifest.version).toBe("0.8.1");
+    expect(manifest.version).toBe("0.9.0");
     expect(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version).toBe(manifest.version);
     for (const capability of ["ui.page.register", "ui.sidebar.register", "ui.dashboardWidget.register", "api.routes.register", "events.emit", "events.subscribe", "jobs.schedule", "issues.read", "issues.create", "issues.update", "issues.wakeup", "plugin.state.read", "plugin.state.write", "companies.read", "database.namespace.migrate", "database.namespace.read", "database.namespace.write"]) {
       expect(manifest.capabilities).toContain(capability);
@@ -136,8 +136,8 @@ describe("module choice", () => {
     await save({ modules: { payroll: false }, installed: INSTALLED }, { companyId: A, actor: { type: "user", userId: "user-9", agentId: null } });
     expect(emitted.map((e) => e.name)).toEqual([SETUP_EVENTS.modulesUpdated, SUMMARY_EVENT]);
     expect([...jobs.keys()].sort()).toEqual([JOBS.reemitModules, JOBS.weeklyFinishSetup, JOBS.templateDrift, JOBS.accessResend].sort());
-    // The status feeds, the drive.binding feed, plus the one company.created wiring (and its lazy catch-up events) of the kit's registerCompanyBootstrap.
-    expect([...handlers.keys()].sort()).toEqual([...Object.values(PIB_PLUGINS).map((key) => `plugin.${key}.setup.status`), `plugin.${PIB_PLUGINS.crm}.drive.binding`, "company.created", "company.updated", "project.created", `plugin.${PIB_PLUGINS.cockpit}.roles.updated`, ...ACCESS_PEERS.flatMap((key) => ["synced", "request", "refusal"].map((name) => `plugin.${key}.access.${name}`))].sort());
+    // The status feeds, the drive.binding feed, the CRM company copy for the People screen (B-D9), plus the one company.created wiring (and its lazy catch-up events) of the kit's registerCompanyBootstrap.
+    expect([...handlers.keys()].sort()).toEqual([...Object.values(PIB_PLUGINS).map((key) => `plugin.${key}.setup.status`), `plugin.${PIB_PLUGINS.crm}.drive.binding`, `plugin.${PIB_PLUGINS.crm}.company.upserted`, `plugin.${PIB_PLUGINS.crm}.company.deleted`, "company.created", "company.updated", "project.created", `plugin.${PIB_PLUGINS.cockpit}.roles.updated`, ...ACCESS_PEERS.flatMap((key) => ["synced", "request", "refusal"].map((name) => `plugin.${key}.access.${name}`))].sort());
     const load = (await actions.get("setup.load")!({}, { companyId: A, actor: { type: "user", userId: "user-9" } })) as Record<string, unknown>;
     expect(load).toMatchObject({ modules: expect.objectContaining({ payroll: false }), updatedBy: "user-9", installed: { [PIB_PLUGINS.crm]: { id: "crm-uuid", status: "ready" } } });
   });

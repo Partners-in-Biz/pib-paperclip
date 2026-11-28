@@ -38,13 +38,19 @@ export function setArea(draft: Draft, keys: string[], state: Exclude<AreaState, 
 
 const draftOf = (grant: Grant | null): Draft => ({ preset: grant?.preset ?? null, allow: grant?.allow ?? [], deny: grant?.deny ?? [] });
 
-export type SaveGrantPayload = Draft & { userId: string; linkedCompanyIds: string[]; scopeOverrides: Grant["scopeOverrides"] };
+export type SaveGrantPayload = Draft & { userId: string; scopeOverrides: Grant["scopeOverrides"] };
 /**
- * What Save sends. The kit rebuilds the whole grant from it, so the fields this
- * tab does not edit (own companies, scope overrides) go back unchanged.
+ * What Save sends. The kit rebuilds the whole grant from it, so the scope
+ * overrides this tab does not edit go back unchanged. There is no linked-companies
+ * field (stage B-D9): his own companies are the ones he manages in the CRM.
  */
 export function grantPayload(userId: string, grant: Grant | null, draft: Draft): SaveGrantPayload {
-  return { userId, ...draft, linkedCompanyIds: grant?.linkedCompanyIds ?? [], scopeOverrides: grant?.scopeOverrides ?? {} };
+  return { userId, ...draft, scopeOverrides: grant?.scopeOverrides ?? {} };
+}
+
+/** The CRM company page, where "Managed by" is changed (the CRM's `?client=company:<id>`). */
+export function crmCompanyPath(id: string): string {
+  return `/crm?${new URLSearchParams({ client: `company:${id}` }).toString()}`;
 }
 
 export interface PeopleSectionProps {
@@ -105,7 +111,7 @@ export function PeopleSection(props: PeopleSectionProps) {
       <SectionCard title="People" icon={Users} subtitle="Owners and admins always have full access." actions={<a {...props.linkFor("/company/settings/invites")} style={{ fontSize: 13, color: tokens.primary }}>Invite people</a>}>
         {members.length ? (
           <div style={{ display: "grid", gap: 8 }}>
-            {members.map((m) => <PersonRow key={m.userId} member={m} name={names.get(m.userId)!} grant={grants.get(m.userId) ?? null} view={view} busy={busy} onSave={props.onSave} onClear={props.onClear} />)}
+            {members.map((m) => <PersonRow key={m.userId} member={m} name={names.get(m.userId)!} grant={grants.get(m.userId) ?? null} view={view} linkFor={props.linkFor} busy={busy} onSave={props.onSave} onClear={props.onClear} />)}
           </div>
         ) : <EmptyState compact title="No members yet" description="Invite people first." />}
       </SectionCard>
@@ -139,11 +145,11 @@ export function PeopleSection(props: PeopleSectionProps) {
   );
 }
 
-function PersonRow({ member, name, grant, view, busy, onSave, onClear }: { member: PeopleMember; name: string; grant: Grant | null; view: AccessPeopleView; busy: string | null; onSave: PeopleSectionProps["onSave"]; onClear: PeopleSectionProps["onClear"] }) {
+function PersonRow({ member, name, grant, view, linkFor, busy, onSave, onClear }: { member: PeopleMember; name: string; grant: Grant | null; view: AccessPeopleView; linkFor: LinkPropsFor; busy: string | null; onSave: PeopleSectionProps["onSave"]; onClear: PeopleSectionProps["onClear"] }) {
   const [draft, setDraft] = useState<Draft | null>(null);
   const admin = isAccessAdminRole(member.role);
   const preset = view.presets.find((p) => p.id === grant?.preset)?.label;
-  const linked = grant?.linkedCompanyIds ?? [];
+  const managed = view.managed?.[member.userId] ?? [];
   return (
     <div style={{ border: `1px solid ${tokens.border}`, borderRadius: 8, padding: 10, display: "grid", gap: 8, minWidth: 0 }}>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", justifyContent: "space-between" }}>
@@ -155,7 +161,15 @@ function PersonRow({ member, name, grant, view, busy, onSave, onClear }: { membe
         <Pill size="sm" tone={admin || grant ? "ok" : "neutral"}>{admin ? "Full access" : preset ?? (grant ? "Custom" : "No access")}</Pill>
         {admin || draft ? null : <Button type="button" variant="secondary" disabled={busy !== null} onClick={() => setDraft(draftOf(grant))}>Change</Button>}
       </div>
-      {admin ? null : <p style={{ margin: 0, fontSize: 12, color: tokens.muted, ...breakAnywhere }}>Own companies: {linked.length ? linked.join(", ") : "none yet"}</p>}
+      {admin ? null : (
+        <p style={{ margin: 0, fontSize: 12, color: tokens.muted, ...breakAnywhere }}>
+          Manages:{" "}
+          {managed.length
+            ? managed.map((c, i) => <span key={c.id}>{i ? ", " : ""}<a {...linkFor(crmCompanyPath(c.id))} style={{ color: tokens.primary }}>{c.name}</a></span>)
+            : "no companies yet"}
+          {" "}(change it on the CRM company page, Managed by)
+        </p>
+      )}
       {draft ? (
         <div style={{ display: "grid", gap: 8 }}>
           <label style={{ display: "grid", gap: 4, fontSize: 12, color: tokens.muted }}>Preset

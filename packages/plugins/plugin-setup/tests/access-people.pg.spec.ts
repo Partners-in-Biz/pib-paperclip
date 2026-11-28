@@ -1,8 +1,8 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { GUARDED_PLUGINS, PERMISSION_CATALOG } from "@partnersinbiz/pib-plugin-kit";
+import { GUARDED_PLUGINS, PERMISSION_CATALOG, registerCrmProjection } from "@partnersinbiz/pib-plugin-kit";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { saveAccessGrant } from "../src/access-grants.js";
-import { accessAreas, accessPeople, saveGrantParams } from "../src/access-people.js";
+import { accessAreas, accessPeople, managedCompanies, saveGrantParams } from "../src/access-people.js";
 import { recordAccessLost, recordAccessRefusal, setAccessMode } from "../src/access-store.js";
 import { NAMESPACE } from "../src/namespace.js";
 import { grantPayload, setArea } from "../src/ui/people.js";
@@ -85,7 +85,7 @@ describe.skipIf(!available)("the People tab view on a real database", () => {
     expect(view.presets.map((p) => p.id)).toContain("clientManager");
   });
 
-  it("a save from the tab keeps the scope overrides and own companies it does not edit", async () => {
+  it("a save from the tab keeps the scope overrides it does not edit, and drops the old linked-companies list (B-D9)", async () => {
     const { ctx } = world();
     await saveAccessGrant(ctx, { companyId: CO, actor: OWNER }, { userId: "u1", preset: "viewer", linkedCompanyIds: ["client-1"], scopeOverrides: { crm: "linked" } });
     const before = await accessPeople(ctx, CO, OWNER);
@@ -98,7 +98,28 @@ describe.skipIf(!available)("the People tab view on a real database", () => {
     expect(await saveAccessGrant(ctx, { companyId: CO, actor: OWNER }, saveGrantParams(params))).toMatchObject({ ok: true, rev: 2 });
     const after = await accessPeople(ctx, CO, OWNER);
     if (!after.ok) throw new Error(after.error);
-    expect(after.people.find((row) => row.userId === "u1")!.grant).toMatchObject({ preset: "viewer", deny: billing, linkedCompanyIds: ["client-1"], scopeOverrides: { crm: "linked" } });
+    expect(after.people.find((row) => row.userId === "u1")!.grant).toMatchObject({ preset: "viewer", deny: billing, linkedCompanyIds: [], scopeOverrides: { crm: "linked" } });
+    // A caller that still sends the field is not taken either.
+    expect(saveGrantParams({ ...params, linkedCompanyIds: ["client-2"] })).not.toHaveProperty("linkedCompanyIds");
+  });
+
+  it("names the CRM companies each limited person manages, from the CRM's company events (migration 007, B-D9)", async () => {
+    const { ctx } = world();
+    const handlers = new Map<string, (event: unknown) => Promise<void>>();
+    (ctx as unknown as { events: { on: (name: string, fn: (event: unknown) => Promise<void>) => void } }).events.on = (name, fn) => void handlers.set(name, fn);
+    registerCrmProjection(ctx, NAMESPACE, { companies: true, contacts: false, companyManagers: true });
+    const upsert = handlers.get("plugin.partnersinbiz.crm.company.upserted")!;
+    const company = (id: string, name: string, managers: unknown, companyId = CO) => upsert({ companyId, payload: { id, name, domain: null, lifecycle: "customer", updatedAt: "2026-11-28T08:00:00.000Z", ...(managers === undefined ? {} : { managers }) } });
+    await company("acme", "Acme Plumbing", { ownerUserId: "u1", managerUserIds: [] });
+    await company("globex", "Globex", { ownerUserId: "owner", managerUserIds: ["u1", "op"] });
+    await company("initech", "Initech", { ownerUserId: "owner", managerUserIds: [] });
+    await company("old", "Older CRM", undefined); // an event from a CRM before stage B: manages nothing
+    await company("foreign", "Foreign", { ownerUserId: "u1", managerUserIds: [] }, "co-2");
+    await handlers.get("plugin.partnersinbiz.crm.company.deleted")!({ companyId: CO, payload: { id: "initech" } });
+    const view = await accessPeople(ctx, CO, OWNER);
+    if (!view.ok) throw new Error(view.error);
+    expect(view.managed).toEqual({ op: [{ id: "globex", name: "Globex" }], u1: [{ id: "acme", name: "Acme Plumbing" }, { id: "globex", name: "Globex" }] });
+    expect(await managedCompanies(ctx, CO, [])).toEqual({});
   });
 
   it("lists refusals newest first, with the agent they went through", async () => {

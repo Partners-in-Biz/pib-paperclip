@@ -1,5 +1,5 @@
 import type { PluginApiRequestInput, PluginApiResponse, PluginContext, PluginPerformActionContext } from "@paperclipai/plugin-sdk";
-import { PIB_PLUGINS, pluginEvent, registerCompanyBootstrap, registerRoleWatch, type AccessGuard, type ActorInput } from "@partnersinbiz/pib-plugin-kit";
+import { PIB_PLUGINS, pluginEvent, registerCompanyBootstrap, registerCrmProjection, registerRoleWatch, type AccessGuard, type ActorInput } from "@partnersinbiz/pib-plugin-kit";
 import { createSetupGuard } from "./access-guard.js";
 import { clearAccessGrant, saveAccessGrant } from "./access-grants.js";
 import { accessPeople, saveGrantParams } from "./access-people.js";
@@ -12,7 +12,7 @@ import { SETUP_EVENTS } from "./kit-setup.js";
 import { templateDrift } from "./drift-job.js";
 import { JOBS } from "./manifest.js";
 import { effectiveModules, ForbiddenError, SetupError } from "./modules.js";
-import { PLUGIN_ID } from "./namespace.js";
+import { NAMESPACE, PLUGIN_ID } from "./namespace.js";
 import { approveStarterPack, bootstrapCompany, isOwnerCompany, loadNewCompany, recordStep, rememberNewCompany, startTemplateHire, starterPackForImport, templateDraft, templatesForOps } from "./new-company.js";
 import { registerTemplateTools } from "./template-tools.js";
 import { backfillEntitlements, loadSetup, message, moduleView, setEntitlements, onDriveBind, onDriveBindingEvent, onStatusEvent, reemitModules, refreshFinishIssue, rememberInstalled, reportMemory, reportStatuses, saveModules, weeklyFinishSetup } from "./service.js";
@@ -47,6 +47,8 @@ export function registerSetup(ctx: PluginContext): AccessGuard {
   });
   registerTemplateTools(ctx, g);
   registerAccessSync(ctx);
+  // People screen (stage B-D9): who manages which CRM company, from the CRM's company events (migration 007).
+  registerCrmProjection(ctx, NAMESPACE, { companies: true, contacts: false, companyManagers: true });
   // "Send again" on the People screen: an owner or admin sends the company's access state now.
   g.action("setup.access.send-again", (_params, context) =>
     refusable(async () => sendAccessAgain(ctx, requiredCompany(context), context.actor.type === "user" ? { type: "user", userId: context.actor.userId } : undefined)),

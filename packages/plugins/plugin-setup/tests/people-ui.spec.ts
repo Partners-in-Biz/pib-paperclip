@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { accessAreas, type AccessPeopleView } from "../src/access-people.js";
 import { fetchMembers } from "../src/ui/api.js";
 import { setupTabs } from "../src/ui/index.js";
-import { PeopleSection, areaState, grantPayload, isAccessAdminRole, setArea, type PeopleSectionProps } from "../src/ui/people.js";
+import { PeopleSection, areaState, crmCompanyPath, grantPayload, isAccessAdminRole, setArea, type PeopleSectionProps } from "../src/ui/people.js";
 
 const noop = () => undefined;
 const view = (over: Partial<AccessPeopleView> = {}): AccessPeopleView => ({
@@ -18,6 +18,7 @@ const view = (over: Partial<AccessPeopleView> = {}): AccessPeopleView => ({
   refusals: [{ companyId: "co", pluginKey: "partnersinbiz.billing", userId: "u1", key: "billing.list", permission: "billing.invoices:view", viaAgentId: "a1", createdAt: "2026-11-17T10:00:00.000Z" }],
   areas: accessAreas(),
   presets: [{ id: "viewer", label: "Viewer" }],
+  managed: { u1: [] },
   ...over,
 });
 const props = (over: Partial<PeopleSectionProps> = {}): PeopleSectionProps => ({
@@ -57,18 +58,25 @@ describe("People tab", () => {
     expect(out).not.toContain("Switch lost");
   });
 
-  it("shows own companies on the collapsed row, read-only, for members only", () => {
+  it("shows the companies a member manages in the CRM, each linking to its CRM page, for members only (B-D9)", () => {
     const out = html(props());
-    expect(out.match(/Own companies: none yet/g)).toHaveLength(1); // u1, not the owner
+    expect(out.match(/Manages: no companies yet/g)).toHaveLength(1); // u1, not the owner
+    const managed = html(props({ view: view({ managed: { u1: [{ id: "acme", name: "Acme Plumbing" }, { id: "globex", name: "Globex" }] } }) }));
+    expect(managed).toContain('href="/PAR/crm?client=company%3Aacme"');
+    expect(managed).toContain(">Acme Plumbing</a>");
+    expect(managed).toContain('href="/PAR/crm?client=company%3Aglobex"');
+    expect(managed).toContain("Managed by");
+    // The old grant list is not shown or offered any more.
     const linked = view({ people: [{ userId: "u1", role: "member", grant: { userId: "u1", preset: "viewer", allow: [], deny: [], linkedCompanyIds: ["client-1"], scopeOverrides: {} } as never }] });
-    expect(html(props({ view: linked }))).toContain("Own companies: client-1");
+    expect(html(props({ view: linked }))).not.toContain("client-1");
+    expect(crmCompanyPath("a b")).toBe("/crm?client=company%3Aa+b");
   });
 
-  it("Save sends the stored scope overrides and own companies back unchanged", () => {
+  it("Save sends the stored scope overrides back unchanged, and no linked-companies field", () => {
     const grant = { userId: "u1", preset: "viewer" as const, allow: [], deny: [], linkedCompanyIds: ["client-1"], scopeOverrides: { crm: "linked" as const }, updatedBy: "owner", updatedAt: "2026-11-17T10:00:00.000Z" };
     const draft = { preset: "viewer", allow: [], deny: ["billing.invoices:view"] };
-    expect(grantPayload("u1", grant, draft)).toEqual({ userId: "u1", ...draft, linkedCompanyIds: ["client-1"], scopeOverrides: { crm: "linked" } });
-    expect(grantPayload("u2", null, { preset: null, allow: [], deny: [] })).toEqual({ userId: "u2", preset: null, allow: [], deny: [], linkedCompanyIds: [], scopeOverrides: {} });
+    expect(grantPayload("u1", grant, draft)).toEqual({ userId: "u1", ...draft, scopeOverrides: { crm: "linked" } });
+    expect(grantPayload("u2", null, { preset: null, allow: [], deny: [] })).toEqual({ userId: "u2", preset: null, allow: [], deny: [], scopeOverrides: {} });
   });
 
   it("switch lost, and an empty report list", () => {
