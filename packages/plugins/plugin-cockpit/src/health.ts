@@ -392,6 +392,7 @@ export async function healthAlerts(env: Env): Promise<Record<string, number>> {
       try {
         const asks = await reconcileAsks(env, row.companyId);
         if (asks.answered || asks.closed) counts.asksSettled = (counts.asksSettled ?? 0) + asks.answered + asks.closed;
+        if (asks.handedBack) counts.asksHandedBack = (counts.asksHandedBack ?? 0) + asks.handedBack;
       } catch (error) {
         env.ctx.logger.info("Question check failed", { companyId: row.companyId, error: message(error) });
       }

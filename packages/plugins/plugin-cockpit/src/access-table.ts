@@ -45,6 +45,9 @@ export const COCKPIT_ACCESS_TABLE: AccessTable = Object.freeze({
   ...rows(ADMIN_ONLY, ["cockpit.attest", "goals.confirm", "ownerDefaults.save", "ownerDigest.post"]),
   // The Decide queue is the owner's (the handler checks it, an agent is refused): owner or admin only.
   ...rows(ADMIN_ONLY, ["decide.queue"]),
+  // Deciding from it acts as the owner (an approval, a card, an ask): owner or admin here, and the handlers let only the
+  // owner, signed in as a person, through (PAR-15315 T2).
+  ...rows(ADMIN_ONLY, ["decide.ask", "decide.approval", "decide.card"]),
   // Watch live and take over (PAR-14514 S3, S4): owner or admin of the owner company, a signed-in person only (the
   // handlers refuse agents too).
   ...rows(ADMIN_ONLY, ["browser.live.ticket", "browser.live.status", "browser.live.sessions", "browser.takeover.done", "browser.takeover.stop", "browser.takeover.waiting"]),

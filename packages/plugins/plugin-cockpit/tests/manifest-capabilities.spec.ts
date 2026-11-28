@@ -31,6 +31,12 @@ const USED_METHODS_TO_CAPABILITIES: Record<string, PluginCapability[]> = {
   "ctx.issues.createComment": ["issue.comments.create"],
   "ctx.issues.requestWakeup": ["issues.wakeup"],
 
+  // decide-actions.ts (PAR-15315 T2) - acting as the owner from Cockpit → Decide
+  "ctx.approvals.get": ["approvals.read"],
+  "ctx.approvals.decide": ["approvals.respond"],
+  "ctx.issues.respondInteraction": ["issue.interactions.respond"],
+  "ctx.issues.createComment({ actorUserId })": ["issue.comments.create", "issue.comments.create_human_attributed"],
+
   // escalate - agent operations
   "ctx.agents.get": ["agents.read"],
 

@@ -284,6 +284,12 @@ const manifest: PaperclipPluginManifestV1 = {
     "issue.relations.read",
     "issue.attachments.read",
     "approvals.read",
+    // 0.33.0 (PAR-15315 T2): Cockpit → Decide resolves the owner's approvals, confirmation cards and asks as the owner.
+    // Only `decide-actions.ts` calls them (tests/act-as-person.spec.ts), and only for the company's owner; the host
+    // re-checks an active non-viewer member. Three new capabilities, so the release is stop-first (DEPLOY.md).
+    "approvals.respond",
+    "issue.interactions.respond",
+    "issue.comments.create_human_attributed",
     "agents.read",
     "agents.pause",
     "agents.resume",
