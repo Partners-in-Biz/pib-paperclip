@@ -3795,8 +3795,10 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     instanceGeneralSettings?.feedbackDataSharingPreference ?? "prompt";
   const showPlanDecompositionsSection =
     instanceExperimentalSettings?.enableIssuePlanDecompositions === true;
+  // The task's workspace file routes are closed to a restricted member under
+  // `enforce` (PAR-15227, PAR-12608 4.6): no file viewer, so no request.
   const fileViewerEnabled =
-    instanceExperimentalSettings?.enableExperimentalFileViewer === true;
+    instanceExperimentalSettings?.enableExperimentalFileViewer === true && !memberGate.closed;
   const { orderedProjects } = useProjectOrder({
     projects,
     companyId: selectedCompanyId,

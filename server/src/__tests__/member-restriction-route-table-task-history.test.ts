@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { eq } from "drizzle-orm";
 import { agents, authUsers, companies, companyMemberships, createDb, heartbeatRuns, issues } from "@paperclipai/db";
 import { errorHandler } from "../middleware/error-handler.js";
 import { activityRoutes } from "../routes/activity.js";
@@ -65,13 +66,19 @@ const CASES: Case[] = [
 const CLOSED_ROWS = [
   "GET /api/issues/:id/context-usage",
   "GET /api/issues/:issueId/browsers",
+  "GET /api/issues/:issueId/chat-binding",
+  "GET /api/issues/:issueId/file-resources/list",
   "GET /api/companies/:companyId/email/tasks/:issueId",
   "GET /api/issues/:id/runner-goal",
 ];
 
+/** PAR-15227 (C6 F2): one run at a time, so it has its own cases below. */
+const ACTIVE_RUN_ROW = "GET /api/issues/:issueId/active-run";
+
 it("every row of this file has exactly one case, and each is open", () => {
   const rows = MEMBER_RESTRICTION_ROUTE_TABLE.filter((entry) => entry.test === THIS_FILE);
-  expect(CASES.map((entry) => entry.row).sort()).toEqual(rows.map((entry) => `${entry.method} ${entry.path}`).sort());
+  expect([...CASES.map((entry) => entry.row), ACTIVE_RUN_ROW].sort())
+    .toEqual(rows.map((entry) => `${entry.method} ${entry.path}`).sort());
   for (const entry of rows) expect(entry.class, entry.path).toBe("open");
 });
 
@@ -205,6 +212,69 @@ it("the context reading, task browsers and the email thread are closed; the runn
       expect(res.status, JSON.stringify(res.body)).toBe(503);
       expect(res.body.code ?? res.body.details?.code).toBe("MEMBER_RESTRICTION_UNAVAILABLE");
       expect(JSON.stringify(res.body)).not.toContain(forR);
+    });
+  });
+
+  describe(ACTIVE_RUN_ROW, () => {
+    const path = (issueId: string) => `/api/issues/${issueId}/active-run`;
+    /** A task of `owner` whose execution run works for `worksFor`. */
+    const taskRunningFor = async (companyId: string, owner: string, worksFor: string) => {
+      const task = await taskWithRuns(companyId, owner);
+      const runId = worksFor === R ? task.forR : task.forO;
+      await db.update(issues).set({ executionRunId: runId, status: "in_progress", assigneeAgentId: task.agentId })
+        .where(eq(issues.id, task.issueId));
+      return { ...task, runId };
+    };
+    const activeRunId = (res: request.Response) => (res.body as { id?: string } | null)?.id ?? null;
+
+    it("AC-G3 and AC-F8: R gets \"not found\" for O's task; with the kill switch `off`, today's answer", async () => {
+      const { issueId, runId } = await taskRunningFor(Y, O, O);
+      const send = async () => as(await boardFor(R)).get(path(issueId));
+      const refused = await send();
+      expect(refused.status, JSON.stringify(refused.body)).toBe(404);
+      expect(refused.body).toEqual({ error: "Issue not found" });
+      const reached = await today(send);
+      ok(reached);
+      expect(activeRunId(reached)).toBe(runId);
+    });
+
+    it("his own task: the run working for him is shown; one working for O is null (AC-G5)", async () => {
+      const mine = await taskRunningFor(Y, R, R);
+      const theirs = await taskRunningFor(Y, R, O);
+      for (const caller of [await boardFor(R), await runFor(R, mine.agentId, Y)]) {
+        const shown = await as(caller).get(path(mine.issueId));
+        ok(shown);
+        expect(activeRunId(shown)).toBe(mine.runId);
+        const hidden = await as(caller).get(path(theirs.issueId));
+        ok(hidden);
+        expect(hidden.body).toBeNull();
+      }
+      const unfiltered = await today(async () => as(await boardFor(R)).get(path(theirs.issueId)));
+      ok(unfiltered);
+      expect(activeRunId(unfiltered)).toBe(theirs.runId);
+    });
+
+    it("scope callers: R as owner of X, and an instance admin who is no member of Y, get today's answer", async () => {
+      const inX = await taskRunningFor(X, R, O);
+      const ownX = await as(await boardFor(R)).get(path(inX.issueId));
+      ok(ownX);
+      expect(activeRunId(ownX)).toBe(inX.runId);
+      const inY = await taskRunningFor(Y, O, O);
+      const admin = async () => as(await boardFor(ADMIN, true)).get(path(inY.issueId));
+      const adminNow = await admin();
+      const adminToday = await today(admin);
+      expect(adminNow.status, JSON.stringify(adminNow.body)).toBe(adminToday.status);
+      expect(activeRunId(adminNow)).toBe(activeRunId(adminToday));
+    });
+
+    it("AC-X1: answers 503 MEMBER_RESTRICTION_UNAVAILABLE and no data when the restriction cannot be read", async () => {
+      const { issueId, runId } = await taskRunningFor(Y, R, R);
+      const caller = await boardFor(R);
+      resolverFails.on = true;
+      const res = await as(caller).get(path(issueId));
+      expect(res.status, JSON.stringify(res.body)).toBe(503);
+      expect(res.body.code ?? res.body.details?.code).toBe("MEMBER_RESTRICTION_UNAVAILABLE");
+      expect(JSON.stringify(res.body)).not.toContain(runId);
     });
   });
 });

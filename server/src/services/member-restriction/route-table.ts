@@ -57,6 +57,7 @@ const INSTANCE_TEST = "server/src/__tests__/member-restriction-route-table-insta
 const AGENT_PAGES_TEST = "server/src/__tests__/member-restriction-route-table-agent-pages.test.ts";
 const PLANNING_CANVAS_TEST = "server/src/__tests__/planning-canvas-access-routes.test.ts";
 const TASK_HISTORY_TEST = "server/src/__tests__/member-restriction-route-table-task-history.test.ts";
+const TOOL_ROUTES_TEST = "server/src/__tests__/member-restriction-route-table-tool-routes.test.ts";
 
 export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntry[] = [
   // C4b-1a (PAR-12730): the task routes of `routes/issues.ts`. Comments,
@@ -86,11 +87,17 @@ export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntr
   { method: "GET", path: "/api/issues/:id/activity", class: "open", test: TASK_HISTORY_TEST },
   { method: "GET", path: "/api/issues/:id/runs", class: "open", test: TASK_HISTORY_TEST },
   { method: "GET", path: "/api/issues/:issueId/live-runs", class: "open", test: TASK_HISTORY_TEST },
+  // PAR-15227 (C6 F2): the task's active run, null unless it works for him.
+  { method: "GET", path: "/api/issues/:issueId/active-run", class: "open", test: TASK_HISTORY_TEST },
   // Closed on purpose (PAR-14342): the session context reading and compaction
   // (agent runtime state), task browsers (browser tools) and the email thread
   // (email) are out of scope for him (section 2); the task page skips them.
+  // PAR-15227 (C6 F2): so are the task's chat binding (chat channels) and its
+  // workspace file list (the handler checks the company only, not the task).
   { method: "GET", path: "/api/issues/:id/context-usage", class: "closed" },
   { method: "GET", path: "/api/issues/:issueId/browsers", class: "closed" },
+  { method: "GET", path: "/api/issues/:issueId/chat-binding", class: "closed" },
+  { method: "GET", path: "/api/issues/:issueId/file-resources/list", class: "closed" },
   { method: "GET", path: "/api/companies/:companyId/email/tasks/:issueId", class: "closed" },
   // Closed on purpose: company set-up (labels), operator tools (recovery,
   // diagnostics, watchdog, monitors, retries, review decisions, low-trust
@@ -473,6 +480,19 @@ export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntr
   // (`filterPluginsOpenForPerson`); without that filter this row would hand him
   // every plugin (PAR-13261).
   { method: "GET", path: "/api/plugins/ui-contributions", class: "plugin", test: "server/src/__tests__/member-restriction-ui-contributions.test.ts" },
+  // PAR-15227 (C6 F1): the doors to plugin tools and project tools for a run
+  // working for him (4.8 "Tools", 4.9 decisions 1 to 3). His own session stays
+  // refused here (and by H-tool-route for everyone not owner or admin). Each
+  // handler binds the call to the caller's own run (`actor_run_mismatch`), and
+  // the dispatcher's gate decides the plugin with the run's person (C40). The
+  // project tools re-enter this router with the run's token, so each call they
+  // make is classified on its own.
+  { method: "GET", path: "/api/plugins/tools", class: "run", test: TOOL_ROUTES_TEST },
+  { method: "POST", path: "/api/plugins/tools/execute", class: "run", test: TOOL_ROUTES_TEST },
+  { method: "POST", path: "/api/tool-gateway/sessions", class: "run", test: TOOL_ROUTES_TEST },
+  { method: "GET", path: "/api/tool-gateway/tools", class: "run", test: TOOL_ROUTES_TEST },
+  { method: "POST", path: "/api/tool-gateway/tools/call", class: "run", test: TOOL_ROUTES_TEST },
+  { method: "POST", path: "/api/mcp/project-tools", class: "run", test: TOOL_ROUTES_TEST },
   // PAR-13932 (Planning Canvas C3): every board route asks the canvas access
   // resolver (`services/planning-canvas-access.ts`), which gives a restricted
   // person his own personal boards and a project board he passes

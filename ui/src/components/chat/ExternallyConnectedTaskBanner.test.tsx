@@ -10,9 +10,12 @@ import { ExternallyConnectedTaskBanner } from "./ExternallyConnectedTaskBanner";
 import { boardSendDraftKey, readBoardSendDraft } from "./board-send-draft";
 import { ApiError } from "@/api/client";
 import { queryKeys } from "@/lib/queryKeys";
-const mockSession = vi.hoisted(() => ({ userId: "user-1" }));
+const mockSession = vi.hoisted(() => ({
+  userId: "user-1",
+  memberRestrictions: undefined as undefined | Array<{ companyId: string; restricted: boolean; mode: string }>,
+}));
 vi.mock("@/api/auth", () => ({
-  authApi: { getSession: vi.fn(async () => ({ user: { id: mockSession.userId } })) },
+  authApi: { getSession: vi.fn(async () => ({ user: { id: mockSession.userId }, memberRestrictions: mockSession.memberRestrictions })) },
 }));
 
 const mockChatEndpointsApi = vi.hoisted(() => ({
@@ -151,6 +154,7 @@ describe("ExternallyConnectedTaskBanner publication truth", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockSession.userId = "user-1";
+    mockSession.memberRestrictions = undefined;
     sessionStorage.clear();
     mockChatEndpointsApi.getPublicationBatchStatus.mockImplementation(
       () => new Promise(() => {}),
@@ -176,6 +180,19 @@ describe("ExternallyConnectedTaskBanner publication truth", () => {
     vi.restoreAllMocks();
     autoResendOverride.stalled = false;
   });
+
+  it.each([["enforce", false], ["report", true]] as const)(
+    "reads the chat binding only when open, restricted under %s (PAR-15227)",
+    async (mode, open) => {
+      mockSession.memberRestrictions = [{ companyId: "company-1", restricted: true, mode }];
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      queryClient.setQueryData(queryKeys.auth.session, { user: { id: mockSession.userId },
+        memberRestrictions: mockSession.memberRestrictions });
+      await renderBanner([], undefined, queryClient);
+      expect(mockChatEndpointsApi.getIssueBinding.mock.calls.length > 0).toBe(open);
+      expect(Boolean(container.textContent?.includes("#paperclip"))).toBe(open);
+    },
+  );
 
   it("cancels an automatic resend and hides its draft after an account change", async () => {
     mockChatEndpointsApi.publishBoardMessage.mockRejectedValue(new ApiError("Bad gateway", 502, {}));
