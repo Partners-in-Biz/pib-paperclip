@@ -8,16 +8,18 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AGENT_ENV_ALLOWLIST_FLAG, SERVER_SECRET_ENV_KEYS } from "@paperclipai/adapter-utils/server-utils";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
-import { execute as claudeExecute } from "@paperclipai/adapter-claude-local/server";
-import { execute as codexExecute } from "@paperclipai/adapter-codex-local/server";
-import { execute as cursorExecute } from "@paperclipai/adapter-cursor-local/server";
-import { execute as geminiExecute } from "@paperclipai/adapter-gemini-local/server";
-import { execute as grokExecute } from "@paperclipai/adapter-grok-local/server";
-import { execute as kimiExecute } from "@paperclipai/adapter-kimi-local/server";
-import { execute as opencodeExecute } from "@paperclipai/adapter-opencode-local/server";
-import { execute as piExecute } from "@paperclipai/adapter-pi-local/server";
-import { execute as hermesExecute } from "@paperclipai/hermes-paperclip-adapter/server";
+import type { AdapterEnvironmentTestContext, AdapterEnvironmentTestResult } from "@paperclipai/adapter-utils";
+import { execute as claudeExecute, testEnvironment as claudeTest } from "@paperclipai/adapter-claude-local/server";
+import { execute as codexExecute, testEnvironment as codexTest } from "@paperclipai/adapter-codex-local/server";
+import { execute as cursorExecute, testEnvironment as cursorTest } from "@paperclipai/adapter-cursor-local/server";
+import { execute as geminiExecute, testEnvironment as geminiTest } from "@paperclipai/adapter-gemini-local/server";
+import { execute as grokExecute, testEnvironment as grokTest } from "@paperclipai/adapter-grok-local/server";
+import { execute as kimiExecute, testEnvironment as kimiTest } from "@paperclipai/adapter-kimi-local/server";
+import { execute as opencodeExecute, testEnvironment as opencodeTest } from "@paperclipai/adapter-opencode-local/server";
+import { execute as piExecute, testEnvironment as piTest } from "@paperclipai/adapter-pi-local/server";
+import { execute as hermesExecute, testEnvironment as hermesTest } from "@paperclipai/hermes-paperclip-adapter/server";
 import { execute as processExecute } from "../adapters/process/execute.js";
+import { testEnvironment as processTest } from "../adapters/process/test.js";
 
 type Execute = (ctx: AdapterExecutionContext) => Promise<AdapterExecutionResult>;
 
@@ -136,4 +138,67 @@ describe.each(ADAPTERS)("$type child env", (adapter) => {
     expect(keys).toContain("BETTER_AUTH_SECRET");
     expect(keys).toContain(UNLISTED_SERVER_KEY);
   }, 60_000);
+});
+
+// The Test-environment route (`POST /companies/:id/adapters/:type/test-environment`)
+// runs a request-supplied `command` before any agent exists. Every adapter's
+// probe must give that command the same filtered env as a run.
+type EnvTest = (ctx: AdapterEnvironmentTestContext) => Promise<AdapterEnvironmentTestResult>;
+const ENV_TESTS: Array<{ type: string; test: EnvTest; commandKey?: string; mustSpawn?: boolean; extra?: Record<string, unknown> }> = [
+  { type: "claude_local", test: claudeTest },
+  { type: "codex_local", test: codexTest },
+  { type: "cursor", test: cursorTest },
+  { type: "gemini_local", test: geminiTest },
+  { type: "grok_local", test: grokTest },
+  { type: "kimi_local", test: kimiTest },
+  { type: "opencode_local", test: opencodeTest, extra: { model: "openai/gpt-5" } },
+  { type: "pi_local", test: piTest, extra: { model: "openrouter/test-model" } },
+  { type: "hermes_local", test: hermesTest, commandKey: "hermesCommand", mustSpawn: true },
+  { type: "hermes_local (connection probe)", test: hermesTest, commandKey: "hermesCommand", mustSpawn: true, extra: { managedAiRouting: { mode: "test" } } },
+  { type: "process", test: processTest as unknown as EnvTest },
+];
+
+async function runEnvTest(entry: (typeof ENV_TESTS)[number]) {
+  const workspace = path.join(root, "workspace");
+  await fs.mkdir(workspace, { recursive: true });
+  const cli = path.join(root, "fake-cli");
+  const capture = path.join(root, "capture-env-test.jsonl");
+  // Fixed capture path: a probe may pass no config env at all.
+  await fs.writeFile(cli, `#!/usr/bin/env node
+require("node:fs").appendFileSync(${JSON.stringify(capture)}, JSON.stringify({ keys: Object.keys(process.env) }) + "\\n");
+if (process.argv.includes("--list-models")) console.log("provider  model\\nopenrouter  test-model");
+console.log("hello");
+`, "utf8");
+  await fs.chmod(cli, 0o755);
+  const config: Record<string, unknown> = {
+    command: cli,
+    ...(entry.commandKey ? { [entry.commandKey]: cli } : {}),
+    cwd: workspace,
+    env: { ...Object.fromEntries(NEVER_KEYS.map((key) => [key, "config-value"])), DATABASE_URL: "postgres://config" },
+    ...entry.extra,
+  };
+  await entry.test({ companyId: "company-1", adapterType: entry.type.split(" ")[0]!, config } as AdapterEnvironmentTestContext)
+    .catch(() => undefined);
+  const text = await fs.readFile(capture, "utf8").catch(() => "");
+  return text.split("\n").filter(Boolean).map((line) => (JSON.parse(line) as { keys: string[] }).keys);
+}
+
+describe.each(ENV_TESTS)("$type test-environment probe", (entry) => {
+  it("gives the configured command no server secret", async () => {
+    const invocations = await runEnvTest(entry);
+    if (entry.mustSpawn) expect(invocations.length).toBeGreaterThan(0);
+    for (const keys of invocations) {
+      for (const key of [...NEVER_KEYS, "DATABASE_URL", UNLISTED_SERVER_KEY]) expect(keys).not.toContain(key);
+      expect(keys).toContain("PATH");
+    }
+  }, 60_000);
+
+  if (entry.mustSpawn) {
+    it("switch off restores today's env", async () => {
+      setEnv(AGENT_ENV_ALLOWLIST_FLAG, "off");
+      const invocations = await runEnvTest(entry);
+      expect(invocations.length).toBeGreaterThan(0);
+      expect(invocations.some((keys) => keys.includes("PAPERCLIP_AGENT_JWT_SECRET") && keys.includes(UNLISTED_SERVER_KEY))).toBe(true);
+    }, 60_000);
+  }
 });
