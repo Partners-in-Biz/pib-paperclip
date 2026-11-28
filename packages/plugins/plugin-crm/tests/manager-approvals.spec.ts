@@ -4,10 +4,10 @@
  * access row: today's route, unchanged (the parity test).
  */
 import { describe, expect, it } from "vitest";
-import { accessCompanyScope, accessGrantScope } from "@partnersinbiz/pib-plugin-kit";
+import { accessCompanyScope, accessGrantScope, noteAccessReceived } from "@partnersinbiz/pib-plugin-kit";
 import { onCareApprovalIssue } from "../src/care-approvals.js";
 import { APPROVAL_KINDS, type ApprovalKind, type ClientKey } from "../src/care-store.js";
-import { requestApproval } from "../src/outbound.js";
+import { repairApprovalIssues, requestApproval } from "../src/outbound.js";
 import { clientManagerApprover, HARD_STOP_APPROVAL_KINDS, MANAGER_APPROVAL_KINDS } from "../src/routing.js";
 import { bootCare, CO, OWNER, type Harness } from "./helpers/care.js";
 
@@ -92,6 +92,48 @@ describe("on enforce, with a limited manager", () => {
     harness.seed({ issues: [{ ...issue!, status: "done", assigneeUserId: null }] });
     await onCareApprovalIssue(harness.ctx, { companyId: CO, entityId: issue!.id, actorType: "agent", actorId: "am-1", payload: {} } as never, "done");
     expect((await harness.ctx.issues.get(issue!.id, CO))!).toMatchObject({ status: "todo", assigneeUserId: JAN });
+  });
+});
+
+describe("the hourly repair opens a missed approval issue on the same route", () => {
+  async function missed(harness: Harness, store: Record<string, any[]>) {
+    const create = harness.ctx.issues.create;
+    harness.ctx.issues.create = async () => { throw new Error("host down"); };
+    const { opened } = await ask(harness, "client_action", ACME);
+    harness.ctx.issues.create = create;
+    expect(opened.issueId).toBeNull();
+    const row = store.care_approvals!.find((a) => a.id === opened.approvalId)!;
+    return { ...row, id: row.id, companyId: CO, kind: row.kind, client: { kind: row.client_kind, id: row.client_ref }, issueId: null, status: "open", payload: row.payload } as never;
+  }
+
+  it("to him on enforce", async () => {
+    const { harness, store } = await world();
+    const approval = await missed(harness, store as never);
+    expect(await repairApprovalIssues(harness.ctx, CO, [approval])).toBe(1);
+    const [issue] = (await harness.ctx.issues.list({ companyId: CO })).filter((i) => String(i.originId ?? "").includes("approval"));
+    expect(issue?.assigneeUserId).toBe(JAN);
+  });
+
+  it("to the owner when his access cannot be read (fails to today's route)", async () => {
+    const { harness, store } = await world();
+    const approval = await missed(harness, store as never);
+    harness.ctx.access.members.list = async () => { throw new Error("members down"); };
+    noteAccessReceived(harness.ctx, CO); // a receive drops the cached read, as in production
+    expect(await repairApprovalIssues(harness.ctx, CO, [approval])).toBe(1);
+    const [issue] = (await harness.ctx.issues.list({ companyId: CO })).filter((i) => String(i.originId ?? "").includes("approval"));
+    expect(issue?.assigneeUserId).toBe(OWNER);
+  });
+});
+
+describe("an agent close is reopened for the owner when his access cannot be read", () => {
+  it("fails to today's route", async () => {
+    const { harness } = await world();
+    const { issue } = await ask(harness, "client_action", ACME);
+    harness.ctx.access.members.list = async () => { throw new Error("members down"); };
+    noteAccessReceived(harness.ctx, CO);
+    harness.seed({ issues: [{ ...issue!, status: "done", assigneeUserId: null }] });
+    await onCareApprovalIssue(harness.ctx, { companyId: CO, entityId: issue!.id, actorType: "agent", actorId: "am-1", payload: {} } as never, "done");
+    expect((await harness.ctx.issues.get(issue!.id, CO))!).toMatchObject({ status: "todo", assigneeUserId: OWNER });
   });
 });
 
