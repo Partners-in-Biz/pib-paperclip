@@ -103,6 +103,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableCombinedInboxTasks: false,
     enableArtifactsV1: false,
     enableConferenceRoomChat: false,
+    enableVoiceRunProfile: false,
     enableClassicTaskInterface: false,
     enableLegacyComposerSubmit: false,
     enableIssuePlanDecompositions: false,
