@@ -28,10 +28,10 @@ const crmContact = (w: World, id: string, name: string, accountIds: string[]) =>
   w.harness.emit("plugin.partnersinbiz.crm.contact.upserted", { id, name, emails: [], phones: [], lifecycle: null, tags: [], accountIds, updatedAt: "2026-10-01T00:00:00Z" }, { companyId: COMPANY });
 
 /** Turns `enforce` on for the company with MEMBER on the Client manager preset (own companies). */
-function limit(w: World, mode: "enforce" | "off" = "enforce") {
+function limit(w: World, mode: "enforce" | "off" = "enforce", allow: string[] = []) {
   const rows = new Map<string, unknown>([
     [stateKey(accessCompanyScope(COMPANY)), { mode, rev: 1, userIds: [MEMBER], receivedAt: new Date().toISOString() }],
-    [stateKey(accessGrantScope(COMPANY, MEMBER)), { preset: "clientManager" }],
+    [stateKey(accessGrantScope(COMPANY, MEMBER)), { preset: "clientManager", allow }],
   ]);
   const { get } = w.ctx.state;
   w.ctx.state.get = async (scope: Parameters<typeof get>[0]) => (rows.has(stateKey(scope)) ? rows.get(stateKey(scope)) : get.call(w.ctx.state, scope));
@@ -46,6 +46,8 @@ const tool = (w: World, name: string, params: Record<string, unknown> = {}, forM
   w.harness.executeTool<ToolOut>(name, params, { companyId: COMPANY, agentId: ADS_AGENT, runId: RUN, projectId: "proj-1", ...(forMember ? { onBehalfOfUserId: MEMBER, onBehalfOfRestricted: true } : {}) } as never);
 const act = <T = Load>(w: World, key: string, params: Record<string, unknown> = {}, userId = MEMBER) =>
   w.harness.performAction<T>(key, params, { companyId: COMPANY, actor: { type: "user", userId, agentId: null, runId: null, companyId: COMPANY } } as never);
+/** The refusal a Client manager gets on the money paths: the preset has no `ads.work` approve (B2-D7, PAR-15244). */
+const NO_APPROVE = "You do not have permission to approve ads campaigns and reports";
 const refusedWith = (result: unknown) => (isRefusal(result) && result.code === PERMISSION_DENIED ? result.message : `not refused: ${JSON.stringify(result)?.slice(0, 200)}`);
 
 describe("Ads access table and the own-scope rules", () => {
@@ -123,14 +125,44 @@ describe.skipIf(!available)("a person limited to his own companies (enforce)", (
     for (const proposalId of [otherProposal, "guessed-id"]) {
       expect((await tool(w, "get-ad-proposal", { proposalId })).error, proposalId).toBe(`Access refused: ${NOT_AMONG_YOUR_COMPANIES}.`);
       expect((await tool(w, "cancel-ad-proposal", { proposalId })).error, proposalId).toBe(`Access refused: ${NOT_AMONG_YOUR_COMPANIES}.`);
-      for (const key of ["ads.proposal", "ads.approve", "ads.cancel-proposal", "ads.mark-done", "ads.execute"]) {
+      for (const key of ["ads.proposal", "ads.cancel-proposal", "ads.mark-done"]) {
         expect(refusedWith(await act(w, key, { proposalId })), `${key} ${proposalId}`).toBe(NOT_AMONG_YOUR_COMPANIES);
       }
+      // Approve and run: the Client manager has no approve (B2-D7), so the same refusal for any id; see the next test.
+      for (const key of ["ads.approve", "ads.execute"]) expect(refusedWith(await act(w, key, { proposalId })), `${key} ${proposalId}`).toBe(NO_APPROVE);
     }
     expect(refusedWith(await act(w, "ads.ack-alert", { alertId: "guessed-id" }))).toBe(NOT_AMONG_YOUR_COMPANIES);
     expect(refusedWith(await act(w, "ads.sync", {}))).toBe(NAME_YOUR_COMPANY);
     expect(refusedWith(await act(w, "ads.sync", { accountId: other.accountId }))).toBe(NOT_AMONG_YOUR_COMPANIES);
     expect(isRefusal(await act(w, "ads.sync", { accountId: acme.accountId }))).toBe(false);
+  });
+
+  it("he proposes a money change for his company but cannot approve or run it; an owner approves it (B2-D7, PAR-15244)", async () => {
+    const proposed = await tool(w, "propose-ad-change", CREATE(acme.accountId, { scopeKey: "company:acme" }));
+    expect(proposed.error).toBeUndefined();
+    const mine = proposed.data?.proposalId as string;
+    expect((await tool(w, "get-ad-proposal", { proposalId: mine })).error).toBeUndefined();
+    for (const proposalId of [mine, acmeProposal]) {
+      expect(refusedWith(await act(w, "ads.approve", { proposalId })), `ads.approve ${proposalId}`).toBe(NO_APPROVE);
+      expect(refusedWith(await act(w, "ads.execute", { proposalId })), `ads.execute ${proposalId}`).toBe(NO_APPROVE);
+      expect((await tool(w, "execute-ad-change", { proposalId, approvalId: "x" })).error, proposalId).toContain(`(${NO_APPROVE})`);
+    }
+    expect((await tool(w, "get-ad-proposal", { proposalId: mine })).data).toMatchObject({ status: "in_review", approvalId: null });
+    const approved = await act<{ status: string; approvalId: string | null }>(w, "ads.approve", { proposalId: mine }, OWNER);
+    // The owner's sign-off is recorded (a client scope may still wait for the client's yes before it is "approved").
+    expect(isRefusal(approved)).toBe(false);
+    expect(approved.approvalId).toEqual(expect.any(String));
+  });
+
+  it("given approve by hand, he still approves only his own companies' proposals; another company's or a guessed id is refused", async () => {
+    limit(w, "enforce", ["ads.work:approve"]);
+    for (const proposalId of [otherProposal, "guessed-id"]) {
+      expect(refusedWith(await act(w, "ads.approve", { proposalId })), proposalId).toBe(NOT_AMONG_YOUR_COMPANIES);
+      expect(refusedWith(await act(w, "ads.execute", { proposalId })), proposalId).toBe(NOT_AMONG_YOUR_COMPANIES);
+    }
+    const own = await act<{ approvalId: string | null }>(w, "ads.approve", { proposalId: acmeProposal });
+    expect(isRefusal(own)).toBe(false);
+    expect(own.approvalId).toEqual(expect.any(String));
   });
 
   it("fails closed: when his companies or a contact's companies cannot be read, the page and the tools refuse", async () => {

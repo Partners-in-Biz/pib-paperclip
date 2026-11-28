@@ -81,7 +81,7 @@ const RECORDED: Record<string, readonly string[]> = {
     "social.posts:delete", "social.posts:approve", "social.accounts:view", "social.accounts:create",
     "social.accounts:edit", "social.accounts:delete", "campaigns.campaigns:view", "campaigns.campaigns:create",
     "campaigns.campaigns:edit", "campaigns.campaigns:delete", "campaigns.campaigns:approve", "ads.work:view",
-    "ads.work:create", "ads.work:edit", "ads.work:delete", "ads.work:approve", "crm.sites:view", "crm.sites:create",
+    "ads.work:create", "ads.work:edit", "ads.work:delete", "crm.sites:view", "crm.sites:create",
     "crm.sites:edit", "crm.sites:delete", "crm.esign:view", "crm.esign:create", "crm.esign:edit", "crm.esign:delete",
     "crm.care:view", "crm.care:create", "crm.care:edit", "crm.care:delete", "crm.drive:view", "crm.drive:create",
     "crm.drive:delete", "crm.desk:view", "crm.desk:edit", "crm.sequences:view", "crm.sequences:create",
@@ -118,6 +118,9 @@ describe("presets", () => {
       /^(voice|accounting|payroll|setup|mailbox|cockpit)\.|\.(settings|reports):/.test(k),
     );
     expect(bad).toEqual([]);
+    // He proposes Ads money changes; an owner approves them (B2-D7, PAR-15244).
+    expect(PRESETS.clientManager.permissions).toContain("ads.work:create");
+    expect(PRESETS.clientManager.permissions).not.toContain("ads.work:approve");
     expect(PRESETS.clientManager.permissions.every((k) => PERMISSION_CATALOG.find((r) => k.startsWith(`${r.id}:`))?.scopable)).toBe(true);
   });
 
