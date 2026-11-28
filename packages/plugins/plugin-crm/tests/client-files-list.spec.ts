@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { boot, CO } from "./helpers/crm.js";
+import { boot, BOARD, CO } from "./helpers/crm.js";
 import { listClientFiles } from "../src/drive/files-list.js";
 import { CLIENT_SUBFOLDERS, DRIVE_SUBFOLDERS, PRODUCT_SUBFOLDERS } from "../src/drive/convention.js";
 import type { DriveFile } from "../src/drive/store.js";
@@ -97,26 +97,15 @@ describe("listClientFiles", () => {
   });
 });
 
-describe("drive-files data handler", () => {
-  it("returns empty list when companyId or projectId missing", async () => {
-    const { harness } = await boot();
-    const result = await harness.getData<{ groups: any[] }>(
-      "drive-files",
-      { companyId: undefined, projectId: "p1" },
-    );
-    expect(result.groups).toEqual([]);
-  });
+/** Stage B-3 (PAR-15205): the old `drive-files` data handler is the action `crm.drive-files`, on the caller's company. */
+describe("crm.drive-files action", () => {
+  const files = (harness: Awaited<ReturnType<typeof boot>>["harness"], params: Record<string, unknown>, companyId = CO) =>
+    harness.performAction<{ groups: any[]; error?: string }>("crm.drive-files", params, { companyId, actor: BOARD });
 
-  it("returns error field when handler throws", async () => {
+  it("returns empty list when projectId is missing", async () => {
     const { harness } = await boot();
-    // Simulate a handler error by triggering listDriveFiles to fail
-    // We can do this by using invalid company/project IDs that will cause DB errors
-    const result = await harness.getData<{ groups: any[]; error?: string }>(
-      "drive-files",
-      { companyId: "", projectId: "" }, // Empty IDs should cause validation to pass but DB query to fail
-    );
-    // The handler should gracefully handle the error
-    expect(result.groups).toEqual([]);
+    expect((await files(harness, {})).groups).toEqual([]);
+    expect((await files(harness, { projectId: "" })).groups).toEqual([]);
   });
 
   it("isolates files by company_id and project_id", async () => {
@@ -151,10 +140,7 @@ describe("drive-files data handler", () => {
         created_at: NOW,
       },
     ];
-    const result = await harness.getData<{ groups: any[] }>("drive-files", {
-      companyId: CO,
-      projectId: "p1",
-    });
+    const result = await files(harness, { projectId: "p1" });
     expect(result.groups[0]!.files).toHaveLength(1);
     expect(result.groups[0]!.files[0]!.name).toBe("co1-file.pdf");
   });
@@ -191,10 +177,7 @@ describe("drive-files data handler", () => {
         created_at: NOW,
       },
     ];
-    const result = await harness.getData<{ groups: any[] }>("drive-files", {
-      companyId: CO,
-      projectId: "p1",
-    });
+    const result = await files(harness, { projectId: "p1" });
     expect(result.groups[0]!.files).toHaveLength(1);
   });
 });

@@ -13,7 +13,6 @@ import {
   useHostContext,
   useHostLocation,
   useHostNavigation,
-  usePluginData,
   type PluginPageProps,
   type PluginSidebarProps,
 } from "@paperclipai/plugin-sdk/ui";
@@ -1998,8 +1997,19 @@ function CompanyDetails({ company, onSave, locking, onLock, companyPrefix }: {
   const [vatNumber, setVatNumber] = useState("");
   const [registrationNumber, setRegistrationNumber] = useState("");
   const contributions = useUiContributions();
-  const hostContext = useHostContext();
-  const driveFolderData = usePluginData<{ folder: { name: string; url: string } | null }>("drive-folder", { companyId: hostContext.companyId ?? undefined, crmCompanyId: company.id });
+  const hostCompanyId = useHostContext().companyId ?? null;
+  // Stage B-3: the `crm.drive-folder` action (through the guard), not a data handler. A refusal or failure: no link.
+  const loadDriveFolder = useCrmAction("crm.drive-folder");
+  const [driveFolder, setDriveFolder] = useState<{ name: string; url: string } | null>(null);
+  useEffect(() => {
+    setDriveFolder(null);
+    if (!hostCompanyId) return;
+    let live = true;
+    loadDriveFolder({ crmCompanyId: company.id })
+      .then((result) => { if (live) setDriveFolder((result as { folder?: { name: string; url: string } | null }).folder ?? null); })
+      .catch(() => undefined);
+    return () => { live = false; };
+  }, [hostCompanyId, company.id]);
 
   function startEdit() {
     setName(company.name);
@@ -2048,7 +2058,7 @@ function CompanyDetails({ company, onSave, locking, onLock, companyPrefix }: {
     { key: "address", label: "Address", value: company.address ? <span style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{company.address}</span> : <NotSet /> },
     { key: "vatNumber", label: "VAT no.", value: company.vatNumber || <NotSet /> },
     { key: "registrationNumber", label: "Reg. no.", value: company.registrationNumber || <NotSet /> },
-    ...(driveFolderData.data?.folder ? [{ key: "driveFolder", label: "Drive folder", value: <DriveFolderLink folder={driveFolderData.data.folder} label="Drive folder" /> }] : []),
+    ...(driveFolder ? [{ key: "driveFolder", label: "Drive folder", value: <DriveFolderLink folder={driveFolder} label="Drive folder" /> }] : []),
   ];
 
   return (

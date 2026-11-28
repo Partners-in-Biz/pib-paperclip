@@ -9,9 +9,11 @@ import { parseServiceAccountKey } from "./google-sa.js";
 import { driveBindingDiscover, driveBindingSet, driveBindingStatus, effectiveSharedDriveId } from "./binding.js";
 import { planFolders, folderTarget, companyFolderName, DRIVE_SUBFOLDERS, type DriveFacts, type Sibling, type DriveBranch } from "./convention.js";
 import { readConfig } from "@partnersinbiz/pib-plugin-kit";
+import { requireClient, visibleClients } from "../lookup.js";
 import { table, getAccount, listAccounts, getContact, listLinks } from "../db.js";
 import { getProjectDriveKind, setProjectDriveKind, listProjectDriveKinds, listDriveFiles } from "./store.js";
 import { saveDriveFile, type SaveDriveFileInput, type SaveDriveFileResult } from "./save.js";
+import { listClientFiles, type FileGroup } from "./files-list.js";
 import { driveJobStatus, type DriveJobView } from "./jobs.js";
 
 const schema = (req: string[], props: Record<string, JsonSchema>): JsonSchema => ({ type: "object", required: req, properties: props, additionalProperties: false });
@@ -121,10 +123,38 @@ export const DRIVE_TOOLS: PluginToolDeclaration[] = [
   },
 ];
 
+/**
+ * Stage B-3 (plan PAR-12581 B-D5): under a `linked` decision a Drive folder or file is his only through one of his
+ * companies: a CRM company he may see, or a project linked to a client he may see. A project with no client (our own
+ * work, a product, a book) is refused, with the same answer as an unknown project. Scope `all`: nothing changes.
+ */
+export async function requireDriveEntity(ctx: PluginContext, viewer: Viewer, type: DriveEntityType, id: string): Promise<void> {
+  if (!viewer.linkedCompanyIds) return;
+  if (type === "crm_company") {
+    await requireClient(ctx, viewer, { kind: "company", id });
+    return;
+  }
+  if (!(await myProjectIds(ctx, viewer)).has(id)) throw new CrmError("Project was not found or is not visible to you (list-client-projects shows a client's projects)");
+}
+
+/** The projects linked to a client this viewer may see (each project belongs to one client). */
+async function myProjectIds(ctx: PluginContext, viewer: Viewer): Promise<Set<string>> {
+  const [links, clients] = await Promise.all([
+    ctx.db.query<{ project_id: string; client_kind: "company" | "contact"; client_ref: string }>(
+      `SELECT project_id, client_kind, client_ref FROM ${table(ctx, "client_projects")} WHERE company_id = $1`,
+      [viewer.companyId],
+    ),
+    visibleClients(ctx, viewer),
+  ]);
+  const refused = new Set(links.filter((link) => !clients.has(link.client_kind, link.client_ref)).map((link) => link.project_id));
+  return new Set(links.map((link) => link.project_id).filter((projectId) => !refused.has(projectId)));
+}
+
 /** The files saved to a project's Drive folder (PAR-7712): what a check reads to prove a save landed, without trusting the producer's answer. */
 export async function driveFilesList(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>): Promise<unknown> {
   const projectId = typeof params.projectId === "string" ? params.projectId.trim() : "";
   if (!projectId) throw new CrmError("projectId is required (list-client-projects shows a client's projects)");
+  await requireDriveEntity(ctx, viewer, "project", projectId);
   const project = await ctx.projects.get(projectId, viewer.companyId);
   if (!project) throw new CrmError("Project not found");
   const subfolder = typeof params.subfolder === "string" && params.subfolder.trim() ? params.subfolder.trim() : undefined;
@@ -147,6 +177,7 @@ export async function driveFolderResolve(ctx: PluginContext, viewer: Viewer, par
   const id = params.entity_id as string;
   if (type !== "project" && type !== "crm_company") throw new CrmError(`Invalid entity_type: ${type}`);
   if (!id) throw new CrmError("Missing entity_id");
+  await requireDriveEntity(ctx, viewer, type, id);
 
   try {
     const broker = await createBrokerForCompany(ctx, viewer.companyId);
@@ -194,6 +225,7 @@ export async function driveFolderEnsure(ctx: PluginContext, viewer: Viewer, para
   const lap = (): number => { const n = clock(); const d = n - mark; mark = n; return d; };
   if (type !== "project" && type !== "crm_company") throw new CrmError(`Invalid entity_type: ${type}`);
   if (!id) throw new CrmError("Missing entity_id");
+  await requireDriveEntity(ctx, viewer, type, id);
 
   // Timing logs (PAR-10212): which step of an ensure is slow (broker set-up, the folder look-up, the plan's steps).
   const startedAt = Date.now();
@@ -540,6 +572,7 @@ export async function driveProjectKindSet(ctx: PluginContext, viewer: Viewer, pa
     throw new CrmError(`Invalid kind: ${kind}. Must be one of: ${validKinds.join(", ")}`);
   }
 
+  await requireDriveEntity(ctx, viewer, "project", projectId);
   // Verify project exists in the company
   const project = await ctx.projects.get(projectId, viewer.companyId);
   if (!project) throw new CrmError("Project not found");
@@ -574,9 +607,11 @@ export async function driveProjectKindList(ctx: PluginContext, viewer: Viewer, p
     projectsToCheck.push(...allProjects.map((p) => p.id));
   }
 
-  // Build result list
+  // Build result list (stage B-3: under a `linked` decision only his clients' projects)
+  const mine = viewer.linkedCompanyIds ? await myProjectIds(ctx, viewer) : null;
   const result = [];
   for (const projId of projectsToCheck) {
+    if (mine && !mine.has(projId)) continue;
     const kind = kindMap.get(projId);
     if (kind) {
       const item: any = { projectId: kind.projectId, kind: kind.kind };
@@ -616,6 +651,7 @@ export async function driveFileSave(ctx: PluginContext, viewer: Viewer, params: 
   if (!input.fileKind) throw new CrmError("Missing fileKind");
   if (!input.name) throw new CrmError("Missing name");
   if (!input.mimeType) throw new CrmError("Missing mimeType");
+  await requireDriveEntity(ctx, viewer, "project", input.projectId);
 
   // Verify project exists in the company
   const project = await ctx.projects.get(input.projectId, input.companyId);
@@ -654,5 +690,46 @@ export async function driveFileTrash(ctx: PluginContext, viewer: Viewer, params:
     if (e instanceof DriveNotBoundError) return { status: "drive_not_bound", hint: "Bind Drive in CRM settings (drive.sharedDriveId)." };
     if (e instanceof BrokerError) return { status: "broker_error", hint: `Google Drive refused the trash (${e.status}).`, retryable: e.retryable };
     throw e;
+  }
+}
+
+/**
+ * `crm.drive-folder` (stage B-3, plan PAR-12581 B-D5; was the `drive-folder` data handler, which had no caller): the
+ * Drive folder of a CRM company for its page. Read-only, never ensures. Under a `linked` decision the company must be
+ * his (refused otherwise); a Drive problem answers no folder.
+ */
+export async function driveFolderPage(
+  ctx: PluginContext,
+  viewer: Viewer,
+  params: Record<string, unknown>,
+  deps: { brokerFor?: (ctx: PluginContext, companyId: string) => Promise<Broker | null> } = {},
+): Promise<{ folder: { name: string; url: string } | null }> {
+  const crmCompanyId = typeof params.crmCompanyId === "string" ? params.crmCompanyId.trim() : "";
+  if (!crmCompanyId) return { folder: null };
+  await requireDriveEntity(ctx, viewer, "crm_company", crmCompanyId);
+  try {
+    const broker = await (deps.brokerFor ?? createBrokerForCompany)(ctx, viewer.companyId);
+    if (!broker) return { folder: null };
+    const folder = await broker.resolve("crm_company", crmCompanyId);
+    if (!folder) return { folder: null };
+    return { folder: { name: folder.path.split("/").pop() || folder.path, url: folder.folder_url } };
+  } catch {
+    return { folder: null };
+  }
+}
+
+/**
+ * `crm.drive-files` (stage B-3, B-D5; was the `drive-files` data handler): a project's saved Drive files, grouped by
+ * sub-folder, for the client page. Under a `linked` decision the project must be one of his clients' (refused otherwise).
+ */
+export async function driveFilesPage(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>): Promise<{ groups: FileGroup[]; error?: string }> {
+  const projectId = typeof params.projectId === "string" ? params.projectId.trim() : "";
+  if (!projectId) return { groups: [] };
+  await requireDriveEntity(ctx, viewer, "project", projectId);
+  try {
+    return { groups: listClientFiles(await listDriveFiles(ctx, viewer.companyId, { projectId })) };
+  } catch (err) {
+    ctx.logger.error(`crm.drive-files failed for company ${viewer.companyId} project ${projectId}: ${err instanceof Error ? err.message : String(err)}`);
+    return { groups: [], error: "Could not load files." };
   }
 }

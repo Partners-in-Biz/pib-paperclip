@@ -17,10 +17,13 @@
  *
  * `scoped` (stage B-2, PAR-15204; plan PAR-12581 B-D3, B-D4): the handler filters by the person's own companies (the
  * guard's `linked` decision reaches `viewerFor`, see `access-scope.ts`, and every list and record check reads
- * `visibleSets`). Only companies, contacts, deals, the desk and their lists are scoped here. Unscoped, so closed to an
- * own-companies person: creates, deletes, merges, shares and hand-offs to an agent, reports, settings, sequences, and
- * the client rows of sites, e-sign, care, Drive and projects (stage B-3). The two Drive data handlers (`drive-folder`,
- * `drive-files`) carry no caller and stay as they are until stage B-3.
+ * `visibleSets`). Companies, contacts, deals, the desk and their lists (B-2); and (stage B-3, PAR-15205) the client
+ * rows of sites (incl. the wp-* tools, lead forms, event keys), profile, e-sign, care, growth, projects and Drive: each
+ * handler checks that the row's client resolves to one of his companies (`requireClient`, `visibleClients().listed`,
+ * `requireDriveEntity`), and a row with no client (our own form, key, cost or project) is refused. Unscoped, so closed
+ * to an own-companies person: creates of companies, contacts and deals, deletes, merges, shares and hand-offs to an
+ * agent, reports (attribution and site events too), settings, sequences, consent and Drive trash. The Drive page reads
+ * are the actions `crm.drive-folder` and `crm.drive-files`; the CRM has no data handler.
  *
  * This file takes nothing but types from the kit.
  */
@@ -53,11 +56,14 @@ export const SHARED_ROWS: Readonly<Record<string, AccessTableEntry>> = Object.fr
   "import-contacts": contacts("create"),
   "bulk-tag-contacts": scoped(contacts("edit")),
   ...rows(scoped(companies("edit")), ["update-company", "update-client-profile", "log-activity"]),
-  ...rows(companies("edit"), ["extract-brand-from-site", "start-new-client", "share-record", "set-client-sensitivity", "record-channel-cost"]),
+  // Stage B-3: the client's profile, sensitivity and channel costs follow the client (a cost with no client is refused).
+  ...rows(scoped(companies("edit")), ["extract-brand-from-site", "set-client-sensitivity", "record-channel-cost"]),
+  ...rows(companies("edit"), ["start-new-client", "share-record"]),
   "create-contact": contacts("create"),
   ...rows(scoped(contacts("edit")), ["update-contact", "link-contact", "set-email-status", "score-contact"]),
-  ...rows(contacts("edit"), ["record-consent", "record-lead-outcome"]),
-  "list-client-leads": contacts("view"),
+  "record-consent": contacts("edit"),
+  "record-lead-outcome": scoped(contacts("edit")),
+  "list-client-leads": scoped(contacts("view")),
   "export-person-data": scoped(contacts("export")),
   "request-erasure": scoped(contacts("delete")),
   // deals and the product catalog
@@ -71,26 +77,29 @@ export const SHARED_ROWS: Readonly<Record<string, AccessTableEntry>> = Object.fr
   "create-sequence": sequences("create"),
   "set-sequence-delivery": sequences("edit"),
   // client projects
-  "link-client-project": projects("edit"),
-  // websites, lead forms, site events and the WordPress Connector
-  ...rows(sites("view"), ["site-changes", "list-lead-sources", "list-event-keys", "site-monitoring", "wp-health", "wp-log"]),
-  ...rows(sites("create"), ["create-lead-endpoint", "create-event-key"]),
-  ...rows(sites("edit"), [
+  // Stage B-3: he may change the kind of his client's project, not link a new one (the handler refuses it).
+  "link-client-project": scoped(projects("edit")),
+  // websites, lead forms, site events and the WordPress Connector (stage B-3: each checks the site's client; our own
+  // forms and keys, with no client, are refused and not listed)
+  ...rows(scoped(sites("view")), ["site-changes", "list-lead-sources", "list-event-keys", "site-monitoring", "wp-health", "wp-log"]),
+  ...rows(scoped(sites("create")), ["create-lead-endpoint", "create-event-key"]),
+  ...rows(scoped(sites("edit")), [
     "save-client-site", "connect-client-site", "check-client-site", "rotate-lead-key", "update-lead-source", "update-event-key",
     "rotate-event-key", "set-site-monitoring", "wp-seo", "wp-schema", "wp-redirects", "wp-robots", "wp-sitemap", "wp-plugins",
     "wp-media", "wp-content", "wp-verify", "wp-archive", "wp-connector", "wp-undo",
   ]),
   ...rows(reports("view"), ["attribution-report", "site-events-report"]),
-  // e-sign
-  ...rows(esign("view"), ["sign-templates", "list-sign-documents", "get-sign-document", "verify-sign-document"]),
-  "create-sign-document": esign("create"),
-  "send-for-signature": esign("edit"),
-  "void-sign-document": esign("delete"),
-  // client care: reports, support, client requests, feedback
-  ...rows(care("view"), ["list-client-reports", "list-support-cases", "client-health", "list-client-actions"]),
-  ...rows(care("create"), ["build-client-report", "record-client-signal", "open-support-case", "request-feedback", "record-feedback", "create-client-action"]),
-  ...rows(care("edit"), ["set-report-narrative", "send-client-report", "skip-client-report", "update-support-case", "move-support-case", "update-client-action"]),
-  "delete-client-signal": care("delete"),
+  // e-sign (stage B-3: each document follows its client; the templates hold no client data). Sending stays a hard
+  // stop: its approval goes to the owner even on his companies (stage B-5).
+  ...rows(scoped(esign("view")), ["sign-templates", "list-sign-documents", "get-sign-document", "verify-sign-document"]),
+  "create-sign-document": scoped(esign("create")),
+  "send-for-signature": scoped(esign("edit")),
+  "void-sign-document": scoped(esign("delete")),
+  // client care: reports, support, client requests, feedback (stage B-3: each follows its client)
+  ...rows(scoped(care("view")), ["list-client-reports", "list-support-cases", "client-health", "list-client-actions"]),
+  ...rows(scoped(care("create")), ["build-client-report", "record-client-signal", "open-support-case", "request-feedback", "record-feedback", "create-client-action"]),
+  ...rows(scoped(care("edit")), ["set-report-narrative", "send-client-report", "skip-client-report", "update-support-case", "move-support-case", "update-client-action"]),
+  "delete-client-signal": scoped(care("delete")),
   // the acceptance agent's canary journeys
   ...rows(ADMIN_ONLY, ["create-canary-client", "cleanup-canary"]),
 });
@@ -107,10 +116,12 @@ const ACTION_ROWS: Readonly<Record<string, AccessTableEntry>> = Object.freeze({
   "crm.give-record": desk("edit"),
   "crm.sequence-detail": sequences("view"),
   "crm.enroll": sequences("edit"),
-  "crm.delete-client-site": sites("delete"),
-  "crm.make-lead-secret": sites("edit"),
-  "crm.unlink-client-project": projects("edit"),
-  ...rows(esign("edit"), ["crm.enable-esign", "crm.disable-esign"]),
+  "crm.delete-client-site": scoped(sites("delete")),
+  "crm.make-lead-secret": scoped(sites("edit")),
+  "crm.unlink-client-project": scoped(projects("edit")),
+  ...rows(scoped(esign("edit")), ["crm.enable-esign", "crm.disable-esign"]),
+  // The client page's Drive folder and files (stage B-3, B-D5: were data handlers with no caller).
+  ...rows(scoped(drive("view")), ["crm.drive-folder", "crm.drive-files"]),
   "crm.settings-status": settings("view"),
   ...rows(ADMIN_ONLY, [
     "crm.reports-drive-catchup", "crm.resync", "crm.sync-skills", "crm.run-services-check", "crm.normalize-services",
@@ -133,10 +144,12 @@ const TOOL_ROWS: Readonly<Record<string, AccessTableEntry>> = Object.freeze({
   ...rows(settings("edit"), ["create-pipeline", "define-field", "create-saved-view", "delete-saved-view", "drive_binding_discover", "drive_binding_set"]),
   "list-sequences": sequences("view"),
   "enroll-contact": sequences("edit"),
-  "list-client-sites": sites("view"),
-  "list-client-projects": projects("view"),
-  ...rows(drive("view"), ["drive_folder_resolve", "drive_project_kind_list", "drive_transfer_status", "drive_file_fetch", "drive_files_list"]),
-  ...rows(drive("create"), ["drive_folder_ensure", "drive_file_save", "drive_project_kind_set"]),
+  "list-client-sites": scoped(sites("view")),
+  "list-client-projects": scoped(projects("view")),
+  // Drive by project or CRM company (stage B-3): a project of one of his clients, or his company. Trash names only a
+  // Drive file id, which cannot be tied to a client: closed.
+  ...rows(scoped(drive("view")), ["drive_folder_resolve", "drive_project_kind_list", "drive_transfer_status", "drive_file_fetch", "drive_files_list"]),
+  ...rows(scoped(drive("create")), ["drive_folder_ensure", "drive_file_save", "drive_project_kind_set"]),
   "drive_file_trash": drive("delete"),
 });
 

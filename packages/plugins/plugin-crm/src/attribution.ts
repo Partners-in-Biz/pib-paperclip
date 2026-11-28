@@ -41,7 +41,7 @@ import {
   type LeadOutcome,
   type RevenueRow,
 } from "./attribution-store.js";
-import { parseClientRef, requireClient } from "./lookup.js";
+import { parseClientRef, requireClient, requireNamedClient } from "./lookup.js";
 import { periodBounds, type ReportSection } from "./report-render.js";
 import { refOf, type ClientKind } from "./refs.js";
 import { eventsSummaryFor, rangeOf, type EventsSummary } from "./site-events.js";
@@ -416,6 +416,7 @@ export function attributionOut(report: AttributionReport, events?: EventsSummary
 /** `attribution-report`: our own (no client) or one client's source-to-revenue report, per channel, first and last touch. */
 export async function attributionReportTool(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
   const client = params.client == null || params.client === "" ? null : parseClientRef(params.client);
+  requireNamedClient(viewer, client, "Our own report");
   if (client) await requireClient(ctx, viewer, client);
   const range = rangeOf(params);
   const bounds = typeof params.period === "string" && params.period.trim() ? periodBounds(params.period.trim()) : { from: new Date(Date.parse(`${range.from}T00:00:00Z`) - 2 * 3_600_000).toISOString(), to: new Date(Date.parse(`${range.to}T00:00:00Z`) - 2 * 3_600_000).toISOString() };
@@ -429,6 +430,7 @@ const CHANNEL_VALUES = [...CHANNELS, UNATTRIBUTED] as const;
 /** `record-channel-cost`: what a channel cost for a month (an agency fee, ad spend a client told us about). Replaces the month's earlier figure. */
 export async function recordChannelCostTool(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
   const client = params.client == null || params.client === "" ? null : parseClientRef(params.client);
+  requireNamedClient(viewer, client, "Our own channel cost");
   if (client) await requireClient(ctx, viewer, client);
   const channel = typeof params.channel === "string" ? params.channel : "";
   if (!(CHANNEL_VALUES as readonly string[]).includes(channel)) throw new CrmError(`channel must be one of ${CHANNEL_VALUES.join(", ")}`);
