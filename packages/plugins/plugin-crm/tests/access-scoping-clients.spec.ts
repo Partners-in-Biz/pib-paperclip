@@ -101,6 +101,21 @@ describe("stage B-3: a limited person on enforce works only on his companies' cl
     expect((await asJan("save-client-site", { siteId: sites.acme, projectId: "p-acme" })).error).toBeUndefined();
   });
 
+  it("another client's site, document and case give the same text as a guessed id (stage B2)", async () => {
+    const { asJan, sites, docs, cases } = await world("enforce");
+    const same = async (name: string, key: string, other: string, extra: Record<string, unknown>) => {
+      const a = (await asJan(name, { [key]: other, ...extra })).error;
+      const b = (await asJan(name, { [key]: "guess-1", ...extra })).error;
+      expect(a, name).toBeTruthy();
+      expect(a!.split(other).join("ID"), name).toBe(b!.split("guess-1").join("ID"));
+      expect(a, name).toMatch(/was not found/);
+      expect(a, name).not.toMatch(/not visible/);
+    };
+    await same("save-client-site", "siteId", sites.globex, { projectId: "p-acme" });
+    await same("get-sign-document", "documentId", docs.globex, {});
+    await same("update-support-case", "caseId", cases.globex, { status: "in_progress" });
+  });
+
   it("lead forms and event keys: Acme's only; Globex's and our own (no client) are refused and not listed", async () => {
     const { act, asJan, forms, keys } = await world("enforce");
     expect((await act("crm.list-lead-sources", {})).sources.map((row: { id: string }) => row.id)).toEqual([forms.acme]);
