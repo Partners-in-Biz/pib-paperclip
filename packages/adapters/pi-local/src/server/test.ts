@@ -4,6 +4,7 @@ import type {
   AdapterEnvironmentTestResult,
 } from "@paperclipai/adapter-utils";
 import {
+  agentInheritedEnv,
   asString,
   parseObject,
   ensurePathInEnv,
@@ -128,7 +129,7 @@ export async function testEnvironment(
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
   }
-  const runtimeEnv = normalizeEnv(ensurePathInEnv({ ...sanitizeInheritedPaperclipEnv(process.env), ...env }));
+  const runtimeEnv = normalizeEnv(ensurePathInEnv({ ...sanitizeInheritedPaperclipEnv(agentInheritedEnv()), ...env }));
 
   const cwdInvalid = checks.some((check) => check.code === "pi_cwd_invalid");
   if (cwdInvalid) {

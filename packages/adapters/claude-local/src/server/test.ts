@@ -4,6 +4,7 @@ import type {
   AdapterEnvironmentTestResult,
 } from "@paperclipai/adapter-utils";
 import {
+  agentInheritedEnv,
   asString,
   asBoolean,
   asNumber,
@@ -150,7 +151,7 @@ export async function testEnvironment(
       helloProbeTimeoutSec: asNumber(config.helloProbeTimeoutSec, targetIsSandbox ? 90 : 45),
     })),
   );
-  const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
+  const runtimeEnv = ensurePathInEnv({ ...agentInheritedEnv(), ...env });
   let localRuntimeCommand: string | null = null;
   try {
     await ensureAdapterExecutionTargetCommandResolvable(command, target, cwd, runtimeEnv);
@@ -249,7 +250,7 @@ export async function testEnvironment(
         check.code !== "claude_managed_config_dir_failed",
     );
   let configuredModelIsCompatible = true;
-  const configuredModel = resolveClaudeModel(config.model, considerHostEnv ? { ...process.env, ...env } : env);
+  const configuredModel = resolveClaudeModel(config.model, considerHostEnv ? { ...agentInheritedEnv(), ...env } : env);
   const minimumCliVersion =
     claudeCommandLooksLike(command, "claude") &&
     (!hasBedrock || isBedrockModelId(configuredModel))

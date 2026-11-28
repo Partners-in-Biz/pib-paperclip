@@ -5,6 +5,7 @@ import type {
   AdapterEnvironmentTestResult,
 } from "@paperclipai/adapter-utils";
 import {
+  agentInheritedEnv,
   asBoolean,
   asNumber,
   asString,
@@ -123,7 +124,7 @@ export async function testEnvironment(
   if (targetIsRemote && typeof env.GEMINI_CLI_TRUST_WORKSPACE !== "string") {
     env.GEMINI_CLI_TRUST_WORKSPACE = "true";
   }
-  const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
+  const runtimeEnv = ensurePathInEnv({ ...agentInheritedEnv(), ...env });
   const installCheck = await maybeRunSandboxInstallCommand({
     runId,
     target,

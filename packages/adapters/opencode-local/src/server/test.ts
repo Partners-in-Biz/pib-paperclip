@@ -8,6 +8,7 @@ import type {
 } from "@paperclipai/adapter-utils";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import {
+  agentInheritedEnv,
   asBoolean,
   asNumber,
   asString,
@@ -209,7 +210,7 @@ export async function testEnvironment(
         configDir: preparedExecutionTargetRuntime.assetDirs.xdgConfig,
       });
     }
-    const runtimeEnv = normalizeEnv(ensurePathInEnv({ ...process.env, ...preparedRuntimeConfig.env }));
+    const runtimeEnv = normalizeEnv(ensurePathInEnv({ ...agentInheritedEnv(), ...preparedRuntimeConfig.env }));
 
     const cwdInvalid = checks.some((check) => check.code === "opencode_cwd_invalid");
     if (cwdInvalid) {
