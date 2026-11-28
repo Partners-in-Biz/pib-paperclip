@@ -25,7 +25,7 @@ import { countPublicHits, recordPublicHit } from "./esign-store.js";
 import { eventCurlExample, eventInstallSteps, eventSnippet, eventUrls, PRIVACY_NOTES, type EventUrls } from "./events-embed.js";
 import { cleanText, clientIp, hashIp } from "./lead-form.js";
 import { ipSalt, NO_URLS_NOTE, urlsFor } from "./lead-capture.js";
-import { parseClientRef, requireClient, visibleClients } from "./lookup.js";
+import { parseClientRef, requireClient, requireNamedClient, visibleClients } from "./lookup.js";
 import { refOf, type ClientKind } from "./refs.js";
 import { getSite } from "./sites.js";
 import {
@@ -376,6 +376,7 @@ async function embedUrlsOf(ctx: PluginContext, companyId: string): Promise<Event
 }
 
 async function clientNameOf(ctx: PluginContext, viewer: Viewer, client: { kind: ClientKind; id: string } | null): Promise<string | null> {
+  requireNamedClient(viewer, client, "This call");
   return client ? requireClient(ctx, viewer, client) : null;
 }
 
@@ -433,6 +434,7 @@ async function requireKey(ctx: PluginContext, viewer: Viewer, params: Record<str
   const key = await getEventKey(ctx, viewer.companyId, id);
   if (!key) throw new CrmError(`Event key ${id} was not found (list-event-keys shows the ids)`);
   if (key.clientKind && key.clientRef) await requireClient(ctx, viewer, { kind: key.clientKind, id: key.clientRef });
+  else requireNamedClient(viewer, null, "This event key");
   return key;
 }
 
@@ -441,10 +443,11 @@ export async function listEventKeysTool(ctx: PluginContext, viewer: Viewer, para
   if (client) await requireClient(ctx, viewer, client);
   const rows = await listEventKeys(ctx, viewer.companyId, params.ownOnly === true ? "own" : client ?? undefined);
   const urls = await embedUrlsOf(ctx, viewer.companyId);
-  const seenClients = client || !rows.some((row) => row.clientKind) ? null : await visibleClients(ctx, viewer);
+  // Under a `linked` decision our own keys (no client) are not listed either.
+  const seenClients = client || (!viewer.linkedCompanyIds && !rows.some((row) => row.clientKind)) ? null : await visibleClients(ctx, viewer);
   const keys = [];
   for (const row of rows) {
-    if (seenClients && row.clientKind && row.clientRef && !seenClients.has(row.clientKind, row.clientRef)) continue;
+    if (seenClients && !seenClients.listed(row.clientKind, row.clientRef)) continue;
     keys.push(await eventKeyView(ctx, row, urls, null));
   }
   return { keys, ...(keys.length === 0 ? { next: "No event keys yet. create-event-key makes one for a client's site (or ours, with no client)." } : {}), ...(urls ? {} : { note: NO_URLS_NOTE }) };

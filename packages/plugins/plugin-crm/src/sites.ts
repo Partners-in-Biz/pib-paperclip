@@ -464,6 +464,14 @@ async function requireProject(ctx: PluginContext, companyId: string, projectId: 
   return { id: String(project.id), name: String((project as { name?: unknown }).name ?? "Project") };
 }
 
+/** The project must be linked to this client (`client_projects`); else the same answer as an unknown project. */
+async function requireProjectOfClient(ctx: PluginContext, companyId: string, projectId: string, client: { kind: ClientKind; id: string }): Promise<void> {
+  const links = await projectLinks(ctx, companyId);
+  if (!links.some((link) => link.project_id === projectId && link.client_kind === client.kind && link.client_ref === client.id)) {
+    throw new CrmError(`Project ${projectId} was not found in this company (list-client-projects shows the projects)`);
+  }
+}
+
 async function requireSite(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>): Promise<SiteRecord> {
   const id = typeof params.siteId === "string" ? params.siteId.trim() : "";
   if (!id) throw new CrmError("siteId is required (list-client-sites shows the ids)");
@@ -551,6 +559,8 @@ export async function saveClientSite(ctx: PluginContext, viewer: Viewer, params:
   if (params.projectId !== undefined) {
     const raw = str(params, "projectId", 100);
     projectId = raw ? (await requireProject(ctx, viewer.companyId, raw)).id : null;
+    // Stage B-3: under a `linked` decision only a project of this same client (its workspace and env are the client's).
+    if (projectId && viewer.linkedCompanyIds && raw !== existing?.projectId) await requireProjectOfClient(ctx, viewer.companyId, projectId, { kind: clientKind, id: clientRef });
   }
   if ((access.includes("repo") || access.includes("sftp")) && !projectId) {
     throw new CrmError("repo and sftp access need the site's Paperclip project (projectId): its workspace holds the code, and its env holds the SFTP login");
@@ -1104,7 +1114,8 @@ export async function clientProjects(ctx: PluginContext, viewer: Viewer, client:
     const project = byId.get(link.project_id);
     return project ? projectOut(project, prefix, link.kind) : { projectId: link.project_id, name: "Project not found (deleted?)", status: null, repoUrl: null, archived: true, kind: link.kind, link: null };
   });
-  if (!options.candidates) return { linked };
+  // Stage B-3: the workspace's projects that belong to no client are not his to see under a `linked` decision.
+  if (!options.candidates || viewer.linkedCompanyIds) return options.candidates ? { linked, candidates: [] } : { linked };
   const taken = new Set(links.map((link) => link.project_id));
   const tokens = words(name);
   const candidates = projects
@@ -1151,6 +1162,9 @@ export async function linkClientProject(ctx: PluginContext, viewer: Viewer, para
   if (existing && (kind === undefined || kind === existing.kind)) {
     return { projectId: project.id, name: project.name, client: ref, alreadyLinked: true, kind: existing.kind };
   }
+  // Stage B-3: under a `linked` decision he may change the kind of his client's project, not link another one (the
+  // workspace's unlinked projects are not his; a link would open their Drive files to him).
+  if (!existing && viewer.linkedCompanyIds) throw new CrmError("You work only on your own companies' projects: a person with full CRM access links a new project to a client");
 
   const kindTaken = (holder?: string) => new CrmError(`${ref} already has a ${kind} project${holder ? ` (${holder})` : ""}. Relink that one to another kind or null first.`);
   if (kind) {

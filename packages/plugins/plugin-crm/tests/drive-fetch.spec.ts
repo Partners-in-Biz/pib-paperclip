@@ -12,6 +12,8 @@ import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 const tools = vi.hoisted(() => ({
   driveFolderEnsure: vi.fn(async () => ({ status: "exists", folder_id: "projFolder", path: "Clients/A", tree: [{ path: "Clients/A/Deliverables", folderId: "subFolder" }] })),
   createBrokerForCompany: vi.fn(async () => null),
+  // The stage B-3 own-companies check (a no-op for scope all); tests/access-scoping-clients.spec.ts covers it.
+  requireDriveEntity: vi.fn(async () => undefined),
 }));
 vi.mock("../src/drive/tools.js", () => tools);
 

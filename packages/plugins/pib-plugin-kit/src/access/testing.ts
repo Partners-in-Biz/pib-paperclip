@@ -51,11 +51,13 @@ import { SETUP_PLUGIN } from "../setup.js";
 import { isRefusal, PERMISSION_DENIED } from "./refusal.js";
 import { ACCESS_EVENTS, accessCompanyScope, parseAccessRow } from "./switch.js";
 
-/** The only data handlers a PiB plugin may register (4.4: they carry no caller). Studio 9, Voice 2, CRM 2. */
+/**
+ * The only data handlers a PiB plugin may register (4.4: they carry no caller). Studio 9, Voice 2. The CRM's two Drive
+ * handlers became actions in stage B-3 (PAR-15205), so the CRM may register none.
+ */
 export const NAMED_DATA_HANDLERS: Readonly<Record<string, readonly string[]>> = Object.freeze({
   "partnersinbiz.studio": ["overview", "assets", "asset", "client-summaries", "generations", "canvases", "canvas", "canvas-versions", "canvas-comments"],
   "partnersinbiz.voice": ["status", "agent-voice"],
-  "partnersinbiz.crm": ["drive-folder", "drive-files"],
 });
 
 /** Section 4.5 item 3; the `agent.tools.register` capability string is not a call. */

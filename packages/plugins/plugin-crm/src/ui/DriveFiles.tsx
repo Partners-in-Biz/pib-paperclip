@@ -2,9 +2,11 @@
  * Display files saved to a Paperclip project's Drive folder.
  * Renders grouped files with name, date, source, and https-validated links.
  */
-import { usePluginData, useHostContext } from "@paperclipai/plugin-sdk/ui";
+import { useEffect, useState } from "react";
+import { useHostContext } from "@paperclipai/plugin-sdk/ui";
 import { tokens, formatDate } from "@partnersinbiz/pib-plugin-ui";
 import type { FileGroup, ClientFile } from "../drive/files-list.js";
+import { useCrmAction } from "./actions.js";
 
 interface FileGroupResponse {
   groups: FileGroup[];
@@ -107,16 +109,24 @@ function FileGroupSection({ group }: { group: FileGroup }) {
  * Shows an empty state when no files are available, or an error state on failure.
  */
 export function DriveFiles({ projectId }: DriveFilesProps) {
-  const hostContext = useHostContext();
-  const driveFilesData = usePluginData<FileGroupResponse>("drive-files", {
-    companyId: hostContext.companyId ?? undefined,
-    projectId: projectId ?? undefined,
-  });
+  const companyId = useHostContext().companyId ?? null;
+  // Stage B-3: the `crm.drive-files` action (through the guard), not a data handler. A refusal shows as the error.
+  const loadFiles = useCrmAction("crm.drive-files");
+  const [data, setData] = useState<FileGroupResponse | null>(null);
+  const [transportError, setTransportError] = useState<string | undefined>(undefined);
+  useEffect(() => {
+    setData(null);
+    setTransportError(undefined);
+    if (!companyId || !projectId) return;
+    let live = true;
+    loadFiles({ projectId })
+      .then((result) => { if (live) setData(result as FileGroupResponse); })
+      .catch((error: unknown) => { if (live) setTransportError(error instanceof Error ? error.message : "Could not load files."); });
+    return () => { live = false; };
+  }, [companyId, projectId]);
 
-  const groups = driveFilesData.data?.groups ?? [];
-  const payloadError = driveFilesData.data?.error;
-  const transportError = typeof driveFilesData.error === "string" ? driveFilesData.error : undefined;
-  const errorMessage = transportError || payloadError;
+  const groups = data?.groups ?? [];
+  const errorMessage = transportError || data?.error;
 
   return (
     <div style={{ marginTop: "16px" }}>

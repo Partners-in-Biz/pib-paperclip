@@ -85,7 +85,7 @@ describe("access test helper: registration, table and source checks", () => {
   });
 
   it("the named data handlers are Studio 9, Voice 2, CRM 2 and no other plugin", () => {
-    expect(Object.fromEntries(Object.entries(NAMED_DATA_HANDLERS).map(([k, v]) => [k, v.length]))).toEqual({ "partnersinbiz.studio": 9, "partnersinbiz.voice": 2, "partnersinbiz.crm": 2 });
+    expect(Object.fromEntries(Object.entries(NAMED_DATA_HANDLERS).map(([k, v]) => [k, v.length]))).toEqual({ "partnersinbiz.studio": 9, "partnersinbiz.voice": 2 });
   });
 
   it("the source check skips the agent.tools.register capability string and comment lines", () => {

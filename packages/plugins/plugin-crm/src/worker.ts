@@ -220,13 +220,11 @@ import { ESIGN_PERSON_ACTIONS, ESIGN_TOOL_NAMES, isEsignTool, runEsignTool } fro
 import { EVENTS_ENDPOINT_KEY, SIGN_ENDPOINT_KEY } from "./endpoints.js";
 import { handleSignWebhook } from "./esign-public.js";
 import { GROWTH_TOOL_NAMES, isGrowthTool, runGrowthTool } from "./growth-dispatch.js";
-import { driveFolderResolve, driveFolderEnsure, driveProjectKindSet, driveProjectKindList, driveFileSave, driveTransferStatus, driveFilesList, driveFileTrash, createBrokerForCompany } from "./drive/tools.js";
+import { driveFolderResolve, driveFolderEnsure, driveProjectKindSet, driveProjectKindList, driveFileSave, driveTransferStatus, driveFilesList, driveFileTrash, driveFilesPage, driveFolderPage } from "./drive/tools.js";
 import { driveFileFetch } from "./drive/fetch.js";
 import { driveBindingDiscover, driveBindingSet, driveBindingStatus, onDriveBindingSetEvent } from "./drive/binding.js";
 import { registerDriveSaveRoute } from "./drive/save-route.js";
 import { reportsDriveCatchup } from "./report-drive-catchup.js";
-import { listDriveFiles } from "./drive/store.js";
-import { listClientFiles } from "./drive/files-list.js";
 import { clientAgreementsAndGrowth } from "./growth-view.js";
 import { handleEventsWebhook } from "./site-events.js";
 import { syncAllPages } from "./esign-sync.js";
@@ -406,6 +404,10 @@ const plugin = definePlugin({
     registerAction("crm.site-changes", async (params, context) => siteChangesTool(ctx, await actionViewer(ctx, context), params));
     registerAction("crm.link-client-project", async (params, context) => linkClientProject(ctx, await actionViewer(ctx, context), params));
     registerAction("crm.unlink-client-project", async (params, context) => unlinkClientProject(ctx, await actionViewer(ctx, context), params, actionSource(context)));
+    // Drive on the client page (stage B-3, plan PAR-12581 B-D5): actions through the guard, so the caller is checked
+    // (they were data handlers with no caller).
+    registerAction("crm.drive-folder", async (params, context) => driveFolderPage(ctx, await actionViewer(ctx, context), params));
+    registerAction("crm.drive-files", async (params, context) => driveFilesPage(ctx, await actionViewer(ctx, context), params));
     registerAction("crm.set-sequence-delivery", async (params, context) => setSequenceDelivery(ctx, await actionViewer(ctx, context), params));
     // Lead forms (public lead capture), starting a new client, and the canary client.
     registerAction("crm.create-lead-endpoint", async (params, context) => createLeadEndpoint(ctx, await actionViewer(ctx, context), params, actionSource(context)));
@@ -641,39 +643,6 @@ const plugin = definePlugin({
         }
       } catch (error) {
         ctx.logger.info("CRM drive.binding.set event handler failed", { error: String(error) });
-      }
-    });
-
-    // Data handler for Drive folder registry lookup (read-only, never calls ensure)
-    ctx.data.register("drive-folder", async (params) => {
-      const hostCompanyId = params.companyId as string | undefined;
-      const crmCompanyId = params.crmCompanyId as string | undefined;
-      if (!hostCompanyId || !crmCompanyId) return { folder: null };
-      try {
-        const broker = await createBrokerForCompany(ctx, hostCompanyId);
-        if (!broker) return { folder: null };
-        const folder = await broker.resolve("crm_company", crmCompanyId);
-        if (!folder) return { folder: null };
-        const name = folder.path.split("/").pop() || folder.path;
-        return { folder: { name, url: folder.folder_url } };
-      } catch {
-        return { folder: null };
-      }
-    });
-
-    // Data handler for Drive files list (read-only, grouped by folder)
-    ctx.data.register("drive-files", async (params) => {
-      const companyId = params.companyId as string | undefined;
-      const projectId = params.projectId as string | undefined;
-      if (!companyId || !projectId) return { groups: [] };
-      try {
-        const files = await listDriveFiles(ctx, companyId, { projectId });
-        const groups = listClientFiles(files);
-        return { groups };
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        ctx.logger.error(`drive-files handler error for company ${companyId} project ${projectId}: ${message}`);
-        return { groups: [], error: "Could not load files." };
       }
     });
 

@@ -87,7 +87,7 @@ import { asLeadExtras, attributionOf, formLines, intakeLead, type LeadExtras } f
 import { openIssueOnce } from "./mail.js";
 import { PLUGIN_ID } from "./namespace.js";
 import { originFor } from "./origins.js";
-import { parseClientRef, requireClient, visibleClients } from "./lookup.js";
+import { parseClientRef, requireClient, requireNamedClient, visibleClients } from "./lookup.js";
 import { companyPrefix, crmLink, refOf, type ClientKind } from "./refs.js";
 import { teamAssignee } from "./routing.js";
 import { getSite } from "./sites.js";
@@ -960,6 +960,7 @@ export async function createLeadEndpoint(ctx: PluginContext, viewer: Viewer, par
   if (wantsSecret && !isPerson(viewer, by)) throw new CrmError(SECRET_BY_PERSON);
   refuseConfirmSecret(params);
   const client = clientOf(params);
+  requireNamedClient(viewer, client, "A form");
   const clientName = client ? await requireClient(ctx, viewer, client) : null;
   const intake = await intakeOf(ctx, viewer.companyId, params);
   if (intake.intake !== "newsletter") refuseNewsletterParams(params, intake.intake);
@@ -1035,6 +1036,7 @@ async function requireSource(ctx: PluginContext, viewer: Viewer, params: Record<
   const source = await getLeadSource(ctx, viewer.companyId, id);
   if (!source) throw new CrmError(`Lead source ${id} was not found (list-lead-sources shows the ids)`);
   if (source.clientKind && source.clientRef) await requireClient(ctx, viewer, { kind: source.clientKind, id: source.clientRef });
+  else requireNamedClient(viewer, null, "This form");
   return source;
 }
 
@@ -1112,10 +1114,11 @@ export async function listLeadSourcesTool(ctx: PluginContext, viewer: Viewer, pa
   const urls = await urlsFor(ctx, viewer.companyId);
   const rows = await listLeadSources(ctx, viewer.companyId, scope);
   const sources = [];
-  // A source of a client the viewer cannot see is not listed (the visible clients are read once, not once per form).
-  const seen = client || !rows.some((row) => row.clientKind) ? null : await visibleClients(ctx, viewer);
+  // A source of a client the viewer cannot see is not listed (the visible clients are read once, not once per form);
+  // under a `linked` decision neither is our own form (no client).
+  const seen = client || (!viewer.linkedCompanyIds && !rows.some((row) => row.clientKind)) ? null : await visibleClients(ctx, viewer);
   for (const row of rows) {
-    if (seen && row.clientKind && row.clientRef && !seen.has(row.clientKind, row.clientRef)) continue;
+    if (seen && !seen.listed(row.clientKind, row.clientRef)) continue;
     sources.push(await leadSourceView(ctx, row, urls));
   }
   return { sources, ...(sources.length === 0 ? { next: "No lead forms yet. create-lead-endpoint makes one for a client (or for us, with no client)." } : {}), ...(urls ? {} : { note: NO_URLS_NOTE }) };

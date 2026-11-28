@@ -78,12 +78,28 @@ async function visible(ctx: PluginContext, viewer: Viewer) {
 /** Every record this viewer may see, as `find-records` and `get-company` read them (the canvas cards use it). */
 export const visibleCrmRecords = visible;
 
-/** The clients this viewer may see, loaded once: for a list that must check many of them. */
-export async function visibleClients(ctx: PluginContext, viewer: Viewer): Promise<{ has: (kind: ClientKind, id: string) => boolean }> {
+/**
+ * The clients this viewer may see, loaded once: for a list that must check many of them. `listed` is the row rule of
+ * a client-keyed list: a row of a client he may see; a row with no client (our own form, key or cost) only under
+ * scope `all`, since under a `linked` decision it is not one of his companies (stage B-3, plan PAR-12581 B-D3).
+ */
+export async function visibleClients(ctx: PluginContext, viewer: Viewer): Promise<{
+  has: (kind: ClientKind, id: string) => boolean;
+  listed: (kind: ClientKind | null | undefined, id: string | null | undefined) => boolean;
+}> {
   const records = await visible(ctx, viewer);
   const companies = new Set(records.accounts.map((row) => row.id));
   const contacts = new Set(records.contacts.map((row) => row.id));
-  return { has: (kind, id) => (kind === "company" ? companies.has(id) : contacts.has(id)) };
+  const has = (kind: ClientKind, id: string) => (kind === "company" ? companies.has(id) : contacts.has(id));
+  return { has, listed: (kind, id) => (kind && id ? has(kind, id) : !viewer.linkedCompanyIds) };
+}
+
+/**
+ * Stage B-3 (plan PAR-12581 B-D3): a client-keyed row or call that names no client is the workspace's own work, not
+ * one of a limited person's companies, so it is refused under a `linked` decision. Scope `all`: nothing changes.
+ */
+export function requireNamedClient(viewer: Viewer, client: unknown, what: string): void {
+  if (viewer.linkedCompanyIds && !client) throw new CrmError(`${what} names no client, and you work only on your own companies' records: name the client (find-records shows them)`);
 }
 
 /** Every stage of every pipeline of the company, each tagged with its pipeline (a deal belongs to the pipeline of its stage). */

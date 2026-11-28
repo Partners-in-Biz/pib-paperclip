@@ -14,7 +14,7 @@ import type { Viewer } from "../domain.js";
 import { DriveNotBoundError, type Broker, type DriveFileInfo } from "./broker.js";
 import { DriveJobFailure, TEXTS, fetchJobKey, jobErrorFor, startDriveJob, type DriveJobStart } from "./jobs.js";
 import { resolveRunScratch } from "./run-scope.js";
-import { createBrokerForCompany, driveFolderEnsure } from "./tools.js";
+import { createBrokerForCompany, driveFolderEnsure, requireDriveEntity } from "./tools.js";
 
 const MiB = 1024 * 1024;
 /** Free space kept on the scratch disk after the file (R3). */
@@ -55,6 +55,7 @@ export async function driveFileFetch(ctx: PluginContext, viewer: Viewer, params:
   const projectId = params.projectId, fileId = params.fileId;
   if (typeof projectId !== "string" || !projectId) return { status: "invalid_input", hint: "projectId is required." };
   if (typeof fileId !== "string" || !FILE_ID.test(fileId)) return { status: "invalid_input", hint: "fileId is a Google Drive file id (letters, digits, - and _)." };
+  await requireDriveEntity(ctx, viewer, "project", projectId);
   const run = await resolveRunScratch(ctx, viewer);
   if (!run.ok) return { status: run.code, hint: run.hint };
   if (!(await ctx.projects.get(projectId, viewer.companyId))) return { status: "project_not_found" };

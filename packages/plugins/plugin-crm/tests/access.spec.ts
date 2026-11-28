@@ -43,11 +43,13 @@ describe("CRM access guard", () => {
     });
   });
 
-  it("the data handlers are only the two named Drive ones (they stay until stage B)", () => {
-    expect(NAMED_DATA_HANDLERS[manifest.id]).toEqual(["drive-folder", "drive-files"]);
+  it("the CRM has no data handler: the two Drive reads are the actions crm.drive-folder and crm.drive-files (stage B-3)", () => {
+    expect(NAMED_DATA_HANDLERS[manifest.id]).toBeUndefined();
+    expect(ACCESS_TABLE["crm.drive-folder"]).toEqual({ resource: "crm.drive", action: "view", scoped: true });
+    expect(ACCESS_TABLE["crm.drive-files"]).toEqual({ resource: "crm.drive", action: "view", scoped: true });
   });
 
-  it("every row names a CRM catalog resource and one of its actions; only the stage B-2 record rows are scoped", () => {
+  it("every row names a CRM catalog resource and one of its actions; only the stage B-2 and B-3 rows are scoped", () => {
     const catalog = new Map(PERMISSION_CATALOG.map((r) => [r.id, r]));
     const scoped: string[] = [];
     for (const [key, entry] of Object.entries(ACCESS_TABLE)) {
@@ -57,9 +59,8 @@ describe("CRM access guard", () => {
       if (entry.scoped) scoped.push(key);
     }
     // Stage B-2 (PAR-15204): companies, contacts, deals, the desk and their lists (tests/access-scoping.spec.ts).
-    // Reports, settings, sequences, creates, deletes, shares and the client rows of stage B-3 stay closed.
     const both = (names: string[]) => names.flatMap((name) => [`crm.${name}`, `tool:${name}`]);
-    expect(scoped.sort()).toEqual([
+    const b2 = [
       ...both([
         "find-records", "bulk-tag-contacts", "update-company", "update-client-profile", "log-activity", "update-contact", "link-contact",
         "set-email-status", "score-contact", "export-person-data", "request-erasure", "move-deal", "update-deal", "call-list", "log-outcome",
@@ -68,8 +69,25 @@ describe("CRM access guard", () => {
       "crm.load", "crm.client-workspace", "crm.activities", "canvas.cards.resolve", "canvas.cards.search", "canvas.cards.related",
       "crm.set-human-owned", "crm.desk",
       ...["get-company", "get-client-profile", "field-history", "get-contact", "contact-graph", "find-duplicates", "export-contacts", "list-deals", "list-stages", "list-deal-products", "add-deal-product"].map((name) => `tool:${name}`),
-    ].sort());
-    for (const key of ["crm.reports-drive-catchup", "tool:pipeline-forecast", "crm.settings-status", "tool:create-pipeline", "crm.create-company", "crm.share-record", "crm.delete-company", "tool:merge-contacts", "crm.sequence-detail", "tool:list-client-sites", "tool:list-sign-documents", "tool:list-support-cases"]) {
+    ];
+    // Stage B-3 (PAR-15205; tests/access-scoping-clients.spec.ts): every row of the client areas (sites incl. wp-* and
+    // lead forms and event keys, e-sign, care, projects, Drive) but Drive trash, and the client's profile, sensitivity,
+    // channel costs and leads.
+    const CLIENT_AREAS = ["crm.sites", "crm.esign", "crm.care", "crm.projects", "crm.drive"];
+    const b3 = [
+      ...Object.entries(ACCESS_TABLE)
+        .filter(([key, entry]) => typeof entry === "object" && "resource" in entry && CLIENT_AREAS.includes(entry.resource) && key !== "tool:drive_file_trash")
+        .map(([key]) => key),
+      ...both(["extract-brand-from-site", "set-client-sensitivity", "record-channel-cost", "record-lead-outcome", "list-client-leads"]),
+    ];
+    expect(scoped.sort()).toEqual([...b2, ...b3].sort());
+    expect(b3).toEqual(expect.arrayContaining(["crm.drive-folder", "crm.drive-files", "tool:wp-seo", "crm.wp-content", "tool:drive_file_save", "tool:list-client-sites", "tool:list-sign-documents", "tool:list-support-cases"]));
+    // Reports (attribution and site events too), settings, sequences, creates, deletes, shares, consent and Drive trash stay closed.
+    for (const key of [
+      "crm.reports-drive-catchup", "tool:pipeline-forecast", "crm.settings-status", "tool:create-pipeline", "crm.create-company", "crm.share-record", "crm.delete-company",
+      "tool:merge-contacts", "crm.sequence-detail", "tool:attribution-report", "crm.site-events-report", "tool:record-consent", "tool:start-new-client", "tool:drive_file_trash",
+      "tool:drive_binding_set",
+    ]) {
       expect((ACCESS_TABLE[key] as { scoped?: true }).scoped, key).toBeUndefined();
     }
   });
