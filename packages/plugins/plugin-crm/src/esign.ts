@@ -71,7 +71,7 @@ import {
 import { DEFAULT_VALID_DAYS, ESIGN_REMIND_AFTER_DAYS, MAX_CONTENT_CHARS, MAX_ESIGN_REMINDERS, MAX_VALID_DAYS, MIN_CONTENT_CHARS, renderTemplate, TEMPLATE_KEYS, TEMPLATE_NOTICE, TEMPLATE_VERSION, TEMPLATES, templateSource } from "./esign-templates.js";
 import { openSignedCopyFilingIssue } from "./filing.js";
 import { moveDealTo, sendHandoff } from "./handoffs.js";
-import { parseClientRef, requireClient, visibleClients } from "./lookup.js";
+import { parseClientRef, requireClient, requireClientOfRecord, visibleClients } from "./lookup.js";
 import { openIssueOnce } from "./mail.js";
 import { originFor } from "./origins.js";
 import { approvalLink, RecipientRefused, requestApproval, withdrawOpenApprovals, type MailApprovalHooks, type MailDraft } from "./outbound.js";
@@ -411,8 +411,9 @@ async function requireDoc(ctx: PluginContext, viewer: Viewer, params: Record<str
   const id = clamp(params.documentId, 80);
   if (!id) throw new CrmError("documentId is required (list-sign-documents shows the ids)");
   const doc = await getDoc(ctx, viewer.companyId, id);
-  if (!doc) throw new CrmError("That document was not found (list-sign-documents shows the ids)");
-  const name = await requireClient(ctx, viewer, { kind: doc.clientKind, id: doc.clientRef });
+  const notFound = "That document was not found (list-sign-documents shows the ids)";
+  if (!doc) throw new CrmError(notFound);
+  const name = await requireClientOfRecord(ctx, viewer, { kind: doc.clientKind, id: doc.clientRef }, notFound);
   return { doc, name };
 }
 

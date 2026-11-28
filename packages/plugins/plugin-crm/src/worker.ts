@@ -2436,7 +2436,8 @@ async function actionViewer(ctx: PluginContext, context: PluginPerformActionCont
 async function requireLinked(ctx: PluginContext, viewer: Viewer, recordType: RecordType, id: string): Promise<void> {
   const sets = await visibleCrmRecords(ctx, viewer);
   const rows: Array<{ id: string }> = recordType === "company" ? sets.accounts : recordType === "contact" ? sets.contacts : sets.deals;
-  if (!rows.some((row) => row.id === id)) throw new CrmError("Record is not visible");
+  // Same text as a guessed id: a limited person cannot tell another client's record from one that does not exist.
+  if (!rows.some((row) => row.id === id)) throw new CrmError(recordType === "company" ? "Company was not found" : recordType === "contact" ? "Contact was not found" : "Deal was not found");
 }
 
 async function requireAccount(ctx: PluginContext, viewer: Viewer, id: string): Promise<AccountDraft> {

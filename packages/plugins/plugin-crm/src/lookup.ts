@@ -680,6 +680,20 @@ export async function requireClient(ctx: PluginContext, viewer: Viewer, client: 
   return row.name;
 }
 
+/**
+ * `requireClient` for a record that hangs off a client (site, document, case). Under a `linked` decision a client that is not his
+ * answers with the record's own not-found text, the same as a guessed id; other scopes keep the client text.
+ */
+export async function requireClientOfRecord(ctx: PluginContext, viewer: Viewer, client: { kind: ClientKind; id: string }, notFound: string): Promise<string> {
+  if (!viewer.linkedCompanyIds) return requireClient(ctx, viewer, client);
+  try {
+    return await requireClient(ctx, viewer, client);
+  } catch (error) {
+    if (error instanceof CrmError) throw new CrmError(notFound);
+    throw error;
+  }
+}
+
 /** The client's name and, for a company, the domain on its CRM record. Refused when the viewer may not see the client. */
 export async function clientNameAndDomain(ctx: PluginContext, viewer: Viewer, client: { kind: ClientKind; id: string }): Promise<{ name: string; domain: string | null }> {
   const records = await visible(ctx, viewer);

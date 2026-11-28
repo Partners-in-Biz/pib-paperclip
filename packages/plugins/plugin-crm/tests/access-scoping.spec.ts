@@ -125,21 +125,27 @@ describe("stage B-2: a limited person on enforce sees only his companies' record
     expect((await tool("get-contact", { contactId: "kim" })).data?.id).toBe("kim");
     for (const id of ["globex", "foreign", "guess-1"]) expect((await tool("get-company", { companyRecordId: id })).error, id).toMatch(/not visible|not found/i);
     for (const id of ["grace", "solo", "guess-1"]) expect((await tool("get-contact", { contactId: id })).error, id).toMatch(/not visible|not found/i);
-    expect((await tool("field-history", { recordType: "company", recordId: "globex" })).error).toMatch(/not visible/);
-    expect((await tool("list-deal-products", { dealId: "d-globex" })).error).toMatch(/not visible/);
-    expect((await tool("list-deal-products", { dealId: "guess-1" })).error).toMatch(/not found/);
+    expect((await tool("field-history", { recordType: "company", recordId: "globex" })).error).toBe("Company was not found");
+    expect((await tool("list-deal-products", { dealId: "d-globex" })).error).toBe("Deal was not found");
+    expect((await tool("list-deal-products", { dealId: "guess-1" })).error).toBe("Deal was not found");
+    expect((await tool("field-history", { recordType: "company", recordId: "guess-1" })).error).toBe((await tool("field-history", { recordType: "company", recordId: "globex" })).error);
   });
 
   it("writes: his records change; another company's record and a guessed id are refused", async () => {
     const { act, store: rows } = await world("enforce");
     await expect(act("crm.update-contact", { contactId: "ada", name: "Ada King" })).resolves.toBeTruthy();
     expect(rows.contacts!.find((row) => row.id === "ada")!.name).toBe("Ada King");
-    await expect(act("crm.update-contact", { contactId: "grace", name: "Hacked" })).rejects.toThrow(/not visible/);
-    await expect(act("crm.update-company", { companyRecordId: "globex", name: "Hacked" })).rejects.toThrow(/not visible/);
-    await expect(act("crm.move-deal", { dealId: "d-globex", stageId: "st-won" })).rejects.toThrow(/not visible/);
-    await expect(act("crm.move-deal", { dealId: "guess-1", stageId: "st-won" })).rejects.toThrow(/not found/);
-    await expect(act("crm.link-contact", { contactId: "kim", companyRecordId: "globex" })).rejects.toThrow(/not visible/);
-    await expect(act("crm.activities", { recordType: "contact", recordId: "solo" })).rejects.toThrow(/not visible/);
+    // Another company's id and a guessed id give the same text (stage B2: he cannot tell that an id exists elsewhere).
+    const same = async (other: () => Promise<unknown>, guessed: () => Promise<unknown>, text: string) => {
+      await expect(other()).rejects.toThrow(new RegExp(`^${text}$`));
+      await expect(guessed()).rejects.toThrow(new RegExp(`^${text}$`));
+    };
+    await same(() => act("crm.update-contact", { contactId: "grace", name: "Hacked" }), () => act("crm.update-contact", { contactId: "guess-1", name: "Hacked" }), "Contact was not found");
+    await same(() => act("crm.update-company", { companyRecordId: "globex", name: "Hacked" }), () => act("crm.update-company", { companyRecordId: "guess-1", name: "Hacked" }), "Company was not found");
+    await same(() => act("crm.update-deal", { dealId: "d-globex", name: "Hacked" }), () => act("crm.update-deal", { dealId: "guess-1", name: "Hacked" }), "Deal was not found");
+    await same(() => act("crm.move-deal", { dealId: "d-globex", stageId: "st-won" }), () => act("crm.move-deal", { dealId: "guess-1", stageId: "st-won" }), "Deal was not found");
+    await same(() => act("crm.link-contact", { contactId: "kim", companyRecordId: "globex" }), () => act("crm.link-contact", { contactId: "kim", companyRecordId: "guess-1" }), "Company was not found");
+    await same(() => act("crm.activities", { recordType: "contact", recordId: "solo" }), () => act("crm.activities", { recordType: "contact", recordId: "guess-1" }), "Contact was not found");
     expect(rows.contacts!.find((row) => row.id === "grace")!.name).toBe("Grace Hopper");
   });
 
@@ -156,7 +162,8 @@ describe("stage B-2: a limited person on enforce sees only his companies' record
     expect(JSON.stringify(groups)).toMatch(/kim/);
     const graph = (await tool("contact-graph", { contactId: "ada" })).data!;
     expect(graph.companies.map((row: { id: string }) => row.id)).toEqual(["acme"]);
-    expect((await tool("contact-graph", { contactId: "grace" })).error).toMatch(/not visible/);
+    expect((await tool("contact-graph", { contactId: "grace" })).error).toBe("Contact was not found");
+    expect((await tool("contact-graph", { contactId: "guess-1" })).error).toBe("Contact was not found");
   });
 
   it("export-person-data and request-erasure: only a person wholly his; another company's person, a guessed id or a bare address are refused", async () => {

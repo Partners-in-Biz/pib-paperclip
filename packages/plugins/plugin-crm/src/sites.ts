@@ -52,7 +52,7 @@ import { asRecord, asStringList, table } from "./db.js";
 import { CrmError, type Viewer } from "./domain.js";
 import { sendHandoff } from "./handoffs.js";
 import { deleteSiteMonitorOf } from "./monitor.js";
-import { parseClientRef, requireClient } from "./lookup.js";
+import { parseClientRef, requireClient, requireClientOfRecord } from "./lookup.js";
 import { companyPrefix, pagePath, refOf, type ClientKind } from "./refs.js";
 import { emitClientProjects } from "./client-projects-emit.js";
 import { CLIENT_PROJECT_KINDS, type ClientProjectKind } from "./project-groups.js";
@@ -476,8 +476,9 @@ async function requireSite(ctx: PluginContext, viewer: Viewer, params: Record<st
   const id = typeof params.siteId === "string" ? params.siteId.trim() : "";
   if (!id) throw new CrmError("siteId is required (list-client-sites shows the ids)");
   const site = await getSite(ctx, viewer.companyId, id);
-  if (!site) throw new CrmError(`Site ${id} was not found (list-client-sites shows the ids)`);
-  await requireClient(ctx, viewer, { kind: site.clientKind, id: site.clientRef });
+  const notFound = `Site ${id} was not found (list-client-sites shows the ids)`;
+  if (!site) throw new CrmError(notFound);
+  await requireClientOfRecord(ctx, viewer, { kind: site.clientKind, id: site.clientRef }, notFound);
   return site;
 }
 

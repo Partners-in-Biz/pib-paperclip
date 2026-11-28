@@ -50,7 +50,7 @@ import {
 } from "./care-store.js";
 import { contactCompanyLinks, getContact } from "./db.js";
 import { CrmError, type Viewer } from "./domain.js";
-import { parseClientRef, requireClient, visibleClients } from "./lookup.js";
+import { parseClientRef, requireClient, requireClientOfRecord, visibleClients } from "./lookup.js";
 import { openIssueOnce } from "./mail.js";
 import { originFor } from "./origins.js";
 import { approvalLink, requestApproval, type MailApprovalHooks } from "./outbound.js";
@@ -301,7 +301,7 @@ export async function updateSupportCaseTool(ctx: PluginContext, viewer: Viewer, 
   if (!id) throw new CrmError("caseId is required (list-support-cases shows them)");
   const found = await getCase(ctx, viewer.companyId, id);
   if (!found) throw new CrmError("That support case was not found");
-  await requireClient(ctx, viewer, found.client);
+  await requireClientOfRecord(ctx, viewer, found.client, "That support case was not found");
   const now = new Date();
   let c = { ...found };
   if (typeof params.status === "string" && params.status) {
