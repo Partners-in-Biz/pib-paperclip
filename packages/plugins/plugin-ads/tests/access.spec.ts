@@ -45,11 +45,11 @@ describe("Paid ads access guard", () => {
     expect(direct).toEqual([]);
   });
 
-  it("no entry is scoped yet, and no table row names another plugin's resource", () => {
+  it("no table row names another plugin's resource; only ads.work rows are scoped (stage B2, own-scope.pg.spec.ts)", () => {
     for (const [key, entry] of Object.entries(ACCESS_TABLE)) {
       if (typeof entry !== "object" || !("resource" in entry)) continue;
       expect(entry.resource, key).toMatch(/^ads\.(work|settings)$/);
-      expect(entry.scoped, key).toBeUndefined();
+      if (entry.resource === "ads.settings") expect(entry.scoped, key).toBeUndefined();
     }
   });
 
@@ -71,7 +71,7 @@ describe("Paid ads access guard", () => {
   });
 
   it("the money paths need ads.work approve: the table says so", () => {
-    for (const key of MONEY_KEYS) expect(ACCESS_TABLE[key], key).toEqual({ resource: "ads.work", action: "approve" });
+    for (const key of MONEY_KEYS) expect(ACCESS_TABLE[key], key).toMatchObject({ resource: "ads.work", action: "approve" });
   });
 
   it("under enforce, an operator with every permission but ads.work approve is refused on the money paths; with approve he passes", async () => {

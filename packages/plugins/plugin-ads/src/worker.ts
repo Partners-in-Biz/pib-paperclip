@@ -1,4 +1,4 @@
-import { jobCompanyIds, createAccessGuard, normalizeToolResult, type AccessGuard } from "@partnersinbiz/pib-plugin-kit";
+import { jobCompanyIds, createAccessGuard, listManagedCrmCompanyIds, normalizeToolResult, ownCompaniesOf, permissionRefusal, type AccessGuard } from "@partnersinbiz/pib-plugin-kit";
 import {
   definePlugin,
   runWorker,
@@ -43,6 +43,7 @@ import { acknowledgeAlert, evaluateCompany, resolveStaleAlerts } from "./evaluat
 import { executeProposal } from "./execute.js";
 import { ADS_HIRE_ROLE, ADS_MATCH_ROLE } from "./hire.js";
 import { ORIGIN_KIND, ensureAdsProject } from "./issues.js";
+import { limitToOwnScopes } from "./own-scope.js";
 import { adsOn, companyUsesAds, knownCompanies, MODULE_OFF_MESSAGE } from "./modules.js";
 import { postDailyReports } from "./report.js";
 import { OAuthFlowError, completeOAuth, connectMock, connectWithToken, startOAuth } from "./oauth.js";
@@ -257,12 +258,19 @@ function toolContent(data: unknown): string {
   return json.length > 24_000 ? `${json.slice(0, 24_000)}\n... (truncated; narrow the request)` : json;
 }
 
-async function runTool(ctx: PluginContext, name: string, params: unknown, run: ToolRunContext): Promise<ToolResult> {
+/** `own`: the companies a limited person's call is limited to (stage B2), null for no limit. */
+async function runTool(ctx: PluginContext, name: string, params: unknown, run: ToolRunContext, own: ReadonlySet<string> | null = null): Promise<ToolResult> {
   try {
     if (!(await adsOn(ctx, run.companyId))) return { error: MODULE_OFF_MESSAGE };
     await ensureCompany(ctx, run.companyId);
     const rt = await runtimeFor(ctx, run.companyId);
-    const data = await dispatchTool(rt, toolViewer(run), name, objectParams(params));
+    let p = objectParams(params);
+    if (own) {
+      const limited = await limitToOwnScopes(rt, own, `tool:${name}`, p);
+      if ("refused" in limited) return { error: `Access refused: ${limited.refused}.` };
+      p = limited.params;
+    }
+    const data = await dispatchTool(rt, toolViewer(run), name, p);
     return { content: toolContent(data), data: data as ToolResult["data"] };
   } catch (error) {
     return { error: errorMessage(error) || "Ads tool failed" };
@@ -513,16 +521,27 @@ const plugin = definePlugin({
     skillSync = createSkillSyncer(ctx, SKILLS);
 
     // Every action, tool and API route goes through the access guard (PAR-12645). With the switch off it is a pass-through.
-    const g = createAccessGuard(ctx, { pluginKey: PLUGIN_ID, table: ACCESS_TABLE });
+    // A limited person's own companies come from the CRM copy (stage B2): the ones he owns or manages.
+    const g = createAccessGuard(ctx, {
+      pluginKey: PLUGIN_ID,
+      table: ACCESS_TABLE,
+      linkedCompanies: (companyId, userId) => listManagedCrmCompanyIds(ctx, ctx.db.namespace, companyId, userId),
+    });
     guard = g;
     for (const tool of ADS_TOOLS) {
-      g.tool(tool.name, tool, async (params, run) => normalizeToolResult(await runTool(ctx, tool.name, params, run)));
+      g.tool(tool.name, tool, async (params, run, check) => normalizeToolResult(await runTool(ctx, tool.name, params, run, ownCompaniesOf(check))));
     }
     for (const [key, handler] of Object.entries(ACTIONS)) {
-      g.action(key, async (params, context) => {
+      g.action(key, async (params, context, check) => {
         const v = actionViewer(context);
         await ensureCompany(ctx, v.companyId);
-        return handler(ctx, await runtimeFor(ctx, v.companyId), v, objectParams(params));
+        const rt = await runtimeFor(ctx, v.companyId);
+        const own = ownCompaniesOf(check);
+        if (!own) return handler(ctx, rt, v, objectParams(params));
+        const limited = await limitToOwnScopes(rt, own, key, objectParams(params));
+        if ("refused" in limited) return permissionRefusal(limited.refused);
+        const result = await handler(ctx, rt, v, limited.params);
+        return limited.after ? limited.after(result) : result;
       });
     }
     for (const routeKey of API_ROUTE_KEYS) g.apiRoute(routeKey, (input) => handleApiRoute(ctx, input));
@@ -582,7 +601,8 @@ const plugin = definePlugin({
     // The one company.created wiring (kit): remembers the company, syncs the skill, makes sure the Ads project exists.
     registerCompanyBootstrap(ctx, { syncer: skillSync, ensureResources: (companyId) => ensureAdsProject(ctx, companyId) });
     // The CRM's clients (names for scopes) and their linked projects (a client's ads issues open in the client's own project).
-    registerCrmProjection(ctx, ctx.db.namespace);
+    // `managers` (stage B2): who manages each company, so a limited person's own companies can be read here.
+    registerCrmProjection(ctx, ctx.db.namespace, { companies: true, contacts: true, companyManagers: true });
     registerClientProjectWatch(ctx);
     ctx.events.on("issue.updated", async (event: PluginEvent) => {
       try {
