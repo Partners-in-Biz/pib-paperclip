@@ -43,7 +43,8 @@ describe("resolveExecutionRunAdapterConfig", () => {
         executionRunConfig: { env: { ...secretNames, CUSTOM_VALUE: "allowed" } },
         environmentEnv: { PAPERCLIP_SECRETS_MASTER_KEY_FILE: "/x" }, projectEnv: { PAPERCLIP_QA_USER: "qa" },
         routineEnv: { BETTER_AUTH_SECRET: "x" }, secretsSvc: { resolveAdapterConfigForRuntime,
-          resolveEnvBindings: vi.fn(async (_companyId, env) => ({ env, secretKeys: new Set(), manifest: [] })) } as any });
+          resolveEnvBindings: vi.fn(async (_companyId, env) => ({ env, secretKeys: new Set(), manifest: [] })),
+        } as unknown as Parameters<typeof resolveExecutionRunAdapterConfig>[0]["secretsSvc"] });
       const env = result.resolvedConfig.env as Record<string, unknown>;
       expect(env.CUSTOM_VALUE).toBe("allowed");
       const names = [...Object.keys(secretNames), "PAPERCLIP_SECRETS_MASTER_KEY_FILE", "PAPERCLIP_QA_USER", "BETTER_AUTH_SECRET"];
