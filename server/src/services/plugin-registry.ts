@@ -528,6 +528,61 @@ export function pluginRegistryService(db: Db) {
       });
     },
 
+    /**
+     * Set (`value` defined) or remove (`value` undefined) one top-level key of the company's settings JSON,
+     * keeping every other key, inside one transaction that locks the row. `enabled` and `lastError` stay
+     * as they are; a missing row is created enabled, the same default a missing row reads as. Removing a
+     * key from a missing row writes nothing. `afterWrite` runs in the same transaction (the audit entry),
+     * so a failure there rolls the write back. `upsertCompanySettings` still replaces the whole JSON: a
+     * concurrent write through it can drop this key (plan PAR-15073, 8 "Shared settings JSON").
+     */
+    mergeCompanySettingsKey: async (
+      pluginId: string,
+      companyId: string,
+      key: string,
+      value: unknown,
+      afterWrite?: (tx: Db, change: { previous: unknown; row: PluginCompanySettings | null }) => Promise<void>,
+    ): Promise<{ previous: unknown; row: PluginCompanySettings | null }> => {
+      return db.transaction(async tx => {
+        const db = tx as unknown as Db;
+        const plugin = await getById(pluginId, db);
+        if (!plugin) throw notFound("Plugin not found");
+
+        if (value !== undefined) {
+          await db
+            .insert(pluginCompanySettings)
+            .values({ pluginId, companyId, enabled: true, settingsJson: {} })
+            .onConflictDoNothing({ target: [pluginCompanySettings.companyId, pluginCompanySettings.pluginId] });
+        }
+        const existing = await db
+          .select()
+          .from(pluginCompanySettings)
+          .where(and(
+            eq(pluginCompanySettings.pluginId, pluginId),
+            eq(pluginCompanySettings.companyId, companyId),
+          ))
+          .for("update")
+          .then((rows) => rows[0] ?? null) as PluginCompanySettings | null;
+
+        const current = existing?.settingsJson ?? {};
+        const previous = Object.prototype.hasOwnProperty.call(current, key) ? current[key] : undefined;
+        let row = existing;
+        if (existing) {
+          const { [key]: _removed, ...rest } = current;
+          const settingsJson = value === undefined ? rest : { ...rest, [key]: value };
+          row = await db
+            .update(pluginCompanySettings)
+            .set({ settingsJson, updatedAt: new Date() })
+            .where(eq(pluginCompanySettings.id, existing.id))
+            .returning()
+            .then((rows) => rows[0] ?? null) as PluginCompanySettings | null;
+        }
+        const change = { previous, row };
+        if (afterWrite) await afterWrite(db, change);
+        return change;
+      });
+    },
+
     // ----- Entities -------------------------------------------------------
 
     /**

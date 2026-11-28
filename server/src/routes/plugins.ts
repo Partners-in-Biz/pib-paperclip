@@ -59,7 +59,17 @@ import {
   pluginLoader,
   REPO_ROOT,
 } from "../services/plugin-loader.js";
-import { logActivity } from "../services/activity-log.js";
+import { logActivity, publishActivity, type ActivityPublication } from "../services/activity-log.js";
+import { logger } from "../middleware/logger.js";
+import {
+  parseVoiceRunProfileSetting,
+  readVoiceRunProfileSetting,
+  storedVoiceRunProfileSetting,
+  VOICE_PLUGIN_KEY,
+  VOICE_RUN_PROFILE_SETTING_KEY,
+  VOICE_RUN_PROFILE_SETTINGS,
+  type VoiceRunProfileSetting,
+} from "../services/heartbeat/voice-run-setting.js";
 import { publishGlobalLiveEvent } from "../services/live-events.js";
 import { issueService } from "../services/issues.js";
 import type { PluginJobScheduler } from "../services/plugin-job-scheduler.js";
@@ -3217,6 +3227,94 @@ export function pluginRoutes(
     });
 
     res.json(status);
+  });
+
+  // ===========================================================================
+  // Company setting `voiceRunProfile` of the voice plugin (PAR-15298, plan PAR-15073 5.2)
+  // ===========================================================================
+
+  /**
+   * Board-only. The same checks as the local-folder write above (board, company access, active non-viewer
+   * membership, operator floor), on the voice plugin only. The value is merged into the plugin's company
+   * settings JSON in one transaction together with its activity entry. The instance flag
+   * `enableVoiceRunProfile` is not checked here: a write with the flag off is stored and reads as off.
+   */
+  async function resolveVoicePlugin(pluginId: string) {
+    const plugin = await resolvePlugin(registry, pluginId);
+    if (!plugin || plugin.pluginKey !== VOICE_PLUGIN_KEY) throw notFound("Voice plugin not found");
+    return plugin;
+  }
+
+  async function writeVoiceRunProfile(req: Request, res: Response, value: VoiceRunProfileSetting | undefined) {
+    const { pluginId, companyId } = req.params as { pluginId: string; companyId: string };
+    const plugin = await resolveVoicePlugin(pluginId);
+    const actor = getActorInfo(req);
+    const publications: ActivityPublication[] = [];
+    const change = await registry.mergeCompanySettingsKey(
+      plugin.id,
+      companyId,
+      VOICE_RUN_PROFILE_SETTING_KEY,
+      value,
+      async (tx) => {
+        await logActivity(tx, {
+          companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          agentApiKeyId: actor.agentApiKeyId,
+          action: value === undefined ? "plugin.voice_run_profile.cleared" : "plugin.voice_run_profile.set",
+          entityType: "plugin",
+          entityId: plugin.id,
+          details: { pluginId: plugin.id, pluginKey: plugin.pluginKey, companyId, value: value ?? null },
+        }, publications);
+      },
+    );
+    for (const publication of publications) {
+      try {
+        publishActivity(publication);
+      } catch (err) {
+        logger.error({ err, companyId }, "failed to publish voice run profile activity");
+      }
+    }
+    res.json({
+      pluginId: plugin.id,
+      companyId,
+      value: storedVoiceRunProfileSetting(change.row?.settingsJson),
+      previous: parseVoiceRunProfileSetting(change.previous),
+    });
+  }
+
+  router.get("/plugins/:pluginId/companies/:companyId/voice-run-profile", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const { pluginId, companyId } = req.params;
+    assertCompanyAccess(req, companyId);
+    const plugin = await resolveVoicePlugin(pluginId);
+    const settings = await registry.getCompanySettings(plugin.id, companyId);
+    res.json({
+      pluginId: plugin.id,
+      companyId,
+      value: storedVoiceRunProfileSetting(settings?.settingsJson),
+      effective: await readVoiceRunProfileSetting(db, companyId),
+    });
+  });
+
+  router.put("/plugins/:pluginId/companies/:companyId/voice-run-profile", async (req, res) => {
+    assertBoardOrgAccess(req);
+    assertPluginManagementVisible();
+    assertCompanyAccess(req, req.params.companyId);
+    const value = parseVoiceRunProfileSetting((req.body as { value?: unknown } | undefined)?.value);
+    if (!value) {
+      throw badRequest(`"value" must be one of ${VOICE_RUN_PROFILE_SETTINGS.join(", ")}`);
+    }
+    await writeVoiceRunProfile(req, res, value);
+  });
+
+  router.delete("/plugins/:pluginId/companies/:companyId/voice-run-profile", async (req, res) => {
+    assertBoardOrgAccess(req);
+    assertPluginManagementVisible();
+    assertCompanyAccess(req, req.params.companyId);
+    await writeVoiceRunProfile(req, res, undefined);
   });
 
   // ===========================================================================
