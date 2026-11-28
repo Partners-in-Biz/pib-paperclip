@@ -202,6 +202,11 @@ export function digestTitle(now: Date): string {
   return `16:00 digest ${sastDate(now)}`;
 }
 
+/** The Cockpit's Decide tab, from the Cockpit address (PAR-15315). */
+export function decideHref(cockpitHref: string): string {
+  return `${cockpitHref}${cockpitHref.includes("?") ? "&" : "?"}tab=decide`;
+}
+
 /** The digest as markdown: header with the trend, then one section per place. */
 export function renderDigest(input: { items: DigestItem[]; stats: DigestStats; now: Date; cockpitHref?: string | null }): string {
   const { items, stats, now } = input;
@@ -216,6 +221,7 @@ export function renderDigest(input: { items: DigestItem[]; stats: DigestStats; n
     oldest && oldestDays !== null ? `Oldest open: ${link(oldest)}, ${oldestDays} ${oldestDays === 1 ? "day" : "days"}.` : null,
   ].filter(Boolean);
   const lines: string[] = [head.join(" "), ""];
+  if (input.cockpitHref) lines.push(`[Decide one by one →](${decideHref(input.cockpitHref)})`, "");
   if (stats.history.length > 1) {
     const recent = stats.history.slice(-7);
     lines.push(`Last ${recent.length} digests, open items: ${recent.map((d) => d.open).join(", ")}. New asks: ${recent.map((d) => d.newAsks).join(", ")}.`, "");

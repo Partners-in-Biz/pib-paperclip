@@ -8,7 +8,7 @@ import {
   type PluginWidgetProps,
 } from "@paperclipai/plugin-sdk/ui";
 import { teamSetupPath } from "@partnersinbiz/pib-plugin-kit/team";
-import { AccessGate, Activity, Bot, Building2, Button, EmptyState, HeartPulse, Inbox, KeyRound, Lightbulb, Megaphone, Newspaper, PageFrame, PageHeader, PageMessage, ShieldCheck, Tabs, Workflow, Wrench, tokens, tone, useAccess } from "@partnersinbiz/pib-plugin-ui";
+import { AccessGate, Activity, Bot, Building2, Button, EmptyState, HeartPulse, Inbox, KeyRound, Lightbulb, Megaphone, Newspaper, PageFrame, PageHeader, PageMessage, Scale, ShieldCheck, Tabs, Workflow, Wrench, tokens, tone, useAccess } from "@partnersinbiz/pib-plugin-ui";
 import { MODULES } from "@partnersinbiz/pib-plugin-kit/setup";
 import { PLUGIN_KEY } from "../constants.js";
 import { KPI_GROUP_TITLES, type RunLite } from "../merge.js";
@@ -28,6 +28,7 @@ import { ProfilePanel } from "./profile.js";
 import { NotificationsPage } from "./NotificationsPage.js";
 import { HostedView, hostedAllowed, useHostedUsage } from "./hosted.js";
 import { PaperPanel } from "./paper.js";
+import { DecidePanel } from "./decide.js";
 import { useAccessMe, useCockpitAction } from "./actions.js";
 
 /** Tier A info cards (key outward-send:*) need no action, so they do not count as waiting. */
@@ -71,10 +72,10 @@ function Shell({ children }: { children: ReactNode }) {
   return <PageFrame accent="cockpit">{children}</PageFrame>;
 }
 
-const TAB_IDS = ["overview", "paper", "flows", "profile", "memory", "notifications", "maintenance", "policy", "browser", "hosted"] as const;
+const TAB_IDS = ["overview", "decide", "paper", "flows", "profile", "memory", "notifications", "maintenance", "policy", "browser", "hosted"] as const;
 type TabId = (typeof TAB_IDS)[number];
 
-/** `?tab=paper`, `?tab=flows`, `?tab=profile`, `?tab=memory`, `?tab=notifications` and `?tab=maintenance` open those tabs; anything else is the overview. */
+/** `?tab=decide`, `?tab=paper`, `?tab=flows`, `?tab=profile`, `?tab=memory`, `?tab=notifications` and `?tab=maintenance` open those tabs; anything else is the overview. */
 export function tabFromSearch(search: string | null | undefined): TabId {
   const value = new URLSearchParams(search ?? "").get("tab");
   return (TAB_IDS as readonly string[]).includes(value ?? "") ? (value as TabId) : "overview";
@@ -140,6 +141,8 @@ function CockpitPageBody({ context }: PluginPageProps) {
   const [policyTick, setPolicyTick] = useState(0);
   const [browserTick, setBrowserTick] = useState(0);
   const [paperTick, setPaperTick] = useState(0);
+  const [decideTick, setDecideTick] = useState(0);
+  const [decideCount, setDecideCount] = useState<number | null>(null);
   const hosted = useHostedUsage(companyId);
   const showHosted = hostedAllowed(hosted.state);
   const moved = movedTabTarget(location.search);
@@ -172,7 +175,8 @@ function CockpitPageBody({ context }: PluginPageProps) {
   const hostedTab = tab === "hosted";
   const browserTab = tab === "browser";
   const paperTab = tab === "paper";
-  const pageTab = memoryTab || profileTab || maintenanceTab || policyTab || hostedTab || browserTab || paperTab;
+  const decideTab = tab === "decide";
+  const pageTab = decideTab || memoryTab || profileTab || maintenanceTab || policyTab || hostedTab || browserTab || paperTab;
   const settingsHref = settingsPath(data.raw?.installed?.[PLUGIN_KEY]?.id ?? installationIdFromUiBase(uiBase()));
   return (
     <Shell>
@@ -192,7 +196,8 @@ function CockpitPageBody({ context }: PluginPageProps) {
               type="button"
               variant="secondary"
               onClick={() => {
-                if (paperTab) setPaperTick((n) => n + 1);
+                if (decideTab) setDecideTick((n) => n + 1);
+                else if (paperTab) setPaperTick((n) => n + 1);
                 else if (memoryTab) setMemoryTick((n) => n + 1);
                 else if (profileTab) setProfileTick((n) => n + 1);
                 else if (maintenanceTab) setMaintenanceTick((n) => n + 1);
@@ -213,6 +218,7 @@ function CockpitPageBody({ context }: PluginPageProps) {
       <Tabs
         tabs={[
           { id: "overview", label: "Overview", icon: Activity, count: view?.waiting.filter(needsAction).length || null, countTone: view?.waiting.some((w) => w.kind === "money" || w.kind === "legal") ? "bad" : "warn" },
+          { id: "decide", label: "Decide", icon: Scale, count: decideCount || null, countTone: "warn" },
           { id: "paper", label: "Paper", icon: Newspaper },
           { id: "flows", label: "Flows", icon: Workflow, count: view?.flows.stuck.length || null, countTone: "warn" },
           { id: "profile", label: "Profile", icon: Building2 },
@@ -227,7 +233,9 @@ function CockpitPageBody({ context }: PluginPageProps) {
         active={tab}
         onChange={(id) => selectTab(id as TabId)}
       />
-      {paperTab ? (
+      {decideTab ? (
+        <DecidePanel key={companyId} refreshKey={decideTick} linkFor={linkFor} navigate={(href) => navigation.navigate(href)} onCount={setDecideCount} />
+      ) : paperTab ? (
         <PaperPanel key={companyId} search={location.search} linkFor={linkFor} navigate={(href) => navigation.navigate(href)} refreshKey={paperTick} />
       ) : hostedTab ? (
         <HostedView key={companyId} state={hosted.state} now={new Date()} onRetry={() => void hosted.reload()} />
