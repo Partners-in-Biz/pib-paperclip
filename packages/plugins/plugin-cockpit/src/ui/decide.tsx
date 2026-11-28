@@ -141,7 +141,7 @@ function DecideCard({
                     e.currentTarget.blur();
                     onOption?.(option);
                   }}
-                  style={{ minHeight: 40, maxWidth: "100%", textAlign: "left", ...wrap }}
+                  style={{ height: "auto", minHeight: 40, padding: "8px 14px", maxWidth: "100%", textAlign: "left", ...wrap }}
                 >
                   {option}{recommended ? " (recommended)" : ""}
                 </Button>
